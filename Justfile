@@ -97,11 +97,14 @@ K3D_CLUSTER := "cerberus-e2e"
 CERBERUS_IMAGE := "cerberus:e2e"
 
 # Boot the k3d cluster, build cerberus image, import it, apply manifests, wait for pods.
+# Host ports map via the k3d loadbalancer to NodePorts on the k3s nodes:
+#   host:8080 -> LB -> NodePort 30080 (cerberus svc)
+#   host:3000 -> LB -> NodePort 30030 (grafana svc)
 e2e-up: e2e-down
     @echo "==> creating k3d cluster {{K3D_CLUSTER}}"
     k3d cluster create {{K3D_CLUSTER}} \
-        --port "3000:3000@loadbalancer" \
-        --port "8080:8080@loadbalancer" \
+        --port "3000:30030@loadbalancer" \
+        --port "8080:30080@loadbalancer" \
         --no-lb=false \
         --k3s-arg "--disable=traefik@server:0" \
         --wait
