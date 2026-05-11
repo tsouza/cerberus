@@ -14,10 +14,13 @@ import (
 // Lower turns a parsed PromQL expression into a chplan tree, using s for
 // table and column name conventions.
 //
-// v0.1 scope: VectorSelector, MatrixSelector (only as a Call argument),
-// Call with `rate` / `increase` / `delta` / `*_over_time`, AggregateExpr
-// with `by (...)`, ParenExpr. Subqueries, scalar arithmetic, `without`,
-// and BinaryExpr are out of scope for the seed.
+// RC1 scope as it grows: VectorSelector, MatrixSelector (only as a Call
+// argument), range-vector Call (`rate` / `increase` / `delta` /
+// `*_over_time`), instant-vector Call (`abs`, `sqrt`, `ln`, ...),
+// AggregateExpr with `by (...)`, ParenExpr, BinaryExpr with
+// scalar/vector arithmetic. Subqueries, `without`, vector-vector
+// matching, `offset`, `@`, and comparison/logical ops land in
+// follow-up milestones.
 func Lower(expr parser.Expr, s schema.Metrics) (chplan.Node, error) {
 	return lower(expr, s)
 }
@@ -117,11 +120,29 @@ func matchOp(t labels.MatchType) chplan.BinaryOp {
 	return chplan.OpEq
 }
 
-// lowerCall handles range-vector functions: rate, increase, delta, and the
-// `*_over_time` family. The single argument is a MatrixSelector wrapping a
-// VectorSelector; we lower the VectorSelector and wrap the result in a
-// RangeWindow capturing the function name + range duration.
+// lowerCall dispatches PromQL function calls. The arg shape decides the
+// path: a MatrixSelector means a range-vector function (rate, increase,
+// *_over_time); anything else is treated as an instant-vector function
+// (abs, sqrt, ln, ...) if recognised. Other functions surface a clear
+// "not yet supported" error pointing at the relevant milestone.
 func lowerCall(c *parser.Call, s schema.Metrics) (chplan.Node, error) {
+	if len(c.Args) >= 1 {
+		if _, ok := c.Args[0].(*parser.MatrixSelector); ok {
+			return lowerRangeVectorCall(c, s)
+		}
+	}
+	if chFn, ok := instantFnCH[c.Func.Name]; ok {
+		return lowerInstantFn(c, s, chFn)
+	}
+	return nil, fmt.Errorf("promql: function %s is not yet supported", c.Func.Name)
+}
+
+// lowerRangeVectorCall handles range-vector functions: rate, increase,
+// delta, and the `*_over_time` family. The single argument is a
+// MatrixSelector wrapping a VectorSelector; we lower the VectorSelector
+// and wrap the result in a RangeWindow capturing the function name +
+// range duration.
+func lowerRangeVectorCall(c *parser.Call, s schema.Metrics) (chplan.Node, error) {
 	if len(c.Args) != 1 {
 		return nil, fmt.Errorf("promql: %s expects exactly 1 argument, got %d", c.Func.Name, len(c.Args))
 	}
