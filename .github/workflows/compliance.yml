@@ -1,0 +1,85 @@
+name: compliance
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'internal/promql/**'
+      - 'internal/chsql/**'
+      - 'internal/optimizer/**'
+      - 'internal/chplan/**'
+      - 'harness/compliance/**'
+      - '.github/workflows/compliance.yml'
+  pull_request:
+    paths:
+      - 'internal/promql/**'
+      - 'internal/chsql/**'
+      - 'internal/optimizer/**'
+      - 'internal/chplan/**'
+      - 'harness/compliance/**'
+      - '.github/workflows/compliance.yml'
+  schedule:
+    # nightly at 04:11 UTC (offset from e2e to spread load)
+    - cron: '11 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compliance-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  compliance:
+    name: prometheus/compliance
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Informational until M6 — set up the harness now so each M1.x can use it,
+    # gate it on the required-status-checks list at RC1 cut.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      - name: Run compliance harness
+        env:
+          # The tester binary needs Go 1.21+; we already have it from setup-go.
+          # The seed window anchors at 2026-05-11T00:00:00Z (see seed.sql).
+          TESTER_END_TIME: "2026-05-11T01:00:00Z"
+          TESTER_RANGE: "3600"
+        run: ./harness/compliance/scripts/run-compliance.sh
+
+      - name: Summarise report
+        if: always()
+        run: |
+          if [ -f harness/compliance/report.json ]; then
+            jq '{
+              total: ([.results[]?] | length),
+              passed: ([.results[]? | select(.unexpectedFailure == null and .diff == null)] | length),
+              diffs: ([.results[]? | select(.diff != null)] | length),
+              unexpected_failures: ([.results[]? | select(.unexpectedFailure != null)] | length)
+            }' harness/compliance/report.json
+          else
+            echo "no report produced"
+          fi
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compliance-report
+          path: harness/compliance/report.json
+          if-no-files-found: warn
+          retention-days: 30

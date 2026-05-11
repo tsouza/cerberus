@@ -1,0 +1,10 @@
+{
+  "$schema": "Comments per entry are required. Each entry must include:",
+  "$schema_fields": [
+    "query: the PromQL string from promql-test-queries.yml",
+    "reason: why cerberus's result differs from reference Prometheus",
+    "tracking: link to the PR or docs/<area>.md note that will close it (or 'will-not-fix' with justification)"
+  ],
+  "$note": "Allowlist starts empty. Entries are added during M1.x as we hit known gaps; reviewers gate every add on the 'reason' being a documented upstream-Prom-vs-CH semantic gap, not a cerberus bug.",
+  "failures": []
+}
