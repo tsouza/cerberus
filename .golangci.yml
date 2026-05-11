@@ -1,0 +1,41 @@
+run:
+  timeout: 5m
+  go: "1.24"
+
+linters:
+  disable-all: true
+  enable:
+    - errcheck
+    - gofumpt
+    - goimports
+    - gosec
+    - govet
+    - ineffassign
+    - misspell
+    - revive
+    - staticcheck
+    - unused
+
+linters-settings:
+  goimports:
+    local-prefixes: github.com/tsouza-squid/cerberus
+  gofumpt:
+    extra-rules: true
+  revive:
+    rules:
+      - name: exported
+        disabled: false
+        arguments:
+          - "checkPrivateReceivers"
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - gosec
+        - revive
+    - path: cmd/
+      linters:
+        - revive

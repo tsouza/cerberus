@@ -30,3 +30,20 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Local build outputs
+bin/
+dist/
+
+# direnv local override
+.direnv/
+.envrc.local
+
+# Local kubeconfig / k3d state
+.kube/
+.k3d/
+
+# Playwright artifacts (PR8)
+test/e2e/playwright/node_modules/
+test/e2e/playwright/test-results/
+test/e2e/playwright/playwright-report/
