@@ -209,6 +209,63 @@ Driven by an audit of cerberus against [12factor.net](https://12factor.net/). Mo
 
 ---
 
+## RC6 — type-safe SQL via go-sqlbuilder
+
+**Hard rule (non-negotiable, takes effect at RC6 cut):** plain strings and `fmt.Sprintf` are forbidden for ClickHouse SQL generation. Every emitted SQL fragment goes through [`huandu/go-sqlbuilder`](https://github.com/huandu/go-sqlbuilder) (or a thin cerberus-internal extension on top of it). Concatenation and templated identifiers are an injection vector even with parameterised values; the builder tracks identifiers, args, and dialect quoting in one place.
+
+### Why now (and not earlier)
+
+Through RC1 the emitter grew Sprintf-driven for speed: `internal/chsql/emit_node.go`, `emit_expr.go`, `range_window.go`, `vector_join.go`, plus the metadata SQL in `internal/api/prom/metadata.go`. That worked for landing the surface, but every helper is hand-quoted, each subquery is a string-pasted hole, and there's no central ClickHouse dialect handling. RC6 reorganises that into a typed, builder-first emitter so RC3's optimizer changes can compose SQL programmatically (PREWHERE promotion, sort-key-aware predicate ordering, MV substitution) without re-scaffolding the string layer.
+
+### Library survey
+
+[`huandu/go-sqlbuilder`](https://github.com/huandu/go-sqlbuilder) covers the dialects we care about: `sqlbuilder.ClickHouse` flavor, `Cond` builders for WHERE/JOIN, `BuilderAs` for nested subqueries, `Args.Add` for placeholder management, `Raw`/`Var` for escape hatches. Subqueries compose by passing builders as `From()` / `Join()` arguments — the engine collects placeholders across the tree.
+
+What `go-sqlbuilder` doesn't model out of the box (the cerberus extension layer):
+
+- **Map column access** — `Attributes['job']`, `mapKeys(Attributes)`, `mapFilter((k,v) -> ..., Attributes)`. Wrap as named helpers (`chsql.MapAt(col, key)`, `chsql.MapKeys(col)`, etc.) returning expression strings via the builder's `Args` API.
+- **Array idiom for RangeWindow** — `groupArray((ts, value))`, `arraySort`, `arrayPopBack`, `arrayPopFront`, `arrayMap((p, c) -> ..., a, b)`, `arrayFilter`. Same pattern: typed helpers that compose builder fragments.
+- **Parameterised aggregates** — `quantile(0.95)(value)`, `quantiles(0.5, 0.9)(value)`. Builder doesn't know the params/args distinction, so a `chsql.ParamAgg(name, params, args)` helper renders it.
+- **DateTime64 literals + interval arithmetic** — `now64(9) - toIntervalNanosecond(N)`, `toDateTime64('2026-...', 9)`. Helpers `chsql.Now64()`, `chsql.SubtractNanos(expr, ns)`, `chsql.DateTime64Lit(t)`.
+- **CH lambda syntax** — `(k, v) -> NOT (k IN ('a', 'b'))`. A `chsql.Lambda(params, body)` helper avoids the freestyle string trap.
+- **PREWHERE clause** (RC3 sort-key emission) — go-sqlbuilder doesn't natively model PREWHERE; add a `chsql.SelectBuilder` wrapper that supports `.Prewhere(cond...)`.
+
+Custom Flavor extension (`sqlbuilder.NewFlavor` style) might also clean up some quoting if upstream `ClickHouse` flavor's identifier escaping doesn't match our needs (CH backticks vs PG double quotes — needs a small audit).
+
+### Refactor strategy
+
+Fixture-first: every TXTAR golden in `test/spec/{promql,logql,traceql,chsql}/` is the safety net. The refactor is allowed to change SQL formatting (whitespace, alias placement) — fixtures get regenerated on the same commit. Behavioural changes (different operators, predicate order) trigger a fixture diff that should be human-reviewed.
+
+PR sequence:
+
+| #    | Item                                                                                                       |
+| ---- | ---------------------------------------------------------------------------------------------------------- |
+| R6.1 | Vendor `huandu/go-sqlbuilder`; add `internal/chsql/builder.go` with the cerberus-internal CH-flavor wrapper plus the helpers above (MapAt, MapKeys, MapFilterExcept, Now64, SubtractNanos, DateTime64Lit, Lambda, ParamAgg). Unit tests pin each helper's output. **No emitter changes yet** — pure scaffolding. |
+| R6.2 | Port `emitScan`, `emitFilter`, `emitProject`, `emitLimit` (the simple ones). TXTAR fixtures regenerate; diff is whitespace / quoting only.                                                                                                                                                              |
+| R6.3 | Port `emitAggregate` + `emitAggFunc` (parameterised aggregates use `ParamAgg`).                              |
+| R6.4 | Port `emitBinary` + `emitMapAccess` + `emitMapWithoutKeys` + `emitFunc` + `emitLineContent`.                  |
+| R6.5 | Port `emitRangeWindow` (the `arraySort/groupArray` windowed-array idiom). The existing emitter is a 100-line Sprintf chain; this is the highest-value port. |
+| R6.6 | Port `emitVectorJoin` (per-series argMax + INNER JOIN).                                                       |
+| R6.7 | Port `internal/api/prom/metadata.go` UNION builders + `unionLabelValuesSQL` + `metricMetaSQL`.                |
+| R6.8 | Port `internal/api/loki/` and `internal/api/tempo/` SQL helpers (RC2/RC3 may have grown new ones).            |
+| R6.9 | **Lint enforcement**: add a custom golangci-lint rule (or a `cmd/check-sql/` Go tool wired into `just check-sql`) that scans `internal/chsql/`, `internal/api/`, `internal/optimizer/` for `fmt.Sprintf` calls whose first arg contains `SELECT`, `WHERE`, `FROM`, `INSERT`, etc. Fails the `lint` CI check on regressions. |
+| R6.10 | `CLAUDE.md` hard-rule update: `**No raw SQL strings.**` becomes a top-level non-negotiable; `docs/sql-style.md` documents the helper API and its escape hatches (when `Raw()` is acceptable, when a custom `chsql.SelectBuilder` extension is preferable). |
+
+### Open questions to resolve in R6.1
+
+- **Identifier quoting**: does `sqlbuilder.ClickHouse` flavor backtick-quote identifiers? If not, we keep our `quoteIdentCH` helper but feed it through the builder's `Var()` mechanism so escaping stays consistent.
+- **`Args` lifecycle**: each builder has its own `Args` accumulator. Nested builders compose via `BuilderAs`; the placeholder positions get re-numbered. Verify with a worst-case nested subquery (e.g. the windowed-array RangeWindow) that the resulting `Build()` output matches what the chclient driver expects.
+- **Performance**: builder construction is allocation-heavier than Sprintf. Bench against a 1000-iteration emit loop on the largest fixture; expect a small regression that's irrelevant compared to CH query latency, but record the number so RC3's optimizer benchmarks stay honest.
+
+### RC6 exit criteria
+
+- `grep -RIn 'fmt.Sprintf' internal/chsql/ internal/api/ | grep -E 'SELECT|FROM|WHERE|INSERT'` returns empty (the lint rule from R6.9 enforces this in CI).
+- Every TXTAR fixture either matches its prior golden bit-for-bit or has a documented whitespace/aliasing diff in the porting PR's description.
+- `internal/chsql/builder_test.go` has ≥ one test per helper in `internal/chsql/builder.go`, exercising the placeholder + arg ordering.
+- `docs/sql-style.md` published with the helper catalog and the "when can I use Raw()?" guidance.
+
+---
+
 ## How we work
 
 - **PR-per-change.** Every change ships as its own PR against `main`. Branch protection requires `ci / check` + `ci / lint`, linear history, no force-push.
