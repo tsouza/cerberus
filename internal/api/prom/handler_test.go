@@ -1,0 +1,197 @@
+package prom_test
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/tsouza/cerberus/internal/api/prom"
+	"github.com/tsouza/cerberus/internal/chclient"
+	"github.com/tsouza/cerberus/internal/schema"
+)
+
+type stubQuerier struct {
+	samples  []chclient.Sample
+	err      error
+	lastSQL  string
+	lastArgs []any
+}
+
+func (s *stubQuerier) Query(_ context.Context, sql string, args ...any) ([]chclient.Sample, error) {
+	s.lastSQL = sql
+	s.lastArgs = args
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.samples, nil
+}
+
+func newServer(q prom.Querier) *httptest.Server {
+	h := prom.New(q, schema.DefaultOTelMetrics(), nil)
+	mux := http.NewServeMux()
+	h.Mount(mux)
+	return httptest.NewServer(mux)
+}
+
+func TestQuery_Vector(t *testing.T) {
+	t.Parallel()
+
+	ts := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+	q := &stubQuerier{
+		samples: []chclient.Sample{
+			{MetricName: "up", Labels: map[string]string{"job": "api"}, Timestamp: ts, Value: 1.0},
+			{MetricName: "up", Labels: map[string]string{"job": "db"}, Timestamp: ts, Value: 0.0},
+		},
+	}
+
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/v1/query?query=up&time=1717999200")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	body := readBody(t, resp)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+	}
+
+	var parsed prom.Response
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v\nbody=%s", err, body)
+	}
+	if parsed.Status != "success" {
+		t.Fatalf("status: got %q, want success; err=%s", parsed.Status, parsed.Error)
+	}
+	if parsed.Data.ResultType != "vector" {
+		t.Fatalf("resultType: got %q, want vector", parsed.Data.ResultType)
+	}
+
+	// Re-marshal then unmarshal the result into the typed shape.
+	rawResult, _ := json.Marshal(parsed.Data.Result)
+	var vec []prom.VectorSample
+	if err := json.Unmarshal(rawResult, &vec); err != nil {
+		t.Fatalf("decode vector: %v", err)
+	}
+	if len(vec) != 2 {
+		t.Fatalf("expected 2 series, got %d", len(vec))
+	}
+	for _, v := range vec {
+		if v.Metric["__name__"] != "up" {
+			t.Errorf("missing __name__ in %+v", v.Metric)
+		}
+		if _, ok := v.Metric["job"]; !ok {
+			t.Errorf("missing job label in %+v", v.Metric)
+		}
+	}
+
+	// The lowered SQL should reference the gauge table and bind the metric
+	// name as an arg.
+	if !strings.Contains(q.lastSQL, "otel_metrics_gauge") {
+		t.Errorf("expected SQL to mention otel_metrics_gauge; got %q", q.lastSQL)
+	}
+	if len(q.lastArgs) == 0 || q.lastArgs[len(q.lastArgs)-1] != "up" {
+		t.Errorf("expected last arg %q, got %v", "up", q.lastArgs)
+	}
+}
+
+func TestQueryRange_Matrix(t *testing.T) {
+	t.Parallel()
+
+	ts := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+	q := &stubQuerier{
+		samples: []chclient.Sample{
+			{MetricName: "up", Labels: map[string]string{"job": "api"}, Timestamp: ts, Value: 1.0},
+		},
+	}
+
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/v1/query_range?query=up&start=1717995600&end=1717999200&step=60")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+	}
+
+	var parsed prom.Response
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if parsed.Data.ResultType != "matrix" {
+		t.Fatalf("resultType: got %q, want matrix", parsed.Data.ResultType)
+	}
+}
+
+func TestQuery_BadInput(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		url    string
+		status int
+		errKey string
+	}{
+		{"missing query", "/api/v1/query", http.StatusBadRequest, prom.ErrBadData},
+		{"bad time", "/api/v1/query?query=up&time=tomorrow", http.StatusBadRequest, prom.ErrBadData},
+		{"invalid promql", "/api/v1/query?query=up%20%2B", http.StatusBadRequest, prom.ErrBadData},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			srv := newServer(&stubQuerier{})
+			t.Cleanup(srv.Close)
+			resp, err := http.Get(srv.URL + tc.url)
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			body := readBody(t, resp)
+			if resp.StatusCode != tc.status {
+				t.Fatalf("status: got %d, want %d; body=%s", resp.StatusCode, tc.status, body)
+			}
+			var parsed prom.Response
+			if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if parsed.Status != "error" || parsed.ErrorType != tc.errKey {
+				t.Fatalf("got status=%q errorType=%q, want error/%s", parsed.Status, parsed.ErrorType, tc.errKey)
+			}
+		})
+	}
+}
+
+func TestQuery_UpstreamError(t *testing.T) {
+	t.Parallel()
+
+	q := &stubQuerier{err: errors.New("clickhouse: connection refused")}
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/v1/query?query=up")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+}
+
+func readBody(t *testing.T, resp *http.Response) string {
+	t.Helper()
+	defer resp.Body.Close()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	return string(b)
+}
