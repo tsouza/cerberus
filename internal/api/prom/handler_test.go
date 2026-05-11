@@ -268,6 +268,31 @@ func TestQuery_BadInput(t *testing.T) {
 	}
 }
 
+func TestResponseHeaders_PromVersionAndCHMillis(t *testing.T) {
+	t.Parallel()
+
+	q := &stubQuerier{
+		samples: []chclient.Sample{
+			{MetricName: "up", Labels: map[string]string{"job": "api"}, Value: 1.0},
+		},
+	}
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/v1/query?query=up")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if got := resp.Header.Get("X-Prometheus-API-Version"); got != "v1" {
+		t.Errorf("X-Prometheus-API-Version: got %q, want v1", got)
+	}
+	if got := resp.Header.Get("X-Cerberus-CH-Millis"); got == "" {
+		t.Errorf("X-Cerberus-CH-Millis: missing")
+	}
+}
+
 func TestQuery_UpstreamError(t *testing.T) {
 	t.Parallel()
 

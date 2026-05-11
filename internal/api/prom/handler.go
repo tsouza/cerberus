@@ -54,17 +54,22 @@ func New(client Querier, s schema.Metrics, logger *slog.Logger) *Handler {
 }
 
 // Mount registers the Prom-compatible endpoints under /api/v1/ on mux.
+// Each route is wrapped with promHeadersMiddleware so responses carry
+// `X-Prometheus-API-Version` and `X-Cerberus-CH-Millis`.
 func (h *Handler) Mount(mux *http.ServeMux) {
-	mux.HandleFunc("GET /api/v1/query", h.handleQuery)
-	mux.HandleFunc("GET /api/v1/query_range", h.handleQueryRange)
-	mux.HandleFunc("POST /api/v1/query", h.handleQuery)
-	mux.HandleFunc("POST /api/v1/query_range", h.handleQueryRange)
-	mux.HandleFunc("GET /api/v1/labels", h.handleLabels)
-	mux.HandleFunc("POST /api/v1/labels", h.handleLabels)
-	mux.HandleFunc("GET /api/v1/label/{name}/values", h.handleLabelValues)
-	mux.HandleFunc("GET /api/v1/series", h.handleSeries)
-	mux.HandleFunc("POST /api/v1/series", h.handleSeries)
-	mux.HandleFunc("GET /api/v1/metadata", h.handleMetadata)
+	register := func(pattern string, hf http.HandlerFunc) {
+		mux.Handle(pattern, promHeadersMiddleware(hf))
+	}
+	register("GET /api/v1/query", h.handleQuery)
+	register("GET /api/v1/query_range", h.handleQueryRange)
+	register("POST /api/v1/query", h.handleQuery)
+	register("POST /api/v1/query_range", h.handleQueryRange)
+	register("GET /api/v1/labels", h.handleLabels)
+	register("POST /api/v1/labels", h.handleLabels)
+	register("GET /api/v1/label/{name}/values", h.handleLabelValues)
+	register("GET /api/v1/series", h.handleSeries)
+	register("POST /api/v1/series", h.handleSeries)
+	register("GET /api/v1/metadata", h.handleMetadata)
 }
 
 func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
@@ -153,7 +158,9 @@ func (h *Handler) executeInstant(ctx context.Context, query string) ([]chclient.
 	}
 	h.Logger.Debug("cerberus query", "promql", query, "sql", sql, "args", args)
 
-	samples, err := h.Client.Query(ctx, sql, args...)
+	samples, err := timeCH(ctx, func() ([]chclient.Sample, error) {
+		return h.Client.Query(ctx, sql, args...)
+	})
 	if err != nil {
 		return nil, &apiError{kind: ErrInternal, err: err, status: http.StatusBadGateway}
 	}
