@@ -69,12 +69,13 @@ func TestLower_errors(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name:    "without aggregation rejected",
-			query:   `sum without (instance) (up)`,
-			wantErr: "'without' aggregation is not yet supported",
+			name:    "topk changes output shape",
+			query:   `topk(5, up)`,
+			wantErr: "changes output shape and lands with M1.7",
 		},
-		// Note: BinaryExpr vector+vector rejection moved to binary_test.go;
-		// arithmetic ops are now lowered for the scalar-vector case (M1.2).
+		// Note: 'without' now lowers (M1.4); BinaryExpr vector+vector
+		// rejection moved to binary_test.go; arithmetic ops are lowered
+		// for the scalar-vector case (M1.2).
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

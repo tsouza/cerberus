@@ -1,17 +1,28 @@
 package chplan
 
 // AggFunc is one aggregate-function call in an Aggregate node's projection
-// list. The emitter renders `<Name>(<args>) AS <alias>` (alias optional).
+// list. The emitter renders `<Name>(<Args>) AS <Alias>` for plain aggregates
+// and `<Name>(<Params>)(<Args>) AS <Alias>` for parameterised aggregates
+// (e.g. CH `quantile(0.95)(value)`).
 type AggFunc struct {
-	Name  string // ClickHouse function name: "sum", "count", "avg", "max", "min", ...
-	Args  []Expr
-	Alias string
+	Name string // ClickHouse function name: "sum", "count", "avg", "max", "min", ...
+	// Params is the parameter list for parameterised aggregates (CH-style).
+	// Nil/empty for plain aggregates.
+	Params []Expr
+	Args   []Expr
+	Alias  string
 }
 
 // Equal reports structural equality with another AggFunc.
 func (a AggFunc) Equal(other AggFunc) bool {
-	if a.Name != other.Name || a.Alias != other.Alias || len(a.Args) != len(other.Args) {
+	if a.Name != other.Name || a.Alias != other.Alias ||
+		len(a.Args) != len(other.Args) || len(a.Params) != len(other.Params) {
 		return false
+	}
+	for i := range a.Params {
+		if !a.Params[i].Equal(other.Params[i]) {
+			return false
+		}
 	}
 	for i := range a.Args {
 		if !a.Args[i].Equal(other.Args[i]) {
