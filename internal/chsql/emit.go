@@ -54,6 +54,8 @@ func (e *emitter) emitNode(n chplan.Node) error {
 		return e.emitRangeWindow(v)
 	case *chplan.Limit:
 		return e.emitLimit(v)
+	case *chplan.VectorJoin:
+		return e.emitVectorJoin(v)
 	default:
 		return fmt.Errorf("%w: node %T", ErrUnsupported, n)
 	}

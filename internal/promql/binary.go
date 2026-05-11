@@ -9,16 +9,18 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
-// lowerBinary handles PromQL BinaryExpr — arithmetic for now. Comparison
-// and logical ops, plus vector-vector matching, land in M1.x follow-ups.
+// lowerBinary handles PromQL BinaryExpr.
 //
 // Supported shapes:
 //   - scalar OP scalar           → folded to chplan.LitFloat at lowering
 //   - scalar OP vector / vec OP scalar → Project that maps Value through
 //     the binary op
+//   - vector OP vector           → VectorJoin with default / `on(...)` /
+//     `ignoring(...)` matching (M1.6)
 //
-// Vector OP vector is rejected with a clear error pointing at M1.6
-// (vector matching), since the join semantics need first-class support.
+// `group_left` / `group_right` (many-to-one / one-to-many) and comparison /
+// logical ops are deferred — they need first-class support for cardinality
+// and the `bool` modifier respectively.
 func lowerBinary(b *parser.BinaryExpr, s schema.Metrics) (chplan.Node, error) {
 	op, err := promBinaryOp(b.Op, b.ReturnBool)
 	if err != nil {
@@ -36,8 +38,53 @@ func lowerBinary(b *parser.BinaryExpr, s schema.Metrics) (chplan.Node, error) {
 	case rhsIsScalar:
 		return projectWithScalar(b.LHS, s, op, rhsScalar, false)
 	default:
-		return nil, fmt.Errorf("promql: vector OP vector binary expressions require vector matching (lands in M1.6); op=%s", b.Op.String())
+		return lowerVectorVector(b, s, op)
 	}
+}
+
+// lowerVectorVector handles the vector-vector case: both sides lower to a
+// Node, and the result is a VectorJoin that the emitter renders as an
+// INNER JOIN of per-series latest samples.
+//
+// `group_left` / `group_right` are rejected here — cardinality enforcement
+// needs additional output-shape work and is intentionally deferred.
+func lowerVectorVector(b *parser.BinaryExpr, s schema.Metrics, op chplan.BinaryOp) (chplan.Node, error) {
+	if b.VectorMatching != nil && (b.VectorMatching.Card == parser.CardManyToOne || b.VectorMatching.Card == parser.CardOneToMany) {
+		side := "left"
+		if b.VectorMatching.Card == parser.CardOneToMany {
+			side = "right"
+		}
+		return nil, fmt.Errorf("promql: group_%s vector matching is not yet supported (cardinality enforcement lands with M1.7 result shaping)", side)
+	}
+	if b.VectorMatching != nil && len(b.VectorMatching.Include) > 0 {
+		return nil, fmt.Errorf("promql: group_left/right with `include(...)` is not yet supported")
+	}
+
+	left, err := lower(b.LHS, s)
+	if err != nil {
+		return nil, err
+	}
+	right, err := lower(b.RHS, s)
+	if err != nil {
+		return nil, err
+	}
+
+	match := chplan.VectorMatch{}
+	if b.VectorMatching != nil {
+		match.Labels = append([]string(nil), b.VectorMatching.MatchingLabels...)
+		match.On = b.VectorMatching.On
+	}
+
+	return &chplan.VectorJoin{
+		Left:             left,
+		Right:            right,
+		Op:               op,
+		Match:            match,
+		MetricNameColumn: s.MetricNameColumn,
+		AttributesColumn: s.AttributesColumn,
+		TimestampColumn:  s.TimestampColumn,
+		ValueColumn:      s.ValueColumn,
+	}, nil
 }
 
 // promBinaryOp maps a PromQL parser op to the chplan op. Comparison ops

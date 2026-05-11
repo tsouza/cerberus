@@ -27,9 +27,14 @@ func TestLower_Binary_Errors(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name:    "vector OP vector deferred",
-			query:   `up + up`,
-			wantErr: "vector OP vector binary expressions require vector matching",
+			name:    "group_left deferred",
+			query:   `up * on(job) group_left up`,
+			wantErr: "group_left vector matching is not yet supported",
+		},
+		{
+			name:    "group_right deferred",
+			query:   `up * on(job) group_right up`,
+			wantErr: "group_right vector matching is not yet supported",
 		},
 		{
 			name:    "bool modifier deferred",
