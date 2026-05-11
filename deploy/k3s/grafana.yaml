@@ -9,6 +9,7 @@ data:
     apiVersion: 1
     datasources:
       - name: Cerberus-Prometheus
+        uid: cerberus-prometheus
         type: prometheus
         access: proxy
         url: http://cerberus:8080
@@ -17,11 +18,13 @@ data:
         jsonData:
           timeInterval: 15s
       - name: Cerberus-Loki
+        uid: cerberus-loki
         type: loki
         access: proxy
         url: http://cerberus:8080
         editable: false
       - name: Cerberus-Tempo
+        uid: cerberus-tempo
         type: tempo
         access: proxy
         url: http://cerberus:8080
