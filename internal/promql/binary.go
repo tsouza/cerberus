@@ -9,18 +9,19 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
-// lowerBinary handles PromQL BinaryExpr — arithmetic for now. Comparison
-// and logical ops, plus vector-vector matching, land in M1.x follow-ups.
+// lowerBinary handles PromQL BinaryExpr.
 //
 // Supported shapes:
-//   - scalar OP scalar           → folded to chplan.LitFloat at lowering
-//   - scalar OP vector / vec OP scalar → Project that maps Value through
-//     the binary op
+//   - scalar OP scalar           → deferred to constant-fold
+//   - scalar OP vector / vec OP scalar with arithmetic op → Project that
+//     maps Value through the op
+//   - scalar OP vector / vec OP scalar with comparison op → Filter on
+//     the comparison (bool modifier off) or Project producing 1.0/0.0
+//     (bool modifier on)
 //
-// Vector OP vector is rejected with a clear error pointing at M1.6
-// (vector matching), since the join semantics need first-class support.
+// Vector OP vector and logical ops (and/or/unless) defer until M1.6 lands.
 func lowerBinary(b *parser.BinaryExpr, s schema.Metrics) (chplan.Node, error) {
-	op, err := promBinaryOp(b.Op, b.ReturnBool)
+	op, err := promBinaryOp(b.Op)
 	if err != nil {
 		return nil, err
 	}
@@ -32,20 +33,17 @@ func lowerBinary(b *parser.BinaryExpr, s schema.Metrics) (chplan.Node, error) {
 	case lhsIsScalar && rhsIsScalar:
 		return nil, fmt.Errorf("promql: scalar-only binary expressions not yet lowered (constant fold lands when scalars are first-class chplan nodes)")
 	case lhsIsScalar:
-		return projectWithScalar(b.RHS, s, op, lhsScalar, true /*scalarOnLeft*/)
+		return lowerVectorScalar(b.RHS, s, op, lhsScalar, true /*scalarOnLeft*/, b.ReturnBool)
 	case rhsIsScalar:
-		return projectWithScalar(b.LHS, s, op, rhsScalar, false)
+		return lowerVectorScalar(b.LHS, s, op, rhsScalar, false, b.ReturnBool)
 	default:
 		return nil, fmt.Errorf("promql: vector OP vector binary expressions require vector matching (lands in M1.6); op=%s", b.Op.String())
 	}
 }
 
-// promBinaryOp maps a PromQL parser op to the chplan op. Comparison ops
-// and the bool modifier defer to a follow-up.
-func promBinaryOp(op parser.ItemType, returnBool bool) (chplan.BinaryOp, error) {
-	if returnBool {
-		return "", fmt.Errorf("promql: 'bool' modifier on binary ops is not yet supported")
-	}
+// promBinaryOp maps a PromQL parser op to the chplan op. Arithmetic and
+// comparison ops are handled here; logical ops (and/or/unless) defer.
+func promBinaryOp(op parser.ItemType) (chplan.BinaryOp, error) {
 	switch op {
 	case parser.ADD:
 		return chplan.OpAdd, nil
@@ -59,8 +57,28 @@ func promBinaryOp(op parser.ItemType, returnBool bool) (chplan.BinaryOp, error) 
 		return chplan.OpMod, nil
 	case parser.POW:
 		return chplan.OpPow, nil
+	case parser.EQLC:
+		return chplan.OpEq, nil
+	case parser.NEQ:
+		return chplan.OpNe, nil
+	case parser.LSS:
+		return chplan.OpLt, nil
+	case parser.LTE:
+		return chplan.OpLe, nil
+	case parser.GTR:
+		return chplan.OpGt, nil
+	case parser.GTE:
+		return chplan.OpGe, nil
 	}
-	return "", fmt.Errorf("promql: binary op %s not yet supported (comparison + logical ops land in M1.x follow-ups)", op.String())
+	return "", fmt.Errorf("promql: binary op %s not yet supported (logical ops `and`/`or`/`unless` land in M1.x follow-ups)", op.String())
+}
+
+func isComparison(op chplan.BinaryOp) bool {
+	switch op {
+	case chplan.OpEq, chplan.OpNe, chplan.OpLt, chplan.OpLe, chplan.OpGt, chplan.OpGe:
+		return true
+	}
+	return false
 }
 
 // tryScalarLiteral unwraps NumberLiteral, ParenExpr around a literal, and
@@ -85,25 +103,38 @@ func tryScalarLiteral(e parser.Expr) (float64, bool) {
 	return 0, false
 }
 
-// projectWithScalar lowers the vector side and wraps it with a Project
-// that replaces ValueColumn with (scalar OP Value) or (Value OP scalar).
+// lowerVectorScalar lowers a binary expression mixing a vector and a
+// scalar. Arithmetic ops are mapped through a Project that replaces
+// `Value` with `(scalar OP Value)` or `(Value OP scalar)`. Comparison ops
+// without the `bool` modifier emit a Filter (keep all samples where the
+// predicate holds); with `bool` they emit a Project producing 1.0/0.0
+// per sample.
 //
-// The projection list is explicit (MetricName, Attributes, TimestampColumn,
-// transformed Value) so the downstream emitter knows the column shape.
 // scalarOnLeft flips the operand order — important for non-commutative
-// ops like SUB and DIV.
-func projectWithScalar(vec parser.Expr, s schema.Metrics, op chplan.BinaryOp, scalar float64, scalarOnLeft bool) (chplan.Node, error) {
+// ops like SUB and DIV and for comparisons (`5 > up` vs `up > 5`).
+func lowerVectorScalar(vec parser.Expr, s schema.Metrics, op chplan.BinaryOp, scalar float64, scalarOnLeft, returnBool bool) (chplan.Node, error) {
 	inner, err := lower(vec, s)
 	if err != nil {
 		return nil, err
 	}
 	valueRef := &chplan.ColumnRef{Name: s.ValueColumn}
 	scalarLit := &chplan.LitFloat{V: scalar}
-	var newValue chplan.Expr
+	var opExpr chplan.Expr
 	if scalarOnLeft {
-		newValue = &chplan.Binary{Op: op, Left: scalarLit, Right: valueRef}
+		opExpr = &chplan.Binary{Op: op, Left: scalarLit, Right: valueRef}
 	} else {
-		newValue = &chplan.Binary{Op: op, Left: valueRef, Right: scalarLit}
+		opExpr = &chplan.Binary{Op: op, Left: valueRef, Right: scalarLit}
+	}
+
+	if isComparison(op) && !returnBool {
+		// `up > 0.5` — keep all columns, filter on the comparison.
+		return &chplan.Filter{Input: inner, Predicate: opExpr}, nil
+	}
+
+	// Either arithmetic or `bool`-modified comparison — map Value through.
+	newValue := chplan.Expr(opExpr)
+	if isComparison(op) && returnBool {
+		newValue = &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{opExpr}}
 	}
 	return &chplan.Project{
 		Input: inner,

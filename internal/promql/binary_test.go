@@ -32,19 +32,14 @@ func TestLower_Binary_Errors(t *testing.T) {
 			wantErr: "vector OP vector binary expressions require vector matching",
 		},
 		{
-			name:    "bool modifier deferred",
-			query:   `up > bool 0`,
-			wantErr: "'bool' modifier on binary ops is not yet supported",
-		},
-		{
 			name:    "scalar OP scalar deferred",
 			query:   `1 + 2`,
 			wantErr: "scalar-only binary expressions not yet lowered",
 		},
 		{
-			name:    "comparison op deferred",
-			query:   `up > 0.5`,
-			wantErr: "binary op > not yet supported",
+			name:    "logical and deferred",
+			query:   `up and up`,
+			wantErr: "binary op and not yet supported",
 		},
 	}
 	for _, tc := range cases {
