@@ -17,10 +17,12 @@ import (
 )
 
 type stubQuerier struct {
-	samples  []chclient.Sample
-	err      error
-	lastSQL  string
-	lastArgs []any
+	samples   []chclient.Sample
+	strings   []string
+	labelSets []map[string]string
+	err       error
+	lastSQL   string
+	lastArgs  []any
 }
 
 func (s *stubQuerier) Query(_ context.Context, sql string, args ...any) ([]chclient.Sample, error) {
@@ -32,11 +34,40 @@ func (s *stubQuerier) Query(_ context.Context, sql string, args ...any) ([]chcli
 	return s.samples, nil
 }
 
+func (s *stubQuerier) QueryStrings(_ context.Context, sql string, args ...any) ([]string, error) {
+	s.lastSQL = sql
+	s.lastArgs = args
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.strings, nil
+}
+
+func (s *stubQuerier) QueryLabelSets(_ context.Context, sql string, args ...any) ([]map[string]string, error) {
+	s.lastSQL = sql
+	s.lastArgs = args
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.labelSets, nil
+}
+
 func newServer(q prom.Querier) *httptest.Server {
 	h := prom.New(q, schema.DefaultOTelMetrics(), nil)
 	mux := http.NewServeMux()
 	h.Mount(mux)
 	return httptest.NewServer(mux)
+}
+
+// queryResponse mirrors prom.Response for tests that need access to the
+// QueryData shape (ResultType + Result). Since prom.Response.Data is now
+// `any` to accommodate metadata endpoints, tests decode into this typed
+// shape directly.
+type queryResponse struct {
+	Status    string         `json:"status"`
+	Data      prom.QueryData `json:"data"`
+	ErrorType string         `json:"errorType"`
+	Error     string         `json:"error"`
 }
 
 func TestQuery_Vector(t *testing.T) {
@@ -63,7 +94,7 @@ func TestQuery_Vector(t *testing.T) {
 		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
 	}
 
-	var parsed prom.Response
+	var parsed queryResponse
 	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
 		t.Fatalf("unmarshal: %v\nbody=%s", err, body)
 	}
@@ -124,12 +155,21 @@ func TestQueryRange_Matrix(t *testing.T) {
 		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
 	}
 
-	var parsed prom.Response
+	var parsed queryResponse
 	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if parsed.Data.ResultType != "matrix" {
 		t.Fatalf("resultType: got %q, want matrix", parsed.Data.ResultType)
+	}
+
+	rawResult, _ := json.Marshal(parsed.Data.Result)
+	var matrix []prom.MatrixSample
+	if err := json.Unmarshal(rawResult, &matrix); err != nil {
+		t.Fatalf("decode matrix: %v", err)
+	}
+	if len(matrix) == 0 {
+		t.Fatalf("expected matrix samples, got none")
 	}
 }
 

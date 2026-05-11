@@ -111,3 +111,54 @@ func (c *Client) Query(ctx context.Context, sql string, args ...any) ([]Sample, 
 	}
 	return out, nil
 }
+
+// QueryStrings runs sql and decodes a single-string-column result into a
+// flat slice. Used by metadata endpoints (/api/v1/labels, label values,
+// metadata) that return a list of names.
+func (c *Client) QueryStrings(ctx context.Context, sql string, args ...any) ([]string, error) {
+	rows, err := c.conn.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, fmt.Errorf("chclient: query: %w", err)
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+
+	var out []string
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			return nil, fmt.Errorf("chclient: scan: %w", err)
+		}
+		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("chclient: rows.Err: %w", err)
+	}
+	return out, nil
+}
+
+// QueryLabelSets runs sql and decodes each row into a Map(String,String)
+// label set. Used by /api/v1/series.
+func (c *Client) QueryLabelSets(ctx context.Context, sql string, args ...any) ([]map[string]string, error) {
+	rows, err := c.conn.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, fmt.Errorf("chclient: query: %w", err)
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+
+	var out []map[string]string
+	for rows.Next() {
+		var m map[string]string
+		if err := rows.Scan(&m); err != nil {
+			return nil, fmt.Errorf("chclient: scan: %w", err)
+		}
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("chclient: rows.Err: %w", err)
+	}
+	return out, nil
+}
