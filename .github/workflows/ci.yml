@@ -57,3 +57,5 @@ jobs:
         with:
           globs: |
             **/*.md
+            !harness/compliance/upstream/**
+            !**/node_modules/**

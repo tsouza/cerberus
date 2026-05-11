@@ -1,0 +1,88 @@
+# Docker Compose stack for the PromQL compliance harness.
+#
+# Services:
+#   clickhouse    OTel-schema CH instance (auth: cerberus/cerberus, db: otel)
+#   seeder        one-shot job that loads the deterministic OTel fixture
+#                 and remote-writes the equivalent into prometheus
+#   prometheus    reference Prom, listens on :29090 (matches test-cerberus.yml)
+#   cerberus      cerberus under test, listens on :29091 (matches
+#                 test-cerberus.yml)
+#
+# Usage:
+#   ./scripts/run-compliance.sh
+# or:
+#   docker compose up --wait
+#   ../upstream/promql/cmd/promql-compliance-tester ...
+#   docker compose down -v
+
+name: cerberus-compliance
+
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8-alpine
+    environment:
+      CLICKHOUSE_DB: otel
+      CLICKHOUSE_USER: cerberus
+      CLICKHOUSE_PASSWORD: cerberus
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8123/ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    ports:
+      - "29000:9000"
+      - "28123:8123"
+
+  prometheus:
+    image: prom/prometheus:v3.0.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-remote-write-receiver
+      - --web.listen-address=:9090
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "29090:9090"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/ready"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  cerberus:
+    image: cerberus:compliance
+    build:
+      context: ../..
+      dockerfile: Dockerfile.local
+    environment:
+      CERBERUS_HTTP_ADDR: ":29091"
+      CERBERUS_CH_ADDR: "clickhouse:9000"
+      CERBERUS_CH_DATABASE: "otel"
+      CERBERUS_CH_USERNAME: "cerberus"
+      CERBERUS_CH_PASSWORD: "cerberus"
+      CERBERUS_CH_DIAL_TIMEOUT: "10s"
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    ports:
+      - "29091:29091"
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/cerberus", "--version"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  seeder:
+    image: clickhouse/clickhouse-server:24.8-alpine
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      prometheus:
+        condition: service_healthy
+    volumes:
+      - ./seed.sh:/seed.sh:ro
+      - ./seed.sql:/seed.sql:ro
+    entrypoint: ["/seed.sh"]
+    restart: "no"

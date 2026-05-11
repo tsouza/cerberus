@@ -2,3 +2,5 @@ node_modules/
 test/e2e/playwright/node_modules/
 test/e2e/playwright/playwright-report/
 test/e2e/playwright/test-results/
+harness/compliance/upstream
+harness/compliance/upstream/**
