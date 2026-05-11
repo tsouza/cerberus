@@ -136,14 +136,19 @@ func matchOp(t labels.MatchType) chplan.BinaryOp {
 
 // lowerCall dispatches PromQL function calls. The arg shape decides the
 // path: a MatrixSelector means a range-vector function (rate, increase,
-// *_over_time); anything else is treated as an instant-vector function
-// (abs, sqrt, ln, ...) if recognised. Other functions surface a clear
-// "not yet supported" error pointing at the relevant milestone.
+// *_over_time); the clamp family takes a vector + scalar bounds; everything
+// else is treated as an instant-vector math function (abs, sqrt, ln, ...)
+// if recognised. Other functions surface a clear "not yet supported"
+// error pointing at the relevant milestone.
 func lowerCall(c *parser.Call, s schema.Metrics) (chplan.Node, error) {
 	if len(c.Args) >= 1 {
 		if _, ok := c.Args[0].(*parser.MatrixSelector); ok {
 			return lowerRangeVectorCall(c, s)
 		}
+	}
+	switch c.Func.Name {
+	case "clamp", "clamp_min", "clamp_max":
+		return lowerClamp(c, s)
 	}
 	if chFn, ok := instantFnCH[c.Func.Name]; ok {
 		return lowerInstantFn(c, s, chFn)

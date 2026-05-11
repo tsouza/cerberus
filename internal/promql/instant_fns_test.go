@@ -24,14 +24,19 @@ func TestLower_InstantFn_Errors(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name:    "round 2-arg deferred",
-			query:   `round(temperature, 0.1)`,
-			wantErr: "supports the unary form only",
+			name:    "round 2-arg requires scalar bound",
+			query:   `round(temperature, scalar(other))`,
+			wantErr: "requires a scalar literal to_nearest",
 		},
 		{
 			name:    "unknown fn",
 			query:   `histogram_quantile(0.9, foo)`,
 			wantErr: "function histogram_quantile is not yet supported",
+		},
+		{
+			name:    "clamp_max needs scalar bound",
+			query:   `clamp_max(up, scalar(other))`,
+			wantErr: "requires a scalar-literal bound",
 		},
 	}
 	for _, tc := range cases {
