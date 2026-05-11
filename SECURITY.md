@@ -6,7 +6,7 @@ cerberus is pre-1.0; only the latest tagged release (or `main` if no tag exists)
 
 ## Reporting a vulnerability
 
-**Do not open a public PR or GitHub Discussion** for a security report. The repo has GitHub Issues disabled by policy; the secure channels are:
+**Do not open a public PR, GitHub Issue, or GitHub Discussion** for a security report — public disclosure before a patch is ready helps attackers. The secure channels are:
 
 1. **GitHub private vulnerability reporting** — preferred. Click the `Security` tab on <https://github.com/tsouza/cerberus> and use "Report a vulnerability". This routes through GitHub's [private advisory flow](https://docs.github.com/en/code-security/security-advisories) and stays confidential until a fix ships.
 2. **Email** — `tcostasouza@gmail.com` with `[cerberus security]` in the subject if you can't use the GitHub flow.

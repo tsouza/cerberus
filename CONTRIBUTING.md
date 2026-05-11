@@ -18,7 +18,7 @@ Two CI checks gate `main`: **`ci / check`** (golangci-lint + race tests + build)
 ## House rules
 
 1. **PR-per-change.** No direct pushes to `main` — branch protection rejects them. Even tiny fixes go through a PR.
-2. **No GitHub Issues.** They're disabled. Backlog narratives live in `docs/*.md`; status tracking lives in the [Cerberus v1.0.0 Roadmap Project](https://github.com/users/tsouza/projects/1). Open a draft PR if you want a place to discuss something before implementing.
+2. **Issues are open for bug reports + design discussion.** File one if you want to flag a bug, propose a feature, or ask a design question before implementing. The internal maintainer workflow (and AI assistants helping with the project) tracks active work in [the Cerberus v1.0.0 Roadmap Project](https://github.com/users/tsouza/projects/1) plus PR descriptions; as an external contributor you don't need to use the Project — a clear issue + a follow-up PR is fine.
 3. **Conventional Commits.** Subjects look like `feat(promql): support offset modifier` or `chore(deps): bump grafana/loki/v3 to v3.8.0`. `subject-case` is relaxed (Dependabot's `Bump X from Y to Z` passes); type + scope are still enforced. `commitlint.config.json` is the source of truth.
 4. **Justfile is the canonical task runner.** `just` lists every recipe. Don't run `go test ./...` directly — `just test` sets the race flag, cover profile, and correct toolchain. If you want a new workflow, add a recipe.
 5. **Fixture-first PRs.** A new PromQL/LogQL/TraceQL feature lands with its TXTAR spec first (failing, with the right `query.<ql>` section), then implementation that turns it green. Reviewers can sanity-check intent by reading fixtures before code.

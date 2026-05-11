@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security report
+    url: https://github.com/tsouza/cerberus/security/advisories/new
+    about: Private vulnerability reporting — please don't disclose security issues in public issues.
+  - name: Roadmap
+    url: https://github.com/tsouza/cerberus/blob/main/docs/roadmap.md
+    about: RC1 / RC2 / RC3 plan; check this before filing a feature request to see if it's already scoped.
+  - name: Project board
+    url: https://github.com/users/tsouza/projects/1
+    about: Live milestone status (filter by RC1 / Workstream / Area).

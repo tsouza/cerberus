@@ -147,7 +147,7 @@ All of [`docs/optimizer-research.md`](optimizer-research.md) lands here. The rea
 ## How we work
 
 - **PR-per-change.** Every change ships as its own PR against `main`. Branch protection requires `ci / check` + `ci / lint`, linear history, no force-push.
-- **No GitHub Issues.** Tracking lives in the GitHub Project board; reasoning lives in PR descriptions; backlog narratives live in `docs/*.md` files.
+- **Agent-driven work goes through PRs, not issues.** When the maintainer or an AI assistant is doing the work, the PR description is the source of truth — no shadow issue tracking. The GitHub Project tracks milestone status; backlog narratives live in `docs/*.md`. **External contributors** are welcome to open issues for bug reports, design questions, or feature proposals — issues are enabled.
 - **Fixture-first.** A milestone's first PR adds *failing* TXTAR / compliance fixtures that capture the contract. Subsequent PRs implement to turn them green. Reviewers can sanity-check intent by reading fixtures before code.
 - **Compliance suite is the source of truth.** If a PromQL feature lands but doesn't move the `prometheus/compliance` pass rate, the PR is incomplete.
 - **Allowlist hygiene.** Adding an entry to `harness/compliance/expected-failures.json` requires a comment with the upstream rationale; never empty-string.

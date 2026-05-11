@@ -1,0 +1,77 @@
+name: Bug report
+description: Something cerberus does that it shouldn't, or vice versa.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug! Before submitting, please check:
+
+        - The bug isn't already covered by an open issue or PR.
+        - You're on the latest tag (or `main`). The latest release is at <https://github.com/tsouza/cerberus/releases>.
+        - For **security issues**, please use the [Security tab's private vulnerability reporting](../security/advisories/new) instead — don't disclose publicly.
+  - type: input
+    id: version
+    attributes:
+      label: Cerberus version
+      description: Output of `cerberus --version` or the Docker tag.
+      placeholder: v1.0.0-RC1 (or `dev` / commit SHA)
+    validations:
+      required: true
+  - type: input
+    id: clickhouse
+    attributes:
+      label: ClickHouse version
+      description: From `SELECT version()` against your CH cluster.
+      placeholder: "24.8.4.13 (clickhouse/clickhouse-server:24.8-alpine)"
+    validations:
+      required: true
+  - type: dropdown
+    id: ql
+    attributes:
+      label: Which query language?
+      multiple: true
+      options:
+        - PromQL
+        - LogQL
+        - TraceQL
+        - Not applicable (HTTP / deploy / build issue)
+    validations:
+      required: true
+  - type: textarea
+    id: query
+    attributes:
+      label: Query (or curl reproducer)
+      description: The exact query or HTTP request that triggers the bug. Backticks please.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+      description: |
+        If you tested against reference Prometheus / Loki / Tempo and got a different answer, please paste that result too — differential reports are gold.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What did cerberus return?
+      description: The actual response body (truncate if huge), HTTP status, and any logs from the cerberus pod.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: schema
+    attributes:
+      label: Schema overrides (if any)
+      description: If you're not using the default OTel-CH exporter schema, paste the relevant table DDL or `schema.Metrics` config.
+      render: sql
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Code of Conduct
+      options:
+        - label: I agree to follow this project's [Code of Conduct](https://github.com/tsouza/cerberus/blob/main/CODE_OF_CONDUCT.md).
+          required: true
