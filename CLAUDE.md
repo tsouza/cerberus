@@ -4,11 +4,11 @@ Drop-in **Prometheus / Loki / Tempo** HTTP gateway for **ClickHouse**. Parses ea
 
 ## Hard rules (non-negotiable)
 
-- **PR-per-change.** No direct pushes to `main` — branch protection rejects them. Required CI checks: `ci / check` + `ci / lint`. Linear history; force-push and deletion are off.
+- **PR-per-change.** No direct pushes to `main` — branch protection rejects them. Required CI checks: `ci / check` + `ci / lint` + `e2e`. Linear history; force-push and deletion are off. **Never use `gh pr merge --admin`** — every PR must merge cleanly with all required checks green. If a required check is failing, fix the code or fix the workflow; don't bypass. Branch protection has `enforce_admins: true` and the personal token doesn't grant override.
 - **Agent-driven work goes through PRs, not Issues.** When *you* (an AI assistant) are doing the work, capture intent in the PR description — don't open an issue to track follow-up. Backlog narratives live in `docs/*.md` files ([`docs/roadmap.md`](docs/roadmap.md), [`docs/optimizer-research.md`](docs/optimizer-research.md)); milestone status lives in the [`Cerberus v1.0.0 Roadmap` GitHub Project](https://github.com/users/tsouza/projects/1) (RC / Workstream / Area / Status fields). Human contributors (or the maintainer) **are welcome to open issues** for bug reports, design discussions, feature proposals — the issues feature is on. The rule is about agent workflow hygiene, not project policy.
 - **Conventional Commits**, enforced by `commitlint` (see `.commitlintrc.json`). The `subject-case` rule is relaxed so Dependabot's `Bump X from Y to Z` subjects pass.
 - **Justfile is the canonical task runner.** `just` lists every recipe. Don't reach for `go test ./...` directly when `just test` exists — the recipe sets the race flag, the cover profile, and the right toolchain.
-- **Compliance is the source of truth for PromQL.** `prometheus/compliance` runs as a merge gate (`compliance.yml`). A PR that adds a PromQL feature but doesn't move the compliance pass rate is incomplete; an entry in `harness/compliance/expected-failures.json` requires a comment explaining the upstream rationale.
+- **Compliance is the source of truth for PromQL — at M6.** Until the M5 → M6 cut, `compliance.yml` runs only on main pushes + nightly + manual dispatch (not on PRs) and acts as an informational baseline. At M6 we re-enable the `pull_request:` trigger and add `prometheus/compliance` to required checks; an entry in `harness/compliance/expected-failures.json` then requires a comment explaining the upstream rationale.
 
 ## Architecture map
 

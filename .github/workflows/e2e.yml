@@ -3,17 +3,11 @@ name: e2e
 on:
   push:
     branches: [main]
+  # e2e is a required status check (branch protection). To guarantee it
+  # produces a status on every PR — including docs- and CI-only ones —
+  # the path filter has been removed. Without that, path-filtered PRs
+  # would never produce an `e2e` check status and could not merge.
   pull_request:
-    paths:
-      - 'cmd/**'
-      - 'internal/**'
-      - 'deploy/**'
-      - 'test/e2e/**'
-      - 'Justfile'
-      - 'Dockerfile.local'
-      - 'go.mod'
-      - 'go.sum'
-      - '.github/workflows/e2e.yml'
   schedule:
     # nightly at 03:17 UTC
     - cron: '17 3 * * *'
