@@ -7,15 +7,20 @@ package prom
 // any datasource-specific quirks.
 
 // Response is the top-level wrapper for every /api/v1/* response.
+// For query endpoints `Data` is a *QueryData; for metadata endpoints
+// (`labels`, `label/.../values`, `series`) it's a direct slice.
 type Response struct {
 	Status    string `json:"status"`              // "success" | "error"
-	Data      *Data  `json:"data,omitempty"`      // nil on errors
+	Data      any    `json:"data,omitempty"`      // nil on errors
 	ErrorType string `json:"errorType,omitempty"` // present on errors
 	Error     string `json:"error,omitempty"`     // present on errors
 }
 
-// Data is the body of a successful response.
-type Data struct {
+// QueryData wraps a /api/v1/query or /api/v1/query_range response body.
+// Kept as a named type (rather than inlining the fields on Response) so
+// metadata-endpoint Data can stay a plain slice without polluting the
+// query-endpoint shape.
+type QueryData struct {
 	ResultType string `json:"resultType"` // "vector" | "matrix" | "scalar" | "string"
 	Result     any    `json:"result"`     // shape depends on ResultType
 }

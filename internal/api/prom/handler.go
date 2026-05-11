@@ -23,6 +23,8 @@ import (
 // it makes unit tests possible without a live ClickHouse.
 type Querier interface {
 	Query(ctx context.Context, sql string, args ...any) ([]chclient.Sample, error)
+	QueryStrings(ctx context.Context, sql string, args ...any) ([]string, error)
+	QueryLabelSets(ctx context.Context, sql string, args ...any) ([]map[string]string, error)
 }
 
 // Handler implements the Prometheus HTTP API endpoints cerberus speaks.
@@ -56,6 +58,11 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/query_range", h.handleQueryRange)
 	mux.HandleFunc("POST /api/v1/query", h.handleQuery)
 	mux.HandleFunc("POST /api/v1/query_range", h.handleQueryRange)
+	mux.HandleFunc("GET /api/v1/labels", h.handleLabels)
+	mux.HandleFunc("POST /api/v1/labels", h.handleLabels)
+	mux.HandleFunc("GET /api/v1/label/{name}/values", h.handleLabelValues)
+	mux.HandleFunc("GET /api/v1/series", h.handleSeries)
+	mux.HandleFunc("POST /api/v1/series", h.handleSeries)
 }
 
 func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
@@ -79,7 +86,7 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 	result := toVector(samples, ts)
 	writeJSON(w, http.StatusOK, Response{
 		Status: "success",
-		Data:   &Data{ResultType: "vector", Result: result},
+		Data:   &QueryData{ResultType: "vector", Result: result},
 	})
 }
 
@@ -118,7 +125,7 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 	result := toMatrixStepGrid(samples, start, end, step)
 	writeJSON(w, http.StatusOK, Response{
 		Status: "success",
-		Data:   &Data{ResultType: "matrix", Result: result},
+		Data:   &QueryData{ResultType: "matrix", Result: result},
 	})
 }
 

@@ -32,11 +32,17 @@ var instantFnCH = map[string]string{
 // arg is expected to be an instant-vector expression; we lower it, then
 // wrap with a Project that maps the Value column through the CH function.
 //
-// Multi-arg forms (e.g. PromQL `round(v, to_nearest)`) are deferred — only
-// the unary form lands in M1.3.
+// Multi-arg variants of round and the clamp family are handled separately.
 func lowerInstantFn(c *parser.Call, s schema.Metrics, chFn string) (chplan.Node, error) {
+	switch c.Func.Name {
+	case "round":
+		if len(c.Args) == 2 {
+			return lowerRoundToNearest(c, s)
+		}
+	}
+
 	if len(c.Args) != 1 {
-		return nil, fmt.Errorf("promql: %s with %d arguments is not yet supported (M1.3 supports the unary form only)",
+		return nil, fmt.Errorf("promql: %s with %d arguments is not yet supported (instant math fns are unary)",
 			c.Func.Name, len(c.Args))
 	}
 
@@ -49,6 +55,102 @@ func lowerInstantFn(c *parser.Call, s schema.Metrics, chFn string) (chplan.Node,
 		Name: chFn,
 		Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}},
 	}
+	return projectValueOverInner(inner, s, newValue), nil
+}
+
+// lowerRoundToNearest implements PromQL `round(v, to_nearest)` as
+// `round(Value / to_nearest) * to_nearest`. CH's native `round(v, N)`
+// rounds to N decimal places, not to a multiple, so we synthesise the
+// multiple-rounding semantics explicitly.
+func lowerRoundToNearest(c *parser.Call, s schema.Metrics) (chplan.Node, error) {
+	toNearest, ok := tryScalarLiteral(c.Args[1])
+	if !ok {
+		return nil, fmt.Errorf("promql: round(v, to_nearest) requires a scalar literal to_nearest")
+	}
+
+	inner, err := lower(c.Args[0], s)
+	if err != nil {
+		return nil, err
+	}
+
+	valueRef := &chplan.ColumnRef{Name: s.ValueColumn}
+	tn := &chplan.LitFloat{V: toNearest}
+
+	rounded := &chplan.FuncCall{
+		Name: "round",
+		Args: []chplan.Expr{&chplan.Binary{Op: chplan.OpDiv, Left: valueRef, Right: tn}},
+	}
+	newValue := &chplan.Binary{Op: chplan.OpMul, Left: rounded, Right: tn}
+	return projectValueOverInner(inner, s, newValue), nil
+}
+
+// lowerClamp implements the PromQL clamp family:
+//
+//	clamp_max(v, max) → least(Value, max)
+//	clamp_min(v, min) → greatest(Value, min)
+//	clamp(v, min, max) → greatest(min, least(max, Value))
+//
+// Bounds must be scalar literals at lowering time (computed bounds defer
+// to RC2 when scalars are first-class chplan nodes).
+func lowerClamp(c *parser.Call, s schema.Metrics) (chplan.Node, error) {
+	switch c.Func.Name {
+	case "clamp_max", "clamp_min":
+		if len(c.Args) != 2 {
+			return nil, fmt.Errorf("promql: %s expects 2 arguments, got %d", c.Func.Name, len(c.Args))
+		}
+		bound, ok := tryScalarLiteral(c.Args[1])
+		if !ok {
+			return nil, fmt.Errorf("promql: %s requires a scalar-literal bound", c.Func.Name)
+		}
+		inner, err := lower(c.Args[0], s)
+		if err != nil {
+			return nil, err
+		}
+		fnName := "least"
+		if c.Func.Name == "clamp_min" {
+			fnName = "greatest"
+		}
+		newValue := &chplan.FuncCall{
+			Name: fnName,
+			Args: []chplan.Expr{
+				&chplan.ColumnRef{Name: s.ValueColumn},
+				&chplan.LitFloat{V: bound},
+			},
+		}
+		return projectValueOverInner(inner, s, newValue), nil
+
+	case "clamp":
+		if len(c.Args) != 3 {
+			return nil, fmt.Errorf("promql: clamp expects 3 arguments, got %d", len(c.Args))
+		}
+		minB, okMin := tryScalarLiteral(c.Args[1])
+		maxB, okMax := tryScalarLiteral(c.Args[2])
+		if !okMin || !okMax {
+			return nil, fmt.Errorf("promql: clamp requires scalar-literal bounds for min and max")
+		}
+		inner, err := lower(c.Args[0], s)
+		if err != nil {
+			return nil, err
+		}
+		valueRef := &chplan.ColumnRef{Name: s.ValueColumn}
+		newValue := &chplan.FuncCall{
+			Name: "greatest",
+			Args: []chplan.Expr{
+				&chplan.LitFloat{V: minB},
+				&chplan.FuncCall{
+					Name: "least",
+					Args: []chplan.Expr{&chplan.LitFloat{V: maxB}, valueRef},
+				},
+			},
+		}
+		return projectValueOverInner(inner, s, newValue), nil
+	}
+	return nil, fmt.Errorf("promql: unknown clamp function %s", c.Func.Name)
+}
+
+// projectValueOverInner wraps inner with a Project that keeps
+// MetricName / Attributes / Timestamp and replaces Value with newValue.
+func projectValueOverInner(inner chplan.Node, s schema.Metrics, newValue chplan.Expr) chplan.Node {
 	return &chplan.Project{
 		Input: inner,
 		Projections: []chplan.Projection{
@@ -57,5 +159,5 @@ func lowerInstantFn(c *parser.Call, s schema.Metrics, chFn string) (chplan.Node,
 			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}},
 			{Expr: newValue, Alias: s.ValueColumn},
 		},
-	}, nil
+	}
 }
