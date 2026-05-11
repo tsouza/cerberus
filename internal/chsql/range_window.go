@@ -126,6 +126,9 @@ func (e *emitter) emitWindowedArray(r *chplan.RangeWindow, valueExpr string) err
 	}
 
 	endExpr := timeOrNow(r.End)
+	if r.Offset > 0 {
+		endExpr = "(" + endExpr + " - toIntervalNanosecond(" + strconv.FormatInt(r.Offset.Nanoseconds(), 10) + "))"
+	}
 	rangeNS := r.Range.Nanoseconds()
 	groupKeys, err := e.collectGroupBy(r.GroupBy)
 	if err != nil {
