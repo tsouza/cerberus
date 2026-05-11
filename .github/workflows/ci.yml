@@ -13,8 +13,8 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  ci:
-    name: lint + test + build
+  check:
+    name: check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -38,26 +38,22 @@ jobs:
       - name: just ci
         run: just ci
 
-  commitlint:
-    name: commitlint
-    if: github.event_name == 'pull_request'
+  lint:
+    name: lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
-          fetch-depth: 0
+          fetch-depth: 0  # commitlint needs full history
 
-      - uses: wagoid/commitlint-github-action@v6
+      - name: commitlint
+        if: github.event_name == 'pull_request'
+        uses: wagoid/commitlint-github-action@v6
         with:
           configFile: .commitlintrc.json
 
-  markdownlint:
-    name: markdownlint
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: DavidAnson/markdownlint-cli2-action@v18
+      - name: markdownlint
+        uses: DavidAnson/markdownlint-cli2-action@v18
         with:
           globs: |
             **/*.md
