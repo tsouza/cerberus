@@ -168,46 +168,111 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics) (chplan.Node, error)
 	}, nil
 }
 
-// lowerAggregate handles `sum by (job) (...)`, `count(...)`, etc.
-// Only the `by` form is supported in v0.1; `without` requires schema-wide
-// label introspection that lands later.
+// lowerAggregate handles `sum by (job) (...)`, `sum without (instance) (...)`,
+// `count(...)`, `stddev(...)`, `stdvar(...)`, `group(...)`, and
+// `quantile(0.95, ...)`. Output-shape-changing aggregates (`topk`, `bottomk`,
+// `count_values`) are deferred to M1.7 since they produce K rows per group
+// rather than one.
 func lowerAggregate(a *parser.AggregateExpr, s schema.Metrics) (chplan.Node, error) {
-	if a.Without {
-		return nil, fmt.Errorf("promql: 'without' aggregation is not yet supported (v0.1 supports 'by' only)")
-	}
-	if a.Param != nil {
-		return nil, fmt.Errorf("promql: parameterised aggregation (%s) is not yet supported", a.Op.String())
-	}
-
 	input, err := lower(a.Expr, s)
 	if err != nil {
 		return nil, err
 	}
 
-	groupBy := make([]chplan.Expr, 0, len(a.Grouping))
+	groupBy, err := aggregateGroupBy(a, s)
+	if err != nil {
+		return nil, err
+	}
+
+	aggFunc, err := buildAggFunc(a, s)
+	if err != nil {
+		return nil, err
+	}
+
+	return &chplan.Aggregate{
+		Input:    input,
+		GroupBy:  groupBy,
+		AggFuncs: []chplan.AggFunc{aggFunc},
+	}, nil
+}
+
+// aggregateGroupBy builds the group-key list for an aggregation. For
+// `by (...)` it returns one MapAccess per named label; for `without (...)`
+// it returns a single MapWithoutKeys spanning the full Attributes map with
+// the named labels stripped.
+func aggregateGroupBy(a *parser.AggregateExpr, s schema.Metrics) ([]chplan.Expr, error) {
+	if a.Without {
+		return []chplan.Expr{
+			&chplan.MapWithoutKeys{
+				Map:  &chplan.ColumnRef{Name: s.AttributesColumn},
+				Keys: append([]string(nil), a.Grouping...),
+			},
+		}, nil
+	}
+	out := make([]chplan.Expr, 0, len(a.Grouping))
 	for _, label := range a.Grouping {
-		groupBy = append(groupBy, &chplan.MapAccess{
+		out = append(out, &chplan.MapAccess{
 			Map: &chplan.ColumnRef{Name: s.AttributesColumn},
 			Key: &chplan.LitString{V: label},
 		})
 	}
-
-	chFunc, err := chAggFunc(a.Op)
-	if err != nil {
-		return nil, err
-	}
-	return &chplan.Aggregate{
-		Input:   input,
-		GroupBy: groupBy,
-		AggFuncs: []chplan.AggFunc{{
-			Name:  chFunc,
-			Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}},
-			Alias: s.ValueColumn,
-		}},
-	}, nil
+	return out, nil
 }
 
-func chAggFunc(op parser.ItemType) (string, error) {
+// buildAggFunc produces the single AggFunc for an aggregation. Output-shape-
+// changing aggregates (`topk`, `bottomk`, `count_values`) are intentionally
+// rejected here pointing at M1.7.
+func buildAggFunc(a *parser.AggregateExpr, s schema.Metrics) (chplan.AggFunc, error) {
+	valueArg := &chplan.ColumnRef{Name: s.ValueColumn}
+
+	switch a.Op {
+	case parser.SUM, parser.COUNT, parser.AVG, parser.MIN, parser.MAX, parser.STDDEV, parser.STDVAR:
+		if a.Param != nil {
+			return chplan.AggFunc{}, fmt.Errorf("promql: aggregation %s does not take a parameter", a.Op.String())
+		}
+		name, err := plainAggCH(a.Op)
+		if err != nil {
+			return chplan.AggFunc{}, err
+		}
+		return chplan.AggFunc{
+			Name:  name,
+			Args:  []chplan.Expr{valueArg},
+			Alias: s.ValueColumn,
+		}, nil
+
+	case parser.GROUP:
+		// PromQL `group(...)` returns 1 for every label combination; emit
+		// `any(1)` which yields a constant 1 per CH group.
+		if a.Param != nil {
+			return chplan.AggFunc{}, fmt.Errorf("promql: group() does not take a parameter")
+		}
+		return chplan.AggFunc{
+			Name:  "any",
+			Args:  []chplan.Expr{&chplan.LitInt{V: 1}},
+			Alias: s.ValueColumn,
+		}, nil
+
+	case parser.QUANTILE:
+		phi, ok := tryScalarLiteral(a.Param)
+		if !ok {
+			return chplan.AggFunc{}, fmt.Errorf("promql: quantile(phi, ...) requires a scalar literal phi (computed phi defers to M1.7)")
+		}
+		return chplan.AggFunc{
+			Name:   "quantile",
+			Params: []chplan.Expr{&chplan.LitFloat{V: phi}},
+			Args:   []chplan.Expr{valueArg},
+			Alias:  s.ValueColumn,
+		}, nil
+
+	case parser.TOPK, parser.BOTTOMK, parser.COUNT_VALUES:
+		return chplan.AggFunc{}, fmt.Errorf("promql: %s changes output shape and lands with M1.7 result shaping", a.Op.String())
+	}
+
+	return chplan.AggFunc{}, fmt.Errorf("promql: aggregation op %s is not yet supported", a.Op.String())
+}
+
+// plainAggCH maps a non-parameterised PromQL aggregator to its CH name.
+func plainAggCH(op parser.ItemType) (string, error) {
 	switch op {
 	case parser.SUM:
 		return "sum", nil
@@ -219,6 +284,10 @@ func chAggFunc(op parser.ItemType) (string, error) {
 		return "min", nil
 	case parser.MAX:
 		return "max", nil
+	case parser.STDDEV:
+		return "stddevPop", nil
+	case parser.STDVAR:
+		return "varPop", nil
 	}
 	return "", fmt.Errorf("promql: aggregation op %s is not yet supported", op.String())
 }

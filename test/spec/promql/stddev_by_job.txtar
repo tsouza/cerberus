@@ -1,0 +1,8 @@
+-- query.promql --
+stddev by (job) (latency_seconds)
+-- sql --
+SELECT `Attributes`[?], stddevPop(`Value`) AS `Value` FROM (SELECT * FROM (SELECT * FROM `otel_metrics_gauge`) WHERE (`MetricName` = ?)) GROUP BY `Attributes`[?]
+-- args --
+[0] string = "job"
+[1] string = "latency_seconds"
+[2] string = "job"

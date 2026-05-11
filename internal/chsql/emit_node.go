@@ -99,6 +99,20 @@ func (e *emitter) emitAggregate(a *chplan.Aggregate) error {
 
 func (e *emitter) emitAggFunc(af chplan.AggFunc) error {
 	e.b.WriteString(af.Name)
+	// Parameterised aggregates emit `<name>(<params>)(<args>)` — used by CH
+	// for `quantile(0.95)(value)`, `quantiles(0.5, 0.9)(value)`, etc.
+	if len(af.Params) > 0 {
+		e.b.WriteByte('(')
+		for i, p := range af.Params {
+			if i > 0 {
+				e.b.WriteString(", ")
+			}
+			if err := e.emitExpr(p); err != nil {
+				return err
+			}
+		}
+		e.b.WriteByte(')')
+	}
 	e.b.WriteByte('(')
 	for i, a := range af.Args {
 		if i > 0 {

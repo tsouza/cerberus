@@ -25,6 +25,8 @@ func (e *emitter) emitExpr(x chplan.Expr) error {
 		return e.emitFunc(v)
 	case *chplan.MapAccess:
 		return e.emitMapAccess(v)
+	case *chplan.MapWithoutKeys:
+		return e.emitMapWithoutKeys(v)
 	default:
 		return fmt.Errorf("%w: expr %T", ErrUnsupported, x)
 	}
@@ -89,6 +91,24 @@ func (e *emitter) emitMapAccess(m *chplan.MapAccess) error {
 		return err
 	}
 	e.b.WriteByte(']')
+	return nil
+}
+
+func (e *emitter) emitMapWithoutKeys(m *chplan.MapWithoutKeys) error {
+	e.b.WriteString("mapFilter((k, v) -> NOT (k IN (")
+	for i, k := range m.Keys {
+		if i > 0 {
+			e.b.WriteString(", ")
+		}
+		if err := e.bindArg(k); err != nil {
+			return err
+		}
+	}
+	e.b.WriteString(")), ")
+	if err := e.emitExpr(m.Map); err != nil {
+		return err
+	}
+	e.b.WriteByte(')')
 	return nil
 }
 
