@@ -28,7 +28,7 @@ func Lower(expr parser.Expr, s schema.Metrics) (chplan.Node, error) {
 func lower(expr parser.Expr, s schema.Metrics) (chplan.Node, error) {
 	switch e := expr.(type) {
 	case *parser.VectorSelector:
-		return lowerVectorSelector(e, s), nil
+		return lowerVectorSelector(e, s)
 	case *parser.Call:
 		return lowerCall(e, s)
 	case *parser.AggregateExpr:
@@ -43,7 +43,9 @@ func lower(expr parser.Expr, s schema.Metrics) (chplan.Node, error) {
 }
 
 // lowerVectorSelector turns `metric{label="val"}` into Scan + Filter.
-func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics) chplan.Node {
+// `@` and `offset` modifiers add a `Timestamp <= anchor` predicate so the
+// instant evaluation reflects the requested shifted time.
+func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics) (chplan.Node, error) {
 	metricName := metricNameFromMatchers(v.LabelMatchers)
 	table := s.GaugeTable
 	if metricName != "" {
@@ -53,10 +55,22 @@ func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics) chplan.Node
 	scan := &chplan.Scan{Table: table}
 
 	pred := buildPredicate(v.LabelMatchers, s)
-	if pred == nil {
-		return scan
+	if hasModifier(v) {
+		anchor, err := anchorFromSelector(v)
+		if err != nil {
+			return nil, err
+		}
+		timeBound := timeBoundExpr(s.TimestampColumn, anchor)
+		if pred == nil {
+			pred = timeBound
+		} else {
+			pred = &chplan.Binary{Op: chplan.OpAnd, Left: pred, Right: timeBound}
+		}
 	}
-	return &chplan.Filter{Input: scan, Predicate: pred}
+	if pred == nil {
+		return scan, nil
+	}
+	return &chplan.Filter{Input: scan, Predicate: pred}, nil
 }
 
 // metricNameFromMatchers returns the value of the __name__ matcher (if any
@@ -157,11 +171,28 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics) (chplan.Node, error)
 			ms.VectorSelector)
 	}
 
-	inner := lowerVectorSelector(vs, s)
+	anchor, err := anchorFromSelector(vs)
+	if err != nil {
+		return nil, err
+	}
+
+	// The RangeWindow already encodes the window's eval anchor; emitting a
+	// duplicate time-bound predicate on the inner Filter would double-count.
+	// Build the inner Scan/Filter without the modifier-derived bound here.
+	vsNoModifier := *vs
+	vsNoModifier.Timestamp = nil
+	vsNoModifier.OriginalOffset = 0
+	vsNoModifier.Offset = 0
+	inner, err := lowerVectorSelector(&vsNoModifier, s)
+	if err != nil {
+		return nil, err
+	}
 	return &chplan.RangeWindow{
 		Input:           inner,
 		Func:            c.Func.Name,
 		Range:           ms.Range,
+		End:             anchor.End,
+		Offset:          anchor.Offset,
 		TimestampColumn: s.TimestampColumn,
 		ValueColumn:     s.ValueColumn,
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
