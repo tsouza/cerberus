@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/prometheus/common/model"
+
+	"github.com/tsouza/cerberus/internal/chclient"
 )
 
 // handleLabels implements GET /api/v1/labels — distinct label names across
@@ -67,6 +70,127 @@ func (h *Handler) handleLabelValues(w http.ResponseWriter, r *http.Request) {
 		Status: "success",
 		Data:   values,
 	})
+}
+
+// MetricMetaEntry is one entry in the per-metric metadata array Prometheus
+// emits from /api/v1/metadata. Cerberus emits exactly one entry per
+// metric for now (multiple entries would be required only if the same
+// metric appears in multiple types — uncommon).
+type MetricMetaEntry struct {
+	Type string `json:"type"`
+	Help string `json:"help"`
+	Unit string `json:"unit"`
+}
+
+// handleMetadata implements GET /api/v1/metadata — per-metric type / help /
+// unit, sourced from the OTel `MetricDescription` and `MetricUnit` columns.
+// Type is derived from the source table: gauge / counter / histogram.
+//
+// The `metric` query parameter restricts the result to a single metric;
+// `limit` caps the number of metrics returned (per Prom convention).
+func (h *Handler) handleMetadata(w http.ResponseWriter, r *http.Request) {
+	metricName := r.URL.Query().Get("metric")
+	limitStr := r.URL.Query().Get("limit")
+
+	rows, err := h.fetchMetricMeta(r.Context(), metricName)
+	if err != nil {
+		h.respondError(w, err)
+		return
+	}
+
+	// Group by metric name; each metric gets a slice of entries.
+	grouped := make(map[string][]MetricMetaEntry, len(rows))
+	for _, row := range rows {
+		grouped[row.Name] = append(grouped[row.Name], MetricMetaEntry{
+			Type: row.Type,
+			Help: row.Description,
+			Unit: row.Unit,
+		})
+	}
+
+	if limitStr != "" {
+		limit, err := parseLimit(limitStr)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, ErrBadData, err)
+			return
+		}
+		grouped = truncateMetadata(grouped, limit)
+	}
+
+	writeJSON(w, http.StatusOK, Response{
+		Status: "success",
+		Data:   grouped,
+	})
+}
+
+func (h *Handler) fetchMetricMeta(ctx context.Context, metricName string) ([]chclient.MetricMetaRow, error) {
+	specs := []struct {
+		table string
+		kind  string
+	}{
+		{h.Schema.GaugeTable, "gauge"},
+		{h.Schema.SumTable, "counter"},
+		{h.Schema.HistogramTable, "histogram"},
+	}
+
+	var out []chclient.MetricMetaRow
+	for _, spec := range specs {
+		sql, args := h.metricMetaSQL(spec.table, metricName)
+		rows, err := h.Client.QueryMetricMeta(ctx, sql, spec.kind, args...)
+		if err != nil {
+			return nil, &apiError{kind: ErrInternal, err: err, status: http.StatusBadGateway}
+		}
+		out = append(out, rows...)
+	}
+	return out, nil
+}
+
+// metricMetaSQL builds the per-table metadata SQL. The result columns are
+// (MetricName, MetricDescription, MetricUnit). When metricName is empty
+// we list all distinct metrics; otherwise we filter to the named one.
+func (h *Handler) metricMetaSQL(table, metricName string) (string, []any) {
+	nameCol := quoteIdentCH(h.Schema.MetricNameColumn)
+	descCol := quoteIdentCH(h.Schema.MetricDescriptionColumn)
+	unitCol := quoteIdentCH(h.Schema.MetricUnitColumn)
+	tbl := quoteIdentCH(table)
+
+	if metricName == "" {
+		return fmt.Sprintf(
+			"SELECT %s, any(%s), any(%s) FROM %s GROUP BY %s ORDER BY %s",
+			nameCol, descCol, unitCol, tbl, nameCol, nameCol,
+		), nil
+	}
+	return fmt.Sprintf(
+		"SELECT %s, any(%s), any(%s) FROM %s WHERE %s = ? GROUP BY %s",
+		nameCol, descCol, unitCol, tbl, nameCol, nameCol,
+	), []any{metricName}
+}
+
+// parseLimit decodes the `limit` query parameter — a positive integer.
+func parseLimit(raw string) (int, error) {
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return 0, errors.New("'limit' must be a non-negative integer")
+	}
+	return n, nil
+}
+
+// truncateMetadata trims the metadata map to at most `limit` metric keys
+// (in alphabetic order to make the truncation deterministic).
+func truncateMetadata(in map[string][]MetricMetaEntry, limit int) map[string][]MetricMetaEntry {
+	if limit <= 0 || len(in) <= limit {
+		return in
+	}
+	keys := make([]string, 0, len(in))
+	for k := range in {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make(map[string][]MetricMetaEntry, limit)
+	for _, k := range keys[:limit] {
+		out[k] = in[k]
+	}
+	return out
 }
 
 // handleSeries implements GET /api/v1/series. Each matcher in `match[]`

@@ -138,6 +138,44 @@ func (c *Client) QueryStrings(ctx context.Context, sql string, args ...any) ([]s
 	return out, nil
 }
 
+// MetricMetaRow is one row from the metadata-discovery query — a metric
+// name plus its OTel description and unit text and the cerberus-derived
+// Prom-style type (gauge / counter / histogram).
+type MetricMetaRow struct {
+	Name        string
+	Description string
+	Unit        string
+	Type        string
+}
+
+// QueryMetricMeta runs sql and decodes each row as a (name, description,
+// unit) triple. The caller supplies the `metricType` (gauge / counter /
+// histogram) since the table the row came from determines that — the SQL
+// itself only returns the OTel columns.
+func (c *Client) QueryMetricMeta(ctx context.Context, sql, metricType string, args ...any) ([]MetricMetaRow, error) {
+	rows, err := c.conn.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, fmt.Errorf("chclient: query: %w", err)
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+
+	var out []MetricMetaRow
+	for rows.Next() {
+		var r MetricMetaRow
+		r.Type = metricType
+		if err := rows.Scan(&r.Name, &r.Description, &r.Unit); err != nil {
+			return nil, fmt.Errorf("chclient: scan: %w", err)
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("chclient: rows.Err: %w", err)
+	}
+	return out, nil
+}
+
 // QueryLabelSets runs sql and decodes each row into a Map(String,String)
 // label set. Used by /api/v1/series.
 func (c *Client) QueryLabelSets(ctx context.Context, sql string, args ...any) ([]map[string]string, error) {
