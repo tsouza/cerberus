@@ -27,6 +27,8 @@ func (e *emitter) emitExpr(x chplan.Expr) error {
 		return e.emitMapAccess(v)
 	case *chplan.MapWithoutKeys:
 		return e.emitMapWithoutKeys(v)
+	case *chplan.LineContent:
+		return e.emitLineContent(v)
 	default:
 		return fmt.Errorf("%w: expr %T", ErrUnsupported, x)
 	}
@@ -108,6 +110,40 @@ func (e *emitter) emitMapWithoutKeys(m *chplan.MapWithoutKeys) error {
 	if err := e.emitExpr(m.Map); err != nil {
 		return err
 	}
+	e.b.WriteByte(')')
+	return nil
+}
+
+func (e *emitter) emitLineContent(l *chplan.LineContent) error {
+	if l.IsRegex {
+		if l.Negated {
+			e.b.WriteString("NOT ")
+		}
+		e.b.WriteString("match(")
+		if err := e.emitExpr(l.Source); err != nil {
+			return err
+		}
+		e.b.WriteString(", ")
+		if err := e.bindArg(l.Pattern); err != nil {
+			return err
+		}
+		e.b.WriteByte(')')
+		return nil
+	}
+	op := " > 0"
+	if l.Negated {
+		op = " = 0"
+	}
+	e.b.WriteString("(position(")
+	if err := e.emitExpr(l.Source); err != nil {
+		return err
+	}
+	e.b.WriteString(", ")
+	if err := e.bindArg(l.Pattern); err != nil {
+		return err
+	}
+	e.b.WriteString(")")
+	e.b.WriteString(op)
 	e.b.WriteByte(')')
 	return nil
 }
