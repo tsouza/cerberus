@@ -9,7 +9,9 @@ This document is the public-facing narrative for the path to `v1.0.0`. Status by
 | **v1.0.0-RC1**   | Full PromQL / LogQL / TraceQL support + 90% upstream API compatibility | Compliance corpora pass; Grafana sees cerberus as drop-in for Prom / Loki / Tempo                |
 | **v1.0.0-RC2**   | Advanced QL features + deferred API surface                            | Subqueries, native-histogram quantiles, structural-chain TraceQL, LogQL `\| unpack`, Loki `tail`… |
 | **v1.0.0-RC3**   | Optimizer rewrite + performance + advanced testing                     | Pattern-based rules, MV substitution, shadow-mode differential, fuzz + chaos + perf benchmarks   |
-| **v1.0.0**       | Tag the last green RC                                                  | All three RCs stable; public API frozen in `pkg/`                                                |
+| **v1.0.0-RC4**   | Full self-observability                                                | Cerberus emits its own structured logs (slog), OTel metrics + traces, defaults to the same CH    |
+| **v1.0.0-RC5**   | 12-factor compliance + polish                                          | `/readyz`, dev `docker-compose.yml`, env-driven schema overrides, `docs/12factor.md`, fast-start  |
+| **v1.0.0**       | Tag the last green RC                                                  | All RCs stable; public API frozen in `pkg/`                                                       |
 
 The existing **3-rule optimizer** (filter-fusion, constant-fold, projection-pushdown) ships unchanged through RC1 and RC2. **No new optimizer work happens before RC3** — its full backlog lives in [`docs/optimizer-research.md`](optimizer-research.md).
 
@@ -141,6 +143,69 @@ All of [`docs/optimizer-research.md`](optimizer-research.md) lands here. The rea
 | R3.11 | Fuzz + chaos + perf-benchmark CI                                   | `go-fuzz`, custom chaos harness, perf-benchmark workflow                                            |
 
 **Exit criterion:** golden-fixture SQL shrinks on real plans; `internal/optimizer` mutation score ≥ 70%; MV substitution active; shadow-mode reveals < 5% native-SQL gap.
+
+---
+
+## RC4 — full self-observability
+
+Cerberus instruments itself with the Go-ecosystem defacto stack and ships telemetry into the same OTel-CH schema it queries. Eats its own dogfood: a cerberus self-dashboard in Grafana queries cerberus, which queries CH, which holds cerberus's own metrics + logs + traces.
+
+### Stack
+
+| Signal   | Library                                                              | Why                                                                                                  |
+| -------- | -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Logging  | stdlib `log/slog` (Go 1.21+)                                          | Already wired in `cmd/cerberus/main.go`. The defacto for new Go projects.                            |
+| Metrics  | OpenTelemetry SDK (`go.opentelemetry.io/otel/sdk/metric`)             | OTLP-native → OTel Collector → CH exporter → same `otel_metrics_*` tables cerberus queries.          |
+| Traces   | OpenTelemetry SDK + `contrib/instrumentation/net/http/otelhttp`       | Auto HTTP spans + manual pipeline spans (parse → lower → optimize → emit → execute).                  |
+
+### Milestones
+
+| #     | Item                                                                                                                                        |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| R4.1  | Logging quality pass: consistent slog fields (`req_id`, `ql`, `query`, `sql_len`, `duration_ms`, `error_kind`), text+json formats, level env  |
+| R4.2  | `otelhttp.NewHandler` wraps the Prom/Loki/Tempo handlers; each request gets a span                                                           |
+| R4.3  | Custom spans around `promql.Lower` / `logql.Lower` / `traceql.Lower` / `optimizer.Default().Run` / `chsql.Emit` / `chclient.Query`            |
+| R4.4  | Self-metrics: request count + latency histogram by route + status; CH roundtrip count + duration; plan IR node count                          |
+| R4.5  | OTLP exporters: `CERBERUS_OTEL_ENDPOINT` / `_INSECURE` / `_SAMPLER` / `_SERVICE_NAME`; graceful no-op when endpoint unreachable                |
+| R4.6  | `deploy/k3s/otel-collector.yaml` + a provisioned `deploy/grafana/dashboards/cerberus-self.json` (cerberus's own metrics rendered by cerberus) |
+| R4.7  | `docs/observability.md`                                                                                                                     |
+
+**Exit criterion:** every Prom/Loki/Tempo request emits one span with pipeline stage timings; self-dashboard renders cerberus's own request rate + p99 latency; disabling OTel via `CERBERUS_OTEL_ENDPOINT=""` produces a zero-collector-dependency binary.
+
+---
+
+## RC5 — 12-factor compliance + polish
+
+Driven by an audit of cerberus against [12factor.net](https://12factor.net/). Most factors pass today; this RC closes the gaps and documents the rest.
+
+### Audit snapshot
+
+| # | Factor              | Status   | Note                                                                                            |
+| - | ------------------- | -------- | ----------------------------------------------------------------------------------------------- |
+| 1 | Codebase            | PASS     | Single repo + Go module.                                                                        |
+| 2 | Dependencies        | PASS     | `go.mod` explicit; `replace` directives documented.                                              |
+| 3 | Config              | PASS     | Env vars only (`CERBERUS_*`); no flags, no runtime YAML.                                        |
+| 4 | Backing services    | PASS     | CH swappable via env.                                                                            |
+| 5 | Build/release/run   | PASS     | goreleaser + Dockerfile + release.yml; immutable artifacts.                                      |
+| 6 | Processes           | PASS     | Stateless; horizontal scale via Deployment replicas.                                             |
+| 7 | Port binding        | PASS     | `:8080` self-binding; env-configurable.                                                          |
+| 8 | Concurrency         | PASS     | Goroutines + Deployment replicas.                                                                |
+| 9 | Disposability       | PASS     | `signal.NotifyContext` + 10s graceful-shutdown deadline.                                         |
+| 10 | Dev/prod parity     | PARTIAL  | Same image runs everywhere; missing a one-command `docker-compose.yml` for local dev.            |
+| 11 | Logs                | PASS     | `slog` to stderr; no log files; no rotation.                                                     |
+| 12 | Admin processes     | PASS     | None today; future admin tasks would land as separate one-offs.                                 |
+
+### Milestones
+
+| #    | Item                                                                                                                  |
+| ---- | --------------------------------------------------------------------------------------------------------------------- |
+| R5.1 | `/readyz` distinct from `/healthz`; k8s manifests updated to use readiness vs liveness                                 |
+| R5.2 | Repo-root `docker-compose.yml` for one-command local dev (CH + OTel Collector + cerberus)                              |
+| R5.3 | Env-driven schema overrides via `CERBERUS_SCHEMA_OVERRIDES_JSON`                                                       |
+| R5.4 | `docs/12factor.md` with file-line citations per factor                                                                 |
+| R5.5 | Startup-speed benchmark: process-start → `/healthz` 200 against a reachable CH; target < 2s                            |
+
+**Exit criterion:** `docker compose up` at repo root brings the dev stack up in < 30s; `CERBERUS_SCHEMA_OVERRIDES_JSON` honoured; `docs/12factor.md` exists with per-factor evidence; startup benchmark passes < 2s in CI.
 
 ---
 
