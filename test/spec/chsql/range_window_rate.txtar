@@ -1,0 +1,4 @@
+-- args --
+(none)
+-- sql --
+/* range_window: func=rate range=5m0s step=1m0s */ SELECT * FROM (SELECT * FROM `otel_metrics_sum`)

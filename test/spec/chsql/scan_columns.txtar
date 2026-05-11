@@ -1,0 +1,4 @@
+-- args --
+(none)
+-- sql --
+SELECT `TimeUnix`, `Value`, `Attributes` FROM `otel_metrics_gauge`

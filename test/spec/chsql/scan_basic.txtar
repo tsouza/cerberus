@@ -1,0 +1,4 @@
+-- args --
+(none)
+-- sql --
+SELECT * FROM `otel_metrics_gauge`

@@ -17,8 +17,10 @@ linters:
   settings:
     revive:
       rules:
+        # Default to no doc comments on every exported symbol — package-level
+        # docs cover intent; method comments only appear where WHY is non-obvious.
         - name: exported
-          disabled: false
+          disabled: true
   exclusions:
     rules:
       - path: _test\.go

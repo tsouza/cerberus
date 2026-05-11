@@ -38,13 +38,6 @@ jobs:
       - name: just ci
         run: just ci
 
-      - name: Upload coverage
-        if: success()
-        uses: codecov/codecov-action@v5
-        with:
-          files: ./coverage.out
-          fail_ci_if_error: false
-
   commitlint:
     name: commitlint
     if: github.event_name == 'pull_request'

@@ -1,0 +1,35 @@
+silent: false
+mutants:
+  arithmetic-base:
+    enabled: true
+  conditionals-boundary:
+    enabled: true
+  conditionals-negation:
+    enabled: true
+  increment-decrement:
+    enabled: true
+  invert-assignments:
+    enabled: true
+  invert-bitwise:
+    enabled: true
+  invert-bitwise-assignments:
+    enabled: true
+  invert-logical:
+    enabled: true
+  invert-loop-ctrl:
+    enabled: true
+  invert-negatives:
+    enabled: true
+  remove-self-assignments:
+    enabled: true
+  remove-statement:
+    enabled: true
+test:
+  timeout-coefficient: 4
+excluded-files:
+  - "**/*_test.go"
+  - "internal/api/**"
+  - "cmd/**"
+  - "**/doc.go"
+threshold-efficacy: 60
+threshold-mcover: 50
