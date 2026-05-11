@@ -1,33 +1,123 @@
 # cerberus
 
-> Three-headed query gateway: **PromQL**, **LogQL**, and **TraceQL** → ClickHouse SQL.
+> Drop-in **Prometheus / Loki / Tempo** HTTP gateway for **ClickHouse**.
+> Keep Grafana, alerting, and your CLI tooling. Swap the backend.
 
-Cerberus lets you keep a single observability backend — ClickHouse — while continuing to point Grafana, Alertmanager, and CLI tooling at Prometheus, Loki, and Tempo. It parses each upstream query language with the project's own reference parser, lowers the result into a shared plan IR, applies a rule-based optimizer, and emits ClickHouse SQL.
+[![CI](https://github.com/tsouza/cerberus/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tsouza/cerberus/actions/workflows/ci.yml)
+[![Mutation](https://github.com/tsouza/cerberus/actions/workflows/mutation.yml/badge.svg?branch=main)](https://github.com/tsouza/cerberus/actions/workflows/mutation.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Go Reference](https://pkg.go.dev/badge/github.com/tsouza/cerberus.svg)](https://pkg.go.dev/github.com/tsouza/cerberus)
+[![Go Report Card](https://goreportcard.com/badge/github.com/tsouza/cerberus)](https://goreportcard.com/report/github.com/tsouza/cerberus)
 
-**Status:** v0.1 seed in progress.
+---
+
+## Why cerberus?
+
+If you've ever shipped metrics, logs, and traces to three different stores just to satisfy three different query languages — Prom/Loki/Tempo — you know the operational tax: three retention policies, three index strategies, three storage bills, three on-call playbooks.
+
+ClickHouse is a great single store for all three signals. The only thing missing has been: **the existing Grafana ecosystem doesn't speak SQL.** Cerberus closes that gap. Point Grafana at cerberus as three datasources (Prometheus, Loki, Tempo) and the queries just work — translated into optimized ClickHouse SQL underneath.
+
+- **No Grafana plugin.** Cerberus speaks the upstream HTTP APIs verbatim.
+- **No custom QL.** PromQL, LogQL, TraceQL — exactly as your dashboards and alerts already use them.
+- **No reinvented parsers.** Cerberus imports `prometheus/promql/parser`, `grafana/loki/v3/pkg/logql/syntax`, and `grafana/tempo/pkg/traceql` directly. If the upstream parses it, cerberus parses it.
+
+## Status
+
+> 🚧 **v0.1 seed in progress** — the architecture, build, test, and CI surface are landing; PromQL works end-to-end as a vertical slice; LogQL and TraceQL are scaffolded for symmetry but not yet wired through.
+
+## Architecture
+
+```
+   PromQL                LogQL                TraceQL
+     │                     │                     │
+     ▼                     ▼                     ▼
+prometheus/        grafana/loki/v3/         grafana/tempo/
+promql/parser      pkg/logql/syntax         pkg/traceql
+     │                     │                     │
+     │     per-QL high-level IR (parser AST)     │
+     │                     │                     │
+     ▼                     ▼                     ▼
+ ┌──────────────────────────────────────────────────┐
+ │            internal/chplan — shared IR           │
+ │ Scan • Filter • Project • Aggregate •            │
+ │ RangeWindow • Limit + expression tree            │
+ └──────────────────────────────────────────────────┘
+                       │
+                       ▼
+            ┌────────────────────────┐
+            │  internal/optimizer    │  rule-based, fixpoint
+            │  • predicate pushdown  │
+            │  • filter fusion       │
+            │  • constant folding    │
+            └────────────────────────┘
+                       │
+                       ▼
+            ┌────────────────────────┐
+            │  internal/chsql        │  emit parameterised SQL
+            └────────────────────────┘
+                       │
+                       ▼
+                  ClickHouse
+```
+
+Schema defaults to the [OpenTelemetry ClickHouse Exporter](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/exporter/clickhouseexporter) layout (`otel_metrics_*`, `otel_logs`, `otel_traces`). A thin YAML override config supports SigNoz schemas and custom column layouts.
 
 ## Quick start
 
+Local dev:
+
 ```sh
-direnv allow                # loads .envrc (Go toolchain on PATH)
-just install-tools          # one-time: golangci-lint, gofumpt, goimports
-just ci                     # lint + test + build
+direnv allow           # loads .envrc (puts Go on PATH, GOTOOLCHAIN=auto)
+just install-tools     # one-time: golangci-lint, gofumpt, goimports, gremlins
+just ci                # lint + test + build
+just build && ./bin/cerberus --help
 ```
 
-## Architecture (one paragraph)
+End-to-end against a real ClickHouse + Grafana in k3d (lands in PR8):
+
+```sh
+just e2e-up            # boot k3d cluster, deploy CH / Grafana / cerberus
+just e2e-seed          # ingest sample OTel data
+just e2e-run           # Go E2E tests + Grafana playwright smoke
+just e2e-down          # tear down
+```
+
+## Testing layers
+
+| Layer | What it covers | How to run |
+|-------|----------------|-----------|
+| **Unit** | Per-package logic, `Equal` contracts, optimizer rule kernels | `just test` |
+| **Spec (TXTAR)** | `<QL> → expected SQL` and `plan → optimized plan` golden tests under `test/spec/` | `just test`; `just update-golden` to regenerate |
+| **Integration** | `chclient` against a real ClickHouse via testcontainers | `go test -tags=integration ./internal/chclient/...` |
+| **E2E** | k3d cluster with CH + Grafana + cerberus; Grafana playwright smoke | `just e2e` |
+| **Mutation** | Gremlins mutation testing on `internal/` logic packages | `just mutate` (slow, nightly in CI) |
+
+## Project structure
 
 ```
-<QL>  →  upstream parser  →  per-QL HL IR  →  shared chplan IR
-                                                      ↓
-                                               rule-based optimizer
-                                                      ↓
-                                               ClickHouse SQL  →  CH
+cmd/cerberus/            # main entrypoint
+internal/
+  api/{prom,loki,tempo}/ # HTTP handlers per upstream API
+  promql/                # PromQL head: parse + lower
+  logql/                 # LogQL head (stub)
+  traceql/               # TraceQL head (stub)
+  chplan/                # shared plan IR
+  chsql/                 # plan → CH SQL emitter
+  optimizer/             # rule + driver + rule implementations
+  chclient/              # CH driver wrapper
+  schema/                # OTel schema defaults + overrides
+  config/                # runtime config
+test/
+  spec/                  # TXTAR fixture-driven tests
+  e2e/                   # k3d + playwright (PR8)
+deploy/k3s/              # Kubernetes manifests
+deploy/grafana/          # provisioned datasources + dashboards
 ```
 
-Each head (PromQL, LogQL, TraceQL) imports the canonical Go parser maintained by its upstream project. All three lower into one shared `internal/chplan` package — a tree of relational operators — over which a small set of rewrite rules runs to a fixpoint. The `internal/chsql` emitter walks the optimized plan and serializes ClickHouse SQL. The HTTP layer emulates the Prom/Loki/Tempo APIs so Grafana sees cerberus as three drop-in datasources.
+## Contributing
 
-Schema defaults to the [OpenTelemetry ClickHouse Exporter](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/exporter/clickhouseexporter) layout (`otel_metrics_*`, `otel_logs`, `otel_traces`), with a thin YAML config to override table and column names for SigNoz or custom setups.
+Open an issue or a discussion before opening a large PR — the seed is opinionated and the architecture lockdown is recent. Smaller PRs (a new optimizer rule, a new TXTAR fixture, a parser-dep bump) are welcome any time. See [CONTRIBUTING.md](CONTRIBUTING.md) (lands in PR9).
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+[MIT](LICENSE) © Thiago Souza.
