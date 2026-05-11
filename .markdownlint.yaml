@@ -1,0 +1,25 @@
+# https://github.com/DavidAnson/markdownlint/blob/main/doc/Rules.md
+default: true
+
+# MD013 — line-length: relax for READMEs and PR bodies; URLs + tables don't
+# wrap well at 80 chars.
+MD013: false
+
+# MD033 — inline-html: allow for badges, <details>/<summary>, <sub>, etc.
+MD033: false
+
+# MD041 — first-line-h1: not every doc starts with a top-level heading
+# (e.g. docs/ files with frontmatter).
+MD041: false
+
+# MD024 — duplicate-headings: allow under different parents (CHANGELOG style).
+MD024:
+  siblings_only: true
+
+# MD034 — bare-URL: enabled by default; flag stray URLs so they get markdown
+# link syntax or angle brackets.
+
+# MD046 — code-block-style: prefer fenced; consistent with all our existing
+# code blocks.
+MD046:
+  style: fenced

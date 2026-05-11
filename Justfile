@@ -7,6 +7,7 @@ GOLANGCI_LINT_VERSION := "v2.12.2"
 GOFUMPT_VERSION := "v0.7.0"
 GOIMPORTS_VERSION := "latest"
 GREMLINS_VERSION := "v0.6.0"
+MARKDOWNLINT_VERSION := "v0.18.1"
 MODULE := "github.com/tsouza/cerberus"
 
 # Default: list recipes.
@@ -62,9 +63,17 @@ mutate-pkg PATH:
 
 # === Lint / format ===
 
-# Run all linters.
+# Run Go linters.
 lint:
     golangci-lint run ./...
+
+# Lint all Markdown files (run via npm exec; no global Node deps).
+lint-md:
+    npm exec --yes -- markdownlint-cli2@{{MARKDOWNLINT_VERSION}} "**/*.md"
+
+# Auto-fix Markdown lint issues where possible.
+fmt-md:
+    npm exec --yes -- markdownlint-cli2@{{MARKDOWNLINT_VERSION}} --fix "**/*.md"
 
 # Format Go code.
 fmt:
