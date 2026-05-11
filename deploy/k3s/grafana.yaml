@@ -38,10 +38,12 @@ metadata:
   labels:
     app: grafana
 spec:
+  type: NodePort
   ports:
     - name: http
       port: 3000
       targetPort: 3000
+      nodePort: 30030
   selector:
     app: grafana
 ---
