@@ -116,16 +116,7 @@ func (e *emitter) emitAggFunc(af chplan.AggFunc) error {
 	return nil
 }
 
-// emitRangeWindow emits a placeholder form for range-vector lowering. The
-// real shape lives in PR5 (PromQL lowering) and PR6 (optimizer); the seed's
-// goal is just to produce a syntactically obvious comment that explains
-// what the plan node represents, so spec tests can assert end-to-end on
-// instant queries today while range queries land later.
-func (e *emitter) emitRangeWindow(r *chplan.RangeWindow) error {
-	fmt.Fprintf(&e.b, "/* range_window: func=%s range=%s step=%s */ SELECT * FROM ",
-		r.Func, r.Range, r.Step)
-	return e.emitSubquery(r.Input)
-}
+// emitRangeWindow lives in range_window.go — full windowed-array idiom.
 
 func (e *emitter) emitLimit(l *chplan.Limit) error {
 	e.b.WriteString("SELECT * FROM ")

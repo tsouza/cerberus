@@ -136,9 +136,12 @@ func lowerCall(c *parser.Call, s schema.Metrics) (chplan.Node, error) {
 
 	inner := lowerVectorSelector(vs, s)
 	return &chplan.RangeWindow{
-		Input: inner,
-		Func:  c.Func.Name,
-		Range: ms.Range,
+		Input:           inner,
+		Func:            c.Func.Name,
+		Range:           ms.Range,
+		TimestampColumn: s.TimestampColumn,
+		ValueColumn:     s.ValueColumn,
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 	}, nil
 }
 
