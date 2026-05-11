@@ -58,13 +58,17 @@ func (e *emitter) emitProject(p *chplan.Project) error {
 func (e *emitter) emitAggregate(a *chplan.Aggregate) error {
 	e.b.WriteString("SELECT ")
 	first := true
-	for _, g := range a.GroupBy {
+	for i, g := range a.GroupBy {
 		if !first {
 			e.b.WriteString(", ")
 		}
 		first = false
 		if err := e.emitExpr(g); err != nil {
 			return err
+		}
+		if i < len(a.GroupByAliases) && a.GroupByAliases[i] != "" {
+			e.b.WriteString(" AS ")
+			writeIdent(&e.b, a.GroupByAliases[i])
 		}
 	}
 	for _, af := range a.AggFuncs {

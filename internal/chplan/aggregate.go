@@ -35,10 +35,16 @@ func (a AggFunc) Equal(other AggFunc) bool {
 // Aggregate groups rows by the GroupBy expressions and computes the
 // AggFuncs. SQL form: `SELECT <GroupBy>, <AggFuncs> FROM <Input> GROUP BY
 // <GroupBy>`.
+//
+// GroupByAliases is an optional parallel slice (same length as GroupBy
+// when non-empty); each entry aliases the matching group-key column in
+// the SELECT list so a wrapping Project can reference it by name. Empty
+// means "no aliases" — emit the raw expression.
 type Aggregate struct {
-	Input    Node
-	GroupBy  []Expr
-	AggFuncs []AggFunc
+	Input          Node
+	GroupBy        []Expr
+	GroupByAliases []string
+	AggFuncs       []AggFunc
 }
 
 func (*Aggregate) planNode() {}

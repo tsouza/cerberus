@@ -1,8 +1,11 @@
 -- query.promql --
 stddev by (job) (latency_seconds)
 -- sql --
-SELECT `Attributes`[?], stddevPop(`Value`) AS `Value` FROM (SELECT * FROM (SELECT * FROM `otel_metrics_gauge`) WHERE (`MetricName` = ?)) GROUP BY `Attributes`[?]
+SELECT ? AS `MetricName`, map(?, `gkey_0`) AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes`[?] AS `gkey_0`, stddevPop(`Value`) AS `Value` FROM (SELECT * FROM (SELECT * FROM `otel_metrics_gauge`) WHERE (`MetricName` = ?)) GROUP BY `Attributes`[?])
 -- args --
-[0] string = "job"
-[1] string = "latency_seconds"
-[2] string = "job"
+[0] string = ""
+[1] string = "job"
+[2] int64 = 9
+[3] string = "job"
+[4] string = "latency_seconds"
+[5] string = "job"

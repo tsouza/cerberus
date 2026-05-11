@@ -1,10 +1,12 @@
 -- query.promql --
 sum without (instance, pod) (up)
 -- sql --
-SELECT mapFilter((k, v) -> NOT (k IN (?, ?)), `Attributes`), sum(`Value`) AS `Value` FROM (SELECT * FROM (SELECT * FROM `otel_metrics_gauge`) WHERE (`MetricName` = ?)) GROUP BY mapFilter((k, v) -> NOT (k IN (?, ?)), `Attributes`)
+SELECT ? AS `MetricName`, `gkey_0` AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT mapFilter((k, v) -> NOT (k IN (?, ?)), `Attributes`) AS `gkey_0`, sum(`Value`) AS `Value` FROM (SELECT * FROM (SELECT * FROM `otel_metrics_gauge`) WHERE (`MetricName` = ?)) GROUP BY mapFilter((k, v) -> NOT (k IN (?, ?)), `Attributes`))
 -- args --
-[0] string = "instance"
-[1] string = "pod"
-[2] string = "up"
-[3] string = "instance"
-[4] string = "pod"
+[0] string = ""
+[1] int64 = 9
+[2] string = "instance"
+[3] string = "pod"
+[4] string = "up"
+[5] string = "instance"
+[6] string = "pod"
