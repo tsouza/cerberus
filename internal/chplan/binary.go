@@ -19,6 +19,8 @@ const (
 	OpSub      BinaryOp = "-"
 	OpMul      BinaryOp = "*"
 	OpDiv      BinaryOp = "/"
+	OpMod      BinaryOp = "%"
+	OpPow      BinaryOp = "^"
 )
 
 // Binary is a binary-operator expression.
