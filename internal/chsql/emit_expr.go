@@ -23,6 +23,8 @@ func (e *emitter) emitExpr(x chplan.Expr) error {
 		return e.emitBinary(v)
 	case *chplan.FuncCall:
 		return e.emitFunc(v)
+	case *chplan.MapAccess:
+		return e.emitMapAccess(v)
 	default:
 		return fmt.Errorf("%w: expr %T", ErrUnsupported, x)
 	}
@@ -62,6 +64,18 @@ func (e *emitter) emitBinary(b *chplan.Binary) error {
 		return err
 	}
 	e.b.WriteByte(')')
+	return nil
+}
+
+func (e *emitter) emitMapAccess(m *chplan.MapAccess) error {
+	if err := e.emitExpr(m.Map); err != nil {
+		return err
+	}
+	e.b.WriteByte('[')
+	if err := e.emitExpr(m.Key); err != nil {
+		return err
+	}
+	e.b.WriteByte(']')
 	return nil
 }
 

@@ -89,6 +89,18 @@ var plans = map[string]chplan.Node{
 		Input: &chplan.Scan{Table: "otel_logs"},
 		Count: 1000,
 	},
+
+	"filter_map_access": &chplan.Filter{
+		Input: &chplan.Scan{Table: "otel_metrics_gauge"},
+		Predicate: &chplan.Binary{
+			Op: chplan.OpEq,
+			Left: &chplan.MapAccess{
+				Map: &chplan.ColumnRef{Name: "Attributes"},
+				Key: &chplan.LitString{V: "job"},
+			},
+			Right: &chplan.LitString{V: "api"},
+		},
+	},
 }
 
 func TestEmit(t *testing.T) {
