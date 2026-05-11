@@ -1,0 +1,107 @@
+version: 2
+
+project_name: cerberus
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: cerberus
+    main: ./cmd/cerberus
+    binary: cerberus
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.Version={{.Version}}
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: cerberus
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    files:
+      - LICENSE
+      - README.md
+      - CHANGELOG.md
+      - docs/roadmap.md
+      - docs/optimizer-research.md
+
+checksum:
+  name_template: "checksums.txt"
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-snapshot+{{.ShortCommit}}"
+
+changelog:
+  use: github-native
+
+dockers:
+  - id: cerberus-amd64
+    image_templates:
+      - "ghcr.io/tsouza/cerberus:{{ .Version }}-amd64"
+      - "ghcr.io/tsouza/cerberus:latest-amd64"
+    use: buildx
+    goos: linux
+    goarch: amd64
+    dockerfile: Dockerfile
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.title={{.ProjectName}}"
+      - "--label=org.opencontainers.image.description=Drop-in Prometheus / Loki / Tempo HTTP gateway for ClickHouse"
+      - "--label=org.opencontainers.image.url=https://github.com/tsouza/cerberus"
+      - "--label=org.opencontainers.image.source=https://github.com/tsouza/cerberus"
+      - "--label=org.opencontainers.image.version={{.Version}}"
+      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
+      - "--label=org.opencontainers.image.licenses=MIT"
+
+  - id: cerberus-arm64
+    image_templates:
+      - "ghcr.io/tsouza/cerberus:{{ .Version }}-arm64"
+      - "ghcr.io/tsouza/cerberus:latest-arm64"
+    use: buildx
+    goos: linux
+    goarch: arm64
+    dockerfile: Dockerfile
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.title={{.ProjectName}}"
+      - "--label=org.opencontainers.image.description=Drop-in Prometheus / Loki / Tempo HTTP gateway for ClickHouse"
+      - "--label=org.opencontainers.image.url=https://github.com/tsouza/cerberus"
+      - "--label=org.opencontainers.image.source=https://github.com/tsouza/cerberus"
+      - "--label=org.opencontainers.image.version={{.Version}}"
+      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
+      - "--label=org.opencontainers.image.licenses=MIT"
+
+docker_manifests:
+  - name_template: "ghcr.io/tsouza/cerberus:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/tsouza/cerberus:{{ .Version }}-amd64"
+      - "ghcr.io/tsouza/cerberus:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/tsouza/cerberus:latest"
+    image_templates:
+      - "ghcr.io/tsouza/cerberus:latest-amd64"
+      - "ghcr.io/tsouza/cerberus:latest-arm64"
+
+release:
+  draft: false
+  prerelease: auto
+  github:
+    owner: tsouza
+    name: cerberus
+  header: |
+    See [CHANGELOG.md](https://github.com/tsouza/cerberus/blob/main/CHANGELOG.md) for the full list of changes.
+  footer: |
+    Docker image: `docker pull ghcr.io/tsouza/cerberus:{{.Version}}`
