@@ -27,7 +27,7 @@ ClickHouse is a great single store for all three signals. The only thing missing
 
 ## Architecture
 
-```
+```text
    PromQL                LogQL                TraceQL
      │                     │                     │
      ▼                     ▼                     ▼
@@ -84,17 +84,17 @@ just e2e-down          # tear down
 
 ## Testing layers
 
-| Layer | What it covers | How to run |
-|-------|----------------|-----------|
-| **Unit** | Per-package logic, `Equal` contracts, optimizer rule kernels | `just test` |
-| **Spec (TXTAR)** | `<QL> → expected SQL` and `plan → optimized plan` golden tests under `test/spec/` | `just test`; `just update-golden` to regenerate |
-| **Integration** | `chclient` against a real ClickHouse via testcontainers | `go test -tags=integration ./internal/chclient/...` |
-| **E2E** | k3d cluster with CH + Grafana + cerberus; Grafana playwright smoke | `just e2e` |
-| **Mutation** | Gremlins mutation testing on `internal/` logic packages | `just mutate` (slow, nightly in CI) |
+| Layer            | What it covers                                                                 | How to run                                                  |
+| ---------------- | ------------------------------------------------------------------------------ | ----------------------------------------------------------- |
+| **Unit**         | Per-package logic, `Equal` contracts, optimizer rule kernels                   | `just test`                                                 |
+| **Spec (TXTAR)** | `<QL> → expected SQL` and `plan → optimized plan` golden tests under `test/spec/` | `just test`; `just update-golden` to regenerate          |
+| **Integration**  | `chclient` against a real ClickHouse via testcontainers                        | `go test -tags=integration ./internal/chclient/...`         |
+| **E2E**          | k3d cluster with CH + Grafana + cerberus; Grafana playwright smoke             | `just e2e`                                                  |
+| **Mutation**     | Gremlins mutation testing on `internal/` logic packages                        | `just mutate` (slow, nightly in CI)                         |
 
 ## Project structure
 
-```
+```text
 cmd/cerberus/            # main entrypoint
 internal/
   api/{prom,loki,tempo}/ # HTTP handlers per upstream API
