@@ -22,6 +22,12 @@ type Metrics struct {
 	TimestampColumn string
 	// ValueColumn names the numeric value column (Float64).
 	ValueColumn string
+
+	// MetricDescriptionColumn names the column carrying the OTel
+	// metric description text (free-form help string).
+	MetricDescriptionColumn string
+	// MetricUnitColumn names the column carrying the OTel metric unit.
+	MetricUnitColumn string
 }
 
 // DefaultOTelMetrics returns the schema produced by the upstream OTel
@@ -36,6 +42,8 @@ func DefaultOTelMetrics() Metrics {
 		ResourceAttributesColumn: "ResourceAttributes",
 		TimestampColumn:          "TimeUnix",
 		ValueColumn:              "Value",
+		MetricDescriptionColumn:  "MetricDescription",
+		MetricUnitColumn:         "MetricUnit",
 	}
 }
 

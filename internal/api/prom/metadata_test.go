@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tsouza/cerberus/internal/api/prom"
 	"github.com/tsouza/cerberus/internal/chclient"
 )
 
@@ -248,5 +249,91 @@ func TestSeries_RequiresMatch(t *testing.T) {
 	}
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	}
+}
+
+func TestMetadata_Endpoint(t *testing.T) {
+	t.Parallel()
+
+	q := &stubQuerier{
+		metaRows: []chclient.MetricMetaRow{
+			{Name: "up", Description: "scrape ok", Unit: "", Type: "gauge"},
+			{Name: "temperature", Description: "ambient temp", Unit: "celsius", Type: "gauge"},
+		},
+	}
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/v1/metadata")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+	var parsed metadataResponse
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if parsed.Status != "success" {
+		t.Fatalf("status: got %q", parsed.Status)
+	}
+
+	var grouped map[string][]prom.MetricMetaEntry
+	if err := json.Unmarshal(parsed.Data, &grouped); err != nil {
+		t.Fatalf("decode data: %v", err)
+	}
+	if _, ok := grouped["up"]; !ok {
+		t.Errorf("expected 'up' metadata; got %+v", grouped)
+	}
+	if _, ok := grouped["temperature"]; !ok {
+		t.Errorf("expected 'temperature' metadata; got %+v", grouped)
+	}
+}
+
+func TestMetadata_FilterByName(t *testing.T) {
+	t.Parallel()
+
+	q := &stubQuerier{
+		metaRows: []chclient.MetricMetaRow{
+			{Name: "up", Description: "scrape ok", Type: "gauge"},
+		},
+	}
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/v1/metadata?metric=up")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+	defer resp.Body.Close()
+
+	if len(q.lastArgs) == 0 || q.lastArgs[0] != "up" {
+		t.Errorf("expected last query arg = 'up', got %v", q.lastArgs)
+	}
+}
+
+func TestMetadata_LimitBadValue(t *testing.T) {
+	t.Parallel()
+
+	cases := []string{"-1", "abc"}
+	for _, raw := range cases {
+		t.Run(raw, func(t *testing.T) {
+			t.Parallel()
+			srv := newServer(&stubQuerier{})
+			t.Cleanup(srv.Close)
+			resp, err := http.Get(srv.URL + "/api/v1/metadata?limit=" + raw)
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("limit=%q: expected 400, got %d", raw, resp.StatusCode)
+			}
+		})
 	}
 }

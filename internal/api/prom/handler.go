@@ -25,6 +25,7 @@ type Querier interface {
 	Query(ctx context.Context, sql string, args ...any) ([]chclient.Sample, error)
 	QueryStrings(ctx context.Context, sql string, args ...any) ([]string, error)
 	QueryLabelSets(ctx context.Context, sql string, args ...any) ([]map[string]string, error)
+	QueryMetricMeta(ctx context.Context, sql, metricType string, args ...any) ([]chclient.MetricMetaRow, error)
 }
 
 // Handler implements the Prometheus HTTP API endpoints cerberus speaks.
@@ -68,6 +69,7 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	register("GET /api/v1/label/{name}/values", h.handleLabelValues)
 	register("GET /api/v1/series", h.handleSeries)
 	register("POST /api/v1/series", h.handleSeries)
+	register("GET /api/v1/metadata", h.handleMetadata)
 }
 
 func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
