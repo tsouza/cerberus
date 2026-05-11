@@ -20,6 +20,7 @@ type stubQuerier struct {
 	samples   []chclient.Sample
 	strings   []string
 	labelSets []map[string]string
+	metaRows  []chclient.MetricMetaRow
 	err       error
 	lastSQL   string
 	lastArgs  []any
@@ -50,6 +51,15 @@ func (s *stubQuerier) QueryLabelSets(_ context.Context, sql string, args ...any)
 		return nil, s.err
 	}
 	return s.labelSets, nil
+}
+
+func (s *stubQuerier) QueryMetricMeta(_ context.Context, sql, _ string, args ...any) ([]chclient.MetricMetaRow, error) {
+	s.lastSQL = sql
+	s.lastArgs = args
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.metaRows, nil
 }
 
 func newServer(q prom.Querier) *httptest.Server {
