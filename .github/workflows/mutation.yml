@@ -25,6 +25,6 @@ jobs:
         with:
           tool: just
       - name: Install gremlins
-        run: go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.7.1
+        run: go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0
       - name: just mutate
         run: just mutate
