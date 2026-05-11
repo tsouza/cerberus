@@ -1,0 +1,42 @@
+# CODEOWNERS — auto-request review on touched paths.
+# Format: <pattern> <owner1> <owner2> ...
+
+# Fallback: everything goes to @tsouza
+*                                          @tsouza
+
+# QL heads + shared IR + emitter + optimizer
+/internal/chplan/                          @tsouza
+/internal/chsql/                           @tsouza
+/internal/optimizer/                       @tsouza
+/internal/promql/                          @tsouza
+/internal/logql/                           @tsouza
+/internal/traceql/                         @tsouza
+
+# HTTP API surface
+/internal/api/                             @tsouza
+
+# Schema, config, CH client
+/internal/schema/                          @tsouza
+/internal/config/                          @tsouza
+/internal/chclient/                        @tsouza
+
+# CI + workflows + release plumbing
+/.github/                                  @tsouza
+/.goreleaser.yml                           @tsouza
+/Justfile                                  @tsouza
+
+# Test surfaces
+/test/                                     @tsouza
+/harness/                                  @tsouza
+
+# Deploy manifests
+/deploy/                                   @tsouza
+
+# Docs + roadmap
+/docs/                                     @tsouza
+/README.md                                 @tsouza
+/CLAUDE.md                                 @tsouza
+/AGENTS.md                                 @tsouza
+/CONTRIBUTING.md                           @tsouza
+/CODE_OF_CONDUCT.md                        @tsouza
+/SECURITY.md                               @tsouza
