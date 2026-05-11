@@ -1,0 +1,4 @@
+-- args --
+(none)
+-- sql --
+SELECT `job`, sum(`Value`) AS `total` FROM (SELECT * FROM `otel_metrics_gauge`) GROUP BY `job`

@@ -36,9 +36,17 @@ clean:
 
 # === Test ===
 
-# Run unit tests with race detector + coverage.
+# Run unit + spec tests with race detector + coverage.
 test:
     go test -race -coverprofile=coverage.out ./...
+
+# Regenerate TXTAR golden sections in test/spec/**/*.txtar from current output.
+# Review `git diff test/spec/` before committing.
+update-golden:
+    GOLDEN_UPDATE=1 go test ./...
+    @echo
+    @echo "Diff of regenerated fixtures:"
+    @git --no-pager diff --stat test/spec/ || true
 
 # === Lint / format ===
 
