@@ -1,12 +1,17 @@
-name: e2e
+name: dashboard
+
+# The "dashboard" smoke test stands up cerberus + ClickHouse + Grafana
+# in a real k3d cluster, seeds OTel data, and exercises a Playwright
+# scenario that renders a Grafana panel through cerberus as a Prom-
+# datasource. It's the broadest "the whole system still works" gate.
+#
+# Required status check (branch protection). The path filter is
+# intentionally absent so docs- and CI-only PRs still produce a
+# `dashboard` check status.
 
 on:
   push:
     branches: [main]
-  # e2e is a required status check (branch protection). To guarantee it
-  # produces a status on every PR — including docs- and CI-only ones —
-  # the path filter has been removed. Without that, path-filtered PRs
-  # would never produce an `e2e` check status and could not merge.
   pull_request:
   schedule:
     # nightly at 03:17 UTC
@@ -17,12 +22,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: e2e-${{ github.ref }}
+  group: dashboard-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  e2e:
-    name: k3d + cerberus + grafana + playwright
+  dashboard:
+    name: dashboard
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
