@@ -1,0 +1,48 @@
+name: Feature request
+description: Suggest a feature, an optimisation, or a deferred-feature lift from RC2/RC3 into earlier scope.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing:
+
+        - Check [`docs/roadmap.md`](../blob/main/docs/roadmap.md) — your feature may already be planned for RC1/RC2/RC3.
+        - Check the [Roadmap Project](https://github.com/users/tsouza/projects/1) for live status.
+        - Check open PRs at <https://github.com/tsouza/cerberus/pulls>.
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: What problem does this solve? Concrete usage scenarios > abstract requests.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: |
+        How should cerberus behave with this feature? If it's a new PromQL/LogQL/TraceQL construct, paste the query syntax. If it's an HTTP endpoint, paste a curl example.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds, partial solutions, or related features in other tools (Prometheus, Loki, Tempo, VictoriaMetrics, SigNoz, …).
+  - type: dropdown
+    id: rc
+    attributes:
+      label: Which RC do you think this fits?
+      options:
+        - RC1 — core QL or API surface, full-impact users hit it daily
+        - RC2 — advanced QL / API; nice-to-have for production parity
+        - RC3 — optimizer / performance / advanced testing
+        - Not sure
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Code of Conduct
+      options:
+        - label: I agree to follow this project's [Code of Conduct](https://github.com/tsouza/cerberus/blob/main/CODE_OF_CONDUCT.md).
+          required: true
