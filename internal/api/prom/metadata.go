@@ -9,21 +9,29 @@ import (
 	"strings"
 
 	"github.com/prometheus/common/model"
+
+	"github.com/tsouza/cerberus/internal/chsql"
+	"github.com/tsouza/cerberus/internal/promql"
 )
 
 // handleLabels implements GET /api/v1/labels — distinct label names across
 // all metric tables, plus the synthetic `__name__` for the metric-name
-// dimension.
-//
-// `match[]` selector filtering is not yet supported; it lands with M2.7.
+// dimension. Optional `match[]` selectors narrow the result to labels of
+// the matched series only.
 func (h *Handler) handleLabels(w http.ResponseWriter, r *http.Request) {
-	if len(r.URL.Query()["match[]"]) > 0 {
-		writeError(w, http.StatusBadRequest, ErrBadData,
-			errors.New("'match[]' selectors are not yet supported on /api/v1/labels"))
+	if err := r.ParseForm(); err != nil {
+		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return
 	}
+	matchers := r.Form["match[]"]
 
-	names, err := h.fetchLabelNames(r.Context())
+	var names []string
+	var err error
+	if len(matchers) == 0 {
+		names, err = h.fetchLabelNames(r.Context())
+	} else {
+		names, err = h.fetchLabelNamesMatched(r.Context(), matchers)
+	}
 	if err != nil {
 		h.respondError(w, err)
 		return
@@ -51,13 +59,19 @@ func (h *Handler) handleLabelValues(w http.ResponseWriter, r *http.Request) {
 			fmt.Errorf("invalid label name %q", name))
 		return
 	}
-	if len(r.URL.Query()["match[]"]) > 0 {
-		writeError(w, http.StatusBadRequest, ErrBadData,
-			errors.New("'match[]' selectors are not yet supported on /api/v1/label/<name>/values"))
+	if err := r.ParseForm(); err != nil {
+		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return
 	}
+	matchers := r.Form["match[]"]
 
-	values, err := h.fetchLabelValues(r.Context(), name)
+	var values []string
+	var err error
+	if len(matchers) == 0 {
+		values, err = h.fetchLabelValues(r.Context(), name)
+	} else {
+		values, err = h.fetchLabelValuesMatched(r.Context(), name, matchers)
+	}
 	if err != nil {
 		h.respondError(w, err)
 		return
@@ -123,7 +137,9 @@ func (h *Handler) handleSeries(w http.ResponseWriter, r *http.Request) {
 // and prepends `__name__`. The returned slice is sorted.
 func (h *Handler) fetchLabelNames(ctx context.Context) ([]string, error) {
 	sql := h.unionLabelNamesSQL()
-	names, err := h.Client.QueryStrings(ctx, sql)
+	names, err := timeCH(ctx, func() ([]string, error) {
+		return h.Client.QueryStrings(ctx, sql)
+	})
 	if err != nil {
 		return nil, &apiError{kind: ErrInternal, err: err, status: http.StatusBadGateway}
 	}
@@ -134,7 +150,10 @@ func (h *Handler) fetchLabelNames(ctx context.Context) ([]string, error) {
 
 func (h *Handler) fetchLabelValues(ctx context.Context, name string) ([]string, error) {
 	if name == model.MetricNameLabel {
-		values, err := h.Client.QueryStrings(ctx, h.unionMetricNamesSQL())
+		sql := h.unionMetricNamesSQL()
+		values, err := timeCH(ctx, func() ([]string, error) {
+			return h.Client.QueryStrings(ctx, sql)
+		})
 		if err != nil {
 			return nil, &apiError{kind: ErrInternal, err: err, status: http.StatusBadGateway}
 		}
@@ -142,12 +161,118 @@ func (h *Handler) fetchLabelValues(ctx context.Context, name string) ([]string, 
 		return values, nil
 	}
 	sql, args := h.unionLabelValuesSQL(name)
-	values, err := h.Client.QueryStrings(ctx, sql, args...)
+	values, err := timeCH(ctx, func() ([]string, error) {
+		return h.Client.QueryStrings(ctx, sql, args...)
+	})
 	if err != nil {
 		return nil, &apiError{kind: ErrInternal, err: err, status: http.StatusBadGateway}
 	}
 	sort.Strings(values)
 	return values, nil
+}
+
+// fetchLabelNamesMatched returns the distinct label names of series
+// matching any of the given match[] selectors. The synthetic `__name__`
+// is always included if at least one selector matches anything.
+func (h *Handler) fetchLabelNamesMatched(ctx context.Context, matchers []string) ([]string, error) {
+	seen := map[string]bool{model.MetricNameLabel: true}
+	for _, m := range matchers {
+		keys, err := h.labelKeysForMatcher(ctx, m)
+		if err != nil {
+			return nil, err
+		}
+		for _, k := range keys {
+			seen[k] = true
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for k := range seen {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// fetchLabelValuesMatched returns the distinct values of <name> across
+// series matching any of the given match[] selectors.
+func (h *Handler) fetchLabelValuesMatched(ctx context.Context, name string, matchers []string) ([]string, error) {
+	seen := map[string]bool{}
+	for _, m := range matchers {
+		vals, err := h.labelValuesForMatcher(ctx, name, m)
+		if err != nil {
+			return nil, err
+		}
+		for _, v := range vals {
+			if v != "" {
+				seen[v] = true
+			}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for v := range seen {
+		out = append(out, v)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// labelKeysForMatcher lowers a single match[] selector, then wraps the
+// matched rows in a `SELECT DISTINCT arrayJoin(mapKeys(Attributes))`
+// to extract its attribute keys.
+func (h *Handler) labelKeysForMatcher(ctx context.Context, matcher string) ([]string, error) {
+	innerSQL, args, err := h.matcherSQL(matcher)
+	if err != nil {
+		return nil, err
+	}
+	attrs := quoteIdentCH(h.Schema.AttributesColumn)
+	sql := fmt.Sprintf("SELECT DISTINCT arrayJoin(mapKeys(%s)) AS name FROM (%s) ORDER BY name",
+		attrs, innerSQL)
+	return timeCH(ctx, func() ([]string, error) {
+		return h.Client.QueryStrings(ctx, sql, args...)
+	})
+}
+
+// labelValuesForMatcher lowers a single match[] selector, then projects
+// the named label's distinct values. `__name__` resolves to MetricName;
+// other labels to `Attributes[<name>]`.
+func (h *Handler) labelValuesForMatcher(ctx context.Context, name, matcher string) ([]string, error) {
+	innerSQL, args, err := h.matcherSQL(matcher)
+	if err != nil {
+		return nil, err
+	}
+	var sql string
+	if name == model.MetricNameLabel {
+		sql = fmt.Sprintf("SELECT DISTINCT %s AS value FROM (%s) ORDER BY value",
+			quoteIdentCH(h.Schema.MetricNameColumn), innerSQL)
+	} else {
+		attrs := quoteIdentCH(h.Schema.AttributesColumn)
+		sql = fmt.Sprintf("SELECT DISTINCT %s[?] AS value FROM (%s) WHERE %s[?] != '' ORDER BY value",
+			attrs, innerSQL, attrs)
+		args = append([]any{name}, args...)
+		args = append(args, name)
+	}
+	return timeCH(ctx, func() ([]string, error) {
+		return h.Client.QueryStrings(ctx, sql, args...)
+	})
+}
+
+// matcherSQL lowers a single matcher to its inner SQL + args. The caller
+// wraps this in whatever projection it needs (DISTINCT mapKeys, etc.).
+func (h *Handler) matcherSQL(matcher string) (string, []any, error) {
+	expr, err := h.parser.ParseExpr(matcher)
+	if err != nil {
+		return "", nil, &apiError{kind: ErrBadData, err: err, status: http.StatusBadRequest}
+	}
+	plan, err := promql.Lower(expr, h.Schema)
+	if err != nil {
+		return "", nil, &apiError{kind: ErrBadData, err: err, status: http.StatusBadRequest}
+	}
+	plan = h.Optimizer.Run(plan)
+	sql, args, err := chsql.Emit(plan)
+	if err != nil {
+		return "", nil, &apiError{kind: ErrInternal, err: err, status: http.StatusInternalServerError}
+	}
+	return sql, args, nil
 }
 
 // fetchSeries lowers the matcher to a Scan+Filter, runs as a sample query,

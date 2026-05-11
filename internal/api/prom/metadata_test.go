@@ -71,10 +71,12 @@ func TestLabels_Endpoint(t *testing.T) {
 	}
 }
 
-func TestLabels_MatchSelectorRejected(t *testing.T) {
+func TestLabels_MatchSelector(t *testing.T) {
 	t.Parallel()
 
-	q := &stubQuerier{}
+	q := &stubQuerier{
+		strings: []string{"job", "instance"},
+	}
 	srv := newServer(q)
 	t.Cleanup(srv.Close)
 
@@ -83,8 +85,25 @@ func TestLabels_MatchSelectorRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("expected 400 for match[] selector, got %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+	var parsed metadataResponse
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var names []string
+	if err := json.Unmarshal(parsed.Data, &names); err != nil {
+		t.Fatalf("decode data: %v", err)
+	}
+	if len(names) < 1 || names[0] != "__name__" {
+		t.Fatalf("expected __name__ in names, got %v", names)
+	}
+	// SQL should wrap the matched scan in `SELECT DISTINCT arrayJoin(mapKeys(...))`.
+	if !strings.Contains(q.lastSQL, "arrayJoin(mapKeys") {
+		t.Errorf("expected SQL to project mapKeys; got %q", q.lastSQL)
 	}
 }
 
