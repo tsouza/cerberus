@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -105,17 +106,24 @@ func TestQuery_Vector(t *testing.T) {
 func TestQueryRange_Matrix(t *testing.T) {
 	t.Parallel()
 
-	ts := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+	// Three samples spaced 30s apart in the requested [start, end] window;
+	// step=60s should produce 5 evaluation points (start, +60, +120, +180, end).
+	start := time.Unix(1717995600, 0).UTC()
+	end := start.Add(4 * time.Minute) // 1717995840
 	q := &stubQuerier{
 		samples: []chclient.Sample{
-			{MetricName: "up", Labels: map[string]string{"job": "api"}, Timestamp: ts, Value: 1.0},
+			{MetricName: "up", Labels: map[string]string{"job": "api"}, Timestamp: start, Value: 1.0},
+			{MetricName: "up", Labels: map[string]string{"job": "api"}, Timestamp: start.Add(90 * time.Second), Value: 2.0},
+			{MetricName: "up", Labels: map[string]string{"job": "api"}, Timestamp: start.Add(180 * time.Second), Value: 3.0},
 		},
 	}
 
 	srv := newServer(q)
 	t.Cleanup(srv.Close)
 
-	resp, err := http.Get(srv.URL + "/api/v1/query_range?query=up&start=1717995600&end=1717999200&step=60")
+	url := fmt.Sprintf("%s/api/v1/query_range?query=up&start=%d&end=%d&step=60",
+		srv.URL, start.Unix(), end.Unix())
+	resp, err := http.Get(url)
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
@@ -130,6 +138,55 @@ func TestQueryRange_Matrix(t *testing.T) {
 	}
 	if parsed.Data.ResultType != "matrix" {
 		t.Fatalf("resultType: got %q, want matrix", parsed.Data.ResultType)
+	}
+
+	rawResult, _ := json.Marshal(parsed.Data.Result)
+	var matrix []prom.MatrixSample
+	if err := json.Unmarshal(rawResult, &matrix); err != nil {
+		t.Fatalf("decode matrix: %v", err)
+	}
+	if len(matrix) != 1 {
+		t.Fatalf("expected 1 series, got %d", len(matrix))
+	}
+	// 5 step points expected for [start..start+4m] step=60s.
+	if got := len(matrix[0].Values); got != 5 {
+		t.Fatalf("expected 5 sample points in matrix, got %d: %+v", got, matrix[0].Values)
+	}
+	// Latest-at-step values: [1, 1, 2, 3, 3] for steps [0, 60, 120, 180, 240].
+	wantValues := []string{"1", "1", "2", "3", "3"}
+	for i, want := range wantValues {
+		if got := matrix[0].Values[i][1]; got != want {
+			t.Errorf("step %d: got value %q, want %q", i, got, want)
+		}
+	}
+}
+
+func TestQueryRange_BadInput(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		url  string
+	}{
+		{"missing start", "/api/v1/query_range?query=up&end=1717999200&step=60"},
+		{"missing end", "/api/v1/query_range?query=up&start=1717995600&step=60"},
+		{"missing step", "/api/v1/query_range?query=up&start=1717995600&end=1717999200"},
+		{"end before start", "/api/v1/query_range?query=up&start=1717999200&end=1717995600&step=60"},
+		{"zero step", "/api/v1/query_range?query=up&start=1717995600&end=1717999200&step=0"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			srv := newServer(&stubQuerier{})
+			t.Cleanup(srv.Close)
+			resp, err := http.Get(srv.URL + tc.url)
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d body=%s", resp.StatusCode, readBody(t, resp))
+			}
+		})
 	}
 }
 

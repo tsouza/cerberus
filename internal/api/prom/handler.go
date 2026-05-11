@@ -89,23 +89,33 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing query parameter"))
 		return
 	}
-	end, err := parseTime(r.URL.Query().Get("end"), time.Now())
-	if err != nil {
-		writeError(w, http.StatusBadRequest, ErrBadData, err)
+	start, err := parseTime(r.URL.Query().Get("start"), time.Time{})
+	if err != nil || start.IsZero() {
+		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing or invalid 'start' parameter"))
+		return
+	}
+	end, err := parseTime(r.URL.Query().Get("end"), time.Time{})
+	if err != nil || end.IsZero() {
+		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing or invalid 'end' parameter"))
+		return
+	}
+	step, err := parseDuration(r.URL.Query().Get("step"))
+	if err != nil || step <= 0 {
+		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing or invalid 'step' parameter"))
+		return
+	}
+	if end.Before(start) {
+		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("'end' must be after 'start'"))
 		return
 	}
 
-	// v0.1 range-query lowering returns the same row set as an instant
-	// query, then projects every sample at the `end` timestamp. Real per-
-	// step bucketing lands when the RangeWindow chplan node grows full
-	// emission semantics (post-PR8 follow-up).
 	samples, err := h.executeInstant(r.Context(), q)
 	if err != nil {
 		h.respondError(w, err)
 		return
 	}
 
-	result := toMatrix(samples, end)
+	result := toMatrixStepGrid(samples, start, end, step)
 	writeJSON(w, http.StatusOK, Response{
 		Status: "success",
 		Data:   &Data{ResultType: "matrix", Result: result},
@@ -187,34 +197,85 @@ func toVector(samples []chclient.Sample, ts time.Time) []VectorSample {
 	return out
 }
 
-// toMatrix is the v0.1 placeholder range result — one point per series at
-// the end timestamp. Full per-step rendering follows when RangeWindow
-// emission lands.
-func toMatrix(samples []chclient.Sample, end time.Time) []MatrixSample {
-	type latest struct {
+// toMatrixStepGrid pivots the sample stream into the Prom matrix shape.
+// For each evaluation step T in [start, end] (inclusive, spaced by step),
+// each series emits one Sample: the value of the latest input row whose
+// timestamp <= T (the standard PromQL latest-sample-at-eval-time
+// semantics). Series with no eligible samples for a given step are
+// represented as a stale-marker gap (the step is simply skipped in the
+// Values slice — Prometheus permits this).
+//
+// Lookback delta: a hard 5-minute lookback by default; older samples are
+// considered stale. Future work threads the API's `lookback_delta`
+// param through here.
+func toMatrixStepGrid(samples []chclient.Sample, start, end time.Time, step time.Duration) []MatrixSample {
+	const lookback = 5 * time.Minute
+
+	type seriesState struct {
 		labels map[string]string
-		ts     time.Time
-		value  float64
+		// rows holds the sorted (ascending) timestamps + values for this
+		// series; we walk the row cursor forward as we advance through
+		// the step grid.
+		rows []chclient.Sample
 	}
-	bySeries := map[string]latest{}
+
+	bySeries := map[string]*seriesState{}
 	for _, s := range samples {
 		labels := withMetricName(s.Labels, s.MetricName)
 		key := canonicalKey(labels)
-		cur, ok := bySeries[key]
-		if !ok || s.Timestamp.After(cur.ts) {
-			bySeries[key] = latest{labels: labels, ts: s.Timestamp, value: s.Value}
+		st, ok := bySeries[key]
+		if !ok {
+			st = &seriesState{labels: labels}
+			bySeries[key] = st
+		}
+		st.rows = append(st.rows, s)
+	}
+	for _, st := range bySeries {
+		// Inline insertion sort by Timestamp ascending — samples are
+		// typically already nearly sorted from CH.
+		for i := 1; i < len(st.rows); i++ {
+			for j := i; j > 0 && st.rows[j-1].Timestamp.After(st.rows[j].Timestamp); j-- {
+				st.rows[j-1], st.rows[j] = st.rows[j], st.rows[j-1]
+			}
 		}
 	}
 
-	stamp := float64(end.UnixMilli()) / 1e3
 	out := make([]MatrixSample, 0, len(bySeries))
-	for _, l := range bySeries {
-		out = append(out, MatrixSample{
-			Metric: l.labels,
-			Values: []Sample{{stamp, strconv.FormatFloat(l.value, 'f', -1, 64)}},
-		})
+	for _, st := range bySeries {
+		ms := MatrixSample{Metric: st.labels}
+		cursor := 0
+		for t := start; !t.After(end); t = t.Add(step) {
+			// Advance cursor as long as the next row's ts <= t.
+			for cursor < len(st.rows) && !st.rows[cursor].Timestamp.After(t) {
+				cursor++
+			}
+			if cursor == 0 {
+				continue // no row at-or-before this step yet
+			}
+			latest := st.rows[cursor-1]
+			if t.Sub(latest.Timestamp) > lookback {
+				continue // older than the lookback window; stale
+			}
+			stamp := float64(t.UnixMilli()) / 1e3
+			ms.Values = append(ms.Values, Sample{stamp, strconv.FormatFloat(latest.Value, 'f', -1, 64)})
+		}
+		if len(ms.Values) > 0 {
+			out = append(out, ms)
+		}
 	}
 	return out
+}
+
+// parseDuration parses a Prom-style step / range duration. Accepts plain
+// floats (seconds) or Go-style durations like `30s`, `5m`, `1h`.
+func parseDuration(raw string) (time.Duration, error) {
+	if raw == "" {
+		return 0, errors.New("missing duration")
+	}
+	if f, err := strconv.ParseFloat(raw, 64); err == nil {
+		return time.Duration(f * float64(time.Second)), nil
+	}
+	return time.ParseDuration(raw)
 }
 
 func withMetricName(labels map[string]string, name string) map[string]string {
