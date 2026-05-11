@@ -90,3 +90,62 @@ ci: lint test build
 # go mod tidy.
 deps-tidy:
     go mod tidy
+
+# === E2E (k3d + ClickHouse + Grafana + cerberus) ===
+
+K3D_CLUSTER := "cerberus-e2e"
+CERBERUS_IMAGE := "cerberus:e2e"
+
+# Boot the k3d cluster, build cerberus image, import it, apply manifests, wait for pods.
+e2e-up: e2e-down
+    @echo "==> creating k3d cluster {{K3D_CLUSTER}}"
+    k3d cluster create {{K3D_CLUSTER}} \
+        --port "3000:3000@loadbalancer" \
+        --port "8080:8080@loadbalancer" \
+        --no-lb=false \
+        --k3s-arg "--disable=traefik@server:0" \
+        --wait
+    @echo "==> building cerberus image"
+    docker build -t {{CERBERUS_IMAGE}} -f Dockerfile.local .
+    @echo "==> importing image into k3d"
+    k3d image import {{CERBERUS_IMAGE}} -c {{K3D_CLUSTER}}
+    @echo "==> applying manifests"
+    kubectl apply -k deploy/k3s/
+    @echo "==> waiting for pods (up to 3 min)"
+    kubectl -n cerberus wait --for=condition=Available deployment/clickhouse --timeout=180s
+    kubectl -n cerberus wait --for=condition=Available deployment/cerberus   --timeout=180s
+    kubectl -n cerberus wait --for=condition=Available deployment/grafana    --timeout=180s
+    @echo "==> e2e-up done"
+    @echo "    grafana:    http://localhost:3000 (admin/admin)"
+    @echo "    cerberus:   http://localhost:8080/healthz"
+
+# Ingest sample OTel data into ClickHouse.
+e2e-seed:
+    @echo "==> seeding OTel metrics"
+    kubectl -n cerberus exec deploy/clickhouse -- \
+        clickhouse-client --user cerberus --password cerberus --multiquery < test/e2e/seed/otel_metrics.sql
+    @echo "==> seed done"
+
+# Run Go E2E HTTP tests against the deployed stack.
+e2e-run:
+    @echo "==> running Go E2E tests"
+    go test -tags=e2e ./test/e2e/...
+
+# Run the Grafana playwright smoke (lands in M0.2).
+e2e-playwright:
+    @echo "==> playwright smoke (lands in M0.2)"
+    @if [ -d test/e2e/playwright ]; then \
+        cd test/e2e/playwright && npm ci && npx playwright test; \
+    else \
+        echo "    (no playwright suite yet — landing in M0.2)"; \
+    fi
+
+# Tear down the cluster.
+e2e-down:
+    @if k3d cluster list | grep -q "^{{K3D_CLUSTER}} "; then \
+        echo "==> deleting k3d cluster {{K3D_CLUSTER}}"; \
+        k3d cluster delete {{K3D_CLUSTER}}; \
+    fi
+
+# Full lifecycle.
+e2e: e2e-up e2e-seed e2e-run e2e-playwright e2e-down

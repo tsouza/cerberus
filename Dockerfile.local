@@ -1,0 +1,27 @@
+# syntax=docker/dockerfile:1
+# Local-build Dockerfile for E2E (consumed by `just e2e-up`).
+#
+# The release Dockerfile (`./Dockerfile`) expects the binary to already be
+# built by goreleaser. For E2E we want a one-shot multi-stage build that
+# produces the same final image without needing goreleaser locally.
+
+FROM golang:1.26 AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.Version=e2e" -o /out/cerberus ./cmd/cerberus
+
+FROM gcr.io/distroless/static-debian12:nonroot
+
+LABEL org.opencontainers.image.title="cerberus"
+LABEL org.opencontainers.image.description="Drop-in Prometheus / Loki / Tempo HTTP gateway for ClickHouse"
+LABEL org.opencontainers.image.licenses="MIT"
+
+COPY --from=build /out/cerberus /usr/local/bin/cerberus
+
+EXPOSE 8080
+
+USER nonroot:nonroot
+
+ENTRYPOINT ["/usr/local/bin/cerberus"]
