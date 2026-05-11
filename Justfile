@@ -6,7 +6,7 @@ set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 GOLANGCI_LINT_VERSION := "v2.12.2"
 GOFUMPT_VERSION := "v0.7.0"
 GOIMPORTS_VERSION := "latest"
-MODULE := "github.com/tsouza-squid/cerberus"
+MODULE := "github.com/tsouza/cerberus"
 
 # Default: list recipes.
 default:

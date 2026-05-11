@@ -37,7 +37,7 @@ formatters:
   settings:
     goimports:
       local-prefixes:
-        - github.com/tsouza-squid/cerberus
+        - github.com/tsouza/cerberus
     gofumpt:
       extra-rules: true
 
