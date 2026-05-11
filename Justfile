@@ -123,10 +123,23 @@ e2e-up: e2e-down
     @echo "    cerberus:   http://localhost:8080/healthz"
 
 # Ingest sample OTel data into ClickHouse.
+# kubectl exec needs -i to forward stdin into the remote container; without
+# it, the `< file` redirect goes only to local stdin and the seed never runs.
 e2e-seed:
     @echo "==> seeding OTel metrics"
+    kubectl -n cerberus exec -i deploy/clickhouse -- \
+        clickhouse-client \
+            --user cerberus --password cerberus \
+            --database otel --multiquery \
+            < test/e2e/seed/otel_metrics.sql
+    @echo "==> verifying table rowcounts"
     kubectl -n cerberus exec deploy/clickhouse -- \
-        clickhouse-client --user cerberus --password cerberus --multiquery < test/e2e/seed/otel_metrics.sql
+        clickhouse-client --user cerberus --password cerberus --database otel --query "\
+            SELECT MetricName, count() AS rows FROM ( \
+                SELECT MetricName FROM otel_metrics_gauge \
+                UNION ALL \
+                SELECT MetricName FROM otel_metrics_sum \
+            ) GROUP BY MetricName ORDER BY MetricName FORMAT PrettyCompact"
     @echo "==> seed done"
 
 # Run Go E2E HTTP tests against the deployed stack.
