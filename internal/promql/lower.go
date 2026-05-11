@@ -209,6 +209,12 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics) (chplan.Node, error)
 // `quantile(0.95, ...)`. Output-shape-changing aggregates (`topk`, `bottomk`,
 // `count_values`) are deferred to M1.7 since they produce K rows per group
 // rather than one.
+//
+// The Aggregate is wrapped with a Project that re-shapes its output into
+// the Sample contract (MetricName, Attributes, TimeUnix, Value) so the
+// API layer can stream rows through `chclient.Sample` directly. PromQL
+// aggregations drop `__name__`, so the projected MetricName is the empty
+// string; the projected Attributes is built from the group-key columns.
 func lowerAggregate(a *parser.AggregateExpr, s schema.Metrics) (chplan.Node, error) {
 	input, err := lower(a.Expr, s)
 	if err != nil {
@@ -225,11 +231,79 @@ func lowerAggregate(a *parser.AggregateExpr, s schema.Metrics) (chplan.Node, err
 		return nil, err
 	}
 
-	return &chplan.Aggregate{
-		Input:    input,
-		GroupBy:  groupBy,
-		AggFuncs: []chplan.AggFunc{aggFunc},
-	}, nil
+	aliases := groupKeyAliases(len(groupBy))
+	agg := &chplan.Aggregate{
+		Input:          input,
+		GroupBy:        groupBy,
+		GroupByAliases: aliases,
+		AggFuncs:       []chplan.AggFunc{aggFunc},
+	}
+	return wrapAggregateForSample(agg, a, s, aliases), nil
+}
+
+// groupKeyAliases returns ["gkey_0", "gkey_1", ...] of length n. Empty
+// slice for n=0 so unaggregated aggregates (`count(up)` with no `by/
+// without`) still skip the aliasing path.
+func groupKeyAliases(n int) []string {
+	if n == 0 {
+		return nil
+	}
+	out := make([]string, n)
+	for i := range out {
+		out[i] = fmt.Sprintf("gkey_%d", i)
+	}
+	return out
+}
+
+// wrapAggregateForSample produces the Sample-shape Project on top of an
+// Aggregate so downstream `chclient.Sample` decoding works for any
+// PromQL aggregation.
+//
+//	MetricName  = ''                          (aggregations drop __name__)
+//	Attributes  = map('lbl0', gkey_0, ...)    for `by (lbl0, lbl1, ...)`
+//	            | gkey_0                       for `without (...)` (mapFilter output)
+//	            | empty Map(String,String)     for unaggregated forms
+//	TimeUnix    = now64(9)                    (eval time)
+//	Value       = <aggFunc alias>             (sum / avg / quantile / ...)
+func wrapAggregateForSample(agg *chplan.Aggregate, a *parser.AggregateExpr, s schema.Metrics, aliases []string) chplan.Node {
+	var attrs chplan.Expr
+	switch {
+	case len(aliases) == 0:
+		// No grouping — emit an empty Map(String, String).
+		attrs = emptyAttrsMap()
+	case a.Without:
+		// Single mapFilter-derived attribute column; the gkey IS the map.
+		attrs = &chplan.ColumnRef{Name: aliases[0]}
+	default:
+		args := make([]chplan.Expr, 0, len(a.Grouping)*2)
+		for i, label := range a.Grouping {
+			args = append(args, &chplan.LitString{V: label}, &chplan.ColumnRef{Name: aliases[i]})
+		}
+		attrs = &chplan.FuncCall{Name: "map", Args: args}
+	}
+
+	return &chplan.Project{
+		Input: agg,
+		Projections: []chplan.Projection{
+			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
+			{Expr: attrs, Alias: s.AttributesColumn},
+			{Expr: &chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}}, Alias: s.TimestampColumn},
+			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
+		},
+	}
+}
+
+// emptyAttrsMap returns a CH expression for an empty Map(String,String),
+// used when an aggregation drops all labels (e.g. `count(up)` with no
+// `by/without` clause).
+func emptyAttrsMap() chplan.Expr {
+	return &chplan.FuncCall{
+		Name: "CAST",
+		Args: []chplan.Expr{
+			&chplan.FuncCall{Name: "map", Args: nil},
+			&chplan.LitString{V: "Map(String,String)"},
+		},
+	}
 }
 
 // aggregateGroupBy builds the group-key list for an aggregation. For
