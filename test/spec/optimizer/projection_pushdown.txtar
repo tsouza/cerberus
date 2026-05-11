@@ -1,0 +1,4 @@
+-- optimized --
+SELECT `Value` AS `v`, `TimeUnix` AS `t` FROM (SELECT `TimeUnix`, `Value` FROM `otel_metrics_gauge`)
+-- unoptimized --
+SELECT `Value` AS `v`, `TimeUnix` AS `t` FROM (SELECT * FROM `otel_metrics_gauge`)
