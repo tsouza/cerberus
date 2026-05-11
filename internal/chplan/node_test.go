@@ -45,6 +45,35 @@ func TestEqual(t *testing.T) {
 		t.Fatalf("Filter: different predicates should not be Equal")
 	}
 
+	vj := &chplan.VectorJoin{
+		Left:             &chplan.Scan{Table: "otel_metrics_sum"},
+		Right:            &chplan.Scan{Table: "otel_metrics_sum"},
+		Op:               chplan.OpAdd,
+		Match:            chplan.VectorMatch{Labels: []string{"job"}, On: true},
+		MetricNameColumn: "MetricName",
+		AttributesColumn: "Attributes",
+		TimestampColumn:  "TimeUnix",
+		ValueColumn:      "Value",
+	}
+	vjSame := &chplan.VectorJoin{
+		Left:             &chplan.Scan{Table: "otel_metrics_sum"},
+		Right:            &chplan.Scan{Table: "otel_metrics_sum"},
+		Op:               chplan.OpAdd,
+		Match:            chplan.VectorMatch{Labels: []string{"job"}, On: true},
+		MetricNameColumn: "MetricName",
+		AttributesColumn: "Attributes",
+		TimestampColumn:  "TimeUnix",
+		ValueColumn:      "Value",
+	}
+	vjDifferentMatch := *vjSame
+	vjDifferentMatch.Match = chplan.VectorMatch{Labels: []string{"job"}, On: false}
+	if !vj.Equal(vjSame) {
+		t.Fatalf("VectorJoin: identical trees should be Equal")
+	}
+	if vj.Equal(&vjDifferentMatch) {
+		t.Fatalf("VectorJoin: on(job) vs ignoring(job) should not be Equal")
+	}
+
 	rw := &chplan.RangeWindow{
 		Input: &chplan.Scan{Table: "otel_metrics_sum"},
 		Func:  "rate",

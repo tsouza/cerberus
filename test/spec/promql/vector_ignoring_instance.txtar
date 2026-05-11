@@ -1,0 +1,9 @@
+-- query.promql --
+http_server_request_duration_count - ignoring(instance) http_server_request_duration_count
+-- sql --
+SELECT L.`MetricName`, L.`Attributes`, L.`TimeUnix`, (L.`Value` - R.`Value`) AS `Value` FROM (SELECT `MetricName`, `Attributes`, max(`TimeUnix`) AS `TimeUnix`, argMax(`Value`, `TimeUnix`) AS `Value` FROM (SELECT * FROM (SELECT * FROM `otel_metrics_sum`) WHERE (`MetricName` = ?)) GROUP BY `MetricName`, `Attributes`) AS L INNER JOIN (SELECT `MetricName`, `Attributes`, max(`TimeUnix`) AS `TimeUnix`, argMax(`Value`, `TimeUnix`) AS `Value` FROM (SELECT * FROM (SELECT * FROM `otel_metrics_sum`) WHERE (`MetricName` = ?)) GROUP BY `MetricName`, `Attributes`) AS R ON mapFilter((k, v) -> NOT (k IN (?)), L.`Attributes`) = mapFilter((k, v) -> NOT (k IN (?)), R.`Attributes`)
+-- args --
+[0] string = "http_server_request_duration_count"
+[1] string = "http_server_request_duration_count"
+[2] string = "instance"
+[3] string = "instance"
