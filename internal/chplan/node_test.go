@@ -45,6 +45,25 @@ func TestEqual(t *testing.T) {
 		t.Fatalf("Filter: different predicates should not be Equal")
 	}
 
+	mwk := &chplan.MapWithoutKeys{
+		Map:  &chplan.ColumnRef{Name: "Attributes"},
+		Keys: []string{"instance", "pod"},
+	}
+	mwkSame := &chplan.MapWithoutKeys{
+		Map:  &chplan.ColumnRef{Name: "Attributes"},
+		Keys: []string{"instance", "pod"},
+	}
+	mwkReordered := &chplan.MapWithoutKeys{
+		Map:  &chplan.ColumnRef{Name: "Attributes"},
+		Keys: []string{"pod", "instance"},
+	}
+	if !mwk.Equal(mwkSame) {
+		t.Fatalf("MapWithoutKeys: identical keys should be Equal")
+	}
+	if mwk.Equal(mwkReordered) {
+		t.Fatalf("MapWithoutKeys: reordered keys are observably different (groups would differ)")
+	}
+
 	vj := &chplan.VectorJoin{
 		Left:             &chplan.Scan{Table: "otel_metrics_sum"},
 		Right:            &chplan.Scan{Table: "otel_metrics_sum"},

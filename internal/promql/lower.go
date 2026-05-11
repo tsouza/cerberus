@@ -28,7 +28,7 @@ func Lower(expr parser.Expr, s schema.Metrics) (chplan.Node, error) {
 func lower(expr parser.Expr, s schema.Metrics) (chplan.Node, error) {
 	switch e := expr.(type) {
 	case *parser.VectorSelector:
-		return lowerVectorSelector(e, s), nil
+		return lowerVectorSelector(e, s)
 	case *parser.Call:
 		return lowerCall(e, s)
 	case *parser.AggregateExpr:
@@ -43,7 +43,9 @@ func lower(expr parser.Expr, s schema.Metrics) (chplan.Node, error) {
 }
 
 // lowerVectorSelector turns `metric{label="val"}` into Scan + Filter.
-func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics) chplan.Node {
+// `@` and `offset` modifiers add a `Timestamp <= anchor` predicate so the
+// instant evaluation reflects the requested shifted time.
+func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics) (chplan.Node, error) {
 	metricName := metricNameFromMatchers(v.LabelMatchers)
 	table := s.GaugeTable
 	if metricName != "" {
@@ -53,10 +55,22 @@ func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics) chplan.Node
 	scan := &chplan.Scan{Table: table}
 
 	pred := buildPredicate(v.LabelMatchers, s)
-	if pred == nil {
-		return scan
+	if hasModifier(v) {
+		anchor, err := anchorFromSelector(v)
+		if err != nil {
+			return nil, err
+		}
+		timeBound := timeBoundExpr(s.TimestampColumn, anchor)
+		if pred == nil {
+			pred = timeBound
+		} else {
+			pred = &chplan.Binary{Op: chplan.OpAnd, Left: pred, Right: timeBound}
+		}
 	}
-	return &chplan.Filter{Input: scan, Predicate: pred}
+	if pred == nil {
+		return scan, nil
+	}
+	return &chplan.Filter{Input: scan, Predicate: pred}, nil
 }
 
 // metricNameFromMatchers returns the value of the __name__ matcher (if any
@@ -157,57 +171,139 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics) (chplan.Node, error)
 			ms.VectorSelector)
 	}
 
-	inner := lowerVectorSelector(vs, s)
+	anchor, err := anchorFromSelector(vs)
+	if err != nil {
+		return nil, err
+	}
+
+	// The RangeWindow already encodes the window's eval anchor; emitting a
+	// duplicate time-bound predicate on the inner Filter would double-count.
+	// Build the inner Scan/Filter without the modifier-derived bound here.
+	vsNoModifier := *vs
+	vsNoModifier.Timestamp = nil
+	vsNoModifier.OriginalOffset = 0
+	vsNoModifier.Offset = 0
+	inner, err := lowerVectorSelector(&vsNoModifier, s)
+	if err != nil {
+		return nil, err
+	}
 	return &chplan.RangeWindow{
 		Input:           inner,
 		Func:            c.Func.Name,
 		Range:           ms.Range,
+		End:             anchor.End,
+		Offset:          anchor.Offset,
 		TimestampColumn: s.TimestampColumn,
 		ValueColumn:     s.ValueColumn,
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 	}, nil
 }
 
-// lowerAggregate handles `sum by (job) (...)`, `count(...)`, etc.
-// Only the `by` form is supported in v0.1; `without` requires schema-wide
-// label introspection that lands later.
+// lowerAggregate handles `sum by (job) (...)`, `sum without (instance) (...)`,
+// `count(...)`, `stddev(...)`, `stdvar(...)`, `group(...)`, and
+// `quantile(0.95, ...)`. Output-shape-changing aggregates (`topk`, `bottomk`,
+// `count_values`) are deferred to M1.7 since they produce K rows per group
+// rather than one.
 func lowerAggregate(a *parser.AggregateExpr, s schema.Metrics) (chplan.Node, error) {
-	if a.Without {
-		return nil, fmt.Errorf("promql: 'without' aggregation is not yet supported (v0.1 supports 'by' only)")
-	}
-	if a.Param != nil {
-		return nil, fmt.Errorf("promql: parameterised aggregation (%s) is not yet supported", a.Op.String())
-	}
-
 	input, err := lower(a.Expr, s)
 	if err != nil {
 		return nil, err
 	}
 
-	groupBy := make([]chplan.Expr, 0, len(a.Grouping))
+	groupBy, err := aggregateGroupBy(a, s)
+	if err != nil {
+		return nil, err
+	}
+
+	aggFunc, err := buildAggFunc(a, s)
+	if err != nil {
+		return nil, err
+	}
+
+	return &chplan.Aggregate{
+		Input:    input,
+		GroupBy:  groupBy,
+		AggFuncs: []chplan.AggFunc{aggFunc},
+	}, nil
+}
+
+// aggregateGroupBy builds the group-key list for an aggregation. For
+// `by (...)` it returns one MapAccess per named label; for `without (...)`
+// it returns a single MapWithoutKeys spanning the full Attributes map with
+// the named labels stripped.
+func aggregateGroupBy(a *parser.AggregateExpr, s schema.Metrics) ([]chplan.Expr, error) {
+	if a.Without {
+		return []chplan.Expr{
+			&chplan.MapWithoutKeys{
+				Map:  &chplan.ColumnRef{Name: s.AttributesColumn},
+				Keys: append([]string(nil), a.Grouping...),
+			},
+		}, nil
+	}
+	out := make([]chplan.Expr, 0, len(a.Grouping))
 	for _, label := range a.Grouping {
-		groupBy = append(groupBy, &chplan.MapAccess{
+		out = append(out, &chplan.MapAccess{
 			Map: &chplan.ColumnRef{Name: s.AttributesColumn},
 			Key: &chplan.LitString{V: label},
 		})
 	}
-
-	chFunc, err := chAggFunc(a.Op)
-	if err != nil {
-		return nil, err
-	}
-	return &chplan.Aggregate{
-		Input:   input,
-		GroupBy: groupBy,
-		AggFuncs: []chplan.AggFunc{{
-			Name:  chFunc,
-			Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}},
-			Alias: s.ValueColumn,
-		}},
-	}, nil
+	return out, nil
 }
 
-func chAggFunc(op parser.ItemType) (string, error) {
+// buildAggFunc produces the single AggFunc for an aggregation. Output-shape-
+// changing aggregates (`topk`, `bottomk`, `count_values`) are intentionally
+// rejected here pointing at M1.7.
+func buildAggFunc(a *parser.AggregateExpr, s schema.Metrics) (chplan.AggFunc, error) {
+	valueArg := &chplan.ColumnRef{Name: s.ValueColumn}
+
+	switch a.Op {
+	case parser.SUM, parser.COUNT, parser.AVG, parser.MIN, parser.MAX, parser.STDDEV, parser.STDVAR:
+		if a.Param != nil {
+			return chplan.AggFunc{}, fmt.Errorf("promql: aggregation %s does not take a parameter", a.Op.String())
+		}
+		name, err := plainAggCH(a.Op)
+		if err != nil {
+			return chplan.AggFunc{}, err
+		}
+		return chplan.AggFunc{
+			Name:  name,
+			Args:  []chplan.Expr{valueArg},
+			Alias: s.ValueColumn,
+		}, nil
+
+	case parser.GROUP:
+		// PromQL `group(...)` returns 1 for every label combination; emit
+		// `any(1)` which yields a constant 1 per CH group.
+		if a.Param != nil {
+			return chplan.AggFunc{}, fmt.Errorf("promql: group() does not take a parameter")
+		}
+		return chplan.AggFunc{
+			Name:  "any",
+			Args:  []chplan.Expr{&chplan.LitInt{V: 1}},
+			Alias: s.ValueColumn,
+		}, nil
+
+	case parser.QUANTILE:
+		phi, ok := tryScalarLiteral(a.Param)
+		if !ok {
+			return chplan.AggFunc{}, fmt.Errorf("promql: quantile(phi, ...) requires a scalar literal phi (computed phi defers to M1.7)")
+		}
+		return chplan.AggFunc{
+			Name:   "quantile",
+			Params: []chplan.Expr{&chplan.LitFloat{V: phi}},
+			Args:   []chplan.Expr{valueArg},
+			Alias:  s.ValueColumn,
+		}, nil
+
+	case parser.TOPK, parser.BOTTOMK, parser.COUNT_VALUES:
+		return chplan.AggFunc{}, fmt.Errorf("promql: %s changes output shape and lands with M1.7 result shaping", a.Op.String())
+	}
+
+	return chplan.AggFunc{}, fmt.Errorf("promql: aggregation op %s is not yet supported", a.Op.String())
+}
+
+// plainAggCH maps a non-parameterised PromQL aggregator to its CH name.
+func plainAggCH(op parser.ItemType) (string, error) {
 	switch op {
 	case parser.SUM:
 		return "sum", nil
@@ -219,6 +315,10 @@ func chAggFunc(op parser.ItemType) (string, error) {
 		return "min", nil
 	case parser.MAX:
 		return "max", nil
+	case parser.STDDEV:
+		return "stddevPop", nil
+	case parser.STDVAR:
+		return "varPop", nil
 	}
 	return "", fmt.Errorf("promql: aggregation op %s is not yet supported", op.String())
 }

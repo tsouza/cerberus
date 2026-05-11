@@ -33,6 +33,11 @@ type RangeWindow struct {
 	Start time.Time
 	End   time.Time
 
+	// Offset is the PromQL `offset` modifier shifted onto the inner
+	// VectorSelector. Subtracted from End at emit time so the window
+	// becomes [End - Offset - Range, End - Offset]. Zero means no offset.
+	Offset time.Duration
+
 	// TimestampColumn names the column carrying the per-sample timestamp
 	// on Input (typically "TimeUnix" for OTel-CH).
 	TimestampColumn string
@@ -57,7 +62,7 @@ func (r *RangeWindow) Equal(other Node) bool {
 	if !ok {
 		return false
 	}
-	if r.Func != o.Func || r.Range != o.Range || r.Step != o.Step {
+	if r.Func != o.Func || r.Range != o.Range || r.Step != o.Step || r.Offset != o.Offset {
 		return false
 	}
 	if !r.Start.Equal(o.Start) || !r.End.Equal(o.End) {
