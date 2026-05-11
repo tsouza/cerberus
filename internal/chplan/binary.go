@@ -5,20 +5,20 @@ package chplan
 type BinaryOp string
 
 const (
-	OpEq         BinaryOp = "="
-	OpNe         BinaryOp = "!="
-	OpLt         BinaryOp = "<"
-	OpLe         BinaryOp = "<="
-	OpGt         BinaryOp = ">"
-	OpGe         BinaryOp = ">="
-	OpMatch      BinaryOp = "=~" // regex match (Prom/Loki style)
-	OpNotMatch   BinaryOp = "!~"
-	OpAnd        BinaryOp = "AND"
-	OpOr         BinaryOp = "OR"
-	OpAdd        BinaryOp = "+"
-	OpSub        BinaryOp = "-"
-	OpMul        BinaryOp = "*"
-	OpDiv        BinaryOp = "/"
+	OpEq       BinaryOp = "="
+	OpNe       BinaryOp = "!="
+	OpLt       BinaryOp = "<"
+	OpLe       BinaryOp = "<="
+	OpGt       BinaryOp = ">"
+	OpGe       BinaryOp = ">="
+	OpMatch    BinaryOp = "=~" // regex match (Prom/Loki style)
+	OpNotMatch BinaryOp = "!~"
+	OpAnd      BinaryOp = "AND"
+	OpOr       BinaryOp = "OR"
+	OpAdd      BinaryOp = "+"
+	OpSub      BinaryOp = "-"
+	OpMul      BinaryOp = "*"
+	OpDiv      BinaryOp = "/"
 )
 
 // Binary is a binary-operator expression.
