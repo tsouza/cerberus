@@ -27,6 +27,7 @@ linters:
         linters:
           - gosec
           - revive
+          - errcheck
       - path: cmd/
         linters:
           - revive
