@@ -73,11 +73,8 @@ func TestLower_errors(t *testing.T) {
 			query:   `sum without (instance) (up)`,
 			wantErr: "'without' aggregation is not yet supported",
 		},
-		{
-			name:    "binary op rejected",
-			query:   `up + up`,
-			wantErr: "unsupported expression",
-		},
+		// Note: BinaryExpr vector+vector rejection moved to binary_test.go;
+		// arithmetic ops are now lowered for the scalar-vector case (M1.2).
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

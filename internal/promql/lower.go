@@ -32,6 +32,8 @@ func lower(expr parser.Expr, s schema.Metrics) (chplan.Node, error) {
 		return lowerAggregate(e, s)
 	case *parser.ParenExpr:
 		return lower(e.Expr, s)
+	case *parser.BinaryExpr:
+		return lowerBinary(e, s)
 	default:
 		return nil, fmt.Errorf("promql: unsupported expression %T", expr)
 	}

@@ -53,6 +53,19 @@ func (e *emitter) emitBinary(b *chplan.Binary) error {
 		}
 		e.b.WriteByte(')')
 		return nil
+
+	case chplan.OpPow:
+		// CH has no `^` operator; lower to `pow(left, right)`.
+		e.b.WriteString("pow(")
+		if err := e.emitExpr(b.Left); err != nil {
+			return err
+		}
+		e.b.WriteString(", ")
+		if err := e.emitExpr(b.Right); err != nil {
+			return err
+		}
+		e.b.WriteByte(')')
+		return nil
 	}
 
 	e.b.WriteByte('(')
