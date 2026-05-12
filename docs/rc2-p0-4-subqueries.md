@@ -49,7 +49,7 @@ mergeable in order.
 
 **Scope.** Generalise `emitWindowedArrayCb` to emit one row per anchor when `OuterRange > 0 && Step > 0`. Approach:
 
-```
+```sql
 SELECT series_key, anchor_ts, <valueExpr>
 FROM (
   SELECT series_key, anchor_ts,
@@ -131,7 +131,7 @@ Instant case (`OuterRange == 0`) keeps today's shape — handler wraps with `now
 
 **Scope.** The canonical Grafana shape: outer `*parser.Call` whose arg is `*parser.SubqueryExpr`. Lowers to a **chained** RangeWindow:
 
-```
+```text
 RangeWindow{
   Func: "max_over_time", Range: 1h, Step: 0,    // outer reducer (instant over the inner matrix)
   Input: RangeWindow{                            // inner matrix from 4.6
@@ -144,6 +144,7 @@ RangeWindow{
 The outer RangeWindow's existing `arraySort(groupArray((TimeUnix, Value)))` reads naturally over the inner matrix's `(TimeUnix=anchor_ts, Value=rate)` output (from 4.4).
 
 Lowering changes:
+
 - `lowerCall` accepts `*parser.SubqueryExpr` as valid arg for range-vector functions.
 - `lowerRangeVectorCall` adds a SubqueryExpr branch that recurses into `lowerSubquery` then wraps with outer RangeWindow.
 
