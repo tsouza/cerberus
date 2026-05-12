@@ -26,15 +26,92 @@ func Lower(expr *traceql.RootExpr, s schema.Traces) (chplan.Node, error) {
 		return nil, fmt.Errorf("traceql: empty pipeline")
 	}
 
-	// First element must be a SpansetFilter for the M4.1 slice. Subsequent
-	// elements (structural ops, scalar filters, group / coalesce / select)
-	// defer to M4.2-M4.4.
-	if len(expr.Pipeline.Elements) > 1 {
-		return nil, fmt.Errorf("traceql: multi-stage pipelines are not yet supported (structural ops + filters land in M4.2)")
+	first := expr.Pipeline.Elements[0]
+	plan, err := lowerPipelineElement(first, s)
+	if err != nil {
+		return nil, err
 	}
 
-	first := expr.Pipeline.Elements[0]
-	return lowerPipelineElement(first, s)
+	// Subsequent pipeline elements layer onto the previous result. M4.3
+	// supports `| count()` / `| sum(...)` / `| avg(...)` / `| max(...)`
+	// / `| min(...)`. Other follow-on stages (scalar filter, group /
+	// coalesce / select) defer to M4.4.
+	for _, el := range expr.Pipeline.Elements[1:] {
+		next, err := lowerFollowingElement(plan, el, s)
+		if err != nil {
+			return nil, err
+		}
+		plan = next
+	}
+	return plan, nil
+}
+
+// lowerFollowingElement layers a pipeline element onto the previous
+// stage's plan. Currently Aggregate (via ScalarFilter wrapper since
+// the parser requires aggregates to be followed by a comparison).
+// GroupOperation / SelectOperation defer to M4.4.
+func lowerFollowingElement(prev chplan.Node, elem traceql.PipelineElement, s schema.Traces) (chplan.Node, error) {
+	switch v := elem.(type) {
+	case traceql.Aggregate:
+		return lowerAggregate(prev, v, s)
+	case *traceql.Aggregate:
+		return lowerAggregate(prev, *v, s)
+	case traceql.ScalarFilter:
+		return lowerScalarFilter(prev, v, s)
+	case *traceql.ScalarFilter:
+		return lowerScalarFilter(prev, *v, s)
+	}
+	return nil, fmt.Errorf("traceql: pipeline tail element %T is not yet supported (select / group land in M4.4)", elem)
+}
+
+// lowerScalarFilter handles `| count() > 0`, `| sum(.duration) >= 1s`,
+// etc. Lowers as Aggregate (LHS) wrapped in a Filter on the output
+// Value column.
+func lowerScalarFilter(prev chplan.Node, sf traceql.ScalarFilter, s schema.Traces) (chplan.Node, error) {
+	aggNode, err := lowerScalarExpr(prev, sf.LHS, s)
+	if err != nil {
+		return nil, err
+	}
+	rhs, err := lowerScalarExpr(prev, sf.RHS, s)
+	if err != nil {
+		return nil, err
+	}
+
+	op, err := mapBinaryOp(sf.Op)
+	if err != nil {
+		return nil, err
+	}
+
+	// rhs is expected to be a chplan.Expr from a Static literal; the
+	// LHS recursed back as a chplan.Node (Aggregate). For the typical
+	// `count() > 0` shape, wrap aggNode with a Filter.
+	rhsExpr, ok := rhs.(chplan.Expr)
+	if !ok {
+		return nil, fmt.Errorf("traceql: scalar-filter RHS must be a literal, got %T", rhs)
+	}
+
+	return &chplan.Filter{
+		Input:     aggNode.(chplan.Node),
+		Predicate: &chplan.Binary{Op: op, Left: &chplan.ColumnRef{Name: "Value"}, Right: rhsExpr},
+	}, nil
+}
+
+// lowerScalarExpr converts a TraceQL ScalarExpression into either a
+// chplan.Node (when the expression aggregates / produces a series) or
+// a chplan.Expr (when it's a literal). Returns `any`; callers
+// type-assert based on context.
+func lowerScalarExpr(prev chplan.Node, e traceql.ScalarExpression, s schema.Traces) (any, error) {
+	switch v := e.(type) {
+	case traceql.Aggregate:
+		return lowerAggregate(prev, v, s)
+	case *traceql.Aggregate:
+		return lowerAggregate(prev, *v, s)
+	case traceql.Static:
+		return lowerStatic(v)
+	case *traceql.Static:
+		return lowerStatic(*v)
+	}
+	return nil, fmt.Errorf("traceql: scalar expression %T is not yet supported", e)
 }
 
 // lowerPipelineElement dispatches a single TraceQL pipeline element to
