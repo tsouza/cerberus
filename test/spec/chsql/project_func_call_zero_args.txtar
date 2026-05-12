@@ -1,0 +1,4 @@
+-- sql --
+SELECT now() AS `current_time` FROM (SELECT * FROM `otel_metrics_gauge`)
+-- args --
+(none)
