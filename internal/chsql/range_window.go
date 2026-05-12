@@ -19,11 +19,24 @@ import (
 //     `if(c < p, c, c - p)` to repair counter resets, arraySum to total.
 //     - *_over_time: straight array aggregation (arrayAvg, arraySum, ...).
 //
-// The emitter substitutes literal timestamps for r.End (and r.Start, when
-// we add step-grid support) inline. Zero values fall back to ClickHouse's
-// `now64(9)` so fixtures stay deterministic and runtime queries still
-// resolve to the current eval time.
+// The emitter substitutes literal timestamps for r.End inline. Zero
+// values fall back to ClickHouse's `now64(9)` so fixtures stay
+// deterministic and runtime queries still resolve to the current eval
+// time.
+//
+// When r.OuterRange > 0 emission switches to the matrix shape: an
+// arrayJoin fans out one row per anchor across [End-OuterRange, End]
+// spaced by Step (end-inclusive), and the outer SELECT projects the
+// anchor timestamp alongside the per-anchor value. Used by PromQL
+// subqueries (P0 #4).
+//
+// When r.Identity is true, Func is ignored and the per-window value is
+// the last sample in the window — used by bare-vector subqueries like
+// `up[5m:1m]`.
 func (e *emitter) emitRangeWindow(r *chplan.RangeWindow) error {
+	if r.Identity {
+		return e.emitRangeWindowIdentity(r)
+	}
 	switch r.Func {
 	case "rate":
 		return e.emitRangeWindowRate(r)
@@ -36,6 +49,14 @@ func (e *emitter) emitRangeWindow(r *chplan.RangeWindow) error {
 	default:
 		return fmt.Errorf("%w: range function %q (lands in M1.1 follow-ups)", ErrUnsupported, r.Func)
 	}
+}
+
+// emitRangeWindowIdentity emits the "last value in window" shape used
+// by bare-vector subqueries (`up[5m:1m]`). Functionally equivalent to
+// last_over_time but lowered from a SubqueryExpr (P0 #4.5) rather than
+// a Call.
+func (e *emitter) emitRangeWindowIdentity(r *chplan.RangeWindow) error {
+	return e.emitWindowedArray(r, "if(length(window_vals) > 0, window_vals[length(window_vals)], nan)")
 }
 
 // emitRangeWindowLogRate emits SQL for LogQL-style `rate({...}[range])`
@@ -148,12 +169,23 @@ func (e *emitter) emitWindowedArray(r *chplan.RangeWindow, valueExpr string) err
 // valueWriter callback runs at the exact SQL position where the value
 // expression lands; callers may bind args inside it (via e.bindArg) so
 // `?` placeholders are emitted in lock-step with the args slice.
+//
+// When r.OuterRange > 0 emission switches to the matrix path: each
+// series emits N rows, one per anchor across [End-OuterRange, End]
+// spaced by Step (end-inclusive). The outer SELECT additionally
+// projects the anchor timestamp as `anchor_ts`.
 func (e *emitter) emitWindowedArrayCb(r *chplan.RangeWindow, valueWriter func() error) error {
 	if r.TimestampColumn == "" {
 		return fmt.Errorf("%w: RangeWindow.TimestampColumn unset", ErrUnsupported)
 	}
 	if r.ValueColumn == "" {
 		return fmt.Errorf("%w: RangeWindow.ValueColumn unset", ErrUnsupported)
+	}
+	if r.OuterRange > 0 {
+		if r.Step <= 0 {
+			return fmt.Errorf("%w: RangeWindow.OuterRange > 0 requires Step > 0", ErrUnsupported)
+		}
+		return e.emitWindowedArrayMatrix(r, valueWriter)
 	}
 
 	endExpr := timeOrNow(r.End)
@@ -204,6 +236,107 @@ func (e *emitter) emitWindowedArrayCb(r *chplan.RangeWindow, valueWriter func() 
 	}
 	e.b.WriteByte(')')
 
+	e.b.WriteByte(')')
+	e.b.WriteByte(')')
+	return nil
+}
+
+// emitWindowedArrayMatrix is the OuterRange > 0 variant: each series
+// emits N rows, one per anchor across [End-OuterRange, End] spaced by
+// Step (end-inclusive). The innermost SELECT computes the per-series
+// (TimeUnix, Value) array once via groupArray + arraySort, then an
+// arrayJoin in the next layer fans out one row per anchor. Subsequent
+// layers operate on the per-(series, anchor) tuple.
+//
+// SQL skeleton (with N = OuterRange/Step + 1):
+//
+//	SELECT series_key, anchor_ts, <valueExpr> AS value FROM (
+//	  SELECT series_key, anchor_ts, <window_vals + counter_delta> FROM (
+//	    SELECT series_key, anchor_ts, arrayFilter(p -> p.1 in [anchor_ts - range, anchor_ts], series_array) AS window_pairs FROM (
+//	      SELECT series_key, series_array,
+//	        arrayJoin(arrayMap(i -> <end> - toIntervalNanosecond(i * <step_ns>), range(0, N))) AS anchor_ts
+//	      FROM (
+//	        SELECT series_key, arraySort(groupArray((TimeUnix, Value))) AS series_array
+//	        FROM (<input>) GROUP BY series_key
+//	      )
+//	    )
+//	  )
+//	)
+func (e *emitter) emitWindowedArrayMatrix(r *chplan.RangeWindow, valueWriter func() error) error {
+	endExpr := timeOrNow(r.End)
+	if r.Offset > 0 {
+		endExpr = "(" + endExpr + " - toIntervalNanosecond(" + strconv.FormatInt(r.Offset.Nanoseconds(), 10) + "))"
+	}
+	rangeNS := r.Range.Nanoseconds()
+	stepNS := r.Step.Nanoseconds()
+	// End-inclusive anchor count. e.g. [5m:2m] = 5m/2m + 1 = 3 anchors
+	// at end, end-2m, end-4m. Truncating division matches Prom semantics.
+	numAnchors := r.OuterRange.Nanoseconds()/stepNS + 1
+	groupKeys, err := e.collectGroupBy(r.GroupBy)
+	if err != nil {
+		return err
+	}
+
+	// Outer SELECT — per-(series, anchor) row.
+	e.b.WriteString("SELECT ")
+	e.writeGroupSelectList(groupKeys)
+	if len(groupKeys) > 0 {
+		e.b.WriteString(", ")
+	}
+	e.b.WriteString("anchor_ts, ")
+	if err := valueWriter(); err != nil {
+		return err
+	}
+	e.b.WriteString(" AS value FROM (")
+
+	// Middle SELECT — window_vals + counter_delta per (series, anchor).
+	e.b.WriteString("SELECT ")
+	e.writeGroupSelectList(groupKeys)
+	if len(groupKeys) > 0 {
+		e.b.WriteString(", ")
+	}
+	e.b.WriteString("anchor_ts, arrayMap(p -> tupleElement(p, 2), window_pairs) AS window_vals")
+	e.b.WriteString(", arraySum(arrayMap((p, c) -> if(c < p, c, c - p), ")
+	e.b.WriteString("arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), ")
+	e.b.WriteString("arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs))")
+	e.b.WriteString(")) AS counter_delta FROM (")
+
+	// Inner-middle SELECT — arrayFilter to [anchor_ts - range, anchor_ts].
+	e.b.WriteString("SELECT ")
+	e.writeGroupSelectList(groupKeys)
+	if len(groupKeys) > 0 {
+		e.b.WriteString(", ")
+	}
+	fmt.Fprintf(&e.b, "anchor_ts, arrayFilter(p -> tupleElement(p, 1) >= anchor_ts - toIntervalNanosecond(%d) AND tupleElement(p, 1) <= anchor_ts, series_array) AS window_pairs FROM (",
+		rangeNS)
+
+	// Anchor-fanout SELECT — arrayJoin produces one row per anchor.
+	e.b.WriteString("SELECT ")
+	e.writeGroupSelectList(groupKeys)
+	if len(groupKeys) > 0 {
+		e.b.WriteString(", ")
+	}
+	fmt.Fprintf(&e.b, "series_array, arrayJoin(arrayMap(i -> %s - toIntervalNanosecond(i * %d), range(0, %d))) AS anchor_ts FROM (",
+		endExpr, stepNS, numAnchors)
+
+	// Innermost SELECT — groupArray of (ts, value), sorted.
+	e.b.WriteString("SELECT ")
+	e.writeGroupSelectList(groupKeys)
+	if len(groupKeys) > 0 {
+		e.b.WriteString(", ")
+	}
+	fmt.Fprintf(&e.b, "arraySort(groupArray((%s, %s))) AS series_array FROM ",
+		quoteIdent(r.TimestampColumn), quoteIdent(r.ValueColumn))
+	if err := e.emitSubquery(r.Input); err != nil {
+		return err
+	}
+	if len(groupKeys) > 0 {
+		e.b.WriteString(" GROUP BY ")
+		e.writeGroupSelectList(groupKeys)
+	}
+	e.b.WriteByte(')')
+
+	e.b.WriteByte(')')
 	e.b.WriteByte(')')
 	e.b.WriteByte(')')
 	return nil
