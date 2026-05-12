@@ -31,9 +31,29 @@ func (e *emitter) emitRangeWindow(r *chplan.RangeWindow) error {
 		return e.emitRangeWindowIncrease(r)
 	case "sum_over_time", "avg_over_time", "min_over_time", "max_over_time", "count_over_time", "last_over_time":
 		return e.emitRangeWindowOverTime(r)
+	case "log_rate":
+		return e.emitRangeWindowLogRate(r)
 	default:
 		return fmt.Errorf("%w: range function %q (lands in M1.1 follow-ups)", ErrUnsupported, r.Func)
 	}
+}
+
+// emitRangeWindowLogRate emits SQL for LogQL-style `rate({...}[range])`
+// (and `bytes_rate`, after the lowering layer projects `length(Body)`
+// as Value): `arraySum(window_vals) / range_seconds`. Distinct from
+// PromQL's counter `rate`, which uses counter-reset-aware deltas.
+//
+// range_seconds binds as a parameter via the value-writer callback so
+// the emitter stays free of new Sprintf-on-SQL instances (RC6 rule).
+func (e *emitter) emitRangeWindowLogRate(r *chplan.RangeWindow) error {
+	return e.emitWindowedArrayCb(r, func() error {
+		e.b.WriteString("if(length(window_vals) > 0, arraySum(window_vals) / ")
+		if err := e.bindArg(r.Range.Seconds()); err != nil {
+			return err
+		}
+		e.b.WriteString(", 0.0)")
+		return nil
+	})
 }
 
 // emitRangeWindowRate emits SQL for `rate(metric[range])`.
@@ -118,6 +138,17 @@ func rateValueExpr(rangeSeconds float64) string {
 // substituted in the outer SELECT position. valueExpr can reference
 // `window_vals` (Array(Float64)) and `counter_delta` (Float64).
 func (e *emitter) emitWindowedArray(r *chplan.RangeWindow, valueExpr string) error {
+	return e.emitWindowedArrayCb(r, func() error {
+		e.b.WriteString(valueExpr)
+		return nil
+	})
+}
+
+// emitWindowedArrayCb is the callback variant of emitWindowedArray. The
+// valueWriter callback runs at the exact SQL position where the value
+// expression lands; callers may bind args inside it (via e.bindArg) so
+// `?` placeholders are emitted in lock-step with the args slice.
+func (e *emitter) emitWindowedArrayCb(r *chplan.RangeWindow, valueWriter func() error) error {
 	if r.TimestampColumn == "" {
 		return fmt.Errorf("%w: RangeWindow.TimestampColumn unset", ErrUnsupported)
 	}
@@ -138,7 +169,11 @@ func (e *emitter) emitWindowedArray(r *chplan.RangeWindow, valueExpr string) err
 	// Outer SELECT — final value per series.
 	e.b.WriteString("SELECT ")
 	e.writeGroupSelectList(groupKeys)
-	fmt.Fprintf(&e.b, ", %s AS value FROM (", valueExpr)
+	e.b.WriteString(", ")
+	if err := valueWriter(); err != nil {
+		return err
+	}
+	e.b.WriteString(" AS value FROM (")
 
 	// Middle SELECT — derives window_vals + counter_delta from window_pairs.
 	e.b.WriteString("SELECT ")
