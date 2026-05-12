@@ -122,24 +122,28 @@ e2e-up: e2e-down
     @echo "    grafana:    http://localhost:3000 (admin/admin)"
     @echo "    cerberus:   http://localhost:8080/healthz"
 
-# Ingest sample OTel data into ClickHouse.
+# Ingest sample OTel data into ClickHouse. Sources every *.sql under
+# test/e2e/seed/ (metrics + logs + traces) in lexical order.
 # kubectl exec needs -i to forward stdin into the remote container; without
 # it, the `< file` redirect goes only to local stdin and the seed never runs.
 e2e-seed:
-    @echo "==> seeding OTel metrics"
-    kubectl -n cerberus exec -i deploy/clickhouse -- \
-        clickhouse-client \
-            --user cerberus --password cerberus \
-            --database otel --multiquery \
-            < test/e2e/seed/otel_metrics.sql
-    @echo "==> verifying table rowcounts"
+    @echo "==> seeding OTel data"
+    @for f in test/e2e/seed/*.sql; do \
+        echo "    + $$f"; \
+        kubectl -n cerberus exec -i deploy/clickhouse -- \
+            clickhouse-client \
+                --user cerberus --password cerberus \
+                --database otel --multiquery \
+                < "$$f"; \
+    done
+    @echo "==> verifying rowcounts"
     kubectl -n cerberus exec deploy/clickhouse -- \
         clickhouse-client --user cerberus --password cerberus --database otel --query "\
-            SELECT MetricName, count() AS rows FROM ( \
-                SELECT MetricName FROM otel_metrics_gauge \
-                UNION ALL \
-                SELECT MetricName FROM otel_metrics_sum \
-            ) GROUP BY MetricName ORDER BY MetricName FORMAT PrettyCompact"
+            SELECT 'metrics_gauge' AS source, count() AS rows FROM otel_metrics_gauge UNION ALL \
+            SELECT 'metrics_sum'   AS source, count() AS rows FROM otel_metrics_sum   UNION ALL \
+            SELECT 'logs'          AS source, count() AS rows FROM otel_logs          UNION ALL \
+            SELECT 'traces'        AS source, count() AS rows FROM otel_traces        \
+            FORMAT PrettyCompact"
     @echo "==> seed done"
 
 # Run Go E2E HTTP tests against the deployed stack.
