@@ -57,11 +57,12 @@ Reviewers gate every addition. **Never an empty `reason`.**
 `.github/workflows/compliance.yml` runs the harness:
 
 - on **push to `main`** with paths under `internal/promql/`, `internal/chsql/`, `internal/optimizer/`, `internal/chplan/`, `harness/compliance/`, or the workflow file itself
-- on **PRs** touching the same paths
 - **nightly at 04:11 UTC**
 - on **manual `workflow_dispatch`**
 
-The workflow is currently `continue-on-error: true` so a failing run reports but doesn't block. M6 flips it to `false` and adds the `compliance / prometheus-compliance` check to the required-status-checks list.
+The **`pull_request:` trigger was dropped at the protection-fix PR (#56)** because gating PRs on a check that legitimately fails until M6 led the agent to bypass via `gh pr merge --admin`. Until M6, compliance is informational baseline; agents and reviewers consult the nightly run to chart progress.
+
+At **M6** we re-enable the `pull_request:` trigger and add `prometheus/compliance` to the required-status-checks list. The agent's hard rule still bans `--admin` regardless.
 
 ## Adding new test cases
 
@@ -72,10 +73,23 @@ The upstream corpus already covers a generous slice of PromQL. If you discover a
 
 If the case is cerberus-specific (e.g. OTel-CH schema quirk), add it as a TXTAR fixture under `test/spec/promql/` instead — that's where cerberus-only tests live.
 
-## Why we don't gate at M0.6
+## Why we don't gate at v1.0.0-RC1
 
-Most of PromQL isn't lowered yet at the seed stage. Gating now would make every PR red. The harness lands now so:
+Most of PromQL is now lowered (M1.1 → M1.7 + M2.x merged) but the corpus still hits known gaps in:
 
-- Each subsequent M1.x PR can run `just compliance` locally and report the pass-rate delta in the PR body (per the [CONTRIBUTING](../CONTRIBUTING.md) test-plan template).
-- The CI run produces an artifact (`compliance-report` for 30 days) so we can chart progress.
-- When M1.7 closes, flipping the gate is a one-line `continue-on-error: false` + adding the check to branch protection.
+- output-shape-changing aggregates (`topk`, `bottomk`, `count_values`) — RC2.
+- subqueries (`m[1h:5m]`) — RC2.
+- `histogram_quantile` over native histograms — RC2.
+- vector-vector comparison + logical ops (`a and b`, `a or b`, `a unless b`) — RC2.
+- a few promshim-equivalent deviations (topk tie-break, float-mod sign drift).
+
+Every PR through RC1 ran `just compliance` locally during development; the nightly + on-main runs continue to chart the pass-rate. M6 (post-RC1) flips compliance to a required check once the gap closes.
+
+## Per-QL corpora
+
+PromQL has the upstream `prometheus/compliance` suite. LogQL and TraceQL don't have first-party corpora, so cerberus derives them:
+
+- **LogQL** (M3.5 follow-up): a generated `harness/logql-corpus/` extracts query strings from `grafana/loki/v3/pkg/logql/*_test.go` and replays them against a Loki testcontainer + cerberus, capturing the diff. Lands as informational at first; promotes to gate once stable.
+- **TraceQL** (M4.5 follow-up): same pattern from `grafana/tempo/pkg/traceql/*_test.go`. Tempo's distinct error response shape (`{"traceID":"","spanID":"","error":true,"message":"..."}`) is handled by a tempo-specific helper in the runner.
+
+Both derived corpora track separately from the PromQL gate but follow the same allowlist hygiene (every entry needs a `reason`, no empty strings).
