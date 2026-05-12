@@ -129,12 +129,12 @@ e2e-up: e2e-down
 e2e-seed:
     @echo "==> seeding OTel data"
     @for f in test/e2e/seed/*.sql; do \
-        echo "    + $$f"; \
+        echo "    + $f"; \
         kubectl -n cerberus exec -i deploy/clickhouse -- \
             clickhouse-client \
                 --user cerberus --password cerberus \
                 --database otel --multiquery \
-                < "$$f"; \
+                < "$f"; \
     done
     @echo "==> verifying rowcounts"
     kubectl -n cerberus exec deploy/clickhouse -- \
