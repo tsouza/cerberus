@@ -14,6 +14,7 @@ import (
 
 	"github.com/tsouza/cerberus/internal/api/loki"
 	"github.com/tsouza/cerberus/internal/api/prom"
+	"github.com/tsouza/cerberus/internal/api/tempo"
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/config"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -66,6 +67,9 @@ func run(logger *slog.Logger) error {
 
 	lokiHandler := loki.New(client, schema.DefaultOTelLogs(), logger.With("api", "loki"))
 	lokiHandler.Mount(mux)
+
+	tempoHandler := tempo.New(client, schema.DefaultOTelTraces(), Version, logger.With("api", "tempo"))
+	tempoHandler.Mount(mux)
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
