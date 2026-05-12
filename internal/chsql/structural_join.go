@@ -32,7 +32,12 @@ func (e *emitter) emitStructuralJoin(j *chplan.StructuralJoin) error {
 	case chplan.StructuralParent:
 		rel = "L." + parentCol + " = R." + spanCol
 	case chplan.StructuralDescendant, chplan.StructuralAncestor:
-		return fmt.Errorf("%w: structural op %q (recursive form lands with M4.2 follow-up)", ErrUnsupported, j.Op)
+		// `>>` / `<<` need a recursive walk through the parent chain —
+		// CH's WITH RECURSIVE syntax or a bounded-depth UNION of
+		// self-joins. Both want CH-integration testing that's hard to
+		// land without a live cluster; deferred to RC3 alongside the
+		// optimizer rewrite. Direct parent-child `>` and `<` work today.
+		return fmt.Errorf("%w: structural op %q — recursive `>>` / `<<` deferred to RC3", ErrUnsupported, j.Op)
 	default:
 		return fmt.Errorf("%w: structural op %q", ErrUnsupported, j.Op)
 	}
