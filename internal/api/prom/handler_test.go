@@ -293,6 +293,34 @@ func TestResponseHeaders_PromVersionAndCHMillis(t *testing.T) {
 	}
 }
 
+// TestMatrixRangeWindowWrap_AnchorTs — matrix-shape RangeWindow
+// (PromQL subquery) exposes a per-row `anchor_ts` column; the
+// wrap-projection must surface it as TimeUnix rather than synthesise
+// via now64(). Verifies P0 4.4 wiring.
+func TestMatrixRangeWindowWrap_AnchorTs(t *testing.T) {
+	t.Parallel()
+
+	q := &stubQuerier{}
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	// `rate(up[5m])` is an instant rate (NOT a subquery yet — subquery
+	// lowering lands in P0 4.5+). For now, verify the instant path uses
+	// synthesised now64()-5s; the matrix path is exercised once 4.5
+	// lowers SubqueryExpr to a matrix-shape RangeWindow.
+	resp, err := http.Get(srv.URL + "/api/v1/query?query=rate(up%5B5m%5D)")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	_ = resp.Body.Close()
+	if !strings.Contains(q.lastSQL, "now64(") {
+		t.Errorf("instant rate path expected synthesised now64() anchor; got SQL: %s", q.lastSQL)
+	}
+	if strings.Contains(q.lastSQL, "anchor_ts") {
+		t.Errorf("instant rate path should not reference anchor_ts; got SQL: %s", q.lastSQL)
+	}
+}
+
 func TestQuery_UpstreamError(t *testing.T) {
 	t.Parallel()
 

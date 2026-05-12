@@ -188,21 +188,32 @@ func wrapWithSampleProjection(plan chplan.Node, s schema.Metrics) chplan.Node {
 		{Expr: &chplan.ColumnRef{Name: s.ValueColumn}},
 	}
 	if isDerivedShape(plan) {
+		// TimeUnix source: matrix-shape RangeWindow exposes a real
+		// per-row `anchor_ts` (one row per anchor across the subquery's
+		// outer range); the instant case has to synthesise via now64().
+		var tsExpr chplan.Expr
+		if isMatrixRangeWindow(plan) {
+			tsExpr = &chplan.ColumnRef{Name: "anchor_ts"}
+		} else {
+			tsExpr = synthesizedAnchor()
+		}
 		projections = []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
 			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
-			// Synthesised eval anchor: now64(9) minus 5s. The minus-5s
-			// buffer keeps the stamped TimeUnix safely within the request's
-			// [start, end] window — CH's now64() runs slightly after the
-			// client's `end` parameter (RTT + cluster clock skew), and
-			// toMatrixStepGrid drops samples timestamped past `end`. M2.1
-			// threads the API's `end` param into the plan so this hack
-			// goes away; until then 5s covers realistic skew.
-			{Expr: synthesizedAnchor(), Alias: s.TimestampColumn},
+			{Expr: tsExpr, Alias: s.TimestampColumn},
 			{Expr: &chplan.ColumnRef{Name: "value"}, Alias: s.ValueColumn},
 		}
 	}
 	return &chplan.Project{Input: plan, Projections: projections}
+}
+
+// isMatrixRangeWindow reports whether the plan root is a matrix-shape
+// RangeWindow — i.e., one that emits N rows per series (one per anchor
+// across [End-OuterRange, End] spaced by Step) and exposes `anchor_ts`
+// as a per-row column. Set by PromQL subquery lowering (P0 4.5+).
+func isMatrixRangeWindow(plan chplan.Node) bool {
+	rw, ok := plan.(*chplan.RangeWindow)
+	return ok && rw.OuterRange > 0
 }
 
 // synthesizedAnchor returns the CH expression cerberus stamps on
