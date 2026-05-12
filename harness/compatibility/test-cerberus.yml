@@ -1,7 +1,7 @@
-# PromQL compliance tester config for cerberus.
+# PromQL compatibility tester config for cerberus.
 #
-# Pointed at by `scripts/run-compliance.sh`; consumed by the upstream
-# `promql-compliance-tester` binary at harness/compliance/upstream/promql/cmd/.
+# Pointed at by `scripts/run-compatibility.sh`; consumed by the upstream
+# `promql-compliance-tester` binary at harness/compatibility/upstream/promql/cmd/.
 #
 # Reference target  = stock Prometheus on the docker-compose stack
 # Test target       = cerberus on the docker-compose stack

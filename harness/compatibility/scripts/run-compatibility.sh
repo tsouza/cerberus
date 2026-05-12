@@ -1,23 +1,23 @@
 #!/usr/bin/env bash
-# Compliance harness entry point.
+# Compatibility harness entry point.
 #
 # Brings up the docker-compose stack (reference Prometheus + cerberus +
 # ClickHouse + seeder), builds the upstream promql-compliance-tester
 # binary, runs it pointed at the two endpoints, and writes the JSON
-# report to harness/compliance/report.json.
+# report to harness/compatibility/report.json.
 #
 # Tests are RUN_ONCE here; reconciliation against expected-failures.json
 # is done by a follow-up Go script (lands in M1.x — for the seed we just
 # capture the raw report and let the user inspect).
 #
 # Usage:
-#   ./harness/compliance/scripts/run-compliance.sh        full lifecycle
+#   ./harness/compatibility/scripts/run-compatibility.sh        full lifecycle
 #   COMPOSE_KEEP=1 ./...                                 leave stack up after run
 #
 # Env:
-#   TESTER_OUTPUT     report file path (default: harness/compliance/report.json)
+#   TESTER_OUTPUT     report file path (default: harness/compatibility/report.json)
 #   TESTER_QUERIES    queries yaml (default: upstream/promql/promql-test-queries.yml)
-#   TESTER_END_TIME   compliance end timestamp (default: 2026-05-11T01:00:00Z)
+#   TESTER_END_TIME   compatibility end timestamp (default: 2026-05-11T01:00:00Z)
 #   TESTER_RANGE      range in seconds (default: 3600 = 1h, matches seed window)
 
 set -eu -o pipefail
@@ -30,7 +30,7 @@ QUERIES=${TESTER_QUERIES:-"$ROOT_DIR/upstream/promql/promql-test-queries.yml"}
 END_TIME=${TESTER_END_TIME:-"2026-05-11T01:00:00Z"}
 RANGE=${TESTER_RANGE:-3600}
 
-echo "==> bringing up compliance stack"
+echo "==> bringing up compatibility stack"
 docker compose up -d --build --wait clickhouse prometheus cerberus
 echo "==> running seeder"
 docker compose up --no-log-prefix seeder

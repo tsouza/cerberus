@@ -1,4 +1,4 @@
-# Docker Compose stack for the PromQL compliance harness.
+# Docker Compose stack for the PromQL compatibility harness.
 #
 # Services:
 #   clickhouse    OTel-schema CH instance (auth: cerberus/cerberus, db: otel)
@@ -9,13 +9,13 @@
 #                 test-cerberus.yml)
 #
 # Usage:
-#   ./scripts/run-compliance.sh
+#   ./scripts/run-compatibility.sh
 # or:
 #   docker compose up --wait
 #   ../upstream/promql/cmd/promql-compliance-tester ...
 #   docker compose down -v
 
-name: cerberus-compliance
+name: cerberus-compatibility
 
 services:
   clickhouse:
@@ -52,7 +52,7 @@ services:
       retries: 30
 
   cerberus:
-    image: cerberus:compliance
+    image: cerberus:compatibility
     build:
       context: ../..
       dockerfile: Dockerfile.local

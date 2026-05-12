@@ -23,7 +23,7 @@ ClickHouse is a great single store for all three signals. The only thing missing
 
 ## Status
 
-> 🟢 **`v1.0.0-RC1` — release candidate.** PromQL is functionally complete (`prometheus/compliance` informational baseline tracked, gates at M6); LogQL covers stream selectors, label filters, the metric form, and aggregations; TraceQL covers spanset filters, structural relations (`>`, `<`), and `count()`. The Prom HTTP head is fully wired into Grafana; Loki's `query` / `query_range` work end-to-end. See [`CHANGELOG.md`](CHANGELOG.md) for the full v1.0.0-RC1 entry and the deferral list for RC2.
+> 🚧 **toward `v1.0.0-RC1`** — M1 (PromQL) + M2 (Prom HTTP API) + M3 (LogQL) + M4.1–M4.3 (TraceQL spanset filters, structural ops `>`/`<`, `count()`) all merged. Pending before the RC1 tag: M4.4 (time filters + `| select(...)`), M4.5 (Tempo HTTP API), and an expanded compatibility test suite (cerberus-side corpus + meaningful Grafana Playwright scenarios). See [`CHANGELOG.md`](CHANGELOG.md) for the full Unreleased entry.
 
 ## Architecture
 

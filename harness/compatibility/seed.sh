@@ -1,11 +1,11 @@
 #!/bin/sh
-# Compliance harness seeder. Runs once per `docker compose up`.
+# Compatibility harness seeder. Runs once per `docker compose up`.
 #
 # 1. Pipe seed.sql into ClickHouse so cerberus has data to serve.
 # 2. Generate equivalent samples and remote-write them into the reference
 #    Prometheus so both stores see identical input. (Implementation lands
 #    when M1 is far enough along that we want differential correctness;
-#    for now we just seed CH and let Prom run empty — compliance pass
+#    for now we just seed CH and let Prom run empty — compatibility pass
 #    rate is informational until M6 anyway.)
 #
 # Designed for the Alpine clickhouse-server image we use as the seeder
