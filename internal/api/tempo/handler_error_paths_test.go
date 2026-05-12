@@ -106,6 +106,12 @@ func TestTraceByID_CHFailure(t *testing.T) {
 // strings; with no rows matching, the response is the standard
 // not-found envelope. Verify cerberus doesn't panic on weird input
 // (single quote, dollar sign, etc.).
+//
+// NOTE: sub-tests deliberately run sequentially (no inner
+// `t.Parallel()`) so they don't race on the shared `stubQuerier`'s
+// `lastSQL` / `lastArgs` fields. The outer `t.Parallel()` still
+// allows this test to run alongside other top-level tests in the
+// package — each of which builds its own stubQuerier instance.
 func TestTraceByID_InvalidHex(t *testing.T) {
 	t.Parallel()
 
@@ -120,7 +126,7 @@ func TestTraceByID_InvalidHex(t *testing.T) {
 	}
 	for _, id := range cases {
 		t.Run(id, func(t *testing.T) {
-			t.Parallel()
+			// No t.Parallel() inside — see comment above.
 			resp, err := http.Get(srv.URL + "/api/traces/" + id)
 			if err != nil {
 				t.Fatalf("GET: %v", err)
