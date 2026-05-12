@@ -1,0 +1,8 @@
+-- query.promql --
+up{job!~"backend.*"}
+-- sql --
+SELECT * FROM (SELECT * FROM `otel_metrics_gauge`) WHERE (NOT match(`Attributes`[?], ?) AND (`MetricName` = ?))
+-- args --
+[0] string = "job"
+[1] string = "backend.*"
+[2] string = "up"

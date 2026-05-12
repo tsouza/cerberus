@@ -1,0 +1,7 @@
+-- query.promql --
+up + ignoring() up
+-- sql --
+SELECT L.`MetricName`, L.`Attributes`, L.`TimeUnix`, (L.`Value` + R.`Value`) AS `Value` FROM (SELECT `MetricName`, `Attributes`, max(`TimeUnix`) AS `TimeUnix`, argMax(`Value`, `TimeUnix`) AS `Value` FROM (SELECT * FROM (SELECT * FROM `otel_metrics_gauge`) WHERE (`MetricName` = ?)) GROUP BY `MetricName`, `Attributes`) AS L INNER JOIN (SELECT `MetricName`, `Attributes`, max(`TimeUnix`) AS `TimeUnix`, argMax(`Value`, `TimeUnix`) AS `Value` FROM (SELECT * FROM (SELECT * FROM `otel_metrics_gauge`) WHERE (`MetricName` = ?)) GROUP BY `MetricName`, `Attributes`) AS R ON L.`Attributes` = R.`Attributes`
+-- args --
+[0] string = "up"
+[1] string = "up"
