@@ -108,6 +108,18 @@ func TestEqual(t *testing.T) {
 	if rw.Equal(rwDifferentRange) {
 		t.Fatalf("RangeWindow: different Range should not be Equal")
 	}
+
+	rwDifferentOuter := *rw
+	rwDifferentOuter.OuterRange = time.Hour
+	if rw.Equal(&rwDifferentOuter) {
+		t.Fatalf("RangeWindow: different OuterRange should not be Equal")
+	}
+
+	rwIdentity := *rw
+	rwIdentity.Identity = true
+	if rw.Equal(&rwIdentity) {
+		t.Fatalf("RangeWindow: different Identity flag should not be Equal")
+	}
 }
 
 // TestWalk confirms the visitor descends in pre-order and respects the

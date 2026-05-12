@@ -26,6 +26,24 @@ type RangeWindow struct {
 	// Zero means instant query (a single step at End).
 	Step time.Duration
 
+	// OuterRange enables PromQL subquery emission: when non-zero the
+	// emitter produces one row per anchor across [End - OuterRange, End]
+	// spaced by Step (end-inclusive), rather than the instant single-anchor
+	// shape. Set by the subquery lowering for `<expr>[<OuterRange>:<Step>]`.
+	// Zero (the default) preserves today's instant semantics.
+	//
+	// Step must be > 0 whenever OuterRange > 0 — number of anchors is
+	// OuterRange/Step + 1.
+	OuterRange time.Duration
+
+	// Identity reports whether the range function is the no-op
+	// "evaluate the last sample in window" path used by bare-vector
+	// subqueries (`up[5m:1m]`). When true, Func is ignored and the
+	// emitter renders `if(length(window_vals) > 0,
+	// window_vals[length(window_vals)], nan)`. Cleaner than overloading
+	// Func with an "identity" sentinel.
+	Identity bool
+
 	// Start / End define the eval grid the function is evaluated at.
 	// Both zero means the emitter substitutes ClickHouse `now64()` for the
 	// query-time anchor, which keeps test fixtures deterministic (the SQL
@@ -63,6 +81,9 @@ func (r *RangeWindow) Equal(other Node) bool {
 		return false
 	}
 	if r.Func != o.Func || r.Range != o.Range || r.Step != o.Step || r.Offset != o.Offset {
+		return false
+	}
+	if r.OuterRange != o.OuterRange || r.Identity != o.Identity {
 		return false
 	}
 	if !r.Start.Equal(o.Start) || !r.End.Equal(o.End) {
