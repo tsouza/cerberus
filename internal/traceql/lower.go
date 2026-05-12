@@ -47,9 +47,8 @@ func Lower(expr *traceql.RootExpr, s schema.Traces) (chplan.Node, error) {
 }
 
 // lowerFollowingElement layers a pipeline element onto the previous
-// stage's plan. Currently Aggregate (via ScalarFilter wrapper since
-// the parser requires aggregates to be followed by a comparison).
-// GroupOperation / SelectOperation defer to M4.4.
+// stage's plan. Aggregate / ScalarFilter / SelectOperation are
+// supported; GroupOperation / CoalesceOperation defer to RC2.
 func lowerFollowingElement(prev chplan.Node, elem traceql.PipelineElement, s schema.Traces) (chplan.Node, error) {
 	switch v := elem.(type) {
 	case traceql.Aggregate:
@@ -60,8 +59,12 @@ func lowerFollowingElement(prev chplan.Node, elem traceql.PipelineElement, s sch
 		return lowerScalarFilter(prev, v, s)
 	case *traceql.ScalarFilter:
 		return lowerScalarFilter(prev, *v, s)
+	case traceql.SelectOperation:
+		return lowerSelect(prev, v, s)
+	case *traceql.SelectOperation:
+		return lowerSelect(prev, *v, s)
 	}
-	return nil, fmt.Errorf("traceql: pipeline tail element %T is not yet supported (select / group land in M4.4)", elem)
+	return nil, fmt.Errorf("traceql: pipeline tail element %T is not yet supported (group / coalesce land in RC2)", elem)
 }
 
 // lowerScalarFilter handles `| count() > 0`, `| sum(.duration) >= 1s`,
