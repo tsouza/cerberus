@@ -44,7 +44,7 @@ func TestTryFoldScalar(t *testing.T) {
 		{"10%3", 1, true},
 		{"2^10", 1024, true},
 		{"(1+2)*3", 9, true},
-		{"1+2*3", 7, true},     // precedence
+		{"1+2*3", 7, true}, // precedence
 		{"(1+2)*(3+4)", 21, true},
 
 		// Division / modulo by zero — Prom semantics.
