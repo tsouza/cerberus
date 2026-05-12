@@ -9,6 +9,10 @@ on:
 permissions:
   contents: write
   packages: write
+  # SLSA provenance attestation needs `id-token` (Sigstore OIDC) +
+  # `attestations` (writes the attestation record back to the repo).
+  id-token: write
+  attestations: write
 
 jobs:
   release:
@@ -35,10 +39,20 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: goreleaser/goreleaser-action@v6
+      - id: goreleaser
+        uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
           version: '~> v2'
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # SLSA build provenance for the release binaries. Lets downstream
+      # consumers verify each artifact was built from this repo at this
+      # commit via `gh attestation verify ...`. Sigstore signs the
+      # attestation through the workflow's OIDC token.
+      - name: Attest release binary provenance
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: 'dist/*.tar.gz'

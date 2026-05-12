@@ -64,7 +64,28 @@ Schema defaults to the [OpenTelemetry ClickHouse Exporter](https://github.com/op
 
 ## Quick start
 
-Local dev:
+### From a published release
+
+Pull the container image (pin to a specific RC — `:latest` is **only**
+advanced by stable releases; RC / alpha / beta tags don't move it):
+
+```sh
+docker pull ghcr.io/tsouza/cerberus:v1.0.0-RC1
+docker run --rm -p 8080:8080 \
+  -e CERBERUS_CH_ADDR=clickhouse:9000 \
+  ghcr.io/tsouza/cerberus:v1.0.0-RC1
+```
+
+Or download a prebuilt binary from the [release page](https://github.com/tsouza/cerberus/releases)
+(linux / darwin × amd64 / arm64). Each release also ships a
+[SLSA build provenance](https://slsa.dev) attestation; verify with:
+
+```sh
+gh attestation verify cerberus_*_linux_amd64.tar.gz \
+  --owner tsouza --repo cerberus
+```
+
+### Local dev
 
 ```sh
 direnv allow           # loads .envrc (puts Go on PATH, GOTOOLCHAIN=auto)
@@ -73,7 +94,7 @@ just ci                # lint + test + build
 just build && ./bin/cerberus --help
 ```
 
-End-to-end against a real ClickHouse + Grafana in k3d (lands in PR8):
+End-to-end against a real ClickHouse + Grafana in k3d:
 
 ```sh
 just e2e-up            # boot k3d cluster, deploy CH / Grafana / cerberus

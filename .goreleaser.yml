@@ -49,10 +49,14 @@ changelog:
   use: github-native
 
 dockers:
+  # Per-arch versioned image. Always pushed regardless of prerelease
+  # status. Tagged both `{{ .Version }}` (e.g. `1.0.0-RC1`, the
+  # goreleaser convention) and `v{{ .Version }}` (e.g. `v1.0.0-RC1`,
+  # the SemVer-with-`v` convention many ops tools default to).
   - id: cerberus-amd64
     image_templates:
       - "ghcr.io/tsouza/cerberus:{{ .Version }}-amd64"
-      - "ghcr.io/tsouza/cerberus:latest-amd64"
+      - "ghcr.io/tsouza/cerberus:v{{ .Version }}-amd64"
     use: buildx
     goos: linux
     goarch: amd64
@@ -70,7 +74,7 @@ dockers:
   - id: cerberus-arm64
     image_templates:
       - "ghcr.io/tsouza/cerberus:{{ .Version }}-arm64"
-      - "ghcr.io/tsouza/cerberus:latest-arm64"
+      - "ghcr.io/tsouza/cerberus:v{{ .Version }}-arm64"
     use: buildx
     goos: linux
     goarch: arm64
@@ -85,12 +89,57 @@ dockers:
       - "--label=org.opencontainers.image.revision={{.FullCommit}}"
       - "--label=org.opencontainers.image.licenses=MIT"
 
+  # `latest-*` tags published ONLY for stable (non-prerelease) tags.
+  # Otherwise an RC / alpha / beta tag would advance `:latest` and
+  # silently break consumers that pin to the tag.
+  - id: cerberus-amd64-latest
+    image_templates:
+      - "ghcr.io/tsouza/cerberus:latest-amd64"
+    skip_push: "{{ if .Prerelease }}true{{ else }}false{{ end }}"
+    use: buildx
+    goos: linux
+    goarch: amd64
+    dockerfile: Dockerfile
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.title={{.ProjectName}}"
+      - "--label=org.opencontainers.image.url=https://github.com/tsouza/cerberus"
+      - "--label=org.opencontainers.image.source=https://github.com/tsouza/cerberus"
+      - "--label=org.opencontainers.image.version={{.Version}}"
+      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
+      - "--label=org.opencontainers.image.licenses=MIT"
+
+  - id: cerberus-arm64-latest
+    image_templates:
+      - "ghcr.io/tsouza/cerberus:latest-arm64"
+    skip_push: "{{ if .Prerelease }}true{{ else }}false{{ end }}"
+    use: buildx
+    goos: linux
+    goarch: arm64
+    dockerfile: Dockerfile
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.title={{.ProjectName}}"
+      - "--label=org.opencontainers.image.url=https://github.com/tsouza/cerberus"
+      - "--label=org.opencontainers.image.source=https://github.com/tsouza/cerberus"
+      - "--label=org.opencontainers.image.version={{.Version}}"
+      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
+      - "--label=org.opencontainers.image.licenses=MIT"
+
 docker_manifests:
+  # Versioned multi-arch manifests — always published.
   - name_template: "ghcr.io/tsouza/cerberus:{{ .Version }}"
     image_templates:
       - "ghcr.io/tsouza/cerberus:{{ .Version }}-amd64"
       - "ghcr.io/tsouza/cerberus:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/tsouza/cerberus:v{{ .Version }}"
+    image_templates:
+      - "ghcr.io/tsouza/cerberus:v{{ .Version }}-amd64"
+      - "ghcr.io/tsouza/cerberus:v{{ .Version }}-arm64"
+  # `:latest` manifest — only for stable tags, so RC / alpha / beta
+  # never advance the rolling `:latest`.
   - name_template: "ghcr.io/tsouza/cerberus:latest"
+    skip_push: "{{ if .Prerelease }}true{{ else }}false{{ end }}"
     image_templates:
       - "ghcr.io/tsouza/cerberus:latest-amd64"
       - "ghcr.io/tsouza/cerberus:latest-arm64"
