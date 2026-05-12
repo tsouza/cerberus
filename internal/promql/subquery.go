@@ -45,10 +45,81 @@ func lowerSubquery(e *parser.SubqueryExpr, s schema.Metrics) (chplan.Node, error
 	switch inner := e.Expr.(type) {
 	case *parser.VectorSelector:
 		return lowerSubqueryOverVectorSelector(e, inner, step, s)
+	case *parser.Call:
+		return lowerSubqueryOverCall(e, inner, step, s)
+	case *parser.ParenExpr:
+		// `(<expr>)[5m:1m]` — unwrap and retry with the same subquery.
+		// Build a synthetic SubqueryExpr around the inner expr so the
+		// modifiers + range/step are preserved.
+		inner2 := *e
+		inner2.Expr = inner.Expr
+		return lowerSubquery(&inner2, s)
+	case *parser.AggregateExpr:
+		return nil, fmt.Errorf("promql: subquery over aggregated expression is not yet supported (deferred from P0 4 — `max_over_time(sum by(...) (rate(...))[1h:5m])` needs chained RangeWindow over Aggregate output, landing in RC3)")
 	case *parser.SubqueryExpr:
 		return nil, fmt.Errorf("promql: nested subqueries are not yet supported (deferred to RC3)")
 	}
-	return nil, fmt.Errorf("promql: subquery over %T is not yet supported (lands in P0 4.6 / 4.7)", e.Expr)
+	return nil, fmt.Errorf("promql: subquery over %T is not yet supported", e.Expr)
+}
+
+// lowerSubqueryOverCall — `<range-vector-fn>(<inner>[<inner_range>])[<outer_range>:<step>]`.
+// The most common shape is `rate(m[5m])[1h:5m]`. Lowers to a single
+// matrix-shape RangeWindow where:
+//
+//   - Func    = the inner range function (rate / increase / *_over_time)
+//   - Range   = the inner matrix selector's range (the 5m in `rate(m[5m])`)
+//   - OuterRange / Step come from the subquery
+//
+// I.e. the same RangeWindow IR that lowerRangeVectorCall produces for
+// instant rate, but with OuterRange + Step populated to fan out N anchors.
+func lowerSubqueryOverCall(
+	sub *parser.SubqueryExpr,
+	call *parser.Call,
+	step time.Duration,
+	s schema.Metrics,
+) (chplan.Node, error) {
+	if len(call.Args) != 1 {
+		return nil, fmt.Errorf("promql: subquery inner %s expects exactly 1 argument, got %d",
+			call.Func.Name, len(call.Args))
+	}
+	ms, ok := call.Args[0].(*parser.MatrixSelector)
+	if !ok {
+		return nil, fmt.Errorf("promql: subquery inner %s must wrap a MatrixSelector, got %T",
+			call.Func.Name, call.Args[0])
+	}
+	vs, ok := ms.VectorSelector.(*parser.VectorSelector)
+	if !ok {
+		return nil, fmt.Errorf("promql: subquery inner matrix selector must wrap a VectorSelector, got %T",
+			ms.VectorSelector)
+	}
+
+	// Strip the inner VS modifier — the subquery's own modifier shadows it.
+	vsNoModifier := *vs
+	vsNoModifier.Timestamp = nil
+	vsNoModifier.OriginalOffset = 0
+	vsNoModifier.Offset = 0
+	inner, err := lowerVectorSelector(&vsNoModifier, s)
+	if err != nil {
+		return nil, err
+	}
+
+	anchor, err := subqueryAnchor(sub)
+	if err != nil {
+		return nil, err
+	}
+
+	return &chplan.RangeWindow{
+		Input:           inner,
+		Func:            call.Func.Name,
+		Range:           ms.Range,
+		OuterRange:      sub.Range,
+		Step:            step,
+		End:             anchor.End,
+		Offset:          anchor.Offset,
+		TimestampColumn: s.TimestampColumn,
+		ValueColumn:     s.ValueColumn,
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
+	}, nil
 }
 
 // lowerSubqueryOverVectorSelector — `metric[range:step]` lowering.
