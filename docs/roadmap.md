@@ -11,6 +11,8 @@ This document is the public-facing narrative for the path to `v1.0.0`. Status by
 | **v1.0.0-RC3**   | Optimizer rewrite + performance + advanced testing                     | Pattern-based rules, MV substitution, shadow-mode differential, fuzz + chaos + perf benchmarks   |
 | **v1.0.0-RC4**   | Full self-observability                                                | Cerberus emits its own structured logs (slog), OTel metrics + traces, defaults to the same CH    |
 | **v1.0.0-RC5**   | 12-factor compatibility + polish                                          | `/readyz`, dev `docker-compose.yml`, env-driven schema overrides, `docs/12factor.md`, fast-start  |
+| **v1.0.0-RC6**   | Type-safe SQL via go-sqlbuilder (R6.0 evaluation → R6.1–R6.10 port)     | No `fmt.Sprintf`-on-SQL anywhere; typed builder with CH-specific helpers; lint enforcement       |
+| **v1.0.0-RC7**   | `internal/engine/` ExecutionEngine framework (R7.0 evaluation → R7.1–R7.8 port) | One pipeline owner; handlers under ~150 LoC each; shared format + httperr helpers       |
 | **v1.0.0**       | Tag the last green RC                                                  | All RCs stable; public API frozen in `pkg/`                                                       |
 
 The existing **3-rule optimizer** (filter-fusion, constant-fold, projection-pushdown) ships unchanged through RC1 and RC2. **No new optimizer work happens before RC3** — its full backlog lives in [`docs/optimizer-research.md`](optimizer-research.md).
@@ -105,10 +107,11 @@ The remaining ~10% per QL, plus the deferred API endpoints. Each lands as its ow
 
 - **PromQL** — subqueries (`m[1h:5m]`); `histogram_quantile` on native histograms; `predict_linear`, `holt_winters`; `@start()`/`@end()`; exemplar attachment; recording-rule inline expansion; `group_left`/`group_right` cardinality enforcement edge cases.
 - **LogQL** — `| unpack`, `| pattern`; advanced `label_format` templating; `bytes_*` precise alignment; `tail` (WebSocket streaming).
-- **TraceQL** — multi-hop structural chains with predicates at each hop; `histogram_over_time`; link traversal + span-event queries; root-span filtering in nested conditions.
-- **HTTP APIs** — Prom `query_exemplars`, `format_query`, `parse_query`; Loki `tail`, `index/stats`, `index/volume`, `detected_fields`, `patterns`; Tempo `search/recent`, `metrics/query_range`.
+- **TraceQL** — multi-hop structural chains (`>>` / `<<` recursive forms); `status = error` / `kind = client` enum statics; `histogram_over_time`; link traversal + span-event queries; root-span filtering in nested conditions; `sum(.attr)` / `avg(.attr)` / `max(.attr)` / `min(.attr)` (blocked on Tempo's unexported `Aggregate.e` field — needs alternative extraction).
+- **HTTP APIs** — Prom `query_exemplars`, `format_query`, `parse_query`; Loki `tail`, `index/stats`, `index/volume`, `detected_fields`, `patterns`; Tempo `search/recent`, `metrics/query_range`, `search/tags`, `search/tag/<n>/values` (the last two gated on RC6 R6.1 sqlbuilder so the new SQL avoids Sprintf).
+- **Self-contained deployment** — replace the synthetic `test/e2e/seed/otel_metrics.sql` with a real OTel pipeline in the k3d stack: OpenTelemetry Collector (contrib image) + ClickHouse exporter that **creates the OTel-CH schema** on startup and collects real k8s telemetry (kubelet/cAdvisor metrics, container logs, collector self-traces, optional sample-app OTLP traces). Cerberus then queries that real data through Grafana for E2E. The TXTAR + synthetic-SQL seeding stays for unit/spec tests where determinism matters more than realism. Unblocks RC4's "cerberus eats its own dogfood" architecture.
 
-**Exit criterion:** the lists above empty out; compatibility pass rate stays ≥ RC1 baseline.
+**Exit criterion:** the lists above empty out; compatibility pass rate stays ≥ RC1 baseline; `just e2e-up` brings up a stack where data flows from real OTel sources, not synthetic INSERTs.
 
 ---
 
@@ -211,11 +214,62 @@ Driven by an audit of cerberus against [12factor.net](https://12factor.net/). Mo
 
 ## RC6 — type-safe SQL via go-sqlbuilder
 
-**Hard rule (non-negotiable, takes effect at RC6 cut):** plain strings and `fmt.Sprintf` are forbidden for ClickHouse SQL generation. Every emitted SQL fragment goes through [`huandu/go-sqlbuilder`](https://github.com/huandu/go-sqlbuilder) (or a thin cerberus-internal extension on top of it). Concatenation and templated identifiers are an injection vector even with parameterised values; the builder tracks identifiers, args, and dialect quoting in one place.
+**Hard rule (non-negotiable, takes effect at RC6 cut):** plain strings and `fmt.Sprintf` are forbidden for ClickHouse SQL generation. Every emitted SQL fragment goes through a typed builder — either [`huandu/go-sqlbuilder`](https://github.com/huandu/go-sqlbuilder) wrapped with a cerberus-internal extension layer, *or* a custom `internal/chsql/builder.go` tailored to chplan IR. The choice is made in R6.0 below. Concatenation and templated identifiers are an injection vector even with parameterised values; the builder tracks identifiers, args, and dialect quoting in one place.
 
 ### Why now (and not earlier)
 
 Through RC1 the emitter grew Sprintf-driven for speed: `internal/chsql/emit_node.go`, `emit_expr.go`, `range_window.go`, `vector_join.go`, plus the metadata SQL in `internal/api/prom/metadata.go`. That worked for landing the surface, but every helper is hand-quoted, each subquery is a string-pasted hole, and there's no central ClickHouse dialect handling. RC6 reorganises that into a typed, builder-first emitter so RC3's optimizer changes can compose SQL programmatically (PREWHERE promotion, sort-key-aware predicate ordering, MV substitution) without re-scaffolding the string layer.
+
+### R6.0 — Evaluation phase (prerequisite)
+
+This is a *decision* milestone, not a code milestone. Its single deliverable is a written evaluation in `docs/sql-builder-evaluation.md` with a recommendation on which SQL-construction strategy RC6 will adopt. No emitter code changes here.
+
+**Inputs to evaluate:**
+
+1. **Security analysis (current state).** Inventory every `fmt.Sprintf` / string-concat callsite that produces ClickHouse SQL and classify each by injection-vector risk:
+   - Schema-derived identifiers (table + column names): low risk — comes from `internal/schema/` config, not user input. Risk surface is the env override path (`CERBERUS_SCHEMA_OVERRIDES_JSON`, lands in R5.3).
+   - Map keys (`Attributes['<key>']`): the key string flows from chplan IR; trace whether the parser/lowering ever surfaces an unfiltered user string into a key position.
+   - Regex patterns / literal values: already parameterised via `?` placeholders.
+   - Tempo's reflect-driven attribute name extraction (`internal/traceql/select.go`): does the upstream parser bound attribute-name characters?
+   - **Output:** a table of callsites × risk-class × current-mitigation, plus a list of any vectors not closed by `?`-placeholders today.
+
+2. **Project impact analysis.**
+   - Refactor scope: line count touched by a full port (today: 6 emit files + 3 handlers + `metadata.go` ≈ 2k LoC).
+   - Risk surface: subtle SQL semantic changes that pass golden updates but trip CH at runtime (e.g. ordering inside `OR` chains, `PREWHERE` placement, alias quoting).
+   - Test coverage protecting the refactor: count of TXTAR fixtures + integration tests as the safety net.
+   - Dependency exposure: pulling in `huandu/go-sqlbuilder` adds a new transitive surface; weigh against the current zero-dep emitter.
+
+3. **Benefit analysis.**
+   - **Security:** what new vectors does a typed builder close that `?` placeholders don't? Honest answer is likely "few" for cerberus today — the upstream parsers already constrain inputs. Defense-in-depth is real but incremental.
+   - **Architecture:** type-safe composition unlocks RC3's optimizer rules (PREWHERE promotion, sort-key reordering, MV substitution, late materialisation). This is the *primary* motivation, not security. Note: RC3 ships **before** RC6 chronologically, so the RC3 emitter work either takes a Sprintf-tax or RC6 jumps the queue. R6.0 evaluates whether to reorder.
+   - **Maintainability:** removes hand-quoting bugs (CH backtick rules, CH lambda syntax, parametric aggregates).
+   - **Testability:** builder-produced SQL is easier to introspect (per-fragment) than Sprintf-built strings.
+
+4. **Build vs buy decision matrix.** For each axis, score third-party (`huandu/go-sqlbuilder`) vs custom (`internal/chsql.Builder`):
+
+   | Axis                         | Third-party                       | Custom                              | Notes                                                                                                                                |
+   | ---------------------------- | --------------------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+   | CH idiom coverage out-of-box | partial                           | full                                | Both need MapAt/MapKeys/Lambda/ParamAgg/PREWHERE helpers; third-party also requires bridging its API to those — ~30–40% of the value is custom either way |
+   | Upstream maintenance         | shared                            | ours                                | `huandu/go-sqlbuilder` is actively maintained but small; if it stalls we fork                                                        |
+   | Onboarding                   | docs exist                        | we write docs                       | Third-party has a larger surface to learn                                                                                            |
+   | API match to chplan IR       | impedance                         | natural                             | Custom builder can be designed *around* chplan node shapes                                                                           |
+   | Code volume                  | smaller core, larger glue         | larger core, smaller glue           | Net LoC is similar                                                                                                                   |
+   | Security guarantees          | type system encodes               | we encode them                      | Equivalent if we're disciplined                                                                                                      |
+
+5. **Decision rule.** The evaluation produces ONE of three recommendations:
+   - **(a) Use `huandu/go-sqlbuilder` + cerberus extension layer.** Justified if the wrapping cost is materially less than building from scratch and the upstream is healthy enough to depend on.
+   - **(b) Build `internal/chsql.Builder` from scratch.** Justified if the impedance mismatch with chplan IR is large enough that wrapping the third-party is *more* work than building tailored, OR if the security-critical surface motivates having a single owned-and-audited builder.
+   - **(c) Defer the migration entirely.** Justified only if the security surface analysis (step 1) shows the current parameterised-emitter has zero open vectors AND the optimizer rules in RC3 can ship without typed SQL composition (unlikely but the eval should test the assumption).
+
+**Preliminary read** (for the eval to refute or confirm):
+
+- The injection surface today is narrow — every dynamic value already flows through `?` placeholders; identifier dynamism is bounded to schema config. Security alone wouldn't justify the migration.
+- The architectural motivation is real: RC3's optimizer rules need to compose SQL fragments, and Sprintf composition collapses under the weight (PREWHERE clauses, conditional WHERE chains, MV-substituted subtrees).
+- ~30–40% of the value (CH-specific helpers — MapAt, MapKeys, Lambda, ParamAgg, PREWHERE) is custom regardless of which library backs it.
+- Custom builder *may* be the lower-effort route precisely because chplan IR is well-defined and stable; wrapping a generic builder adds an impedance layer without removing the custom layer.
+- If recommendation is **(b) custom**, the API surface should mirror chplan node shapes one-to-one (Scan → ScanBuilder, Filter → FilterBuilder, etc.) so the emitter is a structural transformation, not an interpretation.
+
+**Exit criterion for R6.0:** `docs/sql-builder-evaluation.md` exists, recommends (a) / (b) / (c), and the maintainer (Thiago) has signed off on the choice. R6.1 — the first implementation milestone — is then concretely scoped against that choice (currently written assuming **(a)**; rewrite if **(b)** is chosen).
 
 ### Library survey
 
@@ -240,7 +294,7 @@ PR sequence:
 
 | #    | Item                                                                                                       |
 | ---- | ---------------------------------------------------------------------------------------------------------- |
-| R6.1 | Vendor `huandu/go-sqlbuilder`; add `internal/chsql/builder.go` with the cerberus-internal CH-flavor wrapper plus the helpers above (MapAt, MapKeys, MapFilterExcept, Now64, SubtractNanos, DateTime64Lit, Lambda, ParamAgg). Unit tests pin each helper's output. **No emitter changes yet** — pure scaffolding. |
+| R6.1 | Scaffolding per R6.0 decision: vendor `huandu/go-sqlbuilder` + add `internal/chsql/builder.go` as the CH-flavor wrapper (path **(a)**), *or* build `internal/chsql/builder.go` from scratch (path **(b)**). Either path provides the same helpers — MapAt, MapKeys, MapFilterExcept, Now64, SubtractNanos, DateTime64Lit, Lambda, ParamAgg, and a `SelectBuilder` that supports `.Prewhere(cond...)`. Unit tests pin each helper's output. **No emitter changes yet** — pure scaffolding. |
 | R6.2 | Port `emitScan`, `emitFilter`, `emitProject`, `emitLimit` (the simple ones). TXTAR fixtures regenerate; diff is whitespace / quoting only.                                                                                                                                                              |
 | R6.3 | Port `emitAggregate` + `emitAggFunc` (parameterised aggregates use `ParamAgg`).                              |
 | R6.4 | Port `emitBinary` + `emitMapAccess` + `emitMapWithoutKeys` + `emitFunc` + `emitLineContent`.                  |
@@ -251,7 +305,9 @@ PR sequence:
 | R6.9 | **Lint enforcement**: add a custom golangci-lint rule (or a `cmd/check-sql/` Go tool wired into `just check-sql`) that scans `internal/chsql/`, `internal/api/`, `internal/optimizer/` for `fmt.Sprintf` calls whose first arg contains `SELECT`, `WHERE`, `FROM`, `INSERT`, etc. Fails the `lint` CI check on regressions. |
 | R6.10 | `CLAUDE.md` hard-rule update: `**No raw SQL strings.**` becomes a top-level non-negotiable; `docs/sql-style.md` documents the helper API and its escape hatches (when `Raw()` is acceptable, when a custom `chsql.SelectBuilder` extension is preferable). |
 
-### Open questions to resolve in R6.1
+### Open questions to resolve in R6.1 (path **(a)** — third-party)
+
+These apply only if R6.0 picks the third-party route. Path **(b)** custom answers them by design (we own the quoting, args lifecycle, and performance characteristics).
 
 - **Identifier quoting**: does `sqlbuilder.ClickHouse` flavor backtick-quote identifiers? If not, we keep our `quoteIdentCH` helper but feed it through the builder's `Var()` mechanism so escaping stays consistent.
 - **`Args` lifecycle**: each builder has its own `Args` accumulator. Nested builders compose via `BuilderAs`; the placeholder positions get re-numbered. Verify with a worst-case nested subquery (e.g. the windowed-array RangeWindow) that the resulting `Build()` output matches what the chclient driver expects.
@@ -263,6 +319,105 @@ PR sequence:
 - Every TXTAR fixture either matches its prior golden bit-for-bit or has a documented whitespace/aliasing diff in the porting PR's description.
 - `internal/chsql/builder_test.go` has ≥ one test per helper in `internal/chsql/builder.go`, exercising the placeholder + arg ordering.
 - `docs/sql-style.md` published with the helper catalog and the "when can I use Raw()?" guidance.
+
+---
+
+## RC7 — `internal/engine/` ExecutionEngine framework
+
+By RC1's end, every Prom / Loki / Tempo handler runs the same five-stage pipeline — parse → lower → wrap-projection → optimize → emit → query → format — with per-QL adapters at each stage. The repetition is mechanical (5 callsites today, all with subtle drift between them) and grows by one with every new HTTP route. RC7 lifts the common loop into `internal/engine/` so handlers become thin HTTP shells over a `engine.Query(ctx, lang, q)` call. Like RC6, it starts with an evaluation phase: the framework is only worth building if the audit shows the pattern actually generalises.
+
+### Why now (chronologically after RC6)
+
+- The framework is most valuable *after* RC3's optimizer changes and RC6's typed SQL land — those work products would otherwise have to be duplicated by-handler. By RC7 the shared pipeline has stable shape.
+- RC4 self-observability also benefits: one Engine.Query span covers parse + lower + optimize + emit + query for every QL, rather than three separate sets of instrumentation.
+- RC3's shadow-mode differential testing (R3.9) and local-Go evaluator fallback (R3.10) need a place to live; Engine is the natural strategy host.
+
+### R7.0 — Evaluation phase (prerequisite)
+
+Decision milestone. Output: `docs/execution-engine-evaluation.md` with a recommendation on whether to build the framework.
+
+**Inputs to evaluate (audit must be re-run at RC7 cut — code shape will have drifted):**
+
+1. **Pipeline-callsite inventory.** Enumerate every place that runs parse / lower / wrap / optimize / emit / query, with line counts and per-stage divergence:
+   - `internal/api/prom/handler.go` `executeInstant` — full pipeline, times CH calls via `timeCH(...)` → `X-Cerberus-CH-Millis` header.
+   - `internal/api/prom/metadata.go` `matcherSQL` — partial: parse / lower / optimize / emit only (no execute).
+   - `internal/api/loki/handler.go` `execute` — full pipeline; conditional `wrapWithLogSampleProjection` branches on metric-vs-stream; does NOT time CH calls (regression vs Prom).
+   - `internal/api/tempo/handler.go` `handleSearch` — full pipeline; does NOT time CH calls.
+   - `internal/api/tempo/handler.go` `handleTraceByID` — skips parser, builds plan directly.
+   - **Output:** a table of (callsite × stage × divergence × line count). The audit reveals whether the divergences are mechanical (Engine absorbs them) or semantic (per-QL needs survive).
+
+2. **Per-handler duplication.** Code that's already copy-pasted across the three handlers and would collapse under Engine:
+   - `canonicalKey`, `toVector`, `toMatrixStepGrid`, `withMetricName`, `parseTime`, `parseDuration` — three copies, nearly identical.
+   - `apiError`, `writeJSON`, `writeError`, `respondError` — three copies, only the errorType-string differs.
+   - `wrapWithSampleProjection` / `wrapWithLogSampleProjection` — three copies; the "shape the Sample row" responsibility is the same.
+   - **Output:** estimated LoC saved by extracting these to `internal/api/format/` (response shaping) + `internal/api/httperr/` (error mapping). Engine wraps the rest.
+
+3. **Engine surface design.** Sketch what the API would look like:
+
+   ```go
+   package engine
+
+   type Engine struct {
+       Lang      Lang             // per-QL adapter (Parse + ProjectSamples)
+       Optimizer *optimizer.Driver
+       Client    Querier
+       Logger    *slog.Logger
+   }
+
+   type Lang interface {
+       Name() string                                        // "promql" / "logql" / "traceql"
+       Parse(query string) (chplan.Node, Meta, error)        // lowered plan + per-QL hints
+       ProjectSamples(node chplan.Node, meta Meta) chplan.Node
+   }
+
+   type Meta struct {
+       IsMetric    bool   // logql: distinguishes metric-vs-stream output
+       IsTraceByID bool   // tempo: signals projection variant
+       // ... extensible via untyped extras if needed
+   }
+
+   type Result struct {
+       Samples       []chclient.Sample
+       SQL, Strategy string
+       Args          []any
+       CHMillis      int64
+       PlanNodeCount int
+   }
+
+   func (e *Engine) Query(ctx context.Context, q string) (Result, error)
+   func (e *Engine) QueryPlan(ctx context.Context, plan chplan.Node) (Result, error)
+   ```
+
+   Per-QL adapters live in `internal/engine/lang/{promql,logql,traceql}/`.
+
+4. **Cost/benefit.**
+   - **Pros:** one instrumentation point (RC4 simplification); one strategy switch (RC3 shadow-mode / fallback hooks); one place to add caching / rate limiting / hedging in future RCs; handlers become testable without stubbing the whole pipeline.
+   - **Cons:** abstraction tax — readers chase one extra layer; LoC churn ~1k+ during the port; risk of designing the wrong seam if the per-QL drift turns out to be semantic, not mechanical.
+   - **The audit's job:** prove the pattern generalises. If 3+ of the 5 callsites diverge in ways the abstraction can't absorb cleanly, recommend **defer**.
+
+5. **Decision rule.** R7.0 produces one of three recommendations:
+   - **(a) Build.** Audit shows the pipeline shape is mechanical across handlers; per-QL drift fits into a `Lang` adapter without ad-hoc escape hatches.
+   - **(b) Partial.** Build only the shared-helpers extraction (`internal/api/format/` + `internal/api/httperr/`) without the Engine struct itself. Cheaper, captures most of the duplication, no abstraction tax.
+   - **(c) Defer.** Per-QL divergence is large enough that the framework would carry too many escape hatches; revisit at a later RC if the divergence shrinks.
+
+**Preliminary read** (for R7.0's PR to refute or confirm): the pipeline is mechanical across the three QLs today, but RC3 + RC4 + RC6 are likely to *increase* per-handler divergence (timing, OTel spans, builder calls). Doing the Engine refactor *after* those land — at RC7 — means the abstraction is informed by all the divergence axes, not just today's narrow ones. Recommendation likely **(a) Build**, but the eval might find that **(b) Partial** captures 80% of the value at 20% of the risk.
+
+**Exit criterion for R7.0:** `docs/execution-engine-evaluation.md` exists, recommends (a) / (b) / (c), maintainer signs off. R7.1+ scope concretely against the choice.
+
+### Implementation milestones (gated on R7.0)
+
+| #    | Item                                                                                                                                                              |
+| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| R7.1 | `internal/engine/` package with `Engine` struct + `Lang` interface + `Meta` + `Result` types. Unit tests with a fake Querier. **No handler changes yet.**          |
+| R7.2 | `internal/engine/lang/promql/` adapter. Port `internal/api/prom/handler.go` to use `engine.Query` and `engine.QueryPlan`; drop `executeInstant`, `Optimizer` field, `wrapWithSampleProjection` from the handler. Tests still pass. |
+| R7.3 | Same for `internal/engine/lang/logql/` + `internal/api/loki/handler.go`. The metric-vs-stream branch becomes a `Meta.IsMetric` flag, set by the parse step.           |
+| R7.4 | Same for `internal/engine/lang/traceql/` + `internal/api/tempo/handler.go`. `handleTraceByID` becomes `engine.QueryPlan(plan)`.                                      |
+| R7.5 | Extract `internal/api/format/`: `canonicalKey`, `toVector`, `toMatrixStepGrid`, `withMetricName`, `parseTime`, `parseDuration`. Prom + Loki dedupe.                  |
+| R7.6 | Extract `internal/api/httperr/`: `apiError`, `writeJSON`, `writeError`, `respondError`. Each handler keeps just its head's specific error-shape mapping (Prom errorType strings, Tempo's distinct error envelope). |
+| R7.7 | Engine instrumentation: `Result.CHMillis` + `Result.Strategy` + `Result.PlanNodeCount` exposed via response headers (`X-Cerberus-CH-Millis`, `X-Cerberus-Strategy`, `X-Cerberus-Plan-Nodes`). Loki + Tempo gain CH timing they currently lack. |
+| R7.8 | Engine becomes the natural seat for RC3's strategy switch and RC4's OTel hooks. Document the extension points in `docs/engine.md` so RC8+ work plugs in cleanly.    |
+
+**Exit criterion:** `internal/api/{prom,loki,tempo}/handler.go` are each under ~150 LoC and contain only HTTP wrapping + response shaping; `internal/engine/` carries the pipeline; all three handlers emit `X-Cerberus-CH-Millis`; the existing TXTAR + compatibility + Playwright suites pass without changes (refactor is behavioural-equivalence).
 
 ---
 
