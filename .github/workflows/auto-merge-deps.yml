@@ -1,0 +1,53 @@
+name: auto-merge-deps
+
+# Enables auto-merge on Dependabot PRs that meet two conditions:
+#
+#  1. The PR is opened by `dependabot[bot]`.
+#  2. The update-type matches the allowed set for the affected dep
+#     (patch-only for upstream parsers; patch+minor for GitHub
+#     Actions / npm test tooling).
+#
+# Branch protection on `main` still gates the actual merge —
+# auto-merge stays pending until `check + lint + dashboard` go green
+# and only then squash-merges. enforce_admins: true means this
+# workflow can't bypass required checks. See docs/upstream-tracking.md
+# for the full rationale.
+
+on:
+  pull_request_target:
+    types:
+      - opened
+      - reopened
+      - synchronize
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  enable-auto-merge:
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch Dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Enable auto-merge for trusted patch-only bumps
+        if: |
+          (steps.meta.outputs.update-type == 'version-update:semver-patch' &&
+            (contains(steps.meta.outputs.dependency-names, 'github.com/prometheus/prometheus') ||
+             contains(steps.meta.outputs.dependency-names, 'github.com/grafana/loki/v3') ||
+             contains(steps.meta.outputs.dependency-names, 'github.com/grafana/tempo') ||
+             contains(steps.meta.outputs.dependency-names, 'github.com/grafana/dskit') ||
+             contains(steps.meta.outputs.dependency-names, '@playwright/test')))
+          ||
+          (steps.meta.outputs.package-ecosystem == 'github_actions' &&
+            (steps.meta.outputs.update-type == 'version-update:semver-patch' ||
+             steps.meta.outputs.update-type == 'version-update:semver-minor'))
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr merge --auto --squash --delete-branch "$PR_URL"
