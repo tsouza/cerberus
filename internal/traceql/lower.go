@@ -302,6 +302,11 @@ func intrinsicColumn(i traceql.Intrinsic, s schema.Traces) string {
 }
 
 // lowerStatic turns a TraceQL Static literal into a chplan literal.
+//
+// TypeStatus and TypeKind map to the TitleCase string the OTel-CH
+// exporter writes into StatusCode / SpanKind. Tempo's Status.String() /
+// Kind.String() emits lowercase ("error", "client", …); we re-case
+// here so `{ status = error }` matches CH's `'Error'` row.
 func lowerStatic(st traceql.Static) (chplan.Expr, error) {
 	switch st.Type {
 	case traceql.TypeString:
@@ -319,8 +324,59 @@ func lowerStatic(st traceql.Static) (chplan.Expr, error) {
 		// Duration column in OTel-CH is Int64 ns.
 		d, _ := st.Duration()
 		return &chplan.LitInt{V: d.Nanoseconds()}, nil
+	case traceql.TypeStatus:
+		s, ok := st.Status()
+		if !ok {
+			return nil, fmt.Errorf("traceql: static status literal has no Status() value")
+		}
+		return &chplan.LitString{V: statusString(s)}, nil
+	case traceql.TypeKind:
+		k, ok := st.Kind()
+		if !ok {
+			return nil, fmt.Errorf("traceql: static kind literal has no Kind() value")
+		}
+		return &chplan.LitString{V: kindString(k)}, nil
 	}
 	return nil, fmt.Errorf("traceql: static literal type %s is not yet supported", st.Type)
+}
+
+// statusString maps Tempo's Status enum to the StatusCode string the
+// OTel-CH exporter writes. Tempo's Status.String() is lowercase; CH
+// rows carry TitleCase ("Unset" / "Ok" / "Error").
+func statusString(s traceql.Status) string {
+	switch s {
+	case traceql.StatusError:
+		return "Error"
+	case traceql.StatusOk:
+		return "Ok"
+	case traceql.StatusUnset:
+		return "Unset"
+	}
+	// Defensive: future enum values surface as-is rather than silently
+	// producing an empty filter.
+	return s.String()
+}
+
+// kindString maps Tempo's Kind enum to the SpanKind string the OTel-CH
+// exporter writes. Tempo's Kind.String() is lowercase; CH rows carry
+// TitleCase ("Internal" / "Client" / "Server" / "Producer" / "Consumer";
+// "Unspecified" is the conventional unset value).
+func kindString(k traceql.Kind) string {
+	switch k {
+	case traceql.KindUnspecified:
+		return "Unspecified"
+	case traceql.KindInternal:
+		return "Internal"
+	case traceql.KindClient:
+		return "Client"
+	case traceql.KindServer:
+		return "Server"
+	case traceql.KindProducer:
+		return "Producer"
+	case traceql.KindConsumer:
+		return "Consumer"
+	}
+	return k.String()
 }
 
 func mapBinaryOp(op traceql.Operator) (chplan.BinaryOp, error) {
