@@ -76,8 +76,72 @@ func lowerStage(stage syntax.StageExpr, s schema.Logs) (chplan.Expr, error) {
 	switch st := stage.(type) {
 	case *syntax.LineFilterExpr:
 		return lowerLineFilter(st, s)
+	case *syntax.LabelFilterExpr:
+		return lowerLabelFilter(st, s)
+	case *syntax.LineParserExpr:
+		return nil, fmt.Errorf("logql: parser stage `%s` is not yet supported (json/logfmt/regexp/pattern parsers land in M3.3)", st.Op)
+	case *syntax.LogfmtParserExpr:
+		return nil, fmt.Errorf("logql: `| logfmt` parser is not yet supported")
+	case *syntax.JSONExpressionParserExpr:
+		return nil, fmt.Errorf("logql: `| json field=\"...\"` parser is not yet supported")
+	case *syntax.LogfmtExpressionParserExpr:
+		return nil, fmt.Errorf("logql: `| logfmt field=\"...\"` parser is not yet supported")
 	default:
-		return nil, fmt.Errorf("logql: pipeline stage %T is not yet supported (label filters and parsers land in M3.2)", stage)
+		return nil, fmt.Errorf("logql: pipeline stage %T is not yet supported", stage)
+	}
+}
+
+// lowerLabelFilter handles `| label="val"` / `| label=~"regex"` and the
+// boolean conjunctions Loki packs into BinaryLabelFilter. The named
+// label is resolved against ResourceAttributes (parser-extracted labels
+// defer until parser stages are wired up).
+func lowerLabelFilter(f *syntax.LabelFilterExpr, s schema.Logs) (chplan.Expr, error) {
+	return labelFiltererToExpr(f.LabelFilterer, s)
+}
+
+func labelFiltererToExpr(lf loglib.LabelFilterer, s schema.Logs) (chplan.Expr, error) {
+	switch v := lf.(type) {
+	case *loglib.StringLabelFilter:
+		return labelMatcherToExpr(v.Matcher, s), nil
+	case *loglib.LineFilterLabelFilter:
+		// Loki may wrap a string label filter in this when a line-filter
+		// short-circuit is also possible. Both embed *labels.Matcher and
+		// behave identically for our query-rewrite purposes.
+		return labelMatcherToExpr(v.Matcher, s), nil
+	case *loglib.BinaryLabelFilter:
+		left, err := labelFiltererToExpr(v.Left, s)
+		if err != nil {
+			return nil, err
+		}
+		right, err := labelFiltererToExpr(v.Right, s)
+		if err != nil {
+			return nil, err
+		}
+		op := chplan.OpAnd
+		if !v.And {
+			op = chplan.OpOr
+		}
+		return &chplan.Binary{Op: op, Left: left, Right: right}, nil
+	case *loglib.NumericLabelFilter:
+		return nil, fmt.Errorf("logql: numeric label filters are not yet supported (parser-extracted numbers land in M3.3)")
+	case *loglib.DurationLabelFilter, *loglib.BytesLabelFilter:
+		return nil, fmt.Errorf("logql: %T label filter is not yet supported", lf)
+	}
+	return nil, fmt.Errorf("logql: unsupported label filterer %T", lf)
+}
+
+// labelMatcherToExpr renders a Prometheus-style label Matcher against
+// ResourceAttributes. Shared between StringLabelFilter and the
+// short-circuit-friendly LineFilterLabelFilter — both embed the same
+// *labels.Matcher.
+func labelMatcherToExpr(m *labels.Matcher, s schema.Logs) chplan.Expr {
+	return &chplan.Binary{
+		Op: matchOp(m.Type),
+		Left: &chplan.MapAccess{
+			Map: &chplan.ColumnRef{Name: s.ResourceAttributesColumn},
+			Key: &chplan.LitString{V: m.Name},
+		},
+		Right: &chplan.LitString{V: m.Value},
 	}
 }
 
