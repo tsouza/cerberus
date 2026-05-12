@@ -151,6 +151,12 @@ func lowerCall(c *parser.Call, s schema.Metrics) (chplan.Node, error) {
 		if _, ok := c.Args[0].(*parser.MatrixSelector); ok {
 			return lowerRangeVectorCall(c, s)
 		}
+		if sq, ok := c.Args[0].(*parser.SubqueryExpr); ok {
+			// `<range-vector-fn>(<subquery>)` — the canonical Grafana
+			// shape `max_over_time(rate(m[5m])[1h:5m])`. Lowers to a
+			// chained RangeWindow: outer reducer over the inner matrix.
+			return lowerOuterRangeFnOverSubquery(c, sq, s)
+		}
 	}
 	switch c.Func.Name {
 	case "clamp", "clamp_min", "clamp_max":
