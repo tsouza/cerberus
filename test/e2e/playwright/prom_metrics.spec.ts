@@ -53,3 +53,28 @@ test('prom /api/v1/label/__name__/values returns seeded metric names', async ({ 
   expect(body.data, 'up metric present').toContain('up');
   expect(body.data, 'counter metric present').toContain('http_server_request_duration_count');
 });
+
+test('subquery max_over_time(rate(...)[5m:1m]) returns the canonical Grafana shape', async ({ request }) => {
+  const q = encodeURIComponent('max_over_time(rate(http_server_request_duration_count[5m])[5m:1m])');
+  const url = `${promProxy}/query?query=${q}`;
+
+  const resp = await request.get(url);
+  expect(resp.status(), 'prom /query status').toBe(200);
+
+  const body = await resp.json();
+  expect(body.status, 'prom response status').toBe('success');
+  expect(body.data.resultType, 'prom resultType').toBe('vector');
+  expect(body.data.result.length, 'at least one series').toBeGreaterThan(0);
+});
+
+test('subquery up[1m:30s] (bare vector) returns a vector', async ({ request }) => {
+  const q = encodeURIComponent('up[1m:30s]');
+  const url = `${promProxy}/query?query=${q}`;
+
+  const resp = await request.get(url);
+  expect(resp.status(), 'prom /query status').toBe(200);
+
+  const body = await resp.json();
+  expect(body.status, 'prom response status').toBe('success');
+  expect(body.data.result.length, 'at least one series').toBeGreaterThan(0);
+});
