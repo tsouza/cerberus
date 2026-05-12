@@ -181,26 +181,106 @@ func (h *Handler) lowerTraceByID(traceID string) (chplan.Node, error) {
 	}, nil
 }
 
-// wrapWithSampleProjection adds a Project on top of plan that selects
-// the columns the chclient.Sample scanner expects positionally:
-// MetricName (used for SpanName here), Attributes (ResourceAttributes),
-// TimeUnix (Timestamp), Value (Duration as float64-castable). Tempo
-// queries reuse the same Sample shape for transport; the response
-// formatters re-derive richer span data from row context.
+// wrapWithSampleProjection adds a Project on top of plan that emits
+// the canonical chclient.Sample shape — (MetricName, Attributes,
+// TimeUnix, Value) — adapted to whatever the inner plan's output
+// schema actually exposes. Three distinct shapes are recognised:
+//
+//  1. Scan / Filter(Scan) — the otel_traces columns are available
+//     directly; project SpanName / ResourceAttributes / Timestamp /
+//     toFloat64(Duration).
+//  2. StructuralJoin — the emitter renders `SELECT R.* FROM (L)
+//     INNER JOIN (R) ON …`, which exposes R's columns as
+//     R-prefixed names (not unqualified). The wrap-projection uses
+//     ColumnRef.Qualifier="R" to reach them.
+//  3. Aggregate or Filter(Aggregate) — the inner SELECT is just
+//     `<group-keys>, <agg-funcs>`; SpanName / Timestamp / Duration
+//     don't exist in that scope. Synthesise MetricName="" and
+//     TimeUnix=now64(); read Value from the Aggregate's alias.
 func wrapWithSampleProjection(plan chplan.Node, s schema.Traces) chplan.Node {
-	return &chplan.Project{
-		Input: plan,
-		Projections: []chplan.Projection{
-			{Expr: &chplan.ColumnRef{Name: s.SpanNameColumn}, Alias: "MetricName"},
-			{Expr: &chplan.ColumnRef{Name: s.ResourceAttributesColumn}, Alias: "Attributes"},
-			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: "TimeUnix"},
-			// Duration is Int64 (nanoseconds) in OTel-CH; chclient.Sample.Value
-			// is float64 and clickhouse-go's Scan refuses Int64→float64 without
-			// a cast. toFloat64 keeps the wire shape lossless within the
-			// 53-bit mantissa range (a 100-day duration in ns still fits).
-			{Expr: &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.DurationColumn}}}, Alias: "Value"},
+	// Default shape — Scan / Filter(Scan) — canonical columns available.
+	projections := []chplan.Projection{
+		{Expr: &chplan.ColumnRef{Name: s.SpanNameColumn}, Alias: "MetricName"},
+		{Expr: &chplan.ColumnRef{Name: s.ResourceAttributesColumn}, Alias: "Attributes"},
+		{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: "TimeUnix"},
+		// Duration is Int64 (nanoseconds) in OTel-CH; chclient.Sample.Value
+		// is float64 and clickhouse-go's Scan refuses Int64→float64 without
+		// a cast. toFloat64 keeps the wire shape lossless within the
+		// 53-bit mantissa range (a 100-day duration in ns still fits).
+		{Expr: &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.DurationColumn}}}, Alias: "Value"},
+	}
+
+	switch {
+	case isStructuralJoin(plan):
+		// CH exposes the right side of a self-join as R.<col>. Use the
+		// qualifier so the outer SELECT can reach those columns.
+		projections = []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Qualifier: "R", Name: s.SpanNameColumn}, Alias: "MetricName"},
+			{Expr: &chplan.ColumnRef{Qualifier: "R", Name: s.ResourceAttributesColumn}, Alias: "Attributes"},
+			{Expr: &chplan.ColumnRef{Qualifier: "R", Name: s.TimestampColumn}, Alias: "TimeUnix"},
+			{Expr: &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{&chplan.ColumnRef{Qualifier: "R", Name: s.DurationColumn}}}, Alias: "Value"},
+		}
+	case isAggregateShape(plan):
+		// Aggregate output is just (group-keys, agg-func-aliases). SpanName
+		// and Duration aren't in scope; synthesise the missing pieces.
+		// The aggregate's alias is "Value" by convention (set by
+		// internal/traceql/aggregate.go); other code shapes that emit a
+		// different alias would need to thread it through. count() has
+		// no GROUP BY so ResourceAttributes isn't in scope either — use
+		// an empty Map(String,String) CAST, same pattern as PromQL's
+		// emptyAttrsMap helper.
+		projections = []chplan.Projection{
+			{Expr: &chplan.LitString{V: ""}, Alias: "MetricName"},
+			{Expr: emptyAttrsMap(), Alias: "Attributes"},
+			{Expr: &chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}}, Alias: "TimeUnix"},
+			{Expr: &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}}, Alias: "Value"},
+		}
+	}
+
+	return &chplan.Project{Input: plan, Projections: projections}
+}
+
+// emptyAttrsMap returns a CH expression for an empty Map(String,String),
+// used when an Aggregate's GROUP BY is empty (e.g. bare `count()`) and
+// ResourceAttributes isn't in the inner scope. Mirrors the helper in
+// internal/promql/lower.go and internal/logql/vector_aggregation.go so
+// the rendered SQL has the same shape across the three QL surfaces.
+func emptyAttrsMap() chplan.Expr {
+	return &chplan.FuncCall{
+		Name: "CAST",
+		Args: []chplan.Expr{
+			&chplan.FuncCall{Name: "map", Args: nil},
+			&chplan.LitString{V: "Map(String,String)"},
 		},
 	}
+}
+
+// isStructuralJoin reports whether the plan root is a StructuralJoin
+// (or a thin wrapper over one). Today only the bare form needs the
+// R-qualifier handling; nested wrappers would need recursive shape
+// inspection — defer until a real call-site needs it.
+func isStructuralJoin(plan chplan.Node) bool {
+	_, ok := plan.(*chplan.StructuralJoin)
+	return ok
+}
+
+// isAggregateShape reports whether the plan's output schema is just
+// the Aggregate's projected columns (group-keys + agg-func aliases),
+// i.e. the otel_traces canonical columns aren't available. Covers
+// bare Aggregate, Filter(Aggregate) (TraceQL scalar-filter HAVING
+// shape), and Project(Aggregate) (potential future shape).
+func isAggregateShape(plan chplan.Node) bool {
+	switch v := plan.(type) {
+	case *chplan.Aggregate:
+		return true
+	case *chplan.Filter:
+		return isAggregateShape(v.Input)
+	case *chplan.Project:
+		// Explicit Project — assume the user took responsibility for
+		// the output columns.
+		return false
+	}
+	return false
 }
 
 // toTraceSummaries pivots samples into the per-trace summary shape

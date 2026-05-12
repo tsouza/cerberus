@@ -184,15 +184,17 @@ func (h *Handler) execute(ctx context.Context, expr syntax.Expr) ([]chclient.Sam
 // the streams formatter), and the per-record Timestamp.
 func wrapWithLogSampleProjection(plan chplan.Node, s schema.Logs, expr syntax.Expr) chplan.Node {
 	if isMetricQuery(expr) {
-		// Metric queries' wrap-aggregate already produces sample shape;
-		// pass-through Project keeps the chclient column ordering.
+		// Metric queries lower to RangeWindow / Aggregate / Filter(Aggregate),
+		// whose output is just (group-keys…, value). MetricName + TimeUnix
+		// don't exist in that scope — synthesise them so the chclient
+		// Sample scanner has the four positional columns it expects.
 		return &chplan.Project{
 			Input: plan,
 			Projections: []chplan.Projection{
-				{Expr: &chplan.ColumnRef{Name: "MetricName"}},
-				{Expr: &chplan.ColumnRef{Name: "Attributes"}},
-				{Expr: &chplan.ColumnRef{Name: "TimeUnix"}},
-				{Expr: &chplan.ColumnRef{Name: "Value"}},
+				{Expr: &chplan.LitString{V: ""}, Alias: "MetricName"},
+				{Expr: &chplan.ColumnRef{Name: s.ResourceAttributesColumn}, Alias: "Attributes"},
+				{Expr: &chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}}, Alias: "TimeUnix"},
+				{Expr: &chplan.ColumnRef{Name: "value"}, Alias: "Value"},
 			},
 		}
 	}

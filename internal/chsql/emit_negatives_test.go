@@ -2,6 +2,7 @@ package chsql_test
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -125,6 +126,35 @@ func TestEmit_StructuralJoinMissingColumns(t *testing.T) {
 	}
 	if !errors.Is(err, chsql.ErrUnsupported) {
 		t.Errorf("expected wrapped ErrUnsupported; got %v", err)
+	}
+}
+
+// TestEmit_ColumnRefQualifier — a ColumnRef with a non-empty Qualifier
+// renders `<qualifier>.<name>` (both backtick-quoted). Needed for
+// referencing the right-hand side of a StructuralJoin, whose emit
+// shape is `SELECT R.* FROM (L) JOIN (R) ON …` — outer projections
+// must address those columns through the `R` alias.
+func TestEmit_ColumnRefQualifier(t *testing.T) {
+	t.Parallel()
+
+	plan := &chplan.Project{
+		Input: &chplan.Scan{Table: "otel_traces"},
+		Projections: []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Qualifier: "R", Name: "SpanName"}, Alias: "MetricName"},
+			{Expr: &chplan.ColumnRef{Name: "Timestamp"}, Alias: "TimeUnix"},
+		},
+	}
+	sql, _, err := chsql.Emit(plan)
+	if err != nil {
+		t.Fatalf("Emit returned unexpected error: %v", err)
+	}
+	want := "`R`.`SpanName`"
+	if !strings.Contains(sql, want) {
+		t.Errorf("emitted SQL missing qualified column ref:\n  got  %q\n  want it to contain %q", sql, want)
+	}
+	wantBare := "`Timestamp`"
+	if !strings.Contains(sql, wantBare) {
+		t.Errorf("emitted SQL missing bare column ref:\n  got  %q\n  want it to contain %q", sql, wantBare)
 	}
 }
 

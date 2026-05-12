@@ -12,15 +12,22 @@ type Expr interface {
 
 // ColumnRef references a ClickHouse column by name. Quoting and escaping
 // happen at emit time.
+//
+// Qualifier is optional. When non-empty, the emitter renders
+// `<Qualifier>.<Name>` (both identifiers backtick-quoted) — useful for
+// referencing columns out of a named join side (e.g. `R.SpanName` for
+// the right half of a chplan.StructuralJoin). Empty Qualifier emits
+// just the bare column name.
 type ColumnRef struct {
-	Name string
+	Name      string
+	Qualifier string
 }
 
 func (*ColumnRef) exprNode() {}
 
 func (c *ColumnRef) Equal(other Expr) bool {
 	o, ok := other.(*ColumnRef)
-	return ok && c.Name == o.Name
+	return ok && c.Name == o.Name && c.Qualifier == o.Qualifier
 }
 
 // LitString is a string literal. Emitted as a `?` placeholder with the value

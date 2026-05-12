@@ -167,19 +167,51 @@ func (h *Handler) executeInstant(ctx context.Context, query string) ([]chclient.
 	return samples, nil
 }
 
-// wrapWithSampleProjection adds a Project on top of plan that selects
-// exactly MetricName, Attributes, TimeUnix, Value (in that order) so the
-// chclient.Sample scanner can decode rows positionally.
+// wrapWithSampleProjection adds a Project on top of plan that emits
+// the canonical chclient.Sample shape — (MetricName, Attributes,
+// TimeUnix, Value) — adapted to whatever the inner plan's output
+// schema actually exposes. Two distinct shapes are recognised:
+//
+//  1. Scan / Filter(Scan) — the otel_metrics_* columns are available
+//     directly; project MetricName / Attributes / TimeUnix / Value.
+//  2. RangeWindow / Aggregate / Filter(Aggregate) — derived shapes
+//     whose inner SELECT exposes only (group-keys…, value). The
+//     canonical MetricName and TimeUnix don't exist in that scope;
+//     synthesise them as empty string + now64() respectively. The
+//     value column comes from the RangeWindow / Aggregate output
+//     (always lowercase `value` by chsql convention).
 func wrapWithSampleProjection(plan chplan.Node, s schema.Metrics) chplan.Node {
-	return &chplan.Project{
-		Input: plan,
-		Projections: []chplan.Projection{
-			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}},
-			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}},
-			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}},
-			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}},
-		},
+	projections := []chplan.Projection{
+		{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}},
+		{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}},
+		{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}},
+		{Expr: &chplan.ColumnRef{Name: s.ValueColumn}},
 	}
+	if isDerivedShape(plan) {
+		projections = []chplan.Projection{
+			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
+			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+			{Expr: &chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}}, Alias: s.TimestampColumn},
+			{Expr: &chplan.ColumnRef{Name: "value"}, Alias: s.ValueColumn},
+		}
+	}
+	return &chplan.Project{Input: plan, Projections: projections}
+}
+
+// isDerivedShape reports whether the plan's output schema lacks the
+// canonical Sample columns (MetricName / TimeUnix / Value as-is) and
+// has only the (group-keys…, value) shape produced by RangeWindow,
+// Aggregate, or a Filter on top of one of those.
+func isDerivedShape(plan chplan.Node) bool {
+	switch v := plan.(type) {
+	case *chplan.RangeWindow, *chplan.Aggregate:
+		return true
+	case *chplan.Filter:
+		return isDerivedShape(v.Input)
+	case *chplan.Project:
+		return false
+	}
+	return false
 }
 
 // toVector groups samples by label set, picks the latest value per series,
