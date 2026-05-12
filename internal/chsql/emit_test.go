@@ -272,6 +272,46 @@ var plans = map[string]chplan.Node{
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "ResourceAttributes"}},
 	},
 
+	// Matrix-shape RangeWindow — emits one row per anchor across
+	// [End-OuterRange, End] spaced by Step. Used by PromQL subqueries
+	// `rate(m[5m])[1h:5m]` (P0 #4).
+	"range_window_matrix_rate": &chplan.RangeWindow{
+		Input:           &chplan.Scan{Table: "otel_metrics_sum"},
+		Func:            "rate",
+		Range:           5 * time.Minute,
+		Step:            5 * time.Minute,
+		OuterRange:      time.Hour,
+		TimestampColumn: "TimeUnix",
+		ValueColumn:     "Value",
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+	},
+
+	// Matrix-shape RangeWindow + sum_over_time (the inner reducer in
+	// the canonical `max_over_time(rate(...)[1h:5m])` shape).
+	"range_window_matrix_sum_over_time": &chplan.RangeWindow{
+		Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+		Func:            "sum_over_time",
+		Range:           5 * time.Minute,
+		Step:            time.Minute,
+		OuterRange:      30 * time.Minute,
+		TimestampColumn: "TimeUnix",
+		ValueColumn:     "Value",
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+	},
+
+	// Identity-flagged RangeWindow — the "last value in window" shape
+	// used by bare-vector subqueries (`up[5m:1m]`).
+	"range_window_identity": &chplan.RangeWindow{
+		Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+		Identity:        true,
+		Range:           time.Minute,
+		Step:            time.Minute,
+		OuterRange:      5 * time.Minute,
+		TimestampColumn: "TimeUnix",
+		ValueColumn:     "Value",
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+	},
+
 	// FieldAccess — TraceQL dotted attribute access.
 	"filter_field_access": &chplan.Filter{
 		Input: &chplan.Scan{Table: "otel_traces"},
