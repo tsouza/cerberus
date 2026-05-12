@@ -29,9 +29,23 @@ func (e *emitter) emitExpr(x chplan.Expr) error {
 		return e.emitMapWithoutKeys(v)
 	case *chplan.LineContent:
 		return e.emitLineContent(v)
+	case *chplan.FieldAccess:
+		return e.emitFieldAccess(v)
 	default:
 		return fmt.Errorf("%w: expr %T", ErrUnsupported, x)
 	}
+}
+
+func (e *emitter) emitFieldAccess(f *chplan.FieldAccess) error {
+	if err := e.emitExpr(f.Source); err != nil {
+		return err
+	}
+	e.b.WriteByte('[')
+	if err := e.bindArg(f.Path); err != nil {
+		return err
+	}
+	e.b.WriteByte(']')
+	return nil
 }
 
 func (e *emitter) bindArg(v any) error {
