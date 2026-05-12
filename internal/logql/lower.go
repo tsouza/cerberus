@@ -31,6 +31,8 @@ func lower(expr syntax.Expr, s schema.Logs) (chplan.Node, error) {
 		return lowerPipeline(e, s)
 	case *syntax.RangeAggregationExpr:
 		return lowerRangeAggregation(e, s)
+	case *syntax.VectorAggregationExpr:
+		return lowerVectorAggregation(e, s)
 	default:
 		return nil, fmt.Errorf("logql: unsupported expression %T", expr)
 	}
