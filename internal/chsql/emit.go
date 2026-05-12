@@ -56,6 +56,8 @@ func (e *emitter) emitNode(n chplan.Node) error {
 		return e.emitLimit(v)
 	case *chplan.VectorJoin:
 		return e.emitVectorJoin(v)
+	case *chplan.StructuralJoin:
+		return e.emitStructuralJoin(v)
 	default:
 		return fmt.Errorf("%w: node %T", ErrUnsupported, n)
 	}

@@ -34,10 +34,85 @@ func Lower(expr *traceql.RootExpr, s schema.Traces) (chplan.Node, error) {
 	}
 
 	first := expr.Pipeline.Elements[0]
-	if v, ok := first.(*traceql.SpansetFilter); ok {
+	return lowerPipelineElement(first, s)
+}
+
+// lowerPipelineElement dispatches a single TraceQL pipeline element to
+// its corresponding lowering routine. Currently SpansetFilter and
+// SpansetOperation; aggregates / select / scalar filters defer.
+func lowerPipelineElement(elem traceql.PipelineElement, s schema.Traces) (chplan.Node, error) {
+	switch v := elem.(type) {
+	case *traceql.SpansetFilter:
 		return lowerSpansetFilter(v, s)
+	case traceql.SpansetOperation:
+		return lowerSpansetOperation(&v, s)
+	case *traceql.SpansetOperation:
+		return lowerSpansetOperation(v, s)
 	}
-	return nil, fmt.Errorf("traceql: pipeline element %T is not yet supported", first)
+	return nil, fmt.Errorf("traceql: pipeline element %T is not yet supported", elem)
+}
+
+// lowerSpansetOperation handles structural relations (`A > B`, `A < B`)
+// and set operations (`A && B`, `A || B`). The seed (M4.2) covers
+// direct-parent / direct-child structural ops; recursive forms (`>>`,
+// `<<`) and set ops defer.
+func lowerSpansetOperation(op *traceql.SpansetOperation, s schema.Traces) (chplan.Node, error) {
+	left, err := lowerSpansetExpr(op.LHS, s)
+	if err != nil {
+		return nil, err
+	}
+	right, err := lowerSpansetExpr(op.RHS, s)
+	if err != nil {
+		return nil, err
+	}
+
+	relation, err := mapStructuralOp(op.Op)
+	if err != nil {
+		return nil, err
+	}
+	return &chplan.StructuralJoin{
+		Left:               left,
+		Right:              right,
+		Op:                 relation,
+		TraceIDColumn:      s.TraceIDColumn,
+		SpanIDColumn:       s.SpanIDColumn,
+		ParentSpanIDColumn: s.ParentSpanIDColumn,
+	}, nil
+}
+
+// lowerSpansetExpr lowers a TraceQL SpansetExpression (the LHS/RHS of
+// a SpansetOperation). Currently SpansetFilter; nested operations land
+// once `>>` / `<<` recursive support arrives.
+func lowerSpansetExpr(e traceql.SpansetExpression, s schema.Traces) (chplan.Node, error) {
+	switch v := e.(type) {
+	case *traceql.SpansetFilter:
+		return lowerSpansetFilter(v, s)
+	case *traceql.SpansetOperation:
+		return lowerSpansetOperation(v, s)
+	case traceql.SpansetOperation:
+		return lowerSpansetOperation(&v, s)
+	}
+	return nil, fmt.Errorf("traceql: spanset expression %T is not yet supported", e)
+}
+
+// mapStructuralOp translates Tempo's structural Operator enum to the
+// chplan.StructuralOp this emitter understands.
+func mapStructuralOp(op traceql.Operator) (chplan.StructuralOp, error) {
+	switch op {
+	case traceql.OpSpansetChild:
+		return chplan.StructuralChild, nil
+	case traceql.OpSpansetParent:
+		return chplan.StructuralParent, nil
+	case traceql.OpSpansetDescendant:
+		return chplan.StructuralDescendant, nil
+	case traceql.OpSpansetAncestor:
+		return chplan.StructuralAncestor, nil
+	case traceql.OpSpansetAnd, traceql.OpSpansetUnion, traceql.OpSpansetSibling,
+		traceql.OpSpansetNotChild, traceql.OpSpansetNotParent, traceql.OpSpansetNotSibling,
+		traceql.OpSpansetNotAncestor, traceql.OpSpansetNotDescendant:
+		return "", fmt.Errorf("traceql: spanset op %s is not yet supported (set / sibling ops land in M4.2 follow-ups)", op)
+	}
+	return "", fmt.Errorf("traceql: spanset op %s is not a structural relation", op)
 }
 
 // lowerSpansetFilter turns `{ <field-expr> }` into Scan + Filter on
