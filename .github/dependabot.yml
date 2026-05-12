@@ -1,9 +1,11 @@
 version: 2
 updates:
+  # Go modules — parsers get their own daily group so cerberus stays
+  # within a release of upstream. Everything else still bumps weekly.
   - package-ecosystem: gomod
     directory: /
     schedule:
-      interval: weekly
+      interval: daily
     open-pull-requests-limit: 10
     commit-message:
       prefix: chore
@@ -11,6 +13,37 @@ updates:
     labels:
       - dependencies
       - go
+    # Grouping minor + patch bumps reduces PR noise. The three parsers
+    # share state via dskit/memberlist; bumping them individually
+    # produces partial-tree builds that fail the dashboard job. Group
+    # them so a single PR triggers a full CI matrix.
+    groups:
+      upstream-parsers:
+        applies-to: version-updates
+        patterns:
+          - "github.com/prometheus/prometheus*"
+          - "github.com/grafana/loki/*"
+          - "github.com/grafana/tempo*"
+          - "github.com/grafana/dskit*"
+          - "github.com/hashicorp/memberlist*"
+        update-types:
+          - patch
+          - minor
+      go-deps:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "github.com/prometheus/prometheus*"
+          - "github.com/grafana/loki/*"
+          - "github.com/grafana/tempo*"
+          - "github.com/grafana/dskit*"
+          - "github.com/hashicorp/memberlist*"
+        update-types:
+          - patch
+          - minor
+    # Major bumps stay one-per-PR — they almost always need code
+    # changes and benefit from individual review.
 
   - package-ecosystem: github-actions
     directory: /
@@ -22,3 +55,24 @@ updates:
     labels:
       - dependencies
       - github-actions
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  # npm — Playwright + its deps live under test/e2e/playwright. Test
+  # tooling can churn fast; pin weekly.
+  - package-ecosystem: npm
+    directory: /test/e2e/playwright
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+      include: scope
+    labels:
+      - dependencies
+      - npm
+    groups:
+      playwright-deps:
+        patterns:
+          - "*"
