@@ -1,0 +1,8 @@
+-- query.traceql --
+{ resource.service.name = "frontend" } | select(span.http.method)
+-- sql --
+SELECT `TraceId`, `SpanId`, `Timestamp`, `SpanAttributes`[?] AS `http.method` FROM (SELECT * FROM (SELECT * FROM `otel_traces`) WHERE (`ResourceAttributes`[?] = ?))
+-- args --
+[0] string = "http.method"
+[1] string = "service.name"
+[2] string = "frontend"
