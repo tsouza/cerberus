@@ -14,13 +14,17 @@ import (
 // Lower turns a parsed PromQL expression into a chplan tree, using s for
 // table and column name conventions.
 //
-// RC1 scope as it grows: VectorSelector, MatrixSelector (only as a Call
-// argument), range-vector Call (`rate` / `increase` / `delta` /
-// `*_over_time`), instant-vector Call (`abs`, `sqrt`, `ln`, ...),
-// AggregateExpr with `by (...)`, ParenExpr, BinaryExpr with
-// scalar/vector arithmetic. Subqueries, `without`, vector-vector
-// matching, `offset`, `@`, and comparison/logical ops land in
-// follow-up milestones.
+// Supports: VectorSelector, MatrixSelector (only as a Call argument),
+// range-vector Call (`rate` / `increase` / `delta` / `*_over_time`),
+// instant-vector Call (`abs`, `sqrt`, `ln`, ...), AggregateExpr with
+// `by (...)`, ParenExpr, BinaryExpr with scalar/vector arithmetic,
+// SubqueryExpr (P0 4.5–4.7: bare-vector, over range-vector calls,
+// outer reducer over subquery).
+//
+// Deferred to RC3 / later milestones: nested subqueries, subquery
+// over AggregateExpr, subquery `@ start()`/`@ end()`, native-histogram
+// `histogram_quantile`, `predict_linear`/`holt_winters`,
+// `group_left`/`group_right` cardinality edges, exemplars.
 func Lower(expr parser.Expr, s schema.Metrics) (chplan.Node, error) {
 	return lower(expr, s)
 }
