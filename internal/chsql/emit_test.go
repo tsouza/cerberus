@@ -144,6 +144,161 @@ var plans = map[string]chplan.Node{
 			Right: &chplan.LitString{V: "api"},
 		},
 	},
+
+	// VectorJoin — PromQL `on(...)` vector matching.
+	"vector_join_on_job": &chplan.VectorJoin{
+		Left:             &chplan.Scan{Table: "otel_metrics_gauge"},
+		Right:            &chplan.Scan{Table: "otel_metrics_sum"},
+		Op:               chplan.OpAdd,
+		Match:            chplan.VectorMatch{Labels: []string{"job"}, On: true},
+		MetricNameColumn: "MetricName",
+		AttributesColumn: "Attributes",
+		TimestampColumn:  "TimeUnix",
+		ValueColumn:      "Value",
+	},
+	// VectorJoin — PromQL `ignoring(...)` vector matching.
+	"vector_join_ignoring_instance": &chplan.VectorJoin{
+		Left:             &chplan.Scan{Table: "otel_metrics_gauge"},
+		Right:            &chplan.Scan{Table: "otel_metrics_sum"},
+		Op:               chplan.OpSub,
+		Match:            chplan.VectorMatch{Labels: []string{"instance"}, On: false},
+		MetricNameColumn: "MetricName",
+		AttributesColumn: "Attributes",
+		TimestampColumn:  "TimeUnix",
+		ValueColumn:      "Value",
+	},
+
+	// StructuralJoin — TraceQL `>` (parent_of).
+	"structural_join_child": &chplan.StructuralJoin{
+		Left:               &chplan.Scan{Table: "otel_traces"},
+		Right:              &chplan.Scan{Table: "otel_traces"},
+		Op:                 chplan.StructuralChild,
+		TraceIDColumn:      "TraceId",
+		SpanIDColumn:       "SpanId",
+		ParentSpanIDColumn: "ParentSpanId",
+	},
+	// StructuralJoin — TraceQL `<` (child_of).
+	"structural_join_parent": &chplan.StructuralJoin{
+		Left:               &chplan.Scan{Table: "otel_traces"},
+		Right:              &chplan.Scan{Table: "otel_traces"},
+		Op:                 chplan.StructuralParent,
+		TraceIDColumn:      "TraceId",
+		SpanIDColumn:       "SpanId",
+		ParentSpanIDColumn: "ParentSpanId",
+	},
+
+	// MapWithoutKeys used inside an Aggregate group-key: PromQL `without`.
+	"aggregate_sum_without": &chplan.Aggregate{
+		Input: &chplan.Scan{Table: "otel_metrics_gauge"},
+		GroupBy: []chplan.Expr{
+			&chplan.MapWithoutKeys{
+				Map:  &chplan.ColumnRef{Name: "Attributes"},
+				Keys: []string{"instance", "pod"},
+			},
+		},
+		AggFuncs: []chplan.AggFunc{
+			{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "total"},
+		},
+	},
+
+	// Aggregate with parameterised CH aggregate: quantile(0.95)(value).
+	"aggregate_quantile_param": &chplan.Aggregate{
+		Input: &chplan.Scan{Table: "otel_metrics_gauge"},
+		GroupBy: []chplan.Expr{
+			&chplan.ColumnRef{Name: "Attributes"},
+		},
+		AggFuncs: []chplan.AggFunc{
+			{
+				Name:   "quantile",
+				Params: []chplan.Expr{&chplan.LitFloat{V: 0.95}},
+				Args:   []chplan.Expr{&chplan.ColumnRef{Name: "Value"}},
+				Alias:  "p95",
+			},
+		},
+	},
+
+	// LineContent variants (LogQL line filters).
+	"filter_line_contains": &chplan.Filter{
+		Input: &chplan.Scan{Table: "otel_logs"},
+		Predicate: &chplan.LineContent{
+			Source:  &chplan.ColumnRef{Name: "Body"},
+			Pattern: "ERROR",
+		},
+	},
+	"filter_line_not_contains": &chplan.Filter{
+		Input: &chplan.Scan{Table: "otel_logs"},
+		Predicate: &chplan.LineContent{
+			Source:  &chplan.ColumnRef{Name: "Body"},
+			Pattern: "DEBUG",
+			Negated: true,
+		},
+	},
+	"filter_line_regex": &chplan.Filter{
+		Input: &chplan.Scan{Table: "otel_logs"},
+		Predicate: &chplan.LineContent{
+			Source:  &chplan.ColumnRef{Name: "Body"},
+			Pattern: `failed: \w+`,
+			IsRegex: true,
+		},
+	},
+	"filter_line_not_regex": &chplan.Filter{
+		Input: &chplan.Scan{Table: "otel_logs"},
+		Predicate: &chplan.LineContent{
+			Source:  &chplan.ColumnRef{Name: "Body"},
+			Pattern: `health.*ok`,
+			IsRegex: true,
+			Negated: true,
+		},
+	},
+
+	// RangeWindow with offset modifier (PromQL `rate(...)[5m] offset 1h`).
+	"range_window_rate_offset": &chplan.RangeWindow{
+		Input:           &chplan.Scan{Table: "otel_metrics_sum"},
+		Func:            "rate",
+		Range:           5 * time.Minute,
+		Offset:          time.Hour,
+		TimestampColumn: "TimeUnix",
+		ValueColumn:     "Value",
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+	},
+
+	// RangeWindow with the LogQL-specific log_rate function.
+	"range_window_log_rate": &chplan.RangeWindow{
+		Input:           &chplan.Scan{Table: "otel_logs"},
+		Func:            "log_rate",
+		Range:           5 * time.Minute,
+		TimestampColumn: "Timestamp",
+		ValueColumn:     "Value",
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "ResourceAttributes"}},
+	},
+
+	// FieldAccess — TraceQL dotted attribute access.
+	"filter_field_access": &chplan.Filter{
+		Input: &chplan.Scan{Table: "otel_traces"},
+		Predicate: &chplan.Binary{
+			Op: chplan.OpEq,
+			Left: &chplan.FieldAccess{
+				Source: &chplan.ColumnRef{Name: "SpanAttributes"},
+				Path:   "http.status_code",
+			},
+			Right: &chplan.LitInt{V: 500},
+		},
+	},
+
+	// FuncCall — generic CH function expression (length on a column).
+	"project_func_call_length": &chplan.Project{
+		Input: &chplan.Scan{Table: "otel_logs"},
+		Projections: []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: "Timestamp"}, Alias: "t"},
+			{
+				Expr: &chplan.FuncCall{
+					Name: "length",
+					Args: []chplan.Expr{&chplan.ColumnRef{Name: "Body"}},
+				},
+				Alias: "body_bytes",
+			},
+		},
+	},
 }
 
 func TestEmit(t *testing.T) {
