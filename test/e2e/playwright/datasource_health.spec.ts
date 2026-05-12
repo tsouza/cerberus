@@ -12,28 +12,23 @@ import { test, expect } from '@playwright/test';
  * Grafana → cerberus → ClickHouse.
  */
 
-// Skipped until RC2: Grafana 11's Prom datasource health probe
-// issues `?query=1+1`, which is a scalar expression (NumberLiteral
-// `+` NumberLiteral) that cerberus's lowering doesn't support — same
-// gap as bare-number top-level expressions. CH returns 422 with
-// "promql: unsupported expression *parser.BinaryExpr" (or similar).
-// When scalar expressions are lowered in RC2, this test goes green
-// and the deferral marker should be removed.
-//
-// Workaround for "real" probe coverage right now: any of the
-// /api/v1/labels or /api/v1/query?query=up paths in the other specs
-// validate the same proxy chain.
-test.skip('prometheus datasource health probe succeeds', async ({ request }) => {
+// Grafana 11's Prom datasource health probe issues `?query=1+1`.
+// Cerberus folds scalar-only PromQL in Go and returns the canonical
+// scalar envelope without a CH round-trip.
+test('prometheus datasource health probe succeeds', async ({ request }) => {
   const resp = await request.get(
     '/api/datasources/proxy/uid/cerberus-prometheus/api/v1/query?query=1%2B1',
   );
   expect(resp.status(), 'cerberus-prometheus probe status').toBe(200);
   const body = await resp.json();
   expect(body.status, 'body.status').toBe('success');
+  expect(body.data.resultType, 'scalar resultType').toBe('scalar');
+  // result shape: [<ts_float>, "<value_string>"]
+  expect(body.data.result[1], 'folded value').toBe('2');
 });
 
-// Equivalent probe that DOES work today: query `up` (an instant
-// vector selector — cerberus's smallest supported shape).
+// `up` instant-vector probe — the smallest supported shape that
+// actually hits ClickHouse.
 test('prometheus datasource probe — query=up works', async ({ request }) => {
   const resp = await request.get(
     '/api/datasources/proxy/uid/cerberus-prometheus/api/v1/query?query=up',

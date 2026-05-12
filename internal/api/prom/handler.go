@@ -84,6 +84,20 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Scalar-only PromQL (`1+1`, `42`) — Grafana's datasource health
+	// probe path. Evaluate in Go and return the canonical scalar
+	// envelope; no ClickHouse round-trip.
+	if value, ok, err := h.tryScalarFold(q); err != nil {
+		h.respondError(w, err)
+		return
+	} else if ok {
+		writeJSON(w, http.StatusOK, Response{
+			Status: "success",
+			Data:   &QueryData{ResultType: "scalar", Result: scalarPoint(ts, value)},
+		})
+		return
+	}
+
 	samples, err := h.executeInstant(r.Context(), q)
 	if err != nil {
 		h.respondError(w, err)
@@ -123,6 +137,20 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Scalar-only PromQL → matrix of one series at every step holding
+	// the folded constant. Matches Prom's `1+1` over query_range
+	// (single series, no labels, every step bucket populated).
+	if value, ok, err := h.tryScalarFold(q); err != nil {
+		h.respondError(w, err)
+		return
+	} else if ok {
+		writeJSON(w, http.StatusOK, Response{
+			Status: "success",
+			Data:   &QueryData{ResultType: "matrix", Result: scalarMatrix(value, start, end, step)},
+		})
+		return
+	}
+
 	samples, err := h.executeInstant(r.Context(), q)
 	if err != nil {
 		h.respondError(w, err)
@@ -134,6 +162,41 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 		Status: "success",
 		Data:   &QueryData{ResultType: "matrix", Result: result},
 	})
+}
+
+// tryScalarFold parses the query and, if it's a scalar-only expression
+// (NumberLiteral, ParenExpr around scalars, scalar arithmetic), returns
+// the folded constant. The bool reports whether folding succeeded; the
+// error covers parse failures (the same `bad_data` 400 envelope the
+// normal path would return).
+func (h *Handler) tryScalarFold(query string) (float64, bool, error) {
+	expr, err := h.parser.ParseExpr(query)
+	if err != nil {
+		return 0, false, &apiError{kind: ErrBadData, err: err, status: http.StatusBadRequest}
+	}
+	val, ok := promql.TryFoldScalar(expr)
+	return val, ok, nil
+}
+
+// scalarPoint renders the [<unix_seconds_float>, "<value_string>"]
+// pair Prometheus uses for both scalar and matrix sample wire shapes,
+// matching the format toVector / toMatrixStepGrid already use.
+func scalarPoint(ts time.Time, v float64) Sample {
+	return Sample{float64(ts.UnixMilli()) / 1e3, strconv.FormatFloat(v, 'f', -1, 64)}
+}
+
+// scalarMatrix builds the matrix shape for a scalar evaluated over a
+// range: one series with no labels, the folded value repeated at every
+// step bucket between start and end (inclusive).
+func scalarMatrix(v float64, start, end time.Time, step time.Duration) []MatrixSample {
+	if step <= 0 {
+		return nil
+	}
+	values := make([]Sample, 0)
+	for ts := start; !ts.After(end); ts = ts.Add(step) {
+		values = append(values, scalarPoint(ts, v))
+	}
+	return []MatrixSample{{Metric: map[string]string{}, Values: values}}
 }
 
 // executeInstant lowers a PromQL string to chplan, wraps with a Project
