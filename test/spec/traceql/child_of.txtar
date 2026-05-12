@@ -1,0 +1,9 @@
+-- query.traceql --
+{ resource.service.name = "api" } < { resource.service.name = "frontend" }
+-- sql --
+SELECT R.* FROM (SELECT * FROM (SELECT * FROM `otel_traces`) WHERE (`ResourceAttributes`[?] = ?)) AS L INNER JOIN (SELECT * FROM (SELECT * FROM `otel_traces`) WHERE (`ResourceAttributes`[?] = ?)) AS R ON L.`TraceId` = R.`TraceId` AND L.`ParentSpanId` = R.`SpanId`
+-- args --
+[0] string = "service.name"
+[1] string = "api"
+[2] string = "service.name"
+[3] string = "frontend"
