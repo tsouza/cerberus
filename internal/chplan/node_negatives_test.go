@@ -128,6 +128,16 @@ func TestExprEqual_SameTypeDifferentValues(t *testing.T) {
 		a, b chplan.Expr
 	}{
 		{"ColumnRef different name", &chplan.ColumnRef{Name: "a"}, &chplan.ColumnRef{Name: "b"}},
+		{
+			"ColumnRef different qualifier",
+			&chplan.ColumnRef{Name: "c", Qualifier: "L"},
+			&chplan.ColumnRef{Name: "c", Qualifier: "R"},
+		},
+		{
+			"ColumnRef qualifier vs bare",
+			&chplan.ColumnRef{Name: "c"},
+			&chplan.ColumnRef{Name: "c", Qualifier: "R"},
+		},
 		{"LitString different value", &chplan.LitString{V: "a"}, &chplan.LitString{V: "b"}},
 		{"LitInt different value", &chplan.LitInt{V: 1}, &chplan.LitInt{V: 2}},
 		{"LitFloat different value", &chplan.LitFloat{V: 1.0}, &chplan.LitFloat{V: 2.0}},

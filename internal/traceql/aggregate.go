@@ -3,6 +3,7 @@ package traceql
 import (
 	"fmt"
 	"reflect"
+	"unsafe"
 
 	"github.com/grafana/tempo/pkg/traceql"
 
@@ -10,26 +11,45 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
-// lowerAggregate handles `| count()` for the M4.3 slice. `sum(...)`,
-// `avg(...)`, `max(...)`, `min(...)` parse but their inner attribute
-// expression sits on Tempo's unexported `e` field; reflect can't read
-// it without panicking. They surface as "not yet supported" until
-// Tempo exposes an accessor (or we adopt an unsafe shim).
-//
-// The lowering wraps the previous pipeline element's plan with a
-// chplan.Aggregate. count() has no inner expression — we aggregate
-// the constant 1 per row.
-func lowerAggregate(prev chplan.Node, agg traceql.Aggregate, _ schema.Traces) (chplan.Node, error) {
+// lowerAggregate handles `| count()`, `| sum(...)`, `| avg(...)`,
+// `| max(...)`, `| min(...)`. count() has no inner expression — we
+// aggregate the constant 1 per row. The other four read the inner
+// FieldExpression from Tempo's unexported `e` field via the
+// readAggregateExpr unsafe shim (see comment below for the why).
+func lowerAggregate(prev chplan.Node, agg traceql.Aggregate, s schema.Traces) (chplan.Node, error) {
 	op := readAggregateFields(agg)
 	if op == "" {
 		return nil, fmt.Errorf("traceql: aggregate operator not extractable from parser AST")
 	}
-	if op != "count" {
-		return nil, fmt.Errorf("traceql: aggregate `%s` requires reading the inner attribute expression, which Tempo's parser keeps on an unexported field. Lands when upstream adds an accessor or cerberus adopts an `unsafe` shim", op)
+
+	chFunc, err := mapAggregateOp(op)
+	if err != nil {
+		return nil, err
 	}
 
 	const valueAlias = "Value"
-	chFunc, err := mapAggregateOp(op)
+
+	// count() takes no inner expression — aggregate a constant.
+	if op == "count" {
+		return &chplan.Aggregate{
+			Input: prev,
+			AggFuncs: []chplan.AggFunc{{
+				Name:  chFunc,
+				Args:  []chplan.Expr{&chplan.LitInt{V: 1}},
+				Alias: valueAlias,
+			}},
+		}, nil
+	}
+
+	// sum/avg/max/min — extract the inner FieldExpression and lower it.
+	inner, err := readAggregateExpr(agg)
+	if err != nil {
+		return nil, err
+	}
+	if inner == nil {
+		return nil, fmt.Errorf("traceql: aggregate `%s` has nil inner expression", op)
+	}
+	arg, err := lowerFieldExpr(inner, s)
 	if err != nil {
 		return nil, err
 	}
@@ -38,21 +58,43 @@ func lowerAggregate(prev chplan.Node, agg traceql.Aggregate, _ schema.Traces) (c
 		Input: prev,
 		AggFuncs: []chplan.AggFunc{{
 			Name:  chFunc,
-			Args:  []chplan.Expr{&chplan.LitInt{V: 1}},
+			Args:  []chplan.Expr{arg},
 			Alias: valueAlias,
 		}},
 	}, nil
 }
 
+// readAggregateExpr reads Tempo's unexported `e` field on a
+// traceql.Aggregate. Tempo doesn't ship an accessor (no `Expr()`
+// method, no public field) and reflect.Value.Interface() panics on
+// unexported fields, so we take the value's address and reconstruct a
+// typed pointer through unsafe.Pointer.
+//
+// Safe because: agg is passed by value, so &agg is a valid pointer to
+// a local for this function's lifetime; the field offset is fixed by
+// the pinned Tempo dependency in go.mod; the read is type-safe
+// (FieldExpression is an interface, same width as the underlying
+// itab+data tuple).
+func readAggregateExpr(agg traceql.Aggregate) (traceql.FieldExpression, error) {
+	v := reflect.ValueOf(&agg).Elem()
+	field := v.FieldByName("e")
+	if !field.IsValid() {
+		return nil, fmt.Errorf("traceql: Aggregate has no `e` field (Tempo internal layout changed?)")
+	}
+	// #nosec G103 — intentional unsafe.Pointer to read Tempo's unexported
+	// FieldExpression field. Safety justification is documented above.
+	ptr := unsafe.Pointer(field.UnsafeAddr())
+	expr := *(*traceql.FieldExpression)(ptr)
+	return expr, nil
+}
+
 // readAggregateFields reflects Aggregate's unexported `op` field.
-// Tempo's parser doesn't expose an accessor — no Op() method, no
-// public field. The `e` (inner expression) field is also unexported,
-// but reflect.Value.Interface() panics on unexported fields, so we
-// can't safely read it here. Aggregates over an inner attribute
-// (`sum(.duration)`, `avg(.x)`, `max/min`) currently surface as
-// "not yet supported"; only `count()` (which has no inner expr) lowers
-// cleanly via this M4.3 slice. The rest land when Tempo upstream adds
-// accessors or we adopt a guarded `unsafe.Pointer` shim.
+// Tempo's parser doesn't expose an accessor (no Op() method, no public
+// field), so we map the enum's int value back to its name via the
+// fixed iota order in aggregateOpName.
+//
+// The companion `e` field (inner FieldExpression) is read via
+// readAggregateExpr below — same unexported-field problem, harder shim.
 func readAggregateFields(agg traceql.Aggregate) string {
 	v := reflect.ValueOf(agg)
 	if v.Kind() != reflect.Struct {

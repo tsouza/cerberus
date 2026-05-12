@@ -293,6 +293,52 @@ func TestResponseHeaders_PromVersionAndCHMillis(t *testing.T) {
 	}
 }
 
+// TestQuery_ScalarFold — Grafana's `?query=1+1` health probe. The fold
+// runs in Go and short-circuits CH; the stub Querier must never see
+// the query.
+func TestQuery_ScalarFold(t *testing.T) {
+	t.Parallel()
+
+	q := &stubQuerier{}
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/v1/query?query=1%2B1")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+	}
+
+	var parsed queryResponse
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v\nbody=%s", err, body)
+	}
+	if parsed.Status != "success" {
+		t.Fatalf("status: got %q, want success; err=%s", parsed.Status, parsed.Error)
+	}
+	if parsed.Data.ResultType != "scalar" {
+		t.Fatalf("resultType: got %q, want scalar", parsed.Data.ResultType)
+	}
+
+	// Result is [<ts_float>, "<value_string>"]; verify the folded value.
+	rawResult, _ := json.Marshal(parsed.Data.Result)
+	var point [2]any
+	if err := json.Unmarshal(rawResult, &point); err != nil {
+		t.Fatalf("decode scalar: %v", err)
+	}
+	if got := point[1]; got != "2" {
+		t.Errorf("folded value: got %v, want \"2\"", got)
+	}
+
+	// Crucially, the CH stub must NOT have been invoked.
+	if q.lastSQL != "" {
+		t.Errorf("scalar fold reached CH: lastSQL=%q", q.lastSQL)
+	}
+}
+
 func TestQuery_UpstreamError(t *testing.T) {
 	t.Parallel()
 

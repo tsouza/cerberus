@@ -15,18 +15,7 @@ import (
 
 // TestPromQueryRangeRate exercises the M1.1 RangeWindow SQL path:
 // rate() over a 5-minute window against the seeded counter.
-//
-// Skipped until RC2: the wrap-sample projection on top of RangeWindow
-// references MetricName / TimeUnix / Value columns, but RangeWindow's
-// output is just (<group keys>, value). CH responds with a
-// "missing columns" error and the request returns 502. The fix lives
-// in either the chsql emitter (project group-keys + synthesise the
-// missing columns at the windowed-array boundary) or in executeInstant
-// (skip the wrap when the lowered plan root is a RangeWindow). The
-// existing Prom unit tests don't surface this because they stub the
-// Querier — only a real CH integration like this E2E exercise does.
 func TestPromQueryRangeRate(t *testing.T) {
-	t.Skip("rate-in-query_range projection deferred to RC2 — wrap-projection vs RangeWindow output column mismatch")
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
@@ -50,6 +39,34 @@ func TestPromQueryRangeRate(t *testing.T) {
 	}
 	if len(parsed.Data.Result) == 0 {
 		t.Fatalf("expected at least one series; got 0")
+	}
+}
+
+// TestPromQueryScalarFold — Grafana's `?query=1+1` health probe. The
+// fold happens entirely in Go (no CH round-trip); the response must
+// be a scalar.
+func TestPromQueryScalarFold(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resp := getJSON(ctx, t, "/api/v1/query?query=1%2B1")
+	var parsed struct {
+		Status string `json:"status"`
+		Data   struct {
+			ResultType string `json:"resultType"`
+			Result     [2]any `json:"result"`
+		} `json:"data"`
+	}
+	mustDecode(t, resp, &parsed)
+
+	if parsed.Status != "success" {
+		t.Fatalf("status: got %q, want success", parsed.Status)
+	}
+	if parsed.Data.ResultType != "scalar" {
+		t.Fatalf("resultType: got %q, want scalar", parsed.Data.ResultType)
+	}
+	if got := parsed.Data.Result[1]; got != "2" {
+		t.Fatalf("folded value: got %v, want \"2\"", got)
 	}
 }
 

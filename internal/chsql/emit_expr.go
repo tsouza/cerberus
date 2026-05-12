@@ -9,6 +9,10 @@ import (
 func (e *emitter) emitExpr(x chplan.Expr) error {
 	switch v := x.(type) {
 	case *chplan.ColumnRef:
+		if v.Qualifier != "" {
+			writeIdent(&e.b, v.Qualifier)
+			e.b.WriteByte('.')
+		}
 		writeIdent(&e.b, v.Name)
 		return nil
 	case *chplan.LitString:
