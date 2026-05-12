@@ -60,9 +60,11 @@ func TestTryFoldScalar(t *testing.T) {
 		{"1 + up", 0, false},
 		{"up + 1", 0, false},
 
-		// Comparison ops not (yet) folded.
-		{"1 == 1", 0, false},
-		{"1 != 2", 0, false},
+		// Comparison ops not (yet) folded — Prom requires the `bool`
+		// modifier on scalar-vs-scalar comparisons; without `bool` the
+		// parser rejects the query before we ever see it.
+		{"1 == bool 1", 0, false},
+		{"1 != bool 2", 0, false},
 	}
 
 	p := parser.NewParser(parser.Options{})
