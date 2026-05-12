@@ -53,12 +53,6 @@ func TestLokiQueryStreamSelector(t *testing.T) {
 
 // TestLokiQueryRangeCountOverTime verifies the LogQL metric path
 // (M3.3): count_over_time({selector}[5m]) returns a matrix.
-//
-// Un-skipped in RC2 alongside TestPromQueryRangeRate after
-// wrapWithLogSampleProjection / wrapWithSampleProjection became shape-
-// aware: the metric-query path now synthesises MetricName / TimeUnix
-// and aliases the windowed `value` column rather than referencing the
-// canonical Sample columns that only exist on the streams path.
 func TestLokiQueryRangeCountOverTime(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

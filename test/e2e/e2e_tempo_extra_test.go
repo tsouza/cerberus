@@ -87,12 +87,6 @@ func TestTempoSearch_AndFilter(t *testing.T) {
 
 // TestTempoSearch_StructuralChild — `{ frontend } > { api }` runs the
 // inner-join self-query on (TraceId, ParentSpanId).
-//
-// Un-skipped in RC2 once wrapWithSampleProjection became shape-aware:
-// when the lowered plan root is a StructuralJoin the wrap now
-// references the join's right-hand columns through an `R.` qualifier
-// (added to chplan.ColumnRef in the same change), matching the
-// `SELECT R.* FROM (L) INNER JOIN (R) ON ...` emit shape.
 func TestTempoSearch_StructuralChild(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -114,12 +108,6 @@ func TestTempoSearch_StructuralChild(t *testing.T) {
 
 // TestTempoSearch_CountScalar — `{ frontend } | count() > 0` exercises
 // the Aggregate + ScalarFilter lowering.
-//
-// Un-skipped in RC2 alongside TestTempoSearch_StructuralChild: when the
-// lowered plan root is an Aggregate (or Filter(Aggregate)), the wrap
-// synthesises MetricName / TimeUnix / Attributes and aliases the
-// aggregate's `Value` column rather than referencing the canonical
-// Sample columns that only exist on a raw Scan.
 func TestTempoSearch_CountScalar(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

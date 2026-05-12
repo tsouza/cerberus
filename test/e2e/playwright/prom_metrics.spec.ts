@@ -15,10 +15,6 @@ import { test, expect } from '@playwright/test';
 
 const promProxy = '/api/datasources/proxy/uid/cerberus-prometheus/api/v1';
 
-// Un-skipped in RC2 once wrapWithSampleProjection became shape-aware:
-// when the lowered plan root is a RangeWindow / Aggregate the wrap
-// synthesises MetricName / TimeUnix / Value rather than referencing
-// columns that only exist on a raw Scan.
 test('rate(http_server_request_duration_count[5m]) returns a matrix', async ({ request }) => {
   const now = Math.floor(Date.now() / 1000);
   const start = now - 5 * 60;

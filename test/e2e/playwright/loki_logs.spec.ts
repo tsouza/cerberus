@@ -41,9 +41,6 @@ test('logql stream selector returns log lines', async ({ request }) => {
   }
 });
 
-// Un-skipped in RC2 alongside the prom_metrics rate test: the LogQL
-// metric path's wrapWithLogSampleProjection synthesises MetricName /
-// TimeUnix / Value when the lowered plan root is a RangeWindow.
 test('logql metric query returns a matrix', async ({ request }) => {
   // Range = last 5 minutes; step = 30s. Covers the 60s of seeded data.
   const now = Math.floor(Date.now() / 1000);

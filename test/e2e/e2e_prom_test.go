@@ -15,12 +15,6 @@ import (
 
 // TestPromQueryRangeRate exercises the M1.1 RangeWindow SQL path:
 // rate() over a 5-minute window against the seeded counter.
-//
-// Un-skipped in RC2 after wrapWithSampleProjection became shape-aware:
-// when the lowered plan root is a RangeWindow / Aggregate / Filter(Aggregate)
-// the wrap synthesises MetricName / TimeUnix and aliases the windowed
-// `value` column rather than referencing the canonical Sample columns
-// that only exist on a raw Scan.
 func TestPromQueryRangeRate(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
