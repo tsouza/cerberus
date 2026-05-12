@@ -1,0 +1,7 @@
+-- query.traceql --
+{ span.cpu.usage > 0.5 }
+-- sql --
+SELECT * FROM (SELECT * FROM `otel_traces`) WHERE (`SpanAttributes`[?] > ?)
+-- args --
+[0] string = "cpu.usage"
+[1] float64 = 0.5

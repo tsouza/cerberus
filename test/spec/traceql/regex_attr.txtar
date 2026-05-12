@@ -1,0 +1,7 @@
+-- query.traceql --
+{ resource.service.name =~ "front.*" }
+-- sql --
+SELECT * FROM (SELECT * FROM `otel_traces`) WHERE match(`ResourceAttributes`[?], ?)
+-- args --
+[0] string = "service.name"
+[1] string = "front.*"
