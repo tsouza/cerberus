@@ -82,6 +82,64 @@ var inputs = map[string]chplan.Node{
 			{Expr: &chplan.ColumnRef{Name: "TimeUnix"}, Alias: "t"},
 		},
 	},
+
+	// filter_fusion_after_constant_fold: outer predicate is
+	// `LitBool(true) AND <real>` — constant-fold reduces to `<real>`,
+	// then filter-fusion can run on the result. Tests that the
+	// driver re-applies rules after a change (fixpoint behaviour).
+	"filter_fusion_after_constant_fold": &chplan.Filter{
+		Input: &chplan.Filter{
+			Input: &chplan.Scan{Table: "otel_metrics_gauge"},
+			Predicate: &chplan.Binary{
+				Op:    chplan.OpEq,
+				Left:  &chplan.ColumnRef{Name: "MetricName"},
+				Right: &chplan.LitString{V: "up"},
+			},
+		},
+		Predicate: &chplan.Binary{
+			Op:   chplan.OpAnd,
+			Left: &chplan.LitBool{V: true},
+			Right: &chplan.Binary{
+				Op:    chplan.OpEq,
+				Left:  &chplan.ColumnRef{Name: "job"},
+				Right: &chplan.LitString{V: "api"},
+			},
+		},
+	},
+
+	// nested_filter_fold: three-deep Filter(Filter(Filter(Scan)))
+	// with non-trivial predicates. Verifies fusion runs to fixpoint
+	// (collapses all three Filters into one AND-of-three).
+	"nested_filter_fold": &chplan.Filter{
+		Input: &chplan.Filter{
+			Input: &chplan.Filter{
+				Input: &chplan.Scan{Table: "otel_metrics_gauge"},
+				Predicate: &chplan.Binary{
+					Op: chplan.OpEq, Left: &chplan.ColumnRef{Name: "MetricName"}, Right: &chplan.LitString{V: "up"},
+				},
+			},
+			Predicate: &chplan.Binary{
+				Op: chplan.OpEq, Left: &chplan.ColumnRef{Name: "job"}, Right: &chplan.LitString{V: "api"},
+			},
+		},
+		Predicate: &chplan.Binary{
+			Op: chplan.OpGt, Left: &chplan.ColumnRef{Name: "Value"}, Right: &chplan.LitFloat{V: 0},
+		},
+	},
+
+	// constant_fold_idempotent: an already-folded predicate (no
+	// constants to reduce) — the fixture records optimized SQL
+	// byte-identical to unoptimized. Sanity check that the driver
+	// doesn't rewrite already-optimal plans into something
+	// semantically equivalent-but-different.
+	"constant_fold_idempotent": &chplan.Filter{
+		Input: &chplan.Scan{Table: "otel_metrics_gauge"},
+		Predicate: &chplan.Binary{
+			Op:    chplan.OpEq,
+			Left:  &chplan.ColumnRef{Name: "MetricName"},
+			Right: &chplan.LitString{V: "up"},
+		},
+	},
 }
 
 func TestOptimizer(t *testing.T) {

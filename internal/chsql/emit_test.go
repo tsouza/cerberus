@@ -299,6 +299,128 @@ var plans = map[string]chplan.Node{
 			},
 		},
 	},
+
+	// nested_filters_no_fuse: two explicit Filter wrappers should emit
+	// nested subqueries; the optimizer's filter-fusion only fires when
+	// the driver runs over the tree. At the chsql layer, the IR is
+	// emitted as-is.
+	"nested_filters_no_fuse": &chplan.Filter{
+		Input: &chplan.Filter{
+			Input: &chplan.Scan{Table: "otel_metrics_gauge"},
+			Predicate: &chplan.Binary{
+				Op: chplan.OpEq, Left: &chplan.ColumnRef{Name: "MetricName"}, Right: &chplan.LitString{V: "up"},
+			},
+		},
+		Predicate: &chplan.Binary{
+			Op: chplan.OpEq, Left: &chplan.ColumnRef{Name: "job"}, Right: &chplan.LitString{V: "api"},
+		},
+	},
+
+	// project_on_aggregate: outer Project rewrapping an Aggregate's
+	// output. Common pattern after the wrap-sample projection in
+	// api/prom/handler.go.
+	"project_on_aggregate": &chplan.Project{
+		Input: &chplan.Aggregate{
+			Input:   &chplan.Scan{Table: "otel_metrics_gauge"},
+			GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+			AggFuncs: []chplan.AggFunc{
+				{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "total"},
+			},
+		},
+		Projections: []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: "Attributes"}, Alias: "attrs"},
+			{Expr: &chplan.ColumnRef{Name: "total"}, Alias: "v"},
+		},
+	},
+
+	// filter_on_aggregate: HAVING-shape. Filter sits on top of an
+	// Aggregate's grouped output. The scalar-filter lowering for TraceQL's
+	// `| count() > 0` produces this shape.
+	"filter_on_aggregate": &chplan.Filter{
+		Input: &chplan.Aggregate{
+			Input:   &chplan.Scan{Table: "otel_metrics_gauge"},
+			GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+			AggFuncs: []chplan.AggFunc{
+				{Name: "count", Args: []chplan.Expr{&chplan.LitInt{V: 1}}, Alias: "Value"},
+			},
+		},
+		Predicate: &chplan.Binary{
+			Op: chplan.OpGt, Left: &chplan.ColumnRef{Name: "Value"}, Right: &chplan.LitInt{V: 0},
+		},
+	},
+
+	// vector_join_set_and: VectorJoin with OpAnd (set-intersection
+	// shape). Unusual operator on this node but the IR allows it.
+	"vector_join_set_and": &chplan.VectorJoin{
+		Left:             &chplan.Scan{Table: "otel_metrics_gauge"},
+		Right:            &chplan.Scan{Table: "otel_metrics_sum"},
+		Op:               chplan.OpAnd,
+		Match:            chplan.VectorMatch{Labels: []string{"job"}, On: true},
+		MetricNameColumn: "MetricName",
+		AttributesColumn: "Attributes",
+		TimestampColumn:  "TimeUnix",
+		ValueColumn:      "Value",
+	},
+
+	// func_call_zero_args: CH function with no arguments — `now()`.
+	"project_func_call_zero_args": &chplan.Project{
+		Input: &chplan.Scan{Table: "otel_metrics_gauge"},
+		Projections: []chplan.Projection{
+			{Expr: &chplan.FuncCall{Name: "now"}, Alias: "current_time"},
+		},
+	},
+
+	// map_access_special_key: MapAccess key containing a literal dot
+	// and underscores — common shape for OTel `service.name`,
+	// `http.status_code`, etc. The emitter must bind the key as a
+	// parameter (not splice into the SQL), so CH-special chars in the
+	// key are no-op.
+	"filter_map_access_dotted_key": &chplan.Filter{
+		Input: &chplan.Scan{Table: "otel_traces"},
+		Predicate: &chplan.Binary{
+			Op: chplan.OpEq,
+			Left: &chplan.MapAccess{
+				Map: &chplan.ColumnRef{Name: "SpanAttributes"},
+				Key: &chplan.LitString{V: "http.status_code"},
+			},
+			Right: &chplan.LitInt{V: 200},
+		},
+	},
+
+	// deeply_nested_binary: 4-level nested Binary tree. Verifies
+	// emitBinary parenthesizes correctly across multiple depths.
+	"filter_deeply_nested_binary": &chplan.Filter{
+		Input: &chplan.Scan{Table: "otel_metrics_gauge"},
+		Predicate: &chplan.Binary{
+			Op: chplan.OpAnd,
+			Left: &chplan.Binary{
+				Op:    chplan.OpEq,
+				Left:  &chplan.ColumnRef{Name: "MetricName"},
+				Right: &chplan.LitString{V: "up"},
+			},
+			Right: &chplan.Binary{
+				Op: chplan.OpOr,
+				Left: &chplan.Binary{
+					Op: chplan.OpAnd,
+					Left: &chplan.Binary{
+						Op:    chplan.OpEq,
+						Left:  &chplan.ColumnRef{Name: "job"},
+						Right: &chplan.LitString{V: "api"},
+					},
+					Right: &chplan.Binary{
+						Op:    chplan.OpGt,
+						Left:  &chplan.ColumnRef{Name: "Value"},
+						Right: &chplan.LitFloat{V: 0.5},
+					},
+				},
+				Right: &chplan.Binary{
+					Op:    chplan.OpEq,
+					Left:  &chplan.ColumnRef{Name: "MetricName"},
+					Right: &chplan.LitString{V: "down"},
+				},
+			},
+		},
+	},
 }
 
 func TestEmit(t *testing.T) {
