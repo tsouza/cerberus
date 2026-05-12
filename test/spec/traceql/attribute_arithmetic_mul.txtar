@@ -1,0 +1,8 @@
+-- query.traceql --
+{ .a * 2 > 10 }
+-- sql --
+SELECT * FROM (SELECT * FROM `otel_traces`) WHERE ((`SpanAttributes`[?] * ?) > ?)
+-- args --
+[0] string = "a"
+[1] int64 = 2
+[2] int64 = 10
