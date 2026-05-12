@@ -45,6 +45,35 @@ PARTITION BY toYYYYMMDD(TimeUnix)
 ORDER BY (MetricName, toUnixTimestamp64Nano(TimeUnix))
 TTL toDateTime(TimeUnix) + INTERVAL 1 DAY;
 
+-- Histogram table — empty for now, but its existence matters: the Prom
+-- metadata endpoints (/api/v1/labels, /api/v1/label/<n>/values, /metadata)
+-- UNION ALL across gauge + sum + histogram. Without the table, those
+-- queries fail with `Table otel.otel_metrics_histogram doesn't exist`.
+CREATE TABLE IF NOT EXISTS otel.otel_metrics_histogram (
+    ResourceAttributes Map(LowCardinality(String), String) CODEC(ZSTD(1)),
+    ResourceSchemaUrl  String CODEC(ZSTD(1)),
+    ScopeName          String CODEC(ZSTD(1)),
+    ScopeVersion       String CODEC(ZSTD(1)),
+    ScopeAttributes    Map(LowCardinality(String), String) CODEC(ZSTD(1)),
+    MetricName         String CODEC(ZSTD(1)),
+    MetricDescription  String CODEC(ZSTD(1)),
+    MetricUnit         String CODEC(ZSTD(1)),
+    Attributes         Map(LowCardinality(String), String) CODEC(ZSTD(1)),
+    StartTimeUnix      DateTime64(9) CODEC(Delta(8), ZSTD(1)),
+    TimeUnix           DateTime64(9) CODEC(Delta(8), ZSTD(1)),
+    Count              UInt64 CODEC(Delta(8), ZSTD(1)),
+    Sum                Float64 CODEC(ZSTD(1)),
+    BucketCounts       Array(UInt64) CODEC(ZSTD(1)),
+    ExplicitBounds     Array(Float64) CODEC(ZSTD(1)),
+    Value              Float64 CODEC(ZSTD(1)),
+    Flags              UInt32 CODEC(ZSTD(1)),
+    AggregationTemporality Int32 CODEC(ZSTD(1))
+)
+ENGINE = MergeTree()
+PARTITION BY toYYYYMMDD(TimeUnix)
+ORDER BY (MetricName, toUnixTimestamp64Nano(TimeUnix))
+TTL toDateTime(TimeUnix) + INTERVAL 1 DAY;
+
 -- Two `up` series at the current time so the PromQL slice has something to
 -- return. PR8's playwright smoke queries these.
 INSERT INTO otel.otel_metrics_gauge

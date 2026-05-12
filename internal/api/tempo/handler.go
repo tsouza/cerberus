@@ -192,7 +192,11 @@ func wrapWithSampleProjection(plan chplan.Node, s schema.Traces) chplan.Node {
 			{Expr: &chplan.ColumnRef{Name: s.SpanNameColumn}, Alias: "MetricName"},
 			{Expr: &chplan.ColumnRef{Name: s.ResourceAttributesColumn}, Alias: "Attributes"},
 			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: "TimeUnix"},
-			{Expr: &chplan.ColumnRef{Name: s.DurationColumn}, Alias: "Value"},
+			// Duration is Int64 (nanoseconds) in OTel-CH; chclient.Sample.Value
+			// is float64 and clickhouse-go's Scan refuses Int64→float64 without
+			// a cast. toFloat64 keeps the wire shape lossless within the
+			// 53-bit mantissa range (a 100-day duration in ns still fits).
+			{Expr: &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.DurationColumn}}}, Alias: "Value"},
 		},
 	}
 }
