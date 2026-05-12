@@ -4,7 +4,7 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased] — towards v1.0.0-RC1
 
-The seed (PR1–PR7 + admin + v0.1.0) plus the merged M1–M3 + M4.1–M4.3 work below. **Not yet a release candidate** — M4.4 (time filters + `| select(...)`) and M4.5 (Tempo HTTP API + derived corpus) still need to land, and the compatibility test suite needs to expand to cover everything that's been implemented (cerberus-side corpus + meaningful Grafana Playwright scenarios) before the v1.0.0-RC1 tag.
+The seed (PR1–PR7 + admin + v0.1.0) plus M1–M4 + corpus expansion + Playwright + E2E HTTP tests + RC6 / RC7 plan consolidation. All RC1 work is now in flight or merged; the tag is the only step left.
 
 ### Added
 
@@ -35,31 +35,37 @@ The seed (PR1–PR7 + admin + v0.1.0) plus the merged M1–M3 + M4.1–M4.3 work
 - Aggregations: `sum(rate(...))`, `avg by (job) (count_over_time(...))`, `sum without (pod) (...)`, with stddev / stdvar / group / quantile parity to PromQL. [#62]
 - Loki HTTP `query` + `query_range` handlers; metric queries return Prom-style matrix/vector, log queries return Loki "streams" shape. [#63]
 
-#### TraceQL (M4.1 – M4.3, partial)
+#### TraceQL (M4.1 – M4.5)
 
-- `schema.Traces` + `chplan.FieldAccess` for dotted-path attribute references; SpansetFilter with intrinsic resolution (`duration`, `name`, `kind`, `status`, `traceID`, `spanID`, `parent`) and scope-prefixed paths (`resource.` → ResourceAttributes, `span.` → SpanAttributes). [#64]
+- `schema.Traces` + `chplan.FieldAccess` for dotted-path attribute references; SpansetFilter with intrinsic resolution (`duration`, `name`, `kind`, `status`, `statusMessage`, `parent`, scoped `trace:id` / `span:id`) and scope-prefixed paths (`resource.` → ResourceAttributes, `span.` → SpanAttributes). [#64]
 - Direct structural ops `>` (parent of) and `<` (child of) via `chplan.StructuralJoin` rendering an INNER JOIN of two span subqueries on `(TraceId, ParentSpanId)`. [#65]
 - `| count() > 0` aggregate + scalar-filter wrapping; reuses the M1.4 `chplan.Aggregate` shape. [#66]
+- `| select(span.x, resource.y)` projection: reflects out `SelectOperation.attrs` (Tempo keeps it on an unexported field) and emits one column per requested attribute aliased to its TraceQL name. [#70]
+- Tempo HTTP API: `/api/echo`, `/api/status/version`, `/api/search?q=<TraceQL>`, `/api/traces/{id}`. trace-by-id skips the parser and builds the chplan tree directly. Tempo's distinct error envelope (`{"traceID":"","spanID":"","error":true,"message":"..."}`) drives Grafana's "trace not found" UI. [#71]
+
+#### Test corpus expansion (RC1 prereq)
+
+- TraceQL TXTAR fixtures grow from 8 to 26 — boolean `||`, regex / not-regex matchers, every intrinsic (`name`, `kind`, `statusMessage`, `parent`, scoped `trace:id` / `span:id`), span-attribute scoping variants, scalar-filter thresholds, and resource-scoped select projection. [#72]
+- chsql TXTAR fixtures grow from 15 to 29 — direct tests for every chplan IR node (VectorJoin, StructuralJoin, MapWithoutKeys, LineContent variants, parameterised `quantile`, RangeWindow with `Offset` + LogQL `log_rate`, FieldAccess, FuncCall). [#74]
+- Meaningful Grafana Playwright scenarios for all three datasources: LogQL streams + metric, TraceQL search + traceByID, richer PromQL (rate matrix + labels + metric names). Per-signal seed files (`otel_logs.sql`, `otel_traces.sql`). [#76]
+- Cerberus-side HTTP integration tests for every shipped surface: Prom rate / labels / label-values, Loki streams + metric, Tempo echo / version / search / trace-by-id (found + not-found). [#77]
 
 #### Engineering / CI
 
 - Required-status checks: `check`, `lint`, `dashboard` (full-stack k3d + cerberus + Grafana + Playwright smoke). `enforce_admins: true`; `gh pr merge --admin` is forbidden. [#56, #59, #60]
 - Compatibility harness drops the `pull_request` trigger until M6; runs nightly + on `main` push as informational baseline. [#56]
-- RC6 roadmap entry with hard rule: no `fmt.Sprintf` (or string concatenation) for ClickHouse SQL going forward; existing emitter Sprintf is grandfathered until R6.1–R6.10 ports it through `huandu/go-sqlbuilder`. [#57]
-
-### Pending before v1.0.0-RC1
-
-- **M4.4** time filters + `| select(...)` projection.
-- **M4.5** Tempo HTTP API (`/api/search`, `/api/traces/<id>`, `/api/search/tags`, `/api/search/tag/<n>/values`) + derived corpus.
-- **Compatibility test suite expansion**: cerberus-side corpus exercising every implemented feature (PromQL/LogQL/TraceQL surface) so the test suite — not just upstream `prometheus/compliance` — catches regressions.
-- **Meaningful Grafana Playwright scenarios**: instant + range Prom panels, label picker, sum-by panel, log search, rate panel, trace search, structural query — each scenario asserts the rendered panel shows the expected data.
+- RC6 roadmap with hard rule: no `fmt.Sprintf` (or string concatenation) for ClickHouse SQL going forward; existing emitter Sprintf is grandfathered until R6.1–R6.10 port it through a typed builder. [#57]
+- RC6 R6.0 — SQL-builder evaluation phase prepended to RC6: a written security + impact + build-vs-buy analysis recommends third-party (`huandu/go-sqlbuilder` + cerberus extension layer), custom (`internal/chsql.Builder`), or defer. [#73]
+- RC7 — `internal/engine/` ExecutionEngine framework planned with the same R7.0 evaluation-first pattern: audit pipeline divergence across 5 callsites before any code lands; recommendation among (a) Build, (b) Partial — helpers-only extraction, (c) Defer. RC2 narrative gains the self-contained-deployment item (OTel Collector + CH exporter creating schema in k3d). [#75]
 
 ### Deferred to RC2
 
 - PromQL: subqueries, `histogram_quantile` over native histograms, `topk` / `bottomk` / `count_values` (output-shape changes).
 - LogQL: parser stages (`| json`, `| logfmt`, `| regexp`, `| pattern`); `unwrap`-based ops; `tail`; `index/stats`.
-- TraceQL: recursive structural ops `>>` / `<<`, set ops, sibling ops; `sum/avg/max/min` over inner attributes (Tempo's parser keeps the inner expression on an unexported field — needs an upstream accessor).
+- TraceQL: recursive structural ops `>>` / `<<`, set ops, sibling ops; `status = error` / `kind = client` enum statics (Tempo's typed-static encoding needs Status/Kind enum support in `lowerStatic`); `sum / avg / max / min` over inner attributes (Tempo's `Aggregate.e` is on an unexported field — needs an alternative extraction path).
 - Loki HTTP: `/labels`, `/label/.../values`, `/series` (gated on RC6 R6.1's sqlbuilder integration so the new SQL is type-safe), stream-aware row decoder, `tail`.
+- Tempo HTTP: `/api/search/tags`, `/api/search/tag/<n>/values` (same RC6 gate); `search/recent`, `metrics/query_range`.
+- Self-contained deployment: OTel Collector + CH exporter in k3d creating schemas and collecting real k8s telemetry, replacing synthetic `*.sql` seeding for E2E (synthetic stays for unit / spec tests).
 
 ## [v0.1.0] — Seed
 
