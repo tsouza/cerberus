@@ -23,7 +23,7 @@ ClickHouse is a great single store for all three signals. The only thing missing
 
 ## Status
 
-> 🚧 **toward `v1.0.0-RC1`** — M1 (PromQL) + M2 (Prom HTTP API) + M3 (LogQL) + M4.1–M4.3 (TraceQL spanset filters, structural ops `>`/`<`, `count()`) all merged. Pending before the RC1 tag: M4.4 (time filters + `| select(...)`), M4.5 (Tempo HTTP API), and an expanded compatibility test suite (cerberus-side corpus + meaningful Grafana Playwright scenarios). See [`CHANGELOG.md`](CHANGELOG.md) for the full Unreleased entry.
+> 🚧 **`v1.0.0-RC1` candidate** — M1 (PromQL) + M2 (Prom HTTP API) + M3 (LogQL) + M4 (TraceQL + Tempo HTTP API) all merged. TraceQL TXTAR corpus expanded 8 → 26, chsql 15 → 29; Playwright covers Loki + Tempo + richer Prom against Grafana; cerberus-side HTTP integration tests cover every shipped surface. The RC1 tag is the only step left — see [`CHANGELOG.md`](CHANGELOG.md) for the full Unreleased entry, and [`docs/roadmap.md`](docs/roadmap.md) for the path to v1.0.0.
 
 ## Architecture
 
