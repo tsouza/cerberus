@@ -168,6 +168,7 @@ func (h *Handler) execute(ctx context.Context, expr syntax.Expr) ([]chclient.Sam
 
 	samples, err := h.Client.Query(ctx, sqlStr, args...)
 	if err != nil {
+		h.Logger.Warn("cerberus loki CH query failed", "err", err.Error(), "sql", sqlStr)
 		return nil, &apiError{kind: ErrInternal, err: err, status: http.StatusBadGateway}
 	}
 	return samples, nil
@@ -195,25 +196,21 @@ func wrapWithLogSampleProjection(plan chplan.Node, s schema.Logs, expr syntax.Ex
 			},
 		}
 	}
-	// Log-stream query: pull MetricName='', ResourceAttributes,
-	// Timestamp, and Body cast to Float64-stringified-as-Body via a
-	// dedicated downstream decoder. For now we surface the line as the
-	// `Value`-positional-string by re-encoding in toStreams below.
-	//
-	// chclient.Sample's Value is float64 — we can't put a string there
-	// directly. The streams formatter reads the raw `Body` column out of
-	// a separate query, so for log-stream queries the wrapping projection
-	// short-circuits: it re-projects (Body, ResourceAttributes, Timestamp)
-	// and returns 0 as Value (unused).
+	// Log-stream query: chclient.Sample is (MetricName, Attributes, Timestamp,
+	// Value) where Value is float64. The log line `Body` is a String, so it
+	// can't ride in Value — instead we put it in MetricName (also a String)
+	// and write a 0.0 placeholder into Value. toStreams reads back from
+	// Sample.MetricName as the line content.
 	return &chplan.Project{
 		Input: plan,
 		Projections: []chplan.Projection{
-			{Expr: &chplan.LitString{V: ""}, Alias: "MetricName"},
+			{Expr: &chplan.ColumnRef{Name: s.BodyColumn}, Alias: "MetricName"},
 			{Expr: &chplan.ColumnRef{Name: s.ResourceAttributesColumn}, Alias: "Attributes"},
 			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: "TimeUnix"},
-			// Body lives in chclient.Sample.MetricName when it's a string;
-			// the stream-result builder pulls it out below.
-			{Expr: &chplan.ColumnRef{Name: s.BodyColumn}, Alias: "Value"},
+			// Wrap the placeholder zero in toFloat64 so CH returns the column
+			// as Float64; without the cast a bare `0` literal becomes UInt8
+			// and clickhouse-go's Scan rejects UInt8 → *float64.
+			{Expr: &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{&chplan.LitFloat{V: 0}}}, Alias: "Value"},
 		},
 	}
 }
