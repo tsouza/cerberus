@@ -39,6 +39,9 @@ dist/
 .direnv/
 .envrc.local
 
+# Per-developer Claude Code settings (permissions etc.)
+.claude/settings.local.json
+
 # Local kubeconfig / k3d state
 .kube/
 .k3d/
