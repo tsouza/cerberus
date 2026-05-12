@@ -81,6 +81,8 @@ func readAggregateExpr(agg traceql.Aggregate) (traceql.FieldExpression, error) {
 	if !field.IsValid() {
 		return nil, fmt.Errorf("traceql: Aggregate has no `e` field (Tempo internal layout changed?)")
 	}
+	// #nosec G103 — intentional unsafe.Pointer to read Tempo's unexported
+	// FieldExpression field. Safety justification is documented above.
 	ptr := unsafe.Pointer(field.UnsafeAddr())
 	expr := *(*traceql.FieldExpression)(ptr)
 	return expr, nil
