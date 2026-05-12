@@ -2,9 +2,15 @@
 
 All notable changes to cerberus will be documented in this file. The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), with one entry per tagged release.
 
-## [Unreleased] — towards v1.0.0-RC1
+## [Unreleased]
 
-The seed (PR1–PR7 + admin + v0.1.0) plus M1–M4 + corpus expansion + Playwright + E2E HTTP tests + RC6 / RC7 plan consolidation. All RC1 work is now in flight or merged; the tag is the only step left.
+(Work toward v1.0.0-RC2 lands here. See [`docs/roadmap.md`](docs/roadmap.md) for the milestone backlog.)
+
+## [v1.0.0-RC1]
+
+The seed (PR1–PR7 + admin + v0.1.0) plus M1–M4 (full PromQL / LogQL / TraceQL parsing → lowering → execution) + corpus expansion (TXTAR 122 → 166 fixtures, ~280 new unit-test sub-cases, E2E HTTP 12 → 26, Playwright 10 → 19 scenarios) + RC6 / RC7 plan consolidation.
+
+Six pre-existing cerberus bugs surfaced by the RC1 test-coverage push are tracked on the project board as RC2 deferrals (each with a cross-referenced `t.Skip` / `test.skip` marker in the source): wrap-projection over RangeWindow / StructuralJoin / Filter(Aggregate) column-scope mismatch, and bare-scalar PromQL (`1+1`) not lowering.
 
 ### Added
 
@@ -80,5 +86,6 @@ First tagged release. Closes the seed series (PR1–PR7 + admin + roadmap):
 - CI: two-job workflow (`check` + `lint`), commitlint relaxed for Dependabot, markdownlint, mutation testing (gremlins) on a nightly cron.
 - Branch protection on `main`: required checks, linear history, no force pushes / deletions.
 
-[Unreleased]: https://github.com/tsouza/cerberus/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/tsouza/cerberus/compare/v1.0.0-RC1...HEAD
+[v1.0.0-RC1]: https://github.com/tsouza/cerberus/releases/tag/v1.0.0-RC1
 [v0.1.0]: https://github.com/tsouza/cerberus/releases/tag/v0.1.0
