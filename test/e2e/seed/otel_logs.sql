@@ -44,6 +44,10 @@ SELECT
         arrayElement(['handled request', 'connection refused', 'slow query', 'cache hit', 'auth failed'], number % 5 + 1),
         ' id=', toString(number)
     ),
-    map('service.name', arrayElement(['api', 'frontend', 'db'], number % 3 + 1)),
+    -- Use underscored `service_name` so LogQL `{service_name="api"}`
+    -- (which keeps the matcher name verbatim) hits the ResourceAttributes
+    -- key cerberus's labelMatcherToExpr looks up. Prom/OTel naming bridge
+    -- (`service_name` ↔ `service.name`) is RC2 work.
+    map('service_name', arrayElement(['api', 'frontend', 'db'], number % 3 + 1)),
     map('thread', concat('worker-', toString(number % 4)))
 FROM numbers(60);
