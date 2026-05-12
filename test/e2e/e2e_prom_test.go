@@ -15,18 +15,7 @@ import (
 
 // TestPromQueryRangeRate exercises the M1.1 RangeWindow SQL path:
 // rate() over a 5-minute window against the seeded counter.
-//
-// Skipped until RC2: the wrap-sample projection on top of RangeWindow
-// references MetricName / TimeUnix / Value columns, but RangeWindow's
-// output is just (<group keys>, value). CH responds with a
-// "missing columns" error and the request returns 502. The fix lives
-// in either the chsql emitter (project group-keys + synthesise the
-// missing columns at the windowed-array boundary) or in executeInstant
-// (skip the wrap when the lowered plan root is a RangeWindow). The
-// existing Prom unit tests don't surface this because they stub the
-// Querier — only a real CH integration like this E2E exercise does.
 func TestPromQueryRangeRate(t *testing.T) {
-	t.Skip("rate-in-query_range projection deferred to RC2 — wrap-projection vs RangeWindow output column mismatch")
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 

@@ -87,18 +87,7 @@ func TestTempoSearch_AndFilter(t *testing.T) {
 
 // TestTempoSearch_StructuralChild — `{ frontend } > { api }` runs the
 // inner-join self-query on (TraceId, ParentSpanId).
-//
-// Skipped until RC2: the wrap-sample projection on top of
-// StructuralJoin references SpanName/ResourceAttributes/Timestamp by
-// their bare names, but StructuralJoin's `SELECT R.* FROM ...` output
-// doesn't expose them without R-prefixed qualifiers. CH responds:
-//
-//	code 47, message: Unknown expression identifier 'SpanName' in scope
-//
-// Same bug class as TestPromQueryRangeRate (wrap-projection vs
-// derived-plan column mismatch). Tracked on the project board.
 func TestTempoSearch_StructuralChild(t *testing.T) {
-	t.Skip("wrap-projection over StructuralJoin column-scope mismatch — deferred to RC2 (same bug class as TestPromQueryRangeRate)")
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
@@ -119,14 +108,7 @@ func TestTempoSearch_StructuralChild(t *testing.T) {
 
 // TestTempoSearch_CountScalar — `{ frontend } | count() > 0` exercises
 // the Aggregate + ScalarFilter lowering.
-//
-// Skipped until RC2: the wrap-sample projection on top of
-// Filter(Aggregate(Scan)) references SpanName, but the Aggregate's
-// output is just `Value`. Same column-scope mismatch as
-// TestTempoSearch_StructuralChild; CH responds with code 47 "Unknown
-// expression identifier 'SpanName' in scope".
 func TestTempoSearch_CountScalar(t *testing.T) {
-	t.Skip("wrap-projection over Filter(Aggregate) column-scope mismatch — deferred to RC2")
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
