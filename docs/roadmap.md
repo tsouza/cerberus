@@ -211,11 +211,62 @@ Driven by an audit of cerberus against [12factor.net](https://12factor.net/). Mo
 
 ## RC6 — type-safe SQL via go-sqlbuilder
 
-**Hard rule (non-negotiable, takes effect at RC6 cut):** plain strings and `fmt.Sprintf` are forbidden for ClickHouse SQL generation. Every emitted SQL fragment goes through [`huandu/go-sqlbuilder`](https://github.com/huandu/go-sqlbuilder) (or a thin cerberus-internal extension on top of it). Concatenation and templated identifiers are an injection vector even with parameterised values; the builder tracks identifiers, args, and dialect quoting in one place.
+**Hard rule (non-negotiable, takes effect at RC6 cut):** plain strings and `fmt.Sprintf` are forbidden for ClickHouse SQL generation. Every emitted SQL fragment goes through a typed builder — either [`huandu/go-sqlbuilder`](https://github.com/huandu/go-sqlbuilder) wrapped with a cerberus-internal extension layer, *or* a custom `internal/chsql/builder.go` tailored to chplan IR. The choice is made in R6.0 below. Concatenation and templated identifiers are an injection vector even with parameterised values; the builder tracks identifiers, args, and dialect quoting in one place.
 
 ### Why now (and not earlier)
 
 Through RC1 the emitter grew Sprintf-driven for speed: `internal/chsql/emit_node.go`, `emit_expr.go`, `range_window.go`, `vector_join.go`, plus the metadata SQL in `internal/api/prom/metadata.go`. That worked for landing the surface, but every helper is hand-quoted, each subquery is a string-pasted hole, and there's no central ClickHouse dialect handling. RC6 reorganises that into a typed, builder-first emitter so RC3's optimizer changes can compose SQL programmatically (PREWHERE promotion, sort-key-aware predicate ordering, MV substitution) without re-scaffolding the string layer.
+
+### R6.0 — Evaluation phase (prerequisite)
+
+This is a *decision* milestone, not a code milestone. Its single deliverable is a written evaluation in `docs/sql-builder-evaluation.md` with a recommendation on which SQL-construction strategy RC6 will adopt. No emitter code changes here.
+
+**Inputs to evaluate:**
+
+1. **Security analysis (current state).** Inventory every `fmt.Sprintf` / string-concat callsite that produces ClickHouse SQL and classify each by injection-vector risk:
+   - Schema-derived identifiers (table + column names): low risk — comes from `internal/schema/` config, not user input. Risk surface is the env override path (`CERBERUS_SCHEMA_OVERRIDES_JSON`, lands in R5.3).
+   - Map keys (`Attributes['<key>']`): the key string flows from chplan IR; trace whether the parser/lowering ever surfaces an unfiltered user string into a key position.
+   - Regex patterns / literal values: already parameterised via `?` placeholders.
+   - Tempo's reflect-driven attribute name extraction (`internal/traceql/select.go`): does the upstream parser bound attribute-name characters?
+   - **Output:** a table of callsites × risk-class × current-mitigation, plus a list of any vectors not closed by `?`-placeholders today.
+
+2. **Project impact analysis.**
+   - Refactor scope: line count touched by a full port (today: 6 emit files + 3 handlers + `metadata.go` ≈ 2k LoC).
+   - Risk surface: subtle SQL semantic changes that pass golden updates but trip CH at runtime (e.g. ordering inside `OR` chains, `PREWHERE` placement, alias quoting).
+   - Test coverage protecting the refactor: count of TXTAR fixtures + integration tests as the safety net.
+   - Dependency exposure: pulling in `huandu/go-sqlbuilder` adds a new transitive surface; weigh against the current zero-dep emitter.
+
+3. **Benefit analysis.**
+   - **Security:** what new vectors does a typed builder close that `?` placeholders don't? Honest answer is likely "few" for cerberus today — the upstream parsers already constrain inputs. Defense-in-depth is real but incremental.
+   - **Architecture:** type-safe composition unlocks RC3's optimizer rules (PREWHERE promotion, sort-key reordering, MV substitution, late materialisation). This is the *primary* motivation, not security. Note: RC3 ships **before** RC6 chronologically, so the RC3 emitter work either takes a Sprintf-tax or RC6 jumps the queue. R6.0 evaluates whether to reorder.
+   - **Maintainability:** removes hand-quoting bugs (CH backtick rules, CH lambda syntax, parametric aggregates).
+   - **Testability:** builder-produced SQL is easier to introspect (per-fragment) than Sprintf-built strings.
+
+4. **Build vs buy decision matrix.** For each axis, score third-party (`huandu/go-sqlbuilder`) vs custom (`internal/chsql.Builder`):
+
+   | Axis                         | Third-party                       | Custom                              | Notes                                                                                                                                |
+   | ---------------------------- | --------------------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+   | CH idiom coverage out-of-box | partial                           | full                                | Both need MapAt/MapKeys/Lambda/ParamAgg/PREWHERE helpers; third-party also requires bridging its API to those — ~30–40% of the value is custom either way |
+   | Upstream maintenance         | shared                            | ours                                | `huandu/go-sqlbuilder` is actively maintained but small; if it stalls we fork                                                        |
+   | Onboarding                   | docs exist                        | we write docs                       | Third-party has a larger surface to learn                                                                                            |
+   | API match to chplan IR       | impedance                         | natural                             | Custom builder can be designed *around* chplan node shapes                                                                           |
+   | Code volume                  | smaller core, larger glue         | larger core, smaller glue           | Net LoC is similar                                                                                                                   |
+   | Security guarantees          | type system encodes               | we encode them                      | Equivalent if we're disciplined                                                                                                      |
+
+5. **Decision rule.** The evaluation produces ONE of three recommendations:
+   - **(a) Use `huandu/go-sqlbuilder` + cerberus extension layer.** Justified if the wrapping cost is materially less than building from scratch and the upstream is healthy enough to depend on.
+   - **(b) Build `internal/chsql.Builder` from scratch.** Justified if the impedance mismatch with chplan IR is large enough that wrapping the third-party is *more* work than building tailored, OR if the security-critical surface motivates having a single owned-and-audited builder.
+   - **(c) Defer the migration entirely.** Justified only if the security surface analysis (step 1) shows the current parameterised-emitter has zero open vectors AND the optimizer rules in RC3 can ship without typed SQL composition (unlikely but the eval should test the assumption).
+
+**Preliminary read** (for the eval to refute or confirm):
+
+- The injection surface today is narrow — every dynamic value already flows through `?` placeholders; identifier dynamism is bounded to schema config. Security alone wouldn't justify the migration.
+- The architectural motivation is real: RC3's optimizer rules need to compose SQL fragments, and Sprintf composition collapses under the weight (PREWHERE clauses, conditional WHERE chains, MV-substituted subtrees).
+- ~30–40% of the value (CH-specific helpers — MapAt, MapKeys, Lambda, ParamAgg, PREWHERE) is custom regardless of which library backs it.
+- Custom builder *may* be the lower-effort route precisely because chplan IR is well-defined and stable; wrapping a generic builder adds an impedance layer without removing the custom layer.
+- If recommendation is **(b) custom**, the API surface should mirror chplan node shapes one-to-one (Scan → ScanBuilder, Filter → FilterBuilder, etc.) so the emitter is a structural transformation, not an interpretation.
+
+**Exit criterion for R6.0:** `docs/sql-builder-evaluation.md` exists, recommends (a) / (b) / (c), and the maintainer (Thiago) has signed off on the choice. R6.1 — the first implementation milestone — is then concretely scoped against that choice (currently written assuming **(a)**; rewrite if **(b)** is chosen).
 
 ### Library survey
 
@@ -240,7 +291,7 @@ PR sequence:
 
 | #    | Item                                                                                                       |
 | ---- | ---------------------------------------------------------------------------------------------------------- |
-| R6.1 | Vendor `huandu/go-sqlbuilder`; add `internal/chsql/builder.go` with the cerberus-internal CH-flavor wrapper plus the helpers above (MapAt, MapKeys, MapFilterExcept, Now64, SubtractNanos, DateTime64Lit, Lambda, ParamAgg). Unit tests pin each helper's output. **No emitter changes yet** — pure scaffolding. |
+| R6.1 | Scaffolding per R6.0 decision: vendor `huandu/go-sqlbuilder` + add `internal/chsql/builder.go` as the CH-flavor wrapper (path **(a)**), *or* build `internal/chsql/builder.go` from scratch (path **(b)**). Either path provides the same helpers — MapAt, MapKeys, MapFilterExcept, Now64, SubtractNanos, DateTime64Lit, Lambda, ParamAgg, and a `SelectBuilder` that supports `.Prewhere(cond...)`. Unit tests pin each helper's output. **No emitter changes yet** — pure scaffolding. |
 | R6.2 | Port `emitScan`, `emitFilter`, `emitProject`, `emitLimit` (the simple ones). TXTAR fixtures regenerate; diff is whitespace / quoting only.                                                                                                                                                              |
 | R6.3 | Port `emitAggregate` + `emitAggFunc` (parameterised aggregates use `ParamAgg`).                              |
 | R6.4 | Port `emitBinary` + `emitMapAccess` + `emitMapWithoutKeys` + `emitFunc` + `emitLineContent`.                  |
@@ -251,7 +302,9 @@ PR sequence:
 | R6.9 | **Lint enforcement**: add a custom golangci-lint rule (or a `cmd/check-sql/` Go tool wired into `just check-sql`) that scans `internal/chsql/`, `internal/api/`, `internal/optimizer/` for `fmt.Sprintf` calls whose first arg contains `SELECT`, `WHERE`, `FROM`, `INSERT`, etc. Fails the `lint` CI check on regressions. |
 | R6.10 | `CLAUDE.md` hard-rule update: `**No raw SQL strings.**` becomes a top-level non-negotiable; `docs/sql-style.md` documents the helper API and its escape hatches (when `Raw()` is acceptable, when a custom `chsql.SelectBuilder` extension is preferable). |
 
-### Open questions to resolve in R6.1
+### Open questions to resolve in R6.1 (path **(a)** — third-party)
+
+These apply only if R6.0 picks the third-party route. Path **(b)** custom answers them by design (we own the quoting, args lifecycle, and performance characteristics).
 
 - **Identifier quoting**: does `sqlbuilder.ClickHouse` flavor backtick-quote identifiers? If not, we keep our `quoteIdentCH` helper but feed it through the builder's `Var()` mechanism so escaping stays consistent.
 - **`Args` lifecycle**: each builder has its own `Args` accumulator. Nested builders compose via `BuilderAs`; the placeholder positions get re-numbered. Verify with a worst-case nested subquery (e.g. the windowed-array RangeWindow) that the resulting `Build()` output matches what the chclient driver expects.
