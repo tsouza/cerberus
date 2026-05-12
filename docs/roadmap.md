@@ -28,7 +28,7 @@ The remaining items from the original seed plan, plus the compliance harness sca
 | #   | Theme                       | Outcome                                                                                                          |
 | --- | --------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | M0.1 | k3d deploy + Justfile e2e   | `deploy/k3s/`, `deploy/grafana/`, `just e2e-{up,seed,run,down,playwright}`                                        |
-| M0.2 | Playwright smoke + workflow | `test/e2e/playwright/`, `.github/workflows/dashboard.yml`                                                          |
+| M0.2 | Playwright smoke + workflow | `test/e2e/playwright/`, `.github/workflows/e2e.yml` (the `dashboard` job)                                          |
 | M0.3 | AI-agent seed               | `CLAUDE.md`, `AGENTS.md`, three `.claude/skills/`                                                                  |
 | M0.4 | Engineering hygiene         | `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`, `.github/CODEOWNERS`, PR template                          |
 | M0.5 | Release plumbing            | `release.yml` + `.goreleaser.yml`; tag `v0.1.0` to validate the path                                              |
