@@ -1,16 +1,13 @@
 name: compliance
 
 on:
+  # Until M6 the compliance harness is an informational baseline: it
+  # legitimately fails because most PromQL surface is still landing.
+  # Running it on every PR surfaced confusing red checks; until we
+  # graduate it to a real gate (M6), it runs only on main pushes,
+  # nightly, and manual dispatch.
   push:
     branches: [main]
-    paths:
-      - 'internal/promql/**'
-      - 'internal/chsql/**'
-      - 'internal/optimizer/**'
-      - 'internal/chplan/**'
-      - 'harness/compliance/**'
-      - '.github/workflows/compliance.yml'
-  pull_request:
     paths:
       - 'internal/promql/**'
       - 'internal/chsql/**'
