@@ -23,7 +23,7 @@ ClickHouse is a great single store for all three signals. The only thing missing
 
 ## Status
 
-> 🚧 **v0.1 seed in progress** — the architecture, build, test, and CI surface are landing; PromQL works end-to-end as a vertical slice; LogQL and TraceQL are scaffolded for symmetry but not yet wired through.
+> 🟢 **`v1.0.0-RC1` — release candidate.** PromQL is functionally complete (`prometheus/compliance` informational baseline tracked, gates at M6); LogQL covers stream selectors, label filters, the metric form, and aggregations; TraceQL covers spanset filters, structural relations (`>`, `<`), and `count()`. The Prom HTTP head is fully wired into Grafana; Loki's `query` / `query_range` work end-to-end. See [`CHANGELOG.md`](CHANGELOG.md) for the full v1.0.0-RC1 entry and the deferral list for RC2.
 
 ## Architecture
 
