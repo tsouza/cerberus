@@ -191,11 +191,34 @@ func wrapWithSampleProjection(plan chplan.Node, s schema.Metrics) chplan.Node {
 		projections = []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
 			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
-			{Expr: &chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}}, Alias: s.TimestampColumn},
+			// Synthesised eval anchor: now64(9) minus 5s. The minus-5s
+			// buffer keeps the stamped TimeUnix safely within the request's
+			// [start, end] window — CH's now64() runs slightly after the
+			// client's `end` parameter (RTT + cluster clock skew), and
+			// toMatrixStepGrid drops samples timestamped past `end`. M2.1
+			// threads the API's `end` param into the plan so this hack
+			// goes away; until then 5s covers realistic skew.
+			{Expr: synthesizedAnchor(), Alias: s.TimestampColumn},
 			{Expr: &chplan.ColumnRef{Name: "value"}, Alias: s.ValueColumn},
 		}
 	}
 	return &chplan.Project{Input: plan, Projections: projections}
+}
+
+// synthesizedAnchor returns the CH expression cerberus stamps on
+// rate / count_over_time / … sample rows for query_range bucketing.
+// Equivalent to `now64(9) - toIntervalNanosecond(5e9)` — 5 seconds
+// before CH-now. See the docstring on wrapWithSampleProjection's
+// derived-shape branch for the rationale.
+func synthesizedAnchor() chplan.Expr {
+	return &chplan.Binary{
+		Op:   chplan.OpSub,
+		Left: &chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}},
+		Right: &chplan.FuncCall{
+			Name: "toIntervalNanosecond",
+			Args: []chplan.Expr{&chplan.LitInt{V: 5_000_000_000}},
+		},
+	}
 }
 
 // isDerivedShape reports whether the plan's output schema lacks the

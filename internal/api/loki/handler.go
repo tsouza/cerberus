@@ -193,7 +193,14 @@ func wrapWithLogSampleProjection(plan chplan.Node, s schema.Logs, expr syntax.Ex
 			Projections: []chplan.Projection{
 				{Expr: &chplan.LitString{V: ""}, Alias: "MetricName"},
 				{Expr: &chplan.ColumnRef{Name: s.ResourceAttributesColumn}, Alias: "Attributes"},
-				{Expr: &chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}}, Alias: "TimeUnix"},
+				// now64(9) - 5s buffer; see prom handler's synthesizedAnchor
+				// docstring. Avoids toMatrixStepGrid dropping the only row
+				// when CH-now > client-end.
+				{Expr: &chplan.Binary{
+					Op:    chplan.OpSub,
+					Left:  &chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}},
+					Right: &chplan.FuncCall{Name: "toIntervalNanosecond", Args: []chplan.Expr{&chplan.LitInt{V: 5_000_000_000}}},
+				}, Alias: "TimeUnix"},
 				{Expr: &chplan.ColumnRef{Name: "value"}, Alias: "Value"},
 			},
 		}
