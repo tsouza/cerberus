@@ -1,0 +1,4 @@
+-- sql --
+SELECT R.* FROM (SELECT * FROM `otel_traces`) AS L INNER JOIN (SELECT * FROM `otel_traces`) AS R ON L.`TraceId` = R.`TraceId` AND L.`ParentSpanId` = R.`SpanId`
+-- args --
+(none)
