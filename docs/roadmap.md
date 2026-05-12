@@ -11,6 +11,8 @@ This document is the public-facing narrative for the path to `v1.0.0`. Status by
 | **v1.0.0-RC3**   | Optimizer rewrite + performance + advanced testing                     | Pattern-based rules, MV substitution, shadow-mode differential, fuzz + chaos + perf benchmarks   |
 | **v1.0.0-RC4**   | Full self-observability                                                | Cerberus emits its own structured logs (slog), OTel metrics + traces, defaults to the same CH    |
 | **v1.0.0-RC5**   | 12-factor compatibility + polish                                          | `/readyz`, dev `docker-compose.yml`, env-driven schema overrides, `docs/12factor.md`, fast-start  |
+| **v1.0.0-RC6**   | Type-safe SQL via go-sqlbuilder (R6.0 evaluation → R6.1–R6.10 port)     | No `fmt.Sprintf`-on-SQL anywhere; typed builder with CH-specific helpers; lint enforcement       |
+| **v1.0.0-RC7**   | `internal/engine/` ExecutionEngine framework (R7.0 evaluation → R7.1–R7.8 port) | One pipeline owner; handlers under ~150 LoC each; shared format + httperr helpers       |
 | **v1.0.0**       | Tag the last green RC                                                  | All RCs stable; public API frozen in `pkg/`                                                       |
 
 The existing **3-rule optimizer** (filter-fusion, constant-fold, projection-pushdown) ships unchanged through RC1 and RC2. **No new optimizer work happens before RC3** — its full backlog lives in [`docs/optimizer-research.md`](optimizer-research.md).
@@ -105,10 +107,11 @@ The remaining ~10% per QL, plus the deferred API endpoints. Each lands as its ow
 
 - **PromQL** — subqueries (`m[1h:5m]`); `histogram_quantile` on native histograms; `predict_linear`, `holt_winters`; `@start()`/`@end()`; exemplar attachment; recording-rule inline expansion; `group_left`/`group_right` cardinality enforcement edge cases.
 - **LogQL** — `| unpack`, `| pattern`; advanced `label_format` templating; `bytes_*` precise alignment; `tail` (WebSocket streaming).
-- **TraceQL** — multi-hop structural chains with predicates at each hop; `histogram_over_time`; link traversal + span-event queries; root-span filtering in nested conditions.
-- **HTTP APIs** — Prom `query_exemplars`, `format_query`, `parse_query`; Loki `tail`, `index/stats`, `index/volume`, `detected_fields`, `patterns`; Tempo `search/recent`, `metrics/query_range`.
+- **TraceQL** — multi-hop structural chains (`>>` / `<<` recursive forms); `status = error` / `kind = client` enum statics; `histogram_over_time`; link traversal + span-event queries; root-span filtering in nested conditions; `sum(.attr)` / `avg(.attr)` / `max(.attr)` / `min(.attr)` (blocked on Tempo's unexported `Aggregate.e` field — needs alternative extraction).
+- **HTTP APIs** — Prom `query_exemplars`, `format_query`, `parse_query`; Loki `tail`, `index/stats`, `index/volume`, `detected_fields`, `patterns`; Tempo `search/recent`, `metrics/query_range`, `search/tags`, `search/tag/<n>/values` (the last two gated on RC6 R6.1 sqlbuilder so the new SQL avoids Sprintf).
+- **Self-contained deployment** — replace the synthetic `test/e2e/seed/otel_metrics.sql` with a real OTel pipeline in the k3d stack: OpenTelemetry Collector (contrib image) + ClickHouse exporter that **creates the OTel-CH schema** on startup and collects real k8s telemetry (kubelet/cAdvisor metrics, container logs, collector self-traces, optional sample-app OTLP traces). Cerberus then queries that real data through Grafana for E2E. The TXTAR + synthetic-SQL seeding stays for unit/spec tests where determinism matters more than realism. Unblocks RC4's "cerberus eats its own dogfood" architecture.
 
-**Exit criterion:** the lists above empty out; compatibility pass rate stays ≥ RC1 baseline.
+**Exit criterion:** the lists above empty out; compatibility pass rate stays ≥ RC1 baseline; `just e2e-up` brings up a stack where data flows from real OTel sources, not synthetic INSERTs.
 
 ---
 
@@ -316,6 +319,105 @@ These apply only if R6.0 picks the third-party route. Path **(b)** custom answer
 - Every TXTAR fixture either matches its prior golden bit-for-bit or has a documented whitespace/aliasing diff in the porting PR's description.
 - `internal/chsql/builder_test.go` has ≥ one test per helper in `internal/chsql/builder.go`, exercising the placeholder + arg ordering.
 - `docs/sql-style.md` published with the helper catalog and the "when can I use Raw()?" guidance.
+
+---
+
+## RC7 — `internal/engine/` ExecutionEngine framework
+
+By RC1's end, every Prom / Loki / Tempo handler runs the same five-stage pipeline — parse → lower → wrap-projection → optimize → emit → query → format — with per-QL adapters at each stage. The repetition is mechanical (5 callsites today, all with subtle drift between them) and grows by one with every new HTTP route. RC7 lifts the common loop into `internal/engine/` so handlers become thin HTTP shells over a `engine.Query(ctx, lang, q)` call. Like RC6, it starts with an evaluation phase: the framework is only worth building if the audit shows the pattern actually generalises.
+
+### Why now (chronologically after RC6)
+
+- The framework is most valuable *after* RC3's optimizer changes and RC6's typed SQL land — those work products would otherwise have to be duplicated by-handler. By RC7 the shared pipeline has stable shape.
+- RC4 self-observability also benefits: one Engine.Query span covers parse + lower + optimize + emit + query for every QL, rather than three separate sets of instrumentation.
+- RC3's shadow-mode differential testing (R3.9) and local-Go evaluator fallback (R3.10) need a place to live; Engine is the natural strategy host.
+
+### R7.0 — Evaluation phase (prerequisite)
+
+Decision milestone. Output: `docs/execution-engine-evaluation.md` with a recommendation on whether to build the framework.
+
+**Inputs to evaluate (audit must be re-run at RC7 cut — code shape will have drifted):**
+
+1. **Pipeline-callsite inventory.** Enumerate every place that runs parse / lower / wrap / optimize / emit / query, with line counts and per-stage divergence:
+   - `internal/api/prom/handler.go` `executeInstant` — full pipeline, times CH calls via `timeCH(...)` → `X-Cerberus-CH-Millis` header.
+   - `internal/api/prom/metadata.go` `matcherSQL` — partial: parse / lower / optimize / emit only (no execute).
+   - `internal/api/loki/handler.go` `execute` — full pipeline; conditional `wrapWithLogSampleProjection` branches on metric-vs-stream; does NOT time CH calls (regression vs Prom).
+   - `internal/api/tempo/handler.go` `handleSearch` — full pipeline; does NOT time CH calls.
+   - `internal/api/tempo/handler.go` `handleTraceByID` — skips parser, builds plan directly.
+   - **Output:** a table of (callsite × stage × divergence × line count). The audit reveals whether the divergences are mechanical (Engine absorbs them) or semantic (per-QL needs survive).
+
+2. **Per-handler duplication.** Code that's already copy-pasted across the three handlers and would collapse under Engine:
+   - `canonicalKey`, `toVector`, `toMatrixStepGrid`, `withMetricName`, `parseTime`, `parseDuration` — three copies, nearly identical.
+   - `apiError`, `writeJSON`, `writeError`, `respondError` — three copies, only the errorType-string differs.
+   - `wrapWithSampleProjection` / `wrapWithLogSampleProjection` — three copies; the "shape the Sample row" responsibility is the same.
+   - **Output:** estimated LoC saved by extracting these to `internal/api/format/` (response shaping) + `internal/api/httperr/` (error mapping). Engine wraps the rest.
+
+3. **Engine surface design.** Sketch what the API would look like:
+
+   ```go
+   package engine
+
+   type Engine struct {
+       Lang      Lang             // per-QL adapter (Parse + ProjectSamples)
+       Optimizer *optimizer.Driver
+       Client    Querier
+       Logger    *slog.Logger
+   }
+
+   type Lang interface {
+       Name() string                                        // "promql" / "logql" / "traceql"
+       Parse(query string) (chplan.Node, Meta, error)        // lowered plan + per-QL hints
+       ProjectSamples(node chplan.Node, meta Meta) chplan.Node
+   }
+
+   type Meta struct {
+       IsMetric    bool   // logql: distinguishes metric-vs-stream output
+       IsTraceByID bool   // tempo: signals projection variant
+       // ... extensible via untyped extras if needed
+   }
+
+   type Result struct {
+       Samples       []chclient.Sample
+       SQL, Strategy string
+       Args          []any
+       CHMillis      int64
+       PlanNodeCount int
+   }
+
+   func (e *Engine) Query(ctx context.Context, q string) (Result, error)
+   func (e *Engine) QueryPlan(ctx context.Context, plan chplan.Node) (Result, error)
+   ```
+
+   Per-QL adapters live in `internal/engine/lang/{promql,logql,traceql}/`.
+
+4. **Cost/benefit.**
+   - **Pros:** one instrumentation point (RC4 simplification); one strategy switch (RC3 shadow-mode / fallback hooks); one place to add caching / rate limiting / hedging in future RCs; handlers become testable without stubbing the whole pipeline.
+   - **Cons:** abstraction tax — readers chase one extra layer; LoC churn ~1k+ during the port; risk of designing the wrong seam if the per-QL drift turns out to be semantic, not mechanical.
+   - **The audit's job:** prove the pattern generalises. If 3+ of the 5 callsites diverge in ways the abstraction can't absorb cleanly, recommend **defer**.
+
+5. **Decision rule.** R7.0 produces one of three recommendations:
+   - **(a) Build.** Audit shows the pipeline shape is mechanical across handlers; per-QL drift fits into a `Lang` adapter without ad-hoc escape hatches.
+   - **(b) Partial.** Build only the shared-helpers extraction (`internal/api/format/` + `internal/api/httperr/`) without the Engine struct itself. Cheaper, captures most of the duplication, no abstraction tax.
+   - **(c) Defer.** Per-QL divergence is large enough that the framework would carry too many escape hatches; revisit at a later RC if the divergence shrinks.
+
+**Preliminary read** (for R7.0's PR to refute or confirm): the pipeline is mechanical across the three QLs today, but RC3 + RC4 + RC6 are likely to *increase* per-handler divergence (timing, OTel spans, builder calls). Doing the Engine refactor *after* those land — at RC7 — means the abstraction is informed by all the divergence axes, not just today's narrow ones. Recommendation likely **(a) Build**, but the eval might find that **(b) Partial** captures 80% of the value at 20% of the risk.
+
+**Exit criterion for R7.0:** `docs/execution-engine-evaluation.md` exists, recommends (a) / (b) / (c), maintainer signs off. R7.1+ scope concretely against the choice.
+
+### Implementation milestones (gated on R7.0)
+
+| #    | Item                                                                                                                                                              |
+| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| R7.1 | `internal/engine/` package with `Engine` struct + `Lang` interface + `Meta` + `Result` types. Unit tests with a fake Querier. **No handler changes yet.**          |
+| R7.2 | `internal/engine/lang/promql/` adapter. Port `internal/api/prom/handler.go` to use `engine.Query` and `engine.QueryPlan`; drop `executeInstant`, `Optimizer` field, `wrapWithSampleProjection` from the handler. Tests still pass. |
+| R7.3 | Same for `internal/engine/lang/logql/` + `internal/api/loki/handler.go`. The metric-vs-stream branch becomes a `Meta.IsMetric` flag, set by the parse step.           |
+| R7.4 | Same for `internal/engine/lang/traceql/` + `internal/api/tempo/handler.go`. `handleTraceByID` becomes `engine.QueryPlan(plan)`.                                      |
+| R7.5 | Extract `internal/api/format/`: `canonicalKey`, `toVector`, `toMatrixStepGrid`, `withMetricName`, `parseTime`, `parseDuration`. Prom + Loki dedupe.                  |
+| R7.6 | Extract `internal/api/httperr/`: `apiError`, `writeJSON`, `writeError`, `respondError`. Each handler keeps just its head's specific error-shape mapping (Prom errorType strings, Tempo's distinct error envelope). |
+| R7.7 | Engine instrumentation: `Result.CHMillis` + `Result.Strategy` + `Result.PlanNodeCount` exposed via response headers (`X-Cerberus-CH-Millis`, `X-Cerberus-Strategy`, `X-Cerberus-Plan-Nodes`). Loki + Tempo gain CH timing they currently lack. |
+| R7.8 | Engine becomes the natural seat for RC3's strategy switch and RC4's OTel hooks. Document the extension points in `docs/engine.md` so RC8+ work plugs in cleanly.    |
+
+**Exit criterion:** `internal/api/{prom,loki,tempo}/handler.go` are each under ~150 LoC and contain only HTTP wrapping + response shaping; `internal/engine/` carries the pipeline; all three handlers emit `X-Cerberus-CH-Millis`; the existing TXTAR + compatibility + Playwright suites pass without changes (refactor is behavioural-equivalence).
 
 ---
 
