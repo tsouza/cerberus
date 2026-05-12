@@ -1,4 +1,4 @@
--- Deterministic OTel fixture for the PromQL compliance harness.
+-- Deterministic OTel fixture for the PromQL compatibility harness.
 --
 -- Seeds otel_metrics_gauge + otel_metrics_sum with predictable series
 -- covering the constructs the upstream prometheus/compliance corpus

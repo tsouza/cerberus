@@ -2,9 +2,9 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
   external_labels:
-    monitor: "compliance-reference"
+    monitor: "compatibility-reference"
 
 # Reference Prometheus doesn't scrape anything live; the deterministic
 # OTel fixture is remote-written by the seeder, and queries hit /api/v1/
-# from the compliance tester.
+# from the compatibility tester.
 scrape_configs: []

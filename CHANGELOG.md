@@ -2,15 +2,9 @@
 
 All notable changes to cerberus will be documented in this file. The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), with one entry per tagged release.
 
-## [Unreleased]
+## [Unreleased] — towards v1.0.0-RC1
 
-### Added
-
-- Five-phase RC roadmap (RC1–RC5) plus RC6 sqlbuilder refactor in `docs/roadmap.md`.
-
-## [v1.0.0-RC1] — Full PromQL / LogQL / TraceQL slice
-
-The first release candidate. PromQL is functionally complete against the `prometheus/compliance` suite (informational baseline tracked); LogQL covers stream selectors, label filters, the metric form, and aggregations; TraceQL covers spanset filters, structural relations, and `count()`. The Prom HTTP head is fully wired into Grafana; Loki's `query` / `query_range` work end-to-end.
+The seed (PR1–PR7 + admin + v0.1.0) plus the merged M1–M3 + M4.1–M4.3 work below. **Not yet a release candidate** — M4.4 (time filters + `| select(...)`) and M4.5 (Tempo HTTP API + derived corpus) still need to land, and the compatibility test suite needs to expand to cover everything that's been implemented (cerberus-side corpus + meaningful Grafana Playwright scenarios) before the v1.0.0-RC1 tag.
 
 ### Added
 
@@ -41,7 +35,7 @@ The first release candidate. PromQL is functionally complete against the `promet
 - Aggregations: `sum(rate(...))`, `avg by (job) (count_over_time(...))`, `sum without (pod) (...)`, with stddev / stdvar / group / quantile parity to PromQL. [#62]
 - Loki HTTP `query` + `query_range` handlers; metric queries return Prom-style matrix/vector, log queries return Loki "streams" shape. [#63]
 
-#### TraceQL (M4.1 – M4.3)
+#### TraceQL (M4.1 – M4.3, partial)
 
 - `schema.Traces` + `chplan.FieldAccess` for dotted-path attribute references; SpansetFilter with intrinsic resolution (`duration`, `name`, `kind`, `status`, `traceID`, `spanID`, `parent`) and scope-prefixed paths (`resource.` → ResourceAttributes, `span.` → SpanAttributes). [#64]
 - Direct structural ops `>` (parent of) and `<` (child of) via `chplan.StructuralJoin` rendering an INNER JOIN of two span subqueries on `(TraceId, ParentSpanId)`. [#65]
@@ -50,16 +44,22 @@ The first release candidate. PromQL is functionally complete against the `promet
 #### Engineering / CI
 
 - Required-status checks: `check`, `lint`, `dashboard` (full-stack k3d + cerberus + Grafana + Playwright smoke). `enforce_admins: true`; `gh pr merge --admin` is forbidden. [#56, #59, #60]
-- Compliance harness drops the `pull_request` trigger until M6; runs nightly + on `main` push as informational baseline. [#56]
+- Compatibility harness drops the `pull_request` trigger until M6; runs nightly + on `main` push as informational baseline. [#56]
 - RC6 roadmap entry with hard rule: no `fmt.Sprintf` (or string concatenation) for ClickHouse SQL going forward; existing emitter Sprintf is grandfathered until R6.1–R6.10 ports it through `huandu/go-sqlbuilder`. [#57]
+
+### Pending before v1.0.0-RC1
+
+- **M4.4** time filters + `| select(...)` projection.
+- **M4.5** Tempo HTTP API (`/api/search`, `/api/traces/<id>`, `/api/search/tags`, `/api/search/tag/<n>/values`) + derived corpus.
+- **Compatibility test suite expansion**: cerberus-side corpus exercising every implemented feature (PromQL/LogQL/TraceQL surface) so the test suite — not just upstream `prometheus/compliance` — catches regressions.
+- **Meaningful Grafana Playwright scenarios**: instant + range Prom panels, label picker, sum-by panel, log search, rate panel, trace search, structural query — each scenario asserts the rendered panel shows the expected data.
 
 ### Deferred to RC2
 
 - PromQL: subqueries, `histogram_quantile` over native histograms, `topk` / `bottomk` / `count_values` (output-shape changes).
 - LogQL: parser stages (`| json`, `| logfmt`, `| regexp`, `| pattern`); `unwrap`-based ops; `tail`; `index/stats`.
-- TraceQL: recursive structural ops `>>` / `<<`, set ops, sibling ops; `sum/avg/max/min` over inner attributes (Tempo's parser keeps the inner expression on an unexported field — needs an upstream accessor); `| select(...)`.
+- TraceQL: recursive structural ops `>>` / `<<`, set ops, sibling ops; `sum/avg/max/min` over inner attributes (Tempo's parser keeps the inner expression on an unexported field — needs an upstream accessor).
 - Loki HTTP: `/labels`, `/label/.../values`, `/series` (gated on RC6 R6.1's sqlbuilder integration so the new SQL is type-safe), stream-aware row decoder, `tail`.
-- Tempo HTTP: `/api/search`, `/api/traces/<id>`, `/api/search/tags`, `/api/search/tag/<n>/values`.
 
 ## [v0.1.0] — Seed
 
@@ -74,6 +74,5 @@ First tagged release. Closes the seed series (PR1–PR7 + admin + roadmap):
 - CI: two-job workflow (`check` + `lint`), commitlint relaxed for Dependabot, markdownlint, mutation testing (gremlins) on a nightly cron.
 - Branch protection on `main`: required checks, linear history, no force pushes / deletions.
 
-[Unreleased]: https://github.com/tsouza/cerberus/compare/v1.0.0-RC1...HEAD
-[v1.0.0-RC1]: https://github.com/tsouza/cerberus/releases/tag/v1.0.0-RC1
+[Unreleased]: https://github.com/tsouza/cerberus/compare/v0.1.0...HEAD
 [v0.1.0]: https://github.com/tsouza/cerberus/releases/tag/v0.1.0

@@ -69,11 +69,11 @@ lint:
 
 # Lint all Markdown files (run via npm exec; no global Node deps).
 lint-md:
-    npm exec --yes -- markdownlint-cli2@{{MARKDOWNLINT_VERSION}} "**/*.md" "!harness/compliance/upstream/**" "!**/node_modules/**"
+    npm exec --yes -- markdownlint-cli2@{{MARKDOWNLINT_VERSION}} "**/*.md" "!harness/compatibility/upstream/**" "!**/node_modules/**"
 
 # Auto-fix Markdown lint issues where possible.
 fmt-md:
-    npm exec --yes -- markdownlint-cli2@{{MARKDOWNLINT_VERSION}} --fix "**/*.md" "!harness/compliance/upstream/**" "!**/node_modules/**"
+    npm exec --yes -- markdownlint-cli2@{{MARKDOWNLINT_VERSION}} --fix "**/*.md" "!harness/compatibility/upstream/**" "!**/node_modules/**"
 
 # Format Go code.
 fmt:
@@ -168,18 +168,18 @@ e2e-down:
 # Full lifecycle.
 e2e: e2e-up e2e-seed e2e-run e2e-playwright e2e-down
 
-# === Compliance (prometheus/compliance differential harness) ===
+# === Compatibility (prometheus/compliance differential harness) ===
 
-# Run the PromQL compliance suite end-to-end. Slow; expect minutes.
+# Run the PromQL compatibility suite end-to-end. Slow; expect minutes.
 # Sets up the Docker Compose stack (reference Prom + cerberus + CH + seeder),
-# runs the upstream tester, writes harness/compliance/report.json.
-compliance:
-    ./harness/compliance/scripts/run-compliance.sh
+# runs the upstream tester, writes harness/compatibility/report.json.
+compatibility:
+    ./harness/compatibility/scripts/run-compatibility.sh
 
-# Keep the compliance stack running after the tester finishes (for debugging).
-compliance-keep:
-    COMPOSE_KEEP=1 ./harness/compliance/scripts/run-compliance.sh
+# Keep the compatibility stack running after the tester finishes (for debugging).
+compatibility-keep:
+    COMPOSE_KEEP=1 ./harness/compatibility/scripts/run-compatibility.sh
 
-# Tear down the compliance stack manually.
-compliance-down:
-    cd harness/compliance && docker compose down -v
+# Tear down the compatibility stack manually.
+compatibility-down:
+    cd harness/compatibility && docker compose down -v

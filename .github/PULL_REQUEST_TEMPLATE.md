@@ -26,7 +26,7 @@ Roadmap: docs/roadmap.md
 - [ ] `just lint` clean
 - [ ] `just test` passes (race + spec)
 - [ ] New / updated TXTAR fixture(s) reviewed: <paths>
-- [ ] Compliance pass rate moved (if PromQL-touching): <before> → <after>
+- [ ] Compatibility pass rate moved (if PromQL-touching): <before> → <after>
 - [ ] CI green
 
 ## Notes for reviewers

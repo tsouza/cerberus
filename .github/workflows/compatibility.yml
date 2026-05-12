@@ -1,7 +1,7 @@
-name: compliance
+name: compatibility
 
 on:
-  # Until M6 the compliance harness is an informational baseline: it
+  # Until M6 the compatibility harness is an informational baseline: it
   # legitimately fails because most PromQL surface is still landing.
   # Running it on every PR surfaced confusing red checks; until we
   # graduate it to a real gate (M6), it runs only on main pushes,
@@ -13,8 +13,8 @@ on:
       - 'internal/chsql/**'
       - 'internal/optimizer/**'
       - 'internal/chplan/**'
-      - 'harness/compliance/**'
-      - '.github/workflows/compliance.yml'
+      - 'harness/compatibility/**'
+      - '.github/workflows/compatibility.yml'
   schedule:
     # nightly at 04:11 UTC (offset from e2e to spread load)
     - cron: '11 4 * * *'
@@ -24,11 +24,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: compliance-${{ github.ref }}
+  group: compatibility-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  compliance:
+  compatibility:
     name: prometheus/compliance
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -50,24 +50,24 @@ jobs:
         with:
           tool: just
 
-      - name: Run compliance harness
+      - name: Run compatibility harness
         env:
           # The tester binary needs Go 1.21+; we already have it from setup-go.
           # The seed window anchors at 2026-05-11T00:00:00Z (see seed.sql).
           TESTER_END_TIME: "2026-05-11T01:00:00Z"
           TESTER_RANGE: "3600"
-        run: ./harness/compliance/scripts/run-compliance.sh
+        run: ./harness/compatibility/scripts/run-compatibility.sh
 
       - name: Summarise report
         if: always()
         run: |
-          if [ -f harness/compliance/report.json ]; then
+          if [ -f harness/compatibility/report.json ]; then
             jq '{
               total: ([.results[]?] | length),
               passed: ([.results[]? | select(.unexpectedFailure == null and .diff == null)] | length),
               diffs: ([.results[]? | select(.diff != null)] | length),
               unexpected_failures: ([.results[]? | select(.unexpectedFailure != null)] | length)
-            }' harness/compliance/report.json
+            }' harness/compatibility/report.json
           else
             echo "no report produced"
           fi
@@ -76,7 +76,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: compliance-report
-          path: harness/compliance/report.json
+          name: compatibility-report
+          path: harness/compatibility/report.json
           if-no-files-found: warn
           retention-days: 30

@@ -6,11 +6,11 @@ This document is the public-facing narrative for the path to `v1.0.0`. Status by
 
 | Release          | Theme                                                                 | What "done" means                                                                                |
 | ---------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| **v1.0.0-RC1**   | Full PromQL / LogQL / TraceQL support + 90% upstream API compatibility | Compliance corpora pass; Grafana sees cerberus as drop-in for Prom / Loki / Tempo                |
+| **v1.0.0-RC1**   | Full PromQL / LogQL / TraceQL support + 90% upstream API compatibility | Compatibility corpora pass; Grafana sees cerberus as drop-in for Prom / Loki / Tempo                |
 | **v1.0.0-RC2**   | Advanced QL features + deferred API surface                            | Subqueries, native-histogram quantiles, structural-chain TraceQL, LogQL `\| unpack`, Loki `tail`… |
 | **v1.0.0-RC3**   | Optimizer rewrite + performance + advanced testing                     | Pattern-based rules, MV substitution, shadow-mode differential, fuzz + chaos + perf benchmarks   |
 | **v1.0.0-RC4**   | Full self-observability                                                | Cerberus emits its own structured logs (slog), OTel metrics + traces, defaults to the same CH    |
-| **v1.0.0-RC5**   | 12-factor compliance + polish                                          | `/readyz`, dev `docker-compose.yml`, env-driven schema overrides, `docs/12factor.md`, fast-start  |
+| **v1.0.0-RC5**   | 12-factor compatibility + polish                                          | `/readyz`, dev `docker-compose.yml`, env-driven schema overrides, `docs/12factor.md`, fast-start  |
 | **v1.0.0**       | Tag the last green RC                                                  | All RCs stable; public API frozen in `pkg/`                                                       |
 
 The existing **3-rule optimizer** (filter-fusion, constant-fold, projection-pushdown) ships unchanged through RC1 and RC2. **No new optimizer work happens before RC3** — its full backlog lives in [`docs/optimizer-research.md`](optimizer-research.md).
@@ -19,11 +19,11 @@ The existing **3-rule optimizer** (filter-fusion, constant-fold, projection-push
 
 ## RC1 — full QL + 90% API
 
-PRs land in milestone order. Within a milestone, the **first PR adds failing TXTAR / compliance fixtures**; subsequent PRs implement to turn them green. Compliance suites are merge gates, so coverage regressions are impossible.
+PRs land in milestone order. Within a milestone, the **first PR adds failing TXTAR / compatibility fixtures**; subsequent PRs implement to turn them green. Compatibility suites are merge gates, so coverage regressions are impossible.
 
 ### M0 — finish the seed
 
-The remaining items from the original seed plan, plus the compliance harness scaffold.
+The remaining items from the original seed plan, plus the compatibility harness scaffold.
 
 | #   | Theme                       | Outcome                                                                                                          |
 | --- | --------------------------- | ---------------------------------------------------------------------------------------------------------------- |
@@ -32,9 +32,9 @@ The remaining items from the original seed plan, plus the compliance harness sca
 | M0.3 | AI-agent seed               | `CLAUDE.md`, `AGENTS.md`, three `.claude/skills/`                                                                  |
 | M0.4 | Engineering hygiene         | `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`, `.github/CODEOWNERS`, PR template                          |
 | M0.5 | Release plumbing            | `release.yml` + `.goreleaser.yml`; tag `v0.1.0` to validate the path                                              |
-| M0.6 | Compliance harness scaffold | `harness/compliance/` with `prometheus/compliance` submodule, Docker Compose, allowlist file, `compliance.yml`     |
+| M0.6 | Compatibility harness scaffold | `harness/compatibility/` with `prometheus/compliance` submodule, Docker Compose, allowlist file, `compatibility.yml`     |
 
-**Exit criterion:** `just e2e` green; `v0.1.0` cut; `just compliance` runs end-to-end and produces a JSON report (failing baseline is expected and fine).
+**Exit criterion:** `just e2e` green; `v0.1.0` cut; `just compatibility` runs end-to-end and produces a JSON report (failing baseline is expected and fine).
 
 ### M1 — PromQL → 90%, TDD-driven by `prometheus/compliance`
 
@@ -95,7 +95,7 @@ The remaining items from the original seed plan, plus the compliance harness sca
 | M5.1 | `CHANGELOG.md` with features + RC2 deferrals                       |
 | M5.2 | README drops the seed badge; status block reads "RC1"              |
 | M5.3 | Tag `v1.0.0-RC1`; `release.yml` cuts multi-arch binaries + image    |
-| M5.4 | `docs/compliance.md` documents allowlist + per-QL corpus extension |
+| M5.4 | `docs/compatibility.md` documents allowlist + per-QL corpus extension |
 
 ---
 
@@ -108,7 +108,7 @@ The remaining ~10% per QL, plus the deferred API endpoints. Each lands as its ow
 - **TraceQL** — multi-hop structural chains with predicates at each hop; `histogram_over_time`; link traversal + span-event queries; root-span filtering in nested conditions.
 - **HTTP APIs** — Prom `query_exemplars`, `format_query`, `parse_query`; Loki `tail`, `index/stats`, `index/volume`, `detected_fields`, `patterns`; Tempo `search/recent`, `metrics/query_range`.
 
-**Exit criterion:** the lists above empty out; compliance pass rate stays ≥ RC1 baseline.
+**Exit criterion:** the lists above empty out; compatibility pass rate stays ≥ RC1 baseline.
 
 ---
 
@@ -138,7 +138,7 @@ All of [`docs/optimizer-research.md`](optimizer-research.md) lands here. The rea
 
 | #     | Item                                                              | Primary reference                                                                                   |
 | ----- | ----------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| R3.9  | Shadow-mode differential testing (prefer / force-native / oracle) | [promshim-clickhouse `harness/compliance/`](https://github.com/BadLiveware/promshim-clickhouse/tree/main/harness/compliance) |
+| R3.9  | Shadow-mode differential testing (prefer / force-native / oracle) | [promshim-clickhouse `harness/compatibility/`](https://github.com/BadLiveware/promshim-clickhouse/tree/main/harness/compatibility) |
 | R3.10 | Port promshim's local Go evaluator                                 | Same — `internal/promshim/local/`                                                                   |
 | R3.11 | Fuzz + chaos + perf-benchmark CI                                   | `go-fuzz`, custom chaos harness, perf-benchmark workflow                                            |
 
@@ -174,7 +174,7 @@ Cerberus instruments itself with the Go-ecosystem defacto stack and ships teleme
 
 ---
 
-## RC5 — 12-factor compliance + polish
+## RC5 — 12-factor compatibility + polish
 
 Driven by an audit of cerberus against [12factor.net](https://12factor.net/). Most factors pass today; this RC closes the gaps and documents the rest.
 
@@ -270,6 +270,6 @@ PR sequence:
 
 - **PR-per-change.** Every change ships as its own PR against `main`. Branch protection requires `ci / check` + `ci / lint`, linear history, no force-push.
 - **Agent-driven work goes through PRs, not issues.** When the maintainer or an AI assistant is doing the work, the PR description is the source of truth — no shadow issue tracking. The GitHub Project tracks milestone status; backlog narratives live in `docs/*.md`. **External contributors** are welcome to open issues for bug reports, design questions, or feature proposals — issues are enabled.
-- **Fixture-first.** A milestone's first PR adds *failing* TXTAR / compliance fixtures that capture the contract. Subsequent PRs implement to turn them green. Reviewers can sanity-check intent by reading fixtures before code.
-- **Compliance suite is the source of truth.** If a PromQL feature lands but doesn't move the `prometheus/compliance` pass rate, the PR is incomplete.
-- **Allowlist hygiene.** Adding an entry to `harness/compliance/expected-failures.json` requires a comment with the upstream rationale; never empty-string.
+- **Fixture-first.** A milestone's first PR adds *failing* TXTAR / compatibility fixtures that capture the contract. Subsequent PRs implement to turn them green. Reviewers can sanity-check intent by reading fixtures before code.
+- **Compatibility suite is the source of truth.** If a PromQL feature lands but doesn't move the `prometheus/compliance` pass rate, the PR is incomplete.
+- **Allowlist hygiene.** Adding an entry to `harness/compatibility/expected-failures.json` requires a comment with the upstream rationale; never empty-string.

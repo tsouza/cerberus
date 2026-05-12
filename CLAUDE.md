@@ -8,7 +8,7 @@ Drop-in **Prometheus / Loki / Tempo** HTTP gateway for **ClickHouse**. Parses ea
 - **Agent-driven work goes through PRs, not Issues.** When *you* (an AI assistant) are doing the work, capture intent in the PR description — don't open an issue to track follow-up. Backlog narratives live in `docs/*.md` files ([`docs/roadmap.md`](docs/roadmap.md), [`docs/optimizer-research.md`](docs/optimizer-research.md)); milestone status lives in the [`Cerberus v1.0.0 Roadmap` GitHub Project](https://github.com/users/tsouza/projects/1) (RC / Workstream / Area / Status fields). Human contributors (or the maintainer) **are welcome to open issues** for bug reports, design discussions, feature proposals — the issues feature is on. The rule is about agent workflow hygiene, not project policy.
 - **Conventional Commits**, enforced by `commitlint` (see `.commitlintrc.json`). The `subject-case` rule is relaxed so Dependabot's `Bump X from Y to Z` subjects pass.
 - **Justfile is the canonical task runner.** `just` lists every recipe. Don't reach for `go test ./...` directly when `just test` exists — the recipe sets the race flag, the cover profile, and the right toolchain.
-- **Compliance is the source of truth for PromQL — at M6.** Until the M5 → M6 cut, `compliance.yml` runs only on main pushes + nightly + manual dispatch (not on PRs) and acts as an informational baseline. At M6 we re-enable the `pull_request:` trigger and add `prometheus/compliance` to required checks; an entry in `harness/compliance/expected-failures.json` then requires a comment explaining the upstream rationale.
+- **Compatibility is the source of truth for PromQL — at M6.** Until the M5 → M6 cut, `compatibility.yml` runs only on main pushes + nightly + manual dispatch (not on PRs) and acts as an informational baseline. At M6 we re-enable the `pull_request:` trigger and add `prometheus/compliance` to required checks; an entry in `harness/compatibility/expected-failures.json` then requires a comment explaining the upstream rationale.
 - **No raw SQL strings — refactor lands at RC6.** `fmt.Sprintf` (or any string concatenation) used to build a ClickHouse query is forbidden going forward; new emitter code must go through `huandu/go-sqlbuilder` (and the cerberus extension layer wrapping it for CH-specific idioms — see [`docs/roadmap.md` § RC6](docs/roadmap.md#rc6--type-safe-sql-via-go-sqlbuilder)). The existing `internal/chsql/emit_*.go` and `internal/api/prom/metadata.go` Sprintf-built SQL is grandfathered until the RC6 port (R6.1–R6.10), but no PR may add a new instance of the pattern. RC6 R6.9 wires a lint rule to enforce automatically.
 
 ## Architecture map
@@ -26,9 +26,9 @@ internal/
 cmd/cerberus/                main entrypoint
 test/spec/                   TXTAR golden tests (input QL → SQL/plan)
 test/e2e/                    k3d cluster + Grafana playwright smoke
-harness/compliance/          prometheus/compliance Docker Compose harness (lands M0.6)
+harness/compatibility/          prometheus/compliance Docker Compose harness (lands M0.6)
 deploy/{k3s,grafana}/        Kubernetes manifests + Grafana Helm values
-docs/                        roadmap.md, optimizer-research.md, compliance.md (M5.4)
+docs/                        roadmap.md, optimizer-research.md, compatibility.md (M5.4)
 ```
 
 Top-level reading order for any new contributor (human or agent):
@@ -44,7 +44,7 @@ Top-level reading order for any new contributor (human or agent):
 - **Add an optimizer rule** — use the `/cerberus:add-optimizer-rule` skill. Scaffolds `internal/optimizer/<name>.go` + test + TXTAR fixtures.
 - **Bump parser deps** — use the `/cerberus:bump-parser-deps` skill. Runs `go get -u` on the three upstream parsers, runs `go mod tidy`, captures the diff for the PR description.
 - **Run E2E locally** — `just e2e-up && just e2e-seed && just e2e-run && just e2e-down` (lands in M0.1).
-- **Run the compliance suite** — `just compliance` (lands in M0.6). Diffs cerberus against reference Prometheus on a deterministic OTel fixture.
+- **Run the compatibility suite** — `just compatibility` (lands in M0.6). Diffs cerberus against reference Prometheus on a deterministic OTel fixture.
 
 ## Toolchain notes
 

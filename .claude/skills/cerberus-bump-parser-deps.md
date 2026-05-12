@@ -88,10 +88,10 @@ User says:
 
    ## Test plan
    - [ ] CI green
-   - [ ] Compliance suite pass rate unchanged or improved
+   - [ ] Compatibility suite pass rate unchanged or improved
    ```
 
-8. **Monitor CI**. If `compliance.yml` shows new failures, the parser may have started accepting new queries that cerberus doesn't yet lower — those move to `expected-failures.json` with a comment, NOT silently allowed.
+8. **Monitor CI**. If `compatibility.yml` shows new failures, the parser may have started accepting new queries that cerberus doesn't yet lower — those move to `expected-failures.json` with a comment, NOT silently allowed.
 
 ## Tools
 
@@ -103,4 +103,4 @@ User says:
 ## Don't
 
 - Don't bump just one of the three; bump them together so transitive resolutions stabilise in one go.
-- Don't silently add an `expected-failures.json` entry to make compliance pass. Investigate; if the failure is a genuine new feature we don't yet support, file the deferral as a separate item.
+- Don't silently add an `expected-failures.json` entry to make compatibility pass. Investigate; if the failure is a genuine new feature we don't yet support, file the deferral as a separate item.
