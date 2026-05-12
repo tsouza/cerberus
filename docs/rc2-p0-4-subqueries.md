@@ -1,11 +1,11 @@
-# RC2 P0 #4 — PromQL subqueries
+# RC2 P0 4 — PromQL subqueries
 
 Plan produced by the `Plan` agent at the start of RC2 P0 work. Breaks
 `m[1h:5m]` / `rate(m[5m])[1h:5m]` / `max_over_time(rate(m[5m])[1h:5m])`
 support into shippable PR-sized tasks. Each 4.n is independently
 mergeable in order.
 
-## Out of scope for P0 #4 (push to RC3 or P1)
+## Out of scope for P0 4 (push to RC3 or P1)
 
 - **Nested subqueries** (`rate(rate(m[5m])[1h:5m])[2h:10m]`) — 2+ levels.
 - **Subquery `@` modifier + `@ start()`/`@ end()`** — same milestone as instant `@ start/end`.
@@ -170,7 +170,7 @@ MVP: surface a clear lowering error: "subquery over aggregated expression: defer
 
 **Scope.** Verify existing optimizer rules don't mis-rewrite the new matrix-shape RangeWindow. `FilterFusion`, `ConstantFold`, `ProjectionPushdown` walk via `rewriteChildren`; RangeWindow is already in the switch. New `OuterRange` field is shallow-copied correctly by `cp := *v`. Confirm `ProjectionPushdown` doesn't push columns past a matrix-shape RangeWindow in a wrong way.
 
-No new optimizer rules in P0 #4. RC3 adds subquery-aware rules.
+No new optimizer rules in P0 4. RC3 adds subquery-aware rules.
 
 **Test plan.** New TXTAR `test/spec/optimizer/subquery_projection_pushdown.txtar` pinning the no-mis-rewrite contract. Add unit test in `optimizer_test.go`.
 
