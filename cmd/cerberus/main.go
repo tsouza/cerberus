@@ -12,9 +12,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/tsouza/cerberus/internal/api/loki"
 	"github.com/tsouza/cerberus/internal/api/prom"
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/config"
+	"github.com/tsouza/cerberus/internal/schema"
 )
 
 // Version is set at build time by goreleaser.
@@ -61,6 +63,9 @@ func run(logger *slog.Logger) error {
 
 	promHandler := prom.New(client, cfg.Schema, logger.With("api", "prom"))
 	promHandler.Mount(mux)
+
+	lokiHandler := loki.New(client, schema.DefaultOTelLogs(), logger.With("api", "loki"))
+	lokiHandler.Mount(mux)
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
