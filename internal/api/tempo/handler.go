@@ -110,6 +110,7 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 	samples, err := h.Client.Query(r.Context(), sqlStr, args...)
 	if err != nil {
+		h.Logger.Warn("cerberus tempo search CH query failed", "err", err.Error(), "sql", sqlStr)
 		writeError(w, http.StatusBadGateway, "", "", err)
 		return
 	}
@@ -145,6 +146,7 @@ func (h *Handler) handleTraceByID(w http.ResponseWriter, r *http.Request) {
 
 	samples, err := h.Client.Query(r.Context(), sqlStr, args...)
 	if err != nil {
+		h.Logger.Warn("cerberus tempo traceByID CH query failed", "err", err.Error(), "trace_id", traceID, "sql", sqlStr)
 		writeError(w, http.StatusBadGateway, traceID, "", err)
 		return
 	}

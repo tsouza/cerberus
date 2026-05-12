@@ -168,6 +168,7 @@ func (h *Handler) execute(ctx context.Context, expr syntax.Expr) ([]chclient.Sam
 
 	samples, err := h.Client.Query(ctx, sqlStr, args...)
 	if err != nil {
+		h.Logger.Warn("cerberus loki CH query failed", "err", err.Error(), "sql", sqlStr)
 		return nil, &apiError{kind: ErrInternal, err: err, status: http.StatusBadGateway}
 	}
 	return samples, nil
@@ -206,7 +207,10 @@ func wrapWithLogSampleProjection(plan chplan.Node, s schema.Logs, expr syntax.Ex
 			{Expr: &chplan.ColumnRef{Name: s.BodyColumn}, Alias: "MetricName"},
 			{Expr: &chplan.ColumnRef{Name: s.ResourceAttributesColumn}, Alias: "Attributes"},
 			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: "TimeUnix"},
-			{Expr: &chplan.LitFloat{V: 0}, Alias: "Value"},
+			// Wrap the placeholder zero in toFloat64 so CH returns the column
+			// as Float64; without the cast a bare `0` literal becomes UInt8
+			// and clickhouse-go's Scan rejects UInt8 → *float64.
+			{Expr: &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{&chplan.LitFloat{V: 0}}}, Alias: "Value"},
 		},
 	}
 }

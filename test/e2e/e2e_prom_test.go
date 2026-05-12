@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"testing"
@@ -113,7 +114,10 @@ type promRangeResponse struct {
 }
 
 // getJSON is a small test helper that issues a GET, fails the test on
-// dial / non-200, and returns the open response (caller closes).
+// dial / non-200, and returns the open response (caller closes). On a
+// non-200 the response body is included in the failure message so the
+// upstream error (CH parse failure, type mismatch, etc.) shows up in
+// CI without needing a cluster-state dump.
 func getJSON(ctx context.Context, t *testing.T, path string) *http.Response {
 	t.Helper()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL()+path, nil)
@@ -125,8 +129,9 @@ func getJSON(ctx context.Context, t *testing.T, path string) *http.Response {
 		t.Fatalf("GET %s: %v", path, err)
 	}
 	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
-		t.Fatalf("GET %s: status %d", path, resp.StatusCode)
+		t.Fatalf("GET %s: status %d; body=%s", path, resp.StatusCode, string(body))
 	}
 	return resp
 }
