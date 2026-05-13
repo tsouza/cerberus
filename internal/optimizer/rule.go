@@ -38,11 +38,15 @@ func New(rules ...Rule) *Driver {
 // Default returns a Driver configured with all the seed v0.1 rules in a
 // sensible order. The order matters: constant folding may unlock filter
 // fusion (e.g. by collapsing `true AND X` → `X`), which may unlock projection
-// pushdown.
+// pushdown. The two Calcite-style transpose rules added in RC3 R3.2 run
+// after fusion so that adjacent Filters are folded first (giving the
+// transpose a single Filter to push through Project / Aggregate).
 func Default() *Driver {
 	return New(
 		ConstantFold{},
 		FilterFusion{},
+		FilterProjectTranspose(),
+		FilterAggregateTranspose(),
 		ProjectionPushdown{},
 	)
 }

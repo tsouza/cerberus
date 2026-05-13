@@ -1,0 +1,4 @@
+-- optimized --
+SELECT * FROM (SELECT `MetricName` AS `metric` FROM (SELECT `MetricName` FROM `otel_metrics_gauge`)) WHERE (`metric` = ?)
+-- unoptimized --
+SELECT * FROM (SELECT `MetricName` AS `metric` FROM (SELECT * FROM `otel_metrics_gauge`)) WHERE (`metric` = ?)

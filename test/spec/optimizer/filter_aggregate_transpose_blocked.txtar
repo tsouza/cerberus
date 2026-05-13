@@ -1,0 +1,4 @@
+-- optimized --
+SELECT * FROM (SELECT `job`, sum(`Value`) AS `sum_value` FROM (SELECT * FROM `otel_metrics_gauge`) GROUP BY `job`) WHERE (`sum_value` > ?)
+-- unoptimized --
+SELECT * FROM (SELECT `job`, sum(`Value`) AS `sum_value` FROM (SELECT * FROM `otel_metrics_gauge`) GROUP BY `job`) WHERE (`sum_value` > ?)
