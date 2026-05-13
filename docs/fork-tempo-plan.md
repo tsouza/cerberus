@@ -14,6 +14,7 @@ host, how to keep up with upstream tags). It explicitly says:
 > The long-term fix is to **fork each upstream parser** under
 > `github.com/tsouza/` and add the narrow set of accessors cerberus
 > needs. […]
+>
 > - For Tempo `Aggregate`: `func (a Aggregate) Op() AggregateOp` and
 >   `func (a Aggregate) Expr() FieldExpression`.
 
@@ -44,7 +45,7 @@ Two surfaces in `internal/traceql/`:
 ### 1a. `unsafe.Pointer` shim — single occurrence
 
 | File:line | Reads | Upstream type & field | Why |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `internal/traceql/aggregate.go:86` | `*(*traceql.FieldExpression)(unsafe.Pointer(field.UnsafeAddr()))` where `field = reflect.ValueOf(&agg).Elem().FieldByName("e")` | `traceql.Aggregate.e FieldExpression` (`pkg/traceql/ast.go:339`) | Need the inner expression of `sum/avg/min/max(…)` to lower the aggregate argument into a ClickHouse `sum(...)`/`avg(...)`/… call. `Interface()` panics on the unexported field, so we round-trip via `unsafe.Pointer`. |
 
 The shim is *the* canonical reason this fork exists. The `op` field
@@ -62,9 +63,9 @@ These don't use `unsafe.Pointer` but read unexported fields by name —
 silently zero-value on upstream rename.
 
 | File:line | Reads | Upstream type & field | Why |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `internal/traceql/aggregate.go:103` | `v.FieldByName("op").Int()` | `traceql.Aggregate.op AggregateOp` (`ast.go:338`) | Need the operator name (`count`/`sum`/…). Currently round-trips through the enum's iota order via `aggregateOpName`. |
-| `internal/traceql/select.go:57-79` | `v.FieldByName("attrs")` then per-element `Name`/`Scope`/`Parent`/`Intrinsic` reflection | `traceql.SelectOperation.attrs []Attribute` (`ast.go:279`) | Need the projected attribute list for `| select(.a, .b)` lowering. Note: the *element* type `traceql.Attribute` has all-exported fields; only the containing slice is unexported. |
+| `internal/traceql/select.go:57-79` | `v.FieldByName("attrs")` then per-element `Name`/`Scope`/`Parent`/`Intrinsic` reflection | `traceql.SelectOperation.attrs []Attribute` (`ast.go:279`) | Need the projected attribute list for `\| select(.a, .b)` lowering. Note: the *element* type `traceql.Attribute` has all-exported fields; only the containing slice is unexported. |
 
 Repo-wide audit (`grep -RIn 'unsafe.Pointer\|UnsafeAddr\|FieldByName' internal/`):
 **only `internal/traceql/aggregate.go` and `internal/traceql/select.go`**
@@ -82,6 +83,7 @@ requires reading the following unexported state.
 ### 2a. The interfaces themselves are unexported
 
 `pkg/traceql/ast.go:35`:
+
 ```go
 type RootExpr struct {
     Pipeline           Pipeline
@@ -103,6 +105,7 @@ accessor surface.
 ### 2b. `MetricsAggregate` — every field unexported
 
 `pkg/traceql/ast_metrics.go:30`:
+
 ```go
 type MetricsAggregate struct {
     op         MetricsAggregateOp   // rate / count_over_time / …
@@ -143,6 +146,7 @@ question — no such field exists.)*
 ### 2d. `MetricsFilter` (second-stage `| > 10` filter)
 
 `pkg/traceql/ast_metrics.go:430`:
+
 ```go
 type MetricsFilter struct {
     op    Operator   // unexported
@@ -157,6 +161,7 @@ maintainer has the menu.
 ### 2e. `TopKBottomK`
 
 `pkg/traceql/ast_metrics.go:382`:
+
 ```go
 type TopKBottomK struct {
     op     SecondStageOp  // exported enum, unexported field
@@ -192,7 +197,7 @@ Design constraints:
 ### Accessors needed for the day-1 migration (PRs #B and #C)
 
 | Upstream type | Currently unexported | Proposed addition | Cerberus use |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `traceql.Aggregate` | `e FieldExpression` | `func (a Aggregate) InnerExpr() FieldExpression { return a.e }` | `internal/traceql/aggregate.go` — replaces `readAggregateExpr` (`unsafe.Pointer` shim). |
 | `traceql.Aggregate` | `op AggregateOp` | `func (a Aggregate) Op() AggregateOp { return a.op }` | `internal/traceql/aggregate.go` — replaces `readAggregateFields` + `aggregateOpName` enum-iota table. |
 | `traceql.AggregateOp` | const `aggregateCount`, `aggregateMax`, `aggregateMin`, `aggregateSum`, `aggregateAvg` (`enum_aggregates.go:8-13`) | Rename / re-export as `AggregateCount`, `AggregateMax`, `AggregateMin`, `AggregateSum`, `AggregateAvg` (or add exported aliases — see "Patch shape" below). | Cerberus matches on the typed constant instead of the int order. |
@@ -201,7 +206,7 @@ Design constraints:
 ### Accessors needed for MetricsPipeline lowering (PR #C)
 
 | Upstream type | Currently unexported | Proposed addition | Cerberus use |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `traceql.RootExpr` | type `firstStageElement` (interface) | Rename to `FirstStageElement` (exported) and update the field type on `RootExpr.MetricsPipeline`. | Cerberus type-switches on `RootExpr.MetricsPipeline` in the new metrics-lowering entrypoint. |
 | `traceql.RootExpr` | type `secondStageElement` (interface) | Rename to `SecondStageElement` (exported) and update `RootExpr.MetricsSecondStage`. | Same. Used later when cerberus lowers second-stage `topk` / `bottomk` / filters. |
 | `traceql.MetricsAggregate` | `op MetricsAggregateOp` | `func (m *MetricsAggregate) Op() MetricsAggregateOp { return m.op }` | Discriminate `rate` vs `count_over_time` vs `*_over_time(attr)`. |
@@ -213,7 +218,7 @@ Design constraints:
 ### Optional / future accessors (NOT in the day-1 patch)
 
 | Upstream type | Field | Proposed accessor | Cerberus use |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `traceql.MetricsFilter` | `op Operator` / `value float64` | `Op()` / `Value()` | Lower `\| rate() > 10` as a post-aggregation filter. |
 | `traceql.TopKBottomK` | `op SecondStageOp` / `limit int` | `Op()` / `Limit()` | Lower `\| topk(N)` / `\| bottomk(N)`. |
 | `traceql.SpansetOperation` | `matchingSpansBuffer` (runtime only) | none | n/a |
