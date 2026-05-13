@@ -2,11 +2,14 @@ package loki
 
 import (
 	"bytes"
+	"encoding/json"
 	"regexp"
 	"text/template"
 
 	loglib "github.com/grafana/loki/v3/pkg/logql/log"
+	"github.com/grafana/loki/v3/pkg/logql/log/pattern"
 	"github.com/grafana/loki/v3/pkg/logql/syntax"
+	"github.com/grafana/loki/v3/pkg/logqlmodel"
 )
 
 // postProcessExtract walks the parsed LogQL expression and pulls out
@@ -23,6 +26,13 @@ import (
 //     template-set labels on the row. Subsequent line_format stages
 //     see the updated label map; the streams response groups rows by
 //     the final (post-format) label set.
+//   - `| unpack` — parses the line as a JSON object and merges each
+//     string-valued key into the labels map. A special `_entry` key
+//     replaces the line, restoring the original payload from
+//     Promtail's `pack` stage.
+//   - `| pattern "<ip> <_> <method> <path>"` — matches the line against
+//     a Loki pattern expression and adds each named capture to the
+//     labels map. `<_>` skips a segment.
 //
 // Lowering already returns nil-predicate no-ops for these stages so
 // the SQL doesn't try to model them. Returns a transform that maps
@@ -52,6 +62,17 @@ func postProcessExtract(expr syntax.Expr) (lineTransform, error) {
 				return nil, err
 			}
 			steps = append(steps, step)
+		case *syntax.LineParserExpr:
+			switch v.Op {
+			case syntax.OpParserTypeUnpack:
+				steps = append(steps, unpackStep)
+			case syntax.OpParserTypePattern:
+				step, err := newPatternStep(v.Param)
+				if err != nil {
+					return nil, err
+				}
+				steps = append(steps, step)
+			}
 		}
 	}
 
@@ -218,6 +239,100 @@ func newLabelFormatStep(formats []loglib.LabelFmt) (lineTransform, error) {
 				continue
 			}
 			out[c.dst] = buf.String()
+		}
+		return line, out
+	}, nil
+}
+
+// unpackStep implements `| unpack`. The line is expected to be a JSON
+// object emitted by Promtail's `pack` stage: each string-valued key
+// becomes a label, and the special `_entry` key replaces the line.
+//
+// Non-object payloads and JSON-decode errors leave the line and labels
+// unchanged — matching Loki's silent-on-malformed-JSON contract.
+// Non-string values (numbers, arrays, nested objects) are skipped at
+// the label level but the `_entry` rewrite still applies.
+//
+// Returns a FRESH labels map so callers can treat the input as
+// immutable, consistent with newLabelFormatStep.
+func unpackStep(line string, labels map[string]string) (string, map[string]string) {
+	if len(line) == 0 || line[0] != '{' {
+		return line, labels
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(line), &raw); err != nil {
+		return line, labels
+	}
+	out := make(map[string]string, len(labels)+len(raw))
+	for k, v := range labels {
+		out[k] = v
+	}
+	newLine := line
+	for k, v := range raw {
+		// Skip non-string values (Loki's unpack only extracts strings).
+		if len(v) == 0 || v[0] != '"' {
+			continue
+		}
+		var s string
+		if err := json.Unmarshal(v, &s); err != nil {
+			continue
+		}
+		if k == logqlmodel.PackedEntryKey {
+			newLine = s
+			continue
+		}
+		// Don't shadow stream labels — Loki appends a duplicate suffix
+		// in that case. Mirror that behavior so cerberus's row output
+		// matches Loki's.
+		if _, ok := labels[k]; ok {
+			out[k+duplicateSuffix] = s
+			continue
+		}
+		out[k] = s
+	}
+	return newLine, out
+}
+
+// duplicateSuffix matches Loki's `_extracted` suffix appended to
+// parser-extracted labels that would otherwise shadow a stream label.
+// See `loglib.duplicateSuffix` (unexported, kept in sync by name).
+const duplicateSuffix = "_extracted"
+
+// newPatternStep implements `| pattern "<ip> <_> <method> <path>"`.
+// The pattern parser is taken straight from upstream Loki so cerberus
+// matches Loki's named-capture semantics (including `<_>` skips and
+// the trailing-anchor / inter-literal boundaries).
+//
+// Each named capture is added to the labels map. Captures that would
+// shadow a stream label get the `_extracted` suffix, mirroring Loki's
+// disambiguation contract.
+//
+// A pattern that fails to match (Matches returns nil) leaves the line
+// and labels unchanged — Loki's silent-fallback semantics.
+func newPatternStep(p string) (lineTransform, error) {
+	m, err := pattern.New(p)
+	if err != nil {
+		return nil, err
+	}
+	names := m.Names()
+	return func(line string, lbs map[string]string) (string, map[string]string) {
+		caps := m.Matches([]byte(line))
+		if len(caps) == 0 {
+			return line, lbs
+		}
+		out := make(map[string]string, len(lbs)+len(names))
+		for k, v := range lbs {
+			out[k] = v
+		}
+		for i, c := range caps {
+			if i >= len(names) {
+				break
+			}
+			name := names[i]
+			if _, ok := lbs[name]; ok {
+				name += duplicateSuffix
+			}
+			out[name] = string(c)
 		}
 		return line, out
 	}, nil
