@@ -999,6 +999,3 @@ func quoteIdent(name string) string {
 	b.Ident(name)
 	return b.String()
 }
-	timeOrNowFrag(t)(b)
-	return b.String()
-}
