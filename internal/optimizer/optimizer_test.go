@@ -3,6 +3,7 @@ package optimizer_test
 import (
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
@@ -139,6 +140,41 @@ var inputs = map[string]chplan.Node{
 			Left:  &chplan.ColumnRef{Name: "MetricName"},
 			Right: &chplan.LitString{V: "up"},
 		},
+	},
+
+	// subquery_matrix_opaque: a matrix-shape RangeWindow with a
+	// FilterFusion-friendly nested Filter underneath. The optimizer
+	// should fuse the inner two Filters but NOT alter the matrix
+	// RangeWindow itself — the OuterRange / Step / Identity fields
+	// are preserved, the inner Scan is reachable, and the SQL stays
+	// structurally equivalent except for the inner filter fold.
+	// Regression test for P0 4.3+ optimizer-vs-matrix interaction.
+	"subquery_matrix_opaque": &chplan.RangeWindow{
+		Input: &chplan.Filter{
+			Input: &chplan.Filter{
+				Input: &chplan.Scan{Table: "otel_metrics_sum"},
+				Predicate: &chplan.Binary{
+					Op:    chplan.OpEq,
+					Left:  &chplan.ColumnRef{Name: "MetricName"},
+					Right: &chplan.LitString{V: "http_requests_total"},
+				},
+			},
+			Predicate: &chplan.Binary{
+				Op: chplan.OpEq,
+				Left: &chplan.MapAccess{
+					Map: &chplan.ColumnRef{Name: "Attributes"},
+					Key: &chplan.LitString{V: "job"},
+				},
+				Right: &chplan.LitString{V: "api"},
+			},
+		},
+		Func:            "rate",
+		Range:           5 * time.Minute,
+		Step:            5 * time.Minute,
+		OuterRange:      time.Hour,
+		TimestampColumn: "TimeUnix",
+		ValueColumn:     "Value",
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 	},
 }
 
