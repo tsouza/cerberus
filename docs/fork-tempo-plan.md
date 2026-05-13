@@ -214,8 +214,8 @@ Design constraints:
 
 | Upstream type | Field | Proposed accessor | Cerberus use |
 |---|---|---|---|
-| `traceql.MetricsFilter` | `op Operator` / `value float64` | `Op()` / `Value()` | Lower `| rate() > 10` as a post-aggregation filter. |
-| `traceql.TopKBottomK` | `op SecondStageOp` / `limit int` | `Op()` / `Limit()` | Lower `| topk(N)` / `| bottomk(N)`. |
+| `traceql.MetricsFilter` | `op Operator` / `value float64` | `Op()` / `Value()` | Lower `\| rate() > 10` as a post-aggregation filter. |
+| `traceql.TopKBottomK` | `op SecondStageOp` / `limit int` | `Op()` / `Limit()` | Lower `\| topk(N)` / `\| bottomk(N)`. |
 | `traceql.SpansetOperation` | `matchingSpansBuffer` (runtime only) | none | n/a |
 
 These land in follow-up patches as the corresponding lowering work
@@ -403,6 +403,7 @@ Four PRs, in order:
   - **`cmd/check-unsafe/`** — Go program invoked from CI;
     over-engineered for this use case.
   - **Recommendation:** `forbidigo` in `.golangci.yml`:
+
     ```yaml
     linters:
       settings:
@@ -415,6 +416,7 @@ Four PRs, in order:
               msg: 'reflect.FieldByName on parser AST is forbidden; use accessors'
               pkg: ^github.com/tsouza/cerberus/internal/(traceql|api/tempo)$
     ```
+
 - **Files touched:** `.golangci.yml` + maybe a test fixture proving
   the rule fires. **1-2 files.**
 - **Risk:** zero. Gate only — if cerberus is clean post-PR-#B, this
@@ -422,12 +424,12 @@ Four PRs, in order:
 
 ### Total estimated effort
 
-| PR | Files touched | Net LoC | Fixtures regenerated | Difficulty |
-|---|---|---|---|---|
-| #A (wire fork) | 2 | +3 / -0 | 0 | trivial |
-| #B (retire shim) | 3 | +100 / -225 (net -125) | 10 (expected byte-identical) | low |
-| #C (MetricsPipeline) | 5-7 + ~10 new fixtures | +400 / -10 | 0 existing + ~10 new | medium |
-| #D (lint gate) | 1-2 | +15 / -0 | 0 | trivial |
+| PR                   | Files touched          | Net LoC                | Fixtures regenerated         | Difficulty |
+| -------------------- | ---------------------- | ---------------------- | ---------------------------- | ---------- |
+| #A (wire fork)       | 2                      | +3 / -0                | 0                            | trivial    |
+| #B (retire shim)     | 3                      | +100 / -225 (net -125) | 10 (expected byte-identical) | low        |
+| #C (MetricsPipeline) | 5-7 + ~10 new fixtures | +400 / -10             | 0 existing + ~10 new         | medium     |
+| #D (lint gate)       | 1-2                    | +15 / -0               | 0                            | trivial    |
 
 Fork-side patch effort: **~80-120 LoC additions**, ~11 commits,
 single-author + single-reviewer.
@@ -470,6 +472,7 @@ Tempo is AGPL-3.0. Forking under `github.com/tsouza/tempo` is fully
 compatible — AGPL allows forking and modification, as long as the
 LICENSE file is preserved and modifications are clearly marked.
 **Action items on the fork:**
+
 - Preserve `LICENSE` unmodified.
 - Add a short note to `README.md` (or a new `CERBERUS.md`) explaining
   the fork's purpose ("This fork adds narrow accessors needed by
