@@ -65,8 +65,8 @@ func Lower(expr *traceql.RootExpr, s schema.Traces) (chplan.Node, error) {
 }
 
 // lowerFollowingElement layers a pipeline element onto the previous
-// stage's plan. Aggregate / ScalarFilter / SelectOperation are
-// supported; GroupOperation / CoalesceOperation defer to RC2.
+// stage's plan. Aggregate / ScalarFilter / SelectOperation /
+// GroupOperation / CoalesceOperation are supported.
 func lowerFollowingElement(prev chplan.Node, elem traceql.PipelineElement, s schema.Traces) (chplan.Node, error) {
 	switch v := elem.(type) {
 	case traceql.Aggregate:
@@ -81,8 +81,16 @@ func lowerFollowingElement(prev chplan.Node, elem traceql.PipelineElement, s sch
 		return lowerSelect(prev, v, s)
 	case *traceql.SelectOperation:
 		return lowerSelect(prev, *v, s)
+	case traceql.GroupOperation:
+		return lowerGroup(prev, v, s)
+	case *traceql.GroupOperation:
+		return lowerGroup(prev, *v, s)
+	case traceql.CoalesceOperation:
+		return lowerCoalesce(prev, s)
+	case *traceql.CoalesceOperation:
+		return lowerCoalesce(prev, s)
 	}
-	return nil, fmt.Errorf("traceql: pipeline tail element %T is not yet supported (group / coalesce land in RC2)", elem)
+	return nil, fmt.Errorf("traceql: pipeline tail element %T is not yet supported", elem)
 }
 
 // lowerScalarFilter handles `| count() > 0`, `| sum(.duration) >= 1s`,
@@ -150,10 +158,9 @@ func lowerPipelineElement(elem traceql.PipelineElement, s schema.Traces) (chplan
 	return nil, fmt.Errorf("traceql: pipeline element %T is not yet supported", elem)
 }
 
-// lowerSpansetOperation handles structural relations (`A > B`, `A < B`)
-// and set operations (`A && B`, `A || B`). The seed (M4.2) covers
-// direct-parent / direct-child structural ops; recursive forms (`>>`,
-// `<<`) and set ops defer.
+// lowerSpansetOperation handles structural relations (`A > B`, `A < B`,
+// `A ~ B`) and set operations (`A && B`, `A || B`). Recursive structural
+// forms (`>>`, `<<`) and the negated / union-prefixed variants defer.
 func lowerSpansetOperation(op *traceql.SpansetOperation, s schema.Traces) (chplan.Node, error) {
 	left, err := lowerSpansetExpr(op.LHS, s)
 	if err != nil {
@@ -162,6 +169,19 @@ func lowerSpansetOperation(op *traceql.SpansetOperation, s schema.Traces) (chpla
 	right, err := lowerSpansetExpr(op.RHS, s)
 	if err != nil {
 		return nil, err
+	}
+
+	// Set operations (`&&` / `||`) lower to a chplan.SetOperation; the
+	// emitter renders an INNER JOIN (intersect) or UNION DISTINCT (union)
+	// keyed on (TraceID, SpanID).
+	if setOp, ok := mapSetOp(op.Op); ok {
+		return &chplan.SetOperation{
+			Left:          left,
+			Right:         right,
+			Op:            setOp,
+			TraceIDColumn: s.TraceIDColumn,
+			SpanIDColumn:  s.SpanIDColumn,
+		}, nil
 	}
 
 	relation, err := mapStructuralOp(op.Op)
@@ -176,6 +196,19 @@ func lowerSpansetOperation(op *traceql.SpansetOperation, s schema.Traces) (chpla
 		SpanIDColumn:       s.SpanIDColumn,
 		ParentSpanIDColumn: s.ParentSpanIDColumn,
 	}, nil
+}
+
+// mapSetOp identifies the TraceQL operators that lower to a
+// chplan.SetOperation. Returns ok=false for non-set operators so the
+// caller falls back to structural-relation handling.
+func mapSetOp(op traceql.Operator) (chplan.SetOp, bool) {
+	switch op {
+	case traceql.OpSpansetAnd:
+		return chplan.SetIntersect, true
+	case traceql.OpSpansetUnion:
+		return chplan.SetUnion, true
+	}
+	return "", false
 }
 
 // lowerSpansetExpr lowers a TraceQL SpansetExpression (the LHS/RHS of
@@ -205,10 +238,14 @@ func mapStructuralOp(op traceql.Operator) (chplan.StructuralOp, error) {
 		return chplan.StructuralDescendant, nil
 	case traceql.OpSpansetAncestor:
 		return chplan.StructuralAncestor, nil
-	case traceql.OpSpansetAnd, traceql.OpSpansetUnion, traceql.OpSpansetSibling,
-		traceql.OpSpansetNotChild, traceql.OpSpansetNotParent, traceql.OpSpansetNotSibling,
-		traceql.OpSpansetNotAncestor, traceql.OpSpansetNotDescendant:
-		return "", fmt.Errorf("traceql: spanset op %s is not yet supported (set / sibling ops land in M4.2 follow-ups)", op)
+	case traceql.OpSpansetSibling:
+		return chplan.StructuralSibling, nil
+	case traceql.OpSpansetNotChild, traceql.OpSpansetNotParent, traceql.OpSpansetNotSibling,
+		traceql.OpSpansetNotAncestor, traceql.OpSpansetNotDescendant,
+		traceql.OpSpansetUnionChild, traceql.OpSpansetUnionParent,
+		traceql.OpSpansetUnionSibling, traceql.OpSpansetUnionAncestor,
+		traceql.OpSpansetUnionDescendant:
+		return "", fmt.Errorf("traceql: spanset op %s is not yet supported (negated / union-prefixed structural variants defer to RC3)", op)
 	}
 	return "", fmt.Errorf("traceql: spanset op %s is not a structural relation", op)
 }
