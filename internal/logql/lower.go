@@ -64,6 +64,12 @@ func lowerPipeline(e *syntax.PipelineExpr, s schema.Logs) (chplan.Node, error) {
 		if err != nil {
 			return nil, err
 		}
+		// Post-fetch stages (`| line_format`, `| decolorize`) return a
+		// nil predicate — they're applied in Go after the rows return,
+		// not in SQL. Skip them so we don't fold a nil into the AND.
+		if next == nil {
+			continue
+		}
 		if pred == nil {
 			pred = next
 		} else {
