@@ -6,11 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"go.opentelemetry.io/otel/metric"
 	metricnoop "go.opentelemetry.io/otel/metric/noop"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	"go.opentelemetry.io/otel/trace"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
 )
 
@@ -102,9 +100,6 @@ func TestProviders_NoopInterfaceSatisfied(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	var _ trace.TracerProvider = providers.TracerProvider
-	var _ metric.MeterProvider = providers.MeterProvider
-
 	if _, ok := providers.TracerProvider.(tracenoop.TracerProvider); !ok {
 		t.Errorf("TracerProvider not noop type: %T", providers.TracerProvider)
 	}
