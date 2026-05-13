@@ -100,6 +100,13 @@ func lowerStage(stage syntax.StageExpr, s schema.Logs) (chplan.Expr, error) {
 		// Same post-fetch shape: strip ANSI codes from each line
 		// after the rows return. No SQL impact.
 		return nil, nil
+	case *syntax.LabelFmtExpr:
+		// `| label_format new=old, lvl="{{.severity}}"` mutates the
+		// row's label set in Go after the rows return — rename or
+		// template-set per Loki's contract. No SQL impact; the
+		// post-process pipeline pulls the LabelFmtExpr from the
+		// parsed expression on the handler side.
+		return nil, nil
 	case *syntax.LineParserExpr:
 		return nil, fmt.Errorf("logql: parser stage `| %s` is not yet supported (json/logfmt/regexp/pattern parsers deferred from M3.2; revisit in RC3 alongside chsql JSONExtract/extractKeyValuePairs helpers)", st.Op)
 	case *syntax.LogfmtParserExpr:
