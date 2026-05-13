@@ -19,10 +19,10 @@ import (
 //     the comparison (bool modifier off) or Project producing 1.0/0.0
 //     (bool modifier on)
 //   - vector OP vector → VectorJoin with default / `on(...)` /
-//     `ignoring(...)` matching (M1.6)
+//     `ignoring(...)` matching (M1.6) plus `group_left(...)` /
+//     `group_right(...)` cardinality modifiers (RC2 cardinality edges)
 //
-// `group_left` / `group_right` cardinality and logical ops (and/or/unless)
-// defer to M1.7 follow-ups.
+// Logical ops (`and`/`or`/`unless`) defer to a later milestone.
 func lowerBinary(b *parser.BinaryExpr, s schema.Metrics) (chplan.Node, error) {
 	op, err := promBinaryOp(b.Op)
 	if err != nil {
@@ -48,21 +48,42 @@ func lowerBinary(b *parser.BinaryExpr, s schema.Metrics) (chplan.Node, error) {
 // Node, and the result is a VectorJoin that the emitter renders as an
 // INNER JOIN of per-series latest samples.
 //
-// `group_left` / `group_right` are rejected here — cardinality enforcement
-// needs additional output-shape work and is intentionally deferred.
+// Cardinality modifiers (`group_left` / `group_right`) and Include labels
+// thread through to chplan.VectorJoin; the chsql emitter shapes the
+// per-side aggregation accordingly. `CardManyToMany` is rejected — the
+// parser only sets it for set operators (`and`/`or`/`unless`), which
+// promBinaryOp doesn't yet support anyway, but we surface a clean
+// "many-to-many matching not allowed" error to match Prometheus's wording
+// rather than the lower-level "binary op not yet supported".
 func lowerVectorVector(b *parser.BinaryExpr, s schema.Metrics, op chplan.BinaryOp) (chplan.Node, error) {
-	if b.VectorMatching != nil && (b.VectorMatching.Card == parser.CardManyToOne || b.VectorMatching.Card == parser.CardOneToMany) {
-		side := "left"
-		if b.VectorMatching.Card == parser.CardOneToMany {
-			side = "right"
-		}
-		return nil, fmt.Errorf("promql: group_%s vector matching is not yet supported (cardinality enforcement lands with M1.7 result shaping)", side)
-	}
-	if b.VectorMatching != nil && len(b.VectorMatching.Include) > 0 {
-		return nil, fmt.Errorf("promql: group_left/right with `include(...)` is not yet supported")
-	}
 	if b.ReturnBool {
 		return nil, fmt.Errorf("promql: 'bool' modifier on vector-vector binary ops is not yet supported")
+	}
+
+	card := chplan.CardOneToOne
+	var include []string
+	if b.VectorMatching != nil {
+		switch b.VectorMatching.Card {
+		case parser.CardOneToOne:
+			card = chplan.CardOneToOne
+		case parser.CardManyToOne:
+			card = chplan.CardManyToOne
+		case parser.CardOneToMany:
+			card = chplan.CardOneToMany
+		case parser.CardManyToMany:
+			return nil, fmt.Errorf("promql: many-to-many matching not allowed: matching labels must be unique on one side")
+		default:
+			return nil, fmt.Errorf("promql: unsupported vector-matching cardinality %d", b.VectorMatching.Card)
+		}
+		if len(b.VectorMatching.Include) > 0 {
+			if card == chplan.CardOneToOne {
+				return nil, fmt.Errorf("promql: many-to-many matching not allowed: matching labels must be unique on one side; use group_left/group_right when projecting include labels")
+			}
+			include = append([]string(nil), b.VectorMatching.Include...)
+		}
+		// group_left/right without explicit on/ignoring is allowed
+		// (matches the full-Attributes intersection, which the
+		// emitter's "many" aggregation handles by construction).
 	}
 
 	left, err := lower(b.LHS, s)
@@ -85,6 +106,8 @@ func lowerVectorVector(b *parser.BinaryExpr, s schema.Metrics, op chplan.BinaryO
 		Right:            right,
 		Op:               op,
 		Match:            match,
+		Card:             card,
+		Include:          include,
 		MetricNameColumn: s.MetricNameColumn,
 		AttributesColumn: s.AttributesColumn,
 		TimestampColumn:  s.TimestampColumn,

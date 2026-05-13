@@ -23,8 +23,7 @@ import (
 //
 // Deferred to RC3 / later milestones: nested subqueries, subquery
 // over AggregateExpr, subquery `@ start()`/`@ end()`, native-histogram
-// `histogram_quantile`, `predict_linear`/`holt_winters`,
-// `group_left`/`group_right` cardinality edges, exemplars.
+// `histogram_quantile`, `predict_linear`/`holt_winters`, exemplars.
 func Lower(expr parser.Expr, s schema.Metrics) (chplan.Node, error) {
 	return lower(expr, s)
 }

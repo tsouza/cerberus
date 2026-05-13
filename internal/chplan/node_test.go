@@ -93,6 +93,33 @@ func TestEqual(t *testing.T) {
 		t.Fatalf("VectorJoin: on(job) vs ignoring(job) should not be Equal")
 	}
 
+	// Card and Include must round-trip through Equal — the RC2
+	// cardinality-edge fields are observably different plans.
+	vjGroupLeft := *vjSame
+	vjGroupLeft.Card = chplan.CardManyToOne
+	vjGroupLeft.Include = []string{"env"}
+	vjGroupLeftSame := *vjSame
+	vjGroupLeftSame.Card = chplan.CardManyToOne
+	vjGroupLeftSame.Include = []string{"env"}
+	vjGroupRight := *vjSame
+	vjGroupRight.Card = chplan.CardOneToMany
+	vjGroupRight.Include = []string{"env"}
+	vjGroupLeftDiffInclude := *vjSame
+	vjGroupLeftDiffInclude.Card = chplan.CardManyToOne
+	vjGroupLeftDiffInclude.Include = []string{"region"}
+	if !vjGroupLeft.Equal(&vjGroupLeftSame) {
+		t.Fatalf("VectorJoin: identical group_left trees should be Equal")
+	}
+	if vjGroupLeft.Equal(&vjGroupRight) {
+		t.Fatalf("VectorJoin: group_left vs group_right should not be Equal")
+	}
+	if vjGroupLeft.Equal(&vjGroupLeftDiffInclude) {
+		t.Fatalf("VectorJoin: differing Include label sets should not be Equal")
+	}
+	if vj.Equal(&vjGroupLeft) {
+		t.Fatalf("VectorJoin: one-to-one vs group_left should not be Equal")
+	}
+
 	rw := &chplan.RangeWindow{
 		Input: &chplan.Scan{Table: "otel_metrics_sum"},
 		Func:  "rate",
