@@ -97,27 +97,26 @@ func (c *Client) Exec(ctx context.Context, sql string, args ...any) error {
 //
 // For v0.1 the API layer ensures this projection shape via the chplan
 // Project node wrapped around lowered PromQL output.
+//
+// Query is a thin wrapper around QueryCursor that drains the cursor into
+// a slice. Callers that may return millions of rows (notably
+// /api/v1/query_range) should use QueryCursor directly to keep memory
+// bounded — see R3.12 in docs/roadmap.md.
 func (c *Client) Query(ctx context.Context, sql string, args ...any) ([]Sample, error) {
-	rows, err := c.conn.Query(ctx, sql, args...)
+	cursor, err := c.QueryCursor(ctx, sql, args...)
 	if err != nil {
-		return nil, fmt.Errorf("chclient: query: %w", err)
+		return nil, err
 	}
 	defer func() {
-		_ = rows.Close()
+		_ = cursor.Close()
 	}()
 
 	var out []Sample
-	for rows.Next() {
-		var s Sample
-		var labels map[string]string
-		if err := rows.Scan(&s.MetricName, &labels, &s.Timestamp, &s.Value); err != nil {
-			return nil, fmt.Errorf("chclient: scan: %w", err)
-		}
-		s.Labels = labels
-		out = append(out, s)
+	for cursor.Next() {
+		out = append(out, cursor.Sample())
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("chclient: rows.Err: %w", err)
+	if err := cursor.Err(); err != nil {
+		return nil, err
 	}
 	return out, nil
 }

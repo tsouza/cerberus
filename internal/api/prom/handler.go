@@ -24,6 +24,7 @@ import (
 // it makes unit tests possible without a live ClickHouse.
 type Querier interface {
 	Query(ctx context.Context, sql string, args ...any) ([]chclient.Sample, error)
+	QueryCursor(ctx context.Context, sql string, args ...any) (chclient.Cursor, error)
 	QueryStrings(ctx context.Context, sql string, args ...any) ([]string, error)
 	QueryLabelSets(ctx context.Context, sql string, args ...any) ([]map[string]string, error)
 	QueryMetricMeta(ctx context.Context, sql, metricType string, args ...any) ([]chclient.MetricMetaRow, error)
@@ -211,13 +212,20 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	samples, err := h.executeInstant(r.Context(), q, start, end)
+	cursor, err := h.executeRangeStreaming(r.Context(), q, start, end)
 	if err != nil {
 		h.respondError(w, err)
 		return
 	}
+	defer func() {
+		_ = cursor.Close()
+	}()
 
-	result := toMatrixStepGrid(samples, start, end, step)
+	result, err := matrixFromCursor(cursor, start, end, step)
+	if err != nil {
+		h.respondError(w, &apiError{kind: ErrInternal, err: err, status: http.StatusBadGateway})
+		return
+	}
 	writeJSON(w, http.StatusOK, Response{
 		Status: "success",
 		Data:   &QueryData{ResultType: "matrix", Result: result},
@@ -240,7 +248,7 @@ func (h *Handler) tryScalarFold(query string) (float64, bool, error) {
 
 // scalarPoint renders the [<unix_seconds_float>, "<value_string>"]
 // pair Prometheus uses for both scalar and matrix sample wire shapes,
-// matching the format toVector / toMatrixStepGrid already use.
+// matching the format toVector + the matrix pivot already use.
 func scalarPoint(ts time.Time, v float64) Sample {
 	return Sample{float64(ts.UnixMilli()) / 1e3, strconv.FormatFloat(v, 'f', -1, 64)}
 }
@@ -257,6 +265,46 @@ func scalarMatrix(v float64, start, end time.Time, step time.Duration) []MatrixS
 		values = append(values, scalarPoint(ts, v))
 	}
 	return []MatrixSample{{Metric: map[string]string{}, Values: values}}
+}
+
+// executeRangeStreaming is the streaming counterpart to executeInstant
+// used by /api/v1/query_range. The SQL emission is identical — same
+// lowering, same optimizer pass, same wrapWithSampleProjection — but
+// rather than draining the result into a []chclient.Sample slice it
+// returns a chclient.Cursor so the response builder can pivot rows into
+// the matrix shape one at a time. For a wide-range / fine-step query
+// this is the difference between O(rows) and O(rows-per-series)
+// resident memory.
+func (h *Handler) executeRangeStreaming(
+	ctx context.Context,
+	query string,
+	start, end time.Time,
+) (chclient.Cursor, error) {
+	expr, err := h.parser.ParseExpr(query)
+	if err != nil {
+		return nil, &apiError{kind: ErrBadData, err: err, status: http.StatusBadRequest}
+	}
+	plan, err := promql.LowerAt(expr, h.Schema, start, end)
+	if err != nil {
+		return nil, &apiError{kind: ErrExecution, err: err, status: http.StatusUnprocessableEntity}
+	}
+
+	plan = wrapWithSampleProjection(plan, h.Schema)
+	plan = h.Optimizer.Run(plan)
+
+	sql, args, err := chsql.Emit(plan)
+	if err != nil {
+		return nil, &apiError{kind: ErrInternal, err: err, status: http.StatusInternalServerError}
+	}
+	h.Logger.Debug("cerberus query_range (stream)", "promql", query, "sql", sql, "args", args)
+
+	cursor, err := timeCH(ctx, func() (chclient.Cursor, error) {
+		return h.Client.QueryCursor(ctx, sql, args...)
+	})
+	if err != nil {
+		return nil, &apiError{kind: ErrInternal, err: err, status: http.StatusBadGateway}
+	}
+	return cursor, nil
 }
 
 // executeInstant lowers a PromQL string to chplan, wraps with a Project
@@ -406,30 +454,33 @@ func toVector(samples []chclient.Sample, ts time.Time) []VectorSample {
 	return out
 }
 
-// toMatrixStepGrid pivots the sample stream into the Prom matrix shape.
-// For each evaluation step T in [start, end] (inclusive, spaced by step),
-// each series emits one Sample: the value of the latest input row whose
-// timestamp <= T (the standard PromQL latest-sample-at-eval-time
-// semantics). Series with no eligible samples for a given step are
-// represented as a stale-marker gap (the step is simply skipped in the
-// Values slice — Prometheus permits this).
+// matrixFromCursor is the streaming pivot from the cursor: it
+// drains the cursor row-by-row instead of consuming a pre-materialised
+// []chclient.Sample slice. Per-series buffers (timestamps + values) live
+// in a map keyed by canonicalKey; once the cursor is fully drained we
+// pivot each buffer onto the step grid using the same latest-at-step
+// semantics PromQL uses (latest sample at-or-before step, within lookback delta).
 //
-// Lookback delta: a hard 5-minute lookback by default; older samples are
-// considered stale. Future work threads the API's `lookback_delta`
-// param through here.
-func toMatrixStepGrid(samples []chclient.Sample, start, end time.Time, step time.Duration) []MatrixSample {
-	const lookback = 5 * time.Minute
-
+// Memory complexity: O(rows) total in the per-series buffers — but with
+// the master []chclient.Sample slice gone, peak resident bytes shrink
+// roughly 2x (no parallel copy) and the gc churn from growing one big
+// slice disappears. The eventual fully-streaming variant (one series at
+// a time, flushed on canonicalKey boundary changes) requires the SQL
+// emission to ORDER BY (series_key, ts) — that lands as a separate
+// follow-up so this PR stays scoped to the API surface change.
+func matrixFromCursor(
+	cursor chclient.Cursor,
+	start, end time.Time,
+	step time.Duration,
+) ([]MatrixSample, error) {
 	type seriesState struct {
 		labels map[string]string
-		// rows holds the sorted (ascending) timestamps + values for this
-		// series; we walk the row cursor forward as we advance through
-		// the step grid.
-		rows []chclient.Sample
+		rows   []chclient.Sample
 	}
 
 	bySeries := map[string]*seriesState{}
-	for _, s := range samples {
+	for cursor.Next() {
+		s := cursor.Sample()
 		labels := withMetricName(s.Labels, s.MetricName)
 		key := canonicalKey(labels)
 		st, ok := bySeries[key]
@@ -439,31 +490,33 @@ func toMatrixStepGrid(samples []chclient.Sample, start, end time.Time, step time
 		}
 		st.rows = append(st.rows, s)
 	}
+	if err := cursor.Err(); err != nil {
+		return nil, err
+	}
+
+	const lookback = 5 * time.Minute
+	out := make([]MatrixSample, 0, len(bySeries))
 	for _, st := range bySeries {
-		// Inline insertion sort by Timestamp ascending — samples are
+		// Inline insertion sort by Timestamp ascending — rows are
 		// typically already nearly sorted from CH.
 		for i := 1; i < len(st.rows); i++ {
 			for j := i; j > 0 && st.rows[j-1].Timestamp.After(st.rows[j].Timestamp); j-- {
 				st.rows[j-1], st.rows[j] = st.rows[j], st.rows[j-1]
 			}
 		}
-	}
 
-	out := make([]MatrixSample, 0, len(bySeries))
-	for _, st := range bySeries {
 		ms := MatrixSample{Metric: st.labels}
-		cursor := 0
+		row := 0
 		for t := start; !t.After(end); t = t.Add(step) {
-			// Advance cursor as long as the next row's ts <= t.
-			for cursor < len(st.rows) && !st.rows[cursor].Timestamp.After(t) {
-				cursor++
+			for row < len(st.rows) && !st.rows[row].Timestamp.After(t) {
+				row++
 			}
-			if cursor == 0 {
-				continue // no row at-or-before this step yet
+			if row == 0 {
+				continue
 			}
-			latest := st.rows[cursor-1]
+			latest := st.rows[row-1]
 			if t.Sub(latest.Timestamp) > lookback {
-				continue // older than the lookback window; stale
+				continue
 			}
 			stamp := float64(t.UnixMilli()) / 1e3
 			ms.Values = append(ms.Values, Sample{stamp, strconv.FormatFloat(latest.Value, 'f', -1, 64)})
@@ -472,7 +525,7 @@ func toMatrixStepGrid(samples []chclient.Sample, start, end time.Time, step time
 			out = append(out, ms)
 		}
 	}
-	return out
+	return out, nil
 }
 
 // parseDuration parses a Prom-style step / range duration. Accepts plain
