@@ -339,6 +339,94 @@ func TestQuery_ScalarFold(t *testing.T) {
 	}
 }
 
+// TestFormatQuery — Grafana's query-editor "Format query" button.
+// Round-trips the input through Prom's parser; output is the
+// pretty-printed canonical form.
+func TestFormatQuery(t *testing.T) {
+	t.Parallel()
+
+	srv := newServer(&stubQuerier{})
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/v1/format_query?query=up%2Bup")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+	}
+
+	var parsed struct {
+		Status string `json:"status"`
+		Data   string `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v\nbody=%s", err, body)
+	}
+	if parsed.Status != "success" {
+		t.Fatalf("status: got %q, want success", parsed.Status)
+	}
+	if !strings.Contains(parsed.Data, "up") {
+		t.Errorf("expected formatted query to contain `up`; got %q", parsed.Data)
+	}
+}
+
+// TestParseQuery — `/api/v1/parse_query` returns the AST type +
+// stringified node. Minimal shape; enough for Grafana's inline
+// syntax check.
+func TestParseQuery(t *testing.T) {
+	t.Parallel()
+
+	srv := newServer(&stubQuerier{})
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/v1/parse_query?query=up")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+	}
+
+	var parsed struct {
+		Status string `json:"status"`
+		Data   struct {
+			Type string `json:"type"`
+			Node string `json:"node"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v\nbody=%s", err, body)
+	}
+	if parsed.Status != "success" {
+		t.Fatalf("status: got %q, want success", parsed.Status)
+	}
+	if parsed.Data.Type == "" {
+		t.Errorf("expected non-empty Type; got %q", parsed.Data.Type)
+	}
+	if parsed.Data.Node != "up" {
+		t.Errorf("expected Node=`up`; got %q", parsed.Data.Node)
+	}
+}
+
+// TestFormatQuery_BadQuery — invalid PromQL returns 400 bad_data.
+func TestFormatQuery_BadQuery(t *testing.T) {
+	t.Parallel()
+
+	srv := newServer(&stubQuerier{})
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/v1/format_query?query=up%20%2B")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+}
+
 func TestQuery_UpstreamError(t *testing.T) {
 	t.Parallel()
 

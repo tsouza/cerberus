@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -70,6 +71,63 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	register("GET /api/v1/series", h.handleSeries)
 	register("POST /api/v1/series", h.handleSeries)
 	register("GET /api/v1/metadata", h.handleMetadata)
+	register("GET /api/v1/format_query", h.handleFormatQuery)
+	register("POST /api/v1/format_query", h.handleFormatQuery)
+	register("GET /api/v1/parse_query", h.handleParseQuery)
+	register("POST /api/v1/parse_query", h.handleParseQuery)
+}
+
+// handleFormatQuery implements `/api/v1/format_query`. Takes a `query`
+// param, parses it, and returns the pretty-printed string. Grafana's
+// query editor uses this to format on save.
+func (h *Handler) handleFormatQuery(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query().Get("query")
+	if q == "" && r.Method == http.MethodPost {
+		_ = r.ParseForm()
+		q = r.PostForm.Get("query")
+	}
+	if q == "" {
+		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing query parameter"))
+		return
+	}
+	expr, err := h.parser.ParseExpr(q)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, ErrBadData, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, Response{
+		Status: "success",
+		Data:   expr.String(),
+	})
+}
+
+// handleParseQuery implements `/api/v1/parse_query`. Takes a `query`
+// param, parses it, and returns the AST. Upstream Prometheus returns
+// a rich nested-node tree; cerberus returns a minimal shape that
+// signals "parsed OK" via the Type field — enough for Grafana's
+// inline syntax check. Full nested-AST serialization is a follow-up.
+func (h *Handler) handleParseQuery(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query().Get("query")
+	if q == "" && r.Method == http.MethodPost {
+		_ = r.ParseForm()
+		q = r.PostForm.Get("query")
+	}
+	if q == "" {
+		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing query parameter"))
+		return
+	}
+	expr, err := h.parser.ParseExpr(q)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, ErrBadData, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, Response{
+		Status: "success",
+		Data: map[string]any{
+			"type": fmt.Sprintf("%T", expr),
+			"node": expr.String(),
+		},
+	})
 }
 
 func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
