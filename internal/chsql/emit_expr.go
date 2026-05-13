@@ -1,45 +1,33 @@
 package chsql
 
 import (
-	"fmt"
-
 	"github.com/tsouza/cerberus/internal/chplan"
 )
 
+// emit_expr.go is the legacy shim layer for the expression tree.
+//
+// As of RC6 R6.4, every emit method below routes through the public
+// `chsql.Builder.Expr` family rather than writing SQL keywords or
+// operator tokens directly into `e.b`. The shim exists because the
+// grandfathered emitters in range_window.go / emit_node.go::emitOrderBy
+// still call `e.emitExpr` / `e.bindArg`; both will collapse onto
+// `Builder.Expr` directly when R6.5 ports those files.
+//
+// Each method here renders the expression into a fresh Builder via
+// Builder.Expr, then splices the rendered SQL + args back into the
+// emitter's accumulator. Builder.Expr is the canonical implementation;
+// the shims preserve identical wire output for the grandfathered
+// callers without re-implementing the expression tree twice.
+
+// emitExpr renders x as a ClickHouse expression into e.b / e.args.
+// Mirrors Builder.Expr; the two paths produce byte-identical SQL.
 func (e *emitter) emitExpr(x chplan.Expr) error {
-	switch v := x.(type) {
-	case *chplan.ColumnRef:
-		if v.Qualifier != "" {
-			writeIdent(&e.b, v.Qualifier)
-			e.b.WriteByte('.')
-		}
-		writeIdent(&e.b, v.Name)
-		return nil
-	case *chplan.LitString:
-		return e.bindArg(v.V)
-	case *chplan.LitInt:
-		return e.bindArg(v.V)
-	case *chplan.LitFloat:
-		return e.bindArg(v.V)
-	case *chplan.LitBool:
-		return e.bindArg(v.V)
-	case *chplan.Binary:
-		return e.emitBinary(v)
-	case *chplan.FuncCall:
-		return e.emitFunc(v)
-	case *chplan.MapAccess:
-		return e.emitMapAccess(v)
-	case *chplan.MapWithoutKeys:
-		return e.emitMapWithoutKeys(v)
-	case *chplan.LineContent:
-		return e.emitLineContent(v)
-	case *chplan.FieldAccess:
-		return e.emitFieldAccess(v)
-	case *chplan.NestedArrayExists:
-		return e.emitNestedArrayExists(v)
-	default:
-		return fmt.Errorf("%w: expr %T", ErrUnsupported, x)
+	b := &Builder{}
+	if err := b.Expr(x); err != nil {
+		return err
 	}
+	e.splice(b)
+	return nil
 }
 
 // emitNestedArrayExists renders
@@ -47,164 +35,57 @@ func (e *emitter) emitExpr(x chplan.Expr) error {
 //	arrayExists(x -> x[?] <op> ?, `<Column>`.`<SubField>`)
 //
 // for TraceQL link / event attribute filters against the OTel-CH Nested
-// columns. The key + value bind through bindArg so both are driver
-// parameters, not spliced into the SQL.
+// columns. Delegates to Builder.exprNestedArrayExists via Builder.Expr;
+// retained as an emitter method so the grandfathered callers in
+// range_window.go keep a stable surface until R6.5.
 func (e *emitter) emitNestedArrayExists(n *chplan.NestedArrayExists) error {
-	e.b.WriteString("arrayExists(x -> x[")
-	if err := e.bindArg(n.Key); err != nil {
-		return err
-	}
-	e.b.WriteString("] ")
-	e.b.WriteString(string(n.Op))
-	e.b.WriteByte(' ')
-	if err := e.emitExpr(n.Value); err != nil {
-		return err
-	}
-	e.b.WriteString(", ")
-	writeIdent(&e.b, n.Column)
-	e.b.WriteByte('.')
-	writeIdent(&e.b, n.SubField)
-	e.b.WriteByte(')')
-	return nil
+	return e.emitExpr(n)
 }
 
+// emitFieldAccess renders `<source>[?]` with the path bound as a
+// positional arg. Thin shim over Builder.Expr.
 func (e *emitter) emitFieldAccess(f *chplan.FieldAccess) error {
-	if err := e.emitExpr(f.Source); err != nil {
-		return err
-	}
-	e.b.WriteByte('[')
-	if err := e.bindArg(f.Path); err != nil {
-		return err
-	}
-	e.b.WriteByte(']')
-	return nil
+	return e.emitExpr(f)
 }
 
+// bindArg appends a `?` placeholder and records v in the emitter's args
+// slice. Delegates to Builder.Arg; retained as an emitter method for the
+// grandfathered range_window.go callsites which bind duration / timestamp
+// literals around manually-rendered SQL fragments. R6.5 collapses those
+// onto Builder.Arg directly.
 func (e *emitter) bindArg(v any) error {
-	e.b.WriteByte('?')
-	e.args = append(e.args, v)
+	b := &Builder{}
+	b.Arg(v)
+	e.splice(b)
 	return nil
 }
 
+// emitBinary renders a chplan.Binary through Builder.Expr. The
+// Op-specific dispatch (Match / NotMatch / Pow / generic infix) lives
+// inside Builder.exprBinary.
 func (e *emitter) emitBinary(b *chplan.Binary) error {
-	// Regex match ops lower to CH function calls (match / NOT match).
-	switch b.Op {
-	case chplan.OpMatch, chplan.OpNotMatch:
-		if b.Op == chplan.OpNotMatch {
-			e.b.WriteString("NOT ")
-		}
-		e.b.WriteString("match(")
-		if err := e.emitExpr(b.Left); err != nil {
-			return err
-		}
-		e.b.WriteString(", ")
-		if err := e.emitExpr(b.Right); err != nil {
-			return err
-		}
-		e.b.WriteByte(')')
-		return nil
-
-	case chplan.OpPow:
-		// CH has no `^` operator; lower to `pow(left, right)`.
-		e.b.WriteString("pow(")
-		if err := e.emitExpr(b.Left); err != nil {
-			return err
-		}
-		e.b.WriteString(", ")
-		if err := e.emitExpr(b.Right); err != nil {
-			return err
-		}
-		e.b.WriteByte(')')
-		return nil
-	}
-
-	e.b.WriteByte('(')
-	if err := e.emitExpr(b.Left); err != nil {
-		return err
-	}
-	fmt.Fprintf(&e.b, " %s ", b.Op)
-	if err := e.emitExpr(b.Right); err != nil {
-		return err
-	}
-	e.b.WriteByte(')')
-	return nil
+	return e.emitExpr(b)
 }
 
+// emitMapAccess renders `<map>[<key>]` through Builder.Expr.
 func (e *emitter) emitMapAccess(m *chplan.MapAccess) error {
-	if err := e.emitExpr(m.Map); err != nil {
-		return err
-	}
-	e.b.WriteByte('[')
-	if err := e.emitExpr(m.Key); err != nil {
-		return err
-	}
-	e.b.WriteByte(']')
-	return nil
+	return e.emitExpr(m)
 }
 
+// emitMapWithoutKeys renders the `mapFilter((k, v) -> NOT (k IN (...)), <map>)`
+// shape through Builder.Expr.
 func (e *emitter) emitMapWithoutKeys(m *chplan.MapWithoutKeys) error {
-	e.b.WriteString("mapFilter((k, v) -> NOT (k IN (")
-	for i, k := range m.Keys {
-		if i > 0 {
-			e.b.WriteString(", ")
-		}
-		if err := e.bindArg(k); err != nil {
-			return err
-		}
-	}
-	e.b.WriteString(")), ")
-	if err := e.emitExpr(m.Map); err != nil {
-		return err
-	}
-	e.b.WriteByte(')')
-	return nil
+	return e.emitExpr(m)
 }
 
+// emitLineContent renders the LogQL `|=` / `!=` / `|~` / `!~` line
+// matchers through Builder.Expr.
 func (e *emitter) emitLineContent(l *chplan.LineContent) error {
-	if l.IsRegex {
-		if l.Negated {
-			e.b.WriteString("NOT ")
-		}
-		e.b.WriteString("match(")
-		if err := e.emitExpr(l.Source); err != nil {
-			return err
-		}
-		e.b.WriteString(", ")
-		if err := e.bindArg(l.Pattern); err != nil {
-			return err
-		}
-		e.b.WriteByte(')')
-		return nil
-	}
-	op := " > 0"
-	if l.Negated {
-		op = " = 0"
-	}
-	e.b.WriteString("(position(")
-	if err := e.emitExpr(l.Source); err != nil {
-		return err
-	}
-	e.b.WriteString(", ")
-	if err := e.bindArg(l.Pattern); err != nil {
-		return err
-	}
-	e.b.WriteString(")")
-	e.b.WriteString(op)
-	e.b.WriteByte(')')
-	return nil
+	return e.emitExpr(l)
 }
 
+// emitFunc renders a chplan.FuncCall as `<name>(<args>...)` through
+// Builder.Expr.
 func (e *emitter) emitFunc(f *chplan.FuncCall) error {
-	e.b.WriteString(f.Name)
-	e.b.WriteByte('(')
-	for i, a := range f.Args {
-		if i > 0 {
-			e.b.WriteString(", ")
-		}
-		if err := e.emitExpr(a); err != nil {
-			return err
-		}
-	}
-	e.b.WriteByte(')')
-	return nil
+	return e.emitExpr(f)
 }
