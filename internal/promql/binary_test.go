@@ -11,10 +11,14 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
-// TestLower_Binary_Errors covers the cases lowerBinary rejects today —
-// vector/vector (deferred to M1.6 vector matching), the `bool` modifier
-// on comparisons, and pure scalar/scalar (deferred until scalars are
-// first-class chplan nodes).
+// TestLower_Binary_Errors covers the binary-expression shapes lowerBinary
+// still rejects: pure scalar/scalar (deferred until scalars are first-class
+// chplan nodes), logical ops (`and`/`or`/`unless`, deferred to a later
+// milestone), and the `bool` modifier on vector-vector ops.
+//
+// group_left / group_right are no longer rejected — RC2 cardinality-edge
+// support added them with explicit cardinality enforcement; see
+// vector_match_test.go for the lowering coverage.
 func TestLower_Binary_Errors(t *testing.T) {
 	t.Parallel()
 
@@ -27,16 +31,6 @@ func TestLower_Binary_Errors(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name:    "group_left deferred",
-			query:   `up * on(job) group_left up`,
-			wantErr: "group_left vector matching is not yet supported",
-		},
-		{
-			name:    "group_right deferred",
-			query:   `up * on(job) group_right up`,
-			wantErr: "group_right vector matching is not yet supported",
-		},
-		{
 			name:    "scalar OP scalar deferred",
 			query:   `1 + 2`,
 			wantErr: "scalar-only binary expressions not yet lowered",
@@ -45,6 +39,11 @@ func TestLower_Binary_Errors(t *testing.T) {
 			name:    "logical and deferred",
 			query:   `up and up`,
 			wantErr: "binary op and not yet supported",
+		},
+		{
+			name:    "bool modifier on vector-vector rejected",
+			query:   `up == bool up`,
+			wantErr: "'bool' modifier on vector-vector binary ops is not yet supported",
 		},
 	}
 	for _, tc := range cases {
