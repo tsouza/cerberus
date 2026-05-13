@@ -87,80 +87,91 @@ func (e *emitter) emitProject(p *chplan.Project) error {
 }
 
 func (e *emitter) emitAggregate(a *chplan.Aggregate) error {
-	e.b.WriteString("SELECT ")
+	// Prefix: SELECT <group-by keys + aliases>, <agg funcs>
+	prefix := NewBuilder()
+	prefix.WriteSQL("SELECT ")
 	first := true
 	for i, g := range a.GroupBy {
 		if !first {
-			e.b.WriteString(", ")
+			prefix.WriteSQL(", ")
 		}
 		first = false
-		if err := e.emitExpr(g); err != nil {
+		if err := prefix.Expr(g); err != nil {
 			return err
 		}
 		if i < len(a.GroupByAliases) && a.GroupByAliases[i] != "" {
-			e.b.WriteString(" AS ")
-			writeIdent(&e.b, a.GroupByAliases[i])
+			prefix.WriteSQL(" AS ")
+			prefix.Ident(a.GroupByAliases[i])
 		}
 	}
 	for _, af := range a.AggFuncs {
 		if !first {
-			e.b.WriteString(", ")
+			prefix.WriteSQL(", ")
 		}
 		first = false
-		if err := e.emitAggFunc(af); err != nil {
+		if err := writeAggFunc(prefix, af); err != nil {
 			return err
 		}
 	}
 	if first {
 		return fmt.Errorf("%w: Aggregate with no GroupBy keys and no AggFuncs", ErrUnsupported)
 	}
-	e.b.WriteString(" FROM ")
+	prefix.WriteSQL(" FROM ")
+	e.splice(prefix)
+	// Subquery still flows through the legacy emitter — its args land in
+	// e.args at this textual position, between the SELECT list and the
+	// optional GROUP BY suffix.
 	if err := e.emitSubquery(a.Input); err != nil {
 		return err
 	}
 	if len(a.GroupBy) > 0 {
-		e.b.WriteString(" GROUP BY ")
+		suffix := NewBuilder()
+		suffix.WriteSQL(" GROUP BY ")
 		for i, g := range a.GroupBy {
 			if i > 0 {
-				e.b.WriteString(", ")
+				suffix.WriteSQL(", ")
 			}
-			if err := e.emitExpr(g); err != nil {
+			if err := suffix.Expr(g); err != nil {
 				return err
 			}
 		}
+		e.splice(suffix)
 	}
 	return nil
 }
 
-func (e *emitter) emitAggFunc(af chplan.AggFunc) error {
-	e.b.WriteString(af.Name)
-	// Parameterised aggregates emit `<name>(<params>)(<args>)` — used by CH
-	// for `quantile(0.95)(value)`, `quantiles(0.5, 0.9)(value)`, etc.
-	if len(af.Params) > 0 {
-		e.b.WriteByte('(')
-		for i, p := range af.Params {
-			if i > 0 {
-				e.b.WriteString(", ")
+// writeAggFunc renders `<name>[(<params>)](<args>) [AS <alias>]` into b
+// using the public Builder helpers. The parameterised-aggregate shape
+// (`quantile(0.95)(value)`, `quantiles(0.5, 0.9)(value)`, …) goes
+// through Builder.ParamAgg.
+func writeAggFunc(b *Builder, af chplan.AggFunc) error {
+	// Capture the first expression-render error encountered while the
+	// ParamAgg callbacks run; we surface it after ParamAgg returns so
+	// the SQL stays consistent with the legacy emitter's positional
+	// argument ordering on the happy path.
+	var firstErr error
+	mkExpr := func(x chplan.Expr) func(b *Builder) {
+		return func(b *Builder) {
+			if err := b.Expr(x); err != nil && firstErr == nil {
+				firstErr = err
 			}
-			if err := e.emitExpr(p); err != nil {
-				return err
-			}
-		}
-		e.b.WriteByte(')')
-	}
-	e.b.WriteByte('(')
-	for i, a := range af.Args {
-		if i > 0 {
-			e.b.WriteString(", ")
-		}
-		if err := e.emitExpr(a); err != nil {
-			return err
 		}
 	}
-	e.b.WriteByte(')')
+	params := make([]func(b *Builder), 0, len(af.Params))
+	for _, p := range af.Params {
+		params = append(params, mkExpr(p))
+	}
+	args := make([]func(b *Builder), 0, len(af.Args))
+	for _, a := range af.Args {
+		args = append(args, mkExpr(a))
+	}
+	b.ParamAgg(af.Name, params, args)
+	if firstErr != nil {
+		return firstErr
+	}
 	if af.Alias != "" {
-		e.b.WriteString(" AS ")
-		writeIdent(&e.b, af.Alias)
+		b.WriteSQL(" AS ")
+		b.Ident(af.Alias)
 	}
 	return nil
 }
