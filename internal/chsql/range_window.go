@@ -999,14 +999,6 @@ func quoteIdent(name string) string {
 	b.Ident(name)
 	return b.String()
 }
-
-// timeOrNow renders an explicit DateTime64(9) literal for a non-zero
-// time or `now64(9)` for the zero value. Retained for callsites in
-// histogram_over_time.go / histogram_quantile.go that still compose
-// the anchor base as a string; the RangeWindow port routes the same
-// shape through timeOrNowFrag instead.
-func timeOrNow(t time.Time) string {
-	b := &Builder{}
 	timeOrNowFrag(t)(b)
 	return b.String()
 }
