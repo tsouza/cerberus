@@ -356,6 +356,73 @@ func TestAs_WrapsWithAlias(t *testing.T) {
 	}
 }
 
+// TestUnionAll_JoinsParts — UnionAll joins multiple Frags with the
+// " UNION ALL " keyword in stream order, and args bound inside each
+// part land at the position they're emitted.
+func TestUnionAll_JoinsParts(t *testing.T) {
+	t.Parallel()
+
+	left := chsql.NewSelect().
+		Select(chsql.Col("MetricName")).
+		From(chsql.Col("gauge")).
+		Where(func(b *chsql.Builder) {
+			b.Ident("MetricName")
+			b.WriteSQL(" = ")
+			b.Arg("a")
+		})
+	right := chsql.NewSelect().
+		Select(chsql.Col("MetricName")).
+		From(chsql.Col("sum")).
+		Where(func(b *chsql.Builder) {
+			b.Ident("MetricName")
+			b.WriteSQL(" = ")
+			b.Arg("b")
+		})
+
+	b := chsql.NewBuilder()
+	chsql.UnionAll(left.Frag(), right.Frag())(b)
+	sql, args := b.Build()
+	want := "(SELECT `MetricName` FROM `gauge` WHERE `MetricName` = ?)" +
+		" UNION ALL " +
+		"(SELECT `MetricName` FROM `sum` WHERE `MetricName` = ?)"
+	if sql != want {
+		t.Errorf("UnionAll = %q; want %q", sql, want)
+	}
+	wantArgs := []any{"a", "b"}
+	if !reflect.DeepEqual(args, wantArgs) {
+		t.Errorf("Args = %v; want %v", args, wantArgs)
+	}
+}
+
+// TestUnionAll_SinglePart — one part renders without the UNION ALL
+// keyword (the join separator only applies between parts).
+func TestUnionAll_SinglePart(t *testing.T) {
+	t.Parallel()
+
+	only := chsql.NewSelect().
+		Select(chsql.Col("x")).
+		From(chsql.Col("t"))
+
+	b := chsql.NewBuilder()
+	chsql.UnionAll(only.Frag())(b)
+	if got, want := b.String(), "(SELECT `x` FROM `t`)"; got != want {
+		t.Errorf("UnionAll(single) = %q; want %q", got, want)
+	}
+}
+
+// TestUnionAll_PanicsOnEmpty — UnionAll with zero parts is a
+// programmer error.
+func TestUnionAll_PanicsOnEmpty(t *testing.T) {
+	t.Parallel()
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatalf("expected panic on UnionAll()")
+		}
+	}()
+	chsql.UnionAll()
+}
+
 // TestSelectBuilder_SelectAs — SelectAs slot adds "<expr> AS <alias>"
 // to the SELECT list without composing the AS keyword by hand at the
 // call site.
