@@ -111,7 +111,15 @@ The remaining ~10% per QL, plus the deferred API endpoints. Each lands as its ow
 - **Self-contained k3s deployment** — `deploy/k3s/otel-collector.yaml` lands a per-node DaemonSet (kubeletstats + filelog) plus a gateway Deployment (k8s_cluster + k8s_events + OTLP) wired to the ClickHouse exporter, and `deploy/k3s/sample-app.yaml` keeps the trace/metric/log signal tables non-empty via `telemetrygen`. Cerberus then queries real OTel data through Grafana for E2E. The synthetic Go-driven seeder at `test/e2e/seed/cmd/seed/` stays for spec / unit determinism — both writers share the upstream `sqltemplates` schema so it cannot drift. Unblocks RC4's "cerberus eats its own dogfood" round-trip (cerberus's own OTel emission will ride the same collector pipeline).
 - **HTTP APIs** — Prom `query_exemplars`, `format_query`, `parse_query`; Loki `tail`, `index/stats`, `index/volume`, `detected_fields`, `patterns`; Tempo `search/recent`, `metrics/query_range`, `search/tags`, `search/tag/<n>/values` (the last two gated on RC6 R6.1 sqlbuilder so the new SQL avoids Sprintf).
 
-**Exit criterion:** the lists above empty out; compatibility pass rate stays ≥ RC1 baseline; `just e2e-up` brings up a stack where data flows from real OTel sources, not synthetic INSERTs.
+**Exit criterion:** the lists above empty out; compatibility pass rate stays ≥ RC1 baseline; `just e2e-up` brings up a stack where data flows from real OTel sources, not synthetic INSERTs. ✅ **Met** at `v1.0.0-RC2`.
+
+### RC2 release
+
+| #    | Theme                                                                                       |
+| ---- | ------------------------------------------------------------------------------------------- |
+| M5.1 | `CHANGELOG.md` `[v1.0.0-RC2]` entry compiles the ~71 RC2 PRs merged since `v1.0.0-RC1`      |
+| M5.2 | README status block promoted RC1 → RC2 candidate; container-image quick-start pins `:RC2`   |
+| M5.3 | Tag `v1.0.0-RC2`; `release.yml` cuts multi-arch binaries + container image                  |
 
 ---
 

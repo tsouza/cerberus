@@ -4,7 +4,115 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
-(Work toward v1.0.0-RC2 lands here. See [`docs/roadmap.md`](docs/roadmap.md) for the milestone backlog.)
+(Work toward v1.0.0-RC3 lands here. See [`docs/roadmap.md`](docs/roadmap.md) for the milestone backlog.)
+
+## [v1.0.0-RC2]
+
+The advanced-QL + deferred-API release. Closes the RC2 backlog from [`docs/roadmap.md`](docs/roadmap.md) § RC2: PromQL subqueries (P0 4.1–4.11), `predict_linear` / `holt_winters` / `@start()` / `@end()`, `histogram_quantile` over both classic and native (exp) histograms, `group_left` / `group_right` cardinality edges; LogQL `| unpack`, `| pattern`, `| line_format`, `| decolorize`, `| label_format` template stages with Loki template funcs, `bytes_*` alignment, `/api/v1/tail` WebSocket, `/labels`, `/label/.../values`, `/series`, `/detected_fields`, `/patterns`, `/index/stats`, `/index/volume`; TraceQL `status = error` / `kind = client` enum statics, `sum / avg / max / min` over inner attributes, link traversal + span-event queries, set ops, `group / coalesce` pipeline elements, `histogram_over_time`, MetricsPipeline lowering, Tempo `/api/search/recent`, `/api/search/tags`, `/api/search/tag/<n>/values`, `/api/metrics/query_range`. The Tempo `unsafe.Pointer` shim is retired via the [`tsouza/tempo:cerberus-accessors`](https://github.com/tsouza/tempo/tree/cerberus-accessors) fork; the OTel CH Exporter schema is now the source of truth via the [`tsouza/opentelemetry-collector-contrib:cerberus-ddl`](https://github.com/tsouza/opentelemetry-collector-contrib/tree/cerberus-ddl) fork (no more hand-maintained DDL). ~71 PRs merged since `v1.0.0-RC1`.
+
+### Added
+
+#### PromQL (RC2)
+
+- Fold scalar-only PromQL in Go for Grafana's health probe (`1+1`-style queries). [#95]
+- `chplan.RangeWindow.OuterRange` + `Identity` for subquery emit. [#98]
+- Step-grid SQL emission for matrix-shape `RangeWindow`. [#101]
+- Wire matrix `RangeWindow` through `chclient.Sample` shape (P0 4.4). [#104]
+- Lower subquery over range-vector calls — `max_over_time(rate(m[5m])[1h:5m])` (P0 4.6). [#107]
+- Pin optimizer "no mis-rewrite" on matrix `RangeWindow` (P0 4.9). [#109]
+- Subquery roadmap + `Lower()` docs (P0 4.11). [#110]
+- Subquery E2E + Playwright coverage (P0 4.10). [#111]
+- `/api/v1/format_query` + `/api/v1/parse_query` handlers. [#114]
+- `/api/v1/query_exemplars` handler. [#137]
+- `group_left` / `group_right` cardinality + extra-label edges. [#144]
+- `predict_linear`, `holt_winters`, `@start()` / `@end()` modifiers. [#159]
+- `histogram_quantile` on classic histograms (RC2 schema G). [#170]
+- `histogram_quantile` on native (exp) histograms (RC2 schema H). [#171]
+
+#### LogQL (RC2)
+
+- Point stale "not yet supported" LogQL messages at RC3. [#118]
+- `| line_format` + `| decolorize` as Go-side post-process. [#124]
+- Handle nil predicate from no-op stages; `line_format` / `decolorize` handler tests. [#127]
+- TXTAR fixtures for `| line_format` and `| decolorize`. [#128]
+- `| label_format` rename + template stages. [#130]
+- Expose Loki template funcs in `| line_format` / `| label_format`. [#132]
+- `/index/stats` + `/index/volume` handlers. [#141]
+- `| unpack` + `| pattern` parser stages. [#142]
+- `/labels`, `/label/values`, `/series`, `/detected_fields`, `/patterns` handlers. [#151]
+- `bytes_*` alignment + `/api/v1/tail` WebSocket. [#157]
+
+#### TraceQL (RC2)
+
+- Lower `status` / `kind` static literals (P0 6). [#96]
+- Lower `sum` / `avg` / `max` / `min` over inner attribute (P0 7). [#99]
+- `/api/search/recent` + `chplan.OrderBy` IR node. [#123]
+- Cover `/api/search/recent` handler edges. [#126]
+- `/api/search/tags` + `/api/search/tag/<name>/values`. [#150]
+- `MetricsPipeline` lowering — `rate` / `*_over_time` → `Aggregate(Scan(traces))`. [#153]
+- Set ops (`&&`, `||`, `~`) + `group` / `coalesce` pipeline elements. [#156]
+- `MetricsAggregate` IR + `RangeWindow` over metric-shape input. [#160]
+- `/api/metrics/query_range` handler. [#163]
+- Link traversal + span-event queries. [#169]
+- `histogram_over_time(attr)` lowering + emission. [#173]
+
+#### Schema source-of-truth (RC2 schema A–H, plus the `tsouza/opentelemetry-collector-contrib` fork)
+
+- Wire `tsouza/opentelemetry-collector-contrib:cerberus-ddl` via `replace`. [#154]
+- Mirror upstream OTel CH Exporter columns (exp_histogram + missing classic histogram fields). [#158]
+- Wrap upstream OTel CH Exporter DDL via the `schema/ddl` package. [#161]
+- `CERBERUS_AUTO_CREATE_SCHEMA` env-gated startup hook (RC2 schema D). [#166]
+- Refactor `harness/compatibility` to seed via `schema/ddl` package (RC2 schema F). [#167]
+- Refactor `test/e2e` to seed via `schema/ddl` package + Go fixture inserts (RC2 schema E). [#168]
+- Self-contained `otel-collector` + `sample-app` for real E2E data (RC2). [#172]
+
+#### Tooling, CI, repo hygiene
+
+- Daily Dependabot for upstream parsers + auto-merge. [#100]
+- Bump Playwright deps. [#102]
+- Align markdown tables for MD060 (markdownlint v0.40). [#105]
+- Don't advance `:latest` on prereleases + SLSA attestation. [#112]
+- Defer P0 3 (k3s otel-collector) + P0 5 (recursive `>>` / `<<`). [#113]
+- Align indented table that PR #105 missed. [#117]
+- Consolidate lint into one job + add `bodyclose`, `errorlint`. [#119]
+- Switch `auto-merge-deps` to `workflow_run` trigger. [#120]
+- Bump the github-actions group across 1 directory with 10 updates. [#121]
+- RC6 R6.0 — SQL builder evaluation recommends custom builder. [#125]
+- Align CLAUDE.md + roadmap with R6.0 custom-builder choice. [#129]
+- Scaffold public `chsql.Builder` + `SelectBuilder` (RC6 R6.1). [#131]
+- Fuzz + perf-benchmark workflow scaffolds (RC3 R3.11). [#133]
+- Scaffold local Go PromQL evaluator (RC3 R3.10). [#134]
+- Pattern-based optimizer `Rule` API scaffold (RC3 R3.1). [#135]
+- Scaffold differential-testing harness (RC3 R3.9). [#136]
+- Port `emitScan` / `Filter` / `Project` / `Limit` to Builder (RC6 R6.2). [#138]
+- Plan to fork upstream Tempo, retire `unsafe.Pointer` shims. [#139]
+- Port `emitAggregate` + `emitAggFunc` to Builder (RC6 R6.3). [#140]
+- Wire `tsouza/tempo:cerberus-accessors` fork via `replace` directive. [#143]
+- Run dashboard E2E on merge-to-main only, drop PR trigger. [#145]
+- Actually use `SelectBuilder` for R6.2 / R6.3 ports + repo audit. [#146]
+- Retire `unsafe.Pointer` + reflect shims via `tsouza/tempo` accessors. [#148]
+- Tighten no-raw-SQL rule to forbid `Builder.WriteSQL` clause keywords. [#149]
+- `forbidigo` lint forbids `unsafe.Pointer` + `reflect.FieldByName` in `internal/traceql`, `internal/api/tempo`. [#152]
+- Plan 6 scalability levers across RC3 / RC4 / RC5. [#155]
+- Add lefthook pre-commit + commit-msg hooks (formatters only; CI owns validation). [#162]
+- Drop empty `pkg/` — cerberus is a service, not a library. [#165]
+
+### Changed
+
+- `SelectBuilder.Limit(int64)` and Builder API refactors to thread typed clauses through the chplan emitter (R6.2 / R6.3 audit). [#138, #140, #146]
+- Migrate test seeders (`harness/compatibility`, `test/e2e`) off hand-rolled `*.sql` files onto the upstream-derived `schema/ddl` package. [#167, #168]
+
+### Security
+
+- Bump `apache/thrift` v0.22.0 → v0.23.0 (CVE-2026-41602). [#164]
+
+### Infrastructure
+
+- `tsouza/tempo:cerberus-accessors` fork wired via `replace` to retire the `unsafe.Pointer` shim ([#143]); shim removed in [#148]; `forbidigo` gate added in [#152].
+- `tsouza/opentelemetry-collector-contrib:cerberus-ddl` fork wired via `replace` so the OTel CH Exporter DDL is the source of truth (no hand-maintained schema). [#154]
+- Lefthook pre-commit + commit-msg hooks (formatters only; CI owns validation). [#162]
+- `auto-merge-deps` switched to `workflow_run` trigger; `dashboard` job moved to merge-to-main only. [#120, #145]
+- Self-contained k3s deployment: per-node OTel Collector DaemonSet + gateway Deployment + sample-app `telemetrygen` for real E2E data. [#172]
 
 ## [v1.0.0-RC1]
 
@@ -86,6 +194,7 @@ First tagged release. Closes the seed series (PR1–PR7 + admin + roadmap):
 - CI: two-job workflow (`check` + `lint`), commitlint relaxed for Dependabot, markdownlint, mutation testing (gremlins) on a nightly cron.
 - Branch protection on `main`: required checks, linear history, no force pushes / deletions.
 
-[Unreleased]: https://github.com/tsouza/cerberus/compare/v1.0.0-RC1...HEAD
+[Unreleased]: https://github.com/tsouza/cerberus/compare/v1.0.0-RC2...HEAD
+[v1.0.0-RC2]: https://github.com/tsouza/cerberus/releases/tag/v1.0.0-RC2
 [v1.0.0-RC1]: https://github.com/tsouza/cerberus/releases/tag/v1.0.0-RC1
 [v0.1.0]: https://github.com/tsouza/cerberus/releases/tag/v0.1.0
