@@ -101,28 +101,43 @@ func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative) Frag {
 	return func(b *Builder) {
 		phi := formatFloat(h.Phi)
 		// base = pow(2, pow(2, -Scale)). Re-rendered inline at each
-		// use; CH's planner CSEs.
+		// use; CH's planner CSEs. Inline literal `2` and `arrayConcat`
+		// of `[col]` have no typed Frag (no inline-int / array-literal
+		// helpers), so the in-package b.writeSQL path is kept for the
+		// shape's outer layout; the inner pow/arrayCumSum function
+		// shells use typed Call where they would otherwise duplicate
+		// "fn(" + ... + ")" string fragments.
 		writeBase := func() {
 			b.writeSQL("pow(2, pow(2, -")
 			b.Ident(scale)
 			b.writeSQL("))")
 		}
 		// cum = arrayCumSum(arrayConcat([ZeroCount], PositiveBucketCounts)).
-		writeCum := func() {
-			b.writeSQL("arrayCumSum(arrayConcat([")
+		// The arrayConcat([col], col) shape uses an array-literal "[col]"
+		// which has no typed Frag; structure preserved via b.writeSQL.
+		// The arrayCumSum wrapper is emitted via typed Call once the
+		// arrayConcat body is rendered.
+		cumBody := func(b *Builder) {
+			b.writeSQL("arrayConcat([")
 			b.Ident(zc)
 			b.writeSQL("], ")
 			b.Ident(pbc)
-			b.writeSQL("))")
+			b.writeSQL(")")
+		}
+		writeCum := func() {
+			Call("arrayCumSum", cumBody)(b)
 		}
 		// total = cum[length(cum)] — last element of cum.
 		writeTotal := func() {
 			writeCum()
-			b.writeSQL("[length(")
-			writeCum()
-			b.writeSQL(")]")
+			b.writeSQL("[")
+			Call("length", func(b *Builder) { writeCum() })(b)
+			b.writeSQL("]")
 		}
-		// idx = arrayFirstIndex(c -> c >= phi*total, cum)
+		// idx = arrayFirstIndex(c -> c >= phi*total, cum).
+		// Lambda body uses bound var `c`; Builder.Lambda emits "(c) ->"
+		// which drifts vs. "c ->" output, so the in-package writeSQL
+		// path is kept here. Flagged for R6.12.f.
 		writeIdx := func() {
 			b.writeSQL("arrayFirstIndex(c -> c >= (")
 			b.writeSQL(phi)
@@ -164,9 +179,9 @@ func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative) Frag {
 		writeBase()
 		b.writeSQL(", ")
 		b.Ident(po)
-		b.writeSQL(" + length(")
-		b.Ident(pbc)
-		b.writeSQL(")), ")
+		b.writeSQL(" + ")
+		Call("length", Col(pbc))(b)
+		b.writeSQL("), ")
 		// if(idx = 1, ZeroThreshold, ...
 		b.writeSQL("if(")
 		writeIdx()

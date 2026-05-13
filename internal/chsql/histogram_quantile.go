@@ -85,6 +85,15 @@ func (e *emitter) emitHistogramQuantile(h *chplan.HistogramQuantile) error {
 func histogramQuantileValueFrag(h *chplan.HistogramQuantile) Frag {
 	bc := h.BucketCountsColumn
 	eb := h.ExplicitBoundsColumn
+	// Reusable typed Frags for the function-call shapes; closures below
+	// inline these into the if() chain. The non-Call structure (if()
+	// nesting, "[idx]" array indexing, inline phi formatFloat literal)
+	// keeps the in-package b.writeSQL path — no typed Frag covers those
+	// shapes yet, flagged for R6.12.f.
+	lengthBC := Call("length", Col(bc))
+	lengthEB := Call("length", Col(eb))
+	arraySumBC := Call("arraySum", Col(bc))
+	arrayCumSumBC := Call("arrayCumSum", Col(bc))
 	return func(b *Builder) {
 		// Empty histogram → NaN. arrayCumSum on an empty array is empty;
 		// `length(cum) = 0` and `total = 0`. Guard the divide-by-zero +
@@ -93,9 +102,9 @@ func histogramQuantileValueFrag(h *chplan.HistogramQuantile) Frag {
 		// We emit one binding of phi for the multiply-by-total branch;
 		// the phi-bounds short-circuits below bind it again so each
 		// branch carries its own `?` placeholder.
-		b.writeSQL("if(length(")
-		b.Ident(bc)
-		b.writeSQL(") = 0, nan, ")
+		b.writeSQL("if(")
+		lengthBC(b)
+		b.writeSQL(" = 0, nan, ")
 		// total = cum[length(cum)]; cum = arrayCumSum(bc).
 		// Outer if: total = 0 → NaN. We materialise `cum` and `total`
 		// inline via subexpression rather than CTE to keep the shape flat.
@@ -110,9 +119,9 @@ func histogramQuantileValueFrag(h *chplan.HistogramQuantile) Frag {
 		// edge of bucket 1 is conventionally 0 for non-negative
 		// observations; matches upstream Prom's p0 behavior).
 		// `highest_bound` is the last entry in ExplicitBounds.
-		b.writeSQL("if(arraySum(")
-		b.Ident(bc)
-		b.writeSQL(") = 0, nan, ")
+		b.writeSQL("if(")
+		arraySumBC(b)
+		b.writeSQL(" = 0, nan, ")
 		b.writeSQL("if(")
 		b.writeSQL(formatFloat(h.Phi))
 		b.writeSQL(" <= 0, 0.0, ")
@@ -120,9 +129,9 @@ func histogramQuantileValueFrag(h *chplan.HistogramQuantile) Frag {
 		b.writeSQL(formatFloat(h.Phi))
 		b.writeSQL(" >= 1, ")
 		b.Ident(eb)
-		b.writeSQL("[length(")
-		b.Ident(eb)
-		b.writeSQL(")], ")
+		b.writeSQL("[")
+		lengthEB(b)
+		b.writeSQL("], ")
 		// Interpolation branch.
 		// Bind phi for the target multiplier and build the lookup.
 		// Using CH's let-like binding by re-evaluating subexprs is
@@ -143,19 +152,25 @@ func histogramQuantileValueFrag(h *chplan.HistogramQuantile) Frag {
 		//
 		// `idx` is rendered three times in the sub-expression; we
 		// recompute it each time rather than CTE-ing. CH CSE folds it.
+		// arrayFirstIndex(c -> ..., arrayCumSum(bc)) — the lambda body
+		// uses a bound var `c`; Builder.Lambda emits "(c) -> ..." which
+		// drifts vs. the existing "c -> ..." output, so the in-package
+		// b.writeSQL path is kept for the lambda. Flagged for R6.12.f
+		// if/when a parens-less lambda Frag lands. The outer
+		// arrayFirstIndex call wraps the cum frag via Call once the
+		// lambda is emitted.
 		writeIdx := func() {
 			b.writeSQL("arrayFirstIndex(c -> c >= (")
 			b.writeSQL(formatFloat(h.Phi))
-			b.writeSQL(" * arraySum(")
-			b.Ident(bc)
-			b.writeSQL(")), arrayCumSum(")
-			b.Ident(bc)
-			b.writeSQL("))")
+			b.writeSQL(" * ")
+			arraySumBC(b)
+			b.writeSQL("), ")
+			arrayCumSumBC(b)
+			b.writeSQL(")")
 		}
 		writeCumAt := func(offset string) {
-			b.writeSQL("arrayCumSum(")
-			b.Ident(bc)
-			b.writeSQL(")[")
+			arrayCumSumBC(b)
+			b.writeSQL("[")
 			writeIdx()
 			b.writeSQL(offset)
 			b.writeSQL("]")
@@ -170,13 +185,13 @@ func histogramQuantileValueFrag(h *chplan.HistogramQuantile) Frag {
 		// if(idx = length(cum), highest_bound, interpolate)
 		b.writeSQL("if(")
 		writeIdx()
-		b.writeSQL(" = length(arrayCumSum(")
-		b.Ident(bc)
-		b.writeSQL(")), ")
+		b.writeSQL(" = ")
+		Call("length", arrayCumSumBC)(b)
+		b.writeSQL(", ")
 		b.Ident(eb)
-		b.writeSQL("[length(")
-		b.Ident(eb)
-		b.writeSQL(")], ")
+		b.writeSQL("[")
+		lengthEB(b)
+		b.writeSQL("], ")
 		// Interpolate. bound_lo / cum_lo branch on idx = 1.
 		// bound_hi = ExplicitBounds[idx]; cum_hi = cum[idx].
 		// bound_lo = if(idx = 1, 0, ExplicitBounds[idx - 1]);
@@ -193,9 +208,9 @@ func histogramQuantileValueFrag(h *chplan.HistogramQuantile) Frag {
 		writeBoundAt(" - 1")
 		b.writeSQL(")) * ((")
 		b.writeSQL(formatFloat(h.Phi))
-		b.writeSQL(" * arraySum(")
-		b.Ident(bc)
-		b.writeSQL(")) - if(")
+		b.writeSQL(" * ")
+		arraySumBC(b)
+		b.writeSQL(") - if(")
 		writeIdx()
 		b.writeSQL(" = 1, 0.0, ")
 		writeCumAt(" - 1")

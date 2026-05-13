@@ -112,11 +112,14 @@ func (e *emitter) emitMetricsHistogramOverTime(m *chplan.MetricsHistogramOverTim
 // bound argument: it's part of the query shape, not user data, and the
 // per-attribute bucket arithmetic is otherwise parameter-free.
 func histogramBucketFrag(attr chplan.Expr, isDuration bool) Frag {
+	attrFrag := func(b *Builder) { _ = b.Expr(attr) }
 	return func(b *Builder) {
-		b.sb.WriteString("log2(")
-		_ = b.Expr(attr)
-		b.sb.WriteByte(')')
+		Call("log2", attrFrag)(b)
 		if isDuration {
+			// "/ 1e9" — inline divisor (query-shape constant, not user
+			// data); no typed Frag for inline-int literals so the suffix
+			// is appended via direct write. Flagged for R6.12.f if/when
+			// an InlineLit / RawLit Frag lands.
 			b.sb.WriteString(" / 1000000000")
 		}
 	}
