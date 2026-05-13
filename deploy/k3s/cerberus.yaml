@@ -11,6 +11,16 @@ data:
   CERBERUS_CH_USERNAME: "cerberus"
   CERBERUS_CH_PASSWORD: "cerberus"
   CERBERUS_CH_DIAL_TIMEOUT: "10s"
+  # Self-observability OTLP export — once R4.5 wires the OTLP SDK, cerberus
+  # will push its own metrics + traces to the in-cluster gateway, which
+  # forwards them to ClickHouse via the clickhouseexporter. Reading those
+  # rows back through cerberus closes the dogfood loop (see the
+  # "Cerberus self-observability" Grafana dashboard in deploy/grafana/).
+  # Empty value disables OTLP export entirely (zero-collector binary).
+  CERBERUS_OTEL_ENDPOINT: "otel-collector-gateway.cerberus.svc:4317"
+  CERBERUS_OTEL_INSECURE: "true"
+  CERBERUS_OTEL_SERVICE_NAME: "cerberus"
+  CERBERUS_OTEL_SAMPLER: "parentbased_traceidratio:0.1"
 ---
 apiVersion: v1
 kind: Service

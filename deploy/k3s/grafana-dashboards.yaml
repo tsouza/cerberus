@@ -1,0 +1,148 @@
+---
+# Dashboard provider config — points Grafana at /var/lib/grafana/dashboards
+# so any JSON dropped in that mount is loaded as a provisioned dashboard.
+# Folder "Cerberus" groups the self-observability dashboard (and any future
+# cerberus-shipped dashboards) under one top-level entry.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-provider
+  namespace: cerberus
+data:
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: cerberus
+        orgId: 1
+        folder: Cerberus
+        type: file
+        disableDeletion: true
+        editable: false
+        updateIntervalSeconds: 30
+        allowUiUpdates: false
+        options:
+          path: /var/lib/grafana/dashboards
+          foldersFromFilesStructure: false
+---
+# The dashboard JSON itself — sourced from
+# deploy/grafana/dashboards/cerberus-self.json. Keep the two in sync; the
+# repo file is the editable copy, the ConfigMap is the deployed copy.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-cerberus-self
+  namespace: cerberus
+data:
+  cerberus-self.json: |
+    {
+      "annotations": {
+        "list": [
+          {
+            "builtIn": 1,
+            "datasource": {"type": "grafana", "uid": "-- Grafana --"},
+            "enable": true,
+            "hide": true,
+            "iconColor": "rgba(0, 211, 255, 1)",
+            "name": "Annotations & Alerts",
+            "type": "dashboard"
+          }
+        ]
+      },
+      "description": "Cerberus self-observability — dogfood loop: cerberus -> OTLP -> Collector -> ClickHouse -> cerberus -> Grafana.",
+      "editable": false,
+      "graphTooltip": 1,
+      "id": null,
+      "links": [],
+      "panels": [
+        {
+          "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
+          "description": "Query rate by upstream language (PromQL / LogQL / TraceQL).",
+          "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []},
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+          "id": 1,
+          "targets": [{
+            "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
+            "expr": "sum by (language) (rate(cerberus_queries_total{service_name=\"cerberus\"}[5m]))",
+            "legendFormat": "{{language}}",
+            "refId": "A"
+          }],
+          "title": "Query rate by language",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
+          "description": "P50 / P95 / P99 query latency.",
+          "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+          "id": 2,
+          "targets": [
+            {"datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
+             "expr": "histogram_quantile(0.50, sum by (le) (rate(cerberus_queries_duration_seconds_bucket{service_name=\"cerberus\"}[5m])))",
+             "legendFormat": "p50", "refId": "A"},
+            {"datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
+             "expr": "histogram_quantile(0.95, sum by (le) (rate(cerberus_queries_duration_seconds_bucket{service_name=\"cerberus\"}[5m])))",
+             "legendFormat": "p95", "refId": "B"},
+            {"datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
+             "expr": "histogram_quantile(0.99, sum by (le) (rate(cerberus_queries_duration_seconds_bucket{service_name=\"cerberus\"}[5m])))",
+             "legendFormat": "p99", "refId": "C"}
+          ],
+          "title": "Query latency (p50 / p95 / p99)",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
+          "description": "Per-stage latency (parse / lower / optimize / emit / execute), stacked.",
+          "fieldConfig": {"defaults": {"unit": "s", "custom": {"stacking": {"group": "A", "mode": "normal"}, "fillOpacity": 80}}, "overrides": []},
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+          "id": 3,
+          "targets": [{
+            "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
+            "expr": "histogram_quantile(0.95, sum by (le, stage) (rate(cerberus_pipeline_stage_duration_seconds_bucket{service_name=\"cerberus\"}[5m])))",
+            "legendFormat": "{{stage}}",
+            "refId": "A"
+          }],
+          "title": "Per-stage latency (p95, stacked)",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
+          "description": "CH rows + bytes read per second.",
+          "fieldConfig": {"defaults": {"unit": "short"}, "overrides": [{"matcher": {"id": "byName", "options": "bytes/s"}, "properties": [{"id": "unit", "value": "Bps"}]}]},
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+          "id": 4,
+          "targets": [
+            {"datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
+             "expr": "sum(rate(cerberus_ch_rows_read_total{service_name=\"cerberus\"}[5m]))",
+             "legendFormat": "rows/s", "refId": "A"},
+            {"datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
+             "expr": "sum(rate(cerberus_ch_bytes_read_total{service_name=\"cerberus\"}[5m]))",
+             "legendFormat": "bytes/s", "refId": "B"}
+          ],
+          "title": "ClickHouse rows / bytes read per second",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
+          "description": "Error rate (queries with result=\"error\" / total) per language.",
+          "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 0.01}, {"color": "red", "value": 0.05}]}}, "overrides": []},
+          "gridPos": {"h": 8, "w": 24, "x": 0, "y": 16},
+          "id": 5,
+          "targets": [{
+            "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
+            "expr": "sum by (language) (rate(cerberus_queries_total{service_name=\"cerberus\",result=\"error\"}[5m])) / clamp_min(sum by (language) (rate(cerberus_queries_total{service_name=\"cerberus\"}[5m])), 1e-9)",
+            "legendFormat": "{{language}}",
+            "refId": "A"
+          }],
+          "title": "Error rate by language",
+          "type": "timeseries"
+        }
+      ],
+      "refresh": "30s",
+      "schemaVersion": 39,
+      "tags": ["cerberus", "self-observability", "dogfood"],
+      "templating": {"list": []},
+      "time": {"from": "now-1h", "to": "now"},
+      "title": "Cerberus self-observability",
+      "uid": "cerberus-self",
+      "version": 1
+    }
