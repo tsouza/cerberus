@@ -397,8 +397,8 @@ func (h *Handler) labelValuesForMatcher(ctx context.Context, name, matcher strin
 	// FROM subquery's `?` placeholders splice between valueArgs[0] and
 	// valueArgs[1:]. Reconstruct the final slice accordingly.
 	combined := make([]any, 0, len(valueArgs)+len(args))
-	combined = append(combined, valueArgs[0]) // SELECT MapAt key
-	combined = append(combined, args...) // matcher subquery binds
+	combined = append(combined, valueArgs[0])     // SELECT MapAt key
+	combined = append(combined, args...)          // matcher subquery binds
 	combined = append(combined, valueArgs[1:]...) // WHERE: key + empty-sentinel
 	return timeCH(ctx, func() ([]string, error) {
 		return h.Client.QueryStrings(ctx, sql, combined...)
