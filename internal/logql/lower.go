@@ -83,13 +83,13 @@ func lowerStage(stage syntax.StageExpr, s schema.Logs) (chplan.Expr, error) {
 	case *syntax.LabelFilterExpr:
 		return lowerLabelFilter(st, s)
 	case *syntax.LineParserExpr:
-		return nil, fmt.Errorf("logql: parser stage `%s` is not yet supported (json/logfmt/regexp/pattern parsers land in M3.3)", st.Op)
+		return nil, fmt.Errorf("logql: parser stage `| %s` is not yet supported (json/logfmt/regexp/pattern parsers deferred from M3.2; revisit in RC3 alongside chsql JSONExtract/extractKeyValuePairs helpers)", st.Op)
 	case *syntax.LogfmtParserExpr:
-		return nil, fmt.Errorf("logql: `| logfmt` parser is not yet supported")
+		return nil, fmt.Errorf("logql: `| logfmt` parser is not yet supported (deferred from M3.2; revisit in RC3)")
 	case *syntax.JSONExpressionParserExpr:
-		return nil, fmt.Errorf("logql: `| json field=\"...\"` parser is not yet supported")
+		return nil, fmt.Errorf("logql: `| json field=\"...\"` parser is not yet supported (deferred from M3.2; revisit in RC3)")
 	case *syntax.LogfmtExpressionParserExpr:
-		return nil, fmt.Errorf("logql: `| logfmt field=\"...\"` parser is not yet supported")
+		return nil, fmt.Errorf("logql: `| logfmt field=\"...\"` parser is not yet supported (deferred from M3.2; revisit in RC3)")
 	default:
 		return nil, fmt.Errorf("logql: pipeline stage %T is not yet supported", stage)
 	}
@@ -127,9 +127,9 @@ func labelFiltererToExpr(lf loglib.LabelFilterer, s schema.Logs) (chplan.Expr, e
 		}
 		return &chplan.Binary{Op: op, Left: left, Right: right}, nil
 	case *loglib.NumericLabelFilter:
-		return nil, fmt.Errorf("logql: numeric label filters are not yet supported (parser-extracted numbers land in M3.3)")
+		return nil, fmt.Errorf("logql: numeric label filters are not yet supported (parser-extracted numbers depend on `| json` / `| logfmt` parser stages; both deferred to RC3)")
 	case *loglib.DurationLabelFilter, *loglib.BytesLabelFilter:
-		return nil, fmt.Errorf("logql: %T label filter is not yet supported", lf)
+		return nil, fmt.Errorf("logql: %T label filter is not yet supported (parser-extracted typed fields depend on `| json` / `| logfmt` stages; deferred to RC3)", lf)
 	}
 	return nil, fmt.Errorf("logql: unsupported label filterer %T", lf)
 }
