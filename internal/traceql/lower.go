@@ -15,12 +15,20 @@ import (
 )
 
 // Lower turns a parsed TraceQL expression into a chplan tree.
+//
+// When `expr.MetricsPipeline` is non-nil the query is a metrics
+// aggregation (`{ ... } | rate()`, `{ ... } | sum_over_time(attr)`,
+// etc.). The spanset prefix in `expr.Pipeline.Elements` (typically a
+// single `{ ... }` selector) lowers to a Scan/Filter tree, then
+// lowerMetricsPipeline wraps it with a chplan.Aggregate carrying the
+// CH aggregate function + group-by labels. The query time range itself
+// is supplied by the HTTP /api/metrics/query_range handler (which
+// wraps the returned tree with a chplan.RangeWindow) — TraceQL's
+// grammar doesn't carry the range argument in the AST. See
+// docs/fork-tempo-plan.md § 2c.
 func Lower(expr *traceql.RootExpr, s schema.Traces) (chplan.Node, error) {
 	if expr == nil {
 		return nil, fmt.Errorf("traceql: nil RootExpr")
-	}
-	if expr.MetricsPipeline != nil {
-		return nil, fmt.Errorf("traceql: metrics pipelines (`| count()`, `| rate()`) are not yet supported (lands with M4.3)")
 	}
 	if len(expr.Pipeline.Elements) == 0 {
 		return nil, fmt.Errorf("traceql: empty pipeline")
@@ -42,6 +50,16 @@ func Lower(expr *traceql.RootExpr, s schema.Traces) (chplan.Node, error) {
 			return nil, err
 		}
 		plan = next
+	}
+
+	if expr.MetricsPipeline != nil {
+		plan, err = lowerMetricsPipeline(plan, expr.MetricsPipeline, s)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if expr.MetricsSecondStage != nil {
+		return nil, fmt.Errorf("traceql: metrics second-stage operators (`| topk`, `| bottomk`, `| > N`) are not yet supported")
 	}
 	return plan, nil
 }
