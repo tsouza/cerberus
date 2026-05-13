@@ -13,7 +13,7 @@
 # QueryBuilder.writeInto — the legitimate renderer. Every clause keyword
 # (SELECT / FROM / WHERE / GROUP BY / ORDER BY / LIMIT / PREWHERE /
 # WITH RECURSIVE / JOIN variants) is emitted from here and only here.
-internal/chsql/builder.go:717-811
+internal/chsql/builder.go:890-984
 
 # chsql.UnionAll / UnionDistinct Frags — the typed UNION constructors.
 # The keyword lives here so callers compose unions via Frag composition

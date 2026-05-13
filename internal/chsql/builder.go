@@ -507,6 +507,179 @@ func As(expr Frag, alias string) Frag {
 	}
 }
 
+// binOp returns a Frag that renders "<l> <op> <r>" with single spaces
+// around op. Shared shape for the comparison + arithmetic operator
+// constructors below — each typed wrapper just supplies its op token.
+func binOp(op string, l, r Frag) Frag {
+	return func(b *Builder) {
+		l(b)
+		b.sb.WriteByte(' ')
+		b.sb.WriteString(op)
+		b.sb.WriteByte(' ')
+		r(b)
+	}
+}
+
+// Eq returns a Frag rendering "<l> = <r>".
+func Eq(l, r Frag) Frag { return binOp("=", l, r) }
+
+// Neq returns a Frag rendering "<l> != <r>".
+func Neq(l, r Frag) Frag { return binOp("!=", l, r) }
+
+// Gt returns a Frag rendering "<l> > <r>".
+func Gt(l, r Frag) Frag { return binOp(">", l, r) }
+
+// Gte returns a Frag rendering "<l> >= <r>".
+func Gte(l, r Frag) Frag { return binOp(">=", l, r) }
+
+// Lt returns a Frag rendering "<l> < <r>".
+func Lt(l, r Frag) Frag { return binOp("<", l, r) }
+
+// Lte returns a Frag rendering "<l> <= <r>".
+func Lte(l, r Frag) Frag { return binOp("<=", l, r) }
+
+// Like returns a Frag rendering "<l> LIKE <r>".
+func Like(l, r Frag) Frag { return binOp("LIKE", l, r) }
+
+// NotLike returns a Frag rendering "<l> NOT LIKE <r>".
+func NotLike(l, r Frag) Frag { return binOp("NOT LIKE", l, r) }
+
+// And returns a Frag joining parts with " AND ". Panics if parts is empty.
+func And(parts ...Frag) Frag {
+	if len(parts) == 0 {
+		panic("chsql: And requires at least one part")
+	}
+	return func(b *Builder) {
+		for i, p := range parts {
+			if i > 0 {
+				b.sb.WriteString(" AND ")
+			}
+			p(b)
+		}
+	}
+}
+
+// Or returns a Frag joining parts with " OR ". Panics if parts is empty.
+func Or(parts ...Frag) Frag {
+	if len(parts) == 0 {
+		panic("chsql: Or requires at least one part")
+	}
+	return func(b *Builder) {
+		for i, p := range parts {
+			if i > 0 {
+				b.sb.WriteString(" OR ")
+			}
+			p(b)
+		}
+	}
+}
+
+// Not returns a Frag rendering "NOT <f>". No parens are added — the
+// caller wraps with Paren if precedence requires it.
+func Not(f Frag) Frag {
+	return func(b *Builder) {
+		b.sb.WriteString("NOT ")
+		f(b)
+	}
+}
+
+// Add returns a Frag rendering "<l> + <r>".
+func Add(l, r Frag) Frag { return binOp("+", l, r) }
+
+// Sub returns a Frag rendering "<l> - <r>".
+func Sub(l, r Frag) Frag { return binOp("-", l, r) }
+
+// Mul returns a Frag rendering "<l> * <r>".
+func Mul(l, r Frag) Frag { return binOp("*", l, r) }
+
+// Div returns a Frag rendering "<l> / <r>".
+func Div(l, r Frag) Frag { return binOp("/", l, r) }
+
+// Mod returns a Frag rendering "<l> % <r>".
+func Mod(l, r Frag) Frag { return binOp("%", l, r) }
+
+// Neg returns a Frag rendering "-<f>" (no space between the minus and
+// the operand).
+func Neg(f Frag) Frag {
+	return func(b *Builder) {
+		b.sb.WriteByte('-')
+		f(b)
+	}
+}
+
+// Paren returns a Frag rendering "(<f>)" with no inner whitespace.
+func Paren(f Frag) Frag {
+	return func(b *Builder) {
+		b.sb.WriteByte('(')
+		f(b)
+		b.sb.WriteByte(')')
+	}
+}
+
+// Tuple returns a Frag rendering "(<p0>, <p1>, ...)". Panics if parts
+// is empty (an empty tuple is a CH syntax error).
+func Tuple(parts ...Frag) Frag {
+	if len(parts) == 0 {
+		panic("chsql: Tuple requires at least one part")
+	}
+	return func(b *Builder) {
+		b.sb.WriteByte('(')
+		for i, p := range parts {
+			if i > 0 {
+				b.sb.WriteString(", ")
+			}
+			p(b)
+		}
+		b.sb.WriteByte(')')
+	}
+}
+
+// Cast returns a Frag rendering "CAST(<f> AS <typ>)". typ is a CH type
+// name (e.g. "Float64") and is emitted verbatim — same trust contract
+// as Raw, the caller is responsible for ensuring it is a safe literal.
+func Cast(f Frag, typ string) Frag {
+	return func(b *Builder) {
+		b.sb.WriteString("CAST(")
+		f(b)
+		b.sb.WriteString(" AS ")
+		b.sb.WriteString(typ)
+		b.sb.WriteByte(')')
+	}
+}
+
+// Concat returns a Frag rendering parts back-to-back with no separator.
+// For arbitrary glue when callers compose Frags whose internal
+// whitespace they already control. Panics if parts is empty.
+func Concat(parts ...Frag) Frag {
+	if len(parts) == 0 {
+		panic("chsql: Concat requires at least one part")
+	}
+	return func(b *Builder) {
+		for _, p := range parts {
+			p(b)
+		}
+	}
+}
+
+// In returns a Frag rendering "<left> IN (<r0>, <r1>, ...)". Panics if
+// right is empty (an empty IN list is a CH syntax error).
+func In(left Frag, right ...Frag) Frag {
+	if len(right) == 0 {
+		panic("chsql: In requires at least one right-hand part")
+	}
+	return func(b *Builder) {
+		left(b)
+		b.sb.WriteString(" IN (")
+		for i, r := range right {
+			if i > 0 {
+				b.sb.WriteString(", ")
+			}
+			r(b)
+		}
+		b.sb.WriteByte(')')
+	}
+}
+
 // JoinKind identifies a SQL JOIN flavour. The constants render as
 // their literal SQL keywords (e.g. "INNER JOIN") and flow through
 // QueryBuilder.Join's typed slot so callers never compose the join

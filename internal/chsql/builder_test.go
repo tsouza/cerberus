@@ -868,3 +868,238 @@ func TestBuilder_Expr(t *testing.T) {
 		})
 	}
 }
+
+// --- typed operator / punctuation Frag constructors (R6.11a) -----------
+
+// TestOperatorFrags_BinaryOps — each comparison + arithmetic operator
+// renders "<l> <op> <r>" with single spaces around the op token, and
+// the Lit-bound argument lands in the args slice in emission order.
+func TestOperatorFrags_BinaryOps(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		frag    chsql.Frag
+		wantSQL string
+	}{
+		{"Eq", chsql.Eq(chsql.Col("a"), chsql.Lit(int64(1))), "`a` = ?"},
+		{"Neq", chsql.Neq(chsql.Col("a"), chsql.Lit(int64(1))), "`a` != ?"},
+		{"Gt", chsql.Gt(chsql.Col("a"), chsql.Lit(int64(1))), "`a` > ?"},
+		{"Gte", chsql.Gte(chsql.Col("a"), chsql.Lit(int64(1))), "`a` >= ?"},
+		{"Lt", chsql.Lt(chsql.Col("a"), chsql.Lit(int64(1))), "`a` < ?"},
+		{"Lte", chsql.Lte(chsql.Col("a"), chsql.Lit(int64(1))), "`a` <= ?"},
+		{"Like", chsql.Like(chsql.Col("a"), chsql.Lit("x%")), "`a` LIKE ?"},
+		{"NotLike", chsql.NotLike(chsql.Col("a"), chsql.Lit("x%")), "`a` NOT LIKE ?"},
+		{"Add", chsql.Add(chsql.Col("a"), chsql.Lit(int64(1))), "`a` + ?"},
+		{"Sub", chsql.Sub(chsql.Col("a"), chsql.Lit(int64(1))), "`a` - ?"},
+		{"Mul", chsql.Mul(chsql.Col("a"), chsql.Lit(int64(2))), "`a` * ?"},
+		{"Div", chsql.Div(chsql.Col("a"), chsql.Lit(int64(2))), "`a` / ?"},
+		{"Mod", chsql.Mod(chsql.Col("a"), chsql.Lit(int64(2))), "`a` % ?"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			b := chsql.NewBuilder()
+			tc.frag(b)
+			if got := b.String(); got != tc.wantSQL {
+				t.Errorf("%s SQL = %q; want %q", tc.name, got, tc.wantSQL)
+			}
+			if len(b.Args()) != 1 {
+				t.Errorf("%s args len = %d; want 1", tc.name, len(b.Args()))
+			}
+		})
+	}
+}
+
+// TestAnd_JoinsParts — And joins predicates with " AND " and binds
+// args in left-to-right order.
+func TestAnd_JoinsParts(t *testing.T) {
+	t.Parallel()
+
+	b := chsql.NewBuilder()
+	chsql.And(
+		chsql.Eq(chsql.Col("a"), chsql.Lit(int64(1))),
+		chsql.Eq(chsql.Col("b"), chsql.Lit(int64(2))),
+		chsql.Eq(chsql.Col("c"), chsql.Lit(int64(3))),
+	)(b)
+	sql, args := b.Build()
+	want := "`a` = ? AND `b` = ? AND `c` = ?"
+	if sql != want {
+		t.Errorf("And SQL = %q; want %q", sql, want)
+	}
+	if !reflect.DeepEqual(args, []any{int64(1), int64(2), int64(3)}) {
+		t.Errorf("And args = %v", args)
+	}
+}
+
+// TestAnd_PanicsOnEmpty — And() with zero parts is a programmer error.
+func TestAnd_PanicsOnEmpty(t *testing.T) {
+	t.Parallel()
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatalf("expected panic on And()")
+		}
+	}()
+	chsql.And()
+}
+
+// TestOr_JoinsParts — Or joins predicates with " OR ".
+func TestOr_JoinsParts(t *testing.T) {
+	t.Parallel()
+
+	b := chsql.NewBuilder()
+	chsql.Or(
+		chsql.Eq(chsql.Col("a"), chsql.Lit(int64(1))),
+		chsql.Eq(chsql.Col("b"), chsql.Lit(int64(2))),
+	)(b)
+	if got, want := b.String(), "`a` = ? OR `b` = ?"; got != want {
+		t.Errorf("Or SQL = %q; want %q", got, want)
+	}
+}
+
+// TestOr_PanicsOnEmpty — Or() with zero parts is a programmer error.
+func TestOr_PanicsOnEmpty(t *testing.T) {
+	t.Parallel()
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatalf("expected panic on Or()")
+		}
+	}()
+	chsql.Or()
+}
+
+// TestNot_Prefixes — Not emits "NOT " before the inner Frag and does
+// not add parens; precedence is the caller's responsibility.
+func TestNot_Prefixes(t *testing.T) {
+	t.Parallel()
+
+	b := chsql.NewBuilder()
+	chsql.Not(chsql.Eq(chsql.Col("a"), chsql.Lit(int64(1))))(b)
+	if got, want := b.String(), "NOT `a` = ?"; got != want {
+		t.Errorf("Not SQL = %q; want %q", got, want)
+	}
+}
+
+// TestNeg_Prefixes — Neg emits "-" with no space before the operand.
+func TestNeg_Prefixes(t *testing.T) {
+	t.Parallel()
+
+	b := chsql.NewBuilder()
+	chsql.Neg(chsql.Col("a"))(b)
+	if got, want := b.String(), "-`a`"; got != want {
+		t.Errorf("Neg SQL = %q; want %q", got, want)
+	}
+}
+
+// TestParen_Wraps — Paren wraps the inner Frag with no inner spaces.
+func TestParen_Wraps(t *testing.T) {
+	t.Parallel()
+
+	b := chsql.NewBuilder()
+	chsql.Paren(chsql.Or(
+		chsql.Eq(chsql.Col("a"), chsql.Lit(int64(1))),
+		chsql.Eq(chsql.Col("b"), chsql.Lit(int64(2))),
+	))(b)
+	if got, want := b.String(), "(`a` = ? OR `b` = ?)"; got != want {
+		t.Errorf("Paren SQL = %q; want %q", got, want)
+	}
+}
+
+// TestTuple_RendersCommaSeparated — Tuple emits "(<p0>, <p1>, ...)".
+func TestTuple_RendersCommaSeparated(t *testing.T) {
+	t.Parallel()
+
+	b := chsql.NewBuilder()
+	chsql.Tuple(chsql.Lit(int64(1)), chsql.Lit(int64(2)), chsql.Lit(int64(3)))(b)
+	sql, args := b.Build()
+	if got, want := sql, "(?, ?, ?)"; got != want {
+		t.Errorf("Tuple SQL = %q; want %q", got, want)
+	}
+	if !reflect.DeepEqual(args, []any{int64(1), int64(2), int64(3)}) {
+		t.Errorf("Tuple args = %v", args)
+	}
+}
+
+// TestTuple_PanicsOnEmpty — Tuple() with zero parts is a programmer
+// error.
+func TestTuple_PanicsOnEmpty(t *testing.T) {
+	t.Parallel()
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatalf("expected panic on Tuple()")
+		}
+	}()
+	chsql.Tuple()
+}
+
+// TestCast_Wraps — Cast renders "CAST(<f> AS <typ>)" with the type
+// name emitted verbatim (no quoting).
+func TestCast_Wraps(t *testing.T) {
+	t.Parallel()
+
+	b := chsql.NewBuilder()
+	chsql.Cast(chsql.Col("a"), "Float64")(b)
+	if got, want := b.String(), "CAST(`a` AS Float64)"; got != want {
+		t.Errorf("Cast SQL = %q; want %q", got, want)
+	}
+}
+
+// TestConcat_NoSeparator — Concat emits parts back-to-back without
+// any glue. Args bind in emission order.
+func TestConcat_NoSeparator(t *testing.T) {
+	t.Parallel()
+
+	b := chsql.NewBuilder()
+	chsql.Concat(
+		chsql.Col("a"),
+		chsql.Raw(" = "),
+		chsql.Lit(int64(1)),
+	)(b)
+	sql, args := b.Build()
+	if got, want := sql, "`a` = ?"; got != want {
+		t.Errorf("Concat SQL = %q; want %q", got, want)
+	}
+	if !reflect.DeepEqual(args, []any{int64(1)}) {
+		t.Errorf("Concat args = %v", args)
+	}
+}
+
+// TestConcat_PanicsOnEmpty — Concat() with zero parts is a programmer
+// error.
+func TestConcat_PanicsOnEmpty(t *testing.T) {
+	t.Parallel()
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatalf("expected panic on Concat()")
+		}
+	}()
+	chsql.Concat()
+}
+
+// TestIn_RendersList — In emits "<left> IN (<r0>, <r1>, ...)" and
+// binds Lit args in emission order.
+func TestIn_RendersList(t *testing.T) {
+	t.Parallel()
+
+	b := chsql.NewBuilder()
+	chsql.In(chsql.Col("a"), chsql.Lit("x"), chsql.Lit("y"), chsql.Lit("z"))(b)
+	sql, args := b.Build()
+	if got, want := sql, "`a` IN (?, ?, ?)"; got != want {
+		t.Errorf("In SQL = %q; want %q", got, want)
+	}
+	if !reflect.DeepEqual(args, []any{"x", "y", "z"}) {
+		t.Errorf("In args = %v", args)
+	}
+}
+
+// TestIn_PanicsOnEmpty — In with no right-hand parts is a programmer
+// error (empty IN list is a CH syntax error).
+func TestIn_PanicsOnEmpty(t *testing.T) {
+	t.Parallel()
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatalf("expected panic on In() with empty right")
+		}
+	}()
+	chsql.In(chsql.Col("a"))
+}
