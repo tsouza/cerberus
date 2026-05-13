@@ -170,13 +170,13 @@ type chunkSample struct {
 	v float64
 }
 
-func (s chunkSample) T() int64                            { return s.t }
-func (s chunkSample) ST() int64                           { return 0 }
-func (s chunkSample) F() float64                          { return s.v }
-func (s chunkSample) H() *histogram.Histogram             { return nil }
-func (s chunkSample) FH() *histogram.FloatHistogram       { return nil }
-func (s chunkSample) Type() chunkenc.ValueType            { return chunkenc.ValFloat }
-func (s chunkSample) Copy() chunks.Sample                 { return s }
+func (s chunkSample) T() int64                      { return s.t }
+func (s chunkSample) ST() int64                     { return 0 }
+func (s chunkSample) F() float64                    { return s.v }
+func (s chunkSample) H() *histogram.Histogram       { return nil }
+func (s chunkSample) FH() *histogram.FloatHistogram { return nil }
+func (s chunkSample) Type() chunkenc.ValueType      { return chunkenc.ValFloat }
+func (s chunkSample) Copy() chunks.Sample           { return s }
 
 func toChunkSamples(in []FloatSample) []chunks.Sample {
 	out := make([]chunks.Sample, len(in))
