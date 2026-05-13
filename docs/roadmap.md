@@ -8,7 +8,7 @@ This document is the public-facing narrative for the path to `v1.0.0`. Status by
 | -------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
 | **v1.0.0-RC1** | Full PromQL / LogQL / TraceQL support + 90% upstream API compatibility                | Compatibility corpora pass; Grafana sees cerberus as drop-in for Prom / Loki / Tempo              |
 | **v1.0.0-RC2** | Advanced QL features + deferred API surface                                           | Subqueries, native-histogram quantiles, structural-chain TraceQL, LogQL `\| unpack`, Loki `tail`… |
-| **v1.0.0-RC3** | Optimizer rewrite + performance + scalability + advanced testing                      | Pattern-based rules, MV substitution, streaming cursor, plan/SQL cache, shadow-mode differential  |
+| **v1.0.0-RC3** | Optimizer rewrite + performance + scalability + advanced testing                      | Pattern-based rules, MV substitution, streaming cursor, shadow-mode differential testing          |
 | **v1.0.0-RC4** | Full self-observability                                                               | Cerberus emits its own structured logs (slog), OTel metrics + traces, defaults to the same CH     |
 | **v1.0.0-RC5** | 12-factor compatibility + scale-out polish                                            | `/readyz` pings CH, admission control, HPA recipe, dev `docker-compose.yml`, schema overrides     |
 | **v1.0.0-RC6** | Type-safe SQL via custom `internal/chsql.Builder` (R6.0 evaluation → R6.1–R6.10 port) | No `fmt.Sprintf`-on-SQL anywhere; typed builder with CH-specific helpers; lint enforcement        |
@@ -139,7 +139,9 @@ All of [`docs/optimizer-research.md`](optimizer-research.md) lands here. The rea
 
 ### Performance features
 
-R3.4 / R3.6 / R3.7 / R3.8 are the **CH-roundtrip scalability levers** — they shrink the amount of data CH scans and ships per query, which is where the real wins live. R3.12 / R3.13 are the **process-side** scalability levers — they cap RAM growth and collapse per-query CPU. The two groups compose: PREWHERE promotion (R3.4) plus streaming cursor (R3.12) means a 1M-point query both narrows the scan and never materialises the full result in cerberus RAM.
+R3.4 / R3.6 / R3.7 / R3.8 are the **CH-roundtrip scalability levers** — they shrink the amount of data CH scans and ships per query, which is where the real wins live. R3.12 is the **process-side** scalability lever — it caps RAM growth on large result sets. PREWHERE promotion (R3.4) plus streaming cursor (R3.12) means a 1M-point query both narrows the scan and never materialises the full result in cerberus RAM.
+
+**No query/plan/SQL caching.** Cerberus is a thin query gateway — caching results or plans turns it into a memoization layer, which (a) hides freshness bugs behind stale results, (b) shifts the correctness burden from CH to cerberus, and (c) duplicates work Grafana / Prometheus / Loki already do client-side. If a deployment wants caching, put it in front of cerberus (e.g. a Grafana datasource cache) — not inside.
 
 | #     | Item                                                                                                    | Primary reference                                                                                                                         |
 | ----- | ------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
@@ -147,7 +149,6 @@ R3.4 / R3.6 / R3.7 / R3.8 are the **CH-roundtrip scalability levers** — they s
 | R3.7  | Late materialisation for wide-column scans (logs `Body`, `ResourceAttributes`)                          | [Selective Late Materialization, VLDB 2025](http://people.iiis.tsinghua.edu.cn/~huanchen/publications/slm-vldb25.pdf)                     |
 | R3.8  | Filter–RangeWindow transpose                                                                            | [VictoriaMetrics `metricsql/optimizer.go`](https://github.com/VictoriaMetrics/metricsql/blob/master/optimizer.go)                         |
 | R3.12 | Streaming `query_range` matrix response cursor (`chclient.Cursor` over `Sample` rows)                   | Stops handlers from materialising the full matrix; 1M-point query memory drops from O(N) to O(chunk_size). Composes with R3.4. ~600 LoC   |
-| R3.13 | Plan/SQL LRU cache keyed by `(QL kind, query string, schema fingerprint)` → optimized plan + SQL + args | Optimizer fixpoint dominates per-query CPU; cache collapses it to a map lookup. Invalidates on schema-override reload. ~300 LoC           |
 
 ### Advanced testing
 
@@ -157,7 +158,7 @@ R3.4 / R3.6 / R3.7 / R3.8 are the **CH-roundtrip scalability levers** — they s
 | R3.10 | Port promshim's local Go evaluator                                | Same — `internal/promshim/local/`                                                                                                  |
 | R3.11 | Fuzz + chaos + perf-benchmark CI                                  | `go-fuzz`, custom chaos harness, perf-benchmark workflow                                                                           |
 
-**Exit criterion:** golden-fixture SQL shrinks on real plans; `internal/optimizer` mutation score ≥ 70%; MV substitution active; shadow-mode reveals < 5% native-SQL gap; `chclient.Cursor` streams a 1M-row fixture with bounded RSS (R3.12); plan/SQL cache (R3.13) reaches > 90% hit rate on the compatibility corpus replayed twice.
+**Exit criterion:** golden-fixture SQL shrinks on real plans; `internal/optimizer` mutation score ≥ 70%; MV substitution active; shadow-mode reveals < 5% native-SQL gap; `chclient.Cursor` streams a 1M-row fixture with bounded RSS (R3.12).
 
 ---
 
@@ -403,7 +404,7 @@ Decision milestone. Output: `docs/execution-engine-evaluation.md` with a recomme
    Per-QL adapters live in `internal/engine/lang/{promql,logql,traceql}/`.
 
 4. **Cost/benefit.**
-   - **Pros:** one instrumentation point (RC4 simplification); one strategy switch (RC3 shadow-mode / fallback hooks); one place to add caching / rate limiting / hedging in future RCs; handlers become testable without stubbing the whole pipeline.
+   - **Pros:** one instrumentation point (RC4 simplification); one strategy switch (RC3 shadow-mode / fallback hooks); one place to add rate limiting / hedging in future RCs; handlers become testable without stubbing the whole pipeline.
    - **Cons:** abstraction tax — readers chase one extra layer; LoC churn ~1k+ during the port; risk of designing the wrong seam if the per-QL drift turns out to be semantic, not mechanical.
    - **The audit's job:** prove the pattern generalises. If 3+ of the 5 callsites diverge in ways the abstraction can't absorb cleanly, recommend **defer**.
 
