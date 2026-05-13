@@ -27,9 +27,9 @@ import (
 //
 //   - CardOneToMany (`group_right(<labels>)`): mirror of CardManyToOne.
 //
-// Ported to chsql.SelectBuilder at RC6 R6.6: the outer SELECT, each
+// Ported to chsql.QueryBuilder at RC6 R6.6: the outer SELECT, each
 // per-side aggregation subquery, and the INNER JOIN slot all flow
-// through typed SelectBuilder slots. The bare-alias glue (`AS L` /
+// through typed QueryBuilder slots. The bare-alias glue (`AS L` /
 // `AS R`) is operator-token-style WriteSQL inside a Frag — CH accepts
 // unquoted single-letter aliases and the existing fixtures pin that
 // shape.
@@ -55,7 +55,7 @@ func (e *emitter) emitVectorJoin(j *chplan.VectorJoin) error {
 		return err
 	}
 
-	sb := NewSelect().
+	sb := NewQuery().
 		Select(
 			qualColFrag(outerSide, j.MetricNameColumn),
 			outputAttributesFrag(j),
@@ -141,7 +141,7 @@ func (e *emitter) vectorJoinSideFrag(j *chplan.VectorJoin, n chplan.Node, role s
 	if err != nil {
 		return nil, err
 	}
-	sb := NewSelect().From(sub)
+	sb := NewQuery().From(sub)
 	if role == roleMany {
 		sb.Select(
 			Col(j.MetricNameColumn),

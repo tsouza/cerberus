@@ -15,11 +15,11 @@ import (
 //   - SetUnion     (`||`): `(<left>) UNION DISTINCT (<right>)` — CH
 //     UNION DISTINCT collapses identical rows across the two arms.
 //
-// Both shapes flow through SelectBuilder so the typed slot lifecycle
+// Both shapes flow through QueryBuilder so the typed slot lifecycle
 // (FROM source, WHERE predicates, etc.) stays intact. UNION is a
 // SELECT-level binary operator, not a clause keyword inside a single
 // SELECT, so the `" UNION DISTINCT "` token sits between two
-// pre-rendered SelectBuilder Frags rather than abusing a clause slot.
+// pre-rendered QueryBuilder Frags rather than abusing a clause slot.
 func (e *emitter) emitSetOperation(s *chplan.SetOperation) error {
 	if s.TraceIDColumn == "" || s.SpanIDColumn == "" {
 		return fmt.Errorf("%w: SetOperation column names unset", ErrUnsupported)
@@ -53,7 +53,7 @@ func (e *emitter) emitSetOperation(s *chplan.SetOperation) error {
 			b.WriteSQL(" = ")
 			b.QualIdent("R", spanID)
 		}
-		sb := NewSelect().
+		sb := NewQuery().
 			Select(Raw("L.*")).
 			From(from)
 		e.emitSelect(sb)

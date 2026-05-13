@@ -46,7 +46,7 @@ import (
 )
 
 // emitHistogramQuantileNative renders a chplan.HistogramQuantileNative
-// against the OTel-CH exp_histogram schema. The outer SelectBuilder
+// against the OTel-CH exp_histogram schema. The outer QueryBuilder
 // projects the GroupBy columns aliased per GroupByAliases, then the
 // interpolated quantile as the `Value` column, matching the Sample
 // contract the lowering's wrapping Project consumes.
@@ -71,7 +71,7 @@ func (e *emitter) emitHistogramQuantileNative(h *chplan.HistogramQuantileNative)
 		return err
 	}
 
-	sb := NewSelect().From(sub)
+	sb := NewQuery().From(sub)
 	for i, g := range h.GroupBy {
 		expr := g
 		alias := ""

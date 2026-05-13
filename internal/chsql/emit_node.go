@@ -9,7 +9,7 @@ import (
 
 // subqueryFrag returns a Frag that renders n as a parenthesised
 // subquery into the receiving Builder. Used to plug a child plan into
-// SelectBuilder.From without flattening to a string: the args bound
+// QueryBuilder.From without flattening to a string: the args bound
 // by the recursive emit walk land in the receiving Builder's args
 // slice at the position the Frag is written.
 //
@@ -21,7 +21,7 @@ import (
 func (e *emitter) subqueryFrag(n chplan.Node) (Frag, error) {
 	// Pre-render the subquery into an isolated emitter so any chplan
 	// error surfaces synchronously (before the Frag is ever spliced
-	// into the outer SelectBuilder). The rendered string + args are
+	// into the outer QueryBuilder). The rendered string + args are
 	// then captured for cheap replay on each Frag invocation.
 	saveB, saveArgs := e.b, e.args
 	e.b = strings.Builder{}
@@ -41,10 +41,10 @@ func (e *emitter) subqueryFrag(n chplan.Node) (Frag, error) {
 	}, nil
 }
 
-// emitSelect runs the assembled SelectBuilder and splices its rendered
+// emitSelect runs the assembled QueryBuilder and splices its rendered
 // SQL + args into the emitter's output. Centralises the splice
 // boilerplate so the per-node emitters stay focused on slot assembly.
-func (e *emitter) emitSelect(sb *SelectBuilder) {
+func (e *emitter) emitSelect(sb *QueryBuilder) {
 	sql, args := sb.Build()
 	e.b.WriteString(sql)
 	e.args = append(e.args, args...)
@@ -54,7 +54,7 @@ func (e *emitter) emitSelect(sb *SelectBuilder) {
 // for the grandfathered emitters in vector_join.go / structural_join.go
 // that still compose SQL fragments through a free-standing *Builder
 // before flushing to the shared emitter state. R6.6 collapses those
-// onto SelectBuilder and removes this helper.
+// onto QueryBuilder and removes this helper.
 func (e *emitter) splice(b *Builder) {
 	sql, args := b.Build()
 	e.b.WriteString(sql)
@@ -62,7 +62,7 @@ func (e *emitter) splice(b *Builder) {
 }
 
 func (e *emitter) emitScan(s *chplan.Scan) error {
-	sb := NewSelect().From(Col(s.Table))
+	sb := NewQuery().From(Col(s.Table))
 	if len(s.Columns) > 0 {
 		cols := make([]Frag, 0, len(s.Columns))
 		for _, c := range s.Columns {
@@ -88,7 +88,7 @@ func (e *emitter) emitFilter(f *chplan.Filter) error {
 		return err
 	}
 	pred := func(b *Builder) { _ = b.Expr(f.Predicate) }
-	e.emitSelect(NewSelect().From(sub).Where(pred))
+	e.emitSelect(NewQuery().From(sub).Where(pred))
 	return nil
 }
 
@@ -97,7 +97,7 @@ func (e *emitter) emitProject(p *chplan.Project) error {
 	if err != nil {
 		return err
 	}
-	sb := NewSelect().From(sub)
+	sb := NewQuery().From(sub)
 	if len(p.Projections) > 0 {
 		// Pre-flight every projection expression so a chplan error
 		// surfaces synchronously rather than from inside the Frag
@@ -144,7 +144,7 @@ func (e *emitter) emitAggregate(a *chplan.Aggregate) error {
 		return err
 	}
 
-	sb := NewSelect().From(sub)
+	sb := NewQuery().From(sub)
 	for i, g := range a.GroupBy {
 		expr := g
 		alias := ""
@@ -199,7 +199,7 @@ func (e *emitter) emitLimit(l *chplan.Limit) error {
 	if err != nil {
 		return err
 	}
-	sb := NewSelect().From(sub)
+	sb := NewQuery().From(sub)
 	if l.Count > 0 {
 		sb.Limit(l.Count)
 	}
@@ -208,7 +208,7 @@ func (e *emitter) emitLimit(l *chplan.Limit) error {
 }
 
 // emitOrderBy renders `SELECT * FROM (<input>) ORDER BY <k1> [DESC], …`
-// via SelectBuilder.OrderBy. Empty Keys is a programmer error — emit an
+// via QueryBuilder.OrderBy. Empty Keys is a programmer error — emit an
 // error so the plan tree doesn't silently lose its sort intent.
 func (e *emitter) emitOrderBy(o *chplan.OrderBy) error {
 	if len(o.Keys) == 0 {
@@ -225,7 +225,7 @@ func (e *emitter) emitOrderBy(o *chplan.OrderBy) error {
 	if err != nil {
 		return err
 	}
-	sb := NewSelect().From(sub)
+	sb := NewQuery().From(sub)
 	for _, k := range o.Keys {
 		expr := k.Expr
 		sb.OrderBy(func(b *Builder) { _ = b.Expr(expr) }, k.Desc)

@@ -132,7 +132,7 @@ Honest assessment: **incremental, not transformative.** The current `?`-placehol
 This is the **primary motivation** per the roadmap, and the inventory confirms it.
 
 - **RC3 optimizer rules need fragment composition.** PREWHERE promotion moves a predicate from WHERE to PREWHERE — that's a tree transformation on the *SQL side*, not the chplan side, because PREWHERE isn't a chplan node. Sort-key-aware predicate reordering shifts predicate order in WHERE. Materialised-view substitution rewrites the FROM clause to point at an MV instead of the base table. None of these compose cleanly when SQL is a flat string; all of them compose cleanly when SQL is a tree of typed fragments.
-- **Subquery composition.** The current `emitSubquery(plan)` recursively serialises the child plan into the parent's string buffer. A builder lets us pass `*SelectBuilder` instances around without flattening — useful for late-materialisation rewrites that need to peek inside subqueries.
+- **Subquery composition.** The current `emitSubquery(plan)` recursively serialises the child plan into the parent's string buffer. A builder lets us pass `*QueryBuilder` instances around without flattening — useful for late-materialisation rewrites that need to peek inside subqueries.
 - **Late materialisation.** The pattern in CH is `SELECT col FROM (SELECT * FROM tbl WHERE pred ORDER BY x LIMIT N)` — the outer SELECT projects only the columns it needs, the inner reads everything. The builder needs to support nested SELECT-FROM-SELECT with column-list pushdown — Sprintf does this badly today.
 
 ### 5.3 Maintainability
@@ -213,7 +213,7 @@ Specifically: expose and extend the existing chsql emitter as a named public Bui
 
 If signed off, the R6.1+ scope changes as follows:
 
-- **R6.1** rewrites to: "Add `internal/chsql/builder.go` as a public Builder API wrapping the existing emitter mechanics, plus the missing helpers (MapAt, MapKeys, MapFilterExcept, Now64, SubtractNanos, DateTime64Lit, Lambda, ParamAgg, and a `SelectBuilder` that supports `.Prewhere(cond...)`). Unit tests pin each helper's output. **No emitter changes yet** — pure scaffolding."
+- **R6.1** rewrites to: "Add `internal/chsql/builder.go` as a public Builder API wrapping the existing emitter mechanics, plus the missing helpers (MapAt, MapKeys, MapFilterExcept, Now64, SubtractNanos, DateTime64Lit, Lambda, ParamAgg, and a `QueryBuilder` that supports `.Prewhere(cond...)`). Unit tests pin each helper's output. **No emitter changes yet** — pure scaffolding."
 - **R6.2–R6.10** stay structurally the same (port emit_node.go, port range_window.go, port metadata.go, etc.), but each "port to go-sqlbuilder" reads as "port to chsql.Builder". The fixture-first refactor strategy is unchanged.
 - **R6.9 lint rule** scope unchanged: forbid `fmt.Sprintf` in SQL-emitting files via a custom golangci-lint rule (or a `cmd/check-sql/` Go tool wired into `just check`).
 - **R6.10 cleanup** unchanged: regenerate all fixtures, run compatibility, document the builder API.

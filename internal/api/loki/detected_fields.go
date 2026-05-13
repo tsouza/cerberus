@@ -122,7 +122,7 @@ func (h *Handler) handleDetectedFields(w http.ResponseWriter, r *http.Request) {
 // The peek window is small (1000 rows by default) — CH executes this as
 // a top-N scan on the primary key, comparable to /index/stats.
 func buildDetectedFieldsSQL(s schema.Logs, matchers []*labels.Matcher, start, end time.Time, lineLimit int) (string, []any, error) {
-	sb := chsql.NewSelect().
+	sb := chsql.NewQuery().
 		Select(aliased(chsql.Col(s.BodyColumn), "line")).
 		From(chsql.Col(s.LogsTable))
 

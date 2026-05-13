@@ -123,7 +123,7 @@ func buildIndexVolumeSQL(
 ) (string, []any, error) {
 	groupFrag := volumeGroupFrag(s, targetLabels, aggregateBy)
 
-	sb := chsql.NewSelect().
+	sb := chsql.NewQuery().
 		Select(
 			aliased(groupFrag, "labels"),
 			aliased(bytesAggFrag(s.BodyColumn), "bytes"),

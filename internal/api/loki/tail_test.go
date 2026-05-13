@@ -231,7 +231,7 @@ func TestTail_BadInput(t *testing.T) {
 
 // TestTail_SQLShape spins up a tail connection just long enough for the
 // querier to receive one poll, then asserts the emitted SQL routes
-// through SelectBuilder slots — no fmt.Sprintf cosplay.
+// through QueryBuilder slots — no fmt.Sprintf cosplay.
 func TestTail_SQLShape(t *testing.T) {
 	t.Parallel()
 

@@ -31,9 +31,9 @@ import (
 // iteration. MaxDepth (when > 0) caps the iteration count; 0 means
 // unbounded. The final SELECT inner-joins R against the closure.
 //
-// Ported to chsql.SelectBuilder at RC6 R6.6: the direct case uses the
-// new SelectBuilder.Join slot; the recursive case uses the new
-// SelectBuilder.WithRecursive slot for the WITH RECURSIVE … UNION ALL
+// Ported to chsql.QueryBuilder at RC6 R6.6: the direct case uses the
+// new QueryBuilder.Join slot; the recursive case uses the new
+// QueryBuilder.WithRecursive slot for the WITH RECURSIVE … UNION ALL
 // CTE shape.
 func (e *emitter) emitStructuralJoin(j *chplan.StructuralJoin) error {
 	if j.TraceIDColumn == "" || j.SpanIDColumn == "" || j.ParentSpanIDColumn == "" {
@@ -67,7 +67,7 @@ func (e *emitter) emitStructuralDirectJoin(j *chplan.StructuralJoin) error {
 		return err
 	}
 
-	sb := NewSelect().
+	sb := NewQuery().
 		Select(Raw("R.*")).
 		From(aliasedFrag(leftSub, "L")).
 		Join(
@@ -196,7 +196,7 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 	}
 
 	// Anchor: SELECT TraceId, SpanId, ParentSpanId, 0 AS _depth FROM (<L>) AS _seed.
-	anchor := NewSelect().
+	anchor := NewQuery().
 		Select(
 			Col(j.TraceIDColumn),
 			Col(j.SpanIDColumn),
@@ -211,7 +211,7 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 		b.WriteSQL(" AND ")
 		stepRel(b)
 	}
-	step := NewSelect().
+	step := NewQuery().
 		Select(
 			qualColFrag("t", j.TraceIDColumn),
 			qualColFrag("t", j.SpanIDColumn),
@@ -233,7 +233,7 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 	}
 
 	// Closure subquery: WITH RECURSIVE _struct_closure AS (<anchor> UNION ALL <step>) SELECT DISTINCT TraceId, SpanId FROM _struct_closure WHERE _depth > 0.
-	closure := NewSelect().
+	closure := NewQuery().
 		WithRecursive("_struct_closure", anchor, step).
 		Select(
 			Raw("DISTINCT "+quoteIdent(j.TraceIDColumn)),
@@ -248,7 +248,7 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 		b.WriteSQL(" AND ")
 		spanIDPairFrag("L", j.SpanIDColumn, "R", j.SpanIDColumn)(b)
 	}
-	sb := NewSelect().
+	sb := NewQuery().
 		Select(Raw("R.*")).
 		From(aliasedFrag(closure.Frag(), "L")).
 		Join(InnerJoin, aliasedFrag(rightSub, "R"), onClause)

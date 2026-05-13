@@ -130,7 +130,7 @@ func (h *Handler) respondTagValues(w http.ResponseWriter, r *http.Request, v2 bo
 // so the chclient.QueryStrings binder is happy regardless of the
 // underlying type.
 func buildIntrinsicValuesSQL(s schema.Traces, col string, start, end time.Time) (string, []any) {
-	sb := chsql.NewSelect().
+	sb := chsql.NewQuery().
 		Select(distinctToStringFrag(col)).
 		From(chsql.Col(s.SpansTable))
 	if !start.IsZero() {
@@ -159,7 +159,7 @@ func buildIntrinsicValuesSQL(s schema.Traces, col string, start, end time.Time) 
 // fan-out, and the outer v != ” drops the empty-string slot for rows
 // where the key only exists in one of the two maps.
 func buildAttributeValuesSQL(s schema.Traces, name string, start, end time.Time) (string, []any) {
-	inner := chsql.NewSelect().
+	inner := chsql.NewQuery().
 		Select(attrValueArrayJoinFrag(s.AttributesColumn, s.ResourceAttributesColumn, name)).
 		From(chsql.Col(s.SpansTable)).
 		Where(mapContainsAnyFrag(s.AttributesColumn, s.ResourceAttributesColumn, name))
@@ -170,7 +170,7 @@ func buildAttributeValuesSQL(s schema.Traces, name string, start, end time.Time)
 		inner.Where(tempoTimeBoundFrag(s.TimestampColumn, "<=", end))
 	}
 
-	outer := chsql.NewSelect().
+	outer := chsql.NewQuery().
 		Select(chsql.Raw("DISTINCT "), chsql.Col("v")).
 		From(inner.Frag()).
 		Where(nonEmptyFrag("v"))

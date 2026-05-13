@@ -55,7 +55,7 @@ func (e *emitter) emitMetricsHistogramOverTime(m *chplan.MetricsHistogramOverTim
 		return err
 	}
 
-	sb := NewSelect().From(sub)
+	sb := NewQuery().From(sub)
 	for i, g := range m.GroupBy {
 		expr := g
 		alias := ""
@@ -208,7 +208,7 @@ func (e *emitter) emitRangeWindowHistogram(r *chplan.RangeWindow, m *chplan.Metr
 
 	// Inner SELECT: group-by cols, ts, bucket, attr filter, anchor fanout.
 	groupAliases := outerGroupAliases(m.GroupBy, m.GroupByAliases)
-	innerSb := NewSelect().From(inner)
+	innerSb := NewQuery().From(inner)
 	for i, g := range m.GroupBy {
 		expr := g
 		alias := groupAliases[i]
@@ -230,7 +230,7 @@ func (e *emitter) emitRangeWindowHistogram(r *chplan.RangeWindow, m *chplan.Metr
 	})
 
 	// Outer SELECT: group-by + bucket + anchor_ts; count(1) per bucket.
-	outerSb := NewSelect().From(innerSb.Frag())
+	outerSb := NewQuery().From(innerSb.Frag())
 	for _, alias := range groupAliases {
 		a := alias
 		outerSb.Select(func(b *Builder) { b.Ident(a) })

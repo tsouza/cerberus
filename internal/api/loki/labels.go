@@ -71,10 +71,10 @@ func (h *Handler) handleLabels(w http.ResponseWriter, r *http.Request) {
 //	WHERE <matchers> AND `Timestamp` >= ? AND `Timestamp` <= ?
 //	ORDER BY k
 //
-// All identifiers + time-range bounds flow through SelectBuilder slots —
+// All identifiers + time-range bounds flow through QueryBuilder slots —
 // no fmt.Sprintf-on-SQL.
 func buildLabelsSQL(s schema.Logs, matchers []*labels.Matcher, start, end time.Time) (string, []any, error) {
-	sb := chsql.NewSelect().
+	sb := chsql.NewQuery().
 		Select(aliased(distinctMapKeysFrag(s.ResourceAttributesColumn), "k")).
 		From(chsql.Col(s.LogsTable))
 
