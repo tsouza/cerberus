@@ -563,9 +563,9 @@ func distinctMapAtFrag(col, key string) chsql.Frag {
 	}
 }
 
-// mapAtNotEmptyFrag emits `<col>[?] != ''` — the WHERE predicate that
+// mapAtNotEmptyFrag emits `<col>[?] != ”` — the WHERE predicate that
 // drops the empty-string sentinel CH returns when a Map key is absent.
-// The empty string is rendered as a literal `''` (not parameterised)
+// The empty string is rendered as a literal `”` (not parameterised)
 // because it is part of the query shape: the "key-absent" sentinel is
 // a fixed value, not user data, and CH planner pruning relies on it
 // being visible at plan time.
@@ -608,4 +608,3 @@ func validLabelName(s string) bool {
 	}
 	return true
 }
-
