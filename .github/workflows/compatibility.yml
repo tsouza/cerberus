@@ -53,7 +53,8 @@ jobs:
       - name: Run compatibility harness
         env:
           # The tester binary needs Go 1.21+; we already have it from setup-go.
-          # The seed window anchors at 2026-05-11T00:00:00Z (see seed.sql).
+          # The seed window anchors at 2026-05-11T00:00:00Z (see
+          # harness/compatibility/cmd/seed/main.go).
           TESTER_END_TIME: "2026-05-11T01:00:00Z"
           TESTER_RANGE: "3600"
         run: ./harness/compatibility/scripts/run-compatibility.sh

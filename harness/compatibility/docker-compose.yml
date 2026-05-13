@@ -2,16 +2,20 @@
 #
 # Services:
 #   clickhouse    OTel-schema CH instance (auth: cerberus/cerberus, db: otel)
-#   seeder        one-shot job that loads the deterministic OTel fixture
-#                 and remote-writes the equivalent into prometheus
 #   prometheus    reference Prom, listens on :29090 (matches test-cerberus.yml)
 #   cerberus      cerberus under test, listens on :29091 (matches
 #                 test-cerberus.yml)
+#
+# Seeding is no longer a compose service — the fixture is loaded by
+# `go run ./harness/compatibility/cmd/seed/` invoked from
+# scripts/run-compatibility.sh. The seeder reuses internal/schema/ddl so
+# the harness schema can't drift from cerberus's own DDL.
 #
 # Usage:
 #   ./scripts/run-compatibility.sh
 # or:
 #   docker compose up --wait
+#   go run ./harness/compatibility/cmd/seed/
 #   ../upstream/promql/cmd/promql-compliance-tester ...
 #   docker compose down -v
 
@@ -74,15 +78,3 @@ services:
       timeout: 2s
       retries: 30
 
-  seeder:
-    image: clickhouse/clickhouse-server:24.8-alpine
-    depends_on:
-      clickhouse:
-        condition: service_healthy
-      prometheus:
-        condition: service_healthy
-    volumes:
-      - ./seed.sh:/seed.sh:ro
-      - ./seed.sql:/seed.sql:ro
-    entrypoint: ["/seed.sh"]
-    restart: "no"
