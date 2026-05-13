@@ -54,6 +54,8 @@ func (e *emitter) emitNode(n chplan.Node) error {
 		return e.emitMetricsAggregate(v)
 	case *chplan.RangeWindow:
 		return e.emitRangeWindow(v)
+	case *chplan.HistogramQuantile:
+		return e.emitHistogramQuantile(v)
 	case *chplan.Limit:
 		return e.emitLimit(v)
 	case *chplan.OrderBy:
