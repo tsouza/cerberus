@@ -1,7 +1,7 @@
 -- query.promql --
 clamp_max(temperature, 100)
 -- sql --
-SELECT `MetricName`, `Attributes`, `TimeUnix`, least(`Value`, ?) AS `Value` FROM (SELECT * FROM (SELECT * FROM `otel_metrics_gauge`) WHERE (`MetricName` = ?))
+SELECT `MetricName`, `Attributes`, `TimeUnix`, least(`Value`, ?) AS `Value` FROM (SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` = ?))
 -- args --
 [0] float64 = 100
 [1] string = "temperature"

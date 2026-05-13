@@ -39,7 +39,7 @@ func TestLowerLinkAndEvent(t *testing.T) {
 			wantKey:    "span_id",
 			wantOp:     chplan.OpEq,
 			wantValStr: "abc",
-			wantSQL:    "SELECT * FROM (SELECT * FROM `otel_traces`) WHERE arrayExists(x -> x[?] = ?, `Links`.`Attributes`)",
+			wantSQL:    "SELECT * FROM `otel_traces` WHERE arrayExists(x -> x[?] = ?, `Links`.`Attributes`)",
 		},
 		{
 			name:       "link_trace_id",
@@ -48,7 +48,7 @@ func TestLowerLinkAndEvent(t *testing.T) {
 			wantKey:    "trace_id",
 			wantOp:     chplan.OpEq,
 			wantValStr: "deadbeef",
-			wantSQL:    "SELECT * FROM (SELECT * FROM `otel_traces`) WHERE arrayExists(x -> x[?] = ?, `Links`.`Attributes`)",
+			wantSQL:    "SELECT * FROM `otel_traces` WHERE arrayExists(x -> x[?] = ?, `Links`.`Attributes`)",
 		},
 		{
 			name:       "link_attribute",
@@ -57,7 +57,7 @@ func TestLowerLinkAndEvent(t *testing.T) {
 			wantKey:    "environment",
 			wantOp:     chplan.OpEq,
 			wantValStr: "prod",
-			wantSQL:    "SELECT * FROM (SELECT * FROM `otel_traces`) WHERE arrayExists(x -> x[?] = ?, `Links`.`Attributes`)",
+			wantSQL:    "SELECT * FROM `otel_traces` WHERE arrayExists(x -> x[?] = ?, `Links`.`Attributes`)",
 		},
 		{
 			name:       "event_name",
@@ -66,7 +66,7 @@ func TestLowerLinkAndEvent(t *testing.T) {
 			wantKey:    "name",
 			wantOp:     chplan.OpEq,
 			wantValStr: "exception",
-			wantSQL:    "SELECT * FROM (SELECT * FROM `otel_traces`) WHERE arrayExists(x -> x[?] = ?, `Events`.`Attributes`)",
+			wantSQL:    "SELECT * FROM `otel_traces` WHERE arrayExists(x -> x[?] = ?, `Events`.`Attributes`)",
 		},
 		{
 			name:       "event_dotted_attribute",
@@ -75,7 +75,7 @@ func TestLowerLinkAndEvent(t *testing.T) {
 			wantKey:    "exception.type",
 			wantOp:     chplan.OpEq,
 			wantValStr: "ConnectionError",
-			wantSQL:    "SELECT * FROM (SELECT * FROM `otel_traces`) WHERE arrayExists(x -> x[?] = ?, `Events`.`Attributes`)",
+			wantSQL:    "SELECT * FROM `otel_traces` WHERE arrayExists(x -> x[?] = ?, `Events`.`Attributes`)",
 		},
 		{
 			name:       "event_attribute_inequality",
@@ -84,7 +84,7 @@ func TestLowerLinkAndEvent(t *testing.T) {
 			wantKey:    "severity",
 			wantOp:     chplan.OpNe,
 			wantValStr: "info",
-			wantSQL:    "SELECT * FROM (SELECT * FROM `otel_traces`) WHERE arrayExists(x -> x[?] != ?, `Events`.`Attributes`)",
+			wantSQL:    "SELECT * FROM `otel_traces` WHERE arrayExists(x -> x[?] != ?, `Events`.`Attributes`)",
 		},
 	}
 

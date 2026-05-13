@@ -1,0 +1,5 @@
+-- sql --
+SELECT `Timestamp`, `SeverityText` FROM `otel_logs` WHERE (`ServiceName` = ?) AND (`Timestamp` > ?)
+-- args --
+[0] string = "api"
+[1] int64 = 0

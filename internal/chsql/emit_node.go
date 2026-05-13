@@ -77,19 +77,95 @@ func (e *emitter) emitScan(s *chplan.Scan) error {
 }
 
 func (e *emitter) emitFilter(f *chplan.Filter) error {
-	sub, err := e.subqueryFrag(f.Input)
-	if err != nil {
-		return err
-	}
 	// Pre-flight the predicate so a chplan error surfaces here, not
 	// inside the Where-render callback (where the error has no path
 	// to the caller without re-introducing splice plumbing).
 	if err := (&Builder{}).Expr(f.Predicate); err != nil {
 		return err
 	}
+
+	// Filter(Scan(table)) is the case the codegen specialises: emit
+	// `SELECT * FROM <table> [PREWHERE …] WHERE …` directly. This is
+	// the only shape where CH's PREWHERE granule-skipping fires —
+	// PREWHERE wrapping a subquery is a syntax error. For every other
+	// input shape we fall back to the historical wrapped form.
+	if scan, ok := f.Input.(*chplan.Scan); ok {
+		return e.emitFilterScan(f, scan)
+	}
+
+	sub, err := e.subqueryFrag(f.Input)
+	if err != nil {
+		return err
+	}
 	pred := func(b *Builder) { _ = b.Expr(f.Predicate) }
 	e.emitSelect(NewQuery().From(sub).Where(pred))
 	return nil
+}
+
+// emitFilterScan renders a Filter directly above a Scan as the fused
+// `SELECT [cols] FROM <table> [PREWHERE p1 AND …] WHERE q1 AND …`
+// shape — the only context where ClickHouse will apply PREWHERE
+// granule pruning. The conjuncts of f.Predicate are flattened, sorted
+// by sort-key prefix, then partitioned into PREWHERE / WHERE buckets
+// based on the table shape's wide-column metadata.
+//
+// When scan.Columns is non-empty, the SELECT list mirrors it (and the
+// wide-column projection check uses it to decide whether PREWHERE
+// promotion is worthwhile). An empty Columns slice renders as
+// `SELECT *`, which CH treats as touching every column — PREWHERE
+// promotion always activates in that case when the table shape has
+// wide columns registered.
+func (e *emitter) emitFilterScan(f *chplan.Filter, scan *chplan.Scan) error {
+	shape := tableShapeFor(scan.Table)
+	conjuncts := flattenAnd(f.Predicate)
+	conjuncts = orderedConjuncts(conjuncts, shape)
+
+	var prewhereExprs, whereExprs []chplan.Expr
+	if projectionTouchesWide(scan.Columns, shape) {
+		prewhereExprs, whereExprs = partitionPrewhere(conjuncts, shape)
+	} else {
+		whereExprs = conjuncts
+	}
+
+	sb := NewQuery().From(Col(scan.Table))
+	if len(scan.Columns) > 0 {
+		cols := make([]Frag, 0, len(scan.Columns))
+		for _, c := range scan.Columns {
+			cols = append(cols, Col(c))
+		}
+		sb.Select(cols...)
+	}
+
+	// Re-assemble each bucket as a single AND-chain Frag so the rendered
+	// SQL preserves the existing parenthesisation that emitter.Expr
+	// emits for a Binary AND. Emitting one Frag per conjunct via
+	// QueryBuilder.Where(...) would change the surface shape from
+	// `(a AND b) AND c` to `(a) AND (b) AND (c)` for the legacy
+	// fixtures — semantically equivalent but a churning byte diff.
+	if len(prewhereExprs) > 0 {
+		sb.Prewhere(conjunctionFrag(prewhereExprs))
+	}
+	if len(whereExprs) > 0 {
+		sb.Where(conjunctionFrag(whereExprs))
+	}
+	e.emitSelect(sb)
+	return nil
+}
+
+// conjunctionFrag returns a Frag that renders exprs joined with " AND ".
+// Each expr renders via Builder.Expr, which already wraps a Binary in
+// parens; so a list of N exprs renders as `e1 AND e2 AND …` (no extra
+// outer parens, mirroring the legacy emitter's Binary{OpAnd} output
+// shape).
+func conjunctionFrag(exprs []chplan.Expr) Frag {
+	return func(b *Builder) {
+		for i, x := range exprs {
+			if i > 0 {
+				b.sb.WriteString(" AND ")
+			}
+			_ = b.Expr(x)
+		}
+	}
 }
 
 func (e *emitter) emitProject(p *chplan.Project) error {

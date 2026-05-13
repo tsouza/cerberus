@@ -1,0 +1,6 @@
+-- sql --
+SELECT `Timestamp`, `SeverityText`, `ServiceName` FROM `otel_logs` WHERE (`ServiceName` = ?) AND (`SeverityText` = ?) AND (`Timestamp` > ?)
+-- args --
+[0] string = "api"
+[1] string = "ERROR"
+[2] int64 = 0

@@ -1,7 +1,7 @@
 -- query.traceql --
 { resource.service.name = "frontend" && (duration > 100ms || span.http.status_code >= 500) }
 -- sql --
-SELECT * FROM (SELECT * FROM `otel_traces`) WHERE ((`ResourceAttributes`[?] = ?) AND ((`Duration` > ?) OR (`SpanAttributes`[?] >= ?)))
+SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?) AND ((`Duration` > ?) OR (`SpanAttributes`[?] >= ?))
 -- args --
 [0] string = "service.name"
 [1] string = "frontend"

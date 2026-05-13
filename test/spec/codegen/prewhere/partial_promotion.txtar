@@ -1,0 +1,6 @@
+-- sql --
+SELECT `Body`, `Timestamp` FROM `otel_logs` PREWHERE (`ServiceName` = ?) WHERE (`Body` = ?) AND match(`Body`, ?)
+-- args --
+[0] string = "api"
+[1] string = "boom"
+[2] string = "regex"

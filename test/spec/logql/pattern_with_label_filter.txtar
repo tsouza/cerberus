@@ -6,4 +6,4 @@
 [2] string = "level"
 [3] string = "error"
 -- sql --
-SELECT * FROM (SELECT * FROM `otel_logs`) WHERE ((`ResourceAttributes`[?] = ?) AND (`ResourceAttributes`[?] = ?))
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (`ResourceAttributes`[?] = ?)

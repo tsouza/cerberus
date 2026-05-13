@@ -1,7 +1,7 @@
 -- query.logql --
 {job="api"} | line_format "[{{.job}}] {{__line__}}"
 -- sql --
-SELECT * FROM (SELECT * FROM `otel_logs`) WHERE (`ResourceAttributes`[?] = ?)
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?)
 -- args --
 [0] string = "job"
 [1] string = "api"

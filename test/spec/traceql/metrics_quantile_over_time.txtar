@@ -1,7 +1,7 @@
 -- query.traceql --
 {} | quantile_over_time(duration, 0.95)
 -- sql --
-SELECT quantile(?)(`Duration`) AS `Value` FROM (SELECT * FROM (SELECT * FROM `otel_traces`) WHERE ?)
+SELECT quantile(?)(`Duration`) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?)
 -- args --
 [0] float64 = 0.95
 [1] bool = true

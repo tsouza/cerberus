@@ -1,7 +1,7 @@
 -- query.logql --
 {job="api"} | env="prod" or env="stg"
 -- sql --
-SELECT * FROM (SELECT * FROM `otel_logs`) WHERE ((`ResourceAttributes`[?] = ?) AND ((`ResourceAttributes`[?] = ?) OR (`ResourceAttributes`[?] = ?)))
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND ((`ResourceAttributes`[?] = ?) OR (`ResourceAttributes`[?] = ?))
 -- args --
 [0] string = "job"
 [1] string = "api"
