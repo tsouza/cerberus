@@ -585,6 +585,195 @@ func TestSelectBuilder_NestedSubquery(t *testing.T) {
 	}
 }
 
+// TestSelectBuilder_Join — SelectBuilder.Join appends an INNER JOIN
+// (or other JoinKind) clause; args from the source and ON fragments
+// land in emission order between the SELECT/FROM args and the WHERE
+// args.
+func TestSelectBuilder_Join(t *testing.T) {
+	t.Parallel()
+
+	sql, args := chsql.NewSelect().
+		Select(chsql.Raw("L.`Value`"), chsql.Raw("R.`Value`")).
+		From(func(b *chsql.Builder) {
+			b.Ident("otel_metrics_sum")
+			b.WriteSQL(" AS L")
+		}).
+		Join(
+			chsql.InnerJoin,
+			func(b *chsql.Builder) {
+				b.Ident("otel_metrics_gauge")
+				b.WriteSQL(" AS R")
+			},
+			func(b *chsql.Builder) {
+				b.WriteSQL("L.")
+				b.Ident("MetricName")
+				b.WriteSQL(" = ")
+				b.Arg("http_requests_total")
+			},
+		).
+		Where(func(b *chsql.Builder) {
+			b.WriteSQL("R.")
+			b.Ident("Value")
+			b.WriteSQL(" > ")
+			b.Arg(0.5)
+		}).
+		Build()
+
+	wantSQL := "SELECT L.`Value`, R.`Value`" +
+		" FROM `otel_metrics_sum` AS L" +
+		" INNER JOIN `otel_metrics_gauge` AS R ON L.`MetricName` = ?" +
+		" WHERE R.`Value` > ?"
+	if sql != wantSQL {
+		t.Errorf("SQL = %q; want %q", sql, wantSQL)
+	}
+	if want := []any{"http_requests_total", 0.5}; !reflect.DeepEqual(args, want) {
+		t.Errorf("Args = %v; want %v", args, want)
+	}
+}
+
+// TestSelectBuilder_JoinKinds — every JoinKind constant renders as its
+// literal SQL keyword pair. CrossJoin suppresses the ON clause.
+func TestSelectBuilder_JoinKinds(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		kind chsql.JoinKind
+		want string
+	}{
+		{chsql.InnerJoin, "INNER JOIN"},
+		{chsql.LeftJoin, "LEFT JOIN"},
+		{chsql.RightJoin, "RIGHT JOIN"},
+		{chsql.FullJoin, "FULL JOIN"},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.kind), func(t *testing.T) {
+			t.Parallel()
+			sql, _ := chsql.NewSelect().
+				From(chsql.Col("a")).
+				Join(tc.kind, chsql.Col("b"), chsql.Raw("1 = 1")).
+				Build()
+			want := "SELECT * FROM `a` " + tc.want + " `b` ON 1 = 1"
+			if sql != want {
+				t.Errorf("kind=%v sql=%q want=%q", tc.kind, sql, want)
+			}
+		})
+	}
+
+	// CrossJoin drops the ON clause; the on Frag is allowed to be nil.
+	sql, _ := chsql.NewSelect().
+		From(chsql.Col("a")).
+		Join(chsql.CrossJoin, chsql.Col("b"), nil).
+		Build()
+	if want := "SELECT * FROM `a` CROSS JOIN `b`"; sql != want {
+		t.Errorf("CrossJoin sql=%q want=%q", sql, want)
+	}
+}
+
+// TestSelectBuilder_WithRecursive — WithRecursive renders the
+// `WITH RECURSIVE <name> AS (<anchor> UNION ALL <recursive>)` head and
+// threads anchor + recursive args in order ahead of the outer
+// SELECT's args.
+func TestSelectBuilder_WithRecursive(t *testing.T) {
+	t.Parallel()
+
+	anchor := chsql.NewSelect().
+		Select(chsql.Col("id"), chsql.Raw("0 AS _depth")).
+		From(chsql.Col("nodes")).
+		Where(func(b *chsql.Builder) {
+			b.Ident("id")
+			b.WriteSQL(" = ")
+			b.Arg(1)
+		})
+
+	step := chsql.NewSelect().
+		Select(
+			func(b *chsql.Builder) {
+				b.WriteSQL("n.")
+				b.Ident("id")
+			},
+			chsql.Raw("c._depth + 1"),
+		).
+		From(func(b *chsql.Builder) {
+			b.Ident("nodes")
+			b.WriteSQL(" AS n")
+		}).
+		Join(
+			chsql.InnerJoin,
+			chsql.Raw("closure AS c"),
+			chsql.Raw("n.parent = c.id"),
+		).
+		Where(func(b *chsql.Builder) {
+			b.WriteSQL("c._depth < ")
+			b.Arg(5)
+		})
+
+	sql, args := chsql.NewSelect().
+		WithRecursive("closure", anchor, step).
+		Select(chsql.Col("id")).
+		From(chsql.Raw("closure")).
+		Where(chsql.Raw("_depth > 0")).
+		Build()
+
+	wantSQL := "WITH RECURSIVE closure AS (" +
+		"SELECT `id`, 0 AS _depth FROM `nodes` WHERE `id` = ?" +
+		" UNION ALL " +
+		"SELECT n.`id`, c._depth + 1 FROM `nodes` AS n" +
+		" INNER JOIN closure AS c ON n.parent = c.id" +
+		" WHERE c._depth < ?" +
+		") SELECT `id` FROM closure WHERE _depth > 0"
+	if sql != wantSQL {
+		t.Errorf("SQL = %q; want %q", sql, wantSQL)
+	}
+	if want := []any{1, 5}; !reflect.DeepEqual(args, want) {
+		t.Errorf("Args = %v; want %v", args, want)
+	}
+}
+
+// TestSelectBuilder_WithRecursive_PanicsOnNil — passing a nil anchor
+// or recursive panics at render time. The slot stores them via the
+// fluent API without inspection, so the guard fires when writeInto
+// walks the CTE chain.
+func TestSelectBuilder_WithRecursive_PanicsOnNil(t *testing.T) {
+	t.Parallel()
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("WithRecursive(nil, nil) did not panic")
+		}
+		msg, _ := r.(string)
+		if !strings.Contains(msg, "WithRecursive") {
+			t.Errorf("panic value = %v; want message mentioning WithRecursive", r)
+		}
+	}()
+	chsql.NewSelect().
+		WithRecursive("closure", nil, nil).
+		From(chsql.Col("x")).
+		Build()
+}
+
+// TestSelectBuilder_Join_PanicsOnNilON — Join with a nil ON Frag and
+// a non-CrossJoin kind panics at render time (CrossJoin is the only
+// kind that legitimately omits ON).
+func TestSelectBuilder_Join_PanicsOnNilON(t *testing.T) {
+	t.Parallel()
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("Join(InnerJoin, ..., nil) did not panic")
+		}
+		msg, _ := r.(string)
+		if !strings.Contains(msg, "Join") {
+			t.Errorf("panic value = %v; want message mentioning Join", r)
+		}
+	}()
+	chsql.NewSelect().
+		From(chsql.Col("a")).
+		Join(chsql.InnerJoin, chsql.Col("b"), nil).
+		Build()
+}
+
 // TestBuilder_Expr — Builder.Expr renders representative chplan
 // expression shapes with byte-identical output to the legacy
 // emitter.emitExpr. Locked here so the RC6 R6.2 port can't drift from

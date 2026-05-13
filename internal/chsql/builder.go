@@ -19,9 +19,9 @@ import (
 // the same `strings.Builder` + `[]any` args primitives the emitter
 // already uses, plus a handful of CH-specific helpers (MapAt, MapKeys,
 // MapFilterExcept, Now64, SubtractNanos, DateTime64Lit, Lambda,
-// ParamAgg) and a SelectBuilder with first-class PREWHERE, so the RC3
-// optimizer rules can compose SQL fragments without re-parsing rendered
-// strings.
+// ParamAgg) and a SelectBuilder with first-class PREWHERE, JOIN, and
+// WITH RECURSIVE slots so the RC3 optimizer rules can compose SQL
+// fragments without re-parsing rendered strings.
 //
 // The zero value is ready to use.
 type Builder struct {
@@ -490,6 +490,49 @@ func As(expr Frag, alias string) Frag {
 	}
 }
 
+// JoinKind identifies a SQL JOIN flavour. The constants render as
+// their literal SQL keywords (e.g. "INNER JOIN") and flow through
+// SelectBuilder.Join's typed slot so callers never compose the join
+// keyword by hand.
+type JoinKind string
+
+const (
+	// InnerJoin renders as "INNER JOIN" — rows from both sides that
+	// satisfy the ON predicate.
+	InnerJoin JoinKind = "INNER JOIN"
+	// LeftJoin renders as "LEFT JOIN".
+	LeftJoin JoinKind = "LEFT JOIN"
+	// RightJoin renders as "RIGHT JOIN".
+	RightJoin JoinKind = "RIGHT JOIN"
+	// CrossJoin renders as "CROSS JOIN"; the ON Frag is ignored.
+	CrossJoin JoinKind = "CROSS JOIN"
+	// FullJoin renders as "FULL JOIN".
+	FullJoin JoinKind = "FULL JOIN"
+)
+
+// joinClause is one entry in a SelectBuilder's join chain. Rendered
+// as ` <kind> <src> ON <on>` (single leading space) — or, for
+// CrossJoin, ` CROSS JOIN <src>` with the ON Frag suppressed.
+type joinClause struct {
+	Kind JoinKind
+	Src  Frag
+	On   Frag
+}
+
+// cteClause is one entry in a SelectBuilder's WITH chain. The
+// recursive flag flips on the WITH RECURSIVE shape:
+//
+//	WITH RECURSIVE <name> AS (<anchor> UNION ALL <recursive>)
+//
+// Non-recursive CTEs render the anchor alone (no UNION ALL). Only
+// recursive CTEs are wired up at R6.6 — the non-recursive case is
+// reserved for a future R6.x port.
+type cteClause struct {
+	Name      string
+	Anchor    *SelectBuilder
+	Recursive *SelectBuilder
+}
+
 // SelectBuilder accumulates a SELECT statement's parts. Slots are
 // appended to in order; rendering walks each slot, emitting the
 // canonical clause prefix (SELECT, FROM, WHERE, …) and joining
@@ -503,10 +546,25 @@ func As(expr Frag, alias string) Frag {
 // here means those rewrites are slot-level operations rather than
 // string rewrites on rendered SQL.
 //
+// JOIN clauses live in the joins slot, rendered in order between
+// FROM and PREWHERE. Each entry holds a JoinKind, a source Frag (the
+// right-hand table / subquery, typically already aliased via the
+// caller's Frag), and an ON predicate Frag. The shape is the same
+// flavour as a typed Where clause — the JOIN keyword + ON keyword
+// stay inside writeInto.
+//
+// CTEs live in the ctes slot. Currently only WITH RECURSIVE form is
+// emitted (vector_join.go has no CTE; structural_join.go's >> / <<
+// emitter uses the recursive shape). Each entry renders as
+// `WITH RECURSIVE <name> AS (<anchor> UNION ALL <recursive>)` ahead
+// of the SELECT keyword.
+//
 // The zero value is ready to use; NewSelect is provided for clarity.
 type SelectBuilder struct {
+	ctes       []cteClause
 	selectList []Frag
 	from       Frag
+	joins      []joinClause
 	where      []Frag
 	prewhere   []Frag
 	groupBy    []Frag
@@ -545,6 +603,38 @@ func (s *SelectBuilder) SelectAs(expr Frag, alias string) *SelectBuilder {
 // method (which wraps the nested SELECT in parens).
 func (s *SelectBuilder) From(src Frag) *SelectBuilder {
 	s.from = src
+	return s
+}
+
+// Join appends a JOIN clause. kind selects the JOIN flavour (the
+// keyword stays inside writeInto), src is the right-hand source —
+// typically a subquery Frag already wrapped in parens + an unquoted
+// alias suffix (vector_join / structural_join use bare `L` / `R`
+// aliases) — and on is the ON predicate Frag. on may be nil for
+// CrossJoin (the only kind that omits ON); a nil on with any other
+// kind panics at render time.
+//
+// Multiple Join calls chain in order, rendered after FROM and before
+// PREWHERE / WHERE.
+func (s *SelectBuilder) Join(kind JoinKind, src, on Frag) *SelectBuilder {
+	s.joins = append(s.joins, joinClause{Kind: kind, Src: src, On: on})
+	return s
+}
+
+// WithRecursive registers a `WITH RECURSIVE <name> AS (<anchor>
+// UNION ALL <recursive>)` CTE in front of the SELECT. The anchor and
+// recursive children are SelectBuilders so their args land in
+// emission order: anchor first, recursive second, then the outer
+// SELECT.
+//
+// Multiple WithRecursive calls chain — rendered as a single
+// `WITH RECURSIVE <n1> AS (...), <n2> AS (...)` head per CH syntax.
+// At R6.6 only structural_join.go uses one CTE per emit; the
+// multi-CTE shape is reserved for future ports.
+//
+// Passing a nil anchor or recursive panics at render time.
+func (s *SelectBuilder) WithRecursive(name string, anchor, recursive *SelectBuilder) *SelectBuilder {
+	s.ctes = append(s.ctes, cteClause{Name: name, Anchor: anchor, Recursive: recursive})
 	return s
 }
 
@@ -608,6 +698,28 @@ func (s *SelectBuilder) Build() (string, []any) {
 }
 
 func (s *SelectBuilder) writeInto(b *Builder) {
+	if len(s.ctes) > 0 {
+		b.sb.WriteString("WITH RECURSIVE ")
+		for i, c := range s.ctes {
+			if c.Anchor == nil || c.Recursive == nil {
+				panic("chsql: WithRecursive requires non-nil anchor and recursive")
+			}
+			if i > 0 {
+				b.sb.WriteString(", ")
+			}
+			// CTE names render bare — CH accepts unquoted identifiers
+			// for CTE aliases, and the existing structural_join fixture
+			// pins `_struct_closure` (no backticks). The caller is
+			// responsible for passing a CH-identifier-safe token.
+			b.sb.WriteString(c.Name)
+			b.sb.WriteString(" AS (")
+			c.Anchor.writeInto(b)
+			b.sb.WriteString(" UNION ALL ")
+			c.Recursive.writeInto(b)
+			b.sb.WriteByte(')')
+		}
+		b.sb.WriteByte(' ')
+	}
 	b.sb.WriteString("SELECT ")
 	if len(s.selectList) == 0 {
 		b.sb.WriteByte('*')
@@ -622,6 +734,19 @@ func (s *SelectBuilder) writeInto(b *Builder) {
 	if s.from != nil {
 		b.sb.WriteString(" FROM ")
 		s.from(b)
+	}
+	for _, j := range s.joins {
+		b.sb.WriteByte(' ')
+		b.sb.WriteString(string(j.Kind))
+		b.sb.WriteByte(' ')
+		j.Src(b)
+		if j.Kind != CrossJoin {
+			if j.On == nil {
+				panic("chsql: Join requires a non-nil ON Frag (except for CrossJoin)")
+			}
+			b.sb.WriteString(" ON ")
+			j.On(b)
+		}
 	}
 	if len(s.prewhere) > 0 {
 		b.sb.WriteString(" PREWHERE ")
