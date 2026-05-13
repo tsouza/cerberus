@@ -23,7 +23,7 @@ ClickHouse is a great single store for all three signals. The only thing missing
 
 ## Status
 
-> 🚧 **`v1.0.0-RC1` candidate** — M1 (PromQL) + M2 (Prom HTTP API) + M3 (LogQL) + M4 (TraceQL + Tempo HTTP API) all merged. TraceQL TXTAR corpus expanded 8 → 26, chsql 15 → 29; Playwright covers Loki + Tempo + richer Prom against Grafana; cerberus-side HTTP integration tests cover every shipped surface. The RC1 tag is the only step left — see [`CHANGELOG.md`](CHANGELOG.md) for the full Unreleased entry, and [`docs/roadmap.md`](docs/roadmap.md) for the path to v1.0.0.
+> 🚧 **`v1.0.0-RC2` candidate** — RC2 closes the advanced-QL backlog on top of RC1: PromQL subqueries (P0 4.1–4.11), `predict_linear` / `holt_winters` / `@start()` / `@end()`, `histogram_quantile` over classic + native (exp) histograms, `group_left` / `group_right` cardinality edges; LogQL `| unpack` / `| pattern` / `| line_format` / `| decolorize` / `| label_format` with Loki template funcs, `bytes_*` alignment, `/api/v1/tail` WebSocket, `/labels`, `/label/values`, `/series`, `/detected_fields`, `/patterns`, `/index/stats`, `/index/volume`; TraceQL set ops, link traversal + span-events, `histogram_over_time`, MetricsPipeline lowering, Tempo `/api/search/recent`, `/api/search/tags`, `/api/search/tag/<n>/values`, `/api/metrics/query_range`. The Tempo `unsafe.Pointer` shim is retired via the [`tsouza/tempo:cerberus-accessors`](https://github.com/tsouza/tempo/tree/cerberus-accessors) fork; the OTel CH Exporter schema is now the source of truth via [`tsouza/opentelemetry-collector-contrib:cerberus-ddl`](https://github.com/tsouza/opentelemetry-collector-contrib/tree/cerberus-ddl). See [`CHANGELOG.md`](CHANGELOG.md) for the full RC2 entry, and [`docs/roadmap.md`](docs/roadmap.md) for the path to v1.0.0.
 
 ## Architecture
 
@@ -70,10 +70,10 @@ Pull the container image (pin to a specific RC — `:latest` is **only**
 advanced by stable releases; RC / alpha / beta tags don't move it):
 
 ```sh
-docker pull ghcr.io/tsouza/cerberus:v1.0.0-RC1
+docker pull ghcr.io/tsouza/cerberus:v1.0.0-RC2
 docker run --rm -p 8080:8080 \
   -e CERBERUS_CH_ADDR=clickhouse:9000 \
-  ghcr.io/tsouza/cerberus:v1.0.0-RC1
+  ghcr.io/tsouza/cerberus:v1.0.0-RC2
 ```
 
 Or download a prebuilt binary from the [release page](https://github.com/tsouza/cerberus/releases)
