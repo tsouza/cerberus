@@ -167,12 +167,25 @@ func (c *Client) Query(ctx context.Context, sql string, args ...any) ([]Sample, 
 	return out, nil
 }
 
+// flushProgress records the cerberus.clickhouse.{rows,bytes}_read
+// histograms for ctx if a progressRecorder was attached via
+// WithProgressFor. No-op otherwise. Wired into each synchronous
+// non-cursor query method (QueryStrings, QueryMetricMeta,
+// QueryLabelSets, QueryIndexStats, QueryIndexVolume); the cursor path
+// flushes from the cursor's Close.
+func flushProgress(ctx context.Context) {
+	if rec := recorderFromContext(ctx); rec != nil {
+		rec.flush()
+	}
+}
+
 // QueryStrings runs sql and decodes a single-string-column result into a
 // flat slice. Used by metadata endpoints (/api/v1/labels, label values,
 // metadata) that return a list of names.
 func (c *Client) QueryStrings(ctx context.Context, sql string, args ...any) ([]string, error) {
 	ctx, span := startExecuteSpan(ctx, sql)
 	defer span.End()
+	defer flushProgress(ctx)
 	rows, err := c.conn.Query(ctx, sql, args...)
 	if err != nil {
 		span.RecordError(err)
@@ -213,6 +226,7 @@ type MetricMetaRow struct {
 func (c *Client) QueryMetricMeta(ctx context.Context, sql, metricType string, args ...any) ([]MetricMetaRow, error) {
 	ctx, span := startExecuteSpan(ctx, sql)
 	defer span.End()
+	defer flushProgress(ctx)
 	rows, err := c.conn.Query(ctx, sql, args...)
 	if err != nil {
 		span.RecordError(err)
@@ -256,6 +270,7 @@ type IndexStatsRow struct {
 func (c *Client) QueryIndexStats(ctx context.Context, sql string, args ...any) (IndexStatsRow, error) {
 	ctx, span := startExecuteSpan(ctx, sql)
 	defer span.End()
+	defer flushProgress(ctx)
 	rows, err := c.conn.Query(ctx, sql, args...)
 	if err != nil {
 		span.RecordError(err)
@@ -291,6 +306,7 @@ type IndexVolumeRow struct {
 func (c *Client) QueryIndexVolume(ctx context.Context, sql string, args ...any) ([]IndexVolumeRow, error) {
 	ctx, span := startExecuteSpan(ctx, sql)
 	defer span.End()
+	defer flushProgress(ctx)
 	rows, err := c.conn.Query(ctx, sql, args...)
 	if err != nil {
 		span.RecordError(err)
@@ -321,6 +337,7 @@ func (c *Client) QueryIndexVolume(ctx context.Context, sql string, args ...any) 
 func (c *Client) QueryLabelSets(ctx context.Context, sql string, args ...any) ([]map[string]string, error) {
 	ctx, span := startExecuteSpan(ctx, sql)
 	defer span.End()
+	defer flushProgress(ctx)
 	rows, err := c.conn.Query(ctx, sql, args...)
 	if err != nil {
 		span.RecordError(err)

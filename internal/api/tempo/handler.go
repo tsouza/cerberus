@@ -21,6 +21,7 @@ import (
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/optimizer"
 	"github.com/tsouza/cerberus/internal/schema"
+	"github.com/tsouza/cerberus/internal/telemetry"
 	traceql_lower "github.com/tsouza/cerberus/internal/traceql"
 )
 
@@ -86,15 +87,22 @@ func New(client Querier, s schema.Traces, version string, logger *slog.Logger) *
 // check; /api/search runs a TraceQL query; /api/traces/{id} fetches a
 // single trace by ID.
 func (h *Handler) Mount(mux *http.ServeMux) {
-	mux.HandleFunc("GET /api/echo", h.handleEcho)
-	mux.HandleFunc("GET /api/status/version", h.handleVersion)
-	mux.HandleFunc("GET /api/search", h.handleSearch)
-	mux.HandleFunc("GET /api/search/recent", h.handleSearchRecent)
-	mux.HandleFunc("GET /api/search/tags", h.handleSearchTags)
-	mux.HandleFunc("GET /api/search/tag/{name}/values", h.handleSearchTagValues)
-	mux.HandleFunc("GET /api/v2/search/tags", h.handleSearchTagsV2)
-	mux.HandleFunc("GET /api/v2/search/tag/{name}/values", h.handleSearchTagValuesV2)
-	mux.HandleFunc("GET /api/traces/{id}", h.handleTraceByID)
+	// RC4 R4.4: every Tempo endpoint flows through the cerberus.queries.*
+	// counter + duration middleware. /api/echo and /api/status/version
+	// are health-checks and will dominate ResultOK volume — that's fine,
+	// dashboards can split them out via cerberus.route if needed.
+	register := func(pattern string, hf http.HandlerFunc) {
+		mux.Handle(pattern, telemetry.QueryMiddleware("traceql", hf))
+	}
+	register("GET /api/echo", h.handleEcho)
+	register("GET /api/status/version", h.handleVersion)
+	register("GET /api/search", h.handleSearch)
+	register("GET /api/search/recent", h.handleSearchRecent)
+	register("GET /api/search/tags", h.handleSearchTags)
+	register("GET /api/search/tag/{name}/values", h.handleSearchTagValues)
+	register("GET /api/v2/search/tags", h.handleSearchTagsV2)
+	register("GET /api/v2/search/tag/{name}/values", h.handleSearchTagValuesV2)
+	register("GET /api/traces/{id}", h.handleTraceByID)
 }
 
 func (h *Handler) handleEcho(w http.ResponseWriter, _ *http.Request) {
@@ -119,29 +127,39 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
+	parseT := telemetry.ObserveStage(telemetry.StageParse)
 	expr, err := parseExpr(ctx, q)
+	parseT.Done(ctx)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "", "", err)
 		return
 	}
 
+	lowerT := telemetry.ObserveStage(telemetry.StageLower)
 	plan, err := traceql_lower.Lower(ctx, expr, h.Schema)
+	lowerT.Done(ctx)
 	if err != nil {
 		writeError(w, http.StatusUnprocessableEntity, "", "", err)
 		return
 	}
 
 	plan = wrapWithSampleProjection(plan, h.Schema)
+	optT := telemetry.ObserveStage(telemetry.StageOptimize)
 	plan = h.Optimizer.Run(ctx, plan)
+	optT.Done(ctx)
 
+	emitT := telemetry.ObserveStage(telemetry.StageEmit)
 	sqlStr, args, err := chsql.Emit(ctx, plan)
+	emitT.Done(ctx)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "", "", err)
 		return
 	}
 	h.Logger.Debug("cerberus tempo search", "traceql", q, "sql", sqlStr, "args", args)
 
-	samples, err := h.Client.Query(ctx, sqlStr, args...)
+	execT := telemetry.ObserveStage(telemetry.StageExecute)
+	samples, err := h.Client.Query(chclient.WithProgressFor(ctx, "traceql"), sqlStr, args...)
+	execT.Done(ctx)
 	if err != nil {
 		h.Logger.Error("cerberus tempo search CH query failed", "err", err, "sql", sqlStr)
 		writeError(w, http.StatusBadGateway, "", "", err)
@@ -184,16 +202,22 @@ func (h *Handler) handleSearchRecent(w http.ResponseWriter, r *http.Request) {
 	plan = &chplan.Limit{Input: plan, Count: limit}
 	plan = wrapWithSampleProjection(plan, s)
 	ctx := r.Context()
+	optT := telemetry.ObserveStage(telemetry.StageOptimize)
 	plan = h.Optimizer.Run(ctx, plan)
+	optT.Done(ctx)
 
+	emitT := telemetry.ObserveStage(telemetry.StageEmit)
 	sqlStr, args, err := chsql.Emit(ctx, plan)
+	emitT.Done(ctx)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "", "", err)
 		return
 	}
 	h.Logger.Debug("cerberus tempo search/recent", "limit", limit, "sql", sqlStr, "args", args)
 
-	samples, err := h.Client.Query(ctx, sqlStr, args...)
+	execT := telemetry.ObserveStage(telemetry.StageExecute)
+	samples, err := h.Client.Query(chclient.WithProgressFor(ctx, "traceql"), sqlStr, args...)
+	execT.Done(ctx)
 	if err != nil {
 		h.Logger.Error("cerberus tempo search/recent CH query failed", "err", err, "sql", sqlStr)
 		writeError(w, http.StatusBadGateway, "", "", err)
@@ -221,16 +245,22 @@ func (h *Handler) handleTraceByID(w http.ResponseWriter, r *http.Request) {
 	}
 	plan = wrapWithSampleProjection(plan, h.Schema)
 	ctx := r.Context()
+	optT := telemetry.ObserveStage(telemetry.StageOptimize)
 	plan = h.Optimizer.Run(ctx, plan)
+	optT.Done(ctx)
 
+	emitT := telemetry.ObserveStage(telemetry.StageEmit)
 	sqlStr, args, err := chsql.Emit(ctx, plan)
+	emitT.Done(ctx)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "", "", err)
 		return
 	}
 	h.Logger.Debug("cerberus tempo traceByID", "trace_id", traceID, "sql", sqlStr, "args", args)
 
-	samples, err := h.Client.Query(r.Context(), sqlStr, args...)
+	execT := telemetry.ObserveStage(telemetry.StageExecute)
+	samples, err := h.Client.Query(chclient.WithProgressFor(r.Context(), "traceql"), sqlStr, args...)
+	execT.Done(r.Context())
 	if err != nil {
 		h.Logger.Error("cerberus tempo traceByID CH query failed", "err", err, "trace_id", traceID, "sql", sqlStr)
 		writeError(w, http.StatusBadGateway, traceID, "", err)
