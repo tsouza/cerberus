@@ -199,3 +199,94 @@ func TestTraceByID_Found(t *testing.T) {
 		t.Fatalf("expected 1 span, got %d", len(tr.Batches[0].Spans))
 	}
 }
+
+func TestSearchTags_V1_Stub(t *testing.T) {
+	t.Parallel()
+	srv := newServer(&stubQuerier{}, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/search/tags")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	var body tempo.SearchTagsV1Response
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.TagNames == nil {
+		t.Errorf("expected non-nil tagNames (empty list serialises as `[]`); got nil")
+	}
+	if len(body.TagNames) != 0 {
+		t.Errorf("stub should return empty tagNames; got %d", len(body.TagNames))
+	}
+}
+
+func TestSearchTags_V2_Stub(t *testing.T) {
+	t.Parallel()
+	srv := newServer(&stubQuerier{}, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/v2/search/tags")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	var body tempo.SearchTagsV2Response
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Scopes == nil {
+		t.Errorf("expected non-nil scopes (empty list serialises as `[]`); got nil")
+	}
+}
+
+func TestSearchTagValues_V1_Stub(t *testing.T) {
+	t.Parallel()
+	srv := newServer(&stubQuerier{}, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/search/tag/service.name/values")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	var body tempo.SearchTagValuesV1Response
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.TagValues == nil {
+		t.Errorf("expected non-nil tagValues; got nil")
+	}
+}
+
+func TestSearchTagValues_V2_Stub(t *testing.T) {
+	t.Parallel()
+	srv := newServer(&stubQuerier{}, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/v2/search/tag/service.name/values")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	var body tempo.SearchTagValuesV2Response
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.TagValues == nil {
+		t.Errorf("expected non-nil tagValues; got nil")
+	}
+}

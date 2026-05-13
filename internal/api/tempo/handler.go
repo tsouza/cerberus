@@ -63,6 +63,16 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/status/version", h.handleVersion)
 	mux.HandleFunc("GET /api/search", h.handleSearch)
 	mux.HandleFunc("GET /api/traces/{id}", h.handleTraceByID)
+	// /api/search/tags + /api/search/tag/<n>/values power Grafana's
+	// TraceQL Search UI autocomplete. v1 returns a flat tagNames list;
+	// v2 (used by Grafana 11+) returns scoped tags. Both stub here —
+	// real implementation gated on RC6 sqlbuilder (CLAUDE.md
+	// no-Sprintf rule). Stub keeps the Search UI from showing a red
+	// banner; the autocomplete simply has no suggestions.
+	mux.HandleFunc("GET /api/search/tags", h.handleSearchTagsV1)
+	mux.HandleFunc("GET /api/v2/search/tags", h.handleSearchTagsV2)
+	mux.HandleFunc("GET /api/search/tag/{name}/values", h.handleSearchTagValuesV1)
+	mux.HandleFunc("GET /api/v2/search/tag/{name}/values", h.handleSearchTagValuesV2)
 }
 
 func (h *Handler) handleEcho(w http.ResponseWriter, _ *http.Request) {
@@ -75,6 +85,35 @@ func (h *Handler) handleVersion(w http.ResponseWriter, _ *http.Request) {
 		Version:   h.Version,
 		GoVersion: runtime.Version(),
 	})
+}
+
+// handleSearchTagsV1 returns the v1-shape `{tagNames: [...]}` for the
+// TraceQL Search UI's tag-name autocomplete. Stub returns an empty
+// list — Grafana's UI shows no suggestions but the search box keeps
+// working. Real implementation needs CH-side SQL (DISTINCT mapKeys on
+// SpanAttributes / ResourceAttributes / intrinsics); gated on RC6
+// sqlbuilder per the CLAUDE.md no-Sprintf rule.
+func (h *Handler) handleSearchTagsV1(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, SearchTagsV1Response{TagNames: []string{}})
+}
+
+// handleSearchTagsV2 returns the v2-shape used by Grafana 11+:
+// `{scopes: [{name, tags: [...]}]}` where each scope is one of
+// `intrinsic`, `resource`, `span`. Stub returns empty scopes.
+func (h *Handler) handleSearchTagsV2(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, SearchTagsV2Response{Scopes: []TagScope{}})
+}
+
+// handleSearchTagValuesV1 returns the values for a specific tag in
+// the v1 shape `{tagValues: [...]}`. Stub returns empty.
+func (h *Handler) handleSearchTagValuesV1(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, SearchTagValuesV1Response{TagValues: []string{}})
+}
+
+// handleSearchTagValuesV2 returns the v2 shape
+// `{tagValues: [{type, value}]}` used by Grafana 11+. Stub returns empty.
+func (h *Handler) handleSearchTagValuesV2(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, SearchTagValuesV2Response{TagValues: []TagValue{}})
 }
 
 func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {

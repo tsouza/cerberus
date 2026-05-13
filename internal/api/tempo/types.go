@@ -102,3 +102,47 @@ type VersionResponse struct {
 	BuildDate string `json:"buildDate,omitempty"`
 	GoVersion string `json:"goVersion,omitempty"`
 }
+
+// SearchTagsV1Response is the body of `GET /api/search/tags` — the
+// v1 shape that returns a flat list of tag names available across
+// the indexed spans. Used by Grafana's TraceQL Search UI for the tag
+// autocomplete dropdown.
+type SearchTagsV1Response struct {
+	TagNames []string `json:"tagNames"`
+}
+
+// SearchTagsV2Response is the body of `GET /api/v2/search/tags` —
+// the v2 shape Grafana 11+ uses. Each scope groups tags by where
+// they live: `intrinsic` (cerberus's TraceQL keywords), `resource`
+// (ResourceAttributes), `span` (SpanAttributes).
+type SearchTagsV2Response struct {
+	Scopes []TagScope `json:"scopes"`
+}
+
+// TagScope is one entry in SearchTagsV2Response.Scopes.
+type TagScope struct {
+	Name string   `json:"name"`
+	Tags []string `json:"tags"`
+}
+
+// SearchTagValuesV1Response is the body of
+// `GET /api/search/tag/<name>/values` — flat list of values seen for
+// the named tag.
+type SearchTagValuesV1Response struct {
+	TagValues []string `json:"tagValues"`
+}
+
+// SearchTagValuesV2Response is the body of
+// `GET /api/v2/search/tag/<name>/values` — list of typed values used
+// by Grafana 11+.
+type SearchTagValuesV2Response struct {
+	TagValues []TagValue `json:"tagValues"`
+}
+
+// TagValue is one entry in SearchTagValuesV2Response.TagValues. Type
+// is one of `string`, `int`, `float`, `bool`, `duration`, `status`,
+// `kind`.
+type TagValue struct {
+	Type  string `json:"type"`
+	Value string `json:"value"`
+}
