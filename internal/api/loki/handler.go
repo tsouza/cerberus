@@ -83,6 +83,8 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /loki/api/v1/detected_fields", h.handleDetectedFields)
 	mux.HandleFunc("GET /loki/api/v1/patterns", h.handlePatterns)
 	mux.HandleFunc("POST /loki/api/v1/patterns", h.handlePatterns)
+	// /tail is WebSocket-upgrade only; no POST counterpart in upstream Loki.
+	mux.HandleFunc("GET /loki/api/v1/tail", h.handleTail)
 }
 
 func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
