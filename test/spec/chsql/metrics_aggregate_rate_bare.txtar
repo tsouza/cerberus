@@ -1,0 +1,4 @@
+-- args --
+[0] int64 = 1
+-- sql --
+SELECT count(?) AS `Value` FROM (SELECT * FROM `otel_traces`)

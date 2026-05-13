@@ -1,0 +1,4 @@
+-- args --
+[0] int64 = 1
+-- sql --
+SELECT `anchor_ts`, count(?) / 300 AS `Value` FROM (SELECT `Timestamp` AS `ts`, arrayJoin(arrayMap(i -> now64(9) - toIntervalNanosecond(i * 60000000000), range(0, 61))) AS `anchor_ts` FROM (SELECT * FROM `otel_traces`)) WHERE ts >= anchor_ts - toIntervalNanosecond(300000000000) AND ts <= anchor_ts GROUP BY `anchor_ts`
