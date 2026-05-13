@@ -2,15 +2,26 @@ package regression
 
 import (
 	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 )
 
-// seedDir is resolved relative to this test file. The `go test`
-// runner cd's into the package dir, so test/regression/ → ../e2e/seed/.
-const seedDir = "../e2e/seed"
+// seedSource is the single Go file holding the deterministic INSERT
+// statements used by the E2E ClickHouse seeder. Path is relative to this
+// test package directory (`go test` cd's into the package dir).
+const seedSource = "../e2e/seed/cmd/seed/main.go"
+
+// readSeedSource is a small helper since every test below loads the same
+// file. Centralised so a future relocation of the seeder is a one-line fix.
+func readSeedSource(t *testing.T) string {
+	t.Helper()
+	buf, err := os.ReadFile(seedSource)
+	if err != nil {
+		t.Fatalf("read %s: %v", seedSource, err)
+	}
+	return string(buf)
+}
 
 // TestSeedScriptsHaveNoInlineCommentsInValues guards against the bug
 // fixed in commit 292c183: ClickHouse's VALUES parser rejects `--`
@@ -18,54 +29,41 @@ const seedDir = "../e2e/seed"
 // Symptom in CI: `Code: 27. DB::Exception: Cannot parse input:
 // expected '(' before: '-- Trace 2: ...'`.
 //
-// We scan every *.sql under test/e2e/seed/ for blocks delimited by
-// `VALUES` and the terminating `;` and assert no `--` line appears
-// inside.
+// The seed used to live in *.sql files; it's now embedded as Go string
+// constants in test/e2e/seed/cmd/seed/main.go. We scan that file for any
+// `VALUES (` → `;`/closing-backtick span and assert no SQL-style `--`
+// comment line appears inside.
 func TestSeedScriptsHaveNoInlineCommentsInValues(t *testing.T) {
 	t.Parallel()
 
-	entries, err := os.ReadDir(seedDir)
-	if err != nil {
-		t.Fatalf("read %s: %v", seedDir, err)
-	}
+	content := readSeedSource(t)
 
-	// Anchor: a literal `VALUES` keyword followed by optional
-	// whitespace + `(` — i.e., the start of an actual tuple list.
-	// The naive `\bVALUES\b` form was too greedy: it matched the word
-	// `values` inside descriptive `--` comments (`/api/v1/label/<n>/values`,
-	// "a VALUES tuple list") and then captured the next `;` somewhere
-	// far below, producing false-positive "inline comment" hits.
+	// Anchor: a literal `VALUES` keyword followed by optional whitespace +
+	// `(` — i.e., the start of an actual tuple list.
 	startRE := regexp.MustCompile(`(?si)\bVALUES\s*\(`)
-	commentRE := regexp.MustCompile(`(?m)^\s*--`)
+	// SQL-style `--` line comment: leading whitespace + `-- ` (the trailing
+	// space rules out `--`-bordered SQL operators and the rare `--` at the
+	// very end of a line). The bug we're guarding against was `-- Trace 2:`,
+	// which matches this shape.
+	commentRE := regexp.MustCompile(`(?m)^\s*-- `)
 
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".sql") {
+	for _, loc := range startRE.FindAllStringIndex(content, -1) {
+		startIdx := loc[1]
+		// The Go string literal terminates with a backtick. We search for
+		// the *next* backtick after the VALUES start; that bounds the SQL
+		// statement.
+		endIdx := strings.Index(content[startIdx:], "`")
+		if endIdx < 0 {
+			t.Errorf("`VALUES (` at offset %d has no terminating backtick", loc[0])
 			continue
 		}
-		path := filepath.Join(seedDir, e.Name())
-		buf, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read %s: %v", path, err)
-		}
-		content := string(buf)
-		// Locate every `VALUES (` in the file; for each one, find the
-		// matching terminating `;` and scan the body in between.
-		for _, loc := range startRE.FindAllStringIndex(content, -1) {
-			startIdx := loc[1] // immediately after `VALUES (`
-			endIdx := strings.Index(content[startIdx:], ";")
-			if endIdx < 0 {
-				t.Errorf("%s: `VALUES (` at offset %d has no terminating `;`", e.Name(), loc[0])
-				continue
-			}
-			inside := content[startIdx : startIdx+endIdx]
-			if commentRE.MatchString(inside) {
-				// Find the first offending line for a useful error.
-				for _, line := range strings.Split(inside, "\n") {
-					if commentRE.MatchString(line) {
-						t.Errorf("%s: inline `--` comment inside an INSERT VALUES block — CH rejects this: %q",
-							e.Name(), strings.TrimSpace(line))
-						break
-					}
+		inside := content[startIdx : startIdx+endIdx]
+		if commentRE.MatchString(inside) {
+			for _, line := range strings.Split(inside, "\n") {
+				if commentRE.MatchString(line) {
+					t.Errorf("inline `--` comment inside an INSERT VALUES block — CH rejects this: %q",
+						strings.TrimSpace(line))
+					break
 				}
 			}
 		}
@@ -85,45 +83,51 @@ func TestSeedScriptsHaveNoInlineCommentsInValues(t *testing.T) {
 func TestLogsSeedUsesUnderscoredServiceName(t *testing.T) {
 	t.Parallel()
 
-	path := filepath.Join(seedDir, "otel_logs.sql")
-	buf, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
-	}
-	content := string(buf)
+	content := readSeedSource(t)
 
 	if !strings.Contains(content, "'service_name'") {
-		t.Errorf("%s: expected `'service_name'` map key (underscored) — LogQL's matcher.Name is verbatim, dotted form returns empty results", path)
+		t.Errorf("%s: expected `'service_name'` map key (underscored) — LogQL's matcher.Name is verbatim, dotted form returns empty results", seedSource)
 	}
-	// The dotted form being absent is the stronger check, but we
-	// allow it to appear in comment lines — only reject when it's
-	// used as a map() key.
+	// The dotted form being absent inside the logs INSERT is the stronger
+	// check. The traces INSERT legitimately uses `'service.name'` (Tempo
+	// reads ResourceAttributes with the OTel-canonical key), so we narrow
+	// the scan to the logs-INSERT SQL block only.
+	logsStart := strings.Index(content, "insertLogsSQL")
+	if logsStart < 0 {
+		t.Fatalf("%s: insertLogsSQL constant not found", seedSource)
+	}
+	logsEnd := strings.Index(content[logsStart:], "insertTracesSQL")
+	if logsEnd < 0 {
+		logsEnd = len(content) - logsStart
+	}
+	logsBlock := content[logsStart : logsStart+logsEnd]
 	mapDottedRE := regexp.MustCompile(`map\(\s*'service\.name'`)
-	if mapDottedRE.MatchString(content) {
-		t.Errorf("%s: found `map('service.name', ...)` — LogQL stream selectors won't match this; use `service_name` instead until the RC2 Prom/OTel naming bridge lands", path)
+	if mapDottedRE.MatchString(logsBlock) {
+		t.Errorf("%s: found `map('service.name', ...)` inside the logs INSERT — LogQL stream selectors won't match this; use `service_name` instead until the RC2 Prom/OTel naming bridge lands", seedSource)
 	}
 }
 
 // TestMetricsSeedHasHistogramTable guards against the bug surfaced in
 // commit a25edd9: the Prom metadata endpoints (/api/v1/labels,
 // /api/v1/label/<n>/values, /api/v1/metadata) UNION ALL across
-// gauge + sum + histogram tables. Without otel_metrics_histogram in
-// the seed, every metadata query fails with `Table doesn't exist`
-// and cerberus returns 502.
+// gauge + sum + histogram tables. Without otel_metrics_histogram in the
+// seed, every metadata query fails with `Table doesn't exist` and
+// cerberus returns 502.
 //
-// An empty histogram table is fine — the UNION just needs the
-// schema to exist.
+// Schema creation is now delegated to internal/schema/ddl which always
+// creates all 5 metrics tables (gauge, sum, histogram, exp_histogram,
+// summary) as a single Metrics signal. So the table is guaranteed to
+// exist as long as the seeder calls `ddl.Apply(ctx, conn, ddl.All)` —
+// that's what this test now asserts.
 func TestMetricsSeedHasHistogramTable(t *testing.T) {
 	t.Parallel()
 
-	path := filepath.Join(seedDir, "otel_metrics.sql")
-	buf, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
+	content := readSeedSource(t)
+	if !strings.Contains(content, "ddl.ApplyWithConfig") && !strings.Contains(content, "ddl.Apply") {
+		t.Errorf("%s: expected the seeder to call ddl.Apply / ddl.ApplyWithConfig to create the OTel-CH schema (incl. otel_metrics_histogram)", seedSource)
 	}
-	createHistogramRE := regexp.MustCompile(`(?i)CREATE\s+TABLE[^(]*otel_metrics_histogram`)
-	if !createHistogramRE.MatchString(string(buf)) {
-		t.Errorf("%s: missing `CREATE TABLE ... otel_metrics_histogram` — Prom /labels + /label/.../values + /metadata UNION across gauge+sum+histogram, so the histogram table must exist (empty is fine)", path)
+	if !strings.Contains(content, "ddl.All") {
+		t.Errorf("%s: expected the seeder to pass ddl.All — without the Metrics signal, otel_metrics_histogram is missing and Prom /labels + /label/.../values + /metadata fail with 502", seedSource)
 	}
 }
 
@@ -135,12 +139,7 @@ func TestMetricsSeedHasHistogramTable(t *testing.T) {
 func TestTracesSeedHasFrontendAndApiServices(t *testing.T) {
 	t.Parallel()
 
-	path := filepath.Join(seedDir, "otel_traces.sql")
-	buf, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
-	}
-	content := string(buf)
+	content := readSeedSource(t)
 
 	for _, needle := range []string{
 		"'service.name', 'frontend'",
@@ -148,7 +147,7 @@ func TestTracesSeedHasFrontendAndApiServices(t *testing.T) {
 		"a0000000000000000000000000000001",
 	} {
 		if !strings.Contains(content, needle) {
-			t.Errorf("%s: expected %q somewhere in the seed; Tempo E2E tests depend on it", path, needle)
+			t.Errorf("%s: expected %q somewhere in the seed; Tempo E2E tests depend on it", seedSource, needle)
 		}
 	}
 }

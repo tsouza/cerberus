@@ -147,28 +147,28 @@ e2e-up: e2e-down
     @echo "    grafana:    http://localhost:3000 (admin/admin)"
     @echo "    cerberus:   http://localhost:8080/healthz"
 
-# Ingest sample OTel data into ClickHouse. Sources every *.sql under
-# test/e2e/seed/ (metrics + logs + traces) in lexical order.
-# kubectl exec needs -i to forward stdin into the remote container; without
-# it, the `< file` redirect goes only to local stdin and the seed never runs.
+# Ingest sample OTel data into ClickHouse. Runs the Go seed program at
+# test/e2e/seed/cmd/seed/ which (a) applies the upstream OTel-CH DDL via
+# internal/schema/ddl.Apply and (b) inserts the deterministic fixture rows.
+# The DDL is the source of truth — the schema can no longer drift from the
+# upstream exporter, unlike the previous hand-maintained *.sql scripts.
+#
+# Connects from the host via a transient kubectl port-forward; CH listens on
+# port 9000 inside the cluster.
 e2e-seed:
-    @echo "==> seeding OTel data"
-    @for f in test/e2e/seed/*.sql; do \
-        echo "    + $f"; \
-        kubectl -n cerberus exec -i deploy/clickhouse -- \
-            clickhouse-client \
-                --user cerberus --password cerberus \
-                --database otel --multiquery \
-                < "$f"; \
-    done
-    @echo "==> verifying rowcounts"
-    kubectl -n cerberus exec deploy/clickhouse -- \
-        clickhouse-client --user cerberus --password cerberus --database otel --query "\
-            SELECT 'metrics_gauge' AS source, count() AS rows FROM otel_metrics_gauge UNION ALL \
-            SELECT 'metrics_sum'   AS source, count() AS rows FROM otel_metrics_sum   UNION ALL \
-            SELECT 'logs'          AS source, count() AS rows FROM otel_logs          UNION ALL \
-            SELECT 'traces'        AS source, count() AS rows FROM otel_traces        \
-            FORMAT PrettyCompact"
+    @echo "==> seeding OTel data via Go seeder"
+    @kubectl -n cerberus port-forward svc/clickhouse 19000:9000 > /tmp/cerberus-e2e-seed-pf.log 2>&1 & \
+        pf_pid=$!; \
+        trap "kill $pf_pid 2>/dev/null || true" EXIT; \
+        for i in 1 2 3 4 5 6 7 8 9 10; do \
+            if nc -z 127.0.0.1 19000 2>/dev/null; then break; fi; \
+            sleep 1; \
+        done; \
+        CH_ADDR=127.0.0.1:19000 \
+        CH_DATABASE=otel \
+        CH_USERNAME=cerberus \
+        CH_PASSWORD=cerberus \
+            go run ./test/e2e/seed/cmd/seed
     @echo "==> seed done"
 
 # Run Go E2E HTTP tests against the deployed stack.
