@@ -362,11 +362,12 @@ func TestDriver_FixpointTerminates(t *testing.T) {
 	}
 
 	out := optimizer.Default().Run(plan)
-	// After ConstantFold + FilterFusion converges, the deeply-stacked
-	// `LitBool(true)` predicates collapse and the Filters fuse — we expect
-	// a single Filter(Scan) (a non-trivial predicate would normally remain
-	// here; with all-true predicates the Filter itself becomes redundant
-	// but our seed rules don't yet drop trivially-true Filters).
+	// After ConstantFoldHeuristic + FilterFusion converges, the
+	// deeply-stacked `LitBool(true)` predicates collapse and the
+	// Filters fuse — we expect a single Filter(Scan) (a non-trivial
+	// predicate would normally remain here; with all-true predicates
+	// the Filter itself becomes redundant but our seed rules don't yet
+	// drop trivially-true Filters).
 	switch v := out.(type) {
 	case *chplan.Filter:
 		if _, ok := v.Input.(*chplan.Scan); !ok {

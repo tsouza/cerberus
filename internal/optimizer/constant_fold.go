@@ -2,22 +2,67 @@ package optimizer
 
 import "github.com/tsouza/cerberus/internal/chplan"
 
-// ConstantFold simplifies the predicate of every Filter and the expressions
-// inside every Project/Aggregate AggFunc by folding compile-time-known
-// values: Binary over two Lits collapses, and the identity rules for AND/OR
-// with bool literals apply (`true AND X` → `X`, `false OR X` → `X`, etc.).
+// ConstantFoldSemantic reduces pure-literal Binary subtrees inside every
+// Filter predicate and every Project/Aggregate expression: a Binary
+// whose left and right are both LitInt (or both LitFloat) collapses to
+// the computed Lit (`1+2 → 3`, `1=0 → false`).
 //
-// Folding runs recursively across each expression tree before the result is
-// compared with the original — so a single Apply call can collapse nested
-// constants in one shot.
-type ConstantFold struct{}
+// This is the **semantic / must-run** flavour of constant folding
+// (DataFusion `AnalyzerRule` shape — see analyzer.go + § 4 of
+// docs/optimizer-research.md). Downstream rules assume that
+// pure-literal subtrees have already collapsed to a single Lit: a
+// PREWHERE-promotion rule that distinguishes `WHERE false` from
+// `WHERE 1=0` would silently miss the latter without this pass.
+//
+// Folding runs recursively across each expression tree before the
+// result is compared with the original — so a single Apply call can
+// collapse nested literal subtrees in one shot. Idempotent by
+// construction: after one bottom-up sweep no further pure-literal
+// Binary remains.
+type ConstantFoldSemantic struct{}
 
-func (ConstantFold) Name() string { return "constant-fold" }
+// ConstantFoldSemantic satisfies AnalyzerRule.
+func (ConstantFoldSemantic) Name() string { return "constant-fold-semantic" }
 
-func (ConstantFold) Apply(n chplan.Node) (chplan.Node, bool) {
+func (ConstantFoldSemantic) isAnalyzerRule() {}
+
+func (ConstantFoldSemantic) Apply(n chplan.Node) (chplan.Node, bool) {
+	return foldNode(n, foldExprSemantic)
+}
+
+// ConstantFoldHeuristic applies boolean algebraic identities at every
+// Binary in the same expression positions ConstantFoldSemantic
+// inspects:
+//
+//	true  AND X → X        false AND X → false
+//	false OR  X → X        true  OR  X → true
+//
+// This is the **heuristic / optional** flavour of constant folding —
+// the identities make the emitted SQL cleaner but the result is
+// correct either way. ClickHouse will short-circuit `true AND X` at
+// execution time; we apply the identity at plan time to shrink the
+// tree and unblock downstream rules (e.g. FilterFusion sees a single
+// non-trivial predicate instead of a Binary{AND, LitBool(true), real}).
+//
+// Heuristic rules live in Once / FixedPoint batches (not Analyzer)
+// because they are not part of the language contract: skipping them
+// would still produce a correct plan, just a noisier one.
+type ConstantFoldHeuristic struct{}
+
+func (ConstantFoldHeuristic) Name() string { return "constant-fold-heuristic" }
+
+func (ConstantFoldHeuristic) Apply(n chplan.Node) (chplan.Node, bool) {
+	return foldNode(n, foldExprHeuristic)
+}
+
+// foldNode is the shared Node-level walker for the two constant-fold
+// flavours. It visits Filter predicates, Project expressions, and
+// Aggregate group-by / arg expressions, applying foldFn to each
+// expression tree.
+func foldNode(n chplan.Node, foldFn func(chplan.Expr) (chplan.Expr, bool)) (chplan.Node, bool) {
 	switch v := n.(type) {
 	case *chplan.Filter:
-		newPred, changed := foldExpr(v.Predicate)
+		newPred, changed := foldFn(v.Predicate)
 		if !changed {
 			return n, false
 		}
@@ -28,7 +73,7 @@ func (ConstantFold) Apply(n chplan.Node) (chplan.Node, bool) {
 		anyChange := false
 		newProjs := make([]chplan.Projection, len(v.Projections))
 		for i, p := range v.Projections {
-			ne, ch := foldExpr(p.Expr)
+			ne, ch := foldFn(p.Expr)
 			newProjs[i] = chplan.Projection{Expr: ne, Alias: p.Alias}
 			if ch {
 				anyChange = true
@@ -44,7 +89,7 @@ func (ConstantFold) Apply(n chplan.Node) (chplan.Node, bool) {
 		anyChange := false
 		newGroup := make([]chplan.Expr, len(v.GroupBy))
 		for i, g := range v.GroupBy {
-			ne, ch := foldExpr(g)
+			ne, ch := foldFn(g)
 			newGroup[i] = ne
 			if ch {
 				anyChange = true
@@ -54,7 +99,7 @@ func (ConstantFold) Apply(n chplan.Node) (chplan.Node, bool) {
 		for i, af := range v.AggFuncs {
 			newArgs := make([]chplan.Expr, len(af.Args))
 			for j, a := range af.Args {
-				ne, ch := foldExpr(a)
+				ne, ch := foldFn(a)
 				newArgs[j] = ne
 				if ch {
 					anyChange = true
@@ -73,17 +118,19 @@ func (ConstantFold) Apply(n chplan.Node) (chplan.Node, bool) {
 	return n, false
 }
 
-// foldExpr recursively folds e and reports whether the result differs.
-func foldExpr(e chplan.Expr) (chplan.Expr, bool) {
+// foldExprSemantic recursively reduces pure-literal Binary subtrees
+// (both sides LitInt or both LitFloat) — the semantic flavour. It does
+// NOT apply boolean identity rules; those are the heuristic's job.
+func foldExprSemantic(e chplan.Expr) (chplan.Expr, bool) {
 	switch v := e.(type) {
 	case *chplan.Binary:
-		left, lc := foldExpr(v.Left)
-		right, rc := foldExpr(v.Right)
+		left, lc := foldExprSemantic(v.Left)
+		right, rc := foldExprSemantic(v.Right)
 		current := v
 		if lc || rc {
 			current = &chplan.Binary{Op: v.Op, Left: left, Right: right}
 		}
-		folded, fc := foldBinary(current)
+		folded, fc := foldBinaryLiterals(current)
 		if fc {
 			return folded, true
 		}
@@ -92,8 +139,8 @@ func foldExpr(e chplan.Expr) (chplan.Expr, bool) {
 		}
 		return v, false
 	case *chplan.MapAccess:
-		nm, mc := foldExpr(v.Map)
-		nk, kc := foldExpr(v.Key)
+		nm, mc := foldExprSemantic(v.Map)
+		nk, kc := foldExprSemantic(v.Key)
 		if !mc && !kc {
 			return v, false
 		}
@@ -102,7 +149,7 @@ func foldExpr(e chplan.Expr) (chplan.Expr, bool) {
 		newArgs := make([]chplan.Expr, len(v.Args))
 		anyChange := false
 		for i, a := range v.Args {
-			na, ch := foldExpr(a)
+			na, ch := foldExprSemantic(a)
 			newArgs[i] = na
 			if ch {
 				anyChange = true
@@ -116,22 +163,57 @@ func foldExpr(e chplan.Expr) (chplan.Expr, bool) {
 	return e, false
 }
 
-// foldBinary attempts a constant-fold on a single Binary node whose children
-// are already folded. Returns the replacement and true iff a fold applied.
-func foldBinary(b *chplan.Binary) (chplan.Expr, bool) {
-	// Boolean identity rules (independent of literal types on the other side).
-	if lit, ok := b.Left.(*chplan.LitBool); ok {
-		if r, ok := identityForBool(b.Op, lit.V, b.Right); ok {
-			return r, true
+// foldExprHeuristic recursively applies boolean algebraic identities
+// at every Binary — the heuristic flavour. It does NOT touch
+// pure-literal arithmetic; the semantic pass has already canonicalised
+// those.
+func foldExprHeuristic(e chplan.Expr) (chplan.Expr, bool) {
+	switch v := e.(type) {
+	case *chplan.Binary:
+		left, lc := foldExprHeuristic(v.Left)
+		right, rc := foldExprHeuristic(v.Right)
+		current := v
+		if lc || rc {
+			current = &chplan.Binary{Op: v.Op, Left: left, Right: right}
 		}
-	}
-	if lit, ok := b.Right.(*chplan.LitBool); ok {
-		if r, ok := identityForBool(b.Op, lit.V, b.Left); ok {
-			return r, true
+		folded, fc := foldBinaryBoolIdentity(current)
+		if fc {
+			return folded, true
 		}
+		if lc || rc {
+			return current, true
+		}
+		return v, false
+	case *chplan.MapAccess:
+		nm, mc := foldExprHeuristic(v.Map)
+		nk, kc := foldExprHeuristic(v.Key)
+		if !mc && !kc {
+			return v, false
+		}
+		return &chplan.MapAccess{Map: nm, Key: nk}, true
+	case *chplan.FuncCall:
+		newArgs := make([]chplan.Expr, len(v.Args))
+		anyChange := false
+		for i, a := range v.Args {
+			na, ch := foldExprHeuristic(a)
+			newArgs[i] = na
+			if ch {
+				anyChange = true
+			}
+		}
+		if !anyChange {
+			return v, false
+		}
+		return &chplan.FuncCall{Name: v.Name, Args: newArgs}, true
 	}
+	return e, false
+}
 
-	// Pure numeric folds: both sides are int or both sides are float.
+// foldBinaryLiterals attempts a pure-literal numeric / comparison fold
+// on a single Binary whose children are already folded. Returns the
+// replacement and true iff the fold applied. Boolean identity rules
+// live in foldBinaryBoolIdentity (the heuristic flavour).
+func foldBinaryLiterals(b *chplan.Binary) (chplan.Expr, bool) {
 	if li, ok := b.Left.(*chplan.LitInt); ok {
 		if ri, ok := b.Right.(*chplan.LitInt); ok {
 			if r, ok := foldIntInt(b.Op, li.V, ri.V); ok {
@@ -144,6 +226,29 @@ func foldBinary(b *chplan.Binary) (chplan.Expr, bool) {
 			if r, ok := foldFloatFloat(b.Op, lf.V, rf.V); ok {
 				return r, true
 			}
+		}
+	}
+	return b, false
+}
+
+// foldBinaryBoolIdentity attempts a boolean identity collapse on a
+// single Binary:
+//
+//	true  AND X → X        false AND X → false
+//	false OR  X → X        true  OR  X → true
+//
+// Returns the replacement and true iff an identity applied. Pure-
+// literal numeric folding lives in foldBinaryLiterals (the semantic
+// flavour).
+func foldBinaryBoolIdentity(b *chplan.Binary) (chplan.Expr, bool) {
+	if lit, ok := b.Left.(*chplan.LitBool); ok {
+		if r, ok := identityForBool(b.Op, lit.V, b.Right); ok {
+			return r, true
+		}
+	}
+	if lit, ok := b.Right.(*chplan.LitBool); ok {
+		if r, ok := identityForBool(b.Op, lit.V, b.Left); ok {
+			return r, true
 		}
 	}
 	return b, false
