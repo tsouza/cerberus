@@ -1,0 +1,395 @@
+---
+# RBAC for the OTel collector — the kubeletstats and k8s_cluster receivers
+# need read access to the kubelet stats API and a fair chunk of core/apps
+# k8s API resources. Scoping kept to read-only verbs.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-collector
+  namespace: cerberus
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cerberus-otel-collector
+rules:
+  - apiGroups: [""]
+    resources:
+      - nodes
+      - nodes/stats
+      - nodes/proxy
+      - nodes/metrics
+      - services
+      - endpoints
+      - pods
+      - namespaces
+      - resourcequotas
+      - replicationcontrollers
+      - replicationcontrollers/status
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources:
+      - daemonsets
+      - deployments
+      - replicasets
+      - statefulsets
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources:
+      - jobs
+      - cronjobs
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["autoscaling"]
+    resources:
+      - horizontalpodautoscalers
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["events.k8s.io"]
+    resources:
+      - events
+    verbs: ["get", "list", "watch"]
+  - nonResourceURLs: ["/metrics"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cerberus-otel-collector
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cerberus-otel-collector
+subjects:
+  - kind: ServiceAccount
+    name: otel-collector
+    namespace: cerberus
+---
+# Gateway collector config:
+# - receives cluster-wide signals (k8s_cluster, k8s_events)
+# - accepts OTLP from the agent DaemonSet and from the sample-app
+# - writes everything to ClickHouse via the clickhouseexporter, which
+#   issues the same OTel-CH DDL as internal/schema/ddl.Apply (both ride
+#   the upstream sqltemplates). Schema cannot drift.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-gateway-config
+  namespace: cerberus
+data:
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+      k8s_cluster:
+        auth_type: serviceAccount
+        collection_interval: 30s
+        node_conditions_to_report: [Ready, MemoryPressure, DiskPressure, PIDPressure]
+        allocatable_types_to_report: [cpu, memory, ephemeral-storage, storage]
+      k8s_events:
+        auth_type: serviceAccount
+
+    processors:
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 80
+        spike_limit_percentage: 25
+      batch:
+        send_batch_size: 1024
+        timeout: 5s
+      # Ensure every record carries a service.name. Cluster receivers don't
+      # set one; default to the collector's own identity so the OTel-CH
+      # ServiceName column is never empty.
+      resource:
+        attributes:
+          - key: service.name
+            value: cerberus-otel-collector
+            action: insert
+          - key: deployment.environment
+            value: e2e
+            action: upsert
+          - key: k8s.cluster.name
+            value: cerberus-e2e
+            action: upsert
+
+    exporters:
+      clickhouse:
+        endpoint: tcp://clickhouse:9000?dial_timeout=10s
+        database: otel
+        username: cerberus
+        password: cerberus
+        ttl: 0
+        create_schema: true
+        logs_table_name: otel_logs
+        traces_table_name: otel_traces
+        metrics_table_name: otel_metrics
+        timeout: 10s
+        retry_on_failure:
+          enabled: true
+          initial_interval: 1s
+          max_interval: 30s
+          max_elapsed_time: 5m
+        sending_queue:
+          enabled: true
+          num_consumers: 4
+          queue_size: 1000
+
+    service:
+      telemetry:
+        logs:
+          level: info
+      pipelines:
+        metrics:
+          receivers: [otlp, k8s_cluster]
+          processors: [memory_limiter, resource, batch]
+          exporters: [clickhouse]
+        logs:
+          receivers: [otlp, k8s_events]
+          processors: [memory_limiter, resource, batch]
+          exporters: [clickhouse]
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, resource, batch]
+          exporters: [clickhouse]
+---
+# Agent collector config (per-node DaemonSet):
+# - kubeletstats scrape (node + pod + container metrics from the local
+#   kubelet's /stats/summary endpoint)
+# - filelog tails /var/log/pods/**/*.log (container stdout/stderr captured
+#   by the kubelet's CRI log-rotation)
+# - forwards everything to the gateway via OTLP/gRPC. The agent itself
+#   does not talk to ClickHouse — the gateway is the single writer.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-agent-config
+  namespace: cerberus
+data:
+  config.yaml: |
+    receivers:
+      kubeletstats:
+        collection_interval: 20s
+        auth_type: serviceAccount
+        endpoint: ${env:K8S_NODE_NAME}:10250
+        insecure_skip_verify: true
+        metric_groups: [node, pod, container]
+        extra_metadata_labels: [container.id, k8s.volume.type]
+      filelog:
+        include: [/var/log/pods/*/*/*.log]
+        exclude: [/var/log/pods/cerberus_otel-collector*_*/*/*.log]
+        start_at: end
+        include_file_path: true
+        include_file_name: false
+        operators:
+          # Parse the kubelet's CRI log line: "<ts> stdout F <body>".
+          - type: regex_parser
+            regex: '^(?P<time>[^ ]+) (?P<stream>stdout|stderr) (?P<logtag>[^ ]+) ?(?P<log>.*)$'
+            timestamp:
+              parse_from: attributes.time
+              layout_type: gotime
+              layout: '2006-01-02T15:04:05.999999999Z07:00'
+          # Pull pod/namespace/container out of the file path:
+          # /var/log/pods/<namespace>_<pod>_<uid>/<container>/<n>.log
+          - type: regex_parser
+            parse_from: attributes["log.file.path"]
+            regex: '^/var/log/pods/(?P<namespace>[^_]+)_(?P<pod>[^_]+)_(?P<uid>[^/]+)/(?P<container>[^/]+)/'
+          - type: move
+            from: attributes.namespace
+            to: resource["k8s.namespace.name"]
+          - type: move
+            from: attributes.pod
+            to: resource["k8s.pod.name"]
+          - type: move
+            from: attributes.container
+            to: resource["k8s.container.name"]
+          - type: move
+            from: attributes.uid
+            to: resource["k8s.pod.uid"]
+
+    processors:
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 80
+        spike_limit_percentage: 25
+      batch:
+        send_batch_size: 1024
+        timeout: 5s
+      resource:
+        attributes:
+          - key: k8s.node.name
+            value: ${env:K8S_NODE_NAME}
+            action: upsert
+          - key: service.name
+            value: cerberus-otel-agent
+            action: insert
+          - key: deployment.environment
+            value: e2e
+            action: upsert
+
+    exporters:
+      otlp:
+        endpoint: otel-collector-gateway:4317
+        tls:
+          insecure: true
+        retry_on_failure:
+          enabled: true
+          initial_interval: 1s
+          max_interval: 30s
+          max_elapsed_time: 5m
+        sending_queue:
+          enabled: true
+          num_consumers: 4
+          queue_size: 1000
+
+    service:
+      telemetry:
+        logs:
+          level: info
+      pipelines:
+        metrics:
+          receivers: [kubeletstats]
+          processors: [memory_limiter, resource, batch]
+          exporters: [otlp]
+        logs:
+          receivers: [filelog]
+          processors: [memory_limiter, resource, batch]
+          exporters: [otlp]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector-gateway
+  namespace: cerberus
+  labels:
+    app: otel-collector
+    role: gateway
+spec:
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+  selector:
+    app: otel-collector
+    role: gateway
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector-gateway
+  namespace: cerberus
+  labels:
+    app: otel-collector
+    role: gateway
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: otel-collector
+      role: gateway
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+        role: gateway
+    spec:
+      serviceAccountName: otel-collector
+      containers:
+        - name: collector
+          image: otel/opentelemetry-collector-contrib:0.116.1
+          args: ["--config=/etc/otel/config.yaml"]
+          ports:
+            - name: otlp-grpc
+              containerPort: 4317
+            - name: otlp-http
+              containerPort: 4318
+          env:
+            - name: GOMEMLIMIT
+              value: "400MiB"
+          volumeMounts:
+            - name: config
+              mountPath: /etc/otel
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+          readinessProbe:
+            tcpSocket:
+              port: otlp-grpc
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: otlp-grpc
+            initialDelaySeconds: 30
+            periodSeconds: 10
+      volumes:
+        - name: config
+          configMap:
+            name: otel-collector-gateway-config
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: otel-collector-agent
+  namespace: cerberus
+  labels:
+    app: otel-collector
+    role: agent
+spec:
+  selector:
+    matchLabels:
+      app: otel-collector
+      role: agent
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+        role: agent
+    spec:
+      serviceAccountName: otel-collector
+      hostNetwork: false
+      containers:
+        - name: collector
+          image: otel/opentelemetry-collector-contrib:0.116.1
+          args: ["--config=/etc/otel/config.yaml"]
+          env:
+            - name: K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: GOMEMLIMIT
+              value: "200MiB"
+          volumeMounts:
+            - name: config
+              mountPath: /etc/otel
+            - name: varlogpods
+              mountPath: /var/log/pods
+              readOnly: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+      volumes:
+        - name: config
+          configMap:
+            name: otel-collector-agent-config
+        - name: varlogpods
+          hostPath:
+            path: /var/log/pods
+            type: Directory
+      tolerations:
+        - effect: NoSchedule
+          operator: Exists
+        - effect: NoExecute
+          operator: Exists

@@ -55,8 +55,11 @@ jobs:
       - name: Bring up k3d stack
         run: just e2e-up
 
-      - name: Seed OTel data
+      - name: Seed OTel data (deterministic synthetic rows)
         run: just e2e-seed
+
+      - name: Wait for real OTel data from the collector pipeline
+        run: just e2e-wait-otel
 
       - name: Run Go E2E tests
         run: just e2e-run
@@ -93,6 +96,12 @@ jobs:
           kubectl -n cerberus logs deploy/clickhouse --tail 200 || true
           echo "=== grafana logs ==="
           kubectl -n cerberus logs deploy/grafana --tail 200 || true
+          echo "=== otel-collector gateway logs ==="
+          kubectl -n cerberus logs deploy/otel-collector-gateway --tail 200 || true
+          echo "=== otel-collector agent logs ==="
+          kubectl -n cerberus logs daemonset/otel-collector-agent --tail 200 || true
+          echo "=== sample-app traces logs ==="
+          kubectl -n cerberus logs deploy/sample-app-traces --tail 100 || true
 
       - name: Tear down
         if: always()
