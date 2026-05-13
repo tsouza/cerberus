@@ -43,6 +43,15 @@ clean:
 test:
     go test -race ./...
 
+# Run the FuzzParse target for one parser head for a bounded duration.
+# Usage: `just fuzz QL=promql DURATION=60s` (defaults).
+fuzz QL="promql" DURATION="60s":
+    go test -run='^$' -fuzz=FuzzParse -fuzztime={{DURATION}} ./internal/{{QL}}/...
+
+# Run all Go benchmarks (no tests). Short benchtime for local use.
+bench:
+    go test -bench=. -benchmem -benchtime=5x -run='^$' ./...
+
 # Regenerate TXTAR golden sections in test/spec/**/*.txtar from current output.
 # Review `git diff test/spec/` before committing.
 update-golden:
