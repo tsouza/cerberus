@@ -134,7 +134,7 @@ func loadAllowlist(path string) (*allowlist, error) {
 		files:  map[string]bool{},
 		ranges: map[string][][2]int{},
 	}
-	f, err := os.Open(path)
+	f, err := os.Open(path) //nolint:gosec // G304: allowlist path is a CLI argument, not user input
 	if err != nil {
 		if os.IsNotExist(err) {
 			return al, nil
