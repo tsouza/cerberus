@@ -18,6 +18,15 @@ type stubQuerier struct {
 	err      error
 	lastSQL  string
 	lastArgs []any
+
+	// /index/stats canned response (zero value is fine for the
+	// existing /query / /query_range tests that never call it).
+	statsRow chclient.IndexStatsRow
+	statsErr error
+
+	// /index/volume canned response.
+	volumeRows []chclient.IndexVolumeRow
+	volumeErr  error
 }
 
 func (s *stubQuerier) Query(_ context.Context, sql string, args ...any) ([]chclient.Sample, error) {
@@ -27,6 +36,24 @@ func (s *stubQuerier) Query(_ context.Context, sql string, args ...any) ([]chcli
 		return nil, s.err
 	}
 	return s.samples, nil
+}
+
+func (s *stubQuerier) QueryIndexStats(_ context.Context, sql string, args ...any) (chclient.IndexStatsRow, error) {
+	s.lastSQL = sql
+	s.lastArgs = args
+	if s.statsErr != nil {
+		return chclient.IndexStatsRow{}, s.statsErr
+	}
+	return s.statsRow, nil
+}
+
+func (s *stubQuerier) QueryIndexVolume(_ context.Context, sql string, args ...any) ([]chclient.IndexVolumeRow, error) {
+	s.lastSQL = sql
+	s.lastArgs = args
+	if s.volumeErr != nil {
+		return nil, s.volumeErr
+	}
+	return s.volumeRows, nil
 }
 
 func newServer(q loki.Querier) *httptest.Server {

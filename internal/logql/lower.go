@@ -237,6 +237,16 @@ func lineFilterOp(t loglib.LineMatchType) (isRegex, negated bool, err error) {
 	return false, false, fmt.Errorf("logql: line-filter op %s is not yet supported (`|>` pattern filters land in M3.2)", t)
 }
 
+// SelectorPredicate is the exported entry point for callers that need
+// just the stream-selector predicate without lowering the full
+// expression — e.g. the /index/stats and /index/volume handlers, which
+// only care about the matchers, not the pipeline stages.
+//
+// Returns nil if matchers is empty.
+func SelectorPredicate(matchers []*labels.Matcher, s schema.Logs) chplan.Expr {
+	return buildMatchersPredicate(matchers, s)
+}
+
 // buildMatchersPredicate AND-folds the stream-selector matchers into a
 // chplan.Expr. Each matcher targets `ResourceAttributes[<label>]`.
 func buildMatchersPredicate(matchers []*labels.Matcher, s schema.Logs) chplan.Expr {

@@ -25,6 +25,8 @@ import (
 // reasons.
 type Querier interface {
 	Query(ctx context.Context, sql string, args ...any) ([]chclient.Sample, error)
+	QueryIndexStats(ctx context.Context, sql string, args ...any) (chclient.IndexStatsRow, error)
+	QueryIndexVolume(ctx context.Context, sql string, args ...any) ([]chclient.IndexVolumeRow, error)
 }
 
 // Handler implements the Loki HTTP API endpoints cerberus speaks. Mount
@@ -60,6 +62,10 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /loki/api/v1/query", h.handleQuery)
 	mux.HandleFunc("GET /loki/api/v1/query_range", h.handleQueryRange)
 	mux.HandleFunc("POST /loki/api/v1/query_range", h.handleQueryRange)
+	mux.HandleFunc("GET /loki/api/v1/index/stats", h.handleIndexStats)
+	mux.HandleFunc("POST /loki/api/v1/index/stats", h.handleIndexStats)
+	mux.HandleFunc("GET /loki/api/v1/index/volume", h.handleIndexVolume)
+	mux.HandleFunc("POST /loki/api/v1/index/volume", h.handleIndexVolume)
 }
 
 func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
