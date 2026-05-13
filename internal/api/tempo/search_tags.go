@@ -139,10 +139,10 @@ func buildSearchTagsSQL(s schema.Traces, mapCol string, start, end time.Time) (s
 		Select(distinctMapKeysFrag(mapCol)).
 		From(chsql.Col(s.SpansTable))
 	if !start.IsZero() {
-		sb.Where(tempoTimeBoundFrag(s.TimestampColumn, ">=", start))
+		sb.Where(tempoTimeGteFrag(s.TimestampColumn, start))
 	}
 	if !end.IsZero() {
-		sb.Where(tempoTimeBoundFrag(s.TimestampColumn, "<=", end))
+		sb.Where(tempoTimeLteFrag(s.TimestampColumn, end))
 	}
 	return sb.Build()
 }
@@ -150,25 +150,38 @@ func buildSearchTagsSQL(s schema.Traces, mapCol string, start, end time.Time) (s
 // distinctMapKeysFrag emits "DISTINCT arrayJoin(mapKeys(`<col>`))" — the
 // CH idiom for "every distinct attribute key seen". DISTINCT is part of
 // the SELECT list (CH's flavour), not a separate keyword, so it folds
-// into the Frag for the QueryBuilder slot.
+// into the Frag for the QueryBuilder slot. `arrayJoin` + `mapKeys` are
+// CH functions with no typed helper; the call shapes ride on Raw while
+// the column operand flows through chsql.Col.
 func distinctMapKeysFrag(col string) chsql.Frag {
-	return func(b *chsql.Builder) {
-		b.WriteSQL("DISTINCT arrayJoin(")
-		b.MapKeys(col)
-		b.WriteSQL(")")
-	}
+	return chsql.Concat(
+		chsql.Raw("DISTINCT arrayJoin(mapKeys("),
+		chsql.Col(col),
+		chsql.Raw("))"),
+	)
 }
 
-// tempoTimeBoundFrag mirrors loki/index_stats.go's helper. Duplicated
-// here rather than exported so the two API packages stay independent.
-func tempoTimeBoundFrag(col, op string, t time.Time) chsql.Frag {
-	return func(b *chsql.Builder) {
-		b.Ident(col)
-		b.WriteSQL(" ")
-		b.WriteSQL(op)
-		b.WriteSQL(" ")
-		b.DateTime64Lit(t)
-	}
+// tempoTimeGteFrag emits "`<col>` >= toDateTime64('...', 9)" — the
+// lower-bound predicate of a Tempo `start` query parameter. The >=
+// operator routes through the typed chsql.Gte constructor; the
+// DateTime64 literal is rendered via a small Frag wrapper that
+// delegates to Builder.DateTime64Lit (no typed Frag exists for that
+// CH-specific literal shape).
+func tempoTimeGteFrag(col string, t time.Time) chsql.Frag {
+	return chsql.Gte(chsql.Col(col), dateTime64LitFrag(t))
+}
+
+// tempoTimeLteFrag emits "`<col>` <= toDateTime64('...', 9)" — the
+// upper-bound counterpart to tempoTimeGteFrag.
+func tempoTimeLteFrag(col string, t time.Time) chsql.Frag {
+	return chsql.Lte(chsql.Col(col), dateTime64LitFrag(t))
+}
+
+// dateTime64LitFrag wraps Builder.DateTime64Lit as a typed Frag so
+// callers can compose CH DateTime64(9) literals through chsql.Gte /
+// chsql.Lte / etc. without dropping back to b.WriteSQL.
+func dateTime64LitFrag(t time.Time) chsql.Frag {
+	return func(b *chsql.Builder) { b.DateTime64Lit(t) }
 }
 
 // sortedUnique returns the de-duplicated, lexicographically sorted view
