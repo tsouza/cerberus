@@ -167,11 +167,7 @@ func (h *Handler) metricMetaSQL(table, metricName string) (string, []any) {
 	unitCol := h.Schema.MetricUnitColumn
 
 	anyCall := func(col string) chsql.Frag {
-		return func(b *chsql.Builder) {
-			b.WriteSQL("any(")
-			b.Ident(col)
-			b.WriteSQL(")")
-		}
+		return chsql.Concat(chsql.Raw("any("), chsql.Col(col), chsql.Raw(")"))
 	}
 
 	sb := chsql.NewQuery().
@@ -184,11 +180,7 @@ func (h *Handler) metricMetaSQL(table, metricName string) (string, []any) {
 		sql, args := sb.Build()
 		return sql, args
 	}
-	sb.Where(func(b *chsql.Builder) {
-		b.Ident(nameCol)
-		b.WriteSQL(" = ")
-		b.Arg(metricName)
-	})
+	sb.Where(chsql.Eq(chsql.Col(nameCol), chsql.Lit(metricName)))
 	return sb.Build()
 }
 
@@ -534,11 +526,8 @@ func (h *Handler) metricTables() []string {
 // arrayJoinMapKeysFrag emits `arrayJoin(mapKeys(<col>))` — the CH idiom
 // for fanning out a Map column's key set as one row per key.
 func arrayJoinMapKeysFrag(col string) chsql.Frag {
-	return func(b *chsql.Builder) {
-		b.WriteSQL("arrayJoin(")
-		b.MapKeys(col)
-		b.WriteSQL(")")
-	}
+	mapKeys := func(b *chsql.Builder) { b.MapKeys(col) }
+	return chsql.Concat(chsql.Raw("arrayJoin("), mapKeys, chsql.Raw(")"))
 }
 
 // distinctIdent emits `DISTINCT <col>` as a SELECT-list expression. The
@@ -547,20 +536,15 @@ func arrayJoinMapKeysFrag(col string) chsql.Frag {
 // SELECT list and renders identical query plans either way. Putting it
 // in the projection slot keeps it inside the typed Frag surface.
 func distinctIdent(col string) chsql.Frag {
-	return func(b *chsql.Builder) {
-		b.WriteSQL("DISTINCT ")
-		b.Ident(col)
-	}
+	return chsql.Concat(chsql.Raw("DISTINCT "), chsql.Col(col))
 }
 
 // distinctMapAtFrag emits `DISTINCT <col>[?]` and binds key as a
 // positional argument — the projection shape for "distinct values of
 // label <key> stored in the Attributes map".
 func distinctMapAtFrag(col, key string) chsql.Frag {
-	return func(b *chsql.Builder) {
-		b.WriteSQL("DISTINCT ")
-		b.MapAt(col, key)
-	}
+	mapAt := func(b *chsql.Builder) { b.MapAt(col, key) }
+	return chsql.Concat(chsql.Raw("DISTINCT "), mapAt)
 }
 
 // mapAtNotEmptyFrag emits `<col>[?] != ”` — the WHERE predicate that
@@ -570,10 +554,11 @@ func distinctMapAtFrag(col, key string) chsql.Frag {
 // a fixed value, not user data, and CH planner pruning relies on it
 // being visible at plan time.
 func mapAtNotEmptyFrag(col, key string) chsql.Frag {
-	return func(b *chsql.Builder) {
-		b.MapAt(col, key)
-		b.WriteSQL(" != ''")
-	}
+	mapAt := func(b *chsql.Builder) { b.MapAt(col, key) }
+	// The empty-string sentinel CH returns for absent Map keys is part
+	// of the query shape, so the RHS is emitted as the literal `''`
+	// via chsql.Raw rather than parameterised through chsql.Lit.
+	return chsql.Neq(mapAt, chsql.Raw("''"))
 }
 
 // parenRawFrag wraps an already-rendered SQL string in parentheses for
@@ -582,11 +567,7 @@ func mapAtNotEmptyFrag(col, key string) chsql.Frag {
 // caller is responsible for ordering its args ahead of any further
 // `?` bindings the outer QueryBuilder emits.
 func parenRawFrag(sql string) chsql.Frag {
-	return func(b *chsql.Builder) {
-		b.WriteSQL("(")
-		b.WriteSQL(sql)
-		b.WriteSQL(")")
-	}
+	return chsql.Paren(chsql.Raw(sql))
 }
 
 // validLabelName mirrors the Prometheus label-name grammar: [a-zA-Z_][a-zA-Z0-9_]*.
