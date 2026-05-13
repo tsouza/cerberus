@@ -103,13 +103,12 @@ func composeTransforms(steps []lineTransform) lineTransform {
 // unchanged.
 func newLineFormatStep(src string) (lineTransform, error) {
 	var currentLine string
-	funcs := template.FuncMap{
-		"__line__": func() string { return currentLine },
-		// __timestamp__ stub — Loki exposes this as a func too.
-		// Not wired through Sample.Timestamp yet; revisit if a
-		// user template references it.
-		"__timestamp__": func() string { return "" },
-	}
+	funcs := templateFuncs()
+	funcs["__line__"] = func() string { return currentLine }
+	// __timestamp__ stub — Loki exposes this as a func too. Not wired
+	// through Sample.Timestamp yet; revisit if a user template
+	// references it.
+	funcs["__timestamp__"] = func() string { return "" }
 	// Parsing a user-supplied template is the documented contract for
 	// `| line_format` — Loki accepts the same input and we mirror its
 	// semantics. The template runs against the streams response (label
@@ -175,12 +174,10 @@ func newLabelFormatStep(formats []loglib.LabelFmt) (lineTransform, error) {
 		if !f.Rename {
 			// Loki uses `Option("missingkey=zero")` so a missing label
 			// renders as `<no value>`; cerberus mirrors that — silent
-			// rather than error, same as line_format. The funcmap is
-			// empty for label_format (Loki exposes the same set, none
-			// of which are commonly used in label_format templates;
-			// add on demand).
+			// rather than error, same as line_format.
 			tpl, err := template.New("label_format").
 				Option("missingkey=zero").
+				Funcs(templateFuncs()).
 				Parse(f.Value) //nolint:gosec // G708: user-template input is the feature
 			if err != nil {
 				return nil, err
