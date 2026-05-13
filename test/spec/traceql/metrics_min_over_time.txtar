@@ -1,0 +1,6 @@
+-- query.traceql --
+{} | min_over_time(duration)
+-- sql --
+SELECT min(`Duration`) AS `Value` FROM (SELECT * FROM (SELECT * FROM `otel_traces`) WHERE ?)
+-- args --
+[0] bool = true

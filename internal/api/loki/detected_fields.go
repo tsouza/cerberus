@@ -141,7 +141,7 @@ func buildDetectedFieldsSQL(s schema.Logs, matchers []*labels.Matcher, start, en
 		sb.Where(timeBoundFrag(s.TimestampColumn, "<=", end))
 	}
 	sb.OrderBy(chsql.Col(s.TimestampColumn), true).
-		Limit(lineLimit)
+		Limit(int64(lineLimit))
 
 	sqlStr, args := sb.Build()
 	return sqlStr, args, nil
