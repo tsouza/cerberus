@@ -21,6 +21,8 @@ import (
 	"github.com/tsouza/cerberus/internal/config"
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/schema/ddl"
+	"github.com/tsouza/cerberus/internal/telemetry"
+	"go.opentelemetry.io/otel"
 )
 
 // Version is set at build time by goreleaser.
@@ -100,14 +102,34 @@ func run() error {
 	tempoHandler := tempo.New(client, schema.DefaultOTelTraces(), Version, logger.With("api", "tempo"))
 	tempoHandler.Mount(traceMux)
 
-	// RC4 R4.2: install the W3C+Baggage propagator and a no-op
-	// tracer-provider (real OTLP exporters arrive in R4.5), then wrap
-	// the API mux with otelhttp so every Prom/Loki/Tempo request gets
-	// a server span named after the matched route. Wrapping at the mux
-	// level — instead of per-handler — keeps the propagator code path
-	// uniform across all three APIs and lets the span name formatter
-	// pull r.Pattern after the mux has resolved the route.
-	installOTel(nil)
+	// Install the W3C+Baggage propagator and build OTel providers from
+	// the OTLP env config. When CERBERUS_OTLP_ENDPOINT is empty the
+	// telemetry package returns noop providers, so cerberus stays a
+	// zero-collector-dependency binary by default. Wrapping the API
+	// mux with otelhttp gives every Prom/Loki/Tempo request a server
+	// span named after the matched route. Wrapping at the mux level —
+	// instead of per-handler — keeps the propagator code path uniform
+	// across all three APIs and lets the span name formatter pull
+	// r.Pattern after the mux has resolved the route.
+	providers, err := telemetry.New(ctx, telemetry.Config{
+		Endpoint:       cfg.OTLP.Endpoint,
+		Insecure:       cfg.OTLP.Insecure,
+		Headers:        cfg.OTLP.Headers,
+		Timeout:        cfg.OTLP.Timeout,
+		ServiceName:    "cerberus",
+		ServiceVersion: Version,
+	})
+	if err != nil {
+		return fmt.Errorf("init telemetry: %w", err)
+	}
+	installOTel(providers.TracerProvider)
+	otel.SetMeterProvider(providers.MeterProvider)
+	if cfg.OTLP.Endpoint != "" {
+		logger.Info("OTLP exporters enabled",
+			"endpoint", cfg.OTLP.Endpoint,
+			"insecure", cfg.OTLP.Insecure,
+		)
+	}
 	tracedAPI := wrapWithOTel(traceMux, "cerberus")
 
 	// /healthz and /readyz live on a separate sub-mux that bypasses
@@ -149,6 +171,11 @@ func run() error {
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("graceful shutdown: %w", err)
+	}
+	// Flush any pending OTLP batches before the process exits. Noop
+	// when telemetry was disabled (Endpoint == "").
+	if err := providers.Shutdown(shutdownCtx); err != nil {
+		logger.Warn("telemetry shutdown returned error", "err", err)
 	}
 	logger.Info("cerberus stopped")
 	return nil
