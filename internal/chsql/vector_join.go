@@ -27,8 +27,12 @@ import (
 //
 //   - CardOneToMany (`group_right(<labels>)`): mirror of CardManyToOne.
 //
-// All new SQL flows through chsql.Builder; the legacy emitter.b buffer
-// receives only the rendered fragments via splice.
+// Ported to chsql.SelectBuilder at RC6 R6.6: the outer SELECT, each
+// per-side aggregation subquery, and the INNER JOIN slot all flow
+// through typed SelectBuilder slots. The bare-alias glue (`AS L` /
+// `AS R`) is operator-token-style WriteSQL inside a Frag — CH accepts
+// unquoted single-letter aliases and the existing fixtures pin that
+// shape.
 func (e *emitter) emitVectorJoin(j *chplan.VectorJoin) error {
 	if err := e.validateVectorJoinCols(j); err != nil {
 		return err
@@ -42,39 +46,29 @@ func (e *emitter) emitVectorJoin(j *chplan.VectorJoin) error {
 		outerSide = "R"
 	}
 
-	// Outer SELECT prefix — composed via Builder, then spliced.
-	header := NewBuilder()
-	header.WriteSQL("SELECT ")
-	writeSideCol(header, outerSide, j.MetricNameColumn)
-	header.WriteSQL(", ")
-	writeOutputAttributes(header, j)
-	header.WriteSQL(", ")
-	writeSideCol(header, outerSide, j.TimestampColumn)
-	header.WriteSQL(", (")
-	writeSideCol(header, "L", j.ValueColumn)
-	header.WriteSQL(" " + string(j.Op) + " ")
-	writeSideCol(header, "R", j.ValueColumn)
-	header.WriteSQL(") AS ")
-	header.Ident(j.ValueColumn)
-	header.WriteSQL(" FROM ")
-	e.splice(header)
-
-	// Left side — aggregation shape depends on its role.
-	if err := e.emitVectorJoinSide(j, j.Left, leftRole); err != nil {
+	leftFrag, err := e.vectorJoinSideFrag(j, j.Left, leftRole)
+	if err != nil {
 		return err
 	}
-	mid := NewBuilder()
-	mid.WriteSQL(" AS L INNER JOIN ")
-	e.splice(mid)
-
-	if err := e.emitVectorJoinSide(j, j.Right, rightRole); err != nil {
+	rightFrag, err := e.vectorJoinSideFrag(j, j.Right, rightRole)
+	if err != nil {
 		return err
 	}
 
-	tail := NewBuilder()
-	tail.WriteSQL(" AS R ON ")
-	writeVectorMatchPredicate(tail, j.Match, j.AttributesColumn)
-	e.splice(tail)
+	sb := NewSelect().
+		Select(
+			qualColFrag(outerSide, j.MetricNameColumn),
+			outputAttributesFrag(j),
+			qualColFrag(outerSide, j.TimestampColumn),
+			vectorJoinValueExprFrag(j),
+		).
+		From(aliasedFrag(leftFrag, "L")).
+		Join(
+			InnerJoin,
+			aliasedFrag(rightFrag, "R"),
+			vectorMatchPredicateFrag(j.Match, j.AttributesColumn),
+		)
+	e.emitSelect(sb)
 	return nil
 }
 
@@ -122,7 +116,7 @@ const (
 //   - CardOneToOne with full-Attributes match → both sides are
 //     "many"; the per-series aggregation already guarantees one row
 //     per matching key.
-func vectorJoinRoles(j *chplan.VectorJoin) (left, right sideRole) {
+func vectorJoinRoles(j *chplan.VectorJoin) (sideRole, sideRole) {
 	switch j.Card {
 	case chplan.CardManyToOne:
 		return roleMany, roleOne
@@ -135,85 +129,90 @@ func vectorJoinRoles(j *chplan.VectorJoin) (left, right sideRole) {
 	return roleOne, roleOne
 }
 
-// emitVectorJoinSide renders one side of the join as a parenthesised
-// subquery. roleMany keeps per-series granularity (one row per
-// `(MetricName, Attributes)` group). roleOne collapses to one row
-// per matching key with a `throwIf(uniqExact(Attributes) > 1, ...)`
-// side-effect column — the "many-to-many matching not allowed"
-// Prometheus error surfaces at CH query-execution time rather than
-// as a silent cross-product.
-func (e *emitter) emitVectorJoinSide(j *chplan.VectorJoin, n chplan.Node, role sideRole) error {
-	b := NewBuilder()
-	b.WriteSQL("(SELECT ")
+// vectorJoinSideFrag renders one side of the join as a Frag that emits
+// a parenthesised SELECT subquery. roleMany keeps per-series
+// granularity (one row per `(MetricName, Attributes)` group). roleOne
+// collapses to one row per matching key with a
+// `throwIf(uniqExact(Attributes) > 1, ...)` side-effect column — the
+// "many-to-many matching not allowed" Prometheus error surfaces at CH
+// query-execution time rather than as a silent cross-product.
+func (e *emitter) vectorJoinSideFrag(j *chplan.VectorJoin, n chplan.Node, role sideRole) (Frag, error) {
+	sub, err := e.subqueryFrag(n)
+	if err != nil {
+		return nil, err
+	}
+	sb := NewSelect().From(sub)
 	if role == roleMany {
-		b.Ident(j.MetricNameColumn)
-		b.WriteSQL(", ")
-		b.Ident(j.AttributesColumn)
-		b.WriteSQL(", max(")
-		b.Ident(j.TimestampColumn)
-		b.WriteSQL(") AS ")
-		b.Ident(j.TimestampColumn)
-		b.WriteSQL(", argMax(")
-		b.Ident(j.ValueColumn)
-		b.WriteSQL(", ")
-		b.Ident(j.TimestampColumn)
-		b.WriteSQL(") AS ")
-		b.Ident(j.ValueColumn)
-		b.WriteSQL(" FROM ")
-		e.splice(b)
-		if err := e.emitSubquery(n); err != nil {
-			return err
-		}
-		grp := NewBuilder()
-		grp.WriteSQL(" GROUP BY ")
-		grp.Ident(j.MetricNameColumn)
-		grp.WriteSQL(", ")
-		grp.Ident(j.AttributesColumn)
-		grp.WriteSQL(")")
-		e.splice(grp)
-		return nil
+		sb.Select(
+			Col(j.MetricNameColumn),
+			Col(j.AttributesColumn),
+			aggMaxAs(j.TimestampColumn, j.TimestampColumn),
+			argMaxAs(j.ValueColumn, j.TimestampColumn, j.ValueColumn),
+		).GroupBy(
+			Col(j.MetricNameColumn),
+			Col(j.AttributesColumn),
+		)
+		return sb.Frag(), nil
 	}
 
 	// "one" side — aggregate by matching key with a runtime uniqueness
 	// guard. argMax(Attributes, TimeUnix) picks one representative
 	// series per match key; throwIf fires when there's more than one.
-	b.WriteSQL("argMax(")
-	b.Ident(j.MetricNameColumn)
-	b.WriteSQL(", ")
-	b.Ident(j.TimestampColumn)
-	b.WriteSQL(") AS ")
-	b.Ident(j.MetricNameColumn)
-	b.WriteSQL(", argMax(")
-	b.Ident(j.AttributesColumn)
-	b.WriteSQL(", ")
-	b.Ident(j.TimestampColumn)
-	b.WriteSQL(") AS ")
-	b.Ident(j.AttributesColumn)
-	b.WriteSQL(", max(")
-	b.Ident(j.TimestampColumn)
-	b.WriteSQL(") AS ")
-	b.Ident(j.TimestampColumn)
-	b.WriteSQL(", argMax(")
-	b.Ident(j.ValueColumn)
-	b.WriteSQL(", ")
-	b.Ident(j.TimestampColumn)
-	b.WriteSQL(") AS ")
-	b.Ident(j.ValueColumn)
-	b.WriteSQL(", throwIf(uniqExact(")
-	b.Ident(j.AttributesColumn)
-	b.WriteSQL(") > 1, ")
-	b.Arg("many-to-many matching not allowed: matching labels must be unique on one side")
-	b.WriteSQL(") AS _cerberus_match_check FROM ")
-	e.splice(b)
-	if err := e.emitSubquery(n); err != nil {
-		return err
+	sb.Select(
+		argMaxAs(j.MetricNameColumn, j.TimestampColumn, j.MetricNameColumn),
+		argMaxAs(j.AttributesColumn, j.TimestampColumn, j.AttributesColumn),
+		aggMaxAs(j.TimestampColumn, j.TimestampColumn),
+		argMaxAs(j.ValueColumn, j.TimestampColumn, j.ValueColumn),
+		matchCheckFrag(j.AttributesColumn),
+	).GroupBy(matchKeyGroupExprFrag(j.Match, j.AttributesColumn))
+	return sb.Frag(), nil
+}
+
+// aggMaxAs returns a Frag for `max(<col>) AS <alias>`.
+func aggMaxAs(col, alias string) Frag {
+	return As(func(b *Builder) {
+		b.WriteSQL("max(")
+		b.Ident(col)
+		b.WriteSQL(")")
+	}, alias)
+}
+
+// argMaxAs returns a Frag for `argMax(<valCol>, <byCol>) AS <alias>`.
+func argMaxAs(valCol, byCol, alias string) Frag {
+	return As(func(b *Builder) {
+		b.WriteSQL("argMax(")
+		b.Ident(valCol)
+		b.WriteSQL(", ")
+		b.Ident(byCol)
+		b.WriteSQL(")")
+	}, alias)
+}
+
+// matchCheckFrag returns a Frag for the runtime uniqueness guard:
+//
+//	throwIf(uniqExact(<attrsCol>) > 1, ?) AS _cerberus_match_check
+//
+// The error message is bound as a positional `?` argument. The alias
+// `_cerberus_match_check` is rendered bare (no backticks) — the
+// fixtures pin that shape; CH accepts unquoted aliases for ASCII
+// underscore-prefixed names.
+func matchCheckFrag(attrsCol string) Frag {
+	return func(b *Builder) {
+		b.WriteSQL("throwIf(uniqExact(")
+		b.Ident(attrsCol)
+		b.WriteSQL(") > 1, ")
+		b.Arg("many-to-many matching not allowed: matching labels must be unique on one side")
+		b.WriteSQL(") AS _cerberus_match_check")
 	}
-	grp := NewBuilder()
-	grp.WriteSQL(" GROUP BY ")
-	writeMatchKeyGroupExpr(grp, j.Match, j.AttributesColumn)
-	grp.WriteSQL(")")
-	e.splice(grp)
-	return nil
+}
+
+// matchKeyGroupExprFrag returns a Frag for the GROUP BY expression
+// that collapses rows onto a single matching key. For default matching
+// (full Attributes) this is just the Attributes column; for on(labels)
+// it's `mapFilter((k, v) -> k IN (...), Attributes)`; for
+// ignoring(labels) it's the complementary mapFilter.
+func matchKeyGroupExprFrag(m chplan.VectorMatch, attrsCol string) Frag {
+	return func(b *Builder) { writeMatchKeyGroupExpr(b, m, attrsCol) }
 }
 
 // writeMatchKeyGroupExpr emits the GROUP BY expression that collapses
@@ -249,17 +248,21 @@ func writeMatchKeyGroupExpr(b *Builder, m chplan.VectorMatch, attrsCol string) {
 	b.MapFilterExcept(attrsCol, m.Labels...)
 }
 
-// writeOutputAttributes emits the output Attributes expression for the
-// join. For CardOneToOne the output equals L.Attributes. For
-// group_left(<labels>) the output merges the named labels from
-// R.Attributes onto L.Attributes via mapConcat (CH's later-key-wins
-// map merge). group_right mirrors with roles swapped.
+// outputAttributesFrag returns a Frag for the output Attributes
+// expression. For CardOneToOne the output equals the "many" side's
+// Attributes. For group_left(<labels>) the output merges the named
+// labels from the "one" side onto the "many" side via mapConcat (CH's
+// later-key-wins map merge). group_right mirrors with roles swapped.
 //
 // When no Include labels are present (bare `group_left` without an
 // explicit label list, which is uncommon but parser-legal), the
 // "many" side's Attributes flows through unchanged — this matches
 // Prometheus's behaviour where bare group_left/right copies nothing
 // beyond the matching key.
+func outputAttributesFrag(j *chplan.VectorJoin) Frag {
+	return func(b *Builder) { writeOutputAttributes(b, j) }
+}
+
 func writeOutputAttributes(b *Builder, j *chplan.VectorJoin) {
 	manySide := ""
 	switch j.Card {
@@ -302,6 +305,37 @@ func writeOutputAttributes(b *Builder, j *chplan.VectorJoin) {
 	b.Ident(j.AttributesColumn)
 }
 
+// vectorJoinValueExprFrag returns a Frag for the joined value
+// expression: `(L.<val> <op> R.<val>) AS <val>`.
+func vectorJoinValueExprFrag(j *chplan.VectorJoin) Frag {
+	return func(b *Builder) {
+		b.WriteSQL("(")
+		writeSideCol(b, "L", j.ValueColumn)
+		b.WriteSQL(" " + string(j.Op) + " ")
+		writeSideCol(b, "R", j.ValueColumn)
+		b.WriteSQL(") AS ")
+		b.Ident(j.ValueColumn)
+	}
+}
+
+// qualColFrag returns a Frag for `<bareSide>.<col>` — the bare-alias
+// L / R qualifier the legacy emitter pins.
+func qualColFrag(side, col string) Frag {
+	return func(b *Builder) { writeSideCol(b, side, col) }
+}
+
+// aliasedFrag wraps inner in a trailing ` AS <bareAlias>`. The alias
+// is rendered bare (no backticks) — CH accepts unquoted single-letter
+// aliases, and the vector_join / structural_join fixtures pin that
+// shape.
+func aliasedFrag(inner Frag, bareAlias string) Frag {
+	return func(b *Builder) {
+		inner(b)
+		b.WriteSQL(" AS ")
+		b.WriteSQL(bareAlias)
+	}
+}
+
 // writeSideCol emits `<side>.<col>` where <side> is the unquoted alias
 // (L or R) and <col> is the backtick-quoted column identifier. The
 // unquoted alias matches the legacy emitter's output so existing
@@ -312,11 +346,17 @@ func writeSideCol(b *Builder, side, col string) {
 	b.Ident(col)
 }
 
-// writeVectorMatchPredicate emits the ON clause for the join.
+// vectorMatchPredicateFrag returns a Frag for the join's ON clause.
 //
 //   - default (Labels empty, On false) → L.Attributes = R.Attributes
 //   - on(l1, l2)                       → AND of L.Attributes[k] = R.Attributes[k]
 //   - ignoring(l1, l2)                 → mapFilter-stripped equality
+//   - on() with no labels              → 1 = 1 (per-side aggregation
+//     already collapses to one row via the throwIf guard).
+func vectorMatchPredicateFrag(m chplan.VectorMatch, attrsCol string) Frag {
+	return func(b *Builder) { writeVectorMatchPredicate(b, m, attrsCol) }
+}
+
 func writeVectorMatchPredicate(b *Builder, m chplan.VectorMatch, attrsCol string) {
 	if len(m.Labels) == 0 && !m.On {
 		writeSideCol(b, "L", attrsCol)

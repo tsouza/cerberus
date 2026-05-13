@@ -31,10 +31,10 @@ import (
 // iteration. MaxDepth (when > 0) caps the iteration count; 0 means
 // unbounded. The final SELECT inner-joins R against the closure.
 //
-// This file is grandfathered for the no-Sprintf rule until RC6 R6.6
-// (per docs/chsql-audit.md); the recursive helper introduced here
-// follows the file's existing strings.Builder + WriteString style so
-// it ports cleanly when R6.6 lands.
+// Ported to chsql.SelectBuilder at RC6 R6.6: the direct case uses the
+// new SelectBuilder.Join slot; the recursive case uses the new
+// SelectBuilder.WithRecursive slot for the WITH RECURSIVE … UNION ALL
+// CTE shape.
 func (e *emitter) emitStructuralJoin(j *chplan.StructuralJoin) error {
 	if j.TraceIDColumn == "" || j.SpanIDColumn == "" || j.ParentSpanIDColumn == "" {
 		return fmt.Errorf("%w: StructuralJoin column names unset", ErrUnsupported)
@@ -53,40 +53,78 @@ func (e *emitter) emitStructuralJoin(j *chplan.StructuralJoin) error {
 // emitStructuralDirectJoin renders the single-INNER-JOIN form used by
 // `>`, `<`, and `~`. Mirrors the M4.2 seed; MaxDepth is ignored here.
 func (e *emitter) emitStructuralDirectJoin(j *chplan.StructuralJoin) error {
-	traceCol := quoteIdent(j.TraceIDColumn)
-	spanCol := quoteIdent(j.SpanIDColumn)
-	parentCol := quoteIdent(j.ParentSpanIDColumn)
+	relFrag, err := structuralDirectRelFrag(j)
+	if err != nil {
+		return err
+	}
 
-	var rel string
+	leftSub, err := e.subqueryFrag(j.Left)
+	if err != nil {
+		return err
+	}
+	rightSub, err := e.subqueryFrag(j.Right)
+	if err != nil {
+		return err
+	}
+
+	sb := NewSelect().
+		Select(Raw("R.*")).
+		From(aliasedFrag(leftSub, "L")).
+		Join(
+			InnerJoin,
+			aliasedFrag(rightSub, "R"),
+			structuralDirectOnFrag(j, relFrag),
+		)
+	e.emitSelect(sb)
+	return nil
+}
+
+// structuralDirectRelFrag returns the relation predicate that pairs
+// with the trace-id equality. The leading `L.<TraceID> = R.<TraceID>
+// AND` glue is composed in structuralDirectOnFrag — this helper just
+// emits the operator-specific clause.
+func structuralDirectRelFrag(j *chplan.StructuralJoin) (Frag, error) {
 	switch j.Op {
 	case chplan.StructuralChild:
-		rel = "L." + spanCol + " = R." + parentCol
+		// `A > B`: L.SpanID = R.ParentSpanID.
+		return spanIDPairFrag("L", j.SpanIDColumn, "R", j.ParentSpanIDColumn), nil
 	case chplan.StructuralParent:
-		rel = "L." + parentCol + " = R." + spanCol
+		// `A < B`: L.ParentSpanID = R.SpanID.
+		return spanIDPairFrag("L", j.ParentSpanIDColumn, "R", j.SpanIDColumn), nil
 	case chplan.StructuralSibling:
-		// `A ~ B` — same trace, same parent, distinct spans. The
-		// distinct-span clause keeps a row from matching itself when
-		// both sides of the spanset select the same span.
-		rel = "L." + parentCol + " = R." + parentCol + " AND L." + spanCol + " != R." + spanCol
+		// `A ~ B`: same trace, same parent, distinct spans. The
+		// distinct-span clause keeps a row from matching itself
+		// when both sides of the spanset select the same span.
+		return func(b *Builder) {
+			spanIDPairFrag("L", j.ParentSpanIDColumn, "R", j.ParentSpanIDColumn)(b)
+			b.WriteSQL(" AND ")
+			writeSideCol(b, "L", j.SpanIDColumn)
+			b.WriteSQL(" != ")
+			writeSideCol(b, "R", j.SpanIDColumn)
+		}, nil
 	default:
-		return fmt.Errorf("%w: direct structural op %q", ErrUnsupported, j.Op)
+		return nil, fmt.Errorf("%w: direct structural op %q", ErrUnsupported, j.Op)
 	}
+}
 
-	e.b.WriteString("SELECT R.* FROM ")
-	if err := e.emitSubquery(j.Left); err != nil {
-		return err
+// spanIDPairFrag returns a Frag for `<lside>.<lcol> = <rside>.<rcol>`.
+func spanIDPairFrag(lside, lcol, rside, rcol string) Frag {
+	return func(b *Builder) {
+		writeSideCol(b, lside, lcol)
+		b.WriteSQL(" = ")
+		writeSideCol(b, rside, rcol)
 	}
-	e.b.WriteString(" AS L INNER JOIN ")
-	if err := e.emitSubquery(j.Right); err != nil {
-		return err
+}
+
+// structuralDirectOnFrag composes the full ON clause:
+// `L.<TraceID> = R.<TraceID> AND <rel>`. The trace-id equality is
+// always present — direct ops scope every relation to within a trace.
+func structuralDirectOnFrag(j *chplan.StructuralJoin, rel Frag) Frag {
+	return func(b *Builder) {
+		spanIDPairFrag("L", j.TraceIDColumn, "R", j.TraceIDColumn)(b)
+		b.WriteSQL(" AND ")
+		rel(b)
 	}
-	e.b.WriteString(" AS R ON L.")
-	e.b.WriteString(traceCol)
-	e.b.WriteString(" = R.")
-	e.b.WriteString(traceCol)
-	e.b.WriteString(" AND ")
-	e.b.WriteString(rel)
-	return nil
 }
 
 // emitStructuralRecursive renders `>>` / `<<` as a `WITH RECURSIVE`
@@ -126,21 +164,15 @@ func (e *emitter) emitStructuralDirectJoin(j *chplan.StructuralJoin) error {
 // downstream / upstream of L. We achieve this by excluding the
 // anchor depth (0) from the final projection (depth > 0 filter).
 func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
-	traceCol := quoteIdent(j.TraceIDColumn)
-	spanCol := quoteIdent(j.SpanIDColumn)
-	parentCol := quoteIdent(j.ParentSpanIDColumn)
-
 	// Recursive step direction depends on the operator:
 	//   >>  — descendants of L: child's ParentSpanId = closure's SpanId
 	//   <<  — ancestors  of L: parent's SpanId = closure's ParentSpanId
-	var stepOn string
+	var stepRel Frag
 	switch j.Op {
 	case chplan.StructuralDescendant:
-		stepOn = "t." + traceCol + " = c." + traceCol +
-			" AND t." + parentCol + " = c." + spanCol
+		stepRel = spanIDPairFrag("t", j.ParentSpanIDColumn, "c", j.SpanIDColumn)
 	case chplan.StructuralAncestor:
-		stepOn = "t." + traceCol + " = c." + traceCol +
-			" AND t." + spanCol + " = c." + parentCol
+		stepRel = spanIDPairFrag("t", j.SpanIDColumn, "c", j.ParentSpanIDColumn)
 	default:
 		return fmt.Errorf("%w: recursive structural op %q", ErrUnsupported, j.Op)
 	}
@@ -154,46 +186,73 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 		return fmt.Errorf("%w: recursive StructuralJoin needs a Scan in L subtree", ErrUnsupported)
 	}
 
-	e.b.WriteString("SELECT R.* FROM (WITH RECURSIVE _struct_closure AS (SELECT ")
-	e.b.WriteString(traceCol)
-	e.b.WriteString(", ")
-	e.b.WriteString(spanCol)
-	e.b.WriteString(", ")
-	e.b.WriteString(parentCol)
-	e.b.WriteString(", 0 AS _depth FROM ")
-	if err := e.emitSubquery(j.Left); err != nil {
+	leftSub, err := e.subqueryFrag(j.Left)
+	if err != nil {
 		return err
 	}
-	e.b.WriteString(" AS _seed UNION ALL SELECT t.")
-	e.b.WriteString(traceCol)
-	e.b.WriteString(", t.")
-	e.b.WriteString(spanCol)
-	e.b.WriteString(", t.")
-	e.b.WriteString(parentCol)
-	e.b.WriteString(", c._depth + 1 FROM ")
-	e.b.WriteString(quoteIdent(table))
-	e.b.WriteString(" AS t INNER JOIN _struct_closure AS c ON ")
-	e.b.WriteString(stepOn)
+	rightSub, err := e.subqueryFrag(j.Right)
+	if err != nil {
+		return err
+	}
+
+	// Anchor: SELECT TraceId, SpanId, ParentSpanId, 0 AS _depth FROM (<L>) AS _seed.
+	anchor := NewSelect().
+		Select(
+			Col(j.TraceIDColumn),
+			Col(j.SpanIDColumn),
+			Col(j.ParentSpanIDColumn),
+			Raw("0 AS _depth"),
+		).
+		From(aliasedFrag(leftSub, "_seed"))
+
+	// Recursive step: SELECT t.<...>, c._depth + 1 FROM `<table>` AS t INNER JOIN _struct_closure AS c ON <stepOn> [WHERE c._depth < N].
+	stepOn := func(b *Builder) {
+		spanIDPairFrag("t", j.TraceIDColumn, "c", j.TraceIDColumn)(b)
+		b.WriteSQL(" AND ")
+		stepRel(b)
+	}
+	step := NewSelect().
+		Select(
+			qualColFrag("t", j.TraceIDColumn),
+			qualColFrag("t", j.SpanIDColumn),
+			qualColFrag("t", j.ParentSpanIDColumn),
+			Raw("c._depth + 1"),
+		).
+		From(aliasedFrag(Col(table), "t")).
+		Join(
+			InnerJoin,
+			aliasedFrag(Raw("_struct_closure"), "c"),
+			stepOn,
+		)
 	if j.MaxDepth > 0 {
-		e.b.WriteString(" WHERE c._depth < ")
-		e.b.WriteString(strconv.Itoa(j.MaxDepth))
+		// MaxDepth caps the iteration count. Rendered as a literal
+		// integer — depth bounds are part of the query shape, not
+		// user data, and CH's recursive-CTE planner needs them
+		// visible (not parameterised).
+		step.Where(Raw("c._depth < " + strconv.Itoa(j.MaxDepth)))
 	}
-	e.b.WriteString(") SELECT DISTINCT ")
-	e.b.WriteString(traceCol)
-	e.b.WriteString(", ")
-	e.b.WriteString(spanCol)
-	e.b.WriteString(" FROM _struct_closure WHERE _depth > 0) AS L INNER JOIN ")
-	if err := e.emitSubquery(j.Right); err != nil {
-		return err
+
+	// Closure subquery: WITH RECURSIVE _struct_closure AS (<anchor> UNION ALL <step>) SELECT DISTINCT TraceId, SpanId FROM _struct_closure WHERE _depth > 0.
+	closure := NewSelect().
+		WithRecursive("_struct_closure", anchor, step).
+		Select(
+			Raw("DISTINCT "+quoteIdent(j.TraceIDColumn)),
+			Col(j.SpanIDColumn),
+		).
+		From(Raw("_struct_closure")).
+		Where(Raw("_depth > 0"))
+
+	// Outer SELECT R.* FROM (<closure>) AS L INNER JOIN (<R>) AS R ON L.TraceId = R.TraceId AND L.SpanId = R.SpanId.
+	onClause := func(b *Builder) {
+		spanIDPairFrag("L", j.TraceIDColumn, "R", j.TraceIDColumn)(b)
+		b.WriteSQL(" AND ")
+		spanIDPairFrag("L", j.SpanIDColumn, "R", j.SpanIDColumn)(b)
 	}
-	e.b.WriteString(" AS R ON L.")
-	e.b.WriteString(traceCol)
-	e.b.WriteString(" = R.")
-	e.b.WriteString(traceCol)
-	e.b.WriteString(" AND L.")
-	e.b.WriteString(spanCol)
-	e.b.WriteString(" = R.")
-	e.b.WriteString(spanCol)
+	sb := NewSelect().
+		Select(Raw("R.*")).
+		From(aliasedFrag(closure.Frag(), "L")).
+		Join(InnerJoin, aliasedFrag(rightSub, "R"), onClause)
+	e.emitSelect(sb)
 	return nil
 }
 

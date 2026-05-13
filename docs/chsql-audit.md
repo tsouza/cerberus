@@ -79,11 +79,12 @@ milestone ports them.
 - `internal/chsql/range_window.go` — `e.b.WriteString("SELECT ")`
   chains + `fmt.Fprintf(&e.b, ...)` for the windowed-array idiom.
   Retired by **R6.5**.
-- `internal/chsql/vector_join.go` — `header.WriteSQL("SELECT ")` /
+- ~~`internal/chsql/vector_join.go` — `header.WriteSQL("SELECT ")` /
   `" FROM "` / `" GROUP BY "` plus inline `" AND "` glue inside
-  `writeVectorMatchPredicate`. Retired by **R6.6**.
-- `internal/chsql/structural_join.go` — `e.b.WriteString("SELECT R.* FROM ")`
-  plus `fmt.Fprintf` for trace-id / parent-span join. Retired by **R6.6**.
+  `writeVectorMatchPredicate`. Retired by **R6.6**.~~ ✓ Ported in R6.6.
+- ~~`internal/chsql/structural_join.go` — `e.b.WriteString("SELECT R.* FROM ")`
+  plus `fmt.Fprintf` for trace-id / parent-span join. Retired by **R6.6**.~~ ✓ Ported in R6.6: direct + recursive both flow through
+  `SelectBuilder.Join` and `SelectBuilder.WithRecursive`.
 - `internal/chsql/emit_node.go::emitOrderBy` —
   `e.b.WriteString("SELECT * FROM ")` / `" ORDER BY "`. Pre-R6 Tempo
   `/api/search/recent` work; folds in with the **R6.5** RangeWindow port.
