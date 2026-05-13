@@ -25,15 +25,19 @@ import (
 // reasons.
 type Querier interface {
 	Query(ctx context.Context, sql string, args ...any) ([]chclient.Sample, error)
+	QueryStrings(ctx context.Context, sql string, args ...any) ([]string, error)
 	QueryIndexStats(ctx context.Context, sql string, args ...any) (chclient.IndexStatsRow, error)
 	QueryIndexVolume(ctx context.Context, sql string, args ...any) ([]chclient.IndexVolumeRow, error)
+	QueryLabelSets(ctx context.Context, sql string, args ...any) ([]map[string]string, error)
 }
 
 // Handler implements the Loki HTTP API endpoints cerberus speaks. Mount
 // it via Handler.Mount(mux). The current vertical slice covers
-// /loki/api/v1/query and /loki/api/v1/query_range; metadata endpoints
-// (/labels, /label/<name>/values, /series) defer until RC6's
-// go-sqlbuilder integration lands so the new SQL avoids Sprintf.
+// /loki/api/v1/query, /loki/api/v1/query_range, /loki/api/v1/index/stats
+// + /index/volume (RC2 P0.3), and — as of this PR — the remaining RC2
+// metadata endpoints /labels, /label/<name>/values, /series,
+// /detected_fields, /patterns (the last stubbed pending its own
+// pattern-discovery workstream).
 type Handler struct {
 	Client    Querier
 	Schema    schema.Logs
@@ -55,8 +59,11 @@ func New(client Querier, s schema.Logs, logger *slog.Logger) *Handler {
 }
 
 // Mount registers the Loki-compatible endpoints under /loki/api/v1/ on
-// mux. Currently: /query (instant) + /query_range. Future work adds
-// /labels, /label/{name}/values, /series — all gated on RC6 R6.1.
+// mux. Query + range + index/stats + index/volume cover the data-plane;
+// the metadata endpoints (/labels, /label/{name}/values, /series,
+// /detected_fields, /patterns) cover what Grafana's logs UI queries to
+// populate label autocomplete, the streams chooser, and the patterns
+// panel.
 func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /loki/api/v1/query", h.handleQuery)
 	mux.HandleFunc("POST /loki/api/v1/query", h.handleQuery)
@@ -66,6 +73,16 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /loki/api/v1/index/stats", h.handleIndexStats)
 	mux.HandleFunc("GET /loki/api/v1/index/volume", h.handleIndexVolume)
 	mux.HandleFunc("POST /loki/api/v1/index/volume", h.handleIndexVolume)
+	mux.HandleFunc("GET /loki/api/v1/labels", h.handleLabels)
+	mux.HandleFunc("POST /loki/api/v1/labels", h.handleLabels)
+	mux.HandleFunc("GET /loki/api/v1/label/{name}/values", h.handleLabelValues)
+	mux.HandleFunc("POST /loki/api/v1/label/{name}/values", h.handleLabelValues)
+	mux.HandleFunc("GET /loki/api/v1/series", h.handleSeries)
+	mux.HandleFunc("POST /loki/api/v1/series", h.handleSeries)
+	mux.HandleFunc("GET /loki/api/v1/detected_fields", h.handleDetectedFields)
+	mux.HandleFunc("POST /loki/api/v1/detected_fields", h.handleDetectedFields)
+	mux.HandleFunc("GET /loki/api/v1/patterns", h.handlePatterns)
+	mux.HandleFunc("POST /loki/api/v1/patterns", h.handlePatterns)
 }
 
 func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {

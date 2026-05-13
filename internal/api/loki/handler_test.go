@@ -27,6 +27,15 @@ type stubQuerier struct {
 	// /index/volume canned response.
 	volumeRows []chclient.IndexVolumeRow
 	volumeErr  error
+
+	// /labels, /label/{name}/values, /detected_fields share a
+	// single-column string-row result shape; reuse the same channel.
+	stringRows []string
+	stringsErr error
+
+	// /series canned label-set rows.
+	labelSets    []map[string]string
+	labelSetsErr error
 }
 
 func (s *stubQuerier) Query(_ context.Context, sql string, args ...any) ([]chclient.Sample, error) {
@@ -54,6 +63,24 @@ func (s *stubQuerier) QueryIndexVolume(_ context.Context, sql string, args ...an
 		return nil, s.volumeErr
 	}
 	return s.volumeRows, nil
+}
+
+func (s *stubQuerier) QueryStrings(_ context.Context, sql string, args ...any) ([]string, error) {
+	s.lastSQL = sql
+	s.lastArgs = args
+	if s.stringsErr != nil {
+		return nil, s.stringsErr
+	}
+	return s.stringRows, nil
+}
+
+func (s *stubQuerier) QueryLabelSets(_ context.Context, sql string, args ...any) ([]map[string]string, error) {
+	s.lastSQL = sql
+	s.lastArgs = args
+	if s.labelSetsErr != nil {
+		return nil, s.labelSetsErr
+	}
+	return s.labelSets, nil
 }
 
 func newServer(q loki.Querier) *httptest.Server {
