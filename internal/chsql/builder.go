@@ -444,6 +444,36 @@ func Raw(sql string) Frag {
 	return func(b *Builder) { b.sb.WriteString(sql) }
 }
 
+// UnionAll joins one or more Frags with " UNION ALL " between them. It
+// is the typed alternative to `strings.Join(parts, " UNION ALL ")` —
+// keeping the keyword inside the typed surface so the audit grep for
+// clause-keyword cosplay stays clean. Each part is rendered in order
+// and its `?` args bind at the position they're emitted.
+//
+// UNION is a SELECT-level binary operator (mirrors the SetUnion path
+// in set_op.go), not a clause inside a single SELECT, so it lives as
+// a standalone Frag constructor rather than a SelectBuilder slot.
+//
+// Typical use: pass SelectBuilder.Frag() values as parts so each arm
+// renders as a parenthesised (SELECT …) and the whole UnionAll Frag
+// is plugged into the outer SelectBuilder.From slot.
+//
+// Zero parts is a programmer error and panics; one part is rendered
+// unchanged (no UNION keyword emitted).
+func UnionAll(parts ...Frag) Frag {
+	if len(parts) == 0 {
+		panic("chsql: UnionAll requires at least one part")
+	}
+	return func(b *Builder) {
+		for i, p := range parts {
+			if i > 0 {
+				b.sb.WriteString(" UNION ALL ")
+			}
+			p(b)
+		}
+	}
+}
+
 // As wraps expr in "<expr> AS <alias>" with the alias backtick-quoted.
 // The typed alternative to `b.WriteSQL(" AS "); b.Ident(alias)`; using
 // As keeps the AS keyword inside the typed surface so the audit grep

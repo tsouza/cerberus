@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/prometheus/common/model"
@@ -163,21 +162,34 @@ func (h *Handler) fetchMetricMeta(ctx context.Context, metricName string) ([]chc
 // (MetricName, MetricDescription, MetricUnit). When metricName is empty
 // we list all distinct metrics; otherwise we filter to the named one.
 func (h *Handler) metricMetaSQL(table, metricName string) (string, []any) {
-	nameCol := quoteIdentCH(h.Schema.MetricNameColumn)
-	descCol := quoteIdentCH(h.Schema.MetricDescriptionColumn)
-	unitCol := quoteIdentCH(h.Schema.MetricUnitColumn)
-	tbl := quoteIdentCH(table)
+	nameCol := h.Schema.MetricNameColumn
+	descCol := h.Schema.MetricDescriptionColumn
+	unitCol := h.Schema.MetricUnitColumn
+
+	anyCall := func(col string) chsql.Frag {
+		return func(b *chsql.Builder) {
+			b.WriteSQL("any(")
+			b.Ident(col)
+			b.WriteSQL(")")
+		}
+	}
+
+	sb := chsql.NewSelect().
+		Select(chsql.Col(nameCol), anyCall(descCol), anyCall(unitCol)).
+		From(chsql.Col(table)).
+		GroupBy(chsql.Col(nameCol))
 
 	if metricName == "" {
-		return fmt.Sprintf(
-			"SELECT %s, any(%s), any(%s) FROM %s GROUP BY %s ORDER BY %s",
-			nameCol, descCol, unitCol, tbl, nameCol, nameCol,
-		), nil
+		sb.OrderBy(chsql.Col(nameCol), false)
+		sql, args := sb.Build()
+		return sql, args
 	}
-	return fmt.Sprintf(
-		"SELECT %s, any(%s), any(%s) FROM %s WHERE %s = ? GROUP BY %s",
-		nameCol, descCol, unitCol, tbl, nameCol, nameCol,
-	), []any{metricName}
+	sb.Where(func(b *chsql.Builder) {
+		b.Ident(nameCol)
+		b.WriteSQL(" = ")
+		b.Arg(metricName)
+	})
+	return sb.Build()
 }
 
 // parseLimit decodes the `limit` query parameter — a positive integer.
@@ -348,9 +360,13 @@ func (h *Handler) labelKeysForMatcher(ctx context.Context, matcher string) ([]st
 	if err != nil {
 		return nil, err
 	}
-	attrs := quoteIdentCH(h.Schema.AttributesColumn)
-	sql := fmt.Sprintf("SELECT DISTINCT arrayJoin(mapKeys(%s)) AS name FROM (%s) ORDER BY name",
-		attrs, innerSQL)
+	attrsCol := h.Schema.AttributesColumn
+
+	sb := chsql.NewSelect().
+		Select(chsql.As(arrayJoinMapKeysFrag(attrsCol), "name")).
+		From(parenRawFrag(innerSQL)).
+		OrderBy(chsql.Col("name"), false)
+	sql, _ := sb.Build()
 	return timeCH(ctx, func() ([]string, error) {
 		return h.Client.QueryStrings(ctx, sql, args...)
 	})
@@ -364,19 +380,36 @@ func (h *Handler) labelValuesForMatcher(ctx context.Context, name, matcher strin
 	if err != nil {
 		return nil, err
 	}
-	var sql string
 	if name == model.MetricNameLabel {
-		sql = fmt.Sprintf("SELECT DISTINCT %s AS value FROM (%s) ORDER BY value",
-			quoteIdentCH(h.Schema.MetricNameColumn), innerSQL)
-	} else {
-		attrs := quoteIdentCH(h.Schema.AttributesColumn)
-		sql = fmt.Sprintf("SELECT DISTINCT %s[?] AS value FROM (%s) WHERE %s[?] != '' ORDER BY value",
-			attrs, innerSQL, attrs)
-		args = append([]any{name}, args...)
-		args = append(args, name)
+		sb := chsql.NewSelect().
+			Select(chsql.As(distinctIdent(h.Schema.MetricNameColumn), "value")).
+			From(parenRawFrag(innerSQL)).
+			OrderBy(chsql.Col("value"), false)
+		sql, _ := sb.Build()
+		return timeCH(ctx, func() ([]string, error) {
+			return h.Client.QueryStrings(ctx, sql, args...)
+		})
 	}
+	attrsCol := h.Schema.AttributesColumn
+	sb := chsql.NewSelect().
+		Select(chsql.As(distinctMapAtFrag(attrsCol, name), "value")).
+		From(parenRawFrag(innerSQL)).
+		Where(mapAtNotEmptyFrag(attrsCol, name)).
+		OrderBy(chsql.Col("value"), false)
+	sql, valueArgs := sb.Build()
+	// valueArgs holds the `name` bound twice (SELECT then WHERE);
+	// the matcher's args slot between them at the original order:
+	//   <name (SELECT)>, <matcher args (FROM subquery)>, <name (WHERE)>.
+	// SelectBuilder renders SELECT before FROM before WHERE, so
+	// valueArgs is [name, name] (no `?` inside the FROM subquery raw
+	// text). Splice the matcher args at the FROM position by
+	// reconstructing the final slice.
+	combined := make([]any, 0, len(valueArgs)+len(args))
+	combined = append(combined, valueArgs[0]) // SELECT bind
+	combined = append(combined, args...)      // matcher subquery binds
+	combined = append(combined, valueArgs[1]) // WHERE bind
 	return timeCH(ctx, func() ([]string, error) {
-		return h.Client.QueryStrings(ctx, sql, args...)
+		return h.Client.QueryStrings(ctx, sql, combined...)
 	})
 }
 
@@ -431,26 +464,39 @@ func (h *Handler) fetchSeries(ctx context.Context, matcher string) ([]map[string
 // unionLabelNamesSQL builds a UNION of all metric tables' label keys.
 func (h *Handler) unionLabelNamesSQL() string {
 	tables := h.metricTables()
-	parts := make([]string, 0, len(tables))
-	attrsCol := quoteIdentCH(h.Schema.AttributesColumn)
+	attrsCol := h.Schema.AttributesColumn
+	parts := make([]chsql.Frag, 0, len(tables))
 	for _, t := range tables {
-		parts = append(parts,
-			fmt.Sprintf("SELECT DISTINCT arrayJoin(mapKeys(%s)) AS name FROM %s",
-				attrsCol, quoteIdentCH(t)))
+		arm := chsql.NewSelect().
+			Select(chsql.As(arrayJoinMapKeysFrag(attrsCol), "name")).
+			From(chsql.Col(t))
+		parts = append(parts, arm.Frag())
 	}
-	return "SELECT DISTINCT name FROM (" + strings.Join(parts, " UNION ALL ") + ") ORDER BY name"
+	outer := chsql.NewSelect().
+		Select(chsql.As(distinctIdent("name"), "")).
+		From(chsql.UnionAll(parts...)).
+		OrderBy(chsql.Col("name"), false)
+	sql, _ := outer.Build()
+	return sql
 }
 
 // unionMetricNamesSQL returns the distinct MetricName values across tables.
 func (h *Handler) unionMetricNamesSQL() string {
 	tables := h.metricTables()
-	metricCol := quoteIdentCH(h.Schema.MetricNameColumn)
-	parts := make([]string, 0, len(tables))
+	metricCol := h.Schema.MetricNameColumn
+	parts := make([]chsql.Frag, 0, len(tables))
 	for _, t := range tables {
-		parts = append(parts, fmt.Sprintf("SELECT DISTINCT %s AS value FROM %s",
-			metricCol, quoteIdentCH(t)))
+		arm := chsql.NewSelect().
+			Select(chsql.As(distinctIdent(metricCol), "value")).
+			From(chsql.Col(t))
+		parts = append(parts, arm.Frag())
 	}
-	return "SELECT DISTINCT value FROM (" + strings.Join(parts, " UNION ALL ") + ") ORDER BY value"
+	outer := chsql.NewSelect().
+		Select(chsql.As(distinctIdent("value"), "")).
+		From(chsql.UnionAll(parts...)).
+		OrderBy(chsql.Col("value"), false)
+	sql, _ := outer.Build()
+	return sql
 }
 
 // unionLabelValuesSQL returns the distinct Attributes[?] values across
@@ -459,16 +505,20 @@ func (h *Handler) unionMetricNamesSQL() string {
 // (twice: in SELECT and WHERE) — args lists it 2*N times.
 func (h *Handler) unionLabelValuesSQL(name string) (string, []any) {
 	tables := h.metricTables()
-	attrsCol := quoteIdentCH(h.Schema.AttributesColumn)
-	parts := make([]string, 0, len(tables))
-	args := make([]any, 0, len(tables)*2)
+	attrsCol := h.Schema.AttributesColumn
+	parts := make([]chsql.Frag, 0, len(tables))
 	for _, t := range tables {
-		parts = append(parts,
-			fmt.Sprintf("SELECT DISTINCT %s[?] AS value FROM %s WHERE %s[?] != ''",
-				attrsCol, quoteIdentCH(t), attrsCol))
-		args = append(args, name, name)
+		arm := chsql.NewSelect().
+			Select(chsql.As(distinctMapAtFrag(attrsCol, name), "value")).
+			From(chsql.Col(t)).
+			Where(mapAtNotEmptyFrag(attrsCol, name))
+		parts = append(parts, arm.Frag())
 	}
-	return "SELECT DISTINCT value FROM (" + strings.Join(parts, " UNION ALL ") + ") ORDER BY value", args
+	outer := chsql.NewSelect().
+		Select(chsql.As(distinctIdent("value"), "")).
+		From(chsql.UnionAll(parts...)).
+		OrderBy(chsql.Col("value"), false)
+	return outer.Build()
 }
 
 // metricTables returns the configured metric-table names in a stable
@@ -478,6 +528,64 @@ func (h *Handler) metricTables() []string {
 		h.Schema.GaugeTable,
 		h.Schema.SumTable,
 		h.Schema.HistogramTable,
+	}
+}
+
+// arrayJoinMapKeysFrag emits `arrayJoin(mapKeys(<col>))` — the CH idiom
+// for fanning out a Map column's key set as one row per key.
+func arrayJoinMapKeysFrag(col string) chsql.Frag {
+	return func(b *chsql.Builder) {
+		b.WriteSQL("arrayJoin(")
+		b.MapKeys(col)
+		b.WriteSQL(")")
+	}
+}
+
+// distinctIdent emits `DISTINCT <col>` as a SELECT-list expression. The
+// DISTINCT keyword is a SELECT modifier in standard SQL but ClickHouse
+// (like every modern engine) accepts it inline at the head of the
+// SELECT list and renders identical query plans either way. Putting it
+// in the projection slot keeps it inside the typed Frag surface.
+func distinctIdent(col string) chsql.Frag {
+	return func(b *chsql.Builder) {
+		b.WriteSQL("DISTINCT ")
+		b.Ident(col)
+	}
+}
+
+// distinctMapAtFrag emits `DISTINCT <col>[?]` and binds key as a
+// positional argument — the projection shape for "distinct values of
+// label <key> stored in the Attributes map".
+func distinctMapAtFrag(col, key string) chsql.Frag {
+	return func(b *chsql.Builder) {
+		b.WriteSQL("DISTINCT ")
+		b.MapAt(col, key)
+	}
+}
+
+// mapAtNotEmptyFrag emits `<col>[?] != ”` — the WHERE predicate that
+// drops the empty-string sentinel CH returns when a Map key is absent.
+// The empty string is rendered as a literal `”` (not parameterised)
+// because it is part of the query shape: the "key-absent" sentinel is
+// a fixed value, not user data, and CH planner pruning relies on it
+// being visible at plan time.
+func mapAtNotEmptyFrag(col, key string) chsql.Frag {
+	return func(b *chsql.Builder) {
+		b.MapAt(col, key)
+		b.WriteSQL(" != ''")
+	}
+}
+
+// parenRawFrag wraps an already-rendered SQL string in parentheses for
+// use as a SelectBuilder FROM subquery. The wrapped SQL is treated as
+// opaque text — its own `?` placeholders pass through verbatim and the
+// caller is responsible for ordering its args ahead of any further
+// `?` bindings the outer SelectBuilder emits.
+func parenRawFrag(sql string) chsql.Frag {
+	return func(b *chsql.Builder) {
+		b.WriteSQL("(")
+		b.WriteSQL(sql)
+		b.WriteSQL(")")
 	}
 }
 
@@ -499,14 +607,4 @@ func validLabelName(s string) bool {
 		}
 	}
 	return true
-}
-
-// quoteIdentCH backtick-quotes a CH identifier; thin local helper since
-// chsql.writeIdent is unexported.
-func quoteIdentCH(name string) string {
-	var b strings.Builder
-	b.WriteByte('`')
-	b.WriteString(strings.ReplaceAll(name, "`", "``"))
-	b.WriteByte('`')
-	return b.String()
 }
