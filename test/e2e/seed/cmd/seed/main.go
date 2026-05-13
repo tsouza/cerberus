@@ -82,7 +82,7 @@ func run(ctx context.Context) error {
 		return fmt.Errorf("ping %s: %w", addr, err)
 	}
 
-	log.Printf("seed: applying upstream OTel-CH DDL to %s (database=%s)", addr, database)
+	log.Printf("seed: applying upstream OTel-CH DDL to %s (database=%s)", addr, database) //nolint:gosec // G706: addr+database are CI/dev env config, not user input
 	if err := ddl.ApplyWithConfig(ctx, conn, ddl.Config{Database: database}, ddl.All); err != nil {
 		return fmt.Errorf("apply ddl: %w", err)
 	}
