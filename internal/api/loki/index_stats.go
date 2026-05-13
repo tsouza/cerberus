@@ -118,18 +118,18 @@ func buildIndexStatsSQL(s schema.Logs, matchers []*labels.Matcher, start, end ti
 	return sqlStr, args, nil
 }
 
-// aggFrag returns a Frag that emits "<fn>(`<col>`)" — composed via
-// typed Concat + Paren so the SQL stream stays inside the chsql surface
+// aggFrag returns a Frag that emits "<fn>(`<col>`)" via the typed
+// Call constructor so the SQL stream stays inside the chsql surface
 // (no raw clause-keyword cosplay). fn is a CH function name and is
-// emitted verbatim via Raw (same trust contract as Cast's type name).
+// emitted verbatim by Call (same trust contract as Cast's type name).
 func aggFrag(fn, col string) chsql.Frag {
-	return chsql.Concat(chsql.Raw(fn), chsql.Paren(chsql.Col(col)))
+	return chsql.Call(fn, chsql.Col(col))
 }
 
-// countStar returns a Frag that emits "count()". The token has no
-// composable inner shape so it lives as a Raw escape.
+// countStar returns a Frag that emits "count()" via the typed Call
+// constructor with no arguments — matches CH's nullary aggregate shape.
 func countStar() chsql.Frag {
-	return chsql.Raw("count()")
+	return chsql.Call("count")
 }
 
 // bytesAggFrag emits "sum(length(`<body>`))" — the bytes-volume
@@ -138,13 +138,7 @@ func countStar() chsql.Frag {
 // rounding noise. If a deployment compresses Body and wants exact bytes
 // the schema override can swap this column.
 func bytesAggFrag(bodyCol string) chsql.Frag {
-	return chsql.Concat(
-		chsql.Raw("sum"),
-		chsql.Paren(chsql.Concat(
-			chsql.Raw("length"),
-			chsql.Paren(chsql.Col(bodyCol)),
-		)),
-	)
+	return chsql.Call("sum", chsql.Call("length", chsql.Col(bodyCol)))
 }
 
 // timeBoundFrag emits "`<col>` <op> toDateTime64('YYYY-MM-DD HH:MM:SS.fffffffff', 9)".

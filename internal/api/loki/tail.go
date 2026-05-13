@@ -311,8 +311,10 @@ func buildTailSQL(s schema.Logs, matchers []*labels.Matcher, cursor, end time.Ti
 // toFloat64Zero is the chsql.Frag for `toFloat64(0)` — used as the
 // placeholder Value column so the chclient.Sample scanner reads a
 // stable Float64 instead of CH's UInt8 default for a bare literal `0`.
+// Composed via the typed Call constructor wrapping a Lit(0) argument;
+// the 0 binds as a positional `?` and CH coerces it inside toFloat64.
 func toFloat64Zero() chsql.Frag {
-	return chsql.Raw("toFloat64(0)")
+	return chsql.Call("toFloat64", chsql.Lit(0))
 }
 
 // parseTailDelayFor reads the optional `delay_for` query param.
