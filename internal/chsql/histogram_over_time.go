@@ -170,10 +170,7 @@ func (e *emitter) emitRangeWindowHistogram(r *chplan.RangeWindow, m *chplan.Metr
 		}
 	}
 
-	endExpr := timeOrNow(r.End)
-	if r.Offset > 0 {
-		endExpr = "(" + endExpr + " - toIntervalNanosecond(" + strconv.FormatInt(r.Offset.Nanoseconds(), 10) + "))"
-	}
+	end := endExprFrag(r)
 	stepNS := r.Step.Nanoseconds()
 	rangeDur := r.Range
 	if rangeDur == 0 {
@@ -221,7 +218,7 @@ func (e *emitter) emitRangeWindowHistogram(r *chplan.RangeWindow, m *chplan.Metr
 	innerSb.SelectAs(func(b *Builder) { b.Ident(tsCol) }, "ts")
 	innerSb.SelectAs(histogramBucketFrag(m.Attr, m.IsDuration), bucketAlias)
 	innerSb.SelectAs(
-		anchorFanoutFrag(endExpr, stepNS, numAnchors),
+		anchorFanoutFrag(end, stepNS, numAnchors),
 		"anchor_ts",
 	)
 	// Push the <attr> >= 2 filter into the inner SELECT so the anchor

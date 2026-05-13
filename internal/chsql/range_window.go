@@ -15,7 +15,7 @@ import (
 // from bare Aggregate → MetricsAggregate.
 //
 // When a RangeWindow wraps a MetricsAggregate the matrix path is taken
-// instead (see emitWindowedArrayMatrixMetrics).
+// instead (see emitRangeWindowMetrics).
 func (e *emitter) emitMetricsAggregate(m *chplan.MetricsAggregate) error {
 	name, params, args, err := metricsAggregateCH(m)
 	if err != nil {
@@ -193,26 +193,24 @@ func (e *emitter) emitRangeWindowPredictLinear(r *chplan.RangeWindow) error {
 		return fmt.Errorf("%w: predict_linear requires 1 scalar (t), got %d", ErrUnsupported, len(r.Scalars))
 	}
 	t := r.Scalars[0]
-	return e.emitWindowedArrayPairs(r, func() error {
+	anchor := anchorExprFrag(r)
+	return e.emitWindowedArrayPairs(r, func(b *Builder) {
 		// arrayMap to derive xs (seconds from anchor) and ys (values).
 		// window_pairs is Array(Tuple(DateTime64(9), Float64)).
-		e.b.WriteString("if(length(window_pairs) > 1, ")
-		e.b.WriteString("tupleElement(simpleLinearRegression(")
-		e.b.WriteString("arrayMap(p -> dateDiff('second', ")
-		e.b.WriteString(anchorExpr(r))
-		e.b.WriteString(", tupleElement(p, 1)), window_pairs), ")
-		e.b.WriteString("arrayMap(p -> tupleElement(p, 2), window_pairs)")
-		e.b.WriteString("), 2) + tupleElement(simpleLinearRegression(")
-		e.b.WriteString("arrayMap(p -> dateDiff('second', ")
-		e.b.WriteString(anchorExpr(r))
-		e.b.WriteString(", tupleElement(p, 1)), window_pairs), ")
-		e.b.WriteString("arrayMap(p -> tupleElement(p, 2), window_pairs)")
-		e.b.WriteString("), 1) * ")
-		if err := e.bindArg(t); err != nil {
-			return err
-		}
-		e.b.WriteString(", nan)")
-		return nil
+		b.sb.WriteString("if(length(window_pairs) > 1, ")
+		b.sb.WriteString("tupleElement(simpleLinearRegression(")
+		b.sb.WriteString("arrayMap(p -> dateDiff('second', ")
+		anchor(b)
+		b.sb.WriteString(", tupleElement(p, 1)), window_pairs), ")
+		b.sb.WriteString("arrayMap(p -> tupleElement(p, 2), window_pairs)")
+		b.sb.WriteString("), 2) + tupleElement(simpleLinearRegression(")
+		b.sb.WriteString("arrayMap(p -> dateDiff('second', ")
+		anchor(b)
+		b.sb.WriteString(", tupleElement(p, 1)), window_pairs), ")
+		b.sb.WriteString("arrayMap(p -> tupleElement(p, 2), window_pairs)")
+		b.sb.WriteString("), 1) * ")
+		b.Arg(t)
+		b.sb.WriteString(", nan)")
 	})
 }
 
@@ -239,7 +237,7 @@ func (e *emitter) emitRangeWindowHoltWinters(r *chplan.RangeWindow) error {
 	}
 	sf := r.Scalars[0]
 	tf := r.Scalars[1]
-	return e.emitWindowedArray(r, holtWintersValueExpr(sf, tf))
+	return e.emitWindowedArray(r, Raw(holtWintersValueExpr(sf, tf)))
 }
 
 // holtWintersValueExpr renders the per-window Holt-Winters value
@@ -285,7 +283,7 @@ func holtWintersValueExpr(sf, tf float64) string {
 // but skips the middle layer that derives `window_vals` /
 // `counter_delta`; the outer SELECT can directly reference
 // `window_pairs`.
-func (e *emitter) emitWindowedArrayPairs(r *chplan.RangeWindow, valueWriter func() error) error {
+func (e *emitter) emitWindowedArrayPairs(r *chplan.RangeWindow, valueWriter Frag) error {
 	if r.TimestampColumn == "" {
 		return fmt.Errorf("%w: RangeWindow.TimestampColumn unset", ErrUnsupported)
 	}
@@ -295,58 +293,101 @@ func (e *emitter) emitWindowedArrayPairs(r *chplan.RangeWindow, valueWriter func
 	if r.OuterRange > 0 {
 		return fmt.Errorf("%w: predict_linear over subquery not yet supported", ErrUnsupported)
 	}
-	endExpr := timeOrNow(r.End)
-	if r.Offset > 0 {
-		endExpr = "(" + endExpr + " - toIntervalNanosecond(" + strconv.FormatInt(r.Offset.Nanoseconds(), 10) + "))"
-	}
+	end := endExprFrag(r)
 	rangeNS := r.Range.Nanoseconds()
-	groupKeys, err := e.collectGroupBy(r.GroupBy)
+	groupFrags, err := e.collectGroupByFrags(r.GroupBy)
 	if err != nil {
 		return err
 	}
 
-	// Outer SELECT — final value per series.
-	e.b.WriteString("SELECT ")
-	e.writeGroupSelectList(groupKeys)
-	e.b.WriteString(", ")
-	if err := valueWriter(); err != nil {
+	// Innermost SELECT — groupArray of (ts, value), sorted.
+	innermost := NewSelect()
+	for _, g := range groupFrags {
+		innermost.Select(g)
+	}
+	innermost.Select(rawAs(groupArrayPairFrag(r.TimestampColumn, r.ValueColumn), "series_array"))
+	innerSub, err := e.subqueryFrag(r.Input)
+	if err != nil {
 		return err
 	}
-	e.b.WriteString(" AS value FROM (")
+	innermost.From(innerSub)
+	if len(groupFrags) > 0 {
+		innermost.GroupBy(groupFrags...)
+	}
 
 	// Inner SELECT — arrayFilter to the [end-range, end] window.
-	e.b.WriteString("SELECT ")
-	e.writeGroupSelectList(groupKeys)
-	fmt.Fprintf(&e.b, ", arrayFilter(p -> tupleElement(p, 1) >= %s - toIntervalNanosecond(%d) AND tupleElement(p, 1) <= %s, series_array) AS window_pairs FROM (",
-		endExpr, rangeNS, endExpr)
-
-	// Innermost SELECT — groupArray of (ts, value), sorted.
-	e.b.WriteString("SELECT ")
-	e.writeGroupSelectList(groupKeys)
-	fmt.Fprintf(&e.b, ", arraySort(groupArray((%s, %s))) AS series_array FROM ",
-		quoteIdent(r.TimestampColumn), quoteIdent(r.ValueColumn))
-	if err := e.emitSubquery(r.Input); err != nil {
-		return err
+	innerSb := NewSelect().From(innermost.Frag())
+	for _, g := range groupFrags {
+		innerSb.Select(g)
 	}
-	if len(groupKeys) > 0 {
-		e.b.WriteString(" GROUP BY ")
-		e.writeGroupSelectList(groupKeys)
-	}
-	e.b.WriteByte(')')
+	innerSb.Select(rawAs(windowFilterPairsFrag(end, rangeNS), "window_pairs"))
 
-	e.b.WriteByte(')')
+	// Outer SELECT — final value per series.
+	outerSb := NewSelect().From(innerSb.Frag())
+	for _, g := range groupFrags {
+		outerSb.Select(g)
+	}
+	outerSb.Select(rawAs(valueWriter, "value"))
+
+	e.emitSelect(outerSb)
 	return nil
 }
 
-// anchorExpr returns the SQL expression for the RangeWindow's window
+// anchorExprFrag returns a Frag rendering the RangeWindow's window
 // anchor (End - Offset, or now64(9) - Offset for the zero-End case).
 // Used by predict_linear to compute per-sample seconds-from-anchor.
-func anchorExpr(r *chplan.RangeWindow) string {
-	base := timeOrNow(r.End)
-	if r.Offset > 0 {
-		base = "(" + base + " - toIntervalNanosecond(" + strconv.FormatInt(r.Offset.Nanoseconds(), 10) + "))"
+func anchorExprFrag(r *chplan.RangeWindow) Frag {
+	return endExprFrag(r)
+}
+
+// endExprFrag returns a Frag rendering `<End> [- toIntervalNanosecond(<offset>)]`.
+// Shared by every windowed-array emitter; centralises the Offset
+// branch.
+func endExprFrag(r *chplan.RangeWindow) Frag {
+	return func(b *Builder) {
+		base := timeOrNowFrag(r.End)
+		if r.Offset > 0 {
+			b.sb.WriteByte('(')
+			base(b)
+			b.sb.WriteString(" - toIntervalNanosecond(")
+			b.sb.WriteString(strconv.FormatInt(r.Offset.Nanoseconds(), 10))
+			b.sb.WriteString("))")
+			return
+		}
+		base(b)
 	}
-	return base
+}
+
+// rawAs wraps a Frag in "<expr> AS <alias>" with the alias emitted
+// VERBATIM (no backticks). The windowed-array idiom relies on internal
+// aliases like `series_array`, `window_pairs`, `window_vals`,
+// `counter_delta`, `anchor_ts`, `value` that are never user-supplied
+// and must stay un-backticked to keep the byte-level golden fixtures
+// stable. The typed `As` helper backticks every alias; this is the
+// matching variant for the legacy windowed-array shape.
+//
+// Empty alias renders the expression bare (no AS clause).
+func rawAs(expr Frag, alias string) Frag {
+	if alias == "" {
+		return expr
+	}
+	return func(b *Builder) {
+		expr(b)
+		b.sb.WriteString(" AS ")
+		b.sb.WriteString(alias)
+	}
+}
+
+// timeOrNowFrag returns a Frag rendering an explicit DateTime64(9)
+// literal for a non-zero time or `now64(9)` for the zero value.
+func timeOrNowFrag(t time.Time) Frag {
+	return func(b *Builder) {
+		if t.IsZero() {
+			b.Now64()
+			return
+		}
+		b.DateTime64Lit(t)
+	}
 }
 
 // formatFloat renders a float64 in a CH-friendly form (no `e`-notation
@@ -413,10 +454,7 @@ func (e *emitter) emitRangeWindowMetrics(r *chplan.RangeWindow, m *chplan.Metric
 		}
 	}
 
-	endExpr := timeOrNow(r.End)
-	if r.Offset > 0 {
-		endExpr = "(" + endExpr + " - toIntervalNanosecond(" + strconv.FormatInt(r.Offset.Nanoseconds(), 10) + "))"
-	}
+	end := endExprFrag(r)
 	stepNS := r.Step.Nanoseconds()
 	// Range defaults to Step (per-bucket = per-step). When r.Range is
 	// set explicitly (e.g. a future rate-over-Range(Step)), use it
@@ -446,13 +484,6 @@ func (e *emitter) emitRangeWindowMetrics(r *chplan.RangeWindow, m *chplan.Metric
 		numAnchors = 1
 	}
 
-	// Build the per-span anchor-fanout subquery via SelectBuilder so
-	// args bound by GroupBy expressions land in the right position.
-	// We then wrap it in the outer SELECT (the bucket reducer) by
-	// hand because the WHERE clause references `anchor_ts` (the
-	// arrayJoined column from the subquery) — a structure SelectBuilder
-	// handles naturally via Frag callbacks.
-
 	inner, err := e.subqueryFrag(m.Inner)
 	if err != nil {
 		return err
@@ -478,7 +509,7 @@ func (e *emitter) emitRangeWindowMetrics(r *chplan.RangeWindow, m *chplan.Metric
 		innerSb.SelectAs(func(b *Builder) { _ = b.Expr(attr) }, "metric_arg")
 	}
 	innerSb.SelectAs(
-		anchorFanoutFrag(endExpr, stepNS, numAnchors),
+		anchorFanoutFrag(end, stepNS, numAnchors),
 		"anchor_ts",
 	)
 
@@ -497,16 +528,9 @@ func (e *emitter) emitRangeWindowMetrics(r *chplan.RangeWindow, m *chplan.Metric
 	outerSb.Select(As(reducerFrag, m.ValueAlias))
 
 	// WHERE: ts ∈ [anchor_ts - range, anchor_ts].
-	tsRangeNS := rangeNS
 	outerSb.Where(
-		func(b *Builder) {
-			b.sb.WriteString("ts >= anchor_ts - toIntervalNanosecond(")
-			b.sb.WriteString(strconv.FormatInt(tsRangeNS, 10))
-			b.sb.WriteByte(')')
-		},
-		func(b *Builder) {
-			b.sb.WriteString("ts <= anchor_ts")
-		},
+		windowTsLowerBoundFrag(rangeNS),
+		Raw("ts <= anchor_ts"),
 	)
 
 	// GROUP BY group aliases + anchor_ts.
@@ -523,23 +547,95 @@ func (e *emitter) emitRangeWindowMetrics(r *chplan.RangeWindow, m *chplan.Metric
 }
 
 // anchorFanoutFrag returns a Frag rendering
-// `arrayJoin(arrayMap(i -> <endExpr> - toIntervalNanosecond(i * <stepNS>), range(0, <N>)))`.
+// `arrayJoin(arrayMap(i -> <end> - toIntervalNanosecond(i * <stepNS>), range(0, <N>)))`.
 // Used by the matrix-shape RangeWindow emitter to fan each Inner row
 // across N anchors in a single CH pass.
 //
-// endExpr is rendered verbatim (the CH expression for the eval-grid
-// anchor base — typically a DateTime64 literal or `now64(9)`); stepNS
-// and N are inline integer literals.
-func anchorFanoutFrag(endExpr string, stepNS, numAnchors int64) Frag {
+// end is rendered via the Frag callback (the CH expression for the
+// eval-grid anchor base — typically a DateTime64 literal or
+// `now64(9)`); stepNS and N are inline integer literals.
+func anchorFanoutFrag(end Frag, stepNS, numAnchors int64) Frag {
 	return func(b *Builder) {
 		b.sb.WriteString("arrayJoin(arrayMap(i -> ")
-		b.sb.WriteString(endExpr)
+		end(b)
 		b.sb.WriteString(" - toIntervalNanosecond(i * ")
 		b.sb.WriteString(strconv.FormatInt(stepNS, 10))
 		b.sb.WriteString("), range(0, ")
 		b.sb.WriteString(strconv.FormatInt(numAnchors, 10))
 		b.sb.WriteString(")))")
 	}
+}
+
+// windowTsLowerBoundFrag returns a Frag rendering
+// `ts >= anchor_ts - toIntervalNanosecond(<rangeNS>)`. The companion
+// upper bound is the literal `ts <= anchor_ts` (no parameters); both
+// are spliced into the outer SELECT's WHERE clause.
+func windowTsLowerBoundFrag(rangeNS int64) Frag {
+	return func(b *Builder) {
+		b.sb.WriteString("ts >= anchor_ts - toIntervalNanosecond(")
+		b.sb.WriteString(strconv.FormatInt(rangeNS, 10))
+		b.sb.WriteByte(')')
+	}
+}
+
+// groupArrayPairFrag returns a Frag rendering
+// `arraySort(groupArray((<ts>, <val>)))`. The CH idiom that turns a
+// per-row scan of a metrics table into a per-series (ts, value) array,
+// sorted ascending by ts so subsequent counter-reset arithmetic
+// operates in chronological order.
+func groupArrayPairFrag(tsCol, valCol string) Frag {
+	return func(b *Builder) {
+		b.sb.WriteString("arraySort(groupArray((")
+		b.Ident(tsCol)
+		b.sb.WriteString(", ")
+		b.Ident(valCol)
+		b.sb.WriteString(")))")
+	}
+}
+
+// windowFilterPairsFrag returns a Frag rendering
+//
+//	arrayFilter(p -> tupleElement(p, 1) >= <end> - toIntervalNanosecond(<range_ns>)
+//	              AND tupleElement(p, 1) <= <end>,
+//	            series_array)
+//
+// — the per-series window restriction. end may render arbitrary CH
+// expressions (DateTime64 literal, now64(9), or `anchor_ts` in the
+// matrix path); the rangeNS bound is inline.
+func windowFilterPairsFrag(end Frag, rangeNS int64) Frag {
+	return func(b *Builder) {
+		b.sb.WriteString("arrayFilter(p -> tupleElement(p, 1) >= ")
+		end(b)
+		b.sb.WriteString(" - toIntervalNanosecond(")
+		b.sb.WriteString(strconv.FormatInt(rangeNS, 10))
+		b.sb.WriteString(") AND tupleElement(p, 1) <= ")
+		end(b)
+		b.sb.WriteString(", series_array)")
+	}
+}
+
+// counterDeltaFrag returns a Frag rendering
+//
+//	arraySum(arrayMap((p, c) -> if(c < p, c, c - p),
+//	                  arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)),
+//	                  arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs))))
+//
+// — the counter-reset-aware delta over the window's values. Used by
+// the rate / increase value expressions.
+func counterDeltaFrag() Frag {
+	return func(b *Builder) {
+		b.sb.WriteString("arraySum(arrayMap((p, c) -> if(c < p, c, c - p), ")
+		b.sb.WriteString("arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), ")
+		b.sb.WriteString("arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs))")
+		b.sb.WriteString("))")
+	}
+}
+
+// windowValsFrag returns a Frag rendering
+// `arrayMap(p -> tupleElement(p, 2), window_pairs)` — the per-window
+// values array (the values projected out of the (ts, value) tuples).
+func windowValsFrag() Frag {
+	return Raw("arrayMap(p -> tupleElement(p, 2), window_pairs)")
 }
 
 // metricsReducerFrag returns the per-bucket reducer Frag for the matrix
@@ -605,7 +701,7 @@ func outerGroupAliases(groupBy []chplan.Expr, aliases []string) []string {
 // last_over_time but lowered from a SubqueryExpr (P0 #4.5) rather than
 // a Call.
 func (e *emitter) emitRangeWindowIdentity(r *chplan.RangeWindow) error {
-	return e.emitWindowedArray(r, "if(length(window_vals) > 0, window_vals[length(window_vals)], nan)")
+	return e.emitWindowedArray(r, Raw("if(length(window_vals) > 0, window_vals[length(window_vals)], nan)"))
 }
 
 // emitRangeWindowLogRate emits SQL for LogQL-style `rate({...}[range])`
@@ -616,13 +712,11 @@ func (e *emitter) emitRangeWindowIdentity(r *chplan.RangeWindow) error {
 // range_seconds binds as a parameter via the value-writer callback so
 // the emitter stays free of new Sprintf-on-SQL instances (RC6 rule).
 func (e *emitter) emitRangeWindowLogRate(r *chplan.RangeWindow) error {
-	return e.emitWindowedArrayCb(r, func() error {
-		e.b.WriteString("if(length(window_vals) > 0, arraySum(window_vals) / ")
-		if err := e.bindArg(r.Range.Seconds()); err != nil {
-			return err
-		}
-		e.b.WriteString(", 0.0)")
-		return nil
+	rangeSeconds := r.Range.Seconds()
+	return e.emitWindowedArray(r, func(b *Builder) {
+		b.sb.WriteString("if(length(window_vals) > 0, arraySum(window_vals) / ")
+		b.Arg(rangeSeconds)
+		b.sb.WriteString(", 0.0)")
 	})
 }
 
@@ -661,13 +755,13 @@ func (e *emitter) emitRangeWindowLogRate(r *chplan.RangeWindow) error {
 //	    )
 //	)
 func (e *emitter) emitRangeWindowRate(r *chplan.RangeWindow) error {
-	return e.emitWindowedArray(r, rateValueExpr(r.Range.Seconds()))
+	return e.emitWindowedArray(r, rateValueFrag(r.Range.Seconds()))
 }
 
 // emitRangeWindowIncrease emits SQL for `increase(metric[range])`. Same
 // as rate but without dividing by range_seconds.
 func (e *emitter) emitRangeWindowIncrease(r *chplan.RangeWindow) error {
-	return e.emitWindowedArray(r, "if(length(window_vals) > 1, counter_delta, 0.0)")
+	return e.emitWindowedArray(r, Raw("if(length(window_vals) > 1, counter_delta, 0.0)"))
 }
 
 // emitRangeWindowOverTime emits SQL for the `*_over_time` family:
@@ -693,37 +787,32 @@ func (e *emitter) emitRangeWindowOverTime(r *chplan.RangeWindow) error {
 	default:
 		return fmt.Errorf("%w: over-time function %q", ErrUnsupported, r.Func)
 	}
-	return e.emitWindowedArray(r, inner)
+	return e.emitWindowedArray(r, Raw(inner))
 }
 
-// rateValueExpr returns the outer SELECT value expression for rate(),
+// rateValueFrag returns the outer SELECT value Frag for rate(),
 // dividing the counter delta by range_seconds. Length check avoids
-// dividing on a single-point window (rate is undefined there).
-func rateValueExpr(rangeSeconds float64) string {
-	return fmt.Sprintf("if(length(window_vals) > 1, counter_delta / %s, 0.0)",
-		strconv.FormatFloat(rangeSeconds, 'f', -1, 64))
+// dividing on a single-point window (rate is undefined there). The
+// divisor is rendered as a literal float (query shape, not user data).
+func rateValueFrag(rangeSeconds float64) Frag {
+	return func(b *Builder) {
+		b.sb.WriteString("if(length(window_vals) > 1, counter_delta / ")
+		b.sb.WriteString(formatFloat(rangeSeconds))
+		b.sb.WriteString(", 0.0)")
+	}
 }
 
-// emitWindowedArray writes the windowed-array SQL skeleton with valueExpr
-// substituted in the outer SELECT position. valueExpr can reference
-// `window_vals` (Array(Float64)) and `counter_delta` (Float64).
-func (e *emitter) emitWindowedArray(r *chplan.RangeWindow, valueExpr string) error {
-	return e.emitWindowedArrayCb(r, func() error {
-		e.b.WriteString(valueExpr)
-		return nil
-	})
-}
-
-// emitWindowedArrayCb is the callback variant of emitWindowedArray. The
-// valueWriter callback runs at the exact SQL position where the value
-// expression lands; callers may bind args inside it (via e.bindArg) so
-// `?` placeholders are emitted in lock-step with the args slice.
+// emitWindowedArray writes the windowed-array SQL skeleton with the
+// value Frag substituted in the outer SELECT position. The Frag can
+// reference `window_vals` (Array(Float64)) and `counter_delta`
+// (Float64); args bound inside it land at the outer SELECT position so
+// positional `?` ordering follows the SQL stream.
 //
 // When r.OuterRange > 0 emission switches to the matrix path: each
 // series emits N rows, one per anchor across [End-OuterRange, End]
 // spaced by Step (end-inclusive). The outer SELECT additionally
 // projects the anchor timestamp as `anchor_ts`.
-func (e *emitter) emitWindowedArrayCb(r *chplan.RangeWindow, valueWriter func() error) error {
+func (e *emitter) emitWindowedArray(r *chplan.RangeWindow, value Frag) error {
 	if r.TimestampColumn == "" {
 		return fmt.Errorf("%w: RangeWindow.TimestampColumn unset", ErrUnsupported)
 	}
@@ -734,59 +823,54 @@ func (e *emitter) emitWindowedArrayCb(r *chplan.RangeWindow, valueWriter func() 
 		if r.Step <= 0 {
 			return fmt.Errorf("%w: RangeWindow.OuterRange > 0 requires Step > 0", ErrUnsupported)
 		}
-		return e.emitWindowedArrayMatrix(r, valueWriter)
+		return e.emitWindowedArrayMatrix(r, value)
 	}
 
-	endExpr := timeOrNow(r.End)
-	if r.Offset > 0 {
-		endExpr = "(" + endExpr + " - toIntervalNanosecond(" + strconv.FormatInt(r.Offset.Nanoseconds(), 10) + "))"
-	}
+	end := endExprFrag(r)
 	rangeNS := r.Range.Nanoseconds()
-	groupKeys, err := e.collectGroupBy(r.GroupBy)
+	groupFrags, err := e.collectGroupByFrags(r.GroupBy)
 	if err != nil {
 		return err
 	}
 
-	// Outer SELECT — final value per series.
-	e.b.WriteString("SELECT ")
-	e.writeGroupSelectList(groupKeys)
-	e.b.WriteString(", ")
-	if err := valueWriter(); err != nil {
+	// Innermost SELECT — groupArray of (ts, value), sorted.
+	innermost := NewSelect()
+	for _, g := range groupFrags {
+		innermost.Select(g)
+	}
+	innermost.Select(As(groupArrayPairFrag(r.TimestampColumn, r.ValueColumn), "series_array"))
+	innerSub, err := e.subqueryFrag(r.Input)
+	if err != nil {
 		return err
 	}
-	e.b.WriteString(" AS value FROM (")
-
-	// Middle SELECT — derives window_vals + counter_delta from window_pairs.
-	e.b.WriteString("SELECT ")
-	e.writeGroupSelectList(groupKeys)
-	e.b.WriteString(", arrayMap(p -> tupleElement(p, 2), window_pairs) AS window_vals")
-	e.b.WriteString(", arraySum(arrayMap((p, c) -> if(c < p, c, c - p), ")
-	e.b.WriteString("arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), ")
-	e.b.WriteString("arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs))")
-	e.b.WriteString(")) AS counter_delta FROM (")
+	innermost.From(innerSub)
+	if len(groupFrags) > 0 {
+		innermost.GroupBy(groupFrags...)
+	}
 
 	// Inner-middle SELECT — arrayFilter to the [end-range, end] window.
-	e.b.WriteString("SELECT ")
-	e.writeGroupSelectList(groupKeys)
-	fmt.Fprintf(&e.b, ", arrayFilter(p -> tupleElement(p, 1) >= %s - toIntervalNanosecond(%d) AND tupleElement(p, 1) <= %s, series_array) AS window_pairs FROM (",
-		endExpr, rangeNS, endExpr)
-
-	// Innermost SELECT — groupArray of (ts, value), sorted.
-	e.b.WriteString("SELECT ")
-	e.writeGroupSelectList(groupKeys)
-	fmt.Fprintf(&e.b, ", arraySort(groupArray((%s, %s))) AS series_array FROM ",
-		quoteIdent(r.TimestampColumn), quoteIdent(r.ValueColumn))
-	if err := e.emitSubquery(r.Input); err != nil {
-		return err
+	innerMid := NewSelect().From(innermost.Frag())
+	for _, g := range groupFrags {
+		innerMid.Select(g)
 	}
-	if len(groupKeys) > 0 {
-		e.b.WriteString(" GROUP BY ")
-		e.writeGroupSelectList(groupKeys)
-	}
-	e.b.WriteByte(')')
+	innerMid.Select(As(windowFilterPairsFrag(end, rangeNS), "window_pairs"))
 
-	e.b.WriteByte(')')
-	e.b.WriteByte(')')
+	// Middle SELECT — derives window_vals + counter_delta from window_pairs.
+	mid := NewSelect().From(innerMid.Frag())
+	for _, g := range groupFrags {
+		mid.Select(g)
+	}
+	mid.Select(As(windowValsFrag(), "window_vals"))
+	mid.Select(As(counterDeltaFrag(), "counter_delta"))
+
+	// Outer SELECT — final value per series.
+	outer := NewSelect().From(mid.Frag())
+	for _, g := range groupFrags {
+		outer.Select(g)
+	}
+	outer.Select(As(value, "value"))
+
+	e.emitSelect(outer)
 	return nil
 }
 
@@ -799,7 +883,7 @@ func (e *emitter) emitWindowedArrayCb(r *chplan.RangeWindow, valueWriter func() 
 //
 // SQL skeleton (with N = OuterRange/Step + 1):
 //
-//	SELECT series_key, anchor_ts, <valueExpr> AS value FROM (
+//	SELECT series_key, anchor_ts, <valueFrag> AS value FROM (
 //	  SELECT series_key, anchor_ts, <window_vals + counter_delta> FROM (
 //	    SELECT series_key, anchor_ts, arrayFilter(p -> p.1 in [anchor_ts - range, anchor_ts], series_array) AS window_pairs FROM (
 //	      SELECT series_key, series_array,
@@ -811,141 +895,118 @@ func (e *emitter) emitWindowedArrayCb(r *chplan.RangeWindow, valueWriter func() 
 //	    )
 //	  )
 //	)
-func (e *emitter) emitWindowedArrayMatrix(r *chplan.RangeWindow, valueWriter func() error) error {
-	endExpr := timeOrNow(r.End)
-	if r.Offset > 0 {
-		endExpr = "(" + endExpr + " - toIntervalNanosecond(" + strconv.FormatInt(r.Offset.Nanoseconds(), 10) + "))"
-	}
+func (e *emitter) emitWindowedArrayMatrix(r *chplan.RangeWindow, value Frag) error {
+	end := endExprFrag(r)
 	rangeNS := r.Range.Nanoseconds()
 	stepNS := r.Step.Nanoseconds()
 	// End-inclusive anchor count. e.g. [5m:2m] = 5m/2m + 1 = 3 anchors
 	// at end, end-2m, end-4m. Truncating division matches Prom semantics.
 	numAnchors := r.OuterRange.Nanoseconds()/stepNS + 1
-	groupKeys, err := e.collectGroupBy(r.GroupBy)
+	groupFrags, err := e.collectGroupByFrags(r.GroupBy)
 	if err != nil {
 		return err
 	}
 
-	// Outer SELECT — per-(series, anchor) row.
-	e.b.WriteString("SELECT ")
-	e.writeGroupSelectList(groupKeys)
-	if len(groupKeys) > 0 {
-		e.b.WriteString(", ")
+	// Innermost SELECT — groupArray of (ts, value), sorted.
+	innermost := NewSelect()
+	for _, g := range groupFrags {
+		innermost.Select(g)
 	}
-	e.b.WriteString("anchor_ts, ")
-	if err := valueWriter(); err != nil {
+	innermost.Select(As(groupArrayPairFrag(r.TimestampColumn, r.ValueColumn), "series_array"))
+	innerSub, err := e.subqueryFrag(r.Input)
+	if err != nil {
 		return err
 	}
-	e.b.WriteString(" AS value FROM (")
-
-	// Middle SELECT — window_vals + counter_delta per (series, anchor).
-	e.b.WriteString("SELECT ")
-	e.writeGroupSelectList(groupKeys)
-	if len(groupKeys) > 0 {
-		e.b.WriteString(", ")
+	innermost.From(innerSub)
+	if len(groupFrags) > 0 {
+		innermost.GroupBy(groupFrags...)
 	}
-	e.b.WriteString("anchor_ts, arrayMap(p -> tupleElement(p, 2), window_pairs) AS window_vals")
-	e.b.WriteString(", arraySum(arrayMap((p, c) -> if(c < p, c, c - p), ")
-	e.b.WriteString("arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), ")
-	e.b.WriteString("arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs))")
-	e.b.WriteString(")) AS counter_delta FROM (")
-
-	// Inner-middle SELECT — arrayFilter to [anchor_ts - range, anchor_ts].
-	e.b.WriteString("SELECT ")
-	e.writeGroupSelectList(groupKeys)
-	if len(groupKeys) > 0 {
-		e.b.WriteString(", ")
-	}
-	fmt.Fprintf(&e.b, "anchor_ts, arrayFilter(p -> tupleElement(p, 1) >= anchor_ts - toIntervalNanosecond(%d) AND tupleElement(p, 1) <= anchor_ts, series_array) AS window_pairs FROM (",
-		rangeNS)
 
 	// Anchor-fanout SELECT — arrayJoin produces one row per anchor.
-	e.b.WriteString("SELECT ")
-	e.writeGroupSelectList(groupKeys)
-	if len(groupKeys) > 0 {
-		e.b.WriteString(", ")
+	fanout := NewSelect().From(innermost.Frag())
+	for _, g := range groupFrags {
+		fanout.Select(g)
 	}
-	fmt.Fprintf(&e.b, "series_array, arrayJoin(arrayMap(i -> %s - toIntervalNanosecond(i * %d), range(0, %d))) AS anchor_ts FROM (",
-		endExpr, stepNS, numAnchors)
+	fanout.Select(Col("series_array"))
+	fanout.Select(As(anchorFanoutFrag(end, stepNS, numAnchors), "anchor_ts"))
 
-	// Innermost SELECT — groupArray of (ts, value), sorted.
-	e.b.WriteString("SELECT ")
-	e.writeGroupSelectList(groupKeys)
-	if len(groupKeys) > 0 {
-		e.b.WriteString(", ")
+	// Inner-middle SELECT — arrayFilter to [anchor_ts - range, anchor_ts].
+	innerMid := NewSelect().From(fanout.Frag())
+	for _, g := range groupFrags {
+		innerMid.Select(g)
 	}
-	fmt.Fprintf(&e.b, "arraySort(groupArray((%s, %s))) AS series_array FROM ",
-		quoteIdent(r.TimestampColumn), quoteIdent(r.ValueColumn))
-	if err := e.emitSubquery(r.Input); err != nil {
-		return err
-	}
-	if len(groupKeys) > 0 {
-		e.b.WriteString(" GROUP BY ")
-		e.writeGroupSelectList(groupKeys)
-	}
-	e.b.WriteByte(')')
+	innerMid.Select(Col("anchor_ts"))
+	innerMid.Select(As(windowFilterPairsFrag(Raw("anchor_ts"), rangeNS), "window_pairs"))
 
-	e.b.WriteByte(')')
-	e.b.WriteByte(')')
-	e.b.WriteByte(')')
+	// Middle SELECT — window_vals + counter_delta per (series, anchor).
+	mid := NewSelect().From(innerMid.Frag())
+	for _, g := range groupFrags {
+		mid.Select(g)
+	}
+	mid.Select(Col("anchor_ts"))
+	mid.Select(As(windowValsFrag(), "window_vals"))
+	mid.Select(As(counterDeltaFrag(), "counter_delta"))
+
+	// Outer SELECT — per-(series, anchor) row.
+	outer := NewSelect().From(mid.Frag())
+	for _, g := range groupFrags {
+		outer.Select(g)
+	}
+	outer.Select(Col("anchor_ts"))
+	outer.Select(As(value, "value"))
+
+	e.emitSelect(outer)
 	return nil
 }
 
-// collectGroupBy renders each GroupBy expression to an isolated string so
-// it can be reused in SELECT list, GROUP BY, and reused for the outer
-// SELECT in the windowed-array stack. Args captured by emitExpr go to the
-// shared args slice (positions still increase across renders).
+// collectGroupByFrags renders each GroupBy expression to an isolated
+// captured SQL+args once, then returns a []Frag that replays only the
+// SQL (no args) into the receiving Builder. Args captured during
+// pre-render are appended to e.args at call time so they land in the
+// final args slice at the position the first occurrence (the outermost
+// SELECT-list) writes — matching the legacy collectGroupBy
+// semantics.
 //
-// Returns the rendered identifier list (each entry is a complete SQL
-// fragment like `\`Attributes\“).
-func (e *emitter) collectGroupBy(group []chplan.Expr) ([]string, error) {
-	out := make([]string, 0, len(group))
+// The pre-render-once + splice-only-string shape means group-by
+// expressions can appear in both the SELECT-list and the GROUP BY
+// clause without binding their args twice.
+func (e *emitter) collectGroupByFrags(group []chplan.Expr) ([]Frag, error) {
+	out := make([]Frag, 0, len(group))
 	for _, g := range group {
 		// Render to a separate buffer so we can reuse the string.
-		sub := &emitter{args: e.args}
-		if err := sub.emitExpr(g); err != nil {
+		sub := &Builder{}
+		if err := sub.Expr(g); err != nil {
 			return nil, err
 		}
-		// Append any args captured by the sub-emitter back onto ours.
-		e.args = sub.args
-		out = append(out, sub.b.String())
+		sql, args := sub.Build()
+		// Append captured args to the emitter so they land at the
+		// position the outer SELECT-list will reference them. Since
+		// every supported group-by expression is currently arg-free
+		// (bare ColumnRef), `args` is empty in practice; the append
+		// is harmless when it is non-empty for future expressions.
+		e.args = append(e.args, args...)
+		out = append(out, Raw(sql))
 	}
 	return out, nil
 }
 
-func (e *emitter) writeGroupSelectList(group []string) {
-	for i, g := range group {
-		if i > 0 {
-			e.b.WriteString(", ")
-		}
-		e.b.WriteString(g)
-	}
-}
-
-// timeOrNow renders an explicit DateTime64(9) literal for a non-zero time
-// or falls back to ClickHouse's `now64(9)` for the zero value (which is
-// what the lowering produces today; M2.1 will start populating Start/End
-// from the HTTP API's time params).
-func timeOrNow(t time.Time) string {
-	if t.IsZero() {
-		return "now64(9)"
-	}
-	return "toDateTime64('" + t.UTC().Format("2006-01-02 15:04:05.000000000") + "', 9)"
-}
-
-// quoteIdent backtick-quotes a CH identifier; the existing writeIdent
-// writes to a builder, so this is a tiny wrapper that returns the string.
+// quoteIdent backtick-quotes a CH identifier. Retained for the
+// grandfathered emitters in structural_join.go (R6.6) that still
+// compose SQL fragments through free-standing strings before
+// flushing to the emitter; the RangeWindow port no longer calls it.
 func quoteIdent(name string) string {
-	var b []byte
-	b = append(b, '`')
-	for i := 0; i < len(name); i++ {
-		c := name[i]
-		if c == '`' {
-			b = append(b, '`', '`')
-			continue
-		}
-		b = append(b, c)
-	}
-	b = append(b, '`')
-	return string(b)
+	b := &Builder{}
+	b.Ident(name)
+	return b.String()
+}
+
+// timeOrNow renders an explicit DateTime64(9) literal for a non-zero
+// time or `now64(9)` for the zero value. Retained for callsites in
+// histogram_over_time.go / histogram_quantile.go that still compose
+// the anchor base as a string; the RangeWindow port routes the same
+// shape through timeOrNowFrag instead.
+func timeOrNow(t time.Time) string {
+	b := &Builder{}
+	timeOrNowFrag(t)(b)
+	return b.String()
 }
