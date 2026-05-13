@@ -91,6 +91,7 @@ func Default() *Driver {
 				FilterFusion{},
 				FilterProjectTranspose(),
 				FilterAggregateTranspose(),
+				FilterRangeWindowTranspose(),
 			},
 		},
 		Batch{

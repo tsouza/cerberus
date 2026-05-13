@@ -218,6 +218,71 @@ var inputs = map[string]chplan.Node{
 		},
 	},
 
+	// filter_range_window_transpose_passes: Filter over RangeWindow
+	// where the predicate references a bare series-identifying group
+	// key (`Attributes`). The R3.8 rule pushes the Filter under the
+	// RangeWindow; the optimized SQL shows the WHERE clause inside the
+	// arraySort/groupArray subquery, before the windowed aggregation.
+	"filter_range_window_transpose_passes": &chplan.Filter{
+		Input: &chplan.RangeWindow{
+			Input:           &chplan.Scan{Table: "otel_metrics_sum"},
+			Func:            "rate",
+			Range:           5 * time.Minute,
+			TimestampColumn: "TimeUnix",
+			ValueColumn:     "Value",
+			GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+		},
+		Predicate: &chplan.Binary{
+			Op: chplan.OpEq,
+			Left: &chplan.MapAccess{
+				Map: &chplan.ColumnRef{Name: "Attributes"},
+				Key: &chplan.LitString{V: "job"},
+			},
+			Right: &chplan.LitString{V: "api"},
+		},
+	},
+
+	// filter_range_window_transpose_blocked: predicate touches the
+	// per-sample `Value` column, which becomes the windowed-function
+	// input (and is not in the RangeWindow's passthrough series-key
+	// set). The R3.8 rule declines; optimized SQL is byte-identical
+	// to unoptimized.
+	"filter_range_window_transpose_blocked": &chplan.Filter{
+		Input: &chplan.RangeWindow{
+			Input:           &chplan.Scan{Table: "otel_metrics_sum"},
+			Func:            "rate",
+			Range:           5 * time.Minute,
+			TimestampColumn: "TimeUnix",
+			ValueColumn:     "Value",
+			GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+		},
+		Predicate: &chplan.Binary{
+			Op:    chplan.OpGt,
+			Left:  &chplan.ColumnRef{Name: "Value"},
+			Right: &chplan.LitFloat{V: 0},
+		},
+	},
+
+	// filter_range_window_transpose_logql: LogQL-style shape with a
+	// bare-column series identity (`ServiceName`) rather than the
+	// OTel-CH map; the rule pushes the Filter under the RangeWindow
+	// when the predicate sticks to that column.
+	"filter_range_window_transpose_logql": &chplan.Filter{
+		Input: &chplan.RangeWindow{
+			Input:           &chplan.Scan{Table: "otel_logs"},
+			Func:            "rate",
+			Range:           5 * time.Minute,
+			TimestampColumn: "Timestamp",
+			ValueColumn:     "BodyBytes",
+			GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "ServiceName"}},
+		},
+		Predicate: &chplan.Binary{
+			Op:    chplan.OpEq,
+			Left:  &chplan.ColumnRef{Name: "ServiceName"},
+			Right: &chplan.LitString{V: "api"},
+		},
+	},
+
 	// subquery_matrix_opaque: a matrix-shape RangeWindow with a
 	// FilterFusion-friendly nested Filter underneath. The optimizer
 	// should fuse the inner two Filters but NOT alter the matrix
