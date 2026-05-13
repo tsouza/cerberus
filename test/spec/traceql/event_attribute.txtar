@@ -1,0 +1,7 @@
+-- query.traceql --
+{ event.exception.type = "ConnectionError" }
+-- sql --
+SELECT * FROM (SELECT * FROM `otel_traces`) WHERE arrayExists(x -> x[?] = ?, `Events`.`Attributes`)
+-- args --
+[0] string = "exception.type"
+[1] string = "ConnectionError"

@@ -258,9 +258,32 @@ func (b *Builder) Expr(x chplan.Expr) error {
 		return b.exprLineContent(v)
 	case *chplan.FieldAccess:
 		return b.exprFieldAccess(v)
+	case *chplan.NestedArrayExists:
+		return b.exprNestedArrayExists(v)
 	default:
 		return fmt.Errorf("%w: expr %T", ErrUnsupported, x)
 	}
+}
+
+// exprNestedArrayExists renders
+//
+//	arrayExists(x -> x[?] <op> ?, `<Column>`.`<SubField>`)
+//
+// against the public Builder helpers. Mirrors the legacy
+// emitter.emitNestedArrayExists so both paths produce byte-identical SQL.
+func (b *Builder) exprNestedArrayExists(n *chplan.NestedArrayExists) error {
+	b.sb.WriteString("arrayExists(x -> x[")
+	b.Arg(n.Key)
+	b.sb.WriteString("] ")
+	b.sb.WriteString(string(n.Op))
+	b.sb.WriteByte(' ')
+	if err := b.Expr(n.Value); err != nil {
+		return err
+	}
+	b.sb.WriteString(", ")
+	b.QualIdent(n.Column, n.SubField)
+	b.sb.WriteByte(')')
+	return nil
 }
 
 func (b *Builder) exprBinary(bx *chplan.Binary) error {

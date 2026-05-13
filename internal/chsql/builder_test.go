@@ -567,6 +567,33 @@ func TestBuilder_Expr(t *testing.T) {
 			wantSQL: "match(`ServiceName`, ?)",
 			wantArg: []any{"^api-.*"},
 		},
+		{
+			// TraceQL link / event spanset filters lower to this shape
+			// (see chplan.NestedArrayExists). Key + Value bind through
+			// Arg, so the rendered SQL carries two parameter slots.
+			name: "nested_array_exists_eq",
+			expr: &chplan.NestedArrayExists{
+				Column:   "Links",
+				SubField: "Attributes",
+				Key:      "span_id",
+				Op:       chplan.OpEq,
+				Value:    &chplan.LitString{V: "abc"},
+			},
+			wantSQL: "arrayExists(x -> x[?] = ?, `Links`.`Attributes`)",
+			wantArg: []any{"span_id", "abc"},
+		},
+		{
+			name: "nested_array_exists_ne",
+			expr: &chplan.NestedArrayExists{
+				Column:   "Events",
+				SubField: "Attributes",
+				Key:      "severity",
+				Op:       chplan.OpNe,
+				Value:    &chplan.LitString{V: "info"},
+			},
+			wantSQL: "arrayExists(x -> x[?] != ?, `Events`.`Attributes`)",
+			wantArg: []any{"severity", "info"},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

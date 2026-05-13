@@ -274,9 +274,9 @@ func lowerFieldExpr(e traceql.FieldExpression, s schema.Traces) (chplan.Expr, er
 	case *traceql.BinaryOperation:
 		return lowerBinaryOperation(v, s)
 	case *traceql.Attribute:
-		return lowerAttribute(*v, s), nil
+		return lowerAttributeExpr(*v, s)
 	case traceql.Attribute:
-		return lowerAttribute(v, s), nil
+		return lowerAttributeExpr(v, s)
 	case *traceql.Static:
 		return lowerStatic(*v)
 	case traceql.Static:
@@ -285,10 +285,32 @@ func lowerFieldExpr(e traceql.FieldExpression, s schema.Traces) (chplan.Expr, er
 	return nil, fmt.Errorf("traceql: field expression %T is not yet supported", e)
 }
 
+// lowerAttributeExpr wraps lowerAttribute with a guard: link- /
+// event-scoped attributes can only appear inside a comparison
+// (lowerBinaryOperation intercepts them and returns a
+// NestedArrayExists). Reaching this path means the attribute is being
+// used as a scalar value (e.g. `| select(link.span_id)`) which would
+// silently dereference the wrong CH column — error out so the operator
+// can surface the gap rather than ship wrong SQL.
+func lowerAttributeExpr(a traceql.Attribute, s schema.Traces) (chplan.Expr, error) {
+	if a.Scope == traceql.AttributeScopeLink || a.Scope == traceql.AttributeScopeEvent {
+		return nil, fmt.Errorf("traceql: %s.%s used outside a comparison; only equality / inequality / regex filters on link.* and event.* are supported (see RC2 link traversal + span-event queries)", a.Scope, a.Name)
+	}
+	return lowerAttribute(a, s), nil
+}
+
 func lowerBinaryOperation(b *traceql.BinaryOperation, s schema.Traces) (chplan.Expr, error) {
 	op, err := mapBinaryOp(b.Op)
 	if err != nil {
 		return nil, err
+	}
+	// TraceQL link / event spanset filters live on the OTel-CH `Links` /
+	// `Events` Nested columns. Their predicate shape is
+	//   arrayExists(x -> x[<key>] <op> <value>, <Col>.Attributes)
+	// rather than a flat column comparison; capture that as a
+	// NestedArrayExists before generic Binary lowering kicks in.
+	if nested, ok := lowerNestedAttrBinary(b, op, s); ok {
+		return nested, nil
 	}
 	lhs, err := lowerFieldExpr(b.LHS, s)
 	if err != nil {
@@ -299,6 +321,113 @@ func lowerBinaryOperation(b *traceql.BinaryOperation, s schema.Traces) (chplan.E
 		return nil, err
 	}
 	return &chplan.Binary{Op: op, Left: lhs, Right: rhs}, nil
+}
+
+// lowerNestedAttrBinary recognises the
+//
+//	<link|event>.<name> <op> <literal>
+//
+// shape and returns a chplan.NestedArrayExists. The LHS/RHS may be in
+// either order in upstream TraceQL ASTs; we normalise so the attribute
+// reference is always the implicit `x[?]` and the literal is the RHS
+// of the comparison. Returns ok=false when neither side is a link- or
+// event-scoped attribute (the caller falls back to flat Binary lowering).
+func lowerNestedAttrBinary(b *traceql.BinaryOperation, op chplan.BinaryOp, s schema.Traces) (chplan.Expr, bool) {
+	if lhsAttr, ok := nestedScopedAttr(b.LHS); ok {
+		col, key, ok := nestedAttrTarget(lhsAttr, s)
+		if !ok {
+			return nil, false
+		}
+		val, err := lowerFieldExpr(b.RHS, s)
+		if err != nil {
+			return nil, false
+		}
+		return &chplan.NestedArrayExists{
+			Column:   col,
+			SubField: "Attributes",
+			Key:      key,
+			Op:       op,
+			Value:    val,
+		}, true
+	}
+	if rhsAttr, ok := nestedScopedAttr(b.RHS); ok {
+		col, key, ok := nestedAttrTarget(rhsAttr, s)
+		if !ok {
+			return nil, false
+		}
+		val, err := lowerFieldExpr(b.LHS, s)
+		if err != nil {
+			return nil, false
+		}
+		return &chplan.NestedArrayExists{
+			Column:   col,
+			SubField: "Attributes",
+			Key:      key,
+			Op:       flipComparisonOp(op),
+			Value:    val,
+		}, true
+	}
+	return nil, false
+}
+
+// nestedScopedAttr returns the attribute if e is a link- or event-scoped
+// attribute reference (pointer or value form), so callers can branch
+// without re-running the same type-switch twice.
+func nestedScopedAttr(e traceql.FieldExpression) (traceql.Attribute, bool) {
+	switch v := e.(type) {
+	case *traceql.Attribute:
+		if v == nil {
+			return traceql.Attribute{}, false
+		}
+		if v.Scope == traceql.AttributeScopeLink || v.Scope == traceql.AttributeScopeEvent {
+			return *v, true
+		}
+	case traceql.Attribute:
+		if v.Scope == traceql.AttributeScopeLink || v.Scope == traceql.AttributeScopeEvent {
+			return v, true
+		}
+	}
+	return traceql.Attribute{}, false
+}
+
+// nestedAttrTarget maps a link- / event-scoped attribute to the Nested
+// parent column it lives under (LinksColumn or EventsColumn) plus the
+// attribute key to look up inside each row's Attributes map. Returns
+// ok=false when the configured schema has no column for that scope —
+// the caller falls back to the generic lowering and the resulting SQL
+// will error at emit time (better than silently writing the wrong
+// column name).
+func nestedAttrTarget(a traceql.Attribute, s schema.Traces) (col, key string, ok bool) {
+	switch a.Scope {
+	case traceql.AttributeScopeLink:
+		if s.LinksColumn == "" {
+			return "", "", false
+		}
+		return s.LinksColumn, a.Name, true
+	case traceql.AttributeScopeEvent:
+		if s.EventsColumn == "" {
+			return "", "", false
+		}
+		return s.EventsColumn, a.Name, true
+	}
+	return "", "", false
+}
+
+// flipComparisonOp swaps the direction of an asymmetric comparison so
+// `<literal> <op> <attr>` rewrites cleanly to `<attr> <flipped> <literal>`.
+// = / != / AND / OR are symmetric and pass through unchanged.
+func flipComparisonOp(op chplan.BinaryOp) chplan.BinaryOp {
+	switch op {
+	case chplan.OpLt:
+		return chplan.OpGt
+	case chplan.OpLe:
+		return chplan.OpGe
+	case chplan.OpGt:
+		return chplan.OpLt
+	case chplan.OpGe:
+		return chplan.OpLe
+	}
+	return op
 }
 
 // lowerAttribute resolves a TraceQL attribute reference to a chplan
