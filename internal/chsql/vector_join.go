@@ -30,7 +30,7 @@ import (
 // Ported to chsql.QueryBuilder at RC6 R6.6: the outer SELECT, each
 // per-side aggregation subquery, and the INNER JOIN slot all flow
 // through typed QueryBuilder slots. The bare-alias glue (`AS L` /
-// `AS R`) is operator-token-style WriteSQL inside a Frag — CH accepts
+// `AS R`) is operator-token-style writeSQL inside a Frag — CH accepts
 // unquoted single-letter aliases and the existing fixtures pin that
 // shape.
 func (e *emitter) emitVectorJoin(j *chplan.VectorJoin) error {
@@ -171,20 +171,20 @@ func (e *emitter) vectorJoinSideFrag(j *chplan.VectorJoin, n chplan.Node, role s
 // aggMaxAs returns a Frag for `max(<col>) AS <alias>`.
 func aggMaxAs(col, alias string) Frag {
 	return As(func(b *Builder) {
-		b.WriteSQL("max(")
+		b.writeSQL("max(")
 		b.Ident(col)
-		b.WriteSQL(")")
+		b.writeSQL(")")
 	}, alias)
 }
 
 // argMaxAs returns a Frag for `argMax(<valCol>, <byCol>) AS <alias>`.
 func argMaxAs(valCol, byCol, alias string) Frag {
 	return As(func(b *Builder) {
-		b.WriteSQL("argMax(")
+		b.writeSQL("argMax(")
 		b.Ident(valCol)
-		b.WriteSQL(", ")
+		b.writeSQL(", ")
 		b.Ident(byCol)
-		b.WriteSQL(")")
+		b.writeSQL(")")
 	}, alias)
 }
 
@@ -198,11 +198,11 @@ func argMaxAs(valCol, byCol, alias string) Frag {
 // underscore-prefixed names.
 func matchCheckFrag(attrsCol string) Frag {
 	return func(b *Builder) {
-		b.WriteSQL("throwIf(uniqExact(")
+		b.writeSQL("throwIf(uniqExact(")
 		b.Ident(attrsCol)
-		b.WriteSQL(") > 1, ")
+		b.writeSQL(") > 1, ")
 		b.Arg("many-to-many matching not allowed: matching labels must be unique on one side")
-		b.WriteSQL(") AS _cerberus_match_check")
+		b.writeSQL(") AS _cerberus_match_check")
 	}
 }
 
@@ -229,20 +229,20 @@ func writeMatchKeyGroupExpr(b *Builder, m chplan.VectorMatch, attrsCol string) {
 		// on() with no labels — group everything onto a single
 		// match-key. CH doesn't allow an empty IN list, so emit a
 		// constant tuple.
-		b.WriteSQL("tuple()")
+		b.writeSQL("tuple()")
 		return
 	}
 	if m.On {
-		b.WriteSQL("mapFilter((k, v) -> k IN (")
+		b.writeSQL("mapFilter((k, v) -> k IN (")
 		for i, lbl := range m.Labels {
 			if i > 0 {
-				b.WriteSQL(", ")
+				b.writeSQL(", ")
 			}
 			b.Arg(lbl)
 		}
-		b.WriteSQL("), ")
+		b.writeSQL("), ")
 		b.Ident(attrsCol)
-		b.WriteSQL(")")
+		b.writeSQL(")")
 		return
 	}
 	b.MapFilterExcept(attrsCol, m.Labels...)
@@ -290,18 +290,18 @@ func writeOutputAttributes(b *Builder, j *chplan.VectorJoin) {
 	if manySide == "R" {
 		oneSide = "L"
 	}
-	b.WriteSQL("mapConcat(")
+	b.writeSQL("mapConcat(")
 	writeSideCol(b, manySide, j.AttributesColumn)
-	b.WriteSQL(", mapFilter((k, v) -> k IN (")
+	b.writeSQL(", mapFilter((k, v) -> k IN (")
 	for i, lbl := range j.Include {
 		if i > 0 {
-			b.WriteSQL(", ")
+			b.writeSQL(", ")
 		}
 		b.Arg(lbl)
 	}
-	b.WriteSQL("), ")
+	b.writeSQL("), ")
 	writeSideCol(b, oneSide, j.AttributesColumn)
-	b.WriteSQL(")) AS ")
+	b.writeSQL(")) AS ")
 	b.Ident(j.AttributesColumn)
 }
 
@@ -309,11 +309,11 @@ func writeOutputAttributes(b *Builder, j *chplan.VectorJoin) {
 // expression: `(L.<val> <op> R.<val>) AS <val>`.
 func vectorJoinValueExprFrag(j *chplan.VectorJoin) Frag {
 	return func(b *Builder) {
-		b.WriteSQL("(")
+		b.writeSQL("(")
 		writeSideCol(b, "L", j.ValueColumn)
-		b.WriteSQL(" " + string(j.Op) + " ")
+		b.writeSQL(" " + string(j.Op) + " ")
 		writeSideCol(b, "R", j.ValueColumn)
-		b.WriteSQL(") AS ")
+		b.writeSQL(") AS ")
 		b.Ident(j.ValueColumn)
 	}
 }
@@ -331,8 +331,8 @@ func qualColFrag(side, col string) Frag {
 func aliasedFrag(inner Frag, bareAlias string) Frag {
 	return func(b *Builder) {
 		inner(b)
-		b.WriteSQL(" AS ")
-		b.WriteSQL(bareAlias)
+		b.writeSQL(" AS ")
+		b.writeSQL(bareAlias)
 	}
 }
 
@@ -341,8 +341,8 @@ func aliasedFrag(inner Frag, bareAlias string) Frag {
 // unquoted alias matches the legacy emitter's output so existing
 // fixtures that pre-date the Builder port stay stable.
 func writeSideCol(b *Builder, side, col string) {
-	b.WriteSQL(side)
-	b.WriteSQL(".")
+	b.writeSQL(side)
+	b.writeSQL(".")
 	b.Ident(col)
 }
 
@@ -360,7 +360,7 @@ func vectorMatchPredicateFrag(m chplan.VectorMatch, attrsCol string) Frag {
 func writeVectorMatchPredicate(b *Builder, m chplan.VectorMatch, attrsCol string) {
 	if len(m.Labels) == 0 && !m.On {
 		writeSideCol(b, "L", attrsCol)
-		b.WriteSQL(" = ")
+		b.writeSQL(" = ")
 		writeSideCol(b, "R", attrsCol)
 		return
 	}
@@ -369,38 +369,38 @@ func writeVectorMatchPredicate(b *Builder, m chplan.VectorMatch, attrsCol string
 		// every row on the right. The per-side aggregation already
 		// collapses each side to one row via the throwIf-guard, so
 		// the join condition is just a constant TRUE.
-		b.WriteSQL("1 = 1")
+		b.writeSQL("1 = 1")
 		return
 	}
 	if m.On {
 		for i, lbl := range m.Labels {
 			if i > 0 {
-				b.WriteSQL(" AND ")
+				b.writeSQL(" AND ")
 			}
 			writeSideCol(b, "L", attrsCol)
-			b.WriteSQL("[")
+			b.writeSQL("[")
 			b.Arg(lbl)
-			b.WriteSQL("] = ")
+			b.writeSQL("] = ")
 			writeSideCol(b, "R", attrsCol)
-			b.WriteSQL("[")
+			b.writeSQL("[")
 			b.Arg(lbl)
-			b.WriteSQL("]")
+			b.writeSQL("]")
 		}
 		return
 	}
 	for i, side := range []string{"L", "R"} {
 		if i == 1 {
-			b.WriteSQL(" = ")
+			b.writeSQL(" = ")
 		}
-		b.WriteSQL("mapFilter((k, v) -> NOT (k IN (")
+		b.writeSQL("mapFilter((k, v) -> NOT (k IN (")
 		for j, lbl := range m.Labels {
 			if j > 0 {
-				b.WriteSQL(", ")
+				b.writeSQL(", ")
 			}
 			b.Arg(lbl)
 		}
-		b.WriteSQL(")), ")
+		b.writeSQL(")), ")
 		writeSideCol(b, side, attrsCol)
-		b.WriteSQL(")")
+		b.writeSQL(")")
 	}
 }

@@ -179,7 +179,7 @@ func tempoTimeLteFrag(col string, t time.Time) chsql.Frag {
 
 // dateTime64LitFrag wraps Builder.DateTime64Lit as a typed Frag so
 // callers can compose CH DateTime64(9) literals through chsql.Gte /
-// chsql.Lte / etc. without dropping back to b.WriteSQL.
+// chsql.Lte / etc. without dropping back to raw writes.
 func dateTime64LitFrag(t time.Time) chsql.Frag {
 	return func(b *chsql.Builder) { b.DateTime64Lit(t) }
 }

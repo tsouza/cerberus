@@ -93,9 +93,9 @@ func histogramQuantileValueFrag(h *chplan.HistogramQuantile) Frag {
 		// We emit one binding of phi for the multiply-by-total branch;
 		// the phi-bounds short-circuits below bind it again so each
 		// branch carries its own `?` placeholder.
-		b.WriteSQL("if(length(")
+		b.writeSQL("if(length(")
 		b.Ident(bc)
-		b.WriteSQL(") = 0, nan, ")
+		b.writeSQL(") = 0, nan, ")
 		// total = cum[length(cum)]; cum = arrayCumSum(bc).
 		// Outer if: total = 0 → NaN. We materialise `cum` and `total`
 		// inline via subexpression rather than CTE to keep the shape flat.
@@ -110,19 +110,19 @@ func histogramQuantileValueFrag(h *chplan.HistogramQuantile) Frag {
 		// edge of bucket 1 is conventionally 0 for non-negative
 		// observations; matches upstream Prom's p0 behavior).
 		// `highest_bound` is the last entry in ExplicitBounds.
-		b.WriteSQL("if(arraySum(")
+		b.writeSQL("if(arraySum(")
 		b.Ident(bc)
-		b.WriteSQL(") = 0, nan, ")
-		b.WriteSQL("if(")
-		b.WriteSQL(formatFloat(h.Phi))
-		b.WriteSQL(" <= 0, 0.0, ")
-		b.WriteSQL("if(")
-		b.WriteSQL(formatFloat(h.Phi))
-		b.WriteSQL(" >= 1, ")
+		b.writeSQL(") = 0, nan, ")
+		b.writeSQL("if(")
+		b.writeSQL(formatFloat(h.Phi))
+		b.writeSQL(" <= 0, 0.0, ")
+		b.writeSQL("if(")
+		b.writeSQL(formatFloat(h.Phi))
+		b.writeSQL(" >= 1, ")
 		b.Ident(eb)
-		b.WriteSQL("[length(")
+		b.writeSQL("[length(")
 		b.Ident(eb)
-		b.WriteSQL(")], ")
+		b.writeSQL(")], ")
 		// Interpolation branch.
 		// Bind phi for the target multiplier and build the lookup.
 		// Using CH's let-like binding by re-evaluating subexprs is
@@ -144,80 +144,80 @@ func histogramQuantileValueFrag(h *chplan.HistogramQuantile) Frag {
 		// `idx` is rendered three times in the sub-expression; we
 		// recompute it each time rather than CTE-ing. CH CSE folds it.
 		writeIdx := func() {
-			b.WriteSQL("arrayFirstIndex(c -> c >= (")
-			b.WriteSQL(formatFloat(h.Phi))
-			b.WriteSQL(" * arraySum(")
+			b.writeSQL("arrayFirstIndex(c -> c >= (")
+			b.writeSQL(formatFloat(h.Phi))
+			b.writeSQL(" * arraySum(")
 			b.Ident(bc)
-			b.WriteSQL(")), arrayCumSum(")
+			b.writeSQL(")), arrayCumSum(")
 			b.Ident(bc)
-			b.WriteSQL("))")
+			b.writeSQL("))")
 		}
 		writeCumAt := func(offset string) {
-			b.WriteSQL("arrayCumSum(")
+			b.writeSQL("arrayCumSum(")
 			b.Ident(bc)
-			b.WriteSQL(")[")
+			b.writeSQL(")[")
 			writeIdx()
-			b.WriteSQL(offset)
-			b.WriteSQL("]")
+			b.writeSQL(offset)
+			b.writeSQL("]")
 		}
 		writeBoundAt := func(offset string) {
 			b.Ident(eb)
-			b.WriteSQL("[")
+			b.writeSQL("[")
 			writeIdx()
-			b.WriteSQL(offset)
-			b.WriteSQL("]")
+			b.writeSQL(offset)
+			b.writeSQL("]")
 		}
 		// if(idx = length(cum), highest_bound, interpolate)
-		b.WriteSQL("if(")
+		b.writeSQL("if(")
 		writeIdx()
-		b.WriteSQL(" = length(arrayCumSum(")
+		b.writeSQL(" = length(arrayCumSum(")
 		b.Ident(bc)
-		b.WriteSQL(")), ")
+		b.writeSQL(")), ")
 		b.Ident(eb)
-		b.WriteSQL("[length(")
+		b.writeSQL("[length(")
 		b.Ident(eb)
-		b.WriteSQL(")], ")
+		b.writeSQL(")], ")
 		// Interpolate. bound_lo / cum_lo branch on idx = 1.
 		// bound_hi = ExplicitBounds[idx]; cum_hi = cum[idx].
 		// bound_lo = if(idx = 1, 0, ExplicitBounds[idx - 1]);
 		// cum_lo   = if(idx = 1, 0, cum[idx - 1]).
-		b.WriteSQL("(if(")
+		b.writeSQL("(if(")
 		writeIdx()
-		b.WriteSQL(" = 1, 0.0, ")
+		b.writeSQL(" = 1, 0.0, ")
 		writeBoundAt(" - 1")
-		b.WriteSQL(") + (")
+		b.writeSQL(") + (")
 		writeBoundAt("")
-		b.WriteSQL(" - if(")
+		b.writeSQL(" - if(")
 		writeIdx()
-		b.WriteSQL(" = 1, 0.0, ")
+		b.writeSQL(" = 1, 0.0, ")
 		writeBoundAt(" - 1")
-		b.WriteSQL(")) * ((")
-		b.WriteSQL(formatFloat(h.Phi))
-		b.WriteSQL(" * arraySum(")
+		b.writeSQL(")) * ((")
+		b.writeSQL(formatFloat(h.Phi))
+		b.writeSQL(" * arraySum(")
 		b.Ident(bc)
-		b.WriteSQL(")) - if(")
+		b.writeSQL(")) - if(")
 		writeIdx()
-		b.WriteSQL(" = 1, 0.0, ")
+		b.writeSQL(" = 1, 0.0, ")
 		writeCumAt(" - 1")
-		b.WriteSQL(")) / (")
+		b.writeSQL(")) / (")
 		writeCumAt("")
-		b.WriteSQL(" - if(")
+		b.writeSQL(" - if(")
 		writeIdx()
-		b.WriteSQL(" = 1, 0.0, ")
+		b.writeSQL(" = 1, 0.0, ")
 		writeCumAt(" - 1")
 		// Three closes: close the `if(idx=1, ...)`, close the
 		// `(cum_hi - cum_lo)` paren, and close the outer `(if(idx=1, ..., bl) + ...)`
 		// expression wrapper.
-		b.WriteSQL(")))")
+		b.writeSQL(")))")
 		// Close the if(idx = length(cum), highest, <interp>)
-		b.WriteSQL(")")
+		b.writeSQL(")")
 		// Close the if(phi >= 1, …, interpolation)
-		b.WriteSQL(")")
+		b.writeSQL(")")
 		// Close the if(phi <= 0, 0.0, …)
-		b.WriteSQL(")")
+		b.writeSQL(")")
 		// Close the if(arraySum = 0, nan, …)
-		b.WriteSQL(")")
+		b.writeSQL(")")
 		// Close the if(length(bc) = 0, nan, …)
-		b.WriteSQL(")")
+		b.writeSQL(")")
 	}
 }

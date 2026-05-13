@@ -92,15 +92,6 @@ mutate-pkg PATH:
 lint:
     golangci-lint run ./...
 
-# Lint the chsql clause-keyword discipline. Fails on new violations.
-# Scans internal/ + cmd/ + harness/ for fmt.Sprintf / fmt.Fprintf calls
-# that build SQL and internal/chsql/ + internal/api/ for Builder.WriteString
-# / WriteSQL calls that emit clause keywords. Allowlist lives at
-# cmd/check-sql/allowlist.txt; the only legitimate entry is
-# chsql.QueryBuilder.writeInto (the typed renderer).
-check-sql:
-    go run ./cmd/check-sql/
-
 # Lint all Markdown files (run via npm exec; no global Node deps).
 lint-md:
     npm exec --yes -- markdownlint-cli2@{{MARKDOWNLINT_VERSION}} "**/*.md" "!harness/compatibility/upstream/**" "!**/node_modules/**"

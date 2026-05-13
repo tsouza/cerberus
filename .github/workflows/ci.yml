@@ -61,12 +61,6 @@ jobs:
           # Honours .golangci.yml; runs across the whole module.
           args: ./...
 
-      - name: check-sql (clause-keyword discipline)
-        # Custom Go tool: bans fmt.Sprintf / fmt.Fprintf on SQL and
-        # Builder.WriteString / WriteSQL on clause keywords outside
-        # chsql.QueryBuilder.writeInto. See cmd/check-sql/.
-        run: go run ./cmd/check-sql/
-
       - name: commitlint
         if: github.event_name == 'pull_request'
         uses: wagoid/commitlint-github-action@v6

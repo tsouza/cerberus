@@ -103,41 +103,41 @@ func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative) Frag {
 		// base = pow(2, pow(2, -Scale)). Re-rendered inline at each
 		// use; CH's planner CSEs.
 		writeBase := func() {
-			b.WriteSQL("pow(2, pow(2, -")
+			b.writeSQL("pow(2, pow(2, -")
 			b.Ident(scale)
-			b.WriteSQL("))")
+			b.writeSQL("))")
 		}
 		// cum = arrayCumSum(arrayConcat([ZeroCount], PositiveBucketCounts)).
 		writeCum := func() {
-			b.WriteSQL("arrayCumSum(arrayConcat([")
+			b.writeSQL("arrayCumSum(arrayConcat([")
 			b.Ident(zc)
-			b.WriteSQL("], ")
+			b.writeSQL("], ")
 			b.Ident(pbc)
-			b.WriteSQL("))")
+			b.writeSQL("))")
 		}
 		// total = cum[length(cum)] — last element of cum.
 		writeTotal := func() {
 			writeCum()
-			b.WriteSQL("[length(")
+			b.writeSQL("[length(")
 			writeCum()
-			b.WriteSQL(")]")
+			b.writeSQL(")]")
 		}
 		// idx = arrayFirstIndex(c -> c >= phi*total, cum)
 		writeIdx := func() {
-			b.WriteSQL("arrayFirstIndex(c -> c >= (")
-			b.WriteSQL(phi)
-			b.WriteSQL(" * ")
+			b.writeSQL("arrayFirstIndex(c -> c >= (")
+			b.writeSQL(phi)
+			b.writeSQL(" * ")
 			writeTotal()
-			b.WriteSQL("), ")
+			b.writeSQL("), ")
 			writeCum()
-			b.WriteSQL(")")
+			b.writeSQL(")")
 		}
 		writeCumAt := func(offset string) {
 			writeCum()
-			b.WriteSQL("[")
+			b.writeSQL("[")
 			writeIdx()
-			b.WriteSQL(offset)
-			b.WriteSQL("]")
+			b.writeSQL(offset)
+			b.writeSQL("]")
 		}
 
 		// Outer chain:
@@ -150,50 +150,50 @@ func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative) Frag {
 		// and target = phi * total.
 
 		// if(total = 0, nan, ...
-		b.WriteSQL("if(")
+		b.writeSQL("if(")
 		writeTotal()
-		b.WriteSQL(" = 0, nan, ")
+		b.writeSQL(" = 0, nan, ")
 		// if(phi <= 0, 0.0, ...
-		b.WriteSQL("if(")
-		b.WriteSQL(phi)
-		b.WriteSQL(" <= 0, 0.0, ")
+		b.writeSQL("if(")
+		b.writeSQL(phi)
+		b.writeSQL(" <= 0, 0.0, ")
 		// if(phi >= 1, pow(base, po + length(pbc)), ...
-		b.WriteSQL("if(")
-		b.WriteSQL(phi)
-		b.WriteSQL(" >= 1, pow(")
+		b.writeSQL("if(")
+		b.writeSQL(phi)
+		b.writeSQL(" >= 1, pow(")
 		writeBase()
-		b.WriteSQL(", ")
+		b.writeSQL(", ")
 		b.Ident(po)
-		b.WriteSQL(" + length(")
+		b.writeSQL(" + length(")
 		b.Ident(pbc)
-		b.WriteSQL(")), ")
+		b.writeSQL(")), ")
 		// if(idx = 1, ZeroThreshold, ...
-		b.WriteSQL("if(")
+		b.writeSQL("if(")
 		writeIdx()
-		b.WriteSQL(" = 1, ")
+		b.writeSQL(" = 1, ")
 		b.Ident(zt)
-		b.WriteSQL(", ")
+		b.writeSQL(", ")
 		// Interpolated case: pow(base, po + (idx - 2) + fraction)
 		// where fraction = (target - cum[idx-1]) / (cum[idx] - cum[idx-1])
 		// and target = phi * total.
-		b.WriteSQL("pow(")
+		b.writeSQL("pow(")
 		writeBase()
-		b.WriteSQL(", ")
+		b.writeSQL(", ")
 		b.Ident(po)
-		b.WriteSQL(" + (")
+		b.writeSQL(" + (")
 		writeIdx()
-		b.WriteSQL(" - 2) + ((")
-		b.WriteSQL(phi)
-		b.WriteSQL(" * ")
+		b.writeSQL(" - 2) + ((")
+		b.writeSQL(phi)
+		b.writeSQL(" * ")
 		writeTotal()
-		b.WriteSQL(") - ")
+		b.writeSQL(") - ")
 		writeCumAt(" - 1")
-		b.WriteSQL(") / (")
+		b.writeSQL(") / (")
 		writeCumAt("")
-		b.WriteSQL(" - ")
+		b.writeSQL(" - ")
 		writeCumAt(" - 1")
-		b.WriteSQL("))")
+		b.writeSQL("))")
 		// Close: if(idx=1), if(phi>=1), if(phi<=0), if(total=0)
-		b.WriteSQL("))))")
+		b.writeSQL("))))")
 	}
 }
