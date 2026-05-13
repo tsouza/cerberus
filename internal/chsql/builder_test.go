@@ -1102,3 +1102,170 @@ func TestIn_PanicsOnEmpty(t *testing.T) {
 	}()
 	In(Col("a"))
 }
+
+// TestCall_NoArgs — Call with zero args renders as "<name>()", valid
+// for nullary CH functions like now().
+func TestCall_NoArgs(t *testing.T) {
+	t.Parallel()
+
+	b := NewBuilder()
+	Call("now")(b)
+	if got, want := b.String(), "now()"; got != want {
+		t.Errorf("Call(now) = %q; want %q", got, want)
+	}
+}
+
+// TestCall_SingleArg — Call with one arg renders as "<name>(<a0>)".
+func TestCall_SingleArg(t *testing.T) {
+	t.Parallel()
+
+	b := NewBuilder()
+	Call("any", Col("v"))(b)
+	if got, want := b.String(), "any(`v`)"; got != want {
+		t.Errorf("Call(any,v) = %q; want %q", got, want)
+	}
+}
+
+// TestCall_MultipleArgs — Call with multiple args comma-separates them
+// and binds inner args at their emission position.
+func TestCall_MultipleArgs(t *testing.T) {
+	t.Parallel()
+
+	b := NewBuilder()
+	Call("if", Eq(Col("a"), Lit(1)), Lit("y"), Lit("n"))(b)
+	sql, args := b.Build()
+	if want := "if(`a` = ?, ?, ?)"; sql != want {
+		t.Errorf("Call(if,...) = %q; want %q", sql, want)
+	}
+	if wantArgs := []any{1, "y", "n"}; !reflect.DeepEqual(args, wantArgs) {
+		t.Errorf("Args = %v; want %v", args, wantArgs)
+	}
+}
+
+// TestParametric_OneParamOneArg — the basic parametric aggregate shape
+// "<name>(<p>)(<a>)" with a single param and single arg.
+func TestParametric_OneParamOneArg(t *testing.T) {
+	t.Parallel()
+
+	b := NewBuilder()
+	Parametric("quantile", []Frag{Lit(0.5)}, Col("Value"))(b)
+	sql, args := b.Build()
+	if want := "quantile(?)(`Value`)"; sql != want {
+		t.Errorf("Parametric = %q; want %q", sql, want)
+	}
+	if wantArgs := []any{0.5}; !reflect.DeepEqual(args, wantArgs) {
+		t.Errorf("Args = %v; want %v", args, wantArgs)
+	}
+}
+
+// TestParametric_MultiParamMultiArg — params and args lists are both
+// comma-separated; args bind in stream order after params.
+func TestParametric_MultiParamMultiArg(t *testing.T) {
+	t.Parallel()
+
+	b := NewBuilder()
+	Parametric("quantiles", []Frag{Lit(0.5), Lit(0.9)}, Col("a"), Col("b"))(b)
+	sql, args := b.Build()
+	if want := "quantiles(?, ?)(`a`, `b`)"; sql != want {
+		t.Errorf("Parametric = %q; want %q", sql, want)
+	}
+	if wantArgs := []any{0.5, 0.9}; !reflect.DeepEqual(args, wantArgs) {
+		t.Errorf("Args = %v; want %v", args, wantArgs)
+	}
+}
+
+// TestParametric_PanicsOnEmptyParams — zero params is rejected so the
+// API stays distinguishable from a plain Call.
+func TestParametric_PanicsOnEmptyParams(t *testing.T) {
+	t.Parallel()
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatalf("expected panic on Parametric with empty params")
+		}
+	}()
+	Parametric("quantile", nil, Col("Value"))
+}
+
+// TestStar — the unqualified wildcard renders as "*".
+func TestStar(t *testing.T) {
+	t.Parallel()
+
+	b := NewBuilder()
+	Star()(b)
+	if got, want := b.String(), "*"; got != want {
+		t.Errorf("Star = %q; want %q", got, want)
+	}
+}
+
+// TestQualStar_BasicQuoting — QualStar renders "<table>.*" with the
+// table identifier backtick-quoted.
+func TestQualStar_BasicQuoting(t *testing.T) {
+	t.Parallel()
+
+	b := NewBuilder()
+	QualStar("L")(b)
+	if got, want := b.String(), "`L`.*"; got != want {
+		t.Errorf("QualStar(L) = %q; want %q", got, want)
+	}
+}
+
+// TestQualStar_EscapesBackticks — embedded backticks in the table
+// identifier are doubled (mirrors Ident's escape).
+func TestQualStar_EscapesBackticks(t *testing.T) {
+	t.Parallel()
+
+	b := NewBuilder()
+	QualStar("a`b")(b)
+	if got, want := b.String(), "`a``b`.*"; got != want {
+		t.Errorf("QualStar(a`b) = %q; want %q", got, want)
+	}
+}
+
+// TestDistinct — Distinct prefixes its operand with "DISTINCT ".
+func TestDistinct(t *testing.T) {
+	t.Parallel()
+
+	b := NewBuilder()
+	Distinct(Col("Value"))(b)
+	if got, want := b.String(), "DISTINCT `Value`"; got != want {
+		t.Errorf("Distinct = %q; want %q", got, want)
+	}
+}
+
+// TestIsNull — IsNull appends " IS NULL" to its operand.
+func TestIsNull(t *testing.T) {
+	t.Parallel()
+
+	b := NewBuilder()
+	IsNull(Col("Value"))(b)
+	if got, want := b.String(), "`Value` IS NULL"; got != want {
+		t.Errorf("IsNull = %q; want %q", got, want)
+	}
+}
+
+// TestIsNotNull — IsNotNull appends " IS NOT NULL" to its operand.
+func TestIsNotNull(t *testing.T) {
+	t.Parallel()
+
+	b := NewBuilder()
+	IsNotNull(Col("Value"))(b)
+	if got, want := b.String(), "`Value` IS NOT NULL"; got != want {
+		t.Errorf("IsNotNull = %q; want %q", got, want)
+	}
+}
+
+// TestBetween — Between renders "<f> BETWEEN <lo> AND <hi>" and binds
+// args in stream order.
+func TestBetween(t *testing.T) {
+	t.Parallel()
+
+	b := NewBuilder()
+	Between(Col("ts"), Lit(1), Lit(10))(b)
+	sql, args := b.Build()
+	if want := "`ts` BETWEEN ? AND ?"; sql != want {
+		t.Errorf("Between = %q; want %q", sql, want)
+	}
+	if wantArgs := []any{1, 10}; !reflect.DeepEqual(args, wantArgs) {
+		t.Errorf("Args = %v; want %v", args, wantArgs)
+	}
+}
