@@ -231,3 +231,17 @@ replace github.com/hashicorp/memberlist => github.com/grafana/memberlist v0.3.1-
 // additive and gets rebased onto each upstream tag we want to absorb. See
 // docs/fork-tempo-plan.md for the migration plan and accessor inventory.
 replace github.com/grafana/tempo => github.com/tsouza/tempo v0.0.0-20260513081550-403b5ff59697
+
+// Cerberus adopts the OTel ClickHouse Exporter's SQL templates as the
+// schema source-of-truth (see the plan in the can-you-tell-me-merry-thunder
+// thread). The upstream package lives under `internal/`, so we maintain a
+// minimal fork (branch `cerberus-ddl`) that moves the templates out of
+// `internal/` to make them externally importable. The fork is rebased
+// onto each upstream tag we want to absorb. collector-contrib uses a
+// per-subdirectory module layout, so each imported submodule needs its
+// own replace directive pointing at the same fork SHA.
+replace (
+	github.com/open-telemetry/opentelemetry-collector-contrib/internal/coreinternal => github.com/tsouza/opentelemetry-collector-contrib/internal/coreinternal v0.0.0-20260513133556-0dfb75bc1abf
+	github.com/open-telemetry/opentelemetry-collector-contrib/pkg/core/xidutils => github.com/tsouza/opentelemetry-collector-contrib/pkg/core/xidutils v0.0.0-20260513133556-0dfb75bc1abf
+	github.com/open-telemetry/opentelemetry-collector-contrib/pkg/translator/jaeger => github.com/tsouza/opentelemetry-collector-contrib/pkg/translator/jaeger v0.0.0-20260513133556-0dfb75bc1abf
+)

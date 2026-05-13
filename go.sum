@@ -407,12 +407,6 @@ github.com/mwitkow/go-conntrack v0.0.0-20190716064945-2f068394615f/go.mod h1:qRW
 github.com/oklog/ulid v1.3.1 h1:EGfNDEx6MqHz8B3uNV6QAib1UR2Lm97sHi3ocA6ESJ4=
 github.com/oklog/ulid/v2 v2.1.1 h1:suPZ4ARWLOJLegGFiZZ1dFAkqzhMjL3J1TzI+5wHz8s=
 github.com/oklog/ulid/v2 v2.1.1/go.mod h1:rcEKHmBBKfef9DhnvX7y1HZBYxjXb0cP5ExxNsTT1QQ=
-github.com/open-telemetry/opentelemetry-collector-contrib/internal/coreinternal v0.150.0 h1:bpwaePe1iDZUzvF/TBtGb/aFJBRyBAYbWSpCDlMV62Y=
-github.com/open-telemetry/opentelemetry-collector-contrib/internal/coreinternal v0.150.0/go.mod h1://jdJ6pGeThzJ9e/kLXBnp2gcqTuvjvu4df/HycUFGE=
-github.com/open-telemetry/opentelemetry-collector-contrib/pkg/core/xidutils v0.150.0 h1:Rn+s865vOKUOxiQ024mL8LR1Oyxvsx5qOnlRz81N41o=
-github.com/open-telemetry/opentelemetry-collector-contrib/pkg/core/xidutils v0.150.0/go.mod h1:MQOHiv39A973LwC49WEe7TaqMgFp2i/OEj1vUqKxoJ8=
-github.com/open-telemetry/opentelemetry-collector-contrib/pkg/translator/jaeger v0.150.0 h1:QyAlAfLh26KhfhHoS0p77qGtQ9o1lTTfqR84ir+q++Y=
-github.com/open-telemetry/opentelemetry-collector-contrib/pkg/translator/jaeger v0.150.0/go.mod h1:oH8MAPQVje+h6zawzcX9O5heDyXm3hhvTUl0SqTE6cs=
 github.com/opencontainers/go-digest v1.0.0 h1:apOUWs51W5PlhuyGyz9FCeeBIOUDA/6nW8Oi/yOhh5U=
 github.com/opencontainers/go-digest v1.0.0/go.mod h1:0JzlMkj0TRzQZfJkVvzbP0HBR3IKzErnv2BNG4W4MAM=
 github.com/opencontainers/image-spec v1.1.1 h1:y0fUlFfIZhPF1W537XOLg0/fcx6zcHCJwooC2xJA040=
@@ -534,6 +528,12 @@ github.com/tklauser/go-sysconf v0.3.16 h1:frioLaCQSsF5Cy1jgRBrzr6t502KIIwQ0MArYI
 github.com/tklauser/go-sysconf v0.3.16/go.mod h1:/qNL9xxDhc7tx3HSRsLWNnuzbVfh3e7gh/BmM179nYI=
 github.com/tklauser/numcpus v0.11.0 h1:nSTwhKH5e1dMNsCdVBukSZrURJRoHbSEQjdEbY+9RXw=
 github.com/tklauser/numcpus v0.11.0/go.mod h1:z+LwcLq54uWZTX0u/bGobaV34u6V7KNlTZejzM6/3MQ=
+github.com/tsouza/opentelemetry-collector-contrib/internal/coreinternal v0.0.0-20260513133556-0dfb75bc1abf h1:ElnVkNecL2mGOZ1sTT4TBT9HKTEY5PcX0iufP0Yk0JA=
+github.com/tsouza/opentelemetry-collector-contrib/internal/coreinternal v0.0.0-20260513133556-0dfb75bc1abf/go.mod h1://jdJ6pGeThzJ9e/kLXBnp2gcqTuvjvu4df/HycUFGE=
+github.com/tsouza/opentelemetry-collector-contrib/pkg/core/xidutils v0.0.0-20260513133556-0dfb75bc1abf h1:osKtsBiGp8wL8e2p696rqGp9zHAAd/d3mw6lAfLqvZM=
+github.com/tsouza/opentelemetry-collector-contrib/pkg/core/xidutils v0.0.0-20260513133556-0dfb75bc1abf/go.mod h1:MQOHiv39A973LwC49WEe7TaqMgFp2i/OEj1vUqKxoJ8=
+github.com/tsouza/opentelemetry-collector-contrib/pkg/translator/jaeger v0.0.0-20260513133556-0dfb75bc1abf h1:w4/+7gMNwo2bdDgur/jRzn8L+nvK2XvHMoabv2wnvFc=
+github.com/tsouza/opentelemetry-collector-contrib/pkg/translator/jaeger v0.0.0-20260513133556-0dfb75bc1abf/go.mod h1:oH8MAPQVje+h6zawzcX9O5heDyXm3hhvTUl0SqTE6cs=
 github.com/tsouza/tempo v0.0.0-20260513081550-403b5ff59697 h1:fxUP0Bv6ZhrsZt35u9KXPVjTfJ2T+vZSYmczLdjK6n0=
 github.com/tsouza/tempo v0.0.0-20260513081550-403b5ff59697/go.mod h1:tV3Pl9la00Ti1stc4RMsIa41zkx1i3mtxKKy13vXwt4=
 github.com/tv42/httpunix v0.0.0-20150427012821-b75d8614f926/go.mod h1:9ESjWnEqriFuLhtthL60Sar/7RFoluCcXsuvEwTV5KM=
