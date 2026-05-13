@@ -2,7 +2,7 @@
 
 **Status:** draft, awaiting maintainer signoff.
 **Decision sought:** which SQL-construction strategy will RC6 adopt?
-**Recommendation:** **(b) Build `internal/chsql.Builder` from scratch.** See [§6](#6-recommendation) for rationale.
+**Recommendation:** **(b) Build `internal/chsql.Builder` from scratch.** Section 6 below has the rationale.
 
 ## 1. Executive summary
 
@@ -36,21 +36,21 @@ The [roadmap](roadmap.md#rc6--type-safe-sql-via-go-sqlbuilder) sets the framing:
 
 Result of `rg "fmt\.(Sprintf|Fprintf)" internal/` filtered to SQL-producing sites:
 
-| File                                | Line | Purpose                                                  | Risk class |
-| ----------------------------------- | ---- | -------------------------------------------------------- | ---------- |
-| `internal/api/prom/metadata.go`     | 171  | `metricMetaSQL` empty-name branch — SELECT … GROUP BY    | Low        |
-| `internal/api/prom/metadata.go`     | 176  | `metricMetaSQL` named-metric — SELECT … WHERE … =?       | Low        |
-| `internal/api/prom/metadata.go`     | 351  | `labelKeysForMatcher` — SELECT DISTINCT mapKeys wrapper  | Medium     |
-| `internal/api/prom/metadata.go`     | 368  | `labelValuesForMatcher` `__name__` branch                | Low        |
-| `internal/api/prom/metadata.go`     | 372  | `labelValuesForMatcher` attribute branch — `Attrs[?]`    | Low        |
-| `internal/api/prom/metadata.go`     | 433  | `unionLabelNamesSQL` — UNION ALL of mapKeys per table    | Low        |
-| `internal/api/prom/metadata.go`     | 445  | `unionMetricNamesSQL` — UNION ALL of MetricName per table | Low        |
-| `internal/api/prom/metadata.go`     | 462  | `unionLabelValuesSQL` — UNION ALL of `Attributes[?]`     | Low        |
-| `internal/chsql/range_window.go`    | 154  | `rateValueExpr` — embeds a Go-side float                 | None       |
-| `internal/chsql/range_window.go`    | 222, 228, 310, 319, 328 | windowed-array idiom: formats config-derived column names + anchor timestamps + step duration into CH array-function expressions | Low |
-| `internal/chsql/emit_expr.go`       | 97   | `" %s "` Binary.Op string (typed enum value)             | None       |
-| `internal/chsql/emit_node.go`       | 145  | `" LIMIT %d"` Count int                                  | None       |
-| `internal/chsql/structural_join.go` | 53   | `" AS R ON L.%s = R.%s AND %s"` — config column names + rel expr | None |
+| File                                | Line                    | Purpose                                                                                                                          | Risk class |
+| ----------------------------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------- | ---------- |
+| `internal/api/prom/metadata.go`     | 171                     | `metricMetaSQL` empty-name branch — SELECT … GROUP BY                                                                            | Low        |
+| `internal/api/prom/metadata.go`     | 176                     | `metricMetaSQL` named-metric — SELECT … WHERE … =?                                                                               | Low        |
+| `internal/api/prom/metadata.go`     | 351                     | `labelKeysForMatcher` — SELECT DISTINCT mapKeys wrapper                                                                          | Medium     |
+| `internal/api/prom/metadata.go`     | 368                     | `labelValuesForMatcher` `__name__` branch                                                                                        | Low        |
+| `internal/api/prom/metadata.go`     | 372                     | `labelValuesForMatcher` attribute branch — `Attrs[?]`                                                                            | Low        |
+| `internal/api/prom/metadata.go`     | 433                     | `unionLabelNamesSQL` — UNION ALL of mapKeys per table                                                                            | Low        |
+| `internal/api/prom/metadata.go`     | 445                     | `unionMetricNamesSQL` — UNION ALL of MetricName per table                                                                        | Low        |
+| `internal/api/prom/metadata.go`     | 462                     | `unionLabelValuesSQL` — UNION ALL of `Attributes[?]`                                                                             | Low        |
+| `internal/chsql/range_window.go`    | 154                     | `rateValueExpr` — embeds a Go-side float                                                                                         | None       |
+| `internal/chsql/range_window.go`    | 222, 228, 310, 319, 328 | windowed-array idiom: formats config-derived column names + anchor timestamps + step duration into CH array-function expressions | Low        |
+| `internal/chsql/emit_expr.go`       | 97                      | `" %s "` Binary.Op string (typed enum value)                                                                                     | None       |
+| `internal/chsql/emit_node.go`       | 145                     | `" LIMIT %d"` Count int                                                                                                          | None       |
+| `internal/chsql/structural_join.go` | 53                      | `" AS R ON L.%s = R.%s AND %s"` — config column names + rel expr                                                                 | None       |
 
 Counts: **9 callsites in `metadata.go`** (the hand-built UNION SQL); **8 callsites inside the chsql emitter** writing into the emitter's `strings.Builder` (these are mid-fragment formatting, not full-statement assembly, but the RC6 hard rule covers them too).
 
@@ -77,16 +77,16 @@ After tracing every callsite:
 
 LoC counted from the SQL-emitting surface that the migration must touch:
 
-| Path                            | Lines | Notes                                                |
-| ------------------------------- | ----- | ---------------------------------------------------- |
-| `internal/chsql/emit.go`        | ~70   | Driver: chplan.Node dispatch + emitter struct        |
-| `internal/chsql/emit_node.go`   | ~185  | Scan / Filter / Project / Aggregate / Limit / OrderBy |
-| `internal/chsql/emit_expr.go`   | ~120  | Binary / FuncCall / MapAccess / ColumnRef / literals |
-| `internal/chsql/range_window.go` | ~430  | Windowed-array idiom (rate / *_over_time)            |
-| `internal/chsql/vector_join.go` | ~120  | Binary-op join shape                                 |
-| `internal/chsql/structural_join.go` | ~70 | TraceQL structural join shape                       |
-| `internal/api/prom/metadata.go` | ~510  | Hand-built UNION SQL for /labels, /label/.../values   |
-| `internal/api/loki/handler.go`  | ~30 (deferred metadata) | Deferred handlers tagged for RC6     |
+| Path                                | Lines                   | Notes                                                 |
+| ----------------------------------- | ----------------------- | ----------------------------------------------------- |
+| `internal/chsql/emit.go`            | ~70                     | Driver: chplan.Node dispatch + emitter struct         |
+| `internal/chsql/emit_node.go`       | ~185                    | Scan / Filter / Project / Aggregate / Limit / OrderBy |
+| `internal/chsql/emit_expr.go`       | ~120                    | Binary / FuncCall / MapAccess / ColumnRef / literals  |
+| `internal/chsql/range_window.go`    | ~430                    | Windowed-array idiom (rate / *_over_time)             |
+| `internal/chsql/vector_join.go`     | ~120                    | Binary-op join shape                                  |
+| `internal/chsql/structural_join.go` | ~70                     | TraceQL structural join shape                         |
+| `internal/api/prom/metadata.go`     | ~510                    | Hand-built UNION SQL for /labels, /label/.../values   |
+| `internal/api/loki/handler.go`      | ~30 (deferred metadata) | Deferred handlers tagged for RC6                      |
 
 Net: **~1.5k LoC of emitter code + ~510 LoC of hand-built metadata SQL = ~2k LoC** within the migration footprint.
 
@@ -148,12 +148,12 @@ This is the **primary motivation** per the roadmap, and the inventory confirms i
 
 ### Benefit summary
 
-| Dimension       | Where the builder helps                                                  | Magnitude    |
-| --------------- | ------------------------------------------------------------------------ | ------------ |
-| Security        | Defense in depth + audit surface                                         | Incremental  |
-| Architecture    | Enables RC3 optimizer rules (PREWHERE / sort-key / MV / late mat'n)      | Transformative |
-| Maintainability | Centralises CH-dialect knowledge; removes UNION/quoting duplication      | Moderate     |
-| Testability     | Per-fragment unit tests                                                  | Moderate     |
+| Dimension       | Where the builder helps                                             | Magnitude      |
+| --------------- | ------------------------------------------------------------------- | -------------- |
+| Security        | Defense in depth + audit surface                                    | Incremental    |
+| Architecture    | Enables RC3 optimizer rules (PREWHERE / sort-key / MV / late mat'n) | Transformative |
+| Maintainability | Centralises CH-dialect knowledge; removes UNION/quoting duplication | Moderate       |
+| Testability     | Per-fragment unit tests                                             | Moderate       |
 
 **Architecture is the load-bearing benefit.** Without it, the migration is hard to justify.
 
@@ -161,16 +161,16 @@ This is the **primary motivation** per the roadmap, and the inventory confirms i
 
 The roadmap's matrix, refined with concrete cerberus findings from the inventory above:
 
-| Axis                         | `huandu/go-sqlbuilder` + ext. | Custom `internal/chsql.Builder` | Notes |
-| ---------------------------- | ----------------------------- | ------------------------------- | ----- |
-| CH idiom coverage out-of-box | partial — needs ~30–40% custom on top | full — custom IS the layer | Both need MapAt / MapKeys / Lambda / ParamAgg / PREWHERE / Now64 / Array idioms. The third-party path keeps these on top of its API; the custom path makes them first-class. |
-| Upstream maintenance         | shared with broader Go community | ours alone                  | go-sqlbuilder is actively maintained but small. If it stalls, we'd fork — the fork cost ≈ "build custom from scratch but on top of someone else's design". |
-| Onboarding (new contributor) | go-sqlbuilder docs + cerberus extension docs | cerberus-only docs   | Net learning surface is larger for the third-party path. |
-| API match to chplan IR       | impedance layer needed        | natural — builder mirrors chplan node shapes 1:1 | This is the *biggest* asymmetry. The existing emitter already maps chplan.Scan → emitScan, chplan.Filter → emitFilter, etc. Custom builder makes these symmetric (`ScanBuilder`, `FilterBuilder`); third-party builder requires translation. |
-| Code volume                  | smaller core, larger glue     | larger core, smaller glue     | Net LoC is similar, *but* the glue layer in the third-party path adds maintenance burden disproportionate to its size — every chplan IR change ripples through the glue. |
-| Security guarantees          | type system encodes (their schema) | we encode them (our schema) | Equivalent if we're disciplined. The audit surface is smaller for the custom path because it's all in `internal/chsql/`. |
-| Test isolation               | builder tests vendored upstream + ours on glue | all ours, but smaller | Custom path has less to test because it has less surface. |
-| Dependency exposure          | +1 direct dep, small transitive | zero new deps             | Cerberus already manages a `replace` directive for memberlist; minimising new dep surface is a stated project value. |
+| Axis                         | `huandu/go-sqlbuilder` + ext.                  | Custom `internal/chsql.Builder`                  | Notes                                                                                                                                                                                                                                        |
+| ---------------------------- | ---------------------------------------------- | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| CH idiom coverage out-of-box | partial — needs ~30–40% custom on top          | full — custom IS the layer                       | Both need MapAt / MapKeys / Lambda / ParamAgg / PREWHERE / Now64 / Array idioms. The third-party path keeps these on top of its API; the custom path makes them first-class.                                                                 |
+| Upstream maintenance         | shared with broader Go community               | ours alone                                       | go-sqlbuilder is actively maintained but small. If it stalls, we'd fork — the fork cost ≈ "build custom from scratch but on top of someone else's design".                                                                                   |
+| Onboarding (new contributor) | go-sqlbuilder docs + cerberus extension docs   | cerberus-only docs                               | Net learning surface is larger for the third-party path.                                                                                                                                                                                     |
+| API match to chplan IR       | impedance layer needed                         | natural — builder mirrors chplan node shapes 1:1 | This is the *biggest* asymmetry. The existing emitter already maps chplan.Scan → emitScan, chplan.Filter → emitFilter, etc. Custom builder makes these symmetric (`ScanBuilder`, `FilterBuilder`); third-party builder requires translation. |
+| Code volume                  | smaller core, larger glue                      | larger core, smaller glue                        | Net LoC is similar, *but* the glue layer in the third-party path adds maintenance burden disproportionate to its size — every chplan IR change ripples through the glue.                                                                     |
+| Security guarantees          | type system encodes (their schema)             | we encode them (our schema)                      | Equivalent if we're disciplined. The audit surface is smaller for the custom path because it's all in `internal/chsql/`.                                                                                                                     |
+| Test isolation               | builder tests vendored upstream + ours on glue | all ours, but smaller                            | Custom path has less to test because it has less surface.                                                                                                                                                                                    |
+| Dependency exposure          | +1 direct dep, small transitive                | zero new deps                                    | Cerberus already manages a `replace` directive for memberlist; minimising new dep surface is a stated project value.                                                                                                                         |
 
 ### Where the decision lands
 
@@ -226,8 +226,8 @@ If signed off, the R6.1+ scope changes as follows:
 
 ## 8. Signoff
 
-| Reviewer | Decision | Date | Notes |
-| -------- | -------- | ---- | ----- |
+| Reviewer | Decision  | Date      | Notes     |
+| -------- | --------- | --------- | --------- |
 | @tsouza  | _pending_ | _pending_ | _pending_ |
 
 Maintainer signoff unblocks R6.1. Until signoff, RC6 is paused at R6.0.
