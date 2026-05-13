@@ -159,10 +159,16 @@ func buildIndexVolumeSQL(
 // targetLabels subset via mapFilter.
 //
 // chplan.MapWithoutKeys (and Builder.MapFilterExcept) cover the
-// NEGATED form ("everything except these keys"). The positive form is
-// composed inline via typed Frag constructors: a Lambda body wrapping
-// a typed In(...) clause, glued to the column reference inside a
-// mapFilter(...) call.
+// NEGATED form ("everything except these keys"). The positive form
+// here composes the mapFilter body inline through a Frag closure: the
+// outer Call("mapFilter", …) is typed, but the lambda body needs to
+// reference the bare lambda parameter `k` (not a backtick-quoted
+// column), so we drop down to Builder via a Frag closure and use
+// Builder.Lambda for the lambda head + a typed In(…) over the IN list.
+// The bare `k` reference inside In's left slot is the one shape today's
+// typed surface doesn't cover — chsql.Raw("k") remains there pending
+// R6.12.f introducing a Bare(name) / LambdaVar(name) constructor; this
+// callsite is the single "punted" shape in R6.12.a.
 func volumeGroupFrag(s schema.Logs, targetLabels []string, aggregateBy string) chsql.Frag {
 	if len(targetLabels) == 0 || aggregateBy == "series" {
 		return chsql.Col(s.ResourceAttributesColumn)
@@ -173,18 +179,14 @@ func volumeGroupFrag(s schema.Logs, targetLabels []string, aggregateBy string) c
 	for i, k := range keys {
 		keyArgs[i] = chsql.Lit(k)
 	}
+	// PUNTED to R6.12.f: the bare lambda-parameter reference `k` has
+	// no typed constructor yet. Once Bare(name) lands the line below
+	// collapses to: inFrag := chsql.In(chsql.Bare("k"), keyArgs...).
 	inFrag := chsql.In(chsql.Raw("k"), keyArgs...)
 	lambda := func(b *chsql.Builder) {
 		b.Lambda([]string{"k", "v"}, func(b *chsql.Builder) { inFrag(b) })
 	}
-	return chsql.Concat(
-		chsql.Raw("mapFilter"),
-		chsql.Paren(chsql.Concat(
-			lambda,
-			chsql.Raw(", "),
-			chsql.Col(s.ResourceAttributesColumn),
-		)),
-	)
+	return chsql.Call("mapFilter", lambda, chsql.Col(s.ResourceAttributesColumn))
 }
 
 // parseVolumeLimit decodes the optional `limit` parameter; missing /

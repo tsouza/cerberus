@@ -106,11 +106,10 @@ func buildLabelValuesSQL(s schema.Logs, name string, matchers []*labels.Matcher,
 }
 
 // distinctMapAtFrag emits "DISTINCT `<col>`[?]" with name bound as a `?`
-// positional argument. DISTINCT is a SELECT-modifier keyword (not a
-// clause keyword); it has no typed slot of its own, so it rides on
-// Raw + a typed map-access Frag.
+// positional argument. Composed via the typed Distinct constructor
+// wrapping a typed map-access Frag.
 func distinctMapAtFrag(col, name string) chsql.Frag {
-	return chsql.Concat(chsql.Raw("DISTINCT "), mapAtFrag(col, name))
+	return chsql.Distinct(mapAtFrag(col, name))
 }
 
 // nonEmptyMapAtFrag emits "`<col>`[?] != ?" binding both the map key and

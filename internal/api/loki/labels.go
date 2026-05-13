@@ -105,14 +105,11 @@ func buildLabelsSQL(s schema.Logs, matchers []*labels.Matcher, start, end time.T
 // — the CH idiom for flattening a Map column's key array into the row
 // stream and de-duping. Used by /labels (the per-row key set) and is the
 // shape Grafana's label autocomplete expects. The arrayJoin / mapKeys
-// function calls compose through typed Concat + Paren; the inner
-// mapKeys(col) call rides on Builder.MapKeys.
+// function calls compose through the typed Call constructor wrapping
+// Builder.MapKeys for the inner mapKeys(col) call.
 func distinctMapKeysFrag(col string) chsql.Frag {
 	mapKeys := func(b *chsql.Builder) { b.MapKeys(col) }
-	return chsql.Concat(
-		chsql.Raw("DISTINCT arrayJoin"),
-		chsql.Paren(mapKeys),
-	)
+	return chsql.Distinct(chsql.Call("arrayJoin", mapKeys))
 }
 
 // dedupeAndSort drops empty strings, removes duplicates, and sorts the

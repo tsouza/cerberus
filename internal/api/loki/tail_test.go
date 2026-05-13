@@ -265,7 +265,7 @@ func TestTail_SQLShape(t *testing.T) {
 		"`Body` AS `MetricName`",
 		"`ResourceAttributes` AS `Attributes`",
 		"`Timestamp` AS `TimeUnix`",
-		"toFloat64(0) AS `Value`",
+		"toFloat64(?) AS `Value`",
 		"ORDER BY `Timestamp`",
 		"LIMIT 100",
 	} {
