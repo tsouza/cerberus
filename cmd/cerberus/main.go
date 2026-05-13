@@ -84,9 +84,19 @@ func run(logger *slog.Logger) error {
 	tempoHandler := tempo.New(client, schema.DefaultOTelTraces(), Version, logger.With("api", "tempo"))
 	tempoHandler.Mount(mux)
 
+	// RC4 R4.2: install the W3C+Baggage propagator and a no-op
+	// tracer-provider (real OTLP exporters arrive in R4.5), then wrap
+	// the whole mux with otelhttp so every Prom/Loki/Tempo request gets
+	// a server span named after the matched route. Wrapping at the mux
+	// level — instead of per-handler — keeps the propagator code path
+	// uniform across all three APIs and lets the span name formatter
+	// pull r.Pattern after the mux has resolved the route.
+	installOTel(nil)
+	handler := wrapWithOTel(mux, "cerberus")
+
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           mux,
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
