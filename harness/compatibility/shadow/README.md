@@ -24,11 +24,11 @@ that runs without containers.
 
 The CLI takes `--strategy`:
 
-| Strategy        | Behaviour                                                            | Use case                                                            |
-| --------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| `prefer-native` | Run both; return native; record diff; non-fatal on disagreement     | **Default.** CI baseline; lets you measure the gap over time.       |
-| `force-native`  | Run both; return native; **fail** on diff                            | Pre-release gate. Use when the oracle is trusted to be correct.     |
-| `oracle-only`   | Run only the oracle; native is skipped                               | Debugging the oracle; isolating semantic-vs-emitter bugs.           |
+| Strategy        | Behaviour                                                        | Use case                                                        |
+| --------------- | ---------------------------------------------------------------- | --------------------------------------------------------------- |
+| `prefer-native` | Run both; return native; record diff; non-fatal on disagreement  | **Default.** CI baseline; lets you measure the gap over time.   |
+| `force-native`  | Run both; return native; **fail** on diff                        | Pre-release gate. Use when the oracle is trusted to be correct. |
+| `oracle-only`   | Run only the oracle; native is skipped                           | Debugging the oracle; isolating semantic-vs-emitter bugs.       |
 
 ## Diff algorithm
 
@@ -46,16 +46,16 @@ the end.
 
 ## Exit codes
 
-| Code | Meaning                                                              |
-| ---- | -------------------------------------------------------------------- |
-| `0`  | All queries agree (or strategy is `prefer-native` with diffs present) |
-| `1`  | One or more diffs under `force-native` strategy                       |
-| `2`  | Setup failure (corpus unreadable, cerberus unreachable, etc.)        |
+| Code | Meaning                                                                      |
+| ---- | ---------------------------------------------------------------------------- |
+| `0`  | All queries agree (or strategy is `prefer-native` with diffs present)        |
+| `1`  | One or more diffs under `force-native` strategy                              |
+| `2`  | Setup failure (corpus unreadable, cerberus unreachable, etc.)                |
 | `3`  | Oracle unavailable when strategy requires it (`force-native`, `oracle-only`) |
 
 ## How it slots into `harness/compatibility/`
 
-```
+```text
 harness/compatibility/
   docker-compose.yml         <-- existing: reference Prom + cerberus + CH + seeder
   scripts/run-compatibility.sh
@@ -96,7 +96,7 @@ harness exits with code `2` and a clear error.
 
 TXTAR file with two sections per query:
 
-```
+```text
 -- query --
 rate(http_requests_total[5m])
 -- expected_strategy --
