@@ -1,0 +1,7 @@
+-- query.traceql --
+{ name = "parent" } ~ { name = "sibling" }
+-- sql --
+SELECT R.* FROM (SELECT * FROM (SELECT * FROM `otel_traces`) WHERE (`SpanName` = ?)) AS L INNER JOIN (SELECT * FROM (SELECT * FROM `otel_traces`) WHERE (`SpanName` = ?)) AS R ON L.`TraceId` = R.`TraceId` AND L.`ParentSpanId` = R.`ParentSpanId` AND L.`SpanId` != R.`SpanId`
+-- args --
+[0] string = "parent"
+[1] string = "sibling"

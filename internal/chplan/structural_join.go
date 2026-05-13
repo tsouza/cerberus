@@ -6,10 +6,12 @@ package chplan
 //	StructuralDescendant — `A >> B`: A is an ancestor of B         (return B rows)
 //	StructuralParent    — `A < B`  : A is the direct child of B   (return B rows)
 //	StructuralAncestor  — `A << B` : A is a descendant of B        (return B rows)
+//	StructuralSibling   — `A ~ B`  : A and B share the same parent (return B rows)
 //
 // `>>` and `<<` need recursive CTE / multi-level joins; the seed
 // (M4.2) emits `>` and `<` and rejects the recursive forms with a
-// pointer to the M4.2 follow-up.
+// pointer to the M4.2 follow-up. `~` (sibling) lands alongside the
+// RC2 set-ops work.
 type StructuralOp string
 
 const (
@@ -17,6 +19,7 @@ const (
 	StructuralParent     StructuralOp = "<"
 	StructuralDescendant StructuralOp = ">>"
 	StructuralAncestor   StructuralOp = "<<"
+	StructuralSibling    StructuralOp = "~"
 )
 
 // StructuralJoin produces the rows from `Right` whose spans satisfy the

@@ -13,6 +13,9 @@ import (
 //
 //	StructuralChild  (`>`):  L.SpanID = R.ParentSpanID  (R's parent matches L)
 //	StructuralParent (`<`):  L.ParentSpanID = R.SpanID  (R is L's parent)
+//	StructuralSibling (`~`): L.ParentSpanID = R.ParentSpanID AND
+//	                        L.SpanID != R.SpanID (same parent, distinct
+//	                        spans)
 //
 // Recursive forms (`>>`, `<<`) need a recursive CTE / multi-level join
 // and surface as ErrUnsupported until the M4.2 follow-up.
@@ -31,6 +34,11 @@ func (e *emitter) emitStructuralJoin(j *chplan.StructuralJoin) error {
 		rel = "L." + spanCol + " = R." + parentCol
 	case chplan.StructuralParent:
 		rel = "L." + parentCol + " = R." + spanCol
+	case chplan.StructuralSibling:
+		// `A ~ B` — same trace, same parent, distinct spans. The
+		// distinct-span clause keeps a row from matching itself when
+		// both sides of the spanset select the same span.
+		rel = "L." + parentCol + " = R." + parentCol + " AND L." + spanCol + " != R." + spanCol
 	case chplan.StructuralDescendant, chplan.StructuralAncestor:
 		// `>>` / `<<` need a recursive walk through the parent chain —
 		// CH's WITH RECURSIVE syntax or a bounded-depth UNION of
