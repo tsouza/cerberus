@@ -427,6 +427,43 @@ func TestFormatQuery_BadQuery(t *testing.T) {
 	}
 }
 
+// TestQuery_Exemplars_Stub — Grafana panels poll
+// `/api/v1/query_exemplars` regardless of whether cerberus stores
+// exemplars; returning 404 / 500 paints a red banner. The stub
+// returns 200 + empty array; the panel renders normally without
+// exemplar overlays. Real exemplar storage lands in RC4
+// self-observability.
+func TestQuery_Exemplars_Stub(t *testing.T) {
+	t.Parallel()
+
+	q := &stubQuerier{}
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/v1/query_exemplars?query=up")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+	}
+
+	var parsed struct {
+		Status string        `json:"status"`
+		Data   []interface{} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v body=%s", err, body)
+	}
+	if parsed.Status != "success" {
+		t.Errorf("status: got %q, want success", parsed.Status)
+	}
+	if len(parsed.Data) != 0 {
+		t.Errorf("data: got %d entries, want empty stub", len(parsed.Data))
+	}
+}
+
 func TestQuery_UpstreamError(t *testing.T) {
 	t.Parallel()
 

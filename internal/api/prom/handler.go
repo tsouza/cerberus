@@ -75,6 +75,8 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	register("POST /api/v1/format_query", h.handleFormatQuery)
 	register("GET /api/v1/parse_query", h.handleParseQuery)
 	register("POST /api/v1/parse_query", h.handleParseQuery)
+	register("GET /api/v1/query_exemplars", h.handleQueryExemplars)
+	register("POST /api/v1/query_exemplars", h.handleQueryExemplars)
 }
 
 // handleFormatQuery implements `/api/v1/format_query`. Takes a `query`
@@ -127,6 +129,19 @@ func (h *Handler) handleParseQuery(w http.ResponseWriter, r *http.Request) {
 			"type": fmt.Sprintf("%T", expr),
 			"node": expr.String(),
 		},
+	})
+}
+
+// handleQueryExemplars implements `/api/v1/query_exemplars`. Cerberus
+// doesn't store exemplars yet (lands with RC4 self-observability),
+// but Grafana's panel UI polls this endpoint regardless — returning
+// 404 or 500 makes the panel render an unsightly red banner. Stub
+// returns an empty array with success status; Grafana renders the
+// panel without exemplar overlays.
+func (h *Handler) handleQueryExemplars(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, Response{
+		Status: "success",
+		Data:   []any{},
 	})
 }
 
