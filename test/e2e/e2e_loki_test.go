@@ -12,7 +12,7 @@ import (
 
 // TestLokiQueryStreamSelector verifies /loki/api/v1/query (M3.5)
 // returns the `streams` result type for a bare stream selector.
-// The seed (test/e2e/seed/otel_logs.sql) inserts 60 log records
+// The seed (test/e2e/seed/cmd/seed/main.go) inserts 60 log records
 // across 3 services in the last minute, so {service_name="api"}
 // must return at least one stream with values.
 func TestLokiQueryStreamSelector(t *testing.T) {
