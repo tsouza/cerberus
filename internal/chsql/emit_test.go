@@ -133,6 +133,26 @@ var plans = map[string]chplan.Node{
 		Count: 1000,
 	},
 
+	// OrderBy — single-key DESC. Tempo `/api/search/recent` lowers to
+	// Limit(OrderBy(Scan, Timestamp DESC), N).
+	"order_by_timestamp_desc": &chplan.Limit{
+		Input: &chplan.OrderBy{
+			Input: &chplan.Scan{Table: "otel_traces"},
+			Keys: []chplan.OrderKey{
+				{Expr: &chplan.ColumnRef{Name: "Timestamp"}, Desc: true},
+			},
+		},
+		Count: 20,
+	},
+	// OrderBy — two-key (composite sort).
+	"order_by_composite": &chplan.OrderBy{
+		Input: &chplan.Scan{Table: "otel_traces"},
+		Keys: []chplan.OrderKey{
+			{Expr: &chplan.ColumnRef{Name: "ServiceName"}, Desc: false},
+			{Expr: &chplan.ColumnRef{Name: "Timestamp"}, Desc: true},
+		},
+	},
+
 	"filter_map_access": &chplan.Filter{
 		Input: &chplan.Scan{Table: "otel_metrics_gauge"},
 		Predicate: &chplan.Binary{

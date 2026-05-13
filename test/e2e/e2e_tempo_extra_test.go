@@ -160,3 +160,35 @@ func TestTempoSearch_InvalidTraceQL(t *testing.T) {
 		t.Errorf("envelope: empty message")
 	}
 }
+
+// TestTempoSearch_Recent_Default — `/api/search/recent` returns most-
+// recent traces from the seed (7 spans), ordered by Timestamp DESC.
+// Honors the default limit (20 → returns all 7).
+func TestTempoSearch_Recent_Default(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp := getJSON(ctx, t, "/api/search/recent")
+	var parsed struct {
+		Traces []any `json:"traces"`
+	}
+	mustDecode(t, resp, &parsed)
+	if len(parsed.Traces) == 0 {
+		t.Fatalf("expected at least one recent trace from the seed; got 0")
+	}
+}
+
+// TestTempoSearch_Recent_Limit — explicit ?limit=N caps the result count.
+func TestTempoSearch_Recent_Limit(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp := getJSON(ctx, t, "/api/search/recent?limit=2")
+	var parsed struct {
+		Traces []any `json:"traces"`
+	}
+	mustDecode(t, resp, &parsed)
+	if len(parsed.Traces) > 2 {
+		t.Errorf("limit=2 should cap traces; got %d", len(parsed.Traces))
+	}
+}

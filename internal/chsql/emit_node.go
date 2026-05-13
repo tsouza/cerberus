@@ -147,6 +147,32 @@ func (e *emitter) emitLimit(l *chplan.Limit) error {
 	return nil
 }
 
+// emitOrderBy renders `SELECT * FROM (<input>) ORDER BY <k1> [DESC], …`.
+// Empty Keys is a programmer error — emit an error so the plan tree
+// doesn't silently lose its sort intent.
+func (e *emitter) emitOrderBy(o *chplan.OrderBy) error {
+	if len(o.Keys) == 0 {
+		return fmt.Errorf("%w: OrderBy with no keys", ErrUnsupported)
+	}
+	e.b.WriteString("SELECT * FROM ")
+	if err := e.emitSubquery(o.Input); err != nil {
+		return err
+	}
+	e.b.WriteString(" ORDER BY ")
+	for i, k := range o.Keys {
+		if i > 0 {
+			e.b.WriteString(", ")
+		}
+		if err := e.emitExpr(k.Expr); err != nil {
+			return err
+		}
+		if k.Desc {
+			e.b.WriteString(" DESC")
+		}
+	}
+	return nil
+}
+
 // writeIdent writes a ClickHouse identifier with backtick quoting, escaping
 // embedded backticks. ClickHouse accepts backtick-quoted identifiers in all
 // positions where an identifier is expected.

@@ -123,6 +123,14 @@ func rewriteChildren(n chplan.Node, fn func(chplan.Node) (chplan.Node, bool)) (c
 		cp := *v
 		cp.Input = newInput
 		return &cp, true
+	case *chplan.OrderBy:
+		newInput, ch := fn(v.Input)
+		if !ch {
+			return v, false
+		}
+		cp := *v
+		cp.Input = newInput
+		return &cp, true
 	}
 	return n, false
 }

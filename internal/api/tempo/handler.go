@@ -62,6 +62,7 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/echo", h.handleEcho)
 	mux.HandleFunc("GET /api/status/version", h.handleVersion)
 	mux.HandleFunc("GET /api/search", h.handleSearch)
+	mux.HandleFunc("GET /api/search/recent", h.handleSearchRecent)
 	mux.HandleFunc("GET /api/traces/{id}", h.handleTraceByID)
 }
 
@@ -111,6 +112,57 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 	samples, err := h.Client.Query(r.Context(), sqlStr, args...)
 	if err != nil {
 		h.Logger.Warn("cerberus tempo search CH query failed", "err", err.Error(), "sql", sqlStr)
+		writeError(w, http.StatusBadGateway, "", "", err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, SearchResponse{
+		Traces:  toTraceSummaries(samples),
+		Metrics: SearchMetrics{InspectedTraces: len(samples)},
+	})
+}
+
+// handleSearchRecent implements `GET /api/search/recent`. Returns the
+// most-recent N traces (per the seeded Timestamp) without applying a
+// TraceQL filter. Grafana's Tempo Search UI calls this on first page
+// load to populate the trace list.
+//
+// Honors `?limit=N` (default 20, max 200); ignores `start` / `end` for
+// now (the emitter doesn't thread them through OrderBy + Limit).
+func (h *Handler) handleSearchRecent(w http.ResponseWriter, r *http.Request) {
+	limit := int64(20)
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			if n > 200 {
+				n = 200
+			}
+			limit = n
+		}
+	}
+
+	s := h.Schema
+	// Plan: Limit(OrderBy(Scan(otel_traces) ORDER BY Timestamp DESC) LIMIT N)
+	plan := chplan.Node(&chplan.Scan{Table: s.SpansTable})
+	plan = &chplan.OrderBy{
+		Input: plan,
+		Keys: []chplan.OrderKey{
+			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Desc: true},
+		},
+	}
+	plan = &chplan.Limit{Input: plan, Count: limit}
+	plan = wrapWithSampleProjection(plan, s)
+	plan = h.Optimizer.Run(plan)
+
+	sqlStr, args, err := chsql.Emit(plan)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "", "", err)
+		return
+	}
+	h.Logger.Debug("cerberus tempo search/recent", "limit", limit, "sql", sqlStr, "args", args)
+
+	samples, err := h.Client.Query(r.Context(), sqlStr, args...)
+	if err != nil {
+		h.Logger.Warn("cerberus tempo search/recent CH query failed", "err", err.Error(), "sql", sqlStr)
 		writeError(w, http.StatusBadGateway, "", "", err)
 		return
 	}
