@@ -1,6 +1,7 @@
 package chsql_test
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -25,7 +26,7 @@ func TestEmitMetricsHistogramOverTimeBare(t *testing.T) {
 		Inner:       &chplan.Scan{Table: "otel_traces"},
 	}
 
-	sql, args, err := chsql.Emit(plan)
+	sql, args, err := chsql.Emit(context.Background(), plan)
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
@@ -69,7 +70,7 @@ func TestEmitMetricsHistogramOverTimeNonDuration(t *testing.T) {
 		Inner:       &chplan.Scan{Table: "otel_traces"},
 	}
 
-	sql, _, err := chsql.Emit(plan)
+	sql, _, err := chsql.Emit(context.Background(), plan)
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
@@ -96,7 +97,7 @@ func TestEmitMetricsHistogramOverTimeByLabel(t *testing.T) {
 		Inner:          &chplan.Scan{Table: "otel_traces"},
 	}
 
-	sql, _, err := chsql.Emit(plan)
+	sql, _, err := chsql.Emit(context.Background(), plan)
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
@@ -133,7 +134,7 @@ func TestEmitRangeWindowHistogramMatrix(t *testing.T) {
 		TimestampColumn: "Timestamp",
 	}
 
-	sql, _, err := chsql.Emit(plan)
+	sql, _, err := chsql.Emit(context.Background(), plan)
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
@@ -169,7 +170,7 @@ func TestEmitRangeWindowHistogramRejectsZeroStep(t *testing.T) {
 		},
 		TimestampColumn: "Timestamp",
 	}
-	_, _, err := chsql.Emit(plan)
+	_, _, err := chsql.Emit(context.Background(), plan)
 	if err == nil {
 		t.Fatalf("expected error for Step=0, got nil")
 	}
@@ -188,7 +189,7 @@ func TestEmitMetricsHistogramOverTimeRejectsNilAttr(t *testing.T) {
 		ValueAlias:  "Value",
 		Inner:       &chplan.Scan{Table: "otel_traces"},
 	}
-	_, _, err := chsql.Emit(plan)
+	_, _, err := chsql.Emit(context.Background(), plan)
 	if err == nil {
 		t.Fatalf("expected error for nil Attr, got nil")
 	}

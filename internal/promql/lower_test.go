@@ -1,6 +1,7 @@
 package promql_test
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -58,14 +59,14 @@ func TestLower(t *testing.T) {
 		// the fixed range.
 		var plan chplan.Node
 		if strings.Contains(query, "@ start()") || strings.Contains(query, "@ end()") {
-			plan, err = promql.LowerAt(expr, s, start, end)
+			plan, err = promql.LowerAt(context.Background(), expr, s, start, end)
 		} else {
-			plan, err = promql.Lower(expr, s)
+			plan, err = promql.Lower(context.Background(), expr, s)
 		}
 		if err != nil {
 			t.Fatalf("Lower(%q): %v", query, err)
 		}
-		sql, args, err := chsql.Emit(plan)
+		sql, args, err := chsql.Emit(context.Background(), plan)
 		if err != nil {
 			t.Fatalf("Emit: %v", err)
 		}
@@ -106,7 +107,7 @@ func TestLower_errors(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseExpr: %v", err)
 			}
-			if _, err := promql.Lower(expr, s); err == nil {
+			if _, err := promql.Lower(context.Background(), expr, s); err == nil {
 				t.Fatalf("expected error containing %q, got nil", tc.wantErr)
 			} else if !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("error %q does not contain %q", err.Error(), tc.wantErr)

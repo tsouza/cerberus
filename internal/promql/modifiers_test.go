@@ -1,6 +1,7 @@
 package promql_test
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -43,7 +44,7 @@ func TestLower_Modifiers_ErrorsWithoutRange(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseExpr: %v", err)
 			}
-			_, err = promql.Lower(expr, s)
+			_, err = promql.Lower(context.Background(), expr, s)
 			if err == nil {
 				t.Fatalf("expected error containing %q, got nil", tc.wantErr)
 			}
@@ -79,7 +80,7 @@ func TestLowerAt_StartEndModifiers(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseExpr(%q): %v", q, err)
 			}
-			if _, err := promql.LowerAt(expr, s, start, end); err != nil {
+			if _, err := promql.LowerAt(context.Background(), expr, s, start, end); err != nil {
 				t.Fatalf("LowerAt(%q): %v", q, err)
 			}
 		})

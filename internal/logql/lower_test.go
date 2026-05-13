@@ -1,6 +1,7 @@
 package logql_test
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -35,11 +36,11 @@ func TestLower(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ParseExpr(%q): %v", query, err)
 		}
-		plan, err := logql.Lower(expr, s)
+		plan, err := logql.Lower(context.Background(), expr, s)
 		if err != nil {
 			t.Fatalf("Lower(%q): %v", query, err)
 		}
-		sqlStr, args, err := chsql.Emit(plan)
+		sqlStr, args, err := chsql.Emit(context.Background(), plan)
 		if err != nil {
 			t.Fatalf("Emit: %v", err)
 		}

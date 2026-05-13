@@ -1,6 +1,7 @@
 package promql_test
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -59,7 +60,7 @@ func TestLower_HistogramQuantile_Native(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseExpr: %v", err)
 			}
-			plan, err := promql.Lower(expr, s)
+			plan, err := promql.Lower(context.Background(), expr, s)
 			if err != nil {
 				t.Fatalf("Lower: %v", err)
 			}
@@ -155,7 +156,7 @@ func TestLower_HistogramQuantile_NativeVsClassicRouting(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseExpr: %v", err)
 			}
-			plan, err := promql.Lower(expr, s)
+			plan, err := promql.Lower(context.Background(), expr, s)
 			if err != nil {
 				t.Fatalf("Lower: %v", err)
 			}
@@ -193,7 +194,7 @@ func TestLower_HistogramQuantile_NativeRoutingDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseExpr: %v", err)
 	}
-	plan, err := promql.Lower(expr, s)
+	plan, err := promql.Lower(context.Background(), expr, s)
 	if err != nil {
 		t.Fatalf("Lower: %v", err)
 	}
@@ -219,7 +220,7 @@ func TestLower_HistogramQuantile_NativeErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseExpr: %v", err)
 	}
-	if _, err := promql.Lower(expr, s); err == nil || !strings.Contains(err.Error(), "scalar-literal phi") {
+	if _, err := promql.Lower(context.Background(), expr, s); err == nil || !strings.Contains(err.Error(), "scalar-literal phi") {
 		t.Fatalf("expected scalar-literal phi error, got %v", err)
 	}
 }

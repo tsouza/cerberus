@@ -8,12 +8,19 @@
 package chsql
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
 
+	"go.opentelemetry.io/otel"
+
+	"github.com/tsouza/cerberus/internal/cerbtrace"
 	"github.com/tsouza/cerberus/internal/chplan"
 )
+
+// tracer emits the `emit` pipeline-stage span.
+var tracer = otel.Tracer("github.com/tsouza/cerberus/internal/chsql")
 
 // ErrUnsupported is returned when the emitter encounters a node or
 // expression it doesn't know how to render. Test fixtures cover every
@@ -23,15 +30,28 @@ var ErrUnsupported = errors.New("chsql: unsupported")
 
 // Emit serializes a chplan tree as a ClickHouse SQL statement plus the
 // positional argument list to bind. The SQL uses `?` placeholders.
-func Emit(n chplan.Node) (string, []any, error) {
+//
+// The ctx parameter carries the parent OpenTelemetry span (typically
+// the otelhttp request span). Emit wraps the rendering in an `emit`
+// pipeline-stage span so a query's flame graph shows how long SQL
+// serialization took. The emitted SQL byte length is surfaced as
+// `cerberus.sql_length` on the span.
+func Emit(ctx context.Context, n chplan.Node) (string, []any, error) {
+	_, span := tracer.Start(ctx, cerbtrace.SpanEmit)
+	defer span.End()
 	if n == nil {
-		return "", nil, fmt.Errorf("%w: nil node", ErrUnsupported)
+		err := fmt.Errorf("%w: nil node", ErrUnsupported)
+		span.RecordError(err)
+		return "", nil, err
 	}
 	e := &emitter{}
 	if err := e.emitNode(n); err != nil {
+		span.RecordError(err)
 		return "", nil, err
 	}
-	return e.b.String(), e.args, nil
+	sql := e.b.String()
+	span.SetAttributes(cerbtrace.AttrSQLLength.Int(len(sql)))
+	return sql, e.args, nil
 }
 
 type emitter struct {

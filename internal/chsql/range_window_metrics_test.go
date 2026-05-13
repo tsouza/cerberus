@@ -1,6 +1,7 @@
 package chsql_test
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -37,7 +38,7 @@ func TestRangeWindowMetricsExplicitTimeGrid(t *testing.T) {
 		TimestampColumn: "Timestamp",
 	}
 
-	sql, args, err := chsql.Emit(plan)
+	sql, args, err := chsql.Emit(context.Background(), plan)
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
@@ -78,7 +79,7 @@ func TestRangeWindowMetricsRejectsZeroStep(t *testing.T) {
 		TimestampColumn: "Timestamp",
 		// Step zero — should error.
 	}
-	_, _, err := chsql.Emit(plan)
+	_, _, err := chsql.Emit(context.Background(), plan)
 	if err == nil {
 		t.Fatalf("expected error for Step=0, got nil")
 	}
@@ -104,7 +105,7 @@ func TestRangeWindowMetricsRejectsBadStartEnd(t *testing.T) {
 		End:             time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC),
 		TimestampColumn: "Timestamp",
 	}
-	_, _, err := chsql.Emit(plan)
+	_, _, err := chsql.Emit(context.Background(), plan)
 	if err == nil {
 		t.Fatalf("expected error for End < Start, got nil")
 	}
@@ -134,7 +135,7 @@ func TestMetricsAggregateRequiresAttr(t *testing.T) {
 			if op == chplan.MetricsOpQuantileOverTime {
 				plan.Quantiles = []float64{0.95}
 			}
-			_, _, err := chsql.Emit(plan)
+			_, _, err := chsql.Emit(context.Background(), plan)
 			if err == nil {
 				t.Fatalf("expected error for %s without Attr", op)
 			}

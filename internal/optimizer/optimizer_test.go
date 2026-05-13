@@ -1,6 +1,7 @@
 package optimizer_test
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 	"time"
@@ -395,13 +396,13 @@ func TestOptimizer(t *testing.T) {
 			t.Fatalf("no plan registered for fixture %s; add it to optimizer_test.go", c.Name)
 		}
 
-		unoptSQL, _, err := chsql.Emit(input)
+		unoptSQL, _, err := chsql.Emit(context.Background(), input)
 		if err != nil {
 			t.Fatalf("Emit unoptimized: %v", err)
 		}
 
-		opt := optimizer.Default().Run(input)
-		optSQL, _, err := chsql.Emit(opt)
+		opt := optimizer.Default().Run(context.Background(), input)
+		optSQL, _, err := chsql.Emit(context.Background(), opt)
 		if err != nil {
 			t.Fatalf("Emit optimized: %v", err)
 		}
@@ -428,7 +429,7 @@ func TestDriver_FixpointTerminates(t *testing.T) {
 		}
 	}
 
-	out := optimizer.Default().Run(plan)
+	out := optimizer.Default().Run(context.Background(), plan)
 	// After ConstantFoldHeuristic + FilterFusion converges, the
 	// deeply-stacked `LitBool(true)` predicates collapse and the
 	// Filters fuse — we expect a single Filter(Scan) (a non-trivial

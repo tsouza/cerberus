@@ -1,6 +1,7 @@
 package promql_test
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -25,7 +26,7 @@ func TestLower_PredictLinear_OK(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseExpr: %v", err)
 	}
-	plan, err := promql.Lower(expr, s)
+	plan, err := promql.Lower(context.Background(), expr, s)
 	if err != nil {
 		t.Fatalf("Lower: %v", err)
 	}
@@ -42,7 +43,7 @@ func TestLower_PredictLinear_OK(t *testing.T) {
 
 	// Sanity check that the SQL emitter produces a non-empty,
 	// `simpleLinearRegression`-flavoured query.
-	sql, _, err := chsql.Emit(plan)
+	sql, _, err := chsql.Emit(context.Background(), plan)
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
@@ -94,7 +95,7 @@ func TestLower_PredictLinear_Errors(t *testing.T) {
 				}
 				return
 			}
-			_, err = promql.Lower(expr, s)
+			_, err = promql.Lower(context.Background(), expr, s)
 			if err == nil {
 				t.Fatalf("expected error containing %q, got nil", tc.wantErr)
 			}

@@ -1,6 +1,7 @@
 package optimizer_test
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -35,7 +36,7 @@ func TestAnalyzerBatch_RunsOnceAndVerifies(t *testing.T) {
 		optimizer.AnalyzerBatch("analyzer.test", optimizer.IdempotentTestAnalyzerRule{Calls: &calls}),
 	)
 
-	out := d.Run(&chplan.Scan{Table: "raw"})
+	out := d.Run(context.Background(), &chplan.Scan{Table: "raw"})
 
 	if s, ok := out.(*chplan.Scan); !ok || s.Table != "canon" {
 		t.Fatalf("expected Scan{Table:canon}, got %#v", out)
@@ -56,7 +57,7 @@ func TestAnalyzerBatch_NoOpRuleStillVerifies(t *testing.T) {
 		optimizer.AnalyzerBatch("analyzer.test", optimizer.IdempotentTestAnalyzerRule{Calls: &calls}),
 	)
 
-	d.Run(&chplan.Scan{Table: "already-canonical"})
+	d.Run(context.Background(), &chplan.Scan{Table: "already-canonical"})
 
 	if calls != 2 {
 		t.Fatalf("Analyzer strategy should always verify (2 calls per node), got %d", calls)
@@ -86,7 +87,7 @@ func TestAnalyzerBatch_PanicsOnNonIdempotentRule(t *testing.T) {
 	d := optimizer.NewWithBatches(
 		optimizer.AnalyzerBatch("analyzer.non-idempotent", optimizer.NonIdempotentTestAnalyzerRule{}),
 	)
-	d.Run(&chplan.Scan{Table: "a"})
+	d.Run(context.Background(), &chplan.Scan{Table: "a"})
 }
 
 func TestAnalyzerBatch_PanicsWhenStrategyHasNonAnalyzerRule(t *testing.T) {
@@ -120,7 +121,7 @@ func TestAnalyzerBatch_PanicsWhenStrategyHasNonAnalyzerRule(t *testing.T) {
 		Strategy: optimizer.Analyzer(),
 		Rules:    []optimizer.Rule{nonAnalyzerCountingRule{calls: &calls}},
 	})
-	d.Run(&chplan.Scan{Table: "t"})
+	d.Run(context.Background(), &chplan.Scan{Table: "t"})
 }
 
 func TestConstantFoldSemantic_FoldsLiteralArithmetic(t *testing.T) {
@@ -256,7 +257,7 @@ func TestDefault_AnalyzerRunsBeforeOptimizer(t *testing.T) {
 		},
 	})
 
-	out := optimizer.Default().Run(plan)
+	out := optimizer.Default().Run(context.Background(), plan)
 	f, ok := out.(*chplan.Filter)
 	if !ok {
 		t.Fatalf("expected *Filter, got %T", out)

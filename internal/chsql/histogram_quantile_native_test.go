@@ -1,6 +1,7 @@
 package chsql_test
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -23,7 +24,7 @@ func TestEmit_HistogramQuantileNative_NilInput(t *testing.T) {
 		PositiveOffsetColumn:       "PositiveOffset",
 		PositiveBucketCountsColumn: "PositiveBucketCounts",
 	}
-	_, _, err := chsql.Emit(plan)
+	_, _, err := chsql.Emit(context.Background(), plan)
 	if err == nil {
 		t.Fatalf("Emit(HistogramQuantileNative with nil Input) returned nil error")
 	}
@@ -64,7 +65,7 @@ func TestEmit_HistogramQuantileNative_MissingColumns(t *testing.T) {
 			t.Parallel()
 			h := *base
 			tc.mut(&h)
-			_, _, err := chsql.Emit(&h)
+			_, _, err := chsql.Emit(context.Background(), &h)
 			if err == nil {
 				t.Fatalf("Emit returned nil error for %s", tc.name)
 			}
@@ -100,7 +101,7 @@ func TestEmit_HistogramQuantileNative_ShapeSanity(t *testing.T) {
 		AttributesColumn:           "Attributes",
 		TimestampColumn:            "TimeUnix",
 	}
-	sql, _, err := chsql.Emit(plan)
+	sql, _, err := chsql.Emit(context.Background(), plan)
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
 	}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Cursor is a forward-only iterator over a Sample result set. Use it to
@@ -34,6 +35,11 @@ type rowsCursor struct {
 	rows driver.Rows
 	cur  Sample
 	err  error
+	// span is the `execute` pipeline-stage span opened by QueryCursor.
+	// Held by the cursor (rather than closed when QueryCursor returns)
+	// so that row decode + CH wire transit are billed to the execute
+	// stage — the iteration loop is part of the round-trip's cost.
+	span trace.Span
 }
 
 // Next advances the cursor to the next row. Returns false when the
@@ -72,6 +78,13 @@ func (c *rowsCursor) Err() error { return c.err }
 // Close releases the underlying driver.Rows. Safe to call multiple
 // times; subsequent calls are no-ops once the resource is released.
 func (c *rowsCursor) Close() error {
+	if c.span != nil {
+		if c.err != nil {
+			c.span.RecordError(c.err)
+		}
+		c.span.End()
+		c.span = nil
+	}
 	if c.rows == nil {
 		return nil
 	}
@@ -93,9 +106,12 @@ func (c *rowsCursor) Close() error {
 // for long-window `query_range` requests. Callers MUST Close the cursor
 // to return its connection to the pool.
 func (c *Client) QueryCursor(ctx context.Context, sql string, args ...any) (Cursor, error) {
+	ctx, span := startExecuteSpan(ctx, sql)
 	rows, err := c.conn.Query(ctx, sql, args...)
 	if err != nil {
+		span.RecordError(err)
+		span.End()
 		return nil, fmt.Errorf("chclient: query: %w", err)
 	}
-	return &rowsCursor{rows: rows}, nil
+	return &rowsCursor{rows: rows, span: span}, nil
 }

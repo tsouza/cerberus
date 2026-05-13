@@ -8,19 +8,34 @@
 package logql
 
 import (
+	"context"
 	"fmt"
 
 	loglib "github.com/grafana/loki/v3/pkg/logql/log"
 	"github.com/grafana/loki/v3/pkg/logql/syntax"
 	"github.com/prometheus/prometheus/model/labels"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
 
+	"github.com/tsouza/cerberus/internal/cerbtrace"
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
+// tracer emits the `lower` pipeline-stage span for LogQL lowering.
+var tracer = otel.Tracer("github.com/tsouza/cerberus/internal/logql")
+
 // Lower turns a parsed LogQL expression into a chplan tree.
-func Lower(expr syntax.Expr, s schema.Logs) (chplan.Node, error) {
-	return lower(expr, s)
+func Lower(ctx context.Context, expr syntax.Expr, s schema.Logs) (chplan.Node, error) {
+	_, span := tracer.Start(ctx, cerbtrace.SpanLower, trace.WithAttributes(cerbtrace.AttrQL.String("logql")))
+	defer span.End()
+	plan, err := lower(expr, s)
+	if err != nil {
+		span.RecordError(err)
+		return nil, err
+	}
+	span.SetAttributes(cerbtrace.AttrPlanNodeCount.Int(cerbtrace.CountNodes(plan)))
+	return plan, nil
 }
 
 func lower(expr syntax.Expr, s schema.Logs) (chplan.Node, error) {

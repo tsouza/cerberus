@@ -1,6 +1,7 @@
 package promql_test
 
 import (
+	"context"
 	"testing"
 
 	"github.com/prometheus/prometheus/promql/parser"
@@ -43,6 +44,6 @@ func FuzzParse(f *testing.F) {
 		if err != nil {
 			return
 		}
-		_, _ = promql.Lower(expr, s)
+		_, _ = promql.Lower(context.Background(), expr, s)
 	})
 }

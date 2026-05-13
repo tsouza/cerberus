@@ -1,6 +1,7 @@
 package promql_test
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -52,7 +53,7 @@ func TestLower_Aggregate_Errors(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseExpr: %v", err)
 			}
-			_, err = promql.Lower(expr, s)
+			_, err = promql.Lower(context.Background(), expr, s)
 			if err == nil {
 				t.Fatalf("expected error containing %q, got nil", tc.wantErr)
 			}

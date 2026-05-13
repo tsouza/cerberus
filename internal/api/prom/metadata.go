@@ -348,7 +348,7 @@ func (h *Handler) fetchLabelValuesMatched(ctx context.Context, name string, matc
 // matched rows in a `SELECT DISTINCT arrayJoin(mapKeys(Attributes))`
 // to extract its attribute keys.
 func (h *Handler) labelKeysForMatcher(ctx context.Context, matcher string) ([]string, error) {
-	innerSQL, args, err := h.matcherSQL(matcher)
+	innerSQL, args, err := h.matcherSQL(ctx, matcher)
 	if err != nil {
 		return nil, err
 	}
@@ -368,7 +368,7 @@ func (h *Handler) labelKeysForMatcher(ctx context.Context, matcher string) ([]st
 // the named label's distinct values. `__name__` resolves to MetricName;
 // other labels to `Attributes[<name>]`.
 func (h *Handler) labelValuesForMatcher(ctx context.Context, name, matcher string) ([]string, error) {
-	innerSQL, args, err := h.matcherSQL(matcher)
+	innerSQL, args, err := h.matcherSQL(ctx, matcher)
 	if err != nil {
 		return nil, err
 	}
@@ -407,17 +407,17 @@ func (h *Handler) labelValuesForMatcher(ctx context.Context, name, matcher strin
 
 // matcherSQL lowers a single matcher to its inner SQL + args. The caller
 // wraps this in whatever projection it needs (DISTINCT mapKeys, etc.).
-func (h *Handler) matcherSQL(matcher string) (string, []any, error) {
-	expr, err := h.parser.ParseExpr(matcher)
+func (h *Handler) matcherSQL(ctx context.Context, matcher string) (string, []any, error) {
+	expr, err := h.parseExpr(ctx, matcher)
 	if err != nil {
 		return "", nil, &apiError{kind: ErrBadData, err: err, status: http.StatusBadRequest}
 	}
-	plan, err := promql.Lower(expr, h.Schema)
+	plan, err := promql.Lower(ctx, expr, h.Schema)
 	if err != nil {
 		return "", nil, &apiError{kind: ErrBadData, err: err, status: http.StatusBadRequest}
 	}
-	plan = h.Optimizer.Run(plan)
-	sql, args, err := chsql.Emit(plan)
+	plan = h.Optimizer.Run(ctx, plan)
+	sql, args, err := chsql.Emit(ctx, plan)
 	if err != nil {
 		return "", nil, &apiError{kind: ErrInternal, err: err, status: http.StatusInternalServerError}
 	}

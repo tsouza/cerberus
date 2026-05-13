@@ -1,6 +1,7 @@
 package chsql_test
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 	"time"
@@ -146,7 +147,7 @@ func TestEmit_Prewhere(t *testing.T) {
 		if !ok {
 			t.Fatalf("no prewhere plan registered for fixture %s; add it to prewherePlans", c.Name)
 		}
-		sql, args, err := chsql.Emit(plan)
+		sql, args, err := chsql.Emit(context.Background(), plan)
 		if err != nil {
 			t.Fatalf("Emit failed: %v", err)
 		}
