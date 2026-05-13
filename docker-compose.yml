@@ -1,0 +1,140 @@
+# One-command local dev stack for cerberus.
+#
+#   docker compose up --wait
+#   open http://localhost:3000   # Grafana (admin/admin)
+#
+# Services:
+#   clickhouse   single-node CH server, OTel-aware (db=otel, user/pass=cerberus).
+#                Named volume `clickhouse-data` survives `docker compose down`
+#                so seed rows persist across restarts. Use `down -v` to wipe.
+#   cerberus     built from the repo-root `Dockerfile.local` (same image the
+#                k3d E2E uses). Auto-creates the OTel-CH schema on startup via
+#                CERBERUS_AUTO_CREATE_SCHEMA=true, so no separate init job.
+#   seed         one-shot Go program that inserts the deterministic OTel
+#                fixture rows from test/e2e/seed/cmd/seed. Exits after a
+#                successful run; doesn't block the long-lived services from
+#                being ready.
+#   grafana      pre-provisioned with cerberus as three datasources
+#                (Prometheus / Loki / Tempo). Provisioning files live under
+#                `deploy/grafana/compose/`.
+#
+# The OTLP exporter wiring (cerberus -> OTel Collector -> CH) is intentionally
+# omitted: the self-telemetry OTLP code path and the cerberus-self dashboard
+# both land later in RC4. Add an `otel-collector` service alongside cerberus
+# once those land — see deploy/k3s/otel-collector.yaml for the config shape.
+#
+# Default host port map:
+#   3000  -> grafana
+#   8080  -> cerberus (Prom + Loki + Tempo HTTP APIs)
+#   8123  -> clickhouse HTTP
+#   9000  -> clickhouse native protocol
+
+name: cerberus
+
+networks:
+  cerberus-dev:
+    driver: bridge
+
+volumes:
+  clickhouse-data:
+  go-mod-cache:
+
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8-alpine
+    networks: [cerberus-dev]
+    environment:
+      CLICKHOUSE_DB: otel
+      CLICKHOUSE_USER: cerberus
+      CLICKHOUSE_PASSWORD: cerberus
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8123/ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  cerberus:
+    image: cerberus:dev
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+    networks: [cerberus-dev]
+    environment:
+      # CERBERUS_HTTP_ADDR    HTTP listen addr for Prom/Loki/Tempo APIs.
+      CERBERUS_HTTP_ADDR: ":8080"
+      # CERBERUS_CH_*         ClickHouse connection inputs.
+      CERBERUS_CH_ADDR: "clickhouse:9000"
+      CERBERUS_CH_DATABASE: "otel"
+      CERBERUS_CH_USERNAME: "cerberus"
+      CERBERUS_CH_PASSWORD: "cerberus"
+      CERBERUS_CH_DIAL_TIMEOUT: "10s"
+      # CERBERUS_AUTO_CREATE_SCHEMA   apply the OTel-CH DDL on startup so a
+      # fresh CH volume is queryable without a separate migration step.
+      CERBERUS_AUTO_CREATE_SCHEMA: "true"
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    healthcheck:
+      # Distroless image has no shell or wget. Use the cerberus binary's
+      # own `--version` flag as a liveness signal until /readyz lands and
+      # we can shell out to a probe sidecar.
+      test: ["CMD", "/usr/local/bin/cerberus", "--version"]
+      interval: 5s
+      timeout: 2s
+      retries: 12
+      start_period: 5s
+
+  seed:
+    # Runs the same Go seeder the k3d E2E uses, against the compose CH.
+    # One-shot: exits 0 after inserting the deterministic fixture rows.
+    # Re-run with `docker compose run --rm seed` to re-apply on a fresh volume.
+    image: golang:1.26
+    networks: [cerberus-dev]
+    working_dir: /src
+    volumes:
+      - .:/src
+      - go-mod-cache:/go/pkg/mod
+    environment:
+      CH_ADDR: "clickhouse:9000"
+      CH_DATABASE: "otel"
+      CH_USERNAME: "cerberus"
+      CH_PASSWORD: "cerberus"
+      GOTOOLCHAIN: "auto"
+    command: ["go", "run", "./test/e2e/seed/cmd/seed"]
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    restart: "no"
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    networks: [cerberus-dev]
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_USERS_DEFAULT_THEME: dark
+      GF_FEATURE_TOGGLES_ENABLE: traceqlSearch
+    volumes:
+      - ./deploy/grafana/compose/datasources:/etc/grafana/provisioning/datasources:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      cerberus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health || exit 1"]
+      interval: 5s
+      timeout: 2s
+      retries: 12
+
