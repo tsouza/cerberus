@@ -140,19 +140,6 @@ func (e *emitter) emitAggregate(a *chplan.Aggregate) error {
 	return nil
 }
 
-// emitAggFunc renders an AggFunc into a fresh Builder and splices the
-// result into the emitter. The legacy method signature is preserved so
-// the (currently unported) RangeWindow / other callers continue to
-// work; R6.4+ converts the remaining call sites to writeAggFunc.
-func (e *emitter) emitAggFunc(af chplan.AggFunc) error {
-	b := NewBuilder()
-	if err := writeAggFunc(b, af); err != nil {
-		return err
-	}
-	e.splice(b)
-	return nil
-}
-
 // writeAggFunc renders `<name>[(<params>)](<args>) [AS <alias>]` into b
 // using the public Builder helpers. The parameterised-aggregate shape
 // (`quantile(0.95)(value)`, `quantiles(0.5, 0.9)(value)`, …) goes
