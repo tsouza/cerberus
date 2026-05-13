@@ -23,6 +23,15 @@ install-tools:
     go install golang.org/x/tools/cmd/goimports@{{GOIMPORTS_VERSION}}
     go install github.com/go-gremlins/gremlins/cmd/gremlins@{{GREMLINS_VERSION}}
 
+# Install lefthook + activate git hooks. Idempotent; run once after clone.
+# Hooks defined in lefthook.yml run gofumpt / goimports / markdownlint-cli2 --fix
+# on staged files at commit time, and commitlint on the commit message.
+# Heavy validation (go test / golangci-lint / go build) is NOT in the hook —
+# CI owns that. See CLAUDE.md § "No local validation; lefthook + CI own it."
+hooks-install:
+    go install github.com/evilmartians/lefthook@latest
+    lefthook install
+
 # === Build ===
 
 # Build cerberus into ./bin.

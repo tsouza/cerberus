@@ -31,8 +31,16 @@ git clone git@github.com-tsouza:tsouza/cerberus.git   # or HTTPS; SSH alias if y
 cd cerberus
 direnv allow                                          # loads .envrc; puts Go + GOTOOLCHAIN=auto on PATH
 just install-tools                                    # one-time: golangci-lint, gofumpt, goimports, gremlins
+just hooks-install                                    # one-time: lefthook (pre-commit formatters + commit-msg lint)
 just ci                                               # lint + test + build
 ```
+
+Hooks are lightweight: `pre-commit` runs `gofumpt -w` / `goimports -w` /
+`markdownlint-cli2 --fix` on staged files (auto-fixes; restages), and
+`commit-msg` runs `commitlint` so a malformed subject is caught locally
+instead of in CI. Heavy validation (`go test`, `golangci-lint run`,
+`go build`) deliberately is **not** in the hook — CI owns that. Don't
+pre-flight manually.
 
 If `direnv allow` complains, `eval "$(direnv export bash)"` once per shell.
 

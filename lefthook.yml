@@ -1,0 +1,39 @@
+# Lefthook config. Lightweight hooks only — heavy validation runs in CI.
+# Maintainer rule: never run `just test`, `golangci-lint run`, or `go build`
+# locally as a pre-commit step. Trust the hook + CI.
+#
+# Install: `just hooks-install` (one-shot; installs the lefthook binary
+# via `go install` and activates the git hooks). See also CLAUDE.md
+# § "No local validation; lefthook + CI own it."
+
+pre-commit:
+  parallel: true
+  commands:
+    gofumpt:
+      glob: "*.go"
+      stage_fixed: true
+      run: |
+        gofumpt -w {staged_files}
+    goimports:
+      glob: "*.go"
+      stage_fixed: true
+      run: |
+        goimports -w {staged_files}
+    markdownlint:
+      glob: "*.md"
+      stage_fixed: true
+      run: |
+        markdownlint-cli2 --fix {staged_files}
+
+commit-msg:
+  commands:
+    commitlint:
+      run: |
+        npx --no -- commitlint --edit {1}
+
+# Intentionally NOT in pre-commit:
+# - go build / go test / golangci-lint run / just test / just lint
+# Those run in CI (.github/workflows/ci.yml :: `check` + `lint` jobs).
+# Running them locally duplicates CI work + slows the inner loop. See
+# CLAUDE.md hard rule: "lefthook handles formatters; CI handles
+# everything else."
