@@ -26,8 +26,8 @@ import (
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/metric"
 	metricnoop "go.opentelemetry.io/otel/metric/noop"
-	"go.opentelemetry.io/otel/sdk/resource"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
@@ -188,7 +188,8 @@ func buildResource(ctx context.Context, cfg Config) (*resource.Resource, error) 
 	if err != nil || instance == "" {
 		instance = randomInstanceID()
 	}
-	return resource.New(ctx,
+	return resource.New(
+		ctx,
 		resource.WithAttributes(
 			semconv.ServiceName(name),
 			semconv.ServiceVersion(version),
