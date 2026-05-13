@@ -23,3 +23,9 @@ MD024:
 # code blocks.
 MD046:
   style: fenced
+
+# MD060 — table-column-style: pin "aligned" explicitly. The default
+# "consistent" mode picks style from the first table in each file, which
+# breaks when concurrent PRs add tables in mixed styles.
+MD060:
+  style: aligned
