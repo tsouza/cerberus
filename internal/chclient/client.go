@@ -54,6 +54,16 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 	return &Client{conn: conn}, nil
 }
 
+// Conn returns the underlying clickhouse-go/v2 driver connection. It is
+// exposed so packages that need the raw driver — notably
+// internal/schema/ddl, which calls driver.Conn.Exec on the upstream OTel
+// exporter DDL templates — can share the same pool the API layer uses,
+// instead of opening a second connection. Callers should treat the
+// returned connection as read-only (do not close it; rely on Client.Close).
+func (c *Client) Conn() driver.Conn {
+	return c.conn
+}
+
 // Close releases all pooled connections.
 func (c *Client) Close() error {
 	if c.conn == nil {
