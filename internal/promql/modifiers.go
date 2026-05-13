@@ -12,20 +12,48 @@ import (
 // evalAnchor describes the time-anchor that a VectorSelector's `@` and
 // `offset` modifiers resolve to. End is the absolute anchor (zero means
 // "use eval time, lower as `now64(9)` in SQL"); Offset is the shift to
-// subtract from End. `@ start()` / `@ end()` are not yet supported and
-// surface as an error.
+// subtract from End.
+//
+// `@ start()` / `@ end()` resolve to the query-range start / end times
+// when the API layer threads them through via [LowerAt]. Plain [Lower]
+// (no range context) rejects start/end modifiers because the anchor
+// times are not known at lowering time.
 type evalAnchor struct {
 	End    time.Time
 	Offset time.Duration
 }
 
-func anchorFromSelector(vs *parser.VectorSelector) (evalAnchor, error) {
+// lowerCtx carries the query-time information needed by some modifier
+// lowerings (`@ start()` / `@ end()`). Zero-value start/end means "no
+// range threaded", and the start/end modifier path returns an error so
+// callers see the misconfiguration rather than a silently wrong query.
+type lowerCtx struct {
+	start time.Time
+	end   time.Time
+}
+
+func anchorFromSelector(vs *parser.VectorSelector, ctx lowerCtx) (evalAnchor, error) {
 	a := evalAnchor{Offset: vs.OriginalOffset}
-	if vs.StartOrEnd != 0 {
-		return evalAnchor{}, fmt.Errorf("promql: `@ start()` / `@ end()` modifiers are not yet supported (lands when the API layer threads the query range through lowering)")
+	switch vs.StartOrEnd {
+	case parser.START:
+		if ctx.start.IsZero() {
+			return evalAnchor{}, fmt.Errorf("promql: `@ start()` modifier requires query range context (use LowerAt)")
+		}
+		a.End = ctx.start.UTC()
+	case parser.END:
+		if ctx.end.IsZero() {
+			return evalAnchor{}, fmt.Errorf("promql: `@ end()` modifier requires query range context (use LowerAt)")
+		}
+		a.End = ctx.end.UTC()
+	case 0:
+		// no start/end modifier; fall through to literal @ handling
+	default:
+		return evalAnchor{}, fmt.Errorf("promql: unexpected StartOrEnd token %v", vs.StartOrEnd)
 	}
 	if vs.Timestamp != nil {
-		// Upstream stores @ as Unix milliseconds.
+		// Upstream stores @ as Unix milliseconds. A literal @<ts>
+		// modifier takes precedence over start()/end() (they can't
+		// both be set — the parser enforces that).
 		a.End = time.UnixMilli(*vs.Timestamp).UTC()
 	}
 	return a, nil

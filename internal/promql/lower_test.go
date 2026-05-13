@@ -5,9 +5,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/prometheus/prometheus/promql/parser"
 
+	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -26,7 +28,18 @@ func TestLower(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
-	p := parser.NewParser(parser.Options{})
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+
+	// Fixed start/end used when a fixture's query contains `@ start()`
+	// or `@ end()`. Picking small Unix-epoch values keeps the generated
+	// SQL literals short and deterministic. Detected by string match;
+	// fixtures without those modifiers use plain Lower (no range).
+	const (
+		fixtureStartUnix = int64(100)
+		fixtureEndUnix   = int64(500)
+	)
+	start := time.Unix(fixtureStartUnix, 0).UTC()
+	end := time.Unix(fixtureEndUnix, 0).UTC()
 
 	spec.Walk(t, fixtureDir, func(t *testing.T, c *spec.Case) {
 		query, ok := c.Section("query.promql")
@@ -39,7 +52,16 @@ func TestLower(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ParseExpr(%q): %v", query, err)
 		}
-		plan, err := promql.Lower(expr, s)
+		// Fixtures that exercise `@ start()` / `@ end()` need the
+		// time-aware lowering entrypoint; everything else uses plain
+		// Lower so existing fixtures stay deterministic regardless of
+		// the fixed range.
+		var plan chplan.Node
+		if strings.Contains(query, "@ start()") || strings.Contains(query, "@ end()") {
+			plan, err = promql.LowerAt(expr, s, start, end)
+		} else {
+			plan, err = promql.Lower(expr, s)
+		}
 		if err != nil {
 			t.Fatalf("Lower(%q): %v", query, err)
 		}
@@ -61,7 +83,7 @@ func TestLower_errors(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
-	p := parser.NewParser(parser.Options{})
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
 
 	cases := []struct {
 		name    string

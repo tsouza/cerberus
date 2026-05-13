@@ -33,11 +33,11 @@ var instantFnCH = map[string]string{
 // wrap with a Project that maps the Value column through the CH function.
 //
 // Multi-arg variants of round and the clamp family are handled separately.
-func lowerInstantFn(c *parser.Call, s schema.Metrics, chFn string) (chplan.Node, error) {
+func lowerInstantFn(c *parser.Call, s schema.Metrics, chFn string, ctx lowerCtx) (chplan.Node, error) {
 	switch c.Func.Name {
 	case "round":
 		if len(c.Args) == 2 {
-			return lowerRoundToNearest(c, s)
+			return lowerRoundToNearest(c, s, ctx)
 		}
 	}
 
@@ -46,7 +46,7 @@ func lowerInstantFn(c *parser.Call, s schema.Metrics, chFn string) (chplan.Node,
 			c.Func.Name, len(c.Args))
 	}
 
-	inner, err := lower(c.Args[0], s)
+	inner, err := lower(c.Args[0], s, ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -62,13 +62,13 @@ func lowerInstantFn(c *parser.Call, s schema.Metrics, chFn string) (chplan.Node,
 // `round(Value / to_nearest) * to_nearest`. CH's native `round(v, N)`
 // rounds to N decimal places, not to a multiple, so we synthesise the
 // multiple-rounding semantics explicitly.
-func lowerRoundToNearest(c *parser.Call, s schema.Metrics) (chplan.Node, error) {
+func lowerRoundToNearest(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	toNearest, ok := tryScalarLiteral(c.Args[1])
 	if !ok {
 		return nil, fmt.Errorf("promql: round(v, to_nearest) requires a scalar literal to_nearest")
 	}
 
-	inner, err := lower(c.Args[0], s)
+	inner, err := lower(c.Args[0], s, ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -92,7 +92,7 @@ func lowerRoundToNearest(c *parser.Call, s schema.Metrics) (chplan.Node, error) 
 //
 // Bounds must be scalar literals at lowering time (computed bounds defer
 // to RC2 when scalars are first-class chplan nodes).
-func lowerClamp(c *parser.Call, s schema.Metrics) (chplan.Node, error) {
+func lowerClamp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	switch c.Func.Name {
 	case "clamp_max", "clamp_min":
 		if len(c.Args) != 2 {
@@ -102,7 +102,7 @@ func lowerClamp(c *parser.Call, s schema.Metrics) (chplan.Node, error) {
 		if !ok {
 			return nil, fmt.Errorf("promql: %s requires a scalar-literal bound", c.Func.Name)
 		}
-		inner, err := lower(c.Args[0], s)
+		inner, err := lower(c.Args[0], s, ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -128,7 +128,7 @@ func lowerClamp(c *parser.Call, s schema.Metrics) (chplan.Node, error) {
 		if !okMin || !okMax {
 			return nil, fmt.Errorf("promql: clamp requires scalar-literal bounds for min and max")
 		}
-		inner, err := lower(c.Args[0], s)
+		inner, err := lower(c.Args[0], s, ctx)
 		if err != nil {
 			return nil, err
 		}

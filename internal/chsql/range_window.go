@@ -46,9 +46,196 @@ func (e *emitter) emitRangeWindow(r *chplan.RangeWindow) error {
 		return e.emitRangeWindowOverTime(r)
 	case "log_rate":
 		return e.emitRangeWindowLogRate(r)
+	case "predict_linear":
+		return e.emitRangeWindowPredictLinear(r)
+	case "holt_winters":
+		return e.emitRangeWindowHoltWinters(r)
 	default:
 		return fmt.Errorf("%w: range function %q (lands in M1.1 follow-ups)", ErrUnsupported, r.Func)
 	}
+}
+
+// emitRangeWindowPredictLinear emits SQL for `predict_linear(v[range], t)`.
+//
+// The samples in the window become two parallel arrays: `xs` (the
+// per-sample offset from the anchor, in seconds; numbers grow more
+// negative as you go further back in time) and `ys` (the values).
+// ClickHouse's `simpleLinearRegression(x, y)` returns the
+// `(slope, intercept)` tuple of the least-squares fit. The predicted
+// value at horizon `t` seconds past the anchor is therefore
+// `intercept + slope * t`.
+//
+// PromQL semantics: < 2 samples in the window → drop the series (Prom
+// emits NaN; we mirror that with `nan`).
+//
+// The `t` scalar binds as a placeholder argument; range_seconds is
+// only used for the x-axis scale.
+func (e *emitter) emitRangeWindowPredictLinear(r *chplan.RangeWindow) error {
+	if len(r.Scalars) != 1 {
+		return fmt.Errorf("%w: predict_linear requires 1 scalar (t), got %d", ErrUnsupported, len(r.Scalars))
+	}
+	t := r.Scalars[0]
+	return e.emitWindowedArrayPairs(r, func() error {
+		// arrayMap to derive xs (seconds from anchor) and ys (values).
+		// window_pairs is Array(Tuple(DateTime64(9), Float64)).
+		e.b.WriteString("if(length(window_pairs) > 1, ")
+		e.b.WriteString("tupleElement(simpleLinearRegression(")
+		e.b.WriteString("arrayMap(p -> dateDiff('second', ")
+		e.b.WriteString(anchorExpr(r))
+		e.b.WriteString(", tupleElement(p, 1)), window_pairs), ")
+		e.b.WriteString("arrayMap(p -> tupleElement(p, 2), window_pairs)")
+		e.b.WriteString("), 2) + tupleElement(simpleLinearRegression(")
+		e.b.WriteString("arrayMap(p -> dateDiff('second', ")
+		e.b.WriteString(anchorExpr(r))
+		e.b.WriteString(", tupleElement(p, 1)), window_pairs), ")
+		e.b.WriteString("arrayMap(p -> tupleElement(p, 2), window_pairs)")
+		e.b.WriteString("), 1) * ")
+		if err := e.bindArg(t); err != nil {
+			return err
+		}
+		e.b.WriteString(", nan)")
+		return nil
+	})
+}
+
+// emitRangeWindowHoltWinters emits SQL for `holt_winters(v[range], sf, tf)`.
+//
+// Holt-Winters double-exponential smoothing applies the recurrence:
+//
+//	s[0] = y[0]
+//	b[0] = y[1] - y[0]
+//	s[i] = sf*y[i] + (1-sf)*(s[i-1] + b[i-1])
+//	b[i] = tf*(s[i] - s[i-1]) + (1-tf)*b[i-1]
+//	result = s[n-1]
+//
+// We encode this as an arrayFold over the window. CH's
+// `arrayFold(lambda(acc, x), arr, initial_acc)` carries a Tuple(s, b)
+// accumulator from the first element to the last; the first two
+// samples seed the accumulator and the third onward applies the
+// recurrence.
+//
+// PromQL behaviour: < 2 samples → NaN.
+func (e *emitter) emitRangeWindowHoltWinters(r *chplan.RangeWindow) error {
+	if len(r.Scalars) != 2 {
+		return fmt.Errorf("%w: holt_winters requires 2 scalars (sf, tf), got %d", ErrUnsupported, len(r.Scalars))
+	}
+	sf := r.Scalars[0]
+	tf := r.Scalars[1]
+	return e.emitWindowedArray(r, holtWintersValueExpr(sf, tf))
+}
+
+// holtWintersValueExpr renders the per-window Holt-Winters value
+// expression. Operates on `window_vals` (Array(Float64)) and uses
+// `arrayFold` to accumulate the (s, b) tuple. The fold's lambda treats
+// the first two iterations specially via an `index`-tracking trick:
+// the initial accumulator carries `s = ys[1]` and `b = ys[1] - ys[0]`,
+// matching Prometheus's seeding; subsequent iterations apply the
+// recurrence.
+//
+// The expression returns NaN when the window has < 2 samples (Prom
+// emits NaN there).
+func holtWintersValueExpr(sf, tf float64) string {
+	// We seed with the first two samples, then fold over the slice
+	// `window_vals[3:]` applying the recurrence. CH's arrayFold takes
+	// (lambda, array, initialAcc) and the lambda is (acc, elem).
+	//
+	// Numbers are formatted with FormatFloat to keep the SQL stable and
+	// avoid Sprintf-on-SQL. Bound floats inline (no `?`); these are
+	// query-shape parameters, not user data.
+	sfStr := formatFloat(sf)
+	oneMinusSf := formatFloat(1 - sf)
+	tfStr := formatFloat(tf)
+	oneMinusTf := formatFloat(1 - tf)
+	// Lambda body computes new (s, b) given prior (acc.s, acc.b, x).
+	// new_s = sf*x + (1-sf)*(acc.s + acc.b)
+	// new_b = tf*(new_s - acc.s) + (1-tf)*acc.b
+	// We expose them via let bindings inline.
+	return "if(length(window_vals) > 1, " +
+		"tupleElement(arrayFold(" +
+		"(acc, x) -> (" +
+		sfStr + " * x + " + oneMinusSf + " * (tupleElement(acc, 1) + tupleElement(acc, 2)), " +
+		tfStr + " * (" + sfStr + " * x + " + oneMinusSf + " * (tupleElement(acc, 1) + tupleElement(acc, 2)) - tupleElement(acc, 1)) + " + oneMinusTf + " * tupleElement(acc, 2)" +
+		"), arraySlice(window_vals, 3), (window_vals[2], window_vals[2] - window_vals[1])), 1), nan)"
+}
+
+// emitWindowedArrayPairs is a variant of emitWindowedArray for callers
+// that need `window_pairs` (Array(Tuple(ts, value))) rather than just
+// `window_vals` — e.g. `predict_linear` needs the per-sample timestamps
+// to compute x-axis offsets, not just the values.
+//
+// Generates the same Inner/Inner-middle layers as emitWindowedArray
+// but skips the middle layer that derives `window_vals` /
+// `counter_delta`; the outer SELECT can directly reference
+// `window_pairs`.
+func (e *emitter) emitWindowedArrayPairs(r *chplan.RangeWindow, valueWriter func() error) error {
+	if r.TimestampColumn == "" {
+		return fmt.Errorf("%w: RangeWindow.TimestampColumn unset", ErrUnsupported)
+	}
+	if r.ValueColumn == "" {
+		return fmt.Errorf("%w: RangeWindow.ValueColumn unset", ErrUnsupported)
+	}
+	if r.OuterRange > 0 {
+		return fmt.Errorf("%w: predict_linear over subquery not yet supported", ErrUnsupported)
+	}
+	endExpr := timeOrNow(r.End)
+	if r.Offset > 0 {
+		endExpr = "(" + endExpr + " - toIntervalNanosecond(" + strconv.FormatInt(r.Offset.Nanoseconds(), 10) + "))"
+	}
+	rangeNS := r.Range.Nanoseconds()
+	groupKeys, err := e.collectGroupBy(r.GroupBy)
+	if err != nil {
+		return err
+	}
+
+	// Outer SELECT — final value per series.
+	e.b.WriteString("SELECT ")
+	e.writeGroupSelectList(groupKeys)
+	e.b.WriteString(", ")
+	if err := valueWriter(); err != nil {
+		return err
+	}
+	e.b.WriteString(" AS value FROM (")
+
+	// Inner SELECT — arrayFilter to the [end-range, end] window.
+	e.b.WriteString("SELECT ")
+	e.writeGroupSelectList(groupKeys)
+	fmt.Fprintf(&e.b, ", arrayFilter(p -> tupleElement(p, 1) >= %s - toIntervalNanosecond(%d) AND tupleElement(p, 1) <= %s, series_array) AS window_pairs FROM (",
+		endExpr, rangeNS, endExpr)
+
+	// Innermost SELECT — groupArray of (ts, value), sorted.
+	e.b.WriteString("SELECT ")
+	e.writeGroupSelectList(groupKeys)
+	fmt.Fprintf(&e.b, ", arraySort(groupArray((%s, %s))) AS series_array FROM ",
+		quoteIdent(r.TimestampColumn), quoteIdent(r.ValueColumn))
+	if err := e.emitSubquery(r.Input); err != nil {
+		return err
+	}
+	if len(groupKeys) > 0 {
+		e.b.WriteString(" GROUP BY ")
+		e.writeGroupSelectList(groupKeys)
+	}
+	e.b.WriteByte(')')
+
+	e.b.WriteByte(')')
+	return nil
+}
+
+// anchorExpr returns the SQL expression for the RangeWindow's window
+// anchor (End - Offset, or now64(9) - Offset for the zero-End case).
+// Used by predict_linear to compute per-sample seconds-from-anchor.
+func anchorExpr(r *chplan.RangeWindow) string {
+	base := timeOrNow(r.End)
+	if r.Offset > 0 {
+		base = "(" + base + " - toIntervalNanosecond(" + strconv.FormatInt(r.Offset.Nanoseconds(), 10) + "))"
+	}
+	return base
+}
+
+// formatFloat renders a float64 in a CH-friendly form (no `e`-notation
+// unless the value needs it; trailing zeros stripped). Mirrors what
+// strconv.FormatFloat(v, 'f', -1, 64) does.
+func formatFloat(v float64) string {
+	return strconv.FormatFloat(v, 'f', -1, 64)
 }
 
 // emitRangeWindowIdentity emits the "last value in window" shape used

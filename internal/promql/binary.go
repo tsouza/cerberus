@@ -23,7 +23,7 @@ import (
 //     `group_right(...)` cardinality modifiers (RC2 cardinality edges)
 //
 // Logical ops (`and`/`or`/`unless`) defer to a later milestone.
-func lowerBinary(b *parser.BinaryExpr, s schema.Metrics) (chplan.Node, error) {
+func lowerBinary(b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	op, err := promBinaryOp(b.Op)
 	if err != nil {
 		return nil, err
@@ -36,11 +36,11 @@ func lowerBinary(b *parser.BinaryExpr, s schema.Metrics) (chplan.Node, error) {
 	case lhsIsScalar && rhsIsScalar:
 		return nil, fmt.Errorf("promql: scalar-only binary expressions not yet lowered (constant fold lands when scalars are first-class chplan nodes)")
 	case lhsIsScalar:
-		return lowerVectorScalar(b.RHS, s, op, lhsScalar, true /*scalarOnLeft*/, b.ReturnBool)
+		return lowerVectorScalar(b.RHS, s, op, lhsScalar, true /*scalarOnLeft*/, b.ReturnBool, ctx)
 	case rhsIsScalar:
-		return lowerVectorScalar(b.LHS, s, op, rhsScalar, false, b.ReturnBool)
+		return lowerVectorScalar(b.LHS, s, op, rhsScalar, false, b.ReturnBool, ctx)
 	default:
-		return lowerVectorVector(b, s, op)
+		return lowerVectorVector(b, s, op, ctx)
 	}
 }
 
@@ -55,7 +55,7 @@ func lowerBinary(b *parser.BinaryExpr, s schema.Metrics) (chplan.Node, error) {
 // promBinaryOp doesn't yet support anyway, but we surface a clean
 // "many-to-many matching not allowed" error to match Prometheus's wording
 // rather than the lower-level "binary op not yet supported".
-func lowerVectorVector(b *parser.BinaryExpr, s schema.Metrics, op chplan.BinaryOp) (chplan.Node, error) {
+func lowerVectorVector(b *parser.BinaryExpr, s schema.Metrics, op chplan.BinaryOp, ctx lowerCtx) (chplan.Node, error) {
 	if b.ReturnBool {
 		return nil, fmt.Errorf("promql: 'bool' modifier on vector-vector binary ops is not yet supported")
 	}
@@ -86,11 +86,11 @@ func lowerVectorVector(b *parser.BinaryExpr, s schema.Metrics, op chplan.BinaryO
 		// emitter's "many" aggregation handles by construction).
 	}
 
-	left, err := lower(b.LHS, s)
+	left, err := lower(b.LHS, s, ctx)
 	if err != nil {
 		return nil, err
 	}
-	right, err := lower(b.RHS, s)
+	right, err := lower(b.RHS, s, ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -186,8 +186,8 @@ func tryScalarLiteral(e parser.Expr) (float64, bool) {
 //
 // scalarOnLeft flips the operand order — important for non-commutative
 // ops like SUB and DIV and for comparisons (`5 > up` vs `up > 5`).
-func lowerVectorScalar(vec parser.Expr, s schema.Metrics, op chplan.BinaryOp, scalar float64, scalarOnLeft, returnBool bool) (chplan.Node, error) {
-	inner, err := lower(vec, s)
+func lowerVectorScalar(vec parser.Expr, s schema.Metrics, op chplan.BinaryOp, scalar float64, scalarOnLeft, returnBool bool, ctx lowerCtx) (chplan.Node, error) {
+	inner, err := lower(vec, s, ctx)
 	if err != nil {
 		return nil, err
 	}
