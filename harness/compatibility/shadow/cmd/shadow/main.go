@@ -59,29 +59,29 @@ func (noopOracle) Evaluate(_ context.Context, _ string) (shadow.VectorResult, er
 
 // QueryResult is the per-query record emitted in the report.
 type QueryResult struct {
-	Name             string      `json:"name"`
-	Expr             string      `json:"expr"`
-	Strategy         string      `json:"strategy"`
-	NativeError      string      `json:"native_error,omitempty"`
-	OracleError      string      `json:"oracle_error,omitempty"`
-	OracleSkipped    bool        `json:"oracle_skipped,omitempty"`
+	Name             string       `json:"name"`
+	Expr             string       `json:"expr"`
+	Strategy         string       `json:"strategy"`
+	NativeError      string       `json:"native_error,omitempty"`
+	OracleError      string       `json:"oracle_error,omitempty"`
+	OracleSkipped    bool         `json:"oracle_skipped,omitempty"`
 	Diff             *shadow.Diff `json:"diff,omitempty"`
-	NativeSeriesLen  int         `json:"native_series_len"`
-	OracleSeriesLen  int         `json:"oracle_series_len"`
-	DurationNativeMs int64       `json:"duration_native_ms"`
-	DurationOracleMs int64       `json:"duration_oracle_ms"`
+	NativeSeriesLen  int          `json:"native_series_len"`
+	OracleSeriesLen  int          `json:"oracle_series_len"`
+	DurationNativeMs int64        `json:"duration_native_ms"`
+	DurationOracleMs int64        `json:"duration_oracle_ms"`
 }
 
 // Report is the JSON written to --report.
 type Report struct {
-	Strategy        string        `json:"strategy"`
-	CerberusURL     string        `json:"cerberus_url"`
-	Corpus          string        `json:"corpus"`
-	TotalQueries    int           `json:"total_queries"`
-	Diffs           int           `json:"diffs"`
-	NativeErrors    int           `json:"native_errors"`
-	OracleSkipped   int           `json:"oracle_skipped"`
-	Queries         []QueryResult `json:"queries"`
+	Strategy      string        `json:"strategy"`
+	CerberusURL   string        `json:"cerberus_url"`
+	Corpus        string        `json:"corpus"`
+	TotalQueries  int           `json:"total_queries"`
+	Diffs         int           `json:"diffs"`
+	NativeErrors  int           `json:"native_errors"`
+	OracleSkipped int           `json:"oracle_skipped"`
+	Queries       []QueryResult `json:"queries"`
 }
 
 func main() {
@@ -265,11 +265,11 @@ func oneline(s string) string {
 }
 
 func writeReport(path string, r Report) error {
-	f, err := os.Create(path)
+	f, err := os.Create(path) //nolint:gosec // G304: report path is a trusted CLI argument
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	enc := json.NewEncoder(f)
 	enc.SetIndent("", "  ")
 	return enc.Encode(r)
@@ -290,15 +290,15 @@ func evaluateNative(ctx context.Context, c *http.Client, base, expr string, at t
 	q.Set("time", strconv.FormatInt(at.Unix(), 10))
 	u.RawQuery = q.Encode()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil) //nolint:gosec // G704: cerberus URL is a trusted CLI argument (--cerberus-url)
 	if err != nil {
 		return shadow.VectorResult{}, err
 	}
-	resp, err := c.Do(req)
+	resp, err := c.Do(req) //nolint:gosec // G704: see above
 	if err != nil {
 		return shadow.VectorResult{}, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode/100 != 2 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return shadow.VectorResult{}, fmt.Errorf("native HTTP %d: %s", resp.StatusCode, body)
@@ -329,8 +329,8 @@ func parsePromVector(resultType string, results []json.RawMessage) (shadow.Vecto
 	out := shadow.VectorResult{Series: make([]shadow.Series, 0, len(results))}
 	for i, raw := range results {
 		var entry struct {
-			Metric map[string]string `json:"metric"`
-			Value  [2]json.RawMessage `json:"value"`
+			Metric map[string]string    `json:"metric"`
+			Value  [2]json.RawMessage   `json:"value"`
 			Values [][2]json.RawMessage `json:"values"`
 		}
 		if err := json.Unmarshal(raw, &entry); err != nil {

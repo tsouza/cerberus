@@ -32,11 +32,11 @@ type Query struct {
 // Blank lines between sections are ignored. The first `-- query --` marker
 // starts the first entry.
 func LoadCorpus(path string) ([]Query, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) //nolint:gosec // G304: corpus path is a trusted CLI argument
 	if err != nil {
 		return nil, fmt.Errorf("open corpus %q: %w", path, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	return parseCorpus(f, path)
 }
 
