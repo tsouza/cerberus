@@ -352,9 +352,16 @@ func toMatrixStepGrid(samples []chclient.Sample, start, end time.Time, step time
 }
 
 // toStreamsWithTransform pivots samples into Loki's "streams" result shape
-// and optionally runs a per-line transform (line_format / decolorize) over
-// each line before grouping. Each distinct label set becomes one Stream;
-// values are sorted by ts ascending. Nil tx is the identity transform.
+// and optionally runs a per-row transform (line_format / decolorize /
+// label_format) before grouping. Each distinct *output* label set
+// becomes one Stream; values are sorted by ts ascending. Nil tx is
+// the identity transform.
+//
+// When the transform mutates labels (e.g., `| label_format`), the
+// grouping reflects the post-format label set — two rows that differ
+// only on a dropped label collapse into a single stream. Conversely,
+// two rows that share the original labels but diverge after a
+// template-set stay in distinct streams.
 //
 // Note: the synthesized projection writes the log Body string into
 // chclient.Sample.MetricName (since Sample.Value is float64). This is a
@@ -367,15 +374,16 @@ func toStreamsWithTransform(samples []chclient.Sample, tx lineTransform) []Strea
 	}
 	bySeries := map[string]*acc{}
 	for _, s := range samples {
-		key := canonicalKey(s.Labels)
+		line := s.MetricName
+		labels := s.Labels
+		if tx != nil {
+			line, labels = tx(line, labels)
+		}
+		key := canonicalKey(labels)
 		a, ok := bySeries[key]
 		if !ok {
-			a = &acc{labels: s.Labels}
+			a = &acc{labels: labels}
 			bySeries[key] = a
-		}
-		line := s.MetricName
-		if tx != nil {
-			line = tx(line, s.Labels)
 		}
 		a.values = append(a.values, [2]string{
 			strconv.FormatInt(s.Timestamp.UnixNano(), 10),
