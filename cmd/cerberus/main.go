@@ -18,6 +18,7 @@ import (
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/config"
 	"github.com/tsouza/cerberus/internal/schema"
+	"github.com/tsouza/cerberus/internal/schema/ddl"
 )
 
 // Version is set at build time by goreleaser.
@@ -55,6 +56,18 @@ func run(logger *slog.Logger) error {
 	defer func() {
 		_ = client.Close()
 	}()
+
+	if cfg.AutoCreateSchema {
+		logger.Info("auto-creating OTel ClickHouse schema",
+			"database", cfg.ClickHouse.Database,
+			"signals", "metrics,logs,traces",
+		)
+		applyCfg := ddl.Config{Database: cfg.ClickHouse.Database}
+		if err := ddl.ApplyWithConfig(ctx, client.Conn(), applyCfg, ddl.All); err != nil {
+			return fmt.Errorf("auto-create schema: %w", err)
+		}
+		logger.Info("OTel ClickHouse schema ready")
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
