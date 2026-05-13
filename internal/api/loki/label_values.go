@@ -81,7 +81,7 @@ func (h *Handler) handleLabelValues(w http.ResponseWriter, r *http.Request) {
 // out CH-side to avoid one round-trip-then-prune in Go.
 func buildLabelValuesSQL(s schema.Logs, name string, matchers []*labels.Matcher, start, end time.Time) (string, []any, error) {
 	sb := chsql.NewQuery().
-		Select(aliased(distinctMapAtFrag(s.ResourceAttributesColumn, name), "v")).
+		Select(chsql.As(distinctMapAtFrag(s.ResourceAttributesColumn, name), "v")).
 		From(chsql.Col(s.LogsTable))
 
 	pred := logql.SelectorPredicate(matchers, s)
@@ -106,22 +106,24 @@ func buildLabelValuesSQL(s schema.Logs, name string, matchers []*labels.Matcher,
 }
 
 // distinctMapAtFrag emits "DISTINCT `<col>`[?]" with name bound as a `?`
-// positional argument.
+// positional argument. DISTINCT is a SELECT-modifier keyword (not a
+// clause keyword); it has no typed slot of its own, so it rides on
+// Raw + a typed map-access Frag.
 func distinctMapAtFrag(col, name string) chsql.Frag {
-	return func(b *chsql.Builder) {
-		b.WriteSQL("DISTINCT ")
-		b.MapAt(col, name)
-	}
+	return chsql.Concat(chsql.Raw("DISTINCT "), mapAtFrag(col, name))
 }
 
 // nonEmptyMapAtFrag emits "`<col>`[?] != ?" binding both the map key and
-// the empty-string sentinel as positional arguments.
+// the empty-string sentinel as positional arguments. Composed via the
+// typed Neq operator so neither operand reaches a raw SQL literal.
 func nonEmptyMapAtFrag(col, name string) chsql.Frag {
-	return func(b *chsql.Builder) {
-		b.MapAt(col, name)
-		b.WriteSQL(" != ")
-		b.Arg("")
-	}
+	return chsql.Neq(mapAtFrag(col, name), chsql.Lit(""))
+}
+
+// mapAtFrag adapts Builder.MapAt into a Frag — emits "`<col>`[?]" with
+// the key bound as a positional argument.
+func mapAtFrag(col, name string) chsql.Frag {
+	return func(b *chsql.Builder) { b.MapAt(col, name) }
 }
 
 // labelNameFromPath extracts <name> from /loki/api/v1/label/<name>/values.

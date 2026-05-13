@@ -118,19 +118,18 @@ func buildIndexStatsSQL(s schema.Logs, matchers []*labels.Matcher, start, end ti
 	return sqlStr, args, nil
 }
 
-// aggFrag returns a Frag that emits "<fn>(`<col>`)".
+// aggFrag returns a Frag that emits "<fn>(`<col>`)" — composed via
+// typed Concat + Paren so the SQL stream stays inside the chsql surface
+// (no raw clause-keyword cosplay). fn is a CH function name and is
+// emitted verbatim via Raw (same trust contract as Cast's type name).
 func aggFrag(fn, col string) chsql.Frag {
-	return func(b *chsql.Builder) {
-		b.WriteSQL(fn)
-		b.WriteSQL("(")
-		b.Ident(col)
-		b.WriteSQL(")")
-	}
+	return chsql.Concat(chsql.Raw(fn), chsql.Paren(chsql.Col(col)))
 }
 
-// countStar returns a Frag that emits "count()".
+// countStar returns a Frag that emits "count()". The token has no
+// composable inner shape so it lives as a Raw escape.
 func countStar() chsql.Frag {
-	return func(b *chsql.Builder) { b.WriteSQL("count()") }
+	return chsql.Raw("count()")
 }
 
 // bytesAggFrag emits "sum(length(`<body>`))" — the bytes-volume
@@ -139,21 +138,28 @@ func countStar() chsql.Frag {
 // rounding noise. If a deployment compresses Body and wants exact bytes
 // the schema override can swap this column.
 func bytesAggFrag(bodyCol string) chsql.Frag {
-	return func(b *chsql.Builder) {
-		b.WriteSQL("sum(length(")
-		b.Ident(bodyCol)
-		b.WriteSQL("))")
-	}
+	return chsql.Concat(
+		chsql.Raw("sum"),
+		chsql.Paren(chsql.Concat(
+			chsql.Raw("length"),
+			chsql.Paren(chsql.Col(bodyCol)),
+		)),
+	)
 }
 
 // timeBoundFrag emits "`<col>` <op> toDateTime64('YYYY-MM-DD HH:MM:SS.fffffffff', 9)".
+// Only ">=" and "<=" are used by callers; anything else panics so a
+// typo lands at boot rather than as a silent SQL syntax error.
 func timeBoundFrag(col, op string, t time.Time) chsql.Frag {
-	return func(b *chsql.Builder) {
-		b.Ident(col)
-		b.WriteSQL(" ")
-		b.WriteSQL(op)
-		b.WriteSQL(" ")
-		b.DateTime64Lit(t)
+	left := chsql.Col(col)
+	right := func(b *chsql.Builder) { b.DateTime64Lit(t) }
+	switch op {
+	case ">=":
+		return chsql.Gte(left, right)
+	case "<=":
+		return chsql.Lte(left, right)
+	default:
+		panic("loki.timeBoundFrag: unsupported op " + op)
 	}
 }
 

@@ -123,7 +123,7 @@ func (h *Handler) handleDetectedFields(w http.ResponseWriter, r *http.Request) {
 // a top-N scan on the primary key, comparable to /index/stats.
 func buildDetectedFieldsSQL(s schema.Logs, matchers []*labels.Matcher, start, end time.Time, lineLimit int) (string, []any, error) {
 	sb := chsql.NewQuery().
-		Select(aliased(chsql.Col(s.BodyColumn), "line")).
+		Select(chsql.As(chsql.Col(s.BodyColumn), "line")).
 		From(chsql.Col(s.LogsTable))
 
 	pred := logql.SelectorPredicate(matchers, s)

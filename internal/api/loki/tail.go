@@ -312,7 +312,7 @@ func buildTailSQL(s schema.Logs, matchers []*labels.Matcher, cursor, end time.Ti
 // placeholder Value column so the chclient.Sample scanner reads a
 // stable Float64 instead of CH's UInt8 default for a bare literal `0`.
 func toFloat64Zero() chsql.Frag {
-	return func(b *chsql.Builder) { b.WriteSQL("toFloat64(0)") }
+	return chsql.Raw("toFloat64(0)")
 }
 
 // parseTailDelayFor reads the optional `delay_for` query param.
