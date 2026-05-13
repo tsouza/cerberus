@@ -126,7 +126,7 @@ func TestLower_HistogramQuantile_Errors(t *testing.T) {
 		{
 			name:    "non-VectorSelector arg",
 			query:   `histogram_quantile(0.5, vector(1))`,
-			wantErr: "classic-histogram VectorSelector",
+			wantErr: "histogram VectorSelector",
 		},
 	}
 	for _, tc := range cases {

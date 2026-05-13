@@ -98,6 +98,10 @@ type Metrics struct {
 	// ZeroCountColumn names the count of observations that landed in
 	// the zero bucket (UInt64).
 	ZeroCountColumn string
+	// ZeroThresholdColumn names the upper edge of the zero bucket
+	// (Float64). Observations whose absolute value is at or below this
+	// threshold are counted in ZeroCount.
+	ZeroThresholdColumn string
 	// PositiveOffsetColumn names the bucket-index offset for the
 	// positive-range buckets (Int32).
 	PositiveOffsetColumn string
@@ -123,6 +127,18 @@ type Metrics struct {
 	// SpanId / TraceId) follow Nested-access conventions
 	// (`Exemplars.SpanId`, etc.).
 	ExemplarsColumn string
+
+	// ExpHistogramSuffix is the metric-name suffix used to route a
+	// PromQL `histogram_quantile(phi, metric)` call to the exponential
+	// (native) histogram table instead of the classic-histogram table.
+	// PromQL itself has no naming convention for exp histograms (the
+	// upstream Prom distinguishes them by wire-format tag), so cerberus
+	// adopts a simple suffix-based heuristic for the v0.1 seed:
+	// `foo_exp_hist` reads from `otel_metrics_exp_histogram`, everything
+	// else stays on the classic table. Override the suffix via Config
+	// for deployments that follow a different convention; an empty
+	// string disables the routing entirely.
+	ExpHistogramSuffix string
 }
 
 // DefaultOTelMetrics returns the schema produced by the upstream OTel
@@ -159,13 +175,25 @@ func DefaultOTelMetrics() Metrics {
 		IsMonotonicColumn:            "IsMonotonic",
 		ScaleColumn:                  "Scale",
 		ZeroCountColumn:              "ZeroCount",
+		ZeroThresholdColumn:          "ZeroThreshold",
 		PositiveOffsetColumn:         "PositiveOffset",
 		PositiveBucketCountsColumn:   "PositiveBucketCounts",
 		NegativeOffsetColumn:         "NegativeOffset",
 		NegativeBucketCountsColumn:   "NegativeBucketCounts",
 		ValueAtQuantilesColumn:       "ValueAtQuantiles",
 		ExemplarsColumn:              "Exemplars",
+		ExpHistogramSuffix:           "_exp_hist",
 	}
+}
+
+// IsExpHistogramMetric reports whether the given metric name should be
+// routed to the exponential / native histogram table. Returns false if
+// ExpHistogramSuffix is empty (routing disabled).
+func (m Metrics) IsExpHistogramMetric(metricName string) bool {
+	if m.ExpHistogramSuffix == "" {
+		return false
+	}
+	return hasSuffix(metricName, m.ExpHistogramSuffix)
 }
 
 // TableFor picks which metrics table a PromQL metric name belongs in. For

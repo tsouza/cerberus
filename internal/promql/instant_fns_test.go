@@ -36,7 +36,7 @@ func TestLower_InstantFn_Errors(t *testing.T) {
 		{
 			name:    "histogram_quantile non-selector arg",
 			query:   `histogram_quantile(0.9, vector(1))`,
-			wantErr: "second argument must be a classic-histogram VectorSelector",
+			wantErr: "second argument must be a histogram VectorSelector",
 		},
 		{
 			name:    "clamp_max needs scalar bound",

@@ -9,18 +9,22 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
-// lowerHistogramQuantile handles `histogram_quantile(phi, X)`. For PR G,
-// X must be a *parser.VectorSelector naming a classic histogram metric
-// (target table `otel_metrics_histogram` per the OTel-CH schema). Native
-// (exp) histograms route in via PR H — the dispatch shape here is
-// deliberately minimal so adding the exp variant later is a small
-// addition: check the target table, fork to the exp path.
+// lowerHistogramQuantile handles `histogram_quantile(phi, X)`. X must
+// be a *parser.VectorSelector naming a histogram metric — classic
+// (target table `otel_metrics_histogram` per the OTel-CH schema) or
+// exponential / native (target table `otel_metrics_exp_histogram`).
 //
-// Lowering produces a chplan.HistogramQuantile node whose Input is a
-// scan/filter against the histogram table, surfacing the per-row
-// `BucketCounts` (Array(UInt64)) and `ExplicitBounds` (Array(Float64))
-// columns. The chsql emitter renders the linear-interpolation arithmetic
-// (cumulative-sum + bucket lookup + bound interpolation) on those arrays.
+// Routing decision: the metric-name suffix configured on
+// schema.Metrics.ExpHistogramSuffix (default `"_exp_hist"`) selects
+// the native path; everything else falls through to the classic
+// path. PromQL itself has no naming convention for exp histograms;
+// this is a cerberus-side heuristic, configurable per deployment.
+//
+// Lowering produces either a chplan.HistogramQuantile (classic) or
+// chplan.HistogramQuantileNative (exp). The chsql emitter renders the
+// quantile arithmetic in two flavours: linear interpolation across
+// ExplicitBounds × BucketCounts for the classic case, log-scale
+// midpoint estimation across PositiveBucketCounts for the native case.
 //
 // The result is wrapped in a Project to match the Sample contract
 // downstream — `MetricName=”` (Prom quantile drops __name__),
@@ -37,7 +41,11 @@ func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chp
 	}
 	vs, ok := unwrapVectorSelector(c.Args[1])
 	if !ok {
-		return nil, fmt.Errorf("promql: histogram_quantile second argument must be a classic-histogram VectorSelector (native + aggregated forms land in PR H / RC3)")
+		return nil, fmt.Errorf("promql: histogram_quantile second argument must be a histogram VectorSelector (aggregated forms land in RC3)")
+	}
+
+	if s.IsExpHistogramMetric(vs.Name) {
+		return lowerHistogramQuantileNative(vs, phi, s, ctx)
 	}
 
 	// Target the classic-histogram table directly — the metric name is
@@ -80,6 +88,60 @@ func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chp
 	// Wrap in a Project to match the Sample-row contract downstream
 	// (MetricName='', Attributes=<gkey>, TimeUnix=now64(9), Value=value).
 	// Mirrors wrapAggregateForSample in lower.go.
+	return &chplan.Project{
+		Input: hq,
+		Projections: []chplan.Projection{
+			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
+			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+			{Expr: &chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}}, Alias: s.TimestampColumn},
+			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
+		},
+	}, nil
+}
+
+// lowerHistogramQuantileNative builds the chplan.HistogramQuantileNative
+// IR for the exp-histogram path. Mirrors the classic-path scaffold:
+// Scan or Filter against the exp-histogram table, then wrap in a
+// Project to satisfy the Sample-row contract downstream.
+func lowerHistogramQuantileNative(vs *parser.VectorSelector, phi float64, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	scan := &chplan.Scan{Table: s.ExpHistogramTable}
+	pred := buildPredicate(vs.LabelMatchers, s)
+	if hasModifier(vs) {
+		anchor, err := anchorFromSelector(vs, ctx)
+		if err != nil {
+			return nil, err
+		}
+		timeBound := timeBoundExpr(s.TimestampColumn, anchor)
+		if pred == nil {
+			pred = timeBound
+		} else {
+			pred = &chplan.Binary{Op: chplan.OpAnd, Left: pred, Right: timeBound}
+		}
+	}
+	var input chplan.Node = scan
+	if pred != nil {
+		input = &chplan.Filter{Input: scan, Predicate: pred}
+	}
+
+	hq := &chplan.HistogramQuantileNative{
+		Input:                      input,
+		Phi:                        phi,
+		ScaleColumn:                s.ScaleColumn,
+		ZeroCountColumn:            s.ZeroCountColumn,
+		ZeroThresholdColumn:        s.ZeroThresholdColumn,
+		PositiveOffsetColumn:       s.PositiveOffsetColumn,
+		PositiveBucketCountsColumn: s.PositiveBucketCountsColumn,
+		NegativeOffsetColumn:       s.NegativeOffsetColumn,
+		NegativeBucketCountsColumn: s.NegativeBucketCountsColumn,
+		GroupBy: []chplan.Expr{
+			&chplan.ColumnRef{Name: s.AttributesColumn},
+		},
+		GroupByAliases:   []string{s.AttributesColumn},
+		MetricNameColumn: s.MetricNameColumn,
+		AttributesColumn: s.AttributesColumn,
+		TimestampColumn:  s.TimestampColumn,
+	}
+
 	return &chplan.Project{
 		Input: hq,
 		Projections: []chplan.Projection{
