@@ -23,7 +23,7 @@ import (
 // (cumulative-sum + bucket lookup + bound interpolation) on those arrays.
 //
 // The result is wrapped in a Project to match the Sample contract
-// downstream — `MetricName=''` (Prom quantile drops __name__),
+// downstream — `MetricName=”` (Prom quantile drops __name__),
 // `Attributes` reconstructed from the per-row Attributes column,
 // `TimeUnix = now64(9)` (instant eval anchor; M2.1 plumbs real eval
 // time), `Value` from the interpolated quantile.
@@ -108,4 +108,3 @@ func unwrapVectorSelector(e parser.Expr) (*parser.VectorSelector, bool) {
 		}
 	}
 }
-
