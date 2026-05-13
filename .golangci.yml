@@ -14,6 +14,15 @@ linters:
     - gosec
     - revive
     - misspell
+    # bodyclose: catches `resp, _ := client.Do(req); ...` without
+    #   `defer resp.Body.Close()`. Cerberus does a lot of HTTP — leaks
+    #   here are easy to introduce.
+    - bodyclose
+    # errorlint: flags naked `%v` formatting of error values and
+    #   non-wrapped error comparisons. Pushes toward `errors.Is/As` +
+    #   `fmt.Errorf("...: %w", err)` which gives consumers structured
+    #   error handling.
+    - errorlint
   settings:
     revive:
       rules:
@@ -21,6 +30,12 @@ linters:
         # docs cover intent; method comments only appear where WHY is non-obvious.
         - name: exported
           disabled: true
+    errorlint:
+      # Allow comparing error sentinel values via `errors.Is`; flag
+      # everything else (`err == sentinel` becomes a finding).
+      errorf: true
+      asserts: true
+      comparison: true
   exclusions:
     rules:
       - path: _test\.go
@@ -28,6 +43,8 @@ linters:
           - gosec
           - revive
           - errcheck
+          - bodyclose
+          - errorlint
       - path: cmd/
         linters:
           - revive
