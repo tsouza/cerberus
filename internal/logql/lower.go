@@ -82,6 +82,18 @@ func lowerStage(stage syntax.StageExpr, s schema.Logs) (chplan.Expr, error) {
 		return lowerLineFilter(st, s)
 	case *syntax.LabelFilterExpr:
 		return lowerLabelFilter(st, s)
+	case *syntax.LineFmtExpr:
+		// `| line_format "{{.x}}"` is a post-fetch transform —
+		// applied in the API handler over the streams response, not
+		// in SQL. Return no predicate so the lowering doesn't error
+		// on it but the handler still sees the LineFmtExpr in the
+		// original parsed expression.
+		_ = st
+		return nil, nil
+	case *syntax.DecolorizeExpr:
+		// Same post-fetch shape: strip ANSI codes from each line
+		// after the rows return. No SQL impact.
+		return nil, nil
 	case *syntax.LineParserExpr:
 		return nil, fmt.Errorf("logql: parser stage `| %s` is not yet supported (json/logfmt/regexp/pattern parsers deferred from M3.2; revisit in RC3 alongside chsql JSONExtract/extractKeyValuePairs helpers)", st.Op)
 	case *syntax.LogfmtParserExpr:

@@ -246,9 +246,13 @@ func buildInstantData(expr syntax.Expr, samples []chclient.Sample, ts time.Time,
 			Result:     toVector(samples, ts),
 		}, nil
 	}
+	tx, err := postProcessExtract(expr)
+	if err != nil {
+		return nil, &apiError{kind: ErrBadData, err: err, status: http.StatusBadRequest}
+	}
 	return &QueryData{
 		ResultType: "streams",
-		Result:     toStreams(samples),
+		Result:     toStreamsWithTransform(samples, tx),
 	}, nil
 }
 
@@ -262,9 +266,13 @@ func buildRangeData(expr syntax.Expr, samples []chclient.Sample, start, end time
 			Result:     toMatrixStepGrid(samples, start, end, step),
 		}, nil
 	}
+	tx, err := postProcessExtract(expr)
+	if err != nil {
+		return nil, &apiError{kind: ErrBadData, err: err, status: http.StatusBadRequest}
+	}
 	return &QueryData{
 		ResultType: "streams",
-		Result:     toStreams(samples),
+		Result:     toStreamsWithTransform(samples, tx),
 	}, nil
 }
 
@@ -351,6 +359,13 @@ func toMatrixStepGrid(samples []chclient.Sample, start, end time.Time, step time
 // short-term hack — the proper fix is a new chclient row decoder for
 // log-stream output, which lands with the stream-aware decoder PR.
 func toStreams(samples []chclient.Sample) []Stream {
+	return toStreamsWithTransform(samples, nil)
+}
+
+// toStreamsWithTransform is the backbone of toStreams that optionally
+// runs a per-line transform (line_format / decolorize) over each line
+// before grouping. Nil tx is the identity transform (= toStreams).
+func toStreamsWithTransform(samples []chclient.Sample, tx lineTransform) []Stream {
 	type acc struct {
 		labels map[string]string
 		values [][2]string
@@ -363,9 +378,13 @@ func toStreams(samples []chclient.Sample) []Stream {
 			a = &acc{labels: s.Labels}
 			bySeries[key] = a
 		}
+		line := s.MetricName
+		if tx != nil {
+			line = tx(line, s.Labels)
+		}
 		a.values = append(a.values, [2]string{
 			strconv.FormatInt(s.Timestamp.UnixNano(), 10),
-			s.MetricName,
+			line,
 		})
 	}
 	out := make([]Stream, 0, len(bySeries))
