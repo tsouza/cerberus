@@ -248,14 +248,14 @@ This is a *decision* milestone, not a code milestone. Its single deliverable is 
 
 4. **Build vs buy decision matrix.** For each axis, score third-party (`huandu/go-sqlbuilder`) vs custom (`internal/chsql.Builder`):
 
-   | Axis                         | Third-party                       | Custom                              | Notes                                                                                                                                |
-   | ---------------------------- | --------------------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-   | CH idiom coverage out-of-box | partial                           | full                                | Both need MapAt/MapKeys/Lambda/ParamAgg/PREWHERE helpers; third-party also requires bridging its API to those — ~30–40% of the value is custom either way |
-   | Upstream maintenance         | shared                            | ours                                | `huandu/go-sqlbuilder` is actively maintained but small; if it stalls we fork                                                        |
-   | Onboarding                   | docs exist                        | we write docs                       | Third-party has a larger surface to learn                                                                                            |
-   | API match to chplan IR       | impedance                         | natural                             | Custom builder can be designed *around* chplan node shapes                                                                           |
-   | Code volume                  | smaller core, larger glue         | larger core, smaller glue           | Net LoC is similar                                                                                                                   |
-   | Security guarantees          | type system encodes               | we encode them                      | Equivalent if we're disciplined                                                                                                      |
+   | Axis                         | Third-party               | Custom                    | Notes                                                                                                                                                     |
+   | ---------------------------- | ------------------------- | ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+   | CH idiom coverage out-of-box | partial                   | full                      | Both need MapAt/MapKeys/Lambda/ParamAgg/PREWHERE helpers; third-party also requires bridging its API to those — ~30–40% of the value is custom either way |
+   | Upstream maintenance         | shared                    | ours                      | `huandu/go-sqlbuilder` is actively maintained but small; if it stalls we fork                                                                             |
+   | Onboarding                   | docs exist                | we write docs             | Third-party has a larger surface to learn                                                                                                                 |
+   | API match to chplan IR       | impedance                 | natural                   | Custom builder can be designed *around* chplan node shapes                                                                                                |
+   | Code volume                  | smaller core, larger glue | larger core, smaller glue | Net LoC is similar                                                                                                                                        |
+   | Security guarantees          | type system encodes       | we encode them            | Equivalent if we're disciplined                                                                                                                           |
 
 5. **Decision rule.** The evaluation produces ONE of three recommendations:
    - **(a) Use `huandu/go-sqlbuilder` + cerberus extension layer.** Justified if the wrapping cost is materially less than building from scratch and the upstream is healthy enough to depend on.
