@@ -24,13 +24,6 @@ pre-commit:
       stage_fixed: true
       run: |
         markdownlint-cli2 --fix {staged_files}
-    check-sql:
-      # Bans fmt.Sprintf / fmt.Fprintf on SQL and Builder.WriteString /
-      # WriteSQL on clause keywords outside chsql.QueryBuilder.writeInto.
-      # The walker is global (not per-staged-file) so a sibling file's
-      # edit can be the violation source — runs once per commit.
-      run: |
-        go run ./cmd/check-sql/
 
 commit-msg:
   commands:

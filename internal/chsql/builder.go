@@ -44,16 +44,18 @@ func (b *Builder) Args() []any { return b.args }
 // its positional argument slice.
 func (b *Builder) Build() (string, []any) { return b.sb.String(), b.args }
 
-// WriteSQL appends raw SQL text. Most callers should prefer the named
-// helpers — Ident for identifiers, Arg for values, MapAt / Lambda /
-// ParamAgg for CH idioms. WriteSQL is an explicit escape hatch for
-// shapes the helpers don't yet cover.
+// writeSQL appends raw SQL text. Unexported as of R6.11e — external
+// packages must use the typed surface (QueryBuilder slots + Frag
+// constructors like Eq / And / Paren / Cast). In-package callers
+// (histogram_quantile.go, vector_join.go, structural_join.go,
+// set_op.go) use this for operator-token-style glue inside Frag
+// callbacks; clause keywords still go through QueryBuilder slots.
 //
-// (There is intentionally no WriteByte method on Builder: io.ByteWriter
+// (There is intentionally no writeByte method on Builder: io.ByteWriter
 // expects WriteByte(byte) error, and offering a non-error variant
 // confuses both govet and callers. Single-byte writes go through
-// WriteSQL with a one-character string.)
-func (b *Builder) WriteSQL(s string) { b.sb.WriteString(s) }
+// writeSQL with a one-character string.)
+func (b *Builder) writeSQL(s string) { b.sb.WriteString(s) }
 
 // Ident appends a ClickHouse identifier with backtick quoting, doubling
 // any embedded backticks. Mirrors writeIdent in emit_node.go and
@@ -85,7 +87,7 @@ func (b *Builder) Arg(v any) {
 
 // MapAt appends "<col>[?]" and binds key as a positional argument —
 // CH's Map column access. col is a single bare column name; for nested
-// or qualified references, write the prefix via WriteSQL / QualIdent
+// or qualified references, write the prefix via writeSQL / QualIdent
 // before the bracket form lands.
 func (b *Builder) MapAt(col, key string) {
 	b.Ident(col)
@@ -492,7 +494,7 @@ func UnionDistinct(parts ...Frag) Frag {
 }
 
 // As wraps expr in "<expr> AS <alias>" with the alias backtick-quoted.
-// The typed alternative to `b.WriteSQL(" AS "); b.Ident(alias)`; using
+// The typed alternative to `b.writeSQL(" AS "); b.Ident(alias)`; using
 // As keeps the AS keyword inside the typed surface so the audit grep
 // for clause-keyword cosplay stays clean. If alias is empty the inner
 // expression is emitted unchanged (no AS clause).

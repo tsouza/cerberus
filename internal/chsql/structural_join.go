@@ -97,9 +97,9 @@ func structuralDirectRelFrag(j *chplan.StructuralJoin) (Frag, error) {
 		// when both sides of the spanset select the same span.
 		return func(b *Builder) {
 			spanIDPairFrag("L", j.ParentSpanIDColumn, "R", j.ParentSpanIDColumn)(b)
-			b.WriteSQL(" AND ")
+			b.writeSQL(" AND ")
 			writeSideCol(b, "L", j.SpanIDColumn)
-			b.WriteSQL(" != ")
+			b.writeSQL(" != ")
 			writeSideCol(b, "R", j.SpanIDColumn)
 		}, nil
 	default:
@@ -111,7 +111,7 @@ func structuralDirectRelFrag(j *chplan.StructuralJoin) (Frag, error) {
 func spanIDPairFrag(lside, lcol, rside, rcol string) Frag {
 	return func(b *Builder) {
 		writeSideCol(b, lside, lcol)
-		b.WriteSQL(" = ")
+		b.writeSQL(" = ")
 		writeSideCol(b, rside, rcol)
 	}
 }
@@ -122,7 +122,7 @@ func spanIDPairFrag(lside, lcol, rside, rcol string) Frag {
 func structuralDirectOnFrag(j *chplan.StructuralJoin, rel Frag) Frag {
 	return func(b *Builder) {
 		spanIDPairFrag("L", j.TraceIDColumn, "R", j.TraceIDColumn)(b)
-		b.WriteSQL(" AND ")
+		b.writeSQL(" AND ")
 		rel(b)
 	}
 }
@@ -208,7 +208,7 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 	// Recursive step: SELECT t.<...>, c._depth + 1 FROM `<table>` AS t INNER JOIN _struct_closure AS c ON <stepOn> [WHERE c._depth < N].
 	stepOn := func(b *Builder) {
 		spanIDPairFrag("t", j.TraceIDColumn, "c", j.TraceIDColumn)(b)
-		b.WriteSQL(" AND ")
+		b.writeSQL(" AND ")
 		stepRel(b)
 	}
 	step := NewQuery().
@@ -245,7 +245,7 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 	// Outer SELECT R.* FROM (<closure>) AS L INNER JOIN (<R>) AS R ON L.TraceId = R.TraceId AND L.SpanId = R.SpanId.
 	onClause := func(b *Builder) {
 		spanIDPairFrag("L", j.TraceIDColumn, "R", j.TraceIDColumn)(b)
-		b.WriteSQL(" AND ")
+		b.writeSQL(" AND ")
 		spanIDPairFrag("L", j.SpanIDColumn, "R", j.SpanIDColumn)(b)
 	}
 	sb := NewQuery().

@@ -42,11 +42,11 @@ func (e *emitter) emitSetOperation(s *chplan.SetOperation) error {
 		spanID := s.SpanIDColumn
 		on := func(b *Builder) {
 			b.QualIdent("L", traceID)
-			b.WriteSQL(" = ")
+			b.writeSQL(" = ")
 			b.QualIdent("R", traceID)
-			b.WriteSQL(" AND ")
+			b.writeSQL(" AND ")
 			b.QualIdent("L", spanID)
-			b.WriteSQL(" = ")
+			b.writeSQL(" = ")
 			b.QualIdent("R", spanID)
 		}
 		sb := NewQuery().

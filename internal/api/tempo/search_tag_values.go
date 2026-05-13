@@ -241,7 +241,7 @@ func mapContainsFrag(col, key string) chsql.Frag {
 // mapAtFrag emits "`<col>`[?]" — CH's Map column access shape — with
 // key bound as a positional argument. Equivalent to b.MapAt(col, key)
 // but exposed as a typed Frag so callers compose it through Concat /
-// Paren / etc. without dipping back into b.WriteSQL.
+// Paren / etc. without dipping back into raw writes.
 func mapAtFrag(col, key string) chsql.Frag {
 	return chsql.Concat(
 		chsql.Col(col),

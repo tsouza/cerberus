@@ -1,4 +1,4 @@
-package chsql_test
+package chsql
 
 import (
 	"reflect"
@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/tsouza/cerberus/internal/chplan"
-	"github.com/tsouza/cerberus/internal/chsql"
 )
 
 // TestBuilder_Empty — the zero-value Builder renders empty SQL and a
@@ -16,7 +15,7 @@ import (
 func TestBuilder_Empty(t *testing.T) {
 	t.Parallel()
 
-	var b chsql.Builder
+	var b Builder
 	sql, args := b.Build()
 	if sql != "" {
 		t.Errorf("empty Builder produced SQL %q; want empty", sql)
@@ -42,7 +41,7 @@ func TestBuilder_Ident(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			b := chsql.NewBuilder()
+			b := NewBuilder()
 			b.Ident(tc.in)
 			if got := b.String(); got != tc.want {
 				t.Errorf("Ident(%q) = %q; want %q", tc.in, got, tc.want)
@@ -58,7 +57,7 @@ func TestBuilder_Ident(t *testing.T) {
 func TestBuilder_QualIdent(t *testing.T) {
 	t.Parallel()
 
-	b := chsql.NewBuilder()
+	b := NewBuilder()
 	b.QualIdent("L", "Value")
 	if got, want := b.String(), "`L`.`Value`"; got != want {
 		t.Errorf("QualIdent = %q; want %q", got, want)
@@ -69,9 +68,9 @@ func TestBuilder_QualIdent(t *testing.T) {
 func TestBuilder_Arg(t *testing.T) {
 	t.Parallel()
 
-	b := chsql.NewBuilder()
+	b := NewBuilder()
 	b.Arg("hello")
-	b.WriteSQL(", ")
+	b.writeSQL(", ")
 	b.Arg(42)
 	gotSQL, gotArgs := b.Build()
 	if want := "?, ?"; gotSQL != want {
@@ -86,7 +85,7 @@ func TestBuilder_Arg(t *testing.T) {
 func TestBuilder_MapAt(t *testing.T) {
 	t.Parallel()
 
-	b := chsql.NewBuilder()
+	b := NewBuilder()
 	b.MapAt("Attributes", "service.name")
 	gotSQL, gotArgs := b.Build()
 	if want := "`Attributes`[?]"; gotSQL != want {
@@ -101,7 +100,7 @@ func TestBuilder_MapAt(t *testing.T) {
 func TestBuilder_MapKeys(t *testing.T) {
 	t.Parallel()
 
-	b := chsql.NewBuilder()
+	b := NewBuilder()
 	b.MapKeys("Attributes")
 	gotSQL, gotArgs := b.Build()
 	if want := "mapKeys(`Attributes`)"; gotSQL != want {
@@ -116,7 +115,7 @@ func TestBuilder_MapKeys(t *testing.T) {
 func TestBuilder_MapFilterExcept(t *testing.T) {
 	t.Parallel()
 
-	b := chsql.NewBuilder()
+	b := NewBuilder()
 	b.MapFilterExcept("Attributes", "instance", "job")
 	gotSQL, gotArgs := b.Build()
 	want := "mapFilter((k, v) -> NOT (k IN (?, ?)), `Attributes`)"
@@ -144,7 +143,7 @@ func TestBuilder_MapFilterExceptPanicsOnEmpty(t *testing.T) {
 			t.Errorf("panic value = %v; want message mentioning MapFilterExcept", r)
 		}
 	}()
-	b := chsql.NewBuilder()
+	b := NewBuilder()
 	b.MapFilterExcept("Attributes")
 }
 
@@ -152,7 +151,7 @@ func TestBuilder_MapFilterExceptPanicsOnEmpty(t *testing.T) {
 func TestBuilder_Now64(t *testing.T) {
 	t.Parallel()
 
-	b := chsql.NewBuilder()
+	b := NewBuilder()
 	b.Now64()
 	if got, want := b.String(), "now64(9)"; got != want {
 		t.Errorf("Now64 = %q; want %q", got, want)
@@ -165,8 +164,8 @@ func TestBuilder_Now64(t *testing.T) {
 func TestBuilder_SubtractNanos(t *testing.T) {
 	t.Parallel()
 
-	b := chsql.NewBuilder()
-	b.SubtractNanos(func(b *chsql.Builder) { b.Now64() }, int64(5*time.Minute))
+	b := NewBuilder()
+	b.SubtractNanos(func(b *Builder) { b.Now64() }, int64(5*time.Minute))
 	if got, want := b.String(), "(now64(9) - toIntervalNanosecond(300000000000))"; got != want {
 		t.Errorf("SubtractNanos = %q; want %q", got, want)
 	}
@@ -178,11 +177,11 @@ func TestBuilder_SubtractNanos(t *testing.T) {
 func TestBuilder_SubtractNanos_PreservesArgOrder(t *testing.T) {
 	t.Parallel()
 
-	b := chsql.NewBuilder()
-	b.SubtractNanos(func(b *chsql.Builder) {
-		b.WriteSQL("max(")
+	b := NewBuilder()
+	b.SubtractNanos(func(b *Builder) {
+		b.writeSQL("max(")
 		b.MapAt("Attributes", "service.name")
-		b.WriteSQL(")")
+		b.writeSQL(")")
 	}, 1000)
 	gotSQL, gotArgs := b.Build()
 	wantSQL := "(max(`Attributes`[?]) - toIntervalNanosecond(1000))"
@@ -201,7 +200,7 @@ func TestBuilder_DateTime64Lit(t *testing.T) {
 
 	// 2026-05-13 06:07:08.123456789 UTC.
 	tm := time.Date(2026, 5, 13, 6, 7, 8, 123456789, time.UTC)
-	b := chsql.NewBuilder()
+	b := NewBuilder()
 	b.DateTime64Lit(tm)
 	want := "toDateTime64('2026-05-13 06:07:08.123456789', 9)"
 	if got := b.String(); got != want {
@@ -220,7 +219,7 @@ func TestBuilder_DateTime64Lit_NormalisesToUTC(t *testing.T) {
 	}
 	// 2026-05-13 00:00:00 in America/Sao_Paulo == 2026-05-13 03:00:00 UTC.
 	tm := time.Date(2026, 5, 13, 0, 0, 0, 0, loc)
-	b := chsql.NewBuilder()
+	b := NewBuilder()
 	b.DateTime64Lit(tm)
 	want := "toDateTime64('2026-05-13 03:00:00.000000000', 9)"
 	if got := b.String(); got != want {
@@ -233,9 +232,9 @@ func TestBuilder_DateTime64Lit_NormalisesToUTC(t *testing.T) {
 func TestBuilder_Lambda(t *testing.T) {
 	t.Parallel()
 
-	b := chsql.NewBuilder()
-	b.Lambda([]string{"k", "v"}, func(b *chsql.Builder) {
-		b.WriteSQL("k = ")
+	b := NewBuilder()
+	b.Lambda([]string{"k", "v"}, func(b *Builder) {
+		b.writeSQL("k = ")
 		b.Arg("env")
 	})
 	gotSQL, gotArgs := b.Build()
@@ -252,14 +251,14 @@ func TestBuilder_Lambda(t *testing.T) {
 func TestBuilder_ParamAgg_Parameterised(t *testing.T) {
 	t.Parallel()
 
-	b := chsql.NewBuilder()
+	b := NewBuilder()
 	b.ParamAgg(
 		"quantile",
-		[]func(b *chsql.Builder){
-			func(b *chsql.Builder) { b.Arg(0.95) },
+		[]func(b *Builder){
+			func(b *Builder) { b.Arg(0.95) },
 		},
-		[]func(b *chsql.Builder){
-			func(b *chsql.Builder) { b.Ident("Value") },
+		[]func(b *Builder){
+			func(b *Builder) { b.Ident("Value") },
 		},
 	)
 	gotSQL, gotArgs := b.Build()
@@ -276,12 +275,12 @@ func TestBuilder_ParamAgg_Parameterised(t *testing.T) {
 func TestBuilder_ParamAgg_NoParams(t *testing.T) {
 	t.Parallel()
 
-	b := chsql.NewBuilder()
+	b := NewBuilder()
 	b.ParamAgg(
 		"sum",
 		nil,
-		[]func(b *chsql.Builder){
-			func(b *chsql.Builder) { b.Ident("Value") },
+		[]func(b *Builder){
+			func(b *Builder) { b.Ident("Value") },
 		},
 	)
 	if got, want := b.String(), "sum(`Value`)"; got != want {
@@ -293,15 +292,15 @@ func TestBuilder_ParamAgg_NoParams(t *testing.T) {
 func TestBuilder_ParamAgg_MultiParam(t *testing.T) {
 	t.Parallel()
 
-	b := chsql.NewBuilder()
+	b := NewBuilder()
 	b.ParamAgg(
 		"quantiles",
-		[]func(b *chsql.Builder){
-			func(b *chsql.Builder) { b.Arg(0.5) },
-			func(b *chsql.Builder) { b.Arg(0.9) },
+		[]func(b *Builder){
+			func(b *Builder) { b.Arg(0.5) },
+			func(b *Builder) { b.Arg(0.9) },
 		},
-		[]func(b *chsql.Builder){
-			func(b *chsql.Builder) { b.Ident("Value") },
+		[]func(b *Builder){
+			func(b *Builder) { b.Ident("Value") },
 		},
 	)
 	gotSQL, gotArgs := b.Build()
@@ -319,14 +318,14 @@ func TestBuilder_ParamAgg_MultiParam(t *testing.T) {
 func TestFrag_HelpersBindAtPosition(t *testing.T) {
 	t.Parallel()
 
-	b := chsql.NewBuilder()
-	chsql.Col("Value")(b)
-	b.WriteSQL(", ")
-	chsql.Lit(42)(b)
-	b.WriteSQL(", ")
-	chsql.Raw("now64(9)")(b)
-	b.WriteSQL(", ")
-	chsql.Qual("L", "TimeUnix")(b)
+	b := NewBuilder()
+	Col("Value")(b)
+	b.writeSQL(", ")
+	Lit(42)(b)
+	b.writeSQL(", ")
+	Raw("now64(9)")(b)
+	b.writeSQL(", ")
+	Qual("L", "TimeUnix")(b)
 	gotSQL, gotArgs := b.Build()
 	wantSQL := "`Value`, ?, now64(9), `L`.`TimeUnix`"
 	if gotSQL != wantSQL {
@@ -343,14 +342,14 @@ func TestFrag_HelpersBindAtPosition(t *testing.T) {
 func TestAs_WrapsWithAlias(t *testing.T) {
 	t.Parallel()
 
-	b := chsql.NewBuilder()
-	chsql.As(chsql.Col("Value"), "v")(b)
+	b := NewBuilder()
+	As(Col("Value"), "v")(b)
 	if got, want := b.String(), "`Value` AS `v`"; got != want {
 		t.Errorf("As(Col,v) = %q; want %q", got, want)
 	}
 
-	b2 := chsql.NewBuilder()
-	chsql.As(chsql.Col("Value"), "")(b2)
+	b2 := NewBuilder()
+	As(Col("Value"), "")(b2)
 	if got, want := b2.String(), "`Value`"; got != want {
 		t.Errorf("As(Col,\"\") = %q; want %q", got, want)
 	}
@@ -362,25 +361,25 @@ func TestAs_WrapsWithAlias(t *testing.T) {
 func TestUnionAll_JoinsParts(t *testing.T) {
 	t.Parallel()
 
-	left := chsql.NewQuery().
-		Select(chsql.Col("MetricName")).
-		From(chsql.Col("gauge")).
-		Where(func(b *chsql.Builder) {
+	left := NewQuery().
+		Select(Col("MetricName")).
+		From(Col("gauge")).
+		Where(func(b *Builder) {
 			b.Ident("MetricName")
-			b.WriteSQL(" = ")
+			b.writeSQL(" = ")
 			b.Arg("a")
 		})
-	right := chsql.NewQuery().
-		Select(chsql.Col("MetricName")).
-		From(chsql.Col("sum")).
-		Where(func(b *chsql.Builder) {
+	right := NewQuery().
+		Select(Col("MetricName")).
+		From(Col("sum")).
+		Where(func(b *Builder) {
 			b.Ident("MetricName")
-			b.WriteSQL(" = ")
+			b.writeSQL(" = ")
 			b.Arg("b")
 		})
 
-	b := chsql.NewBuilder()
-	chsql.UnionAll(left.Frag(), right.Frag())(b)
+	b := NewBuilder()
+	UnionAll(left.Frag(), right.Frag())(b)
 	sql, args := b.Build()
 	want := "(SELECT `MetricName` FROM `gauge` WHERE `MetricName` = ?)" +
 		" UNION ALL " +
@@ -399,12 +398,12 @@ func TestUnionAll_JoinsParts(t *testing.T) {
 func TestUnionAll_SinglePart(t *testing.T) {
 	t.Parallel()
 
-	only := chsql.NewQuery().
-		Select(chsql.Col("x")).
-		From(chsql.Col("t"))
+	only := NewQuery().
+		Select(Col("x")).
+		From(Col("t"))
 
-	b := chsql.NewBuilder()
-	chsql.UnionAll(only.Frag())(b)
+	b := NewBuilder()
+	UnionAll(only.Frag())(b)
 	if got, want := b.String(), "(SELECT `x` FROM `t`)"; got != want {
 		t.Errorf("UnionAll(single) = %q; want %q", got, want)
 	}
@@ -420,7 +419,7 @@ func TestUnionAll_PanicsOnEmpty(t *testing.T) {
 			t.Fatalf("expected panic on UnionAll()")
 		}
 	}()
-	chsql.UnionAll()
+	UnionAll()
 }
 
 // TestQueryBuilder_SelectAs — SelectAs slot adds "<expr> AS <alias>"
@@ -429,10 +428,10 @@ func TestUnionAll_PanicsOnEmpty(t *testing.T) {
 func TestQueryBuilder_SelectAs(t *testing.T) {
 	t.Parallel()
 
-	sql, _ := chsql.NewQuery().
-		SelectAs(chsql.Col("MetricName"), "name").
-		SelectAs(chsql.Col("Value"), "").
-		From(chsql.Col("otel_metrics_gauge")).
+	sql, _ := NewQuery().
+		SelectAs(Col("MetricName"), "name").
+		SelectAs(Col("Value"), "").
+		From(Col("otel_metrics_gauge")).
 		Build()
 	want := "SELECT `MetricName` AS `name`, `Value` FROM `otel_metrics_gauge`"
 	if sql != want {
@@ -446,7 +445,7 @@ func TestQueryBuilder_SelectAs(t *testing.T) {
 func TestQueryBuilder_Empty(t *testing.T) {
 	t.Parallel()
 
-	sql, args := chsql.NewQuery().Build()
+	sql, args := NewQuery().Build()
 	if want := "SELECT *"; sql != want {
 		t.Errorf("empty SELECT = %q; want %q", sql, want)
 	}
@@ -460,12 +459,12 @@ func TestQueryBuilder_Empty(t *testing.T) {
 func TestQueryBuilder_Basic(t *testing.T) {
 	t.Parallel()
 
-	sql, args := chsql.NewQuery().
-		Select(chsql.Col("MetricName"), chsql.Col("Value")).
-		From(chsql.Col("otel_metrics_gauge")).
-		Where(func(b *chsql.Builder) {
+	sql, args := NewQuery().
+		Select(Col("MetricName"), Col("Value")).
+		From(Col("otel_metrics_gauge")).
+		Where(func(b *Builder) {
 			b.Ident("MetricName")
-			b.WriteSQL(" = ")
+			b.writeSQL(" = ")
 			b.Arg("http_requests_total")
 		}).
 		Limit(100).
@@ -486,23 +485,23 @@ func TestQueryBuilder_Basic(t *testing.T) {
 func TestQueryBuilder_Prewhere(t *testing.T) {
 	t.Parallel()
 
-	sql, args := chsql.NewQuery().
-		Select(chsql.Col("Value")).
-		From(chsql.Col("otel_metrics_gauge")).
-		Prewhere(func(b *chsql.Builder) {
+	sql, args := NewQuery().
+		Select(Col("Value")).
+		From(Col("otel_metrics_gauge")).
+		Prewhere(func(b *Builder) {
 			b.Ident("TimeUnix")
-			b.WriteSQL(" > ")
+			b.writeSQL(" > ")
 			b.Now64()
 		}).
 		Where(
-			func(b *chsql.Builder) {
+			func(b *Builder) {
 				b.Ident("MetricName")
-				b.WriteSQL(" = ")
+				b.writeSQL(" = ")
 				b.Arg("http_requests_total")
 			},
-			func(b *chsql.Builder) {
+			func(b *Builder) {
 				b.Ident("Value")
-				b.WriteSQL(" > ")
+				b.writeSQL(" > ")
 				b.Arg(0.5)
 			},
 		).
@@ -524,11 +523,11 @@ func TestQueryBuilder_Prewhere(t *testing.T) {
 func TestQueryBuilder_GroupByOrderBy(t *testing.T) {
 	t.Parallel()
 
-	sql, args := chsql.NewQuery().
-		Select(chsql.Col("MetricName"), chsql.Raw("sum(`Value`) AS `total`")).
-		From(chsql.Col("otel_metrics_gauge")).
-		GroupBy(chsql.Col("MetricName")).
-		OrderBy(chsql.Col("total"), true).
+	sql, args := NewQuery().
+		Select(Col("MetricName"), Raw("sum(`Value`) AS `total`")).
+		From(Col("otel_metrics_gauge")).
+		GroupBy(Col("MetricName")).
+		OrderBy(Col("total"), true).
 		Limit(10).
 		Build()
 
@@ -553,21 +552,21 @@ func TestQueryBuilder_GroupByOrderBy(t *testing.T) {
 func TestQueryBuilder_NestedSubquery(t *testing.T) {
 	t.Parallel()
 
-	inner := chsql.NewQuery().
-		Select(chsql.Col("MetricName"), chsql.Col("Value")).
-		From(chsql.Col("otel_metrics_gauge")).
-		Where(func(b *chsql.Builder) {
+	inner := NewQuery().
+		Select(Col("MetricName"), Col("Value")).
+		From(Col("otel_metrics_gauge")).
+		Where(func(b *Builder) {
 			b.MapAt("Attributes", "service.name")
-			b.WriteSQL(" = ")
+			b.writeSQL(" = ")
 			b.Arg("api")
 		})
 
-	sql, args := chsql.NewQuery().
-		Select(chsql.Col("Value")).
+	sql, args := NewQuery().
+		Select(Col("Value")).
 		From(inner.Frag()).
-		Where(func(b *chsql.Builder) {
+		Where(func(b *Builder) {
 			b.Ident("Value")
-			b.WriteSQL(" > ")
+			b.writeSQL(" > ")
 			b.Arg(0.5)
 		}).
 		Build()
@@ -592,29 +591,29 @@ func TestQueryBuilder_NestedSubquery(t *testing.T) {
 func TestQueryBuilder_Join(t *testing.T) {
 	t.Parallel()
 
-	sql, args := chsql.NewQuery().
-		Select(chsql.Raw("L.`Value`"), chsql.Raw("R.`Value`")).
-		From(func(b *chsql.Builder) {
+	sql, args := NewQuery().
+		Select(Raw("L.`Value`"), Raw("R.`Value`")).
+		From(func(b *Builder) {
 			b.Ident("otel_metrics_sum")
-			b.WriteSQL(" AS L")
+			b.writeSQL(" AS L")
 		}).
 		Join(
-			chsql.InnerJoin,
-			func(b *chsql.Builder) {
+			InnerJoin,
+			func(b *Builder) {
 				b.Ident("otel_metrics_gauge")
-				b.WriteSQL(" AS R")
+				b.writeSQL(" AS R")
 			},
-			func(b *chsql.Builder) {
-				b.WriteSQL("L.")
+			func(b *Builder) {
+				b.writeSQL("L.")
 				b.Ident("MetricName")
-				b.WriteSQL(" = ")
+				b.writeSQL(" = ")
 				b.Arg("http_requests_total")
 			},
 		).
-		Where(func(b *chsql.Builder) {
-			b.WriteSQL("R.")
+		Where(func(b *Builder) {
+			b.writeSQL("R.")
 			b.Ident("Value")
-			b.WriteSQL(" > ")
+			b.writeSQL(" > ")
 			b.Arg(0.5)
 		}).
 		Build()
@@ -637,20 +636,20 @@ func TestQueryBuilder_JoinKinds(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		kind chsql.JoinKind
+		kind JoinKind
 		want string
 	}{
-		{chsql.InnerJoin, "INNER JOIN"},
-		{chsql.LeftJoin, "LEFT JOIN"},
-		{chsql.RightJoin, "RIGHT JOIN"},
-		{chsql.FullJoin, "FULL JOIN"},
+		{InnerJoin, "INNER JOIN"},
+		{LeftJoin, "LEFT JOIN"},
+		{RightJoin, "RIGHT JOIN"},
+		{FullJoin, "FULL JOIN"},
 	}
 	for _, tc := range cases {
 		t.Run(string(tc.kind), func(t *testing.T) {
 			t.Parallel()
-			sql, _ := chsql.NewQuery().
-				From(chsql.Col("a")).
-				Join(tc.kind, chsql.Col("b"), chsql.Raw("1 = 1")).
+			sql, _ := NewQuery().
+				From(Col("a")).
+				Join(tc.kind, Col("b"), Raw("1 = 1")).
 				Build()
 			want := "SELECT * FROM `a` " + tc.want + " `b` ON 1 = 1"
 			if sql != want {
@@ -660,9 +659,9 @@ func TestQueryBuilder_JoinKinds(t *testing.T) {
 	}
 
 	// CrossJoin drops the ON clause; the on Frag is allowed to be nil.
-	sql, _ := chsql.NewQuery().
-		From(chsql.Col("a")).
-		Join(chsql.CrossJoin, chsql.Col("b"), nil).
+	sql, _ := NewQuery().
+		From(Col("a")).
+		Join(CrossJoin, Col("b"), nil).
 		Build()
 	if want := "SELECT * FROM `a` CROSS JOIN `b`"; sql != want {
 		t.Errorf("CrossJoin sql=%q want=%q", sql, want)
@@ -676,42 +675,42 @@ func TestQueryBuilder_JoinKinds(t *testing.T) {
 func TestQueryBuilder_WithRecursive(t *testing.T) {
 	t.Parallel()
 
-	anchor := chsql.NewQuery().
-		Select(chsql.Col("id"), chsql.Raw("0 AS _depth")).
-		From(chsql.Col("nodes")).
-		Where(func(b *chsql.Builder) {
+	anchor := NewQuery().
+		Select(Col("id"), Raw("0 AS _depth")).
+		From(Col("nodes")).
+		Where(func(b *Builder) {
 			b.Ident("id")
-			b.WriteSQL(" = ")
+			b.writeSQL(" = ")
 			b.Arg(1)
 		})
 
-	step := chsql.NewQuery().
+	step := NewQuery().
 		Select(
-			func(b *chsql.Builder) {
-				b.WriteSQL("n.")
+			func(b *Builder) {
+				b.writeSQL("n.")
 				b.Ident("id")
 			},
-			chsql.Raw("c._depth + 1"),
+			Raw("c._depth + 1"),
 		).
-		From(func(b *chsql.Builder) {
+		From(func(b *Builder) {
 			b.Ident("nodes")
-			b.WriteSQL(" AS n")
+			b.writeSQL(" AS n")
 		}).
 		Join(
-			chsql.InnerJoin,
-			chsql.Raw("closure AS c"),
-			chsql.Raw("n.parent = c.id"),
+			InnerJoin,
+			Raw("closure AS c"),
+			Raw("n.parent = c.id"),
 		).
-		Where(func(b *chsql.Builder) {
-			b.WriteSQL("c._depth < ")
+		Where(func(b *Builder) {
+			b.writeSQL("c._depth < ")
 			b.Arg(5)
 		})
 
-	sql, args := chsql.NewQuery().
+	sql, args := NewQuery().
 		WithRecursive("closure", anchor, step).
-		Select(chsql.Col("id")).
-		From(chsql.Raw("closure")).
-		Where(chsql.Raw("_depth > 0")).
+		Select(Col("id")).
+		From(Raw("closure")).
+		Where(Raw("_depth > 0")).
 		Build()
 
 	wantSQL := "WITH RECURSIVE closure AS (" +
@@ -746,9 +745,9 @@ func TestQueryBuilder_WithRecursive_PanicsOnNil(t *testing.T) {
 			t.Errorf("panic value = %v; want message mentioning WithRecursive", r)
 		}
 	}()
-	chsql.NewQuery().
+	NewQuery().
 		WithRecursive("closure", nil, nil).
-		From(chsql.Col("x")).
+		From(Col("x")).
 		Build()
 }
 
@@ -768,9 +767,9 @@ func TestQueryBuilder_Join_PanicsOnNilON(t *testing.T) {
 			t.Errorf("panic value = %v; want message mentioning Join", r)
 		}
 	}()
-	chsql.NewQuery().
-		From(chsql.Col("a")).
-		Join(chsql.InnerJoin, chsql.Col("b"), nil).
+	NewQuery().
+		From(Col("a")).
+		Join(InnerJoin, Col("b"), nil).
 		Build()
 }
 
@@ -854,7 +853,7 @@ func TestBuilder_Expr(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			b := chsql.NewBuilder()
+			b := NewBuilder()
 			if err := b.Expr(tc.expr); err != nil {
 				t.Fatalf("Expr: %v", err)
 			}
@@ -879,27 +878,27 @@ func TestOperatorFrags_BinaryOps(t *testing.T) {
 
 	cases := []struct {
 		name    string
-		frag    chsql.Frag
+		frag    Frag
 		wantSQL string
 	}{
-		{"Eq", chsql.Eq(chsql.Col("a"), chsql.Lit(int64(1))), "`a` = ?"},
-		{"Neq", chsql.Neq(chsql.Col("a"), chsql.Lit(int64(1))), "`a` != ?"},
-		{"Gt", chsql.Gt(chsql.Col("a"), chsql.Lit(int64(1))), "`a` > ?"},
-		{"Gte", chsql.Gte(chsql.Col("a"), chsql.Lit(int64(1))), "`a` >= ?"},
-		{"Lt", chsql.Lt(chsql.Col("a"), chsql.Lit(int64(1))), "`a` < ?"},
-		{"Lte", chsql.Lte(chsql.Col("a"), chsql.Lit(int64(1))), "`a` <= ?"},
-		{"Like", chsql.Like(chsql.Col("a"), chsql.Lit("x%")), "`a` LIKE ?"},
-		{"NotLike", chsql.NotLike(chsql.Col("a"), chsql.Lit("x%")), "`a` NOT LIKE ?"},
-		{"Add", chsql.Add(chsql.Col("a"), chsql.Lit(int64(1))), "`a` + ?"},
-		{"Sub", chsql.Sub(chsql.Col("a"), chsql.Lit(int64(1))), "`a` - ?"},
-		{"Mul", chsql.Mul(chsql.Col("a"), chsql.Lit(int64(2))), "`a` * ?"},
-		{"Div", chsql.Div(chsql.Col("a"), chsql.Lit(int64(2))), "`a` / ?"},
-		{"Mod", chsql.Mod(chsql.Col("a"), chsql.Lit(int64(2))), "`a` % ?"},
+		{"Eq", Eq(Col("a"), Lit(int64(1))), "`a` = ?"},
+		{"Neq", Neq(Col("a"), Lit(int64(1))), "`a` != ?"},
+		{"Gt", Gt(Col("a"), Lit(int64(1))), "`a` > ?"},
+		{"Gte", Gte(Col("a"), Lit(int64(1))), "`a` >= ?"},
+		{"Lt", Lt(Col("a"), Lit(int64(1))), "`a` < ?"},
+		{"Lte", Lte(Col("a"), Lit(int64(1))), "`a` <= ?"},
+		{"Like", Like(Col("a"), Lit("x%")), "`a` LIKE ?"},
+		{"NotLike", NotLike(Col("a"), Lit("x%")), "`a` NOT LIKE ?"},
+		{"Add", Add(Col("a"), Lit(int64(1))), "`a` + ?"},
+		{"Sub", Sub(Col("a"), Lit(int64(1))), "`a` - ?"},
+		{"Mul", Mul(Col("a"), Lit(int64(2))), "`a` * ?"},
+		{"Div", Div(Col("a"), Lit(int64(2))), "`a` / ?"},
+		{"Mod", Mod(Col("a"), Lit(int64(2))), "`a` % ?"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			b := chsql.NewBuilder()
+			b := NewBuilder()
 			tc.frag(b)
 			if got := b.String(); got != tc.wantSQL {
 				t.Errorf("%s SQL = %q; want %q", tc.name, got, tc.wantSQL)
@@ -916,11 +915,11 @@ func TestOperatorFrags_BinaryOps(t *testing.T) {
 func TestAnd_JoinsParts(t *testing.T) {
 	t.Parallel()
 
-	b := chsql.NewBuilder()
-	chsql.And(
-		chsql.Eq(chsql.Col("a"), chsql.Lit(int64(1))),
-		chsql.Eq(chsql.Col("b"), chsql.Lit(int64(2))),
-		chsql.Eq(chsql.Col("c"), chsql.Lit(int64(3))),
+	b := NewBuilder()
+	And(
+		Eq(Col("a"), Lit(int64(1))),
+		Eq(Col("b"), Lit(int64(2))),
+		Eq(Col("c"), Lit(int64(3))),
 	)(b)
 	sql, args := b.Build()
 	want := "`a` = ? AND `b` = ? AND `c` = ?"
@@ -940,17 +939,17 @@ func TestAnd_PanicsOnEmpty(t *testing.T) {
 			t.Fatalf("expected panic on And()")
 		}
 	}()
-	chsql.And()
+	And()
 }
 
 // TestOr_JoinsParts — Or joins predicates with " OR ".
 func TestOr_JoinsParts(t *testing.T) {
 	t.Parallel()
 
-	b := chsql.NewBuilder()
-	chsql.Or(
-		chsql.Eq(chsql.Col("a"), chsql.Lit(int64(1))),
-		chsql.Eq(chsql.Col("b"), chsql.Lit(int64(2))),
+	b := NewBuilder()
+	Or(
+		Eq(Col("a"), Lit(int64(1))),
+		Eq(Col("b"), Lit(int64(2))),
 	)(b)
 	if got, want := b.String(), "`a` = ? OR `b` = ?"; got != want {
 		t.Errorf("Or SQL = %q; want %q", got, want)
@@ -965,7 +964,7 @@ func TestOr_PanicsOnEmpty(t *testing.T) {
 			t.Fatalf("expected panic on Or()")
 		}
 	}()
-	chsql.Or()
+	Or()
 }
 
 // TestNot_Prefixes — Not emits "NOT " before the inner Frag and does
@@ -973,8 +972,8 @@ func TestOr_PanicsOnEmpty(t *testing.T) {
 func TestNot_Prefixes(t *testing.T) {
 	t.Parallel()
 
-	b := chsql.NewBuilder()
-	chsql.Not(chsql.Eq(chsql.Col("a"), chsql.Lit(int64(1))))(b)
+	b := NewBuilder()
+	Not(Eq(Col("a"), Lit(int64(1))))(b)
 	if got, want := b.String(), "NOT `a` = ?"; got != want {
 		t.Errorf("Not SQL = %q; want %q", got, want)
 	}
@@ -984,8 +983,8 @@ func TestNot_Prefixes(t *testing.T) {
 func TestNeg_Prefixes(t *testing.T) {
 	t.Parallel()
 
-	b := chsql.NewBuilder()
-	chsql.Neg(chsql.Col("a"))(b)
+	b := NewBuilder()
+	Neg(Col("a"))(b)
 	if got, want := b.String(), "-`a`"; got != want {
 		t.Errorf("Neg SQL = %q; want %q", got, want)
 	}
@@ -995,10 +994,10 @@ func TestNeg_Prefixes(t *testing.T) {
 func TestParen_Wraps(t *testing.T) {
 	t.Parallel()
 
-	b := chsql.NewBuilder()
-	chsql.Paren(chsql.Or(
-		chsql.Eq(chsql.Col("a"), chsql.Lit(int64(1))),
-		chsql.Eq(chsql.Col("b"), chsql.Lit(int64(2))),
+	b := NewBuilder()
+	Paren(Or(
+		Eq(Col("a"), Lit(int64(1))),
+		Eq(Col("b"), Lit(int64(2))),
 	))(b)
 	if got, want := b.String(), "(`a` = ? OR `b` = ?)"; got != want {
 		t.Errorf("Paren SQL = %q; want %q", got, want)
@@ -1009,8 +1008,8 @@ func TestParen_Wraps(t *testing.T) {
 func TestTuple_RendersCommaSeparated(t *testing.T) {
 	t.Parallel()
 
-	b := chsql.NewBuilder()
-	chsql.Tuple(chsql.Lit(int64(1)), chsql.Lit(int64(2)), chsql.Lit(int64(3)))(b)
+	b := NewBuilder()
+	Tuple(Lit(int64(1)), Lit(int64(2)), Lit(int64(3)))(b)
 	sql, args := b.Build()
 	if got, want := sql, "(?, ?, ?)"; got != want {
 		t.Errorf("Tuple SQL = %q; want %q", got, want)
@@ -1029,7 +1028,7 @@ func TestTuple_PanicsOnEmpty(t *testing.T) {
 			t.Fatalf("expected panic on Tuple()")
 		}
 	}()
-	chsql.Tuple()
+	Tuple()
 }
 
 // TestCast_Wraps — Cast renders "CAST(<f> AS <typ>)" with the type
@@ -1037,8 +1036,8 @@ func TestTuple_PanicsOnEmpty(t *testing.T) {
 func TestCast_Wraps(t *testing.T) {
 	t.Parallel()
 
-	b := chsql.NewBuilder()
-	chsql.Cast(chsql.Col("a"), "Float64")(b)
+	b := NewBuilder()
+	Cast(Col("a"), "Float64")(b)
 	if got, want := b.String(), "CAST(`a` AS Float64)"; got != want {
 		t.Errorf("Cast SQL = %q; want %q", got, want)
 	}
@@ -1049,11 +1048,11 @@ func TestCast_Wraps(t *testing.T) {
 func TestConcat_NoSeparator(t *testing.T) {
 	t.Parallel()
 
-	b := chsql.NewBuilder()
-	chsql.Concat(
-		chsql.Col("a"),
-		chsql.Raw(" = "),
-		chsql.Lit(int64(1)),
+	b := NewBuilder()
+	Concat(
+		Col("a"),
+		Raw(" = "),
+		Lit(int64(1)),
 	)(b)
 	sql, args := b.Build()
 	if got, want := sql, "`a` = ?"; got != want {
@@ -1073,7 +1072,7 @@ func TestConcat_PanicsOnEmpty(t *testing.T) {
 			t.Fatalf("expected panic on Concat()")
 		}
 	}()
-	chsql.Concat()
+	Concat()
 }
 
 // TestIn_RendersList — In emits "<left> IN (<r0>, <r1>, ...)" and
@@ -1081,8 +1080,8 @@ func TestConcat_PanicsOnEmpty(t *testing.T) {
 func TestIn_RendersList(t *testing.T) {
 	t.Parallel()
 
-	b := chsql.NewBuilder()
-	chsql.In(chsql.Col("a"), chsql.Lit("x"), chsql.Lit("y"), chsql.Lit("z"))(b)
+	b := NewBuilder()
+	In(Col("a"), Lit("x"), Lit("y"), Lit("z"))(b)
 	sql, args := b.Build()
 	if got, want := sql, "`a` IN (?, ?, ?)"; got != want {
 		t.Errorf("In SQL = %q; want %q", got, want)
@@ -1101,5 +1100,5 @@ func TestIn_PanicsOnEmpty(t *testing.T) {
 			t.Fatalf("expected panic on In() with empty right")
 		}
 	}()
-	chsql.In(chsql.Col("a"))
+	In(Col("a"))
 }
