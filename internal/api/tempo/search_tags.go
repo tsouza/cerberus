@@ -92,13 +92,13 @@ func (h *Handler) respondTags(w http.ResponseWriter, r *http.Request, v2 bool) {
 
 	resourceTags, err := h.fetchTagKeys(r.Context(), h.Schema.ResourceAttributesColumn, start, end)
 	if err != nil {
-		h.Logger.Warn("cerberus tempo /search/tags resource CH query failed", "err", err.Error())
+		h.Logger.Error("cerberus tempo /search/tags resource CH query failed", "err", err)
 		writeError(w, http.StatusBadGateway, "", "", err)
 		return
 	}
 	spanTags, err := h.fetchTagKeys(r.Context(), h.Schema.AttributesColumn, start, end)
 	if err != nil {
-		h.Logger.Warn("cerberus tempo /search/tags span CH query failed", "err", err.Error())
+		h.Logger.Error("cerberus tempo /search/tags span CH query failed", "err", err)
 		writeError(w, http.StatusBadGateway, "", "", err)
 		return
 	}

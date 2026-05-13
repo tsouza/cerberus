@@ -62,7 +62,7 @@ func (h *Handler) handleSeries(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := h.Client.QueryLabelSets(r.Context(), sqlStr, args...)
 	if err != nil {
-		h.Logger.Warn("cerberus loki series CH query failed", "err", err.Error(), "sql", sqlStr)
+		h.Logger.Error("cerberus loki series CH query failed", "err", err, "sql", sqlStr)
 		h.respondError(w, &apiError{kind: ErrInternal, err: err, status: http.StatusBadGateway})
 		return
 	}

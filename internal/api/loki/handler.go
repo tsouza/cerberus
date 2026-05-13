@@ -216,7 +216,7 @@ func (h *Handler) execute(ctx context.Context, expr syntax.Expr) ([]chclient.Sam
 
 	samples, err := h.Client.Query(ctx, sqlStr, args...)
 	if err != nil {
-		h.Logger.Warn("cerberus loki CH query failed", "err", err.Error(), "sql", sqlStr)
+		h.Logger.Error("cerberus loki CH query failed", "err", err, "sql", sqlStr)
 		return nil, &apiError{kind: ErrInternal, err: err, status: http.StatusBadGateway}
 	}
 	return samples, nil

@@ -61,7 +61,7 @@ func (h *Handler) handleIndexStats(w http.ResponseWriter, r *http.Request) {
 
 	row, err := h.Client.QueryIndexStats(r.Context(), sqlStr, args...)
 	if err != nil {
-		h.Logger.Warn("cerberus loki index_stats CH query failed", "err", err.Error(), "sql", sqlStr)
+		h.Logger.Error("cerberus loki index_stats CH query failed", "err", err, "sql", sqlStr)
 		h.respondError(w, &apiError{kind: ErrInternal, err: err, status: http.StatusBadGateway})
 		return
 	}
