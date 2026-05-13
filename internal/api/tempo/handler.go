@@ -334,6 +334,10 @@ func isAggregateShape(plan chplan.Node) bool {
 	switch v := plan.(type) {
 	case *chplan.Aggregate:
 		return true
+	case *chplan.MetricsAggregate:
+		// TraceQL metrics-pipeline output: same SELECT-list shape as
+		// chplan.Aggregate (group-keys + Value alias).
+		return true
 	case *chplan.Filter:
 		return isAggregateShape(v.Input)
 	case *chplan.Project:

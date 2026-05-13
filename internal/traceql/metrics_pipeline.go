@@ -53,12 +53,17 @@ func lowerMetricsPipeline(prev chplan.Node, mp traceql.FirstStageElement, s sche
 }
 
 // lowerMetricsAggregate maps a single `MetricsAggregate` (rate / sum /
-// avg / min / max / count / quantile over_time) onto a chplan.Aggregate.
+// avg / min / max / count / quantile over_time) onto a
+// chplan.MetricsAggregate.
 //
-// Per fork-tempo-plan.md § 2c, `rate()` and `count_over_time()` both
-// reduce to a row-count at this layer (CH `count(1)`); the
-// per-evaluation-step rate normalisation lives on the wrapping
-// `chplan.RangeWindow` the handler attaches, not here.
+// The IR carries the source TraceQL op symbolically (chplan.MetricsOp)
+// rather than collapsing to a CH aggregate name at lowering time. This
+// preserves the rate vs count_over_time distinction the wrapping
+// chplan.RangeWindow needs for per-bucket normalisation in the
+// `/api/metrics/query_range` matrix path; bare emission (no
+// RangeWindow wrapper) still produces SQL byte-identical to the prior
+// chplan.Aggregate shape via internal/chsql/range_window.go's
+// emitMetricsAggregate.
 //
 // `quantile_over_time(attr, q1, q2, ...)` is supported only for a
 // single quantile (the common Grafana case). Multi-quantile queries
@@ -66,17 +71,17 @@ func lowerMetricsPipeline(prev chplan.Node, mp traceql.FirstStageElement, s sche
 // whether to split into N queries.
 //
 // `histogram_over_time(attr)` is deferred — the lowering would need a
-// chplan node distinct from a scalar Aggregate, and the
+// chplan node distinct from a scalar MetricsAggregate, and the
 // `/api/metrics/query_range` handler shape for histogram series has not
 // landed yet.
 func lowerMetricsAggregate(prev chplan.Node, agg *traceql.MetricsAggregate, s schema.Traces) (chplan.Node, error) {
 	op := agg.Op()
-	chFunc, params, err := mapMetricsAggregateOp(op, agg.Quantiles())
+	cop, err := mapMetricsAggregateOp(op)
 	if err != nil {
 		return nil, err
 	}
 
-	args, err := metricsAggregateArgs(op, agg.Attribute(), s)
+	attr, err := metricsAggregateAttr(op, agg.Attribute(), s)
 	if err != nil {
 		return nil, err
 	}
@@ -86,75 +91,75 @@ func lowerMetricsAggregate(prev chplan.Node, agg *traceql.MetricsAggregate, s sc
 		return nil, err
 	}
 
-	return &chplan.Aggregate{
-		Input:          prev,
+	var quantiles []float64
+	if op == traceql.MetricsAggregateQuantileOverTime {
+		qs := agg.Quantiles()
+		if len(qs) == 0 {
+			return nil, fmt.Errorf("traceql: quantile_over_time requires at least one quantile")
+		}
+		if len(qs) > 1 {
+			return nil, fmt.Errorf("traceql: multi-quantile quantile_over_time is not yet supported (got %d quantiles)", len(qs))
+		}
+		quantiles = []float64{qs[0]}
+	}
+
+	return &chplan.MetricsAggregate{
+		Op:             cop,
+		Attr:           attr,
 		GroupBy:        groupBy,
 		GroupByAliases: groupAliases,
-		AggFuncs: []chplan.AggFunc{{
-			Name:   chFunc,
-			Params: params,
-			Args:   args,
-			Alias:  metricsValueAlias,
-		}},
+		Quantiles:      quantiles,
+		ValueAlias:     metricsValueAlias,
+		Inner:          prev,
 	}, nil
 }
 
-// mapMetricsAggregateOp turns a TraceQL MetricsAggregateOp into the CH
-// aggregate-function name + parameter list (for parameterised aggregates
-// like `quantile(0.95)(value)`).
-//
-// rate / count_over_time both lower to `count` — the handler-side
-// RangeWindow.Func discriminates them when it picks the per-step
-// normalisation (rate divides by the window's seconds; count_over_time
-// does not).
-func mapMetricsAggregateOp(op traceql.MetricsAggregateOp, qs []float64) (name string, params []chplan.Expr, err error) {
+// mapMetricsAggregateOp turns a TraceQL MetricsAggregateOp into the
+// chplan.MetricsOp enum the IR carries. The previous version returned
+// a CH aggregate-function name directly — that mapping now lives in
+// internal/chsql/range_window.go's metricsAggregateCH so the emitter
+// can also pick the per-bucket reducer for the matrix path.
+func mapMetricsAggregateOp(op traceql.MetricsAggregateOp) (chplan.MetricsOp, error) {
 	switch op {
-	case traceql.MetricsAggregateRate, traceql.MetricsAggregateCountOverTime:
-		return "count", nil, nil
+	case traceql.MetricsAggregateRate:
+		return chplan.MetricsOpRate, nil
+	case traceql.MetricsAggregateCountOverTime:
+		return chplan.MetricsOpCountOverTime, nil
 	case traceql.MetricsAggregateSumOverTime:
-		return "sum", nil, nil
+		return chplan.MetricsOpSumOverTime, nil
 	case traceql.MetricsAggregateAvgOverTime:
-		return "avg", nil, nil
+		return chplan.MetricsOpAvgOverTime, nil
 	case traceql.MetricsAggregateMinOverTime:
-		return "min", nil, nil
+		return chplan.MetricsOpMinOverTime, nil
 	case traceql.MetricsAggregateMaxOverTime:
-		return "max", nil, nil
+		return chplan.MetricsOpMaxOverTime, nil
 	case traceql.MetricsAggregateQuantileOverTime:
-		if len(qs) == 0 {
-			return "", nil, fmt.Errorf("traceql: quantile_over_time requires at least one quantile")
-		}
-		if len(qs) > 1 {
-			return "", nil, fmt.Errorf("traceql: multi-quantile quantile_over_time is not yet supported (got %d quantiles)", len(qs))
-		}
-		return "quantile", []chplan.Expr{&chplan.LitFloat{V: qs[0]}}, nil
+		return chplan.MetricsOpQuantileOverTime, nil
 	case traceql.MetricsAggregateHistogramOverTime:
-		return "", nil, fmt.Errorf("traceql: histogram_over_time is not yet supported")
+		return chplan.MetricsOpInvalid, fmt.Errorf("traceql: histogram_over_time is not yet supported")
 	}
-	return "", nil, fmt.Errorf("traceql: metrics aggregate op %s is not yet supported", op)
+	return chplan.MetricsOpInvalid, fmt.Errorf("traceql: metrics aggregate op %s is not yet supported", op)
 }
 
-// metricsAggregateArgs picks the inner expression list for the CH
-// aggregate.
+// metricsAggregateAttr picks the chplan.Expr for the metric operand.
 //
-//   - rate / count_over_time: `count(1)` — there is no operand in the
-//     TraceQL source; we count rows.
+//   - rate / count_over_time: nil (no operand in the TraceQL source;
+//     the emitter renders `count(1)`).
 //   - *_over_time(attr) and quantile_over_time(attr, q): the lowered
 //     attribute reference.
 //
 // The "no attribute supplied" sentinel is the zero-value `Attribute{}`
 // (same convention Tempo's runtime uses at
 // ast_metrics.go: `a.attr != (Attribute{})`).
-func metricsAggregateArgs(op traceql.MetricsAggregateOp, attr traceql.Attribute, s schema.Traces) ([]chplan.Expr, error) {
+func metricsAggregateAttr(op traceql.MetricsAggregateOp, attr traceql.Attribute, s schema.Traces) (chplan.Expr, error) {
 	switch op {
 	case traceql.MetricsAggregateRate, traceql.MetricsAggregateCountOverTime:
-		// `count(1)` — keeps the parameterised form symmetrical with the
-		// `count()` aggregate produced by lowerAggregate in aggregate.go.
-		return []chplan.Expr{&chplan.LitInt{V: 1}}, nil
+		return nil, nil
 	}
 	if attr == (traceql.Attribute{}) {
 		return nil, fmt.Errorf("traceql: %s requires an attribute operand", op)
 	}
-	return []chplan.Expr{lowerAttribute(attr, s)}, nil
+	return lowerAttribute(attr, s), nil
 }
 
 // lowerMetricsGroupBy turns a TraceQL `by (<attr>, <attr>, ...)` list

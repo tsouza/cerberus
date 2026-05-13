@@ -1,0 +1,4 @@
+-- args --
+(none)
+-- sql --
+SELECT `anchor_ts`, sum(`metric_arg`) AS `Value` FROM (SELECT `Timestamp` AS `ts`, `Duration` AS `metric_arg`, arrayJoin(arrayMap(i -> now64(9) - toIntervalNanosecond(i * 60000000000), range(0, 6))) AS `anchor_ts` FROM (SELECT * FROM `otel_traces`)) WHERE ts >= anchor_ts - toIntervalNanosecond(60000000000) AND ts <= anchor_ts GROUP BY `anchor_ts`

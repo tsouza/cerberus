@@ -8,6 +8,113 @@ import (
 	"github.com/tsouza/cerberus/internal/chplan"
 )
 
+// emitMetricsAggregate renders a chplan.MetricsAggregate as a single-row
+// aggregate when it sits at the root of the plan tree (no wrapping
+// RangeWindow). The SQL shape mirrors chplan.Aggregate so the TraceQL
+// instant-metric fixtures stay byte-identical across the IR change
+// from bare Aggregate → MetricsAggregate.
+//
+// When a RangeWindow wraps a MetricsAggregate the matrix path is taken
+// instead (see emitWindowedArrayMatrixMetrics).
+func (e *emitter) emitMetricsAggregate(m *chplan.MetricsAggregate) error {
+	name, params, args, err := metricsAggregateCH(m)
+	if err != nil {
+		return err
+	}
+	// Pre-flight expressions so chplan errors surface synchronously
+	// (mirrors emitAggregate's pre-flight loop).
+	for _, g := range m.GroupBy {
+		if err := (&Builder{}).Expr(g); err != nil {
+			return err
+		}
+	}
+	for _, p := range params {
+		if err := (&Builder{}).Expr(p); err != nil {
+			return err
+		}
+	}
+	for _, a := range args {
+		if err := (&Builder{}).Expr(a); err != nil {
+			return err
+		}
+	}
+	if m.Inner == nil {
+		return fmt.Errorf("%w: MetricsAggregate.Inner is nil", ErrUnsupported)
+	}
+
+	sub, err := e.subqueryFrag(m.Inner)
+	if err != nil {
+		return err
+	}
+
+	sb := NewSelect().From(sub)
+	for i, g := range m.GroupBy {
+		expr := g
+		alias := ""
+		if i < len(m.GroupByAliases) {
+			alias = m.GroupByAliases[i]
+		}
+		sb.SelectAs(func(b *Builder) { _ = b.Expr(expr) }, alias)
+	}
+	af := chplan.AggFunc{Name: name, Params: params, Args: args, Alias: m.ValueAlias}
+	sb.Select(aggFuncFrag(af))
+	if len(m.GroupBy) > 0 {
+		groupFrags := make([]Frag, 0, len(m.GroupBy))
+		for _, g := range m.GroupBy {
+			expr := g
+			groupFrags = append(groupFrags, func(b *Builder) { _ = b.Expr(expr) })
+		}
+		sb.GroupBy(groupFrags...)
+	}
+	e.emitSelect(sb)
+	return nil
+}
+
+// metricsAggregateCH maps a MetricsAggregate.Op to the CH aggregate
+// function name + parameter list + argument list. Centralises the
+// per-Op switch so both the bare-emission path and the matrix path
+// agree on the per-bucket reducer.
+//
+// rate / count_over_time → `count(1)` (the rate-specific per-bucket
+// division by seconds lives on the matrix-path emitter, not here).
+// *_over_time(attr) → the matching CH aggregate over Attr.
+// quantile_over_time(attr, q) → `quantile(q)(Attr)`.
+func metricsAggregateCH(m *chplan.MetricsAggregate) (name string, params []chplan.Expr, args []chplan.Expr, err error) {
+	switch m.Op {
+	case chplan.MetricsOpRate, chplan.MetricsOpCountOverTime:
+		return "count", nil, []chplan.Expr{&chplan.LitInt{V: 1}}, nil
+	case chplan.MetricsOpSumOverTime:
+		if m.Attr == nil {
+			return "", nil, nil, fmt.Errorf("%w: %s requires Attr", ErrUnsupported, m.Op)
+		}
+		return "sum", nil, []chplan.Expr{m.Attr}, nil
+	case chplan.MetricsOpAvgOverTime:
+		if m.Attr == nil {
+			return "", nil, nil, fmt.Errorf("%w: %s requires Attr", ErrUnsupported, m.Op)
+		}
+		return "avg", nil, []chplan.Expr{m.Attr}, nil
+	case chplan.MetricsOpMinOverTime:
+		if m.Attr == nil {
+			return "", nil, nil, fmt.Errorf("%w: %s requires Attr", ErrUnsupported, m.Op)
+		}
+		return "min", nil, []chplan.Expr{m.Attr}, nil
+	case chplan.MetricsOpMaxOverTime:
+		if m.Attr == nil {
+			return "", nil, nil, fmt.Errorf("%w: %s requires Attr", ErrUnsupported, m.Op)
+		}
+		return "max", nil, []chplan.Expr{m.Attr}, nil
+	case chplan.MetricsOpQuantileOverTime:
+		if m.Attr == nil {
+			return "", nil, nil, fmt.Errorf("%w: %s requires Attr", ErrUnsupported, m.Op)
+		}
+		if len(m.Quantiles) != 1 {
+			return "", nil, nil, fmt.Errorf("%w: MetricsAggregate quantile expects exactly 1 quantile, got %d", ErrUnsupported, len(m.Quantiles))
+		}
+		return "quantile", []chplan.Expr{&chplan.LitFloat{V: m.Quantiles[0]}}, []chplan.Expr{m.Attr}, nil
+	}
+	return "", nil, nil, fmt.Errorf("%w: MetricsAggregate op %s", ErrUnsupported, m.Op)
+}
+
 // emitRangeWindow lowers a chplan.RangeWindow to ClickHouse SQL using the
 // windowed-array idiom inspired by promshim-clickhouse:
 //
@@ -34,6 +141,9 @@ import (
 // the last sample in the window — used by bare-vector subqueries like
 // `up[5m:1m]`.
 func (e *emitter) emitRangeWindow(r *chplan.RangeWindow) error {
+	if m, ok := r.Input.(*chplan.MetricsAggregate); ok {
+		return e.emitRangeWindowMetrics(r, m)
+	}
 	if r.Identity {
 		return e.emitRangeWindowIdentity(r)
 	}
@@ -49,6 +159,250 @@ func (e *emitter) emitRangeWindow(r *chplan.RangeWindow) error {
 	default:
 		return fmt.Errorf("%w: range function %q (lands in M1.1 follow-ups)", ErrUnsupported, r.Func)
 	}
+}
+
+// emitRangeWindowMetrics renders a RangeWindow wrapping a
+// MetricsAggregate — the TraceQL `/api/metrics/query_range` shape.
+// Each per-span row out of m.Inner is fanned across the N evaluation
+// anchors via arrayJoin(range(0, N)); the outer SELECT applies the
+// Op-specific CH aggregate per (group-by, anchor) bucket.
+//
+// SQL skeleton (N = (End-Start)/Step + 1 or OuterRange/Step + 1):
+//
+//	SELECT [<group cols>,] anchor_ts, <reducer> AS value
+//	FROM (
+//	  SELECT [<group cols>,] <TimestampColumn> AS ts, [<Attr> AS metric_arg,]
+//	         arrayJoin(arrayMap(i -> <anchor_base> - toIntervalNanosecond(i * <step_ns>), range(0, <N>))) AS anchor_ts
+//	  FROM (<Inner>)
+//	)
+//	WHERE ts >= anchor_ts - toIntervalNanosecond(<range_ns>)
+//	  AND ts <= anchor_ts
+//	GROUP BY [<group cols>,] anchor_ts
+//
+// `<reducer>` depends on m.Op:
+//
+//   - Rate: `count(1) / <range_seconds>`
+//   - CountOverTime: `count(1)`
+//   - Sum/Min/Max/AvgOverTime: `sum/min/max/avg(metric_arg)`
+//   - QuantileOverTime: `quantile(q)(metric_arg)`
+//
+// `<anchor_base>` is r.End (or now64(9) for the zero-time fixture).
+// Range defaults to Step when r.Range is zero (matches Tempo's TraceQL
+// metrics semantics: each bucket covers exactly its Step width).
+func (e *emitter) emitRangeWindowMetrics(r *chplan.RangeWindow, m *chplan.MetricsAggregate) error {
+	if r.TimestampColumn == "" {
+		return fmt.Errorf("%w: RangeWindow.TimestampColumn unset (required for MetricsAggregate input)", ErrUnsupported)
+	}
+	if r.Step <= 0 {
+		return fmt.Errorf("%w: RangeWindow wrapping MetricsAggregate requires Step > 0", ErrUnsupported)
+	}
+	chName, params, args, err := metricsAggregateCH(m)
+	if err != nil {
+		return err
+	}
+
+	// Pre-flight all expressions so chplan errors surface synchronously.
+	for _, g := range m.GroupBy {
+		if err := (&Builder{}).Expr(g); err != nil {
+			return err
+		}
+	}
+	for _, p := range params {
+		if err := (&Builder{}).Expr(p); err != nil {
+			return err
+		}
+	}
+	for _, a := range args {
+		if err := (&Builder{}).Expr(a); err != nil {
+			return err
+		}
+	}
+
+	endExpr := timeOrNow(r.End)
+	if r.Offset > 0 {
+		endExpr = "(" + endExpr + " - toIntervalNanosecond(" + strconv.FormatInt(r.Offset.Nanoseconds(), 10) + "))"
+	}
+	stepNS := r.Step.Nanoseconds()
+	// Range defaults to Step (per-bucket = per-step). When r.Range is
+	// set explicitly (e.g. a future rate-over-Range(Step)), use it
+	// verbatim.
+	rangeDur := r.Range
+	if rangeDur == 0 {
+		rangeDur = r.Step
+	}
+	rangeNS := rangeDur.Nanoseconds()
+	rangeSeconds := rangeDur.Seconds()
+
+	// Anchor count: end-inclusive grid across [End-Span, End] spaced by
+	// Step. When OuterRange > 0 use it (PromQL subquery semantics);
+	// otherwise derive from [Start, End].
+	var numAnchors int64
+	switch {
+	case r.OuterRange > 0:
+		numAnchors = r.OuterRange.Nanoseconds()/stepNS + 1
+	case !r.Start.IsZero() && !r.End.IsZero():
+		span := r.End.Sub(r.Start).Nanoseconds()
+		if span < 0 {
+			return fmt.Errorf("%w: RangeWindow.Start > End", ErrUnsupported)
+		}
+		numAnchors = span/stepNS + 1
+	default:
+		// Instant fallback — single anchor at End.
+		numAnchors = 1
+	}
+
+	// Build the per-span anchor-fanout subquery via SelectBuilder so
+	// args bound by GroupBy expressions land in the right position.
+	// We then wrap it in the outer SELECT (the bucket reducer) by
+	// hand because the WHERE clause references `anchor_ts` (the
+	// arrayJoined column from the subquery) — a structure SelectBuilder
+	// handles naturally via Frag callbacks.
+
+	inner, err := e.subqueryFrag(m.Inner)
+	if err != nil {
+		return err
+	}
+
+	// Inner SELECT: fan each Inner row across N anchors, projecting
+	// group-by cols, the timestamp as `ts`, [the metric operand as
+	// metric_arg,] and the anchor_ts. Group-by columns are aliased
+	// so the outer SELECT / WHERE / GROUP BY can reference them by
+	// a stable name regardless of whether the source expression was
+	// a bare ColumnRef or a Map lookup.
+	groupAliases := outerGroupAliases(m.GroupBy, m.GroupByAliases)
+	innerSb := NewSelect().From(inner)
+	for i, g := range m.GroupBy {
+		expr := g
+		alias := groupAliases[i]
+		innerSb.SelectAs(func(b *Builder) { _ = b.Expr(expr) }, alias)
+	}
+	tsCol := r.TimestampColumn
+	innerSb.SelectAs(func(b *Builder) { b.Ident(tsCol) }, "ts")
+	if m.Op != chplan.MetricsOpRate && m.Op != chplan.MetricsOpCountOverTime && m.Attr != nil {
+		attr := m.Attr
+		innerSb.SelectAs(func(b *Builder) { _ = b.Expr(attr) }, "metric_arg")
+	}
+	innerSb.SelectAs(
+		anchorFanoutFrag(endExpr, stepNS, numAnchors),
+		"anchor_ts",
+	)
+
+	// Outer SELECT: GROUP BY group cols + anchor_ts; apply the
+	// per-bucket reducer.
+	outerSb := NewSelect().From(innerSb.Frag())
+
+	// Group-by columns in the outer SELECT-list are referenced by the
+	// stable inner-SELECT aliases (set above).
+	for _, alias := range groupAliases {
+		a := alias
+		outerSb.Select(func(b *Builder) { b.Ident(a) })
+	}
+	outerSb.Select(Col("anchor_ts"))
+	reducerFrag := metricsReducerFrag(m.Op, chName, params, args, rangeSeconds)
+	outerSb.Select(As(reducerFrag, m.ValueAlias))
+
+	// WHERE: ts ∈ [anchor_ts - range, anchor_ts].
+	tsRangeNS := rangeNS
+	outerSb.Where(
+		func(b *Builder) {
+			b.sb.WriteString("ts >= anchor_ts - toIntervalNanosecond(")
+			b.sb.WriteString(strconv.FormatInt(tsRangeNS, 10))
+			b.sb.WriteByte(')')
+		},
+		func(b *Builder) {
+			b.sb.WriteString("ts <= anchor_ts")
+		},
+	)
+
+	// GROUP BY group aliases + anchor_ts.
+	groupFrags := make([]Frag, 0, len(groupAliases)+1)
+	for _, alias := range groupAliases {
+		a := alias
+		groupFrags = append(groupFrags, func(b *Builder) { b.Ident(a) })
+	}
+	groupFrags = append(groupFrags, Col("anchor_ts"))
+	outerSb.GroupBy(groupFrags...)
+
+	e.emitSelect(outerSb)
+	return nil
+}
+
+// anchorFanoutFrag returns a Frag rendering
+// `arrayJoin(arrayMap(i -> <endExpr> - toIntervalNanosecond(i * <stepNS>), range(0, <N>)))`.
+// Used by the matrix-shape RangeWindow emitter to fan each Inner row
+// across N anchors in a single CH pass.
+//
+// endExpr is rendered verbatim (the CH expression for the eval-grid
+// anchor base — typically a DateTime64 literal or `now64(9)`); stepNS
+// and N are inline integer literals.
+func anchorFanoutFrag(endExpr string, stepNS, numAnchors int64) Frag {
+	return func(b *Builder) {
+		b.sb.WriteString("arrayJoin(arrayMap(i -> ")
+		b.sb.WriteString(endExpr)
+		b.sb.WriteString(" - toIntervalNanosecond(i * ")
+		b.sb.WriteString(strconv.FormatInt(stepNS, 10))
+		b.sb.WriteString("), range(0, ")
+		b.sb.WriteString(strconv.FormatInt(numAnchors, 10))
+		b.sb.WriteString(")))")
+	}
+}
+
+// metricsReducerFrag returns the per-bucket reducer Frag for the matrix
+// emission path. rate normalises `count(1)` by dividing through the
+// range duration in seconds (rendered as a literal — duration constants
+// are query-shape, not user-data).
+func metricsReducerFrag(op chplan.MetricsOp, chName string, params, args []chplan.Expr, rangeSeconds float64) Frag {
+	// Translate Attr operand to a metric_arg reference (the alias the
+	// inner SELECT projects under) for *_over_time cases.
+	argFrags := make([]func(b *Builder), 0, len(args))
+	for range args {
+		argFrags = append(argFrags, func(b *Builder) { b.Ident("metric_arg") })
+	}
+	if op == chplan.MetricsOpRate || op == chplan.MetricsOpCountOverTime {
+		// args is [LitInt{1}] — pass through verbatim so we emit count(?).
+		argFrags = argFrags[:0]
+		for _, a := range args {
+			expr := a
+			argFrags = append(argFrags, func(b *Builder) { _ = b.Expr(expr) })
+		}
+	}
+	paramFrags := make([]func(b *Builder), 0, len(params))
+	for _, p := range params {
+		expr := p
+		paramFrags = append(paramFrags, func(b *Builder) { _ = b.Expr(expr) })
+	}
+
+	switch op {
+	case chplan.MetricsOpRate:
+		return func(b *Builder) {
+			b.ParamAgg(chName, paramFrags, argFrags)
+			b.sb.WriteString(" / ")
+			b.sb.WriteString(strconv.FormatFloat(rangeSeconds, 'f', -1, 64))
+		}
+	}
+	return func(b *Builder) {
+		b.ParamAgg(chName, paramFrags, argFrags)
+	}
+}
+
+// outerGroupAliases returns the SELECT-list aliases used to refer to
+// group-by columns in the outer matrix SELECT. Falls back to a
+// "g0", "g1", ... synthetic alias when the source GroupByAliases is
+// empty (chplan permits unaliased groups; the matrix shape needs a
+// stable handle to thread between subquery and GROUP BY).
+func outerGroupAliases(groupBy []chplan.Expr, aliases []string) []string {
+	if len(groupBy) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(groupBy))
+	for i := range groupBy {
+		if i < len(aliases) && aliases[i] != "" {
+			out = append(out, aliases[i])
+			continue
+		}
+		out = append(out, "g"+strconv.Itoa(i))
+	}
+	return out
 }
 
 // emitRangeWindowIdentity emits the "last value in window" shape used

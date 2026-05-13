@@ -1,0 +1,4 @@
+-- args --
+[0] float64 = 0.95
+-- sql --
+SELECT quantile(?)(`Duration`) AS `Value` FROM (SELECT * FROM `otel_traces`)
