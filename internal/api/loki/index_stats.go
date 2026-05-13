@@ -92,7 +92,7 @@ func (h *Handler) handleIndexStats(w http.ResponseWriter, r *http.Request) {
 // "no raw SQL" rule for new code).
 func buildIndexStatsSQL(s schema.Logs, matchers []*labels.Matcher, start, end time.Time) (string, []any, error) {
 	pred := logql.SelectorPredicate(matchers, s)
-	sb := chsql.NewSelect().
+	sb := chsql.NewQuery().
 		Select(
 			aggFrag("uniqExact", s.ResourceAttributesColumn),
 			countStar(),

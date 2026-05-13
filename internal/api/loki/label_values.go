@@ -80,7 +80,7 @@ func (h *Handler) handleLabelValues(w http.ResponseWriter, r *http.Request) {
 // name never reaches the SQL string itself. Empty values are filtered
 // out CH-side to avoid one round-trip-then-prune in Go.
 func buildLabelValuesSQL(s schema.Logs, name string, matchers []*labels.Matcher, start, end time.Time) (string, []any, error) {
-	sb := chsql.NewSelect().
+	sb := chsql.NewQuery().
 		Select(aliased(distinctMapAtFrag(s.ResourceAttributesColumn, name), "v")).
 		From(chsql.Col(s.LogsTable))
 

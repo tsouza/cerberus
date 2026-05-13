@@ -67,7 +67,7 @@ type TagScope struct {
 //	FROM `otel_traces`
 //	WHERE `Timestamp` >= ? AND `Timestamp` <= ?
 //
-// All identifiers and bound values flow through chsql.SelectBuilder —
+// All identifiers and bound values flow through chsql.QueryBuilder —
 // no fmt.Sprintf-on-SQL (CLAUDE.md "no raw SQL strings" rule).
 func (h *Handler) handleSearchTags(w http.ResponseWriter, r *http.Request) {
 	h.respondTags(w, r, false)
@@ -135,7 +135,7 @@ func (h *Handler) fetchTagKeys(ctx context.Context, mapCol string, start, end ti
 // Exposed for tests so the SQL shape is pinned without spinning up the
 // HTTP layer.
 func buildSearchTagsSQL(s schema.Traces, mapCol string, start, end time.Time) (string, []any) {
-	sb := chsql.NewSelect().
+	sb := chsql.NewQuery().
 		Select(distinctMapKeysFrag(mapCol)).
 		From(chsql.Col(s.SpansTable))
 	if !start.IsZero() {
@@ -150,7 +150,7 @@ func buildSearchTagsSQL(s schema.Traces, mapCol string, start, end time.Time) (s
 // distinctMapKeysFrag emits "DISTINCT arrayJoin(mapKeys(`<col>`))" — the
 // CH idiom for "every distinct attribute key seen". DISTINCT is part of
 // the SELECT list (CH's flavour), not a separate keyword, so it folds
-// into the Frag for the SelectBuilder slot.
+// into the Frag for the QueryBuilder slot.
 func distinctMapKeysFrag(col string) chsql.Frag {
 	return func(b *chsql.Builder) {
 		b.WriteSQL("DISTINCT arrayJoin(")

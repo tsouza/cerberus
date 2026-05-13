@@ -174,7 +174,7 @@ func (h *Handler) metricMetaSQL(table, metricName string) (string, []any) {
 		}
 	}
 
-	sb := chsql.NewSelect().
+	sb := chsql.NewQuery().
 		Select(chsql.Col(nameCol), anyCall(descCol), anyCall(unitCol)).
 		From(chsql.Col(table)).
 		GroupBy(chsql.Col(nameCol))
@@ -362,7 +362,7 @@ func (h *Handler) labelKeysForMatcher(ctx context.Context, matcher string) ([]st
 	}
 	attrsCol := h.Schema.AttributesColumn
 
-	sb := chsql.NewSelect().
+	sb := chsql.NewQuery().
 		Select(chsql.As(arrayJoinMapKeysFrag(attrsCol), "name")).
 		From(parenRawFrag(innerSQL)).
 		OrderBy(chsql.Col("name"), false)
@@ -381,7 +381,7 @@ func (h *Handler) labelValuesForMatcher(ctx context.Context, name, matcher strin
 		return nil, err
 	}
 	if name == model.MetricNameLabel {
-		sb := chsql.NewSelect().
+		sb := chsql.NewQuery().
 			Select(chsql.As(distinctIdent(h.Schema.MetricNameColumn), "value")).
 			From(parenRawFrag(innerSQL)).
 			OrderBy(chsql.Col("value"), false)
@@ -391,7 +391,7 @@ func (h *Handler) labelValuesForMatcher(ctx context.Context, name, matcher strin
 		})
 	}
 	attrsCol := h.Schema.AttributesColumn
-	sb := chsql.NewSelect().
+	sb := chsql.NewQuery().
 		Select(chsql.As(distinctMapAtFrag(attrsCol, name), "value")).
 		From(parenRawFrag(innerSQL)).
 		Where(mapAtNotEmptyFrag(attrsCol, name)).
@@ -400,7 +400,7 @@ func (h *Handler) labelValuesForMatcher(ctx context.Context, name, matcher strin
 	// valueArgs holds the `name` bound twice (SELECT then WHERE);
 	// the matcher's args slot between them at the original order:
 	//   <name (SELECT)>, <matcher args (FROM subquery)>, <name (WHERE)>.
-	// SelectBuilder renders SELECT before FROM before WHERE, so
+	// QueryBuilder renders SELECT before FROM before WHERE, so
 	// valueArgs is [name, name] (no `?` inside the FROM subquery raw
 	// text). Splice the matcher args at the FROM position by
 	// reconstructing the final slice.
@@ -467,12 +467,12 @@ func (h *Handler) unionLabelNamesSQL() string {
 	attrsCol := h.Schema.AttributesColumn
 	parts := make([]chsql.Frag, 0, len(tables))
 	for _, t := range tables {
-		arm := chsql.NewSelect().
+		arm := chsql.NewQuery().
 			Select(chsql.As(arrayJoinMapKeysFrag(attrsCol), "name")).
 			From(chsql.Col(t))
 		parts = append(parts, arm.Frag())
 	}
-	outer := chsql.NewSelect().
+	outer := chsql.NewQuery().
 		Select(chsql.As(distinctIdent("name"), "")).
 		From(chsql.UnionAll(parts...)).
 		OrderBy(chsql.Col("name"), false)
@@ -486,12 +486,12 @@ func (h *Handler) unionMetricNamesSQL() string {
 	metricCol := h.Schema.MetricNameColumn
 	parts := make([]chsql.Frag, 0, len(tables))
 	for _, t := range tables {
-		arm := chsql.NewSelect().
+		arm := chsql.NewQuery().
 			Select(chsql.As(distinctIdent(metricCol), "value")).
 			From(chsql.Col(t))
 		parts = append(parts, arm.Frag())
 	}
-	outer := chsql.NewSelect().
+	outer := chsql.NewQuery().
 		Select(chsql.As(distinctIdent("value"), "")).
 		From(chsql.UnionAll(parts...)).
 		OrderBy(chsql.Col("value"), false)
@@ -508,13 +508,13 @@ func (h *Handler) unionLabelValuesSQL(name string) (string, []any) {
 	attrsCol := h.Schema.AttributesColumn
 	parts := make([]chsql.Frag, 0, len(tables))
 	for _, t := range tables {
-		arm := chsql.NewSelect().
+		arm := chsql.NewQuery().
 			Select(chsql.As(distinctMapAtFrag(attrsCol, name), "value")).
 			From(chsql.Col(t)).
 			Where(mapAtNotEmptyFrag(attrsCol, name))
 		parts = append(parts, arm.Frag())
 	}
-	outer := chsql.NewSelect().
+	outer := chsql.NewQuery().
 		Select(chsql.As(distinctIdent("value"), "")).
 		From(chsql.UnionAll(parts...)).
 		OrderBy(chsql.Col("value"), false)
@@ -577,10 +577,10 @@ func mapAtNotEmptyFrag(col, key string) chsql.Frag {
 }
 
 // parenRawFrag wraps an already-rendered SQL string in parentheses for
-// use as a SelectBuilder FROM subquery. The wrapped SQL is treated as
+// use as a QueryBuilder FROM subquery. The wrapped SQL is treated as
 // opaque text — its own `?` placeholders pass through verbatim and the
 // caller is responsible for ordering its args ahead of any further
-// `?` bindings the outer SelectBuilder emits.
+// `?` bindings the outer QueryBuilder emits.
 func parenRawFrag(sql string) chsql.Frag {
 	return func(b *chsql.Builder) {
 		b.WriteSQL("(")

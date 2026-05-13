@@ -19,7 +19,7 @@ import (
 // the same `strings.Builder` + `[]any` args primitives the emitter
 // already uses, plus a handful of CH-specific helpers (MapAt, MapKeys,
 // MapFilterExcept, Now64, SubtractNanos, DateTime64Lit, Lambda,
-// ParamAgg) and a SelectBuilder with first-class PREWHERE, JOIN, and
+// ParamAgg) and a QueryBuilder with first-class PREWHERE, JOIN, and
 // WITH RECURSIVE slots so the RC3 optimizer rules can compose SQL
 // fragments without re-parsing rendered strings.
 //
@@ -412,7 +412,7 @@ func (b *Builder) exprFieldAccess(f *chplan.FieldAccess) error {
 }
 
 // Frag is the unit of composition: anything that knows how to write
-// itself into a Builder. SelectBuilder's slots hold Frag values
+// itself into a Builder. QueryBuilder's slots hold Frag values
 // rather than rendered strings so positional `?` arguments stay
 // tied to the position they're written at — a fragment passed to
 // Where renders into the WHERE clause with its args at the WHERE
@@ -420,7 +420,7 @@ func (b *Builder) exprFieldAccess(f *chplan.FieldAccess) error {
 type Frag func(b *Builder)
 
 // Col returns a Frag that emits a backtick-quoted column identifier.
-// Equivalent to b.Ident(name) but usable as a SelectBuilder slot.
+// Equivalent to b.Ident(name) but usable as a QueryBuilder slot.
 func Col(name string) Frag {
 	return func(b *Builder) { b.Ident(name) }
 }
@@ -452,11 +452,11 @@ func Raw(sql string) Frag {
 //
 // UNION is a SELECT-level binary operator (mirrors the SetUnion path
 // in set_op.go), not a clause inside a single SELECT, so it lives as
-// a standalone Frag constructor rather than a SelectBuilder slot.
+// a standalone Frag constructor rather than a QueryBuilder slot.
 //
-// Typical use: pass SelectBuilder.Frag() values as parts so each arm
+// Typical use: pass QueryBuilder.Frag() values as parts so each arm
 // renders as a parenthesised (SELECT …) and the whole UnionAll Frag
-// is plugged into the outer SelectBuilder.From slot.
+// is plugged into the outer QueryBuilder.From slot.
 //
 // Zero parts is a programmer error and panics; one part is rendered
 // unchanged (no UNION keyword emitted).
@@ -492,7 +492,7 @@ func As(expr Frag, alias string) Frag {
 
 // JoinKind identifies a SQL JOIN flavour. The constants render as
 // their literal SQL keywords (e.g. "INNER JOIN") and flow through
-// SelectBuilder.Join's typed slot so callers never compose the join
+// QueryBuilder.Join's typed slot so callers never compose the join
 // keyword by hand.
 type JoinKind string
 
@@ -510,7 +510,7 @@ const (
 	FullJoin JoinKind = "FULL JOIN"
 )
 
-// joinClause is one entry in a SelectBuilder's join chain. Rendered
+// joinClause is one entry in a QueryBuilder's join chain. Rendered
 // as ` <kind> <src> ON <on>` (single leading space) — or, for
 // CrossJoin, ` CROSS JOIN <src>` with the ON Frag suppressed.
 type joinClause struct {
@@ -519,7 +519,7 @@ type joinClause struct {
 	On   Frag
 }
 
-// cteClause is one entry in a SelectBuilder's WITH chain. The
+// cteClause is one entry in a QueryBuilder's WITH chain. The
 // recursive flag flips on the WITH RECURSIVE shape:
 //
 //	WITH RECURSIVE <name> AS (<anchor> UNION ALL <recursive>)
@@ -529,11 +529,11 @@ type joinClause struct {
 // reserved for a future R6.x port.
 type cteClause struct {
 	Name      string
-	Anchor    *SelectBuilder
-	Recursive *SelectBuilder
+	Anchor    *QueryBuilder
+	Recursive *QueryBuilder
 }
 
-// SelectBuilder accumulates a SELECT statement's parts. Slots are
+// QueryBuilder accumulates a SELECT statement's parts. Slots are
 // appended to in order; rendering walks each slot, emitting the
 // canonical clause prefix (SELECT, FROM, WHERE, …) and joining
 // per-slot Frags with the right separator.
@@ -559,8 +559,8 @@ type cteClause struct {
 // `WITH RECURSIVE <name> AS (<anchor> UNION ALL <recursive>)` ahead
 // of the SELECT keyword.
 //
-// The zero value is ready to use; NewSelect is provided for clarity.
-type SelectBuilder struct {
+// The zero value is ready to use; NewQuery is provided for clarity.
+type QueryBuilder struct {
 	ctes       []cteClause
 	selectList []Frag
 	from       Frag
@@ -578,12 +578,12 @@ type orderKey struct {
 	Desc bool
 }
 
-// NewSelect returns an empty SelectBuilder.
-func NewSelect() *SelectBuilder { return &SelectBuilder{} }
+// NewQuery returns an empty QueryBuilder.
+func NewQuery() *QueryBuilder { return &QueryBuilder{} }
 
 // Select appends one or more expressions to the SELECT list. If the
 // list is left empty at Build time the rendered SQL emits `SELECT *`.
-func (s *SelectBuilder) Select(exprs ...Frag) *SelectBuilder {
+func (s *QueryBuilder) Select(exprs ...Frag) *QueryBuilder {
 	s.selectList = append(s.selectList, exprs...)
 	return s
 }
@@ -593,15 +593,15 @@ func (s *SelectBuilder) Select(exprs ...Frag) *SelectBuilder {
 // Convenience wrapper over As + Select; lets projection callers express
 // "this expression renames to this column" without composing the AS
 // keyword by hand.
-func (s *SelectBuilder) SelectAs(expr Frag, alias string) *SelectBuilder {
+func (s *QueryBuilder) SelectAs(expr Frag, alias string) *QueryBuilder {
 	s.selectList = append(s.selectList, As(expr, alias))
 	return s
 }
 
 // From sets the FROM source. Accepts any Frag — Col(table), Raw for
-// subquery escape hatches, or another SelectBuilder via its Frag()
+// subquery escape hatches, or another QueryBuilder via its Frag()
 // method (which wraps the nested SELECT in parens).
-func (s *SelectBuilder) From(src Frag) *SelectBuilder {
+func (s *QueryBuilder) From(src Frag) *QueryBuilder {
 	s.from = src
 	return s
 }
@@ -616,14 +616,14 @@ func (s *SelectBuilder) From(src Frag) *SelectBuilder {
 //
 // Multiple Join calls chain in order, rendered after FROM and before
 // PREWHERE / WHERE.
-func (s *SelectBuilder) Join(kind JoinKind, src, on Frag) *SelectBuilder {
+func (s *QueryBuilder) Join(kind JoinKind, src, on Frag) *QueryBuilder {
 	s.joins = append(s.joins, joinClause{Kind: kind, Src: src, On: on})
 	return s
 }
 
 // WithRecursive registers a `WITH RECURSIVE <name> AS (<anchor>
 // UNION ALL <recursive>)` CTE in front of the SELECT. The anchor and
-// recursive children are SelectBuilders so their args land in
+// recursive children are QueryBuilders so their args land in
 // emission order: anchor first, recursive second, then the outer
 // SELECT.
 //
@@ -633,14 +633,14 @@ func (s *SelectBuilder) Join(kind JoinKind, src, on Frag) *SelectBuilder {
 // multi-CTE shape is reserved for future ports.
 //
 // Passing a nil anchor or recursive panics at render time.
-func (s *SelectBuilder) WithRecursive(name string, anchor, recursive *SelectBuilder) *SelectBuilder {
+func (s *QueryBuilder) WithRecursive(name string, anchor, recursive *QueryBuilder) *QueryBuilder {
 	s.ctes = append(s.ctes, cteClause{Name: name, Anchor: anchor, Recursive: recursive})
 	return s
 }
 
 // Where appends predicates to the WHERE clause. Multiple predicates
 // are joined with " AND " when rendered.
-func (s *SelectBuilder) Where(conds ...Frag) *SelectBuilder {
+func (s *QueryBuilder) Where(conds ...Frag) *QueryBuilder {
 	s.where = append(s.where, conds...)
 	return s
 }
@@ -648,20 +648,20 @@ func (s *SelectBuilder) Where(conds ...Frag) *SelectBuilder {
 // Prewhere appends predicates to the PREWHERE clause. Multiple
 // predicates are joined with " AND " when rendered. PREWHERE is
 // emitted before WHERE in the SQL.
-func (s *SelectBuilder) Prewhere(conds ...Frag) *SelectBuilder {
+func (s *QueryBuilder) Prewhere(conds ...Frag) *QueryBuilder {
 	s.prewhere = append(s.prewhere, conds...)
 	return s
 }
 
 // GroupBy appends grouping expressions.
-func (s *SelectBuilder) GroupBy(keys ...Frag) *SelectBuilder {
+func (s *QueryBuilder) GroupBy(keys ...Frag) *QueryBuilder {
 	s.groupBy = append(s.groupBy, keys...)
 	return s
 }
 
 // OrderBy appends a sort key. desc selects DESC; default is ASC
 // (implicit, ClickHouse default).
-func (s *SelectBuilder) OrderBy(expr Frag, desc bool) *SelectBuilder {
+func (s *QueryBuilder) OrderBy(expr Frag, desc bool) *QueryBuilder {
 	s.orderBy = append(s.orderBy, orderKey{Expr: expr, Desc: desc})
 	return s
 }
@@ -671,17 +671,17 @@ func (s *SelectBuilder) OrderBy(expr Frag, desc bool) *SelectBuilder {
 // `?` placeholders in all driver paths and the value is part of the
 // query shape, not user data). int64 accommodates chplan.Limit.Count
 // without a lossy downcast.
-func (s *SelectBuilder) Limit(n int64) *SelectBuilder {
+func (s *QueryBuilder) Limit(n int64) *QueryBuilder {
 	s.limit = n
 	s.hasLimit = n > 0
 	return s
 }
 
 // Frag returns a Frag that emits the rendered SELECT wrapped in
-// parentheses. Used to plug a SelectBuilder into another's From
+// parentheses. Used to plug a QueryBuilder into another's From
 // without flattening to a string: args bound inside the nested
 // SELECT stay tied to their position in the outer args slice.
-func (s *SelectBuilder) Frag() Frag {
+func (s *QueryBuilder) Frag() Frag {
 	return func(b *Builder) {
 		b.sb.WriteByte('(')
 		s.writeInto(b)
@@ -691,13 +691,13 @@ func (s *SelectBuilder) Frag() Frag {
 
 // Build renders the SELECT statement to (sql, args). Equivalent to
 // running Frag() into a fresh Builder, minus the surrounding parens.
-func (s *SelectBuilder) Build() (string, []any) {
+func (s *QueryBuilder) Build() (string, []any) {
 	b := NewBuilder()
 	s.writeInto(b)
 	return b.Build()
 }
 
-func (s *SelectBuilder) writeInto(b *Builder) {
+func (s *QueryBuilder) writeInto(b *Builder) {
 	if len(s.ctes) > 0 {
 		b.sb.WriteString("WITH RECURSIVE ")
 		for i, c := range s.ctes {

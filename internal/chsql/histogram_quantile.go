@@ -36,7 +36,7 @@ import (
 //     non-negative observations).
 //   - Any other phi → linear interpolation per the steps above.
 //
-// The outer SelectBuilder projects the GroupBy columns aliased per
+// The outer QueryBuilder projects the GroupBy columns aliased per
 // GroupByAliases, then the interpolated quantile as the `Value` column,
 // matching the Sample contract the lowering's wrapping Project consumes.
 func (e *emitter) emitHistogramQuantile(h *chplan.HistogramQuantile) error {
@@ -59,7 +59,7 @@ func (e *emitter) emitHistogramQuantile(h *chplan.HistogramQuantile) error {
 		return err
 	}
 
-	sb := NewSelect().From(sub)
+	sb := NewQuery().From(sub)
 	for i, g := range h.GroupBy {
 		expr := g
 		alias := ""

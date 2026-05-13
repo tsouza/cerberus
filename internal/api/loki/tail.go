@@ -275,7 +275,7 @@ func writeTailChunk(conn *websocket.Conn, streams []Stream) error {
 // MetricName carries the log line (same hijack as the other log-stream
 // handlers — chclient.Sample.Value is float64 so the line rides in
 // the String-typed MetricName slot). All identifiers and time-range
-// bounds flow through chsql.SelectBuilder — no fmt.Sprintf-on-SQL.
+// bounds flow through chsql.QueryBuilder — no fmt.Sprintf-on-SQL.
 //
 // Rows are sorted ascending so the runTailLoop cursor-advance logic
 // picks the genuinely latest sample. Without ORDER BY the LIMIT could
@@ -283,7 +283,7 @@ func writeTailChunk(conn *websocket.Conn, streams []Stream) error {
 // that arrive on the next poll.
 func buildTailSQL(s schema.Logs, matchers []*labels.Matcher, cursor, end time.Time, limit int) (string, []any, error) {
 	pred := logql.SelectorPredicate(matchers, s)
-	sb := chsql.NewSelect().
+	sb := chsql.NewQuery().
 		Select(
 			chsql.As(chsql.Col(s.BodyColumn), "MetricName"),
 			chsql.As(chsql.Col(s.ResourceAttributesColumn), "Attributes"),

@@ -13,7 +13,7 @@ import (
 // clients that send raw nanos (e.g. some Grafana plugins).
 //
 // Both bounds are optional; an absent value yields the zero time.Time,
-// which the SelectBuilder treats as "no predicate".
+// which the QueryBuilder treats as "no predicate".
 func parseTempoStartEnd(r *http.Request) (time.Time, time.Time, error) {
 	startStr := r.URL.Query().Get("start")
 	endStr := r.URL.Query().Get("end")

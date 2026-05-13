@@ -47,7 +47,7 @@ func (e *emitter) emitMetricsAggregate(m *chplan.MetricsAggregate) error {
 		return err
 	}
 
-	sb := NewSelect().From(sub)
+	sb := NewQuery().From(sub)
 	for i, g := range m.GroupBy {
 		expr := g
 		alias := ""
@@ -301,7 +301,7 @@ func (e *emitter) emitWindowedArrayPairs(r *chplan.RangeWindow, valueWriter Frag
 	}
 
 	// Innermost SELECT — groupArray of (ts, value), sorted.
-	innermost := NewSelect()
+	innermost := NewQuery()
 	for _, g := range groupFrags {
 		innermost.Select(g)
 	}
@@ -316,14 +316,14 @@ func (e *emitter) emitWindowedArrayPairs(r *chplan.RangeWindow, valueWriter Frag
 	}
 
 	// Inner SELECT — arrayFilter to the [end-range, end] window.
-	innerSb := NewSelect().From(innermost.Frag())
+	innerSb := NewQuery().From(innermost.Frag())
 	for _, g := range groupFrags {
 		innerSb.Select(g)
 	}
 	innerSb.Select(rawAs(windowFilterPairsFrag(end, rangeNS), "window_pairs"))
 
 	// Outer SELECT — final value per series.
-	outerSb := NewSelect().From(innerSb.Frag())
+	outerSb := NewQuery().From(innerSb.Frag())
 	for _, g := range groupFrags {
 		outerSb.Select(g)
 	}
@@ -496,7 +496,7 @@ func (e *emitter) emitRangeWindowMetrics(r *chplan.RangeWindow, m *chplan.Metric
 	// a stable name regardless of whether the source expression was
 	// a bare ColumnRef or a Map lookup.
 	groupAliases := outerGroupAliases(m.GroupBy, m.GroupByAliases)
-	innerSb := NewSelect().From(inner)
+	innerSb := NewQuery().From(inner)
 	for i, g := range m.GroupBy {
 		expr := g
 		alias := groupAliases[i]
@@ -515,7 +515,7 @@ func (e *emitter) emitRangeWindowMetrics(r *chplan.RangeWindow, m *chplan.Metric
 
 	// Outer SELECT: GROUP BY group cols + anchor_ts; apply the
 	// per-bucket reducer.
-	outerSb := NewSelect().From(innerSb.Frag())
+	outerSb := NewQuery().From(innerSb.Frag())
 
 	// Group-by columns in the outer SELECT-list are referenced by the
 	// stable inner-SELECT aliases (set above).
@@ -834,7 +834,7 @@ func (e *emitter) emitWindowedArray(r *chplan.RangeWindow, value Frag) error {
 	}
 
 	// Innermost SELECT — groupArray of (ts, value), sorted.
-	innermost := NewSelect()
+	innermost := NewQuery()
 	for _, g := range groupFrags {
 		innermost.Select(g)
 	}
@@ -849,14 +849,14 @@ func (e *emitter) emitWindowedArray(r *chplan.RangeWindow, value Frag) error {
 	}
 
 	// Inner-middle SELECT — arrayFilter to the [end-range, end] window.
-	innerMid := NewSelect().From(innermost.Frag())
+	innerMid := NewQuery().From(innermost.Frag())
 	for _, g := range groupFrags {
 		innerMid.Select(g)
 	}
 	innerMid.Select(As(windowFilterPairsFrag(end, rangeNS), "window_pairs"))
 
 	// Middle SELECT — derives window_vals + counter_delta from window_pairs.
-	mid := NewSelect().From(innerMid.Frag())
+	mid := NewQuery().From(innerMid.Frag())
 	for _, g := range groupFrags {
 		mid.Select(g)
 	}
@@ -864,7 +864,7 @@ func (e *emitter) emitWindowedArray(r *chplan.RangeWindow, value Frag) error {
 	mid.Select(As(counterDeltaFrag(), "counter_delta"))
 
 	// Outer SELECT — final value per series.
-	outer := NewSelect().From(mid.Frag())
+	outer := NewQuery().From(mid.Frag())
 	for _, g := range groupFrags {
 		outer.Select(g)
 	}
@@ -908,7 +908,7 @@ func (e *emitter) emitWindowedArrayMatrix(r *chplan.RangeWindow, value Frag) err
 	}
 
 	// Innermost SELECT — groupArray of (ts, value), sorted.
-	innermost := NewSelect()
+	innermost := NewQuery()
 	for _, g := range groupFrags {
 		innermost.Select(g)
 	}
@@ -923,7 +923,7 @@ func (e *emitter) emitWindowedArrayMatrix(r *chplan.RangeWindow, value Frag) err
 	}
 
 	// Anchor-fanout SELECT — arrayJoin produces one row per anchor.
-	fanout := NewSelect().From(innermost.Frag())
+	fanout := NewQuery().From(innermost.Frag())
 	for _, g := range groupFrags {
 		fanout.Select(g)
 	}
@@ -931,7 +931,7 @@ func (e *emitter) emitWindowedArrayMatrix(r *chplan.RangeWindow, value Frag) err
 	fanout.Select(As(anchorFanoutFrag(end, stepNS, numAnchors), "anchor_ts"))
 
 	// Inner-middle SELECT — arrayFilter to [anchor_ts - range, anchor_ts].
-	innerMid := NewSelect().From(fanout.Frag())
+	innerMid := NewQuery().From(fanout.Frag())
 	for _, g := range groupFrags {
 		innerMid.Select(g)
 	}
@@ -939,7 +939,7 @@ func (e *emitter) emitWindowedArrayMatrix(r *chplan.RangeWindow, value Frag) err
 	innerMid.Select(As(windowFilterPairsFrag(Raw("anchor_ts"), rangeNS), "window_pairs"))
 
 	// Middle SELECT — window_vals + counter_delta per (series, anchor).
-	mid := NewSelect().From(innerMid.Frag())
+	mid := NewQuery().From(innerMid.Frag())
 	for _, g := range groupFrags {
 		mid.Select(g)
 	}
@@ -948,7 +948,7 @@ func (e *emitter) emitWindowedArrayMatrix(r *chplan.RangeWindow, value Frag) err
 	mid.Select(As(counterDeltaFrag(), "counter_delta"))
 
 	// Outer SELECT — per-(series, anchor) row.
-	outer := NewSelect().From(mid.Frag())
+	outer := NewQuery().From(mid.Frag())
 	for _, g := range groupFrags {
 		outer.Select(g)
 	}

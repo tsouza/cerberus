@@ -314,7 +314,7 @@ func TestBuilder_ParamAgg_MultiParam(t *testing.T) {
 }
 
 // TestFrag_HelpersBindAtPosition — Col / Lit / Raw / Qual produce
-// Frags that can be plugged into a SelectBuilder slot; args bind in
+// Frags that can be plugged into a QueryBuilder slot; args bind in
 // emission order.
 func TestFrag_HelpersBindAtPosition(t *testing.T) {
 	t.Parallel()
@@ -362,7 +362,7 @@ func TestAs_WrapsWithAlias(t *testing.T) {
 func TestUnionAll_JoinsParts(t *testing.T) {
 	t.Parallel()
 
-	left := chsql.NewSelect().
+	left := chsql.NewQuery().
 		Select(chsql.Col("MetricName")).
 		From(chsql.Col("gauge")).
 		Where(func(b *chsql.Builder) {
@@ -370,7 +370,7 @@ func TestUnionAll_JoinsParts(t *testing.T) {
 			b.WriteSQL(" = ")
 			b.Arg("a")
 		})
-	right := chsql.NewSelect().
+	right := chsql.NewQuery().
 		Select(chsql.Col("MetricName")).
 		From(chsql.Col("sum")).
 		Where(func(b *chsql.Builder) {
@@ -399,7 +399,7 @@ func TestUnionAll_JoinsParts(t *testing.T) {
 func TestUnionAll_SinglePart(t *testing.T) {
 	t.Parallel()
 
-	only := chsql.NewSelect().
+	only := chsql.NewQuery().
 		Select(chsql.Col("x")).
 		From(chsql.Col("t"))
 
@@ -423,13 +423,13 @@ func TestUnionAll_PanicsOnEmpty(t *testing.T) {
 	chsql.UnionAll()
 }
 
-// TestSelectBuilder_SelectAs — SelectAs slot adds "<expr> AS <alias>"
+// TestQueryBuilder_SelectAs — SelectAs slot adds "<expr> AS <alias>"
 // to the SELECT list without composing the AS keyword by hand at the
 // call site.
-func TestSelectBuilder_SelectAs(t *testing.T) {
+func TestQueryBuilder_SelectAs(t *testing.T) {
 	t.Parallel()
 
-	sql, _ := chsql.NewSelect().
+	sql, _ := chsql.NewQuery().
 		SelectAs(chsql.Col("MetricName"), "name").
 		SelectAs(chsql.Col("Value"), "").
 		From(chsql.Col("otel_metrics_gauge")).
@@ -440,13 +440,13 @@ func TestSelectBuilder_SelectAs(t *testing.T) {
 	}
 }
 
-// TestSelectBuilder_Empty — empty SelectBuilder renders "SELECT *".
+// TestQueryBuilder_Empty — empty QueryBuilder renders "SELECT *".
 // (No FROM is fine; CH accepts SELECT * alone for fixture-style
 // shapes, even if it's not what production emits.)
-func TestSelectBuilder_Empty(t *testing.T) {
+func TestQueryBuilder_Empty(t *testing.T) {
 	t.Parallel()
 
-	sql, args := chsql.NewSelect().Build()
+	sql, args := chsql.NewQuery().Build()
 	if want := "SELECT *"; sql != want {
 		t.Errorf("empty SELECT = %q; want %q", sql, want)
 	}
@@ -455,12 +455,12 @@ func TestSelectBuilder_Empty(t *testing.T) {
 	}
 }
 
-// TestSelectBuilder_Basic — Select / From / Where / Limit composed
+// TestQueryBuilder_Basic — Select / From / Where / Limit composed
 // in order, args from a Lit() in Where bind at the WHERE position.
-func TestSelectBuilder_Basic(t *testing.T) {
+func TestQueryBuilder_Basic(t *testing.T) {
 	t.Parallel()
 
-	sql, args := chsql.NewSelect().
+	sql, args := chsql.NewQuery().
 		Select(chsql.Col("MetricName"), chsql.Col("Value")).
 		From(chsql.Col("otel_metrics_gauge")).
 		Where(func(b *chsql.Builder) {
@@ -481,12 +481,12 @@ func TestSelectBuilder_Basic(t *testing.T) {
 	}
 }
 
-// TestSelectBuilder_Prewhere — PREWHERE is emitted before WHERE in
+// TestQueryBuilder_Prewhere — PREWHERE is emitted before WHERE in
 // the rendered SQL; multiple predicates in either slot join with AND.
-func TestSelectBuilder_Prewhere(t *testing.T) {
+func TestQueryBuilder_Prewhere(t *testing.T) {
 	t.Parallel()
 
-	sql, args := chsql.NewSelect().
+	sql, args := chsql.NewQuery().
 		Select(chsql.Col("Value")).
 		From(chsql.Col("otel_metrics_gauge")).
 		Prewhere(func(b *chsql.Builder) {
@@ -519,12 +519,12 @@ func TestSelectBuilder_Prewhere(t *testing.T) {
 	}
 }
 
-// TestSelectBuilder_GroupByOrderBy — GROUP BY + ORDER BY composition;
+// TestQueryBuilder_GroupByOrderBy — GROUP BY + ORDER BY composition;
 // DESC flag on the OrderBy key emits the DESC keyword.
-func TestSelectBuilder_GroupByOrderBy(t *testing.T) {
+func TestQueryBuilder_GroupByOrderBy(t *testing.T) {
 	t.Parallel()
 
-	sql, args := chsql.NewSelect().
+	sql, args := chsql.NewQuery().
 		Select(chsql.Col("MetricName"), chsql.Raw("sum(`Value`) AS `total`")).
 		From(chsql.Col("otel_metrics_gauge")).
 		GroupBy(chsql.Col("MetricName")).
@@ -545,15 +545,15 @@ func TestSelectBuilder_GroupByOrderBy(t *testing.T) {
 	}
 }
 
-// TestSelectBuilder_NestedSubquery — the worst-case nested case the
+// TestQueryBuilder_NestedSubquery — the worst-case nested case the
 // roadmap calls out: an inner SELECT with its own placeholders feeds
 // the outer SELECT's FROM, and an outer WHERE adds another `?`. Args
 // must appear in the same order as the `?` placeholders in the
 // rendered SQL.
-func TestSelectBuilder_NestedSubquery(t *testing.T) {
+func TestQueryBuilder_NestedSubquery(t *testing.T) {
 	t.Parallel()
 
-	inner := chsql.NewSelect().
+	inner := chsql.NewQuery().
 		Select(chsql.Col("MetricName"), chsql.Col("Value")).
 		From(chsql.Col("otel_metrics_gauge")).
 		Where(func(b *chsql.Builder) {
@@ -562,7 +562,7 @@ func TestSelectBuilder_NestedSubquery(t *testing.T) {
 			b.Arg("api")
 		})
 
-	sql, args := chsql.NewSelect().
+	sql, args := chsql.NewQuery().
 		Select(chsql.Col("Value")).
 		From(inner.Frag()).
 		Where(func(b *chsql.Builder) {
@@ -585,14 +585,14 @@ func TestSelectBuilder_NestedSubquery(t *testing.T) {
 	}
 }
 
-// TestSelectBuilder_Join — SelectBuilder.Join appends an INNER JOIN
+// TestQueryBuilder_Join — QueryBuilder.Join appends an INNER JOIN
 // (or other JoinKind) clause; args from the source and ON fragments
 // land in emission order between the SELECT/FROM args and the WHERE
 // args.
-func TestSelectBuilder_Join(t *testing.T) {
+func TestQueryBuilder_Join(t *testing.T) {
 	t.Parallel()
 
-	sql, args := chsql.NewSelect().
+	sql, args := chsql.NewQuery().
 		Select(chsql.Raw("L.`Value`"), chsql.Raw("R.`Value`")).
 		From(func(b *chsql.Builder) {
 			b.Ident("otel_metrics_sum")
@@ -631,9 +631,9 @@ func TestSelectBuilder_Join(t *testing.T) {
 	}
 }
 
-// TestSelectBuilder_JoinKinds — every JoinKind constant renders as its
+// TestQueryBuilder_JoinKinds — every JoinKind constant renders as its
 // literal SQL keyword pair. CrossJoin suppresses the ON clause.
-func TestSelectBuilder_JoinKinds(t *testing.T) {
+func TestQueryBuilder_JoinKinds(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
@@ -648,7 +648,7 @@ func TestSelectBuilder_JoinKinds(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(string(tc.kind), func(t *testing.T) {
 			t.Parallel()
-			sql, _ := chsql.NewSelect().
+			sql, _ := chsql.NewQuery().
 				From(chsql.Col("a")).
 				Join(tc.kind, chsql.Col("b"), chsql.Raw("1 = 1")).
 				Build()
@@ -660,7 +660,7 @@ func TestSelectBuilder_JoinKinds(t *testing.T) {
 	}
 
 	// CrossJoin drops the ON clause; the on Frag is allowed to be nil.
-	sql, _ := chsql.NewSelect().
+	sql, _ := chsql.NewQuery().
 		From(chsql.Col("a")).
 		Join(chsql.CrossJoin, chsql.Col("b"), nil).
 		Build()
@@ -669,14 +669,14 @@ func TestSelectBuilder_JoinKinds(t *testing.T) {
 	}
 }
 
-// TestSelectBuilder_WithRecursive — WithRecursive renders the
+// TestQueryBuilder_WithRecursive — WithRecursive renders the
 // `WITH RECURSIVE <name> AS (<anchor> UNION ALL <recursive>)` head and
 // threads anchor + recursive args in order ahead of the outer
 // SELECT's args.
-func TestSelectBuilder_WithRecursive(t *testing.T) {
+func TestQueryBuilder_WithRecursive(t *testing.T) {
 	t.Parallel()
 
-	anchor := chsql.NewSelect().
+	anchor := chsql.NewQuery().
 		Select(chsql.Col("id"), chsql.Raw("0 AS _depth")).
 		From(chsql.Col("nodes")).
 		Where(func(b *chsql.Builder) {
@@ -685,7 +685,7 @@ func TestSelectBuilder_WithRecursive(t *testing.T) {
 			b.Arg(1)
 		})
 
-	step := chsql.NewSelect().
+	step := chsql.NewQuery().
 		Select(
 			func(b *chsql.Builder) {
 				b.WriteSQL("n.")
@@ -707,7 +707,7 @@ func TestSelectBuilder_WithRecursive(t *testing.T) {
 			b.Arg(5)
 		})
 
-	sql, args := chsql.NewSelect().
+	sql, args := chsql.NewQuery().
 		WithRecursive("closure", anchor, step).
 		Select(chsql.Col("id")).
 		From(chsql.Raw("closure")).
@@ -729,11 +729,11 @@ func TestSelectBuilder_WithRecursive(t *testing.T) {
 	}
 }
 
-// TestSelectBuilder_WithRecursive_PanicsOnNil — passing a nil anchor
+// TestQueryBuilder_WithRecursive_PanicsOnNil — passing a nil anchor
 // or recursive panics at render time. The slot stores them via the
 // fluent API without inspection, so the guard fires when writeInto
 // walks the CTE chain.
-func TestSelectBuilder_WithRecursive_PanicsOnNil(t *testing.T) {
+func TestQueryBuilder_WithRecursive_PanicsOnNil(t *testing.T) {
 	t.Parallel()
 
 	defer func() {
@@ -746,16 +746,16 @@ func TestSelectBuilder_WithRecursive_PanicsOnNil(t *testing.T) {
 			t.Errorf("panic value = %v; want message mentioning WithRecursive", r)
 		}
 	}()
-	chsql.NewSelect().
+	chsql.NewQuery().
 		WithRecursive("closure", nil, nil).
 		From(chsql.Col("x")).
 		Build()
 }
 
-// TestSelectBuilder_Join_PanicsOnNilON — Join with a nil ON Frag and
+// TestQueryBuilder_Join_PanicsOnNilON — Join with a nil ON Frag and
 // a non-CrossJoin kind panics at render time (CrossJoin is the only
 // kind that legitimately omits ON).
-func TestSelectBuilder_Join_PanicsOnNilON(t *testing.T) {
+func TestQueryBuilder_Join_PanicsOnNilON(t *testing.T) {
 	t.Parallel()
 
 	defer func() {
@@ -768,7 +768,7 @@ func TestSelectBuilder_Join_PanicsOnNilON(t *testing.T) {
 			t.Errorf("panic value = %v; want message mentioning Join", r)
 		}
 	}()
-	chsql.NewSelect().
+	chsql.NewQuery().
 		From(chsql.Col("a")).
 		Join(chsql.InnerJoin, chsql.Col("b"), nil).
 		Build()

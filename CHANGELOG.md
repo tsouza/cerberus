@@ -79,7 +79,7 @@ The advanced-QL + deferred-API release. Closes the RC2 backlog from [`docs/roadm
 - Bump the github-actions group across 1 directory with 10 updates. [#121]
 - RC6 R6.0 — SQL builder evaluation recommends custom builder. [#125]
 - Align CLAUDE.md + roadmap with R6.0 custom-builder choice. [#129]
-- Scaffold public `chsql.Builder` + `SelectBuilder` (RC6 R6.1). [#131]
+- Scaffold public `chsql.Builder` + `QueryBuilder` (RC6 R6.1). [#131]
 - Fuzz + perf-benchmark workflow scaffolds (RC3 R3.11). [#133]
 - Scaffold local Go PromQL evaluator (RC3 R3.10). [#134]
 - Pattern-based optimizer `Rule` API scaffold (RC3 R3.1). [#135]
@@ -89,7 +89,7 @@ The advanced-QL + deferred-API release. Closes the RC2 backlog from [`docs/roadm
 - Port `emitAggregate` + `emitAggFunc` to Builder (RC6 R6.3). [#140]
 - Wire `tsouza/tempo:cerberus-accessors` fork via `replace` directive. [#143]
 - Run dashboard E2E on merge-to-main only, drop PR trigger. [#145]
-- Actually use `SelectBuilder` for R6.2 / R6.3 ports + repo audit. [#146]
+- Actually use `QueryBuilder` for R6.2 / R6.3 ports + repo audit. [#146]
 - Retire `unsafe.Pointer` + reflect shims via `tsouza/tempo` accessors. [#148]
 - Tighten no-raw-SQL rule to forbid `Builder.WriteSQL` clause keywords. [#149]
 - `forbidigo` lint forbids `unsafe.Pointer` + `reflect.FieldByName` in `internal/traceql`, `internal/api/tempo`. [#152]
@@ -99,7 +99,7 @@ The advanced-QL + deferred-API release. Closes the RC2 backlog from [`docs/roadm
 
 ### Changed
 
-- `SelectBuilder.Limit(int64)` and Builder API refactors to thread typed clauses through the chplan emitter (R6.2 / R6.3 audit). [#138, #140, #146]
+- `QueryBuilder.Limit(int64)` and Builder API refactors to thread typed clauses through the chplan emitter (R6.2 / R6.3 audit). [#138, #140, #146]
 - Migrate test seeders (`harness/compatibility`, `test/e2e`) off hand-rolled `*.sql` files onto the upstream-derived `schema/ddl` package. [#167, #168]
 
 ### Security

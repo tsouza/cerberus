@@ -85,9 +85,9 @@ func (h *Handler) handleSeries(w http.ResponseWriter, r *http.Request) {
 //
 // Multiple match[] selectors are OR'd (Loki's documented semantics —
 // each match[] independently contributes streams). All identifiers and
-// time bounds flow through SelectBuilder slots.
+// time bounds flow through QueryBuilder slots.
 func buildSeriesSQL(s schema.Logs, selectorGroups [][]*labels.Matcher, start, end time.Time) (string, []any, error) {
-	sb := chsql.NewSelect().
+	sb := chsql.NewQuery().
 		Select(aliased(chsql.Col(s.ResourceAttributesColumn), "labels")).
 		From(chsql.Col(s.LogsTable))
 
