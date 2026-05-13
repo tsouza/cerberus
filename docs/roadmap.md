@@ -13,7 +13,7 @@ This document is the public-facing narrative for the path to `v1.0.0`. Status by
 | **v1.0.0-RC5** | 12-factor compatibility + scale-out polish                                            | `/readyz` pings CH, admission control, HPA recipe, dev `docker-compose.yml`, schema overrides     |
 | **v1.0.0-RC6** | Type-safe SQL via custom `internal/chsql.Builder` (R6.0 evaluation → R6.1–R6.10 port) | No `fmt.Sprintf`-on-SQL anywhere; typed builder with CH-specific helpers; lint enforcement        |
 | **v1.0.0-RC7** | `internal/engine/` ExecutionEngine framework (R7.0 evaluation → R7.1–R7.8 port)       | One pipeline owner; handlers under ~150 LoC each; shared format + httperr helpers                 |
-| **v1.0.0**     | Tag the last green RC                                                                 | All RCs stable; HTTP wire protocols (Prom / Loki / Tempo) are the public surface — no Go `pkg/` API |
+| **v1.0.0**     | Tag the last green RC                                                                 | All RCs stable; HTTP wire protocols are the public surface, not a Go API                          |
 
 The existing **3-rule optimizer** (filter-fusion, constant-fold, projection-pushdown) ships unchanged through RC1 and RC2. **No new optimizer work happens before RC3** — its full backlog lives in [`docs/optimizer-research.md`](optimizer-research.md).
 
