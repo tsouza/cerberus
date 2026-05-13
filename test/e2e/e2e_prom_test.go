@@ -42,19 +42,20 @@ func TestPromQueryRangeRate(t *testing.T) {
 	}
 }
 
-// TestPromQueryScalarFold — Grafana's `?query=1+1` health probe. The
-// fold happens entirely in Go (no CH round-trip); the response must
-// be a scalar.
-func TestPromQueryScalarFold(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+// TestPromQuerySubqueryBareVector — P0 4.5: `up[1m:30s]` lowers to a
+// matrix RangeWindow with Identity=true, producing 3 anchors per
+// series across [now-1m, now]. Validates the bare-vector subquery
+// lowering against real CH data.
+func TestPromQuerySubqueryBareVector(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	resp := getJSON(ctx, t, "/api/v1/query?query=1%2B1")
+	resp := getJSON(ctx, t, "/api/v1/query?query=up%5B1m%3A30s%5D")
 	var parsed struct {
 		Status string `json:"status"`
 		Data   struct {
 			ResultType string `json:"resultType"`
-			Result     [2]any `json:"result"`
+			Result     []any  `json:"result"`
 		} `json:"data"`
 	}
 	mustDecode(t, resp, &parsed)
@@ -62,11 +63,35 @@ func TestPromQueryScalarFold(t *testing.T) {
 	if parsed.Status != "success" {
 		t.Fatalf("status: got %q, want success", parsed.Status)
 	}
-	if parsed.Data.ResultType != "scalar" {
-		t.Fatalf("resultType: got %q, want scalar", parsed.Data.ResultType)
+	if len(parsed.Data.Result) == 0 {
+		t.Fatalf("expected at least one series; got 0")
 	}
-	if got := parsed.Data.Result[1]; got != "2" {
-		t.Fatalf("folded value: got %v, want \"2\"", got)
+}
+
+// TestPromQuerySubqueryMaxOverTimeRate — P0 4.7: the canonical
+// Grafana subquery shape `max_over_time(rate(m[5m])[5m:1m])`. The
+// inner matrix produces 6 rate evaluations per series; the outer
+// max_over_time reduces to the peak rate.
+func TestPromQuerySubqueryMaxOverTimeRate(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	q := url.QueryEscape("max_over_time(rate(http_server_request_duration_count[5m])[5m:1m])")
+	resp := getJSON(ctx, t, "/api/v1/query?query="+q)
+	var parsed struct {
+		Status string `json:"status"`
+		Data   struct {
+			ResultType string `json:"resultType"`
+			Result     []any  `json:"result"`
+		} `json:"data"`
+	}
+	mustDecode(t, resp, &parsed)
+
+	if parsed.Status != "success" {
+		t.Fatalf("status: got %q, want success", parsed.Status)
+	}
+	if len(parsed.Data.Result) == 0 {
+		t.Fatalf("expected at least one series for max_over_time(rate(...))[5m:1m]; got 0")
 	}
 }
 

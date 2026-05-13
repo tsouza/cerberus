@@ -163,6 +163,68 @@ func lowerSubqueryOverVectorSelector(
 	}, nil
 }
 
+// lowerOuterRangeFnOverSubquery — `max_over_time(rate(m[5m])[1h:5m])`,
+// the canonical Grafana subquery shape. The outer call is a
+// range-vector function reducing over the inner matrix output.
+//
+// IR is a chained RangeWindow:
+//
+//	RangeWindow{
+//	  Func:       <outer fn name>,      // "max_over_time", "sum_over_time", …
+//	  Range:      <subquery range>,     // the full inner matrix lookback
+//	  Step:       0,                    // instant — single value per series
+//	  Input:      RangeWindow{          // matrix from lowerSubquery
+//	    Func:       <inner fn name>,
+//	    Range:      <inner matrix range>,
+//	    OuterRange: <subquery range>,
+//	    Step:       <subquery step>,
+//	    ...,
+//	  },
+//	  TimestampColumn: "anchor_ts",     // inner matrix's per-row anchor
+//	  ValueColumn:     "value",         // inner matrix's emitted value
+//	}
+//
+// The outer's TimestampColumn / ValueColumn point at the inner matrix
+// output columns rather than the underlying table's TimeUnix/Value.
+func lowerOuterRangeFnOverSubquery(
+	outer *parser.Call,
+	sub *parser.SubqueryExpr,
+	s schema.Metrics,
+) (chplan.Node, error) {
+	if _, ok := rangeVectorFn[outer.Func.Name]; !ok {
+		return nil, fmt.Errorf("promql: %s does not accept a subquery argument", outer.Func.Name)
+	}
+
+	inner, err := lowerSubquery(sub, s)
+	if err != nil {
+		return nil, err
+	}
+
+	return &chplan.RangeWindow{
+		Input:           inner,
+		Func:            outer.Func.Name,
+		Range:           sub.Range,
+		TimestampColumn: "anchor_ts",
+		ValueColumn:     "value",
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
+	}, nil
+}
+
+// rangeVectorFn is the set of PromQL functions cerberus's emitter
+// handles as range-vector reducers. Subquery-argument lowering only
+// fires for these.
+var rangeVectorFn = map[string]struct{}{
+	"rate":            {},
+	"increase":        {},
+	"delta":           {},
+	"sum_over_time":   {},
+	"avg_over_time":   {},
+	"min_over_time":   {},
+	"max_over_time":   {},
+	"count_over_time": {},
+	"last_over_time":  {},
+}
+
 // subqueryAnchor reads the subquery's `@` + `offset` modifiers into an
 // evalAnchor. Mirrors anchorFromSelector for SubqueryExpr's identical
 // modifier fields.
