@@ -32,8 +32,8 @@ RANGE=${TESTER_RANGE:-3600}
 
 echo "==> bringing up compatibility stack"
 docker compose up -d --build --wait clickhouse prometheus cerberus
-echo "==> running seeder"
-docker compose up --no-log-prefix seeder
+echo "==> running seeder (go run ./cmd/seed)"
+(cd "$ROOT_DIR/../.." && go run ./harness/compatibility/cmd/seed/)
 
 echo "==> building promql-compliance-tester"
 TESTER_DIR="$ROOT_DIR/upstream/promql/cmd/promql-compliance-tester"
