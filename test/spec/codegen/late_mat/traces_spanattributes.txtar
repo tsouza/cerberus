@@ -1,0 +1,4 @@
+-- args --
+[0] string = "api"
+-- sql --
+SELECT `w`.`SpanAttributes`, `scan`.`TraceId`, `scan`.`SpanId`, `scan`.`SpanName` FROM (SELECT `TraceId`, `SpanId`, `SpanName`, `ServiceName`, `Timestamp` FROM `otel_traces` WHERE (`ServiceName` = ?) LIMIT 25) AS scan INNER JOIN `otel_traces` AS w ON `scan`.`Timestamp` = `w`.`Timestamp` AND `scan`.`TraceId` = `w`.`TraceId` AND `scan`.`SpanId` = `w`.`SpanId`
