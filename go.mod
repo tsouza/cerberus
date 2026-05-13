@@ -224,3 +224,10 @@ require (
 )
 
 replace github.com/hashicorp/memberlist => github.com/grafana/memberlist v0.3.1-0.20260410131411-8c2f3bdae9db
+
+// Cerberus needs narrow accessors on top of grafana/tempo's pkg/traceql to
+// retire the unsafe.Pointer + reflect.FieldByName shims in
+// internal/traceql/. The fork (branch `cerberus-accessors`) is purely
+// additive and gets rebased onto each upstream tag we want to absorb. See
+// docs/fork-tempo-plan.md for the migration plan and accessor inventory.
+replace github.com/grafana/tempo => github.com/tsouza/tempo v0.0.0-20260513081550-403b5ff59697
