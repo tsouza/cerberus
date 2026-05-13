@@ -29,9 +29,14 @@ func TestLower_InstantFn_Errors(t *testing.T) {
 			wantErr: "requires a scalar literal to_nearest",
 		},
 		{
-			name:    "unknown fn",
-			query:   `histogram_quantile(0.9, foo)`,
-			wantErr: "function histogram_quantile is not yet supported",
+			name:    "histogram_quantile non-scalar phi",
+			query:   `histogram_quantile(scalar(other), foo)`,
+			wantErr: "requires a scalar-literal phi",
+		},
+		{
+			name:    "histogram_quantile non-selector arg",
+			query:   `histogram_quantile(0.9, vector(1))`,
+			wantErr: "second argument must be a classic-histogram VectorSelector",
 		},
 		{
 			name:    "clamp_max needs scalar bound",

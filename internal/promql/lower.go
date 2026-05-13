@@ -24,7 +24,10 @@ import (
 //
 // Deferred to RC3 / later milestones: nested subqueries, subquery
 // over AggregateExpr, subquery `@ start()`/`@ end()`, native-histogram
-// `histogram_quantile`, `predict_linear`/`holt_winters`, exemplars.
+// `histogram_quantile` (PR H, otel_metrics_exp_histogram), exemplars.
+// Classic-histogram `histogram_quantile(phi, <selector>)` is supported
+// via lowerHistogramQuantile against the OTel-CH classic histogram
+// table (BucketCounts × ExplicitBounds arrays).
 func Lower(expr parser.Expr, s schema.Metrics) (chplan.Node, error) {
 	return lower(expr, s, lowerCtx{})
 }
@@ -173,6 +176,8 @@ func lowerCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 	switch c.Func.Name {
 	case "clamp", "clamp_min", "clamp_max":
 		return lowerClamp(c, s, ctx)
+	case "histogram_quantile":
+		return lowerHistogramQuantile(c, s, ctx)
 	}
 	if chFn, ok := instantFnCH[c.Func.Name]; ok {
 		return lowerInstantFn(c, s, chFn, ctx)
