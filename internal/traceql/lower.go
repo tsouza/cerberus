@@ -324,7 +324,9 @@ func lowerBinaryOperation(b *traceql.BinaryOperation, s schema.Traces) (chplan.E
 }
 
 // lowerNestedAttrBinary recognises the
-//   <link|event>.<name> <op> <literal>
+//
+//	<link|event>.<name> <op> <literal>
+//
 // shape and returns a chplan.NestedArrayExists. The LHS/RHS may be in
 // either order in upstream TraceQL ASTs; we normalise so the attribute
 // reference is always the implicit `x[?]` and the literal is the RHS

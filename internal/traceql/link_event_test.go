@@ -215,4 +215,3 @@ func filterPredicate(t *testing.T, plan chplan.Node) chplan.Expr {
 	}
 	return f.Predicate
 }
-
