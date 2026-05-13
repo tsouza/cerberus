@@ -35,9 +35,37 @@ func (e *emitter) emitExpr(x chplan.Expr) error {
 		return e.emitLineContent(v)
 	case *chplan.FieldAccess:
 		return e.emitFieldAccess(v)
+	case *chplan.NestedArrayExists:
+		return e.emitNestedArrayExists(v)
 	default:
 		return fmt.Errorf("%w: expr %T", ErrUnsupported, x)
 	}
+}
+
+// emitNestedArrayExists renders
+//
+//	arrayExists(x -> x[?] <op> ?, `<Column>`.`<SubField>`)
+//
+// for TraceQL link / event attribute filters against the OTel-CH Nested
+// columns. The key + value bind through bindArg so both are driver
+// parameters, not spliced into the SQL.
+func (e *emitter) emitNestedArrayExists(n *chplan.NestedArrayExists) error {
+	e.b.WriteString("arrayExists(x -> x[")
+	if err := e.bindArg(n.Key); err != nil {
+		return err
+	}
+	e.b.WriteString("] ")
+	e.b.WriteString(string(n.Op))
+	e.b.WriteByte(' ')
+	if err := e.emitExpr(n.Value); err != nil {
+		return err
+	}
+	e.b.WriteString(", ")
+	writeIdent(&e.b, n.Column)
+	e.b.WriteByte('.')
+	writeIdent(&e.b, n.SubField)
+	e.b.WriteByte(')')
+	return nil
 }
 
 func (e *emitter) emitFieldAccess(f *chplan.FieldAccess) error {
