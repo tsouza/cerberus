@@ -1,0 +1,4 @@
+-- args --
+[0] int64 = 9
+-- sql --
+SELECT `w`.`Body`, `scan`.`Timestamp`, `scan`.`SeverityNumber` FROM (SELECT `Timestamp`, `SeverityNumber`, `TraceId`, `SpanId` FROM `otel_logs` WHERE (`SeverityNumber` >= ?) LIMIT 100) AS scan INNER JOIN `otel_logs` AS w ON `scan`.`Timestamp` = `w`.`Timestamp` AND `scan`.`TraceId` = `w`.`TraceId` AND `scan`.`SpanId` = `w`.`SpanId`

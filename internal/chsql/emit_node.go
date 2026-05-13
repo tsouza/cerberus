@@ -169,6 +169,15 @@ func conjunctionFrag(exprs []chplan.Expr) Frag {
 }
 
 func (e *emitter) emitProject(p *chplan.Project) error {
+	// Late materialisation (RC3 R3.7): when this Project sits atop a
+	// Limit(Filter?(Scan)) over a wide-column table AND the projection
+	// references a wide column, emit the two-stage rewrite (inner thin
+	// SELECT + JOIN back for wide columns) instead of the canonical
+	// single-SELECT shape. See late_mat.go for the gate + emission.
+	if m, ok := isLateMatCandidate(p); ok {
+		return e.emitLateMat(m)
+	}
+
 	sub, err := e.subqueryFrag(p.Input)
 	if err != nil {
 		return err

@@ -43,7 +43,40 @@ type Logs struct {
 	// (String; populated when the LogRecord carries a structured event
 	// name distinct from the body).
 	EventNameColumn string
+
+	// WideColumns lists the "fat" columns on the logs table — columns
+	// whose per-row payload is large enough that fetching them dominates
+	// the IO cost of a Scan. The chsql late-materialisation rewrite
+	// (RC3 R3.7, see docs/optimizer-research.md § 3) checks this list
+	// when a Project+Limit+Filter+Scan stack lands on this table: if any
+	// of the projection's columns are wide, the inner SELECT skips them
+	// and an outer JOIN back fetches them only for the surviving rows.
+	//
+	// For the OTel-CH default this is `Body` + `ResourceAttributes` +
+	// `LogAttributes` — each can carry hundreds of bytes per row.
+	WideColumns []string
+
+	// RowKey is the tuple of columns that uniquely identifies a row in
+	// the logs table. Used by the chsql late-materialisation rewrite
+	// (RC3 R3.7) as the JOIN key between the thin inner SELECT and the
+	// outer "fetch wide columns" SELECT. The tuple must be globally
+	// unique — duplicates would yield a row-multiplication bug.
+	//
+	// For the OTel-CH default this is `(Timestamp, TraceId, SpanId)` —
+	// timestamps alone are not unique (multiple log records can share a
+	// timestamp, especially at coarser-than-ns precision), but the
+	// (TraceId, SpanId) suffix supplies the entropy. Logs ingested
+	// without trace context all share TraceId=000…0 / SpanId=000…0; in
+	// that degenerate case the rewrite cannot apply — callers should
+	// guard with HasUniqueRowKey().
+	RowKey []string
 }
+
+// HasUniqueRowKey reports whether RowKey is non-empty — the precondition
+// for the late-materialisation rewrite (see docs/optimizer-research.md §
+// 3). Custom-schema users with non-unique storage layouts leave RowKey
+// empty to skip the rewrite.
+func (l Logs) HasUniqueRowKey() bool { return len(l.RowKey) > 0 }
 
 // DefaultOTelLogs returns the schema produced by the upstream OTel
 // ClickHouse Exporter for logs.
@@ -64,5 +97,12 @@ func DefaultOTelLogs() Logs {
 		TraceFlagsColumn:         "TraceFlags",
 		ServiceNameColumn:        "ServiceName",
 		EventNameColumn:          "EventName",
+		// Wide columns — large per-row payloads. Late materialisation
+		// (RC3 R3.7) defers fetching these until after filter+limit.
+		WideColumns: []string{"Body", "ResourceAttributes", "LogAttributes"},
+		// (Timestamp, TraceId, SpanId) uniquely identifies an OTel-CH
+		// log row when ingestion carries trace context. See WideColumns
+		// godoc + docs/optimizer-research.md § 3.
+		RowKey: []string{"Timestamp", "TraceId", "SpanId"},
 	}
 }
