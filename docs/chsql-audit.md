@@ -73,9 +73,16 @@ Pre-R6.1 emitter code that still uses `strings.Builder` /
 "no raw SQL strings" rule grandfathers these until the listed RC6
 milestone ports them.
 
-- `internal/chsql/emit_expr.go` — `strings.Builder.WriteString` +
-  `Sprintf` for the expression tree (Binary, FuncCall, MapAccess,
-  MapWithoutKeys, LineContent, FieldAccess). Retired by **R6.4**.
+- ~~`internal/chsql/emit_expr.go`~~ — **retired by R6.4** (this milestone).
+  Every emit method (`emitExpr`, `emitBinary`, `emitFunc`, `emitMapAccess`,
+  `emitMapWithoutKeys`, `emitLineContent`, `emitFieldAccess`,
+  `emitNestedArrayExists`, `bindArg`) now delegates to `chsql.Builder.Expr`
+  / `Builder.Arg`; no method writes SQL bytes directly into the emitter's
+  buffer. Builder.Expr is the canonical implementation. The emitter
+  methods remain as thin shims because the grandfathered callers in
+  `range_window.go` and `emit_node.go::emitOrderBy` (R6.5) still use the
+  legacy surface; both collapse onto Builder.Expr directly when R6.5
+  ports those files, at which point the shims here can be deleted.
 - `internal/chsql/range_window.go` — `e.b.WriteString("SELECT ")`
   chains + `fmt.Fprintf(&e.b, ...)` for the windowed-array idiom.
   Retired by **R6.5**.
@@ -99,7 +106,6 @@ grep -nE 'e\.b\.WriteString|fmt\.Fprintf\(&e\.b|fmt\.Sprintf' \
   internal/chsql/range_window.go \
   internal/chsql/vector_join.go \
   internal/chsql/structural_join.go \
-  internal/chsql/emit_expr.go \
   internal/api/prom/metadata.go
 ```
 
@@ -136,9 +142,9 @@ operator-token, not clause-keyword.
 ## Audit tally (post-fix)
 
 - **Cosplay fixed**: 11 callsites across `internal/chsql/emit_node.go`.
-- **Grandfathered**: 5 files (`emit_expr.go`, `range_window.go`,
-  `vector_join.go`, `structural_join.go`, `metadata.go`) + the
-  pre-R6 `emitOrderBy` block, retired by R6.4–R6.7.
+- **Grandfathered**: 4 files (`range_window.go`, `vector_join.go`,
+  `structural_join.go`, `metadata.go`) + the pre-R6 `emitOrderBy`
+  block, retired by R6.5–R6.7. (`emit_expr.go` retired in R6.4.)
 - **Legitimate token writes**: ~30+ callsites across `internal/api/loki/`
   and `internal/chsql/builder_test.go`; all are operator-glue inside
   Frags or test bodies, none replicate a `SelectBuilder` slot.
