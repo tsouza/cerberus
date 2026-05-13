@@ -13,13 +13,14 @@
 # QueryBuilder.writeInto — the legitimate renderer. Every clause keyword
 # (SELECT / FROM / WHERE / GROUP BY / ORDER BY / LIMIT / PREWHERE /
 # WITH RECURSIVE / JOIN variants) is emitted from here and only here.
-internal/chsql/builder.go:700-794
+internal/chsql/builder.go:717-811
 
-# chsql.UnionAll Frag — the typed UNION ALL constructor. The keyword
-# lives here so callers compose unions via Frag composition rather than
-# stringing the keyword by hand. Same legitimate-renderer reasoning as
-# QueryBuilder.writeInto.
+# chsql.UnionAll / UnionDistinct Frags — the typed UNION constructors.
+# The keyword lives here so callers compose unions via Frag composition
+# rather than stringing the keyword by hand. Same legitimate-renderer
+# reasoning as QueryBuilder.writeInto.
 internal/chsql/builder.go:470
+internal/chsql/builder.go:487
 
 # Integration-test probes against ClickHouse system.tables. These tests
 # query the live server to assert what got created and do not flow
