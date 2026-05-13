@@ -8,6 +8,11 @@
 //
 // Rules ship in their own files (filter_fusion.go, constant_fold.go,
 // projection_pushdown.go); the default rule set is wired in Default().
+//
+// Rules are grouped into Batches (Catalyst-style). Each Batch carries a
+// Strategy (`Once` or `FixedPoint(n)`) that controls how its rules
+// iterate. Batches run sequentially in the order Default() returns
+// them; within a batch, rules run in declared order. See batch.go.
 package optimizer
 
 import "github.com/tsouza/cerberus/internal/chplan"
@@ -21,42 +26,97 @@ type Rule interface {
 	Apply(n chplan.Node) (chplan.Node, bool)
 }
 
-// Driver runs a set of Rules to a fixpoint over a chplan tree.
+// defaultMaxIterations is the fixpoint cap used by Default()'s
+// FixedPoint batches and by the New() back-compat wrapper. Generous;
+// rules that don't converge typically signal a bug rather than a
+// tuning concern.
+const defaultMaxIterations = 100
+
+// Driver runs a sequence of Batches over a chplan tree.
 type Driver struct {
-	rules         []Rule
-	maxIterations int
+	batches []Batch
 }
 
-// New builds a Driver with the supplied rule set, in the order they'll run
-// during each iteration. The default iteration cap (100) is generous; rules
-// that don't converge typically signal a bug rather than a configuration
-// concern.
+// New builds a Driver with the supplied rule set wrapped in a single
+// `FixedPoint(100)` batch named "default". Preserved for back-compat
+// with callers that pre-date Batch grouping; new code should call
+// NewWithBatches.
 func New(rules ...Rule) *Driver {
-	return &Driver{rules: rules, maxIterations: 100}
+	return NewWithBatches(Batch{
+		Name:     "default",
+		Strategy: FixedPoint(defaultMaxIterations),
+		Rules:    rules,
+	})
 }
 
-// Default returns a Driver configured with all the seed v0.1 rules in a
-// sensible order. The order matters: constant folding may unlock filter
-// fusion (e.g. by collapsing `true AND X` → `X`), which may unlock projection
-// pushdown. The two Calcite-style transpose rules added in RC3 R3.2 run
-// after fusion so that adjacent Filters are folded first (giving the
-// transpose a single Filter to push through Project / Aggregate).
+// NewWithBatches builds a Driver that runs the given batches in order.
+// Each batch iterates per its Strategy; later batches see the output of
+// earlier ones.
+func NewWithBatches(batches ...Batch) *Driver {
+	return &Driver{batches: batches}
+}
+
+// Default returns a Driver configured with all the seed v0.1 rules
+// grouped into Catalyst-style batches. The split:
+//
+//   - "constant-folding" (Once) — ConstantFold is idempotent; one pass
+//     reaches its fixpoint by construction (folding is a single
+//     bottom-up sweep that consumes every literal subtree it can).
+//     Re-iterating wastes work.
+//   - "predicate-pushdown" (FixedPoint) — FilterFusion + the two R3.2
+//     transpose rules can unlock each other: fuse adjacent filters,
+//     transpose the fused filter through Project / Aggregate, then
+//     possibly fuse again as new neighbours appear. Iteration is
+//     load-bearing here.
+//   - "projection" (FixedPoint) — ProjectionPushdown may iterate as
+//     pushdown unused-column elimination cascades through nested
+//     Projects. Today only one pass changes anything, but the
+//     strategy leaves room for follow-up rules (R3.4 / R3.7) to land
+//     in this batch without changing wiring.
+//
+// Order matters across batches: constant folding feeds the predicate-
+// pushdown batch (true AND X → X means a filter that was previously
+// composite becomes single, which the transpose rules can then push).
 func Default() *Driver {
-	return New(
-		ConstantFold{},
-		FilterFusion{},
-		FilterProjectTranspose(),
-		FilterAggregateTranspose(),
-		ProjectionPushdown{},
+	return NewWithBatches(
+		Batch{
+			Name:     "constant-folding",
+			Strategy: Once(),
+			Rules:    []Rule{ConstantFold{}},
+		},
+		Batch{
+			Name:     "predicate-pushdown",
+			Strategy: FixedPoint(defaultMaxIterations),
+			Rules: []Rule{
+				FilterFusion{},
+				FilterProjectTranspose(),
+				FilterAggregateTranspose(),
+			},
+		},
+		Batch{
+			Name:     "projection",
+			Strategy: FixedPoint(defaultMaxIterations),
+			Rules:    []Rule{ProjectionPushdown{}},
+		},
 	)
 }
 
-// Run rewrites plan to a fixpoint, returning the optimized tree. Run never
-// mutates plan; rules construct fresh nodes when they rewrite.
+// Run rewrites plan by applying each batch in order, returning the
+// optimized tree. Run never mutates plan; rules construct fresh nodes
+// when they rewrite.
 func (d *Driver) Run(plan chplan.Node) chplan.Node {
-	for i := 0; i < d.maxIterations; i++ {
+	for _, batch := range d.batches {
+		plan = runBatch(plan, batch)
+	}
+	return plan
+}
+
+// runBatch applies batch.Rules to plan per batch.Strategy.
+func runBatch(plan chplan.Node, batch Batch) chplan.Node {
+	maxIter := batch.Strategy.maxIterations()
+	for i := 0; i < maxIter; i++ {
 		var iterationChanged bool
-		for _, rule := range d.rules {
+		for _, rule := range batch.Rules {
 			rewritten, changed := applyToTree(plan, rule)
 			plan = rewritten
 			iterationChanged = iterationChanged || changed
