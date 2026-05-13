@@ -337,6 +337,42 @@ func TestFrag_HelpersBindAtPosition(t *testing.T) {
 	}
 }
 
+// TestAs_WrapsWithAlias — As(expr, alias) emits "<expr> AS <alias>"
+// with the alias backtick-quoted; an empty alias passes the inner
+// Frag through unchanged.
+func TestAs_WrapsWithAlias(t *testing.T) {
+	t.Parallel()
+
+	b := chsql.NewBuilder()
+	chsql.As(chsql.Col("Value"), "v")(b)
+	if got, want := b.String(), "`Value` AS `v`"; got != want {
+		t.Errorf("As(Col,v) = %q; want %q", got, want)
+	}
+
+	b2 := chsql.NewBuilder()
+	chsql.As(chsql.Col("Value"), "")(b2)
+	if got, want := b2.String(), "`Value`"; got != want {
+		t.Errorf("As(Col,\"\") = %q; want %q", got, want)
+	}
+}
+
+// TestSelectBuilder_SelectAs — SelectAs slot adds "<expr> AS <alias>"
+// to the SELECT list without composing the AS keyword by hand at the
+// call site.
+func TestSelectBuilder_SelectAs(t *testing.T) {
+	t.Parallel()
+
+	sql, _ := chsql.NewSelect().
+		SelectAs(chsql.Col("MetricName"), "name").
+		SelectAs(chsql.Col("Value"), "").
+		From(chsql.Col("otel_metrics_gauge")).
+		Build()
+	want := "SELECT `MetricName` AS `name`, `Value` FROM `otel_metrics_gauge`"
+	if sql != want {
+		t.Errorf("SelectAs = %q; want %q", sql, want)
+	}
+}
+
 // TestSelectBuilder_Empty — empty SelectBuilder renders "SELECT *".
 // (No FROM is fine; CH accepts SELECT * alone for fixture-style
 // shapes, even if it's not what production emits.)

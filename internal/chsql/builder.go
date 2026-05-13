@@ -421,6 +421,22 @@ func Raw(sql string) Frag {
 	return func(b *Builder) { b.sb.WriteString(sql) }
 }
 
+// As wraps expr in "<expr> AS <alias>" with the alias backtick-quoted.
+// The typed alternative to `b.WriteSQL(" AS "); b.Ident(alias)`; using
+// As keeps the AS keyword inside the typed surface so the audit grep
+// for clause-keyword cosplay stays clean. If alias is empty the inner
+// expression is emitted unchanged (no AS clause).
+func As(expr Frag, alias string) Frag {
+	if alias == "" {
+		return expr
+	}
+	return func(b *Builder) {
+		expr(b)
+		b.sb.WriteString(" AS ")
+		b.Ident(alias)
+	}
+}
+
 // SelectBuilder accumulates a SELECT statement's parts. Slots are
 // appended to in order; rendering walks each slot, emitting the
 // canonical clause prefix (SELECT, FROM, WHERE, …) and joining
@@ -442,7 +458,7 @@ type SelectBuilder struct {
 	prewhere   []Frag
 	groupBy    []Frag
 	orderBy    []orderKey
-	limit      int
+	limit      int64
 	hasLimit   bool
 }
 
@@ -458,6 +474,16 @@ func NewSelect() *SelectBuilder { return &SelectBuilder{} }
 // list is left empty at Build time the rendered SQL emits `SELECT *`.
 func (s *SelectBuilder) Select(exprs ...Frag) *SelectBuilder {
 	s.selectList = append(s.selectList, exprs...)
+	return s
+}
+
+// SelectAs appends "<expr> AS <alias>" to the SELECT list. If alias is
+// empty the expression is appended bare (equivalent to Select(expr)).
+// Convenience wrapper over As + Select; lets projection callers express
+// "this expression renames to this column" without composing the AS
+// keyword by hand.
+func (s *SelectBuilder) SelectAs(expr Frag, alias string) *SelectBuilder {
+	s.selectList = append(s.selectList, As(expr, alias))
 	return s
 }
 
@@ -500,8 +526,9 @@ func (s *SelectBuilder) OrderBy(expr Frag, desc bool) *SelectBuilder {
 // Limit sets the LIMIT count. n <= 0 emits no LIMIT clause; positive
 // n is rendered as a literal integer (CH's LIMIT does not accept
 // `?` placeholders in all driver paths and the value is part of the
-// query shape, not user data).
-func (s *SelectBuilder) Limit(n int) *SelectBuilder {
+// query shape, not user data). int64 accommodates chplan.Limit.Count
+// without a lossy downcast.
+func (s *SelectBuilder) Limit(n int64) *SelectBuilder {
 	s.limit = n
 	s.hasLimit = n > 0
 	return s
@@ -584,6 +611,6 @@ func (s *SelectBuilder) writeInto(b *Builder) {
 	}
 	if s.hasLimit {
 		b.sb.WriteString(" LIMIT ")
-		b.sb.WriteString(strconv.Itoa(s.limit))
+		b.sb.WriteString(strconv.FormatInt(s.limit, 10))
 	}
 }
