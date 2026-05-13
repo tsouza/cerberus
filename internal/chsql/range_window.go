@@ -990,12 +990,3 @@ func (e *emitter) collectGroupByFrags(group []chplan.Expr) ([]Frag, error) {
 	return out, nil
 }
 
-// quoteIdent backtick-quotes a CH identifier. Retained for the
-// grandfathered emitters in structural_join.go (R6.6) that still
-// compose SQL fragments through free-standing strings before
-// flushing to the emitter; the RangeWindow port no longer calls it.
-func quoteIdent(name string) string {
-	b := &Builder{}
-	b.Ident(name)
-	return b.String()
-}
