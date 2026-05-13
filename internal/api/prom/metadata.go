@@ -356,11 +356,11 @@ func (h *Handler) labelKeysForMatcher(ctx context.Context, matcher string) ([]st
 
 	sb := chsql.NewQuery().
 		Select(chsql.As(arrayJoinMapKeysFrag(attrsCol), "name")).
-		From(parenRawFrag(innerSQL)).
+		From(matcherSubqueryFrag(innerSQL, args)).
 		OrderBy(chsql.Col("name"), false)
-	sql, _ := sb.Build()
+	sql, combined := sb.Build()
 	return timeCH(ctx, func() ([]string, error) {
-		return h.Client.QueryStrings(ctx, sql, args...)
+		return h.Client.QueryStrings(ctx, sql, combined...)
 	})
 }
 
@@ -375,31 +375,24 @@ func (h *Handler) labelValuesForMatcher(ctx context.Context, name, matcher strin
 	if name == model.MetricNameLabel {
 		sb := chsql.NewQuery().
 			Select(chsql.As(distinctIdent(h.Schema.MetricNameColumn), "value")).
-			From(parenRawFrag(innerSQL)).
+			From(matcherSubqueryFrag(innerSQL, args)).
 			OrderBy(chsql.Col("value"), false)
-		sql, _ := sb.Build()
+		sql, combined := sb.Build()
 		return timeCH(ctx, func() ([]string, error) {
-			return h.Client.QueryStrings(ctx, sql, args...)
+			return h.Client.QueryStrings(ctx, sql, combined...)
 		})
 	}
 	attrsCol := h.Schema.AttributesColumn
+	// chsql.Subquery splices the matcher's args inline at the FROM
+	// position; QueryBuilder renders SELECT → FROM → WHERE so the final
+	// args slice naturally interleaves as [SELECT-MapAt-key, matcher args,
+	// WHERE-MapAt-key, WHERE-empty-sentinel] — no manual splicing.
 	sb := chsql.NewQuery().
 		Select(chsql.As(distinctMapAtFrag(attrsCol, name), "value")).
-		From(parenRawFrag(innerSQL)).
+		From(matcherSubqueryFrag(innerSQL, args)).
 		Where(mapAtNotEmptyFrag(attrsCol, name)).
 		OrderBy(chsql.Col("value"), false)
-	sql, valueArgs := sb.Build()
-	// valueArgs holds, in render order:
-	//   <name (SELECT MapAt key)>,
-	//   <name (WHERE MapAt key)>,
-	//   <"" (WHERE empty-sentinel Lit)>.
-	// QueryBuilder renders SELECT before FROM before WHERE, so the
-	// FROM subquery's `?` placeholders splice between valueArgs[0] and
-	// valueArgs[1:]. Reconstruct the final slice accordingly.
-	combined := make([]any, 0, len(valueArgs)+len(args))
-	combined = append(combined, valueArgs[0])     // SELECT MapAt key
-	combined = append(combined, args...)          // matcher subquery binds
-	combined = append(combined, valueArgs[1:]...) // WHERE: key + empty-sentinel
+	sql, combined := sb.Build()
 	return timeCH(ctx, func() ([]string, error) {
 		return h.Client.QueryStrings(ctx, sql, combined...)
 	})
@@ -551,21 +544,27 @@ func distinctMapAtFrag(col, key string) chsql.Frag {
 // mapAtNotEmptyFrag emits `<col>[?] != ?` and binds both the map key
 // and the empty-string sentinel as positional args — the WHERE
 // predicate that drops the empty-string CH returns when a Map key is
-// absent. The empty-string RHS is parameterised through chsql.Lit
-// (rather than rendered as a literal) so the whole expression stays
-// inside the typed Frag surface; R6.12.f deletes the Raw escape hatch.
+// absent. The empty-string RHS is parameterised through chsql.Lit so
+// the whole expression stays inside the typed Frag surface (R6.12.f
+// retired the Raw / Concat escape hatches).
 func mapAtNotEmptyFrag(col, key string) chsql.Frag {
 	mapAt := chsql.Frag(func(b *chsql.Builder) { b.MapAt(col, key) })
 	return chsql.Neq(mapAt, chsql.Lit(""))
 }
 
-// parenRawFrag wraps an already-rendered SQL string in parentheses for
-// use as a QueryBuilder FROM subquery. The wrapped SQL is treated as
-// opaque text — its own `?` placeholders pass through verbatim and the
-// caller is responsible for ordering its args ahead of any further
-// `?` bindings the outer QueryBuilder emits.
-func parenRawFrag(sql string) chsql.Frag {
-	return chsql.Paren(chsql.Raw(sql))
+// matcherSubqueryFrag wraps the legacy chsql.Emit output (sql + args)
+// in a parenthesised subquery Frag for use as a QueryBuilder FROM
+// source. Threads through chsql.Subquery + chsql.PreRenderedSQL so the
+// wrapped SQL's `?` placeholders and their bound args land in the
+// outer Builder's args slice at the position the Frag emits — no
+// manual splicing required on the caller side.
+//
+// This is the documented interop between the legacy string-typed
+// chsql.Emit and the typed QueryBuilder surface. A future R6.x port
+// of chsql.Emit to return a *QueryBuilder will retire this helper
+// (and chsql.PreRenderedSQL).
+func matcherSubqueryFrag(sql string, args []any) chsql.Frag {
+	return chsql.Subquery(chsql.PreRenderedSQL{SQL: sql, Args: args})
 }
 
 // validLabelName mirrors the Prometheus label-name grammar: [a-zA-Z_][a-zA-Z0-9_]*.
