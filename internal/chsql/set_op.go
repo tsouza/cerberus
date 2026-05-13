@@ -40,11 +40,7 @@ func (e *emitter) emitSetOperation(s *chplan.SetOperation) error {
 		//   ON L.TraceId = R.TraceId AND L.SpanId = R.SpanId
 		traceID := s.TraceIDColumn
 		spanID := s.SpanIDColumn
-		from := func(b *Builder) {
-			leftFrag(b)
-			b.WriteSQL(" AS L INNER JOIN ")
-			rightFrag(b)
-			b.WriteSQL(" AS R ON ")
+		on := func(b *Builder) {
 			b.QualIdent("L", traceID)
 			b.WriteSQL(" = ")
 			b.QualIdent("R", traceID)
@@ -55,20 +51,17 @@ func (e *emitter) emitSetOperation(s *chplan.SetOperation) error {
 		}
 		sb := NewQuery().
 			Select(Raw("L.*")).
-			From(from)
+			From(As(leftFrag, "L")).
+			Join(InnerJoin, As(rightFrag, "R"), on)
 		e.emitSelect(sb)
 		return nil
 	case chplan.SetUnion:
 		// (<left>) UNION DISTINCT (<right>). CH's UNION DISTINCT
 		// dedupes on the full row tuple, which matches TraceQL's
 		// "spans appearing on either side" semantics for spans drawn
-		// from the same underlying table. Each subquery Frag is
-		// already a `(SELECT ...)` parenthesised form, so the
-		// rendered output is well-formed CH UNION.
+		// from the same underlying table.
 		b := NewBuilder()
-		leftFrag(b)
-		b.WriteSQL(" UNION DISTINCT ")
-		rightFrag(b)
+		UnionDistinct(leftFrag, rightFrag)(b)
 		e.splice(b)
 		return nil
 	}

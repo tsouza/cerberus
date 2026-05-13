@@ -474,6 +474,23 @@ func UnionAll(parts ...Frag) Frag {
 	}
 }
 
+// UnionDistinct renders `<p1> UNION DISTINCT <p2> UNION DISTINCT …`.
+// CH's UNION DISTINCT dedupes on the full row tuple. Same composition
+// shape as UnionAll; see its godoc.
+func UnionDistinct(parts ...Frag) Frag {
+	if len(parts) == 0 {
+		panic("chsql: UnionDistinct requires at least one part")
+	}
+	return func(b *Builder) {
+		for i, p := range parts {
+			if i > 0 {
+				b.sb.WriteString(" UNION DISTINCT ")
+			}
+			p(b)
+		}
+	}
+}
+
 // As wraps expr in "<expr> AS <alias>" with the alias backtick-quoted.
 // The typed alternative to `b.WriteSQL(" AS "); b.Ident(alias)`; using
 // As keeps the AS keyword inside the typed surface so the audit grep
