@@ -206,6 +206,36 @@ var plans = map[string]chplan.Node{
 		SpanIDColumn:       "SpanId",
 		ParentSpanIDColumn: "ParentSpanId",
 	},
+	// StructuralJoin — TraceQL `>>` (recursive descendant; unbounded
+	// depth via CH `WITH RECURSIVE`).
+	"structural_join_descendant": &chplan.StructuralJoin{
+		Left:               &chplan.Scan{Table: "otel_traces"},
+		Right:              &chplan.Scan{Table: "otel_traces"},
+		Op:                 chplan.StructuralDescendant,
+		TraceIDColumn:      "TraceId",
+		SpanIDColumn:       "SpanId",
+		ParentSpanIDColumn: "ParentSpanId",
+	},
+	// StructuralJoin — TraceQL `<<` (recursive ancestor; unbounded depth).
+	"structural_join_ancestor": &chplan.StructuralJoin{
+		Left:               &chplan.Scan{Table: "otel_traces"},
+		Right:              &chplan.Scan{Table: "otel_traces"},
+		Op:                 chplan.StructuralAncestor,
+		TraceIDColumn:      "TraceId",
+		SpanIDColumn:       "SpanId",
+		ParentSpanIDColumn: "ParentSpanId",
+	},
+	// StructuralJoin — recursive descendant with MaxDepth = 3 (the
+	// recursive step's WHERE clause caps the walk).
+	"structural_join_descendant_bounded": &chplan.StructuralJoin{
+		Left:               &chplan.Scan{Table: "otel_traces"},
+		Right:              &chplan.Scan{Table: "otel_traces"},
+		Op:                 chplan.StructuralDescendant,
+		TraceIDColumn:      "TraceId",
+		SpanIDColumn:       "SpanId",
+		ParentSpanIDColumn: "ParentSpanId",
+		MaxDepth:           3,
+	},
 
 	// MapWithoutKeys used inside an Aggregate group-key: PromQL `without`.
 	"aggregate_sum_without": &chplan.Aggregate{
