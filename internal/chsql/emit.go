@@ -56,6 +56,8 @@ func (e *emitter) emitNode(n chplan.Node) error {
 		return e.emitRangeWindow(v)
 	case *chplan.HistogramQuantile:
 		return e.emitHistogramQuantile(v)
+	case *chplan.HistogramQuantileNative:
+		return e.emitHistogramQuantileNative(v)
 	case *chplan.Limit:
 		return e.emitLimit(v)
 	case *chplan.OrderBy:
