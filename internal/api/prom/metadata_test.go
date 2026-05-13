@@ -146,10 +146,18 @@ func TestLabelValues_Endpoint(t *testing.T) {
 	if !strings.Contains(q.lastSQL, "Attributes`[?]") {
 		t.Errorf("expected SQL to reference Attributes map access; got %q", q.lastSQL)
 	}
-	// arg[0..N] should all be "job" (one per UNION segment + WHERE bind).
+	// Per UNION arm the bind order is:
+	//   <name (SELECT DISTINCT Attributes[?])>,
+	//   <name (WHERE Attributes[?] != ?)>,
+	//   <"" (WHERE empty-sentinel Lit)>.
+	// All `name` slots should be "job"; the empty-sentinel slots should be "".
 	for i, a := range q.lastArgs {
-		if a != "job" {
-			t.Errorf("arg[%d] = %v, want %q", i, a, "job")
+		var want any = "job"
+		if i%3 == 2 {
+			want = ""
+		}
+		if a != want {
+			t.Errorf("arg[%d] = %v, want %v", i, a, want)
 		}
 	}
 }

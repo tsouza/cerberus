@@ -167,7 +167,7 @@ func (h *Handler) metricMetaSQL(table, metricName string) (string, []any) {
 	unitCol := h.Schema.MetricUnitColumn
 
 	anyCall := func(col string) chsql.Frag {
-		return chsql.Concat(chsql.Raw("any("), chsql.Col(col), chsql.Raw(")"))
+		return chsql.Call("any", chsql.Col(col))
 	}
 
 	sb := chsql.NewQuery().
@@ -389,17 +389,17 @@ func (h *Handler) labelValuesForMatcher(ctx context.Context, name, matcher strin
 		Where(mapAtNotEmptyFrag(attrsCol, name)).
 		OrderBy(chsql.Col("value"), false)
 	sql, valueArgs := sb.Build()
-	// valueArgs holds the `name` bound twice (SELECT then WHERE);
-	// the matcher's args slot between them at the original order:
-	//   <name (SELECT)>, <matcher args (FROM subquery)>, <name (WHERE)>.
-	// QueryBuilder renders SELECT before FROM before WHERE, so
-	// valueArgs is [name, name] (no `?` inside the FROM subquery raw
-	// text). Splice the matcher args at the FROM position by
-	// reconstructing the final slice.
+	// valueArgs holds, in render order:
+	//   <name (SELECT MapAt key)>,
+	//   <name (WHERE MapAt key)>,
+	//   <"" (WHERE empty-sentinel Lit)>.
+	// QueryBuilder renders SELECT before FROM before WHERE, so the
+	// FROM subquery's `?` placeholders splice between valueArgs[0] and
+	// valueArgs[1:]. Reconstruct the final slice accordingly.
 	combined := make([]any, 0, len(valueArgs)+len(args))
-	combined = append(combined, valueArgs[0]) // SELECT bind
-	combined = append(combined, args...)      // matcher subquery binds
-	combined = append(combined, valueArgs[1]) // WHERE bind
+	combined = append(combined, valueArgs[0])     // SELECT MapAt key
+	combined = append(combined, args...)          // matcher subquery binds
+	combined = append(combined, valueArgs[1:]...) // WHERE: key + empty-sentinel
 	return timeCH(ctx, func() ([]string, error) {
 		return h.Client.QueryStrings(ctx, sql, combined...)
 	})
@@ -492,9 +492,11 @@ func (h *Handler) unionMetricNamesSQL() string {
 }
 
 // unionLabelValuesSQL returns the distinct Attributes[?] values across
-// tables, skipping the empty-string sentinel that mapAccess yields when a
-// key is absent. Returns (sql, args). The name is bound once per table
-// (twice: in SELECT and WHERE) — args lists it 2*N times.
+// tables, skipping the empty-string sentinel that mapAccess yields when
+// a key is absent. Returns (sql, args). Each table arm binds three
+// args: the label name (SELECT MapAt), the label name (WHERE MapAt),
+// and the empty-string sentinel (WHERE Lit("")) — args lists 3*N
+// entries in [name, name, ""] groups per arm.
 func (h *Handler) unionLabelValuesSQL(name string) (string, []any) {
 	tables := h.metricTables()
 	attrsCol := h.Schema.AttributesColumn
@@ -526,8 +528,7 @@ func (h *Handler) metricTables() []string {
 // arrayJoinMapKeysFrag emits `arrayJoin(mapKeys(<col>))` — the CH idiom
 // for fanning out a Map column's key set as one row per key.
 func arrayJoinMapKeysFrag(col string) chsql.Frag {
-	mapKeys := func(b *chsql.Builder) { b.MapKeys(col) }
-	return chsql.Concat(chsql.Raw("arrayJoin("), mapKeys, chsql.Raw(")"))
+	return chsql.Call("arrayJoin", chsql.Call("mapKeys", chsql.Col(col)))
 }
 
 // distinctIdent emits `DISTINCT <col>` as a SELECT-list expression. The
@@ -536,29 +537,26 @@ func arrayJoinMapKeysFrag(col string) chsql.Frag {
 // SELECT list and renders identical query plans either way. Putting it
 // in the projection slot keeps it inside the typed Frag surface.
 func distinctIdent(col string) chsql.Frag {
-	return chsql.Concat(chsql.Raw("DISTINCT "), chsql.Col(col))
+	return chsql.Distinct(chsql.Col(col))
 }
 
 // distinctMapAtFrag emits `DISTINCT <col>[?]` and binds key as a
 // positional argument — the projection shape for "distinct values of
 // label <key> stored in the Attributes map".
 func distinctMapAtFrag(col, key string) chsql.Frag {
-	mapAt := func(b *chsql.Builder) { b.MapAt(col, key) }
-	return chsql.Concat(chsql.Raw("DISTINCT "), mapAt)
+	mapAt := chsql.Frag(func(b *chsql.Builder) { b.MapAt(col, key) })
+	return chsql.Distinct(mapAt)
 }
 
-// mapAtNotEmptyFrag emits `<col>[?] != ”` — the WHERE predicate that
-// drops the empty-string sentinel CH returns when a Map key is absent.
-// The empty string is rendered as a literal `”` (not parameterised)
-// because it is part of the query shape: the "key-absent" sentinel is
-// a fixed value, not user data, and CH planner pruning relies on it
-// being visible at plan time.
+// mapAtNotEmptyFrag emits `<col>[?] != ?` and binds both the map key
+// and the empty-string sentinel as positional args — the WHERE
+// predicate that drops the empty-string CH returns when a Map key is
+// absent. The empty-string RHS is parameterised through chsql.Lit
+// (rather than rendered as a literal) so the whole expression stays
+// inside the typed Frag surface; R6.12.f deletes the Raw escape hatch.
 func mapAtNotEmptyFrag(col, key string) chsql.Frag {
-	mapAt := func(b *chsql.Builder) { b.MapAt(col, key) }
-	// The empty-string sentinel CH returns for absent Map keys is part
-	// of the query shape, so the RHS is emitted as the literal `''`
-	// via chsql.Raw rather than parameterised through chsql.Lit.
-	return chsql.Neq(mapAt, chsql.Raw("''"))
+	mapAt := chsql.Frag(func(b *chsql.Builder) { b.MapAt(col, key) })
+	return chsql.Neq(mapAt, chsql.Lit(""))
 }
 
 // parenRawFrag wraps an already-rendered SQL string in parentheses for
