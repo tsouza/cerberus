@@ -71,14 +71,26 @@ func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs) (chpla
 
 // rangeValueExpr returns the per-row Value the RangeWindow aggregates.
 // Line-counting ops use constant 1; byte-counting ops use length(Body).
+//
+// `length(Body)` is wrapped in `toFloat64` so the per-row Value tuple
+// — `(Timestamp, Value)` shaped by the windowed-array RangeWindow
+// emitter — carries a Float64 second element. Without the cast CH
+// resolves the column to UInt64, and the downstream arrayMap / arraySum
+// chain promotes back to Float64 with quiet rounding (UInt64 → Float64
+// loses precision at ≥ 2^53). The cast keeps the units aligned with
+// the line-counter path (`LitInt{V:1}` → Int64) where arithmetic
+// remains exact across the [start, end] window.
 func rangeValueExpr(op string, s schema.Logs) (chplan.Expr, error) {
 	switch op {
 	case syntax.OpRangeTypeRate, syntax.OpRangeTypeCount:
 		return &chplan.LitInt{V: 1}, nil
 	case syntax.OpRangeTypeBytesRate, syntax.OpRangeTypeBytes:
 		return &chplan.FuncCall{
-			Name: "length",
-			Args: []chplan.Expr{&chplan.ColumnRef{Name: s.BodyColumn}},
+			Name: "toFloat64",
+			Args: []chplan.Expr{&chplan.FuncCall{
+				Name: "length",
+				Args: []chplan.Expr{&chplan.ColumnRef{Name: s.BodyColumn}},
+			}},
 		}, nil
 	}
 	return nil, fmt.Errorf("logql: range op %s is not yet supported (unwrap-based ops land with parser support)", op)
