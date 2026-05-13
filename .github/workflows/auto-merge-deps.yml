@@ -2,10 +2,15 @@ name: auto-merge-deps
 
 # Enables auto-merge on Dependabot PRs that meet two conditions:
 #
-#  1. The PR is opened by `dependabot[bot]`.
+#  1. The PR head branch starts with `dependabot/` (Dependabot's
+#     fixed prefix).
 #  2. The update-type matches the allowed set for the affected dep
-#     (patch-only for upstream parsers; patch+minor for GitHub
-#     Actions / npm test tooling).
+#     (patch-only for upstream parsers; patch+minor for GitHub Actions).
+#
+# Trigger is `workflow_run` chained after `ci` completes, NOT
+# `pull_request_target`, so non-Dependabot PRs never see a "Skipped"
+# `enable-auto-merge` check in their status list — the workflow simply
+# isn't registered for them.
 #
 # Branch protection on `main` still gates the actual merge —
 # auto-merge stays pending until `check + lint + dashboard` go green
@@ -14,11 +19,9 @@ name: auto-merge-deps
 # for the full rationale.
 
 on:
-  pull_request_target:
-    types:
-      - opened
-      - reopened
-      - synchronize
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
 
 permissions:
   contents: write
@@ -26,9 +29,27 @@ permissions:
 
 jobs:
   enable-auto-merge:
-    if: github.actor == 'dependabot[bot]'
+    # Only act on Dependabot's own branches. `workflow_run.head_branch`
+    # is the PR's head branch on workflow_run events — Dependabot
+    # prefixes every branch with `dependabot/`.
+    if: |
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      startsWith(github.event.workflow_run.head_branch, 'dependabot/')
     runs-on: ubuntu-latest
     steps:
+      # Resolve the PR number from the head_sha (workflow_run doesn't
+      # carry the PR number directly).
+      - id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          pr=$(gh api "repos/$REPO/commits/$HEAD_SHA/pulls" --jq '.[0].number')
+          echo "number=$pr" >> "$GITHUB_OUTPUT"
+          echo "Resolved PR: $pr"
+
       - name: Fetch Dependabot metadata
         id: meta
         uses: dependabot/fetch-metadata@v3
@@ -48,6 +69,7 @@ jobs:
             (steps.meta.outputs.update-type == 'version-update:semver-patch' ||
              steps.meta.outputs.update-type == 'version-update:semver-minor'))
         env:
-          PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh pr merge --auto --squash --delete-branch "$PR_URL"
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        run: gh pr merge --auto --squash --delete-branch -R "$REPO" "$PR_NUMBER"
