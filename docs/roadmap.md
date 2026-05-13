@@ -47,13 +47,13 @@ All of [`docs/optimizer-research.md`](optimizer-research.md) lands here. The rea
 
 ### Optimizer rewrite
 
-| #    | Item                                                        | Status                  | Primary reference                                                                                                                                          |
-| ---- | ----------------------------------------------------------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| R3.1 | Pattern-based `Rule` API (Calcite-style match / transform)  | shipped via #135      | [Apache Calcite `org.apache.calcite.rel.rules`](https://calcite.apache.org/javadocAggregate/)                                                              |
-| R3.2 | `FilterProjectTranspose` + `FilterAggregateTranspose` rules | shipped via #177      | Same                                                                                                                                                       |
-| R3.3 | Catalyst-style `Batch` grouping                             | Todo                    | [Spark `Optimizer.scala`](https://github.com/apache/spark/blob/master/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/optimizer/Optimizer.scala) |
-| R3.4 | Sort-key-aware filter emission + `PREWHERE` promotion       | Todo                    | [ClickHouse query-optimization guide](https://clickhouse.com/resources/engineering/clickhouse-query-optimisation-definitive-guide)                         |
-| R3.5 | Analyzer vs Optimizer rule split                            | Todo                    | [DataFusion optimizer crate](https://docs.rs/datafusion-optimizer/latest/datafusion_optimizer/)                                                            |
+| #    | Item                                                        | Status           | Primary reference                                                                                                                                          |
+| ---- | ----------------------------------------------------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| R3.1 | Pattern-based `Rule` API (Calcite-style match / transform)  | shipped via #135 | [Apache Calcite `org.apache.calcite.rel.rules`](https://calcite.apache.org/javadocAggregate/)                                                              |
+| R3.2 | `FilterProjectTranspose` + `FilterAggregateTranspose` rules | shipped via #177 | Same                                                                                                                                                       |
+| R3.3 | Catalyst-style `Batch` grouping                             | Todo             | [Spark `Optimizer.scala`](https://github.com/apache/spark/blob/master/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/optimizer/Optimizer.scala) |
+| R3.4 | Sort-key-aware filter emission + `PREWHERE` promotion       | Todo             | [ClickHouse query-optimization guide](https://clickhouse.com/resources/engineering/clickhouse-query-optimisation-definitive-guide)                         |
+| R3.5 | Analyzer vs Optimizer rule split                            | Todo             | [DataFusion optimizer crate](https://docs.rs/datafusion-optimizer/latest/datafusion_optimizer/)                                                            |
 
 ### Performance features
 
@@ -61,20 +61,20 @@ R3.4 / R3.6 / R3.7 / R3.8 are the **CH-roundtrip scalability levers** — they s
 
 **No query/plan/SQL caching.** Cerberus is a thin query gateway — caching results or plans turns it into a memoization layer, which (a) hides freshness bugs behind stale results, (b) shifts the correctness burden from CH to cerberus, and (c) duplicates work Grafana / Prometheus / Loki already do client-side. If a deployment wants caching, put it in front of cerberus (e.g. a Grafana datasource cache) — not inside.
 
-| #     | Item                                                                                  | Status              | Primary reference                                                                                                                         |
-| ----- | ------------------------------------------------------------------------------------- | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| R3.6  | Materialised-view substitution for `otel_metrics_*` rollups (cost-model trigger)      | Todo                | [Promscale #152](https://github.com/timescale/promscale/issues/152) + [Jindal VLDB 2018](http://www.vldb.org/pvldb/vol11/p800-jindal.pdf) |
-| R3.7  | Late materialisation for wide-column scans (logs `Body`, `ResourceAttributes`)        | Todo                | [Selective Late Materialization, VLDB 2025](http://people.iiis.tsinghua.edu.cn/~huanchen/publications/slm-vldb25.pdf)                     |
-| R3.8  | Filter–RangeWindow transpose                                                          | Todo                | [VictoriaMetrics `metricsql/optimizer.go`](https://github.com/VictoriaMetrics/metricsql/blob/master/optimizer.go)                         |
-| R3.12 | Streaming `query_range` matrix response cursor (`chclient.Cursor` over `Sample` rows) | shipped via #175  | Stops handlers from materialising the full matrix; 1M-point query memory drops from O(N) to O(chunk_size). Composes with R3.4.            |
+| #     | Item                                                                                  | Status           | Primary reference                                                                                                                         |
+| ----- | ------------------------------------------------------------------------------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| R3.6  | Materialised-view substitution for `otel_metrics_*` rollups (cost-model trigger)      | Todo             | [Promscale #152](https://github.com/timescale/promscale/issues/152) + [Jindal VLDB 2018](http://www.vldb.org/pvldb/vol11/p800-jindal.pdf) |
+| R3.7  | Late materialisation for wide-column scans (logs `Body`, `ResourceAttributes`)        | Todo             | [Selective Late Materialization, VLDB 2025](http://people.iiis.tsinghua.edu.cn/~huanchen/publications/slm-vldb25.pdf)                     |
+| R3.8  | Filter–RangeWindow transpose                                                          | Todo             | [VictoriaMetrics `metricsql/optimizer.go`](https://github.com/VictoriaMetrics/metricsql/blob/master/optimizer.go)                         |
+| R3.12 | Streaming `query_range` matrix response cursor (`chclient.Cursor` over `Sample` rows) | shipped via #175 | Stops handlers from materialising the full matrix; 1M-point query memory drops from O(N) to O(chunk_size). Composes with R3.4.            |
 
 ### Advanced testing
 
-| #     | Item                                                              | Status              | Primary reference                                                                                                                  |
-| ----- | ----------------------------------------------------------------- | ------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| R3.9  | Shadow-mode differential testing (prefer / force-native / oracle) | shipped via #136  | [promshim-clickhouse `harness/compatibility/`](https://github.com/BadLiveware/promshim-clickhouse/tree/main/harness/compatibility) |
-| R3.10 | Port promshim's local Go evaluator                                | shipped via #134  | Same — `internal/promshim/local/`                                                                                                  |
-| R3.11 | Fuzz + chaos + perf-benchmark CI                                  | shipped via #133  | `go-fuzz`, custom chaos harness, perf-benchmark workflow                                                                           |
+| #     | Item                                                              | Status           | Primary reference                                                                                                                  |
+| ----- | ----------------------------------------------------------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| R3.9  | Shadow-mode differential testing (prefer / force-native / oracle) | shipped via #136 | [promshim-clickhouse `harness/compatibility/`](https://github.com/BadLiveware/promshim-clickhouse/tree/main/harness/compatibility) |
+| R3.10 | Port promshim's local Go evaluator                                | shipped via #134 | Same — `internal/promshim/local/`                                                                                                  |
+| R3.11 | Fuzz + chaos + perf-benchmark CI                                  | shipped via #133 | `go-fuzz`, custom chaos harness, perf-benchmark workflow                                                                           |
 
 **Exit criterion:** golden-fixture SQL shrinks on real plans; `internal/optimizer` mutation score ≥ 70%; MV substitution active; shadow-mode reveals < 5% native-SQL gap; `chclient.Cursor` streams a 1M-row fixture with bounded RSS.
 
@@ -114,20 +114,20 @@ Driven by an audit of cerberus against [12factor.net](https://12factor.net/). Mo
 
 ### Audit snapshot
 
-| #   | Factor            | Status  | Note                                                                                  |
-| --- | ----------------- | ------- | ------------------------------------------------------------------------------------- |
-| 1   | Codebase          | PASS    | Single repo + Go module.                                                              |
-| 2   | Dependencies      | PASS    | `go.mod` explicit; `replace` directives documented.                                   |
-| 3   | Config            | PASS    | Env vars only (`CERBERUS_*`); no flags, no runtime YAML.                              |
-| 4   | Backing services  | PASS    | CH swappable via env.                                                                 |
-| 5   | Build/release/run | PASS    | goreleaser + Dockerfile + release.yml; immutable artifacts.                           |
-| 6   | Processes         | PASS    | Stateless; horizontal scale via Deployment replicas.                                  |
-| 7   | Port binding      | PASS    | `:8080` self-binding; env-configurable.                                               |
-| 8   | Concurrency       | PASS    | Goroutines + Deployment replicas.                                                     |
-| 9   | Disposability     | PASS    | `signal.NotifyContext` + 10s graceful-shutdown deadline.                              |
-| 10  | Dev/prod parity   | PARTIAL | Same image runs everywhere; missing a one-command `docker-compose.yml` for local dev. |
-| 11  | Logs              | PASS    | `slog` to stderr; no log files; no rotation.                                          |
-| 12  | Admin processes   | PASS    | None today; future admin tasks would land as separate one-offs.                       |
+| #  | Factor            | Status  | Note                                                                                  |
+| -- | ----------------- | ------- | ------------------------------------------------------------------------------------- |
+| 1  | Codebase          | PASS    | Single repo + Go module.                                                              |
+| 2  | Dependencies      | PASS    | `go.mod` explicit; `replace` directives documented.                                   |
+| 3  | Config            | PASS    | Env vars only (`CERBERUS_*`); no flags, no runtime YAML.                              |
+| 4  | Backing services  | PASS    | CH swappable via env.                                                                 |
+| 5  | Build/release/run | PASS    | goreleaser + Dockerfile + release.yml; immutable artifacts.                           |
+| 6  | Processes         | PASS    | Stateless; horizontal scale via Deployment replicas.                                  |
+| 7  | Port binding      | PASS    | `:8080` self-binding; env-configurable.                                               |
+| 8  | Concurrency       | PASS    | Goroutines + Deployment replicas.                                                     |
+| 9  | Disposability     | PASS    | `signal.NotifyContext` + 10s graceful-shutdown deadline.                              |
+| 10 | Dev/prod parity   | PARTIAL | Same image runs everywhere; missing a one-command `docker-compose.yml` for local dev. |
+| 11 | Logs              | PASS    | `slog` to stderr; no log files; no rotation.                                          |
+| 12 | Admin processes   | PASS    | None today; future admin tasks would land as separate one-offs.                       |
 
 ### Milestones
 
@@ -168,19 +168,19 @@ CH identifier quoting (`writeIdent` — backticks with doubled-backtick escaping
 
 ### PR sequence
 
-| #     | Item                                                                                                                                                                                                                                                                                                                                  | Status                  |
-| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- |
-| R6.0  | Evaluation phase: `docs/sql-builder-evaluation.md` recommends path (b) — build custom `internal/chsql.Builder`.                                                                                                                                                                                                                       | shipped               |
-| R6.1  | Scaffolding: `internal/chsql/builder.go` as a public Builder API plus the CH-specific helpers (`MapAt`, `MapKeys`, `MapFilterExcept`, `Now64`, `SubtractNanos`, `DateTime64Lit`, `Lambda`, `ParamAgg`) and a `QueryBuilder` supporting `.Prewhere(cond...)`. Unit tests pin each helper's output. No emitter changes — pure scaffolding. | shipped via #131      |
-| R6.2  | Port `emitScan`, `emitFilter`, `emitProject`, `emitLimit` (the simple ones).                                                                                                                                                                                                                                                          | shipped via #138      |
-| R6.3  | Port `emitAggregate` + `emitAggFunc` (parameterised aggregates use `chsql.ParamAgg`).                                                                                                                                                                                                                                                  | shipped via #140      |
-| R6.4  | Port `emitBinary` + `emitMapAccess` + `emitMapWithoutKeys` + `emitFunc` + `emitLineContent` (`internal/chsql/emit_expr.go`).                                                                                                                                                                                                           | shipped via #179      |
-| R6.5  | Port `emitRangeWindow` (`internal/chsql/range_window.go` — the `arraySort/groupArray` windowed-array idiom) and `emit_node.go::emitOrderBy`.                                                                                                                                                                                            | shipped via #182      |
-| R6.6  | Port `emitVectorJoin` (per-series argMax + INNER JOIN) **and** the full `internal/chsql/structural_join.go` (both `emitStructuralDirectJoin` and `emitStructuralRecursive`). Adds typed `QueryBuilder.Join(kind, src, on)` + `QueryBuilder.WithRecursive(name, anchor, recursive)` helpers.                                            | shipped via #181      |
-| R6.7  | Port `internal/api/prom/metadata.go` UNION builders + `unionLabelValuesSQL` + `metricMetaSQL`.                                                                                                                                                                                                                                         | shipped via #180      |
-| R6.8  | Audit `internal/api/loki/` and `internal/api/tempo/` SQL helpers and port any remaining Sprintf-on-SQL callsites. Most loki + tempo helpers were already builder-aware by RC2 cut (#141, #150) — R6.8 is the cleanup sweep.                                                                                                              | Todo                    |
-| R6.9  | **Lint enforcement**: a `cmd/check-sql/` Go tool wired into `just check-sql` (and the `lint` CI job) that scans `internal/chsql/`, `internal/api/`, `internal/optimizer/` for `fmt.Sprintf` calls whose first arg contains `SELECT`, `WHERE`, `FROM`, `INSERT`, etc., plus the `Builder.WriteSQL("…keyword…")` cosplay shape. Fails CI on regressions. | Todo (in-flight)        |
-| R6.10 | CLAUDE.md hard-rule promotion: `**No raw SQL strings.**` becomes a top-level non-negotiable; `docs/sql-style.md` documents the helper API and its escape hatches (when `chsql.Raw()` is acceptable, when extending `chsql.QueryBuilder` is preferable).                                                                                | Todo                    |
+| #     | Item                                                                                                                                                                                                                                                                                                                                                   | Status           |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------- |
+| R6.0  | Evaluation phase: `docs/sql-builder-evaluation.md` recommends path (b) — build custom `internal/chsql.Builder`.                                                                                                                                                                                                                                        | shipped          |
+| R6.1  | Scaffolding: `internal/chsql/builder.go` as a public Builder API plus the CH-specific helpers (`MapAt`, `MapKeys`, `MapFilterExcept`, `Now64`, `SubtractNanos`, `DateTime64Lit`, `Lambda`, `ParamAgg`) and a `QueryBuilder` supporting `.Prewhere(cond...)`. Unit tests pin each helper's output. No emitter changes — pure scaffolding.               | shipped via #131 |
+| R6.2  | Port `emitScan`, `emitFilter`, `emitProject`, `emitLimit` (the simple ones).                                                                                                                                                                                                                                                                           | shipped via #138 |
+| R6.3  | Port `emitAggregate` + `emitAggFunc` (parameterised aggregates use `chsql.ParamAgg`).                                                                                                                                                                                                                                                                  | shipped via #140 |
+| R6.4  | Port `emitBinary` + `emitMapAccess` + `emitMapWithoutKeys` + `emitFunc` + `emitLineContent` (`internal/chsql/emit_expr.go`).                                                                                                                                                                                                                           | shipped via #179 |
+| R6.5  | Port `emitRangeWindow` (`internal/chsql/range_window.go` — the `arraySort/groupArray` windowed-array idiom) and `emit_node.go::emitOrderBy`.                                                                                                                                                                                                           | shipped via #182 |
+| R6.6  | Port `emitVectorJoin` (per-series argMax + INNER JOIN) **and** the full `internal/chsql/structural_join.go` (both `emitStructuralDirectJoin` and `emitStructuralRecursive`). Adds typed `QueryBuilder.Join(kind, src, on)` + `QueryBuilder.WithRecursive(name, anchor, recursive)` helpers.                                                            | shipped via #181 |
+| R6.7  | Port `internal/api/prom/metadata.go` UNION builders + `unionLabelValuesSQL` + `metricMetaSQL`.                                                                                                                                                                                                                                                         | shipped via #180 |
+| R6.8  | Audit `internal/api/loki/` and `internal/api/tempo/` SQL helpers and port any remaining Sprintf-on-SQL callsites. Most loki + tempo helpers were already builder-aware by RC2 cut (#141, #150) — R6.8 is the cleanup sweep.                                                                                                                            | Todo             |
+| R6.9  | **Lint enforcement**: a `cmd/check-sql/` Go tool wired into `just check-sql` (and the `lint` CI job) that scans `internal/chsql/`, `internal/api/`, `internal/optimizer/` for `fmt.Sprintf` calls whose first arg contains `SELECT`, `WHERE`, `FROM`, `INSERT`, etc., plus the `Builder.WriteSQL("…keyword…")` cosplay shape. Fails CI on regressions. | Todo (in-flight) |
+| R6.10 | CLAUDE.md hard-rule promotion: `**No raw SQL strings.**` becomes a top-level non-negotiable; `docs/sql-style.md` documents the helper API and its escape hatches (when `chsql.Raw()` is acceptable, when extending `chsql.QueryBuilder` is preferable).                                                                                                | Todo             |
 
 ### Notes for the custom path
 

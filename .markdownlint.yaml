@@ -23,9 +23,3 @@ MD024:
 # code blocks.
 MD046:
   style: fenced
-
-# MD060 — table-column-style: disabled. Pipe alignment is cosmetic; rendered
-# HTML is identical regardless. The rule causes frequent friction on rows
-# that contain inline-code spans (especially with escaped `\|` pipes inside
-# code spans, which the rule's column counter mishandles).
-MD060: false
