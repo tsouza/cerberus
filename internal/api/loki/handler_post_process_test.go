@@ -133,6 +133,67 @@ func TestHandler_LineFormat_BadTemplate_400(t *testing.T) {
 	}
 }
 
+// TestHandler_LabelFormat_GroupsByOutputLabels — when `| label_format`
+// renames a label, the streams response must group rows by the
+// POST-format label set. Without this, the rename would be visible in
+// streams[*].stream but the canonical key would still use the old
+// labels — splitting what should be one stream into two.
+func TestHandler_LabelFormat_GroupsByOutputLabels(t *testing.T) {
+	t.Parallel()
+
+	ts := time.Date(2026, 5, 12, 12, 0, 0, 0, time.UTC)
+	q := &stubQuerier{
+		samples: []chclient.Sample{
+			{MetricName: "row 1", Labels: map[string]string{"job": "api"}, Timestamp: ts},
+			{MetricName: "row 2", Labels: map[string]string{"job": "api"}, Timestamp: ts.Add(time.Second)},
+		},
+	}
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	streams := getStreams(t, srv.URL, `{job="api"} | label_format svc=job`)
+	if len(streams) != 1 {
+		t.Fatalf("expected 1 stream (post-format key), got %d: %+v", len(streams), streams)
+	}
+	got := streams[0].Stream
+	if got["svc"] != "api" {
+		t.Errorf("expected svc=api in renamed labels; got %v", got)
+	}
+	if _, ok := got["job"]; ok {
+		t.Errorf("expected job to be removed by rename; got %v", got)
+	}
+	if len(streams[0].Values) != 2 {
+		t.Errorf("expected 2 values rolled into one stream, got %d", len(streams[0].Values))
+	}
+}
+
+// TestHandler_LabelFormat_TemplateThenLineFormat — composition:
+// label_format sets a templated label, then line_format references
+// the new label. Pins that the line_format template sees the
+// post-format dot map.
+func TestHandler_LabelFormat_TemplateThenLineFormat(t *testing.T) {
+	t.Parallel()
+
+	ts := time.Date(2026, 5, 12, 12, 0, 0, 0, time.UTC)
+	q := &stubQuerier{
+		samples: []chclient.Sample{
+			{MetricName: "boom", Labels: map[string]string{"job": "api", "severity": "ERROR"}, Timestamp: ts},
+		},
+	}
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	streams := getStreams(t, srv.URL,
+		"{job=\"api\"} | label_format lvl=`{{.severity}}` | line_format `[{{.lvl}}] {{__line__}}`")
+	if len(streams) != 1 || len(streams[0].Values) != 1 {
+		t.Fatalf("unexpected shape: %+v", streams)
+	}
+	got := streams[0].Values[0][1]
+	if got != "[ERROR] boom" {
+		t.Errorf("line: got %q, want %q", got, "[ERROR] boom")
+	}
+}
+
 // TestHandler_NoLineFormat_PassThrough — a query with no post-fetch
 // stages goes through the identity path. Regression test for the
 // nil-transform branch in toStreamsWithTransform.

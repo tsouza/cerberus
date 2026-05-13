@@ -23,7 +23,7 @@ func TestLineFormat_LabelInterpolation(t *testing.T) {
 		t.Fatalf("expected non-nil transform for line_format query")
 	}
 
-	got := tx("hello world", map[string]string{"job": "api"})
+	got, _ := tx("hello world", map[string]string{"job": "api"})
 	want := "[api] hello world"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
@@ -48,7 +48,7 @@ func TestDecolorize_StripsAnsi(t *testing.T) {
 		t.Fatalf("expected non-nil transform for decolorize query")
 	}
 
-	got := tx("\x1b[31mERROR\x1b[0m: oops", nil)
+	got, _ := tx("\x1b[31mERROR\x1b[0m: oops", nil)
 	want := "ERROR: oops"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
@@ -69,7 +69,7 @@ func TestLineFormat_Compose(t *testing.T) {
 		t.Fatalf("extract: %v", err)
 	}
 
-	got := tx("\x1b[31mERROR\x1b[0m: oops", map[string]string{"job": "api"})
+	got, _ := tx("\x1b[31mERROR\x1b[0m: oops", map[string]string{"job": "api"})
 	want := "[api] ERROR: oops"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
