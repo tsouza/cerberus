@@ -1,7 +1,9 @@
 # Fork Tempo — concrete plan to retire the `unsafe.Pointer` shim
 
-**Status:** investigation / plan. Execution is a follow-up PR. Authored as
-input to RC2 hardening — supersedes the "Forks" section of
+**Status:** PR #A (`go.mod` replace), PR #B (retire shim), and PR #D
+(forbidigo lint gate) have landed. PR #C (TraceQL MetricsPipeline
+lowering) is the remaining work item. Originally authored as input to
+RC2 hardening — supersedes the "Forks" section of
 [`docs/upstream-tracking.md`](upstream-tracking.md) with concrete API
 shapes, file-level diff estimates, and a per-PR migration sequence.
 
@@ -397,7 +399,16 @@ Four PRs, in order:
 - **Risk:** medium. New SQL emission path; relies on the fork having
   the MetricsPipeline accessors. Gated by PR #A landing first.
 
-### Cerberus PR #D — "lint gate against new `unsafe.Pointer`"
+### Cerberus PR #D — "lint gate against new `unsafe.Pointer`" — **LANDED**
+
+Implemented in `.golangci.yml` via `forbidigo` (the recommended
+option below), scoped to `internal/traceql/` + `internal/api/tempo/`
+through an inverted `exclusions.rules[].path-except` filter. Note:
+forbidigo with `analyze-types: true` matches `unsafe.Pointer` as a
+declared type (e.g. `var p unsafe.Pointer`) but not as a conversion
+call (`unsafe.Pointer(&x)`); the latter shape is already caught by
+`gosec` G103 (enabled repo-wide), so the combination covers the
+shim shape retired in PR #B without leaving a hole.
 
 - **Scope:** add a CI guard preventing `unsafe.Pointer` and
   `reflect.Value.FieldByName` from reappearing in
