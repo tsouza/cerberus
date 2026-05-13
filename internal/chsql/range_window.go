@@ -149,6 +149,9 @@ func (e *emitter) emitRangeWindow(r *chplan.RangeWindow) error {
 	if m, ok := r.Input.(*chplan.MetricsAggregate); ok {
 		return e.emitRangeWindowMetrics(r, m)
 	}
+	if h, ok := r.Input.(*chplan.MetricsHistogramOverTime); ok {
+		return e.emitRangeWindowHistogram(r, h)
+	}
 	if r.Identity {
 		return e.emitRangeWindowIdentity(r)
 	}

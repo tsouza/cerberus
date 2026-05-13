@@ -142,6 +142,10 @@ func TestLowerMetricsPipeline(t *testing.T) {
 // accessors on that type yet, and the post-#148 rule forbids
 // reflect/unsafe on parser AST.
 //
+// `histogram_over_time(...)` is no longer here — it lowers to a
+// chplan.MetricsHistogramOverTime node as of this PR; see
+// TestLowerHistogramOverTime in histogram_over_time_test.go.
+//
 // `| > 0` (MetricsSecondStage) is deferred until the second-stage
 // filter / topk lowering lands.
 func TestLowerMetricsPipelineUnsupported(t *testing.T) {
@@ -158,11 +162,6 @@ func TestLowerMetricsPipelineUnsupported(t *testing.T) {
 			name:       "avg_over_time_deferred",
 			query:      `{} | avg_over_time(duration)`,
 			wantSubstr: "not yet supported",
-		},
-		{
-			name:       "histogram_over_time_deferred",
-			query:      `{} | histogram_over_time(duration)`,
-			wantSubstr: "histogram_over_time is not yet supported",
 		},
 		{
 			name:       "quantile_over_time_multi_deferred",

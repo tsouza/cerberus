@@ -70,12 +70,19 @@ func lowerMetricsPipeline(prev chplan.Node, mp traceql.FirstStageElement, s sche
 // surface a clean "not yet supported" error so the caller can decide
 // whether to split into N queries.
 //
-// `histogram_over_time(attr)` is deferred — the lowering would need a
-// chplan node distinct from a scalar MetricsAggregate, and the
-// `/api/metrics/query_range` handler shape for histogram series has not
-// landed yet.
+// `histogram_over_time(attr)` lowers to a dedicated
+// chplan.MetricsHistogramOverTime node — the per-bucket value is a
+// distribution (one row per (group-by, bucket) tuple) rather than a
+// scalar, so it warrants a distinct IR shape from the scalar
+// MetricsAggregate. Bucketing mirrors Tempo's bucketizeFnFor: each
+// span's <attr> is rounded up to the nearest power of two
+// (log2(ceil(v))); durations additionally divide by 1e9 so the bucket
+// label reads in seconds.
 func lowerMetricsAggregate(prev chplan.Node, agg *traceql.MetricsAggregate, s schema.Traces) (chplan.Node, error) {
 	op := agg.Op()
+	if op == traceql.MetricsAggregateHistogramOverTime {
+		return lowerMetricsHistogramOverTime(prev, agg, s)
+	}
 	cop, err := mapMetricsAggregateOp(op)
 	if err != nil {
 		return nil, err
@@ -136,7 +143,9 @@ func mapMetricsAggregateOp(op traceql.MetricsAggregateOp) (chplan.MetricsOp, err
 	case traceql.MetricsAggregateQuantileOverTime:
 		return chplan.MetricsOpQuantileOverTime, nil
 	case traceql.MetricsAggregateHistogramOverTime:
-		return chplan.MetricsOpInvalid, fmt.Errorf("traceql: histogram_over_time is not yet supported")
+		// Handled by lowerMetricsHistogramOverTime — never falls through
+		// to this switch.
+		return chplan.MetricsOpHistogramOverTime, fmt.Errorf("traceql: histogram_over_time must lower via lowerMetricsHistogramOverTime")
 	}
 	return chplan.MetricsOpInvalid, fmt.Errorf("traceql: metrics aggregate op %s is not yet supported", op)
 }
@@ -160,6 +169,46 @@ func metricsAggregateAttr(op traceql.MetricsAggregateOp, attr traceql.Attribute,
 		return nil, fmt.Errorf("traceql: %s requires an attribute operand", op)
 	}
 	return lowerAttribute(attr, s), nil
+}
+
+// histogramBucketAlias is the SELECT-list alias for the bucket column
+// synthesised by histogram_over_time. Mirrors Tempo's internal label
+// name `__bucket` (pkg/traceql/ast_metrics.go: `internalLabelBucket`)
+// so downstream query_range wrapping code can pick the bucket out of
+// the row by a stable name.
+const histogramBucketAlias = "__bucket"
+
+// lowerMetricsHistogramOverTime maps `| histogram_over_time(<attr>) [by(...)]`
+// to a chplan.MetricsHistogramOverTime node.
+//
+// Bucketing follows Tempo's `bucketizeFnFor`: duration attrs (the
+// `duration` intrinsic, or attributes typed as TypeDuration) emit
+// `log2(<attr>) / 1e9` so the bucket reads in seconds; other numeric
+// attrs emit the raw `log2(<attr>)`. The runtime drops spans with
+// <attr> < 2 (bucketizeDuration / bucketizeAttribute return
+// NewStaticNil()); the SQL emitter mirrors that with a WHERE filter on
+// the operand.
+func lowerMetricsHistogramOverTime(prev chplan.Node, agg *traceql.MetricsAggregate, s schema.Traces) (chplan.Node, error) {
+	attr := agg.Attribute()
+	if attr == (traceql.Attribute{}) {
+		return nil, fmt.Errorf("traceql: histogram_over_time requires an attribute operand")
+	}
+	attrExpr := lowerAttribute(attr, s)
+
+	groupBy, groupAliases, err := lowerMetricsGroupBy(agg.GroupBy(), s)
+	if err != nil {
+		return nil, err
+	}
+
+	return &chplan.MetricsHistogramOverTime{
+		Attr:           attrExpr,
+		IsDuration:     attr.Intrinsic == traceql.IntrinsicDuration,
+		GroupBy:        groupBy,
+		GroupByAliases: groupAliases,
+		BucketAlias:    histogramBucketAlias,
+		ValueAlias:     metricsValueAlias,
+		Inner:          prev,
+	}, nil
 }
 
 // lowerMetricsGroupBy turns a TraceQL `by (<attr>, <attr>, ...)` list

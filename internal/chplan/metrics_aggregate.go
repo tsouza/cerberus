@@ -35,6 +35,14 @@ const (
 	// `| quantile_over_time(<attr>, q)`; the quantile values are
 	// carried on MetricsAggregate.Quantiles.
 	MetricsOpQuantileOverTime
+	// MetricsOpHistogramOverTime corresponds to TraceQL
+	// `| histogram_over_time(<attr>)`. This Op never appears on a
+	// MetricsAggregate — `histogram_over_time` lowers to its own
+	// MetricsHistogramOverTime node because the per-bucket value is
+	// a distribution rather than a scalar. The constant exists so
+	// fork-side error reporting (e.g. unsupported parser shapes) can
+	// reuse the same enum surface.
+	MetricsOpHistogramOverTime
 )
 
 // String returns the TraceQL-source name of the operator (`rate`,
@@ -55,6 +63,8 @@ func (o MetricsOp) String() string {
 		return "max_over_time"
 	case MetricsOpQuantileOverTime:
 		return "quantile_over_time"
+	case MetricsOpHistogramOverTime:
+		return "histogram_over_time"
 	}
 	return "invalid"
 }
