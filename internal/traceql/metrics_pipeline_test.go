@@ -18,7 +18,7 @@ import (
 //
 // Range / step intentionally aren't part of the lowered tree —
 // the /api/metrics/query_range handler wraps with chplan.RangeWindow
-// at request time (see docs/fork-tempo-plan.md § 2c).
+// at request time (see docs/upstream-forks.md).
 func TestLowerMetricsPipeline(t *testing.T) {
 	t.Parallel()
 

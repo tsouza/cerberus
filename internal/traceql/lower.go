@@ -25,7 +25,7 @@ import (
 // is supplied by the HTTP /api/metrics/query_range handler (which
 // wraps the returned tree with a chplan.RangeWindow) — TraceQL's
 // grammar doesn't carry the range argument in the AST. See
-// docs/fork-tempo-plan.md § 2c.
+// docs/upstream-forks.md.
 func Lower(expr *traceql.RootExpr, s schema.Traces) (chplan.Node, error) {
 	if expr == nil {
 		return nil, fmt.Errorf("traceql: nil RootExpr")

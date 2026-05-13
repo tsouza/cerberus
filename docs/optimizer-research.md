@@ -82,9 +82,11 @@ When one of these is implemented, open a PR — the reference here is the PR des
 
 ## Suggested implementation order
 
-1. Port the three Calcite transpose rules (§1) — unblocks projection pushdown firing on real PromQL plans.
+1. ✅ Port the three Calcite transpose rules (§1) — shipped via #177 (RC3 R3.2).
 2. Mirror VictoriaMetrics's `PushdownBinaryOpFilters` test structure (§2) — gives us a known-good fixture pattern.
-3. Adopt Spark Catalyst's `Batch` grouping for the fixpoint driver (§4) — prevents thrashing as the rule set grows.
-4. Add a sort-key-aware filter emitter in `internal/chsql` (§3) — first ClickHouse-specific codegen rule.
-5. Real `RangeWindow` SQL via `groupArray` / ordered-scan patterns (§2 + §5) — unblocks `rate` and friends.
-6. MV substitution for `otel_metrics_*` rollups (§2 Promscale + §6 Jindal) — the milestone where cerberus commits to a cost model.
+3. Adopt Spark Catalyst's `Batch` grouping for the fixpoint driver (§4) — prevents thrashing as the rule set grows. (RC3 R3.3.)
+4. Add a sort-key-aware filter emitter in `internal/chsql` (§3) — first ClickHouse-specific codegen rule. (RC3 R3.4 — PREWHERE promotion.)
+5. ✅ Real `RangeWindow` SQL via `groupArray` / ordered-scan patterns (§2 + §5) — shipped through RC1 M1.1 and refined through RC2.
+6. MV substitution for `otel_metrics_*` rollups (§2 Promscale + §6 Jindal) — the milestone where cerberus commits to a cost model. (RC3 R3.6.)
+
+The pattern-based `Rule` API itself shipped via #135 (RC3 R3.1) — every new rule above lands on top of that API.

@@ -1,164 +1,40 @@
-# chsql callsite audit
+# chsql callsite rulebook
 
-Repo-wide inventory of every SQL-building callsite in cerberus. Categorises
-each one as **cosplay** (uses `Builder.WriteSQL` for a clause keyword
-where `QueryBuilder` already has a typed slot), **grandfathered**
-(pre-R6.1 emitter code retained until its RC6 port milestone), or
-**legitimate token write** (operator-token `WriteSQL` inside a `Frag`
-that no typed helper covers).
+The "no raw SQL strings" hard rule (CLAUDE.md § Hard rules) has two forbidden patterns and one rulebook for distinguishing them from legitimate operator-token writes.
 
-This audit was triggered by the maintainer catching the R6.2 (PR #138)
-and R6.3 (PR #140) ports shipping `prefix.WriteSQL("SELECT ")` /
-`WriteSQL(" FROM ")` / `WriteSQL(" WHERE ")` — that pattern is
-`fmt.Sprintf`-on-SQL with an extra step and defeats the whole point of
-the typed `chsql.QueryBuilder`. This PR fixes every bucket-1 entry.
+This document was originally a file-by-file audit triggered by the R6.2 / R6.3 ports shipping `prefix.WriteSQL("SELECT ")` etc. After R6.4–R6.7 ported every grandfathered file, the audit shrunk to the rulebook below. The bucket-2 (grandfathered) surface is **empty** as of RC6 R6.7; the lint enforcement described under R6.9 is the going-forward gate.
 
-Detection greps (see CLAUDE.md hard rule "no raw SQL strings"):
+## Three buckets
 
-```sh
-grep -RnE 'WriteSQL\(" *(SELECT|FROM|WHERE|GROUP BY|ORDER BY|LIMIT|PREWHERE|HAVING|UNION|JOIN |LEFT JOIN|INNER JOIN)' internal/ cmd/ harness/
-grep -RnE 'WriteSQL\(" AND "\)' internal/ cmd/ harness/
-grep -RnE 'fmt\.Sprintf\([^)]*(SELECT|FROM|WHERE|INSERT|GROUP BY|ORDER BY)' internal/ cmd/ harness/
-grep -RnE 'WriteString\([^)]*(SELECT|FROM|WHERE|GROUP BY|ORDER BY|LIMIT|PREWHERE)' internal/ cmd/ harness/
-```
+- **Bucket 1 — Cosplay (forbidden, fail the lint gate).** `Builder.WriteSQL(" SELECT ")` / `WriteSQL(" FROM ")` / `WriteSQL(" WHERE ")` / `WriteSQL(" GROUP BY ")` / `WriteSQL(" ORDER BY ")` / `WriteSQL(" LIMIT ")` / `WriteSQL(" PREWHERE ")` / `WriteSQL(" JOIN ")` / `WriteSQL(" UNION ")` / `WriteSQL(" HAVING ")` etc. used to compose structural clause keywords. That's `fmt.Sprintf` cosplay — it bypasses `QueryBuilder`'s arg-lifecycle and nesting guarantees. Use the typed slots instead: `.Select(...)`, `.From(...)`, `.Where(...)`, `.GroupBy(...)`, `.OrderBy(...)`, `.Limit(...)`, `.Prewhere(...)`, `.Join(kind, src, on)`, `.WithRecursive(name, anchor, recursive)`, plus the `chsql.As(expr, alias)` / `QueryBuilder.SelectAs(expr, alias)` helpers for aliased projections.
 
-## Bucket 1 — Cosplay (FIXED in this PR)
+- **Bucket 2 — Grandfathered (empty post-R6.7).** Pre-R6.1 emitter code that used `strings.Builder` / `fmt.Sprintf` / direct `e.b.WriteString` for SQL keywords. Originally: `emit_expr.go` (retired R6.4), `range_window.go` + `emit_node.go::emitOrderBy` (retired R6.5), `vector_join.go` + `structural_join.go` (retired R6.6), `internal/api/prom/metadata.go` (retired R6.7). **All four files now flow through `QueryBuilder`.** Any new pre-builder pattern in these files is a regression, not a grandfathered case.
 
-`Builder.WriteSQL(" SELECT ")` etc. used for structural clause keywords.
-Each callsite below moved to `chsql.QueryBuilder` slots.
+- **Bucket 3 — Legitimate token writes (allowed).** `WriteSQL(" = ")` / `WriteSQL(" AS ")` / `WriteSQL(", ")` / `WriteSQL(" > ")` etc. used inside `Frag` callbacks for operators or glue that has no typed helper. Acceptable per CLAUDE.md (the rule forbids *clause keywords*, not operator tokens). Representative callsites: `internal/api/loki/index_stats.go` `timeBoundFrag` (op + glue), `internal/api/loki/index_volume.go` `aliased` (`" AS "`), `Builder.Expr`'s binary-operator glue inside `chsql/builder.go`.
 
-- `internal/chsql/emit_node.go:26` — `b.WriteSQL("SELECT ")` in
-  `emitScan` → `NewQuery().Select(...).From(Col(table))`.
-- `internal/chsql/emit_node.go:37` — `b.WriteSQL(" FROM ")` in
-  `emitScan` → `.From(Col(s.Table))`.
-- `internal/chsql/emit_node.go:46` — `prefix.WriteSQL("SELECT * FROM ")`
-  in `emitFilter` → `NewQuery().From(e.subqueryFrag(...))`.
-- `internal/chsql/emit_node.go:56` — `suffix.WriteSQL(" WHERE ")` in
-  `emitFilter` → `.Where(predicateFrag)`.
-- `internal/chsql/emit_node.go:67` — `prefix.WriteSQL("SELECT ")` in
-  `emitProject` → `.Select(projectionFrags...)`.
-- `internal/chsql/emit_node.go:84` — `prefix.WriteSQL(" FROM ")` in
-  `emitProject` → `.From(e.subqueryFrag(...))`.
-- `internal/chsql/emit_node.go:92` — `prefix.WriteSQL("SELECT ")` in
-  `emitAggregate` → `.Select(groupByFrags..., aggFuncFrags...)`.
-- `internal/chsql/emit_node.go:119` — `prefix.WriteSQL(" FROM ")` in
-  `emitAggregate` → `.From(e.subqueryFrag(...))`.
-- `internal/chsql/emit_node.go:129` — `suffix.WriteSQL(" GROUP BY ")` in
-  `emitAggregate` → `.GroupBy(groupByFrags...)`.
-- `internal/chsql/emit_node.go:183` — `prefix.WriteSQL("SELECT * FROM ")`
-  in `emitLimit` → `NewQuery().From(e.subqueryFrag(...))`.
-- `internal/chsql/emit_node.go:192` — `suffix.WriteSQL(" LIMIT ")` in
-  `emitLimit` → `.Limit(int(l.Count))`.
+## Detection greps
 
-The aliased projection shape (`<expr> AS <alias>`) was inline
-`prefix.WriteSQL(" AS ")` + `prefix.Ident(alias)`. This PR adds a typed
-`chsql.As(expr Frag, alias string) Frag` helper plus a
-`QueryBuilder.SelectAs(expr Frag, alias string)` slot so the projection
-list never composes the `AS` keyword by hand again. The legacy
-`internal/api/loki/index_volume.go` `aliased` local helper stays put
-(out of scope; the package-private form predates the new public
-`chsql.As`).
-
-`builder_test.go` also constructed `b.WriteSQL("max(")` / `WriteSQL(")")`
-patterns to stage args. Those are operator-glue around the
-`Builder.Arg` / `Builder.Ident` calls (no clause keyword, no
-`QueryBuilder`-replaceable shape), so they remain bucket-3
-legitimate-token writes for now. They are a thin layer that can move
-to typed helpers as RC6 R6.4–R6.8 expand the helper set.
-
-## Bucket 2 — Grandfathered
-
-Pre-R6.1 emitter code that still uses `strings.Builder` /
-`fmt.Sprintf` / direct `e.b.WriteString` for SQL keywords. CLAUDE.md's
-"no raw SQL strings" rule grandfathers these until the listed RC6
-milestone ports them.
-
-- ~~`internal/chsql/emit_expr.go`~~ — **retired by R6.4** (this milestone).
-  Every emit method (`emitExpr`, `emitBinary`, `emitFunc`, `emitMapAccess`,
-  `emitMapWithoutKeys`, `emitLineContent`, `emitFieldAccess`,
-  `emitNestedArrayExists`, `bindArg`) now delegates to `chsql.Builder.Expr`
-  / `Builder.Arg`; no method writes SQL bytes directly into the emitter's
-  buffer. Builder.Expr is the canonical implementation. The emitter
-  methods remain as thin shims because the grandfathered callers in
-  `range_window.go` and `emit_node.go::emitOrderBy` (R6.5) still use the
-  legacy surface; both collapse onto Builder.Expr directly when R6.5
-  ports those files, at which point the shims here can be deleted.
-- `internal/chsql/range_window.go` — `e.b.WriteString("SELECT ")`
-  chains + `fmt.Fprintf(&e.b, ...)` for the windowed-array idiom.
-  Retired by **R6.5**.
-- ~~`internal/chsql/vector_join.go` — `header.WriteSQL("SELECT ")` /
-  `" FROM "` / `" GROUP BY "` plus inline `" AND "` glue inside
-  `writeVectorMatchPredicate`. Retired by **R6.6**.~~ ✓ Ported in R6.6.
-- ~~`internal/chsql/structural_join.go` — `e.b.WriteString("SELECT R.* FROM ")`
-  plus `fmt.Fprintf` for trace-id / parent-span join. Retired by **R6.6**.~~ ✓ Ported in R6.6: direct + recursive both flow through
-  `QueryBuilder.Join` and `QueryBuilder.WithRecursive`.
-- `internal/chsql/emit_node.go::emitOrderBy` —
-  `e.b.WriteString("SELECT * FROM ")` / `" ORDER BY "`. Pre-R6 Tempo
-  `/api/search/recent` work; folds in with the **R6.5** RangeWindow port.
-- `internal/api/prom/metadata.go` — `fmt.Sprintf` for label-keys /
-  label-values / UNION-ALL builders (`unionLabelNamesSQL`,
-  `unionMetricNamesSQL`, `unionLabelValuesSQL`, `labelKeysForMatcher`,
-  `labelValuesForMatcher`). Retired by **R6.7**.
-
-Detection greps for the bucket-2 surface:
+These greps are what the R6.9 lint gate (in-flight; lands under `cmd/check-sql/` wired into `just check-sql`) automates. Until the gate ships, run them manually before merging emitter changes:
 
 ```sh
-grep -nE 'e\.b\.WriteString|fmt\.Fprintf\(&e\.b|fmt\.Sprintf' \
-  internal/chsql/range_window.go \
-  internal/chsql/vector_join.go \
-  internal/chsql/structural_join.go \
-  internal/api/prom/metadata.go
+# Cosplay (must be empty outside QueryBuilder.writeInto):
+grep -RnE 'WriteSQL\(" *(SELECT|FROM|WHERE|GROUP BY|ORDER BY|LIMIT|PREWHERE|HAVING|UNION|JOIN |LEFT JOIN|INNER JOIN)' \
+  internal/chsql/ internal/api/ cmd/ harness/
+
+# Direct buffer writes for keywords (R6.5/R6.6/R6.7-style; must be empty):
+grep -RnE 'WriteString\([^)]*(SELECT|FROM|WHERE|GROUP BY|ORDER BY|LIMIT|PREWHERE)' \
+  internal/chsql/ internal/api/
+
+# Sprintf-on-SQL (must be empty in SQL-emitting packages):
+grep -RnE 'fmt\.Sprintf\([^)]*(SELECT|FROM|WHERE|INSERT|GROUP BY|ORDER BY)' \
+  internal/chsql/ internal/api/
 ```
 
-None of these are touched by this PR — porting them lives in the
-upcoming R6.x milestones (see `docs/roadmap.md` § RC6 R6.4–R6.8). If a
-PR re-touches one of these files for an unrelated reason it should leave
-the SQL composition shape alone; the port is a single mechanical commit
-per milestone.
+The `QueryBuilder.writeInto` implementation in `internal/chsql/builder.go` is the **only** legitimate site where those clause keywords appear as string literals — it's the implementation of the typed slots, not a caller of them. The lint gate exempts it explicitly.
 
-## Bucket 3 — Legitimate token writes
+## Pointers
 
-`WriteSQL(" = ")` / `WriteSQL(" AS ")` / `WriteSQL(", ")` /
-`WriteSQL(" > ")` etc. used inside `Frag` callbacks for operators or
-glue that has no typed helper. Acceptable per CLAUDE.md (the rule
-forbids *clause keywords*, not operator tokens). Listed for
-completeness so future audit greps can distinguish them.
-
-Representative callsites (not exhaustive — every `Frag` in the
-loki/index handlers and every operator emit in `Builder.Expr` produces
-similar tokens):
-
-- `internal/api/loki/index_stats.go` — `timeBoundFrag` writes `" "` +
-  op + `" "`; `aggFrag` / `bytesAggFrag` write `(` / `)` glue.
-- `internal/api/loki/index_volume.go` — `aliased` writes `" AS "`;
-  `volumeGroupFrag` writes `mapFilter(...)` glue.
-- `internal/chsql/builder_test.go` — `b.WriteSQL(" = ")` /
-  `b.WriteSQL(" > ")` inside `Where` callbacks; these are the canonical
-  documented pattern in the `QueryBuilder` doc comments.
-
-Inside `Builder.Expr` the binary-operator glue (`b.sb.WriteByte(' ')` +
-`b.sb.WriteString(string(bx.Op))` + `b.sb.WriteByte(' ')`) is similarly
-operator-token, not clause-keyword.
-
-## Audit tally (post-fix)
-
-- **Cosplay fixed**: 11 callsites across `internal/chsql/emit_node.go`.
-- **Grandfathered**: 4 files (`range_window.go`, `vector_join.go`,
-  `structural_join.go`, `metadata.go`) + the pre-R6 `emitOrderBy`
-  block, retired by R6.5–R6.7. (`emit_expr.go` retired in R6.4.)
-- **Legitimate token writes**: ~30+ callsites across `internal/api/loki/`
-  and `internal/chsql/builder_test.go`; all are operator-glue inside
-  Frags or test bodies, none replicate a `QueryBuilder` slot.
-
-## Final-greps post-fix (must be empty)
-
-```sh
-grep -RnE 'WriteSQL\(" *(SELECT|FROM|WHERE|GROUP BY|ORDER BY|LIMIT|PREWHERE)' \
-  internal/chsql/emit_node.go \
-  internal/chsql/builder_test.go \
-  internal/api/loki/ internal/api/prom/ internal/api/tempo/
-```
-
-If this grep ever resurfaces a hit outside `QueryBuilder.writeInto`
-(the implementation of the typed slots), it is a regression — the typed
-slots exist precisely so callers never compose those keywords by hand.
+- `internal/chsql/builder.go` — the public `Builder` + `QueryBuilder` API.
+- `internal/chsql/builder_test.go` — canonical examples of `Frag` callbacks composing operator tokens (bucket-3 pattern).
+- `docs/roadmap.md` § RC6 — R6.4–R6.7 ports (executed) + R6.8 (in flight) + R6.9 lint gate + R6.10 docs.
+- `docs/sql-builder-evaluation.md` — the R6.0 build-vs-buy decision.
