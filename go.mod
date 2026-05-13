@@ -7,6 +7,7 @@ require (
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
 	github.com/grafana/loki/v3 v3.7.1
 	github.com/grafana/tempo v1.5.1-0.20260508211128-2f74ea818de1
+	github.com/open-telemetry/opentelemetry-collector-contrib/exporter/clickhouseexporter v0.150.0
 	github.com/prometheus/common v0.67.5
 	github.com/prometheus/prometheus v0.311.3
 	github.com/testcontainers/testcontainers-go/modules/clickhouse v0.42.0
@@ -242,6 +243,7 @@ replace github.com/grafana/tempo => github.com/tsouza/tempo v0.0.0-2026051308155
 // per-subdirectory module layout, so each imported submodule needs its
 // own replace directive pointing at the same fork SHA.
 replace (
+	github.com/open-telemetry/opentelemetry-collector-contrib/exporter/clickhouseexporter => github.com/tsouza/opentelemetry-collector-contrib/exporter/clickhouseexporter v0.0.0-20260513133556-0dfb75bc1abf
 	github.com/open-telemetry/opentelemetry-collector-contrib/internal/coreinternal => github.com/tsouza/opentelemetry-collector-contrib/internal/coreinternal v0.0.0-20260513133556-0dfb75bc1abf
 	github.com/open-telemetry/opentelemetry-collector-contrib/pkg/core/xidutils => github.com/tsouza/opentelemetry-collector-contrib/pkg/core/xidutils v0.0.0-20260513133556-0dfb75bc1abf
 	github.com/open-telemetry/opentelemetry-collector-contrib/pkg/translator/jaeger => github.com/tsouza/opentelemetry-collector-contrib/pkg/translator/jaeger v0.0.0-20260513133556-0dfb75bc1abf

@@ -43,6 +43,13 @@ clean:
 test:
     go test -race ./...
 
+# Run the internal/schema/ddl integration tests against a real ClickHouse
+# container (spun up via testcontainers-go). Requires Docker. Gated behind
+# the `integration` build tag so regular `just test` doesn't pull in
+# Docker.
+schema-ddl-test:
+    go test -race -tags=integration ./internal/schema/ddl/...
+
 # Run the FuzzParse target for one parser head for a bounded duration.
 # Usage: `just fuzz QL=promql DURATION=60s` (defaults).
 fuzz QL="promql" DURATION="60s":
