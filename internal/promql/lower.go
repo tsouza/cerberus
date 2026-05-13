@@ -2,6 +2,7 @@ package promql
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/model/labels"
@@ -25,23 +26,35 @@ import (
 // over AggregateExpr, subquery `@ start()`/`@ end()`, native-histogram
 // `histogram_quantile`, `predict_linear`/`holt_winters`, exemplars.
 func Lower(expr parser.Expr, s schema.Metrics) (chplan.Node, error) {
-	return lower(expr, s)
+	return lower(expr, s, lowerCtx{})
 }
 
-func lower(expr parser.Expr, s schema.Metrics) (chplan.Node, error) {
+// LowerAt is the time-aware variant of [Lower] used by handlers that
+// know the query's evaluation range (start / end). It threads those
+// times through to the `@ start()` / `@ end()` modifier resolution so
+// `metric @ start()` lowers against the request's start time instead
+// of erroring out.
+//
+// For an instant query the API layer passes start == end == ts; for a
+// query_range it passes the request's start / end.
+func LowerAt(expr parser.Expr, s schema.Metrics, start, end time.Time) (chplan.Node, error) {
+	return lower(expr, s, lowerCtx{start: start, end: end})
+}
+
+func lower(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	switch e := expr.(type) {
 	case *parser.VectorSelector:
-		return lowerVectorSelector(e, s)
+		return lowerVectorSelector(e, s, ctx)
 	case *parser.Call:
-		return lowerCall(e, s)
+		return lowerCall(e, s, ctx)
 	case *parser.AggregateExpr:
-		return lowerAggregate(e, s)
+		return lowerAggregate(e, s, ctx)
 	case *parser.ParenExpr:
-		return lower(e.Expr, s)
+		return lower(e.Expr, s, ctx)
 	case *parser.BinaryExpr:
-		return lowerBinary(e, s)
+		return lowerBinary(e, s, ctx)
 	case *parser.SubqueryExpr:
-		return lowerSubquery(e, s)
+		return lowerSubquery(e, s, ctx)
 	default:
 		return nil, fmt.Errorf("promql: unsupported expression %T", expr)
 	}
@@ -50,7 +63,7 @@ func lower(expr parser.Expr, s schema.Metrics) (chplan.Node, error) {
 // lowerVectorSelector turns `metric{label="val"}` into Scan + Filter.
 // `@` and `offset` modifiers add a `Timestamp <= anchor` predicate so the
 // instant evaluation reflects the requested shifted time.
-func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics) (chplan.Node, error) {
+func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	metricName := metricNameFromMatchers(v.LabelMatchers)
 	table := s.GaugeTable
 	if metricName != "" {
@@ -61,7 +74,7 @@ func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics) (chplan.Nod
 
 	pred := buildPredicate(v.LabelMatchers, s)
 	if hasModifier(v) {
-		anchor, err := anchorFromSelector(v)
+		anchor, err := anchorFromSelector(v, ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -145,24 +158,24 @@ func matchOp(t labels.MatchType) chplan.BinaryOp {
 // else is treated as an instant-vector math function (abs, sqrt, ln, ...)
 // if recognised. Other functions surface a clear "not yet supported"
 // error pointing at the relevant milestone.
-func lowerCall(c *parser.Call, s schema.Metrics) (chplan.Node, error) {
+func lowerCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	if len(c.Args) >= 1 {
 		if _, ok := c.Args[0].(*parser.MatrixSelector); ok {
-			return lowerRangeVectorCall(c, s)
+			return lowerRangeVectorCall(c, s, ctx)
 		}
 		if sq, ok := c.Args[0].(*parser.SubqueryExpr); ok {
 			// `<range-vector-fn>(<subquery>)` — the canonical Grafana
 			// shape `max_over_time(rate(m[5m])[1h:5m])`. Lowers to a
 			// chained RangeWindow: outer reducer over the inner matrix.
-			return lowerOuterRangeFnOverSubquery(c, sq, s)
+			return lowerOuterRangeFnOverSubquery(c, sq, s, ctx)
 		}
 	}
 	switch c.Func.Name {
 	case "clamp", "clamp_min", "clamp_max":
-		return lowerClamp(c, s)
+		return lowerClamp(c, s, ctx)
 	}
 	if chFn, ok := instantFnCH[c.Func.Name]; ok {
-		return lowerInstantFn(c, s, chFn)
+		return lowerInstantFn(c, s, chFn, ctx)
 	}
 	return nil, fmt.Errorf("promql: function %s is not yet supported", c.Func.Name)
 }
@@ -172,7 +185,13 @@ func lowerCall(c *parser.Call, s schema.Metrics) (chplan.Node, error) {
 // MatrixSelector wrapping a VectorSelector; we lower the VectorSelector
 // and wrap the result in a RangeWindow capturing the function name +
 // range duration.
-func lowerRangeVectorCall(c *parser.Call, s schema.Metrics) (chplan.Node, error) {
+func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	switch c.Func.Name {
+	case "predict_linear":
+		return lowerPredictLinear(c, s, ctx)
+	case "holt_winters", "double_exponential_smoothing":
+		return lowerHoltWinters(c, s, ctx)
+	}
 	if len(c.Args) != 1 {
 		return nil, fmt.Errorf("promql: %s expects exactly 1 argument, got %d", c.Func.Name, len(c.Args))
 	}
@@ -187,7 +206,7 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics) (chplan.Node, error)
 			ms.VectorSelector)
 	}
 
-	anchor, err := anchorFromSelector(vs)
+	anchor, err := anchorFromSelector(vs, ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -199,7 +218,8 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics) (chplan.Node, error)
 	vsNoModifier.Timestamp = nil
 	vsNoModifier.OriginalOffset = 0
 	vsNoModifier.Offset = 0
-	inner, err := lowerVectorSelector(&vsNoModifier, s)
+	vsNoModifier.StartOrEnd = 0
+	inner, err := lowerVectorSelector(&vsNoModifier, s, ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -226,8 +246,8 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics) (chplan.Node, error)
 // API layer can stream rows through `chclient.Sample` directly. PromQL
 // aggregations drop `__name__`, so the projected MetricName is the empty
 // string; the projected Attributes is built from the group-key columns.
-func lowerAggregate(a *parser.AggregateExpr, s schema.Metrics) (chplan.Node, error) {
-	input, err := lower(a.Expr, s)
+func lowerAggregate(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	input, err := lower(a.Expr, s, ctx)
 	if err != nil {
 		return nil, err
 	}

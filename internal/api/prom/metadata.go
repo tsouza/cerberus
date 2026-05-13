@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/prometheus/common/model"
 
@@ -402,8 +403,12 @@ func (h *Handler) matcherSQL(matcher string) (string, []any, error) {
 // and dedupes the resulting label sets.
 func (h *Handler) fetchSeries(ctx context.Context, matcher string) ([]map[string]string, error) {
 	// Reuse the existing instant-query pipeline; rows come back as Samples
-	// and we dedupe to label sets in canonicalKey order.
-	samples, err := h.executeInstant(ctx, matcher)
+	// and we dedupe to label sets in canonicalKey order. Series matchers
+	// don't carry @ start()/end(); pass `now` for both anchors so any
+	// literal @<ts> still resolves but the start()/end() variants surface
+	// as errors at lowering time.
+	now := time.Now()
+	samples, err := h.executeInstant(ctx, matcher, now, now)
 	if err != nil {
 		return nil, err
 	}

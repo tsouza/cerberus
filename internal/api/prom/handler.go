@@ -50,7 +50,7 @@ func New(client Querier, s schema.Metrics, logger *slog.Logger) *Handler {
 		Schema:    s,
 		Optimizer: optimizer.Default(),
 		Logger:    logger,
-		parser:    promparser.NewParser(promparser.Options{}),
+		parser:    promparser.NewParser(promparser.Options{EnableExperimentalFunctions: true}),
 	}
 }
 
@@ -158,7 +158,7 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	samples, err := h.executeInstant(r.Context(), q)
+	samples, err := h.executeInstant(r.Context(), q, ts, ts)
 	if err != nil {
 		h.respondError(w, err)
 		return
@@ -211,7 +211,7 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	samples, err := h.executeInstant(r.Context(), q)
+	samples, err := h.executeInstant(r.Context(), q, start, end)
 	if err != nil {
 		h.respondError(w, err)
 		return
@@ -262,12 +262,16 @@ func scalarMatrix(v float64, start, end time.Time, step time.Duration) []MatrixS
 // executeInstant lowers a PromQL string to chplan, wraps with a Project
 // that selects exactly the four columns chclient.Sample expects, optimizes,
 // emits SQL, and runs the query.
-func (h *Handler) executeInstant(ctx context.Context, query string) ([]chclient.Sample, error) {
+//
+// start / end are the query's evaluation-range bookends, threaded into
+// the lowering layer so `@ start()` / `@ end()` modifiers can resolve
+// against them. For instant queries the caller passes start == end == ts.
+func (h *Handler) executeInstant(ctx context.Context, query string, start, end time.Time) ([]chclient.Sample, error) {
 	expr, err := h.parser.ParseExpr(query)
 	if err != nil {
 		return nil, &apiError{kind: ErrBadData, err: err, status: http.StatusBadRequest}
 	}
-	plan, err := promql.Lower(expr, h.Schema)
+	plan, err := promql.LowerAt(expr, h.Schema, start, end)
 	if err != nil {
 		return nil, &apiError{kind: ErrExecution, err: err, status: http.StatusUnprocessableEntity}
 	}

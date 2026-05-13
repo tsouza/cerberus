@@ -27,7 +27,7 @@ const defaultSubqueryStep = time.Minute
 // (the "last value in window" emission). Each anchor across
 // `[End-OuterRange, End]` evaluates the inner selector by picking the
 // last sample whose timestamp falls within `[anchor-Step, anchor]`.
-func lowerSubquery(e *parser.SubqueryExpr, s schema.Metrics) (chplan.Node, error) {
+func lowerSubquery(e *parser.SubqueryExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	if e.Range <= 0 {
 		return nil, fmt.Errorf("promql: subquery range must be positive, got %s", e.Range)
 	}
@@ -38,22 +38,19 @@ func lowerSubquery(e *parser.SubqueryExpr, s schema.Metrics) (chplan.Node, error
 	if step < 0 {
 		return nil, fmt.Errorf("promql: subquery step must be positive, got %s", e.Step)
 	}
-	if e.StartOrEnd != 0 {
-		return nil, fmt.Errorf("promql: subquery `@ start()` / `@ end()` is not yet supported (deferred from P0 4)")
-	}
 
 	switch inner := e.Expr.(type) {
 	case *parser.VectorSelector:
-		return lowerSubqueryOverVectorSelector(e, inner, step, s)
+		return lowerSubqueryOverVectorSelector(e, inner, step, s, ctx)
 	case *parser.Call:
-		return lowerSubqueryOverCall(e, inner, step, s)
+		return lowerSubqueryOverCall(e, inner, step, s, ctx)
 	case *parser.ParenExpr:
 		// `(<expr>)[5m:1m]` — unwrap and retry with the same subquery.
 		// Build a synthetic SubqueryExpr around the inner expr so the
 		// modifiers + range/step are preserved.
 		inner2 := *e
 		inner2.Expr = inner.Expr
-		return lowerSubquery(&inner2, s)
+		return lowerSubquery(&inner2, s, ctx)
 	case *parser.AggregateExpr:
 		return nil, fmt.Errorf("promql: subquery over aggregated expression is not yet supported (deferred from P0 4 — `max_over_time(sum by(...) (rate(...))[1h:5m])` needs chained RangeWindow over Aggregate output, landing in RC3)")
 	case *parser.SubqueryExpr:
@@ -77,6 +74,7 @@ func lowerSubqueryOverCall(
 	call *parser.Call,
 	step time.Duration,
 	s schema.Metrics,
+	ctx lowerCtx,
 ) (chplan.Node, error) {
 	if len(call.Args) != 1 {
 		return nil, fmt.Errorf("promql: subquery inner %s expects exactly 1 argument, got %d",
@@ -98,12 +96,13 @@ func lowerSubqueryOverCall(
 	vsNoModifier.Timestamp = nil
 	vsNoModifier.OriginalOffset = 0
 	vsNoModifier.Offset = 0
-	inner, err := lowerVectorSelector(&vsNoModifier, s)
+	vsNoModifier.StartOrEnd = 0
+	inner, err := lowerVectorSelector(&vsNoModifier, s, ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	anchor, err := subqueryAnchor(sub)
+	anchor, err := subqueryAnchor(sub, ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -134,17 +133,19 @@ func lowerSubqueryOverVectorSelector(
 	vs *parser.VectorSelector,
 	step time.Duration,
 	s schema.Metrics,
+	ctx lowerCtx,
 ) (chplan.Node, error) {
 	vsNoModifier := *vs
 	vsNoModifier.Timestamp = nil
 	vsNoModifier.OriginalOffset = 0
 	vsNoModifier.Offset = 0
-	inner, err := lowerVectorSelector(&vsNoModifier, s)
+	vsNoModifier.StartOrEnd = 0
+	inner, err := lowerVectorSelector(&vsNoModifier, s, ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	anchor, err := subqueryAnchor(sub)
+	anchor, err := subqueryAnchor(sub, ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -190,12 +191,13 @@ func lowerOuterRangeFnOverSubquery(
 	outer *parser.Call,
 	sub *parser.SubqueryExpr,
 	s schema.Metrics,
+	ctx lowerCtx,
 ) (chplan.Node, error) {
 	if _, ok := rangeVectorFn[outer.Func.Name]; !ok {
 		return nil, fmt.Errorf("promql: %s does not accept a subquery argument", outer.Func.Name)
 	}
 
-	inner, err := lowerSubquery(sub, s)
+	inner, err := lowerSubquery(sub, s, ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -228,10 +230,23 @@ var rangeVectorFn = map[string]struct{}{
 // subqueryAnchor reads the subquery's `@` + `offset` modifiers into an
 // evalAnchor. Mirrors anchorFromSelector for SubqueryExpr's identical
 // modifier fields.
-func subqueryAnchor(e *parser.SubqueryExpr) (evalAnchor, error) {
+func subqueryAnchor(e *parser.SubqueryExpr, ctx lowerCtx) (evalAnchor, error) {
 	a := evalAnchor{Offset: e.OriginalOffset}
-	if e.StartOrEnd != 0 {
-		return evalAnchor{}, fmt.Errorf("promql: subquery `@ start()` / `@ end()` modifiers are not yet supported")
+	switch e.StartOrEnd {
+	case parser.START:
+		if ctx.start.IsZero() {
+			return evalAnchor{}, fmt.Errorf("promql: subquery `@ start()` modifier requires query range context (use LowerAt)")
+		}
+		a.End = ctx.start.UTC()
+	case parser.END:
+		if ctx.end.IsZero() {
+			return evalAnchor{}, fmt.Errorf("promql: subquery `@ end()` modifier requires query range context (use LowerAt)")
+		}
+		a.End = ctx.end.UTC()
+	case 0:
+		// no start/end modifier
+	default:
+		return evalAnchor{}, fmt.Errorf("promql: unexpected subquery StartOrEnd token %v", e.StartOrEnd)
 	}
 	if e.Timestamp != nil {
 		a.End = time.UnixMilli(*e.Timestamp).UTC()

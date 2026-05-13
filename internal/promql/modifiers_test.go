@@ -3,6 +3,7 @@ package promql_test
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/prometheus/prometheus/promql/parser"
 
@@ -10,10 +11,10 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
-// TestLower_Modifiers_Errors covers the modifier paths that intentionally
-// stay out of scope in M1.5 (the start()/end() variants depend on the API
-// layer threading the query range through lowering).
-func TestLower_Modifiers_Errors(t *testing.T) {
+// TestLower_Modifiers_ErrorsWithoutRange covers the modifier paths that
+// require a query range context (`@ start()` / `@ end()`) but were
+// invoked via the plain Lower entrypoint that doesn't carry one.
+func TestLower_Modifiers_ErrorsWithoutRange(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
@@ -25,14 +26,14 @@ func TestLower_Modifiers_Errors(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name:    "at start() deferred",
+			name:    "at start() without range context",
 			query:   `up @ start()`,
-			wantErr: "`@ start()` / `@ end()` modifiers are not yet supported",
+			wantErr: "`@ start()` modifier requires query range context",
 		},
 		{
-			name:    "at end() in range vector deferred",
+			name:    "at end() in range vector without range context",
 			query:   `rate(http_requests_total[5m] @ end())`,
-			wantErr: "`@ start()` / `@ end()` modifiers are not yet supported",
+			wantErr: "`@ end()` modifier requires query range context",
 		},
 	}
 	for _, tc := range cases {
@@ -48,6 +49,38 @@ func TestLower_Modifiers_Errors(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("error %q does not contain %q", err.Error(), tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestLowerAt_StartEndModifiers verifies the time-aware lowering
+// resolves `@ start()` / `@ end()` against the threaded range.
+func TestLowerAt_StartEndModifiers(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	p := parser.NewParser(parser.Options{})
+
+	start := time.Unix(100, 0).UTC()
+	end := time.Unix(500, 0).UTC()
+
+	cases := []string{
+		`up @ start()`,
+		`up @ end()`,
+		`rate(http_requests_total[5m] @ start())`,
+		`rate(http_requests_total[5m] @ end())`,
+	}
+	for _, q := range cases {
+		q := q
+		t.Run(q, func(t *testing.T) {
+			t.Parallel()
+			expr, err := p.ParseExpr(q)
+			if err != nil {
+				t.Fatalf("ParseExpr(%q): %v", q, err)
+			}
+			if _, err := promql.LowerAt(expr, s, start, end); err != nil {
+				t.Fatalf("LowerAt(%q): %v", q, err)
 			}
 		})
 	}

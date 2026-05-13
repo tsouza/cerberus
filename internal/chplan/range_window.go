@@ -69,6 +69,14 @@ type RangeWindow struct {
 	// column carries all the labels). May be nil/empty, in which case
 	// the emitter does not group — all rows are treated as one series.
 	GroupBy []Expr
+
+	// Scalars carries the scalar arguments threaded onto the range
+	// function by the lowering layer. Used by `predict_linear(v, t)`
+	// (single scalar — predict horizon in seconds) and
+	// `holt_winters(v, sf, tf)` (smoothing factor + trend factor).
+	// Empty for the simpler range functions (rate / increase /
+	// *_over_time / log_rate) that take no extra parameters.
+	Scalars []float64
 }
 
 func (*RangeWindow) planNode() {}
@@ -97,6 +105,14 @@ func (r *RangeWindow) Equal(other Node) bool {
 	}
 	for i := range r.GroupBy {
 		if !r.GroupBy[i].Equal(o.GroupBy[i]) {
+			return false
+		}
+	}
+	if len(r.Scalars) != len(o.Scalars) {
+		return false
+	}
+	for i := range r.Scalars {
+		if r.Scalars[i] != o.Scalars[i] {
 			return false
 		}
 	}
