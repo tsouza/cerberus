@@ -1,6 +1,7 @@
 package traceql_test
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -97,7 +98,7 @@ func TestLowerLinkAndEvent(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Parse(%q): %v", tc.query, err)
 			}
-			plan, err := traceql.Lower(expr, s)
+			plan, err := traceql.Lower(context.Background(), expr, s)
 			if err != nil {
 				t.Fatalf("Lower(%q): %v", tc.query, err)
 			}
@@ -126,7 +127,7 @@ func TestLowerLinkAndEvent(t *testing.T) {
 				t.Errorf("Value = %q, want %q", gotVal.V, tc.wantValStr)
 			}
 
-			sqlStr, args, err := chsql.Emit(plan)
+			sqlStr, args, err := chsql.Emit(context.Background(), plan)
 			if err != nil {
 				t.Fatalf("Emit: %v", err)
 			}
@@ -168,7 +169,7 @@ func TestLowerLinkEventScalarUseRejected(t *testing.T) {
 			},
 		},
 	}
-	_, err := traceql.Lower(root, s)
+	_, err := traceql.Lower(context.Background(), root, s)
 	if err == nil {
 		t.Fatal("Lower returned nil error for scalar link.span_id use; want error")
 	}

@@ -1,16 +1,23 @@
 package promql
 
 import (
+	"context"
 	"fmt"
 	"time"
 
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql/parser"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
 
+	"github.com/tsouza/cerberus/internal/cerbtrace"
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/schema"
 )
+
+// tracer emits the `lower` pipeline-stage span for PromQL lowering.
+var tracer = otel.Tracer("github.com/tsouza/cerberus/internal/promql")
 
 // Lower turns a parsed PromQL expression into a chplan tree, using s for
 // table and column name conventions.
@@ -28,8 +35,16 @@ import (
 // Classic-histogram `histogram_quantile(phi, <selector>)` is supported
 // via lowerHistogramQuantile against the OTel-CH classic histogram
 // table (BucketCounts × ExplicitBounds arrays).
-func Lower(expr parser.Expr, s schema.Metrics) (chplan.Node, error) {
-	return lower(expr, s, lowerCtx{})
+func Lower(ctx context.Context, expr parser.Expr, s schema.Metrics) (chplan.Node, error) {
+	_, span := tracer.Start(ctx, cerbtrace.SpanLower, trace.WithAttributes(cerbtrace.AttrQL.String("promql")))
+	defer span.End()
+	plan, err := lower(expr, s, lowerCtx{})
+	if err != nil {
+		span.RecordError(err)
+		return nil, err
+	}
+	span.SetAttributes(cerbtrace.AttrPlanNodeCount.Int(cerbtrace.CountNodes(plan)))
+	return plan, nil
 }
 
 // LowerAt is the time-aware variant of [Lower] used by handlers that
@@ -40,8 +55,16 @@ func Lower(expr parser.Expr, s schema.Metrics) (chplan.Node, error) {
 //
 // For an instant query the API layer passes start == end == ts; for a
 // query_range it passes the request's start / end.
-func LowerAt(expr parser.Expr, s schema.Metrics, start, end time.Time) (chplan.Node, error) {
-	return lower(expr, s, lowerCtx{start: start, end: end})
+func LowerAt(ctx context.Context, expr parser.Expr, s schema.Metrics, start, end time.Time) (chplan.Node, error) {
+	_, span := tracer.Start(ctx, cerbtrace.SpanLower, trace.WithAttributes(cerbtrace.AttrQL.String("promql")))
+	defer span.End()
+	plan, err := lower(expr, s, lowerCtx{start: start, end: end})
+	if err != nil {
+		span.RecordError(err)
+		return nil, err
+	}
+	span.SetAttributes(cerbtrace.AttrPlanNodeCount.Int(cerbtrace.CountNodes(plan)))
+	return plan, nil
 }
 
 func lower(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {

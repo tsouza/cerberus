@@ -1,6 +1,7 @@
 package optimizer_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -48,7 +49,7 @@ func TestFilterRangeWindowTranspose_SeriesKey(t *testing.T) {
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 	}
 
-	out := optimizer.New(optimizer.FilterRangeWindowTranspose()).Run(input)
+	out := optimizer.New(optimizer.FilterRangeWindowTranspose()).Run(context.Background(), input)
 	if !out.Equal(expected) {
 		t.Fatalf("FilterRangeWindowTranspose did not fire:\n got: %#v\nwant: %#v", out, expected)
 	}
@@ -78,7 +79,7 @@ func TestFilterRangeWindowTranspose_BlockedByValueColumn(t *testing.T) {
 		},
 	}
 
-	out := optimizer.New(optimizer.FilterRangeWindowTranspose()).Run(input)
+	out := optimizer.New(optimizer.FilterRangeWindowTranspose()).Run(context.Background(), input)
 	if !out.Equal(input) {
 		t.Fatalf("rule fired despite value-column reference:\n got: %#v", out)
 	}
@@ -109,7 +110,7 @@ func TestFilterRangeWindowTranspose_BlockedByTimestampColumn(t *testing.T) {
 		},
 	}
 
-	out := optimizer.New(optimizer.FilterRangeWindowTranspose()).Run(input)
+	out := optimizer.New(optimizer.FilterRangeWindowTranspose()).Run(context.Background(), input)
 	if !out.Equal(input) {
 		t.Fatalf("rule fired despite timestamp-column reference:\n got: %#v", out)
 	}
@@ -150,7 +151,7 @@ func TestFilterRangeWindowTranspose_BlockedByMixedPredicate(t *testing.T) {
 		},
 	}
 
-	out := optimizer.New(optimizer.FilterRangeWindowTranspose()).Run(input)
+	out := optimizer.New(optimizer.FilterRangeWindowTranspose()).Run(context.Background(), input)
 	if !out.Equal(input) {
 		t.Fatalf("rule fired despite mixed predicate:\n got: %#v", out)
 	}
@@ -181,7 +182,7 @@ func TestFilterRangeWindowTranspose_BlockedByEmptyGroupBy(t *testing.T) {
 		},
 	}
 
-	out := optimizer.New(optimizer.FilterRangeWindowTranspose()).Run(input)
+	out := optimizer.New(optimizer.FilterRangeWindowTranspose()).Run(context.Background(), input)
 	if !out.Equal(input) {
 		t.Fatalf("rule fired despite empty GroupBy:\n got: %#v", out)
 	}
@@ -216,7 +217,7 @@ func TestFilterRangeWindowTranspose_BlockedByComputedGroupKey(t *testing.T) {
 		},
 	}
 
-	out := optimizer.New(optimizer.FilterRangeWindowTranspose()).Run(input)
+	out := optimizer.New(optimizer.FilterRangeWindowTranspose()).Run(context.Background(), input)
 	if !out.Equal(input) {
 		t.Fatalf("rule fired despite computed group key:\n got: %#v", out)
 	}
@@ -236,7 +237,7 @@ func TestFilterRangeWindowTranspose_NoMatchOnOtherShape(t *testing.T) {
 		},
 	}
 
-	out := optimizer.New(optimizer.FilterRangeWindowTranspose()).Run(input)
+	out := optimizer.New(optimizer.FilterRangeWindowTranspose()).Run(context.Background(), input)
 	if !out.Equal(input) {
 		t.Fatalf("rule fired on Filter(Scan):\n got: %#v", out)
 	}
@@ -267,7 +268,7 @@ func TestFilterRangeWindowTranspose_LogQLShape(t *testing.T) {
 		Predicate: pred,
 	}
 
-	out := optimizer.New(optimizer.FilterRangeWindowTranspose()).Run(input)
+	out := optimizer.New(optimizer.FilterRangeWindowTranspose()).Run(context.Background(), input)
 	rw, ok := out.(*chplan.RangeWindow)
 	if !ok {
 		t.Fatalf("expected RangeWindow at root, got %T", out)

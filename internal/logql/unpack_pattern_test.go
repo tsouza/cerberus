@@ -1,6 +1,7 @@
 package logql_test
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -93,7 +94,7 @@ func TestLowerUnpackPattern_StillRejectsOtherParsers(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseExpr: %v", err)
 			}
-			if _, err := logql.Lower(expr, s); err == nil {
+			if _, err := logql.Lower(context.Background(), expr, s); err == nil {
 				t.Errorf("expected Lower(%q) to error; got nil", q)
 			}
 		})
@@ -123,11 +124,11 @@ func emitSQL(t *testing.T, q string, s schema.Logs) string {
 	if err != nil {
 		t.Fatalf("ParseExpr(%q): %v", q, err)
 	}
-	plan, err := logql.Lower(expr, s)
+	plan, err := logql.Lower(context.Background(), expr, s)
 	if err != nil {
 		t.Fatalf("Lower(%q): %v", q, err)
 	}
-	sqlStr, _, err := chsql.Emit(plan)
+	sqlStr, _, err := chsql.Emit(context.Background(), plan)
 	if err != nil {
 		t.Fatalf("Emit(%q): %v", q, err)
 	}

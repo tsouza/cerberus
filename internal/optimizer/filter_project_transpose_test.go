@@ -1,6 +1,7 @@
 package optimizer_test
 
 import (
+	"context"
 	"testing"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -41,7 +42,7 @@ func TestFilterProjectTranspose_Passthrough(t *testing.T) {
 		},
 	}
 
-	out := optimizer.New(optimizer.FilterProjectTranspose()).Run(input)
+	out := optimizer.New(optimizer.FilterProjectTranspose()).Run(context.Background(), input)
 	if !out.Equal(expected) {
 		t.Fatalf("FilterProjectTranspose did not fire:\n got: %#v\nwant: %#v", out, expected)
 	}
@@ -70,7 +71,7 @@ func TestFilterProjectTranspose_Aliased(t *testing.T) {
 		Predicate: pred,
 	}
 
-	out := optimizer.New(optimizer.FilterProjectTranspose()).Run(input)
+	out := optimizer.New(optimizer.FilterProjectTranspose()).Run(context.Background(), input)
 	proj, ok := out.(*chplan.Project)
 	if !ok {
 		t.Fatalf("expected Project at root, got %T", out)
@@ -103,7 +104,7 @@ func TestFilterProjectTranspose_BlockedByRename(t *testing.T) {
 		},
 	}
 
-	out := optimizer.New(optimizer.FilterProjectTranspose()).Run(input)
+	out := optimizer.New(optimizer.FilterProjectTranspose()).Run(context.Background(), input)
 	if !out.Equal(input) {
 		t.Fatalf("rule fired despite alias-renamed reference:\n got: %#v", out)
 	}
@@ -138,7 +139,7 @@ func TestFilterProjectTranspose_BlockedByComputed(t *testing.T) {
 		},
 	}
 
-	out := optimizer.New(optimizer.FilterProjectTranspose()).Run(input)
+	out := optimizer.New(optimizer.FilterProjectTranspose()).Run(context.Background(), input)
 	if !out.Equal(input) {
 		t.Fatalf("rule fired despite computed-column reference:\n got: %#v", out)
 	}
@@ -161,7 +162,7 @@ func TestFilterProjectTranspose_BlockedByStarProject(t *testing.T) {
 		},
 	}
 
-	out := optimizer.New(optimizer.FilterProjectTranspose()).Run(input)
+	out := optimizer.New(optimizer.FilterProjectTranspose()).Run(context.Background(), input)
 	if !out.Equal(input) {
 		t.Fatalf("rule fired on SELECT-* Project:\n got: %#v", out)
 	}
@@ -182,7 +183,7 @@ func TestFilterProjectTranspose_NoMatchOnOtherShape(t *testing.T) {
 		},
 	}
 
-	out := optimizer.New(optimizer.FilterProjectTranspose()).Run(input)
+	out := optimizer.New(optimizer.FilterProjectTranspose()).Run(context.Background(), input)
 	if !out.Equal(input) {
 		t.Fatalf("rule fired on Filter(Scan): %#v", out)
 	}

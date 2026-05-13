@@ -60,7 +60,7 @@ func (h *Handler) handleQueryExemplars(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing query parameter"))
 		return
 	}
-	if _, err := h.parser.ParseExpr(q); err != nil {
+	if _, err := h.parseExpr(r.Context(), q); err != nil {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return
 	}

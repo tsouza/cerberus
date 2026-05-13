@@ -11,7 +11,10 @@ import (
 	"time"
 
 	"github.com/grafana/loki/v3/pkg/logql/syntax"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
 
+	"github.com/tsouza/cerberus/internal/cerbtrace"
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
@@ -19,6 +22,26 @@ import (
 	"github.com/tsouza/cerberus/internal/optimizer"
 	"github.com/tsouza/cerberus/internal/schema"
 )
+
+// tracer emits the `parse` pipeline-stage span before the LogQL parser
+// runs. The subsequent lower / optimize / emit / execute stages carry
+// their own tracers from their owning packages.
+var tracer = otel.Tracer("github.com/tsouza/cerberus/internal/api/loki")
+
+// parseExpr wraps syntax.ParseExpr in a `parse` pipeline-stage span.
+// The QL identifier and the (truncated) query string land on the span
+// as `cerberus.ql` + `cerberus.query`.
+func parseExpr(ctx context.Context, query string) (syntax.Expr, error) {
+	_, span := tracer.Start(ctx, cerbtrace.SpanParse,
+		trace.WithAttributes(cerbtrace.ParseAttrs("logql", query)...))
+	defer span.End()
+	expr, err := syntax.ParseExpr(query)
+	if err != nil {
+		span.RecordError(err)
+		return nil, err
+	}
+	return expr, nil
+}
 
 // Querier is the subset of *chclient.Client that the Handler needs.
 // Mirrors the api/prom Querier interface for the same stub-in-tests
@@ -99,7 +122,7 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	expr, err := syntax.ParseExpr(q)
+	expr, err := parseExpr(r.Context(), q)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return
@@ -150,7 +173,7 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	expr, err := syntax.ParseExpr(q)
+	expr, err := parseExpr(r.Context(), q)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return
@@ -177,15 +200,15 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 // execute lowers a parsed LogQL expression, wraps with a sample-shape
 // projection, optimizes, emits SQL, and runs the query.
 func (h *Handler) execute(ctx context.Context, expr syntax.Expr) ([]chclient.Sample, error) {
-	plan, err := logql.Lower(expr, h.Schema)
+	plan, err := logql.Lower(ctx, expr, h.Schema)
 	if err != nil {
 		return nil, &apiError{kind: ErrExecution, err: err, status: http.StatusUnprocessableEntity}
 	}
 
 	plan = wrapWithLogSampleProjection(plan, h.Schema, expr)
-	plan = h.Optimizer.Run(plan)
+	plan = h.Optimizer.Run(ctx, plan)
 
-	sqlStr, args, err := chsql.Emit(plan)
+	sqlStr, args, err := chsql.Emit(ctx, plan)
 	if err != nil {
 		return nil, &apiError{kind: ErrInternal, err: err, status: http.StatusInternalServerError}
 	}

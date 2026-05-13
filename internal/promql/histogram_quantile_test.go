@@ -1,6 +1,7 @@
 package promql_test
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -59,7 +60,7 @@ func TestLower_HistogramQuantile_Classic(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseExpr: %v", err)
 			}
-			plan, err := promql.Lower(expr, s)
+			plan, err := promql.Lower(context.Background(), expr, s)
 			if err != nil {
 				t.Fatalf("Lower: %v", err)
 			}
@@ -141,7 +142,7 @@ func TestLower_HistogramQuantile_Errors(t *testing.T) {
 				}
 				return
 			}
-			if _, err := promql.Lower(expr, s); err == nil {
+			if _, err := promql.Lower(context.Background(), expr, s); err == nil {
 				t.Fatalf("expected error containing %q, got nil", tc.wantErr)
 			} else if !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("error %q does not contain %q", err.Error(), tc.wantErr)

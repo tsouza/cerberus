@@ -1,6 +1,7 @@
 package traceql_test
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -26,7 +27,7 @@ func TestLowerSetOps(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Parse: %v", err)
 		}
-		plan, err := traceql.Lower(expr, s)
+		plan, err := traceql.Lower(context.Background(), expr, s)
 		if err != nil {
 			t.Fatalf("Lower: %v", err)
 		}
@@ -49,7 +50,7 @@ func TestLowerSetOps(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Parse: %v", err)
 		}
-		plan, err := traceql.Lower(expr, s)
+		plan, err := traceql.Lower(context.Background(), expr, s)
 		if err != nil {
 			t.Fatalf("Lower: %v", err)
 		}
@@ -68,7 +69,7 @@ func TestLowerSetOps(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Parse: %v", err)
 		}
-		plan, err := traceql.Lower(expr, s)
+		plan, err := traceql.Lower(context.Background(), expr, s)
 		if err != nil {
 			t.Fatalf("Lower: %v", err)
 		}
@@ -116,7 +117,7 @@ func TestLowerSetOpsUnsupported(t *testing.T) {
 				// parse-time rejection is acceptable.
 				return
 			}
-			_, err = traceql.Lower(expr, s)
+			_, err = traceql.Lower(context.Background(), expr, s)
 			if err == nil {
 				t.Fatalf("Lower(%q): expected error, got nil", tc.query)
 			}

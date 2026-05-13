@@ -1,6 +1,7 @@
 package optimizer_test
 
 import (
+	"context"
 	"testing"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -28,7 +29,7 @@ func TestPatternRule_IdentityNoop(t *testing.T) {
 		},
 	}
 
-	out := optimizer.New(identity).Run(input)
+	out := optimizer.New(identity).Run(context.Background(), input)
 	if !out.Equal(input) {
 		t.Fatalf("identity rule mutated the plan: got %#v, want %#v", out, input)
 	}
@@ -58,7 +59,7 @@ func TestPatternRule_DropLimit(t *testing.T) {
 	inner := &chplan.Scan{Table: "otel_metrics_gauge"}
 	input := &chplan.Limit{Input: inner, Count: 10}
 
-	out := optimizer.New(dropLimit).Run(input)
+	out := optimizer.New(dropLimit).Run(context.Background(), input)
 	if !out.Equal(inner) {
 		t.Fatalf("drop-limit produced %#v, want %#v", out, inner)
 	}
@@ -92,7 +93,7 @@ func TestPatternRule_DropLimit_Nested(t *testing.T) {
 		},
 	}
 
-	out := optimizer.New(dropLimit).Run(input)
+	out := optimizer.New(dropLimit).Run(context.Background(), input)
 
 	got, ok := out.(*chplan.Filter)
 	if !ok {

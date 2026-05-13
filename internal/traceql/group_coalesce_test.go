@@ -1,6 +1,7 @@
 package traceql_test
 
 import (
+	"context"
 	"testing"
 
 	tempo "github.com/grafana/tempo/pkg/traceql"
@@ -26,7 +27,7 @@ func TestLowerGroupCoalesce(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Parse: %v", err)
 		}
-		plan, err := traceql.Lower(expr, s)
+		plan, err := traceql.Lower(context.Background(), expr, s)
 		if err != nil {
 			t.Fatalf("Lower: %v", err)
 		}
@@ -56,7 +57,7 @@ func TestLowerGroupCoalesce(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Parse: %v", err)
 		}
-		plan, err := traceql.Lower(expr, s)
+		plan, err := traceql.Lower(context.Background(), expr, s)
 		if err != nil {
 			t.Fatalf("Lower: %v", err)
 		}
@@ -83,7 +84,7 @@ func TestLowerGroupCoalesce(t *testing.T) {
 		// `by()` with no expression should fail at parse time, but if a
 		// caller hand-builds a GroupOperation with a nil Expression the
 		// lowering surfaces a clean error rather than panicking.
-		_, err := traceql.Lower(&tempo.RootExpr{
+		_, err := traceql.Lower(context.Background(), &tempo.RootExpr{
 			Pipeline: tempo.Pipeline{Elements: []tempo.PipelineElement{
 				&tempo.SpansetFilter{},
 				tempo.GroupOperation{Expression: nil},

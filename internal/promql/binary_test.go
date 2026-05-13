@@ -1,6 +1,7 @@
 package promql_test
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -53,7 +54,7 @@ func TestLower_Binary_Errors(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseExpr: %v", err)
 			}
-			_, err = promql.Lower(expr, s)
+			_, err = promql.Lower(context.Background(), expr, s)
 			if err == nil {
 				t.Fatalf("expected error containing %q, got nil", tc.wantErr)
 			}
@@ -106,11 +107,11 @@ func TestLower_Binary_VectorScalar(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseExpr: %v", err)
 			}
-			plan, err := promql.Lower(expr, s)
+			plan, err := promql.Lower(context.Background(), expr, s)
 			if err != nil {
 				t.Fatalf("Lower: %v", err)
 			}
-			sql, _, err := chsql.Emit(plan)
+			sql, _, err := chsql.Emit(context.Background(), plan)
 			if err != nil {
 				t.Fatalf("Emit: %v", err)
 			}

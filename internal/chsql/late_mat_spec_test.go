@@ -1,6 +1,7 @@
 package chsql_test
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -145,7 +146,7 @@ func TestEmitLateMatFixtures(t *testing.T) {
 		if !ok {
 			t.Fatalf("no plan registered for fixture %s; add it to lateMatPlans in late_mat_spec_test.go", c.Name)
 		}
-		sql, args, err := chsql.Emit(plan)
+		sql, args, err := chsql.Emit(context.Background(), plan)
 		if err != nil {
 			t.Fatalf("Emit failed: %v", err)
 		}

@@ -11,7 +11,10 @@ import (
 	"time"
 
 	promparser "github.com/prometheus/prometheus/promql/parser"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
 
+	"github.com/tsouza/cerberus/internal/cerbtrace"
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
@@ -19,6 +22,11 @@ import (
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
 )
+
+// tracer emits the `parse` pipeline-stage span before the PromQL parser
+// runs. The subsequent lower / optimize / emit / execute stages carry
+// their own tracers from their owning packages.
+var tracer = otel.Tracer("github.com/tsouza/cerberus/internal/api/prom")
 
 // Querier is the subset of *chclient.Client that Handler needs. Stubbing
 // it makes unit tests possible without a live ClickHouse.
@@ -93,7 +101,7 @@ func (h *Handler) handleFormatQuery(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing query parameter"))
 		return
 	}
-	expr, err := h.parser.ParseExpr(q)
+	expr, err := h.parseExpr(r.Context(), q)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return
@@ -119,7 +127,7 @@ func (h *Handler) handleParseQuery(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing query parameter"))
 		return
 	}
-	expr, err := h.parser.ParseExpr(q)
+	expr, err := h.parseExpr(r.Context(), q)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return
@@ -148,7 +156,7 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 	// Scalar-only PromQL (`1+1`, `42`) — Grafana's datasource health
 	// probe path. Evaluate in Go and return the canonical scalar
 	// envelope; no ClickHouse round-trip.
-	if value, ok, err := h.tryScalarFold(q); err != nil {
+	if value, ok, err := h.tryScalarFold(r.Context(), q); err != nil {
 		h.respondError(w, err)
 		return
 	} else if ok {
@@ -201,7 +209,7 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 	// Scalar-only PromQL → matrix of one series at every step holding
 	// the folded constant. Matches Prom's `1+1` over query_range
 	// (single series, no labels, every step bucket populated).
-	if value, ok, err := h.tryScalarFold(q); err != nil {
+	if value, ok, err := h.tryScalarFold(r.Context(), q); err != nil {
 		h.respondError(w, err)
 		return
 	} else if ok {
@@ -237,13 +245,28 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 // the folded constant. The bool reports whether folding succeeded; the
 // error covers parse failures (the same `bad_data` 400 envelope the
 // normal path would return).
-func (h *Handler) tryScalarFold(query string) (float64, bool, error) {
-	expr, err := h.parser.ParseExpr(query)
+func (h *Handler) tryScalarFold(ctx context.Context, query string) (float64, bool, error) {
+	expr, err := h.parseExpr(ctx, query)
 	if err != nil {
 		return 0, false, &apiError{kind: ErrBadData, err: err, status: http.StatusBadRequest}
 	}
 	val, ok := promql.TryFoldScalar(expr)
 	return val, ok, nil
+}
+
+// parseExpr wraps the prom parser in a `parse` pipeline-stage span. The
+// QL identifier and the (truncated) query string land on the span as
+// `cerberus.ql` + `cerberus.query`.
+func (h *Handler) parseExpr(ctx context.Context, query string) (promparser.Expr, error) {
+	_, span := tracer.Start(ctx, cerbtrace.SpanParse,
+		trace.WithAttributes(cerbtrace.ParseAttrs("promql", query)...))
+	defer span.End()
+	expr, err := h.parser.ParseExpr(query)
+	if err != nil {
+		span.RecordError(err)
+		return nil, err
+	}
+	return expr, nil
 }
 
 // scalarPoint renders the [<unix_seconds_float>, "<value_string>"]
@@ -280,19 +303,19 @@ func (h *Handler) executeRangeStreaming(
 	query string,
 	start, end time.Time,
 ) (chclient.Cursor, error) {
-	expr, err := h.parser.ParseExpr(query)
+	expr, err := h.parseExpr(ctx, query)
 	if err != nil {
 		return nil, &apiError{kind: ErrBadData, err: err, status: http.StatusBadRequest}
 	}
-	plan, err := promql.LowerAt(expr, h.Schema, start, end)
+	plan, err := promql.LowerAt(ctx, expr, h.Schema, start, end)
 	if err != nil {
 		return nil, &apiError{kind: ErrExecution, err: err, status: http.StatusUnprocessableEntity}
 	}
 
 	plan = wrapWithSampleProjection(plan, h.Schema)
-	plan = h.Optimizer.Run(plan)
+	plan = h.Optimizer.Run(ctx, plan)
 
-	sql, args, err := chsql.Emit(plan)
+	sql, args, err := chsql.Emit(ctx, plan)
 	if err != nil {
 		return nil, &apiError{kind: ErrInternal, err: err, status: http.StatusInternalServerError}
 	}
@@ -315,19 +338,19 @@ func (h *Handler) executeRangeStreaming(
 // the lowering layer so `@ start()` / `@ end()` modifiers can resolve
 // against them. For instant queries the caller passes start == end == ts.
 func (h *Handler) executeInstant(ctx context.Context, query string, start, end time.Time) ([]chclient.Sample, error) {
-	expr, err := h.parser.ParseExpr(query)
+	expr, err := h.parseExpr(ctx, query)
 	if err != nil {
 		return nil, &apiError{kind: ErrBadData, err: err, status: http.StatusBadRequest}
 	}
-	plan, err := promql.LowerAt(expr, h.Schema, start, end)
+	plan, err := promql.LowerAt(ctx, expr, h.Schema, start, end)
 	if err != nil {
 		return nil, &apiError{kind: ErrExecution, err: err, status: http.StatusUnprocessableEntity}
 	}
 
 	plan = wrapWithSampleProjection(plan, h.Schema)
-	plan = h.Optimizer.Run(plan)
+	plan = h.Optimizer.Run(ctx, plan)
 
-	sql, args, err := chsql.Emit(plan)
+	sql, args, err := chsql.Emit(ctx, plan)
 	if err != nil {
 		return nil, &apiError{kind: ErrInternal, err: err, status: http.StatusInternalServerError}
 	}

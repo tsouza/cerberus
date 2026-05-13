@@ -1,6 +1,7 @@
 package chsql
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -252,7 +253,7 @@ func TestEmitLateMatShape(t *testing.T) {
 		},
 	}
 
-	sql, args, err := Emit(plan)
+	sql, args, err := Emit(context.Background(), plan)
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
@@ -307,7 +308,7 @@ func TestEmitLateMatFallback(t *testing.T) {
 		},
 	}
 
-	sql, _, err := Emit(plan)
+	sql, _, err := Emit(context.Background(), plan)
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
 	}

@@ -1,6 +1,7 @@
 package promql_test
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -38,7 +39,7 @@ func TestLower_VectorMatch_Cardinality(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ParseExpr: %v", err)
 		}
-		plan, err := promql.Lower(expr, s)
+		plan, err := promql.Lower(context.Background(), expr, s)
 		if err != nil {
 			t.Fatalf("Lower: %v", err)
 		}
@@ -60,7 +61,7 @@ func TestLower_VectorMatch_Cardinality(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ParseExpr: %v", err)
 		}
-		plan, err := promql.Lower(expr, s)
+		plan, err := promql.Lower(context.Background(), expr, s)
 		if err != nil {
 			t.Fatalf("Lower: %v", err)
 		}
@@ -82,7 +83,7 @@ func TestLower_VectorMatch_Cardinality(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ParseExpr: %v", err)
 		}
-		plan, err := promql.Lower(expr, s)
+		plan, err := promql.Lower(context.Background(), expr, s)
 		if err != nil {
 			t.Fatalf("Lower: %v", err)
 		}
@@ -91,7 +92,7 @@ func TestLower_VectorMatch_Cardinality(t *testing.T) {
 			t.Errorf("Include = %v, want %v", got, want)
 		}
 
-		sql, args, err := chsql.Emit(plan)
+		sql, args, err := chsql.Emit(context.Background(), plan)
 		if err != nil {
 			t.Fatalf("Emit: %v", err)
 		}
@@ -113,11 +114,11 @@ func TestLower_VectorMatch_Cardinality(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ParseExpr: %v", err)
 		}
-		plan, err := promql.Lower(expr, s)
+		plan, err := promql.Lower(context.Background(), expr, s)
 		if err != nil {
 			t.Fatalf("Lower: %v", err)
 		}
-		sql, args, err := chsql.Emit(plan)
+		sql, args, err := chsql.Emit(context.Background(), plan)
 		if err != nil {
 			t.Fatalf("Emit: %v", err)
 		}
@@ -137,11 +138,11 @@ func TestLower_VectorMatch_Cardinality(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ParseExpr: %v", err)
 		}
-		plan, err := promql.Lower(expr, s)
+		plan, err := promql.Lower(context.Background(), expr, s)
 		if err != nil {
 			t.Fatalf("Lower: %v", err)
 		}
-		sql, _, err := chsql.Emit(plan)
+		sql, _, err := chsql.Emit(context.Background(), plan)
 		if err != nil {
 			t.Fatalf("Emit: %v", err)
 		}
@@ -156,11 +157,11 @@ func TestLower_VectorMatch_Cardinality(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ParseExpr: %v", err)
 		}
-		plan, err := promql.Lower(expr, s)
+		plan, err := promql.Lower(context.Background(), expr, s)
 		if err != nil {
 			t.Fatalf("Lower: %v", err)
 		}
-		sql, _, err := chsql.Emit(plan)
+		sql, _, err := chsql.Emit(context.Background(), plan)
 		if err != nil {
 			t.Fatalf("Emit: %v", err)
 		}
@@ -177,11 +178,11 @@ func TestLower_VectorMatch_Cardinality(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ParseExpr: %v", err)
 		}
-		plan, err := promql.Lower(expr, s)
+		plan, err := promql.Lower(context.Background(), expr, s)
 		if err != nil {
 			t.Fatalf("Lower: %v", err)
 		}
-		sql, _, err := chsql.Emit(plan)
+		sql, _, err := chsql.Emit(context.Background(), plan)
 		if err != nil {
 			t.Fatalf("Emit: %v", err)
 		}
@@ -202,11 +203,11 @@ func TestLower_VectorMatch_Cardinality(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ParseExpr: %v", err)
 		}
-		plan, err := promql.Lower(expr, s)
+		plan, err := promql.Lower(context.Background(), expr, s)
 		if err != nil {
 			t.Fatalf("Lower: %v", err)
 		}
-		sql, _, err := chsql.Emit(plan)
+		sql, _, err := chsql.Emit(context.Background(), plan)
 		if err != nil {
 			t.Fatalf("Emit: %v", err)
 		}
@@ -248,7 +249,7 @@ func TestLower_VectorMatch_ManyToMany(t *testing.T) {
 	}
 	bin.VectorMatching = &parser.VectorMatching{Card: parser.CardManyToMany}
 
-	if _, err := promql.Lower(expr, s); err == nil {
+	if _, err := promql.Lower(context.Background(), expr, s); err == nil {
 		t.Fatal("expected many-to-many error, got nil")
 	} else if !strings.Contains(err.Error(), "many-to-many matching not allowed") {
 		t.Errorf("error %q does not contain 'many-to-many matching not allowed'", err.Error())

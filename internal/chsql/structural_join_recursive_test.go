@@ -1,6 +1,7 @@
 package chsql_test
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -22,7 +23,7 @@ func TestEmitStructuralRecursive_DescendantOrientation(t *testing.T) {
 		SpanIDColumn:       "SpanId",
 		ParentSpanIDColumn: "ParentSpanId",
 	}
-	sql, _, err := chsql.Emit(plan)
+	sql, _, err := chsql.Emit(context.Background(), plan)
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
@@ -46,7 +47,7 @@ func TestEmitStructuralRecursive_AncestorOrientation(t *testing.T) {
 		SpanIDColumn:       "SpanId",
 		ParentSpanIDColumn: "ParentSpanId",
 	}
-	sql, _, err := chsql.Emit(plan)
+	sql, _, err := chsql.Emit(context.Background(), plan)
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
@@ -71,7 +72,7 @@ func TestEmitStructuralRecursive_AnchorExcluded(t *testing.T) {
 		SpanIDColumn:       "SpanId",
 		ParentSpanIDColumn: "ParentSpanId",
 	}
-	sql, _, err := chsql.Emit(plan)
+	sql, _, err := chsql.Emit(context.Background(), plan)
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
@@ -101,7 +102,7 @@ func TestEmitStructuralRecursive_PreservesLeftArgs(t *testing.T) {
 		SpanIDColumn:       "SpanId",
 		ParentSpanIDColumn: "ParentSpanId",
 	}
-	_, args, err := chsql.Emit(plan)
+	_, args, err := chsql.Emit(context.Background(), plan)
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
 	}

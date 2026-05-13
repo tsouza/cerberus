@@ -1,6 +1,7 @@
 package chsql_test
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -596,7 +597,7 @@ func TestEmit(t *testing.T) {
 		if !ok {
 			t.Fatalf("no plan registered for fixture %s; add it to plans in emit_test.go", c.Name)
 		}
-		sql, args, err := chsql.Emit(plan)
+		sql, args, err := chsql.Emit(context.Background(), plan)
 		if err != nil {
 			t.Fatalf("Emit failed: %v", err)
 		}

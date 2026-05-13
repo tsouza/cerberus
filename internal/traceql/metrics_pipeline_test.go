@@ -1,6 +1,7 @@
 package traceql_test
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -78,7 +79,7 @@ func TestLowerMetricsPipeline(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Parse(%q): %v", tc.query, err)
 			}
-			plan, err := traceql.Lower(expr, s)
+			plan, err := traceql.Lower(context.Background(), expr, s)
 			if err != nil {
 				t.Fatalf("Lower(%q): %v", tc.query, err)
 			}
@@ -182,7 +183,7 @@ func TestLowerMetricsPipelineUnsupported(t *testing.T) {
 				// error is acceptable for these deferred forms.
 				return
 			}
-			_, err = traceql.Lower(expr, s)
+			_, err = traceql.Lower(context.Background(), expr, s)
 			if err == nil {
 				t.Fatalf("Lower(%q): expected error, got nil", tc.query)
 			}

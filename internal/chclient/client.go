@@ -9,7 +9,36 @@ import (
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/tsouza/cerberus/internal/cerbtrace"
 )
+
+// tracer emits the `execute` pipeline-stage span on every ClickHouse
+// round-trip.
+var tracer = otel.Tracer("github.com/tsouza/cerberus/internal/chclient")
+
+// OpenTelemetry semantic-conventions attribute keys for the execute
+// span. cerberus uses the v1.0-vintage db.system / db.statement keys
+// for compatibility with dashboards already pivoting on them.
+var (
+	attrDBSystem    = attribute.Key("db.system")
+	attrDBStatement = attribute.Key("db.statement")
+)
+
+// startExecuteSpan opens an `execute` span carrying the standard
+// db.system + db.statement semantic-conventions attributes plus the
+// cerberus.sql_length counter. Returns the derived context and span.
+func startExecuteSpan(ctx context.Context, sql string) (context.Context, trace.Span) {
+	stmt := cerbtrace.Truncate(sql, cerbtrace.MaxStatementLen)
+	return tracer.Start(ctx, cerbtrace.SpanExecute, trace.WithAttributes(
+		attrDBSystem.String("clickhouse"),
+		attrDBStatement.String(stmt),
+		cerbtrace.AttrSQLLength.Int(len(sql)),
+	))
+}
 
 // Config describes a single ClickHouse connection.
 type Config struct {
@@ -85,7 +114,10 @@ type Sample struct {
 // error. Use for DDL (CREATE TABLE, ...) and DML (INSERT, ...) that don't
 // produce a result set.
 func (c *Client) Exec(ctx context.Context, sql string, args ...any) error {
+	ctx, span := startExecuteSpan(ctx, sql)
+	defer span.End()
 	if err := c.conn.Exec(ctx, sql, args...); err != nil {
+		span.RecordError(err)
 		return fmt.Errorf("chclient: exec: %w", err)
 	}
 	return nil
@@ -125,8 +157,11 @@ func (c *Client) Query(ctx context.Context, sql string, args ...any) ([]Sample, 
 // flat slice. Used by metadata endpoints (/api/v1/labels, label values,
 // metadata) that return a list of names.
 func (c *Client) QueryStrings(ctx context.Context, sql string, args ...any) ([]string, error) {
+	ctx, span := startExecuteSpan(ctx, sql)
+	defer span.End()
 	rows, err := c.conn.Query(ctx, sql, args...)
 	if err != nil {
+		span.RecordError(err)
 		return nil, fmt.Errorf("chclient: query: %w", err)
 	}
 	defer func() {
@@ -162,8 +197,11 @@ type MetricMetaRow struct {
 // histogram) since the table the row came from determines that — the SQL
 // itself only returns the OTel columns.
 func (c *Client) QueryMetricMeta(ctx context.Context, sql, metricType string, args ...any) ([]MetricMetaRow, error) {
+	ctx, span := startExecuteSpan(ctx, sql)
+	defer span.End()
 	rows, err := c.conn.Query(ctx, sql, args...)
 	if err != nil {
+		span.RecordError(err)
 		return nil, fmt.Errorf("chclient: query: %w", err)
 	}
 	defer func() {
@@ -202,8 +240,11 @@ type IndexStatsRow struct {
 // aggregates (streams, entries, bytes) and decodes it. An empty result
 // set is treated as the all-zeros row.
 func (c *Client) QueryIndexStats(ctx context.Context, sql string, args ...any) (IndexStatsRow, error) {
+	ctx, span := startExecuteSpan(ctx, sql)
+	defer span.End()
 	rows, err := c.conn.Query(ctx, sql, args...)
 	if err != nil {
+		span.RecordError(err)
 		return IndexStatsRow{}, fmt.Errorf("chclient: query: %w", err)
 	}
 	defer func() {
@@ -234,8 +275,11 @@ type IndexVolumeRow struct {
 // QueryIndexVolume runs sql expecting rows of (Map(String,String),
 // UInt64) and decodes them into IndexVolumeRow.
 func (c *Client) QueryIndexVolume(ctx context.Context, sql string, args ...any) ([]IndexVolumeRow, error) {
+	ctx, span := startExecuteSpan(ctx, sql)
+	defer span.End()
 	rows, err := c.conn.Query(ctx, sql, args...)
 	if err != nil {
+		span.RecordError(err)
 		return nil, fmt.Errorf("chclient: query: %w", err)
 	}
 	defer func() {
@@ -261,8 +305,11 @@ func (c *Client) QueryIndexVolume(ctx context.Context, sql string, args ...any) 
 // QueryLabelSets runs sql and decodes each row into a Map(String,String)
 // label set. Used by /api/v1/series.
 func (c *Client) QueryLabelSets(ctx context.Context, sql string, args ...any) ([]map[string]string, error) {
+	ctx, span := startExecuteSpan(ctx, sql)
+	defer span.End()
 	rows, err := c.conn.Query(ctx, sql, args...)
 	if err != nil {
+		span.RecordError(err)
 		return nil, fmt.Errorf("chclient: query: %w", err)
 	}
 	defer func() {

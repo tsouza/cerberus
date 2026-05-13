@@ -27,9 +27,17 @@
 package optimizer
 
 import (
+	"context"
+
+	"go.opentelemetry.io/otel"
+
+	"github.com/tsouza/cerberus/internal/cerbtrace"
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/schema"
 )
+
+// tracer emits the `optimize` pipeline-stage span.
+var tracer = otel.Tracer("github.com/tsouza/cerberus/internal/optimizer")
 
 // Rule is one rewrite pass over the plan IR.
 type Rule interface {
@@ -157,14 +165,27 @@ func DefaultWithSchema(metrics schema.Metrics) *Driver {
 // Run rewrites plan by applying each batch in order, returning the
 // optimized tree. Run never mutates plan; rules construct fresh nodes
 // when they rewrite.
-func (d *Driver) Run(plan chplan.Node) chplan.Node {
+//
+// The ctx parameter carries the parent OpenTelemetry span (typically
+// the otelhttp request span installed in RC4 R4.2). Run wraps the
+// whole pass in an `optimize` pipeline-stage span so a query's flame
+// graph shows how long rule iteration took. The total number of
+// rule-application changes is surfaced as `cerberus.rules_applied`.
+func (d *Driver) Run(ctx context.Context, plan chplan.Node) chplan.Node {
+	_, span := tracer.Start(ctx, cerbtrace.SpanOptimize)
+	defer span.End()
+	rulesApplied := 0
 	for _, batch := range d.batches {
-		plan = runBatch(plan, batch)
+		plan, rulesApplied = runBatch(plan, batch, rulesApplied)
 	}
+	span.SetAttributes(cerbtrace.AttrRulesApplied.Int(rulesApplied))
 	return plan
 }
 
-// runBatch applies batch.Rules to plan per batch.Strategy.
+// runBatch applies batch.Rules to plan per batch.Strategy. Returns the
+// rewritten plan plus an updated `rulesApplied` counter — incremented
+// every time a rule reports a tree change. The counter is surfaced as
+// `cerberus.rules_applied` on the `optimize` span emitted by Driver.Run.
 //
 // Analyzer batches receive special handling: every rule must satisfy
 // AnalyzerRule and is invoked via applyAnalyzerRule, which runs the
@@ -173,15 +194,19 @@ func (d *Driver) Run(plan chplan.Node) chplan.Node {
 // must-run contract violation and panics with the offending rule's
 // name. This makes the contract surface at test time rather than
 // silently misbehaving in production.
-func runBatch(plan chplan.Node, batch Batch) chplan.Node {
+func runBatch(plan chplan.Node, batch Batch, rulesApplied int) (chplan.Node, int) {
 	if _, isAnalyzer := batch.Strategy.(analyzerStrategy); isAnalyzer {
 		for _, rule := range batch.Rules {
 			if _, ok := rule.(AnalyzerRule); !ok {
 				panic("optimizer: analyzer batch " + batch.Name + " contains non-AnalyzerRule " + rule.Name() + "; use AnalyzerBatch() to construct analyzer batches")
 			}
-			plan, _ = applyAnalyzerRule(plan, rule)
+			var changed bool
+			plan, changed = applyAnalyzerRule(plan, rule)
+			if changed {
+				rulesApplied++
+			}
 		}
-		return plan
+		return plan, rulesApplied
 	}
 	maxIter := batch.Strategy.maxIterations()
 	for i := 0; i < maxIter; i++ {
@@ -190,12 +215,15 @@ func runBatch(plan chplan.Node, batch Batch) chplan.Node {
 			rewritten, changed := applyToTree(plan, rule)
 			plan = rewritten
 			iterationChanged = iterationChanged || changed
+			if changed {
+				rulesApplied++
+			}
 		}
 		if !iterationChanged {
-			return plan
+			return plan, rulesApplied
 		}
 	}
-	return plan
+	return plan, rulesApplied
 }
 
 // applyToTree walks n bottom-up, applying rule at each node. Returns the

@@ -12,7 +12,10 @@ import (
 	"strings"
 
 	"github.com/grafana/tempo/pkg/traceql"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
 
+	"github.com/tsouza/cerberus/internal/cerbtrace"
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
@@ -20,6 +23,25 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 	traceql_lower "github.com/tsouza/cerberus/internal/traceql"
 )
+
+// tracer emits the `parse` pipeline-stage span before the TraceQL
+// parser runs.
+var tracer = otel.Tracer("github.com/tsouza/cerberus/internal/api/tempo")
+
+// parseExpr wraps traceql.Parse in a `parse` pipeline-stage span. The
+// QL identifier and the (truncated) query string land on the span as
+// `cerberus.ql` + `cerberus.query`.
+func parseExpr(ctx context.Context, query string) (*traceql.RootExpr, error) {
+	_, span := tracer.Start(ctx, cerbtrace.SpanParse,
+		trace.WithAttributes(cerbtrace.ParseAttrs("traceql", query)...))
+	defer span.End()
+	expr, err := traceql.Parse(query)
+	if err != nil {
+		span.RecordError(err)
+		return nil, err
+	}
+	return expr, nil
+}
 
 // Querier is the subset of *chclient.Client the Handler needs. Stub
 // shape mirrors api/prom + api/loki for the same test reasons.
@@ -96,29 +118,30 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	expr, err := traceql.Parse(q)
+	ctx := r.Context()
+	expr, err := parseExpr(ctx, q)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "", "", err)
 		return
 	}
 
-	plan, err := traceql_lower.Lower(expr, h.Schema)
+	plan, err := traceql_lower.Lower(ctx, expr, h.Schema)
 	if err != nil {
 		writeError(w, http.StatusUnprocessableEntity, "", "", err)
 		return
 	}
 
 	plan = wrapWithSampleProjection(plan, h.Schema)
-	plan = h.Optimizer.Run(plan)
+	plan = h.Optimizer.Run(ctx, plan)
 
-	sqlStr, args, err := chsql.Emit(plan)
+	sqlStr, args, err := chsql.Emit(ctx, plan)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "", "", err)
 		return
 	}
 	h.Logger.Debug("cerberus tempo search", "traceql", q, "sql", sqlStr, "args", args)
 
-	samples, err := h.Client.Query(r.Context(), sqlStr, args...)
+	samples, err := h.Client.Query(ctx, sqlStr, args...)
 	if err != nil {
 		h.Logger.Warn("cerberus tempo search CH query failed", "err", err.Error(), "sql", sqlStr)
 		writeError(w, http.StatusBadGateway, "", "", err)
@@ -160,16 +183,17 @@ func (h *Handler) handleSearchRecent(w http.ResponseWriter, r *http.Request) {
 	}
 	plan = &chplan.Limit{Input: plan, Count: limit}
 	plan = wrapWithSampleProjection(plan, s)
-	plan = h.Optimizer.Run(plan)
+	ctx := r.Context()
+	plan = h.Optimizer.Run(ctx, plan)
 
-	sqlStr, args, err := chsql.Emit(plan)
+	sqlStr, args, err := chsql.Emit(ctx, plan)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "", "", err)
 		return
 	}
 	h.Logger.Debug("cerberus tempo search/recent", "limit", limit, "sql", sqlStr, "args", args)
 
-	samples, err := h.Client.Query(r.Context(), sqlStr, args...)
+	samples, err := h.Client.Query(ctx, sqlStr, args...)
 	if err != nil {
 		h.Logger.Warn("cerberus tempo search/recent CH query failed", "err", err.Error(), "sql", sqlStr)
 		writeError(w, http.StatusBadGateway, "", "", err)
@@ -196,9 +220,10 @@ func (h *Handler) handleTraceByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	plan = wrapWithSampleProjection(plan, h.Schema)
-	plan = h.Optimizer.Run(plan)
+	ctx := r.Context()
+	plan = h.Optimizer.Run(ctx, plan)
 
-	sqlStr, args, err := chsql.Emit(plan)
+	sqlStr, args, err := chsql.Emit(ctx, plan)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "", "", err)
 		return

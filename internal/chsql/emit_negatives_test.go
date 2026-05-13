@@ -1,6 +1,7 @@
 package chsql_test
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -17,7 +18,7 @@ import (
 func TestEmit_NilNode(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := chsql.Emit(nil)
+	_, _, err := chsql.Emit(context.Background(), nil)
 	if err == nil {
 		t.Fatalf("Emit(nil) returned nil error; expected ErrUnsupported")
 	}
@@ -35,7 +36,7 @@ func TestEmit_AggregateMissingBoth(t *testing.T) {
 	plan := &chplan.Aggregate{
 		Input: &chplan.Scan{Table: "otel_metrics_gauge"},
 	}
-	_, _, err := chsql.Emit(plan)
+	_, _, err := chsql.Emit(context.Background(), plan)
 	if err == nil {
 		t.Fatalf("Emit(Aggregate with no GroupBy/AggFuncs) returned nil error")
 	}
@@ -76,7 +77,7 @@ func TestEmit_RangeWindowMissingColumns(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			_, _, err := chsql.Emit(tc.rw)
+			_, _, err := chsql.Emit(context.Background(), tc.rw)
 			if err == nil {
 				t.Fatalf("Emit(%s) returned nil error", tc.name)
 			}
@@ -99,7 +100,7 @@ func TestEmit_RangeWindowUnknownFunc(t *testing.T) {
 		TimestampColumn: "TimeUnix",
 		ValueColumn:     "Value",
 	}
-	_, _, err := chsql.Emit(plan)
+	_, _, err := chsql.Emit(context.Background(), plan)
 	if err == nil {
 		t.Fatalf("Emit(RangeWindow with unknown Func) returned nil")
 	}
@@ -120,7 +121,7 @@ func TestEmit_StructuralJoinMissingColumns(t *testing.T) {
 		Op:    chplan.StructuralChild,
 		// All column names unset.
 	}
-	_, _, err := chsql.Emit(plan)
+	_, _, err := chsql.Emit(context.Background(), plan)
 	if err == nil {
 		t.Fatalf("Emit(StructuralJoin with no columns) returned nil")
 	}
@@ -144,7 +145,7 @@ func TestEmit_ColumnRefQualifier(t *testing.T) {
 			{Expr: &chplan.ColumnRef{Name: "Timestamp"}, Alias: "TimeUnix"},
 		},
 	}
-	sql, _, err := chsql.Emit(plan)
+	sql, _, err := chsql.Emit(context.Background(), plan)
 	if err != nil {
 		t.Fatalf("Emit returned unexpected error: %v", err)
 	}
@@ -178,7 +179,7 @@ func TestEmit_StructuralJoinRecursiveEmits(t *testing.T) {
 				SpanIDColumn:       "SpanId",
 				ParentSpanIDColumn: "ParentSpanId",
 			}
-			sql, _, err := chsql.Emit(plan)
+			sql, _, err := chsql.Emit(context.Background(), plan)
 			if err != nil {
 				t.Fatalf("Emit(StructuralJoin %s) unexpected error: %v", op, err)
 			}
@@ -206,7 +207,7 @@ func TestEmit_StructuralJoinRecursiveBoundedDepth(t *testing.T) {
 		ParentSpanIDColumn: "ParentSpanId",
 		MaxDepth:           5,
 	}
-	sql, _, err := chsql.Emit(plan)
+	sql, _, err := chsql.Emit(context.Background(), plan)
 	if err != nil {
 		t.Fatalf("Emit returned unexpected error: %v", err)
 	}

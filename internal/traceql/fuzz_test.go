@@ -1,6 +1,7 @@
 package traceql_test
 
 import (
+	"context"
 	"testing"
 
 	tempo "github.com/grafana/tempo/pkg/traceql"
@@ -42,6 +43,6 @@ func FuzzParse(f *testing.F) {
 		if err != nil {
 			return
 		}
-		_, _ = traceql.Lower(expr, s)
+		_, _ = traceql.Lower(context.Background(), expr, s)
 	})
 }

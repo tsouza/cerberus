@@ -1,6 +1,7 @@
 package logql_test
 
 import (
+	"context"
 	"testing"
 
 	"github.com/grafana/loki/v3/pkg/logql/syntax"
@@ -42,6 +43,6 @@ func FuzzParse(f *testing.F) {
 		if err != nil {
 			return
 		}
-		_, _ = logql.Lower(expr, s)
+		_, _ = logql.Lower(context.Background(), expr, s)
 	})
 }

@@ -1,6 +1,7 @@
 package traceql_test
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -28,7 +29,7 @@ func TestLowerMultiHopChain(t *testing.T) {
 		t.Fatalf("Parse: %v", err)
 	}
 
-	plan, err := traceql.Lower(expr, s)
+	plan, err := traceql.Lower(context.Background(), expr, s)
 	if err != nil {
 		t.Fatalf("Lower: %v", err)
 	}
@@ -64,7 +65,7 @@ func TestLowerRecursiveDescendant(t *testing.T) {
 		t.Fatalf("Parse: %v", err)
 	}
 
-	plan, err := traceql.Lower(expr, s)
+	plan, err := traceql.Lower(context.Background(), expr, s)
 	if err != nil {
 		t.Fatalf("Lower: %v", err)
 	}
@@ -94,7 +95,7 @@ func TestLowerRecursiveAncestor(t *testing.T) {
 		t.Fatalf("Parse: %v", err)
 	}
 
-	plan, err := traceql.Lower(expr, s)
+	plan, err := traceql.Lower(context.Background(), expr, s)
 	if err != nil {
 		t.Fatalf("Lower: %v", err)
 	}
@@ -122,11 +123,11 @@ func TestEmitRecursiveDescendant_EndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	plan, err := traceql.Lower(expr, s)
+	plan, err := traceql.Lower(context.Background(), expr, s)
 	if err != nil {
 		t.Fatalf("Lower: %v", err)
 	}
-	sql, args, err := chsql.Emit(plan)
+	sql, args, err := chsql.Emit(context.Background(), plan)
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
 	}

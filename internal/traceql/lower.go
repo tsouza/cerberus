@@ -6,13 +6,20 @@
 package traceql
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/grafana/tempo/pkg/traceql"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
 
+	"github.com/tsouza/cerberus/internal/cerbtrace"
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/schema"
 )
+
+// tracer emits the `lower` pipeline-stage span for TraceQL lowering.
+var tracer = otel.Tracer("github.com/tsouza/cerberus/internal/traceql")
 
 // Lower turns a parsed TraceQL expression into a chplan tree.
 //
@@ -26,7 +33,21 @@ import (
 // wraps the returned tree with a chplan.RangeWindow) — TraceQL's
 // grammar doesn't carry the range argument in the AST. See
 // docs/upstream-forks.md.
-func Lower(expr *traceql.RootExpr, s schema.Traces) (chplan.Node, error) {
+func Lower(ctx context.Context, expr *traceql.RootExpr, s schema.Traces) (chplan.Node, error) {
+	_, span := tracer.Start(ctx, cerbtrace.SpanLower, trace.WithAttributes(cerbtrace.AttrQL.String("traceql")))
+	defer span.End()
+	plan, err := lowerRoot(expr, s)
+	if err != nil {
+		span.RecordError(err)
+		return nil, err
+	}
+	span.SetAttributes(cerbtrace.AttrPlanNodeCount.Int(cerbtrace.CountNodes(plan)))
+	return plan, nil
+}
+
+// lowerRoot is the body of Lower minus the span bookkeeping; split so
+// the public entry point keeps tracing concerns separate.
+func lowerRoot(expr *traceql.RootExpr, s schema.Traces) (chplan.Node, error) {
 	if expr == nil {
 		return nil, fmt.Errorf("traceql: nil RootExpr")
 	}

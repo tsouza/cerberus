@@ -1,6 +1,7 @@
 package traceql_test
 
 import (
+	"context"
 	"testing"
 
 	tempo "github.com/grafana/tempo/pkg/traceql"
@@ -54,7 +55,7 @@ func TestLowerHistogramOverTime(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Parse(%q): %v", tc.query, err)
 			}
-			plan, err := traceql.Lower(expr, s)
+			plan, err := traceql.Lower(context.Background(), expr, s)
 			if err != nil {
 				t.Fatalf("Lower(%q): %v", tc.query, err)
 			}
@@ -105,7 +106,7 @@ func TestLowerHistogramOverTimeRequiresAttr(t *testing.T) {
 	if err != nil {
 		return
 	}
-	if _, err := traceql.Lower(expr, s); err == nil {
+	if _, err := traceql.Lower(context.Background(), expr, s); err == nil {
 		t.Fatalf("Lower with no operand: expected error, got nil")
 	}
 }

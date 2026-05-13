@@ -1,6 +1,7 @@
 package optimizer_test
 
 import (
+	"context"
 	"testing"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -41,7 +42,7 @@ func TestFilterAggregateTranspose_GroupKey(t *testing.T) {
 		},
 	}
 
-	out := optimizer.New(optimizer.FilterAggregateTranspose()).Run(input)
+	out := optimizer.New(optimizer.FilterAggregateTranspose()).Run(context.Background(), input)
 	if !out.Equal(expected) {
 		t.Fatalf("FilterAggregateTranspose did not fire:\n got: %#v\nwant: %#v", out, expected)
 	}
@@ -69,7 +70,7 @@ func TestFilterAggregateTranspose_BlockedByAggOutput(t *testing.T) {
 		},
 	}
 
-	out := optimizer.New(optimizer.FilterAggregateTranspose()).Run(input)
+	out := optimizer.New(optimizer.FilterAggregateTranspose()).Run(context.Background(), input)
 	if !out.Equal(input) {
 		t.Fatalf("rule fired despite aggregate-output reference:\n got: %#v", out)
 	}
@@ -98,7 +99,7 @@ func TestFilterAggregateTranspose_BlockedByRenamedKey(t *testing.T) {
 		},
 	}
 
-	out := optimizer.New(optimizer.FilterAggregateTranspose()).Run(input)
+	out := optimizer.New(optimizer.FilterAggregateTranspose()).Run(context.Background(), input)
 	if !out.Equal(input) {
 		t.Fatalf("rule fired despite renamed group key:\n got: %#v", out)
 	}
@@ -130,7 +131,7 @@ func TestFilterAggregateTranspose_BlockedByComputedGroupKey(t *testing.T) {
 		},
 	}
 
-	out := optimizer.New(optimizer.FilterAggregateTranspose()).Run(input)
+	out := optimizer.New(optimizer.FilterAggregateTranspose()).Run(context.Background(), input)
 	if !out.Equal(input) {
 		t.Fatalf("rule fired despite computed group key:\n got: %#v", out)
 	}
@@ -158,7 +159,7 @@ func TestFilterAggregateTranspose_AliasMatchesName(t *testing.T) {
 		},
 	}
 
-	out := optimizer.New(optimizer.FilterAggregateTranspose()).Run(input)
+	out := optimizer.New(optimizer.FilterAggregateTranspose()).Run(context.Background(), input)
 	agg, ok := out.(*chplan.Aggregate)
 	if !ok {
 		t.Fatalf("expected Aggregate at root, got %T", out)
@@ -182,7 +183,7 @@ func TestFilterAggregateTranspose_NoMatchOnOtherShape(t *testing.T) {
 		},
 	}
 
-	out := optimizer.New(optimizer.FilterAggregateTranspose()).Run(input)
+	out := optimizer.New(optimizer.FilterAggregateTranspose()).Run(context.Background(), input)
 	if !out.Equal(input) {
 		t.Fatalf("rule fired on Filter(Scan): %#v", out)
 	}
