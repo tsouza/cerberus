@@ -248,7 +248,7 @@ func (h *Handler) tryScalarFold(query string) (float64, bool, error) {
 
 // scalarPoint renders the [<unix_seconds_float>, "<value_string>"]
 // pair Prometheus uses for both scalar and matrix sample wire shapes,
-// matching the format toVector / toMatrixStepGrid already use.
+// matching the format toVector + the matrix pivot already use.
 func scalarPoint(ts time.Time, v float64) Sample {
 	return Sample{float64(ts.UnixMilli()) / 1e3, strconv.FormatFloat(v, 'f', -1, 64)}
 }
@@ -454,12 +454,12 @@ func toVector(samples []chclient.Sample, ts time.Time) []VectorSample {
 	return out
 }
 
-// matrixFromCursor is the streaming counterpart to toMatrixStepGrid: it
+// matrixFromCursor is the streaming pivot from the cursor: it
 // drains the cursor row-by-row instead of consuming a pre-materialised
 // []chclient.Sample slice. Per-series buffers (timestamps + values) live
 // in a map keyed by canonicalKey; once the cursor is fully drained we
 // pivot each buffer onto the step grid using the same latest-at-step
-// semantics toMatrixStepGrid implements.
+// semantics PromQL uses (latest sample at-or-before step, within lookback delta).
 //
 // Memory complexity: O(rows) total in the per-series buffers — but with
 // the master []chclient.Sample slice gone, peak resident bytes shrink
@@ -526,75 +526,6 @@ func matrixFromCursor(
 		}
 	}
 	return out, nil
-}
-
-// toMatrixStepGrid pivots the sample stream into the Prom matrix shape.
-// For each evaluation step T in [start, end] (inclusive, spaced by step),
-// each series emits one Sample: the value of the latest input row whose
-// timestamp <= T (the standard PromQL latest-sample-at-eval-time
-// semantics). Series with no eligible samples for a given step are
-// represented as a stale-marker gap (the step is simply skipped in the
-// Values slice — Prometheus permits this).
-//
-// Lookback delta: a hard 5-minute lookback by default; older samples are
-// considered stale. Future work threads the API's `lookback_delta`
-// param through here.
-func toMatrixStepGrid(samples []chclient.Sample, start, end time.Time, step time.Duration) []MatrixSample {
-	const lookback = 5 * time.Minute
-
-	type seriesState struct {
-		labels map[string]string
-		// rows holds the sorted (ascending) timestamps + values for this
-		// series; we walk the row cursor forward as we advance through
-		// the step grid.
-		rows []chclient.Sample
-	}
-
-	bySeries := map[string]*seriesState{}
-	for _, s := range samples {
-		labels := withMetricName(s.Labels, s.MetricName)
-		key := canonicalKey(labels)
-		st, ok := bySeries[key]
-		if !ok {
-			st = &seriesState{labels: labels}
-			bySeries[key] = st
-		}
-		st.rows = append(st.rows, s)
-	}
-	for _, st := range bySeries {
-		// Inline insertion sort by Timestamp ascending — samples are
-		// typically already nearly sorted from CH.
-		for i := 1; i < len(st.rows); i++ {
-			for j := i; j > 0 && st.rows[j-1].Timestamp.After(st.rows[j].Timestamp); j-- {
-				st.rows[j-1], st.rows[j] = st.rows[j], st.rows[j-1]
-			}
-		}
-	}
-
-	out := make([]MatrixSample, 0, len(bySeries))
-	for _, st := range bySeries {
-		ms := MatrixSample{Metric: st.labels}
-		cursor := 0
-		for t := start; !t.After(end); t = t.Add(step) {
-			// Advance cursor as long as the next row's ts <= t.
-			for cursor < len(st.rows) && !st.rows[cursor].Timestamp.After(t) {
-				cursor++
-			}
-			if cursor == 0 {
-				continue // no row at-or-before this step yet
-			}
-			latest := st.rows[cursor-1]
-			if t.Sub(latest.Timestamp) > lookback {
-				continue // older than the lookback window; stale
-			}
-			stamp := float64(t.UnixMilli()) / 1e3
-			ms.Values = append(ms.Values, Sample{stamp, strconv.FormatFloat(latest.Value, 'f', -1, 64)})
-		}
-		if len(ms.Values) > 0 {
-			out = append(out, ms)
-		}
-	}
-	return out
 }
 
 // parseDuration parses a Prom-style step / range duration. Accepts plain
