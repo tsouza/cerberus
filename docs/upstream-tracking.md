@@ -75,10 +75,14 @@ releases, hot-fixes within days).
 ## Forks: when upstream's API isn't enough
 
 The parsers ship AST node types where **important fields are
-unexported** with no public accessors. Cerberus reads them anyway via
-reflection or `unsafe.Pointer` shims — see
-`internal/traceql/aggregate.go`'s `readAggregateExpr` for the canonical
-example (added for P0 #7 in RC2).
+unexported** with no public accessors. Cerberus used to read them
+via reflection or `unsafe.Pointer` shims; the canonical example was
+`internal/traceql/aggregate.go`'s `readAggregateExpr` (added for
+P0 #7 in RC2). That shim has since been retired against the
+`github.com/tsouza/tempo` fork (`cerberus-accessors` branch); see
+[`docs/fork-tempo-plan.md`](fork-tempo-plan.md). A `forbidigo` rule
+in `.golangci.yml` prevents either pattern from being reintroduced
+under `internal/traceql/` or `internal/api/tempo/`.
 
 The shim works but is **fragile** in three ways:
 
@@ -174,6 +178,9 @@ then we'll know which additional accessors we need.
 - `.github/dependabot.yml` — the daily-grouped config described above.
 - `.github/workflows/auto-merge-deps.yml` — auto-merge on green CI for
   trusted patch-only bumps.
-- `internal/traceql/aggregate.go` — `readAggregateExpr` is the current
-  unsafe shim this strategy eventually replaces.
+- `internal/traceql/aggregate.go` — historically housed
+  `readAggregateExpr` (the `unsafe.Pointer` shim this strategy replaced);
+  now uses fork accessors from `tsouza/tempo:cerberus-accessors`.
+- `.golangci.yml` — the `forbidigo` rule blocking `unsafe.Pointer` /
+  `reflect.Value.FieldByName` from being reintroduced.
 - `docs/roadmap.md` — RC2 backlog references this doc.
