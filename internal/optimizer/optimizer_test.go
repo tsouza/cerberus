@@ -142,6 +142,82 @@ var inputs = map[string]chplan.Node{
 		},
 	},
 
+	// filter_project_transpose_passes: Filter over Project([X, Y], Scan)
+	// where the predicate references a passthrough column. The R3.2
+	// rule pushes the Filter under the Project; the optimized SQL
+	// shows the Filter wrapping the Scan with the Project on top.
+	"filter_project_transpose_passes": &chplan.Filter{
+		Input: &chplan.Project{
+			Input: &chplan.Scan{Table: "otel_metrics_gauge"},
+			Projections: []chplan.Projection{
+				{Expr: &chplan.ColumnRef{Name: "MetricName"}},
+				{Expr: &chplan.ColumnRef{Name: "Value"}},
+			},
+		},
+		Predicate: &chplan.Binary{
+			Op:    chplan.OpEq,
+			Left:  &chplan.ColumnRef{Name: "MetricName"},
+			Right: &chplan.LitString{V: "up"},
+		},
+	},
+
+	// filter_project_transpose_blocked: Project renames `MetricName`
+	// to `metric`; the Filter touches the *alias*. The R3.2 rule
+	// declines (alias has no source-side column). ProjectionPushdown
+	// still fires on the inner Project(Scan) and narrows the scan's
+	// column list — a benign side effect that the fixture records.
+	"filter_project_transpose_blocked": &chplan.Filter{
+		Input: &chplan.Project{
+			Input: &chplan.Scan{Table: "otel_metrics_gauge"},
+			Projections: []chplan.Projection{
+				{Expr: &chplan.ColumnRef{Name: "MetricName"}, Alias: "metric"},
+			},
+		},
+		Predicate: &chplan.Binary{
+			Op:    chplan.OpEq,
+			Left:  &chplan.ColumnRef{Name: "metric"},
+			Right: &chplan.LitString{V: "up"},
+		},
+	},
+
+	// filter_aggregate_transpose_passes: Filter over Aggregate where
+	// the predicate references a bare group-by column (`job`). The
+	// R3.2 rule pushes the Filter under the Aggregate; the optimized
+	// SQL shows the WHERE clause inside the GROUP BY's FROM subquery.
+	"filter_aggregate_transpose_passes": &chplan.Filter{
+		Input: &chplan.Aggregate{
+			Input:   &chplan.Scan{Table: "otel_metrics_gauge"},
+			GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "job"}},
+			AggFuncs: []chplan.AggFunc{
+				{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "sum_value"},
+			},
+		},
+		Predicate: &chplan.Binary{
+			Op:    chplan.OpEq,
+			Left:  &chplan.ColumnRef{Name: "job"},
+			Right: &chplan.LitString{V: "api"},
+		},
+	},
+
+	// filter_aggregate_transpose_blocked: predicate touches the
+	// aggregate-output column `sum_value`, which doesn't exist in the
+	// Aggregate's input. The R3.2 rule declines; optimized SQL is
+	// byte-identical to unoptimized.
+	"filter_aggregate_transpose_blocked": &chplan.Filter{
+		Input: &chplan.Aggregate{
+			Input:   &chplan.Scan{Table: "otel_metrics_gauge"},
+			GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "job"}},
+			AggFuncs: []chplan.AggFunc{
+				{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "sum_value"},
+			},
+		},
+		Predicate: &chplan.Binary{
+			Op:    chplan.OpGt,
+			Left:  &chplan.ColumnRef{Name: "sum_value"},
+			Right: &chplan.LitFloat{V: 0},
+		},
+	},
+
 	// subquery_matrix_opaque: a matrix-shape RangeWindow with a
 	// FilterFusion-friendly nested Filter underneath. The optimizer
 	// should fuse the inner two Filters but NOT alter the matrix
