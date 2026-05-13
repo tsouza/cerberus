@@ -10,9 +10,20 @@
 // projection_pushdown.go); the default rule set is wired in Default().
 //
 // Rules are grouped into Batches (Catalyst-style). Each Batch carries a
-// Strategy (`Once` or `FixedPoint(n)`) that controls how its rules
-// iterate. Batches run sequentially in the order Default() returns
-// them; within a batch, rules run in declared order. See batch.go.
+// Strategy (`Once`, `Analyzer`, or `FixedPoint(n)`) that controls how
+// its rules iterate. Batches run sequentially in the order Default()
+// returns them; within a batch, rules run in declared order.
+//
+// Rules themselves split into two contracts (DataFusion-style; see
+// docs/optimizer-research.md § 4):
+//
+//   - AnalyzerRule — semantic / must-run / idempotent. Lives in an
+//     Analyzer-strategy batch and runs before any OptimizerRule sees
+//     the plan. See analyzer.go.
+//   - OptimizerRule (the plain Rule interface) — heuristic / optional.
+//     Lives in an Once or FixedPoint(n) batch.
+//
+// See batch.go.
 package optimizer
 
 import "github.com/tsouza/cerberus/internal/chplan"
@@ -57,35 +68,48 @@ func NewWithBatches(batches ...Batch) *Driver {
 }
 
 // Default returns a Driver configured with all the seed v0.1 rules
-// grouped into Catalyst-style batches. The split:
+// grouped into Catalyst-style batches. The split borrows the DataFusion
+// `AnalyzerRule` vs `OptimizerRule` distinction (see
+// docs/optimizer-research.md § 4):
 //
-//   - "constant-folding" (Once) — ConstantFold is idempotent; one pass
-//     reaches its fixpoint by construction (folding is a single
-//     bottom-up sweep that consumes every literal subtree it can).
-//     Re-iterating wastes work.
-//   - "predicate-pushdown" (FixedPoint) — FilterFusion + the two R3.2
-//     transpose rules can unlock each other: fuse adjacent filters,
-//     transpose the fused filter through Project / Aggregate, then
-//     possibly fuse again as new neighbours appear. Iteration is
+//   - "analyzer.constant-fold-semantic" (Analyzer, must-run) —
+//     ConstantFoldSemantic reduces literal-only arithmetic / comparison
+//     binaries (`1+2 → 3`, `1=0 → false`). Downstream rules rely on
+//     pure-literal subtrees having collapsed to a single Lit, so the
+//     pass is a semantic invariant rather than a heuristic improvement.
+//     Idempotent by construction; the Analyzer strategy enforces that
+//     contract via a verification pass and panics on violation.
+//   - "optimizer.constant-fold-heuristic" (Once) —
+//     ConstantFoldHeuristic applies boolean algebraic identities
+//     (`true AND X → X`, `false OR X → X`, `false AND X → false`,
+//     `true OR X → true`). Single bottom-up sweep reaches its fixpoint;
+//     the identities are ergonomic — they shrink emitted SQL but the
+//     result is correct either way.
+//   - "optimizer.predicate-pushdown" (FixedPoint) — FilterFusion + the
+//     two R3.2 transpose rules can unlock each other: fuse adjacent
+//     filters, transpose the fused filter through Project / Aggregate,
+//     then possibly fuse again as new neighbours appear. Iteration is
 //     load-bearing here.
-//   - "projection" (FixedPoint) — ProjectionPushdown may iterate as
-//     pushdown unused-column elimination cascades through nested
-//     Projects. Today only one pass changes anything, but the
-//     strategy leaves room for follow-up rules (R3.4 / R3.7) to land
-//     in this batch without changing wiring.
+//   - "optimizer.projection" (FixedPoint) — ProjectionPushdown may
+//     iterate as pushdown unused-column elimination cascades through
+//     nested Projects. Today only one pass changes anything, but the
+//     strategy leaves room for follow-up rules (R3.7) to land in this
+//     batch without changing wiring.
 //
-// Order matters across batches: constant folding feeds the predicate-
-// pushdown batch (true AND X → X means a filter that was previously
-// composite becomes single, which the transpose rules can then push).
+// Order matters across batches: the analyzer batch runs first
+// (must-run); the heuristic constant fold then canonicalises bool
+// literals so that predicate pushdown sees a tree where filters whose
+// predicates contained `true AND ...` have already collapsed.
 func Default() *Driver {
 	return NewWithBatches(
+		AnalyzerBatch("analyzer.constant-fold-semantic", ConstantFoldSemantic{}),
 		Batch{
-			Name:     "constant-folding",
+			Name:     "optimizer.constant-fold-heuristic",
 			Strategy: Once(),
-			Rules:    []Rule{ConstantFold{}},
+			Rules:    []Rule{ConstantFoldHeuristic{}},
 		},
 		Batch{
-			Name:     "predicate-pushdown",
+			Name:     "optimizer.predicate-pushdown",
 			Strategy: FixedPoint(defaultMaxIterations),
 			Rules: []Rule{
 				FilterFusion{},
@@ -95,7 +119,7 @@ func Default() *Driver {
 			},
 		},
 		Batch{
-			Name:     "projection",
+			Name:     "optimizer.projection",
 			Strategy: FixedPoint(defaultMaxIterations),
 			Rules:    []Rule{ProjectionPushdown{}},
 		},
@@ -113,7 +137,24 @@ func (d *Driver) Run(plan chplan.Node) chplan.Node {
 }
 
 // runBatch applies batch.Rules to plan per batch.Strategy.
+//
+// Analyzer batches receive special handling: every rule must satisfy
+// AnalyzerRule and is invoked via applyAnalyzerRule, which runs the
+// rule once over the tree and then a verification pass. A
+// non-idempotent rule (verification pass produces further change) is a
+// must-run contract violation and panics with the offending rule's
+// name. This makes the contract surface at test time rather than
+// silently misbehaving in production.
 func runBatch(plan chplan.Node, batch Batch) chplan.Node {
+	if _, isAnalyzer := batch.Strategy.(analyzerStrategy); isAnalyzer {
+		for _, rule := range batch.Rules {
+			if _, ok := rule.(AnalyzerRule); !ok {
+				panic("optimizer: analyzer batch " + batch.Name + " contains non-AnalyzerRule " + rule.Name() + "; use AnalyzerBatch() to construct analyzer batches")
+			}
+			plan, _ = applyAnalyzerRule(plan, rule)
+		}
+		return plan
+	}
 	maxIter := batch.Strategy.maxIterations()
 	for i := 0; i < maxIter; i++ {
 		var iterationChanged bool
