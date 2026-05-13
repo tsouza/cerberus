@@ -1,0 +1,51 @@
+name: fuzz
+
+# Weekly fuzz pass over the three parser heads. Runs the seed `FuzzParse`
+# targets in `internal/{promql,logql,traceql}` for a bounded duration each.
+# Any crash is uploaded as a `testdata/fuzz/...` corpus artifact so the
+# triggering input can be replayed locally with `go test -run=<TestName>/<hash>`.
+#
+# RC3 R3.11 scaffold. PR-comment + corpus-promotion polish lands later.
+
+on:
+  schedule:
+    # Sunday 03:00 UTC.
+    - cron: '0 3 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  fuzz:
+    name: fuzz (${{ matrix.ql }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ql: [promql, logql, traceql]
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: fuzz ${{ matrix.ql }}
+        run: |
+          go test -run='^$' -fuzz=Fuzz -fuzztime=120s ./internal/${{ matrix.ql }}/...
+
+      - name: upload fuzz corpus on crash
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-corpus-${{ matrix.ql }}
+          path: |
+            internal/${{ matrix.ql }}/testdata/fuzz/**
+          if-no-files-found: ignore
+          retention-days: 30
