@@ -134,10 +134,10 @@ func buildIntrinsicValuesSQL(s schema.Traces, col string, start, end time.Time) 
 		Select(distinctToStringFrag(col)).
 		From(chsql.Col(s.SpansTable))
 	if !start.IsZero() {
-		sb.Where(tempoTimeBoundFrag(s.TimestampColumn, ">=", start))
+		sb.Where(tempoTimeGteFrag(s.TimestampColumn, start))
 	}
 	if !end.IsZero() {
-		sb.Where(tempoTimeBoundFrag(s.TimestampColumn, "<=", end))
+		sb.Where(tempoTimeLteFrag(s.TimestampColumn, end))
 	}
 	return sb.Build()
 }
@@ -164,10 +164,10 @@ func buildAttributeValuesSQL(s schema.Traces, name string, start, end time.Time)
 		From(chsql.Col(s.SpansTable)).
 		Where(mapContainsAnyFrag(s.AttributesColumn, s.ResourceAttributesColumn, name))
 	if !start.IsZero() {
-		inner.Where(tempoTimeBoundFrag(s.TimestampColumn, ">=", start))
+		inner.Where(tempoTimeGteFrag(s.TimestampColumn, start))
 	}
 	if !end.IsZero() {
-		inner.Where(tempoTimeBoundFrag(s.TimestampColumn, "<=", end))
+		inner.Where(tempoTimeLteFrag(s.TimestampColumn, end))
 	}
 
 	outer := chsql.NewQuery().
@@ -177,55 +177,87 @@ func buildAttributeValuesSQL(s schema.Traces, name string, start, end time.Time)
 	return outer.Build()
 }
 
-// distinctToStringFrag emits "DISTINCT toString(`<col>`)".
+// distinctToStringFrag emits "DISTINCT toString(`<col>`)". `toString`
+// is a CH function call with no typed helper, so the function name +
+// trailing paren live behind chsql.Raw — only the operand goes through
+// the typed Col Frag. The DISTINCT prefix is a SELECT-list modifier
+// the QueryBuilder folds into the projection slot.
 func distinctToStringFrag(col string) chsql.Frag {
-	return func(b *chsql.Builder) {
-		b.WriteSQL("DISTINCT toString(")
-		b.Ident(col)
-		b.WriteSQL(")")
-	}
+	return chsql.Concat(
+		chsql.Raw("DISTINCT toString("),
+		chsql.Col(col),
+		chsql.Raw(")"),
+	)
 }
 
 // attrValueArrayJoinFrag emits the per-row fan-out:
 //
 //	arrayJoin([`<attrCol>`[?], `<resCol>`[?]]) AS `v`
+//
+// `arrayJoin` is a CH function with no typed helper (kept as Raw); the
+// map-subscript operands go through mapAtFrag, and the AS-alias suffix
+// uses the typed chsql.As constructor so the AS keyword stays inside
+// the typed surface.
 func attrValueArrayJoinFrag(attrCol, resCol, key string) chsql.Frag {
-	return func(b *chsql.Builder) {
-		b.WriteSQL("arrayJoin([")
-		b.MapAt(attrCol, key)
-		b.WriteSQL(", ")
-		b.MapAt(resCol, key)
-		b.WriteSQL("]) AS ")
-		b.Ident("v")
-	}
+	return chsql.As(
+		chsql.Concat(
+			chsql.Raw("arrayJoin(["),
+			mapAtFrag(attrCol, key),
+			chsql.Raw(", "),
+			mapAtFrag(resCol, key),
+			chsql.Raw("])"),
+		),
+		"v",
+	)
 }
 
 // mapContainsAnyFrag emits "(mapContains(`<attrCol>`, ?) OR
 // mapContains(`<resCol>`, ?))" — the row-level pre-filter that prunes
-// spans not carrying the requested attribute key in either map.
+// spans not carrying the requested attribute key in either map. The
+// outer parens + OR composition use the typed Paren/Or constructors;
+// each mapContains call is a Concat of Raw("mapContains(") + the
+// typed operand frags + Raw(")").
 func mapContainsAnyFrag(attrCol, resCol, key string) chsql.Frag {
-	return func(b *chsql.Builder) {
-		b.WriteSQL("(mapContains(")
-		b.Ident(attrCol)
-		b.WriteSQL(", ")
-		b.Arg(key)
-		b.WriteSQL(") OR mapContains(")
-		b.Ident(resCol)
-		b.WriteSQL(", ")
-		b.Arg(key)
-		b.WriteSQL("))")
-	}
+	return chsql.Paren(chsql.Or(
+		mapContainsFrag(attrCol, key),
+		mapContainsFrag(resCol, key),
+	))
 }
 
-// nonEmptyFrag emits "`<col>` != ”", used to drop the empty-string
-// slot the arrayJoin synthesises for rows where the key lives in only
-// one of the two attribute maps.
+// mapContainsFrag emits "mapContains(`<col>`, ?)" with key bound as a
+// positional argument. CH's mapContains function has no typed helper,
+// so the call shape lives behind chsql.Raw; only the column and key
+// operands flow through Col / Lit.
+func mapContainsFrag(col, key string) chsql.Frag {
+	return chsql.Concat(
+		chsql.Raw("mapContains("),
+		chsql.Col(col),
+		chsql.Raw(", "),
+		chsql.Lit(key),
+		chsql.Raw(")"),
+	)
+}
+
+// mapAtFrag emits "`<col>`[?]" — CH's Map column access shape — with
+// key bound as a positional argument. Equivalent to b.MapAt(col, key)
+// but exposed as a typed Frag so callers compose it through Concat /
+// Paren / etc. without dipping back into b.WriteSQL.
+func mapAtFrag(col, key string) chsql.Frag {
+	return chsql.Concat(
+		chsql.Col(col),
+		chsql.Raw("["),
+		chsql.Lit(key),
+		chsql.Raw("]"),
+	)
+}
+
+// nonEmptyFrag emits "`<col>` != ?" binding the empty string as a
+// positional argument; used to drop the empty-string slot the
+// arrayJoin synthesises for rows where the key lives in only one of
+// the two attribute maps. The != operator routes through the typed
+// chsql.Neq constructor.
 func nonEmptyFrag(col string) chsql.Frag {
-	return func(b *chsql.Builder) {
-		b.Ident(col)
-		b.WriteSQL(" != ")
-		b.Arg("")
-	}
+	return chsql.Neq(chsql.Col(col), chsql.Lit(""))
 }
 
 // intrinsicType returns the Tempo V2 type label for an intrinsic. Used
