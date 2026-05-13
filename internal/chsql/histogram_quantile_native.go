@@ -11,20 +11,20 @@
 //  3. total = cum[length(cum)]; target = phi * total.
 //  4. idx = arrayFirstIndex(c -> c >= target, cum) (1-based).
 //  5. Edge cases:
-//       - total = 0 → NaN.
-//       - phi <= 0 → 0 (non-negative observations; matches Prom's
-//         classic-histogram p0 convention).
-//       - phi >= 1 → pow(base, PositiveOffset + length(PositiveBucketCounts))
-//         i.e. the upper edge of the largest positive bucket.
-//       - idx = 1 → the quantile lands in the zero bucket; return
-//         ZeroThreshold as the safest summary of "we know it's small,
-//         we don't know exactly how small".
+//     - total = 0 → NaN.
+//     - phi <= 0 → 0 (non-negative observations; matches Prom's
+//     classic-histogram p0 convention).
+//     - phi >= 1 → pow(base, PositiveOffset + length(PositiveBucketCounts))
+//     i.e. the upper edge of the largest positive bucket.
+//     - idx = 1 → the quantile lands in the zero bucket; return
+//     ZeroThreshold as the safest summary of "we know it's small,
+//     we don't know exactly how small".
 //  6. Otherwise: bucket position is idx - 2 (0-based offset into
 //     PositiveBucketCounts), absolute bucket index is
 //     PositiveOffset + (idx - 2). Log-scale linear interpolation
 //     inside the bucket:
-//       fraction = (target - cum[idx-1]) / (cum[idx] - cum[idx-1])
-//       value    = pow(base, PositiveOffset + (idx - 2) + fraction)
+//     fraction = (target - cum[idx-1]) / (cum[idx] - cum[idx-1])
+//     value    = pow(base, PositiveOffset + (idx - 2) + fraction)
 //     Identity used: upper / lower = base, so a log-linear walk
 //     across the bucket reduces to a single pow() of the
 //     fractional bucket index.
