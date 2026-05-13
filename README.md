@@ -23,7 +23,7 @@ ClickHouse is a great single store for all three signals. The only thing missing
 
 ## Status
 
-> 🚧 **`v1.0.0-RC1` candidate** — M1 (PromQL) + M2 (Prom HTTP API) + M3 (LogQL) + M4 (TraceQL + Tempo HTTP API) all merged. TraceQL TXTAR corpus expanded 8 → 26, chsql 15 → 29; Playwright covers Loki + Tempo + richer Prom against Grafana; cerberus-side HTTP integration tests cover every shipped surface. The RC1 tag is the only step left — see [`CHANGELOG.md`](CHANGELOG.md) for the full Unreleased entry, and [`docs/roadmap.md`](docs/roadmap.md) for the path to v1.0.0.
+> 🚧 **`v1.0.0-RC2` in flight** — RC1 tagged (full PromQL / LogQL / TraceQL + 90% upstream API surface). RC2 is mid-stream: PromQL subqueries, `group_left/group_right` cardinality edges, LogQL `| unpack` + `| pattern` + template stages, Loki `index/stats` + `index/volume`, Tempo `search/recent`, Prom `query_exemplars` / `format_query` / `parse_query` have all merged; RC3 + RC6 scaffolding (pattern-based optimizer rule API, shadow-mode harness, chsql `Builder` / `SelectBuilder`, fuzz + perf-benchmark CI) lands in parallel. See [`CHANGELOG.md`](CHANGELOG.md) for the per-PR shipped list and [`docs/roadmap.md`](docs/roadmap.md) for the path to v1.0.0.
 
 ## Architecture
 

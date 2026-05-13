@@ -4,7 +4,54 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
-(Work toward v1.0.0-RC2 lands here. See [`docs/roadmap.md`](docs/roadmap.md) for the milestone backlog.)
+Work toward v1.0.0-RC2 lands here. See [`docs/roadmap.md`](docs/roadmap.md) for the milestone backlog and the [GitHub Project](https://github.com/users/tsouza/projects/1) for live status.
+
+### Added
+
+#### PromQL / Prom HTTP (RC2)
+
+- `group_left` / `group_right` cardinality enforcement edge cases + extra-label edges. [#144]
+- Subquery lowering over range-vector calls (P0 4.1–4.11). [#95, #98, #99, #101, #104, #107, #109, #110, #111]
+- `/api/v1/query_exemplars` handler. [#137]
+- `/api/v1/format_query` + `/api/v1/parse_query` handlers. [#114]
+- Local Go PromQL evaluator scaffold (`internal/promshim/local`) — RC3 R3.10 prep. [#134]
+
+#### LogQL / Loki HTTP (RC2)
+
+- `| label_format` rename + template stages. [#130]
+- `| line_format` + `| decolorize` as Go-side post-process. [#124]
+- Loki template-func surface exposed in `| line_format` / `| label_format`. [#132]
+- `| unpack` + `| pattern` parser stages. [#142]
+- `/index/stats` + `/index/volume` handlers. [#141]
+- `lowerPipeline` skips nil predicate from no-op stages. [#127]
+
+#### TraceQL / Tempo HTTP (RC2)
+
+- `/api/search/recent` handler + `chplan.OrderBy` IR node. [#123]
+- Lower `sum` / `avg` / `max` / `min` over inner attribute. [#99]
+- Lower `status` / `kind` static literals. [#96]
+- Test coverage for `/api/search/recent` handler edges. [#126]
+
+#### Optimizer / chplan (RC3 prep)
+
+- Pattern-based `Rule` API scaffold (Calcite-style). [#135]
+- Differential-testing harness scaffold (`harness/shadow/`). [#136]
+- `chplan.RangeWindow.OuterRange` + `Identity` for subquery emit. [#98]
+
+#### chsql Builder (RC6)
+
+- R6.0 SQL-builder evaluation — recommends custom builder. [#125]
+- R6.1 public `Builder` + `SelectBuilder` scaffolding. [#131]
+- R6.2 port `emitScan` / `emitFilter` / `emitProject` / `emitLimit` to Builder. [#138]
+- R6.3 port `emitAggregate` + `emitAggFunc` (parameterised aggregates) to Builder. [#140]
+
+#### Engineering / CI
+
+- Fuzz + perf-benchmark workflow scaffolds (RC3 R3.11). [#133]
+- Consolidate all linting into a single `lint` job + add `bodyclose`, `errorlint`. [#119]
+- Auto-merge-deps switched to `workflow_run` trigger. [#120]
+- Dashboard E2E moved to merge-to-main only — `dashboard` is no longer a PR-required check. [#145]
+- Tempo fork wired via `replace` — `tsouza/tempo:cerberus-accessors` ([#143]); shim retirement is in flight per [`docs/fork-tempo-plan.md`](docs/fork-tempo-plan.md). [#139, #143]
 
 ## [v1.0.0-RC1]
 

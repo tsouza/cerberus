@@ -80,47 +80,50 @@ reflection or `unsafe.Pointer` shims — see
 `internal/traceql/aggregate.go`'s `readAggregateExpr` for the canonical
 example (added for P0 #7 in RC2).
 
-The shim works but is **fragile** in three ways:
+The shim works but is **fragile**: field renames go silent, type
+changes corrupt the read, and field reordering breaks `UnsafeAddr`
+math — each failure mode silent at compile time and caught (if at all)
+by the fixture suite.
 
-1. **Field renames go silent**: `agg.e` could become `agg.expr` in a
-   future Tempo release and our `reflect.FieldByName("e")` returns
-   zero-value with no compile error.
-2. **Type changes corrupt**: the `unsafe.Pointer` cast assumes the
-   field's underlying type is exactly `traceql.FieldExpression`. A
-   type change there corrupts the read with no warning.
-3. **Field reordering breaks `UnsafeAddr` math**: less likely than
-   rename but possible — and equally silent.
+### Status — the Tempo fork is live (RC2)
 
-We catch most of these as **fixture-suite failures** when bumping
-parser deps, but only because we have decent fixture coverage. As the
-unsafe surface grows (P0 #7 today; likely more for LogQL parser stages,
-`predict_linear` upstream-internal state, etc.), the failure cone
-grows.
+**This section's long-term plan is no longer "tentative RC4" — it
+shipped at RC2 and the consumer-side migration is in flight.** The
+concrete migration plan, accessor inventory, and per-PR sequence live
+in [`docs/fork-tempo-plan.md`](fork-tempo-plan.md); this section is
+kept as the cross-QL strategy doc.
 
-### Strategy
+What has landed:
 
-The long-term fix is to **fork each upstream parser** under
-`github.com/tsouza/` and add the narrow set of accessors cerberus
-needs. Steps:
+- **`tsouza/tempo:cerberus-accessors`** — a fork of `grafana/tempo`
+  carrying narrow accessors on `pkg/traceql` (`Aggregate.Op()`,
+  `Aggregate.Expr()`, `SelectOperation.Attrs()`, plus the
+  MetricsPipeline accessors needed for RC2 metrics lowering). Wired
+  into cerberus via `replace github.com/grafana/tempo =>
+  github.com/tsouza/tempo …` in `go.mod` (PR #143).
+- The shim retirement itself is a follow-up PR sequence — see
+  [`docs/fork-tempo-plan.md`](fork-tempo-plan.md) § "Migration
+  sequence". As of writing,
+  `internal/traceql/aggregate.go`'s `readAggregateExpr`
+  (`unsafe.Pointer`) and `internal/traceql/select.go`'s reflect loop
+  are still in place and slated for retirement on the next
+  fork-consumer PR.
 
-1. **Fork** `prometheus/prometheus`, `grafana/loki`, `grafana/tempo`
-   under `tsouza`. Use the standard GitHub fork; tag a `-cerberus.N`
-   suffix on cerberus-specific releases (`v1.5.1-cerberus.1`, etc.).
-2. **Add accessors** as a thin patch series under `patches/` on the
-   fork:
-   - For Tempo `Aggregate`: `func (a Aggregate) Op() AggregateOp` and
-     `func (a Aggregate) Expr() FieldExpression`.
-   - For Loki / Prom: whichever unexported fields cerberus currently
-     touches via `unsafe`.
-3. **`replace` directives** in cerberus's `go.mod` point at the forks.
-4. **Replace the `unsafe` shims** with the new accessors. Delete
-   `readAggregateExpr` and friends; the `reflect`-only paths can stay
-   for fields where the accessor doesn't exist yet.
+What's *not* forked yet:
+
+- **Prometheus** — the upstream parser exports what we need today.
+  The `Call` / `MatrixSelector` private fields could surface needs
+  later (e.g. `predict_linear` upstream-internal state). If/when that
+  happens, this doc — not `fork-tempo-plan.md` — captures the second
+  fork.
+- **Loki** — the parser-stage rejection path doesn't need unexported
+  access. May change as we lower more LogQL stages.
 
 ### Automated upstream tracking on the fork
 
 The forks can't be one-shot — upstream releases continuously and
-cerberus needs to absorb fixes. A workable automation pattern:
+cerberus needs to absorb fixes. The workable automation pattern (still
+to be wired on `tsouza/tempo`):
 
 - **Track upstream tags via a GitHub Action** scheduled hourly on the
   fork: when a new tag appears upstream, the workflow creates a branch
@@ -128,44 +131,13 @@ cerberus needs to absorb fixes. A workable automation pattern:
   opens a PR on the fork, and optionally runs the upstream test suite
   to verify the patches still apply.
 - **Tag releases** as `<upstream-tag>-cerberus.<n>` so cerberus's
-  go.mod can pin a specific patch-set version.
+  `go.mod` can pin a specific patch-set version.
 - **Dependabot in cerberus** picks up the new fork tag like any other
   Go dep; the grouped daily bump catches it.
 - **Conflicts** surface as failed `git am` steps — the auto-PR halts
   and the maintainer reviews. Cerberus's TXTAR + Playwright suites
   guard correctness end-to-end so any silent semantic drift surfaces
   before merge.
-
-### What goes in each fork's patch series
-
-Minimal set as of RC2:
-
-- **Tempo** — `Aggregate.Op()` accessor, `Aggregate.Expr()` accessor.
-  Possibly `BinaryOperation` field exposure if we discover more
-  unexported state. Possibly `SubqueryExpr` analogue if Tempo
-  introduces one and keeps fields private.
-- **Prometheus** — none yet; the parser exports what we need today.
-  The `Call` / `MatrixSelector` private fields could surface needs
-  later.
-- **Loki** — none yet; the parser-stage rejection path doesn't need
-  unexported access. May change as we lower more LogQL stages.
-
-### When to start
-
-Not blocking RC2. The current unsafe shims are limited in number (one
-as of P0 #7) and the fixture suite catches drift. The fork strategy
-lands when:
-
-- The cost of one of: a CI red after a parser-dep bump, OR adding a
-  third unsafe shim, exceeds the cost of standing up the fork +
-  automation (estimated one-day setup, ongoing maintenance ~zero per
-  release as long as upstream is stable).
-- OR cerberus's compatibility goal (M6 `prometheus/compliance` gate)
-  needs parser-internal state that's currently unreachable without
-  forking.
-
-Tentative target: **RC4**, alongside the self-observability work — by
-then we'll know which additional accessors we need.
 
 ---
 
@@ -174,6 +146,11 @@ then we'll know which additional accessors we need.
 - `.github/dependabot.yml` — the daily-grouped config described above.
 - `.github/workflows/auto-merge-deps.yml` — auto-merge on green CI for
   trusted patch-only bumps.
-- `internal/traceql/aggregate.go` — `readAggregateExpr` is the current
-  unsafe shim this strategy eventually replaces.
-- `docs/roadmap.md` — RC2 backlog references this doc.
+- `internal/traceql/aggregate.go` — `readAggregateExpr` is the
+  remaining unsafe shim slated for retirement once the fork accessors
+  are wired through (see [`docs/fork-tempo-plan.md`](fork-tempo-plan.md)).
+- `internal/traceql/select.go` — `reflect.FieldByName("attrs")` shim,
+  same retirement plan.
+- [`docs/fork-tempo-plan.md`](fork-tempo-plan.md) — concrete Tempo
+  fork plan + per-PR migration sequence.
+- `docs/roadmap.md` — RC2 backlog references this doc + fork-tempo-plan.
