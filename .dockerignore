@@ -1,0 +1,42 @@
+# Keep the Docker build context small (matters for Dockerfile.local, which
+# copies the whole tree). Mirrors .gitignore plus a few build-only artifacts
+# that .gitignore tolerates but Docker should never see.
+
+.git
+.github
+.claude
+.envrc
+.golangci.yml
+.gremlins.yaml
+.goreleaser.yml
+.markdownlint.yaml
+.markdownlintignore
+.editorconfig
+.commitlintrc.json
+lefthook.yml
+
+# Build outputs
+bin/
+dist/
+coverage.out
+coverage.html
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+
+# Test artifacts
+test/e2e/playwright/node_modules/
+test/e2e/playwright/test-results/
+test/e2e/playwright/playwright-report/
+
+# Documentation / contributor surface — never affects the build.
+docs/
+*.md
+LICENSE
+
+# Compose / k8s / harness — image build does not need these.
+docker-compose.yml
+deploy/
+harness/

@@ -1,0 +1,28 @@
+# Grafana datasource provisioning for the repo-root docker-compose.yml stack.
+#
+# Cerberus exposes three Grafana-facing APIs on a single HTTP port — Prom,
+# Loki and Tempo — so all three datasources point at the same URL. The k3s
+# manifest at deploy/k3s/grafana.yaml mirrors this layout.
+apiVersion: 1
+datasources:
+  - name: Cerberus-Prometheus
+    uid: cerberus-prometheus
+    type: prometheus
+    access: proxy
+    url: http://cerberus:8080
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 15s
+  - name: Cerberus-Loki
+    uid: cerberus-loki
+    type: loki
+    access: proxy
+    url: http://cerberus:8080
+    editable: false
+  - name: Cerberus-Tempo
+    uid: cerberus-tempo
+    type: tempo
+    access: proxy
+    url: http://cerberus:8080
+    editable: false

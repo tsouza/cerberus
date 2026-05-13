@@ -64,6 +64,20 @@ Schema defaults to the [OpenTelemetry ClickHouse Exporter](https://github.com/op
 
 ## Quick start
 
+### Docker Compose (one-command local dev)
+
+```sh
+git clone https://github.com/tsouza/cerberus.git && cd cerberus
+docker compose up --wait
+open http://localhost:3000   # Grafana (admin/admin); cerberus on :8080
+```
+
+The stack builds cerberus from the repo, boots a single-node ClickHouse,
+loads the deterministic OTel fixture (logs / traces / metrics), and brings
+up Grafana pre-provisioned with cerberus as three datasources (Prom +
+Loki + Tempo). ClickHouse data persists in a named volume; use
+`docker compose down -v` to wipe it.
+
 ### From a published release
 
 Pull the container image (pin to a specific RC — `:latest` is **only**
