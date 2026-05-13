@@ -663,6 +663,112 @@ func Concat(parts ...Frag) Frag {
 	}
 }
 
+// writeFragList emits Frags comma-separated (with ", " between
+// subsequent parts) into the builder. Shared helper for the function-
+// call shapes below — keeps the loop pattern in one place rather than
+// duplicating it across Call, Parametric, etc.
+func writeFragList(b *Builder, parts []Frag) {
+	for i, p := range parts {
+		if i > 0 {
+			b.sb.WriteString(", ")
+		}
+		p(b)
+	}
+}
+
+// Call returns a Frag rendering "<name>(<a0>, <a1>, ...)" — a CH
+// function call. name is emitted verbatim and is treated as a trusted
+// literal (same trust contract as Cast's type-name); callers must
+// ensure it's a safe CH function identifier. An empty args list
+// renders as "<name>()", which is valid for nullary CH functions like
+// now() or today().
+func Call(name string, args ...Frag) Frag {
+	return func(b *Builder) {
+		b.sb.WriteString(name)
+		b.sb.WriteByte('(')
+		writeFragList(b, args)
+		b.sb.WriteByte(')')
+	}
+}
+
+// Parametric returns a Frag rendering a CH parametric aggregate
+// "<name>(<p0>, <p1>, ...)(<a0>, <a1>, ...)" — e.g. quantile(0.5)(col).
+// name is a trusted literal (same trust contract as Call / Cast).
+// params MUST be non-empty: a parametric aggregate with zero params is
+// indistinguishable from a plain Call and the API rejects it to keep
+// the typed surface unambiguous. args may be empty if the CH function
+// permits it.
+//
+// See https://clickhouse.com/docs/en/sql-reference/aggregate-functions/parametric-aggregate-functions
+// for the CH-side semantics.
+func Parametric(name string, params []Frag, args ...Frag) Frag {
+	if len(params) == 0 {
+		panic("chsql: Parametric requires at least one param; use Call for non-parametric functions")
+	}
+	return func(b *Builder) {
+		b.sb.WriteString(name)
+		b.sb.WriteByte('(')
+		writeFragList(b, params)
+		b.sb.WriteString(")(")
+		writeFragList(b, args)
+		b.sb.WriteByte(')')
+	}
+}
+
+// Star returns a Frag rendering "*" — the unqualified wildcard for
+// SELECT *. Use QualStar for the qualified "<table>.*" form.
+func Star() Frag {
+	return func(b *Builder) { b.sb.WriteByte('*') }
+}
+
+// QualStar returns a Frag rendering "<table>.*" with the table
+// identifier flowing through Ident's backtick quoting (so embedded
+// backticks are doubled).
+func QualStar(table string) Frag {
+	return func(b *Builder) {
+		b.Ident(table)
+		b.sb.WriteString(".*")
+	}
+}
+
+// Distinct returns a Frag rendering "DISTINCT <f>". Typically used
+// inside the SELECT projection slot to deduplicate the result rows
+// on the given expression.
+func Distinct(f Frag) Frag {
+	return func(b *Builder) {
+		b.sb.WriteString("DISTINCT ")
+		f(b)
+	}
+}
+
+// IsNull returns a Frag rendering "<f> IS NULL".
+func IsNull(f Frag) Frag {
+	return func(b *Builder) {
+		f(b)
+		b.sb.WriteString(" IS NULL")
+	}
+}
+
+// IsNotNull returns a Frag rendering "<f> IS NOT NULL".
+func IsNotNull(f Frag) Frag {
+	return func(b *Builder) {
+		f(b)
+		b.sb.WriteString(" IS NOT NULL")
+	}
+}
+
+// Between returns a Frag rendering "<f> BETWEEN <lo> AND <hi>". The
+// CH semantics match SQL standard: inclusive on both bounds.
+func Between(f, lo, hi Frag) Frag {
+	return func(b *Builder) {
+		f(b)
+		b.sb.WriteString(" BETWEEN ")
+		lo(b)
+		b.sb.WriteString(" AND ")
+		hi(b)
+	}
+}
+
 // In returns a Frag rendering "<left> IN (<r0>, <r1>, ...)". Panics if
 // right is empty (an empty IN list is a CH syntax error).
 func In(left Frag, right ...Frag) Frag {
