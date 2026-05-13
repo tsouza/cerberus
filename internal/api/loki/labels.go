@@ -75,7 +75,7 @@ func (h *Handler) handleLabels(w http.ResponseWriter, r *http.Request) {
 // no fmt.Sprintf-on-SQL.
 func buildLabelsSQL(s schema.Logs, matchers []*labels.Matcher, start, end time.Time) (string, []any, error) {
 	sb := chsql.NewQuery().
-		Select(aliased(distinctMapKeysFrag(s.ResourceAttributesColumn), "k")).
+		Select(chsql.As(distinctMapKeysFrag(s.ResourceAttributesColumn), "k")).
 		From(chsql.Col(s.LogsTable))
 
 	pred := logql.SelectorPredicate(matchers, s)
@@ -104,13 +104,15 @@ func buildLabelsSQL(s schema.Logs, matchers []*labels.Matcher, start, end time.T
 //
 // — the CH idiom for flattening a Map column's key array into the row
 // stream and de-duping. Used by /labels (the per-row key set) and is the
-// shape Grafana's label autocomplete expects.
+// shape Grafana's label autocomplete expects. The arrayJoin / mapKeys
+// function calls compose through typed Concat + Paren; the inner
+// mapKeys(col) call rides on Builder.MapKeys.
 func distinctMapKeysFrag(col string) chsql.Frag {
-	return func(b *chsql.Builder) {
-		b.WriteSQL("DISTINCT arrayJoin(mapKeys(")
-		b.Ident(col)
-		b.WriteSQL("))")
-	}
+	mapKeys := func(b *chsql.Builder) { b.MapKeys(col) }
+	return chsql.Concat(
+		chsql.Raw("DISTINCT arrayJoin"),
+		chsql.Paren(mapKeys),
+	)
 }
 
 // dedupeAndSort drops empty strings, removes duplicates, and sorts the

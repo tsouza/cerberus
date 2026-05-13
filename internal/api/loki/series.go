@@ -88,7 +88,7 @@ func (h *Handler) handleSeries(w http.ResponseWriter, r *http.Request) {
 // time bounds flow through QueryBuilder slots.
 func buildSeriesSQL(s schema.Logs, selectorGroups [][]*labels.Matcher, start, end time.Time) (string, []any, error) {
 	sb := chsql.NewQuery().
-		Select(aliased(chsql.Col(s.ResourceAttributesColumn), "labels")).
+		Select(chsql.As(chsql.Col(s.ResourceAttributesColumn), "labels")).
 		From(chsql.Col(s.LogsTable))
 
 	if len(selectorGroups) > 0 {
@@ -124,20 +124,14 @@ func buildSeriesSQL(s schema.Logs, selectorGroups [][]*labels.Matcher, start, en
 // match[] selector predicates. A single fragment is emitted bare (no
 // outer parens) to keep the WHERE-AND chain readable.
 func orJoinedFrag(fragments []chsql.Frag) chsql.Frag {
-	return func(b *chsql.Builder) {
-		if len(fragments) == 1 {
-			fragments[0](b)
-			return
-		}
-		for i, f := range fragments {
-			if i > 0 {
-				b.WriteSQL(" OR ")
-			}
-			b.WriteSQL("(")
-			f(b)
-			b.WriteSQL(")")
-		}
+	if len(fragments) == 1 {
+		return fragments[0]
 	}
+	parts := make([]chsql.Frag, len(fragments))
+	for i, f := range fragments {
+		parts[i] = chsql.Paren(f)
+	}
+	return chsql.Or(parts...)
 }
 
 // dedupeLabelSets normalises the rows: drops empty maps, dedupes the

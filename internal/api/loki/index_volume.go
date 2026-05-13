@@ -125,8 +125,8 @@ func buildIndexVolumeSQL(
 
 	sb := chsql.NewQuery().
 		Select(
-			aliased(groupFrag, "labels"),
-			aliased(bytesAggFrag(s.BodyColumn), "bytes"),
+			chsql.As(groupFrag, "labels"),
+			chsql.As(bytesAggFrag(s.BodyColumn), "bytes"),
 		).
 		From(chsql.Col(s.LogsTable))
 
@@ -157,36 +157,34 @@ func buildIndexVolumeSQL(
 // label-set group key. "series" (or empty + no targetLabels) groups by
 // the full ResourceAttributes map; otherwise we project to the
 // targetLabels subset via mapFilter.
+//
+// chplan.MapWithoutKeys (and Builder.MapFilterExcept) cover the
+// NEGATED form ("everything except these keys"). The positive form is
+// composed inline via typed Frag constructors: a Lambda body wrapping
+// a typed In(...) clause, glued to the column reference inside a
+// mapFilter(...) call.
 func volumeGroupFrag(s schema.Logs, targetLabels []string, aggregateBy string) chsql.Frag {
 	if len(targetLabels) == 0 || aggregateBy == "series" {
 		return chsql.Col(s.ResourceAttributesColumn)
 	}
 	keys := append([]string(nil), targetLabels...)
 	sort.Strings(keys)
-	// Routes through chplan.MapWithoutKeys' sibling shape — but since
-	// MapWithoutKeys NEGATES the IN, write a fresh Frag for the
-	// positive form. Reuses the same Builder Arg/Ident helpers.
-	return func(b *chsql.Builder) {
-		b.WriteSQL("mapFilter((k, v) -> k IN (")
-		for i, k := range keys {
-			if i > 0 {
-				b.WriteSQL(", ")
-			}
-			b.Arg(k)
-		}
-		b.WriteSQL("), ")
-		b.Ident(s.ResourceAttributesColumn)
-		b.WriteSQL(")")
+	keyArgs := make([]chsql.Frag, len(keys))
+	for i, k := range keys {
+		keyArgs[i] = chsql.Lit(k)
 	}
-}
-
-// aliased wraps a Frag with " AS <ident>".
-func aliased(inner chsql.Frag, alias string) chsql.Frag {
-	return func(b *chsql.Builder) {
-		inner(b)
-		b.WriteSQL(" AS ")
-		b.Ident(alias)
+	inFrag := chsql.In(chsql.Raw("k"), keyArgs...)
+	lambda := func(b *chsql.Builder) {
+		b.Lambda([]string{"k", "v"}, func(b *chsql.Builder) { inFrag(b) })
 	}
+	return chsql.Concat(
+		chsql.Raw("mapFilter"),
+		chsql.Paren(chsql.Concat(
+			lambda,
+			chsql.Raw(", "),
+			chsql.Col(s.ResourceAttributesColumn),
+		)),
+	)
 }
 
 // parseVolumeLimit decodes the optional `limit` parameter; missing /
