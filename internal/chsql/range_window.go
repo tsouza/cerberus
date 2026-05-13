@@ -989,4 +989,3 @@ func (e *emitter) collectGroupByFrags(group []chplan.Expr) ([]Frag, error) {
 	}
 	return out, nil
 }
-
