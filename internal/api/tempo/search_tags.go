@@ -151,13 +151,13 @@ func buildSearchTagsSQL(s schema.Traces, mapCol string, start, end time.Time) (s
 // CH idiom for "every distinct attribute key seen". DISTINCT is part of
 // the SELECT list (CH's flavour), not a separate keyword, so it folds
 // into the Frag for the QueryBuilder slot. `arrayJoin` + `mapKeys` are
-// CH functions with no typed helper; the call shapes ride on Raw while
-// the column operand flows through chsql.Col.
+// CH functions composed through the typed Call constructor; the column
+// operand flows through chsql.Col.
 func distinctMapKeysFrag(col string) chsql.Frag {
-	return chsql.Concat(
-		chsql.Raw("DISTINCT arrayJoin(mapKeys("),
-		chsql.Col(col),
-		chsql.Raw("))"),
+	return chsql.Distinct(
+		chsql.Call("arrayJoin",
+			chsql.Call("mapKeys", chsql.Col(col)),
+		),
 	)
 }
 

@@ -171,44 +171,53 @@ func buildAttributeValuesSQL(s schema.Traces, name string, start, end time.Time)
 	}
 
 	outer := chsql.NewQuery().
-		Select(chsql.Raw("DISTINCT "), chsql.Col("v")).
+		Select(chsql.Distinct(chsql.Col("v"))).
 		From(inner.Frag()).
 		Where(nonEmptyFrag("v"))
 	return outer.Build()
 }
 
 // distinctToStringFrag emits "DISTINCT toString(`<col>`)". `toString`
-// is a CH function call with no typed helper, so the function name +
-// trailing paren live behind chsql.Raw — only the operand goes through
-// the typed Col Frag. The DISTINCT prefix is a SELECT-list modifier
-// the QueryBuilder folds into the projection slot.
+// flows through the typed Call constructor; DISTINCT is composed via
+// the typed Distinct Frag so the whole expression is a single
+// projection-slot Frag for the QueryBuilder.
 func distinctToStringFrag(col string) chsql.Frag {
-	return chsql.Concat(
-		chsql.Raw("DISTINCT toString("),
-		chsql.Col(col),
-		chsql.Raw(")"),
-	)
+	return chsql.Distinct(chsql.Call("toString", chsql.Col(col)))
 }
 
 // attrValueArrayJoinFrag emits the per-row fan-out:
 //
 //	arrayJoin([`<attrCol>`[?], `<resCol>`[?]]) AS `v`
 //
-// `arrayJoin` is a CH function with no typed helper (kept as Raw); the
-// map-subscript operands go through mapAtFrag, and the AS-alias suffix
-// uses the typed chsql.As constructor so the AS keyword stays inside
-// the typed surface.
+// `arrayJoin` flows through the typed Call constructor; the AS-alias
+// suffix uses the typed chsql.As constructor. The CH array literal
+// "[a, b]" has no typed helper today — its brackets ride on Concat +
+// Raw and are flagged for R6.12.f follow-up (an Array Frag).
 func attrValueArrayJoinFrag(attrCol, resCol, key string) chsql.Frag {
 	return chsql.As(
-		chsql.Concat(
-			chsql.Raw("arrayJoin(["),
+		chsql.Call("arrayJoin", arrayLitFrag(
 			mapAtFrag(attrCol, key),
-			chsql.Raw(", "),
 			mapAtFrag(resCol, key),
-			chsql.Raw("])"),
-		),
+		)),
 		"v",
 	)
+}
+
+// arrayLitFrag emits "[<e0>, <e1>, …]" — the CH array literal shape.
+// No typed Frag helper exists for this today; the brackets ride on
+// Concat + Raw. Flagged for R6.12.f follow-up (add an Array(…) Frag
+// to internal/chsql/builder.go alongside Tuple).
+func arrayLitFrag(elems ...chsql.Frag) chsql.Frag {
+	parts := make([]chsql.Frag, 0, 2+2*len(elems))
+	parts = append(parts, chsql.Raw("["))
+	for i, e := range elems {
+		if i > 0 {
+			parts = append(parts, chsql.Raw(", "))
+		}
+		parts = append(parts, e)
+	}
+	parts = append(parts, chsql.Raw("]"))
+	return chsql.Concat(parts...)
 }
 
 // mapContainsAnyFrag emits "(mapContains(`<attrCol>`, ?) OR
@@ -225,23 +234,18 @@ func mapContainsAnyFrag(attrCol, resCol, key string) chsql.Frag {
 }
 
 // mapContainsFrag emits "mapContains(`<col>`, ?)" with key bound as a
-// positional argument. CH's mapContains function has no typed helper,
-// so the call shape lives behind chsql.Raw; only the column and key
-// operands flow through Col / Lit.
+// positional argument. Composes through the typed Call constructor;
+// column / key operands flow through Col / Lit.
 func mapContainsFrag(col, key string) chsql.Frag {
-	return chsql.Concat(
-		chsql.Raw("mapContains("),
-		chsql.Col(col),
-		chsql.Raw(", "),
-		chsql.Lit(key),
-		chsql.Raw(")"),
-	)
+	return chsql.Call("mapContains", chsql.Col(col), chsql.Lit(key))
 }
 
 // mapAtFrag emits "`<col>`[?]" — CH's Map column access shape — with
 // key bound as a positional argument. Equivalent to b.MapAt(col, key)
-// but exposed as a typed Frag so callers compose it through Concat /
-// Paren / etc. without dipping back into raw writes.
+// but exposed as a typed Frag so callers compose it without dipping
+// back into raw writes. The "[" + "]" subscript shape has no typed
+// helper today; flagged for R6.12.f follow-up (a Subscript / MapAt
+// Frag in internal/chsql/builder.go).
 func mapAtFrag(col, key string) chsql.Frag {
 	return chsql.Concat(
 		chsql.Col(col),
