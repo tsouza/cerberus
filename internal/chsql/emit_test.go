@@ -409,6 +409,80 @@ var plans = map[string]chplan.Node{
 		},
 	},
 
+	// MetricsAggregate (bare emission, no wrapping RangeWindow) — the
+	// TraceQL instant-metric shape. SQL is byte-equivalent to a plain
+	// chplan.Aggregate with the per-Op CH function name.
+	"metrics_aggregate_rate_bare": &chplan.MetricsAggregate{
+		Op:         chplan.MetricsOpRate,
+		ValueAlias: "Value",
+		Inner:      &chplan.Scan{Table: "otel_traces"},
+	},
+	"metrics_aggregate_sum_over_time_bare": &chplan.MetricsAggregate{
+		Op:         chplan.MetricsOpSumOverTime,
+		Attr:       &chplan.ColumnRef{Name: "Duration"},
+		ValueAlias: "Value",
+		Inner:      &chplan.Scan{Table: "otel_traces"},
+	},
+	"metrics_aggregate_quantile_over_time_bare": &chplan.MetricsAggregate{
+		Op:         chplan.MetricsOpQuantileOverTime,
+		Attr:       &chplan.ColumnRef{Name: "Duration"},
+		Quantiles:  []float64{0.95},
+		ValueAlias: "Value",
+		Inner:      &chplan.Scan{Table: "otel_traces"},
+	},
+
+	// RangeWindow wrapping MetricsAggregate — the matrix shape used
+	// by TraceQL's /api/metrics/query_range handler. Each per-span row
+	// is fanned across the N evaluation anchors via arrayJoin(range())
+	// and the outer SELECT applies the Op-specific reducer per
+	// (group-by, anchor) bucket.
+	"range_window_metrics_rate": &chplan.RangeWindow{
+		Input: &chplan.MetricsAggregate{
+			Op:         chplan.MetricsOpRate,
+			ValueAlias: "Value",
+			Inner:      &chplan.Scan{Table: "otel_traces"},
+		},
+		Range:           5 * time.Minute,
+		Step:            time.Minute,
+		OuterRange:      time.Hour,
+		TimestampColumn: "Timestamp",
+	},
+	"range_window_metrics_count_over_time_by": &chplan.RangeWindow{
+		Input: &chplan.MetricsAggregate{
+			Op:             chplan.MetricsOpCountOverTime,
+			GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: "ServiceName"}},
+			GroupByAliases: []string{"service"},
+			ValueAlias:     "Value",
+			Inner:          &chplan.Scan{Table: "otel_traces"},
+		},
+		Step:            time.Minute,
+		OuterRange:      10 * time.Minute,
+		TimestampColumn: "Timestamp",
+	},
+	"range_window_metrics_sum_over_time_attr": &chplan.RangeWindow{
+		Input: &chplan.MetricsAggregate{
+			Op:         chplan.MetricsOpSumOverTime,
+			Attr:       &chplan.ColumnRef{Name: "Duration"},
+			ValueAlias: "Value",
+			Inner:      &chplan.Scan{Table: "otel_traces"},
+		},
+		Step:            time.Minute,
+		OuterRange:      5 * time.Minute,
+		TimestampColumn: "Timestamp",
+	},
+	"range_window_metrics_quantile_over_time_attr": &chplan.RangeWindow{
+		Input: &chplan.MetricsAggregate{
+			Op:         chplan.MetricsOpQuantileOverTime,
+			Attr:       &chplan.ColumnRef{Name: "Duration"},
+			Quantiles:  []float64{0.95},
+			ValueAlias: "Value",
+			Inner:      &chplan.Scan{Table: "otel_traces"},
+		},
+		Step:            time.Minute,
+		OuterRange:      5 * time.Minute,
+		TimestampColumn: "Timestamp",
+	},
+
 	// vector_join_set_and: VectorJoin with OpAnd (set-intersection
 	// shape). Unusual operator on this node but the IR allows it.
 	"vector_join_set_and": &chplan.VectorJoin{

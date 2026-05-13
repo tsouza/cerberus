@@ -7,10 +7,27 @@ import "time"
 // timestamp lies within [step-Range, step]. Used to lower expressions like
 // `rate(metric[5m])` and `sum_over_time(metric[1h])`.
 //
-// The emitter (internal/chsql/range_window.go) produces ClickHouse SQL
-// using the windowed-array idiom: GROUP BY series, build a sorted
-// (ts, value) array via groupArray + arraySort, arrayFilter to the
-// per-step window, then apply the function-specific aggregation.
+// Input shapes (the emitter discriminates at render time):
+//
+//   - Row-shape relation (PromQL / LogQL): every row carries the
+//     per-sample (TimestampColumn, ValueColumn) pair plus the GroupBy
+//     series identity. The emitter (internal/chsql/range_window.go)
+//     produces ClickHouse SQL using the windowed-array idiom: GROUP BY
+//     series, build a sorted (ts, value) array via groupArray +
+//     arraySort, arrayFilter to the per-step window, then apply the
+//     function-specific aggregation. Func names the PromQL operator
+//     (`rate`, `*_over_time`, …); TimestampColumn / ValueColumn are
+//     required.
+//
+//   - MetricsAggregate input (TraceQL): the underlying relation is a
+//     chplan.MetricsAggregate whose Inner is a per-span Scan/Filter
+//     tree. Func is ignored — MetricsAggregate.Op carries the
+//     per-bucket reducer. The emitter renders a time-bucketed matrix
+//     via arrayJoin(range(...)) over [Start, End] spaced by Step,
+//     applying the Op-specific CH aggregate per bucket. TimestampColumn
+//     is required (it names the per-span Timestamp on Inner);
+//     ValueColumn is unused (the metric value is the reduce of Attr).
+//     Step must be > 0 in this mode.
 type RangeWindow struct {
 	Input Node
 

@@ -50,6 +50,8 @@ func (e *emitter) emitNode(n chplan.Node) error {
 		return e.emitProject(v)
 	case *chplan.Aggregate:
 		return e.emitAggregate(v)
+	case *chplan.MetricsAggregate:
+		return e.emitMetricsAggregate(v)
 	case *chplan.RangeWindow:
 		return e.emitRangeWindow(v)
 	case *chplan.Limit:
