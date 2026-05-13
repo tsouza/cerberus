@@ -108,7 +108,19 @@ func lowerStage(stage syntax.StageExpr, s schema.Logs) (chplan.Expr, error) {
 		// parsed expression on the handler side.
 		return nil, nil
 	case *syntax.LineParserExpr:
-		return nil, fmt.Errorf("logql: parser stage `| %s` is not yet supported (json/logfmt/regexp/pattern parsers deferred from M3.2; revisit in RC3 alongside chsql JSONExtract/extractKeyValuePairs helpers)", st.Op)
+		// `| unpack` and `| pattern` are parser stages that extract
+		// labels from the line in Go after the rows return — they have
+		// no SQL impact (lowering returns no predicate). The API handler
+		// pulls them out of the parsed expression via postProcessExtract
+		// and applies them per row.
+		//
+		// Other parser stages (`| json`, `| logfmt`, `| regexp`) stay
+		// deferred to RC3 alongside `chsql` JSONExtract helpers.
+		switch st.Op {
+		case syntax.OpParserTypeUnpack, syntax.OpParserTypePattern:
+			return nil, nil
+		}
+		return nil, fmt.Errorf("logql: parser stage `| %s` is not yet supported (json/logfmt/regexp parsers deferred from M3.2; revisit in RC3 alongside chsql JSONExtract/extractKeyValuePairs helpers)", st.Op)
 	case *syntax.LogfmtParserExpr:
 		return nil, fmt.Errorf("logql: `| logfmt` parser is not yet supported (deferred from M3.2; revisit in RC3)")
 	case *syntax.JSONExpressionParserExpr:
