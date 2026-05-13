@@ -62,7 +62,10 @@ func New(client Querier, s schema.Traces, version string, logger *slog.Logger) *
 // Mount registers the Tempo-compatible endpoints under /api/ on mux.
 // /api/echo + /api/status/version satisfy Grafana's datasource health
 // check; /api/search runs a TraceQL query; /api/traces/{id} fetches a
-// single trace by ID.
+// single trace by ID; /api/metrics/query_range runs a TraceQL metrics
+// pipeline (`| rate()`, `| count_over_time()`, `| *_over_time(...)`)
+// against the spans table and returns the matrix in Tempo's
+// series-of-samples envelope.
 func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/echo", h.handleEcho)
 	mux.HandleFunc("GET /api/status/version", h.handleVersion)
@@ -73,6 +76,7 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v2/search/tags", h.handleSearchTagsV2)
 	mux.HandleFunc("GET /api/v2/search/tag/{name}/values", h.handleSearchTagValuesV2)
 	mux.HandleFunc("GET /api/traces/{id}", h.handleTraceByID)
+	mux.HandleFunc("GET /api/metrics/query_range", h.handleMetricsQueryRange)
 }
 
 func (h *Handler) handleEcho(w http.ResponseWriter, _ *http.Request) {
