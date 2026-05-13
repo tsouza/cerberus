@@ -9,9 +9,11 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
 
+	"github.com/tsouza/cerberus/internal/api/health"
 	"github.com/tsouza/cerberus/internal/api/loki"
 	"github.com/tsouza/cerberus/internal/api/prom"
 	"github.com/tsouza/cerberus/internal/api/tempo"
@@ -57,6 +59,10 @@ func run(logger *slog.Logger) error {
 		_ = client.Close()
 	}()
 
+	// schemaReady tracks whether the auto-create-schema startup hook
+	// has finished at least once. When auto-create is off the readiness
+	// probe should not gate on it, so we seed it true.
+	var schemaReady atomic.Bool
 	if cfg.AutoCreateSchema {
 		logger.Info("auto-creating OTel ClickHouse schema",
 			"database", cfg.ClickHouse.Database,
@@ -67,36 +73,51 @@ func run(logger *slog.Logger) error {
 			return fmt.Errorf("auto-create schema: %w", err)
 		}
 		logger.Info("OTel ClickHouse schema ready")
+		schemaReady.Store(true)
+	} else {
+		schemaReady.Store(true)
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-	})
+	// The trace mux carries the three Prom/Loki/Tempo APIs and is
+	// wrapped with otelhttp so every request becomes a server span.
+	traceMux := http.NewServeMux()
 
 	promHandler := prom.New(client, cfg.Schema, logger.With("api", "prom"))
-	promHandler.Mount(mux)
+	promHandler.Mount(traceMux)
 
 	lokiHandler := loki.New(client, schema.DefaultOTelLogs(), logger.With("api", "loki"))
-	lokiHandler.Mount(mux)
+	lokiHandler.Mount(traceMux)
 
 	tempoHandler := tempo.New(client, schema.DefaultOTelTraces(), Version, logger.With("api", "tempo"))
-	tempoHandler.Mount(mux)
+	tempoHandler.Mount(traceMux)
 
 	// RC4 R4.2: install the W3C+Baggage propagator and a no-op
 	// tracer-provider (real OTLP exporters arrive in R4.5), then wrap
-	// the whole mux with otelhttp so every Prom/Loki/Tempo request gets
+	// the API mux with otelhttp so every Prom/Loki/Tempo request gets
 	// a server span named after the matched route. Wrapping at the mux
 	// level — instead of per-handler — keeps the propagator code path
 	// uniform across all three APIs and lets the span name formatter
 	// pull r.Pattern after the mux has resolved the route.
 	installOTel(nil)
-	handler := wrapWithOTel(mux, "cerberus")
+	tracedAPI := wrapWithOTel(traceMux, "cerberus")
+
+	// /healthz and /readyz live on a separate sub-mux that bypasses
+	// otelhttp: k8s probes hit at multi-Hz rates and would otherwise
+	// flood the trace backend with no-op spans. The readiness handler
+	// memoises results behind a TTL cache so concurrent probes coalesce
+	// into a single ClickHouse ping per window.
+	healthHandler := health.New(health.Options{
+		Pinger:      client,
+		SchemaReady: schemaReady.Load,
+	})
+
+	rootMux := http.NewServeMux()
+	healthHandler.Mount(rootMux)
+	rootMux.Handle("/", tracedAPI)
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           handler,
+		Handler:           rootMux,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

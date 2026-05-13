@@ -72,6 +72,20 @@ func (c *Client) Close() error {
 	return c.conn.Close()
 }
 
+// Ping verifies the underlying ClickHouse connection is reachable. It
+// forwards to the clickhouse-go/v2 driver's Ping, which performs a
+// lightweight round-trip on a pooled connection. The readiness probe
+// (internal/api/health) uses it as the downstream-dependency check.
+func (c *Client) Ping(ctx context.Context) error {
+	if c.conn == nil {
+		return fmt.Errorf("chclient: ping: nil connection")
+	}
+	if err := c.conn.Ping(ctx); err != nil {
+		return fmt.Errorf("chclient: ping: %w", err)
+	}
+	return nil
+}
+
 // Sample is one row of metrics data returned by Query. It's the shape the
 // /api/v1/query and /api/v1/query_range handlers expect — see api/prom.
 type Sample struct {

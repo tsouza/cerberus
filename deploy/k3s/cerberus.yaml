@@ -66,12 +66,19 @@ spec:
               memory: 64Mi
             limits:
               memory: 256Mi
+          # /readyz pings ClickHouse (with a small TTL cache so this
+          # probe doesn't hammer CH) and reports the auto-create-schema
+          # invariant. A failure removes the pod from the Service
+          # endpoints without restarting it — backpressure, not crash.
           readinessProbe:
             httpGet:
-              path: /healthz
+              path: /readyz
               port: http
             initialDelaySeconds: 2
             periodSeconds: 3
+            timeoutSeconds: 2
+          # /healthz is intentionally dependency-free: a failure here
+          # means the process is wedged and k8s should restart the pod.
           livenessProbe:
             httpGet:
               path: /healthz
