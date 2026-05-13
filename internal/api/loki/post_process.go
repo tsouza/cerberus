@@ -13,9 +13,10 @@ import (
 // rows return:
 //
 //   - `| line_format "<tpl>"` — Go text/template; receives the
-//     stream's labels as `.<label>` and the original line as
-//     `__line__`. Composed left-to-right (the rightmost line_format
-//     sees the output of the previous one).
+//     stream's labels as `.<label>` and exposes the current line as
+//     `{{__line__}}` (a parameterless template func, matching Loki's
+//     own templating contract). Composed left-to-right (the rightmost
+//     line_format sees the output of the previous one).
 //   - `| decolorize` — strip ANSI escape codes from each line.
 //
 // Lowering already returns nil-predicate no-ops for these stages so
@@ -32,13 +33,11 @@ func postProcessExtract(expr syntax.Expr) (lineTransform, error) {
 	for _, st := range pipe.MultiStages {
 		switch v := st.(type) {
 		case *syntax.LineFmtExpr:
-			tpl, err := template.New("line_format").
-				Funcs(lineFormatFuncs).
-				Parse(v.Value)
+			step, err := newLineFormatStep(v.Value)
 			if err != nil {
 				return nil, err
 			}
-			steps = append(steps, lineFormatStep(tpl))
+			steps = append(steps, step)
 		case *syntax.DecolorizeExpr:
 			steps = append(steps, decolorizeStep)
 		}
@@ -68,26 +67,52 @@ func composeTransforms(steps []lineTransform) lineTransform {
 	}
 }
 
-// lineFormatStep returns the transform for a single `| line_format`
-// template. Each call merges the stream's labels into the template
-// dot value and injects the current line as `__line__`. On a runtime
-// template error (e.g., a referenced label is missing) the function
-// returns the input line unchanged — silently failing matches Loki's
-// own behaviour.
-func lineFormatStep(tpl *template.Template) lineTransform {
+// newLineFormatStep parses a `| line_format` template and returns a
+// per-line transform. The template can reference labels as `.<name>`
+// and the current line via the parameterless `{{__line__}}` function
+// — Loki's contract.
+//
+// On a runtime template error (e.g., a referenced label is missing)
+// the transform returns the input line unchanged — matching Loki's
+// silent-fallback semantics. Parse-time errors surface as a query
+// error so the user knows their template is broken.
+//
+// The returned closure captures `currentLine` so `{{__line__}}` can
+// read the line for each call. The transform is single-goroutine by
+// construction (postProcessExtract returns a fresh transform per
+// request, and toStreamsWithTransform applies it sequentially over
+// samples), so no synchronization is needed.
+func newLineFormatStep(src string) (lineTransform, error) {
+	var currentLine string
+	funcs := template.FuncMap{
+		"__line__": func() string { return currentLine },
+		// __timestamp__ stub — Loki exposes this as a func too.
+		// Not wired through Sample.Timestamp yet; revisit if a
+		// user template references it.
+		"__timestamp__": func() string { return "" },
+	}
+	// Parsing a user-supplied template is the documented contract for
+	// `| line_format` — Loki accepts the same input and we mirror its
+	// semantics. The template runs against the streams response (label
+	// values + line text) only, never against server state. The
+	// per-execution funcmap above and the empty default context bound
+	// `{{...}}` access to the request payload.
+	tpl, err := template.New("line_format").Funcs(funcs).Parse(src) //nolint:gosec // G708: user-template input is the feature
+	if err != nil {
+		return nil, err
+	}
 	return func(line string, labels map[string]string) string {
-		ctx := make(map[string]any, len(labels)+1)
+		currentLine = line
+		ctx := make(map[string]any, len(labels))
 		for k, v := range labels {
 			ctx[k] = v
 		}
-		ctx["__line__"] = line
-
 		var buf bytes.Buffer
 		if err := tpl.Execute(&buf, ctx); err != nil {
 			return line
 		}
 		return buf.String()
-	}
+	}, nil
 }
 
 // decolorizeStep strips ANSI escape sequences from each line. Matches
@@ -100,14 +125,3 @@ func decolorizeStep(line string, _ map[string]string) string {
 // the most common form: `ESC [ <params> <intermediate> <final>`. Loki
 // uses a similar regex (see github.com/grafana/loki/pkg/logql/log).
 var ansiEscape = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
-
-// lineFormatFuncs are the template funcs cerberus exposes inside
-// `| line_format`. A subset of Loki's full set; the rest fail at
-// template-parse time with a clear error pointing the user at the
-// gap.
-//
-// Currently exposed: none (just label-access via `.<name>`). Loki
-// also offers `regexReplaceAll`, `lower`, `upper`, `trim`, etc. —
-// add as use-cases surface. Failing at parse-time is intentional:
-// silent omission would render garbage lines.
-var lineFormatFuncs = template.FuncMap{}

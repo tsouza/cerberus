@@ -208,8 +208,8 @@ func wrapWithLogSampleProjection(plan chplan.Node, s schema.Logs, expr syntax.Ex
 	// Log-stream query: chclient.Sample is (MetricName, Attributes, Timestamp,
 	// Value) where Value is float64. The log line `Body` is a String, so it
 	// can't ride in Value — instead we put it in MetricName (also a String)
-	// and write a 0.0 placeholder into Value. toStreams reads back from
-	// Sample.MetricName as the line content.
+	// and write a 0.0 placeholder into Value. toStreamsWithTransform reads
+	// back from Sample.MetricName as the line content.
 	return &chplan.Project{
 		Input: plan,
 		Projections: []chplan.Projection{
@@ -351,20 +351,15 @@ func toMatrixStepGrid(samples []chclient.Sample, start, end time.Time, step time
 	return out
 }
 
-// toStreams pivots samples into Loki's "streams" result shape. Each
-// distinct label set becomes one Stream; values are sorted by ts ascending.
+// toStreamsWithTransform pivots samples into Loki's "streams" result shape
+// and optionally runs a per-line transform (line_format / decolorize) over
+// each line before grouping. Each distinct label set becomes one Stream;
+// values are sorted by ts ascending. Nil tx is the identity transform.
 //
 // Note: the synthesized projection writes the log Body string into
 // chclient.Sample.MetricName (since Sample.Value is float64). This is a
 // short-term hack — the proper fix is a new chclient row decoder for
 // log-stream output, which lands with the stream-aware decoder PR.
-func toStreams(samples []chclient.Sample) []Stream {
-	return toStreamsWithTransform(samples, nil)
-}
-
-// toStreamsWithTransform is the backbone of toStreams that optionally
-// runs a per-line transform (line_format / decolorize) over each line
-// before grouping. Nil tx is the identity transform (= toStreams).
 func toStreamsWithTransform(samples []chclient.Sample, tx lineTransform) []Stream {
 	type acc struct {
 		labels map[string]string
