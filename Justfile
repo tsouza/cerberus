@@ -196,3 +196,20 @@ compatibility-keep:
 # Tear down the compatibility stack manually.
 compatibility-down:
     cd harness/compatibility && docker compose down -v
+
+# === Shadow-mode differential testing (RC3 R3.9) ===
+
+# Build + run the shadow-mode harness against a corpus.
+# Expects a running cerberus reachable at $CERBERUS_URL (default
+# http://localhost:9090). Oracle wiring is stubbed until R3.10 lands;
+# under `prefer-native` (default) the noop oracle records diffs as
+# "oracle skipped" (non-fatal). See harness/compatibility/shadow/README.md.
+shadow-mode CORPUS="harness/compatibility/shadow/corpus/smoke.txt" STRATEGY="prefer-native":
+    @echo "==> building shadow-mode harness"
+    go build -trimpath -o bin/shadow ./harness/compatibility/shadow/cmd/shadow
+    @echo "==> running shadow-mode (strategy={{STRATEGY}})"
+    ./bin/shadow \
+        --corpus {{CORPUS}} \
+        --strategy {{STRATEGY}} \
+        --cerberus-url "${CERBERUS_URL:-http://localhost:9090}" \
+        --report shadow-report.json

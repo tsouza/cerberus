@@ -1,0 +1,26 @@
+# Shadow-mode smoke corpus.
+# These are deliberately simple PromQL expressions that exercise the three
+# main shapes the diff cares about: instant vectors, range vectors with rate,
+# and grouped aggregations. R3.10's oracle will validate semantics; R3.9 just
+# proves the harness end-to-end.
+
+-- query --
+up
+
+-- query --
+rate(http_requests_total[5m])
+
+-- query --
+sum by (job) (rate(http_requests_total[5m]))
+
+-- query --
+sum by (job, instance) (up)
+
+-- query --
+avg_over_time(node_load1[10m])
+
+-- query --
+histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket[5m])))
+
+-- query --
+count by (job) (up == 1)

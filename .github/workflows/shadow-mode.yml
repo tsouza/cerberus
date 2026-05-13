@@ -1,0 +1,92 @@
+name: shadow-mode
+
+# RC3 R3.9 — shadow-mode differential testing harness.
+#
+# Scaffold only. The oracle (`internal/promshim/local/`) lands in R3.10, so
+# this workflow runs on manual dispatch only. Once R3.10 merges, we will:
+#   * flip the strategy default to force-native,
+#   * add `schedule:` (nightly) + `push:` (main, scoped paths) triggers,
+#   * remove `continue-on-error`.
+
+on:
+  workflow_dispatch:
+    inputs:
+      corpus:
+        description: 'Path to a corpus TXTAR file'
+        required: false
+        default: 'harness/compatibility/shadow/corpus/smoke.txt'
+      strategy:
+        description: 'Diff strategy: prefer-native | force-native | oracle-only'
+        required: false
+        default: 'prefer-native'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: shadow-mode-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shadow:
+    name: shadow-mode
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Informational until R3.10 lands. The noop oracle marks every query
+    # "oracle skipped"; under `prefer-native` the harness still exits 0 but
+    # we keep this guard so a future strategy bump doesn't immediately fail
+    # required-checks.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      - name: Build harness
+        run: go build -trimpath -o bin/shadow ./harness/compatibility/shadow/cmd/shadow
+
+      - name: Run shadow-mode against smoke corpus
+        env:
+          # No real cerberus is started here yet; with the noop oracle the
+          # harness will report native HTTP errors per query, which is the
+          # expected shape until R3.10 wires the in-process oracle.
+          CERBERUS_URL: ${{ vars.SHADOW_CERBERUS_URL || 'http://localhost:9090' }}
+        run: |
+          ./bin/shadow \
+            --corpus "${{ github.event.inputs.corpus }}" \
+            --strategy "${{ github.event.inputs.strategy }}" \
+            --report shadow-report.json \
+            || echo "shadow-mode exited non-zero (expected pre-R3.10)"
+
+      - name: Summarise report
+        if: always()
+        run: |
+          if [ -f shadow-report.json ]; then
+            jq '{
+              strategy: .strategy,
+              total: .total_queries,
+              diffs: .diffs,
+              native_errors: .native_errors,
+              oracle_skipped: .oracle_skipped
+            }' shadow-report.json
+          else
+            echo "no report produced"
+          fi
+
+      - name: Upload diff report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: shadow-report
+          path: shadow-report.json
+          if-no-files-found: warn
+          retention-days: 30
