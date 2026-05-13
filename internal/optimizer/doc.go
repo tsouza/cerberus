@@ -48,18 +48,37 @@
 //  1. analyzer.constant-fold-semantic (Analyzer)
 //  2. optimizer.constant-fold-heuristic (Once)
 //  3. optimizer.predicate-pushdown (FixedPoint) — FilterFusion +
-//     FilterProjectTranspose + FilterAggregateTranspose
+//     FilterProjectTranspose + FilterAggregateTranspose +
+//     FilterRangeWindowTranspose
 //  4. optimizer.projection (FixedPoint) — ProjectionPushdown
+//  5. optimizer.mv-substitution (FixedPoint) — MVSubstitution
+//     (RC3 R3.6). Runs last so predicate pushdown has already
+//     surfaced the `RangeWindow(Scan(base))` patterns the rule
+//     matches against. The rule needs a Metrics schema to read its
+//     rollup registry from; Default() binds the default OTel schema,
+//     DefaultWithSchema lets handler wiring override.
 //
-// Later RC3 rules (PREWHERE promotion at R3.4, Filter–RangeWindow
-// transpose at R3.8) plug into this structure without changing the
-// driver wiring. Each batch's name is prefixed `analyzer.` or
-// `optimizer.` to make the contract obvious in trace logs.
+// Each batch's name is prefixed `analyzer.` or `optimizer.` to make
+// the contract obvious in trace logs.
+//
+// # Cost model (mv-substitution)
+//
+// The MV-substitution batch is the first place cerberus picks among
+// equivalent plans (a rollup-scanned query and a base-scanned query
+// produce the same answer when the substitution is safe). RC3 R3.6
+// ships a deliberately simple cost model — `firstApplicable`, which
+// picks the first registry-listed rollup that passes the safety
+// conditions — and an unexported `costModel` interface stub so v2
+// can swap in a real estimator (per Jindal VLDB 2018 §4–§6) without
+// touching the rule. See mv_substitution.go for the safety-condition
+// breakdown and docs/optimizer-research.md § 6 for the design
+// rationale.
 //
 // # File layout
 //
 // Rules ship in their own files (filter_fusion.go, constant_fold.go,
 // projection_pushdown.go, filter_project_transpose.go,
-// filter_aggregate_transpose.go); the driver + batch + analyzer types
-// live in rule.go, batch.go, and analyzer.go.
+// filter_aggregate_transpose.go, filter_range_window_transpose.go,
+// mv_substitution.go); the driver + batch + analyzer types live in
+// rule.go, batch.go, and analyzer.go.
 package optimizer

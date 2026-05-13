@@ -1,5 +1,7 @@
 package schema
 
+import "time"
+
 // Metrics describes how cerberus reads metrics from ClickHouse. The default
 // (returned by DefaultOTelMetrics) matches the OpenTelemetry ClickHouse
 // Exporter v0.x schema; users with custom layouts override individual
@@ -128,6 +130,16 @@ type Metrics struct {
 	// (`Exemplars.SpanId`, etc.).
 	ExemplarsColumn string
 
+	// MetricsRollups declares pre-aggregated rollup tables the
+	// operator has provisioned alongside the base metrics tables. The
+	// optimizer's MV-substitution rule (RC3 R3.6) reads this list to
+	// decide whether a `RangeWindow` over a base table can be rewritten
+	// to scan the matching rollup instead. The registry is the
+	// operator's contract: cerberus trusts the listed tables exist and
+	// carry the declared (Window, AggOp) semantics. Empty means "no
+	// rollups available" — the rule will never fire.
+	MetricsRollups []Rollup
+
 	// ExpHistogramSuffix is the metric-name suffix used to route a
 	// PromQL `histogram_quantile(phi, metric)` call to the exponential
 	// (native) histogram table instead of the classic-histogram table.
@@ -139,6 +151,128 @@ type Metrics struct {
 	// for deployments that follow a different convention; an empty
 	// string disables the routing entirely.
 	ExpHistogramSuffix string
+}
+
+// RollupAggOp enumerates the per-bucket reducer the operator
+// configured the upstream rollup table to compute. The optimizer uses
+// this to check commutativity against the outer query's aggregate (sum
+// over sums is total sum; max over maxes is total max; avg over avgs
+// is NOT total avg without per-bucket weights, so RollupAggAvg is
+// explicitly excluded from the v1 substitution).
+type RollupAggOp string
+
+const (
+	// RollupAggSum names a rollup whose materialised column holds the
+	// per-bucket sum of the base table's value column. Commutes with
+	// outer `sum`.
+	RollupAggSum RollupAggOp = "sum"
+	// RollupAggCount names a rollup whose materialised column holds
+	// the per-bucket sample count. Commutes with outer `count` (and
+	// with outer `sum` when the per-bucket value is itself a count).
+	RollupAggCount RollupAggOp = "count"
+	// RollupAggMin names a rollup whose materialised column holds the
+	// per-bucket minimum. Commutes with outer `min`.
+	RollupAggMin RollupAggOp = "min"
+	// RollupAggMax names a rollup whose materialised column holds the
+	// per-bucket maximum. Commutes with outer `max`.
+	RollupAggMax RollupAggOp = "max"
+)
+
+// Rollup describes a single pre-aggregated rollup table in the OTel
+// metrics schema. The optimizer's MV-substitution rule (RC3 R3.6)
+// rewrites a `RangeWindow(Scan(BaseTable))` to `RangeWindow(Scan(RollupTable))`
+// when the query's step + range + aggregate operator are compatible
+// with the rollup's window + commuting aggregate.
+//
+// The rollup table is expected to expose:
+//
+//   - The same series-identity columns as the base table (the
+//     `Attributes` / `ResourceAttributes` / `ServiceName` columns are
+//     copied through unchanged by the upstream OTel exporter).
+//   - The same `TimestampColumn` aligned to the rollup window's
+//     boundary (e.g. `toStartOfFiveMinute(TimeUnix) AS TimeUnix`).
+//   - A `ValueColumn` carrying the pre-aggregated per-bucket value
+//     (e.g. `Sum` for an AggOp=sum rollup, `Max` for AggOp=max, …).
+//     The rule rewrites the `RangeWindow.ValueColumn` to this name
+//     before re-emitting SQL.
+type Rollup struct {
+	// BaseTable names the source `otel_metrics_*` table the rollup
+	// summarises (e.g. "otel_metrics_sum").
+	BaseTable string
+	// RollupTable names the materialised pre-aggregated table the
+	// upstream OTel exporter writes (e.g. "otel_metrics_sum_5m").
+	RollupTable string
+	// Window is the rollup's bucket size — every row in RollupTable
+	// represents one bucket of this width over the base table.
+	Window time.Duration
+	// AggOp is the per-bucket reducer the rollup applies to the base
+	// table's value column. Determines which outer aggregates can
+	// commute with the rollup.
+	AggOp RollupAggOp
+	// ValueColumn names the column on RollupTable that carries the
+	// pre-aggregated per-bucket value. Almost always upper-cased
+	// AggOp ("Sum" / "Count" / "Min" / "Max"). Stored explicitly so
+	// custom-named rollups can override the convention.
+	ValueColumn string
+}
+
+// Rollups returns the configured MetricsRollups list. Returned as a
+// dedicated accessor so future filtering (e.g. selecting candidates
+// for a given base table) can centralise here without touching every
+// caller.
+func (m Metrics) Rollups() []Rollup { return m.MetricsRollups }
+
+// RollupsFor returns the rollups whose BaseTable equals base. Order
+// is preserved from MetricsRollups; the rule walks the slice in this
+// order and picks the first applicable candidate (the v1
+// `firstApplicable` CostModel — see internal/optimizer/mv_substitution.go).
+// Operators who care about candidate ordering should list the longest
+// (coarsest) window first so the rule prefers the rollup that strips
+// the most data.
+func (m Metrics) RollupsFor(base string) []Rollup {
+	var out []Rollup
+	for _, r := range m.MetricsRollups {
+		if r.BaseTable == base {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// defaultOTelRollups returns the canonical OTel CH exporter rollups.
+// The upstream exporter only writes these tables when the operator
+// explicitly enables the rollup feature, so the default schema
+// advertises them — operators who haven't enabled rollups will simply
+// never have the rule fire (the substitution checks for the rollup
+// table existing logically via this registry; cerberus does not probe
+// CH's `system.tables`).
+//
+// Two canonical rollups ship in the default schema:
+//
+//   - `otel_metrics_sum_5m` — five-minute sum buckets. Suits PromQL
+//     `query_range` with 5-minute step.
+//   - `otel_metrics_sum_1h` — one-hour sum buckets. Suits long-range
+//     queries (24h, 7d) where five-minute resolution is overkill.
+//
+// Longest window first so `firstApplicable` prefers the coarsest
+// rollup that still satisfies the query's step.
+func defaultOTelRollups() []Rollup {
+	return []Rollup{
+		{
+			BaseTable:   "otel_metrics_sum",
+			RollupTable: "otel_metrics_sum_1h",
+			Window:      time.Hour,
+			AggOp:       RollupAggSum,
+			ValueColumn: "Sum",
+		},
+		{
+			BaseTable:   "otel_metrics_sum",
+			RollupTable: "otel_metrics_sum_5m",
+			Window:      5 * time.Minute,
+			AggOp:       RollupAggSum,
+			ValueColumn: "Sum",
+		},
+	}
 }
 
 // DefaultOTelMetrics returns the schema produced by the upstream OTel
@@ -183,6 +317,7 @@ func DefaultOTelMetrics() Metrics {
 		ValueAtQuantilesColumn:       "ValueAtQuantiles",
 		ExemplarsColumn:              "Exemplars",
 		ExpHistogramSuffix:           "_exp_hist",
+		MetricsRollups:               defaultOTelRollups(),
 	}
 }
 

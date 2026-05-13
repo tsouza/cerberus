@@ -26,7 +26,10 @@
 // See batch.go.
 package optimizer
 
-import "github.com/tsouza/cerberus/internal/chplan"
+import (
+	"github.com/tsouza/cerberus/internal/chplan"
+	"github.com/tsouza/cerberus/internal/schema"
+)
 
 // Rule is one rewrite pass over the plan IR.
 type Rule interface {
@@ -95,12 +98,32 @@ func NewWithBatches(batches ...Batch) *Driver {
 //     nested Projects. Today only one pass changes anything, but the
 //     strategy leaves room for follow-up rules (R3.7) to land in this
 //     batch without changing wiring.
+//   - "optimizer.mv-substitution" (FixedPoint) — MVSubstitution
+//     rewrites `RangeWindow(Scan(base))` to `RangeWindow(Scan(rollup))`
+//     when the operator has declared a pre-aggregated rollup whose
+//     window + aggregation operator commute with the query's step +
+//     range + outer function. Runs after predicate-pushdown so a
+//     filter transposed under a RangeWindow can still see the
+//     post-substitution scan (the rollup table exposes the same
+//     series-identity columns as the base table). Default schema
+//     ships the canonical `otel_metrics_sum_5m` / `otel_metrics_sum_1h`
+//     entries — operators using a custom schema can call
+//     `DefaultWithSchema(...)` to plug their own rollups in.
 //
 // Order matters across batches: the analyzer batch runs first
 // (must-run); the heuristic constant fold then canonicalises bool
 // literals so that predicate pushdown sees a tree where filters whose
 // predicates contained `true AND ...` have already collapsed.
 func Default() *Driver {
+	return DefaultWithSchema(schema.DefaultOTelMetrics())
+}
+
+// DefaultWithSchema is like Default but binds the MV-substitution rule
+// to the supplied Metrics schema's rollup registry. Use this from API
+// handler wiring when the deployment overrides the default OTel
+// schema; the rule needs to see the operator's configured rollup
+// tables to find substitution candidates.
+func DefaultWithSchema(metrics schema.Metrics) *Driver {
 	return NewWithBatches(
 		AnalyzerBatch("analyzer.constant-fold-semantic", ConstantFoldSemantic{}),
 		Batch{
@@ -122,6 +145,11 @@ func Default() *Driver {
 			Name:     "optimizer.projection",
 			Strategy: FixedPoint(defaultMaxIterations),
 			Rules:    []Rule{ProjectionPushdown{}},
+		},
+		Batch{
+			Name:     "optimizer.mv-substitution",
+			Strategy: FixedPoint(defaultMaxIterations),
+			Rules:    []Rule{MVSubstitution(metrics.Rollups(), metrics.ValueColumn)},
 		},
 	)
 }
