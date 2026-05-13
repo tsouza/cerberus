@@ -26,7 +26,7 @@ linters:
     # forbidigo: bans `unsafe.Pointer` and `reflect.Value.FieldByName`
     #   inside `internal/traceql/` + `internal/api/tempo/` so the
     #   parser-internal shim retired in #148 cannot be reintroduced.
-    #   See docs/fork-tempo-plan.md § "Cerberus PR #D". Scoped to those
+    #   See docs/upstream-forks.md. Scoped to those
     #   two dirs via `exclusions.rules[].path-except` below.
     - forbidigo
   settings:
@@ -49,7 +49,7 @@ linters:
       analyze-types: true
       forbid:
         - pattern: '^unsafe\.Pointer$'
-          msg: 'unsafe.Pointer is forbidden in internal/traceql/ and internal/api/tempo/ — use the tsouza/tempo:cerberus-accessors fork accessors instead. See docs/fork-tempo-plan.md.'
+          msg: 'unsafe.Pointer is forbidden in internal/traceql/ and internal/api/tempo/ — use the tsouza/tempo:cerberus-accessors fork accessors instead. See docs/upstream-forks.md.'
         - pattern: '^reflect\.Value\.FieldByName$'
           msg: 'reflect.FieldByName on parser AST is forbidden — use the upstream-fork accessors instead.'
   exclusions:

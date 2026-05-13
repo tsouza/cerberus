@@ -15,7 +15,7 @@ name: auto-merge-deps
 # Branch protection on `main` still gates the actual merge —
 # auto-merge stays pending until `check + lint + dashboard` go green
 # and only then squash-merges. enforce_admins: true means this
-# workflow can't bypass required checks. See docs/upstream-tracking.md
+# workflow can't bypass required checks. See docs/upstream-forks.md
 # for the full rationale.
 
 on:

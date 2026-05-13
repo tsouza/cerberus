@@ -1,6 +1,6 @@
 // This file (and select.go) read parser AST nodes exclusively via the
 // upstream-fork-exposed accessors on github.com/tsouza/tempo:cerberus-accessors
-// — no reflection, no pointer aliasing tricks. See docs/fork-tempo-plan.md.
+// — no reflection, no pointer aliasing tricks. See docs/upstream-forks.md.
 
 package traceql
 
@@ -18,7 +18,7 @@ import (
 // aggregate the constant 1 per row. The other four read the inner
 // FieldExpression via the upstream-fork-exposed Aggregate.InnerExpr()
 // accessor (github.com/tsouza/tempo:cerberus-accessors) — see
-// docs/fork-tempo-plan.md.
+// docs/upstream-forks.md.
 func lowerAggregate(prev chplan.Node, agg traceql.Aggregate, s schema.Traces) (chplan.Node, error) {
 	chFunc, err := mapAggregateOp(agg.Op())
 	if err != nil {

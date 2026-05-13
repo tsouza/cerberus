@@ -16,7 +16,7 @@ import (
 // The attribute list is read via the upstream-fork-exposed
 // SelectOperation.Attrs() accessor
 // (github.com/tsouza/tempo:cerberus-accessors) — see
-// docs/fork-tempo-plan.md.
+// docs/upstream-forks.md.
 //
 // Output: a chplan.Project that emits the standard span-identity
 // columns (TraceId, SpanId, Timestamp) plus the selected attribute
