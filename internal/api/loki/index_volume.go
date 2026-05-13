@@ -147,7 +147,7 @@ func buildIndexVolumeSQL(
 
 	sb.GroupBy(chsql.Col("labels")).
 		OrderBy(chsql.Col("bytes"), true).
-		Limit(limit)
+		Limit(int64(limit))
 
 	sqlStr, args := sb.Build()
 	return sqlStr, args, nil
