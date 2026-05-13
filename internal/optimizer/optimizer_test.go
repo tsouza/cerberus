@@ -283,6 +283,73 @@ var inputs = map[string]chplan.Node{
 		},
 	},
 
+	// mv_substitution_sum_5m: sum_over_time(metric[1h]) with step=5m
+	// over otel_metrics_sum. All four safety conditions hold against
+	// the default 5m sum-rollup; the rule rewrites Scan.Table to
+	// otel_metrics_sum_5m and RangeWindow.ValueColumn from `Value` to
+	// the rollup's pre-aggregated `Sum` column.
+	"mv_substitution_sum_5m": &chplan.RangeWindow{
+		Input:           &chplan.Scan{Table: "otel_metrics_sum"},
+		Func:            "sum_over_time",
+		Range:           time.Hour,
+		Step:            5 * time.Minute,
+		TimestampColumn: "TimeUnix",
+		ValueColumn:     "Value",
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+	},
+
+	// mv_substitution_step_too_small: same plan as the happy path but
+	// with step=30s. Step < window violates safety condition (1); the
+	// rule must skip and the optimized SQL stays on otel_metrics_sum.
+	"mv_substitution_step_too_small": &chplan.RangeWindow{
+		Input:           &chplan.Scan{Table: "otel_metrics_sum"},
+		Func:            "sum_over_time",
+		Range:           time.Hour,
+		Step:            30 * time.Second,
+		TimestampColumn: "TimeUnix",
+		ValueColumn:     "Value",
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+	},
+
+	// mv_substitution_range_not_multiple: 7-minute range over a 5m
+	// rollup. range%window != 0 violates safety condition (2); the
+	// rule must skip.
+	"mv_substitution_range_not_multiple": &chplan.RangeWindow{
+		Input:           &chplan.Scan{Table: "otel_metrics_sum"},
+		Func:            "sum_over_time",
+		Range:           7 * time.Minute,
+		Step:            5 * time.Minute,
+		TimestampColumn: "TimeUnix",
+		ValueColumn:     "Value",
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+	},
+
+	// mv_substitution_avg_blocked: avg_over_time does NOT commute
+	// with a sum-rollup (no per-bucket weights). Safety condition (3)
+	// rejects; the rule must skip.
+	"mv_substitution_avg_blocked": &chplan.RangeWindow{
+		Input:           &chplan.Scan{Table: "otel_metrics_sum"},
+		Func:            "avg_over_time",
+		Range:           time.Hour,
+		Step:            5 * time.Minute,
+		TimestampColumn: "TimeUnix",
+		ValueColumn:     "Value",
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+	},
+
+	// mv_substitution_no_rollup_for_gauge: query over otel_metrics_gauge
+	// — the default registry has no gauge rollups, so safety condition
+	// (4) rejects.
+	"mv_substitution_no_rollup_for_gauge": &chplan.RangeWindow{
+		Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+		Func:            "sum_over_time",
+		Range:           time.Hour,
+		Step:            5 * time.Minute,
+		TimestampColumn: "TimeUnix",
+		ValueColumn:     "Value",
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+	},
+
 	// subquery_matrix_opaque: a matrix-shape RangeWindow with a
 	// FilterFusion-friendly nested Filter underneath. The optimizer
 	// should fuse the inner two Filters but NOT alter the matrix

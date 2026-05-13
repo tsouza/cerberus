@@ -1,6 +1,9 @@
 package schema
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // TestDefaultOTelMetricsPinsUpstreamColumns pins every column name
 // DefaultOTelMetrics() returns against the verbatim string the upstream
@@ -109,5 +112,49 @@ func TestDefaultOTelMetricsTableFor(t *testing.T) {
 		if got := m.TableFor(name); got != want {
 			t.Errorf("TableFor(%q): got %q, want %q", name, got, want)
 		}
+	}
+}
+
+// TestDefaultOTelMetricsRollups pins the canonical OTel sum rollups
+// the upstream exporter writes when rollup tables are enabled. The
+// MV-substitution optimizer rule (RC3 R3.6) reads this list to find
+// candidates; if the upstream exporter ships a new rollup window we
+// add it here so the rule picks it up.
+func TestDefaultOTelMetricsRollups(t *testing.T) {
+	t.Parallel()
+	m := DefaultOTelMetrics()
+
+	rollups := m.Rollups()
+	if len(rollups) == 0 {
+		t.Fatalf("DefaultOTelMetrics: expected at least the two canonical sum rollups; got none")
+	}
+
+	// The 1h rollup must come before 5m so firstApplicable cost-model
+	// prefers the coarsest applicable window.
+	got1h := rollups[0]
+	if got1h.RollupTable != "otel_metrics_sum_1h" {
+		t.Errorf("first rollup: got RollupTable=%q, want otel_metrics_sum_1h (coarsest-first ordering broken)", got1h.RollupTable)
+	}
+	if got1h.Window != time.Hour {
+		t.Errorf("1h rollup Window: got %s, want 1h", got1h.Window)
+	}
+	if got1h.AggOp != RollupAggSum {
+		t.Errorf("1h rollup AggOp: got %q, want sum", got1h.AggOp)
+	}
+	if got1h.ValueColumn != "Sum" {
+		t.Errorf("1h rollup ValueColumn: got %q, want Sum", got1h.ValueColumn)
+	}
+	if got1h.BaseTable != m.SumTable {
+		t.Errorf("1h rollup BaseTable: got %q, want %q", got1h.BaseTable, m.SumTable)
+	}
+
+	// RollupsFor must filter by base table.
+	sumOnly := m.RollupsFor(m.SumTable)
+	if len(sumOnly) != 2 {
+		t.Errorf("RollupsFor(SumTable): expected 2 rollups, got %d", len(sumOnly))
+	}
+	gaugeOnly := m.RollupsFor(m.GaugeTable)
+	if len(gaugeOnly) != 0 {
+		t.Errorf("RollupsFor(GaugeTable): expected 0 rollups (no gauge rollups in default schema), got %d", len(gaugeOnly))
 	}
 }
