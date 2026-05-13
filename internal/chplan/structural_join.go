@@ -8,10 +8,16 @@ package chplan
 //	StructuralAncestor  — `A << B` : A is a descendant of B        (return B rows)
 //	StructuralSibling   — `A ~ B`  : A and B share the same parent (return B rows)
 //
-// `>>` and `<<` need recursive CTE / multi-level joins; the seed
-// (M4.2) emits `>` and `<` and rejects the recursive forms with a
-// pointer to the M4.2 follow-up. `~` (sibling) lands alongside the
-// RC2 set-ops work.
+// Direct parent-child (`>` / `<`) and sibling (`~`) emit as a single
+// INNER JOIN on (TraceID, SpanID/ParentSpanID). Recursive forms
+// (`>>` / `<<`) walk the parent chain via a CH `WITH RECURSIVE` CTE
+// — see internal/chsql/structural_join.go for the emission strategy
+// and docs/roadmap.md § RC3 for the deferred-from-RC2 rationale.
+//
+// Multi-hop chains (`a > b > c`) already fall out of the binary node
+// shape: the lowering produces `StructuralJoin{Left: a, Right:
+// StructuralJoin{Left: b, Right: c}}` by recursing into LHS/RHS
+// SpansetOperation nodes.
 type StructuralOp string
 
 const (
@@ -27,6 +33,13 @@ const (
 // produce span rows from otel_traces (or a derived projection thereof);
 // the join key uses TraceID + (Span/Parent)ID columns named in the
 // schema.
+//
+// MaxDepth bounds the parent-chain walk for recursive ops (`>>` / `<<`):
+// 0 means unbounded (the CH `WITH RECURSIVE` CTE iterates until the
+// fixpoint). Positive values cap the recursion at that many levels —
+// useful for cost control on deep traces; the optimizer may set this
+// from a configured ceiling. For the direct ops (`>` / `<` / `~`) the
+// field is ignored: those always emit a single-level INNER JOIN.
 type StructuralJoin struct {
 	Left, Right Node
 	Op          StructuralOp
@@ -34,6 +47,8 @@ type StructuralJoin struct {
 	TraceIDColumn      string
 	SpanIDColumn       string
 	ParentSpanIDColumn string
+
+	MaxDepth int
 }
 
 func (*StructuralJoin) planNode() {}
@@ -51,6 +66,9 @@ func (j *StructuralJoin) Equal(other Node) bool {
 	if j.TraceIDColumn != o.TraceIDColumn ||
 		j.SpanIDColumn != o.SpanIDColumn ||
 		j.ParentSpanIDColumn != o.ParentSpanIDColumn {
+		return false
+	}
+	if j.MaxDepth != o.MaxDepth {
 		return false
 	}
 	return j.Left.Equal(o.Left) && j.Right.Equal(o.Right)

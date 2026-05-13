@@ -158,11 +158,13 @@ func TestEmit_ColumnRefQualifier(t *testing.T) {
 	}
 }
 
-// TestEmit_StructuralJoinRecursiveOpRejected — `>>` (descendant) and
-// `<<` (ancestor) are mapped at the lowering layer but the emitter
-// doesn't yet produce JOIN-on-prefix SQL. Emit must reject cleanly
-// rather than producing broken SQL.
-func TestEmit_StructuralJoinRecursiveOpRejected(t *testing.T) {
+// TestEmit_StructuralJoinRecursiveEmits — `>>` (descendant) and `<<`
+// (ancestor) lower to a CH `WITH RECURSIVE` CTE that walks the parent
+// chain inside the span table. Confirm both ops emit a recursive CTE
+// header so a regression that silently falls back to the direct
+// INNER-JOIN shape is caught early. (Byte-exact SQL is locked in by
+// the `structural_join_descendant` / `_ancestor` txtar fixtures.)
+func TestEmit_StructuralJoinRecursiveEmits(t *testing.T) {
 	t.Parallel()
 
 	for _, op := range []chplan.StructuralOp{chplan.StructuralDescendant, chplan.StructuralAncestor} {
@@ -176,13 +178,39 @@ func TestEmit_StructuralJoinRecursiveOpRejected(t *testing.T) {
 				SpanIDColumn:       "SpanId",
 				ParentSpanIDColumn: "ParentSpanId",
 			}
-			_, _, err := chsql.Emit(plan)
-			if err == nil {
-				t.Fatalf("Emit(StructuralJoin %s) returned nil; recursive form should error until RC2", op)
+			sql, _, err := chsql.Emit(plan)
+			if err != nil {
+				t.Fatalf("Emit(StructuralJoin %s) unexpected error: %v", op, err)
 			}
-			if !errors.Is(err, chsql.ErrUnsupported) {
-				t.Errorf("expected wrapped ErrUnsupported; got %v", err)
+			if !strings.Contains(sql, "WITH RECURSIVE _struct_closure") {
+				t.Errorf("Emit(StructuralJoin %s) did not render a WITH RECURSIVE CTE; got %q",
+					op, sql)
 			}
 		})
+	}
+}
+
+// TestEmit_StructuralJoinRecursiveBoundedDepth — MaxDepth > 0 caps the
+// recursive walk via a `WHERE c._depth < N` predicate inside the
+// recursive step. MaxDepth == 0 (default) is unbounded and emits no
+// WHERE clause inside the CTE step.
+func TestEmit_StructuralJoinRecursiveBoundedDepth(t *testing.T) {
+	t.Parallel()
+
+	plan := &chplan.StructuralJoin{
+		Left:               &chplan.Scan{Table: "otel_traces"},
+		Right:              &chplan.Scan{Table: "otel_traces"},
+		Op:                 chplan.StructuralDescendant,
+		TraceIDColumn:      "TraceId",
+		SpanIDColumn:       "SpanId",
+		ParentSpanIDColumn: "ParentSpanId",
+		MaxDepth:           5,
+	}
+	sql, _, err := chsql.Emit(plan)
+	if err != nil {
+		t.Fatalf("Emit returned unexpected error: %v", err)
+	}
+	if !strings.Contains(sql, "WHERE c._depth < 5") {
+		t.Errorf("Emit did not render depth cap; got %q", sql)
 	}
 }

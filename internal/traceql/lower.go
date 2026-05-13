@@ -159,8 +159,12 @@ func lowerPipelineElement(elem traceql.PipelineElement, s schema.Traces) (chplan
 }
 
 // lowerSpansetOperation handles structural relations (`A > B`, `A < B`,
-// `A ~ B`) and set operations (`A && B`, `A || B`). Recursive structural
-// forms (`>>`, `<<`) and the negated / union-prefixed variants defer.
+// `A ~ B`, plus the recursive forms `A >> B` / `A << B`) and set
+// operations (`A && B`, `A || B`). Multi-hop chains (`A > B > C`) fall
+// out of the binary StructuralJoin shape — the Tempo grammar binds `>`
+// left-associatively, so chained operators parse as nested
+// SpansetOperation nodes that this function recurses into via
+// lowerSpansetExpr. Negated / union-prefixed variants still defer.
 func lowerSpansetOperation(op *traceql.SpansetOperation, s schema.Traces) (chplan.Node, error) {
 	left, err := lowerSpansetExpr(op.LHS, s)
 	if err != nil {
@@ -212,8 +216,10 @@ func mapSetOp(op traceql.Operator) (chplan.SetOp, bool) {
 }
 
 // lowerSpansetExpr lowers a TraceQL SpansetExpression (the LHS/RHS of
-// a SpansetOperation). Currently SpansetFilter; nested operations land
-// once `>>` / `<<` recursive support arrives.
+// a SpansetOperation). Handles SpansetFilter and nested SpansetOperation
+// — the nested case is what makes multi-hop chains (`A > B > C`) and
+// mixed direct/recursive chains (`A > B >> C`) work without any
+// dedicated lowering pass.
 func lowerSpansetExpr(e traceql.SpansetExpression, s schema.Traces) (chplan.Node, error) {
 	switch v := e.(type) {
 	case *traceql.SpansetFilter:
