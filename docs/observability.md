@@ -6,14 +6,14 @@ that store so a self-dashboard works against a running cluster.
 
 The full self-observability stack lands across **RC4**:
 
-| Item | Status | Notes |
-| ---- | ------ | ----- |
-| R4.1 — slog quality pass + env-configurable format / level | landed | this doc |
-| R4.2 — `otelhttp.NewHandler` wraps the Prom / Loki / Tempo handlers | planned | adds one span per HTTP request |
-| R4.3 — Custom spans around parse / lower / optimize / emit / execute | planned | pipeline stage timings |
-| R4.4 — Self-metrics: request count + latency + CH roundtrip + in-flight gauge | planned | HPA-consumable |
+| Item                                                                                                  | Status  | Notes                                    |
+| ----------------------------------------------------------------------------------------------------- | ------- | ---------------------------------------- |
+| R4.1 — slog quality pass + env-configurable format / level                                          | landed  | this doc                                 |
+| R4.2 — `otelhttp.NewHandler` wraps the Prom / Loki / Tempo handlers                                 | planned | adds one span per HTTP request           |
+| R4.3 — Custom spans around parse / lower / optimize / emit / execute                                | planned | pipeline stage timings                   |
+| R4.4 — Self-metrics: request count + latency + CH roundtrip + in-flight gauge                       | planned | HPA-consumable                           |
 | R4.5 — OTLP exporters wired (`CERBERUS_OTEL_ENDPOINT` / `_INSECURE` / `_SAMPLER` / `_SERVICE_NAME`) | planned | graceful no-op when endpoint unreachable |
-| R4.6 — `deploy/k3s/otel-collector.yaml` + `deploy/grafana/dashboards/cerberus-self.json` | planned | wires the export path end-to-end |
+| R4.6 — `deploy/k3s/otel-collector.yaml` + `deploy/grafana/dashboards/cerberus-self.json`            | planned | wires the export path end-to-end         |
 
 This page only covers what has already shipped. The remaining rows are
 expanded as the milestones land.
@@ -23,10 +23,10 @@ expanded as the milestones land.
 Cerberus uses the standard library's [`log/slog`](https://pkg.go.dev/log/slog)
 for structured logging. Two env vars steer the handler:
 
-| Env var               | Default | Allowed values                          | Effect                                   |
-| --------------------- | ------- | --------------------------------------- | ---------------------------------------- |
-| `CERBERUS_LOG_FORMAT` | `text`  | `text`, `json` (case-insensitive)       | slog handler kind                        |
-| `CERBERUS_LOG_LEVEL`  | `info`  | `debug`, `info`, `warn`, `error` (+ `warning` alias) | Minimum level retained by the handler |
+| Env var               | Default | Allowed values                                       | Effect                                   |
+| --------------------- | ------- | ---------------------------------------------------- | ---------------------------------------- |
+| `CERBERUS_LOG_FORMAT` | `text`  | `text`, `json` (case-insensitive)                    | slog handler kind                        |
+| `CERBERUS_LOG_LEVEL`  | `info`  | `debug`, `info`, `warn`, `error` (+ `warning` alias) | Minimum level retained by the handler    |
 
 Invalid values surface as a startup error rather than silently downgrading
 observability — a typo never ships to prod undetected.
@@ -56,15 +56,15 @@ observability — a typo never ships to prod undetected.
 The codebase follows a small set of consistent keys so a future query
 across `otel_logs` can filter without guessing:
 
-| Key       | Type   | Notes                                                  |
-| --------- | ------ | ------------------------------------------------------ |
-| `api`     | string | `prom` / `loki` / `tempo`, set on the per-handler logger via `.With("api", ...)` in `cmd/cerberus/main.go` |
-| `promql` / `logql` / `traceql` | string | The query text as received |
-| `sql`     | string | The emitted ClickHouse SQL                             |
-| `args`    | []any  | Parameterised SQL args                                 |
-| `err`     | error  | Native `error` value — slog encodes via `.Error()` for json + `%v` for text |
-| `trace_id`| string | Tempo `traceByID` handler only                         |
-| `tag`     | string | Tempo tag-values handler                               |
+| Key                            | Type   | Notes                                                                                                      |
+| ------------------------------ | ------ | ---------------------------------------------------------------------------------------------------------- |
+| `api`                          | string | `prom` / `loki` / `tempo`, set on the per-handler logger via `.With("api", ...)` in `cmd/cerberus/main.go` |
+| `promql` / `logql` / `traceql` | string | The query text as received                                                                                 |
+| `sql`                          | string | The emitted ClickHouse SQL                                                                                 |
+| `args`                         | []any  | Parameterised SQL args                                                                                     |
+| `err`                          | error  | Native `error` value — slog encodes via `.Error()` for json + `%v` for text                              |
+| `trace_id`                     | string | Tempo `traceByID` handler only                                                                             |
+| `tag`                          | string | Tempo tag-values handler                                                                                   |
 
 Always pass the native `error` as `"err", err` rather than `err.Error()`
 so a future `slog.Handler` middleware can branch on `errors.As` /
