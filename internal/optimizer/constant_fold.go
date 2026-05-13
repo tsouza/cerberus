@@ -22,7 +22,8 @@ import "github.com/tsouza/cerberus/internal/chplan"
 type ConstantFoldSemantic struct{}
 
 // ConstantFoldSemantic satisfies AnalyzerRule.
-func (ConstantFoldSemantic) Name() string   { return "constant-fold-semantic" }
+func (ConstantFoldSemantic) Name() string { return "constant-fold-semantic" }
+
 func (ConstantFoldSemantic) isAnalyzerRule() {}
 
 func (ConstantFoldSemantic) Apply(n chplan.Node) (chplan.Node, bool) {
