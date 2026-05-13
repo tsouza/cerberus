@@ -1,7 +1,7 @@
 -- query.traceql --
 {} | by(resource.service.name)
 -- sql --
-SELECT `ResourceAttributes`[?] AS `GroupKey`, any(`TraceId`) AS `TraceId`, any(`SpanId`) AS `SpanId`, min(`Timestamp`) AS `Timestamp` FROM (SELECT * FROM (SELECT * FROM `otel_traces`) WHERE ?) GROUP BY `ResourceAttributes`[?]
+SELECT `ResourceAttributes`[?] AS `GroupKey`, any(`TraceId`) AS `TraceId`, any(`SpanId`) AS `SpanId`, min(`Timestamp`) AS `Timestamp` FROM (SELECT * FROM `otel_traces` WHERE ?) GROUP BY `ResourceAttributes`[?]
 -- args --
 [0] string = "service.name"
 [1] bool = true

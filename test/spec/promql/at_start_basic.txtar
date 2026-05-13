@@ -5,4 +5,4 @@ up @ start()
 [1] string = "1970-01-01 00:01:40.000000000"
 [2] int64 = 9
 -- sql --
-SELECT * FROM (SELECT * FROM `otel_metrics_gauge`) WHERE ((`MetricName` = ?) AND (`TimeUnix` <= toDateTime64(?, ?)))
+SELECT * FROM `otel_metrics_gauge` PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?))

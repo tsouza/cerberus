@@ -1,7 +1,7 @@
 -- query.traceql --
 { resource.service.name = "frontend" } | histogram_over_time(duration)
 -- sql --
-SELECT log2(`Duration`) / 1000000000 AS `__bucket`, count(?) AS `Value` FROM (SELECT * FROM (SELECT * FROM `otel_traces`) WHERE (`ResourceAttributes`[?] = ?)) WHERE `Duration` >= 2 GROUP BY `__bucket`
+SELECT log2(`Duration`) / 1000000000 AS `__bucket`, count(?) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) WHERE `Duration` >= 2 GROUP BY `__bucket`
 -- args --
 [0] int64 = 1
 [1] string = "service.name"

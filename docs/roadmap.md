@@ -52,7 +52,7 @@ All of [`docs/optimizer-research.md`](optimizer-research.md) lands here. The rea
 | R3.1 | Pattern-based `Rule` API (Calcite-style match / transform)  | shipped via #135 | [Apache Calcite `org.apache.calcite.rel.rules`](https://calcite.apache.org/javadocAggregate/)                                                              |
 | R3.2 | `FilterProjectTranspose` + `FilterAggregateTranspose` rules | shipped via #177 | Same                                                                                                                                                       |
 | R3.3 | Catalyst-style `Batch` grouping                             | shipped via #PR  | [Spark `Optimizer.scala`](https://github.com/apache/spark/blob/master/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/optimizer/Optimizer.scala) |
-| R3.4 | Sort-key-aware filter emission + `PREWHERE` promotion       | Todo             | [ClickHouse query-optimization guide](https://clickhouse.com/resources/engineering/clickhouse-query-optimisation-definitive-guide)                         |
+| R3.4 | Sort-key-aware filter emission + `PREWHERE` promotion       | shipped via #PR  | [ClickHouse query-optimization guide](https://clickhouse.com/resources/engineering/clickhouse-query-optimisation-definitive-guide)                         |
 | R3.5 | Analyzer vs Optimizer rule split                            | Todo             | [DataFusion optimizer crate](https://docs.rs/datafusion-optimizer/latest/datafusion_optimizer/)                                                            |
 
 ### Performance features
