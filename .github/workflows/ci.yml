@@ -55,7 +55,7 @@ jobs:
 
       - name: golangci-lint (Go + formatters)
         # v7+ is required for golangci-lint v2; v6 caps at v1.
-        uses: golangci/golangci-lint-action@v7
+        uses: golangci/golangci-lint-action@v9
         with:
           version: v2.12.2
           # Honours .golangci.yml; runs across the whole module.
@@ -68,7 +68,7 @@ jobs:
           configFile: .commitlintrc.json
 
       - name: markdownlint
-        uses: DavidAnson/markdownlint-cli2-action@v18
+        uses: DavidAnson/markdownlint-cli2-action@v23
         with:
           globs: |
             **/*.md
