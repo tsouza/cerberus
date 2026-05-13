@@ -79,7 +79,12 @@ func (e *emitter) emitMetricsAggregate(m *chplan.MetricsAggregate) error {
 // division by seconds lives on the matrix-path emitter, not here).
 // *_over_time(attr) → the matching CH aggregate over Attr.
 // quantile_over_time(attr, q) → `quantile(q)(Attr)`.
-func metricsAggregateCH(m *chplan.MetricsAggregate) (name string, params []chplan.Expr, args []chplan.Expr, err error) {
+func metricsAggregateCH(m *chplan.MetricsAggregate) (
+	name string,
+	params []chplan.Expr,
+	args []chplan.Expr,
+	err error,
+) {
 	switch m.Op {
 	case chplan.MetricsOpRate, chplan.MetricsOpCountOverTime:
 		return "count", nil, []chplan.Expr{&chplan.LitInt{V: 1}}, nil
