@@ -1,6 +1,6 @@
 # Cerberus roadmap — v1.0.0
 
-This document is the public-facing narrative for the path to `v1.0.0`. Status by milestone lives in the [GitHub Project](https://github.com/users/tsouza/projects) — *Cerberus v1.0.0 Roadmap*. Per-PR-level reasoning lives in the PR descriptions themselves; we don't use GitHub Issues.
+This document is the public-facing narrative for the path to `v1.0.0`. Status by milestone lives in the [GitHub Project](https://github.com/users/tsouza/projects) — _Cerberus v1.0.0 Roadmap_. Per-PR-level reasoning lives in the PR descriptions themselves; we don't use GitHub Issues.
 
 ## At a glance
 
@@ -8,9 +8,9 @@ This document is the public-facing narrative for the path to `v1.0.0`. Status by
 | -------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
 | **v1.0.0-RC1** | Full PromQL / LogQL / TraceQL support + 90% upstream API compatibility                | Compatibility corpora pass; Grafana sees cerberus as drop-in for Prom / Loki / Tempo              |
 | **v1.0.0-RC2** | Advanced QL features + deferred API surface                                           | Subqueries, native-histogram quantiles, structural-chain TraceQL, LogQL `\| unpack`, Loki `tail`… |
-| **v1.0.0-RC3** | Optimizer rewrite + performance + advanced testing                                    | Pattern-based rules, MV substitution, shadow-mode differential, fuzz + chaos + perf benchmarks    |
+| **v1.0.0-RC3** | Optimizer rewrite + performance + scalability + advanced testing                      | Pattern-based rules, MV substitution, streaming cursor, plan/SQL cache, shadow-mode differential  |
 | **v1.0.0-RC4** | Full self-observability                                                               | Cerberus emits its own structured logs (slog), OTel metrics + traces, defaults to the same CH     |
-| **v1.0.0-RC5** | 12-factor compatibility + polish                                                      | `/readyz`, dev `docker-compose.yml`, env-driven schema overrides, `docs/12factor.md`, fast-start  |
+| **v1.0.0-RC5** | 12-factor compatibility + scale-out polish                                            | `/readyz` pings CH, admission control, HPA recipe, dev `docker-compose.yml`, schema overrides     |
 | **v1.0.0-RC6** | Type-safe SQL via custom `internal/chsql.Builder` (R6.0 evaluation → R6.1–R6.10 port) | No `fmt.Sprintf`-on-SQL anywhere; typed builder with CH-specific helpers; lint enforcement        |
 | **v1.0.0-RC7** | `internal/engine/` ExecutionEngine framework (R7.0 evaluation → R7.1–R7.8 port)       | One pipeline owner; handlers under ~150 LoC each; shared format + httperr helpers                 |
 | **v1.0.0**     | Tag the last green RC                                                                 | All RCs stable; public API frozen in `pkg/`                                                       |
@@ -106,7 +106,7 @@ The remaining items from the original seed plan, plus the compatibility harness 
 The remaining ~10% per QL, plus the deferred API endpoints. Each lands as its own PR after RC1 tags.
 
 - **PromQL** — `histogram_quantile` on native histograms; `predict_linear`, `holt_winters`; `@start()`/`@end()`; exemplar attachment; recording-rule inline expansion; `group_left`/`group_right` cardinality enforcement edge cases. Subqueries (`m[1h:5m]`, `max_over_time(rate(m[5m])[1h:5m])`) shipped via P0 4.1–4.11 (RC2) — full plan in [`docs/rc2-p0-4-subqueries.md`](rc2-p0-4-subqueries.md). Subquery over aggregator (`max_over_time(sum by(...) (rate(...))[1h:5m])`) + nested subqueries deferred to RC3.
-- **LogQL** — `| unpack`, `| pattern`; advanced `label_format` templating; `bytes_*` precise alignment; `tail` (WebSocket streaming).
+- **LogQL** — `| unpack`, `| pattern`; advanced `label_format` templating; `bytes_*` precise alignment; `tail` (WebSocket streaming). The `tail` handler **must** use a bounded send buffer plus `select` on `ctx.Done()` — slow clients are dropped with a `slog.Warn`, not allowed to OOM the server. Per-connection concurrency caps fold into R5.6 admission control.
 - **TraceQL** — `histogram_over_time`; link traversal + span-event queries; root-span filtering in nested conditions. `status = error` / `kind = client` enum statics shipped via P0 6 (RC2). `sum(.attr)` / `avg(.attr)` / `max(.attr)` / `min(.attr)` shipped via P0 7 (RC2) using an `unsafe.Pointer` shim on the Tempo `Aggregate.e` field — the long-term replacement (fork + `Expr()` accessor) is captured in [`docs/upstream-tracking.md`](upstream-tracking.md). Recursive structural chains (`>>` / `<<`) deferred to RC3: needs CH WITH RECURSIVE / bounded-depth UNION SQL that wants CH-integration testing alongside the RC3 optimizer work. Direct parent-child `>` and `<` work today.
 - **Self-contained k3s deployment** with `otel-collector` + ClickHouse exporter deferred to RC4 alongside the self-observability work — when cerberus emits its own OTel data it'll round-trip through the same collector pipeline. The synthetic `test/e2e/seed/*.sql` continues to be the canonical fixture surface for spec / unit / E2E determinism.
 - **HTTP APIs** — Prom `query_exemplars`, `format_query`, `parse_query`; Loki `tail`, `index/stats`, `index/volume`, `detected_fields`, `patterns`; Tempo `search/recent`, `metrics/query_range`, `search/tags`, `search/tag/<n>/values` (the last two gated on RC6 R6.1 sqlbuilder so the new SQL avoids Sprintf).
@@ -132,11 +132,15 @@ All of [`docs/optimizer-research.md`](optimizer-research.md) lands here. The rea
 
 ### Performance features
 
-| #    | Item                                                                             | Primary reference                                                                                                                         |
-| ---- | -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| R3.6 | Materialised-view substitution for `otel_metrics_*` rollups (cost-model trigger) | [Promscale #152](https://github.com/timescale/promscale/issues/152) + [Jindal VLDB 2018](http://www.vldb.org/pvldb/vol11/p800-jindal.pdf) |
-| R3.7 | Late materialisation for wide-column scans (logs `Body`, `ResourceAttributes`)   | [Selective Late Materialization, VLDB 2025](http://people.iiis.tsinghua.edu.cn/~huanchen/publications/slm-vldb25.pdf)                     |
-| R3.8 | Filter–RangeWindow transpose                                                     | [VictoriaMetrics `metricsql/optimizer.go`](https://github.com/VictoriaMetrics/metricsql/blob/master/optimizer.go)                         |
+R3.4 / R3.6 / R3.7 / R3.8 are the **CH-roundtrip scalability levers** — they shrink the amount of data CH scans and ships per query, which is where the real wins live. R3.12 / R3.13 are the **process-side** scalability levers — they cap RAM growth and collapse per-query CPU. The two groups compose: PREWHERE promotion (R3.4) plus streaming cursor (R3.12) means a 1M-point query both narrows the scan and never materialises the full result in cerberus RAM.
+
+| #     | Item                                                                                                    | Primary reference                                                                                                                         |
+| ----- | ------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| R3.6  | Materialised-view substitution for `otel_metrics_*` rollups (cost-model trigger)                        | [Promscale #152](https://github.com/timescale/promscale/issues/152) + [Jindal VLDB 2018](http://www.vldb.org/pvldb/vol11/p800-jindal.pdf) |
+| R3.7  | Late materialisation for wide-column scans (logs `Body`, `ResourceAttributes`)                          | [Selective Late Materialization, VLDB 2025](http://people.iiis.tsinghua.edu.cn/~huanchen/publications/slm-vldb25.pdf)                     |
+| R3.8  | Filter–RangeWindow transpose                                                                            | [VictoriaMetrics `metricsql/optimizer.go`](https://github.com/VictoriaMetrics/metricsql/blob/master/optimizer.go)                         |
+| R3.12 | Streaming `query_range` matrix response cursor (`chclient.Cursor` over `Sample` rows)                   | Stops handlers from materialising the full matrix; 1M-point query memory drops from O(N) to O(chunk_size). Composes with R3.4. ~600 LoC   |
+| R3.13 | Plan/SQL LRU cache keyed by `(QL kind, query string, schema fingerprint)` → optimized plan + SQL + args | Optimizer fixpoint dominates per-query CPU; cache collapses it to a map lookup. Invalidates on schema-override reload. ~300 LoC           |
 
 ### Advanced testing
 
@@ -146,7 +150,7 @@ All of [`docs/optimizer-research.md`](optimizer-research.md) lands here. The rea
 | R3.10 | Port promshim's local Go evaluator                                | Same — `internal/promshim/local/`                                                                                                  |
 | R3.11 | Fuzz + chaos + perf-benchmark CI                                  | `go-fuzz`, custom chaos harness, perf-benchmark workflow                                                                           |
 
-**Exit criterion:** golden-fixture SQL shrinks on real plans; `internal/optimizer` mutation score ≥ 70%; MV substitution active; shadow-mode reveals < 5% native-SQL gap.
+**Exit criterion:** golden-fixture SQL shrinks on real plans; `internal/optimizer` mutation score ≥ 70%; MV substitution active; shadow-mode reveals < 5% native-SQL gap; `chclient.Cursor` streams a 1M-row fixture with bounded RSS (R3.12); plan/SQL cache (R3.13) reaches > 90% hit rate on the compatibility corpus replayed twice.
 
 ---
 
@@ -164,15 +168,15 @@ Cerberus instruments itself with the Go-ecosystem defacto stack and ships teleme
 
 ### Milestones
 
-| #    | Item                                                                                                                                          |
-| ---- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| R4.1 | Logging quality pass: consistent slog fields (`req_id`, `ql`, `query`, `sql_len`, `duration_ms`, `error_kind`), text+json formats, level env  |
-| R4.2 | `otelhttp.NewHandler` wraps the Prom/Loki/Tempo handlers; each request gets a span                                                            |
-| R4.3 | Custom spans around `promql.Lower` / `logql.Lower` / `traceql.Lower` / `optimizer.Default().Run` / `chsql.Emit` / `chclient.Query`            |
-| R4.4 | Self-metrics: request count + latency histogram by route + status; CH roundtrip count + duration; plan IR node count                          |
-| R4.5 | OTLP exporters: `CERBERUS_OTEL_ENDPOINT` / `_INSECURE` / `_SAMPLER` / `_SERVICE_NAME`; graceful no-op when endpoint unreachable               |
-| R4.6 | `deploy/k3s/otel-collector.yaml` + a provisioned `deploy/grafana/dashboards/cerberus-self.json` (cerberus's own metrics rendered by cerberus) |
-| R4.7 | `docs/observability.md`                                                                                                                       |
+| #    | Item                                                                                                                                                                                                |
+| ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| R4.1 | Logging quality pass: consistent slog fields (`req_id`, `ql`, `query`, `sql_len`, `duration_ms`, `error_kind`), text+json formats, level env                                                        |
+| R4.2 | `otelhttp.NewHandler` wraps the Prom/Loki/Tempo handlers; each request gets a span                                                                                                                  |
+| R4.3 | Custom spans around `promql.Lower` / `logql.Lower` / `traceql.Lower` / `optimizer.Default().Run` / `chsql.Emit` / `chclient.Query`                                                                  |
+| R4.4 | Self-metrics: request count + latency histogram by route + status; CH roundtrip count + duration; plan IR node count; `cerberus_http_requests_in_flight` gauge per route (HPA-consumable, see R5.7) |
+| R4.5 | OTLP exporters: `CERBERUS_OTEL_ENDPOINT` / `_INSECURE` / `_SAMPLER` / `_SERVICE_NAME`; graceful no-op when endpoint unreachable                                                                     |
+| R4.6 | `deploy/k3s/otel-collector.yaml` + a provisioned `deploy/grafana/dashboards/cerberus-self.json` (cerberus's own metrics rendered by cerberus)                                                       |
+| R4.7 | `docs/observability.md`                                                                                                                                                                             |
 
 **Exit criterion:** every Prom/Loki/Tempo request emits one span with pipeline stage timings; self-dashboard renders cerberus's own request rate + p99 latency; disabling OTel via `CERBERUS_OTEL_ENDPOINT=""` produces a zero-collector-dependency binary.
 
@@ -201,15 +205,17 @@ Driven by an audit of cerberus against [12factor.net](https://12factor.net/). Mo
 
 ### Milestones
 
-| #    | Item                                                                                        |
-| ---- | ------------------------------------------------------------------------------------------- |
-| R5.1 | `/readyz` distinct from `/healthz`; k8s manifests updated to use readiness vs liveness      |
-| R5.2 | Repo-root `docker-compose.yml` for one-command local dev (CH + OTel Collector + cerberus)   |
-| R5.3 | Env-driven schema overrides via `CERBERUS_SCHEMA_OVERRIDES_JSON`                            |
-| R5.4 | `docs/12factor.md` with file-line citations per factor                                      |
-| R5.5 | Startup-speed benchmark: process-start → `/healthz` 200 against a reachable CH; target < 2s |
+| #    | Item                                                                                                                                                                                                                                              |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| R5.1 | `/readyz` distinct from `/healthz`; readiness actually pings CH (`chclient.Ping`) and fails-open within a small TTL cache so the probe doesn't hammer CH; k8s manifests switched to readiness probe                                               |
+| R5.2 | Repo-root `docker-compose.yml` for one-command local dev (CH + OTel Collector + cerberus)                                                                                                                                                         |
+| R5.3 | Env-driven schema overrides via `CERBERUS_SCHEMA_OVERRIDES_JSON`                                                                                                                                                                                  |
+| R5.4 | `docs/12factor.md` with file-line citations per factor                                                                                                                                                                                            |
+| R5.5 | Startup-speed benchmark: process-start → `/healthz` 200 against a reachable CH; target < 2s                                                                                                                                                       |
+| R5.6 | Per-handler concurrency cap / admission control via `golang.org/x/sync/semaphore`, env-driven (`CERBERUS_MAX_INFLIGHT_PROM` / `_LOKI` / `_TEMPO` / `_TAIL`). Surfaces backpressure as `503` + `Retry-After` instead of CH-side timeouts. ~250 LoC |
+| R5.7 | Horizontal scale recipe: example `deploy/k3s/cerberus-hpa.yaml` driven by the R4.4 self-metrics (`cerberus_http_requests_in_flight`), with a short `docs/12factor.md` § on the scale-out story                                                    |
 
-**Exit criterion:** `docker compose up` at repo root brings the dev stack up in < 30s; `CERBERUS_SCHEMA_OVERRIDES_JSON` honoured; `docs/12factor.md` exists with per-factor evidence; startup benchmark passes < 2s in CI.
+**Exit criterion:** `docker compose up` at repo root brings the dev stack up in < 30s; `CERBERUS_SCHEMA_OVERRIDES_JSON` honoured; `docs/12factor.md` exists with per-factor evidence; startup benchmark passes < 2s in CI; admission-control unit test demonstrates `503 Retry-After` under saturation; example HPA manifest scales replicas from `cerberus_http_requests_in_flight` in a k3d smoke test.
 
 ---
 
@@ -223,7 +229,7 @@ Through RC1 the emitter grew Sprintf-driven for speed: `internal/chsql/emit_node
 
 ### R6.0 — Evaluation phase (prerequisite)
 
-This is a *decision* milestone, not a code milestone. Its single deliverable is a written evaluation in `docs/sql-builder-evaluation.md` with a recommendation on which SQL-construction strategy RC6 will adopt. No emitter code changes here.
+This is a _decision_ milestone, not a code milestone. Its single deliverable is a written evaluation in `docs/sql-builder-evaluation.md` with a recommendation on which SQL-construction strategy RC6 will adopt. No emitter code changes here.
 
 **Inputs to evaluate:**
 
@@ -242,7 +248,7 @@ This is a *decision* milestone, not a code milestone. Its single deliverable is 
 
 3. **Benefit analysis.**
    - **Security:** what new vectors does a typed builder close that `?` placeholders don't? Honest answer is likely "few" for cerberus today — the upstream parsers already constrain inputs. Defense-in-depth is real but incremental.
-   - **Architecture:** type-safe composition unlocks RC3's optimizer rules (PREWHERE promotion, sort-key reordering, MV substitution, late materialisation). This is the *primary* motivation, not security. Note: RC3 ships **before** RC6 chronologically, so the RC3 emitter work either takes a Sprintf-tax or RC6 jumps the queue. R6.0 evaluates whether to reorder.
+   - **Architecture:** type-safe composition unlocks RC3's optimizer rules (PREWHERE promotion, sort-key reordering, MV substitution, late materialisation). This is the _primary_ motivation, not security. Note: RC3 ships **before** RC6 chronologically, so the RC3 emitter work either takes a Sprintf-tax or RC6 jumps the queue. R6.0 evaluates whether to reorder.
    - **Maintainability:** removes hand-quoting bugs (CH backtick rules, CH lambda syntax, parametric aggregates).
    - **Testability:** builder-produced SQL is easier to introspect (per-fragment) than Sprintf-built strings.
 
@@ -253,13 +259,13 @@ This is a *decision* milestone, not a code milestone. Its single deliverable is 
    | CH idiom coverage out-of-box | partial                   | full                      | Both need MapAt/MapKeys/Lambda/ParamAgg/PREWHERE helpers; third-party also requires bridging its API to those — ~30–40% of the value is custom either way |
    | Upstream maintenance         | shared                    | ours                      | `huandu/go-sqlbuilder` is actively maintained but small; if it stalls we fork                                                                             |
    | Onboarding                   | docs exist                | we write docs             | Third-party has a larger surface to learn                                                                                                                 |
-   | API match to chplan IR       | impedance                 | natural                   | Custom builder can be designed *around* chplan node shapes                                                                                                |
+   | API match to chplan IR       | impedance                 | natural                   | Custom builder can be designed _around_ chplan node shapes                                                                                                |
    | Code volume                  | smaller core, larger glue | larger core, smaller glue | Net LoC is similar                                                                                                                                        |
    | Security guarantees          | type system encodes       | we encode them            | Equivalent if we're disciplined                                                                                                                           |
 
 5. **Decision rule.** The evaluation produces ONE of three recommendations:
    - **(a) Use `huandu/go-sqlbuilder` + cerberus extension layer.** Justified if the wrapping cost is materially less than building from scratch and the upstream is healthy enough to depend on.
-   - **(b) Build `internal/chsql.Builder` from scratch.** Justified if the impedance mismatch with chplan IR is large enough that wrapping the third-party is *more* work than building tailored, OR if the security-critical surface motivates having a single owned-and-audited builder.
+   - **(b) Build `internal/chsql.Builder` from scratch.** Justified if the impedance mismatch with chplan IR is large enough that wrapping the third-party is _more_ work than building tailored, OR if the security-critical surface motivates having a single owned-and-audited builder.
    - **(c) Defer the migration entirely.** Justified only if the security surface analysis (step 1) shows the current parameterised-emitter has zero open vectors AND the optimizer rules in RC3 can ship without typed SQL composition (unlikely but the eval should test the assumption).
 
 **Preliminary read** (for the eval to refute or confirm):
@@ -267,7 +273,7 @@ This is a *decision* milestone, not a code milestone. Its single deliverable is 
 - The injection surface today is narrow — every dynamic value already flows through `?` placeholders; identifier dynamism is bounded to schema config. Security alone wouldn't justify the migration.
 - The architectural motivation is real: RC3's optimizer rules need to compose SQL fragments, and Sprintf composition collapses under the weight (PREWHERE clauses, conditional WHERE chains, MV-substituted subtrees).
 - ~30–40% of the value (CH-specific helpers — MapAt, MapKeys, Lambda, ParamAgg, PREWHERE) is custom regardless of which library backs it.
-- Custom builder *may* be the lower-effort route precisely because chplan IR is well-defined and stable; wrapping a generic builder adds an impedance layer without removing the custom layer.
+- Custom builder _may_ be the lower-effort route precisely because chplan IR is well-defined and stable; wrapping a generic builder adds an impedance layer without removing the custom layer.
 - If recommendation is **(b) custom**, the API surface should mirror chplan node shapes one-to-one (Scan → ScanBuilder, Filter → FilterBuilder, etc.) so the emitter is a structural transformation, not an interpretation.
 
 **Exit criterion for R6.0:** `docs/sql-builder-evaluation.md` exists, recommends (a) / (b) / (c), and the maintainer (Thiago) has signed off on the choice. R6.1 — the first implementation milestone — is then concretely scoped against that choice (currently written assuming **(a)**; rewrite if **(b)** is chosen).
@@ -327,7 +333,7 @@ By RC1's end, every Prom / Loki / Tempo handler runs the same five-stage pipelin
 
 ### Why now (chronologically after RC6)
 
-- The framework is most valuable *after* RC3's optimizer changes and RC6's typed SQL land — those work products would otherwise have to be duplicated by-handler. By RC7 the shared pipeline has stable shape.
+- The framework is most valuable _after_ RC3's optimizer changes and RC6's typed SQL land — those work products would otherwise have to be duplicated by-handler. By RC7 the shared pipeline has stable shape.
 - RC4 self-observability also benefits: one Engine.Query span covers parse + lower + optimize + emit + query for every QL, rather than three separate sets of instrumentation.
 - RC3's shadow-mode differential testing (R3.9) and local-Go evaluator fallback (R3.10) need a place to live; Engine is the natural strategy host.
 
@@ -399,7 +405,7 @@ Decision milestone. Output: `docs/execution-engine-evaluation.md` with a recomme
    - **(b) Partial.** Build only the shared-helpers extraction (`internal/api/format/` + `internal/api/httperr/`) without the Engine struct itself. Cheaper, captures most of the duplication, no abstraction tax.
    - **(c) Defer.** Per-QL divergence is large enough that the framework would carry too many escape hatches; revisit at a later RC if the divergence shrinks.
 
-**Preliminary read** (for R7.0's PR to refute or confirm): the pipeline is mechanical across the three QLs today, but RC3 + RC4 + RC6 are likely to *increase* per-handler divergence (timing, OTel spans, builder calls). Doing the Engine refactor *after* those land — at RC7 — means the abstraction is informed by all the divergence axes, not just today's narrow ones. Recommendation likely **(a) Build**, but the eval might find that **(b) Partial** captures 80% of the value at 20% of the risk.
+**Preliminary read** (for R7.0's PR to refute or confirm): the pipeline is mechanical across the three QLs today, but RC3 + RC4 + RC6 are likely to _increase_ per-handler divergence (timing, OTel spans, builder calls). Doing the Engine refactor _after_ those land — at RC7 — means the abstraction is informed by all the divergence axes, not just today's narrow ones. Recommendation likely **(a) Build**, but the eval might find that **(b) Partial** captures 80% of the value at 20% of the risk.
 
 **Exit criterion for R7.0:** `docs/execution-engine-evaluation.md` exists, recommends (a) / (b) / (c), maintainer signs off. R7.1+ scope concretely against the choice.
 
@@ -424,6 +430,6 @@ Decision milestone. Output: `docs/execution-engine-evaluation.md` with a recomme
 
 - **PR-per-change.** Every change ships as its own PR against `main`. Branch protection requires `ci / check` + `ci / lint`, linear history, no force-push.
 - **Agent-driven work goes through PRs, not issues.** When the maintainer or an AI assistant is doing the work, the PR description is the source of truth — no shadow issue tracking. The GitHub Project tracks milestone status; backlog narratives live in `docs/*.md`. **External contributors** are welcome to open issues for bug reports, design questions, or feature proposals — issues are enabled.
-- **Fixture-first.** A milestone's first PR adds *failing* TXTAR / compatibility fixtures that capture the contract. Subsequent PRs implement to turn them green. Reviewers can sanity-check intent by reading fixtures before code.
+- **Fixture-first.** A milestone's first PR adds _failing_ TXTAR / compatibility fixtures that capture the contract. Subsequent PRs implement to turn them green. Reviewers can sanity-check intent by reading fixtures before code.
 - **Compatibility suite is the source of truth.** If a PromQL feature lands but doesn't move the `prometheus/compliance` pass rate, the PR is incomplete.
 - **Allowlist hygiene.** Adding an entry to `harness/compatibility/expected-failures.json` requires a comment with the upstream rationale; never empty-string.
