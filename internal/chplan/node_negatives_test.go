@@ -229,3 +229,30 @@ func TestExprEqual_DeeplyNested(t *testing.T) {
 		t.Errorf("Equal: 4-deep trees differing only in deepest leaf should NOT be Equal")
 	}
 }
+
+// TestOrderByEqual_Negatives — OrderBy Equal() must distinguish
+// direction (ASC vs DESC) and key expression. Equal-length but
+// different-direction keys must not compare equal.
+func TestOrderByEqual_Negatives(t *testing.T) {
+	t.Parallel()
+
+	scan := &chplan.Scan{Table: "otel_traces"}
+	tsCol := &chplan.ColumnRef{Name: "Timestamp"}
+
+	a := &chplan.OrderBy{Input: scan, Keys: []chplan.OrderKey{{Expr: tsCol, Desc: true}}}
+	b := &chplan.OrderBy{Input: scan, Keys: []chplan.OrderKey{{Expr: tsCol, Desc: false}}}
+	if a.Equal(b) {
+		t.Errorf("OrderBy DESC vs ASC should not be Equal")
+	}
+	if b.Equal(a) {
+		t.Errorf("OrderBy Equal must be symmetric")
+	}
+
+	c := &chplan.OrderBy{Input: scan, Keys: []chplan.OrderKey{
+		{Expr: tsCol, Desc: true},
+		{Expr: &chplan.ColumnRef{Name: "Duration"}, Desc: false},
+	}}
+	if a.Equal(c) {
+		t.Errorf("OrderBy with different key count should not be Equal")
+	}
+}
