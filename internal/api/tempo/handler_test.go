@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,9 +17,16 @@ import (
 
 type stubQuerier struct {
 	samples  []chclient.Sample
+	strings  []string
 	err      error
 	lastSQL  string
 	lastArgs []any
+	// stringsBySQL lets tests stub multiple back-to-back QueryStrings
+	// calls (e.g. /search/tags issues one query per attribute map);
+	// when set, the longest substring match against the incoming SQL
+	// picks the row set, with the bare `strings` field acting as the
+	// default fallback.
+	stringsBySQL map[string][]string
 }
 
 func (s *stubQuerier) Query(_ context.Context, sql string, args ...any) ([]chclient.Sample, error) {
@@ -28,6 +36,20 @@ func (s *stubQuerier) Query(_ context.Context, sql string, args ...any) ([]chcli
 		return nil, s.err
 	}
 	return s.samples, nil
+}
+
+func (s *stubQuerier) QueryStrings(_ context.Context, sql string, args ...any) ([]string, error) {
+	s.lastSQL = sql
+	s.lastArgs = args
+	if s.err != nil {
+		return nil, s.err
+	}
+	for needle, rows := range s.stringsBySQL {
+		if strings.Contains(sql, needle) {
+			return rows, nil
+		}
+	}
+	return s.strings, nil
 }
 
 func newServer(q tempo.Querier, version string) *httptest.Server {

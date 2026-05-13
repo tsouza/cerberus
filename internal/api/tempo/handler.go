@@ -23,15 +23,20 @@ import (
 
 // Querier is the subset of *chclient.Client the Handler needs. Stub
 // shape mirrors api/prom + api/loki for the same test reasons.
+//
+// QueryStrings backs the /api/search/tags + /api/search/tag/<name>/values
+// endpoints, which expect a single-string-column result rather than the
+// chclient.Sample shape.
 type Querier interface {
 	Query(ctx context.Context, sql string, args ...any) ([]chclient.Sample, error)
+	QueryStrings(ctx context.Context, sql string, args ...any) ([]string, error)
 }
 
 // Handler implements the Tempo HTTP API endpoints cerberus speaks.
-// Mount it via Handler.Mount(mux). The current vertical slice covers
-// /api/echo, /api/status/version, /api/search, and /api/traces/<id>.
-// /api/search/tags + /api/search/tag/<n>/values defer to RC6's
-// sqlbuilder integration so the new SQL avoids Sprintf.
+// Mount it via Handler.Mount(mux). The current surface covers
+// /api/echo, /api/status/version, /api/search, /api/search/recent,
+// /api/search/tags, /api/search/tag/{name}/values (plus the V2
+// variants under /api/v2/), and /api/traces/{id}.
 type Handler struct {
 	Client    Querier
 	Schema    schema.Traces
@@ -63,6 +68,10 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/status/version", h.handleVersion)
 	mux.HandleFunc("GET /api/search", h.handleSearch)
 	mux.HandleFunc("GET /api/search/recent", h.handleSearchRecent)
+	mux.HandleFunc("GET /api/search/tags", h.handleSearchTags)
+	mux.HandleFunc("GET /api/search/tag/{name}/values", h.handleSearchTagValues)
+	mux.HandleFunc("GET /api/v2/search/tags", h.handleSearchTagsV2)
+	mux.HandleFunc("GET /api/v2/search/tag/{name}/values", h.handleSearchTagValuesV2)
 	mux.HandleFunc("GET /api/traces/{id}", h.handleTraceByID)
 }
 
