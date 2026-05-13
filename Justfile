@@ -140,9 +140,14 @@ e2e-up: e2e-down
     @echo "==> applying manifests"
     kubectl apply -k deploy/k3s/
     @echo "==> waiting for pods (up to 3 min)"
-    kubectl -n cerberus wait --for=condition=Available deployment/clickhouse --timeout=180s
-    kubectl -n cerberus wait --for=condition=Available deployment/cerberus   --timeout=180s
-    kubectl -n cerberus wait --for=condition=Available deployment/grafana    --timeout=180s
+    kubectl -n cerberus wait --for=condition=Available deployment/clickhouse              --timeout=180s
+    kubectl -n cerberus wait --for=condition=Available deployment/cerberus                --timeout=180s
+    kubectl -n cerberus wait --for=condition=Available deployment/grafana                 --timeout=180s
+    kubectl -n cerberus wait --for=condition=Available deployment/otel-collector-gateway  --timeout=180s
+    kubectl -n cerberus wait --for=condition=Available deployment/sample-app-traces       --timeout=180s
+    kubectl -n cerberus wait --for=condition=Available deployment/sample-app-metrics      --timeout=180s
+    kubectl -n cerberus wait --for=condition=Available deployment/sample-app-logs         --timeout=180s
+    kubectl -n cerberus rollout status daemonset/otel-collector-agent                     --timeout=180s
     @echo "==> e2e-up done"
     @echo "    grafana:    http://localhost:3000 (admin/admin)"
     @echo "    cerberus:   http://localhost:8080/healthz"
@@ -155,6 +160,14 @@ e2e-up: e2e-down
 #
 # Connects from the host via a transient kubectl port-forward; CH listens on
 # port 9000 inside the cluster.
+#
+# Dual-data-source model (see deploy/k3s/README.md):
+#   - `e2e-seed` inserts deterministic synthetic rows used by spec tests
+#     that need exact values (e.g. `up` metric with known labels).
+#   - The OTel collector DaemonSet+gateway+sample-app trio populates real
+#     OTel data continuously for realistic Grafana smoke + dashboard tests.
+# Both share the same `otel.*` tables (schema cannot drift — both write
+# via the upstream sqltemplates).
 e2e-seed:
     @echo "==> seeding OTel data via Go seeder"
     @kubectl -n cerberus port-forward svc/clickhouse 19000:9000 > /tmp/cerberus-e2e-seed-pf.log 2>&1 & \
@@ -170,6 +183,40 @@ e2e-seed:
         CH_PASSWORD=cerberus \
             go run ./test/e2e/seed/cmd/seed
     @echo "==> seed done"
+
+# Wait until the OTel collector has populated real data in every signal
+# table (logs / traces / one of the metrics tables). Bootstraps the
+# pipeline before tests rely on it — telemetrygen + kubeletstats take
+# ~30-60s to flush a first batch through the gateway.
+#
+# Polls every 5s for up to 3 min; fails the recipe if any signal stays
+# empty. Uses `kubectl exec` against the ClickHouse pod so it does not
+# need a host-side port-forward.
+e2e-wait-otel:
+    @echo "==> waiting for real OTel data in ClickHouse"
+    @deadline=$(($(date +%s) + 180)); \
+        while [ $(date +%s) -lt $deadline ]; do \
+            logs=$(kubectl -n cerberus exec deploy/clickhouse -- clickhouse-client \
+                --user cerberus --password cerberus --database otel \
+                --query "SELECT count() FROM otel_logs" 2>/dev/null || echo 0); \
+            traces=$(kubectl -n cerberus exec deploy/clickhouse -- clickhouse-client \
+                --user cerberus --password cerberus --database otel \
+                --query "SELECT count() FROM otel_traces" 2>/dev/null || echo 0); \
+            sum=$(kubectl -n cerberus exec deploy/clickhouse -- clickhouse-client \
+                --user cerberus --password cerberus --database otel \
+                --query "SELECT count() FROM otel_metrics_sum" 2>/dev/null || echo 0); \
+            gauge=$(kubectl -n cerberus exec deploy/clickhouse -- clickhouse-client \
+                --user cerberus --password cerberus --database otel \
+                --query "SELECT count() FROM otel_metrics_gauge" 2>/dev/null || echo 0); \
+            echo "    logs=$logs traces=$traces metrics_sum=$sum metrics_gauge=$gauge"; \
+            if [ "$logs" -gt 0 ] && [ "$traces" -gt 0 ] && { [ "$sum" -gt 0 ] || [ "$gauge" -gt 0 ]; }; then \
+                echo "==> OTel pipeline is live"; \
+                exit 0; \
+            fi; \
+            sleep 5; \
+        done; \
+        echo "==> timeout waiting for OTel data"; \
+        exit 1
 
 # Run Go E2E HTTP tests against the deployed stack.
 e2e-run:
@@ -194,8 +241,9 @@ e2e-down:
 
 
 
-# Full lifecycle.
-e2e: e2e-up e2e-seed e2e-run e2e-playwright e2e-down
+# Full lifecycle. Seed first (deterministic rows), then wait for the
+# collector to populate real OTel data, then run the test matrix.
+e2e: e2e-up e2e-seed e2e-wait-otel e2e-run e2e-playwright e2e-down
 
 # === Compatibility (prometheus/compliance differential harness) ===
 

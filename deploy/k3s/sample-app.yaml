@@ -1,0 +1,128 @@
+---
+# Synthetic OTLP-emitting workload — `telemetrygen`, the upstream tool
+# shipped from opentelemetry-collector-contrib. It produces a continuous
+# stream of traces/metrics/logs against an OTLP gRPC endpoint, which lets
+# E2E assert on real OTel data without building a bespoke container image.
+#
+# Three separate Deployments (traces / metrics / logs) — telemetrygen
+# only emits one signal per invocation. Each is a tiny binary, the
+# trio together fits well under the gateway's memory budget.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sample-app-traces
+  namespace: cerberus
+  labels:
+    app: sample-app
+    signal: traces
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sample-app
+      signal: traces
+  template:
+    metadata:
+      labels:
+        app: sample-app
+        signal: traces
+    spec:
+      containers:
+        - name: telemetrygen
+          image: ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.116.0
+          args:
+            - traces
+            - --otlp-endpoint=otel-collector-gateway:4317
+            - --otlp-insecure
+            - --duration=24h
+            - --rate=2
+            - --workers=1
+            - --service=sample-app
+            - --otlp-attributes=service.namespace="cerberus-e2e"
+            - --otlp-attributes=deployment.environment="e2e"
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sample-app-metrics
+  namespace: cerberus
+  labels:
+    app: sample-app
+    signal: metrics
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sample-app
+      signal: metrics
+  template:
+    metadata:
+      labels:
+        app: sample-app
+        signal: metrics
+    spec:
+      containers:
+        - name: telemetrygen
+          image: ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.116.0
+          args:
+            - metrics
+            - --otlp-endpoint=otel-collector-gateway:4317
+            - --otlp-insecure
+            - --duration=24h
+            - --rate=2
+            - --workers=1
+            - --service=sample-app
+            - --otlp-attributes=service.namespace="cerberus-e2e"
+            - --otlp-attributes=deployment.environment="e2e"
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sample-app-logs
+  namespace: cerberus
+  labels:
+    app: sample-app
+    signal: logs
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sample-app
+      signal: logs
+  template:
+    metadata:
+      labels:
+        app: sample-app
+        signal: logs
+    spec:
+      containers:
+        - name: telemetrygen
+          image: ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.116.0
+          args:
+            - logs
+            - --otlp-endpoint=otel-collector-gateway:4317
+            - --otlp-insecure
+            - --duration=24h
+            - --rate=5
+            - --workers=1
+            - --otlp-attributes=service.name="sample-app"
+            - --otlp-attributes=service.namespace="cerberus-e2e"
+            - --otlp-attributes=deployment.environment="e2e"
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              memory: 128Mi

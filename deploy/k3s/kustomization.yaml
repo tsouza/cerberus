@@ -8,6 +8,8 @@ resources:
   - clickhouse.yaml
   - cerberus.yaml
   - grafana.yaml
+  - otel-collector.yaml
+  - sample-app.yaml
 
 commonLabels:
   app.kubernetes.io/part-of: cerberus
