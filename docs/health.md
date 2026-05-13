@@ -60,9 +60,9 @@ Content-Type: application/json
 
 ### Response shape
 
-| Field        | Type    | Values                                                        |
-| ------------ | ------- | ------------------------------------------------------------- |
-| `clickhouse` | string  | `"ok"` on success, `"error: <reason>"` on a failed ping.      |
+| Field        | Type    | Values                                                                                                                                        |
+| ------------ | ------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `clickhouse` | string  | `"ok"` on success, `"error: <reason>"` on a failed ping.                                                                                      |
 | `schema`     | string  | `"ready"` when the auto-create hook is done (or disabled), `"pending"` while it is still running, `"unknown"` when the CH ping itself failed. |
 
 ### HTTP status codes
