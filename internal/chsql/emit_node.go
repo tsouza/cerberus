@@ -201,11 +201,7 @@ func (e *emitter) emitLimit(l *chplan.Limit) error {
 	}
 	sb := NewSelect().From(sub)
 	if l.Count > 0 {
-		// SelectBuilder.Limit renders LIMIT as a literal integer —
-		// matches the legacy emitter's behaviour. l.Count is int64;
-		// downcast is safe at the LIMIT scale (CH itself accepts
-		// signed int values).
-		sb.Limit(int(l.Count))
+		sb.Limit(l.Count)
 	}
 	e.emitSelect(sb)
 	return nil

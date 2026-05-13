@@ -458,7 +458,7 @@ type SelectBuilder struct {
 	prewhere   []Frag
 	groupBy    []Frag
 	orderBy    []orderKey
-	limit      int
+	limit      int64
 	hasLimit   bool
 }
 
@@ -526,8 +526,9 @@ func (s *SelectBuilder) OrderBy(expr Frag, desc bool) *SelectBuilder {
 // Limit sets the LIMIT count. n <= 0 emits no LIMIT clause; positive
 // n is rendered as a literal integer (CH's LIMIT does not accept
 // `?` placeholders in all driver paths and the value is part of the
-// query shape, not user data).
-func (s *SelectBuilder) Limit(n int) *SelectBuilder {
+// query shape, not user data). int64 accommodates chplan.Limit.Count
+// without a lossy downcast.
+func (s *SelectBuilder) Limit(n int64) *SelectBuilder {
 	s.limit = n
 	s.hasLimit = n > 0
 	return s
@@ -610,6 +611,6 @@ func (s *SelectBuilder) writeInto(b *Builder) {
 	}
 	if s.hasLimit {
 		b.sb.WriteString(" LIMIT ")
-		b.sb.WriteString(strconv.Itoa(s.limit))
+		b.sb.WriteString(strconv.FormatInt(s.limit, 10))
 	}
 }
