@@ -207,33 +207,29 @@ func (e *emitter) emitLimit(l *chplan.Limit) error {
 	return nil
 }
 
-// emitOrderBy renders `SELECT * FROM (<input>) ORDER BY <k1> [DESC], …`.
-// Empty Keys is a programmer error — emit an error so the plan tree
-// doesn't silently lose its sort intent.
-//
-// NOTE (grandfathered, retired by RC6 R6.5): this function predates
-// the R6.2 emit_node.go port and still writes SQL keywords directly
-// into the strings.Builder. The R6.5 RangeWindow port lifts it onto
-// SelectBuilder alongside the other matrix-shape emitters.
+// emitOrderBy renders `SELECT * FROM (<input>) ORDER BY <k1> [DESC], …`
+// via SelectBuilder.OrderBy. Empty Keys is a programmer error — emit an
+// error so the plan tree doesn't silently lose its sort intent.
 func (e *emitter) emitOrderBy(o *chplan.OrderBy) error {
 	if len(o.Keys) == 0 {
 		return fmt.Errorf("%w: OrderBy with no keys", ErrUnsupported)
 	}
-	e.b.WriteString("SELECT * FROM ")
-	if err := e.emitSubquery(o.Input); err != nil {
-		return err
-	}
-	e.b.WriteString(" ORDER BY ")
-	for i, k := range o.Keys {
-		if i > 0 {
-			e.b.WriteString(", ")
-		}
-		if err := e.emitExpr(k.Expr); err != nil {
+	// Pre-flight every key expression so chplan errors surface
+	// synchronously rather than from inside the Frag render.
+	for _, k := range o.Keys {
+		if err := (&Builder{}).Expr(k.Expr); err != nil {
 			return err
 		}
-		if k.Desc {
-			e.b.WriteString(" DESC")
-		}
 	}
+	sub, err := e.subqueryFrag(o.Input)
+	if err != nil {
+		return err
+	}
+	sb := NewSelect().From(sub)
+	for _, k := range o.Keys {
+		expr := k.Expr
+		sb.OrderBy(func(b *Builder) { _ = b.Expr(expr) }, k.Desc)
+	}
+	e.emitSelect(sb)
 	return nil
 }
