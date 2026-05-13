@@ -1,9 +1,12 @@
 package chsql
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/tsouza/cerberus/internal/chplan"
 )
 
 // Builder accumulates a parameterised ClickHouse SQL fragment plus the
@@ -210,6 +213,179 @@ func (b *Builder) ParamAgg(name string, params, args []func(b *Builder)) {
 		a(b)
 	}
 	b.sb.WriteByte(')')
+}
+
+// Expr renders a chplan.Expr through the Builder using the public
+// Builder helpers (Ident / Arg / etc.). It mirrors the legacy
+// emitter.emitExpr in emit_expr.go; RC6 R6.2 introduces this method so
+// the ported emitFilter / emitProject can emit predicates and
+// projection expressions without reaching into the private emitter.
+//
+// The legacy emitter.emitExpr is intentionally retained — it is the
+// canonical implementation until RC6 R6.4 ports the expression tree.
+// Both paths produce byte-identical SQL for every fixture; once the
+// rest of the emitter migrates, emitExpr collapses into this method.
+func (b *Builder) Expr(x chplan.Expr) error {
+	switch v := x.(type) {
+	case *chplan.ColumnRef:
+		if v.Qualifier != "" {
+			b.QualIdent(v.Qualifier, v.Name)
+			return nil
+		}
+		b.Ident(v.Name)
+		return nil
+	case *chplan.LitString:
+		b.Arg(v.V)
+		return nil
+	case *chplan.LitInt:
+		b.Arg(v.V)
+		return nil
+	case *chplan.LitFloat:
+		b.Arg(v.V)
+		return nil
+	case *chplan.LitBool:
+		b.Arg(v.V)
+		return nil
+	case *chplan.Binary:
+		return b.exprBinary(v)
+	case *chplan.FuncCall:
+		return b.exprFunc(v)
+	case *chplan.MapAccess:
+		return b.exprMapAccess(v)
+	case *chplan.MapWithoutKeys:
+		return b.exprMapWithoutKeys(v)
+	case *chplan.LineContent:
+		return b.exprLineContent(v)
+	case *chplan.FieldAccess:
+		return b.exprFieldAccess(v)
+	default:
+		return fmt.Errorf("%w: expr %T", ErrUnsupported, x)
+	}
+}
+
+func (b *Builder) exprBinary(bx *chplan.Binary) error {
+	switch bx.Op {
+	case chplan.OpMatch, chplan.OpNotMatch:
+		if bx.Op == chplan.OpNotMatch {
+			b.sb.WriteString("NOT ")
+		}
+		b.sb.WriteString("match(")
+		if err := b.Expr(bx.Left); err != nil {
+			return err
+		}
+		b.sb.WriteString(", ")
+		if err := b.Expr(bx.Right); err != nil {
+			return err
+		}
+		b.sb.WriteByte(')')
+		return nil
+	case chplan.OpPow:
+		b.sb.WriteString("pow(")
+		if err := b.Expr(bx.Left); err != nil {
+			return err
+		}
+		b.sb.WriteString(", ")
+		if err := b.Expr(bx.Right); err != nil {
+			return err
+		}
+		b.sb.WriteByte(')')
+		return nil
+	}
+	b.sb.WriteByte('(')
+	if err := b.Expr(bx.Left); err != nil {
+		return err
+	}
+	b.sb.WriteByte(' ')
+	b.sb.WriteString(string(bx.Op))
+	b.sb.WriteByte(' ')
+	if err := b.Expr(bx.Right); err != nil {
+		return err
+	}
+	b.sb.WriteByte(')')
+	return nil
+}
+
+func (b *Builder) exprFunc(f *chplan.FuncCall) error {
+	b.sb.WriteString(f.Name)
+	b.sb.WriteByte('(')
+	for i, a := range f.Args {
+		if i > 0 {
+			b.sb.WriteString(", ")
+		}
+		if err := b.Expr(a); err != nil {
+			return err
+		}
+	}
+	b.sb.WriteByte(')')
+	return nil
+}
+
+func (b *Builder) exprMapAccess(m *chplan.MapAccess) error {
+	if err := b.Expr(m.Map); err != nil {
+		return err
+	}
+	b.sb.WriteByte('[')
+	if err := b.Expr(m.Key); err != nil {
+		return err
+	}
+	b.sb.WriteByte(']')
+	return nil
+}
+
+func (b *Builder) exprMapWithoutKeys(m *chplan.MapWithoutKeys) error {
+	b.sb.WriteString("mapFilter((k, v) -> NOT (k IN (")
+	for i, k := range m.Keys {
+		if i > 0 {
+			b.sb.WriteString(", ")
+		}
+		b.Arg(k)
+	}
+	b.sb.WriteString(")), ")
+	if err := b.Expr(m.Map); err != nil {
+		return err
+	}
+	b.sb.WriteByte(')')
+	return nil
+}
+
+func (b *Builder) exprLineContent(l *chplan.LineContent) error {
+	if l.IsRegex {
+		if l.Negated {
+			b.sb.WriteString("NOT ")
+		}
+		b.sb.WriteString("match(")
+		if err := b.Expr(l.Source); err != nil {
+			return err
+		}
+		b.sb.WriteString(", ")
+		b.Arg(l.Pattern)
+		b.sb.WriteByte(')')
+		return nil
+	}
+	op := " > 0"
+	if l.Negated {
+		op = " = 0"
+	}
+	b.sb.WriteString("(position(")
+	if err := b.Expr(l.Source); err != nil {
+		return err
+	}
+	b.sb.WriteString(", ")
+	b.Arg(l.Pattern)
+	b.sb.WriteByte(')')
+	b.sb.WriteString(op)
+	b.sb.WriteByte(')')
+	return nil
+}
+
+func (b *Builder) exprFieldAccess(f *chplan.FieldAccess) error {
+	if err := b.Expr(f.Source); err != nil {
+		return err
+	}
+	b.sb.WriteByte('[')
+	b.Arg(f.Path)
+	b.sb.WriteByte(']')
+	return nil
 }
 
 // Frag is the unit of composition: anything that knows how to write

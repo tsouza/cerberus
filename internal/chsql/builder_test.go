@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
 )
 
@@ -478,5 +479,73 @@ func TestSelectBuilder_NestedSubquery(t *testing.T) {
 	// `?` order: MapAt key, inner WHERE rhs, outer WHERE rhs.
 	if want := []any{"service.name", "api", 0.5}; !reflect.DeepEqual(args, want) {
 		t.Errorf("Args = %v; want %v", args, want)
+	}
+}
+
+// TestBuilder_Expr — Builder.Expr renders representative chplan
+// expression shapes with byte-identical output to the legacy
+// emitter.emitExpr. Locked here so the RC6 R6.2 port can't drift from
+// the canonical shape before R6.4 collapses both paths.
+func TestBuilder_Expr(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		expr    chplan.Expr
+		wantSQL string
+		wantArg []any
+	}{
+		{
+			name:    "column_ref",
+			expr:    &chplan.ColumnRef{Name: "MetricName"},
+			wantSQL: "`MetricName`",
+		},
+		{
+			name:    "column_ref_qualified",
+			expr:    &chplan.ColumnRef{Qualifier: "L", Name: "Value"},
+			wantSQL: "`L`.`Value`",
+		},
+		{
+			name:    "lit_string",
+			expr:    &chplan.LitString{V: "http_requests_total"},
+			wantSQL: "?",
+			wantArg: []any{"http_requests_total"},
+		},
+		{
+			name: "binary_eq",
+			expr: &chplan.Binary{
+				Op:    chplan.OpEq,
+				Left:  &chplan.ColumnRef{Name: "MetricName"},
+				Right: &chplan.LitString{V: "x"},
+			},
+			wantSQL: "(`MetricName` = ?)",
+			wantArg: []any{"x"},
+		},
+		{
+			name: "binary_match",
+			expr: &chplan.Binary{
+				Op:    chplan.OpMatch,
+				Left:  &chplan.ColumnRef{Name: "ServiceName"},
+				Right: &chplan.LitString{V: "^api-.*"},
+			},
+			wantSQL: "match(`ServiceName`, ?)",
+			wantArg: []any{"^api-.*"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			b := chsql.NewBuilder()
+			if err := b.Expr(tc.expr); err != nil {
+				t.Fatalf("Expr: %v", err)
+			}
+			sql, args := b.Build()
+			if sql != tc.wantSQL {
+				t.Errorf("SQL = %q; want %q", sql, tc.wantSQL)
+			}
+			if !reflect.DeepEqual(args, tc.wantArg) {
+				t.Errorf("Args = %v; want %v", args, tc.wantArg)
+			}
+		})
 	}
 }
