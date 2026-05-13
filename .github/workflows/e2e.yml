@@ -4,14 +4,15 @@ name: e2e
 # stack smoke: k3d + cerberus + Grafana + Playwright); future e2e
 # scenarios would land as additional jobs in this workflow.
 #
-# The `dashboard` job is a required status check (branch protection).
-# Path filter is intentionally absent so docs- and CI-only PRs still
-# produce the check.
+# As of 2026-05-13 the `dashboard` job no longer runs on pull_request —
+# it executes only on push to main + nightly + manual dispatch. It is
+# no longer in the required-status-checks list either; regressions are
+# caught at merge-to-main time and reverted from main if they break.
+# The PR fast-feedback loop stays on `check` + `lint`.
 
 on:
   push:
     branches: [main]
-  pull_request:
   schedule:
     # nightly at 03:17 UTC
     - cron: '17 3 * * *'
@@ -22,7 +23,7 @@ permissions:
 
 concurrency:
   group: e2e-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
 
 jobs:
   dashboard:
