@@ -250,48 +250,6 @@ func projectionColumnNames(ps []chplan.Projection) map[string]struct{} {
 	return out
 }
 
-// collectColumnRefs walks an Expr tree and returns every bare column
-// name it references (Qualifier == ""). Used to populate the inner
-// SELECT's projection so the WHERE clause has its inputs.
-//
-// Qualified ColumnRefs (Qualifier != "") are skipped — they appear
-// only inside join arm subqueries where the qualifier already says
-// "this column is fetched somewhere else". Late materialisation
-// operates on a flat scan + predicate, so qualifier-bearing refs
-// would indicate a plan shape the gate has already rejected.
-func collectColumnRefs(e chplan.Expr) []string {
-	var out []string
-	var walk func(chplan.Expr)
-	walk = func(x chplan.Expr) {
-		switch v := x.(type) {
-		case *chplan.ColumnRef:
-			if v.Qualifier == "" {
-				out = append(out, v.Name)
-			}
-		case *chplan.Binary:
-			walk(v.Left)
-			walk(v.Right)
-		case *chplan.FuncCall:
-			for _, a := range v.Args {
-				walk(a)
-			}
-		case *chplan.MapAccess:
-			walk(v.Map)
-			walk(v.Key)
-		case *chplan.MapWithoutKeys:
-			walk(v.Map)
-		case *chplan.LineContent:
-			walk(v.Source)
-		case *chplan.FieldAccess:
-			walk(v.Source)
-		case *chplan.NestedArrayExists:
-			walk(v.Value)
-		}
-	}
-	walk(e)
-	return out
-}
-
 // emitLateMat renders the two-stage SELECT for a matched
 // late-materialisation candidate. The shape mirrors the godoc at the
 // top of this file: an inner SELECT that fetches only thin columns +
