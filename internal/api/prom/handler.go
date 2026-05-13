@@ -75,6 +75,8 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	register("POST /api/v1/format_query", h.handleFormatQuery)
 	register("GET /api/v1/parse_query", h.handleParseQuery)
 	register("POST /api/v1/parse_query", h.handleParseQuery)
+	register("GET /api/v1/query_exemplars", h.handleQueryExemplars)
+	register("POST /api/v1/query_exemplars", h.handleQueryExemplars)
 }
 
 // handleFormatQuery implements `/api/v1/format_query`. Takes a `query`
