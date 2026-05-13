@@ -228,6 +228,6 @@ If signed off, the R6.1+ scope changes as follows:
 
 | Reviewer | Decision  | Date      | Notes     |
 | -------- | --------- | --------- | --------- |
-| @tsouza  | _pending_ | _pending_ | _pending_ |
+| @tsouza  | *pending* | *pending* | *pending* |
 
 Maintainer signoff unblocks R6.1. Until signoff, RC6 is paused at R6.0.
