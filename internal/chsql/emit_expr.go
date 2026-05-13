@@ -30,24 +30,6 @@ func (e *emitter) emitExpr(x chplan.Expr) error {
 	return nil
 }
 
-// emitNestedArrayExists renders
-//
-//	arrayExists(x -> x[?] <op> ?, `<Column>`.`<SubField>`)
-//
-// for TraceQL link / event attribute filters against the OTel-CH Nested
-// columns. Delegates to Builder.exprNestedArrayExists via Builder.Expr;
-// retained as an emitter method so the grandfathered callers in
-// range_window.go keep a stable surface until R6.5.
-func (e *emitter) emitNestedArrayExists(n *chplan.NestedArrayExists) error {
-	return e.emitExpr(n)
-}
-
-// emitFieldAccess renders `<source>[?]` with the path bound as a
-// positional arg. Thin shim over Builder.Expr.
-func (e *emitter) emitFieldAccess(f *chplan.FieldAccess) error {
-	return e.emitExpr(f)
-}
-
 // bindArg appends a `?` placeholder and records v in the emitter's args
 // slice. Delegates to Builder.Arg; retained as an emitter method for the
 // grandfathered range_window.go callsites which bind duration / timestamp
@@ -58,34 +40,4 @@ func (e *emitter) bindArg(v any) error {
 	b.Arg(v)
 	e.splice(b)
 	return nil
-}
-
-// emitBinary renders a chplan.Binary through Builder.Expr. The
-// Op-specific dispatch (Match / NotMatch / Pow / generic infix) lives
-// inside Builder.exprBinary.
-func (e *emitter) emitBinary(b *chplan.Binary) error {
-	return e.emitExpr(b)
-}
-
-// emitMapAccess renders `<map>[<key>]` through Builder.Expr.
-func (e *emitter) emitMapAccess(m *chplan.MapAccess) error {
-	return e.emitExpr(m)
-}
-
-// emitMapWithoutKeys renders the `mapFilter((k, v) -> NOT (k IN (...)), <map>)`
-// shape through Builder.Expr.
-func (e *emitter) emitMapWithoutKeys(m *chplan.MapWithoutKeys) error {
-	return e.emitExpr(m)
-}
-
-// emitLineContent renders the LogQL `|=` / `!=` / `|~` / `!~` line
-// matchers through Builder.Expr.
-func (e *emitter) emitLineContent(l *chplan.LineContent) error {
-	return e.emitExpr(l)
-}
-
-// emitFunc renders a chplan.FuncCall as `<name>(<args>...)` through
-// Builder.Expr.
-func (e *emitter) emitFunc(f *chplan.FuncCall) error {
-	return e.emitExpr(f)
 }

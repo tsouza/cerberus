@@ -237,12 +237,3 @@ func (e *emitter) emitOrderBy(o *chplan.OrderBy) error {
 	}
 	return nil
 }
-
-// writeIdent writes a ClickHouse identifier with backtick quoting, escaping
-// embedded backticks. ClickHouse accepts backtick-quoted identifiers in all
-// positions where an identifier is expected.
-func writeIdent(b *strings.Builder, name string) {
-	b.WriteByte('`')
-	b.WriteString(strings.ReplaceAll(name, "`", "``"))
-	b.WriteByte('`')
-}
