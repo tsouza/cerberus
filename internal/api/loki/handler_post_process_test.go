@@ -133,6 +133,36 @@ func TestHandler_LineFormat_BadTemplate_400(t *testing.T) {
 	}
 }
 
+// TestHandler_LineFormat_WithTemplateFuncs — verifies the line_format
+// template surface includes the cerberus FuncMap (lower / upper /
+// regexReplaceAll / etc). Pinning these via a handler-integration test
+// catches the wiring through newLineFormatStep — a regression that
+// removed `templateFuncs()` from the funcmap would silently strip
+// these funcs and crash with "function not defined" at query time.
+func TestHandler_LineFormat_WithTemplateFuncs(t *testing.T) {
+	t.Parallel()
+
+	ts := time.Date(2026, 5, 12, 12, 0, 0, 0, time.UTC)
+	q := &stubQuerier{
+		samples: []chclient.Sample{
+			{MetricName: "HELLO World", Labels: map[string]string{"job": "API"}, Timestamp: ts},
+		},
+	}
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	streams := getStreams(t, srv.URL,
+		"{job=\"API\"} | line_format `[{{ lower .job }}] {{ upper __line__ }}`")
+	if len(streams) != 1 || len(streams[0].Values) != 1 {
+		t.Fatalf("unexpected shape: %+v", streams)
+	}
+	got := streams[0].Values[0][1]
+	want := "[api] HELLO WORLD"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
 // TestHandler_LabelFormat_GroupsByOutputLabels — when `| label_format`
 // renames a label, the streams response must group rows by the
 // POST-format label set. Without this, the rename would be visible in
