@@ -36,6 +36,15 @@ func (s *stubQuerier) Query(_ context.Context, sql string, args ...any) ([]chcli
 	return s.samples, nil
 }
 
+func (s *stubQuerier) QueryCursor(_ context.Context, sql string, args ...any) (chclient.Cursor, error) {
+	s.lastSQL = sql
+	s.lastArgs = args
+	if s.err != nil {
+		return nil, s.err
+	}
+	return newSliceCursor(s.samples), nil
+}
+
 func (s *stubQuerier) QueryStrings(_ context.Context, sql string, args ...any) ([]string, error) {
 	s.lastSQL = sql
 	s.lastArgs = args
@@ -441,6 +450,83 @@ func TestQuery_UpstreamError(t *testing.T) {
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("expected 502, got %d body=%s", resp.StatusCode, readBody(t, resp))
 	}
+}
+
+// BenchmarkExecuteRangeStreaming exercises the streaming path against a
+// 100k-sample synthetic result set spread across 100 series and reports
+// allocated bytes per request. The cursor variant should keep the peak
+// resident slice (the master []chclient.Sample copy) out of the
+// allocation profile.
+func BenchmarkExecuteRangeStreaming(b *testing.B) {
+	const (
+		seriesCount     = 100
+		samplesPerSerie = 1000
+	)
+	start := time.Unix(1717995600, 0).UTC()
+	step := time.Second
+	end := start.Add(time.Duration(samplesPerSerie-1) * step)
+
+	samples := make([]chclient.Sample, 0, seriesCount*samplesPerSerie)
+	for i := 0; i < seriesCount; i++ {
+		labels := map[string]string{"job": "api", "instance": fmt.Sprintf("host-%d", i)}
+		for j := 0; j < samplesPerSerie; j++ {
+			samples = append(samples, chclient.Sample{
+				MetricName: "up",
+				Labels:     labels,
+				Timestamp:  start.Add(time.Duration(j) * step),
+				Value:      float64(j),
+			})
+		}
+	}
+
+	q := &stubQuerier{samples: samples}
+	srv := newServer(q)
+	b.Cleanup(srv.Close)
+	url := fmt.Sprintf("%s/api/v1/query_range?query=up&start=%d&end=%d&step=1",
+		srv.URL, start.Unix(), end.Unix())
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		resp, err := http.Get(url)
+		if err != nil {
+			b.Fatalf("GET: %v", err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}
+}
+
+// sliceCursor is the in-memory chclient.Cursor used by stubQuerier so
+// tests don't need a live ClickHouse for /api/v1/query_range. Mirrors
+// the production cursor's lifecycle: Next advances, Sample yields the
+// current row, Err reports any saved error, Close is idempotent.
+type sliceCursor struct {
+	samples []chclient.Sample
+	idx     int
+	cur     chclient.Sample
+	closed  bool
+}
+
+func newSliceCursor(samples []chclient.Sample) *sliceCursor {
+	return &sliceCursor{samples: samples, idx: -1}
+}
+
+func (c *sliceCursor) Next() bool {
+	c.idx++
+	if c.idx >= len(c.samples) {
+		return false
+	}
+	c.cur = c.samples[c.idx]
+	return true
+}
+
+func (c *sliceCursor) Sample() chclient.Sample { return c.cur }
+func (c *sliceCursor) Err() error              { return nil }
+
+func (c *sliceCursor) Close() error {
+	c.closed = true
+	return nil
 }
 
 func readBody(t *testing.T, resp *http.Response) string {
