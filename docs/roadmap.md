@@ -174,7 +174,7 @@ Cerberus instruments itself with the Go-ecosystem defacto stack and ships teleme
 | R4.3 | Custom spans around `promql.Lower` / `logql.Lower` / `traceql.Lower` / `optimizer.Default().Run` / `chsql.Emit` / `chclient.Query`                                                                  |
 | R4.4 | Self-metrics: request count + latency histogram by route + status; CH roundtrip count + duration; plan IR node count; `cerberus_http_requests_in_flight` gauge per route (HPA-consumable, see R5.7) |
 | R4.5 | OTLP exporters: `CERBERUS_OTEL_ENDPOINT` / `_INSECURE` / `_SAMPLER` / `_SERVICE_NAME`; graceful no-op when endpoint unreachable                                                                     |
-| R4.6 | Extend `deploy/k3s/otel-collector.yaml` (landed in RC2) to scrape cerberus's own OTLP export + provisioned `deploy/grafana/dashboards/cerberus-self.json` (cerberus's own metrics rendered by cerberus)  |
+| R4.6 | Wire cerberus's OTLP export into `deploy/k3s/otel-collector.yaml` (landed in RC2) + provisioned `deploy/grafana/dashboards/cerberus-self.json`                                                      |
 | R4.7 | `docs/observability.md`                                                                                                                                                                             |
 
 **Exit criterion:** every Prom/Loki/Tempo request emits one span with pipeline stage timings; self-dashboard renders cerberus's own request rate + p99 latency; disabling OTel via `CERBERUS_OTEL_ENDPOINT=""` produces a zero-collector-dependency binary.
