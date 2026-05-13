@@ -7,6 +7,27 @@ import (
 	"github.com/tsouza/cerberus/internal/chplan"
 )
 
+// verbatim returns a Frag that emits sql as an unquoted token sequence.
+// Used in this file for synthetic emitter-chosen identifiers — local
+// CTE names (`_struct_closure`, `_seed`), the unquoted `_depth` alias,
+// and the qualifier-prefixed `c._depth` / `t.<col>` references that
+// the recursive CTE walks — none of which take user input. The
+// surrounding shape (alias names, the `_depth` column) is fixed by
+// the emitter and pinned by the TraceQL golden fixtures, so the
+// unquoted form is deliberate.
+//
+// This is the in-package writeSQL drop the R6.12.e brief sanctions for
+// shapes that don't fit a typed Frag constructor. R6.12.f deletes
+// chsql.Raw; the structural-CTE shapes here keep needing one of:
+// (a) unquoted alias support on As (the `_depth` literal), (b) an
+// unquoted-qualifier helper for `c.<unquoted-alias>` references,
+// (c) a literal-int Frag for inline depth bounds. Until those land
+// the verbatim escape keeps the typed-Frag rewrite local without
+// growing builder.go's public surface for one-off CTE plumbing.
+func verbatim(sql string) Frag {
+	return func(b *Builder) { b.sb.WriteString(sql) }
+}
+
 // emitStructuralJoin renders a TraceQL structural relation against
 // the otel_traces span table. The result projects the right-hand
 // span's columns (TraceQL convention: `A > B` returns the matched B
@@ -68,7 +89,7 @@ func (e *emitter) emitStructuralDirectJoin(j *chplan.StructuralJoin) error {
 	}
 
 	sb := NewQuery().
-		Select(Raw("R.*")).
+		Select(verbatim("R.*")).
 		From(aliasedFrag(leftSub, "L")).
 		Join(
 			InnerJoin,
@@ -201,7 +222,7 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 			Col(j.TraceIDColumn),
 			Col(j.SpanIDColumn),
 			Col(j.ParentSpanIDColumn),
-			Raw("0 AS _depth"),
+			verbatim("0 AS _depth"),
 		).
 		From(aliasedFrag(leftSub, "_seed"))
 
@@ -216,12 +237,12 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 			qualColFrag("t", j.TraceIDColumn),
 			qualColFrag("t", j.SpanIDColumn),
 			qualColFrag("t", j.ParentSpanIDColumn),
-			Raw("c._depth + 1"),
+			verbatim("c._depth + 1"),
 		).
 		From(aliasedFrag(Col(table), "t")).
 		Join(
 			InnerJoin,
-			aliasedFrag(Raw("_struct_closure"), "c"),
+			aliasedFrag(verbatim("_struct_closure"), "c"),
 			stepOn,
 		)
 	if j.MaxDepth > 0 {
@@ -229,18 +250,18 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 		// integer — depth bounds are part of the query shape, not
 		// user data, and CH's recursive-CTE planner needs them
 		// visible (not parameterised).
-		step.Where(Raw("c._depth < " + strconv.Itoa(j.MaxDepth)))
+		step.Where(verbatim("c._depth < " + strconv.Itoa(j.MaxDepth)))
 	}
 
 	// Closure subquery: WITH RECURSIVE _struct_closure AS (<anchor> UNION ALL <step>) SELECT DISTINCT TraceId, SpanId FROM _struct_closure WHERE _depth > 0.
 	closure := NewQuery().
 		WithRecursive("_struct_closure", anchor, step).
 		Select(
-			Raw("DISTINCT "+quoteIdent(j.TraceIDColumn)),
+			Distinct(Col(j.TraceIDColumn)),
 			Col(j.SpanIDColumn),
 		).
-		From(Raw("_struct_closure")).
-		Where(Raw("_depth > 0"))
+		From(verbatim("_struct_closure")).
+		Where(verbatim("_depth > 0"))
 
 	// Outer SELECT R.* FROM (<closure>) AS L INNER JOIN (<R>) AS R ON L.TraceId = R.TraceId AND L.SpanId = R.SpanId.
 	onClause := func(b *Builder) {
@@ -249,7 +270,7 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 		spanIDPairFrag("L", j.SpanIDColumn, "R", j.SpanIDColumn)(b)
 	}
 	sb := NewQuery().
-		Select(Raw("R.*")).
+		Select(verbatim("R.*")).
 		From(aliasedFrag(closure.Frag(), "L")).
 		Join(InnerJoin, aliasedFrag(rightSub, "R"), onClause)
 	e.emitSelect(sb)

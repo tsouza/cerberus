@@ -50,7 +50,7 @@ func (e *emitter) emitSetOperation(s *chplan.SetOperation) error {
 			b.QualIdent("R", spanID)
 		}
 		sb := NewQuery().
-			Select(Raw("L.*")).
+			Select(verbatim("L.*")).
 			From(As(leftFrag, "L")).
 			Join(InnerJoin, As(rightFrag, "R"), on)
 		e.emitSelect(sb)
