@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/prometheus/prometheus/promql"
+	"github.com/prometheus/prometheus/promql/parser"
 )
 
 // Options configures a local PromQL evaluator. Zero-valued fields fall back to
@@ -28,7 +29,12 @@ type Engine struct {
 
 // NewEngine constructs a local PromQL evaluator with the provided options.
 // The wrapped promql.Engine has @ modifier and negative offsets enabled to
-// mirror modern Prometheus defaults.
+// mirror modern Prometheus defaults. The parser is constructed with
+// EnableExperimentalFunctions=true so the shadow-mode oracle exercises
+// Prometheus 3.x experimental functions (e.g. double_exponential_smoothing)
+// that cerberus's own parser already accepts (see internal/api/prom.New).
+// Keeping the oracle aligned with cerberus's parser is the whole point of
+// the local promshim.
 func NewEngine(opts Options) *Engine {
 	if opts.MaxSamples == 0 {
 		opts.MaxSamples = 50_000_000
@@ -46,6 +52,7 @@ func NewEngine(opts Options) *Engine {
 			LookbackDelta:        opts.LookbackDelta,
 			EnableAtModifier:     true,
 			EnableNegativeOffset: true,
+			Parser:               parser.NewParser(parser.Options{EnableExperimentalFunctions: true}),
 		}),
 	}
 }
