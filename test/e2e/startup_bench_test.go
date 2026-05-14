@@ -8,10 +8,10 @@
 // CI scheduler jitter while still catching real regressions (e.g. a new
 // startup hook that blocks the listener bind).
 //
-// Build-tagged + env-gated so regular `go test ./...` doesn't pull in
-// the build step. Run via `just startup-bench` or:
+// Build-tagged so regular `go test ./...` doesn't pull in the build
+// step. Run via `just startup-bench` or:
 //
-//	RUN_STARTUP_BENCH=1 go test -tags=startup_bench ./test/e2e/...
+//	go test -tags=startup_bench ./test/e2e/...
 //
 // Prerequisites:
 //   - ClickHouse reachable at $CH_ADDR (default 127.0.0.1:9000), already
@@ -49,10 +49,6 @@ const (
 )
 
 func TestStartupSpeed_HealthzUnder2s(t *testing.T) {
-	if os.Getenv("RUN_STARTUP_BENCH") != "1" {
-		t.Skip("set RUN_STARTUP_BENCH=1 to run the startup benchmark")
-	}
-
 	binary := os.Getenv("CERBERUS_BIN")
 	if binary == "" {
 		binary = buildCerberus(t)
