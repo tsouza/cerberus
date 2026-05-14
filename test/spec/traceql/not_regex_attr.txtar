@@ -5,3 +5,14 @@ SELECT * FROM `otel_traces` WHERE NOT match(`ResourceAttributes`[?], ?)
 -- args --
 [0] string = "service.name"
 [1] string = "back.*"
+-- seed --
+CREATE TABLE otel_traces (
+    _idx UInt64,
+    ResourceAttributes Map(String, String) MATERIALIZED map('service.name', if(_idx = 0, 'frontend', if(_idx = 1, 'backend', 'db')))
+) ENGINE = MergeTree ORDER BY _idx;
+INSERT INTO otel_traces (_idx) VALUES (0), (1), (2);
+-- expected_rows --
+[
+  [0],
+  [2]
+]

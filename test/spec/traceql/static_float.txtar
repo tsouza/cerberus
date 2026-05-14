@@ -5,3 +5,13 @@ SELECT * FROM `otel_traces` WHERE (`SpanAttributes`[?] = ?)
 -- args --
 [0] string = "ratio"
 [1] float64 = 0.95
+-- seed --
+CREATE TABLE otel_traces (
+    _idx UInt64,
+    SpanAttributes Map(String, String) MATERIALIZED map('ratio', if(_idx = 0, '0.95', '0.5'))
+) ENGINE = MergeTree ORDER BY _idx;
+INSERT INTO otel_traces (_idx) VALUES (0), (1);
+-- expected_rows --
+[
+  [0]
+]

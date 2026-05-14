@@ -5,3 +5,16 @@ SELECT count(?) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?)
 -- args --
 [0] int64 = 1
 [1] bool = true
+-- seed --
+CREATE TABLE otel_traces (
+    Duration UInt64
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    (50000000),
+    (100000000),
+    (200000000),
+    (300000000);
+-- expected_rows --
+[
+  [4]
+]

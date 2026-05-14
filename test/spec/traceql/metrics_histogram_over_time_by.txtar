@@ -7,3 +7,16 @@ SELECT `ResourceAttributes`[?] AS `service.name`, log2(`Duration`) / 1000000000 
 [1] int64 = 1
 [2] bool = true
 [3] string = "service.name"
+-- seed --
+CREATE TABLE otel_traces (
+    ResourceAttributes Map(String, String),
+    Duration UInt64
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    (map('service.name', 'frontend'), 1024),
+    (map('service.name', 'frontend'), 1024),
+    (map('service.name', 'frontend'), 1024);
+-- expected_rows --
+[
+  ["frontend", 1.0e-08, 3]
+]

@@ -4,3 +4,15 @@
 SELECT * FROM `otel_traces` WHERE (`StatusMessage` = ?)
 -- args --
 [0] string = "internal server error"
+-- seed --
+CREATE TABLE otel_traces (
+    StatusMessage String
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    (''),
+    ('internal server error'),
+    ('timeout');
+-- expected_rows --
+[
+  ["internal server error"]
+]

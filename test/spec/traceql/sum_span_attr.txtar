@@ -7,3 +7,15 @@ SELECT * FROM (SELECT sum(`SpanAttributes`[?]) AS `Value` FROM (SELECT * FROM `o
 [1] string = "http.status_code"
 [2] int64 = 400
 [3] int64 = 0
+-- seed --
+CREATE TABLE otel_traces (
+    SpanAttributes Map(String, UInt64)
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    (map('http.status_code', 500)),
+    (map('http.status_code', 404)),
+    (map('http.status_code', 200));
+-- expected_rows --
+[
+  [904]
+]

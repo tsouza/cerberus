@@ -5,3 +5,17 @@ SELECT quantile(?)(`Duration`) AS `Value` FROM (SELECT * FROM `otel_traces` WHER
 -- args --
 [0] float64 = 0.95
 [1] bool = true
+-- seed --
+CREATE TABLE otel_traces (
+    Duration UInt64
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    (100000000),
+    (100000000),
+    (100000000),
+    (100000000),
+    (100000000);
+-- expected_rows --
+[
+  [100000000.0]
+]

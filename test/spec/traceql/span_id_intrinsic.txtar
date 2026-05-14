@@ -4,3 +4,15 @@
 SELECT * FROM `otel_traces` WHERE (`SpanId` = ?)
 -- args --
 [0] string = "0123456789abcdef"
+-- seed --
+CREATE TABLE otel_traces (
+    SpanId String
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    ('0000000000000001'),
+    ('0123456789abcdef'),
+    ('fedcba9876543210');
+-- expected_rows --
+[
+  ["0123456789abcdef"]
+]

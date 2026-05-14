@@ -4,3 +4,15 @@
 SELECT * FROM `otel_traces` WHERE (`SpanKind` = ?)
 -- args --
 [0] string = "client"
+-- seed --
+CREATE TABLE otel_traces (
+    SpanKind String
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    ('Server'),
+    ('client'),
+    ('Internal');
+-- expected_rows --
+[
+  ["client"]
+]

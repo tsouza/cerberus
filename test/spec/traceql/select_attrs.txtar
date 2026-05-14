@@ -7,3 +7,18 @@ SELECT `TraceId`, `SpanId`, `Timestamp`, `SpanAttributes`[?] AS `http.method`, `
 [1] string = "http.status_code"
 [2] string = "service.name"
 [3] string = "frontend"
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    Timestamp DateTime64(9),
+    SpanAttributes Map(String, String),
+    ResourceAttributes Map(String, String)
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    ('a0000000000000000000000000000001', '0000000000000001', toDateTime64('2026-01-01 00:00:00', 9), map('http.method', 'GET', 'http.status_code', '200'), map('service.name', 'frontend')),
+    ('a0000000000000000000000000000002', '0000000000000002', toDateTime64('2026-01-01 00:00:01', 9), map('http.method', 'POST', 'http.status_code', '500'), map('service.name', 'backend'));
+-- expected_rows --
+[
+  ["a0000000000000000000000000000001", "0000000000000001", "2026-01-01T00:00:00Z", "GET", "200"]
+]

@@ -4,3 +4,15 @@
 SELECT max(`Duration`) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?)
 -- args --
 [0] bool = true
+-- seed --
+CREATE TABLE otel_traces (
+    Duration UInt64
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    (50000000),
+    (200000000),
+    (100000000);
+-- expected_rows --
+[
+  [200000000]
+]
