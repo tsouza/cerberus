@@ -1,0 +1,10 @@
+-- query.traceql --
+{ resource.service.name = "x" } ~ { resource.service.name = "y" && duration > 1s }
+-- args --
+[0] string = "service.name"
+[1] string = "x"
+[2] int64 = 1000000000
+[3] string = "service.name"
+[4] string = "y"
+-- sql --
+SELECT R.* FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) AS L INNER JOIN (SELECT * FROM `otel_traces` PREWHERE (`Duration` > ?) WHERE (`ResourceAttributes`[?] = ?)) AS R ON L.`TraceId` = R.`TraceId` AND L.`ParentSpanId` = R.`ParentSpanId` AND L.`SpanId` != R.`SpanId`

@@ -1,0 +1,10 @@
+-- query.logql --
+{job="api"} | level="error" |= "timeout"
+-- args --
+[0] string = "job"
+[1] string = "api"
+[2] string = "level"
+[3] string = "error"
+[4] string = "timeout"
+-- sql --
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (`ResourceAttributes`[?] = ?) AND (position(`Body`, ?) > 0)

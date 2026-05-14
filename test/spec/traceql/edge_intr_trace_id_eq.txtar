@@ -1,0 +1,6 @@
+-- query.traceql --
+{ trace:id = "abc123" }
+-- args --
+[0] string = "abc123"
+-- sql --
+SELECT * FROM `otel_traces` WHERE (`TraceId` = ?)

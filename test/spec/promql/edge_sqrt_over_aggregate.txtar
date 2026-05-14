@@ -1,0 +1,9 @@
+-- query.promql --
+sqrt(avg(latency_seconds))
+-- args --
+[0] string = ""
+[1] string = "Map(String,String)"
+[2] int64 = 9
+[3] string = "latency_seconds"
+-- sql --
+SELECT `MetricName`, `Attributes`, `TimeUnix`, sqrt(`Value`) AS `Value` FROM (SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT avg(`Value`) AS `Value` FROM (SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` = ?))))

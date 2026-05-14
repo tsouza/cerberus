@@ -1,0 +1,8 @@
+-- query.logql --
+{job="api"} |= "packed" | unpack | line_format "[{{.pod}}/{{.level}}] {{__line__}}"
+-- args --
+[0] string = "job"
+[1] string = "api"
+[2] string = "packed"
+-- sql --
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (position(`Body`, ?) > 0)

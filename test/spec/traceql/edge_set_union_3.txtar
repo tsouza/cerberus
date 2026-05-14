@@ -1,0 +1,11 @@
+-- query.traceql --
+{ resource.service.name = "a" } || { resource.service.name = "b" } || { resource.service.name = "c" }
+-- args --
+[0] string = "service.name"
+[1] string = "a"
+[2] string = "service.name"
+[3] string = "b"
+[4] string = "service.name"
+[5] string = "c"
+-- sql --
+((SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) UNION DISTINCT (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?))) UNION DISTINCT (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?))

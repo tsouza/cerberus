@@ -1,0 +1,7 @@
+-- query.traceql --
+{ span.http.status_code < 500 }
+-- args --
+[0] string = "http.status_code"
+[1] int64 = 500
+-- sql --
+SELECT * FROM `otel_traces` WHERE (`SpanAttributes`[?] < ?)

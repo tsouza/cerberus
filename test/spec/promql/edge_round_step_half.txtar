@@ -1,0 +1,8 @@
+-- query.promql --
+round(temperature, 0.5)
+-- args --
+[0] float64 = 0.5
+[1] float64 = 0.5
+[2] string = "temperature"
+-- sql --
+SELECT `MetricName`, `Attributes`, `TimeUnix`, (round((`Value` / ?)) * ?) AS `Value` FROM (SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` = ?))

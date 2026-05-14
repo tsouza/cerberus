@@ -1,0 +1,9 @@
+-- query.promql --
+((up * 2) + 1) / 3
+-- args --
+[0] float64 = 3
+[1] float64 = 1
+[2] float64 = 2
+[3] string = "up"
+-- sql --
+SELECT `MetricName`, `Attributes`, `TimeUnix`, (`Value` / ?) AS `Value` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, (`Value` + ?) AS `Value` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, (`Value` * ?) AS `Value` FROM (SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` = ?))))

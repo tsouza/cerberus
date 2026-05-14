@@ -1,0 +1,7 @@
+-- query.promql --
+-5 - up
+-- args --
+[0] float64 = -5
+[1] string = "up"
+-- sql --
+SELECT `MetricName`, `Attributes`, `TimeUnix`, (? - `Value`) AS `Value` FROM (SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` = ?))

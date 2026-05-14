@@ -1,0 +1,7 @@
+-- query.traceql --
+{ resource.service.name !~ "test.*" }
+-- args --
+[0] string = "service.name"
+[1] string = "test.*"
+-- sql --
+SELECT * FROM `otel_traces` WHERE NOT match(`ResourceAttributes`[?], ?)

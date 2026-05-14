@@ -1,0 +1,17 @@
+-- query.logql --
+sum by (job, level) (rate({job="api"}[5m]))
+-- args --
+[0] string = ""
+[1] string = "job"
+[2] string = "level"
+[3] int64 = 9
+[4] string = "job"
+[5] string = "level"
+[6] float64 = 300
+[7] int64 = 1
+[8] string = "job"
+[9] string = "api"
+[10] string = "job"
+[11] string = "level"
+-- sql --
+SELECT ? AS `MetricName`, map(?, `gkey_0`, ?, `gkey_1`) AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `ResourceAttributes`[?] AS `gkey_0`, `ResourceAttributes`[?] AS `gkey_1`, sum(`Value`) AS `Value` FROM (SELECT `ResourceAttributes`, if(length(window_vals) > 0, arraySum(window_vals) / ?, 0.0) AS `value` FROM (SELECT `ResourceAttributes`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `ResourceAttributes`, arrayFilter(p -> tupleElement(p, 1) >= now64(9) - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= now64(9), series_array) AS `window_pairs` FROM (SELECT `ResourceAttributes`, arraySort(groupArray((`Timestamp`, `Value`))) AS `series_array` FROM (SELECT `ResourceAttributes`, `Timestamp`, ? AS `Value` FROM (SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?))) GROUP BY `ResourceAttributes`)))) GROUP BY `ResourceAttributes`[?], `ResourceAttributes`[?])

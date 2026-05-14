@@ -1,0 +1,21 @@
+-- query.promql --
+up * on(job, env, svc) machine_role
+-- args --
+[0] string = "many-to-many matching not allowed: matching labels must be unique on one side"
+[1] string = "up"
+[2] string = "job"
+[3] string = "env"
+[4] string = "svc"
+[5] string = "many-to-many matching not allowed: matching labels must be unique on one side"
+[6] string = "machine_role"
+[7] string = "job"
+[8] string = "env"
+[9] string = "svc"
+[10] string = "job"
+[11] string = "job"
+[12] string = "env"
+[13] string = "env"
+[14] string = "svc"
+[15] string = "svc"
+-- sql --
+SELECT L.`MetricName`, L.`Attributes`, L.`TimeUnix`, (L.`Value` * R.`Value`) AS `Value` FROM (SELECT argMax(`MetricName`, `TimeUnix`) AS `MetricName`, argMax(`Attributes`, `TimeUnix`) AS `Attributes`, max(`TimeUnix`) AS `TimeUnix`, argMax(`Value`, `TimeUnix`) AS `Value`, throwIf(uniqExact(`Attributes`) > 1, ?) AS _cerberus_match_check FROM (SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` = ?)) GROUP BY mapFilter((k, v) -> k IN (?, ?, ?), `Attributes`)) AS L INNER JOIN (SELECT argMax(`MetricName`, `TimeUnix`) AS `MetricName`, argMax(`Attributes`, `TimeUnix`) AS `Attributes`, max(`TimeUnix`) AS `TimeUnix`, argMax(`Value`, `TimeUnix`) AS `Value`, throwIf(uniqExact(`Attributes`) > 1, ?) AS _cerberus_match_check FROM (SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` = ?)) GROUP BY mapFilter((k, v) -> k IN (?, ?, ?), `Attributes`)) AS R ON L.`Attributes`[?] = R.`Attributes`[?] AND L.`Attributes`[?] = R.`Attributes`[?] AND L.`Attributes`[?] = R.`Attributes`[?]

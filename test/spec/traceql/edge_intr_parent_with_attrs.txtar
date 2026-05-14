@@ -1,0 +1,7 @@
+-- query.traceql --
+{ parent && resource.service.name = "api" }
+-- args --
+[0] string = "service.name"
+[1] string = "api"
+-- sql --
+SELECT * FROM `otel_traces` PREWHERE `ParentSpanId` WHERE (`ResourceAttributes`[?] = ?)

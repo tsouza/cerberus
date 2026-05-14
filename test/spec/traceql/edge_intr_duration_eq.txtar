@@ -1,0 +1,6 @@
+-- query.traceql --
+{ duration = 1s }
+-- args --
+[0] int64 = 1000000000
+-- sql --
+SELECT * FROM `otel_traces` WHERE (`Duration` = ?)

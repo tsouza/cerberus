@@ -1,0 +1,9 @@
+-- query.traceql --
+{ resource.service.name = "x" && status = error } | avg(duration) > 500ms
+-- args --
+[0] string = "Error"
+[1] string = "service.name"
+[2] string = "x"
+[3] int64 = 500000000
+-- sql --
+SELECT * FROM (SELECT avg(`Duration`) AS `Value` FROM (SELECT * FROM `otel_traces` PREWHERE (`StatusCode` = ?) WHERE (`ResourceAttributes`[?] = ?))) WHERE (`Value` > ?)

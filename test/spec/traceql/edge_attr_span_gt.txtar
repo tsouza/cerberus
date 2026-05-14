@@ -1,0 +1,7 @@
+-- query.traceql --
+{ span.size > 1024 }
+-- args --
+[0] string = "size"
+[1] int64 = 1024
+-- sql --
+SELECT * FROM `otel_traces` WHERE (`SpanAttributes`[?] > ?)
