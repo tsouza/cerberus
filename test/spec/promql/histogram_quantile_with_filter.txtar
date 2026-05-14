@@ -1,3 +1,14 @@
+# TODO(empty-rows-audit): expected_rows stays empty here for two reasons.
+# (1) The seed inserts only 'other_metric' while the query targets a
+# different MetricName, so the inner Filter drops every row. (2) The
+# outer projection emits now64(9) for TimeUnix, which is wall-clock at
+# query time and so non-deterministic. To populate real expected_rows,
+# both have to be addressed: align the seed with the queried metric AND
+# teach the chDB runner (test/spec/runner_chdb.go) to substitute now64()
+# for a fixed timestamp before execution. Until that lands, treat the
+# text-equality goldens (-- sql -- / -- chplan --) as the authoritative
+# coverage for these fixtures.
+
 -- query.promql --
 histogram_quantile(0.95, sum by(le) (rate(http_server_request_duration{job="api"}[5m])))
 -- seed --

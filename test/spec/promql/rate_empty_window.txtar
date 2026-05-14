@@ -1,3 +1,9 @@
+# expected_rows is intentionally empty: the @-anchor pins the eval at
+# 1970-01-01 00:30:00 and the [5m] window covers 00:25:00..00:30:00,
+# but the seed samples are at 00:00:00 / 00:05:00. With no samples in
+# the window cerberus correctly drops the series (post-PR #287). This
+# fixture exercises the empty-window path.
+
 -- query.promql --
 rate(http_requests_total[5m] @ 1800)
 -- args --

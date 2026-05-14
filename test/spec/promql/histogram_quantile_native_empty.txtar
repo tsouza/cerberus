@@ -1,3 +1,8 @@
+# expected_rows is intentionally empty: the query filters by
+# service="does-not-exist" which does not match the seed (service="api"),
+# so cerberus correctly emits zero rows. This fixture exercises the
+# no-match path for native (exponential) histograms.
+
 -- query.promql --
 histogram_quantile(0.95, http_server_duration_exp_hist{service="does-not-exist"})
 -- sql --
