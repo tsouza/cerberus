@@ -19,6 +19,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
 	"reflect"
 	"sort"
 	"strings"
@@ -651,6 +652,24 @@ func normalizeValue(v any) any {
 		return float64(x)
 	case float32:
 		return float64(x)
+	case string:
+		// JSON cannot represent ±Inf / NaN natively (json.Unmarshal
+		// would reject the bare tokens). Fixture authors encode them
+		// as string sentinels in `expected_rows:` so the assertion
+		// path can match a chDB row whose Value column is non-finite
+		// (e.g. PromQL quantile(phi<0, ...) lowers to -Inf). The
+		// CH float64 → Go float64 path returns math.Inf(±1) /
+		// math.NaN() directly, so the expected side must do the
+		// same here.
+		switch x {
+		case "Inf", "+Inf":
+			return math.Inf(+1)
+		case "-Inf":
+			return math.Inf(-1)
+		case "NaN":
+			return math.NaN()
+		}
+		return v
 	case map[string]any:
 		out := make(map[string]any, len(x))
 		for k, vv := range x {
@@ -669,9 +688,46 @@ func normalizeValue(v any) any {
 }
 
 func mustJSON(v any) string {
-	b, err := json.MarshalIndent(v, "", "  ")
+	// json.Marshal rejects non-finite float64 values; route them
+	// through the same sentinel strings normalizeValue accepts on
+	// the read path so sortRows can keep delegating to JSON
+	// without per-call error handling for ±Inf / NaN cells.
+	b, err := json.MarshalIndent(infSafe(v), "", "  ")
 	if err != nil {
 		return fmt.Sprintf("<json err: %v>", err)
 	}
 	return string(b)
+}
+
+// infSafe walks v and substitutes non-finite float64 values with the
+// JSON-friendly string sentinels normalizeValue understands ("+Inf",
+// "-Inf", "NaN"). Other types pass through unchanged. Used only by
+// the mustJSON sort key — the cell values themselves are still
+// compared via reflect.DeepEqual at full float64 precision.
+func infSafe(v any) any {
+	switch x := v.(type) {
+	case float64:
+		switch {
+		case math.IsNaN(x):
+			return "NaN"
+		case math.IsInf(x, +1):
+			return "+Inf"
+		case math.IsInf(x, -1):
+			return "-Inf"
+		}
+		return x
+	case map[string]any:
+		out := make(map[string]any, len(x))
+		for k, vv := range x {
+			out[k] = infSafe(vv)
+		}
+		return out
+	case []any:
+		out := make([]any, len(x))
+		for i, vv := range x {
+			out[i] = infSafe(vv)
+		}
+		return out
+	}
+	return v
 }

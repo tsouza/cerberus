@@ -500,7 +500,23 @@ func lowerAggregate(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (ch
 		AggFuncs:           []chplan.AggFunc{aggFunc},
 		DropEmptyOnNoGroup: true,
 	}
-	return wrapAggregateForSample(agg, a, s, aliases), nil
+	wrapped := wrapAggregateForSample(agg, a, s, aliases)
+	// quantile(phi, V) with phi outside [0, 1] is well-defined in
+	// PromQL — see prometheus/promql/quantile.go: phi<0 → -Inf,
+	// phi>1 → +Inf. CH's `quantile` aggregate rejects out-of-range
+	// phi at the wire layer, so buildAggFunc has already clamped
+	// the emitted phi to 0.5; here we wrap the Aggregate output in
+	// a Project that overrides Value with the PromQL-spec Inf
+	// constant. The per-group identity (MetricName / Attributes /
+	// TimeUnix) carries through unchanged from the inner Project.
+	if a.Op == parser.QUANTILE {
+		if phi, ok := tryScalarLiteral(a.Param); ok {
+			if infValue, outOfRange := outOfRangePhiInf(phi); outOfRange {
+				wrapped = projectValueOverInner(wrapped, s, &chplan.LitFloat{V: infValue})
+			}
+		}
+	}
+	return wrapped, nil
 }
 
 // lowerCountValues lowers `count_values("label", expr) [by(g)]`. The
@@ -852,9 +868,18 @@ func buildAggFunc(a *parser.AggregateExpr, s schema.Metrics) (chplan.AggFunc, er
 		if !ok {
 			return chplan.AggFunc{}, fmt.Errorf("promql: quantile(phi, ...) requires a scalar literal phi (computed phi defers to M1.7)")
 		}
+		// CH's `quantile(phi)` aggregate errors on phi outside
+		// [0, 1]; clamp the emitted phi to a safe sentinel (0.5)
+		// for those cases. lowerAggregate post-Projects the Value
+		// column to ±Inf (matching Prom's funcQuantile semantics)
+		// so the clamped value is never observed.
+		emitPhi := phi
+		if _, outOfRange := outOfRangePhiInf(phi); outOfRange {
+			emitPhi = 0.5
+		}
 		return chplan.AggFunc{
 			Name:   "quantile",
-			Params: []chplan.Expr{&chplan.LitFloat{V: phi}},
+			Params: []chplan.Expr{&chplan.LitFloat{V: emitPhi}},
 			Args:   []chplan.Expr{valueArg},
 			Alias:  s.ValueColumn,
 		}, nil
