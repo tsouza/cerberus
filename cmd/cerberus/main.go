@@ -21,7 +21,6 @@ import (
 	"github.com/tsouza/cerberus/internal/api/tempo"
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/config"
-	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/schema/ddl"
 	"github.com/tsouza/cerberus/internal/telemetry"
 )
@@ -97,10 +96,10 @@ func run() error {
 	promHandler := prom.New(client, cfg.Schema, logger.With("api", "prom"))
 	promHandler.Mount(traceMux)
 
-	lokiHandler := loki.New(client, schema.DefaultOTelLogs(), logger.With("api", "loki"))
+	lokiHandler := loki.New(client, cfg.Logs, logger.With("api", "loki"))
 	lokiHandler.Mount(traceMux)
 
-	tempoHandler := tempo.New(client, schema.DefaultOTelTraces(), Version, logger.With("api", "tempo"))
+	tempoHandler := tempo.New(client, cfg.Traces, Version, logger.With("api", "tempo"))
 	tempoHandler.Mount(traceMux)
 
 	// Install the W3C+Baggage propagator and build OTel providers from

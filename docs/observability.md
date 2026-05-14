@@ -80,6 +80,35 @@ time=2026-05-13T10:14:01.000Z level=INFO msg="cerberus starting" version=v1.0.0-
 {"time":"2026-05-13T10:14:01Z","level":"INFO","msg":"cerberus starting","version":"v1.0.0-RC4","http_addr":":8080","ch_addr":"clickhouse:9000","ch_db":"otel","log_format":"json","log_level":"INFO"}
 ```
 
+## Schema-shape overrides
+
+Cerberus reads the OpenTelemetry ClickHouse Exporter layout by default
+(table names + column names mirror the upstream
+`clickhouseexporter` DDL — see [`docs/upstream-forks.md`](upstream-forks.md)).
+Deployments with a customised CH layout — renamed tables, sharded
+clusters, alternate database conventions — override the table names via
+env vars at startup; nothing rebuild-related is required.
+
+| Variable                                      | Default                      | Effect                                                        |
+| --------------------------------------------- | ---------------------------- | ------------------------------------------------------------- |
+| `CERBERUS_SCHEMA_METRICS_GAUGE_TABLE`         | `otel_metrics_gauge`         | Gauge-metrics table name.                                     |
+| `CERBERUS_SCHEMA_METRICS_SUM_TABLE`           | `otel_metrics_sum`           | Sum / counter metrics table name.                             |
+| `CERBERUS_SCHEMA_METRICS_HISTOGRAM_TABLE`     | `otel_metrics_histogram`     | Classic histogram metrics table name.                         |
+| `CERBERUS_SCHEMA_METRICS_EXP_HISTOGRAM_TABLE` | `otel_metrics_exp_histogram` | Exponential / native histogram metrics table name.            |
+| `CERBERUS_SCHEMA_METRICS_SUMMARY_TABLE`       | `otel_metrics_summary`       | Summary metrics table name.                                   |
+| `CERBERUS_SCHEMA_LOGS_TABLE`                  | `otel_logs`                  | Logs table name read by the Loki API.                         |
+| `CERBERUS_SCHEMA_TRACES_TABLE`                | `otel_traces`                | Spans table name read by the Tempo API.                       |
+
+The active ClickHouse **database** is set by `CERBERUS_CH_DATABASE`
+(default `otel`) — that single knob covers both the connection's
+default schema and the database the auto-create DDL targets, so no
+separate `CERBERUS_SCHEMA_DATABASE` is required.
+
+Whitespace-only values (e.g. an empty `""` or a value with stray
+newlines) are treated as unset and fall back to the default. Non-empty
+values are trimmed before use. Column-name overrides are not in the
+current surface — open a tracking issue if a deployment needs them.
+
 ## Tracing + metrics export (R4.5, shipped)
 
 Cerberus emits structured logs, spans, and self-metrics so an operator can

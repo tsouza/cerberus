@@ -21,6 +21,14 @@ type Config struct {
 	HTTPAddr   string
 	ClickHouse chclient.Config
 	Schema     schema.Metrics
+	// Logs is the OTel logs schema (table + columns the Loki API reads).
+	// Defaults to schema.DefaultOTelLogs() with any CERBERUS_SCHEMA_LOGS_*
+	// env overrides applied.
+	Logs schema.Logs
+	// Traces is the OTel traces schema (table + columns the Tempo API
+	// reads). Defaults to schema.DefaultOTelTraces() with any
+	// CERBERUS_SCHEMA_TRACES_* env overrides applied.
+	Traces schema.Traces
 
 	// AutoCreateSchema, when true, instructs cerberus to run the OTel
 	// ClickHouse Exporter DDL (via internal/schema/ddl) against the
@@ -97,6 +105,16 @@ type OTLPConfig struct {
 //
 // Standard OTEL_EXPORTER_OTLP_* env vars are also honored by the OTel
 // Go SDK and complement these — see docs/observability.md.
+//
+// Schema-shape overrides (see internal/schema for the full env-var list):
+//
+//	CERBERUS_SCHEMA_METRICS_GAUGE_TABLE         default "otel_metrics_gauge"
+//	CERBERUS_SCHEMA_METRICS_SUM_TABLE           default "otel_metrics_sum"
+//	CERBERUS_SCHEMA_METRICS_HISTOGRAM_TABLE     default "otel_metrics_histogram"
+//	CERBERUS_SCHEMA_METRICS_EXP_HISTOGRAM_TABLE default "otel_metrics_exp_histogram"
+//	CERBERUS_SCHEMA_METRICS_SUMMARY_TABLE       default "otel_metrics_summary"
+//	CERBERUS_SCHEMA_LOGS_TABLE                  default "otel_logs"
+//	CERBERUS_SCHEMA_TRACES_TABLE                default "otel_traces"
 func FromEnv() (Config, error) {
 	dial, err := time.ParseDuration(envDefault("CERBERUS_CH_DIAL_TIMEOUT", "5s"))
 	if err != nil {
@@ -123,7 +141,9 @@ func FromEnv() (Config, error) {
 			Password:    envDefault("CERBERUS_CH_PASSWORD", ""),
 			DialTimeout: dial,
 		},
-		Schema:           schema.DefaultOTelMetrics(),
+		Schema:           schema.DefaultOTelMetricsFromEnv(),
+		Logs:             schema.DefaultOTelLogsFromEnv(),
+		Traces:           schema.DefaultOTelTracesFromEnv(),
 		AutoCreateSchema: autoCreate,
 		Log:              logCfg,
 		OTLP:             otlp,
