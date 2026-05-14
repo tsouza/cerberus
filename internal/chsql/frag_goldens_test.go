@@ -326,7 +326,7 @@ func TestFrag_Goldens(t *testing.T) {
 				t.Errorf("SQL = %q; want %q", gotSQL, tc.wantSQL)
 			}
 			if tc.wantArgs == nil {
-				if gotArgs != nil && len(gotArgs) != 0 {
+				if len(gotArgs) != 0 {
 					t.Errorf("Args = %v; want nil/empty", gotArgs)
 				}
 				return
@@ -447,7 +447,9 @@ func TestFrag_InlineLit_PanicMessage(t *testing.T) {
 			t.Errorf("panic value = %v; want message mentioning 'bool'", r)
 		}
 	}()
-	InlineLit(true)
+	// InlineLit returns a closure; the panic fires only when the closure
+	// runs against a Builder. Invoke it here to surface the panic.
+	InlineLit(true)(NewBuilder())
 }
 
 // TestFrag_Array_BindsAtPosition — Array elements emit their args
