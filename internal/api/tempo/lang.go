@@ -72,12 +72,14 @@ func (l *traceqlLang) Parse(ctx context.Context, query string) (chplan.Node, eng
 	}, nil
 }
 
-func (l *traceqlLang) ProjectSamples(plan chplan.Node, _ engine.Meta) chplan.Node {
+func (l *traceqlLang) ProjectSamples(plan chplan.Node, meta engine.Meta) chplan.Node {
 	// Tempo's wrap-projection inspects the inner plan shape
-	// (Scan / StructuralJoin / Aggregate) and materialises the
-	// canonical (MetricName, Attributes, TimeUnix, Value) tuple — the
-	// same logic the handler used to call inline. IsTraceByID rows
-	// arrive as Filter(Scan) which falls into the canonical branch,
-	// so the same helper covers both entry points.
-	return wrapWithSampleProjection(plan, l.schema)
+	// (Scan / StructuralJoin / Aggregate / Project) and materialises
+	// the canonical (MetricName, Attributes, TimeUnix, Value) tuple.
+	// IsTraceByID is threaded through so the Filter(Scan) branch can
+	// enrich the Attributes map with the span-detail fields Grafana's
+	// trace-view UI consumes (TraceId / SpanId / ParentSpanId /
+	// SpanKind / StatusCode + SpanAttributes); the search-path
+	// branches use the leaner canonical projection unchanged.
+	return wrapWithSampleProjection(plan, l.schema, meta)
 }
