@@ -158,10 +158,18 @@ func (e *emitter) emitRangeWindow(r *chplan.RangeWindow) error {
 	switch r.Func {
 	case "rate":
 		return e.emitRangeWindowRate(r)
+	case "irate":
+		return e.emitRangeWindowIRate(r)
 	case "increase":
 		return e.emitRangeWindowIncrease(r)
-	case "sum_over_time", "avg_over_time", "min_over_time", "max_over_time", "count_over_time", "last_over_time":
+	case "delta":
+		return e.emitRangeWindowDelta(r)
+	case "idelta":
+		return e.emitRangeWindowIDelta(r)
+	case "sum_over_time", "avg_over_time", "min_over_time", "max_over_time", "count_over_time", "last_over_time", "stddev_over_time":
 		return e.emitRangeWindowOverTime(r)
+	case "quantile_over_time":
+		return e.emitRangeWindowQuantileOverTime(r)
 	case "log_rate":
 		return e.emitRangeWindowLogRate(r)
 	case "predict_linear":
@@ -763,9 +771,14 @@ func (e *emitter) emitRangeWindowIncrease(r *chplan.RangeWindow) error {
 
 // emitRangeWindowOverTime emits SQL for the `*_over_time` family:
 // sum_over_time, avg_over_time, min_over_time, max_over_time,
-// count_over_time, last_over_time. These don't need counter-reset
-// handling — they're straight array aggregations over the window's
-// values.
+// count_over_time, last_over_time, stddev_over_time. These don't need
+// counter-reset handling — they're straight array aggregations over
+// the window's values.
+//
+// stddev_over_time uses CH's `arrayReduce('stddevPop', ...)` to match
+// Prometheus's `Engine.evalAggrOverTime → varianceOverTime` which
+// builds a Welford running estimator that divides squared deviations
+// by N (population variance), not by N-1.
 func (e *emitter) emitRangeWindowOverTime(r *chplan.RangeWindow) error {
 	var inner string
 	switch r.Func {
@@ -781,10 +794,104 @@ func (e *emitter) emitRangeWindowOverTime(r *chplan.RangeWindow) error {
 		inner = "toFloat64(length(window_vals))"
 	case "last_over_time":
 		inner = "if(length(window_vals) > 0, window_vals[length(window_vals)], nan)"
+	case "stddev_over_time":
+		// Empty window → drop the series (Prom returns no sample).
+		// We mirror with NaN; the engine layer treats NaN as "drop"
+		// when projecting samples. Single-sample windows render the
+		// population stddev which is 0 — matches Prom's Welford
+		// estimator (sum of squared deviations / 1 = 0 when there's
+		// only one sample equal to the running mean).
+		inner = "if(length(window_vals) > 0, arrayReduce('stddevPop', window_vals), nan)"
 	default:
 		return fmt.Errorf("%w: over-time function %q", ErrUnsupported, r.Func)
 	}
 	return e.emitWindowedArray(r, verbatim(inner))
+}
+
+// emitRangeWindowDelta emits SQL for `delta(v[range])`: the
+// difference between the LAST and FIRST samples in the window. Unlike
+// `increase`, delta is meant for gauges (no counter-reset arithmetic),
+// so the value is simply `window_vals[N] - window_vals[1]`.
+//
+// PromQL `delta` returns NaN when the window holds fewer than 2
+// samples — same as Prom's `funcDelta`.
+func (e *emitter) emitRangeWindowDelta(r *chplan.RangeWindow) error {
+	const expr = "if(length(window_vals) > 1, window_vals[length(window_vals)] - window_vals[1], nan)"
+	return e.emitWindowedArray(r, verbatim(expr))
+}
+
+// emitRangeWindowIDelta emits SQL for `idelta(v[range])`: the
+// difference between the LAST TWO samples in the window. Like
+// `delta`, no counter-reset arithmetic.
+//
+// `idelta` returns NaN when the window holds fewer than 2 samples
+// (matches Prom's `funcIdelta`).
+func (e *emitter) emitRangeWindowIDelta(r *chplan.RangeWindow) error {
+	const expr = "if(length(window_vals) > 1, window_vals[length(window_vals)] - window_vals[length(window_vals) - 1], nan)"
+	return e.emitWindowedArray(r, verbatim(expr))
+}
+
+// emitRangeWindowIRate emits SQL for `irate(v[range])`: per-second
+// instantaneous rate using ONLY the last two samples in the window.
+//
+//	irate = if(c >= p, c - p, c) / (last_ts - prev_ts)
+//
+// The numerator is counter-reset aware (`if(c < p, c, c - p)`) and
+// the denominator is the time between the two samples in seconds.
+// PromQL's `funcIrate` returns NaN if there are fewer than 2 samples
+// in the window.
+func (e *emitter) emitRangeWindowIRate(r *chplan.RangeWindow) error {
+	// We need both the last two values and the last two timestamps,
+	// so reach for `window_pairs` (Array(Tuple(ts, value))) via
+	// emitWindowedArrayPairs rather than the values-only
+	// emitWindowedArray path.
+	return e.emitWindowedArrayPairs(r, verbatim(irateValueExpr()))
+}
+
+// irateValueExpr renders the irate per-window value expression. Operates
+// on `window_pairs` (Array(Tuple(DateTime64(9), Float64))). The two
+// most recent samples are at positions length(window_pairs) - 1 and
+// length(window_pairs); the rate is the counter-reset-aware delta
+// divided by the per-sample interval in seconds.
+//
+// CH note: dateDiff('second', earlier, later) returns an Int32 that
+// loses sub-second precision. For sub-second sample intervals (rare
+// in PromQL but possible with high-resolution scrapes), the
+// dateDiff('nanosecond', earlier, later) flavour returns the gap in
+// nanoseconds; divide by 1e9 to get fractional seconds. We use the
+// nanosecond flavour so the result agrees with Prometheus's
+// nanosecond-precision arithmetic.
+func irateValueExpr() string {
+	const lastPair = "window_pairs[length(window_pairs)]"
+	const prevPair = "window_pairs[length(window_pairs) - 1]"
+	const lastVal = "tupleElement(" + lastPair + ", 2)"
+	const prevVal = "tupleElement(" + prevPair + ", 2)"
+	const lastTs = "tupleElement(" + lastPair + ", 1)"
+	const prevTs = "tupleElement(" + prevPair + ", 1)"
+	// dateDiff('nanosecond', earlier, later) returns Int64.
+	dt := "dateDiff('nanosecond', " + prevTs + ", " + lastTs + ")"
+	delta := "if(" + lastVal + " < " + prevVal + ", " + lastVal + ", " + lastVal + " - " + prevVal + ")"
+	// Guard against zero-second interval (two samples at the same
+	// nanosecond) — return NaN rather than divide-by-zero.
+	return "if(length(window_pairs) > 1 AND " + dt + " > 0, (" + delta + ") / ((" + dt + ") / 1e9), nan)"
+}
+
+// emitRangeWindowQuantileOverTime emits SQL for
+// `quantile_over_time(phi, v[range])`. Phi rides on
+// RangeWindow.Scalars[0] and feeds CH's parameterised
+// `quantile(<phi>)(<arg>)` aggregate via `arrayReduce` — the only
+// way to apply a parameterised aggregate to an array literal inside
+// a SELECT expression without re-introducing an outer GROUP BY.
+//
+// PromQL returns NaN when the window is empty. Phi is rendered
+// inline as a CH literal (query shape, not user data).
+func (e *emitter) emitRangeWindowQuantileOverTime(r *chplan.RangeWindow) error {
+	if len(r.Scalars) != 1 {
+		return fmt.Errorf("%w: quantile_over_time requires 1 scalar (phi), got %d", ErrUnsupported, len(r.Scalars))
+	}
+	phi := r.Scalars[0]
+	expr := "if(length(window_vals) > 0, arrayReduce('quantile(" + formatFloat(phi) + ")', window_vals), nan)"
+	return e.emitWindowedArray(r, verbatim(expr))
 }
 
 // rateValueFrag returns the outer SELECT value Frag for rate(),

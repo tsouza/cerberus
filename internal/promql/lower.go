@@ -356,6 +356,12 @@ func matchOp(t labels.MatchType) chplan.BinaryOp {
 // if recognised. Other functions surface a clear "not yet supported"
 // error pointing at the relevant milestone.
 func lowerCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	// `quantile_over_time(phi, v[range])` takes a scalar first; the
+	// range-vector lives at c.Args[1]. Route it before the generic
+	// "is c.Args[0] a MatrixSelector?" check below.
+	if c.Func.Name == "quantile_over_time" {
+		return lowerQuantileOverTime(c, s, ctx)
+	}
 	if len(c.Args) >= 1 {
 		if _, ok := c.Args[0].(*parser.MatrixSelector); ok {
 			return lowerRangeVectorCall(c, s, ctx)
