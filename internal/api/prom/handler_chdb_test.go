@@ -1,0 +1,358 @@
+//go:build chdb
+
+// chDB-backed mirror of the handler_test.go cases. The default
+// (untagged) test lane uses stubQuerier so it stays CGO-free; this
+// file exercises the same HTTP surface against a real chDB session
+// so the full pipeline (parse → lower → optimize → emit → execute)
+// is asserted end-to-end on every chdb-tagged run.
+//
+// Each test seeds an OTel-metrics-gauge-shaped table inside an
+// ephemeral chDB session, executes the handler, and asserts the
+// envelope returned to the client. The seed values are chosen to
+// match the assertions in the parallel stub-based test verbatim —
+// the SQL the handler emits is therefore exercised end-to-end
+// against ClickHouse semantics rather than against a stubbed-out
+// slice of [chclient.Sample].
+
+package prom_test
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/tsouza/cerberus/internal/api/prom"
+	"github.com/tsouza/cerberus/internal/chclienttest"
+	"github.com/tsouza/cerberus/internal/schema"
+)
+
+// gaugeDDL is the OTel-metrics-gauge-shaped table the chDB-backed
+// handler tests seed before exercising the handler. The full upstream
+// OTel exporter DDL has many more columns than the handler reads —
+// this minimal shape covers exactly the four columns the prom
+// emitter's outer Project projects, plus the columns the gauge-table
+// SQL filters on (MetricName). chDB is happy to project a subset of
+// the columns it knows about; missing-column INSERTs would fail.
+const gaugeDDL = `CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = Memory;`
+
+func newChDBServer(t *testing.T, ddl string) (*httptest.Server, *chclienttest.Client) {
+	t.Helper()
+	c := chclienttest.NewChDB(t)
+	if ddl != "" {
+		c.Seed(t, ddl)
+	}
+	h := prom.New(c, schema.DefaultOTelMetrics(), nil)
+	mux := http.NewServeMux()
+	h.Mount(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv, c
+}
+
+func TestQuery_Vector_ChDB(t *testing.T) {
+	// Two gauge rows for `up`, distinct job labels; the handler will
+	// emit SELECT … FROM otel_metrics_gauge WHERE MetricName=? and
+	// receive both rows back.
+	ts := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC).Format("2006-01-02 15:04:05.000")
+	seed := gaugeDDL + fmt.Sprintf(`
+INSERT INTO otel_metrics_gauge VALUES
+    ('up', map('job', 'api'), toDateTime64('%s', 9), 1.0),
+    ('up', map('job', 'db'),  toDateTime64('%s', 9), 0.0);`, ts, ts)
+
+	srv, _ := newChDBServer(t, seed)
+	resp, err := http.Get(srv.URL + "/api/v1/query?query=up&time=1717999200")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+	}
+
+	var parsed queryResponse
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v\nbody=%s", err, body)
+	}
+	if parsed.Status != "success" {
+		t.Fatalf("status=%q err=%s", parsed.Status, parsed.Error)
+	}
+	if parsed.Data.ResultType != "vector" {
+		t.Fatalf("resultType=%q, want vector", parsed.Data.ResultType)
+	}
+
+	rawResult, _ := json.Marshal(parsed.Data.Result)
+	var vec []prom.VectorSample
+	if err := json.Unmarshal(rawResult, &vec); err != nil {
+		t.Fatalf("decode vector: %v", err)
+	}
+	if len(vec) != 2 {
+		t.Fatalf("expected 2 series, got %d: %+v", len(vec), vec)
+	}
+	jobs := map[string]bool{}
+	for _, v := range vec {
+		if v.Metric["__name__"] != "up" {
+			t.Errorf("missing __name__ in %+v", v.Metric)
+		}
+		jobs[v.Metric["job"]] = true
+	}
+	for _, j := range []string{"api", "db"} {
+		if !jobs[j] {
+			t.Errorf("missing series with job=%s; got %+v", j, vec)
+		}
+	}
+}
+
+func TestQueryRange_Matrix_ChDB(t *testing.T) {
+	// Three samples spaced 90s apart over a 4-minute window; step=60s.
+	start := time.Unix(1717995600, 0).UTC()
+	end := start.Add(4 * time.Minute)
+	seedRows := make([]string, 0, 3)
+	for i, off := range []time.Duration{0, 90 * time.Second, 180 * time.Second} {
+		ts := start.Add(off).Format("2006-01-02 15:04:05.000")
+		seedRows = append(seedRows, fmt.Sprintf(
+			`('up', map('job', 'api'), toDateTime64('%s', 9), %d.0)`,
+			ts, i+1,
+		))
+	}
+	seed := gaugeDDL + "\nINSERT INTO otel_metrics_gauge VALUES\n  " +
+		strings.Join(seedRows, ",\n  ") + ";"
+
+	srv, _ := newChDBServer(t, seed)
+
+	url := fmt.Sprintf("%s/api/v1/query_range?query=up&start=%d&end=%d&step=60",
+		srv.URL, start.Unix(), end.Unix())
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+	}
+
+	var parsed queryResponse
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if parsed.Data.ResultType != "matrix" {
+		t.Fatalf("resultType=%q, want matrix", parsed.Data.ResultType)
+	}
+
+	rawResult, _ := json.Marshal(parsed.Data.Result)
+	var matrix []prom.MatrixSample
+	if err := json.Unmarshal(rawResult, &matrix); err != nil {
+		t.Fatalf("decode matrix: %v", err)
+	}
+	if len(matrix) != 1 {
+		t.Fatalf("expected 1 series, got %d: %+v", len(matrix), matrix)
+	}
+	// 5 step points expected for [start..start+4m] step=60s.
+	if got := len(matrix[0].Values); got != 5 {
+		t.Fatalf("expected 5 sample points in matrix, got %d: %+v",
+			got, matrix[0].Values)
+	}
+	// Latest-at-step values: [1, 1, 2, 3, 3] for steps
+	// [0, 60, 120, 180, 240].
+	wantValues := []string{"1", "1", "2", "3", "3"}
+	for i, want := range wantValues {
+		if got := matrix[0].Values[i][1]; got != want {
+			t.Errorf("step %d: got value %q, want %q",
+				i, got, want)
+		}
+	}
+}
+
+func TestResponseHeaders_ChDB(t *testing.T) {
+	ts := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC).Format("2006-01-02 15:04:05.000")
+	seed := gaugeDDL + fmt.Sprintf(`
+INSERT INTO otel_metrics_gauge VALUES
+    ('up', map('job', 'api'), toDateTime64('%s', 9), 1.0);`, ts)
+
+	srv, _ := newChDBServer(t, seed)
+	resp, err := http.Get(srv.URL + "/api/v1/query?query=up")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if got := resp.Header.Get("X-Prometheus-API-Version"); got != "v1" {
+		t.Errorf("X-Prometheus-API-Version: got %q, want v1", got)
+	}
+	if got := resp.Header.Get("X-Cerberus-CH-Millis"); got == "" {
+		t.Errorf("X-Cerberus-CH-Millis: missing")
+	}
+}
+
+func TestQuery_ScalarFold_ChDB(t *testing.T) {
+	// Scalar fold short-circuits the CH path. The chDB session is
+	// initialised but never queried — same contract as the stub test.
+	srv, _ := newChDBServer(t, gaugeDDL)
+	resp, err := http.Get(srv.URL + "/api/v1/query?query=1%2B1")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+	}
+	var parsed queryResponse
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if parsed.Data.ResultType != "scalar" {
+		t.Fatalf("resultType=%q, want scalar", parsed.Data.ResultType)
+	}
+	rawResult, _ := json.Marshal(parsed.Data.Result)
+	var point [2]any
+	if err := json.Unmarshal(rawResult, &point); err != nil {
+		t.Fatalf("decode scalar: %v", err)
+	}
+	if got := point[1]; got != "2" {
+		t.Errorf("folded value: got %v, want \"2\"", got)
+	}
+}
+
+func TestQuery_UpstreamError_ChDB(t *testing.T) {
+	// NewChDBWithError synthesises a Querier that errors every call —
+	// the proxy for an unreachable ClickHouse. The handler should
+	// translate that into a 502.
+	c := chclienttest.NewChDBWithError(t, errors.New("clickhouse: connection refused"))
+	h := prom.New(c, schema.DefaultOTelMetrics(), nil)
+	mux := http.NewServeMux()
+	h.Mount(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/v1/query?query=up")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d body=%s",
+			resp.StatusCode, readBody(t, resp))
+	}
+}
+
+func TestQueryRange_BadInput_ChDB(t *testing.T) {
+	cases := []struct {
+		name string
+		url  string
+	}{
+		{"missing start", "/api/v1/query_range?query=up&end=1717999200&step=60"},
+		{"missing end", "/api/v1/query_range?query=up&start=1717995600&step=60"},
+		{"missing step", "/api/v1/query_range?query=up&start=1717995600&end=1717999200"},
+		{"end before start", "/api/v1/query_range?query=up&start=1717999200&end=1717995600&step=60"},
+		{"zero step", "/api/v1/query_range?query=up&start=1717995600&end=1717999200&step=0"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, _ := newChDBServer(t, gaugeDDL)
+			resp, err := http.Get(srv.URL + tc.url)
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d body=%s",
+					resp.StatusCode, readBody(t, resp))
+			}
+		})
+	}
+}
+
+func TestQuery_BadInput_ChDB(t *testing.T) {
+	cases := []struct {
+		name   string
+		url    string
+		status int
+		errKey string
+	}{
+		{"missing query", "/api/v1/query", http.StatusBadRequest, prom.ErrBadData},
+		{"bad time", "/api/v1/query?query=up&time=tomorrow", http.StatusBadRequest, prom.ErrBadData},
+		{"invalid promql", "/api/v1/query?query=up%20%2B", http.StatusBadRequest, prom.ErrBadData},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, _ := newChDBServer(t, gaugeDDL)
+			resp, err := http.Get(srv.URL + tc.url)
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			body := readBody(t, resp)
+			if resp.StatusCode != tc.status {
+				t.Fatalf("status: got %d, want %d; body=%s",
+					resp.StatusCode, tc.status, body)
+			}
+			var parsed prom.Response
+			if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if parsed.Status != "error" || parsed.ErrorType != tc.errKey {
+				t.Fatalf("got status=%q errorType=%q, want error/%s",
+					parsed.Status, parsed.ErrorType, tc.errKey)
+			}
+		})
+	}
+}
+
+func TestFormatQuery_ChDB(t *testing.T) {
+	srv, _ := newChDBServer(t, gaugeDDL)
+	resp, err := http.Get(srv.URL + "/api/v1/format_query?query=up%2Bup")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+	}
+	var parsed struct {
+		Status string `json:"status"`
+		Data   string `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if parsed.Status != "success" {
+		t.Fatalf("status=%q", parsed.Status)
+	}
+	if !strings.Contains(parsed.Data, "up") {
+		t.Errorf("expected formatted query to contain up; got %q", parsed.Data)
+	}
+}
+
+func TestParseQuery_ChDB(t *testing.T) {
+	srv, _ := newChDBServer(t, gaugeDDL)
+	resp, err := http.Get(srv.URL + "/api/v1/parse_query?query=up")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+	}
+	var parsed struct {
+		Status string `json:"status"`
+		Data   struct {
+			Type string `json:"type"`
+			Node string `json:"node"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if parsed.Status != "success" {
+		t.Fatalf("status=%q", parsed.Status)
+	}
+	if parsed.Data.Type == "" || parsed.Data.Node != "up" {
+		t.Errorf("unexpected parse data: %+v", parsed.Data)
+	}
+}
