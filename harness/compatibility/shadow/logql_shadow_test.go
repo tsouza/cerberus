@@ -240,12 +240,12 @@ type aggregation struct {
 
 // logqlShadowCase is one differential test entry.
 type logqlShadowCase struct {
-	name       string
-	query      string // full LogQL string — must parse via upstream Loki
-	matchers   []streamMatcher
-	filters    []logFilter
-	metric     metricKind
-	agg        aggregation
+	name     string
+	query    string // full LogQL string — must parse via upstream Loki
+	matchers []streamMatcher
+	filters  []logFilter
+	metric   metricKind
+	agg      aggregation
 	expected VectorResult
 	opts     DiffOptions
 }
