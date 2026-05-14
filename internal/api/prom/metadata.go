@@ -11,6 +11,7 @@ import (
 
 	"github.com/prometheus/common/model"
 
+	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/promql"
@@ -238,7 +239,7 @@ func (h *Handler) handleSeries(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for _, lset := range sets {
-			key := canonicalKey(lset)
+			key := format.CanonicalKey(lset)
 			if _, ok := seen[key]; !ok {
 				seen[key] = lset
 			}
@@ -433,8 +434,8 @@ func (h *Handler) fetchSeries(ctx context.Context, matcher string) ([]map[string
 
 	seen := make(map[string]map[string]string)
 	for _, s := range samples {
-		labels := withMetricName(s.Labels, s.MetricName)
-		key := canonicalKey(labels)
+		labels := format.WithMetricName(s.Labels, s.MetricName)
+		key := format.CanonicalKey(labels)
 		if _, ok := seen[key]; !ok {
 			seen[key] = labels
 		}

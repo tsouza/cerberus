@@ -9,13 +9,13 @@ import (
 	"runtime"
 	"sort"
 	"strconv"
-	"strings"
 
 	"github.com/grafana/tempo/pkg/traceql"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/tsouza/cerberus/internal/api/admit"
+	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/cerbtrace"
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -469,7 +469,7 @@ func toTraceSummaries(samples []chclient.Sample) []TraceSummary {
 func groupBatches(samples []chclient.Sample) []ResourceSpans {
 	bucket := map[string]*ResourceSpans{}
 	for _, s := range samples {
-		key := canonicalKey(s.Labels)
+		key := format.CanonicalKey(s.Labels)
 		rs, ok := bucket[key]
 		if !ok {
 			rs = &ResourceSpans{Resource: Resource{Attributes: s.Labels}}
@@ -486,25 +486,6 @@ func groupBatches(samples []chclient.Sample) []ResourceSpans {
 		out = append(out, *rs)
 	}
 	return out
-}
-
-func canonicalKey(labels map[string]string) string {
-	if len(labels) == 0 {
-		return ""
-	}
-	keys := make([]string, 0, len(labels))
-	for k := range labels {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	var b strings.Builder
-	for _, k := range keys {
-		b.WriteString(k)
-		b.WriteByte('=')
-		b.WriteString(labels[k])
-		b.WriteByte(0)
-	}
-	return b.String()
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

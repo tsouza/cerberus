@@ -8,6 +8,7 @@ import (
 	"github.com/grafana/loki/v3/pkg/logql/syntax"
 	"github.com/prometheus/prometheus/model/labels"
 
+	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/logql"
@@ -201,11 +202,11 @@ func parseStartEnd(r *http.Request) (time.Time, time.Time, error) {
 	startStr := r.URL.Query().Get("start")
 	endStr := r.URL.Query().Get("end")
 
-	start, err := parseTime(startStr, now.Add(-time.Hour))
+	start, err := format.ParseTimeLoki(startStr, now.Add(-time.Hour))
 	if err != nil {
 		return time.Time{}, time.Time{}, err
 	}
-	end, err := parseTime(endStr, now)
+	end, err := format.ParseTimeLoki(endStr, now)
 	if err != nil {
 		return time.Time{}, time.Time{}, err
 	}
