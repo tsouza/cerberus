@@ -48,3 +48,6 @@ jobs:
 
       - name: Run chDB probe
         run: go test -tags chdb -v -count=1 -run TestChDBProbe ./internal/chclient/...
+
+      - name: Run TXTAR round-trip suite (chDB)
+        run: just spec-chdb
