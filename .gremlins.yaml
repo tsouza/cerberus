@@ -31,5 +31,25 @@ excluded-files:
   - "internal/api/**"
   - "cmd/**"
   - "**/doc.go"
-threshold-efficacy: 60
+
+# Phased mutation-testing rollout. Layer 3 (PR #247) added ~125
+# invariant tests across internal/chplan, so chplan is the first
+# package dense enough to meet an 80% efficacy bar. The other
+# kill-zone packages onboard once their coverage catches up:
+#
+#   Phase 1 (this file):    internal/chplan       @ 80% efficacy
+#   Phase 2 (planned):      internal/chsql        @ 75% efficacy
+#   Phase 3 (planned):      internal/optimizer    @ 70% efficacy
+#   Phase 4 (planned):      QL parsers + lower    @ 65% efficacy
+#                           then promote gremlins to a required gate.
+#
+# The thresholds below are GLOBAL (gremlins v0.6.0 does not support
+# per-package thresholds — see `gremlins unleash --help`). To enforce
+# the per-phase bar without dragging the slower packages down, run
+# gremlins scoped to one package at a time in CI via
+# `gremlins unleash --threshold-efficacy <bar> ./internal/<pkg>/...`
+# in the workflow rather than the global config. The values below are
+# the floor for the whole-repo `just mutate` invocation and stay
+# informational until phase 4.
+threshold-efficacy: 80
 threshold-mcover: 50
