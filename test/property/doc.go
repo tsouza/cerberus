@@ -58,8 +58,10 @@
 //
 //   - doc.go — this file.
 //   - framework.go — runner glue: rapid.Check loop, types
-//     (Dataset / Query / Outcome), per-iteration seed → generate
-//     → run → diff → fail.
+//     (Dataset / Query / Outcome / LogsModel), per-iteration seed →
+//     generate → run → diff → fail. Exports Run (PromQL) and
+//     RunLogs (LogQL) entry points; both share the comparator and
+//     dataset-dump path.
 //   - chdb.go — chdb-tagged session helpers (open, apply DDL, map-
 //     projection rewrite, decode cell). Replicated from
 //     test/spec/runner_chdb.go; kept in-package so test/property has
@@ -69,11 +71,18 @@
 //   - gen/metrics.go — random Dataset generator (DDL + in-memory
 //     mirror; gauge-only for the MVP).
 //   - gen/promql.go — random PromQL query generator targeted at the
-//     bridge oracle's accept-set.
-//   - oracle/bridge.go — temporary bridge to promshim/local; will be
-//     replaced by oracle/spec.go in PR 2.
-//   - promql_test.go — TestPromQL_Property_Bridge, the chdb-tagged
-//     top-level test wiring it all together.
+//     from-scratch oracle's accept-set.
+//   - gen/logql.go — random LogQL dataset + query generator (logs
+//     mirror; log-stream selectors with `|=` / `!=` / `| label_format`).
+//   - oracle/bridge.go — temporary bridge to promshim/local; retained
+//     as a secondary sanity check for PromQL.
+//   - oracle/promql/ — from-scratch PromQL evaluator.
+//   - oracle/logql/  — from-scratch LogQL evaluator (log-stream
+//     subset; metric-form queries deferred).
+//   - promql_test.go — TestPromQL_Property_FromScratch, the chdb-
+//     tagged PromQL property test.
+//   - logql_test.go  — TestLogQL_Property, the chdb-tagged LogQL
+//     property test.
 //
 // # Running locally
 //

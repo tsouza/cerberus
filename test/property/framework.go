@@ -12,18 +12,25 @@ import (
 // Dataset is the random data shape every property iteration starts with.
 //
 // The DDL is a multi-statement script (CREATE TABLE + INSERTs) the chDB
-// helpers will replay against an ephemeral session. The Metrics mirror is
-// the same data in the in-memory shape the oracle reads — keeping both
-// in sync is the generator's responsibility.
+// helpers will replay against an ephemeral session. The Metrics / Logs
+// mirrors are the same data in the in-memory shape the oracle reads —
+// keeping them in sync with the DDL is the generator's responsibility.
+//
+// A generator populates exactly one of the typed mirrors: Metrics for
+// the PromQL property test, Logs for the LogQL property test. The
+// other stays nil. The Run / RunLogs entry points pivot on which
+// mirror is non-nil.
 type Dataset struct {
 	// DDL is the multi-statement seed: `CREATE OR REPLACE TABLE …;
 	// INSERT … VALUES …;`. The runner splits on top-level semicolons
 	// before exec'ing.
 	DDL string
-	// Metrics is the in-memory mirror of the dataset, in the shape the
-	// oracle understands. The generator owns the invariant
-	// `Metrics ⇔ DDL`.
+	// Metrics is the in-memory mirror of a metrics dataset (otel_metrics_gauge).
+	// Generator owns the invariant `Metrics ⇔ DDL`.
 	Metrics *MetricsModel
+	// Logs is the in-memory mirror of a logs dataset (otel_logs).
+	// Generator owns the invariant `Logs ⇔ DDL`.
+	Logs *LogsModel
 }
 
 // MetricsModel is the in-memory metrics mirror. It's intentionally tiny
@@ -48,6 +55,94 @@ type Point struct {
 	// convention so the oracle's storage layer can consume it directly.
 	TimestampMs int64
 	Value       float64
+}
+
+// LogsModel is the in-memory logs mirror. It holds the rows the
+// generator inserted into otel_logs; the oracle reads each row's
+// (resource attributes, line body) directly while the cerberus side
+// re-reads them via SQL.
+type LogsModel struct {
+	Records []LogRecord
+}
+
+// LogRecord is one row in a LogsModel. ResourceAttributes carries the
+// stream-identity labels (job, service_name, …); Body is the raw log
+// line; SeverityText is the OTel SeverityText column; Timestamp is
+// unix nanoseconds (DateTime64(9) precision in chDB).
+type LogRecord struct {
+	Body               string
+	SeverityText       string
+	ResourceAttributes map[string]string
+	TimestampNanos     int64
+}
+
+// StreamLabelsPresent returns the union of all label names that appear
+// on any record's ResourceAttributes map, sorted for determinism. Used
+// by the LogQL query generator to bound matcher choices.
+func (m *LogsModel) StreamLabelsPresent() map[string][]string {
+	if m == nil {
+		return nil
+	}
+	out := map[string]map[string]struct{}{}
+	for _, r := range m.Records {
+		for k, v := range r.ResourceAttributes {
+			if _, ok := out[k]; !ok {
+				out[k] = map[string]struct{}{}
+			}
+			out[k][v] = struct{}{}
+		}
+	}
+	result := make(map[string][]string, len(out))
+	for k, vs := range out {
+		values := make([]string, 0, len(vs))
+		for v := range vs {
+			values = append(values, v)
+		}
+		sort.Strings(values)
+		result[k] = values
+	}
+	return result
+}
+
+// BodyTokensPresent returns substrings that occur on at least one
+// log line in the model, sorted for determinism. The LogQL query
+// generator uses this so every `|= "literal"` filter has at least
+// one record it could match.
+func (m *LogsModel) BodyTokensPresent() []string {
+	if m == nil {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	for _, r := range m.Records {
+		for _, tok := range tokenizeBody(r.Body) {
+			seen[tok] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for tok := range seen {
+		out = append(out, tok)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// tokenizeBody is a minimal whitespace tokeniser. It exists in this
+// file (rather than in test/property/gen) so the model layer is
+// self-contained for the BodyTokensPresent contract.
+func tokenizeBody(body string) []string {
+	var out []string
+	start := -1
+	for i := 0; i <= len(body); i++ {
+		atSpace := i == len(body) || body[i] == ' ' || body[i] == '\t'
+		switch {
+		case atSpace && start >= 0:
+			out = append(out, body[start:i])
+			start = -1
+		case !atSpace && start < 0:
+			start = i
+		}
+	}
+	return out
 }
 
 // NamesPresent returns the distinct metric names in the dataset, sorted
@@ -133,10 +228,24 @@ type Outcome struct {
 
 // OutcomeRow is one labeled sample in an Outcome. Timestamp is unix
 // milliseconds (matching Prom).
+//
+// The Value field is the canonical sample value for numeric outcomes
+// (PromQL instant vectors, LogQL metric queries). The Line field
+// carries log-stream content for LogQL log queries — both the oracle
+// and cerberus must populate it for stream-shaped outcomes; the
+// comparator's row matcher pairs entries by (label set, timestamp,
+// line) so two rows with identical labels + ts but different lines
+// won't collide.
+//
+// For numeric outcomes Line stays empty and the comparator falls back
+// to a value-equality check via [valuesClose]; for stream outcomes
+// Value stays zero and the comparator checks Line equality byte-for-
+// byte.
 type OutcomeRow struct {
 	Labels      map[string]string
 	TimestampMs int64
 	Value       float64
+	Line        string
 }
 
 // DatasetGen produces a random Dataset. Implementations should use
@@ -215,6 +324,45 @@ func Run(
 	})
 }
 
+// RunLogs is the LogQL equivalent of Run. It pivots on Dataset.Logs
+// rather than Dataset.Metrics — the LogQL generator populates
+// ds.Logs.Records and leaves ds.Metrics nil. Same shrinking contract
+// applies; the rapid.Check loop minimises the failing (dataset,
+// query) pair before reporting.
+//
+// The runner skips an iteration only when the generator produces a
+// degenerate draw (empty record set, empty query). It NEVER calls
+// t.Skip — a comparator drift is always a real property failure.
+func RunLogs(
+	t *testing.T,
+	_ Config,
+	dgen DatasetGen,
+	qgen QueryGen,
+	oracle OracleFn,
+	ch CerberusFn,
+) {
+	t.Helper()
+
+	rapid.Check(t, func(rt *rapid.T) {
+		ds := dgen(rt)
+		if ds.Logs == nil || len(ds.Logs.Records) == 0 {
+			rt.Skipf("empty logs dataset")
+		}
+		q := qgen(rt, ds)
+		if q.String == "" {
+			rt.Skipf("empty query")
+		}
+
+		oracleOut := oracle(ds, q)
+		cerberusOut := ch(ds, q)
+
+		if diff := CompareOutcomes(oracleOut, cerberusOut); diff != "" {
+			rt.Fatalf("property drift\n--- query ---\n%s\nevalTs=%d\n--- dataset ---\n%s\n--- diff ---\n%s",
+				q.String, q.EvalTs, dumpDataset(ds), diff)
+		}
+	})
+}
+
 // CompareOutcomes returns "" when both sides agree and a multiline
 // diff string otherwise. The shape mirrors what shadow.Compare emits
 // but is local to this package so the property test can render a
@@ -261,6 +409,18 @@ func CompareOutcomes(want, got Outcome) string {
 					key, i, ws[i].TimestampMs, gs[i].TimestampMs)
 				continue
 			}
+			// Stream rows (Line non-empty on either side) check the
+			// line content byte-for-byte; numeric rows fall through to
+			// the float tolerance check. The two paths are mutually
+			// exclusive — stream outcomes leave Value=0 and numeric
+			// outcomes leave Line="".
+			if ws[i].Line != "" || gs[i].Line != "" {
+				if ws[i].Line != gs[i].Line {
+					fmt.Fprintf(&diff, "series %s: line[%d] @ts=%d want=%q got=%q\n",
+						key, i, ws[i].TimestampMs, ws[i].Line, gs[i].Line)
+				}
+				continue
+			}
 			if !valuesClose(ws[i].Value, gs[i].Value) {
 				fmt.Fprintf(&diff, "series %s: value[%d] @ts=%d want=%g got=%g\n",
 					key, i, ws[i].TimestampMs, ws[i].Value, gs[i].Value)
@@ -284,7 +444,14 @@ func indexOutcomeRows(rows []OutcomeRow) map[string][]OutcomeRow {
 	}
 	for _, samples := range out {
 		sort.Slice(samples, func(i, j int) bool {
-			return samples[i].TimestampMs < samples[j].TimestampMs
+			// Sort by timestamp first, then line content for stream
+			// outcomes (so two rows with the same ts but different
+			// lines compare slot-for-slot rather than colliding
+			// arbitrarily on map iteration order).
+			if samples[i].TimestampMs != samples[j].TimestampMs {
+				return samples[i].TimestampMs < samples[j].TimestampMs
+			}
+			return samples[i].Line < samples[j].Line
 		})
 	}
 	return out
@@ -356,12 +523,20 @@ func valuesClose(a, b float64) bool {
 // reader can reconstruct what the generator produced.
 func dumpDataset(d Dataset) string {
 	var b strings.Builder
-	if d.Metrics == nil {
-		return "(nil metrics)"
+	if d.Metrics != nil {
+		fmt.Fprintf(&b, "series=%d\n", len(d.Metrics.Series))
+		for _, s := range d.Metrics.Series {
+			fmt.Fprintf(&b, "  %s%s points=%d\n", s.MetricName, labelKey(s.Labels), len(s.Points))
+		}
+		return b.String()
 	}
-	fmt.Fprintf(&b, "series=%d\n", len(d.Metrics.Series))
-	for _, s := range d.Metrics.Series {
-		fmt.Fprintf(&b, "  %s%s points=%d\n", s.MetricName, labelKey(s.Labels), len(s.Points))
+	if d.Logs != nil {
+		fmt.Fprintf(&b, "records=%d\n", len(d.Logs.Records))
+		for _, r := range d.Logs.Records {
+			fmt.Fprintf(&b, "  ts=%d %s severity=%q body=%q\n",
+				r.TimestampNanos, labelKey(r.ResourceAttributes), r.SeverityText, r.Body)
+		}
+		return b.String()
 	}
-	return b.String()
+	return "(empty dataset)"
 }
