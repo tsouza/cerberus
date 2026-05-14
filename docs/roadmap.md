@@ -316,6 +316,10 @@ The TXTAR text-equality suite catches every change in the emitted SQL but it doe
 
 **Exit criterion:** every TXTAR fixture that opts in renders byte-stable SQL **and** the row set it produces against a chDB session matches the pinned `expected_rows`; the optimizer property test runs 100 random plans per CI and finds zero divergence between unoptimized + optimized output; `just mutate-chdb` produces a strictly higher kill score than `just mutate` (semantically equivalent mutants are correctly not killed).
 
+### Post-RC8 test-deepening initiative
+
+After the RC8 cut, the suite was deepened in two waves to ~1000+ additional tests across 12 layers, plus the oracle property framework scaffolding and the gremlins phased rollout. The full layer map (1: parser smoke / 2a: chplan IR snapshots / 2b: lowering edges / 3: chplan IR invariants / 4: optimizer properties / 5: chsql Frag goldens / 6a–c: chDB roundtrip per QL / 7: HTTP conformance / 8: system lifecycle / 9: differential shadow harness / 10: Playwright UX / 11: chaos + goleak / 12: perf benchmarks + alloc regressions), CI gates, gremlins phase table, and oracle property phases all live in [`docs/test-strategy.md`](test-strategy.md). The roadmap continues to track RC-level feature milestones; test-strategy is the standing reference for layer-by-layer coverage.
+
 ---
 
 ## How we work
