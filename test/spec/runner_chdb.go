@@ -453,7 +453,19 @@ func normalizeValue(v any) any {
 	switch x := v.(type) {
 	case int:
 		return float64(x)
+	case int8:
+		return float64(x)
+	case int16:
+		return float64(x)
+	case int32:
+		return float64(x)
 	case int64:
+		return float64(x)
+	case uint8:
+		return float64(x)
+	case uint16:
+		return float64(x)
+	case uint32:
 		return float64(x)
 	case uint64:
 		return float64(x)
