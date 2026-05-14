@@ -179,12 +179,19 @@ func TestRegression_MixedSafeUnsafePredicate_NotPushed(t *testing.T) {
 		ValueColumn:     "Value",
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 	}
+	// `safe AND unsafe`: safe sub-clause references Attributes (a
+	// passthrough series key); unsafe sub-clause references Value
+	// (the windowed output, not in the input row shape).
 	plan := &chplan.Filter{
 		Input: rw,
 		Predicate: &chplan.Binary{
-			Op:    chplan.OpAnd,
-			Left:  labelFilter("Attributes", "v1"),       // safe
-			Right: &chplan.Binary{Op: chplan.OpGt, Left: &chplan.ColumnRef{Name: "Value"}, Right: &chplan.LitFloat{V: 0}}, // unsafe
+			Op:   chplan.OpAnd,
+			Left: labelFilter("Attributes", "v1"),
+			Right: &chplan.Binary{
+				Op:    chplan.OpGt,
+				Left:  &chplan.ColumnRef{Name: "Value"},
+				Right: &chplan.LitFloat{V: 0},
+			},
 		},
 	}
 	out := optimizer.Default().Run(context.Background(), plan)
