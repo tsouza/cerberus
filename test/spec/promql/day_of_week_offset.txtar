@@ -1,0 +1,32 @@
+-- query.promql --
+day_of_week(weekday_marker)
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('weekday_marker', map('host', 'sun'), toDateTime64('2026-01-01 00:00:00', 9), 1700956800);
+-- expected_rows --
+[
+  ["weekday_marker", {"host": "sun"}, "2026-01-01T00:00:00Z", 0.0]
+]
+-- args --
+[0] string = "UTC"
+[1] int64 = 7
+[2] string = "weekday_marker"
+[3] string = "2026-01-01 00:00:01.000000000"
+[4] int64 = 9
+[5] string = "2026-01-01 00:00:01.000000000"
+[6] int64 = 9
+[7] int64 = 300000000000
+-- chplan --
+Project [MetricName, Attributes, TimeUnix, (toDayOfWeek(toDateTime(toInt64(Value), "UTC")) % 7) AS Value]
+  Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
+    Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
+      Filter predicate=(((MetricName = "weekday_marker") AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+        Scan(otel_metrics_gauge)
+-- sql --
+SELECT `MetricName`, `Attributes`, `TimeUnix`, (toDayOfWeek(toDateTime(toInt64(`Value`), ?)) % ?) AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_gauge` PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`))

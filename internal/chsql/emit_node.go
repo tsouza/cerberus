@@ -61,7 +61,7 @@ func (e *emitter) splice(b *Builder) {
 }
 
 func (e *emitter) emitScan(s *chplan.Scan) error {
-	sb := NewQuery().From(Col(s.Table))
+	sb := NewQuery().From(scanTableFrag(s))
 	if len(s.Columns) > 0 {
 		cols := make([]Frag, 0, len(s.Columns))
 		for _, c := range s.Columns {
@@ -88,6 +88,18 @@ func (e *emitter) emitOneRow(_ *chplan.OneRow) error {
 	sb := NewQuery().Select(InlineLit(int64(1)))
 	e.emitSelect(sb)
 	return nil
+}
+
+// scanTableFrag returns the Frag that renders the Scan's table reference.
+// When Database is empty (the common case) it's just the bare backtick-
+// quoted table name; when Database is non-empty (synthetic single-row
+// sources like `system.one`) it emits the qualified `<db>`.`<tbl>` shape
+// so CH resolves the system database directly.
+func scanTableFrag(s *chplan.Scan) Frag {
+	if s.Database != "" {
+		return Qual(s.Database, s.Table)
+	}
+	return Col(s.Table)
 }
 
 func (e *emitter) emitFilter(f *chplan.Filter) error {
@@ -141,7 +153,7 @@ func (e *emitter) emitFilterScan(f *chplan.Filter, scan *chplan.Scan) error {
 		whereExprs = conjuncts
 	}
 
-	sb := NewQuery().From(Col(scan.Table))
+	sb := NewQuery().From(scanTableFrag(scan))
 	if len(scan.Columns) > 0 {
 		cols := make([]Frag, 0, len(scan.Columns))
 		for _, c := range scan.Columns {

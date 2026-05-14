@@ -38,10 +38,14 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 	}
 	switch v := n.(type) {
 	case *chplan.Scan:
+		tbl := v.Table
+		if v.Database != "" {
+			tbl = v.Database + "." + v.Table
+		}
 		if len(v.Columns) == 0 {
-			fmt.Fprintf(b, "%sScan(%s)\n", indent, v.Table)
+			fmt.Fprintf(b, "%sScan(%s)\n", indent, tbl)
 		} else {
-			fmt.Fprintf(b, "%sScan(%s, columns=[%s])\n", indent, v.Table, strings.Join(v.Columns, ", "))
+			fmt.Fprintf(b, "%sScan(%s, columns=[%s])\n", indent, tbl, strings.Join(v.Columns, ", "))
 		}
 	case *chplan.OneRow:
 		fmt.Fprintf(b, "%sOneRow\n", indent)
