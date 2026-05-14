@@ -62,6 +62,12 @@ promql/parser      pkg/logql/syntax         pkg/traceql
 
 Schema defaults to the [OpenTelemetry ClickHouse Exporter](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/exporter/clickhouseexporter) layout (`otel_metrics_*`, `otel_logs`, `otel_traces`). A thin YAML override config supports SigNoz schemas and custom column layouts.
 
+The three heads share one query pipeline — `internal/engine/`. Each
+head plugs in as a `Lang` adapter (parser + lowering + per-language
+projection); the engine owns the parse → optimize → emit → execute
+loop and the telemetry around it. See [`docs/engine.md`](docs/engine.md)
+for the contract, request lifecycle, and extension points.
+
 ## Quick start
 
 Cerberus is a [12-factor app](docs/12factor.md): one stateless binary,
