@@ -40,6 +40,12 @@ func (h *Handler) handleLabels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Wire-format contract: Prometheus emits `"data":[]` (not null) when
+	// the result set is empty. JSON-marshalling a nil []string yields
+	// `null`, which Grafana's discovery probes reject.
+	if names == nil {
+		names = []string{}
+	}
 	writeJSON(w, http.StatusOK, Response{
 		Status: "success",
 		Data:   names,
@@ -80,6 +86,12 @@ func (h *Handler) handleLabelValues(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Wire-format contract: Prometheus emits `"data":[]` (not null) when
+	// no values match. JSON-marshalling a nil []string yields `null`,
+	// which Grafana's label/values probe rejects.
+	if values == nil {
+		values = []string{}
+	}
 	writeJSON(w, http.StatusOK, Response{
 		Status: "success",
 		Data:   values,
