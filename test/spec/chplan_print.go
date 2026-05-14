@@ -43,6 +43,9 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		} else {
 			fmt.Fprintf(b, "%sScan(%s, columns=[%s])\n", indent, v.Table, strings.Join(v.Columns, ", "))
 		}
+	case *chplan.OneRow:
+		fmt.Fprintf(b, "%sOneRow\n", indent)
+		_ = v
 	case *chplan.Filter:
 		fmt.Fprintf(b, "%sFilter predicate=%s\n", indent, printExpr(v.Predicate))
 		printNode(b, v.Input, depth+1)

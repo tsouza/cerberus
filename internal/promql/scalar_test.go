@@ -60,11 +60,19 @@ func TestTryFoldScalar(t *testing.T) {
 		{"1 + up", 0, false},
 		{"up + 1", 0, false},
 
-		// Comparison ops not (yet) folded — Prom requires the `bool`
-		// modifier on scalar-vs-scalar comparisons; without `bool` the
-		// parser rejects the query before we ever see it.
-		{"1 == bool 1", 0, false},
-		{"1 != bool 2", 0, false},
+		// Comparison ops with the `bool` modifier — fold to 1.0/0.0.
+		// Bare scalar-scalar comparisons (no `bool`) are rejected by
+		// the Prom parser before reaching the fold path, so the only
+		// shape that ever lands here carries ReturnBool=true.
+		{"1 == bool 1", 1, true},
+		{"1 == bool 2", 0, true},
+		{"1 != bool 2", 1, true},
+		{"1 < bool 2", 1, true},
+		{"2 < bool 1", 0, true},
+		{"1 <= bool 1", 1, true},
+		{"1 > bool 2", 0, true},
+		{"1 >= bool 1", 1, true},
+		{"(1 < bool 2) * 10", 10, true},
 	}
 
 	p := parser.NewParser(parser.Options{})

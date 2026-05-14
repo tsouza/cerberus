@@ -13,9 +13,12 @@ import (
 )
 
 // TestLower_Binary_Errors covers the binary-expression shapes lowerBinary
-// still rejects: pure scalar/scalar (deferred until scalars are first-class
-// chplan nodes) and logical ops (`and`/`or`/`unless`, deferred to a later
+// still rejects: logical ops (`and`/`or`/`unless`, deferred to a later
 // milestone).
+//
+// Pure scalar-scalar is no longer rejected — TryFoldScalar reduces both
+// sides at lowering time and emits a synthetic 1-row vector; see
+// TestLower_Binary_ScalarOnly_Folds for the happy-path coverage.
 //
 // group_left / group_right are no longer rejected — RC2 cardinality-edge
 // support added them with explicit cardinality enforcement; see
@@ -35,11 +38,6 @@ func TestLower_Binary_Errors(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name:    "scalar OP scalar deferred",
-			query:   `1 + 2`,
-			wantErr: "scalar-only binary expressions not yet lowered",
-		},
-		{
 			name:    "logical and deferred",
 			query:   `up and up`,
 			wantErr: "binary op and not yet supported",
@@ -58,6 +56,66 @@ func TestLower_Binary_Errors(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("error %q does not contain %q", err.Error(), tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestLower_Binary_ScalarOnly_Folds end-to-end checks the synthetic
+// 1-row vector path: a pure scalar-scalar BinaryExpr folds to a single
+// literal at lowering time and the emitted SQL has the folded value
+// bound as the Value column on a no-FROM SELECT.
+func TestLower_Binary_ScalarOnly_Folds(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	p := parser.NewParser(parser.Options{})
+
+	cases := []struct {
+		name      string
+		query     string
+		wantInSQL []string
+	}{
+		{
+			name:      "simple add",
+			query:     `1 + 2`,
+			wantInSQL: []string{"SELECT 1", "AS `Value`"},
+		},
+		{
+			name:      "precedence",
+			query:     `1 + 2 * 3`,
+			wantInSQL: []string{"SELECT 1", "AS `Value`"},
+		},
+		{
+			name:      "parens",
+			query:     `(1 + 2) * (3 + 4)`,
+			wantInSQL: []string{"SELECT 1", "AS `Value`"},
+		},
+		{
+			name:      "bool eq",
+			query:     `1 == bool 2`,
+			wantInSQL: []string{"SELECT 1", "AS `Value`"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			expr, err := p.ParseExpr(tc.query)
+			if err != nil {
+				t.Fatalf("ParseExpr: %v", err)
+			}
+			plan, err := promql.Lower(context.Background(), expr, s)
+			if err != nil {
+				t.Fatalf("Lower: %v", err)
+			}
+			sql, _, err := chsql.Emit(context.Background(), plan)
+			if err != nil {
+				t.Fatalf("Emit: %v", err)
+			}
+			for _, want := range tc.wantInSQL {
+				if !strings.Contains(sql, want) {
+					t.Errorf("expected SQL to contain %q; full SQL:\n%s", want, sql)
+				}
 			}
 		})
 	}

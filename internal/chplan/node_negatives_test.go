@@ -51,6 +51,11 @@ func TestEqual_MismatchedNodeTypes(t *testing.T) {
 				TraceIDColumn: "TraceId", SpanIDColumn: "SpanId", ParentSpanIDColumn: "ParentSpanId",
 			},
 		},
+		{
+			"OneRow vs Scan",
+			&chplan.OneRow{},
+			&chplan.Scan{Table: "t"},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

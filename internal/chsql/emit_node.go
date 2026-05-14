@@ -75,6 +75,21 @@ func (e *emitter) emitScan(s *chplan.Scan) error {
 	return nil
 }
 
+// emitOneRow renders `SELECT 1` — a no-FROM SELECT that ClickHouse
+// evaluates to a single literal row. Used by chplan.Project over
+// chplan.OneRow to materialise PromQL `time()` / `vector(scalar)` /
+// folded scalar-only binops as a synthetic 1-row vector.
+//
+// The literal `1` is emitted via InlineLit (no `?` placeholder) because
+// it is part of the query shape — the row's value never reaches the
+// caller; the surrounding Project replaces it with the per-call
+// expressions for MetricName / Attributes / TimeUnix / Value.
+func (e *emitter) emitOneRow(_ *chplan.OneRow) error {
+	sb := NewQuery().Select(InlineLit(int64(1)))
+	e.emitSelect(sb)
+	return nil
+}
+
 func (e *emitter) emitFilter(f *chplan.Filter) error {
 	// Pre-flight the predicate so a chplan error surfaces here, not
 	// inside the Where-render callback (where the error has no path

@@ -11,11 +11,11 @@ import (
 // (value, true) on success and (0, false) when the expression touches
 // any data (vector selectors, calls, aggregations, …).
 //
-// This is what powers Grafana's `1+1` datasource health probe: the
-// probe never needs to reach CH because the answer is a known constant.
-// Without this short-circuit cerberus would surface a "scalar-only
-// binary expressions not yet lowered" error and Grafana would flag the
-// datasource as unhealthy.
+// This is what powers Grafana's `1+1` datasource health probe and the
+// PromQL `vector(scalar)` / `time()` lowerings: the probe never needs
+// to reach CH because the answer is a known constant. The
+// /api/v1/query_range scalar shortcut in api/prom/handler.go and the
+// scalar-only-binop fold in promql/binary.go both consume this folder.
 //
 // Supported shapes:
 //   - NumberLiteral           — `42`, `0.5`, `1e3`, `NaN`, `Inf`
@@ -24,11 +24,13 @@ import (
 //   - BinaryExpr scalar OP scalar with arithmetic op — `1+1`, `2*3-1`,
 //     `pow(2, 10)`-style `2^10`, `1/0` (yields ±Inf, like Prom),
 //     `0/0` and `1 % 0` (NaN).
+//   - BinaryExpr scalar OP scalar with comparison op AND ReturnBool —
+//     `1 == bool 2 → 0`, `1 < bool 2 → 1`. Bare comparison
+//     (no `bool`) is rejected by the Prom parser on two scalars, so
+//     the only way one reaches the folder is with the modifier set.
 //
-// Comparison and logical ops are intentionally NOT folded here — Prom
-// evaluates them as scalars only with the `bool` modifier; without it
-// they filter, which doesn't make sense on a pure scalar. Add later
-// when a real call-site needs it.
+// Logical ops (`and`/`or`/`unless`) are not folded — Prom rejects them
+// on scalars at parse time.
 func TryFoldScalar(e parser.Expr) (float64, bool) {
 	switch v := e.(type) {
 	case *parser.NumberLiteral:
@@ -52,6 +54,16 @@ func TryFoldScalar(e parser.Expr) (float64, bool) {
 		rhs, rok := TryFoldScalar(v.RHS)
 		if !rok {
 			return 0, false
+		}
+		if isFoldableComparison(v.Op) {
+			// Prom requires the `bool` modifier on scalar-scalar
+			// comparisons; without it the parser rejects the query
+			// at parse time, so an unflagged comparison reaching this
+			// far is a parser bug we don't try to paper over.
+			if !v.ReturnBool {
+				return 0, false
+			}
+			return foldComparisonScalar(v.Op, lhs, rhs)
 		}
 		return foldBinaryScalar(v.Op, lhs, rhs)
 	}
@@ -89,4 +101,50 @@ func foldBinaryScalar(op parser.ItemType, lhs, rhs float64) (float64, bool) {
 		return math.Pow(lhs, rhs), true
 	}
 	return 0, false
+}
+
+// isFoldableComparison reports whether op is a comparison operator
+// that can be folded on two scalars. Mirrors PromQL's comparison set
+// (== / != / < / <= / > / >=) and intentionally excludes logical ops
+// (and/or/unless) — those are set operators on vectors, not foldable
+// scalars.
+func isFoldableComparison(op parser.ItemType) bool {
+	switch op {
+	case parser.EQLC, parser.NEQ, parser.LSS, parser.LTE, parser.GTR, parser.GTE:
+		return true
+	}
+	return false
+}
+
+// foldComparisonScalar applies a comparison op to two scalars and
+// returns 1.0 on true / 0.0 on false. PromQL's `bool` modifier maps
+// comparison-with-vector to a 1.0/0.0 Project; the same arithmetic
+// holds for scalar-scalar so we mirror it here.
+//
+// NaN-comparison semantics follow IEEE-754: any comparison involving
+// NaN is false, so `NaN == bool NaN → 0` and `NaN != bool NaN → 1`.
+// This matches Prom's evaluator, which delegates to Go's comparison
+// operators at the same precision.
+func foldComparisonScalar(op parser.ItemType, lhs, rhs float64) (float64, bool) {
+	var result bool
+	switch op {
+	case parser.EQLC:
+		result = lhs == rhs
+	case parser.NEQ:
+		result = lhs != rhs
+	case parser.LSS:
+		result = lhs < rhs
+	case parser.LTE:
+		result = lhs <= rhs
+	case parser.GTR:
+		result = lhs > rhs
+	case parser.GTE:
+		result = lhs >= rhs
+	default:
+		return 0, false
+	}
+	if result {
+		return 1, true
+	}
+	return 0, true
 }

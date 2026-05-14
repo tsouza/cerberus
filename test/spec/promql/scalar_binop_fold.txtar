@@ -1,0 +1,12 @@
+-- query.promql --
+1 + 2
+-- args --
+[0] string = ""
+[1] string = "Map(String,String)"
+[2] int64 = 9
+[3] float64 = 3
+-- chplan --
+Project ["" AS MetricName, CAST(map(), "Map(String,String)") AS Attributes, now64(9) AS TimeUnix, 3 AS Value]
+  OneRow
+-- sql --
+SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, ? AS `Value` FROM (SELECT 1)
