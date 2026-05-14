@@ -3,6 +3,8 @@ package config
 import (
 	"testing"
 	"time"
+
+	"github.com/tsouza/cerberus/internal/schema"
 )
 
 // TestFromEnv_AutoCreateSchema_Default confirms the new flag defaults to
@@ -152,5 +154,63 @@ func TestFromEnv_OTLP_EndpointTrimmed(t *testing.T) {
 	}
 	if got, want := cfg.OTLP.Endpoint, "collector:4317"; got != want {
 		t.Errorf("Endpoint = %q; want %q", got, want)
+	}
+}
+
+// TestFromEnv_SchemaDefaults confirms that with no schema env vars set
+// the resolved Config.Schema / Logs / Traces match the defaults-only
+// factories exactly. The override path is additive — a deploy that
+// touches nothing keeps the upstream OTel CH layout.
+func TestFromEnv_SchemaDefaults(t *testing.T) {
+	for _, key := range []string{
+		schema.EnvMetricsGaugeTable,
+		schema.EnvMetricsSumTable,
+		schema.EnvMetricsHistogramTable,
+		schema.EnvMetricsExpHistogramTable,
+		schema.EnvMetricsSummaryTable,
+		schema.EnvLogsTable,
+		schema.EnvTracesTable,
+	} {
+		t.Setenv(key, "")
+	}
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+	if cfg.Schema.SumTable != schema.DefaultOTelMetrics().SumTable {
+		t.Errorf("Schema.SumTable: got %q, want default", cfg.Schema.SumTable)
+	}
+	if cfg.Logs.LogsTable != schema.DefaultOTelLogs().LogsTable {
+		t.Errorf("Logs.LogsTable: got %q, want default", cfg.Logs.LogsTable)
+	}
+	if cfg.Traces.SpansTable != schema.DefaultOTelTraces().SpansTable {
+		t.Errorf("Traces.SpansTable: got %q, want default", cfg.Traces.SpansTable)
+	}
+}
+
+// TestFromEnv_SchemaOverrides confirms env-var overrides reach the
+// resolved Config struct. Covers one knob per signal — the per-field
+// override matrix is exhaustively covered in internal/schema/env_test.go.
+func TestFromEnv_SchemaOverrides(t *testing.T) {
+	t.Setenv(schema.EnvMetricsSumTable, "custom_metrics_sum")
+	t.Setenv(schema.EnvLogsTable, "custom_logs")
+	t.Setenv(schema.EnvTracesTable, "custom_spans")
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+	if cfg.Schema.SumTable != "custom_metrics_sum" {
+		t.Errorf("Schema.SumTable: got %q, want %q", cfg.Schema.SumTable, "custom_metrics_sum")
+	}
+	if cfg.Logs.LogsTable != "custom_logs" {
+		t.Errorf("Logs.LogsTable: got %q, want %q", cfg.Logs.LogsTable, "custom_logs")
+	}
+	if cfg.Traces.SpansTable != "custom_spans" {
+		t.Errorf("Traces.SpansTable: got %q, want %q", cfg.Traces.SpansTable, "custom_spans")
+	}
+	// Sanity: non-overridden fields stay defaulted (column names are not
+	// part of the override surface in this milestone).
+	if cfg.Schema.GaugeTable != schema.DefaultOTelMetrics().GaugeTable {
+		t.Errorf("Schema.GaugeTable should be unchanged: got %q", cfg.Schema.GaugeTable)
 	}
 }
