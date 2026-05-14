@@ -10,3 +10,24 @@ SELECT R.`MetricName`, mapConcat(R.`Attributes`, mapFilter((k, v) -> k IN (?), L
 [4] string = "http_requests_total"
 [5] string = "job"
 [6] string = "job"
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = Memory;
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = Memory;
+INSERT INTO otel_metrics_gauge VALUES
+    ('machine_role', map('job', 'api', 'env', 'prod'), toDateTime64('2026-01-01 00:00:00', 9), 3.0);
+INSERT INTO otel_metrics_sum VALUES
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 7.0);
+-- expected_rows --
+[
+  ["http_requests_total", {"job": "api", "env": "prod"}, "2026-01-01T00:00:00Z", 21.0]
+]

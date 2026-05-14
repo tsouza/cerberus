@@ -11,3 +11,16 @@ SELECT L.`MetricName`, L.`Attributes`, L.`TimeUnix`, (L.`Value` - R.`Value`) AS 
 [5] string = "instance"
 [6] string = "instance"
 [7] string = "instance"
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = Memory;
+INSERT INTO otel_metrics_sum VALUES
+    ('http_server_request_duration_count', map('job', 'api', 'instance', 'i-1'), toDateTime64('2026-01-01 00:00:00', 9), 50.0);
+-- expected_rows --
+[
+  ["http_server_request_duration_count", {"job": "api", "instance": "i-1"}, "2026-01-01T00:00:00Z", 0.0]
+]
