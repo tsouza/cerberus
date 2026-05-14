@@ -39,6 +39,13 @@ type Error struct {
 	Kind string
 	// Err is the underlying error. Required.
 	Err error
+	// RetryAfterSeconds, when > 0, instructs the per-handler error
+	// writer to stamp a `Retry-After: N` response header alongside
+	// the JSON envelope. Used for the 503 fast-fail responses emitted
+	// when the chclient circuit breaker is OPEN, so clients back off
+	// for the breaker's recovery window instead of hammering the
+	// gateway during an upstream CH outage.
+	RetryAfterSeconds int
 }
 
 // Error implements the error interface.

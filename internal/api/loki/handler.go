@@ -251,6 +251,17 @@ func classifyEngineErr(err error) error {
 	if err == nil {
 		return nil
 	}
+	// Circuit-breaker fast-fail short-circuit: when the chclient
+	// breaker is OPEN, surface 503 + Retry-After: 5 directly. See
+	// internal/api/prom for the rationale.
+	if errors.Is(err, chclient.ErrCircuitOpen) {
+		return &apiError{
+			Kind:              ErrUnavailable,
+			Err:               err,
+			Status:            http.StatusServiceUnavailable,
+			RetryAfterSeconds: 5,
+		}
+	}
 	var apiErr *apiError
 	if errors.As(err, &apiErr) {
 		return apiErr
@@ -433,8 +444,23 @@ func toStreamsWithTransform(samples []chclient.Sample, tx lineTransform) []Strea
 type apiError = httperr.Error
 
 func (h *Handler) respondError(w http.ResponseWriter, err error) {
+	// Circuit-breaker fast-fail short-circuit applies regardless of
+	// whether the callsite pre-wrapped the chclient error in its own
+	// *apiError — many Loki sub-handlers do (`&apiError{Status: 502,
+	// Err: chclient.QueryX...Err}`), and the inner ErrCircuitOpen
+	// would otherwise be masked by the outer wrap. We sniff via
+	// errors.Is so both shapes (bare and wrapped) get the 503 +
+	// Retry-After treatment.
+	if errors.Is(err, chclient.ErrCircuitOpen) {
+		w.Header().Set("Retry-After", "5")
+		writeError(w, http.StatusServiceUnavailable, ErrUnavailable, err)
+		return
+	}
 	var apiErr *apiError
 	if errors.As(err, &apiErr) {
+		if apiErr.RetryAfterSeconds > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(apiErr.RetryAfterSeconds))
+		}
 		writeError(w, apiErr.Status, apiErr.Kind, apiErr.Err)
 		return
 	}
