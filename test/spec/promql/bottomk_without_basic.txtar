@@ -1,0 +1,39 @@
+-- query.promql --
+bottomk(2, up) without (instance)
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('up', map('job', 'api', 'instance', 'a'), toDateTime64('2026-01-01 00:00:00', 9), 0.1),
+    ('up', map('job', 'api', 'instance', 'b'), toDateTime64('2026-01-01 00:00:00', 9), 0.5),
+    ('up', map('job', 'api', 'instance', 'c'), toDateTime64('2026-01-01 00:00:00', 9), 0.9),
+    ('up', map('job', 'api', 'instance', 'd'), toDateTime64('2026-01-01 00:00:00', 9), 0.7),
+    ('up', map('job', 'web', 'instance', 'a'), toDateTime64('2026-01-01 00:00:00', 9), 0.3),
+    ('up', map('job', 'web', 'instance', 'b'), toDateTime64('2026-01-01 00:00:00', 9), 0.8);
+-- expected_rows --
+[
+  ["up", {"instance": "a", "job": "api"}, "2026-01-01T00:00:00Z", 0.1],
+  ["up", {"instance": "b", "job": "api"}, "2026-01-01T00:00:00Z", 0.5],
+  ["up", {"instance": "a", "job": "web"}, "2026-01-01T00:00:00Z", 0.3],
+  ["up", {"instance": "b", "job": "web"}, "2026-01-01T00:00:00Z", 0.8]
+]
+-- args --
+[0] string = "up"
+[1] string = "2026-01-01 00:00:01.000000000"
+[2] int64 = 9
+[3] string = "2026-01-01 00:00:01.000000000"
+[4] int64 = 9
+[5] int64 = 300000000000
+[6] string = "instance"
+-- chplan --
+TopK k=2 sort=Value ASC by=[mapWithout(Attributes, [instance])] columns=[MetricName, Attributes, TimeUnix, Value]
+  Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
+    Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
+      Filter predicate=(((MetricName = "up") AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+        Scan(otel_metrics_gauge)
+-- sql --
+SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_gauge` PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`)) ORDER BY `Value` LIMIT 2 BY mapFilter((k, v) -> NOT (k IN (?)), `Attributes`))

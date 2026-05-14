@@ -13,10 +13,10 @@ import (
 
 // TestLower_Aggregate_Errors covers the aggregate paths whose error
 // messages are observable contract (param / no-param mismatch, computed
-// quantile phi, topk/bottomk/count_values argument-shape rejections).
-// The previously-deferred `changes output shape` errors landed in PR
-// (topk/bottomk → chplan.TopK; count_values → Aggregate + Project) and
-// no longer surface here.
+// quantile phi, count_values argument-shape rejections). topk/bottomk
+// now accept `without(...)` (lowered into a MapWithoutKeys partition
+// expression on chplan.TopK.By); count_values `without` is still
+// deferred.
 func TestLower_Aggregate_Errors(t *testing.T) {
 	t.Parallel()
 
@@ -28,11 +28,6 @@ func TestLower_Aggregate_Errors(t *testing.T) {
 		query   string
 		wantErr string
 	}{
-		{
-			name:    "topk without not yet supported",
-			query:   `topk(3, up) without (instance)`,
-			wantErr: "without(...) is not yet supported",
-		},
 		{
 			name:    "topk K must be scalar literal",
 			query:   `topk(scalar(up), latency_seconds)`,

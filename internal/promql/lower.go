@@ -664,14 +664,14 @@ func tryStringLiteral(e parser.Expr) (string, bool) {
 // an error since the SQL `LIMIT 0` shape is degenerate and the
 // fixture-driven flow keeps a positive K invariant on the plan tree.
 //
-// `without(...)` is rejected: the spec allows it, but partitioning
-// "by every label except <these>" expands to `LIMIT K BY <full
-// Attributes minus listed keys>`, which is a different rewrite
-// than the by-list path and lands as a follow-up.
+// `without (l1, l2, ...)` partitions by "every label except <these>".
+// We emit a single `MapWithoutKeys` Expr into the `By` slot — it lowers
+// to CH's `mapFilter((k, v) -> NOT (k IN (?,...)), Attributes)`, which
+// is exactly the per-series partition key we want for LIMIT K BY. The
+// degenerate `without ()` case (empty Grouping) means "remove nothing",
+// equivalent to partitioning by the full Attributes map; emit a bare
+// ColumnRef so we don't render an empty IN-list (CH rejects that).
 func lowerTopK(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	if a.Without {
-		return nil, fmt.Errorf("promql: %s without(...) is not yet supported (use by(...) or no grouping)", a.Op.String())
-	}
 	kF, ok := tryScalarLiteral(a.Param)
 	if !ok {
 		return nil, fmt.Errorf("promql: %s requires a scalar literal K (computed K is not yet supported)", a.Op.String())
@@ -692,12 +692,28 @@ func lowerTopK(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chplan.
 		return nil, err
 	}
 
-	by := make([]chplan.Expr, 0, len(a.Grouping))
-	for _, label := range a.Grouping {
-		by = append(by, &chplan.MapAccess{
-			Map: &chplan.ColumnRef{Name: s.AttributesColumn},
-			Key: &chplan.LitString{V: label},
-		})
+	var by []chplan.Expr
+	switch {
+	case a.Without && len(a.Grouping) == 0:
+		// `topk(K, v) without ()` — partition by the full Attributes map.
+		by = []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}}
+	case a.Without:
+		// `topk(K, v) without (l1, l2)` — partition by `Attributes` with
+		// the listed labels stripped via mapFilter. Single MapWithoutKeys
+		// Expr keeps the per-series partition shape symmetric with the
+		// non-shape-changing aggregation path (`aggregateGroupBy`).
+		by = []chplan.Expr{&chplan.MapWithoutKeys{
+			Map:  &chplan.ColumnRef{Name: s.AttributesColumn},
+			Keys: append([]string(nil), a.Grouping...),
+		}}
+	default:
+		by = make([]chplan.Expr, 0, len(a.Grouping))
+		for _, label := range a.Grouping {
+			by = append(by, &chplan.MapAccess{
+				Map: &chplan.ColumnRef{Name: s.AttributesColumn},
+				Key: &chplan.LitString{V: label},
+			})
+		}
 	}
 
 	return &chplan.TopK{
