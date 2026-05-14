@@ -58,6 +58,8 @@ func run(logger *slog.Logger) error {
 		username = flag.String("user", envOr("CERBERUS_CH_USERNAME", "cerberus"), "ClickHouse username")
 		password = flag.String("password", envOr("CERBERUS_CH_PASSWORD", "cerberus"), "ClickHouse password")
 		timeout  = flag.Duration("timeout", 60*time.Second, "dial + ready timeout")
+		promURL  = flag.String("prom-remote-write", promRemoteWriteURL(),
+			"Prometheus remote_write URL; set empty to skip the Prom fan-out")
 	)
 	flag.Parse()
 
@@ -92,6 +94,15 @@ func run(logger *slog.Logger) error {
 	logger.Info("inserting fixture", "anchor", anchor, "steps", fixtureSteps)
 	if err := insertFixture(ctx, conn); err != nil {
 		return fmt.Errorf("insert fixture: %w", err)
+	}
+
+	if *promURL != "" {
+		logger.Info("mirroring fixture into prometheus via remote_write", "url", *promURL)
+		if err := remoteWriteFixture(ctx, conn, *promURL, logger); err != nil {
+			return fmt.Errorf("prom remote_write: %w", err)
+		}
+	} else {
+		logger.Info("skipping prom remote_write fan-out (empty URL)")
 	}
 
 	logger.Info("seed done")
