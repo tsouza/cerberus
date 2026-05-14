@@ -52,7 +52,7 @@ func lowerSubquery(e *parser.SubqueryExpr, s schema.Metrics, ctx lowerCtx) (chpl
 		inner2.Expr = inner.Expr
 		return lowerSubquery(&inner2, s, ctx)
 	case *parser.AggregateExpr:
-		return nil, fmt.Errorf("promql: subquery over aggregated expression is not yet supported (deferred from P0 4 — `max_over_time(sum by(...) (rate(...))[1h:5m])` needs chained RangeWindow over Aggregate output, landing in RC3)")
+		return lowerSubqueryOverAggregate(e, inner, step, s, ctx)
 	case *parser.SubqueryExpr:
 		return nil, fmt.Errorf("promql: nested subqueries are not yet supported (deferred to RC3)")
 	}
@@ -79,6 +79,11 @@ func lowerSubqueryOverCall(
 	if len(call.Args) != 1 {
 		return nil, fmt.Errorf("promql: subquery inner %s expects exactly 1 argument, got %d",
 			call.Func.Name, len(call.Args))
+	}
+	if innerSub, ok := call.Args[0].(*parser.SubqueryExpr); ok {
+		// Nested subquery: `<fn>(<inner-sub>)[<outer-range>:<step>]`.
+		// e.g. `max_over_time(rate(m[1m])[5m:30s])[1h:5m]`.
+		return lowerSubqueryOverCallSubquery(sub, call, innerSub, step, s, ctx)
 	}
 	ms, ok := call.Args[0].(*parser.MatrixSelector)
 	if !ok {
@@ -258,4 +263,254 @@ func subqueryAnchor(e *parser.SubqueryExpr, ctx lowerCtx) (evalAnchor, error) {
 		a.End = time.UnixMilli(*e.Timestamp).UTC()
 	}
 	return a, nil
+}
+
+// lowerSubqueryOverAggregate — `<sum/avg/...>(<inner>)[<outer_range>:<step>]`.
+//
+// The canonical Grafana shape is
+// `max_over_time(sum by(job)(rate(http_requests_total[1m]))[1h:30s])` —
+// at each anchor `t` across `[End - sub.Range, End]` spaced by `step`,
+// evaluate `sum by(job)(rate(http_requests_total[1m]))` at `t`.
+//
+// The lowered tree is a Project[Aggregate[matrix-RangeWindow]]:
+//
+//	Project[Attributes = map('<label>', gkey_0, ...), anchor_ts, value]
+//	  Aggregate[GroupBy: [<by-keys via Attributes['<label>'] AS gkey_N>, anchor_ts], AggFuncs: [<op>(value) AS value]]
+//	    RangeWindow[matrix shape: per-(series, anchor) Inner-call output]
+//	      <Filter/Scan from the AggregateExpr.Expr lowering>
+//
+// The outer Project re-exposes the canonical (Attributes, anchor_ts,
+// value) shape so a wrapping RangeWindow (the `max_over_time(...)`)
+// can group by Attributes and window over anchor_ts/value without
+// caring that the underlying series identity came from a `by(...)`
+// clause rather than the raw scan's Attributes map.
+//
+// Only `by(...)` aggregations are supported here. `without(...)`
+// would need the matrix RangeWindow to expose every label that wasn't
+// removed, which the current matrix lowering doesn't do (it groups by
+// the full Attributes map only). Same restriction as the parameterised
+// aggregates QUANTILE / TOPK / BOTTOMK / COUNT_VALUES that change
+// output shape — left to the next milestone.
+func lowerSubqueryOverAggregate(
+	sub *parser.SubqueryExpr,
+	agg *parser.AggregateExpr,
+	step time.Duration,
+	s schema.Metrics,
+	ctx lowerCtx,
+) (chplan.Node, error) {
+	if agg.Without {
+		return nil, fmt.Errorf("promql: subquery over `without(...)` aggregation is not yet supported")
+	}
+	switch agg.Op {
+	case parser.SUM, parser.COUNT, parser.AVG, parser.MIN, parser.MAX:
+		// Supported per-bucket reducers — sum/count/avg/min/max over the
+		// matrix value column produce one value per (anchor, by-key) row.
+	default:
+		return nil, fmt.Errorf("promql: subquery over %s aggregation is not yet supported",
+			agg.Op.String())
+	}
+
+	// Lower the aggregate's inner argument as a matrix-shape subquery
+	// (OuterRange + Step set). Produces (Attributes, anchor_ts, value)
+	// rows — one per (series, anchor) bucket — that the wrapping
+	// Aggregate groups across.
+	matrix, err := lowerSubqueryInnerMatrix(sub, agg.Expr, step, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Build the Aggregate's GroupBy: one MapAccess per `by(...)` label
+	// PLUS the per-anchor key so the reducer fires once per (anchor,
+	// label-tuple).
+	groupBy := make([]chplan.Expr, 0, len(agg.Grouping)+1)
+	groupAliases := make([]string, 0, len(agg.Grouping)+1)
+	for i, label := range agg.Grouping {
+		groupBy = append(groupBy, &chplan.MapAccess{
+			Map: &chplan.ColumnRef{Name: s.AttributesColumn},
+			Key: &chplan.LitString{V: label},
+		})
+		groupAliases = append(groupAliases, fmt.Sprintf("gkey_%d", i))
+	}
+	groupBy = append(groupBy, &chplan.ColumnRef{Name: "anchor_ts"})
+	groupAliases = append(groupAliases, "anchor_ts")
+
+	// Build the AggFunc. `value` (lowercase) is the matrix
+	// RangeWindow's output column. The Aggregate's output column reuses
+	// the same alias so the outer RangeWindow can reference it
+	// transparently via its ValueColumn = "value".
+	aggFunc, err := buildSubqueryAggFunc(agg, "value")
+	if err != nil {
+		return nil, err
+	}
+
+	innerAgg := &chplan.Aggregate{
+		Input:          matrix,
+		GroupBy:        groupBy,
+		GroupByAliases: groupAliases,
+		AggFuncs:       []chplan.AggFunc{aggFunc},
+	}
+
+	// Rebuild Attributes from the gkey aliases so the outer
+	// RangeWindow's `GroupBy: [ColumnRef("Attributes")]` lights up
+	// without further plumbing. anchor_ts + value pass through as
+	// matching aliases. Value is cast to Float64 so the outer
+	// RangeWindow's counter_delta arithmetic (always emitted even by
+	// arrayAvg / arrayMax / arrayMin reducers) can do `c - p` without
+	// hitting CH's NO_COMMON_TYPE error on count's UInt64 result.
+	attrsExpr := buildAttributesFromAggregate(agg, groupAliases[:len(agg.Grouping)])
+	return &chplan.Project{
+		Input: innerAgg,
+		Projections: []chplan.Projection{
+			{Expr: attrsExpr, Alias: s.AttributesColumn},
+			{Expr: &chplan.ColumnRef{Name: "anchor_ts"}, Alias: "anchor_ts"},
+			{
+				Expr: &chplan.FuncCall{
+					Name: "toFloat64",
+					Args: []chplan.Expr{&chplan.ColumnRef{Name: "value"}},
+				},
+				Alias: "value",
+			},
+		},
+	}, nil
+}
+
+// lowerSubqueryInnerMatrix produces a matrix-shape RangeWindow for the
+// expression that lives inside an `<agg>[range:step]` clause's
+// aggregate. Recurses through ParenExpr; dispatches Call /
+// VectorSelector to the same matrix-emitting helpers
+// lowerSubqueryOverCall / lowerSubqueryOverVectorSelector use.
+//
+// Only shapes that already produce per-anchor matrix output are
+// supported — extending coverage to BinaryExpr / nested aggregations
+// would need additional plan-tree shaping the matrix emitter can't
+// currently consume.
+func lowerSubqueryInnerMatrix(
+	sub *parser.SubqueryExpr,
+	expr parser.Expr,
+	step time.Duration,
+	s schema.Metrics,
+	ctx lowerCtx,
+) (chplan.Node, error) {
+	switch inner := expr.(type) {
+	case *parser.ParenExpr:
+		return lowerSubqueryInnerMatrix(sub, inner.Expr, step, s, ctx)
+	case *parser.Call:
+		return lowerSubqueryOverCall(sub, inner, step, s, ctx)
+	case *parser.VectorSelector:
+		return lowerSubqueryOverVectorSelector(sub, inner, step, s, ctx)
+	}
+	return nil, fmt.Errorf("promql: subquery over aggregation of %T is not yet supported", expr)
+}
+
+// buildSubqueryAggFunc maps a PromQL AggregateExpr to the chplan
+// AggFunc that runs INSIDE the subquery-over-aggregate pipeline.
+// Mirrors buildAggFunc but takes the input column name as a parameter
+// (the matrix RangeWindow emits lowercase `value`, not s.ValueColumn).
+func buildSubqueryAggFunc(a *parser.AggregateExpr, inCol string) (chplan.AggFunc, error) {
+	valueArg := &chplan.ColumnRef{Name: inCol}
+	switch a.Op {
+	case parser.SUM:
+		return chplan.AggFunc{Name: "sum", Args: []chplan.Expr{valueArg}, Alias: "value"}, nil
+	case parser.COUNT:
+		return chplan.AggFunc{Name: "count", Args: []chplan.Expr{valueArg}, Alias: "value"}, nil
+	case parser.AVG:
+		return chplan.AggFunc{Name: "avg", Args: []chplan.Expr{valueArg}, Alias: "value"}, nil
+	case parser.MIN:
+		return chplan.AggFunc{Name: "min", Args: []chplan.Expr{valueArg}, Alias: "value"}, nil
+	case parser.MAX:
+		return chplan.AggFunc{Name: "max", Args: []chplan.Expr{valueArg}, Alias: "value"}, nil
+	}
+	return chplan.AggFunc{}, fmt.Errorf("promql: subquery over %s aggregation is not yet supported", a.Op.String())
+}
+
+// buildAttributesFromAggregate rebuilds an Attributes map literal from
+// the gkey_N aliases produced by the subquery's inner Aggregate. The
+// result lets a wrapping RangeWindow group by `Attributes` without
+// needing to know that the underlying identity came from a `by(...)`
+// clause.
+//
+// `by(label1, label2)` → `map('label1', gkey_0, 'label2', gkey_1)`.
+// `by()` (no labels) → empty `Map(String,String)` literal.
+func buildAttributesFromAggregate(agg *parser.AggregateExpr, gkeyAliases []string) chplan.Expr {
+	if len(agg.Grouping) == 0 {
+		return &chplan.FuncCall{
+			Name: "CAST",
+			Args: []chplan.Expr{
+				&chplan.FuncCall{Name: "map", Args: nil},
+				&chplan.LitString{V: "Map(String,String)"},
+			},
+		}
+	}
+	args := make([]chplan.Expr, 0, len(agg.Grouping)*2)
+	for i, label := range agg.Grouping {
+		args = append(args,
+			&chplan.LitString{V: label},
+			&chplan.ColumnRef{Name: gkeyAliases[i]},
+		)
+	}
+	return &chplan.FuncCall{Name: "map", Args: args}
+}
+
+// lowerSubqueryOverCallSubquery handles the nested-subquery shape
+// `<outer-fn>(<inner-sub>)[<outer-range>:<step>]`. Canonical example:
+// `max_over_time(rate(m[1m])[5m:30s])[1h:5m]`.
+//
+// Conceptual evaluation: at each outer anchor `t_outer` ∈
+// `[End - sub.Range, End]` spaced by `step`, evaluate
+// `<outer-fn>(<inner-sub>)` at `t_outer` — which is itself
+// `<outer-fn>` over `<inner-sub>` evaluated at the inner anchors
+// across `[t_outer - innerSub.Range, t_outer]` spaced by
+// `innerSub.Step`.
+//
+// We widen the inner subquery's `Range` to cover the union of both
+// outer + inner ranges, then wrap with a matrix RangeWindow that
+// reduces per outer anchor. The widened inner emits one row per
+// (series, t_inner) at innerSub.Step resolution across
+// `[End - (sub.Range + innerSub.Range), End]`; the outer matrix
+// groupArrays per Attributes and arrayFilters to
+// `[t_outer - innerSub.Range, t_outer]` per outer anchor before
+// applying the outer-fn reducer.
+func lowerSubqueryOverCallSubquery(
+	sub *parser.SubqueryExpr,
+	call *parser.Call,
+	innerSub *parser.SubqueryExpr,
+	step time.Duration,
+	s schema.Metrics,
+	ctx lowerCtx,
+) (chplan.Node, error) {
+	if _, ok := rangeVectorFn[call.Func.Name]; !ok {
+		return nil, fmt.Errorf("promql: %s does not accept a subquery argument", call.Func.Name)
+	}
+	if innerSub.Range <= 0 {
+		return nil, fmt.Errorf("promql: inner subquery range must be positive, got %s", innerSub.Range)
+	}
+
+	// Widen the inner subquery to cover the outer range PLUS the inner
+	// range so every outer anchor's lookback finds inner anchors. Each
+	// per-outer-anchor reduction then arrayFilters to the inner-range
+	// window — see emitWindowedArrayMatrix.
+	widened := *innerSub
+	widened.Range = sub.Range + innerSub.Range
+	wideInner, err := lowerSubquery(&widened, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	anchor, err := subqueryAnchor(sub, ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return &chplan.RangeWindow{
+		Input:           wideInner,
+		Func:            call.Func.Name,
+		Range:           innerSub.Range,
+		OuterRange:      sub.Range,
+		Step:            step,
+		End:             anchor.End,
+		Offset:          anchor.Offset,
+		TimestampColumn: "anchor_ts",
+		ValueColumn:     "value",
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
+	}, nil
 }

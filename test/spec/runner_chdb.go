@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -32,6 +33,20 @@ import (
 // `parquet.go`: `return fmt.Errorf("empty row")`). It surfaces on
 // rows.Err() and must be ignored — any other error is real.
 const chdbEOFSentinel = "empty row"
+
+// nowAnchorLiteral is the deterministic CH literal we splice in place
+// of every `now64(...)` reference in the emitted SQL. It mirrors the
+// instant-eval anchor `internal/promql/lower_test.go` feeds into
+// `LowerAt` (`time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC)`), so each
+// round-trip fixture sees the same wall-clock the lowering pass used
+// to compute filter bounds. Keeping this in lock-step with the
+// lowering anchor lets `expected_rows:` cells pin the TimeUnix column
+// to a fixed string instead of chasing wall-clock noise.
+//
+// The third arg (`'UTC'`) is mandatory: chDB's parser treats the
+// timezone slot positionally and rejects `toDateTime64(str, 9)` when
+// the literal has fractional seconds.
+const nowAnchorLiteral = "toDateTime64('2026-01-01 00:00:01.000000000', 9, 'UTC')"
 
 // tolerantRowsErr matches the helper used by the chDB probe in
 // internal/chclient/chdb_probe_test.go.
@@ -229,6 +244,144 @@ func extractProjectionCount(query string) int {
 	return len(splitProjections(head))
 }
 
+// substituteNow64 rewrites every `now64(...)` reference in the emitted
+// SQL to the deterministic [nowAnchorLiteral] so instant queries that
+// project the wall-clock as `TimeUnix` (PromQL aggregations, histogram
+// quantiles, subqueries, predict_linear, holt_winters) produce a
+// repeatable cell in `expected_rows:`. Without this, the outer
+// projection would scan as the wall-clock at test execution time and
+// never match a written-in-stone fixture row.
+//
+// Two shapes appear in the corpus:
+//
+//   - `now64(?)` — parameterized; the trailing `?` is bound to an
+//     int64 precision arg in `args:`. We strip the corresponding
+//     positional slot from args alongside the SQL rewrite so the
+//     remaining `?` placeholders re-index correctly.
+//
+//   - `now64(9)` / `now64(<int>)` — emitted as a literal in subquery,
+//     predict_linear, and holt_winters lowerings. No args slot to
+//     consume.
+//
+// The function tracks `?` placeholder offsets while scanning so the
+// args list is mutated in lock-step. This is a test-infra workaround
+// for the inherent non-determinism of wall-clock projections in
+// instant queries — production code path is untouched. See PR #288's
+// audit note ("seed/metric mismatch + non-deterministic now64") and
+// the follow-up that lands seed alignment + this substitution
+// together.
+func substituteNow64(query string, args []any) (string, []any) {
+	// Fast-path: nothing to do when neither shape is present.
+	if !strings.Contains(query, "now64(") {
+		return query, args
+	}
+
+	var (
+		out      strings.Builder
+		newArgs  = make([]any, 0, len(args))
+		argIdx   int
+		inStr    byte
+	)
+	out.Grow(len(query))
+
+	for i := 0; i < len(query); i++ {
+		c := query[i]
+		// Track string literals so a stray `?` or `now64(` inside
+		// quotes is left alone. CH SQL uses single-quotes; backticks
+		// quote identifiers, not strings, so they don't interfere
+		// with placeholder counting.
+		if inStr != 0 {
+			out.WriteByte(c)
+			if c == inStr {
+				inStr = 0
+			}
+			continue
+		}
+		if c == '\'' {
+			inStr = c
+			out.WriteByte(c)
+			continue
+		}
+
+		// Match `now64(?)` — substitute literal and consume one arg.
+		if c == 'n' && strings.HasPrefix(query[i:], "now64(?)") {
+			out.WriteString(nowAnchorLiteral)
+			// Skip the consumed arg slot. argIdx is the next-to-bind
+			// index; it points at the `?` inside `now64(?)` which we
+			// are about to drop. Advance past it without copying.
+			argIdx++
+			i += len("now64(?)") - 1
+			continue
+		}
+
+		// Match `now64(<int>)` — substitute literal, no args change.
+		if c == 'n' && strings.HasPrefix(query[i:], "now64(") {
+			// Find the matching `)` at depth 0 starting after the `(`.
+			rest := query[i+len("now64("):]
+			depth := 1
+			j := 0
+			for ; j < len(rest); j++ {
+				if rest[j] == '(' {
+					depth++
+				} else if rest[j] == ')' {
+					depth--
+					if depth == 0 {
+						break
+					}
+				}
+			}
+			if j < len(rest) {
+				inner := strings.TrimSpace(rest[:j])
+				// Only substitute when the body is a bare numeric
+				// literal (the precision arg). Anything else (no
+				// known cases today) passes through to surface a
+				// real failure rather than silently mis-rewrite.
+				if isIntLiteral(inner) {
+					out.WriteString(nowAnchorLiteral)
+					i += len("now64(") + j // jump past the closing `)`
+					continue
+				}
+			}
+		}
+
+		// Generic `?` placeholder: copy the arg through.
+		if c == '?' {
+			out.WriteByte(c)
+			if argIdx < len(args) {
+				newArgs = append(newArgs, args[argIdx])
+			}
+			argIdx++
+			continue
+		}
+
+		out.WriteByte(c)
+	}
+
+	return out.String(), newArgs
+}
+
+// isIntLiteral reports whether s is a non-empty run of ASCII digits
+// (optionally prefixed by `-`). Used by substituteNow64 to recognise
+// the precision literal in `now64(9)` without pulling in strconv.
+func isIntLiteral(s string) bool {
+	if s == "" {
+		return false
+	}
+	i := 0
+	if s[0] == '-' {
+		i = 1
+		if len(s) == 1 {
+			return false
+		}
+	}
+	for ; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // openChDB returns a fresh ephemeral chDB session. The empty DSN
 // triggers a temp-dir-backed session that's torn down with the
 // connection — there is no `:memory:` literal in chdb-go.
@@ -324,9 +477,12 @@ func splitStatements(s string) []string {
 // `expected_rows:`. Caller passes the loaded fixture; if it's not a
 // round-trip fixture, the call is a no-op.
 //
-// Determinism contract: the fixture's `sql:` (or the seed's INSERT
-// ordering combined with a server-side ORDER BY in the emitted SQL)
-// MUST produce a stable row order — RunRoundTrip does NOT sort rows.
+// Determinism contract: cerberus's emitted instant-query SQL does not
+// carry a top-level ORDER BY (PromQL's instant-query result is a set
+// of (labels, value) pairs — no order is promised by the wire shape),
+// so RunRoundTrip canonicalises both sides through [sortRows] before
+// `reflect.DeepEqual`. Fixtures that rely on a stable order must
+// emit one explicitly in the seed/SQL — none do today.
 // Map column comparison uses reflect.DeepEqual on map[string]any so
 // JSON key ordering is irrelevant.
 func RunRoundTrip(t *testing.T, c *Case) {
@@ -345,16 +501,22 @@ func RunRoundTrip(t *testing.T, c *Case) {
 	db := openChDB(t)
 	applySeed(t, db, rt.Seed)
 
-	query := rewriteMapProjections(rt.SQL)
+	// substituteNow64 must run BEFORE rewriteMapProjections so the
+	// `now64(?)`-consumed args are dropped before the Map rewrite
+	// inspects the SQL. The two passes are independent textually but
+	// the args side is global, and ordering them this way keeps the
+	// argIdx accounting in substituteNow64 simple.
+	query, queryArgs := substituteNow64(rt.SQL, rt.Args)
+	query = rewriteMapProjections(query)
 	colCount := extractProjectionCount(query)
 	if colCount == 0 {
 		t.Fatalf("fixture %s: cannot determine SELECT projection count from sql", c.Name)
 	}
 
-	rows, err := db.Query(query, rt.Args...)
+	rows, err := db.Query(query, queryArgs...)
 	if err != nil {
 		t.Fatalf("query failed:\n--- query ---\n%s\n--- args ---\n%#v\n--- err ---\n%v",
-			query, rt.Args, err)
+			query, queryArgs, err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -390,10 +552,28 @@ func RunRoundTrip(t *testing.T, c *Case) {
 	want := normalizeExpected(rt.ExpectedRows)
 	gotNorm := normalizeExpected(got)
 
+	// PromQL instant-query results are sets — the chDB engine is
+	// free to return groups in any order when the emitted SQL lacks
+	// a top-level ORDER BY (which it does). Sort both sides through
+	// the same canonical form so DeepEqual reflects set-equality.
+	sortRows(want)
+	sortRows(gotNorm)
+
 	if !reflect.DeepEqual(gotNorm, want) {
 		t.Fatalf("round-trip mismatch (fixture %s)\n got = %s\nwant = %s",
 			c.Name, mustJSON(gotNorm), mustJSON(want))
 	}
+}
+
+// sortRows canonicalises a result set by sorting rows in-place on the
+// JSON encoding of their cells. The encoding is deterministic for the
+// types the runner emits (string, float64, bool, nil, []any,
+// map[string]any), so any two row sets that compare set-equal end up
+// with identical post-sort orderings.
+func sortRows(rows [][]any) {
+	sort.Slice(rows, func(i, j int) bool {
+		return mustJSON(rows[i]) < mustJSON(rows[j])
+	})
 }
 
 // decodeCell turns a chdb-go driver-native value into the Go value

@@ -1,0 +1,59 @@
+-- query.promql --
+avg_over_time(count by(level)(rate(log_lines_total[5m]))[30m:1m])
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum VALUES
+    ('log_lines_total', map('level', 'info'), toDateTime64('2025-12-31 23:30:00', 9), 0.0),
+    ('log_lines_total', map('level', 'info'), toDateTime64('2025-12-31 23:31:00', 9), 1.0),
+    ('log_lines_total', map('level', 'info'), toDateTime64('2025-12-31 23:32:00', 9), 2.0),
+    ('log_lines_total', map('level', 'info'), toDateTime64('2025-12-31 23:33:00', 9), 3.0),
+    ('log_lines_total', map('level', 'info'), toDateTime64('2025-12-31 23:34:00', 9), 4.0),
+    ('log_lines_total', map('level', 'info'), toDateTime64('2025-12-31 23:35:00', 9), 5.0),
+    ('log_lines_total', map('level', 'info'), toDateTime64('2025-12-31 23:36:00', 9), 6.0),
+    ('log_lines_total', map('level', 'info'), toDateTime64('2025-12-31 23:37:00', 9), 7.0),
+    ('log_lines_total', map('level', 'info'), toDateTime64('2025-12-31 23:38:00', 9), 8.0),
+    ('log_lines_total', map('level', 'info'), toDateTime64('2025-12-31 23:39:00', 9), 9.0),
+    ('log_lines_total', map('level', 'info'), toDateTime64('2025-12-31 23:40:00', 9), 10.0),
+    ('log_lines_total', map('level', 'info'), toDateTime64('2025-12-31 23:41:00', 9), 11.0),
+    ('log_lines_total', map('level', 'info'), toDateTime64('2025-12-31 23:42:00', 9), 12.0),
+    ('log_lines_total', map('level', 'info'), toDateTime64('2025-12-31 23:43:00', 9), 13.0),
+    ('log_lines_total', map('level', 'info'), toDateTime64('2025-12-31 23:44:00', 9), 14.0),
+    ('log_lines_total', map('level', 'info'), toDateTime64('2025-12-31 23:45:00', 9), 15.0),
+    ('log_lines_total', map('level', 'info'), toDateTime64('2025-12-31 23:46:00', 9), 16.0),
+    ('log_lines_total', map('level', 'info'), toDateTime64('2025-12-31 23:47:00', 9), 17.0),
+    ('log_lines_total', map('level', 'info'), toDateTime64('2025-12-31 23:48:00', 9), 18.0),
+    ('log_lines_total', map('level', 'info'), toDateTime64('2025-12-31 23:49:00', 9), 19.0),
+    ('log_lines_total', map('level', 'info'), toDateTime64('2025-12-31 23:50:00', 9), 20.0),
+    ('log_lines_total', map('level', 'info'), toDateTime64('2025-12-31 23:51:00', 9), 21.0),
+    ('log_lines_total', map('level', 'info'), toDateTime64('2025-12-31 23:52:00', 9), 22.0),
+    ('log_lines_total', map('level', 'info'), toDateTime64('2025-12-31 23:53:00', 9), 23.0),
+    ('log_lines_total', map('level', 'info'), toDateTime64('2025-12-31 23:54:00', 9), 24.0),
+    ('log_lines_total', map('level', 'info'), toDateTime64('2025-12-31 23:55:00', 9), 25.0),
+    ('log_lines_total', map('level', 'info'), toDateTime64('2025-12-31 23:56:00', 9), 26.0),
+    ('log_lines_total', map('level', 'info'), toDateTime64('2025-12-31 23:57:00', 9), 27.0),
+    ('log_lines_total', map('level', 'info'), toDateTime64('2025-12-31 23:58:00', 9), 28.0),
+    ('log_lines_total', map('level', 'info'), toDateTime64('2025-12-31 23:59:00', 9), 29.0),
+    ('log_lines_total', map('level', 'info'), toDateTime64('2026-01-01 00:00:00', 9), 30.0);
+-- expected_rows --
+[
+  [{"level": "info"}, 1.0]
+]
+-- args --
+[0] string = "level"
+[1] string = "level"
+[2] string = "log_lines_total"
+[3] string = "level"
+-- chplan --
+RangeWindow func=avg_over_time range=30m0s step=0s ts=anchor_ts value=value groupBy=[Attributes]
+  Project [map("level", gkey_0) AS Attributes, anchor_ts AS anchor_ts, toFloat64(value) AS value]
+    Aggregate groupBy=[Attributes["level"] AS gkey_0, anchor_ts AS anchor_ts] funcs=[count(value) AS value]
+      RangeWindow func=rate range=5m0s step=1m0s outerRange=30m0s ts=TimeUnix value=Value groupBy=[Attributes]
+        Filter predicate=(MetricName = "log_lines_total")
+          Scan(otel_metrics_sum)
+-- sql --
+SELECT `Attributes`, if(length(window_vals) > 0, arrayAvg(window_vals), nan) AS `value` FROM (SELECT `Attributes`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `Attributes`, arrayFilter(p -> tupleElement(p, 1) >= now64(9) - toIntervalNanosecond(1800000000000) AND tupleElement(p, 1) <= now64(9), series_array) AS `window_pairs` FROM (SELECT `Attributes`, arraySort(groupArray((`anchor_ts`, `value`))) AS `series_array` FROM (SELECT map(?, `gkey_0`) AS `Attributes`, `anchor_ts` AS `anchor_ts`, toFloat64(`value`) AS `value` FROM (SELECT `Attributes`[?] AS `gkey_0`, `anchor_ts` AS `anchor_ts`, count(`value`) AS `value` FROM (SELECT `Attributes`, `anchor_ts`, if(length(window_vals) > 1, counter_delta / 300, 0.0) AS `value` FROM (SELECT `Attributes`, `anchor_ts`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `Attributes`, `anchor_ts`, arrayFilter(p -> tupleElement(p, 1) >= anchor_ts - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= anchor_ts, series_array) AS `window_pairs` FROM (SELECT `Attributes`, `series_array`, arrayJoin(arrayMap(i -> now64(9) - toIntervalNanosecond(i * 60000000000), range(0, 31))) AS `anchor_ts` FROM (SELECT `Attributes`, arraySort(groupArray((`TimeUnix`, `Value`))) AS `series_array` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` = ?)) GROUP BY `Attributes`)))) WHERE length(`window_vals`) >= 2) GROUP BY `Attributes`[?], `anchor_ts`)) GROUP BY `Attributes`))) WHERE length(`window_vals`) >= 1
