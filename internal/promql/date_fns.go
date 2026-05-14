@@ -19,7 +19,7 @@ import (
 // `vector(time())` — a single instant-vector entry whose value is the
 // current evaluation timestamp in seconds. cerberus lowers that to a
 // degenerate scan over `system.one` (CH's one-row table) projecting
-// `(MetricName='', Attributes={}, TimeUnix=now64(9), Value=<fn>(now()))`.
+// `(MetricName=”, Attributes={}, TimeUnix=now64(9), Value=<fn>(now()))`.
 // The `timestamp` function does NOT have a zero-arg form in upstream
 // PromQL — Prometheus rejects it during parsing — so the no-arg branch
 // is unreachable for that name; we keep the same shape anyway for
