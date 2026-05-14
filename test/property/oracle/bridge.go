@@ -1,18 +1,25 @@
 // Package oracle holds the property-test oracles — the independent
 // specs that compute the expected output for a (dataset, query) pair.
 //
-// In Phase 1 PR 1 there's exactly one oracle: bridge.go, which
-// delegates to Prometheus's own promql.Engine via internal/promshim/
-// local. This is intentionally a TEMPORARY bridge — it lets us land
-// the framework infrastructure and exercise the
-// generators-comparator-shrinker chain end-to-end before doing the
-// harder work of writing a from-scratch evaluator.
+// As of Phase 1 PR 2 the canonical oracle is the from-scratch
+// PromQL evaluator in [oracle/promql] (invoked via
+// [promql.Evaluate]). It implements PromQL semantics directly off
+// the in-tree spec rather than delegating to Prometheus's
+// promql.Engine — that's the whole point: catch bugs cerberus
+// shares with upstream Prometheus.
 //
-// Phase 1 PR 2 will add oracle/spec.go: a from-scratch PromQL
-// evaluator that reads the same property.MetricsModel directly. At
-// that point this bridge becomes redundant and the property test
-// becomes a true differential check against an independent
-// specification.
+// The PR 1 bridge oracle below (BridgePromQLOracle) is retained
+// for two reasons:
+//
+//  1. It's still a useful sanity check during evaluator development
+//     — if a query disagrees between the bridge oracle and the
+//     from-scratch oracle, one of them has a bug.
+//  2. Other consumers (the shadow harness, future regression
+//     tests) may want a bridge to Prom's engine without pulling in
+//     this oracle's evaluator. Keep the bridge wiring intact.
+//
+// The property test (test/property/promql_test.go) wires
+// [promql.Evaluate] as the oracle going forward.
 package oracle
 
 import (
@@ -30,16 +37,13 @@ import (
 // promql.Engine (wrapped by internal/promshim/local). It returns the
 // result in the framework's property.Outcome shape.
 //
-// IMPORTANT: this is a TEMPORARY bridge — the oracle wraps the same
-// PromQL implementation cerberus is supposedly differentially tested
-// against. So a "match" here proves cerberus emits SQL whose results
-// match Prometheus's in-memory engine for the (narrow) MVP query set.
-// That's a meaningful regression bar but it is NOT the from-scratch
-// independent oracle the framework promises. Phase 1 PR 2 replaces
-// this file with a hand-written evaluator that reads the same
-// MetricsModel; at that point the property test stops being a
-// "cerberus vs. Prometheus" pinpoint and becomes a real differential
-// against an independent specification.
+// As of Phase 1 PR 2 the property test wires the from-scratch
+// [oracle/promql] evaluator as the canonical oracle. This bridge is
+// retained as a secondary sanity check — if a query disagrees
+// between the bridge (delegating to Prom's engine) and the
+// from-scratch oracle, one of them has a bug. It's also a useful
+// helper for the shadow harness or any consumer that wants Prom-
+// engine semantics without pulling in the from-scratch evaluator.
 //
 // The bridge:
 //
