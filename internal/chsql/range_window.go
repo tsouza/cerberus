@@ -205,13 +205,21 @@ func (e *emitter) emitRangeWindowPredictLinear(r *chplan.RangeWindow) error {
 	return e.emitWindowedArrayPairs(r, func(b *Builder) {
 		// arrayMap to derive xs (seconds from anchor) and ys (values).
 		// window_pairs is Array(Tuple(DateTime64(9), Float64)).
+		//
+		// CH's `simpleLinearRegression(x, y)` is an aggregate — it
+		// rejects raw arrays at the call site (ILLEGAL_TYPE_OF_ARGUMENT).
+		// `arrayReduce('simpleLinearRegression', xs, ys)` is the idiom
+		// for applying an aggregate to parallel array columns
+		// row-by-row, matching the per-series shape the window-array
+		// path produces. Mirrors the stddev_over_time / quantile_over_time
+		// emit paths in this file.
 		b.sb.WriteString("if(length(window_pairs) > 1, ")
-		b.sb.WriteString("tupleElement(simpleLinearRegression(")
+		b.sb.WriteString("tupleElement(arrayReduce('simpleLinearRegression', ")
 		b.sb.WriteString("arrayMap(p -> dateDiff('second', ")
 		anchor(b)
 		b.sb.WriteString(", tupleElement(p, 1)), window_pairs), ")
 		b.sb.WriteString("arrayMap(p -> tupleElement(p, 2), window_pairs)")
-		b.sb.WriteString("), 2) + tupleElement(simpleLinearRegression(")
+		b.sb.WriteString("), 2) + tupleElement(arrayReduce('simpleLinearRegression', ")
 		b.sb.WriteString("arrayMap(p -> dateDiff('second', ")
 		anchor(b)
 		b.sb.WriteString(", tupleElement(p, 1)), window_pairs), ")
