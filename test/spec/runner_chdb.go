@@ -91,9 +91,9 @@ func rewriteMapProjections(query string) string {
 	projs := splitProjections(head)
 	for i, p := range projs {
 		expr, alias := splitAlias(p)
-		// Implicit alias: bare `Col` projection.
+		// Implicit alias: bare `Col` or `Qual.\`Col\`` projection.
 		if alias == "" {
-			alias = unquoteBackticks(strings.TrimSpace(expr))
+			alias = mapColAlias(strings.TrimSpace(expr))
 		}
 		if !isMapColumn(alias) {
 			continue
@@ -101,6 +101,18 @@ func rewriteMapProjections(query string) string {
 		projs[i] = "toJSONString(" + expr + ") AS `" + alias + "`"
 	}
 	return "SELECT " + strings.Join(projs, ", ") + tail
+}
+
+// mapColAlias derives the implicit projection alias for a bare column
+// reference. Handles both `\`Col\`` (unqualified) and `Q.\`Col\``
+// (qualifier-prefixed, e.g. the `L.\`Attributes\`` form vector_join
+// emits) so the surrounding Map-rewrite pass can recognise Attributes
+// projected through the join's left / right side.
+func mapColAlias(s string) string {
+	if i := strings.LastIndexByte(s, '.'); i >= 0 {
+		s = s[i+1:]
+	}
+	return unquoteBackticks(s)
 }
 
 // splitOuterSelect returns the (projection-list, rest) split of a
