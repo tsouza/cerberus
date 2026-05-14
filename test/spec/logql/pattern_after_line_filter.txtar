@@ -6,3 +6,17 @@
 [2] string = "GET"
 -- sql --
 SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (position(`Body`, ?) > 0)
+-- seed --
+CREATE TABLE otel_logs (
+    Body String,
+    ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api')
+) ENGINE = Memory;
+INSERT INTO otel_logs (Body) VALUES
+    ('1.2.3.4 - GET /a'),
+    ('5.6.7.8 - POST /b'),
+    ('9.9.9.9 - GET /c');
+-- expected_rows --
+[
+  ["1.2.3.4 - GET /a"],
+  ["9.9.9.9 - GET /c"]
+]

@@ -8,3 +8,18 @@ SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (position(`Bod
 [2] string = "a"
 [3] string = "b"
 [4] string = "c"
+-- seed --
+CREATE TABLE otel_logs (
+    Body String,
+    ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api')
+) ENGINE = Memory;
+INSERT INTO otel_logs (Body) VALUES
+    ('apple_c'),
+    ('apple_bc'),
+    ('xxxc'),
+    ('a-c');
+-- expected_rows --
+[
+  ["apple_c"],
+  ["a-c"]
+]

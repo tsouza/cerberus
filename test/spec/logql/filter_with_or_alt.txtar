@@ -7,3 +7,18 @@ SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND ((position(`Bo
 [1] string = "api"
 [2] string = "error"
 [3] string = "warn"
+-- seed --
+CREATE TABLE otel_logs (
+    Body String,
+    ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api')
+) ENGINE = Memory;
+INSERT INTO otel_logs (Body) VALUES
+    ('info: ok'),
+    ('error: db'),
+    ('warn: high load'),
+    ('debug: trace');
+-- expected_rows --
+[
+  ["error: db"],
+  ["warn: high load"]
+]

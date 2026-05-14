@@ -5,3 +5,16 @@ SELECT `ResourceAttributes`, arraySum(window_vals) AS `value` FROM (SELECT `Reso
 -- args --
 [0] string = "job"
 [1] string = "api"
+-- seed --
+CREATE TABLE otel_logs (
+    Timestamp DateTime64(9),
+    Body String,
+    ResourceAttributes Map(String, String)
+) ENGINE = Memory;
+INSERT INTO otel_logs (Timestamp, Body, ResourceAttributes) VALUES
+    (now64(9), 'xx', map('job', 'api')),
+    (now64(9), 'yyyy', map('job', 'api'));
+-- expected_rows --
+[
+  [{"job": "api"}, 6.0]
+]
