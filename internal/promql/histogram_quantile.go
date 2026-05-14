@@ -25,12 +25,14 @@ import (
 //     with parallel `BucketCounts` × `ExplicitBounds` arrays (no `le`
 //     label per row), so the lowering rewrites the inner chain to:
 //
-//	  - Filter the histogram-table Scan to the rate's time window.
-//	  - `sumForEach(BucketCounts)` element-wise across rows in the user's
-//	    by/without group (the `le` label is implicit in the array
-//	    position and is dropped from the by-clause silently).
-//	  - `any(ExplicitBounds)` — picking one representative bounds array
-//	    (every row of the same metric in OTel-CH carries the same bounds).
+//   - Filter the histogram-table Scan to the rate's time window.
+//
+//   - `sumForEach(BucketCounts)` element-wise across rows in the user's
+//     by/without group (the `le` label is implicit in the array
+//     position and is dropped from the by-clause silently).
+//
+//   - `any(ExplicitBounds)` — picking one representative bounds array
+//     (every row of the same metric in OTel-CH carries the same bounds).
 //
 // The native (exp-histogram) path still requires a bare VectorSelector
 // for now — the same idiom over native histograms lands in a later
@@ -395,7 +397,8 @@ func histogramAggGroupBy(agg *parser.AggregateExpr, s schema.Metrics) ([]chplan.
 			Key: &chplan.LitString{V: label},
 		}
 		aliases[i] = alias
-		mapArgs = append(mapArgs,
+		mapArgs = append(
+			mapArgs,
 			&chplan.LitString{V: label},
 			&chplan.ColumnRef{Name: alias},
 		)
