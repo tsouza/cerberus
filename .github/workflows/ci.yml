@@ -74,3 +74,21 @@ jobs:
             **/*.md
             !harness/compatibility/upstream/**
             !**/node_modules/**
+
+  # `forbid-skip` is the GA test-discipline gate. The maintainer's
+  # NON-NEGOTIABLE rule is "no t.Skip in test files — fix the bug, do
+  # not skip." Greps `*_test.go` for `t.Skip` / `t.Skipf` / `t.SkipNow`
+  # via `git ls-files` (already excludes vendor / .gitignored paths)
+  # and fails the build if any match. Runs in parallel with `check` +
+  # `lint`; flip on as a required status check via branch protection.
+  forbid-skip:
+    name: forbid-skip
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Reject t.Skip in test files
+        run: |
+          if git ls-files -z -- '*_test.go' | xargs -0 grep -nE 't\.Skip[fN]?\(' --; then
+            echo "::error::t.Skip / t.Skipf / t.SkipNow found in test files — fix the bug, do not skip"
+            exit 1
+          fi
