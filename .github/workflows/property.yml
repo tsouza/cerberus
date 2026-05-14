@@ -63,15 +63,23 @@ jobs:
         # draw before the test gives up.
         # `-v` surfaces the rapid seed in the workflow log so a failure
         # is reproducible with `-rapid.seed=<N>`.
+        #
+        # Flag ordering matters: rapid's flags (`-rapid.checks`,
+        # `-rapid.shrinktime`) are registered by the rapid library, not
+        # by `go test`. `go test` only recognises them as test-binary
+        # flags when they appear AFTER the package list — otherwise the
+        # toolchain misparses them as build flags, drops the package
+        # path, and falls back to `.` (the module root), which has no
+        # Go files and aborts with `FAIL . [setup failed]`.
         run: |
           go test \
             -tags chdb \
             -count=1 \
             -v \
             -timeout=20m \
+            ./test/property/... \
             -rapid.checks=500 \
-            -rapid.shrinktime=5m \
-            ./test/property/...
+            -rapid.shrinktime=5m
 
       - name: Upload rapid failure artifacts
         if: failure()
