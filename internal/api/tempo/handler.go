@@ -2,6 +2,7 @@ package tempo
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -325,44 +326,80 @@ func (h *Handler) lowerTraceByID(traceID string) (chplan.Node, error) {
 	}, nil
 }
 
+// Reserved keys used by wrapWithSampleProjection to smuggle trace-detail
+// fields (TraceId, SpanId, ParentSpanId, SpanKind, StatusCode, +
+// SpanAttributes JSON) through the canonical chclient.Sample.Labels
+// map for the /api/traces/{id} path. groupBatches splits them back
+// out into the SpanEntry fields Grafana's trace-view consumes.
+//
+// The keys are namespaced under `__cerberus_*` so they cannot collide
+// with real OTel attribute keys (which by spec are reserved namespaces
+// like `service.*`, `http.*`, etc., never `__*`).
+const (
+	traceByIDKeyTraceID       = "__cerberus_traceID"
+	traceByIDKeySpanID        = "__cerberus_spanID"
+	traceByIDKeyParentSpanID  = "__cerberus_parentSpanID"
+	traceByIDKeySpanKind      = "__cerberus_spanKind"
+	traceByIDKeyStatusCode    = "__cerberus_statusCode"
+	traceByIDKeySpanAttrsJSON = "__cerberus_spanAttrsJSON"
+)
+
 // wrapWithSampleProjection adds a Project on top of plan that emits
 // the canonical chclient.Sample shape — (MetricName, Attributes,
 // TimeUnix, Value) — adapted to whatever the inner plan's output
-// schema actually exposes. Three distinct shapes are recognised:
+// schema actually exposes. Four distinct shapes are recognised:
 //
 //  1. Scan / Filter(Scan) — the otel_traces columns are available
 //     directly; project SpanName / ResourceAttributes / Timestamp /
-//     toFloat64(Duration).
-//  2. StructuralJoin — the emitter renders `SELECT R.* FROM (L)
-//     INNER JOIN (R) ON …`, which exposes R's columns as
-//     R-prefixed names (not unqualified). The wrap-projection uses
-//     ColumnRef.Qualifier="R" to reach them.
+//     toFloat64(Duration). When meta.IsTraceByID is set, the
+//     Attributes map is enriched with span-detail fields the
+//     trace-view UI consumes (see traceByIDProjections).
+//  2. StructuralJoin — the emitter renders `SELECT R.* FROM (L) AS L
+//     INNER JOIN (R) AS R ON …`. CH's outer-scope column resolution
+//     depends on the L subquery's column set, so the wrap branches
+//     on the structural Op (see the case body for the per-op
+//     rationale).
 //  3. Aggregate or Filter(Aggregate) — the inner SELECT is just
 //     `<group-keys>, <agg-funcs>`; SpanName / Timestamp / Duration
 //     don't exist in that scope. Synthesise MetricName="" and
 //     TimeUnix=now64(); read Value from the Aggregate's alias.
-func wrapWithSampleProjection(plan chplan.Node, s schema.Traces) chplan.Node {
-	// Default shape — Scan / Filter(Scan) — canonical columns available.
-	projections := []chplan.Projection{
-		{Expr: &chplan.ColumnRef{Name: s.SpanNameColumn}, Alias: "MetricName"},
-		{Expr: &chplan.ColumnRef{Name: s.ResourceAttributesColumn}, Alias: "Attributes"},
-		{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: "TimeUnix"},
-		// Duration is Int64 (nanoseconds) in OTel-CH; chclient.Sample.Value
-		// is float64 and clickhouse-go's Scan refuses Int64→float64 without
-		// a cast. toFloat64 keeps the wire shape lossless within the
-		// 53-bit mantissa range (a 100-day duration in ns still fits).
-		{Expr: &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.DurationColumn}}}, Alias: "Value"},
-	}
-
+//  4. Project — lowerSelect for `| select(...)` produces a user-shaped
+//     projection (TraceId, SpanId, Timestamp, <selected-attrs>) that
+//     doesn't expose SpanName / Duration / ResourceAttributes. The
+//     /api/search response envelope only needs the canonical Sample
+//     fields, so we strip the user Project and re-wrap the underlying
+//     Scan / Filter(Scan) with the canonical projection. The
+//     user-selected attrs are dropped from the HTTP search response
+//     (they were never surfaced in the trace-summary shape); the spec
+//     fixtures that pin the lowerSelect shape go through chDB without
+//     wrap-projection so they're unaffected.
+func wrapWithSampleProjection(plan chplan.Node, s schema.Traces, meta engine.Meta) chplan.Node {
 	switch {
 	case isStructuralJoin(plan):
-		// CH exposes the right side of a self-join as R.<col>. Use the
-		// qualifier so the outer SELECT can reach those columns.
-		projections = []chplan.Projection{
-			{Expr: &chplan.ColumnRef{Qualifier: "R", Name: s.SpanNameColumn}, Alias: "MetricName"},
-			{Expr: &chplan.ColumnRef{Qualifier: "R", Name: s.ResourceAttributesColumn}, Alias: "Attributes"},
-			{Expr: &chplan.ColumnRef{Qualifier: "R", Name: s.TimestampColumn}, Alias: "TimeUnix"},
-			{Expr: &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{&chplan.ColumnRef{Qualifier: "R", Name: s.DurationColumn}}}, Alias: "Value"},
+		// CH's column-resolution at the outer SELECT layer depends on
+		// the L side of the inner `SELECT R.* FROM (L) AS L INNER JOIN
+		// (R) AS R ON ...`:
+		//
+		//   - For direct ops (>, <, ~), L emits `SELECT * FROM
+		//     otel_traces WHERE ...` (all columns); CH leaves R's
+		//     columns reachable as `R.<col>` in the outer scope but
+		//     refuses bare `<col>` because L and R share names.
+		//   - For recursive ops (>>, <<), L is a `WITH RECURSIVE`
+		//     closure CTE that only selects (TraceId, SpanId); CH
+		//     narrows R-side resolution to those two columns and
+		//     refuses `R.<other-col>`, but accepts bare `<col>`
+		//     references (which then reach R's full output).
+		//
+		// Both regressions were caught by tempo_ux.spec.ts (the L10
+		// UX flows nightly run). Until the emitter wraps the join in
+		// a uniform re-projection layer, branch the wrap projection
+		// on Op to use whichever form CH accepts for this shape.
+		sj := plan.(*chplan.StructuralJoin)
+		switch sj.Op {
+		case chplan.StructuralDescendant, chplan.StructuralAncestor:
+			return &chplan.Project{Input: plan, Projections: canonicalSampleProjections(s)}
+		default:
+			return &chplan.Project{Input: plan, Projections: rQualifiedSampleProjections(s)}
 		}
 	case isAggregateShape(plan):
 		// Aggregate output is just (group-keys, agg-func-aliases). SpanName
@@ -373,15 +410,115 @@ func wrapWithSampleProjection(plan chplan.Node, s schema.Traces) chplan.Node {
 		// no GROUP BY so ResourceAttributes isn't in scope either — use
 		// an empty Map(String,String) CAST, same pattern as PromQL's
 		// emptyAttrsMap helper.
-		projections = []chplan.Projection{
+		return &chplan.Project{Input: plan, Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: "MetricName"},
 			{Expr: emptyAttrsMap(), Alias: "Attributes"},
 			{Expr: &chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}}, Alias: "TimeUnix"},
 			{Expr: &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}}, Alias: "Value"},
-		}
+		}}
+	case isProjectShape(plan):
+		// `| select(...)` lowering produces Project(Filter?(Scan)) with
+		// a user-defined column list. The HTTP search envelope only
+		// needs canonical Sample columns, so replace the user Project
+		// with one rooted in the same input.
+		inner := plan.(*chplan.Project).Input
+		return &chplan.Project{Input: inner, Projections: canonicalSampleProjections(s)}
 	}
 
-	return &chplan.Project{Input: plan, Projections: projections}
+	// Default shape — Scan / Filter(Scan) — canonical columns available.
+	if meta.IsTraceByID {
+		return &chplan.Project{Input: plan, Projections: traceByIDProjections(s)}
+	}
+	return &chplan.Project{Input: plan, Projections: canonicalSampleProjections(s)}
+}
+
+// canonicalSampleProjections returns the standard (MetricName,
+// Attributes, TimeUnix, Value) projection over otel_traces canonical
+// columns. Used for /api/search and the recursive structural-join
+// (`>>` / `<<`) wrap path, where the inner SELECT exposes R's columns
+// unqualified to the outer scope.
+func canonicalSampleProjections(s schema.Traces) []chplan.Projection {
+	return []chplan.Projection{
+		{Expr: &chplan.ColumnRef{Name: s.SpanNameColumn}, Alias: "MetricName"},
+		{Expr: &chplan.ColumnRef{Name: s.ResourceAttributesColumn}, Alias: "Attributes"},
+		{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: "TimeUnix"},
+		// Duration is Int64 (nanoseconds) in OTel-CH; chclient.Sample.Value
+		// is float64 and clickhouse-go's Scan refuses Int64→float64 without
+		// a cast. toFloat64 keeps the wire shape lossless within the
+		// 53-bit mantissa range (a 100-day duration in ns still fits).
+		{Expr: &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.DurationColumn}}}, Alias: "Value"},
+	}
+}
+
+// rQualifiedSampleProjections mirrors canonicalSampleProjections but
+// reaches into R's columns via the `R.<col>` qualifier. Used for direct
+// structural ops (`>` / `<` / `~`) where the inner `SELECT R.* FROM
+// (otel_traces) L INNER JOIN (otel_traces) R ON …` keeps R's columns
+// addressable only as `R.<col>` at the outer scope (bare `<col>`
+// produces `Unknown expression identifier 'SpanName'` because L and R
+// share names).
+func rQualifiedSampleProjections(s schema.Traces) []chplan.Projection {
+	return []chplan.Projection{
+		{Expr: &chplan.ColumnRef{Qualifier: "R", Name: s.SpanNameColumn}, Alias: "MetricName"},
+		{Expr: &chplan.ColumnRef{Qualifier: "R", Name: s.ResourceAttributesColumn}, Alias: "Attributes"},
+		{Expr: &chplan.ColumnRef{Qualifier: "R", Name: s.TimestampColumn}, Alias: "TimeUnix"},
+		{Expr: &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{&chplan.ColumnRef{Qualifier: "R", Name: s.DurationColumn}}}, Alias: "Value"},
+	}
+}
+
+// traceByIDProjections returns the wrap-projection used for
+// /api/traces/{id}. It mirrors the canonical shape but enriches the
+// Attributes map with the span-detail fields Grafana's trace-view
+// renders: TraceId / SpanId / ParentSpanId / SpanKind / StatusCode +
+// the full SpanAttributes map (JSON-encoded under a single reserved
+// key, since the flat chclient.Sample.Labels shape only carries one
+// homogeneously-typed Map(String,String) — encoding SpanAttributes
+// as JSON lets us round-trip arbitrary OTel attribute keys without
+// adding a chplan.Lambda for arrayMap key-rewriting). groupBatches
+// pivots the reserved-key entries into the SpanEntry fields and
+// json-parses the SpanAttributes blob back into a map.
+func traceByIDProjections(s schema.Traces) []chplan.Projection {
+	// Build the per-row metadata map(k1, v1, k2, v2, ...) of trace /
+	// span identity fields + the JSON-encoded SpanAttributes. All
+	// values are String so the mapConcat with ResourceAttributes
+	// satisfies CH's homogeneous-value-type requirement.
+	metaKVPairs := []chplan.Expr{
+		&chplan.LitString{V: traceByIDKeyTraceID},
+		&chplan.ColumnRef{Name: s.TraceIDColumn},
+		&chplan.LitString{V: traceByIDKeySpanID},
+		&chplan.ColumnRef{Name: s.SpanIDColumn},
+		&chplan.LitString{V: traceByIDKeyParentSpanID},
+		&chplan.ColumnRef{Name: s.ParentSpanIDColumn},
+		&chplan.LitString{V: traceByIDKeySpanKind},
+		// SpanKind / StatusCode are LowCardinality(String); cast to
+		// String so the mapConcat homogeneous-value-type requirement
+		// is met across the merged Map(String,String).
+		&chplan.FuncCall{Name: "toString", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.SpanKindColumn}}},
+		&chplan.LitString{V: traceByIDKeyStatusCode},
+		&chplan.FuncCall{Name: "toString", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.StatusCodeColumn}}},
+		&chplan.LitString{V: traceByIDKeySpanAttrsJSON},
+		// CH `toJSONString(<Map>)` renders a JSON object like
+		// {"http.method":"GET","http.status_code":"200"}. The Go
+		// handler json-decodes it back into a Go map[string]string.
+		&chplan.FuncCall{Name: "toJSONString", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}}},
+	}
+	metaMap := &chplan.FuncCall{Name: "map", Args: metaKVPairs}
+
+	// Final Attributes = mapConcat(ResourceAttributes, metaMap).
+	// Resource attribute keys (service.*, k8s.*, host.*, ...) never
+	// collide with the __cerberus_* reserved keys so no precedence
+	// surprises.
+	mergedAttrs := &chplan.FuncCall{Name: "mapConcat", Args: []chplan.Expr{
+		&chplan.ColumnRef{Name: s.ResourceAttributesColumn},
+		metaMap,
+	}}
+
+	return []chplan.Projection{
+		{Expr: &chplan.ColumnRef{Name: s.SpanNameColumn}, Alias: "MetricName"},
+		{Expr: mergedAttrs, Alias: "Attributes"},
+		{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: "TimeUnix"},
+		{Expr: &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.DurationColumn}}}, Alias: "Value"},
+	}
 }
 
 // emptyAttrsMap returns a CH expression for an empty Map(String,String),
@@ -405,6 +542,18 @@ func emptyAttrsMap() chplan.Expr {
 // inspection — defer until a real call-site needs it.
 func isStructuralJoin(plan chplan.Node) bool {
 	_, ok := plan.(*chplan.StructuralJoin)
+	return ok
+}
+
+// isProjectShape reports whether the plan root is a chplan.Project.
+// Today the only producer at HTTP layer is internal/traceql.lowerSelect
+// (the `| select(...)` pipeline element), which projects user-chosen
+// columns that don't match the canonical chclient.Sample shape; the
+// wrap drops the user Project and re-projects the underlying Scan to
+// keep the search-result envelope intact. See the
+// wrapWithSampleProjection switch comment for the rationale.
+func isProjectShape(plan chplan.Node) bool {
+	_, ok := plan.(*chplan.Project)
 	return ok
 }
 
@@ -485,20 +634,35 @@ func toTraceSummaries(samples []chclient.Sample) []TraceSummary {
 }
 
 // groupBatches converts a flat span list into Tempo's `batches` shape
-// (one batch per distinct ResourceAttributes set).
+// (one batch per distinct ResourceAttributes set). The wrap-projection
+// for /api/traces/{id} (see traceByIDProjections) smuggles span-detail
+// fields (TraceId / SpanId / ParentSpanId / SpanKind / StatusCode plus
+// the SpanAttributes map) inside chclient.Sample.Labels under reserved
+// keys; we split them back out into the SpanEntry fields Grafana's
+// trace-view consumes and keep ResourceAttributes (un-prefixed entries)
+// on the Resource.Attributes map.
 func groupBatches(samples []chclient.Sample) []ResourceSpans {
 	bucket := map[string]*ResourceSpans{}
 	for _, s := range samples {
-		key := format.CanonicalKey(s.Labels)
+		resourceAttrs, spanAttrs, meta := splitTraceByIDLabels(s.Labels)
+		// Group by resource-attribute set so Grafana's "Processes" tab
+		// gets one batch per service.
+		key := format.CanonicalKey(resourceAttrs)
 		rs, ok := bucket[key]
 		if !ok {
-			rs = &ResourceSpans{Resource: Resource{Attributes: s.Labels}}
+			rs = &ResourceSpans{Resource: Resource{Attributes: resourceAttrs}}
 			bucket[key] = rs
 		}
 		rs.Spans = append(rs.Spans, SpanEntry{
+			TraceID:           meta[traceByIDKeyTraceID],
+			SpanID:            meta[traceByIDKeySpanID],
+			ParentSpanID:      meta[traceByIDKeyParentSpanID],
 			Name:              s.MetricName,
+			Kind:              meta[traceByIDKeySpanKind],
 			StartTimeUnixNano: strconv.FormatInt(s.Timestamp.UnixNano(), 10),
 			DurationNanos:     int64(s.Value),
+			Status:            SpanStatus{Code: meta[traceByIDKeyStatusCode]},
+			Attributes:        spanAttrs,
 		})
 	}
 	out := make([]ResourceSpans, 0, len(bucket))
@@ -506,6 +670,49 @@ func groupBatches(samples []chclient.Sample) []ResourceSpans {
 		out = append(out, *rs)
 	}
 	return out
+}
+
+// splitTraceByIDLabels partitions the chclient.Sample.Labels map into
+// (resourceAttrs, spanAttrs, meta) using the reserved-key constants
+// established by traceByIDProjections:
+//
+//   - traceByIDKeySpanAttrsJSON's value is a JSON-encoded map; we
+//     json-decode it into spanAttrs.
+//   - Keys that exactly match one of the traceByIDKey* metadata
+//     constants go into meta.
+//   - Everything else stays in resourceAttrs (so Grafana's "Processes"
+//     tab still sees ResourceAttributes verbatim).
+//
+// On the /api/search path (non-trace-by-id), no reserved keys are
+// present and the function returns labels as resourceAttrs unchanged.
+func splitTraceByIDLabels(labels map[string]string) (resourceAttrs, spanAttrs, meta map[string]string) {
+	resourceAttrs = make(map[string]string, len(labels))
+	for k, v := range labels {
+		switch k {
+		case traceByIDKeySpanAttrsJSON:
+			if v == "" || v == "{}" {
+				continue
+			}
+			var parsed map[string]string
+			if err := json.Unmarshal([]byte(v), &parsed); err != nil {
+				// Defensive: malformed JSON should never happen
+				// (CH toJSONString is canonical), but if it does we
+				// drop the span-attrs rather than failing the whole
+				// trace view.
+				continue
+			}
+			spanAttrs = parsed
+		case traceByIDKeyTraceID, traceByIDKeySpanID, traceByIDKeyParentSpanID,
+			traceByIDKeySpanKind, traceByIDKeyStatusCode:
+			if meta == nil {
+				meta = map[string]string{}
+			}
+			meta[k] = v
+		default:
+			resourceAttrs[k] = v
+		}
+	}
+	return resourceAttrs, spanAttrs, meta
 }
 
 // writeJSON wraps [httperr.WriteJSON] so package-local callsites stay
