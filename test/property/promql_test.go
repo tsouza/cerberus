@@ -47,30 +47,57 @@
 // # Skip rationale (current state)
 //
 // PR #272 surfaced three cerberus-vs-Prom divergences via the from-
-// scratch oracle. Two were fixed in PRs #275 and #277 (sum-LWR and
-// instant-selector / VectorJoin eval-ts). The third — rate / increase
-// / delta / *_over_time emitting synthetic zero rows for empty
-// windows — was fixed by adding `WHERE length(window_vals) >= N` to
-// the outer SELECT of the windowed-array emitter (see
-// `internal/chsql/range_window.go::emitWindowedArray`).
+// scratch oracle. The original three were all fixed:
+//   - sum-LWR (#275)
+//   - instant-selector / VectorJoin eval-ts (#277)
+//   - rate / increase / delta / *_over_time empty-window zero rows
+//     (#287 — `WHERE length(window_vals) >= N` on the outer SELECT of
+//     `internal/chsql/range_window.go::emitWindowedArray`)
 //
-// Force-running the test with `CERBERUS_PROPERTY_FORCE=1` now
-// surfaces a SEPARATE pre-existing bug that the rate-empty-window
-// fix did not introduce: cerberus's `RangeWindow` emitter projects
-// the windowed value as a lowercase `value` alias, but the parent
-// `Aggregate` references the schema-cased `Value` column. The result
-// is a CH UNKNOWN_IDENTIFIER error on any `sum(rate(...))` /
-// `count(rate(...))` shape against real data. The bug is dormant in
-// the txtar fixtures because none of the aggregate-over-rate cases
-// carry `expected_rows:` — only `histogram_quantile(sum by(le)
-// (rate))` is exercised end-to-end, and it routes through a
-// dedicated histogram code path that bypasses the case mismatch.
+// Force-running the test with `CERBERUS_PROPERTY_FORCE=1` surfaces a
+// SEPARATE pre-existing bug that the rate-empty-window fix did not
+// introduce: cerberus's `RangeWindow` emitter projects the windowed
+// value as a lowercase `value` alias (see line ~353 of
+// `internal/chsql/range_window.go`, the outer SELECT in
+// `emitWindowedArrayPairs`), but the parent `Aggregate` references
+// the schema-cased `Value` column. The result is a CH
+// `UNKNOWN_IDENTIFIER: 'Value'. Maybe you meant: ['value']` error on
+// any `sum(rate(...))` / `count(rate(...))` shape against real data.
+//
+// The bug is dormant in the txtar fixtures because none of the
+// aggregate-over-rate cases carry `expected_rows:` — only
+// `histogram_quantile(sum by(le)(rate))` is exercised end-to-end,
+// and it routes through a dedicated histogram code path that
+// bypasses the case mismatch.
+//
+// # Regression checkpoint
+//
+// As of 2026-05-14 (this branch), a forced run with
+// `-rapid.checks=100` shrinks to the minimal reproducer:
+//
+//	query   sum(rate(up{instance="a"}[1m]))
+//	evalTs  1778673800
+//	dataset 2 series of `up{}`, 6 + 3 points
+//	seed    11512813954976776230 (rapid v0.4.8)
+//
+// Reproduce locally:
+//
+//	CERBERUS_PROPERTY_FORCE=1 go test -tags chdb \
+//	    -run TestPromQL_Property_FromScratch \
+//	    ./test/property/... \
+//	    -rapid.seed=11512813954976776230 -v
+//
+// rapid persists the shrunk failing draw under
+// `test/property/testdata/rapid/TestPromQL_Property_FromScratch/`;
+// the matching `.fail` file is checked in so the property workflow
+// re-runs the same minimised reproducer once the production fix
+// lands and the t.Skip is lifted.
 //
 // TODO: until the RangeWindow emitter projects `Value` (Pascal) — or
 // `lowerRangeVectorCall` interposes a Project that renames `value`
-// → `Value` — this property test stays t.Skip'd. Set
-// `CERBERUS_PROPERTY_FORCE=1` to reproduce the remaining divergence
-// locally.
+// → `Value` — this property test stays t.Skip'd. Production fix is
+// out of scope for the test branch; tracked as a follow-up under the
+// RC3 property-driven bug backlog.
 package property_test
 
 import (
@@ -109,12 +136,13 @@ import (
 // skip rationale and how to remove it.
 func TestPromQL_Property_FromScratch(t *testing.T) {
 	if os.Getenv("CERBERUS_PROPERTY_FORCE") == "" {
-		t.Skip("property: skipped pending production-side fix for RangeWindow `value` → " +
-			"Aggregate `Value` case mismatch (sum(rate(...))/count(rate(...)) etc. fail at " +
-			"runtime with CH UNKNOWN_IDENTIFIER). The original rate-empty-window divergence " +
-			"was fixed (internal/chsql/range_window.go emitWindowedArray adds " +
-			"`WHERE length(window_vals) >= N`); this is a SEPARATE pre-existing bug " +
-			"surfaced by the same property test. Set CERBERUS_PROPERTY_FORCE=1 to reproduce.")
+		t.Skip("property: skipped pending production-side fix for RangeWindow " +
+			"`value` (lowercase) → Aggregate `Value` (Pascal) case mismatch in " +
+			"internal/chsql/range_window.go::emitWindowedArrayPairs. " +
+			"sum(rate(...))/count(rate(...)) etc. fail at CH execution with " +
+			"UNKNOWN_IDENTIFIER. Reproduce with CERBERUS_PROPERTY_FORCE=1 " +
+			"(seed 11512813954976776230, rapid v0.4.8). See package doc comment " +
+			"for the regression checkpoint + tracked TODO.")
 	}
 
 	cli := chclienttest.NewChDB(t)
