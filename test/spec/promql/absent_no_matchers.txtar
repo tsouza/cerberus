@@ -1,0 +1,54 @@
+# `absent(<bare-name>)` — the no-matcher case from the compat lane
+# (`absent(nonexistent_metric_name)`). The argument is a bare metric
+# name with no equality matchers, so the synthesised output row has
+# an empty Attributes map.
+#
+# The chplan stack is:
+#
+#   Project ["", CAST(map(), 'Map(String,String)'),
+#            <eval-ts>, toFloat64(1)]
+#     Filter (_cerb_n = 0)
+#       Aggregate count() AS _cerb_n   (DropEmptyOnNoGroup=false)
+#         Filter (MetricName = "nonexistent_metric_name")
+#           Scan(otel_metrics_gauge)
+#
+# The inner Filter (metric name match) returns 0 rows; the Aggregate
+# with DropEmptyOnNoGroup=false still emits one row (count=0); the
+# outer Filter passes it through; the Project synthesises the absent
+# row with the bare Value=1 (wrapped in toFloat64 so the cursor scan
+# into *float64 doesn't crash — clickhouse-go/v2 binds float64(1.0)
+# as the SQL literal `1` which CH narrows to UInt8).
+
+-- query.promql --
+absent(nonexistent_metric_name)
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- Only an unrelated metric is present — the filtered Scan above
+-- produces 0 rows for `nonexistent_metric_name`.
+INSERT INTO otel_metrics_gauge VALUES
+    ('temperature', map('host', 'a'), toDateTime64('2026-01-01 00:00:00', 9), 42.0);
+-- expected_rows --
+[
+  ["", {}, "2026-01-01T00:00:01Z", 1.0]
+]
+-- args --
+[0] string = ""
+[1] string = "Map(String,String)"
+[2] string = "2026-01-01 00:00:01.000000000"
+[3] int64 = 9
+[4] float64 = 1
+[5] string = "nonexistent_metric_name"
+[6] int64 = 0
+-- chplan --
+Project ["" AS MetricName, CAST(map(), "Map(String,String)") AS Attributes, toDateTime64("2026-01-01 00:00:01.000000000", 9) AS TimeUnix, toFloat64(1) AS Value]
+  Filter predicate=(_cerb_n = 0)
+    Aggregate groupBy=[] funcs=[count() AS _cerb_n]
+      Filter predicate=(MetricName = "nonexistent_metric_name")
+        Scan(otel_metrics_gauge)
+-- sql --
+SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, toDateTime64(?, ?) AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT * FROM (SELECT count() AS `_cerb_n` FROM (SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` = ?))) WHERE (`_cerb_n` = ?))

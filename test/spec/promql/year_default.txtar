@@ -5,7 +5,7 @@ year()
 [1] string = "Map(String,String)"
 [2] int64 = 9
 -- chplan --
-Project ["" AS MetricName, CAST(map(), "Map(String,String)") AS Attributes, now64(9) AS TimeUnix, toYear(now()) AS Value]
-  Scan(system.one)
+Project ["" AS MetricName, CAST(map(), "Map(String,String)") AS Attributes, now64(9) AS TimeUnix, toFloat64(toYear(now())) AS Value]
+  OneRow
 -- sql --
-SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, toYear(now()) AS `Value` FROM (SELECT * FROM `system`.`one`)
+SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, toFloat64(toYear(now())) AS `Value` FROM (SELECT 1)

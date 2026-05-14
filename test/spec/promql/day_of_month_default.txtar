@@ -1,0 +1,18 @@
+# `day_of_month()` — the zero-arg form. PromQL spec:
+# `day_of_month()` ≡ `day_of_month(vector(time()))`. cerberus lowers
+# it to a OneRow source projecting Value=toFloat64(toDayOfMonth(now())).
+# The `toFloat64` wrap forces CH's UInt8 `toDayOfMonth` return into
+# Float64 so the cursor decode into `*float64` doesn't error with
+# `converting UInt8 to *float64 is unsupported`.
+
+-- query.promql --
+day_of_month()
+-- args --
+[0] string = ""
+[1] string = "Map(String,String)"
+[2] int64 = 9
+-- chplan --
+Project ["" AS MetricName, CAST(map(), "Map(String,String)") AS Attributes, now64(9) AS TimeUnix, toFloat64(toDayOfMonth(now())) AS Value]
+  OneRow
+-- sql --
+SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, toFloat64(toDayOfMonth(now())) AS `Value` FROM (SELECT 1)

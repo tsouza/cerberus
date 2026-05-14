@@ -18,8 +18,8 @@ import (
 // When called without an argument the PromQL spec defaults the input to
 // `vector(time())` — a single instant-vector entry whose value is the
 // current evaluation timestamp in seconds. cerberus lowers that to a
-// degenerate scan over `system.one` (CH's one-row table) projecting
-// `(MetricName=”, Attributes={}, TimeUnix=now64(9), Value=<fn>(now()))`.
+// degenerate `OneRow` source projecting
+// `(MetricName=”, Attributes={}, TimeUnix=now64(9), Value=toFloat64(<fn>(now())))`.
 // The `timestamp` function does NOT have a zero-arg form in upstream
 // PromQL — Prometheus rejects it during parsing — so the no-arg branch
 // is unreachable for that name; we keep the same shape anyway for
@@ -39,6 +39,17 @@ import (
 //   - `timestamp(v)` ignores `Value` and reads the sample's TimeUnix
 //     column instead, converting the DateTime64(9) to fractional Unix
 //     seconds via `toUnixTimestamp64Nano(TimeUnix) / 1e9`.
+//
+// Type-coercion note: every CH date-component function (`toYear`,
+// `toMonth`, `toDayOfMonth`, `toDayOfWeek`, `toHour`, `toMinute`)
+// returns a small integer (`UInt8` / `UInt16`). The cerberus Sample
+// row is decoded into `*float64`, and clickhouse-go/v2 refuses to
+// convert a UInt8/UInt16 column into `*float64` (errors with
+// `converting UInt16 to *float64 is unsupported`). Wrap every emit
+// in `toFloat64(...)` so the Value column lands as Float64 on the
+// wire — this is the same shape every other Float-typed Value
+// projection ends up with. `timestamp(v)` is already Float64 (it
+// divides by `1e9`) but wrapping it is harmless.
 func lowerDateFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	if len(c.Args) > 1 {
 		return nil, fmt.Errorf("promql: %s expects 0 or 1 argument, got %d", c.Func.Name, len(c.Args))
@@ -56,7 +67,7 @@ func lowerDateFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	if newValue == nil {
 		return nil, fmt.Errorf("promql: unknown date function %s", c.Func.Name)
 	}
-	return projectValueOverInner(inner, s, newValue), nil
+	return projectValueOverInner(inner, s, asFloat64(newValue)), nil
 }
 
 // lowerDateFnNoArg synthesises a single-row constant instant vector for
@@ -64,16 +75,29 @@ func lowerDateFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 // `year(vector(time()))`. The result is a one-row vector with the time
 // component of the current eval timestamp as its sample value.
 //
-// We emit `Scan(system.one)` (CH's single-row builtin) wrapped in a
+// We emit `OneRow` (cerberus's no-FROM `SELECT 1` source) wrapped in a
 // Project that builds the canonical Sample shape:
 //
 //	MetricName  = ''
 //	Attributes  = CAST(map(), 'Map(String,String)')
 //	TimeUnix    = now64(9)
-//	Value       = <date-fn>(now())
+//	Value       = toFloat64(<date-fn>(now()))
 //
 // — matching the shape produced by an unaggregated PromQL aggregation
-// over the same single instant vector.
+// over the same single instant vector. The `toFloat64` wrap is
+// load-bearing: see the type-coercion note on `lowerDateFn` for the
+// rationale (the CH date-component builtins return UInt8/UInt16 and
+// clickhouse-go/v2 refuses to scan those into `*float64`).
+//
+// Historical note: this previously emitted `Scan{Database:"system",
+// Table:"one"}` — a qualified scan over CH's standard one-row table.
+// The SQL works against real CH 24.x, but using the dedicated
+// `chplan.OneRow` source is cleaner: it bypasses the qualified-table
+// emit path entirely and reuses the same `SELECT 1` shape that
+// `time()` / `vector(scalar)` already rely on. The `Scan{Database:...}`
+// shape now has no remaining callers in the PromQL head; the
+// emitter's `scanTableFrag` qualified branch can be retired in a
+// follow-up cleanup.
 func lowerDateFnNoArg(name string, s schema.Metrics) (chplan.Node, error) {
 	now := &chplan.FuncCall{Name: "now"}
 	expr := dateFnExpr(name, now, now)
@@ -81,14 +105,24 @@ func lowerDateFnNoArg(name string, s schema.Metrics) (chplan.Node, error) {
 		return nil, fmt.Errorf("promql: unknown date function %s", name)
 	}
 	return &chplan.Project{
-		Input: &chplan.Scan{Database: "system", Table: "one"},
+		Input: &chplan.OneRow{},
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
 			{Expr: emptyAttrsMap(), Alias: s.AttributesColumn},
 			{Expr: &chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}}, Alias: s.TimestampColumn},
-			{Expr: expr, Alias: s.ValueColumn},
+			{Expr: asFloat64(expr), Alias: s.ValueColumn},
 		},
 	}, nil
+}
+
+// asFloat64 wraps e in `toFloat64(...)`. Used by the date-function
+// lowerings to coerce CH integer return types (toYear → UInt16,
+// toMonth/toHour/etc → UInt8) into Float64, matching the Sample.Value
+// column type the cursor decodes into. Idempotent for Float64 inputs
+// (CH's `toFloat64` is a no-op identity on Float64) so the wrap is
+// safe even on the `timestamp(v)` path that already yields Float64.
+func asFloat64(e chplan.Expr) chplan.Expr {
+	return &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{e}}
 }
 
 // dateFnExpr returns the CH expression that computes the date-component

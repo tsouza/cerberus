@@ -1,0 +1,20 @@
+# `hour()` — the zero-arg form. PromQL spec:
+# `hour()` ≡ `hour(vector(time()))`. cerberus lowers to a OneRow
+# source projecting Value=toFloat64(toHour(now())).
+#
+# The `toFloat64` wrap is load-bearing: CH's `toHour` returns UInt8
+# (0-23), and the cursor decodes Sample.Value into `*float64`.
+# clickhouse-go/v2 refuses the conversion (`converting UInt8 to
+# *float64 is unsupported`) without the wrap.
+
+-- query.promql --
+hour()
+-- args --
+[0] string = ""
+[1] string = "Map(String,String)"
+[2] int64 = 9
+-- chplan --
+Project ["" AS MetricName, CAST(map(), "Map(String,String)") AS Attributes, now64(9) AS TimeUnix, toFloat64(toHour(now())) AS Value]
+  OneRow
+-- sql --
+SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, toFloat64(toHour(now())) AS `Value` FROM (SELECT 1)

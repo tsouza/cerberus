@@ -1,0 +1,20 @@
+# `minute()` — the zero-arg form. PromQL spec:
+# `minute()` ≡ `minute(vector(time()))`. cerberus lowers to a OneRow
+# source projecting Value=toFloat64(toMinute(now())).
+#
+# The `toFloat64` wrap is load-bearing: CH's `toMinute` returns
+# UInt8 (0-59), and the cursor decodes Sample.Value into `*float64`.
+# Without the wrap the driver errors with `converting UInt8 to
+# *float64 is unsupported`.
+
+-- query.promql --
+minute()
+-- args --
+[0] string = ""
+[1] string = "Map(String,String)"
+[2] int64 = 9
+-- chplan --
+Project ["" AS MetricName, CAST(map(), "Map(String,String)") AS Attributes, now64(9) AS TimeUnix, toFloat64(toMinute(now())) AS Value]
+  OneRow
+-- sql --
+SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, toFloat64(toMinute(now())) AS `Value` FROM (SELECT 1)
