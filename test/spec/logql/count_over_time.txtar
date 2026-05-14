@@ -1,7 +1,7 @@
 -- query.logql --
 count_over_time({job="api"}[5m])
 -- sql --
-SELECT `ResourceAttributes`, toFloat64(length(window_vals)) AS `value` FROM (SELECT `ResourceAttributes`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `ResourceAttributes`, arrayFilter(p -> tupleElement(p, 1) >= now64(9) - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= now64(9), series_array) AS `window_pairs` FROM (SELECT `ResourceAttributes`, arraySort(groupArray((`Timestamp`, `Value`))) AS `series_array` FROM (SELECT `ResourceAttributes`, `Timestamp`, ? AS `Value` FROM (SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?))) GROUP BY `ResourceAttributes`)))
+SELECT `ResourceAttributes`, toFloat64(length(window_vals)) AS `value` FROM (SELECT `ResourceAttributes`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `ResourceAttributes`, arrayFilter(p -> tupleElement(p, 1) >= now64(9) - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= now64(9), series_array) AS `window_pairs` FROM (SELECT `ResourceAttributes`, arraySort(groupArray((`Timestamp`, `Value`))) AS `series_array` FROM (SELECT `ResourceAttributes`, `Timestamp`, ? AS `Value` FROM (SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?))) GROUP BY `ResourceAttributes`))) WHERE length(`window_vals`) >= 1
 -- args --
 [0] int64 = 1
 [1] string = "job"
