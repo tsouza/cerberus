@@ -1,0 +1,7 @@
+-- query.traceql --
+{ .path =~ "/api/.*" }
+-- args --
+[0] string = "path"
+[1] string = "/api/.*"
+-- sql --
+SELECT * FROM `otel_traces` WHERE match(`SpanAttributes`[?], ?)

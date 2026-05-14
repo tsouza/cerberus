@@ -1,0 +1,9 @@
+-- query.traceql --
+{ resource.service.name = "x" } | min(span.attempts) < 3
+-- args --
+[0] string = "attempts"
+[1] string = "service.name"
+[2] string = "x"
+[3] int64 = 3
+-- sql --
+SELECT * FROM (SELECT min(`SpanAttributes`[?]) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?))) WHERE (`Value` < ?)

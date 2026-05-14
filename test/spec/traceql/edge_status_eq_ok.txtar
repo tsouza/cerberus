@@ -1,0 +1,6 @@
+-- query.traceql --
+{ status = ok }
+-- args --
+[0] string = "Ok"
+-- sql --
+SELECT * FROM `otel_traces` WHERE (`StatusCode` = ?)

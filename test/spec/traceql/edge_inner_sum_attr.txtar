@@ -1,0 +1,9 @@
+-- query.traceql --
+{ resource.service.name = "x" } | sum(span.size) > 1000
+-- args --
+[0] string = "size"
+[1] string = "service.name"
+[2] string = "x"
+[3] int64 = 1000
+-- sql --
+SELECT * FROM (SELECT sum(`SpanAttributes`[?]) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?))) WHERE (`Value` > ?)

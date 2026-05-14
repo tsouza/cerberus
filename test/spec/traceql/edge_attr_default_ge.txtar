@@ -1,0 +1,7 @@
+-- query.traceql --
+{ .timeout >= 100 }
+-- args --
+[0] string = "timeout"
+[1] int64 = 100
+-- sql --
+SELECT * FROM `otel_traces` WHERE (`SpanAttributes`[?] >= ?)

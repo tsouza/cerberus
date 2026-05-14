@@ -1,0 +1,6 @@
+-- query.traceql --
+{ kind = consumer }
+-- args --
+[0] string = "Consumer"
+-- sql --
+SELECT * FROM `otel_traces` WHERE (`SpanKind` = ?)

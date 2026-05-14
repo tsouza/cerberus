@@ -1,0 +1,6 @@
+-- query.traceql --
+{ span:id = "deadbeef" }
+-- args --
+[0] string = "deadbeef"
+-- sql --
+SELECT * FROM `otel_traces` WHERE (`SpanId` = ?)

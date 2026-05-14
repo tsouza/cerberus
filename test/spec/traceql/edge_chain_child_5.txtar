@@ -1,0 +1,15 @@
+-- query.traceql --
+{ resource.service.name = "a" } > { resource.service.name = "b" } > { resource.service.name = "c" } > { resource.service.name = "d" } > { resource.service.name = "e" }
+-- args --
+[0] string = "service.name"
+[1] string = "a"
+[2] string = "service.name"
+[3] string = "b"
+[4] string = "service.name"
+[5] string = "c"
+[6] string = "service.name"
+[7] string = "d"
+[8] string = "service.name"
+[9] string = "e"
+-- sql --
+SELECT R.* FROM (SELECT R.* FROM (SELECT R.* FROM (SELECT R.* FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) AS L INNER JOIN (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) AS R ON L.`TraceId` = R.`TraceId` AND L.`SpanId` = R.`ParentSpanId`) AS L INNER JOIN (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) AS R ON L.`TraceId` = R.`TraceId` AND L.`SpanId` = R.`ParentSpanId`) AS L INNER JOIN (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) AS R ON L.`TraceId` = R.`TraceId` AND L.`SpanId` = R.`ParentSpanId`) AS L INNER JOIN (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) AS R ON L.`TraceId` = R.`TraceId` AND L.`SpanId` = R.`ParentSpanId`

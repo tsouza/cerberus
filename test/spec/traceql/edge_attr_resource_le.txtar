@@ -1,0 +1,7 @@
+-- query.traceql --
+{ resource.replicas <= 5 }
+-- args --
+[0] string = "replicas"
+[1] int64 = 5
+-- sql --
+SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] <= ?)

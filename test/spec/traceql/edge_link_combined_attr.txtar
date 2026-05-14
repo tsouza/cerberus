@@ -1,0 +1,9 @@
+-- query.traceql --
+{ resource.service.name = "x" && link.environment = "staging" }
+-- args --
+[0] string = "service.name"
+[1] string = "x"
+[2] string = "environment"
+[3] string = "staging"
+-- sql --
+SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?) AND arrayExists(x -> x[?] = ?, `Links`.`Attributes`)
