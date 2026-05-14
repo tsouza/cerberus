@@ -1,0 +1,37 @@
+# Mirrors the compatibility-lane shape: no `@ end()` modifier (so the
+# windowed-array filter binds against `now64(9)` rather than a fixed
+# anchor) and a sub-second range. The compat lane hits this every time
+# it runs `quantile_over_time(-0.5, demo_memory_usage_bytes[1s])` and
+# its 5 longer-range siblings — every case was 502-ing in real CH
+# 24.x post-#322 because the lowerer's `-Inf` LitFloat was riding the
+# positional `?` slot, and clickhouse-go binds `math.Inf(-1)` as the
+# mixed-case literal `-Inf` which CH 24.x parses as `-(Inf)` →
+# `Unknown identifier 'Inf'`. The Builder.Expr fix emits ±Inf / NaN
+# inline as the CH-portable division form `(±1.0/0)` / `(0.0/0)`, so
+# the wire SQL never carries the case-sensitive identifier.
+-- query.promql --
+quantile_over_time(-0.5, latency_ms[1s])
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('latency_ms', map('endpoint', '/api/v1'), toDateTime64('2026-01-01 00:00:00.000000000', 9), 100.0),
+    ('latency_ms', map('endpoint', '/api/v1'), toDateTime64('2026-01-01 00:00:00.500000000', 9), 200.0),
+    ('latency_ms', map('endpoint', '/api/v1'), toDateTime64('2026-01-01 00:00:01.000000000', 9), 300.0);
+-- expected_rows --
+[
+  [{"endpoint": "/api/v1"}, "-Inf"]
+]
+-- args --
+[0] string = "latency_ms"
+-- chplan --
+Project [Attributes, -Inf AS Value]
+  RangeWindow func=quantile_over_time range=1s step=0s ts=TimeUnix value=Value groupBy=[Attributes] scalars=[0.5]
+    Filter predicate=(MetricName = "latency_ms")
+      Scan(otel_metrics_gauge)
+-- sql --
+SELECT `Attributes`, (-1.0/0) AS `Value` FROM (SELECT `Attributes`, if(length(window_vals) > 0, arrayReduce('quantile(0.5)', window_vals), nan) AS `Value` FROM (SELECT `Attributes`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `Attributes`, arrayFilter(p -> tupleElement(p, 1) >= now64(9) - toIntervalNanosecond(1000000000) AND tupleElement(p, 1) <= now64(9), series_array) AS `window_pairs` FROM (SELECT `Attributes`, arraySort(groupArray((`TimeUnix`, `Value`))) AS `series_array` FROM (SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` = ?)) GROUP BY `Attributes`))) WHERE length(`window_vals`) >= 1)

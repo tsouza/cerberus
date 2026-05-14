@@ -2,6 +2,7 @@ package chsql
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -80,6 +81,33 @@ func (b *Builder) QualIdent(qualifier, name string) {
 func (b *Builder) Arg(v any) {
 	b.sb.WriteByte('?')
 	b.args = append(b.args, v)
+}
+
+// writeInlineNonFinite emits ±Inf / NaN inline as a CH-portable
+// arithmetic literal and returns true; finite floats return false and
+// nothing is written. PromQL's `quantile()` helper returns ±Inf for phi
+// outside [0, 1] (see prometheus/promql/quantile.go) and the lowerer
+// post-Projects the Value column with such a literal — but clickhouse-go
+// and chdb-go both render Go's `math.Inf(±1)` / `math.NaN()` as the
+// mixed-case strings `+Inf` / `-Inf` / `NaN` when binding `?`, and real
+// CH 24.x parses only the lowercase forms (`inf` / `-inf` / `nan`),
+// surfacing on the wire as `Unknown identifier 'Inf'` → 502. The
+// division forms `1.0/0` / `-1.0/0` / `0.0/0` fold to the same IEEE
+// special values on the CH side and don't depend on the lexer's
+// case-sensitivity for the identifier path.
+func writeInlineNonFinite(b *Builder, v float64) bool {
+	switch {
+	case math.IsNaN(v):
+		b.sb.WriteString("(0.0/0)")
+		return true
+	case math.IsInf(v, +1):
+		b.sb.WriteString("(1.0/0)")
+		return true
+	case math.IsInf(v, -1):
+		b.sb.WriteString("(-1.0/0)")
+		return true
+	}
+	return false
 }
 
 // MapAt appends "<col>[?]" and binds key as a positional argument —
@@ -233,6 +261,21 @@ func (b *Builder) Expr(x chplan.Expr) error {
 		b.Arg(v.V)
 		return nil
 	case *chplan.LitFloat:
+		// Non-finite float64 values (±Inf / NaN) cannot ride the
+		// positional `?` parameter slot: clickhouse-go and chdb-go
+		// both render them via fmt.Sprint / strconv.AppendFloat,
+		// which emit the literal strings `+Inf` / `-Inf` / `NaN`
+		// (mixed case). Real CH 24.x parses the lowercase forms
+		// (`inf` / `-inf` / `nan`) but rejects mixed-case `Inf` /
+		// `NaN` as an unknown identifier, surfacing as the wire
+		// 502 cerberus sees on `quantile_over_time(-0.5, ...)`
+		// post-#322. Emit the value inline as a CH-portable
+		// division form (`1.0/0`, `-1.0/0`, `0.0/0`) so the
+		// driver never sees a non-finite arg and CH's parser
+		// never sees the case-sensitive identifier path.
+		if writeInlineNonFinite(b, v.V) {
+			return nil
+		}
 		b.Arg(v.V)
 		return nil
 	case *chplan.LitBool:
@@ -601,6 +644,13 @@ func InlineLit(v any) Frag {
 		case int:
 			b.sb.WriteString(strconv.FormatInt(int64(x), 10))
 		case float64:
+			// Mirror the LitFloat path in Builder.Expr: emit ±Inf
+			// / NaN as a CH-portable division form so the SQL the
+			// driver assembles never carries the mixed-case
+			// identifier strings real CH 24.x rejects.
+			if writeInlineNonFinite(b, x) {
+				break
+			}
 			b.sb.WriteString(strconv.FormatFloat(x, 'f', -1, 64))
 		case string:
 			b.sb.WriteByte('\'')
