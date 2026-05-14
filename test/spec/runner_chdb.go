@@ -236,6 +236,14 @@ func openChDB(t *testing.T) *sql.DB {
 // applySeed splits a multi-statement script on top-level semicolons
 // and exec's each piece. Statements wrapped in single-quoted strings
 // keep their semicolons literal (handled by a tiny state machine).
+//
+// Cross-fixture isolation: chdb-go shares one engine across a process,
+// so bare `CREATE TABLE foo` from a prior fixture survives to clash
+// with the next. The applier promotes bare `CREATE TABLE` to
+// `CREATE OR REPLACE TABLE` so re-running a fixture in the same
+// process is idempotent. Fixture authors who want strict CH semantics
+// can opt out by writing `CREATE OR REPLACE TABLE` /
+// `CREATE TABLE IF NOT EXISTS` themselves.
 func applySeed(t *testing.T, db *sql.DB, seed string) {
 	t.Helper()
 	for _, stmt := range splitStatements(seed) {
@@ -243,10 +251,28 @@ func applySeed(t *testing.T, db *sql.DB, seed string) {
 		if stmt == "" {
 			continue
 		}
+		stmt = promoteCreateTable(stmt)
 		if _, err := db.Exec(stmt); err != nil {
 			t.Fatalf("seed exec failed:\n--- stmt ---\n%s\n--- err ---\n%v", stmt, err)
 		}
 	}
+}
+
+// promoteCreateTable rewrites a bare `CREATE TABLE …` statement to
+// `CREATE OR REPLACE TABLE …` so re-running a seed against a chDB
+// session that already holds the table is idempotent. Other variants
+// (`CREATE OR REPLACE TABLE`, `CREATE TABLE IF NOT EXISTS`,
+// `CREATE TEMPORARY TABLE`) are left untouched.
+func promoteCreateTable(stmt string) string {
+	trimmed := strings.TrimLeft(stmt, " \t\n\r")
+	prefix := stmt[:len(stmt)-len(trimmed)]
+	upper := strings.ToUpper(trimmed)
+	const needle = "CREATE TABLE "
+	if !strings.HasPrefix(upper, needle) {
+		return stmt
+	}
+	rest := trimmed[len(needle):]
+	return prefix + "CREATE OR REPLACE TABLE " + rest
 }
 
 func splitStatements(s string) []string {

@@ -51,3 +51,6 @@ jobs:
 
       - name: Run TXTAR round-trip suite (chDB)
         run: just spec-chdb
+
+      - name: Run handler tests (chDB)
+        run: just test-chdb

@@ -68,6 +68,12 @@ schema-ddl-test:
 spec-chdb:
     go test -tags chdb -count=1 ./test/spec/...
 
+# Run the chDB-tagged handler tests under internal/api/... plus the
+# chclienttest package itself. Same prerequisite as spec-chdb (libchdb
+# at the default install path). Mirrors the `chdb` CI job.
+test-chdb:
+    go test -tags chdb -count=1 ./internal/chclienttest/... ./internal/api/...
+
 # Run the FuzzParse target for one parser head for a bounded duration.
 # Usage: `just fuzz QL=promql DURATION=60s` (defaults).
 fuzz QL="promql" DURATION="60s":
