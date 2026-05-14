@@ -66,6 +66,8 @@ func (e *emitter) emitNode(n chplan.Node) error {
 		return e.emitScan(v)
 	case *chplan.OneRow:
 		return e.emitOneRow(v)
+	case *chplan.StepGrid:
+		return e.emitStepGrid(v)
 	case *chplan.Filter:
 		return e.emitFilter(v)
 	case *chplan.Project:
@@ -92,6 +94,8 @@ func (e *emitter) emitNode(n chplan.Node) error {
 		return e.emitVectorJoin(v)
 	case *chplan.StructuralJoin:
 		return e.emitStructuralJoin(v)
+	case *chplan.CrossJoin:
+		return e.emitCrossJoin(v)
 	case *chplan.SetOperation:
 		return e.emitSetOperation(v)
 	default:

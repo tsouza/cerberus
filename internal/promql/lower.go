@@ -55,10 +55,32 @@ func Lower(ctx context.Context, expr parser.Expr, s schema.Metrics) (chplan.Node
 //
 // For an instant query the API layer passes start == end == ts; for a
 // query_range it passes the request's start / end.
+//
+// LowerAt is the instant-mode entry point — it leaves step at zero, so
+// the synthetic-vector lowerings continue to emit a single `OneRow`
+// row (the instant query produces a single sample at the eval ts).
+// Range-mode callers use [LowerAtRange] to thread a step duration in
+// so the same synthetic shapes materialise as a StepGrid fanned across
+// the eval window.
 func LowerAt(ctx context.Context, expr parser.Expr, s schema.Metrics, start, end time.Time) (chplan.Node, error) {
+	return LowerAtRange(ctx, expr, s, start, end, 0)
+}
+
+// LowerAtRange is the range-mode variant of [LowerAt]: it threads the
+// query_range step duration through to the lowering context so the
+// no-driving-vector synthetic shapes (`time()`, `vector(N)`, zero-arg
+// date fns, `absent(...)`) emit one row per step in `[start, end]`
+// instead of a single row at the eval anchor.
+//
+// step == 0 is equivalent to [LowerAt] (instant mode); the lowering
+// keeps the OneRow source so existing per-fixture SQL stays
+// byte-stable. Callers that pass step > 0 MUST also pass non-zero
+// start / end (the StepGrid emitter renders them as inline DateTime64
+// literals).
+func LowerAtRange(ctx context.Context, expr parser.Expr, s schema.Metrics, start, end time.Time, step time.Duration) (chplan.Node, error) {
 	_, span := tracer.Start(ctx, cerbtrace.SpanLower, trace.WithAttributes(cerbtrace.AttrQL.String("promql")))
 	defer span.End()
-	plan, err := lower(expr, s, lowerCtx{start: start, end: end})
+	plan, err := lower(expr, s, lowerCtx{start: start, end: end, step: step})
 	if err != nil {
 		span.RecordError(err)
 		return nil, err

@@ -56,7 +56,7 @@ func lowerDateFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	}
 
 	if len(c.Args) == 0 {
-		return lowerDateFnNoArg(c.Func.Name, s)
+		return lowerDateFnNoArg(c.Func.Name, s, ctx)
 	}
 
 	inner, err := lower(c.Args[0], s, ctx)
@@ -98,21 +98,19 @@ func lowerDateFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 // shape now has no remaining callers in the PromQL head; the
 // emitter's `scanTableFrag` qualified branch can be retired in a
 // follow-up cleanup.
-func lowerDateFnNoArg(name string, s schema.Metrics) (chplan.Node, error) {
+//
+// In range mode (ctx.step > 0) the source is swapped for a StepGrid
+// emitting one anchor per step in `[start, end]`; `now()` references
+// inside the value expression are rewritten by [syntheticScalarVector]
+// to read the per-row `anchor_ts` column so each step's row reflects
+// that step's date components.
+func lowerDateFnNoArg(name string, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	now := &chplan.FuncCall{Name: "now"}
 	expr := dateFnExpr(name, now, now)
 	if expr == nil {
 		return nil, fmt.Errorf("promql: unknown date function %s", name)
 	}
-	return &chplan.Project{
-		Input: &chplan.OneRow{},
-		Projections: []chplan.Projection{
-			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
-			{Expr: emptyAttrsMap(), Alias: s.AttributesColumn},
-			{Expr: &chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}}, Alias: s.TimestampColumn},
-			{Expr: asFloat64(expr), Alias: s.ValueColumn},
-		},
-	}, nil
+	return syntheticScalarVector(asFloat64(expr), nil, s, ctx), nil
 }
 
 // asFloat64 wraps e in `toFloat64(...)`. Used by the date-function

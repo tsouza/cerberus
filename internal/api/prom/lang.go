@@ -24,11 +24,19 @@ import (
 // than living under `internal/promql/` because ProjectSamples wraps the
 // plan into the per-handler Sample shape (an HTTP-layer concern); the
 // promql package stays focused on parser → chplan lowering.
+//
+// Step is non-zero only on the /api/v1/query_range path: it threads
+// the request's `step` parameter into the lowering ctx so the
+// no-driving-vector shapes (`time()`, `vector(N)`, zero-arg date fns,
+// `absent(...)`) materialise a step-grid source instead of OneRow.
+// Instant queries leave Step at 0; the lowering then keeps the
+// existing OneRow shape (one row at the eval anchor).
 type lang struct {
 	Parser promparser.Parser
 	Schema schema.Metrics
 	Start  time.Time
 	End    time.Time
+	Step   time.Duration
 }
 
 // Compile-time check that *lang satisfies engine.Lang.
@@ -78,7 +86,7 @@ func (l *lang) Parse(ctx context.Context, query string) (chplan.Node, engine.Met
 	parseT.Done(ctx)
 
 	lowerT := telemetry.ObserveStage(telemetry.StageLower)
-	plan, err := promql.LowerAt(ctx, expr, l.Schema, l.Start, l.End)
+	plan, err := promql.LowerAtRange(ctx, expr, l.Schema, l.Start, l.End, l.Step)
 	lowerT.Done(ctx)
 	if err != nil {
 		return nil, engine.Meta{}, &parseStageError{stage: "lower", err: err}
