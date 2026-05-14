@@ -144,26 +144,31 @@ jobs:
 
       - name: Start ClickHouse
         run: |
+          # Use the Ubuntu-base image, not -alpine. The alpine variant
+          # on GH Actions runners stalls in the entrypoint script for
+          # several minutes (never starts the server process); the
+          # Ubuntu image boots in ~10s. The dashboard k3d job still
+          # uses -alpine because it has more headroom in-cluster.
           docker run -d --name clickhouse \
             -p 9000:9000 -p 8123:8123 \
             -e CLICKHOUSE_DB=otel \
             -e CLICKHOUSE_USER=cerberus \
             -e CLICKHOUSE_PASSWORD=cerberus \
-            clickhouse/clickhouse-server:24.8-alpine
+            clickhouse/clickhouse-server:24.8
 
       - name: Wait for ClickHouse
         run: |
-          # Poll for up to 5 minutes. CH alpine boot under GH Actions
-          # load takes 120–200s; the inline polling lets us wait
-          # without GH killing the container.
-          for i in $(seq 1 60); do
+          # Poll for up to 2 minutes — Ubuntu-base CH typically opens
+          # 8123 within 10–20s. wget runs inside the container
+          # (busybox-style is fine; full Ubuntu wget is also fine).
+          for i in $(seq 1 24); do
             if docker exec clickhouse wget -q --spider http://localhost:8123/ping; then
               echo "ClickHouse ready after $((i*5))s"
               exit 0
             fi
             sleep 5
           done
-          echo "ClickHouse failed to become ready after 5 minutes"
+          echo "ClickHouse failed to become ready after 2 minutes"
           docker logs --tail 100 clickhouse
           exit 1
 
