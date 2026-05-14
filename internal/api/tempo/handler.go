@@ -2,12 +2,14 @@ package tempo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"runtime"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/grafana/tempo/pkg/traceql"
 	"go.opentelemetry.io/otel"
@@ -19,11 +21,10 @@ import (
 	"github.com/tsouza/cerberus/internal/cerbtrace"
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
-	"github.com/tsouza/cerberus/internal/chsql"
+	"github.com/tsouza/cerberus/internal/engine"
 	"github.com/tsouza/cerberus/internal/optimizer"
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/telemetry"
-	traceql_lower "github.com/tsouza/cerberus/internal/traceql"
 )
 
 // tracer emits the `parse` pipeline-stage span before the TraceQL
@@ -68,6 +69,15 @@ type Handler struct {
 	Logger    *slog.Logger
 	Version   string
 
+	// Engine runs the shared parse → wrap-projection → optimize →
+	// emit → execute pipeline for /api/search and /api/traces/{id}.
+	// The string-result endpoints (/api/search/tags etc.) still call
+	// Client.QueryStrings directly because the engine surface is
+	// row-oriented today.
+	Engine *engine.Engine
+	// lang is the TraceQL adapter Engine calls for parse + wrap.
+	lang *traceqlLang
+
 	// Limiter caps in-flight Tempo API requests. nil disables the
 	// admission middleware. Wired from CERBERUS_ADMIT_TEMPO.
 	Limiter *admit.Limiter
@@ -78,12 +88,15 @@ func New(client Querier, s schema.Traces, version string, logger *slog.Logger) *
 	if logger == nil {
 		logger = slog.Default()
 	}
+	opt := optimizer.Default()
 	return &Handler{
 		Client:    client,
 		Schema:    s,
-		Optimizer: optimizer.Default(),
+		Optimizer: opt,
 		Logger:    logger,
 		Version:   version,
+		Engine:    &engine.Engine{Optimizer: opt, Client: client},
+		lang:      &traceqlLang{schema: s},
 	}
 }
 
@@ -135,49 +148,44 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	parseT := telemetry.ObserveStage(telemetry.StageParse)
-	expr, err := parseExpr(ctx, q)
-	parseT.Done(ctx)
+	// Engine.Query runs parse → lower → wrap-projection → optimize →
+	// emit → execute. The TraceQL adapter (h.lang) owns the parser
+	// dispatch + wrap-projection so the post-engine response pivot
+	// stays handler-local.
+	res, err := h.Engine.Query(ctx, h.lang, q)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "", "", err)
+		writeError(w, classifySearchErr(err), "", "", err)
 		return
 	}
-
-	lowerT := telemetry.ObserveStage(telemetry.StageLower)
-	plan, err := traceql_lower.Lower(ctx, expr, h.Schema)
-	lowerT.Done(ctx)
-	if err != nil {
-		writeError(w, http.StatusUnprocessableEntity, "", "", err)
-		return
-	}
-
-	plan = wrapWithSampleProjection(plan, h.Schema)
-	optT := telemetry.ObserveStage(telemetry.StageOptimize)
-	plan = h.Optimizer.Run(ctx, plan)
-	optT.Done(ctx)
-
-	emitT := telemetry.ObserveStage(telemetry.StageEmit)
-	sqlStr, args, err := chsql.Emit(ctx, plan)
-	emitT.Done(ctx)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "", "", err)
-		return
-	}
-	h.Logger.Debug("cerberus tempo search", "traceql", q, "sql", sqlStr, "args", args)
-
-	execT := telemetry.ObserveStage(telemetry.StageExecute)
-	samples, err := h.Client.Query(chclient.WithProgressFor(ctx, "traceql"), sqlStr, args...)
-	execT.Done(ctx)
-	if err != nil {
-		h.Logger.Error("cerberus tempo search CH query failed", "err", err, "sql", sqlStr)
-		writeError(w, http.StatusBadGateway, "", "", err)
-		return
-	}
+	h.Logger.Debug("cerberus tempo search", "traceql", q, "sql", res.SQL, "args", res.Args)
 
 	writeJSON(w, http.StatusOK, SearchResponse{
-		Traces:  toTraceSummaries(samples),
-		Metrics: SearchMetrics{InspectedTraces: len(samples)},
+		Traces:  toTraceSummaries(res.Samples),
+		Metrics: SearchMetrics{InspectedTraces: len(res.Samples)},
 	})
+}
+
+// classifySearchErr maps an engine.Query error to the HTTP status the
+// inline handler used to return: parse failures → 400, lower failures
+// → 422, emit failures → 500, execute failures → 502. The Lang
+// adapter tags parse vs lower errors with errParseStage / errLowerStage
+// so errors.Is recovers the precise stage even though the engine
+// collapses both into its outer `engine: parse:` wrapper.
+func classifySearchErr(err error) int {
+	if err == nil {
+		return http.StatusInternalServerError
+	}
+	switch {
+	case errors.Is(err, errParseStage):
+		return http.StatusBadRequest
+	case errors.Is(err, errLowerStage):
+		return http.StatusUnprocessableEntity
+	case strings.Contains(err.Error(), "engine: emit:"):
+		return http.StatusInternalServerError
+	case strings.Contains(err.Error(), "engine: execute:"):
+		return http.StatusBadGateway
+	}
+	return http.StatusInternalServerError
 }
 
 // handleSearchRecent implements `GET /api/search/recent`. Returns the
@@ -200,6 +208,7 @@ func (h *Handler) handleSearchRecent(w http.ResponseWriter, r *http.Request) {
 
 	s := h.Schema
 	// Plan: Limit(OrderBy(Scan(otel_traces) ORDER BY Timestamp DESC) LIMIT N)
+	// — the engine applies wrap-projection + optimizer + emit + execute.
 	plan := chplan.Node(&chplan.Scan{Table: s.SpansTable})
 	plan = &chplan.OrderBy{
 		Input: plan,
@@ -208,33 +217,21 @@ func (h *Handler) handleSearchRecent(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	plan = &chplan.Limit{Input: plan, Count: limit}
-	plan = wrapWithSampleProjection(plan, s)
+
 	ctx := r.Context()
-	optT := telemetry.ObserveStage(telemetry.StageOptimize)
-	plan = h.Optimizer.Run(ctx, plan)
-	optT.Done(ctx)
-
-	emitT := telemetry.ObserveStage(telemetry.StageEmit)
-	sqlStr, args, err := chsql.Emit(ctx, plan)
-	emitT.Done(ctx)
+	// /search/recent doesn't go through a parser, so use QueryPlan
+	// directly. IsTraceByID stays false: the OrderBy+Limit shape
+	// benefits from the seed optimizer's projection-pushdown pass.
+	res, err := h.Engine.QueryPlan(ctx, h.lang, plan, engine.Meta{ResponseShape: "tempo-trace"})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "", "", err)
+		writeError(w, classifySearchErr(err), "", "", err)
 		return
 	}
-	h.Logger.Debug("cerberus tempo search/recent", "limit", limit, "sql", sqlStr, "args", args)
-
-	execT := telemetry.ObserveStage(telemetry.StageExecute)
-	samples, err := h.Client.Query(chclient.WithProgressFor(ctx, "traceql"), sqlStr, args...)
-	execT.Done(ctx)
-	if err != nil {
-		h.Logger.Error("cerberus tempo search/recent CH query failed", "err", err, "sql", sqlStr)
-		writeError(w, http.StatusBadGateway, "", "", err)
-		return
-	}
+	h.Logger.Debug("cerberus tempo search/recent", "limit", limit, "sql", res.SQL, "args", res.Args)
 
 	writeJSON(w, http.StatusOK, SearchResponse{
-		Traces:  toTraceSummaries(samples),
-		Metrics: SearchMetrics{InspectedTraces: len(samples)},
+		Traces:  toTraceSummaries(res.Samples),
+		Metrics: SearchMetrics{InspectedTraces: len(res.Samples)},
 	})
 }
 
@@ -251,30 +248,27 @@ func (h *Handler) handleTraceByID(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "", "", err)
 		return
 	}
-	plan = wrapWithSampleProjection(plan, h.Schema)
+
+	// /traces/{id} is the canonical engine.QueryPlan + IsTraceByID
+	// caller: the plan is hand-built (no parser), and the row-by-id
+	// fetch has no rewrites worth running — IsTraceByID = true tells
+	// the engine to skip the optimizer pass entirely (engine.go's
+	// `if !meta.IsTraceByID` branch). The wrap-projection still runs
+	// via Lang.ProjectSamples so the chclient.Sample shape is
+	// canonical before emit.
 	ctx := r.Context()
-	optT := telemetry.ObserveStage(telemetry.StageOptimize)
-	plan = h.Optimizer.Run(ctx, plan)
-	optT.Done(ctx)
-
-	emitT := telemetry.ObserveStage(telemetry.StageEmit)
-	sqlStr, args, err := chsql.Emit(ctx, plan)
-	emitT.Done(ctx)
+	res, err := h.Engine.QueryPlan(ctx, h.lang, plan, engine.Meta{
+		IsTraceByID:   true,
+		ResponseShape: "tempo-trace",
+	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "", "", err)
+		h.Logger.Error("cerberus tempo traceByID CH query failed", "err", err, "trace_id", traceID)
+		writeError(w, classifyTraceByIDErr(err), traceID, "", err)
 		return
 	}
-	h.Logger.Debug("cerberus tempo traceByID", "trace_id", traceID, "sql", sqlStr, "args", args)
+	h.Logger.Debug("cerberus tempo traceByID", "trace_id", traceID, "sql", res.SQL, "args", res.Args)
 
-	execT := telemetry.ObserveStage(telemetry.StageExecute)
-	samples, err := h.Client.Query(chclient.WithProgressFor(r.Context(), "traceql"), sqlStr, args...)
-	execT.Done(r.Context())
-	if err != nil {
-		h.Logger.Error("cerberus tempo traceByID CH query failed", "err", err, "trace_id", traceID, "sql", sqlStr)
-		writeError(w, http.StatusBadGateway, traceID, "", err)
-		return
-	}
-	if len(samples) == 0 {
+	if len(res.Samples) == 0 {
 		// Tempo's "trace not found" shape — Grafana renders the right UI.
 		writeJSON(w, http.StatusNotFound, ErrorResponse{
 			TraceID: traceID, SpanID: "", Error: true,
@@ -284,8 +278,23 @@ func (h *Handler) handleTraceByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, TraceByIDResponse{
-		Batches: groupBatches(samples),
+		Batches: groupBatches(res.Samples),
 	})
+}
+
+// classifyTraceByIDErr is the trace-by-ID counterpart to
+// classifySearchErr. Only emit (500) and execute (502) errors are
+// reachable today since the plan is hand-built and IsTraceByID skips
+// the optimizer; the helper keeps the same shape for consistency
+// with the search-path classifier.
+func classifyTraceByIDErr(err error) int {
+	if err == nil {
+		return http.StatusInternalServerError
+	}
+	if strings.Contains(err.Error(), "engine: execute:") {
+		return http.StatusBadGateway
+	}
+	return http.StatusInternalServerError
 }
 
 // lowerTraceByID builds a chplan tree equivalent to the TraceQL
