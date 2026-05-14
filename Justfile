@@ -59,6 +59,15 @@ test:
 schema-ddl-test:
     go test -race -tags=integration ./internal/schema/ddl/...
 
+# Run the TXTAR spec suite with the chDB-backed round-trip assertion
+# layer enabled. Requires libchdb.so (see `just chdb-install`). The
+# default `just test` lane stays CGO_ENABLED=0 and never compiles the
+# chdb-go driver. Only fixtures that declare both `seed:` and
+# `expected_rows:` are executed against chDB; everything else still
+# runs through the text-equality golden path.
+spec-chdb:
+    go test -tags chdb -count=1 ./test/spec/...
+
 # Run the FuzzParse target for one parser head for a bounded duration.
 # Usage: `just fuzz QL=promql DURATION=60s` (defaults).
 fuzz QL="promql" DURATION="60s":
