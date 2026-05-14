@@ -7,3 +7,18 @@ SELECT * FROM (SELECT count(?) AS `Value` FROM (SELECT * FROM `otel_traces` WHER
 [1] string = "service.name"
 [2] string = "frontend"
 [3] int64 = 5
+-- seed --
+CREATE TABLE otel_traces (
+    ResourceAttributes Map(String, String)
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    (map('service.name', 'frontend')),
+    (map('service.name', 'frontend')),
+    (map('service.name', 'frontend')),
+    (map('service.name', 'frontend')),
+    (map('service.name', 'frontend')),
+    (map('service.name', 'backend'));
+-- expected_rows --
+[
+  [5]
+]

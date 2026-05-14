@@ -6,3 +6,13 @@ SELECT * FROM `otel_traces` WHERE ((`SpanAttributes`[?] + `SpanAttributes`[?]) >
 [0] string = "a"
 [1] string = "b"
 [2] int64 = 10
+-- seed --
+CREATE TABLE otel_traces (
+    _idx UInt64,
+    SpanAttributes Map(String, String) MATERIALIZED map('a', if(_idx = 0, '7', '3'), 'b', if(_idx = 0, '8', '4'))
+) ENGINE = MergeTree ORDER BY _idx;
+INSERT INTO otel_traces (_idx) VALUES (0), (1);
+-- expected_rows --
+[
+  [0]
+]

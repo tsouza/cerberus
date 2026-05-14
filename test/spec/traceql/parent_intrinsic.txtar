@@ -4,3 +4,15 @@
 SELECT * FROM `otel_traces` WHERE (`ParentSpanId` = ?)
 -- args --
 [0] string = "fedcba9876543210"
+-- seed --
+CREATE TABLE otel_traces (
+    ParentSpanId String
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    (''),
+    ('fedcba9876543210'),
+    ('0123456789abcdef');
+-- expected_rows --
+[
+  ["fedcba9876543210"]
+]

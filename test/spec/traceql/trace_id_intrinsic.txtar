@@ -4,3 +4,15 @@
 SELECT * FROM `otel_traces` WHERE (`TraceId` = ?)
 -- args --
 [0] string = "abcdef0123456789"
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    ('0123456789abcdef'),
+    ('abcdef0123456789'),
+    ('fedcba9876543210');
+-- expected_rows --
+[
+  ["abcdef0123456789"]
+]

@@ -8,3 +8,18 @@ SELECT * FROM `otel_traces` PREWHERE (`Duration` > ?) WHERE (`ResourceAttributes
 [2] string = "frontend"
 [3] string = "http.status_code"
 [4] int64 = 500
+-- seed --
+CREATE TABLE otel_traces (
+    Duration UInt64,
+    ResourceAttributes Map(String, String) MATERIALIZED map('service.name', 'frontend'),
+    SpanAttributes Map(String, String) MATERIALIZED map('http.status_code', if(Duration > 100000000, '500', '200'))
+) ENGINE = MergeTree ORDER BY Duration;
+INSERT INTO otel_traces (Duration) VALUES
+    (50000000),
+    (150000000),
+    (250000000);
+-- expected_rows --
+[
+  [150000000],
+  [250000000]
+]

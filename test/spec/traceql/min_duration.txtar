@@ -6,3 +6,17 @@ SELECT * FROM (SELECT min(`Duration`) AS `Value` FROM (SELECT * FROM `otel_trace
 [0] string = "service.name"
 [1] string = "frontend"
 [2] int64 = 10000000
+-- seed --
+CREATE TABLE otel_traces (
+    ResourceAttributes Map(String, String),
+    Duration UInt64
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    (map('service.name', 'frontend'), 30000000),
+    (map('service.name', 'frontend'), 50000000),
+    (map('service.name', 'frontend'), 80000000),
+    (map('service.name', 'backend'),   5000000);
+-- expected_rows --
+[
+  [30000000]
+]

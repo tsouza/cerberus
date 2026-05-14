@@ -5,3 +5,13 @@ SELECT * FROM `otel_traces` WHERE (`SpanAttributes`[?] > ?)
 -- args --
 [0] string = "cpu.usage"
 [1] float64 = 0.5
+-- seed --
+CREATE TABLE otel_traces (
+    _idx UInt64,
+    SpanAttributes Map(String, String) MATERIALIZED map('cpu.usage', if(_idx = 0, '0.7', '0.3'))
+) ENGINE = MergeTree ORDER BY _idx;
+INSERT INTO otel_traces (_idx) VALUES (0), (1);
+-- expected_rows --
+[
+  [0]
+]

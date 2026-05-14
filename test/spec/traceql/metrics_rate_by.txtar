@@ -7,3 +7,15 @@ SELECT `ResourceAttributes`[?] AS `service.name`, count(?) AS `Value` FROM (SELE
 [1] int64 = 1
 [2] bool = true
 [3] string = "service.name"
+-- seed --
+CREATE TABLE otel_traces (
+    ResourceAttributes Map(String, String)
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    (map('service.name', 'frontend')),
+    (map('service.name', 'frontend')),
+    (map('service.name', 'frontend'));
+-- expected_rows --
+[
+  ["frontend", 3]
+]

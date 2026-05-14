@@ -6,3 +6,16 @@ SELECT `ResourceAttributes`[?] AS `GroupKey`, any(`TraceId`) AS `TraceId`, any(`
 [0] string = "service.name"
 [1] bool = true
 [2] string = "service.name"
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    Timestamp DateTime64(9),
+    ResourceAttributes Map(String, String)
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    ('a0000000000000000000000000000001', '0000000000000001', toDateTime64('2026-01-01 00:00:00', 9), map('service.name', 'frontend'));
+-- expected_rows --
+[
+  ["frontend", "a0000000000000000000000000000001", "0000000000000001", "2026-01-01T00:00:00Z"]
+]

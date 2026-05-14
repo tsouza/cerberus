@@ -5,3 +5,15 @@ SELECT log2(`Duration`) / 1000000000 AS `__bucket`, count(?) AS `Value` FROM (SE
 -- args --
 [0] int64 = 1
 [1] bool = true
+-- seed --
+CREATE TABLE otel_traces (
+    Duration UInt64
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    (1024),
+    (1024),
+    (1024);
+-- expected_rows --
+[
+  [1.0e-08, 3]
+]

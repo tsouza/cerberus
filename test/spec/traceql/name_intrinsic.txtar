@@ -4,3 +4,15 @@
 SELECT * FROM `otel_traces` WHERE (`SpanName` = ?)
 -- args --
 [0] string = "GET /api/users"
+-- seed --
+CREATE TABLE otel_traces (
+    SpanName String
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    ('GET /home'),
+    ('GET /api/users'),
+    ('POST /checkout');
+-- expected_rows --
+[
+  ["GET /api/users"]
+]

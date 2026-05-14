@@ -4,3 +4,15 @@
 SELECT * FROM `otel_traces` WHERE (`StatusCode` = ?)
 -- args --
 [0] string = "Error"
+-- seed --
+CREATE TABLE otel_traces (
+    StatusCode String
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    ('Ok'),
+    ('Error'),
+    ('Unset');
+-- expected_rows --
+[
+  ["Error"]
+]

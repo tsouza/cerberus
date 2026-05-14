@@ -5,3 +5,16 @@ SELECT * FROM `otel_traces` PREWHERE (`StatusCode` = ?) WHERE (`SpanKind` = ?)
 -- args --
 [0] string = "Error"
 [1] string = "Server"
+-- seed --
+CREATE TABLE otel_traces (
+    StatusCode String,
+    SpanKind String MATERIALIZED if(StatusCode = 'Error', 'Server', 'Client')
+) ENGINE = MergeTree ORDER BY StatusCode;
+INSERT INTO otel_traces (StatusCode) VALUES
+    ('Error'),
+    ('Ok'),
+    ('Unset');
+-- expected_rows --
+[
+  ["Error"]
+]

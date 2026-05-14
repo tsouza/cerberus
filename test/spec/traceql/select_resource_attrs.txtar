@@ -7,3 +7,17 @@ SELECT `TraceId`, `SpanId`, `Timestamp`, `ResourceAttributes`[?] AS `service.nam
 [1] string = "k8s.cluster.name"
 [2] string = "service.name"
 [3] string = "frontend"
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    Timestamp DateTime64(9),
+    ResourceAttributes Map(String, String)
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    ('a0000000000000000000000000000001', '0000000000000001', toDateTime64('2026-01-01 00:00:00', 9), map('service.name', 'frontend', 'service.namespace', 'web', 'k8s.cluster.name', 'prod')),
+    ('a0000000000000000000000000000002', '0000000000000002', toDateTime64('2026-01-01 00:00:01', 9), map('service.name', 'backend',  'service.namespace', 'api', 'k8s.cluster.name', 'stg'));
+-- expected_rows --
+[
+  ["a0000000000000000000000000000001", "0000000000000001", "2026-01-01T00:00:00Z", "web", "prod"]
+]

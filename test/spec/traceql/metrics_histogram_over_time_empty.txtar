@@ -6,3 +6,16 @@ SELECT log2(`Duration`) / 1000000000 AS `__bucket`, count(?) AS `Value` FROM (SE
 [0] int64 = 1
 [1] string = "service.name"
 [2] string = "frontend"
+-- seed --
+CREATE TABLE otel_traces (
+    ResourceAttributes Map(String, String),
+    Duration UInt64
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    (map('service.name', 'frontend'), 1024),
+    (map('service.name', 'frontend'), 1024),
+    (map('service.name', 'backend'),  4096);
+-- expected_rows --
+[
+  [1.0e-08, 2]
+]

@@ -4,3 +4,16 @@
 SELECT * FROM `otel_traces` WHERE (`Duration` >= ?)
 -- args --
 [0] int64 = 1000000000
+-- seed --
+CREATE TABLE otel_traces (
+    Duration UInt64
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    (500000000),
+    (1000000000),
+    (2000000000);
+-- expected_rows --
+[
+  [1000000000],
+  [2000000000]
+]
