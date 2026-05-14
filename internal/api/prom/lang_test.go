@@ -77,26 +77,26 @@ func TestLang_Parse_ParseError(t *testing.T) {
 }
 
 // TestLang_Parse_LowerError — a parseable but unsupported PromQL form
-// (`label_replace`, currently not lowered) surfaces as a
-// parseStageError tagged "lower". Verifies the parse → lower split is
-// preserved through the adapter.
+// (`sort`, currently not lowered) surfaces as a parseStageError tagged
+// "lower". Verifies the parse → lower split is preserved through the
+// adapter.
 func TestLang_Parse_LowerError(t *testing.T) {
 	t.Parallel()
 
 	l := langForTest()
-	_, _, err := l.Parse(context.Background(), `label_replace(up, "x", "$1", "instance", "(.*)")`)
+	_, _, err := l.Parse(context.Background(), `sort(up)`)
 	if err == nil {
-		t.Fatalf("Parse(label_replace): expected lower failure, got nil")
+		t.Fatalf("Parse(sort): expected lower failure, got nil")
 	}
 	var ps *parseStageError
 	if !errors.As(err, &ps) {
-		t.Fatalf("Parse(label_replace): err type = %T, want *parseStageError; err=%v", err, err)
+		t.Fatalf("Parse(sort): err type = %T, want *parseStageError; err=%v", err, err)
 	}
 	if ps.stage != "lower" {
 		t.Errorf("parseStageError.stage: got %q, want %q (got err=%v)", ps.stage, "lower", err)
 	}
-	if !strings.Contains(err.Error(), "label_replace") {
-		t.Errorf("err message: got %q, want it to mention label_replace", err.Error())
+	if !strings.Contains(err.Error(), "sort") {
+		t.Errorf("err message: got %q, want it to mention sort", err.Error())
 	}
 }
 

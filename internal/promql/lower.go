@@ -378,6 +378,10 @@ func lowerCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 		return lowerClamp(c, s, ctx)
 	case "histogram_quantile":
 		return lowerHistogramQuantile(c, s, ctx)
+	case "label_replace":
+		return lowerLabelReplace(c, s, ctx)
+	case "label_join":
+		return lowerLabelJoin(c, s, ctx)
 	}
 	if chFn, ok := instantFnCH[c.Func.Name]; ok {
 		return lowerInstantFn(c, s, chFn, ctx)

@@ -248,6 +248,10 @@ func (b *Builder) Expr(x chplan.Expr) error {
 		return b.exprMapWithoutKeys(v)
 	case *chplan.MapWithoutEmptyValues:
 		return b.exprMapWithoutEmptyValues(v)
+	case *chplan.LabelReplace:
+		return b.exprLabelReplace(v)
+	case *chplan.LabelJoin:
+		return b.exprLabelJoin(v)
 	case *chplan.LineContent:
 		return b.exprLineContent(v)
 	case *chplan.FieldAccess:
@@ -384,6 +388,94 @@ func (b *Builder) exprMapWithoutEmptyValues(m *chplan.MapWithoutEmptyValues) err
 		return err
 	}
 	b.sb.WriteByte(')')
+	return nil
+}
+
+// exprLabelReplace renders PromQL `label_replace(v, dst, replacement, src, regex)`
+// over a CH Map(String, String). The PromQL semantics are:
+//
+//   - if `regex` matches the FULL value of `src` (Prom anchors with `^…$`),
+//     bind `dst` to the regex-substituted `replacement`;
+//   - otherwise leave `dst` unchanged.
+//
+// Lowers to:
+//
+//	mapFilter((k, v) -> v != '',
+//	    if(match(<map>[?src], ?anchoredRegex),
+//	       mapUpdate(<map>, map(?dst, replaceRegexpOne(<map>[?src], ?anchoredRegex, ?replacement))),
+//	       <map>))
+//
+// `anchoredRegex` is `^<regex>$` so the match is full-string, matching
+// Prometheus's `RE2 ^…$` anchoring rule. The outer mapFilter drops the
+// dst label when the substituted replacement is the empty string —
+// Prom's "labels set to empty values are dropped" rule.
+func (b *Builder) exprLabelReplace(l *chplan.LabelReplace) error {
+	anchored := "^" + l.Regex + "$"
+	b.sb.WriteString("mapFilter((k, v) -> v != '', if(match(")
+	if err := b.Expr(l.Map); err != nil {
+		return err
+	}
+	b.sb.WriteByte('[')
+	b.Arg(l.Src)
+	b.sb.WriteString("], ")
+	b.Arg(anchored)
+	b.sb.WriteString("), mapUpdate(")
+	if err := b.Expr(l.Map); err != nil {
+		return err
+	}
+	b.sb.WriteString(", map(")
+	b.Arg(l.Dst)
+	b.sb.WriteString(", replaceRegexpOne(")
+	if err := b.Expr(l.Map); err != nil {
+		return err
+	}
+	b.sb.WriteByte('[')
+	b.Arg(l.Src)
+	b.sb.WriteString("], ")
+	b.Arg(anchored)
+	b.sb.WriteString(", ")
+	b.Arg(l.Replacement)
+	b.sb.WriteString("))), ")
+	if err := b.Expr(l.Map); err != nil {
+		return err
+	}
+	b.sb.WriteString("))")
+	return nil
+}
+
+// exprLabelJoin renders PromQL `label_join(v, dst, separator, src1, src2, ...)`
+// over a CH Map(String, String):
+//
+//	mapFilter((k, v) -> v != '',
+//	    mapUpdate(<map>, map(?dst, arrayStringConcat([<map>[?src1], <map>[?src2], ...], ?separator))))
+//
+// Missing source labels read as the empty string from CH's Map default;
+// the empty-value mapFilter wrapper then drops `dst` if the joined
+// result is entirely empty (e.g. join of all-absent labels with an
+// empty separator). The match to Prom semantics is: Prom canonicalises
+// empty-valued labels to "absent", same as our drop.
+func (b *Builder) exprLabelJoin(l *chplan.LabelJoin) error {
+	b.sb.WriteString("mapFilter((k, v) -> v != '', mapUpdate(")
+	if err := b.Expr(l.Map); err != nil {
+		return err
+	}
+	b.sb.WriteString(", map(")
+	b.Arg(l.Dst)
+	b.sb.WriteString(", arrayStringConcat([")
+	for i, src := range l.Srcs {
+		if i > 0 {
+			b.sb.WriteString(", ")
+		}
+		if err := b.Expr(l.Map); err != nil {
+			return err
+		}
+		b.sb.WriteByte('[')
+		b.Arg(src)
+		b.sb.WriteByte(']')
+	}
+	b.sb.WriteString("], ")
+	b.Arg(l.Separator)
+	b.sb.WriteString("))))")
 	return nil
 }
 

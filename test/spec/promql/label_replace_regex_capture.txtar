@@ -1,0 +1,36 @@
+-- query.promql --
+label_replace(temperature, "service", "svc-$1", "host", "host-(.*)")
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('temperature', map('host', 'host-prod'), toDateTime64('2026-01-01 00:00:00', 9), 22.5);
+-- expected_rows --
+[
+  ["temperature", {"host": "host-prod", "service": "svc-prod"}, "2026-01-01T00:00:00Z", 22.5]
+]
+-- args --
+[0] string = "host"
+[1] string = "^host-(.*)$"
+[2] string = "service"
+[3] string = "host"
+[4] string = "^host-(.*)$"
+[5] string = "svc-$1"
+[6] string = "temperature"
+[7] string = "2026-01-01 00:00:01.000000000"
+[8] int64 = 9
+[9] string = "2026-01-01 00:00:01.000000000"
+[10] int64 = 9
+[11] int64 = 300000000000
+-- chplan --
+Project [MetricName, labelReplace(Attributes, dst="service", replacement="svc-$1", src="host", regex="host-(.*)") AS Attributes, TimeUnix, Value]
+  Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
+    Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
+      Filter predicate=(((MetricName = "temperature") AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+        Scan(otel_metrics_gauge)
+-- sql --
+SELECT `MetricName`, mapFilter((k, v) -> v != '', if(match(`Attributes`[?], ?), mapUpdate(`Attributes`, map(?, replaceRegexpOne(`Attributes`[?], ?, ?))), `Attributes`)) AS `Attributes`, `TimeUnix`, `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_gauge` PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`))
