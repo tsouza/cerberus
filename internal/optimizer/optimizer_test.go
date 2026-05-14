@@ -144,9 +144,10 @@ var inputs = map[string]chplan.Node{
 	},
 
 	// filter_project_transpose_passes: Filter over Project([X, Y], Scan)
-	// where the predicate references a passthrough column. The R3.2
-	// rule pushes the Filter under the Project; the optimized SQL
-	// shows the Filter wrapping the Scan with the Project on top.
+	// where the predicate references a passthrough column. The
+	// FilterProjectTranspose rule pushes the Filter under the Project;
+	// the optimized SQL shows the Filter wrapping the Scan with the
+	// Project on top.
 	"filter_project_transpose_passes": &chplan.Filter{
 		Input: &chplan.Project{
 			Input: &chplan.Scan{Table: "otel_metrics_gauge"},
@@ -163,7 +164,7 @@ var inputs = map[string]chplan.Node{
 	},
 
 	// filter_project_transpose_blocked: Project renames `MetricName`
-	// to `metric`; the Filter touches the *alias*. The R3.2 rule
+	// to `metric`; the Filter touches the *alias*. The transpose rule
 	// declines (alias has no source-side column). ProjectionPushdown
 	// still fires on the inner Project(Scan) and narrows the scan's
 	// column list — a benign side effect that the fixture records.
@@ -183,8 +184,9 @@ var inputs = map[string]chplan.Node{
 
 	// filter_aggregate_transpose_passes: Filter over Aggregate where
 	// the predicate references a bare group-by column (`job`). The
-	// R3.2 rule pushes the Filter under the Aggregate; the optimized
-	// SQL shows the WHERE clause inside the GROUP BY's FROM subquery.
+	// FilterAggregateTranspose rule pushes the Filter under the
+	// Aggregate; the optimized SQL shows the WHERE clause inside the
+	// GROUP BY's FROM subquery.
 	"filter_aggregate_transpose_passes": &chplan.Filter{
 		Input: &chplan.Aggregate{
 			Input:   &chplan.Scan{Table: "otel_metrics_gauge"},
@@ -202,7 +204,7 @@ var inputs = map[string]chplan.Node{
 
 	// filter_aggregate_transpose_blocked: predicate touches the
 	// aggregate-output column `sum_value`, which doesn't exist in the
-	// Aggregate's input. The R3.2 rule declines; optimized SQL is
+	// Aggregate's input. The transpose rule declines; optimized SQL is
 	// byte-identical to unoptimized.
 	"filter_aggregate_transpose_blocked": &chplan.Filter{
 		Input: &chplan.Aggregate{
@@ -221,8 +223,8 @@ var inputs = map[string]chplan.Node{
 
 	// filter_range_window_transpose_passes: Filter over RangeWindow
 	// where the predicate references a bare series-identifying group
-	// key (`Attributes`). The R3.8 rule pushes the Filter under the
-	// RangeWindow; the optimized SQL shows the WHERE clause inside the
+	// key (`Attributes`). The FilterRangeWindowTranspose rule pushes
+	// the Filter under the RangeWindow; the optimized SQL shows the WHERE clause inside the
 	// arraySort/groupArray subquery, before the windowed aggregation.
 	"filter_range_window_transpose_passes": &chplan.Filter{
 		Input: &chplan.RangeWindow{
@@ -246,7 +248,7 @@ var inputs = map[string]chplan.Node{
 	// filter_range_window_transpose_blocked: predicate touches the
 	// per-sample `Value` column, which becomes the windowed-function
 	// input (and is not in the RangeWindow's passthrough series-key
-	// set). The R3.8 rule declines; optimized SQL is byte-identical
+	// set). The transpose rule declines; optimized SQL is byte-identical
 	// to unoptimized.
 	"filter_range_window_transpose_blocked": &chplan.Filter{
 		Input: &chplan.RangeWindow{

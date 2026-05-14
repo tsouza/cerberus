@@ -23,12 +23,11 @@ func TestTelemetryInstall_NilNoopByDefault(t *testing.T) {
 		Done(t.Context(), telemetry.ResultOK)
 }
 
-// TestTelemetryInstall_ManualReader exercises the integration path the
-// PR description called out: install a sdkmetric.MeterProvider with a
+// TestTelemetryInstall_ManualReader exercises the metric-export
+// integration path: install a sdkmetric.MeterProvider with a
 // ManualReader, drive one query through every instrument, assert the
-// counter incremented and the histograms have data. Mirrors the
-// recipe R4.5 will use when it swaps in the OTLP exporter — the only
-// difference there is the Reader.
+// counter incremented and the histograms have data. The OTLP exporter
+// recipe mirrors this — the only difference is the Reader.
 func TestTelemetryInstall_ManualReader(t *testing.T) {
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))

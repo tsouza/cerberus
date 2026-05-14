@@ -89,7 +89,7 @@ func histogramQuantileValueFrag(h *chplan.HistogramQuantile) Frag {
 	// inline these into the if() chain. The non-Call structure (if()
 	// nesting, "[idx]" array indexing, inline phi formatFloat literal)
 	// keeps the in-package b.writeSQL path — no typed Frag covers those
-	// shapes yet, flagged for R6.12.f.
+	// shapes yet.
 	lengthBC := Call("length", Col(bc))
 	lengthEB := Call("length", Col(eb))
 	arraySumBC := Call("arraySum", Col(bc))
@@ -155,8 +155,7 @@ func histogramQuantileValueFrag(h *chplan.HistogramQuantile) Frag {
 		// arrayFirstIndex(c -> ..., arrayCumSum(bc)) — the lambda body
 		// uses a bound var `c`; Builder.Lambda emits "(c) -> ..." which
 		// drifts vs. the existing "c -> ..." output, so the in-package
-		// b.writeSQL path is kept for the lambda. Flagged for R6.12.f
-		// if/when a parens-less lambda Frag lands. The outer
+		// b.writeSQL path is kept for the lambda. The outer
 		// arrayFirstIndex call wraps the cum frag via Call once the
 		// lambda is emitted.
 		writeIdx := func() {

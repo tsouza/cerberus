@@ -3,8 +3,8 @@
 // Each pipeline stage (parse → lower → optimize → emit → execute) is a
 // short-lived span emitted from the package that performs the work, so a
 // single PromQL/LogQL/TraceQL query — once otelhttp has put its request
-// span on the context (RC4 R4.2) — produces a five-span chain whose
-// shape is uniform across the three heads.
+// span on the context — produces a five-span chain whose shape is
+// uniform across the three heads.
 //
 // Span attribute keys are interned here so the contract is one file
 // long. The keys follow the `cerberus.*` namespace for cerberus-owned

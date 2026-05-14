@@ -11,14 +11,14 @@ import (
 	"github.com/tsouza/cerberus/test/spec"
 )
 
-// prewhereFixtureDir is the spec directory for the R3.4 PREWHERE / sort-
+// prewhereFixtureDir is the spec directory for the PREWHERE / sort-
 // key-ordering fixtures. Lives outside test/spec/chsql/ so the chsql
 // emitter golden set and the codegen-rule golden set stay separable —
-// when R3.7 (late materialisation) adds its own fixtures it lands under
-// test/spec/codegen/late_mat/ on the same pattern.
+// late-materialisation fixtures land under test/spec/codegen/late_mat/
+// on the same pattern.
 var prewhereFixtureDir = filepath.Join("..", "..", "test", "spec", "codegen", "prewhere")
 
-// prewherePlans are the chplan trees the R3.4 fixtures pin. The trees
+// prewherePlans are the chplan trees the PREWHERE fixtures pin. The trees
 // are constructed bare (no optimizer pass) so the goldens reflect
 // codegen behaviour exclusively.
 var prewherePlans = map[string]chplan.Node{
@@ -138,8 +138,8 @@ var prewherePlans = map[string]chplan.Node{
 	},
 }
 
-// TestEmit_Prewhere walks the R3.4-specific fixture set. Mirrors the
-// shape of TestEmit so the golden-update loop is the same.
+// TestEmit_Prewhere walks the PREWHERE-specific fixture set. Mirrors
+// the shape of TestEmit so the golden-update loop is the same.
 func TestEmit_Prewhere(t *testing.T) {
 	t.Parallel()
 	spec.Walk(t, prewhereFixtureDir, func(t *testing.T, c *spec.Case) {

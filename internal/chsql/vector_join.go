@@ -27,9 +27,8 @@ import (
 //
 //   - CardOneToMany (`group_right(<labels>)`): mirror of CardManyToOne.
 //
-// Ported to chsql.QueryBuilder at RC6 R6.6: the outer SELECT, each
-// per-side aggregation subquery, and the INNER JOIN slot all flow
-// through typed QueryBuilder slots. The bare-alias glue (`AS L` /
+// The outer SELECT, each per-side aggregation subquery, and the INNER
+// JOIN slot all flow through typed QueryBuilder slots. The bare-alias glue (`AS L` /
 // `AS R`) is operator-token-style writeSQL inside a Frag — CH accepts
 // unquoted single-letter aliases and the existing fixtures pin that
 // shape.

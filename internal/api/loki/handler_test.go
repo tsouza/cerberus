@@ -178,9 +178,9 @@ func TestQuery_MetricVector(t *testing.T) {
 	}
 }
 
-// TestResponseHeaders_EngineInstrumentation covers the R7.7 contract on
-// the Loki head: every successful /query response carries the three
-// canonical X-Cerberus-* headers populated by engine.Engine.
+// TestResponseHeaders_EngineInstrumentation covers the Loki head's
+// response-header contract: every successful /query response carries the
+// three canonical X-Cerberus-* headers populated by engine.Engine.
 func TestResponseHeaders_EngineInstrumentation(t *testing.T) {
 	t.Parallel()
 

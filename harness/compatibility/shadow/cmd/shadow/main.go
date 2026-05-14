@@ -1,9 +1,10 @@
-// Command shadow is the RC3 R3.9 shadow-mode differential testing CLI.
+// Command shadow is the shadow-mode differential testing CLI.
 //
 // It reads a corpus of PromQL queries, evaluates each one against cerberus
 // (native path, over HTTP) and an in-process PromQL oracle, and diffs the
-// two result vectors. The oracle is stubbed until R3.10 lands
-// `internal/promshim/local/`.
+// two result vectors. The oracle is currently a noop stub — the
+// in-process PromQL oracle lives at `internal/promshim/local/` and a
+// future wiring change can plug it in here.
 //
 // See ../../README.md for the strategy matrix, exit codes, and corpus format.
 package main
@@ -41,15 +42,15 @@ const (
 	exitOracleMissing   = 3
 )
 
-// OracleProvider is the seam R3.10 fills. Until then, noopOracle returns
-// ErrOracleSkipped for every query.
+// OracleProvider is the seam an oracle implementation fills. The
+// noopOracle stub returns ErrOracleSkipped for every query.
 type OracleProvider interface {
 	Evaluate(ctx context.Context, expr string) (shadow.VectorResult, error)
 }
 
 // ErrOracleSkipped signals the noop oracle has been invoked. Callers handle
 // per strategy.
-var ErrOracleSkipped = errors.New("oracle: skipped (R3.10 not yet wired)")
+var ErrOracleSkipped = errors.New("oracle: skipped (no oracle wired)")
 
 type noopOracle struct{}
 
@@ -133,7 +134,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	// Under force-native / oracle-only, an unavailable oracle is fatal up front.
 	if strategy == StrategyForceNative || strategy == StrategyOracleOnly {
 		if _, isNoop := oracle.(noopOracle); isNoop {
-			fmt.Fprintf(stderr, "strategy %q requires an oracle but R3.10 has not landed; aborting\n", strategy)
+			fmt.Fprintf(stderr, "strategy %q requires an oracle but none is wired; aborting\n", strategy)
 			return exitOracleMissing
 		}
 	}

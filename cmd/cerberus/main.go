@@ -144,10 +144,9 @@ func run() error {
 	// the route.
 	traceMux := http.NewServeMux()
 
-	// Prom is the first head ported to the shared engine.Engine
-	// pipeline (RC7 R7.2); the engine is constructed below from the
-	// shared Client + a seed optimizer and assigned onto the handler.
-	// Loki + Tempo follow as RC7 R7.3 / R7.4 ports.
+	// All three heads run on the shared engine.Engine pipeline; each
+	// engine is constructed below from the shared Client + a seed
+	// optimizer and assigned onto the per-head handler.
 	promHandler := prom.New(client, cfg.Schema, logger.With("api", "prom"))
 	promHandler.Engine = &engine.Engine{Optimizer: promHandler.Optimizer, Client: client}
 	promHandler.Limiter = promLimiter

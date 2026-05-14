@@ -47,8 +47,8 @@ type Logs struct {
 	// WideColumns lists the "fat" columns on the logs table — columns
 	// whose per-row payload is large enough that fetching them dominates
 	// the IO cost of a Scan. The chsql late-materialisation rewrite
-	// (RC3 R3.7, see docs/optimizer-research.md § 3) checks this list
-	// when a Project+Limit+Filter+Scan stack lands on this table: if any
+	// (see docs/optimizer-research.md § 3) checks this list when a
+	// Project+Limit+Filter+Scan stack lands on this table: if any
 	// of the projection's columns are wide, the inner SELECT skips them
 	// and an outer JOIN back fetches them only for the surviving rows.
 	//
@@ -58,8 +58,8 @@ type Logs struct {
 
 	// RowKey is the tuple of columns that uniquely identifies a row in
 	// the logs table. Used by the chsql late-materialisation rewrite
-	// (RC3 R3.7) as the JOIN key between the thin inner SELECT and the
-	// outer "fetch wide columns" SELECT. The tuple must be globally
+	// as the JOIN key between the thin inner SELECT and the outer
+	// "fetch wide columns" SELECT. The tuple must be globally
 	// unique — duplicates would yield a row-multiplication bug.
 	//
 	// For the OTel-CH default this is `(Timestamp, TraceId, SpanId)` —
@@ -98,7 +98,7 @@ func DefaultOTelLogs() Logs {
 		ServiceNameColumn:        "ServiceName",
 		EventNameColumn:          "EventName",
 		// Wide columns — large per-row payloads. Late materialisation
-		// (RC3 R3.7) defers fetching these until after filter+limit.
+		// defers fetching these until after filter+limit.
 		WideColumns: []string{"Body", "ResourceAttributes", "LogAttributes"},
 		// (Timestamp, TraceId, SpanId) uniquely identifies an OTel-CH
 		// log row when ingestion carries trace context. See WideColumns

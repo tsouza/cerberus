@@ -132,8 +132,8 @@ type Metrics struct {
 
 	// MetricsRollups declares pre-aggregated rollup tables the
 	// operator has provisioned alongside the base metrics tables. The
-	// optimizer's MV-substitution rule (RC3 R3.6) reads this list to
-	// decide whether a `RangeWindow` over a base table can be rewritten
+	// optimizer's MV-substitution rule reads this list to decide whether
+	// a `RangeWindow` over a base table can be rewritten
 	// to scan the matching rollup instead. The registry is the
 	// operator's contract: cerberus trusts the listed tables exist and
 	// carry the declared (Window, AggOp) semantics. Empty means "no
@@ -179,8 +179,8 @@ const (
 )
 
 // Rollup describes a single pre-aggregated rollup table in the OTel
-// metrics schema. The optimizer's MV-substitution rule (RC3 R3.6)
-// rewrites a `RangeWindow(Scan(BaseTable))` to `RangeWindow(Scan(RollupTable))`
+// metrics schema. The optimizer's MV-substitution rule rewrites a
+// `RangeWindow(Scan(BaseTable))` to `RangeWindow(Scan(RollupTable))`
 // when the query's step + range + aggregate operator are compatible
 // with the rollup's window + commuting aggregate.
 //

@@ -24,8 +24,8 @@
 // rationale and the DataFusion docs at
 // https://docs.rs/datafusion-optimizer/latest/datafusion_optimizer/ for
 // the upstream contract. Spark Catalyst and DuckDB make a similar cut;
-// the Tsinghua "Selective Late Materialization" paper (RC3 R3.7) takes
-// it as a given.
+// the Tsinghua "Selective Late Materialization" paper takes it as a
+// given.
 //
 // Concretely: cerberus's original `ConstantFold` rule conflated two
 // flavours of fold —
@@ -37,7 +37,7 @@
 //     ergonomic — it shrinks emitted SQL but the result is correct
 //     either way.
 //
-// R3.5 splits the conflated rule into ConstantFoldSemantic
+// Today the conflated rule is split into ConstantFoldSemantic
 // (AnalyzerRule, lives in the analyzer batch) and ConstantFoldHeuristic
 // (OptimizerRule, lives in a Once batch right after the analyzer).
 //
@@ -51,8 +51,8 @@
 //     FilterProjectTranspose + FilterAggregateTranspose +
 //     FilterRangeWindowTranspose
 //  4. optimizer.projection (FixedPoint) — ProjectionPushdown
-//  5. optimizer.mv-substitution (FixedPoint) — MVSubstitution
-//     (RC3 R3.6). Runs last so predicate pushdown has already
+//  5. optimizer.mv-substitution (FixedPoint) — MVSubstitution.
+//     Runs last so predicate pushdown has already
 //     surfaced the `RangeWindow(Scan(base))` patterns the rule
 //     matches against. The rule needs a Metrics schema to read its
 //     rollup registry from; Default() binds the default OTel schema,
@@ -65,8 +65,8 @@
 //
 // The MV-substitution batch is the first place cerberus picks among
 // equivalent plans (a rollup-scanned query and a base-scanned query
-// produce the same answer when the substitution is safe). RC3 R3.6
-// ships a deliberately simple cost model — `firstApplicable`, which
+// produce the same answer when the substitution is safe). The current
+// cost model is deliberately simple — `firstApplicable`, which
 // picks the first registry-listed rollup that passes the safety
 // conditions — and an unexported `costModel` interface stub so v2
 // can swap in a real estimator (per Jindal VLDB 2018 §4–§6) without

@@ -5,7 +5,7 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
-// Late materialisation for wide-column scans (RC3 R3.7).
+// Late materialisation for wide-column scans.
 //
 // When a query reads "fat" columns (logs.Body, logs.ResourceAttributes,
 // traces.SpanAttributes, …) but only keeps a small fraction of the rows
@@ -238,8 +238,8 @@ func stringSet(xs []string) map[string]struct{} {
 // ColumnRefs as wide-projection signals is the conservative choice.
 //
 // A future refinement walks ColumnRefs inside arbitrary expressions to
-// widen the rewrite's applicability. R3.7 starts with the simple form
-// so the gate's reasoning is auditable.
+// widen the rewrite's applicability. The current form keeps the gate's
+// reasoning auditable.
 func projectionColumnNames(ps []chplan.Projection) map[string]struct{} {
 	out := map[string]struct{}{}
 	for _, p := range ps {

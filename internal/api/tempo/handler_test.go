@@ -222,10 +222,10 @@ func TestTraceByID_Found(t *testing.T) {
 	}
 }
 
-// TestResponseHeaders_EngineInstrumentation covers the R7.7 contract
-// on the Tempo head: /api/search returns Strategy=native; /api/traces/{id}
-// returns Strategy=trace-by-id (engine.Meta.IsTraceByID short-circuits
-// the optimizer and tags the response).
+// TestResponseHeaders_EngineInstrumentation covers the Tempo head's
+// response-header contract: /api/search returns Strategy=native;
+// /api/traces/{id} returns Strategy=trace-by-id (engine.Meta.IsTraceByID
+// short-circuits the optimizer and tags the response).
 func TestResponseHeaders_EngineInstrumentation(t *testing.T) {
 	t.Parallel()
 

@@ -117,8 +117,7 @@ func TestDefaultOTelMetricsTableFor(t *testing.T) {
 
 // TestDefaultOTelMetricsRollups pins the canonical OTel sum rollups
 // the upstream exporter writes when rollup tables are enabled. The
-// MV-substitution optimizer rule (RC3 R3.6) reads this list to find
-// candidates; if the upstream exporter ships a new rollup window we
+// MV-substitution optimizer rule reads this list to find candidates; if the upstream exporter ships a new rollup window we
 // add it here so the rule picks it up.
 func TestDefaultOTelMetricsRollups(t *testing.T) {
 	t.Parallel()

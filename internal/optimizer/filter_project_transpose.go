@@ -11,8 +11,8 @@ import "github.com/tsouza/cerberus/internal/chplan"
 // The shape unlocks downstream rules: pushing the Filter under a Project
 // lets `ProjectionPushdown` (currently fires on `Project(Scan)` only) see
 // the new `Project(Filter(...))` chain through a future column-set pass,
-// and exposes the Filter to `PREWHERE` promotion (R3.4) once the Scan
-// becomes the Filter's immediate input again.
+// and exposes the Filter to `PREWHERE` promotion once the Scan becomes
+// the Filter's immediate input again.
 //
 // Safety. The Filter sees the Project's *output* columns. Pushing it
 // underneath the Project means the same predicate must be evaluable
@@ -34,8 +34,8 @@ import "github.com/tsouza/cerberus/internal/chplan"
 //     belong to joins, which are not in scope for filter-project
 //     transposition.
 //
-// Built on the `PatternRule` scaffold introduced in R3.1 — declarative
-// `Match` / `Transform` rather than the legacy `Rule.Apply` type-switch.
+// Built on the `PatternRule` scaffold — declarative `Match` /
+// `Transform` rather than the legacy `Rule.Apply` type-switch.
 // FilterProjectTranspose is exposed as a constructor returning a `Rule`
 // so callers can register it alongside the legacy three rules.
 func FilterProjectTranspose() Rule {

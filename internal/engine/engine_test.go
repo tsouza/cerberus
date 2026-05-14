@@ -120,10 +120,10 @@ func TestEngine_Query_HappyPath(t *testing.T) {
 	}
 }
 
-// TestEngine_Query_HeadersPopulated covers the R7.7 contract: every
-// successful Result carries the canonical X-Cerberus-* response-header
-// bag (Strategy / Plan-Nodes / CH-Millis), and the Strategy field on
-// Result agrees with the header value.
+// TestEngine_Query_HeadersPopulated covers the response-header contract:
+// every successful Result carries the canonical X-Cerberus-* header bag
+// (Strategy / Plan-Nodes / CH-Millis), and the Strategy field on Result
+// agrees with the header value.
 func TestEngine_Query_HeadersPopulated(t *testing.T) {
 	t.Parallel()
 

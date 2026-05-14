@@ -18,8 +18,10 @@ import "github.com/tsouza/cerberus/internal/chplan"
 // both engines schedule rules and let each rule decide whether the
 // candidate node is a match.
 //
-// Scope (RC3 R3.1): the type + driver wiring only. The first batch of
-// rules ported to PatternRule lands in RC3 R3.2.
+// The PatternRule type plus the driver wiring is the canonical shape
+// for new rules. The transpose family (FilterProjectTranspose,
+// FilterAggregateTranspose, FilterRangeWindowTranspose, and MVSubstitution)
+// is built on top.
 type PatternRule struct {
 	// RuleName is the rule's identifier, surfaced via `Rule.Name()` for
 	// debug logging and test fixtures.

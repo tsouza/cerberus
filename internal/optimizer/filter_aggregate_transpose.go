@@ -12,8 +12,8 @@ import "github.com/tsouza/cerberus/internal/chplan"
 // predicate over the Aggregate result is equivalent to the same
 // predicate applied to the rows feeding the Aggregate. Pushing it
 // underneath dramatically shrinks the rows the GROUP BY has to chew
-// through, and exposes the predicate to PREWHERE promotion (R3.4)
-// once it reaches the Scan.
+// through, and exposes the predicate to PREWHERE promotion once it
+// reaches the Scan.
 //
 // Safety. The Filter sees two flavours of output column on the
 // Aggregate: the group-by keys (`Aggregate.GroupBy`, optionally renamed
@@ -35,7 +35,7 @@ import "github.com/tsouza/cerberus/internal/chplan"
 //   - `GroupByAliases[i]` that renames the key.
 //   - `ColumnRef` with a non-empty Qualifier in the predicate.
 //
-// Built on the `PatternRule` scaffold introduced in R3.1.
+// Built on the `PatternRule` scaffold.
 func FilterAggregateTranspose() Rule {
 	return &PatternRule{
 		RuleName: "filter-aggregate-transpose",

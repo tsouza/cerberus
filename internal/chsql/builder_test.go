@@ -26,8 +26,7 @@ func TestBuilder_Empty(t *testing.T) {
 }
 
 // TestBuilder_Ident — backtick quoting with embedded-backtick doubling.
-// Mirrors the existing emit_node.go behaviour so the future R6.2 port
-// is a one-for-one swap.
+// Mirrors the existing emit_node.go behaviour.
 func TestBuilder_Ident(t *testing.T) {
 	t.Parallel()
 
@@ -761,8 +760,8 @@ func TestQueryBuilder_Join_PanicsOnNilON(t *testing.T) {
 
 // TestBuilder_Expr — Builder.Expr renders representative chplan
 // expression shapes with byte-identical output to the legacy
-// emitter.emitExpr. Locked here so the RC6 R6.2 port can't drift from
-// the canonical shape before R6.4 collapses both paths.
+// emitter.emitExpr. Locked here so neither path can drift from the
+// canonical shape.
 func TestBuilder_Expr(t *testing.T) {
 	t.Parallel()
 

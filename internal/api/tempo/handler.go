@@ -105,8 +105,8 @@ func New(client Querier, s schema.Traces, version string, logger *slog.Logger) *
 // check; /api/search runs a TraceQL query; /api/traces/{id} fetches a
 // single trace by ID.
 func (h *Handler) Mount(mux *http.ServeMux) {
-	// RC4 R4.4: every Tempo endpoint flows through the cerberus.queries.*
-	// counter + duration middleware. /api/echo and /api/status/version
+	// Every Tempo endpoint flows through the cerberus.queries.* counter
+	// + duration middleware. /api/echo and /api/status/version
 	// are health-checks and will dominate ResultOK volume — that's fine,
 	// dashboards can split them out via cerberus.route if needed.
 	register := func(pattern string, hf http.HandlerFunc) {

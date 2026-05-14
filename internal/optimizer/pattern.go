@@ -16,9 +16,9 @@ package optimizer
 // node. Bindings flow back to the caller (a `PatternRule`'s `Apply`
 // function) via a `Bindings` map keyed on the names supplied to `Capture`.
 //
-// Scope (RC3 R3.1): scaffold only. The existing three optimizer rules
-// (filter-fusion, constant-fold, projection-pushdown) keep their bespoke
-// type-switch shape. RC3 R3.2 ports them to `PatternRule`.
+// The baseline rules (filter-fusion, constant-fold, projection-pushdown)
+// keep their bespoke type-switch shape; the transpose family and
+// MVSubstitution are built on top of `PatternRule`.
 
 import (
 	"reflect"

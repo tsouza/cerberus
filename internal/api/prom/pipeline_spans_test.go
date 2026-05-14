@@ -20,10 +20,10 @@ import (
 
 // spanRecordingQuerier wraps stubQuerier with the chclient-side
 // `execute` pipeline-stage span so the in-handler-process span chain
-// reaches the full five-stage shape the RC4 R4.3 contract promises.
-// The real chclient package emits this span when it actually calls
-// driver.Conn.Query; tests stub the driver out, so we have to emit it
-// ourselves to keep the assertion meaningful.
+// reaches the full five-stage shape the pipeline-instrumentation contract
+// promises. The real chclient package emits this span when it actually
+// calls driver.Conn.Query; tests stub the driver out, so we have to emit
+// it ourselves to keep the assertion meaningful.
 type spanRecordingQuerier struct {
 	stubQuerier
 }
@@ -59,7 +59,7 @@ func TestMain(m *testing.M) {
 
 // TestPipelineSpans_FiveStageChain asserts that a single /api/v1/query
 // request emits the canonical five-span chain — parse → lower →
-// optimize → emit → execute — that the RC4 R4.3 instrumentation
+// optimize → emit → execute — that the pipeline instrumentation
 // promises.
 func TestPipelineSpans_FiveStageChain(t *testing.T) {
 	pipelineSpanExporter.Reset()

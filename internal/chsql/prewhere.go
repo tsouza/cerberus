@@ -198,7 +198,7 @@ func orderedConjuncts(conjuncts []chplan.Expr, shape TableShape) []chplan.Expr {
 // non-wide-touching predicate is kept in WHERE so CH's executor
 // doesn't degenerate to a no-op WHERE clause. The behaviour is purely
 // cosmetic — CH happily accepts a query with only PREWHERE — but the
-// retained predicate matches the design note in the R3.4 spec.
+// retained predicate matches the PREWHERE-promotion design note.
 //
 // When the shape has no wide columns registered (e.g. an unknown
 // table), partitionPrewhere returns empty PREWHERE and all conjuncts

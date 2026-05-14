@@ -90,8 +90,8 @@ func New(client Querier, s schema.Logs, logger *slog.Logger) *Handler {
 // populate label autocomplete, the streams chooser, and the patterns
 // panel.
 func (h *Handler) Mount(mux *http.ServeMux) {
-	// RC4 R4.4: route every endpoint through the cerberus.queries.*
-	// counter + duration middleware. WebSocket /tail is included — a
+	// Route every endpoint through the cerberus.queries.* counter +
+	// duration middleware. WebSocket /tail is included — a
 	// long-lived tail counts as one query for the purposes of total
 	// volume bookkeeping; its duration will skew toward the long tail
 	// of the histogram, which is what dashboards want to see anyway.

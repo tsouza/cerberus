@@ -3,8 +3,6 @@ name: perf-benchmark
 # Weekly perf-regression sweep. Runs `go test -bench=.` against `main` and
 # against the trigger ref, then diffs the two with benchstat. Both raw
 # outputs and the benchstat diff are uploaded as artifacts.
-#
-# RC3 R3.11 scaffold. PR-comment integration lands as RC3 polish.
 
 on:
   schedule:

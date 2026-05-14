@@ -162,8 +162,8 @@ func TestConstantFoldSemantic_LeavesBoolIdentityAlone(t *testing.T) {
 
 	// `true AND X` is a *heuristic* fold — ConstantFoldSemantic must
 	// NOT collapse it. The boolean identity is the heuristic rule's
-	// territory; mixing the two flavours is exactly the bug R3.5
-	// fixes.
+	// territory; mixing the two flavours is exactly the bug the
+	// analyzer/optimizer split fixes.
 	pred := &chplan.Binary{
 		Op:   chplan.OpAnd,
 		Left: &chplan.LitBool{V: true},

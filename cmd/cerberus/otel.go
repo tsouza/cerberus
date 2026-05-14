@@ -1,9 +1,9 @@
-// otel.go wires the bare-minimum OpenTelemetry plumbing cerberus needs at
-// RC4 R4.2: a no-op tracer-provider (real exporters land in R4.5), the
-// W3C / Baggage propagator pair so incoming `traceparent` headers are
-// honored, and a helper that wraps an HTTP handler with otelhttp so every
-// request becomes a server span whose name derives from the matched
-// http.ServeMux pattern.
+// otel.go wires the OpenTelemetry plumbing cerberus needs: a tracer
+// provider (real OTLP exporters when configured, no-op otherwise),
+// the W3C / Baggage propagator pair so incoming `traceparent` headers
+// are honored, and a helper that wraps an HTTP handler with otelhttp so
+// every request becomes a server span whose name derives from the
+// matched http.ServeMux pattern.
 package main
 
 import (
@@ -20,8 +20,8 @@ import (
 
 // installOTel installs the default propagator (W3C TraceContext + Baggage)
 // and the supplied tracer provider as process globals. Passing nil for tp
-// installs a no-op provider — the safe default until R4.5 wires real
-// OTLP exporters.
+// installs a no-op provider — the safe default when no OTLP endpoint
+// is configured.
 //
 // Idempotent: safe to call multiple times (e.g. from a test setup helper
 // alongside main's call), the last writer wins. Tests that want to

@@ -15,7 +15,7 @@ import "github.com/tsouza/cerberus/internal/chplan"
 // applied to the per-sample rows feeding the window. Pushing it
 // underneath shrinks the rows the windowed-array idiom has to
 // `groupArray` / `arraySort` / `arrayFilter` through, and exposes the
-// predicate to PREWHERE promotion (R3.4) once it reaches the Scan.
+// predicate to PREWHERE promotion once it reaches the Scan.
 //
 // Safety. The Filter sees three flavours of column on the
 // RangeWindow's output:
@@ -53,7 +53,7 @@ import "github.com/tsouza/cerberus/internal/chplan"
 //     enough in practice that the conservative policy buys safety
 //     without losing much.
 //
-// Built on the `PatternRule` scaffold introduced in R3.1.
+// Built on the `PatternRule` scaffold.
 func FilterRangeWindowTranspose() Rule {
 	return &PatternRule{
 		RuleName: "filter-range-window-transpose",
