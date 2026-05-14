@@ -1,0 +1,66 @@
+# 2026/05/14 15:37:10.983290 [TestPromQL_Property_FromScratch] [rapid] draw dataset: property.Dataset{DDL:"CREATE OR REPLACE TABLE otel_metrics_gauge (\n    MetricName String,\n    Attributes Map(String, String),\n    TimeUnix DateTime64(9),\n    Value Float64\n) ENGINE = MergeTree ORDER BY (MetricName, TimeUnix);\nINSERT INTO otel_metrics_gauge VALUES ('up', map('instance', 'b'), toDateTime64('2026-05-13 12:00:00.000', 9), 0), ('up', map('instance', 'b'), toDateTime64('2026-05-13 12:00:15.000', 9), 0), ('up', map('instance', 'b'), toDateTime64('2026-05-13 12:00:30.000', 9), 0), ('up', map('instance', 'b'), toDateTime64('2026-05-13 12:00:45.000', 9), 0), ('up', map('instance', 'b'), toDateTime64('2026-05-13 12:01:00.000', 9), 0), ('up', map('instance', 'b'), toDateTime64('2026-05-13 12:01:15.000', 9), 0);\nINSERT INTO otel_metrics_gauge VALUES ('up', map('instance', 'a'), toDateTime64('2026-05-13 12:00:00.000', 9), 0), ('up', map('instance', 'a'), toDateTime64('2026-05-13 12:00:15.000', 9), 0), ('up', map('instance', 'a'), toDateTime64('2026-05-13 12:00:30.000', 9), 0);\n", Metrics:(*property.MetricsModel)(0x203d225961e0)}
+# 2026/05/14 15:37:10.983319 [TestPromQL_Property_FromScratch] [rapid] draw query: property.Query{String:"sum(rate(up{instance=\"a\"}[1m]))", EvalTs:1778673800}
+# 2026/05/14 15:37:11.011922 [TestPromQL_Property_FromScratch] property drift
+# --- query ---
+# sum(rate(up{instance="a"}[1m]))
+# evalTs=1778673800
+# --- dataset ---
+# series=2
+#   up{instance="b"} points=6
+#   up{instance="a"} points=3
+# 
+# --- diff ---
+# error mismatch: want_err=<nil> got_err=cerberus returned status="error" errorType="internal" err="engine: execute: chclienttest: query: Code: 47. DB::Exception: Unknown expression or function identifier `Value` in scope SELECT sum(Value) AS Value FROM (SELECT Attributes, if(length(window_vals) > 1, counter_delta / 60, 0.) AS value FROM (SELECT Attributes, arrayMap(p -> (p.2), window_pairs) AS window_vals, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> (x.2), window_pairs)), arrayPopFront(arrayMap(x -> (x.2), window_pairs)))) AS counter_delta FROM (SELECT Attributes, arrayFilter(p -> (((p.1) >= (now64(9) - toIntervalNanosecond(60000000000))) AND ((p.1) <= now64(9))), series_array) AS window_pairs FROM (SELECT Attributes, arraySort(groupArray((TimeUnix, Value))) AS series_array FROM (SELECT * FROM otel_metrics_gauge PREWHERE MetricName = 'up' WHERE (Attributes['instance']) = 'a') GROUP BY Attributes))) WHERE length(window_vals) >= 2). Maybe you meant: ['value']. (UNKNOWN_IDENTIFIER)"
+# 
+v0.4.8#11512813954976776230
+0x0
+0x0
+0x1
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1
+0x0
+0x6b74f03291620
+0x5
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x38e38e38e38e4
+0x2
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1
+0x0
+0x0
+0x0
+0x0
+0x0
+0x6b74f03291620
+0x4
