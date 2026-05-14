@@ -26,10 +26,10 @@ INSERT INTO otel_metrics_gauge VALUES
 [5] string = "temperature"
 [6] int64 = 0
 -- chplan --
-Project ["" AS MetricName, CAST(map(), "Map(String,String)") AS Attributes, toDateTime64("2026-01-01 00:00:01.000000000", 9) AS TimeUnix, 1 AS Value]
+Project ["" AS MetricName, CAST(map(), "Map(String,String)") AS Attributes, toDateTime64("2026-01-01 00:00:01.000000000", 9) AS TimeUnix, toFloat64(1) AS Value]
   Filter predicate=(_cerb_n = 0)
     Aggregate groupBy=[] funcs=[count() AS _cerb_n]
       Filter predicate=(MetricName = "temperature")
         Scan(otel_metrics_gauge)
 -- sql --
-SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, toDateTime64(?, ?) AS `TimeUnix`, ? AS `Value` FROM (SELECT * FROM (SELECT count() AS `_cerb_n` FROM (SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` = ?))) WHERE (`_cerb_n` = ?))
+SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, toDateTime64(?, ?) AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT * FROM (SELECT count() AS `_cerb_n` FROM (SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` = ?))) WHERE (`_cerb_n` = ?))

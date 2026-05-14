@@ -110,7 +110,16 @@ func lowerAbsent(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	//   MetricName=''                                  (absent drops __name__)
 	//   Attributes=map(<eq-matchers from v>)           (Prom funcAbsent label rule)
 	//   TimeUnix=<eval anchor>                         (now64(9) or literal eval ts)
-	//   Value=1.0                                      (Prom's spec value)
+	//   Value=toFloat64(1)                             (Prom's spec value)
+	//
+	// The Value expression is wrapped in `toFloat64(...)` because the
+	// clickhouse-go/v2 driver renders Go `float64(1.0)` as the SQL
+	// literal `1` (no decimal), and CH narrows that to `UInt8`. The
+	// downstream cursor scans into `*float64`, and the driver refuses
+	// to convert UInt8 → *float64 (errors with `converting UInt8 to
+	// *float64 is unsupported`). Wrapping in `toFloat64(?)` forces
+	// CH to project Float64 on the wire regardless of the bound
+	// literal's inferred type.
 	timeExpr := anchorBaseExpr(evalAnchor{End: ctx.end.UTC()})
 	if ctx.end.IsZero() {
 		timeExpr = anchorBaseExpr(evalAnchor{})
@@ -121,7 +130,7 @@ func lowerAbsent(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
 			{Expr: absentAttrsMap(vs.LabelMatchers), Alias: s.AttributesColumn},
 			{Expr: timeExpr, Alias: s.TimestampColumn},
-			{Expr: &chplan.LitFloat{V: 1.0}, Alias: s.ValueColumn},
+			{Expr: &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{&chplan.LitFloat{V: 1.0}}}, Alias: s.ValueColumn},
 		},
 	}, nil
 }

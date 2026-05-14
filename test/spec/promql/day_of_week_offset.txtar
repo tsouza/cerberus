@@ -23,10 +23,10 @@ INSERT INTO otel_metrics_gauge VALUES
 [6] int64 = 9
 [7] int64 = 300000000000
 -- chplan --
-Project [MetricName, Attributes, TimeUnix, (toDayOfWeek(toDateTime(toInt64(Value), "UTC")) % 7) AS Value]
+Project [MetricName, Attributes, TimeUnix, toFloat64((toDayOfWeek(toDateTime(toInt64(Value), "UTC")) % 7)) AS Value]
   Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
     Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
       Filter predicate=(((MetricName = "weekday_marker") AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
         Scan(otel_metrics_gauge)
 -- sql --
-SELECT `MetricName`, `Attributes`, `TimeUnix`, (toDayOfWeek(toDateTime(toInt64(`Value`), ?)) % ?) AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_gauge` PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`))
+SELECT `MetricName`, `Attributes`, `TimeUnix`, toFloat64((toDayOfWeek(toDateTime(toInt64(`Value`), ?)) % ?)) AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_gauge` PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`))

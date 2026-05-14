@@ -1,0 +1,24 @@
+# `day_of_week()` — the zero-arg form. PromQL spec:
+# `day_of_week()` ≡ `day_of_week(vector(time()))`. cerberus lowers
+# it to a OneRow source. CH's `toDayOfWeek` returns 1-7 (Mon=1..Sun=7);
+# PromQL `day_of_week` returns 0-6 (Sun=0..Sat=6) — `toDayOfWeek(d) % 7`
+# bridges the gap.
+#
+# The result is wrapped in `toFloat64(...)`: `toDayOfWeek` returns
+# UInt8, and the cursor decodes into `*float64`. Without the wrap
+# the clickhouse-go/v2 driver errors with
+# `converting UInt8 to *float64 is unsupported`. With the wrap CH
+# projects the column as Float64 on the wire.
+
+-- query.promql --
+day_of_week()
+-- args --
+[0] string = ""
+[1] string = "Map(String,String)"
+[2] int64 = 9
+[3] int64 = 7
+-- chplan --
+Project ["" AS MetricName, CAST(map(), "Map(String,String)") AS Attributes, now64(9) AS TimeUnix, toFloat64((toDayOfWeek(now()) % 7)) AS Value]
+  OneRow
+-- sql --
+SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, toFloat64((toDayOfWeek(now()) % ?)) AS `Value` FROM (SELECT 1)

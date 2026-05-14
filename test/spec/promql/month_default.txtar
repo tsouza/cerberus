@@ -1,0 +1,20 @@
+# `month()` — the zero-arg form. PromQL spec: `month()` ≡
+# `month(vector(time()))`. cerberus lowers it to a OneRow source
+# projecting (MetricName="", Attributes={}, TimeUnix=now64(9),
+# Value=toFloat64(toMonth(now()))). The `toFloat64` wrap is
+# load-bearing: CH's `toMonth` returns UInt8, and clickhouse-go/v2
+# refuses to scan UInt8 → *float64 (errors with
+# `converting UInt8 to *float64 is unsupported`). See
+# `internal/promql/date_fns.go` for the type-coercion rationale.
+
+-- query.promql --
+month()
+-- args --
+[0] string = ""
+[1] string = "Map(String,String)"
+[2] int64 = 9
+-- chplan --
+Project ["" AS MetricName, CAST(map(), "Map(String,String)") AS Attributes, now64(9) AS TimeUnix, toFloat64(toMonth(now())) AS Value]
+  OneRow
+-- sql --
+SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, toFloat64(toMonth(now())) AS `Value` FROM (SELECT 1)

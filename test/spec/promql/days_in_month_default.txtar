@@ -1,0 +1,21 @@
+# `days_in_month()` — the zero-arg form. CH has no direct
+# `daysInMonth` builtin; cerberus lowers via
+# `toDayOfMonth(toLastDayOfMonth(now()))` (the day-of-month of the
+# last day in the month IS the day count for that month).
+#
+# The OneRow source supplies the single row. The outer `toFloat64`
+# wrap is load-bearing: `toDayOfMonth` returns UInt8 and the cursor
+# decodes into `*float64` (errors with `converting UInt8 to *float64
+# is unsupported` without it).
+
+-- query.promql --
+days_in_month()
+-- args --
+[0] string = ""
+[1] string = "Map(String,String)"
+[2] int64 = 9
+-- chplan --
+Project ["" AS MetricName, CAST(map(), "Map(String,String)") AS Attributes, now64(9) AS TimeUnix, toFloat64(toDayOfMonth(toLastDayOfMonth(now()))) AS Value]
+  OneRow
+-- sql --
+SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, toFloat64(toDayOfMonth(toLastDayOfMonth(now()))) AS `Value` FROM (SELECT 1)
