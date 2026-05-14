@@ -18,7 +18,7 @@ import (
 // `topk` / `bottomk` change output shape (K rows per group) and stay
 // deferred to M1.7-style follow-ups; `quantile` requires a parameterised
 // CH aggregate that we already support for PromQL.
-func lowerVectorAggregation(e *syntax.VectorAggregationExpr, s schema.Logs) (chplan.Node, error) {
+func lowerVectorAggregation(e *syntax.VectorAggregationExpr, s schema.Logs, lc lowerCtx) (chplan.Node, error) {
 	if e.Left == nil {
 		return nil, fmt.Errorf("logql: vector-aggregation has nil inner")
 	}
@@ -27,7 +27,7 @@ func lowerVectorAggregation(e *syntax.VectorAggregationExpr, s schema.Logs) (chp
 	if !ok {
 		return nil, fmt.Errorf("logql: vector-aggregation inner is not an Expr (%T)", e.Left)
 	}
-	input, err := lower(innerExpr, s)
+	input, err := lower(innerExpr, s, lc)
 	if err != nil {
 		return nil, err
 	}

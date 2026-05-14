@@ -1,0 +1,35 @@
+-- query.logql --
+{service_name="api"}
+-- start --
+2026-05-14T12:03:20Z
+-- end --
+2026-05-14T12:05:00Z
+-- sql --
+SELECT * FROM `otel_logs` WHERE (`Timestamp` >= toDateTime64(?, ?)) AND (`Timestamp` <= toDateTime64(?, ?)) AND (`ResourceAttributes`[?] = ?)
+-- args --
+[0] string = "2026-05-14 12:03:20.000000000"
+[1] int64 = 9
+[2] string = "2026-05-14 12:05:00.000000000"
+[3] int64 = 9
+[4] string = "service_name"
+[5] string = "api"
+-- seed --
+CREATE TABLE otel_logs (
+    Timestamp DateTime64(9),
+    Body String MATERIALIZED '',
+    ResourceAttributes Map(String, String) MATERIALIZED map('service_name', 'api')
+) ENGINE = Memory;
+INSERT INTO otel_logs (Timestamp) VALUES
+    (toDateTime64('2026-05-14 12:00:00.000000000', 9)),
+    (toDateTime64('2026-05-14 12:01:40.000000000', 9)),
+    (toDateTime64('2026-05-14 12:03:20.000000000', 9)),
+    (toDateTime64('2026-05-14 12:05:00.000000000', 9)),
+    (toDateTime64('2026-05-14 12:06:40.000000000', 9));
+-- expected_rows --
+[
+  ["2026-05-14T12:03:20Z"],
+  ["2026-05-14T12:05:00Z"]
+]
+-- chplan --
+Filter predicate=((ResourceAttributes["service_name"] = "api") AND ((Timestamp >= toDateTime64("2026-05-14 12:03:20.000000000", 9)) AND (Timestamp <= toDateTime64("2026-05-14 12:05:00.000000000", 9))))
+  Scan(otel_logs)

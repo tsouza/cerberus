@@ -3,6 +3,7 @@ package logql
 import (
 	"context"
 	"net/http"
+	"time"
 
 	"github.com/grafana/loki/v3/pkg/logql/syntax"
 	"go.opentelemetry.io/otel/trace"
@@ -29,8 +30,18 @@ import (
 // The parser-stage spans (cerbtrace.SpanParse + cerbtrace.SpanLower)
 // open inside Parse so cerberus's trace shape stays identical to the
 // pre-engine handler.
+//
+// Start / End carry the request's wire-format [start, end] window so
+// the lowering can AND-fold a Timestamp BETWEEN predicate above every
+// Scan(LogsTable). Zero values disable the window injection (matches
+// the previous behaviour for callers that only care about the parse
+// + lower contract without an HTTP window). The handler constructs a
+// fresh *Lang per request; the long-lived bits (Schema) come from the
+// Handler so per-request allocation is cheap.
 type Lang struct {
 	Schema schema.Logs
+	Start  time.Time
+	End    time.Time
 }
 
 // errorTypes mirrors the Loki errorType vocabulary the handler emits.
@@ -64,7 +75,7 @@ func (l *Lang) Parse(ctx context.Context, query string) (chplan.Node, engine.Met
 	}
 
 	lowerT := telemetry.ObserveStage(telemetry.StageLower)
-	plan, err := Lower(ctx, expr, l.Schema)
+	plan, err := LowerAt(ctx, expr, l.Schema, l.Start, l.End)
 	lowerT.Done(ctx)
 	if err != nil {
 		return nil, engine.Meta{}, &httperr.Error{

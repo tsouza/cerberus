@@ -57,9 +57,13 @@ type Handler struct {
 	// Optimizer + Client.
 	Engine *engine.Engine
 
-	// Lang adapts LogQL to the engine pipeline — owns parse + lower +
-	// the metric-vs-stream wrap-projection switch. Held as a value
-	// pointer so the Schema field can travel with it.
+	// Lang is a long-lived template adapter — its Schema is the
+	// canonical handle the metadata endpoints share. The /query and
+	// /query_range handlers DO NOT reuse this instance: they construct
+	// a fresh *logql.Lang per request via langForRequest so the
+	// request's [start, end] window threads into the lowering as a
+	// `Timestamp BETWEEN ?` predicate. Held as a pointer so the
+	// metadata path can pivot on the same schema without re-allocating.
 	Lang *logql.Lang
 
 	// Limiter caps in-flight Loki API requests. nil disables the
@@ -136,7 +140,13 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := h.Engine.Query(r.Context(), h.Lang, q)
+	// Instant /query: collapse the window onto a single point. Per
+	// upstream Loki contract the evaluation lookback is the previous
+	// 5 minutes (the same instant-lookback PromQL uses). Threading
+	// [ts - 5m, ts] keeps the Scan filtered to that envelope so the
+	// SQL doesn't return every matching log in the table.
+	const instantLookback = 5 * time.Minute
+	res, err := h.Engine.Query(r.Context(), h.langForRequest(ts.Add(-instantLookback), ts), q)
 	if err != nil {
 		h.respondError(w, classifyEngineErr(err))
 		return
@@ -184,7 +194,7 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := h.Engine.Query(r.Context(), h.Lang, q)
+	res, err := h.Engine.Query(r.Context(), h.langForRequest(start, end), q)
 	if err != nil {
 		h.respondError(w, classifyEngineErr(err))
 		return
@@ -203,6 +213,17 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 		Status: "success",
 		Data:   data,
 	})
+}
+
+// langForRequest builds a per-request *logql.Lang carrying the request's
+// [start, end] window. The engine threads Start / End down through
+// logql.LowerAt so every Scan(LogsTable) gains a
+// `Timestamp BETWEEN start AND end` predicate at the SQL layer — the
+// fix for the wire-format contract violation where /query and
+// /query_range used to return every matching log row regardless of the
+// requested window.
+func (h *Handler) langForRequest(start, end time.Time) *logql.Lang {
+	return &logql.Lang{Schema: h.Schema, Start: start, End: end}
 }
 
 // writeEngineHeaders stamps the X-Cerberus-* response headers populated
