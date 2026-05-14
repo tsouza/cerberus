@@ -28,22 +28,22 @@ jobs:
       matrix:
         include:
           - phase: phase1
-            scope: ./internal/chplan/...
+            scope: ./internal/chplan
             efficacy: 80
           - phase: phase2
-            scope: ./internal/chsql/...
+            scope: ./internal/chsql
             efficacy: 75
           - phase: phase3-optimizer
-            scope: ./internal/optimizer/...
+            scope: ./internal/optimizer
             efficacy: 70
           - phase: phase4-promql
-            scope: ./internal/promql/...
+            scope: ./internal/promql
             efficacy: 65
           - phase: phase4-logql
-            scope: ./internal/logql/...
+            scope: ./internal/logql
             efficacy: 65
           - phase: phase4-traceql
-            scope: ./internal/traceql/...
+            scope: ./internal/traceql
             efficacy: 65
     steps:
       - uses: actions/checkout@v6
