@@ -23,7 +23,7 @@ ClickHouse is a great single store for all three signals. The only thing missing
 
 ## Status
 
-> 🚧 **`v1.0.0-RC2` candidate** — RC2 closes the advanced-QL backlog on top of RC1: PromQL subqueries (P0 4.1–4.11), `predict_linear` / `holt_winters` / `@start()` / `@end()`, `histogram_quantile` over classic + native (exp) histograms, `group_left` / `group_right` cardinality edges; LogQL `| unpack` / `| pattern` / `| line_format` / `| decolorize` / `| label_format` with Loki template funcs, `bytes_*` alignment, `/api/v1/tail` WebSocket, `/labels`, `/label/values`, `/series`, `/detected_fields`, `/patterns`, `/index/stats`, `/index/volume`; TraceQL set ops, link traversal + span-events, `histogram_over_time`, MetricsPipeline lowering, Tempo `/api/search/recent`, `/api/search/tags`, `/api/search/tag/<n>/values`, `/api/metrics/query_range`. The Tempo `unsafe.Pointer` shim is retired via the [`tsouza/tempo:cerberus-accessors`](https://github.com/tsouza/tempo/tree/cerberus-accessors) fork; the OTel CH Exporter schema is now the source of truth via [`tsouza/opentelemetry-collector-contrib:cerberus-ddl`](https://github.com/tsouza/opentelemetry-collector-contrib/tree/cerberus-ddl). See [`CHANGELOG.md`](CHANGELOG.md) for the full RC2 entry, and [`docs/roadmap.md`](docs/roadmap.md) for the path to v1.0.0.
+> **`v1.0.0` candidate.** Cerberus has shipped the full RC1–RC8 backlog: PromQL / LogQL / TraceQL parse + lowering, the pattern-based optimizer (transposes, PREWHERE promotion, late materialisation, MV substitution), the typed `chsql` SQL emitter, the shared `internal/engine` pipeline, full self-observability (`slog` + OTel traces + OTLP-exported metrics), 12-factor packaging (`/readyz`, admission control, `docker compose up` for one-command local dev), and the chDB-backed round-trip + property test suites. Upstream parser shims are retired via the [`tsouza/tempo:cerberus-accessors`](https://github.com/tsouza/tempo/tree/cerberus-accessors) fork; the schema source of truth is [`tsouza/opentelemetry-collector-contrib:cerberus-ddl`](https://github.com/tsouza/opentelemetry-collector-contrib/tree/cerberus-ddl). See [`CHANGELOG.md`](CHANGELOG.md) for the per-release breakdown.
 
 ## Architecture
 
@@ -91,14 +91,14 @@ Loki + Tempo). ClickHouse data persists in a named volume; use
 
 ### From a published release
 
-Pull the container image (pin to a specific RC — `:latest` is **only**
-advanced by stable releases; RC / alpha / beta tags don't move it):
+Pull the container image (`:latest` is **only** advanced by stable
+releases; RC / alpha / beta tags don't move it):
 
 ```sh
-docker pull ghcr.io/tsouza/cerberus:v1.0.0-RC2
+docker pull ghcr.io/tsouza/cerberus:v1.0.0
 docker run --rm -p 8080:8080 \
   -e CERBERUS_CH_ADDR=clickhouse:9000 \
-  ghcr.io/tsouza/cerberus:v1.0.0-RC2
+  ghcr.io/tsouza/cerberus:v1.0.0
 ```
 
 Or download a prebuilt binary from the [release page](https://github.com/tsouza/cerberus/releases)
@@ -155,14 +155,14 @@ internal/
   config/                # runtime config
 test/
   spec/                  # TXTAR fixture-driven tests
-  e2e/                   # k3d + playwright (PR8)
+  e2e/                   # k3d + playwright
 deploy/k3s/              # Kubernetes manifests
 deploy/grafana/          # provisioned datasources + dashboards
 ```
 
 ## Contributing
 
-Open an issue or a discussion before opening a large PR — the seed is opinionated and the architecture lockdown is recent. Smaller PRs (a new optimizer rule, a new TXTAR fixture, a parser-dep bump) are welcome any time. See [CONTRIBUTING.md](CONTRIBUTING.md) (lands in PR9).
+Open an issue or a discussion before opening a large PR — the seed is opinionated and the architecture lockdown is recent. Smaller PRs (a new optimizer rule, a new TXTAR fixture, a parser-dep bump) are welcome any time. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
