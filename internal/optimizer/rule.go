@@ -98,15 +98,15 @@ func NewWithBatches(batches ...Batch) *Driver {
 //     the identities are ergonomic — they shrink emitted SQL but the
 //     result is correct either way.
 //   - "optimizer.predicate-pushdown" (FixedPoint) — FilterFusion + the
-//     two R3.2 transpose rules can unlock each other: fuse adjacent
-//     filters, transpose the fused filter through Project / Aggregate,
-//     then possibly fuse again as new neighbours appear. Iteration is
+//     transpose rules can unlock each other: fuse adjacent filters,
+//     transpose the fused filter through Project / Aggregate, then
+//     possibly fuse again as new neighbours appear. Iteration is
 //     load-bearing here.
 //   - "optimizer.projection" (FixedPoint) — ProjectionPushdown may
 //     iterate as pushdown unused-column elimination cascades through
 //     nested Projects. Today only one pass changes anything, but the
-//     strategy leaves room for follow-up rules (R3.7) to land in this
-//     batch without changing wiring.
+//     strategy leaves room for follow-up rules to land in this batch
+//     without changing wiring.
 //   - "optimizer.mv-substitution" (FixedPoint) — MVSubstitution
 //     rewrites `RangeWindow(Scan(base))` to `RangeWindow(Scan(rollup))`
 //     when the operator has declared a pre-aggregated rollup whose
@@ -168,13 +168,12 @@ func DefaultWithSchema(metrics schema.Metrics) *Driver {
 // when they rewrite.
 //
 // The ctx parameter carries the parent OpenTelemetry span (typically
-// the otelhttp request span installed in RC4 R4.2). Run wraps the
-// whole pass in an `optimize` pipeline-stage span so a query's flame
-// graph shows how long rule iteration took. The total number of
-// rule-application changes is surfaced as `cerberus.rules_applied`
-// on the span and as the `cerberus.optimizer.rules_applied` histogram
-// (RC4 R4.4) so dashboards can aggregate how much rewriting the
-// optimizer is doing across the fleet.
+// the otelhttp request span). Run wraps the whole pass in an
+// `optimize` pipeline-stage span so a query's flame graph shows how
+// long rule iteration took. The total number of rule-application
+// changes is surfaced as `cerberus.rules_applied` on the span and as
+// the `cerberus.optimizer.rules_applied` histogram so dashboards can
+// aggregate how much rewriting the optimizer is doing across the fleet.
 func (d *Driver) Run(ctx context.Context, plan chplan.Node) chplan.Node {
 	_, span := tracer.Start(ctx, cerbtrace.SpanOptimize)
 	defer span.End()

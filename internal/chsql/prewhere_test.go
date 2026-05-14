@@ -298,7 +298,7 @@ func TestProjectionTouchesWide(t *testing.T) {
 }
 
 // TestTableShapeForKnownTables covers the default OTel-CH tables; the
-// codegen depends on these shapes for the R3.4 rewrites.
+// codegen depends on these shapes for the PREWHERE rewrites.
 func TestTableShapeForKnownTables(t *testing.T) {
 	t.Parallel()
 	for _, tbl := range []string{"otel_logs", "otel_traces", "otel_metrics_gauge", "otel_metrics_sum"} {

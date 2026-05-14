@@ -15,7 +15,7 @@ import (
 // panic-freedom: any panic surfaces as a fuzz crash with the offending
 // seed promoted to testdata/fuzz/FuzzParse/.
 //
-// RC3 R3.11 — seed corpus is intentionally small; CI runs `-fuzztime=120s`
+// The seed corpus is intentionally small; CI runs `-fuzztime=120s`
 // per parser weekly to grow the corpus organically.
 func FuzzParse(f *testing.F) {
 	seeds := []string{

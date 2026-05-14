@@ -72,8 +72,8 @@ type Traces struct {
 	// WideColumns lists the "fat" columns on the spans table — columns
 	// whose per-row payload is large enough that fetching them dominates
 	// the IO cost of a Scan. The chsql late-materialisation rewrite
-	// (RC3 R3.7, see docs/optimizer-research.md § 3) checks this list
-	// when a Project+Limit+Filter+Scan stack lands on this table: if any
+	// (see docs/optimizer-research.md § 3) checks this list when a
+	// Project+Limit+Filter+Scan stack lands on this table: if any
 	// of the projection's columns are wide, the inner SELECT skips them
 	// and an outer JOIN back fetches them only for the surviving rows.
 	//
@@ -122,7 +122,7 @@ func DefaultOTelTraces() Traces {
 		LinksColumn:           "Links",
 		TimestampColumn:       "Timestamp",
 		// Wide columns — large per-row payloads. Late materialisation
-		// (RC3 R3.7) defers fetching these until after filter+limit.
+		// defers fetching these until after filter+limit.
 		WideColumns: []string{"SpanAttributes", "ResourceAttributes", "Events", "Links"},
 		// (Timestamp, TraceId, SpanId) — TraceId+SpanId is the OTel
 		// natural key; Timestamp prefix matches the table sort order.

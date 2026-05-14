@@ -1,8 +1,10 @@
 # Shadow-mode differential testing harness
 
-> RC3 R3.9 scaffold. See [`docs/roadmap.md` § RC3](../../../docs/roadmap.md#advanced-testing).
-> Oracle wiring stubbed until [R3.10](../../../docs/roadmap.md#advanced-testing)
-> lands the in-process PromQL evaluator (`internal/promshim/local/`).
+> The CLI + diff machinery is in place. Oracle wiring is currently a
+> noop stub; the in-process PromQL evaluator lives at
+> `internal/promshim/local/` and can be plugged in here when the
+> shadow-mode pipeline is promoted from informational to a required
+> gate. See [`docs/roadmap.md` § RC3](../../../docs/roadmap.md).
 
 ## What "shadow mode" means
 
@@ -59,7 +61,7 @@ the end.
 harness/compatibility/
   docker-compose.yml         <-- existing: reference Prom + cerberus + CH + seeder
   scripts/run-compatibility.sh
-  shadow/                    <-- this directory (RC3 R3.9)
+  shadow/                    <-- this directory
     cmd/shadow/main.go         CLI entry point
     differ.go                  pure diff function
     corpus.go                  TXTAR corpus loader
@@ -67,8 +69,8 @@ harness/compatibility/
 ```
 
 The Docker Compose stack remains the heavyweight reference; shadow mode is the
-in-process companion. They share the corpus format eventually (R3.10 follow-up)
-but ship independently.
+in-process companion. They can share the corpus format in a follow-up,
+but ship independently today.
 
 ## Usage
 
@@ -109,11 +111,11 @@ flips the global flag to `force-native`).
 
 ## Oracle stub
 
-Until R3.10 lands, the binary ships with a `noopOracle` that returns
-`OracleSkipped` for every query. Under `prefer-native` this is fine — the
-native answer is returned and the diff is recorded as "oracle skipped"
-(non-fatal). Under `force-native` or `oracle-only`, the binary exits with
-code `3` to make the missing dependency loud.
+The binary ships with a `noopOracle` that returns `OracleSkipped` for
+every query. Under `prefer-native` this is fine — the native answer is
+returned and the diff is recorded as "oracle skipped" (non-fatal).
+Under `force-native` or `oracle-only`, the binary exits with code `3`
+to make the missing dependency loud.
 
 The wiring point is a single interface:
 
@@ -123,10 +125,11 @@ type OracleProvider interface {
 }
 ```
 
-R3.10 will swap `noopOracle` for `promshimlocal.New(...)`.
+Wiring `internal/promshim/local/` in here (`promshimlocal.New(...)`)
+is the natural next step.
 
 ## Status
 
-**Scaffold only.** Native evaluator wiring is a real HTTP client; oracle is
-stubbed. Workflow is `workflow_dispatch` only — it does not run on PRs or
-nightly until R3.10 unblocks the oracle.
+Native evaluator wiring is a real HTTP client; oracle is stubbed.
+Workflow is `workflow_dispatch` only — it does not run on PRs or
+nightly. Promote to a required gate once the oracle is wired.

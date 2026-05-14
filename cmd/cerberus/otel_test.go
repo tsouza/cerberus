@@ -13,12 +13,13 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// TestWrapWithOTel_EmitsRouteSpan exercises the full R4.2 wiring path: a
-// real http.ServeMux with registered patterns, wrapped via wrapWithOTel,
-// served through httptest, and verified via an in-memory span recorder.
-// The assertion is purposefully tight: one span, named after the matched
-// pattern. This is the contract R4.3 depends on when it attaches child
-// spans for parse / lower / optimize / emit.
+// TestWrapWithOTel_EmitsRouteSpan exercises the full otelhttp wiring
+// path: a real http.ServeMux with registered patterns, wrapped via
+// wrapWithOTel, served through httptest, and verified via an in-memory
+// span recorder. The assertion is purposefully tight: one span, named
+// after the matched pattern. This is the contract the pipeline-stage
+// spans (parse / lower / optimize / emit / execute) depend on when
+// they attach as children.
 func TestWrapWithOTel_EmitsRouteSpan(t *testing.T) {
 	exporter := tracetest.NewInMemoryExporter()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
@@ -91,8 +92,8 @@ func TestWrapWithOTel_FallbackSpanName(t *testing.T) {
 	}
 }
 
-// TestWrapWithOTel_PropagatesTraceContext verifies the second half of
-// R4.2: incoming `traceparent` headers are honored so the handler's
+// TestWrapWithOTel_PropagatesTraceContext verifies that incoming
+// `traceparent` headers are honored so the handler's
 // http.Request.Context() carries the inbound trace ID. Grafana sets
 // traceparent on every datasource query — without this, cerberus spans
 // would be orphaned from the user-initiated trace.

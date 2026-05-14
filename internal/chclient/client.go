@@ -147,7 +147,7 @@ func (c *Client) Exec(ctx context.Context, sql string, args ...any) error {
 // Query is a thin wrapper around QueryCursor that drains the cursor into
 // a slice. Callers that may return millions of rows (notably
 // /api/v1/query_range) should use QueryCursor directly to keep memory
-// bounded — see R3.12 in docs/roadmap.md.
+// bounded.
 func (c *Client) Query(ctx context.Context, sql string, args ...any) ([]Sample, error) {
 	cursor, err := c.QueryCursor(ctx, sql, args...)
 	if err != nil {

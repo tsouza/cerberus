@@ -1,4 +1,4 @@
-// Package shadow implements the RC3 R3.9 shadow-mode differential testing
+// Package shadow implements the shadow-mode differential testing
 // harness.
 //
 // The harness runs each query through cerberus (native path) and an in-process

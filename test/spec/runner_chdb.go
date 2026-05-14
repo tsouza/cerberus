@@ -12,7 +12,7 @@
 // (with `args:` bound), and asserts the resulting rows match the
 // `expected_rows:` JSON. Map columns are wrapped server-side in
 // `toJSONString(...)` to dodge the native parquet Map scan panic
-// documented in chDB probe (RC8 R8.0).
+// documented by the chDB driver probe.
 package spec
 
 import (
@@ -208,7 +208,7 @@ func unquoteBackticks(s string) string {
 // extractProjectionCount counts top-level SELECT projections by
 // re-splitting the outer SELECT's projection list on depth-0 commas.
 // Used to size the scan-target slice without calling
-// rows.ColumnTypes() (which panics on Map columns per the R8.0 probe).
+// rows.ColumnTypes() (which panics on Map columns per the chDB probe).
 func extractProjectionCount(query string) int {
 	head, _ := splitOuterSelect(query)
 	if head == "" {
@@ -352,7 +352,7 @@ func RunRoundTrip(t *testing.T, c *Case) {
 		// native Go value (string, int64, float64, time.Time, []byte)
 		// per chdb/driver/parquet.go's switch table. This sidesteps
 		// rows.ColumnTypes() (which panics on Map columns per the
-		// R8.0 probe).
+		// chDB driver probe).
 		cells := make([]any, colCount)
 		ptrs := make([]any, colCount)
 		for i := range cells {

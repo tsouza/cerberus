@@ -51,10 +51,9 @@ func (e *emitter) emitSelect(sb *QueryBuilder) {
 }
 
 // splice drains b's accumulated SQL + args into the emitter. Retained
-// for the grandfathered emitters in vector_join.go / structural_join.go
-// that still compose SQL fragments through a free-standing *Builder
-// before flushing to the shared emitter state. R6.6 collapses those
-// onto QueryBuilder and removes this helper.
+// for the emitters in vector_join.go / structural_join.go that still
+// compose SQL fragments through a free-standing *Builder before
+// flushing to the shared emitter state.
 func (e *emitter) splice(b *Builder) {
 	sql, args := b.Build()
 	e.b.WriteString(sql)
@@ -169,7 +168,7 @@ func conjunctionFrag(exprs []chplan.Expr) Frag {
 }
 
 func (e *emitter) emitProject(p *chplan.Project) error {
-	// Late materialisation (RC3 R3.7): when this Project sits atop a
+	// Late materialisation: when this Project sits atop a
 	// Limit(Filter?(Scan)) over a wide-column table AND the projection
 	// references a wide column, emit the two-stage rewrite (inner thin
 	// SELECT + JOIN back for wide columns) instead of the canonical

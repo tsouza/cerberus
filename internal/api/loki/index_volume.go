@@ -163,9 +163,9 @@ func buildIndexVolumeSQL(
 // here composes the mapFilter body inline: the outer Call("mapFilter",
 // …) is typed, the lambda head is composed via Builder.Lambda, and
 // the bare lambda-parameter reference `k` inside In's left slot uses
-// chsql.BareIdent (the typed constructor introduced by R6.12.f for
-// CH-safe bare identifiers — narrow trust contract, no backtick
-// quoting). All composition lives inside the typed Frag surface.
+// chsql.BareIdent (the typed constructor for CH-safe bare identifiers
+// — narrow trust contract, no backtick quoting). All composition lives
+// inside the typed Frag surface.
 func volumeGroupFrag(s schema.Logs, targetLabels []string, aggregateBy string) chsql.Frag {
 	if len(targetLabels) == 0 || aggregateBy == "series" {
 		return chsql.Col(s.ResourceAttributesColumn)

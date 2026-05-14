@@ -117,9 +117,8 @@ func histogramBucketFrag(attr chplan.Expr, isDuration bool) Frag {
 		Call("log2", attrFrag)(b)
 		if isDuration {
 			// "/ 1e9" — inline divisor (query-shape constant, not user
-			// data); no typed Frag for inline-int literals so the suffix
-			// is appended via direct write. Flagged for R6.12.f if/when
-			// an InlineLit / RawLit Frag lands.
+			// data); appended via direct write because the surrounding
+			// emitter expects a writer callback, not a Frag.
 			b.sb.WriteString(" / 1000000000")
 		}
 	}

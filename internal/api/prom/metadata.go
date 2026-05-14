@@ -546,8 +546,8 @@ func distinctMapAtFrag(col, key string) chsql.Frag {
 // and the empty-string sentinel as positional args — the WHERE
 // predicate that drops the empty-string CH returns when a Map key is
 // absent. The empty-string RHS is parameterised through chsql.Lit so
-// the whole expression stays inside the typed Frag surface (R6.12.f
-// retired the Raw / Concat escape hatches).
+// the whole expression stays inside the typed Frag surface (the public
+// Raw / Concat escape hatches were retired).
 func mapAtNotEmptyFrag(col, key string) chsql.Frag {
 	mapAt := chsql.Frag(func(b *chsql.Builder) { b.MapAt(col, key) })
 	return chsql.Neq(mapAt, chsql.Lit(""))

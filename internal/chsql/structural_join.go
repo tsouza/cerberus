@@ -31,10 +31,9 @@ import (
 // iteration. MaxDepth (when > 0) caps the iteration count; 0 means
 // unbounded. The final SELECT inner-joins R against the closure.
 //
-// Ported to chsql.QueryBuilder at RC6 R6.6: the direct case uses the
-// new QueryBuilder.Join slot; the recursive case uses the new
-// QueryBuilder.WithRecursive slot for the WITH RECURSIVE … UNION ALL
-// CTE shape.
+// The direct case uses the QueryBuilder.Join slot; the recursive case
+// uses the QueryBuilder.WithRecursive slot for the WITH RECURSIVE …
+// UNION ALL CTE shape.
 func (e *emitter) emitStructuralJoin(j *chplan.StructuralJoin) error {
 	if j.TraceIDColumn == "" || j.SpanIDColumn == "" || j.ParentSpanIDColumn == "" {
 		return fmt.Errorf("%w: StructuralJoin column names unset", ErrUnsupported)

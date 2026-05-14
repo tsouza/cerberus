@@ -3,8 +3,8 @@
 // flowing through the gateway, how long each pipeline stage takes, and
 // how much ClickHouse work each query did.
 //
-// Spans (RC4 R4.2 / R4.3) and metrics (this package, RC4 R4.4) are
-// complementary: spans tell a per-request story (one trace per query),
+// Spans (per-request, owned by cerbtrace) and metrics (this package)
+// are complementary: spans tell a per-request story (one trace per query),
 // metrics aggregate the same events into cheap dashboard-friendly
 // counters / histograms. The two sets share their attribute namespace
 // (`cerberus.*`) so dashboards can pivot on the same fields.
@@ -33,9 +33,8 @@ import (
 // scope is greppable across cerberus's instruments.
 const meterName = "github.com/tsouza/cerberus/internal/telemetry"
 
-// Attribute keys shared with cerbtrace (when R4.3 lands) so dashboards
-// pivot on the same names whether the source is a span attribute or a
-// metric label.
+// Attribute keys shared with cerbtrace so dashboards pivot on the same
+// names whether the source is a span attribute or a metric label.
 const (
 	// AttrQL is the query language: "promql", "logql", or "traceql".
 	AttrQL = attribute.Key("cerberus.ql")
@@ -49,9 +48,9 @@ const (
 	AttrStage = attribute.Key("stage")
 )
 
-// Stage names. Mirrored from R4.3's cerbtrace span names so a dashboard
-// can group histogram buckets by the same stage attribute the trace
-// view uses.
+// Stage names. Mirrored from cerbtrace's span names so a dashboard can
+// group histogram buckets by the same stage attribute the trace view
+// uses.
 const (
 	StageParse    = "parse"
 	StageLower    = "lower"
@@ -196,8 +195,8 @@ func mustBuild(meter metric.Meter) *Instruments {
 }
 
 // Install replaces the process-global MeterProvider with mp. Passing
-// nil installs a no-op provider — the safe default until R4.5 wires
-// real OTLP metric exporters. Mirrors the spirit of cmd/cerberus's
+// nil installs a no-op provider — the safe default when no OTLP
+// exporter is configured. Mirrors the spirit of cmd/cerberus's
 // installOTel for tracer providers, and resets the instrument cache so
 // the next Get() rebuilds against the new provider.
 func Install(mp metric.MeterProvider) {

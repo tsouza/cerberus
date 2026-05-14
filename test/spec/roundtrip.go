@@ -23,7 +23,7 @@
 //     the emitted `sql:`. Map(String,String) columns appear as JSON
 //     objects ({"job":"api"}) — the runner round-trips Map columns
 //     through `toJSONString(...)` server-side and decodes them on the
-//     Go side (per R8.0's chdb-go probe, native Map scan panics in
+//     Go side (per the chDB driver probe, native Map scan panics in
 //     parquet-go inside chdb-go v1.11.0).
 //
 // We chose JSON over TSV for `expected_rows:` because Map columns

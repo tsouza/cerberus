@@ -8,9 +8,9 @@
 //
 // The default `just test` lane stays CGO_ENABLED=0 and never compiles
 // this package — every file is gated behind the `chdb` build tag, the
-// same tag the chDB probe (RC8 R8.0) and the TXTAR round-trip runner
-// (RC8 R8.1) use. The `chdb` CI job runs after `just chdb-install` has
-// placed libchdb.so at /usr/local/lib.
+// same tag the chDB driver probe and the TXTAR round-trip runner use.
+// The `chdb` CI job runs after `just chdb-install` has placed
+// libchdb.so at /usr/local/lib.
 //
 // Map column scan: chdb-go v1.11.0's parquet driver panics on the
 // Parquet MAP logical type, so every emitted SQL that projects a

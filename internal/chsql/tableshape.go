@@ -124,9 +124,9 @@ func buildDefaultTableShapes() map[string]TableShape {
 	// Attributes, toUnixTimestamp64Nano(TimeUnix)). The schema package
 	// doesn't carry a Metrics.WideColumns field yet, so the wide set is
 	// supplied inline — ResourceAttributes and ScopeAttributes are the
-	// large maps; Exemplars is a Nested column. R3.7 will extend
-	// schema.Metrics with WideColumns + RowKey; this list moves there
-	// at the same time.
+	// large maps; Exemplars is a Nested column. A future refactor can
+	// extend schema.Metrics with WideColumns + RowKey and move this list
+	// there.
 	metricsShape := TableShape{
 		SortColumns: []string{
 			metrics.ServiceNameColumn,

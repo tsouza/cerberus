@@ -13,15 +13,13 @@ import (
 // positional `?` argument slice that the chclient driver binds.
 //
 // Builder is the public, named version of the private emitter struct in
-// emit.go. As of RC6 R6.1 it is pure scaffolding — no emit_*.go function
-// uses it yet; R6.2–R6.10 port each emit function in turn. The
-// architectural intent (per docs/sql-builder-evaluation.md) is to expose
-// the same `strings.Builder` + `[]any` args primitives the emitter
-// already uses, plus a handful of CH-specific helpers (MapAt, MapKeys,
+// emit.go. The architectural intent (per docs/sql-builder-evaluation.md)
+// is to expose the same `strings.Builder` + `[]any` args primitives the
+// emitter uses, plus a handful of CH-specific helpers (MapAt, MapKeys,
 // MapFilterExcept, Now64, SubtractNanos, DateTime64Lit, Lambda,
 // ParamAgg) and a QueryBuilder with first-class PREWHERE, JOIN, and
-// WITH RECURSIVE slots so the RC3 optimizer rules can compose SQL
-// fragments without re-parsing rendered strings.
+// WITH RECURSIVE slots so the optimizer rules can compose SQL fragments
+// without re-parsing rendered strings.
 //
 // The zero value is ready to use.
 type Builder struct {
@@ -44,9 +42,9 @@ func (b *Builder) Args() []any { return b.args }
 // its positional argument slice.
 func (b *Builder) Build() (string, []any) { return b.sb.String(), b.args }
 
-// writeSQL appends raw SQL text. Unexported as of R6.11e — external
-// packages must use the typed surface (QueryBuilder slots + Frag
-// constructors like Eq / And / Paren / Cast). In-package callers
+// writeSQL appends raw SQL text. Unexported — external packages must
+// use the typed surface (QueryBuilder slots + Frag constructors like
+// Eq / And / Paren / Cast). In-package callers
 // (histogram_quantile.go, vector_join.go, structural_join.go,
 // set_op.go) use this for operator-token-style glue inside Frag
 // callbacks; clause keywords still go through QueryBuilder slots.
@@ -59,8 +57,7 @@ func (b *Builder) writeSQL(s string) { b.sb.WriteString(s) }
 
 // Ident appends a ClickHouse identifier with backtick quoting, doubling
 // any embedded backticks. Mirrors writeIdent in emit_node.go and
-// quoteIdent in range_window.go; R6.2+ replaces both call sites with
-// this method.
+// quoteIdent in range_window.go.
 func (b *Builder) Ident(name string) {
 	b.sb.WriteByte('`')
 	b.sb.WriteString(strings.ReplaceAll(name, "`", "``"))
@@ -111,8 +108,7 @@ func (b *Builder) MapKeys(col string) {
 //
 // binding each key as a positional `?` argument. The shape mirrors
 // emit_expr.go's emitMapWithoutKeys (used by PromQL's ignoring(…)
-// modifier) and vector_join.go's mapFilter for the same purpose;
-// R6.4 / R6.6 collapse both call sites onto this helper.
+// modifier) and vector_join.go's mapFilter for the same purpose.
 //
 // Empty keys is a programmer error and panics: the resulting CH SQL
 // would always pass the filter, which is never the caller's intent
@@ -218,15 +214,9 @@ func (b *Builder) ParamAgg(name string, params, args []func(b *Builder)) {
 }
 
 // Expr renders a chplan.Expr through the Builder using the public
-// Builder helpers (Ident / Arg / etc.). It mirrors the legacy
-// emitter.emitExpr in emit_expr.go; RC6 R6.2 introduces this method so
-// the ported emitFilter / emitProject can emit predicates and
-// projection expressions without reaching into the private emitter.
-//
-// The legacy emitter.emitExpr is intentionally retained — it is the
-// canonical implementation until RC6 R6.4 ports the expression tree.
-// Both paths produce byte-identical SQL for every fixture; once the
-// rest of the emitter migrates, emitExpr collapses into this method.
+// Builder helpers (Ident / Arg / etc.). It is used by the ported
+// emitFilter / emitProject to emit predicates and projection expressions
+// without reaching into the private emitter.
 func (b *Builder) Expr(x chplan.Expr) error {
 	switch v := x.(type) {
 	case *chplan.ColumnRef:
@@ -448,9 +438,9 @@ func Lit(v any) Frag {
 // shape pins their lexical form.
 //
 // This is the package-private successor to the public chsql.Raw that
-// R6.12.f retired. External packages can't call it; in-package
-// callers reach for it sparingly and only for emitter-controlled
-// synthetic tokens. The public typed Frag surface (Call, BareIdent,
+// was retired. External packages can't call it; in-package callers
+// reach for it sparingly and only for emitter-controlled synthetic
+// tokens. The public typed Frag surface (Call, BareIdent,
 // InlineLit, Subscript, Array, If, Lambda1, Subquery, …) covers the
 // general case.
 func verbatim(sql string) Frag {
@@ -896,9 +886,8 @@ type Subqueryable interface {
 //
 // Both *QueryBuilder and the chsql-public PreRenderedSQL adapter
 // satisfy Subqueryable. The latter is the one documented escape for
-// SQL produced by the legacy string emitter (chsql.Emit) until a
-// future R6.x port collapses that emitter into the QueryBuilder
-// surface.
+// SQL produced by the legacy string emitter (chsql.Emit) — a future
+// port can collapse that emitter into the QueryBuilder surface.
 func Subquery(s Subqueryable) Frag {
 	return func(b *Builder) {
 		sql, args := s.Build()
@@ -913,8 +902,8 @@ func Subquery(s Subqueryable) Frag {
 // Subqueryable so it can flow through Subquery without raw-string
 // composition. Holds an opaque CH SQL string plus its positional args;
 // reserved for legacy chsql.Emit output that pre-dates the
-// QueryBuilder migration. A future R6.x milestone will port chsql.Emit
-// to return a *QueryBuilder directly and retire this type.
+// QueryBuilder migration. A future port can move chsql.Emit to return
+// a *QueryBuilder directly and retire this type.
 //
 // Don't reach for this for newly written code — compose with
 // QueryBuilder + typed Frags instead.
@@ -1086,8 +1075,8 @@ type joinClause struct {
 //	WITH RECURSIVE <name> AS (<anchor> UNION ALL <recursive>)
 //
 // Non-recursive CTEs render the anchor alone (no UNION ALL). Only
-// recursive CTEs are wired up at R6.6 — the non-recursive case is
-// reserved for a future R6.x port.
+// recursive CTEs are wired up today — the non-recursive case is
+// reserved for a future port if needed.
 type cteClause struct {
 	Name      string
 	Anchor    *QueryBuilder
@@ -1101,9 +1090,9 @@ type cteClause struct {
 //
 // PREWHERE is a first-class slot, distinct from WHERE. ClickHouse
 // evaluates PREWHERE before WHERE on the primary-key columns,
-// pruning rows before the full row read; RC3's optimizer rules
-// promote predicates from WHERE → PREWHERE when the predicate
-// only references sort-key columns. Modelling PREWHERE separately
+// pruning rows before the full row read; the optimizer's PREWHERE
+// promotion rule moves predicates from WHERE → PREWHERE when the
+// predicate only references sort-key columns. Modelling PREWHERE separately
 // here means those rewrites are slot-level operations rather than
 // string rewrites on rendered SQL.
 //
@@ -1190,8 +1179,8 @@ func (s *QueryBuilder) Join(kind JoinKind, src, on Frag) *QueryBuilder {
 //
 // Multiple WithRecursive calls chain — rendered as a single
 // `WITH RECURSIVE <n1> AS (...), <n2> AS (...)` head per CH syntax.
-// At R6.6 only structural_join.go uses one CTE per emit; the
-// multi-CTE shape is reserved for future ports.
+// Only structural_join.go uses one CTE per emit today; the multi-CTE
+// shape is reserved for future ports.
 //
 // Passing a nil anchor or recursive panics at render time.
 func (s *QueryBuilder) WithRecursive(name string, anchor, recursive *QueryBuilder) *QueryBuilder {

@@ -223,8 +223,8 @@ func mapContainsFrag(col, key string) chsql.Frag {
 
 // mapAtFrag emits "`<col>`[?]" — CH's Map column access shape — with
 // key bound as a positional argument. Composed via the typed
-// chsql.Subscript constructor introduced by R6.12.f, with the column
-// flowing through Col (backtick-quoted) and the key through Lit
+// typed chsql.Subscript constructor, with the column flowing through
+// Col (backtick-quoted) and the key through Lit
 // (`?`-bound). Equivalent to Builder.MapAt but exposed as a typed
 // Frag for QueryBuilder slot composition.
 func mapAtFrag(col, key string) chsql.Frag {

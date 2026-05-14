@@ -38,8 +38,8 @@ import (
 //
 //   - HeaderStrategy   — execution-path label. "trace-by-id" for the
 //     Tempo /traces/{id} short-circuit, "native" otherwise. Reserved
-//     values for future strategies: "mv-substituted" (R3.6) and
-//     "shadow-fallback" (R3.9+).
+//     values for future strategies: "mv-substituted" (when the rule
+//     fires) and "shadow-fallback" (oracle pivot).
 //   - HeaderPlanNodes  — post-optimize plan node count (chplan tree
 //     walked depth-first). Useful for debug dashboards + cost-shape
 //     telemetry.

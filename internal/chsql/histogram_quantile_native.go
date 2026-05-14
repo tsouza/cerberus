@@ -137,7 +137,7 @@ func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative) Frag {
 		// idx = arrayFirstIndex(c -> c >= phi*total, cum).
 		// Lambda body uses bound var `c`; Builder.Lambda emits "(c) ->"
 		// which drifts vs. "c ->" output, so the in-package writeSQL
-		// path is kept here. Flagged for R6.12.f.
+		// path is kept here.
 		writeIdx := func() {
 			b.writeSQL("arrayFirstIndex(c -> c >= (")
 			b.writeSQL(phi)

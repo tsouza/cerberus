@@ -13,10 +13,10 @@ import (
 )
 
 // lateMatFixtureDir holds the TXTAR goldens for the
-// late-materialisation codegen (RC3 R3.7). Kept separate from the
-// general chsql/ fixture directory so the rewrite's emission shape is
-// easy to scan as a group; the trigger pattern and the no-op
-// fall-through cases live side by side.
+// late-materialisation codegen rewrite. Kept separate from the general
+// chsql/ fixture directory so the rewrite's emission shape is easy to
+// scan as a group; the trigger pattern and the no-op fall-through cases
+// live side by side.
 var lateMatFixtureDir = filepath.Join("..", "..", "test", "spec", "codegen", "late_mat")
 
 // lateMatPlans maps each fixture base name to its source chplan tree.

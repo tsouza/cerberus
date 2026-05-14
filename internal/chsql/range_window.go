@@ -595,11 +595,11 @@ func groupArrayPairFrag(tsCol, valCol string) Frag {
 
 // windowFilterPairsFrag returns a Frag rendering the per-series
 // arrayFilter clamp to the [end-range, end] window over the
-// `series_array` alias. Thin wrapper over chsql.RangeWindowFilter
-// (R6.13's typed compound-idiom helper); kept as a local helper so
-// the rangeNS-arithmetic stays a single inline literal rather than
-// repeated `Sub(end, Call("toIntervalNanosecond", …))` boilerplate
-// at every callsite.
+// `series_array` alias. Thin wrapper over the chsql.RangeWindowFilter
+// typed compound-idiom helper; kept as a local helper so the
+// rangeNS-arithmetic stays a single inline literal rather than repeated
+// `Sub(end, Call("toIntervalNanosecond", …))` boilerplate at every
+// callsite.
 //
 // end may render arbitrary CH expressions (DateTime64 literal,
 // `now64(9)`, or `anchor_ts` in the matrix path); the rangeNS bound
@@ -620,10 +620,10 @@ func windowFilterPairsFrag(end Frag, rangeNS int64) Frag {
 //
 // The inner 5-function sandwich (the two arrayPopBack/Front layers
 // over the value-projection arrayMap, paired by the outer arrayMap)
-// is delegated to chsql.CounterDelta — R6.13's typed compound-idiom
-// helper. The outer arraySum stays here because rate / increase
-// reduce the per-pair delta array to a scalar; emitters that wanted
-// the raw delta array could call CounterDelta directly.
+// is delegated to chsql.CounterDelta — a typed compound-idiom helper.
+// The outer arraySum stays here because rate / increase reduce the
+// per-pair delta array to a scalar; emitters that wanted the raw delta
+// array could call CounterDelta directly.
 func counterDeltaFrag() Frag {
 	return Call("arraySum", CounterDelta(BareIdent("window_pairs")))
 }
@@ -707,8 +707,8 @@ func (e *emitter) emitRangeWindowIdentity(r *chplan.RangeWindow) error {
 // PromQL's counter `rate`, which uses counter-reset-aware deltas.
 //
 // range_seconds binds as a parameter via the value-writer callback so
-// the emitter stays free of new Sprintf-on-SQL instances (RC6 rule).
-// The empty-window guard is delegated to chsql.IfNonZero (R6.13).
+// the emitter stays free of new Sprintf-on-SQL instances. The
+// empty-window guard is delegated to chsql.IfNonZero.
 func (e *emitter) emitRangeWindowLogRate(r *chplan.RangeWindow) error {
 	rangeSeconds := r.Range.Seconds()
 	return e.emitWindowedArray(r, IfNonZero(
