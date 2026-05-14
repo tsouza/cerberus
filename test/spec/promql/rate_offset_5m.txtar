@@ -1,14 +1,3 @@
-# TODO(empty-rows-audit): expected_rows stays empty here for two reasons.
-# (1) The seed inserts only 'other_metric' while the query targets a
-# different MetricName, so the inner Filter drops every row. (2) The
-# outer projection emits now64(9) for TimeUnix, which is wall-clock at
-# query time and so non-deterministic. To populate real expected_rows,
-# both have to be addressed: align the seed with the queried metric AND
-# teach the chDB runner (test/spec/runner_chdb.go) to substitute now64()
-# for a fixed timestamp before execution. Until that lands, treat the
-# text-equality goldens (-- sql -- / -- chplan --) as the authoritative
-# coverage for these fixtures.
-
 -- query.promql --
 rate(http_server_request_duration_count[1m] offset 5m)
 -- sql --
@@ -23,9 +12,12 @@ CREATE TABLE otel_metrics_sum (
     Value Float64
 ) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
 INSERT INTO otel_metrics_sum VALUES
-    ('other_metric', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 10.0);
+    ('http_server_request_duration_count', map('job', 'api'), toDateTime64('2025-12-31 23:54:31', 9), 10.0),
+    ('http_server_request_duration_count', map('job', 'api'), toDateTime64('2025-12-31 23:55:00', 9), 40.0);
 -- expected_rows --
-[]
+[
+  [{"job": "api"}, 0.5]
+]
 -- chplan --
 RangeWindow func=rate range=1m0s step=0s offset=5m0s ts=TimeUnix value=Value groupBy=[Attributes]
   Filter predicate=(MetricName = "http_server_request_duration_count")
