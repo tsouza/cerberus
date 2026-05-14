@@ -1,0 +1,223 @@
+# Architectural-coupling rules for cerberus, enforced by `go-arch-lint`.
+#
+# The intent is the project's core layering, as described in CLAUDE.md:
+#
+#     parse → lower → optimize → emit → execute
+#
+# Concretely, the domain layers (lowest to highest) are:
+#
+#     chplan          — shared plan IR (no dependencies)
+#     ql              — promql / logql / traceql parsers + lowering
+#     optimizer       — rule-based plan rewrites
+#     chsql           — plan → ClickHouse SQL emitter
+#     chclient        — CH driver wrapper
+#     engine          — query pipeline orchestrator
+#     api             — HTTP handlers per upstream wire format
+#
+# Cross-cutting utility packages (declared as `commonComponents` so any
+# layer may import them) are:
+#
+#     schema          — OTel-CH default + override config; QL lowerings,
+#                       optimizer MV rules, and chsql emitters all need
+#                       column-name access.
+#     cerbtrace       — typed OTel span helpers (depends only on chplan).
+#     telemetry       — OTel SDK setup + meter registry.
+#     httperr         — typed HTTP-error carrier. Despite its location
+#                       under internal/api/, this package owns the
+#                       typed error value that engine adapters raise so
+#                       handlers can `errors.As` into the right wire
+#                       envelope. It is not part of the HTTP-handler
+#                       layer in the dependency graph; it is a leaf type
+#                       package. See its package doc-comment.
+#     api-admit       — shared admission-control middleware.
+#     api-format      — wire-format helpers shared across handlers.
+#     api-health      — readiness probe.
+#     promshim-local  — Prometheus-engine reference shim for property
+#                       tests (test-only consumer).
+#     schema-ddl      — OTel-CH DDL helpers (config consumes; isolated).
+#     chclienttest    — chclient test helpers.
+#
+# Deviations from the strictest "domain layers only" interpretation of
+# the proposed rules:
+#
+#   - `optimizer` is allowed to import `chplan`, `schema`, and the
+#     utility components. The `schema` dep is load-bearing: the
+#     MV-substitution rule resolves materialised-view column names
+#     against the schema.
+#   - QL packages (`promql`, `logql`, `traceql`) import `chplan` and
+#     `schema`. `logql` additionally imports `httperr` + `engine`
+#     because the LogQL adapter implements `engine.Lang` and returns
+#     `*httperr.Error` values for the parse/lower error stages so the
+#     downstream handler can `errors.As` into the wire envelope. The
+#     same shape applies to `promql` and `traceql` once they migrate
+#     to the engine.Lang surface — keep parity for all three.
+#   - `api/loki`, `api/prom`, `api/tempo` import `optimizer` to wire
+#     a per-handler driver instance into the request pipeline. This is
+#     composition (the handler owns the driver), not violation of the
+#     "optimize sits below api" intuition.
+#   - `engine` imports `optimizer` + `chsql` + `chclient` because it
+#     is the orchestrator that walks parse → optimize → emit → execute.
+#     It does NOT import `promql` / `logql` / `traceql` directly; those
+#     are wired in through the `engine.Lang` interface at the handler
+#     layer.
+#
+# If you tighten any of these, expect a measurable refactor (the
+# adapter / handler wiring would need a different seam).
+
+version: 3
+
+# Bound the linter to the in-repo Go packages. test/, harness/, cmd/
+# code is checked by golangci-lint but exempt from arch-lint — they
+# legitimately reach across the IR / SQL / driver layers for fixtures
+# and entrypoints.
+workdir: internal
+
+# Enforce only internal component-layering rules. Vendor (third-party
+# import) checks are off — the heads legitimately consume their
+# upstream parsers and we don't want to maintain a vendor allow-list
+# for every transitively-pulled OTel / Loki / Prom subpackage.
+allow:
+  depOnAnyVendor: true
+
+# Skip *_test.go files. Tests legitimately reach across layer
+# boundaries to set up fixtures; arch-lint enforces the production
+# import graph.
+excludeFiles:
+  - ".*_test\\.go$"
+
+components:
+  # Domain layers.
+  chplan:    { in: chplan }
+  promql:    { in: promql }
+  logql:     { in: logql }
+  traceql:   { in: traceql }
+  optimizer: { in: optimizer }
+  chsql:     { in: chsql }
+  chclient:  { in: chclient }
+  engine:    { in: engine }
+  config:    { in: config }
+  api-loki:  { in: api/loki }
+  api-prom:  { in: api/prom }
+  api-tempo: { in: api/tempo }
+  # Cross-cutting utility packages — see commonComponents below.
+  schema:         { in: schema }
+  schema-ddl:     { in: schema/ddl }
+  cerbtrace:      { in: cerbtrace }
+  telemetry:      { in: telemetry }
+  httperr:        { in: api/httperr }
+  api-admit:      { in: api/admit }
+  api-format:     { in: api/format }
+  api-health:     { in: api/health }
+  promshim-local: { in: promshim/local }
+  chclienttest:   { in: chclienttest }
+
+# commonComponents are importable from every layer without an explicit
+# `mayDependOn` entry. These are the cross-cutting utility packages
+# documented in the header.
+commonComponents:
+  - schema
+  - schema-ddl
+  - cerbtrace
+  - telemetry
+  - httperr
+  - api-admit
+  - api-format
+  - api-health
+  - promshim-local
+  - chclienttest
+
+deps:
+  # chplan is the foundation. No internal dependencies declared — entries
+  # are omitted for leaf components since go-arch-lint requires every
+  # listed `mayDependOn` to be non-empty. Omitting the entry implicitly
+  # forbids all internal imports, which is what we want.
+
+  # QL layers parse upstream syntax and lower to chplan. The LogQL
+  # adapter has migrated to the engine.Lang interface, so it depends
+  # on `engine` for the typed contracts (engine.Meta etc); promql and
+  # traceql remain on the older shape and import only chplan + the
+  # utility commons. Mirror logql's surface in the next RC when the
+  # other two adapt to engine.Lang.
+  promql:
+    mayDependOn:
+      - chplan
+  logql:
+    mayDependOn:
+      - chplan
+      - engine
+  traceql:
+    mayDependOn:
+      - chplan
+
+  # The optimizer rewrites plans in place. It must not know about SQL
+  # emission, the CH driver, or HTTP handlers. (It may read schema via
+  # the commonComponents allowance for MV substitution.)
+  optimizer:
+    mayDependOn:
+      - chplan
+
+  # chsql lowers plans to SQL. It needs chplan (to walk). schema is
+  # available via commonComponents for column-name access. It must not
+  # import QL parsers or handlers.
+  chsql:
+    mayDependOn:
+      - chplan
+
+  # chclient is the CH driver wrapper. Pure execution layer.
+  # (mayDependOn intentionally omitted — see chplan comment.)
+
+  # engine is the orchestrator: parse → optimize → emit → execute.
+  # It does NOT import QL packages directly — QL adapters implement
+  # engine.Lang and are injected at construction time.
+  engine:
+    mayDependOn:
+      - chplan
+      - chsql
+      - chclient
+      - optimizer
+
+  # config is wired from cmd/ to build chclient + schema at boot.
+  config:
+    mayDependOn:
+      - chclient
+
+  # Handlers compose the full stack: QL parser, optimizer, engine,
+  # SQL emitter, CH driver. Each handler imports exactly its own
+  # language layer.
+  api-loki:
+    mayDependOn:
+      - chplan
+      - chsql
+      - chclient
+      - engine
+      - optimizer
+      - logql
+  api-prom:
+    mayDependOn:
+      - chplan
+      - chsql
+      - chclient
+      - engine
+      - optimizer
+      - promql
+  api-tempo:
+    mayDependOn:
+      - chplan
+      - chsql
+      - chclient
+      - engine
+      - optimizer
+      - traceql
+
+  # Utility components — `cerbtrace` pulls in `chplan`, `chclienttest`
+  # is a build-tagged (`chdb`) test helper that wraps chclient so each
+  # handler's test suite can drive a chDB session via the production
+  # Querier surface; the rest are leaves. Empty `mayDependOn` entries
+  # are omitted; commonComponents flow naturally so leaves don't need
+  # an entry here.
+  cerbtrace:
+    mayDependOn:
+      - chplan
+  chclienttest:
+    mayDependOn:
+      - chclient
