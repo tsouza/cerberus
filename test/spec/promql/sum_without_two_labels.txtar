@@ -1,14 +1,3 @@
-# TODO(empty-rows-audit): expected_rows stays empty here for two reasons.
-# (1) The seed inserts only 'other_metric' while the query targets a
-# different MetricName, so the inner Filter drops every row. (2) The
-# outer projection emits now64(9) for TimeUnix, which is wall-clock at
-# query time and so non-deterministic. To populate real expected_rows,
-# both have to be addressed: align the seed with the queried metric AND
-# teach the chDB runner (test/spec/runner_chdb.go) to substitute now64()
-# for a fixed timestamp before execution. Until that lands, treat the
-# text-equality goldens (-- sql -- / -- chplan --) as the authoritative
-# coverage for these fixtures.
-
 -- query.promql --
 sum without (instance, pod) (up)
 -- sql --
@@ -34,9 +23,14 @@ CREATE TABLE otel_metrics_gauge (
     Value Float64
 ) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
 INSERT INTO otel_metrics_gauge VALUES
-    ('other_metric', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 1.0);
+    ('up', map('job', 'api', 'instance', 'a', 'pod', 'p1'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
+    ('up', map('job', 'api', 'instance', 'b', 'pod', 'p2'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
+    ('up', map('job', 'web', 'instance', 'a', 'pod', 'p1'), toDateTime64('2026-01-01 00:00:00', 9), 1.0);
 -- expected_rows --
-[]
+[
+  ["", {"job": "api"}, "2026-01-01T00:00:01Z", 2.0],
+  ["", {"job": "web"}, "2026-01-01T00:00:01Z", 1.0]
+]
 -- chplan --
 Project ["" AS MetricName, gkey_0 AS Attributes, now64(9) AS TimeUnix, Value AS Value]
   Aggregate groupBy=[mapWithout(Attributes, [instance, pod]) AS gkey_0] funcs=[sum(Value) AS Value]

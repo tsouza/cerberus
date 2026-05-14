@@ -148,9 +148,49 @@ func lowerClamp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, er
 	return nil, fmt.Errorf("promql: unknown clamp function %s", c.Func.Name)
 }
 
-// projectValueOverInner wraps inner with a Project that keeps
-// MetricName / Attributes / Timestamp and replaces Value with newValue.
+// projectValueOverInner wraps inner with a Project that keeps the
+// label-bearing columns and replaces Value with newValue.
+//
+// The set of forwarded columns depends on the inner shape:
+//
+//   - LWR / Aggregate / Project / Filter / Scan: MetricName / Attributes
+//     / Timestamp are all in scope, so we forward all four columns.
+//
+//   - RangeWindow: the row-shape emitter projects only `Attributes` and
+//     a lowercase `value` alias — MetricName and TimeUnix never survive
+//     the windowed groupArray, and the emitter's value alias is
+//     deliberately distinct from the schema's ValueColumn so the
+//     subquery wrapper can chain a second RangeWindow on top. Asking
+//     for MetricName/TimeUnix or `Value` (capital) in the outer Project
+//     produced a CH `UNKNOWN_IDENTIFIER` at execution time (masked
+//     while the round-trip path treated `expected_rows: []` as a
+//     no-op). For this shape we forward only Attributes + the
+//     lowercase value, aliasing back to the schema column on the way
+//     out so callers can keep referencing `s.ValueColumn` uniformly.
+//
+// The text-equality goldens in test/spec/promql/ track both shapes; see
+// e.g. `edge_abs_over_rate.txtar` (instant fn over rate) and
+// `unary_minus_rate.txtar` (unary minus over rate).
 func projectValueOverInner(inner chplan.Node, s schema.Metrics, newValue chplan.Expr) chplan.Node {
+	if _, ok := inner.(*chplan.RangeWindow); ok {
+		// First rename the RangeWindow's lowercase `value` → ValueColumn
+		// so the outer Project's reference (s.ValueColumn baked into
+		// newValue at the caller) resolves cleanly.
+		renamed := &chplan.Project{
+			Input: inner,
+			Projections: []chplan.Projection{
+				{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}},
+				{Expr: &chplan.ColumnRef{Name: "value"}, Alias: s.ValueColumn},
+			},
+		}
+		return &chplan.Project{
+			Input: renamed,
+			Projections: []chplan.Projection{
+				{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}},
+				{Expr: newValue, Alias: s.ValueColumn},
+			},
+		}
+	}
 	return &chplan.Project{
 		Input: inner,
 		Projections: []chplan.Projection{

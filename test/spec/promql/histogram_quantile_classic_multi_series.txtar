@@ -1,18 +1,7 @@
-# TODO(empty-rows-audit): expected_rows stays empty here for two reasons.
-# (1) The seed inserts only 'other_metric' while the query targets a
-# different MetricName, so the inner Filter drops every row. (2) The
-# outer projection emits now64(9) for TimeUnix, which is wall-clock at
-# query time and so non-deterministic. To populate real expected_rows,
-# both have to be addressed: align the seed with the queried metric AND
-# teach the chDB runner (test/spec/runner_chdb.go) to substitute now64()
-# for a fixed timestamp before execution. Until that lands, treat the
-# text-equality goldens (-- sql -- / -- chplan --) as the authoritative
-# coverage for these fixtures.
-
 -- query.promql --
 histogram_quantile(0.95, http_server_request_duration{service=~".+"})
 -- sql --
-SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes` AS `Attributes`, if(length(`BucketCounts`) = 0, nan, if(arraySum(`BucketCounts`) = 0, nan, if(0.95 <= 0, 0.0, if(0.95 >= 1, `ExplicitBounds`[length(`ExplicitBounds`)], if(arrayFirstIndex(c -> c >= (0.95 * arraySum(`BucketCounts`)), arrayCumSum(`BucketCounts`)) = length(arrayCumSum(`BucketCounts`)), `ExplicitBounds`[length(`ExplicitBounds`)], (if(arrayFirstIndex(c -> c >= (0.95 * arraySum(`BucketCounts`)), arrayCumSum(`BucketCounts`)) = 1, 0.0, `ExplicitBounds`[arrayFirstIndex(c -> c >= (0.95 * arraySum(`BucketCounts`)), arrayCumSum(`BucketCounts`)) - 1]) + (`ExplicitBounds`[arrayFirstIndex(c -> c >= (0.95 * arraySum(`BucketCounts`)), arrayCumSum(`BucketCounts`))] - if(arrayFirstIndex(c -> c >= (0.95 * arraySum(`BucketCounts`)), arrayCumSum(`BucketCounts`)) = 1, 0.0, `ExplicitBounds`[arrayFirstIndex(c -> c >= (0.95 * arraySum(`BucketCounts`)), arrayCumSum(`BucketCounts`)) - 1])) * ((0.95 * arraySum(`BucketCounts`)) - if(arrayFirstIndex(c -> c >= (0.95 * arraySum(`BucketCounts`)), arrayCumSum(`BucketCounts`)) = 1, 0.0, arrayCumSum(`BucketCounts`)[arrayFirstIndex(c -> c >= (0.95 * arraySum(`BucketCounts`)), arrayCumSum(`BucketCounts`)) - 1])) / (arrayCumSum(`BucketCounts`)[arrayFirstIndex(c -> c >= (0.95 * arraySum(`BucketCounts`)), arrayCumSum(`BucketCounts`))] - if(arrayFirstIndex(c -> c >= (0.95 * arraySum(`BucketCounts`)), arrayCumSum(`BucketCounts`)) = 1, 0.0, arrayCumSum(`BucketCounts`)[arrayFirstIndex(c -> c >= (0.95 * arraySum(`BucketCounts`)), arrayCumSum(`BucketCounts`)) - 1])))))))) AS `Value` FROM (SELECT * FROM `otel_metrics_histogram` PREWHERE (`MetricName` = ?) WHERE match(`Attributes`[?], ?)))
+SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes` AS `Attributes`, if(length(`BucketCounts`) = 0, nan, if(arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`)) = 0, nan, if(0.95 <= 0, 0.0, if(0.95 >= 1, `ExplicitBounds`[length(`ExplicitBounds`)], if(arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) = length(arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))), `ExplicitBounds`[length(`ExplicitBounds`)], (if(arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) = 1, 0.0, `ExplicitBounds`[arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - 1]) + (`ExplicitBounds`[arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`)))] - if(arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) = 1, 0.0, `ExplicitBounds`[arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - 1])) * ((0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - if(arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) = 1, 0.0, arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - 1])) / (arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`)))] - if(arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) = 1, 0.0, arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - 1])))))))) AS `Value` FROM (SELECT * FROM `otel_metrics_histogram` PREWHERE (`MetricName` = ?) WHERE match(`Attributes`[?], ?)))
 -- args --
 [0] string = ""
 [1] int64 = 9
@@ -28,9 +17,13 @@ CREATE TABLE otel_metrics_histogram (
     ExplicitBounds Array(Float64)
 ) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
 INSERT INTO otel_metrics_histogram VALUES
-    ('other_metric', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), [1, 2, 3], [0.1, 0.5, 1.0]);
+    ('http_server_request_duration', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), [1, 2, 3], [0.1, 0.5, 1.0]),
+    ('http_server_request_duration', map('service', 'web'), toDateTime64('2026-01-01 00:00:00', 9), [4, 4, 2], [0.1, 0.5, 1.0]);
 -- expected_rows --
-[]
+[
+  ["", {"service": "api"}, "2026-01-01T00:00:01Z", 1.0],
+  ["", {"service": "web"}, "2026-01-01T00:00:01Z", 1.0]
+]
 -- chplan --
 Project ["" AS MetricName, Attributes AS Attributes, now64(9) AS TimeUnix, Value AS Value]
   HistogramQuantile phi=0.95 groupBy=[Attributes AS Attributes]
