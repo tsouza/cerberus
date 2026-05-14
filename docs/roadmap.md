@@ -320,6 +320,82 @@ The TXTAR text-equality suite catches every change in the emitted SQL but it doe
 
 After the RC8 cut, the suite was deepened in two waves to ~1000+ additional tests across 12 layers, plus the oracle property framework scaffolding and the gremlins phased rollout. The full layer map (1: parser smoke / 2a: chplan IR snapshots / 2b: lowering edges / 3: chplan IR invariants / 4: optimizer properties / 5: chsql Frag goldens / 6a–c: chDB roundtrip per QL / 7: HTTP conformance / 8: system lifecycle / 9: differential shadow harness / 10: Playwright UX / 11: chaos + goleak / 12: perf benchmarks + alloc regressions), CI gates, gremlins phase table, and oracle property phases all live in [`docs/test-strategy.md`](test-strategy.md). The roadmap continues to track RC-level feature milestones; test-strategy is the standing reference for layer-by-layer coverage.
 
+### Path to GA — post-RC8 correctness + resilience pass
+
+With the test pyramid in place, the from-scratch PromQL oracle (#272, Phase 1 PR 2) surfaced a wave of correctness gaps the byte-equality TXTAR fixtures had been blind to. Each gap landed as its own PR with a property regression seed pinned in `test/property/testdata/rapid/`. The work tightened RC1 / RC2 PromQL coverage, added the missing resilience layers (circuit breaker, goleak), and converted the test suite to a hard "no skip" discipline so RC8 mutation work doesn't paper over silently-disabled tests.
+
+**PromQL correctness — oracle-surfaced gaps (RC1 / RC2 completion):**
+
+- `rate` / `increase` / `delta` drop series on empty windows (#287).
+- `histogram_quantile` over `sum by(le)(rate(...))` aggregation shape (#281).
+- Tempo metrics matrix `Value` column cast to `Float64` for `histogram_quantile` correctness (#294).
+- Subquery body over aggregate / `BinaryExpr` via recursive inner-expression lowering (#295, #319).
+- RangeWindow `Value` alias + sum-on-empty regression seed (#310).
+- `bool` modifier on V-V comparisons + empty `without()` degenerate (#311).
+- `label_replace` / `label_join` via Map rewrite (#312).
+- `absent_over_time` / `stdvar_over_time` / `deriv` / `resets` / `changes` range-window emit (#314).
+- `time()` / `vector()` + scalar-only binop fold (#316).
+- Date functions `year` / `month` / `day_of_month` / `day_of_week` / `days_in_month` / `hour` / `minute` / `timestamp` (#313).
+- `topk` / `bottomk` via LIMIT BY (plus `count_values` via Aggregate reshape) (#318); `without(...)` variant via `MapWithoutKeys` LIMIT BY partition (#327).
+- `^` (pow) emitted as `pow()` instead of raw CH `^` (which is XOR) (#320).
+- `absent(v)` lowered via `count()`-guarded synthesised Sample (#321).
+- `quantile` / `quantile_over_time` fold out-of-range φ to ±Inf (#322).
+- ±Inf / NaN literals emitted as CH-portable division forms (#328).
+
+**LogQL / TraceQL correctness:**
+
+- LogQL start/end pushed into lowering, tightened Playwright assertions (#290).
+- LogQL wire-wrap column refs match RangeWindow emit shape (#315).
+- Loki `/tail` stubQuerier race: mutex-guard the shared parallel-subtest fake (#317).
+- TraceQL `toFloat64` cast on numeric literal comparison against Map-typed values (#303).
+- TraceQL non-aggregate scalar-filter LHS errors instead of panicking (#324).
+
+**Resilience (Layer 11 chaos):**
+
+- `chclient` circuit breaker for CH-disconnect resilience + chaos sweep (#305).
+- Cursor-chaos sweep no longer guarded by `testing.Short` (#306).
+
+**Test discipline — no skip:**
+
+- Misc `t.Skip` purge: chaos × 2, lifecycle, shadow experiment (#302).
+- Shadow harness `tc.skipReason` dropped — pass or remove (#307).
+- e2e startup-bench redundant `RUN_STARTUP_BENCH` env gate dropped (#308).
+- `t.Skip` forbidden in test files via CI gate; branch protection updated (#309).
+
+**Shadow-mode + oracle:**
+
+- Shadow mode wires `promshim/local` oracle + flips defaults (#326).
+- Property RangeWindow case-mismatch seed pinned as regression check (#296).
+
+**Optimizer + compatibility:**
+
+- Widen `ProjectionPushdown` + `MVSubstitution`; remove non-commutativity skips (#300).
+- Compatibility harness: real CH healthcheck (#297), `cerberus --version` wired into docker healthcheck (#298), upstream tester's current CLI + drop `|| true` mask (#301), POST-form handler + curated queries + jq null-vs-empty (#304).
+
+**Tempo API:**
+
+- `/api/metrics/query_range` handler shipped post-RC2 (#291).
+
+**CI / infrastructure:**
+
+- Quality-metric linters + `go-arch-lint` for coupling enforcement (#323).
+- Perf-benchmark methodology: n=6 samples, 1s benchtime, parent-of-main baseline (#325).
+- Property workflow: unskip + nightly N=500 (#280), restored `TestPromQL_Property_FromScratch` wiring (#284), rapid flags after package list (#285).
+- Mutation workflow: trailing `/...` stripped from per-phase scope paths (#283).
+- Playwright seed + handler fixes from L10 PR #261 nightly failures (#286).
+
+**Fixture audits (Layer 6 chDB roundtrip rigor):**
+
+- 38 empty-`expected_rows` fixtures audited (#288).
+- `normalizeValue` coerces all integer widths (#289).
+- 32 tautologically-green PromQL fixtures eliminated (#293).
+- 17 LogQL + TraceQL chDB roundtrip lanes audited against silent fails (#299).
+- TraceQL multi-attribute `by()` chDB roundtrip fixtures (#282).
+
+**Coverage baseline:** `docs/coverage.md` published as the GA-prep coverage baseline with per-package thresholds (#292).
+
+**GA readiness:** with these PRs merged the project board is fully drained; the maintainer cuts `v1.0.0` from the last green main after a final pre-release audit.
+
 ---
 
 ## How we work
