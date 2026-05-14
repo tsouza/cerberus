@@ -527,6 +527,36 @@ var plans = map[string]chplan.Node{
 		ValueColumn:      "Value",
 	},
 
+	// vector_join_pow_on: VectorJoin with OpPow over an `on(...)` match
+	// — pins that the emitter renders `pow(L.Value, R.Value)` rather
+	// than `(L.Value ^ R.Value)`. CH's `^` is bitwise XOR (integer-
+	// only), so the raw-op shape would yield a CH 502 on Float64
+	// columns (the compat-lane failure that motivated this fix).
+	"vector_join_pow_on": &chplan.VectorJoin{
+		Left:             &chplan.Scan{Table: "otel_metrics_gauge"},
+		Right:            &chplan.Scan{Table: "otel_metrics_sum"},
+		Op:               chplan.OpPow,
+		Match:            chplan.VectorMatch{Labels: []string{"job"}, On: true},
+		MetricNameColumn: "MetricName",
+		AttributesColumn: "Attributes",
+		TimestampColumn:  "TimeUnix",
+		ValueColumn:      "Value",
+	},
+	// vector_join_pow_group_left: VectorJoin with OpPow + group_left
+	// — the second compat-lane failure shape.
+	"vector_join_pow_group_left": &chplan.VectorJoin{
+		Left:             &chplan.Scan{Table: "otel_metrics_gauge"},
+		Right:            &chplan.Scan{Table: "otel_metrics_sum"},
+		Op:               chplan.OpPow,
+		Match:            chplan.VectorMatch{Labels: []string{"instance", "type"}, On: true},
+		Card:             chplan.CardManyToOne,
+		Include:          []string{"job"},
+		MetricNameColumn: "MetricName",
+		AttributesColumn: "Attributes",
+		TimestampColumn:  "TimeUnix",
+		ValueColumn:      "Value",
+	},
+
 	// func_call_zero_args: CH function with no arguments — `now()`.
 	"project_func_call_zero_args": &chplan.Project{
 		Input: &chplan.Scan{Table: "otel_metrics_gauge"},
