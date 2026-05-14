@@ -23,12 +23,12 @@ import (
 //
 // Categories covered:
 //   - Instant functions     (abs, ceil, floor, round, clamp[_min|_max], sqrt,
-//                            exp, ln, log2, log10, sgn)
+//     exp, ln, log2, log10, sgn)
 //   - Aggregations          (sum, avg, min, max, count, topk, bottomk,
-//                            quantile, stddev, stdvar, group, count_values)
-//                           with both by() and without() forms
+//     quantile, stddev, stdvar, group, count_values)
+//     with both by() and without() forms
 //   - Range functions       (rate, irate, increase, delta, idelta, resets,
-//                            changes, deriv, predict_linear, holt_winters)
+//     changes, deriv, predict_linear, holt_winters)
 //   - Binary                (arithmetic, comparison, bool modifier)
 //   - Vector matching       (on(), ignoring(), group_left, group_right)
 //   - Modifiers             (offset, @start(), @end(), @<ts>)
@@ -150,7 +150,8 @@ func promqlSeed(store *local.SampleStore) {
 		v := wobbly[i%len(wobbly)]
 		store.Append(
 			labels.FromStrings("__name__", "wobble", "job", "api"),
-			promqlBaseTS.Add(time.Duration(i)*step).UnixMilli(), v)
+			promqlBaseTS.Add(time.Duration(i)*step).UnixMilli(), v,
+		)
 	}
 }
 
@@ -676,7 +677,7 @@ func promqlRangeFnCases() []promqlShadowCase {
 			opts: DiffOptions{AbsEpsilon: 1, RelEpsilon: 0.05},
 		},
 		{
-			name:   "holt_winters_node_load1_api_0",
+			name: "holt_winters_node_load1_api_0",
 			// holt_winters was renamed to double_exponential_smoothing in Prometheus
 			// 3.x and is gated behind EnableExperimentalFunctions, which the local
 			// shim does not toggle on (intentionally — cerberus inherits the same

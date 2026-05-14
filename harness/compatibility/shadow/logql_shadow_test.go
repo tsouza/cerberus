@@ -232,23 +232,23 @@ const (
 
 // aggregation is the outermost aggregation (or "none" if the metric is raw).
 type aggregation struct {
-	op       string   // "sum", "avg", "count", "min", "max"
-	by       []string // group-by labels; empty == no aggregation
-	without  []string // group-without labels (mutually exclusive with by)
-	noOuter  bool
+	op      string   // "sum", "avg", "count", "min", "max"
+	by      []string // group-by labels; empty == no aggregation
+	without []string // group-without labels (mutually exclusive with by)
+	noOuter bool
 }
 
 // logqlShadowCase is one differential test entry.
 type logqlShadowCase struct {
-	name        string
-	query       string // full LogQL string — must parse via upstream Loki
-	matchers    []streamMatcher
-	filters     []logFilter
-	metric      metricKind
-	agg         aggregation
-	expected    VectorResult
-	opts        DiffOptions
-	skipReason  string
+	name       string
+	query      string // full LogQL string — must parse via upstream Loki
+	matchers   []streamMatcher
+	filters    []logFilter
+	metric     metricKind
+	agg        aggregation
+	expected   VectorResult
+	opts       DiffOptions
+	skipReason string
 }
 
 // evaluateLogQLCase runs the test mini-evaluator and returns a VectorResult
@@ -371,14 +371,6 @@ func cloneLabels(in map[string]string) map[string]string {
 	return out
 }
 
-func groupKeyForCase(lbls map[string]string, agg aggregation) string {
-	if agg.noOuter {
-		return streamKey(lbls)
-	}
-	proj := projectLabelsForCase(lbls, agg)
-	return streamKey(proj)
-}
-
 func projectLabelsForCase(lbls map[string]string, agg aggregation) map[string]string {
 	if agg.noOuter {
 		// Selector-only / pipeline-format keep the original label set.
@@ -457,7 +449,8 @@ func logqlInstantCases() []logqlShadowCase {
 	var cases []logqlShadowCase
 
 	// --- Line filter chains (6) ---
-	cases = append(cases,
+	cases = append(
+		cases,
 		logqlShadowCase{
 			name:     "line_eq_filter_keeps_error_only",
 			query:    `{job="api"} |= "ERROR"`,
@@ -543,7 +536,8 @@ func logqlInstantCases() []logqlShadowCase {
 	)
 
 	// --- Label filters (4) ---
-	cases = append(cases,
+	cases = append(
+		cases,
 		logqlShadowCase{
 			name:     "label_eq_filter",
 			query:    `{job="api"} | level="error"`,
@@ -597,7 +591,8 @@ func logqlInstantCases() []logqlShadowCase {
 	)
 
 	// --- Metric forms (8) ---
-	cases = append(cases,
+	cases = append(
+		cases,
 		logqlShadowCase{
 			name:     "rate_5m_api",
 			query:    `rate({job="api"}[5m])`,
@@ -700,7 +695,8 @@ func logqlInstantCases() []logqlShadowCase {
 	// --- Pipeline stages parsing only (4) ---
 	// These are parser-level differential tests; the in-test evaluator stays
 	// in selector mode but the upstream parser must accept the full pipeline.
-	cases = append(cases,
+	cases = append(
+		cases,
 		logqlShadowCase{
 			name:     "json_stage_keeps_all_lines",
 			query:    `{job="api"} | json`,
@@ -748,7 +744,8 @@ func logqlInstantCases() []logqlShadowCase {
 	)
 
 	// --- Aggregations with by() (5) ---
-	cases = append(cases,
+	cases = append(
+		cases,
 		logqlShadowCase{
 			name:     "agg_sum_by_level",
 			query:    `sum by (level) (count_over_time({job=~".+"}[5m]))`,
@@ -818,7 +815,8 @@ func logqlInstantCases() []logqlShadowCase {
 	// cerberus's logql layer must accept the shape. The evaluator treats
 	// formatting as a pass-through (label set unchanged) for the count
 	// reduction in scope here.
-	cases = append(cases,
+	cases = append(
+		cases,
 		logqlShadowCase{
 			name:     "line_format_pipeline_keeps_stream",
 			query:    `{job="api"} | json | line_format "{{.path}}-{{.status}}"`,

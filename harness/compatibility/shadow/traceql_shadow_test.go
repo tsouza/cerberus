@@ -212,11 +212,11 @@ func cmpNum(a, b float64, op string) bool {
 type structuralKind int
 
 const (
-	structNone        structuralKind = iota
-	structDescendant                 // >
-	structAncestor                   // <
-	structParent                     // >> (parent of)
-	structChild                      // << (child of)
+	structNone       structuralKind = iota
+	structDescendant                // >
+	structAncestor                  // <
+	structParent                    // >> (parent of)
+	structChild                     // << (child of)
 )
 
 // setOp is the boolean combination over a list of branches; setOpUnion
@@ -236,10 +236,10 @@ type traceqlShadowCase struct {
 	query string
 
 	// matchers / structural / setOp drive the in-test evaluator.
-	matchersA  []matcher
-	matchersB  []matcher
-	structural structuralKind
-	setOp      setOp
+	matchersA   []matcher
+	matchersB   []matcher
+	structural  structuralKind
+	setOp       setOp
 	setBranches [][]matcher
 
 	// metric/aggregation reductions on the matched span set.
@@ -503,7 +503,8 @@ func traceqlInstantCases() []traceqlShadowCase {
 	var cases []traceqlShadowCase
 
 	// --- Attribute matchers per scope (5) ---
-	cases = append(cases,
+	cases = append(
+		cases,
 		traceqlShadowCase{
 			name:  "resource_service_name_eq_frontend",
 			query: `{ resource.service.name = "frontend" }`,
@@ -565,7 +566,8 @@ func traceqlInstantCases() []traceqlShadowCase {
 	)
 
 	// --- Intrinsics (4) ---
-	cases = append(cases,
+	cases = append(
+		cases,
 		traceqlShadowCase{
 			name:  "duration_gt_100ms",
 			query: `{ duration > 100ms }`,
@@ -617,7 +619,8 @@ func traceqlInstantCases() []traceqlShadowCase {
 	)
 
 	// --- Structural ops (4) ---
-	cases = append(cases,
+	cases = append(
+		cases,
 		traceqlShadowCase{
 			name:  "descendant_op_frontend_to_db",
 			query: `{ resource.service.name = "frontend" } > { resource.service.name = "db" }`,
@@ -682,7 +685,8 @@ func traceqlInstantCases() []traceqlShadowCase {
 	)
 
 	// --- Set ops (3) ---
-	cases = append(cases,
+	cases = append(
+		cases,
 		traceqlShadowCase{
 			name:  "set_and_frontend_and_status_error",
 			query: `{ resource.service.name = "frontend" && status = error }`,
@@ -710,7 +714,7 @@ func traceqlInstantCases() []traceqlShadowCase {
 			}},
 		},
 		traceqlShadowCase{
-			name:  "set_union_three_branches",
+			name: "set_union_three_branches",
 			// TraceQL's `~` (union) operator at branch level. Upstream parser must
 			// accept the boolean-or shape; the evaluator emulates it via branches.
 			query: `{ kind = "server" } || { kind = "internal" }`,
@@ -730,7 +734,8 @@ func traceqlInstantCases() []traceqlShadowCase {
 	)
 
 	// --- Inner aggregates (2) ---
-	cases = append(cases,
+	cases = append(
+		cases,
 		traceqlShadowCase{
 			name:  "count_spans_per_trace",
 			query: `{ resource.service.name =~ ".+" } | count() > 0`,
@@ -761,7 +766,8 @@ func traceqlInstantCases() []traceqlShadowCase {
 	)
 
 	// --- MetricsPipeline (2) ---
-	cases = append(cases,
+	cases = append(
+		cases,
 		traceqlShadowCase{
 			name:  "metrics_rate_over_status_error",
 			query: `{ status = error } | rate()`,
