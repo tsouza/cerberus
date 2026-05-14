@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
-	"go.uber.org/goleak"
 )
 
 // Layer 11 — circuit-breaker chaos tests for the CH-disconnect resilience
@@ -32,21 +31,11 @@ import (
 // atomic.Bool so concurrent goroutines see the change without races.
 
 // The package's TestMain is in execute_span_test.go — it installs the
-// in-memory tracer provider. The breaker chaos tests use goleak per-test
-// via t.Cleanup instead (see verifyNoLeakedGoroutines).
-//
-// verifyNoLeakedGoroutines registers a cleanup that asserts goleak is
-// satisfied at end-of-test. The breaker itself spawns no goroutines, but
-// our gatedFlakyConn test fixture can — so each chaos test runs the
-// check to catch a future fixture regression.
-func verifyNoLeakedGoroutines(t *testing.T) {
-	t.Helper()
-	t.Cleanup(func() {
-		if err := goleak.Find(); err != nil {
-			t.Errorf("goleak: %v", err)
-		}
-	})
-}
+// in-memory tracer provider. The breaker itself spawns no goroutines,
+// and the gatedFlakyConn fixture only blocks the caller goroutine on a
+// channel receive (no fan-out), so per-test goleak.Find isn't load-bearing
+// here — TestMain-level goleak.VerifyTestMain would be the right knob if
+// a future fixture starts spawning goroutines.
 
 // flakyConn is a driver.Conn that flips between "healthy" (returns
 // nil from Query / Ping / Exec) and "failing" (returns failErr) based
