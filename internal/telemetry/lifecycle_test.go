@@ -2,8 +2,8 @@ package telemetry
 
 import (
 	"context"
+	"errors"
 	"net"
-	"os"
 	"testing"
 	"time"
 
@@ -15,7 +15,7 @@ import (
 // in Config still produces "cerberus" on the resource. Anchors the
 // invariant cerberus dashboards rely on (service.name=cerberus).
 func TestBuildResource_DefaultsServiceName(t *testing.T) {
-	res, err := buildResource(t.Context(), Config{})
+	res, err := buildResource(t.Context(), Config{}, nil)
 	if err != nil {
 		t.Fatalf("buildResource: %v", err)
 	}
@@ -27,7 +27,7 @@ func TestBuildResource_DefaultsServiceName(t *testing.T) {
 // TestBuildResource_DefaultsServiceVersion confirms an empty
 // ServiceVersion in Config falls back to "dev".
 func TestBuildResource_DefaultsServiceVersion(t *testing.T) {
-	res, err := buildResource(t.Context(), Config{})
+	res, err := buildResource(t.Context(), Config{}, nil)
 	if err != nil {
 		t.Fatalf("buildResource: %v", err)
 	}
@@ -43,7 +43,7 @@ func TestBuildResource_AppliesConfiguredVersion(t *testing.T) {
 	res, err := buildResource(t.Context(), Config{
 		ServiceName:    "cerberus",
 		ServiceVersion: "v1.2.3",
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("buildResource: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestBuildResource_AppliesConfiguredVersion(t *testing.T) {
 // disambiguate). The value is either the hostname or a random fallback
 // — both non-empty.
 func TestBuildResource_IncludesServiceInstanceID(t *testing.T) {
-	res, err := buildResource(t.Context(), Config{})
+	res, err := buildResource(t.Context(), Config{}, nil)
 	if err != nil {
 		t.Fatalf("buildResource: %v", err)
 	}
@@ -66,19 +66,43 @@ func TestBuildResource_IncludesServiceInstanceID(t *testing.T) {
 	}
 }
 
-// TestBuildResource_InstanceIDMatchesHostnameWhenAvailable: when
-// os.Hostname succeeds, the resource attribute should match.
+// TestBuildResource_InstanceIDMatchesHostnameWhenAvailable: when the
+// supplied hostname resolver succeeds, the resource attribute should
+// match it. The test drives buildResource through a deterministic
+// hostnameFunc stub so the assertion holds on every host — scratch
+// containers, CI sandboxes and developer laptops alike. The production
+// path (os.Hostname) is still the New() default; the defensive
+// randomInstanceID fallback is exercised by
+// TestBuildResource_InstanceIDFallsBackOnHostnameError below.
 func TestBuildResource_InstanceIDMatchesHostnameWhenAvailable(t *testing.T) {
-	host, err := os.Hostname()
-	if err != nil || host == "" {
-		t.Skip("hostname unavailable on this host; skipping")
-	}
-	res, err := buildResource(t.Context(), Config{})
+	const want = "test-host"
+	stub := func() (string, error) { return want, nil }
+	res, err := buildResource(t.Context(), Config{}, stub)
 	if err != nil {
 		t.Fatalf("buildResource: %v", err)
 	}
-	if got := attr(res, "service.instance.id"); got != host {
-		t.Errorf("service.instance.id = %q; want %q", got, host)
+	if got := attr(res, "service.instance.id"); got != want {
+		t.Errorf("service.instance.id = %q; want %q", got, want)
+	}
+}
+
+// TestBuildResource_InstanceIDFallsBackOnHostnameError pins the
+// defensive path: when the hostname resolver errors out (the original
+// reason the test above had a t.Skip), buildResource falls back to a
+// random 16-byte hex string rather than emitting an empty
+// service.instance.id.
+func TestBuildResource_InstanceIDFallsBackOnHostnameError(t *testing.T) {
+	stub := func() (string, error) { return "", errors.New("hostname unavailable") }
+	res, err := buildResource(t.Context(), Config{}, stub)
+	if err != nil {
+		t.Fatalf("buildResource: %v", err)
+	}
+	got := attr(res, "service.instance.id")
+	if got == "" {
+		t.Fatal("service.instance.id = empty; want random fallback")
+	}
+	if got == "test-host" {
+		t.Fatalf("service.instance.id = %q; expected random fallback, not stubbed hostname", got)
 	}
 }
 

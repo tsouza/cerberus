@@ -79,7 +79,7 @@ func New(ctx context.Context, cfg Config) (*Providers, error) {
 		}, nil
 	}
 
-	res, err := buildResource(ctx, cfg)
+	res, err := buildResource(ctx, cfg, os.Hostname)
 	if err != nil {
 		return nil, fmt.Errorf("build resource: %w", err)
 	}
@@ -167,15 +167,25 @@ func newMeterProvider(ctx context.Context, cfg Config, res *resource.Resource) (
 	return mp, mp.Shutdown, nil
 }
 
+// hostnameFunc resolves the hostname used for service.instance.id. The
+// production path is os.Hostname; tests inject a deterministic stub to
+// avoid host-environment dependence (scratch containers, sandboxed CI
+// runners and Linux netns-isolated test pods can all return empty or
+// errored hostnames).
+type hostnameFunc func() (string, error)
+
 // buildResource composes the resource attached to every exported span
 // and metric. Attribute fallbacks:
 //
 //   - service.name        ← cfg.ServiceName  (defaults to "cerberus" if blank)
 //   - service.version     ← cfg.ServiceVersion (defaults to "dev" if blank)
-//   - service.instance.id ← os.Hostname()    (falls back to a random 16-byte
+//   - service.instance.id ← hostname()        (falls back to a random 16-byte
 //     hex string when hostname lookup errors out — common in scratch
 //     containers)
-func buildResource(ctx context.Context, cfg Config) (*resource.Resource, error) {
+//
+// hostname is parameterised for testability — production callers pass
+// os.Hostname; tests supply a stub. Nil is treated as os.Hostname.
+func buildResource(ctx context.Context, cfg Config, hostname hostnameFunc) (*resource.Resource, error) {
 	name := cfg.ServiceName
 	if name == "" {
 		name = "cerberus"
@@ -184,7 +194,10 @@ func buildResource(ctx context.Context, cfg Config) (*resource.Resource, error) 
 	if version == "" {
 		version = "dev"
 	}
-	instance, err := os.Hostname()
+	if hostname == nil {
+		hostname = os.Hostname
+	}
+	instance, err := hostname()
 	if err != nil || instance == "" {
 		instance = randomInstanceID()
 	}
