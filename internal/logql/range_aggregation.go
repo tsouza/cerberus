@@ -43,13 +43,12 @@ func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs, lc low
 		return nil, err
 	}
 
-	const synthValue = "Value"
 	projected := &chplan.Project{
 		Input: inner,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.ColumnRef{Name: s.ResourceAttributesColumn}},
 			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}},
-			{Expr: value, Alias: synthValue},
+			{Expr: value, Alias: rangeAggSynthValueColumn},
 		},
 	}
 
@@ -64,10 +63,19 @@ func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs, lc low
 		Range:           e.Left.Interval,
 		Offset:          e.Left.Offset,
 		TimestampColumn: s.TimestampColumn,
-		ValueColumn:     synthValue,
+		ValueColumn:     rangeAggSynthValueColumn,
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.ResourceAttributesColumn}},
 	}, nil
 }
+
+// rangeAggSynthValueColumn is the column name LogQL's range-aggregation
+// lowering synthesises for the per-row metric value (constant 1 for line
+// counts; length(Body) for byte counts). Shared with [Lang.ProjectSamples]
+// so the engine's metric-branch wire-wrap can `chplan.ColumnRef` the same
+// alias the inner RangeWindow / Aggregate emit at their outer SELECT site
+// since #310. Pinning this in one place keeps the two layers from drifting
+// like they did between #310 and the e2e-failures it surfaced.
+const rangeAggSynthValueColumn = "Value"
 
 // rangeValueExpr returns the per-row Value the RangeWindow aggregates.
 // Line-counting ops use constant 1; byte-counting ops use length(Body).
