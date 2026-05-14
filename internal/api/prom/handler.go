@@ -466,10 +466,12 @@ func errContainsStage(msg, stage string) bool {
 //  2. RangeWindow / Aggregate / Filter(Aggregate) — derived shapes
 //     whose inner SELECT exposes only (group-keys…, s.ValueColumn).
 //     The canonical MetricName doesn't exist in that scope; synthesise
-//     it as empty string. The matrix RangeWindow projects anchor_ts AS
-//     s.TimestampColumn on its outermost SELECT so the per-row timestamp
-//     flows through under the canonical name; the instant case has to
-//     synthesise via now64().
+//     it as empty string. The matrix RangeWindow exposes the per-row
+//     anchor as the literal column `anchor_ts` (no inner alias to
+//     s.TimestampColumn — emitWindowedArrayMatrix emits it raw); this
+//     Project renames `anchor_ts` → s.TimestampColumn on the way out via
+//     the projection's own Alias. The instant case has to synthesise
+//     via now64().
 func wrapWithSampleProjection(plan chplan.Node, s schema.Metrics) chplan.Node {
 	projections := []chplan.Projection{
 		{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}},
@@ -479,12 +481,13 @@ func wrapWithSampleProjection(plan chplan.Node, s schema.Metrics) chplan.Node {
 	}
 	if isDerivedShape(plan) {
 		// TimeUnix source: matrix-shape RangeWindow exposes a real
-		// per-row timestamp under s.TimestampColumn (one row per anchor
-		// across the subquery's outer range); the instant case has to
-		// synthesise via now64().
+		// per-row timestamp under the literal column `anchor_ts` (one
+		// row per anchor across the subquery's outer range); the outer
+		// Projection's own Alias renames it back to s.TimestampColumn
+		// on emit. The instant case has to synthesise via now64().
 		var tsExpr chplan.Expr
 		if isMatrixRangeWindow(plan) {
-			tsExpr = &chplan.ColumnRef{Name: s.TimestampColumn}
+			tsExpr = &chplan.ColumnRef{Name: "anchor_ts"}
 		} else {
 			tsExpr = synthesizedAnchor()
 		}

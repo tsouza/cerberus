@@ -108,9 +108,15 @@ func (l *Lang) ProjectSamples(plan chplan.Node, meta engine.Meta) chplan.Node {
 	s := l.Schema
 	if meta.IsMetric {
 		// Metric queries lower to RangeWindow / Aggregate / Filter(Aggregate),
-		// whose output is just (group-keys…, value). MetricName + TimeUnix
+		// whose output is (group-keys…, <metric-value>). MetricName + TimeUnix
 		// don't exist in that scope — synthesise them so the chclient
 		// Sample scanner has the four positional columns it expects.
+		//
+		// The metric-value column is the canonical PascalCase `Value` (the
+		// alias the RangeWindow / Aggregate emitters project at every outer
+		// SELECT site since #310 collapsed the rename Project layer); mirror
+		// it here so the wire-wrap doesn't ColumnRef the pre-#310 lowercase
+		// alias.
 		return &chplan.Project{
 			Input: plan,
 			Projections: []chplan.Projection{
@@ -124,7 +130,7 @@ func (l *Lang) ProjectSamples(plan chplan.Node, meta engine.Meta) chplan.Node {
 					Left:  &chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}},
 					Right: &chplan.FuncCall{Name: "toIntervalNanosecond", Args: []chplan.Expr{&chplan.LitInt{V: 5_000_000_000}}},
 				}, Alias: "TimeUnix"},
-				{Expr: &chplan.ColumnRef{Name: "value"}, Alias: "Value"},
+				{Expr: &chplan.ColumnRef{Name: rangeAggSynthValueColumn}, Alias: "Value"},
 			},
 		}
 	}
