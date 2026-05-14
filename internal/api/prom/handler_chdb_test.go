@@ -38,12 +38,19 @@ import (
 // emitter's outer Project projects, plus the columns the gauge-table
 // SQL filters on (MetricName). chDB is happy to project a subset of
 // the columns it knows about; missing-column INSERTs would fail.
+//
+// Engine is MergeTree (not Memory) because the chsql emitter promotes
+// Filter(Scan) predicates from WHERE → PREWHERE, and ClickHouse's
+// Memory engine rejects PREWHERE with `ILLEGAL_PREWHERE`. The sort key
+// `(MetricName, TimeUnix)` mirrors the production OTel-CH layout, so
+// the same PREWHERE-promotion shapes the production deployment hits
+// also run here.
 const gaugeDDL = `CREATE TABLE otel_metrics_gauge (
     MetricName String,
     Attributes Map(String, String),
     TimeUnix DateTime64(9),
     Value Float64
-) ENGINE = Memory;`
+) ENGINE = MergeTree() ORDER BY (MetricName, TimeUnix);`
 
 func newChDBServer(t *testing.T, ddl string) (*httptest.Server, *chclienttest.Client) {
 	t.Helper()
@@ -63,14 +70,21 @@ func TestQuery_Vector_ChDB(t *testing.T) {
 	// Two gauge rows for `up`, distinct job labels; the handler will
 	// emit SELECT … FROM otel_metrics_gauge WHERE MetricName=? and
 	// receive both rows back.
-	ts := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC).Format("2006-01-02 15:04:05.000")
+	//
+	// The query `time` is pinned to the seed timestamp so the bare-
+	// selector LWR wrapper's `Timestamp <= eval_ts` and 5-minute
+	// staleness predicates both match. A query `time` earlier than the
+	// seed would LWR-filter every row out and yield an empty vector.
+	seedTime := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+	ts := seedTime.Format("2006-01-02 15:04:05.000")
 	seed := gaugeDDL + fmt.Sprintf(`
 INSERT INTO otel_metrics_gauge VALUES
     ('up', map('job', 'api'), toDateTime64('%s', 9), 1.0),
     ('up', map('job', 'db'),  toDateTime64('%s', 9), 0.0);`, ts, ts)
 
 	srv, _ := newChDBServer(t, seed)
-	resp, err := http.Get(srv.URL + "/api/v1/query?query=up&time=1717999200")
+	resp, err := http.Get(fmt.Sprintf("%s/api/v1/query?query=up&time=%d",
+		srv.URL, seedTime.Unix()))
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
@@ -113,19 +127,22 @@ INSERT INTO otel_metrics_gauge VALUES
 }
 
 func TestQueryRange_Matrix_ChDB(t *testing.T) {
-	// Three samples spaced 90s apart over a 4-minute window; step=60s.
+	// One seeded sample at `start`; query window is [start, start+4m]
+	// with step=60s (5 anchor points). Pre-LWR the bare `up` selector
+	// returned every raw sample and the matrix pivot's "latest at step"
+	// rule fanned them across the step grid; the LWR wrapper added in
+	// `2a67f3e` now collapses to a single per-series row at the latest
+	// sample's TimeUnix, so each subsequent step bucket simply
+	// re-uses that LWR-collapsed sample (its TS sits at-or-before every
+	// step). Anchoring the seed at `start` therefore keeps the
+	// 5-step matrix shape this test pins, only with a single repeated
+	// value instead of the pre-LWR ramp.
 	start := time.Unix(1717995600, 0).UTC()
 	end := start.Add(4 * time.Minute)
-	seedRows := make([]string, 0, 3)
-	for i, off := range []time.Duration{0, 90 * time.Second, 180 * time.Second} {
-		ts := start.Add(off).Format("2006-01-02 15:04:05.000")
-		seedRows = append(seedRows, fmt.Sprintf(
-			`('up', map('job', 'api'), toDateTime64('%s', 9), %d.0)`,
-			ts, i+1,
-		))
-	}
-	seed := gaugeDDL + "\nINSERT INTO otel_metrics_gauge VALUES\n  " +
-		strings.Join(seedRows, ",\n  ") + ";"
+	ts := start.Format("2006-01-02 15:04:05.000")
+	seed := gaugeDDL + fmt.Sprintf(`
+INSERT INTO otel_metrics_gauge VALUES
+    ('up', map('job', 'api'), toDateTime64('%s', 9), 7.0);`, ts)
 
 	srv, _ := newChDBServer(t, seed)
 
@@ -161,9 +178,9 @@ func TestQueryRange_Matrix_ChDB(t *testing.T) {
 		t.Fatalf("expected 5 sample points in matrix, got %d: %+v",
 			got, matrix[0].Values)
 	}
-	// Latest-at-step values: [1, 1, 2, 3, 3] for steps
-	// [0, 60, 120, 180, 240].
-	wantValues := []string{"1", "1", "2", "3", "3"}
+	// LWR-collapsed seed (the only sample, at TimeUnix=start) reappears
+	// at every step within the 5-minute staleness window.
+	wantValues := []string{"7", "7", "7", "7", "7"}
 	for i, want := range wantValues {
 		if got := matrix[0].Values[i][1]; got != want {
 			t.Errorf("step %d: got value %q, want %q",
