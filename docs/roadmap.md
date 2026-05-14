@@ -305,14 +305,14 @@ Decision milestone. Output: `docs/execution-engine-evaluation.md` with a recomme
 
 ## RC8 — chDB-backed semantic test layer
 
-The TXTAR text-equality suite catches every change in the emitted SQL but it doesn't catch *semantic* regressions where the SQL still parses and its result set silently flips. RC8 closes that gap by wiring [chDB](https://github.com/chdb-io/chdb-go) (in-process ClickHouse) into the test layers that benefit from real query execution against deterministic seeds.
+The TXTAR text-equality suite catches every change in the emitted SQL but it doesn't catch _semantic_ regressions where the SQL still parses and its result set silently flips. RC8 closes that gap by wiring [chDB](https://github.com/chdb-io/chdb-go) (in-process ClickHouse) into the test layers that benefit from real query execution against deterministic seeds.
 
 | #    | Item                                                                                                                 | Status           |
 | ---- | -------------------------------------------------------------------------------------------------------------------- | ---------------- |
 | R8.0 | Driver probe: validate `Map(String, String)` scan via `database/sql` + document chdb-go v1.11.0 quirks               | shipped via #221 |
 | R8.1 | TXTAR `-- seed --` / `-- expected_rows --` sections + build-tagged `chdb` runner                                     | shipped via #223 |
 | R8.2 | chDB-backed `Querier` for handler tests (replaces hand-rolled stubs across `internal/api/{prom,loki,tempo}`)         | shipped via #229 |
-| R8.3 | Property test on optimizer rules (`internal/optimizer/property_test.go`) + mutation kill criterion using chDB         | shipped via #233 |
+| R8.3 | Property test on optimizer rules (`internal/optimizer/property_test.go`) + mutation kill criterion using chDB        | shipped via #233 |
 
 **Exit criterion:** every TXTAR fixture that opts in renders byte-stable SQL **and** the row set it produces against a chDB session matches the pinned `expected_rows`; the optimizer property test runs 100 random plans per CI and finds zero divergence between unoptimized + optimized output; `just mutate-chdb` produces a strictly higher kill score than `just mutate` (semantically equivalent mutants are correctly not killed).
 
