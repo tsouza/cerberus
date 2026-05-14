@@ -11,6 +11,7 @@ import (
 	"github.com/grafana/loki/v3/pkg/logql/syntax"
 	"github.com/prometheus/prometheus/model/labels"
 
+	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/logql"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -95,7 +96,7 @@ func (h *Handler) handleTail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	start, err := parseTime(r.URL.Query().Get("start"), time.Now().UTC())
+	start, err := format.ParseTimeLoki(r.URL.Query().Get("start"), time.Now().UTC())
 	if err != nil {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return

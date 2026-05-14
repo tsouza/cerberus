@@ -4,6 +4,8 @@ import (
 	"errors"
 	"net/http"
 	"time"
+
+	"github.com/tsouza/cerberus/internal/api/format"
 )
 
 // ExemplarSeries is the wire shape for one element of the
@@ -73,12 +75,12 @@ func (h *Handler) handleQueryExemplars(w http.ResponseWriter, r *http.Request) {
 	if endRaw == "" && r.Method == http.MethodPost {
 		endRaw = r.PostForm.Get("end")
 	}
-	start, err := parseTime(startRaw, time.Time{})
+	start, err := format.ParseTimeProm(startRaw, time.Time{})
 	if err != nil || start.IsZero() {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing or invalid 'start' parameter"))
 		return
 	}
-	end, err := parseTime(endRaw, time.Time{})
+	end, err := format.ParseTimeProm(endRaw, time.Time{})
 	if err != nil || end.IsZero() {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing or invalid 'end' parameter"))
 		return

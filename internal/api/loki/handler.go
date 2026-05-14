@@ -15,6 +15,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/tsouza/cerberus/internal/api/admit"
+	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/cerbtrace"
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -134,7 +135,7 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing query parameter"))
 		return
 	}
-	ts, err := parseTime(r.URL.Query().Get("time"), time.Now())
+	ts, err := format.ParseTimeLoki(r.URL.Query().Get("time"), time.Now())
 	if err != nil {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return
@@ -172,17 +173,17 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing query parameter"))
 		return
 	}
-	start, err := parseTime(r.URL.Query().Get("start"), time.Time{})
+	start, err := format.ParseTimeLoki(r.URL.Query().Get("start"), time.Time{})
 	if err != nil || start.IsZero() {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing or invalid 'start' parameter"))
 		return
 	}
-	end, err := parseTime(r.URL.Query().Get("end"), time.Time{})
+	end, err := format.ParseTimeLoki(r.URL.Query().Get("end"), time.Time{})
 	if err != nil || end.IsZero() {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing or invalid 'end' parameter"))
 		return
 	}
-	step, err := parseDuration(r.URL.Query().Get("step"))
+	step, err := format.ParseDuration(r.URL.Query().Get("step"))
 	if err != nil {
 		// Loki allows missing step (auto-resolves); cerberus requires it for
 		// metric queries. Default to 1 minute when absent.
@@ -365,7 +366,7 @@ func toVector(samples []chclient.Sample, ts time.Time) []VectorSample {
 	}
 	bySeries := map[string]latest{}
 	for _, s := range samples {
-		key := canonicalKey(s.Labels)
+		key := format.CanonicalKey(s.Labels)
 		cur, ok := bySeries[key]
 		if !ok || s.Timestamp.After(cur.ts) {
 			bySeries[key] = latest{labels: s.Labels, ts: s.Timestamp, value: s.Value}
@@ -394,7 +395,7 @@ func toMatrixStepGrid(samples []chclient.Sample, start, end time.Time, step time
 	}
 	bySeries := map[string]*seriesState{}
 	for _, s := range samples {
-		key := canonicalKey(s.Labels)
+		key := format.CanonicalKey(s.Labels)
 		st, ok := bySeries[key]
 		if !ok {
 			st = &seriesState{labels: s.Labels}
@@ -459,7 +460,7 @@ func toStreamsWithTransform(samples []chclient.Sample, tx lineTransform) []Strea
 		if tx != nil {
 			line, labels = tx(line, labels)
 		}
-		key := canonicalKey(labels)
+		key := format.CanonicalKey(labels)
 		a, ok := bySeries[key]
 		if !ok {
 			a = &acc{labels: labels}
@@ -476,59 +477,6 @@ func toStreamsWithTransform(samples []chclient.Sample, tx lineTransform) []Strea
 		out = append(out, Stream{Stream: a.labels, Values: a.values})
 	}
 	return out
-}
-
-// canonicalKey is a deterministic string form of a label set.
-func canonicalKey(labels map[string]string) string {
-	if len(labels) == 0 {
-		return ""
-	}
-	keys := make([]string, 0, len(labels))
-	for k := range labels {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	var b []byte
-	for _, k := range keys {
-		b = append(b, k...)
-		b = append(b, '=')
-		b = append(b, labels[k]...)
-		b = append(b, 0)
-	}
-	return string(b)
-}
-
-// parseTime accepts a Unix-seconds-as-float, Unix-nanoseconds-as-int, or
-// RFC3339 timestamp. Loki accepts all three, with `time` defaulting to
-// "now" on instant queries.
-func parseTime(raw string, def time.Time) (time.Time, error) {
-	if raw == "" {
-		return def, nil
-	}
-	if n, err := strconv.ParseInt(raw, 10, 64); err == nil && n > 1_000_000_000_000 {
-		// Heuristic: > 1e12 means nanoseconds (Loki convention).
-		return time.Unix(0, n).UTC(), nil
-	}
-	if f, err := strconv.ParseFloat(raw, 64); err == nil {
-		return time.Unix(int64(f), int64((f-float64(int64(f)))*1e9)).UTC(), nil
-	}
-	t, err := time.Parse(time.RFC3339Nano, raw)
-	if err != nil {
-		return time.Time{}, errors.New("time parameter must be Unix seconds/nanoseconds or RFC3339")
-	}
-	return t.UTC(), nil
-}
-
-// parseDuration accepts a Prom/Loki-style duration ("5m") or float
-// seconds ("60.5"). Returns a duration; callers default to 1m if missing.
-func parseDuration(raw string) (time.Duration, error) {
-	if raw == "" {
-		return 0, errors.New("missing duration")
-	}
-	if f, err := strconv.ParseFloat(raw, 64); err == nil {
-		return time.Duration(f * float64(time.Second)), nil
-	}
-	return time.ParseDuration(raw)
 }
 
 // apiError carries the Loki errorType + an HTTP status code through the

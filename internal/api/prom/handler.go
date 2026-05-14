@@ -15,6 +15,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/tsouza/cerberus/internal/api/admit"
+	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/cerbtrace"
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -169,7 +170,7 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing query parameter"))
 		return
 	}
-	ts, err := parseTime(r.URL.Query().Get("time"), time.Now())
+	ts, err := format.ParseTimeProm(r.URL.Query().Get("time"), time.Now())
 	if err != nil {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return
@@ -208,17 +209,17 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing query parameter"))
 		return
 	}
-	start, err := parseTime(r.URL.Query().Get("start"), time.Time{})
+	start, err := format.ParseTimeProm(r.URL.Query().Get("start"), time.Time{})
 	if err != nil || start.IsZero() {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing or invalid 'start' parameter"))
 		return
 	}
-	end, err := parseTime(r.URL.Query().Get("end"), time.Time{})
+	end, err := format.ParseTimeProm(r.URL.Query().Get("end"), time.Time{})
 	if err != nil || end.IsZero() {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing or invalid 'end' parameter"))
 		return
 	}
-	step, err := parseDuration(r.URL.Query().Get("step"))
+	step, err := format.ParseDuration(r.URL.Query().Get("step"))
 	if err != nil || step <= 0 {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing or invalid 'step' parameter"))
 		return
@@ -500,8 +501,8 @@ func toVector(samples []chclient.Sample, ts time.Time) []VectorSample {
 
 	bySeries := map[string]latest{}
 	for _, s := range samples {
-		labels := withMetricName(s.Labels, s.MetricName)
-		key := canonicalKey(labels)
+		labels := format.WithMetricName(s.Labels, s.MetricName)
+		key := format.CanonicalKey(labels)
 		cur, ok := bySeries[key]
 		if !ok || s.Timestamp.After(cur.ts) {
 			bySeries[key] = latest{labels: labels, ts: s.Timestamp, value: s.Value}
@@ -546,8 +547,8 @@ func matrixFromCursor(
 	bySeries := map[string]*seriesState{}
 	for cursor.Next() {
 		s := cursor.Sample()
-		labels := withMetricName(s.Labels, s.MetricName)
-		key := canonicalKey(labels)
+		labels := format.WithMetricName(s.Labels, s.MetricName)
+		key := format.CanonicalKey(labels)
 		st, ok := bySeries[key]
 		if !ok {
 			st = &seriesState{labels: labels}
@@ -591,71 +592,6 @@ func matrixFromCursor(
 		}
 	}
 	return out, nil
-}
-
-// parseDuration parses a Prom-style step / range duration. Accepts plain
-// floats (seconds) or Go-style durations like `30s`, `5m`, `1h`.
-func parseDuration(raw string) (time.Duration, error) {
-	if raw == "" {
-		return 0, errors.New("missing duration")
-	}
-	if f, err := strconv.ParseFloat(raw, 64); err == nil {
-		return time.Duration(f * float64(time.Second)), nil
-	}
-	return time.ParseDuration(raw)
-}
-
-func withMetricName(labels map[string]string, name string) map[string]string {
-	out := make(map[string]string, len(labels)+1)
-	for k, v := range labels {
-		out[k] = v
-	}
-	if name != "" {
-		out["__name__"] = name
-	}
-	return out
-}
-
-// canonicalKey is a deterministic string form of a label set, used as a
-// map key for grouping. Sorted by key ASCII to match what Prometheus does.
-func canonicalKey(labels map[string]string) string {
-	if len(labels) == 0 {
-		return ""
-	}
-	keys := make([]string, 0, len(labels))
-	for k := range labels {
-		keys = append(keys, k)
-	}
-	// Inline insertion sort — labels are typically small (<20).
-	for i := 1; i < len(keys); i++ {
-		for j := i; j > 0 && keys[j-1] > keys[j]; j-- {
-			keys[j-1], keys[j] = keys[j], keys[j-1]
-		}
-	}
-	var b []byte
-	for _, k := range keys {
-		b = append(b, k...)
-		b = append(b, '=')
-		b = append(b, labels[k]...)
-		b = append(b, 0)
-	}
-	return string(b)
-}
-
-// parseTime parses a Prom-API time parameter — a Unix-seconds float or an
-// RFC3339 timestamp. An empty string falls back to def.
-func parseTime(raw string, def time.Time) (time.Time, error) {
-	if raw == "" {
-		return def, nil
-	}
-	if f, err := strconv.ParseFloat(raw, 64); err == nil {
-		return time.Unix(int64(f), int64((f-float64(int64(f)))*1e9)).UTC(), nil
-	}
-	t, err := time.Parse(time.RFC3339Nano, raw)
-	if err != nil {
-		return time.Time{}, errors.New("time parameter must be Unix seconds or RFC3339")
-	}
-	return t.UTC(), nil
 }
 
 // apiError carries the Prom errorType + an HTTP status code through the

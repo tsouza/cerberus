@@ -8,6 +8,7 @@ import (
 
 	"github.com/prometheus/prometheus/model/labels"
 
+	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/logql"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -146,7 +147,7 @@ func dedupeLabelSets(in []map[string]string) []map[string]string {
 		if len(m) == 0 {
 			continue
 		}
-		key := canonicalKey(m)
+		key := format.CanonicalKey(m)
 		if _, ok := seen[key]; ok {
 			continue
 		}
@@ -154,7 +155,7 @@ func dedupeLabelSets(in []map[string]string) []map[string]string {
 		out = append(out, m)
 	}
 	sort.Slice(out, func(i, j int) bool {
-		return canonicalKey(out[i]) < canonicalKey(out[j])
+		return format.CanonicalKey(out[i]) < format.CanonicalKey(out[j])
 	})
 	return out
 }
