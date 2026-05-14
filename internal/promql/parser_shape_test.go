@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql/parser"
 )
@@ -53,7 +54,7 @@ func TestParserShape_InstantSelector(t *testing.T) {
 	// The parser synthesises a __name__=="up" matcher from the bare name.
 	var nameMatcher *labels.Matcher
 	for _, m := range vs.LabelMatchers {
-		if m.Name == labels.MetricName {
+		if m.Name == model.MetricNameLabel {
 			nameMatcher = m
 			break
 		}
