@@ -1,19 +1,59 @@
 name: chdb
 
-# chDB engine probe. Runs the build-tagged `chdb` test that validates
-# the chdb-go database/sql driver round-trips Map(String, String) into
-# a Go map[string]string via rows.Scan — the gating question for using
-# chDB as a semantic-assertion layer on top of TXTAR text goldens.
+# chDB engine + TXTAR-roundtrip lane.
+#
+# Two informational jobs, both linking libchdb.so:
+#
+#   1. `probe`     — driver-shim sanity check (`TestChDBProbe`). Validates
+#                    the chdb-go database/sql driver round-trips
+#                    Map(String, String) into a Go map[string]string via
+#                    rows.Scan. Originally the only chDB CI lane (RC8 R8.0).
+#
+#   2. `roundtrip` — TXTAR seed → SQL → expected_rows differential lane,
+#                    split into a matrix over the three QL heads
+#                    (promql / logql / traceql). Each matrix entry runs
+#                    `go test -tags chdb -count=1 ./test/spec/<ql>/...`
+#                    which executes the chdb-tagged `TestRoundTripChDB`
+#                    walker over every *.txtar fixture under that head
+#                    that declares both `seed:` and `expected_rows:`.
+#
+# Why split: the required PR gates (`check` + `lint` + `forbid-skip`) are
+# CGO-free and never compile the chdb-go driver, so they cannot run the
+# roundtrip pass. Without this workflow exercising
+# `./test/spec/{promql,logql,traceql}/`, fixture regressions slip past
+# code review (e.g. label_replace_basic.txtar landed broken on main via
+# #312 — no workflow caught it).
 #
 # Informational only. NOT a required PR check; not in the
 # required-status-checks list. The required PR lane stays `check` +
 # `lint` and runs CGO-free Go tests — this workflow links libchdb.so
-# and is therefore segregated.
-#
-# Triggers: manual dispatch + nightly. Promote to PR-gating later if
-# the probe is consistently green and the runner work depends on it.
+# and is therefore segregated. Promote to PR-gating later if the lane
+# is consistently green and the runner work depends on it.
 
 on:
+  push:
+    branches: [main]
+  pull_request:
+    # Scope the PR trigger to changes that can plausibly affect
+    # SQL emission, plan IR, parser lowering, fixtures, or the chDB
+    # roundtrip plumbing itself. Broad enough that anything touching
+    # the round-trip surface fires the lane; tight enough that pure
+    # docs / unrelated CI tweaks don't pay the libchdb cost.
+    paths:
+      - 'internal/chsql/**'
+      - 'internal/promql/**'
+      - 'internal/logql/**'
+      - 'internal/traceql/**'
+      - 'internal/chplan/**'
+      - 'internal/optimizer/**'
+      - 'internal/chclient/**'
+      - 'internal/chclienttest/**'
+      - 'test/spec/**'
+      - 'harness/prometheus-compliance/cmd/seed/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/chdb.yml'
+      - 'Justfile'
   workflow_dispatch:
   schedule:
     # nightly at 04:00 UTC
@@ -24,7 +64,7 @@ permissions:
 
 concurrency:
   group: chdb-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   probe:
@@ -49,8 +89,40 @@ jobs:
       - name: Run chDB probe
         run: go test -tags chdb -v -count=1 -run TestChDBProbe ./internal/chclient/...
 
-      - name: Run TXTAR round-trip suite (chDB)
-        run: just spec-chdb
-
       - name: Run handler tests (chDB)
         run: just test-chdb
+
+  # `roundtrip` walks every *.txtar fixture under test/spec/<ql>/ and,
+  # for fixtures that declare both `seed:` and `expected_rows:`, runs
+  # the stored `sql:` + `args:` against an ephemeral in-process chDB
+  # session and asserts the resulting rows match `expected_rows:`. The
+  # test entry point is `TestRoundTripChDB` in
+  # test/spec/<ql>/roundtrip_chdb_test.go.
+  #
+  # Matrix entries run in parallel (`fail-fast: false`) so a regression
+  # in one head doesn't mask regressions in the others.
+  roundtrip:
+    name: roundtrip (${{ matrix.ql }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        ql: [promql, logql, traceql]
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      - name: Install libchdb.so
+        run: just chdb-install
+
+      - name: Run TXTAR round-trip (${{ matrix.ql }})
+        run: go test -tags chdb -count=1 ./test/spec/${{ matrix.ql }}/...
