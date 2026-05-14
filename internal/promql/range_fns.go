@@ -2,6 +2,7 @@ package promql
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/prometheus/prometheus/promql/parser"
 
@@ -127,6 +128,17 @@ func lowerHoltWinters(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.No
 // IR: a RangeWindow with Func="quantile_over_time" and
 // Scalars=[phi]. The chsql emitter switches on Func and reads
 // Scalars[0] for the quantile parameter.
+//
+// Out-of-range phi: PromQL's funcQuantileOverTime delegates to the
+// shared `quantile()` helper, which returns -Inf for phi < 0 and +Inf
+// for phi > 1 (see prometheus/promql/quantile.go). ClickHouse's
+// `quantile` aggregate rejects phi outside [0, 1], so the lowerer
+// detects the out-of-range case at compile time, builds the
+// RangeWindow with phi clamped to a valid sentinel (0.5 — the actual
+// computed value is discarded), and post-Projects the Value column to
+// +Inf / -Inf. The empty-window branch still produces NaN per Prom
+// semantics (matching the unconditional `if(length(...) > 0, ..., nan)`
+// the emitter already writes).
 func lowerQuantileOverTime(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	if len(c.Args) != 2 {
 		return nil, fmt.Errorf("promql: quantile_over_time expects 2 arguments, got %d", len(c.Args))
@@ -155,17 +167,61 @@ func lowerQuantileOverTime(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpl
 	if err != nil {
 		return nil, err
 	}
-	return &chplan.RangeWindow{
+
+	// Detect compile-time out-of-range phi. CH's quantile aggregate
+	// errors on phi outside [0, 1]; substitute a safe phi for the
+	// inner aggregate and post-Project the Value column to the
+	// PromQL-spec Inf-valued constant. NaN phi rides the same path
+	// (CH would also error on `quantile(NaN)`) and is materialised
+	// as a NaN literal in the post-Project — empty windows still
+	// produce `nan` via the emitter's length-guarded `if`.
+	infValue, replaceValue := outOfRangePhiInf(phi)
+
+	emitPhi := phi
+	if replaceValue {
+		emitPhi = 0.5
+	}
+
+	window := &chplan.RangeWindow{
 		Input:           inner,
 		Func:            "quantile_over_time",
 		Range:           ms.Range,
 		End:             anchor.End,
 		Offset:          anchor.Offset,
-		Scalars:         []float64{phi},
+		Scalars:         []float64{emitPhi},
 		TimestampColumn: s.TimestampColumn,
 		ValueColumn:     s.ValueColumn,
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
-	}, nil
+	}
+	if !replaceValue {
+		return window, nil
+	}
+	return projectValueOverInner(window, s, &chplan.LitFloat{V: infValue}), nil
+}
+
+// outOfRangePhiInf reports whether phi falls outside PromQL's valid
+// quantile range [0, 1] and returns the PromQL-spec replacement value:
+//
+//   - phi < 0  → (-Inf, true)
+//   - phi > 1  → (+Inf, true)
+//   - NaN       → (NaN,  true)   (mirrors Prom's `quantile()` helper)
+//   - otherwise → (0,    false)
+//
+// Callers fold a `true` result into a post-Project on the aggregate /
+// range-window output so CH's `quantile()` aggregate never sees an
+// out-of-range phi (CH errors on phi outside [0, 1]). The two phi-
+// taking call sites — `quantile_over_time(phi, v[range])` and
+// `quantile(phi, V)` aggregator — share this single fold.
+func outOfRangePhiInf(phi float64) (float64, bool) {
+	switch {
+	case math.IsNaN(phi):
+		return math.NaN(), true
+	case phi < 0:
+		return math.Inf(-1), true
+	case phi > 1:
+		return math.Inf(+1), true
+	}
+	return 0, false
 }
 
 // matrixAndSelector extracts the *parser.MatrixSelector and inner
