@@ -17,20 +17,26 @@ import (
 // AST's String() method — guaranteed to round-trip through
 // promparser.ParseExpr by the upstream parser contract.
 //
-// Accept-set for PR 1 (narrow on purpose; expanded in PR 2):
+// Accept-set as of Phase 1 PR 2 (widened from PR 1 with the from-
+// scratch oracle in place):
 //
 //   - Bare vector selector: `metric{label="value", …}`
+//   - Aggregation:           `sum(metric{...})`,
+//     `sum by(label)(metric{...})`
+//   - Range function:        `rate(metric{...}[60s])`,
+//     `sum(rate(metric{...}[60s]))`
 //
-// `sum(...)` / `rate(...)` / range-vector functions are deferred to PR
-// 2 along with the from-scratch oracle. Initial Phase 1 PR 1 runs of
-// this property test (seed=9184878648749493481) discovered that
-// cerberus's emitted SQL for `sum(metric{...})` sums every stored
-// sample's Value, while Prometheus's instant evaluator picks the
-// latest sample per series first and then sums — a real semantic
-// gap (TODO: file with a minimised TXTAR fixture).
-// PR 1's purpose is the framework infrastructure; narrowing the
-// generator's accept-set to the bare-selector shape lets the suite
-// pass clean while the framework is on solid ground.
+// PR 1 narrowed the set to bare selectors because the bridge oracle
+// (Prom's own engine) and cerberus disagreed on two real semantic
+// points: cerberus's `sum` sums every stored sample rather than the
+// LWR per series, and cerberus's vector path doesn't honour the
+// eval-ts boundary the way Prom does. The from-scratch oracle (PR 2)
+// implements both rules correctly — so widening the generator surfaces
+// those production-side divergences as property-test failures (as
+// intended). The property test is currently t.Skip'd in the test
+// file with a pointer to the tracked follow-up production fixes; the
+// generator is wired up the way a green production path will exercise
+// once those fixes land.
 //
 // EvalTs is anchored to the dataset's window so every query has at
 // least one matching sample within Prometheus's 5-minute LookbackDelta.
@@ -47,28 +53,17 @@ func PromQLQuery(d property.Dataset) *rapid.Generator[property.Query] {
 		name := rapid.SampledFrom(names).Draw(t, "metric")
 		matchers := drawMatchers(t, name, d.Metrics)
 
-		expr := &parser.VectorSelector{
-			Name:          name,
-			LabelMatchers: matchers,
-		}
+		expr := drawExpr(t, name, matchers)
 
 		// EvalTs: pick a timestamp AFTER every dataset sample but
-		// well within the bridge oracle's 5-minute LookbackDelta.
-		// The dataset generator emits at most 10 points per series at
-		// 15-second spacing (max sample ts = anchor + 9*15s = 135s).
-		// Picking anchor + 200s leaves a comfortable margin past the
-		// last sample so the bridge oracle's
-		// "latest-sample-at-or-before-eval-ts" rule and cerberus's
-		// "latest sample regardless of eval ts" path agree
-		// (post-filter on a closed sample window, every "latest
-		// available" equals "latest with ts ≤ eval ts").
+		// well within the 5-minute LookbackDelta (Prom's default,
+		// which the from-scratch oracle also uses).
 		//
-		// Phase 1 PR 2 will tighten this: with a from-scratch oracle
-		// the generator can pick arbitrary eval timestamps and the
-		// oracle will compute the lookback / latest-at-ts semantics
-		// directly. Today cerberus's vector path doesn't honour the
-		// eval-ts boundary the way Prometheus does, so we side-step
-		// the gap.
+		// The dataset generator emits at most 10 points per series
+		// at 15-second spacing (max sample ts = anchor + 9*15s =
+		// 135s). Picking anchor + 200s leaves a comfortable margin
+		// past the last sample so the per-series LWR rule has a
+		// fresh sample to surface.
 		evalTs := AnchorTime().Add(200 * time.Second).Unix()
 
 		return property.Query{
@@ -76,6 +71,60 @@ func PromQLQuery(d property.Dataset) *rapid.Generator[property.Query] {
 			EvalTs: evalTs,
 		}
 	})
+}
+
+// drawExpr picks the random expression shape per the PR 2 accept-set.
+// Each draw is uniform over the candidate shapes; the breakdown:
+//
+//   - bare vector selector             — exercises the LWR rule
+//   - sum(selector)                    — exercises aggregation + LWR
+//   - sum by(label)(selector)          — exercises grouping
+//   - rate(selector[60s])              — exercises range function
+//   - sum(rate(selector[60s]))         — exercises composition
+//
+// Aggregations strip __name__; the bare selector keeps it. Both
+// shapes are valid Prom queries.
+func drawExpr(t *rapid.T, name string, matchers []*labels.Matcher) parser.Expr {
+	shape := rapid.IntRange(0, 4).Draw(t, "shape")
+	sel := &parser.VectorSelector{Name: name, LabelMatchers: matchers}
+	switch shape {
+	case 0:
+		return sel
+	case 1:
+		return &parser.AggregateExpr{Op: parser.SUM, Expr: sel}
+	case 2:
+		// `sum by(<label>)`: pick a label from the dataset's pool.
+		// Falls back to no-grouping if no labels are available.
+		group := pickLabelName(t)
+		return &parser.AggregateExpr{Op: parser.SUM, Expr: sel, Grouping: group}
+	case 3:
+		return &parser.Call{
+			Func: parser.Functions["rate"],
+			Args: []parser.Expr{
+				&parser.MatrixSelector{VectorSelector: sel, Range: 60 * time.Second},
+			},
+		}
+	case 4:
+		return &parser.AggregateExpr{
+			Op: parser.SUM,
+			Expr: &parser.Call{
+				Func: parser.Functions["rate"],
+				Args: []parser.Expr{
+					&parser.MatrixSelector{VectorSelector: sel, Range: 60 * time.Second},
+				},
+			},
+		}
+	}
+	return sel
+}
+
+func pickLabelName(t *rapid.T) []string {
+	// A nil/empty group means "no grouping" — equivalent to bare
+	// `sum(...)`. Otherwise pick one of the pool's label names.
+	if !rapid.Bool().Draw(t, "useGroup") {
+		return nil
+	}
+	return []string{rapid.SampledFrom(LabelNamePool).Draw(t, "groupLabel")}
 }
 
 // drawMatchers picks a 0-or-1 label matcher to attach to the
