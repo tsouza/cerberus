@@ -19,7 +19,7 @@ INSERT INTO otel_metrics_gauge VALUES
 [2] string = "service"
 [3] string = "host"
 [4] string = "^host-(.*)$"
-[5] string = "svc-$1"
+[5] string = "svc-\\1"
 [6] string = "temperature"
 [7] string = "2026-01-01 00:00:01.000000000"
 [8] int64 = 9
@@ -27,7 +27,7 @@ INSERT INTO otel_metrics_gauge VALUES
 [10] int64 = 9
 [11] int64 = 300000000000
 -- chplan --
-Project [MetricName, labelReplace(Attributes, dst="service", replacement="svc-$1", src="host", regex="host-(.*)") AS Attributes, TimeUnix, Value]
+Project [MetricName, labelReplace(Attributes, dst="service", replacement="svc-\\1", src="host", regex="host-(.*)") AS Attributes, TimeUnix, Value]
   Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
     Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
       Filter predicate=(((MetricName = "temperature") AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
