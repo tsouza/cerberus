@@ -133,16 +133,17 @@ jobs:
           CLICKHOUSE_PASSWORD: cerberus
         ports:
           - 9000:9000
-        # Health probe: clickhouse/clickhouse-server:24.8-alpine init does
-        # a two-phase boot (temp server → apply users+DB → restart "for
-        # real"). Port 8123 is briefly unresponsive during the restart.
-        # 10 retries × 5s = 50s isn't enough under runner load; bump to
-        # 24 retries × 5s = 120s.
+        # Health probe: clickhouse/clickhouse-server:24.8-alpine has a
+        # two-phase boot (temp server → apply users+DB → restart "for
+        # real") that takes 60–120s on GH Actions runners under load.
+        # Last observed: 121s to reach the "create database 'otel'" log
+        # line, *just past* the 120s window. 36 retries × 5s = 180s
+        # gives 60s of headroom over the worst case we've seen.
         options: >-
           --health-cmd "wget -nv -t1 --spider http://localhost:8123/ping || exit 1"
           --health-interval 5s
           --health-timeout 3s
-          --health-retries 24
+          --health-retries 36
     steps:
       - uses: actions/checkout@v6
 
