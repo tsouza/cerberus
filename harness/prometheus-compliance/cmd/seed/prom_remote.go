@@ -79,6 +79,7 @@ var fixtureSources = []fixtureSource{
 	{"demo_http_requests_total", "otel_metrics_sum"},
 	{"demo_disk_usage_bytes", "otel_metrics_gauge"},
 	{"demo_disk_total_bytes", "otel_metrics_gauge"},
+	{"demo_num_cpus", "otel_metrics_gauge"},
 	{"up", "otel_metrics_gauge"},
 }
 
