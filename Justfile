@@ -83,6 +83,55 @@ fuzz QL="promql" DURATION="60s":
 bench:
     go test -bench=. -benchmem -benchtime=5x -run='^$' ./...
 
+# Generate the GA-prep coverage baseline (default-tag + chdb-tagged
+# lanes, merged via in-line awk because gocovmerge can't reconcile
+# block-boundary drift between the two compilations). Writes
+# cover.out, cover-chdb.out, and cover-merged.out, then prints the
+# total + a per-package summary sorted by coverage. See
+# docs/coverage-baseline.md for what the numbers mean and which
+# packages are intentionally under-tested.
+#
+# Requires chDB for the second lane (`just chdb-install`). If
+# libchdb.so isn't present, the recipe still emits cover.out and
+# treats cover-merged.out as cover.out (default-tag baseline only).
+coverage:
+    @echo "==> default-tag coverage"
+    # `|| true` tolerates partial failures (e.g. `main` packages that
+    # require the `covdata` tool on toolchains that ship without it).
+    # The cover.out profile is still written for every package that
+    # compiled, which is all production code in internal/**.
+    go test -coverprofile=cover.out ./... || true
+    @test -s cover.out
+    @if [ -e /usr/local/lib/libchdb.so ]; then \
+        echo "==> chdb-tagged coverage"; \
+        go test -tags chdb -coverprofile=cover-chdb.out ./... || true; \
+        echo "==> merging profiles"; \
+        { echo "mode: set"; \
+          awk 'FNR==1{next} { k=$1" "$2; if (!(k in m) || $3>m[k]) m[k]=$3 } END { for (k in m) print k, m[k] }' cover.out cover-chdb.out | sort; \
+        } > cover-merged.out; \
+    else \
+        echo "==> libchdb.so not found, skipping chdb lane"; \
+        cp cover.out cover-merged.out; \
+    fi
+    @echo
+    @echo "==> Total"
+    @go tool cover -func=cover-merged.out | tail -1
+    @echo
+    @echo "==> Per-package (sorted by coverage)"
+    @awk -F'[: ,]' 'NR > 1 { \
+        n = split($0, w, " "); stmts = w[n-1]; hits = w[n]; \
+        split($0, a, ":"); fp = a[1]; \
+        sub(/^github\.com\/tsouza\/cerberus\//, "", fp); \
+        k = fp; sub(/\/[^\/]+$/, "", k); \
+        total[k] += stmts; \
+        if (hits != 0) covered[k] += stmts; \
+      } END { \
+        for (p in total) { \
+          pct = (total[p] > 0) ? 100.0*covered[p]/total[p] : 0; \
+          printf "%6.2f%%  %5d / %-5d  %s\n", pct, covered[p], total[p], p; \
+        } \
+      }' cover-merged.out | sort -rn
+
 # Regenerate TXTAR golden sections in test/spec/**/*.txtar from current output.
 # Review `git diff test/spec/` before committing.
 update-golden:
