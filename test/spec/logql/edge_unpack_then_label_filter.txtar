@@ -7,3 +7,6 @@
 [3] string = "warn|error"
 -- sql --
 SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND match(`ResourceAttributes`[?], ?)
+-- chplan --
+Filter predicate=((ResourceAttributes["job"] = "api") AND (ResourceAttributes["level"] =~ "warn|error"))
+  Scan(otel_logs)

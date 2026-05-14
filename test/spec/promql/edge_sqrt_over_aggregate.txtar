@@ -7,3 +7,9 @@ sqrt(avg(latency_seconds))
 [3] string = "latency_seconds"
 -- sql --
 SELECT `MetricName`, `Attributes`, `TimeUnix`, sqrt(`Value`) AS `Value` FROM (SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT avg(`Value`) AS `Value` FROM (SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` = ?))))
+-- chplan --
+Project [MetricName, Attributes, TimeUnix, sqrt(Value) AS Value]
+  Project ["" AS MetricName, CAST(map(), "Map(String,String)") AS Attributes, now64(9) AS TimeUnix, Value AS Value]
+    Aggregate groupBy=[] funcs=[avg(Value) AS Value]
+      Filter predicate=(MetricName = "latency_seconds")
+        Scan(otel_metrics_gauge)

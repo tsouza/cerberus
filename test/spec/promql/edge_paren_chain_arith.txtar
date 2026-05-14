@@ -7,3 +7,9 @@
 [3] string = "up"
 -- sql --
 SELECT `MetricName`, `Attributes`, `TimeUnix`, (`Value` / ?) AS `Value` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, (`Value` + ?) AS `Value` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, (`Value` * ?) AS `Value` FROM (SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` = ?))))
+-- chplan --
+Project [MetricName, Attributes, TimeUnix, (Value / 3) AS Value]
+  Project [MetricName, Attributes, TimeUnix, (Value + 1) AS Value]
+    Project [MetricName, Attributes, TimeUnix, (Value * 2) AS Value]
+      Filter predicate=(MetricName = "up")
+        Scan(otel_metrics_gauge)
