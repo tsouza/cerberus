@@ -344,6 +344,75 @@ func (e *emitter) emitLimit(l *chplan.Limit) error {
 	return nil
 }
 
+// emitTopK renders `SELECT * FROM (<input>) ORDER BY <sortExpr> [DESC]
+// LIMIT K [BY <by_exprs>...]` — ClickHouse's `LIMIT N BY <expr>`
+// extension is the natural shape for PromQL's `topk(K, v) by (g)`
+// (per-partition top-K) and `topk(K, v)` (whole-result top-K, no
+// partitioning).
+//
+// K <= 0 is a programmer error — topk(0, ...) is meaningless and the
+// PromQL lowering should have rejected it upstream; emit an error so
+// the plan tree doesn't silently produce an unbounded result.
+func (e *emitter) emitTopK(t *chplan.TopK) error {
+	if t.K <= 0 {
+		return fmt.Errorf("%w: TopK with non-positive K=%d", ErrUnsupported, t.K)
+	}
+	if t.SortExpr == nil {
+		return fmt.Errorf("%w: TopK with nil SortExpr", ErrUnsupported)
+	}
+	// Pre-flight expressions so chplan errors surface synchronously.
+	if err := (&Builder{}).Expr(t.SortExpr); err != nil {
+		return err
+	}
+	for _, by := range t.By {
+		if err := (&Builder{}).Expr(by); err != nil {
+			return err
+		}
+	}
+
+	sub, err := e.subqueryFrag(t.Input)
+	if err != nil {
+		return err
+	}
+	sortExpr := t.SortExpr
+
+	// Inner SELECT applies the ORDER BY + LIMIT BY combo. We keep it as
+	// `SELECT *` so the inner subquery's column names flow through to
+	// LIMIT BY's resolution unambiguously. If we instead aliased the
+	// columns here (e.g. `Attributes AS Attributes`), CH's name
+	// resolution for `LIMIT BY Attributes['key']` would prefer the
+	// SELECT-list alias over the FROM subquery's column — fine when
+	// they're the same type, but fragile when an outer wrapper rewrites
+	// the alias's type (e.g. the chDB roundtrip runner wraps Map columns
+	// in toJSONString(...) on the outermost SELECT).
+	inner := NewQuery().From(sub).OrderBy(
+		func(b *Builder) { _ = b.Expr(sortExpr) },
+		t.Desc,
+	).Limit(t.K)
+	if len(t.By) > 0 {
+		byFrags := make([]Frag, 0, len(t.By))
+		for _, by := range t.By {
+			expr := by
+			byFrags = append(byFrags, func(b *Builder) { _ = b.Expr(expr) })
+		}
+		inner.LimitBy(byFrags...)
+	}
+
+	// Outer SELECT projects the canonical column list. When `Columns`
+	// is empty we emit a bare `SELECT *` so the row arity matches the
+	// inner subquery verbatim.
+	outer := NewQuery().From(inner.Frag())
+	if len(t.Columns) > 0 {
+		cols := make([]Frag, 0, len(t.Columns))
+		for _, c := range t.Columns {
+			cols = append(cols, Col(c))
+		}
+		outer.Select(cols...)
+	}
+	e.emitSelect(outer)
+	return nil
+}
+
 // emitOrderBy renders `SELECT * FROM (<input>) ORDER BY <k1> [DESC], …`
 // via QueryBuilder.OrderBy. Empty Keys is a programmer error — emit an
 // error so the plan tree doesn't silently lose its sort intent.

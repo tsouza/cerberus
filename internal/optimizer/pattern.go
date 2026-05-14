@@ -58,6 +58,7 @@ var (
 	KindOrderBy        = NodeKind{t: reflect.TypeOf((*chplan.OrderBy)(nil))}
 	KindVectorJoin     = NodeKind{t: reflect.TypeOf((*chplan.VectorJoin)(nil))}
 	KindStructuralJoin = NodeKind{t: reflect.TypeOf((*chplan.StructuralJoin)(nil))}
+	KindTopK           = NodeKind{t: reflect.TypeOf((*chplan.TopK)(nil))}
 )
 
 // Bindings is the result of a successful pattern match: a map from the

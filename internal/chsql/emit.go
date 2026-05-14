@@ -84,6 +84,8 @@ func (e *emitter) emitNode(n chplan.Node) error {
 		return e.emitLimit(v)
 	case *chplan.OrderBy:
 		return e.emitOrderBy(v)
+	case *chplan.TopK:
+		return e.emitTopK(v)
 	case *chplan.VectorJoin:
 		return e.emitVectorJoin(v)
 	case *chplan.StructuralJoin:

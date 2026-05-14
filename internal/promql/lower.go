@@ -450,9 +450,10 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 
 // lowerAggregate handles `sum by (job) (...)`, `sum without (instance) (...)`,
 // `count(...)`, `stddev(...)`, `stdvar(...)`, `group(...)`, and
-// `quantile(0.95, ...)`. Output-shape-changing aggregates (`topk`, `bottomk`,
-// `count_values`) are deferred to M1.7 since they produce K rows per group
-// rather than one.
+// `quantile(0.95, ...)`. The shape-changing aggregates `topk`/`bottomk` are
+// handled separately via lowerTopK — they produce K rows per partition
+// rather than one, so they map to a TopK plan node (CH's `LIMIT K BY`)
+// instead of the regular Aggregate. `count_values` remains deferred.
 //
 // The Aggregate is wrapped with a Project that re-shapes its output into
 // the Sample contract (MetricName, Attributes, TimeUnix, Value) so the
@@ -460,6 +461,13 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 // aggregations drop `__name__`, so the projected MetricName is the empty
 // string; the projected Attributes is built from the group-key columns.
 func lowerAggregate(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	if a.Op == parser.TOPK || a.Op == parser.BOTTOMK {
+		return lowerTopK(a, s, ctx)
+	}
+	if a.Op == parser.COUNT_VALUES {
+		return lowerCountValues(a, s, ctx)
+	}
+
 	input, err := lower(a.Expr, s, ctx)
 	if err != nil {
 		return nil, err
@@ -484,6 +492,202 @@ func lowerAggregate(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (ch
 		DropEmptyOnNoGroup: true,
 	}
 	return wrapAggregateForSample(agg, a, s, aliases), nil
+}
+
+// lowerCountValues lowers `count_values("label", expr) [by(g)]`. The
+// shape is: for each distinct value of `expr` (within each `by` group),
+// emit a row whose Attributes carry the unique value as a synthetic
+// label binding (`<label>=<stringified value>`) plus any `by`-grouped
+// labels, and whose Value is the count of input series that hit that
+// value.
+//
+// SQL shape (no `by`):
+//
+//	SELECT '' AS MetricName,
+//	       CAST(map('<label>', toString(Value)), 'Map(String,String)') AS Attributes,
+//	       now64(9) AS TimeUnix,
+//	       count() AS Value
+//	FROM (<inner>)
+//	GROUP BY toString(Value)
+//
+// SQL shape (with `by(g)`):
+//
+//	SELECT '' AS MetricName,
+//	       mapWithoutEmpty(map('g', gkey_0, '<label>', toString(Value))) AS Attributes,
+//	       now64(9) AS TimeUnix,
+//	       count() AS Value
+//	FROM (<inner>)
+//	GROUP BY Attributes['g'], toString(Value)
+//
+// `without(...)` follows the same path as the other aggregations for
+// compositionality, but `count_values` semantics with `without` are
+// rarely used in practice; we reject it for now to keep the surface
+// small.
+func lowerCountValues(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	if a.Without {
+		return nil, fmt.Errorf("promql: count_values without(...) is not yet supported")
+	}
+	label, ok := tryStringLiteral(a.Param)
+	if !ok {
+		return nil, fmt.Errorf("promql: count_values requires a string-literal label name as the first arg")
+	}
+	if label == "" {
+		return nil, fmt.Errorf("promql: count_values requires a non-empty label name")
+	}
+
+	input, err := lower(a.Expr, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Group keys: the `by(...)` labels (as Attributes map accesses) plus
+	// the value-as-label key (toString(Value)). The value-as-label key
+	// gets its own alias so the wrapping Project can reference it.
+	groupBy := make([]chplan.Expr, 0, len(a.Grouping)+1)
+	aliases := make([]string, 0, len(a.Grouping)+1)
+	for i, lbl := range a.Grouping {
+		groupBy = append(groupBy, &chplan.MapAccess{
+			Map: &chplan.ColumnRef{Name: s.AttributesColumn},
+			Key: &chplan.LitString{V: lbl},
+		})
+		aliases = append(aliases, fmt.Sprintf("gkey_%d", i))
+	}
+	const (
+		valueKeyAlias = "cv_val"
+		countAlias    = "cv_count"
+	)
+	groupBy = append(groupBy, &chplan.FuncCall{
+		Name: "toString",
+		Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}},
+	})
+	aliases = append(aliases, valueKeyAlias)
+
+	agg := &chplan.Aggregate{
+		Input:          input,
+		GroupBy:        groupBy,
+		GroupByAliases: aliases,
+		// Alias count() as cv_count (not Value) so CH's name resolution
+		// in the GROUP BY clause doesn't pick up the aggregate alias
+		// when it sees `toString(Value)` — CH otherwise errors with
+		// `Aggregate function count() AS Value is found in GROUP BY`.
+		// The outer Project re-aliases cv_count back to Value.
+		AggFuncs: []chplan.AggFunc{
+			{Name: "count", Args: []chplan.Expr{}, Alias: countAlias},
+		},
+		// count_values returns one row per distinct value; empty input
+		// produces no rows naturally because there's nothing to group
+		// over. The count() guard isn't needed (and would be wrong —
+		// it would suppress the zero-distinct-values case).
+		DropEmptyOnNoGroup: false,
+	}
+
+	// Build the Attributes map for the wrapping Project. Each `by`
+	// label binds its gkey_<i> column; the synthetic label binds
+	// cv_val.
+	mapArgs := make([]chplan.Expr, 0, (len(a.Grouping)+1)*2)
+	for i, lbl := range a.Grouping {
+		mapArgs = append(mapArgs,
+			&chplan.LitString{V: lbl},
+			&chplan.ColumnRef{Name: aliases[i]},
+		)
+	}
+	mapArgs = append(mapArgs,
+		&chplan.LitString{V: label},
+		&chplan.ColumnRef{Name: valueKeyAlias},
+	)
+	attrs := &chplan.MapWithoutEmptyValues{
+		Map: &chplan.FuncCall{Name: "map", Args: mapArgs},
+	}
+
+	return &chplan.Project{
+		Input: agg,
+		Projections: []chplan.Projection{
+			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
+			{Expr: attrs, Alias: s.AttributesColumn},
+			{Expr: &chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}}, Alias: s.TimestampColumn},
+			{Expr: &chplan.ColumnRef{Name: countAlias}, Alias: s.ValueColumn},
+		},
+	}, nil
+}
+
+// tryStringLiteral returns the value of a *parser.StringLiteral, peeling
+// off ParenExpr wrappers. Returns ("", false) if e isn't a string
+// literal.
+func tryStringLiteral(e parser.Expr) (string, bool) {
+	switch v := e.(type) {
+	case *parser.StringLiteral:
+		return v.Val, true
+	case *parser.ParenExpr:
+		return tryStringLiteral(v.Expr)
+	}
+	return "", false
+}
+
+// lowerTopK lowers `topk(K, expr) [by(g) | without(g)] (...)` and
+// `bottomk(K, expr) ...` into a chplan.TopK over the lowered inner
+// expression. Unlike a regular aggregation, topk/bottomk preserve
+// every input label — `by(...)` only partitions; the result vector
+// keeps all the original labels of the surviving series.
+//
+// SQL shape:
+//
+//	SELECT MetricName, Attributes, TimeUnix, Value FROM (<inner>)
+//	  ORDER BY Value [DESC|ASC] LIMIT K [BY <partition_exprs>]
+//
+// K must be a non-negative integer scalar literal at lowering time.
+// PromQL also accepts a `0` K (returns no series); we treat K=0 as
+// an error since the SQL `LIMIT 0` shape is degenerate and the
+// fixture-driven flow keeps a positive K invariant on the plan tree.
+//
+// `without(...)` is rejected: the spec allows it, but partitioning
+// "by every label except <these>" expands to `LIMIT K BY <full
+// Attributes minus listed keys>`, which is a different rewrite
+// than the by-list path and lands as a follow-up.
+func lowerTopK(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	if a.Without {
+		return nil, fmt.Errorf("promql: %s without(...) is not yet supported (use by(...) or no grouping)", a.Op.String())
+	}
+	kF, ok := tryScalarLiteral(a.Param)
+	if !ok {
+		return nil, fmt.Errorf("promql: %s requires a scalar literal K (computed K is not yet supported)", a.Op.String())
+	}
+	if kF < 0 || kF != float64(int64(kF)) {
+		return nil, fmt.Errorf("promql: %s K must be a non-negative integer literal, got %v", a.Op.String(), kF)
+	}
+	if kF == 0 {
+		// PromQL semantics: topk(0, v) returns an empty result. CH's
+		// LIMIT 0 is degenerate and downstream invariants assume
+		// positive K; reject so callers see a clear error rather
+		// than a silent empty.
+		return nil, fmt.Errorf("promql: %s K must be > 0", a.Op.String())
+	}
+
+	input, err := lower(a.Expr, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	by := make([]chplan.Expr, 0, len(a.Grouping))
+	for _, label := range a.Grouping {
+		by = append(by, &chplan.MapAccess{
+			Map: &chplan.ColumnRef{Name: s.AttributesColumn},
+			Key: &chplan.LitString{V: label},
+		})
+	}
+
+	return &chplan.TopK{
+		Input:    input,
+		K:        int64(kF),
+		By:       by,
+		SortExpr: &chplan.ColumnRef{Name: s.ValueColumn},
+		Desc:     a.Op == parser.TOPK,
+		Columns: []string{
+			s.MetricNameColumn,
+			s.AttributesColumn,
+			s.TimestampColumn,
+			s.ValueColumn,
+		},
+	}, nil
 }
 
 // groupKeyAliases returns ["gkey_0", "gkey_1", ...] of length n. Empty
@@ -600,9 +804,10 @@ func aggregateGroupBy(a *parser.AggregateExpr, s schema.Metrics) ([]chplan.Expr,
 	return out, nil
 }
 
-// buildAggFunc produces the single AggFunc for an aggregation. Output-shape-
-// changing aggregates (`topk`, `bottomk`, `count_values`) are intentionally
-// rejected here pointing at M1.7.
+// buildAggFunc produces the single AggFunc for an aggregation. The output-
+// shape-changing aggregates `topk`/`bottomk` are handled out-of-band via
+// lowerTopK before this function is called. `count_values` (the remaining
+// shape-changer) is still rejected here.
 func buildAggFunc(a *parser.AggregateExpr, s schema.Metrics) (chplan.AggFunc, error) {
 	valueArg := &chplan.ColumnRef{Name: s.ValueColumn}
 
@@ -645,7 +850,7 @@ func buildAggFunc(a *parser.AggregateExpr, s schema.Metrics) (chplan.AggFunc, er
 			Alias:  s.ValueColumn,
 		}, nil
 
-	case parser.TOPK, parser.BOTTOMK, parser.COUNT_VALUES:
+	case parser.COUNT_VALUES:
 		return chplan.AggFunc{}, fmt.Errorf("promql: %s changes output shape and lands with M1.7 result shaping", a.Op.String())
 	}
 

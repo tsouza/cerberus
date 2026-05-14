@@ -11,9 +11,12 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
-// TestLower_Aggregate_Errors covers the M1.4 surface that intentionally
-// stays out of scope (output-shape-changing aggregates) plus the param /
-// no-param mismatch paths so the error messages remain observable.
+// TestLower_Aggregate_Errors covers the aggregate paths whose error
+// messages are observable contract (param / no-param mismatch, computed
+// quantile phi, topk/bottomk/count_values argument-shape rejections).
+// The previously-deferred `changes output shape` errors landed in PR
+// (topk/bottomk → chplan.TopK; count_values → Aggregate + Project) and
+// no longer surface here.
 func TestLower_Aggregate_Errors(t *testing.T) {
 	t.Parallel()
 
@@ -26,19 +29,34 @@ func TestLower_Aggregate_Errors(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name:    "topk shape change deferred",
-			query:   `topk(3, up)`,
-			wantErr: "changes output shape and lands with M1.7",
+			name:    "topk without not yet supported",
+			query:   `topk(3, up) without (instance)`,
+			wantErr: "without(...) is not yet supported",
 		},
 		{
-			name:    "bottomk shape change deferred",
-			query:   `bottomk(3, up)`,
-			wantErr: "changes output shape and lands with M1.7",
+			name:    "topk K must be scalar literal",
+			query:   `topk(scalar(up), latency_seconds)`,
+			wantErr: "requires a scalar literal K",
 		},
 		{
-			name:    "count_values shape change deferred",
-			query:   `count_values("v", up)`,
-			wantErr: "changes output shape and lands with M1.7",
+			name:    "topk K must be non-negative integer",
+			query:   `topk(-1, up)`,
+			wantErr: "non-negative integer literal",
+		},
+		{
+			name:    "topk K must be > 0",
+			query:   `topk(0, up)`,
+			wantErr: "K must be > 0",
+		},
+		{
+			name:    "count_values rejects empty label",
+			query:   `count_values("", up)`,
+			wantErr: "non-empty label name",
+		},
+		{
+			name:    "count_values without not yet supported",
+			query:   `count_values("v", up) without (instance)`,
+			wantErr: "without(...) is not yet supported",
 		},
 		{
 			name:    "quantile needs scalar literal phi",

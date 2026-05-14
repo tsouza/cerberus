@@ -1237,6 +1237,7 @@ type QueryBuilder struct {
 	orderBy    []orderKey
 	limit      int64
 	hasLimit   bool
+	limitBy    []Frag
 }
 
 type orderKey struct {
@@ -1340,6 +1341,21 @@ func (s *QueryBuilder) OrderBy(expr Frag, desc bool) *QueryBuilder {
 func (s *QueryBuilder) Limit(n int64) *QueryBuilder {
 	s.limit = n
 	s.hasLimit = n > 0
+	return s
+}
+
+// LimitBy appends a partition expression to the CH-specific
+// `LIMIT N BY <expr1>, <expr2>, ...` clause, which restricts the
+// LIMIT to the first N rows per distinct combination of the BY
+// expressions. Calling LimitBy without first calling Limit is a
+// no-op (CH requires the LIMIT count).
+//
+// Used by chplan.TopK to render `topk(K, v) by (g)` as the canonical
+// CH idiom — preserves all input columns and only K rows survive
+// per group, matching PromQL's topk/bottomk semantics. Empty BY
+// renders no `BY` suffix (bare `LIMIT N`).
+func (s *QueryBuilder) LimitBy(exprs ...Frag) *QueryBuilder {
+	s.limitBy = append(s.limitBy, exprs...)
 	return s
 }
 
@@ -1456,5 +1472,14 @@ func (s *QueryBuilder) writeInto(b *Builder) {
 	if s.hasLimit {
 		b.sb.WriteString(" LIMIT ")
 		b.sb.WriteString(strconv.FormatInt(s.limit, 10))
+		if len(s.limitBy) > 0 {
+			b.sb.WriteString(" BY ")
+			for i, f := range s.limitBy {
+				if i > 0 {
+					b.sb.WriteString(", ")
+				}
+				f(b)
+			}
+		}
 	}
 }

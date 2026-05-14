@@ -546,6 +546,46 @@ func TestQueryBuilder_GroupByOrderBy(t *testing.T) {
 	}
 }
 
+// TestQueryBuilder_LimitBy — CH `LIMIT N BY <expr>` extension. The BY
+// suffix only renders when Limit is positive; calling LimitBy without
+// a positive Limit is a no-op.
+func TestQueryBuilder_LimitBy(t *testing.T) {
+	t.Parallel()
+
+	sql, args := NewQuery().
+		From(Col("otel_metrics_gauge")).
+		OrderBy(Col("Value"), true).
+		Limit(3).
+		LimitBy(func(b *Builder) { b.MapAt("Attributes", "job") }).
+		Build()
+
+	wantSQL := "SELECT * FROM `otel_metrics_gauge`" +
+		" ORDER BY `Value` DESC" +
+		" LIMIT 3 BY `Attributes`[?]"
+	if sql != wantSQL {
+		t.Errorf("SQL = %q; want %q", sql, wantSQL)
+	}
+	if want := []any{"job"}; !reflect.DeepEqual(args, want) {
+		t.Errorf("Args = %v; want %v", args, want)
+	}
+}
+
+// TestQueryBuilder_LimitBy_NoLimit — LimitBy without Limit emits no
+// LIMIT clause at all (the BY suffix is gated on hasLimit).
+func TestQueryBuilder_LimitBy_NoLimit(t *testing.T) {
+	t.Parallel()
+
+	sql, _ := NewQuery().
+		From(Col("t")).
+		LimitBy(Col("x")).
+		Build()
+
+	wantSQL := "SELECT * FROM `t`"
+	if sql != wantSQL {
+		t.Errorf("SQL = %q; want %q", sql, wantSQL)
+	}
+}
+
 // TestQueryBuilder_NestedSubquery — the worst-case nested case the
 // roadmap calls out: an inner SELECT with its own placeholders feeds
 // the outer SELECT's FROM, and an outer WHERE adds another `?`. Args
