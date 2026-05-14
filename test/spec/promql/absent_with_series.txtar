@@ -1,0 +1,35 @@
+# absent() over a metric the table DOES contain — Prom returns an
+# empty vector (no row). At this layer the inner Filter matches at
+# least one Scan row, so count() returns > 0; the outer
+# `_cerb_n = 0` filter drops the candidate sample, the surrounding
+# Project produces zero output rows.
+
+-- query.promql --
+absent(temperature)
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('temperature', map('host', 'a'), toDateTime64('2026-01-01 00:00:00', 9), 42.0);
+-- expected_rows --
+[]
+-- args --
+[0] string = ""
+[1] string = "Map(String,String)"
+[2] string = "2026-01-01 00:00:01.000000000"
+[3] int64 = 9
+[4] float64 = 1
+[5] string = "temperature"
+[6] int64 = 0
+-- chplan --
+Project ["" AS MetricName, CAST(map(), "Map(String,String)") AS Attributes, toDateTime64("2026-01-01 00:00:01.000000000", 9) AS TimeUnix, 1 AS Value]
+  Filter predicate=(_cerb_n = 0)
+    Aggregate groupBy=[] funcs=[count() AS _cerb_n]
+      Filter predicate=(MetricName = "temperature")
+        Scan(otel_metrics_gauge)
+-- sql --
+SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, toDateTime64(?, ?) AS `TimeUnix`, ? AS `Value` FROM (SELECT * FROM (SELECT count() AS `_cerb_n` FROM (SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` = ?))) WHERE (`_cerb_n` = ?))

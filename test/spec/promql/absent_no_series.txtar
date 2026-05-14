@@ -1,0 +1,52 @@
+# absent() over a metric the table doesn't contain — Prom returns a
+# 1-row vector with the equality-matcher labels lifted onto the
+# synthesised output sample. The chplan is a 4-layer stack:
+#
+#   Project ["", map(<eq-matchers>), <eval ts>, 1.0]
+#     Filter (_cerb_n = 0)
+#       Aggregate count() AS _cerb_n   (DropEmptyOnNoGroup=false)
+#         Filter (MetricName = "nonexistent_metric_name") AND (Attributes['job'] = "x")
+#           Scan(otel_metrics_gauge)
+#
+# The inner Filter (matchers) yields 0 rows because the only seeded
+# row belongs to a different metric; the Aggregate with
+# DropEmptyOnNoGroup=false still emits one row of zeros (count=0); the
+# outer Filter passes it through; the Project synthesises the absent
+# row with `job=x` lifted from the equality matcher.
+
+-- query.promql --
+absent(nonexistent_metric_name{job="x"})
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- Only an unrelated metric is present — the filtered Scan above
+-- produces 0 rows for `nonexistent_metric_name`.
+INSERT INTO otel_metrics_gauge VALUES
+    ('temperature', map('host', 'a'), toDateTime64('2026-01-01 00:00:00', 9), 42.0);
+-- expected_rows --
+[
+  ["", {"job": "x"}, "2026-01-01T00:00:01Z", 1.0]
+]
+-- args --
+[0] string = ""
+[1] string = "job"
+[2] string = "x"
+[3] string = "2026-01-01 00:00:01.000000000"
+[4] int64 = 9
+[5] float64 = 1
+[6] string = "nonexistent_metric_name"
+[7] string = "job"
+[8] string = "x"
+[9] int64 = 0
+-- chplan --
+Project ["" AS MetricName, map("job", "x") AS Attributes, toDateTime64("2026-01-01 00:00:01.000000000", 9) AS TimeUnix, 1 AS Value]
+  Filter predicate=(_cerb_n = 0)
+    Aggregate groupBy=[] funcs=[count() AS _cerb_n]
+      Filter predicate=((Attributes["job"] = "x") AND (MetricName = "nonexistent_metric_name"))
+        Scan(otel_metrics_gauge)
+-- sql --
+SELECT ? AS `MetricName`, map(?, ?) AS `Attributes`, toDateTime64(?, ?) AS `TimeUnix`, ? AS `Value` FROM (SELECT * FROM (SELECT count() AS `_cerb_n` FROM (SELECT * FROM `otel_metrics_gauge` PREWHERE (`MetricName` = ?) WHERE (`Attributes`[?] = ?))) WHERE (`_cerb_n` = ?))

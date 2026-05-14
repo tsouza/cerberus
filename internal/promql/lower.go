@@ -374,6 +374,8 @@ func lowerCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 		}
 	}
 	switch c.Func.Name {
+	case "absent":
+		return lowerAbsent(c, s, ctx)
 	case "clamp", "clamp_min", "clamp_max":
 		return lowerClamp(c, s, ctx)
 	case "histogram_quantile":
