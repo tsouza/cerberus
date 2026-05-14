@@ -33,23 +33,27 @@ excluded-files:
   - "**/doc.go"
 
 # Phased mutation-testing rollout. Layer 3 (PR #247) added ~125
-# invariant tests across internal/chplan, so chplan is the first
+# invariant tests across internal/chplan, so chplan was the first
 # package dense enough to meet an 80% efficacy bar. The other
 # kill-zone packages onboard once their coverage catches up:
 #
-#   Phase 1 (this file):    internal/chplan       @ 80% efficacy
-#   Phase 2 (planned):      internal/chsql        @ 75% efficacy
-#   Phase 3 (planned):      internal/optimizer    @ 70% efficacy
+#   Phase 1 (PR #260):      internal/chplan       @ 80% efficacy — DONE
+#   Phase 2 (this PR):      internal/chsql        @ 75% efficacy — NEW
+#   Phase 3 (pending #266): internal/optimizer    @ 70% efficacy
+#                           (waits on Layer 4 chDB property tests)
 #   Phase 4 (planned):      QL parsers + lower    @ 65% efficacy
-#                           then promote gremlins to a required gate.
+#                           (waits on Layer 2b coverage)
+#
+# Promotion to a required CI gate happens after all four phases stay
+# stable for a week.
 #
 # The thresholds below are GLOBAL (gremlins v0.6.0 does not support
-# per-package thresholds — see `gremlins unleash --help`). To enforce
-# the per-phase bar without dragging the slower packages down, run
-# gremlins scoped to one package at a time in CI via
-# `gremlins unleash --threshold-efficacy <bar> ./internal/<pkg>/...`
-# in the workflow rather than the global config. The values below are
-# the floor for the whole-repo `just mutate` invocation and stay
-# informational until phase 4.
+# per-package thresholds — see `gremlins unleash --help`). The
+# per-phase bar is enforced in `.github/workflows/mutation.yml` via a
+# matrix that runs `gremlins unleash --threshold-efficacy <bar>
+# ./internal/<pkg>/...` once per phase, scoped to a single package
+# at a time so the slower packages don't drag the bar down. The
+# values below are the floor for the unscoped whole-repo
+# `just mutate` invocation and stay informational until phase 4.
 threshold-efficacy: 80
 threshold-mcover: 50

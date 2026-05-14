@@ -151,17 +151,19 @@ the default lane, which would score a string-equality false-kill.
 
 ### Phased rollout
 
-The whole-repo `threshold-efficacy` bar is global (gremlins v0.6.0
-has no per-package threshold). The rollout is therefore staged: each
-phase raises the global bar only once the next-most-covered package
-catches up, and promotion to a required CI gate waits for phase 4.
+The whole-repo `threshold-efficacy` bar in `.gremlins.yaml` is global
+(gremlins v0.6.0 has no per-package threshold). The rollout is
+therefore staged: each phase enforces its own per-package bar via the
+`mutation` workflow's matrix, which scopes `gremlins unleash
+--threshold-efficacy <bar>` to one package at a time. Promotion to a
+required CI gate waits for phase 4 plus a week of stable runs.
 
-| Phase                            | Package              | Target efficacy |
-| -------------------------------- | -------------------- | --------------- |
-| 1 (active — `.gremlins.yaml`)    | `internal/chplan`    | 80%             |
-| 2 (planned)                      | `internal/chsql`     | 75%             |
-| 3 (planned)                      | `internal/optimizer` | 70%             |
-| 4 (planned, then required gate)  | QL parsers + lower   | 65%             |
+| Phase                            | Package              | Target efficacy | Status                           |
+| -------------------------------- | -------------------- | --------------- | -------------------------------- |
+| 1 (PR #260)                      | `internal/chplan`    | 80%             | active in `mutation.yml` matrix  |
+| 2 (this PR)                      | `internal/chsql`     | 75%             | active in `mutation.yml` matrix  |
+| 3                                | `internal/optimizer` | 70%             | waits on #266 (Layer 4 chDB)     |
+| 4 (then required gate)           | QL parsers + lower   | 65%             | waits on Layer 2b coverage       |
 
 Until phase 4, `just mutate` (and the `mutation` workflow that wraps
 it) stays informational. The thresholds are advisory floors only —

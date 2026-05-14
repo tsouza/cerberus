@@ -12,19 +12,36 @@ permissions:
 
 jobs:
   mutate:
-    name: gremlins unleash
+    # Per-phase mutation kill-zone. gremlins v0.6.0 has no per-package
+    # threshold, so each phase runs as its own matrix entry scoped to a
+    # single package with its own --threshold-efficacy bar. The bar in
+    # `.gremlins.yaml` (currently 80) is the floor for the unscoped
+    # whole-repo `just mutate` invocation only — the matrix below
+    # overrides it per phase. All phases are informational until phase
+    # 4; the workflow stays on push-to-main + nightly + dispatch.
+    name: gremlins ${{ matrix.phase }} (${{ matrix.scope }} @ ${{ matrix.efficacy }}%)
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - phase: phase1
+            scope: ./internal/chplan/...
+            efficacy: 80
+          - phase: phase2
+            scope: ./internal/chsql/...
+            efficacy: 75
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
           go-version-file: 'go.mod'
           cache: true
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: just
       - name: Install gremlins
         run: go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0
-      - name: just mutate
-        run: just mutate
+      - name: gremlins unleash
+        run: |
+          gremlins unleash \
+            --threshold-efficacy ${{ matrix.efficacy }} \
+            ${{ matrix.scope }}
