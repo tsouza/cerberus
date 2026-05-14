@@ -40,6 +40,11 @@ type rowsCursor struct {
 	// so that row decode + CH wire transit are billed to the execute
 	// stage — the iteration loop is part of the round-trip's cost.
 	span trace.Span
+	// rec is the progress recorder latched at QueryCursor time. The
+	// cursor flushes it on Close so the rows/bytes_read histograms
+	// observe the per-query total exactly once — irrespective of how
+	// long the caller takes to drain rows.
+	rec *progressRecorder
 }
 
 // Next advances the cursor to the next row. Returns false when the
@@ -77,6 +82,10 @@ func (c *rowsCursor) Err() error { return c.err }
 
 // Close releases the underlying driver.Rows. Safe to call multiple
 // times; subsequent calls are no-ops once the resource is released.
+//
+// The first call also flushes the progress recorder so the per-query
+// rows/bytes histograms see the totals exactly once. Subsequent calls
+// skip the flush (rec is nil'd after the first run).
 func (c *rowsCursor) Close() error {
 	if c.span != nil {
 		if c.err != nil {
@@ -84,6 +93,10 @@ func (c *rowsCursor) Close() error {
 		}
 		c.span.End()
 		c.span = nil
+	}
+	if c.rec != nil {
+		c.rec.flush()
+		c.rec = nil
 	}
 	if c.rows == nil {
 		return nil
@@ -113,5 +126,5 @@ func (c *Client) QueryCursor(ctx context.Context, sql string, args ...any) (Curs
 		span.End()
 		return nil, fmt.Errorf("chclient: query: %w", err)
 	}
-	return &rowsCursor{rows: rows, span: span}, nil
+	return &rowsCursor{rows: rows, span: span, rec: recorderFromContext(ctx)}, nil
 }

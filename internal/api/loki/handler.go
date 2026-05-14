@@ -21,6 +21,7 @@ import (
 	"github.com/tsouza/cerberus/internal/logql"
 	"github.com/tsouza/cerberus/internal/optimizer"
 	"github.com/tsouza/cerberus/internal/schema"
+	"github.com/tsouza/cerberus/internal/telemetry"
 )
 
 // tracer emits the `parse` pipeline-stage span before the LogQL parser
@@ -88,26 +89,34 @@ func New(client Querier, s schema.Logs, logger *slog.Logger) *Handler {
 // populate label autocomplete, the streams chooser, and the patterns
 // panel.
 func (h *Handler) Mount(mux *http.ServeMux) {
-	mux.HandleFunc("GET /loki/api/v1/query", h.handleQuery)
-	mux.HandleFunc("POST /loki/api/v1/query", h.handleQuery)
-	mux.HandleFunc("GET /loki/api/v1/query_range", h.handleQueryRange)
-	mux.HandleFunc("POST /loki/api/v1/query_range", h.handleQueryRange)
-	mux.HandleFunc("GET /loki/api/v1/index/stats", h.handleIndexStats)
-	mux.HandleFunc("POST /loki/api/v1/index/stats", h.handleIndexStats)
-	mux.HandleFunc("GET /loki/api/v1/index/volume", h.handleIndexVolume)
-	mux.HandleFunc("POST /loki/api/v1/index/volume", h.handleIndexVolume)
-	mux.HandleFunc("GET /loki/api/v1/labels", h.handleLabels)
-	mux.HandleFunc("POST /loki/api/v1/labels", h.handleLabels)
-	mux.HandleFunc("GET /loki/api/v1/label/{name}/values", h.handleLabelValues)
-	mux.HandleFunc("POST /loki/api/v1/label/{name}/values", h.handleLabelValues)
-	mux.HandleFunc("GET /loki/api/v1/series", h.handleSeries)
-	mux.HandleFunc("POST /loki/api/v1/series", h.handleSeries)
-	mux.HandleFunc("GET /loki/api/v1/detected_fields", h.handleDetectedFields)
-	mux.HandleFunc("POST /loki/api/v1/detected_fields", h.handleDetectedFields)
-	mux.HandleFunc("GET /loki/api/v1/patterns", h.handlePatterns)
-	mux.HandleFunc("POST /loki/api/v1/patterns", h.handlePatterns)
+	// RC4 R4.4: route every endpoint through the cerberus.queries.*
+	// counter + duration middleware. WebSocket /tail is included — a
+	// long-lived tail counts as one query for the purposes of total
+	// volume bookkeeping; its duration will skew toward the long tail
+	// of the histogram, which is what dashboards want to see anyway.
+	register := func(pattern string, hf http.HandlerFunc) {
+		mux.Handle(pattern, telemetry.QueryMiddleware("logql", hf))
+	}
+	register("GET /loki/api/v1/query", h.handleQuery)
+	register("POST /loki/api/v1/query", h.handleQuery)
+	register("GET /loki/api/v1/query_range", h.handleQueryRange)
+	register("POST /loki/api/v1/query_range", h.handleQueryRange)
+	register("GET /loki/api/v1/index/stats", h.handleIndexStats)
+	register("POST /loki/api/v1/index/stats", h.handleIndexStats)
+	register("GET /loki/api/v1/index/volume", h.handleIndexVolume)
+	register("POST /loki/api/v1/index/volume", h.handleIndexVolume)
+	register("GET /loki/api/v1/labels", h.handleLabels)
+	register("POST /loki/api/v1/labels", h.handleLabels)
+	register("GET /loki/api/v1/label/{name}/values", h.handleLabelValues)
+	register("POST /loki/api/v1/label/{name}/values", h.handleLabelValues)
+	register("GET /loki/api/v1/series", h.handleSeries)
+	register("POST /loki/api/v1/series", h.handleSeries)
+	register("GET /loki/api/v1/detected_fields", h.handleDetectedFields)
+	register("POST /loki/api/v1/detected_fields", h.handleDetectedFields)
+	register("GET /loki/api/v1/patterns", h.handlePatterns)
+	register("POST /loki/api/v1/patterns", h.handlePatterns)
 	// /tail is WebSocket-upgrade only; no POST counterpart in upstream Loki.
-	mux.HandleFunc("GET /loki/api/v1/tail", h.handleTail)
+	register("GET /loki/api/v1/tail", h.handleTail)
 }
 
 func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
@@ -122,7 +131,9 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	parseT := telemetry.ObserveStage(telemetry.StageParse)
 	expr, err := parseExpr(r.Context(), q)
+	parseT.Done(r.Context())
 	if err != nil {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return
@@ -173,7 +184,9 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	parseT := telemetry.ObserveStage(telemetry.StageParse)
 	expr, err := parseExpr(r.Context(), q)
+	parseT.Done(r.Context())
 	if err != nil {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return
@@ -198,23 +211,33 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 }
 
 // execute lowers a parsed LogQL expression, wraps with a sample-shape
-// projection, optimizes, emits SQL, and runs the query.
+// projection, optimizes, emits SQL, and runs the query. Each stage is
+// timed onto the cerberus.pipeline.stage.duration.seconds histogram
+// (RC4 R4.4); parse already happened in the caller.
 func (h *Handler) execute(ctx context.Context, expr syntax.Expr) ([]chclient.Sample, error) {
+	lowerT := telemetry.ObserveStage(telemetry.StageLower)
 	plan, err := logql.Lower(ctx, expr, h.Schema)
+	lowerT.Done(ctx)
 	if err != nil {
 		return nil, &apiError{kind: ErrExecution, err: err, status: http.StatusUnprocessableEntity}
 	}
 
 	plan = wrapWithLogSampleProjection(plan, h.Schema, expr)
+	optT := telemetry.ObserveStage(telemetry.StageOptimize)
 	plan = h.Optimizer.Run(ctx, plan)
+	optT.Done(ctx)
 
+	emitT := telemetry.ObserveStage(telemetry.StageEmit)
 	sqlStr, args, err := chsql.Emit(ctx, plan)
+	emitT.Done(ctx)
 	if err != nil {
 		return nil, &apiError{kind: ErrInternal, err: err, status: http.StatusInternalServerError}
 	}
 	h.Logger.Debug("cerberus loki query", "logql", expr.String(), "sql", sqlStr, "args", args)
 
-	samples, err := h.Client.Query(ctx, sqlStr, args...)
+	execT := telemetry.ObserveStage(telemetry.StageExecute)
+	samples, err := h.Client.Query(chclient.WithProgressFor(ctx, "logql"), sqlStr, args...)
+	execT.Done(ctx)
 	if err != nil {
 		h.Logger.Error("cerberus loki CH query failed", "err", err, "sql", sqlStr)
 		return nil, &apiError{kind: ErrInternal, err: err, status: http.StatusBadGateway}

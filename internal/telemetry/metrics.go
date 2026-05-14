@@ -1,0 +1,296 @@
+// Package telemetry owns cerberus's self-observability instruments — the
+// OpenTelemetry counters and histograms that report how many queries are
+// flowing through the gateway, how long each pipeline stage takes, and
+// how much ClickHouse work each query did.
+//
+// Spans (RC4 R4.2 / R4.3) and metrics (this package, RC4 R4.4) are
+// complementary: spans tell a per-request story (one trace per query),
+// metrics aggregate the same events into cheap dashboard-friendly
+// counters / histograms. The two sets share their attribute namespace
+// (`cerberus.*`) so dashboards can pivot on the same fields.
+//
+// All instruments are created lazily on first call to Instruments(), so
+// the package is safe to import from anywhere without paying a startup
+// cost. Tests can install their own MeterProvider via
+// otel.SetMeterProvider before the first call; subsequent calls reuse
+// the cached instruments built off whichever provider was active at the
+// first call. For test isolation use Reset() to drop the cache.
+package telemetry
+
+import (
+	"context"
+	"sync"
+	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+	metricnoop "go.opentelemetry.io/otel/metric/noop"
+)
+
+// meterName is the instrumentation-scope identifier stamped on every
+// metric this package records. Matches the package import path so the
+// scope is greppable across cerberus's instruments.
+const meterName = "github.com/tsouza/cerberus/internal/telemetry"
+
+// Attribute keys shared with cerbtrace (when R4.3 lands) so dashboards
+// pivot on the same names whether the source is a span attribute or a
+// metric label.
+const (
+	// AttrQL is the query language: "promql", "logql", or "traceql".
+	AttrQL = attribute.Key("cerberus.ql")
+	// AttrRoute is the matched http.ServeMux pattern — e.g.
+	// "GET /api/v1/query". Cardinality is bounded by the route set.
+	AttrRoute = attribute.Key("cerberus.route")
+	// AttrResult is "ok" or "error" — handler outcome bucket.
+	AttrResult = attribute.Key("result")
+	// AttrStage is the pipeline stage: parse / lower / optimize /
+	// emit / execute. Cardinality is fixed at five.
+	AttrStage = attribute.Key("stage")
+)
+
+// Stage names. Mirrored from R4.3's cerbtrace span names so a dashboard
+// can group histogram buckets by the same stage attribute the trace
+// view uses.
+const (
+	StageParse    = "parse"
+	StageLower    = "lower"
+	StageOptimize = "optimize"
+	StageEmit     = "emit"
+	StageExecute  = "execute"
+)
+
+// Result label values for AttrResult.
+const (
+	ResultOK    = "ok"
+	ResultError = "error"
+)
+
+// Instruments groups the cerberus self-metric set. One instance is
+// cached per process; callers should fetch it via Get() rather than
+// constructing their own.
+type Instruments struct {
+	// QueriesTotal counts every Prom/Loki/Tempo query the gateway
+	// handles, regardless of result. Attributes: cerberus.ql,
+	// cerberus.route, result.
+	QueriesTotal metric.Int64Counter
+
+	// QueryDuration is the wall-clock distribution per query, end to
+	// end (handler entry to handler return). Seconds. Same attributes
+	// as QueriesTotal.
+	QueryDuration metric.Float64Histogram
+
+	// StageDuration is the per-pipeline-stage timing distribution.
+	// Attributes: stage. Seconds.
+	StageDuration metric.Float64Histogram
+
+	// RulesApplied is the distribution of how many optimizer rule
+	// invocations reported a change for a given query. A rough proxy
+	// for how much rewriting the optimizer actually did. No
+	// attributes — the optimizer is QL-agnostic.
+	RulesApplied metric.Int64Histogram
+
+	// ClickHouseRowsRead is the distribution of rows ClickHouse
+	// reported reading per query (sum across Progress events).
+	// Attribute: cerberus.ql.
+	ClickHouseRowsRead metric.Int64Histogram
+
+	// ClickHouseBytesRead is the distribution of bytes ClickHouse
+	// reported reading per query (sum across Progress events).
+	// Attribute: cerberus.ql.
+	ClickHouseBytesRead metric.Int64Histogram
+}
+
+var (
+	cacheMu sync.Mutex
+	cache   *Instruments
+)
+
+// Get returns the process-wide Instruments set, building it on first
+// call from the currently-installed MeterProvider. Safe to call
+// concurrently; subsequent callers see the same pointer. Failures from
+// the SDK's instrument constructors are treated as fatal — they should
+// only fire on a misconfigured provider, and a noop fallback would
+// silently swallow telemetry.
+func Get() *Instruments {
+	cacheMu.Lock()
+	defer cacheMu.Unlock()
+	if cache != nil {
+		return cache
+	}
+	meter := otel.GetMeterProvider().Meter(meterName)
+	cache = mustBuild(meter)
+	return cache
+}
+
+// Reset drops the cached Instruments. Tests call this after swapping
+// the global MeterProvider so the next Get() picks up the new one.
+func Reset() {
+	cacheMu.Lock()
+	defer cacheMu.Unlock()
+	cache = nil
+}
+
+// mustBuild constructs every instrument off meter. The OTel SDK only
+// returns an error if the instrument name/options fail validation —
+// our names are constants known good, so the error path is
+// theoretically unreachable but we still wire it via panic so a future
+// rename that violates the syntax surfaces loudly at first use.
+func mustBuild(meter metric.Meter) *Instruments {
+	queriesTotal, err := meter.Int64Counter(
+		"cerberus.queries.total",
+		metric.WithDescription("Total queries handled, by language / route / result."),
+		metric.WithUnit("{query}"),
+	)
+	if err != nil {
+		panic("telemetry: build queries.total: " + err.Error())
+	}
+	queryDuration, err := meter.Float64Histogram(
+		"cerberus.queries.duration.seconds",
+		metric.WithDescription("End-to-end query wall-clock, seconds."),
+		metric.WithUnit("s"),
+	)
+	if err != nil {
+		panic("telemetry: build queries.duration: " + err.Error())
+	}
+	stageDuration, err := meter.Float64Histogram(
+		"cerberus.pipeline.stage.duration.seconds",
+		metric.WithDescription("Per-stage pipeline wall-clock, seconds."),
+		metric.WithUnit("s"),
+	)
+	if err != nil {
+		panic("telemetry: build stage.duration: " + err.Error())
+	}
+	rulesApplied, err := meter.Int64Histogram(
+		"cerberus.optimizer.rules_applied",
+		metric.WithDescription("Optimizer rule invocations that changed the plan."),
+		metric.WithUnit("{rule}"),
+	)
+	if err != nil {
+		panic("telemetry: build rules_applied: " + err.Error())
+	}
+	chRows, err := meter.Int64Histogram(
+		"cerberus.clickhouse.rows_read",
+		metric.WithDescription("ClickHouse rows read per query (sum of Progress events)."),
+		metric.WithUnit("{row}"),
+	)
+	if err != nil {
+		panic("telemetry: build rows_read: " + err.Error())
+	}
+	chBytes, err := meter.Int64Histogram(
+		"cerberus.clickhouse.bytes_read",
+		metric.WithDescription("ClickHouse bytes read per query (sum of Progress events)."),
+		metric.WithUnit("By"),
+	)
+	if err != nil {
+		panic("telemetry: build bytes_read: " + err.Error())
+	}
+	return &Instruments{
+		QueriesTotal:        queriesTotal,
+		QueryDuration:       queryDuration,
+		StageDuration:       stageDuration,
+		RulesApplied:        rulesApplied,
+		ClickHouseRowsRead:  chRows,
+		ClickHouseBytesRead: chBytes,
+	}
+}
+
+// Install replaces the process-global MeterProvider with mp. Passing
+// nil installs a no-op provider — the safe default until R4.5 wires
+// real OTLP metric exporters. Mirrors the spirit of cmd/cerberus's
+// installOTel for tracer providers, and resets the instrument cache so
+// the next Get() rebuilds against the new provider.
+func Install(mp metric.MeterProvider) {
+	if mp == nil {
+		mp = metricnoop.NewMeterProvider()
+	}
+	otel.SetMeterProvider(mp)
+	Reset()
+}
+
+// StageTimer is a one-shot stopwatch returned by ObserveStage. Call
+// Done() exactly once when the stage completes — typically via defer
+// at the entry of the stage's call site.
+type StageTimer struct {
+	stage string
+	start time.Time
+}
+
+// ObserveStage starts a stopwatch for the given pipeline stage. The
+// returned timer records its duration on the StageDuration histogram
+// when Done(ctx) is called. Idiomatic use:
+//
+//	t := telemetry.ObserveStage(telemetry.StageOptimize)
+//	defer t.Done(ctx)
+func ObserveStage(stage string) *StageTimer {
+	return &StageTimer{stage: stage, start: time.Now()}
+}
+
+// Done records the stage's elapsed time. ctx propagates baggage /
+// exemplars to the histogram if the SDK is configured for that. A nil
+// receiver is a no-op so callers don't have to guard the defer.
+func (t *StageTimer) Done(ctx context.Context) {
+	if t == nil {
+		return
+	}
+	Get().StageDuration.Record(ctx, time.Since(t.start).Seconds(),
+		metric.WithAttributes(AttrStage.String(t.stage)),
+	)
+}
+
+// QueryTimer is the per-request stopwatch returned by ObserveQuery. It
+// owns the (counter, duration) pair for the API-handler middleware so
+// callers don't have to remember to bump both.
+type QueryTimer struct {
+	ql    string
+	route string
+	start time.Time
+}
+
+// ObserveQuery starts a stopwatch for a Prom/Loki/Tempo request. ql is
+// the language identifier ("promql" / "logql" / "traceql"); route is
+// the matched http.ServeMux pattern (handler middleware pulls this
+// from r.Pattern after the mux has resolved the request).
+func ObserveQuery(ql, route string) *QueryTimer {
+	return &QueryTimer{ql: ql, route: route, start: time.Now()}
+}
+
+// Done records the query's outcome on QueriesTotal and its wall-clock
+// on QueryDuration. result is one of ResultOK / ResultError. ctx is
+// passed through to the OTel SDK so exemplars (linked spans) attach
+// correctly when the request span is on the context.
+func (t *QueryTimer) Done(ctx context.Context, result string) {
+	if t == nil {
+		return
+	}
+	attrs := metric.WithAttributes(
+		AttrQL.String(t.ql),
+		AttrRoute.String(t.route),
+		AttrResult.String(result),
+	)
+	inst := Get()
+	inst.QueriesTotal.Add(ctx, 1, attrs)
+	inst.QueryDuration.Record(ctx, time.Since(t.start).Seconds(), attrs)
+}
+
+// RecordRulesApplied records n (the optimizer's per-query change
+// count) on the RulesApplied histogram. Pulled out as a free function
+// because the optimizer.Driver.Run callsite is the only producer and
+// it doesn't need a stopwatch wrapper.
+func RecordRulesApplied(ctx context.Context, n int) {
+	Get().RulesApplied.Record(ctx, int64(n))
+}
+
+// RecordClickHouseProgress records the (rows, bytes) summary the
+// ClickHouse driver reports for a single query. ql labels the
+// histogram so dashboards can pivot per-language. Caller is the
+// chclient query wrapper; it aggregates Progress callbacks into a
+// single (rows, bytes) total before invoking this.
+func RecordClickHouseProgress(ctx context.Context, ql string, rows, bytes uint64) {
+	attrs := metric.WithAttributes(AttrQL.String(ql))
+	inst := Get()
+	// OTel Int64Histogram requires int64; CH reports uint64 totals.
+	// Real CH row/byte counts never approach int64 overflow (≈9.2e18).
+	inst.ClickHouseRowsRead.Record(ctx, int64(rows), attrs)   //nolint:gosec // G115
+	inst.ClickHouseBytesRead.Record(ctx, int64(bytes), attrs) //nolint:gosec // G115
+}

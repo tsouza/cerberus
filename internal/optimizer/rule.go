@@ -34,6 +34,7 @@ import (
 	"github.com/tsouza/cerberus/internal/cerbtrace"
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/schema"
+	"github.com/tsouza/cerberus/internal/telemetry"
 )
 
 // tracer emits the `optimize` pipeline-stage span.
@@ -170,7 +171,10 @@ func DefaultWithSchema(metrics schema.Metrics) *Driver {
 // the otelhttp request span installed in RC4 R4.2). Run wraps the
 // whole pass in an `optimize` pipeline-stage span so a query's flame
 // graph shows how long rule iteration took. The total number of
-// rule-application changes is surfaced as `cerberus.rules_applied`.
+// rule-application changes is surfaced as `cerberus.rules_applied`
+// on the span and as the `cerberus.optimizer.rules_applied` histogram
+// (RC4 R4.4) so dashboards can aggregate how much rewriting the
+// optimizer is doing across the fleet.
 func (d *Driver) Run(ctx context.Context, plan chplan.Node) chplan.Node {
 	_, span := tracer.Start(ctx, cerbtrace.SpanOptimize)
 	defer span.End()
@@ -179,6 +183,7 @@ func (d *Driver) Run(ctx context.Context, plan chplan.Node) chplan.Node {
 		plan, rulesApplied = runBatch(plan, batch, rulesApplied)
 	}
 	span.SetAttributes(cerbtrace.AttrRulesApplied.Int(rulesApplied))
+	telemetry.RecordRulesApplied(ctx, rulesApplied)
 	return plan
 }
 

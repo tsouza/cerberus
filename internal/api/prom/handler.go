@@ -21,6 +21,7 @@ import (
 	"github.com/tsouza/cerberus/internal/optimizer"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
+	"github.com/tsouza/cerberus/internal/telemetry"
 )
 
 // tracer emits the `parse` pipeline-stage span before the PromQL parser
@@ -68,7 +69,11 @@ func New(client Querier, s schema.Metrics, logger *slog.Logger) *Handler {
 // `X-Prometheus-API-Version` and `X-Cerberus-CH-Millis`.
 func (h *Handler) Mount(mux *http.ServeMux) {
 	register := func(pattern string, hf http.HandlerFunc) {
-		mux.Handle(pattern, promHeadersMiddleware(hf))
+		// RC4 R4.4: wrap each route with the cerberus.queries.* counter
+		// + duration histogram middleware. Layered inside
+		// promHeadersMiddleware so the CH-millis counter (which lives on
+		// r.Context()) is still in scope when the inner handler runs.
+		mux.Handle(pattern, promHeadersMiddleware(telemetry.QueryMiddleware("promql", hf)))
 	}
 	register("GET /api/v1/query", h.handleQuery)
 	register("GET /api/v1/query_range", h.handleQueryRange)
@@ -303,27 +308,37 @@ func (h *Handler) executeRangeStreaming(
 	query string,
 	start, end time.Time,
 ) (chclient.Cursor, error) {
+	parseT := telemetry.ObserveStage(telemetry.StageParse)
 	expr, err := h.parseExpr(ctx, query)
+	parseT.Done(ctx)
 	if err != nil {
 		return nil, &apiError{kind: ErrBadData, err: err, status: http.StatusBadRequest}
 	}
+	lowerT := telemetry.ObserveStage(telemetry.StageLower)
 	plan, err := promql.LowerAt(ctx, expr, h.Schema, start, end)
+	lowerT.Done(ctx)
 	if err != nil {
 		return nil, &apiError{kind: ErrExecution, err: err, status: http.StatusUnprocessableEntity}
 	}
 
 	plan = wrapWithSampleProjection(plan, h.Schema)
+	optT := telemetry.ObserveStage(telemetry.StageOptimize)
 	plan = h.Optimizer.Run(ctx, plan)
+	optT.Done(ctx)
 
+	emitT := telemetry.ObserveStage(telemetry.StageEmit)
 	sql, args, err := chsql.Emit(ctx, plan)
+	emitT.Done(ctx)
 	if err != nil {
 		return nil, &apiError{kind: ErrInternal, err: err, status: http.StatusInternalServerError}
 	}
 	h.Logger.Debug("cerberus query_range (stream)", "promql", query, "sql", sql, "args", args)
 
+	execT := telemetry.ObserveStage(telemetry.StageExecute)
 	cursor, err := timeCH(ctx, func() (chclient.Cursor, error) {
-		return h.Client.QueryCursor(ctx, sql, args...)
+		return h.Client.QueryCursor(chclient.WithProgressFor(ctx, "promql"), sql, args...)
 	})
+	execT.Done(ctx)
 	if err != nil {
 		return nil, &apiError{kind: ErrInternal, err: err, status: http.StatusBadGateway}
 	}
@@ -338,27 +353,37 @@ func (h *Handler) executeRangeStreaming(
 // the lowering layer so `@ start()` / `@ end()` modifiers can resolve
 // against them. For instant queries the caller passes start == end == ts.
 func (h *Handler) executeInstant(ctx context.Context, query string, start, end time.Time) ([]chclient.Sample, error) {
+	parseT := telemetry.ObserveStage(telemetry.StageParse)
 	expr, err := h.parseExpr(ctx, query)
+	parseT.Done(ctx)
 	if err != nil {
 		return nil, &apiError{kind: ErrBadData, err: err, status: http.StatusBadRequest}
 	}
+	lowerT := telemetry.ObserveStage(telemetry.StageLower)
 	plan, err := promql.LowerAt(ctx, expr, h.Schema, start, end)
+	lowerT.Done(ctx)
 	if err != nil {
 		return nil, &apiError{kind: ErrExecution, err: err, status: http.StatusUnprocessableEntity}
 	}
 
 	plan = wrapWithSampleProjection(plan, h.Schema)
+	optT := telemetry.ObserveStage(telemetry.StageOptimize)
 	plan = h.Optimizer.Run(ctx, plan)
+	optT.Done(ctx)
 
+	emitT := telemetry.ObserveStage(telemetry.StageEmit)
 	sql, args, err := chsql.Emit(ctx, plan)
+	emitT.Done(ctx)
 	if err != nil {
 		return nil, &apiError{kind: ErrInternal, err: err, status: http.StatusInternalServerError}
 	}
 	h.Logger.Debug("cerberus query", "promql", query, "sql", sql, "args", args)
 
+	execT := telemetry.ObserveStage(telemetry.StageExecute)
 	samples, err := timeCH(ctx, func() ([]chclient.Sample, error) {
-		return h.Client.Query(ctx, sql, args...)
+		return h.Client.Query(chclient.WithProgressFor(ctx, "promql"), sql, args...)
 	})
+	execT.Done(ctx)
 	if err != nil {
 		return nil, &apiError{kind: ErrInternal, err: err, status: http.StatusBadGateway}
 	}
