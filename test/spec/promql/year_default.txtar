@@ -1,0 +1,11 @@
+-- query.promql --
+year()
+-- args --
+[0] string = ""
+[1] string = "Map(String,String)"
+[2] int64 = 9
+-- chplan --
+Project ["" AS MetricName, CAST(map(), "Map(String,String)") AS Attributes, now64(9) AS TimeUnix, toYear(now()) AS Value]
+  Scan(system.one)
+-- sql --
+SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, toYear(now()) AS `Value` FROM (SELECT * FROM `system`.`one`)

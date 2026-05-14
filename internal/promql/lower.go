@@ -386,6 +386,9 @@ func lowerCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 		return lowerTime(c, s, ctx)
 	case "vector":
 		return lowerVector(c, s, ctx)
+	case "year", "month", "day_of_month", "day_of_week",
+		"days_in_month", "hour", "minute", "timestamp":
+		return lowerDateFn(c, s, ctx)
 	}
 	if chFn, ok := instantFnCH[c.Func.Name]; ok {
 		return lowerInstantFn(c, s, chFn, ctx)
