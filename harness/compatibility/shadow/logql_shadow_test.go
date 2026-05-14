@@ -240,15 +240,14 @@ type aggregation struct {
 
 // logqlShadowCase is one differential test entry.
 type logqlShadowCase struct {
-	name       string
-	query      string // full LogQL string — must parse via upstream Loki
-	matchers   []streamMatcher
-	filters    []logFilter
-	metric     metricKind
-	agg        aggregation
-	expected   VectorResult
-	opts       DiffOptions
-	skipReason string
+	name     string
+	query    string // full LogQL string — must parse via upstream Loki
+	matchers []streamMatcher
+	filters  []logFilter
+	metric   metricKind
+	agg      aggregation
+	expected VectorResult
+	opts     DiffOptions
 }
 
 // evaluateLogQLCase runs the test mini-evaluator and returns a VectorResult
@@ -878,10 +877,6 @@ func TestLogQLShadowDiff(t *testing.T) {
 			// that parses upstream is by construction one cerberus can parse.
 			if _, err := lokisyntax.ParseExpr(tc.query); err != nil {
 				t.Fatalf("upstream Loki parser rejected %q: %v", tc.query, err)
-			}
-
-			if tc.skipReason != "" {
-				t.Skip(tc.skipReason)
 			}
 
 			got := evaluateLogQLCase(tc)

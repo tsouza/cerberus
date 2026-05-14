@@ -221,8 +221,6 @@ type promqlShadowCase struct {
 	expected VectorResult
 	// opts overrides DefaultDiffOptions when non-zero.
 	opts DiffOptions
-	// skipReason, if set, marks the case as skipped with a TODO note.
-	skipReason string
 }
 
 // promqlInstantTS is the canonical eval timestamp for instant queries:
@@ -947,9 +945,6 @@ func TestPromQLShadowDiff(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if tc.skipReason != "" {
-				t.Skip(tc.skipReason)
-			}
 
 			res, err := eng.Instant(ctx, store, tc.query, tc.evalAt)
 			if err != nil {
