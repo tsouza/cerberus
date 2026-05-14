@@ -3,6 +3,7 @@ package chclient
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"go.opentelemetry.io/otel/trace"
@@ -45,6 +46,12 @@ type rowsCursor struct {
 	// observe the per-query total exactly once — irrespective of how
 	// long the caller takes to drain rows.
 	rec *progressRecorder
+	// closeOnce serialises Close() so the span / rec / rows nil-outs
+	// happen exactly once, even under concurrent Close calls (e.g. a
+	// caller's `defer cursor.Close()` racing a context-cancellation
+	// path that also calls Close).
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // Next advances the cursor to the next row. Returns false when the
@@ -81,32 +88,36 @@ func (c *rowsCursor) Sample() Sample { return c.cur }
 func (c *rowsCursor) Err() error { return c.err }
 
 // Close releases the underlying driver.Rows. Safe to call multiple
-// times; subsequent calls are no-ops once the resource is released.
+// times AND from multiple goroutines concurrently; the underlying
+// teardown runs exactly once via sync.Once, and subsequent calls return
+// the same error the first call returned.
 //
 // The first call also flushes the progress recorder so the per-query
 // rows/bytes histograms see the totals exactly once. Subsequent calls
-// skip the flush (rec is nil'd after the first run).
+// are no-ops.
 func (c *rowsCursor) Close() error {
-	if c.span != nil {
-		if c.err != nil {
-			c.span.RecordError(c.err)
+	c.closeOnce.Do(func() {
+		if c.span != nil {
+			if c.err != nil {
+				c.span.RecordError(c.err)
+			}
+			c.span.End()
+			c.span = nil
 		}
-		c.span.End()
-		c.span = nil
-	}
-	if c.rec != nil {
-		c.rec.flush()
-		c.rec = nil
-	}
-	if c.rows == nil {
-		return nil
-	}
-	err := c.rows.Close()
-	c.rows = nil
-	if err != nil {
-		return fmt.Errorf("chclient: rows.Close: %w", err)
-	}
-	return nil
+		if c.rec != nil {
+			c.rec.flush()
+			c.rec = nil
+		}
+		if c.rows == nil {
+			return
+		}
+		err := c.rows.Close()
+		c.rows = nil
+		if err != nil {
+			c.closeErr = fmt.Errorf("chclient: rows.Close: %w", err)
+		}
+	})
+	return c.closeErr
 }
 
 // QueryCursor runs sql with positional args and returns a forward-only
