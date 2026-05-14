@@ -2,7 +2,6 @@ package tempo
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/tsouza/cerberus/internal/api/admit"
 	"github.com/tsouza/cerberus/internal/api/format"
+	"github.com/tsouza/cerberus/internal/api/httperr"
 	"github.com/tsouza/cerberus/internal/cerbtrace"
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -276,9 +276,7 @@ func (h *Handler) handleTraceByID(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(samples) == 0 {
 		// Tempo's "trace not found" shape — Grafana renders the right UI.
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusNotFound)
-		_ = json.NewEncoder(w).Encode(ErrorResponse{
+		writeJSON(w, http.StatusNotFound, ErrorResponse{
 			TraceID: traceID, SpanID: "", Error: true,
 			Message: fmt.Sprintf("trace not found: %s", traceID),
 		})
@@ -488,16 +486,20 @@ func groupBatches(samples []chclient.Sample) []ResourceSpans {
 	return out
 }
 
+// writeJSON wraps [httperr.WriteJSON] so package-local callsites stay
+// unqualified. The shared helper handles Content-Type + status + body
+// encoding identically across all three handlers.
 func writeJSON(w http.ResponseWriter, status int, body any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(body)
+	httperr.WriteJSON(w, status, body)
 }
 
-// writeError returns Tempo's distinct error shape so Grafana renders
-// the right UI (vs generic JSON error).
+// writeError emits Tempo's distinct error envelope
+// `{traceID, spanID, error, message}` (vs Prom's
+// `{status, errorType, error}`) so Grafana renders the right UI. The
+// envelope shape is wire-format invariant — it stays per-handler rather
+// than living in httperr.
 func writeError(w http.ResponseWriter, status int, traceID, spanID string, err error) {
-	writeJSON(w, status, ErrorResponse{
+	httperr.WriteJSON(w, status, ErrorResponse{
 		TraceID: traceID, SpanID: spanID, Error: true,
 		Message: err.Error(),
 	})
