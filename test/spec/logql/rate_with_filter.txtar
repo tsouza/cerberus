@@ -15,10 +15,10 @@ CREATE TABLE otel_logs (
     ResourceAttributes Map(String, String)
 ) ENGINE = Memory;
 INSERT INTO otel_logs (Timestamp, Body, ResourceAttributes) VALUES
-    (now64(9), 'error 1', map('job', 'api')),
-    (now64(9), 'info 1', map('job', 'api')),
-    (now64(9), 'error 2', map('job', 'api')),
-    (now64(9), 'error 3', map('job', 'api'));
+    (toDateTime64('2025-12-31 23:58:00', 9), 'error 1', map('job', 'api')),
+    (toDateTime64('2025-12-31 23:58:30', 9), 'info 1', map('job', 'api')),
+    (toDateTime64('2025-12-31 23:59:00', 9), 'error 2', map('job', 'api')),
+    (toDateTime64('2026-01-01 00:00:00', 9), 'error 3', map('job', 'api'));
 -- expected_rows --
 [
   [{"job": "api"}, 0.01]
