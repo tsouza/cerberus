@@ -460,7 +460,7 @@ func (h *Handler) unionLabelNamesSQL() string {
 	}
 	outer := chsql.NewQuery().
 		Select(chsql.As(distinctIdent("name"), "")).
-		From(chsql.UnionAll(parts...)).
+		From(chsql.Paren(chsql.UnionAll(parts...))).
 		OrderBy(chsql.Col("name"), false)
 	sql, _ := outer.Build()
 	return sql
@@ -479,7 +479,7 @@ func (h *Handler) unionMetricNamesSQL() string {
 	}
 	outer := chsql.NewQuery().
 		Select(chsql.As(distinctIdent("value"), "")).
-		From(chsql.UnionAll(parts...)).
+		From(chsql.Paren(chsql.UnionAll(parts...))).
 		OrderBy(chsql.Col("value"), false)
 	sql, _ := outer.Build()
 	return sql
@@ -504,7 +504,7 @@ func (h *Handler) unionLabelValuesSQL(name string) (string, []any) {
 	}
 	outer := chsql.NewQuery().
 		Select(chsql.As(distinctIdent("value"), "")).
-		From(chsql.UnionAll(parts...)).
+		From(chsql.Paren(chsql.UnionAll(parts...))).
 		OrderBy(chsql.Col("value"), false)
 	return outer.Build()
 }
