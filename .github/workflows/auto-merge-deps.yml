@@ -56,6 +56,12 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # Patch-only auto-merge covers the modules that flow through
+      # tsouza/* forks. The forks-monitor cron only mints tags when
+      # commits touch the narrow cerberus subtree, so any tag-bump PR
+      # opened by Dependabot here is by construction "an upstream change
+      # that affects us". CI ( `check` + `lint` ) is still the merge
+      # gate via branch protection.
       - name: Enable auto-merge for trusted patch-only bumps
         if: |
           (steps.meta.outputs.update-type == 'version-update:semver-patch' &&
@@ -63,6 +69,10 @@ jobs:
              contains(steps.meta.outputs.dependency-names, 'github.com/grafana/loki/v3') ||
              contains(steps.meta.outputs.dependency-names, 'github.com/grafana/tempo') ||
              contains(steps.meta.outputs.dependency-names, 'github.com/grafana/dskit') ||
+             contains(steps.meta.outputs.dependency-names, 'github.com/open-telemetry/opentelemetry-collector-contrib/exporter/clickhouseexporter') ||
+             contains(steps.meta.outputs.dependency-names, 'github.com/open-telemetry/opentelemetry-collector-contrib/internal/coreinternal') ||
+             contains(steps.meta.outputs.dependency-names, 'github.com/open-telemetry/opentelemetry-collector-contrib/pkg/core/xidutils') ||
+             contains(steps.meta.outputs.dependency-names, 'github.com/open-telemetry/opentelemetry-collector-contrib/pkg/translator/jaeger') ||
              contains(steps.meta.outputs.dependency-names, '@playwright/test')))
           ||
           (steps.meta.outputs.package-ecosystem == 'github_actions' &&

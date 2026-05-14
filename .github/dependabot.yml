@@ -13,10 +13,18 @@ updates:
     labels:
       - dependencies
       - go
-    # Grouping minor + patch bumps reduces PR noise. The three parsers
+    # Grouping minor + patch bumps reduces PR noise. The four parsers
     # share state via dskit/memberlist; bumping them individually
     # produces partial-tree builds that fail the dashboard job. Group
     # them so a single PR triggers a full CI matrix.
+    #
+    # All four parser modules are routed through tsouza/* forks via
+    # `replace` directives in go.mod. Dependabot tracks new tags on the
+    # fork repos and updates both the `require` version and the
+    # `replace` target. The forks-monitor cron at
+    # tsouza/cerberus-forks-monitor only mints a new tag when commits
+    # touch the narrow subtree cerberus consumes, so the Dependabot
+    # stream stays focused. See docs/upstream-forks.md.
     groups:
       upstream-parsers:
         applies-to: version-updates
@@ -26,6 +34,7 @@ updates:
           - "github.com/grafana/tempo*"
           - "github.com/grafana/dskit*"
           - "github.com/hashicorp/memberlist*"
+          - "github.com/open-telemetry/opentelemetry-collector-contrib/*"
         update-types:
           - patch
           - minor
@@ -39,6 +48,7 @@ updates:
           - "github.com/grafana/tempo*"
           - "github.com/grafana/dskit*"
           - "github.com/hashicorp/memberlist*"
+          - "github.com/open-telemetry/opentelemetry-collector-contrib/*"
         update-types:
           - patch
           - minor
