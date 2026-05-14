@@ -15,23 +15,23 @@ inside each layer.
 
 ## At a glance
 
-| Layer | Name                                | Status         | Lives in                                                                                                                                            | Catches                                                                                         | Misses                                                                                |
-| ----- | ----------------------------------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| 1     | Parser smoke / AST-shape pinning    | PR #267 open   | `internal/{promql,logql,traceql}/parser_*_test.go` (60 tests)                                                                                       | Upstream parser renames a field, swaps an enum, changes a root-node type after a fork rebase    | Semantic divergence below the AST surface                                             |
-| 2a    | chplan IR snapshots in TXTAR        | PR #265 open   | `test/spec/<head>/*.txtar` (`-- chplan --` section, 207 fixtures)                                                                                   | Lowering regressions that don't change emitted SQL bytes                                        | Optimizer-introduced regressions (covered by `-- chplan_optimized --` pair)           |
-| 2b    | Lowering edge cases                 | planned        | `internal/{promql,logql,traceql}/lower_*_test.go`                                                                                                   | Edge inputs (NaN, empty matrix, scalar coercions) that don't appear in golden fixtures          | Combinatoric blow-up — keep table-driven                                              |
-| 3     | chplan IR invariants                | merged #247    | `internal/chplan/{equal,walk}_invariants_test.go` (125 tests)                                                                                       | `Equal()` false-positives / negatives; `Walk` / `Children` ordering drift; pointer-identity     | Lowering bugs — IR is generic                                                         |
-| 4     | Optimizer rule properties           | PR #266 open   | `internal/optimizer/{rule_interaction,termination,decision_pins,regression_bank,property_extended}_test.go` (70 tests)                              | Rule-pair commutation, non-termination, mis-rewrites, decision-pin regressions                  | Cross-rule chDB row drift (covered by Layer 6 chDB property)                          |
-| 5     | chsql Frag + QueryBuilder goldens   | merged #248    | `internal/chsql/{frag_goldens,query_builder_invariants,emit_node_goldens}_test.go` (114 tests)                                                      | Frag render shape, slot-ordering invariants, append/replace semantics, Build idempotency        | SQL that compiles but executes incorrectly — covered by Layer 6                       |
-| 6a    | PromQL chDB roundtrip               | merged #256    | `test/spec/promql/*.txtar` (`-- seed --` / `-- expected_rows --`, 63 fixtures)                                                                      | Optimizer/emitter rewrites that change the row set                                              | Behaviour outside the seeded corpus                                                   |
-| 6b    | LogQL chDB roundtrip                | merged #255    | `test/spec/logql/*.txtar` (39 fixtures)                                                                                                             | Same as 6a for LogQL                                                                            | Same as 6a                                                                            |
-| 6c    | TraceQL chDB roundtrip              | PR #263 open   | `test/spec/traceql/*.txtar` (61 fixtures)                                                                                                           | Same as 6a for TraceQL                                                                          | Same as 6a                                                                            |
-| 7     | HTTP handler conformance            | merged #250    | `internal/api/{prom,loki,tempo}/conformance_test.go` (~138 cases)                                                                                   | Wire-format drift, error envelope shape, header pins, range-param parsing, admission control    | Real-network failure modes (covered by Layer 11) and UX flows (Layer 10)              |
-| 8     | System / process lifecycle          | merged #249    | `internal/config/`, `internal/api/health/`, `cmd/cerberus/`, telemetry, schema/ddl (87 tests)                                                       | Env-var contract, `/readyz` TTL coalescing, OTel telemetry attributes, signal-driven shutdown   | Cross-process behaviour — Compose / k3d (Layer 10)                                    |
-| 9     | Differential shadow harness         | PR #262 open   | `harness/compatibility/shadow/*_test.go` (116 new tests)                                                                                            | Cerberus vs. reference engine drift on PromQL / LogQL / TraceQL corpora                         | Implementation-defined corners that both sides handle the same                        |
-| 10    | Playwright UX flows                 | PR #261 open   | `test/e2e/playwright/*.spec.ts` (~58 new tests across 4 specs)                                                                                      | Grafana Explore / Logs / Trace panel request sequences against cerberus's three datasource APIs | Pure backend logic — Layers 1–8                                                       |
-| 11    | Chaos / failure-mode                | merged #253    | `internal/{chclient,api/{prom,loki,tempo,admit}}/chaos_test.go`, `test/regression/goleak_test.go` (70 tests, surfaced #259 `rowsCursor.Close` race) | CH-failure, mid-stream cursor faults, goroutine leaks, panic-mid-handler slot release           | Long-tail platform-specific failures                                                  |
-| 12    | Perf benchmarks + alloc regressions | merged #251    | `internal/*/*_bench_test.go` (29 `BenchmarkXxx` + 11 `TestAllocs_Xxx`)                                                                              | Allocation count regressions per pipeline stage; bounded-RSS streaming cursor                   | Wall-clock perf regressions — left to `perf-benchmark.yml` benchstat                  |
+| Layer | Name                                | Status         | Lives in                                                                                                                                                                                         | Catches                                                                                                              | Misses                                                                                |
+| ----- | ----------------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| 1     | Parser smoke / AST-shape pinning    | PR #267 open   | `internal/{promql,logql,traceql}/parser_*_test.go` (60 tests)                                                                                                                                    | Upstream parser renames a field, swaps an enum, changes a root-node type after a fork rebase                         | Semantic divergence below the AST surface                                             |
+| 2a    | chplan IR snapshots in TXTAR        | PR #265 open   | `test/spec/<head>/*.txtar` (`-- chplan --` section, 207 fixtures)                                                                                                                                | Lowering regressions that don't change emitted SQL bytes                                                             | Optimizer-introduced regressions (covered by `-- chplan_optimized --` pair)           |
+| 2b    | Lowering edge cases                 | planned        | `internal/{promql,logql,traceql}/lower_*_test.go`                                                                                                                                                | Edge inputs (NaN, empty matrix, scalar coercions) that don't appear in golden fixtures                               | Combinatoric blow-up — keep table-driven                                              |
+| 3     | chplan IR invariants                | merged #247    | `internal/chplan/{equal,walk}_invariants_test.go` (125 tests)                                                                                                                                    | `Equal()` false-positives / negatives; `Walk` / `Children` ordering drift; pointer-identity                          | Lowering bugs — IR is generic                                                         |
+| 4     | Optimizer rule properties           | PR #266 open   | `internal/optimizer/{rule_interaction,termination,decision_pins,regression_bank,property_extended}_test.go` (70 tests)                                                                           | Rule-pair commutation, non-termination, mis-rewrites, decision-pin regressions                                       | Cross-rule chDB row drift (covered by Layer 6 chDB property)                          |
+| 5     | chsql Frag + QueryBuilder goldens   | merged #248    | `internal/chsql/{frag_goldens,query_builder_invariants,emit_node_goldens}_test.go` (114 tests)                                                                                                   | Frag render shape, slot-ordering invariants, append/replace semantics, Build idempotency                             | SQL that compiles but executes incorrectly — covered by Layer 6                       |
+| 6a    | PromQL chDB roundtrip               | merged #256    | `test/spec/promql/*.txtar` (`-- seed --` / `-- expected_rows --`, 63 fixtures)                                                                                                                   | Optimizer/emitter rewrites that change the row set                                                                   | Behaviour outside the seeded corpus                                                   |
+| 6b    | LogQL chDB roundtrip                | merged #255    | `test/spec/logql/*.txtar` (39 fixtures)                                                                                                                                                          | Same as 6a for LogQL                                                                                                 | Same as 6a                                                                            |
+| 6c    | TraceQL chDB roundtrip              | PR #263 open   | `test/spec/traceql/*.txtar` (61 fixtures)                                                                                                                                                        | Same as 6a for TraceQL                                                                                               | Same as 6a                                                                            |
+| 7     | HTTP handler conformance            | merged #250    | `internal/api/{prom,loki,tempo}/conformance_test.go` (~138 cases)                                                                                                                                | Wire-format drift, error envelope shape, header pins, range-param parsing, admission control                         | Real-network failure modes (covered by Layer 11) and UX flows (Layer 10)              |
+| 8     | System / process lifecycle          | merged #249    | `internal/config/`, `internal/api/health/`, `cmd/cerberus/`, telemetry, schema/ddl (87 tests)                                                                                                    | Env-var contract, `/readyz` TTL coalescing, OTel telemetry attributes, signal-driven shutdown                        | Cross-process behaviour — Compose / k3d (Layer 10)                                    |
+| 9     | Differential shadow harness         | PR #262 open   | `harness/compatibility/shadow/*_test.go` (116 new tests)                                                                                                                                         | Cerberus vs. reference engine drift on PromQL / LogQL / TraceQL corpora                                              | Implementation-defined corners that both sides handle the same                        |
+| 10    | Playwright UX flows                 | PR #261 open   | `test/e2e/playwright/*.spec.ts` (~58 new tests across 4 specs)                                                                                                                                   | Grafana Explore / Logs / Trace panel request sequences against cerberus's three datasource APIs                      | Pure backend logic — Layers 1–8                                                       |
+| 11    | Chaos / failure-mode                | merged #253    | `internal/{chclient,api/{prom,loki,tempo,admit}}/chaos_test.go`, `test/regression/goleak_test.go` (70 tests, surfaced #259 `rowsCursor.Close` race; CH-disconnect circuit breaker added in #305) | CH-failure, mid-stream cursor faults, goroutine leaks, panic-mid-handler slot release, CH-disconnect circuit breaker | Long-tail platform-specific failures                                                  |
+| 12    | Perf benchmarks + alloc regressions | merged #251    | `internal/*/*_bench_test.go` (29 `BenchmarkXxx` + 11 `TestAllocs_Xxx`)                                                                                                                           | Allocation count regressions per pipeline stage; bounded-RSS streaming cursor                                        | Wall-clock perf regressions — left to `perf-benchmark.yml` benchstat                  |
 
 ## CI gates
 
@@ -114,31 +114,40 @@ cerberus agrees with an independent oracle on every iteration. Failure
 shrinking (via `pgregory.net/rapid`) reduces the reproducer to a
 one-series, one-point dataset and a two-token query.
 
-The framework is **landing in-flight via Phase 1 PR 1** — file paths
-below describe the planned layout. The package is `chdb`-tagged
-end-to-end so the default CGO-free `just test` lane stays green.
+Phase 1 has landed end-to-end — framework scaffolding (Phase 1 PR 1)
+plus the from-scratch PromQL oracle (#272, Phase 1 PR 2). The package
+is `chdb`-tagged end-to-end so the default CGO-free `just test` lane
+stays green. As of #280, the `property` workflow is unskipped and runs
+on push-to-main + nightly + manual dispatch.
 
-The `property` workflow runs nightly (`.github/workflows/property.yml`,
-push-to-main + nightly + manual dispatch) with `-rapid.checks=500` —
-five times wider than rapid's default 100. The default 100 still
-applies for developers running `go test -tags chdb ./test/property/...`
-locally; the nightly lane is the wider sweep. Failures upload any
-rapid-shrunk reproducers from `test/property/testdata/rapid/` as a
-workflow artifact, and the `-v` test log prints the rapid seed so a
-failing run reproduces locally via
+The `property` workflow (`.github/workflows/property.yml`) runs with
+`-rapid.checks=500` — five times wider than rapid's default 100. The
+default 100 still applies for developers running
+`go test -tags chdb ./test/property/...` locally; the nightly lane is
+the wider sweep. Failures upload any rapid-shrunk reproducers from
+`test/property/testdata/rapid/` as a workflow artifact, and the `-v`
+test log prints the rapid seed so a failing run reproduces locally via
 `go test -tags chdb -run TestPromQL_Property -rapid.seed=<N> ./test/property/...`.
+
+The from-scratch oracle has already paid for itself: it surfaced the
+"Path to GA" wave of PromQL correctness gaps (rate/increase/delta on
+empty windows, label_replace, absent, quantile φ clamp, topk, date
+funcs, ±Inf/NaN wire-format, etc. — see `docs/roadmap.md` § "Path to
+GA"). Each gap landed with a pinned seed under
+`test/property/testdata/rapid/` so the regression can't silently
+resurface.
 
 ### Phases
 
-- **Phase 1 PR 1 — framework scaffolding.** The oracle is a temporary
-  bridge to Prometheus's own `promql.Engine` via `internal/promshim/local`.
-  This is a sanity check on the framework infrastructure (generators,
-  chDB session, comparator, shrinking driver); not yet an independent
-  specification. Lives at `test/property/{framework,chdb,gen,oracle,promql_test}.go`.
-- **Phase 1 PR 2 — from-scratch oracle.** Replaces `oracle/bridge.go`
-  with an in-tree PromQL evaluator reading the same `MetricsModel`. At
-  that point the test becomes a true differential property: cerberus
-  must match an INDEPENDENT spec of PromQL semantics.
+- **Phase 1 PR 1 — framework scaffolding (shipped).** The oracle was a
+  temporary bridge to Prometheus's own `promql.Engine` via
+  `internal/promshim/local`. This was a sanity check on the framework
+  infrastructure (generators, chDB session, comparator, shrinking
+  driver). Lives at `test/property/{framework,chdb,gen,oracle,promql_test}.go`.
+- **Phase 1 PR 2 — from-scratch oracle (shipped via #272).** Replaced
+  `oracle/bridge.go` with an in-tree PromQL evaluator reading the same
+  `MetricsModel`. The test is now a true differential property:
+  cerberus must match an INDEPENDENT spec of PromQL semantics.
 - **Phase 2 — LogQL oracle.** Same architecture against a from-scratch
   LogQL evaluator over the random log-stream generators.
 - **Phase 3 — TraceQL oracle.** Same architecture against TraceQL.
