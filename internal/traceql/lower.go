@@ -447,12 +447,11 @@ func isComparisonOp(op chplan.BinaryOp) bool {
 // keeps `{ name = "checkout" }` (string intrinsic) from incorrectly
 // triggering toFloat64 wraps on the literal side.
 func isNumericExpr(expr chplan.Expr) bool {
+	if b, ok := expr.(*chplan.Binary); ok {
+		return isArithmeticOp(b.Op)
+	}
 	switch expr.(type) {
-	case *chplan.LitInt, *chplan.LitFloat:
-		return true
-	case *chplan.Binary:
-		return isArithmeticOp(expr.(*chplan.Binary).Op)
-	case *chplan.FuncCall:
+	case *chplan.LitInt, *chplan.LitFloat, *chplan.FuncCall:
 		return true
 	}
 	return false

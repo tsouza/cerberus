@@ -69,14 +69,14 @@ func TestNumericAttrCoercion(t *testing.T) {
 			wantSubstr: "(toFloat64(`SpanAttributes`[?]) * ?) > ?",
 		},
 		{
-			name:       "string_eq_leaves_field_access_bare",
-			query:      `{ resource.service.name = "frontend" }`,
-			notSubstr:  "toFloat64(",
+			name:      "string_eq_leaves_field_access_bare",
+			query:     `{ resource.service.name = "frontend" }`,
+			notSubstr: "toFloat64(",
 		},
 		{
-			name:       "regex_match_leaves_field_access_bare",
-			query:      `{ .service.name =~ "front.*" }`,
-			notSubstr:  "toFloat64(",
+			name:      "regex_match_leaves_field_access_bare",
+			query:     `{ .service.name =~ "front.*" }`,
+			notSubstr: "toFloat64(",
 		},
 		{
 			name: "intrinsic_duration_not_double_wrapped",
