@@ -102,3 +102,52 @@ manual dispatch only. It first runs `TestChDBProbe` from R8.0, then
 `just spec-chdb` to exercise the round-trip suite. Promote to a
 required PR gate once the suite is consistently green and the pilot
 fixture coverage has grown beyond the initial 5.
+
+## Property tests
+
+The optimizer ships a chDB-backed property test
+(`internal/optimizer/property_test.go`, build tag `chdb`) that
+generates random plan trees from a tight grammar (Scan / Filter /
+Project, with AND/OR predicates against `MetricName`, `Value`, and
+`TimeUnix`) and asserts that the optimizer preserves the row set
+when both the unoptimized and optimized forms are executed against
+the same chDB session.
+
+The grammar is intentionally narrow — wider node coverage
+(Aggregate, RangeWindow, joins) is future work. The current shape
+exercises every RC1 rule (FilterFusion, ConstantFold,
+ProjectionPushdown) plus the R3.2 transposes; that's where
+optimizer-introduced semantic divergence is most likely today.
+
+Plan count defaults to 100; `go test -short -tags chdb` knocks it
+down to 10 for fast local feedback. Failures dump the pre- and
+post-optimization SQL plus both row sets so reproduction is one
+re-run away.
+
+## Mutation testing
+
+`just mutate` runs `gremlins` across `internal/...` using
+`.gremlins.yaml`. Kill criterion is the package-local test file: a
+mutant that survives `go test ./<pkg>/` is reported as LIVED.
+
+`just mutate-chdb` extends the kill criterion with the chDB layer.
+Two changes vs. the default lane:
+
+- `-t chdb` — compiles the property test (`internal/optimizer/`)
+  and any future chdb-tagged test files into the per-mutant test
+  binary.
+- `-i` (integration) — per mutation, runs the complete
+  `go test -tags chdb ./...` instead of just the mutated package's
+  local tests. This pulls the TXTAR round-trip suite under
+  `test/spec/<head>/` into the kill criterion for mutants in
+  `internal/optimizer/` and `internal/chsql/`.
+
+The effect: a mutation that changes the emitted SQL text but
+preserves the rendered row set is correctly NOT killed (it is
+semantically equivalent — the optimizer property test still passes,
+and so do the round-trip fixtures). That sharpens the score over
+the default lane, which would score a string-equality false-kill.
+
+The recipe is slow (tens of minutes) and informational only —
+neither `just mutate` nor `just mutate-chdb` is on a required CI
+path today.
