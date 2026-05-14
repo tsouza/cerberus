@@ -6,3 +6,17 @@ SELECT `ResourceAttributes`, toFloat64(length(window_vals)) AS `value` FROM (SEL
 [0] int64 = 1
 [1] string = "job"
 [2] string = "api"
+-- seed --
+CREATE TABLE otel_logs (
+    Timestamp DateTime64(9),
+    Body String,
+    ResourceAttributes Map(String, String)
+) ENGINE = Memory;
+INSERT INTO otel_logs (Timestamp, Body, ResourceAttributes) VALUES
+    (now64(9), 'a', map('job', 'api')),
+    (now64(9), 'b', map('job', 'api')),
+    (now64(9), 'c', map('job', 'api'));
+-- expected_rows --
+[
+  [{"job": "api"}, 3.0]
+]

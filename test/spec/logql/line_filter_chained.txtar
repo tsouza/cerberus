@@ -7,3 +7,18 @@ SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (position(`Bod
 [1] string = "api"
 [2] string = "error"
 [3] string = "5[0-9]{2}"
+-- seed --
+CREATE TABLE otel_logs (
+    Body String,
+    ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api')
+) ENGINE = Memory;
+INSERT INTO otel_logs (Body) VALUES
+    ('error 500 db'),
+    ('error 200 fine'),
+    ('warning 503 slow'),
+    ('error 504 timeout');
+-- expected_rows --
+[
+  ["error 500 db"],
+  ["error 504 timeout"]
+]

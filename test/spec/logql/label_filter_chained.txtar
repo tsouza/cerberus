@@ -10,3 +10,17 @@ SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (position(`Bod
 [4] string = "prod"
 [5] string = "severity"
 [6] string = "high"
+-- seed --
+CREATE TABLE otel_logs (
+    Body String,
+    ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api', 'env', 'prod', 'severity', 'high')
+) ENGINE = Memory;
+INSERT INTO otel_logs (Body) VALUES
+    ('error: ouch'),
+    ('info: fine'),
+    ('error: again');
+-- expected_rows --
+[
+  ["error: ouch"],
+  ["error: again"]
+]

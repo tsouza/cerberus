@@ -7,3 +7,14 @@
 [3] string = "error"
 -- sql --
 SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (`ResourceAttributes`[?] = ?)
+-- seed --
+CREATE TABLE otel_logs (
+    Body String,
+    ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api', 'level', 'error')
+) ENGINE = Memory;
+INSERT INTO otel_logs (Body) VALUES ('packed error one'), ('packed error two');
+-- expected_rows --
+[
+  ["packed error one"],
+  ["packed error two"]
+]

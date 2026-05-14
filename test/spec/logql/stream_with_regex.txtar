@@ -5,3 +5,14 @@ SELECT * FROM `otel_logs` WHERE match(`ResourceAttributes`[?], ?)
 -- args --
 [0] string = "env"
 [1] string = "prod|stg"
+-- seed --
+CREATE TABLE otel_logs (
+    Body String,
+    ResourceAttributes Map(String, String) MATERIALIZED map('env', 'prod')
+) ENGINE = Memory;
+INSERT INTO otel_logs (Body) VALUES ('m1'), ('m2');
+-- expected_rows --
+[
+  ["m1"],
+  ["m2"]
+]

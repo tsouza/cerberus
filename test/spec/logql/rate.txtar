@@ -7,3 +7,29 @@ SELECT `ResourceAttributes`, if(length(window_vals) > 0, arraySum(window_vals) /
 [1] int64 = 1
 [2] string = "job"
 [3] string = "api"
+-- seed --
+CREATE TABLE otel_logs (
+    Timestamp DateTime64(9),
+    Body String,
+    ResourceAttributes Map(String, String)
+) ENGINE = Memory;
+INSERT INTO otel_logs (Timestamp, Body, ResourceAttributes) VALUES
+    (now64(9), 'a', map('job', 'api')),
+    (now64(9), 'b', map('job', 'api')),
+    (now64(9), 'c', map('job', 'api')),
+    (now64(9), 'd', map('job', 'api')),
+    (now64(9), 'e', map('job', 'api')),
+    (now64(9), 'f', map('job', 'api')),
+    (now64(9), 'g', map('job', 'api')),
+    (now64(9), 'h', map('job', 'api')),
+    (now64(9), 'i', map('job', 'api')),
+    (now64(9), 'j', map('job', 'api')),
+    (now64(9), 'k', map('job', 'api')),
+    (now64(9), 'l', map('job', 'api')),
+    (now64(9), 'm', map('job', 'api')),
+    (now64(9), 'n', map('job', 'api')),
+    (now64(9), 'o', map('job', 'api'));
+-- expected_rows --
+[
+  [{"job": "api"}, 0.25]
+]

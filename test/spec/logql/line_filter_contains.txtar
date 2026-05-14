@@ -6,3 +6,18 @@ SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (position(`Bod
 [0] string = "job"
 [1] string = "api"
 [2] string = "error"
+-- seed --
+CREATE TABLE otel_logs (
+    Body String,
+    ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api')
+) ENGINE = Memory;
+INSERT INTO otel_logs (Body) VALUES
+    ('this is an error'),
+    ('debug message'),
+    ('another error occurred'),
+    ('info: all good');
+-- expected_rows --
+[
+  ["this is an error"],
+  ["another error occurred"]
+]

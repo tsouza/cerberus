@@ -6,3 +6,17 @@ SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND NOT match(`Bod
 [0] string = "job"
 [1] string = "api"
 [2] string = "health"
+-- seed --
+CREATE TABLE otel_logs (
+    Body String,
+    ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api')
+) ENGINE = Memory;
+INSERT INTO otel_logs (Body) VALUES
+    ('GET /index'),
+    ('GET /health'),
+    ('POST /api');
+-- expected_rows --
+[
+  ["GET /index"],
+  ["POST /api"]
+]

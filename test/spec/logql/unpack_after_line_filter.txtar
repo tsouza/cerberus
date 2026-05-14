@@ -6,3 +6,17 @@
 [2] string = "packed"
 -- sql --
 SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (position(`Body`, ?) > 0)
+-- seed --
+CREATE TABLE otel_logs (
+    Body String,
+    ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api')
+) ENGINE = Memory;
+INSERT INTO otel_logs (Body) VALUES
+    ('packed payload 1'),
+    ('plain log'),
+    ('packed payload 2');
+-- expected_rows --
+[
+  ["packed payload 1"],
+  ["packed payload 2"]
+]
