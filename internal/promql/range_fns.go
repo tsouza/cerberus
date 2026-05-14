@@ -118,6 +118,56 @@ func lowerHoltWinters(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.No
 	}, nil
 }
 
+// lowerQuantileOverTime handles `quantile_over_time(phi, v[range])`:
+// PromQL's range-vector quantile reducer with phi as a scalar-literal
+// first argument and the range vector as the second. CH emits it as
+// `quantile(phi)(window_vals)` inside the standard windowed-array
+// idiom.
+//
+// IR: a RangeWindow with Func="quantile_over_time" and
+// Scalars=[phi]. The chsql emitter switches on Func and reads
+// Scalars[0] for the quantile parameter.
+func lowerQuantileOverTime(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	if len(c.Args) != 2 {
+		return nil, fmt.Errorf("promql: quantile_over_time expects 2 arguments, got %d", len(c.Args))
+	}
+	phi, ok := tryScalarLiteral(c.Args[0])
+	if !ok {
+		return nil, fmt.Errorf("promql: quantile_over_time requires a scalar-literal phi (computed phi defers to RC3)")
+	}
+	ms, vs, err := matrixAndSelector(c, c.Args[1])
+	if err != nil {
+		return nil, err
+	}
+
+	anchor, err := anchorFromSelector(vs, ctx)
+	if err != nil {
+		return nil, err
+	}
+	vsNoModifier := *vs
+	vsNoModifier.Timestamp = nil
+	vsNoModifier.OriginalOffset = 0
+	vsNoModifier.Offset = 0
+	vsNoModifier.StartOrEnd = 0
+	rangeCtx := ctx
+	rangeCtx.inRangeVector = true
+	inner, err := lowerVectorSelector(&vsNoModifier, s, rangeCtx)
+	if err != nil {
+		return nil, err
+	}
+	return &chplan.RangeWindow{
+		Input:           inner,
+		Func:            "quantile_over_time",
+		Range:           ms.Range,
+		End:             anchor.End,
+		Offset:          anchor.Offset,
+		Scalars:         []float64{phi},
+		TimestampColumn: s.TimestampColumn,
+		ValueColumn:     s.ValueColumn,
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
+	}, nil
+}
+
 // matrixAndSelector extracts the *parser.MatrixSelector and inner
 // *parser.VectorSelector from a function call's first arg, with the
 // canonical error messages the other range-vector functions use.
