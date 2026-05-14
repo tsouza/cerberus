@@ -25,12 +25,16 @@ internal/
   schema/                    OTel-CH default + override config
   config/                    runtime config (env-driven)
 cmd/cerberus/                main entrypoint
-test/spec/                   TXTAR golden tests (input QL → SQL/plan)
+test/spec/                   TXTAR golden tests (input QL → SQL/plan + `-- chplan --` IR snapshots [incoming via PR #265] + optional `-- seed --` / `-- expected_rows --` chDB roundtrip). `test/spec/chplan_print.go` is the deterministic IR pretty-printer used by Layer 2a snapshots.
+test/property/               oracle-based property tests (`pgregory.net/rapid` shrinking + chDB execution) — Phase 1 PR 1 in flight; `gen/` random data + query generators; `oracle/bridge.go` temporary bridge to `promshim/local` (replaced by from-scratch evaluator in Phase 1 PR 2).
+test/regression/             meta-tests that pin past CI failures so they can't silently recur — goleak detectors across every handler entrypoint (added by #253), justfile-shape pins, seed-program invariants.
 test/e2e/                    k3d cluster + Grafana playwright smoke
 test/e2e/{k3s,grafana}/      k3d manifests + Grafana provisioning (datasources, dashboards) consumed by the smoke
 harness/compatibility/          prometheus/compliance Docker Compose harness + shadow-mode differential testing
-docs/                        roadmap.md, optimizer-research.md, compatibility.md, engine.md, observability.md, 12factor.md, …
+docs/                        roadmap.md, optimizer-research.md, compatibility.md, engine.md, observability.md, 12factor.md, test-strategy.md, …
 ```
+
+See [`docs/test-strategy.md`](docs/test-strategy.md) for the canonical 12-layer test map, the CI-gate inventory, the gremlins phased rollout, and the property-test phase plan.
 
 Top-level reading order for any new contributor (human or agent):
 
@@ -42,11 +46,13 @@ Top-level reading order for any new contributor (human or agent):
 
 ## Common workflows
 
-- **Add a TXTAR fixture** — use the `/cerberus:add-fixture` skill (under `.claude/skills/`). It creates `test/spec/<ql>/<name>.txtar` with the right section headers; run `just update-golden` after the implementation lands to fill in expected sections.
+- **Add a TXTAR fixture** — use the `/cerberus:add-fixture` skill (under `.claude/skills/`). It creates `test/spec/<ql>/<name>.txtar` with the right section headers (`-- input --`, `-- sql --`, `-- chplan --`, optional `-- seed --` / `-- expected_rows --`); run `just update-golden` after the implementation lands to fill in expected sections.
 - **Add an optimizer rule** — use the `/cerberus:add-optimizer-rule` skill. Scaffolds `internal/optimizer/<name>.go` + test + TXTAR fixtures.
+- **Add a property test** — add a row to the generator + oracle under `test/property/{gen,oracle}/` and a case to `test/property/promql_test.go`. The framework wires `rapid.Check` → dataset gen → chDB exec → oracle → comparator; you only swap the data shape + oracle. Build-tagged `chdb`; runs in the `chdb` workflow only.
 - **Bump parser deps** — use the `/cerberus:bump-parser-deps` skill. Runs `go get -u` on the three upstream parsers, runs `go mod tidy`, captures the diff for the PR description.
 - **Run E2E locally** — `just e2e-up && just e2e-seed && just e2e-run && just e2e-down`.
 - **Run the compatibility suite** — `just compatibility`. Diffs cerberus against reference Prometheus on a deterministic OTel fixture.
+- **Find which test layer covers a class of bug** — see [`docs/test-strategy.md`](docs/test-strategy.md) for the layer map + per-layer "catches X / misses Y" guidance.
 
 ## Toolchain notes
 

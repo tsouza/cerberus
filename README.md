@@ -128,15 +128,28 @@ just e2e-run           # Go E2E tests + Grafana playwright smoke
 just e2e-down          # tear down
 ```
 
-## Testing layers
+## Testing
 
-| Layer            | What it covers                                                                    | How to run                                          |
+Cerberus is tested in 12 layers — AST shape pinning, plan-IR
+invariants, optimizer properties, emitted-SQL goldens, chDB-backed
+roundtrips, HTTP wire conformance, system lifecycle, differential
+shadow harness, Playwright UX flows, chaos / goleak, perf benchmarks
++ alloc regressions, and an oracle-based property framework. See
+[`docs/test-strategy.md`](docs/test-strategy.md) for the canonical
+layer map, CI-gate inventory, gremlins phased rollout, and per-layer
+recipes for adding a new test.
+
+Quick reference:
+
+| Layer family     | What it covers                                                                    | How to run                                          |
 | ---------------- | --------------------------------------------------------------------------------- | --------------------------------------------------- |
-| **Unit**         | Per-package logic, `Equal` contracts, optimizer rule kernels                      | `just test`                                         |
-| **Spec (TXTAR)** | `<QL> → expected SQL` and `plan → optimized plan` golden tests under `test/spec/` | `just test`; `just update-golden` to regenerate     |
+| **Unit**         | Per-package logic, `Equal` contracts, optimizer rule kernels, Frag goldens        | `just test`                                         |
+| **Spec (TXTAR)** | `<QL> → expected SQL` + chplan IR snapshots + optional chDB roundtrip             | `just test`; `just spec-chdb` for roundtrip lane    |
+| **Property**     | Oracle-based property tests with `rapid` shrinking and chDB execution             | `go test -tags chdb ./test/property/...`            |
 | **Integration**  | `chclient` against a real ClickHouse via testcontainers                           | `go test -tags=integration ./internal/chclient/...` |
-| **E2E**          | k3d cluster with CH + Grafana + cerberus; Grafana playwright smoke                | `just e2e`                                          |
-| **Mutation**     | Gremlins mutation testing on `internal/` logic packages                           | `just mutate` (slow, nightly in CI)                 |
+| **E2E**          | k3d cluster with CH + Grafana + cerberus; Grafana Playwright smoke                | `just e2e`                                          |
+| **Compat**       | `prometheus/compliance` differential harness                                      | `just compatibility`                                |
+| **Mutation**     | Gremlins mutation matrix (`internal/chplan` @ 80%, `internal/chsql` @ 75%)        | `just mutate` (slow, nightly in CI)                 |
 
 ## Project structure
 
