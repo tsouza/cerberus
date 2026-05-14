@@ -133,11 +133,16 @@ jobs:
           CLICKHOUSE_PASSWORD: cerberus
         ports:
           - 9000:9000
+        # Health probe: clickhouse/clickhouse-server:24.8-alpine init does
+        # a two-phase boot (temp server → apply users+DB → restart "for
+        # real"). Port 8123 is briefly unresponsive during the restart.
+        # 10 retries × 5s = 50s isn't enough under runner load; bump to
+        # 24 retries × 5s = 120s.
         options: >-
           --health-cmd "wget -nv -t1 --spider http://localhost:8123/ping || exit 1"
           --health-interval 5s
           --health-timeout 3s
-          --health-retries 10
+          --health-retries 24
     steps:
       - uses: actions/checkout@v6
 
