@@ -87,45 +87,12 @@ func TestLower(t *testing.T) {
 	})
 }
 
-// TestLower_errors covers the unsupported-PromQL paths so regressions in
-// the error message remain visible.
-func TestLower_errors(t *testing.T) {
-	t.Parallel()
-
-	s := schema.DefaultOTelMetrics()
-	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
-
-	cases := []struct {
-		name    string
-		query   string
-		wantErr string
-	}{
-		{
-			name:    "topk without is not yet supported",
-			query:   `topk(5, up) without (instance)`,
-			wantErr: "without(...) is not yet supported",
-		},
-		// Note: 'without' now lowers (M1.4) for non-shape-changing aggs;
-		// topk/bottomk/count_values landed via chplan.TopK + Aggregate
-		// reshape; BinaryExpr vector+vector rejection moved to
-		// binary_test.go; arithmetic ops are lowered for the
-		// scalar-vector case (M1.2).
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			expr, err := p.ParseExpr(tc.query)
-			if err != nil {
-				t.Fatalf("ParseExpr: %v", err)
-			}
-			if _, err := promql.Lower(context.Background(), expr, s); err == nil {
-				t.Fatalf("expected error containing %q, got nil", tc.wantErr)
-			} else if !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("error %q does not contain %q", err.Error(), tc.wantErr)
-			}
-		})
-	}
-}
+// Per-op error-path coverage lives in op-specific *_test.go files now —
+// see aggregate_test.go (topk/bottomk/count_values argument shapes) and
+// binary_test.go (BinaryExpr vector-vector rejection paths). The
+// previously-tested "topk without" rejection no longer exists: as of
+// the topk/bottomk without(...) lowering, `topk(K, v) without (l)`
+// lowers into chplan.TopK with a MapWithoutKeys partition expression.
 
 func formatArgs(args []any) string {
 	if len(args) == 0 {
