@@ -2,40 +2,24 @@
 #
 # This file is a near-verbatim copy of
 # harness/prometheus-compliance/upstream/promql/promql-test-queries.yml
-# (prometheus/compliance @ 7e28242) with a small set of edits:
+# (prometheus/compliance @ 7e28242) with one edit:
 #
 # 1. The PromLabs "demo service" preamble (lines 1-31 of the upstream file)
 #    is stripped — it documents docker-run instructions for the prometheus-
 #    demo-service that the OTel-seeded harness doesn't use.
 #
-# 2. Three queries are REMOVED:
+# Series schema: the harness seeds a fixture that mirrors PromLabs's demo
+# service labels (`instance` / `job` / `type` / `mode` / `method` / `path`
+# / `status` / `device`). `instance` values are `demo.promlabs.com:10000`
+# / `:10001` / `:10002`; every series carries `job=demo`. See
+# `cmd/seed/main.go::fixtureInserts` for the canonical label sets.
 #
-#        label_replace(demo_num_cpus, "~invalid", "", "src", "(.*)")
-#        should_fail: true
-#
-#        label_replace(demo_num_cpus, "instance", "", "", "")
-#        should_fail: true
-#
-#        label_join(demo_num_cpus, "~invalid", "-", "instance")
-#        should_fail: true
-#
-#    Background: upstream annotates each as `should_fail: true` because
-#    Prom rejects either an invalid destination label name or a
-#    duplicated-output-label-set construction. BUT the failure path is
-#    only hit when the metric (`demo_num_cpus`) actually returns data —
-#    with an empty input vector, Prom's executor short-circuits and
-#    returns success-with-empty BEFORE the validation check fires. Our
-#    OTel seed corpus does not populate `demo_num_cpus`, so all three
-#    return empty-success, and the upstream `promql-compliance-tester`
-#    `log.Fatalf`'s on the first one ("expected reference API query …
-#    to fail, but succeeded"), aborting the entire run. Removing the
-#    entries lets the harness run to completion. When the seed corpus
-#    grows to include `demo_num_cpus`, restore the queries in M1.x.
-#
-# All other entries (including queries that reference demo metrics not yet
-# in the seed) are preserved verbatim: when both ref Prom and cerberus
-# return empty results for a missing-metric query, the tester records that
-# as PASS (zero diff), which is acceptable noise for the RC1 baseline.
+# Some metric families referenced by individual queries are NOT yet in
+# the seed (e.g. `demo_api_request_duration_seconds_bucket`,
+# `demo_batch_last_success_timestamp_seconds`, `demo_intermittent_metric`).
+# When both ref Prom and cerberus return empty results for a missing-metric
+# query, the tester records that as PASS (zero diff) — acceptable noise
+# for the RC1 baseline.
 #
 # Pointer-to-upstream: re-sync this file by re-copying the upstream and
 # re-applying the edit above. Track in a follow-up M1.x ticket so this
@@ -210,14 +194,16 @@ test_cases:
     # label_replace fails when the regex is invalid.
   - query: 'label_replace(demo_num_cpus, "job", "value-$1", "src", "(.*")'
     should_fail: true
-    # NOTE: 3 upstream entries with `should_fail: true` are intentionally
-    # OMITTED here — see the file header for rationale. They were:
-    #   label_replace(demo_num_cpus, "~invalid", "", "src", "(.*)")  should_fail: true
-    #   label_replace(demo_num_cpus, "instance", "", "", "")         should_fail: true
-    #   label_join(demo_num_cpus, "~invalid", "-", "instance")       should_fail: true
-    # All three depend on demo_num_cpus being non-empty for Prom to hit
-    # the failure path. With our seed corpus, ref Prom returns empty
-    # success and the upstream tester log.Fatalf's.
+    # label_replace fails when the destination label name is invalid.
+  - query: 'label_replace(demo_num_cpus, "~invalid", "", "src", "(.*)")'
+    should_fail: true
+    # label_replace fails when the source label is empty and would produce
+    # a duplicate output label set.
+  - query: 'label_replace(demo_num_cpus, "instance", "", "", "")'
+    should_fail: true
+    # label_join fails when the destination label name is invalid.
+  - query: 'label_join(demo_num_cpus, "~invalid", "-", "instance")'
+    should_fail: true
   - query: 'label_join(demo_num_cpus, "new_label", "-", "instance", "job")'
   - query: 'label_join(demo_num_cpus, "job", "-", "instance", "job")'
   - query: 'label_join(demo_num_cpus, "job", "-", "instance")'

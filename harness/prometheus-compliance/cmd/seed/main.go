@@ -163,8 +163,26 @@ type namedStmt struct {
 
 // fixtureInserts is the ordered list of seed INSERTs. Each SQL string is a
 // static literal — see insertFixture's docstring for why.
+//
+// Label schema matches the PromLabs demo service that the upstream
+// `prometheus/compliance/promql/promql-test-queries.yml` was written
+// against. The compatibility tester hits `on(instance, job, type)` and
+// equivalent matchers; series tagged with `host=host-a|host-b` only would
+// share the empty match group `{}` and trip the "duplicate series for the
+// match group" abort in the upstream tester. Canonical instance values
+// are `demo.promlabs.com:10000` / `:10001` / `:10002`; every series
+// carries `job=demo` (the Prom-default label PromLabs's scrape config
+// would inject). `ResourceAttributes` stays `service.name=demo` — that's
+// the OTel resource layer and is unrelated to the Prom-side wire labels
+// the tester matches on.
 var fixtureInserts = []namedStmt{
-	// demo_cpu_usage_seconds_total: 2 hosts × 3 modes, counters.
+	// demo_cpu_usage_seconds_total: 3 instances × 3 modes = 9 series, counters.
+	//
+	// CROSS JOIN the instance + mode dimensions against the step axis so every
+	// (instance, mode) pair gets one sample per step. A `(number % 3)`
+	// derivation for both dimensions would correlate them — only 3 series
+	// (not 9) would land in CH and the suite's `by(instance, mode)` queries
+	// would silently degenerate.
 	{
 		name: "demo_cpu_usage_seconds_total",
 		sql: `INSERT INTO otel_metrics_sum
@@ -176,24 +194,31 @@ var fixtureInserts = []namedStmt{
             'demo_cpu_usage_seconds_total',
             'CPU seconds spent in mode',
             'seconds',
-            map('host', host, 'mode', mode),
+            map('instance', instance, 'job', 'demo', 'mode', mode),
             toDateTime64({anchor:String}, 9),
             toDateTime64({anchor:String}, 9) + INTERVAL step SECOND,
-            toFloat64(step + (host_idx * 100) + (mode_idx * 10)),
+            toFloat64(step + (instance_idx * 1000) + (mode_idx * 100)),
             0,
             2,
             true
         FROM (
-            SELECT
-                number AS step,
-                arrayElement(['host-a','host-b'], (number % 2) + 1) AS host,
-                arrayElement(['user','system','idle'], (number % 3) + 1) AS mode,
-                (number % 2) AS host_idx,
-                (number % 3) AS mode_idx
-            FROM numbers({steps:UInt64})
+            SELECT step, instance, instance_idx, mode, mode_idx
+            FROM (SELECT number AS step FROM numbers({steps:UInt64})) AS s
+            CROSS JOIN (
+                SELECT arrayJoin(
+                    ['demo.promlabs.com:10000','demo.promlabs.com:10001','demo.promlabs.com:10002']
+                ) AS instance,
+                indexOf(
+                    ['demo.promlabs.com:10000','demo.promlabs.com:10001','demo.promlabs.com:10002'],
+                    instance) - 1 AS instance_idx
+            ) AS i
+            CROSS JOIN (
+                SELECT arrayJoin(['user','system','idle']) AS mode,
+                indexOf(['user','system','idle'], mode) - 1 AS mode_idx
+            ) AS m
         )`,
 	},
-	// demo_memory_usage_bytes: 2 hosts, gauge.
+	// demo_memory_usage_bytes: 3 instances × 4 types = 12 series, gauge.
 	{
 		name: "demo_memory_usage_bytes",
 		sql: `INSERT INTO otel_metrics_gauge
@@ -204,19 +229,29 @@ var fixtureInserts = []namedStmt{
             'demo_memory_usage_bytes',
             'Memory in use',
             'bytes',
-            map('host', host),
+            map('instance', instance, 'job', 'demo', 'type', type),
             toDateTime64({anchor:String}, 9),
             toDateTime64({anchor:String}, 9) + INTERVAL step SECOND,
-            toFloat64(2 * 1024 * 1024 * 1024 + (step * 1024) + (host_idx * 512))
+            toFloat64(2 * 1024 * 1024 * 1024 + (step * 1024) + (instance_idx * 10000000) + (type_idx * 1000000))
         FROM (
-            SELECT
-                number AS step,
-                arrayElement(['host-a','host-b'], (number % 2) + 1) AS host,
-                (number % 2) AS host_idx
-            FROM numbers({steps:UInt64})
+            SELECT step, instance, instance_idx, type, type_idx
+            FROM (SELECT number AS step FROM numbers({steps:UInt64})) AS s
+            CROSS JOIN (
+                SELECT arrayJoin(
+                    ['demo.promlabs.com:10000','demo.promlabs.com:10001','demo.promlabs.com:10002']
+                ) AS instance,
+                indexOf(
+                    ['demo.promlabs.com:10000','demo.promlabs.com:10001','demo.promlabs.com:10002'],
+                    instance) - 1 AS instance_idx
+            ) AS i
+            CROSS JOIN (
+                SELECT arrayJoin(['cached','free','buffers','used']) AS type,
+                indexOf(['cached','free','buffers','used'], type) - 1 AS type_idx
+            ) AS t
         )`,
 	},
-	// demo_http_requests_total: 2 routes × 2 statuses, counter reset.
+	// demo_http_requests_total: 2 instances × 2 methods × 2 paths × 2 statuses = 16 series,
+	// counter reset.
 	{
 		name: "demo_http_requests_total",
 		sql: `INSERT INTO otel_metrics_sum
@@ -228,26 +263,38 @@ var fixtureInserts = []namedStmt{
             'demo_http_requests_total',
             'HTTP requests by route + status',
             '1',
-            map('route', route, 'status', status),
+            map('instance', instance, 'job', 'demo',
+                'method', method, 'path', path, 'status', status),
             toDateTime64({anchor:String}, 9),
             toDateTime64({anchor:String}, 9) + INTERVAL step SECOND,
             if(step < 120,
-                toFloat64(step * 10 + (route_idx * 100) + (status_idx * 50)),
-                toFloat64((step - 120) * 10 + (route_idx * 100) + (status_idx * 50))),
+                toFloat64(step * 10 + (instance_idx * 1000) + (method_idx * 500) + (path_idx * 250) + (status_idx * 100)),
+                toFloat64((step - 120) * 10 + (instance_idx * 1000) + (method_idx * 500) + (path_idx * 250) + (status_idx * 100))),
             0,
             2,
             true
         FROM (
-            SELECT
-                number AS step,
-                arrayElement(['/api','/web'], (number % 2) + 1) AS route,
-                arrayElement(['200','500'], (number % 2) + 1) AS status,
-                (number % 2) AS route_idx,
-                (number % 2) AS status_idx
-            FROM numbers({steps:UInt64})
+            SELECT step, instance, instance_idx, method, method_idx, path, path_idx, status, status_idx
+            FROM (SELECT number AS step FROM numbers({steps:UInt64})) AS s
+            CROSS JOIN (
+                SELECT arrayJoin(['demo.promlabs.com:10000','demo.promlabs.com:10001']) AS instance,
+                indexOf(['demo.promlabs.com:10000','demo.promlabs.com:10001'], instance) - 1 AS instance_idx
+            ) AS i
+            CROSS JOIN (
+                SELECT arrayJoin(['GET','POST']) AS method,
+                indexOf(['GET','POST'], method) - 1 AS method_idx
+            ) AS me
+            CROSS JOIN (
+                SELECT arrayJoin(['/api','/web']) AS path,
+                indexOf(['/api','/web'], path) - 1 AS path_idx
+            ) AS p
+            CROSS JOIN (
+                SELECT arrayJoin(['200','500']) AS status,
+                indexOf(['200','500'], status) - 1 AS status_idx
+            ) AS st
         )`,
 	},
-	// demo_disk_usage_bytes: 1 host × 2 mounts, gauge.
+	// demo_disk_usage_bytes: 2 instances × 2 devices = 4 series, gauge.
 	{
 		name: "demo_disk_usage_bytes",
 		sql: `INSERT INTO otel_metrics_gauge
@@ -258,16 +305,21 @@ var fixtureInserts = []namedStmt{
             'demo_disk_usage_bytes',
             'Disk space in use',
             'bytes',
-            map('host', 'host-a', 'mount', mount),
+            map('instance', instance, 'job', 'demo', 'device', device),
             toDateTime64({anchor:String}, 9),
             toDateTime64({anchor:String}, 9) + INTERVAL step SECOND,
-            toFloat64(10 * 1024 * 1024 * 1024 + step * mount_idx * 1024)
+            toFloat64(10 * 1024 * 1024 * 1024 + step * (device_idx + 1) * 1024 + (instance_idx * 4096))
         FROM (
-            SELECT
-                number AS step,
-                arrayElement(['/','/data'], (number % 2) + 1) AS mount,
-                ((number % 2) + 1) AS mount_idx
-            FROM numbers({steps:UInt64})
+            SELECT step, instance, instance_idx, device, device_idx
+            FROM (SELECT number AS step FROM numbers({steps:UInt64})) AS s
+            CROSS JOIN (
+                SELECT arrayJoin(['demo.promlabs.com:10000','demo.promlabs.com:10001']) AS instance,
+                indexOf(['demo.promlabs.com:10000','demo.promlabs.com:10001'], instance) - 1 AS instance_idx
+            ) AS i
+            CROSS JOIN (
+                SELECT arrayJoin(['/dev/sda1','/dev/sda2']) AS device,
+                indexOf(['/dev/sda1','/dev/sda2'], device) - 1 AS device_idx
+            ) AS d
         )`,
 	},
 	// demo_disk_total_bytes: companion to disk_usage_bytes, gauge.
@@ -281,18 +333,53 @@ var fixtureInserts = []namedStmt{
             'demo_disk_total_bytes',
             'Total disk capacity',
             'bytes',
-            map('host', 'host-a', 'mount', mount),
+            map('instance', instance, 'job', 'demo', 'device', device),
             toDateTime64({anchor:String}, 9),
             toDateTime64({anchor:String}, 9) + INTERVAL step SECOND,
             toFloat64(100 * 1024 * 1024 * 1024)
         FROM (
-            SELECT
-                number AS step,
-                arrayElement(['/','/data'], (number % 2) + 1) AS mount
-            FROM numbers({steps:UInt64})
+            SELECT step, instance, device
+            FROM (SELECT number AS step FROM numbers({steps:UInt64})) AS s
+            CROSS JOIN (
+                SELECT arrayJoin(['demo.promlabs.com:10000','demo.promlabs.com:10001']) AS instance
+            ) AS i
+            CROSS JOIN (
+                SELECT arrayJoin(['/dev/sda1','/dev/sda2']) AS device
+            ) AS d
         )`,
 	},
-	// up: 2 instances, both up.
+	// demo_num_cpus: 3 instances, gauge. Value = 4 cores per instance, constant.
+	//
+	// Originally absent from the seed (see the cerberus-test-queries.yml header
+	// for the removal rationale); restored to cover the 28 query mentions in
+	// the test file plus the 3 `should_fail: true` label_replace / label_join
+	// entries that the header documented as gated on this metric returning
+	// non-empty data.
+	{
+		name: "demo_num_cpus",
+		sql: `INSERT INTO otel_metrics_gauge
+            (ResourceAttributes, MetricName, MetricDescription, MetricUnit,
+             Attributes, StartTimeUnix, TimeUnix, Value)
+        SELECT
+            map('service.name', 'demo'),
+            'demo_num_cpus',
+            'Number of CPU cores on the target',
+            '1',
+            map('instance', instance, 'job', 'demo'),
+            toDateTime64({anchor:String}, 9),
+            toDateTime64({anchor:String}, 9) + INTERVAL step SECOND,
+            4.0
+        FROM (
+            SELECT step, instance
+            FROM (SELECT number AS step FROM numbers({steps:UInt64})) AS s
+            CROSS JOIN (
+                SELECT arrayJoin(
+                    ['demo.promlabs.com:10000','demo.promlabs.com:10001','demo.promlabs.com:10002']
+                ) AS instance
+            ) AS i
+        )`,
+	},
+	// up: 3 instances, all up.
 	{
 		name: "up",
 		sql: `INSERT INTO otel_metrics_gauge
@@ -308,10 +395,13 @@ var fixtureInserts = []namedStmt{
             toDateTime64({anchor:String}, 9) + INTERVAL step SECOND,
             1.0
         FROM (
-            SELECT
-                number AS step,
-                arrayElement(['host-a:9100','host-b:9100'], (number % 2) + 1) AS instance
-            FROM numbers({steps:UInt64})
+            SELECT step, instance
+            FROM (SELECT number AS step FROM numbers({steps:UInt64})) AS s
+            CROSS JOIN (
+                SELECT arrayJoin(
+                    ['demo.promlabs.com:10000','demo.promlabs.com:10001','demo.promlabs.com:10002']
+                ) AS instance
+            ) AS i
         )`,
 	},
 }
