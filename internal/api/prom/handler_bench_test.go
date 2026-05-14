@@ -103,7 +103,7 @@ func (c *cursorQuerier) QueryLabelSets(_ context.Context, _ string, _ ...any) ([
 	return nil, nil
 }
 
-func (c *cursorQuerier) QueryMetricMeta(_ context.Context, _ string, _ string, _ ...any) ([]chclient.MetricMetaRow, error) {
+func (c *cursorQuerier) QueryMetricMeta(_ context.Context, _, _ string, _ ...any) ([]chclient.MetricMetaRow, error) {
 	return nil, nil
 }
 
