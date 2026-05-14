@@ -1,6 +1,7 @@
 package ddl
 
 import (
+	"context"
 	"strings"
 	"sync"
 	"testing"
@@ -286,10 +287,10 @@ func TestApply_Idempotent_NoOpWhenSignalsEmpty(t *testing.T) {
 	// Apply iterates signals and only calls conn.Exec inside the loop;
 	// with no signals, conn must never be touched, so a nil conn is
 	// safe.
-	if err := Apply(nil, nil, nil); err != nil {
+	if err := Apply(context.TODO(), nil, nil); err != nil {
 		t.Errorf("Apply with no signals: %v; want nil (no-op)", err)
 	}
-	if err := ApplyWithConfig(nil, nil, Config{}, []Signal{}); err != nil {
+	if err := ApplyWithConfig(context.TODO(), nil, Config{}, []Signal{}); err != nil {
 		t.Errorf("ApplyWithConfig with no signals: %v; want nil (no-op)", err)
 	}
 }

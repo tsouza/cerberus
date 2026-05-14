@@ -295,4 +295,3 @@ func TestQueryTimer_DoneOnNilReceiverIsSafe(t *testing.T) {
 	var qt *telemetry.QueryTimer
 	qt.Done(t.Context(), telemetry.ResultOK) // must not panic
 }
-
