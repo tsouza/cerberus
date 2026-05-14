@@ -13,7 +13,7 @@ CREATE TABLE otel_metrics_histogram (
     TimeUnix DateTime64(9),
     BucketCounts Array(UInt64),
     ExplicitBounds Array(Float64)
-) ENGINE = Memory;
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
 INSERT INTO otel_metrics_histogram VALUES
     ('other_metric', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), [1, 2, 3], [0.1, 0.5, 1.0]);
 -- expected_rows --

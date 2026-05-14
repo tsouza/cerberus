@@ -33,14 +33,22 @@ func TestLower(t *testing.T) {
 
 	// Fixed start/end used when a fixture's query contains `@ start()`
 	// or `@ end()`. Picking small Unix-epoch values keeps the generated
-	// SQL literals short and deterministic. Detected by string match;
-	// fixtures without those modifiers use plain Lower (no range).
+	// SQL literals short and deterministic.
 	const (
 		fixtureStartUnix = int64(100)
 		fixtureEndUnix   = int64(500)
 	)
 	start := time.Unix(fixtureStartUnix, 0).UTC()
 	end := time.Unix(fixtureEndUnix, 0).UTC()
+
+	// Every other fixture uses a deterministic instant-eval anchor
+	// just after the seed timestamps (the round-trip fixtures all use
+	// `toDateTime64('2026-01-01 00:00:00', 9)`). One second after that
+	// keeps the seed inside the 5-minute LWR staleness window the
+	// instant-selector lowering applies. This is what gets passed to
+	// LowerAt as both start and end — instant queries have
+	// start == end == eval_ts.
+	instantEval := time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC)
 
 	spec.Walk(t, fixtureDir, func(t *testing.T, c *spec.Case) {
 		query, ok := c.Section("query.promql")
@@ -54,14 +62,14 @@ func TestLower(t *testing.T) {
 			t.Fatalf("ParseExpr(%q): %v", query, err)
 		}
 		// Fixtures that exercise `@ start()` / `@ end()` need the
-		// time-aware lowering entrypoint; everything else uses plain
-		// Lower so existing fixtures stay deterministic regardless of
-		// the fixed range.
+		// special fixed range; every other fixture lowers with the
+		// deterministic instant-eval anchor so the LWR staleness
+		// predicate produces stable SQL literals.
 		var plan chplan.Node
 		if strings.Contains(query, "@ start()") || strings.Contains(query, "@ end()") {
 			plan, err = promql.LowerAt(context.Background(), expr, s, start, end)
 		} else {
-			plan, err = promql.Lower(context.Background(), expr, s)
+			plan, err = promql.LowerAt(context.Background(), expr, s, instantEval, instantEval)
 		}
 		if err != nil {
 			t.Fatalf("Lower(%q): %v", query, err)

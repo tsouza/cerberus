@@ -8,7 +8,7 @@ CREATE TABLE otel_metrics_gauge (
     Attributes Map(String, String),
     TimeUnix DateTime64(9),
     Value Float64
-) ENGINE = Memory;
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
 INSERT INTO otel_metrics_gauge VALUES
     ('other_metric', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 10.0);
 -- expected_rows --

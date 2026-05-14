@@ -89,6 +89,19 @@ func lower(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error
 // lowerVectorSelector turns `metric{label="val"}` into Scan + Filter.
 // `@` and `offset` modifiers add a `Timestamp <= anchor` predicate so the
 // instant evaluation reflects the requested shifted time.
+//
+// When ctx.inRangeVector is false (the default — top-level selector,
+// under aggregations, or inside instant arithmetic) cerberus also
+// applies PromQL's Latest-With-Respect-to-T (LWR) rule: filter the
+// scan to samples with `Timestamp <= anchor` AND
+// `anchor - Timestamp < 5m` (Prom's default staleness window), then
+// collapse to one row per series via `argMax(Value, TimeUnix)` /
+// `max(TimeUnix)` grouped by `(MetricName, Attributes)`. That's the
+// per-series-latest-within-lookback contract any downstream aggregation
+// must aggregate over. Range-vector consumers (rate / *_over_time /
+// subqueries) bypass the LWR wrap by setting `inRangeVector` before
+// recursing — the RangeWindow node owns the in-window aggregation
+// itself.
 func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	metricName := metricNameFromMatchers(v.LabelMatchers)
 	table := s.GaugeTable
@@ -99,22 +112,178 @@ func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCt
 	scan := &chplan.Scan{Table: table}
 
 	pred := buildPredicate(v.LabelMatchers, s)
-	if hasModifier(v) {
-		anchor, err := anchorFromSelector(v, ctx)
-		if err != nil {
-			return nil, err
+
+	// Resolve the effective evaluation anchor for this selector.
+	// `@`/offset modifiers shadow the surrounding ctx; absent a
+	// modifier we pick up ctx.end (the query's eval timestamp) so
+	// the LWR predicate below has something to compare against.
+	anchor, err := selectorAnchor(v, ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if ctx.inRangeVector {
+		// Inside a range vector / subquery the surrounding node owns
+		// the per-window aggregation. We still apply the modifier's
+		// `Timestamp <= anchor` bound when present (matching the pre-
+		// LWR behaviour) so the range-vector pipeline only sees
+		// samples up to the requested instant.
+		if hasModifier(v) {
+			timeBound := timeBoundExpr(s.TimestampColumn, anchor)
+			if pred == nil {
+				pred = timeBound
+			} else {
+				pred = &chplan.Binary{Op: chplan.OpAnd, Left: pred, Right: timeBound}
+			}
 		}
-		timeBound := timeBoundExpr(s.TimestampColumn, anchor)
 		if pred == nil {
-			pred = timeBound
-		} else {
-			pred = &chplan.Binary{Op: chplan.OpAnd, Left: pred, Right: timeBound}
+			return scan, nil
 		}
+		return &chplan.Filter{Input: scan, Predicate: pred}, nil
 	}
-	if pred == nil {
-		return scan, nil
+	// Instant-vector context: the LWR wrapper applies both the
+	// `Timestamp <= anchor` upper bound and the staleness lower
+	// bound, so we DON'T pre-add the modifier's timeBoundExpr here —
+	// that would duplicate the upper-bound predicate.
+	return wrapInstantLatestPerSeries(scan, pred, anchor, s), nil
+}
+
+// wrapInstantLatestPerSeries adds the LWR + staleness predicates on
+// top of (scan, pred) and collapses to one row per `(MetricName,
+// Attributes)` series via `argMax(Value, TimeUnix)`. The output
+// preserves the canonical Sample-row schema — MetricName, Attributes,
+// TimeUnix, Value — so the surrounding plan tree (Aggregate, Project,
+// Filter, ...) keeps consuming the same column shape it did before
+// the LWR wrap landed.
+//
+// Schema-preservation is what lets `wrapWithSampleProjection` upstream
+// keep its non-derived-shape path: the root after this wrap is a
+// chplan.Project whose output columns match the table's canonical
+// names, so `isDerivedShape` returns false and the handler-side
+// projection is a pass-through.
+//
+// Aliasing detail: the inner Aggregate projects the per-series TimeUnix
+// + Value pair through temporary aliases (`lwr_ts`, `lwr_value`) so
+// `argMax(Value, TimeUnix)` is unambiguous. CH otherwise rejects the
+// query with ILLEGAL_AGGREGATION on the (TimeUnix-the-alias /
+// TimeUnix-the-column) shadow inside the same SELECT projection list.
+// The outer Project re-aliases back to the canonical names so the
+// surrounding plan tree continues to see the same `MetricName /
+// Attributes / TimeUnix / Value` shape.
+func wrapInstantLatestPerSeries(scan *chplan.Scan, pred chplan.Expr, anchor evalAnchor, s schema.Metrics) chplan.Node {
+	lwr := timeBoundExpr(s.TimestampColumn, anchor)
+	staleness := stalenessLowerBoundExpr(s.TimestampColumn, anchor, instantLookback)
+	combined := pred
+	for _, p := range []chplan.Expr{lwr, staleness} {
+		if combined == nil {
+			combined = p
+			continue
+		}
+		combined = &chplan.Binary{Op: chplan.OpAnd, Left: combined, Right: p}
 	}
-	return &chplan.Filter{Input: scan, Predicate: pred}, nil
+	filtered := &chplan.Filter{Input: scan, Predicate: combined}
+
+	const (
+		lwrTsAlias    = "lwr_ts"
+		lwrValueAlias = "lwr_value"
+	)
+
+	agg := &chplan.Aggregate{
+		Input: filtered,
+		GroupBy: []chplan.Expr{
+			&chplan.ColumnRef{Name: s.MetricNameColumn},
+			&chplan.ColumnRef{Name: s.AttributesColumn},
+		},
+		GroupByAliases: []string{s.MetricNameColumn, s.AttributesColumn},
+		AggFuncs: []chplan.AggFunc{
+			{
+				Name:  "max",
+				Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.TimestampColumn}},
+				Alias: lwrTsAlias,
+			},
+			{
+				Name: "argMax",
+				Args: []chplan.Expr{
+					&chplan.ColumnRef{Name: s.ValueColumn},
+					&chplan.ColumnRef{Name: s.TimestampColumn},
+				},
+				Alias: lwrValueAlias,
+			},
+		},
+	}
+
+	return &chplan.Project{
+		Input: agg,
+		Projections: []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
+			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+			{Expr: &chplan.ColumnRef{Name: lwrTsAlias}, Alias: s.TimestampColumn},
+			{Expr: &chplan.ColumnRef{Name: lwrValueAlias}, Alias: s.ValueColumn},
+		},
+	}
+}
+
+// selectorAnchor resolves the effective evaluation anchor for a vector
+// selector, threading through `@` / offset / start() / end() modifiers
+// and falling back to the surrounding query's end timestamp. The zero
+// anchor means "use `now64(9)` at the SQL level" — picked up by
+// `timeBoundExpr` callers.
+//
+// `@<ts>` and `@ start()/@ end()` set the absolute anchor directly;
+// `offset` shifts the anchor by a fixed delta and keeps whatever base
+// anchor the rest of the resolution produced. So `up offset 5m`
+// against a query with eval_ts = T anchors at `(T, offset=5m)` —
+// `timeBoundExpr` then renders `Timestamp <= T - 5m` and the
+// staleness predicate renders `Timestamp > T - 5m - lookback`.
+func selectorAnchor(vs *parser.VectorSelector, ctx lowerCtx) (evalAnchor, error) {
+	if hasModifier(vs) {
+		a, err := anchorFromSelector(vs, ctx)
+		if err != nil {
+			return evalAnchor{}, err
+		}
+		// `up offset 5m` (no `@`) leaves anchorFromSelector with
+		// `End == zero` because the selector itself doesn't pin an
+		// absolute time. Without threading ctx.end through, the SQL
+		// renders `now64(9)` and the LWR window would skew off the
+		// real eval timestamp — bug-shaped for instant queries that
+		// resolve eval_ts in the API layer. So back-fill End from
+		// the surrounding query whenever an offset would otherwise
+		// land on a zero anchor.
+		if a.End.IsZero() && !ctx.end.IsZero() {
+			a.End = ctx.end.UTC()
+		}
+		return a, nil
+	}
+	// No modifier — anchor the LWR window to the surrounding query's
+	// end time when threaded through LowerAt. Otherwise leave the
+	// anchor zero so the SQL renders `now64(9)`.
+	if !ctx.end.IsZero() {
+		return evalAnchor{End: ctx.end.UTC()}, nil
+	}
+	return evalAnchor{}, nil
+}
+
+// stalenessLowerBoundExpr renders the strict-lower-bound half of the
+// LWR window:  `<col> > (<anchor> - <lookback>)`. Combined with the
+// non-strict upper bound `<col> <= <anchor>` (from timeBoundExpr), the
+// pair matches Prometheus's `Timestamp <= T AND T - Timestamp <
+// lookback` rule.
+func stalenessLowerBoundExpr(col string, a evalAnchor, lookback time.Duration) chplan.Expr {
+	anchor := anchorBaseExpr(a)
+	offsetNs := lookback.Nanoseconds() + a.Offset.Nanoseconds()
+	right := &chplan.Binary{
+		Op:   chplan.OpSub,
+		Left: anchor,
+		Right: &chplan.FuncCall{
+			Name: "toIntervalNanosecond",
+			Args: []chplan.Expr{&chplan.LitInt{V: offsetNs}},
+		},
+	}
+	return &chplan.Binary{
+		Op:    chplan.OpGt,
+		Left:  &chplan.ColumnRef{Name: col},
+		Right: right,
+	}
 }
 
 // metricNameFromMatchers returns the value of the __name__ matcher (if any
@@ -242,12 +411,16 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 	// The RangeWindow already encodes the window's eval anchor; emitting a
 	// duplicate time-bound predicate on the inner Filter would double-count.
 	// Build the inner Scan/Filter without the modifier-derived bound here.
+	// The inRangeVector flag also suppresses the bare-selector LWR wrap so
+	// every in-window sample reaches the RangeWindow node.
 	vsNoModifier := *vs
 	vsNoModifier.Timestamp = nil
 	vsNoModifier.OriginalOffset = 0
 	vsNoModifier.Offset = 0
 	vsNoModifier.StartOrEnd = 0
-	inner, err := lowerVectorSelector(&vsNoModifier, s, ctx)
+	rangeCtx := ctx
+	rangeCtx.inRangeVector = true
+	inner, err := lowerVectorSelector(&vsNoModifier, s, rangeCtx)
 	if err != nil {
 		return nil, err
 	}
