@@ -473,10 +473,11 @@ func lowerAggregate(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (ch
 
 	aliases := groupKeyAliases(len(groupBy))
 	agg := &chplan.Aggregate{
-		Input:          input,
-		GroupBy:        groupBy,
-		GroupByAliases: aliases,
-		AggFuncs:       []chplan.AggFunc{aggFunc},
+		Input:              input,
+		GroupBy:            groupBy,
+		GroupByAliases:     aliases,
+		AggFuncs:           []chplan.AggFunc{aggFunc},
+		DropEmptyOnNoGroup: true,
 	}
 	return wrapAggregateForSample(agg, a, s, aliases), nil
 }
@@ -515,11 +516,22 @@ func wrapAggregateForSample(agg *chplan.Aggregate, a *parser.AggregateExpr, s sc
 		// Single mapFilter-derived attribute column; the gkey IS the map.
 		attrs = &chplan.ColumnRef{Name: aliases[0]}
 	default:
+		// `sum by (job, instance) (...)` over series whose `job` label is
+		// absent produces a gkey with the CH-Map default empty string
+		// (`Attributes['job']` returns `''` when the key is missing).
+		// PromQL's canonical Labels representation drops empty-valued
+		// labels, so wrap the map() literal with MapWithoutEmptyValues
+		// to strip empty-valued entries before the wire layer renders
+		// them. Series with an explicit `""` label value canonicalise
+		// the same way upstream, so this is lossless for real-world
+		// inputs.
 		args := make([]chplan.Expr, 0, len(a.Grouping)*2)
 		for i, label := range a.Grouping {
 			args = append(args, &chplan.LitString{V: label}, &chplan.ColumnRef{Name: aliases[i]})
 		}
-		attrs = &chplan.FuncCall{Name: "map", Args: args}
+		attrs = &chplan.MapWithoutEmptyValues{
+			Map: &chplan.FuncCall{Name: "map", Args: args},
+		}
 	}
 
 	return &chplan.Project{

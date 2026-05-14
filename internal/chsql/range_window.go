@@ -350,7 +350,7 @@ func (e *emitter) emitWindowedArrayPairs(r *chplan.RangeWindow, valueWriter Frag
 	for _, g := range groupFrags {
 		outerSb.Select(g)
 	}
-	outerSb.Select(rawAs(valueWriter, "value"))
+	outerSb.Select(rawAs(valueWriter, r.ValueColumn))
 	if minWindowSize > 0 {
 		outerSb.Where(windowLenAtLeastFrag("window_pairs", minWindowSize))
 	}
@@ -1049,7 +1049,7 @@ func (e *emitter) emitWindowedArray(r *chplan.RangeWindow, value Frag, minWindow
 	for _, g := range groupFrags {
 		outer.Select(g)
 	}
-	outer.Select(As(value, "value"))
+	outer.Select(As(value, r.ValueColumn))
 	if minWindowSize > 0 {
 		outer.Where(windowLenAtLeastFrag("window_vals", minWindowSize))
 	}
@@ -1137,7 +1137,7 @@ func (e *emitter) emitWindowedArrayMatrix(r *chplan.RangeWindow, value Frag, min
 		outer.Select(g)
 	}
 	outer.Select(Col("anchor_ts"))
-	outer.Select(As(value, "value"))
+	outer.Select(As(value, r.ValueColumn))
 	if minWindowSize > 0 {
 		outer.Where(windowLenAtLeastFrag("window_vals", minWindowSize))
 	}

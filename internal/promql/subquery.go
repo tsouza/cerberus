@@ -193,11 +193,16 @@ func lowerSubqueryOverVectorSelector(
 //	    ...,
 //	  },
 //	  TimestampColumn: "anchor_ts",     // inner matrix's per-row anchor
-//	  ValueColumn:     "value",         // inner matrix's emitted value
+//	  ValueColumn:     s.ValueColumn,   // inner matrix emits s.ValueColumn
 //	}
 //
 // The outer's TimestampColumn / ValueColumn point at the inner matrix
 // output columns rather than the underlying table's TimeUnix/Value.
+// The inner matrix uses `anchor_ts` for the per-row anchor and emits
+// the per-window value under `s.ValueColumn` (the schema's canonical
+// PascalCase `Value` — the windowed-array emitter projects `r.ValueColumn`
+// at every outer SELECT site since the fix to chsql.range_window in
+// commit 1 of this PR).
 func lowerOuterRangeFnOverSubquery(
 	outer *parser.Call,
 	sub *parser.SubqueryExpr,
@@ -218,7 +223,7 @@ func lowerOuterRangeFnOverSubquery(
 		Func:            outer.Func.Name,
 		Range:           sub.Range,
 		TimestampColumn: "anchor_ts",
-		ValueColumn:     "value",
+		ValueColumn:     s.ValueColumn,
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 	}, nil
 }
@@ -334,26 +339,28 @@ func lowerSubqueryOverAggregate(
 	groupBy = append(groupBy, &chplan.ColumnRef{Name: "anchor_ts"})
 	groupAliases = append(groupAliases, "anchor_ts")
 
-	// Build the AggFunc. `value` (lowercase) is the matrix
-	// RangeWindow's output column. The Aggregate's output column reuses
-	// the same alias so the outer RangeWindow can reference it
-	// transparently via its ValueColumn = "value".
-	aggFunc, err := buildSubqueryAggFunc(agg, "value")
+	// Build the AggFunc. The matrix RangeWindow emits its windowed
+	// value under `s.ValueColumn` (the schema's canonical PascalCase
+	// `Value`); the Aggregate's output column reuses the same alias so
+	// the outer RangeWindow can reference it transparently via its
+	// `ValueColumn = s.ValueColumn`.
+	aggFunc, err := buildSubqueryAggFunc(agg, s.ValueColumn)
 	if err != nil {
 		return nil, err
 	}
 
 	innerAgg := &chplan.Aggregate{
-		Input:          matrix,
-		GroupBy:        groupBy,
-		GroupByAliases: groupAliases,
-		AggFuncs:       []chplan.AggFunc{aggFunc},
+		Input:              matrix,
+		GroupBy:            groupBy,
+		GroupByAliases:     groupAliases,
+		AggFuncs:           []chplan.AggFunc{aggFunc},
+		DropEmptyOnNoGroup: true,
 	}
 
 	// Rebuild Attributes from the gkey aliases so the outer
 	// RangeWindow's `GroupBy: [ColumnRef("Attributes")]` lights up
-	// without further plumbing. anchor_ts + value pass through as
-	// matching aliases. Value is cast to Float64 so the outer
+	// without further plumbing. anchor_ts + s.ValueColumn pass through
+	// as matching aliases. Value is cast to Float64 so the outer
 	// RangeWindow's counter_delta arithmetic (always emitted even by
 	// arrayAvg / arrayMax / arrayMin reducers) can do `c - p` without
 	// hitting CH's NO_COMMON_TYPE error on count's UInt64 result.
@@ -366,9 +373,9 @@ func lowerSubqueryOverAggregate(
 			{
 				Expr: &chplan.FuncCall{
 					Name: "toFloat64",
-					Args: []chplan.Expr{&chplan.ColumnRef{Name: "value"}},
+					Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}},
 				},
-				Alias: "value",
+				Alias: s.ValueColumn,
 			},
 		},
 	}, nil
@@ -404,21 +411,25 @@ func lowerSubqueryInnerMatrix(
 
 // buildSubqueryAggFunc maps a PromQL AggregateExpr to the chplan
 // AggFunc that runs INSIDE the subquery-over-aggregate pipeline.
-// Mirrors buildAggFunc but takes the input column name as a parameter
-// (the matrix RangeWindow emits lowercase `value`, not s.ValueColumn).
-func buildSubqueryAggFunc(a *parser.AggregateExpr, inCol string) (chplan.AggFunc, error) {
-	valueArg := &chplan.ColumnRef{Name: inCol}
+// Mirrors buildAggFunc but takes the value column name as a parameter
+// — used for both the input (the matrix RangeWindow's emitted value
+// column) and the output alias (so a wrapping RangeWindow can
+// reference the aggregate output via its ValueColumn). Callers pass
+// `s.ValueColumn` (the schema-canonical `Value`) so the inner / outer
+// references stay consistent end-to-end.
+func buildSubqueryAggFunc(a *parser.AggregateExpr, valCol string) (chplan.AggFunc, error) {
+	valueArg := &chplan.ColumnRef{Name: valCol}
 	switch a.Op {
 	case parser.SUM:
-		return chplan.AggFunc{Name: "sum", Args: []chplan.Expr{valueArg}, Alias: "value"}, nil
+		return chplan.AggFunc{Name: "sum", Args: []chplan.Expr{valueArg}, Alias: valCol}, nil
 	case parser.COUNT:
-		return chplan.AggFunc{Name: "count", Args: []chplan.Expr{valueArg}, Alias: "value"}, nil
+		return chplan.AggFunc{Name: "count", Args: []chplan.Expr{valueArg}, Alias: valCol}, nil
 	case parser.AVG:
-		return chplan.AggFunc{Name: "avg", Args: []chplan.Expr{valueArg}, Alias: "value"}, nil
+		return chplan.AggFunc{Name: "avg", Args: []chplan.Expr{valueArg}, Alias: valCol}, nil
 	case parser.MIN:
-		return chplan.AggFunc{Name: "min", Args: []chplan.Expr{valueArg}, Alias: "value"}, nil
+		return chplan.AggFunc{Name: "min", Args: []chplan.Expr{valueArg}, Alias: valCol}, nil
 	case parser.MAX:
-		return chplan.AggFunc{Name: "max", Args: []chplan.Expr{valueArg}, Alias: "value"}, nil
+		return chplan.AggFunc{Name: "max", Args: []chplan.Expr{valueArg}, Alias: valCol}, nil
 	}
 	return chplan.AggFunc{}, fmt.Errorf("promql: subquery over %s aggregation is not yet supported", a.Op.String())
 }
@@ -510,7 +521,7 @@ func lowerSubqueryOverCallSubquery(
 		End:             anchor.End,
 		Offset:          anchor.Offset,
 		TimestampColumn: "anchor_ts",
-		ValueColumn:     "value",
+		ValueColumn:     s.ValueColumn,
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 	}, nil
 }
