@@ -51,9 +51,13 @@ func TestRangeWindowMetricsExplicitTimeGrid(t *testing.T) {
 	if !strings.Contains(sql, "range(0, 6)") {
 		t.Errorf("expected range(0, 6), SQL=%s", sql)
 	}
-	// Rate reducer normalises by range_seconds (60s).
-	if !strings.Contains(sql, "count(?) / 60") {
-		t.Errorf("expected `count(?) / 60`, SQL=%s", sql)
+	// Rate reducer normalises by range_seconds (60s); the count(?)
+	// aggregate is wrapped in toFloat64 so the Value column has the
+	// uniform Float64 wire type chclient.Sample.Value expects (UInt64
+	// → *float64 ScanRow conversion is unsupported by the CH Go
+	// driver). The substring is "toFloat64(count(?)) / 60".
+	if !strings.Contains(sql, "toFloat64(count(?)) / 60") {
+		t.Errorf("expected `toFloat64(count(?)) / 60`, SQL=%s", sql)
 	}
 	// args has the LitInt{1} bound by count(1).
 	if len(args) != 1 {
@@ -138,6 +142,63 @@ func TestMetricsAggregateRequiresAttr(t *testing.T) {
 			_, _, err := chsql.Emit(context.Background(), plan)
 			if err == nil {
 				t.Fatalf("expected error for %s without Attr", op)
+			}
+		})
+	}
+}
+
+// TestRangeWindowMetricsReducerIsFloat64 pins the Value-column type
+// invariant: every metrics-pipeline op in the matrix path must wrap the
+// per-bucket reducer in `toFloat64(...)` so chclient.Sample.Value
+// (a `float64`) can be Scan'd directly out of the row stream. Without
+// the wrap, `| count_over_time()` (CH `count()` → UInt64) and
+// `| {sum,min,max}_over_time(duration)` (CH aggregate over Int64 →
+// Int64) both surface as `engine: execute: chclient: scan: (Value)
+// converting UInt64 to *float64 is unsupported` against a real
+// ClickHouse — the bug fixed in #(this PR).
+//
+// The stubQuerier-backed handler test (metrics_query_range_test.go)
+// can't catch this because it returns pre-typed Go []chclient.Sample
+// values; the ScanRow conversion path is bypassed.
+func TestRangeWindowMetricsReducerIsFloat64(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		op   chplan.MetricsOp
+		attr chplan.Expr
+		q    []float64
+	}{
+		{name: "rate", op: chplan.MetricsOpRate},
+		{name: "count_over_time", op: chplan.MetricsOpCountOverTime},
+		{name: "sum_over_time", op: chplan.MetricsOpSumOverTime, attr: &chplan.ColumnRef{Name: "Duration"}},
+		{name: "avg_over_time", op: chplan.MetricsOpAvgOverTime, attr: &chplan.ColumnRef{Name: "Duration"}},
+		{name: "min_over_time", op: chplan.MetricsOpMinOverTime, attr: &chplan.ColumnRef{Name: "Duration"}},
+		{name: "max_over_time", op: chplan.MetricsOpMaxOverTime, attr: &chplan.ColumnRef{Name: "Duration"}},
+		{name: "quantile_over_time", op: chplan.MetricsOpQuantileOverTime, attr: &chplan.ColumnRef{Name: "Duration"}, q: []float64{0.95}},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			plan := &chplan.RangeWindow{
+				Input: &chplan.MetricsAggregate{
+					Op:         c.op,
+					Attr:       c.attr,
+					Quantiles:  c.q,
+					ValueAlias: "Value",
+					Inner:      &chplan.Scan{Table: "otel_traces"},
+				},
+				Step:            time.Minute,
+				OuterRange:      5 * time.Minute,
+				TimestampColumn: "Timestamp",
+			}
+			sql, _, err := chsql.Emit(context.Background(), plan)
+			if err != nil {
+				t.Fatalf("Emit %s: %v", c.name, err)
+			}
+			if !strings.Contains(sql, "toFloat64(") {
+				t.Errorf("%s reducer must wrap in toFloat64(...) so the Value column scans into chclient.Sample.Value (float64); SQL=%s", c.name, sql)
 			}
 		})
 	}

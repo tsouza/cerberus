@@ -1,7 +1,7 @@
 -- args --
 [0] float64 = 0.95
 -- sql --
-SELECT `anchor_ts`, quantile(?)(`metric_arg`) AS `Value` FROM (SELECT `Timestamp` AS `ts`, `Duration` AS `metric_arg`, arrayJoin(arrayMap(i -> now64(9) - toIntervalNanosecond(i * 60000000000), range(0, 6))) AS `anchor_ts` FROM (SELECT * FROM `otel_traces`)) WHERE ts >= anchor_ts - toIntervalNanosecond(60000000000) AND ts <= anchor_ts GROUP BY `anchor_ts`
+SELECT `anchor_ts`, toFloat64(quantile(?)(`metric_arg`)) AS `Value` FROM (SELECT `Timestamp` AS `ts`, `Duration` AS `metric_arg`, arrayJoin(arrayMap(i -> now64(9) - toIntervalNanosecond(i * 60000000000), range(0, 6))) AS `anchor_ts` FROM (SELECT * FROM `otel_traces`)) WHERE ts >= anchor_ts - toIntervalNanosecond(60000000000) AND ts <= anchor_ts GROUP BY `anchor_ts`
 -- chplan --
 RangeWindow func= range=0s step=1m0s outerRange=5m0s ts=Timestamp
   MetricsAggregate op=quantile_over_time attr=Duration quantiles=[0.95] valueAlias=Value
