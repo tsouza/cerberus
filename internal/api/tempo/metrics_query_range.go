@@ -231,7 +231,8 @@ func wrapMetricsForSample(rw *chplan.RangeWindow, m *chplan.MetricsAggregate) ch
 	} else {
 		args := make([]chplan.Expr, 0, len(m.GroupBy)*2)
 		for i := range m.GroupBy {
-			args = append(args,
+			args = append(
+				args,
 				&chplan.LitString{V: labelNames[i]},
 				&chplan.FuncCall{
 					Name: "toString",
@@ -359,4 +360,3 @@ func labelsFromSample(attrs map[string]string, labelNames []string) []MetricsLab
 	}
 	return out
 }
-
