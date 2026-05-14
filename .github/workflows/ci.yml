@@ -61,6 +61,16 @@ jobs:
           # Honours .golangci.yml; runs across the whole module.
           args: ./...
 
+      # go-arch-lint enforces the cerberus layering (parse → lower →
+      # optimize → emit → execute) declared in .go-arch-lint.yml.
+      # No first-party Action exists; install via `go install` so it
+      # reuses setup-go's module cache.
+      - name: install go-arch-lint
+        run: go install github.com/fe3dback/go-arch-lint@v1.15.0
+
+      - name: go-arch-lint
+        run: go-arch-lint check
+
       - name: commitlint
         if: github.event_name == 'pull_request'
         uses: wagoid/commitlint-github-action@v6

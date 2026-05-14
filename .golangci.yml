@@ -1,3 +1,54 @@
+# ---------------------------------------------------------------------------
+# Quality-metric linters (see `enable:` block below).
+#
+# Each linter measures a structural code-quality signal and is configured
+# with a threshold tuned to pass current main with headroom — the point is
+# enforcement going forward (block PRs that introduce new violations), not
+# punitive retroactive cleanup. Thresholds may be tightened later as the
+# called-out hotspots are refactored; raising thresholds is fine when a new
+# pattern needs it, but lowering should be the gradient.
+#
+# - gocognit (cognitive complexity per function). Counts how hard a fn is
+#   to read: nesting, switches, jumps. Threshold 60 covers the SQL emitter
+#   dispatcher (`(*QueryBuilder).writeInto`, 59) which is intrinsically
+#   shaped like a big switch over node kinds. TODO: tighten to 30 once
+#   writeInto is broken up by emit_node.go.
+#
+# - cyclop (cyclomatic complexity per function + package average). Counts
+#   branches. `max-complexity: 32` covers `writeInto` (30); `package-average:
+#   10.0` covers `engine` at ~4 with room. TODO: tighten max-complexity to
+#   25 once writeInto is decomposed.
+#
+# - funlen (function length: lines + statements). Catches the "this got
+#   too long, split it" review comment. 150 lines / 80 statements clears
+#   the biggest production fn (`histogramQuantileValueFrag`, 91 lines /
+#   79 stmts) with breathing room.
+#
+# - nestif (max nested-if depth). Currently max 5; threshold 6 leaves a
+#   one-step buffer.
+#
+# - dupl (token-stream duplication). Threshold 220 tokens. The 200 floor
+#   would fire on a near-identical pair of constant-fold helpers in
+#   `internal/optimizer/constant_fold.go` (lines 124-164 ↔ 170-210, ~210
+#   tokens) — duplication acknowledged in the fold-by-type design.
+#   TODO: deduplicate the per-type fold helpers and tighten back to 200.
+#
+# - maintidx (composite Maintainability Index). Halstead-based score;
+#   warns when a fn's MI < 20. Production minimum currently 47 (no fires).
+#
+# - lll (line length). 280 chars. Cerberus emits long CH SQL strings and
+#   `INSERT VALUES` seed data in `test/e2e/seed/cmd/seed/main.go` reaches
+#   264 chars. 140 would fire on ~30 legitimate SQL/seed lines; 280 keeps
+#   the linter useful for accidental 500-char monsters without rewriting
+#   readable SQL.
+#
+# The `test/spec/` and `test/property/` paths are excluded from the
+# complexity linters because they hold deterministic-IR pretty-printers
+# (`chplan_print.go`, 142 cognitive complexity by design — covers every
+# IR node) and oracle evaluators that mirror PromQL semantics; they're
+# test infrastructure, not production code.
+# ---------------------------------------------------------------------------
+
 version: "2"
 
 run:
@@ -29,6 +80,14 @@ linters:
     #   See docs/upstream-forks.md. Scoped to those
     #   two dirs via `exclusions.rules[].path-except` below.
     - forbidigo
+    # Quality-metric linters — see header comment.
+    - gocognit
+    - cyclop
+    - funlen
+    - nestif
+    - dupl
+    - maintidx
+    - lll
   settings:
     revive:
       rules:
@@ -52,6 +111,22 @@ linters:
           msg: 'unsafe.Pointer is forbidden in internal/traceql/ and internal/api/tempo/ — use the tsouza/tempo:cerberus-accessors fork accessors instead. See docs/upstream-forks.md.'
         - pattern: '^reflect\.Value\.FieldByName$'
           msg: 'reflect.FieldByName on parser AST is forbidden — use the upstream-fork accessors instead.'
+    gocognit:
+      min-complexity: 60
+    cyclop:
+      max-complexity: 32
+      package-average: 10.0
+    funlen:
+      lines: 150
+      statements: 80
+    nestif:
+      min-complexity: 6
+    dupl:
+      threshold: 220
+    maintidx:
+      under: 20
+    lll:
+      line-length: 280
   exclusions:
     rules:
       - path: _test\.go
@@ -61,6 +136,13 @@ linters:
           - errcheck
           - bodyclose
           - errorlint
+          - gocognit
+          - cyclop
+          - funlen
+          - nestif
+          - dupl
+          - maintidx
+          - lll
       - path: cmd/
         linters:
           - revive
@@ -70,6 +152,28 @@ linters:
       - linters:
           - forbidigo
         path-except: '^internal/(traceql|api/tempo)/'
+      # test/spec/ holds the deterministic IR pretty-printer + roundtrip
+      # runner; test/property/ holds the rapid oracle evaluators. Both are
+      # test infrastructure whose structure mirrors the IR / PromQL surface
+      # — they're allowed to be large by design.
+      - path: test/spec/
+        linters:
+          - gocognit
+          - cyclop
+          - funlen
+          - nestif
+          - dupl
+          - maintidx
+          - lll
+      - path: test/property/
+        linters:
+          - gocognit
+          - cyclop
+          - funlen
+          - nestif
+          - dupl
+          - maintidx
+          - lll
 
 formatters:
   enable:
