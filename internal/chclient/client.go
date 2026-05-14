@@ -93,6 +93,20 @@ func (c *Client) Conn() driver.Conn {
 	return c.conn
 }
 
+// newWithConn returns a *Client wrapping the supplied driver.Conn. It is
+// a test-only seam used by the chaos / failure-mode tests in this package
+// to drive the cursor / Exec / Query paths against a fault-injecting fake
+// driver.Conn without standing up a real ClickHouse server.
+//
+// Production callers MUST use New, which goes through clickhouse.Open and
+// performs the connectivity Ping. This constructor bypasses both — it is
+// unexported and intentionally narrow.
+//
+//nolint:revive // test-only seam; production code must use New.
+func newWithConn(conn driver.Conn) *Client {
+	return &Client{conn: conn}
+}
+
 // Close releases all pooled connections.
 func (c *Client) Close() error {
 	if c.conn == nil {

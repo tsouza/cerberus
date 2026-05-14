@@ -678,14 +678,14 @@ func promqlRangeFnCases() []promqlShadowCase {
 		},
 		{
 			name: "holt_winters_node_load1_api_0",
-			// holt_winters was renamed to double_exponential_smoothing in Prometheus
-			// 3.x and is gated behind EnableExperimentalFunctions, which the local
-			// shim does not toggle on (intentionally — cerberus inherits the same
-			// default). Skip with a clear note; reinstate once cerberus exposes the
-			// feature flag.
-			skipReason: "double_exponential_smoothing is experimental; tracked alongside Prometheus 3.x feature-flag rollout",
-			query:      `double_exponential_smoothing(node_load1{job="api",instance="0"}[5m], 0.8, 0.3)`,
-			evalAt:     promqlInstantTS,
+			// holt_winters was renamed to double_exponential_smoothing in
+			// Prometheus 3.x and is gated behind EnableExperimentalFunctions.
+			// The local promshim engine flips that flag on (see
+			// internal/promshim/local/engine.go) so the shadow oracle stays
+			// aligned with cerberus's own parser, which already accepts
+			// experimental functions (internal/api/prom.New).
+			query:  `double_exponential_smoothing(node_load1{job="api",instance="0"}[5m], 0.8, 0.3)`,
+			evalAt: promqlInstantTS,
 			expected: VectorResult{Series: []Series{
 				promqlAt5m(21, "job", "api", "instance", "0"),
 			}},

@@ -110,6 +110,53 @@ func (r *chaosRows) Close() error {
 	return nil
 }
 
+// chaosConn is a fault-injecting driver.Conn used to drive the chaos
+// path through QueryCursor / Query / Exec without standing up a real
+// CH server. The only knob currently exercised is queryErr — every
+// Query / QueryRow / Select / Exec call surfaces it. Extend the knob
+// set if a future test needs a happy-path Query + chaotic Rows.
+type chaosConn struct {
+	queryErr error
+}
+
+func (c *chaosConn) Contributors() []string { return nil }
+
+func (c *chaosConn) ServerVersion() (*driver.ServerVersion, error) {
+	return &driver.ServerVersion{}, nil
+}
+
+func (c *chaosConn) Select(context.Context, any, string, ...any) error { return c.queryErr }
+
+func (c *chaosConn) Query(context.Context, string, ...any) (driver.Rows, error) {
+	if c.queryErr != nil {
+		return nil, c.queryErr
+	}
+	return &chaosRows{}, nil
+}
+
+func (c *chaosConn) QueryRow(context.Context, string, ...any) driver.Row {
+	return chaosRow{c.queryErr}
+}
+
+func (c *chaosConn) PrepareBatch(context.Context, string, ...driver.PrepareBatchOption) (driver.Batch, error) {
+	return nil, c.queryErr
+}
+
+func (c *chaosConn) Exec(context.Context, string, ...any) error { return c.queryErr }
+
+func (c *chaosConn) AsyncInsert(context.Context, string, bool, ...any) error { return c.queryErr }
+func (c *chaosConn) Ping(context.Context) error                              { return c.queryErr }
+func (c *chaosConn) Stats() driver.Stats                                     { return driver.Stats{} }
+func (c *chaosConn) Close() error                                            { return nil }
+
+// chaosRow satisfies driver.Row for chaosConn.QueryRow; we never look at
+// its decoded value — the tests only consume the error path.
+type chaosRow struct{ err error }
+
+func (r chaosRow) Err() error           { return r.err }
+func (r chaosRow) Scan(...any) error    { return r.err }
+func (r chaosRow) ScanStruct(any) error { return r.err }
+
 func mkSamples(n int) []Sample {
 	ts := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
 	out := make([]Sample, n)
@@ -273,18 +320,24 @@ func TestCursor_CloseFreesRowsHandle(t *testing.T) {
 
 // TestQueryCursor_OpenError — when the underlying driver returns an
 // error from conn.Query (e.g. connection refused), QueryCursor must
-// propagate it and the execute span must be closed.
-//
-// Drives this through a stub Client whose conn is a fakeConn that
-// returns an error from Query.
+// propagate it as a chclient: query: ... error. Driven via the
+// test-only newWithConn seam against a fault-injecting fake driver.Conn.
 func TestQueryCursor_OpenError(t *testing.T) {
 	t.Parallel()
-	// We don't have a public Client constructor that injects driver.Conn;
-	// the chaos path here is the same one exercised by the higher-level
-	// handler tests (stubQuerier with err != nil). Skip with a TODO
-	// pointing at the handler-side chaos tests where this lives end-to-
-	// end.
-	t.Skip("covered by internal/api/{prom,loki,tempo} chaos_test.go via stubQuerier{err:...}")
+	want := errors.New("clickhouse: connection refused")
+	client := newWithConn(&chaosConn{queryErr: want})
+
+	cursor, err := client.QueryCursor(context.Background(), "SELECT 1")
+	if cursor != nil {
+		t.Errorf("QueryCursor: got non-nil cursor on open error")
+		_ = cursor.Close()
+	}
+	if err == nil {
+		t.Fatal("QueryCursor: nil error, want propagated query error")
+	}
+	if !errors.Is(err, want) {
+		t.Errorf("QueryCursor: err=%v; want wrap of %v", err, want)
+	}
 }
 
 // TestCursor_Cancellation_StopsDrain — when the caller cancels the
@@ -330,15 +383,11 @@ func TestCursor_Cancellation_StopsDrain(t *testing.T) {
 // not deadlock and must not double-release the underlying rows. The
 // idempotency invariant.
 //
-// TODO(prod-bug): the current rowsCursor.Close path is not goroutine-safe
-// — it reads + nils c.rows / c.span without a mutex. Production callers
-// only Close once (via `defer cursor.Close()` in the handler), so the
-// race isn't observable today, but a future change that fans Close
-// across goroutines would tickle it. Race detected under `go test
-// -race`; skipping until the production code grows a sync.Once
-// guard around Close (or callers document single-Close-only).
+// The cursor wraps its teardown in sync.Once, so concurrent Close
+// callers all observe the same close error (nil on the happy path) and
+// the underlying rows.Close fires exactly once. Race-detector clean
+// under `go test -race`.
 func TestCursor_ConcurrentClose(t *testing.T) {
-	t.Skip("TODO(prod-bug): rowsCursor.Close is not goroutine-safe; data race under -race. See test comment.")
 	t.Parallel()
 	rows := &chaosRows{samples: mkSamples(50)}
 	cursor := &rowsCursor{rows: rows}
@@ -352,8 +401,8 @@ func TestCursor_ConcurrentClose(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	if rows.closeCalled.Load() < 1 {
-		t.Fatal("rows.Close: not invoked")
+	if got := rows.closeCalled.Load(); got != 1 {
+		t.Fatalf("rows.Close: got %d invocations, want exactly 1 (sync.Once)", got)
 	}
 }
 
