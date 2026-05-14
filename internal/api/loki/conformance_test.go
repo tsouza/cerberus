@@ -779,10 +779,10 @@ func TestConformance_LokiAdmitSerialReleasesSlot(t *testing.T) {
 // doesn't affect prom/tempo because each handler owns its own. Wire a
 // loki handler with no limiter; every request passes.
 //
-// Issued serially because `stubQuerier` mutates `lastSQL`/`lastArgs`
-// without locking — a concurrent goroutine fan-out would trip the
-// race detector on those writes, which is incidental to the property
-// under test (nil-limiter = always-admit).
+// Issued serially: keeps the assertion simple ("n requests, n
+// admits"). `stubQuerier` now mutex-guards lastSQL/lastArgs, so a
+// concurrent fan-out would also be race-clean — but the serial loop
+// gives us a deterministic counter.
 func TestConformance_LokiAdmitIndependentFromOthers(t *testing.T) {
 	t.Parallel()
 

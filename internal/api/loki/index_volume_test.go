@@ -59,17 +59,18 @@ func TestIndexVolume_HappyPath(t *testing.T) {
 	// SQL sanity: GROUP BY + ORDER BY bytes DESC + LIMIT must all be
 	// present; bytes column aggregates via length(Body); labels grouping
 	// uses the full ResourceAttributes map when targetLabels is absent.
-	if !strings.Contains(q.lastSQL, "GROUP BY") {
-		t.Errorf("missing GROUP BY: %q", q.lastSQL)
+	lastSQL := q.LastSQL()
+	if !strings.Contains(lastSQL, "GROUP BY") {
+		t.Errorf("missing GROUP BY: %q", lastSQL)
 	}
-	if !strings.Contains(q.lastSQL, "ORDER BY `bytes` DESC") {
-		t.Errorf("missing ORDER BY bytes DESC: %q", q.lastSQL)
+	if !strings.Contains(lastSQL, "ORDER BY `bytes` DESC") {
+		t.Errorf("missing ORDER BY bytes DESC: %q", lastSQL)
 	}
-	if !strings.Contains(q.lastSQL, "LIMIT 100") {
-		t.Errorf("default limit absent: %q", q.lastSQL)
+	if !strings.Contains(lastSQL, "LIMIT 100") {
+		t.Errorf("default limit absent: %q", lastSQL)
 	}
-	if !strings.Contains(q.lastSQL, "`ResourceAttributes` AS `labels`") {
-		t.Errorf("default group key should be full RA map: %q", q.lastSQL)
+	if !strings.Contains(lastSQL, "`ResourceAttributes` AS `labels`") {
+		t.Errorf("default group key should be full RA map: %q", lastSQL)
 	}
 }
 
@@ -92,15 +93,17 @@ func TestIndexVolume_TargetLabels(t *testing.T) {
 		t.Fatalf("status=%d", resp.StatusCode)
 	}
 
-	if !strings.Contains(q.lastSQL, "mapFilter((k, v) -> k IN (") {
-		t.Errorf("missing mapFilter for targetLabels: %q", q.lastSQL)
+	lastSQL := q.LastSQL()
+	lastArgs := q.LastArgs()
+	if !strings.Contains(lastSQL, "mapFilter((k, v) -> k IN (") {
+		t.Errorf("missing mapFilter for targetLabels: %q", lastSQL)
 	}
 	// Args carry the target-label keys (sorted): env, job, plus the
 	// original "job" matcher value pair (job, api) ahead of those. The
 	// exact positions track the SQL stream — we just confirm the keys
 	// landed in the slice.
 	want := map[string]bool{"job": false, "env": false, "api": false}
-	for _, a := range q.lastArgs {
+	for _, a := range lastArgs {
 		if s, ok := a.(string); ok {
 			if _, present := want[s]; present {
 				want[s] = true
@@ -109,7 +112,7 @@ func TestIndexVolume_TargetLabels(t *testing.T) {
 	}
 	for k, seen := range want {
 		if !seen {
-			t.Errorf("expected arg %q not bound; args=%v", k, q.lastArgs)
+			t.Errorf("expected arg %q not bound; args=%v", k, lastArgs)
 		}
 	}
 }
@@ -132,8 +135,9 @@ func TestIndexVolume_Limit(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status=%d", resp.StatusCode)
 	}
-	if !strings.Contains(q.lastSQL, "LIMIT 25") {
-		t.Errorf("expected LIMIT 25 in SQL: %q", q.lastSQL)
+	lastSQL := q.LastSQL()
+	if !strings.Contains(lastSQL, "LIMIT 25") {
+		t.Errorf("expected LIMIT 25 in SQL: %q", lastSQL)
 	}
 
 	// bad input

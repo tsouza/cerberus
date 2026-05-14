@@ -48,14 +48,15 @@ func TestIndexStats_HappyPath(t *testing.T) {
 	// SQL sanity: the matcher predicate must end up in the rendered SQL,
 	// going through the Builder (no fmt.Sprintf string concatenation),
 	// and the time bounds must be present as DateTime64 literals.
-	if !strings.Contains(q.lastSQL, "uniqExact(`ResourceAttributes`)") {
-		t.Errorf("missing uniqExact in SQL: %q", q.lastSQL)
+	lastSQL := q.LastSQL()
+	if !strings.Contains(lastSQL, "uniqExact(`ResourceAttributes`)") {
+		t.Errorf("missing uniqExact in SQL: %q", lastSQL)
 	}
-	if !strings.Contains(q.lastSQL, "sum(length(`Body`))") {
-		t.Errorf("missing bytes agg in SQL: %q", q.lastSQL)
+	if !strings.Contains(lastSQL, "sum(length(`Body`))") {
+		t.Errorf("missing bytes agg in SQL: %q", lastSQL)
 	}
-	if !strings.Contains(q.lastSQL, "toDateTime64(") {
-		t.Errorf("missing time bounds in SQL: %q", q.lastSQL)
+	if !strings.Contains(lastSQL, "toDateTime64(") {
+		t.Errorf("missing time bounds in SQL: %q", lastSQL)
 	}
 }
 
