@@ -110,13 +110,19 @@ func TestAllocs_Lower(t *testing.T) {
 		query  string
 		maxAvg float64 // ceiling on allocs/op
 	}{
-		// Baselines (recorded on a 1M-row test host): 13 / 17 / 27 /
-		// 40 / 21. Ceilings = baseline × ~3 to keep the test
-		// regression-focused; a 3× spike means somebody slipped a
-		// heap allocation into a fast path.
-		{"instant", `up`, 40},
+		// Baselines (recorded on a 1M-row test host):
+		// instant 48 (was 13 before LWR landed; instant selectors
+		//   now build Project(Aggregate(Filter(Scan))) instead of
+		//   Filter(Scan) to implement PromQL's Latest-With-Respect-to-T
+		//   semantics — fix for sum-over-stored-samples + eval-ts-
+		//   boundary bugs in the bare-selector path).
+		// range 17 / binary 27 / aggregation 40 / subquery 21.
+		// Ceilings = baseline × ~2-3 to keep the test regression-
+		// focused; a multi-× spike means somebody slipped a heap
+		// allocation into a fast path.
+		{"instant", `up`, 70},
 		{"range", `rate(http_requests_total[5m])`, 60},
-		{"binary", `(up * 2) > 1`, 90},
+		{"binary", `(up * 2) > 1`, 130},
 		{"aggregation", `sum by (le)(rate(http_request_duration_seconds_bucket[1m]))`, 130},
 		{"subquery", `max_over_time(rate(http_requests_total[1m])[5m:30s])`, 70},
 	}

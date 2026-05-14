@@ -5,22 +5,29 @@ sum without (instance) (up)
 [1] int64 = 9
 [2] string = "instance"
 [3] string = "up"
-[4] string = "instance"
+[4] string = "2026-01-01 00:00:01.000000000"
+[5] int64 = 9
+[6] string = "2026-01-01 00:00:01.000000000"
+[7] int64 = 9
+[8] int64 = 300000000000
+[9] string = "instance"
 -- seed --
 CREATE TABLE otel_metrics_gauge (
     MetricName String,
     Attributes Map(String, String),
     TimeUnix DateTime64(9),
     Value Float64
-) ENGINE = Memory;
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
 INSERT INTO otel_metrics_gauge VALUES
     ('other_metric', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 1.0);
 -- expected_rows --
 []
 -- sql --
-SELECT ? AS `MetricName`, `gkey_0` AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT mapFilter((k, v) -> NOT (k IN (?)), `Attributes`) AS `gkey_0`, sum(`Value`) AS `Value` FROM (SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` = ?)) GROUP BY mapFilter((k, v) -> NOT (k IN (?)), `Attributes`))
+SELECT ? AS `MetricName`, `gkey_0` AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT mapFilter((k, v) -> NOT (k IN (?)), `Attributes`) AS `gkey_0`, sum(`Value`) AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_gauge` PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`)) GROUP BY mapFilter((k, v) -> NOT (k IN (?)), `Attributes`))
 -- chplan --
 Project ["" AS MetricName, gkey_0 AS Attributes, now64(9) AS TimeUnix, Value AS Value]
   Aggregate groupBy=[mapWithout(Attributes, [instance]) AS gkey_0] funcs=[sum(Value) AS Value]
-    Filter predicate=(MetricName = "up")
-      Scan(otel_metrics_gauge)
+    Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
+      Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
+        Filter predicate=(((MetricName = "up") AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+          Scan(otel_metrics_gauge)

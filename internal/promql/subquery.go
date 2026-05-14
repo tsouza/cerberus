@@ -92,12 +92,16 @@ func lowerSubqueryOverCall(
 	}
 
 	// Strip the inner VS modifier — the subquery's own modifier shadows it.
+	// inRangeVector also suppresses the bare-selector LWR wrap so every
+	// in-window sample reaches the surrounding RangeWindow.
 	vsNoModifier := *vs
 	vsNoModifier.Timestamp = nil
 	vsNoModifier.OriginalOffset = 0
 	vsNoModifier.Offset = 0
 	vsNoModifier.StartOrEnd = 0
-	inner, err := lowerVectorSelector(&vsNoModifier, s, ctx)
+	rangeCtx := ctx
+	rangeCtx.inRangeVector = true
+	inner, err := lowerVectorSelector(&vsNoModifier, s, rangeCtx)
 	if err != nil {
 		return nil, err
 	}
@@ -140,7 +144,9 @@ func lowerSubqueryOverVectorSelector(
 	vsNoModifier.OriginalOffset = 0
 	vsNoModifier.Offset = 0
 	vsNoModifier.StartOrEnd = 0
-	inner, err := lowerVectorSelector(&vsNoModifier, s, ctx)
+	rangeCtx := ctx
+	rangeCtx.inRangeVector = true
+	inner, err := lowerVectorSelector(&vsNoModifier, s, rangeCtx)
 	if err != nil {
 		return nil, err
 	}

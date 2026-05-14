@@ -3,25 +3,39 @@ up * on(job, env, svc) machine_role
 -- args --
 [0] string = "many-to-many matching not allowed: matching labels must be unique on one side"
 [1] string = "up"
-[2] string = "job"
-[3] string = "env"
-[4] string = "svc"
-[5] string = "many-to-many matching not allowed: matching labels must be unique on one side"
-[6] string = "machine_role"
+[2] string = "2026-01-01 00:00:01.000000000"
+[3] int64 = 9
+[4] string = "2026-01-01 00:00:01.000000000"
+[5] int64 = 9
+[6] int64 = 300000000000
 [7] string = "job"
 [8] string = "env"
 [9] string = "svc"
-[10] string = "job"
-[11] string = "job"
-[12] string = "env"
-[13] string = "env"
-[14] string = "svc"
-[15] string = "svc"
+[10] string = "many-to-many matching not allowed: matching labels must be unique on one side"
+[11] string = "machine_role"
+[12] string = "2026-01-01 00:00:01.000000000"
+[13] int64 = 9
+[14] string = "2026-01-01 00:00:01.000000000"
+[15] int64 = 9
+[16] int64 = 300000000000
+[17] string = "job"
+[18] string = "env"
+[19] string = "svc"
+[20] string = "job"
+[21] string = "job"
+[22] string = "env"
+[23] string = "env"
+[24] string = "svc"
+[25] string = "svc"
 -- sql --
-SELECT L.`MetricName`, L.`Attributes`, L.`TimeUnix`, (L.`Value` * R.`Value`) AS `Value` FROM (SELECT argMax(`MetricName`, `TimeUnix`) AS `MetricName`, argMax(`Attributes`, `TimeUnix`) AS `Attributes`, max(`TimeUnix`) AS `TimeUnix`, argMax(`Value`, `TimeUnix`) AS `Value`, throwIf(uniqExact(`Attributes`) > 1, ?) AS _cerberus_match_check FROM (SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` = ?)) GROUP BY mapFilter((k, v) -> k IN (?, ?, ?), `Attributes`)) AS L INNER JOIN (SELECT argMax(`MetricName`, `TimeUnix`) AS `MetricName`, argMax(`Attributes`, `TimeUnix`) AS `Attributes`, max(`TimeUnix`) AS `TimeUnix`, argMax(`Value`, `TimeUnix`) AS `Value`, throwIf(uniqExact(`Attributes`) > 1, ?) AS _cerberus_match_check FROM (SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` = ?)) GROUP BY mapFilter((k, v) -> k IN (?, ?, ?), `Attributes`)) AS R ON L.`Attributes`[?] = R.`Attributes`[?] AND L.`Attributes`[?] = R.`Attributes`[?] AND L.`Attributes`[?] = R.`Attributes`[?]
+SELECT L.`MetricName`, L.`Attributes`, L.`TimeUnix`, (L.`Value` * R.`Value`) AS `Value` FROM (SELECT argMax(`MetricName`, `TimeUnix`) AS `MetricName`, argMax(`Attributes`, `TimeUnix`) AS `Attributes`, max(`TimeUnix`) AS `TimeUnix`, argMax(`Value`, `TimeUnix`) AS `Value`, throwIf(uniqExact(`Attributes`) > 1, ?) AS _cerberus_match_check FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_gauge` PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`)) GROUP BY mapFilter((k, v) -> k IN (?, ?, ?), `Attributes`)) AS L INNER JOIN (SELECT argMax(`MetricName`, `TimeUnix`) AS `MetricName`, argMax(`Attributes`, `TimeUnix`) AS `Attributes`, max(`TimeUnix`) AS `TimeUnix`, argMax(`Value`, `TimeUnix`) AS `Value`, throwIf(uniqExact(`Attributes`) > 1, ?) AS _cerberus_match_check FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_gauge` PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`)) GROUP BY mapFilter((k, v) -> k IN (?, ?, ?), `Attributes`)) AS R ON L.`Attributes`[?] = R.`Attributes`[?] AND L.`Attributes`[?] = R.`Attributes`[?] AND L.`Attributes`[?] = R.`Attributes`[?]
 -- chplan --
 VectorJoin op=* match=on(job,env,svc) card=one-to-one
-  Filter predicate=(MetricName = "up")
-    Scan(otel_metrics_gauge)
-  Filter predicate=(MetricName = "machine_role")
-    Scan(otel_metrics_gauge)
+  Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
+    Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
+      Filter predicate=(((MetricName = "up") AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+        Scan(otel_metrics_gauge)
+  Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
+    Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
+      Filter predicate=(((MetricName = "machine_role") AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+        Scan(otel_metrics_gauge)

@@ -1,23 +1,33 @@
 -- query.promql --
 http_server_request_duration_count / on(job) http_server_request_duration_sum
 -- sql --
-SELECT L.`MetricName`, L.`Attributes`, L.`TimeUnix`, (L.`Value` / R.`Value`) AS `Value` FROM (SELECT argMax(`MetricName`, `TimeUnix`) AS `MetricName`, argMax(`Attributes`, `TimeUnix`) AS `Attributes`, max(`TimeUnix`) AS `TimeUnix`, argMax(`Value`, `TimeUnix`) AS `Value`, throwIf(uniqExact(`Attributes`) > 1, ?) AS _cerberus_match_check FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` = ?)) GROUP BY mapFilter((k, v) -> k IN (?), `Attributes`)) AS L INNER JOIN (SELECT argMax(`MetricName`, `TimeUnix`) AS `MetricName`, argMax(`Attributes`, `TimeUnix`) AS `Attributes`, max(`TimeUnix`) AS `TimeUnix`, argMax(`Value`, `TimeUnix`) AS `Value`, throwIf(uniqExact(`Attributes`) > 1, ?) AS _cerberus_match_check FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` = ?)) GROUP BY mapFilter((k, v) -> k IN (?), `Attributes`)) AS R ON L.`Attributes`[?] = R.`Attributes`[?]
+SELECT L.`MetricName`, L.`Attributes`, L.`TimeUnix`, (L.`Value` / R.`Value`) AS `Value` FROM (SELECT argMax(`MetricName`, `TimeUnix`) AS `MetricName`, argMax(`Attributes`, `TimeUnix`) AS `Attributes`, max(`TimeUnix`) AS `TimeUnix`, argMax(`Value`, `TimeUnix`) AS `Value`, throwIf(uniqExact(`Attributes`) > 1, ?) AS _cerberus_match_check FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`)) GROUP BY mapFilter((k, v) -> k IN (?), `Attributes`)) AS L INNER JOIN (SELECT argMax(`MetricName`, `TimeUnix`) AS `MetricName`, argMax(`Attributes`, `TimeUnix`) AS `Attributes`, max(`TimeUnix`) AS `TimeUnix`, argMax(`Value`, `TimeUnix`) AS `Value`, throwIf(uniqExact(`Attributes`) > 1, ?) AS _cerberus_match_check FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`)) GROUP BY mapFilter((k, v) -> k IN (?), `Attributes`)) AS R ON L.`Attributes`[?] = R.`Attributes`[?]
 -- args --
 [0] string = "many-to-many matching not allowed: matching labels must be unique on one side"
 [1] string = "http_server_request_duration_count"
-[2] string = "job"
-[3] string = "many-to-many matching not allowed: matching labels must be unique on one side"
-[4] string = "http_server_request_duration_sum"
-[5] string = "job"
-[6] string = "job"
+[2] string = "2026-01-01 00:00:01.000000000"
+[3] int64 = 9
+[4] string = "2026-01-01 00:00:01.000000000"
+[5] int64 = 9
+[6] int64 = 300000000000
 [7] string = "job"
+[8] string = "many-to-many matching not allowed: matching labels must be unique on one side"
+[9] string = "http_server_request_duration_sum"
+[10] string = "2026-01-01 00:00:01.000000000"
+[11] int64 = 9
+[12] string = "2026-01-01 00:00:01.000000000"
+[13] int64 = 9
+[14] int64 = 300000000000
+[15] string = "job"
+[16] string = "job"
+[17] string = "job"
 -- seed --
 CREATE TABLE otel_metrics_sum (
     MetricName String,
     Attributes Map(String, String),
     TimeUnix DateTime64(9),
     Value Float64
-) ENGINE = Memory;
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
 INSERT INTO otel_metrics_sum VALUES
     ('http_server_request_duration_count', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 100.0),
     ('http_server_request_duration_sum',   map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 25.0);
@@ -27,7 +37,11 @@ INSERT INTO otel_metrics_sum VALUES
 ]
 -- chplan --
 VectorJoin op=/ match=on(job) card=one-to-one
-  Filter predicate=(MetricName = "http_server_request_duration_count")
-    Scan(otel_metrics_sum)
-  Filter predicate=(MetricName = "http_server_request_duration_sum")
-    Scan(otel_metrics_sum)
+  Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
+    Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
+      Filter predicate=(((MetricName = "http_server_request_duration_count") AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+        Scan(otel_metrics_sum)
+  Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
+    Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
+      Filter predicate=(((MetricName = "http_server_request_duration_sum") AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+        Scan(otel_metrics_sum)

@@ -39,7 +39,9 @@ func lowerPredictLinear(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.
 	vsNoModifier.OriginalOffset = 0
 	vsNoModifier.Offset = 0
 	vsNoModifier.StartOrEnd = 0
-	inner, err := lowerVectorSelector(&vsNoModifier, s, ctx)
+	rangeCtx := ctx
+	rangeCtx.inRangeVector = true
+	inner, err := lowerVectorSelector(&vsNoModifier, s, rangeCtx)
 	if err != nil {
 		return nil, err
 	}
@@ -93,7 +95,9 @@ func lowerHoltWinters(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.No
 	vsNoModifier.OriginalOffset = 0
 	vsNoModifier.Offset = 0
 	vsNoModifier.StartOrEnd = 0
-	inner, err := lowerVectorSelector(&vsNoModifier, s, ctx)
+	rangeCtx := ctx
+	rangeCtx.inRangeVector = true
+	inner, err := lowerVectorSelector(&vsNoModifier, s, rangeCtx)
 	if err != nil {
 		return nil, err
 	}

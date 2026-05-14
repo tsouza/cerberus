@@ -144,12 +144,21 @@ func TestQuery_Vector(t *testing.T) {
 	}
 
 	// The lowered SQL should reference the gauge table and bind the metric
-	// name as an arg.
+	// name as an arg. The bare-selector path appends LWR + eval-ts /
+	// staleness predicates after the MetricName equality, so "up" lands
+	// somewhere in lastArgs rather than at the tail.
 	if !strings.Contains(q.lastSQL, "otel_metrics_gauge") {
 		t.Errorf("expected SQL to mention otel_metrics_gauge; got %q", q.lastSQL)
 	}
-	if len(q.lastArgs) == 0 || q.lastArgs[len(q.lastArgs)-1] != "up" {
-		t.Errorf("expected last arg %q, got %v", "up", q.lastArgs)
+	foundUp := false
+	for _, a := range q.lastArgs {
+		if a == "up" {
+			foundUp = true
+			break
+		}
+	}
+	if !foundUp {
+		t.Errorf("expected %q among bound args, got %v", "up", q.lastArgs)
 	}
 }
 

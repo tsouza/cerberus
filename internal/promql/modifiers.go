@@ -27,10 +27,27 @@ type evalAnchor struct {
 // lowerings (`@ start()` / `@ end()`). Zero-value start/end means "no
 // range threaded", and the start/end modifier path returns an error so
 // callers see the misconfiguration rather than a silently wrong query.
+//
+// inRangeVector marks recursive descents into a range-vector context
+// (under a matrix selector wrapped by rate / *_over_time / subquery).
+// `lowerVectorSelector` checks the flag to decide whether to apply
+// PromQL's instant-vector Latest-With-Respect-to-T (LWR) projection:
+// at the top level (and under aggregations / arithmetic on instant
+// vectors) we collapse to one row per series with the latest sample
+// within the staleness window; under a range vector we leave every
+// in-window sample for the RangeWindow node to consume.
 type lowerCtx struct {
-	start time.Time
-	end   time.Time
+	start         time.Time
+	end           time.Time
+	inRangeVector bool
 }
+
+// instantLookback is the default Prometheus staleness window applied
+// when an instant-vector selector picks the latest sample per series.
+// Prom defaults to 5 minutes; cerberus matches the upstream constant
+// rather than reading a per-deployment override so the LWR predicate
+// behaves predictably across environments.
+const instantLookback = 5 * time.Minute
 
 func anchorFromSelector(vs *parser.VectorSelector, ctx lowerCtx) (evalAnchor, error) {
 	a := evalAnchor{Offset: vs.OriginalOffset}
@@ -69,21 +86,7 @@ func hasModifier(vs *parser.VectorSelector) bool {
 // VectorSelector with `@` or `offset`. The anchor is `now64(9)` (or a
 // literal toDateTime64) optionally minus a nanosecond interval.
 func timeBoundExpr(col string, a evalAnchor) chplan.Expr {
-	var base chplan.Expr
-	if a.End.IsZero() {
-		base = &chplan.FuncCall{
-			Name: "now64",
-			Args: []chplan.Expr{&chplan.LitInt{V: 9}},
-		}
-	} else {
-		base = &chplan.FuncCall{
-			Name: "toDateTime64",
-			Args: []chplan.Expr{
-				&chplan.LitString{V: a.End.Format("2006-01-02 15:04:05.000000000")},
-				&chplan.LitInt{V: 9},
-			},
-		}
-	}
+	base := anchorBaseExpr(a)
 	bound := base
 	if a.Offset > 0 {
 		bound = &chplan.Binary{
@@ -99,5 +102,27 @@ func timeBoundExpr(col string, a evalAnchor) chplan.Expr {
 		Op:    chplan.OpLe,
 		Left:  &chplan.ColumnRef{Name: col},
 		Right: bound,
+	}
+}
+
+// anchorBaseExpr returns the SQL expression for an `evalAnchor`'s
+// reference time. Zero anchor renders as `now64(9)`; an absolute
+// anchor renders as `toDateTime64('YYYY-MM-DD HH:MM:SS.fffffffff',
+// 9)`. The Offset field is NOT applied here — callers compose the
+// subtract themselves (timeBoundExpr applies an offset; the LWR
+// staleness predicate composes its own offset+lookback delta).
+func anchorBaseExpr(a evalAnchor) chplan.Expr {
+	if a.End.IsZero() {
+		return &chplan.FuncCall{
+			Name: "now64",
+			Args: []chplan.Expr{&chplan.LitInt{V: 9}},
+		}
+	}
+	return &chplan.FuncCall{
+		Name: "toDateTime64",
+		Args: []chplan.Expr{
+			&chplan.LitString{V: a.End.Format("2006-01-02 15:04:05.000000000")},
+			&chplan.LitInt{V: 9},
+		},
 	}
 }
