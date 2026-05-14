@@ -9,6 +9,16 @@ name: property
 # sweep); this workflow overrides to `-rapid.checks=500` to widen the
 # nightly search.
 #
+# Coverage today:
+#
+#   - TestPromQL_Property_FromScratch — PromQL instant + range +
+#     aggregations against the from-scratch oracle.
+#   - TestTraceQL_Property            — TraceQL spanset filter +
+#     `| count() OP N` against the from-scratch oracle.
+#
+# Both run in the same `property` job (one `go test` invocation walks
+# every test in `./test/property/...`).
+#
 # Like `chdb.yml`, this workflow links `libchdb.so` and is therefore
 # segregated from the required PR lane. NOT a required PR check; not
 # in the required-status-checks list. The required PR lane stays
@@ -18,7 +28,8 @@ name: property
 # rapid seed is captured in the test output (and the workflow log).
 # Authors can reproduce a failing run locally with:
 #
-#   go test -tags chdb -run TestPromQL_Property -rapid.seed=<N> ./test/property/...
+#   go test -tags chdb -run TestPromQL_Property  -rapid.seed=<N> ./test/property/...
+#   go test -tags chdb -run TestTraceQL_Property -rapid.seed=<N> ./test/property/...
 
 on:
   push:
