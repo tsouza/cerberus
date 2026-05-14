@@ -13,10 +13,12 @@ name: property
 #
 #   - TestPromQL_Property_FromScratch — PromQL instant + range +
 #     aggregations against the from-scratch oracle.
+#   - TestLogQL_Property              — LogQL stream + line filter +
+#     `| label_format` against the from-scratch oracle.
 #   - TestTraceQL_Property            — TraceQL spanset filter +
 #     `| count() OP N` against the from-scratch oracle.
 #
-# Both run in the same `property` job (one `go test` invocation walks
+# All run in the same `property` job (one `go test` invocation walks
 # every test in `./test/property/...`).
 #
 # Like `chdb.yml`, this workflow links `libchdb.so` and is therefore
@@ -29,6 +31,7 @@ name: property
 # Authors can reproduce a failing run locally with:
 #
 #   go test -tags chdb -run TestPromQL_Property  -rapid.seed=<N> ./test/property/...
+#   go test -tags chdb -run TestLogQL_Property   -rapid.seed=<N> ./test/property/...
 #   go test -tags chdb -run TestTraceQL_Property -rapid.seed=<N> ./test/property/...
 
 on:
@@ -49,7 +52,7 @@ concurrency:
 
 jobs:
   property:
-    name: property (rapid N=500)
+    name: property (PromQL + LogQL, rapid N=500)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
