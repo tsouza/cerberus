@@ -124,6 +124,27 @@ func lowerVectorVector(b *parser.BinaryExpr, s schema.Metrics, op chplan.BinaryO
 		return nil, err
 	}
 
+	// Synthetic-scalar fold: when BOTH legs lower to the canonical
+	// 4-slot synthetic-vector shape ([syntheticScalarVector]), the
+	// VectorJoin emit path collapses each side to one row via the
+	// per-side argMax wrap and then joins on (MetricName, Attributes)
+	// — yielding 1 × 1 = 1 row instead of Prom's N rows per step.
+	// This shows up as 12 compat-lane shape-diffs for the
+	// `time() OP time()` family (all 6 arithmetic + 6 bool comparisons).
+	// The fix mirrors the literal-literal fold one level above: rebuild
+	// a single Project over the shared synthetic source with the
+	// combined value expression, skipping VectorJoin entirely.
+	//
+	// Gated on default matching (no on/ignoring/group_left/group_right
+	// modifiers) — two empty-label legs only join correctly via the
+	// full-Attributes intersection, and any `on(<label>)` / Include
+	// shape against empty Attributes is semantically incoherent (Prom
+	// errors out). Keeping the gate narrow means anything cardinality-
+	// modifier-shaped still flows through the existing V-V path.
+	if isSyntheticScalarPlan(left, s) && isSyntheticScalarPlan(right, s) && isDefaultMatching(b.VectorMatching) {
+		return foldSyntheticBinary(left, right, op, b.ReturnBool, s), nil
+	}
+
 	match := chplan.VectorMatch{}
 	if b.VectorMatching != nil {
 		match.Labels = append([]string(nil), b.VectorMatching.MatchingLabels...)
@@ -143,6 +164,89 @@ func lowerVectorVector(b *parser.BinaryExpr, s schema.Metrics, op chplan.BinaryO
 		TimestampColumn:  s.TimestampColumn,
 		ValueColumn:      s.ValueColumn,
 	}, nil
+}
+
+// isDefaultMatching reports whether the parser's VectorMatching slot
+// is the "no explicit matching modifier" shape — nil, or set to the
+// default one-to-one card with no matching labels / no include labels.
+// The synthetic-scalar fold only fires for this shape; anything more
+// specific (on/ignoring/group_left/group_right) flows through the
+// regular VectorJoin path so cardinality / include semantics still
+// route through the V-V emitter.
+func isDefaultMatching(vm *parser.VectorMatching) bool {
+	if vm == nil {
+		return true
+	}
+	return vm.Card == parser.CardOneToOne &&
+		len(vm.MatchingLabels) == 0 &&
+		len(vm.Include) == 0 &&
+		!vm.On
+}
+
+// foldSyntheticBinary builds the combined Project for a V-V binop
+// where both legs are synthetic-scalar shapes. The returned plan is a
+// single 4-slot Project over the shared `OneRow` / `StepGrid` source
+// with the per-leg Value expressions woven together.
+//
+// The MetricName + Attributes + TimeUnix slots reuse the left leg's
+// expressions verbatim — both legs lowered through
+// [syntheticScalarVector] so the timestamp expression already
+// reflects the requested instant (`now64(9)` / a literal anchor) or
+// the per-step `anchor_ts` column. Choosing the left leg's timestamp
+// over the right's is arbitrary; the values are equal by construction
+// (both threaded from the same lowerCtx).
+//
+// Op-by-op Value shape:
+//
+//   - Arithmetic op: `(lhs_value OP rhs_value)`.
+//   - Comparison op + `bool` modifier: `toFloat64(lhs_value OP rhs_value)`
+//     (1.0 / 0.0 per step, matching PromQL's vector-bool semantics).
+//   - Comparison op WITHOUT `bool`: Prom's V-V comparison-as-filter rule
+//     applies — preserve LHS Value where the comparison holds, drop
+//     rows where it doesn't. We keep `lhs_value` in the Value slot and
+//     wrap the Project in a Filter on the comparison expression so
+//     the rendered SQL drops non-matching rows at the WHERE level.
+//     None of the 12 reported compat shape-diffs hit this branch
+//     (all of them carry the `bool` modifier when comparing two
+//     scalars), but we round it out for completeness — without the
+//     modifier the Prom parser permits the shape and the comparator
+//     in the harness would otherwise see another diff.
+func foldSyntheticBinary(left, right chplan.Node, op chplan.BinaryOp, returnBool bool, s schema.Metrics) chplan.Node {
+	lhsVal := syntheticValueExpr(left)
+	rhsVal := syntheticValueExpr(right)
+	cmpExpr := chplan.Expr(&chplan.Binary{Op: op, Left: lhsVal, Right: rhsVal})
+	leftProject := left.(*chplan.Project)
+
+	var newValue chplan.Expr
+	switch {
+	case isComparison(op) && returnBool:
+		newValue = &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{cmpExpr}}
+	case isComparison(op):
+		// Bare V-V comparison: Value is the LHS sample value (Prom's
+		// "preserve LHS where comparison holds" rule); the Filter
+		// below drops non-matching rows.
+		newValue = lhsVal
+	default:
+		newValue = cmpExpr
+	}
+
+	combined := &chplan.Project{
+		Input: syntheticSource(left),
+		Projections: []chplan.Projection{
+			leftProject.Projections[0], // "" AS MetricName
+			leftProject.Projections[1], // <empty-map> AS Attributes
+			leftProject.Projections[2], // <ts_expr> AS TimeUnix
+			{Expr: newValue, Alias: s.ValueColumn},
+		},
+	}
+
+	if isComparison(op) && !returnBool {
+		return &chplan.Filter{
+			Input:     combined,
+			Predicate: cmpExpr,
+		}
+	}
+	return combined
 }
 
 // promBinaryOp maps a PromQL parser op to the chplan op. Arithmetic and

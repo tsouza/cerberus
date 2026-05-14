@@ -72,6 +72,94 @@ func syntheticScalarVector(valueExpr, timeExpr chplan.Expr, s schema.Metrics, ct
 	}
 }
 
+// isSyntheticScalarPlan reports whether plan is the shape produced by
+// [syntheticScalarVector]: a `Project` whose source is `OneRow` /
+// `StepGrid` and whose projections match the canonical 4-slot synthetic
+// vector layout — `LitString("") AS MetricName`, `<empty-map> AS
+// Attributes`, `<ts_expr> AS TimeUnix`, `<value_expr> AS Value`.
+//
+// Synthetic-scalar lowerings (`time()`, `vector(scalar)`, zero-arg
+// date functions) emit this exact shape: a one-per-step (range mode)
+// or one-row (instant mode) "constant per step" stream with no input
+// data dependency. When BOTH legs of a vector-vector binop lower to
+// this shape, the [lowerVectorVector] path would join two N-row
+// per-step streams via an INNER JOIN keyed on
+// `(MetricName, Attributes)` — and because the per-side argMax wrap
+// collapses each side to one row first, the join degenerates to
+// 1-row × 1-row even though Prom would emit N rows. The fix is to
+// detect this pair and fold to a single `Project` over a shared
+// `StepGrid` / `OneRow` source, mirroring how [TryFoldScalar] folds
+// pure literal-literal binops.
+//
+// The predicate is intentionally narrow: it matches only the shape
+// `syntheticScalarVector` writes. Any callsite that mints a Project
+// with a non-empty literal `MetricName`, a non-empty Attributes map,
+// or a different projection order falls through to the regular
+// V-V join path.
+func isSyntheticScalarPlan(plan chplan.Node, s schema.Metrics) bool {
+	p, ok := plan.(*chplan.Project)
+	if !ok {
+		return false
+	}
+	switch p.Input.(type) {
+	case *chplan.OneRow, *chplan.StepGrid:
+	default:
+		return false
+	}
+	if len(p.Projections) != 4 {
+		return false
+	}
+	// Projection 0 — MetricName slot: must be `LitString("")` aliased
+	// to the metric-name column. Any other shape (e.g. a CAST or a
+	// non-empty literal) means the plan carries identifying labels
+	// the fold would erase.
+	mn := p.Projections[0]
+	if mn.Alias != s.MetricNameColumn {
+		return false
+	}
+	if lit, ok := mn.Expr.(*chplan.LitString); !ok || lit.V != "" {
+		return false
+	}
+	// Projection 1 — Attributes slot: must be the canonical empty-map
+	// expression. We compare against a freshly-built emptyAttrsMap()
+	// to avoid coupling to its internal shape (CAST(map(),
+	// 'Map(String,String)')).
+	at := p.Projections[1]
+	if at.Alias != s.AttributesColumn {
+		return false
+	}
+	if !at.Expr.Equal(emptyAttrsMap()) {
+		return false
+	}
+	// Projection 2 — TimeUnix slot: alias-only check (the value
+	// expression varies between `now64(9)` / a `toDateTime64` literal
+	// / a `ColumnRef{anchor_ts}` depending on instant/range mode).
+	if p.Projections[2].Alias != s.TimestampColumn {
+		return false
+	}
+	// Projection 3 — Value slot: alias-only check (the value
+	// expression is exactly what we want to extract).
+	return p.Projections[3].Alias == s.ValueColumn
+}
+
+// syntheticValueExpr returns the Value-slot expression from a plan
+// previously matched by [isSyntheticScalarPlan]. The caller MUST gate
+// on `isSyntheticScalarPlan(plan, s) == true` before invoking —
+// otherwise the function panics (caller bug).
+func syntheticValueExpr(plan chplan.Node) chplan.Expr {
+	return plan.(*chplan.Project).Projections[3].Expr
+}
+
+// syntheticSource returns the underlying `OneRow` / `StepGrid` source
+// of a plan previously matched by [isSyntheticScalarPlan]. Used by the
+// V-V synthetic-fold path to attach the combined Project to one of
+// the two legs' sources (both legs share identical Start/End/Step in
+// the StepGrid case, since they thread through the same lowerCtx; the
+// instant-mode OneRow has no state).
+func syntheticSource(plan chplan.Node) chplan.Node {
+	return plan.(*chplan.Project).Input
+}
+
 // rewriteAnchorRefs walks expr and replaces every `now64(9)` /
 // `now()` FuncCall with a ColumnRef to `anchor_ts`. Used by the
 // range-mode synthetic-vector lowerings so the per-step value

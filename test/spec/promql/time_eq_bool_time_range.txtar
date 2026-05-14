@@ -1,0 +1,24 @@
+# `time() == bool time()` — synthetic-scalar V-V fold (bool
+# comparison). The `bool` modifier wraps the comparison in
+# `toFloat64(...)` so every matched pair surfaces as 1.0 / 0.0
+# rather than letting the comparison drop non-matching rows.
+# Companion to time_plus_time_range; pins the lowered chplan + SQL
+# for the equality-bool variant. See time_plus_time_range.txtar
+# for the fold's rationale.
+-- query.promql --
+time() == bool time()
+-- args --
+[0] string = ""
+[1] string = "Map(String,String)"
+[2] int64 = 9
+[3] string = "2026-01-01 00:00:01.000000000"
+[4] int64 = 9
+[5] int64 = 1000000000
+[6] string = "2026-01-01 00:00:01.000000000"
+[7] int64 = 9
+[8] int64 = 1000000000
+-- chplan --
+Project ["" AS MetricName, CAST(map(), "Map(String,String)") AS Attributes, now64(9) AS TimeUnix, toFloat64((toFloat64((toUnixTimestamp64Nano(toDateTime64("2026-01-01 00:00:01.000000000", 9)) / 1000000000)) = toFloat64((toUnixTimestamp64Nano(toDateTime64("2026-01-01 00:00:01.000000000", 9)) / 1000000000)))) AS Value]
+  OneRow
+-- sql --
+SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, toFloat64((toFloat64((toUnixTimestamp64Nano(toDateTime64(?, ?)) / ?)) = toFloat64((toUnixTimestamp64Nano(toDateTime64(?, ?)) / ?)))) AS `Value` FROM (SELECT 1)

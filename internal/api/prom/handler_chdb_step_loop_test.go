@@ -34,6 +34,7 @@ package prom_test
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -137,6 +138,162 @@ func TestQueryRange_StepLoop_NoDrivingVector_ChDB(t *testing.T) {
 			// Assert per-bucket values match the Prom semantics:
 			// each step emits one sample of the expression evaluated
 			// at that step's timestamp.
+			for i, v := range values {
+				want := tc.wantValue(i)
+				if got := v[1]; got != want {
+					t.Errorf("step %d: value=%q want=%q (full row: %+v)",
+						i, got, want, v)
+				}
+			}
+		})
+	}
+}
+
+// TestQueryRange_StepLoop_TimeTime_ChDB walks the 12 `time() OP time()`
+// shapes Pool-Z surfaced (all 6 arithmetic + 6 bool comparisons). Each
+// is a V-V binop where BOTH legs are synthetic-scalar plans — pre-fix
+// these routed through chplan.VectorJoin and the per-side argMax
+// collapse reduced each leg to one row before joining, leaving the
+// matrix with 1×1 rows instead of N rows per step. Compatibility run
+// surfaced these as 12 shape-diffs in the compat lane.
+//
+// The fix detects "both legs are synthetic-scalar plans" inside
+// lowerBinary and folds to a single Project over the shared StepGrid
+// source (the equivalent of TryFoldScalar's literal-literal fold one
+// level up). This test pins the runtime matrix shape end-to-end:
+// each query must surface N samples on the requested step grid, with
+// the expected per-step value derived from the step's `anchor_ts`.
+func TestQueryRange_StepLoop_TimeTime_ChDB(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(5 * time.Minute)
+	step := 30 * time.Second
+	const wantSamples = 11
+
+	// time() at step i is `start.Unix() + i*30`. The test seeds nothing
+	// because synthetic-scalar plans don't read from any table, but
+	// applySeed requires a non-empty seed string — pick a no-op
+	// CREATE TABLE so the chdb session has something to ingest. The
+	// query under test doesn't read from this table.
+	seed := gaugeDDL
+	srv, _ := newChDBServer(t, seed)
+
+	// timeOf returns time() (Unix seconds) at step i, as a float so the
+	// expected-value formatting matches the wire shape.
+	timeOf := func(i int) float64 {
+		return float64(start.Unix() + int64(i)*30)
+	}
+	fmtF := func(f float64) string {
+		return strconv.FormatFloat(f, 'f', -1, 64)
+	}
+
+	cases := []struct {
+		name      string
+		query     string
+		wantValue func(i int) string
+	}{
+		// 6 arithmetic ops: time() <OP> time() — both legs equal at
+		// each step so SUB / MOD yield 0, MUL/POW square, DIV/ADD
+		// double/scale.
+		{
+			name:  "add",
+			query: "time() + time()",
+			wantValue: func(i int) string {
+				return fmtF(2 * timeOf(i))
+			},
+		},
+		{
+			name:  "sub",
+			query: "time() - time()",
+			wantValue: func(_ int) string {
+				return "0"
+			},
+		},
+		{
+			name:  "mul",
+			query: "time() * time()",
+			wantValue: func(i int) string {
+				return fmtF(timeOf(i) * timeOf(i))
+			},
+		},
+		{
+			name:  "div",
+			query: "time() / time()",
+			wantValue: func(_ int) string {
+				return "1"
+			},
+		},
+		{
+			name:  "mod",
+			query: "time() % time()",
+			wantValue: func(_ int) string {
+				return "0"
+			},
+		},
+		{
+			name:  "pow",
+			query: "time() ^ time()",
+			wantValue: func(i int) string {
+				return fmtF(math.Pow(timeOf(i), timeOf(i)))
+			},
+		},
+		// 6 bool comparisons: time() <CMP> bool time() — both legs are
+		// equal at every step so `== bool` and `<= bool` and `>= bool`
+		// yield 1.0; `!= bool`, `< bool`, `> bool` yield 0.0.
+		{
+			name:  "eq-bool",
+			query: "time() == bool time()",
+			wantValue: func(_ int) string {
+				return "1"
+			},
+		},
+		{
+			name:  "ne-bool",
+			query: "time() != bool time()",
+			wantValue: func(_ int) string {
+				return "0"
+			},
+		},
+		{
+			name:  "lt-bool",
+			query: "time() < bool time()",
+			wantValue: func(_ int) string {
+				return "0"
+			},
+		},
+		{
+			name:  "le-bool",
+			query: "time() <= bool time()",
+			wantValue: func(_ int) string {
+				return "1"
+			},
+		},
+		{
+			name:  "gt-bool",
+			query: "time() > bool time()",
+			wantValue: func(_ int) string {
+				return "0"
+			},
+		},
+		{
+			name:  "ge-bool",
+			query: "time() >= bool time()",
+			wantValue: func(_ int) string {
+				return "1"
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			matrix := runStepLoopRange(t, srv.URL, tc.query, start, end, step)
+			if len(matrix) != 1 {
+				t.Fatalf("expected exactly 1 series in matrix, got %d: %+v", len(matrix), matrix)
+			}
+			values := matrix[0].Values
+			if len(values) != wantSamples {
+				t.Fatalf("expected %d samples (one per step), got %d: %+v",
+					wantSamples, len(values), values)
+			}
 			for i, v := range values {
 				want := tc.wantValue(i)
 				if got := v[1]; got != want {

@@ -1,0 +1,29 @@
+# `time() + time()` — synthetic-scalar V-V fold. Pre-fix this lowered
+# to a VectorJoin whose per-side argMax collapse produced 1×1 rows;
+# in range mode that surfaced as 12 compat-lane shape-diffs because
+# Prom emits one row per (start, end, step) step. The fix detects
+# "both legs are synthetic-scalar plans" at lowering time and folds
+# to a single Project over the shared OneRow / StepGrid source —
+# mirroring how TryFoldScalar folds literal-literal binops.
+#
+# Instant-mode shape here pins the fold's chplan + SQL: a single
+# 4-slot Project over (SELECT 1) with Value = (left_time + right_time).
+# Range mode (StepGrid source) exercised by the chDB step-loop test
+# under internal/api/prom/handler_chdb_step_loop_test.go.
+-- query.promql --
+time() + time()
+-- args --
+[0] string = ""
+[1] string = "Map(String,String)"
+[2] int64 = 9
+[3] string = "2026-01-01 00:00:01.000000000"
+[4] int64 = 9
+[5] int64 = 1000000000
+[6] string = "2026-01-01 00:00:01.000000000"
+[7] int64 = 9
+[8] int64 = 1000000000
+-- chplan --
+Project ["" AS MetricName, CAST(map(), "Map(String,String)") AS Attributes, now64(9) AS TimeUnix, (toFloat64((toUnixTimestamp64Nano(toDateTime64("2026-01-01 00:00:01.000000000", 9)) / 1000000000)) + toFloat64((toUnixTimestamp64Nano(toDateTime64("2026-01-01 00:00:01.000000000", 9)) / 1000000000))) AS Value]
+  OneRow
+-- sql --
+SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, (toFloat64((toUnixTimestamp64Nano(toDateTime64(?, ?)) / ?)) + toFloat64((toUnixTimestamp64Nano(toDateTime64(?, ?)) / ?))) AS `Value` FROM (SELECT 1)
