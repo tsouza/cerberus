@@ -4,4 +4,4 @@
 [0] string = "size"
 [1] int64 = 1024
 -- sql --
-SELECT * FROM `otel_traces` WHERE (`SpanAttributes`[?] > ?)
+SELECT * FROM `otel_traces` WHERE (toFloat64(`SpanAttributes`[?]) > ?)

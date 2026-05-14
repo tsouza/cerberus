@@ -1,14 +1,17 @@
-# TODO(traceql-numeric-attr-coercion): SQL emits `SpanAttributes[?] > ?` with
-# a float64 arg, but `SpanAttributes` is `Map(String, String)` in production
-# OTel-CH — CH refuses `String > Float64` with NO_COMMON_TYPE. The chDB
-# round-trip lane was therefore dropped here (seed + expected_rows removed);
-# this fixture currently exercises only the text-equality `sql:` golden
-# until the TraceQL lowering casts numeric literals on attribute
-# comparisons (or wraps the map lookup in a toFloat64 cast).
 -- query.traceql --
 { span.cpu.usage > 0.5 }
 -- sql --
-SELECT * FROM `otel_traces` WHERE (`SpanAttributes`[?] > ?)
+SELECT * FROM `otel_traces` WHERE (toFloat64(`SpanAttributes`[?]) > ?)
 -- args --
 [0] string = "cpu.usage"
 [1] float64 = 0.5
+-- seed --
+CREATE TABLE otel_traces (
+    _idx UInt64,
+    SpanAttributes Map(String, String) MATERIALIZED map('cpu.usage', if(_idx = 0, '0.7', '0.3'))
+) ENGINE = MergeTree ORDER BY _idx;
+INSERT INTO otel_traces (_idx) VALUES (0), (1);
+-- expected_rows --
+[
+  [0]
+]

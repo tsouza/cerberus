@@ -1,7 +1,7 @@
 -- query.traceql --
 { span.http.status_code >= 400 } | sum(span.http.status_code) > 0
 -- sql --
-SELECT * FROM (SELECT sum(`SpanAttributes`[?]) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE (`SpanAttributes`[?] >= ?))) WHERE (`Value` > ?)
+SELECT * FROM (SELECT sum(`SpanAttributes`[?]) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE (toFloat64(`SpanAttributes`[?]) >= ?))) WHERE (`Value` > ?)
 -- args --
 [0] string = "http.status_code"
 [1] string = "http.status_code"

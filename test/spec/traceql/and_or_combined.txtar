@@ -1,17 +1,25 @@
-# TODO(traceql-numeric-attr-coercion): SQL emits `SpanAttributes[?] >= ?`
-# with an int64 arg, but `SpanAttributes` is `Map(String, String)` in
-# production OTel-CH — CH refuses `String >= UInt16` with NO_COMMON_TYPE.
-# The chDB round-trip lane was therefore dropped here (seed + expected_rows
-# removed); this fixture currently exercises only the text-equality `sql:`
-# golden until the TraceQL lowering casts numeric literals on attribute
-# comparisons (or wraps the map lookup in a toFloat64/toInt64 cast).
 -- query.traceql --
 { resource.service.name = "frontend" && (duration > 100ms || span.http.status_code >= 500) }
 -- sql --
-SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?) AND ((`Duration` > ?) OR (`SpanAttributes`[?] >= ?))
+SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?) AND ((`Duration` > ?) OR (toFloat64(`SpanAttributes`[?]) >= ?))
 -- args --
 [0] string = "service.name"
 [1] string = "frontend"
 [2] int64 = 100000000
 [3] string = "http.status_code"
 [4] int64 = 500
+-- seed --
+CREATE TABLE otel_traces (
+    Duration UInt64,
+    ResourceAttributes Map(String, String) MATERIALIZED map('service.name', if(Duration = 80000000, 'backend', 'frontend')),
+    SpanAttributes Map(String, String) MATERIALIZED map('http.status_code', if(Duration = 50000000, '500', '200'))
+) ENGINE = MergeTree ORDER BY Duration;
+INSERT INTO otel_traces (Duration) VALUES
+    (50000000),
+    (80000000),
+    (150000000);
+-- expected_rows --
+[
+  [50000000],
+  [150000000]
+]
