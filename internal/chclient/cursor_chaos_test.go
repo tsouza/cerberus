@@ -24,11 +24,11 @@ import (
 //
 // Bound: 32 MiB. A regression that buffers every row internally would
 // blow this; the streaming path keeps it well below.
+//
+// Runtime: the generator-backed rows yield one sample per Next, so the
+// 1M-iteration sweep finishes in <100ms (≈400ms under -race). Cheap
+// enough to always run; no -short skip.
 func TestStreamingCursor_Bounded_1M_Points(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping 1M-row sweep in short mode")
-	}
-
 	const N = 1_000_000
 
 	rows := newGenRows(N)
