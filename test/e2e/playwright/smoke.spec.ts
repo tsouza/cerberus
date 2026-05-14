@@ -14,7 +14,7 @@ import { test, expect } from '@playwright/test';
  *      receives the request, lowers it, executes against ClickHouse,
  *      and returns Prom-shaped JSON that Grafana parses.
  *
- * Grafana anonymous viewer access is enabled in deploy/k3s/grafana.yaml,
+ * Grafana anonymous viewer access is enabled in test/e2e/k3s/grafana.yaml,
  * so the request goes through without auth.
  *
  * UI-level (Explore page) checks land once M2 lands real label/series

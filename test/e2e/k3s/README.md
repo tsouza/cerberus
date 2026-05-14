@@ -1,4 +1,4 @@
-# `deploy/k3s/` — self-contained E2E stack
+# `test/e2e/k3s/` — self-contained E2E stack
 
 This directory ships a one-shot k3d/k3s manifest set that brings up
 cerberus together with ClickHouse, Grafana, an OpenTelemetry Collector
@@ -30,7 +30,7 @@ sources** that write to the same `otel.*` tables:
    etc.). This is what spec-style E2E tests assert on — they need
    known values at known timestamps with known labels.
 
-2. **Real OTel pipeline (`deploy/k3s/otel-collector.yaml`).** Boots
+2. **Real OTel pipeline (`test/e2e/k3s/otel-collector.yaml`).** Boots
    alongside cerberus and continuously writes real telemetry:
    - The **agent DaemonSet** runs `kubeletstats` (node/pod/container
      metrics from the local kubelet) and `filelog` (container stdout/
@@ -93,7 +93,7 @@ gate test execution on the pipeline being live (it usually takes
 
 `cerberus-hpa.yaml` ships a `HorizontalPodAutoscaler` targeting the
 `cerberus` Deployment. It is wired into `kustomization.yaml` so
-`just e2e-up` (and any `kubectl apply -k deploy/k3s/`) brings the
+`just e2e-up` (and any `kubectl apply -k test/e2e/k3s/`) brings the
 autoscaler up alongside everything else.
 
 Defaults:

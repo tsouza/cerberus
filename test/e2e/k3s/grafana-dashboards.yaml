@@ -25,7 +25,7 @@ data:
           foldersFromFilesStructure: false
 ---
 # The dashboard JSON itself — sourced from
-# deploy/grafana/dashboards/cerberus-self.json. Keep the two in sync; the
+# test/e2e/grafana/dashboards/cerberus-self.json. Keep the two in sync; the
 # repo file is the editable copy, the ConfigMap is the deployed copy.
 apiVersion: v1
 kind: ConfigMap

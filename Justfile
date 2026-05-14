@@ -218,7 +218,7 @@ e2e-up: e2e-down
     @echo "==> importing image into k3d"
     k3d image import {{CERBERUS_IMAGE}} -c {{K3D_CLUSTER}}
     @echo "==> applying manifests"
-    kubectl apply -k deploy/k3s/
+    kubectl apply -k test/e2e/k3s/
     @echo "==> waiting for pods (up to 3 min)"
     kubectl -n cerberus wait --for=condition=Available deployment/clickhouse              --timeout=180s
     kubectl -n cerberus wait --for=condition=Available deployment/cerberus                --timeout=180s
@@ -241,7 +241,7 @@ e2e-up: e2e-down
 # Connects from the host via a transient kubectl port-forward; CH listens on
 # port 9000 inside the cluster.
 #
-# Dual-data-source model (see deploy/k3s/README.md):
+# Dual-data-source model (see test/e2e/k3s/README.md):
 #   - `e2e-seed` inserts deterministic synthetic rows used by spec tests
 #     that need exact values (e.g. `up` metric with known labels).
 #   - The OTel collector DaemonSet+gateway+sample-app trio populates real

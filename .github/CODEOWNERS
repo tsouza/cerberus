@@ -29,9 +29,6 @@
 /test/                                     @tsouza
 /harness/                                  @tsouza
 
-# Deploy manifests
-/deploy/                                   @tsouza
-
 # Docs + roadmap
 /docs/                                     @tsouza
 /README.md                                 @tsouza

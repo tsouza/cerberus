@@ -78,7 +78,7 @@ If you're touching the compatibility harness, include the JSON diff (`harness/co
 
 - **Unit + spec (TXTAR)** — run on every PR; merge gate.
 - **PromQL compatibility** — `prometheus/compliance` Docker harness; merge gate for PRs touching `internal/promql/**`, `internal/chsql/**`, `internal/optimizer/**`.
-- **E2E (k3d + Grafana playwright)** — path-gated on `internal/api/**` + `deploy/**`; merge gate when touched.
+- **E2E (k3d + Grafana playwright)** — path-gated on `internal/api/**` + `test/e2e/k3s/**` + `test/e2e/grafana/**`; merge gate when touched.
 - **Mutation** — Gremlins nightly; informational, investigated weekly.
 
 ## Project memory and AI assistants

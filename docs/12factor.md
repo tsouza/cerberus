@@ -115,7 +115,7 @@ binary.
   `cmd/cerberus/main.go` reflects the tag.
 - **Release** — the build output is combined with the deployment
   configuration. In Kubernetes that means a specific image SHA in
-  `deploy/k3s/cerberus.yaml` (or the operator's chart) plus the
+  `test/e2e/k3s/cerberus.yaml` (or the operator's chart) plus the
   `cerberus-config` ConfigMap. The release is immutable: rolling
   back means redeploying the previous tag, not editing files in
   place.
@@ -161,7 +161,7 @@ publishes the port to the outside world; cerberus itself only knows
 how to bind and serve.
 
 The same binding semantics apply in every environment: `docker compose
-up` exposes `8080:8080`, `deploy/k3s/cerberus.yaml` declares a
+up` exposes `8080:8080`, `test/e2e/k3s/cerberus.yaml` declares a
 `NodePort` on `30080 → 8080`, and a local `./cerberus` run from
 source listens on `:8080`. No env-var translation is needed between
 deployment targets.
@@ -219,7 +219,7 @@ while still capping the worst-case fan-out into ClickHouse.
 
 ### Kubernetes HorizontalPodAutoscaler
 
-`deploy/k3s/cerberus-hpa.yaml` ships a ready-to-apply HPA recipe that
+`test/e2e/k3s/cerberus-hpa.yaml` ships a ready-to-apply HPA recipe that
 makes this concrete:
 
 - **Replica bounds:** `minReplicas: 2` (survives a single-pod failure
@@ -263,7 +263,7 @@ default `5s`), and — if `CERBERUS_AUTO_CREATE_SCHEMA=true` — applying
 the idempotent OTel-CH DDL. The HTTP listener is up within seconds
 of the container starting. A reasonable Kubernetes
 `initialDelaySeconds: 2` on the readiness probe is enough (see
-`deploy/k3s/cerberus.yaml`).
+`test/e2e/k3s/cerberus.yaml`).
 
 **Shutdown** is graceful and signal-driven. `cmd/cerberus/main.go`
 installs a `signal.NotifyContext` for `SIGINT` and `SIGTERM`. On
@@ -293,7 +293,7 @@ other:
   ClickHouse, cerberus, a one-shot OTel-fixture seeder, and Grafana
   pre-provisioned with cerberus as three datasources. `docker compose
   up --wait` and the local stack is queryable.
-- **Kubernetes / k3d** (`deploy/k3s/`) — the same image is built with
+- **Kubernetes / k3d** (`test/e2e/k3s/`) — the same image is built with
   `just e2e-up`, imported into a k3d cluster, and run alongside the
   same ClickHouse + Grafana topology. The shipped manifests
   (`cerberus.yaml`, `clickhouse.yaml`, `grafana.yaml`,

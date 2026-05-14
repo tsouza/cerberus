@@ -15,7 +15,7 @@ data:
   # will push its own metrics + traces to the in-cluster gateway, which
   # forwards them to ClickHouse via the clickhouseexporter. Reading those
   # rows back through cerberus closes the dogfood loop (see the
-  # "Cerberus self-observability" Grafana dashboard in deploy/grafana/).
+  # "Cerberus self-observability" Grafana dashboard in test/e2e/grafana/).
   # Empty value disables OTLP export entirely (zero-collector binary).
   CERBERUS_OTEL_ENDPOINT: "otel-collector-gateway.cerberus.svc:4317"
   CERBERUS_OTEL_INSECURE: "true"

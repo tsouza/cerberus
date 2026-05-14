@@ -156,8 +156,8 @@ internal/
 test/
   spec/                  # TXTAR fixture-driven tests
   e2e/                   # k3d + playwright
-deploy/k3s/              # Kubernetes manifests
-deploy/grafana/          # provisioned datasources + dashboards
+  e2e/k3s/               # k3d manifests consumed by the smoke
+  e2e/grafana/           # provisioned datasources + dashboards
 ```
 
 ## Contributing

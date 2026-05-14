@@ -38,7 +38,7 @@ Highlights:
 - **LogQL** — `| unpack`, `| pattern`, `| line_format`, `| decolorize`, `| label_format` (with Loki template funcs), `bytes_*` alignment, `/api/v1/tail` WebSocket (bounded send buffer + `ctx.Done()` drop), `/labels`, `/label/.../values`, `/series`, `/detected_fields`, `/patterns`, `/index/stats`, `/index/volume`.
 - **TraceQL** — `status = error` / `kind = client` enum statics, `sum / avg / max / min` over inner attributes, link traversal + span-event queries, set ops, `group / coalesce` pipeline elements, `histogram_over_time`, MetricsPipeline lowering, multi-hop + recursive `>>` / `<<` chains via CH `WITH RECURSIVE` CTEs.
 - **Tempo HTTP API** — `/api/search/recent`, `/api/search/tags`, `/api/search/tag/<n>/values`, `/api/metrics/query_range`.
-- **Self-contained k3s deployment** — `deploy/k3s/otel-collector.yaml` (per-node DaemonSet + gateway Deployment wired to the CH exporter) plus `deploy/k3s/sample-app.yaml` (telemetrygen). E2E now reads real OTel data through Grafana.
+- **Self-contained k3s deployment** — `test/e2e/k3s/otel-collector.yaml` (per-node DaemonSet + gateway Deployment wired to the CH exporter) plus `test/e2e/k3s/sample-app.yaml` (telemetrygen). E2E now reads real OTel data through Grafana.
 - **Tempo fork wired** — `unsafe.Pointer` + `reflect.FieldByName` shims retired against `tsouza/tempo:cerberus-accessors`; `forbidigo` gates regressions. See [`docs/upstream-forks.md`](upstream-forks.md).
 - **Schema source-of-truth migration** — OTel-CH exporter schema is now the source via `tsouza/opentelemetry-collector-contrib:cerberus-ddl`; `internal/schema/ddl/` consumes the upstream `sqltemplates` API; auto-create startup hook + e2e + compatibility seeders migrated.
 
@@ -104,7 +104,7 @@ Cerberus instruments itself with the Go-ecosystem defacto stack and ships teleme
 | R4.3 | Custom spans around `promql.Lower` / `logql.Lower` / `traceql.Lower` / `optimizer.Default().Run` / `chsql.Emit` / `chclient.Query`                                                                  |
 | R4.4 | Self-metrics: request count + latency histogram by route + status; CH roundtrip count + duration; plan IR node count; `cerberus_http_requests_in_flight` gauge per route (HPA-consumable, see R5.7) |
 | R4.5 | OTLP exporters: `CERBERUS_OTEL_ENDPOINT` / `_INSECURE` / `_SAMPLER` / `_SERVICE_NAME`; graceful no-op when endpoint unreachable                                                                     |
-| R4.6 | Wire cerberus's OTLP export into `deploy/k3s/otel-collector.yaml` (landed in RC2) + provisioned `deploy/grafana/dashboards/cerberus-self.json`                                                      |
+| R4.6 | Wire cerberus's OTLP export into `test/e2e/k3s/otel-collector.yaml` (landed in RC2) + provisioned `test/e2e/grafana/dashboards/cerberus-self.json`                                                  |
 | R4.7 | `docs/observability.md`                                                                                                                                                                             |
 
 **Exit criterion:** every Prom/Loki/Tempo request emits one span with pipeline stage timings; self-dashboard renders cerberus's own request rate + p99 latency; disabling OTel via `CERBERUS_OTEL_ENDPOINT=""` produces a zero-collector-dependency binary.
@@ -142,7 +142,7 @@ Driven by an audit of cerberus against [12factor.net](https://12factor.net/). Mo
 | R5.4 | `docs/12factor.md` with file-line citations per factor                                                                                                                                                                                            |
 | R5.5 | Startup-speed benchmark: process-start → `/healthz` 200 against a reachable CH; target < 2s                                                                                                                                                       |
 | R5.6 | Per-handler concurrency cap / admission control via `golang.org/x/sync/semaphore`, env-driven (`CERBERUS_MAX_INFLIGHT_PROM` / `_LOKI` / `_TEMPO` / `_TAIL`). Surfaces backpressure as `503` + `Retry-After` instead of CH-side timeouts. ~250 LoC |
-| R5.7 | Horizontal scale recipe: example `deploy/k3s/cerberus-hpa.yaml` driven by the R4.4 self-metrics (`cerberus_http_requests_in_flight`), with a short `docs/12factor.md` § on the scale-out story                                                    |
+| R5.7 | Horizontal scale recipe: example `test/e2e/k3s/cerberus-hpa.yaml` driven by the R4.4 self-metrics (`cerberus_http_requests_in_flight`), with a short `docs/12factor.md` § on the scale-out story                                                  |
 
 **Exit criterion:** `docker compose up` at repo root brings the dev stack up in < 30s; `CERBERUS_SCHEMA_OVERRIDES_JSON` honoured; `docs/12factor.md` exists with per-factor evidence; startup benchmark passes < 2s in CI; admission-control unit test demonstrates `503 Retry-After` under saturation; example HPA manifest scales replicas from `cerberus_http_requests_in_flight` in a k3d smoke test.
 

@@ -39,7 +39,7 @@ Please include:
 
 ## Cryptographic hardening
 
-cerberus doesn't ship cryptographic primitives. The HTTP server delegates TLS to a reverse proxy (per the deployment manifests in `deploy/k3s/`). Bugs in upstream TLS / authn libraries should go to those projects.
+cerberus doesn't ship cryptographic primitives. The HTTP server delegates TLS to a reverse proxy (the example manifests under `test/e2e/k3s/` show one wiring). Bugs in upstream TLS / authn libraries should go to those projects.
 
 ## Hall of fame
 
