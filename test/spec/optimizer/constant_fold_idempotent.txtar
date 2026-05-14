@@ -2,3 +2,9 @@
 SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` = ?)
 -- optimized --
 SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` = ?)
+-- chplan_optimized --
+Filter predicate=(MetricName = "up")
+  Scan(otel_metrics_gauge)
+-- chplan_unoptimized --
+Filter predicate=(MetricName = "up")
+  Scan(otel_metrics_gauge)

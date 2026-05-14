@@ -4,3 +4,6 @@ SELECT `Body`, `Timestamp` FROM `otel_logs` PREWHERE (`ServiceName` = ?) WHERE (
 [0] string = "api"
 [1] string = "boom"
 [2] string = "regex"
+-- chplan --
+Filter predicate=(((ServiceName = "api") AND (Body = "boom")) AND match(Body, "regex"))
+  Scan(otel_logs, columns=[Body, Timestamp])

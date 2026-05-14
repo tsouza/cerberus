@@ -18,3 +18,6 @@ INSERT INTO otel_logs (Body) VALUES ('hello'), ('world');
   ["hello"],
   ["world"]
 ]
+-- chplan --
+Filter predicate=((ResourceAttributes["job"] = "api") AND (ResourceAttributes["env"] = "prod"))
+  Scan(otel_logs)

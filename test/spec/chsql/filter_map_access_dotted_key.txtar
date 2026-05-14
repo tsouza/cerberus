@@ -3,3 +3,6 @@ SELECT * FROM `otel_traces` WHERE (`SpanAttributes`[?] = ?)
 -- args --
 [0] string = "http.status_code"
 [1] int64 = 200
+-- chplan --
+Filter predicate=(SpanAttributes["http.status_code"] = 200)
+  Scan(otel_traces)

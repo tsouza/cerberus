@@ -21,3 +21,6 @@ INSERT INTO otel_logs (Body) VALUES
   ["this is an error"],
   ["another error occurred"]
 ]
+-- chplan --
+Filter predicate=((ResourceAttributes["job"] = "api") AND lineContent(Body, "error", substr))
+  Scan(otel_logs)

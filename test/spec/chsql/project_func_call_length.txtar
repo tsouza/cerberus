@@ -2,3 +2,6 @@
 SELECT `Timestamp` AS `t`, length(`Body`) AS `body_bytes` FROM (SELECT * FROM `otel_logs`)
 -- args --
 (none)
+-- chplan --
+Project [Timestamp AS t, length(Body) AS body_bytes]
+  Scan(otel_logs)

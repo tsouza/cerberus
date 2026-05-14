@@ -11,3 +11,10 @@ SELECT ? AS `MetricName`, `gkey_0` AS `Attributes`, now64(?) AS `TimeUnix`, `Val
 [5] string = "job"
 [6] string = "api"
 [7] string = "pod"
+-- chplan --
+Project ["" AS MetricName, gkey_0 AS Attributes, now64(9) AS TimeUnix, Value AS Value]
+  Aggregate groupBy=[mapWithout(ResourceAttributes, [pod]) AS gkey_0] funcs=[sum(Value) AS Value]
+    RangeWindow func=log_rate range=5m0s step=0s ts=Timestamp value=Value groupBy=[ResourceAttributes]
+      Project [ResourceAttributes, Timestamp, 1 AS Value]
+        Filter predicate=(ResourceAttributes["job"] = "api")
+          Scan(otel_logs)

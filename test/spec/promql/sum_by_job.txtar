@@ -20,3 +20,8 @@ INSERT INTO otel_metrics_gauge VALUES
 []
 -- sql --
 SELECT ? AS `MetricName`, map(?, `gkey_0`) AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes`[?] AS `gkey_0`, sum(`Value`) AS `Value` FROM (SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` = ?)) GROUP BY `Attributes`[?])
+-- chplan --
+Project ["" AS MetricName, map("job", gkey_0) AS Attributes, now64(9) AS TimeUnix, Value AS Value]
+  Aggregate groupBy=[Attributes["job"] AS gkey_0] funcs=[sum(Value) AS Value]
+    Filter predicate=(MetricName = "up")
+      Scan(otel_metrics_gauge)

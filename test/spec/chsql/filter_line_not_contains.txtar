@@ -2,3 +2,6 @@
 SELECT * FROM `otel_logs` WHERE (position(`Body`, ?) = 0)
 -- args --
 [0] string = "DEBUG"
+-- chplan --
+Filter predicate=lineContent(Body, "DEBUG", substr,not)
+  Scan(otel_logs)

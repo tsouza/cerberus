@@ -2,3 +2,5 @@
 (none)
 -- sql --
 SELECT * FROM `otel_metrics_gauge`
+-- chplan --
+Scan(otel_metrics_gauge)

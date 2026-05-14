@@ -18,3 +18,8 @@ INSERT INTO otel_logs (Timestamp, Body, ResourceAttributes) VALUES
 [
   [{"job": "api"}, 6.0]
 ]
+-- chplan --
+RangeWindow func=sum_over_time range=1h0m0s step=0s ts=Timestamp value=Value groupBy=[ResourceAttributes]
+  Project [ResourceAttributes, Timestamp, toFloat64(length(Body)) AS Value]
+    Filter predicate=(ResourceAttributes["job"] = "api")
+      Scan(otel_logs)

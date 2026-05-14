@@ -2,3 +2,6 @@
 (none)
 -- sql --
 SELECT `job`, sum(`Value`) AS `total` FROM (SELECT * FROM `otel_metrics_gauge`) GROUP BY `job`
+-- chplan --
+Aggregate groupBy=[job] funcs=[sum(Value) AS total]
+  Scan(otel_metrics_gauge)

@@ -2,3 +2,11 @@
 SELECT `MetricName`, `Value` FROM (SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` = ?))
 -- unoptimized --
 SELECT * FROM (SELECT `MetricName`, `Value` FROM (SELECT * FROM `otel_metrics_gauge`)) WHERE (`MetricName` = ?)
+-- chplan_optimized --
+Project [MetricName, Value]
+  Filter predicate=(MetricName = "up")
+    Scan(otel_metrics_gauge)
+-- chplan_unoptimized --
+Filter predicate=(MetricName = "up")
+  Project [MetricName, Value]
+    Scan(otel_metrics_gauge)

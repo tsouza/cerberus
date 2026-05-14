@@ -20,3 +20,6 @@ INSERT INTO otel_logs (Body) VALUES
   ["packed payload 1"],
   ["packed payload 2"]
 ]
+-- chplan --
+Filter predicate=((ResourceAttributes["job"] = "api") AND lineContent(Body, "packed", substr))
+  Scan(otel_logs)

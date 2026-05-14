@@ -5,3 +5,6 @@ SELECT * FROM `otel_metrics_gauge` PREWHERE (`MetricName` = ?) WHERE (`TimeUnix`
 -- args --
 [0] string = "up"
 [1] int64 = 9
+-- chplan --
+Filter predicate=((MetricName = "up") AND (TimeUnix <= now64(9)))
+  Scan(otel_metrics_gauge)

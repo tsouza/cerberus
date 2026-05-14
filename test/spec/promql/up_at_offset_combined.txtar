@@ -7,3 +7,6 @@ SELECT * FROM `otel_metrics_gauge` PREWHERE (`MetricName` = ?) WHERE (`TimeUnix`
 [1] string = "2022-01-01 00:00:00.000000000"
 [2] int64 = 9
 [3] int64 = 300000000000
+-- chplan --
+Filter predicate=((MetricName = "up") AND (TimeUnix <= (toDateTime64("2022-01-01 00:00:00.000000000", 9) - toIntervalNanosecond(300000000000))))
+  Scan(otel_metrics_gauge)

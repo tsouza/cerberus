@@ -4,3 +4,6 @@ up
 [0] string = "up"
 -- sql --
 SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` = ?)
+-- chplan --
+Filter predicate=(MetricName = "up")
+  Scan(otel_metrics_gauge)

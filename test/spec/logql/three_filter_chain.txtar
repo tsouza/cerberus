@@ -23,3 +23,6 @@ INSERT INTO otel_logs (Body) VALUES
   ["apple_c"],
   ["a-c"]
 ]
+-- chplan --
+Filter predicate=((ResourceAttributes["job"] = "api") AND ((lineContent(Body, "a", substr) AND lineContent(Body, "b", substr,not)) AND lineContent(Body, "c", regex)))
+  Scan(otel_logs)

@@ -2,3 +2,6 @@
 [0] string = "^api-.*"
 -- sql --
 SELECT * FROM `otel_metrics_gauge` WHERE match(`ResourceAttributes_service_name`, ?)
+-- chplan --
+Filter predicate=(ResourceAttributes_service_name =~ "^api-.*")
+  Scan(otel_metrics_gauge)

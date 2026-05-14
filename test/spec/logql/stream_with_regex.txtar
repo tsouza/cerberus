@@ -16,3 +16,6 @@ INSERT INTO otel_logs (Body) VALUES ('m1'), ('m2');
   ["m1"],
   ["m2"]
 ]
+-- chplan --
+Filter predicate=(ResourceAttributes["env"] =~ "prod|stg")
+  Scan(otel_logs)

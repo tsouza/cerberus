@@ -151,8 +151,9 @@ func TestEmitLateMatFixtures(t *testing.T) {
 			t.Fatalf("Emit failed: %v", err)
 		}
 		spec.Match(t, c, map[string]string{
-			"sql":  sql,
-			"args": formatLateMatArgs(args),
+			"sql":    sql,
+			"args":   formatLateMatArgs(args),
+			"chplan": spec.PrintChplan(plan),
 		})
 	})
 }

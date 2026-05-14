@@ -20,3 +20,6 @@ INSERT INTO otel_logs (Body) VALUES
   ["1.2.3.4 - GET /a"],
   ["9.9.9.9 - GET /c"]
 ]
+-- chplan --
+Filter predicate=((ResourceAttributes["job"] = "api") AND lineContent(Body, "GET", substr))
+  Scan(otel_logs)

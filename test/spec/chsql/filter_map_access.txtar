@@ -3,3 +3,6 @@
 [1] string = "api"
 -- sql --
 SELECT * FROM `otel_metrics_gauge` WHERE (`Attributes`[?] = ?)
+-- chplan --
+Filter predicate=(Attributes["job"] = "api")
+  Scan(otel_metrics_gauge)

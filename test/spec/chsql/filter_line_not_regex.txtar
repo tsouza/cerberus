@@ -2,3 +2,6 @@
 SELECT * FROM `otel_logs` WHERE NOT match(`Body`, ?)
 -- args --
 [0] string = "health.*ok"
+-- chplan --
+Filter predicate=lineContent(Body, "health.*ok", regex,not)
+  Scan(otel_logs)

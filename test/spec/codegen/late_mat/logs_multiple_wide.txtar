@@ -2,3 +2,8 @@
 [0] string = "api"
 -- sql --
 SELECT `w`.`Body`, `w`.`ResourceAttributes`, `scan`.`Timestamp` FROM (SELECT `Timestamp`, `ServiceName`, `TraceId`, `SpanId` FROM `otel_logs` WHERE (`ServiceName` = ?) LIMIT 50) AS scan INNER JOIN `otel_logs` AS w ON `scan`.`Timestamp` = `w`.`Timestamp` AND `scan`.`TraceId` = `w`.`TraceId` AND `scan`.`SpanId` = `w`.`SpanId`
+-- chplan --
+Project [Body, ResourceAttributes, Timestamp]
+  Limit 50
+    Filter predicate=(ServiceName = "api")
+      Scan(otel_logs)

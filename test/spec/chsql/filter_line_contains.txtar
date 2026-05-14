@@ -2,3 +2,6 @@
 SELECT * FROM `otel_logs` WHERE (position(`Body`, ?) > 0)
 -- args --
 [0] string = "ERROR"
+-- chplan --
+Filter predicate=lineContent(Body, "ERROR", substr)
+  Scan(otel_logs)

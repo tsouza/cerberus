@@ -2,3 +2,7 @@
 SELECT `Attributes` AS `attrs`, `total` AS `v` FROM (SELECT `Attributes`, sum(`Value`) AS `total` FROM (SELECT * FROM `otel_metrics_gauge`) GROUP BY `Attributes`)
 -- args --
 (none)
+-- chplan --
+Project [Attributes AS attrs, total AS v]
+  Aggregate groupBy=[Attributes] funcs=[sum(Value) AS total]
+    Scan(otel_metrics_gauge)

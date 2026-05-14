@@ -7,3 +7,7 @@ SELECT L.`MetricName`, L.`Attributes`, L.`TimeUnix`, (L.`Value` AND R.`Value`) A
 [3] string = "job"
 [4] string = "job"
 [5] string = "job"
+-- chplan --
+VectorJoin op=AND match=on(job) card=one-to-one
+  Scan(otel_metrics_gauge)
+  Scan(otel_metrics_sum)

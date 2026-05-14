@@ -15,3 +15,6 @@ INSERT INTO otel_logs (Body) VALUES ('1.2.3.4 - POST /b');
 [
   ["1.2.3.4 - POST /b"]
 ]
+-- chplan --
+Filter predicate=(ResourceAttributes["job"] = "api")
+  Scan(otel_logs)

@@ -6,3 +6,6 @@ up{job="api"}
 [2] string = "api"
 -- sql --
 SELECT * FROM `otel_metrics_gauge` PREWHERE (`MetricName` = ?) WHERE (`Attributes`[?] = ?)
+-- chplan --
+Filter predicate=((Attributes["job"] = "api") AND (MetricName = "up"))
+  Scan(otel_metrics_gauge)

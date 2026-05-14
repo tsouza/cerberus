@@ -10,3 +10,10 @@ SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`
 [4] int64 = 1
 [5] string = "job"
 [6] string = "api"
+-- chplan --
+Project ["" AS MetricName, CAST(map(), "Map(String,String)") AS Attributes, now64(9) AS TimeUnix, Value AS Value]
+  Aggregate groupBy=[] funcs=[sum(Value) AS Value]
+    RangeWindow func=log_rate range=1m0s step=0s ts=Timestamp value=Value groupBy=[ResourceAttributes]
+      Project [ResourceAttributes, Timestamp, 1 AS Value]
+        Filter predicate=(ResourceAttributes["job"] = "api")
+          Scan(otel_logs)
