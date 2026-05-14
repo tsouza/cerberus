@@ -1,0 +1,7 @@
+-- query.promql --
+up <= bool 1
+-- args --
+[0] float64 = 1
+[1] string = "up"
+-- sql --
+SELECT `MetricName`, `Attributes`, `TimeUnix`, toFloat64((`Value` <= ?)) AS `Value` FROM (SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` = ?))

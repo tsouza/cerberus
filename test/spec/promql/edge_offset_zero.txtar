@@ -1,0 +1,6 @@
+-- query.promql --
+up offset 0s
+-- args --
+[0] string = "up"
+-- sql --
+SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` = ?)
