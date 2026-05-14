@@ -63,11 +63,12 @@ func TestDetectedFields_JSON(t *testing.T) {
 	}
 
 	// SQL sanity: ordering by Timestamp DESC + LIMIT.
-	if !strings.Contains(q.lastSQL, "ORDER BY `Timestamp` DESC") {
-		t.Errorf("missing ORDER BY DESC: %q", q.lastSQL)
+	lastSQL := q.LastSQL()
+	if !strings.Contains(lastSQL, "ORDER BY `Timestamp` DESC") {
+		t.Errorf("missing ORDER BY DESC: %q", lastSQL)
 	}
-	if !strings.Contains(q.lastSQL, "LIMIT 1000") {
-		t.Errorf("missing default LIMIT 1000: %q", q.lastSQL)
+	if !strings.Contains(lastSQL, "LIMIT 1000") {
+		t.Errorf("missing default LIMIT 1000: %q", lastSQL)
 	}
 }
 

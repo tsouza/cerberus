@@ -48,11 +48,12 @@ func TestLabels_HappyPath(t *testing.T) {
 	}
 
 	// SQL sanity: arrayJoin(mapKeys(...)) must be present.
-	if !strings.Contains(q.lastSQL, "arrayJoin(mapKeys(`ResourceAttributes`))") {
-		t.Errorf("missing arrayJoin(mapKeys()) in SQL: %q", q.lastSQL)
+	lastSQL := q.LastSQL()
+	if !strings.Contains(lastSQL, "arrayJoin(mapKeys(`ResourceAttributes`))") {
+		t.Errorf("missing arrayJoin(mapKeys()) in SQL: %q", lastSQL)
 	}
-	if !strings.Contains(q.lastSQL, "toDateTime64(") {
-		t.Errorf("missing time bounds in SQL: %q", q.lastSQL)
+	if !strings.Contains(lastSQL, "toDateTime64(") {
+		t.Errorf("missing time bounds in SQL: %q", lastSQL)
 	}
 }
 

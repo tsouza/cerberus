@@ -44,21 +44,23 @@ func TestLabelValues_HappyPath(t *testing.T) {
 
 	// SQL sanity: the map-access form is present and uses positional
 	// `?` for the label name (never spliced into the SQL).
-	if !strings.Contains(q.lastSQL, "`ResourceAttributes`[?]") {
-		t.Errorf("missing map-access in SQL: %q", q.lastSQL)
+	lastSQL := q.LastSQL()
+	lastArgs := q.LastArgs()
+	if !strings.Contains(lastSQL, "`ResourceAttributes`[?]") {
+		t.Errorf("missing map-access in SQL: %q", lastSQL)
 	}
-	if strings.Contains(q.lastSQL, "'job'") {
-		t.Errorf("label name leaked into SQL: %q", q.lastSQL)
+	if strings.Contains(lastSQL, "'job'") {
+		t.Errorf("label name leaked into SQL: %q", lastSQL)
 	}
 	// And it must show up as an arg.
 	foundJob := false
-	for _, a := range q.lastArgs {
+	for _, a := range lastArgs {
 		if s, ok := a.(string); ok && s == "job" {
 			foundJob = true
 		}
 	}
 	if !foundJob {
-		t.Errorf("label name not in args: %v", q.lastArgs)
+		t.Errorf("label name not in args: %v", lastArgs)
 	}
 }
 
@@ -82,8 +84,9 @@ func TestLabelValues_Selector(t *testing.T) {
 		t.Fatalf("status=%d", resp.StatusCode)
 	}
 	// Selector binds `job` as a key + `api` as a value.
+	lastArgs := q.LastArgs()
 	hasJob, hasAPI := false, false
-	for _, a := range q.lastArgs {
+	for _, a := range lastArgs {
 		if s, ok := a.(string); ok {
 			if s == "job" {
 				hasJob = true
@@ -94,7 +97,7 @@ func TestLabelValues_Selector(t *testing.T) {
 		}
 	}
 	if !hasJob || !hasAPI {
-		t.Errorf("missing selector args (job=%v, api=%v): %v", hasJob, hasAPI, q.lastArgs)
+		t.Errorf("missing selector args (job=%v, api=%v): %v", hasJob, hasAPI, lastArgs)
 	}
 }
 

@@ -60,19 +60,31 @@ func (s *tailStubQuerier) Query(_ context.Context, sql string, args ...any) ([]c
 	return out, nil
 }
 
+// The remaining Querier methods are not exercised by /tail itself, but
+// the package shares this stub across other tests via the loki.Querier
+// interface. Lock every accessor so future test wiring that fans these
+// out across parallel goroutines is race-clean by construction.
 func (s *tailStubQuerier) QueryIndexStats(_ context.Context, _ string, _ ...any) (chclient.IndexStatsRow, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.statsRow, s.statsErr
 }
 
 func (s *tailStubQuerier) QueryIndexVolume(_ context.Context, _ string, _ ...any) ([]chclient.IndexVolumeRow, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.volumeRows, s.volumeErr
 }
 
 func (s *tailStubQuerier) QueryStrings(_ context.Context, _ string, _ ...any) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.stringRows, s.stringsErr
 }
 
 func (s *tailStubQuerier) QueryLabelSets(_ context.Context, _ string, _ ...any) ([]map[string]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.labelSets, s.labelSetsErr
 }
 

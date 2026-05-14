@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,7 +16,15 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
+// stubQuerier is a shared in-package test fixture for the loki HTTP
+// handlers. A single stub is sometimes wired into a server that fans a
+// request out across parallel subtests (see TestConformance_LokiLabelValuesWire
+// and TestConformance_LokiSeriesWire), so every field accessed inside a
+// Query* method is guarded by mu. Tests that read lastSQL / lastArgs
+// after a request returns must do so via LastSQL() / LastArgs() so the
+// race detector sees the happens-before edge.
 type stubQuerier struct {
+	mu       sync.Mutex
 	samples  []chclient.Sample
 	err      error
 	lastSQL  string
@@ -41,48 +50,83 @@ type stubQuerier struct {
 }
 
 func (s *stubQuerier) Query(_ context.Context, sql string, args ...any) ([]chclient.Sample, error) {
+	s.mu.Lock()
 	s.lastSQL = sql
 	s.lastArgs = args
-	if s.err != nil {
-		return nil, s.err
+	samples, err := s.samples, s.err
+	s.mu.Unlock()
+	if err != nil {
+		return nil, err
 	}
-	return s.samples, nil
+	return samples, nil
 }
 
 func (s *stubQuerier) QueryIndexStats(_ context.Context, sql string, args ...any) (chclient.IndexStatsRow, error) {
+	s.mu.Lock()
 	s.lastSQL = sql
 	s.lastArgs = args
-	if s.statsErr != nil {
-		return chclient.IndexStatsRow{}, s.statsErr
+	row, err := s.statsRow, s.statsErr
+	s.mu.Unlock()
+	if err != nil {
+		return chclient.IndexStatsRow{}, err
 	}
-	return s.statsRow, nil
+	return row, nil
 }
 
 func (s *stubQuerier) QueryIndexVolume(_ context.Context, sql string, args ...any) ([]chclient.IndexVolumeRow, error) {
+	s.mu.Lock()
 	s.lastSQL = sql
 	s.lastArgs = args
-	if s.volumeErr != nil {
-		return nil, s.volumeErr
+	rows, err := s.volumeRows, s.volumeErr
+	s.mu.Unlock()
+	if err != nil {
+		return nil, err
 	}
-	return s.volumeRows, nil
+	return rows, nil
 }
 
 func (s *stubQuerier) QueryStrings(_ context.Context, sql string, args ...any) ([]string, error) {
+	s.mu.Lock()
 	s.lastSQL = sql
 	s.lastArgs = args
-	if s.stringsErr != nil {
-		return nil, s.stringsErr
+	rows, err := s.stringRows, s.stringsErr
+	s.mu.Unlock()
+	if err != nil {
+		return nil, err
 	}
-	return s.stringRows, nil
+	return rows, nil
 }
 
 func (s *stubQuerier) QueryLabelSets(_ context.Context, sql string, args ...any) ([]map[string]string, error) {
+	s.mu.Lock()
 	s.lastSQL = sql
 	s.lastArgs = args
-	if s.labelSetsErr != nil {
-		return nil, s.labelSetsErr
+	rows, err := s.labelSets, s.labelSetsErr
+	s.mu.Unlock()
+	if err != nil {
+		return nil, err
 	}
-	return s.labelSets, nil
+	return rows, nil
+}
+
+// LastSQL returns the SQL passed to the most recent Query* call. Locked
+// because writers run on HTTP-handler goroutines and readers run on the
+// test goroutine after the request returns; the race detector needs the
+// explicit happens-before that the mutex provides.
+func (s *stubQuerier) LastSQL() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastSQL
+}
+
+// LastArgs returns the positional args of the most recent Query* call.
+// Returns the slice header by value (the underlying backing array is
+// not mutated after a Query* call returns, so callers may iterate it
+// without further locking).
+func (s *stubQuerier) LastArgs() []any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastArgs
 }
 
 func newServer(q loki.Querier) *httptest.Server {
@@ -241,18 +285,20 @@ func TestQueryRange_PushesStartEndToSQL(t *testing.T) {
 		t.Fatalf("status=%d", resp.StatusCode)
 	}
 
-	if !strings.Contains(q.lastSQL, "`Timestamp` >=") || !strings.Contains(q.lastSQL, "`Timestamp` <=") {
-		t.Fatalf("expected Timestamp BETWEEN predicate in SQL; got: %s", q.lastSQL)
+	lastSQL := q.LastSQL()
+	lastArgs := q.LastArgs()
+	if !strings.Contains(lastSQL, "`Timestamp` >=") || !strings.Contains(lastSQL, "`Timestamp` <=") {
+		t.Fatalf("expected Timestamp BETWEEN predicate in SQL; got: %s", lastSQL)
 	}
 	// The bound is rendered as toDateTime64('YYYY-MM-DD HH:MM:SS.fffffffff', 9)
 	// so both bound strings must appear as positional args.
 	const wantStart = "2026-05-14 12:03:20.000000000"
 	const wantEnd = "2026-05-14 12:05:00.000000000"
-	if !containsArg(q.lastArgs, wantStart) {
-		t.Errorf("expected args to contain start bound %q; got: %#v", wantStart, q.lastArgs)
+	if !containsArg(lastArgs, wantStart) {
+		t.Errorf("expected args to contain start bound %q; got: %#v", wantStart, lastArgs)
 	}
-	if !containsArg(q.lastArgs, wantEnd) {
-		t.Errorf("expected args to contain end bound %q; got: %#v", wantEnd, q.lastArgs)
+	if !containsArg(lastArgs, wantEnd) {
+		t.Errorf("expected args to contain end bound %q; got: %#v", wantEnd, lastArgs)
 	}
 }
 
@@ -280,16 +326,18 @@ func TestQuery_PushesInstantWindowToSQL(t *testing.T) {
 		t.Fatalf("status=%d", resp.StatusCode)
 	}
 
-	if !strings.Contains(q.lastSQL, "`Timestamp` >=") || !strings.Contains(q.lastSQL, "`Timestamp` <=") {
-		t.Fatalf("expected Timestamp BETWEEN predicate in SQL; got: %s", q.lastSQL)
+	lastSQL := q.LastSQL()
+	lastArgs := q.LastArgs()
+	if !strings.Contains(lastSQL, "`Timestamp` >=") || !strings.Contains(lastSQL, "`Timestamp` <=") {
+		t.Fatalf("expected Timestamp BETWEEN predicate in SQL; got: %s", lastSQL)
 	}
 	const wantStart = "2026-05-14 12:00:00.000000000"
 	const wantEnd = "2026-05-14 12:05:00.000000000"
-	if !containsArg(q.lastArgs, wantStart) {
-		t.Errorf("expected args to contain start bound %q; got: %#v", wantStart, q.lastArgs)
+	if !containsArg(lastArgs, wantStart) {
+		t.Errorf("expected args to contain start bound %q; got: %#v", wantStart, lastArgs)
 	}
-	if !containsArg(q.lastArgs, wantEnd) {
-		t.Errorf("expected args to contain end bound %q; got: %#v", wantEnd, q.lastArgs)
+	if !containsArg(lastArgs, wantEnd) {
+		t.Errorf("expected args to contain end bound %q; got: %#v", wantEnd, lastArgs)
 	}
 }
 

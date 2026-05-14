@@ -48,11 +48,12 @@ func TestSeries_HappyPath(t *testing.T) {
 	}
 
 	// SQL sanity: GROUP BY labels + two predicate groups OR'd.
-	if !strings.Contains(q.lastSQL, "GROUP BY") {
-		t.Errorf("missing GROUP BY in SQL: %q", q.lastSQL)
+	lastSQL := q.LastSQL()
+	if !strings.Contains(lastSQL, "GROUP BY") {
+		t.Errorf("missing GROUP BY in SQL: %q", lastSQL)
 	}
-	if !strings.Contains(q.lastSQL, " OR ") {
-		t.Errorf("missing OR between selectors in SQL: %q", q.lastSQL)
+	if !strings.Contains(lastSQL, " OR ") {
+		t.Errorf("missing OR between selectors in SQL: %q", lastSQL)
 	}
 }
 
@@ -74,8 +75,9 @@ func TestSeries_NoMatch(t *testing.T) {
 	}
 	// SQL must not contain " OR " (no selector groups) but must still
 	// have a GROUP BY.
-	if !strings.Contains(q.lastSQL, "GROUP BY") {
-		t.Errorf("missing GROUP BY: %q", q.lastSQL)
+	lastSQL := q.LastSQL()
+	if !strings.Contains(lastSQL, "GROUP BY") {
+		t.Errorf("missing GROUP BY: %q", lastSQL)
 	}
 }
 
