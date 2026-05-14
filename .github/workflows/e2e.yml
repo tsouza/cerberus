@@ -106,3 +106,45 @@ jobs:
       - name: Tear down
         if: always()
         run: just e2e-down
+
+  startup-bench:
+    # Startup-speed benchmark: spawn cerberus and assert <2 s to /healthz.
+    # Informational only — not a required gate. The fast-feedback PR loop
+    # stays on `check` + `lint`. Runs on push-to-main + nightly + manual
+    # dispatch alongside the dashboard job.
+    name: startup-bench
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    services:
+      clickhouse:
+        image: clickhouse/clickhouse-server:24.8-alpine
+        env:
+          CLICKHOUSE_DB: otel
+          CLICKHOUSE_USER: cerberus
+          CLICKHOUSE_PASSWORD: cerberus
+        ports:
+          - 9000:9000
+        options: >-
+          --health-cmd "wget -nv -t1 --spider http://localhost:8123/ping || exit 1"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      - name: Run startup benchmark
+        env:
+          CH_ADDR: 127.0.0.1:9000
+          CH_DATABASE: otel
+          CH_USERNAME: cerberus
+          CH_PASSWORD: cerberus
+        run: just startup-bench
