@@ -10,6 +10,7 @@ package logql
 import (
 	"context"
 	"fmt"
+	"time"
 
 	loglib "github.com/grafana/loki/v3/pkg/logql/log"
 	"github.com/grafana/loki/v3/pkg/logql/syntax"
@@ -25,11 +26,44 @@ import (
 // tracer emits the `lower` pipeline-stage span for LogQL lowering.
 var tracer = otel.Tracer("github.com/tsouza/cerberus/internal/logql")
 
-// Lower turns a parsed LogQL expression into a chplan tree.
+// lowerCtx threads query-time information needed by lowering. Zero
+// Start / End mean "no time window threaded" — the lowering emits a plan
+// without a Timestamp BETWEEN predicate. Callers reaching LogQL through
+// the API handler pass the request's [start, end] so each Scan(otel_logs)
+// is filtered down to the requested wire-format window at the SQL layer
+// (the previous behaviour returned every matching log row regardless of
+// the requested window — a Loki wire-format contract violation).
+type lowerCtx struct {
+	Start time.Time
+	End   time.Time
+}
+
+// hasTimeWindow reports whether the context carries a non-degenerate
+// [Start, End] pair to inject as a BETWEEN predicate.
+func (c lowerCtx) hasTimeWindow() bool {
+	return !c.Start.IsZero() && !c.End.IsZero()
+}
+
+// Lower turns a parsed LogQL expression into a chplan tree. No time
+// window is injected — callers that know the request's [start, end]
+// should use [LowerAt] instead.
 func Lower(ctx context.Context, expr syntax.Expr, s schema.Logs) (chplan.Node, error) {
+	return lowerWithCtx(ctx, expr, s, lowerCtx{})
+}
+
+// LowerAt is the time-aware variant of [Lower]: it AND-folds a
+// `<TimestampColumn> >= start AND <TimestampColumn> <= end` predicate
+// above every Scan(LogsTable) the lowering produces, so the emitted
+// SQL honours the request's window. For an instant query the caller
+// passes start == end == ts (or [time-step, time] per Loki convention).
+func LowerAt(ctx context.Context, expr syntax.Expr, s schema.Logs, start, end time.Time) (chplan.Node, error) {
+	return lowerWithCtx(ctx, expr, s, lowerCtx{Start: start, End: end})
+}
+
+func lowerWithCtx(ctx context.Context, expr syntax.Expr, s schema.Logs, lc lowerCtx) (chplan.Node, error) {
 	_, span := tracer.Start(ctx, cerbtrace.SpanLower, trace.WithAttributes(cerbtrace.AttrQL.String("logql")))
 	defer span.End()
-	plan, err := lower(expr, s)
+	plan, err := lower(expr, s, lc)
 	if err != nil {
 		span.RecordError(err)
 		return nil, err
@@ -38,16 +72,16 @@ func Lower(ctx context.Context, expr syntax.Expr, s schema.Logs) (chplan.Node, e
 	return plan, nil
 }
 
-func lower(expr syntax.Expr, s schema.Logs) (chplan.Node, error) {
+func lower(expr syntax.Expr, s schema.Logs, lc lowerCtx) (chplan.Node, error) {
 	switch e := expr.(type) {
 	case *syntax.MatchersExpr:
-		return lowerMatchers(e, s), nil
+		return lowerMatchers(e, s, lc), nil
 	case *syntax.PipelineExpr:
-		return lowerPipeline(e, s)
+		return lowerPipeline(e, s, lc)
 	case *syntax.RangeAggregationExpr:
-		return lowerRangeAggregation(e, s)
+		return lowerRangeAggregation(e, s, lc)
 	case *syntax.VectorAggregationExpr:
-		return lowerVectorAggregation(e, s)
+		return lowerVectorAggregation(e, s, lc)
 	default:
 		return nil, fmt.Errorf("logql: unsupported expression %T", expr)
 	}
@@ -55,10 +89,14 @@ func lower(expr syntax.Expr, s schema.Logs) (chplan.Node, error) {
 
 // lowerMatchers turns `{job="api", env=~"prod|stg"}` into Scan + Filter.
 // Stream-selector label matchers go against the ResourceAttributes map
-// since OTel-CH stores stream-identity labels there.
-func lowerMatchers(e *syntax.MatchersExpr, s schema.Logs) chplan.Node {
+// since OTel-CH stores stream-identity labels there. When the context
+// carries a [start, end] window, a `TimestampColumn BETWEEN start AND end`
+// predicate is AND-folded above the Scan so the emitted SQL honours
+// the request's wire-format window.
+func lowerMatchers(e *syntax.MatchersExpr, s schema.Logs, lc lowerCtx) chplan.Node {
 	scan := &chplan.Scan{Table: s.LogsTable}
 	pred := buildMatchersPredicate(e.Mts, s)
+	pred = andFoldTimeWindow(pred, s, lc)
 	if pred == nil {
 		return scan
 	}
@@ -67,8 +105,8 @@ func lowerMatchers(e *syntax.MatchersExpr, s schema.Logs) chplan.Node {
 
 // lowerPipeline handles a stream selector followed by line filters
 // (and, in later milestones, label filters and parsers).
-func lowerPipeline(e *syntax.PipelineExpr, s schema.Logs) (chplan.Node, error) {
-	inner := lowerMatchers(e.Left, s)
+func lowerPipeline(e *syntax.PipelineExpr, s schema.Logs, lc lowerCtx) (chplan.Node, error) {
+	inner := lowerMatchers(e.Left, s, lc)
 	pred := chplan.Expr(nil)
 	if f, ok := inner.(*chplan.Filter); ok {
 		pred = f.Predicate
@@ -313,4 +351,46 @@ func matchOp(t labels.MatchType) chplan.BinaryOp {
 		return chplan.OpNotMatch
 	}
 	return chplan.OpEq
+}
+
+// andFoldTimeWindow AND-folds a `<TimestampColumn> >= start AND
+// <TimestampColumn> <= end` predicate onto pred when the lowering context
+// carries a non-zero window. The bounds render as
+// `toDateTime64('YYYY-MM-DD HH:MM:SS.fffffffff', 9)` so the placeholders
+// land on the DateTime64(9) Timestamp column without an implicit
+// conversion. Mirror of the prom-side anchor rendering in
+// internal/promql/modifiers.go::anchorBaseExpr.
+func andFoldTimeWindow(pred chplan.Expr, s schema.Logs, lc lowerCtx) chplan.Expr {
+	if !lc.hasTimeWindow() {
+		return pred
+	}
+	tsCol := &chplan.ColumnRef{Name: s.TimestampColumn}
+	lowerBound := &chplan.Binary{
+		Op:    chplan.OpGe,
+		Left:  tsCol,
+		Right: timeLiteralExpr(lc.Start),
+	}
+	upperBound := &chplan.Binary{
+		Op:    chplan.OpLe,
+		Left:  tsCol,
+		Right: timeLiteralExpr(lc.End),
+	}
+	window := &chplan.Binary{Op: chplan.OpAnd, Left: lowerBound, Right: upperBound}
+	if pred == nil {
+		return window
+	}
+	return &chplan.Binary{Op: chplan.OpAnd, Left: pred, Right: window}
+}
+
+// timeLiteralExpr renders an absolute timestamp as a CH DateTime64(9)
+// literal. The format string mirrors prom's anchorBaseExpr so the two
+// paths emit identical placeholder shapes.
+func timeLiteralExpr(t time.Time) chplan.Expr {
+	return &chplan.FuncCall{
+		Name: "toDateTime64",
+		Args: []chplan.Expr{
+			&chplan.LitString{V: t.UTC().Format("2006-01-02 15:04:05.000000000")},
+			&chplan.LitInt{V: 9},
+		},
+	}
 }

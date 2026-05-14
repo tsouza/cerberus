@@ -6,9 +6,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/grafana/loki/v3/pkg/logql/syntax"
 
+	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/logql"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -20,6 +22,13 @@ var fixtureDir = filepath.Join("..", "..", "test", "spec", "logql")
 // TestLower walks every *.txtar fixture under test/spec/logql/, parses
 // the LogQL in `query.logql`, lowers it, emits SQL, and compares the
 // result to the recorded `sql` + `args` sections.
+//
+// Fixtures may optionally declare `start:` and `end:` sections (both
+// RFC3339Nano timestamps) — when present the lowering uses
+// [logql.LowerAt] so the emitted SQL carries a Timestamp BETWEEN
+// predicate matching what the Loki handler threads through at request
+// time. Fixtures without those sections lower via [logql.Lower] (no
+// time window) so the existing fixture corpus remains stable.
 func TestLower(t *testing.T) {
 	t.Parallel()
 
@@ -36,7 +45,18 @@ func TestLower(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ParseExpr(%q): %v", query, err)
 		}
-		plan, err := logql.Lower(context.Background(), expr, s)
+
+		start, end, err := readWindowSections(c)
+		if err != nil {
+			t.Fatalf("window sections: %v", err)
+		}
+
+		var plan chplan.Node
+		if start.IsZero() && end.IsZero() {
+			plan, err = logql.Lower(context.Background(), expr, s)
+		} else {
+			plan, err = logql.LowerAt(context.Background(), expr, s, start, end)
+		}
 		if err != nil {
 			t.Fatalf("Lower(%q): %v", query, err)
 		}
@@ -51,6 +71,34 @@ func TestLower(t *testing.T) {
 			"chplan": spec.PrintChplan(plan),
 		})
 	})
+}
+
+// readWindowSections pulls optional `start:` / `end:` RFC3339Nano
+// sections from c. Missing or empty sections return zero times so the
+// caller falls back to the no-window Lower path.
+func readWindowSections(c *spec.Case) (time.Time, time.Time, error) {
+	var start, end time.Time
+	if v, ok := c.Section("start"); ok {
+		v = strings.TrimSpace(v)
+		if v != "" {
+			t, err := time.Parse(time.RFC3339Nano, v)
+			if err != nil {
+				return time.Time{}, time.Time{}, fmt.Errorf("start: %w", err)
+			}
+			start = t
+		}
+	}
+	if v, ok := c.Section("end"); ok {
+		v = strings.TrimSpace(v)
+		if v != "" {
+			t, err := time.Parse(time.RFC3339Nano, v)
+			if err != nil {
+				return time.Time{}, time.Time{}, fmt.Errorf("end: %w", err)
+			}
+			end = t
+		}
+	}
+	return start, end, nil
 }
 
 func formatArgs(args []any) string {

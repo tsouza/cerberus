@@ -22,7 +22,7 @@ import (
 // `unwrap` and the value-aggregation ops (`avg_over_time`,
 // `quantile_over_time`, etc.) require parser-extracted numeric
 // columns and defer until parsers land.
-func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs) (chplan.Node, error) {
+func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs, lc lowerCtx) (chplan.Node, error) {
 	if e.Left == nil {
 		return nil, fmt.Errorf("logql: range-aggregation has nil inner")
 	}
@@ -33,7 +33,7 @@ func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs) (chpla
 		return nil, fmt.Errorf("logql: range-aggregation with `by`/`without` grouping is not yet supported (M3.4)")
 	}
 
-	inner, err := lower(e.Left.Left, s)
+	inner, err := lower(e.Left.Left, s, lc)
 	if err != nil {
 		return nil, err
 	}

@@ -130,22 +130,24 @@ test.describe('Loki UX — Logs panel flows', () => {
     expect(Array.isArray(body.data.patterns), 'data.patterns is an array').toBe(true);
   });
 
-  test('time range: query_range returns well-shaped streams over the seed window', async ({
+  test('time range: query_range strictly contains every value in [start, end]', async ({
     request,
   }) => {
-    // Cerberus's Loki streams handler does not yet filter log rows by
-    // the URL `start` / `end` parameters at the SQL level — they're
-    // consumed only for matrix step-grid bucketing on metric queries
-    // (handler.go § buildRangeData). The seed packs 60 rows into the
-    // 60-second window ending at seed time; in CI the seed-to-test
-    // gap is variable (30-120 s), so the strict
-    // `start <= ts <= end` check is unreliable and flaked nightly
-    // (run 25860046087). Until cerberus pushes the window predicate
-    // through the lowering layer, pin only what the handler already
-    // guarantees: shape + valid nanosecond timestamps + non-empty
-    // results inside a generous seed-vintage envelope.
+    // Cerberus's Loki streams handler now threads URL `start` / `end`
+    // through to the LogQL lowering, which AND-folds a
+    // `Timestamp BETWEEN start AND end` predicate above the
+    // Scan(otel_logs) node. The emitted SQL honours the requested
+    // window — every returned value's timestamp MUST satisfy
+    // `start_ns <= ts <= end_ns`. The previous "1-day envelope"
+    // tolerance is gone: the strict assertion is the regression gate
+    // for the wire-format contract.
+    //
+    // Window sized at 5 minutes (matching last5MinWindow) so the seed's
+    // 60-row [seed_now - 60s, seed_now] burst is always inside the
+    // [test_now - 300s, test_now] window even when CI's seed-to-test
+    // gap stretches to the e2e-wait-otel ceiling.
     const end = Math.floor(Date.now() / 1000);
-    const start = end - 30;
+    const start = end - 5 * 60;
     const q = encodeURIComponent('{service_name="api"}');
     const url = `${lokiProxy}/query_range?query=${q}&start=${start}&end=${end}&step=10`;
     const resp = await request.get(url);
@@ -153,21 +155,20 @@ test.describe('Loki UX — Logs panel flows', () => {
     const body = await resp.json();
     expect(body.status).toBe('success');
     expect(['streams', 'matrix']).toContain(body.data.resultType);
-    // Seed vintage envelope: rows land in [now - 1 day, now]. The
-    // generous lower bound tolerates seed-to-test latency drift in
-    // CI without losing the timestamp-shape assertion.
-    const oneDayAgoNs = (end - 24 * 60 * 60) * 1e9;
+    // Strict containment: every value's ts must be in [start_ns, end_ns].
+    const startNs = start * 1e9;
     const endNs = end * 1e9;
     let totalValues = 0;
     for (const s of body.data.result) {
       if (!s.values || s.values.length === 0) continue;
       totalValues += s.values.length;
-      const [ts] = s.values[0];
       if (body.data.resultType === 'streams') {
-        const tsNum = Number(ts);
-        expect(Number.isFinite(tsNum) && tsNum > 0, 'ts is a positive number').toBe(true);
-        expect(tsNum, 'ts within seed-vintage envelope').toBeGreaterThanOrEqual(oneDayAgoNs);
-        expect(tsNum, 'ts not in the future').toBeLessThanOrEqual(endNs);
+        for (const [ts] of s.values) {
+          const tsNum = Number(ts);
+          expect(Number.isFinite(tsNum) && tsNum > 0, 'ts is a positive number').toBe(true);
+          expect(tsNum, 'ts >= start_ns').toBeGreaterThanOrEqual(startNs);
+          expect(tsNum, 'ts <= end_ns').toBeLessThanOrEqual(endNs);
+        }
       }
     }
     expect(totalValues, '≥1 log value across the response').toBeGreaterThan(0);

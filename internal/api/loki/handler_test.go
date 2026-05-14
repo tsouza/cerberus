@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -208,6 +210,100 @@ func TestResponseHeaders_EngineInstrumentation(t *testing.T) {
 	if got := resp.Header.Get("X-Cerberus-CH-Millis"); got == "" {
 		t.Errorf("X-Cerberus-CH-Millis: missing")
 	}
+}
+
+// TestQueryRange_PushesStartEndToSQL pins the wire-format contract that
+// the URL `start` / `end` parameters reach the engine and produce a
+// Timestamp BETWEEN predicate in the emitted SQL. The bug this guards
+// against is the pre-fix behaviour where the handler parsed those params
+// for response shaping (matrix step-grid bucketing) but never threaded
+// them through to the lowering — so the emitted SQL returned every
+// matching log row regardless of the requested window.
+func TestQueryRange_PushesStartEndToSQL(t *testing.T) {
+	t.Parallel()
+
+	q := &stubQuerier{}
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	// Window: 2026-05-14T12:03:20Z → 2026-05-14T12:05:00Z (Unix seconds).
+	// 1778760000 = 2026-05-14T12:00:00Z; +200s = 1778760200; +300s = 1778760300.
+	const startSec = 1778760200
+	const endSec = 1778760300
+	url := srv.URL + `/loki/api/v1/query_range?query=%7Bservice_name%3D%22api%22%7D` +
+		`&start=` + strconv.Itoa(startSec) + `&end=` + strconv.Itoa(endSec) + `&step=10`
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+
+	if !strings.Contains(q.lastSQL, "`Timestamp` >=") || !strings.Contains(q.lastSQL, "`Timestamp` <=") {
+		t.Fatalf("expected Timestamp BETWEEN predicate in SQL; got: %s", q.lastSQL)
+	}
+	// The bound is rendered as toDateTime64('YYYY-MM-DD HH:MM:SS.fffffffff', 9)
+	// so both bound strings must appear as positional args.
+	const wantStart = "2026-05-14 12:03:20.000000000"
+	const wantEnd = "2026-05-14 12:05:00.000000000"
+	if !containsArg(q.lastArgs, wantStart) {
+		t.Errorf("expected args to contain start bound %q; got: %#v", wantStart, q.lastArgs)
+	}
+	if !containsArg(q.lastArgs, wantEnd) {
+		t.Errorf("expected args to contain end bound %q; got: %#v", wantEnd, q.lastArgs)
+	}
+}
+
+// TestQuery_PushesInstantWindowToSQL pins the same contract on the
+// instant `/query` path. The handler collapses a single `time` param
+// into a [time - 5m, time] envelope (per Loki's instant-lookback
+// convention) so the emitted SQL doesn't pull every matching row in
+// the table.
+func TestQuery_PushesInstantWindowToSQL(t *testing.T) {
+	t.Parallel()
+
+	q := &stubQuerier{}
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	// time = 2026-05-14T12:05:00Z; window = [12:00:00, 12:05:00].
+	const tsSec = 1778760300
+	url := srv.URL + `/loki/api/v1/query?query=%7Bservice_name%3D%22api%22%7D&time=` + strconv.Itoa(tsSec)
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+
+	if !strings.Contains(q.lastSQL, "`Timestamp` >=") || !strings.Contains(q.lastSQL, "`Timestamp` <=") {
+		t.Fatalf("expected Timestamp BETWEEN predicate in SQL; got: %s", q.lastSQL)
+	}
+	const wantStart = "2026-05-14 12:00:00.000000000"
+	const wantEnd = "2026-05-14 12:05:00.000000000"
+	if !containsArg(q.lastArgs, wantStart) {
+		t.Errorf("expected args to contain start bound %q; got: %#v", wantStart, q.lastArgs)
+	}
+	if !containsArg(q.lastArgs, wantEnd) {
+		t.Errorf("expected args to contain end bound %q; got: %#v", wantEnd, q.lastArgs)
+	}
+}
+
+// containsArg reports whether any positional arg equals the given
+// string. Helper for asserting bound rendering without coupling to
+// arg ordering (the chsql emitter may reorder predicates by sort-key
+// rank).
+func containsArg(args []any, want string) bool {
+	for _, a := range args {
+		if s, ok := a.(string); ok && s == want {
+			return true
+		}
+	}
+	return false
 }
 
 // TestQueryRange_BadInput covers the validation contract on
