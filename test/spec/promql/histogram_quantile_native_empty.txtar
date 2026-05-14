@@ -8,3 +8,18 @@ SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, now64(?) AS `TimeUnix`, 
 [2] string = "http_server_duration_exp_hist"
 [3] string = "service"
 [4] string = "does-not-exist"
+-- seed --
+CREATE TABLE otel_metrics_exp_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Scale Int32,
+    ZeroCount UInt64,
+    ZeroThreshold Float64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64)
+) ENGINE = Memory;
+INSERT INTO otel_metrics_exp_histogram VALUES
+    ('http_server_duration_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 0, 0, 0.0, 0, [1, 2, 3]);
+-- expected_rows --
+[]

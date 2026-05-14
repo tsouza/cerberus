@@ -9,3 +9,14 @@ SELECT ? AS `MetricName`, map(?, `gkey_0`) AS `Attributes`, now64(?) AS `TimeUni
 [3] string = "job"
 [4] string = "latency_seconds"
 [5] string = "job"
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = Memory;
+INSERT INTO otel_metrics_gauge VALUES
+    ('other_metric', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 1.0);
+-- expected_rows --
+[]
