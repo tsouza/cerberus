@@ -289,6 +289,8 @@ func RecordRulesApplied(ctx context.Context, n int) {
 func RecordClickHouseProgress(ctx context.Context, ql string, rows, bytes uint64) {
 	attrs := metric.WithAttributes(AttrQL.String(ql))
 	inst := Get()
-	inst.ClickHouseRowsRead.Record(ctx, int64(rows), attrs)
-	inst.ClickHouseBytesRead.Record(ctx, int64(bytes), attrs)
+	// OTel Int64Histogram requires int64; CH reports uint64 totals.
+	// Real CH row/byte counts never approach int64 overflow (≈9.2e18).
+	inst.ClickHouseRowsRead.Record(ctx, int64(rows), attrs)   //nolint:gosec // G115
+	inst.ClickHouseBytesRead.Record(ctx, int64(bytes), attrs) //nolint:gosec // G115
 }
