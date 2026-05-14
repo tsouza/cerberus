@@ -23,17 +23,30 @@ name: cerberus-compatibility
 
 services:
   clickhouse:
-    image: clickhouse/clickhouse-server:24.8-alpine
+    # Use the Ubuntu-base image, NOT -alpine. Per PR #245's finding,
+    # `clickhouse/clickhouse-server:24.8-alpine` on GH Actions runners
+    # stalls in the entrypoint script for 5+ min (never starts the
+    # server, never binds 8123). The Ubuntu-base variant boots in
+    # ~10-20s on the same runners. A future maintainer: do not
+    # innocently switch back to -alpine here without re-validating
+    # against the GH-runner musl/scheduling regression.
+    image: clickhouse/clickhouse-server:24.8
     environment:
       CLICKHOUSE_DB: otel
       CLICKHOUSE_USER: cerberus
       CLICKHOUSE_PASSWORD: cerberus
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8123/ping"]
-      interval: 2s
-      timeout: 2s
-      retries: 30
+      # `clickhouse-client --query 'SELECT 1'` is more reliable than
+      # `wget /ping`: the HTTP listener (:8123) binds slightly before
+      # the SQL engine is ready to answer queries. Talking SQL over the
+      # local unix socket as the default user proves end-to-end
+      # readiness (matches the pattern PR #245 used for startup-bench).
+      test: ["CMD-SHELL", "clickhouse-client --query 'SELECT 1' 2>/dev/null || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 36
+      start_period: 30s
     ports:
       - "29000:9000"
       - "28123:8123"
