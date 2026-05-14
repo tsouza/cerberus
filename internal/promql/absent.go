@@ -97,8 +97,31 @@ func lowerAbsent(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 		DropEmptyOnNoGroup: false,
 	}
 
+	// In range mode (ctx.step > 0) fan the 1-row count-check across the
+	// query_range step grid via CROSS JOIN. The Cartesian product is
+	// either N rows × 1 row (absent → emit N samples) or N rows × 0
+	// rows (present → emit nothing). The outer Filter still operates
+	// on `_cerb_n`; with CH 24.x CROSS JOIN the right side's columns
+	// are visible to the outer SELECT.
+	//
+	// In instant mode the existing 1-row aggregate suffices: a single
+	// sample at the eval anchor with Value = 1 / no rows when present.
+	var filterInput chplan.Node = agg
+	var timeExpr chplan.Expr
+	if ctx.step > 0 {
+		filterInput = &chplan.CrossJoin{
+			Left:  &chplan.StepGrid{Start: ctx.start.UTC(), End: ctx.end.UTC(), Step: ctx.step},
+			Right: agg,
+		}
+		timeExpr = &chplan.ColumnRef{Name: "anchor_ts"}
+	} else if !ctx.end.IsZero() {
+		timeExpr = anchorBaseExpr(evalAnchor{End: ctx.end.UTC()})
+	} else {
+		timeExpr = anchorBaseExpr(evalAnchor{})
+	}
+
 	onlyEmpty := &chplan.Filter{
-		Input: agg,
+		Input: filterInput,
 		Predicate: &chplan.Binary{
 			Op:    chplan.OpEq,
 			Left:  &chplan.ColumnRef{Name: cntAlias},
@@ -109,7 +132,7 @@ func lowerAbsent(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	// Synthesise the canonical Sample-row contract:
 	//   MetricName=''                                  (absent drops __name__)
 	//   Attributes=map(<eq-matchers from v>)           (Prom funcAbsent label rule)
-	//   TimeUnix=<eval anchor>                         (now64(9) or literal eval ts)
+	//   TimeUnix=<eval anchor>                         (now64(9) or anchor_ts)
 	//   Value=toFloat64(1)                             (Prom's spec value)
 	//
 	// The Value expression is wrapped in `toFloat64(...)` because the
@@ -120,10 +143,6 @@ func lowerAbsent(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	// *float64 is unsupported`). Wrapping in `toFloat64(?)` forces
 	// CH to project Float64 on the wire regardless of the bound
 	// literal's inferred type.
-	timeExpr := anchorBaseExpr(evalAnchor{End: ctx.end.UTC()})
-	if ctx.end.IsZero() {
-		timeExpr = anchorBaseExpr(evalAnchor{})
-	}
 	return &chplan.Project{
 		Input: onlyEmpty,
 		Projections: []chplan.Projection{

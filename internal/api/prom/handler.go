@@ -263,7 +263,7 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cursor, hdr, err := h.executeRangeStreaming(r.Context(), q, start, end)
+	cursor, hdr, err := h.executeRangeStreaming(r.Context(), q, start, end, step)
 	if err != nil {
 		h.respondError(w, err)
 		return
@@ -340,12 +340,21 @@ func scalarMatrix(v float64, start, end time.Time, step time.Duration) []MatrixS
 // the handler retains responsibility for the chclient.Cursor →
 // response-shape pivot. For a wide-range / fine-step query this is the
 // difference between O(rows) and O(rows-per-series) resident memory.
+//
+// step is threaded through to the PromQL lang adapter so the
+// "no-driving-vector" lowerings (`time()`, `vector(N)`, zero-arg date
+// fns, `absent(...)`) emit one sample per step across [start, end]
+// instead of a single row at the eval anchor. Without this threading
+// the matrix pivot below would drop those rows outside the 5-minute
+// lookback window, producing the empty-matrix shape Pool-O/Pool-S2
+// surfaced as 54 compat-lane diffs.
 func (h *Handler) executeRangeStreaming(
 	ctx context.Context,
 	query string,
 	start, end time.Time,
+	step time.Duration,
 ) (chclient.Cursor, map[string]string, error) {
-	l := &lang{Parser: h.parser, Schema: h.Schema, Start: start, End: end}
+	l := &lang{Parser: h.parser, Schema: h.Schema, Start: start, End: end, Step: step}
 	// Time the entire QueryCursor entry so the cursor-open round-trip
 	// is billed to X-Cerberus-CH-Millis the same way timeCH did pre-
 	// port. The execute span the engine opens internally covers the

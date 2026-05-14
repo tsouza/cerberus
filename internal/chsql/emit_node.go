@@ -2,6 +2,7 @@ package chsql
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -86,6 +87,93 @@ func (e *emitter) emitScan(s *chplan.Scan) error {
 // expressions for MetricName / Attributes / TimeUnix / Value.
 func (e *emitter) emitOneRow(_ *chplan.OneRow) error {
 	sb := NewQuery().Select(InlineLit(int64(1)))
+	e.emitSelect(sb)
+	return nil
+}
+
+// emitStepGrid renders a single-column SELECT that fans out one row
+// per Prom query_range step in `[Start, End]` spaced by Step:
+//
+//	SELECT arrayJoin(arrayMap(i -> toDateTime64('<start>', 9) + toIntervalNanosecond(i * <step_ns>), range(0, <N>))) AS anchor_ts
+//
+// where N = (End-Start)/Step + 1 (end-inclusive). The output column is
+// named `anchor_ts` — the PromQL no-driving-vector lowerings
+// (`time()`, `vector(N)`, zero-arg date fns, `absent(...)`) consume
+// it through the surrounding Project's TimeUnix projection so each
+// emitted Sample lands at the right step bucket.
+//
+// The step / numAnchors / start time are emitted as inline SQL
+// literals (no `?` placeholders) for the same reason the surrounding
+// matrix RangeWindow fan-out does: they are part of the query shape,
+// CH cannot prune sort keys against parameter-bound bounds, and the
+// driver round-trip is one less round trip when the literal is in
+// the SQL stream.
+//
+// When Step <= 0 this is a degenerate "single-anchor" StepGrid (the
+// instant query path) — emit a single-row SELECT carrying Start as
+// the anchor_ts. This shape is unreachable from the standard PromQL
+// lowering (the lowering picks OneRow in that case) but keeps the
+// emitter total.
+func (e *emitter) emitStepGrid(g *chplan.StepGrid) error {
+	if g.Step <= 0 {
+		// Degenerate single-anchor StepGrid — emit a one-row SELECT
+		// carrying the Start time as anchor_ts so callers reading
+		// `anchor_ts` get a usable column reference in either mode.
+		sb := NewQuery().Select(As(func(b *Builder) {
+			b.DateTime64Lit(g.Start)
+		}, "anchor_ts"))
+		e.emitSelect(sb)
+		return nil
+	}
+	stepNS := g.Step.Nanoseconds()
+	// End-inclusive anchor count: anchors at Start, Start+Step, …
+	// up to and including End. Matches Prom's range-query step grid
+	// (the upstream evaluator emits (end-start)/step + 1 samples per
+	// series in the canonical case).
+	numAnchors := (g.End.Sub(g.Start).Nanoseconds())/stepNS + 1
+	if numAnchors < 1 {
+		numAnchors = 1
+	}
+	start := g.Start
+	sb := NewQuery().Select(As(func(b *Builder) {
+		b.sb.WriteString("arrayJoin(arrayMap(i -> ")
+		b.DateTime64Lit(start)
+		b.sb.WriteString(" + toIntervalNanosecond(i * ")
+		b.sb.WriteString(strconv.FormatInt(stepNS, 10))
+		b.sb.WriteString("), range(0, ")
+		b.sb.WriteString(strconv.FormatInt(numAnchors, 10))
+		b.sb.WriteString(")))")
+	}, "anchor_ts"))
+	e.emitSelect(sb)
+	return nil
+}
+
+// emitCrossJoin renders an unconditional Cartesian product as
+// `SELECT * FROM (<Left>) AS L CROSS JOIN (<Right>) AS R`. Both
+// subqueries get bare-uppercase aliases so CH 24.x's
+// `joined_subquery_requires_alias = 1` invariant is satisfied without
+// requiring callers to know the column-collision shape. Output rows
+// expose the union of both sides' columns; callers that need to
+// project a subset wrap the CrossJoin in a Project (or rely on the
+// surrounding Filter/Project to read the columns by name).
+//
+// Used by the range-mode `absent(...)` lowering to fan the inner
+// count-check across the StepGrid's anchor column. The StepGrid
+// emits a single `anchor_ts` column on the left; the Aggregate emits
+// `_cerb_n` on the right; the outer Filter reads both by bare name
+// (no collision), so the L/R aliases are inert beyond satisfying
+// the parser invariant.
+func (e *emitter) emitCrossJoin(j *chplan.CrossJoin) error {
+	leftSub, err := e.subqueryFrag(j.Left)
+	if err != nil {
+		return err
+	}
+	rightSub, err := e.subqueryFrag(j.Right)
+	if err != nil {
+		return err
+	}
+	sb := NewQuery().From(aliasedFrag(leftSub, "L")).
+		Join(CrossJoin, aliasedFrag(rightSub, "R"), nil)
 	e.emitSelect(sb)
 	return nil
 }

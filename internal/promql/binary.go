@@ -39,7 +39,7 @@ func lowerBinary(b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (chplan.N
 	// a `(1+2) + vec` mixed shape falls through to the vector/scalar
 	// path below.
 	if v, ok := TryFoldScalar(b); ok {
-		return syntheticScalarVector(&chplan.LitFloat{V: v}, nil, s), nil
+		return syntheticScalarVector(&chplan.LitFloat{V: v}, nil, s, ctx), nil
 	}
 
 	op, err := promBinaryOp(b.Op)

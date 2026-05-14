@@ -37,8 +37,18 @@ type evalAnchor struct {
 // within the staleness window; under a range vector we leave every
 // in-window sample for the RangeWindow node to consume.
 type lowerCtx struct {
-	start         time.Time
-	end           time.Time
+	start time.Time
+	end   time.Time
+	// step is the query_range step duration. When > 0 the lowering is
+	// in "range mode" — synthetic-vector lowerings whose result would
+	// otherwise have no driving input (`time()`, `vector(scalar)`,
+	// zero-arg date fns, `absent(...)`) materialise a StepGrid source
+	// so the emitted SQL produces one row per step in `[start, end]`,
+	// matching Prom's `query_range` semantics ("emit one sample per
+	// (start, end, step) regardless of input data"). step == 0 means
+	// instant mode (start == end == eval ts) — the OneRow source is
+	// kept for byte-stable SQL on the existing fixtures.
+	step          time.Duration
 	inRangeVector bool
 }
 
