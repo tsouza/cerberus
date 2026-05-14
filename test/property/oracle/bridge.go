@@ -19,6 +19,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/model/labels"
 
 	"github.com/tsouza/cerberus/internal/promshim/local"
@@ -97,7 +98,7 @@ func BridgePromQLOracle(d property.Dataset, q property.Query) property.Outcome {
 			// HTTP response surfaces __name__ as a real label too,
 			// so symmetric stripping keeps the comparator's
 			// labelKey() canonical-form aligned.
-			if l.Name == labels.MetricName {
+			if l.Name == model.MetricNameLabel {
 				return
 			}
 			lblMap[l.Name] = l.Value
