@@ -1,0 +1,286 @@
+package admit_test
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+
+	"go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+
+	"github.com/tsouza/cerberus/internal/api/admit"
+)
+
+func TestAcquireBelowCap(t *testing.T) {
+	t.Parallel()
+	l := admit.New("prom", 3)
+	rel1, ok := l.Acquire(t.Context())
+	if !ok {
+		t.Fatalf("acquire 1: want ok, got reject")
+	}
+	rel2, ok := l.Acquire(t.Context())
+	if !ok {
+		t.Fatalf("acquire 2: want ok, got reject")
+	}
+	rel1()
+	rel2()
+}
+
+func TestAcquireAtCapRejects(t *testing.T) {
+	t.Parallel()
+	l := admit.New("prom", 1)
+	rel, ok := l.Acquire(t.Context())
+	if !ok {
+		t.Fatalf("acquire 1: want ok, got reject")
+	}
+	defer rel()
+	if _, ok := l.Acquire(t.Context()); ok {
+		t.Fatalf("acquire 2: want reject, got ok")
+	}
+}
+
+func TestReleaseAllowsNext(t *testing.T) {
+	t.Parallel()
+	l := admit.New("prom", 1)
+	rel, ok := l.Acquire(t.Context())
+	if !ok {
+		t.Fatalf("acquire 1: want ok")
+	}
+	rel()
+	rel2, ok := l.Acquire(t.Context())
+	if !ok {
+		t.Fatalf("acquire after release: want ok, got reject")
+	}
+	rel2()
+}
+
+func TestReleaseIdempotent(t *testing.T) {
+	t.Parallel()
+	l := admit.New("prom", 1)
+	rel, ok := l.Acquire(t.Context())
+	if !ok {
+		t.Fatalf("acquire: want ok")
+	}
+	rel()
+	rel() // second call must not panic, must not double-release
+	rel2, ok := l.Acquire(t.Context())
+	if !ok {
+		t.Fatalf("re-acquire: want ok")
+	}
+	// If double-release wrongly returned a second token, cap=1 would
+	// still allow another acquire here. Verify the slot is taken.
+	if _, ok := l.Acquire(t.Context()); ok {
+		t.Fatalf("re-acquire 2: want reject, got ok — double-release corrupted the semaphore")
+	}
+	rel2()
+}
+
+func TestNilLimiterAlwaysAdmits(t *testing.T) {
+	t.Parallel()
+	var l *admit.Limiter
+	for range 100 {
+		rel, ok := l.Acquire(t.Context())
+		if !ok {
+			t.Fatalf("nil limiter must always admit")
+		}
+		rel()
+	}
+}
+
+func TestNewZeroCapReturnsNil(t *testing.T) {
+	t.Parallel()
+	if l := admit.New("prom", 0); l != nil {
+		t.Fatalf("cap=0: want nil limiter, got %v", l)
+	}
+	if l := admit.New("prom", -1); l != nil {
+		t.Fatalf("cap=-1: want nil limiter, got %v", l)
+	}
+}
+
+func TestMiddlewareBelowCap(t *testing.T) {
+	t.Parallel()
+	l := admit.New("prom", 2)
+	var hits atomic.Int32
+	h := l.Middleware(1, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	for range 5 {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/test", nil)
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("want 200, got %d", rec.Code)
+		}
+	}
+	if hits.Load() != 5 {
+		t.Fatalf("want 5 handler hits, got %d", hits.Load())
+	}
+}
+
+func TestMiddlewareRejectsAtCap(t *testing.T) {
+	t.Parallel()
+	l := admit.New("prom", 1)
+	// Hold the slot so the next request through the middleware hits
+	// the cap.
+	rel, ok := l.Acquire(t.Context())
+	if !ok {
+		t.Fatalf("setup acquire: want ok")
+	}
+	defer rel()
+
+	h := l.Middleware(1, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Fatalf("handler must not run when limiter is full")
+	}))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("want 503, got %d", rec.Code)
+	}
+	if got := rec.Header().Get("Retry-After"); got != "1" {
+		t.Fatalf("Retry-After: want \"1\", got %q", got)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "admission control") {
+		t.Fatalf("body should mention admission control, got %q", body)
+	}
+}
+
+func TestMiddlewareNilLimiterPassesThrough(t *testing.T) {
+	t.Parallel()
+	var l *admit.Limiter
+	var hits atomic.Int32
+	h := l.Middleware(1, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	for range 10 {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/test", nil)
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("want 200, got %d", rec.Code)
+		}
+	}
+	if hits.Load() != 10 {
+		t.Fatalf("want 10 hits, got %d", hits.Load())
+	}
+}
+
+func TestMiddlewareNoRetryAfterWhenZero(t *testing.T) {
+	t.Parallel()
+	l := admit.New("prom", 1)
+	rel, _ := l.Acquire(t.Context())
+	defer rel()
+
+	h := l.Middleware(0, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("want 503, got %d", rec.Code)
+	}
+	if got := rec.Header().Get("Retry-After"); got != "" {
+		t.Fatalf("Retry-After: want empty (suppressed), got %q", got)
+	}
+}
+
+func TestConcurrentAcquireRespectsCap(t *testing.T) {
+	t.Parallel()
+	const cap, workers = 4, 64
+	l := admit.New("prom", cap)
+
+	var (
+		inflight    atomic.Int32
+		maxInflight atomic.Int32
+		admitted    atomic.Int32
+		rejected    atomic.Int32
+		wg          sync.WaitGroup
+		start       = make(chan struct{})
+	)
+	wg.Add(workers)
+	for range workers {
+		go func() {
+			defer wg.Done()
+			<-start
+			rel, ok := l.Acquire(t.Context())
+			if !ok {
+				rejected.Add(1)
+				return
+			}
+			admitted.Add(1)
+			cur := inflight.Add(1)
+			for {
+				maxObserved := maxInflight.Load()
+				if cur <= maxObserved || maxInflight.CompareAndSwap(maxObserved, cur) {
+					break
+				}
+			}
+			inflight.Add(-1)
+			rel()
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if got := maxInflight.Load(); got > int32(cap) {
+		t.Fatalf("max concurrent in-flight %d exceeded cap %d", got, cap)
+	}
+	if admitted.Load()+rejected.Load() != workers {
+		t.Fatalf("accounting mismatch: admitted=%d rejected=%d workers=%d",
+			admitted.Load(), rejected.Load(), workers)
+	}
+}
+
+func TestRejectedCounter(t *testing.T) {
+	t.Parallel()
+	// Use the test-only NewWithProvider so this limiter's rejection
+	// counter targets *our* manual reader exclusively. Routing through
+	// the OTel global would cross-count with the limiters built by
+	// parallel tests, which all share that global.
+	reader := metric.NewManualReader()
+	mp := metric.NewMeterProvider(metric.WithReader(reader))
+
+	l := admit.NewWithProvider("prom", 1, mp)
+	rel, _ := l.Acquire(t.Context())
+	defer rel()
+
+	// Drive two rejections through Acquire.
+	if _, ok := l.Acquire(t.Context()); ok {
+		t.Fatalf("acquire 2: want reject")
+	}
+	if _, ok := l.Acquire(t.Context()); ok {
+		t.Fatalf("acquire 3: want reject")
+	}
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(t.Context(), &rm); err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	var found bool
+	var sum int64
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != "cerberus.admit.rejected_total" {
+				continue
+			}
+			found = true
+			sumData, ok := m.Data.(metricdata.Sum[int64])
+			if !ok {
+				t.Fatalf("rejected_total data: want Sum[int64], got %T", m.Data)
+			}
+			for _, dp := range sumData.DataPoints {
+				sum += dp.Value
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("cerberus.admit.rejected_total not exported")
+	}
+	if sum != 2 {
+		t.Fatalf("rejected_total: want 2, got %d", sum)
+	}
+}

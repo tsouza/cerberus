@@ -214,3 +214,70 @@ func TestFromEnv_SchemaOverrides(t *testing.T) {
 		t.Errorf("Schema.GaugeTable should be unchanged: got %q", cfg.Schema.GaugeTable)
 	}
 }
+
+// TestFromEnv_Admit_Defaults verifies the conservative defaults for
+// the per-handler concurrency caps when no env vars are set.
+func TestFromEnv_Admit_Defaults(t *testing.T) {
+	t.Setenv("CERBERUS_ADMIT_DISABLED", "")
+	t.Setenv("CERBERUS_ADMIT_PROM", "")
+	t.Setenv("CERBERUS_ADMIT_LOKI", "")
+	t.Setenv("CERBERUS_ADMIT_TEMPO", "")
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+	if cfg.Admit.Disabled {
+		t.Errorf("Admit.Disabled = true; want false")
+	}
+	if cfg.Admit.MaxInflightProm != defaultAdmitProm {
+		t.Errorf("MaxInflightProm = %d; want %d", cfg.Admit.MaxInflightProm, defaultAdmitProm)
+	}
+	if cfg.Admit.MaxInflightLoki != defaultAdmitLoki {
+		t.Errorf("MaxInflightLoki = %d; want %d", cfg.Admit.MaxInflightLoki, defaultAdmitLoki)
+	}
+	if cfg.Admit.MaxInflightTempo != defaultAdmitTempo {
+		t.Errorf("MaxInflightTempo = %d; want %d", cfg.Admit.MaxInflightTempo, defaultAdmitTempo)
+	}
+}
+
+// TestFromEnv_Admit_Overrides confirms env-var overrides flow through.
+func TestFromEnv_Admit_Overrides(t *testing.T) {
+	t.Setenv("CERBERUS_ADMIT_DISABLED", "true")
+	t.Setenv("CERBERUS_ADMIT_PROM", "128")
+	t.Setenv("CERBERUS_ADMIT_LOKI", "16")
+	t.Setenv("CERBERUS_ADMIT_TEMPO", "8")
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+	if !cfg.Admit.Disabled {
+		t.Errorf("Admit.Disabled = false; want true")
+	}
+	if cfg.Admit.MaxInflightProm != 128 {
+		t.Errorf("MaxInflightProm = %d; want 128", cfg.Admit.MaxInflightProm)
+	}
+	if cfg.Admit.MaxInflightLoki != 16 {
+		t.Errorf("MaxInflightLoki = %d; want 16", cfg.Admit.MaxInflightLoki)
+	}
+	if cfg.Admit.MaxInflightTempo != 8 {
+		t.Errorf("MaxInflightTempo = %d; want 8", cfg.Admit.MaxInflightTempo)
+	}
+}
+
+// TestFromEnv_Admit_RejectsNegative ensures a negative cap fails fast
+// at startup rather than silently disabling admission control.
+func TestFromEnv_Admit_RejectsNegative(t *testing.T) {
+	t.Setenv("CERBERUS_ADMIT_PROM", "-1")
+	if _, err := FromEnv(); err == nil {
+		t.Fatalf("FromEnv with CERBERUS_ADMIT_PROM=-1: want error, got nil")
+	}
+}
+
+// TestFromEnv_Admit_RejectsGarbage ensures a non-integer value also
+// fails fast.
+func TestFromEnv_Admit_RejectsGarbage(t *testing.T) {
+	t.Setenv("CERBERUS_ADMIT_PROM", "not-a-number")
+	if _, err := FromEnv(); err == nil {
+		t.Fatalf("FromEnv with CERBERUS_ADMIT_PROM=not-a-number: want error, got nil")
+	}
+}

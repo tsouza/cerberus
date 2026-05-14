@@ -51,6 +51,37 @@ type Config struct {
 	// OTel Go SDK reads them by default and they merge with whatever
 	// these cerberus-specific values resolve to.
 	OTLP OTLPConfig
+
+	// Admit configures per-handler concurrency caps. When Admit.Disabled
+	// is true cerberus skips the admission middleware entirely and every
+	// request is admitted. When false, each API head (Prom / Loki /
+	// Tempo) gets its own counted semaphore — requests above the cap
+	// are rejected with HTTP 503 + Retry-After: 1 so well-behaved
+	// clients back off and CH stays out of overload.
+	Admit AdmitConfig
+}
+
+// AdmitConfig holds the per-handler concurrency cap knobs.
+//
+// Defaults are deliberately conservative — easy to lift via env, hard
+// to accidentally deny-of-service legitimate traffic with the
+// out-of-the-box values. Tempo's default is half of Prom/Loki because
+// trace queries are typically the heaviest per-call (full trace span
+// fetches + tag-value scans across wide column sets).
+type AdmitConfig struct {
+	// Disabled, when true, removes admission control entirely. Handy
+	// for local development where artificial caps mask real
+	// concurrency bugs. Default false (admission control enabled).
+	Disabled bool
+
+	// MaxInflightProm caps simultaneous in-flight Prom API requests.
+	MaxInflightProm int
+
+	// MaxInflightLoki caps simultaneous in-flight Loki API requests.
+	MaxInflightLoki int
+
+	// MaxInflightTempo caps simultaneous in-flight Tempo API requests.
+	MaxInflightTempo int
 }
 
 // LogConfig controls the slog setup applied at startup.
@@ -102,6 +133,10 @@ type OTLPConfig struct {
 //	CERBERUS_OTLP_INSECURE         default "false"
 //	CERBERUS_OTLP_HEADERS          default ""   ("k=v,k2=v2" comma-separated)
 //	CERBERUS_OTLP_TIMEOUT          default "10s"
+//	CERBERUS_ADMIT_DISABLED        default "false"
+//	CERBERUS_ADMIT_PROM            default 64
+//	CERBERUS_ADMIT_LOKI            default 64
+//	CERBERUS_ADMIT_TEMPO           default 32
 //
 // Standard OTEL_EXPORTER_OTLP_* env vars are also honored by the OTel
 // Go SDK and complement these — see docs/observability.md.
@@ -132,6 +167,10 @@ func FromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	admit, err := admitFromEnv()
+	if err != nil {
+		return Config{}, err
+	}
 	return Config{
 		HTTPAddr: envDefault("CERBERUS_HTTP_ADDR", ":8080"),
 		ClickHouse: chclient.Config{
@@ -147,6 +186,56 @@ func FromEnv() (Config, error) {
 		AutoCreateSchema: autoCreate,
 		Log:              logCfg,
 		OTLP:             otlp,
+		Admit:            admit,
+	}, nil
+}
+
+// Default per-handler concurrency caps. Tempo gets a smaller cap
+// because trace queries (search + tag-value scans + per-trace span
+// fetches) are heavier than Prom/Loki metric queries.
+const (
+	defaultAdmitProm  = 64
+	defaultAdmitLoki  = 64
+	defaultAdmitTempo = 32
+)
+
+// admitFromEnv reads CERBERUS_ADMIT_* env vars into an AdmitConfig.
+// Unset values use the conservative defaults above. Setting any cap
+// to 0 disables admission control for that head specifically (a
+// finer-grained alternative to CERBERUS_ADMIT_DISABLED, which kills
+// every head). Negative caps are rejected — they almost certainly
+// mean a typo.
+func admitFromEnv() (AdmitConfig, error) {
+	disabled, err := envBool("CERBERUS_ADMIT_DISABLED", false)
+	if err != nil {
+		return AdmitConfig{}, fmt.Errorf("CERBERUS_ADMIT_DISABLED: %w", err)
+	}
+	prom, err := envInt("CERBERUS_ADMIT_PROM", defaultAdmitProm)
+	if err != nil {
+		return AdmitConfig{}, fmt.Errorf("CERBERUS_ADMIT_PROM: %w", err)
+	}
+	loki, err := envInt("CERBERUS_ADMIT_LOKI", defaultAdmitLoki)
+	if err != nil {
+		return AdmitConfig{}, fmt.Errorf("CERBERUS_ADMIT_LOKI: %w", err)
+	}
+	tempo, err := envInt("CERBERUS_ADMIT_TEMPO", defaultAdmitTempo)
+	if err != nil {
+		return AdmitConfig{}, fmt.Errorf("CERBERUS_ADMIT_TEMPO: %w", err)
+	}
+	for name, v := range map[string]int{
+		"CERBERUS_ADMIT_PROM":  prom,
+		"CERBERUS_ADMIT_LOKI":  loki,
+		"CERBERUS_ADMIT_TEMPO": tempo,
+	} {
+		if v < 0 {
+			return AdmitConfig{}, fmt.Errorf("%s: must be >= 0, got %d", name, v)
+		}
+	}
+	return AdmitConfig{
+		Disabled:         disabled,
+		MaxInflightProm:  prom,
+		MaxInflightLoki:  loki,
+		MaxInflightTempo: tempo,
 	}, nil
 }
 
@@ -225,6 +314,21 @@ func envDefault(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// envInt parses an integer env var. An unset or empty value returns
+// def. Anything that fails strconv.Atoi is rejected with an error so
+// misconfiguration fails fast at startup.
+func envInt(key string, def int) (int, error) {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, fmt.Errorf("invalid integer %q: %w", v, err)
+	}
+	return n, nil
 }
 
 // envBool parses a boolean env var. Accepts the standard strconv.ParseBool

@@ -75,6 +75,10 @@ The canonical list:
 | `CERBERUS_OTLP_INSECURE`      | `false`           | Dial OTLP endpoint without TLS.                                      |
 | `CERBERUS_OTLP_HEADERS`       | (empty)           | Comma-separated `key=value` gRPC metadata (e.g. auth tokens).        |
 | `CERBERUS_OTLP_TIMEOUT`       | `10s`             | Per-request OTLP roundtrip timeout.                                  |
+| `CERBERUS_ADMIT_DISABLED`     | `false`           | Disable per-handler concurrency caps (see Factor VIII).              |
+| `CERBERUS_ADMIT_PROM`         | `64`              | Max simultaneous in-flight Prom API requests.                        |
+| `CERBERUS_ADMIT_LOKI`         | `64`              | Max simultaneous in-flight Loki API requests.                        |
+| `CERBERUS_ADMIT_TEMPO`        | `32`              | Max simultaneous in-flight Tempo API requests.                       |
 
 Misconfigured values fail fast: an unparseable duration, an unknown
 log level, or a malformed OTLP header list aborts startup with a clear
@@ -179,6 +183,39 @@ A single cerberus process is itself concurrent: the standard
 `net/http` server multiplexes goroutines per request, and the
 ClickHouse driver pool serves them from a shared connection set.
 There is no `--workers` flag because there is no need for one.
+
+### Per-handler concurrency caps (admission control)
+
+To keep a single replica from saturating ClickHouse during traffic
+spikes, cerberus enforces a per-handler concurrency cap via a counted
+semaphore in `internal/api/admit`. Each API head (Prom / Loki /
+Tempo) gets its own limiter; requests above the cap are rejected
+immediately with HTTP `503 Service Unavailable` and a
+`Retry-After: 1` header so well-behaved clients back off rather than
+piling onto an already-overloaded ClickHouse.
+
+| Variable                   | Default | Meaning                                                                                  |
+| -------------------------- | ------- | ---------------------------------------------------------------------------------------- |
+| `CERBERUS_ADMIT_DISABLED`  | `false` | When `true`, removes admission control entirely. Useful for local dev / load tests.      |
+| `CERBERUS_ADMIT_PROM`      | `64`    | Maximum simultaneous in-flight Prom API requests. `0` disables this head specifically.   |
+| `CERBERUS_ADMIT_LOKI`      | `64`    | Maximum simultaneous in-flight Loki API requests. `0` disables this head specifically.   |
+| `CERBERUS_ADMIT_TEMPO`     | `32`    | Maximum simultaneous in-flight Tempo API requests. Lower than Prom/Loki because trace queries are typically heavier. |
+
+Rejections are emitted on the `cerberus.admit.rejected_total` OTel
+counter (labelled by `cerberus.admit.head`) so dashboards can alert
+on a steady-state non-zero rejection rate — the signal that an
+operator should either lift the cap (if CH has headroom) or scale
+the cerberus replica count out (if it doesn't). Admitted requests
+continue to be counted on `cerberus.queries.total`; the two
+counters are deliberately disjoint so a "total inbound" view sums
+both.
+
+The defaults are deliberately conservative — easy to lift via env,
+hard to accidentally deny-of-service legitimate traffic out of the
+box. A four-replica deployment at default caps gives 256 concurrent
+Prom queries and 128 concurrent Tempo queries before any client
+sees a 503; that is more than enough for most Grafana dashboards
+while still capping the worst-case fan-out into ClickHouse.
 
 ### Kubernetes HorizontalPodAutoscaler
 

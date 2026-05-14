@@ -15,6 +15,7 @@ import (
 
 	"go.opentelemetry.io/otel"
 
+	"github.com/tsouza/cerberus/internal/api/admit"
 	"github.com/tsouza/cerberus/internal/api/health"
 	"github.com/tsouza/cerberus/internal/api/loki"
 	"github.com/tsouza/cerberus/internal/api/prom"
@@ -89,28 +90,12 @@ func run() error {
 		schemaReady.Store(true)
 	}
 
-	// The trace mux carries the three Prom/Loki/Tempo APIs and is
-	// wrapped with otelhttp so every request becomes a server span.
-	traceMux := http.NewServeMux()
-
-	promHandler := prom.New(client, cfg.Schema, logger.With("api", "prom"))
-	promHandler.Mount(traceMux)
-
-	lokiHandler := loki.New(client, cfg.Logs, logger.With("api", "loki"))
-	lokiHandler.Mount(traceMux)
-
-	tempoHandler := tempo.New(client, cfg.Traces, Version, logger.With("api", "tempo"))
-	tempoHandler.Mount(traceMux)
-
 	// Install the W3C+Baggage propagator and build OTel providers from
 	// the OTLP env config. When CERBERUS_OTLP_ENDPOINT is empty the
 	// telemetry package returns noop providers, so cerberus stays a
-	// zero-collector-dependency binary by default. Wrapping the API
-	// mux with otelhttp gives every Prom/Loki/Tempo request a server
-	// span named after the matched route. Wrapping at the mux level —
-	// instead of per-handler — keeps the propagator code path uniform
-	// across all three APIs and lets the span name formatter pull
-	// r.Pattern after the mux has resolved the route.
+	// zero-collector-dependency binary by default. The providers are
+	// installed BEFORE handler.Mount so the per-head admit limiters
+	// build their rejected-counter against the right meter provider.
 	providers, err := telemetry.New(ctx, telemetry.Config{
 		Endpoint:       cfg.OTLP.Endpoint,
 		Insecure:       cfg.OTLP.Insecure,
@@ -130,6 +115,46 @@ func run() error {
 			"insecure", cfg.OTLP.Insecure,
 		)
 	}
+
+	// Build per-head admission-control limiters. When
+	// CERBERUS_ADMIT_DISABLED=true every limiter is nil and the
+	// middleware short-circuits to a pass-through wrapper. Otherwise
+	// each cap comes from CERBERUS_ADMIT_{PROM,LOKI,TEMPO} (or the
+	// conservative defaults — see internal/config.admitFromEnv).
+	var promLimiter, lokiLimiter, tempoLimiter *admit.Limiter
+	if !cfg.Admit.Disabled {
+		promLimiter = admit.New("prom", cfg.Admit.MaxInflightProm)
+		lokiLimiter = admit.New("loki", cfg.Admit.MaxInflightLoki)
+		tempoLimiter = admit.New("tempo", cfg.Admit.MaxInflightTempo)
+		logger.Info("admission control enabled",
+			"prom", cfg.Admit.MaxInflightProm,
+			"loki", cfg.Admit.MaxInflightLoki,
+			"tempo", cfg.Admit.MaxInflightTempo,
+		)
+	} else {
+		logger.Info("admission control disabled (CERBERUS_ADMIT_DISABLED=true)")
+	}
+
+	// The trace mux carries the three Prom/Loki/Tempo APIs and is
+	// wrapped with otelhttp so every request becomes a server span.
+	// Wrapping at the mux level — instead of per-handler — keeps the
+	// propagator code path uniform across all three APIs and lets the
+	// span name formatter pull r.Pattern after the mux has resolved
+	// the route.
+	traceMux := http.NewServeMux()
+
+	promHandler := prom.New(client, cfg.Schema, logger.With("api", "prom"))
+	promHandler.Limiter = promLimiter
+	promHandler.Mount(traceMux)
+
+	lokiHandler := loki.New(client, cfg.Logs, logger.With("api", "loki"))
+	lokiHandler.Limiter = lokiLimiter
+	lokiHandler.Mount(traceMux)
+
+	tempoHandler := tempo.New(client, cfg.Traces, Version, logger.With("api", "tempo"))
+	tempoHandler.Limiter = tempoLimiter
+	tempoHandler.Mount(traceMux)
+
 	tracedAPI := wrapWithOTel(traceMux, "cerberus")
 
 	// /healthz and /readyz live on a separate sub-mux that bypasses

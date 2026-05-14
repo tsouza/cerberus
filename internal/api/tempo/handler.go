@@ -15,6 +15,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/tsouza/cerberus/internal/api/admit"
 	"github.com/tsouza/cerberus/internal/cerbtrace"
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -66,6 +67,10 @@ type Handler struct {
 	Optimizer *optimizer.Driver
 	Logger    *slog.Logger
 	Version   string
+
+	// Limiter caps in-flight Tempo API requests. nil disables the
+	// admission middleware. Wired from CERBERUS_ADMIT_TEMPO.
+	Limiter *admit.Limiter
 }
 
 // New constructs a Handler with the seed optimizer wired in.
@@ -92,7 +97,10 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	// are health-checks and will dominate ResultOK volume — that's fine,
 	// dashboards can split them out via cerberus.route if needed.
 	register := func(pattern string, hf http.HandlerFunc) {
-		mux.Handle(pattern, telemetry.QueryMiddleware("traceql", hf))
+		// admit.Middleware (outer) → telemetry.QueryMiddleware (inner)
+		// — same layering as the Prom + Loki heads. Rejections land
+		// on cerberus.admit.rejected_total, not cerberus.queries.*.
+		mux.Handle(pattern, h.Limiter.Middleware(1, telemetry.QueryMiddleware("traceql", hf)))
 	}
 	register("GET /api/echo", h.handleEcho)
 	register("GET /api/status/version", h.handleVersion)
