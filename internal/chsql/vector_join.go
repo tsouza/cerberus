@@ -347,6 +347,13 @@ func writeOutputAttributes(b *Builder, j *chplan.VectorJoin) {
 // vectorJoinValueExprFrag returns a Frag for the joined value
 // expression. The default shape is `(L.<val> <op> R.<val>) AS <val>`.
 //
+// PromQL `^` (exponentiation) is special-cased: in ClickHouse the `^`
+// token is bitwise-XOR (integer-only), not exponentiation, so emitting
+// it directly against Float64 columns yields a CH ILLEGAL_TYPE_OF_ARGUMENT
+// error (HTTP 502 at the compat lane). PromQL semantics call for
+// floating-point exponentiation, which CH spells `pow(x, y)` — matching
+// the scalar `exprBinary` path's special case for OpPow.
+//
 // When ReturnBool is set on a comparison op (PromQL `lhs > bool rhs`),
 // the binary result is wrapped with `toFloat64(...)` so every matched
 // pair emits 1.0 or 0.0 instead of being dropped by the comparison —
@@ -354,7 +361,12 @@ func writeOutputAttributes(b *Builder, j *chplan.VectorJoin) {
 func vectorJoinValueExprFrag(j *chplan.VectorJoin) Frag {
 	left := qualColFrag("L", j.ValueColumn)
 	right := qualColFrag("R", j.ValueColumn)
-	inner := Paren(binOp(string(j.Op), left, right))
+	var inner Frag
+	if j.Op == chplan.OpPow {
+		inner = Call("pow", left, right)
+	} else {
+		inner = Paren(binOp(string(j.Op), left, right))
+	}
 	if j.ReturnBool {
 		inner = Call("toFloat64", inner)
 	}

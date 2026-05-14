@@ -1,0 +1,15 @@
+-- sql --
+SELECT L.`MetricName`, mapConcat(L.`Attributes`, mapFilter((k, v) -> k IN (?), R.`Attributes`)) AS `Attributes`, L.`TimeUnix`, pow(L.`Value`, R.`Value`) AS `Value` FROM (SELECT `_join_MetricName` AS `MetricName`, `_join_Attributes` AS `Attributes`, `_join_TimeUnix` AS `TimeUnix`, `_join_Value` AS `Value` FROM (SELECT `MetricName` AS `_join_MetricName`, `Attributes` AS `_join_Attributes`, max(`TimeUnix`) AS `_join_TimeUnix`, argMax(`Value`, `TimeUnix`) AS `_join_Value` FROM (SELECT * FROM `otel_metrics_gauge`) GROUP BY `MetricName`, `Attributes`)) AS L INNER JOIN (SELECT `_join_MetricName` AS `MetricName`, `_join_Attributes` AS `Attributes`, `_join_TimeUnix` AS `TimeUnix`, `_join_Value` AS `Value` FROM (SELECT argMax(`MetricName`, `TimeUnix`) AS `_join_MetricName`, argMax(`Attributes`, `TimeUnix`) AS `_join_Attributes`, max(`TimeUnix`) AS `_join_TimeUnix`, argMax(`Value`, `TimeUnix`) AS `_join_Value`, throwIf(uniqExact(`Attributes`) > 1, ?) AS _cerberus_match_check FROM (SELECT * FROM `otel_metrics_sum`) GROUP BY mapFilter((k, v) -> k IN (?, ?), `Attributes`))) AS R ON L.`Attributes`[?] = R.`Attributes`[?] AND L.`Attributes`[?] = R.`Attributes`[?]
+-- args --
+[0] string = "job"
+[1] string = "many-to-many matching not allowed: matching labels must be unique on one side"
+[2] string = "instance"
+[3] string = "type"
+[4] string = "instance"
+[5] string = "instance"
+[6] string = "type"
+[7] string = "type"
+-- chplan --
+VectorJoin op=^ match=on(instance,type) card=many-to-one include=[job]
+  Scan(otel_metrics_gauge)
+  Scan(otel_metrics_sum)
