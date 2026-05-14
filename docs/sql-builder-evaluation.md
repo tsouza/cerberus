@@ -1,21 +1,21 @@
-# RC6 R6.0 — SQL builder evaluation
+# SQL builder evaluation
 
-**Status:** decision landed; `internal/chsql.Builder` implementation in flight under R6.1–R6.10.
+**Status:** decision landed; `internal/chsql.Builder` ships as the canonical SQL emission surface.
 **Decision:** **(b) Build `internal/chsql.Builder` from scratch.**
 
 ## Decision summary
 
-The CLAUDE.md RC6 hard rule forbids `fmt.Sprintf` (and any string concatenation) for ClickHouse SQL generation. R6.0 weighed three paths:
+The CLAUDE.md hard rule forbids `fmt.Sprintf` (and any string concatenation) for ClickHouse SQL generation. The evaluation weighed three paths:
 
 - **(a)** Adopt [`huandu/go-sqlbuilder`](https://github.com/huandu/go-sqlbuilder) wrapped with a cerberus extension layer.
 - **(b)** Build a custom `internal/chsql.Builder` tailored to chplan IR.
 - **(c)** Defer the migration entirely.
 
-The honest reading of cerberus's state at R6.0:
+The honest reading of cerberus's state at the time of the decision:
 
 - The **security argument** for the migration is weak: every dynamic value already rides through `?` placeholders; the remaining Sprintf surface (`metadata.go` + one `range_window.go` numeric format) uses schema-config identifiers and Go-side floats, not user strings.
-- The **architectural argument** is strong: RC3's optimizer rules (PREWHERE promotion, sort-key reordering, materialised-view substitution, late materialisation) need to compose SQL fragments programmatically, and the Sprintf + `strings.Builder` mixture can't model that cleanly.
-- The **existing chsql emitter is already a custom builder in miniature** — it owns a `strings.Builder` + `[]any` placeholder slice, dispatches per chplan node, handles backtick quoting via `writeIdent`, and renders parameterised aggregates already. RC6 R6.1+ work is to **make that builder a named, public API**, not to rip-and-replace it with a third-party library.
+- The **architectural argument** is strong: optimizer rules (PREWHERE promotion, sort-key reordering, materialised-view substitution, late materialisation) need to compose SQL fragments programmatically, and the Sprintf + `strings.Builder` mixture can't model that cleanly.
+- The **existing chsql emitter is already a custom builder in miniature** — it owns a `strings.Builder` + `[]any` placeholder slice, dispatches per chplan node, handles backtick quoting via `writeIdent`, and renders parameterised aggregates already. The work was to **make that builder a named, public API**, not to rip-and-replace it with a third-party library.
 
 ## Decision matrix
 
@@ -40,11 +40,11 @@ The pivotal axis is **API match to chplan IR**. The existing emitter is structur
 
 ## Why not (c)
 
-- RC3's optimizer rules need fragment composition, and the optimizer rule work overlaps RC2's tail end. Deferring would force RC3 to either grow Sprintf-driven for the new emit code (compounding the migration debt) or defer the optimizer rules themselves.
-- The CLAUDE.md hard rule already states "new emitter code must go through" the builder — without R6.1 landing, every RC2/RC3 PR either violates the rule or postpones the new emit code.
+- Optimizer rules need fragment composition. Deferring would force later RCs to either grow Sprintf-driven for the new emit code (compounding the migration debt) or defer the optimizer rules themselves.
+- The CLAUDE.md hard rule already states "new emitter code must go through" the builder — without the scaffolding landing, every new emit PR either violates the rule or postpones the new emit code.
 
 ## Outcome
 
-Path **(b)** is implemented across R6.1–R6.10 in [`docs/roadmap.md` § RC6](roadmap.md#rc6--type-safe-sql-via-custom-internalchsqlbuilder). R6.1 (#131) landed the scaffolding (`internal/chsql/builder.go`); R6.2 / R6.3 / R6.4 / R6.5 / R6.6 / R6.7 ported the existing emitter file-by-file behind the typed surface; R6.8 wires the remaining loki + tempo helpers; R6.9 lands the lint gate; R6.10 closes out with the CLAUDE.md hard-rule promotion and `docs/sql-style.md`.
+Path **(b)** is implemented; see [`docs/roadmap.md` § RC6](roadmap.md#rc6--type-safe-sql-via-custom-internalchsqlbuilder) for the milestone breakdown. The scaffolding landed first (`internal/chsql/builder.go`); the existing emitter was ported file-by-file behind the typed surface; the remaining loki + tempo helpers were swept into the typed API; a lint gate guards against regressions (later retired once the typed API became the only public emission surface); CLAUDE.md promoted "no raw SQL strings" to a top-level non-negotiable.
 
-Signoff: @tsouza, RC6 cut.
+Signoff: @tsouza.

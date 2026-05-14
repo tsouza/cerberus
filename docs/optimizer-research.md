@@ -73,20 +73,20 @@ When one of these is implemented, open a PR — the reference here is the PR des
 
 - **"An Overview of Query Optimization in Relational Systems."** Chaudhuri, PODS 1998.
   [PDF.](https://www.microsoft.com/en-us/research/wp-content/uploads/2016/02/pods98-tutorial.pdf)
-  Still the canonical statement of the rule-vs-cost line. Decisions a fixpoint rule set cannot make: (a) join ordering beyond two relations, (b) materialised-view selection among overlapping candidates, (c) predicate ordering when predicates have very different selectivities. Cerberus hit (b) first in RC3 R3.6 — see the Jindal entry below.
+  Still the canonical statement of the rule-vs-cost line. Decisions a fixpoint rule set cannot make: (a) join ordering beyond two relations, (b) materialised-view selection among overlapping candidates, (c) predicate ordering when predicates have very different selectivities. Cerberus hit (b) first with the MV-substitution rule — see the Jindal entry below.
 - **"Selecting Subexpressions to Materialize at Datacenter Scale."** Jindal et al., VLDB 2018.
   [PDF.](http://www.vldb.org/pvldb/vol11/p800-jindal.pdf)
-  The precise problem cerberus faces once multiple OTel rollups (`_5m`, `_1h`, raw) are in play: given a query and overlapping candidate materializations, pick the subset. Section 4 (subexpression matching) and section 6 (cost model) are the parts to read. Addressed in v1 by `internal/optimizer.MVSubstitution` (RC3 R3.6, #201) with a simple-heuristic `firstApplicable` cost model — picks the first registry-listed rollup that passes the four safety conditions (step ≥ window, range a multiple of window, outer aggregate commutes with rollup AggOp, rollup exists for the base table). The `costModel` interface is stubbed so v2 can swap in a real estimator without touching the rule.
+  The precise problem cerberus faces once multiple OTel rollups (`_5m`, `_1h`, raw) are in play: given a query and overlapping candidate materializations, pick the subset. Section 4 (subexpression matching) and section 6 (cost model) are the parts to read. Addressed in v1 by `internal/optimizer.MVSubstitution` (PR #201) with a simple-heuristic `firstApplicable` cost model — picks the first registry-listed rollup that passes the four safety conditions (step ≥ window, range a multiple of window, outer aggregate commutes with rollup AggOp, rollup exists for the base table). The `costModel` interface is stubbed so v2 can swap in a real estimator without touching the rule.
 
 ---
 
 ## Suggested implementation order
 
-1. Port the three Calcite transpose rules (§1) — shipped via #177 (RC3 R3.2).
+1. Port the three Calcite transpose rules (§1) — shipped via #177.
 2. Mirror VictoriaMetrics's `PushdownBinaryOpFilters` test structure (§2) — gives us a known-good fixture pattern.
-3. Adopt Spark Catalyst's `Batch` grouping for the fixpoint driver (§4) — prevents thrashing as the rule set grows. (RC3 R3.3.)
-4. Add a sort-key-aware filter emitter in `internal/chsql` (§3) — first ClickHouse-specific codegen rule. (RC3 R3.4 — PREWHERE promotion.)
-5. Real `RangeWindow` SQL via `groupArray` / ordered-scan patterns (§2 + §5) — shipped through RC1 M1.1 and refined through RC2.
-6. MV substitution for `otel_metrics_*` rollups (§2 Promscale + §6 Jindal) — the milestone where cerberus commits to a cost model. Shipped via #201 (RC3 R3.6) with a simple-heuristic v1; the `costModel` interface stub keeps the seam open for a real estimator in a future RC.
+3. Adopt Spark Catalyst's `Batch` grouping for the fixpoint driver (§4) — prevents thrashing as the rule set grows. Shipped via #191.
+4. Add a sort-key-aware filter emitter in `internal/chsql` (§3) — first ClickHouse-specific codegen rule. PREWHERE promotion shipped via #196.
+5. Real `RangeWindow` SQL via `groupArray` / ordered-scan patterns (§2 + §5) — shipped through RC1 and refined through RC2.
+6. MV substitution for `otel_metrics_*` rollups (§2 Promscale + §6 Jindal) — the milestone where cerberus commits to a cost model. Shipped via #201 with a simple-heuristic v1; the `costModel` interface stub keeps the seam open for a real estimator in a future release.
 
-The pattern-based `Rule` API itself shipped via #135 (RC3 R3.1) — every new rule above lands on top of that API.
+The pattern-based `Rule` API itself shipped via #135 — every new rule above lands on top of that API.

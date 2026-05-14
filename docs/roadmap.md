@@ -2,18 +2,21 @@
 
 This document is the public-facing narrative for the path to `v1.0.0`. Status by milestone lives in the [GitHub Project](https://github.com/users/tsouza/projects) — _Cerberus v1.0.0 Roadmap_. Per-PR-level reasoning lives in the PR descriptions themselves; we don't use GitHub Issues.
 
+> **GA status:** every RC1–RC8 milestone has shipped; the project board is fully drained. The maintainer cuts `v1.0.0` from the last green main after a final pre-release audit.
+
 ## At a glance
 
-| Release        | Theme                                                                                 | What "done" means                                                                                 |
-| -------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| **v1.0.0-RC1** | Full PromQL / LogQL / TraceQL support + 90% upstream API compatibility                | Compatibility corpora pass; Grafana sees cerberus as drop-in for Prom / Loki / Tempo              |
-| **v1.0.0-RC2** | Advanced QL features + deferred API surface                                           | Subqueries, native-histogram quantiles, structural-chain TraceQL, LogQL `\| unpack`, Loki `tail`… |
-| **v1.0.0-RC3** | Optimizer rewrite + performance + scalability + advanced testing                      | Pattern-based rules, MV substitution, streaming cursor, shadow-mode differential testing          |
-| **v1.0.0-RC4** | Full self-observability                                                               | Cerberus emits its own structured logs (slog), OTel metrics + traces, defaults to the same CH     |
-| **v1.0.0-RC5** | 12-factor compatibility + scale-out polish                                            | `/readyz` pings CH, admission control, HPA recipe, dev `docker-compose.yml`, schema overrides     |
-| **v1.0.0-RC6** | Type-safe SQL via custom `internal/chsql.Builder` (R6.0 evaluation → R6.1–R6.10 port) | No `fmt.Sprintf`-on-SQL anywhere; typed builder with CH-specific helpers; lint enforcement        |
-| **v1.0.0-RC7** | `internal/engine/` ExecutionEngine framework (R7.0 evaluation → R7.1–R7.8 port)       | One pipeline owner; handlers under ~150 LoC each; shared format + httperr helpers                 |
-| **v1.0.0**     | Tag the last green RC                                                                 | All RCs stable; HTTP wire protocols are the public surface, not a Go API                          |
+| Release        | Theme                                                                  | What "done" means                                                                                 |
+| -------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| **v1.0.0-RC1** | Full PromQL / LogQL / TraceQL support + 90% upstream API compatibility | Compatibility corpora pass; Grafana sees cerberus as drop-in for Prom / Loki / Tempo              |
+| **v1.0.0-RC2** | Advanced QL features + deferred API surface                            | Subqueries, native-histogram quantiles, structural-chain TraceQL, LogQL `\| unpack`, Loki `tail`… |
+| **v1.0.0-RC3** | Optimizer rewrite + performance + scalability + advanced testing       | Pattern-based rules, MV substitution, streaming cursor, shadow-mode differential testing          |
+| **v1.0.0-RC4** | Full self-observability                                                | Cerberus emits its own structured logs (slog), OTel metrics + traces, defaults to the same CH     |
+| **v1.0.0-RC5** | 12-factor compatibility + scale-out polish                             | `/readyz` pings CH, admission control, HPA recipe, dev `docker-compose.yml`, schema overrides     |
+| **v1.0.0-RC6** | Type-safe SQL via custom `internal/chsql.Builder`                      | No `fmt.Sprintf`-on-SQL anywhere; typed builder with CH-specific helpers; closed Frag surface     |
+| **v1.0.0-RC7** | `internal/engine/` ExecutionEngine framework                           | One pipeline owner; handlers under ~150 LoC each; shared format + httperr helpers                 |
+| **v1.0.0-RC8** | chDB-backed semantic test layer                                        | TXTAR fixtures opt into in-process chDB execution; optimizer property tests; mutation kill lane   |
+| **v1.0.0**     | Tag the last green RC                                                  | All RCs stable; HTTP wire protocols are the public surface, not a Go API                          |
 
 ---
 
@@ -297,6 +300,21 @@ Decision milestone. Output: `docs/execution-engine-evaluation.md` with a recomme
 | R7.8 | Engine becomes the natural seat for RC3's strategy switch and RC4's OTel hooks. Document the extension points in `docs/engine.md` so RC8+ work plugs in cleanly.                                                                               |
 
 **Exit criterion:** `internal/api/{prom,loki,tempo}/handler.go` are each under ~150 LoC and contain only HTTP wrapping + response shaping; `internal/engine/` carries the pipeline; all three handlers emit `X-Cerberus-CH-Millis`; the existing TXTAR + compatibility + Playwright suites pass without changes (refactor is behavioural-equivalence).
+
+---
+
+## RC8 — chDB-backed semantic test layer
+
+The TXTAR text-equality suite catches every change in the emitted SQL but it doesn't catch _semantic_ regressions where the SQL still parses and its result set silently flips. RC8 closes that gap by wiring [chDB](https://github.com/chdb-io/chdb-go) (in-process ClickHouse) into the test layers that benefit from real query execution against deterministic seeds.
+
+| #    | Item                                                                                                                 | Status           |
+| ---- | -------------------------------------------------------------------------------------------------------------------- | ---------------- |
+| R8.0 | Driver probe: validate `Map(String, String)` scan via `database/sql` + document chdb-go v1.11.0 quirks               | shipped via #221 |
+| R8.1 | TXTAR `-- seed --` / `-- expected_rows --` sections + build-tagged `chdb` runner                                     | shipped via #223 |
+| R8.2 | chDB-backed `Querier` for handler tests (replaces hand-rolled stubs across `internal/api/{prom,loki,tempo}`)         | shipped via #229 |
+| R8.3 | Property test on optimizer rules (`internal/optimizer/property_test.go`) + mutation kill criterion using chDB        | shipped via #233 |
+
+**Exit criterion:** every TXTAR fixture that opts in renders byte-stable SQL **and** the row set it produces against a chDB session matches the pinned `expected_rows`; the optimizer property test runs 100 random plans per CI and finds zero divergence between unoptimized + optimized output; `just mutate-chdb` produces a strictly higher kill score than `just mutate` (semantically equivalent mutants are correctly not killed).
 
 ---
 

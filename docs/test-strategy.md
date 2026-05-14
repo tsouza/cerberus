@@ -61,7 +61,7 @@ on the engine's read order.
 
 chdb-go v1.11.0's parquet wire driver panics on the parquet MAP
 logical type when `rows.Scan` reaches a `Map(String, String)`
-column. The R8.0 chDB probe
+column. The chDB driver probe
 (`internal/chclient/chdb_probe_test.go`) confirmed that wrapping the
 projection server-side in `toJSONString(...)` and JSON-decoding the
 resulting string on the Go side is a clean shim.
@@ -98,10 +98,10 @@ behavior:
 ### CI
 
 The `chdb` workflow (`.github/workflows/chdb.yml`) runs nightly +
-manual dispatch only. It first runs `TestChDBProbe` from R8.0, then
-`just spec-chdb` to exercise the round-trip suite. Promote to a
-required PR gate once the suite is consistently green and the pilot
-fixture coverage has grown beyond the initial 5.
+manual dispatch only. It first runs `TestChDBProbe` (the driver-quirk
+probe), then `just spec-chdb` to exercise the round-trip suite.
+Promote to a required PR gate once the suite is consistently green
+and the pilot fixture coverage has grown beyond the initial 5.
 
 ## Property tests
 
@@ -115,9 +115,10 @@ the same chDB session.
 
 The grammar is intentionally narrow — wider node coverage
 (Aggregate, RangeWindow, joins) is future work. The current shape
-exercises every RC1 rule (FilterFusion, ConstantFold,
-ProjectionPushdown) plus the R3.2 transposes; that's where
-optimizer-introduced semantic divergence is most likely today.
+exercises the baseline rules (FilterFusion, ConstantFold,
+ProjectionPushdown) plus the FilterProjectTranspose +
+FilterAggregateTranspose pair; that's where optimizer-introduced
+semantic divergence is most likely today.
 
 Plan count defaults to 100; `go test -short -tags chdb` knocks it
 down to 10 for fast local feedback. Failures dump the pre- and

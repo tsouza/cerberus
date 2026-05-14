@@ -9,8 +9,8 @@ Drop-in **Prometheus / Loki / Tempo** HTTP gateway for **ClickHouse**. Parses ea
 - **Conventional Commits**, enforced by `commitlint` (see `.commitlintrc.json`). The `subject-case` rule is relaxed so Dependabot's `Bump X from Y to Z` subjects pass.
 - **Justfile is the canonical task runner.** `just` lists every recipe. Don't reach for `go test ./...` directly when `just test` exists — the recipe sets the race flag, the cover profile, and the right toolchain.
 - **No local validation; lefthook + CI own it.** Don't run `just test`, `just lint`, `go test`, `golangci-lint run`, `go build`, or `markdownlint-cli2` manually as a pre-flight before pushing. The repo's `lefthook.yml` runs lightweight formatters (`gofumpt` / `goimports` / `markdownlint-cli2 --fix`) on staged files at commit time, and the `commit-msg` hook validates Conventional Commits via `commitlint`. CI (`check` + `lint` jobs) runs the heavy validation. New contributors run `just hooks-install` once after cloning; agents trust the hook + CI and don't pre-flight.
-- **Compatibility is the source of truth for PromQL — at M6.** Until the M5 → M6 cut, `compatibility.yml` runs only on main pushes + nightly + manual dispatch (not on PRs) and acts as an informational baseline. At M6 we re-enable the `pull_request:` trigger and add `prometheus/compliance` to required checks; an entry in `harness/compatibility/expected-failures.json` then requires a comment explaining the upstream rationale.
-- **No raw SQL strings — typed API at RC6.** Use `internal/chsql.Builder` / `chsql.QueryBuilder` — the custom CH-flavored builder API (see [`docs/sql-builder-evaluation.md`](docs/sql-builder-evaluation.md) for the build-vs-buy decision and [`docs/roadmap.md` § RC6](docs/roadmap.md#rc6--type-safe-sql-via-custom-internalchsqlbuilder) for the milestone sequence). Compose clauses via typed `QueryBuilder` slots (`.Select` / `.From` / `.Where` / `.GroupBy` / `.OrderBy` / `.Limit` / `.Prewhere` / `.Join` / `.WithRecursive`) and expressions via typed Frags (`Eq` / `And` / `Or` / `Paren` / `Cast` / `In` / `Like` / `Add` / `Call` / `Array` / `Subscript` / `If` / `Lambda1` / `Subquery` / `BareIdent` / `InlineLit` / etc.). `Builder.WriteSQL` was renamed to unexported `writeSQL` in R6.11e and the `chsql.Raw` / `chsql.Concat` public escape hatches were retired in R6.12 — external packages cannot raw-write SQL by construction. The typed-Frag surface is closed: add new typed constructors when a shape isn't covered, never compose SQL via string concatenation. The Sprintf scanner is gone too; reviewer discipline + the typed API are the enforcement.
+- **Compatibility is the source of truth for PromQL.** `compatibility.yml` runs on main pushes + nightly + manual dispatch and acts as the informational baseline; a future cut can re-enable the `pull_request:` trigger and add `prometheus/compliance` to required checks. An entry in `harness/compatibility/expected-failures.json` requires a comment explaining the upstream rationale.
+- **No raw SQL strings — typed chsql API only.** Use `internal/chsql.Builder` / `chsql.QueryBuilder` — the custom CH-flavored builder API (see [`docs/sql-builder-evaluation.md`](docs/sql-builder-evaluation.md) for the build-vs-buy decision and [`docs/roadmap.md` § RC6](docs/roadmap.md#rc6--type-safe-sql-via-custom-internalchsqlbuilder) for the milestone sequence). Compose clauses via typed `QueryBuilder` slots (`.Select` / `.From` / `.Where` / `.GroupBy` / `.OrderBy` / `.Limit` / `.Prewhere` / `.Join` / `.WithRecursive`) and expressions via typed Frags (`Eq` / `And` / `Or` / `Paren` / `Cast` / `In` / `Like` / `Add` / `Call` / `Array` / `Subscript` / `If` / `Lambda1` / `Subquery` / `BareIdent` / `InlineLit` / etc.). `Builder.writeSQL` is unexported and the `chsql.Raw` / `chsql.Concat` public escape hatches are gone — external packages cannot raw-write SQL by construction. The typed-Frag surface is closed: add new typed constructors when a shape isn't covered, never compose SQL via string concatenation. Reviewer discipline + the typed API are the enforcement.
 
 ## Architecture map
 
@@ -19,7 +19,7 @@ internal/
   api/{prom,loki,tempo}/    HTTP handlers per upstream API
   promql/, logql/, traceql/ three heads: parse + lower
   chplan/                    shared plan IR (Scan, Filter, Project, Aggregate, RangeWindow, Limit + Expr tree)
-  optimizer/                 rule-based, fixpoint driver. RC1 ships 3 rules (filter-fusion, constant-fold, projection-pushdown); RC3 expands.
+  optimizer/                 rule-based, fixpoint driver. Pattern API + analyzer/optimizer rule split; transposes + PREWHERE promotion + MV substitution + late materialisation.
   chsql/                     plan → ClickHouse SQL emitter
   chclient/                  CH driver wrapper (clickhouse-go/v2)
   schema/                    OTel-CH default + override config
@@ -27,15 +27,15 @@ internal/
 cmd/cerberus/                main entrypoint
 test/spec/                   TXTAR golden tests (input QL → SQL/plan)
 test/e2e/                    k3d cluster + Grafana playwright smoke
-harness/compatibility/          prometheus/compliance Docker Compose harness (lands M0.6)
+harness/compatibility/          prometheus/compliance Docker Compose harness + shadow-mode differential testing
 deploy/{k3s,grafana}/        Kubernetes manifests + Grafana Helm values
-docs/                        roadmap.md, optimizer-research.md, compatibility.md (M5.4)
+docs/                        roadmap.md, optimizer-research.md, compatibility.md, engine.md, observability.md, 12factor.md, …
 ```
 
 Top-level reading order for any new contributor (human or agent):
 
 1. `README.md` — what the project is, quick start.
-2. `docs/roadmap.md` — RC1 / RC2 / RC3 plan, milestone tables, exit criteria.
+2. `docs/roadmap.md` — per-RC plan, milestone tables, exit criteria.
 3. `docs/engine.md` — shared query pipeline (`internal/engine/`), the `Lang` contract, and the extension points each new head plugs into.
 4. `docs/optimizer-research.md` — durable optimizer backlog for RC3.
 5. `internal/promql/lower.go` — the canonical lowering pattern; mirror it when adding LogQL / TraceQL slices.
@@ -45,8 +45,8 @@ Top-level reading order for any new contributor (human or agent):
 - **Add a TXTAR fixture** — use the `/cerberus:add-fixture` skill (under `.claude/skills/`). It creates `test/spec/<ql>/<name>.txtar` with the right section headers; run `just update-golden` after the implementation lands to fill in expected sections.
 - **Add an optimizer rule** — use the `/cerberus:add-optimizer-rule` skill. Scaffolds `internal/optimizer/<name>.go` + test + TXTAR fixtures.
 - **Bump parser deps** — use the `/cerberus:bump-parser-deps` skill. Runs `go get -u` on the three upstream parsers, runs `go mod tidy`, captures the diff for the PR description.
-- **Run E2E locally** — `just e2e-up && just e2e-seed && just e2e-run && just e2e-down` (lands in M0.1).
-- **Run the compatibility suite** — `just compatibility` (lands in M0.6). Diffs cerberus against reference Prometheus on a deterministic OTel fixture.
+- **Run E2E locally** — `just e2e-up && just e2e-seed && just e2e-run && just e2e-down`.
+- **Run the compatibility suite** — `just compatibility`. Diffs cerberus against reference Prometheus on a deterministic OTel fixture.
 
 ## Toolchain notes
 
@@ -77,5 +77,5 @@ Local SSH config has two GitHub identities:
 
 - "How does this PR ship?" → branch + push + `gh pr create` → CI must pass → squash-merge with `gh pr merge --squash --delete-branch`.
 - "Where do I add this feature?" → check `docs/roadmap.md` first; the milestone tells you which package + which fixture dir.
-- "Is this RC1 / RC2 / RC3?" → roadmap tables make this explicit. When in doubt, add a comment to the PR asking.
+- "Which RC does this belong to?" → roadmap tables make this explicit. When in doubt, add a comment to the PR asking.
 - "Can I update the Project from a PR?" → yes, the repo is linked. Move the matching draft item to `In Progress` when you start, `Done` when the PR merges (or wire a workflow that does it).

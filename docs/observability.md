@@ -4,21 +4,20 @@ Cerberus is its own first-class observability customer: it queries OTel-CH
 metrics + logs + traces, and it ships the same shape of telemetry back into
 that store so a self-dashboard works against a running cluster.
 
-The full self-observability stack lands across **RC4**:
+The self-observability stack covers four pillars:
 
-| Item                                                                                                  | Status  | Notes                                    |
-| ----------------------------------------------------------------------------------------------------- | ------- | ---------------------------------------- |
-| R4.1 — slog quality pass + env-configurable format / level                                            | landed  | this doc                                 |
-| R4.2 — `otelhttp.NewHandler` wraps the Prom / Loki / Tempo handlers                                   | planned | adds one span per HTTP request           |
-| R4.3 — Custom spans around parse / lower / optimize / emit / execute                                  | planned | pipeline stage timings                   |
-| R4.4 — Self-metrics: request count + latency + CH roundtrip + in-flight gauge                         | planned | HPA-consumable                           |
-| R4.5 — OTLP exporters wired (`CERBERUS_OTLP_ENDPOINT` / `_INSECURE` / `_HEADERS` / `_TIMEOUT`)        | landed  | graceful no-op when endpoint unreachable |
-| R4.6 — `deploy/k3s/otel-collector.yaml` + `deploy/grafana/dashboards/cerberus-self.json`              | planned | wires the export path end-to-end         |
+| Pillar                | Surface                                                                                          |
+| --------------------- | ------------------------------------------------------------------------------------------------ |
+| Structured logging    | `log/slog`, env-configurable format / level (this page)                                          |
+| HTTP request tracing  | `otelhttp.NewHandler` wraps every Prom / Loki / Tempo endpoint — one span per HTTP request       |
+| Pipeline tracing      | Custom spans around parse / lower / optimize / emit / execute give per-stage timings             |
+| Self-metrics + OTLP   | Request count + latency + CH roundtrip + in-flight gauge, exported via OTLP gRPC                 |
 
-This page only covers what has already shipped. The remaining rows are
-expanded as the milestones land.
+The k3s manifest at `deploy/k3s/otel-collector.yaml` and the provisioned
+`deploy/grafana/dashboards/cerberus-self.json` wire the full export path
+end-to-end against a running cluster.
 
-## Logging (R4.1, shipped)
+## Logging
 
 Cerberus uses the standard library's [`log/slog`](https://pkg.go.dev/log/slog)
 for structured logging. Logs are written as an event stream to `stderr`
@@ -76,10 +75,10 @@ so a future `slog.Handler` middleware can branch on `errors.As` /
 
 ```text
 # CERBERUS_LOG_FORMAT=text CERBERUS_LOG_LEVEL=info (defaults)
-time=2026-05-13T10:14:01.000Z level=INFO msg="cerberus starting" version=v1.0.0-RC4 http_addr=:8080 ch_addr=clickhouse:9000 ch_db=otel log_format=text log_level=INFO
+time=2026-05-13T10:14:01.000Z level=INFO msg="cerberus starting" version=v1.0.0 http_addr=:8080 ch_addr=clickhouse:9000 ch_db=otel log_format=text log_level=INFO
 
 # CERBERUS_LOG_FORMAT=json
-{"time":"2026-05-13T10:14:01Z","level":"INFO","msg":"cerberus starting","version":"v1.0.0-RC4","http_addr":":8080","ch_addr":"clickhouse:9000","ch_db":"otel","log_format":"json","log_level":"INFO"}
+{"time":"2026-05-13T10:14:01Z","level":"INFO","msg":"cerberus starting","version":"v1.0.0","http_addr":":8080","ch_addr":"clickhouse:9000","ch_db":"otel","log_format":"json","log_level":"INFO"}
 ```
 
 ## Schema-shape overrides
@@ -111,7 +110,7 @@ newlines) are treated as unset and fall back to the default. Non-empty
 values are trimmed before use. Column-name overrides are not in the
 current surface — open a tracking issue if a deployment needs them.
 
-## Tracing + metrics export (R4.5, shipped)
+## Tracing + metrics export
 
 Cerberus emits structured logs, spans, and self-metrics so an operator can
 see what the gateway is doing in production.
