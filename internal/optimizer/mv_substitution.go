@@ -107,10 +107,6 @@ func (r *mvSubstitutionRule) Apply(n chplan.Node) (chplan.Node, bool) {
 	if !ok {
 		return n, false
 	}
-	scan, ok := rw.Input.(*chplan.Scan)
-	if !ok {
-		return n, false
-	}
 	if len(r.rollups) == 0 {
 		return n, false
 	}
@@ -119,6 +115,45 @@ func (r *mvSubstitutionRule) Apply(n chplan.Node) (chplan.Node, bool) {
 	// MetricsAggregate input). Those windows route through a different
 	// emitter and the rollup table doesn't help them.
 	if rw.ValueColumn == "" || rw.ValueColumn != r.baseValueColumn {
+		return n, false
+	}
+
+	// Match two shapes:
+	//
+	//  1. `RangeWindow(Scan)` — the seed pattern. Substitute directly.
+	//  2. `RangeWindow(Filter(Scan))` — the widened pattern. Safe iff
+	//     the Filter's predicate references ONLY series-identifying
+	//     bare-column GroupBy keys on the RangeWindow. Those columns
+	//     are preserved (with the same names) on the rollup table by
+	//     the upstream OTel exporter (the rollup MV's GROUP BY is the
+	//     base table's series-identity columns + the bucketed
+	//     timestamp). Any predicate touching the windowed value, the
+	//     timestamp, or a non-passthrough column would silently change
+	//     row counts when applied to a rolled-up table, so reject.
+	//
+	// Shape (2) is what `FilterRangeWindowTranspose` produces when it
+	// pushes a Filter under a RangeWindow — without this widening the
+	// `RangeWindow(Filter(Scan))` chain is order-dependent against
+	// the transpose rule. See `rule_interaction_test.go` Pair 27 for
+	// the commutativity check that this widening unlocks.
+	var (
+		scan       *chplan.Scan
+		filterNode *chplan.Filter
+	)
+	switch inner := rw.Input.(type) {
+	case *chplan.Scan:
+		scan = inner
+	case *chplan.Filter:
+		s, ok := inner.Input.(*chplan.Scan)
+		if !ok {
+			return n, false
+		}
+		if !filterIsRollupSafe(inner.Predicate, rw) {
+			return n, false
+		}
+		scan = s
+		filterNode = inner
+	default:
 		return n, false
 	}
 
@@ -147,10 +182,40 @@ func (r *mvSubstitutionRule) Apply(n chplan.Node) (chplan.Node, bool) {
 	// passes will re-narrow against the rollup's actual columns.
 	newScan.Columns = nil
 
+	var newInput chplan.Node = &newScan
+	if filterNode != nil {
+		// Preserve the safe Filter around the rewritten Scan. The
+		// predicate stays referring to the same series-identity column
+		// names, which the rollup table also exposes — see the doc
+		// comment above for why this is correct.
+		newFilter := *filterNode
+		newFilter.Input = &newScan
+		newInput = &newFilter
+	}
+
 	newRW := *rw
-	newRW.Input = &newScan
+	newRW.Input = newInput
 	newRW.ValueColumn = picked.ValueColumn
 	return &newRW, true
+}
+
+// filterIsRollupSafe reports whether every column the predicate
+// references is a bare series-identity key on the enclosing RangeWindow
+// (i.e. appears in `rw.GroupBy` as a `*chplan.ColumnRef` with no
+// qualifier). Predicates that touch the windowed value, the timestamp,
+// the per-sample value, or a non-GroupBy column return false — the rule
+// declines rather than risk emitting a substitution that changes row
+// counts against the rolled-up table.
+//
+// Mirrors the safety reasoning in `seriesIdentifyingColumns` used by
+// `FilterRangeWindowTranspose`: the two rules agree on which predicates
+// are safe to live under a RangeWindow's row shape.
+func filterIsRollupSafe(pred chplan.Expr, rw *chplan.RangeWindow) bool {
+	passthrough := seriesIdentifyingColumns(rw)
+	if passthrough == nil {
+		return false
+	}
+	return onlyReferencesPassthrough(pred, passthrough)
 }
 
 // rollupApplies checks the four safety conditions documented on
