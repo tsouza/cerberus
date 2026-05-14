@@ -451,8 +451,8 @@ func toTraceSummaries(samples []chclient.Sample) []TraceSummary {
 		// The TraceID lives in the row's labels under a synthetic key —
 		// for the search projection we don't pull it out (handler hits
 		// `/search/tags` defer); instead each unique sample is one span,
-		// and we use the MetricName + Timestamp to summarise.
-		// TODO(M4.5 follow-up): include TraceId in projection.
+		// and we use the MetricName + Timestamp to summarise. A future
+		// release can include TraceId in the projection if needed.
 		key := s.MetricName + "|" + s.Timestamp.Format("20060102150405.000000000")
 		a, ok := byTrace[key]
 		if !ok {

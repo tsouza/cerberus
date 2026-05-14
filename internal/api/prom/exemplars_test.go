@@ -23,11 +23,11 @@ type exemplarsResponse struct {
 
 // TestQueryExemplars — table-test for /api/v1/query_exemplars.
 //
-// The RC2 schema doesn't expose exemplars yet so the success path always
+// The current schema doesn't expose exemplars so the success path always
 // returns `data:[]`; the cases below pin every other observable: input
 // validation (missing / unparseable / bogus-time params), HTTP-method
-// support (GET + POST), and the empty-array envelope shape. Once the
-// schema TODO in exemplars.go lands, the fixtures here grow to cover
+// support (GET + POST), and the empty-array envelope shape. When the
+// schema gains an exemplars column, the fixtures here can grow to cover
 // single-series + multi-series results without changing the input wiring.
 func TestQueryExemplars(t *testing.T) {
 	t.Parallel()
@@ -158,8 +158,7 @@ func TestQueryExemplars(t *testing.T) {
 			if parsed.Status != "success" {
 				t.Fatalf("status: got %q, want success; err=%s", parsed.Status, parsed.Error)
 			}
-			// The schema-TODO empty-data path returns an empty slice, not
-			// a null. Both decode to len(Data)==0 in Go, so verify the raw
+			// The empty-data path returns an empty slice, not a null. Both decode to len(Data)==0 in Go, so verify the raw
 			// JSON shape too.
 			if len(parsed.Data) != 0 {
 				t.Fatalf("expected empty data slice, got %d entries", len(parsed.Data))
@@ -176,8 +175,8 @@ func TestQueryExemplars(t *testing.T) {
 	}
 }
 
-// TestQueryExemplars_EnvelopeShape — pin the data array shape for when
-// the schema TODO lands. The empty-data path serialises as
+// TestQueryExemplars_EnvelopeShape — pin the data array shape so a
+// future implementation can't drift. The empty-data path serialises as
 // `data:[]`, and the field-name vocabulary (`seriesLabels` /
 // `exemplars` / `labels` / `value` / `timestamp`) matches Prom's
 // documented response shape verbatim.
