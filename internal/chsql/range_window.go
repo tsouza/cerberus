@@ -674,6 +674,17 @@ func windowValsFrag() Frag {
 // emission path. rate normalises `count(1)` by dividing through the
 // range duration in seconds (rendered as a literal — duration constants
 // are query-shape, not user-data).
+//
+// The reducer is always wrapped in `toFloat64(...)` so the projected
+// `Value` column has a uniform Float64 wire type — `chclient.Sample.Value`
+// is `float64`, and the CH Go driver refuses to coerce UInt64 (the
+// natural type of `count()`) or Int64 (the natural type of
+// `sum/min/max(Duration)`) into `*float64` at Scan time. Without the
+// cast, `| count_over_time() by (...)` against a real ClickHouse
+// surfaces as `engine: execute: chclient: scan: (Value) converting
+// UInt64 to *float64 is unsupported`. The rate case keeps the cast as
+// well even though `count() / N` already promotes to Float64 in CH —
+// the uniform wrap is cheaper to reason about than a per-op exception.
 func metricsReducerFrag(op chplan.MetricsOp, chName string, params, args []chplan.Expr, rangeSeconds float64) Frag {
 	// Translate Attr operand to a metric_arg reference (the alias the
 	// inner SELECT projects under) for *_over_time cases.
@@ -698,13 +709,16 @@ func metricsReducerFrag(op chplan.MetricsOp, chName string, params, args []chpla
 	switch op {
 	case chplan.MetricsOpRate:
 		return func(b *Builder) {
+			b.sb.WriteString("toFloat64(")
 			b.ParamAgg(chName, paramFrags, argFrags)
-			b.sb.WriteString(" / ")
+			b.sb.WriteString(") / ")
 			b.sb.WriteString(strconv.FormatFloat(rangeSeconds, 'f', -1, 64))
 		}
 	}
 	return func(b *Builder) {
+		b.sb.WriteString("toFloat64(")
 		b.ParamAgg(chName, paramFrags, argFrags)
+		b.sb.WriteByte(')')
 	}
 }
 
