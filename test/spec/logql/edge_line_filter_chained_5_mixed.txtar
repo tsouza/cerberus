@@ -1,0 +1,12 @@
+-- query.logql --
+{job="api"} |= "error" != "debug" |~ "5[0-9]{2}" !~ "^test" |= "prod"
+-- args --
+[0] string = "job"
+[1] string = "api"
+[2] string = "error"
+[3] string = "debug"
+[4] string = "5[0-9]{2}"
+[5] string = "^test"
+[6] string = "prod"
+-- sql --
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (position(`Body`, ?) > 0) AND (position(`Body`, ?) = 0) AND match(`Body`, ?) AND NOT match(`Body`, ?) AND (position(`Body`, ?) > 0)

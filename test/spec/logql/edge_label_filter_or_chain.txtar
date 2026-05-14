@@ -1,0 +1,13 @@
+-- query.logql --
+{job="api"} | level="error" or level="warn" or level="fatal"
+-- args --
+[0] string = "job"
+[1] string = "api"
+[2] string = "level"
+[3] string = "error"
+[4] string = "level"
+[5] string = "warn"
+[6] string = "level"
+[7] string = "fatal"
+-- sql --
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (((`ResourceAttributes`[?] = ?) OR (`ResourceAttributes`[?] = ?)) OR (`ResourceAttributes`[?] = ?))

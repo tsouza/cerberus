@@ -1,0 +1,7 @@
+-- query.logql --
+{job="api"} | label_format severity_level="{{.severity}}-level"
+-- args --
+[0] string = "job"
+[1] string = "api"
+-- sql --
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?)

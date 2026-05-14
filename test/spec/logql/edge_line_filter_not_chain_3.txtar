@@ -1,0 +1,10 @@
+-- query.logql --
+{job="api"} != "info" != "debug" != "trace"
+-- args --
+[0] string = "job"
+[1] string = "api"
+[2] string = "info"
+[3] string = "debug"
+[4] string = "trace"
+-- sql --
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (position(`Body`, ?) = 0) AND (position(`Body`, ?) = 0) AND (position(`Body`, ?) = 0)
