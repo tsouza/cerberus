@@ -4,3 +4,16 @@ ln(http_requests_total)
 [0] string = "http_requests_total"
 -- sql --
 SELECT `MetricName`, `Attributes`, `TimeUnix`, log(`Value`) AS `Value` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` = ?))
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = Memory;
+INSERT INTO otel_metrics_sum VALUES
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 2.718281828459045);
+-- expected_rows --
+[
+  ["http_requests_total", {"job": "api"}, "2026-01-01T00:00:00Z", 1.0]
+]

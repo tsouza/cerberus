@@ -5,3 +5,16 @@ up ^ 2
 [1] string = "up"
 -- sql --
 SELECT `MetricName`, `Attributes`, `TimeUnix`, pow(`Value`, ?) AS `Value` FROM (SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` = ?))
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = Memory;
+INSERT INTO otel_metrics_gauge VALUES
+    ('up', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 5.0);
+-- expected_rows --
+[
+  ["up", {"job": "api"}, "2026-01-01T00:00:00Z", 25.0]
+]
