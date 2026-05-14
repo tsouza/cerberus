@@ -2,14 +2,32 @@ name: shadow-mode
 
 # Shadow-mode differential testing harness.
 #
-# The oracle (`internal/promshim/local/`) is built but not yet wired
-# into the shadow CLI; this workflow runs on manual dispatch only. Once
-# the oracle is wired:
-#   * flip the strategy default to force-native,
-#   * add `schedule:` (nightly) + `push:` (main, scoped paths) triggers,
-#   * remove `continue-on-error`.
+# Evaluates each PromQL query in the corpus against (a) cerberus's native
+# HTTP path and (b) the in-process Prometheus engine oracle that lives at
+# `internal/promshim/local/`, then diffs the two result vectors. The CLI
+# entrypoint is `harness/compatibility/shadow/cmd/shadow`; see the
+# README in `harness/compatibility/shadow/` for the strategy matrix and
+# exit codes.
+#
+# Triggers:
+#   * push to main on differential-testing paths — keeps the report
+#     fresh as cerberus's PromQL surface evolves.
+#   * nightly cron — daily baseline against an unchanged corpus.
+#   * manual dispatch — ad-hoc runs over an alternate corpus / strategy.
 
 on:
+  schedule:
+    - cron: '0 5 * * *' # daily 05:00 UTC
+  push:
+    branches: [main]
+    paths:
+      - 'internal/promql/**'
+      - 'internal/chsql/**'
+      - 'internal/chplan/**'
+      - 'internal/api/prom/**'
+      - 'internal/promshim/local/**'
+      - 'harness/compatibility/shadow/**'
+      - '.github/workflows/shadow-mode.yml'
   workflow_dispatch:
     inputs:
       corpus:
@@ -19,7 +37,7 @@ on:
       strategy:
         description: 'Diff strategy: prefer-native | force-native | oracle-only'
         required: false
-        default: 'prefer-native'
+        default: 'force-native'
 
 permissions:
   contents: read
@@ -33,11 +51,6 @@ jobs:
     name: shadow-mode
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # Informational. The noop oracle marks every query "oracle skipped";
-    # under `prefer-native` the harness still exits 0 but we keep this
-    # guard so a future strategy bump doesn't immediately fail
-    # required-checks.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v6
         with:
@@ -57,16 +70,19 @@ jobs:
 
       - name: Run shadow-mode against smoke corpus
         env:
-          # No real cerberus is started here yet; with the noop oracle the
-          # harness will report native HTTP errors per query, which is the
-          # expected shape until the in-process oracle is wired.
+          # The native side talks HTTP to a cerberus instance. On scheduled /
+          # push runs no real cerberus is up; those rows surface as native
+          # errors (informational) while the oracle side still reports
+          # against the seeded dataset. Set vars.SHADOW_CERBERUS_URL to
+          # point at a live cerberus when running under workflow_dispatch.
           CERBERUS_URL: ${{ vars.SHADOW_CERBERUS_URL || 'http://localhost:9090' }}
+          SHADOW_CORPUS: ${{ github.event.inputs.corpus || 'harness/compatibility/shadow/corpus/smoke.txt' }}
+          SHADOW_STRATEGY: ${{ github.event.inputs.strategy || 'force-native' }}
         run: |
           ./bin/shadow \
-            --corpus "${{ github.event.inputs.corpus }}" \
-            --strategy "${{ github.event.inputs.strategy }}" \
-            --report shadow-report.json \
-            || echo "shadow-mode exited non-zero (expected without a wired oracle)"
+            --corpus "$SHADOW_CORPUS" \
+            --strategy "$SHADOW_STRATEGY" \
+            --report shadow-report.json
 
       - name: Summarise report
         if: always()

@@ -406,9 +406,10 @@ compatibility-down:
 
 # Build + run the shadow-mode harness against a corpus.
 # Expects a running cerberus reachable at $CERBERUS_URL (default
-# http://localhost:9090). Oracle wiring is stubbed until R3.10 lands;
-# under `prefer-native` (default) the noop oracle records diffs as
-# "oracle skipped" (non-fatal). See harness/compatibility/shadow/README.md.
+# http://localhost:9090). The oracle is wired to internal/promshim/local
+# and evaluates against a seeded in-memory dataset; native errors are
+# expected when CERBERUS_URL points at nothing.
+# See harness/compatibility/shadow/README.md.
 shadow-mode CORPUS="harness/compatibility/shadow/corpus/smoke.txt" STRATEGY="prefer-native":
     @echo "==> building shadow-mode harness"
     go build -trimpath -o bin/shadow ./harness/compatibility/shadow/cmd/shadow

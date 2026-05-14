@@ -1,12 +1,11 @@
 // Command shadow is the shadow-mode differential testing CLI.
 //
 // It reads a corpus of PromQL queries, evaluates each one against cerberus
-// (native path, over HTTP) and an in-process PromQL oracle, and diffs the
-// two result vectors. The oracle is currently a noop stub — the
-// in-process PromQL oracle lives at `internal/promshim/local/` and a
-// future wiring change can plug it in here.
+// (native path, over HTTP) and an in-process PromQL oracle backed by
+// `internal/promshim/local`, and diffs the two result vectors.
 //
 // See ../../README.md for the strategy matrix, exit codes, and corpus format.
+// The oracle implementation lives alongside this file in oracle.go.
 package main
 
 import (
@@ -39,24 +38,24 @@ const (
 	exitOK              = 0
 	exitDiffForceNative = 1
 	exitSetupFailure    = 2
-	exitOracleMissing   = 3
 )
 
-// OracleProvider is the seam an oracle implementation fills. The
-// noopOracle stub returns ErrOracleSkipped for every query.
+// OracleProvider is the seam an oracle implementation fills. The default
+// implementation in oracle.go (localOracle) wraps internal/promshim/local;
+// the seam is kept so alternate oracles can be plugged in for ad-hoc
+// debugging without rewriting the CLI loop.
 type OracleProvider interface {
 	Evaluate(ctx context.Context, expr string) (shadow.VectorResult, error)
 }
 
-// ErrOracleSkipped signals the noop oracle has been invoked. Callers handle
-// per strategy.
-var ErrOracleSkipped = errors.New("oracle: skipped (no oracle wired)")
-
-type noopOracle struct{}
-
-func (noopOracle) Evaluate(_ context.Context, _ string) (shadow.VectorResult, error) {
-	return shadow.VectorResult{}, ErrOracleSkipped
-}
+// ErrOracleSkipped is the sentinel an OracleProvider may return to signal
+// "no oracle answer for this query" — the harness records this as a
+// non-fatal skip under prefer-native and propagates it as an error
+// (OracleError) under force-native / oracle-only. The wired localOracle
+// never returns this; it's retained as part of the provider contract for
+// future oracles that legitimately decline some queries (e.g. expressions
+// referencing series that aren't in the seeded dataset).
+var ErrOracleSkipped = errors.New("oracle: skipped")
 
 // QueryResult is the per-query record emitted in the report.
 type QueryResult struct {
@@ -99,7 +98,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		"base URL of running cerberus (e.g. http://localhost:9090). Falls back to $CERBERUS_URL.")
 	reportPath := fs.String("report", "", "if set, write a JSON report to this path")
 	timeoutSec := fs.Int("timeout", 30, "per-query timeout in seconds")
-	queryTimestamp := fs.Int64("at", 0, "evaluate instant queries at this UNIX timestamp (0 = now)")
+	queryTimestamp := fs.Int64("at", 0,
+		"evaluate instant queries at this UNIX timestamp (0 = the oracle's seeded-dataset default)")
 
 	if err := fs.Parse(args); err != nil {
 		return exitSetupFailure
@@ -129,19 +129,20 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return exitSetupFailure
 	}
 
-	oracle := OracleProvider(noopOracle{})
-
-	// Under force-native / oracle-only, an unavailable oracle is fatal up front.
-	if strategy == StrategyForceNative || strategy == StrategyOracleOnly {
-		if _, isNoop := oracle.(noopOracle); isNoop {
-			fmt.Fprintf(stderr, "strategy %q requires an oracle but none is wired; aborting\n", strategy)
-			return exitOracleMissing
-		}
-	}
-
-	at := time.Now()
+	// Evaluation timestamp drives both the native HTTP query and the in-process
+	// oracle. When --at is unset, defer to the oracle's own default (anchored
+	// to the seeded dataset's epoch) so the smoke corpus produces meaningful
+	// samples without requiring callers to know the seed timestamp.
+	var at time.Time
 	if *queryTimestamp != 0 {
 		at = time.Unix(*queryTimestamp, 0)
+	}
+
+	oracle := OracleProvider(newLocalOracle(at))
+	// newLocalOracle resolves the zero value to its seeded-dataset default;
+	// echo that resolved value so the native side queries at the same instant.
+	if at.IsZero() {
+		at = oracle.(*localOracle).at
 	}
 
 	report := Report{
@@ -181,9 +182,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 			}
 		}
 
-		// We always run the oracle when available, since prefer-native /
-		// force-native both need its output for the diff. The noop oracle
-		// short-circuits below.
+		// We always run the oracle since prefer-native / force-native both
+		// need its output for the diff. An oracle that returns
+		// ErrOracleSkipped (or any other error) is recorded per-query and
+		// the diff is suppressed for that row.
 		t0 := time.Now()
 		or, err := oracle.Evaluate(ctx, q.Expr)
 		result.DurationOracleMs = time.Since(t0).Milliseconds()

@@ -1,10 +1,12 @@
 # Shadow-mode differential testing harness
 
-> The CLI + diff machinery is in place. Oracle wiring is currently a
-> noop stub; the in-process PromQL evaluator lives at
-> `internal/promshim/local/` and can be plugged in here when the
-> shadow-mode pipeline is promoted from informational to a required
-> gate. See [`docs/roadmap.md` § RC3](../../../docs/roadmap.md).
+> The CLI + diff machinery is in place and the in-process PromQL oracle
+> (`internal/promshim/local/`) is wired into the CLI via `oracle.go` in
+> the same directory as `cmd/shadow/main.go`. The workflow at
+> `.github/workflows/shadow-mode.yml` runs nightly + on pushes to main
+> touching the differential-testing paths; see
+> [`docs/roadmap.md` § RC3](../../../docs/roadmap.md) for the milestone
+> context.
 
 ## What "shadow mode" means
 
@@ -53,7 +55,6 @@ the end.
 | `0`  | All queries agree (or strategy is `prefer-native` with diffs present)        |
 | `1`  | One or more diffs under `force-native` strategy                              |
 | `2`  | Setup failure (corpus unreadable, cerberus unreachable, etc.)                |
-| `3`  | Oracle unavailable when strategy requires it (`force-native`, `oracle-only`) |
 
 ## How it slots into `harness/compatibility/`
 
@@ -63,9 +64,11 @@ harness/compatibility/
   scripts/run-compatibility.sh
   shadow/                    <-- this directory
     cmd/shadow/main.go         CLI entry point
+    cmd/shadow/oracle.go       in-process PromQL oracle (promshim/local wrapper)
     differ.go                  pure diff function
     corpus.go                  TXTAR corpus loader
-    corpus/smoke.txt           5-query smoke corpus
+    result_adapter.go          local.Result → VectorResult bridge
+    corpus/smoke.txt           7-query smoke corpus
 ```
 
 The Docker Compose stack remains the heavyweight reference; shadow mode is the
@@ -109,27 +112,31 @@ prefer-native
 mark known-divergent queries that should stay `prefer-native` even when CI
 flips the global flag to `force-native`).
 
-## Oracle stub
+## Oracle wiring
 
-The binary ships with a `noopOracle` that returns `OracleSkipped` for
-every query. Under `prefer-native` this is fine — the native answer is
-returned and the diff is recorded as "oracle skipped" (non-fatal).
-Under `force-native` or `oracle-only`, the binary exits with code `3`
-to make the missing dependency loud.
+The CLI builds a `localOracle` (see `cmd/shadow/oracle.go`) that wraps
+the `internal/promshim/local` engine over a deterministic in-memory
+SampleStore. The store is seeded with `http_requests_total` counters,
+`up` and `node_load1` gauges, and `http_request_duration_seconds_bucket`
+classic-histogram buckets — enough surface for the smoke corpus to
+return non-trivial vectors. When `--at` is unset the CLI evaluates at
+the seeded dataset's epoch + 5 minutes so rate() and friends have
+enough samples.
 
-The wiring point is a single interface:
+The `OracleProvider` interface remains a seam so alternate oracles
+(e.g. a from-scratch PromQL evaluator) can replace the wired one
+without touching the CLI loop:
 
 ```go
 type OracleProvider interface {
-    Evaluate(ctx context.Context, q Query) (VectorResult, error)
+    Evaluate(ctx context.Context, expr string) (VectorResult, error)
 }
 ```
 
-Wiring `internal/promshim/local/` in here (`promshimlocal.New(...)`)
-is the natural next step.
-
 ## Status
 
-Native evaluator wiring is a real HTTP client; oracle is stubbed.
-Workflow is `workflow_dispatch` only — it does not run on PRs or
-nightly. Promote to a required gate once the oracle is wired.
+Both sides are wired: the native side speaks HTTP to cerberus, the
+oracle side evaluates in-process via `internal/promshim/local`. The
+workflow runs nightly + on push-to-main on differential-testing paths;
+the default strategy is `force-native` so any diff between cerberus
+and the reference engine fails the workflow.

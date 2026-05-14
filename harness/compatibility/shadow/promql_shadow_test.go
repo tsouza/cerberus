@@ -155,49 +155,10 @@ func promqlSeed(store *local.SampleStore) {
 	}
 }
 
-// resultToVector adapts a promshim/local Result into the shadow VectorResult
-// shape that the differ understands.
-func resultToVector(r local.Result) VectorResult {
-	switch r.Kind {
-	case local.ResultKindVector:
-		out := VectorResult{Series: make([]Series, 0, len(r.Vector))}
-		for _, s := range r.Vector {
-			out.Series = append(out.Series, Series{
-				Labels:  labelsToMap(s.Metric),
-				Samples: []Sample{{TimestampMs: s.T, Value: s.V}},
-			})
-		}
-		return out
-	case local.ResultKindMatrix:
-		out := VectorResult{Series: make([]Series, 0, len(r.Matrix))}
-		for _, m := range r.Matrix {
-			samples := make([]Sample, 0, len(m.Points))
-			for _, p := range m.Points {
-				samples = append(samples, Sample{TimestampMs: p.T, Value: p.V})
-			}
-			out.Series = append(out.Series, Series{
-				Labels:  labelsToMap(m.Metric),
-				Samples: samples,
-			})
-		}
-		return out
-	case local.ResultKindScalar:
-		if r.Scalar == nil {
-			return VectorResult{}
-		}
-		return VectorResult{Series: []Series{{
-			Labels:  map[string]string{},
-			Samples: []Sample{{TimestampMs: r.Scalar.T, Value: r.Scalar.V}},
-		}}}
-	}
-	return VectorResult{}
-}
-
-func labelsToMap(ls labels.Labels) map[string]string {
-	out := make(map[string]string, ls.Len())
-	ls.Range(func(l labels.Label) { out[l.Name] = l.Value })
-	return out
-}
+// resultToVector and labelsToMap moved to result_adapter.go as
+// ResultToVector / LabelsToMap so the shadow CLI can reuse the same
+// promshim/local → VectorResult translation. The test sites below keep their
+// existing shape via thin aliases.
 
 // labelMap is a fluent helper for building expected label sets in tests.
 func labelMap(kvs ...string) map[string]string {
@@ -950,7 +911,7 @@ func TestPromQLShadowDiff(t *testing.T) {
 			if err != nil {
 				t.Fatalf("oracle.Instant(%q): %v", tc.query, err)
 			}
-			got := resultToVector(res)
+			got := ResultToVector(res)
 			want := normaliseExpected(tc.expected, tc.evalAt)
 
 			opts := tc.opts
