@@ -1068,6 +1068,6 @@ func (b *blockingQuerier) QueryLabelSets(_ context.Context, _ string, _ ...any) 
 	return nil, nil
 }
 
-func (b *blockingQuerier) QueryMetricMeta(_ context.Context, _ string, _ string, _ ...any) ([]chclient.MetricMetaRow, error) {
+func (b *blockingQuerier) QueryMetricMeta(_ context.Context, _, _ string, _ ...any) ([]chclient.MetricMetaRow, error) {
 	return nil, nil
 }
