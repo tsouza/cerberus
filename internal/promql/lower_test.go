@@ -101,13 +101,15 @@ func TestLower_errors(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name:    "topk changes output shape",
-			query:   `topk(5, up)`,
-			wantErr: "changes output shape and lands with M1.7",
+			name:    "topk without is not yet supported",
+			query:   `topk(5, up) without (instance)`,
+			wantErr: "without(...) is not yet supported",
 		},
-		// Note: 'without' now lowers (M1.4); BinaryExpr vector+vector
-		// rejection moved to binary_test.go; arithmetic ops are lowered
-		// for the scalar-vector case (M1.2).
+		// Note: 'without' now lowers (M1.4) for non-shape-changing aggs;
+		// topk/bottomk/count_values landed via chplan.TopK + Aggregate
+		// reshape; BinaryExpr vector+vector rejection moved to
+		// binary_test.go; arithmetic ops are lowered for the
+		// scalar-vector case (M1.2).
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

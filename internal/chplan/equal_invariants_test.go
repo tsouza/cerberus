@@ -506,6 +506,113 @@ func TestOrderBy_Equal_Negative_KeyExpr(t *testing.T) {
 	}
 }
 
+func TestTopK_Equal_Positive(t *testing.T) {
+	t.Parallel()
+	build := func() *chplan.TopK {
+		return &chplan.TopK{
+			Input:    &chplan.Scan{Table: "t"},
+			K:        3,
+			By:       []chplan.Expr{&chplan.ColumnRef{Name: "Job"}},
+			SortExpr: &chplan.ColumnRef{Name: "Value"},
+			Desc:     true,
+			Columns:  []string{"a", "b"},
+		}
+	}
+	if !build().Equal(build()) {
+		t.Fatalf("identical TopK trees should be Equal")
+	}
+}
+
+func TestTopK_Equal_Negative_K(t *testing.T) {
+	t.Parallel()
+	mk := func(k int64) *chplan.TopK {
+		return &chplan.TopK{
+			Input:    &chplan.Scan{Table: "t"},
+			K:        k,
+			SortExpr: &chplan.ColumnRef{Name: "Value"},
+		}
+	}
+	if mk(3).Equal(mk(5)) {
+		t.Errorf("different K should not be Equal")
+	}
+}
+
+func TestTopK_Equal_Negative_Desc(t *testing.T) {
+	t.Parallel()
+	mk := func(d bool) *chplan.TopK {
+		return &chplan.TopK{
+			Input:    &chplan.Scan{Table: "t"},
+			K:        3,
+			SortExpr: &chplan.ColumnRef{Name: "Value"},
+			Desc:     d,
+		}
+	}
+	if mk(true).Equal(mk(false)) {
+		t.Errorf("different Desc should not be Equal")
+	}
+}
+
+func TestTopK_Equal_Negative_By(t *testing.T) {
+	t.Parallel()
+	mk := func(by string) *chplan.TopK {
+		return &chplan.TopK{
+			Input:    &chplan.Scan{Table: "t"},
+			K:        3,
+			By:       []chplan.Expr{&chplan.ColumnRef{Name: by}},
+			SortExpr: &chplan.ColumnRef{Name: "Value"},
+		}
+	}
+	if mk("Job").Equal(mk("Instance")) {
+		t.Errorf("different By should not be Equal")
+	}
+}
+
+func TestTopK_Equal_Negative_SortExpr(t *testing.T) {
+	t.Parallel()
+	mk := func(s string) *chplan.TopK {
+		return &chplan.TopK{
+			Input:    &chplan.Scan{Table: "t"},
+			K:        3,
+			SortExpr: &chplan.ColumnRef{Name: s},
+		}
+	}
+	if mk("Value").Equal(mk("Other")) {
+		t.Errorf("different SortExpr should not be Equal")
+	}
+}
+
+func TestTopK_Equal_Negative_Columns(t *testing.T) {
+	t.Parallel()
+	mk := func(cols []string) *chplan.TopK {
+		return &chplan.TopK{
+			Input:    &chplan.Scan{Table: "t"},
+			K:        3,
+			SortExpr: &chplan.ColumnRef{Name: "Value"},
+			Columns:  cols,
+		}
+	}
+	if mk([]string{"a"}).Equal(mk([]string{"a", "b"})) {
+		t.Errorf("different Columns length should not be Equal")
+	}
+	if mk([]string{"a"}).Equal(mk([]string{"b"})) {
+		t.Errorf("different Columns content should not be Equal")
+	}
+}
+
+func TestTopK_Equal_Negative_Input(t *testing.T) {
+	t.Parallel()
+	mk := func(table string) *chplan.TopK {
+		return &chplan.TopK{
+			Input:    &chplan.Scan{Table: table},
+			K:        3,
+			SortExpr: &chplan.ColumnRef{Name: "Value"},
+		}
+	}
+	if mk("a").Equal(mk("b")) {
+		t.Errorf("different Input should not be Equal")
+	}
+}
+
 func TestSetOperation_Equal_Positive(t *testing.T) {
 	t.Parallel()
 	build := func() *chplan.SetOperation {

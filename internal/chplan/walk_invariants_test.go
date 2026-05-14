@@ -128,6 +128,16 @@ func TestOrderBy_Walk_VisitsInput(t *testing.T) {
 	assertSentinels(t, visitScans(root), []string{"ob_input"})
 }
 
+func TestTopK_Walk_VisitsInput(t *testing.T) {
+	t.Parallel()
+	root := &chplan.TopK{
+		Input:    &chplan.Scan{Table: "topk_input"},
+		K:        3,
+		SortExpr: &chplan.ColumnRef{Name: "Value"},
+	}
+	assertSentinels(t, visitScans(root), []string{"topk_input"})
+}
+
 func TestHistogramQuantile_Walk_VisitsInput(t *testing.T) {
 	t.Parallel()
 	root := &chplan.HistogramQuantile{
@@ -355,6 +365,16 @@ func TestChildren_OrderByReturnsExactlyInput(t *testing.T) {
 	kids := o.Children()
 	if len(kids) != 1 || kids[0] != input {
 		t.Errorf("OrderBy.Children() should return [Input], got %v", kids)
+	}
+}
+
+func TestChildren_TopKReturnsExactlyInput(t *testing.T) {
+	t.Parallel()
+	input := &chplan.Scan{Table: "t"}
+	tk := &chplan.TopK{Input: input, K: 3, SortExpr: &chplan.ColumnRef{Name: "Value"}}
+	kids := tk.Children()
+	if len(kids) != 1 || kids[0] != input {
+		t.Errorf("TopK.Children() should return [Input], got %v", kids)
 	}
 }
 

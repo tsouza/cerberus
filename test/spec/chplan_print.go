@@ -87,6 +87,24 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 	case *chplan.Limit:
 		fmt.Fprintf(b, "%sLimit %d\n", indent, v.Count)
 		printNode(b, v.Input, depth+1)
+	case *chplan.TopK:
+		dir := "ASC"
+		if v.Desc {
+			dir = "DESC"
+		}
+		fmt.Fprintf(b, "%sTopK k=%d sort=%s %s", indent, v.K, printExpr(v.SortExpr), dir)
+		if len(v.By) > 0 {
+			bys := make([]string, len(v.By))
+			for i, e := range v.By {
+				bys[i] = printExpr(e)
+			}
+			fmt.Fprintf(b, " by=[%s]", strings.Join(bys, ", "))
+		}
+		if len(v.Columns) > 0 {
+			fmt.Fprintf(b, " columns=[%s]", strings.Join(v.Columns, ", "))
+		}
+		b.WriteString("\n")
+		printNode(b, v.Input, depth+1)
 	case *chplan.OrderBy:
 		keys := make([]string, len(v.Keys))
 		for i, k := range v.Keys {
