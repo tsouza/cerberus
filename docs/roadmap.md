@@ -73,11 +73,11 @@ R3.4 / R3.6 / R3.7 / R3.8 are the **CH-roundtrip scalability levers** — they s
 
 ### Advanced testing
 
-| #     | Item                                                              | Status           | Primary reference                                                                                                                  |
-| ----- | ----------------------------------------------------------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| #     | Item                                                              | Status           | Primary reference                                                                                                                                  |
+| ----- | ----------------------------------------------------------------- | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | R3.9  | Shadow-mode differential testing (prefer / force-native / oracle) | shipped via #136 | [promshim-clickhouse `harness/prometheus-compliance/`](https://github.com/BadLiveware/promshim-clickhouse/tree/main/harness/prometheus-compliance) |
-| R3.10 | Port promshim's local Go evaluator                                | shipped via #134 | Same — `internal/promshim/local/`                                                                                                  |
-| R3.11 | Fuzz + chaos + perf-benchmark CI                                  | shipped via #133 | `go-fuzz`, custom chaos harness, perf-benchmark workflow                                                                           |
+| R3.10 | Port promshim's local Go evaluator                                | shipped via #134 | Same — `internal/promshim/local/`                                                                                                                  |
+| R3.11 | Fuzz + chaos + perf-benchmark CI                                  | shipped via #133 | `go-fuzz`, custom chaos harness, perf-benchmark workflow                                                                                           |
 
 **Exit criterion:** golden-fixture SQL shrinks on real plans; `internal/optimizer` mutation score ≥ 70%; MV substitution active; shadow-mode reveals < 5% native-SQL gap; `chclient.Cursor` streams a 1M-row fixture with bounded RSS.
 
