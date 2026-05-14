@@ -69,10 +69,11 @@ resulting string on the Go side is a clean shim.
 The round-trip runner applies this transform automatically: any
 top-level SELECT projection whose alias is one of `Attributes`,
 `ResourceAttributes`, `ScopeAttributes`, or `SpanAttributes` is
-rewritten to `toJSONString(<expr>) AS \`<alias>\``. Fixture authors
-write `expected_rows:` with the Map column as a JSON object (e.g.
-`{"host": "a"}`); `reflect.DeepEqual` handles JSON key ordering for
-free.
+rewritten to a `toJSONString(<expr>) AS <alias>` form (with the
+alias backtick-quoted in the actual emitted SQL). Fixture authors
+write `expected_rows:` with the Map column as a JSON object (for
+example, `{"host": "a"}`); `reflect.DeepEqual` handles JSON key
+ordering for free.
 
 ### chdb-go quirks
 
