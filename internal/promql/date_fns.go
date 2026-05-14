@@ -98,7 +98,7 @@ func lowerDateFnNoArg(name string, s schema.Metrics) (chplan.Node, error) {
 //
 // Returns nil when name is not a recognised date function — caller
 // translates that into a "not yet supported" error.
-func dateFnExpr(name string, valueDT chplan.Expr, tsRef chplan.Expr) chplan.Expr {
+func dateFnExpr(name string, valueDT, tsRef chplan.Expr) chplan.Expr {
 	switch name {
 	case "year":
 		return &chplan.FuncCall{Name: "toYear", Args: []chplan.Expr{valueDT}}
