@@ -102,6 +102,15 @@ jobs:
           kubectl -n cerberus logs daemonset/otel-collector-agent --tail 200 || true
           echo "=== sample-app traces logs ==="
           kubectl -n cerberus logs deploy/sample-app-traces --tail 100 || true
+          echo "=== sample-app metrics logs ==="
+          kubectl -n cerberus logs deploy/sample-app-metrics --tail 100 || true
+          echo "=== sample-app metrics previous-container logs ==="
+          kubectl -n cerberus logs deploy/sample-app-metrics --previous --tail 100 || true
+          echo "=== sample-app logs logs ==="
+          kubectl -n cerberus logs deploy/sample-app-logs --tail 100 || true
+          echo "=== sample-app metrics describe ==="
+          kubectl -n cerberus describe deployment/sample-app-metrics || true
+          kubectl -n cerberus describe pod -l app=sample-app,signal=metrics || true
 
       - name: Tear down
         if: always()
