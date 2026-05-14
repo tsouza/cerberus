@@ -1,0 +1,28 @@
+-- query.promql --
+deriv(disk_used_bytes[5m])
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- Linear ramp: value increases by 100 every 10 seconds → slope 10/s.
+INSERT INTO otel_metrics_gauge VALUES
+    ('disk_used_bytes', map('host', 'a'), toDateTime64('2025-12-31 23:59:20', 9), 100.0),
+    ('disk_used_bytes', map('host', 'a'), toDateTime64('2025-12-31 23:59:30', 9), 200.0),
+    ('disk_used_bytes', map('host', 'a'), toDateTime64('2025-12-31 23:59:40', 9), 300.0),
+    ('disk_used_bytes', map('host', 'a'), toDateTime64('2025-12-31 23:59:50', 9), 400.0),
+    ('disk_used_bytes', map('host', 'a'), toDateTime64('2026-01-01 00:00:00', 9), 500.0);
+-- expected_rows --
+[
+  [{"host": "a"}, 10.0]
+]
+-- args --
+[0] string = "disk_used_bytes"
+-- chplan --
+RangeWindow func=deriv range=5m0s step=0s ts=TimeUnix value=Value groupBy=[Attributes]
+  Filter predicate=(MetricName = "disk_used_bytes")
+    Scan(otel_metrics_gauge)
+-- sql --
+SELECT `Attributes`, if(length(window_pairs) > 1, tupleElement(arrayReduce('simpleLinearRegression', arrayMap(p -> dateDiff('second', now64(9), tupleElement(p, 1)), window_pairs), arrayMap(p -> tupleElement(p, 2), window_pairs)), 1), nan) AS Value FROM (SELECT `Attributes`, arrayFilter(p -> tupleElement(p, 1) >= now64(9) - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= now64(9), series_array) AS window_pairs FROM (SELECT `Attributes`, arraySort(groupArray((`TimeUnix`, `Value`))) AS series_array FROM (SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` = ?)) GROUP BY `Attributes`)) WHERE length(`window_pairs`) >= 2

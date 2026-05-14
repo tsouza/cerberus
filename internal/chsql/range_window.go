@@ -166,7 +166,7 @@ func (e *emitter) emitRangeWindow(r *chplan.RangeWindow) error {
 		return e.emitRangeWindowDelta(r)
 	case "idelta":
 		return e.emitRangeWindowIDelta(r)
-	case "sum_over_time", "avg_over_time", "min_over_time", "max_over_time", "count_over_time", "last_over_time", "stddev_over_time":
+	case "sum_over_time", "avg_over_time", "min_over_time", "max_over_time", "count_over_time", "last_over_time", "stddev_over_time", "stdvar_over_time":
 		return e.emitRangeWindowOverTime(r)
 	case "quantile_over_time":
 		return e.emitRangeWindowQuantileOverTime(r)
@@ -176,6 +176,14 @@ func (e *emitter) emitRangeWindow(r *chplan.RangeWindow) error {
 		return e.emitRangeWindowPredictLinear(r)
 	case "holt_winters":
 		return e.emitRangeWindowHoltWinters(r)
+	case "absent_over_time":
+		return e.emitRangeWindowAbsentOverTime(r)
+	case "deriv":
+		return e.emitRangeWindowDeriv(r)
+	case "resets":
+		return e.emitRangeWindowResets(r)
+	case "changes":
+		return e.emitRangeWindowChanges(r)
 	default:
 		return fmt.Errorf("%w: range function %q (lands in M1.1 follow-ups)", ErrUnsupported, r.Func)
 	}
@@ -830,14 +838,15 @@ func (e *emitter) emitRangeWindowIncrease(r *chplan.RangeWindow) error {
 
 // emitRangeWindowOverTime emits SQL for the `*_over_time` family:
 // sum_over_time, avg_over_time, min_over_time, max_over_time,
-// count_over_time, last_over_time, stddev_over_time. These don't need
-// counter-reset handling — they're straight array aggregations over
-// the window's values.
+// count_over_time, last_over_time, stddev_over_time, stdvar_over_time.
+// These don't need counter-reset handling — they're straight array
+// aggregations over the window's values.
 //
-// stddev_over_time uses CH's `arrayReduce('stddevPop', ...)` to match
-// Prometheus's `Engine.evalAggrOverTime → varianceOverTime` which
-// builds a Welford running estimator that divides squared deviations
-// by N (population variance), not by N-1.
+// stddev_over_time / stdvar_over_time use CH's
+// `arrayReduce('stddevPop' | 'varPop', ...)` to match Prometheus's
+// `Engine.evalAggrOverTime → varianceOverTime` which builds a Welford
+// running estimator that divides squared deviations by N (population
+// variance / stddev), not by N-1.
 func (e *emitter) emitRangeWindowOverTime(r *chplan.RangeWindow) error {
 	var inner string
 	switch r.Func {
@@ -861,6 +870,14 @@ func (e *emitter) emitRangeWindowOverTime(r *chplan.RangeWindow) error {
 		// estimator (sum of squared deviations / 1 = 0 when there's
 		// only one sample equal to the running mean).
 		inner = "if(length(window_vals) > 0, arrayReduce('stddevPop', window_vals), nan)"
+	case "stdvar_over_time":
+		// Population variance (divides by N, not N-1) to match
+		// Prometheus's funcStdvarOverTime / varianceOverTime which
+		// builds a Welford running estimator with divisor N. Same
+		// empty-window contract as stddev_over_time: drop the series
+		// (we emit NaN; the engine treats NaN as "drop"). Single-sample
+		// window renders 0 (sum of squared deviations / 1 = 0).
+		inner = "if(length(window_vals) > 0, arrayReduce('varPop', window_vals), nan)"
 	default:
 		return fmt.Errorf("%w: over-time function %q", ErrUnsupported, r.Func)
 	}
@@ -869,6 +886,129 @@ func (e *emitter) emitRangeWindowOverTime(r *chplan.RangeWindow) error {
 	// short-circuit on zero samples). The outer SELECT gets
 	// `WHERE length(window_vals) >= 1`.
 	return e.emitWindowedArray(r, verbatim(inner), 1)
+}
+
+// emitRangeWindowAbsentOverTime emits SQL for `absent_over_time(v[range])`.
+//
+// PromQL semantics: returns 1 (with synthesised labels derived from the
+// selector matchers) when the lookback window contains zero samples;
+// returns no result when any sample is present.
+//
+// The fully-faithful "synthesise labels for the empty-input case" path
+// requires post-emit engine handling (Prom's funcAbsentOverTime is one
+// of three engine-specialised functions, alongside absent and present_
+// over_time — see internal/engine.go's `absent_over_time` switch in
+// the upstream parser). At the per-series RangeWindow layer the most
+// we can do is emit `1.0` for series whose window happens to be empty
+// (matching Prom's per-series no-data path) and NaN for series with at
+// least one sample (engine layer treats NaN as drop). The "no series at
+// all" case (where Prom synthesises the matcher-derived labels) lands
+// alongside the engine-side absent() implementation.
+//
+// minWindowSize stays at 0 so empty windows DO emit a row — the very
+// shape we want for the "absent" branch to materialise.
+func (e *emitter) emitRangeWindowAbsentOverTime(r *chplan.RangeWindow) error {
+	value := If(
+		Gt(Call("length", BareIdent("window_vals")), InlineLit(int64(0))),
+		verbatim("nan"),
+		verbatim("1.0"),
+	)
+	return e.emitWindowedArray(r, value, 0)
+}
+
+// emitRangeWindowDeriv emits SQL for `deriv(v[range])`.
+//
+// PromQL: returns the per-second slope of a least-squares linear fit
+// over the samples in the window. The fit's x-axis is the per-sample
+// seconds-from-anchor (negative-going as you walk backwards in time);
+// the y-axis is the sample value. We piggy-back on the same
+// `simpleLinearRegression` aggregate used by predict_linear and pull
+// out tuple element 2 (the slope; element 1 is the intercept).
+//
+// PromQL behaviour: < 2 samples in the window → drop the series (Prom
+// emits no sample). We emit NaN there; the engine layer treats NaN as
+// "drop". Additionally, the outer SELECT gets `WHERE length(window_pairs) >= 2`
+// so single-sample series don't reach the projection.
+//
+// Mirrors emitRangeWindowPredictLinear's structure — same xs/ys
+// arrayMap construction, same `simpleLinearRegression` arrayReduce
+// idiom — but pulls slope only (no `+ slope * t` horizon arithmetic
+// and no t scalar).
+func (e *emitter) emitRangeWindowDeriv(r *chplan.RangeWindow) error {
+	anchor := anchorExprFrag(r)
+	return e.emitWindowedArrayPairs(r, func(b *Builder) {
+		b.sb.WriteString("if(length(window_pairs) > 1, tupleElement(arrayReduce('simpleLinearRegression', ")
+		b.sb.WriteString("arrayMap(p -> dateDiff('second', ")
+		anchor(b)
+		b.sb.WriteString(", tupleElement(p, 1)), window_pairs), ")
+		b.sb.WriteString("arrayMap(p -> tupleElement(p, 2), window_pairs)")
+		b.sb.WriteString("), 1), nan)")
+	}, 2)
+}
+
+// emitRangeWindowResets emits SQL for `resets(v[range])`.
+//
+// PromQL: returns the count of counter-reset events in the window — a
+// reset is any adjacent pair (prev, curr) where `curr < prev`. The
+// result is rendered as a Float64 to match the wire type the engine
+// projects.
+//
+// Empty window → drop the series (Prom emits no sample). Single-sample
+// windows render 0 (no adjacent pairs to compare). The outer SELECT
+// drops empty-window rows via `WHERE length(window_vals) >= 1`.
+//
+// Implementation: the standard arrayPopBack/arrayPopFront sandwich
+// gives parallel `prev` / `curr` lists; an arrayMap with a per-pair
+// `if(curr < prev, 1, 0)` indicator + arraySum reduces to the count.
+func (e *emitter) emitRangeWindowResets(r *chplan.RangeWindow) error {
+	value := Cast(
+		Call("arraySum",
+			Call("arrayMap",
+				Lambda2("p", "c", If(
+					Lt(BareIdent("c"), BareIdent("p")),
+					InlineLit(int64(1)),
+					InlineLit(int64(0)),
+				)),
+				Call("arrayPopBack", BareIdent("window_vals")),
+				Call("arrayPopFront", BareIdent("window_vals")),
+			),
+		),
+		"Float64",
+	)
+	return e.emitWindowedArray(r, value, 1)
+}
+
+// emitRangeWindowChanges emits SQL for `changes(v[range])`.
+//
+// PromQL: returns the count of value changes in the window — any
+// adjacent pair (prev, curr) where `curr != prev`. Like resets, the
+// result is a Float64 count.
+//
+// Empty window → drop the series. Single-sample windows render 0
+// (no adjacent pairs). The outer SELECT drops empty-window rows via
+// `WHERE length(window_vals) >= 1`.
+//
+// Implementation mirrors emitRangeWindowResets but with `c != p` as
+// the per-pair indicator. Prom's funcChanges has an additional
+// `!(NaN(curr) && NaN(prev))` carve-out so a NaN-on-both-sides pair
+// is not counted as a change; we accept the divergence on float-NaN
+// streams (rare in practice, and the goldens cover only finite values).
+func (e *emitter) emitRangeWindowChanges(r *chplan.RangeWindow) error {
+	value := Cast(
+		Call("arraySum",
+			Call("arrayMap",
+				Lambda2("p", "c", If(
+					Neq(BareIdent("c"), BareIdent("p")),
+					InlineLit(int64(1)),
+					InlineLit(int64(0)),
+				)),
+				Call("arrayPopBack", BareIdent("window_vals")),
+				Call("arrayPopFront", BareIdent("window_vals")),
+			),
+		),
+		"Float64",
+	)
+	return e.emitWindowedArray(r, value, 1)
 }
 
 // emitRangeWindowDelta emits SQL for `delta(v[range])`: the
