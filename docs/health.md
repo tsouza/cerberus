@@ -103,9 +103,39 @@ livenessProbe:
 - **Startup** — none needed today; `initialDelaySeconds: 2` on the
   readiness probe is enough for cerberus to bind its listener.
 
+## Startup latency
+
+Cerberus binds its HTTP listener fast: with
+`CERBERUS_AUTO_CREATE_SCHEMA=false` and a reachable ClickHouse, the
+gap from process spawn to first `200 OK` on `/healthz` is well under
+2 seconds. The benchmark in `test/e2e/startup_bench_test.go` enforces
+this with a 2500 ms ceiling (target < 2000 ms, plus a 500 ms safety
+margin to absorb CI scheduler jitter).
+
+Run it locally with:
+
+```sh
+# Requires a warm ClickHouse at $CH_ADDR (default 127.0.0.1:9000).
+just startup-bench
+```
+
+The benchmark is build-tagged (`startup_bench`) and `RUN_STARTUP_BENCH`-
+gated, so regular `just test` skips it. CI runs it as an informational
+job in `.github/workflows/e2e.yml` (`startup-bench` job) on push-to-main,
+nightly, and manual dispatch — it is **not** a required PR gate, so a
+slow VM doesn't block merges, but a real regression (e.g. a new
+synchronous startup hook that blocks the listener bind) shows up on the
+very next merge.
+
+When `CERBERUS_AUTO_CREATE_SCHEMA=true`, the startup hook that applies
+the OTel ClickHouse DDL runs synchronously **before** the listener
+binds, so both probes wait for the schema to be ready; in that mode the
+< 2 s budget no longer applies (DDL apply time dominates).
+
 ## Implementation pointers
 
 - Endpoint code: `internal/api/health/health.go`.
 - Wire-up: `cmd/cerberus/main.go` (separate sub-mux so probes bypass
   the otelhttp wrapper).
 - ClickHouse ping: `internal/chclient/client.go` — `(*Client).Ping`.
+- Startup benchmark: `test/e2e/startup_bench_test.go`.

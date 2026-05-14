@@ -223,6 +223,18 @@ e2e-run:
     @echo "==> running Go E2E tests"
     go test -tags=e2e ./test/e2e/...
 
+# Run the startup-speed benchmark: spawn cerberus and measure wall-clock
+# time from process-start to first 200 OK on /healthz. Asserts < 2.5 s.
+# Requires a reachable ClickHouse at $CH_ADDR (default 127.0.0.1:9000);
+# the benchmark sets CERBERUS_AUTO_CREATE_SCHEMA=false so we measure
+# pure HTTP-listener bootstrap and not DDL apply time.
+#
+# Override with CH_ADDR / CH_DATABASE / CH_USERNAME / CH_PASSWORD env
+# vars; see test/e2e/startup_bench_test.go for the full list.
+startup-bench:
+    @echo "==> startup-speed benchmark (target < 2 s to /healthz)"
+    RUN_STARTUP_BENCH=1 go test -tags=startup_bench -v -count=1 -run TestStartupSpeed ./test/e2e/...
+
 # Run the Grafana playwright smoke (lands in M0.2).
 e2e-playwright:
     @echo "==> playwright smoke (lands in M0.2)"
