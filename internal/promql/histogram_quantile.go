@@ -369,7 +369,15 @@ func histogramAggGroupBy(agg *parser.AggregateExpr, s schema.Metrics) ([]chplan.
 	if agg.Without {
 		// `sum without (...)` — single group key derived from
 		// mapFilter on Attributes. `le` doesn't exist in OTel-CH but
-		// listing it is harmless (no-op key removal).
+		// listing it is harmless (no-op key removal). Empty `without ()`
+		// is the degenerate "remove nothing" shape: group by the full
+		// Attributes map directly (CH rejects mapFilter with an empty
+		// IN list as a syntax error).
+		if len(agg.Grouping) == 0 {
+			return []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
+				[]string{"gkey_0"},
+				&chplan.ColumnRef{Name: "gkey_0"}
+		}
 		return []chplan.Expr{
 				&chplan.MapWithoutKeys{
 					Map:  &chplan.ColumnRef{Name: s.AttributesColumn},

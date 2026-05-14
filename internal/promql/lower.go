@@ -562,8 +562,23 @@ func emptyAttrsMap() chplan.Expr {
 // `by (...)` it returns one MapAccess per named label; for `without (...)`
 // it returns a single MapWithoutKeys spanning the full Attributes map with
 // the named labels stripped.
+//
+// `without ()` (empty Grouping list) is the degenerate "remove nothing"
+// shape — equivalent to grouping by the full Attributes map. Emitting a
+// MapWithoutKeys{Keys: []} would lower to `mapFilter((k, v) -> NOT (k
+// IN ()), Attributes)`, which CH rejects as a syntax error (empty IN
+// list). Short-circuit to a bare ColumnRef so the GroupBy slot
+// references `Attributes` directly. Semantics match Prometheus's
+// `aggregators.test` "Empty without" case: one output row per unique
+// input label set, with all labels preserved (aggregation drops only
+// `__name__`, which the OTel-CH Attributes map never contains).
 func aggregateGroupBy(a *parser.AggregateExpr, s schema.Metrics) ([]chplan.Expr, error) {
 	if a.Without {
+		if len(a.Grouping) == 0 {
+			return []chplan.Expr{
+				&chplan.ColumnRef{Name: s.AttributesColumn},
+			}, nil
+		}
 		return []chplan.Expr{
 			&chplan.MapWithoutKeys{
 				Map:  &chplan.ColumnRef{Name: s.AttributesColumn},
