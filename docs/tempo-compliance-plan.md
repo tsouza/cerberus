@@ -6,13 +6,13 @@ Cerberus's `harness/compatibility/` runs `prometheus/compliance` against a refer
 
 ### Official Grafana-maintained artefacts (no dedicated suite)
 
-| Artefact | Path | Shape | Useful as compliance corpus? |
-|---|---|---|---|
-| **`pkg/traceql/test_examples.yaml`** | [link](https://github.com/grafana/tempo/blob/main/pkg/traceql/test_examples.yaml) | YAML lists of `valid`, `parse_fails`, `validate_fails`, `unsupported` query *strings*. No expected results. | Parser-level only. Already covered by cerberus's `internal/traceql/parse_test.go`. Not behavioural. |
-| **`integration/api/*.go`** | [link](https://github.com/grafana/tempo/tree/main/integration/api) | Black-box Go tests booting real Tempo, hitting `/api/v2/search/tags`, `/api/v2/search/tag/{n}/values`, `/api/search`, `/api/v2/traces/{id}`, etc. Assert `tempopb.*Response` shape via `require.Equal`. | **Strongest fit.** Procedurally generated Jaeger Thrift batches (`MakeThriftBatchWithSpanCountAttributeAndName`) — not portable corpus, but harness pattern + assertion shapes are directly reusable. |
-| **`integration/api/query_range_test.go`** | [link](https://github.com/grafana/tempo/blob/main/integration/api/query_range_test.go) | Exercises `/api/metrics/query_range`; validates via **internal consistency** (`avg = sum/count`, exemplar belongs to series, etc.). No external diff. | Lifts the cross-check invariant idea; inputs random. |
-| **`cmd/tempo-vulture/`** | [link](https://github.com/grafana/tempo/tree/main/cmd/tempo-vulture) | Long-running canary. Pushes deterministic OTLP traces seeded from epoch, queries them back via [`httpclient.Client`](https://github.com/grafana/tempo/blob/main/pkg/httpclient/httpclient.go) (`QueryTrace`, `QueryTraceV2`, `SearchTraceQLWithRange`, `MetricsQueryRange`, `SearchWithRange`). Diffs trace round-trip via `reflect.DeepEqual` + `go-test/deep`. Exports Prometheus counters. | **Closest analogue to `prom-compliance-tester`.** Single-backend (write/read same Tempo), but trivially repointed at two backends. |
-| **`grafana/oats`** | [link](https://github.com/grafana/oats) | YAML-declarative round-trip tests against the LGTM stack. TraceQL assertions: `traceql:`, `equals:`/`regexp:`/`attributes:`/`count:`. | Conformance against a *single* Tempo, not differential. Useful as smoke-test corpus source. |
+| Artefact                                  | Path                                                                                   | Shape                                                                                                                                                                                                                                                                                                                                                                                         | Useful as compliance corpus?                                                                                                                                                                          |
+| ----------------------------------------- | -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`pkg/traceql/test_examples.yaml`**      | [link](https://github.com/grafana/tempo/blob/main/pkg/traceql/test_examples.yaml)      | YAML lists of `valid`, `parse_fails`, `validate_fails`, `unsupported` query *strings*. No expected results.                                                                                                                                                                                                                                                                                   | Parser-level only. Already covered by cerberus's `internal/traceql/parse_test.go`. Not behavioural.                                                                                                   |
+| **`integration/api/*.go`**                | [link](https://github.com/grafana/tempo/tree/main/integration/api)                     | Black-box Go tests booting real Tempo, hitting `/api/v2/search/tags`, `/api/v2/search/tag/{n}/values`, `/api/search`, `/api/v2/traces/{id}`, etc. Assert `tempopb.*Response` shape via `require.Equal`.                                                                                                                                                                                       | **Strongest fit.** Procedurally generated Jaeger Thrift batches (`MakeThriftBatchWithSpanCountAttributeAndName`) — not portable corpus, but harness pattern + assertion shapes are directly reusable. |
+| **`integration/api/query_range_test.go`** | [link](https://github.com/grafana/tempo/blob/main/integration/api/query_range_test.go) | Exercises `/api/metrics/query_range`; validates via **internal consistency** (`avg = sum/count`, exemplar belongs to series, etc.). No external diff.                                                                                                                                                                                                                                         | Lifts the cross-check invariant idea; inputs random.                                                                                                                                                  |
+| **`cmd/tempo-vulture/`**                  | [link](https://github.com/grafana/tempo/tree/main/cmd/tempo-vulture)                   | Long-running canary. Pushes deterministic OTLP traces seeded from epoch, queries them back via [`httpclient.Client`](https://github.com/grafana/tempo/blob/main/pkg/httpclient/httpclient.go) (`QueryTrace`, `QueryTraceV2`, `SearchTraceQLWithRange`, `MetricsQueryRange`, `SearchWithRange`). Diffs trace round-trip via `reflect.DeepEqual` + `go-test/deep`. Exports Prometheus counters. | **Closest analogue to `prom-compliance-tester`.** Single-backend (write/read same Tempo), but trivially repointed at two backends.                                                                    |
+| **`grafana/oats`**                        | [link](https://github.com/grafana/oats)                                                | YAML-declarative round-trip tests against the LGTM stack. TraceQL assertions: `traceql:`, `equals:`/`regexp:`/`attributes:`/`count:`.                                                                                                                                                                                                                                                         | Conformance against a *single* Tempo, not differential. Useful as smoke-test corpus source.                                                                                                           |
 
 ### Third-party / community
 
@@ -23,11 +23,11 @@ Cerberus's `harness/compatibility/` runs `prometheus/compliance` against a refer
 
 ### Closest analogues ranked
 
-| | Pros | Cons |
-|---|---|---|
-| **A. `cmd/tempo-vulture`** | Deterministic seed + read-back + structured comparison + Prometheus counters. Repointing the read path at cerberus gives a differential driver in a few hundred lines. | Single-backend by design. |
-| **B. `grafana/oats` yaml runner** | Clean DSL. | Assertion model is "matched span has attribute X = Y", not byte-equal — less precise. |
-| **C. `integration/api/api_test.go` harness** | In-process, no Compose, reuses our tempo-fork proto types. | Weak for full HTTP/JSON wire diffing. |
+|                                              | Pros                                                                                                                                                                   | Cons                                                                                  |
+| -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| **A. `cmd/tempo-vulture`**                   | Deterministic seed + read-back + structured comparison + Prometheus counters. Repointing the read path at cerberus gives a differential driver in a few hundred lines. | Single-backend by design.                                                             |
+| **B. `grafana/oats` yaml runner**            | Clean DSL.                                                                                                                                                             | Assertion model is "matched span has attribute X = Y", not byte-equal — less precise. |
+| **C. `integration/api/api_test.go` harness** | In-process, no Compose, reuses our tempo-fork proto types.                                                                                                             | Weak for full HTTP/JSON wire diffing.                                                 |
 
 **Recommendation: A.** Fork vulture's seeder pattern into a cerberus-owned Compose stack + diff driver. This mirrors how `harness/compatibility/` reuses `prometheus/compliance/promql/`.
 
@@ -95,17 +95,17 @@ Intentional mismatches → `expected-failures.json` with comment, same as Prom h
 
 ## Endpoints exercised (priority order)
 
-| Endpoint | RC alignment | Why |
-|---|---|---|
-| `GET /api/echo` | RC1 | Trivial liveness; Grafana datasource probes this. |
-| `GET /api/traces/{id}` (v1 + v2) | RC1 | Foundational read path. |
-| `GET /api/search?q=<TraceQL>` | RC2 | TraceQL search — central conformance surface. |
-| `GET /api/v2/search/tags?scope=...` | RC2 | Drives Grafana's tag autocomplete. |
-| `GET /api/v2/search/tag/{n}/values` | RC2 | Typed value response. |
-| `GET /api/metrics/query_range` | RC3 | TraceQL metrics; semantic-consistency layer applies. |
-| `GET /api/metrics/query` | RC3 | Instant variant. |
-| `GET /api/search/tags` (v1) | RC1 | Backwards-compat shape. |
-| `GET /api/search/tag/{n}/values` (v1) | RC1 | Backwards-compat shape. |
+| Endpoint                              | RC alignment | Why                                                  |
+| ------------------------------------- | ------------ | ---------------------------------------------------- |
+| `GET /api/echo`                       | RC1          | Trivial liveness; Grafana datasource probes this.    |
+| `GET /api/traces/{id}` (v1 + v2)      | RC1          | Foundational read path.                              |
+| `GET /api/search?q=<TraceQL>`         | RC2          | TraceQL search — central conformance surface.        |
+| `GET /api/v2/search/tags?scope=...`   | RC2          | Drives Grafana's tag autocomplete.                   |
+| `GET /api/v2/search/tag/{n}/values`   | RC2          | Typed value response.                                |
+| `GET /api/metrics/query_range`        | RC3          | TraceQL metrics; semantic-consistency layer applies. |
+| `GET /api/metrics/query`              | RC3          | Instant variant.                                     |
+| `GET /api/search/tags` (v1)           | RC1          | Backwards-compat shape.                              |
+| `GET /api/search/tag/{n}/values` (v1) | RC1          | Backwards-compat shape.                              |
 
 ## Per-PR breakdown
 

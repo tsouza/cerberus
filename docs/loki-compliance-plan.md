@@ -28,11 +28,11 @@ Other Grafana artefacts:
 
 ### Closest analogues ranked
 
-| Approach | Pros | Cons |
-|---|---|---|
+| Approach                                                       | Pros                                                                                         | Cons                                                                                          |
+| -------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
 | **A. Vendor `pkg/logql/bench/` + `TestRemoteStorageEquality`** | Already maintained by Grafana; correct diff semantics; mirrors `prometheus/compliance` shape | Build-tagged; couples to upstream Go test driver; YAML templates need `dataset_metadata.json` |
-| **B. Build cerberus-owned driver, reuse bench YAML** | Decouples from upstream test runner; consistent with how cerberus ships the Prom harness | Owning diff logic = more code; AGPL drag of YAML lift |
-| **C. Roll fresh corpus from cerberus's TXTAR fixtures** | Self-contained, MIT-clean | Forfeits Grafana's curation; reinvents what they already maintain |
+| **B. Build cerberus-owned driver, reuse bench YAML**           | Decouples from upstream test runner; consistent with how cerberus ships the Prom harness     | Owning diff logic = more code; AGPL drag of YAML lift                                         |
+| **C. Roll fresh corpus from cerberus's TXTAR fixtures**        | Self-contained, MIT-clean                                                                    | Forfeits Grafana's curation; reinvents what they already maintain                             |
 
 **Recommendation: A → B over time.** Start by vendoring upstream verbatim (mirror how `harness/compatibility/upstream/promql/` is set up); migrate the diff driver to cerberus-owned later for report-format consistency.
 
