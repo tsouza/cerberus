@@ -71,13 +71,16 @@ spec:
         - name: telemetrygen
           image: ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.116.0
           args:
+            # NOTE: telemetrygen v0.116.0 `metrics` subcommand has no
+            # `--service` flag (unlike `traces`). Pass service.name via
+            # `--otlp-attributes`, same shape as `sample-app-logs`.
             - metrics
             - --otlp-endpoint=otel-collector-gateway:4317
             - --otlp-insecure
             - --duration=24h
             - --rate=2
             - --workers=1
-            - --service=sample-app
+            - --otlp-attributes=service.name="sample-app"
             - --otlp-attributes=service.namespace="cerberus-e2e"
             - --otlp-attributes=deployment.environment="e2e"
           resources:
