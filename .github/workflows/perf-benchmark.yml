@@ -1,14 +1,33 @@
 name: perf-benchmark
 
-# Weekly perf-regression sweep. Runs `go test -bench=.` against `main` and
+# Weekly perf-regression sweep. Runs `go test -bench=.` against a baseline
+# (origin/main, or HEAD~1 when the trigger ref already *is* main) and
 # against the trigger ref, then diffs the two with benchstat. Both raw
-# outputs and the benchstat diff are uploaded as artifacts.
+# outputs and the benchstat diff are uploaded as artifacts; the diff is
+# also surfaced as a job summary.
+#
+# Statistical rigor: benchstat requires n >= 6 samples to compute a
+# confidence interval at α=0.05, so each side runs `-count=6`. The
+# previous `-benchtime=10x -count=1` shape produced rows annotated with
+# "need >= 6 samples" and p=1.000 — pure noise. `-benchtime=1s` lets the
+# Go test runner auto-scale b.N to amortise setup over many iterations
+# (critical for the sub-µs PromQL/LogQL lower benches). `-cpu=1` pins
+# GOMAXPROCS=1 to avoid the multi-core sampling cost.
 
 on:
   schedule:
     # Sunday 04:00 UTC.
     - cron: '0 4 * * 0'
   workflow_dispatch:
+    inputs:
+      baseline_ref:
+        description: >-
+          Git ref to use as the benchmark baseline. Leave blank to auto-pick:
+          origin/main when the trigger ref is a branch, HEAD~1 when the
+          trigger ref already is main (avoids the same-vs-same diff).
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -19,7 +38,7 @@ concurrency:
 
 jobs:
   bench:
-    name: benchstat diff (main vs ref)
+    name: benchstat diff (baseline vs ref)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -34,25 +53,93 @@ jobs:
       - name: install benchstat
         run: go install golang.org/x/perf/cmd/benchstat@latest
 
-      - name: capture ref SHA
-        id: ref
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-
-      - name: bench against main
+      - name: resolve baseline + ref SHAs
+        id: refs
+        env:
+          INPUT_BASELINE_REF: ${{ inputs.baseline_ref }}
         run: |
-          git fetch origin main
-          git checkout origin/main
-          go test -bench=. -benchmem -benchtime=10x -run='^$' ./... \
-            | tee main.bench
+          set -euo pipefail
+          git fetch --no-tags origin main
+          ref_sha="$(git rev-parse HEAD)"
+          main_sha="$(git rev-parse origin/main)"
+
+          # Explicit input wins. Otherwise: if the trigger ref already
+          # resolves to origin/main (workflow_dispatch from main, or the
+          # weekly schedule), compare against the parent commit so the
+          # diff isn't a trivial same-vs-same. For any other ref, the
+          # natural baseline is origin/main.
+          if [[ -n "${INPUT_BASELINE_REF}" ]]; then
+            baseline_ref="${INPUT_BASELINE_REF}"
+          elif [[ "${ref_sha}" == "${main_sha}" ]]; then
+            baseline_ref="${ref_sha}^"
+          else
+            baseline_ref="${main_sha}"
+          fi
+
+          baseline_sha="$(git rev-parse "${baseline_ref}")"
+          if [[ "${baseline_sha}" == "${ref_sha}" ]]; then
+            echo "::error::baseline (${baseline_ref} = ${baseline_sha}) is the same as ref (${ref_sha}); benchstat would produce same-vs-same noise." >&2
+            exit 1
+          fi
+
+          echo "ref_sha=${ref_sha}"           | tee -a "$GITHUB_OUTPUT"
+          echo "baseline_sha=${baseline_sha}" | tee -a "$GITHUB_OUTPUT"
+          echo "baseline_ref=${baseline_ref}" | tee -a "$GITHUB_OUTPUT"
+
+      - name: bench against baseline
+        env:
+          BASELINE_SHA: ${{ steps.refs.outputs.baseline_sha }}
+        run: |
+          set -euo pipefail
+          git checkout --detach "${BASELINE_SHA}"
+          # -count=6   minimum samples for benchstat α=0.05 (n>=6 -> Mann-Whitney).
+          # -benchtime=1s  auto-scale b.N so sub-µs benchmarks aren't dominated by setup.
+          # -cpu=1   pin GOMAXPROCS=1; multi-core sampling adds variance for these single-goroutine benches.
+          go test -bench=. -benchmem -benchtime=1s -count=6 -cpu=1 -run='^$' ./... \
+            | tee baseline.bench
 
       - name: bench against trigger ref
+        env:
+          REF_SHA: ${{ steps.refs.outputs.ref_sha }}
         run: |
-          git checkout ${{ steps.ref.outputs.sha }}
-          go test -bench=. -benchmem -benchtime=10x -run='^$' ./... \
+          set -euo pipefail
+          git checkout --detach "${REF_SHA}"
+          go test -bench=. -benchmem -benchtime=1s -count=6 -cpu=1 -run='^$' ./... \
             | tee ref.bench
 
       - name: benchstat diff
-        run: benchstat main.bench ref.bench | tee benchstat.txt
+        run: benchstat baseline.bench ref.bench | tee benchstat.txt
+
+      - name: write job summary
+        if: always()
+        env:
+          BASELINE_REF: ${{ steps.refs.outputs.baseline_ref }}
+          BASELINE_SHA: ${{ steps.refs.outputs.baseline_sha }}
+          REF_SHA: ${{ steps.refs.outputs.ref_sha }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## perf-benchmark"
+            echo
+            echo "| field | value |"
+            echo "| --- | --- |"
+            echo "| baseline ref | \`${BASELINE_REF}\` |"
+            echo "| baseline SHA | \`${BASELINE_SHA}\` |"
+            echo "| trigger SHA | \`${REF_SHA}\` |"
+            echo "| samples per benchmark | 6 |"
+            echo "| benchtime | 1s |"
+            echo "| GOMAXPROCS | 1 |"
+            echo
+            if [[ -s benchstat.txt ]]; then
+              echo "### benchstat baseline.bench ref.bench"
+              echo
+              echo '```'
+              cat benchstat.txt
+              echo '```'
+            else
+              echo "_benchstat.txt is empty — see job logs for failures._"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: upload bench artifacts
         if: always()
@@ -60,7 +147,7 @@ jobs:
         with:
           name: perf-benchmark
           path: |
-            main.bench
+            baseline.bench
             ref.bench
             benchstat.txt
           if-no-files-found: warn
