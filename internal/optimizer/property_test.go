@@ -69,13 +69,20 @@ const propertyTable = "otel_metrics_gauge"
 // `CREATE TABLE` to `CREATE OR REPLACE TABLE` for us, but the optimizer
 // property test owns its own chDB session so we write the OR-REPLACE
 // form directly.
+//
+// Engine is MergeTree (not Memory) because the chsql emitter promotes
+// Filter(Scan) predicates from WHERE → PREWHERE, and ClickHouse's
+// Memory engine rejects PREWHERE with `ILLEGAL_PREWHERE`. The sort key
+// `(MetricName, TimeUnix)` mirrors the production OTel-CH layout, so
+// the optimized plans the property test round-trips exercise the same
+// PREWHERE shapes a production deployment would hit.
 const propertyDDL = `
 CREATE OR REPLACE TABLE otel_metrics_gauge (
     MetricName String,
     Attributes Map(String, String),
     TimeUnix DateTime64(9),
     Value Float64
-) ENGINE = Memory;
+) ENGINE = MergeTree() ORDER BY (MetricName, TimeUnix);
 INSERT INTO otel_metrics_gauge VALUES
     ('up',          map('job', 'api',     'host', 'a'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
     ('up',          map('job', 'api',     'host', 'b'), toDateTime64('2026-01-01 00:00:01', 9), 1.0),

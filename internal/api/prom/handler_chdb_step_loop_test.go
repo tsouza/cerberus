@@ -314,14 +314,14 @@ func TestQueryRange_StepLoop_TimeTime_ChDB(t *testing.T) {
 // same matrix shape it did pre-fix.
 //
 // We deliberately use the avg_over_time / matrix RangeWindow path
-// rather than a bare selector + scalar binop because: (a) the
-// bare-selector LWR path hits chDB's `ENGINE = Memory does not
-// support PREWHERE` regression that pre-dates this PR (see
-// `TestQuery_Vector_ChDB` failing identically on origin/main); and
-// (b) wrapping in `+ 0` triggers a separate pre-existing 4-column
-// `lowerVectorScalar` Project bug over a 2-column RangeWindow
-// derived shape. Neither is caused by, nor exposed by, the step-loop
-// fix in this PR.
+// rather than a bare selector + scalar binop because wrapping in `+ 0`
+// triggers a pre-existing 4-column `lowerVectorScalar` Project bug
+// over a 2-column RangeWindow derived shape. That bug is not caused
+// by, nor exposed by, the step-loop fix in this PR.
+//
+// (The bare-selector LWR path previously also hit chDB's
+// `ENGINE = Memory does not support PREWHERE` failure; that regression
+// is fixed in the same change that swaps `gaugeDDL` to MergeTree.)
 func TestQueryRange_StepLoop_DrivingVector_ChDB(t *testing.T) {
 	// Anchor the seed window at "now" because the matrix RangeWindow
 	// path uses `End = now64(9)` (no @ modifier threading) on its
