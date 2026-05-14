@@ -305,10 +305,11 @@ func lowerHistogramQuantileAgg(shape histogramAggShape, phi float64, s schema.Me
 		},
 	}
 	agg := &chplan.Aggregate{
-		Input:          input,
-		GroupBy:        groupBy,
-		GroupByAliases: groupByAliases,
-		AggFuncs:       aggFuncs,
+		Input:              input,
+		GroupBy:            groupBy,
+		GroupByAliases:     groupByAliases,
+		AggFuncs:           aggFuncs,
+		DropEmptyOnNoGroup: true,
 	}
 
 	// Inner Project re-shapes the aggregate output back into the

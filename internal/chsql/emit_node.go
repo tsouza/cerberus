@@ -228,6 +228,17 @@ func (e *emitter) emitAggregate(a *chplan.Aggregate) error {
 		return err
 	}
 
+	// Aggregate(GroupBy=[], …) corner case: CH's "1-row-per-aggregate-
+	// only-query" semantics emit a single row of zeros even over empty
+	// input. PromQL/LogQL spec says an aggregation over the empty set
+	// produces no result, so callers flag `DropEmptyOnNoGroup` and the
+	// emitter wraps the aggregate with a `count() > 0` guard. TraceQL's
+	// `| count() = 0` idiom expects the CH-default 1-row-of-zeros and
+	// leaves the flag false.
+	if len(a.GroupBy) == 0 && a.DropEmptyOnNoGroup {
+		return e.emitAggregateNoGroup(a, sub)
+	}
+
 	sb := NewQuery().From(sub)
 	for i, g := range a.GroupBy {
 		expr := g
@@ -244,15 +255,57 @@ func (e *emitter) emitAggregate(a *chplan.Aggregate) error {
 
 	// GROUP BY mirrors the SELECT-list group-by expressions (without
 	// aliases — CH groups by the underlying expression, not the alias).
-	if len(a.GroupBy) > 0 {
-		groupFrags := make([]Frag, 0, len(a.GroupBy))
-		for _, g := range a.GroupBy {
-			expr := g
-			groupFrags = append(groupFrags, func(b *Builder) { _ = b.Expr(expr) })
-		}
-		sb.GroupBy(groupFrags...)
+	groupFrags := make([]Frag, 0, len(a.GroupBy))
+	for _, g := range a.GroupBy {
+		expr := g
+		groupFrags = append(groupFrags, func(b *Builder) { _ = b.Expr(expr) })
 	}
+	sb.GroupBy(groupFrags...)
 	e.emitSelect(sb)
+	return nil
+}
+
+// emitAggregateNoGroup renders the `Aggregate(GroupBy=[], …)` shape as
+// a count()-guarded two-layer SELECT so empty input produces 0 output
+// rows (PromQL/LogQL spec) rather than CH's default 1-row-of-zeros for
+// aggregate-only queries.
+//
+// Shape:
+//
+//	SELECT <alias_1>, <alias_2>, …
+//	FROM (
+//	    SELECT <agg_1> AS <alias_1>, …, count() AS _cerb_n
+//	    FROM (<input>)
+//	) WHERE _cerb_n > 0
+//
+// When an AggFunc has an empty Alias, a synthetic `_cerb_agg_<i>`
+// alias is minted on the inner SELECT and referenced from the outer
+// (without emitting AS on the outer projection — equivalent to the
+// pre-wrap bare aggregate output column shape). All real chplan
+// callsites carry non-empty aliases today; the synthetic-alias branch
+// is a forward-compat hedge.
+func (e *emitter) emitAggregateNoGroup(a *chplan.Aggregate, sub Frag) error {
+	const guardAlias = "_cerb_n"
+	inner := NewQuery().From(sub)
+	outerCols := make([]Frag, 0, len(a.AggFuncs))
+	for i, af := range a.AggFuncs {
+		af := af
+		alias := af.Alias
+		if alias == "" {
+			alias = fmt.Sprintf("_cerb_agg_%d", i)
+			af.Alias = alias
+		}
+		inner.Select(aggFuncFrag(af))
+		outerCols = append(outerCols, Col(alias))
+	}
+	inner.Select(As(Call("count"), guardAlias))
+
+	outer := NewQuery().From(inner.Frag())
+	for _, c := range outerCols {
+		outer.Select(c)
+	}
+	outer.Where(Gt(Col(guardAlias), InlineLit(int64(0))))
+	e.emitSelect(outer)
 	return nil
 }
 

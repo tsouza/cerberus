@@ -39,10 +39,11 @@ func lowerVectorAggregation(e *syntax.VectorAggregationExpr, s schema.Logs, lc l
 	}
 
 	agg := &chplan.Aggregate{
-		Input:          input,
-		GroupBy:        groupBy,
-		GroupByAliases: aliases,
-		AggFuncs:       []chplan.AggFunc{aggFunc},
+		Input:              input,
+		GroupBy:            groupBy,
+		GroupByAliases:     aliases,
+		AggFuncs:           []chplan.AggFunc{aggFunc},
+		DropEmptyOnNoGroup: true,
 	}
 	return wrapVectorAggregateForSample(agg, e, s, aliases), nil
 }

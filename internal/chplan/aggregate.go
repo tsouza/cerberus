@@ -40,11 +40,20 @@ func (a AggFunc) Equal(other AggFunc) bool {
 // when non-empty); each entry aliases the matching group-key column in
 // the SELECT list so a wrapping Project can reference it by name. Empty
 // means "no aliases" — emit the raw expression.
+//
+// DropEmptyOnNoGroup controls the PromQL/LogQL "aggregation over empty
+// input produces no result" semantics. When true AND GroupBy is empty,
+// the emitter wraps the aggregate with a `count() > 0` guard so an
+// empty Input projects 0 outer rows instead of CH's default 1-row-of-
+// zeros for aggregate-only queries. PromQL / LogQL set it; TraceQL
+// (whose `| count() = 0` idiom requires a 0 row for empty input) does
+// not. Has no effect when GroupBy is non-empty.
 type Aggregate struct {
-	Input          Node
-	GroupBy        []Expr
-	GroupByAliases []string
-	AggFuncs       []AggFunc
+	Input              Node
+	GroupBy            []Expr
+	GroupByAliases     []string
+	AggFuncs           []AggFunc
+	DropEmptyOnNoGroup bool
 }
 
 func (*Aggregate) planNode() {}
@@ -53,7 +62,8 @@ func (a *Aggregate) Children() []Node { return []Node{a.Input} }
 
 func (a *Aggregate) Equal(other Node) bool {
 	o, ok := other.(*Aggregate)
-	if !ok || len(a.GroupBy) != len(o.GroupBy) || len(a.AggFuncs) != len(o.AggFuncs) {
+	if !ok || len(a.GroupBy) != len(o.GroupBy) || len(a.AggFuncs) != len(o.AggFuncs) ||
+		a.DropEmptyOnNoGroup != o.DropEmptyOnNoGroup {
 		return false
 	}
 	for i := range a.GroupBy {

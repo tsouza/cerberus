@@ -92,7 +92,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strconv"
 	"testing"
 
@@ -119,16 +118,6 @@ import (
 // reproduces with `-rapid.seed=<N>`) and the minimised dataset / query
 // rapid shrunk to.
 func TestPromQL_Property_FromScratch(t *testing.T) {
-	if os.Getenv("CERBERUS_PROPERTY_FORCE") == "" {
-		t.Skip("property: skipped pending PromQL aggregate-on-empty fix " +
-			"(separate from the RangeWindow value-alias bug already fixed). " +
-			"`sum(metric[r])` over an evalTs outside the data range emits a " +
-			"spurious `{} = 0` row from CH's 1-row-per-aggregate-only-query " +
-			"semantics; PromQL spec says empty result. Reproduce with " +
-			"CERBERUS_PROPERTY_FORCE=1 (seed 11512813954976776230, rapid v0.4.8). " +
-			"See package doc above for the three candidate fix paths.")
-	}
-
 	cli := chclienttest.NewChDB(t)
 	h := prom.New(cli, schema.DefaultOTelMetrics(), nil)
 	mux := http.NewServeMux()

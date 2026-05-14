@@ -246,6 +246,8 @@ func (b *Builder) Expr(x chplan.Expr) error {
 		return b.exprMapAccess(v)
 	case *chplan.MapWithoutKeys:
 		return b.exprMapWithoutKeys(v)
+	case *chplan.MapWithoutEmptyValues:
+		return b.exprMapWithoutEmptyValues(v)
 	case *chplan.LineContent:
 		return b.exprLineContent(v)
 	case *chplan.FieldAccess:
@@ -356,6 +358,28 @@ func (b *Builder) exprMapWithoutKeys(m *chplan.MapWithoutKeys) error {
 		b.Arg(k)
 	}
 	b.sb.WriteString(")), ")
+	if err := b.Expr(m.Map); err != nil {
+		return err
+	}
+	b.sb.WriteByte(')')
+	return nil
+}
+
+// exprMapWithoutEmptyValues renders
+//
+//	mapFilter((k, v) -> v != '', <map>)
+//
+// — the CH expression that strips Map entries whose value is the
+// empty string. The empty-string literal is emitted inline (no `?`
+// placeholder) because it is part of the query shape, not user data.
+//
+// PromQL `by(...)` aggregation lowering wraps the per-group-key
+// `map('label1', gkey_0, ...)` literal with this so series whose
+// grouped-by label was absent in the OTel-CH Attributes Map don't
+// surface as `{label1=""}` on the wire — Prom canonicalises an
+// empty-valued label to "no label", and so do we.
+func (b *Builder) exprMapWithoutEmptyValues(m *chplan.MapWithoutEmptyValues) error {
+	b.sb.WriteString("mapFilter((k, v) -> v != '', ")
 	if err := b.Expr(m.Map); err != nil {
 		return err
 	}

@@ -1,0 +1,89 @@
+# 2026/05/14 17:37:08.414824 [TestPromQL_Property_FromScratch] [rapid] draw dataset: property.Dataset{DDL:"CREATE OR REPLACE TABLE otel_metrics_gauge (\n    MetricName String,\n    Attributes Map(String, String),\n    TimeUnix DateTime64(9),\n    Value Float64\n) ENGINE = MergeTree ORDER BY (MetricName, TimeUnix);\nINSERT INTO otel_metrics_gauge VALUES ('temperature', map('instance', 'a'), toDateTime64('2026-05-13 12:00:00.000', 9), 0), ('temperature', map('instance', 'a'), toDateTime64('2026-05-13 12:00:15.000', 9), 0), ('temperature', map('instance', 'a'), toDateTime64('2026-05-13 12:00:30.000', 9), 0), ('temperature', map('instance', 'a'), toDateTime64('2026-05-13 12:00:45.000', 9), 0), ('temperature', map('instance', 'a'), toDateTime64('2026-05-13 12:01:00.000', 9), 0), ('temperature', map('instance', 'a'), toDateTime64('2026-05-13 12:01:15.000', 9), 0);\nINSERT INTO otel_metrics_gauge VALUES ('temperature', map('instance', 'a', 'job', 'api'), toDateTime64('2026-05-13 12:00:00.000', 9), 0), ('temperature', map('instance', 'a', 'job', 'api'), toDateTime64('2026-05-13 12:00:15.000', 9), 0), ('temperature', map('instance', 'a', 'job', 'api'), toDateTime64('2026-05-13 12:00:30.000', 9), 0);\nINSERT INTO otel_metrics_gauge VALUES ('up', map('instance', 'a'), toDateTime64('2026-05-13 12:00:00.000', 9), 23), ('up', map('instance', 'a'), toDateTime64('2026-05-13 12:00:15.000', 9), 0.5), ('up', map('instance', 'a'), toDateTime64('2026-05-13 12:00:30.000', 9), 0.5);\n", Metrics:(*property.MetricsModel)(0x1467eec00ae0)}
+# 2026/05/14 17:37:08.414858 [TestPromQL_Property_FromScratch] [rapid] draw query: property.Query{String:"sum by (job) (up{instance=\"a\"})", EvalTs:1778673800}
+# 2026/05/14 17:37:08.451107 [TestPromQL_Property_FromScratch] property drift
+# --- query ---
+# sum by (job) (up{instance="a"})
+# evalTs=1778673800
+# --- dataset ---
+# series=3
+#   temperature{instance="a"} points=6
+#   temperature{instance="a",job="api"} points=3
+#   up{instance="a"} points=3
+# 
+# --- diff ---
+# missing series in got: {}
+# extra series in got: {job=""}
+# 
+v0.4.8#1198533573856439928
+0x0
+0x38e38e38e38e4
+0x2
+0x0
+0x1
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x6b74f03291620
+0x5
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1
+0x0
+0x0
+0x1
+0x0
+0x0
+0x0
+0x0
+0x0
+0x38e38e38e38e4
+0x2
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x38e38e38e38e4
+0x2
+0x174db24d75da99
+0x5
+0x26758712f27ff
+0x1
+0xb0e1d6c41cca
+0x1
+0x80f9d3f2c464c
+0x1
+0x1
+0xd7524a9b1b24e
+0x0
+0x1aab7e431ed7ee
+0x0
+0x222c3b44e3c47
+0x6d26aff004e80
+0x2
+0x1
+0xba8fcece19bfd
+0x0
