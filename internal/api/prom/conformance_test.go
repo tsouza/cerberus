@@ -276,9 +276,6 @@ func TestConformance_LabelValuesWire(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if tc.name == "label_empty_result" {
-				t.Skip("TODO: handler returns `null` instead of `[]` when no values match; handler-side fix follow-up")
-			}
 			srv := newServer(&stubQuerier{strings: tc.rows})
 			t.Cleanup(srv.Close)
 
