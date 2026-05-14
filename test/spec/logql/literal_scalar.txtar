@@ -1,0 +1,20 @@
+-- query.logql --
+42
+-- args --
+[0] string = "Map(String,String)"
+[1] float64 = 42
+-- seed --
+CREATE TABLE otel_logs (
+    Timestamp DateTime64(9),
+    Body String,
+    ResourceAttributes Map(String, String)
+) ENGINE = Memory;
+-- expected_rows --
+[
+  [{}, 42.0]
+]
+-- chplan --
+Project [CAST(map(), "Map(String,String)") AS ResourceAttributes, 42 AS Value]
+  OneRow
+-- sql --
+SELECT CAST(map(), ?) AS `ResourceAttributes`, ? AS `Value` FROM (SELECT 1)

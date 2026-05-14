@@ -1,0 +1,34 @@
+-- query.logql --
+label_replace(count_over_time({service_name="api"}[5m]), "newlabel", "$1", "service_name", "(.+)")
+-- args --
+[0] string = "service_name"
+[1] string = "^(.+)$"
+[2] string = "newlabel"
+[3] string = "service_name"
+[4] string = "^(.+)$"
+[5] string = "$1"
+[6] int64 = 1
+[7] string = "service_name"
+[8] string = "api"
+-- seed --
+CREATE TABLE otel_logs (
+    Timestamp DateTime64(9),
+    Body String,
+    ResourceAttributes Map(String, String)
+) ENGINE = Memory;
+INSERT INTO otel_logs (Timestamp, Body, ResourceAttributes) VALUES
+    (toDateTime64('2025-12-31 23:58:00', 9), 'a', map('service_name', 'api')),
+    (toDateTime64('2025-12-31 23:59:00', 9), 'b', map('service_name', 'api')),
+    (toDateTime64('2026-01-01 00:00:00', 9), 'c', map('service_name', 'api'));
+-- expected_rows --
+[
+  [{"service_name": "api", "newlabel": "api"}, 3.0]
+]
+-- chplan --
+Project [labelReplace(ResourceAttributes, dst="newlabel", replacement="$1", src="service_name", regex="(.+)") AS ResourceAttributes, Value]
+  RangeWindow func=count_over_time range=5m0s step=0s ts=Timestamp value=Value groupBy=[ResourceAttributes]
+    Project [ResourceAttributes, Timestamp, 1 AS Value]
+      Filter predicate=(ResourceAttributes["service_name"] = "api")
+        Scan(otel_logs)
+-- sql --
+SELECT mapFilter((k, v) -> v != '', if(match(`ResourceAttributes`[?], ?), mapUpdate(`ResourceAttributes`, map(?, replaceRegexpOne(`ResourceAttributes`[?], ?, ?))), `ResourceAttributes`)) AS `ResourceAttributes`, `Value` FROM (SELECT `ResourceAttributes`, toFloat64(length(window_vals)) AS `Value` FROM (SELECT `ResourceAttributes`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `ResourceAttributes`, arrayFilter(p -> tupleElement(p, 1) >= now64(9) - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= now64(9), series_array) AS `window_pairs` FROM (SELECT `ResourceAttributes`, arraySort(groupArray((`Timestamp`, `Value`))) AS `series_array` FROM (SELECT `ResourceAttributes`, `Timestamp`, ? AS `Value` FROM (SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?))) GROUP BY `ResourceAttributes`))) WHERE length(`window_vals`) >= 1)

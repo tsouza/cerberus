@@ -82,6 +82,14 @@ func lower(expr syntax.Expr, s schema.Logs, lc lowerCtx) (chplan.Node, error) {
 		return lowerRangeAggregation(e, s, lc)
 	case *syntax.VectorAggregationExpr:
 		return lowerVectorAggregation(e, s, lc)
+	case *syntax.LiteralExpr:
+		return lowerLiteral(e, s)
+	case *syntax.VectorExpr:
+		return lowerVector(e, s)
+	case *syntax.BinOpExpr:
+		return lowerBinary(e, s, lc)
+	case *syntax.LabelReplaceExpr:
+		return lowerLabelReplace(e, s, lc)
 	default:
 		return nil, fmt.Errorf("logql: unsupported expression %T", expr)
 	}
