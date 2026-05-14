@@ -75,7 +75,7 @@ R3.4 / R3.6 / R3.7 / R3.8 are the **CH-roundtrip scalability levers** — they s
 
 | #     | Item                                                              | Status           | Primary reference                                                                                                                  |
 | ----- | ----------------------------------------------------------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| R3.9  | Shadow-mode differential testing (prefer / force-native / oracle) | shipped via #136 | [promshim-clickhouse `harness/compatibility/`](https://github.com/BadLiveware/promshim-clickhouse/tree/main/harness/compatibility) |
+| R3.9  | Shadow-mode differential testing (prefer / force-native / oracle) | shipped via #136 | [promshim-clickhouse `harness/prometheus-compliance/`](https://github.com/BadLiveware/promshim-clickhouse/tree/main/harness/prometheus-compliance) |
 | R3.10 | Port promshim's local Go evaluator                                | shipped via #134 | Same — `internal/promshim/local/`                                                                                                  |
 | R3.11 | Fuzz + chaos + perf-benchmark CI                                  | shipped via #133 | `go-fuzz`, custom chaos harness, perf-benchmark workflow                                                                           |
 
@@ -404,4 +404,4 @@ With the test pyramid in place, the from-scratch PromQL oracle (#272, Phase 1 PR
 - **Agent-driven work goes through PRs, not issues.** When the maintainer or an AI assistant is doing the work, the PR description is the source of truth — no shadow issue tracking. The GitHub Project tracks milestone status; backlog narratives live in `docs/*.md`. **External contributors** are welcome to open issues for bug reports, design questions, or feature proposals — issues are enabled.
 - **Fixture-first.** A milestone's first PR adds _failing_ TXTAR / compatibility fixtures that capture the contract. Subsequent PRs implement to turn them green. Reviewers can sanity-check intent by reading fixtures before code.
 - **Compatibility suite is the source of truth.** If a PromQL feature lands but doesn't move the `prometheus/compliance` pass rate, the PR is incomplete.
-- **Allowlist hygiene.** Adding an entry to `harness/compatibility/expected-failures.json` requires a comment with the upstream rationale; never empty-string.
+- **Allowlist hygiene.** Adding an entry to `harness/prometheus-compliance/expected-failures.json` requires a comment with the upstream rationale; never empty-string.

@@ -66,7 +66,7 @@ Go's coverage instrumentation tracks (this is the denominator for the
 | `internal/config`                    | 380   | 2          | 3          | 96.81%     | 91 / 94          |
 | `internal/api/admit`                 | 166   | 1          | 3          | 93.94%     | 31 / 33          |
 | `internal/chplan`                    | 1394  | 24         | 6          | 90.46%     | 237 / 262        |
-| `harness/compatibility/shadow`       | 332   | 2          | 5          | 90.00%     | 117 / 130        |
+| `harness/prometheus-compliance/shadow`       | 332   | 2          | 5          | 90.00%     | 117 / 130        |
 | `internal/schema`                    | 667   | 5          | 4          | 86.49%     | 32 / 37          |
 | `internal/api/tempo`                 | 1449  | 7          | 7          | 84.95%     | 271 / 319        |
 | `internal/schema/ddl`                | 315   | 2          | 3          | 84.75%     | 50 / 59          |
@@ -97,8 +97,8 @@ covered indirectly through the packages they import.
 
 | Package                                          | LoC  | Why no coverage                              |
 | ------------------------------------------------ | ---- | -------------------------------------------- |
-| `harness/compatibility/cmd/seed`                 | 313  | one-shot CLI seed for compatibility runs     |
-| `harness/compatibility/shadow/cmd/shadow`        | 378  | shadow-mode runner CLI                       |
+| `harness/prometheus-compliance/cmd/seed`                 | 313  | one-shot CLI seed for compatibility runs     |
+| `harness/prometheus-compliance/shadow/cmd/shadow`        | 378  | shadow-mode runner CLI                       |
 | `test/e2e/seed/cmd/seed`                         | 222  | e2e seeder CLI                               |
 | `test/property/gen`                              | 467  | rapid generators used by `test/property`     |
 | `test/property/oracle`                           | 117  | shared oracle helpers                        |

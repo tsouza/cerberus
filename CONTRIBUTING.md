@@ -22,7 +22,7 @@ Two CI checks gate `main`: **`ci / check`** (golangci-lint + race tests + build)
 3. **Conventional Commits.** Subjects look like `feat(promql): support offset modifier` or `chore(deps): bump grafana/loki/v3 to v3.8.0`. `subject-case` is relaxed (Dependabot's `Bump X from Y to Z` passes); type + scope are still enforced. `commitlint.config.json` is the source of truth.
 4. **Justfile is the canonical task runner.** `just` lists every recipe. Don't run `go test ./...` directly — `just test` sets the race flag, cover profile, and correct toolchain. If you want a new workflow, add a recipe.
 5. **Fixture-first PRs.** A new PromQL/LogQL/TraceQL feature lands with its TXTAR spec first (failing, with the right `query.<ql>` section), then implementation that turns it green. Reviewers can sanity-check intent by reading fixtures before code.
-6. **Compatibility suite is the source of truth.** If a PromQL feature lands but doesn't move the `prometheus/compliance` pass rate, the PR is incomplete. Adding an entry to `harness/compatibility/expected-failures.json` requires a comment with the upstream rationale; never empty-string.
+6. **Compatibility suite is the source of truth.** If a PromQL feature lands but doesn't move the `prometheus/compliance` pass rate, the PR is incomplete. Adding an entry to `harness/prometheus-compliance/expected-failures.json` requires a comment with the upstream rationale; never empty-string.
 
 ## Setup
 
@@ -70,7 +70,7 @@ If `direnv allow` complains, `eval "$(direnv export bash)"` once per shell.
 - [ ] CI green
 ```
 
-If you're touching the compatibility harness, include the JSON diff (`harness/compatibility/expected-failures.json` before/after) in the body.
+If you're touching the compatibility harness, include the JSON diff (`harness/prometheus-compliance/expected-failures.json` before/after) in the body.
 
 ## Testing layers
 

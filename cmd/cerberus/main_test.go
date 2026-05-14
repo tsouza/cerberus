@@ -4,7 +4,7 @@ import "testing"
 
 // TestIsVersionFlag pins the argv shapes recognized by the
 // `--version` pre-flight. The cerberus container in
-// harness/compatibility/docker-compose.yml uses this exact path as
+// harness/prometheus-compliance/docker-compose.yml uses this exact path as
 // its docker healthcheck because the distroless runtime image has no
 // shell / wget / curl; a regression here would silently re-break the
 // compatibility lane's "container ... is unhealthy" failure mode

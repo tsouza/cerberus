@@ -2,5 +2,5 @@ node_modules/
 test/e2e/playwright/node_modules/
 test/e2e/playwright/playwright-report/
 test/e2e/playwright/test-results/
-harness/compatibility/upstream
-harness/compatibility/upstream/**
+harness/prometheus-compliance/upstream
+harness/prometheus-compliance/upstream/**

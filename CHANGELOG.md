@@ -66,7 +66,7 @@ The advanced-QL + deferred-API release. Closes the RC2 backlog from [`docs/roadm
 - Mirror upstream OTel CH Exporter columns (exp_histogram + missing classic histogram fields). [#158]
 - Wrap upstream OTel CH Exporter DDL via the `schema/ddl` package. [#161]
 - `CERBERUS_AUTO_CREATE_SCHEMA` env-gated startup hook (RC2 schema D). [#166]
-- Refactor `harness/compatibility` to seed via `schema/ddl` package (RC2 schema F). [#167]
+- Refactor `harness/prometheus-compliance` to seed via `schema/ddl` package (RC2 schema F). [#167]
 - Refactor `test/e2e` to seed via `schema/ddl` package + Go fixture inserts (RC2 schema E). [#168]
 - Self-contained `otel-collector` + `sample-app` for real E2E data (RC2). [#172]
 
@@ -104,7 +104,7 @@ The advanced-QL + deferred-API release. Closes the RC2 backlog from [`docs/roadm
 ### Changed
 
 - `QueryBuilder.Limit(int64)` and Builder API refactors to thread typed clauses through the chplan emitter (R6.2 / R6.3 audit). [#138, #140, #146]
-- Migrate test seeders (`harness/compatibility`, `test/e2e`) off hand-rolled `*.sql` files onto the upstream-derived `schema/ddl` package. [#167, #168]
+- Migrate test seeders (`harness/prometheus-compliance`, `test/e2e`) off hand-rolled `*.sql` files onto the upstream-derived `schema/ddl` package. [#167, #168]
 
 ### Security
 

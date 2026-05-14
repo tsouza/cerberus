@@ -12,10 +12,10 @@ just compatibility
 
 This:
 
-1. Brings up `harness/compatibility/docker-compose.yml` (reference Prometheus on `localhost:29090`, cerberus on `localhost:29091`, ClickHouse on `localhost:29000`, plus a one-shot seeder).
+1. Brings up `harness/prometheus-compliance/docker-compose.yml` (reference Prometheus on `localhost:29090`, cerberus on `localhost:29091`, ClickHouse on `localhost:29000`, plus a one-shot seeder).
 2. Builds the upstream `promql-compliance-tester` binary from the submodule.
 3. Runs it pointed at the two endpoints, with `test-cerberus.yml` as config and `2026-05-11T00:00:00Z..01:00:00Z` (a 1-hour seed window) as the eval range.
-4. Writes `harness/compatibility/report.json`.
+4. Writes `harness/prometheus-compliance/report.json`.
 5. Tears the stack down.
 
 Set `COMPOSE_KEEP=1` to leave the stack running for poking around:
@@ -34,14 +34,14 @@ jq '{
   passed: ([.results[]? | select(.unexpectedFailure == null and .diff == null)] | length),
   diffs: ([.results[]? | select(.diff != null)] | length),
   unexpected_failures: ([.results[]? | select(.unexpectedFailure != null)] | length)
-}' harness/compatibility/report.json
+}' harness/prometheus-compliance/report.json
 ```
 
 A passing run has no `unexpectedFailure` entries and the `diffs` field reflects only the allowlist in `expected-failures.json`.
 
 ## Allowlist (`expected-failures.json`)
 
-`harness/compatibility/expected-failures.json` documents queries where cerberus is **knowingly** different from reference Prometheus. Every entry must include:
+`harness/prometheus-compliance/expected-failures.json` documents queries where cerberus is **knowingly** different from reference Prometheus. Every entry must include:
 
 - `query` — the exact PromQL string from `promql-test-queries.yml`.
 - `reason` — why the result differs. Acceptable reasons:
@@ -56,7 +56,7 @@ Reviewers gate every addition. **Never an empty `reason`.**
 
 `.github/workflows/compatibility.yml` runs the harness:
 
-- on **push to `main`** with paths under `internal/promql/`, `internal/chsql/`, `internal/optimizer/`, `internal/chplan/`, `harness/compatibility/`, or the workflow file itself
+- on **push to `main`** with paths under `internal/promql/`, `internal/chsql/`, `internal/optimizer/`, `internal/chplan/`, `harness/prometheus-compliance/`, or the workflow file itself
 - on **PRs** touching the same paths
 - **nightly at 04:11 UTC**
 - on **manual `workflow_dispatch`**
@@ -68,7 +68,7 @@ The workflow is currently `continue-on-error: true` so a failing run reports but
 The upstream corpus already covers a generous slice of PromQL. If you discover a real-world query that cerberus mishandles but the corpus doesn't cover, the right move is:
 
 1. Open a PR to [`prometheus/compliance`](https://github.com/prometheus/compliance) adding the query (so every adapter benefits, not just cerberus).
-2. Once it lands, bump the submodule SHA in `harness/compatibility/upstream`.
+2. Once it lands, bump the submodule SHA in `harness/prometheus-compliance/upstream`.
 
 If the case is cerberus-specific (e.g. OTel-CH schema quirk), add it as a TXTAR fixture under `test/spec/promql/` instead — that's where cerberus-only tests live.
 
