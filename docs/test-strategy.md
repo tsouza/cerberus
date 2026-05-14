@@ -48,6 +48,7 @@ inside each layer.
 | `mutation` (`phase4-logql`)     | Same workflow, separate matrix entry              | push-to-main + nightly + manual                  | Informational                             | gremlins on `internal/logql` @ 65% efficacy                                 |
 | `mutation` (`phase4-traceql`)   | Same workflow, separate matrix entry              | push-to-main + nightly + manual                  | Informational                             | gremlins on `internal/traceql` @ 65% efficacy                               |
 | `chdb`                          | `.github/workflows/chdb.yml`                      | nightly + manual                                 | Informational                             | TXTAR chDB roundtrip (Layer 6a/6b/6c) + handler tests under `-tags chdb`    |
+| `property`                      | `.github/workflows/property.yml`                  | push-to-main + nightly + manual                  | Informational                             | Oracle property tests under `./test/property/...` with rapid `N=500`        |
 | `shadow-mode`                   | `.github/workflows/shadow-mode.yml`               | push-to-main + nightly + manual                  | Informational                             | Layer 9 differential corpora                                                |
 | `fuzz`                          | `.github/workflows/fuzz.yml`                      | nightly + manual                                 | Informational                             | `FuzzParse` per QL head                                                     |
 | `perf-benchmark`                | `.github/workflows/perf-benchmark.yml`            | weekly + manual                                  | Informational                             | `go test -bench` sweep with benchstat regression detection                  |
@@ -116,6 +117,16 @@ one-series, one-point dataset and a two-token query.
 The framework is **landing in-flight via Phase 1 PR 1** — file paths
 below describe the planned layout. The package is `chdb`-tagged
 end-to-end so the default CGO-free `just test` lane stays green.
+
+The `property` workflow runs nightly (`.github/workflows/property.yml`,
+push-to-main + nightly + manual dispatch) with `-rapid.checks=500` —
+five times wider than rapid's default 100. The default 100 still
+applies for developers running `go test -tags chdb ./test/property/...`
+locally; the nightly lane is the wider sweep. Failures upload any
+rapid-shrunk reproducers from `test/property/testdata/rapid/` as a
+workflow artifact, and the `-v` test log prints the rapid seed so a
+failing run reproduces locally via
+`go test -tags chdb -run TestPromQL_Property -rapid.seed=<N> ./test/property/...`.
 
 ### Phases
 

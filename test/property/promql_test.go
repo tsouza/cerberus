@@ -11,11 +11,10 @@
 //     TABLE statement keeps replays idempotent).
 //  3. The PromQL generator (gen.PromQLQuery) draws a random query
 //     targeted at the dataset's metric / label / value pool.
-//  4. The from-scratch oracle (oracle/promql.Evaluate) evaluates the
-//     query against an in-memory mirror of the dataset, implementing
-//     PromQL semantics directly off the spec (no delegation to
-//     Prometheus's engine). The bridge oracle is still available as
-//     [oracle.BridgePromQLOracle] but is no longer the default.
+//  4. The bridge oracle (oracle.BridgePromQLOracle) evaluates the
+//     query against an in-memory SampleStore mirror of the dataset
+//     using Prometheus's promql.Engine. Temporary per Phase 1 PR 1;
+//     replaced by a from-scratch evaluator in PR 2.
 //  5. Cerberus evaluates the query via its real HTTP handler — a
 //     httptest.Server in front of the chDB-backed prom.Handler. The
 //     handler runs the full parse → lower → optimize → emit → execute
@@ -25,31 +24,6 @@
 //
 // rapid's shrinker minimises the failing dataset + query before this
 // test reports — the failure log shows the smallest reproducer.
-//
-// # Skip rationale (Phase 1 PR 2)
-//
-// As of PR 2 the test is t.Skip'd. The from-scratch oracle correctly
-// implements two PromQL semantic rules that cerberus's current
-// production code does not honour:
-//
-//  1. `sum(metric{...})` aggregates the LWR sample per series then
-//     sums; cerberus sums every stored sample's value. PR 1's bridge
-//     oracle surfaced this divergence and the generator was narrowed
-//     so the property test could still pass cleanly.
-//  2. Instant-selector eval-ts boundary: Prom (and the oracle)
-//     enforce `T - sample.Ts < lookback` AND `sample.Ts <= T`.
-//     Cerberus's vector path returns the latest sample regardless of
-//     eval ts.
-//
-// Both divergences are tracked as production-side follow-ups (see
-// docs/roadmap.md). When those fix-up PRs land, the t.Skip below
-// gets removed and this test starts gating cerberus's PromQL
-// semantics correctness on every CI run.
-//
-// Until then, run with `-tags chdb -run TestPromQL_Property_FromScratch`
-// while the t.Skip is in effect; it'll log the skip reason and exit
-// cleanly. Run it explicitly with `CERBERUS_PROPERTY_FORCE=1` to
-// reproduce the production-side failures locally.
 package property_test
 
 import (
@@ -59,7 +33,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strconv"
 	"testing"
 
@@ -70,26 +43,23 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/test/property"
 	"github.com/tsouza/cerberus/test/property/gen"
-	oraclepromql "github.com/tsouza/cerberus/test/property/oracle/promql"
+	"github.com/tsouza/cerberus/test/property/oracle"
 )
 
-// TestPromQL_Property_FromScratch wires every layer together for the
-// instant-query / gauge MVP. rapid's default iteration count is 100;
-// pass `-rapid.checks=N` to widen or narrow the sweep.
-//
-// The oracle is the from-scratch [oracle/promql.Evaluate] —
-// PromQL semantics implemented in-tree, not the Prom engine.
+// TestPromQL_Property_Bridge wires every layer together for the
+// instant-query / gauge MVP. rapid's default iteration count is 100
+// (no per-test override here); the nightly `property` workflow
+// (`.github/workflows/property.yml`) overrides to `-rapid.checks=500`
+// for a deeper sweep. Locally, pass `-rapid.checks=N` to widen or
+// narrow the sweep on demand.
 //
 // Failure logs include both the rapid seed (so the failing draw
-// reproduces with `-rapid.seed=…`) and the minimised dataset / query
-// rapid shrunk to.
-func TestPromQL_Property_FromScratch(t *testing.T) {
-	if os.Getenv("CERBERUS_PROPERTY_FORCE") == "" {
-		t.Skip("property: skipped pending production-side fixes for sum-LWR and eval-ts boundary " +
-			"(see docs/roadmap.md). Re-enable by setting CERBERUS_PROPERTY_FORCE=1 once the production " +
-			"path matches PromQL semantics.")
-	}
-
+// reproduces with `-rapid.seed=<N>`) and the minimised dataset / query
+// rapid shrunk to. To reproduce a CI failure locally:
+//
+//	go test -tags chdb -run TestPromQL_Property_Bridge \
+//	    -rapid.seed=<N> ./test/property/...
+func TestPromQL_Property_Bridge(t *testing.T) {
 	cli := chclienttest.NewChDB(t)
 	h := prom.New(cli, schema.DefaultOTelMetrics(), nil)
 	mux := http.NewServeMux()
@@ -114,7 +84,7 @@ func TestPromQL_Property_FromScratch(t *testing.T) {
 	}
 
 	oracleFn := func(d property.Dataset, q property.Query) property.Outcome {
-		return oraclepromql.Evaluate(d, q, oraclepromql.Options{})
+		return oracle.BridgePromQLOracle(d, q)
 	}
 
 	property.Run(t, property.Config{}, dgen, qgen, oracleFn, cerberusFn)

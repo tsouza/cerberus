@@ -1,0 +1,87 @@
+name: property
+
+# Nightly oracle property-test lane.
+#
+# Runs the chdb-tagged property tests under `./test/property/...` with
+# a deeper rapid sweep than the local default. The test code itself
+# uses rapid's default 100 iterations (so a developer running
+# `go test -tags chdb ./test/property/...` locally gets a fast 100x
+# sweep); this workflow overrides to `-rapid.checks=500` to widen the
+# nightly search.
+#
+# Like `chdb.yml`, this workflow links `libchdb.so` and is therefore
+# segregated from the required PR lane. NOT a required PR check; not
+# in the required-status-checks list. The required PR lane stays
+# `check` + `lint` and runs CGO-free Go tests.
+#
+# Triggers: push to main, manual dispatch, nightly. On failure, the
+# rapid seed is captured in the test output (and the workflow log).
+# Authors can reproduce a failing run locally with:
+#
+#   go test -tags chdb -run TestPromQL_Property -rapid.seed=<N> ./test/property/...
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    # nightly at 03:45 UTC, ahead of `chdb.yml` (04:00 UTC) so the
+    # runners stagger and a libchdb cache primed here can be reused.
+    - cron: '45 3 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: property-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  property:
+    name: property (rapid N=500)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      - name: Install libchdb.so
+        run: just chdb-install
+
+      - name: Run property tests (rapid N=500)
+        # `-tags chdb` enables the chdb-tagged property entry points;
+        # `-rapid.checks=500` widens beyond rapid's default of 100;
+        # `-rapid.shrinktime=5m` lets the shrinker work on a failing
+        # draw before the test gives up.
+        # `-v` surfaces the rapid seed in the workflow log so a failure
+        # is reproducible with `-rapid.seed=<N>`.
+        run: |
+          go test \
+            -tags chdb \
+            -count=1 \
+            -v \
+            -timeout=20m \
+            -rapid.checks=500 \
+            -rapid.shrinktime=5m \
+            ./test/property/...
+
+      - name: Upload rapid failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: property-rapid-failures
+          # rapid persists shrunk failing draws under testdata/rapid/
+          # of the test package directory. Capture them so the seed +
+          # the minimised dataset/query are downloadable from the run.
+          path: |
+            test/property/testdata/rapid/**
+          if-no-files-found: ignore
+          retention-days: 30
