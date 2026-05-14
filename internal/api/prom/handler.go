@@ -175,12 +175,16 @@ func (h *Handler) handleParseQuery(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query().Get("query")
+	// r.FormValue merges URL query params with POST form-encoded body
+	// (auto-calling ParseForm). Upstream Prometheus accepts `query=...`
+	// in either; Grafana + the prometheus/client_golang library POST
+	// with application/x-www-form-urlencoded for instant queries.
+	q := r.FormValue("query")
 	if q == "" {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing query parameter"))
 		return
 	}
-	ts, err := format.ParseTimeProm(r.URL.Query().Get("time"), time.Now())
+	ts, err := format.ParseTimeProm(r.FormValue("time"), time.Now())
 	if err != nil {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return
@@ -215,22 +219,27 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query().Get("query")
+	// r.FormValue merges URL query params with POST form-encoded body
+	// (auto-calling ParseForm). Upstream Prometheus accepts these in
+	// either form, and the prometheus/client_golang library defaults
+	// to POST application/x-www-form-urlencoded for range queries
+	// (see DoGetFallback in client_golang/api/prometheus/v1/api.go).
+	q := r.FormValue("query")
 	if q == "" {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing query parameter"))
 		return
 	}
-	start, err := format.ParseTimeProm(r.URL.Query().Get("start"), time.Time{})
+	start, err := format.ParseTimeProm(r.FormValue("start"), time.Time{})
 	if err != nil || start.IsZero() {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing or invalid 'start' parameter"))
 		return
 	}
-	end, err := format.ParseTimeProm(r.URL.Query().Get("end"), time.Time{})
+	end, err := format.ParseTimeProm(r.FormValue("end"), time.Time{})
 	if err != nil || end.IsZero() {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing or invalid 'end' parameter"))
 		return
 	}
-	step, err := format.ParseDuration(r.URL.Query().Get("step"))
+	step, err := format.ParseDuration(r.FormValue("step"))
 	if err != nil || step <= 0 {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing or invalid 'step' parameter"))
 		return

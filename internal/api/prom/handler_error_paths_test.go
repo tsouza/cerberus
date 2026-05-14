@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -11,12 +12,72 @@ import (
 	"github.com/tsouza/cerberus/internal/api/prom"
 )
 
-// POST-form tests for /api/v1/query and /api/v1/query_range are
-// intentionally absent until cerberus's handler reads from
-// r.FormValue() / r.PostFormValue() instead of r.URL.Query() (today's
-// implementation reads URL query string only, so POST form bodies are
-// silently ignored — a real gap vs upstream Prometheus). When the
-// handler is fixed, re-add TestQuery_POST + TestQueryRange_POST here.
+// TestQueryPOSTForm + TestQueryRangePOSTForm pin the handler's POST-form
+// behaviour. Background: prior to this fix, the handlers read `query` /
+// `start` / `end` / `step` / `time` only from `r.URL.Query()`, so a POST
+// request with an `application/x-www-form-urlencoded` body had its params
+// silently ignored and the handler returned `400 missing query parameter`.
+// This is the request shape that the prometheus/client_golang library
+// (and therefore the upstream `promql-compliance-tester` driving the
+// compatibility harness) uses by default — DoGetFallback in
+// api/prometheus/v1/api.go POSTs form-encoded by default and only falls
+// back to GET on a 405/501. The handlers now use `r.FormValue` which
+// merges URL query + parsed POST form, matching upstream Prometheus.
+func TestQueryPOSTForm(t *testing.T) {
+	t.Parallel()
+
+	srv := newServer(&stubQuerier{})
+	t.Cleanup(srv.Close)
+
+	// `1+1` is a scalar PromQL — the scalar-fold path short-circuits
+	// before the stub is exercised, so we don't have to load any data.
+	form := url.Values{}
+	form.Set("query", "1+1")
+	form.Set("time", "1700000000")
+	resp, err := http.PostForm(srv.URL+"/api/v1/query", form)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: got %d, want 200; body=%s", resp.StatusCode, body)
+	}
+	var env prom.Response
+	if err := json.Unmarshal([]byte(body), &env); err != nil {
+		t.Fatalf("body not JSON: %v; body=%s", err, body)
+	}
+	if env.Status != "success" {
+		t.Errorf("body.status: got %q, want success; body=%s", env.Status, body)
+	}
+}
+
+func TestQueryRangePOSTForm(t *testing.T) {
+	t.Parallel()
+
+	srv := newServer(&stubQuerier{})
+	t.Cleanup(srv.Close)
+
+	form := url.Values{}
+	form.Set("query", "1+1")
+	form.Set("start", "1700000000")
+	form.Set("end", "1700003600")
+	form.Set("step", "60s")
+	resp, err := http.PostForm(srv.URL+"/api/v1/query_range", form)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: got %d, want 200; body=%s", resp.StatusCode, body)
+	}
+	var env prom.Response
+	if err := json.Unmarshal([]byte(body), &env); err != nil {
+		t.Fatalf("body not JSON: %v; body=%s", err, body)
+	}
+	if env.Status != "success" {
+		t.Errorf("body.status: got %q, want success; body=%s", env.Status, body)
+	}
+}
 
 // TestErrorResponse_ShapeAndContentType verifies that every error
 // response from cerberus carries:
