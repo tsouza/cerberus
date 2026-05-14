@@ -1,3 +1,8 @@
+# expected_rows is intentionally empty: histogram_quantile requires `le`
+# to be preserved through aggregation, but `sum by(job)` drops it. With
+# no `le` label, the bucket structure collapses, so cerberus correctly
+# emits zero rows. This fixture exercises that "le-not-in-by" path.
+
 -- query.promql --
 histogram_quantile(0.95, sum by(job) (rate(http_server_request_duration[5m])))
 -- seed --

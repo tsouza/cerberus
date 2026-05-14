@@ -1,3 +1,8 @@
+# expected_rows is intentionally empty: the query filters by job="missing"
+# which does not match the seed (job="api"), so cerberus correctly emits
+# zero rows. This fixture exercises the no-match path for classic
+# histograms.
+
 -- query.promql --
 histogram_quantile(0.95, http_server_request_duration{job="missing"})
 -- sql --
