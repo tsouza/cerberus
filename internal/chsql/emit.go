@@ -64,6 +64,8 @@ func (e *emitter) emitNode(n chplan.Node) error {
 	switch v := n.(type) {
 	case *chplan.Scan:
 		return e.emitScan(v)
+	case *chplan.OneRow:
+		return e.emitOneRow(v)
 	case *chplan.Filter:
 		return e.emitFilter(v)
 	case *chplan.Project:

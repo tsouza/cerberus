@@ -74,6 +74,32 @@ func TestScan_Equal_Negative_ColumnsContent(t *testing.T) {
 	}
 }
 
+// TestOneRow_Equal_Positive — OneRow has no fields; two instances must
+// compare Equal unconditionally (it's a singleton in spirit).
+func TestOneRow_Equal_Positive(t *testing.T) {
+	t.Parallel()
+	a := &chplan.OneRow{}
+	b := &chplan.OneRow{}
+	if !a.Equal(b) {
+		t.Fatalf("two OneRow values should be Equal")
+	}
+	if !b.Equal(a) {
+		t.Fatalf("Equal must be symmetric")
+	}
+}
+
+// TestOneRow_Equal_Negative_OtherType — Equal against a non-OneRow node
+// must return false; the type-assertion in Equal is what guarantees
+// optimizer rules don't accidentally rewrite OneRow into a Scan.
+func TestOneRow_Equal_Negative_OtherType(t *testing.T) {
+	t.Parallel()
+	a := &chplan.OneRow{}
+	b := &chplan.Scan{Table: "t"}
+	if a.Equal(b) {
+		t.Errorf("OneRow should not Equal Scan")
+	}
+}
+
 func TestFilter_Equal_Positive(t *testing.T) {
 	t.Parallel()
 	build := func() *chplan.Filter {

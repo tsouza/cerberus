@@ -12,9 +12,15 @@ import (
 // lowerBinary handles PromQL BinaryExpr.
 //
 // Supported shapes:
-//   - scalar OP scalar           → deferred to constant-fold
+//   - scalar OP scalar → constant-folded at lowering time via
+//     [TryFoldScalar] and emitted as a synthetic 1-row vector.
+//     Comparison ops require the `bool` modifier (Prom's rule for
+//     scalar-vs-scalar; without `bool` the parser rejects the query
+//     before we ever see it).
 //   - scalar OP vector / vec OP scalar with arithmetic op → Project that
-//     maps Value through the op
+//     maps Value through the op. If the scalar side is itself a foldable
+//     scalar tree (`(1+2) + vec`), [tryScalarLiteral] reduces it to a
+//     single LitFloat first.
 //   - scalar OP vector / vec OP scalar with comparison op → Filter on
 //     the comparison (bool modifier off) or Project producing 1.0/0.0
 //     (bool modifier on)
@@ -24,6 +30,18 @@ import (
 //
 // Logical ops (`and`/`or`/`unless`) defer to a later milestone.
 func lowerBinary(b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	// Scalar-only fold first: when BOTH sides resolve to a constant we
+	// materialise a 1-row synthetic vector with the folded value.
+	// TryFoldScalar walks NumberLiteral / ParenExpr / UnaryExpr /
+	// arithmetic BinaryExpr / bool-comparison BinaryExpr; we also need
+	// it to handle the deeply-nested arithmetic cases like
+	// `(1+2)*(3+4)`. The walk only succeeds when both sides reduce, so
+	// a `(1+2) + vec` mixed shape falls through to the vector/scalar
+	// path below.
+	if v, ok := TryFoldScalar(b); ok {
+		return syntheticScalarVector(&chplan.LitFloat{V: v}, nil, s), nil
+	}
+
 	op, err := promBinaryOp(b.Op)
 	if err != nil {
 		return nil, err
@@ -34,7 +52,11 @@ func lowerBinary(b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (chplan.N
 
 	switch {
 	case lhsIsScalar && rhsIsScalar:
-		return nil, fmt.Errorf("promql: scalar-only binary expressions not yet lowered (constant fold lands when scalars are first-class chplan nodes)")
+		// Should not happen — TryFoldScalar above already covers every
+		// shape tryScalarLiteral covers. Keep the error as a safety
+		// net so a future divergence between the two surfaces here
+		// instead of silently producing wrong SQL.
+		return nil, fmt.Errorf("promql: scalar-only binary expression not folded (op %s) — internal invariant violation", b.Op.String())
 	case lhsIsScalar:
 		return lowerVectorScalar(b.RHS, s, op, lhsScalar, true /*scalarOnLeft*/, b.ReturnBool, ctx)
 	case rhsIsScalar:
@@ -163,26 +185,15 @@ func isComparison(op chplan.BinaryOp) bool {
 	return false
 }
 
-// tryScalarLiteral unwraps NumberLiteral, ParenExpr around a literal, and
-// UnaryExpr(-N) at lowering time. Returns the literal value and true on a
-// match, or 0+false otherwise.
+// tryScalarLiteral unwraps NumberLiteral, ParenExpr around a literal,
+// UnaryExpr(±N), and nested scalar-only arithmetic / bool-comparison
+// BinaryExpr at lowering time. Returns the folded value and true on a
+// match, or 0+false otherwise. Delegates to [TryFoldScalar] so the
+// surface stays in sync — any new scalar shape added there picks up
+// here automatically (e.g. `(1+2) + vec` lowers as `3 + vec` because
+// the LHS folds to 3).
 func tryScalarLiteral(e parser.Expr) (float64, bool) {
-	switch v := e.(type) {
-	case *parser.NumberLiteral:
-		return v.Val, true
-	case *parser.ParenExpr:
-		return tryScalarLiteral(v.Expr)
-	case *parser.UnaryExpr:
-		if v.Op == parser.SUB {
-			if inner, ok := tryScalarLiteral(v.Expr); ok {
-				return -inner, true
-			}
-		}
-		if v.Op == parser.ADD {
-			return tryScalarLiteral(v.Expr)
-		}
-	}
-	return 0, false
+	return TryFoldScalar(e)
 }
 
 // lowerVectorScalar lowers a binary expression mixing a vector and a

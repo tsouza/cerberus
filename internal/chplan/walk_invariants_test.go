@@ -61,6 +61,20 @@ func TestScan_Walk_NoChildren(t *testing.T) {
 	assertSentinels(t, got, []string{"sentinel"})
 }
 
+// TestOneRow_Walk_NoChildren — OneRow is a leaf like Scan; it carries
+// no inputs because the `SELECT 1` emission doesn't consume rows from
+// anywhere. The Walk traversal must report zero Scan sentinels.
+func TestOneRow_Walk_NoChildren(t *testing.T) {
+	t.Parallel()
+	root := &chplan.OneRow{}
+	kids := root.Children()
+	if kids != nil {
+		t.Errorf("OneRow.Children() must be nil, got %v", kids)
+	}
+	got := visitScans(root)
+	assertSentinels(t, got, nil)
+}
+
 func TestFilter_Walk_VisitsInput(t *testing.T) {
 	t.Parallel()
 	root := &chplan.Filter{

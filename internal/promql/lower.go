@@ -382,6 +382,10 @@ func lowerCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 		return lowerLabelReplace(c, s, ctx)
 	case "label_join":
 		return lowerLabelJoin(c, s, ctx)
+	case "time":
+		return lowerTime(c, s, ctx)
+	case "vector":
+		return lowerVector(c, s, ctx)
 	}
 	if chFn, ok := instantFnCH[c.Func.Name]; ok {
 		return lowerInstantFn(c, s, chFn, ctx)
