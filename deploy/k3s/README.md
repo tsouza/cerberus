@@ -7,15 +7,15 @@ whole `kustomization.yaml` via `kubectl apply -k`.
 
 ## Components
 
-| Manifest                | What it deploys                                                                      |
-| ----------------------- | ------------------------------------------------------------------------------------ |
-| `namespace.yaml`        | The `cerberus` namespace everything lives in.                                        |
-| `clickhouse.yaml`       | Single-node ClickHouse (Deployment + Service) backing the `otel` database.           |
-| `cerberus.yaml`         | Cerberus Deployment + NodePort Service (host `:8080`).                               |
-| `grafana.yaml`          | Grafana 11 with provisioned Cerberus-{Prometheus,Loki,Tempo} datasources.            |
-| `grafana-dashboards.yaml` | Dashboard provider config + `Cerberus self-observability` dashboard ConfigMap.     |
-| `otel-collector.yaml`   | Gateway Deployment + per-node DaemonSet, RBAC, ServiceAccount, two ConfigMaps.       |
-| `sample-app.yaml`       | Three `telemetrygen` Deployments (traces / metrics / logs) targeting the gateway.    |
+| Manifest                  | What it deploys                                                                      |
+| ------------------------- | ------------------------------------------------------------------------------------ |
+| `namespace.yaml`          | The `cerberus` namespace everything lives in.                                        |
+| `clickhouse.yaml`         | Single-node ClickHouse (Deployment + Service) backing the `otel` database.           |
+| `cerberus.yaml`           | Cerberus Deployment + NodePort Service (host `:8080`).                               |
+| `grafana.yaml`            | Grafana 11 with provisioned Cerberus-{Prometheus,Loki,Tempo} datasources.            |
+| `grafana-dashboards.yaml` | Dashboard provider config + `Cerberus self-observability` dashboard ConfigMap.       |
+| `otel-collector.yaml`     | Gateway Deployment + per-node DaemonSet, RBAC, ServiceAccount, two ConfigMaps.       |
+| `sample-app.yaml`         | Three `telemetrygen` Deployments (traces / metrics / logs) targeting the gateway.    |
 
 ## Dual-data-source model
 
