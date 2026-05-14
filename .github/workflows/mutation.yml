@@ -17,8 +17,9 @@ jobs:
     # single package with its own --threshold-efficacy bar. The bar in
     # `.gremlins.yaml` (currently 80) is the floor for the unscoped
     # whole-repo `just mutate` invocation only — the matrix below
-    # overrides it per phase. All phases are informational until phase
-    # 4; the workflow stays on push-to-main + nightly + dispatch.
+    # overrides it per phase. All matrix entries stay informational
+    # until all four phases stay green for a week of nightly runs; the
+    # workflow stays on push-to-main + nightly + dispatch.
     name: gremlins ${{ matrix.phase }} (${{ matrix.scope }} @ ${{ matrix.efficacy }}%)
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -32,6 +33,18 @@ jobs:
           - phase: phase2
             scope: ./internal/chsql/...
             efficacy: 75
+          - phase: phase3-optimizer
+            scope: ./internal/optimizer/...
+            efficacy: 70
+          - phase: phase4-promql
+            scope: ./internal/promql/...
+            efficacy: 65
+          - phase: phase4-logql
+            scope: ./internal/logql/...
+            efficacy: 65
+          - phase: phase4-traceql
+            scope: ./internal/traceql/...
+            efficacy: 65
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6

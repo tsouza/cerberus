@@ -37,12 +37,12 @@ excluded-files:
 # package dense enough to meet an 80% efficacy bar. The other
 # kill-zone packages onboard once their coverage catches up:
 #
-#   Phase 1 (PR #260):      internal/chplan       @ 80% efficacy — DONE
-#   Phase 2 (this PR):      internal/chsql        @ 75% efficacy — NEW
-#   Phase 3 (pending #266): internal/optimizer    @ 70% efficacy
-#                           (waits on Layer 4 chDB property tests)
-#   Phase 4 (planned):      QL parsers + lower    @ 65% efficacy
-#                           (waits on Layer 2b coverage)
+#   Phase 1 (PR #260):      internal/chplan       @ 80% efficacy — ROLLED OUT
+#   Phase 2 (PR #268):      internal/chsql        @ 75% efficacy — ROLLED OUT
+#   Phase 3 (PR #273):      internal/optimizer    @ 70% efficacy — ROLLED OUT
+#                           (Layer 4 chDB property tests landed via #266)
+#   Phase 4 (PR #273):      QL parsers + lower    @ 65% efficacy — ROLLED OUT
+#                           (Layer 2b lowering coverage landed)
 #
 # Promotion to a required CI gate happens after all four phases stay
 # stable for a week.
@@ -54,6 +54,7 @@ excluded-files:
 # ./internal/<pkg>/...` once per phase, scoped to a single package
 # at a time so the slower packages don't drag the bar down. The
 # values below are the floor for the unscoped whole-repo
-# `just mutate` invocation and stay informational until phase 4.
+# `just mutate` invocation; the per-phase matrix entries are
+# informational until all four phases stay green for a week.
 threshold-efficacy: 80
 threshold-mcover: 50
