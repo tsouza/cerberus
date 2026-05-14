@@ -200,13 +200,14 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	samples, err := h.executeInstant(r.Context(), q, ts, ts)
+	samples, hdr, err := h.executeInstant(r.Context(), q, ts, ts)
 	if err != nil {
 		h.respondError(w, err)
 		return
 	}
 
 	result := toVector(samples, ts)
+	writeEngineHeaders(w, hdr)
 	writeJSON(w, http.StatusOK, Response{
 		Status: "success",
 		Data:   &QueryData{ResultType: "vector", Result: result},
@@ -253,7 +254,7 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cursor, err := h.executeRangeStreaming(r.Context(), q, start, end)
+	cursor, hdr, err := h.executeRangeStreaming(r.Context(), q, start, end)
 	if err != nil {
 		h.respondError(w, err)
 		return
@@ -267,6 +268,7 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 		h.respondError(w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway})
 		return
 	}
+	writeEngineHeaders(w, hdr)
 	writeJSON(w, http.StatusOK, Response{
 		Status: "success",
 		Data:   &QueryData{ResultType: "matrix", Result: result},
@@ -333,7 +335,7 @@ func (h *Handler) executeRangeStreaming(
 	ctx context.Context,
 	query string,
 	start, end time.Time,
-) (chclient.Cursor, error) {
+) (chclient.Cursor, map[string]string, error) {
 	l := &lang{Parser: h.parser, Schema: h.Schema, Start: start, End: end}
 	// Time the entire QueryCursor entry so the cursor-open round-trip
 	// is billed to X-Cerberus-CH-Millis the same way timeCH did pre-
@@ -346,10 +348,10 @@ func (h *Handler) executeRangeStreaming(
 		c.add(time.Since(chStart))
 	}
 	if err != nil {
-		return nil, classifyEngineError(err)
+		return nil, nil, classifyEngineError(err)
 	}
 	h.Logger.Debug("cerberus query_range (stream)", "promql", query, "sql", res.SQL, "args", res.Args)
-	return res.Cursor, nil
+	return res.Cursor, res.Headers, nil
 }
 
 // executeInstant runs a PromQL query through engine.Engine and returns
@@ -357,20 +359,40 @@ func (h *Handler) executeRangeStreaming(
 // threaded into the Lang adapter so `@ start()` / `@ end()` modifiers
 // resolve against them. For instant queries the caller passes
 // start == end == ts.
-func (h *Handler) executeInstant(ctx context.Context, query string, start, end time.Time) ([]chclient.Sample, error) {
+func (h *Handler) executeInstant(ctx context.Context, query string, start, end time.Time) ([]chclient.Sample, map[string]string, error) {
 	l := &lang{Parser: h.parser, Schema: h.Schema, Start: start, End: end}
 	res, err := h.Engine.Query(ctx, l, query)
 	if err != nil {
-		return nil, classifyEngineError(err)
+		return nil, nil, classifyEngineError(err)
 	}
 	h.Logger.Debug("cerberus query", "promql", query, "sql", res.SQL, "args", res.Args)
 	// Engine times the execute stage uniformly; surface that to the
 	// per-request chMillisCounter so the X-Cerberus-CH-Millis header
-	// keeps reporting CH wall-clock.
+	// keeps reporting CH wall-clock. The middleware-driven counter is
+	// retained alongside the engine's per-Result.Headers stamp so the
+	// error-path response (no engine.Result) still gets a sensible
+	// (zero) X-Cerberus-CH-Millis stamped by the middleware.
 	if c := ctxCounter(ctx); c != nil {
 		c.add(time.Duration(res.CHMillis) * time.Millisecond)
 	}
-	return res.Samples, nil
+	return res.Samples, res.Headers, nil
+}
+
+// writeEngineHeaders stamps the X-Cerberus-* response headers populated
+// by engine.Engine.Query / QueryCursor onto w before the response body
+// fires. Safe to call with a nil / empty map (no-op).
+//
+// The middleware-driven X-Cerberus-CH-Millis stamp still runs after the
+// handler returns (see middleware.go); when the engine populated
+// res.Headers[X-Cerberus-CH-Millis] we Set the same key here first and
+// the middleware's later Set is a no-op overwrite with the equivalent
+// value (engine CH timing is also written into the per-request counter
+// in executeInstant). The middleware path stays as a safety net for
+// error responses where the engine never produced a Result.
+func writeEngineHeaders(w http.ResponseWriter, hdr map[string]string) {
+	for k, v := range hdr {
+		w.Header().Set(k, v)
+	}
 }
 
 // classifyEngineError maps engine.Query / engine.QueryCursor errors to

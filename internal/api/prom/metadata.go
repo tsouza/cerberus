@@ -427,7 +427,7 @@ func (h *Handler) fetchSeries(ctx context.Context, matcher string) ([]map[string
 	// literal @<ts> still resolves but the start()/end() variants surface
 	// as errors at lowering time.
 	now := time.Now()
-	samples, err := h.executeInstant(ctx, matcher, now, now)
+	samples, _, err := h.executeInstant(ctx, matcher, now, now)
 	if err != nil {
 		return nil, err
 	}
