@@ -34,6 +34,15 @@ type Config struct {
 	// Log configures cerberus's own structured logging (stdlib log/slog).
 	// See LogConfig for the env-var contract.
 	Log LogConfig
+
+	// OTLP is the OpenTelemetry exporter configuration. When
+	// OTLP.Endpoint is empty cerberus installs no-op trace and meter
+	// providers (zero-collector-dependency binary). When set, cerberus
+	// builds gRPC OTLP exporters that ship spans + self-metrics to that
+	// endpoint. Standard OTEL_EXPORTER_OTLP_* env vars also work — the
+	// OTel Go SDK reads them by default and they merge with whatever
+	// these cerberus-specific values resolve to.
+	OTLP OTLPConfig
 }
 
 // LogConfig controls the slog setup applied at startup.
@@ -49,6 +58,26 @@ type LogConfig struct {
 	Level  slog.Level
 }
 
+// OTLPConfig holds OTLP gRPC exporter settings shared by the trace and
+// metric exporters. An empty Endpoint disables exporters entirely.
+type OTLPConfig struct {
+	// Endpoint is the gRPC target, e.g. "otel-collector.observability.svc:4317".
+	// Empty disables the exporters (noop providers installed).
+	Endpoint string
+
+	// Insecure, when true, dials the endpoint without TLS (handy for
+	// local dev / k3d where the collector listens on plain gRPC).
+	Insecure bool
+
+	// Headers are passed to every OTLP request as gRPC metadata
+	// (typically used for auth bearer tokens).
+	Headers map[string]string
+
+	// Timeout caps a single OTLP request roundtrip. Applies to both
+	// the trace and metric exporters.
+	Timeout time.Duration
+}
+
 // FromEnv reads configuration from environment variables, falling back to
 // reasonable defaults for local development.
 //
@@ -61,6 +90,13 @@ type LogConfig struct {
 //	CERBERUS_AUTO_CREATE_SCHEMA    default "false"
 //	CERBERUS_LOG_FORMAT            default "text"  ("text" | "json")
 //	CERBERUS_LOG_LEVEL             default "info"  ("debug" | "info" | "warn" | "error")
+//	CERBERUS_OTLP_ENDPOINT         default ""   (empty → exporters disabled)
+//	CERBERUS_OTLP_INSECURE         default "false"
+//	CERBERUS_OTLP_HEADERS          default ""   ("k=v,k2=v2" comma-separated)
+//	CERBERUS_OTLP_TIMEOUT          default "10s"
+//
+// Standard OTEL_EXPORTER_OTLP_* env vars are also honored by the OTel
+// Go SDK and complement these — see docs/observability.md.
 func FromEnv() (Config, error) {
 	dial, err := time.ParseDuration(envDefault("CERBERUS_CH_DIAL_TIMEOUT", "5s"))
 	if err != nil {
@@ -71,6 +107,10 @@ func FromEnv() (Config, error) {
 		return Config{}, fmt.Errorf("CERBERUS_AUTO_CREATE_SCHEMA: %w", err)
 	}
 	logCfg, err := envLog()
+	if err != nil {
+		return Config{}, err
+	}
+	otlp, err := otlpFromEnv()
 	if err != nil {
 		return Config{}, err
 	}
@@ -86,6 +126,7 @@ func FromEnv() (Config, error) {
 		Schema:           schema.DefaultOTelMetrics(),
 		AutoCreateSchema: autoCreate,
 		Log:              logCfg,
+		OTLP:             otlp,
 	}, nil
 }
 
@@ -104,6 +145,59 @@ func NewLogger(w io.Writer, cfg LogConfig) *slog.Logger {
 		h = slog.NewTextHandler(w, opts)
 	}
 	return slog.New(h)
+}
+
+// otlpFromEnv parses the CERBERUS_OTLP_* env vars into an OTLPConfig.
+// Empty endpoint is the documented "disabled" state and not an error —
+// the caller installs noop providers in that case.
+func otlpFromEnv() (OTLPConfig, error) {
+	timeout, err := time.ParseDuration(envDefault("CERBERUS_OTLP_TIMEOUT", "10s"))
+	if err != nil {
+		return OTLPConfig{}, fmt.Errorf("CERBERUS_OTLP_TIMEOUT: %w", err)
+	}
+	insecure, err := envBool("CERBERUS_OTLP_INSECURE", false)
+	if err != nil {
+		return OTLPConfig{}, fmt.Errorf("CERBERUS_OTLP_INSECURE: %w", err)
+	}
+	headers, err := parseHeaders(os.Getenv("CERBERUS_OTLP_HEADERS"))
+	if err != nil {
+		return OTLPConfig{}, fmt.Errorf("CERBERUS_OTLP_HEADERS: %w", err)
+	}
+	return OTLPConfig{
+		Endpoint: strings.TrimSpace(os.Getenv("CERBERUS_OTLP_ENDPOINT")),
+		Insecure: insecure,
+		Headers:  headers,
+		Timeout:  timeout,
+	}, nil
+}
+
+// parseHeaders splits a "k=v,k2=v2" string into a map. Empty input
+// returns nil, mirroring the noop default. Whitespace around keys and
+// values is trimmed. Entries without "=" are rejected so a typo doesn't
+// silently drop an auth header.
+func parseHeaders(raw string) (map[string]string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	out := map[string]string{}
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		eq := strings.IndexByte(part, '=')
+		if eq < 0 {
+			return nil, fmt.Errorf("entry %q: missing '='", part)
+		}
+		k := strings.TrimSpace(part[:eq])
+		v := strings.TrimSpace(part[eq+1:])
+		if k == "" {
+			return nil, fmt.Errorf("entry %q: empty key", part)
+		}
+		out[k] = v
+	}
+	return out, nil
 }
 
 func envDefault(key, def string) string {
