@@ -237,7 +237,7 @@ func (e *emitter) emitRangeWindowHoltWinters(r *chplan.RangeWindow) error {
 	}
 	sf := r.Scalars[0]
 	tf := r.Scalars[1]
-	return e.emitWindowedArray(r, Raw(holtWintersValueExpr(sf, tf)))
+	return e.emitWindowedArray(r, verbatim(holtWintersValueExpr(sf, tf)))
 }
 
 // holtWintersValueExpr renders the per-window Holt-Winters value
@@ -530,7 +530,7 @@ func (e *emitter) emitRangeWindowMetrics(r *chplan.RangeWindow, m *chplan.Metric
 	// WHERE: ts ∈ [anchor_ts - range, anchor_ts].
 	outerSb.Where(
 		windowTsLowerBoundFrag(rangeNS),
-		Raw("ts <= anchor_ts"),
+		verbatim("ts <= anchor_ts"),
 	)
 
 	// GROUP BY group aliases + anchor_ts.
@@ -635,7 +635,7 @@ func counterDeltaFrag() Frag {
 // `arrayMap(p -> tupleElement(p, 2), window_pairs)` — the per-window
 // values array (the values projected out of the (ts, value) tuples).
 func windowValsFrag() Frag {
-	return Raw("arrayMap(p -> tupleElement(p, 2), window_pairs)")
+	return verbatim("arrayMap(p -> tupleElement(p, 2), window_pairs)")
 }
 
 // metricsReducerFrag returns the per-bucket reducer Frag for the matrix
@@ -701,7 +701,7 @@ func outerGroupAliases(groupBy []chplan.Expr, aliases []string) []string {
 // last_over_time but lowered from a SubqueryExpr (P0 #4.5) rather than
 // a Call.
 func (e *emitter) emitRangeWindowIdentity(r *chplan.RangeWindow) error {
-	return e.emitWindowedArray(r, Raw("if(length(window_vals) > 0, window_vals[length(window_vals)], nan)"))
+	return e.emitWindowedArray(r, verbatim("if(length(window_vals) > 0, window_vals[length(window_vals)], nan)"))
 }
 
 // emitRangeWindowLogRate emits SQL for LogQL-style `rate({...}[range])`
@@ -761,7 +761,7 @@ func (e *emitter) emitRangeWindowRate(r *chplan.RangeWindow) error {
 // emitRangeWindowIncrease emits SQL for `increase(metric[range])`. Same
 // as rate but without dividing by range_seconds.
 func (e *emitter) emitRangeWindowIncrease(r *chplan.RangeWindow) error {
-	return e.emitWindowedArray(r, Raw("if(length(window_vals) > 1, counter_delta, 0.0)"))
+	return e.emitWindowedArray(r, verbatim("if(length(window_vals) > 1, counter_delta, 0.0)"))
 }
 
 // emitRangeWindowOverTime emits SQL for the `*_over_time` family:
@@ -787,7 +787,7 @@ func (e *emitter) emitRangeWindowOverTime(r *chplan.RangeWindow) error {
 	default:
 		return fmt.Errorf("%w: over-time function %q", ErrUnsupported, r.Func)
 	}
-	return e.emitWindowedArray(r, Raw(inner))
+	return e.emitWindowedArray(r, verbatim(inner))
 }
 
 // rateValueFrag returns the outer SELECT value Frag for rate(),
@@ -936,7 +936,7 @@ func (e *emitter) emitWindowedArrayMatrix(r *chplan.RangeWindow, value Frag) err
 		innerMid.Select(g)
 	}
 	innerMid.Select(Col("anchor_ts"))
-	innerMid.Select(As(windowFilterPairsFrag(Raw("anchor_ts"), rangeNS), "window_pairs"))
+	innerMid.Select(As(windowFilterPairsFrag(verbatim("anchor_ts"), rangeNS), "window_pairs"))
 
 	// Middle SELECT — window_vals + counter_delta per (series, anchor).
 	mid := NewQuery().From(innerMid.Frag())
@@ -985,7 +985,7 @@ func (e *emitter) collectGroupByFrags(group []chplan.Expr) ([]Frag, error) {
 		// (bare ColumnRef), `args` is empty in practice; the append
 		// is harmless when it is non-empty for future expressions.
 		e.args = append(e.args, args...)
-		out = append(out, Raw(sql))
+		out = append(out, verbatim(sql))
 	}
 	return out, nil
 }

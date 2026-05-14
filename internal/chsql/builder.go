@@ -438,12 +438,78 @@ func Lit(v any) Frag {
 	return func(b *Builder) { b.Arg(v) }
 }
 
-// Raw returns a Frag that emits sql verbatim — the escape hatch for
-// shapes not (yet) covered by a typed helper. R6.9's lint rule will
-// flag direct fmt.Sprintf-on-SQL but Raw is the sanctioned bypass
-// for one-off CH idioms; reach for it sparingly.
-func Raw(sql string) Frag {
+// verbatim is the in-package escape for synthetic emitter-chosen
+// tokens that don't fit a typed Frag constructor — local CTE / alias
+// names pinned by golden fixtures (`_struct_closure`, `_seed`, the
+// `_depth` alias), qualified-bare references like `c._depth` /
+// `t.<col>` the recursive CTE walks, and the bare `anchor_ts` / `ts`
+// references the range-window emitter uses inside arrayFilter / WHERE
+// clauses. None of these take user input; the surrounding emitter
+// shape pins their lexical form.
+//
+// This is the package-private successor to the public chsql.Raw that
+// R6.12.f retired. External packages can't call it; in-package
+// callers reach for it sparingly and only for emitter-controlled
+// synthetic tokens. The public typed Frag surface (Call, BareIdent,
+// InlineLit, Subscript, Array, If, Lambda1, Subquery, …) covers the
+// general case.
+func verbatim(sql string) Frag {
 	return func(b *Builder) { b.sb.WriteString(sql) }
+}
+
+// BareIdent returns a Frag that emits name literally — no backtick
+// quoting. The narrow trust contract: name MUST be a CH-safe bare
+// identifier (the CH grammar requires it to match
+// `[a-zA-Z_][a-zA-Z0-9_]*`). Used for lambda parameter names
+// (`mapFilter((k, v) -> k IN (?), col)` — `k` is not a column) and
+// other emitter-controlled bare tokens.
+//
+// Prefer Col / Qual for genuine column references — they apply the
+// backtick quoting CH expects. BareIdent is for parameter / synthetic
+// alias references the emitter pins.
+func BareIdent(name string) Frag {
+	return func(b *Builder) { b.sb.WriteString(name) }
+}
+
+// InlineLit returns a Frag emitting v as an inline literal (no `?`
+// placeholder, no positional binding). Supports int64, int, float64,
+// and string (single-quoted with CH-style escaping for embedded `'`
+// and `\`). Used for values that are part of the query *shape* rather
+// than data:
+//
+//   - array literals `[0, 1, 2]` — the elements are CH-syntax constants;
+//   - default sentinel arguments like `toFloat64(0)` where the 0 is the
+//     CH expression's shape, not user input;
+//   - constants inside lambda predicates the optimizer needs visible
+//     (CH's planner can't push a `?`-bound bound through some expression
+//     shapes).
+//
+// Prefer Lit (which uses `?` binding) when the value is user / plan
+// data. InlineLit panics for unsupported types so a mis-typed callsite
+// surfaces at test time rather than producing wrong SQL.
+func InlineLit(v any) Frag {
+	return func(b *Builder) {
+		switch x := v.(type) {
+		case int64:
+			b.sb.WriteString(strconv.FormatInt(x, 10))
+		case int:
+			b.sb.WriteString(strconv.FormatInt(int64(x), 10))
+		case float64:
+			b.sb.WriteString(strconv.FormatFloat(x, 'f', -1, 64))
+		case string:
+			b.sb.WriteByte('\'')
+			for i := 0; i < len(x); i++ {
+				c := x[i]
+				if c == '\'' || c == '\\' {
+					b.sb.WriteByte('\\')
+				}
+				b.sb.WriteByte(c)
+			}
+			b.sb.WriteByte('\'')
+		default:
+			panic(fmt.Sprintf("chsql: InlineLit unsupported type %T", v))
+		}
+	}
 }
 
 // UnionAll joins one or more Frags with " UNION ALL " between them. It
@@ -649,19 +715,108 @@ func Cast(f Frag, typ string) Frag {
 	}
 }
 
-// Concat returns a Frag rendering parts back-to-back with no separator.
-// For arbitrary glue when callers compose Frags whose internal
-// whitespace they already control. Panics if parts is empty.
-func Concat(parts ...Frag) Frag {
-	if len(parts) == 0 {
-		panic("chsql: Concat requires at least one part")
-	}
+// Array returns a Frag rendering a CH array literal "[<e0>, <e1>, …]".
+// An empty elems list renders as "[]" (CH accepts the empty-array
+// literal; its element type is inferred from the surrounding context
+// or, if standalone, defaults to `Array(Nothing)`).
+//
+// Element Frags emit their own `?` placeholders if present; bound args
+// land in element order.
+func Array(elems ...Frag) Frag {
 	return func(b *Builder) {
-		for _, p := range parts {
-			p(b)
-		}
+		b.sb.WriteByte('[')
+		writeFragList(b, elems)
+		b.sb.WriteByte(']')
 	}
 }
+
+// Subscript returns a Frag rendering "<container>[<key>]" — CH's Map /
+// Array subscript shape (`col[?]`, `arr[idx]`). Both operands are
+// rendered through their Frag callbacks so any `?` placeholders bind
+// in container-then-key order.
+//
+// Companion to Builder.MapAt (which is the same shape but with a
+// hard-coded bare column name + `?`-bound key); Subscript is the typed
+// Frag form for the general case where container and key are arbitrary
+// expressions.
+func Subscript(container, key Frag) Frag {
+	return func(b *Builder) {
+		container(b)
+		b.sb.WriteByte('[')
+		key(b)
+		b.sb.WriteByte(']')
+	}
+}
+
+// If returns a Frag rendering "if(<cond>, <then>, <else>)" — CH's
+// ternary `if` function. The fixed-arity wrapper around Call("if", …)
+// makes the structural intent grep-able and rejects ill-arity uses at
+// compile time.
+func If(cond, thenF, elseF Frag) Frag {
+	return Call("if", cond, thenF, elseF)
+}
+
+// Lambda1 returns a Frag rendering "<param> -> <body>" — a CH
+// single-parameter lambda (no parens around the parameter, matching
+// CH's conventional shape for `arrayMap(x -> ..., arr)`). For multi-
+// parameter lambdas use Builder.Lambda directly (it wraps params in
+// parens).
+//
+// param is emitted via BareIdent's trust contract: must be a CH-safe
+// bare identifier (`[a-zA-Z_][a-zA-Z0-9_]*`); the caller is responsible.
+func Lambda1(param string, body Frag) Frag {
+	return func(b *Builder) {
+		b.sb.WriteString(param)
+		b.sb.WriteString(" -> ")
+		body(b)
+	}
+}
+
+// Subqueryable is anything that renders as a parameterised SQL
+// statement. *QueryBuilder satisfies it; PreRenderedSQL adapts a
+// (sql, args) pair from the legacy emitter so its output can flow
+// through Subquery without raw-string composition.
+type Subqueryable interface {
+	Build() (string, []any)
+}
+
+// Subquery returns a Frag rendering "(<rendered s>)" — wraps a
+// Subqueryable's rendered SQL in parentheses and splices its args at
+// the position the Frag emits. Use this to plug a SELECT into another
+// QueryBuilder's From slot without flattening to a string first; args
+// stay tied to the position they're written at.
+//
+// Both *QueryBuilder and the chsql-public PreRenderedSQL adapter
+// satisfy Subqueryable. The latter is the one documented escape for
+// SQL produced by the legacy string emitter (chsql.Emit) until a
+// future R6.x port collapses that emitter into the QueryBuilder
+// surface.
+func Subquery(s Subqueryable) Frag {
+	return func(b *Builder) {
+		sql, args := s.Build()
+		b.sb.WriteByte('(')
+		b.sb.WriteString(sql)
+		b.sb.WriteByte(')')
+		b.args = append(b.args, args...)
+	}
+}
+
+// PreRenderedSQL adapts an already-rendered (sql, args) pair into a
+// Subqueryable so it can flow through Subquery without raw-string
+// composition. Holds an opaque CH SQL string plus its positional args;
+// reserved for legacy chsql.Emit output that pre-dates the
+// QueryBuilder migration. A future R6.x milestone will port chsql.Emit
+// to return a *QueryBuilder directly and retire this type.
+//
+// Don't reach for this for newly written code — compose with
+// QueryBuilder + typed Frags instead.
+type PreRenderedSQL struct {
+	SQL  string
+	Args []any
+}
+
+// Build satisfies Subqueryable.
+func (p PreRenderedSQL) Build() (string, []any) { return p.SQL, p.Args }
 
 // writeFragList emits Frags comma-separated (with ", " between
 // subsequent parts) into the builder. Shared helper for the function-

@@ -86,11 +86,11 @@ Cerberus instruments itself with the Go-ecosystem defacto stack and ships teleme
 
 ### Stack
 
-| Signal  | Library                                                         | Why                                                                                         |
-| ------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| Logging | stdlib `log/slog` (Go 1.21+)                                    | Already wired in `cmd/cerberus/main.go`. The defacto for new Go projects.                   |
-| Metrics | OpenTelemetry SDK (`go.opentelemetry.io/otel/sdk/metric`)       | OTLP-native → OTel Collector → CH exporter → same `otel_metrics_*` tables cerberus queries. |
-| Traces  | OpenTelemetry SDK + `contrib/instrumentation/net/http/otelhttp` | Auto HTTP spans + manual pipeline spans (parse → lower → optimize → emit → execute).        |
+| Signal  | Library                                                         | Why                                                                                               |
+| ------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| Logging | stdlib `log/slog` (Go 1.21+)                                    | Already wired in `cmd/cerberus/main.go`. The defacto for new Go projects.                         |
+| Metrics | OpenTelemetry SDK (`go.opentelemetry.io/otel/sdk/metric`)       | OTLP-native → OTel Collector → CH exporter → same `otel_metrics_*` tables cerberus queries.       |
+| Traces  | OpenTelemetry SDK + `contrib/instrumentation/net/http/otelhttp` | Auto HTTP spans + manual pipeline spans (parse → lower → optimize → emit → execute).              |
 
 ### Milestones
 
@@ -181,7 +181,8 @@ CH identifier quoting (`writeIdent` — backticks with doubled-backtick escaping
 | R6.8  | Audit `internal/api/loki/` and `internal/api/tempo/` SQL helpers and port any remaining Sprintf-on-SQL callsites. Most loki + tempo helpers were already builder-aware by RC2 cut (#141, #150) — R6.8 is the cleanup sweep.                                                                                                                            | shipped          |
 | R6.9  | Lint enforcement: a `cmd/check-sql/` Go tool wired into `just check-sql` (and the `lint` CI job) that scans `internal/chsql/`, `internal/api/`, `internal/optimizer/` for `fmt.Sprintf` calls whose first arg contains `SELECT`, `WHERE`, `FROM`, `INSERT`, etc., plus the `Builder.WriteSQL("...keyword...")` cosplay shape. Fails CI on regressions. | shipped via #184 |
 | R6.10 | CLAUDE.md hard-rule promotion: `**No raw SQL strings.**` becomes a top-level non-negotiable; `docs/sql-style.md` documents the helper API and its escape hatches (when `chsql.Raw()` is acceptable, when extending `chsql.QueryBuilder` is preferable).                                                                                                | shipped via #193 |
-| R6.11 | Typed Frag constructors + port `internal/api/{loki,tempo,prom}` to the typed surface (R6.11a #187, R6.11b #190, R6.11c #188, R6.11d #189). R6.11e (this PR) closes the milestone: renames `Builder.WriteSQL` → unexported `writeSQL`, deletes `cmd/check-sql/`, retires the Sprintf scanner. Typed API is now the only public emission surface.        | shipped          |
+| R6.11 | Typed Frag constructors + port `internal/api/{loki,tempo,prom}` to the typed surface (R6.11a #187, R6.11b #190, R6.11c #188, R6.11d #189). R6.11e closes the milestone: renames `Builder.WriteSQL` → unexported `writeSQL`, deletes `cmd/check-sql/`, retires the Sprintf scanner. Typed API is now the only public emission surface.                  | shipped          |
+| R6.12 | Retire the `chsql.Raw` / `chsql.Concat` escape hatches by walking every callsite and porting it to a typed constructor; close the public chsql surface so opaque-SQL bytes never enter Frag composition. Adds the missing typed constructors (`BareIdent`, `InlineLit`, `Array`, `Subscript`, `If`, `Lambda1`, `Subquery`, `PreRenderedSQL`).          | shipped          |
 
 ### Notes for the custom path
 

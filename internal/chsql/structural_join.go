@@ -7,27 +7,6 @@ import (
 	"github.com/tsouza/cerberus/internal/chplan"
 )
 
-// verbatim returns a Frag that emits sql as an unquoted token sequence.
-// Used in this file for synthetic emitter-chosen identifiers — local
-// CTE names (`_struct_closure`, `_seed`), the unquoted `_depth` alias,
-// and the qualifier-prefixed `c._depth` / `t.<col>` references that
-// the recursive CTE walks — none of which take user input. The
-// surrounding shape (alias names, the `_depth` column) is fixed by
-// the emitter and pinned by the TraceQL golden fixtures, so the
-// unquoted form is deliberate.
-//
-// This is the in-package writeSQL drop the R6.12.e brief sanctions for
-// shapes that don't fit a typed Frag constructor. R6.12.f deletes
-// chsql.Raw; the structural-CTE shapes here keep needing one of:
-// (a) unquoted alias support on As (the `_depth` literal), (b) an
-// unquoted-qualifier helper for `c.<unquoted-alias>` references,
-// (c) a literal-int Frag for inline depth bounds. Until those land
-// the verbatim escape keeps the typed-Frag rewrite local without
-// growing builder.go's public surface for one-off CTE plumbing.
-func verbatim(sql string) Frag {
-	return func(b *Builder) { b.sb.WriteString(sql) }
-}
-
 // emitStructuralJoin renders a TraceQL structural relation against
 // the otel_traces span table. The result projects the right-hand
 // span's columns (TraceQL convention: `A > B` returns the matched B

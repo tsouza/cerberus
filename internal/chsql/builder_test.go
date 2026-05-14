@@ -312,7 +312,7 @@ func TestBuilder_ParamAgg_MultiParam(t *testing.T) {
 	}
 }
 
-// TestFrag_HelpersBindAtPosition — Col / Lit / Raw / Qual produce
+// TestFrag_HelpersBindAtPosition — Col / Lit / Call / Qual produce
 // Frags that can be plugged into a QueryBuilder slot; args bind in
 // emission order.
 func TestFrag_HelpersBindAtPosition(t *testing.T) {
@@ -323,7 +323,7 @@ func TestFrag_HelpersBindAtPosition(t *testing.T) {
 	b.writeSQL(", ")
 	Lit(42)(b)
 	b.writeSQL(", ")
-	Raw("now64(9)")(b)
+	Call("now64", InlineLit(int64(9)))(b)
 	b.writeSQL(", ")
 	Qual("L", "TimeUnix")(b)
 	gotSQL, gotArgs := b.Build()
@@ -524,7 +524,10 @@ func TestQueryBuilder_GroupByOrderBy(t *testing.T) {
 	t.Parallel()
 
 	sql, args := NewQuery().
-		Select(Col("MetricName"), Raw("sum(`Value`) AS `total`")).
+		Select(
+			Col("MetricName"),
+			As(Call("sum", Col("Value")), "total"),
+		).
 		From(Col("otel_metrics_gauge")).
 		GroupBy(Col("MetricName")).
 		OrderBy(Col("total"), true).
@@ -592,7 +595,7 @@ func TestQueryBuilder_Join(t *testing.T) {
 	t.Parallel()
 
 	sql, args := NewQuery().
-		Select(Raw("L.`Value`"), Raw("R.`Value`")).
+		Select(Qual("L", "Value"), Qual("R", "Value")).
 		From(func(b *Builder) {
 			b.Ident("otel_metrics_sum")
 			b.writeSQL(" AS L")
@@ -603,25 +606,15 @@ func TestQueryBuilder_Join(t *testing.T) {
 				b.Ident("otel_metrics_gauge")
 				b.writeSQL(" AS R")
 			},
-			func(b *Builder) {
-				b.writeSQL("L.")
-				b.Ident("MetricName")
-				b.writeSQL(" = ")
-				b.Arg("http_requests_total")
-			},
+			Eq(Qual("L", "MetricName"), Lit("http_requests_total")),
 		).
-		Where(func(b *Builder) {
-			b.writeSQL("R.")
-			b.Ident("Value")
-			b.writeSQL(" > ")
-			b.Arg(0.5)
-		}).
+		Where(Gt(Qual("R", "Value"), Lit(0.5))).
 		Build()
 
-	wantSQL := "SELECT L.`Value`, R.`Value`" +
+	wantSQL := "SELECT `L`.`Value`, `R`.`Value`" +
 		" FROM `otel_metrics_sum` AS L" +
-		" INNER JOIN `otel_metrics_gauge` AS R ON L.`MetricName` = ?" +
-		" WHERE R.`Value` > ?"
+		" INNER JOIN `otel_metrics_gauge` AS R ON `L`.`MetricName` = ?" +
+		" WHERE `R`.`Value` > ?"
 	if sql != wantSQL {
 		t.Errorf("SQL = %q; want %q", sql, wantSQL)
 	}
@@ -649,7 +642,7 @@ func TestQueryBuilder_JoinKinds(t *testing.T) {
 			t.Parallel()
 			sql, _ := NewQuery().
 				From(Col("a")).
-				Join(tc.kind, Col("b"), Raw("1 = 1")).
+				Join(tc.kind, Col("b"), Eq(InlineLit(int64(1)), InlineLit(int64(1)))).
 				Build()
 			want := "SELECT * FROM `a` " + tc.want + " `b` ON 1 = 1"
 			if sql != want {
@@ -676,21 +669,14 @@ func TestQueryBuilder_WithRecursive(t *testing.T) {
 	t.Parallel()
 
 	anchor := NewQuery().
-		Select(Col("id"), Raw("0 AS _depth")).
+		Select(Col("id"), verbatim("0 AS _depth")).
 		From(Col("nodes")).
-		Where(func(b *Builder) {
-			b.Ident("id")
-			b.writeSQL(" = ")
-			b.Arg(1)
-		})
+		Where(Eq(Col("id"), Lit(1)))
 
 	step := NewQuery().
 		Select(
-			func(b *Builder) {
-				b.writeSQL("n.")
-				b.Ident("id")
-			},
-			Raw("c._depth + 1"),
+			Qual("n", "id"),
+			verbatim("c._depth + 1"),
 		).
 		From(func(b *Builder) {
 			b.Ident("nodes")
@@ -698,8 +684,8 @@ func TestQueryBuilder_WithRecursive(t *testing.T) {
 		}).
 		Join(
 			InnerJoin,
-			Raw("closure AS c"),
-			Raw("n.parent = c.id"),
+			verbatim("closure AS c"),
+			verbatim("n.parent = c.id"),
 		).
 		Where(func(b *Builder) {
 			b.writeSQL("c._depth < ")
@@ -709,14 +695,14 @@ func TestQueryBuilder_WithRecursive(t *testing.T) {
 	sql, args := NewQuery().
 		WithRecursive("closure", anchor, step).
 		Select(Col("id")).
-		From(Raw("closure")).
-		Where(Raw("_depth > 0")).
+		From(verbatim("closure")).
+		Where(verbatim("_depth > 0")).
 		Build()
 
 	wantSQL := "WITH RECURSIVE closure AS (" +
 		"SELECT `id`, 0 AS _depth FROM `nodes` WHERE `id` = ?" +
 		" UNION ALL " +
-		"SELECT n.`id`, c._depth + 1 FROM `nodes` AS n" +
+		"SELECT `n`.`id`, c._depth + 1 FROM `nodes` AS n" +
 		" INNER JOIN closure AS c ON n.parent = c.id" +
 		" WHERE c._depth < ?" +
 		") SELECT `id` FROM closure WHERE _depth > 0"
@@ -1043,36 +1029,190 @@ func TestCast_Wraps(t *testing.T) {
 	}
 }
 
-// TestConcat_NoSeparator — Concat emits parts back-to-back without
-// any glue. Args bind in emission order.
-func TestConcat_NoSeparator(t *testing.T) {
+// TestBareIdent_Emits — BareIdent emits the name without backtick
+// quoting; used for lambda parameter / synthetic-alias references
+// that the CH parser must see as a bare identifier.
+func TestBareIdent_Emits(t *testing.T) {
 	t.Parallel()
 
 	b := NewBuilder()
-	Concat(
-		Col("a"),
-		Raw(" = "),
-		Lit(int64(1)),
-	)(b)
-	sql, args := b.Build()
-	if got, want := sql, "`a` = ?"; got != want {
-		t.Errorf("Concat SQL = %q; want %q", got, want)
+	BareIdent("k")(b)
+	if got, want := b.String(), "k"; got != want {
+		t.Errorf("BareIdent SQL = %q; want %q", got, want)
 	}
-	if !reflect.DeepEqual(args, []any{int64(1)}) {
-		t.Errorf("Concat args = %v", args)
+	if args := b.Args(); args != nil {
+		t.Errorf("BareIdent bound args %v; want none", args)
 	}
 }
 
-// TestConcat_PanicsOnEmpty — Concat() with zero parts is a programmer
-// error.
-func TestConcat_PanicsOnEmpty(t *testing.T) {
+// TestInlineLit_RendersTypes — InlineLit renders int / int64 / float64
+// / string literals inline (no `?`-binding) with CH-safe quoting.
+func TestInlineLit_RendersTypes(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		v    any
+		want string
+	}{
+		{"int", 42, "42"},
+		{"int64", int64(9), "9"},
+		{"float64", 0.5, "0.5"},
+		{"string_plain", "hello", "'hello'"},
+		{"string_quote", "it's", "'it\\'s'"},
+		{"string_backslash", `a\b`, `'a\\b'`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			b := NewBuilder()
+			InlineLit(tc.v)(b)
+			if got := b.String(); got != tc.want {
+				t.Errorf("InlineLit(%v) = %q; want %q", tc.v, got, tc.want)
+			}
+			if b.Args() != nil {
+				t.Errorf("InlineLit bound args = %v; want none", b.Args())
+			}
+		})
+	}
+}
+
+// TestInlineLit_PanicsOnUnsupported — passing a type without an inline
+// rendering rule is a programmer error; surface it at test time.
+func TestInlineLit_PanicsOnUnsupported(t *testing.T) {
 	t.Parallel()
 	defer func() {
 		if r := recover(); r == nil {
-			t.Fatalf("expected panic on Concat()")
+			t.Fatalf("expected panic on InlineLit(unsupported)")
 		}
 	}()
-	Concat()
+	b := NewBuilder()
+	InlineLit(struct{}{})(b)
+}
+
+// TestArray_RendersLiteral — Array emits "[<e0>, <e1>, …]" with
+// element Frags rendered through their own callbacks; bound args land
+// in element order.
+func TestArray_RendersLiteral(t *testing.T) {
+	t.Parallel()
+
+	b := NewBuilder()
+	Array(Lit("a"), Lit("b"), Lit("c"))(b)
+	sql, args := b.Build()
+	if got, want := sql, "[?, ?, ?]"; got != want {
+		t.Errorf("Array SQL = %q; want %q", got, want)
+	}
+	if !reflect.DeepEqual(args, []any{"a", "b", "c"}) {
+		t.Errorf("Array args = %v", args)
+	}
+}
+
+// TestArray_Empty — Array() with no elements emits the empty-array
+// literal "[]" (CH accepts this; element type is contextual).
+func TestArray_Empty(t *testing.T) {
+	t.Parallel()
+	b := NewBuilder()
+	Array()(b)
+	if got, want := b.String(), "[]"; got != want {
+		t.Errorf("Array() = %q; want %q", got, want)
+	}
+}
+
+// TestSubscript_RendersBrackets — Subscript renders "<c>[<k>]"; both
+// operands flow through their Frag callbacks.
+func TestSubscript_RendersBrackets(t *testing.T) {
+	t.Parallel()
+
+	b := NewBuilder()
+	Subscript(Col("Attributes"), Lit("service.name"))(b)
+	sql, args := b.Build()
+	if got, want := sql, "`Attributes`[?]"; got != want {
+		t.Errorf("Subscript SQL = %q; want %q", got, want)
+	}
+	if !reflect.DeepEqual(args, []any{"service.name"}) {
+		t.Errorf("Subscript args = %v", args)
+	}
+}
+
+// TestIf_RendersTernary — If renders the CH if() builtin with three
+// fixed slots; args bind in cond/then/else order.
+func TestIf_RendersTernary(t *testing.T) {
+	t.Parallel()
+
+	b := NewBuilder()
+	If(
+		Eq(Col("a"), Lit(1)),
+		Lit("yes"),
+		Lit("no"),
+	)(b)
+	sql, args := b.Build()
+	if got, want := sql, "if(`a` = ?, ?, ?)"; got != want {
+		t.Errorf("If SQL = %q; want %q", got, want)
+	}
+	if !reflect.DeepEqual(args, []any{1, "yes", "no"}) {
+		t.Errorf("If args = %v", args)
+	}
+}
+
+// TestLambda1_RendersBareParam — Lambda1 emits "<p> -> <body>"
+// without parens around the parameter (single-arg lambda shape).
+func TestLambda1_RendersBareParam(t *testing.T) {
+	t.Parallel()
+
+	b := NewBuilder()
+	Lambda1("x", Call("toFloat64", BareIdent("x")))(b)
+	if got, want := b.String(), "x -> toFloat64(x)"; got != want {
+		t.Errorf("Lambda1 SQL = %q; want %q", got, want)
+	}
+}
+
+// TestSubquery_QueryBuilder — Subquery wraps a *QueryBuilder render in
+// parens and splices its args at the position the Frag emits.
+func TestSubquery_QueryBuilder(t *testing.T) {
+	t.Parallel()
+
+	inner := NewQuery().
+		Select(Col("v")).
+		From(Col("t")).
+		Where(Eq(Col("k"), Lit("x")))
+
+	b := NewBuilder()
+	Subquery(inner)(b)
+	sql, args := b.Build()
+	want := "(SELECT `v` FROM `t` WHERE `k` = ?)"
+	if sql != want {
+		t.Errorf("Subquery SQL = %q; want %q", sql, want)
+	}
+	if !reflect.DeepEqual(args, []any{"x"}) {
+		t.Errorf("Subquery args = %v", args)
+	}
+}
+
+// TestSubquery_PreRenderedSQL — Subquery + PreRenderedSQL splices a
+// pre-rendered (sql, args) pair from the legacy emitter into the outer
+// builder's stream at the Frag's position.
+func TestSubquery_PreRenderedSQL(t *testing.T) {
+	t.Parallel()
+
+	pre := PreRenderedSQL{
+		SQL:  "SELECT `v` FROM `t` WHERE `k` = ?",
+		Args: []any{"x"},
+	}
+
+	outer, args := NewQuery().
+		Select(Col("v")).
+		From(Subquery(pre)).
+		Where(Gt(Col("v"), Lit(0))).
+		Build()
+	want := "SELECT `v` FROM (SELECT `v` FROM `t` WHERE `k` = ?) WHERE `v` > ?"
+	if outer != want {
+		t.Errorf("Subquery(PreRenderedSQL) SQL = %q; want %q", outer, want)
+	}
+	// Args interleave at FROM position: inner args first (from the
+	// PreRenderedSQL), then the outer WHERE arg.
+	if !reflect.DeepEqual(args, []any{"x", 0}) {
+		t.Errorf("Args = %v; want [x 0]", args)
+	}
 }
 
 // TestIn_RendersList — In emits "<left> IN (<r0>, <r1>, ...)" and
