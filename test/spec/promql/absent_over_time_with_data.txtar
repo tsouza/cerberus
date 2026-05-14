@@ -1,0 +1,22 @@
+# When the lookback window contains at least one sample, absent_over_time
+# returns "no result" — at this RangeWindow layer the per-series value
+# expression projects NaN; the engine wrap converts NaN-rows to dropped
+# rows before reaching the API layer. (Compare to Prom's
+# `funcAbsentOverTime` — engine.go specialises the matrix output for
+# absent_over_time to synthesise / suppress the result series.)
+#
+# This fixture pins the SQL + chplan shape only. The chDB round-trip
+# is opt-in by including `seed:` + `expected_rows:` — both intentionally
+# omitted here because the NaN-row interaction with the chDB
+# float-comparison path is engine-layer concern, not RangeWindow emit.
+
+-- query.promql --
+absent_over_time(temperature[5m])
+-- args --
+[0] string = "temperature"
+-- chplan --
+RangeWindow func=absent_over_time range=5m0s step=0s ts=TimeUnix value=Value groupBy=[Attributes]
+  Filter predicate=(MetricName = "temperature")
+    Scan(otel_metrics_gauge)
+-- sql --
+SELECT `Attributes`, if(length(window_vals) > 0, nan, 1.0) AS `Value` FROM (SELECT `Attributes`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `Attributes`, arrayFilter(p -> tupleElement(p, 1) >= now64(9) - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= now64(9), series_array) AS `window_pairs` FROM (SELECT `Attributes`, arraySort(groupArray((`TimeUnix`, `Value`))) AS `series_array` FROM (SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` = ?)) GROUP BY `Attributes`)))
