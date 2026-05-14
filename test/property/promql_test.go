@@ -44,60 +44,45 @@
 // rapid persists the shrunk failing draw under `testdata/rapid/`; the
 // nightly workflow archives that directory as an artifact on failure.
 //
-// # Skip rationale (current state)
+// # History of past divergences (resolved)
 //
-// PR #272 surfaced three cerberus-vs-Prom divergences via the from-
-// scratch oracle. The original three were all fixed:
-//   - sum-LWR (#275)
-//   - instant-selector / VectorJoin eval-ts (#277)
+// The from-scratch oracle surfaced four cerberus-vs-Prom divergences:
+//
+//   - sum-LWR (#275) — FIXED
+//   - instant-selector / VectorJoin eval-ts (#277) — FIXED
 //   - rate / increase / delta / *_over_time empty-window zero rows
 //     (#287 — `WHERE length(window_vals) >= N` on the outer SELECT of
-//     `internal/chsql/range_window.go::emitWindowedArray`)
+//     `internal/chsql/range_window.go::emitWindowedArray`) — FIXED
+//   - RangeWindow value alias case mismatch: the outer SELECT of
+//     `emitWindowedArrayPairs` / `emitWindowedArray` /
+//     `emitWindowedArrayMatrix` projected the windowed value as
+//     lowercase `value`, while parent `Aggregate` referenced the
+//     schema-cased `Value` column — FIXED by emitting `r.ValueColumn`
+//     (PascalCase canonical) at all three emit sites; the
+//     `projectValueOverInner` rename-workaround in
+//     `internal/promql/instant_fns.go` is removed in the same change.
 //
-// Force-running the test with `CERBERUS_PROPERTY_FORCE=1` surfaces a
-// SEPARATE pre-existing bug that the rate-empty-window fix did not
-// introduce: cerberus's `RangeWindow` emitter projects the windowed
-// value as a lowercase `value` alias (see line ~353 of
-// `internal/chsql/range_window.go`, the outer SELECT in
-// `emitWindowedArrayPairs`), but the parent `Aggregate` references
-// the schema-cased `Value` column. The result is a CH
-// `UNKNOWN_IDENTIFIER: 'Value'. Maybe you meant: ['value']` error on
-// any `sum(rate(...))` / `count(rate(...))` shape against real data.
+// # Current skip rationale
 //
-// The bug is dormant in the txtar fixtures because none of the
-// aggregate-over-rate cases carry `expected_rows:` — only
-// `histogram_quantile(sum by(le)(rate))` is exercised end-to-end,
-// and it routes through a dedicated histogram code path that
-// bypasses the case mismatch.
+// Force-running the test with `CERBERUS_PROPERTY_FORCE=1` after the
+// fixes above surfaces a SEPARATE pre-existing divergence:
+// `sum(metric{...}[r])` over an evalTs that lies outside the data
+// range causes cerberus to emit a spurious `{} = 0` row, while
+// PromQL specifies an empty result. Root cause: `chplan.Aggregate`
+// with empty GroupBy emits `SELECT sum(Value) FROM (...)` without a
+// HAVING/COUNT guard, so CH's "1 row per aggregate-only query"
+// semantics produce a 0 even on empty input.
 //
-// # Regression checkpoint
+// Tracked as a follow-up: the fix is one of:
+//   a) Wrap with a `count()` subquery + outer `WHERE _cnt > 0`.
+//   b) Add a `chsql.SelectBuilder.Having` slot + an `Aggregate`-level
+//      `HAVING count() > 0` for the GroupBy=[] case.
+//   c) Lower `Aggregate(GroupBy=[], …)` into
+//      `Filter(_cnt > 0, Aggregate(…, count AS _cnt))` at the PromQL
+//      lowering layer + a downstream `Project` to drop `_cnt`.
 //
-// As of 2026-05-14 (this branch), a forced run with
-// `-rapid.checks=100` shrinks to the minimal reproducer:
-//
-//	query   sum(rate(up{instance="a"}[1m]))
-//	evalTs  1778673800
-//	dataset 2 series of `up{}`, 6 + 3 points
-//	seed    11512813954976776230 (rapid v0.4.8)
-//
-// Reproduce locally:
-//
-//	CERBERUS_PROPERTY_FORCE=1 go test -tags chdb \
-//	    -run TestPromQL_Property_FromScratch \
-//	    ./test/property/... \
-//	    -rapid.seed=11512813954976776230 -v
-//
-// rapid persists the shrunk failing draw under
-// `test/property/testdata/rapid/TestPromQL_Property_FromScratch/`;
-// the matching `.fail` file is checked in so the property workflow
-// re-runs the same minimised reproducer once the production fix
-// lands and the t.Skip is lifted.
-//
-// TODO: until the RangeWindow emitter projects `Value` (Pascal) — or
-// `lowerRangeVectorCall` interposes a Project that renames `value`
-// → `Value` — this property test stays t.Skip'd. Production fix is
-// out of scope for the test branch; tracked as a follow-up under the
-// RC3 property-driven bug backlog.
+// Until the chosen path lands, force-runs reproduce with
+// `CERBERUS_PROPERTY_FORCE=1` (seed 11512813954976776230, rapid v0.4.8).
 package property_test
 
 import (
@@ -132,17 +117,16 @@ import (
 //
 // Failure logs include both the rapid seed (so the failing draw
 // reproduces with `-rapid.seed=<N>`) and the minimised dataset / query
-// rapid shrunk to. See the package-level doc above for the current
-// skip rationale and how to remove it.
+// rapid shrunk to.
 func TestPromQL_Property_FromScratch(t *testing.T) {
 	if os.Getenv("CERBERUS_PROPERTY_FORCE") == "" {
-		t.Skip("property: skipped pending production-side fix for RangeWindow " +
-			"`value` (lowercase) → Aggregate `Value` (Pascal) case mismatch in " +
-			"internal/chsql/range_window.go::emitWindowedArrayPairs. " +
-			"sum(rate(...))/count(rate(...)) etc. fail at CH execution with " +
-			"UNKNOWN_IDENTIFIER. Reproduce with CERBERUS_PROPERTY_FORCE=1 " +
-			"(seed 11512813954976776230, rapid v0.4.8). See package doc comment " +
-			"for the regression checkpoint + tracked TODO.")
+		t.Skip("property: skipped pending PromQL aggregate-on-empty fix " +
+			"(separate from the RangeWindow value-alias bug already fixed). " +
+			"`sum(metric[r])` over an evalTs outside the data range emits a " +
+			"spurious `{} = 0` row from CH's 1-row-per-aggregate-only-query " +
+			"semantics; PromQL spec says empty result. Reproduce with " +
+			"CERBERUS_PROPERTY_FORCE=1 (seed 11512813954976776230, rapid v0.4.8). " +
+			"See package doc above for the three candidate fix paths.")
 	}
 
 	cli := chclienttest.NewChDB(t)

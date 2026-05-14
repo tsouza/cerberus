@@ -3,10 +3,9 @@ abs(rate(http_requests_total[5m]))
 -- args --
 [0] string = "http_requests_total"
 -- sql --
-SELECT `Attributes`, abs(`Value`) AS `Value` FROM (SELECT `Attributes`, `value` AS `Value` FROM (SELECT `Attributes`, if(length(window_vals) > 1, counter_delta / 300, 0.0) AS `value` FROM (SELECT `Attributes`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `Attributes`, arrayFilter(p -> tupleElement(p, 1) >= now64(9) - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= now64(9), series_array) AS `window_pairs` FROM (SELECT `Attributes`, arraySort(groupArray((`TimeUnix`, `Value`))) AS `series_array` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` = ?)) GROUP BY `Attributes`))) WHERE length(`window_vals`) >= 2))
+SELECT `Attributes`, abs(`Value`) AS `Value` FROM (SELECT `Attributes`, if(length(window_vals) > 1, counter_delta / 300, 0.0) AS `Value` FROM (SELECT `Attributes`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `Attributes`, arrayFilter(p -> tupleElement(p, 1) >= now64(9) - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= now64(9), series_array) AS `window_pairs` FROM (SELECT `Attributes`, arraySort(groupArray((`TimeUnix`, `Value`))) AS `series_array` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` = ?)) GROUP BY `Attributes`))) WHERE length(`window_vals`) >= 2)
 -- chplan --
 Project [Attributes, abs(Value) AS Value]
-  Project [Attributes, value AS Value]
-    RangeWindow func=rate range=5m0s step=0s ts=TimeUnix value=Value groupBy=[Attributes]
-      Filter predicate=(MetricName = "http_requests_total")
-        Scan(otel_metrics_sum)
+  RangeWindow func=rate range=5m0s step=0s ts=TimeUnix value=Value groupBy=[Attributes]
+    Filter predicate=(MetricName = "http_requests_total")
+      Scan(otel_metrics_sum)
