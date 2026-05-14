@@ -12,7 +12,7 @@ The full self-observability stack lands across **RC4**:
 | R4.2 — `otelhttp.NewHandler` wraps the Prom / Loki / Tempo handlers                                   | planned | adds one span per HTTP request           |
 | R4.3 — Custom spans around parse / lower / optimize / emit / execute                                  | planned | pipeline stage timings                   |
 | R4.4 — Self-metrics: request count + latency + CH roundtrip + in-flight gauge                         | planned | HPA-consumable                           |
-| R4.5 — OTLP exporters wired (`CERBERUS_OTLP_ENDPOINT` / `_INSECURE` / `_HEADERS` / `_TIMEOUT`)         | landed  | graceful no-op when endpoint unreachable |
+| R4.5 — OTLP exporters wired (`CERBERUS_OTLP_ENDPOINT` / `_INSECURE` / `_HEADERS` / `_TIMEOUT`)        | landed  | graceful no-op when endpoint unreachable |
 | R4.6 — `deploy/k3s/otel-collector.yaml` + `deploy/grafana/dashboards/cerberus-self.json`              | planned | wires the export path end-to-end         |
 
 This page only covers what has already shipped. The remaining rows are
