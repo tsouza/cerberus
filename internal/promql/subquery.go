@@ -53,6 +53,8 @@ func lowerSubquery(e *parser.SubqueryExpr, s schema.Metrics, ctx lowerCtx) (chpl
 		return lowerSubquery(&inner2, s, ctx)
 	case *parser.AggregateExpr:
 		return lowerSubqueryOverAggregate(e, inner, step, s, ctx)
+	case *parser.BinaryExpr:
+		return lowerSubqueryOverBinary(e, inner, step, s, ctx)
 	case *parser.SubqueryExpr:
 		return nil, fmt.Errorf("promql: nested subqueries are not yet supported (deferred to RC3)")
 	}
@@ -120,6 +122,57 @@ func lowerSubqueryOverCall(
 		Input:           inner,
 		Func:            call.Func.Name,
 		Range:           ms.Range,
+		OuterRange:      sub.Range,
+		Step:            step,
+		End:             anchor.End,
+		Offset:          anchor.Offset,
+		TimestampColumn: s.TimestampColumn,
+		ValueColumn:     s.ValueColumn,
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
+	}, nil
+}
+
+// lowerSubqueryOverBinary — `(<vec> op <scalar>)[range:step]` /
+// `(<vec> op <vec>)[range:step]` lowering. The inner BinaryExpr is
+// lowered in range-vector context so the LWR collapse is suppressed
+// and every in-window sample reaches the wrapping matrix RangeWindow.
+// The wrapping RangeWindow uses `Identity=true` — same shape as the
+// bare-vector subquery case — to emit the "last value in window" per
+// anchor across `[End - sub.Range, End]` spaced by `step`. Subquery
+// `@`/`offset` modifiers thread onto the wrapper via subqueryAnchor.
+//
+// PromQL evaluates `(<expr>)[range:step]` by re-evaluating `<expr>`
+// at each anchor; the BinaryExpr's per-sample `(Value op scalar)` /
+// `(Value_L op Value_R)` rewrite or comparison-Filter drop is applied
+// to every sample inside the window, and the wrapper picks the most
+// recent one. Comparison ops without `bool` modifier still resolve to
+// a Filter on the un-projected value, so the matrix RangeWindow sees
+// only samples that satisfied the predicate — matching Prom's "drop
+// non-matching samples then take the latest" semantics for
+// `(up > 0.5)[5m:1m]`.
+func lowerSubqueryOverBinary(
+	sub *parser.SubqueryExpr,
+	b *parser.BinaryExpr,
+	step time.Duration,
+	s schema.Metrics,
+	ctx lowerCtx,
+) (chplan.Node, error) {
+	rangeCtx := ctx
+	rangeCtx.inRangeVector = true
+	inner, err := lowerBinary(b, s, rangeCtx)
+	if err != nil {
+		return nil, err
+	}
+
+	anchor, err := subqueryAnchor(sub, ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return &chplan.RangeWindow{
+		Input:           inner,
+		Identity:        true,
+		Range:           step, // per-anchor lookback = subquery step
 		OuterRange:      sub.Range,
 		Step:            step,
 		End:             anchor.End,
