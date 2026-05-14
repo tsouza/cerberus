@@ -22,6 +22,7 @@ import (
 	"github.com/tsouza/cerberus/internal/api/tempo"
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/config"
+	"github.com/tsouza/cerberus/internal/engine"
 	"github.com/tsouza/cerberus/internal/schema/ddl"
 	"github.com/tsouza/cerberus/internal/telemetry"
 )
@@ -143,7 +144,12 @@ func run() error {
 	// the route.
 	traceMux := http.NewServeMux()
 
+	// Prom is the first head ported to the shared engine.Engine
+	// pipeline (RC7 R7.2); the engine is constructed below from the
+	// shared Client + a seed optimizer and assigned onto the handler.
+	// Loki + Tempo follow as RC7 R7.3 / R7.4 ports.
 	promHandler := prom.New(client, cfg.Schema, logger.With("api", "prom"))
+	promHandler.Engine = &engine.Engine{Optimizer: promHandler.Optimizer, Client: client}
 	promHandler.Limiter = promLimiter
 	promHandler.Mount(traceMux)
 

@@ -19,7 +19,7 @@ import (
 	"github.com/tsouza/cerberus/internal/cerbtrace"
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
-	"github.com/tsouza/cerberus/internal/chsql"
+	"github.com/tsouza/cerberus/internal/engine"
 	"github.com/tsouza/cerberus/internal/optimizer"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -44,8 +44,13 @@ type Querier interface {
 // Handler implements the Prometheus HTTP API endpoints cerberus speaks.
 // Mount it via Handler.Mount(mux).
 type Handler struct {
-	Client    Querier
-	Schema    schema.Metrics
+	Client Querier
+	Schema schema.Metrics
+	// Engine runs the shared parse → lower → optimize → emit → execute
+	// pipeline. Wired by New from the same Client + Optimizer the
+	// handler holds; the indirection keeps the per-request pipeline
+	// orchestration in one place across the three API heads.
+	Engine    *engine.Engine
 	Optimizer *optimizer.Driver
 	Logger    *slog.Logger
 
@@ -58,15 +63,20 @@ type Handler struct {
 	parser promparser.Parser
 }
 
-// New constructs a Handler with the seed optimizer wired in.
+// New constructs a Handler with the seed optimizer wired in plus a
+// matching engine.Engine. The engine + handler share the same Client
+// and Optimizer; the engine owns the pipeline loop, the handler owns
+// HTTP routing + the per-API wire-format pivot.
 func New(client Querier, s schema.Metrics, logger *slog.Logger) *Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	opt := optimizer.Default()
 	return &Handler{
 		Client:    client,
 		Schema:    s,
-		Optimizer: optimizer.Default(),
+		Engine:    &engine.Engine{Optimizer: opt, Client: client},
+		Optimizer: opt,
 		Logger:    logger,
 		parser:    promparser.NewParser(promparser.Options{EnableExperimentalFunctions: true}),
 	}
@@ -314,98 +324,92 @@ func scalarMatrix(v float64, start, end time.Time, step time.Duration) []MatrixS
 }
 
 // executeRangeStreaming is the streaming counterpart to executeInstant
-// used by /api/v1/query_range. The SQL emission is identical — same
-// lowering, same optimizer pass, same wrapWithSampleProjection — but
-// rather than draining the result into a []chclient.Sample slice it
-// returns a chclient.Cursor so the response builder can pivot rows into
-// the matrix shape one at a time. For a wide-range / fine-step query
-// this is the difference between O(rows) and O(rows-per-series)
-// resident memory.
+// used by /api/v1/query_range. The pipeline body (parse → lower →
+// project → optimize → emit → execute) runs through engine.QueryCursor;
+// the handler retains responsibility for the chclient.Cursor →
+// response-shape pivot. For a wide-range / fine-step query this is the
+// difference between O(rows) and O(rows-per-series) resident memory.
 func (h *Handler) executeRangeStreaming(
 	ctx context.Context,
 	query string,
 	start, end time.Time,
 ) (chclient.Cursor, error) {
-	parseT := telemetry.ObserveStage(telemetry.StageParse)
-	expr, err := h.parseExpr(ctx, query)
-	parseT.Done(ctx)
-	if err != nil {
-		return nil, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
+	l := &lang{Parser: h.parser, Schema: h.Schema, Start: start, End: end}
+	// Time the entire QueryCursor entry so the cursor-open round-trip
+	// is billed to X-Cerberus-CH-Millis the same way timeCH did pre-
+	// port. The execute span the engine opens internally covers the
+	// same wall-clock; this counter is the handler-side header
+	// surface, separate from the OTel span.
+	chStart := time.Now()
+	res, err := h.Engine.QueryCursor(ctx, l, query)
+	if c := ctxCounter(ctx); c != nil {
+		c.add(time.Since(chStart))
 	}
-	lowerT := telemetry.ObserveStage(telemetry.StageLower)
-	plan, err := promql.LowerAt(ctx, expr, h.Schema, start, end)
-	lowerT.Done(ctx)
 	if err != nil {
-		return nil, &apiError{Kind: ErrExecution, Err: err, Status: http.StatusUnprocessableEntity}
+		return nil, classifyEngineError(err)
 	}
-
-	plan = wrapWithSampleProjection(plan, h.Schema)
-	optT := telemetry.ObserveStage(telemetry.StageOptimize)
-	plan = h.Optimizer.Run(ctx, plan)
-	optT.Done(ctx)
-
-	emitT := telemetry.ObserveStage(telemetry.StageEmit)
-	sql, args, err := chsql.Emit(ctx, plan)
-	emitT.Done(ctx)
-	if err != nil {
-		return nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError}
-	}
-	h.Logger.Debug("cerberus query_range (stream)", "promql", query, "sql", sql, "args", args)
-
-	execT := telemetry.ObserveStage(telemetry.StageExecute)
-	cursor, err := timeCH(ctx, func() (chclient.Cursor, error) {
-		return h.Client.QueryCursor(chclient.WithProgressFor(ctx, "promql"), sql, args...)
-	})
-	execT.Done(ctx)
-	if err != nil {
-		return nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
-	}
-	return cursor, nil
+	h.Logger.Debug("cerberus query_range (stream)", "promql", query, "sql", res.SQL, "args", res.Args)
+	return res.Cursor, nil
 }
 
-// executeInstant lowers a PromQL string to chplan, wraps with a Project
-// that selects exactly the four columns chclient.Sample expects, optimizes,
-// emits SQL, and runs the query.
-//
-// start / end are the query's evaluation-range bookends, threaded into
-// the lowering layer so `@ start()` / `@ end()` modifiers can resolve
-// against them. For instant queries the caller passes start == end == ts.
+// executeInstant runs a PromQL query through engine.Engine and returns
+// the row slice. start / end are the query's evaluation-range bookends,
+// threaded into the Lang adapter so `@ start()` / `@ end()` modifiers
+// resolve against them. For instant queries the caller passes
+// start == end == ts.
 func (h *Handler) executeInstant(ctx context.Context, query string, start, end time.Time) ([]chclient.Sample, error) {
-	parseT := telemetry.ObserveStage(telemetry.StageParse)
-	expr, err := h.parseExpr(ctx, query)
-	parseT.Done(ctx)
+	l := &lang{Parser: h.parser, Schema: h.Schema, Start: start, End: end}
+	res, err := h.Engine.Query(ctx, l, query)
 	if err != nil {
-		return nil, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
+		return nil, classifyEngineError(err)
 	}
-	lowerT := telemetry.ObserveStage(telemetry.StageLower)
-	plan, err := promql.LowerAt(ctx, expr, h.Schema, start, end)
-	lowerT.Done(ctx)
-	if err != nil {
-		return nil, &apiError{Kind: ErrExecution, Err: err, Status: http.StatusUnprocessableEntity}
+	h.Logger.Debug("cerberus query", "promql", query, "sql", res.SQL, "args", res.Args)
+	// Engine times the execute stage uniformly; surface that to the
+	// per-request chMillisCounter so the X-Cerberus-CH-Millis header
+	// keeps reporting CH wall-clock.
+	if c := ctxCounter(ctx); c != nil {
+		c.add(time.Duration(res.CHMillis) * time.Millisecond)
 	}
+	return res.Samples, nil
+}
 
-	plan = wrapWithSampleProjection(plan, h.Schema)
-	optT := telemetry.ObserveStage(telemetry.StageOptimize)
-	plan = h.Optimizer.Run(ctx, plan)
-	optT.Done(ctx)
-
-	emitT := telemetry.ObserveStage(telemetry.StageEmit)
-	sql, args, err := chsql.Emit(ctx, plan)
-	emitT.Done(ctx)
-	if err != nil {
-		return nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError}
+// classifyEngineError maps engine.Query / engine.QueryCursor errors to
+// the per-stage apiError shape the Prom handler exposes via
+// respondError. The engine wraps each stage's error with an
+// "engine: <stage>:" prefix (parse / emit / execute); the Lang
+// adapter further tags parse-vs-lower failures via parseStageError so
+// the wire-level errorType / HTTP status mirror the pre-port
+// classification.
+func classifyEngineError(err error) error {
+	if err == nil {
+		return nil
 	}
-	h.Logger.Debug("cerberus query", "promql", query, "sql", sql, "args", args)
-
-	execT := telemetry.ObserveStage(telemetry.StageExecute)
-	samples, err := timeCH(ctx, func() ([]chclient.Sample, error) {
-		return h.Client.Query(chclient.WithProgressFor(ctx, "promql"), sql, args...)
-	})
-	execT.Done(ctx)
-	if err != nil {
-		return nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
+	var ps *parseStageError
+	if errors.As(err, &ps) {
+		switch ps.stage {
+		case "parse":
+			return &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
+		case "lower":
+			return &apiError{Kind: ErrExecution, Err: err, Status: http.StatusUnprocessableEntity}
+		}
 	}
-	return samples, nil
+	msg := err.Error()
+	switch {
+	case errContainsStage(msg, "emit"):
+		return &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError}
+	case errContainsStage(msg, "execute"):
+		return &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
+	}
+	return &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError}
+}
+
+// errContainsStage reports whether msg starts with `engine: <stage>:`.
+// Kept narrow (prefix match against the engine's wrapping format) so a
+// downstream error message that happens to contain "execute" doesn't
+// get mis-classified.
+func errContainsStage(msg, stage string) bool {
+	prefix := "engine: " + stage + ":"
+	return len(msg) >= len(prefix) && msg[:len(prefix)] == prefix
 }
 
 // wrapWithSampleProjection adds a Project on top of plan that emits
