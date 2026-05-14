@@ -10,8 +10,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -36,10 +34,10 @@ func TestConformance_LokiQueryWire(t *testing.T) {
 
 	ts := time.Date(2026, 5, 12, 12, 0, 0, 0, time.UTC)
 	cases := []struct {
-		name       string
-		query      string
-		samples    []chclient.Sample
-		wantType   string
+		name        string
+		query       string
+		samples     []chclient.Sample
+		wantType    string
 		wantStreams int
 	}{
 		{
@@ -53,9 +51,9 @@ func TestConformance_LokiQueryWire(t *testing.T) {
 			wantStreams: 1,
 		},
 		{
-			name:    "streams_empty",
-			query:   `{job="api"}`,
-			samples: nil,
+			name:     "streams_empty",
+			query:    `{job="api"}`,
+			samples:  nil,
 			wantType: "streams",
 		},
 	}
@@ -99,14 +97,11 @@ func TestConformance_LokiQueryWire(t *testing.T) {
 			if c.wantStreams > 0 && len(streams) != c.wantStreams {
 				t.Errorf("streams count: got %d, want %d", len(streams), c.wantStreams)
 			}
-			for _, s := range streams {
-				for _, v := range s.Values {
-					// Each tuple element is a string.
-					if v[0] == "" || v[1] == "" {
-						// allow empty line but value pair must marshal as strings
-					}
-				}
-			}
+			// Each tuple element is a string. Empty line is allowed,
+			// but the [ts, line] pair must round-trip as strings — the
+			// json.Unmarshal above already enforces that for the
+			// declared [2]string type, so no extra assertion needed.
+			_ = streams
 		})
 	}
 }
@@ -355,7 +350,7 @@ func TestConformance_LokiIndexVolumeWire(t *testing.T) {
 			var env struct {
 				Status string `json:"status"`
 				Data   struct {
-					ResultType string             `json:"resultType"`
+					ResultType string              `json:"resultType"`
 					Result     []loki.VectorSample `json:"result"`
 				} `json:"data"`
 			}
@@ -404,7 +399,7 @@ func TestConformance_LokiDetectedFieldsWire(t *testing.T) {
 				t.Fatalf("status=%d body=%s", resp.StatusCode, body)
 			}
 			var env struct {
-				Status string                    `json:"status"`
+				Status string                  `json:"status"`
 				Data   loki.DetectedFieldsData `json:"data"`
 			}
 			if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
@@ -446,7 +441,7 @@ func TestConformance_LokiPatternsWire(t *testing.T) {
 				t.Fatalf("status=%d body=%s", resp.StatusCode, body)
 			}
 			var env struct {
-				Status string `json:"status"`
+				Status string            `json:"status"`
 				Data   loki.PatternsData `json:"data"`
 			}
 			if err := json.Unmarshal(body, &env); err != nil {
@@ -480,17 +475,17 @@ func TestConformance_LokiErrorEnvelope(t *testing.T) {
 		},
 		{
 			name: "400_bad_logql", stub: &stubQuerier{},
-			path: "/loki/api/v1/query?query=not+a+selector",
+			path:     "/loki/api/v1/query?query=not+a+selector",
 			wantCode: http.StatusBadRequest, wantKind: loki.ErrBadData,
 		},
 		{
 			name: "400_missing_start_range", stub: &stubQuerier{},
-			path: "/loki/api/v1/query_range?query=%7Bjob%3D%22api%22%7D&end=2&step=1",
+			path:     "/loki/api/v1/query_range?query=%7Bjob%3D%22api%22%7D&end=2&step=1",
 			wantCode: http.StatusBadRequest, wantKind: loki.ErrBadData,
 		},
 		{
 			name: "400_end_before_start", stub: &stubQuerier{},
-			path: "/loki/api/v1/query_range?query=%7Bjob%3D%22api%22%7D&start=20&end=10&step=1",
+			path:     "/loki/api/v1/query_range?query=%7Bjob%3D%22api%22%7D&start=20&end=10&step=1",
 			wantCode: http.StatusBadRequest, wantKind: loki.ErrBadData,
 		},
 		{
@@ -511,7 +506,7 @@ func TestConformance_LokiErrorEnvelope(t *testing.T) {
 		},
 		{
 			name: "502_query_ch_failure", stub: &stubQuerier{err: errors.New("clickhouse: connection refused")},
-			path: "/loki/api/v1/query?query=%7Bjob%3D%22api%22%7D",
+			path:     "/loki/api/v1/query?query=%7Bjob%3D%22api%22%7D",
 			wantCode: http.StatusBadGateway, wantKind: loki.ErrInternal,
 		},
 		{
@@ -520,12 +515,12 @@ func TestConformance_LokiErrorEnvelope(t *testing.T) {
 		},
 		{
 			name: "502_index_stats_ch_failure", stub: &stubQuerier{statsErr: errors.New("ch failure")},
-			path: "/loki/api/v1/index/stats?query=%7Bjob%3D%22api%22%7D&start=1&end=60",
+			path:     "/loki/api/v1/index/stats?query=%7Bjob%3D%22api%22%7D&start=1&end=60",
 			wantCode: http.StatusBadGateway, wantKind: loki.ErrInternal,
 		},
 		{
 			name: "502_index_volume_ch_failure", stub: &stubQuerier{volumeErr: errors.New("ch failure")},
-			path: "/loki/api/v1/index/volume?query=%7Bjob%3D%22api%22%7D&start=1&end=60",
+			path:     "/loki/api/v1/index/volume?query=%7Bjob%3D%22api%22%7D&start=1&end=60",
 			wantCode: http.StatusBadGateway, wantKind: loki.ErrInternal,
 		},
 	}
@@ -782,7 +777,12 @@ func TestConformance_LokiAdmitSerialReleasesSlot(t *testing.T) {
 
 // TestConformance_LokiAdmitIndependentFromOthers — the loki limiter
 // doesn't affect prom/tempo because each handler owns its own. Wire a
-// loki handler with cap=0 (no limiter); requests always pass.
+// loki handler with no limiter; every request passes.
+//
+// Issued serially because `stubQuerier` mutates `lastSQL`/`lastArgs`
+// without locking — a concurrent goroutine fan-out would trip the
+// race detector on those writes, which is incidental to the property
+// under test (nil-limiter = always-admit).
 func TestConformance_LokiAdmitIndependentFromOthers(t *testing.T) {
 	t.Parallel()
 
@@ -795,26 +795,19 @@ func TestConformance_LokiAdmitIndependentFromOthers(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	var (
-		wg       sync.WaitGroup
-		admitted atomic.Int32
-	)
-	for i := 0; i < 20; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			resp, err := http.Get(srv.URL + `/loki/api/v1/query?query=%7Bjob%3D%22api%22%7D`)
-			if err != nil {
-				return
-			}
-			defer resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				admitted.Add(1)
-			}
-		}()
+	const n = 20
+	admitted := 0
+	for i := 0; i < n; i++ {
+		resp, err := http.Get(srv.URL + `/loki/api/v1/query?query=%7Bjob%3D%22api%22%7D`)
+		if err != nil {
+			continue
+		}
+		if resp.StatusCode == http.StatusOK {
+			admitted++
+		}
+		resp.Body.Close()
 	}
-	wg.Wait()
-	if admitted.Load() != 20 {
-		t.Errorf("nil-limiter handler must admit every request: got %d/20", admitted.Load())
+	if admitted != n {
+		t.Errorf("nil-limiter handler must admit every request: got %d/%d", admitted, n)
 	}
 }

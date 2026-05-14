@@ -200,7 +200,7 @@ func TestConformance_TempoSearchTagsWire(t *testing.T) {
 			t.Fatalf("decode: %v", err)
 		}
 		// V2: three scopes — resource, span, intrinsic.
-		var seen = map[string]bool{}
+		seen := map[string]bool{}
 		for _, s := range r.Scopes {
 			seen[s.Name] = true
 		}
@@ -348,9 +348,9 @@ func TestConformance_TempoErrorEnvelope(t *testing.T) {
 			wantCode: http.StatusBadRequest,
 		},
 		{
-			name: "502_search_ch_failure",
-			stub: &stubQuerier{err: errors.New("clickhouse: connection refused")},
-			path: "/api/search?q=%7B%20resource.service.name%20%3D%20%22api%22%20%7D",
+			name:     "502_search_ch_failure",
+			stub:     &stubQuerier{err: errors.New("clickhouse: connection refused")},
+			path:     "/api/search?q=%7B%20resource.service.name%20%3D%20%22api%22%20%7D",
 			wantCode: http.StatusBadGateway,
 		},
 		{
