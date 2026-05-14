@@ -593,25 +593,20 @@ func groupArrayPairFrag(tsCol, valCol string) Frag {
 	}
 }
 
-// windowFilterPairsFrag returns a Frag rendering
+// windowFilterPairsFrag returns a Frag rendering the per-series
+// arrayFilter clamp to the [end-range, end] window over the
+// `series_array` alias. Thin wrapper over chsql.RangeWindowFilter
+// (R6.13's typed compound-idiom helper); kept as a local helper so
+// the rangeNS-arithmetic stays a single inline literal rather than
+// repeated `Sub(end, Call("toIntervalNanosecond", …))` boilerplate
+// at every callsite.
 //
-//	arrayFilter(p -> tupleElement(p, 1) >= <end> - toIntervalNanosecond(<range_ns>)
-//	              AND tupleElement(p, 1) <= <end>,
-//	            series_array)
-//
-// — the per-series window restriction. end may render arbitrary CH
-// expressions (DateTime64 literal, now64(9), or `anchor_ts` in the
-// matrix path); the rangeNS bound is inline.
+// end may render arbitrary CH expressions (DateTime64 literal,
+// `now64(9)`, or `anchor_ts` in the matrix path); the rangeNS bound
+// is inline.
 func windowFilterPairsFrag(end Frag, rangeNS int64) Frag {
-	return func(b *Builder) {
-		b.sb.WriteString("arrayFilter(p -> tupleElement(p, 1) >= ")
-		end(b)
-		b.sb.WriteString(" - toIntervalNanosecond(")
-		b.sb.WriteString(strconv.FormatInt(rangeNS, 10))
-		b.sb.WriteString(") AND tupleElement(p, 1) <= ")
-		end(b)
-		b.sb.WriteString(", series_array)")
-	}
+	start := Sub(end, Call("toIntervalNanosecond", InlineLit(rangeNS)))
+	return RangeWindowFilter(start, end, BareIdent("series_array"))
 }
 
 // counterDeltaFrag returns a Frag rendering
@@ -622,13 +617,15 @@ func windowFilterPairsFrag(end Frag, rangeNS int64) Frag {
 //
 // — the counter-reset-aware delta over the window's values. Used by
 // the rate / increase value expressions.
+//
+// The inner 5-function sandwich (the two arrayPopBack/Front layers
+// over the value-projection arrayMap, paired by the outer arrayMap)
+// is delegated to chsql.CounterDelta — R6.13's typed compound-idiom
+// helper. The outer arraySum stays here because rate / increase
+// reduce the per-pair delta array to a scalar; emitters that wanted
+// the raw delta array could call CounterDelta directly.
 func counterDeltaFrag() Frag {
-	return func(b *Builder) {
-		b.sb.WriteString("arraySum(arrayMap((p, c) -> if(c < p, c, c - p), ")
-		b.sb.WriteString("arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), ")
-		b.sb.WriteString("arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs))")
-		b.sb.WriteString("))")
-	}
+	return Call("arraySum", CounterDelta(BareIdent("window_pairs")))
 }
 
 // windowValsFrag returns a Frag rendering
@@ -711,13 +708,13 @@ func (e *emitter) emitRangeWindowIdentity(r *chplan.RangeWindow) error {
 //
 // range_seconds binds as a parameter via the value-writer callback so
 // the emitter stays free of new Sprintf-on-SQL instances (RC6 rule).
+// The empty-window guard is delegated to chsql.IfNonZero (R6.13).
 func (e *emitter) emitRangeWindowLogRate(r *chplan.RangeWindow) error {
 	rangeSeconds := r.Range.Seconds()
-	return e.emitWindowedArray(r, func(b *Builder) {
-		b.sb.WriteString("if(length(window_vals) > 0, arraySum(window_vals) / ")
-		b.Arg(rangeSeconds)
-		b.sb.WriteString(", 0.0)")
-	})
+	return e.emitWindowedArray(r, IfNonZero(
+		Call("arraySum", BareIdent("window_vals")),
+		Lit(rangeSeconds),
+	))
 }
 
 // emitRangeWindowRate emits SQL for `rate(metric[range])`.

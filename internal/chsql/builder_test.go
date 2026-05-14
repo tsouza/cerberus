@@ -1409,3 +1409,123 @@ func TestBetween(t *testing.T) {
 		t.Errorf("Args = %v; want %v", args, wantArgs)
 	}
 }
+
+// TestLambda2_RendersParensAroundParams — Lambda2 renders
+// "(<p1>, <p2>) -> <body>", the paired-array lambda shape used by
+// arrayMap / arrayFold across two source arrays.
+func TestLambda2_RendersParensAroundParams(t *testing.T) {
+	t.Parallel()
+
+	b := NewBuilder()
+	Lambda2("p", "c", Sub(BareIdent("c"), BareIdent("p")))(b)
+	if got, want := b.String(), "(p, c) -> c - p"; got != want {
+		t.Errorf("Lambda2 SQL = %q; want %q", got, want)
+	}
+}
+
+// TestRangeWindowFilter_Basic — RangeWindowFilter renders the
+// arrayFilter(p -> ts>=start AND ts<=end, series) shape with
+// timestamps extracted via tupleElement(p, 1).
+func TestRangeWindowFilter_Basic(t *testing.T) {
+	t.Parallel()
+
+	b := NewBuilder()
+	RangeWindowFilter(
+		BareIdent("anchor_ts - toIntervalNanosecond(300000000000)"),
+		BareIdent("anchor_ts"),
+		BareIdent("series_array"),
+	)(b)
+	want := "arrayFilter(p -> tupleElement(p, 1) >= anchor_ts - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= anchor_ts, series_array)"
+	if got := b.String(); got != want {
+		t.Errorf("RangeWindowFilter SQL = %q; want %q", got, want)
+	}
+}
+
+// TestRangeWindowFilter_BindsArgsInOrder — Frag inputs that emit `?`
+// placeholders bind in start → end → series order.
+func TestRangeWindowFilter_BindsArgsInOrder(t *testing.T) {
+	t.Parallel()
+
+	b := NewBuilder()
+	RangeWindowFilter(Lit("S"), Lit("E"), Lit("A"))(b)
+	sql, args := b.Build()
+	want := "arrayFilter(p -> tupleElement(p, 1) >= ? AND tupleElement(p, 1) <= ?, ?)"
+	if sql != want {
+		t.Errorf("RangeWindowFilter SQL = %q; want %q", sql, want)
+	}
+	if !reflect.DeepEqual(args, []any{"S", "E", "A"}) {
+		t.Errorf("Args = %v; want [S E A]", args)
+	}
+}
+
+// TestCounterDelta_Basic — CounterDelta renders the 5-function pair-
+// wise delta sandwich without an enclosing arraySum; the caller wraps
+// in arraySum when reducing to a scalar.
+func TestCounterDelta_Basic(t *testing.T) {
+	t.Parallel()
+
+	b := NewBuilder()
+	CounterDelta(BareIdent("window_pairs"))(b)
+	want := "arrayMap((p, c) -> if(c < p, c, c - p), " +
+		"arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), " +
+		"arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))"
+	if got := b.String(); got != want {
+		t.Errorf("CounterDelta SQL = %q; want %q", got, want)
+	}
+}
+
+// TestCounterDelta_ArraySumWrap — CounterDelta is intentionally not
+// pre-wrapped; composing under arraySum produces the canonical
+// rate/increase delta-reducer shape.
+func TestCounterDelta_ArraySumWrap(t *testing.T) {
+	t.Parallel()
+
+	b := NewBuilder()
+	Call("arraySum", CounterDelta(BareIdent("window_pairs")))(b)
+	want := "arraySum(arrayMap((p, c) -> if(c < p, c, c - p), " +
+		"arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), " +
+		"arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs))))"
+	if got := b.String(); got != want {
+		t.Errorf("arraySum(CounterDelta) SQL = %q; want %q", got, want)
+	}
+}
+
+// TestIfNonZero_Basic — IfNonZero renders the
+// if(length(window_vals) > 0, <num>/<denom>, 0.0) guard with the
+// `0.0` literal preserved (FormatFloat would emit `0` and drift
+// goldens).
+func TestIfNonZero_Basic(t *testing.T) {
+	t.Parallel()
+
+	b := NewBuilder()
+	IfNonZero(
+		Call("arraySum", BareIdent("window_vals")),
+		Lit(60.0),
+	)(b)
+	sql, args := b.Build()
+	want := "if(length(window_vals) > 0, arraySum(window_vals) / ?, 0.0)"
+	if sql != want {
+		t.Errorf("IfNonZero SQL = %q; want %q", sql, want)
+	}
+	if !reflect.DeepEqual(args, []any{60.0}) {
+		t.Errorf("Args = %v; want [60]", args)
+	}
+}
+
+// TestIfNonZero_InlineDenom — when denom is an inline numeric
+// literal (no `?` binding), the rendered SQL has no placeholders.
+// Covers the edge case where the divisor is part of the query shape.
+func TestIfNonZero_InlineDenom(t *testing.T) {
+	t.Parallel()
+
+	b := NewBuilder()
+	IfNonZero(BareIdent("window_vals"), BareIdent("range_seconds"))(b)
+	sql, args := b.Build()
+	want := "if(length(window_vals) > 0, window_vals / range_seconds, 0.0)"
+	if sql != want {
+		t.Errorf("IfNonZero SQL = %q; want %q", sql, want)
+	}
+	if len(args) != 0 {
+		t.Errorf("Args = %v; want empty", args)
+	}
+}

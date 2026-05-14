@@ -759,8 +759,8 @@ func If(cond, thenF, elseF Frag) Frag {
 // Lambda1 returns a Frag rendering "<param> -> <body>" — a CH
 // single-parameter lambda (no parens around the parameter, matching
 // CH's conventional shape for `arrayMap(x -> ..., arr)`). For multi-
-// parameter lambdas use Builder.Lambda directly (it wraps params in
-// parens).
+// parameter lambdas use Lambda2 (or Builder.Lambda for the general
+// N-arity case — it wraps params in parens).
 //
 // param is emitted via BareIdent's trust contract: must be a CH-safe
 // bare identifier (`[a-zA-Z_][a-zA-Z0-9_]*`); the caller is responsible.
@@ -770,6 +770,114 @@ func Lambda1(param string, body Frag) Frag {
 		b.sb.WriteString(" -> ")
 		body(b)
 	}
+}
+
+// Lambda2 returns a Frag rendering "(<p1>, <p2>) -> <body>" — a CH
+// two-parameter lambda, the shape `arrayMap` / `arrayFilter` /
+// `arrayFold` use for paired-array operations like
+// `arrayMap((p, c) -> if(c < p, c, c - p), prev, curr)`. Both
+// parameter names follow BareIdent's trust contract.
+func Lambda2(p1, p2 string, body Frag) Frag {
+	return func(b *Builder) {
+		b.sb.WriteByte('(')
+		b.sb.WriteString(p1)
+		b.sb.WriteString(", ")
+		b.sb.WriteString(p2)
+		b.sb.WriteString(") -> ")
+		body(b)
+	}
+}
+
+// RangeWindowFilter renders
+//
+//	arrayFilter(p -> tupleElement(p, 1) >= <start>
+//	              AND tupleElement(p, 1) <= <end>,
+//	            <series>)
+//
+// — the per-series clamp to the [start, end] window used by every
+// range-window emitter. series is a CH array of (Timestamp, Value)
+// tuples (typically the `series_array` alias projected by the
+// innermost groupArray + arraySort layer). The lambda parameter `p`
+// binds each tuple; `tupleElement(p, 1)` extracts the timestamp.
+//
+// Composed entirely from typed primitives — no raw SQL writes — so
+// the audit grep for clause-keyword cosplay stays clean. The
+// start / end / series Frags emit their own `?` placeholders if
+// present; bound args land in start → end → series order.
+func RangeWindowFilter(start, end, series Frag) Frag {
+	tsElem := Call("tupleElement", BareIdent("p"), InlineLit(int64(1)))
+	body := And(Gte(tsElem, start), Lte(tsElem, end))
+	return Call("arrayFilter", Lambda1("p", body), series)
+}
+
+// CounterDelta renders
+//
+//	arrayMap((p, c) -> if(c < p, c, c - p),
+//	         arrayPopBack(arrayMap(x -> tupleElement(x, 2), <seriesArr>)),
+//	         arrayPopFront(arrayMap(x -> tupleElement(x, 2), <seriesArr>)))
+//
+// — the counter-reset-aware pair-wise delta over the values of a CH
+// array of (Timestamp, Value) tuples. arrayPopBack drops the last
+// element to yield the `prev` sample list; arrayPopFront drops the
+// first to yield the `curr` sample list; the lambda pairs them and
+// emits `curr - prev` for monotonic moves or `curr` itself when a
+// counter reset (curr < prev) is detected.
+//
+// The result is an Array(Float64); callers typically wrap it in
+// `arraySum(...)` to reduce to the scalar delta over the window.
+// CounterDelta is intentionally not pre-wrapped so the typed surface
+// stays compositional (an emitter that wants the array form — e.g.
+// for cumulative-delta debugging — can drop the arraySum).
+//
+// seriesArr is rendered twice (once into each arrayPopBack /
+// arrayPopFront branch). For callers passing a Frag with `?`
+// bindings this would double-bind; in practice the emitter always
+// passes a bare alias reference (`BareIdent("window_pairs")`) which
+// has no args.
+func CounterDelta(seriesArr Frag) Frag {
+	valsArr := func() Frag {
+		return Call(
+			"arrayMap",
+			Lambda1("x", Call("tupleElement", BareIdent("x"), InlineLit(int64(2)))),
+			seriesArr,
+		)
+	}
+	lambdaBody := If(
+		Lt(BareIdent("c"), BareIdent("p")),
+		BareIdent("c"),
+		Sub(BareIdent("c"), BareIdent("p")),
+	)
+	return Call(
+		"arrayMap",
+		Lambda2("p", "c", lambdaBody),
+		Call("arrayPopBack", valsArr()),
+		Call("arrayPopFront", valsArr()),
+	)
+}
+
+// IfNonZero renders
+//
+//	if(length(window_vals) > 0, <num> / <denom>, 0.0)
+//
+// — the divide-by-zero guard used by the LogQL log-rate window
+// reducer (and any future *_over_time / *_rate reducer that maps an
+// empty window to 0.0 rather than NaN).
+//
+// The predicate is hard-wired to `length(window_vals) > 0` because
+// every callsite operates against the synthetic `window_vals` alias
+// the windowed-array emitter projects in its middle layer; threading
+// the predicate as a third Frag would just push that constant up to
+// every callsite for no structural gain.
+func IfNonZero(num, denom Frag) Frag {
+	return If(
+		Gt(Call("length", BareIdent("window_vals")), InlineLit(int64(0))),
+		Div(num, denom),
+		// `0.0` is the existing emitter's literal for the empty-window
+		// fallback; InlineLit(0.0) would render as `0` (FormatFloat's
+		// canonical form) and drift goldens. verbatim is the in-package
+		// escape for emitter-pinned synthetic tokens.
+		verbatim("0.0"),
+	)
 }
 
 // Subqueryable is anything that renders as a parameterised SQL
