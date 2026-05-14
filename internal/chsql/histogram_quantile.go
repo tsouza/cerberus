@@ -90,10 +90,24 @@ func histogramQuantileValueFrag(h *chplan.HistogramQuantile) Frag {
 	// nesting, "[idx]" array indexing, inline phi formatFloat literal)
 	// keeps the in-package b.writeSQL path — no typed Frag covers those
 	// shapes yet.
+	//
+	// BucketCounts is Array(UInt64) in the OTel-CH schema; arraySum /
+	// arrayCumSum on it return UInt64. The downstream linear-interpolation
+	// arithmetic mixes those with Float64 ExplicitBounds and the `0.0`
+	// edge-case literals, which CH rejects with NO_COMMON_TYPE
+	// ("some are integers and some are floating point"). Cast BucketCounts
+	// to Array(Float64) once at the entry so every sum / cumsum derives
+	// Float64 and the interpolation arithmetic stays in a single numeric
+	// domain. CSE folds the cast across the many references.
+	var bcFloat Frag = func(b *Builder) {
+		b.writeSQL("arrayMap(x -> toFloat64(x), ")
+		b.Ident(bc)
+		b.writeSQL(")")
+	}
 	lengthBC := Call("length", Col(bc))
 	lengthEB := Call("length", Col(eb))
-	arraySumBC := Call("arraySum", Col(bc))
-	arrayCumSumBC := Call("arrayCumSum", Col(bc))
+	arraySumBC := Call("arraySum", bcFloat)
+	arrayCumSumBC := Call("arrayCumSum", bcFloat)
 	return func(b *Builder) {
 		// Empty histogram → NaN. arrayCumSum on an empty array is empty;
 		// `length(cum) = 0` and `total = 0`. Guard the divide-by-zero +
