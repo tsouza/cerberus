@@ -12,7 +12,7 @@ package chplan
 //     unchanged — `dst` keeps whatever value it had (often "absent").
 //
 // PromQL also drops labels whose value is the empty string; the emitter
-// wraps the resulting map with `mapFilter((k, v) -> v != '', …)` so
+// wraps the resulting map with `mapFilter((k, v) -> v != ”, …)` so
 // `label_replace(m, "dst", "", "src", ".*")` correctly removes the dst
 // label when present, matching ref Prometheus.
 //
