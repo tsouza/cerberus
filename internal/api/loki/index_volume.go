@@ -63,7 +63,7 @@ func (h *Handler) handleIndexVolume(w http.ResponseWriter, r *http.Request) {
 
 	sqlStr, args, err := buildIndexVolumeSQL(h.Schema, matchers, start, end, limit, targetLabels, aggregateBy)
 	if err != nil {
-		h.respondError(w, &apiError{kind: ErrInternal, err: err, status: http.StatusInternalServerError})
+		h.respondError(w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError})
 		return
 	}
 	h.Logger.Debug("cerberus loki index_volume", "logql", q, "sql", sqlStr, "args", args)
@@ -71,7 +71,7 @@ func (h *Handler) handleIndexVolume(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.Client.QueryIndexVolume(r.Context(), sqlStr, args...)
 	if err != nil {
 		h.Logger.Error("cerberus loki index_volume CH query failed", "err", err, "sql", sqlStr)
-		h.respondError(w, &apiError{kind: ErrInternal, err: err, status: http.StatusBadGateway})
+		h.respondError(w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway})
 		return
 	}
 

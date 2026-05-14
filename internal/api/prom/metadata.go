@@ -152,7 +152,7 @@ func (h *Handler) fetchMetricMeta(ctx context.Context, metricName string) ([]chc
 		sql, args := h.metricMetaSQL(spec.table, metricName)
 		rows, err := h.Client.QueryMetricMeta(ctx, sql, spec.kind, args...)
 		if err != nil {
-			return nil, &apiError{kind: ErrInternal, err: err, status: http.StatusBadGateway}
+			return nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
 		}
 		out = append(out, rows...)
 	}
@@ -270,7 +270,7 @@ func (h *Handler) fetchLabelNames(ctx context.Context) ([]string, error) {
 		return h.Client.QueryStrings(ctx, sql)
 	})
 	if err != nil {
-		return nil, &apiError{kind: ErrInternal, err: err, status: http.StatusBadGateway}
+		return nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
 	}
 	out := append([]string{model.MetricNameLabel}, names...)
 	sort.Strings(out)
@@ -284,7 +284,7 @@ func (h *Handler) fetchLabelValues(ctx context.Context, name string) ([]string, 
 			return h.Client.QueryStrings(ctx, sql)
 		})
 		if err != nil {
-			return nil, &apiError{kind: ErrInternal, err: err, status: http.StatusBadGateway}
+			return nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
 		}
 		sort.Strings(values)
 		return values, nil
@@ -294,7 +294,7 @@ func (h *Handler) fetchLabelValues(ctx context.Context, name string) ([]string, 
 		return h.Client.QueryStrings(ctx, sql, args...)
 	})
 	if err != nil {
-		return nil, &apiError{kind: ErrInternal, err: err, status: http.StatusBadGateway}
+		return nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
 	}
 	sort.Strings(values)
 	return values, nil
@@ -404,16 +404,16 @@ func (h *Handler) labelValuesForMatcher(ctx context.Context, name, matcher strin
 func (h *Handler) matcherSQL(ctx context.Context, matcher string) (string, []any, error) {
 	expr, err := h.parseExpr(ctx, matcher)
 	if err != nil {
-		return "", nil, &apiError{kind: ErrBadData, err: err, status: http.StatusBadRequest}
+		return "", nil, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
 	}
 	plan, err := promql.Lower(ctx, expr, h.Schema)
 	if err != nil {
-		return "", nil, &apiError{kind: ErrBadData, err: err, status: http.StatusBadRequest}
+		return "", nil, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
 	}
 	plan = h.Optimizer.Run(ctx, plan)
 	sql, args, err := chsql.Emit(ctx, plan)
 	if err != nil {
-		return "", nil, &apiError{kind: ErrInternal, err: err, status: http.StatusInternalServerError}
+		return "", nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError}
 	}
 	return sql, args, nil
 }

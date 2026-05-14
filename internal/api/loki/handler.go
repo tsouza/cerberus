@@ -2,7 +2,6 @@ package loki
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/tsouza/cerberus/internal/api/admit"
 	"github.com/tsouza/cerberus/internal/api/format"
+	"github.com/tsouza/cerberus/internal/api/httperr"
 	"github.com/tsouza/cerberus/internal/cerbtrace"
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -229,7 +229,7 @@ func (h *Handler) execute(ctx context.Context, expr syntax.Expr) ([]chclient.Sam
 	plan, err := logql.Lower(ctx, expr, h.Schema)
 	lowerT.Done(ctx)
 	if err != nil {
-		return nil, &apiError{kind: ErrExecution, err: err, status: http.StatusUnprocessableEntity}
+		return nil, &apiError{Kind: ErrExecution, Err: err, Status: http.StatusUnprocessableEntity}
 	}
 
 	plan = wrapWithLogSampleProjection(plan, h.Schema, expr)
@@ -241,7 +241,7 @@ func (h *Handler) execute(ctx context.Context, expr syntax.Expr) ([]chclient.Sam
 	sqlStr, args, err := chsql.Emit(ctx, plan)
 	emitT.Done(ctx)
 	if err != nil {
-		return nil, &apiError{kind: ErrInternal, err: err, status: http.StatusInternalServerError}
+		return nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError}
 	}
 	h.Logger.Debug("cerberus loki query", "logql", expr.String(), "sql", sqlStr, "args", args)
 
@@ -250,7 +250,7 @@ func (h *Handler) execute(ctx context.Context, expr syntax.Expr) ([]chclient.Sam
 	execT.Done(ctx)
 	if err != nil {
 		h.Logger.Error("cerberus loki CH query failed", "err", err, "sql", sqlStr)
-		return nil, &apiError{kind: ErrInternal, err: err, status: http.StatusBadGateway}
+		return nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
 	}
 	return samples, nil
 }
@@ -329,7 +329,7 @@ func buildInstantData(expr syntax.Expr, samples []chclient.Sample, ts time.Time,
 	}
 	tx, err := postProcessExtract(expr)
 	if err != nil {
-		return nil, &apiError{kind: ErrBadData, err: err, status: http.StatusBadRequest}
+		return nil, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
 	}
 	return &QueryData{
 		ResultType: "streams",
@@ -349,7 +349,7 @@ func buildRangeData(expr syntax.Expr, samples []chclient.Sample, start, end time
 	}
 	tx, err := postProcessExtract(expr)
 	if err != nil {
-		return nil, &apiError{kind: ErrBadData, err: err, status: http.StatusBadRequest}
+		return nil, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
 	}
 	return &QueryData{
 		ResultType: "streams",
@@ -479,34 +479,31 @@ func toStreamsWithTransform(samples []chclient.Sample, tx lineTransform) []Strea
 	return out
 }
 
-// apiError carries the Loki errorType + an HTTP status code through the
-// internal error path.
-type apiError struct {
-	kind   string
-	err    error
-	status int
-}
-
-func (e *apiError) Error() string { return e.err.Error() }
-func (e *apiError) Unwrap() error { return e.err }
+// apiError is a package-local alias for the shared [httperr.Error]
+// carrier so the existing in-package callsites can stay literal.
+type apiError = httperr.Error
 
 func (h *Handler) respondError(w http.ResponseWriter, err error) {
 	var apiErr *apiError
 	if errors.As(err, &apiErr) {
-		writeError(w, apiErr.status, apiErr.kind, apiErr.err)
+		writeError(w, apiErr.Status, apiErr.Kind, apiErr.Err)
 		return
 	}
 	writeError(w, http.StatusInternalServerError, ErrInternal, err)
 }
 
+// writeJSON wraps [httperr.WriteJSON] so package-local callsites stay
+// unqualified. The shared helper handles Content-Type + status + body
+// encoding identically across all three handlers.
 func writeJSON(w http.ResponseWriter, status int, body any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(body)
+	httperr.WriteJSON(w, status, body)
 }
 
+// writeError emits the Loki JSON envelope `{status, errorType, error}`.
+// Loki and Prom share the same wire format here; the envelope is still
+// shaped per-handler so each package owns its own `Response` type.
 func writeError(w http.ResponseWriter, status int, kind string, err error) {
-	writeJSON(w, status, Response{
+	httperr.WriteJSON(w, status, Response{
 		Status:    "error",
 		ErrorType: kind,
 		Error:     err.Error(),

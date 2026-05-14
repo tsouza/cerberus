@@ -2,7 +2,6 @@ package prom
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/tsouza/cerberus/internal/api/admit"
 	"github.com/tsouza/cerberus/internal/api/format"
+	"github.com/tsouza/cerberus/internal/api/httperr"
 	"github.com/tsouza/cerberus/internal/cerbtrace"
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -254,7 +254,7 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 
 	result, err := matrixFromCursor(cursor, start, end, step)
 	if err != nil {
-		h.respondError(w, &apiError{kind: ErrInternal, err: err, status: http.StatusBadGateway})
+		h.respondError(w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway})
 		return
 	}
 	writeJSON(w, http.StatusOK, Response{
@@ -271,7 +271,7 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) tryScalarFold(ctx context.Context, query string) (float64, bool, error) {
 	expr, err := h.parseExpr(ctx, query)
 	if err != nil {
-		return 0, false, &apiError{kind: ErrBadData, err: err, status: http.StatusBadRequest}
+		return 0, false, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
 	}
 	val, ok := promql.TryFoldScalar(expr)
 	return val, ok, nil
@@ -330,13 +330,13 @@ func (h *Handler) executeRangeStreaming(
 	expr, err := h.parseExpr(ctx, query)
 	parseT.Done(ctx)
 	if err != nil {
-		return nil, &apiError{kind: ErrBadData, err: err, status: http.StatusBadRequest}
+		return nil, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
 	}
 	lowerT := telemetry.ObserveStage(telemetry.StageLower)
 	plan, err := promql.LowerAt(ctx, expr, h.Schema, start, end)
 	lowerT.Done(ctx)
 	if err != nil {
-		return nil, &apiError{kind: ErrExecution, err: err, status: http.StatusUnprocessableEntity}
+		return nil, &apiError{Kind: ErrExecution, Err: err, Status: http.StatusUnprocessableEntity}
 	}
 
 	plan = wrapWithSampleProjection(plan, h.Schema)
@@ -348,7 +348,7 @@ func (h *Handler) executeRangeStreaming(
 	sql, args, err := chsql.Emit(ctx, plan)
 	emitT.Done(ctx)
 	if err != nil {
-		return nil, &apiError{kind: ErrInternal, err: err, status: http.StatusInternalServerError}
+		return nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError}
 	}
 	h.Logger.Debug("cerberus query_range (stream)", "promql", query, "sql", sql, "args", args)
 
@@ -358,7 +358,7 @@ func (h *Handler) executeRangeStreaming(
 	})
 	execT.Done(ctx)
 	if err != nil {
-		return nil, &apiError{kind: ErrInternal, err: err, status: http.StatusBadGateway}
+		return nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
 	}
 	return cursor, nil
 }
@@ -375,13 +375,13 @@ func (h *Handler) executeInstant(ctx context.Context, query string, start, end t
 	expr, err := h.parseExpr(ctx, query)
 	parseT.Done(ctx)
 	if err != nil {
-		return nil, &apiError{kind: ErrBadData, err: err, status: http.StatusBadRequest}
+		return nil, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
 	}
 	lowerT := telemetry.ObserveStage(telemetry.StageLower)
 	plan, err := promql.LowerAt(ctx, expr, h.Schema, start, end)
 	lowerT.Done(ctx)
 	if err != nil {
-		return nil, &apiError{kind: ErrExecution, err: err, status: http.StatusUnprocessableEntity}
+		return nil, &apiError{Kind: ErrExecution, Err: err, Status: http.StatusUnprocessableEntity}
 	}
 
 	plan = wrapWithSampleProjection(plan, h.Schema)
@@ -393,7 +393,7 @@ func (h *Handler) executeInstant(ctx context.Context, query string, start, end t
 	sql, args, err := chsql.Emit(ctx, plan)
 	emitT.Done(ctx)
 	if err != nil {
-		return nil, &apiError{kind: ErrInternal, err: err, status: http.StatusInternalServerError}
+		return nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError}
 	}
 	h.Logger.Debug("cerberus query", "promql", query, "sql", sql, "args", args)
 
@@ -403,7 +403,7 @@ func (h *Handler) executeInstant(ctx context.Context, query string, start, end t
 	})
 	execT.Done(ctx)
 	if err != nil {
-		return nil, &apiError{kind: ErrInternal, err: err, status: http.StatusBadGateway}
+		return nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
 	}
 	return samples, nil
 }
@@ -594,34 +594,31 @@ func matrixFromCursor(
 	return out, nil
 }
 
-// apiError carries the Prom errorType + an HTTP status code through the
-// internal error path.
-type apiError struct {
-	kind   string
-	err    error
-	status int
-}
-
-func (e *apiError) Error() string { return e.err.Error() }
-func (e *apiError) Unwrap() error { return e.err }
+// apiError is a package-local alias for the shared [httperr.Error]
+// carrier so the existing in-package callsites can stay literal.
+type apiError = httperr.Error
 
 func (h *Handler) respondError(w http.ResponseWriter, err error) {
 	var apiErr *apiError
 	if errors.As(err, &apiErr) {
-		writeError(w, apiErr.status, apiErr.kind, apiErr.err)
+		writeError(w, apiErr.Status, apiErr.Kind, apiErr.Err)
 		return
 	}
 	writeError(w, http.StatusInternalServerError, ErrInternal, err)
 }
 
+// writeJSON wraps [httperr.WriteJSON] so package-local callsites stay
+// unqualified. The shared helper handles Content-Type + status + body
+// encoding identically across all three handlers.
 func writeJSON(w http.ResponseWriter, status int, body any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(body)
+	httperr.WriteJSON(w, status, body)
 }
 
+// writeError emits the Prom JSON envelope `{status, errorType, error}`.
+// The envelope shape is wire-format invariant — Grafana parses it
+// directly — so it stays per-handler rather than living in httperr.
 func writeError(w http.ResponseWriter, status int, kind string, err error) {
-	writeJSON(w, status, Response{
+	httperr.WriteJSON(w, status, Response{
 		Status:    "error",
 		ErrorType: kind,
 		Error:     err.Error(),
