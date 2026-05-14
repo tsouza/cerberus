@@ -19,6 +19,18 @@
 #   TESTER_QUERIES    queries yaml (default: upstream/promql/promql-test-queries.yml)
 #   TESTER_END_TIME   compatibility end timestamp (default: 2026-05-11T01:00:00Z)
 #   TESTER_RANGE      range in seconds (default: 3600 = 1h, matches seed window)
+#
+# Upstream tester invocation (post-PR #298 / #300 audit):
+#   The upstream `promql-compliance-tester` only accepts `-config-file`
+#   (repeatable), `-output-format`, `-output-html-template`,
+#   `-output-passing`, `-query-parallelism`. Older legacy flags
+#   `-query-file`, `-end`, `-range` were silently rejected with
+#   "flag provided but not defined" — the script previously masked
+#   that with `|| true`, so the suite produced a zero-byte report and
+#   the workflow reported success despite never running a single query.
+#   The flags now flow through repeated `-config-file` args; time
+#   parameters are injected via a generated overlay yaml so this stays
+#   driven from the workflow env.
 
 set -eu -o pipefail
 
@@ -40,13 +52,35 @@ TESTER_DIR="$ROOT_DIR/upstream/promql/cmd/promql-compliance-tester"
 TESTER_BIN="$ROOT_DIR/upstream/promql/cmd/promql-compliance-tester/promql-compliance-tester"
 (cd "$TESTER_DIR" && go build -o promql-compliance-tester .)
 
+# Materialise the time-window overlay. The upstream tester reads
+# `query_time_parameters.end_time` + `range_in_seconds` from one of
+# its `-config-file` inputs (it concatenates all of them before YAML
+# parsing). Keeping the overlay ephemeral keeps test-cerberus.yml
+# clean — that file declares stable wiring (URLs + tweaks); the
+# overlay carries CI-volatile values (END_TIME / RANGE) which are
+# expected to differ per local invocation and per CI dispatch.
+OVERLAY=$(mktemp -t cerberus-compat-overlay.XXXXXX.yml)
+trap 'rm -f "$OVERLAY"' EXIT
+cat > "$OVERLAY" <<EOF
+query_time_parameters:
+  end_time: '${END_TIME}'
+  range_in_seconds: ${RANGE}
+EOF
+
 echo "==> running tester"
+# Note: NO `|| true` here. A non-zero exit from the tester is meaningful:
+#   - flag parsing / config errors (exit 2) → real harness bug
+#   - per-query divergences are emitted INSIDE the JSON report, not via
+#     exit code — the tester exits 0 even when individual queries
+#     diverge, so we lose no signal by failing-fast on a non-zero exit.
+# Stdout (the JSON report) and stderr (operator-readable log lines from
+# the tester) are split so the report file stays parseable while errors
+# remain visible in CI logs.
 "$TESTER_BIN" \
     -config-file "$ROOT_DIR/test-cerberus.yml" \
-    -query-file "$QUERIES" \
-    -end "$END_TIME" \
-    -range "${RANGE}s" \
-    -output-format json > "$OUTPUT" || true
+    -config-file "$QUERIES" \
+    -config-file "$OVERLAY" \
+    -output-format json > "$OUTPUT"
 
 echo "==> report written to $OUTPUT"
 echo "==> summary:"
