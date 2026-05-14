@@ -46,26 +46,31 @@
 //
 // # Skip rationale (current state)
 //
-// PR #272 surfaced two cerberus-vs-Prom divergences via the from-scratch
-// oracle: `sum(metric{...})` aggregating every stored sample's value
-// instead of the LWR per series, and the instant selector not honouring
-// the eval-ts boundary. Both were fixed in PRs #275 and #277. A third
-// divergence — surfaced by the same generator once #272 widened the
-// accept-set to include `rate(...[60s])` and `sum(rate(...[60s]))` —
-// remains: cerberus emits a 0-rate row for series with zero samples in
-// the rate window. PromQL drops the series entirely (and so does the
-// from-scratch oracle). Because the generator's evalTs is fixed at
-// `AnchorTime() + 200s` while series samples span `AnchorTime() + [0,
-// 135s]`, every rate-shaped draw hits this divergence.
+// PR #272 surfaced three cerberus-vs-Prom divergences via the from-
+// scratch oracle. Two were fixed in PRs #275 and #277 (sum-LWR and
+// instant-selector / VectorJoin eval-ts). The third — rate / increase
+// / delta / *_over_time emitting synthetic zero rows for empty
+// windows — was fixed by adding `WHERE length(window_vals) >= N` to
+// the outer SELECT of the windowed-array emitter (see
+// `internal/chsql/range_window.go::emitWindowedArray`).
 //
-// Until rate-empty-window semantics are fixed in
-// `internal/chsql/range_window.go`'s `rateValueFrag` (or the generator
-// is adjusted to keep evalTs inside the sample span), this test stays
-// t.Skip'd. Run with `CERBERUS_PROPERTY_FORCE=1` to reproduce the
-// remaining divergence locally. Once the production-side fix lands,
-// remove the `t.Skip` — the nightly `property` workflow already runs
-// `./test/property/...` and will pick up the unskipped test
-// automatically.
+// Force-running the test with `CERBERUS_PROPERTY_FORCE=1` now
+// surfaces a SEPARATE pre-existing bug that the rate-empty-window
+// fix did not introduce: cerberus's `RangeWindow` emitter projects
+// the windowed value as a lowercase `value` alias, but the parent
+// `Aggregate` references the schema-cased `Value` column. The result
+// is a CH UNKNOWN_IDENTIFIER error on any `sum(rate(...))` /
+// `count(rate(...))` shape against real data. The bug is dormant in
+// the txtar fixtures because none of the aggregate-over-rate cases
+// carry `expected_rows:` — only `histogram_quantile(sum by(le)
+// (rate))` is exercised end-to-end, and it routes through a
+// dedicated histogram code path that bypasses the case mismatch.
+//
+// TODO: until the RangeWindow emitter projects `Value` (Pascal) — or
+// `lowerRangeVectorCall` interposes a Project that renames `value`
+// → `Value` — this property test stays t.Skip'd. Set
+// `CERBERUS_PROPERTY_FORCE=1` to reproduce the remaining divergence
+// locally.
 package property_test
 
 import (
@@ -104,11 +109,12 @@ import (
 // skip rationale and how to remove it.
 func TestPromQL_Property_FromScratch(t *testing.T) {
 	if os.Getenv("CERBERUS_PROPERTY_FORCE") == "" {
-		t.Skip("property: skipped pending production-side fix for rate(metric[range]) empty-window " +
-			"semantics (cerberus emits 0; PromQL drops the series). PRs #275 + #277 fixed " +
-			"the sum-LWR and instant-selector eval-ts divergences that originally motivated " +
-			"this skip; the rate-empty-window divergence remains. Set CERBERUS_PROPERTY_FORCE=1 " +
-			"once internal/chsql/range_window.go matches PromQL on rate-empty-window.")
+		t.Skip("property: skipped pending production-side fix for RangeWindow `value` → " +
+			"Aggregate `Value` case mismatch (sum(rate(...))/count(rate(...)) etc. fail at " +
+			"runtime with CH UNKNOWN_IDENTIFIER). The original rate-empty-window divergence " +
+			"was fixed (internal/chsql/range_window.go emitWindowedArray adds " +
+			"`WHERE length(window_vals) >= N`); this is a SEPARATE pre-existing bug " +
+			"surfaced by the same property test. Set CERBERUS_PROPERTY_FORCE=1 to reproduce.")
 	}
 
 	cli := chclienttest.NewChDB(t)

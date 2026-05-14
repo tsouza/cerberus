@@ -219,7 +219,7 @@ func (e *emitter) emitRangeWindowPredictLinear(r *chplan.RangeWindow) error {
 		b.sb.WriteString("), 1) * ")
 		b.Arg(t)
 		b.sb.WriteString(", nan)")
-	})
+	}, 2)
 }
 
 // emitRangeWindowHoltWinters emits SQL for `holt_winters(v[range], sf, tf)`.
@@ -245,7 +245,7 @@ func (e *emitter) emitRangeWindowHoltWinters(r *chplan.RangeWindow) error {
 	}
 	sf := r.Scalars[0]
 	tf := r.Scalars[1]
-	return e.emitWindowedArray(r, verbatim(holtWintersValueExpr(sf, tf)))
+	return e.emitWindowedArray(r, verbatim(holtWintersValueExpr(sf, tf)), 2)
 }
 
 // holtWintersValueExpr renders the per-window Holt-Winters value
@@ -291,7 +291,14 @@ func holtWintersValueExpr(sf, tf float64) string {
 // but skips the middle layer that derives `window_vals` /
 // `counter_delta`; the outer SELECT can directly reference
 // `window_pairs`.
-func (e *emitter) emitWindowedArrayPairs(r *chplan.RangeWindow, valueWriter Frag) error {
+//
+// minWindowSize controls the PromQL "drop empty windows" semantics:
+// when > 0, the outer SELECT adds `WHERE length(window_pairs) >= N`
+// so series whose window holds fewer than N samples are dropped from
+// the result (matches Prom's funcRate / funcIrate / funcPredictLinear,
+// which return no sample for those windows). 0 disables the filter
+// (used by LogQL log_rate, which emits 0 for empty windows).
+func (e *emitter) emitWindowedArrayPairs(r *chplan.RangeWindow, valueWriter Frag, minWindowSize int) error {
 	if r.TimestampColumn == "" {
 		return fmt.Errorf("%w: RangeWindow.TimestampColumn unset", ErrUnsupported)
 	}
@@ -336,6 +343,9 @@ func (e *emitter) emitWindowedArrayPairs(r *chplan.RangeWindow, valueWriter Frag
 		outerSb.Select(g)
 	}
 	outerSb.Select(rawAs(valueWriter, "value"))
+	if minWindowSize > 0 {
+		outerSb.Where(windowLenAtLeastFrag("window_pairs", minWindowSize))
+	}
 
 	e.emitSelect(outerSb)
 	return nil
@@ -617,6 +627,23 @@ func windowFilterPairsFrag(end Frag, rangeNS int64) Frag {
 	return RangeWindowFilter(start, end, BareIdent("series_array"))
 }
 
+// windowLenAtLeastFrag returns a Frag rendering
+// `length(<arrCol>) >= <n>` — the predicate the outer SELECT uses to
+// drop empty-window rows so PromQL "no sample emitted" semantics
+// survive the lowering. arrCol is the array alias projected up from
+// the FROM (typically `window_vals` or `window_pairs`); n is the
+// per-function minimum sample count (1 for *_over_time, 2 for
+// rate / increase / delta / idelta / irate / predict_linear /
+// holt_winters).
+func windowLenAtLeastFrag(arrCol string, n int) Frag {
+	return func(b *Builder) {
+		b.sb.WriteString("length(")
+		b.Ident(arrCol)
+		b.sb.WriteString(") >= ")
+		b.sb.WriteString(strconv.Itoa(n))
+	}
+}
+
 // counterDeltaFrag returns a Frag rendering
 //
 //	arraySum(arrayMap((p, c) -> if(c < p, c, c - p),
@@ -704,9 +731,10 @@ func outerGroupAliases(groupBy []chplan.Expr, aliases []string) []string {
 // emitRangeWindowIdentity emits the "last value in window" shape used
 // by bare-vector subqueries (`up[5m:1m]`). Functionally equivalent to
 // last_over_time but lowered from a SubqueryExpr (P0 #4.5) rather than
-// a Call.
+// a Call. Drops anchors whose window is empty (1+ samples required to
+// have a "last").
 func (e *emitter) emitRangeWindowIdentity(r *chplan.RangeWindow) error {
-	return e.emitWindowedArray(r, verbatim("if(length(window_vals) > 0, window_vals[length(window_vals)], nan)"))
+	return e.emitWindowedArray(r, verbatim("if(length(window_vals) > 0, window_vals[length(window_vals)], nan)"), 1)
 }
 
 // emitRangeWindowLogRate emits SQL for LogQL-style `rate({...}[range])`
@@ -717,12 +745,16 @@ func (e *emitter) emitRangeWindowIdentity(r *chplan.RangeWindow) error {
 // range_seconds binds as a parameter via the value-writer callback so
 // the emitter stays free of new Sprintf-on-SQL instances. The
 // empty-window guard is delegated to chsql.IfNonZero.
+//
+// LogQL semantics emit `0` for an empty window (it's a sum-based
+// metric, not counter-reset arithmetic), so the empty-window-drop
+// filter on the outer SELECT is OFF (minWindowSize = 0).
 func (e *emitter) emitRangeWindowLogRate(r *chplan.RangeWindow) error {
 	rangeSeconds := r.Range.Seconds()
 	return e.emitWindowedArray(r, IfNonZero(
 		Call("arraySum", BareIdent("window_vals")),
 		Lit(rangeSeconds),
-	))
+	), 0)
 }
 
 // emitRangeWindowRate emits SQL for `rate(metric[range])`.
@@ -760,13 +792,18 @@ func (e *emitter) emitRangeWindowLogRate(r *chplan.RangeWindow) error {
 //	    )
 //	)
 func (e *emitter) emitRangeWindowRate(r *chplan.RangeWindow) error {
-	return e.emitWindowedArray(r, rateValueFrag(r.Range.Seconds()))
+	// PromQL rate drops series whose window holds fewer than 2 samples
+	// (matches Prom's funcRate / extrapolatedRate). The outer SELECT
+	// gets `WHERE length(window_vals) >= 2`.
+	return e.emitWindowedArray(r, rateValueFrag(r.Range.Seconds()), 2)
 }
 
 // emitRangeWindowIncrease emits SQL for `increase(metric[range])`. Same
 // as rate but without dividing by range_seconds.
 func (e *emitter) emitRangeWindowIncrease(r *chplan.RangeWindow) error {
-	return e.emitWindowedArray(r, verbatim("if(length(window_vals) > 1, counter_delta, 0.0)"))
+	// PromQL increase drops series whose window holds fewer than 2
+	// samples (matches Prom's funcIncrease / extrapolatedRate).
+	return e.emitWindowedArray(r, verbatim("if(length(window_vals) > 1, counter_delta, 0.0)"), 2)
 }
 
 // emitRangeWindowOverTime emits SQL for the `*_over_time` family:
@@ -805,7 +842,11 @@ func (e *emitter) emitRangeWindowOverTime(r *chplan.RangeWindow) error {
 	default:
 		return fmt.Errorf("%w: over-time function %q", ErrUnsupported, r.Func)
 	}
-	return e.emitWindowedArray(r, verbatim(inner))
+	// Every *_over_time variant drops empty-window rows per Prom
+	// semantics (Prom's funcSumOverTime / funcCountOverTime / etc. all
+	// short-circuit on zero samples). The outer SELECT gets
+	// `WHERE length(window_vals) >= 1`.
+	return e.emitWindowedArray(r, verbatim(inner), 1)
 }
 
 // emitRangeWindowDelta emits SQL for `delta(v[range])`: the
@@ -817,7 +858,9 @@ func (e *emitter) emitRangeWindowOverTime(r *chplan.RangeWindow) error {
 // samples — same as Prom's `funcDelta`.
 func (e *emitter) emitRangeWindowDelta(r *chplan.RangeWindow) error {
 	const expr = "if(length(window_vals) > 1, window_vals[length(window_vals)] - window_vals[1], nan)"
-	return e.emitWindowedArray(r, verbatim(expr))
+	// PromQL delta drops series whose window holds fewer than 2
+	// samples (matches Prom's funcDelta).
+	return e.emitWindowedArray(r, verbatim(expr), 2)
 }
 
 // emitRangeWindowIDelta emits SQL for `idelta(v[range])`: the
@@ -828,7 +871,9 @@ func (e *emitter) emitRangeWindowDelta(r *chplan.RangeWindow) error {
 // (matches Prom's `funcIdelta`).
 func (e *emitter) emitRangeWindowIDelta(r *chplan.RangeWindow) error {
 	const expr = "if(length(window_vals) > 1, window_vals[length(window_vals)] - window_vals[length(window_vals) - 1], nan)"
-	return e.emitWindowedArray(r, verbatim(expr))
+	// PromQL idelta drops series whose window holds fewer than 2
+	// samples (matches Prom's funcIdelta).
+	return e.emitWindowedArray(r, verbatim(expr), 2)
 }
 
 // emitRangeWindowIRate emits SQL for `irate(v[range])`: per-second
@@ -844,8 +889,9 @@ func (e *emitter) emitRangeWindowIRate(r *chplan.RangeWindow) error {
 	// We need both the last two values and the last two timestamps,
 	// so reach for `window_pairs` (Array(Tuple(ts, value))) via
 	// emitWindowedArrayPairs rather than the values-only
-	// emitWindowedArray path.
-	return e.emitWindowedArrayPairs(r, verbatim(irateValueExpr()))
+	// emitWindowedArray path. PromQL irate drops series whose window
+	// holds fewer than 2 samples (matches Prom's funcIrate).
+	return e.emitWindowedArrayPairs(r, verbatim(irateValueExpr()), 2)
 }
 
 // irateValueExpr renders the irate per-window value expression. Operates
@@ -883,15 +929,16 @@ func irateValueExpr() string {
 // way to apply a parameterised aggregate to an array literal inside
 // a SELECT expression without re-introducing an outer GROUP BY.
 //
-// PromQL returns NaN when the window is empty. Phi is rendered
-// inline as a CH literal (query shape, not user data).
+// PromQL drops series when the window is empty (matches Prom's
+// funcQuantileOverTime). Phi is rendered inline as a CH literal
+// (query shape, not user data).
 func (e *emitter) emitRangeWindowQuantileOverTime(r *chplan.RangeWindow) error {
 	if len(r.Scalars) != 1 {
 		return fmt.Errorf("%w: quantile_over_time requires 1 scalar (phi), got %d", ErrUnsupported, len(r.Scalars))
 	}
 	phi := r.Scalars[0]
 	expr := "if(length(window_vals) > 0, arrayReduce('quantile(" + formatFloat(phi) + ")', window_vals), nan)"
-	return e.emitWindowedArray(r, verbatim(expr))
+	return e.emitWindowedArray(r, verbatim(expr), 1)
 }
 
 // rateValueFrag returns the outer SELECT value Frag for rate(),
@@ -916,7 +963,15 @@ func rateValueFrag(rangeSeconds float64) Frag {
 // series emits N rows, one per anchor across [End-OuterRange, End]
 // spaced by Step (end-inclusive). The outer SELECT additionally
 // projects the anchor timestamp as `anchor_ts`.
-func (e *emitter) emitWindowedArray(r *chplan.RangeWindow, value Frag) error {
+//
+// minWindowSize controls the PromQL "drop empty windows" semantics:
+// when > 0, the outer SELECT adds `WHERE length(window_vals) >= N`
+// so series (or (series, anchor) rows in the matrix shape) whose
+// window holds fewer than N samples are dropped from the result —
+// matching Prom's behaviour for rate / increase / delta / *_over_time,
+// which all return no sample for those windows. 0 disables the filter
+// (LogQL log_rate emits 0 for empty windows).
+func (e *emitter) emitWindowedArray(r *chplan.RangeWindow, value Frag, minWindowSize int) error {
 	if r.TimestampColumn == "" {
 		return fmt.Errorf("%w: RangeWindow.TimestampColumn unset", ErrUnsupported)
 	}
@@ -927,7 +982,7 @@ func (e *emitter) emitWindowedArray(r *chplan.RangeWindow, value Frag) error {
 		if r.Step <= 0 {
 			return fmt.Errorf("%w: RangeWindow.OuterRange > 0 requires Step > 0", ErrUnsupported)
 		}
-		return e.emitWindowedArrayMatrix(r, value)
+		return e.emitWindowedArrayMatrix(r, value, minWindowSize)
 	}
 
 	end := endExprFrag(r)
@@ -973,6 +1028,9 @@ func (e *emitter) emitWindowedArray(r *chplan.RangeWindow, value Frag) error {
 		outer.Select(g)
 	}
 	outer.Select(As(value, "value"))
+	if minWindowSize > 0 {
+		outer.Where(windowLenAtLeastFrag("window_vals", minWindowSize))
+	}
 
 	e.emitSelect(outer)
 	return nil
@@ -999,7 +1057,7 @@ func (e *emitter) emitWindowedArray(r *chplan.RangeWindow, value Frag) error {
 //	    )
 //	  )
 //	)
-func (e *emitter) emitWindowedArrayMatrix(r *chplan.RangeWindow, value Frag) error {
+func (e *emitter) emitWindowedArrayMatrix(r *chplan.RangeWindow, value Frag, minWindowSize int) error {
 	end := endExprFrag(r)
 	rangeNS := r.Range.Nanoseconds()
 	stepNS := r.Step.Nanoseconds()
@@ -1058,6 +1116,9 @@ func (e *emitter) emitWindowedArrayMatrix(r *chplan.RangeWindow, value Frag) err
 	}
 	outer.Select(Col("anchor_ts"))
 	outer.Select(As(value, "value"))
+	if minWindowSize > 0 {
+		outer.Where(windowLenAtLeastFrag("window_vals", minWindowSize))
+	}
 
 	e.emitSelect(outer)
 	return nil
