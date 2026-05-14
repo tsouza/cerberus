@@ -134,14 +134,21 @@ func lowerScalarFilter(prev chplan.Node, sf traceql.ScalarFilter, s schema.Trace
 
 	// rhs is expected to be a chplan.Expr from a Static literal; the
 	// LHS recursed back as a chplan.Node (Aggregate). For the typical
-	// `count() > 0` shape, wrap aggNode with a Filter.
+	// `count() > 0` shape, wrap aggNode with a Filter. The Tempo parser
+	// happily accepts pathological forms like `{} | 0 > 0` (no aggregate
+	// on either side) — type-assert before dereferencing so we return a
+	// structured error instead of panicking.
+	aggPlan, ok := aggNode.(chplan.Node)
+	if !ok {
+		return nil, fmt.Errorf("traceql: scalar-filter LHS must aggregate to a series (count() / sum(...) / avg(...) / min(...) / max(...)), got %T", aggNode)
+	}
 	rhsExpr, ok := rhs.(chplan.Expr)
 	if !ok {
 		return nil, fmt.Errorf("traceql: scalar-filter RHS must be a literal, got %T", rhs)
 	}
 
 	return &chplan.Filter{
-		Input:     aggNode.(chplan.Node),
+		Input:     aggPlan,
 		Predicate: &chplan.Binary{Op: op, Left: &chplan.ColumnRef{Name: "Value"}, Right: rhsExpr},
 	}, nil
 }
