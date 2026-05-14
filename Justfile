@@ -362,7 +362,7 @@ e2e-run:
 # vars; see test/e2e/startup_bench_test.go for the full list.
 startup-bench:
     @echo "==> startup-speed benchmark (target < 2 s to /healthz)"
-    RUN_STARTUP_BENCH=1 go test -tags=startup_bench -v -count=1 -run TestStartupSpeed ./test/e2e/...
+    go test -tags=startup_bench -v -count=1 -run TestStartupSpeed ./test/e2e/...
 
 # Run the Grafana playwright smoke (lands in M0.2).
 e2e-playwright:

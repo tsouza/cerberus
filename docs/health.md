@@ -121,13 +121,13 @@ Run it locally with:
 just startup-bench
 ```
 
-The benchmark is build-tagged (`startup_bench`) and `RUN_STARTUP_BENCH`-
-gated, so regular `just test` skips it. CI runs it as an informational
-job in `.github/workflows/e2e.yml` (`startup-bench` job) on push-to-main,
-nightly, and manual dispatch — it is **not** a required PR gate, so a
-slow VM doesn't block merges, but a real regression (e.g. a new
-synchronous startup hook that blocks the listener bind) shows up on the
-very next merge.
+The benchmark is build-tagged (`startup_bench`), so regular `just test`
+skips it (the file isn't compiled without the tag). CI runs it as an
+informational job in `.github/workflows/e2e.yml` (`startup-bench` job)
+on push-to-main, nightly, and manual dispatch — it is **not** a required
+PR gate, so a slow VM doesn't block merges, but a real regression (e.g.
+a new synchronous startup hook that blocks the listener bind) shows up
+on the very next merge.
 
 When `CERBERUS_AUTO_CREATE_SCHEMA=true`, the startup hook that applies
 the OTel ClickHouse DDL runs synchronously **before** the listener
