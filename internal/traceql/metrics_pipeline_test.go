@@ -64,6 +64,28 @@ func TestLowerMetricsPipeline(t *testing.T) {
 			wantOp: chplan.MetricsOpRate, wantAttr: false, wantGroup: 1, hasFilter: true,
 		},
 		{
+			// Multi-attribute `by (...)` — every element of the
+			// upstream MetricsAggregate.GroupBy() list must survive
+			// into chplan.MetricsAggregate.GroupBy (and the parallel
+			// GroupByAliases). Locks in the contract the chDB
+			// roundtrip fixtures `by_multi_attribute`,
+			// `by_three_attributes`, `by_mixed_scopes`, and
+			// `by_intrinsic_and_attr` rely on.
+			name:   "rate_by_two_labels",
+			query:  `{} | rate() by (resource.service.name, span.http.status_code)`,
+			wantOp: chplan.MetricsOpRate, wantAttr: false, wantGroup: 2, hasFilter: true,
+		},
+		{
+			name:   "rate_by_three_labels",
+			query:  `{} | rate() by (resource.service.name, span.kind, span.http.method)`,
+			wantOp: chplan.MetricsOpRate, wantAttr: false, wantGroup: 3, hasFilter: true,
+		},
+		{
+			name:   "count_over_time_by_intrinsic_and_attr",
+			query:  `{} | count_over_time() by (kind, resource.service.name)`,
+			wantOp: chplan.MetricsOpCountOverTime, wantAttr: false, wantGroup: 2, hasFilter: true,
+		},
+		{
 			name:   "quantile_over_time_single",
 			query:  `{} | quantile_over_time(duration, 0.95)`,
 			wantOp: chplan.MetricsOpQuantileOverTime, wantAttr: true, wantGroup: 0, hasFilter: true,

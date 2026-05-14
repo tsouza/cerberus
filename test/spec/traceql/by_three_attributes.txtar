@@ -1,0 +1,28 @@
+-- query.traceql --
+{} | rate() by (resource.service.name, span.kind, span.http.method)
+-- sql --
+SELECT `ResourceAttributes`[?] AS `service.name`, `SpanAttributes`[?] AS `kind`, `SpanAttributes`[?] AS `http.method`, count(?) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?) GROUP BY `ResourceAttributes`[?], `SpanAttributes`[?], `SpanAttributes`[?]
+-- args --
+[0] string = "service.name"
+[1] string = "kind"
+[2] string = "http.method"
+[3] int64 = 1
+[4] bool = true
+[5] string = "service.name"
+[6] string = "kind"
+[7] string = "http.method"
+-- seed --
+CREATE TABLE otel_traces (
+    ResourceAttributes Map(String, String),
+    SpanAttributes Map(String, String)
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    (map('service.name', 'frontend'), map('kind', 'Client', 'http.method', 'GET')),
+    (map('service.name', 'frontend'), map('kind', 'Client', 'http.method', 'GET')),
+    (map('service.name', 'frontend'), map('kind', 'Client', 'http.method', 'GET')),
+    (map('service.name', 'frontend'), map('kind', 'Client', 'http.method', 'GET')),
+    (map('service.name', 'frontend'), map('kind', 'Client', 'http.method', 'GET'));
+-- expected_rows --
+[
+  ["frontend", "Client", "GET", 5]
+]
