@@ -6,5 +6,16 @@ sum without (instance) (up)
 [2] string = "instance"
 [3] string = "up"
 [4] string = "instance"
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = Memory;
+INSERT INTO otel_metrics_gauge VALUES
+    ('other_metric', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 1.0);
+-- expected_rows --
+[]
 -- sql --
 SELECT ? AS `MetricName`, `gkey_0` AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT mapFilter((k, v) -> NOT (k IN (?)), `Attributes`) AS `gkey_0`, sum(`Value`) AS `Value` FROM (SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` = ?)) GROUP BY mapFilter((k, v) -> NOT (k IN (?)), `Attributes`))
