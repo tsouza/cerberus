@@ -21,3 +21,8 @@ INSERT INTO otel_metrics_gauge VALUES
     ('other_metric', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 1.0);
 -- expected_rows --
 []
+-- chplan --
+Project ["" AS MetricName, map("job", gkey_0) AS Attributes, now64(9) AS TimeUnix, Value AS Value]
+  Aggregate groupBy=[Attributes["job"] AS gkey_0] funcs=[any(1) AS Value]
+    Filter predicate=(MetricName = "up")
+      Scan(otel_metrics_gauge)

@@ -5,3 +5,6 @@ SELECT mapFilter((k, v) -> NOT (k IN (?, ?)), `Attributes`), sum(`Value`) AS `to
 [1] string = "pod"
 [2] string = "instance"
 [3] string = "pod"
+-- chplan --
+Aggregate groupBy=[mapWithout(Attributes, [instance, pod])] funcs=[sum(Value) AS total]
+  Scan(otel_metrics_gauge)

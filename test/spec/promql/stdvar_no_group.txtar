@@ -7,3 +7,8 @@ SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`
 [1] string = "Map(String,String)"
 [2] int64 = 9
 [3] string = "latency_seconds"
+-- chplan --
+Project ["" AS MetricName, CAST(map(), "Map(String,String)") AS Attributes, now64(9) AS TimeUnix, Value AS Value]
+  Aggregate groupBy=[] funcs=[varPop(Value) AS Value]
+    Filter predicate=(MetricName = "latency_seconds")
+      Scan(otel_metrics_gauge)

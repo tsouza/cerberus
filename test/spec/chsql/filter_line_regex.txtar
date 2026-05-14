@@ -2,3 +2,6 @@
 SELECT * FROM `otel_logs` WHERE match(`Body`, ?)
 -- args --
 [0] string = "failed: \\w+"
+-- chplan --
+Filter predicate=lineContent(Body, "failed: \\w+", regex)
+  Scan(otel_logs)

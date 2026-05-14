@@ -6,3 +6,6 @@ SELECT * FROM `otel_metrics_gauge` PREWHERE (`MetricName` = ?) WHERE NOT match(`
 [0] string = "up"
 [1] string = "job"
 [2] string = "backend.*"
+-- chplan --
+Filter predicate=((Attributes["job"] !~ "backend.*") AND (MetricName = "up"))
+  Scan(otel_metrics_gauge)

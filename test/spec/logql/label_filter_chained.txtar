@@ -24,3 +24,6 @@ INSERT INTO otel_logs (Body) VALUES
   ["error: ouch"],
   ["error: again"]
 ]
+-- chplan --
+Filter predicate=((((ResourceAttributes["job"] = "api") AND lineContent(Body, "error", substr)) AND (ResourceAttributes["env"] = "prod")) AND (ResourceAttributes["severity"] = "high"))
+  Scan(otel_logs)

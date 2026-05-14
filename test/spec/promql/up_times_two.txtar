@@ -18,3 +18,7 @@ INSERT INTO otel_metrics_gauge VALUES
 [
   ["up", {"job": "api"}, "2026-01-01T00:00:00Z", 6.0]
 ]
+-- chplan --
+Project [MetricName, Attributes, TimeUnix, (Value * 2) AS Value]
+  Filter predicate=(MetricName = "up")
+    Scan(otel_metrics_gauge)

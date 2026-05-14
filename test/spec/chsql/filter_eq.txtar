@@ -2,3 +2,6 @@
 [0] string = "http_requests_total"
 -- sql --
 SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` = ?)
+-- chplan --
+Filter predicate=(MetricName = "http_requests_total")
+  Scan(otel_metrics_gauge)

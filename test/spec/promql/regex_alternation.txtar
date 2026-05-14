@@ -6,3 +6,6 @@ SELECT * FROM `otel_metrics_gauge` PREWHERE (`MetricName` = ?) WHERE match(`Attr
 [0] string = "up"
 [1] string = "job"
 [2] string = "api|web"
+-- chplan --
+Filter predicate=((Attributes["job"] =~ "api|web") AND (MetricName = "up"))
+  Scan(otel_metrics_gauge)

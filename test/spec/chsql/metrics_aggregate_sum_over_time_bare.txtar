@@ -2,3 +2,6 @@
 (none)
 -- sql --
 SELECT sum(`Duration`) AS `Value` FROM (SELECT * FROM `otel_traces`)
+-- chplan --
+MetricsAggregate op=sum_over_time attr=Duration valueAlias=Value
+  Scan(otel_traces)

@@ -17,3 +17,6 @@ INSERT INTO otel_logs (Body) VALUES ('alpha'), ('beta'), ('gamma');
   ["beta"],
   ["gamma"]
 ]
+-- chplan --
+Filter predicate=(ResourceAttributes["job"] = "api")
+  Scan(otel_logs)

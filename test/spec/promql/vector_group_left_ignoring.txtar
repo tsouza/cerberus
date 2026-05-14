@@ -31,3 +31,9 @@ INSERT INTO otel_metrics_gauge VALUES
 [
   ["http_requests_total", {"job": "api", "env": "prod", "instance": "i-1"}, "2026-01-01T00:00:00Z", 8.0]
 ]
+-- chplan --
+VectorJoin op=* match=ignoring(instance) card=many-to-one include=[env]
+  Filter predicate=(MetricName = "http_requests_total")
+    Scan(otel_metrics_sum)
+  Filter predicate=(MetricName = "machine_role")
+    Scan(otel_metrics_gauge)

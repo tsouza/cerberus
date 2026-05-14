@@ -16,3 +16,7 @@ INSERT INTO otel_metrics_sum VALUES
 []
 -- sql --
 SELECT `Attributes`, if(length(window_pairs) > 1, tupleElement(simpleLinearRegression(arrayMap(p -> dateDiff('second', now64(9), tupleElement(p, 1)), window_pairs), arrayMap(p -> tupleElement(p, 2), window_pairs)), 2) + tupleElement(simpleLinearRegression(arrayMap(p -> dateDiff('second', now64(9), tupleElement(p, 1)), window_pairs), arrayMap(p -> tupleElement(p, 2), window_pairs)), 1) * ?, nan) AS value FROM (SELECT `Attributes`, arrayFilter(p -> tupleElement(p, 1) >= now64(9) - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= now64(9), series_array) AS window_pairs FROM (SELECT `Attributes`, arraySort(groupArray((`TimeUnix`, `Value`))) AS series_array FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` = ?)) GROUP BY `Attributes`))
+-- chplan --
+RangeWindow func=predict_linear range=5m0s step=0s ts=TimeUnix value=Value groupBy=[Attributes] scalars=[3600]
+  Filter predicate=(MetricName = "http_requests_total")
+    Scan(otel_metrics_sum)

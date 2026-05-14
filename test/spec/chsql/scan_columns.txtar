@@ -2,3 +2,5 @@
 (none)
 -- sql --
 SELECT `TimeUnix`, `Value`, `Attributes` FROM `otel_metrics_gauge`
+-- chplan --
+Scan(otel_metrics_gauge, columns=[TimeUnix, Value, Attributes])

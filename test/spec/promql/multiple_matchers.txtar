@@ -8,3 +8,6 @@ SELECT * FROM `otel_metrics_gauge` PREWHERE (`MetricName` = ?) AND (`Attributes`
 [2] string = "api"
 [3] string = "env"
 [4] string = "prod"
+-- chplan --
+Filter predicate=(((Attributes["job"] = "api") AND (Attributes["env"] = "prod")) AND (MetricName = "up"))
+  Scan(otel_metrics_gauge)

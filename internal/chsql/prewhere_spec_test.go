@@ -152,8 +152,9 @@ func TestEmit_Prewhere(t *testing.T) {
 			t.Fatalf("Emit failed: %v", err)
 		}
 		spec.Match(t, c, map[string]string{
-			"sql":  sql,
-			"args": formatArgs(args),
+			"sql":    sql,
+			"args":   formatArgs(args),
+			"chplan": spec.PrintChplan(plan),
 		})
 	})
 

@@ -20,3 +20,6 @@ INSERT INTO otel_logs (Body) VALUES
   ["info: ready"],
   ["warn: slow"]
 ]
+-- chplan --
+Filter predicate=((ResourceAttributes["job"] = "api") AND lineContent(Body, "debug", substr,not))
+  Scan(otel_logs)

@@ -7,3 +7,7 @@ SELECT L.`MetricName`, L.`Attributes`, L.`TimeUnix`, (L.`Value` - R.`Value`) AS 
 [3] string = "instance"
 [4] string = "instance"
 [5] string = "instance"
+-- chplan --
+VectorJoin op=- match=ignoring(instance) card=one-to-one
+  Scan(otel_metrics_gauge)
+  Scan(otel_metrics_sum)

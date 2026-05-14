@@ -20,3 +20,8 @@ INSERT INTO otel_metrics_histogram VALUES
     ('http_server_request_duration', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), [1, 2, 3], [0.1, 0.5, 1.0]);
 -- expected_rows --
 []
+-- chplan --
+Project ["" AS MetricName, Attributes AS Attributes, now64(9) AS TimeUnix, Value AS Value]
+  HistogramQuantile phi=0.95 groupBy=[Attributes AS Attributes]
+    Filter predicate=((Attributes["job"] = "missing") AND (MetricName = "http_server_request_duration"))
+      Scan(otel_metrics_histogram)

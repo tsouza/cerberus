@@ -18,3 +18,9 @@ INSERT INTO otel_metrics_gauge VALUES
 [
   ["up", {"job": "api"}, "2026-01-01T00:00:00Z", 14.0]
 ]
+-- chplan --
+VectorJoin op=+ match=default card=one-to-one
+  Filter predicate=(MetricName = "up")
+    Scan(otel_metrics_gauge)
+  Filter predicate=(MetricName = "up")
+    Scan(otel_metrics_gauge)

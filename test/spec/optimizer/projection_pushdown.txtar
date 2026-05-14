@@ -2,3 +2,9 @@
 SELECT `Value` AS `v`, `TimeUnix` AS `t` FROM (SELECT `TimeUnix`, `Value` FROM `otel_metrics_gauge`)
 -- unoptimized --
 SELECT `Value` AS `v`, `TimeUnix` AS `t` FROM (SELECT * FROM `otel_metrics_gauge`)
+-- chplan_optimized --
+Project [Value AS v, TimeUnix AS t]
+  Scan(otel_metrics_gauge, columns=[TimeUnix, Value])
+-- chplan_unoptimized --
+Project [Value AS v, TimeUnix AS t]
+  Scan(otel_metrics_gauge)

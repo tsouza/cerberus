@@ -19,3 +19,7 @@ INSERT INTO otel_metrics_gauge VALUES
 [
   ["temperature", {"host": "a"}, "2026-01-01T00:00:00Z", 100.0]
 ]
+-- chplan --
+Project [MetricName, Attributes, TimeUnix, greatest(0, least(100, Value)) AS Value]
+  Filter predicate=(MetricName = "temperature")
+    Scan(otel_metrics_gauge)

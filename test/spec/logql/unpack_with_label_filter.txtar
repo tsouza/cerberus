@@ -18,3 +18,6 @@ INSERT INTO otel_logs (Body) VALUES ('packed error one'), ('packed error two');
   ["packed error one"],
   ["packed error two"]
 ]
+-- chplan --
+Filter predicate=((ResourceAttributes["job"] = "api") AND (ResourceAttributes["level"] = "error"))
+  Scan(otel_logs)

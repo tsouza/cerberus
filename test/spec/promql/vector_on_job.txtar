@@ -25,3 +25,9 @@ INSERT INTO otel_metrics_sum VALUES
 [
   ["http_server_request_duration_count", {"job": "api"}, "2026-01-01T00:00:00Z", 4.0]
 ]
+-- chplan --
+VectorJoin op=/ match=on(job) card=one-to-one
+  Filter predicate=(MetricName = "http_server_request_duration_count")
+    Scan(otel_metrics_sum)
+  Filter predicate=(MetricName = "http_server_request_duration_sum")
+    Scan(otel_metrics_sum)

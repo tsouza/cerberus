@@ -3,3 +3,6 @@ SELECT `Timestamp`, `SeverityText` FROM `otel_logs` WHERE (`ServiceName` = ?) AN
 -- args --
 [0] string = "api"
 [1] int64 = 0
+-- chplan --
+Filter predicate=((Timestamp > 0) AND (ServiceName = "api"))
+  Scan(otel_logs, columns=[Timestamp, SeverityText])

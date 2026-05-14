@@ -17,3 +17,7 @@ INSERT INTO otel_metrics_gauge VALUES
 [
   ["latency_seconds", {"job": "api"}, "2026-01-01T00:00:00Z", 4.0]
 ]
+-- chplan --
+Project [MetricName, Attributes, TimeUnix, sqrt(Value) AS Value]
+  Filter predicate=(MetricName = "latency_seconds")
+    Scan(otel_metrics_gauge)

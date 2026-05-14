@@ -2,3 +2,7 @@
 SELECT R.* FROM (SELECT * FROM `otel_traces`) AS L INNER JOIN (SELECT * FROM `otel_traces`) AS R ON L.`TraceId` = R.`TraceId` AND L.`SpanId` = R.`ParentSpanId`
 -- args --
 (none)
+-- chplan --
+StructuralJoin op=>
+  Scan(otel_traces)
+  Scan(otel_traces)

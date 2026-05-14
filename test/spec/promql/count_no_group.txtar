@@ -7,3 +7,8 @@ count(up)
 [3] string = "up"
 -- sql --
 SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT count(`Value`) AS `Value` FROM (SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` = ?)))
+-- chplan --
+Project ["" AS MetricName, CAST(map(), "Map(String,String)") AS Attributes, now64(9) AS TimeUnix, Value AS Value]
+  Aggregate groupBy=[] funcs=[count(Value) AS Value]
+    Filter predicate=(MetricName = "up")
+      Scan(otel_metrics_gauge)

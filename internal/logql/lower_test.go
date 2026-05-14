@@ -46,8 +46,9 @@ func TestLower(t *testing.T) {
 		}
 
 		spec.Match(t, c, map[string]string{
-			"sql":  sqlStr,
-			"args": formatArgs(args),
+			"sql":    sqlStr,
+			"args":   formatArgs(args),
+			"chplan": spec.PrintChplan(plan),
 		})
 	})
 }
