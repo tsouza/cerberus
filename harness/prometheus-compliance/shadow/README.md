@@ -20,7 +20,7 @@ the result vectors:
 
 The diff catches regressions where the CH-backed path drifts from PromQL
 semantics without having to spin up a full reference Prometheus + remote-write
-seeder (which is what the sibling `harness/compatibility/` Docker Compose stack
+seeder (which is what the sibling `harness/prometheus-compliance/` Docker Compose stack
 already does). Shadow mode is the lighter-weight, faster-feedback companion
 that runs without containers.
 
@@ -56,10 +56,10 @@ the end.
 | `1`  | One or more diffs under `force-native` strategy                              |
 | `2`  | Setup failure (corpus unreadable, cerberus unreachable, etc.)                |
 
-## How it slots into `harness/compatibility/`
+## How it slots into `harness/prometheus-compliance/`
 
 ```text
-harness/compatibility/
+harness/prometheus-compliance/
   docker-compose.yml         <-- existing: reference Prom + cerberus + CH + seeder
   scripts/run-compatibility.sh
   shadow/                    <-- this directory
@@ -81,15 +81,15 @@ The harness expects a running cerberus reachable at `$CERBERUS_URL` (defaults
 to `http://localhost:9090`):
 
 ```sh
-just shadow-mode CORPUS=harness/compatibility/shadow/corpus/smoke.txt STRATEGY=prefer-native
+just shadow-mode CORPUS=harness/prometheus-compliance/shadow/corpus/smoke.txt STRATEGY=prefer-native
 ```
 
 Or invoke the binary directly:
 
 ```sh
-go build -o bin/shadow ./harness/compatibility/shadow/cmd/shadow
+go build -o bin/shadow ./harness/prometheus-compliance/shadow/cmd/shadow
 CERBERUS_URL=http://localhost:9090 ./bin/shadow \
-    --corpus harness/compatibility/shadow/corpus/smoke.txt \
+    --corpus harness/prometheus-compliance/shadow/corpus/smoke.txt \
     --strategy prefer-native \
     --report shadow-report.json
 ```

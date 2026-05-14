@@ -4,19 +4,19 @@
 # Brings up the docker-compose stack (reference Prometheus + cerberus +
 # ClickHouse + seeder), builds the upstream promql-compliance-tester
 # binary, runs it pointed at the two endpoints, and writes the JSON
-# report to harness/compatibility/report.json.
+# report to harness/prometheus-compliance/report.json.
 #
 # Tests are RUN_ONCE here; reconciliation against expected-failures.json
 # is done by a follow-up Go script (lands in M1.x — for the seed we just
 # capture the raw report and let the user inspect).
 #
 # Usage:
-#   ./harness/compatibility/scripts/run-compatibility.sh        full lifecycle
+#   ./harness/prometheus-compliance/scripts/run-compatibility.sh        full lifecycle
 #   COMPOSE_KEEP=1 ./...                                 leave stack up after run
 #
 # Env:
-#   TESTER_OUTPUT     report file path (default: harness/compatibility/report.json)
-#   TESTER_QUERIES    queries yaml (default: harness/compatibility/cerberus-test-queries.yml,
+#   TESTER_OUTPUT     report file path (default: harness/prometheus-compliance/report.json)
+#   TESTER_QUERIES    queries yaml (default: harness/prometheus-compliance/cerberus-test-queries.yml,
 #                     a curated copy of upstream/promql/promql-test-queries.yml
 #                     with corpus-incompatible should_fail entries removed —
 #                     see the file header for the policy)
@@ -48,7 +48,7 @@ RANGE=${TESTER_RANGE:-3600}
 echo "==> bringing up compatibility stack"
 docker compose up -d --build --wait clickhouse prometheus cerberus
 echo "==> running seeder (go run ./cmd/seed)"
-(cd "$ROOT_DIR/../.." && go run ./harness/compatibility/cmd/seed/)
+(cd "$ROOT_DIR/../.." && go run ./harness/prometheus-compliance/cmd/seed/)
 
 echo "==> building promql-compliance-tester"
 TESTER_DIR="$ROOT_DIR/upstream/promql/cmd/promql-compliance-tester"

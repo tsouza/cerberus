@@ -1,7 +1,7 @@
 # Cerberus-side curated PromQL test queries for the compatibility harness.
 #
 # This file is a near-verbatim copy of
-# harness/compatibility/upstream/promql/promql-test-queries.yml
+# harness/prometheus-compliance/upstream/promql/promql-test-queries.yml
 # (prometheus/compliance @ 7e28242) with a small set of edits:
 #
 # 1. The PromLabs "demo service" preamble (lines 1-31 of the upstream file)

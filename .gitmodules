@@ -1,3 +1,3 @@
-[submodule "harness/compatibility/upstream"]
-	path = harness/compatibility/upstream
+[submodule "harness/prometheus-compliance/upstream"]
+	path = harness/prometheus-compliance/upstream
 	url = https://github.com/prometheus/compliance.git

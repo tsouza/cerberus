@@ -16,7 +16,7 @@
 // on localhost:29000 (override via CERBERUS_CH_ADDR).
 //
 // The fixture covers the metrics enumerated in upstream
-// promql-test-queries.yml — see harness/compatibility/README for context.
+// promql-test-queries.yml — see harness/prometheus-compliance/README for context.
 package main
 
 import (

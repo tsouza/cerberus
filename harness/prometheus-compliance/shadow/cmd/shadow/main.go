@@ -21,7 +21,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/tsouza/cerberus/harness/compatibility/shadow"
+	"github.com/tsouza/cerberus/harness/prometheus-compliance/shadow"
 )
 
 // Strategy selects which evaluator(s) to consult and whether disagreement is fatal.

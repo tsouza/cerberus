@@ -13,7 +13,7 @@ on:
       - 'internal/chsql/**'
       - 'internal/optimizer/**'
       - 'internal/chplan/**'
-      - 'harness/compatibility/**'
+      - 'harness/prometheus-compliance/**'
       - '.github/workflows/compatibility.yml'
   schedule:
     # nightly at 04:11 UTC (offset from e2e to spread load)
@@ -73,10 +73,10 @@ jobs:
         env:
           # The tester binary needs Go 1.21+; we already have it from setup-go.
           # The seed window anchors at 2026-05-11T00:00:00Z (see
-          # harness/compatibility/cmd/seed/main.go).
+          # harness/prometheus-compliance/cmd/seed/main.go).
           TESTER_END_TIME: "2026-05-11T01:00:00Z"
           TESTER_RANGE: "3600"
-        run: ./harness/compatibility/scripts/run-compatibility.sh
+        run: ./harness/prometheus-compliance/scripts/run-compatibility.sh
 
       - name: Summarise report
         if: always()
@@ -87,13 +87,13 @@ jobs:
           # `== null` checks counted passes as failures and vice versa.
           # `// ""` normalises both null + empty to "" so the partition
           # is consistent.
-          if [ -f harness/compatibility/report.json ]; then
+          if [ -f harness/prometheus-compliance/report.json ]; then
             jq '{
               total: ([.results[]?] | length),
               passed: ([.results[]? | select((.unexpectedFailure // "") == "" and (.diff // "") == "")] | length),
               diffs: ([.results[]? | select((.diff // "") != "")] | length),
               unexpected_failures: ([.results[]? | select((.unexpectedFailure // "") != "")] | length)
-            }' harness/compatibility/report.json
+            }' harness/prometheus-compliance/report.json
           else
             echo "no report produced (harness step likely failed before tester ran)"
           fi
@@ -103,7 +103,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: compatibility-report
-          path: harness/compatibility/report.json
+          path: harness/prometheus-compliance/report.json
           if-no-files-found: warn
           retention-days: 30
 

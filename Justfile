@@ -175,11 +175,11 @@ lint:
 
 # Lint all Markdown files (run via npm exec; no global Node deps).
 lint-md:
-    npm exec --yes -- markdownlint-cli2@{{MARKDOWNLINT_VERSION}} "**/*.md" "!harness/compatibility/upstream/**" "!**/node_modules/**"
+    npm exec --yes -- markdownlint-cli2@{{MARKDOWNLINT_VERSION}} "**/*.md" "!harness/prometheus-compliance/upstream/**" "!**/node_modules/**"
 
 # Auto-fix Markdown lint issues where possible.
 fmt-md:
-    npm exec --yes -- markdownlint-cli2@{{MARKDOWNLINT_VERSION}} --fix "**/*.md" "!harness/compatibility/upstream/**" "!**/node_modules/**"
+    npm exec --yes -- markdownlint-cli2@{{MARKDOWNLINT_VERSION}} --fix "**/*.md" "!harness/prometheus-compliance/upstream/**" "!**/node_modules/**"
 
 # Format Go code.
 fmt:
@@ -390,17 +390,17 @@ e2e: e2e-up e2e-seed e2e-wait-otel e2e-run e2e-playwright e2e-down
 
 # Run the PromQL compatibility suite end-to-end. Slow; expect minutes.
 # Sets up the Docker Compose stack (reference Prom + cerberus + CH + seeder),
-# runs the upstream tester, writes harness/compatibility/report.json.
+# runs the upstream tester, writes harness/prometheus-compliance/report.json.
 compatibility:
-    ./harness/compatibility/scripts/run-compatibility.sh
+    ./harness/prometheus-compliance/scripts/run-compatibility.sh
 
 # Keep the compatibility stack running after the tester finishes (for debugging).
 compatibility-keep:
-    COMPOSE_KEEP=1 ./harness/compatibility/scripts/run-compatibility.sh
+    COMPOSE_KEEP=1 ./harness/prometheus-compliance/scripts/run-compatibility.sh
 
 # Tear down the compatibility stack manually.
 compatibility-down:
-    cd harness/compatibility && docker compose down -v
+    cd harness/prometheus-compliance && docker compose down -v
 
 # === Shadow-mode differential testing (RC3 R3.9) ===
 
@@ -409,10 +409,10 @@ compatibility-down:
 # http://localhost:9090). The oracle is wired to internal/promshim/local
 # and evaluates against a seeded in-memory dataset; native errors are
 # expected when CERBERUS_URL points at nothing.
-# See harness/compatibility/shadow/README.md.
-shadow-mode CORPUS="harness/compatibility/shadow/corpus/smoke.txt" STRATEGY="prefer-native":
+# See harness/prometheus-compliance/shadow/README.md.
+shadow-mode CORPUS="harness/prometheus-compliance/shadow/corpus/smoke.txt" STRATEGY="prefer-native":
     @echo "==> building shadow-mode harness"
-    go build -trimpath -o bin/shadow ./harness/compatibility/shadow/cmd/shadow
+    go build -trimpath -o bin/shadow ./harness/prometheus-compliance/shadow/cmd/shadow
     @echo "==> running shadow-mode (strategy={{STRATEGY}})"
     ./bin/shadow \
         --corpus {{CORPUS}} \

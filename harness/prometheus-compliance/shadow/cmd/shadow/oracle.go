@@ -7,7 +7,7 @@ import (
 
 	"github.com/prometheus/prometheus/model/labels"
 
-	"github.com/tsouza/cerberus/harness/compatibility/shadow"
+	"github.com/tsouza/cerberus/harness/prometheus-compliance/shadow"
 	"github.com/tsouza/cerberus/internal/promshim/local"
 )
 
@@ -18,7 +18,7 @@ import (
 // promshim result into the shadow VectorResult shape the differ understands.
 //
 // The seeded dataset mirrors the shape exercised by the smoke corpus
-// (`harness/compatibility/shadow/corpus/smoke.txt`):
+// (`harness/prometheus-compliance/shadow/corpus/smoke.txt`):
 //
 //   - http_requests_total counters across job × method
 //   - up gauges across job
@@ -33,7 +33,7 @@ import (
 // Spinning up real Prometheus would gain us nothing — the engine API the
 // promshim wraps is the exact upstream engine. Keeping the oracle in-process
 // also means the shadow workflow runs without containers (the heavyweight
-// reference lives in `harness/compatibility/`'s Docker Compose stack).
+// reference lives in `harness/prometheus-compliance/`'s Docker Compose stack).
 type localOracle struct {
 	engine *local.Engine
 	store  *local.SampleStore
