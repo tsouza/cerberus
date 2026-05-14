@@ -81,12 +81,18 @@ jobs:
       - name: Summarise report
         if: always()
         run: |
+          # Compatibility-tester results encode "no error" as an empty
+          # string, not JSON null — the JSON shape is `"diff": ""` and
+          # `"unexpectedFailure": ""` for a passing query. The earlier
+          # `== null` checks counted passes as failures and vice versa.
+          # `// ""` normalises both null + empty to "" so the partition
+          # is consistent.
           if [ -f harness/compatibility/report.json ]; then
             jq '{
               total: ([.results[]?] | length),
-              passed: ([.results[]? | select(.unexpectedFailure == null and .diff == null)] | length),
-              diffs: ([.results[]? | select(.diff != null)] | length),
-              unexpected_failures: ([.results[]? | select(.unexpectedFailure != null)] | length)
+              passed: ([.results[]? | select((.unexpectedFailure // "") == "" and (.diff // "") == "")] | length),
+              diffs: ([.results[]? | select((.diff // "") != "")] | length),
+              unexpected_failures: ([.results[]? | select((.unexpectedFailure // "") != "")] | length)
             }' harness/compatibility/report.json
           else
             echo "no report produced (harness step likely failed before tester ran)"
