@@ -14,6 +14,7 @@ The closest analogue is **`grafana/loki:pkg/logql/bench/`** — not framed as "c
 - Companion **`discover` tool** ([`pkg/logql/bench/discover/cmd/discover`](https://github.com/grafana/loki/tree/main/pkg/logql/bench/discover)) introspects a live Loki to produce `dataset_metadata.json`. Cerberus seeds deterministically + commits a pinned `dataset_metadata.json` to bypass.
 
 Other Grafana artefacts:
+
 - **`grafana/loki:integration/`** — programmatic cluster builder + table tests. Not extractable as a wire-API corpus.
 - **`pkg/logql/syntax/parser_test.go`** — parser conformance, not query/response.
 - **`pkg/logql/engine_test.go`** — Go-typed expected outputs, not extractable.
