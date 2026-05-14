@@ -43,13 +43,12 @@ type Exemplar struct {
 // error envelopes on bad probes, then return `{status:"success",
 // data:[]}` so the exemplars probe doesn't crash the dashboard.
 //
-// TODO(RC2/RC3 schema): once `internal/schema/otel.go` exposes an
-// exemplars column (or a sibling-table join target), wire the SQL via
-// `internal/chsql.Builder` — extract VectorSelector matchers from the
-// parsed PromQL expression, build a SELECT against the metric's
+// A future release can wire the SQL via `internal/chsql.Builder` once
+// `internal/schema/otel.go` exposes an exemplars column (or a
+// sibling-table join target) — extract VectorSelector matchers from
+// the parsed PromQL expression, build a SELECT against the metric's
 // exemplars source with the matcher predicates in WHERE, time-bounded
 // on `[start, end]`, and shape the result rows into ExemplarSeries.
-// See `docs/roadmap.md § RC2 PromQL HTTP APIs`.
 func (h *Handler) handleQueryExemplars(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost {
 		_ = r.ParseForm()
@@ -90,7 +89,7 @@ func (h *Handler) handleQueryExemplars(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Empty-data path — see the schema TODO on the function docstring.
+	// Empty-data path — see the schema note on the function docstring.
 	// Return `[]ExemplarSeries{}` (not nil) so the JSON envelope renders
 	// as `"data":[]` rather than `"data":null`; Grafana's exemplars probe
 	// distinguishes the two.

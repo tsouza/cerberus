@@ -26,15 +26,14 @@ type Pattern struct {
 // handlePatterns implements GET /loki/api/v1/patterns.
 //
 // Upstream Loki 3.x exposes a pattern-discovery subsystem (drain3-style
-// log template extraction) on this endpoint. Cerberus defers that
-// subsystem to a follow-up workstream — the algorithm is its own beast
-// and Grafana's pattern panel renders an empty result gracefully.
-//
-// TODO(RC3+): implement pattern discovery (likely drain3-equivalent
-// running over the same peek-window used by /detected_fields). For now
-// the endpoint exists so Grafana's panel doesn't 404; it validates the
+// log template extraction) on this endpoint. Cerberus does not run a
+// pattern-discovery algorithm itself today — the algorithm is its own
+// beast and Grafana's pattern panel renders an empty result gracefully.
+// The endpoint exists so Grafana's panel doesn't 404; it validates the
 // caller's parameters (so a broken `query` still returns 400) and then
-// emits {status:"success", data:{patterns:[]}}.
+// emits {status:"success", data:{patterns:[]}}. A future release can
+// run a drain3-equivalent over the same peek-window used by
+// /detected_fields if there's demand.
 func (h *Handler) handlePatterns(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query().Get("query")
 	if q == "" {
