@@ -2,7 +2,7 @@ package chplan
 
 // MapWithoutEmptyValues is a Map-valued expression that yields the
 // input Map with every entry whose value is the empty string dropped.
-// Lowers to ClickHouse's `mapFilter((k, v) -> v != '', <map>)`.
+// Lowers to ClickHouse's `mapFilter((k, v) -> v != ”, <map>)`.
 //
 // Used by PromQL `aggregation by (...)` lowering to canonicalise the
 // output label-set: a series whose grouped-by label is absent in
