@@ -233,7 +233,7 @@ func renderTraceQLRow(s traceQLSpan) string {
 	b.WriteString("map()")
 	b.WriteString(", ")
 	// Duration
-	b.WriteString(fmt.Sprintf("%d", s.durationNs))
+	fmt.Fprintf(&b, "%d", s.durationNs)
 	b.WriteString(", ")
 	// StatusCode
 	b.WriteString(quoteSQL(s.statusCode))
