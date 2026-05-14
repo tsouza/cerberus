@@ -248,9 +248,8 @@ type traceqlShadowCase struct {
 	pipelineP float64 // quantile parameter
 
 	// expected is the hand-computed result vector.
-	expected   VectorResult
-	opts       DiffOptions
-	skipReason string
+	expected VectorResult
+	opts     DiffOptions
 }
 
 // evalAtMs is the timestamp the evaluator stamps onto every output sample.
@@ -820,10 +819,6 @@ func TestTraceQLShadowDiff(t *testing.T) {
 			// parses upstream by construction parses through the cerberus head.
 			if _, err := traceql.Parse(tc.query); err != nil {
 				t.Fatalf("upstream Tempo parser rejected %q: %v", tc.query, err)
-			}
-
-			if tc.skipReason != "" {
-				t.Skip(tc.skipReason)
 			}
 
 			got := evaluateTraceQLCase(tc)
