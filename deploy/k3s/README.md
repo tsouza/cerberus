@@ -12,6 +12,7 @@ whole `kustomization.yaml` via `kubectl apply -k`.
 | `namespace.yaml`          | The `cerberus` namespace everything lives in.                                        |
 | `clickhouse.yaml`         | Single-node ClickHouse (Deployment + Service) backing the `otel` database.           |
 | `cerberus.yaml`           | Cerberus Deployment + NodePort Service (host `:8080`).                               |
+| `cerberus-hpa.yaml`       | HorizontalPodAutoscaler scaling cerberus on CPU utilisation (2–10 replicas).         |
 | `grafana.yaml`            | Grafana 11 with provisioned Cerberus-{Prometheus,Loki,Tempo} datasources.            |
 | `grafana-dashboards.yaml` | Dashboard provider config + `Cerberus self-observability` dashboard ConfigMap.       |
 | `otel-collector.yaml`     | Gateway Deployment + per-node DaemonSet, RBAC, ServiceAccount, two ConfigMaps.       |
@@ -87,6 +88,58 @@ gate test execution on the pipeline being live (it usually takes
   pinned in `go.mod`. Bump in lockstep when the fork moves.
 - `ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.116.0`
   — same family, published as a separate image.
+
+## Horizontal scale-out (HPA)
+
+`cerberus-hpa.yaml` ships a `HorizontalPodAutoscaler` targeting the
+`cerberus` Deployment. It is wired into `kustomization.yaml` so
+`just e2e-up` (and any `kubectl apply -k deploy/k3s/`) brings the
+autoscaler up alongside everything else.
+
+Defaults:
+
+- `minReplicas: 2`, `maxReplicas: 10`.
+- Scales on **CPU utilisation** at 70% of the pod's CPU request. The
+  standard `metrics-server` is the only dependency (already present
+  in k3d/k3s). No prometheus-adapter, no prometheus-operator.
+- Scale-up: up to 3 pods per 60s, 30s stabilisation window.
+- Scale-down: 1 pod per 300s, 5-minute stabilisation window.
+
+The Deployment manifest deliberately omits the `replicas:` field so
+the HPA owns the count. Setting both would cause the controllers to
+fight on every reconcile.
+
+### Verifying
+
+```sh
+kubectl -n cerberus get hpa cerberus
+kubectl -n cerberus describe hpa cerberus
+```
+
+The output should show `TARGETS  70%/<current>%` and
+`MINPODS  2`, `MAXPODS  10`. If `TARGETS` is `<unknown>/70%`,
+metrics-server has not reported yet — give it 60 seconds after the
+pods become Ready.
+
+### Tuning
+
+- **Bigger ceiling** — raise `maxReplicas` once the upstream
+  ClickHouse cluster can absorb the parallel query load.
+- **Quieter scale-down** — increase `scaleDown.stabilizationWindowSeconds`
+  for workloads with predictable diurnal dips.
+- **Load-aware scaling** — see the commented block at the bottom of
+  `cerberus-hpa.yaml` for the prometheus-adapter recipe that scales
+  on `rate(cerberus_queries_total[1m])` instead of CPU.
+
+### Pairing with admission caps
+
+When `CERBERUS_MAX_INFLIGHT_PROM` / `_LOKI` / `_TEMPO` / `_TAIL` are
+set, a saturated pod returns `503 Retry-After` immediately rather
+than queuing work that ClickHouse cannot keep up with. Average CPU
+utilisation across the remaining pods stays high, the HPA spawns the
+next replica, and the new pod takes its share of traffic on the
+following load-balancer hash. The admission caps protect ClickHouse
+while the HPA grows the pool.
 
 ## Cleaning up
 

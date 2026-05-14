@@ -47,7 +47,10 @@ metadata:
   labels:
     app: cerberus
 spec:
-  replicas: 1
+  # replicas is intentionally omitted — the HorizontalPodAutoscaler in
+  # cerberus-hpa.yaml owns this field. Setting it here would cause the
+  # Deployment controller and the HPA to fight over the replica count
+  # on every reconcile. The HPA's minReplicas (2) defines the floor.
   strategy:
     type: RollingUpdate
   selector:

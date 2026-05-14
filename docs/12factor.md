@@ -180,6 +180,42 @@ A single cerberus process is itself concurrent: the standard
 ClickHouse driver pool serves them from a shared connection set.
 There is no `--workers` flag because there is no need for one.
 
+### Kubernetes HorizontalPodAutoscaler
+
+`deploy/k3s/cerberus-hpa.yaml` ships a ready-to-apply HPA recipe that
+makes this concrete:
+
+- **Replica bounds:** `minReplicas: 2` (survives a single-pod failure
+  without dropping below one healthy serving pod) and `maxReplicas: 10`
+  (a conservative ceiling; lift it per cluster as ClickHouse capacity
+  allows).
+- **Scaling signal:** CPU utilisation at 70% of the pod's CPU request.
+  Cerberus's hot path (parse → lower → optimize → emit) is CPU-bound on
+  the gateway side, so CPU is a faithful load proxy. The standard
+  `metrics-server` (bundled with k3d/k3s) is the only dependency —
+  no prometheus-adapter required.
+- **Scale-up is fast, scale-down is slow.** Up to 3 new pods per 60s
+  window with a 30s stabilisation window absorbs bursty traffic
+  quickly; at most 1 pod per 300s window with a 5-minute stabilisation
+  window avoids thrashing on transient dips.
+- **Load-aware alternative.** A commented block in the same manifest
+  documents the prometheus-adapter wiring required to scale on
+  `rate(cerberus_queries_total[1m])` once a cluster ships a Prometheus
+  stack. The CPU path keeps working as a safety net in parallel.
+
+The Deployment manifest deliberately omits the `replicas:` field so
+the HPA owns it — otherwise the Deployment controller and the HPA
+fight on every reconcile. The HPA's `minReplicas` defines the floor.
+
+Per-handler admission control (`CERBERUS_MAX_INFLIGHT_PROM` /
+`_LOKI` / `_TEMPO` / `_TAIL`) pairs naturally with horizontal
+scale-out: once a single pod hits its in-flight cap, it returns `503
+Retry-After` immediately, the average CPU utilisation across the
+remaining pods stays high, and the HPA spawns the next replica. The
+two mechanisms are complementary, not redundant: admission caps
+defend ClickHouse from a thundering herd while the HPA is still
+catching up.
+
 ## Factor IX — Disposability
 
 > Maximize robustness with fast startup and graceful shutdown.

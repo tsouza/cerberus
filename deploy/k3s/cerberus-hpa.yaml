@@ -1,0 +1,108 @@
+---
+# HorizontalPodAutoscaler for the cerberus Deployment.
+#
+# Cerberus is stateless (ClickHouse holds all state), so horizontal scale-out
+# is the right scaling lever — adding replicas behind the Service distributes
+# load without coordination. This manifest ships a CPU-based recipe that
+# works on any Kubernetes cluster with the standard `metrics-server`
+# installed (which k3d/k3s ship by default). For load-aware scaling using
+# the cerberus self-metric `cerberus_queries_total`, see the alternative
+# block at the bottom of this file and `deploy/k3s/README.md`.
+#
+# Why CPU as the default trigger:
+#   - metrics-server is universally available; the prometheus-adapter +
+#     prometheus-operator stack required for custom metrics is not part
+#     of this manifest set today.
+#   - Cerberus's hot path (parse → lower → optimize → emit) is CPU-bound
+#     on the gateway side; ClickHouse handles the heavy I/O. CPU
+#     utilisation is therefore a faithful proxy for query load.
+#
+# Replica bounds:
+#   - minReplicas: 2 — survives a single-pod failure (rolling restarts,
+#     node drains, OOM kills) without dropping below one healthy pod.
+#   - maxReplicas: 10 — conservative ceiling. Operators with larger
+#     ClickHouse clusters can lift this; the gateway itself is cheap
+#     (~64Mi memory request) but the upstream CH cluster must absorb
+#     the parallel query load.
+#
+# Scale behaviour:
+#   - Scale-up is fast: at most 3 pods per 60s window, with a 30s
+#     stabilisation window. Bursty query traffic gets capacity quickly.
+#   - Scale-down is slow: at most 1 pod per 300s window, with a 5-minute
+#     stabilisation window. Avoids thrashing on transient dips.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: cerberus
+  namespace: cerberus
+  labels:
+    app: cerberus
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: cerberus
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          # 70% of the pod's CPU request (100m in cerberus.yaml) — leaves
+          # headroom for the burst between an HPA scrape and the new pod
+          # becoming Ready.
+          averageUtilization: 70
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 30
+      policies:
+        - type: Pods
+          value: 3
+          periodSeconds: 60
+      selectPolicy: Max
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 300
+      selectPolicy: Max
+# -----------------------------------------------------------------------------
+# Alternative: load-aware scaling on cerberus_queries_total (commented out).
+#
+# When the cluster ships a Prometheus + prometheus-adapter stack that
+# scrapes the OTel Collector's `prometheus` exporter (or scrapes cerberus
+# directly via a future `/metrics` endpoint), the HPA can scale on real
+# query rate instead of CPU. Replace the `metrics:` block above with:
+#
+#   metrics:
+#     - type: Pods
+#       pods:
+#         metric:
+#           name: cerberus_queries_per_second
+#         target:
+#           type: AverageValue
+#           # ~50 queries/sec/pod — tune to the workload. Past this point
+#           # the HPA scales out. Pair with CERBERUS_MAX_INFLIGHT_*
+#           # admission caps so a saturated pod returns 503 Retry-After
+#           # while the HPA spawns its replacement.
+#           averageValue: "50"
+#
+# Wiring sketch:
+#   1. Add a `prometheus` exporter to the OTel Collector gateway config
+#      (deploy/k3s/otel-collector.yaml) so cerberus.queries.total is
+#      exposed in Prometheus exposition format on :8889/metrics.
+#   2. Install the kube-prometheus-stack chart (or prometheus-operator +
+#      prometheus-adapter) in the cluster.
+#   3. Add a ServiceMonitor selecting the otel-collector-gateway service
+#      so Prometheus scrapes the gateway.
+#   4. Configure prometheus-adapter to expose
+#      rate(cerberus_queries_total[1m]) (summed per cerberus pod) as the
+#      external metric `cerberus_queries_per_second`.
+#   5. Switch this HPA's `metrics:` block to the Pods-metric form above.
+#
+# The CPU path keeps working as a safety net while custom metrics are
+# being rolled out — the HPA can carry both metric blocks and will scale
+# on whichever signal demands more replicas.
