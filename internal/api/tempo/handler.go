@@ -104,7 +104,11 @@ func New(client Querier, s schema.Traces, version string, logger *slog.Logger) *
 // Mount registers the Tempo-compatible endpoints under /api/ on mux.
 // /api/echo + /api/status/version satisfy Grafana's datasource health
 // check; /api/search runs a TraceQL query; /api/traces/{id} fetches a
-// single trace by ID.
+// single trace by ID; /api/metrics/query_range evaluates a TraceQL
+// metrics pipeline (`| rate()`, `| count_over_time()`, `| *_over_time(...)`)
+// against the spans table and returns the matrix in Tempo's
+// series-of-samples envelope (the shape Grafana's service-graph and
+// metrics dashboards consume).
 func (h *Handler) Mount(mux *http.ServeMux) {
 	// Every Tempo endpoint flows through the cerberus.queries.* counter
 	// + duration middleware. /api/echo and /api/status/version
@@ -125,6 +129,7 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	register("GET /api/v2/search/tags", h.handleSearchTagsV2)
 	register("GET /api/v2/search/tag/{name}/values", h.handleSearchTagValuesV2)
 	register("GET /api/traces/{id}", h.handleTraceByID)
+	register("GET /api/metrics/query_range", h.handleMetricsQueryRange)
 }
 
 func (h *Handler) handleEcho(w http.ResponseWriter, _ *http.Request) {

@@ -271,17 +271,46 @@ test.describe('Tempo UX — Search flows', () => {
     expect(body.message, 'envelope.message present').toBeTruthy();
   });
 
-  test('service graph: tempo metrics_query_range endpoint not yet implemented', async ({
+  test('service graph: tempo metrics_query_range returns matrix envelope', async ({
     request,
   }) => {
-    test.skip(
-      true,
-      'service graph requires /api/metrics/query_range (Tempo metrics_query_range). ' +
-        'Not yet implemented in cerberus tempo handler — RC4 metrics-from-traces work.',
+    // Grafana's service-graph view calls /api/metrics/query_range with
+    // a TraceQL metrics pipeline (`| rate()`, `| count_over_time()`,
+    // `| *_over_time(...)` etc.) for inter-service rate + duration.
+    // Cerberus answers with Tempo's native series-of-samples envelope:
+    //   {series: [{labels: [{key, value}], samples: [{timestampMs, value}]}]}
+    // The Playwright suite seeds three traces (see L10 seed); a
+    // `| count_over_time() by (resource.service.name)` should return at
+    // least one series whose label set names the seeded service.
+    const start = Math.floor(Date.now() / 1000) - 3600; // last hour
+    const end = Math.floor(Date.now() / 1000);
+    const q = '{} | count_over_time() by (resource.service.name)';
+    const params = new URLSearchParams({
+      q,
+      start: String(start),
+      end: String(end),
+      step: '60s',
+    });
+    const resp = await request.get(
+      `${tempoProxy}/metrics/query_range?${params.toString()}`,
     );
-    // When implemented, replace with:
-    //   const resp = await request.get(`${tempoProxy}/metrics/query_range?q=...`);
-    //   expect(resp.status()).toBe(200);
-    void request;
+    expect(resp.status(), 'metrics/query_range 200').toBe(200);
+    const body = await resp.json();
+    expect(Array.isArray(body.series), 'series is array').toBe(true);
+    // The envelope must be parseable even when no spans match the
+    // step window — Grafana's datasource short-circuits on null.
+    // Per-series shape checks only fire when CH actually returned rows.
+    for (const s of body.series ?? []) {
+      expect(Array.isArray(s.labels), 'series.labels is array').toBe(true);
+      expect(Array.isArray(s.samples), 'series.samples is array').toBe(true);
+      for (const lbl of s.labels) {
+        expect(typeof lbl.key, 'label.key is string').toBe('string');
+        expect(typeof lbl.value, 'label.value is string').toBe('string');
+      }
+      for (const smp of s.samples) {
+        expect(typeof smp.timestampMs, 'sample.timestampMs is number').toBe('number');
+        expect(typeof smp.value, 'sample.value is number').toBe('number');
+      }
+    }
   });
 });
