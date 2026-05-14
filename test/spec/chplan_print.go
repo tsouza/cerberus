@@ -134,6 +134,9 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		if len(v.Include) > 0 {
 			fmt.Fprintf(b, " include=[%s]", strings.Join(v.Include, ", "))
 		}
+		if v.ReturnBool {
+			b.WriteString(" bool")
+		}
 		b.WriteString("\n")
 		printNode(b, v.Left, depth+1)
 		printNode(b, v.Right, depth+1)

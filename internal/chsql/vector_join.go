@@ -345,16 +345,20 @@ func writeOutputAttributes(b *Builder, j *chplan.VectorJoin) {
 }
 
 // vectorJoinValueExprFrag returns a Frag for the joined value
-// expression: `(L.<val> <op> R.<val>) AS <val>`.
+// expression. The default shape is `(L.<val> <op> R.<val>) AS <val>`.
+//
+// When ReturnBool is set on a comparison op (PromQL `lhs > bool rhs`),
+// the binary result is wrapped with `toFloat64(...)` so every matched
+// pair emits 1.0 or 0.0 instead of being dropped by the comparison —
+// matching Prometheus's `bool` semantics for V-V comparisons.
 func vectorJoinValueExprFrag(j *chplan.VectorJoin) Frag {
-	return func(b *Builder) {
-		b.writeSQL("(")
-		writeSideCol(b, "L", j.ValueColumn)
-		b.writeSQL(" " + string(j.Op) + " ")
-		writeSideCol(b, "R", j.ValueColumn)
-		b.writeSQL(") AS ")
-		b.Ident(j.ValueColumn)
+	left := qualColFrag("L", j.ValueColumn)
+	right := qualColFrag("R", j.ValueColumn)
+	inner := Paren(binOp(string(j.Op), left, right))
+	if j.ReturnBool {
+		inner = Call("toFloat64", inner)
 	}
+	return As(inner, j.ValueColumn)
 }
 
 // qualColFrag returns a Frag for `<bareSide>.<col>` — the bare-alias

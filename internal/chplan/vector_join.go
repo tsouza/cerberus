@@ -59,6 +59,16 @@ const (
 // the matching key (carrying the Include labels), and the output's
 // Attributes map merges the right's Include values onto the left's
 // Attributes. CardOneToMany mirrors the orientation.
+//
+// ReturnBool models PromQL's `bool` modifier on a comparison op. When
+// the input op is one of the six comparison ops (=, !=, <, <=, >, >=)
+// and ReturnBool is true, the emitter produces `toFloat64(L.Value <Op>
+// R.Value)` instead of the default `(L.Value <Op> R.Value)` so the
+// join keeps every matched pair (emitting 1.0 / 0.0 per pair) rather
+// than letting the comparison drop non-matching rows the way the
+// default V-V comparison shape would in Prometheus. The flag has no
+// effect for non-comparison ops; lowerings set it only for ops where
+// `isComparison(Op)` holds.
 type VectorJoin struct {
 	Left  Node
 	Right Node
@@ -70,6 +80,12 @@ type VectorJoin struct {
 	// Include is the `group_left(<labels>)` / `group_right(<labels>)`
 	// extra-label list. Nil/empty when no Include was specified.
 	Include []string
+	// ReturnBool models PromQL's `bool` modifier on a comparison op
+	// (`lhs > bool rhs`). Only meaningful when `Op` is a comparison op;
+	// the emitter wraps the per-pair binary result with `toFloat64(...)`
+	// so every matched pair surfaces as 1.0 / 0.0 rather than being
+	// filtered out by the comparison.
+	ReturnBool bool
 
 	MetricNameColumn string
 	AttributesColumn string
@@ -90,6 +106,9 @@ func (v *VectorJoin) Equal(other Node) bool {
 		return false
 	}
 	if v.Card != o.Card || !slices.Equal(v.Include, o.Include) {
+		return false
+	}
+	if v.ReturnBool != o.ReturnBool {
 		return false
 	}
 	if v.MetricNameColumn != o.MetricNameColumn ||

@@ -55,9 +55,16 @@ func lowerBinary(b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (chplan.N
 // promBinaryOp doesn't yet support anyway, but we surface a clean
 // "many-to-many matching not allowed" error to match Prometheus's wording
 // rather than the lower-level "binary op not yet supported".
+//
+// The `bool` modifier on a comparison op (`lhs > bool rhs`) threads into
+// `chplan.VectorJoin.ReturnBool`; the emitter wraps the per-pair binary
+// result in `toFloat64(...)` so every matched pair surfaces as 1.0 / 0.0
+// rather than the comparison dropping non-matching rows. The modifier is
+// rejected for non-comparison ops to match Prometheus's parser-level
+// guard ("bool modifier is only allowed for comparison operators").
 func lowerVectorVector(b *parser.BinaryExpr, s schema.Metrics, op chplan.BinaryOp, ctx lowerCtx) (chplan.Node, error) {
-	if b.ReturnBool {
-		return nil, fmt.Errorf("promql: 'bool' modifier on vector-vector binary ops is not yet supported")
+	if b.ReturnBool && !isComparison(op) {
+		return nil, fmt.Errorf("promql: 'bool' modifier is only allowed on comparison binary ops")
 	}
 
 	card := chplan.CardOneToOne
@@ -108,6 +115,7 @@ func lowerVectorVector(b *parser.BinaryExpr, s schema.Metrics, op chplan.BinaryO
 		Match:            match,
 		Card:             card,
 		Include:          include,
+		ReturnBool:       b.ReturnBool,
 		MetricNameColumn: s.MetricNameColumn,
 		AttributesColumn: s.AttributesColumn,
 		TimestampColumn:  s.TimestampColumn,
