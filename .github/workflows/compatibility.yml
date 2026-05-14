@@ -32,9 +32,23 @@ jobs:
     name: prometheus/compliance
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # Informational until M6 — set up the harness now so each M1.x can use it,
-    # gate it on the required-status-checks list at RC1 cut.
-    continue-on-error: true
+    # NOTE: job-level `continue-on-error: true` was REMOVED here on
+    # purpose. Previously it combined with `if: always()` on Summarise
+    # / Upload to make every job-level failure (e.g. CH container
+    # unhealthy → `docker compose up` aborts) report a green workflow
+    # conclusion. 20+ consecutive main pushes ran red-at-job /
+    # green-at-workflow before this was caught.
+    #
+    # The new contract: the workflow conclusion MUST track the job
+    # conclusion. Summary + artifact upload still run on failure
+    # (`if: always()` on those steps), but the explicit
+    # "Fail job if compatibility step failed" step at the end
+    # re-raises a non-zero exit when the harness step diverged or
+    # crashed, so the workflow badge / GH Project status correctly
+    # turns red.
+    #
+    # Promoting this to a required PR check at RC1 cut is a separate
+    # decision tracked in docs/roadmap.md.
     steps:
       - uses: actions/checkout@v6
         with:
@@ -51,6 +65,11 @@ jobs:
           tool: just
 
       - name: Run compatibility harness
+        id: compat
+        # IMPORTANT: do NOT add `continue-on-error: true` here.
+        # We rely on this step's outcome to drive the workflow's
+        # red/green state. `id: compat` lets later steps inspect
+        # `steps.compat.outcome` without masking the failure.
         env:
           # The tester binary needs Go 1.21+; we already have it from setup-go.
           # The seed window anchors at 2026-05-11T00:00:00Z (see
@@ -70,7 +89,7 @@ jobs:
               unexpected_failures: ([.results[]? | select(.unexpectedFailure != null)] | length)
             }' harness/compatibility/report.json
           else
-            echo "no report produced"
+            echo "no report produced (harness step likely failed before tester ran)"
           fi
 
       - name: Upload report
@@ -81,3 +100,13 @@ jobs:
           path: harness/compatibility/report.json
           if-no-files-found: warn
           retention-days: 30
+
+      - name: Fail job if compatibility step failed
+        # Last step in the job. Re-raises the harness step's failure
+        # AFTER the summary and artifact have been emitted, so the
+        # workflow conclusion mirrors the harness outcome instead of
+        # being masked by `if: always()` housekeeping above.
+        if: always() && steps.compat.outcome == 'failure'
+        run: |
+          echo "::error title=compatibility suite failed::compatibility harness (steps.compat) exited non-zero — see the 'Run compatibility harness' step log and the uploaded compatibility-report artifact"
+          exit 1
