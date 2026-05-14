@@ -202,15 +202,19 @@ type lokiStub struct{ samples []chclient.Sample }
 func (s *lokiStub) Query(_ context.Context, _ string, _ ...any) ([]chclient.Sample, error) {
 	return s.samples, nil
 }
+
 func (s *lokiStub) QueryStrings(_ context.Context, _ string, _ ...any) ([]string, error) {
 	return nil, nil
 }
+
 func (s *lokiStub) QueryIndexStats(_ context.Context, _ string, _ ...any) (chclient.IndexStatsRow, error) {
 	return chclient.IndexStatsRow{}, nil
 }
+
 func (s *lokiStub) QueryIndexVolume(_ context.Context, _ string, _ ...any) ([]chclient.IndexVolumeRow, error) {
 	return nil, nil
 }
+
 func (s *lokiStub) QueryLabelSets(_ context.Context, _ string, _ ...any) ([]map[string]string, error) {
 	return nil, nil
 }
@@ -278,6 +282,7 @@ type tempoStub struct{ samples []chclient.Sample }
 func (s *tempoStub) Query(_ context.Context, _ string, _ ...any) ([]chclient.Sample, error) {
 	return s.samples, nil
 }
+
 func (s *tempoStub) QueryStrings(_ context.Context, _ string, _ ...any) ([]string, error) {
 	return nil, nil
 }
@@ -350,15 +355,19 @@ type failingProm struct {
 func (f *failingProm) Query(_ context.Context, _ string, _ ...any) ([]chclient.Sample, error) {
 	return nil, f.err
 }
+
 func (f *failingProm) QueryCursor(_ context.Context, _ string, _ ...any) (chclient.Cursor, error) {
 	return nil, f.err
 }
+
 func (f *failingProm) QueryStrings(_ context.Context, _ string, _ ...any) ([]string, error) {
 	return nil, f.err
 }
+
 func (f *failingProm) QueryLabelSets(_ context.Context, _ string, _ ...any) ([]map[string]string, error) {
 	return nil, f.err
 }
+
 func (f *failingProm) QueryMetricMeta(_ context.Context, _, _ string, _ ...any) ([]chclient.MetricMetaRow, error) {
 	return nil, f.err
 }
