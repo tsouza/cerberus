@@ -194,11 +194,11 @@ immediately with HTTP `503 Service Unavailable` and a
 `Retry-After: 1` header so well-behaved clients back off rather than
 piling onto an already-overloaded ClickHouse.
 
-| Variable                   | Default | Meaning                                                                                  |
-| -------------------------- | ------- | ---------------------------------------------------------------------------------------- |
-| `CERBERUS_ADMIT_DISABLED`  | `false` | When `true`, removes admission control entirely. Useful for local dev / load tests.      |
-| `CERBERUS_ADMIT_PROM`      | `64`    | Maximum simultaneous in-flight Prom API requests. `0` disables this head specifically.   |
-| `CERBERUS_ADMIT_LOKI`      | `64`    | Maximum simultaneous in-flight Loki API requests. `0` disables this head specifically.   |
+| Variable                   | Default | Meaning                                                                                                              |
+| -------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------- |
+| `CERBERUS_ADMIT_DISABLED`  | `false` | When `true`, removes admission control entirely. Useful for local dev / load tests.                                  |
+| `CERBERUS_ADMIT_PROM`      | `64`    | Maximum simultaneous in-flight Prom API requests. `0` disables this head specifically.                               |
+| `CERBERUS_ADMIT_LOKI`      | `64`    | Maximum simultaneous in-flight Loki API requests. `0` disables this head specifically.                               |
 | `CERBERUS_ADMIT_TEMPO`     | `32`    | Maximum simultaneous in-flight Tempo API requests. Lower than Prom/Loki because trace queries are typically heavier. |
 
 Rejections are emitted on the `cerberus.admit.rejected_total` OTel
