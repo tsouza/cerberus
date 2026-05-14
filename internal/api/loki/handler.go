@@ -7,48 +7,28 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/grafana/loki/v3/pkg/logql/syntax"
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/trace"
 
 	"github.com/tsouza/cerberus/internal/api/admit"
 	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/api/httperr"
-	"github.com/tsouza/cerberus/internal/cerbtrace"
 	"github.com/tsouza/cerberus/internal/chclient"
-	"github.com/tsouza/cerberus/internal/chplan"
-	"github.com/tsouza/cerberus/internal/chsql"
+	"github.com/tsouza/cerberus/internal/engine"
 	"github.com/tsouza/cerberus/internal/logql"
 	"github.com/tsouza/cerberus/internal/optimizer"
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/telemetry"
 )
 
-// tracer emits the `parse` pipeline-stage span before the LogQL parser
-// runs. The subsequent lower / optimize / emit / execute stages carry
-// their own tracers from their owning packages.
-var tracer = otel.Tracer("github.com/tsouza/cerberus/internal/api/loki")
-
-// parseExpr wraps syntax.ParseExpr in a `parse` pipeline-stage span.
-// The QL identifier and the (truncated) query string land on the span
-// as `cerberus.ql` + `cerberus.query`.
-func parseExpr(ctx context.Context, query string) (syntax.Expr, error) {
-	_, span := tracer.Start(ctx, cerbtrace.SpanParse,
-		trace.WithAttributes(cerbtrace.ParseAttrs("logql", query)...))
-	defer span.End()
-	expr, err := syntax.ParseExpr(query)
-	if err != nil {
-		span.RecordError(err)
-		return nil, err
-	}
-	return expr, nil
-}
-
-// Querier is the subset of *chclient.Client that the Handler needs.
-// Mirrors the api/prom Querier interface for the same stub-in-tests
-// reasons.
+// Querier is the subset of *chclient.Client that the Handler needs for
+// the non-engine endpoints (labels / series / index-stats / volume /
+// detected-fields / tail). The /query and /query_range data-plane
+// endpoints now run through engine.Engine, which carries its own
+// narrower Querier — Handler still owns this broader interface so
+// the metadata endpoints can stub it in tests.
 type Querier interface {
 	Query(ctx context.Context, sql string, args ...any) ([]chclient.Sample, error)
 	QueryStrings(ctx context.Context, sql string, args ...any) ([]string, error)
@@ -70,6 +50,18 @@ type Handler struct {
 	Optimizer *optimizer.Driver
 	Logger    *slog.Logger
 
+	// Engine drives the /query and /query_range data-plane endpoints
+	// (parse → lower → wrap-projection → optimize → emit → execute).
+	// Constructed lazily in New so callers don't need to wire it
+	// explicitly; the engine.Engine instance shares this handler's
+	// Optimizer + Client.
+	Engine *engine.Engine
+
+	// Lang adapts LogQL to the engine pipeline — owns parse + lower +
+	// the metric-vs-stream wrap-projection switch. Held as a value
+	// pointer so the Schema field can travel with it.
+	Lang *logql.Lang
+
 	// Limiter caps in-flight Loki API requests. nil disables the
 	// admission middleware. Wired from CERBERUS_ADMIT_LOKI.
 	Limiter *admit.Limiter
@@ -80,11 +72,14 @@ func New(client Querier, s schema.Logs, logger *slog.Logger) *Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	opt := optimizer.Default()
 	return &Handler{
 		Client:    client,
 		Schema:    s,
-		Optimizer: optimizer.Default(),
+		Optimizer: opt,
 		Logger:    logger,
+		Engine:    &engine.Engine{Optimizer: opt, Client: client},
+		Lang:      &logql.Lang{Schema: s},
 	}
 }
 
@@ -141,21 +136,15 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	parseT := telemetry.ObserveStage(telemetry.StageParse)
-	expr, err := parseExpr(r.Context(), q)
-	parseT.Done(r.Context())
+	res, err := h.Engine.Query(r.Context(), h.Lang, q)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, ErrBadData, err)
+		h.respondError(w, classifyEngineErr(err))
 		return
 	}
+	expr, _ := res.Meta.Extra["expr"].(syntax.Expr)
+	h.Logger.Debug("cerberus loki query", "logql", q, "sql", res.SQL, "args", res.Args)
 
-	samples, err := h.execute(r.Context(), expr)
-	if err != nil {
-		h.respondError(w, err)
-		return
-	}
-
-	data, err := buildInstantData(expr, samples, ts, h.Schema)
+	data, err := buildInstantData(expr, res.Samples, ts, h.Schema)
 	if err != nil {
 		h.respondError(w, err)
 		return
@@ -194,21 +183,15 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	parseT := telemetry.ObserveStage(telemetry.StageParse)
-	expr, err := parseExpr(r.Context(), q)
-	parseT.Done(r.Context())
+	res, err := h.Engine.Query(r.Context(), h.Lang, q)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, ErrBadData, err)
+		h.respondError(w, classifyEngineErr(err))
 		return
 	}
+	expr, _ := res.Meta.Extra["expr"].(syntax.Expr)
+	h.Logger.Debug("cerberus loki query_range", "logql", q, "sql", res.SQL, "args", res.Args)
 
-	samples, err := h.execute(r.Context(), expr)
-	if err != nil {
-		h.respondError(w, err)
-		return
-	}
-
-	data, err := buildRangeData(expr, samples, start, end, step, h.Schema)
+	data, err := buildRangeData(expr, res.Samples, start, end, step, h.Schema)
 	if err != nil {
 		h.respondError(w, err)
 		return
@@ -220,108 +203,37 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// execute lowers a parsed LogQL expression, wraps with a sample-shape
-// projection, optimizes, emits SQL, and runs the query. Each stage is
-// timed onto the cerberus.pipeline.stage.duration.seconds histogram
-// (RC4 R4.4); parse already happened in the caller.
-func (h *Handler) execute(ctx context.Context, expr syntax.Expr) ([]chclient.Sample, error) {
-	lowerT := telemetry.ObserveStage(telemetry.StageLower)
-	plan, err := logql.Lower(ctx, expr, h.Schema)
-	lowerT.Done(ctx)
-	if err != nil {
-		return nil, &apiError{Kind: ErrExecution, Err: err, Status: http.StatusUnprocessableEntity}
+// classifyEngineErr maps the error chains engine.Engine returns onto
+// the Loki HTTP error vocabulary. Parse-stage errors arrive already
+// wrapped in *apiError by [logql.Lang.Parse] (400 bad_data for parser
+// failures, 422 execution for lower failures), so errors.As pulls them
+// out unchanged. Engine-wrapped emit / execute errors are bare wrapped
+// strings — we sniff the stage prefix to map emit → 500 and execute →
+// 502 with the right Loki errorType.
+func classifyEngineErr(err error) error {
+	if err == nil {
+		return nil
 	}
-
-	plan = wrapWithLogSampleProjection(plan, h.Schema, expr)
-	optT := telemetry.ObserveStage(telemetry.StageOptimize)
-	plan = h.Optimizer.Run(ctx, plan)
-	optT.Done(ctx)
-
-	emitT := telemetry.ObserveStage(telemetry.StageEmit)
-	sqlStr, args, err := chsql.Emit(ctx, plan)
-	emitT.Done(ctx)
-	if err != nil {
-		return nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError}
+	var apiErr *apiError
+	if errors.As(err, &apiErr) {
+		return apiErr
 	}
-	h.Logger.Debug("cerberus loki query", "logql", expr.String(), "sql", sqlStr, "args", args)
-
-	execT := telemetry.ObserveStage(telemetry.StageExecute)
-	samples, err := h.Client.Query(chclient.WithProgressFor(ctx, "logql"), sqlStr, args...)
-	execT.Done(ctx)
-	if err != nil {
-		h.Logger.Error("cerberus loki CH query failed", "err", err, "sql", sqlStr)
-		return nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
+	msg := err.Error()
+	switch {
+	case strings.HasPrefix(msg, "engine: execute:"):
+		return &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
+	case strings.HasPrefix(msg, "engine: emit:"):
+		return &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError}
+	default:
+		return &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError}
 	}
-	return samples, nil
-}
-
-// wrapWithLogSampleProjection adds a Project on top of plan so the
-// chclient.Sample scanner can decode rows positionally. For metric
-// queries (rate, count_over_time, sum(...)) the lowered plan already
-// produces (MetricName, Attributes, TimeUnix, Value) — the projection
-// is an explicit pass-through. For raw log-stream queries
-// ({selector} ...) the projection synthesises an empty MetricName, the
-// Body column as a synthetic stringified Value (decoded as a string by
-// the streams formatter), and the per-record Timestamp.
-func wrapWithLogSampleProjection(plan chplan.Node, s schema.Logs, expr syntax.Expr) chplan.Node {
-	if isMetricQuery(expr) {
-		// Metric queries lower to RangeWindow / Aggregate / Filter(Aggregate),
-		// whose output is just (group-keys…, value). MetricName + TimeUnix
-		// don't exist in that scope — synthesise them so the chclient
-		// Sample scanner has the four positional columns it expects.
-		return &chplan.Project{
-			Input: plan,
-			Projections: []chplan.Projection{
-				{Expr: &chplan.LitString{V: ""}, Alias: "MetricName"},
-				{Expr: &chplan.ColumnRef{Name: s.ResourceAttributesColumn}, Alias: "Attributes"},
-				// now64(9) - 5s buffer; see prom handler's synthesizedAnchor
-				// docstring. Avoids toMatrixStepGrid dropping the only row
-				// when CH-now > client-end.
-				{Expr: &chplan.Binary{
-					Op:    chplan.OpSub,
-					Left:  &chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}},
-					Right: &chplan.FuncCall{Name: "toIntervalNanosecond", Args: []chplan.Expr{&chplan.LitInt{V: 5_000_000_000}}},
-				}, Alias: "TimeUnix"},
-				{Expr: &chplan.ColumnRef{Name: "value"}, Alias: "Value"},
-			},
-		}
-	}
-	// Log-stream query: chclient.Sample is (MetricName, Attributes, Timestamp,
-	// Value) where Value is float64. The log line `Body` is a String, so it
-	// can't ride in Value — instead we put it in MetricName (also a String)
-	// and write a 0.0 placeholder into Value. toStreamsWithTransform reads
-	// back from Sample.MetricName as the line content.
-	return &chplan.Project{
-		Input: plan,
-		Projections: []chplan.Projection{
-			{Expr: &chplan.ColumnRef{Name: s.BodyColumn}, Alias: "MetricName"},
-			{Expr: &chplan.ColumnRef{Name: s.ResourceAttributesColumn}, Alias: "Attributes"},
-			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: "TimeUnix"},
-			// Wrap the placeholder zero in toFloat64 so CH returns the column
-			// as Float64; without the cast a bare `0` literal becomes UInt8
-			// and clickhouse-go's Scan rejects UInt8 → *float64.
-			{Expr: &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{&chplan.LitFloat{V: 0}}}, Alias: "Value"},
-		},
-	}
-}
-
-// isMetricQuery reports whether the parsed LogQL expression produces a
-// numeric series (rate / count_over_time / aggregations) versus a raw
-// log-line stream.
-func isMetricQuery(expr syntax.Expr) bool {
-	switch expr.(type) {
-	case *syntax.RangeAggregationExpr, *syntax.VectorAggregationExpr,
-		*syntax.LiteralExpr, *syntax.BinOpExpr, *syntax.LabelReplaceExpr:
-		return true
-	}
-	return false
 }
 
 // buildInstantData turns the sample stream into a Loki instant-query
 // data body. Metric queries produce a vector; log queries produce
 // streams.
 func buildInstantData(expr syntax.Expr, samples []chclient.Sample, ts time.Time, _ schema.Logs) (*QueryData, error) {
-	if isMetricQuery(expr) {
+	if logql.IsMetricQuery(expr) {
 		return &QueryData{
 			ResultType: "vector",
 			Result:     toVector(samples, ts),
@@ -341,7 +253,7 @@ func buildInstantData(expr syntax.Expr, samples []chclient.Sample, ts time.Time,
 // body. Metric queries produce a matrix (per-step latest value per
 // series). Log queries produce streams.
 func buildRangeData(expr syntax.Expr, samples []chclient.Sample, start, end time.Time, step time.Duration, _ schema.Logs) (*QueryData, error) {
-	if isMetricQuery(expr) {
+	if logql.IsMetricQuery(expr) {
 		return &QueryData{
 			ResultType: "matrix",
 			Result:     toMatrixStepGrid(samples, start, end, step),

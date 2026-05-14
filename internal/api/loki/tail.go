@@ -119,7 +119,7 @@ func (h *Handler) handleTail(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return
 	}
-	if isMetricQuery(expr) {
+	if logql.IsMetricQuery(expr) {
 		writeError(w, http.StatusBadRequest, ErrBadData,
 			errors.New("/tail accepts log-line queries only; metric-form queries (rate, count_over_time, ...) are not supported"))
 		return
