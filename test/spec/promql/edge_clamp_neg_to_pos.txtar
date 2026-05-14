@@ -6,3 +6,7 @@ clamp(temperature, -100, 100)
 [2] string = "temperature"
 -- sql --
 SELECT `MetricName`, `Attributes`, `TimeUnix`, greatest(?, least(?, `Value`)) AS `Value` FROM (SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` = ?))
+-- chplan --
+Project [MetricName, Attributes, TimeUnix, greatest(-100, least(100, Value)) AS Value]
+  Filter predicate=(MetricName = "temperature")
+    Scan(otel_metrics_gauge)

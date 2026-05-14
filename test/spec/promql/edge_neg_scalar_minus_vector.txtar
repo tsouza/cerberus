@@ -5,3 +5,7 @@
 [1] string = "up"
 -- sql --
 SELECT `MetricName`, `Attributes`, `TimeUnix`, (? - `Value`) AS `Value` FROM (SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` = ?))
+-- chplan --
+Project [MetricName, Attributes, TimeUnix, (-5 - Value) AS Value]
+  Filter predicate=(MetricName = "up")
+    Scan(otel_metrics_gauge)

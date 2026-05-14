@@ -5,3 +5,6 @@
 [1] string = "api"
 -- sql --
 SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?)
+-- chplan --
+Filter predicate=(ResourceAttributes["job"] = "api")
+  Scan(otel_logs)

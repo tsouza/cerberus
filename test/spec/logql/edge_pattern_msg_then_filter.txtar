@@ -7,3 +7,6 @@
 [3] string = "^$"
 -- sql --
 SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND NOT match(`ResourceAttributes`[?], ?)
+-- chplan --
+Filter predicate=((ResourceAttributes["job"] = "api") AND (ResourceAttributes["msg"] !~ "^$"))
+  Scan(otel_logs)

@@ -8,3 +8,6 @@
 [4] string = "panic"
 -- sql --
 SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (((position(`Body`, ?) > 0) OR (position(`Body`, ?) > 0)) OR (position(`Body`, ?) > 0))
+-- chplan --
+Filter predicate=((ResourceAttributes["job"] = "api") AND ((lineContent(Body, "error", substr) OR lineContent(Body, "fatal", substr)) OR lineContent(Body, "panic", substr)))
+  Scan(otel_logs)

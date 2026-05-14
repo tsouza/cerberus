@@ -11,3 +11,6 @@
 [7] string = "fatal"
 -- sql --
 SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (((`ResourceAttributes`[?] = ?) OR (`ResourceAttributes`[?] = ?)) OR (`ResourceAttributes`[?] = ?))
+-- chplan --
+Filter predicate=((ResourceAttributes["job"] = "api") AND (((ResourceAttributes["level"] = "error") OR (ResourceAttributes["level"] = "warn")) OR (ResourceAttributes["level"] = "fatal")))
+  Scan(otel_logs)

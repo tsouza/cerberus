@@ -5,3 +5,7 @@ up <= bool 1
 [1] string = "up"
 -- sql --
 SELECT `MetricName`, `Attributes`, `TimeUnix`, toFloat64((`Value` <= ?)) AS `Value` FROM (SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` = ?))
+-- chplan --
+Project [MetricName, Attributes, TimeUnix, toFloat64((Value <= 1)) AS Value]
+  Filter predicate=(MetricName = "up")
+    Scan(otel_metrics_gauge)
