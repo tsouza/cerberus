@@ -410,8 +410,8 @@ func TestOptimizer(t *testing.T) {
 		}
 
 		spec.Match(t, c, map[string]string{
-			"unoptimized":       unoptSQL,
-			"optimized":         optSQL,
+			"unoptimized":        unoptSQL,
+			"optimized":          optSQL,
 			"chplan_unoptimized": spec.PrintChplan(input),
 			"chplan_optimized":   spec.PrintChplan(opt),
 		})
