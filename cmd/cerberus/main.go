@@ -30,7 +30,30 @@ import (
 // Version is set at build time by goreleaser.
 var Version = "dev"
 
+// isVersionFlag reports whether argv requests a version dump. cerberus
+// is otherwise env-driven and ignores argv, but `--version` / `-v` /
+// `version` are wired so docker + k8s healthchecks can probe the
+// binary cheaply: the distroless runtime image has no shell, no wget,
+// and no curl, so invoking the binary itself is the only viable
+// healthcheck path. Exported via a function (not inlined in main) so
+// the same dispatch is verified by main_test.go.
+func isVersionFlag(args []string) bool {
+	if len(args) < 2 {
+		return false
+	}
+	switch args[1] {
+	case "--version", "-v", "version":
+		return true
+	}
+	return false
+}
+
 func main() {
+	if isVersionFlag(os.Args) {
+		fmt.Fprintln(os.Stdout, Version)
+		return
+	}
+
 	// Bootstrap logger used only until config.FromEnv returns and the
 	// configured logger replaces it. Text + info matches the configured
 	// defaults so the upgrade is invisible when env vars are unset.
