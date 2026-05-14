@@ -64,6 +64,11 @@ Schema defaults to the [OpenTelemetry ClickHouse Exporter](https://github.com/op
 
 ## Quick start
 
+Cerberus is a [12-factor app](docs/12factor.md): one stateless binary,
+configured entirely via environment variables, treating ClickHouse and
+the optional OTel collector as attached resources. The same image runs
+unchanged under Docker Compose, Kubernetes, or a bare-metal supervisor.
+
 ### Docker Compose (one-command local dev)
 
 ```sh

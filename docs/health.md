@@ -3,7 +3,9 @@
 Cerberus exposes two HTTP endpoints intended for orchestrator probes
 (Kubernetes, Nomad, Docker healthchecks, …). They follow the standard
 12-factor distinction between *liveness* (is the process alive?) and
-*readiness* (is this instance ready to serve traffic?).
+*readiness* (is this instance ready to serve traffic?), and they back
+the graceful-shutdown contract described in factor IX of the
+[12-factor methodology](12factor.md#factor-ix--disposability).
 
 Both endpoints live on the same HTTP listener as the Prom/Loki/Tempo
 APIs (`CERBERUS_HTTP_ADDR`, default `:8080`) and are deliberately served

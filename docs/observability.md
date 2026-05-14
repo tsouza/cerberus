@@ -21,7 +21,9 @@ expanded as the milestones land.
 ## Logging (R4.1, shipped)
 
 Cerberus uses the standard library's [`log/slog`](https://pkg.go.dev/log/slog)
-for structured logging. Two env vars steer the handler:
+for structured logging. Logs are written as an event stream to `stderr`
+(factor XI of the [12-factor methodology](12factor.md#factor-xi--logs))
+— cerberus never owns the sink. Two env vars steer the handler:
 
 | Env var               | Default | Allowed values                                       | Effect                                |
 | --------------------- | ------- | ---------------------------------------------------- | ------------------------------------- |
