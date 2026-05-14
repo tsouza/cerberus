@@ -8,4 +8,4 @@
 [4] int64 = 200
 [5] int64 = 10
 -- sql --
-SELECT * FROM (SELECT count(?) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?) AND (`SpanAttributes`[?] > ?))) WHERE (`Value` > ?)
+SELECT * FROM (SELECT count(?) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?) AND (toFloat64(`SpanAttributes`[?]) > ?))) WHERE (`Value` > ?)

@@ -1,16 +1,18 @@
-# TODO(traceql-numeric-attr-coercion): SQL emits arithmetic over a
-# `SpanAttributes[?]` map lookup and a numeric literal, but
-# `SpanAttributes` is `Map(String, String)` in production OTel-CH — CH
-# refuses `String * UInt8` with ILLEGAL_TYPE_OF_ARGUMENT. The chDB
-# round-trip lane was therefore dropped here (seed + expected_rows
-# removed); this fixture currently exercises only the text-equality
-# `sql:` golden until the TraceQL lowering wraps attribute lookups in
-# toFloat64 casts when used as arithmetic operands.
 -- query.traceql --
 { .a * 2 > 10 }
 -- sql --
-SELECT * FROM `otel_traces` WHERE ((`SpanAttributes`[?] * ?) > ?)
+SELECT * FROM `otel_traces` WHERE ((toFloat64(`SpanAttributes`[?]) * ?) > ?)
 -- args --
 [0] string = "a"
 [1] int64 = 2
 [2] int64 = 10
+-- seed --
+CREATE TABLE otel_traces (
+    _idx UInt64,
+    SpanAttributes Map(String, String) MATERIALIZED map('a', if(_idx = 0, '7', '3'))
+) ENGINE = MergeTree ORDER BY _idx;
+INSERT INTO otel_traces (_idx) VALUES (0), (1);
+-- expected_rows --
+[
+  [0]
+]

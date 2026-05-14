@@ -347,7 +347,114 @@ func lowerBinaryOperation(b *traceql.BinaryOperation, s schema.Traces) (chplan.E
 	if err != nil {
 		return nil, err
 	}
+	// Map(String, String) coercion: SpanAttributes / ResourceAttributes
+	// are typed Map(String, String) in OTel-CH, so a bare
+	// `SpanAttributes['http.status_code'] >= 500` comparison fails in
+	// ClickHouse with NO_COMMON_TYPE ("there is no supertype for types
+	// String, UInt8"). When the lowered Binary has numeric semantics
+	// (arithmetic op, or comparison whose peer is a numeric expression)
+	// we wrap any FieldAccess child in `toFloat64(...)` so the cast
+	// happens server-side. Float64 widens both int and float literals
+	// without precision loss for the magnitudes typical of attribute
+	// values (HTTP status codes, percentages, sizes).
+	lhs, rhs = coerceNumericFieldAccess(op, lhs, rhs)
 	return &chplan.Binary{Op: op, Left: lhs, Right: rhs}, nil
+}
+
+// coerceNumericFieldAccess wraps FieldAccess children in toFloat64(...)
+// when the parent Binary needs numeric semantics:
+//
+//   - Arithmetic ops (+ / - / * / / / % / ^) always coerce both sides,
+//     recursing into nested arithmetic so a chain like `.a + .b + .c`
+//     yields `toFloat64(.a) + toFloat64(.b) + toFloat64(.c)`.
+//
+//   - Comparison ops (= / != / < / <= / > / >=) coerce both sides only
+//     when at least one side is a numeric expression (literal int /
+//     float, an arithmetic Binary, or an already-coerced FuncCall).
+//     The "both sides" rule covers commutative comparisons where the
+//     literal appears on the left (`500 <= span.http.status_code`).
+//
+//   - Regex / logical ops (=~ / !~ / AND / OR) leave both sides alone
+//     because their operands are strings or booleans.
+//
+// FieldAccess that resolves to an intrinsic column (e.g. Duration,
+// already Int64) doesn't reach this path — intrinsics lower to a
+// ColumnRef, not a FieldAccess. So the wrap is restricted to the
+// Map(String, String) carriers by construction.
+func coerceNumericFieldAccess(op chplan.BinaryOp, lhs, rhs chplan.Expr) (chplan.Expr, chplan.Expr) {
+	if isArithmeticOp(op) {
+		return coerceFieldAccess(lhs), coerceFieldAccess(rhs)
+	}
+	if isComparisonOp(op) && (isNumericExpr(lhs) || isNumericExpr(rhs)) {
+		return coerceFieldAccess(lhs), coerceFieldAccess(rhs)
+	}
+	return lhs, rhs
+}
+
+// coerceFieldAccess wraps every FieldAccess inside expr in
+// toFloat64(...), recursing into arithmetic Binary nodes so a nested
+// `.a + .b` becomes `toFloat64(.a) + toFloat64(.b)`. Non-arithmetic
+// sub-expressions (literals, ColumnRefs, FuncCalls already produced by
+// a deeper coercion) pass through unchanged.
+func coerceFieldAccess(expr chplan.Expr) chplan.Expr {
+	switch v := expr.(type) {
+	case *chplan.FieldAccess:
+		return &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{v}}
+	case *chplan.Binary:
+		if isArithmeticOp(v.Op) {
+			return &chplan.Binary{
+				Op:    v.Op,
+				Left:  coerceFieldAccess(v.Left),
+				Right: coerceFieldAccess(v.Right),
+			}
+		}
+	}
+	return expr
+}
+
+// isArithmeticOp reports whether op is one of the numeric arithmetic
+// operators where both operands must compute as numbers.
+func isArithmeticOp(op chplan.BinaryOp) bool {
+	switch op {
+	case chplan.OpAdd, chplan.OpSub, chplan.OpMul, chplan.OpDiv, chplan.OpMod, chplan.OpPow:
+		return true
+	}
+	return false
+}
+
+// isComparisonOp reports whether op is one of the value-comparison
+// operators eligible for numeric-attribute coercion. Excludes regex
+// (=~ / !~) which operate on strings, and AND / OR which compose
+// booleans.
+func isComparisonOp(op chplan.BinaryOp) bool {
+	switch op {
+	case chplan.OpEq, chplan.OpNe, chplan.OpLt, chplan.OpLe, chplan.OpGt, chplan.OpGe:
+		return true
+	}
+	return false
+}
+
+// isNumericExpr reports whether expr has numeric semantics on the CH
+// side — a numeric literal, an arithmetic Binary, or a FuncCall
+// (which in this lowering only comes from a prior toFloat64 wrap).
+// Used to decide whether a comparison's "other side" needs a numeric
+// peer, which is what triggers FieldAccess coercion.
+//
+// ColumnRef deliberately does NOT count as numeric here: the only
+// intrinsic ColumnRef that's numeric in OTel-CH is Duration, and a
+// `Duration > 100ms` comparison doesn't need attribute coercion (both
+// sides are already typed Int64). Treating ColumnRef as non-numeric
+// keeps `{ name = "checkout" }` (string intrinsic) from incorrectly
+// triggering toFloat64 wraps on the literal side.
+func isNumericExpr(expr chplan.Expr) bool {
+	if b, ok := expr.(*chplan.Binary); ok {
+		return isArithmeticOp(b.Op)
+	}
+	switch expr.(type) {
+	case *chplan.LitInt, *chplan.LitFloat, *chplan.FuncCall:
+		return true
+	}
+	return false
 }
 
 // lowerNestedAttrBinary recognises the
