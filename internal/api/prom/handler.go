@@ -472,6 +472,19 @@ func errContainsStage(msg, stage string) bool {
 //     Project renames `anchor_ts` → s.TimestampColumn on the way out via
 //     the projection's own Alias. The instant case has to synthesise
 //     via now64().
+//
+// Project transparency: PromQL lowerings like `projectValueOverInner`
+// (clamp / abs / unary minus / `quantile_over_time(out-of-range, ...)`
+// Inf-Value fold) wrap a RangeWindow / Aggregate with a Project whose
+// projections are the same (group-keys, Value) shape the inner already
+// exposes — i.e., the Project replaces only the Value expression and
+// does NOT widen the column set. Such Projects pass the derived-shape
+// gate through; otherwise the canonical-shape branch would generate
+// `SELECT MetricName, TimeUnix, ... FROM (<two-column derived>)` and
+// real CH 24.x rejects the missing-column reference as 502. The
+// projectionExposesCanonical check distinguishes these "value-rewrite"
+// Projects from the canonical-shape Projects upstream lowerings (LWR,
+// instant fns over `temperature`, etc.) emit.
 func wrapWithSampleProjection(plan chplan.Node, s schema.Metrics) chplan.Node {
 	projections := []chplan.Projection{
 		{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}},
@@ -479,7 +492,7 @@ func wrapWithSampleProjection(plan chplan.Node, s schema.Metrics) chplan.Node {
 		{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}},
 		{Expr: &chplan.ColumnRef{Name: s.ValueColumn}},
 	}
-	if isDerivedShape(plan) {
+	if isDerivedShape(plan, s) {
 		// TimeUnix source: matrix-shape RangeWindow exposes a real
 		// per-row timestamp under the literal column `anchor_ts` (one
 		// row per anchor across the subquery's outer range); the outer
@@ -505,9 +518,23 @@ func wrapWithSampleProjection(plan chplan.Node, s schema.Metrics) chplan.Node {
 // RangeWindow — i.e., one that emits N rows per series (one per anchor
 // across [End-OuterRange, End] spaced by Step) and exposes `anchor_ts`
 // as a per-row column. Set by PromQL subquery lowering (P0 4.5+).
+//
+// "Plan root" here is "after walking past any value-rewrite Projects"
+// — `projectValueOverInner` (RangeWindow case) drops a Project on top
+// that keeps the same `[Attributes, ..., Value]` shape, including the
+// `anchor_ts` passthrough when the inner is matrix-shape. The outer
+// Project's projections still reference `anchor_ts` by name, so the
+// `wrapWithSampleProjection` matrix branch can keep doing the same.
 func isMatrixRangeWindow(plan chplan.Node) bool {
-	rw, ok := plan.(*chplan.RangeWindow)
-	return ok && rw.OuterRange > 0
+	switch v := plan.(type) {
+	case *chplan.RangeWindow:
+		return v.OuterRange > 0
+	case *chplan.Project:
+		return isMatrixRangeWindow(v.Input)
+	case *chplan.Filter:
+		return isMatrixRangeWindow(v.Input)
+	}
+	return false
 }
 
 // synthesizedAnchor returns the CH expression cerberus stamps on
@@ -530,16 +557,78 @@ func synthesizedAnchor() chplan.Expr {
 // canonical Sample columns (MetricName / TimeUnix / Value as-is) and
 // has only the (group-keys…, value) shape produced by RangeWindow,
 // Aggregate, or a Filter on top of one of those.
-func isDerivedShape(plan chplan.Node) bool {
+//
+// A Project on top of a derived shape stays derived UNLESS its own
+// projections name all four canonical Sample columns as outputs —
+// that's the LWR `Project [MetricName, Attributes, TimeUnix, Value]`
+// shape lowered for canonical-shape consumers. The
+// projectValueOverInner Project (clamp / abs / instant fn over
+// RangeWindow, plus the quantile_over_time out-of-range fold from
+// PR #322) carries only `[Attributes, ..., Value]` over a derived
+// inner, and must not be classified as canonical because the inner
+// scope doesn't carry MetricName / TimeUnix — real CH 24.x rejects
+// the missing-column reference with a 502 on `query_range`.
+func isDerivedShape(plan chplan.Node, s schema.Metrics) bool {
 	switch v := plan.(type) {
 	case *chplan.RangeWindow, *chplan.Aggregate:
 		return true
 	case *chplan.Filter:
-		return isDerivedShape(v.Input)
+		return isDerivedShape(v.Input, s)
 	case *chplan.Project:
-		return false
+		if projectionExposesCanonical(v, s) {
+			return false
+		}
+		return isDerivedShape(v.Input, s)
 	}
 	return false
+}
+
+// projectionExposesCanonical reports whether p's projections name all
+// four canonical Sample column outputs (MetricName / Attributes /
+// TimeUnix / Value). An output is "named" when either Projection.Alias
+// matches, or the Projection.Expr is a bare ColumnRef to the canonical
+// column name with no Alias rewrite (the canonical column passes
+// through under its own name).
+//
+// We only treat this as canonical when ALL four names are present —
+// `projectValueOverInner` (RangeWindow case) emits a two-output
+// Project (`Attributes`, `Value`) over a derived inner, so missing
+// MetricName / TimeUnix correctly disqualifies it.
+func projectionExposesCanonical(p *chplan.Project, s schema.Metrics) bool {
+	needed := map[string]bool{
+		s.MetricNameColumn: false,
+		s.AttributesColumn: false,
+		s.TimestampColumn:  false,
+		s.ValueColumn:      false,
+	}
+	for _, proj := range p.Projections {
+		name := projectionOutputName(proj)
+		if _, ok := needed[name]; ok {
+			needed[name] = true
+		}
+	}
+	for _, ok := range needed {
+		if !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// projectionOutputName returns the column name a Projection exposes:
+// the explicit Alias when set, otherwise the bare-ColumnRef name when
+// the Expr is a column reference. Computed Exprs without an Alias
+// return "" — the caller treats that as "no canonical column exposed
+// at this slot", which is the conservative answer for the
+// projectExposesCanonical check.
+func projectionOutputName(p chplan.Projection) string {
+	if p.Alias != "" {
+		return p.Alias
+	}
+	if cr, ok := p.Expr.(*chplan.ColumnRef); ok {
+		return cr.Name
+	}
+	return ""
 }
 
 // toVector groups samples by label set, picks the latest value per series,
