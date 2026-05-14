@@ -123,27 +123,13 @@ jobs:
     # dispatch alongside the dashboard job.
     name: startup-bench
     runs-on: ubuntu-latest
-    timeout-minutes: 5
-    services:
-      clickhouse:
-        image: clickhouse/clickhouse-server:24.8-alpine
-        env:
-          CLICKHOUSE_DB: otel
-          CLICKHOUSE_USER: cerberus
-          CLICKHOUSE_PASSWORD: cerberus
-        ports:
-          - 9000:9000
-        # Health probe: clickhouse/clickhouse-server:24.8-alpine has a
-        # two-phase boot (temp server → apply users+DB → restart "for
-        # real") that takes 60–120s on GH Actions runners under load.
-        # Last observed: 121s to reach the "create database 'otel'" log
-        # line, *just past* the 120s window. 36 retries × 5s = 180s
-        # gives 60s of headroom over the worst case we've seen.
-        options: >-
-          --health-cmd "wget -nv -t1 --spider http://localhost:8123/ping || exit 1"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 36
+    timeout-minutes: 10
+    # Why not `services:`? `clickhouse/clickhouse-server:24.8-alpine`'s
+    # two-phase entrypoint (temp server → create user+DB → restart) takes
+    # 120–200s under GH Actions runner load, and GH's `services:` retry
+    # mechanism kills the container on the first window expiry. Running
+    # CH inline as a plain `docker run` step with our own poll loop
+    # decouples the wait from GH's healthcheck timer and never races.
     steps:
       - uses: actions/checkout@v6
 
@@ -156,6 +142,31 @@ jobs:
         with:
           tool: just
 
+      - name: Start ClickHouse
+        run: |
+          docker run -d --name clickhouse \
+            -p 9000:9000 -p 8123:8123 \
+            -e CLICKHOUSE_DB=otel \
+            -e CLICKHOUSE_USER=cerberus \
+            -e CLICKHOUSE_PASSWORD=cerberus \
+            clickhouse/clickhouse-server:24.8-alpine
+
+      - name: Wait for ClickHouse
+        run: |
+          # Poll for up to 5 minutes. CH alpine boot under GH Actions
+          # load takes 120–200s; the inline polling lets us wait
+          # without GH killing the container.
+          for i in $(seq 1 60); do
+            if docker exec clickhouse wget -q --spider http://localhost:8123/ping; then
+              echo "ClickHouse ready after $((i*5))s"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "ClickHouse failed to become ready after 5 minutes"
+          docker logs --tail 100 clickhouse
+          exit 1
+
       - name: Run startup benchmark
         env:
           CH_ADDR: 127.0.0.1:9000
@@ -163,3 +174,7 @@ jobs:
           CH_USERNAME: cerberus
           CH_PASSWORD: cerberus
         run: just startup-bench
+
+      - name: Stop ClickHouse
+        if: always()
+        run: docker rm -f clickhouse || true
