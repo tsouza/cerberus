@@ -62,12 +62,12 @@ func Evaluate(d property.Dataset, q property.Query) property.Outcome {
 // applyExpr walks the parsed LogQL expression and returns the records
 // that survive the pipeline. The pipeline order is:
 //
-//	1. Stream-selector matchers filter records that lack the matched
-//	   ResourceAttribute pair.
-//	2. Each pipeline stage runs over the surviving records left-to-
-//	   right. Filter stages drop records; format stages mutate the
-//	   per-record label set (and, for `| line_format`, the body — not
-//	   yet implemented).
+//  1. Stream-selector matchers filter records that lack the matched
+//     ResourceAttribute pair.
+//  2. Each pipeline stage runs over the surviving records left-to-
+//     right. Filter stages drop records; format stages mutate the
+//     per-record label set (and, for `| line_format`, the body — not
+//     yet implemented).
 //
 // Returns a fresh slice; callers can mutate the result without
 // aliasing back into the dataset.

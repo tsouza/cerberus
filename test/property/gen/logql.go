@@ -226,7 +226,7 @@ func renderResourceAttrs(labels map[string]string) string {
 // escapeSQLString minimal-escapes a string for inclusion inside a
 // single-quoted CH literal. The generator only produces alphabetic
 // + space content (LogBodyTokenPool, LogSeverityPool, etc.), so the
-// only escape it ever has to do is single-quote → ''. Defensive
+// only escape it ever has to do is single-quote → ”. Defensive
 // against future pool growth.
 func escapeSQLString(s string) string {
 	return strings.ReplaceAll(s, "'", "''")
