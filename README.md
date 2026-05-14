@@ -134,7 +134,7 @@ Cerberus is tested in 12 layers — AST shape pinning, plan-IR
 invariants, optimizer properties, emitted-SQL goldens, chDB-backed
 roundtrips, HTTP wire conformance, system lifecycle, differential
 shadow harness, Playwright UX flows, chaos / goleak, perf benchmarks
-+ alloc regressions, and an oracle-based property framework. See
+with alloc regressions, and an oracle-based property framework. See
 [`docs/test-strategy.md`](docs/test-strategy.md) for the canonical
 layer map, CI-gate inventory, gremlins phased rollout, and per-layer
 recipes for adding a new test.
