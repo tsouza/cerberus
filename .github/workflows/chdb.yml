@@ -1,0 +1,50 @@
+name: chdb
+
+# chDB engine probe. Runs the build-tagged `chdb` test that validates
+# the chdb-go database/sql driver round-trips Map(String, String) into
+# a Go map[string]string via rows.Scan — the gating question for using
+# chDB as a semantic-assertion layer on top of TXTAR text goldens.
+#
+# Informational only. NOT a required PR check; not in the
+# required-status-checks list. The required PR lane stays `check` +
+# `lint` and runs CGO-free Go tests — this workflow links libchdb.so
+# and is therefore segregated.
+#
+# Triggers: manual dispatch + nightly. Promote to PR-gating later if
+# the probe is consistently green and the runner work depends on it.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # nightly at 04:00 UTC
+    - cron: '0 4 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chdb-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    name: probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      - name: Install libchdb.so
+        run: just chdb-install
+
+      - name: Run chDB probe
+        run: go test -tags chdb -v -count=1 -run TestChDBProbe ./internal/chclient/...

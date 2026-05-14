@@ -116,6 +116,54 @@ ci: lint test build
 deps-tidy:
     go mod tidy
 
+# === chDB (in-process ClickHouse engine probe) ===
+
+CHDB_VERSION := "v4.0.2"
+CHDB_INSTALL_PATH := "/usr/local/lib/libchdb.so"
+
+# Install libchdb.so (the in-process ClickHouse engine shared library)
+# used by the chdb-go database/sql driver. Required only for tests that
+# carry the `chdb` build tag — currently the engine-probe test under
+# `internal/chclient/`. Production builds never link against this; the
+# release binary stays CGO_ENABLED=0.
+#
+# Pinned to v4.0.2 because that is the last upstream release that ships
+# the standalone `<platform>-libchdb.tar.gz` assets the chdb-go driver
+# expects; v4.1.x releases bundle libchdb inside Python wheels only.
+# Mirror update_libchdb.sh shipped inside chdb-go.
+#
+# Idempotent: skips download if the install path already exists. Override
+# CHDB_VERSION at the recipe call (`just chdb-install CHDB_VERSION=v4.0.2`).
+chdb-install:
+    @if [ -f "{{CHDB_INSTALL_PATH}}" ]; then \
+        echo "==> libchdb already present at {{CHDB_INSTALL_PATH}} (delete to reinstall)"; \
+        exit 0; \
+    fi
+    @os="$(uname -s)"; \
+        arch="$(uname -m)"; \
+        case "$os" in \
+            Linux) \
+                case "$arch" in \
+                    aarch64|arm64) asset="linux-aarch64-libchdb.tar.gz" ;; \
+                    *)             asset="linux-x86_64-libchdb.tar.gz" ;; \
+                esac ;; \
+            Darwin) \
+                case "$arch" in \
+                    arm64) asset="macos-arm64-libchdb.tar.gz" ;; \
+                    *)     asset="macos-x86_64-libchdb.tar.gz" ;; \
+                esac ;; \
+            *) echo "unsupported platform: $os" >&2; exit 1 ;; \
+        esac; \
+        url="https://github.com/chdb-io/chdb/releases/download/{{CHDB_VERSION}}/$asset"; \
+        echo "==> downloading $url"; \
+        tmp="$(mktemp -d)"; \
+        curl -fsSL -o "$tmp/libchdb.tar.gz" "$url"; \
+        tar -C "$tmp" -xzf "$tmp/libchdb.tar.gz"; \
+        echo "==> installing to {{CHDB_INSTALL_PATH}} (sudo may prompt)"; \
+        sudo install -m 0755 "$tmp/libchdb.so" "{{CHDB_INSTALL_PATH}}"; \
+        rm -rf "$tmp"; \
+        echo "==> libchdb {{CHDB_VERSION}} installed"
+
 # === E2E (k3d + ClickHouse + Grafana + cerberus) ===
 
 K3D_CLUSTER := "cerberus-e2e"
