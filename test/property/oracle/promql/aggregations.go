@@ -180,13 +180,3 @@ func topKBottomK(rows []VectorRow, k int, bottom bool) []aggResult {
 	return out
 }
 
-// isAggregationOp reports whether op is one of the aggregation
-// operators the oracle handles.
-func isAggregationOp(op parser.ItemType) bool {
-	switch op {
-	case parser.SUM, parser.AVG, parser.MIN, parser.MAX,
-		parser.COUNT, parser.TOPK, parser.BOTTOMK:
-		return true
-	}
-	return false
-}

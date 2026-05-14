@@ -159,15 +159,9 @@ func extrapolatedRate(samples []Sample, rangeMs, effectiveTs int64, isCounter, i
 	if durationToStart >= extrapolationThreshold {
 		durationToStart = averageDurationBetweenSamplesMs / 2
 	}
-	// For counters, if the first sample is zero, the counter started
-	// during the window — extrapolate fully to the left edge.
-	if isCounter && resultValue > 0 && len(samples) > 0 && samples[0].V >= 0 {
-		// Prom extrapolates fully to the left if the first sample is
-		// close to zero. We follow the engine's exact rule below
-		// (which is the average-gap heuristic); the zero-start
-		// optimization above duplicates information already captured
-		// in counter-reset detection.
-	}
+	// For counters, the zero-start case is already captured by the
+	// counter-reset detection above; no additional left-edge handling
+	// needed (Prom's average-gap heuristic below applies uniformly).
 	extrapolateToInterval += durationToStart
 
 	if durationToEnd >= extrapolationThreshold {
