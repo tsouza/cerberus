@@ -14,6 +14,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/tsouza/cerberus/internal/api/admit"
 	"github.com/tsouza/cerberus/internal/cerbtrace"
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -47,6 +48,12 @@ type Handler struct {
 	Optimizer *optimizer.Driver
 	Logger    *slog.Logger
 
+	// Limiter caps in-flight Prom API requests. nil disables the
+	// admission middleware (every request flows through). main wires
+	// this from CERBERUS_ADMIT_PROM; tests leave it nil for
+	// unconstrained behaviour.
+	Limiter *admit.Limiter
+
 	parser promparser.Parser
 }
 
@@ -69,11 +76,21 @@ func New(client Querier, s schema.Metrics, logger *slog.Logger) *Handler {
 // `X-Prometheus-API-Version` and `X-Cerberus-CH-Millis`.
 func (h *Handler) Mount(mux *http.ServeMux) {
 	register := func(pattern string, hf http.HandlerFunc) {
-		// RC4 R4.4: wrap each route with the cerberus.queries.* counter
-		// + duration histogram middleware. Layered inside
-		// promHeadersMiddleware so the CH-millis counter (which lives on
-		// r.Context()) is still in scope when the inner handler runs.
-		mux.Handle(pattern, promHeadersMiddleware(telemetry.QueryMiddleware("promql", hf)))
+		// Layering, outermost → innermost:
+		//   admit.Middleware       — reject early when at the cap so
+		//                            the slot is freed before any
+		//                            request-shaped work runs.
+		//   promHeadersMiddleware  — sets Prom response headers + the
+		//                            CH-millis counter on r.Context().
+		//   telemetry.QueryMiddleware — counts every admitted request
+		//                            on cerberus.queries.* with the
+		//                            matched route label.
+		//   hf                     — the actual handler.
+		// Rejections are not counted by QueryMiddleware (the inner
+		// handler never runs); they show up on
+		// cerberus.admit.rejected_total instead.
+		handler := promHeadersMiddleware(telemetry.QueryMiddleware("promql", hf))
+		mux.Handle(pattern, h.Limiter.Middleware(1, handler))
 	}
 	register("GET /api/v1/query", h.handleQuery)
 	register("GET /api/v1/query_range", h.handleQueryRange)

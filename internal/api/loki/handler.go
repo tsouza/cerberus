@@ -14,6 +14,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/tsouza/cerberus/internal/api/admit"
 	"github.com/tsouza/cerberus/internal/cerbtrace"
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -67,6 +68,10 @@ type Handler struct {
 	Schema    schema.Logs
 	Optimizer *optimizer.Driver
 	Logger    *slog.Logger
+
+	// Limiter caps in-flight Loki API requests. nil disables the
+	// admission middleware. Wired from CERBERUS_ADMIT_LOKI.
+	Limiter *admit.Limiter
 }
 
 // New constructs a Handler with the seed optimizer wired in.
@@ -95,7 +100,11 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	// volume bookkeeping; its duration will skew toward the long tail
 	// of the histogram, which is what dashboards want to see anyway.
 	register := func(pattern string, hf http.HandlerFunc) {
-		mux.Handle(pattern, telemetry.QueryMiddleware("logql", hf))
+		// admit.Middleware (outer) → telemetry.QueryMiddleware (inner)
+		// — rejections are accounted on cerberus.admit.rejected_total,
+		// not on cerberus.queries.*. See prom.Handler.Mount for the
+		// full layering note.
+		mux.Handle(pattern, h.Limiter.Middleware(1, telemetry.QueryMiddleware("logql", hf)))
 	}
 	register("GET /loki/api/v1/query", h.handleQuery)
 	register("POST /loki/api/v1/query", h.handleQuery)
