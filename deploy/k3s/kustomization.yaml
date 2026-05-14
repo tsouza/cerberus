@@ -8,6 +8,7 @@ resources:
   - clickhouse.yaml
   - cerberus.yaml
   - grafana.yaml
+  - grafana-dashboards.yaml
   - otel-collector.yaml
   - sample-app.yaml
 
