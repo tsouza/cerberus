@@ -159,10 +159,21 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	h.Logger.Debug("cerberus tempo search", "traceql", q, "sql", res.SQL, "args", res.Args)
 
+	writeEngineHeaders(w, res.Headers)
 	writeJSON(w, http.StatusOK, SearchResponse{
 		Traces:  toTraceSummaries(res.Samples),
 		Metrics: SearchMetrics{InspectedTraces: len(res.Samples)},
 	})
+}
+
+// writeEngineHeaders stamps the X-Cerberus-* response headers populated
+// by engine.Engine.Query / QueryPlan onto w before the response body
+// fires. Safe to call with a nil / empty map (no-op). See the matching
+// helper in internal/api/loki/handler.go for the full rationale.
+func writeEngineHeaders(w http.ResponseWriter, hdr map[string]string) {
+	for k, v := range hdr {
+		w.Header().Set(k, v)
+	}
 }
 
 // classifySearchErr maps an engine.Query error to the HTTP status the
@@ -229,6 +240,7 @@ func (h *Handler) handleSearchRecent(w http.ResponseWriter, r *http.Request) {
 	}
 	h.Logger.Debug("cerberus tempo search/recent", "limit", limit, "sql", res.SQL, "args", res.Args)
 
+	writeEngineHeaders(w, res.Headers)
 	writeJSON(w, http.StatusOK, SearchResponse{
 		Traces:  toTraceSummaries(res.Samples),
 		Metrics: SearchMetrics{InspectedTraces: len(res.Samples)},
@@ -268,6 +280,7 @@ func (h *Handler) handleTraceByID(w http.ResponseWriter, r *http.Request) {
 	}
 	h.Logger.Debug("cerberus tempo traceByID", "trace_id", traceID, "sql", res.SQL, "args", res.Args)
 
+	writeEngineHeaders(w, res.Headers)
 	if len(res.Samples) == 0 {
 		// Tempo's "trace not found" shape — Grafana renders the right UI.
 		writeJSON(w, http.StatusNotFound, ErrorResponse{

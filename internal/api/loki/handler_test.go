@@ -178,6 +178,38 @@ func TestQuery_MetricVector(t *testing.T) {
 	}
 }
 
+// TestResponseHeaders_EngineInstrumentation covers the R7.7 contract on
+// the Loki head: every successful /query response carries the three
+// canonical X-Cerberus-* headers populated by engine.Engine.
+func TestResponseHeaders_EngineInstrumentation(t *testing.T) {
+	t.Parallel()
+
+	ts := time.Date(2026, 5, 12, 12, 0, 0, 0, time.UTC)
+	q := &stubQuerier{
+		samples: []chclient.Sample{
+			{MetricName: "hello", Labels: map[string]string{"job": "api"}, Timestamp: ts},
+		},
+	}
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + `/loki/api/v1/query?query=%7Bjob%3D%22api%22%7D`)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if got := resp.Header.Get("X-Cerberus-Strategy"); got != "native" {
+		t.Errorf("X-Cerberus-Strategy: got %q, want native", got)
+	}
+	if got := resp.Header.Get("X-Cerberus-Plan-Nodes"); got == "" {
+		t.Errorf("X-Cerberus-Plan-Nodes: missing")
+	}
+	if got := resp.Header.Get("X-Cerberus-CH-Millis"); got == "" {
+		t.Errorf("X-Cerberus-CH-Millis: missing")
+	}
+}
+
 // TestQueryRange_BadInput covers the validation contract on
 // /loki/api/v1/query_range.
 func TestQueryRange_BadInput(t *testing.T) {

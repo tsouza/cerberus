@@ -120,6 +120,63 @@ func TestEngine_Query_HappyPath(t *testing.T) {
 	}
 }
 
+// TestEngine_Query_HeadersPopulated covers the R7.7 contract: every
+// successful Result carries the canonical X-Cerberus-* response-header
+// bag (Strategy / Plan-Nodes / CH-Millis), and the Strategy field on
+// Result agrees with the header value.
+func TestEngine_Query_HeadersPopulated(t *testing.T) {
+	t.Parallel()
+
+	q := &fakeQuerier{rows: []chclient.Sample{{MetricName: "up"}}}
+	lang := &fakeLang{name: "promql"}
+	eng := newEngine(q)
+
+	res, err := eng.Query(context.Background(), lang, "up")
+	if err != nil {
+		t.Fatalf("Query: unexpected err: %v", err)
+	}
+
+	if got, want := res.Strategy, "native"; got != want {
+		t.Errorf("Result.Strategy: got %q, want %q", got, want)
+	}
+	if res.Headers == nil {
+		t.Fatalf("Result.Headers: nil, want populated bag")
+	}
+	if got, want := res.Headers[engine.HeaderStrategy], "native"; got != want {
+		t.Errorf("Headers[%s]: got %q, want %q", engine.HeaderStrategy, got, want)
+	}
+	if got := res.Headers[engine.HeaderPlanNodes]; got == "" {
+		t.Errorf("Headers[%s]: empty, want numeric", engine.HeaderPlanNodes)
+	}
+	if got := res.Headers[engine.HeaderCHMillis]; got == "" {
+		t.Errorf("Headers[%s]: empty, want numeric", engine.HeaderCHMillis)
+	}
+}
+
+// TestEngine_QueryPlan_IsTraceByID_StrategyHeader verifies the
+// trace-by-id short-circuit also flips the Strategy label so debug
+// dashboards can distinguish the row-by-id path from the optimised
+// native path.
+func TestEngine_QueryPlan_IsTraceByID_StrategyHeader(t *testing.T) {
+	t.Parallel()
+
+	q := &fakeQuerier{}
+	lang := &fakeLang{name: "traceql"}
+	eng := newEngine(q)
+
+	plan := &chplan.Scan{Table: "otel_traces"}
+	res, err := eng.QueryPlan(context.Background(), lang, plan, engine.Meta{IsTraceByID: true})
+	if err != nil {
+		t.Fatalf("QueryPlan: unexpected err: %v", err)
+	}
+	if got, want := res.Strategy, "trace-by-id"; got != want {
+		t.Errorf("Result.Strategy: got %q, want %q", got, want)
+	}
+	if got, want := res.Headers[engine.HeaderStrategy], "trace-by-id"; got != want {
+		t.Errorf("Headers[%s]: got %q, want %q", engine.HeaderStrategy, got, want)
+	}
+}
+
 func TestEngine_QueryPlan_HappyPath(t *testing.T) {
 	t.Parallel()
 

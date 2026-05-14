@@ -221,3 +221,58 @@ func TestTraceByID_Found(t *testing.T) {
 		t.Fatalf("expected 1 span, got %d", len(tr.Batches[0].Spans))
 	}
 }
+
+// TestResponseHeaders_EngineInstrumentation covers the R7.7 contract
+// on the Tempo head: /api/search returns Strategy=native; /api/traces/{id}
+// returns Strategy=trace-by-id (engine.Meta.IsTraceByID short-circuits
+// the optimizer and tags the response).
+func TestResponseHeaders_EngineInstrumentation(t *testing.T) {
+	t.Parallel()
+
+	q := &stubQuerier{
+		samples: []chclient.Sample{
+			{
+				MetricName: "GET /api/users",
+				Labels:     map[string]string{"service.name": "frontend"},
+				Timestamp:  time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+				Value:      150_000_000,
+			},
+		},
+	}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	t.Run("search_native", func(t *testing.T) {
+		resp, err := http.Get(srv.URL + "/api/search?q=%7B%20resource.service.name%20%3D%20%22frontend%22%20%7D")
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		defer resp.Body.Close()
+		if got := resp.Header.Get("X-Cerberus-Strategy"); got != "native" {
+			t.Errorf("X-Cerberus-Strategy: got %q, want native", got)
+		}
+		if got := resp.Header.Get("X-Cerberus-Plan-Nodes"); got == "" {
+			t.Errorf("X-Cerberus-Plan-Nodes: missing")
+		}
+		if got := resp.Header.Get("X-Cerberus-CH-Millis"); got == "" {
+			t.Errorf("X-Cerberus-CH-Millis: missing")
+		}
+	})
+
+	t.Run("traceByID_short_circuit", func(t *testing.T) {
+		resp, err := http.Get(srv.URL + "/api/traces/abc123")
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		defer resp.Body.Close()
+		if got := resp.Header.Get("X-Cerberus-Strategy"); got != "trace-by-id" {
+			t.Errorf("X-Cerberus-Strategy: got %q, want trace-by-id", got)
+		}
+		if got := resp.Header.Get("X-Cerberus-Plan-Nodes"); got == "" {
+			t.Errorf("X-Cerberus-Plan-Nodes: missing")
+		}
+		if got := resp.Header.Get("X-Cerberus-CH-Millis"); got == "" {
+			t.Errorf("X-Cerberus-CH-Millis: missing")
+		}
+	})
+}

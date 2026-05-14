@@ -21,6 +21,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/tsouza/cerberus/internal/cerbtrace"
@@ -30,6 +31,37 @@ import (
 	"github.com/tsouza/cerberus/internal/optimizer"
 	"github.com/tsouza/cerberus/internal/telemetry"
 )
+
+// Canonical X-Cerberus-* response-header names the engine populates on
+// every Result / CursorResult.Headers map. Handlers iterate the bag and
+// stamp each (k, v) onto w.Header() before WriteHeader fires.
+//
+//   - HeaderStrategy   — execution-path label. "trace-by-id" for the
+//     Tempo /traces/{id} short-circuit, "native" otherwise. Reserved
+//     values for future strategies: "mv-substituted" (R3.6) and
+//     "shadow-fallback" (R3.9+).
+//   - HeaderPlanNodes  — post-optimize plan node count (chplan tree
+//     walked depth-first). Useful for debug dashboards + cost-shape
+//     telemetry.
+//   - HeaderCHMillis   — ClickHouse execute wall-clock in milliseconds.
+//     Only stamped on the eager Result (not CursorResult — the cursor
+//     keeps the connection open and the wall-clock isn't known until
+//     the caller drains).
+const (
+	HeaderStrategy  = "X-Cerberus-Strategy"
+	HeaderPlanNodes = "X-Cerberus-Plan-Nodes"
+	HeaderCHMillis  = "X-Cerberus-CH-Millis"
+)
+
+// strategyFor picks the canonical Strategy label from meta. Centralised
+// so Result and CursorResult agree on the value and so future strategies
+// (mv-substituted, shadow-fallback) have one place to land.
+func strategyFor(meta Meta) string {
+	if meta.IsTraceByID {
+		return "trace-by-id"
+	}
+	return "native"
+}
 
 // Querier is the subset of *chclient.Client Engine needs. Each handler
 // already declares a (broader) Querier in its own package; Engine
@@ -214,13 +246,21 @@ func (e *Engine) QueryPlan(ctx context.Context, lang Lang, plan chplan.Node, met
 		return Result{}, fmt.Errorf("engine: execute: %w", err)
 	}
 
+	nodes := cerbtrace.CountNodes(plan)
+	strategy := strategyFor(meta)
 	return Result{
 		Samples:       samples,
 		SQL:           sql,
 		Args:          args,
+		Strategy:      strategy,
 		CHMillis:      chMillis,
-		PlanNodeCount: cerbtrace.CountNodes(plan),
-		Meta:          meta,
+		PlanNodeCount: nodes,
+		Headers: map[string]string{
+			HeaderStrategy:  strategy,
+			HeaderPlanNodes: strconv.Itoa(nodes),
+			HeaderCHMillis:  strconv.FormatInt(chMillis, 10),
+		},
+		Meta: meta,
 	}, nil
 }
 
@@ -298,11 +338,23 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 		return CursorResult{}, fmt.Errorf("engine: execute: %w", err)
 	}
 
+	nodes := cerbtrace.CountNodes(plan)
+	strategy := strategyFor(meta)
 	return CursorResult{
 		Cursor:        cursor,
 		SQL:           sql,
 		Args:          args,
-		PlanNodeCount: cerbtrace.CountNodes(plan),
-		Meta:          meta,
+		Strategy:      strategy,
+		PlanNodeCount: nodes,
+		Headers: map[string]string{
+			HeaderStrategy:  strategy,
+			HeaderPlanNodes: strconv.Itoa(nodes),
+			// CH-Millis is omitted on the cursor path — wall-clock for
+			// the execute stage isn't known until the caller drains
+			// the cursor + Close()s it. Streaming consumers that want
+			// per-request CH timing should plug into the
+			// cerberus.clickhouse.* histograms instead.
+		},
+		Meta: meta,
 	}, nil
 }

@@ -300,6 +300,12 @@ func TestResponseHeaders_PromVersionAndCHMillis(t *testing.T) {
 	if got := resp.Header.Get("X-Cerberus-CH-Millis"); got == "" {
 		t.Errorf("X-Cerberus-CH-Millis: missing")
 	}
+	if got := resp.Header.Get("X-Cerberus-Strategy"); got != "native" {
+		t.Errorf("X-Cerberus-Strategy: got %q, want native", got)
+	}
+	if got := resp.Header.Get("X-Cerberus-Plan-Nodes"); got == "" {
+		t.Errorf("X-Cerberus-Plan-Nodes: missing")
+	}
 }
 
 // TestQuery_ScalarFold — Grafana's `?query=1+1` health probe. The fold
