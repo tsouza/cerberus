@@ -1,0 +1,12 @@
+-- unoptimized --
+SELECT `Value` AS `v`, `TimeUnix` AS `t` FROM (SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` = ?))
+-- optimized --
+SELECT `Value` AS `v`, `TimeUnix` AS `t` FROM (SELECT `MetricName`, `TimeUnix`, `Value` FROM `otel_metrics_gauge` WHERE (`MetricName` = ?))
+-- chplan_unoptimized --
+Project [Value AS v, TimeUnix AS t]
+  Filter predicate=(MetricName = "up")
+    Scan(otel_metrics_gauge)
+-- chplan_optimized --
+Project [Value AS v, TimeUnix AS t]
+  Filter predicate=(MetricName = "up")
+    Scan(otel_metrics_gauge, columns=[MetricName, TimeUnix, Value])

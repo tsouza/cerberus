@@ -513,29 +513,37 @@ func TestRuleInteraction_FilterProjectTranspose_x_FilterRangeWindowTranspose(t *
 
 // --- Pair 21: FilterProjectTranspose × ProjectionPushdown.
 //
-// Order-dependent: ProjectionPushdown only matches `Project(Scan)`
-// directly (projection_pushdown.go's documented v0.1 limitation
-// — see the package comment: "The `Project(Filter(Scan))` shape
-// will be handled once we have a column-set analysis pass that
-// flows down through Filter/Aggregate/RangeWindow").
+// Commutativity unlocked by widening `ProjectionPushdown` to match
+// `Project(Filter(Scan))` in addition to `Project(Scan)` (see
+// projection_pushdown.go). With that widening:
 //
-// Consequence on a `Filter(Project(Scan))` plan:
 //   - (Pushdown, TransposeFilter): pushdown narrows the inner Scan
 //     before transpose moves the Filter; final shape is
-//     `Project([cols], Filter(Scan(narrowed), pred))`.
+//     `Project([cols], Filter(Scan(narrowed=projCols∪predCols), pred))`.
 //   - (TransposeFilter, Pushdown): transpose first leaves
-//     `Project(Filter(Scan))`, which pushdown's pattern doesn't
-//     match. Final shape is
-//     `Project([cols], Filter(Scan(empty cols), pred))`.
+//     `Project(Filter(Scan))`; the widened pushdown then narrows the
+//     inner Scan against `projCols ∪ predCols`. Final shape:
+//     `Project([cols], Filter(Scan(narrowed=projCols∪predCols), pred))`.
 //
-// The two converged trees are semantically equivalent (both emit
-// the same rows) but structurally divergent — Scan.Columns differs.
-// This is the canonical "pushdown limitation" gap; we t.Skip with
-// a TODO so the test surfaces the moment pushdown grows the wider
-// pattern match.
+// The two final trees are now structurally identical because both
+// orderings narrow the Scan to the same union set; the predicate stays
+// in the Filter slot above the Scan in both.
 func TestRuleInteraction_FilterProjectTranspose_x_ProjectionPushdown(t *testing.T) {
 	t.Parallel()
-	t.Skip("ProjectionPushdown's `Project(Scan)`-only match makes this pair order-dependent; see projection_pushdown.go limitation note + this test's package comment for the design rationale. Unskip once ProjectionPushdown handles `Project(Filter(Scan))`.")
+	plan := &chplan.Filter{
+		Input: &chplan.Project{
+			Input: &chplan.Scan{Table: "otel_metrics_gauge"},
+			Projections: []chplan.Projection{
+				{Expr: &chplan.ColumnRef{Name: "MetricName"}},
+				{Expr: &chplan.ColumnRef{Name: "Value"}},
+			},
+		},
+		Predicate: labelFilter("MetricName", "up"),
+	}
+	twoRuleConverge(t, "proj-transpose×proj-pushdown", plan,
+		optimizer.FilterProjectTranspose(),
+		optimizer.ProjectionPushdown{},
+	)
 }
 
 // --- Pair 22: FilterProjectTranspose × MVSubstitution.
@@ -659,11 +667,12 @@ func TestRuleInteraction_FilterRangeWindowTranspose_x_ProjectionPushdown(t *test
 
 // --- Pair 27: FilterRangeWindowTranspose × MVSubstitution.
 //
-// Order-dependent: MVSubstitution's match pattern requires
-// `RangeWindow(Scan)` with Scan as the immediate child of the
-// RangeWindow. Once FilterRangeWindowTranspose has pushed a Filter
-// under the RangeWindow, the inner shape becomes
-// `RangeWindow(Filter(Scan))` and MVSubstitution can no longer fire.
+// Commutativity unlocked by widening `MVSubstitution` to match
+// `RangeWindow(Filter(Scan))` in addition to `RangeWindow(Scan)`
+// (see mv_substitution.go). The Filter is required to reference only
+// series-identity columns on the RangeWindow's `GroupBy` slot —
+// columns the rollup table preserves with the same names — so the
+// rewrite keeps the Filter alive around the substituted Scan.
 //
 // On a `Filter(RangeWindow(Scan), pred=Attributes=v1)` plan:
 //   - (MV, RWTranspose): MV substitutes Scan.Table → rollup (and
@@ -671,23 +680,32 @@ func TestRuleInteraction_FilterRangeWindowTranspose_x_ProjectionPushdown(t *test
 //     Filter under. Final shape:
 //     `RW(Filter(Scan(rollup), pred))` with ValueColumn="Sum".
 //   - (RWTranspose, MV): RWTranspose pushes Filter under first,
-//     leaving `RW(Filter(Scan))`. MV's pattern doesn't match
-//     because rw.Input is Filter, not Scan. Final shape:
-//     `RW(Filter(Scan(base), pred))` with ValueColumn="Value".
+//     leaving `RW(Filter(Scan(base)), pred)`. MV's widened pattern
+//     matches — `pred=Attributes=v1` is rollup-safe (Attributes is
+//     a series-identity GroupBy column) — and substitutes the inner
+//     Scan + RangeWindow.ValueColumn. Final shape:
+//     `RW(Filter(Scan(rollup), pred))` with ValueColumn="Sum".
 //
-// Both trees are *semantically* equivalent against the base table
-// (no rollup substitution happens in order 2), but Order 1 is
-// strictly cheaper. The optimizer's default batch ordering
-// (predicate-pushdown → mv-substitution) deliberately runs
-// transposes FIRST, then mv-sub — which means in practice the
-// default driver hits Order 2 unless the predicate doesn't push.
-//
-// t.Skip with a TODO so the test surfaces once MVSubstitution
-// grows a wider pattern (e.g. matching `RangeWindow(Filter(Scan))`
-// and lifting the Filter when substituting).
+// Both orderings converge to the same tree.
 func TestRuleInteraction_FilterRangeWindowTranspose_x_MVSubstitution(t *testing.T) {
 	t.Parallel()
-	t.Skip("MVSubstitution's `RangeWindow(Scan)`-only match makes this pair order-dependent against a transposed Filter (`RangeWindow(Filter(Scan))` blocks the substitution). See mv_substitution.go's first-step guard for the design constraint; unskip once MVSubstitution supports the wider pattern.")
+	rw := &chplan.RangeWindow{
+		Input:           &chplan.Scan{Table: "otel_metrics_sum"},
+		Func:            "sum_over_time",
+		Range:           time.Hour,
+		Step:            5 * time.Minute,
+		TimestampColumn: "TimeUnix",
+		ValueColumn:     "Value",
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+	}
+	plan := &chplan.Filter{
+		Input:     rw,
+		Predicate: labelFilter("Attributes", "v1"),
+	}
+	twoRuleConverge(t, "rw-transpose×mv-sub", plan,
+		optimizer.FilterRangeWindowTranspose(),
+		optimizer.MVSubstitution([]schema.Rollup{sumRollupForInteraction}, "Value"),
+	)
 }
 
 // --- Pair 28: ProjectionPushdown × MVSubstitution.

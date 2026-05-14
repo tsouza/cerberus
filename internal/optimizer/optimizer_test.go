@@ -387,6 +387,92 @@ var inputs = map[string]chplan.Node{
 		ValueColumn:     "Value",
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 	},
+
+	// pushdown_through_filter: Project(Filter(Scan)) — pushdown's
+	// widened pattern narrows the inner Scan's column list to the
+	// union of refs(Projections) ∪ refs(Filter.Predicate). The
+	// Filter stays in place between the (narrowed) Scan and the
+	// Project. Locks the v0.2 widening of ProjectionPushdown that
+	// removes the rule-interaction skip with FilterProjectTranspose.
+	"pushdown_through_filter": &chplan.Project{
+		Input: &chplan.Filter{
+			Input: &chplan.Scan{Table: "otel_metrics_gauge"},
+			Predicate: &chplan.Binary{
+				Op:    chplan.OpEq,
+				Left:  &chplan.ColumnRef{Name: "MetricName"},
+				Right: &chplan.LitString{V: "up"},
+			},
+		},
+		Projections: []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: "Value"}, Alias: "v"},
+			{Expr: &chplan.ColumnRef{Name: "TimeUnix"}, Alias: "t"},
+		},
+	},
+
+	// mv_sub_through_safe_filter: Filter(RangeWindow(Scan), pred)
+	// where pred references only the series-identity GroupBy column
+	// (`Attributes`). After predicate-pushdown transposes the Filter
+	// under the RangeWindow (`RangeWindow(Filter(Scan), pred)`), the
+	// widened MVSubstitution pattern matches and substitutes the
+	// rollup table + ValueColumn. Locks the v0.2 widening of
+	// MVSubstitution that removes the rule-interaction skip with
+	// FilterRangeWindowTranspose.
+	"mv_sub_through_safe_filter": &chplan.Filter{
+		Input: &chplan.RangeWindow{
+			Input:           &chplan.Scan{Table: "otel_metrics_sum"},
+			Func:            "sum_over_time",
+			Range:           time.Hour,
+			Step:            5 * time.Minute,
+			TimestampColumn: "TimeUnix",
+			ValueColumn:     "Value",
+			GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+		},
+		Predicate: &chplan.Binary{
+			Op: chplan.OpEq,
+			Left: &chplan.MapAccess{
+				Map: &chplan.ColumnRef{Name: "Attributes"},
+				Key: &chplan.LitString{V: "job"},
+			},
+			Right: &chplan.LitString{V: "api"},
+		},
+	},
+
+	// mv_sub_blocked_by_unsafe_filter: RangeWindow(Filter(Scan), pred)
+	// where pred references the per-sample `Value` column — NOT a
+	// series-identity GroupBy column. The widened MVSubstitution must
+	// refuse: applying the predicate against the rollup table would
+	// look up a column whose semantics (a per-sample value) don't
+	// match the rolled-up shape. Pins the safety guard on the widened
+	// MVSubstitution pattern.
+	//
+	// Note. The input starts already in `RangeWindow(Filter(Scan))`
+	// shape rather than `Filter(RangeWindow(Scan))`. If the test
+	// started with the outer-Filter shape, predicate-pushdown's
+	// FilterRangeWindowTranspose would decline (Value is not
+	// passthrough), the Filter would stay above the RangeWindow, and
+	// MVSubstitution's seed `RangeWindow(Scan)` pattern would then
+	// substitute the rollup — which is correct, because the Filter is
+	// above the RangeWindow and applies to the windowed output, not
+	// the rolled-up rows. The case this fixture pins is the orthogonal
+	// one: the Filter is *between* the RangeWindow and the Scan, so
+	// it would apply to the rollup's row shape, where `Value` doesn't
+	// exist with the same semantics.
+	"mv_sub_blocked_by_unsafe_filter": &chplan.RangeWindow{
+		Input: &chplan.Filter{
+			Input: &chplan.Scan{Table: "otel_metrics_sum"},
+			Predicate: &chplan.Binary{
+				Op:    chplan.OpGt,
+				Left:  &chplan.ColumnRef{Name: "Value"},
+				Right: &chplan.LitFloat{V: 0},
+			},
+		},
+		Func:            "sum_over_time",
+		Range:           time.Hour,
+		Step:            5 * time.Minute,
+		TimestampColumn: "TimeUnix",
+		ValueColumn:     "Value",
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+	},
 }
 
 func TestOptimizer(t *testing.T) {

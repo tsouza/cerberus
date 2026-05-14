@@ -7,13 +7,28 @@ import (
 )
 
 // ProjectionPushdown narrows a Scan's column list to the union of columns
-// referenced by an immediately-enclosing Project. With the OTel CH schema's
-// wide tables (~10+ columns including resource attributes), this is a real
-// win: only the columns the plan actually consumes get read.
+// referenced by an immediately-enclosing Project (and any intervening
+// Filter). With the OTel CH schema's wide tables (~10+ columns including
+// resource attributes), this is a real win: only the columns the plan
+// actually consumes get read.
 //
-// v0.1 limitation: only fires for `Project(Scan)` directly. The
-// `Project(Filter(Scan))` shape will be handled once we have a column-set
-// analysis pass that flows down through Filter/Aggregate/RangeWindow.
+// Two shapes match:
+//
+//  1. `Project(Scan)` — narrow Scan.Columns to the column refs the
+//     Projections touch.
+//  2. `Project(Filter(Scan))` — push the projection THROUGH the Filter
+//     down to the Scan. Safe iff Scan.Columns is empty (the Filter's
+//     predicate evaluates on Scan's row shape, which after narrowing
+//     must still include every column the predicate touches). The
+//     narrowed Scan.Columns is the UNION of refs(Projections) ∪
+//     refs(Filter.Predicate); the Filter stays in place between the
+//     Project and the (now-narrowed) Scan.
+//
+// Shape (2) is what `FilterProjectTranspose` produces when it pushes a
+// Filter under a Project — without this widening the
+// `Project(Filter(Scan))` chain is order-dependent against the
+// transpose rule. See `rule_interaction_test.go` Pair 21 for the
+// commutativity check that this widening unlocks.
 type ProjectionPushdown struct{}
 
 func (ProjectionPushdown) Name() string { return "projection-pushdown" }
@@ -23,22 +38,92 @@ func (ProjectionPushdown) Apply(n chplan.Node) (chplan.Node, bool) {
 	if !ok {
 		return n, false
 	}
-	s, ok := p.Input.(*chplan.Scan)
-	if !ok || len(s.Columns) > 0 {
+	switch child := p.Input.(type) {
+	case *chplan.Scan:
+		return applyProjectScan(p, child)
+	case *chplan.Filter:
+		return applyProjectFilterScan(p, child)
+	default:
 		return n, false
 	}
+}
 
+// applyProjectScan handles the seed `Project(Scan)` shape.
+func applyProjectScan(p *chplan.Project, s *chplan.Scan) (chplan.Node, bool) {
+	if len(s.Columns) > 0 {
+		return p, false
+	}
 	cols := referencedColumns(p.Projections)
 	if len(cols) == 0 {
-		return n, false
+		return p, false
 	}
-
 	newScan := *s
 	newScan.Columns = cols
-
 	newProject := *p
 	newProject.Input = &newScan
 	return &newProject, true
+}
+
+// applyProjectFilterScan handles `Project(Filter(Scan))`: push the
+// projection's column set THROUGH the Filter down to the Scan, unioning
+// in any columns the Filter's predicate references so the predicate
+// remains evaluable on the narrowed row shape.
+func applyProjectFilterScan(p *chplan.Project, f *chplan.Filter) (chplan.Node, bool) {
+	s, ok := f.Input.(*chplan.Scan)
+	if !ok || len(s.Columns) > 0 {
+		return p, false
+	}
+	projCols := referencedColumns(p.Projections)
+	if len(projCols) == 0 {
+		return p, false
+	}
+	cols := unionSortedColumns(projCols, predicateColumns(f.Predicate))
+
+	newScan := *s
+	newScan.Columns = cols
+	newFilter := *f
+	newFilter.Input = &newScan
+	newProject := *p
+	newProject.Input = &newFilter
+	return &newProject, true
+}
+
+// predicateColumns returns the set of ColumnRef names the predicate
+// references, deduped and sorted. Bare-column refs only — qualified
+// refs (joins, not in scope here) are not expected on a Filter directly
+// over a Scan.
+func predicateColumns(e chplan.Expr) []string {
+	seen := map[string]struct{}{}
+	walkExpr(e, func(sub chplan.Expr) {
+		if cr, ok := sub.(*chplan.ColumnRef); ok {
+			seen[cr.Name] = struct{}{}
+		}
+	})
+	out := make([]string, 0, len(seen))
+	for name := range seen {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// unionSortedColumns merges two already-sorted, deduped column-name
+// slices into a single sorted+deduped slice. Stable, deterministic
+// output keeps Scan.Columns reproducible across runs.
+func unionSortedColumns(a, b []string) []string {
+	seen := make(map[string]struct{}, len(a)+len(b))
+	for _, n := range a {
+		seen[n] = struct{}{}
+	}
+	for _, n := range b {
+		seen[n] = struct{}{}
+	}
+	out := make([]string, 0, len(seen))
+	for n := range seen {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // referencedColumns returns the set of ColumnRef names referenced anywhere
