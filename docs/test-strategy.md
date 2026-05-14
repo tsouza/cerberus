@@ -35,18 +35,22 @@ inside each layer.
 
 ## CI gates
 
-| Gate                   | Workflow                                          | Trigger                                          | Required PR check?                        | Scope                                                                       |
-| ---------------------- | ------------------------------------------------- | ------------------------------------------------ | ----------------------------------------- | --------------------------------------------------------------------------- |
-| `check`                | `.github/workflows/ci.yml` (job `check`)          | PRs + push                                       | Required                                  | `go test -race -cover ./...` (Layers 1, 2a, 2b, 3, 4, 5, 7, 8, 11 default)  |
-| `lint`                 | `.github/workflows/ci.yml` (job `lint`)           | PRs + push                                       | Required                                  | `golangci-lint` v2 + markdownlint + commitlint                              |
-| `dashboard` (E2E)      | `.github/workflows/e2e.yml` (job `dashboard`)     | push-to-main + nightly + manual                  | Informational                             | k3d + cerberus + Grafana + Playwright (Layer 10)                            |
-| `compatibility`        | `.github/workflows/compatibility.yml`             | push-to-main + nightly + manual                  | Informational today; required at v1.0 cut | `prometheus/compliance` differential (PromQL truth-source)                  |
-| `mutation` (`phase1`)  | `.github/workflows/mutation.yml` (matrix)         | push-to-main + nightly + manual                  | Informational                             | gremlins on `internal/chplan` @ 80% efficacy                                |
-| `mutation` (`phase2`)  | Same workflow, separate matrix entry              | push-to-main + nightly + manual                  | Informational                             | gremlins on `internal/chsql` @ 75% efficacy                                 |
-| `chdb`                 | `.github/workflows/chdb.yml`                      | nightly + manual                                 | Informational                             | TXTAR chDB roundtrip (Layer 6a/6b/6c) + handler tests under `-tags chdb`    |
-| `shadow-mode`          | `.github/workflows/shadow-mode.yml`               | push-to-main + nightly + manual                  | Informational                             | Layer 9 differential corpora                                                |
-| `fuzz`                 | `.github/workflows/fuzz.yml`                      | nightly + manual                                 | Informational                             | `FuzzParse` per QL head                                                     |
-| `perf-benchmark`       | `.github/workflows/perf-benchmark.yml`            | weekly + manual                                  | Informational                             | `go test -bench` sweep with benchstat regression detection                  |
+| Gate                            | Workflow                                          | Trigger                                          | Required PR check?                        | Scope                                                                       |
+| ------------------------------- | ------------------------------------------------- | ------------------------------------------------ | ----------------------------------------- | --------------------------------------------------------------------------- |
+| `check`                         | `.github/workflows/ci.yml` (job `check`)          | PRs + push                                       | Required                                  | `go test -race -cover ./...` (Layers 1, 2a, 2b, 3, 4, 5, 7, 8, 11 default)  |
+| `lint`                          | `.github/workflows/ci.yml` (job `lint`)           | PRs + push                                       | Required                                  | `golangci-lint` v2 + markdownlint + commitlint                              |
+| `dashboard` (E2E)               | `.github/workflows/e2e.yml` (job `dashboard`)     | push-to-main + nightly + manual                  | Informational                             | k3d + cerberus + Grafana + Playwright (Layer 10)                            |
+| `compatibility`                 | `.github/workflows/compatibility.yml`             | push-to-main + nightly + manual                  | Informational today; required at v1.0 cut | `prometheus/compliance` differential (PromQL truth-source)                  |
+| `mutation` (`phase1`)           | `.github/workflows/mutation.yml` (matrix)         | push-to-main + nightly + manual                  | Informational                             | gremlins on `internal/chplan` @ 80% efficacy                                |
+| `mutation` (`phase2`)           | Same workflow, separate matrix entry              | push-to-main + nightly + manual                  | Informational                             | gremlins on `internal/chsql` @ 75% efficacy                                 |
+| `mutation` (`phase3-optimizer`) | Same workflow, separate matrix entry              | push-to-main + nightly + manual                  | Informational                             | gremlins on `internal/optimizer` @ 70% efficacy                             |
+| `mutation` (`phase4-promql`)    | Same workflow, separate matrix entry              | push-to-main + nightly + manual                  | Informational                             | gremlins on `internal/promql` @ 65% efficacy                                |
+| `mutation` (`phase4-logql`)     | Same workflow, separate matrix entry              | push-to-main + nightly + manual                  | Informational                             | gremlins on `internal/logql` @ 65% efficacy                                 |
+| `mutation` (`phase4-traceql`)   | Same workflow, separate matrix entry              | push-to-main + nightly + manual                  | Informational                             | gremlins on `internal/traceql` @ 65% efficacy                               |
+| `chdb`                          | `.github/workflows/chdb.yml`                      | nightly + manual                                 | Informational                             | TXTAR chDB roundtrip (Layer 6a/6b/6c) + handler tests under `-tags chdb`    |
+| `shadow-mode`                   | `.github/workflows/shadow-mode.yml`               | push-to-main + nightly + manual                  | Informational                             | Layer 9 differential corpora                                                |
+| `fuzz`                          | `.github/workflows/fuzz.yml`                      | nightly + manual                                 | Informational                             | `FuzzParse` per QL head                                                     |
+| `perf-benchmark`                | `.github/workflows/perf-benchmark.yml`            | weekly + manual                                  | Informational                             | `go test -bench` sweep with benchstat regression detection                  |
 
 The PR-required surface is small on purpose. `check` + `lint` keep the
 fast feedback loop fast; everything below pollinates main on a slower
@@ -83,10 +87,10 @@ whole-repo `just mutate`.
 
 | Phase | Package                                        | Target efficacy | Status                                 |
 | ----- | ---------------------------------------------- | --------------- | -------------------------------------- |
-| 1     | `internal/chplan`                              | 80%             | DONE (PR #260)                         |
-| 2     | `internal/chsql`                               | 75%             | DONE (PR #268)                         |
-| 3     | `internal/optimizer`                           | 70%             | Pending Layer 4 (PR #266)              |
-| 4     | `internal/{promql,logql,traceql}` + `lower.go` | 65%             | Pending Layer 2b (lowering edge tests) |
+| 1     | `internal/chplan`                              | 80%             | Rolled out, informational (PR #260)    |
+| 2     | `internal/chsql`                               | 75%             | Rolled out, informational (PR #268)    |
+| 3     | `internal/optimizer`                           | 70%             | Rolled out, informational              |
+| 4     | `internal/{promql,logql,traceql}` + `lower.go` | 65%             | Rolled out, informational              |
 
 Promotion to a required PR gate is gated on Phase 4: once all four
 phases stay green for a week of nightly runs, `mutation` becomes a
