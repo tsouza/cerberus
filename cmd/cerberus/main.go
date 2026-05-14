@@ -27,25 +27,34 @@ import (
 var Version = "dev"
 
 func main() {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	slog.SetDefault(logger)
+	// Bootstrap logger used only until config.FromEnv returns and the
+	// configured logger replaces it. Text + info matches the configured
+	// defaults so the upgrade is invisible when env vars are unset.
+	bootstrap := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	slog.SetDefault(bootstrap)
 
-	if err := run(logger); err != nil {
-		logger.Error("cerberus exited with error", "err", err)
+	if err := run(); err != nil {
+		slog.Default().Error("cerberus exited with error", "err", err)
 		os.Exit(1)
 	}
 }
 
-func run(logger *slog.Logger) error {
+func run() error {
 	cfg, err := config.FromEnv()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
+
+	logger := config.NewLogger(os.Stderr, cfg.Log)
+	slog.SetDefault(logger)
+
 	logger.Info("cerberus starting",
 		"version", Version,
 		"http_addr", cfg.HTTPAddr,
 		"ch_addr", cfg.ClickHouse.Addr,
 		"ch_db", cfg.ClickHouse.Database,
+		"log_format", cfg.Log.Format,
+		"log_level", cfg.Log.Level.String(),
 	)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

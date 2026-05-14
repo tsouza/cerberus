@@ -132,7 +132,7 @@ func (h *Handler) handleTail(w http.ResponseWriter, r *http.Request) {
 	conn, err := tailUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		// Upgrade has already written the HTTP error response; just log.
-		h.Logger.Warn("cerberus loki tail upgrade failed", "err", err.Error())
+		h.Logger.Warn("cerberus loki tail upgrade failed", "err", err)
 		return
 	}
 	defer func() { _ = conn.Close() }()
@@ -212,13 +212,13 @@ func (h *Handler) runTailLoop(ctx context.Context, conn *websocket.Conn, cfg tai
 
 		sqlStr, args, err := buildTailSQL(cfg.schema, cfg.matchers, cursor, end, cfg.limit)
 		if err != nil {
-			h.Logger.Warn("cerberus loki tail buildSQL failed", "err", err.Error())
+			h.Logger.Error("cerberus loki tail buildSQL failed", "err", err)
 			return
 		}
 
 		samples, err := h.Client.Query(loopCtx, sqlStr, args...)
 		if err != nil {
-			h.Logger.Warn("cerberus loki tail CH query failed", "err", err.Error())
+			h.Logger.Error("cerberus loki tail CH query failed", "err", err)
 			return
 		}
 
@@ -246,7 +246,7 @@ func (h *Handler) runTailLoop(ctx context.Context, conn *websocket.Conn, cfg tai
 		if err := writeTailChunk(conn, streams); err != nil {
 			// Write failure usually means client disconnected; bail
 			// cleanly so the deferred Close runs.
-			h.Logger.Debug("cerberus loki tail write failed", "err", err.Error())
+			h.Logger.Debug("cerberus loki tail write failed", "err", err)
 			return
 		}
 	}

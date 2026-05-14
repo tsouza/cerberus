@@ -5,6 +5,8 @@ package config
 
 import (
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -28,6 +30,23 @@ type Config struct {
 	// (every statement carries CREATE TABLE IF NOT EXISTS) so enabling
 	// the flag on an already-populated ClickHouse is a no-op.
 	AutoCreateSchema bool
+
+	// Log configures cerberus's own structured logging (stdlib log/slog).
+	// See LogConfig for the env-var contract.
+	Log LogConfig
+}
+
+// LogConfig controls the slog setup applied at startup.
+//
+//   - Format is the slog handler kind. "text" produces a human-readable
+//     stream suited to local development; "json" produces newline-delimited
+//     JSON suited to log aggregators (Loki / ECS / GCP).
+//   - Level is the minimum level recorded; lower-severity records are
+//     dropped at the handler. Supported: "debug", "info" (default),
+//     "warn", "error".
+type LogConfig struct {
+	Format string
+	Level  slog.Level
 }
 
 // FromEnv reads configuration from environment variables, falling back to
@@ -40,6 +59,8 @@ type Config struct {
 //	CERBERUS_CH_PASSWORD           default ""
 //	CERBERUS_CH_DIAL_TIMEOUT       default "5s"
 //	CERBERUS_AUTO_CREATE_SCHEMA    default "false"
+//	CERBERUS_LOG_FORMAT            default "text"  ("text" | "json")
+//	CERBERUS_LOG_LEVEL             default "info"  ("debug" | "info" | "warn" | "error")
 func FromEnv() (Config, error) {
 	dial, err := time.ParseDuration(envDefault("CERBERUS_CH_DIAL_TIMEOUT", "5s"))
 	if err != nil {
@@ -48,6 +69,10 @@ func FromEnv() (Config, error) {
 	autoCreate, err := envBool("CERBERUS_AUTO_CREATE_SCHEMA", false)
 	if err != nil {
 		return Config{}, fmt.Errorf("CERBERUS_AUTO_CREATE_SCHEMA: %w", err)
+	}
+	logCfg, err := envLog()
+	if err != nil {
+		return Config{}, err
 	}
 	return Config{
 		HTTPAddr: envDefault("CERBERUS_HTTP_ADDR", ":8080"),
@@ -60,7 +85,25 @@ func FromEnv() (Config, error) {
 		},
 		Schema:           schema.DefaultOTelMetrics(),
 		AutoCreateSchema: autoCreate,
+		Log:              logCfg,
 	}, nil
+}
+
+// NewLogger builds a *slog.Logger from a LogConfig writing to w. The
+// caller is responsible for installing the result as the slog default
+// (e.g. via slog.SetDefault) if global propagation is desired. Accepting
+// io.Writer keeps the helper trivially testable (a *bytes.Buffer drops
+// straight in).
+func NewLogger(w io.Writer, cfg LogConfig) *slog.Logger {
+	opts := &slog.HandlerOptions{Level: cfg.Level}
+	var h slog.Handler
+	switch cfg.Format {
+	case "json":
+		h = slog.NewJSONHandler(w, opts)
+	default:
+		h = slog.NewTextHandler(w, opts)
+	}
+	return slog.New(h)
 }
 
 func envDefault(key, def string) string {
@@ -84,4 +127,31 @@ func envBool(key string, def bool) (bool, error) {
 		return false, fmt.Errorf("invalid boolean %q: %w", v, err)
 	}
 	return b, nil
+}
+
+// envLog parses CERBERUS_LOG_FORMAT + CERBERUS_LOG_LEVEL into a LogConfig.
+// Unset values default to "text" / "info"; invalid values fail fast at
+// startup so a typo never silently downgrades observability.
+func envLog() (LogConfig, error) {
+	format := strings.ToLower(strings.TrimSpace(envDefault("CERBERUS_LOG_FORMAT", "text")))
+	switch format {
+	case "text", "json":
+	default:
+		return LogConfig{}, fmt.Errorf("CERBERUS_LOG_FORMAT: invalid value %q (want \"text\" or \"json\")", format)
+	}
+	levelStr := strings.ToLower(strings.TrimSpace(envDefault("CERBERUS_LOG_LEVEL", "info")))
+	var level slog.Level
+	switch levelStr {
+	case "debug":
+		level = slog.LevelDebug
+	case "info":
+		level = slog.LevelInfo
+	case "warn", "warning":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	default:
+		return LogConfig{}, fmt.Errorf("CERBERUS_LOG_LEVEL: invalid value %q (want \"debug\", \"info\", \"warn\", or \"error\")", levelStr)
+	}
+	return LogConfig{Format: format, Level: level}, nil
 }

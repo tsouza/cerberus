@@ -101,7 +101,7 @@ func (h *Handler) respondTagValues(w http.ResponseWriter, r *http.Request, v2 bo
 
 	values, err := h.Client.QueryStrings(r.Context(), sqlStr, args...)
 	if err != nil {
-		h.Logger.Warn("cerberus tempo /search/tag/values CH query failed", "err", err.Error(), "tag", name)
+		h.Logger.Error("cerberus tempo /search/tag/values CH query failed", "err", err, "tag", name)
 		writeError(w, http.StatusBadGateway, "", "", err)
 		return
 	}
