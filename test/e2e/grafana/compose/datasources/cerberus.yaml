@@ -2,7 +2,7 @@
 #
 # Cerberus exposes three Grafana-facing APIs on a single HTTP port — Prom,
 # Loki and Tempo — so all three datasources point at the same URL. The k3s
-# manifest at deploy/k3s/grafana.yaml mirrors this layout.
+# manifest at test/e2e/k3s/grafana.yaml mirrors this layout.
 apiVersion: 1
 datasources:
   - name: Cerberus-Prometheus

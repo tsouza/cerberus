@@ -16,12 +16,12 @@
 #                being ready.
 #   grafana      pre-provisioned with cerberus as three datasources
 #                (Prometheus / Loki / Tempo). Provisioning files live under
-#                `deploy/grafana/compose/`.
+#                `test/e2e/grafana/compose/`.
 #
 # The OTLP exporter wiring (cerberus -> OTel Collector -> CH) is intentionally
 # omitted: the self-telemetry OTLP code path and the cerberus-self dashboard
 # both land later in RC4. Add an `otel-collector` service alongside cerberus
-# once those land — see deploy/k3s/otel-collector.yaml for the config shape.
+# once those land — see test/e2e/k3s/otel-collector.yaml for the config shape.
 #
 # Default host port map:
 #   3000  -> grafana
@@ -126,7 +126,7 @@ services:
       GF_USERS_DEFAULT_THEME: dark
       GF_FEATURE_TOGGLES_ENABLE: traceqlSearch
     volumes:
-      - ./deploy/grafana/compose/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./test/e2e/grafana/compose/datasources:/etc/grafana/provisioning/datasources:ro
     ports:
       - "3000:3000"
     depends_on:

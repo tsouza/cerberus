@@ -7,7 +7,7 @@
 # works on any Kubernetes cluster with the standard `metrics-server`
 # installed (which k3d/k3s ship by default). For load-aware scaling using
 # the cerberus self-metric `cerberus_queries_total`, see the alternative
-# block at the bottom of this file and `deploy/k3s/README.md`.
+# block at the bottom of this file and `test/e2e/k3s/README.md`.
 #
 # Why CPU as the default trigger:
 #   - metrics-server is universally available; the prometheus-adapter +
@@ -92,7 +92,7 @@ spec:
 #
 # Wiring sketch:
 #   1. Add a `prometheus` exporter to the OTel Collector gateway config
-#      (deploy/k3s/otel-collector.yaml) so cerberus.queries.total is
+#      (test/e2e/k3s/otel-collector.yaml) so cerberus.queries.total is
 #      exposed in Prometheus exposition format on :8889/metrics.
 #   2. Install the kube-prometheus-stack chart (or prometheus-operator +
 #      prometheus-adapter) in the cluster.

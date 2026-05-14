@@ -27,8 +27,8 @@ internal/
 cmd/cerberus/                main entrypoint
 test/spec/                   TXTAR golden tests (input QL → SQL/plan)
 test/e2e/                    k3d cluster + Grafana playwright smoke
+test/e2e/{k3s,grafana}/      k3d manifests + Grafana provisioning (datasources, dashboards) consumed by the smoke
 harness/compatibility/          prometheus/compliance Docker Compose harness + shadow-mode differential testing
-deploy/{k3s,grafana}/        Kubernetes manifests + Grafana Helm values
 docs/                        roadmap.md, optimizer-research.md, compatibility.md, engine.md, observability.md, 12factor.md, …
 ```
 

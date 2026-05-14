@@ -76,7 +76,7 @@ Content-Type: application/json
 
 ## Kubernetes probe configuration
 
-The shipped `deploy/k3s/cerberus.yaml` wires the probes as follows:
+The shipped `test/e2e/k3s/cerberus.yaml` wires the probes as follows:
 
 ```yaml
 readinessProbe:

@@ -38,5 +38,6 @@ LICENSE
 
 # Compose / k8s / harness — image build does not need these.
 docker-compose.yml
-deploy/
+test/e2e/k3s/
+test/e2e/grafana/
 harness/

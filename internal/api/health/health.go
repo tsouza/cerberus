@@ -80,7 +80,7 @@ func New(opts Options) *Handler {
 	if h.cacheTTL == 0 {
 		// 2s lines up with the typical k8s probe period (5Hz on the
 		// hot path; ~3s for cerberus' own readinessProbe in
-		// deploy/k3s/cerberus.yaml). Two seconds of coalescing keeps
+		// test/e2e/k3s/cerberus.yaml). Two seconds of coalescing keeps
 		// CH load near zero while still surfacing outages within one
 		// probe period.
 		h.cacheTTL = 2 * time.Second

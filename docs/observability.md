@@ -13,8 +13,8 @@ The self-observability stack covers four pillars:
 | Pipeline tracing      | Custom spans around parse / lower / optimize / emit / execute give per-stage timings             |
 | Self-metrics + OTLP   | Request count + latency + CH roundtrip + in-flight gauge, exported via OTLP gRPC                 |
 
-The k3s manifest at `deploy/k3s/otel-collector.yaml` and the provisioned
-`deploy/grafana/dashboards/cerberus-self.json` wire the full export path
+The k3s manifest at `test/e2e/k3s/otel-collector.yaml` and the provisioned
+`test/e2e/grafana/dashboards/cerberus-self.json` wire the full export path
 end-to-end against a running cluster.
 
 ## Logging
