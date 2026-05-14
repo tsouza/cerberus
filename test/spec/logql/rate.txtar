@@ -14,21 +14,21 @@ CREATE TABLE otel_logs (
     ResourceAttributes Map(String, String)
 ) ENGINE = Memory;
 INSERT INTO otel_logs (Timestamp, Body, ResourceAttributes) VALUES
-    (now64(9), 'a', map('job', 'api')),
-    (now64(9), 'b', map('job', 'api')),
-    (now64(9), 'c', map('job', 'api')),
-    (now64(9), 'd', map('job', 'api')),
-    (now64(9), 'e', map('job', 'api')),
-    (now64(9), 'f', map('job', 'api')),
-    (now64(9), 'g', map('job', 'api')),
-    (now64(9), 'h', map('job', 'api')),
-    (now64(9), 'i', map('job', 'api')),
-    (now64(9), 'j', map('job', 'api')),
-    (now64(9), 'k', map('job', 'api')),
-    (now64(9), 'l', map('job', 'api')),
-    (now64(9), 'm', map('job', 'api')),
-    (now64(9), 'n', map('job', 'api')),
-    (now64(9), 'o', map('job', 'api'));
+    (toDateTime64('2025-12-31 23:59:01', 9), 'a', map('job', 'api')),
+    (toDateTime64('2025-12-31 23:59:05', 9), 'b', map('job', 'api')),
+    (toDateTime64('2025-12-31 23:59:09', 9), 'c', map('job', 'api')),
+    (toDateTime64('2025-12-31 23:59:13', 9), 'd', map('job', 'api')),
+    (toDateTime64('2025-12-31 23:59:17', 9), 'e', map('job', 'api')),
+    (toDateTime64('2025-12-31 23:59:21', 9), 'f', map('job', 'api')),
+    (toDateTime64('2025-12-31 23:59:25', 9), 'g', map('job', 'api')),
+    (toDateTime64('2025-12-31 23:59:29', 9), 'h', map('job', 'api')),
+    (toDateTime64('2025-12-31 23:59:33', 9), 'i', map('job', 'api')),
+    (toDateTime64('2025-12-31 23:59:37', 9), 'j', map('job', 'api')),
+    (toDateTime64('2025-12-31 23:59:41', 9), 'k', map('job', 'api')),
+    (toDateTime64('2025-12-31 23:59:45', 9), 'l', map('job', 'api')),
+    (toDateTime64('2025-12-31 23:59:49', 9), 'm', map('job', 'api')),
+    (toDateTime64('2025-12-31 23:59:53', 9), 'n', map('job', 'api')),
+    (toDateTime64('2026-01-01 00:00:00', 9), 'o', map('job', 'api'));
 -- expected_rows --
 [
   [{"job": "api"}, 0.25]
