@@ -149,6 +149,25 @@ semantically equivalent — the optimizer property test still passes,
 and so do the round-trip fixtures). That sharpens the score over
 the default lane, which would score a string-equality false-kill.
 
+### Phased rollout
+
+The whole-repo `threshold-efficacy` bar is global (gremlins v0.6.0
+has no per-package threshold). The rollout is therefore staged: each
+phase raises the global bar only once the next-most-covered package
+catches up, and promotion to a required CI gate waits for phase 4.
+
+| Phase                            | Package              | Target efficacy |
+| -------------------------------- | -------------------- | --------------- |
+| 1 (active — `.gremlins.yaml`)    | `internal/chplan`    | 80%             |
+| 2 (planned)                      | `internal/chsql`     | 75%             |
+| 3 (planned)                      | `internal/optimizer` | 70%             |
+| 4 (planned, then required gate)  | QL parsers + lower   | 65%             |
+
+Until phase 4, `just mutate` (and the `mutation` workflow that wraps
+it) stays informational. The thresholds are advisory floors only —
+contributors do NOT have to land mutation-killing tests with every
+PR.
+
 The recipe is slow (tens of minutes) and informational only —
 neither `just mutate` nor `just mutate-chdb` is on a required CI
 path today.
