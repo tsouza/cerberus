@@ -52,4 +52,8 @@ const (
 	ErrTimeout   = "timeout"
 	ErrCanceled  = "canceled"
 	ErrExecution = "execution"
+	// ErrUnavailable is the Loki-vocabulary errorType for HTTP 503
+	// responses cerberus emits when its downstream-CH circuit breaker
+	// is OPEN. Mirrors prom.ErrUnavailable for consistency.
+	ErrUnavailable = "unavailable"
 )

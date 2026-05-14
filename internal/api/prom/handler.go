@@ -415,6 +415,19 @@ func classifyEngineError(err error) error {
 	if err == nil {
 		return nil
 	}
+	// Circuit-breaker fast-fail short-circuit: when the chclient
+	// breaker is OPEN, surface 503 + Retry-After: 5 directly without
+	// dressing it as a 5xx "execute" failure. This is the wire
+	// signal Grafana / Prom clients honour to back off rather than
+	// hammer the gateway during an upstream CH outage.
+	if errors.Is(err, chclient.ErrCircuitOpen) {
+		return &apiError{
+			Kind:              ErrUnavailable,
+			Err:               err,
+			Status:            http.StatusServiceUnavailable,
+			RetryAfterSeconds: 5,
+		}
+	}
 	var ps *parseStageError
 	if errors.As(err, &ps) {
 		switch ps.stage {
@@ -451,11 +464,12 @@ func errContainsStage(msg, stage string) bool {
 //  1. Scan / Filter(Scan) — the otel_metrics_* columns are available
 //     directly; project MetricName / Attributes / TimeUnix / Value.
 //  2. RangeWindow / Aggregate / Filter(Aggregate) — derived shapes
-//     whose inner SELECT exposes only (group-keys…, value). The
-//     canonical MetricName and TimeUnix don't exist in that scope;
-//     synthesise them as empty string + now64() respectively. The
-//     value column comes from the RangeWindow / Aggregate output
-//     (always lowercase `value` by chsql convention).
+//     whose inner SELECT exposes only (group-keys…, s.ValueColumn).
+//     The canonical MetricName doesn't exist in that scope; synthesise
+//     it as empty string. The matrix RangeWindow projects anchor_ts AS
+//     s.TimestampColumn on its outermost SELECT so the per-row timestamp
+//     flows through under the canonical name; the instant case has to
+//     synthesise via now64().
 func wrapWithSampleProjection(plan chplan.Node, s schema.Metrics) chplan.Node {
 	projections := []chplan.Projection{
 		{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}},
@@ -465,11 +479,12 @@ func wrapWithSampleProjection(plan chplan.Node, s schema.Metrics) chplan.Node {
 	}
 	if isDerivedShape(plan) {
 		// TimeUnix source: matrix-shape RangeWindow exposes a real
-		// per-row `anchor_ts` (one row per anchor across the subquery's
-		// outer range); the instant case has to synthesise via now64().
+		// per-row timestamp under s.TimestampColumn (one row per anchor
+		// across the subquery's outer range); the instant case has to
+		// synthesise via now64().
 		var tsExpr chplan.Expr
 		if isMatrixRangeWindow(plan) {
-			tsExpr = &chplan.ColumnRef{Name: "anchor_ts"}
+			tsExpr = &chplan.ColumnRef{Name: s.TimestampColumn}
 		} else {
 			tsExpr = synthesizedAnchor()
 		}
@@ -477,7 +492,7 @@ func wrapWithSampleProjection(plan chplan.Node, s schema.Metrics) chplan.Node {
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
 			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
 			{Expr: tsExpr, Alias: s.TimestampColumn},
-			{Expr: &chplan.ColumnRef{Name: "value"}, Alias: s.ValueColumn},
+			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
 		}
 	}
 	return &chplan.Project{Input: plan, Projections: projections}
@@ -634,8 +649,22 @@ func matrixFromCursor(
 type apiError = httperr.Error
 
 func (h *Handler) respondError(w http.ResponseWriter, err error) {
+	// Circuit-breaker fast-fail short-circuit applies regardless of
+	// whether the callsite pre-wrapped the chclient error in its own
+	// *apiError. The inner ErrCircuitOpen would otherwise be masked
+	// by the outer wrap (`&apiError{Status: 502, Err: chclient...}`);
+	// errors.Is rescues both shapes (bare and wrapped) for the
+	// 503 + Retry-After treatment.
+	if errors.Is(err, chclient.ErrCircuitOpen) {
+		w.Header().Set("Retry-After", "5")
+		writeError(w, http.StatusServiceUnavailable, ErrUnavailable, err)
+		return
+	}
 	var apiErr *apiError
 	if errors.As(err, &apiErr) {
+		if apiErr.RetryAfterSeconds > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(apiErr.RetryAfterSeconds))
+		}
 		writeError(w, apiErr.Status, apiErr.Kind, apiErr.Err)
 		return
 	}

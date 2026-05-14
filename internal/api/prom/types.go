@@ -49,4 +49,9 @@ const (
 	ErrTimeout   = "timeout"
 	ErrCanceled  = "canceled"
 	ErrExecution = "execution"
+	// ErrUnavailable is the Prom-vocabulary errorType for HTTP 503
+	// responses cerberus emits when its downstream-CH circuit breaker
+	// is OPEN. The Prom vocabulary doesn't have a dedicated "downstream
+	// out" code; "unavailable" is the closest match in the family.
+	ErrUnavailable = "unavailable"
 )

@@ -52,8 +52,17 @@ type Config struct {
 }
 
 // Client is a stateless wrapper over a clickhouse-go/v2 connection pool.
+//
+// Every CH-touching method (Ping, Exec, Query, QueryCursor, QueryStrings,
+// QueryMetricMeta, QueryIndexStats, QueryIndexVolume, QueryLabelSets) is
+// guarded by a per-Client circuit breaker (see breaker.go). When CH goes
+// dark the breaker trips after a short failure budget and methods return
+// [ErrCircuitOpen] without dialling — the handler layer maps that into
+// HTTP 503 with a `Retry-After: 5` header so clients back off cleanly
+// instead of stacking inner-stage retries against a dead upstream.
 type Client struct {
 	conn driver.Conn
+	br   breaker
 }
 
 // New opens a connection pool to ClickHouse and pings it once to confirm
@@ -119,11 +128,22 @@ func (c *Client) Close() error {
 // forwards to the clickhouse-go/v2 driver's Ping, which performs a
 // lightweight round-trip on a pooled connection. The readiness probe
 // (internal/api/health) uses it as the downstream-dependency check.
+//
+// Guarded by the circuit breaker: when the breaker is OPEN, Ping
+// returns ErrCircuitOpen instantly without touching CH. That is the
+// behavior /readyz depends on to report "red" within the cache TTL
+// after the breaker trips — the ping IS the readiness probe, so a
+// short-circuited ping is a short-circuited readiness check.
 func (c *Client) Ping(ctx context.Context) error {
 	if c.conn == nil {
 		return fmt.Errorf("chclient: ping: nil connection")
 	}
-	if err := c.conn.Ping(ctx); err != nil {
+	if !c.br.allow() {
+		return fmt.Errorf("chclient: ping: %w", ErrCircuitOpen)
+	}
+	err := c.conn.Ping(ctx)
+	c.br.record(err)
+	if err != nil {
 		return fmt.Errorf("chclient: ping: %w", err)
 	}
 	return nil
@@ -141,10 +161,18 @@ type Sample struct {
 // Exec runs sql with positional args against ClickHouse and returns any
 // error. Use for DDL (CREATE TABLE, ...) and DML (INSERT, ...) that don't
 // produce a result set.
+//
+// Guarded by the circuit breaker: when the breaker is OPEN this returns
+// ErrCircuitOpen without touching CH and without opening an execute span.
 func (c *Client) Exec(ctx context.Context, sql string, args ...any) error {
+	if !c.br.allow() {
+		return fmt.Errorf("chclient: exec: %w", ErrCircuitOpen)
+	}
 	ctx, span := startExecuteSpan(ctx, sql)
 	defer span.End()
-	if err := c.conn.Exec(ctx, sql, args...); err != nil {
+	err := c.conn.Exec(ctx, sql, args...)
+	c.br.record(err)
+	if err != nil {
 		span.RecordError(err)
 		return fmt.Errorf("chclient: exec: %w", err)
 	}
@@ -196,11 +224,18 @@ func flushProgress(ctx context.Context) {
 // QueryStrings runs sql and decodes a single-string-column result into a
 // flat slice. Used by metadata endpoints (/api/v1/labels, label values,
 // metadata) that return a list of names.
+//
+// Guarded by the circuit breaker: returns ErrCircuitOpen instantly when
+// the breaker is OPEN, no execute span opened.
 func (c *Client) QueryStrings(ctx context.Context, sql string, args ...any) ([]string, error) {
+	if !c.br.allow() {
+		return nil, fmt.Errorf("chclient: query: %w", ErrCircuitOpen)
+	}
 	ctx, span := startExecuteSpan(ctx, sql)
 	defer span.End()
 	defer flushProgress(ctx)
 	rows, err := c.conn.Query(ctx, sql, args...)
+	c.br.record(err)
 	if err != nil {
 		span.RecordError(err)
 		return nil, fmt.Errorf("chclient: query: %w", err)
@@ -237,11 +272,17 @@ type MetricMetaRow struct {
 // unit) triple. The caller supplies the `metricType` (gauge / counter /
 // histogram) since the table the row came from determines that — the SQL
 // itself only returns the OTel columns.
+//
+// Guarded by the circuit breaker (see [Client] doc).
 func (c *Client) QueryMetricMeta(ctx context.Context, sql, metricType string, args ...any) ([]MetricMetaRow, error) {
+	if !c.br.allow() {
+		return nil, fmt.Errorf("chclient: query: %w", ErrCircuitOpen)
+	}
 	ctx, span := startExecuteSpan(ctx, sql)
 	defer span.End()
 	defer flushProgress(ctx)
 	rows, err := c.conn.Query(ctx, sql, args...)
+	c.br.record(err)
 	if err != nil {
 		span.RecordError(err)
 		return nil, fmt.Errorf("chclient: query: %w", err)
@@ -281,11 +322,17 @@ type IndexStatsRow struct {
 // QueryIndexStats runs sql expecting a single row of three UInt64
 // aggregates (streams, entries, bytes) and decodes it. An empty result
 // set is treated as the all-zeros row.
+//
+// Guarded by the circuit breaker (see [Client] doc).
 func (c *Client) QueryIndexStats(ctx context.Context, sql string, args ...any) (IndexStatsRow, error) {
+	if !c.br.allow() {
+		return IndexStatsRow{}, fmt.Errorf("chclient: query: %w", ErrCircuitOpen)
+	}
 	ctx, span := startExecuteSpan(ctx, sql)
 	defer span.End()
 	defer flushProgress(ctx)
 	rows, err := c.conn.Query(ctx, sql, args...)
+	c.br.record(err)
 	if err != nil {
 		span.RecordError(err)
 		return IndexStatsRow{}, fmt.Errorf("chclient: query: %w", err)
@@ -317,11 +364,17 @@ type IndexVolumeRow struct {
 
 // QueryIndexVolume runs sql expecting rows of (Map(String,String),
 // UInt64) and decodes them into IndexVolumeRow.
+//
+// Guarded by the circuit breaker (see [Client] doc).
 func (c *Client) QueryIndexVolume(ctx context.Context, sql string, args ...any) ([]IndexVolumeRow, error) {
+	if !c.br.allow() {
+		return nil, fmt.Errorf("chclient: query: %w", ErrCircuitOpen)
+	}
 	ctx, span := startExecuteSpan(ctx, sql)
 	defer span.End()
 	defer flushProgress(ctx)
 	rows, err := c.conn.Query(ctx, sql, args...)
+	c.br.record(err)
 	if err != nil {
 		span.RecordError(err)
 		return nil, fmt.Errorf("chclient: query: %w", err)
@@ -348,11 +401,17 @@ func (c *Client) QueryIndexVolume(ctx context.Context, sql string, args ...any) 
 
 // QueryLabelSets runs sql and decodes each row into a Map(String,String)
 // label set. Used by /api/v1/series.
+//
+// Guarded by the circuit breaker (see [Client] doc).
 func (c *Client) QueryLabelSets(ctx context.Context, sql string, args ...any) ([]map[string]string, error) {
+	if !c.br.allow() {
+		return nil, fmt.Errorf("chclient: query: %w", ErrCircuitOpen)
+	}
 	ctx, span := startExecuteSpan(ctx, sql)
 	defer span.End()
 	defer flushProgress(ctx)
 	rows, err := c.conn.Query(ctx, sql, args...)
+	c.br.record(err)
 	if err != nil {
 		span.RecordError(err)
 		return nil, fmt.Errorf("chclient: query: %w", err)

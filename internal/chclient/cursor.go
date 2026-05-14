@@ -129,9 +129,20 @@ func (c *rowsCursor) Close() error {
 // process memory at a time, which is the only way to keep RAM bounded
 // for long-window `query_range` requests. Callers MUST Close the cursor
 // to return its connection to the pool.
+//
+// Guarded by the circuit breaker (see [Client] doc). The breaker
+// observes the open-call outcome only — once the cursor is returned,
+// iteration errors propagate via cursor.Err() but are NOT re-recorded
+// against the breaker. A single failed query is one failure, not N
+// where N is the number of rows the caller drained before hitting the
+// transport drop.
 func (c *Client) QueryCursor(ctx context.Context, sql string, args ...any) (Cursor, error) {
+	if !c.br.allow() {
+		return nil, fmt.Errorf("chclient: query: %w", ErrCircuitOpen)
+	}
 	ctx, span := startExecuteSpan(ctx, sql)
 	rows, err := c.conn.Query(ctx, sql, args...)
+	c.br.record(err)
 	if err != nil {
 		span.RecordError(err)
 		span.End()

@@ -188,11 +188,18 @@ func writeEngineHeaders(w http.ResponseWriter, hdr map[string]string) {
 // adapter tags parse vs lower errors with errParseStage / errLowerStage
 // so errors.Is recovers the precise stage even though the engine
 // collapses both into its outer `engine: parse:` wrapper.
+//
+// Circuit-breaker fast-fail: when the chclient breaker is OPEN the
+// underlying error chains down to chclient.ErrCircuitOpen and we
+// surface HTTP 503 — the Retry-After: 5 stamp lives on the handler
+// side (see handleSearch / handleTraceByID).
 func classifySearchErr(err error) int {
 	if err == nil {
 		return http.StatusInternalServerError
 	}
 	switch {
+	case errors.Is(err, chclient.ErrCircuitOpen):
+		return http.StatusServiceUnavailable
 	case errors.Is(err, errParseStage):
 		return http.StatusBadRequest
 	case errors.Is(err, errLowerStage):
@@ -309,6 +316,9 @@ func (h *Handler) handleTraceByID(w http.ResponseWriter, r *http.Request) {
 func classifyTraceByIDErr(err error) int {
 	if err == nil {
 		return http.StatusInternalServerError
+	}
+	if errors.Is(err, chclient.ErrCircuitOpen) {
+		return http.StatusServiceUnavailable
 	}
 	if strings.Contains(err.Error(), "engine: execute:") {
 		return http.StatusBadGateway
@@ -732,7 +742,18 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 // `{status, errorType, error}`) so Grafana renders the right UI. The
 // envelope shape is wire-format invariant — it stays per-handler rather
 // than living in httperr.
+//
+// When the underlying error chain contains chclient.ErrCircuitOpen
+// (the GA-default downstream-CH circuit breaker is OPEN) the writer
+// stamps `Retry-After: 5` on the response so well-behaved clients
+// back off for the breaker's recovery window. The 503 status is
+// supplied by classifySearchErr / classifyTraceByIDErr; the header
+// is set here so all Tempo error paths get it without each call site
+// repeating the boilerplate.
 func writeError(w http.ResponseWriter, status int, traceID, spanID string, err error) {
+	if errors.Is(err, chclient.ErrCircuitOpen) {
+		w.Header().Set("Retry-After", "5")
+	}
 	httperr.WriteJSON(w, status, ErrorResponse{
 		TraceID: traceID, SpanID: spanID, Error: true,
 		Message: err.Error(),
