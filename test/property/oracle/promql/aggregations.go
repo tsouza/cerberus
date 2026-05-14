@@ -179,4 +179,3 @@ func topKBottomK(rows []VectorRow, k int, bottom bool) []aggResult {
 	}
 	return out
 }
-
