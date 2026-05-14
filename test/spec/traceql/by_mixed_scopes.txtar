@@ -1,0 +1,24 @@
+-- query.traceql --
+{} | max_over_time(duration) by (resource.service.name, span.http.method)
+-- sql --
+SELECT `ResourceAttributes`[?] AS `service.name`, `SpanAttributes`[?] AS `http.method`, max(`Duration`) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?) GROUP BY `ResourceAttributes`[?], `SpanAttributes`[?]
+-- args --
+[0] string = "service.name"
+[1] string = "http.method"
+[2] bool = true
+[3] string = "service.name"
+[4] string = "http.method"
+-- seed --
+CREATE TABLE otel_traces (
+    ResourceAttributes Map(String, String),
+    SpanAttributes Map(String, String),
+    Duration UInt64
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    (map('service.name', 'frontend'), map('http.method', 'GET'),  50000000),
+    (map('service.name', 'frontend'), map('http.method', 'GET'), 100000000),
+    (map('service.name', 'frontend'), map('http.method', 'GET'),  75000000);
+-- expected_rows --
+[
+  ["frontend", "GET", 100000000]
+]

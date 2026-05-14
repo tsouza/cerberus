@@ -1,0 +1,23 @@
+-- query.traceql --
+{} | count_over_time() by (kind, resource.service.name)
+-- sql --
+SELECT `SpanKind` AS `kind`, `ResourceAttributes`[?] AS `service.name`, count(?) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?) GROUP BY `SpanKind`, `ResourceAttributes`[?]
+-- args --
+[0] string = "service.name"
+[1] int64 = 1
+[2] bool = true
+[3] string = "service.name"
+-- seed --
+CREATE TABLE otel_traces (
+    ResourceAttributes Map(String, String),
+    SpanKind String
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    (map('service.name', 'frontend'), 'Client'),
+    (map('service.name', 'frontend'), 'Client'),
+    (map('service.name', 'frontend'), 'Client'),
+    (map('service.name', 'frontend'), 'Client');
+-- expected_rows --
+[
+  ["Client", "frontend", 4]
+]
