@@ -187,7 +187,10 @@ func TestLower_VectorMatch_Cardinality(t *testing.T) {
 			t.Fatalf("Emit: %v", err)
 		}
 		// The "many" (left) side aggregates over (MetricName, Attributes).
-		if !strings.Contains(sql, "GROUP BY `MetricName`, `Attributes`) AS L") {
+		// Per-side aggregation is wrapped in an outer Project that renames
+		// `_join_*` aliases back to canonical names, so the GROUP BY
+		// clause closes with `)) AS L` (inner agg + outer Project).
+		if !strings.Contains(sql, "GROUP BY `MetricName`, `Attributes`)) AS L") {
 			t.Errorf("expected left side per-series aggregation; got:\n%s", sql)
 		}
 		// The "one" (right) side aggregates by the matching key with
@@ -211,8 +214,10 @@ func TestLower_VectorMatch_Cardinality(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Emit: %v", err)
 		}
-		// Right side is the "many" → per-series aggregation.
-		if !strings.Contains(sql, "GROUP BY `MetricName`, `Attributes`) AS R") {
+		// Right side is the "many" → per-series aggregation. The
+		// per-side outer Project closes the inner agg's GROUP BY with
+		// a second `)`.
+		if !strings.Contains(sql, "GROUP BY `MetricName`, `Attributes`)) AS R") {
 			t.Errorf("expected right side per-series aggregation; got:\n%s", sql)
 		}
 		// Output MetricName / TimeUnix come from R (the many side).

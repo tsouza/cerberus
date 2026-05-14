@@ -135,36 +135,76 @@ func vectorJoinRoles(j *chplan.VectorJoin) (sideRole, sideRole) {
 // `throwIf(uniqExact(Attributes) > 1, ...)` side-effect column — the
 // "many-to-many matching not allowed" Prometheus error surfaces at CH
 // query-execution time rather than as a silent cross-product.
+//
+// The per-side aggregation projects its outputs through `_join_*`
+// aliases (`_join_MetricName`, `_join_Attributes`, `_join_TimeUnix`,
+// `_join_Value`) then an outer subquery renames them back to the
+// canonical names. Reason: when the input is already an LWR'd Sample-
+// shaped subquery (the post-PR #275 default for instant
+// VectorSelectors), CH's analyzer otherwise traces the alias chain
+// `TimeUnix → lwr_ts → max(TimeUnix)` through the subquery boundary
+// and rejects the per-side aggregation with ILLEGAL_AGGREGATION
+// ("max(TimeUnix) AS TimeUnix is found inside another aggregate
+// function"). Renaming the per-side aggregates breaks the chain — CH
+// sees the inner subquery as having columns named `_join_*` not
+// `TimeUnix` / `Value`, so the agg-inside-agg detector doesn't
+// misfire. The outer Project renames back so the JOIN's ON clause
+// and outer SELECT continue to reference `L.Attributes` / `R.Value`
+// naturally.
 func (e *emitter) vectorJoinSideFrag(j *chplan.VectorJoin, n chplan.Node, role sideRole) (Frag, error) {
 	sub, err := e.subqueryFrag(n)
 	if err != nil {
 		return nil, err
 	}
-	sb := NewQuery().From(sub)
+	inner := NewQuery().From(sub)
 	if role == roleMany {
-		sb.Select(
-			Col(j.MetricNameColumn),
-			Col(j.AttributesColumn),
-			aggMaxAs(j.TimestampColumn, j.TimestampColumn),
-			argMaxAs(j.ValueColumn, j.TimestampColumn, j.ValueColumn),
+		inner.Select(
+			As(Col(j.MetricNameColumn), joinAlias(j.MetricNameColumn)),
+			As(Col(j.AttributesColumn), joinAlias(j.AttributesColumn)),
+			aggMaxAs(j.TimestampColumn, joinAlias(j.TimestampColumn)),
+			argMaxAs(j.ValueColumn, j.TimestampColumn, joinAlias(j.ValueColumn)),
 		).GroupBy(
 			Col(j.MetricNameColumn),
 			Col(j.AttributesColumn),
 		)
-		return sb.Frag(), nil
+	} else {
+		// "one" side — aggregate by matching key with a runtime
+		// uniqueness guard. argMax(Attributes, TimeUnix) picks one
+		// representative series per match key; throwIf fires when
+		// there's more than one.
+		inner.Select(
+			argMaxAs(j.MetricNameColumn, j.TimestampColumn, joinAlias(j.MetricNameColumn)),
+			argMaxAs(j.AttributesColumn, j.TimestampColumn, joinAlias(j.AttributesColumn)),
+			aggMaxAs(j.TimestampColumn, joinAlias(j.TimestampColumn)),
+			argMaxAs(j.ValueColumn, j.TimestampColumn, joinAlias(j.ValueColumn)),
+			matchCheckFrag(j.AttributesColumn),
+		).GroupBy(matchKeyGroupExprFrag(j.Match, j.AttributesColumn))
 	}
 
-	// "one" side — aggregate by matching key with a runtime uniqueness
-	// guard. argMax(Attributes, TimeUnix) picks one representative
-	// series per match key; throwIf fires when there's more than one.
-	sb.Select(
-		argMaxAs(j.MetricNameColumn, j.TimestampColumn, j.MetricNameColumn),
-		argMaxAs(j.AttributesColumn, j.TimestampColumn, j.AttributesColumn),
-		aggMaxAs(j.TimestampColumn, j.TimestampColumn),
-		argMaxAs(j.ValueColumn, j.TimestampColumn, j.ValueColumn),
-		matchCheckFrag(j.AttributesColumn),
-	).GroupBy(matchKeyGroupExprFrag(j.Match, j.AttributesColumn))
-	return sb.Frag(), nil
+	// Outer Project: rename `_join_*` back to canonical column names
+	// so the JOIN's ON clause and the outer SELECT reference
+	// `L.Attributes` / `R.Value` / etc. directly. The throwIf
+	// side-effect column from roleOne is dropped here — CH still
+	// evaluates it as part of the inner aggregation, but the join's
+	// ON / projection don't need it.
+	outer := NewQuery().
+		Select(
+			As(Col(joinAlias(j.MetricNameColumn)), j.MetricNameColumn),
+			As(Col(joinAlias(j.AttributesColumn)), j.AttributesColumn),
+			As(Col(joinAlias(j.TimestampColumn)), j.TimestampColumn),
+			As(Col(joinAlias(j.ValueColumn)), j.ValueColumn),
+		).
+		From(inner.Frag())
+	return outer.Frag(), nil
+}
+
+// joinAlias returns the per-side aggregation's internal alias for a
+// canonical Sample column. Using a `_join_` prefix keeps the alias
+// distinct from any input column name, which is what breaks CH's
+// alias-chain trace through the inner aggregation subquery (see the
+// vectorJoinSideFrag docstring).
+func joinAlias(col string) string {
+	return "_join_" + col
 }
 
 // aggMaxAs returns a Frag for `max(<col>) AS <alias>`.
