@@ -1,25 +1,42 @@
-# Upstream tracking — parser bumps + cerberus forks
+# Upstream tracking — parser deps routed through tsouza/* forks
 
-Cerberus depends on three upstream parsers as Go libraries:
+Cerberus depends on four upstream parser / schema sources as Go libraries:
 
-- `github.com/prometheus/prometheus/promql/parser`
-- `github.com/grafana/loki/v3/pkg/logql/syntax`
+- `github.com/prometheus/prometheus/promql/parser` (+ `model/labels`, `model/histogram`)
+- `github.com/grafana/loki/v3/pkg/logql/syntax` (+ `pkg/logql/log`, `pkg/logqlmodel`)
 - `github.com/grafana/tempo/pkg/traceql`
+- `github.com/open-telemetry/opentelemetry-collector-contrib/exporter/clickhouseexporter/sqltemplates` (+ three sibling submodules)
 
-Plus the wider Grafana ecosystem (`dskit`, the forked `memberlist`) and the OTel Collector. Two forks under `github.com/tsouza/` carry the cerberus-specific patches; everything else rides upstream tags.
+Plus the wider Grafana ecosystem (`dskit`, the forked `memberlist`) which still rides upstream tags.
+
+**All four upstreams are routed through `github.com/tsouza/*` forks.** The forks exist primarily as a *Dependabot watch boundary*: cerberus's `go.mod` `replace` directives point at semver tags on the forks, not pseudo-versions on upstream. A dedicated cron repo, [`tsouza/cerberus-forks-monitor`](https://github.com/tsouza/cerberus-forks-monitor), decides daily whether anything cerberus cares about landed upstream and only then mints a new fork tag. Dependabot in cerberus sees a clean stream of patch bumps it can grouped-PR on.
 
 ## Active forks
 
-| Fork                                                                                                  | Branch               | Purpose                                                                                                                                                                                                                                                                                                 |
-| ----------------------------------------------------------------------------------------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`tsouza/tempo`](https://github.com/tsouza/tempo)                                                     | `cerberus-accessors` | Exposes the unexported `traceql` AST state cerberus needs for `internal/traceql/aggregate.go`, `internal/traceql/select.go`, and the MetricsPipeline lowering in `internal/traceql/metrics_pipeline.go`. Replaces the `unsafe.Pointer` + `reflect.FieldByName` shims cerberus used through P0 #7 (RC2). |
-| [`tsouza/opentelemetry-collector-contrib`](https://github.com/tsouza/opentelemetry-collector-contrib) | `cerberus-ddl`       | Surfaces the OTel-CH exporter's DDL templates (`sqltemplates`) as a consumable Go API so cerberus's `internal/schema/ddl/` package generates the same `CREATE TABLE` statements the exporter writes against. Single source of truth for the OTel-CH schema — no hand-maintained DDL.                    |
+| Fork                                                                                                  | Branch               | Patches             | Purpose                                                                                                                                                                                                                                                                                                 |
+| ----------------------------------------------------------------------------------------------------- | -------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`tsouza/prometheus`](https://github.com/tsouza/prometheus)                                           | `cerberus-parser`    | zero                | Pure Dependabot watch boundary. Cerberus consumes a narrow subtree (`promql/parser`, `model/labels`, `model/histogram`, a couple of adjacent files); the fork lets us mint tags only when those paths change.                                                                                           |
+| [`tsouza/loki`](https://github.com/tsouza/loki)                                                       | `cerberus-parser`    | zero                | Same watch-boundary role for `pkg/logql/syntax`, `pkg/logql/log/pattern`, `pkg/logqlmodel`, and a few `logql/log/*.go` files. Tag stream uses the `/v3` major version to match upstream's module path.                                                                                                  |
+| [`tsouza/tempo`](https://github.com/tsouza/tempo)                                                     | `cerberus-accessors` | ~6 accessors        | Exposes the unexported `traceql` AST state cerberus needs for `internal/traceql/aggregate.go`, `internal/traceql/select.go`, and the MetricsPipeline lowering in `internal/traceql/metrics_pipeline.go`. Replaces the `unsafe.Pointer` + `reflect.FieldByName` shims cerberus used through P0 #7 (RC2). |
+| [`tsouza/opentelemetry-collector-contrib`](https://github.com/tsouza/opentelemetry-collector-contrib) | `cerberus-ddl`       | sqltemplates hoist  | Surfaces the OTel-CH exporter's DDL templates (`sqltemplates`) as a consumable Go API so cerberus's `internal/schema/ddl/` package generates the same `CREATE TABLE` statements the exporter writes against. Single source of truth for the OTel-CH schema — no hand-maintained DDL.                    |
 
-Each fork is wired via a `go.mod` `replace` directive pinning a pseudo-version at the head of the branch. Both forks track upstream `main`; `cerberus-accessors` and `cerberus-ddl` are long-lived branches rebased onto each upstream release cerberus wants to absorb.
+Each fork is wired via a `go.mod` `replace` directive pinning a **semver tag** at the head of the long-lived `cerberus-*` branch. The forks' default branch IS the `cerberus-*` branch (so Dependabot resolves tags against it). The collector-contrib fork also carries per-submodule tags (`exporter/clickhouseexporter/v…`, `internal/coreinternal/v…`, `pkg/core/xidutils/v…`, `pkg/translator/jaeger/v…`) at the same SHA, because Go's module proxy resolves submodule versions independently in a monorepo.
 
-## Why fork (not reflect / unsafe)
+## Why fork all four — even the unpatched ones?
 
-Both forks replace fragile reflective access to unexported upstream state. The `tsouza/tempo` fork retired:
+A fork that we never patch is still valuable as a **Dependabot watch boundary**. The motivation:
+
+- Cerberus consumes a **tiny slice** of each upstream parser (typically the parser tree + a couple of `model` packages).
+- Upstream releases happen ~weekly. Without a fork, Dependabot would open a PR per release regardless of whether the change touched anything cerberus actually imports.
+- A fork lets *us* decide "is this commit relevant?" before it ever becomes a tag. That decision is automated by `cerberus-forks-monitor`.
+
+The cost is one extra layer (the fork, the monitor) and an additional invariant ("don't merge anything to upstream branches on the fork — only force-push the rebased `cerberus-*` branch"). The forks-monitor `README` covers operational details.
+
+## Why the patched forks exist (tempo / otelc)
+
+Both patched forks replace fragile reflective access to unexported upstream state.
+
+The `tsouza/tempo` fork retired:
 
 - `internal/traceql/aggregate.go`'s `*(*traceql.FieldExpression)(unsafe.Pointer(field.UnsafeAddr()))` shim on `Aggregate.e` (the inner expression of `sum/avg/min/max(…)`).
 - `internal/traceql/aggregate.go`'s `reflect.Value.FieldByName("op")` read on `Aggregate.op`.
@@ -28,58 +45,96 @@ Both forks replace fragile reflective access to unexported upstream state. The `
 
 The accessors are pure additions on the fork — one commit per accessor or per logically-coherent group. The total patch size on the fork is ~80–120 LoC of additions plus the two interface renames (`firstStageElement` → `FirstStageElement`, `secondStageElement` → `SecondStageElement`).
 
+The `tsouza/opentelemetry-collector-contrib` fork hoists the `sqltemplates` package out of `internal/` so cerberus's `internal/schema/ddl/` package can consume it directly. Without the hoist, cerberus would have to fork the templates wholesale, losing the upstream tracking that's the whole point.
+
 Both shapes (`unsafe.Pointer` + `reflect.Value.FieldByName`) are now banned in `internal/traceql/` and `internal/api/tempo/` via a `forbidigo` rule in `.golangci.yml`. New shims regress the lint gate.
 
-## Rebase workflow
+## How a new upstream change reaches cerberus
 
-1. On the fork: `git fetch upstream && git checkout cerberus-accessors` (or `cerberus-ddl`).
-2. `git rebase upstream/main` (or onto a specific upstream tag).
-3. Resolve conflicts. The accessors are pure additions in mostly-stable files (`ast.go`, `ast_metrics.go`, `enum_aggregates.go` on the Tempo fork; `sqltemplates.go` on the collector-contrib fork). Conflicts surface as adjacent-line edits when upstream changes the surrounding code.
-4. `go test ./pkg/traceql/...` (Tempo) or `go test ./exporter/clickhouseexporter/...` (collector-contrib) must stay green.
-5. `git push --force-with-lease origin <branch>`.
-6. In cerberus: `go get github.com/tsouza/tempo@<new-sha>` (or `…/opentelemetry-collector-contrib@<new-sha>`) → `go mod tidy` → push. CI must stay green; if it doesn't, the fork rebase exposed a real semantic drift in upstream and the cerberus migration code needs an update — exactly the early-warning value we wanted.
+```text
+┌──────────────────────┐                             ┌──────────────────────────┐
+│ upstream repo        │ ────────────────────────▶  │ tsouza/<fork>            │
+│ (prometheus, loki,   │   ─ relevant paths only ─  │   cerberus-<branch>      │
+│  tempo, otel-c)      │   ─ as a new tag ─         │     ├── v0.0.1 (baseline)│
+│                      │                             │     ├── v0.0.2          │
+│                      │                             │     └── …               │
+└──────────────────────┘                             └────────────┬─────────────┘
+                                                                  │
+                                  cerberus-forks-monitor (cron) ──┘
+                                                                  │
+                                       Dependabot watches tags    │
+                                                                  ▼
+                                                     ┌──────────────────────────┐
+                                                     │ tsouza/cerberus go.mod   │
+                                                     │   replace directives use │
+                                                     │   tsouza/<fork>@vX.Y.Z   │
+                                                     └──────────────────────────┘
+```
 
-Dependabot in cerberus picks up the new pseudo-version like any other Go dep bump (daily, grouped under `upstream-parsers` per `.github/dependabot.yml`).
+Concretely, the daily cycle is:
 
-## Auto-bump: Dependabot grouping + auto-merge
+1. `cerberus-forks-monitor` cron triggers at 10:17 UTC. The job lives at [`tsouza/cerberus-forks-monitor`](https://github.com/tsouza/cerberus-forks-monitor); the configuration is `monitor.yml`.
+2. For each fork, the monitor clones the fork + the upstream and runs `git log <last-tag>..upstream/main -- <relevant_paths>`.
+3. If empty: skip silently.
+4. If non-empty: rebase `cerberus-<branch>` onto `upstream/main`, run the configured subtree tests (`go test ./promql/parser/...`, etc.), push, and mint a new patch-bumped tag (plus per-submodule tags for collector-contrib).
+5. On rebase conflict or red tests: open an issue in the monitor repo for human resolution. The fork is NOT force-pushed in that case.
+6. Dependabot in cerberus picks up the new tag on its next daily run (`.github/dependabot.yml`, group `upstream-parsers`) and opens a single grouped PR.
+7. The patch-only auto-merge workflow (`.github/workflows/auto-merge-deps.yml`) enables auto-merge once `check + lint` go green. Branch protection still gates the actual merge.
 
-`.github/dependabot.yml` runs **daily** for Go modules with two groups:
+## Manual operations
 
-- `upstream-parsers` — Prom + Loki + Tempo + dskit + memberlist bumped together. They share state via the forked `memberlist` `replace` (see CLAUDE.md "Transitive-dep gotcha"); bumping one without the others tends to fail the build.
-- `go-deps` — everything else, also daily, grouped.
+### Force a fork re-check
 
-Patch + minor bumps land in those grouped PRs. **Major bumps stay one-per-PR** — they usually need code changes and benefit from individual review.
+```bash
+gh -R tsouza/cerberus-forks-monitor workflow run daily.yml
+```
 
-GitHub Actions get a weekly bump (slower-moving) under `github-actions`. Playwright / npm deps under `test/e2e/playwright` get weekly under `playwright-deps`.
+### Manually rebase a fork (e.g. after a conflict the bot couldn't handle)
 
-### Auto-merge on green CI
+```bash
+git clone git@github.com-tsouza:tsouza/<fork>.git
+cd <fork>
+git remote add upstream https://github.com/<upstream>.git
+git fetch upstream main
+git checkout cerberus-<branch>
+git rebase upstream/main
+# resolve conflicts; if patches are pure additions, conflicts are rare
+go test ./<subtree>/...
+git push --force-with-lease origin cerberus-<branch>
+# mint a new tag (bump patch from the last cerberus-* tag)
+LAST=$(git describe --tags --abbrev=0 --match 'v*-cerberus-*')
+NEXT=$(awk -F. '{patch=$3; gsub(/-.*/,"",patch); printf "%s.%s.%d-cerberus-...", $1, $2, patch+1}' <<<"$LAST")
+git tag "$NEXT"
+git push origin "$NEXT"
+```
 
-`.github/workflows/auto-merge-deps.yml` watches Dependabot PRs. When the PR is **patch-only** for an explicitly-trusted set of deps, the workflow enables auto-merge after CI passes. Trusted today:
-
-- `github.com/prometheus/prometheus` (patch-only)
-- `github.com/grafana/loki/v3` (patch-only)
-- `github.com/grafana/tempo` (patch-only)
-- `github.com/grafana/dskit` (patch-only)
-- All `actions/*` GitHub Actions (patch + minor)
-- Playwright (`@playwright/test`) (patch-only)
-
-Minor bumps for parsers stay manual — even patch-named upstream releases sometimes ship semver-violating parser changes.
-
-**Branch protection rules still apply.** The auto-merge marks the PR; merge happens only after `check + lint` go green. `enforce_admins: true` prevents bypass.
-
-## When to add a new accessor
+### Add an accessor to the tempo fork
 
 The fork's patch series stays minimal. Add an accessor when:
 
 - Cerberus needs to read an unexported field today, and the alternative is a new `unsafe.Pointer` shim or a `reflect.FieldByName` read (both forbidden by `.golangci.yml`).
 - An upstream interface is unexported and cerberus needs to type-switch on a value of that interface (e.g. `firstStageElement`).
 
-Open the PR on the fork first (one commit per accessor), rebase `cerberus-accessors` / `cerberus-ddl` onto the new commit, then bump the `replace` directive in cerberus's `go.mod`.
+Open the PR on the fork first (one commit per accessor), let the `cerberus-branch-check.yml` workflow on the fork pass, then either wait for the monitor to mint a new tag or mint one by hand. Then bump the `replace` directive in cerberus's `go.mod`.
+
+### Add a new upstream
+
+If a new RC introduces a fifth parser dep:
+
+1. Fork the repo to `tsouza/<name>`.
+2. Locally create a `cerberus-<flavor>` branch off the upstream commit you want as baseline. Push it. Set as default via `gh repo edit tsouza/<name> --default-branch cerberus-<flavor>`.
+3. Tag the branch head as `v0.0.1-cerberus-<flavor>` (or `v<MAJOR>.0.0-cerberus-<flavor>` if upstream uses a `/vMAJOR` module path).
+4. Add `.github/workflows/cerberus-branch-check.yml` to the fork running `go test` on the relevant subtree.
+5. Add an entry to `monitor.yml` in `tsouza/cerberus-forks-monitor`.
+6. Extend the `upstream-parsers` group + the auto-merge allowlist in cerberus's `.github/dependabot.yml` and `.github/workflows/auto-merge-deps.yml`.
+7. Add a `replace` directive in cerberus's `go.mod`.
 
 ## References
 
-- `.github/dependabot.yml` — daily-grouped config.
+- [`tsouza/cerberus-forks-monitor`](https://github.com/tsouza/cerberus-forks-monitor) — the daily cron repo. `README.md` there has the operational detail.
+- `.github/dependabot.yml` — daily-grouped config. Group `upstream-parsers` covers all four forks.
 - `.github/workflows/auto-merge-deps.yml` — auto-merge on green CI for trusted patch-only bumps.
 - `.golangci.yml` — `forbidigo` rule blocking `unsafe.Pointer` / `reflect.Value.FieldByName` from being reintroduced in `internal/traceql/` and `internal/api/tempo/`.
 - `internal/schema/ddl/` — consumes the `sqltemplates` API exposed by the collector-contrib fork.
 - `internal/traceql/aggregate.go`, `internal/traceql/select.go`, `internal/traceql/metrics_pipeline.go` — call the Tempo fork's accessors.
+- `CLAUDE.md` § "Transitive-dep gotcha" — the unrelated memberlist replace.
