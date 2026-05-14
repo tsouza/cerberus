@@ -19,6 +19,13 @@ pre-commit:
       stage_fixed: true
       run: |
         goimports -w {staged_files}
+    md-table-align:
+      # MD060 (table-column-style: aligned) has no auto-fixer in
+      # markdownlint-cli2 — pad cell widths before --fix sees the file.
+      glob: "*.md"
+      stage_fixed: true
+      run: |
+        python3 scripts/align-md-tables.py {staged_files}
     markdownlint:
       glob: "*.md"
       stage_fixed: true
