@@ -41,6 +41,16 @@ type Querier interface {
 	Query(ctx context.Context, sql string, args ...any) ([]chclient.Sample, error)
 }
 
+// CursorQuerier is the optional streaming sibling of Querier. When the
+// engine's Client implements it, Engine.QueryCursor / QueryPlanCursor
+// route through it for the prom /query_range matrix path; otherwise
+// those entry points return an error. The split keeps the engine's
+// minimum surface narrow (one method on Querier) while still allowing
+// per-language adapters to opt into streaming on a per-call basis.
+type CursorQuerier interface {
+	QueryCursor(ctx context.Context, sql string, args ...any) (chclient.Cursor, error)
+}
+
 // Engine owns the shared dependencies (optimizer, ClickHouse client)
 // and runs the pipeline loop. One Engine instance lives in each
 // handler; the per-language differences are supplied by the Lang
@@ -209,6 +219,89 @@ func (e *Engine) QueryPlan(ctx context.Context, lang Lang, plan chplan.Node, met
 		SQL:           sql,
 		Args:          args,
 		CHMillis:      chMillis,
+		PlanNodeCount: cerbtrace.CountNodes(plan),
+		Meta:          meta,
+	}, nil
+}
+
+// CursorResult is what Engine.QueryCursor / QueryPlanCursor return on
+// success. Mirrors Result but carries a chclient.Cursor instead of a
+// []chclient.Sample slice — the caller drives row consumption and is
+// responsible for cursor.Close(). CHMillis is intentionally absent
+// because the execute stage's wall-clock isn't known until the caller
+// drains the cursor; the chclient.Cursor implementation closes its own
+// `execute` span on Close, so timing instrumentation stays consistent.
+type CursorResult struct {
+	Cursor        chclient.Cursor
+	SQL           string
+	Args          []any
+	Strategy      string
+	PlanNodeCount int
+	Headers       map[string]string
+	Meta          Meta
+}
+
+// QueryCursor runs the full pipeline through emit, then opens a
+// streaming cursor against the emitted SQL instead of draining rows
+// into a slice. Caller MUST defer Cursor.Close() on the returned
+// CursorResult on the happy path. The handler-side /query_range
+// matrix pivot is the canonical consumer.
+//
+// Errors: returns ErrNoCursorQuerier when Engine.Client doesn't
+// implement CursorQuerier (configuration mistake); otherwise the
+// per-stage wrapped errors mirror Query.
+func (e *Engine) QueryCursor(ctx context.Context, lang Lang, query string) (CursorResult, error) {
+	if lang == nil {
+		return CursorResult{}, fmt.Errorf("engine: nil Lang")
+	}
+	plan, meta, err := lang.Parse(ctx, query)
+	if err != nil {
+		return CursorResult{}, fmt.Errorf("engine: parse: %w", err)
+	}
+	return e.QueryPlanCursor(ctx, lang, plan, meta)
+}
+
+// QueryPlanCursor is the streaming sibling of QueryPlan. Same wrap +
+// optimize + emit pipeline; opens a cursor instead of executing
+// eagerly. The IsTraceByID short-circuit (skip optimizer) applies
+// identically.
+func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Node, meta Meta) (CursorResult, error) {
+	if lang == nil {
+		return CursorResult{}, fmt.Errorf("engine: nil Lang")
+	}
+	if plan == nil {
+		return CursorResult{}, fmt.Errorf("engine: nil plan")
+	}
+	cq, ok := e.Client.(CursorQuerier)
+	if !ok {
+		return CursorResult{}, fmt.Errorf("engine: client does not implement CursorQuerier")
+	}
+
+	plan = lang.ProjectSamples(plan, meta)
+	if !meta.IsTraceByID {
+		optT := telemetry.ObserveStage(telemetry.StageOptimize)
+		plan = e.Optimizer.Run(ctx, plan)
+		optT.Done(ctx)
+	}
+
+	emitT := telemetry.ObserveStage(telemetry.StageEmit)
+	sql, args, err := chsql.Emit(ctx, plan)
+	emitT.Done(ctx)
+	if err != nil {
+		return CursorResult{}, fmt.Errorf("engine: emit: %w", err)
+	}
+
+	execT := telemetry.ObserveStage(telemetry.StageExecute)
+	cursor, err := cq.QueryCursor(chclient.WithProgressFor(ctx, lang.Name()), sql, args...)
+	execT.Done(ctx)
+	if err != nil {
+		return CursorResult{}, fmt.Errorf("engine: execute: %w", err)
+	}
+
+	return CursorResult{
+		Cursor:        cursor,
+		SQL:           sql,
+		Args:          args,
 		PlanNodeCount: cerbtrace.CountNodes(plan),
 		Meta:          meta,
 	}, nil
