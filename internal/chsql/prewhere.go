@@ -44,6 +44,12 @@ func collectColumnRefs(e chplan.Expr) []string {
 			walk(v.Key)
 		case *chplan.MapWithoutKeys:
 			walk(v.Map)
+		case *chplan.MapWithoutEmptyValues:
+			walk(v.Map)
+		case *chplan.LabelReplace:
+			walk(v.Map)
+		case *chplan.LabelJoin:
+			walk(v.Map)
 		case *chplan.LineContent:
 			walk(v.Source)
 		case *chplan.FieldAccess:
@@ -88,7 +94,7 @@ func isCheapPredicate(e chplan.Expr) bool {
 		return isCheapPredicate(v.Source)
 	case *chplan.FieldAccess:
 		return isCheapPredicate(v.Source)
-	case *chplan.MapWithoutKeys, *chplan.FuncCall, *chplan.NestedArrayExists:
+	case *chplan.MapWithoutKeys, *chplan.MapWithoutEmptyValues, *chplan.LabelReplace, *chplan.LabelJoin, *chplan.FuncCall, *chplan.NestedArrayExists:
 		return false
 	}
 	return false
