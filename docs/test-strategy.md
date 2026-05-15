@@ -91,7 +91,7 @@ The bar per phase is set roughly 4-15 percentage points below the
 observed nightly kill rate so the gate is meaningful — a real test
 regression breaks the build — without flapping on legitimate
 run-to-run variance. The "May 2026 raise" column captures the bump
-landed in PR TBD which closed the gap between threshold and actuals.
+landed in PR #378 which closed the gap between threshold and actuals.
 
 | Phase | Package                                        | Target efficacy | May 2026 raise | Status                                 |
 | ----- | ---------------------------------------------- | --------------- | --------------- | -------------------------------------- |
