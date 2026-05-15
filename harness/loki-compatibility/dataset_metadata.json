@@ -1,0 +1,126 @@
+{
+  "_comment": "TODO: Regenerate against PR 1's deterministic seeder once it lands. This placeholder pins reasonable OTel-shape defaults so PR 2 (vendor) lands without taking a hard dependency on PR 1's exact selector vocabulary. The fields here mirror the DatasetMetadata struct in upstream/loki-bench/query_registry.go's metadata.go sibling (not vendored). PR 1 (Pool-CA) will replace this verbatim.",
+  "_pr_dependency": "harness/loki-compatibility seeder lands in PR 1 of docs/loki-compliance-plan.md; see ../docs/loki-compliance-plan.md.",
+  "all_selectors": [
+    "{service_name=\"loki-bench-app-a\", namespace=\"default\", cluster=\"cerberus-loki-bench\", container=\"app\"}",
+    "{service_name=\"loki-bench-app-b\", namespace=\"default\", cluster=\"cerberus-loki-bench\", container=\"app\"}",
+    "{service_name=\"loki-bench-database\", namespace=\"default\", cluster=\"cerberus-loki-bench\", container=\"db\"}"
+  ],
+  "by_format": {
+    "json": [
+      "{service_name=\"loki-bench-app-a\", namespace=\"default\", cluster=\"cerberus-loki-bench\", container=\"app\"}",
+      "{service_name=\"loki-bench-database\", namespace=\"default\", cluster=\"cerberus-loki-bench\", container=\"db\"}"
+    ],
+    "logfmt": [
+      "{service_name=\"loki-bench-app-b\", namespace=\"default\", cluster=\"cerberus-loki-bench\", container=\"app\"}"
+    ],
+    "unstructured": []
+  },
+  "by_service_name": {
+    "loki-bench-app-a": [
+      "{service_name=\"loki-bench-app-a\", namespace=\"default\", cluster=\"cerberus-loki-bench\", container=\"app\"}"
+    ],
+    "loki-bench-app-b": [
+      "{service_name=\"loki-bench-app-b\", namespace=\"default\", cluster=\"cerberus-loki-bench\", container=\"app\"}"
+    ],
+    "loki-bench-database": [
+      "{service_name=\"loki-bench-database\", namespace=\"default\", cluster=\"cerberus-loki-bench\", container=\"db\"}"
+    ]
+  },
+  "statistics": {
+    "generated": "2026-05-15T00:00:00Z",
+    "streams_by_format": {
+      "json": 2,
+      "logfmt": 1
+    },
+    "streams_by_service": {
+      "loki-bench-app-a": 1,
+      "loki-bench-app-b": 1,
+      "loki-bench-database": 1
+    },
+    "total_streams": 3
+  },
+  "time_range": {
+    "start": "2026-05-15T00:00:00Z",
+    "end": "2026-05-15T00:10:00Z"
+  },
+  "version": "1.0",
+  "by_unwrappable_field": {
+    "bytes": [
+      "{service_name=\"loki-bench-app-a\", namespace=\"default\", cluster=\"cerberus-loki-bench\", container=\"app\"}",
+      "{service_name=\"loki-bench-database\", namespace=\"default\", cluster=\"cerberus-loki-bench\", container=\"db\"}"
+    ],
+    "duration": [
+      "{service_name=\"loki-bench-app-a\", namespace=\"default\", cluster=\"cerberus-loki-bench\", container=\"app\"}"
+    ]
+  },
+  "by_detected_field": {
+    "level": [
+      "{service_name=\"loki-bench-app-a\", namespace=\"default\", cluster=\"cerberus-loki-bench\", container=\"app\"}",
+      "{service_name=\"loki-bench-app-b\", namespace=\"default\", cluster=\"cerberus-loki-bench\", container=\"app\"}",
+      "{service_name=\"loki-bench-database\", namespace=\"default\", cluster=\"cerberus-loki-bench\", container=\"db\"}"
+    ]
+  },
+  "by_structured_metadata": {
+    "detected_level": [
+      "{service_name=\"loki-bench-app-a\", namespace=\"default\", cluster=\"cerberus-loki-bench\", container=\"app\"}",
+      "{service_name=\"loki-bench-app-b\", namespace=\"default\", cluster=\"cerberus-loki-bench\", container=\"app\"}",
+      "{service_name=\"loki-bench-database\", namespace=\"default\", cluster=\"cerberus-loki-bench\", container=\"db\"}"
+    ],
+    "pod": [
+      "{service_name=\"loki-bench-app-a\", namespace=\"default\", cluster=\"cerberus-loki-bench\", container=\"app\"}"
+    ]
+  },
+  "by_label_key": {
+    "service_name": [
+      "{service_name=\"loki-bench-app-a\", namespace=\"default\", cluster=\"cerberus-loki-bench\", container=\"app\"}",
+      "{service_name=\"loki-bench-app-b\", namespace=\"default\", cluster=\"cerberus-loki-bench\", container=\"app\"}",
+      "{service_name=\"loki-bench-database\", namespace=\"default\", cluster=\"cerberus-loki-bench\", container=\"db\"}"
+    ],
+    "namespace": [
+      "{service_name=\"loki-bench-app-a\", namespace=\"default\", cluster=\"cerberus-loki-bench\", container=\"app\"}",
+      "{service_name=\"loki-bench-app-b\", namespace=\"default\", cluster=\"cerberus-loki-bench\", container=\"app\"}",
+      "{service_name=\"loki-bench-database\", namespace=\"default\", cluster=\"cerberus-loki-bench\", container=\"db\"}"
+    ],
+    "cluster": [
+      "{service_name=\"loki-bench-app-a\", namespace=\"default\", cluster=\"cerberus-loki-bench\", container=\"app\"}",
+      "{service_name=\"loki-bench-app-b\", namespace=\"default\", cluster=\"cerberus-loki-bench\", container=\"app\"}",
+      "{service_name=\"loki-bench-database\", namespace=\"default\", cluster=\"cerberus-loki-bench\", container=\"db\"}"
+    ],
+    "container": [
+      "{service_name=\"loki-bench-app-a\", namespace=\"default\", cluster=\"cerberus-loki-bench\", container=\"app\"}",
+      "{service_name=\"loki-bench-app-b\", namespace=\"default\", cluster=\"cerberus-loki-bench\", container=\"app\"}",
+      "{service_name=\"loki-bench-database\", namespace=\"default\", cluster=\"cerberus-loki-bench\", container=\"db\"}"
+    ]
+  },
+  "by_keyword": {
+    "debug": [
+      "{service_name=\"loki-bench-app-a\", namespace=\"default\", cluster=\"cerberus-loki-bench\", container=\"app\"}",
+      "{service_name=\"loki-bench-app-b\", namespace=\"default\", cluster=\"cerberus-loki-bench\", container=\"app\"}"
+    ],
+    "error": [
+      "{service_name=\"loki-bench-app-a\", namespace=\"default\", cluster=\"cerberus-loki-bench\", container=\"app\"}",
+      "{service_name=\"loki-bench-app-b\", namespace=\"default\", cluster=\"cerberus-loki-bench\", container=\"app\"}",
+      "{service_name=\"loki-bench-database\", namespace=\"default\", cluster=\"cerberus-loki-bench\", container=\"db\"}"
+    ],
+    "level": [
+      "{service_name=\"loki-bench-app-a\", namespace=\"default\", cluster=\"cerberus-loki-bench\", container=\"app\"}",
+      "{service_name=\"loki-bench-app-b\", namespace=\"default\", cluster=\"cerberus-loki-bench\", container=\"app\"}",
+      "{service_name=\"loki-bench-database\", namespace=\"default\", cluster=\"cerberus-loki-bench\", container=\"db\"}"
+    ]
+  },
+  "metadata_by_selector": {
+    "{service_name=\"loki-bench-app-a\", namespace=\"default\", cluster=\"cerberus-loki-bench\", container=\"app\"}": {
+      "min_range": 60000000000,
+      "min_instant_range": 60000000000
+    },
+    "{service_name=\"loki-bench-app-b\", namespace=\"default\", cluster=\"cerberus-loki-bench\", container=\"app\"}": {
+      "min_range": 60000000000,
+      "min_instant_range": 60000000000
+    },
+    "{service_name=\"loki-bench-database\", namespace=\"default\", cluster=\"cerberus-loki-bench\", container=\"db\"}": {
+      "min_range": 60000000000,
+      "min_instant_range": 60000000000
+    }
+  }
+}

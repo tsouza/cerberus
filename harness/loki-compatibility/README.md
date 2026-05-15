@@ -1,100 +1,192 @@
-# LogQL compatibility harness
+# Loki / LogQL compatibility harness
 
-Mirrors [`harness/prometheus-compliance/`](../prometheus-compliance/) for the
-LogQL side. Stands up reference Grafana Loki and cerberus side-by-side,
-seeds both with the same deterministic log stream, and (in later PRs)
-diffs query results between the two.
+> Status: **PR 2 (vendor `pkg/logql/bench`)** of the rollout described in
+> [`docs/loki-compliance-plan.md`](../../docs/loki-compliance-plan.md).
+> This directory currently holds **only** a vendored snapshot of
+> Grafana's `pkg/logql/bench/` corpus + driver scaffolding files.
+> There is no Compose stack, no diff runner script, and no CI yet —
+> those follow in PRs 3 and 4.
 
-This directory currently contains **PR 1 of 6**: the scaffold.
+## Why this harness exists
 
-## What's here (PR 1)
+Cerberus already has `harness/prometheus-compliance/` (PromQL parity vs
+reference Prometheus). The Loki / LogQL surface has no upstream
+`loki-conformance` repo; the closest analogue is `grafana/loki:pkg/logql/bench/` —
+a YAML query corpus + `TestRemoteStorageEquality` build-tagged Go test
+driver. This harness vendors that snapshot verbatim (the same posture
+`harness/prometheus-compliance/upstream/` takes vs `prometheus/compliance`),
+runs reference Loki + cerberus side-by-side, and diffs the responses.
+
+See [`docs/loki-compliance-plan.md`](../../docs/loki-compliance-plan.md)
+for the full landscape analysis, the per-PR breakdown, and the
+license/AGPL containment strategy.
+
+## Layout (current — PR 2)
 
 ```text
 harness/loki-compatibility/
-  README.md                            this file
-  docker-compose.yml                   clickhouse + loki (reference) + cerberus
-  loki-config.yaml                     single-binary Loki, filesystem backend
-  cmd/seed/                            deterministic CH + Loki dual-write seeder
-  scripts/run-loki-compatibility.sh    compose up --wait, run seeder, tear down
+  README.md                       this file
+  cerberus-test-queries.yml       overlay documenting drops for unsupported LogQL features
+  dataset_metadata.json           pinned dataset metadata for ${SELECTOR}/${LABEL_*} expansion
+  upstream/
+    loki-bench/                   vendored grafana/loki:pkg/logql/bench snapshot
+      LICENSE                     AGPL-3.0, copied verbatim from grafana/loki
+      VERSION                     exact upstream coordinates of the snapshot
+      query_registry.go           YAML loader + template-variable expander
+      remote_test.go              TestRemoteStorageEquality (build-tagged remote_correctness)
+      queries/
+        schema.json               JSON schema for query YAMLs
+        fast/*.yaml               minimal corpus (basic-selectors, simple-metrics, structured-metadata)
 ```
 
-## What's deferred
+## Layout (planned — PRs 1, 3, 4)
 
-Per [`docs/loki-compliance-plan.md`](../../docs/loki-compliance-plan.md):
+PR 1 (in parallel, Pool-CA) lands the seed + Compose scaffold:
 
-- **PR 2** vendors `grafana/loki:pkg/logql/bench/` under `upstream/loki-bench/`
-  and adds `cerberus-test-queries.yml` (curated YAML corpus overlay) and
-  `dataset_metadata.json`.
-- **PR 3** ports the upstream `TestRemoteStorageEquality` diff driver +
-  wires `scripts/run-loki-compatibility.sh` to invoke it (initially just
-  builds + runs the diff loop against the seeded fixture).
-- **PR 4** adds the `.github/workflows/loki-compatibility.yml` informational
-  CI lane (push-to-main + nightly + manual dispatch).
-- **PR 5** ports the diff driver to cerberus-owned code under
-  `cmd/loki-compliance-tester/` for report-format parity with the Prom
-  harness.
-- **PR 6** expands the corpus into `queries/regression/` + slices of
-  `queries/exhaustive/`.
+```text
+harness/loki-compatibility/
+  docker-compose.yml              PR 1 — clickhouse + reference loki + cerberus + seeder
+  loki-config.yaml                PR 1 — reference Loki single-binary config
+  test-cerberus.yml               PR 1 — addr-1 (loki) + addr-2 (cerberus) endpoint config
+  cmd/seed/                       PR 1 — deterministic OTel-shape log seeder
+  cmd/discover/                   later  — dataset_metadata.json regenerator
+  scripts/
+    run-loki-compatibility.sh     PR 3 — go test -tags=remote_correctness driver
+```
 
-## Usage
+PR 4 lands the informational CI lane:
 
-From the repo root:
+```text
+.github/workflows/loki-compatibility.yml  PR 4 — push:main + nightly cron + workflow_dispatch
+```
+
+## What's in `upstream/loki-bench/`
+
+A pure, unmodified snapshot of these paths from `grafana/loki` at the tag
+recorded in [`upstream/loki-bench/VERSION`](upstream/loki-bench/VERSION):
+
+- `pkg/logql/bench/queries/fast/*.yaml` — the minimal-coverage corpus
+  (basic-selectors, simple-metrics, structured-metadata). `regression/`
+  + `exhaustive/` slices are deferred to PR 6 of the plan.
+- `pkg/logql/bench/queries/schema.json` — JSON Schema the YAMLs validate against.
+- `pkg/logql/bench/query_registry.go` — `QueryRegistry` + `${SELECTOR}` /
+  `${LABEL_NAME}` / `${LABEL_VALUE}` template expander.
+- `pkg/logql/bench/remote_test.go` — `TestRemoteStorageEquality`
+  build-tagged `remote_correctness`. Reused verbatim in PR 3 to drive
+  the diff loop; replaced by a cerberus-owned driver later (plan PR 5).
+- `LICENSE` — AGPL-3.0 from upstream, scoped to this subtree only.
+
+Cerberus's `tsouza/loki` fork (the replace target in `go.mod`) only
+tracks `pkg/logql/syntax/`, `pkg/logql/log/`, and `pkg/logqlmodel/` —
+`pkg/logql/bench/` is outside the fork's watch boundary, so the
+snapshot here pins `grafana/loki` directly rather than the fork tag.
+
+### Why vendor, not import via `go.mod`?
+
+Same reasoning as `harness/tempo-compatibility/upstream/` (see PR #367):
+
+1. **PR 2 is reference material, not a build dependency.** The driver
+   wiring lands in PR 3 and can decide which subset to import vs
+   adapt. Vendoring lets reviewers read the corpus + driver shape in
+   the diff without cloning grafana/loki.
+2. **`remote_test.go` is build-tagged `remote_correctness`.** It's a
+   test driver, not library code; cerberus's main build doesn't need it.
+3. **Snapshot stability.** A future bump of any Loki transitive dep
+   won't silently move the corpus shape under us — the snapshot is
+   pinned explicitly here.
+
+### Why the vendor isn't compiled
+
+`remote_test.go` imports `github.com/grafana/loki/v3/pkg/logcli/client`
++ `github.com/grafana/loki/v3/pkg/loghttp`, which pull in heavy
+transitive deps (the Loki client, dskit, etc.) just to run the diff
+loop. Until PR 3 wires the driver explicitly, we exclude the vendor
+from the module graph via a `go.mod` `ignore` directive:
+
+```text
+ignore ./harness/loki-compatibility/upstream
+```
+
+The directive is a Go 1.25+ feature; cerberus already pins Go 1.26
+via `go.mod`. With it in place:
+
+- `go build ./...` / `go test ./...` / `go vet ./...` skip the vendor.
+- The vendored sources stay on disk for reference + PR 3 to adapt.
+
+## Cerberus overlay files
+
+Two files at the harness root capture cerberus-specific configuration
+that lives OUTSIDE the AGPL `upstream/` boundary:
+
+- **`cerberus-test-queries.yml`** — overlay applied on top of the
+  vendored corpus. The `should_skip:` list documents which queries
+  exercise LogQL features cerberus doesn't implement yet (e.g. v2
+  engine forward log queries, dataobj-engine structured-metadata
+  fast-paths). PR 3's runner consumes this; the initial commit lists
+  zero entries — reviewers add as PR 4's CI lane surfaces gaps.
+- **`dataset_metadata.json`** — pinned dataset metadata that maps
+  `${SELECTOR}` / `${LABEL_NAME}` / `${LABEL_VALUE}` template vars to
+  concrete values seeded by PR 1's deterministic seeder. Once PR 1
+  lands, this file gets regenerated against the seeded fixture; the
+  placeholder here records the shape and reasonable defaults so the
+  vendor PR doesn't depend on PR 1's seed shape landing first.
+
+## Licensing
+
+`grafana/loki` is **AGPL-3.0** ([upstream LICENSE](https://github.com/grafana/loki/blob/main/LICENSE)).
+The vendored snapshot inherits AGPL-3.0, and [`upstream/loki-bench/LICENSE`](upstream/loki-bench/LICENSE)
+is the verbatim copy.
+
+Cerberus itself is independently licensed (see the repo root `LICENSE`);
+the AGPL terms apply only to the vendored subtree under `upstream/loki-bench/`.
+The driver scripts that land in PRs 3-4 live OUTSIDE `upstream/`
+(under `scripts/` + `cmd/`) and are cerberus-licensed.
+
+## Bump procedure
+
+Re-snapshot when:
+
+1. Upstream Loki adds queries to `queries/fast/` that cerberus wants
+   to cover, **or**
+2. The shape of `QueryRegistry` / `remote_test.go` changes meaningfully
+   (e.g. new template var, new diff semantics), **or**
+3. The `should_skip:` overlay drifts because upstream renamed/removed
+   a query we previously skipped.
+
+To re-snapshot:
 
 ```sh
-just loki-compatibility            # compose up, seed, smoke /labels, tear down
-just loki-compatibility-keep       # same, but leave the stack running
-just loki-compatibility-down       # tear down a stack left running by -keep
+# 1. Pick the new tag (typically matches the `loki:X.Y.Z` Docker image
+#    cerberus runs as the reference target in docker-compose.yml).
+TAG=v3.7.1
+
+# 2. Shallow clone at that tag.
+git clone --depth=1 -b "$TAG" https://github.com/grafana/loki /tmp/loki-upstream
+
+# 3. Wipe + re-copy the vendored paths.
+rm -rf harness/loki-compatibility/upstream/loki-bench/{queries,LICENSE,query_registry.go,remote_test.go}
+mkdir -p harness/loki-compatibility/upstream/loki-bench/queries/fast
+cp /tmp/loki-upstream/pkg/logql/bench/queries/fast/*.yaml \
+   harness/loki-compatibility/upstream/loki-bench/queries/fast/
+cp /tmp/loki-upstream/pkg/logql/bench/queries/schema.json \
+   harness/loki-compatibility/upstream/loki-bench/queries/schema.json
+cp /tmp/loki-upstream/pkg/logql/bench/query_registry.go \
+   harness/loki-compatibility/upstream/loki-bench/query_registry.go
+cp /tmp/loki-upstream/pkg/logql/bench/remote_test.go \
+   harness/loki-compatibility/upstream/loki-bench/remote_test.go
+cp /tmp/loki-upstream/LICENSE \
+   harness/loki-compatibility/upstream/loki-bench/LICENSE
+
+# 4. Update upstream/loki-bench/VERSION with the new tag + commit SHA.
+$EDITOR harness/loki-compatibility/upstream/loki-bench/VERSION
+
+# 5. PR the diff. Reviewer checks the bump procedure was followed
+#    verbatim; no sanitisation of vendored sources is permitted.
 ```
 
-Or directly:
+## Related docs
 
-```sh
-./harness/loki-compatibility/scripts/run-loki-compatibility.sh
-```
-
-## Endpoints (when the stack is up)
-
-| Service    | Host:port                | Role                                    |
-| ---------- | ------------------------ | --------------------------------------- |
-| ClickHouse | `localhost:28000` (TCP)  | OTel-schema, `otel_logs`                |
-|            | `localhost:28223` (HTTP) | same                                    |
-| Loki       | `localhost:23100`        | reference target                        |
-| cerberus   | `localhost:29092`        | test target (LogQL on `/loki/api/v1/*`) |
-
-Port allocation is offset from the prometheus-compliance harness so the
-two stacks can coexist on the same dev host.
-
-## Seeder
-
-`cmd/seed/` writes the same deterministic fixture to both targets:
-
-- **ClickHouse** — `INSERT INTO otel_logs` with the column layout from
-  the upstream OTel-CH Exporter DDL (`internal/schema/ddl`).
-- **Loki** — HTTP POST to `/loki/api/v1/push` with `{streams:[...]}`.
-
-Fixture shape: 4 services × 600 entries × 1 entry/sec = 10 minutes of
-deterministic log data anchored at `2026-05-11T00:00:00Z`. Both writes
-use the same anchor + same line bodies, so diff output in PR 3+ will
-surface genuine LogQL semantic gaps, not data asymmetry.
-
-Smoke contract: after the seeder runs, `GET /loki/api/v1/labels` MUST
-return non-empty on BOTH `:23100` (reference Loki) and `:29092`
-(cerberus), and `SELECT count() FROM otel_logs` on the CH side MUST
-return > 0. The seeder polls each target and fails fast if any
-condition isn't met within 30s.
-
-The /labels probe passes a wide `[start, end]` window covering the
-fixture anchor plus a buffer on each side — cerberus reads from CH
-via `Timestamp BETWEEN ...`, so a window-less /labels call returns
-empty. The wide window also absorbs the (system clock vs anchor)
-skew that arises when CI runs days after the anchor date. PR 3's
-diff driver will thread tighter per-query windows for the actual
-result comparisons; the smoke just needs both endpoints alive.
-
-## License
-
-Cerberus itself is MIT. PR 2 will vendor an AGPLv3 corpus from
-`grafana/loki:pkg/logql/bench/` under `upstream/loki-bench/` with the
-upstream LICENSE preserved — same posture as
-[`harness/prometheus-compliance/upstream/promql/`](../prometheus-compliance/upstream/promql/).
-PR 1 vendors nothing, so the AGPL note only applies once PR 2 lands.
+- [`docs/loki-compliance-plan.md`](../../docs/loki-compliance-plan.md) — the rollout plan
+- [`docs/upstream-forks.md`](../../docs/upstream-forks.md) — how the `tsouza/loki` fork is wired (and why the bench corpus is outside it)
+- [`harness/prometheus-compliance/`](../prometheus-compliance/) — sibling Prom harness
+- [`harness/tempo-compatibility/`](../tempo-compatibility/) — sibling Tempo harness, PR 1 (#367)

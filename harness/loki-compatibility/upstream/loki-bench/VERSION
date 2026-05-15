@@ -1,0 +1,21 @@
+# Vendored from github.com/grafana/loki.
+#
+# This file records the EXACT upstream coordinates of the snapshot under
+# this directory. See ../../README.md and ../../../docs/loki-compliance-plan.md
+# for the bump procedure.
+#
+# Cerberus's `tsouza/loki` fork (replace directive in go.mod) only
+# tracks `pkg/logql/syntax/`, `pkg/logql/log/`, and `pkg/logqlmodel`;
+# `pkg/logql/bench/` is OUT of that watch boundary. The snapshot here
+# therefore pins grafana/loki directly rather than the fork tag.
+
+upstream_repo:     github.com/grafana/loki
+upstream_tag:      v3.7.0
+upstream_commit:   3361de24b692875d77bd7433cd6baa7c68dc0ef9
+
+vendored_paths:
+  - pkg/logql/bench/queries/fast/*.yaml
+  - pkg/logql/bench/queries/schema.json
+  - pkg/logql/bench/query_registry.go
+  - pkg/logql/bench/remote_test.go
+  - LICENSE
