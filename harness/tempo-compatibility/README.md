@@ -1,12 +1,29 @@
 # Tempo / TraceQL compatibility harness
 
-> Status: **PR 2 (compose + stub driver + nightly workflow)** of the
-> rollout described in [`docs/tempo-compliance-plan.md`](../../docs/tempo-compliance-plan.md).
+> Status: **PR 4 (read corpus + smoke diff)** of the rollout described
+> in [`docs/tempo-compliance-plan.md`](../../docs/tempo-compliance-plan.md).
 > This directory holds the vendored snapshot from PR 1 (`upstream/`),
 > the Docker Compose stack standing up reference Tempo + cerberus +
-> ClickHouse, a STUB driver that exits 0, and a nightly /
-> `workflow_dispatch` GitHub Actions lane (informational, not a
-> required check). The real seeder + diff driver follow in PRs 3-4.
+> ClickHouse, the driver binary with two subcommands — `seed` (push
+> deterministic OTLP batch to both backends, smoke `/api/traces/<id>`)
+> and `diff` (run the TXTAR corpus through both backends, write a
+> markdown diff report) — and a nightly / `workflow_dispatch` GitHub
+> Actions lane (informational, not a required check). Metrics and tag
+> endpoints land in PRs 5-6.
+>
+> ## Ingest path (PR 3 vs the original plan)
+>
+> docs/tempo-compliance-plan.md "Open question 1" flagged a choice:
+> seed cerberus via OTLP or via direct CH INSERT. **PR 3 settles on
+> direct CH INSERT** because cerberus is read-only over OTLP — its
+> HTTP layer answers Prom / Loki / Tempo queries by reading from a CH
+> instance whose tables are populated by the OTel-CH exporter in real
+> deployments. Running a full collector + exporter pipeline inside the
+> harness just to seed would re-test the exporter (already covered
+> upstream), not cerberus's read path. The Tempo side, by contrast,
+> has no out-of-band ingest path and must take OTLP. Both writes are
+> derived from one in-memory fixture so per-span fields stay 1:1
+> across both read paths.
 
 ## Why this harness exists
 
@@ -22,18 +39,25 @@ See [`docs/tempo-compliance-plan.md`](../../docs/tempo-compliance-plan.md)
 for the full landscape analysis, the per-PR breakdown, and the diff
 strategy.
 
-## Layout (current — PR 2)
+## Layout (current — PR 4)
 
 ```text
 harness/tempo-compatibility/
   README.md             this file
-  docker-compose.yml    PR 2 — tempo + cerberus + clickhouse + stub driver
-  tempo-config.yaml     PR 2 — reference Tempo (local block storage)
+  docker-compose.yml    tempo + cerberus + clickhouse + driver
+  tempo-config.yaml     reference Tempo (local block storage)
   scripts/
-    run-tempo-compatibility.sh  PR 2 — `docker compose up --wait` + driver + teardown
-  driver/                       PR 2 — STUB; PRs 3-4 wire the real seeder + differ
-    Dockerfile          PR 2 — multi-stage build of the driver binary
-    main.go             PR 2 — flag-only stub, prints banner + exits 0
+    run-tempo-compatibility.sh  `docker compose up --wait` + seed + diff + teardown
+  driver/                       cerberus-owned driver binary
+    Dockerfile          repo-root context multi-stage build
+    main.go             subcommand dispatcher (seed / diff)
+    seeder.go           OTLP push to Tempo + CH INSERT for cerberus
+    corpus.go           TXTAR corpus loader (PR 4)
+    differ.go           canonical-key + relative-epsilon diff (PR 4)
+    diff.go             `diff` subcommand: HTTP fetch + assertions + report (PR 4)
+    corpus/
+      smoke.txtar       ~20 cases lifted from shadow corpus (PR 4)
+  reports/              driver report output (gitignored)
   upstream/             PR 1 — vendored snapshot (read-only reference)
     LICENSE             AGPL-3.0, copied verbatim from grafana/tempo
     VERSION             exact upstream coordinates of the snapshot
@@ -41,23 +65,39 @@ harness/tempo-compatibility/
     pkg/httpclient/     Tempo HTTP client; reused by the future driver
 ```
 
-## Layout (planned — PRs 3-7)
-
-PRs 3-7 grow the driver from stub into the real differ:
+## Layout (planned — PRs 5-7)
 
 ```text
 harness/tempo-compatibility/
   driver/
-    main.go             PR 3+ — orchestrator (parses flags, dispatches)
-    seeder.go           PR 3  — push OTLP batches to tempo + cerberus
-    corpus.go           PR 4  — TXTAR loader
-    differ.go           PR 4  — JSON-shape diff
-    report.go           PR 4  — markdown report writer
     corpus/
-      smoke.txtar       PR 4  — 10-query smoke set
-      coverage.txtar    PR 5  — ~40 queries, one per TraceQL feature
-  expected-failures.json  PR 4+
+      coverage.txtar    PR 5/6 — full coverage (metrics + tags + values)
+  expected-failures.json  PR 5+
 ```
+
+## Differ design (PR 4)
+
+The differ runs each corpus case against both Tempo and cerberus via
+`/api/search` (and `/api/traces/<id>` for per-id smoke cases), then
+compares the responses. Two complications drive the diff strategy:
+
+1. **Cerberus's `TraceSummary.TraceID` is synthetic today.** See
+   `internal/api/tempo/handler.go::toTraceSummaries` — the stub key is
+   `MetricName + "|" + Timestamp`, not the real OTLP trace ID hex
+   Tempo returns. A literal byte-equal would false-positive on every
+   case. The differ canonicalises each summary via
+   `H(rootServiceName || rootTraceName)` and compares the canonical-key
+   multisets, exactly the plan's "hash trace IDs deterministically
+   (different orderings of equal sets don't false-positive)" prescription.
+2. **Per-case expectations are orthogonal to differential equality.** A
+   case like `{ resource.service.name = "checkout" }` can carry an
+   `expected_min_traces: 1` assertion ("each backend, on its own, must
+   return at least one trace") AND still be subject to the structural
+   diff between the two responses. The driver reports both in the
+   markdown summary so a single regression doesn't mask the other.
+
+Numeric fields (durationMs, startTimeUnixNano) compare under a 1e-9
+relative epsilon — same defaults as `harness/prometheus-compliance/shadow`.
 
 ## What's in `upstream/`
 

@@ -1,0 +1,61 @@
+# Dockerfile-specific ignore for the tempo-compat driver build context.
+#
+# BuildKit picks `<dockerfile>.dockerignore` over the repo-root
+# `.dockerignore` when both exist for the same Dockerfile. The root
+# `.dockerignore` excludes `harness/` (because Dockerfile.local builds
+# the cerberus binary and doesn't need it), but the tempo-compat
+# driver lives under `harness/tempo-compatibility/driver/` and DOES
+# need its own source visible in the build context. This file
+# narrows the exclusions accordingly.
+#
+# Pattern: mirror the root .dockerignore exclusions for everything
+# unrelated to this driver, but DO NOT re-exclude `harness/` (so the
+# `COPY . .` in the Dockerfile picks up the driver sources).
+
+.git
+.github
+.claude
+.envrc
+.golangci.yml
+.gremlins.yaml
+.goreleaser.yml
+.markdownlint.yaml
+.markdownlintignore
+.editorconfig
+.commitlintrc.json
+lefthook.yml
+
+# Build outputs
+bin/
+dist/
+coverage.out
+coverage.html
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+
+# Test artifacts
+test/e2e/playwright/node_modules/
+test/e2e/playwright/test-results/
+test/e2e/playwright/playwright-report/
+
+# Documentation / contributor surface — never affects the driver build.
+docs/
+*.md
+LICENSE
+
+# Compose / k8s — not relevant to the driver compile.
+docker-compose.yml
+test/e2e/k3s/
+test/e2e/grafana/
+
+# Narrow the harness/ exclusion: keep tempo-compatibility/driver/ in
+# the build context (needed for `go build`), but skip the heavy
+# upstream/ vendor + sibling harnesses to keep the image small.
+harness/prometheus-compliance/
+harness/loki-compatibility/
+harness/tempo-compatibility/upstream/
+harness/tempo-compatibility/reports/
+harness/tempo-compatibility/scripts/

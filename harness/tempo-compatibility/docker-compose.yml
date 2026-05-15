@@ -92,14 +92,14 @@ services:
       # collisions on the developer machine.
       - "23200:3200"  # HTTP (query API)
       - "24317:4317"  # OTLP gRPC ingest (used by PR 3's seeder)
-    healthcheck:
-      # /ready returns 200 only once Tempo has loaded its config AND
-      # opened the listeners. Reliable single-binary probe.
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3200/ready || exit 1"]
-      interval: 5s
-      timeout: 3s
-      retries: 30
-      start_period: 10s
+    # No Docker-level healthcheck: the grafana/tempo image is distroless
+    # (no sh / wget / curl / nc) and Tempo's binary doesn't expose a
+    # self-ping subcommand suitable for `CMD ["tempo", ...]`. Readiness
+    # is enforced from the driver's pre-push `/ready` poll instead
+    # (see `waitTempoReady` in driver/seeder.go) — same pattern the
+    # loki-compatibility harness uses for the distroless `grafana/loki`
+    # image. The pre-push poll covers the cold-start window between
+    # "container running" and "OTLP gRPC listener accepting Export".
 
   cerberus-tempo:
     image: cerberus:tempo-compatibility
@@ -128,26 +128,47 @@ services:
       retries: 30
 
   tempo-compat-driver:
+    # PR 4: the driver now exposes two real subcommands — `seed` (push
+    # fixture into both backends) and `diff` (run TXTAR corpus, write
+    # markdown report). The run-tempo-compatibility script invokes
+    # them in sequence; the default `command:` keeps `seed` so an ad-hoc
+    # `docker compose run --rm tempo-compat-driver` still does the
+    # right thing during local debugging.
+    #
+    # Build context widened from `./driver` to the repo root so the
+    # driver can `import "github.com/tsouza/cerberus/internal/schema/ddl"`
+    # and the OTLP gRPC client types via cerberus's go.mod. Mirrors
+    # how Dockerfile.local builds the cerberus binary.
+    image: cerberus-tempo-compat-driver:pr4
     build:
-      context: ./driver
-    # The stub driver prints a banner and exits 0. PRs 3-4 will wire the
-    # real seeder + differ; the flag surface is already wired here so
-    # the Compose contract is stable across the rollout.
-    command:
-      - "-tempo=http://tempo:3200"
-      - "-cerberus=http://cerberus-tempo:29092"
-      - "-corpus=/corpus/smoke.txtar"
-      - "-report=/reports/diff.json"
+      context: ../..
+      dockerfile: harness/tempo-compatibility/driver/Dockerfile
+    command: ["seed"]
+    environment:
+      # Targets are reachable on the compose network by service name.
+      # The seeder honours flags or these env vars (`flag.String`'s
+      # default is `envOr(...)`).
+      TEMPO_OTLP_ADDR: "tempo:4317"
+      TEMPO_HTTP_URL: "http://tempo:3200"
+      CERBERUS_URL: "http://cerberus-tempo:29092"
+      CERBERUS_CH_ADDR: "clickhouse:9000"
+      CERBERUS_CH_DATABASE: "otel"
+      CERBERUS_CH_USERNAME: "cerberus"
+      CERBERUS_CH_PASSWORD: "cerberus"
     depends_on:
       tempo:
-        condition: service_healthy
+        # Distroless tempo image has no healthcheck (see service definition);
+        # the driver polls /ready before issuing the first OTLP Export.
+        condition: service_started
       cerberus-tempo:
         condition: service_healthy
       clickhouse:
         condition: service_healthy
     volumes:
-      # The corpus + reports dirs don't exist yet (PRs 3-4 populate them).
-      # The driver stub tolerates missing files so the Compose run is a
-      # smoke for wiring, not data.
-      - ./driver/corpus:/corpus:ro
+      # `reports/` receives the differ's markdown output (PR 4). The
+      # seeder doesn't write here; the mount is mandatory for `diff`.
       - ./reports:/reports
+      # `corpus/` is the TXTAR source the differ reads. Mount read-only
+      # so a defensive write in the driver can't accidentally rewrite
+      # the source-of-truth corpus from inside the container.
+      - ./driver/corpus:/corpus:ro

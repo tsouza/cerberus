@@ -429,10 +429,10 @@ loki-compatibility-down:
 
 # Run the Tempo / TraceQL compatibility harness end-to-end. Slow; expect
 # minutes. Sets up the Docker Compose stack (reference Tempo +
-# cerberus + CH + stub driver), runs the driver, writes reports under
-# harness/tempo-compatibility/reports/. PR 2 of
-# docs/tempo-compliance-plan.md — the driver is a stub until PRs 3-4
-# wire the real seeder + differ.
+# cerberus + CH + seeder driver), runs the seeder which pushes a
+# deterministic OTLP batch to Tempo and an equivalent INSERT into CH
+# for cerberus, then smokes /api/traces/<id> on both backends.
+# PR 3 of docs/tempo-compliance-plan.md — diff driver lands in PR 4.
 tempo-compatibility:
     ./harness/tempo-compatibility/scripts/run-tempo-compatibility.sh
 
