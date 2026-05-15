@@ -43,8 +43,13 @@ import (
 // RoundTripSections is the parsed shape of the optional `seed:` /
 // `expected_rows:` / `sql:` / `args:` sections attached to a fixture.
 //
-// When `Seed` or `ExpectedRows` is empty, the fixture has not opted
-// into round-trip execution. Callers should check IsRoundTrip().
+// When `Seed` is empty or `expected_rows:` is missing, the fixture
+// has not opted into round-trip execution. Callers should check
+// IsRoundTrip(). An explicit empty array (`[]`) IS a valid opt-in
+// — it asserts the predicate filters all rows out, which is the
+// only way to make post-aggregation predicate boundaries (e.g.
+// `| count() > 0` against zero matching rows) discriminating in the
+// round-trip layer.
 type RoundTripSections struct {
 	// Seed is the CH DDL+INSERT script that populates the in-process
 	// chDB session. The runner splits on semicolons and runs each
@@ -55,7 +60,8 @@ type RoundTripSections struct {
 	// ExpectedRows is the parsed JSON content of `expected_rows:`.
 	// Each row is a slice of `any` mirroring the emitted SQL's
 	// SELECT projection. Map columns are unmarshalled as
-	// map[string]any.
+	// map[string]any. Stays nil when the section is absent; becomes
+	// `[][]any{}` (non-nil, len 0) when the section is `[]`.
 	ExpectedRows [][]any
 
 	// SQL is the raw `sql:` section (after normalization). The
@@ -66,12 +72,19 @@ type RoundTripSections struct {
 	// Args is the bound []any matching the `?` placeholders in SQL,
 	// parsed from the `args:` text format the emitter writes.
 	Args []any
+
+	// expectedRowsPresent records whether the fixture authored an
+	// `expected_rows:` section at all (even an empty `[]`), so
+	// IsRoundTrip can distinguish "no opt-in" from "opt-in,
+	// asserts zero rows".
+	expectedRowsPresent bool
 }
 
 // IsRoundTrip reports whether the fixture opted into the
-// seed+expected_rows assertion path.
+// seed+expected_rows assertion path. An explicit `expected_rows: []`
+// counts as opt-in.
 func (r *RoundTripSections) IsRoundTrip() bool {
-	return strings.TrimSpace(r.Seed) != "" && len(r.ExpectedRows) > 0
+	return strings.TrimSpace(r.Seed) != "" && r.expectedRowsPresent
 }
 
 // LoadRoundTrip extracts `seed:` / `expected_rows:` / `sql:` / `args:`
@@ -86,8 +99,16 @@ func LoadRoundTrip(c *Case) (*RoundTripSections, error) {
 	if v, ok := c.Section("expected_rows"); ok {
 		v = strings.TrimSpace(v)
 		if v != "" {
+			out.expectedRowsPresent = true
 			if err := json.Unmarshal([]byte(v), &out.ExpectedRows); err != nil {
 				return nil, fmt.Errorf("expected_rows JSON: %w", err)
+			}
+			if out.ExpectedRows == nil {
+				// `[]` unmarshals to a nil slice in some Go
+				// versions; normalize to non-nil empty slice so
+				// reflect.DeepEqual against the runner's empty
+				// `got` slice succeeds.
+				out.ExpectedRows = [][]any{}
 			}
 		}
 	}
