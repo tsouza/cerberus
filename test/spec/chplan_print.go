@@ -244,6 +244,35 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		if v.Inner != nil {
 			printNode(b, v.Inner, depth+1)
 		}
+	case *chplan.AbsentOverTime:
+		fmt.Fprintf(b, "%sAbsentOverTime range=%s step=%s", indent, v.Range, v.Step)
+		if v.Offset != 0 {
+			fmt.Fprintf(b, " offset=%s", v.Offset)
+		}
+		if v.TimestampColumn != "" {
+			fmt.Fprintf(b, " ts=%s", v.TimestampColumn)
+		}
+		if v.ValueColumn != "" {
+			fmt.Fprintf(b, " value=%s", v.ValueColumn)
+		}
+		if v.MetricNameColumn != "" {
+			fmt.Fprintf(b, " name=%s", v.MetricNameColumn)
+		}
+		if v.AttributesColumn != "" {
+			fmt.Fprintf(b, " attrs=%s", v.AttributesColumn)
+		}
+		if len(v.SynthLabels) > 0 {
+			parts := make([]string, len(v.SynthLabels))
+			for i, kv := range v.SynthLabels {
+				parts[i] = fmt.Sprintf("%s=%q", kv.Key, kv.Value)
+			}
+			fmt.Fprintf(b, " synth=[%s]", strings.Join(parts, ", "))
+		}
+		if !v.Start.IsZero() || !v.End.IsZero() {
+			fmt.Fprintf(b, " start=%s end=%s", v.Start.UTC().Format("2006-01-02T15:04:05Z"), v.End.UTC().Format("2006-01-02T15:04:05Z"))
+		}
+		b.WriteString("\n")
+		printNode(b, v.Input, depth+1)
 	case *chplan.HistogramQuantile:
 		gb := make([]string, len(v.GroupBy))
 		for i, e := range v.GroupBy {

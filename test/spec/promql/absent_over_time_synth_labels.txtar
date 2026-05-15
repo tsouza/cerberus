@@ -1,0 +1,50 @@
+# absent_over_time(<metric>{<eq-matchers>}[range]) — the matcher-derived
+# label synthesis path. The input selector has TWO equality matchers
+# (`job="x"`, `instance="host-1"`) on top of `__name__`. Per Prom's
+# funcAbsentOverTime (which delegates label construction to
+# `createLabelsForAbsentFunction`), the absence-indicator series carries
+# `__name__` dropped + the equality matchers lifted onto the output.
+#
+# The seed contains only an unrelated metric, so the matcher-filtered
+# scan returns zero rows and every step anchor in the eval grid
+# survives the per-anchor lookback check. The chplan/sql sections
+# auto-fill on `GOLDEN_UPDATE=1`; the expected_rows section pins the
+# observable wire shape: one row at the eval anchor with the
+# matcher-synthesised label map.
+
+-- query.promql --
+absent_over_time(nonexistent_metric{job="x",instance="host-1"}[5m])
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- Only an unrelated metric is present. The matcher-filtered scan
+-- yields zero rows, so sample_ts_arr is empty and every step anchor
+-- passes the arrayCount = 0 filter.
+INSERT INTO otel_metrics_gauge VALUES
+    ('temperature', map('host', 'a'), toDateTime64('2026-01-01 00:00:00', 9), 42.0);
+-- expected_rows --
+[
+  ["", {"instance": "host-1", "job": "x"}, "2026-01-01T00:00:01Z", 1.0]
+]
+-- args --
+[0] string = ""
+[1] string = "job"
+[2] string = "x"
+[3] string = "instance"
+[4] string = "host-1"
+[5] float64 = 1
+[6] string = "nonexistent_metric"
+[7] string = "job"
+[8] string = "x"
+[9] string = "instance"
+[10] string = "host-1"
+-- chplan --
+AbsentOverTime range=5m0s step=0s ts=TimeUnix value=Value name=MetricName attrs=Attributes synth=[job="x", instance="host-1"] start=0001-01-01T00:00:00Z end=2026-01-01T00:00:01Z
+  Filter predicate=(((Attributes["job"] = "x") AND (Attributes["instance"] = "host-1")) AND (MetricName = "nonexistent_metric"))
+    Scan(otel_metrics_gauge)
+-- sql --
+SELECT ? AS `MetricName`, map(?, ?, ?, ?) AS `Attributes`, anchor_ts AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT anchor_ts FROM (SELECT toDateTime64('2026-01-01 00:00:01.000000000', 9) AS `anchor_ts`, sample_ts_arr FROM (SELECT groupArray(`TimeUnix`) AS `sample_ts_arr` FROM (SELECT * FROM `otel_metrics_gauge` PREWHERE (`MetricName` = ?) AND (`Attributes`[?] = ?) WHERE (`Attributes`[?] = ?)) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:00:01.000000000', 9))) WHERE arrayCount(t -> t > anchor_ts - toIntervalNanosecond(300000000000) AND t <= anchor_ts, sample_ts_arr) = 0)

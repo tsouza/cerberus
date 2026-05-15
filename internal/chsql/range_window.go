@@ -176,8 +176,6 @@ func (e *emitter) emitRangeWindow(r *chplan.RangeWindow) error {
 		return e.emitRangeWindowPredictLinear(r)
 	case "holt_winters":
 		return e.emitRangeWindowHoltWinters(r)
-	case "absent_over_time":
-		return e.emitRangeWindowAbsentOverTime(r)
 	case "deriv":
 		return e.emitRangeWindowDeriv(r)
 	case "resets":
@@ -1002,34 +1000,6 @@ func (e *emitter) emitRangeWindowOverTime(r *chplan.RangeWindow) error {
 	// short-circuit on zero samples). The outer SELECT gets
 	// `WHERE length(window_vals) >= 1`.
 	return e.emitWindowedArray(r, verbatim(inner), 1)
-}
-
-// emitRangeWindowAbsentOverTime emits SQL for `absent_over_time(v[range])`.
-//
-// PromQL semantics: returns 1 (with synthesised labels derived from the
-// selector matchers) when the lookback window contains zero samples;
-// returns no result when any sample is present.
-//
-// The fully-faithful "synthesise labels for the empty-input case" path
-// requires post-emit engine handling (Prom's funcAbsentOverTime is one
-// of three engine-specialised functions, alongside absent and present_
-// over_time — see internal/engine.go's `absent_over_time` switch in
-// the upstream parser). At the per-series RangeWindow layer the most
-// we can do is emit `1.0` for series whose window happens to be empty
-// (matching Prom's per-series no-data path) and NaN for series with at
-// least one sample (engine layer treats NaN as drop). The "no series at
-// all" case (where Prom synthesises the matcher-derived labels) lands
-// alongside the engine-side absent() implementation.
-//
-// minWindowSize stays at 0 so empty windows DO emit a row — the very
-// shape we want for the "absent" branch to materialise.
-func (e *emitter) emitRangeWindowAbsentOverTime(r *chplan.RangeWindow) error {
-	value := If(
-		Gt(Call("length", BareIdent("window_vals")), InlineLit(int64(0))),
-		verbatim("nan"),
-		verbatim("1.0"),
-	)
-	return e.emitWindowedArray(r, value, 0)
 }
 
 // emitRangeWindowDeriv emits SQL for `deriv(v[range])`.

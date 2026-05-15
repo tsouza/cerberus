@@ -154,6 +154,145 @@ func lowerAbsent(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	}, nil
 }
 
+// lowerAbsentOverTime implements PromQL `absent_over_time(v[range])`.
+// The function emits the absence-indicator series whose labels are
+// derived from the input vector-selector's equality matchers (same
+// rule as instant `absent(...)`, mirroring Prom's
+// `createLabelsForAbsentFunction`). Samples are placed at every
+// per-step anchor whose `(anchor - range, anchor]` lookback window
+// has zero matching samples in the table; anchors with any matching
+// sample contribute no output.
+//
+// Lowered shape:
+//
+//	AbsentOverTime synth=<matcher-eq-set> range=<R> step=<step>
+//	               start=<start> end=<end> offset=<offset>
+//	  Filter? predicate=<v's matchers without the time bound>
+//	    Scan(<table>)
+//
+// The chsql emitter for AbsentOverTime renders the per-anchor lookback
+// check via a groupArray of the per-sample timestamps + arrayCount(t
+// -> in_window, sample_ts_arr). See
+// internal/chsql/absent_over_time.go for the SQL skeleton.
+//
+// Cerberus previously routed `absent_over_time` through the regular
+// per-series RangeWindow path which emitted `if(length(window_vals) >
+// 0, NaN, 1.0)` per (series, anchor) — wrong labels (original series
+// labels, not the matcher-synthesised set) AND wrong shape (per-series
+// NaN rows the matrix pivot didn't drop). Bucket 4 of
+// docs/compat-residual-audit-25898791664.md attributes 6 compat lane
+// diffs to this divergence; replacing the lowering with the dedicated
+// AbsentOverTime node closes those diffs by emitting Prom's
+// single-synthesised-series shape directly.
+func lowerAbsentOverTime(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	if len(c.Args) != 1 {
+		return nil, fmt.Errorf("promql: absent_over_time() expects 1 argument, got %d", len(c.Args))
+	}
+	ms, ok := c.Args[0].(*parser.MatrixSelector)
+	if !ok {
+		return nil, fmt.Errorf("promql: absent_over_time() argument must be a range-vector selector, got %T", c.Args[0])
+	}
+	vs, ok := ms.VectorSelector.(*parser.VectorSelector)
+	if !ok {
+		return nil, fmt.Errorf("promql: matrix selector's inner must be a VectorSelector, got %T", ms.VectorSelector)
+	}
+
+	anchor, err := anchorFromSelector(vs, ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Build the inner filtered Scan with the modifier stripped — the
+	// AbsentOverTime node embeds its own per-anchor window bound, and
+	// any duplicate time predicate on the inner Filter would over-narrow
+	// the global prefilter the emitter applies above the inner scan.
+	vsNoMod := *vs
+	vsNoMod.Timestamp = nil
+	vsNoMod.OriginalOffset = 0
+	vsNoMod.Offset = 0
+	vsNoMod.StartOrEnd = 0
+	rangeCtx := ctx
+	rangeCtx.inRangeVector = true
+	inner, err := lowerVectorSelector(&vsNoMod, s, rangeCtx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Resolve the eval anchor: a non-zero `@`/`@start`/`@end` modifier
+	// pins `anchor.End` directly; otherwise fall through to ctx.end (the
+	// query's eval time for instant queries). Zero ctx.end + zero
+	// anchor.End falls back to CH's `now64(9)` at emit time — mirrors
+	// the lowerAbsent instant-mode contract.
+	endTime := anchor.End
+	if endTime.IsZero() && !ctx.end.IsZero() {
+		endTime = ctx.end.UTC()
+	}
+
+	a := &chplan.AbsentOverTime{
+		Input:            inner,
+		SynthLabels:      synthLabelsFromMatchers(vs.LabelMatchers),
+		Range:            ms.Range,
+		End:              endTime,
+		Offset:           anchor.Offset,
+		TimestampColumn:  s.TimestampColumn,
+		ValueColumn:      s.ValueColumn,
+		MetricNameColumn: s.MetricNameColumn,
+		AttributesColumn: s.AttributesColumn,
+	}
+	// In range mode (Pool-AK's per-anchor query_range plumbing) fan the
+	// per-anchor lookback check across the request's step grid. The
+	// emitter pivots between the single-anchor (Step == 0) and
+	// arrayJoin-fanout (Step > 0) shapes via this Step value.
+	if ctx.step > 0 && !ctx.start.IsZero() && !ctx.end.IsZero() {
+		a.Start = ctx.start.UTC()
+		a.End = ctx.end.UTC()
+		a.Step = ctx.step
+	}
+	return a, nil
+}
+
+// synthLabelsFromMatchers builds the matcher-derived label set Prom's
+// funcAbsentOverTime / funcAbsent lift onto the synthesised output
+// series. Reuses the same rules `absentAttrsMap` applies but returns
+// the ordered (key, value) pair list directly so the chsql emitter can
+// thread each kv through `Lit(...)` for `?`-bound rendering.
+//
+// Skip `__name__`; include only equality matchers; drop labels appearing
+// more than once on the same name (`absent_over_time(x{job="a",
+// job="b"}[5m])` → `{}`).
+func synthLabelsFromMatchers(matchers []*labels.Matcher) []chplan.SynthLabel {
+	has := make(map[string]bool, len(matchers))
+	order := make([]string, 0, len(matchers))
+	values := make(map[string]string, len(matchers))
+	for _, m := range matchers {
+		if m.Name == model.MetricNameLabel {
+			continue
+		}
+		if m.Type != labels.MatchEqual {
+			if has[m.Name] {
+				delete(values, m.Name)
+			}
+			continue
+		}
+		if has[m.Name] {
+			delete(values, m.Name)
+			continue
+		}
+		has[m.Name] = true
+		values[m.Name] = m.Value
+		order = append(order, m.Name)
+	}
+	out := make([]chplan.SynthLabel, 0, len(order))
+	for _, name := range order {
+		v, ok := values[name]
+		if !ok {
+			continue
+		}
+		out = append(out, chplan.SynthLabel{Key: name, Value: v})
+	}
+	return out
+}
+
 // absentAttrsMap renders the absent-output label set as a CH
 // Map(String, String) literal, mirroring Prom's
 // `createLabelsForAbsentFunction` rules:
