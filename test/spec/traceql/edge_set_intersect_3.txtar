@@ -7,3 +7,12 @@
 [3] string = "Error"
 -- sql --
 SELECT L.* FROM (SELECT L.* FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) AS `L` INNER JOIN (SELECT * FROM `otel_traces` WHERE (`Duration` > ?)) AS `R` ON `L`.`TraceId` = `R`.`TraceId` AND `L`.`SpanId` = `R`.`SpanId`) AS `L` INNER JOIN (SELECT * FROM `otel_traces` WHERE (`StatusCode` = ?)) AS `R` ON `L`.`TraceId` = `R`.`TraceId` AND `L`.`SpanId` = `R`.`SpanId`
+-- chplan --
+SetOperation op=&&
+  SetOperation op=&&
+    Filter predicate=(ResourceAttributes["service.name"] = "a")
+      Scan(otel_traces)
+    Filter predicate=(Duration > 1000000000)
+      Scan(otel_traces)
+  Filter predicate=(StatusCode = "Error")
+    Scan(otel_traces)

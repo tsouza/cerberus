@@ -9,3 +9,12 @@
 [5] string = "c"
 -- sql --
 ((SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) UNION DISTINCT (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?))) UNION DISTINCT (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?))
+-- chplan --
+SetOperation op=||
+  SetOperation op=||
+    Filter predicate=(ResourceAttributes["service.name"] = "a")
+      Scan(otel_traces)
+    Filter predicate=(ResourceAttributes["service.name"] = "b")
+      Scan(otel_traces)
+  Filter predicate=(ResourceAttributes["service.name"] = "c")
+    Scan(otel_traces)

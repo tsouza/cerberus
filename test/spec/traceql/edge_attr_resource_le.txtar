@@ -5,3 +5,6 @@
 [1] int64 = 5
 -- sql --
 SELECT * FROM `otel_traces` WHERE (toFloat64(`ResourceAttributes`[?]) <= ?)
+-- chplan --
+Filter predicate=(toFloat64(ResourceAttributes["replicas"]) <= 5)
+  Scan(otel_traces)

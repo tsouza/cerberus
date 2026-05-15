@@ -20,3 +20,8 @@ INSERT INTO otel_traces VALUES
 [
   [80000000.0]
 ]
+-- chplan --
+Filter predicate=(Value > 50000000)
+  Aggregate groupBy=[] funcs=[avg(Duration) AS Value]
+    Filter predicate=(ResourceAttributes["service.name"] = "frontend")
+      Scan(otel_traces)

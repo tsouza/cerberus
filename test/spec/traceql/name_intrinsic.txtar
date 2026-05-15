@@ -16,3 +16,6 @@ INSERT INTO otel_traces VALUES
 [
   ["GET /api/users"]
 ]
+-- chplan --
+Filter predicate=(SpanName = "GET /api/users")
+  Scan(otel_traces)

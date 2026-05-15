@@ -5,3 +5,6 @@
 [1] string = "api"
 -- sql --
 SELECT * FROM `otel_traces` PREWHERE `ParentSpanId` WHERE (`ResourceAttributes`[?] = ?)
+-- chplan --
+Filter predicate=(ParentSpanId AND (ResourceAttributes["service.name"] = "api"))
+  Scan(otel_traces)

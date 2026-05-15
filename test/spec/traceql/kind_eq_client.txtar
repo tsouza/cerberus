@@ -16,3 +16,6 @@ INSERT INTO otel_traces VALUES
 [
   ["Client"]
 ]
+-- chplan --
+Filter predicate=(SpanKind = "Client")
+  Scan(otel_traces)

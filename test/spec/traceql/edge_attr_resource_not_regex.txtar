@@ -5,3 +5,6 @@
 [1] string = "test.*"
 -- sql --
 SELECT * FROM `otel_traces` WHERE NOT match(`ResourceAttributes`[?], ?)
+-- chplan --
+Filter predicate=(ResourceAttributes["service.name"] !~ "test.*")
+  Scan(otel_traces)

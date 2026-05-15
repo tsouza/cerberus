@@ -5,3 +5,6 @@ SELECT * FROM `otel_traces` WHERE (`SpanAttributes`[?] = ?)
 -- args --
 [0] string = "cache.hit"
 [1] bool = true
+-- chplan --
+Filter predicate=(SpanAttributes["cache.hit"] = true)
+  Scan(otel_traces)

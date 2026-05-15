@@ -17,3 +17,6 @@ INSERT INTO otel_traces VALUES
   ["Error"],
   ["Unset"]
 ]
+-- chplan --
+Filter predicate=(StatusCode != "Ok")
+  Scan(otel_traces)

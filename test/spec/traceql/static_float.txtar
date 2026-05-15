@@ -15,3 +15,6 @@ INSERT INTO otel_traces (_idx) VALUES (0), (1);
 [
   [0]
 ]
+-- chplan --
+Filter predicate=(toFloat64(SpanAttributes["ratio"]) = 0.95)
+  Scan(otel_traces)

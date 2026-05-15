@@ -16,3 +16,6 @@ INSERT INTO otel_traces VALUES
 [
   ["internal server error"]
 ]
+-- chplan --
+Filter predicate=(StatusMessage = "internal server error")
+  Scan(otel_traces)

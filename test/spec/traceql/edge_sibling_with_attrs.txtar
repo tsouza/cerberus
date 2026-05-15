@@ -8,3 +8,9 @@
 [4] string = "y"
 -- sql --
 SELECT R.* FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) AS L INNER JOIN (SELECT * FROM `otel_traces` PREWHERE (`Duration` > ?) WHERE (`ResourceAttributes`[?] = ?)) AS R ON L.`TraceId` = R.`TraceId` AND L.`ParentSpanId` = R.`ParentSpanId` AND L.`SpanId` != R.`SpanId`
+-- chplan --
+StructuralJoin op=~
+  Filter predicate=(ResourceAttributes["service.name"] = "x")
+    Scan(otel_traces)
+  Filter predicate=((ResourceAttributes["service.name"] = "y") AND (Duration > 1000000000))
+    Scan(otel_traces)

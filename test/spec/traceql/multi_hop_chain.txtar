@@ -9,3 +9,12 @@ SELECT R.* FROM (SELECT R.* FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAt
 [3] string = "b"
 [4] string = "service.name"
 [5] string = "c"
+-- chplan --
+StructuralJoin op=>
+  StructuralJoin op=>
+    Filter predicate=(ResourceAttributes["service.name"] = "a")
+      Scan(otel_traces)
+    Filter predicate=(ResourceAttributes["service.name"] = "b")
+      Scan(otel_traces)
+  Filter predicate=(ResourceAttributes["service.name"] = "c")
+    Scan(otel_traces)

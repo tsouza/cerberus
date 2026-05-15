@@ -7,3 +7,8 @@
 [3] int64 = 3
 -- sql --
 SELECT * FROM (SELECT min(`SpanAttributes`[?]) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?))) WHERE (`Value` < ?)
+-- chplan --
+Filter predicate=(Value < 3)
+  Aggregate groupBy=[] funcs=[min(SpanAttributes["attempts"]) AS Value]
+    Filter predicate=(ResourceAttributes["service.name"] = "x")
+      Scan(otel_traces)

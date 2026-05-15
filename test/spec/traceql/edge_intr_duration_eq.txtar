@@ -4,3 +4,6 @@
 [0] int64 = 1000000000
 -- sql --
 SELECT * FROM `otel_traces` WHERE (`Duration` = ?)
+-- chplan --
+Filter predicate=(Duration = 1000000000)
+  Scan(otel_traces)

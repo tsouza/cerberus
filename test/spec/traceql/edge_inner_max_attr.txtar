@@ -7,3 +7,8 @@
 [3] int64 = 100
 -- sql --
 SELECT * FROM (SELECT max(`SpanAttributes`[?]) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?))) WHERE (`Value` > ?)
+-- chplan --
+Filter predicate=(Value > 100)
+  Aggregate groupBy=[] funcs=[max(SpanAttributes["latency_ms"]) AS Value]
+    Filter predicate=(ResourceAttributes["service.name"] = "x")
+      Scan(otel_traces)

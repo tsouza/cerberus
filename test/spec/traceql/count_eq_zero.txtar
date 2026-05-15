@@ -19,3 +19,8 @@ INSERT INTO otel_traces VALUES
 [
   [0]
 ]
+-- chplan --
+Filter predicate=(Value = 0)
+  Aggregate groupBy=[] funcs=[count(1) AS Value]
+    Filter predicate=(ResourceAttributes["service.name"] = "frontend")
+      Scan(otel_traces)

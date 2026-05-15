@@ -16,3 +16,6 @@ INSERT INTO otel_traces (_idx) VALUES (0), (1), (2);
   [0],
   [2]
 ]
+-- chplan --
+Filter predicate=(ResourceAttributes["service.name"] !~ "back.*")
+  Scan(otel_traces)

@@ -4,3 +4,6 @@
 [0] string = "GET.*"
 -- sql --
 SELECT * FROM `otel_traces` WHERE match(`SpanName`, ?)
+-- chplan --
+Filter predicate=(SpanName =~ "GET.*")
+  Scan(otel_traces)

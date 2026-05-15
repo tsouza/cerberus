@@ -18,3 +18,6 @@ INSERT INTO otel_traces (StatusCode) VALUES
 [
   ["Error"]
 ]
+-- chplan --
+Filter predicate=((StatusCode = "Error") AND (SpanKind = "Server"))
+  Scan(otel_traces)

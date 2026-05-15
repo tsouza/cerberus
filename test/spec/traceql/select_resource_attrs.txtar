@@ -21,3 +21,7 @@ INSERT INTO otel_traces VALUES
 [
   ["a0000000000000000000000000000001", "0000000000000001", "2026-01-01T00:00:00Z", "web", "prod"]
 ]
+-- chplan --
+Project [TraceId, SpanId, Timestamp, ResourceAttributes["service.namespace"] AS service.namespace, ResourceAttributes["k8s.cluster.name"] AS k8s.cluster.name]
+  Filter predicate=(ResourceAttributes["service.name"] = "frontend")
+    Scan(otel_traces)

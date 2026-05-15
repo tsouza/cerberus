@@ -16,3 +16,6 @@ INSERT INTO otel_traces VALUES
 [
   ["0123456789abcdef"]
 ]
+-- chplan --
+Filter predicate=(SpanId = "0123456789abcdef")
+  Scan(otel_traces)

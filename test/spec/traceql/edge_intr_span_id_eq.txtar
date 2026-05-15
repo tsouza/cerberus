@@ -4,3 +4,6 @@
 [0] string = "deadbeef"
 -- sql --
 SELECT * FROM `otel_traces` WHERE (`SpanId` = ?)
+-- chplan --
+Filter predicate=(SpanId = "deadbeef")
+  Scan(otel_traces)
