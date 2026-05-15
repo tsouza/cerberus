@@ -1,29 +1,39 @@
 #!/usr/bin/env bash
 # Tempo / TraceQL compatibility harness entry point.
 #
-# Status: PR 3 of docs/tempo-compliance-plan.md. The driver is now a
-# real seeder (not a stub) — it writes a deterministic OTLP batch into
-# Tempo's :4317 AND inserts the same fixture into ClickHouse so cerberus
-# reads it via the same /api/traces path. The driver's own smoke
-# assertion (poll /api/traces/<id> on both backends and assert non-zero
-# matching span counts) gates this script's exit code.
+# Status: PR 4 of docs/tempo-compliance-plan.md. The driver runs in two
+# phases sequentially:
+#
+#   1. seed — push a deterministic OTLP batch to Tempo's :4317 AND
+#             insert the same fixture into ClickHouse so cerberus reads
+#             it via /api/traces. In-process smoke confirms both
+#             backends resolve the first trace ID with non-zero spans.
+#   2. diff — read the TXTAR corpus, run every TraceQL query through
+#             both backends, write a markdown diff report to
+#             $REPORT_DIR/diff.md. Default: informational (script
+#             returns 0 even if the corpus diffs); set FAIL_ON_DIFF=1
+#             to bubble per-case regressions up to a non-zero rc.
 #
 # Usage:
-#   ./harness/tempo-compatibility/scripts/run-tempo-compatibility.sh   full lifecycle
+#   ./harness/tempo-compatibility/scripts/run-tempo-compatibility.sh   full lifecycle (seed → diff)
 #   COMPOSE_KEEP=1 ./...                                               leave stack up after run
+#   FAIL_ON_DIFF=1 ./...                                               exit non-zero on diffs
 #
 # Env:
-#   REPORT_DIR    where the driver writes diff.json (default:
-#                 harness/tempo-compatibility/reports/). PR 3's seeder
-#                 doesn't write a report — that lands in PR 4.
-#   COMPOSE_KEEP  non-empty: leave the compose stack running after the
-#                 seeder completes (useful for poking at /api/traces and
-#                 the otel_traces table manually).
+#   REPORT_DIR     where the driver writes diff.md (default:
+#                  harness/tempo-compatibility/reports/).
+#   COMPOSE_KEEP   non-empty: leave the compose stack running after the
+#                  differ completes (useful for poking at /api/traces
+#                  and the otel_traces table manually).
+#   FAIL_ON_DIFF   non-empty: forward --fail-on-diff to the differ so
+#                  the script exits non-zero on any case that reported
+#                  a structural diff / assertion / hard error.
 #
-# Exit codes (driver passthrough):
-#   0  seeder + smoke succeeded (both backends returned spans for the
-#      first trace ID with matching counts)
-#   non-zero  stack failed to come up OR seeder/smoke failed.
+# Exit codes:
+#   0  seed + diff completed (informational mode) OR with FAIL_ON_DIFF
+#      set, every corpus case passed.
+#   non-zero  stack failed to come up OR seeder failed OR (with
+#             FAIL_ON_DIFF set) the differ reported a regression.
 
 set -eu -o pipefail
 
@@ -73,10 +83,33 @@ echo "==> running tempo-compat-driver seed"
 # non-zero exit.
 set +e
 docker compose run --rm tempo-compat-driver seed
-DRIVER_RC=$?
+SEED_RC=$?
 set -e
 
-echo "==> driver exited with rc=$DRIVER_RC"
-echo "==> reports under $REPORT_DIR (empty until PR 4 lands the differ)"
+echo "==> seeder exited with rc=$SEED_RC"
+if [ "$SEED_RC" -ne 0 ]; then
+    echo "==> seeder failed — skipping diff"
+    exit "$SEED_RC"
+fi
 
-exit "$DRIVER_RC"
+# PR 4: after seed, run the differ against the same backends. The
+# differ emits a markdown report under $REPORT_DIR; in informational
+# mode (default) it returns 0 even if the report contains diffs so
+# the workflow stays a baseline. Set FAIL_ON_DIFF=1 to bubble
+# regressions up to a non-zero rc — useful for `just`-style local
+# repro and for the eventual PR 7 promotion to a required check.
+DIFF_FLAGS=""
+if [ -n "${FAIL_ON_DIFF:-}" ]; then
+    DIFF_FLAGS="--fail-on-diff"
+fi
+
+echo "==> running tempo-compat-driver diff"
+set +e
+docker compose run --rm tempo-compat-driver diff $DIFF_FLAGS
+DIFF_RC=$?
+set -e
+
+echo "==> differ exited with rc=$DIFF_RC"
+echo "==> report at $REPORT_DIR/diff.md"
+
+exit "$DIFF_RC"

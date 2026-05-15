@@ -1,21 +1,24 @@
 # syntax=docker/dockerfile:1
 # Multi-stage build for the Tempo / TraceQL compatibility driver.
 #
-# Status: PR 3 of docs/tempo-compliance-plan.md. The driver grew from
-# stdlib-only stub (PR 2) into a real seeder that imports
-# `internal/schema/ddl` and `go.opentelemetry.io/proto/otlp/...`. To
-# compile against cerberus's go.mod we must build with a repo-root
-# context (same shape as Dockerfile.local for the cerberus binary).
+# Status: PR 4 of docs/tempo-compliance-plan.md. The driver exposes
+# `seed` (PR 3) + `diff` (PR 4) subcommands; both compile from the same
+# binary so the compose image is stable across PR-level rollout. The
+# repo-root build context lets the driver import
+# `internal/schema/ddl` and the OTLP gRPC client types via cerberus's
+# go.mod (same shape as Dockerfile.local for the cerberus binary).
 #
 # Build:
 #   docker compose build tempo-compat-driver
 # Run:
 #   docker compose run --rm tempo-compat-driver seed
+#   docker compose run --rm tempo-compat-driver diff [--fail-on-diff]
 #
 # Subcommands (see driver/main.go):
 #   seed   PR 3 — push OTLP to Tempo + INSERT into ClickHouse +
 #                 smoke-poll /api/traces on both backends.
-#   diff   PR 4 — corpus + markdown report (not implemented yet).
+#   diff   PR 4 — read TXTAR corpus, run TraceQL through both backends
+#                 via /api/search + /api/traces, write markdown report.
 
 FROM golang:1.26 AS build
 WORKDIR /src
@@ -37,7 +40,7 @@ RUN CGO_ENABLED=0 go build \
 FROM gcr.io/distroless/static-debian12:nonroot
 
 LABEL org.opencontainers.image.title="cerberus-tempo-compat-driver"
-LABEL org.opencontainers.image.description="Tempo / TraceQL compatibility driver (seeder in PR 3; differ lands in PR 4)"
+LABEL org.opencontainers.image.description="Tempo / TraceQL compatibility driver (seed + diff subcommands)"
 LABEL org.opencontainers.image.licenses="MIT"
 
 COPY --from=build /out/driver /usr/local/bin/driver

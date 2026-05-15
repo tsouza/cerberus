@@ -128,17 +128,18 @@ services:
       retries: 30
 
   tempo-compat-driver:
-    # PR 3: the driver is no longer a stub — it's a real binary with
-    # `seed` (this PR) and `diff` (pending in PR 4) subcommands. The
-    # default command runs `seed`; the smoke + run-tempo-compatibility
-    # script invokes `docker compose run --rm tempo-compat-driver seed`
-    # explicitly so the contract is stable across PRs.
+    # PR 4: the driver now exposes two real subcommands — `seed` (push
+    # fixture into both backends) and `diff` (run TXTAR corpus, write
+    # markdown report). The run-tempo-compatibility script invokes
+    # them in sequence; the default `command:` keeps `seed` so an ad-hoc
+    # `docker compose run --rm tempo-compat-driver` still does the
+    # right thing during local debugging.
     #
     # Build context widened from `./driver` to the repo root so the
     # driver can `import "github.com/tsouza/cerberus/internal/schema/ddl"`
     # and the OTLP gRPC client types via cerberus's go.mod. Mirrors
     # how Dockerfile.local builds the cerberus binary.
-    image: cerberus-tempo-compat-driver:pr3
+    image: cerberus-tempo-compat-driver:pr4
     build:
       context: ../..
       dockerfile: harness/tempo-compatibility/driver/Dockerfile
@@ -164,7 +165,10 @@ services:
       clickhouse:
         condition: service_healthy
     volumes:
-      # `reports/` is mounted ahead of PR 4 so the diff subcommand can
-      # write the markdown report once it lands. The seeder doesn't
-      # write to this dir; the mount is forward-compat only.
+      # `reports/` receives the differ's markdown output (PR 4). The
+      # seeder doesn't write here; the mount is mandatory for `diff`.
       - ./reports:/reports
+      # `corpus/` is the TXTAR source the differ reads. Mount read-only
+      # so a defensive write in the driver can't accidentally rewrite
+      # the source-of-truth corpus from inside the container.
+      - ./driver/corpus:/corpus:ro

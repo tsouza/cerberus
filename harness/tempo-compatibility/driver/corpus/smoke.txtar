@@ -1,0 +1,292 @@
+# Tempo / TraceQL compatibility smoke corpus (PR 4).
+#
+# Lifted-and-adapted from harness/prometheus-compliance/shadow/
+# traceql_shadow_test.go::traceqlInstantCases() (~20 hand-translated
+# cases). The shadow test runs the SAME 20 categories against a fake
+# in-process span set; this corpus runs the SAME categories against
+# real Tempo + real cerberus, fed by harness/.../driver/seeder.go's
+# deterministic OTLP push.
+#
+# Seeder fixture shape (see seeder.go):
+#   * 4 services: checkout, payments, search, shipping
+#   * 25 traces per service (100 traces total)
+#   * Each trace: 1 root span (Server, "GET /api/<svc>/<idx>", 150ms)
+#     + 2-4 children (rotating kinds, every 5th child = ERROR)
+#   * Resource attrs: service.name, deployment.env="compat-test",
+#     telemetry.sdk="cerberus-tempo-compat-seeder", trace.fixture="pr3"
+#   * Span attrs (root): http.method=GET, http.target=/api/<svc>/<idx>,
+#     trace.index=<idx>
+#   * Span attrs (child): child.index, kind
+#   * Status: Ok (default), Error for every 5th child
+#   * Anchor: 2026-05-11T00:00:00Z; each trace shifted by (svcIdx*25 +
+#     traceIdx) seconds — last trace lands ~400s after anchor
+#
+# Diff strategy reminder (see differ.go top-of-file):
+#   * Trace IDs are canonicalised via H(rootServiceName||rootTraceName)
+#     so cerberus's currently-synthetic TraceID doesn't false-positive.
+#   * Numeric fields compare under 1e-9 relative epsilon.
+#   * Cardinality is reported as a reason but every key-level miss is
+#     also surfaced under missing_in_a / missing_in_b.
+#
+# Cases below cover the 7 shadow categories: attribute matchers per
+# scope (5), intrinsics (4), structural ops (4), set ops (3), inner
+# aggregates (2), and metrics pipeline (2). PR 5 will flip the metrics
+# pipeline cases from `skip_reason` to active.
+
+# --- Attribute matchers per scope (5) ---
+
+-- name --
+resource_service_name_eq_checkout
+-- query --
+{ resource.service.name = "checkout" }
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+200
+-- expected_services --
+checkout
+
+-- name --
+resource_service_name_neq_checkout
+-- query --
+{ resource.service.name != "checkout" }
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+200
+
+-- name --
+resource_service_name_regex_shipping
+-- query --
+{ resource.service.name =~ "ship.*" }
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+200
+-- expected_services --
+shipping
+
+-- name --
+resource_deployment_env_eq_compat_test
+-- query --
+{ resource.deployment.env = "compat-test" }
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+500
+
+-- name --
+span_http_method_eq_get
+-- query --
+{ span.http.method = "GET" }
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+500
+
+# --- Intrinsics (4) ---
+
+-- name --
+duration_gt_100ms
+-- query --
+{ duration > 100ms }
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+500
+
+-- name --
+duration_lt_300ms
+-- query --
+{ duration < 300ms }
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+500
+
+-- name --
+kind_eq_server
+-- query --
+{ kind = server }
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+500
+
+-- name --
+status_eq_error
+-- query --
+{ status = error }
+-- endpoint --
+search
+# Every 5th child reports error; ~80 error spans across the fixture.
+-- expected_min_traces --
+1
+-- expected_max_traces --
+500
+
+# --- Structural ops (4) ---
+
+-- name --
+descendant_op_payments_to_consumer
+-- query --
+{ resource.service.name = "payments" } > { kind = consumer }
+-- endpoint --
+search
+-- expected_min_traces --
+0
+-- expected_max_traces --
+500
+
+-- name --
+ancestor_op_consumer_under_payments
+-- query --
+{ kind = consumer } < { resource.service.name = "payments" }
+-- endpoint --
+search
+-- expected_min_traces --
+0
+-- expected_max_traces --
+500
+
+-- name --
+direct_parent_op_checkout_to_child
+-- query --
+{ resource.service.name = "checkout" } >> { kind = client }
+-- endpoint --
+search
+-- expected_min_traces --
+0
+-- expected_max_traces --
+500
+
+-- name --
+direct_child_op_client_under_checkout
+-- query --
+{ kind = client } << { resource.service.name = "checkout" }
+-- endpoint --
+search
+-- expected_min_traces --
+0
+-- expected_max_traces --
+500
+
+# --- Set ops (3) ---
+
+-- name --
+set_and_checkout_and_status_error
+-- query --
+{ resource.service.name = "checkout" && status = error }
+-- endpoint --
+search
+-- expected_min_traces --
+0
+-- expected_max_traces --
+500
+
+-- name --
+set_or_two_services
+-- query --
+{ resource.service.name = "checkout" } || { resource.service.name = "payments" }
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+500
+
+-- name --
+set_or_two_kinds
+-- query --
+{ kind = server } || { kind = internal }
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+500
+
+# --- Inner aggregates (2) ---
+# Inner aggregations run through /api/search today (no metrics
+# endpoint required); they're listed as a separate category because
+# the wire shape is the same SearchResponse envelope but the row
+# semantics differ (group-by-trace vs per-span).
+
+-- name --
+count_spans_per_trace
+-- query --
+{ resource.service.name =~ ".+" } | count() > 0
+-- endpoint --
+search
+-- expected_min_traces --
+0
+-- expected_max_traces --
+500
+
+-- name --
+avg_duration_per_trace_status_ok
+-- query --
+{ status = ok } | avg(duration) > 0
+-- endpoint --
+search
+-- expected_min_traces --
+0
+-- expected_max_traces --
+500
+
+# --- MetricsPipeline (2) — DEFERRED to PR 5 ---
+# These are wire-shape-different from /api/search (they hit
+# /api/metrics/query_range and return Prom-shape series). Listed here
+# so the smoke set documents the eventual full coverage map; the
+# differ skips them by checking SkipReason.
+
+-- name --
+metrics_rate_over_status_error
+-- query --
+{ status = error } | rate()
+-- endpoint --
+search
+-- skip_reason --
+metrics endpoint — lands in PR 5 (docs/tempo-compliance-plan.md)
+
+-- name --
+metrics_quantile_p95_duration
+-- query --
+{ duration > 0 } | quantile_over_time(duration, .95)
+-- endpoint --
+search
+-- skip_reason --
+metrics endpoint — lands in PR 5 (docs/tempo-compliance-plan.md)
+
+# --- Per-id smoke (1) ---
+# Doesn't map back to a shadow case (the shadow tests evaluate against
+# a synthetic in-process span set, never against /api/traces/<id>).
+# Lifted from the seeder's smoke step: PR 3 confirmed both backends
+# resolve the first checkout/0 trace; PR 4 reuses that wiring as a
+# distinct corpus shape so the differ exercises both /api/search and
+# /api/traces/<id> code paths in one run.
+
+-- name --
+trace_by_id_first_checkout
+-- query --
+{ }
+-- endpoint --
+traces
+-- traceid_template --
+checkout/0

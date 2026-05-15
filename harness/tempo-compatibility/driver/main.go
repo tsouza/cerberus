@@ -3,16 +3,19 @@
 // stack has a single binary with a stable flag surface; behaviour is
 // selected via the first positional argument (the "subcommand"):
 //
-//   - `seed`    (PR 3 — this PR) writes the same deterministic OTLP
-//     batch to the reference Tempo (via OTLP gRPC :4317) and to
-//     ClickHouse's `otel_traces` table (the read path cerberus uses to
-//     answer Tempo HTTP queries). After both writes complete it polls
+//   - `seed`    (PR 3) writes the same deterministic OTLP batch to
+//     the reference Tempo (via OTLP gRPC :4317) and to ClickHouse's
+//     `otel_traces` table (the read path cerberus uses to answer Tempo
+//     HTTP queries). After both writes complete it polls
 //     `/api/traces/<first-id>` on both backends and reports the per-
-//     backend span count. The PR-3 contract is: stack comes up, seed
+//     backend span count. The contract is: stack comes up, seed
 //     pushes to both targets, the smoke trace-id resolves on both.
-//   - `diff`    (PR 4 — pending) will run the TraceQL corpus through
-//     both backends and emit a markdown report. The subcommand is
-//     not implemented yet; invoking it exits with rc=2.
+//   - `diff`    (PR 4 — this PR) reads a TXTAR corpus, runs every
+//     TraceQL query through both backends via /api/search (and
+//     /api/traces/<id> for the per-id smoke cases), applies per-side
+//     assertions, computes the structural diff, and emits a markdown
+//     report under /reports/. Returns 0 (informational baseline) by
+//     default; pass --fail-on-diff to make any diff non-zero.
 //
 // The two-way "OTLP into Tempo, INSERT into CH" split is documented in
 // docs/tempo-compliance-plan.md's "Open question 1": cerberus is
@@ -38,7 +41,7 @@ import (
 
 // version is stamped on driver output so a reader scanning CI logs can
 // tell at a glance which PR's behaviour they're looking at.
-const version = "pr3-seeder"
+const version = "pr4-differ"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -55,8 +58,10 @@ func main() {
 			os.Exit(1)
 		}
 	case "diff":
-		fmt.Fprintln(os.Stderr, "tempo-compat-driver diff: not implemented yet — lands in PR 4")
-		os.Exit(2)
+		if err := runDiff(args); err != nil {
+			fmt.Fprintf(os.Stderr, "tempo-compat-driver diff: %v\n", err)
+			os.Exit(1)
+		}
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -78,6 +83,8 @@ subcommands:
           equivalent rows into ClickHouse otel_traces; smoke-poll
           /api/traces/<id> on both backends.
   diff    run the TraceQL corpus through both backends, emit a
-          markdown diff report. (PR 4 — not implemented yet)
+          markdown diff report under /reports/. Default exit code is
+          0 (informational); pass --fail-on-diff to bubble per-case
+          regressions up to a non-zero rc.
 `, version)
 }
