@@ -220,6 +220,180 @@ func TestSearchTagsV2_ScopePartition(t *testing.T) {
 	}
 }
 
+// TestSearchTagsV2_ScopeFilter — the `?scope=` query parameter on
+// /api/v2/search/tags must restrict the response to the requested
+// bucket. Mirrors upstream Tempo's pkg/api.ParseSearchTagsRequest
+// semantics (resource / span / intrinsic / none-or-empty / "all" alias).
+// Before this fix the handler silently emitted every scope, so
+// Grafana's per-scope autocomplete iterated over irrelevant keys.
+func TestSearchTagsV2_ScopeFilter(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name       string
+		query      string
+		wantScopes []string
+		// wantTag is one tag the response *must* contain; absent means
+		// "no positive-content assertion, just the scope partition
+		// matters".
+		wantTag string
+	}{
+		{name: "resource_only", query: "?scope=resource", wantScopes: []string{"resource"}, wantTag: "service.name"},
+		{name: "span_only", query: "?scope=span", wantScopes: []string{"span"}, wantTag: "http.method"},
+		{name: "intrinsic_only", query: "?scope=intrinsic", wantScopes: []string{"intrinsic"}, wantTag: "name"},
+		{name: "none_default", query: "", wantScopes: []string{"resource", "span", "intrinsic"}},
+		{name: "none_explicit", query: "?scope=none", wantScopes: []string{"resource", "span", "intrinsic"}},
+		{name: "all_alias", query: "?scope=all", wantScopes: []string{"resource", "span", "intrinsic"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			q := &stubQuerier{stringsBySQL: map[string][]string{
+				"`ResourceAttributes`": {"service.name"},
+				"`SpanAttributes`":     {"http.method"},
+			}}
+			srv := newServer(q, "v1.0.0-test")
+			t.Cleanup(srv.Close)
+
+			resp, err := http.Get(srv.URL + "/api/v2/search/tags" + tc.query)
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status=%d body=%s", resp.StatusCode, readBody(t, resp))
+			}
+			var body tempo.SearchTagsResponseV2
+			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+
+			gotNames := make([]string, 0, len(body.Scopes))
+			gotByName := map[string][]string{}
+			for _, s := range body.Scopes {
+				gotNames = append(gotNames, s.Name)
+				gotByName[s.Name] = s.Tags
+			}
+			if len(gotNames) != len(tc.wantScopes) {
+				t.Fatalf("scope buckets=%v want=%v", gotNames, tc.wantScopes)
+			}
+			for _, want := range tc.wantScopes {
+				if _, ok := gotByName[want]; !ok {
+					t.Errorf("missing scope %q in %v", want, gotNames)
+				}
+			}
+			if tc.wantTag != "" {
+				// The single requested scope must carry the canary tag.
+				bucket := tc.wantScopes[0]
+				if !contains(gotByName[bucket], tc.wantTag) {
+					t.Errorf("scope %q missing %q: %+v", bucket, tc.wantTag, gotByName[bucket])
+				}
+			}
+		})
+	}
+}
+
+// TestSearchTagsV2_InvalidScope — anything outside the upstream
+// allowlist must surface as a 400 with the Tempo error envelope, so
+// clients see the same shape they would hitting reference Tempo.
+func TestSearchTagsV2_InvalidScope(t *testing.T) {
+	t.Parallel()
+	q := &stubQuerier{}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/v2/search/tags?scope=bogus")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status=%d want 400 body=%s", resp.StatusCode, readBody(t, resp))
+	}
+	var er tempo.ErrorResponse
+	if err := json.NewDecoder(resp.Body).Decode(&er); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !er.Error {
+		t.Errorf("expected error=true, got %+v", er)
+	}
+	if !strings.Contains(er.Message, "invalid scope") {
+		t.Errorf("expected error message to mention %q, got %q", "invalid scope", er.Message)
+	}
+}
+
+// TestSearchTagsV2_ScopeSkipsCH — when the caller asks for `scope=intrinsic`
+// the handler must NOT issue the resource / span CH lookups. Pins the
+// no-extra-roundtrips behaviour so future refactors can't quietly
+// regress to always-fetch-all.
+func TestSearchTagsV2_ScopeSkipsCH(t *testing.T) {
+	t.Parallel()
+	q := &stubQuerier{stringsBySQL: map[string][]string{
+		"`ResourceAttributes`": {"resource.should.not.appear"},
+		"`SpanAttributes`":     {"span.should.not.appear"},
+	}}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/v2/search/tags?scope=intrinsic")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+	if q.lastSQL != "" {
+		t.Errorf("intrinsic-only request must not hit CH, got SQL=%q", q.lastSQL)
+	}
+}
+
+// TestSearchTags_V1ScopeFilter — V1 mirrors V2's parsing: invalid
+// scopes still 400, and `scope=intrinsic` collapses the envelope to
+// just the static intrinsic list (no CH fetches).
+func TestSearchTags_V1ScopeFilter(t *testing.T) {
+	t.Parallel()
+	t.Run("intrinsic_only", func(t *testing.T) {
+		t.Parallel()
+		q := &stubQuerier{stringsBySQL: map[string][]string{
+			"`ResourceAttributes`": {"resource.should.not.appear"},
+			"`SpanAttributes`":     {"span.should.not.appear"},
+		}}
+		srv := newServer(q, "v1.0.0-test")
+		t.Cleanup(srv.Close)
+
+		resp, err := http.Get(srv.URL + "/api/search/tags?scope=intrinsic")
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		defer resp.Body.Close()
+		var body tempo.SearchTagsResponse
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if contains(body.TagNames, "resource.should.not.appear") {
+			t.Errorf("intrinsic-only V1 envelope leaked resource tag: %v", body.TagNames)
+		}
+		if !contains(body.TagNames, "name") {
+			t.Errorf("intrinsic-only V1 envelope missing intrinsic %q: %v", "name", body.TagNames)
+		}
+	})
+	t.Run("invalid", func(t *testing.T) {
+		t.Parallel()
+		q := &stubQuerier{}
+		srv := newServer(q, "v1.0.0-test")
+		t.Cleanup(srv.Close)
+
+		resp, err := http.Get(srv.URL + "/api/search/tags?scope=bogus")
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("status=%d want 400", resp.StatusCode)
+		}
+	})
+}
+
 // contains is a small helper so test failures point at the missing
 // string rather than dumping the whole slice diff.
 func contains(haystack []string, needle string) bool {

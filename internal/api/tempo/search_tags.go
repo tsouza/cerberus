@@ -52,6 +52,26 @@ type TagScope struct {
 	Tags []string `json:"tags"`
 }
 
+// scope query-param values accepted by /api/v2/search/tags. Mirrors
+// upstream Tempo's `pkg/api.ParseSearchTagsRequest` semantics:
+//
+//   - "resource"  → only the resource scope bucket
+//   - "span"      → only the span scope bucket
+//   - "intrinsic" → only the intrinsic bucket
+//   - "none" or "" → every scope (default; matches AttributeScopeNone)
+//
+// Anything else is a 400. We accept "all" as a friendly alias for the
+// default — upstream Tempo doesn't define it, but the parameter is
+// otherwise free-form to clients and "all" is the obvious user
+// intuition for "give me everything", so we let it through.
+const (
+	tagScopeResource  = "resource"
+	tagScopeSpan      = "span"
+	tagScopeIntrinsic = "intrinsic"
+	tagScopeNone      = "none"
+	tagScopeAll       = "all"
+)
+
 // handleSearchTags implements `GET /api/search/tags`. Returns the union
 // of every dynamic attribute key (span + resource maps) plus the static
 // intrinsic-span list, sorted ascending. Honours optional `start`/`end`
@@ -83,6 +103,12 @@ func (h *Handler) handleSearchTagsV2(w http.ResponseWriter, r *http.Request) {
 // respondTags is the shared core of V1 + V2: it runs two independent
 // CH lookups (one per attribute map) so the V2 response can keep the
 // resource-vs-span split, then unions them for the V1 envelope.
+//
+// The optional `?scope=` query parameter filters which buckets are
+// fetched and returned. Honouring it on V2 was missing before — the
+// handler emitted every scope regardless of what the client asked for,
+// which made Grafana's per-scope autocomplete iterate over irrelevant
+// keys.
 func (h *Handler) respondTags(w http.ResponseWriter, r *http.Request, v2 bool) {
 	start, end, err := parseTempoStartEnd(r)
 	if err != nil {
@@ -90,36 +116,77 @@ func (h *Handler) respondTags(w http.ResponseWriter, r *http.Request, v2 bool) {
 		return
 	}
 
-	resourceTags, err := h.fetchTagKeys(r.Context(), h.Schema.ResourceAttributesColumn, start, end)
+	scope, err := parseTagScope(r.URL.Query().Get("scope"))
 	if err != nil {
-		h.Logger.Error("cerberus tempo /search/tags resource CH query failed", "err", err)
-		writeError(w, http.StatusBadGateway, "", "", err)
-		return
-	}
-	spanTags, err := h.fetchTagKeys(r.Context(), h.Schema.AttributesColumn, start, end)
-	if err != nil {
-		h.Logger.Error("cerberus tempo /search/tags span CH query failed", "err", err)
-		writeError(w, http.StatusBadGateway, "", "", err)
+		writeError(w, http.StatusBadRequest, "", "", err)
 		return
 	}
 
+	var resourceTags, spanTags []string
+	if scope == tagScopeNone || scope == tagScopeResource {
+		resourceTags, err = h.fetchTagKeys(r.Context(), h.Schema.ResourceAttributesColumn, start, end)
+		if err != nil {
+			h.Logger.Error("cerberus tempo /search/tags resource CH query failed", "err", err)
+			writeError(w, http.StatusBadGateway, "", "", err)
+			return
+		}
+	}
+	if scope == tagScopeNone || scope == tagScopeSpan {
+		spanTags, err = h.fetchTagKeys(r.Context(), h.Schema.AttributesColumn, start, end)
+		if err != nil {
+			h.Logger.Error("cerberus tempo /search/tags span CH query failed", "err", err)
+			writeError(w, http.StatusBadGateway, "", "", err)
+			return
+		}
+	}
+
 	if v2 {
-		writeJSON(w, http.StatusOK, SearchTagsResponseV2{
-			Scopes: []TagScope{
-				{Name: "resource", Tags: sortedUnique(resourceTags)},
-				{Name: "span", Tags: sortedUnique(spanTags)},
-				{Name: "intrinsic", Tags: append([]string(nil), intrinsicTags...)},
-			},
-		})
+		scopes := make([]TagScope, 0, 3)
+		if scope == tagScopeNone || scope == tagScopeResource {
+			scopes = append(scopes, TagScope{Name: tagScopeResource, Tags: sortedUnique(resourceTags)})
+		}
+		if scope == tagScopeNone || scope == tagScopeSpan {
+			scopes = append(scopes, TagScope{Name: tagScopeSpan, Tags: sortedUnique(spanTags)})
+		}
+		if scope == tagScopeNone || scope == tagScopeIntrinsic {
+			scopes = append(scopes, TagScope{Name: tagScopeIntrinsic, Tags: append([]string(nil), intrinsicTags...)})
+		}
+		writeJSON(w, http.StatusOK, SearchTagsResponseV2{Scopes: scopes})
 		return
 	}
 
 	all := make([]string, 0, len(resourceTags)+len(spanTags)+len(intrinsicTags))
 	all = append(all, resourceTags...)
 	all = append(all, spanTags...)
-	all = append(all, intrinsicTags...)
+	if scope == tagScopeNone || scope == tagScopeIntrinsic {
+		all = append(all, intrinsicTags...)
+	}
 	writeJSON(w, http.StatusOK, SearchTagsResponse{TagNames: sortedUnique(all)})
 }
+
+// parseTagScope normalises the `?scope=` query parameter against the
+// upstream Tempo allowlist. Returns the canonical scope keyword the
+// rest of the handler branches on, or an error suitable for a 400. The
+// empty string and the literal "none" both collapse to "none" (= every
+// scope, matching upstream's AttributeScopeNone). "all" is accepted as
+// a synonym for "none" because it's the obvious user intuition; every
+// other value is rejected with the same shape upstream Tempo uses.
+func parseTagScope(raw string) (string, error) {
+	switch raw {
+	case "", tagScopeNone, tagScopeAll:
+		return tagScopeNone, nil
+	case tagScopeResource, tagScopeSpan, tagScopeIntrinsic:
+		return raw, nil
+	default:
+		return "", &tagScopeError{raw: raw}
+	}
+}
+
+// tagScopeError carries the rejected scope value into writeError so the
+// 400 body matches upstream Tempo's `invalid scope: <v>` phrasing.
+type tagScopeError struct{ raw string }
+
+func (e *tagScopeError) Error() string { return "invalid scope: " + e.raw }
 
 // fetchTagKeys runs the mapKeys-distinct lookup for a single attribute
 // map column. Splitting into two queries (rather than one with
