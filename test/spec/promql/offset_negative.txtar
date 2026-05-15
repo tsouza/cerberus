@@ -1,0 +1,33 @@
+# `metric offset -5m` over query_range — exercise the range-mode LWR path
+# (wrapRangeLatestPerSeries) with a negative `offset` modifier. Prom
+# semantics: negative offset shifts the lookback window FORWARD in time
+# (evaluating at `t - (-5m) = t + 5m`). Pre-fix, the
+# `if anchor.Offset > 0` guard in internal/promql/lower.go silently
+# zeroed the negative-offset subtract on the upper bound, leaving the
+# window pinned to `(anchor - lookback, anchor]` and returning no
+# samples for the forward-shifted compat queries.
+#
+# Post-fix, both bounds carry the offset subtract; `Offset != 0` so
+# zero-offset queries stay byte-stable while signed offsets render
+# correctly (CH interval arithmetic flips the sign:
+# `anchor - toIntervalNanosecond(-300_000_000_000)` renders as
+# `anchor + 5m`). Bucket 7 from
+# docs/compat-residual-audit-25898791664.md (2 diffs).
+-- query.promql --
+demo_memory_usage_bytes offset -5m
+-- range_step --
+1m
+-- args --
+[0] string = "demo_memory_usage_bytes"
+[1] int64 = -300000000000
+[2] int64 = 0
+-- chplan --
+Project [MetricName AS MetricName, Attributes AS Attributes, anchor_ts AS TimeUnix, lwr_value AS Value]
+  Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes, anchor_ts AS anchor_ts] funcs=[argMax(Value, TimeUnix) AS lwr_value]
+    Filter predicate=((TimeUnix <= (anchor_ts - toIntervalNanosecond(-300000000000))) AND (TimeUnix > (anchor_ts - toIntervalNanosecond(0))))
+      CrossJoin
+        StepGrid start=2026-01-01T00:00:00.000000000Z end=2026-01-01T00:05:00.000000000Z step=1m0s
+        Filter predicate=(MetricName = "demo_memory_usage_bytes")
+          Scan(otel_metrics_gauge)
+-- sql --
+SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `anchor_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `anchor_ts` AS `anchor_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT * FROM (SELECT arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:00:00.000000000', 9) + toIntervalNanosecond(i * 60000000000), range(0, 6))) AS `anchor_ts`) AS L CROSS JOIN (SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` = ?)) AS R) WHERE ((`TimeUnix` <= (`anchor_ts` - toIntervalNanosecond(?))) AND (`TimeUnix` > (`anchor_ts` - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`, `anchor_ts`)

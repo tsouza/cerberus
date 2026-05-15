@@ -1,0 +1,47 @@
+# `label_replace(metric, "dst", "value-$1", "nonexistent-src", "(.*)")`
+# — Prom semantics treat a missing source label as the empty string, so
+# the regex `(.*)` matches `""` (empty match), capture group $1 binds
+# to `""`, and the dst label is set to the substituted replacement
+# (literal `value-` + empty $1 = `value-`). Cerberus drops the row's
+# dst label entirely pre-fix; the outer `mapFilter((k, v) -> v != '',
+# ...)` was keying off the same closed-over expression as the if-branch
+# rather than the post-mapUpdate Map, so the freshly-added dst entry
+# never survived the filter pass.
+#
+# Bucket 8 from docs/compat-residual-audit-25898791664.md (1 diff).
+-- query.promql --
+label_replace(temperature, "dst", "value-$1", "nonexistent-src", "(.*)")
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('temperature', map('host', 'a'), toDateTime64('2026-01-01 00:00:00', 9), 22.5);
+-- expected_rows --
+[
+  ["temperature", {"host": "a", "dst": "value-"}, "2026-01-01T00:00:00Z", 22.5]
+]
+-- args --
+[0] string = "nonexistent-src"
+[1] string = "^(.*)$"
+[2] string = "dst"
+[3] string = "nonexistent-src"
+[4] string = "^(.*)$"
+[5] string = "value-\\1"
+[6] string = "temperature"
+[7] string = "2026-01-01 00:00:01.000000000"
+[8] int64 = 9
+[9] string = "2026-01-01 00:00:01.000000000"
+[10] int64 = 9
+[11] int64 = 300000000000
+-- chplan --
+Project [MetricName, labelReplace(Attributes, dst="dst", replacement="value-\\1", src="nonexistent-src", regex="(.*)") AS Attributes, TimeUnix, Value]
+  Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
+    Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
+      Filter predicate=(((MetricName = "temperature") AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+        Scan(otel_metrics_gauge)
+-- sql --
+SELECT `MetricName`, mapFilter((k, v) -> v != '', if(match(`Attributes`[?], ?), mapUpdate(`Attributes`, map(?, replaceRegexpOne(`Attributes`[?], ?, ?))), `Attributes`)) AS `Attributes`, `TimeUnix`, `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_gauge` PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`))

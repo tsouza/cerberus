@@ -293,7 +293,14 @@ func wrapRangeLatestPerSeries(scan *chplan.Scan, pred chplan.Expr, anchor evalAn
 	// anchor (i.e., the user's intent is preserved when they don't pin
 	// the absolute @ modifier).
 	var upperBound chplan.Expr = anchorRef
-	if anchor.Offset > 0 {
+	// Negative offsets shift the lookback window FORWARD in time relative
+	// to each step's anchor (Prom evaluates `metric offset -5m` at
+	// `t - (-5m) = t + 5m`). The subtraction below handles the sign
+	// correctly — `anchor_ts - toIntervalNanosecond(-300_000_000_000)`
+	// renders as `anchor_ts + 5m` per CH interval arithmetic. The
+	// guard checks `!= 0` rather than `> 0` so the negative case isn't
+	// silently zeroed.
+	if anchor.Offset != 0 {
 		upperBound = &chplan.Binary{
 			Op:   chplan.OpSub,
 			Left: anchorRef,

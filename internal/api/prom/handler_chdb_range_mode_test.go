@@ -453,6 +453,51 @@ func TestQueryRange_RangeMode_LabelReplace_NonMatchingRegex_ChDB(t *testing.T) {
 	}
 }
 
+// TestQueryRange_RangeMode_LabelReplace_MissingSrc_ChDB pins
+// `label_replace(v, dst, "value-$1", "<missing-src>", "(.*)")` over
+// query_range. Prom semantics treat the missing source label as the
+// empty string; the regex `(.*)` matches `""` → $1 = `""` →
+// replacement renders as `value-`. The dst label is set to `value-`
+// (non-empty, so the `mapFilter((k, v) -> v != '', ...)` outer-most
+// drop pass keeps it).
+//
+// Bucket 8 from docs/compat-residual-audit-25898791664.md. Pre-fix
+// the compat lane reported `job` as absent on cerberus while Prom
+// emitted `job="value-"`; this test pins the post-fix behaviour so
+// the regression can't silently recur.
+func TestQueryRange_RangeMode_LabelReplace_MissingSrc_ChDB(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(5 * time.Minute)
+	step := 30 * time.Second
+	const seedSamples = 11
+
+	seedRows := make([]string, 0, seedSamples)
+	for i := 0; i < seedSamples; i++ {
+		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
+		seedRows = append(seedRows, fmt.Sprintf(
+			`('demo_num_cpus', map('instance', 'demo.promlabs.com:10000', 'job', 'demo'), toDateTime64('%s', 9), 4.0)`,
+			ts,
+		))
+	}
+	seed := gaugeDDL + "\nINSERT INTO otel_metrics_gauge VALUES\n  " +
+		strings.Join(seedRows, ",\n  ") + ";"
+	srv, _ := newChDBServer(t, seed)
+
+	query := `label_replace(demo_num_cpus, "job", "value-$1", "nonexistent-src", "(.*)")`
+	matrix := runRangeModeQueryRange(t, srv.URL, query, start, end, step)
+	if len(matrix) != 1 {
+		t.Fatalf("expected exactly 1 series, got %d: %+v", len(matrix), matrix)
+	}
+	// Missing src → empty match → $1 = "" → dst="value-" (non-empty).
+	if got := matrix[0].Metric["job"]; got != "value-" {
+		t.Errorf("job: got %q, want %q (full metric: %+v)", got, "value-", matrix[0].Metric)
+	}
+	if got := matrix[0].Metric["instance"]; got != "demo.promlabs.com:10000" {
+		t.Errorf("instance: got %q, want %q (full metric: %+v)",
+			got, "demo.promlabs.com:10000", matrix[0].Metric)
+	}
+}
+
 // TestQueryRange_RangeMode_QuantileOverTime_ChDB pins
 // `quantile_over_time(phi, metric[range])` under query_range. The
 // `quantile_over_time` lowering routes through `lowerQuantileOverTime`

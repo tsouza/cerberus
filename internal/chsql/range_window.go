@@ -488,11 +488,14 @@ func (e *emitter) emitWindowedArrayPairsMatrix(r *chplan.RangeWindow, valueWrite
 
 // endExprFrag returns a Frag rendering `<End> [- toIntervalNanosecond(<offset>)]`.
 // Shared by every windowed-array emitter; centralises the Offset
-// branch.
+// branch. `r.Offset != 0` so a negative offset (Prom's forward-shift
+// form, `rate(metric[range] offset -5m)`) still emits the subtract —
+// CH interval arithmetic renders `End - toIntervalNanosecond(-N)` as
+// `End + N` so the window shifts forward into the future correctly.
 func endExprFrag(r *chplan.RangeWindow) Frag {
 	return func(b *Builder) {
 		base := timeOrNowFrag(r.End)
-		if r.Offset > 0 {
+		if r.Offset != 0 {
 			b.sb.WriteByte('(')
 			base(b)
 			b.sb.WriteString(" - toIntervalNanosecond(")
