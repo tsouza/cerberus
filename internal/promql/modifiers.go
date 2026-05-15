@@ -98,7 +98,11 @@ func hasModifier(vs *parser.VectorSelector) bool {
 func timeBoundExpr(col string, a evalAnchor) chplan.Expr {
 	base := anchorBaseExpr(a)
 	bound := base
-	if a.Offset > 0 {
+	// `a.Offset != 0` so a negative offset (Prom's forward-shift form,
+	// `metric offset -5m` evaluates at `t - (-5m) = t + 5m`) still
+	// emits the subtract — CH interval arithmetic flips the sign for us
+	// and renders `anchor - toIntervalNanosecond(-N)` as `anchor + N`.
+	if a.Offset != 0 {
 		bound = &chplan.Binary{
 			Op:   chplan.OpSub,
 			Left: base,
