@@ -1082,6 +1082,161 @@ func TestQueryRange_RangeMode_HistogramQuantileClassic_ChDB(t *testing.T) {
 	}
 }
 
+// expHistogramDDL is the OTel-CH exp-histogram-shaped table the
+// chDB-backed Phase-2 native-aggregated regression tests seed before
+// exercising `histogram_quantile(phi, sum by(le)(rate(<exp_hist>[r])))`.
+// Mirrors `histogramDDL`'s minimal-but-MergeTree shape so the chsql
+// emitter's PREWHERE promotion path runs end-to-end against ClickHouse
+// semantics (Memory engine rejects PREWHERE).
+const expHistogramDDL = `CREATE TABLE otel_metrics_exp_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Scale Int32,
+    ZeroCount UInt64,
+    ZeroThreshold Float64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree() ORDER BY (MetricName, TimeUnix);`
+
+// TestQuery_HistogramQuantileNativeAgg_ChDB pins
+// `histogram_quantile(phi, sum by(le)(rate(<sel>_exp_hist[r])))` over
+// `/api/v1/query` against the OTel-CH exp-histogram table. Phase 2 of
+// docs/native-histogram-plan.md replaced the stub-rejection error with
+// a real lowering: an aggregate that collects per-row exp-histogram
+// fields into groupArrays + a wrapping Project that does the
+// scale-fold + offset-align + zero-pad + element-wise sum, before
+// HistogramQuantileNative walks the merged distribution.
+//
+// Seed: two series sharing Scale=0 with parallel positive bucket
+// arrays [1,2,3] and [3,4,3], both at PositiveOffset=0 → merged
+// distribution [4, 6, 6] (total 16). For phi=0.95 the cum array
+// (prefixed with ZeroCount=0) is [0, 4, 10, 16]; the target value
+// 0.95 * 16 = 15.2 lands in the third positive bucket, log-linear
+// interpolation yields 2^(0 + 2 + (15.2-10)/(16-10)) ≈ 7.2938.
+//
+// Range-mode (`/api/v1/query_range`) for the native path collapses to
+// instant-mode behaviour until Phase 3 wires the per-step anchor
+// grid; the instant endpoint is the meaningful Phase 2 contract.
+func TestQuery_HistogramQuantileNativeAgg_ChDB(t *testing.T) {
+	evalTS := time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC)
+	seedTS := evalTS.Add(-time.Second).Format("2006-01-02 15:04:05.000000000")
+	seed := expHistogramDDL + fmt.Sprintf(`
+INSERT INTO otel_metrics_exp_histogram VALUES
+    ('http_server_duration_exp_hist', map('service', 'api'), toDateTime64('%s', 9), 0, 0, 0.0, 0, [1, 2, 3], 0, []),
+    ('http_server_duration_exp_hist', map('service', 'web'), toDateTime64('%s', 9), 0, 0, 0.0, 0, [3, 4, 3], 0, []);`,
+		seedTS, seedTS)
+	srv, _ := newChDBServer(t, seed)
+
+	q := "histogram_quantile(0.95, sum by(le)(rate(http_server_duration_exp_hist[5m])))"
+	reqURL := fmt.Sprintf("%s/api/v1/query?query=%s&time=%d",
+		srv.URL, url.QueryEscape(q), evalTS.Unix())
+	resp, err := http.Get(reqURL)
+	if err != nil {
+		t.Fatalf("GET %s: %v", reqURL, err)
+	}
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+	}
+	var parsed queryResponse
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v\nbody=%s", err, body)
+	}
+	if parsed.Status != "success" {
+		t.Fatalf("status: got %q (errorType=%q error=%q), want success",
+			parsed.Status, parsed.ErrorType, parsed.Error)
+	}
+	if parsed.Data.ResultType != "vector" {
+		t.Fatalf("resultType: got %q, want vector", parsed.Data.ResultType)
+	}
+	rawResult, _ := json.Marshal(parsed.Data.Result)
+	var vec []prom.VectorSample
+	if err := json.Unmarshal(rawResult, &vec); err != nil {
+		t.Fatalf("decode vector: %v (raw=%s)", err, rawResult)
+	}
+	// `sum by(le)(...)` collapses to a single group after dropping `le`
+	// (cerberus's exp histograms have no per-bucket `le` label — the
+	// bucket distribution lives in PositiveBucketCounts arrays).
+	if len(vec) != 1 {
+		t.Fatalf("expected exactly 1 series (sum by(le) collapses to a single group), got %d: %+v",
+			len(vec), vec)
+	}
+	gotValue, _ := strconv.ParseFloat(fmt.Sprintf("%v", vec[0].Value[1]), 64)
+	// 2^(0 + 2 + (15.2-10)/(16-10)) = 2^(2.866…) ≈ 7.29378.
+	const wantValue = 7.293779908465734
+	const epsilon = 1e-9
+	if got, want := gotValue, wantValue; got < want-epsilon || got > want+epsilon {
+		t.Errorf("histogram_quantile value: got %v, want %v (±%v)", got, want, epsilon)
+	}
+}
+
+// TestQuery_HistogramQuantileNativeAgg_MixedScale_ChDB pins the
+// scale-fold half of Phase 2: two series with different Scales merge
+// by downscaling the finer one to the coarser one before offset
+// alignment + element-wise sum. The merge mirrors Prometheus's
+// FloatHistogram.Add semantics (model/histogram/float_histogram.go:
+// reduceResolution + addBuckets).
+//
+// Seed: "fine" Scale=1, off=0, buckets=[1,2,3,4] (4 buckets at S=1).
+//       "coarse" Scale=0, off=0, buckets=[5,10] (2 buckets at S=0).
+// Downscale "fine" to S=0 via `targetIdx`: abs idx 0,1,2,3 at S=1 →
+//   abs idx 0,0,1,1 at S=0 → consolidated buckets [1+2, 3+4] = [3,7].
+// Merged at S=0: [3+5, 7+10] = [8, 17] at off=0; total = 25.
+// For phi=0.95: target = 23.75; cum = [0, 8, 25]; idx where cum >=
+// 23.75 is 3 → second positive bucket. value = 2^(0 + 1 + (23.75-8)/(25-8))
+// = 2^(1.9265) ≈ 3.80124.
+func TestQuery_HistogramQuantileNativeAgg_MixedScale_ChDB(t *testing.T) {
+	evalTS := time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC)
+	seedTS := evalTS.Add(-time.Second).Format("2006-01-02 15:04:05.000000000")
+	seed := expHistogramDDL + fmt.Sprintf(`
+INSERT INTO otel_metrics_exp_histogram VALUES
+    ('http_server_duration_exp_hist', map('series', 'fine'),   toDateTime64('%s', 9), 1, 0, 0.0, 0, [1, 2, 3, 4], 0, []),
+    ('http_server_duration_exp_hist', map('series', 'coarse'), toDateTime64('%s', 9), 0, 0, 0.0, 0, [5, 10],       0, []);`,
+		seedTS, seedTS)
+	srv, _ := newChDBServer(t, seed)
+
+	q := "histogram_quantile(0.95, sum by(le)(rate(http_server_duration_exp_hist[5m])))"
+	reqURL := fmt.Sprintf("%s/api/v1/query?query=%s&time=%d",
+		srv.URL, url.QueryEscape(q), evalTS.Unix())
+	resp, err := http.Get(reqURL)
+	if err != nil {
+		t.Fatalf("GET %s: %v", reqURL, err)
+	}
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+	}
+	var parsed queryResponse
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v\nbody=%s", err, body)
+	}
+	if parsed.Status != "success" {
+		t.Fatalf("status: got %q (errorType=%q error=%q), want success",
+			parsed.Status, parsed.ErrorType, parsed.Error)
+	}
+	if parsed.Data.ResultType != "vector" {
+		t.Fatalf("resultType: got %q, want vector", parsed.Data.ResultType)
+	}
+	rawResult, _ := json.Marshal(parsed.Data.Result)
+	var vec []prom.VectorSample
+	if err := json.Unmarshal(rawResult, &vec); err != nil {
+		t.Fatalf("decode vector: %v (raw=%s)", err, rawResult)
+	}
+	if len(vec) != 1 {
+		t.Fatalf("expected exactly 1 series, got %d: %+v", len(vec), vec)
+	}
+	gotValue, _ := strconv.ParseFloat(fmt.Sprintf("%v", vec[0].Value[1]), 64)
+	// 2^(0 + 1 + (23.75-8)/(25-8)) = 2^1.9265… ≈ 3.80124.
+	const wantValue = 3.801241244429467
+	const epsilon = 1e-9
+	if got, want := gotValue, wantValue; got < want-epsilon || got > want+epsilon {
+		t.Errorf("histogram_quantile value: got %v, want %v (±%v)", got, want, epsilon)
+	}
+}
+
 // TestQueryRange_RangeMode_VVOnCompare_ChDB pins the bare V-V
 // `on(...)` comparison binop family (==, !=, <, >, <=, >=) under
 // `/api/v1/query_range` — the no-`bool`-modifier sibling of
