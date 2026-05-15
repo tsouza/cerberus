@@ -1596,6 +1596,92 @@ func TestQueryRange_RangeMode_AtModifier_Collapse_ChDB(t *testing.T) {
 	}
 }
 
+// TestQueryRange_RangeMode_LastOverTime_PreservesName_ChDB pins
+// Prom's `dropName=false` semantics for `last_over_time` (and, by
+// symmetry, `first_over_time`) under `/api/v1/query_range`. Prom's
+// engine special-cases these two range functions out of the
+// `dropName` default for every other range-vector fn:
+//
+//	prometheus/prometheus@cerberus-parser/promql/engine.go:2114
+//	`dropName := (e.Func.Name != "last_over_time" && e.Func.Name != "first_over_time")`
+//
+// They're position-shift reducers (pick a single sample from the
+// window), so the emitted sample carries the source metric's name
+// — distinct from `rate`/`sum_over_time`/etc. which produce
+// genuinely derived samples and drop `__name__`.
+//
+// Pre-fix the bare-range-fn lowering emitted a RangeWindow whose
+// output schema is `(Attributes, [anchor_ts,] Value)` — MetricName
+// is dropped by the windowed-array GROUP BY Attributes. The HTTP
+// layer's `wrapWithSampleProjection` then classified the plan as
+// derived-shape and synthesised `LitString{""} AS MetricName`, so
+// the wire response omitted `__name__` for every
+// `last_over_time(metric[range])` query. The PromLabs compat lane
+// surfaced this as 6 diffs on `last_over_time(demo_memory_usage_bytes[1s|15s|1m|5m|15m|1h])`
+// (cerberus `Metric: {...}` vs Prom `Metric: demo_memory_usage_bytes{...}`)
+// in run 25901406046.
+//
+// The fix wraps the RangeWindow at lowering with a canonical
+// 4-column Project that pins MetricName to the matcher literal;
+// the HTTP-layer `projectionExposesCanonical` recognises the shape
+// and the literal flows through to `__name__` on the wire.
+func TestQueryRange_RangeMode_LastOverTime_PreservesName_ChDB(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(5 * time.Minute)
+	step := 30 * time.Second
+	const seedSamples = 11
+
+	seedRows := make([]string, 0, seedSamples)
+	for i := 0; i < seedSamples; i++ {
+		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
+		seedRows = append(seedRows, fmt.Sprintf(
+			`('demo_memory_usage_bytes', map('instance', 'demo', 'job', 'api'), toDateTime64('%s', 9), %d.0)`,
+			ts, 100+i,
+		))
+	}
+	seed := gaugeDDL + "\nINSERT INTO otel_metrics_gauge VALUES\n  " +
+		strings.Join(seedRows, ",\n  ") + ";"
+	srv, _ := newChDBServer(t, seed)
+
+	matrix := runRangeModeQueryRange(t, srv.URL,
+		"last_over_time(demo_memory_usage_bytes[5m])", start, end, step)
+	if len(matrix) != 1 {
+		t.Fatalf("expected exactly 1 series, got %d: %+v", len(matrix), matrix)
+	}
+	// `__name__` MUST be present and equal to the matcher literal —
+	// Prom's `dropName=false` for `last_over_time`. This is the
+	// regression contract: pre-fix, the matrix sample omitted
+	// `__name__` entirely (synthesised as `""`).
+	name, hasName := matrix[0].Metric["__name__"]
+	if !hasName {
+		t.Fatalf("expected __name__ on last_over_time output, got missing (full metric: %+v)",
+			matrix[0].Metric)
+	}
+	if name != "demo_memory_usage_bytes" {
+		t.Errorf("__name__: got %q, want %q (full metric: %+v)",
+			name, "demo_memory_usage_bytes", matrix[0].Metric)
+	}
+	// Series labels still flow through unchanged — `last_over_time`
+	// only drops samples outside the window; the label set is
+	// preserved (just like instant `metric` would).
+	if got := matrix[0].Metric["instance"]; got != "demo" {
+		t.Errorf("instance: got %q, want %q (full metric: %+v)",
+			got, "demo", matrix[0].Metric)
+	}
+	if got := matrix[0].Metric["job"]; got != "api" {
+		t.Errorf("job: got %q, want %q (full metric: %+v)",
+			got, "api", matrix[0].Metric)
+	}
+	// `last_over_time(metric[5m])` at each step anchor returns the
+	// latest sample within `(anchor - 5m, anchor]`. The seed has one
+	// sample per step at the step boundary, so each anchor's window
+	// terminates on a fresh sample whose value matches `100 + i`.
+	if got := len(matrix[0].Values); got < 5 {
+		t.Fatalf("expected per-step last_over_time matrix (>= 5 samples); got %d: %+v",
+			got, matrix[0].Values)
+	}
+}
+
 // runRangeModeQueryRange is the test helper shared across the Pool-AK
 // range-mode regression cases. Mirrors `runStepLoopRange` but lives
 // in this file so the Pool-AK suite is self-contained for any future

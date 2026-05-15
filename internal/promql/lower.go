@@ -756,7 +756,77 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 		rw.Step = ctx.step
 		rw.OuterRange = ctx.end.Sub(ctx.start)
 	}
+	// `last_over_time` and `first_over_time` preserve `__name__`
+	// per Prometheus semantics — they're position-shift reducers that
+	// pick a single sample from the window, so the emitted sample carries
+	// the source metric's name. Every other range-vector fn (rate,
+	// increase, delta, sum_over_time, ...) produces a derived sample
+	// and Prom drops `__name__` for them. See upstream:
+	//
+	//	prometheus/prometheus@cerberus-parser/promql/engine.go:2114
+	//	`dropName := (e.Func.Name != "last_over_time" && e.Func.Name != "first_over_time")`
+	//
+	// The RangeWindow output schema is (Attributes, [anchor_ts,] Value)
+	// — MetricName is dropped by the windowed-array GROUP BY Attributes.
+	// To preserve `__name__` we wrap the RangeWindow with a canonical
+	// 4-column Project that pins MetricName to the matcher's literal
+	// name. The HTTP-layer `wrapWithSampleProjection` recognises this
+	// shape (via `projectionExposesCanonical`) and skips its
+	// derived-shape `LitString{""} AS MetricName` synthesis, so the
+	// literal flows through and `__name__` appears on the wire.
+	//
+	// The matcher's `__name__` value must be a single equality matcher
+	// (`metric_name{...}`) for `metricNameFromMatchers` to return a
+	// non-empty string. Regex `__name__=~"foo|bar"` falls through to
+	// the existing empty-MetricName behaviour — the structural fix to
+	// thread per-series names through the windowed aggregation is a
+	// larger change deferred until a query in that shape surfaces in
+	// the compat lane.
+	if c.Func.Name == "last_over_time" || c.Func.Name == "first_over_time" {
+		return wrapRangeWindowPreserveName(rw, s, metricNameFromMatchers(vs.LabelMatchers)), nil
+	}
 	return rw, nil
+}
+
+// wrapRangeWindowPreserveName wraps a RangeWindow with a canonical
+// 4-column Project that pins MetricName to a literal so the HTTP-layer
+// `wrapWithSampleProjection` recognises the canonical shape and
+// preserves `__name__` on the wire. Used by `last_over_time` /
+// `first_over_time` to mirror Prom's `dropName=false` for these fns.
+//
+// The matrix-shape RangeWindow (Step > 0) carries per-row anchors in
+// the `anchor_ts` column; the instant shape doesn't expose a real
+// TimeUnix at all (the SQL emits only Attributes + Value), so the
+// projection synthesises one via the same `now64() - 5s` expression
+// the handler uses for derived-shape Projects. The outer
+// `wrapWithSampleProjection` canonical branch reads back the
+// `s.TimestampColumn` alias verbatim either way.
+func wrapRangeWindowPreserveName(rw *chplan.RangeWindow, s schema.Metrics, name string) chplan.Node {
+	var tsExpr chplan.Expr
+	if rw.OuterRange > 0 {
+		tsExpr = &chplan.ColumnRef{Name: "anchor_ts"}
+	} else {
+		// Mirror `synthesizedAnchor()` in internal/api/prom/handler.go:
+		// the instant-shape RangeWindow doesn't expose a real per-row
+		// anchor, so we stamp `now64(9) - toIntervalNanosecond(5e9)`.
+		tsExpr = &chplan.Binary{
+			Op:   chplan.OpSub,
+			Left: &chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}},
+			Right: &chplan.FuncCall{
+				Name: "toIntervalNanosecond",
+				Args: []chplan.Expr{&chplan.LitInt{V: 5_000_000_000}},
+			},
+		}
+	}
+	return &chplan.Project{
+		Input: rw,
+		Projections: []chplan.Projection{
+			{Expr: &chplan.LitString{V: name}, Alias: s.MetricNameColumn},
+			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+			{Expr: tsExpr, Alias: s.TimestampColumn},
+			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
+		},
+	}
 }
 
 // lowerAggregate handles `sum by (job) (...)`, `sum without (instance) (...)`,
