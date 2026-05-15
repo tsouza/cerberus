@@ -65,7 +65,7 @@ func (e *emitter) emitVectorJoin(j *chplan.VectorJoin) error {
 		Join(
 			InnerJoin,
 			aliasedFrag(rightFrag, "R"),
-			vectorMatchPredicateFrag(j.Match, j.AttributesColumn),
+			vectorMatchPredicateFrag(j.Match, j.AttributesColumn, j.TimestampColumn, j.StepAligned),
 		)
 	e.emitSelect(sb)
 	return nil
@@ -158,27 +158,60 @@ func (e *emitter) vectorJoinSideFrag(j *chplan.VectorJoin, n chplan.Node, role s
 	}
 	inner := NewQuery().From(sub)
 	if role == roleMany {
-		inner.Select(
-			As(Col(j.MetricNameColumn), joinAlias(j.MetricNameColumn)),
-			As(Col(j.AttributesColumn), joinAlias(j.AttributesColumn)),
-			aggMaxAs(j.TimestampColumn, joinAlias(j.TimestampColumn)),
-			argMaxAs(j.ValueColumn, j.TimestampColumn, joinAlias(j.ValueColumn)),
-		).GroupBy(
-			Col(j.MetricNameColumn),
-			Col(j.AttributesColumn),
-		)
+		// Step-aligned ("range mode") joins keep TimeUnix in the
+		// per-side group key so the per-(series, anchor) row survives
+		// instead of being collapsed to one row per series. The
+		// selector projects TimeUnix directly (it's a group key,
+		// already unique within the group). Instant mode leaves
+		// TimeUnix off the GROUP BY and uses max(TimeUnix) to pick
+		// the latest LWR sample — byte-stable for the existing
+		// fixtures.
+		if j.StepAligned {
+			inner.Select(
+				As(Col(j.MetricNameColumn), joinAlias(j.MetricNameColumn)),
+				As(Col(j.AttributesColumn), joinAlias(j.AttributesColumn)),
+				As(Col(j.TimestampColumn), joinAlias(j.TimestampColumn)),
+				argMaxAs(j.ValueColumn, j.TimestampColumn, joinAlias(j.ValueColumn)),
+			).GroupBy(
+				Col(j.MetricNameColumn),
+				Col(j.AttributesColumn),
+				Col(j.TimestampColumn),
+			)
+		} else {
+			inner.Select(
+				As(Col(j.MetricNameColumn), joinAlias(j.MetricNameColumn)),
+				As(Col(j.AttributesColumn), joinAlias(j.AttributesColumn)),
+				aggMaxAs(j.TimestampColumn, joinAlias(j.TimestampColumn)),
+				argMaxAs(j.ValueColumn, j.TimestampColumn, joinAlias(j.ValueColumn)),
+			).GroupBy(
+				Col(j.MetricNameColumn),
+				Col(j.AttributesColumn),
+			)
+		}
 	} else {
 		// "one" side — aggregate by matching key with a runtime
 		// uniqueness guard. argMax(Attributes, TimeUnix) picks one
 		// representative series per match key; throwIf fires when
 		// there's more than one.
+		//
+		// Step-aligned joins extend the match key with TimeUnix so
+		// each (match-key, anchor) gets its own row and the throwIf
+		// uniqueness guard fires per-anchor rather than across the
+		// full per-step matrix. The selector keeps argMax /
+		// max(TimeUnix) for symmetry with instant mode — within a
+		// single (match-key, anchor) group all rows share the same
+		// TimeUnix by construction.
+		groupFrags := []Frag{matchKeyGroupExprFrag(j.Match, j.AttributesColumn)}
+		if j.StepAligned {
+			groupFrags = append(groupFrags, Col(j.TimestampColumn))
+		}
 		inner.Select(
 			argMaxAs(j.MetricNameColumn, j.TimestampColumn, joinAlias(j.MetricNameColumn)),
 			argMaxAs(j.AttributesColumn, j.TimestampColumn, joinAlias(j.AttributesColumn)),
 			aggMaxAs(j.TimestampColumn, joinAlias(j.TimestampColumn)),
 			argMaxAs(j.ValueColumn, j.TimestampColumn, joinAlias(j.ValueColumn)),
 			matchCheckFrag(j.AttributesColumn),
-		).GroupBy(matchKeyGroupExprFrag(j.Match, j.AttributesColumn))
+		).GroupBy(groupFrags...)
 	}
 
 	// Outer Project: rename `_join_*` back to canonical column names
@@ -408,11 +441,31 @@ func writeSideCol(b *Builder, side, col string) {
 //   - ignoring(l1, l2)                 → mapFilter-stripped equality
 //   - on() with no labels              → 1 = 1 (per-side aggregation
 //     already collapses to one row via the throwIf guard).
-func vectorMatchPredicateFrag(m chplan.VectorMatch, attrsCol string) Frag {
-	return func(b *Builder) { writeVectorMatchPredicate(b, m, attrsCol) }
+//
+// When stepAligned is true the rendered predicate additionally ANDs in
+// `L.<tsCol> = R.<tsCol>` so each anchor joins its own per-anchor
+// pair — required when both sides emit a per-step matrix (range mode).
+// Without that conjunct the join would degenerate into a full cross
+// across anchors (roleMany) or fold the matrix down to a single per-
+// match-key row at the surviving anchor (roleOne).
+func vectorMatchPredicateFrag(m chplan.VectorMatch, attrsCol, tsCol string, stepAligned bool) Frag {
+	return func(b *Builder) { writeVectorMatchPredicate(b, m, attrsCol, tsCol, stepAligned) }
 }
 
-func writeVectorMatchPredicate(b *Builder, m chplan.VectorMatch, attrsCol string) {
+func writeVectorMatchPredicate(b *Builder, m chplan.VectorMatch, attrsCol, tsCol string, stepAligned bool) {
+	writeMatchKeyPredicate(b, m, attrsCol)
+	if stepAligned {
+		b.writeSQL(" AND ")
+		writeSideCol(b, "L", tsCol)
+		b.writeSQL(" = ")
+		writeSideCol(b, "R", tsCol)
+	}
+}
+
+// writeMatchKeyPredicate renders just the label-matching half of the
+// join's ON clause — extracted so the step-alignment AND can be
+// composed on top without copying the per-shape branches.
+func writeMatchKeyPredicate(b *Builder, m chplan.VectorMatch, attrsCol string) {
 	if len(m.Labels) == 0 && !m.On {
 		writeSideCol(b, "L", attrsCol)
 		b.writeSQL(" = ")

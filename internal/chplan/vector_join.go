@@ -87,6 +87,28 @@ type VectorJoin struct {
 	// filtered out by the comparison.
 	ReturnBool bool
 
+	// StepAligned reports whether the join must step-align on the
+	// per-anchor TimestampColumn. Set by the PromQL binary lowering
+	// when ctx.step > 0 (range mode) and one or both sides produce a
+	// per-step matrix (via wrapRangeLatestPerSeries / matrix
+	// RangeWindow). The emitter then:
+	//
+	//   - adds TimestampColumn to each per-side aggregation's GROUP BY
+	//     so each (series, anchor) row survives instead of being
+	//     collapsed to a single per-series row, and
+	//   - ANDs `L.TimestampColumn = R.TimestampColumn` into the JOIN's
+	//     ON clause so the per-pair comparison fires per anchor.
+	//
+	// Without this flag, the per-side aggregation collapses N anchors
+	// onto a single match-key, the `on(...)` join finds N×N matches
+	// (or a single per-match-key row in roleOne), and the comparison
+	// either fails the runtime uniqueness guard or silently degenerates
+	// into a cartesian product across anchors.
+	//
+	// Default false preserves the instant-mode shape; the existing
+	// V-V fixtures stay byte-stable.
+	StepAligned bool
+
 	MetricNameColumn string
 	AttributesColumn string
 	TimestampColumn  string
@@ -109,6 +131,9 @@ func (v *VectorJoin) Equal(other Node) bool {
 		return false
 	}
 	if v.ReturnBool != o.ReturnBool {
+		return false
+	}
+	if v.StepAligned != o.StepAligned {
 		return false
 	}
 	if v.MetricNameColumn != o.MetricNameColumn ||
