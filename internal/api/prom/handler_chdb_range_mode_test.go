@@ -1618,3 +1618,80 @@ func runRangeModeQueryRange(t *testing.T, baseURL, query string, start, end time
 	}
 	return matrix
 }
+
+// TestQueryRange_RangeMode_SubScrape_ChDB pins the sub-scrape window
+// behaviour for the `instantValue` / `simpleLinearRegression` family:
+// `irate` / `idelta` / `deriv` / `predict_linear` over query_range
+// with a `[15s]` range against a 30s-scrape series. Each per-step
+// window `(anchor - 15s, anchor]` holds at most one sample, and
+// Prom's funcIrate / funcIdelta / funcDeriv / funcPredictLinear all
+// short-circuit on "< 2 float points" — the matrix MUST contain no
+// samples for any series. Cerberus mirrors via the
+// `WHERE length(window_pairs|window_vals) >= 2` outer guard on the
+// matrix-mode emit path.
+//
+// Pool-BD #366 followup — the `extrapolatedRate` boundary correction
+// covered `rate` / `increase` / `delta`; this test pins the parallel
+// drop semantics for the `instantValue` / `simpleLinearRegression`
+// path so the sub-scrape variants flagged in Pool-AU's Bucket 3 audit
+// (#355) stay green.
+func TestQueryRange_RangeMode_SubScrape_ChDB(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(5 * time.Minute)
+	step := 30 * time.Second
+	const seedSamples = 11
+
+	// Scrape every 30s — same cadence as the step. With range = 15s,
+	// each per-step window `(anchor - 15s, anchor]` captures at most
+	// one sample regardless of phase alignment.
+	scrape := 30 * time.Second
+	gaugeRows := make([]string, 0, seedSamples)
+	sumRows := make([]string, 0, seedSamples)
+	for i := 0; i < seedSamples; i++ {
+		ts := start.Add(time.Duration(i) * scrape).Format("2006-01-02 15:04:05.000000000")
+		gaugeRows = append(gaugeRows, fmt.Sprintf(
+			`('demo_disk_usage_bytes', map('instance', 'demo'), toDateTime64('%s', 9), %d.0)`,
+			ts, 100+i,
+		))
+		sumRows = append(sumRows, fmt.Sprintf(
+			`('demo_cpu_usage_seconds_total', map('instance', 'demo'), toDateTime64('%s', 9), %d.0)`,
+			ts, 100+i,
+		))
+	}
+	sumDDL := strings.ReplaceAll(gaugeDDL, "otel_metrics_gauge", "otel_metrics_sum")
+	seed := gaugeDDL + "\nINSERT INTO otel_metrics_gauge VALUES\n  " +
+		strings.Join(gaugeRows, ",\n  ") + ";\n" +
+		sumDDL + "\nINSERT INTO otel_metrics_sum VALUES\n  " +
+		strings.Join(sumRows, ",\n  ") + ";"
+	srv, _ := newChDBServer(t, seed)
+
+	cases := []struct {
+		name  string
+		query string
+	}{
+		// irate / idelta — Prom's funcIrate / funcIdelta delegate to
+		// instantValue, which short-circuits when `len(samples) < 2`.
+		{"irate", "irate(demo_cpu_usage_seconds_total[15s])"},
+		{"idelta", "idelta(demo_disk_usage_bytes[15s])"},
+		// deriv / predict_linear — Prom's funcDeriv / funcPredictLinear
+		// each guard `len(samples.Floats) < 2`. simpleLinearRegression
+		// requires ≥2 points to fit a line.
+		{"deriv", "deriv(demo_disk_usage_bytes[15s])"},
+		{"predict_linear", "predict_linear(demo_disk_usage_bytes[15s], 600)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			matrix := runRangeModeQueryRange(t, srv.URL, tc.query, start, end, step)
+			// Every anchor's window holds ≤ 1 sample, so the outer
+			// `WHERE length(window_pairs|window_vals) >= 2` drops every
+			// (series, anchor) row. Prom returns an empty matrix in this
+			// scenario; cerberus must agree.
+			for _, series := range matrix {
+				if len(series.Values) != 0 {
+					t.Fatalf("expected zero samples for sub-scrape window (got %d for series %+v): %+v",
+						len(series.Values), series.Metric, series.Values)
+				}
+			}
+		})
+	}
+}

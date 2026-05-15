@@ -1,0 +1,30 @@
+# Sub-scrape range — `irate(metric[15s])` against a 30s-scrape series.
+# The window `(end-15s, end]` captures at most one sample, so Prom's
+# funcIrate → instantValue("< 2 samples") drops the series. Cerberus
+# mirrors via the `WHERE length(window_pairs) >= 2` guard on the outer
+# SELECT. Pool-BD #366 followup — instantValue path companion to the
+# extrapolatedRate boundary correction.
+
+-- query.promql --
+irate(http_requests_total[15s] @ end())
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum VALUES
+    ('http_requests_total', map('job', 'api'), toDateTime64('1970-01-01 00:07:30', 9), 0.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('1970-01-01 00:08:00', 9), 50.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('1970-01-01 00:08:20', 9), 100.0);
+-- expected_rows --
+[]
+-- args --
+[0] string = "http_requests_total"
+-- chplan --
+RangeWindow func=irate range=15s step=0s ts=TimeUnix value=Value groupBy=[Attributes] start=0001-01-01T00:00:00Z end=1970-01-01T00:08:20Z
+  Filter predicate=(MetricName = "http_requests_total")
+    Scan(otel_metrics_sum)
+-- sql --
+SELECT `Attributes`, if(length(window_pairs) > 1 AND dateDiff('nanosecond', tupleElement(window_pairs[length(window_pairs) - 1], 1), tupleElement(window_pairs[length(window_pairs)], 1)) > 0, (if(tupleElement(window_pairs[length(window_pairs)], 2) < tupleElement(window_pairs[length(window_pairs) - 1], 2), tupleElement(window_pairs[length(window_pairs)], 2), tupleElement(window_pairs[length(window_pairs)], 2) - tupleElement(window_pairs[length(window_pairs) - 1], 2))) / ((dateDiff('nanosecond', tupleElement(window_pairs[length(window_pairs) - 1], 1), tupleElement(window_pairs[length(window_pairs)], 1))) / 1e9), nan) AS Value FROM (SELECT `Attributes`, arrayFilter(p -> tupleElement(p, 1) > toDateTime64('1970-01-01 00:08:20.000000000', 9) - toIntervalNanosecond(15000000000) AND tupleElement(p, 1) <= toDateTime64('1970-01-01 00:08:20.000000000', 9), series_array) AS window_pairs FROM (SELECT `Attributes`, arraySort(groupArray((`TimeUnix`, `Value`))) AS series_array FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` = ?)) GROUP BY `Attributes`)) WHERE length(`window_pairs`) >= 2
