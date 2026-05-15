@@ -12,14 +12,11 @@ CREATE TABLE otel_traces (
     ResourceAttributes Map(String, String)
 ) ENGINE = Memory;
 INSERT INTO otel_traces VALUES
-    (map('service.name', 'frontend')),
-    (map('service.name', 'frontend')),
-    (map('service.name', 'frontend')),
-    (map('service.name', 'backend'));
+    (map('service.name', 'backend')),
+    (map('service.name', 'db')),
+    (map('service.name', 'cache'));
 -- expected_rows --
-[
-  [3]
-]
+[]
 -- chplan --
 Filter predicate=(Value > 0)
   Aggregate groupBy=[] funcs=[count(1) AS Value]

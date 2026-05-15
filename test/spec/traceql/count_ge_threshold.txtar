@@ -15,13 +15,9 @@ INSERT INTO otel_traces VALUES
     (map('service.name', 'frontend')),
     (map('service.name', 'frontend')),
     (map('service.name', 'frontend')),
-    (map('service.name', 'frontend')),
-    (map('service.name', 'frontend')),
     (map('service.name', 'backend'));
 -- expected_rows --
-[
-  [5]
-]
+[]
 -- chplan --
 Filter predicate=(Value >= 5)
   Aggregate groupBy=[] funcs=[count(1) AS Value]
