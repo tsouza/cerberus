@@ -25,12 +25,13 @@ internal/
   schema/                    OTel-CH default + override config
   config/                    runtime config (env-driven)
 cmd/cerberus/                main entrypoint
-test/spec/                   TXTAR golden tests (input QL → SQL/plan + `-- chplan --` IR snapshots [incoming via PR #265] + optional `-- seed --` / `-- expected_rows --` chDB roundtrip). `test/spec/chplan_print.go` is the deterministic IR pretty-printer used by Layer 2a snapshots.
-test/property/               oracle-based property tests (`pgregory.net/rapid` shrinking + chDB execution) — Phase 1 PR 1 in flight; `gen/` random data + query generators; `oracle/bridge.go` temporary bridge to `promshim/local` (replaced by from-scratch evaluator in Phase 1 PR 2).
+test/spec/                   TXTAR golden tests (input QL → SQL/plan + `-- chplan --` IR snapshots + optional `-- seed --` / `-- expected_rows --` chDB roundtrip). `test/spec/chplan_print.go` is the deterministic IR pretty-printer used by Layer 2a snapshots.
+test/property/               oracle-based property tests (`pgregory.net/rapid` shrinking + chDB execution); `gen/` random data + query generators; `oracle/` from-scratch evaluator (replaced the earlier `promshim/local` bridge in Phase 1).
 test/regression/             meta-tests that pin past CI failures so they can't silently recur — goleak detectors across every handler entrypoint (added by #253), justfile-shape pins, seed-program invariants.
 test/e2e/                    k3d cluster + Grafana playwright smoke
 test/e2e/{k3s,grafana}/      k3d manifests + Grafana provisioning (datasources, dashboards) consumed by the smoke
 harness/prometheus-compliance/          prometheus/compliance Docker Compose harness + shadow-mode differential testing
+harness/tempo-compatibility/            vendored `cmd/tempo-vulture` + `pkg/httpclient` snapshot for TraceQL parity (driver + CI follow in later PRs; see `docs/tempo-compliance-plan.md`)
 docs/                        roadmap.md, optimizer-research.md, compatibility.md, engine.md, observability.md, 12factor.md, test-strategy.md, …
 ```
 
