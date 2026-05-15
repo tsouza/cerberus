@@ -50,6 +50,12 @@ func TestLower(t *testing.T) {
 	// start == end == eval_ts.
 	instantEval := time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC)
 
+	// Deterministic range-mode anchor used by fixtures that opt into the
+	// `range_step` section. The window `[2026-01-01 00:00:00, 00:05:00]`
+	// keeps the SQL literals short and the step grid deterministic.
+	rangeStart := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	rangeEnd := rangeStart.Add(5 * time.Minute)
+
 	spec.Walk(t, fixtureDir, func(t *testing.T, c *spec.Case) {
 		query, ok := c.Section("query.promql")
 		if !ok {
@@ -65,11 +71,27 @@ func TestLower(t *testing.T) {
 		// special fixed range; every other fixture lowers with the
 		// deterministic instant-eval anchor so the LWR staleness
 		// predicate produces stable SQL literals.
+		//
+		// A `range_step:` section opts the fixture into range mode: the
+		// section value is a duration parsed by time.ParseDuration, and
+		// the lowering uses LowerAtRange with the deterministic
+		// rangeStart/rangeEnd window. This is the fixture-side mechanism
+		// for exercising query_range lowerings (histogram_quantile per-
+		// step anchor, etc.) without requiring per-test Go scaffolding.
 		var plan chplan.Node
-		if strings.Contains(query, "@ start()") || strings.Contains(query, "@ end()") {
+		switch {
+		case strings.Contains(query, "@ start()") || strings.Contains(query, "@ end()"):
 			plan, err = promql.LowerAt(context.Background(), expr, s, start, end)
-		} else {
-			plan, err = promql.LowerAt(context.Background(), expr, s, instantEval, instantEval)
+		default:
+			if rs, ok := c.Section("range_step"); ok {
+				stepDur, perr := time.ParseDuration(strings.TrimSpace(rs))
+				if perr != nil {
+					t.Fatalf("fixture %s: parse range_step %q: %v", c.Name, rs, perr)
+				}
+				plan, err = promql.LowerAtRange(context.Background(), expr, s, rangeStart, rangeEnd, stepDur)
+			} else {
+				plan, err = promql.LowerAt(context.Background(), expr, s, instantEval, instantEval)
+			}
 		}
 		if err != nil {
 			t.Fatalf("Lower(%q): %v", query, err)

@@ -1,0 +1,21 @@
+-- query.promql --
+histogram_quantile(0.95, sum by(le)(rate(http_server_request_duration[5m])))
+-- range_step --
+30s
+-- args --
+[0] string = ""
+[1] string = "Map(String,String)"
+[2] string = "http_server_request_duration"
+[3] int64 = 300000000000
+-- chplan --
+Project ["" AS MetricName, Attributes AS Attributes, anchor_ts AS TimeUnix, Value AS Value]
+  HistogramQuantile phi=0.95 groupBy=[anchor_ts AS anchor_ts, Attributes AS Attributes]
+    Project [anchor_ts AS anchor_ts, CAST(map(), "Map(String,String)") AS Attributes, BucketCounts AS BucketCounts, ExplicitBounds AS ExplicitBounds]
+      Aggregate groupBy=[anchor_ts AS anchor_ts] funcs=[sumForEach(BucketCounts) AS BucketCounts, any(ExplicitBounds) AS ExplicitBounds]
+        Filter predicate=((TimeUnix <= anchor_ts) AND (TimeUnix > (anchor_ts - toIntervalNanosecond(300000000000))))
+          CrossJoin
+            StepGrid start=2026-01-01T00:00:00.000000000Z end=2026-01-01T00:05:00.000000000Z step=30s
+            Filter predicate=(MetricName = "http_server_request_duration")
+              Scan(otel_metrics_histogram)
+-- sql --
+SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, `anchor_ts` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `anchor_ts` AS `anchor_ts`, `Attributes` AS `Attributes`, if(length(`BucketCounts`) = 0, nan, if(arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`)) = 0, nan, if(0.95 <= 0, 0.0, if(0.95 >= 1, `ExplicitBounds`[length(`ExplicitBounds`)], if(arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) = length(arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))), `ExplicitBounds`[length(`ExplicitBounds`)], (if(arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) = 1, 0.0, `ExplicitBounds`[arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - 1]) + (`ExplicitBounds`[arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`)))] - if(arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) = 1, 0.0, `ExplicitBounds`[arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - 1])) * ((0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - if(arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) = 1, 0.0, arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - 1])) / (arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`)))] - if(arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) = 1, 0.0, arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - 1])))))))) AS `Value` FROM (SELECT `anchor_ts` AS `anchor_ts`, CAST(map(), ?) AS `Attributes`, `BucketCounts` AS `BucketCounts`, `ExplicitBounds` AS `ExplicitBounds` FROM (SELECT `anchor_ts` AS `anchor_ts`, sumForEach(`BucketCounts`) AS `BucketCounts`, any(`ExplicitBounds`) AS `ExplicitBounds` FROM (SELECT * FROM (SELECT * FROM (SELECT arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:00:00.000000000', 9) + toIntervalNanosecond(i * 30000000000), range(0, 11))) AS `anchor_ts`) AS L CROSS JOIN (SELECT * FROM `otel_metrics_histogram` WHERE (`MetricName` = ?)) AS R) WHERE ((`TimeUnix` <= `anchor_ts`) AND (`TimeUnix` > (`anchor_ts` - toIntervalNanosecond(?))))) GROUP BY `anchor_ts`)))

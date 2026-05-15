@@ -73,6 +73,15 @@ func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chp
 		if s.IsExpHistogramMetric(shape.selector.Name) {
 			return nil, fmt.Errorf("promql: histogram_quantile over aggregated native (exp) histograms is not yet supported")
 		}
+		// Range mode (ctx.step > 0): build a per-step plan that fans the
+		// bucket aggregation + quantile interpolation across the request's
+		// step grid. Modifier-bearing inner selectors fall back to the
+		// instant path until matrix-anchor handling for `@`/offset is
+		// wired (rare in practice — Grafana never threads modifiers
+		// through histogram_quantile on query_range).
+		if histogramRangeApplies(ctx) && !hasModifier(shape.selector) {
+			return lowerHistogramQuantileClassicAggRange(shape, phi, s, ctx), nil
+		}
 		return lowerHistogramQuantileAgg(shape, phi, s, ctx)
 	}
 
@@ -83,6 +92,18 @@ func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chp
 
 	if s.IsExpHistogramMetric(vs.Name) {
 		return lowerHistogramQuantileNative(vs, phi, s, ctx)
+	}
+
+	// Range mode (ctx.step > 0): build a per-step plan that fans the
+	// classic-histogram bucket array forward through a StepGrid + LWR
+	// window so each step in `[start, end]` emits its own quantile row.
+	// Pool-AK flagged the now64(9) hardcode in this lowering as the
+	// `histogram_quantile classic-bucket still hardcodes now64(9) in
+	// range mode` bug surfaced when finishing the per-step LWR rework
+	// (PR #347). Modifier-bearing selectors fall back to the instant
+	// path until matrix-anchor handling lands.
+	if histogramRangeApplies(ctx) && !hasModifier(vs) {
+		return lowerHistogramQuantileClassicBareRange(vs, phi, s, ctx), nil
 	}
 
 	// Target the classic-histogram table directly — the metric name is
