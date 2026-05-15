@@ -185,31 +185,34 @@ The shared `buildHistogramRangeTree` helper in
 the bucket-aggregation function and the inner-Project shape so the
 native path reuses the scaffold.
 
-## Phase 4 (deferred) — negative-side observations
+## Phase 4 (shipped) — negative-side observations
 
 OTel exp-histograms can carry observations < 0 in the `Negative*`
-arrays. Cerberus's positive-only emitter ignores them — quantiles over
-distributions with negative observations return the quantile of the
-non-negative subset.
+arrays. Cerberus's original positive-only emitter ignored them — quantiles
+over distributions with negative observations returned the quantile of
+the non-negative subset only.
 
-For latency / size histograms (the common case) negative
-observations are spec-undefined and don't appear in practice, so the
-limitation is acceptable for v0.1. Phase 4 extends the emitter when a
-real use-case surfaces:
+The Phase 4 emitter walks the full distribution:
 
-- The `cum` array needs to walk
-  `Negative` (in reverse), then `ZeroCount`, then `Positive` so the
-  cumulative sum reflects the natural ordering of the distribution.
-- The interpolation inside a negative bucket uses
-  `-pow(base, NegativeOffset + idx + fraction)` (the negative-side
-  buckets carry positive widths, mirrored around zero).
-- The `idx = 1` edge case becomes "lands in the most-negative bucket"
-  rather than "lands in the zero bucket"; the ZeroThreshold edge
-  shifts to the boundary between negative+positive walks.
-
-The IR node already carries `NegativeOffsetColumn` /
-`NegativeBucketCountsColumn` so Phase 4 is a single-file change in
-`internal/chsql/histogram_quantile_native.go`.
+- The `cum` array walks `Negative` (in reverse via `arrayReverse`),
+  then `ZeroCount`, then `Positive` so the cumulative sum reflects the
+  natural ordering of the distribution. `arrayReverse([]) = []`, so
+  distributions with no negative observations collapse to the Phase 1
+  shape.
+- Negative-bucket interpolation uses
+  `-pow(base, NegativeOffset + (nlen - idx) + 1 - fraction)`.
+- The zero band interpolates linearly between
+  `-ZeroThreshold` and `+ZeroThreshold`.
+- Edge cases:
+  - `phi <= 0` returns `-pow(base, NegativeOffset + nlen)` when
+    negative observations exist, else `0.0`.
+  - `phi >= 1` returns the positive upper edge when positive
+    observations exist; falls back to `ZeroThreshold` when only the
+    zero bucket is non-empty; falls back to `-pow(base, NegativeOffset)`
+    (least-negative upper edge) when only negative observations exist.
+- The IR node already carried `NegativeOffsetColumn` /
+  `NegativeBucketCountsColumn`; the change was isolated to the emitter
+  in `internal/chsql/histogram_quantile_native.go`.
 
 ## Routing knob
 
@@ -227,11 +230,11 @@ Operators that follow a different convention override the suffix via
 
 | Layer | Path                                                                              | Phase 1 | Phase 2 | Phase 3 | Phase 4 |
 | ----- | --------------------------------------------------------------------------------- | ------- | ------- | ------- | ------- |
-| 2a    | `test/spec/promql/histogram_quantile_native{,_agg}*.txtar` (chplan + SQL)         | yes     | yes     | TBD     | TBD     |
+| 2a    | `test/spec/promql/histogram_quantile_native{,_agg}*.txtar` (chplan + SQL)         | yes     | yes     | TBD     | yes     |
 | 2b    | `internal/promql/histogram_quantile_{native,}_test.go` (lowering)                 | yes     | yes     | TBD     | n/a     |
 | 3     | `internal/chplan/equal_invariants_test.go` (IR Equal)                             | yes     | reuses  | reuses  | reuses  |
-| 5     | `internal/chsql/histogram_quantile_native_test.go` (emitter shape)                | yes     | reuses  | TBD     | TBD     |
-| 6a    | TXTAR `-- seed --` / `-- expected_rows --` chDB roundtrip + `handler_chdb_*_test` | yes     | yes     | TBD     | TBD     |
+| 5     | `internal/chsql/histogram_quantile_native_test.go` (emitter shape)                | yes     | reuses  | TBD     | yes     |
+| 6a    | TXTAR `-- seed --` / `-- expected_rows --` chDB roundtrip + `handler_chdb_*_test` | yes     | yes     | TBD     | yes     |
 
 Each subsequent phase opens its own PR; the box above tracks which
 layers gain coverage. The Layer 6a roundtrip is the strongest signal

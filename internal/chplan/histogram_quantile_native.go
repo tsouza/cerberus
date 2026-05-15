@@ -18,15 +18,16 @@ package chplan
 //   - ZeroCount (UInt64): observations at or below ZeroThreshold.
 //   - ZeroThreshold (Float64): the upper edge of the zero bucket.
 //
-// PR H ships the positive-only path: the emitter assumes the input
-// distribution is non-negative (the common case for latency / size
-// histograms) and walks the positive bucket array. NegativeOffset /
-// NegativeBucketCounts are surfaced on the IR node so a later patch
-// can extend the emitter without an IR break; for RC2 they are
-// materialised but unused. ZeroCount is folded into the total + the
-// cumulative sum so quantiles that land at or below the zero bucket
-// return ZeroThreshold (the safest summary of "we know it's small,
-// we don't know exactly how small").
+// The emitter walks Negative (reversed) → ZeroCount → Positive when
+// building the cumulative-sum array so the quantile is taken over the
+// natural ordering of the distribution. NegativeOffset /
+// NegativeBucketCounts are required on the IR node; distributions with
+// no negative observations carry empty arrays and the walk collapses
+// to the original positive-only shape via arrayReverse([]) = [].
+// ZeroCount is folded as the contiguous "zero band" between the
+// negative and positive walks so quantiles landing in the zero
+// segment linearly interpolate between -ZeroThreshold and
+// +ZeroThreshold.
 //
 // IR contract (mirrors HistogramQuantile):
 //
