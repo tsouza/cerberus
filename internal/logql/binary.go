@@ -224,6 +224,30 @@ func vectorMatchingFromOpts(vm *syntax.VectorMatching) (chplan.VectorCard, chpla
 	return card, match, include, nil
 }
 
+// includeLabelsFromBinop returns the labels listed in `group_left(...)` /
+// `group_right(...)` of the binop's VectorMatching. Returns an empty
+// (non-nil) slice when the binop has no Opts, no VectorMatching, or
+// when the matching declares no Include labels.
+//
+// Sources `b.Opts.VectorMatching.Include`. The returned slice is a fresh
+// copy — callers may retain or mutate it without aliasing the parser AST.
+//
+// Pre-thread for #393: aggregation lowering will read this to project
+// the join-side include labels onto the aggregation output. The helper
+// itself does not yet feed any caller — that wiring lands in a follow-up.
+func includeLabelsFromBinop(b *syntax.BinOpExpr) []string {
+	if b == nil || b.Opts == nil || b.Opts.VectorMatching == nil {
+		return []string{}
+	}
+	src := b.Opts.VectorMatching.Include
+	if len(src) == 0 {
+		return []string{}
+	}
+	out := make([]string, len(src))
+	copy(out, src)
+	return out
+}
+
 // logqlBinaryOp maps a LogQL parser op string to the chplan op enum.
 // Arithmetic and comparison ops are handled here; logical ops
 // (`and` / `or` / `unless`) defer to a later milestone.
