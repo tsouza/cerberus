@@ -18,19 +18,21 @@ INSERT INTO otel_metrics_gauge VALUES
 [1] string = "^nomatch-(.*)$"
 [2] string = "dst"
 [3] string = "host"
-[4] string = "^nomatch-(.*)$"
-[5] string = "renamed"
-[6] string = "temperature"
-[7] string = "2026-01-01 00:00:01.000000000"
-[8] int64 = 9
+[4] string = "renamed"
+[5] string = "host"
+[6] string = "^nomatch-(.*)$"
+[7] string = "renamed"
+[8] string = "temperature"
 [9] string = "2026-01-01 00:00:01.000000000"
 [10] int64 = 9
-[11] int64 = 300000000000
+[11] string = "2026-01-01 00:00:01.000000000"
+[12] int64 = 9
+[13] int64 = 300000000000
 -- chplan --
-Project [MetricName, labelReplace(Attributes, dst="dst", replacement="renamed", src="host", regex="nomatch-(.*)") AS Attributes, TimeUnix, Value]
+Project [MetricName, labelReplace(Attributes, dst="dst", replacement="renamed", src="host", regex="nomatch-(.*)", emptyReplacement="renamed") AS Attributes, TimeUnix, Value]
   Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
     Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
       Filter predicate=(((MetricName = "temperature") AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
         Scan(otel_metrics_gauge)
 -- sql --
-SELECT `MetricName`, mapFilter((k, v) -> v != '', if(match(`Attributes`[?], ?), mapUpdate(`Attributes`, map(?, replaceRegexpOne(`Attributes`[?], ?, ?))), `Attributes`)) AS `Attributes`, `TimeUnix`, `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_gauge` PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`))
+SELECT `MetricName`, mapFilter((k, v) -> v != '', if(match(`Attributes`[?], ?), mapUpdate(`Attributes`, map(?, if(empty(`Attributes`[?]), ?, replaceRegexpOne(`Attributes`[?], ?, ?)))), `Attributes`)) AS `Attributes`, `TimeUnix`, `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_gauge` PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`))

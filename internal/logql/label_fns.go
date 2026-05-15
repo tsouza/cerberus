@@ -47,11 +47,12 @@ func lowerLabelReplace(e *syntax.LabelReplaceExpr, s schema.Logs, lc lowerCtx) (
 	}
 
 	attrs := &chplan.LabelReplace{
-		Map:         &chplan.ColumnRef{Name: s.ResourceAttributesColumn},
-		Dst:         e.Dst,
-		Replacement: qlcommon.ReplacementToCH(e.Replacement, e.Regex),
-		Src:         e.Src,
-		Regex:       e.Regex,
+		Map:              &chplan.ColumnRef{Name: s.ResourceAttributesColumn},
+		Dst:              e.Dst,
+		Replacement:      qlcommon.ReplacementToCH(e.Replacement, e.Regex),
+		Src:              e.Src,
+		Regex:            e.Regex,
+		EmptyReplacement: qlcommon.EmptyCapturesReplacement(e.Replacement),
 	}
 	return projectResourceAttributesOverInner(inner, s, attrs), nil
 }

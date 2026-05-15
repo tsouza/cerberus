@@ -445,13 +445,29 @@ func (b *Builder) exprMapWithoutEmptyValues(m *chplan.MapWithoutEmptyValues) err
 //
 //	mapFilter((k, v) -> v != '',
 //	    if(match(<map>[?src], ?anchoredRegex),
-//	       mapUpdate(<map>, map(?dst, replaceRegexpOne(<map>[?src], ?anchoredRegex, ?replacement))),
+//	       mapUpdate(<map>, map(?dst,
+//	          if(empty(<map>[?src]),
+//	             ?emptyReplacement,
+//	             replaceRegexpOne(<map>[?src], ?anchoredRegex, ?replacement)))),
 //	       <map>))
 //
 // `anchoredRegex` is `^<regex>$` so the match is full-string, matching
 // Prometheus's `RE2 ^…$` anchoring rule. The outer mapFilter drops the
 // dst label when the substituted replacement is the empty string —
 // Prom's "labels set to empty values are dropped" rule.
+//
+// The inner `if(empty(src), emptyReplacement, replaceRegexpOne(…))`
+// short-circuit patches CH ≤ 24.8's divergent behaviour where
+// `replaceRegexpOne(”, '^(.*)$', 'value-\1')` returns the empty
+// string (the input is silently passed through) instead of the
+// spec-correct `"value-"`. The build-time pre-computed
+// `emptyReplacement` substitutes every capture group with "" — the
+// value Go's `ExpandString` (Prom's reference impl) produces against
+// an empty match. CH ≥ 25.8 honours `replaceRegexpOne` on empty
+// inputs natively; the conditional collapses harmlessly in that
+// regime (both branches produce the same string). The compose
+// harness's reference Prom is on CH 24.8 so the short-circuit is
+// load-bearing on the compatibility lane.
 func (b *Builder) exprLabelReplace(l *chplan.LabelReplace) error {
 	anchored := "^" + l.Regex + "$"
 	b.sb.WriteString("mapFilter((k, v) -> v != '', if(match(")
@@ -468,6 +484,14 @@ func (b *Builder) exprLabelReplace(l *chplan.LabelReplace) error {
 	}
 	b.sb.WriteString(", map(")
 	b.Arg(l.Dst)
+	b.sb.WriteString(", if(empty(")
+	if err := b.Expr(l.Map); err != nil {
+		return err
+	}
+	b.sb.WriteByte('[')
+	b.Arg(l.Src)
+	b.sb.WriteString("]), ")
+	b.Arg(l.EmptyReplacement)
 	b.sb.WriteString(", replaceRegexpOne(")
 	if err := b.Expr(l.Map); err != nil {
 		return err
@@ -478,7 +502,7 @@ func (b *Builder) exprLabelReplace(l *chplan.LabelReplace) error {
 	b.Arg(anchored)
 	b.sb.WriteString(", ")
 	b.Arg(l.Replacement)
-	b.sb.WriteString("))), ")
+	b.sb.WriteString(")))), ")
 	if err := b.Expr(l.Map); err != nil {
 		return err
 	}

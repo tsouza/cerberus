@@ -47,11 +47,12 @@ func lowerLabelReplace(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.N
 		return nil, err
 	}
 	attrs := &chplan.LabelReplace{
-		Map:         &chplan.ColumnRef{Name: s.AttributesColumn},
-		Dst:         dst,
-		Replacement: qlcommon.ReplacementToCH(replacement, regex),
-		Src:         src,
-		Regex:       regex,
+		Map:              &chplan.ColumnRef{Name: s.AttributesColumn},
+		Dst:              dst,
+		Replacement:      qlcommon.ReplacementToCH(replacement, regex),
+		Src:              src,
+		Regex:            regex,
+		EmptyReplacement: qlcommon.EmptyCapturesReplacement(replacement),
 	}
 	return projectAttributesOverInner(inner, s, attrs), nil
 }
