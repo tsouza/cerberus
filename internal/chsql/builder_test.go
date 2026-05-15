@@ -1463,8 +1463,10 @@ func TestLambda2_RendersParensAroundParams(t *testing.T) {
 }
 
 // TestRangeWindowFilter_Basic — RangeWindowFilter renders the
-// arrayFilter(p -> ts>=start AND ts<=end, series) shape with
-// timestamps extracted via tupleElement(p, 1).
+// arrayFilter(p -> ts>start AND ts<=end, series) shape with
+// timestamps extracted via tupleElement(p, 1). The interval is
+// left-open / right-closed to match PromQL range vector selector
+// semantics (start = end - range is excluded).
 func TestRangeWindowFilter_Basic(t *testing.T) {
 	t.Parallel()
 
@@ -1474,7 +1476,7 @@ func TestRangeWindowFilter_Basic(t *testing.T) {
 		BareIdent("anchor_ts"),
 		BareIdent("series_array"),
 	)(b)
-	want := "arrayFilter(p -> tupleElement(p, 1) >= anchor_ts - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= anchor_ts, series_array)"
+	want := "arrayFilter(p -> tupleElement(p, 1) > anchor_ts - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= anchor_ts, series_array)"
 	if got := b.String(); got != want {
 		t.Errorf("RangeWindowFilter SQL = %q; want %q", got, want)
 	}
@@ -1488,7 +1490,7 @@ func TestRangeWindowFilter_BindsArgsInOrder(t *testing.T) {
 	b := NewBuilder()
 	RangeWindowFilter(Lit("S"), Lit("E"), Lit("A"))(b)
 	sql, args := b.Build()
-	want := "arrayFilter(p -> tupleElement(p, 1) >= ? AND tupleElement(p, 1) <= ?, ?)"
+	want := "arrayFilter(p -> tupleElement(p, 1) > ? AND tupleElement(p, 1) <= ?, ?)"
 	if sql != want {
 		t.Errorf("RangeWindowFilter SQL = %q; want %q", sql, want)
 	}

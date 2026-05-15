@@ -946,12 +946,15 @@ func Lambda2(p1, p2 string, body Frag) Frag {
 
 // RangeWindowFilter renders
 //
-//	arrayFilter(p -> tupleElement(p, 1) >= <start>
+//	arrayFilter(p -> tupleElement(p, 1) >  <start>
 //	              AND tupleElement(p, 1) <= <end>,
 //	            <series>)
 //
-// — the per-series clamp to the [start, end] window used by every
-// range-window emitter. series is a CH array of (Timestamp, Value)
+// — the per-series clamp to the (start, end] window used by every
+// range-window emitter. The interval is left-open / right-closed to
+// match PromQL range vector selector semantics: a sample at exactly
+// t = end - range is *not* part of the window, while a sample at
+// exactly t = end is. series is a CH array of (Timestamp, Value)
 // tuples (typically the `series_array` alias projected by the
 // innermost groupArray + arraySort layer). The lambda parameter `p`
 // binds each tuple; `tupleElement(p, 1)` extracts the timestamp.
@@ -962,7 +965,7 @@ func Lambda2(p1, p2 string, body Frag) Frag {
 // present; bound args land in start → end → series order.
 func RangeWindowFilter(start, end, series Frag) Frag {
 	tsElem := Call("tupleElement", BareIdent("p"), InlineLit(int64(1)))
-	body := And(Gte(tsElem, start), Lte(tsElem, end))
+	body := And(Gt(tsElem, start), Lte(tsElem, end))
 	return Call("arrayFilter", Lambda1("p", body), series)
 }
 

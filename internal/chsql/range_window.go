@@ -740,12 +740,13 @@ func groupArrayPairFrag(tsCol, valCol string) Frag {
 }
 
 // windowFilterPairsFrag returns a Frag rendering the per-series
-// arrayFilter clamp to the [end-range, end] window over the
-// `series_array` alias. Thin wrapper over the chsql.RangeWindowFilter
-// typed compound-idiom helper; kept as a local helper so the
-// rangeNS-arithmetic stays a single inline literal rather than repeated
-// `Sub(end, Call("toIntervalNanosecond", …))` boilerplate at every
-// callsite.
+// arrayFilter clamp to the (end-range, end] window over the
+// `series_array` alias. The interval is left-open / right-closed to
+// match PromQL range vector selector semantics. Thin wrapper over
+// the chsql.RangeWindowFilter typed compound-idiom helper; kept as a
+// local helper so the rangeNS-arithmetic stays a single inline literal
+// rather than repeated `Sub(end, Call("toIntervalNanosecond", …))`
+// boilerplate at every callsite.
 //
 // end may render arbitrary CH expressions (DateTime64 literal,
 // `now64(9)`, or `anchor_ts` in the matrix path); the rangeNS bound
@@ -920,7 +921,7 @@ func (e *emitter) emitRangeWindowLogRate(r *chplan.RangeWindow) error {
 //	        SELECT
 //	            series_key,
 //	            arrayFilter(
-//	                p -> tupleElement(p, 1) >= <end> - toIntervalNanosecond(<range_ns>)
+//	                p -> tupleElement(p, 1) >  <end> - toIntervalNanosecond(<range_ns>)
 //	                  AND tupleElement(p, 1) <= <end>,
 //	                series_array
 //	            ) AS window_pairs
