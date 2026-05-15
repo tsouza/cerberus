@@ -307,15 +307,21 @@ func foldSyntheticBinary(left, right chplan.Node, op chplan.BinaryOp, returnBool
 //
 // The result shape mirrors [lowerVectorScalar]:
 //
-//   - Arithmetic op: Project [MetricName, Attributes, TimeUnix,
-//     (<synth_val> OP Value) AS Value] over the vec leg.
+//   - Arithmetic op: Project ["" AS MetricName, Attributes, TimeUnix,
+//     (<synth_val> OP Value) AS Value] over the vec leg. The
+//     MetricName column is rewritten to an empty literal per Prom's
+//     derived-sample rule (`time() <op> metric` is not the same
+//     series as `metric`, so `__name__` drops). Same rule as #359
+//     applied to instant fns / scalar-vec binops / V-V binops.
 //   - Comparison op + `bool` modifier: Project with
-//     `toFloat64(<synth_val> OP Value) AS Value`.
+//     `toFloat64(<synth_val> OP Value) AS Value`; MetricName is
+//     likewise emptied (bool-compared rows are derived samples).
 //   - Comparison op WITHOUT `bool`: Filter on `<synth_val> OP Value`
 //     keeping the vec leg's columns intact (Prom's "preserve LHS
 //     where comparison holds" rule reduces here to "preserve vec
 //     rows where comparison holds" since the synthetic side has no
-//     labels of its own to keep).
+//     labels of its own to keep — and Prom's bare-comparison rule
+//     preserves __name__ when the op filters rather than transforms).
 //
 // Range mode rewiring: the synthetic leg's Value expression may
 // reference `ColumnRef{anchor_ts}` (the per-step anchor introduced by
@@ -349,7 +355,7 @@ func foldSyntheticVectorBinary(synth, vec chplan.Node, op chplan.BinaryOp, scala
 	return &chplan.Project{
 		Input: vec,
 		Projections: []chplan.Projection{
-			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}},
+			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
 			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}},
 			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}},
 			{Expr: newValue, Alias: s.ValueColumn},
