@@ -167,9 +167,19 @@ func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCt
 	}
 	// Range mode (ctx.step > 0): build the per-step LWR by cross-joining
 	// the raw scan with a StepGrid and collapsing latest-per-(series,
-	// anchor). Anchor modifiers (`@`/`offset`) are honoured by shifting
-	// the predicate against `anchor_ts` rather than a single end_ts.
+	// anchor). Anchor modifiers (`offset`) are honoured by shifting the
+	// predicate against `anchor_ts` rather than a single end_ts.
 	if ctx.step > 0 && !ctx.start.IsZero() && !ctx.end.IsZero() {
+		// `@<absolute>` / `@ start()` / `@ end()` pin a single anchor
+		// across all steps — every step evaluates the same fixed-time
+		// LWR. Collapse the StepGrid fan-out: run the LWR once at the
+		// pinned anchor (yielding one row per series, same shape as
+		// instant mode) and broadcast across the step grid via
+		// CrossJoin so the matrix pivot still receives one row per
+		// (series, step).
+		if hasAbsoluteAt(v) {
+			return wrapRangeAbsoluteAtBroadcast(scan, pred, anchor, ctx, s), nil
+		}
 		return wrapRangeLatestPerSeries(scan, pred, anchor, ctx, s), nil
 	}
 	// Instant-vector context: the LWR wrapper applies both the
@@ -389,6 +399,111 @@ func wrapRangeLatestPerSeries(scan *chplan.Scan, pred chplan.Expr, anchor evalAn
 			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
 			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
 			{Expr: anchorRef, Alias: s.TimestampColumn},
+			{Expr: &chplan.ColumnRef{Name: lwrValueAlias}, Alias: s.ValueColumn},
+		},
+	}
+}
+
+// wrapRangeAbsoluteAtBroadcast is the range-mode lowering for a bare
+// vector selector pinned by an ABSOLUTE `@` modifier (`@<unix-ts>`,
+// `@ start()`, `@ end()`). The pinned anchor is fixed across every step
+// in `[start, end]`, so every step evaluates the SAME LWR window and
+// yields the same per-series value. Rather than emit the N-anchor
+// StepGrid fan-out that the bare-selector path uses, this wrap:
+//
+//  1. Evaluates the LWR ONCE against the pinned anchor — produces 1 row
+//     per series with the canonical `[MetricName, Attributes, lwr_value]`
+//     shape (TimeUnix is dropped so it doesn't collide with the StepGrid's
+//     anchor_ts in the outer scope).
+//  2. CrossJoins with a StepGrid spanning the request window — yields
+//     N (series, step) rows total.
+//  3. Projects the StepGrid's anchor_ts as TimeUnix and the inner
+//     lwr_value as Value — restoring the canonical 4-column Sample
+//     contract for downstream consumers.
+//
+// Plan shape:
+//
+//	Project [MetricName, Attributes, anchor_ts AS TimeUnix, lwr_value AS Value]
+//	  CrossJoin
+//	    StepGrid(start, end, step)
+//	    Project [MetricName, Attributes, lwr_value]
+//	      Aggregate by(MetricName, Attributes) argMax(Value, TimeUnix) AS lwr_value
+//	        Filter (matchers AND TimeUnix <= @ts AND TimeUnix > @ts - 5m)
+//	          Scan(<table>)
+//
+// Response shape is unchanged: matrixFromCursor still receives N rows
+// per series (one per step, all carrying the same Value at distinct
+// step timestamps), so the JSON payload preserves Prom's expected
+// N-sample matrix for a fixed-anchor query.
+//
+// The win is SQL complexity: the bucket-aggregate fan-out collapses to a
+// single-pass LWR over the raw scan + a trivial broadcast — CH evaluates
+// the staleness window once instead of N times, and the PREWHERE-eligible
+// matchers stay on the bare scan (the optimizer promotes them as usual).
+//
+// Closes follow-up #2 from Pool-AK's PR #347.
+func wrapRangeAbsoluteAtBroadcast(scan *chplan.Scan, pred chplan.Expr, anchor evalAnchor, ctx lowerCtx, s schema.Metrics) chplan.Node {
+	// Inner: LWR collapsed once at the pinned anchor. The filter is the
+	// same shape wrapInstantLatestPerSeries uses — Timestamp <= anchor
+	// AND Timestamp > anchor - lookback — with offset (if any) folded
+	// in via timeBoundExpr / stalenessLowerBoundExpr. Honoring offset
+	// here lets `metric @ 1700000000 offset 5m` slide the LWR window
+	// back by 5m and still produce a stable per-series result.
+	lwr := timeBoundExpr(s.TimestampColumn, anchor)
+	staleness := stalenessLowerBoundExpr(s.TimestampColumn, anchor, instantLookback)
+	combined := pred
+	for _, p := range []chplan.Expr{lwr, staleness} {
+		if combined == nil {
+			combined = p
+			continue
+		}
+		combined = &chplan.Binary{Op: chplan.OpAnd, Left: combined, Right: p}
+	}
+	filtered := &chplan.Filter{Input: scan, Predicate: combined}
+
+	const lwrValueAlias = "lwr_value"
+
+	innerAgg := &chplan.Aggregate{
+		Input: filtered,
+		GroupBy: []chplan.Expr{
+			&chplan.ColumnRef{Name: s.MetricNameColumn},
+			&chplan.ColumnRef{Name: s.AttributesColumn},
+		},
+		GroupByAliases: []string{s.MetricNameColumn, s.AttributesColumn},
+		AggFuncs: []chplan.AggFunc{{
+			Name: "argMax",
+			Args: []chplan.Expr{
+				&chplan.ColumnRef{Name: s.ValueColumn},
+				&chplan.ColumnRef{Name: s.TimestampColumn},
+			},
+			Alias: lwrValueAlias,
+		}},
+	}
+	// Drop TimeUnix from the inner output so it doesn't collide with
+	// the StepGrid's anchor_ts column once the two sides CrossJoin —
+	// the outer Project re-projects anchor_ts into the TimeUnix slot.
+	innerProject := &chplan.Project{
+		Input: innerAgg,
+		Projections: []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
+			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+			{Expr: &chplan.ColumnRef{Name: lwrValueAlias}, Alias: lwrValueAlias},
+		},
+	}
+
+	joined := &chplan.CrossJoin{
+		Left:  &chplan.StepGrid{Start: ctx.start.UTC(), End: ctx.end.UTC(), Step: ctx.step},
+		Right: innerProject,
+	}
+
+	// Re-shape the joined output into the canonical Sample 4-column
+	// contract with TimeUnix sourced from the step grid's anchor_ts.
+	return &chplan.Project{
+		Input: joined,
+		Projections: []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
+			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+			{Expr: &chplan.ColumnRef{Name: "anchor_ts"}, Alias: s.TimestampColumn},
 			{Expr: &chplan.ColumnRef{Name: lwrValueAlias}, Alias: s.ValueColumn},
 		},
 	}

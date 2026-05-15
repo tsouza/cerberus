@@ -92,6 +92,23 @@ func hasModifier(vs *parser.VectorSelector) bool {
 	return vs.Timestamp != nil || vs.OriginalOffset != 0 || vs.StartOrEnd != 0
 }
 
+// hasAbsoluteAt reports whether vs pins an ABSOLUTE evaluation anchor —
+// `@<unix-ts>` (vs.Timestamp), `@ start()`, or `@ end()` (vs.StartOrEnd).
+// A bare `offset <d>` (no `@`) does NOT count: `offset` is a relative
+// shift applied against the surrounding query's eval time, so it remains
+// per-step in range mode and the per-step LWR wrap stays correct.
+//
+// The signal drives the "fixed-anchor" OneRow + broadcast optimization in
+// range mode: when this is true and ctx.step > 0, the same anchor value
+// applies at every step grid point, so the SQL evaluates the LWR window
+// ONCE and broadcasts the per-series result across the step grid via a
+// CrossJoin instead of fanning the LWR window across N step anchors.
+//
+// Closes follow-up #2 from Pool-AK's per-step LWR rework (PR #347).
+func hasAbsoluteAt(vs *parser.VectorSelector) bool {
+	return vs.Timestamp != nil || vs.StartOrEnd != 0
+}
+
 // timeBoundExpr builds `<col> <= <anchor>` for an instant-vector
 // VectorSelector with `@` or `offset`. The anchor is `now64(9)` (or a
 // literal toDateTime64) optionally minus a nanosecond interval.
