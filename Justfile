@@ -419,6 +419,24 @@ loki-compatibility-keep:
 # Tear down the Loki compatibility stack manually.
 loki-compatibility-down:
     cd harness/loki-compatibility && docker compose down -v
+# === Tempo / TraceQL compatibility harness ===
+
+# Run the Tempo / TraceQL compatibility harness end-to-end. Slow; expect
+# minutes. Sets up the Docker Compose stack (reference Tempo +
+# cerberus + CH + stub driver), runs the driver, writes reports under
+# harness/tempo-compatibility/reports/. PR 2 of
+# docs/tempo-compliance-plan.md — the driver is a stub until PRs 3-4
+# wire the real seeder + differ.
+tempo-compatibility:
+    ./harness/tempo-compatibility/scripts/run-tempo-compatibility.sh
+
+# Keep the tempo-compatibility stack running after the driver finishes (for debugging).
+tempo-compatibility-keep:
+    COMPOSE_KEEP=1 ./harness/tempo-compatibility/scripts/run-tempo-compatibility.sh
+
+# Tear down the tempo-compatibility stack manually.
+tempo-compatibility-down:
+    cd harness/tempo-compatibility && docker compose down -v
 
 # === Shadow-mode differential testing (RC3 R3.9) ===
 
