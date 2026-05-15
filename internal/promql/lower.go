@@ -165,6 +165,13 @@ func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCt
 		}
 		return &chplan.Filter{Input: scan, Predicate: pred}, nil
 	}
+	// Range mode (ctx.step > 0): build the per-step LWR by cross-joining
+	// the raw scan with a StepGrid and collapsing latest-per-(series,
+	// anchor). Anchor modifiers (`@`/`offset`) are honoured by shifting
+	// the predicate against `anchor_ts` rather than a single end_ts.
+	if ctx.step > 0 && !ctx.start.IsZero() && !ctx.end.IsZero() {
+		return wrapRangeLatestPerSeries(scan, pred, anchor, ctx, s), nil
+	}
 	// Instant-vector context: the LWR wrapper applies both the
 	// `Timestamp <= anchor` upper bound and the staleness lower
 	// bound, so we DON'T pre-add the modifier's timeBoundExpr here —
@@ -242,6 +249,139 @@ func wrapInstantLatestPerSeries(scan *chplan.Scan, pred chplan.Expr, anchor eval
 			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
 			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
 			{Expr: &chplan.ColumnRef{Name: lwrTsAlias}, Alias: s.TimestampColumn},
+			{Expr: &chplan.ColumnRef{Name: lwrValueAlias}, Alias: s.ValueColumn},
+		},
+	}
+}
+
+// wrapRangeLatestPerSeries builds the per-step LWR for a vector
+// selector evaluated over a query_range window. The shape is:
+//
+//	Project [MetricName, Attributes, anchor_ts AS TimeUnix, lwr_value AS Value]
+//	  Aggregate by (MetricName, Attributes, anchor_ts) funcs=[argMax(Value, TimeUnix) AS lwr_value]
+//	    Filter (anchor_ts - <offset> >= TimeUnix AND TimeUnix > anchor_ts - <offset> - 5m)
+//	      CrossJoin(StepGrid(start, end, step), Scan + matchers_filter)
+//
+// At each step `t = start, start+step, ..., end` the StepGrid emits one
+// `anchor_ts = t` row; the CrossJoin pairs that with every raw sample row,
+// the Filter trims to the per-step LWR window `(t-offset-5m, t-offset]`,
+// the Aggregate collapses to one row per (series, anchor) carrying the
+// latest-in-window Value, and the outer Project exposes the canonical
+// (MetricName, Attributes, TimeUnix, Value) shape with TimeUnix = anchor_ts.
+//
+// Output schema preservation lets the surrounding plan tree (aggregations,
+// arithmetic, instant fns) keep consuming the same column shape it did
+// before — the difference vs the instant LWR wrap is that each (series)
+// produces N rows (one per step inside `[start, end]` that had data) rather
+// than a single row at `end_ts`.
+func wrapRangeLatestPerSeries(scan *chplan.Scan, pred chplan.Expr, anchor evalAnchor, ctx lowerCtx, s schema.Metrics) chplan.Node {
+	const (
+		anchorCol     = "anchor_ts"
+		lwrValueAlias = "lwr_value"
+	)
+	anchorRef := &chplan.ColumnRef{Name: anchorCol}
+	// `@`/offset modifiers shift the LWR window against the per-step
+	// anchor: `up offset 5m` over a step at `t` evaluates the latest
+	// sample in `(t-5m-5m, t-5m]`. The shift is `(anchor_ts - offset)`
+	// for the upper bound and `(anchor_ts - offset - lookback)` for the
+	// strict lower bound.
+	//
+	// When the modifier is `@<absolute>` (no offset, ctx.end ignored)
+	// the per-step semantics still apply — Prom queries with `@ start()`
+	// over a range query keep a single anchor across all steps. That
+	// shape is rare enough that the wrap below falls back to a per-step
+	// anchor (i.e., the user's intent is preserved when they don't pin
+	// the absolute @ modifier).
+	var upperBound chplan.Expr = anchorRef
+	if anchor.Offset > 0 {
+		upperBound = &chplan.Binary{
+			Op:   chplan.OpSub,
+			Left: anchorRef,
+			Right: &chplan.FuncCall{
+				Name: "toIntervalNanosecond",
+				Args: []chplan.Expr{&chplan.LitInt{V: anchor.Offset.Nanoseconds()}},
+			},
+		}
+	}
+	// `TimeUnix <= anchor_ts - offset` (non-strict upper)
+	lwrUpper := &chplan.Binary{
+		Op:    chplan.OpLe,
+		Left:  &chplan.ColumnRef{Name: s.TimestampColumn},
+		Right: upperBound,
+	}
+	// `TimeUnix > anchor_ts - offset - lookback` (strict lower)
+	lookbackNs := instantLookback.Nanoseconds() + anchor.Offset.Nanoseconds()
+	lowerBound := &chplan.Binary{
+		Op:   chplan.OpSub,
+		Left: anchorRef,
+		Right: &chplan.FuncCall{
+			Name: "toIntervalNanosecond",
+			Args: []chplan.Expr{&chplan.LitInt{V: lookbackNs}},
+		},
+	}
+	lwrLower := &chplan.Binary{
+		Op:    chplan.OpGt,
+		Left:  &chplan.ColumnRef{Name: s.TimestampColumn},
+		Right: lowerBound,
+	}
+
+	// Inner Scan/Filter — apply matchers via PREWHERE-eligible filter
+	// the optimizer already promotes. The `(scan, pred)` split keeps the
+	// downstream PREWHERE path unchanged; when pred is nil (no matchers)
+	// the scan flows directly into the CrossJoin.
+	var rawSide chplan.Node = scan
+	if pred != nil {
+		rawSide = &chplan.Filter{Input: scan, Predicate: pred}
+	}
+
+	stepGrid := &chplan.StepGrid{
+		Start: ctx.start.UTC(),
+		End:   ctx.end.UTC(),
+		Step:  ctx.step,
+	}
+	joined := &chplan.CrossJoin{
+		Left:  stepGrid,
+		Right: rawSide,
+	}
+
+	// Filter to the per-step LWR window.
+	filterPred := chplan.Expr(&chplan.Binary{
+		Op: chplan.OpAnd, Left: lwrUpper, Right: lwrLower,
+	})
+	filtered := &chplan.Filter{Input: joined, Predicate: filterPred}
+
+	// Aggregate per (MetricName, Attributes, anchor_ts) collapsing to
+	// the latest sample in the per-step window. The argMax over
+	// TimeUnix gives the LWR-canonical "newest sample in window".
+	agg := &chplan.Aggregate{
+		Input: filtered,
+		GroupBy: []chplan.Expr{
+			&chplan.ColumnRef{Name: s.MetricNameColumn},
+			&chplan.ColumnRef{Name: s.AttributesColumn},
+			anchorRef,
+		},
+		GroupByAliases: []string{s.MetricNameColumn, s.AttributesColumn, anchorCol},
+		AggFuncs: []chplan.AggFunc{
+			{
+				Name: "argMax",
+				Args: []chplan.Expr{
+					&chplan.ColumnRef{Name: s.ValueColumn},
+					&chplan.ColumnRef{Name: s.TimestampColumn},
+				},
+				Alias: lwrValueAlias,
+			},
+		},
+	}
+
+	// Outer Project re-aliases anchor_ts → TimeUnix so the canonical
+	// 4-column Sample contract holds for downstream consumers
+	// (aggregations, arithmetic, instant fns, the handler-side pivot).
+	return &chplan.Project{
+		Input: agg,
+		Projections: []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
+			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+			{Expr: anchorRef, Alias: s.TimestampColumn},
 			{Expr: &chplan.ColumnRef{Name: lwrValueAlias}, Alias: s.ValueColumn},
 		},
 	}
@@ -467,7 +607,7 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 	if err != nil {
 		return nil, err
 	}
-	return &chplan.RangeWindow{
+	rw := &chplan.RangeWindow{
 		Input:           inner,
 		Func:            c.Func.Name,
 		Range:           ms.Range,
@@ -476,7 +616,23 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 		TimestampColumn: s.TimestampColumn,
 		ValueColumn:     s.ValueColumn,
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
-	}, nil
+	}
+	// In range mode, fan the range function across the request's step
+	// grid: each anchor in [start, end] (spaced by step) emits one row
+	// per series with the per-anchor function value. The emitter
+	// already supports this via OuterRange + Step (the matrix path used
+	// by subqueries); we just need to flip the switch when LowerAtRange
+	// threaded a non-zero step. Without this, `rate(m[5m])` over
+	// query_range degenerates to a single anchor at end_ts and the
+	// matrix pivot only sees one sample per series — the same root
+	// cause as the bare-selector range-mode bug Pool-AK is fixing.
+	if ctx.step > 0 && !ctx.start.IsZero() && !ctx.end.IsZero() {
+		rw.Start = ctx.start.UTC()
+		rw.End = ctx.end.UTC()
+		rw.Step = ctx.step
+		rw.OuterRange = ctx.end.Sub(ctx.start)
+	}
+	return rw, nil
 }
 
 // lowerAggregate handles `sum by (job) (...)`, `sum without (instance) (...)`,
@@ -515,6 +671,18 @@ func lowerAggregate(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (ch
 	}
 
 	aliases := groupKeyAliases(len(groupBy))
+	// In range mode the input plan exposes a per-step TimeUnix
+	// (anchor_ts re-aliased by wrapRangeLatestPerSeries). Aggregations
+	// must group by the per-step bucket in addition to the user's
+	// `by/without` keys — otherwise CH would collapse N anchors into one
+	// row per series-set. Inject TimeUnix as an extra group key with a
+	// stable alias (`bucket_ts`) the wrap can reference.
+	const bucketAlias = "bucket_ts"
+	rangeBucketed := ctx.step > 0
+	if rangeBucketed {
+		groupBy = append(groupBy, &chplan.ColumnRef{Name: s.TimestampColumn})
+		aliases = append(aliases, bucketAlias)
+	}
 	agg := &chplan.Aggregate{
 		Input:              input,
 		GroupBy:            groupBy,
@@ -522,7 +690,13 @@ func lowerAggregate(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (ch
 		AggFuncs:           []chplan.AggFunc{aggFunc},
 		DropEmptyOnNoGroup: true,
 	}
-	wrapped := wrapAggregateForSample(agg, a, s, aliases)
+	// The wrap re-projects the bucket alias onto TimeUnix so range-mode
+	// aggregations expose per-step rows on the canonical column shape.
+	userAliases := aliases
+	if rangeBucketed {
+		userAliases = aliases[:len(aliases)-1]
+	}
+	wrapped := wrapAggregateForSample(agg, a, s, userAliases, rangeBucketed, bucketAlias)
 	// quantile(phi, V) with phi outside [0, 1] is well-defined in
 	// PromQL — see prometheus/promql/quantile.go: phi<0 → -Inf,
 	// phi>1 → +Inf. CH's `quantile` aggregate rejects out-of-range
@@ -775,9 +949,15 @@ func groupKeyAliases(n int) []string {
 //	Attributes  = map('lbl0', gkey_0, ...)    for `by (lbl0, lbl1, ...)`
 //	            | gkey_0                       for `without (...)` (mapFilter output)
 //	            | empty Map(String,String)     for unaggregated forms
-//	TimeUnix    = now64(9)                    (eval time)
+//	TimeUnix    = now64(9)                    (instant mode — eval time)
+//	            | <bucketAlias>                (range mode — per-step anchor)
 //	Value       = <aggFunc alias>             (sum / avg / quantile / ...)
-func wrapAggregateForSample(agg *chplan.Aggregate, a *parser.AggregateExpr, s schema.Metrics, aliases []string) chplan.Node {
+//
+// rangeBucketed reflects whether the underlying Aggregate carries an
+// extra TimeUnix group key (range mode); when true the projection's
+// TimeUnix slot references the bucket alias the Aggregate exposed so
+// per-step aggregation rows propagate onto the canonical column shape.
+func wrapAggregateForSample(agg *chplan.Aggregate, a *parser.AggregateExpr, s schema.Metrics, aliases []string, rangeBucketed bool, bucketAlias string) chplan.Node {
 	var attrs chplan.Expr
 	switch {
 	case len(aliases) == 0:
@@ -805,12 +985,17 @@ func wrapAggregateForSample(agg *chplan.Aggregate, a *parser.AggregateExpr, s sc
 		}
 	}
 
+	tsExpr := chplan.Expr(&chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}})
+	if rangeBucketed {
+		tsExpr = &chplan.ColumnRef{Name: bucketAlias}
+	}
+
 	return &chplan.Project{
 		Input: agg,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
 			{Expr: attrs, Alias: s.AttributesColumn},
-			{Expr: &chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}}, Alias: s.TimestampColumn},
+			{Expr: tsExpr, Alias: s.TimestampColumn},
 			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
 		},
 	}

@@ -163,13 +163,26 @@ func lowerClamp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, er
 // e.g. `edge_abs_over_rate.txtar` (instant fn over rate) and
 // `unary_minus_rate.txtar` (unary minus over rate).
 func projectValueOverInner(inner chplan.Node, s schema.Metrics, newValue chplan.Expr) chplan.Node {
-	if _, ok := inner.(*chplan.RangeWindow); ok {
+	if rw, ok := inner.(*chplan.RangeWindow); ok {
+		projections := []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}},
+		}
+		// Matrix-shape RangeWindow (range-mode subqueries + range-mode
+		// `rate`/`*_over_time` queries with Step > 0) exposes
+		// `anchor_ts` as the per-row per-anchor timestamp. The outer
+		// wrapWithSampleProjection reads it back through this Project
+		// (when `isMatrixRangeWindow` walks past the value-rewrite
+		// Project layer); forwarding the column keeps the per-anchor
+		// time-bucketing intact for callers like `abs(avg_over_time(…))`.
+		if rw.OuterRange > 0 {
+			projections = append(projections, chplan.Projection{
+				Expr: &chplan.ColumnRef{Name: "anchor_ts"},
+			})
+		}
+		projections = append(projections, chplan.Projection{Expr: newValue, Alias: s.ValueColumn})
 		return &chplan.Project{
-			Input: inner,
-			Projections: []chplan.Projection{
-				{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}},
-				{Expr: newValue, Alias: s.ValueColumn},
-			},
+			Input:       inner,
+			Projections: projections,
 		}
 	}
 	return &chplan.Project{
