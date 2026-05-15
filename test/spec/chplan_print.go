@@ -50,6 +50,14 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 	case *chplan.OneRow:
 		fmt.Fprintf(b, "%sOneRow\n", indent)
 		_ = v
+	case *chplan.StepGrid:
+		fmt.Fprintf(b, "%sStepGrid start=%s end=%s step=%s\n",
+			indent, v.Start.Format("2006-01-02T15:04:05.000000000Z"),
+			v.End.Format("2006-01-02T15:04:05.000000000Z"), v.Step)
+	case *chplan.CrossJoin:
+		fmt.Fprintf(b, "%sCrossJoin\n", indent)
+		printNode(b, v.Left, depth+1)
+		printNode(b, v.Right, depth+1)
 	case *chplan.Filter:
 		fmt.Fprintf(b, "%sFilter predicate=%s\n", indent, printExpr(v.Predicate))
 		printNode(b, v.Input, depth+1)

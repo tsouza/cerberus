@@ -671,24 +671,38 @@ func toVector(samples []chclient.Sample, ts time.Time) []VectorSample {
 	return out
 }
 
-// matrixFromCursor is the streaming pivot from the cursor: it
-// drains the cursor row-by-row instead of consuming a pre-materialised
-// []chclient.Sample slice. Per-series buffers (timestamps + values) live
-// in a map keyed by canonicalKey; once the cursor is fully drained we
-// pivot each buffer onto the step grid using the same latest-at-step
-// semantics PromQL uses (latest sample at-or-before step, within lookback delta).
+// matrixFromCursor drains the cursor row-by-row and emits one Matrix
+// sample per row at the row's TimeUnix.
 //
-// Memory complexity: O(rows) total in the per-series buffers — but with
-// the master []chclient.Sample slice gone, peak resident bytes shrink
-// roughly 2x (no parallel copy) and the gc churn from growing one big
-// slice disappears. The eventual fully-streaming variant (one series at
-// a time, flushed on canonicalKey boundary changes) requires the SQL
-// emission to ORDER BY (series_key, ts) — that lands as a separate
-// follow-up so this PR stays scoped to the API surface change.
+// The Pool-AK range-mode rework makes every PromQL `query_range`
+// plan emit one row per (series, step anchor) on the SQL side —
+// each row already carries the per-step LWR-resolved value at the
+// correct anchor timestamp. The matrix-shape RangeWindow path (rate
+// / *_over_time / subquery) follows the same per-anchor contract.
+// So the matrix pivot is now a trivial row → sample copy keyed by
+// canonical series key, with no step-grid iteration or carry-forward
+// dance.
+//
+// Empty-window anchors are dropped by the SQL itself (the per-step
+// LWR yields no row when no sample falls in `(anchor-5m, anchor]`;
+// the matrix RangeWindow's `length(window_vals) >= N` predicate
+// drops empty rate / *_over_time windows). The pivot mirrors that
+// behaviour by simply not emitting a sample at an anchor for which
+// no row was returned — preserving Prom's "no sample for an empty
+// staleness window" rule end-to-end.
+//
+// Rows whose Timestamp falls outside `[start, end]` are clipped so a
+// drifted server-side `now64(9)` (legacy bare-selector instant
+// shapes) never lands a stray point past the request window.
+//
+// Memory complexity: O(rows) total in the per-series buffers. The
+// eventual fully-streaming variant (one series at a time, flushed on
+// canonicalKey boundary changes) requires the SQL emission to
+// ORDER BY (series_key, ts).
 func matrixFromCursor(
 	cursor chclient.Cursor,
 	start, end time.Time,
-	step time.Duration,
+	_ time.Duration,
 ) ([]MatrixSample, error) {
 	type seriesState struct {
 		labels map[string]string
@@ -711,11 +725,12 @@ func matrixFromCursor(
 		return nil, err
 	}
 
-	const lookback = 5 * time.Minute
 	out := make([]MatrixSample, 0, len(bySeries))
 	for _, st := range bySeries {
 		// Inline insertion sort by Timestamp ascending — rows are
-		// typically already nearly sorted from CH.
+		// typically already nearly sorted from CH but the CrossJoin
+		// + Aggregate plan shapes the rework introduces do not
+		// guarantee row order across (series, anchor) pairs.
 		for i := 1; i < len(st.rows); i++ {
 			for j := i; j > 0 && st.rows[j-1].Timestamp.After(st.rows[j].Timestamp); j-- {
 				st.rows[j-1], st.rows[j] = st.rows[j], st.rows[j-1]
@@ -723,20 +738,12 @@ func matrixFromCursor(
 		}
 
 		ms := MatrixSample{Metric: st.labels}
-		row := 0
-		for t := start; !t.After(end); t = t.Add(step) {
-			for row < len(st.rows) && !st.rows[row].Timestamp.After(t) {
-				row++
-			}
-			if row == 0 {
+		for _, r := range st.rows {
+			if r.Timestamp.Before(start) || r.Timestamp.After(end) {
 				continue
 			}
-			latest := st.rows[row-1]
-			if t.Sub(latest.Timestamp) > lookback {
-				continue
-			}
-			stamp := float64(t.UnixMilli()) / 1e3
-			ms.Values = append(ms.Values, Sample{stamp, strconv.FormatFloat(latest.Value, 'f', -1, 64)})
+			stamp := float64(r.Timestamp.UnixMilli()) / 1e3
+			ms.Values = append(ms.Values, Sample{stamp, strconv.FormatFloat(r.Value, 'f', -1, 64)})
 		}
 		if len(ms.Values) > 0 {
 			out = append(out, ms)

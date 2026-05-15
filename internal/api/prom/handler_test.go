@@ -165,15 +165,20 @@ func TestQuery_Vector(t *testing.T) {
 func TestQueryRange_Matrix(t *testing.T) {
 	t.Parallel()
 
-	// Three samples spaced 30s apart in the requested [start, end] window;
-	// step=60s should produce 5 evaluation points (start, +60, +120, +180, end).
+	// Post Pool-AK rework: matrix pivot is a row → sample copy keyed
+	// by canonical series. The SQL handed back is responsible for the
+	// per-step LWR (bare selector path) or per-anchor windowing
+	// (matrix RangeWindow path) — the pivot no longer iterates the
+	// step grid or carries values forward. Stub three rows at distinct
+	// step anchors and assert the matrix surfaces them verbatim, in
+	// timestamp order, with no carry-forward of stale values.
 	start := time.Unix(1717995600, 0).UTC()
 	end := start.Add(4 * time.Minute) // 1717995840
 	q := &stubQuerier{
 		samples: []chclient.Sample{
 			{MetricName: "up", Labels: map[string]string{"job": "api"}, Timestamp: start, Value: 1.0},
-			{MetricName: "up", Labels: map[string]string{"job": "api"}, Timestamp: start.Add(90 * time.Second), Value: 2.0},
-			{MetricName: "up", Labels: map[string]string{"job": "api"}, Timestamp: start.Add(180 * time.Second), Value: 3.0},
+			{MetricName: "up", Labels: map[string]string{"job": "api"}, Timestamp: start.Add(2 * time.Minute), Value: 2.0},
+			{MetricName: "up", Labels: map[string]string{"job": "api"}, Timestamp: start.Add(3 * time.Minute), Value: 3.0},
 		},
 	}
 
@@ -207,15 +212,17 @@ func TestQueryRange_Matrix(t *testing.T) {
 	if len(matrix) != 1 {
 		t.Fatalf("expected 1 series, got %d", len(matrix))
 	}
-	// 5 step points expected for [start..start+4m] step=60s.
-	if got := len(matrix[0].Values); got != 5 {
-		t.Fatalf("expected 5 sample points in matrix, got %d: %+v", got, matrix[0].Values)
+	if got := len(matrix[0].Values); got != 3 {
+		t.Fatalf("expected 3 sample points (one per stubbed row), got %d: %+v",
+			got, matrix[0].Values)
 	}
-	// Latest-at-step values: [1, 1, 2, 3, 3] for steps [0, 60, 120, 180, 240].
-	wantValues := []string{"1", "1", "2", "3", "3"}
+	// Values appear in the order the SQL returned them — the rows the
+	// stub yields land at start + (0, 2, 3) minutes with values
+	// (1, 2, 3) — verbatim.
+	wantValues := []string{"1", "2", "3"}
 	for i, want := range wantValues {
 		if got := matrix[0].Values[i][1]; got != want {
-			t.Errorf("step %d: got value %q, want %q", i, got, want)
+			t.Errorf("row %d: got value %q, want %q", i, got, want)
 		}
 	}
 }
