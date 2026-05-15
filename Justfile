@@ -444,6 +444,18 @@ tempo-compatibility-keep:
 tempo-compatibility-down:
     cd harness/tempo-compatibility && docker compose down -v
 
+# === Compatibility — all three heads ===
+
+# Run all three compatibility harnesses sequentially: PromQL
+# (prometheus/compliance), LogQL (vendored grafana/loki:pkg/logql/bench
+# + cerberus-owned tester), TraceQL (tempo-compatibility stub until
+# docs/tempo-compliance-plan.md PRs 3-4 wire the real differ). Each
+# sub-recipe tears its own compose stack down on every exit path.
+# Slow — expect tens of minutes. Use the per-head recipes for iteration.
+# Exit semantics: fails fast on the first non-zero recipe; the report
+# files for each head land under harness/*/reports/ regardless.
+compatibility-all: compatibility loki-compatibility tempo-compatibility
+
 # === Shadow-mode differential testing (RC3 R3.9) ===
 
 # Build + run the shadow-mode harness against a corpus.
