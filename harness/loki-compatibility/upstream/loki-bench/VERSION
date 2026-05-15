@@ -15,6 +15,14 @@ upstream_commit:   3361de24b692875d77bd7433cd6baa7c68dc0ef9
 
 vendored_paths:
   - pkg/logql/bench/queries/fast/*.yaml
+  # PR 6 (docs/loki-compliance-plan.md) widened the corpus to include
+  # regression/ and exhaustive/ subdirs. Every entry currently lands in
+  # cerberus-test-queries.yml's should_skip with a per-feature rationale
+  # — the YAMLs are vendored verbatim so the runner sees them when
+  # cerberus ships the deferred RC2/RC3 LogQL features and the
+  # corresponding overlay entry is dropped.
+  - pkg/logql/bench/queries/regression/*.yaml
+  - pkg/logql/bench/queries/exhaustive/*.yaml
   - pkg/logql/bench/queries/schema.json
   - pkg/logql/bench/query_registry.go
   - pkg/logql/bench/remote_test.go
