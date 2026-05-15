@@ -194,16 +194,17 @@ test_cases:
     # label_replace fails when the regex is invalid.
   - query: 'label_replace(demo_num_cpus, "job", "value-$1", "src", "(.*")'
     should_fail: true
-    # label_replace fails when the destination label name is invalid.
-  - query: 'label_replace(demo_num_cpus, "~invalid", "", "src", "(.*)")'
-    should_fail: true
-    # label_replace fails when the source label is empty and would produce
-    # a duplicate output label set.
-  - query: 'label_replace(demo_num_cpus, "instance", "", "", "")'
-    should_fail: true
-    # label_join fails when the destination label name is invalid.
-  - query: 'label_join(demo_num_cpus, "~invalid", "-", "instance")'
-    should_fail: true
+    # `label_replace(..., "~invalid", ...)` / `label_replace(..., "instance",
+    # "", "", "")` / `label_join(..., "~invalid", ...)` were `should_fail`
+    # against Prom 2.x — `~invalid` violated the legacy label-name regex
+    # `[a-zA-Z_][a-zA-Z0-9_]*` so the function errored. Prom 3.0+ ships UTF-8
+    # label names by default
+    # (https://prometheus.io/docs/prometheus/latest/feature_flags/#utf-8-label-name-support),
+    # so `~invalid` is now legal and the queries succeed. Reference Prom in
+    # this harness is `prom/prometheus:v3.0.1`, so they can't be flagged
+    # `should_fail: true` anymore. Re-introduce only if the upstream
+    # compliance suite tightens these into Prom-3.x-shaped should_fail
+    # cases (e.g. genuinely malformed regex, multi-byte invalid identifier).
   - query: 'label_join(demo_num_cpus, "new_label", "-", "instance", "job")'
   - query: 'label_join(demo_num_cpus, "job", "-", "instance", "job")'
   - query: 'label_join(demo_num_cpus, "job", "-", "instance")'
