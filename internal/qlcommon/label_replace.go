@@ -136,3 +136,81 @@ func ReplacementToCH(repl, regex string) string {
 	}
 	return b.String()
 }
+
+// EmptyCapturesReplacement returns the result of substituting Go's
+// regex `ExpandString` template `repl` against an EMPTY source string
+// that matched the regex via a match where every capture group binds
+// to "". This matches the semantics of `label_replace(m, dst, repl,
+// src, regex)` when `src` is absent from the input series labels (Prom
+// reads missing labels as the empty string) AND the regex matches that
+// empty string — e.g. `(.*)`, `.*`, `^()$` all match `""` with
+// every group capturing `""`.
+//
+// Why we need a separate path:
+//
+//	CH ≤ 24.8's `replaceRegexpOne('', '^(.*)$', 'value-\1')` returns
+//	`""` (the empty input is passed through verbatim, regardless of
+//	the replacement template), instead of the spec-correct `"value-"`.
+//	The outer `mapFilter((k, v) -> v != '', …)` then drops the dst
+//	label entirely, diverging from reference Prom which emits
+//	`dst="value-"`. CH ≥ 25.8 honours the replacement on empty inputs,
+//	but the cerberus deployment lane targets CH 24.8 (the OTel
+//	collector's pinned LTS), so we patch the divergence at SQL build
+//	time by pre-computing the empty-captures result and using it as a
+//	short-circuit when the source value is empty at row time.
+//
+// Substitution rules (mirror `ReplacementToCH` but resolve each
+// backref to the empty string instead of CH's `\N` form):
+//
+//   - `$$`                → literal `$`
+//   - `$N` / `${N}`       → empty string (the N-th capture binds to ""
+//     when the full match was "")
+//   - Any other `$<x>`    → preserved verbatim (named groups,
+//     multi-digit indices — same opt-out as `ReplacementToCH`)
+func EmptyCapturesReplacement(repl string) string {
+	var b strings.Builder
+	b.Grow(len(repl))
+	for i := 0; i < len(repl); i++ {
+		c := repl[i]
+		if c != '$' {
+			b.WriteByte(c)
+			continue
+		}
+		// Lone `$` at end of string — preserve.
+		if i+1 >= len(repl) {
+			b.WriteByte('$')
+			continue
+		}
+		next := repl[i+1]
+		switch {
+		case next == '$':
+			// `$$` → literal `$`.
+			b.WriteByte('$')
+			i++
+		case next >= '0' && next <= '9':
+			// `$N` → "" (capture N is empty for an empty-string match).
+			// Two-digit `$10`+ is preserved verbatim — `ReplacementToCH`
+			// makes the same opt-out, so the regex compile / CH parse
+			// error surfaces consistently.
+			if i+2 < len(repl) && repl[i+2] >= '0' && repl[i+2] <= '9' {
+				b.WriteByte('$')
+				continue
+			}
+			// Single-digit numbered capture → empty. Skip past the digit.
+			i++
+		case next == '{':
+			// `${N}` (single digit) → "". Anything else (named captures,
+			// multi-digit indices) is preserved verbatim — same opt-out
+			// as `ReplacementToCH`.
+			if i+3 < len(repl) && repl[i+2] >= '0' && repl[i+2] <= '9' && repl[i+3] == '}' {
+				i += 3
+				continue
+			}
+			b.WriteByte('$')
+		default:
+			// `$<letter>` etc. — preserve verbatim.
+			b.WriteByte('$')
+		}
+	}
+	return b.String()
+}

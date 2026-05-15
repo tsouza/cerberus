@@ -71,3 +71,60 @@ func TestReplacementToCH(t *testing.T) {
 		})
 	}
 }
+
+// TestEmptyCapturesReplacement locks the build-time pre-computation of
+// the "all captures bind to empty" replacement template — the value a
+// PromQL/LogQL `label_replace` should emit when the source label is
+// absent (read as empty from the input map) AND the regex matches that
+// empty string. The whole reason this helper exists is that CH ≤ 24.8's
+// `replaceRegexpOne` silently passes the empty input through (returning
+// `""` instead of substituting the replacement); the emit-time
+// `if(empty(src), <emptyResult>, replaceRegexpOne(…))` short-circuit
+// uses this helper to compute `<emptyResult>` ahead of time.
+func TestEmptyCapturesReplacement(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"empty", "", ""},
+		{"literal_no_dollar", "hello", "hello"},
+		// Single-digit numbered captures resolve to "" — the canonical
+		// shape from the compat-residual diff
+		// (`label_replace(m, dst, "value-$1", "nonexistent-src", "(.*)")`
+		// → `dst="value-"`).
+		{"single_digit_backref", "$1", ""},
+		{"prefix_then_backref", "value-$1", "value-"},
+		{"backref_zero_whole_match", "$0", ""},
+		{"two_single_digit_refs", "$1-$2", "-"},
+		{"backref_nine", "$9", ""},
+		// `$$` collapses to a literal `$` (mirrors ExpandString).
+		{"dollar_dollar_literal", "$$", "$"},
+		{"dollar_dollar_then_text", "$$x", "$x"},
+		// Braced single-digit form behaves the same as bare `$N`.
+		{"braced_single_digit", "${1}-suffix", "-suffix"},
+		// Multi-digit indices and named captures are preserved verbatim
+		// — same opt-out as `ReplacementToCH`.
+		{"braced_multi_digit_preserved", "${10}", "${10}"},
+		{"multi_digit_unbraced_preserved", "$10", "$10"},
+		{"named_capture_preserved", "${name}", "${name}"},
+		// Edge cases that ExpandString handles literally.
+		{"lone_dollar_at_end", "abc$", "abc$"},
+		{"dollar_letter_preserved", "$x", "$x"},
+		// Literal backslashes pass through unchanged — only `$`-prefixed
+		// metacharacters are interpreted in the Go regex replacement
+		// template the QLs feed us.
+		{"existing_backslash_preserved", `\1`, `\1`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := EmptyCapturesReplacement(tc.in)
+			if got != tc.want {
+				t.Fatalf("EmptyCapturesReplacement(%q): got %q, want %q",
+					tc.in, got, tc.want)
+			}
+		})
+	}
+}

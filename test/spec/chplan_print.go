@@ -343,8 +343,8 @@ func printExpr(e chplan.Expr) string {
 	case *chplan.MapWithoutEmptyValues:
 		return fmt.Sprintf("mapWithoutEmpty(%s)", printExpr(v.Map))
 	case *chplan.LabelReplace:
-		return fmt.Sprintf("labelReplace(%s, dst=%q, replacement=%q, src=%q, regex=%q)",
-			printExpr(v.Map), v.Dst, v.Replacement, v.Src, v.Regex)
+		return fmt.Sprintf("labelReplace(%s, dst=%q, replacement=%q, src=%q, regex=%q, emptyReplacement=%q)",
+			printExpr(v.Map), v.Dst, v.Replacement, v.Src, v.Regex, v.EmptyReplacement)
 	case *chplan.LabelJoin:
 		return fmt.Sprintf("labelJoin(%s, dst=%q, separator=%q, srcs=[%s])",
 			printExpr(v.Map), v.Dst, v.Separator, strings.Join(v.Srcs, ", "))

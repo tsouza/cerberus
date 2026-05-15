@@ -1,16 +1,28 @@
-# `label_replace(metric, "dst", "value-$1", "nonexistent-src", "(.*)")`
-# — Prom semantics treat a missing source label as the empty string, so
-# the regex `(.*)` matches `""` (empty match), capture group $1 binds
-# to `""`, and the dst label is set to the substituted replacement
-# (literal `value-` + empty $1 = `value-`). Cerberus drops the row's
-# dst label entirely pre-fix; the outer `mapFilter((k, v) -> v != '',
-# ...)` was keying off the same closed-over expression as the if-branch
-# rather than the post-mapUpdate Map, so the freshly-added dst entry
-# never survived the filter pass.
+# `label_replace(metric, "job", "value-$1", "nonexistent-src", "(.*)")`
+# — exact shape from compat run 25901406046 (the residual after PR #360's
+# regression coverage landed): the input metric ALREADY carries `job=demo`,
+# and Prom OVERWRITES that to `job="value-"` when src is absent but the
+# regex matches the empty string. Pre-fix cerberus instead dropped the
+# `job` label entirely because CH ≤ 24.8's
+# `replaceRegexpOne('', '^(.*)$', 'value-\\1')` returns the empty string
+# (silent input pass-through), the outer mapFilter then drops the
+# `job=""` entry, and the row loses its overwrite.
 #
-# Bucket 8 from docs/compat-residual-audit-25898791664.md (1 diff).
+# The fix in PR #393 short-circuits the empty-source path at SQL build
+# time:
+#
+#	if(empty(src),
+#	   <emptyCapturesReplacement>,        // pre-computed: "value-"
+#	   replaceRegexpOne(src, regex, repl))
+#
+# `<emptyCapturesReplacement>` is computed by
+# `qlcommon.EmptyCapturesReplacement` — the same Go-regex
+# `ExpandString` semantics Prom uses, applied against an all-empty
+# captures binding. CH ≥ 25.8 honours `replaceRegexpOne` on empty
+# inputs natively (both branches produce `"value-"` there), so the
+# conditional collapses harmlessly outside the 24.8 lane.
 -- query.promql --
-label_replace(temperature, "dst", "value-$1", "nonexistent-src", "(.*)")
+label_replace(temperature, "job", "value-$1", "nonexistent-src", "(.*)")
 -- seed --
 CREATE TABLE otel_metrics_gauge (
     MetricName String,
@@ -19,15 +31,15 @@ CREATE TABLE otel_metrics_gauge (
     Value Float64
 ) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
 INSERT INTO otel_metrics_gauge VALUES
-    ('temperature', map('host', 'a'), toDateTime64('2026-01-01 00:00:00', 9), 22.5);
+    ('temperature', map('instance', 'i1', 'job', 'demo'), toDateTime64('2026-01-01 00:00:00', 9), 22.5);
 -- expected_rows --
 [
-  ["temperature", {"host": "a", "dst": "value-"}, "2026-01-01T00:00:00Z", 22.5]
+  ["temperature", {"instance": "i1", "job": "value-"}, "2026-01-01T00:00:00Z", 22.5]
 ]
 -- args --
 [0] string = "nonexistent-src"
 [1] string = "^(.*)$"
-[2] string = "dst"
+[2] string = "job"
 [3] string = "nonexistent-src"
 [4] string = "value-"
 [5] string = "nonexistent-src"
@@ -40,7 +52,7 @@ INSERT INTO otel_metrics_gauge VALUES
 [12] int64 = 9
 [13] int64 = 300000000000
 -- chplan --
-Project [MetricName, labelReplace(Attributes, dst="dst", replacement="value-\\1", src="nonexistent-src", regex="(.*)", emptyReplacement="value-") AS Attributes, TimeUnix, Value]
+Project [MetricName, labelReplace(Attributes, dst="job", replacement="value-\\1", src="nonexistent-src", regex="(.*)", emptyReplacement="value-") AS Attributes, TimeUnix, Value]
   Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
     Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
       Filter predicate=(((MetricName = "temperature") AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
