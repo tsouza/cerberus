@@ -905,51 +905,25 @@ func (e *emitter) emitRangeWindowLogRate(r *chplan.RangeWindow) error {
 
 // emitRangeWindowRate emits SQL for `rate(metric[range])`.
 //
-// Form (instant eval at r.End, looking back r.Range):
+// Routes through emitWindowedArrayExtrapolated so the per-window value
+// applies Prom's `extrapolatedRate` boundary correction (mirrors
+// prometheus/promql/functions.go::extrapolatedRate) on top of the
+// counter-reset-aware delta.
 //
-//	SELECT
-//	    series_key,
-//	    if(length(window_vals) > 1, counter_delta / range_seconds, 0.0) AS value
-//	FROM (
-//	    SELECT
-//	        series_key,
-//	        arrayMap(p -> tupleElement(p, 2), window_pairs) AS window_vals,
-//	        arraySum(arrayMap(
-//	            (p, c) -> if(c < p, c, c - p),
-//	            arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)),
-//	            arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs))
-//	        )) AS counter_delta,
-//	        <range_seconds> AS range_seconds
-//	    FROM (
-//	        SELECT
-//	            series_key,
-//	            arrayFilter(
-//	                p -> tupleElement(p, 1) >  <end> - toIntervalNanosecond(<range_ns>)
-//	                  AND tupleElement(p, 1) <= <end>,
-//	                series_array
-//	            ) AS window_pairs
-//	        FROM (
-//	            SELECT
-//	                <group-by-keys> AS series_key,
-//	                arraySort(groupArray((`TimeUnix`, `Value`))) AS series_array
-//	            FROM (<input>)
-//	            GROUP BY <group-by-keys>
-//	        )
-//	    )
-//	)
+// PromQL rate drops series whose window holds fewer than 2 samples
+// (matches Prom's funcRate / extrapolatedRate). The outer SELECT gets
+// `WHERE length(window_vals) >= 2`.
 func (e *emitter) emitRangeWindowRate(r *chplan.RangeWindow) error {
-	// PromQL rate drops series whose window holds fewer than 2 samples
-	// (matches Prom's funcRate / extrapolatedRate). The outer SELECT
-	// gets `WHERE length(window_vals) >= 2`.
-	return e.emitWindowedArray(r, rateValueFrag(r.Range.Seconds()), 2)
+	return e.emitWindowedArrayExtrapolated(r, extrapolationKindRate)
 }
 
 // emitRangeWindowIncrease emits SQL for `increase(metric[range])`. Same
-// as rate but without dividing by range_seconds.
+// counter-reset arithmetic + extrapolation as rate but without dividing
+// by range_seconds (matches Prom's funcIncrease).
+//
+// PromQL increase drops series whose window holds fewer than 2 samples.
 func (e *emitter) emitRangeWindowIncrease(r *chplan.RangeWindow) error {
-	// PromQL increase drops series whose window holds fewer than 2
-	// samples (matches Prom's funcIncrease / extrapolatedRate).
-	return e.emitWindowedArray(r, verbatim("if(length(window_vals) > 1, counter_delta, 0.0)"), 2)
+	return e.emitWindowedArrayExtrapolated(r, extrapolationKindIncrease)
 }
 
 // emitRangeWindowOverTime emits SQL for the `*_over_time` family:
@@ -1134,17 +1108,16 @@ func (e *emitter) emitRangeWindowChanges(r *chplan.RangeWindow) error {
 }
 
 // emitRangeWindowDelta emits SQL for `delta(v[range])`: the
-// difference between the LAST and FIRST samples in the window. Unlike
-// `increase`, delta is meant for gauges (no counter-reset arithmetic),
-// so the value is simply `window_vals[N] - window_vals[1]`.
+// extrapolation-corrected difference between the LAST and FIRST samples
+// in the window. Unlike `increase`, delta is meant for gauges (no
+// counter-reset arithmetic and no clamp-to-zero), but it still receives
+// the same boundary-extrapolation correction Prom applies via its
+// shared `extrapolatedRate(isCounter=false, isRate=false)` helper.
 //
 // PromQL `delta` returns NaN when the window holds fewer than 2
 // samples — same as Prom's `funcDelta`.
 func (e *emitter) emitRangeWindowDelta(r *chplan.RangeWindow) error {
-	const expr = "if(length(window_vals) > 1, window_vals[length(window_vals)] - window_vals[1], nan)"
-	// PromQL delta drops series whose window holds fewer than 2
-	// samples (matches Prom's funcDelta).
-	return e.emitWindowedArray(r, verbatim(expr), 2)
+	return e.emitWindowedArrayExtrapolated(r, extrapolationKindDelta)
 }
 
 // emitRangeWindowIDelta emits SQL for `idelta(v[range])`: the
@@ -1225,15 +1198,428 @@ func (e *emitter) emitRangeWindowQuantileOverTime(r *chplan.RangeWindow) error {
 	return e.emitWindowedArray(r, verbatim(expr), 1)
 }
 
-// rateValueFrag returns the outer SELECT value Frag for rate(),
-// dividing the counter delta by range_seconds. Length check avoids
-// dividing on a single-point window (rate is undefined there). The
-// divisor is rendered as a literal float (query shape, not user data).
-func rateValueFrag(rangeSeconds float64) Frag {
+// extrapolationKind selects the per-function flavour of Prom's shared
+// `extrapolatedRate` helper. rate / increase / delta all funnel
+// through the same boundary-extrapolation arithmetic but differ in
+//
+//  1. whether the raw window value is `counter_delta` (counter-reset
+//     aware: rate / increase) or `last_val - first_val` (gauge: delta),
+//  2. whether the counter clamp-to-zero shortcut runs (rate / increase
+//     only — Prom's isCounter branch), and
+//  3. whether the factor is per-second (rate only — Prom's isRate
+//     branch).
+//
+// Mirrors prometheus/promql/functions.go::extrapolatedRate, lines
+// 188-314 (the helper funcDelta / funcRate / funcIncrease share).
+type extrapolationKind int
+
+const (
+	// extrapolationKindRate matches `funcRate(...) = extrapolatedRate(isCounter=true, isRate=true)`.
+	extrapolationKindRate extrapolationKind = iota
+	// extrapolationKindIncrease matches `funcIncrease(...) = extrapolatedRate(isCounter=true, isRate=false)`.
+	extrapolationKindIncrease
+	// extrapolationKindDelta matches `funcDelta(...) = extrapolatedRate(isCounter=false, isRate=false)`.
+	extrapolationKindDelta
+)
+
+// isCounter reports whether the raw window value runs through Prom's
+// counter-reset-aware delta + clamp-to-zero shortcut (rate / increase)
+// or stays as a straight gauge delta (delta).
+func (k extrapolationKind) isCounter() bool {
+	return k == extrapolationKindRate || k == extrapolationKindIncrease
+}
+
+// isRate reports whether the extrapolation factor is per-second
+// (only `rate` divides through `r.Range.Seconds()` at the end).
+func (k extrapolationKind) isRate() bool { return k == extrapolationKindRate }
+
+// emitWindowedArrayExtrapolated emits SQL for rate / increase / delta
+// with Prom's `extrapolatedRate` boundary correction applied to the
+// per-window value. Compared to emitWindowedArray, this path projects
+// three extra columns at the mid layer — first_ts, last_ts, first_val —
+// then adds an extrap layer that materialises Prom's
+// `durationToStart`, `durationToEnd`, and `sampled_interval` quantities
+// so the outer SELECT can express the per-window value as a single
+// multiplication.
+//
+// SQL skeleton (instant eval, omitting matrix anchor_ts):
+//
+//	SELECT series_key,
+//	       <raw_result> * <factor> [/ <range_seconds>] AS Value
+//	FROM (
+//	  SELECT series_key, window_vals, counter_delta,
+//	         first_ts, last_ts, first_val,
+//	         sampled_interval, duration_to_start, duration_to_end
+//	  FROM (
+//	    SELECT series_key, window_vals, counter_delta,
+//	           first_ts, last_ts, first_val
+//	    FROM (...standard window_pairs scaffolding...)
+//	  )
+//	)
+//
+// The `<factor>` is `(sampled_interval + duration_to_start + duration_to_end) / sampled_interval`,
+// matching Prom's `factor := (sampledInterval + durationToStart + durationToEnd) / sampledInterval`
+// at functions.go:304.
+//
+// `<raw_result>` is `counter_delta` for rate / increase (Prom's
+// counter-reset-aware accumulator) and `(last_val - first_val)` for
+// delta (Prom's gauge `samples[N-1].F - samples[0].F`).
+//
+// When `r.OuterRange > 0`, the matrix variant is selected instead — same
+// per-window arithmetic, but the window range is `(anchor_ts - range, anchor_ts]`
+// and each series fans out one row per anchor.
+func (e *emitter) emitWindowedArrayExtrapolated(r *chplan.RangeWindow, kind extrapolationKind) error {
+	if r.TimestampColumn == "" {
+		return fmt.Errorf("%w: RangeWindow.TimestampColumn unset", ErrUnsupported)
+	}
+	if r.ValueColumn == "" {
+		return fmt.Errorf("%w: RangeWindow.ValueColumn unset", ErrUnsupported)
+	}
+	if r.OuterRange > 0 {
+		if r.Step <= 0 {
+			return fmt.Errorf("%w: RangeWindow.OuterRange > 0 requires Step > 0", ErrUnsupported)
+		}
+		return e.emitWindowedArrayExtrapolatedMatrix(r, kind)
+	}
+
+	end := endExprFrag(r)
+	rangeNS := r.Range.Nanoseconds()
+	rangeSeconds := r.Range.Seconds()
+	rangeStart := rangeStartFrag(end, rangeNS)
+	groupFrags, err := e.collectGroupByFrags(r.GroupBy)
+	if err != nil {
+		return err
+	}
+
+	// Innermost SELECT — groupArray of (ts, value), sorted.
+	innermost := NewQuery()
+	for _, g := range groupFrags {
+		innermost.Select(g)
+	}
+	innermost.Select(As(groupArrayPairFrag(r.TimestampColumn, r.ValueColumn), "series_array"))
+	innerSub, err := e.subqueryFrag(r.Input)
+	if err != nil {
+		return err
+	}
+	innermost.From(innerSub)
+	if len(groupFrags) > 0 {
+		innermost.GroupBy(groupFrags...)
+	}
+
+	// Inner-middle SELECT — arrayFilter to the (end-range, end] window.
+	innerMid := NewQuery().From(innermost.Frag())
+	for _, g := range groupFrags {
+		innerMid.Select(g)
+	}
+	innerMid.Select(As(windowFilterPairsFrag(end, rangeNS), "window_pairs"))
+
+	// Mid SELECT — derives the per-window scalars the extrap layer
+	// consumes. window_vals + counter_delta cover the standard shape;
+	// first_ts / last_ts / first_val are the extra columns Prom's
+	// extrapolatedRate needs to compute the boundary correction.
+	mid := NewQuery().From(innerMid.Frag())
+	for _, g := range groupFrags {
+		mid.Select(g)
+	}
+	mid.Select(As(windowValsFrag(), "window_vals"))
+	mid.Select(As(counterDeltaFrag(), "counter_delta"))
+	mid.Select(As(firstTsFrag(), "first_ts"))
+	mid.Select(As(lastTsFrag(), "last_ts"))
+	mid.Select(As(firstValFrag(), "first_val"))
+
+	// Extrap SELECT — materialises the Prom-side scalars derived from
+	// the mid columns. Splitting them off keeps the outer expression a
+	// single multiplication rather than a nested CASE-with-shared-
+	// subexpression soup. Each scalar is plain dependent arithmetic;
+	// CH evaluates the chain row-by-row.
+	extrap := NewQuery().From(mid.Frag())
+	for _, g := range groupFrags {
+		extrap.Select(g)
+	}
+	extrap.Select(Col("window_vals"))
+	extrap.Select(Col("counter_delta"))
+	extrap.Select(Col("first_val"))
+	extrap.Select(As(sampledIntervalFrag(), "sampled_interval"))
+	extrap.Select(As(durationToStartFrag(rangeStart, kind.isCounter()), "duration_to_start"))
+	extrap.Select(As(durationToEndFrag(end), "duration_to_end"))
+
+	// Outer SELECT — final value per series.
+	outer := NewQuery().From(extrap.Frag())
+	for _, g := range groupFrags {
+		outer.Select(g)
+	}
+	outer.Select(As(extrapolatedValueFrag(kind, rangeSeconds), r.ValueColumn))
+	outer.Where(windowLenAtLeastFrag("window_vals", 2))
+
+	e.emitSelect(outer)
+	return nil
+}
+
+// emitWindowedArrayExtrapolatedMatrix is the OuterRange > 0 variant of
+// emitWindowedArrayExtrapolated. Each series emits N rows, one per
+// anchor across [End-OuterRange, End] spaced by Step (end-inclusive);
+// the per-row window is `(anchor_ts - range, anchor_ts]` and the
+// per-row range bounds drive the extrapolation arithmetic.
+func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kind extrapolationKind) error {
+	end := endExprFrag(r)
+	rangeNS := r.Range.Nanoseconds()
+	stepNS := r.Step.Nanoseconds()
+	rangeSeconds := r.Range.Seconds()
+	// End-inclusive anchor count. Truncating division matches Prom.
+	numAnchors := r.OuterRange.Nanoseconds()/stepNS + 1
+	anchor := verbatim("anchor_ts")
+	rangeStart := rangeStartFrag(anchor, rangeNS)
+	groupFrags, err := e.collectGroupByFrags(r.GroupBy)
+	if err != nil {
+		return err
+	}
+
+	// Innermost SELECT — groupArray of (ts, value), sorted.
+	innermost := NewQuery()
+	for _, g := range groupFrags {
+		innermost.Select(g)
+	}
+	innermost.Select(As(groupArrayPairFrag(r.TimestampColumn, r.ValueColumn), "series_array"))
+	innerSub, err := e.subqueryFrag(r.Input)
+	if err != nil {
+		return err
+	}
+	innermost.From(innerSub)
+	if len(groupFrags) > 0 {
+		innermost.GroupBy(groupFrags...)
+	}
+
+	// Anchor-fanout SELECT — arrayJoin produces one row per anchor.
+	fanout := NewQuery().From(innermost.Frag())
+	for _, g := range groupFrags {
+		fanout.Select(g)
+	}
+	fanout.Select(Col("series_array"))
+	fanout.Select(As(anchorFanoutFrag(end, stepNS, numAnchors), "anchor_ts"))
+
+	// Inner-middle SELECT — arrayFilter to [anchor_ts - range, anchor_ts].
+	innerMid := NewQuery().From(fanout.Frag())
+	for _, g := range groupFrags {
+		innerMid.Select(g)
+	}
+	innerMid.Select(Col("anchor_ts"))
+	innerMid.Select(As(windowFilterPairsFrag(anchor, rangeNS), "window_pairs"))
+
+	// Mid SELECT — window_vals + counter_delta + first/last_ts + first_val.
+	mid := NewQuery().From(innerMid.Frag())
+	for _, g := range groupFrags {
+		mid.Select(g)
+	}
+	mid.Select(Col("anchor_ts"))
+	mid.Select(As(windowValsFrag(), "window_vals"))
+	mid.Select(As(counterDeltaFrag(), "counter_delta"))
+	mid.Select(As(firstTsFrag(), "first_ts"))
+	mid.Select(As(lastTsFrag(), "last_ts"))
+	mid.Select(As(firstValFrag(), "first_val"))
+
+	// Extrap SELECT — Prom-side scalars derived per-(series, anchor).
+	extrap := NewQuery().From(mid.Frag())
+	for _, g := range groupFrags {
+		extrap.Select(g)
+	}
+	extrap.Select(Col("anchor_ts"))
+	extrap.Select(Col("window_vals"))
+	extrap.Select(Col("counter_delta"))
+	extrap.Select(Col("first_val"))
+	extrap.Select(As(sampledIntervalFrag(), "sampled_interval"))
+	extrap.Select(As(durationToStartFrag(rangeStart, kind.isCounter()), "duration_to_start"))
+	extrap.Select(As(durationToEndFrag(anchor), "duration_to_end"))
+
+	// Outer SELECT — per-(series, anchor) row.
+	outer := NewQuery().From(extrap.Frag())
+	for _, g := range groupFrags {
+		outer.Select(g)
+	}
+	outer.Select(Col("anchor_ts"))
+	outer.Select(As(extrapolatedValueFrag(kind, rangeSeconds), r.ValueColumn))
+	outer.Where(windowLenAtLeastFrag("window_vals", 2))
+
+	e.emitSelect(outer)
+	return nil
+}
+
+// firstTsFrag renders `tupleElement(window_pairs[1], 1)` — the first
+// sample's timestamp (DateTime64(9)) extracted from the per-window
+// pair array. Mirrors Prom's `samples.Floats[0].T`.
+func firstTsFrag() Frag {
+	return verbatim("tupleElement(window_pairs[1], 1)")
+}
+
+// lastTsFrag renders `tupleElement(window_pairs[length(window_pairs)], 1)`
+// — the last sample's timestamp. Mirrors Prom's
+// `samples.Floats[numSamplesMinusOne].T`.
+func lastTsFrag() Frag {
+	return verbatim("tupleElement(window_pairs[length(window_pairs)], 1)")
+}
+
+// firstValFrag renders `tupleElement(window_pairs[1], 2)` — the first
+// sample's value, needed by the counter clamp-to-zero shortcut so the
+// extrapolated rate doesn't dip below zero when the counter started
+// inside the window.
+func firstValFrag() Frag {
+	return verbatim("tupleElement(window_pairs[1], 2)")
+}
+
+// rangeStartFrag renders `<end> - toIntervalNanosecond(<rangeNS>)` —
+// Prom's `rangeStart = enh.Ts - durationMilliseconds(ms.Range+vs.Offset)`
+// (functions.go:197). end may render arbitrary CH expressions; the
+// rangeNS bound is inline.
+func rangeStartFrag(end Frag, rangeNS int64) Frag {
+	return Sub(end, Call("toIntervalNanosecond", InlineLit(rangeNS)))
+}
+
+// sampledIntervalFrag renders the per-window sampled interval in
+// seconds (Float64): `dateDiff('nanosecond', first_ts, last_ts) / 1e9`.
+// Mirrors Prom's `sampledInterval := float64(lastT-firstT) / 1000`
+// (functions.go:258), substituting nanosecond precision for the
+// millisecond timebase Prom carries.
+func sampledIntervalFrag() Frag {
+	return verbatim("toFloat64(dateDiff('nanosecond', first_ts, last_ts)) / 1e9")
+}
+
+// durationToStartFrag renders the per-window distance from the left
+// window edge to the first sample, applying Prom's extrapolation
+// threshold (functions.go lines 273-276):
+//
+//	durationToStart := float64(firstT-rangeStart) / 1000
+//	averageDurationBetweenSamples := sampledInterval / float64(numSamplesMinusOne)
+//	extrapolationThreshold := averageDurationBetweenSamples * 1.1
+//	if durationToStart >= extrapolationThreshold {
+//	    durationToStart = averageDurationBetweenSamples / 2
+//	}
+//
+// The counter clamp-to-zero shortcut (Prom lines 277-298) is applied
+// downstream inside [extrapolatedValueFrag] because it has to share the
+// counter_delta / first_val handles with the result accumulator —
+// keeping the two halves co-located keeps the dependent-arithmetic
+// chain readable in the emitted SQL.
+//
+// `sampled_interval` is a mid-layer alias the extrap layer carries
+// through; `numSamplesMinusOne` is computed inline as
+// `length(window_vals) - 1` (the outer WHERE clause's `length >= 2`
+// gate guarantees the divisor is non-zero). rangeStart is supplied as
+// a Frag so the instant + matrix paths can pin the appropriate
+// window-left expression (instant: `end - range`; matrix:
+// `anchor_ts - range`). The `isCounter` flag is kept for parity with
+// the durationToEndFrag signature even though it has no effect at the
+// duration_to_start layer — leaving the parameter in place keeps the
+// emit call sites symmetric.
+func durationToStartFrag(rangeStart Frag, _ bool) Frag {
 	return func(b *Builder) {
-		b.sb.WriteString("if(length(window_vals) > 1, counter_delta / ")
-		b.sb.WriteString(formatFloat(rangeSeconds))
-		b.sb.WriteString(", 0.0)")
+		b.sb.WriteString("if(")
+		writeDurationToStartRaw(b, rangeStart)
+		b.sb.WriteString(" >= 1.1 * sampled_interval / (length(window_vals) - 1), ")
+		b.sb.WriteString("sampled_interval / (length(window_vals) - 1) / 2, ")
+		writeDurationToStartRaw(b, rangeStart)
+		b.sb.WriteByte(')')
+	}
+}
+
+// writeDurationToStartRaw renders the un-clamped duration-to-start in
+// seconds: `toFloat64(dateDiff('nanosecond', rangeStart, first_ts)) / 1e9`.
+// Mirrors Prom's `float64(firstT-rangeStart) / 1000`.
+func writeDurationToStartRaw(b *Builder, rangeStart Frag) {
+	b.sb.WriteString("toFloat64(dateDiff('nanosecond', ")
+	rangeStart(b)
+	b.sb.WriteString(", first_ts)) / 1e9")
+}
+
+// durationToEndFrag renders the per-window distance from the last
+// sample to the right window edge, applying Prom's extrapolation
+// threshold (no counter branch — Prom only clamps the LEFT edge to the
+// counter's zero point).
+//
+// Mirrors functions.go lines 300-302:
+//
+//	durationToEnd := float64(rangeEnd-lastT) / 1000
+//	if durationToEnd >= extrapolationThreshold {
+//	    durationToEnd = averageDurationBetweenSamples / 2
+//	}
+//
+// rangeEnd is supplied as a Frag so the instant + matrix paths can pin
+// the appropriate window-right expression (instant: `end`; matrix:
+// `anchor_ts`).
+func durationToEndFrag(rangeEnd Frag) Frag {
+	return func(b *Builder) {
+		b.sb.WriteString("if(")
+		writeDurationToEndRaw(b, rangeEnd)
+		b.sb.WriteString(" >= 1.1 * sampled_interval / (length(window_vals) - 1), ")
+		b.sb.WriteString("sampled_interval / (length(window_vals) - 1) / 2, ")
+		writeDurationToEndRaw(b, rangeEnd)
+		b.sb.WriteByte(')')
+	}
+}
+
+// writeDurationToEndRaw renders the un-clamped duration-to-end in
+// seconds: `toFloat64(dateDiff('nanosecond', last_ts, rangeEnd)) / 1e9`.
+// Mirrors Prom's `float64(rangeEnd-lastT) / 1000`.
+func writeDurationToEndRaw(b *Builder, rangeEnd Frag) {
+	b.sb.WriteString("toFloat64(dateDiff('nanosecond', last_ts, ")
+	rangeEnd(b)
+	b.sb.WriteString(")) / 1e9")
+}
+
+// extrapolatedValueFrag renders the per-window final value:
+//
+//	if(sampled_interval > 0,
+//	   <raw_result> * (sampled_interval + duration_to_start + duration_to_end) / sampled_interval [/ <range_seconds>],
+//	   nan)
+//
+// The `sampled_interval > 0` guard maps Prom's `len(samples.Floats) > 1`
+// + non-collapsed-timestamp case to a NaN sample (the engine layer
+// treats NaN as drop). It also dodges the divide-by-zero CH would
+// otherwise hit when two samples landed at the same nanosecond.
+//
+// `<raw_result>` is `counter_delta` for rate / increase (counter-reset
+// aware) and `(last_val - first_val)` for delta (gauge). For delta we
+// reference `window_vals[length(window_vals)] - first_val` to avoid
+// projecting a separate `last_val` alias.
+//
+// The optional `/ <range_seconds>` only applies to rate (Prom's
+// `isRate` branch at functions.go:305-307).
+func extrapolatedValueFrag(kind extrapolationKind, rangeSeconds float64) Frag {
+	return func(b *Builder) {
+		b.sb.WriteString("if(sampled_interval > 0, ")
+		// raw result
+		switch kind {
+		case extrapolationKindDelta:
+			b.sb.WriteString("(window_vals[length(window_vals)] - first_val)")
+		default:
+			b.sb.WriteString("counter_delta")
+		}
+		// counter clamp-to-zero rewrite of durationToStart: when the
+		// counter started inside the window, Prom shortens the
+		// durationToStart to the implied zero-crossing of the linear
+		// extrapolation so the rate stays non-negative. Encoded inline
+		// at the `factor` level via:
+		//
+		//   factor = (sampled_interval +
+		//             least(duration_to_start, duration_to_zero) +
+		//             duration_to_end) / sampled_interval
+		//
+		// duration_to_zero = sampled_interval * (first_val / counter_delta)
+		// only when `counter_delta > 0 && first_val >= 0`; otherwise we
+		// keep the un-clamped duration_to_start.
+		b.sb.WriteString(" * (sampled_interval + ")
+		if kind.isCounter() {
+			// least() with the counter zero-crossing guard.
+			b.sb.WriteString("if(counter_delta > 0 AND first_val >= 0, ")
+			b.sb.WriteString("least(duration_to_start, sampled_interval * first_val / counter_delta), ")
+			b.sb.WriteString("duration_to_start)")
+		} else {
+			b.sb.WriteString("duration_to_start")
+		}
+		b.sb.WriteString(" + duration_to_end) / sampled_interval")
+		if kind.isRate() {
+			b.sb.WriteString(" / ")
+			b.sb.WriteString(formatFloat(rangeSeconds))
+		}
+		b.sb.WriteString(", nan)")
 	}
 }
 

@@ -763,6 +763,92 @@ func TestQueryRange_RangeMode_RateMatrix_ChDB(t *testing.T) {
 	}
 }
 
+// TestQueryRange_RangeMode_RateExtrapolation_ChDB pins
+// `rate(metric[1m])` over `/api/v1/query_range` against samples that
+// land asymmetrically inside the window so Prom's `extrapolatedRate`
+// boundary correction matters end-to-end. Pre-fix the value path
+// emitted `counter_delta / range_seconds` — a raw division that ignored
+// the gap between the first/last sample and the window edges; with the
+// fix in place the emitted SQL multiplies the counter_delta by the
+// boundary-extrapolation factor before dividing through range_seconds,
+// surfacing the exact Prom-faithful rate.
+//
+// Seed shape (single series, deterministic timestamps). All three
+// samples land inside the right-most window once it includes 00:04:00
+// onward; the left-most window only sees one sample (the very first)
+// and is dropped by the `length >= 2` guard.
+//
+//	t=00:04:00 val=10
+//	t=00:04:10 val=20
+//	t=00:04:18 val=40
+//
+// Each query_range step looks at the prior 60s window. The query
+// window [start, end] = [00:04:00, 00:05:00] step=60s gives two
+// anchors:
+//
+//   - anchor=00:04:00: window=(00:03:00, 00:04:00], samples=[] →
+//     length<2, dropped (the window edge is strict-less-than, so the
+//     00:04:00 sample lands on the NEXT anchor).
+//   - anchor=00:05:00: window=(00:04:00, 00:05:00], samples=[20, 40] →
+//     two samples (00:04:00 is excluded by the strict-less inequality;
+//     00:04:18 is the last one in the window).
+//
+// At anchor=00:05:00 the extrapolation arithmetic plays out as:
+//
+//	firstT=00:04:10, lastT=00:04:18, sampledInterval=8s, n-1=1,
+//	avgGap=8s, threshold=8.8s.
+//	durationToStart = 250-240 = 10s   (>8.8 → set to 8/2 = 4s).
+//	durationToEnd   = 300-258 = 42s   (>8.8 → set to 8/2 = 4s).
+//	counter_delta=20 > 0 && firstVal=20 >= 0 →
+//	  durationToZero = 8*(20/20) = 8s (> 4, keep durationToStart=4).
+//	factor = (8 + 4 + 4) / 8 = 2.0.
+//	rate = 20 * 2.0 / 60 = 0.333... * 2 = 0.6666... per second.
+//
+// Pre-fix the same anchor would emit counter_delta/60 = 20/60 =
+// 0.333... — the raw "counter delta divided by range" shortcut without
+// extrapolation. The test asserts the new 0.6666... value to pin
+// Bucket 3 of the post-#350 compat audit
+// (docs/compat-residual-audit-25898791664.md).
+func TestQueryRange_RangeMode_RateExtrapolation_ChDB(t *testing.T) {
+	// Deterministic eval window so the extrapolation factor is
+	// reproducible across machines. start=1970-01-01T00:04:00Z matches
+	// the Prom-style "small integer offsets" notation in the docstring.
+	start := time.Date(1970, 1, 1, 0, 4, 0, 0, time.UTC)
+	end := time.Date(1970, 1, 1, 0, 5, 0, 0, time.UTC)
+	step := 60 * time.Second
+
+	sumDDL := strings.ReplaceAll(gaugeDDL, "otel_metrics_gauge", "otel_metrics_sum")
+	seedRows := []string{
+		`('demo_requests_total', map('instance', 'demo'), toDateTime64('1970-01-01 00:04:00', 9), 10.0)`,
+		`('demo_requests_total', map('instance', 'demo'), toDateTime64('1970-01-01 00:04:10', 9), 20.0)`,
+		`('demo_requests_total', map('instance', 'demo'), toDateTime64('1970-01-01 00:04:18', 9), 40.0)`,
+	}
+	seed := sumDDL + "\nINSERT INTO otel_metrics_sum VALUES\n  " +
+		strings.Join(seedRows, ",\n  ") + ";"
+	srv, _ := newChDBServer(t, seed)
+
+	matrix := runRangeModeQueryRange(t, srv.URL,
+		"rate(demo_requests_total[1m])", start, end, step)
+	if len(matrix) != 1 {
+		t.Fatalf("expected exactly 1 series, got %d: %+v", len(matrix), matrix)
+	}
+	values := matrix[0].Values
+	if len(values) != 1 {
+		t.Fatalf("expected exactly 1 anchor (only end=00:05:00 has >=2 samples), got %d: %+v",
+			len(values), values)
+	}
+	// Pre-fix the value would have been 20/60 = "0.3333333333333333"
+	// (counter_delta / range_seconds, no extrapolation). Post-fix the
+	// extrapolation factor is 2.0, so the value doubles to ~0.6666...
+	// CH renders the Float64 via its default ToString rule which trims
+	// trailing zeros; "0.6666666666666666" is what the runner reads.
+	const wantValue = "0.6666666666666666"
+	if got := values[0][1]; got != wantValue {
+		t.Errorf("rate value: got %q, want %q (pre-fix surfaced 0.3333... — the counter_delta / "+
+			"range shortcut without extrapolation; full row: %+v)", got, wantValue, values[0])
+	}
+}
+
 // TestQueryRange_RangeMode_SumOverTimeMatrix_ChDB pins
 // `sum_over_time(metric[5m])` over `/api/v1/query_range`. Same matrix
 // fan-out story as rate, but for the *_over_time family. Each anchor
