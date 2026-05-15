@@ -1,20 +1,21 @@
 -- query.promql --
 up + ignoring() up
 -- sql --
-SELECT L.`MetricName`, L.`Attributes`, L.`TimeUnix`, (L.`Value` + R.`Value`) AS `Value` FROM (SELECT `_join_MetricName` AS `MetricName`, `_join_Attributes` AS `Attributes`, `_join_TimeUnix` AS `TimeUnix`, `_join_Value` AS `Value` FROM (SELECT `MetricName` AS `_join_MetricName`, `Attributes` AS `_join_Attributes`, max(`TimeUnix`) AS `_join_TimeUnix`, argMax(`Value`, `TimeUnix`) AS `_join_Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_gauge` PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`)) GROUP BY `MetricName`, `Attributes`)) AS L INNER JOIN (SELECT `_join_MetricName` AS `MetricName`, `_join_Attributes` AS `Attributes`, `_join_TimeUnix` AS `TimeUnix`, `_join_Value` AS `Value` FROM (SELECT `MetricName` AS `_join_MetricName`, `Attributes` AS `_join_Attributes`, max(`TimeUnix`) AS `_join_TimeUnix`, argMax(`Value`, `TimeUnix`) AS `_join_Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_gauge` PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`)) GROUP BY `MetricName`, `Attributes`)) AS R ON L.`Attributes` = R.`Attributes`
+SELECT ? AS `MetricName`, L.`Attributes`, L.`TimeUnix`, (L.`Value` + R.`Value`) AS `Value` FROM (SELECT `_join_MetricName` AS `MetricName`, `_join_Attributes` AS `Attributes`, `_join_TimeUnix` AS `TimeUnix`, `_join_Value` AS `Value` FROM (SELECT `MetricName` AS `_join_MetricName`, `Attributes` AS `_join_Attributes`, max(`TimeUnix`) AS `_join_TimeUnix`, argMax(`Value`, `TimeUnix`) AS `_join_Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_gauge` PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`)) GROUP BY `MetricName`, `Attributes`)) AS L INNER JOIN (SELECT `_join_MetricName` AS `MetricName`, `_join_Attributes` AS `Attributes`, `_join_TimeUnix` AS `TimeUnix`, `_join_Value` AS `Value` FROM (SELECT `MetricName` AS `_join_MetricName`, `Attributes` AS `_join_Attributes`, max(`TimeUnix`) AS `_join_TimeUnix`, argMax(`Value`, `TimeUnix`) AS `_join_Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_gauge` PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`)) GROUP BY `MetricName`, `Attributes`)) AS R ON L.`Attributes` = R.`Attributes`
 -- args --
-[0] string = "up"
-[1] string = "2026-01-01 00:00:01.000000000"
-[2] int64 = 9
-[3] string = "2026-01-01 00:00:01.000000000"
-[4] int64 = 9
-[5] int64 = 300000000000
-[6] string = "up"
-[7] string = "2026-01-01 00:00:01.000000000"
-[8] int64 = 9
-[9] string = "2026-01-01 00:00:01.000000000"
-[10] int64 = 9
-[11] int64 = 300000000000
+[0] string = ""
+[1] string = "up"
+[2] string = "2026-01-01 00:00:01.000000000"
+[3] int64 = 9
+[4] string = "2026-01-01 00:00:01.000000000"
+[5] int64 = 9
+[6] int64 = 300000000000
+[7] string = "up"
+[8] string = "2026-01-01 00:00:01.000000000"
+[9] int64 = 9
+[10] string = "2026-01-01 00:00:01.000000000"
+[11] int64 = 9
+[12] int64 = 300000000000
 -- seed --
 CREATE TABLE otel_metrics_gauge (
     MetricName String,
@@ -26,7 +27,7 @@ INSERT INTO otel_metrics_gauge VALUES
     ('up', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 7.0);
 -- expected_rows --
 [
-  ["up", {"job": "api"}, "2026-01-01T00:00:00Z", 14.0]
+  ["", {"job": "api"}, "2026-01-01T00:00:00Z", 14]
 ]
 -- chplan --
 VectorJoin op=+ match=default card=one-to-one

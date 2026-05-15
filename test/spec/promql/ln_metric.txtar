@@ -1,14 +1,15 @@
 -- query.promql --
 ln(http_requests_total)
 -- args --
-[0] string = "http_requests_total"
-[1] string = "2026-01-01 00:00:01.000000000"
-[2] int64 = 9
-[3] string = "2026-01-01 00:00:01.000000000"
-[4] int64 = 9
-[5] int64 = 300000000000
+[0] string = ""
+[1] string = "http_requests_total"
+[2] string = "2026-01-01 00:00:01.000000000"
+[3] int64 = 9
+[4] string = "2026-01-01 00:00:01.000000000"
+[5] int64 = 9
+[6] int64 = 300000000000
 -- sql --
-SELECT `MetricName`, `Attributes`, `TimeUnix`, log(`Value`) AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`))
+SELECT ? AS `MetricName`, `Attributes`, `TimeUnix`, log(`Value`) AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`))
 -- seed --
 CREATE TABLE otel_metrics_sum (
     MetricName String,
@@ -20,10 +21,10 @@ INSERT INTO otel_metrics_sum VALUES
     ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 2.718281828459045);
 -- expected_rows --
 [
-  ["http_requests_total", {"job": "api"}, "2026-01-01T00:00:00Z", 1.0]
+  ["", {"job": "api"}, "2026-01-01T00:00:00Z", 1]
 ]
 -- chplan --
-Project [MetricName, Attributes, TimeUnix, log(Value) AS Value]
+Project ["" AS MetricName, Attributes, TimeUnix, log(Value) AS Value]
   Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
     Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
       Filter predicate=(((MetricName = "http_requests_total") AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))

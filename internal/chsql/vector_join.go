@@ -56,7 +56,7 @@ func (e *emitter) emitVectorJoin(j *chplan.VectorJoin) error {
 
 	sb := NewQuery().
 		Select(
-			qualColFrag(outerSide, j.MetricNameColumn),
+			outputMetricNameFrag(j, outerSide),
 			outputAttributesFrag(j),
 			qualColFrag(outerSide, j.TimestampColumn),
 			vectorJoinValueExprFrag(j),
@@ -391,6 +391,41 @@ func writeOutputAttributes(b *Builder, j *chplan.VectorJoin) {
 	writeSideCol(b, oneSide, j.AttributesColumn)
 	b.writeSQL(")) AS ")
 	b.Ident(j.AttributesColumn)
+}
+
+// outputMetricNameFrag returns a Frag for the joined output's
+// MetricName slot. PromQL's V-V binop rule:
+//
+//   - Arithmetic op (any non-comparison): always drops `__name__`.
+//   - Comparison op with `bool` modifier (`ReturnBool == true`):
+//     drops `__name__` — the result is a 1.0/0.0 derived sample.
+//   - Bare comparison op: preserves the LHS metric name (PromQL's
+//     "comparison-as-filter" rule keeps the LHS sample's full label
+//     set, including `__name__`).
+//
+// The dropped case emits a parameterised empty string aliased back to
+// the MetricName column; the preserved case projects the outer side's
+// qualified MetricName directly. See Pool-AU's audit (#355) — this
+// site accounts for ~15 of the 107 compat-lane `__name__`-retention
+// diffs (V-V arithmetic with `on(...)` + V-V `bool` compare with
+// `on(...)` + the `group_left` variants).
+func outputMetricNameFrag(j *chplan.VectorJoin, outerSide string) Frag {
+	if vectorJoinDropsName(j) {
+		return As(func(b *Builder) { b.Arg("") }, j.MetricNameColumn)
+	}
+	return qualColFrag(outerSide, j.MetricNameColumn)
+}
+
+// vectorJoinDropsName reports whether the V-V binop output drops
+// `__name__`. PromQL's rule: arithmetic ops always drop, comparison
+// ops drop only with the `bool` modifier (otherwise the comparison
+// acts as a filter and LHS labels survive).
+func vectorJoinDropsName(j *chplan.VectorJoin) bool {
+	switch j.Op {
+	case chplan.OpEq, chplan.OpNe, chplan.OpLt, chplan.OpLe, chplan.OpGt, chplan.OpGe:
+		return j.ReturnBool
+	}
+	return true
 }
 
 // vectorJoinValueExprFrag returns a Frag for the joined value

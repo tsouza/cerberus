@@ -168,11 +168,20 @@ func lowerClamp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, er
 //
 // The set of forwarded columns depends on the inner shape:
 //
-//   - LWR / Aggregate / Project / Filter / Scan: MetricName / Attributes
-//     / Timestamp are all in scope, so we forward all four columns.
+//   - LWR / Aggregate / Project / Filter / Scan: Attributes / Timestamp
+//     flow through unchanged; MetricName is replaced with an empty
+//     string to match PromQL's "drop __name__ on derived samples"
+//     rule — every caller (instant math fns, clamp family, unary
+//     minus, date fns, quantile-out-of-range fold) produces a derived
+//     sample that Prom strips `__name__` from. The previous shape
+//     (forwarding `MetricName` verbatim) caused ~30+ of the 107
+//     compat-lane diffs in Pool-AU's audit (#355) for queries like
+//     `abs(metric)` showing Metric: metric{...} on cerberus vs
+//     Metric: {...} on reference Prometheus.
 //
 //   - RangeWindow: only `Attributes` + `Value` survive the windowed
-//     groupArray — MetricName and TimeUnix never make it through.
+//     groupArray — MetricName and TimeUnix never make it through, so
+//     this branch already matches Prom semantics by construction.
 //
 // The text-equality goldens in test/spec/promql/ track both shapes; see
 // e.g. `edge_abs_over_rate.txtar` (instant fn over rate) and
@@ -203,7 +212,7 @@ func projectValueOverInner(inner chplan.Node, s schema.Metrics, newValue chplan.
 	return &chplan.Project{
 		Input: inner,
 		Projections: []chplan.Projection{
-			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}},
+			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
 			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}},
 			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}},
 			{Expr: newValue, Alias: s.ValueColumn},

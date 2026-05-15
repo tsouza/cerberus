@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"os"
 	"reflect"
 	"sort"
 	"strings"
@@ -561,9 +562,102 @@ func RunRoundTrip(t *testing.T, c *Case) {
 	sortRows(gotNorm)
 
 	if !reflect.DeepEqual(gotNorm, want) {
+		// GOLDEN_UPDATE=1: rewrite `expected_rows` in-place rather
+		// than failing — same flow as the text-equality goldens in
+		// internal/promql/lower_test.go. Lets dev/CI regenerate the
+		// round-trip cells after a semantically-correct query
+		// change (e.g., PromQL `__name__`-drop fix in #355) without
+		// hand-editing 70+ fixtures.
+		if os.Getenv(envGoldenUpdate) == "1" {
+			Match(t, c, map[string]string{
+				"expected_rows": formatExpectedRows(gotNorm),
+			})
+			return
+		}
 		t.Fatalf("round-trip mismatch (fixture %s)\n got = %s\nwant = %s",
 			c.Name, mustJSON(gotNorm), mustJSON(want))
 	}
+}
+
+// formatExpectedRows renders a row set in the canonical TXTAR
+// `expected_rows:` shape: outer `[`/`]` on their own lines, each row
+// on its own line indented with two spaces, cells rendered compact-JSON
+// with `, ` separators (matching the byte shape every hand-authored
+// fixture in test/spec/{promql,logql,traceql}/ pins).
+//
+// We don't lean on `json.Marshal` for the row itself because the
+// stdlib produces no-space separators (`","`), so manual fixtures and
+// regenerated ones would drift by whitespace alone. Each cell flows
+// through json.Marshal individually, then we join with `, `.
+func formatExpectedRows(rows [][]any) string {
+	if len(rows) == 0 {
+		return "[]"
+	}
+	var b strings.Builder
+	b.WriteString("[\n")
+	for i, row := range rows {
+		b.WriteString("  [")
+		for j, cell := range row {
+			if j > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString(formatExpectedCell(cell))
+		}
+		b.WriteByte(']')
+		if i < len(rows)-1 {
+			b.WriteByte(',')
+		}
+		b.WriteByte('\n')
+	}
+	b.WriteString("]")
+	return b.String()
+}
+
+// formatExpectedCell renders one cell of an `expected_rows:` row.
+// Maps render with spaces between key/value pairs (`{"k": "v", ...}`)
+// to match the hand-authored fixture shape; everything else delegates
+// to json.Marshal of the infSafe-wrapped value.
+func formatExpectedCell(v any) string {
+	if m, ok := v.(map[string]any); ok {
+		return formatExpectedMap(m)
+	}
+	raw, err := json.Marshal(infSafe(v))
+	if err != nil {
+		return fmt.Sprintf(`"<json err: %v>"`, err)
+	}
+	return string(raw)
+}
+
+// formatExpectedMap renders a JSON object with deterministic key order
+// (`sort.Strings`) and `, ` separators between pairs and `: ` between
+// keys/values, matching the hand-authored fixture style. Used only by
+// the GOLDEN_UPDATE regeneration path; the read path goes through
+// `json.Unmarshal` which is whitespace-insensitive.
+func formatExpectedMap(m map[string]any) string {
+	if len(m) == 0 {
+		return "{}"
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	b.WriteByte('{')
+	for i, k := range keys {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		raw, err := json.Marshal(k)
+		if err != nil {
+			raw = []byte(fmt.Sprintf(`"<json err: %v>"`, err))
+		}
+		b.Write(raw)
+		b.WriteString(": ")
+		b.WriteString(formatExpectedCell(m[k]))
+	}
+	b.WriteByte('}')
+	return b.String()
 }
 
 // sortRows canonicalises a result set by sorting rows in-place on the
