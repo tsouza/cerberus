@@ -402,6 +402,24 @@ compatibility-keep:
 compatibility-down:
     cd harness/prometheus-compliance && docker compose down -v
 
+# === Compatibility (LogQL — Loki compatibility harness, scaffold) ===
+
+# Run the LogQL compatibility scaffold smoke. PR 1 of the rollout plan
+# in docs/loki-compliance-plan.md: brings up reference Loki + cerberus +
+# CH, seeds both, asserts /labels is non-empty on each. Corpus + diff
+# driver land in PR 2-3.
+loki-compatibility:
+    ./harness/loki-compatibility/scripts/run-loki-compatibility.sh
+
+# Keep the Loki compatibility stack running after the smoke finishes
+# (for debugging /loki/api/v1/* + ClickHouse manually).
+loki-compatibility-keep:
+    COMPOSE_KEEP=1 ./harness/loki-compatibility/scripts/run-loki-compatibility.sh
+
+# Tear down the Loki compatibility stack manually.
+loki-compatibility-down:
+    cd harness/loki-compatibility && docker compose down -v
+
 # === Shadow-mode differential testing (RC3 R3.9) ===
 
 # Build + run the shadow-mode harness against a corpus.
