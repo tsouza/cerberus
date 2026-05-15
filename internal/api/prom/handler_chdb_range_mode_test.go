@@ -1208,6 +1208,14 @@ func TestQueryRange_RangeMode_VVOnCompare_ChDB(t *testing.T) {
 					t.Errorf("unexpected series instance=%q: %+v", inst, ms.Metric)
 					continue
 				}
+				// V-V bare comparison is a transformation, not a
+				// passthrough — Prom drops `__name__` from the output
+				// (same rule that fires for arithmetic + `bool`-modified
+				// compare). The matrix series must not carry it.
+				if name, hasName := ms.Metric["__name__"]; hasName {
+					t.Errorf("instance=%s: expected __name__ dropped on bare comparison, got %q (full metric: %+v)",
+						inst, name, ms.Metric)
+				}
 				if len(ms.Values) != wantSamples {
 					t.Errorf("instance=%s: expected %d samples, got %d: %+v",
 						inst, wantSamples, len(ms.Values), ms.Values)
@@ -1287,6 +1295,13 @@ func TestQueryRange_RangeMode_VVOnCompareGroupLeft_ChDB(t *testing.T) {
 		if got := ms.Metric["job"]; got != "demo" {
 			t.Errorf("instance=%s: expected job=demo (group_left copy), got job=%q (full metric: %+v)",
 				inst, got, ms.Metric)
+		}
+		// V-V bare comparison drops `__name__` even when group_left
+		// copies labels onto the output — the join is still a
+		// transformation, not a passthrough.
+		if name, hasName := ms.Metric["__name__"]; hasName {
+			t.Errorf("instance=%s: expected __name__ dropped on bare comparison, got %q (full metric: %+v)",
+				inst, name, ms.Metric)
 		}
 		if len(ms.Values) != wantSamples {
 			t.Errorf("instance=%s: expected %d samples, got %d: %+v",
