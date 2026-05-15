@@ -94,12 +94,12 @@ run-to-run variance. The "May 2026 raise" column captures the bump
 landed in PR #378 which closed the gap between threshold and actuals.
 
 | Phase | Package                                        | Target efficacy | May 2026 raise | Status                                 |
-| ----- | ---------------------------------------------- | --------------- | --------------- | -------------------------------------- |
-| 1     | `internal/chplan`                              | 90%             | 80% → 90%       | Rolled out, informational (PR #260)    |
-| 2     | `internal/chsql`                               | 85%             | 75% → 85%       | Rolled out, informational (PR #268)    |
-| 3     | `internal/optimizer`                           | 85%             | 70% → 85%       | Rolled out, informational              |
-| 4     | `internal/{promql,logql,traceql}` + `lower.go` | 85%             | 65% → 85%       | Rolled out, informational              |
-| 5     | `internal/qlcommon` (label_replace template)   | 75%             | new             | Rolled out, informational              |
+| ----- | ---------------------------------------------- | --------------- | -------------- | -------------------------------------- |
+| 1     | `internal/chplan`                              | 90%             | 80% -> 90%     | Rolled out, informational (PR #260)    |
+| 2     | `internal/chsql`                               | 85%             | 75% -> 85%     | Rolled out, informational (PR #268)    |
+| 3     | `internal/optimizer`                           | 85%             | 70% -> 85%     | Rolled out, informational              |
+| 4     | `internal/{promql,logql,traceql}` + `lower.go` | 85%             | 65% -> 85%     | Rolled out, informational              |
+| 5     | `internal/qlcommon` (label_replace template)   | 75%             | new            | Rolled out, informational              |
 
 Promotion to a required PR gate is gated on all phases: once they
 stay green for a week of nightly runs, `mutation` becomes a required
