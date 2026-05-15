@@ -486,13 +486,6 @@ func (e *emitter) emitWindowedArrayPairsMatrix(r *chplan.RangeWindow, valueWrite
 	return nil
 }
 
-// anchorExprFrag returns a Frag rendering the RangeWindow's window
-// anchor (End - Offset, or now64(9) - Offset for the zero-End case).
-// Used by predict_linear to compute per-sample seconds-from-anchor.
-func anchorExprFrag(r *chplan.RangeWindow) Frag {
-	return endExprFrag(r)
-}
-
 // endExprFrag returns a Frag rendering `<End> [- toIntervalNanosecond(<offset>)]`.
 // Shared by every windowed-array emitter; centralises the Offset
 // branch.
