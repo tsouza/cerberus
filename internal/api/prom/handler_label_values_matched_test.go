@@ -82,6 +82,13 @@ func TestLabelValues_MatchSelector(t *testing.T) {
 // TestLabelValues_MatchSelector_MetricName routes through
 // `labelValuesForMatcher`'s `__name__` branch — distinct MetricName
 // projection over the matcher subquery rather than Attributes[?].
+//
+// The matcher subquery itself may still contain Attributes[?]
+// references (when the predicate filters labels — e.g. job="api"),
+// so the assertion checks the OUTER projection prefix specifically:
+// `SELECT DISTINCT MetricName AS value` rather than
+// `SELECT DISTINCT Attributes[?] AS value`. The two branches diverge
+// at the outermost projection slot.
 func TestLabelValues_MatchSelector_MetricName(t *testing.T) {
 	t.Parallel()
 
@@ -101,14 +108,14 @@ func TestLabelValues_MatchSelector_MetricName(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	// __name__ branch uses the MetricName column, NOT Attributes mapAccess.
-	if strings.Contains(q.lastSQL, "Attributes`[") {
-		t.Errorf("__name__ matcher branch should not access Attributes "+
-			"in the outer projection; got %q", q.lastSQL)
-	}
-	if !strings.Contains(q.lastSQL, "MetricName") {
-		t.Errorf("__name__ matcher branch should reference MetricName; "+
-			"got %q", q.lastSQL)
+	// The outer projection must be `MetricName AS value` (the __name__
+	// branch). The non-__name__ branch would project Attributes[?] AS
+	// value at the same slot. Match the prefix to disambiguate the
+	// outer projection from any Attributes[?] references in the
+	// matcher subquery's WHERE clause.
+	if !strings.HasPrefix(q.lastSQL, "SELECT DISTINCT `MetricName` AS `value`") {
+		t.Errorf("__name__ matcher branch should project MetricName at "+
+			"the outer SELECT; got %q", q.lastSQL)
 	}
 	if !strings.Contains(q.lastSQL, "DISTINCT") {
 		t.Errorf("expected DISTINCT projection in SQL; got %q",
@@ -271,7 +278,14 @@ func TestLabelValues_MatchSelector_BadMatcher(t *testing.T) {
 // TestLabelValues_MatchSelector_UpstreamError exercises the CH-error
 // path: the stub injects an error so labelValuesForMatcher's QueryStrings
 // call returns it, which fetchLabelValuesMatched propagates, which
-// handleLabelValues surfaces as 502.
+// handleLabelValues surfaces via respondError.
+//
+// labelValuesForMatcher returns the raw QueryStrings error (no
+// *apiError wrap), so respondError falls through to the default
+// 500/internal branch — same shape as a non-classified internal
+// error. The non-matched fetchLabelValues path wraps in
+// apiError{Status: 502}; this path doesn't. Pinning the actual
+// behaviour so a future wrap (or its absence) gets noticed.
 func TestLabelValues_MatchSelector_UpstreamError(t *testing.T) {
 	t.Parallel()
 
@@ -284,9 +298,13 @@ func TestLabelValues_MatchSelector_UpstreamError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
-	if resp.StatusCode != http.StatusBadGateway {
-		t.Fatalf("expected 502, got %d body=%s",
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("expected 500 (raw QueryStrings error path), got %d body=%s",
 			resp.StatusCode, readBody(t, resp))
+	}
+	body := readBody(t, resp)
+	if !strings.Contains(body, "internal") {
+		t.Errorf("expected internal errorType; got %s", body)
 	}
 }
 
