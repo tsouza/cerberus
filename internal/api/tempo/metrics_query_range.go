@@ -29,9 +29,23 @@ type MetricsQueryRangeResponse struct {
 }
 
 // MetricsSeries is one entry of MetricsQueryRangeResponse.Series.
+//
+// Exemplars is always emitted as a JSON array (never omitted), even
+// when empty, so Grafana's Tempo datasource sees a stable envelope
+// shape; cerberus does not yet populate exemplars (placeholder for a
+// follow-up that wires trace-anchored samples through). See EF #398.
 type MetricsSeries struct {
-	Labels  []MetricsLabel  `json:"labels"`
-	Samples []MetricsSample `json:"samples"`
+	Labels    []MetricsLabel  `json:"labels"`
+	Samples   []MetricsSample `json:"samples"`
+	Exemplars []Exemplar      `json:"exemplars"`
+}
+
+// Exemplar is one trace-anchored sample point in MetricsSeries.Exemplars.
+type Exemplar struct {
+	Value     float64 `json:"value"`
+	Timestamp int64   `json:"timestamp_ms"`
+	TraceID   string  `json:"traceID"`
+	SpanID    string  `json:"spanID,omitempty"`
 }
 
 // MetricsLabel is one (key, value) pair in MetricsSeries.Labels.
@@ -406,7 +420,11 @@ func toMetricsSeries(samples []chclient.Sample, m *chplan.MetricsAggregate) []Me
 		sort.Slice(b.samples, func(i, j int) bool {
 			return b.samples[i].TimestampMs < b.samples[j].TimestampMs
 		})
-		out = append(out, MetricsSeries{Labels: b.labels, Samples: b.samples})
+		out = append(out, MetricsSeries{
+			Labels:    b.labels,
+			Samples:   b.samples,
+			Exemplars: []Exemplar{},
+		})
 	}
 	return out
 }

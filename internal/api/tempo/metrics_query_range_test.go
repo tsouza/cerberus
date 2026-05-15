@@ -481,3 +481,38 @@ func TestMetricsQueryRange_StepDurationForms(t *testing.T) {
 		})
 	}
 }
+
+// TestMetricsQueryRange_ExemplarsEnvelope pins the wire-shape contract
+// that every MetricsSeries emits `"exemplars": []` even before cerberus
+// populates them. Grafana's Tempo datasource expects the field, so
+// omitting it (or rendering it as null) destabilises the envelope. See
+// EF #398 for the broader Tempo metrics shape parity work.
+func TestMetricsQueryRange_ExemplarsEnvelope(t *testing.T) {
+	t.Parallel()
+
+	q := &stubQuerier{samples: []chclient.Sample{{
+		Labels:    map[string]string{},
+		Timestamp: time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+		Value:     1.0,
+	}}}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	u := metricsQueryRangeURL(srv.URL, "{} | rate()", map[string]string{
+		"start": fixtureStartUnix,
+		"end":   fixtureEndUnix,
+		"step":  "60s",
+	})
+	resp, err := http.Get(u)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+	raw := readBody(t, resp)
+	if !strings.Contains(raw, `"exemplars":[]`) {
+		t.Fatalf("response missing empty exemplars array\nbody=%s", raw)
+	}
+}
