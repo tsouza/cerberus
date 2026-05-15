@@ -268,3 +268,5 @@ replace (
 	github.com/open-telemetry/opentelemetry-collector-contrib/pkg/core/xidutils => github.com/tsouza/opentelemetry-collector-contrib/pkg/core/xidutils v0.0.1-cerberus-ddl
 	github.com/open-telemetry/opentelemetry-collector-contrib/pkg/translator/jaeger => github.com/tsouza/opentelemetry-collector-contrib/pkg/translator/jaeger v0.0.1-cerberus-ddl
 )
+
+ignore ./harness/tempo-compatibility/upstream
