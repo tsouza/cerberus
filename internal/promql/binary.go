@@ -151,6 +151,17 @@ func lowerVectorVector(b *parser.BinaryExpr, s schema.Metrics, op chplan.BinaryO
 		match.On = b.VectorMatching.On
 	}
 
+	// Range mode (ctx.step > 0): both sides materialise per-step rows
+	// (one per series × anchor) via wrapRangeLatestPerSeries / the
+	// matrix RangeWindow. The V-V join must step-align so each anchor
+	// joins its own pair, otherwise the per-side aggregation collapses
+	// N anchors onto a single match-key (roleOne) or the join finds N×N
+	// matches per series (roleMany). Lifting `StepAligned` onto the
+	// VectorJoin lets the emitter add TimestampColumn to both the
+	// per-side GROUP BY and the JOIN's ON clause; instant mode keeps
+	// the byte-stable shape (StepAligned=false default).
+	stepAligned := ctx.step > 0
+
 	return &chplan.VectorJoin{
 		Left:             left,
 		Right:            right,
@@ -159,6 +170,7 @@ func lowerVectorVector(b *parser.BinaryExpr, s schema.Metrics, op chplan.BinaryO
 		Card:             card,
 		Include:          include,
 		ReturnBool:       b.ReturnBool,
+		StepAligned:      stepAligned,
 		MetricNameColumn: s.MetricNameColumn,
 		AttributesColumn: s.AttributesColumn,
 		TimestampColumn:  s.TimestampColumn,

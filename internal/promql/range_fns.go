@@ -46,7 +46,7 @@ func lowerPredictLinear(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.
 	if err != nil {
 		return nil, err
 	}
-	return &chplan.RangeWindow{
+	rw := &chplan.RangeWindow{
 		Input:           inner,
 		Func:            "predict_linear",
 		Range:           ms.Range,
@@ -56,7 +56,19 @@ func lowerPredictLinear(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.
 		TimestampColumn: s.TimestampColumn,
 		ValueColumn:     s.ValueColumn,
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
-	}, nil
+	}
+	// Range mode (ctx.step > 0): fan across the request's step grid so
+	// each anchor in [start, end] emits its own per-window prediction.
+	// Mirrors lowerRangeVectorCall — without this gate the outer
+	// `RangeWindow` defaults to Step=0 and the matrix pivot collapses
+	// every step bucket onto a single anchor at end_ts.
+	if ctx.step > 0 && !ctx.start.IsZero() && !ctx.end.IsZero() {
+		rw.Start = ctx.start.UTC()
+		rw.End = ctx.end.UTC()
+		rw.Step = ctx.step
+		rw.OuterRange = ctx.end.Sub(ctx.start)
+	}
+	return rw, nil
 }
 
 // lowerHoltWinters handles `holt_winters(v range-vector, sf scalar, tf
@@ -102,7 +114,7 @@ func lowerHoltWinters(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.No
 	if err != nil {
 		return nil, err
 	}
-	return &chplan.RangeWindow{
+	rw := &chplan.RangeWindow{
 		Input: inner,
 		// Use the canonical "holt_winters" name in the IR regardless
 		// of whether the source query used the legacy name or the new
@@ -116,7 +128,17 @@ func lowerHoltWinters(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.No
 		TimestampColumn: s.TimestampColumn,
 		ValueColumn:     s.ValueColumn,
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
-	}, nil
+	}
+	// Range mode (ctx.step > 0): fan across the request's step grid so
+	// each anchor in [start, end] emits its own per-window smoothed
+	// value (matches the lowerRangeVectorCall matrix gate).
+	if ctx.step > 0 && !ctx.start.IsZero() && !ctx.end.IsZero() {
+		rw.Start = ctx.start.UTC()
+		rw.End = ctx.end.UTC()
+		rw.Step = ctx.step
+		rw.OuterRange = ctx.end.Sub(ctx.start)
+	}
+	return rw, nil
 }
 
 // lowerQuantileOverTime handles `quantile_over_time(phi, v[range])`:
@@ -192,6 +214,15 @@ func lowerQuantileOverTime(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpl
 		TimestampColumn: s.TimestampColumn,
 		ValueColumn:     s.ValueColumn,
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
+	}
+	// Range mode (ctx.step > 0): fan across the request's step grid so
+	// each anchor in [start, end] emits its own per-window quantile
+	// (matches the lowerRangeVectorCall matrix gate).
+	if ctx.step > 0 && !ctx.start.IsZero() && !ctx.end.IsZero() {
+		window.Start = ctx.start.UTC()
+		window.End = ctx.end.UTC()
+		window.Step = ctx.step
+		window.OuterRange = ctx.end.Sub(ctx.start)
 	}
 	if !replaceValue {
 		return window, nil

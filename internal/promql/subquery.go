@@ -271,14 +271,29 @@ func lowerOuterRangeFnOverSubquery(
 		return nil, err
 	}
 
-	return &chplan.RangeWindow{
+	rw := &chplan.RangeWindow{
 		Input:           inner,
 		Func:            outer.Func.Name,
 		Range:           sub.Range,
 		TimestampColumn: "anchor_ts",
 		ValueColumn:     s.ValueColumn,
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
-	}, nil
+	}
+	// Range mode: the outer reducer in `max_over_time(rate(m[5m])[1h:5m])`
+	// must fan across the request's step grid so each anchor in
+	// [start, end] emits its own per-window reduction. Without this the
+	// outer RangeWindow keeps Step=0 and collapses to a single anchor at
+	// end_ts (compat-lane: 502 / single-point matrix). Mirrors the
+	// `lowerRangeVectorCall` matrix fan-out introduced for bare
+	// range-vector calls — the same gate (ctx.step > 0 with start/end
+	// threaded through LowerAtRange) applies here.
+	if ctx.step > 0 && !ctx.start.IsZero() && !ctx.end.IsZero() {
+		rw.Start = ctx.start.UTC()
+		rw.End = ctx.end.UTC()
+		rw.Step = ctx.step
+		rw.OuterRange = ctx.end.Sub(ctx.start)
+	}
+	return rw, nil
 }
 
 // rangeVectorFn is the set of PromQL functions cerberus's emitter
