@@ -841,6 +841,116 @@ func TestQueryRange_RangeMode_VVOnComparison_ChDB(t *testing.T) {
 	}
 }
 
+// histogramDDL is the OTel-CH classic-histogram-shaped table the chDB-
+// backed range-mode tests below seed before exercising
+// `histogram_quantile(phi, ...)` under `/api/v1/query_range`. Mirrors
+// `gaugeDDL`'s minimal-but-MergeTree shape so the chsql emitter's
+// PREWHERE promotion path runs end-to-end against ClickHouse semantics
+// (Memory engine rejects PREWHERE).
+const histogramDDL = `CREATE TABLE otel_metrics_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    BucketCounts Array(UInt64),
+    ExplicitBounds Array(Float64)
+) ENGINE = MergeTree() ORDER BY (MetricName, TimeUnix);`
+
+// TestQueryRange_RangeMode_HistogramQuantileClassic_ChDB pins
+// `histogram_quantile(phi, sum by(le)(rate(<bucket>[r])))` over
+// `/api/v1/query_range` against the OTel-CH classic-histogram table.
+// Pre-fix, the lowering emitted `now64(9)` for every anchor's TimeUnix
+// so the matrix pivot collapsed N anchors onto a single "now" point —
+// Pool-AK flagged this as the `histogram_quantile classic-bucket still
+// hardcodes now64(9) in range mode` follow-up to the per-step LWR
+// rework (#347).
+//
+// The fix routes range-mode histogram_quantile through a per-step plan:
+// CrossJoin(StepGrid, Filter(Scan)) + per-anchor LWR window + Aggregate
+// by (anchor_ts, user_labels) + HistogramQuantile with anchor_ts in the
+// GroupBy. The outer Project re-aliases anchor_ts → TimeUnix so the
+// matrix pivot lands one quantile sample per step.
+//
+// Seed: classic-histogram rows whose BucketCounts ([le=0.1, le=0.5,
+// le=+Inf]) grow over time. With buckets [0.1, 0.5, +Inf] and counts
+// [a, b, c] the cumulative is [a, a+b, a+b+c]; for phi=0.95 the target
+// `0.95 * (a+b+c)` lands inside the second or third bucket depending
+// on the per-anchor sum. The lookback is 5m so each step anchor sums
+// every bucket-row before it (rates over the window). The resulting
+// values move monotonically across the step grid — a regression where
+// the now64(9) collapse silently returned would surface as one
+// repeated quantile value (single anchor at end_ts) or zero samples.
+func TestQueryRange_RangeMode_HistogramQuantileClassic_ChDB(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(5 * time.Minute)
+	step := 30 * time.Second
+	const seedSamples = 11
+
+	// Seed: one histogram row per (anchor, series) carrying a
+	// monotonically growing BucketCounts vector. The bucket bounds
+	// [0.1, 0.5] (plus the implicit +Inf trailing bucket) stay
+	// constant; the per-bucket counts go up by step. Per-anchor
+	// rate-window sums therefore grow with the step index, and the
+	// p95 interpolation lands inside one of the explicit-bounds
+	// buckets (not at the highest finite edge) so any sub-bucket
+	// regression surfaces in the value comparison.
+	seedRows := make([]string, 0, seedSamples)
+	for i := 0; i < seedSamples; i++ {
+		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
+		// BucketCounts at index i: [10+i, 20+i, 30+i] — the trailing
+		// +Inf bucket dominates so p95 reads into the (0.5, +Inf]
+		// bucket and the emitter returns the highest explicit bound
+		// (0.5) per the spec's "phi crosses +Inf → return last
+		// explicit bound" branch. The shape is stable across steps,
+		// but the step-anchor TimeUnix MUST change with each row.
+		seedRows = append(seedRows, fmt.Sprintf(
+			`('http_server_request_duration', map('service', 'api'), toDateTime64('%s', 9), [%d, %d, %d], [0.1, 0.5])`,
+			ts, 10+i, 20+i, 30+i,
+		))
+	}
+	seed := histogramDDL + "\nINSERT INTO otel_metrics_histogram VALUES\n  " +
+		strings.Join(seedRows, ",\n  ") + ";"
+	srv, _ := newChDBServer(t, seed)
+
+	matrix := runRangeModeQueryRange(t, srv.URL,
+		"histogram_quantile(0.95, sum by(le)(rate(http_server_request_duration[5m])))",
+		start, end, step)
+	if len(matrix) == 0 {
+		t.Fatalf("expected at least 1 series; got 0")
+	}
+	values := matrix[0].Values
+	// Pre-fix the lowering emitted now64(9) for every per-step anchor
+	// so the matrix pivot collapsed onto one row — assert per-step
+	// fan-out (>= 2 distinct sample rows; the task description's lower
+	// bound).
+	if got := len(values); got < 2 {
+		t.Fatalf("expected per-step histogram_quantile matrix (>= 2 samples); got %d: %+v",
+			got, values)
+	}
+	// Per-step Timestamp must increase strictly — a regression where
+	// every anchor reused now64(9) would surface as identical
+	// timestamps repeated across the matrix.
+	for i := 1; i < len(values); i++ {
+		prev, _ := values[i-1][0].(float64)
+		curr, _ := values[i][0].(float64)
+		if curr <= prev {
+			t.Errorf("step %d: timestamp not strictly increasing: prev=%v curr=%v (full row: %+v)",
+				i, prev, curr, values)
+		}
+	}
+	// Every per-step quantile value must be the highest explicit
+	// bound (0.5) — the seed's bucket distribution forces phi=0.95 to
+	// land inside the (+Inf) overflow bucket, and the emitter's
+	// `idx == length(cum)` branch returns ExplicitBounds[length(eb)]
+	// = 0.5 per the upstream Prom spec. A regression that emitted a
+	// different value (e.g. interpolating across the +Inf bucket) or
+	// repeated a stale value across all steps would diverge here.
+	for i, v := range values {
+		if got := v[1]; got != "0.5" {
+			t.Errorf("step %d: value=%q want=%q (full row: %+v)", i, got, "0.5", v)
+		}
+	}
+}
+
 // runRangeModeQueryRange is the test helper shared across the Pool-AK
 // range-mode regression cases. Mirrors `runStepLoopRange` but lives
 // in this file so the Pool-AK suite is self-contained for any future
