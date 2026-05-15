@@ -145,6 +145,37 @@ func lowerVectorVector(b *parser.BinaryExpr, s schema.Metrics, op chplan.BinaryO
 		return foldSyntheticBinary(left, right, op, b.ReturnBool, s), nil
 	}
 
+	// Asymmetric synthetic fold: when EXACTLY ONE leg is the synthetic-
+	// scalar shape and the other is a real metric vector, the
+	// VectorJoin's per-side argMax wrap would key the synthetic side on
+	// (MetricName="", Attributes={}) and the metric side on its real
+	// (MetricName, {instance, job, ...}) — the INNER JOIN on full
+	// Attributes finds zero matches and the result is empty. Prom's
+	// semantics broadcast the synthetic scalar across every (series,
+	// step) row of the real side. We rebuild that here by promoting
+	// the synthetic's Value expression into a per-step / per-row scalar
+	// and routing through the vector-scalar binop shape (Project Value
+	// through the op, or Filter for bare-comparison). The synthetic
+	// side's Value expression may reference `anchor_ts` (range mode);
+	// the metric side's outer projection re-aliases `anchor_ts` →
+	// TimeUnix, so we rewrite ColumnRef{anchor_ts} → ColumnRef{TimeUnix}
+	// before splicing.
+	//
+	// Bucket 6 from docs/compat-residual-audit-25898791664.md: the
+	// `time() <op> metric` and `metric <op> time()` shapes collapse to
+	// empty without this. Gated on default matching for the same
+	// reasons as the both-synthetic fold above.
+	if isDefaultMatching(b.VectorMatching) {
+		lSynth := isSyntheticScalarPlan(left, s)
+		rSynth := isSyntheticScalarPlan(right, s)
+		switch {
+		case lSynth && !rSynth:
+			return foldSyntheticVectorBinary(left, right, op, true /*scalarOnLeft*/, b.ReturnBool, s), nil
+		case !lSynth && rSynth:
+			return foldSyntheticVectorBinary(right, left, op, false /*scalarOnLeft*/, b.ReturnBool, s), nil
+		}
+	}
+
 	match := chplan.VectorMatch{}
 	if b.VectorMatching != nil {
 		match.Labels = append([]string(nil), b.VectorMatching.MatchingLabels...)
@@ -259,6 +290,108 @@ func foldSyntheticBinary(left, right chplan.Node, op chplan.BinaryOp, returnBool
 		}
 	}
 	return combined
+}
+
+// foldSyntheticVectorBinary handles the asymmetric case where one leg
+// of a vector-vector binop is a synthetic-scalar shape (e.g. `time()`,
+// `vector(N)`, zero-arg date fn) and the other is a real metric vector.
+// The synthetic side acts as a per-step / per-row scalar broadcast
+// across every (series, step) row of the metric side — matching
+// Prom's semantics for `time() + metric`, `metric > time()`, etc.
+//
+// synth is the synthetic-scalar leg; vec is the real-vector leg.
+// scalarOnLeft tracks the original PromQL operand order so non-
+// commutative ops (SUB, DIV, MOD, POW) and comparisons preserve
+// orientation. returnBool wraps comparison ops in `toFloat64(...)`
+// for the 1.0 / 0.0 vector-bool result.
+//
+// The result shape mirrors [lowerVectorScalar]:
+//
+//   - Arithmetic op: Project [MetricName, Attributes, TimeUnix,
+//     (<synth_val> OP Value) AS Value] over the vec leg.
+//   - Comparison op + `bool` modifier: Project with
+//     `toFloat64(<synth_val> OP Value) AS Value`.
+//   - Comparison op WITHOUT `bool`: Filter on `<synth_val> OP Value`
+//     keeping the vec leg's columns intact (Prom's "preserve LHS
+//     where comparison holds" rule reduces here to "preserve vec
+//     rows where comparison holds" since the synthetic side has no
+//     labels of its own to keep).
+//
+// Range mode rewiring: the synthetic leg's Value expression may
+// reference `ColumnRef{anchor_ts}` (the per-step anchor introduced by
+// [syntheticScalarVector] via [rewriteAnchorRefs]); the vec leg's
+// outer projection from [wrapRangeLatestPerSeries] re-aliases
+// `anchor_ts` → TimeUnix, so we rewrite ColumnRef{anchor_ts} →
+// ColumnRef{TimeUnix} before splicing the synthetic value into the
+// vec leg's row stream. Instant-mode synthetic Values are pure
+// literal expressions (`toFloat64(toUnixTimestamp64Nano(<lit>) /
+// 1e9)`) with no ColumnRefs, so the rewrite is a no-op there.
+func foldSyntheticVectorBinary(synth, vec chplan.Node, op chplan.BinaryOp, scalarOnLeft, returnBool bool, s schema.Metrics) chplan.Node {
+	synthVal := rewriteAnchorToTimeUnix(syntheticValueExpr(synth), s)
+	vecValue := chplan.Expr(&chplan.ColumnRef{Name: s.ValueColumn})
+
+	var lhs, rhs chplan.Expr
+	if scalarOnLeft {
+		lhs, rhs = synthVal, vecValue
+	} else {
+		lhs, rhs = vecValue, synthVal
+	}
+	opExpr := &chplan.Binary{Op: op, Left: lhs, Right: rhs}
+
+	if isComparison(op) && !returnBool {
+		return &chplan.Filter{Input: vec, Predicate: opExpr}
+	}
+
+	var newValue chplan.Expr = opExpr
+	if isComparison(op) && returnBool {
+		newValue = &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{opExpr}}
+	}
+	return &chplan.Project{
+		Input: vec,
+		Projections: []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}},
+			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}},
+			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}},
+			{Expr: newValue, Alias: s.ValueColumn},
+		},
+	}
+}
+
+// rewriteAnchorToTimeUnix walks expr and replaces every
+// `ColumnRef{anchor_ts}` with `ColumnRef{<TimestampColumn>}`. Used by
+// [foldSyntheticVectorBinary] to thread a synthetic-leg Value
+// expression (which references `anchor_ts` in range mode) onto the
+// vector leg, whose outer projection has already renamed the per-step
+// anchor column to the canonical TimeUnix slot.
+//
+// The walk covers FuncCall args and Binary children — the shape
+// [syntheticScalarVector] / [rewriteAnchorRefs] produce. Other Expr
+// types (literals, MapAccess, etc.) don't carry anchor_ts references
+// in the synthetic-scalar shape and pass through unchanged.
+func rewriteAnchorToTimeUnix(expr chplan.Expr, s schema.Metrics) chplan.Expr {
+	if expr == nil {
+		return nil
+	}
+	switch v := expr.(type) {
+	case *chplan.ColumnRef:
+		if v.Name == "anchor_ts" && v.Qualifier == "" {
+			return &chplan.ColumnRef{Name: s.TimestampColumn}
+		}
+		return expr
+	case *chplan.FuncCall:
+		newArgs := make([]chplan.Expr, len(v.Args))
+		for i, a := range v.Args {
+			newArgs[i] = rewriteAnchorToTimeUnix(a, s)
+		}
+		return &chplan.FuncCall{Name: v.Name, Args: newArgs}
+	case *chplan.Binary:
+		return &chplan.Binary{
+			Op:    v.Op,
+			Left:  rewriteAnchorToTimeUnix(v.Left, s),
+			Right: rewriteAnchorToTimeUnix(v.Right, s),
+		}
+	}
+	return expr
 }
 
 // promBinaryOp maps a PromQL parser op to the chplan op. Arithmetic and

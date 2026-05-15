@@ -1,0 +1,33 @@
+# `time() < http_requests_total` — Bucket 6 (bare comparison shape).
+# Without the `bool` modifier the V-V comparison-as-filter rule
+# applies: rows where the predicate holds survive, values are
+# preserved from the vector leg. Pre-fix the V-V join's empty-label
+# match collapsed the result; the asymmetric synthetic fold here
+# emits a Filter on `(<time_value> < Value)` over the vec subtree.
+# Runtime values pinned end-to-end by
+# TestQueryRange_StepLoop_TimeMetric_ChDB; this fixture pins the
+# chplan + SQL shape only (Filter wraps the metric leg's outer
+# Project, so the emitted SQL is `SELECT * FROM (<vec>) WHERE
+# (<time_value> < Value)` — `SELECT *` skips the chDB Map rewrite
+# and the runtime cell shape is asserted in the chDB step-loop
+# test instead).
+-- query.promql --
+time() < http_requests_total
+-- args --
+[0] string = "http_requests_total"
+[1] string = "2026-01-01 00:00:01.000000000"
+[2] int64 = 9
+[3] string = "2026-01-01 00:00:01.000000000"
+[4] int64 = 9
+[5] int64 = 300000000000
+[6] string = "2026-01-01 00:00:01.000000000"
+[7] int64 = 9
+[8] int64 = 1000000000
+-- chplan --
+Filter predicate=(toFloat64((toUnixTimestamp64Nano(toDateTime64("2026-01-01 00:00:01.000000000", 9)) / 1000000000)) < Value)
+  Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
+    Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
+      Filter predicate=(((MetricName = "http_requests_total") AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+        Scan(otel_metrics_sum)
+-- sql --
+SELECT * FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`)) WHERE (toFloat64((toUnixTimestamp64Nano(toDateTime64(?, ?)) / ?)) < `Value`)

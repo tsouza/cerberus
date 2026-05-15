@@ -1,0 +1,41 @@
+# `time() < bool metric` — Bucket 6 (bool comparison shape).
+# The `bool` modifier wraps the comparison in `toFloat64(...)` so every
+# row surfaces as 1.0 / 0.0 instead of filtering. Pre-fix the V-V join
+# collapsed to empty; the asymmetric synthetic fold emits a Project
+# producing `toFloat64(<time_value> < Value) AS Value` over every vec
+# row.
+-- query.promql --
+time() < bool http_requests_total
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum VALUES
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 9999999999.0),
+    ('http_requests_total', map('job', 'db'), toDateTime64('2026-01-01 00:00:00', 9), 5.0);
+-- expected_rows --
+[
+  ["http_requests_total", {"job": "api"}, "2026-01-01T00:00:00Z", 1.0],
+  ["http_requests_total", {"job": "db"}, "2026-01-01T00:00:00Z", 0.0]
+]
+-- args --
+[0] string = "2026-01-01 00:00:01.000000000"
+[1] int64 = 9
+[2] int64 = 1000000000
+[3] string = "http_requests_total"
+[4] string = "2026-01-01 00:00:01.000000000"
+[5] int64 = 9
+[6] string = "2026-01-01 00:00:01.000000000"
+[7] int64 = 9
+[8] int64 = 300000000000
+-- chplan --
+Project [MetricName, Attributes, TimeUnix, toFloat64((toFloat64((toUnixTimestamp64Nano(toDateTime64("2026-01-01 00:00:01.000000000", 9)) / 1000000000)) < Value)) AS Value]
+  Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
+    Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
+      Filter predicate=(((MetricName = "http_requests_total") AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+        Scan(otel_metrics_sum)
+-- sql --
+SELECT `MetricName`, `Attributes`, `TimeUnix`, toFloat64((toFloat64((toUnixTimestamp64Nano(toDateTime64(?, ?)) / ?)) < `Value`)) AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`))

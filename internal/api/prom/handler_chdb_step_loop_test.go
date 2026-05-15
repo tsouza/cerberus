@@ -305,6 +305,141 @@ func TestQueryRange_StepLoop_TimeTime_ChDB(t *testing.T) {
 	}
 }
 
+// TestQueryRange_StepLoop_TimeMetric_ChDB walks the `time() OP metric`
+// shapes from Bucket 6 of the residual-audit doc — the asymmetric
+// counterpart to TestQueryRange_StepLoop_TimeTime_ChDB. Pre-fix these
+// routed through chplan.VectorJoin and the per-side argMax keyed on
+// (MetricName="", Attributes={}) vs the metric's real labels collapsed
+// to zero matches; the result was an empty matrix. The asymmetric
+// synthetic fold in lowerVectorVector splices the time-value
+// expression (which references `anchor_ts` in range mode) into the
+// metric leg's per-step Project, rewriting ColumnRef{anchor_ts} →
+// ColumnRef{TimeUnix} so the spliced expression resolves against the
+// metric leg's outer-projection column shape.
+//
+// Window: start=T0, end=T0+5m, step=30s → 11 anchors at T0+i*30
+// for i = 0..10. The seed lands one sample at each step with
+// Value=100+i so the LWR pick at step i is the sample at step i
+// (the per-step anchor + 5-min lookback both include it).
+//
+// Each operation pins both directions (synth-on-left and synth-on-
+// right) so non-commutative ops (SUB / DIV / LT / GT) surface
+// failures independently of the commutative variants.
+func TestQueryRange_StepLoop_TimeMetric_ChDB(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(5 * time.Minute)
+	step := 30 * time.Second
+	const wantSamples = 11
+
+	seedRows := make([]string, 0, wantSamples)
+	for i := 0; i < wantSamples; i++ {
+		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
+		seedRows = append(seedRows, fmt.Sprintf(
+			`('demo_memory_usage_bytes', map('instance', 'demo'), toDateTime64('%s', 9), %d.0)`,
+			ts, 100+i,
+		))
+	}
+	seed := gaugeDDL + "\nINSERT INTO otel_metrics_gauge VALUES\n  " +
+		strings.Join(seedRows, ",\n  ") + ";"
+	srv, _ := newChDBServer(t, seed)
+
+	// timeOf returns time() (Unix seconds) at step i.
+	timeOf := func(i int) float64 {
+		return float64(start.Unix() + int64(i)*30)
+	}
+	// metricOf returns the demo metric value at step i (the per-step
+	// LWR picks the seeded sample at step i with Value=100+i).
+	metricOf := func(i int) float64 {
+		return float64(100 + i)
+	}
+	fmtF := func(f float64) string {
+		return strconv.FormatFloat(f, 'f', -1, 64)
+	}
+
+	cases := []struct {
+		name      string
+		query     string
+		wantValue func(i int) string
+	}{
+		// Arithmetic — both directions for non-commutative ops so the
+		// scalarOnLeft flag is exercised. ADD/MUL are commutative so
+		// one direction is sufficient.
+		{
+			name:  "time-plus-metric",
+			query: "time() + demo_memory_usage_bytes",
+			wantValue: func(i int) string {
+				return fmtF(timeOf(i) + metricOf(i))
+			},
+		},
+		{
+			name:  "metric-minus-time",
+			query: "demo_memory_usage_bytes - time()",
+			wantValue: func(i int) string {
+				return fmtF(metricOf(i) - timeOf(i))
+			},
+		},
+		{
+			name:  "time-minus-metric",
+			query: "time() - demo_memory_usage_bytes",
+			wantValue: func(i int) string {
+				return fmtF(timeOf(i) - metricOf(i))
+			},
+		},
+		{
+			name:  "time-times-metric",
+			query: "time() * demo_memory_usage_bytes",
+			wantValue: func(i int) string {
+				return fmtF(timeOf(i) * metricOf(i))
+			},
+		},
+		{
+			name:  "metric-div-time",
+			query: "demo_memory_usage_bytes / time()",
+			wantValue: func(i int) string {
+				return fmtF(metricOf(i) / timeOf(i))
+			},
+		},
+		// Bool comparisons — time() >> metric values at every step
+		// (time is ~1.7e9, metric is ~100), so `time > bool metric`
+		// is always 1, `time < bool metric` is always 0.
+		{
+			name:  "time-gt-bool-metric",
+			query: "time() > bool demo_memory_usage_bytes",
+			wantValue: func(_ int) string {
+				return "1"
+			},
+		},
+		{
+			name:  "metric-lt-bool-time",
+			query: "demo_memory_usage_bytes < bool time()",
+			wantValue: func(_ int) string {
+				return "1"
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			matrix := runStepLoopRange(t, srv.URL, tc.query, start, end, step)
+			if len(matrix) != 1 {
+				t.Fatalf("expected exactly 1 series in matrix, got %d: %+v", len(matrix), matrix)
+			}
+			values := matrix[0].Values
+			if len(values) != wantSamples {
+				t.Fatalf("expected %d samples (one per step), got %d: %+v",
+					wantSamples, len(values), values)
+			}
+			for i, v := range values {
+				want := tc.wantValue(i)
+				if got := v[1]; got != want {
+					t.Errorf("step %d: value=%q want=%q (full row: %+v)",
+						i, got, want, v)
+				}
+			}
+		})
+	}
+}
+
 // TestQueryRange_StepLoop_DrivingVector_ChDB pins the control case:
 // a driving-vector query (`avg_over_time(demo_memory_usage_bytes[1m])`)
 // must keep emitting per-step samples from the input data, NOT N rows
