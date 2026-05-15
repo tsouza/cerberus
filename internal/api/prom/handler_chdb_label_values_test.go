@@ -80,8 +80,14 @@ INSERT INTO otel_metrics_gauge (MetricName, MetricDescription, MetricUnit, Attri
 		ts, ts, ts)
 
 	srv, _ := newChDBServer(t, seed)
+	// Anchor the matcher's LWR window so it includes seedTime. With the
+	// default 5-minute instant lookback, end == seedTime keeps the seed
+	// inside the non-strict upper / strict lower bound window.
+	start := seedTime.Add(-5 * time.Minute).Unix()
+	end := seedTime.Unix()
 	url := srv.URL + "/api/v1/label/job/values?" +
-		"match%5B%5D=up%7Binstance%3D%22h1%3A8080%22%7D"
+		"match%5B%5D=up%7Binstance%3D%22h1%3A8080%22%7D" +
+		fmt.Sprintf("&start=%d&end=%d", start, end)
 	resp, err := http.Get(url)
 	if err != nil {
 		t.Fatalf("GET: %v", err)
@@ -134,8 +140,11 @@ INSERT INTO otel_metrics_gauge (MetricName, MetricDescription, MetricUnit, Attri
 		ts, ts)
 
 	srv, _ := newChDBServer(t, seed)
+	start := seedTime.Add(-5 * time.Minute).Unix()
+	end := seedTime.Unix()
 	url := srv.URL + "/api/v1/label/job/values?" +
-		"match%5B%5D=%7Bjob%3D~%22.%2B%22%7D"
+		"match%5B%5D=%7Bjob%3D~%22.%2B%22%7D" +
+		fmt.Sprintf("&start=%d&end=%d", start, end)
 	resp, err := http.Get(url)
 	if err != nil {
 		t.Fatalf("GET: %v", err)
@@ -174,8 +183,11 @@ INSERT INTO otel_metrics_gauge (MetricName, MetricDescription, MetricUnit, Attri
 		ts, ts, ts)
 
 	srv, _ := newChDBServer(t, seed)
+	start := seedTime.Add(-5 * time.Minute).Unix()
+	end := seedTime.Unix()
 	url := srv.URL + "/api/v1/label/job/values?" +
-		"match%5B%5D=up&match%5B%5D=down"
+		"match%5B%5D=up&match%5B%5D=down" +
+		fmt.Sprintf("&start=%d&end=%d", start, end)
 	resp, err := http.Get(url)
 	if err != nil {
 		t.Fatalf("GET: %v", err)
@@ -240,8 +252,11 @@ INSERT INTO otel_metrics_gauge (MetricName, MetricDescription, MetricUnit, Attri
 		ts, ts, ts)
 
 	srv, _ := newChDBServer(t, seed)
+	start := seedTime.Add(-5 * time.Minute).Unix()
+	end := seedTime.Unix()
 	url := srv.URL + "/api/v1/label/__name__/values?" +
-		"match%5B%5D=%7Bjob%3D%22api%22%7D"
+		"match%5B%5D=%7Bjob%3D%22api%22%7D" +
+		fmt.Sprintf("&start=%d&end=%d", start, end)
 	resp, err := http.Get(url)
 	if err != nil {
 		t.Fatalf("GET: %v", err)
