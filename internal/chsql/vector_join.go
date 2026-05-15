@@ -394,21 +394,24 @@ func writeOutputAttributes(b *Builder, j *chplan.VectorJoin) {
 }
 
 // outputMetricNameFrag returns a Frag for the joined output's
-// MetricName slot. PromQL's V-V binop rule:
+// MetricName slot. PromQL's V-V binop rule, per Prometheus's reference
+// implementation: every V-V binop is a transformation — the output
+// sample is derived, not a passthrough of the LHS sample. So
+// `__name__` is dropped for every shape:
 //
-//   - Arithmetic op (any non-comparison): always drops `__name__`.
+//   - Arithmetic op (any non-comparison): drops `__name__`.
 //   - Comparison op with `bool` modifier (`ReturnBool == true`):
 //     drops `__name__` — the result is a 1.0/0.0 derived sample.
-//   - Bare comparison op: preserves the LHS metric name (PromQL's
-//     "comparison-as-filter" rule keeps the LHS sample's full label
-//     set, including `__name__`).
+//   - Bare comparison op: also drops `__name__`. Although LHS labels
+//     other than `__name__` survive the comparison-as-filter, Prom
+//     still strips the metric name from the output — comparing two
+//     time series is a transformation, not a passthrough.
 //
 // The dropped case emits a parameterised empty string aliased back to
-// the MetricName column; the preserved case projects the outer side's
-// qualified MetricName directly. See Pool-AU's audit (#355) — this
-// site accounts for ~15 of the 107 compat-lane `__name__`-retention
-// diffs (V-V arithmetic with `on(...)` + V-V `bool` compare with
-// `on(...)` + the `group_left` variants).
+// the MetricName column. See Pool-AU's audit (#355) and Pool-AT's
+// #356 — this site accounts for ~18 of the 107 compat-lane
+// `__name__`-retention diffs across V-V arithmetic / `bool`-compare /
+// bare-compare + group_left variants.
 func outputMetricNameFrag(j *chplan.VectorJoin, outerSide string) Frag {
 	if vectorJoinDropsName(j) {
 		return As(func(b *Builder) { b.Arg("") }, j.MetricNameColumn)
@@ -417,14 +420,10 @@ func outputMetricNameFrag(j *chplan.VectorJoin, outerSide string) Frag {
 }
 
 // vectorJoinDropsName reports whether the V-V binop output drops
-// `__name__`. PromQL's rule: arithmetic ops always drop, comparison
-// ops drop only with the `bool` modifier (otherwise the comparison
-// acts as a filter and LHS labels survive).
-func vectorJoinDropsName(j *chplan.VectorJoin) bool {
-	switch j.Op {
-	case chplan.OpEq, chplan.OpNe, chplan.OpLt, chplan.OpLe, chplan.OpGt, chplan.OpGe:
-		return j.ReturnBool
-	}
+// `__name__`. Prometheus drops the metric name for every V-V binop
+// — arithmetic, comparison-with-bool, and bare comparison alike,
+// because each is a transformation rather than a passthrough.
+func vectorJoinDropsName(_ *chplan.VectorJoin) bool {
 	return true
 }
 
