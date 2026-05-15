@@ -1,10 +1,12 @@
 name: tempo-compatibility
 
-# Status: PR 2 of docs/tempo-compliance-plan.md. The driver this
-# workflow invokes is a STUB that always exits 0. The workflow's job
-# in PR 2 is to prove the Compose stack stands up under GitHub Actions
-# and to wire the dispatch / cron / on-push triggers so PRs 3-4 can
-# focus on the seeder + differ without also debugging CI plumbing.
+# Status: PR 3 of docs/tempo-compliance-plan.md. The driver this
+# workflow invokes is a real seeder (PR 3) that pushes OTLP into
+# reference Tempo + INSERTs into ClickHouse for cerberus + smokes
+# /api/traces/<id> on both backends. continue-on-error is preserved
+# at the job level so the workflow stays an informational baseline
+# until PR 7 promotes it to a required check (per the rollout in the
+# plan doc).
 #
 # Triggers:
 #   * workflow_dispatch  — manual runs from the GH UI.
@@ -73,14 +75,13 @@ jobs:
         # so no explicit `docker compose down` step is needed even on
         # failure. The continue-on-error at job level keeps a non-zero
         # rc from turning the workflow conclusion red while we're in
-        # informational mode.
+        # informational mode (PR 7 of the rollout flips this).
         run: ./harness/tempo-compatibility/scripts/run-tempo-compatibility.sh
 
       - name: Upload report
         # `if: always()` so we capture whatever the driver wrote even
-        # when the harness step failed. In PR 2 the stub doesn't write
-        # a report, so this will typically warn "if-no-files-found";
-        # PRs 3-4 will populate the dir.
+        # when the harness step failed. PR 3's seeder doesn't write a
+        # report (smoke is in-process); PR 4's differ populates this dir.
         if: always()
         uses: actions/upload-artifact@v7
         with:

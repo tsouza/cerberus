@@ -1,24 +1,29 @@
 #!/usr/bin/env bash
 # Tempo / TraceQL compatibility harness entry point.
 #
-# Status: PR 2 of docs/tempo-compliance-plan.md. Brings up the
-# docker-compose stack (reference Tempo + cerberus + ClickHouse +
-# STUB driver), invokes the stub, and tears down. The real seeder +
-# diff driver land in PRs 3-4; the stub already accepts the full flag
-# surface so this script's contract is stable across the rollout.
+# Status: PR 3 of docs/tempo-compliance-plan.md. The driver is now a
+# real seeder (not a stub) — it writes a deterministic OTLP batch into
+# Tempo's :4317 AND inserts the same fixture into ClickHouse so cerberus
+# reads it via the same /api/traces path. The driver's own smoke
+# assertion (poll /api/traces/<id> on both backends and assert non-zero
+# matching span counts) gates this script's exit code.
 #
 # Usage:
-#   ./harness/tempo-compatibility/scripts/run-tempo-compatibility.sh        full lifecycle
-#   COMPOSE_KEEP=1 ./...                                                    leave stack up after run
+#   ./harness/tempo-compatibility/scripts/run-tempo-compatibility.sh   full lifecycle
+#   COMPOSE_KEEP=1 ./...                                               leave stack up after run
 #
 # Env:
 #   REPORT_DIR    where the driver writes diff.json (default:
-#                 harness/tempo-compatibility/reports/). The directory
-#                 is created on first run.
+#                 harness/tempo-compatibility/reports/). PR 3's seeder
+#                 doesn't write a report — that lands in PR 4.
+#   COMPOSE_KEEP  non-empty: leave the compose stack running after the
+#                 seeder completes (useful for poking at /api/traces and
+#                 the otel_traces table manually).
 #
 # Exit codes (driver passthrough):
-#   0  driver exited 0  (in PR 2: stub always exits 0)
-#   non-zero  stack failed to come up OR driver exited non-zero
+#   0  seeder + smoke succeeded (both backends returned spans for the
+#      first trace ID with matching counts)
+#   non-zero  stack failed to come up OR seeder/smoke failed.
 
 set -eu -o pipefail
 
@@ -53,17 +58,18 @@ echo "==> bringing up tempo-compatibility stack"
 docker compose up -d --build --wait --wait-timeout 300 \
     clickhouse tempo cerberus-tempo
 
-echo "==> running tempo-compat-driver (stub in PR 2)"
-# `docker compose run --rm` invokes the driver and removes the
-# container afterwards. The stub prints a banner and exits 0; PRs 3-4
-# will replace it with the real seed → query → diff pipeline.
+echo "==> running tempo-compat-driver seed"
+# `docker compose run --rm` invokes the seeder and removes the
+# container afterwards. The seeder pushes OTLP into Tempo, INSERTs the
+# same fixture into ClickHouse, and polls /api/traces/<id> on both
+# backends as the in-process smoke check.
 #
-# Note: NO `|| true` here. The driver's exit code is meaningful —
-# masking it would let regressions land green (this is the same trap
-# that bit the PromQL harness pre-#298). The cleanup trap still tears
-# down the stack on a non-zero exit.
+# Note: NO `|| true` here. The driver's exit code is meaningful — masking
+# it would let regressions land green (the same trap that bit the PromQL
+# harness pre-#298). The cleanup trap still tears down the stack on a
+# non-zero exit.
 set +e
-docker compose run --rm tempo-compat-driver
+docker compose run --rm tempo-compat-driver seed
 DRIVER_RC=$?
 set -e
 

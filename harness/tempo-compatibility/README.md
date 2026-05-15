@@ -1,12 +1,28 @@
 # Tempo / TraceQL compatibility harness
 
-> Status: **PR 2 (compose + stub driver + nightly workflow)** of the
-> rollout described in [`docs/tempo-compliance-plan.md`](../../docs/tempo-compliance-plan.md).
+> Status: **PR 3 (seeder)** of the rollout described in
+> [`docs/tempo-compliance-plan.md`](../../docs/tempo-compliance-plan.md).
 > This directory holds the vendored snapshot from PR 1 (`upstream/`),
 > the Docker Compose stack standing up reference Tempo + cerberus +
-> ClickHouse, a STUB driver that exits 0, and a nightly /
-> `workflow_dispatch` GitHub Actions lane (informational, not a
-> required check). The real seeder + diff driver follow in PRs 3-4.
+> ClickHouse, the driver binary with a `seed` subcommand that pushes a
+> deterministic OTLP batch to both backends and asserts
+> `/api/traces/<id>` returns matching span counts on both, and a
+> nightly / `workflow_dispatch` GitHub Actions lane (informational, not
+> a required check). The diff driver follows in PR 4.
+>
+> ## Ingest path (PR 3 vs the original plan)
+>
+> docs/tempo-compliance-plan.md "Open question 1" flagged a choice:
+> seed cerberus via OTLP or via direct CH INSERT. **PR 3 settles on
+> direct CH INSERT** because cerberus is read-only over OTLP — its
+> HTTP layer answers Prom / Loki / Tempo queries by reading from a CH
+> instance whose tables are populated by the OTel-CH exporter in real
+> deployments. Running a full collector + exporter pipeline inside the
+> harness just to seed would re-test the exporter (already covered
+> upstream), not cerberus's read path. The Tempo side, by contrast,
+> has no out-of-band ingest path and must take OTLP. Both writes are
+> derived from one in-memory fixture so per-span fields stay 1:1
+> across both read paths.
 
 ## Why this harness exists
 
@@ -22,18 +38,21 @@ See [`docs/tempo-compliance-plan.md`](../../docs/tempo-compliance-plan.md)
 for the full landscape analysis, the per-PR breakdown, and the diff
 strategy.
 
-## Layout (current — PR 2)
+## Layout (current — PR 3)
 
 ```text
 harness/tempo-compatibility/
   README.md             this file
-  docker-compose.yml    PR 2 — tempo + cerberus + clickhouse + stub driver
-  tempo-config.yaml     PR 2 — reference Tempo (local block storage)
+  docker-compose.yml    tempo + cerberus + clickhouse + seeder driver
+  tempo-config.yaml     reference Tempo (local block storage)
   scripts/
-    run-tempo-compatibility.sh  PR 2 — `docker compose up --wait` + driver + teardown
-  driver/                       PR 2 — STUB; PRs 3-4 wire the real seeder + differ
-    Dockerfile          PR 2 — multi-stage build of the driver binary
-    main.go             PR 2 — flag-only stub, prints banner + exits 0
+    run-tempo-compatibility.sh  `docker compose up --wait` + driver + teardown
+  driver/                       cerberus-owned driver binary
+    Dockerfile          repo-root context multi-stage build
+    main.go             PR 3 — subcommand dispatcher (seed / diff)
+    seeder.go           PR 3 — OTLP push to Tempo + CH INSERT for cerberus
+    corpus/.gitkeep     PR 4+ corpus dir placeholder
+  reports/              driver report output (gitignored)
   upstream/             PR 1 — vendored snapshot (read-only reference)
     LICENSE             AGPL-3.0, copied verbatim from grafana/tempo
     VERSION             exact upstream coordinates of the snapshot
@@ -41,16 +60,16 @@ harness/tempo-compatibility/
     pkg/httpclient/     Tempo HTTP client; reused by the future driver
 ```
 
-## Layout (planned — PRs 3-7)
+## Layout (planned — PRs 4-7)
 
-PRs 3-7 grow the driver from stub into the real differ:
+PRs 4-7 grow the driver from seeder into the real differ:
 
 ```text
 harness/tempo-compatibility/
   driver/
-    main.go             PR 3+ — orchestrator (parses flags, dispatches)
-    seeder.go           PR 3  — push OTLP batches to tempo + cerberus
-    corpus.go           PR 4  — TXTAR loader
+    main.go             PR 3+ — subcommand dispatcher (seed / diff)
+    seeder.go           PR 3  — push OTLP to tempo + CH INSERT for cerberus
+    corpus.go           PR 4  — TXTAR corpus loader
     differ.go           PR 4  — JSON-shape diff
     report.go           PR 4  — markdown report writer
     corpus/

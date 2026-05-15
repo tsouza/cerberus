@@ -1,57 +1,83 @@
-// Command tempo-compat-driver is a STUB for PR 2 of the Tempo / TraceQL
-// compatibility harness rollout (docs/tempo-compliance-plan.md). It
-// exists so the docker-compose stack has a well-typed flag surface to
-// invoke from day one; PRs 3-4 replace the body with the real seeder +
-// differ:
+// Command tempo-compat-driver is the dispatch entry point for the
+// Tempo / TraceQL compatibility harness. It exists so the docker-compose
+// stack has a single binary with a stable flag surface; behaviour is
+// selected via the first positional argument (the "subcommand"):
 //
-//   - PR 3: implement seeder.go (push identical OTLP batches to
-//     reference Tempo's :4317 and cerberus's OTLP ingest, wait for
-//     replication, smoke that /api/traces/<id> returns equal span
-//     counts on both backends).
-//   - PR 4: implement corpus.go + differ.go (load TXTAR corpus, fan
-//     each query at both backends, write a markdown diff report).
+//   - `seed`    (PR 3 — this PR) writes the same deterministic OTLP
+//     batch to the reference Tempo (via OTLP gRPC :4317) and to
+//     ClickHouse's `otel_traces` table (the read path cerberus uses to
+//     answer Tempo HTTP queries). After both writes complete it polls
+//     `/api/traces/<first-id>` on both backends and reports the per-
+//     backend span count. The PR-3 contract is: stack comes up, seed
+//     pushes to both targets, the smoke trace-id resolves on both.
+//   - `diff`    (PR 4 — pending) will run the TraceQL corpus through
+//     both backends and emit a markdown report. The subcommand is
+//     not implemented yet; invoking it exits with rc=2.
 //
-// Until then this binary parses the same flags PRs 3-4 will use,
-// prints a banner naming the stub, and exits 0. Keeping the flag
-// surface stable means scripts/run-tempo-compatibility.sh and
-// docker-compose.yml don't need to change when the real driver lands.
+// The two-way "OTLP into Tempo, INSERT into CH" split is documented in
+// docs/tempo-compliance-plan.md's "Open question 1": cerberus is
+// **read-only over OTLP**. The HTTP layer answers Prom / Loki / Tempo
+// queries by reading from a CH instance whose tables are populated by
+// the OTel-CH exporter in a real deployment. The compatibility harness
+// can't run a full collector → exporter pipeline just to seed (that
+// would re-test the exporter, not cerberus's read path), so it inserts
+// directly into `otel_traces` with the same shape the exporter would
+// produce. The Tempo side, by contrast, has no out-of-band ingest path
+// and must take OTLP. Both writes are derived from one in-memory
+// fixture so per-span fields stay 1:1 between the two read paths.
 //
-// Implementation deliberately uses stdlib only (no anthrosphere SDKs,
-// no Tempo httpclient yet). PR 3 will pull in the vendored
-// harness/tempo-compatibility/upstream/pkg/httpclient as the read
-// client and the OTLP gRPC SDK for the write side.
+// Single binary, multiple subcommands keeps the docker-compose flag
+// surface stable: the same image gets re-invoked across PRs by changing
+// the `command:` array, not by swapping images.
 package main
 
 import (
-	"flag"
 	"fmt"
 	"os"
 )
 
-// version is stamped on driver-stub output so a reader scanning CI
-// logs can tell at a glance whether they're looking at the PR-2 stub
-// or the real differ that lands in PR 4.
-const version = "stub-pr2"
+// version is stamped on driver output so a reader scanning CI logs can
+// tell at a glance which PR's behaviour they're looking at.
+const version = "pr3-seeder"
 
 func main() {
-	tempoURL := flag.String("tempo", "http://tempo:3200",
-		"reference Tempo HTTP base URL (PR 3-4: read-back endpoint for diffs)")
-	cerberusURL := flag.String("cerberus", "http://cerberus-tempo:29092",
-		"cerberus-under-test HTTP base URL (PR 3-4: read-back endpoint for diffs)")
-	corpusPath := flag.String("corpus", "/corpus/smoke.txtar",
-		"TXTAR corpus path (PR 4: query corpus to fan at both backends)")
-	reportPath := flag.String("report", "/reports/diff.json",
-		"output report path (PR 4: per-query diff results in JSON)")
+	if len(os.Args) < 2 {
+		fmt.Fprintln(os.Stderr, "tempo-compat-driver: missing subcommand")
+		usage()
+		os.Exit(2)
+	}
+	sub := os.Args[1]
+	args := os.Args[2:]
+	switch sub {
+	case "seed":
+		if err := runSeed(args); err != nil {
+			fmt.Fprintf(os.Stderr, "tempo-compat-driver seed: %v\n", err)
+			os.Exit(1)
+		}
+	case "diff":
+		fmt.Fprintln(os.Stderr, "tempo-compat-driver diff: not implemented yet — lands in PR 4")
+		os.Exit(2)
+	case "-h", "--help", "help":
+		usage()
+	default:
+		fmt.Fprintf(os.Stderr, "tempo-compat-driver: unknown subcommand %q\n", sub)
+		usage()
+		os.Exit(2)
+	}
+}
 
-	flag.Parse()
+// usage prints the subcommand list. Kept terse: the harness is
+// driver-internal infrastructure, not a user CLI.
+func usage() {
+	fmt.Fprintf(os.Stderr, `tempo-compat-driver %s
 
-	// Output is line-prefixed with the binary name so it's grep-able in
-	// the compose log stream alongside Tempo / cerberus / ClickHouse.
-	_, _ = fmt.Fprintf(os.Stdout, "tempo-compat-driver %s\n", version)
-	_, _ = fmt.Fprintf(os.Stdout, "tempo-compat-driver  tempo    = %s\n", *tempoURL)
-	_, _ = fmt.Fprintf(os.Stdout, "tempo-compat-driver  cerberus = %s\n", *cerberusURL)
-	_, _ = fmt.Fprintf(os.Stdout, "tempo-compat-driver  corpus   = %s\n", *corpusPath)
-	_, _ = fmt.Fprintf(os.Stdout, "tempo-compat-driver  report   = %s\n", *reportPath)
-	_, _ = fmt.Fprintln(os.Stdout, "tempo-compat-driver stub: no seeder, no differ — PRs 3-4 will fill this in")
-	_, _ = fmt.Fprintln(os.Stdout, "tempo-compat-driver exit 0")
+usage: tempo-compat-driver <subcommand> [flags]
+
+subcommands:
+  seed    push a deterministic OTLP batch to Tempo (:4317) AND insert
+          equivalent rows into ClickHouse otel_traces; smoke-poll
+          /api/traces/<id> on both backends.
+  diff    run the TraceQL corpus through both backends, emit a
+          markdown diff report. (PR 4 — not implemented yet)
+`, version)
 }

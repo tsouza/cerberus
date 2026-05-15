@@ -128,16 +128,32 @@ services:
       retries: 30
 
   tempo-compat-driver:
+    # PR 3: the driver is no longer a stub — it's a real binary with
+    # `seed` (this PR) and `diff` (pending in PR 4) subcommands. The
+    # default command runs `seed`; the smoke + run-tempo-compatibility
+    # script invokes `docker compose run --rm tempo-compat-driver seed`
+    # explicitly so the contract is stable across PRs.
+    #
+    # Build context widened from `./driver` to the repo root so the
+    # driver can `import "github.com/tsouza/cerberus/internal/schema/ddl"`
+    # and the OTLP gRPC client types via cerberus's go.mod. Mirrors
+    # how Dockerfile.local builds the cerberus binary.
+    image: cerberus-tempo-compat-driver:pr3
     build:
-      context: ./driver
-    # The stub driver prints a banner and exits 0. PRs 3-4 will wire the
-    # real seeder + differ; the flag surface is already wired here so
-    # the Compose contract is stable across the rollout.
-    command:
-      - "-tempo=http://tempo:3200"
-      - "-cerberus=http://cerberus-tempo:29092"
-      - "-corpus=/corpus/smoke.txtar"
-      - "-report=/reports/diff.json"
+      context: ../..
+      dockerfile: harness/tempo-compatibility/driver/Dockerfile
+    command: ["seed"]
+    environment:
+      # Targets are reachable on the compose network by service name.
+      # The seeder honours flags or these env vars (`flag.String`'s
+      # default is `envOr(...)`).
+      TEMPO_OTLP_ADDR: "tempo:4317"
+      TEMPO_HTTP_URL: "http://tempo:3200"
+      CERBERUS_URL: "http://cerberus-tempo:29092"
+      CERBERUS_CH_ADDR: "clickhouse:9000"
+      CERBERUS_CH_DATABASE: "otel"
+      CERBERUS_CH_USERNAME: "cerberus"
+      CERBERUS_CH_PASSWORD: "cerberus"
     depends_on:
       tempo:
         condition: service_healthy
@@ -146,8 +162,7 @@ services:
       clickhouse:
         condition: service_healthy
     volumes:
-      # The corpus + reports dirs don't exist yet (PRs 3-4 populate them).
-      # The driver stub tolerates missing files so the Compose run is a
-      # smoke for wiring, not data.
-      - ./driver/corpus:/corpus:ro
+      # `reports/` is mounted ahead of PR 4 so the diff subcommand can
+      # write the markdown report once it lands. The seeder doesn't
+      # write to this dir; the mount is forward-compat only.
       - ./reports:/reports
