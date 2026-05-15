@@ -951,6 +951,226 @@ func TestQueryRange_RangeMode_HistogramQuantileClassic_ChDB(t *testing.T) {
 	}
 }
 
+// TestQueryRange_RangeMode_VVOnCompare_ChDB pins the bare V-V
+// `on(...)` comparison binop family (==, !=, <, >, <=, >=) under
+// `/api/v1/query_range` — the no-`bool`-modifier sibling of
+// TestQueryRange_RangeMode_VVOnComparison_ChDB. Before this fix every
+// shape in the family returned `server_error: 502` because the
+// comparison emit path projected the per-pair comparison result
+// `(L.Value <op> R.Value)` — a CH UInt8 — into the canonical Value
+// column, and clickhouse-go's scan into `*float64` rejected the type
+// with the 502 surfacing as 12 compat-lane failures on the
+// `demo_memory_usage_bytes` selector (six bare ops × two LHS shapes —
+// bare selector and `sum by()` `group_left(job)` join).
+//
+// The fix routes plain V-V comparisons through the existing step-
+// aligned VectorJoin (PR #348's StepAligned conjunct) and projects
+// `L.Value` into the output column with a `WHERE (L.Value <op>
+// R.Value)` predicate so Prom's "preserve LHS where comparison
+// holds" semantics fire and the output Value stays Float64. This
+// test seeds two series with comparable values, runs every op, and
+// asserts each step's matrix-output value is one of the LHS sample
+// values that satisfied the per-anchor comparison.
+//
+// The chDB lane is the right home: this is a wire-format regression
+// (clickhouse-go scan refusing UInt8 → *float64), not a SQL-shape
+// regression, so the stub lane wouldn't catch a future regression
+// that breaks only the scan path.
+func TestQueryRange_RangeMode_VVOnCompare_ChDB(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(5 * time.Minute)
+	step := 30 * time.Second
+	const wantSamples = 11
+
+	// Two series with constant per-step values (100, 200). Comparing
+	// each series with itself across the on(instance, job, type)
+	// match yields rows where L.Value == R.Value (always true), so
+	// `==` keeps every pair, `<`/`>` drop everything, and `<=`/`>=`
+	// behave like `==`. Mirrors the compatibility lane's PromLabs
+	// demo seed (instance/job/type labels).
+	seedRows := make([]string, 0, wantSamples*2)
+	for i := 0; i < wantSamples; i++ {
+		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
+		seedRows = append(seedRows,
+			fmt.Sprintf(`('demo_memory_usage_bytes', map('instance', 'a', 'job', 'demo', 'type', 'used'), toDateTime64('%s', 9), 100.0)`, ts),
+			fmt.Sprintf(`('demo_memory_usage_bytes', map('instance', 'b', 'job', 'demo', 'type', 'used'), toDateTime64('%s', 9), 200.0)`, ts),
+		)
+	}
+	seed := gaugeDDL + "\nINSERT INTO otel_metrics_gauge VALUES\n  " +
+		strings.Join(seedRows, ",\n  ") + ";"
+	srv, _ := newChDBServer(t, seed)
+
+	// Each entry pins the per-pair filter behaviour of one of the
+	// 12 compat-lane shapes (the 6 bare comparison ops, all over the
+	// same on(instance, job, type) shape). When the comparison
+	// passes, the LHS Value flows through; when it fails, no row is
+	// emitted at that step.
+	type vvCmpCase struct {
+		// name is the t.Run subtest name and doubles as the trace tag.
+		name string
+		// query is the PromQL expression executed against the seeded
+		// matrix. The bare comparison without `bool` triggers
+		// Prom's V-V comparison filter rule.
+		query string
+		// wantSeriesCount is the number of distinct series the
+		// matrix should carry after the filter.
+		wantSeriesCount int
+		// wantValuePerSeries is the per-instance Value sample we
+		// expect at each step in the result series. Each series
+		// must carry exactly `wantSamples` rows of the matching
+		// value when the comparison passes (== / <= / >=).
+		wantValuePerSeries map[string]string
+	}
+	for _, tc := range []vvCmpCase{
+		{
+			name:               "eq",
+			query:              `demo_memory_usage_bytes == on(instance, job, type) demo_memory_usage_bytes`,
+			wantSeriesCount:    2,
+			wantValuePerSeries: map[string]string{"a": "100", "b": "200"},
+		},
+		{
+			name:               "le",
+			query:              `demo_memory_usage_bytes <= on(instance, job, type) demo_memory_usage_bytes`,
+			wantSeriesCount:    2,
+			wantValuePerSeries: map[string]string{"a": "100", "b": "200"},
+		},
+		{
+			name:               "ge",
+			query:              `demo_memory_usage_bytes >= on(instance, job, type) demo_memory_usage_bytes`,
+			wantSeriesCount:    2,
+			wantValuePerSeries: map[string]string{"a": "100", "b": "200"},
+		},
+		{
+			name:               "ne",
+			query:              `demo_memory_usage_bytes != on(instance, job, type) demo_memory_usage_bytes`,
+			wantSeriesCount:    0,
+			wantValuePerSeries: nil,
+		},
+		{
+			name:               "lt",
+			query:              `demo_memory_usage_bytes < on(instance, job, type) demo_memory_usage_bytes`,
+			wantSeriesCount:    0,
+			wantValuePerSeries: nil,
+		},
+		{
+			name:               "gt",
+			query:              `demo_memory_usage_bytes > on(instance, job, type) demo_memory_usage_bytes`,
+			wantSeriesCount:    0,
+			wantValuePerSeries: nil,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			matrix := runRangeModeQueryRange(t, srv.URL,
+				tc.query, start, end, step)
+			if len(matrix) != tc.wantSeriesCount {
+				t.Fatalf("query=%q: expected %d series, got %d: %+v",
+					tc.query, tc.wantSeriesCount, len(matrix), matrix)
+			}
+			if tc.wantSeriesCount == 0 {
+				// Filtered-out shape — nothing more to check.
+				return
+			}
+			for _, ms := range matrix {
+				inst := ms.Metric["instance"]
+				want, ok := tc.wantValuePerSeries[inst]
+				if !ok {
+					t.Errorf("unexpected series instance=%q: %+v", inst, ms.Metric)
+					continue
+				}
+				if len(ms.Values) != wantSamples {
+					t.Errorf("instance=%s: expected %d samples, got %d: %+v",
+						inst, wantSamples, len(ms.Values), ms.Values)
+					continue
+				}
+				for i, v := range ms.Values {
+					if got := v[1]; got != want {
+						t.Errorf("instance=%s step %d: value=%q want=%q (full row: %+v)",
+							inst, i, got, want, v)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestQueryRange_RangeMode_VVOnCompareGroupLeft_ChDB pins the
+// `sum by(instance, type) (metric) <cmp> on(instance, type)
+// group_left(job) metric` family (the second LHS shape in the
+// compat-lane's 12-failure batch). The `group_left(job)` modifier
+// copies the `job` label onto the LHS-derived output rows.
+//
+// Pre-fix: the emit path projected `(L.Value <op> R.Value)` as the
+// Value column → UInt8 → clickhouse-go scan failure → 502.
+//
+// Post-fix: the bare comparison routes through `WHERE (L.Value <op>
+// R.Value)` with `L.Value AS Value`; the matrix output carries the
+// LHS aggregate value where the comparison holds.
+//
+// Seeded: two `(instance, type)` groups (a/b × used) with a single
+// job per group. The LHS aggregate `sum by(instance, type)` folds
+// the per-group rows down to one value; the RHS bare selector
+// preserves the job label. `group_left(job)` then copies the job
+// label onto the LHS output without trip the uniqueness throwIf
+// (one row per (instance, type, job) tuple on each side).
+func TestQueryRange_RangeMode_VVOnCompareGroupLeft_ChDB(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(5 * time.Minute)
+	step := 30 * time.Second
+	const wantSamples = 11
+
+	// Two (instance, type) groups, each with a single demo job. The
+	// LHS `sum by(instance, type)` produces one row per group (same
+	// value as the single underlying row); the RHS bare selector
+	// produces one row per group with `job=demo`. `group_left(job)`
+	// copies `job` from RHS onto the LHS output.
+	seedRows := make([]string, 0, wantSamples*2)
+	for i := 0; i < wantSamples; i++ {
+		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
+		seedRows = append(seedRows,
+			fmt.Sprintf(`('demo_memory_usage_bytes', map('instance', 'a', 'job', 'demo', 'type', 'used'), toDateTime64('%s', 9), 100.0)`, ts),
+			fmt.Sprintf(`('demo_memory_usage_bytes', map('instance', 'b', 'job', 'demo', 'type', 'used'), toDateTime64('%s', 9), 200.0)`, ts),
+		)
+	}
+	seed := gaugeDDL + "\nINSERT INTO otel_metrics_gauge VALUES\n  " +
+		strings.Join(seedRows, ",\n  ") + ";"
+	srv, _ := newChDBServer(t, seed)
+
+	// `sum by(instance, type) (metric)` folds the per-group rows
+	// down to one value per (instance, type); comparing that against
+	// the bare selector on the same data with `on(instance, type)`
+	// always holds for `==`.
+	query := `sum by(instance, type) (demo_memory_usage_bytes) == on(instance, type) group_left(job) demo_memory_usage_bytes`
+	matrix := runRangeModeQueryRange(t, srv.URL, query, start, end, step)
+	if len(matrix) != 2 {
+		t.Fatalf("expected 2 series (one per (instance, type) group), got %d: %+v",
+			len(matrix), matrix)
+	}
+	wantPerInstance := map[string]string{"a": "100", "b": "200"}
+	for _, ms := range matrix {
+		inst := ms.Metric["instance"]
+		want, ok := wantPerInstance[inst]
+		if !ok {
+			t.Errorf("unexpected series instance=%q: %+v", inst, ms.Metric)
+			continue
+		}
+		if got := ms.Metric["job"]; got != "demo" {
+			t.Errorf("instance=%s: expected job=demo (group_left copy), got job=%q (full metric: %+v)",
+				inst, got, ms.Metric)
+		}
+		if len(ms.Values) != wantSamples {
+			t.Errorf("instance=%s: expected %d samples, got %d: %+v",
+				inst, wantSamples, len(ms.Values), ms.Values)
+			continue
+		}
+		for i, v := range ms.Values {
+			if got := v[1]; got != want {
+				t.Errorf("instance=%s step %d: value=%q want=%q (full row: %+v)",
+					inst, i, got, want, v)
+			}
+		}
+	}
+}
+
 // runRangeModeQueryRange is the test helper shared across the Pool-AK
 // range-mode regression cases. Mirrors `runStepLoopRange` but lives
 // in this file so the Pool-AK suite is self-contained for any future

@@ -67,6 +67,22 @@ func (e *emitter) emitVectorJoin(j *chplan.VectorJoin) error {
 			aliasedFrag(rightFrag, "R"),
 			vectorMatchPredicateFrag(j.Match, j.AttributesColumn, j.TimestampColumn, j.StepAligned),
 		)
+	// Bare V-V comparison (no `bool` modifier): PromQL's
+	// "preserve LHS where comparison holds" rule applies. The Value
+	// expression (set by vectorJoinValueExprFrag) already projects
+	// `L.Value` for this case, so add the comparison as a WHERE filter
+	// so rows where the comparison is false are dropped. Without the
+	// filter the join keeps every matched pair, producing rows whose
+	// Value is the LHS even when the comparison would have dropped
+	// them in Prometheus.
+	//
+	// Without `bool` the emit would otherwise project a UInt8 column
+	// (CH's `Float64 <cmp> Float64` return type) into Value, which
+	// clickhouse-go cannot scan into `*float64` — surfacing as a 502
+	// at the compat lane for every plain V-V comparison with `on(...)`.
+	if isComparisonOp(j.Op) && !j.ReturnBool {
+		sb.Where(vectorJoinCompareFilterFrag(j))
+	}
 	e.emitSelect(sb)
 	return nil
 }
@@ -391,9 +407,26 @@ func writeOutputAttributes(b *Builder, j *chplan.VectorJoin) {
 // the binary result is wrapped with `toFloat64(...)` so every matched
 // pair emits 1.0 or 0.0 instead of being dropped by the comparison —
 // matching Prometheus's `bool` semantics for V-V comparisons.
+//
+// Bare comparison op (no `bool` modifier): Prom's V-V comparison-as-
+// filter rule applies — preserve the LHS sample value where the
+// comparison holds and drop rows where it doesn't. emitVectorJoin
+// pairs this projection with a `WHERE (L.Value <op> R.Value)` clause
+// via vectorJoinCompareFilterFrag; here we project `L.Value` directly
+// rather than the comparison expression so the surviving rows carry
+// the LHS sample value (Float64) rather than a UInt8 comparison
+// result. Without the LHS projection the rendered Value column would
+// be `Float64 <cmp> Float64` → UInt8, which clickhouse-go cannot scan
+// into `*float64` (the 502 the compat lane surfaces).
 func vectorJoinValueExprFrag(j *chplan.VectorJoin) Frag {
 	left := qualColFrag("L", j.ValueColumn)
 	right := qualColFrag("R", j.ValueColumn)
+	if isComparisonOp(j.Op) && !j.ReturnBool {
+		// Plain V-V comparison: filter wraps the join via the WHERE
+		// clause; the Value column carries the LHS sample value
+		// (Float64) to satisfy the scan contract.
+		return As(left, j.ValueColumn)
+	}
 	var inner Frag
 	if j.Op == chplan.OpPow {
 		inner = Call("pow", left, right)
@@ -404,6 +437,32 @@ func vectorJoinValueExprFrag(j *chplan.VectorJoin) Frag {
 		inner = Call("toFloat64", inner)
 	}
 	return As(inner, j.ValueColumn)
+}
+
+// vectorJoinCompareFilterFrag returns the WHERE-clause Frag used for
+// bare V-V comparisons (no `bool` modifier). PromQL's semantics keep
+// LHS samples where `L.Value <op> R.Value` holds and drop the rest;
+// the comparison expression is emitted as a WHERE predicate so CH
+// drops the non-matching rows at the join's output level.
+//
+// PromQL's vector-vector comparison ops are limited to the six listed
+// in [isComparisonOp]; OpPow (a special case in the value expression)
+// is intentionally not a comparison so this branch never sees it.
+func vectorJoinCompareFilterFrag(j *chplan.VectorJoin) Frag {
+	left := qualColFrag("L", j.ValueColumn)
+	right := qualColFrag("R", j.ValueColumn)
+	return Paren(binOp(string(j.Op), left, right))
+}
+
+// isComparisonOp reports whether op is one of PromQL's six comparison
+// binary ops. Kept local to the emitter so the chsql package doesn't
+// take a dep on internal/promql for the BinaryOp predicate.
+func isComparisonOp(op chplan.BinaryOp) bool {
+	switch op {
+	case chplan.OpEq, chplan.OpNe, chplan.OpLt, chplan.OpLe, chplan.OpGt, chplan.OpGe:
+		return true
+	}
+	return false
 }
 
 // qualColFrag returns a Frag for `<bareSide>.<col>` — the bare-alias
