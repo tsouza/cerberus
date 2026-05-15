@@ -1,4 +1,4 @@
-package promql
+package qlcommon
 
 import "testing"
 
@@ -8,14 +8,14 @@ import "testing"
 // because this regex has all 9 groups.
 const nineCaptureRegex = `(.)(.)(.)(.)(.)(.)(.)(.)(.)`
 
-// TestPromReplacementToCH locks down the PromQL → ClickHouse replacement
-// template rewrite that label_replace relies on. PromQL uses Go's
-// `regexp.Regexp.ExpandString` syntax (`$1`, `${1}`, `$$`); CH's
-// `replaceRegexpOne` uses backslash escapes (`\1`, `\\`). Without the
-// rewrite, capture-group references are emitted as literal `$N` text and
-// the substituted label value is wrong (e.g., `svc-$1` instead of
-// `svc-prod`).
-func TestPromReplacementToCH(t *testing.T) {
+// TestReplacementToCH locks down the QL → ClickHouse replacement
+// template rewrite that PromQL + LogQL `label_replace` both rely on.
+// Both QLs use Go's `regexp.Regexp.ExpandString` syntax (`$1`,
+// `${1}`, `$$`); CH's `replaceRegexpOne` uses backslash escapes
+// (`\1`, `\\`). Without the rewrite, capture-group references are
+// emitted as literal `$N` text and the substituted label value is
+// wrong (e.g., `svc-$1` instead of `svc-prod`).
+func TestReplacementToCH(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
@@ -41,7 +41,7 @@ func TestPromReplacementToCH(t *testing.T) {
 		{"existing_backslash_escaped", `\1`, nineCaptureRegex, `\\1`},
 		{"existing_backslash_and_backref", `\$1`, nineCaptureRegex, `\\\1`},
 		// Out-of-range backrefs drop. The regex has 0 capture groups,
-		// so `$1` (the PromQL backref) has no source — Prom's
+		// so `$1` (the QL backref) has no source — Prom/Loki's
 		// ExpandString substitutes the empty string. CH's
 		// replaceRegexpOne rejects `\1` against a 0-group regex at
 		// SQL-parse time even when match() short-circuits the call,
@@ -63,9 +63,9 @@ func TestPromReplacementToCH(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := promReplacementToCH(tc.in, tc.regex)
+			got := ReplacementToCH(tc.in, tc.regex)
 			if got != tc.want {
-				t.Fatalf("promReplacementToCH(%q, %q): got %q, want %q",
+				t.Fatalf("ReplacementToCH(%q, %q): got %q, want %q",
 					tc.in, tc.regex, got, tc.want)
 			}
 		})

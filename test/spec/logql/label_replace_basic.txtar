@@ -6,7 +6,7 @@ label_replace(count_over_time({service_name="api"}[5m]), "newlabel", "$1", "serv
 [2] string = "newlabel"
 [3] string = "service_name"
 [4] string = "^(.+)$"
-[5] string = "$1"
+[5] string = "\\1"
 [6] int64 = 1
 [7] string = "service_name"
 [8] string = "api"
@@ -25,7 +25,7 @@ INSERT INTO otel_logs (Timestamp, Body, ResourceAttributes) VALUES
   [{"service_name": "api", "newlabel": "api"}, 3.0]
 ]
 -- chplan --
-Project [labelReplace(ResourceAttributes, dst="newlabel", replacement="$1", src="service_name", regex="(.+)") AS ResourceAttributes, Value]
+Project [labelReplace(ResourceAttributes, dst="newlabel", replacement="\\1", src="service_name", regex="(.+)") AS ResourceAttributes, Value]
   RangeWindow func=count_over_time range=5m0s step=0s ts=Timestamp value=Value groupBy=[ResourceAttributes]
     Project [ResourceAttributes, Timestamp, 1 AS Value]
       Filter predicate=(ResourceAttributes["service_name"] = "api")

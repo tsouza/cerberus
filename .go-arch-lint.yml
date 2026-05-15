@@ -110,6 +110,7 @@ components:
   api-health:     { in: api/health }
   promshim-local: { in: promshim/local }
   chclienttest:   { in: chclienttest }
+  qlcommon:       { in: qlcommon }
 
 # commonComponents are importable from every layer without an explicit
 # `mayDependOn` entry. These are the cross-cutting utility packages
@@ -125,6 +126,7 @@ commonComponents:
   - api-health
   - promshim-local
   - chclienttest
+  - qlcommon
 
 deps:
   # chplan is the foundation. No internal dependencies declared — entries

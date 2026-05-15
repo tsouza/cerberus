@@ -6,6 +6,7 @@ import (
 	"github.com/grafana/loki/v3/pkg/logql/syntax"
 
 	"github.com/tsouza/cerberus/internal/chplan"
+	"github.com/tsouza/cerberus/internal/qlcommon"
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
@@ -26,6 +27,15 @@ import (
 // parser also pre-compiles `Re` and stashes any invalid-regex error
 // inside an unexported `err` field; ParseExpr surfaces it before
 // lowering reaches us.
+//
+// The Replacement string is run through qlcommon.ReplacementToCH so
+// Go-regexp `$N` / `${N}` backrefs become CH `replaceRegexpOne` `\N`
+// backrefs. LogQL's reference replacement engine is Go's
+// `regexp.Regexp.ExpandString` (identical to PromQL); without the
+// translation a replacement like `"svc-$1"` is emitted to CH verbatim
+// and treated as the literal string `svc-$1` instead of a capture
+// substitution. See internal/qlcommon/label_replace.go for the rule
+// table.
 func lowerLabelReplace(e *syntax.LabelReplaceExpr, s schema.Logs, lc lowerCtx) (chplan.Node, error) {
 	if e.Left == nil {
 		return nil, fmt.Errorf("logql: label_replace has nil inner")
@@ -39,7 +49,7 @@ func lowerLabelReplace(e *syntax.LabelReplaceExpr, s schema.Logs, lc lowerCtx) (
 	attrs := &chplan.LabelReplace{
 		Map:         &chplan.ColumnRef{Name: s.ResourceAttributesColumn},
 		Dst:         e.Dst,
-		Replacement: e.Replacement,
+		Replacement: qlcommon.ReplacementToCH(e.Replacement, e.Regex),
 		Src:         e.Src,
 		Regex:       e.Regex,
 	}
