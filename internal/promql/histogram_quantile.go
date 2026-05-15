@@ -71,7 +71,7 @@ func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chp
 	// the existing error message if the shape isn't recognised).
 	if shape, ok := matchHistogramAggIdiom(c.Args[1]); ok {
 		if s.IsExpHistogramMetric(shape.selector.Name) {
-			return nil, fmt.Errorf("promql: histogram_quantile over aggregated native (exp) histograms is not yet supported")
+			return lowerHistogramQuantileNativeAgg(shape, phi, s, ctx)
 		}
 		// Range mode (ctx.step > 0): build a per-step plan that fans the
 		// bucket aggregation + quantile interpolation across the request's
@@ -471,6 +471,14 @@ func andExpr(a, b chplan.Expr) chplan.Expr {
 // IR for the exp-histogram path. Mirrors the classic-path scaffold:
 // Scan or Filter against the exp-histogram table, then wrap in a
 // Project to satisfy the Sample-row contract downstream.
+//
+// Instant-mode only for now — range-mode (per-step anchor grid) is
+// the Phase 3 follow-up. See docs/native-histogram-plan.md § Phase 3.
+// query_range over a native-histogram metric currently collapses to
+// instant-mode behaviour with TimeUnix = now64(9) for every step
+// (matches pre-#353 classic-path behaviour); fixing this requires the
+// StepGrid + per-anchor lookback rewrite mirroring
+// lowerHistogramQuantileClassicBareRange.
 func lowerHistogramQuantileNative(vs *parser.VectorSelector, phi float64, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	scan := &chplan.Scan{Table: s.ExpHistogramTable}
 	pred := buildPredicate(vs.LabelMatchers, s)
@@ -519,6 +527,27 @@ func lowerHistogramQuantileNative(vs *parser.VectorSelector, phi float64, s sche
 			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
 		},
 	}, nil
+}
+
+// lowerHistogramQuantileNativeAgg is the Phase 2 placeholder for the
+// aggregated-input native (exp) histogram path:
+// `histogram_quantile(phi, sum [by/without] (rate(<sel>_exp_hist[r])))`.
+//
+// The classic-histogram sibling (lowerHistogramQuantileAgg) rewrites
+// the inner chain to sumForEach(BucketCounts) + any(ExplicitBounds)
+// over a time-bounded Filter. The native equivalent needs to align
+// per-series PositiveOffset values before element-wise summing
+// PositiveBucketCounts, downscale series whose Scale differs from the
+// group minimum, sum ZeroCount, and max-merge ZeroThreshold. None of
+// those operations have a single CH primitive, so the lowering needs
+// careful design — see docs/native-histogram-plan.md § Phase 2.
+//
+// Pinned by TestLower_HistogramQuantile_OverAggregation_NativeRejected
+// (internal/promql/histogram_quantile_test.go); Phase 2 deletes the
+// rejection test and adds the positive-shape mirror tests alongside
+// the classic-agg lowering tests.
+func lowerHistogramQuantileNativeAgg(_ histogramAggShape, _ float64, _ schema.Metrics, _ lowerCtx) (chplan.Node, error) {
+	return nil, fmt.Errorf("promql: histogram_quantile over aggregated native (exp) histograms is not yet supported (see docs/native-histogram-plan.md § Phase 2)")
 }
 
 // unwrapVectorSelector peels ParenExpr / StepInvariantExpr wrappers off

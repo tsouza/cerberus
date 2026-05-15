@@ -265,9 +265,11 @@ func TestLower_HistogramQuantile_OverAggregation_LeDropped(t *testing.T) {
 }
 
 // TestLower_HistogramQuantile_OverAggregation_NativeRejected confirms
-// the aggregated-input path bails out on native (exp) histograms. The
-// native path's bucket arithmetic differs enough that mirroring the
-// classic-path lowering is a separate milestone.
+// the aggregated-input path bails out on native (exp) histograms via
+// the Phase 2 stub (lowerHistogramQuantileNativeAgg). The native path's
+// bucket arithmetic differs enough that mirroring the classic-path
+// lowering is a separate milestone — see docs/native-histogram-plan.md
+// § Phase 2 for the deferred design.
 func TestLower_HistogramQuantile_OverAggregation_NativeRejected(t *testing.T) {
 	t.Parallel()
 
@@ -280,8 +282,15 @@ func TestLower_HistogramQuantile_OverAggregation_NativeRejected(t *testing.T) {
 	}
 	if _, err := promql.Lower(context.Background(), expr, s); err == nil {
 		t.Fatalf("expected error for aggregated native histogram, got nil")
-	} else if !strings.Contains(err.Error(), "native") {
-		t.Errorf("error %q should mention native histograms", err.Error())
+	} else {
+		if !strings.Contains(err.Error(), "native") {
+			t.Errorf("error %q should mention native histograms", err.Error())
+		}
+		// The Phase 2 stub points readers at the deferred design doc so
+		// they can pick up the work without re-deriving the algorithm.
+		if !strings.Contains(err.Error(), "native-histogram-plan.md") {
+			t.Errorf("error %q should cite docs/native-histogram-plan.md", err.Error())
+		}
 	}
 }
 

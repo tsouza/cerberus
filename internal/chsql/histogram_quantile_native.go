@@ -36,7 +36,8 @@
 // classic histograms whose buckets are non-negative by convention.
 // Extending the emitter to a full positive+zero+negative walk is a
 // follow-up; the IR node already carries the Negative* columns so
-// the change is local to this file.
+// the change is local to this file. See
+// docs/native-histogram-plan.md § Phase 4 for the deferred design.
 package chsql
 
 import (
