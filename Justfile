@@ -402,16 +402,22 @@ compatibility-keep:
 compatibility-down:
     cd harness/prometheus-compliance && docker compose down -v
 
-# === Compatibility (LogQL — Loki compatibility harness, scaffold) ===
+# === Compatibility (LogQL — Loki compatibility harness) ===
 
-# Run the LogQL compatibility scaffold smoke. PR 1 of the rollout plan
-# in docs/loki-compliance-plan.md: brings up reference Loki + cerberus +
-# CH, seeds both, asserts /labels is non-empty on each. Corpus + diff
-# driver land in PR 2-3.
+# Run the LogQL compatibility harness end-to-end. Brings up reference
+# Loki + cerberus + ClickHouse, seeds both, builds the diff driver from
+# the vendored upstream/loki-bench corpus, runs TestRemoteStorageEquality
+# against both endpoints, writes harness/loki-compatibility/reports/diff.json.
+# See harness/loki-compatibility/README.md + docs/loki-compliance-plan.md.
 loki-compatibility:
     ./harness/loki-compatibility/scripts/run-loki-compatibility.sh
 
-# Keep the Loki compatibility stack running after the smoke finishes
+# Run the smoke (compose + seed + /labels assertion) without the diff
+# driver. Useful when the seeder is the bisect target.
+loki-compatibility-smoke:
+    DRIVER_SKIP=1 ./harness/loki-compatibility/scripts/run-loki-compatibility.sh
+
+# Keep the Loki compatibility stack running after the run finishes
 # (for debugging /loki/api/v1/* + ClickHouse manually).
 loki-compatibility-keep:
     COMPOSE_KEEP=1 ./harness/loki-compatibility/scripts/run-loki-compatibility.sh

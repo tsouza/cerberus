@@ -18,4 +18,22 @@ vendored_paths:
   - pkg/logql/bench/queries/schema.json
   - pkg/logql/bench/query_registry.go
   - pkg/logql/bench/remote_test.go
+  # PR 3 expanded the snapshot to include the support files
+  # remote_test.go transitively depends on (metadata loader, variable
+  # resolver, test-case shape, conversion helpers, assertions). Without
+  # them the `go test -tags=remote_correctness -c` build pulled by
+  # scripts/run-loki-compatibility.sh would fail with `undefined:
+  # TestCase / LoadMetadata / ConvertResult / assertResultNotEmpty / ...`.
+  - pkg/logql/bench/metadata.go
+  - pkg/logql/bench/metadata_resolver.go
+  - pkg/logql/bench/testcase.go
+  - pkg/logql/bench/convert_test.go
+  - pkg/logql/bench/assertions_test.go
+  # metadata.go references GeneratorConfig / StreamMetadata / LogFormat
+  # from generator.go + faker.go; those are kept verbatim so the
+  # package compiles without sanitisation. They're test-data generation
+  # helpers; remote_test.go itself never invokes them — but the symbols
+  # have to resolve for the package to type-check.
+  - pkg/logql/bench/generator.go
+  - pkg/logql/bench/faker.go
   - LICENSE
