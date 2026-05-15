@@ -1,0 +1,21 @@
+-- query.promql --
+up @ 1767225600
+-- range_step --
+30s
+-- args --
+[0] string = "up"
+[1] string = "2026-01-01 00:00:00.000000000"
+[2] int64 = 9
+[3] string = "2026-01-01 00:00:00.000000000"
+[4] int64 = 9
+[5] int64 = 300000000000
+-- chplan --
+Project [MetricName AS MetricName, Attributes AS Attributes, anchor_ts AS TimeUnix, lwr_value AS Value]
+  CrossJoin
+    StepGrid start=2026-01-01T00:00:00.000000000Z end=2026-01-01T00:05:00.000000000Z step=30s
+    Project [MetricName AS MetricName, Attributes AS Attributes, lwr_value AS lwr_value]
+      Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[argMax(Value, TimeUnix) AS lwr_value]
+        Filter predicate=(((MetricName = "up") AND (TimeUnix <= toDateTime64("2026-01-01 00:00:00.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:00.000000000", 9) - toIntervalNanosecond(300000000000))))
+          Scan(otel_metrics_gauge)
+-- sql --
+SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `anchor_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT * FROM (SELECT arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:00:00.000000000', 9) + toIntervalNanosecond(i * 30000000000), range(0, 11))) AS `anchor_ts`) AS L CROSS JOIN (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_value` AS `lwr_value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_gauge` PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`)) AS R)

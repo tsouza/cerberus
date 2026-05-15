@@ -1417,6 +1417,84 @@ func TestQueryRange_RangeMode_TopK_ChDB(t *testing.T) {
 	})
 }
 
+// TestQueryRange_RangeMode_AtModifier_Collapse_ChDB pins the
+// `metric @ <fixed_ts>` over `/api/v1/query_range` shape. Pool-AK's PR
+// #347 deferred this as follow-up #2: when an absolute `@<ts>` is set,
+// every step in `[start, end]` evaluates the same fixed-anchor LWR so
+// the StepGrid fan-out wastes CH work. The follow-up collapses the
+// per-step LWR to a single LWR evaluation + broadcast across the step
+// grid via CrossJoin(StepGrid, OneRowPerSeriesLWR).
+//
+// Response shape must stay unchanged: N matrix samples per series, all
+// carrying the same Value (the LWR result at @ts) at distinct step
+// timestamps. Only the SQL emit complexity drops — the bucket-aggregate
+// fan-out collapses to a single-pass LWR + broadcast.
+//
+// Seeded: 11 samples spaced by step=30s. The @ ts pins evaluation at
+// the very last sample (start + 10*step), so the LWR window
+// `(@ts - 5m, @ts]` contains all 11 samples and the argMax surfaces
+// the final value (110). Every step in the response window should
+// carry that same value.
+func TestQueryRange_RangeMode_AtModifier_Collapse_ChDB(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(5 * time.Minute)
+	step := 30 * time.Second
+	const wantSamples = 11
+	// Pin @ to the last seed timestamp so the LWR window picks up the
+	// largest seeded value (110); using a time inside the seed grid
+	// keeps the assertion stable regardless of the per-step anchor's
+	// per-window contents (the @ts collapse must be the only signal).
+	atTS := start.Add(10 * step).Unix()
+
+	seedRows := make([]string, 0, wantSamples)
+	for i := 0; i < wantSamples; i++ {
+		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
+		seedRows = append(seedRows, fmt.Sprintf(
+			`('demo_memory_usage_bytes', map('instance', 'demo'), toDateTime64('%s', 9), %d.0)`,
+			ts, 100+i,
+		))
+	}
+	seed := gaugeDDL + "\nINSERT INTO otel_metrics_gauge VALUES\n  " +
+		strings.Join(seedRows, ",\n  ") + ";"
+
+	srv, _ := newChDBServer(t, seed)
+
+	matrix := runRangeModeQueryRange(t, srv.URL,
+		fmt.Sprintf("demo_memory_usage_bytes @ %d", atTS),
+		start, end, step)
+	if len(matrix) != 1 {
+		t.Fatalf("expected exactly 1 series, got %d: %+v", len(matrix), matrix)
+	}
+	values := matrix[0].Values
+	// Response shape must remain N matrix samples — the OneRow + broadcast
+	// rewrite is correctness-preserving across the wire format. A regression
+	// that ditched the StepGrid broadcast entirely would surface as 1
+	// matrix point.
+	if len(values) != wantSamples {
+		t.Fatalf("expected %d samples (one per step), got %d: %+v",
+			wantSamples, len(values), values)
+	}
+	// Every per-step value must be the LWR result at @ts — the seed's
+	// largest value (110) is the latest sample with TimeUnix <= @ts.
+	const wantValue = "110"
+	for i, v := range values {
+		if got := v[1]; got != wantValue {
+			t.Errorf("step %d: value=%q want=%q (full row: %+v)", i, got, wantValue, v)
+		}
+	}
+	// Per-step Timestamp must increase strictly — a regression where the
+	// StepGrid collapsed to OneRow without broadcasting would surface as
+	// a single timestamp.
+	for i := 1; i < len(values); i++ {
+		prev, _ := values[i-1][0].(float64)
+		curr, _ := values[i][0].(float64)
+		if curr <= prev {
+			t.Errorf("step %d: timestamp not strictly increasing: prev=%v curr=%v (full row: %+v)",
+				i, prev, curr, values)
+		}
+	}
+}
+
 // runRangeModeQueryRange is the test helper shared across the Pool-AK
 // range-mode regression cases. Mirrors `runStepLoopRange` but lives
 // in this file so the Pool-AK suite is self-contained for any future
