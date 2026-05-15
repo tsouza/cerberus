@@ -325,6 +325,32 @@ func TestNoGoroutineLeak_TempoTraceByID(t *testing.T) {
 	}
 }
 
+// TestNoGoroutineLeak_TempoMetricsQueryInstant exercises the instant
+// variant of the TraceQL metrics pipeline — the handler shares the
+// matrix-shape RangeWindow plan with /api/metrics/query_range but
+// runs it over a single bucket (step=end-start). A regression here
+// would surface as a goroutine spawned per request by the metrics
+// engine path that the handler then forgets to tear down.
+func TestNoGoroutineLeak_TempoMetricsQueryInstant(t *testing.T) {
+	defer goleak.VerifyNone(t, goleakOpts()...)
+
+	h := tempo.New(&tempoStub{}, schema.DefaultOTelTraces(), "v1.0.0", slog.Default())
+	mux := http.NewServeMux()
+	h.Mount(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	for range 30 {
+		u := fmt.Sprintf("%s/api/metrics/query?q=%%7B%%7D%%20%%7C%%20rate()&start=%d&end=%d",
+			srv.URL, time.Now().Add(-1*time.Hour).Unix(), time.Now().Unix())
+		resp, err := http.Get(u)
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		_ = resp.Body.Close()
+	}
+}
+
 // TestNoGoroutineLeak_UnderError — drives requests against a failing CH
 // stub so the error path is the one exercised. Different goroutine
 // graph than the happy path (no streaming cursor open, immediate
