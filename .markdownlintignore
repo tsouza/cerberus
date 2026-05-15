@@ -4,3 +4,7 @@ test/e2e/playwright/playwright-report/
 test/e2e/playwright/test-results/
 harness/prometheus-compliance/upstream
 harness/prometheus-compliance/upstream/**
+harness/tempo-compatibility/upstream
+harness/tempo-compatibility/upstream/**
+harness/loki-compatibility/upstream
+harness/loki-compatibility/upstream/**

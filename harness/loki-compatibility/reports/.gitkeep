@@ -1,0 +1,5 @@
+# Reports written here by scripts/run-loki-compatibility.sh. Empty by
+# default; reports are gitignored at the harness root via the .gitignore
+# in this directory (the dir itself is committed so the script's
+# `mkdir -p reports/` is a no-op rather than a fatal `mkdir` against a
+# non-existent parent on a fresh clone).

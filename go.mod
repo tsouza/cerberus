@@ -270,3 +270,4 @@ replace (
 )
 
 ignore ./harness/tempo-compatibility/upstream
+ignore ./harness/loki-compatibility/upstream
