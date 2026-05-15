@@ -73,11 +73,8 @@ jobs:
 
       - name: Run tempo-compatibility harness
         id: harness
-        # The script handles its own teardown (cleanup trap on EXIT),
-        # so no explicit `docker compose down` step is needed even on
-        # failure. The continue-on-error at job level keeps a non-zero
-        # rc from turning the workflow conclusion red while we're in
-        # informational mode (PR 7 of the rollout flips this).
+        env:
+          FAIL_ON_DIFF: "1"
         run: ./harness/tempo-compatibility/scripts/run-tempo-compatibility.sh
 
       - name: Upload report
