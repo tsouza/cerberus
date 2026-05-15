@@ -24,28 +24,38 @@ name: chdb
 # code review (e.g. label_replace_basic.txtar landed broken on main via
 # #312 — no workflow caught it).
 #
-# Informational only. NOT a required PR check; not in the
-# required-status-checks list. The required PR lane stays `check` +
-# `lint` and runs CGO-free Go tests — this workflow links libchdb.so
-# and is therefore segregated. Promote to PR-gating later if the lane
-# is consistently green and the runner work depends on it.
+# Required on PRs whose path filter matches (see `paths:` below). The
+# `probe` job and each `roundtrip (<ql>)` matrix entry are entries in
+# the required-status-checks list on `main`. Required-on-match means
+# GitHub's branch protection waits for the workflow to register a
+# context; when the workflow is skipped by the path filter, the check
+# is recorded as `expected` and resolves automatically because no run
+# was created. Promoted from informational after Pool-DD #382 merged
+# while the chDB lane was skipping `internal/api/**` changes and let
+# four broken handler tests through (fixed in #388).
+#
+# If you widen the path filter, audit the required-checks list at the
+# same time — a context that never runs blocks every PR.
 
 on:
   push:
     branches: [main]
   pull_request:
     # Scope the PR trigger to changes that can plausibly affect
-    # SQL emission, plan IR, parser lowering, fixtures, or the chDB
-    # roundtrip plumbing itself. Broad enough that anything touching
+    # SQL emission, plan IR, parser lowering, fixtures, the chDB
+    # roundtrip plumbing, or the HTTP handlers that exercise the
+    # chDB-tagged handler tests. Broad enough that anything touching
     # the round-trip surface fires the lane; tight enough that pure
     # docs / unrelated CI tweaks don't pay the libchdb cost.
     paths:
+      - 'internal/api/**'
       - 'internal/chsql/**'
       - 'internal/promql/**'
       - 'internal/logql/**'
       - 'internal/traceql/**'
       - 'internal/chplan/**'
       - 'internal/optimizer/**'
+      - 'internal/engine/**'
       - 'internal/chclient/**'
       - 'internal/chclienttest/**'
       - 'test/spec/**'
