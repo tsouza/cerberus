@@ -126,3 +126,86 @@ func TestDeriveTraceIDFromTemplate_BadFormatFails(t *testing.T) {
 		t.Fatal("expected error on non-numeric idx")
 	}
 }
+
+func TestBuildURL_TagsV1(t *testing.T) {
+	t.Parallel()
+	tc := CorpusCase{Name: "x", Endpoint: "tags_v1"}
+	u, err := buildURL("http://tempo:3200", tc, "tempo", time.Unix(1000, 0), time.Unix(2000, 0), 200)
+	if err != nil {
+		t.Fatalf("buildURL: %v", err)
+	}
+	if !strings.HasPrefix(u, "http://tempo:3200/api/search/tags?") {
+		t.Fatalf("unexpected url: %s", u)
+	}
+	if !strings.Contains(u, "start=1000") || !strings.Contains(u, "end=2000") {
+		t.Fatalf("missing start/end: %s", u)
+	}
+}
+
+func TestBuildURL_TagsV2WithScope(t *testing.T) {
+	t.Parallel()
+	tc := CorpusCase{Name: "x", Endpoint: "tags_v2", Scope: "resource"}
+	u, err := buildURL("http://tempo:3200", tc, "tempo", time.Unix(1000, 0), time.Unix(2000, 0), 200)
+	if err != nil {
+		t.Fatalf("buildURL: %v", err)
+	}
+	if !strings.HasPrefix(u, "http://tempo:3200/api/v2/search/tags?") {
+		t.Fatalf("unexpected url: %s", u)
+	}
+	if !strings.Contains(u, "scope=resource") {
+		t.Fatalf("scope query missing: %s", u)
+	}
+}
+
+func TestBuildURL_TagsV2WithoutScopeOmitsParam(t *testing.T) {
+	t.Parallel()
+	tc := CorpusCase{Name: "x", Endpoint: "tags_v2"}
+	u, err := buildURL("http://tempo:3200", tc, "tempo", time.Unix(0, 0), time.Unix(0, 0), 20)
+	if err != nil {
+		t.Fatalf("buildURL: %v", err)
+	}
+	if strings.Contains(u, "scope=") {
+		t.Fatalf("scope= should be omitted when Scope is empty: %s", u)
+	}
+}
+
+func TestBuildURL_TagValuesV1(t *testing.T) {
+	t.Parallel()
+	tc := CorpusCase{Name: "x", Endpoint: "tag_values_v1", TagName: "service.name"}
+	u, err := buildURL("http://tempo:3200", tc, "tempo", time.Unix(1000, 0), time.Unix(2000, 0), 200)
+	if err != nil {
+		t.Fatalf("buildURL: %v", err)
+	}
+	if !strings.HasPrefix(u, "http://tempo:3200/api/search/tag/service.name/values?") {
+		t.Fatalf("unexpected url: %s", u)
+	}
+}
+
+func TestBuildURL_TagValuesV2(t *testing.T) {
+	t.Parallel()
+	tc := CorpusCase{Name: "x", Endpoint: "tag_values_v2", TagName: "deployment.env"}
+	u, err := buildURL("http://tempo:3200", tc, "tempo", time.Unix(1000, 0), time.Unix(2000, 0), 200)
+	if err != nil {
+		t.Fatalf("buildURL: %v", err)
+	}
+	if !strings.HasPrefix(u, "http://tempo:3200/api/v2/search/tag/deployment.env/values?") {
+		t.Fatalf("unexpected url: %s", u)
+	}
+}
+
+func TestCompareForEndpoint_DispatchesTagShape(t *testing.T) {
+	t.Parallel()
+	// Both bodies are V1 tag-names envelopes; the trace-search Compare
+	// would error on the shape, so a clean Diff confirms the dispatch
+	// routed to CompareTagNames.
+	a := []byte(`{"tagNames":["service.name","http.method"]}`)
+	b := []byte(`{"tagNames":["service.name","http.method"]}`)
+	tc := CorpusCase{Name: "tags_match", Endpoint: "tags_v1"}
+	d, err := compareForEndpoint(tc, a, b)
+	if err != nil {
+		t.Fatalf("compareForEndpoint: %v", err)
+	}
+	if !d.Equal {
+		t.Fatalf("expected equal on identical tag names, got %+v", d)
+	}
+}

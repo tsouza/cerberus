@@ -198,13 +198,129 @@ func TestSmokeCorpus_LoadsAndMeetsFloor(t *testing.T) {
 	if len(cases) < 20 {
 		t.Fatalf("smoke corpus shrunk: got %d, want >= 20", len(cases))
 	}
-	// Every active case has a non-empty query.
+	// Every active case has a non-empty query unless the endpoint is one
+	// of the "no TraceQL" kinds (search_recent + the four tag endpoints).
 	for _, c := range cases {
 		if c.SkipReason != "" {
 			continue
 		}
-		if c.Query == "" && c.Endpoint != "search_recent" {
+		if c.Query == "" && c.Endpoint != "search_recent" && !isTagEndpoint(c.Endpoint) {
 			t.Fatalf("case %q: empty query but endpoint=%q", c.Name, c.Endpoint)
 		}
+	}
+}
+
+func TestSmokeCorpus_TagEndpointCoverage(t *testing.T) {
+	t.Parallel()
+	cases, err := LoadCorpus(filepath.Join("corpus", "smoke.txtar"))
+	if err != nil {
+		t.Fatalf("LoadCorpus: %v", err)
+	}
+	// PR 6 commits the four tag endpoints. Every endpoint kind must
+	// have at least one active case in the smoke corpus so the differ
+	// exercises the full response-shape matrix on every nightly run.
+	required := map[string]bool{
+		"tags_v1":       false,
+		"tags_v2":       false,
+		"tag_values_v1": false,
+		"tag_values_v2": false,
+	}
+	for _, c := range cases {
+		if c.SkipReason != "" {
+			continue
+		}
+		if _, ok := required[c.Endpoint]; ok {
+			required[c.Endpoint] = true
+		}
+	}
+	for ep, seen := range required {
+		if !seen {
+			t.Errorf("smoke corpus lacks an active case for endpoint=%q", ep)
+		}
+	}
+}
+
+func TestParseCorpus_TagValuesRequiresTagName(t *testing.T) {
+	t.Parallel()
+	for _, ep := range []string{"tag_values_v1", "tag_values_v2"} {
+		in := `-- name --
+x
+-- endpoint --
+` + ep + `
+`
+		if _, err := parseCorpus(strings.NewReader(in), "test"); err == nil {
+			t.Fatalf("endpoint=%s without tag_name should fail", ep)
+		}
+	}
+}
+
+func TestParseCorpus_TagValuesWithTagNameOK(t *testing.T) {
+	t.Parallel()
+	in := `-- name --
+tv
+-- endpoint --
+tag_values_v1
+-- tag_name --
+service.name
+-- expected_values --
+checkout
+payments
+`
+	got, err := parseCorpus(strings.NewReader(in), "test")
+	if err != nil {
+		t.Fatalf("parseCorpus: %v", err)
+	}
+	if got[0].TagName != "service.name" {
+		t.Fatalf("tag_name = %q", got[0].TagName)
+	}
+	if len(got[0].ExpectedValues) != 2 ||
+		got[0].ExpectedValues[0] != "checkout" || got[0].ExpectedValues[1] != "payments" {
+		t.Fatalf("expected_values = %v", got[0].ExpectedValues)
+	}
+}
+
+func TestParseCorpus_TagsV2WithScopeOK(t *testing.T) {
+	t.Parallel()
+	in := `-- name --
+tg
+-- endpoint --
+tags_v2
+-- scope --
+resource
+-- expected_scopes --
+resource
+-- expected_min_values --
+1
+-- expected_max_values --
+500
+`
+	got, err := parseCorpus(strings.NewReader(in), "test")
+	if err != nil {
+		t.Fatalf("parseCorpus: %v", err)
+	}
+	if got[0].Scope != "resource" {
+		t.Fatalf("scope = %q", got[0].Scope)
+	}
+	if len(got[0].ExpectedScopes) != 1 || got[0].ExpectedScopes[0] != "resource" {
+		t.Fatalf("expected_scopes = %v", got[0].ExpectedScopes)
+	}
+	if got[0].ExpectedMinValues != 1 || got[0].ExpectedMaxValues != 500 {
+		t.Fatalf("min/max values = %d..%d", got[0].ExpectedMinValues, got[0].ExpectedMaxValues)
+	}
+}
+
+func TestParseCorpus_ScopeOnlyValidForTagsV2(t *testing.T) {
+	t.Parallel()
+	in := `-- name --
+bad
+-- query --
+{ x = 1 }
+-- endpoint --
+search
+-- scope --
+resource
+`
+	if _, err := parseCorpus(strings.NewReader(in), "test"); err == nil {
+		t.Fatal("scope on a non-tags_v2 case should fail")
 	}
 }

@@ -321,6 +321,20 @@ func valuesClose(a, b float64, opts DiffOptions) bool {
 // Returns reasons for every expectation that failed. An empty slice
 // means all expectations passed.
 func AssertCase(tc CorpusCase, body []byte, backendLabel string) ([]DiffReason, error) {
+	switch tc.Endpoint {
+	case "tags_v1", "tags_v2":
+		return assertTagsCase(tc, body, backendLabel)
+	case "tag_values_v1", "tag_values_v2":
+		return assertTagValuesCase(tc, body, backendLabel)
+	default:
+		return assertTraceSearchCase(tc, body, backendLabel)
+	}
+}
+
+// assertTraceSearchCase is the original AssertCase body — applies the
+// trace-search assertions (min/max traces, expected services, root-name
+// regexp) to a SearchResponse body.
+func assertTraceSearchCase(tc CorpusCase, body []byte, backendLabel string) ([]DiffReason, error) {
 	var reasons []DiffReason
 	a, err := decodeSearch(body)
 	if err != nil {
@@ -364,6 +378,401 @@ func AssertCase(tc CorpusCase, body []byte, backendLabel string) ([]DiffReason, 
 		}
 	}
 	return reasons, nil
+}
+
+// assertTagsCase applies the tag-endpoint assertions: min/max list
+// cardinality, expected-values subset (every value in tc.ExpectedValues
+// must appear in the response), and (for tags_v2) expected-scopes
+// subset.
+func assertTagsCase(tc CorpusCase, body []byte, backendLabel string) ([]DiffReason, error) {
+	v2 := tc.Endpoint == "tags_v2"
+	tagNames, scopeNames, err := decodeTagNames(body, v2)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", backendLabel, err)
+	}
+	var reasons []DiffReason
+	if tc.ExpectedMinValues > 0 && len(tagNames) < tc.ExpectedMinValues {
+		reasons = append(reasons, DiffReason{
+			Kind:   "assertion",
+			Detail: fmt.Sprintf("%s: got %d tag names, want >= %d", backendLabel, len(tagNames), tc.ExpectedMinValues),
+		})
+	}
+	if tc.ExpectedMaxValues > 0 && len(tagNames) > tc.ExpectedMaxValues {
+		reasons = append(reasons, DiffReason{
+			Kind:   "assertion",
+			Detail: fmt.Sprintf("%s: got %d tag names, want <= %d", backendLabel, len(tagNames), tc.ExpectedMaxValues),
+		})
+	}
+	if len(tc.ExpectedValues) > 0 {
+		seen := stringSet(tagNames)
+		for _, want := range tc.ExpectedValues {
+			if !seen[want] {
+				reasons = append(reasons, DiffReason{
+					Kind:   "assertion",
+					Detail: fmt.Sprintf("%s: expected tag name %q in response", backendLabel, want),
+				})
+			}
+		}
+	}
+	if len(tc.ExpectedScopes) > 0 {
+		if !v2 {
+			reasons = append(reasons, DiffReason{
+				Kind:   "assertion",
+				Detail: fmt.Sprintf("%s: expected_scopes only meaningful for tags_v2", backendLabel),
+			})
+		} else {
+			seen := stringSet(scopeNames)
+			for _, want := range tc.ExpectedScopes {
+				if !seen[want] {
+					reasons = append(reasons, DiffReason{
+						Kind:   "assertion",
+						Detail: fmt.Sprintf("%s: expected scope %q in response (got %v)", backendLabel, want, scopeNames),
+					})
+				}
+			}
+		}
+	}
+	return reasons, nil
+}
+
+// assertTagValuesCase applies the tag-values assertions: min/max list
+// cardinality + expected-values subset.
+func assertTagValuesCase(tc CorpusCase, body []byte, backendLabel string) ([]DiffReason, error) {
+	v2 := tc.Endpoint == "tag_values_v2"
+	values, _, err := decodeTagValues(body, v2)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", backendLabel, err)
+	}
+	var reasons []DiffReason
+	if tc.ExpectedMinValues > 0 && len(values) < tc.ExpectedMinValues {
+		reasons = append(reasons, DiffReason{
+			Kind:   "assertion",
+			Detail: fmt.Sprintf("%s: got %d tag values, want >= %d", backendLabel, len(values), tc.ExpectedMinValues),
+		})
+	}
+	if tc.ExpectedMaxValues > 0 && len(values) > tc.ExpectedMaxValues {
+		reasons = append(reasons, DiffReason{
+			Kind:   "assertion",
+			Detail: fmt.Sprintf("%s: got %d tag values, want <= %d", backendLabel, len(values), tc.ExpectedMaxValues),
+		})
+	}
+	if len(tc.ExpectedValues) > 0 {
+		seen := stringSet(values)
+		for _, want := range tc.ExpectedValues {
+			if !seen[want] {
+				reasons = append(reasons, DiffReason{
+					Kind:   "assertion",
+					Detail: fmt.Sprintf("%s: expected tag value %q in response (tag_name=%q)", backendLabel, want, tc.TagName),
+				})
+			}
+		}
+	}
+	return reasons, nil
+}
+
+// stringSet is a tiny helper: returns a presence map keyed on the slice
+// entries. Inlined in two places (CompareTagNames + assertion paths) so
+// extracting it keeps both sites identical.
+func stringSet(in []string) map[string]bool {
+	out := make(map[string]bool, len(in))
+	for _, s := range in {
+		out[s] = true
+	}
+	return out
+}
+
+// TagNamesResponseV1 mirrors `/api/search/tags`.
+type TagNamesResponseV1 struct {
+	TagNames []string `json:"tagNames"`
+}
+
+// TagNamesResponseV2 mirrors `/api/v2/search/tags`. Each scope carries
+// a name (resource / span / intrinsic) and the keys belonging to it.
+type TagNamesResponseV2 struct {
+	Scopes []TagNamesScope `json:"scopes"`
+}
+
+// TagNamesScope is one V2 scope entry.
+type TagNamesScope struct {
+	Name string   `json:"name"`
+	Tags []string `json:"tags"`
+}
+
+// TagValuesResponseV1 mirrors `/api/search/tag/{name}/values`.
+type TagValuesResponseV1 struct {
+	TagValues []string `json:"tagValues"`
+}
+
+// TagValuesResponseV2 mirrors `/api/v2/search/tag/{name}/values`. Each
+// entry is a typed object so the autocomplete UI can render the type
+// suffix on dynamic attributes.
+type TagValuesResponseV2 struct {
+	TagValues []TagValueV2 `json:"tagValues"`
+}
+
+// TagValueV2 is one typed value entry.
+type TagValueV2 struct {
+	Type  string `json:"type"`
+	Value string `json:"value"`
+}
+
+// decodeTagNames parses a tags response and returns the flattened set of
+// tag names plus (for v2) the list of scope names that appeared. The
+// flatten-then-set approach lets CompareTagNames lean on the same path
+// for V1 and V2; the V2 scope partition is reported separately via the
+// scopeNames return so the differ can surface scope-set mismatches.
+func decodeTagNames(body []byte, v2 bool) (tagNames, scopeNames []string, err error) {
+	if v2 {
+		var out TagNamesResponseV2
+		if err := json.Unmarshal(body, &out); err != nil {
+			return nil, nil, fmt.Errorf("decode /api/v2/search/tags response: %w", err)
+		}
+		seen := map[string]struct{}{}
+		for _, sc := range out.Scopes {
+			scopeNames = append(scopeNames, sc.Name)
+			for _, t := range sc.Tags {
+				if _, dup := seen[t]; dup {
+					continue
+				}
+				seen[t] = struct{}{}
+				tagNames = append(tagNames, t)
+			}
+		}
+		sort.Strings(tagNames)
+		sort.Strings(scopeNames)
+		return tagNames, scopeNames, nil
+	}
+	var out TagNamesResponseV1
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, nil, fmt.Errorf("decode /api/search/tags response: %w", err)
+	}
+	tagNames = append(tagNames, out.TagNames...)
+	sort.Strings(tagNames)
+	return tagNames, nil, nil
+}
+
+// decodeTagValues parses a tag-values response and returns the flat
+// list of values plus (for v2) the per-value Type strings keyed by
+// value. The byValueType map lets CompareTagValues report mismatched
+// type annotations on the intersection without false-positing when one
+// side omits the V2 envelope.
+func decodeTagValues(body []byte, v2 bool) (values []string, byValueType map[string]string, err error) {
+	if v2 {
+		var out TagValuesResponseV2
+		if err := json.Unmarshal(body, &out); err != nil {
+			return nil, nil, fmt.Errorf("decode /api/v2/search/tag/{name}/values response: %w", err)
+		}
+		byValueType = make(map[string]string, len(out.TagValues))
+		for _, tv := range out.TagValues {
+			values = append(values, tv.Value)
+			byValueType[tv.Value] = tv.Type
+		}
+		sort.Strings(values)
+		return values, byValueType, nil
+	}
+	var out TagValuesResponseV1
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, nil, fmt.Errorf("decode /api/search/tag/{name}/values response: %w", err)
+	}
+	values = append(values, out.TagValues...)
+	sort.Strings(values)
+	return values, nil, nil
+}
+
+// CompareTagNames diffs two tags-endpoint response bodies. The diff is
+// a set-difference on the flattened tag-name set: a key present on one
+// side and missing on the other is reported as missing_in_a /
+// missing_in_b. For tags_v2 the per-scope set is also diffed so a
+// missing or extra scope name surfaces as a `scope_mismatch` reason.
+func CompareTagNames(aBody, bBody []byte, aLabel, bLabel string, v2 bool) (Diff, error) {
+	aNames, aScopes, err := decodeTagNames(aBody, v2)
+	if err != nil {
+		return Diff{}, fmt.Errorf("%s: %w", aLabel, err)
+	}
+	bNames, bScopes, err := decodeTagNames(bBody, v2)
+	if err != nil {
+		return Diff{}, fmt.Errorf("%s: %w", bLabel, err)
+	}
+
+	out := Diff{Equal: true}
+
+	if len(aNames) != len(bNames) {
+		out.Equal = false
+		out.Reasons = append(out.Reasons, DiffReason{
+			Kind:   "cardinality",
+			Detail: fmt.Sprintf("%s=%d tag names, %s=%d tag names", aLabel, len(aNames), bLabel, len(bNames)),
+		})
+	}
+
+	addSetDiff(&out, aNames, bNames, aLabel, bLabel)
+	out.MatchedCount = countIntersection(aNames, bNames)
+
+	if v2 {
+		// Scope-set differences ride on top of the tag-name diff because
+		// they describe a different axis (cerberus today returns the same
+		// scope set regardless of ?scope=, real Tempo filters). Reporting
+		// the scope axis explicitly keeps the markdown report actionable.
+		addScopeDiff(&out, aScopes, bScopes, aLabel, bLabel)
+	}
+
+	return out, nil
+}
+
+// CompareTagValues diffs two tag-values-endpoint response bodies. The
+// diff is a set-difference on the value list. For tag_values_v2 the
+// per-value `Type` field is also compared on the intersection — a
+// disagreement there is reported as `field_mismatch`.
+func CompareTagValues(aBody, bBody []byte, aLabel, bLabel string, v2 bool) (Diff, error) {
+	aValues, aTypes, err := decodeTagValues(aBody, v2)
+	if err != nil {
+		return Diff{}, fmt.Errorf("%s: %w", aLabel, err)
+	}
+	bValues, bTypes, err := decodeTagValues(bBody, v2)
+	if err != nil {
+		return Diff{}, fmt.Errorf("%s: %w", bLabel, err)
+	}
+
+	out := Diff{Equal: true}
+
+	if len(aValues) != len(bValues) {
+		out.Equal = false
+		out.Reasons = append(out.Reasons, DiffReason{
+			Kind:   "cardinality",
+			Detail: fmt.Sprintf("%s=%d tag values, %s=%d tag values", aLabel, len(aValues), bLabel, len(bValues)),
+		})
+	}
+
+	addSetDiff(&out, aValues, bValues, aLabel, bLabel)
+	out.MatchedCount = countIntersection(aValues, bValues)
+
+	if v2 && len(aTypes) > 0 && len(bTypes) > 0 {
+		// Walk the intersection in deterministic order so the report is
+		// reproducible; only report a type mismatch when both sides
+		// populated the field (mirrors the trace differ's "skip blanks"
+		// rule).
+		intersection := intersect(aValues, bValues)
+		for _, v := range intersection {
+			at := aTypes[v]
+			bt := bTypes[v]
+			if at != "" && bt != "" && at != bt {
+				out.Equal = false
+				out.Reasons = append(out.Reasons, DiffReason{
+					Kind:   "field_mismatch",
+					Detail: fmt.Sprintf("value %q: type %s=%q vs %s=%q", v, aLabel, at, bLabel, bt),
+				})
+			}
+		}
+	}
+
+	return out, nil
+}
+
+// addSetDiff appends missing_in_a / missing_in_b reasons for the
+// symmetric difference of a + b. Order is deterministic so the report
+// is reproducible across runs.
+func addSetDiff(out *Diff, a, b []string, aLabel, bLabel string) {
+	aSet := stringSet(a)
+	bSet := stringSet(b)
+	var missingInA, missingInB []string
+	for s := range bSet {
+		if !aSet[s] {
+			missingInA = append(missingInA, s)
+		}
+	}
+	for s := range aSet {
+		if !bSet[s] {
+			missingInB = append(missingInB, s)
+		}
+	}
+	sort.Strings(missingInA)
+	sort.Strings(missingInB)
+	for _, s := range missingInA {
+		out.Equal = false
+		out.Reasons = append(out.Reasons, DiffReason{
+			Kind:   "missing_in_a",
+			Detail: fmt.Sprintf("%q present in %s but missing in %s", s, bLabel, aLabel),
+		})
+	}
+	for _, s := range missingInB {
+		out.Equal = false
+		out.Reasons = append(out.Reasons, DiffReason{
+			Kind:   "missing_in_b",
+			Detail: fmt.Sprintf("%q present in %s but missing in %s", s, aLabel, bLabel),
+		})
+	}
+}
+
+// addScopeDiff is the V2-tags-specific scope-set diff. Reasons get a
+// `scope_mismatch` kind so the report distinguishes them from the
+// tag-name set diff.
+func addScopeDiff(out *Diff, a, b []string, aLabel, bLabel string) {
+	aSet := stringSet(a)
+	bSet := stringSet(b)
+	var missingInA, missingInB []string
+	for s := range bSet {
+		if !aSet[s] {
+			missingInA = append(missingInA, s)
+		}
+	}
+	for s := range aSet {
+		if !bSet[s] {
+			missingInB = append(missingInB, s)
+		}
+	}
+	sort.Strings(missingInA)
+	sort.Strings(missingInB)
+	for _, s := range missingInA {
+		out.Equal = false
+		out.Reasons = append(out.Reasons, DiffReason{
+			Kind:   "scope_mismatch",
+			Detail: fmt.Sprintf("scope %q present in %s but missing in %s", s, bLabel, aLabel),
+		})
+	}
+	for _, s := range missingInB {
+		out.Equal = false
+		out.Reasons = append(out.Reasons, DiffReason{
+			Kind:   "scope_mismatch",
+			Detail: fmt.Sprintf("scope %q present in %s but missing in %s", s, aLabel, bLabel),
+		})
+	}
+}
+
+// countIntersection counts the size of the set intersection of a + b.
+// O(|a| + |b|); duplicates inside one side count once.
+func countIntersection(a, b []string) int {
+	aSet := stringSet(a)
+	n := 0
+	seen := map[string]bool{}
+	for _, s := range b {
+		if seen[s] {
+			continue
+		}
+		seen[s] = true
+		if aSet[s] {
+			n++
+		}
+	}
+	return n
+}
+
+// intersect returns the lexicographically sorted intersection of two
+// string slices. Used by CompareTagValues to walk matched values in a
+// reproducible order.
+func intersect(a, b []string) []string {
+	aSet := stringSet(a)
+	out := make([]string, 0, len(b))
+	seen := map[string]bool{}
+	for _, s := range b {
+		if seen[s] {
+			continue
+		}
+		seen[s] = true
+		if aSet[s] {
+			out = append(out, s)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // canonicalizeJSON re-marshals a JSON blob with sorted object keys so

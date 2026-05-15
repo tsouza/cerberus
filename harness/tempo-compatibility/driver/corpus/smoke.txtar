@@ -290,3 +290,141 @@ trace_by_id_first_checkout
 traces
 -- traceid_template --
 checkout/0
+
+# --- Tags + tag-values endpoints (PR 6) ---
+# Conformance for the four tag endpoints. Cardinality bounds are wide
+# because the precise per-backend tag-key inventory drifts with both
+# backends' OTLP→storage mapping (cerberus surfaces ResourceAttributes /
+# SpanAttributes map keys + a static intrinsic list; real Tempo surfaces
+# whatever its block-storage indexer recorded). The structural diff
+# tells us which keys disagree; the subset assertions pin the keys that
+# MUST appear because the seeder writes them on every span.
+
+-- name --
+tags_v1_all
+-- endpoint --
+tags_v1
+-- expected_min_values --
+1
+-- expected_max_values --
+500
+-- expected_values --
+service.name
+http.method
+
+-- name --
+tags_v2_resource
+-- endpoint --
+tags_v2
+-- scope --
+resource
+# Cerberus today ignores ?scope= and always returns the full scope set,
+# so the differ will surface a scope-axis diff between cerberus and
+# Tempo here. The subset assertion still passes on both sides because
+# `service.name` lives in the resource scope on Tempo and cerberus
+# both surfaces it (from ResourceAttributes / static map).
+-- expected_min_values --
+1
+-- expected_max_values --
+500
+-- expected_values --
+service.name
+-- expected_scopes --
+resource
+
+-- name --
+tags_v2_span
+-- endpoint --
+tags_v2
+-- scope --
+span
+-- expected_min_values --
+1
+-- expected_max_values --
+500
+-- expected_values --
+http.method
+-- expected_scopes --
+span
+
+-- name --
+tags_v2_intrinsic
+-- endpoint --
+tags_v2
+-- scope --
+intrinsic
+-- expected_min_values --
+1
+-- expected_max_values --
+500
+# Intrinsics are static in both backends; the seeder doesn't influence
+# their presence — they always surface alongside dynamic attributes.
+-- expected_values --
+name
+kind
+-- expected_scopes --
+intrinsic
+
+-- name --
+tag_values_v1_service_name
+-- endpoint --
+tag_values_v1
+-- tag_name --
+service.name
+-- expected_min_values --
+1
+-- expected_max_values --
+50
+# Seeder writes 4 service.name values; every one MUST surface on both
+# sides because resource.service.name is the canonical dispatcher.
+-- expected_values --
+checkout
+payments
+search
+shipping
+
+-- name --
+tag_values_v2_service_name
+-- endpoint --
+tag_values_v2
+-- tag_name --
+service.name
+-- expected_min_values --
+1
+-- expected_max_values --
+50
+-- expected_values --
+checkout
+payments
+search
+shipping
+
+-- name --
+tag_values_v2_deployment_env
+-- endpoint --
+tag_values_v2
+-- tag_name --
+deployment.env
+-- expected_min_values --
+1
+-- expected_max_values --
+20
+# Every seeded span carries deployment.env="compat-test"; only one
+# value lives in this attribute today.
+-- expected_values --
+compat-test
+
+-- name --
+tag_values_v2_unknown_tag_empty
+-- endpoint --
+tag_values_v2
+-- tag_name --
+this.tag.does.not.exist
+# Both backends should return an empty `tagValues` list for an unknown
+# attribute key — the result is the empty subset of a never-populated
+# CH map column. Differ surfaces a cardinality match on len=0 with no
+# missing_in_* reasons.
+-- expected_min_values --
+0
+-- expected_max_values --
+0

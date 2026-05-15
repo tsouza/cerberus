@@ -1,15 +1,17 @@
 # Tempo / TraceQL compatibility harness
 
-> Status: **PR 4 (read corpus + smoke diff)** of the rollout described
-> in [`docs/tempo-compliance-plan.md`](../../docs/tempo-compliance-plan.md).
+> Status: **PR 6 (tags + tag-values)** of the rollout described in
+> [`docs/tempo-compliance-plan.md`](../../docs/tempo-compliance-plan.md).
 > This directory holds the vendored snapshot from PR 1 (`upstream/`),
 > the Docker Compose stack standing up reference Tempo + cerberus +
 > ClickHouse, the driver binary with two subcommands — `seed` (push
 > deterministic OTLP batch to both backends, smoke `/api/traces/<id>`)
 > and `diff` (run the TXTAR corpus through both backends, write a
 > markdown diff report) — and a nightly / `workflow_dispatch` GitHub
-> Actions lane (informational, not a required check). Metrics and tag
-> endpoints land in PRs 5-6.
+> Actions lane (informational, not a required check). The smoke corpus
+> now covers `/api/search`, `/api/traces/<id>`, and the four tag /
+> tag-values endpoints (V1 + V2); the metrics endpoints
+> (`/api/metrics/query_range` + `/api/metrics/query`) ship in PR 5.
 >
 > ## Ingest path (PR 3 vs the original plan)
 >
@@ -39,7 +41,7 @@ See [`docs/tempo-compliance-plan.md`](../../docs/tempo-compliance-plan.md)
 for the full landscape analysis, the per-PR breakdown, and the diff
 strategy.
 
-## Layout (current — PR 4)
+## Layout (current — PR 6)
 
 ```text
 harness/tempo-compatibility/
@@ -52,11 +54,13 @@ harness/tempo-compatibility/
     Dockerfile          repo-root context multi-stage build
     main.go             subcommand dispatcher (seed / diff)
     seeder.go           OTLP push to Tempo + CH INSERT for cerberus
-    corpus.go           TXTAR corpus loader (PR 4)
-    differ.go           canonical-key + relative-epsilon diff (PR 4)
-    diff.go             `diff` subcommand: HTTP fetch + assertions + report (PR 4)
+    corpus.go           TXTAR corpus loader (PR 4 + PR 6 tag sections)
+    differ.go           canonical-key + relative-epsilon diff (PR 4) +
+                        tag-name / tag-values set diff (PR 6)
+    diff.go             `diff` subcommand: HTTP fetch + assertions + report
     corpus/
-      smoke.txtar       ~20 cases lifted from shadow corpus (PR 4)
+      smoke.txtar       trace search + per-id (PR 4) + tag / tag-values
+                        endpoints (PR 6)
   reports/              driver report output (gitignored)
   upstream/             PR 1 — vendored snapshot (read-only reference)
     LICENSE             AGPL-3.0, copied verbatim from grafana/tempo
@@ -65,13 +69,13 @@ harness/tempo-compatibility/
     pkg/httpclient/     Tempo HTTP client; reused by the future driver
 ```
 
-## Layout (planned — PRs 5-7)
+## Layout (planned — PRs 5 + 7)
 
 ```text
 harness/tempo-compatibility/
   driver/
     corpus/
-      coverage.txtar    PR 5/6 — full coverage (metrics + tags + values)
+      coverage.txtar    PR 5 — metrics endpoints
   expected-failures.json  PR 5+
 ```
 
@@ -98,6 +102,47 @@ compares the responses. Two complications drive the diff strategy:
 
 Numeric fields (durationMs, startTimeUnixNano) compare under a 1e-9
 relative epsilon — same defaults as `harness/prometheus-compliance/shadow`.
+
+## Corpus categories
+
+The TXTAR corpus is the single source of truth for which Tempo HTTP
+shapes the differ exercises. PR 4 lifted the trace-search categories
+from the shadow harness; PR 6 added the four tag / tag-values
+endpoints.
+
+| Category                | Endpoint kind     | Wire shape                                      | Diff strategy                                          |
+| ----------------------- | ----------------- | ----------------------------------------------- | ------------------------------------------------------ |
+| Attribute matchers      | `search`          | `{traces:[TraceSummary]}`                       | Canonical-key (rootSvc, rootName) set diff             |
+| Intrinsics              | `search`          | same                                            | same                                                   |
+| Structural ops          | `search`          | same                                            | same                                                   |
+| Set ops                 | `search`          | same                                            | same                                                   |
+| Inner aggregates        | `search`          | same                                            | same                                                   |
+| Metrics pipeline        | `search` (PR 5)   | Prom series envelope                            | Semantic invariants + structural diff (lands PR 5)     |
+| Per-id round trip       | `traces`          | `{trace:{...}}`                                 | Trace-ID derivation from seeder template + status-2xx  |
+| Tag names V1            | `tags_v1`         | `{tagNames:[string]}`                           | Set diff over the flat list                            |
+| Tag names V2            | `tags_v2`         | `{scopes:[{name, tags}]}`                       | Set diff over flattened tags + per-scope-name diff     |
+| Tag values V1           | `tag_values_v1`   | `{tagValues:[string]}`                          | Set diff over the flat list                            |
+| Tag values V2           | `tag_values_v2`   | `{tagValues:[{type, value}]}`                   | Set diff over `Value` + `Type`-field diff on overlap   |
+
+The PR 6 corpus pins three classes of subset assertion on the tag
+endpoints:
+
+- **Always-present keys** (`service.name`, `http.method`) — the seeder
+  writes these on every span, so both backends MUST surface them in the
+  tag-names lists.
+- **Always-present values** (`checkout` / `payments` / `search` /
+  `shipping` for `service.name`; `compat-test` for `deployment.env`) —
+  the seeded value cardinality is exact, so a missing value is a real
+  ingest / lowering regression.
+- **Empty-result edge case** (`this.tag.does.not.exist`) — both
+  backends must return an empty `tagValues` list, exercising the
+  graceful-empty branches of each side's lookup code.
+
+Cerberus today ignores the `?scope=` filter on `tags_v2` and returns
+every scope regardless. PR 6's `tags_v2_resource` / `tags_v2_span` /
+`tags_v2_intrinsic` cases will surface that gap as a `scope_mismatch`
+reason in the markdown report — informational on the nightly job, not a
+hard fail.
 
 ## What's in `upstream/`
 
