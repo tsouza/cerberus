@@ -73,6 +73,43 @@ upstream `${SELECTOR}` / `${LABEL_*}` templates resolve against real
 data (the current overlay marks every `fast/` entry as skipped pending
 that work).
 
+## Upstream corpus (PR 2)
+
+PR 2 (#369) introduced the AGPL-scoped vendor under
+`upstream/loki-bench/`. The snapshot pins `grafana/loki` directly (the
+`tsouza/loki` fork watches only `pkg/logql/syntax/`, `pkg/logql/log/`,
+and `pkg/logqlmodel/`, so `pkg/logql/bench/` is outside the fork
+boundary). PR 2 vendored:
+
+- `pkg/logql/bench/queries/fast/*.yaml` — minimal-coverage corpus
+  (basic-selectors, simple-metrics, structured-metadata).
+- `pkg/logql/bench/queries/schema.json` — JSON Schema the YAMLs
+  validate against.
+- `pkg/logql/bench/query_registry.go` — `QueryRegistry` plus the
+  `${SELECTOR}` / `${LABEL_NAME}` / `${LABEL_VALUE}` template
+  expander.
+- `pkg/logql/bench/remote_test.go` — upstream `TestRemoteStorageEquality`,
+  build-tagged `remote_correctness`. PR 5 supersedes it with the
+  cerberus-owned driver, but the file remains as upstream reference.
+- `LICENSE` — AGPL-3.0, copied verbatim from the upstream repo root
+  and scoped to the `upstream/loki-bench/` subtree only.
+- `VERSION` — exact upstream coordinates (tag + commit SHA + the
+  `vendored_paths:` block that doubles as the bump-procedure
+  inventory).
+
+The PR 2 commit also widened `.github/workflows/ci.yml`'s `forbid-skip`
+git ls-files pathspec to exclude `harness/*/upstream/**`. The vendored
+`remote_test.go` has two `t.Skip()` calls (legitimate "flag not set"
+gating that's part of upstream's driver protocol); the forbid-skip
+rule applies to cerberus-authored tests and is preserved everywhere
+else.
+
+PR 3 (#387) expanded the snapshot to include the support files
+(`metadata.go`, `metadata_resolver.go`, `testcase.go`,
+`assertions_test.go`, `convert_test.go`, `generator.go`, `faker.go`)
+so `go test -c` resolves cleanly without sanitising upstream sources.
+See the section below for the full current inventory.
+
 ## What's in `upstream/loki-bench/`
 
 A pure, unmodified snapshot of these paths from `grafana/loki` at the
@@ -111,7 +148,7 @@ tracks `pkg/logql/syntax/`, `pkg/logql/log/`, and `pkg/logqlmodel/` —
 `pkg/logql/bench/` is outside the fork's watch boundary, so the
 snapshot here pins `grafana/loki` directly rather than the fork tag.
 
-### Why vendor, not import via `go.mod`?
+### Why vendor, not import via `go.mod`
 
 Same reasoning as `harness/tempo-compatibility/upstream/` (see PR #367):
 
