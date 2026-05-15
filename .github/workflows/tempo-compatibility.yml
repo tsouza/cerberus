@@ -1,12 +1,12 @@
 name: tempo-compatibility
 
-# Status: PR 3 of docs/tempo-compliance-plan.md. The driver this
-# workflow invokes is a real seeder (PR 3) that pushes OTLP into
-# reference Tempo + INSERTs into ClickHouse for cerberus + smokes
-# /api/traces/<id> on both backends. continue-on-error is preserved
-# at the job level so the workflow stays an informational baseline
-# until PR 7 promotes it to a required check (per the rollout in the
-# plan doc).
+# Status: PR 4 of docs/tempo-compliance-plan.md. The driver this
+# workflow invokes runs both subcommands in sequence: seed (push OTLP
+# into Tempo + INSERT into ClickHouse for cerberus + smoke
+# /api/traces/<id>) then diff (TXTAR corpus through /api/search +
+# /api/traces; markdown report under reports/). continue-on-error is
+# preserved at the job level so the workflow stays an informational
+# baseline until PR 7 promotes it to a required check.
 #
 # Triggers:
 #   * workflow_dispatch  — manual runs from the GH UI.
@@ -53,13 +53,15 @@ jobs:
     name: tempo/compatibility
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # Informational baseline for PR 2 — the stub driver always exits 0,
-    # but the Compose lifecycle (pull tempo image, build cerberus image,
-    # build driver image, wait for healthchecks) can legitimately fail
-    # under runner flake. continue-on-error keeps the workflow badge
-    # green during the rollout. PR 7 of the plan promotes this to a
-    # gated required check once nightly is stable for 7 consecutive
-    # runs (per docs/tempo-compliance-plan.md "Per-PR breakdown").
+    # Informational baseline through PR 6. The Compose lifecycle (pull
+    # tempo image, build cerberus image, build driver image, wait for
+    # healthchecks) can legitimately fail under runner flake, and the
+    # PR-4 differ runs without --fail-on-diff so a per-case structural
+    # regression also stays informational. continue-on-error keeps the
+    # workflow badge green during the rollout. PR 7 of the plan
+    # promotes this to a gated required check once nightly is stable
+    # for 7 consecutive runs (per docs/tempo-compliance-plan.md
+    # "Per-PR breakdown").
     continue-on-error: true
     steps:
       - uses: actions/checkout@v6
@@ -80,8 +82,9 @@ jobs:
 
       - name: Upload report
         # `if: always()` so we capture whatever the driver wrote even
-        # when the harness step failed. PR 3's seeder doesn't write a
-        # report (smoke is in-process); PR 4's differ populates this dir.
+        # when the harness step failed. PR 4 wires up the differ which
+        # writes diff.md under this directory; the seeder leaves it
+        # empty.
         if: always()
         uses: actions/upload-artifact@v7
         with:
