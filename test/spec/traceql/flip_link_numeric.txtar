@@ -1,0 +1,10 @@
+-- query.traceql --
+{ 500 < link.http_status }
+-- sql --
+SELECT * FROM `otel_traces` WHERE arrayExists(x -> x[?] > ?, `Links`.`Attributes`)
+-- args --
+[0] string = "http_status"
+[1] int64 = 500
+-- chplan --
+Filter predicate=nestedArrayExists(Links.Attributes["http_status"] > 500)
+  Scan(otel_traces)

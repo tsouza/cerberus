@@ -1,0 +1,10 @@
+-- query.traceql --
+{ "warn" >= link.severity }
+-- sql --
+SELECT * FROM `otel_traces` WHERE arrayExists(x -> x[?] <= ?, `Links`.`Attributes`)
+-- args --
+[0] string = "severity"
+[1] string = "warn"
+-- chplan --
+Filter predicate=nestedArrayExists(Links.Attributes["severity"] <= "warn")
+  Scan(otel_traces)

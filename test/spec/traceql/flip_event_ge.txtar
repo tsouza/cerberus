@@ -1,0 +1,10 @@
+-- query.traceql --
+{ 500 >= event.code }
+-- sql --
+SELECT * FROM `otel_traces` WHERE arrayExists(x -> x[?] <= ?, `Events`.`Attributes`)
+-- args --
+[0] string = "code"
+[1] int64 = 500
+-- chplan --
+Filter predicate=nestedArrayExists(Events.Attributes["code"] <= 500)
+  Scan(otel_traces)
