@@ -10,9 +10,13 @@ import (
 )
 
 // TestRangeWindowGapFunctionsEmit asserts the per-function value
-// expression for the five compatibility-lane gaps closed in this PR:
+// expression for the four compatibility-lane gaps closed in the
+// original five-function batch that this test was carved out of.
+// `absent_over_time` graduated to a dedicated chplan.AbsentOverTime
+// node (see TestAbsentOverTimeEmit) because the per-series RangeWindow
+// shape can't synthesise the matcher-derived label set Prom's
+// funcAbsentOverTime emits.
 //
-//   - absent_over_time → if(length(window_vals) > 0, nan, 1.0)
 //   - stdvar_over_time → arrayReduce('varPop', window_vals)
 //   - deriv            → tupleElement(arrayReduce('simpleLinearRegression', xs, ys), 1)
 //   - resets           → count of adjacent pairs where curr < prev
@@ -40,17 +44,6 @@ func TestRangeWindowGapFunctionsEmit(t *testing.T) {
 		fn          string
 		wantSubstrs []string
 	}{
-		{
-			name: "absent_over_time",
-			fn:   "absent_over_time",
-			wantSubstrs: []string{
-				// Per-series guard: empty window → 1.0, populated window → nan.
-				"if(length(window_vals) > 0, nan, 1.0)",
-				// minWindowSize=0 — empty windows DO produce a row;
-				// the outer SELECT must NOT carry a WHERE filter.
-				// Spot-check that no `WHERE length(...)` clause appears.
-			},
-		},
 		{
 			name: "stdvar_over_time",
 			fn:   "stdvar_over_time",
@@ -119,29 +112,5 @@ func TestRangeWindowGapFunctionsEmit(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-// TestRangeWindowAbsentOverTimeNoWindowFilter pins the minWindowSize=0
-// contract for absent_over_time: the outer SELECT must NOT carry a
-// `WHERE length(window_vals) >= N` filter, because the entire point of
-// the function is to project a value when the window is empty. Every
-// other RangeWindow function has the filter on; this test guards that
-// inversion.
-func TestRangeWindowAbsentOverTimeNoWindowFilter(t *testing.T) {
-	t.Parallel()
-	plan := &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
-		Func:            "absent_over_time",
-		TimestampColumn: "TimeUnix",
-		ValueColumn:     "Value",
-		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
-	}
-	sql, _, err := chsql.Emit(context.Background(), plan)
-	if err != nil {
-		t.Fatalf("Emit: %v", err)
-	}
-	if strings.Contains(sql, "WHERE length(") {
-		t.Errorf("absent_over_time must not filter empty windows out; SQL=%s", sql)
 	}
 }

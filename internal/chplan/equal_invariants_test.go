@@ -449,6 +449,67 @@ func TestRangeWindow_Equal_Negative_StartEnd(t *testing.T) {
 	}
 }
 
+func TestAbsentOverTime_Equal_Positive(t *testing.T) {
+	t.Parallel()
+	build := func() *chplan.AbsentOverTime {
+		return &chplan.AbsentOverTime{
+			Input:            &chplan.Scan{Table: "otel_metrics_gauge"},
+			SynthLabels:      []chplan.SynthLabel{{Key: "job", Value: "x"}},
+			Range:            5 * time.Minute,
+			Step:             time.Minute,
+			TimestampColumn:  "TimeUnix",
+			ValueColumn:      "Value",
+			MetricNameColumn: "MetricName",
+			AttributesColumn: "Attributes",
+		}
+	}
+	if !build().Equal(build()) {
+		t.Fatalf("identical AbsentOverTime trees should be Equal")
+	}
+}
+
+func TestAbsentOverTime_Equal_Negative_Range(t *testing.T) {
+	t.Parallel()
+	a := &chplan.AbsentOverTime{Input: &chplan.Scan{Table: "t"}, Range: time.Minute}
+	b := &chplan.AbsentOverTime{Input: &chplan.Scan{Table: "t"}, Range: 5 * time.Minute}
+	if a.Equal(b) {
+		t.Errorf("different Range should not be Equal")
+	}
+}
+
+func TestAbsentOverTime_Equal_Negative_Step(t *testing.T) {
+	t.Parallel()
+	a := &chplan.AbsentOverTime{Input: &chplan.Scan{Table: "t"}, Step: time.Minute}
+	b := &chplan.AbsentOverTime{Input: &chplan.Scan{Table: "t"}, Step: time.Second}
+	if a.Equal(b) {
+		t.Errorf("different Step should not be Equal")
+	}
+}
+
+func TestAbsentOverTime_Equal_Negative_SynthLabels(t *testing.T) {
+	t.Parallel()
+	a := &chplan.AbsentOverTime{
+		Input:       &chplan.Scan{Table: "t"},
+		SynthLabels: []chplan.SynthLabel{{Key: "job", Value: "x"}},
+	}
+	b := &chplan.AbsentOverTime{
+		Input:       &chplan.Scan{Table: "t"},
+		SynthLabels: []chplan.SynthLabel{{Key: "job", Value: "y"}},
+	}
+	if a.Equal(b) {
+		t.Errorf("different SynthLabels should not be Equal")
+	}
+}
+
+func TestAbsentOverTime_Equal_Negative_Input(t *testing.T) {
+	t.Parallel()
+	a := &chplan.AbsentOverTime{Input: &chplan.Scan{Table: "a"}}
+	b := &chplan.AbsentOverTime{Input: &chplan.Scan{Table: "b"}}
+	if a.Equal(b) {
+		t.Errorf("different Input should not be Equal")
+	}
+}
+
 func TestLimit_Equal_Positive(t *testing.T) {
 	t.Parallel()
 	a := &chplan.Limit{Input: &chplan.Scan{Table: "t"}, Count: 100}

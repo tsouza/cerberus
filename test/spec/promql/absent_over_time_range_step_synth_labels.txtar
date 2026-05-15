@@ -1,0 +1,59 @@
+# absent_over_time(<metric>{<eq-matchers>}[range]) over query_range —
+# fans the per-anchor lookback check across the step grid `[2026-01-01
+# 00:00:00, 00:05:00]` spaced by 30s (11 anchors total, end-inclusive).
+# The matcher-filtered scan returns zero rows because no
+# `nonexistent_metric` series exists in the seed; the
+# `sample_ts_arr = []` plumbed through the inner subquery makes every
+# anchor pass the `arrayCount(...) = 0` filter. Output: 11 rows, one
+# per anchor, each carrying the matcher-synthesised label map
+# (`{job: "x", instance: "host-1"}` — drop `__name__`, lift the two
+# equality matchers).
+
+-- query.promql --
+absent_over_time(nonexistent_metric{job="x",instance="host-1"}[5m])
+-- range_step --
+30s
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- Only an unrelated metric is present. The matcher-filtered scan
+-- yields zero rows, so every per-anchor lookback window sees an empty
+-- sample_ts_arr.
+INSERT INTO otel_metrics_gauge VALUES
+    ('temperature', map('host', 'a'), toDateTime64('2026-01-01 00:00:00', 9), 42.0);
+-- expected_rows --
+[
+  ["", {"instance": "host-1", "job": "x"}, "2026-01-01T00:00:00Z", 1.0],
+  ["", {"instance": "host-1", "job": "x"}, "2026-01-01T00:00:30Z", 1.0],
+  ["", {"instance": "host-1", "job": "x"}, "2026-01-01T00:01:00Z", 1.0],
+  ["", {"instance": "host-1", "job": "x"}, "2026-01-01T00:01:30Z", 1.0],
+  ["", {"instance": "host-1", "job": "x"}, "2026-01-01T00:02:00Z", 1.0],
+  ["", {"instance": "host-1", "job": "x"}, "2026-01-01T00:02:30Z", 1.0],
+  ["", {"instance": "host-1", "job": "x"}, "2026-01-01T00:03:00Z", 1.0],
+  ["", {"instance": "host-1", "job": "x"}, "2026-01-01T00:03:30Z", 1.0],
+  ["", {"instance": "host-1", "job": "x"}, "2026-01-01T00:04:00Z", 1.0],
+  ["", {"instance": "host-1", "job": "x"}, "2026-01-01T00:04:30Z", 1.0],
+  ["", {"instance": "host-1", "job": "x"}, "2026-01-01T00:05:00Z", 1.0]
+]
+-- args --
+[0] string = ""
+[1] string = "job"
+[2] string = "x"
+[3] string = "instance"
+[4] string = "host-1"
+[5] float64 = 1
+[6] string = "nonexistent_metric"
+[7] string = "job"
+[8] string = "x"
+[9] string = "instance"
+[10] string = "host-1"
+-- chplan --
+AbsentOverTime range=5m0s step=30s ts=TimeUnix value=Value name=MetricName attrs=Attributes synth=[job="x", instance="host-1"] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+  Filter predicate=(((Attributes["job"] = "x") AND (Attributes["instance"] = "host-1")) AND (MetricName = "nonexistent_metric"))
+    Scan(otel_metrics_gauge)
+-- sql --
+SELECT ? AS `MetricName`, map(?, ?, ?, ?) AS `Attributes`, anchor_ts AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT anchor_ts FROM (SELECT arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:00:00.000000000', 9) + toIntervalNanosecond(i * 30000000000), range(0, 11))) AS `anchor_ts`, sample_ts_arr FROM (SELECT groupArray(`TimeUnix`) AS `sample_ts_arr` FROM (SELECT * FROM `otel_metrics_gauge` PREWHERE (`MetricName` = ?) AND (`Attributes`[?] = ?) WHERE (`Attributes`[?] = ?)) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9))) WHERE arrayCount(t -> t > anchor_ts - toIntervalNanosecond(300000000000) AND t <= anchor_ts, sample_ts_arr) = 0)

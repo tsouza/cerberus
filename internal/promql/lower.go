@@ -578,6 +578,8 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 		return lowerPredictLinear(c, s, ctx)
 	case "holt_winters", "double_exponential_smoothing":
 		return lowerHoltWinters(c, s, ctx)
+	case "absent_over_time":
+		return lowerAbsentOverTime(c, s, ctx)
 	}
 	if len(c.Args) != 1 {
 		return nil, fmt.Errorf("promql: %s expects exactly 1 argument, got %d", c.Func.Name, len(c.Args))
