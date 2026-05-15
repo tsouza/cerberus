@@ -83,6 +83,7 @@ jobs:
           globs: |
             **/*.md
             !harness/prometheus-compliance/upstream/**
+            !harness/tempo-compatibility/upstream/**
             !**/node_modules/**
 
   # `forbid-skip` is the GA test-discipline gate. The maintainer's
