@@ -318,14 +318,51 @@ func projectValueOverLogInner(inner chplan.Node, s schema.Logs, newValue chplan.
 // The function is only called from [lowerVectorVector] — every other
 // LogQL binop path operates on the inner LogQL shape directly without
 // the VectorJoin canonical-shape requirement.
+//
+// Inner shape selector:
+//
+//   - vector-aggregation leg (e.g. `sum by (svc) (count_over_time(...))`):
+//     `wrapVectorAggregateForSample` has already projected the row into
+//     the (MetricName, Attributes, TimeUnix, Value) Sample contract, so
+//     the `ResourceAttributes` column no longer exists. Reading it would
+//     surface as `UNKNOWN_IDENTIFIER: ResourceAttributes` at chDB.
+//     Forward the existing `Attributes` column verbatim instead.
+//   - every other leg shape (RangeWindow, lowerLiteral / lowerVector
+//     synthetic, label_replace wrap): the column carrying stream
+//     identity is `ResourceAttributes` — rename it to `Attributes`
+//     under the projection.
 func sampleShapeOverLogInner(inner chplan.Node, s schema.Logs) chplan.Node {
+	attrsCol := s.ResourceAttributesColumn
+	if isVectorAggregateSampleShape(inner) {
+		attrsCol = "Attributes"
+	}
 	return &chplan.Project{
 		Input: inner,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: "MetricName"},
-			{Expr: &chplan.ColumnRef{Name: s.ResourceAttributesColumn}, Alias: "Attributes"},
+			{Expr: &chplan.ColumnRef{Name: attrsCol}, Alias: "Attributes"},
 			{Expr: &chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}}, Alias: "TimeUnix"},
 			{Expr: &chplan.ColumnRef{Name: rangeAggSynthValueColumn}, Alias: rangeAggSynthValueColumn},
 		},
 	}
+}
+
+// isVectorAggregateSampleShape reports whether inner already carries the
+// canonical Sample contract — i.e. came out of
+// [wrapVectorAggregateForSample]. The signal is a top-level
+// `*chplan.Project` whose alias list includes `Attributes`; that's the
+// only LogQL lowering that produces an `Attributes`-aliased projection
+// (RangeWindow / lowerLiteral / lowerVector / label_replace all alias
+// `ResourceAttributes`).
+func isVectorAggregateSampleShape(n chplan.Node) bool {
+	p, ok := n.(*chplan.Project)
+	if !ok {
+		return false
+	}
+	for _, proj := range p.Projections {
+		if proj.Alias == "Attributes" {
+			return true
+		}
+	}
+	return false
 }

@@ -1,0 +1,64 @@
+-- query.logql --
+sum by (svc) (count_over_time({app="x"}[5m])) / on(svc) group_left(env) sum by (svc) (count_over_time({app="y"}[5m]))
+-- seed --
+CREATE TABLE otel_logs (
+    Timestamp DateTime64(9),
+    Body String,
+    ResourceAttributes Map(String, String)
+) ENGINE = Memory;
+INSERT INTO otel_logs (Timestamp, Body, ResourceAttributes) VALUES
+    (toDateTime64('2025-12-31 23:58:00', 9), 'a', map('app', 'x', 'svc', 'api', 'env', 'prod')),
+    (toDateTime64('2025-12-31 23:59:00', 9), 'b', map('app', 'x', 'svc', 'api', 'env', 'prod')),
+    (toDateTime64('2026-01-01 00:00:00', 9), 'c', map('app', 'x', 'svc', 'api', 'env', 'prod')),
+    (toDateTime64('2025-12-31 23:58:00', 9), 'd', map('app', 'y', 'svc', 'api', 'env', 'prod')),
+    (toDateTime64('2025-12-31 23:59:00', 9), 'e', map('app', 'y', 'svc', 'api', 'env', 'prod')),
+    (toDateTime64('2026-01-01 00:00:00', 9), 'f', map('app', 'y', 'svc', 'api', 'env', 'prod'));
+-- expected_rows --
+[
+  ["", {"svc": "api"}, "2026-01-01T00:00:01Z", 1]
+]
+-- args --
+[0] string = ""
+[1] string = "env"
+[2] string = ""
+[3] int64 = 9
+[4] string = ""
+[5] string = "svc"
+[6] int64 = 9
+[7] string = "svc"
+[8] int64 = 1
+[9] string = "app"
+[10] string = "x"
+[11] string = "svc"
+[12] string = "many-to-many matching not allowed: matching labels must be unique on one side"
+[13] string = ""
+[14] int64 = 9
+[15] string = ""
+[16] string = "svc"
+[17] int64 = 9
+[18] string = "svc"
+[19] int64 = 1
+[20] string = "app"
+[21] string = "y"
+[22] string = "svc"
+[23] string = "svc"
+[24] string = "svc"
+[25] string = "svc"
+-- chplan --
+VectorJoin op=/ match=on(svc) card=many-to-one include=[env]
+  Project ["" AS MetricName, Attributes AS Attributes, now64(9) AS TimeUnix, Value AS Value]
+    Project ["" AS MetricName, map("svc", gkey_0) AS Attributes, now64(9) AS TimeUnix, Value AS Value]
+      Aggregate groupBy=[ResourceAttributes["svc"] AS gkey_0] funcs=[sum(Value) AS Value]
+        RangeWindow func=count_over_time range=5m0s step=0s ts=Timestamp value=Value groupBy=[ResourceAttributes]
+          Project [ResourceAttributes, Timestamp, 1 AS Value]
+            Filter predicate=(ResourceAttributes["app"] = "x")
+              Scan(otel_logs)
+  Project ["" AS MetricName, Attributes AS Attributes, now64(9) AS TimeUnix, Value AS Value]
+    Project ["" AS MetricName, map("svc", gkey_0) AS Attributes, now64(9) AS TimeUnix, Value AS Value]
+      Aggregate groupBy=[ResourceAttributes["svc"] AS gkey_0] funcs=[sum(Value) AS Value]
+        RangeWindow func=count_over_time range=5m0s step=0s ts=Timestamp value=Value groupBy=[ResourceAttributes]
+          Project [ResourceAttributes, Timestamp, 1 AS Value]
+            Filter predicate=(ResourceAttributes["app"] = "y")
+              Scan(otel_logs)
+-- sql --
+SELECT ? AS `MetricName`, mapConcat(L.`Attributes`, mapFilter((k, v) -> k IN (?), R.`Attributes`)) AS `Attributes`, L.`TimeUnix`, (L.`Value` / R.`Value`) AS `Value` FROM (SELECT `_join_MetricName` AS `MetricName`, `_join_Attributes` AS `Attributes`, `_join_TimeUnix` AS `TimeUnix`, `_join_Value` AS `Value` FROM (SELECT `MetricName` AS `_join_MetricName`, `Attributes` AS `_join_Attributes`, max(`TimeUnix`) AS `_join_TimeUnix`, argMax(`Value`, `TimeUnix`) AS `_join_Value` FROM (SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT ? AS `MetricName`, map(?, `gkey_0`) AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `ResourceAttributes`[?] AS `gkey_0`, sum(`Value`) AS `Value` FROM (SELECT `ResourceAttributes`, toFloat64(length(window_vals)) AS `Value` FROM (SELECT `ResourceAttributes`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `ResourceAttributes`, arrayFilter(p -> tupleElement(p, 1) > now64(9) - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= now64(9), series_array) AS `window_pairs` FROM (SELECT `ResourceAttributes`, arraySort(groupArray((`Timestamp`, `Value`))) AS `series_array` FROM (SELECT `ResourceAttributes`, `Timestamp`, ? AS `Value` FROM (SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?))) GROUP BY `ResourceAttributes`))) WHERE length(`window_vals`) >= 1) GROUP BY `ResourceAttributes`[?]))) GROUP BY `MetricName`, `Attributes`)) AS L INNER JOIN (SELECT `_join_MetricName` AS `MetricName`, `_join_Attributes` AS `Attributes`, `_join_TimeUnix` AS `TimeUnix`, `_join_Value` AS `Value` FROM (SELECT argMax(`MetricName`, `TimeUnix`) AS `_join_MetricName`, argMax(`Attributes`, `TimeUnix`) AS `_join_Attributes`, max(`TimeUnix`) AS `_join_TimeUnix`, argMax(`Value`, `TimeUnix`) AS `_join_Value`, throwIf(uniqExact(`Attributes`) > 1, ?) AS _cerberus_match_check FROM (SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT ? AS `MetricName`, map(?, `gkey_0`) AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `ResourceAttributes`[?] AS `gkey_0`, sum(`Value`) AS `Value` FROM (SELECT `ResourceAttributes`, toFloat64(length(window_vals)) AS `Value` FROM (SELECT `ResourceAttributes`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `ResourceAttributes`, arrayFilter(p -> tupleElement(p, 1) > now64(9) - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= now64(9), series_array) AS `window_pairs` FROM (SELECT `ResourceAttributes`, arraySort(groupArray((`Timestamp`, `Value`))) AS `series_array` FROM (SELECT `ResourceAttributes`, `Timestamp`, ? AS `Value` FROM (SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?))) GROUP BY `ResourceAttributes`))) WHERE length(`window_vals`) >= 1) GROUP BY `ResourceAttributes`[?]))) GROUP BY mapFilter((k, v) -> k IN (?), `Attributes`))) AS R ON L.`Attributes`[?] = R.`Attributes`[?]
