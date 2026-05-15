@@ -1,0 +1,10 @@
+-- query.traceql --
+{ 100ms < event.duration }
+-- sql --
+SELECT * FROM `otel_traces` WHERE arrayExists(x -> x[?] > ?, `Events`.`Attributes`)
+-- args --
+[0] string = "duration"
+[1] int64 = 100000000
+-- chplan --
+Filter predicate=nestedArrayExists(Events.Attributes["duration"] > 100000000)
+  Scan(otel_traces)

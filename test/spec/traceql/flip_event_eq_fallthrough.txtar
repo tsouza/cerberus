@@ -1,0 +1,10 @@
+-- query.traceql --
+{ "exception" = event.name }
+-- sql --
+SELECT * FROM `otel_traces` WHERE arrayExists(x -> x[?] = ?, `Events`.`Attributes`)
+-- args --
+[0] string = "name"
+[1] string = "exception"
+-- chplan --
+Filter predicate=nestedArrayExists(Events.Attributes["name"] = "exception")
+  Scan(otel_traces)

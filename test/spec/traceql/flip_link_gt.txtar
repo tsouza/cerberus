@@ -1,0 +1,20 @@
+-- query.traceql --
+{ "warn" > link.severity }
+-- sql --
+SELECT * FROM `otel_traces` WHERE arrayExists(x -> x[?] < ?, `Links`.`Attributes`)
+-- args --
+[0] string = "severity"
+[1] string = "warn"
+-- seed --
+CREATE TABLE otel_traces (
+    _idx UInt64,
+    `Links.Attributes` Array(Map(String, String)) MATERIALIZED if(_idx = 0, [map('severity', 'info')], [map('severity', 'warn')])
+) ENGINE = MergeTree ORDER BY _idx;
+INSERT INTO otel_traces (_idx) VALUES (0), (1);
+-- expected_rows --
+[
+  [0]
+]
+-- chplan --
+Filter predicate=nestedArrayExists(Links.Attributes["severity"] < "warn")
+  Scan(otel_traces)

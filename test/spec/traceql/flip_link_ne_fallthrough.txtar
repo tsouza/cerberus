@@ -1,0 +1,10 @@
+-- query.traceql --
+{ "prod" != link.environment }
+-- sql --
+SELECT * FROM `otel_traces` WHERE arrayExists(x -> x[?] != ?, `Links`.`Attributes`)
+-- args --
+[0] string = "environment"
+[1] string = "prod"
+-- chplan --
+Filter predicate=nestedArrayExists(Links.Attributes["environment"] != "prod")
+  Scan(otel_traces)

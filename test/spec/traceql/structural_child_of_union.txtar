@@ -1,0 +1,20 @@
+-- query.traceql --
+{ resource.service.name = "a" } > ({ resource.service.name = "b" } || { resource.service.name = "c" })
+-- sql --
+SELECT R.* FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) AS L INNER JOIN ((SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) UNION DISTINCT (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?))) AS R ON L.`TraceId` = R.`TraceId` AND L.`SpanId` = R.`ParentSpanId`
+-- args --
+[0] string = "service.name"
+[1] string = "a"
+[2] string = "service.name"
+[3] string = "b"
+[4] string = "service.name"
+[5] string = "c"
+-- chplan --
+StructuralJoin op=>
+  Filter predicate=(ResourceAttributes["service.name"] = "a")
+    Scan(otel_traces)
+  SetOperation op=||
+    Filter predicate=(ResourceAttributes["service.name"] = "b")
+      Scan(otel_traces)
+    Filter predicate=(ResourceAttributes["service.name"] = "c")
+      Scan(otel_traces)
