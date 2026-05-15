@@ -19,3 +19,7 @@ INSERT INTO otel_traces VALUES
 [
   [100000000.0]
 ]
+-- chplan --
+MetricsAggregate op=quantile_over_time attr=Duration quantiles=[0.95] valueAlias=Value
+  Filter predicate=true
+    Scan(otel_traces)

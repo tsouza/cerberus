@@ -6,3 +6,9 @@ SELECT L.* FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)
 [0] string = "service.name"
 [1] string = "a"
 [2] int64 = 1000000000
+-- chplan --
+SetOperation op=&&
+  Filter predicate=(ResourceAttributes["service.name"] = "a")
+    Scan(otel_traces)
+  Filter predicate=(Duration > 1000000000)
+    Scan(otel_traces)

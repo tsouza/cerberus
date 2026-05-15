@@ -20,3 +20,6 @@ INSERT INTO otel_traces (Duration) VALUES
   [50000000],
   [150000000]
 ]
+-- chplan --
+Filter predicate=((ResourceAttributes["service.name"] = "frontend") OR (Duration > 100000000))
+  Scan(otel_traces)

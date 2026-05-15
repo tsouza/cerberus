@@ -4,3 +4,6 @@
 [0] string = "Ok"
 -- sql --
 SELECT * FROM `otel_traces` WHERE (`StatusCode` = ?)
+-- chplan --
+Filter predicate=(StatusCode = "Ok")
+  Scan(otel_traces)

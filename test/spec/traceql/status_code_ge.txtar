@@ -16,3 +16,6 @@ INSERT INTO otel_traces (_idx) VALUES (0), (1), (2);
   [0],
   [1]
 ]
+-- chplan --
+Filter predicate=(toFloat64(SpanAttributes["http.status_code"]) >= 500)
+  Scan(otel_traces)

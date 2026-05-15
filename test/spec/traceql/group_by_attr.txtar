@@ -19,3 +19,7 @@ INSERT INTO otel_traces VALUES
 [
   ["frontend", "a0000000000000000000000000000001", "0000000000000001", "2026-01-01T00:00:00Z"]
 ]
+-- chplan --
+Aggregate groupBy=[ResourceAttributes["service.name"] AS GroupKey] funcs=[any(TraceId) AS TraceId, any(SpanId) AS SpanId, min(Timestamp) AS Timestamp]
+  Filter predicate=true
+    Scan(otel_traces)

@@ -19,3 +19,7 @@ INSERT INTO otel_traces VALUES
 [
   [1.0e-08, 2]
 ]
+-- chplan --
+MetricsHistogramOverTime attr=Duration duration=true bucketAlias=__bucket valueAlias=Value
+  Filter predicate=(ResourceAttributes["service.name"] = "frontend")
+    Scan(otel_traces)

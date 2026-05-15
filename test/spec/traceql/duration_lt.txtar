@@ -16,3 +16,6 @@ INSERT INTO otel_traces VALUES
 [
   [10000000]
 ]
+-- chplan --
+Filter predicate=(Duration < 50000000)
+  Scan(otel_traces)

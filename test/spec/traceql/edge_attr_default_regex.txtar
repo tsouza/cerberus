@@ -5,3 +5,6 @@
 [1] string = "/api/.*"
 -- sql --
 SELECT * FROM `otel_traces` WHERE match(`SpanAttributes`[?], ?)
+-- chplan --
+Filter predicate=(SpanAttributes["path"] =~ "/api/.*")
+  Scan(otel_traces)

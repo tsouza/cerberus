@@ -7,3 +7,9 @@ SELECT R.* FROM (WITH RECURSIVE _struct_closure AS (SELECT `TraceId`, `SpanId`, 
 [1] string = "leaf"
 [2] string = "service.name"
 [3] string = "root"
+-- chplan --
+StructuralJoin op=<<
+  Filter predicate=(ResourceAttributes["service.name"] = "leaf")
+    Scan(otel_traces)
+  Filter predicate=(ResourceAttributes["service.name"] = "root")
+    Scan(otel_traces)

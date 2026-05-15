@@ -7,3 +7,9 @@ SELECT R.* FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)
 [1] string = "api"
 [2] string = "service.name"
 [3] string = "frontend"
+-- chplan --
+StructuralJoin op=<
+  Filter predicate=(ResourceAttributes["service.name"] = "api")
+    Scan(otel_traces)
+  Filter predicate=(ResourceAttributes["service.name"] = "frontend")
+    Scan(otel_traces)

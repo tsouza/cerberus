@@ -5,3 +5,7 @@
 [1] string = "x"
 -- sql --
 SELECT `TraceId` AS `TraceId`, `SpanId` AS `SpanId`, min(`Timestamp`) AS `Timestamp` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) GROUP BY `TraceId`, `SpanId`
+-- chplan --
+Aggregate groupBy=[TraceId AS TraceId, SpanId AS SpanId] funcs=[min(Timestamp) AS Timestamp]
+  Filter predicate=(ResourceAttributes["service.name"] = "x")
+    Scan(otel_traces)

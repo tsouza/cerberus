@@ -18,3 +18,7 @@ INSERT INTO otel_traces VALUES
 [
   [4]
 ]
+-- chplan --
+MetricsAggregate op=rate valueAlias=Value
+  Filter predicate=true
+    Scan(otel_traces)

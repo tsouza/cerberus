@@ -18,3 +18,7 @@ INSERT INTO otel_traces VALUES
 [
   [2]
 ]
+-- chplan --
+MetricsAggregate op=count_over_time valueAlias=Value
+  Filter predicate=(ResourceAttributes["service.name"] = "frontend")
+    Scan(otel_traces)

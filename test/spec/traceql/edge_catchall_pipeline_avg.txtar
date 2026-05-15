@@ -7,3 +7,8 @@
 [3] int64 = 500000000
 -- sql --
 SELECT * FROM (SELECT avg(`Duration`) AS `Value` FROM (SELECT * FROM `otel_traces` PREWHERE (`StatusCode` = ?) WHERE (`ResourceAttributes`[?] = ?))) WHERE (`Value` > ?)
+-- chplan --
+Filter predicate=(Value > 500000000)
+  Aggregate groupBy=[] funcs=[avg(Duration) AS Value]
+    Filter predicate=((ResourceAttributes["service.name"] = "x") AND (StatusCode = "Error"))
+      Scan(otel_traces)

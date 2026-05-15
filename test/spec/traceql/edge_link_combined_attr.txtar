@@ -7,3 +7,6 @@
 [3] string = "staging"
 -- sql --
 SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?) AND arrayExists(x -> x[?] = ?, `Links`.`Attributes`)
+-- chplan --
+Filter predicate=((ResourceAttributes["service.name"] = "x") AND nestedArrayExists(Links.Attributes["environment"] = "staging"))
+  Scan(otel_traces)

@@ -4,3 +4,6 @@
 [0] string = "Producer"
 -- sql --
 SELECT * FROM `otel_traces` WHERE (`SpanKind` = ?)
+-- chplan --
+Filter predicate=(SpanKind = "Producer")
+  Scan(otel_traces)

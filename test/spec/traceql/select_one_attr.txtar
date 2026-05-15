@@ -21,3 +21,7 @@ INSERT INTO otel_traces VALUES
 [
   ["a0000000000000000000000000000001", "0000000000000001", "2026-01-01T00:00:00Z", "GET"]
 ]
+-- chplan --
+Project [TraceId, SpanId, Timestamp, SpanAttributes["http.method"] AS http.method]
+  Filter predicate=(ResourceAttributes["service.name"] = "frontend")
+    Scan(otel_traces)

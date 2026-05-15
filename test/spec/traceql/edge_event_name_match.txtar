@@ -5,3 +5,6 @@
 [1] string = "exception"
 -- sql --
 SELECT * FROM `otel_traces` WHERE arrayExists(x -> x[?] = ?, `Events`.`Attributes`)
+-- chplan --
+Filter predicate=nestedArrayExists(Events.Attributes["name"] = "exception")
+  Scan(otel_traces)

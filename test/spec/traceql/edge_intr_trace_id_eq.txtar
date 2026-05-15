@@ -4,3 +4,6 @@
 [0] string = "abc123"
 -- sql --
 SELECT * FROM `otel_traces` WHERE (`TraceId` = ?)
+-- chplan --
+Filter predicate=(TraceId = "abc123")
+  Scan(otel_traces)

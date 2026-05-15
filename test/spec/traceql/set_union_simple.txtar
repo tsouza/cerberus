@@ -7,3 +7,9 @@
 [1] string = "a"
 [2] string = "service.name"
 [3] string = "b"
+-- chplan --
+SetOperation op=||
+  Filter predicate=(ResourceAttributes["service.name"] = "a")
+    Scan(otel_traces)
+  Filter predicate=(ResourceAttributes["service.name"] = "b")
+    Scan(otel_traces)

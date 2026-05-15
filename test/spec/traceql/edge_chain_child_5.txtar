@@ -13,3 +13,18 @@
 [9] string = "e"
 -- sql --
 SELECT R.* FROM (SELECT R.* FROM (SELECT R.* FROM (SELECT R.* FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) AS L INNER JOIN (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) AS R ON L.`TraceId` = R.`TraceId` AND L.`SpanId` = R.`ParentSpanId`) AS L INNER JOIN (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) AS R ON L.`TraceId` = R.`TraceId` AND L.`SpanId` = R.`ParentSpanId`) AS L INNER JOIN (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) AS R ON L.`TraceId` = R.`TraceId` AND L.`SpanId` = R.`ParentSpanId`) AS L INNER JOIN (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) AS R ON L.`TraceId` = R.`TraceId` AND L.`SpanId` = R.`ParentSpanId`
+-- chplan --
+StructuralJoin op=>
+  StructuralJoin op=>
+    StructuralJoin op=>
+      StructuralJoin op=>
+        Filter predicate=(ResourceAttributes["service.name"] = "a")
+          Scan(otel_traces)
+        Filter predicate=(ResourceAttributes["service.name"] = "b")
+          Scan(otel_traces)
+      Filter predicate=(ResourceAttributes["service.name"] = "c")
+        Scan(otel_traces)
+    Filter predicate=(ResourceAttributes["service.name"] = "d")
+      Scan(otel_traces)
+  Filter predicate=(ResourceAttributes["service.name"] = "e")
+    Scan(otel_traces)

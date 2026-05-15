@@ -4,3 +4,6 @@
 [0] string = "timeout.*"
 -- sql --
 SELECT * FROM `otel_traces` WHERE match(`StatusMessage`, ?)
+-- chplan --
+Filter predicate=(StatusMessage =~ "timeout.*")
+  Scan(otel_traces)
