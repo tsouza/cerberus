@@ -149,7 +149,7 @@ Quick reference:
 | **Integration**  | `chclient` against a real ClickHouse via testcontainers                           | `go test -tags=integration ./internal/chclient/...` |
 | **E2E**          | k3d cluster with CH + Grafana + cerberus; Grafana Playwright smoke                | `just e2e`                                          |
 | **Compat**       | `prometheus/compliance` differential harness                                      | `just compatibility`                                |
-| **Mutation**     | Gremlins mutation matrix (`internal/chplan` @ 80%, `internal/chsql` @ 75%)        | `just mutate` (slow, nightly in CI)                 |
+| **Mutation**     | Gremlins matrix — see `docs/test-strategy.md` § "Gremlins phased rollout" for bar | `just mutate` (slow, nightly in CI)                 |
 
 ## Project structure
 

@@ -12,17 +12,15 @@ mutants:
     enabled: true
   invert-bitwise:
     enabled: true
-  invert-bitwise-assignments:
+  invert-bwassign:
     enabled: true
   invert-logical:
     enabled: true
-  invert-loop-ctrl:
+  invert-loopctrl:
     enabled: true
   invert-negatives:
     enabled: true
   remove-self-assignments:
-    enabled: true
-  remove-statement:
     enabled: true
 test:
   timeout-coefficient: 4
@@ -32,19 +30,33 @@ excluded-files:
   - "cmd/**"
   - "**/doc.go"
 
-# Phased mutation-testing rollout. Layer 3 (PR #247) added ~125
-# invariant tests across internal/chplan, so chplan was the first
-# package dense enough to meet an 80% efficacy bar. The other
-# kill-zone packages onboard once their coverage catches up:
+# Phased mutation-testing rollout. Each phase scopes gremlins to one
+# package with its own `--threshold-efficacy` bar enforced in
+# `.github/workflows/mutation.yml`. Bars are set roughly 4-15
+# percentage points below the observed nightly kill rate, so the bar
+# is a meaningful gate (a real test-quality regression breaks the
+# build) without flapping on legitimate run-to-run variance.
 #
-#   Phase 1 (PR #260):      internal/chplan       @ 80% efficacy — ROLLED OUT
-#   Phase 2 (PR #268):      internal/chsql        @ 75% efficacy — ROLLED OUT
-#   Phase 3 (PR #273):      internal/optimizer    @ 70% efficacy — ROLLED OUT
-#                           (Layer 4 chDB property tests landed via #266)
-#   Phase 4 (PR #273):      QL parsers + lower    @ 65% efficacy — ROLLED OUT
-#                           (Layer 2b lowering coverage landed)
+#   Phase 1: internal/chplan       @ 90% — was 80% (nightly: ~95%)
+#   Phase 2: internal/chsql        @ 85% — was 75% (nightly: ~88%)
+#   Phase 3: internal/optimizer    @ 85% — was 70% (nightly: ~91%)
+#   Phase 4: internal/promql       @ 85% — was 65% (nightly: ~94%)
+#            internal/logql        @ 85% — was 65% (nightly: ~94%)
+#            internal/traceql      @ 85% — was 65% (nightly: 100%)
+#   Phase 5: internal/qlcommon     @ 75% — new (label_replace template)
 #
-# Promotion to a required CI gate happens after all four phases stay
+# Note: the yaml keys `invert-bwassign` and `invert-loopctrl` above
+# match gremlins v0.6.0's `MutantTypeEnabledKey` derivation (lowercase
+# `mt.String()` with `_` → `-`). Earlier revisions of this file used
+# `invert-bitwise-assignments` / `invert-loop-ctrl`, which gremlins
+# silently ignored — those two mutators were defaults-off and thus
+# never ran. Both are now enabled, surfacing extra mutants for
+# `<<= |= &= ^=` and `break / continue` constructs.
+#
+# See `docs/test-strategy.md` § "Gremlins phased rollout" for the
+# rationale + the actual-vs-bar table.
+#
+# Promotion to a required CI gate happens after all phases stay
 # stable for a week.
 #
 # The thresholds below are GLOBAL (gremlins v0.6.0 does not support
@@ -55,6 +67,6 @@ excluded-files:
 # at a time so the slower packages don't drag the bar down. The
 # values below are the floor for the unscoped whole-repo
 # `just mutate` invocation; the per-phase matrix entries are
-# informational until all four phases stay green for a week.
-threshold-efficacy: 80
+# informational until all phases stay green for a week.
+threshold-efficacy: 85
 threshold-mcover: 50
