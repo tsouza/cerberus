@@ -196,7 +196,7 @@ var fixtureInserts = []namedStmt{
             'seconds',
             map('instance', instance, 'job', 'demo', 'mode', mode),
             toDateTime64({anchor:String}, 9),
-            toDateTime64({anchor:String}, 9) + INTERVAL step SECOND,
+            toDateTime64({anchor:String}, 9) + INTERVAL step * 15 SECOND,
             toFloat64(step + (instance_idx * 1000) + (mode_idx * 100)),
             0,
             2,
@@ -231,7 +231,7 @@ var fixtureInserts = []namedStmt{
             'bytes',
             map('instance', instance, 'job', 'demo', 'type', type),
             toDateTime64({anchor:String}, 9),
-            toDateTime64({anchor:String}, 9) + INTERVAL step SECOND,
+            toDateTime64({anchor:String}, 9) + INTERVAL step * 15 SECOND,
             toFloat64(2 * 1024 * 1024 * 1024 + (step * 1024) + (instance_idx * 10000000) + (type_idx * 1000000))
         FROM (
             SELECT step, instance, instance_idx, type, type_idx
@@ -266,7 +266,7 @@ var fixtureInserts = []namedStmt{
             map('instance', instance, 'job', 'demo',
                 'method', method, 'path', path, 'status', status),
             toDateTime64({anchor:String}, 9),
-            toDateTime64({anchor:String}, 9) + INTERVAL step SECOND,
+            toDateTime64({anchor:String}, 9) + INTERVAL step * 15 SECOND,
             if(step < 120,
                 toFloat64(step * 10 + (instance_idx * 1000) + (method_idx * 500) + (path_idx * 250) + (status_idx * 100)),
                 toFloat64((step - 120) * 10 + (instance_idx * 1000) + (method_idx * 500) + (path_idx * 250) + (status_idx * 100))),
@@ -307,7 +307,7 @@ var fixtureInserts = []namedStmt{
             'bytes',
             map('instance', instance, 'job', 'demo', 'device', device),
             toDateTime64({anchor:String}, 9),
-            toDateTime64({anchor:String}, 9) + INTERVAL step SECOND,
+            toDateTime64({anchor:String}, 9) + INTERVAL step * 15 SECOND,
             toFloat64(10 * 1024 * 1024 * 1024 + step * (device_idx + 1) * 1024 + (instance_idx * 4096))
         FROM (
             SELECT step, instance, instance_idx, device, device_idx
@@ -335,7 +335,7 @@ var fixtureInserts = []namedStmt{
             'bytes',
             map('instance', instance, 'job', 'demo', 'device', device),
             toDateTime64({anchor:String}, 9),
-            toDateTime64({anchor:String}, 9) + INTERVAL step SECOND,
+            toDateTime64({anchor:String}, 9) + INTERVAL step * 15 SECOND,
             toFloat64(100 * 1024 * 1024 * 1024)
         FROM (
             SELECT step, instance, device
@@ -367,7 +367,7 @@ var fixtureInserts = []namedStmt{
             '1',
             map('instance', instance, 'job', 'demo'),
             toDateTime64({anchor:String}, 9),
-            toDateTime64({anchor:String}, 9) + INTERVAL step SECOND,
+            toDateTime64({anchor:String}, 9) + INTERVAL step * 15 SECOND,
             4.0
         FROM (
             SELECT step, instance
@@ -392,7 +392,7 @@ var fixtureInserts = []namedStmt{
             '1',
             map('instance', instance, 'job', 'demo'),
             toDateTime64({anchor:String}, 9),
-            toDateTime64({anchor:String}, 9) + INTERVAL step SECOND,
+            toDateTime64({anchor:String}, 9) + INTERVAL step * 15 SECOND,
             1.0
         FROM (
             SELECT step, instance
