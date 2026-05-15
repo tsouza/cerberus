@@ -292,6 +292,29 @@ func lowerOuterRangeFnOverSubquery(
 		rw.End = ctx.end.UTC()
 		rw.Step = ctx.step
 		rw.OuterRange = ctx.end.Sub(ctx.start)
+		// Widen the inner subquery's anchor grid so it covers the union
+		// of the outer evaluation window plus one full subquery range.
+		// Without this, the inner stays anchored at `now64(9) - sub.Range`
+		// (`lowerSubqueryOverCall`'s `End` defaults to zero because
+		// `subqueryAnchor` only honours `@start()` / `@end()`). For every
+		// outer anchor `t` in `[ctx.start, ctx.end]` the outer's
+		// per-anchor filter `(t - sub.Range, t]` reads the inner's
+		// `anchor_ts` column — so the inner anchor grid must extend
+		// across `[ctx.start - sub.Range, ctx.end]` or the filter falls
+		// outside the emitted inner anchors and the matrix collapses to
+		// an empty matrix. Compat-lane manifestation:
+		// `avg_over_time(rate(demo_cpu_usage_seconds_total[1m])[2m:10s])`
+		// returned [] vs Prom's populated matrix (`#400` Bucket 3).
+		// The Identity-true sibling (`max_over_time((<binary>)[5m:10s])`)
+		// also benefits from the same widening — the inner's anchor
+		// grid is the same shape, the bug just manifests less obviously
+		// because the binary inner doesn't carry the `>= 2 samples`
+		// guard that the counter-extrapolation path adds.
+		if innerRW, ok := inner.(*chplan.RangeWindow); ok {
+			innerRW.Start = ctx.start.Add(-sub.Range).UTC()
+			innerRW.End = ctx.end.UTC()
+			innerRW.OuterRange = ctx.end.Sub(ctx.start) + sub.Range
+		}
 	}
 	return rw, nil
 }
