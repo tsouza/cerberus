@@ -10,12 +10,13 @@
 //     `/api/traces/<first-id>` on both backends and reports the per-
 //     backend span count. The contract is: stack comes up, seed
 //     pushes to both targets, the smoke trace-id resolves on both.
-//   - `diff`    (PR 4 — this PR) reads a TXTAR corpus, runs every
-//     TraceQL query through both backends via /api/search (and
-//     /api/traces/<id> for the per-id smoke cases), applies per-side
-//     assertions, computes the structural diff, and emits a markdown
-//     report under /reports/. Returns 0 (informational baseline) by
-//     default; pass --fail-on-diff to make any diff non-zero.
+//   - `diff`    (PR 4 + PR 5) reads a TXTAR corpus, runs every TraceQL
+//     query through both backends via /api/search, /api/traces/<id>,
+//     /api/metrics/query_range, and /api/metrics/query, applies per-
+//     side assertions + semantic-consistency invariants, computes the
+//     structural diff, and emits a markdown report under /reports/.
+//     Returns 0 (informational baseline) by default; pass
+//     --fail-on-diff to make any diff non-zero.
 //
 // The two-way "OTLP into Tempo, INSERT into CH" split is documented in
 // docs/tempo-compliance-plan.md's "Open question 1": cerberus is
@@ -41,7 +42,7 @@ import (
 
 // version is stamped on driver output so a reader scanning CI logs can
 // tell at a glance which PR's behaviour they're looking at.
-const version = "pr4-differ"
+const version = "pr5-metrics"
 
 func main() {
 	if len(os.Args) < 2 {

@@ -209,3 +209,66 @@ func TestCompareForEndpoint_DispatchesTagShape(t *testing.T) {
 		t.Fatalf("expected equal on identical tag names, got %+v", d)
 	}
 }
+
+func TestBuildURL_MetricsRange(t *testing.T) {
+	t.Parallel()
+	tc := CorpusCase{
+		Name:     "m",
+		Query:    `{ } | rate()`,
+		Endpoint: "metrics_range",
+		Step:     "60s",
+	}
+	u, err := buildURL("http://tempo:3200", tc, "tempo", time.Unix(1000, 0), time.Unix(2000, 0), 200)
+	if err != nil {
+		t.Fatalf("buildURL: %v", err)
+	}
+	if !strings.HasPrefix(u, "http://tempo:3200/api/metrics/query_range?") {
+		t.Fatalf("unexpected url: %s", u)
+	}
+	if !strings.Contains(u, "step=60s") {
+		t.Fatalf("missing step=60s: %s", u)
+	}
+	if !strings.Contains(u, "start=1000") || !strings.Contains(u, "end=2000") {
+		t.Fatalf("missing start/end: %s", u)
+	}
+	if !strings.Contains(u, "q=") {
+		t.Fatalf("missing q=: %s", u)
+	}
+}
+
+func TestBuildURL_MetricsRangeMissingStepFails(t *testing.T) {
+	t.Parallel()
+	tc := CorpusCase{
+		Name:     "m",
+		Query:    `{ } | rate()`,
+		Endpoint: "metrics_range",
+	}
+	if _, err := buildURL("http://tempo:3200", tc, "tempo", time.Unix(1000, 0), time.Unix(2000, 0), 200); err == nil {
+		t.Fatal("expected error: metrics_range without Step")
+	}
+}
+
+func TestBuildURL_MetricsInstant(t *testing.T) {
+	t.Parallel()
+	tc := CorpusCase{
+		Name:     "m",
+		Query:    `{ } | rate()`,
+		Endpoint: "metrics_instant",
+	}
+	u, err := buildURL("http://tempo:3200", tc, "tempo", time.Unix(1000, 0), time.Unix(2000, 0), 200)
+	if err != nil {
+		t.Fatalf("buildURL: %v", err)
+	}
+	if !strings.HasPrefix(u, "http://tempo:3200/api/metrics/query?") {
+		t.Fatalf("unexpected url: %s", u)
+	}
+	if !strings.Contains(u, "start=1000") || !strings.Contains(u, "end=2000") {
+		t.Fatalf("missing start/end: %s", u)
+	}
+	if !strings.Contains(u, "q=") {
+		t.Fatalf("missing q=: %s", u)
+	}
+	if strings.Contains(u, "step=") {
+		t.Fatalf("instant endpoint must not carry step: %s", u)
+	}
+}

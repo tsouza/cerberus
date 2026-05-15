@@ -324,3 +324,108 @@ resource
 		t.Fatal("scope on a non-tags_v2 case should fail")
 	}
 }
+
+func TestParseCorpus_MetricsRangeSections(t *testing.T) {
+	t.Parallel()
+	in := `-- name --
+metrics_rate
+-- query --
+{ } | rate()
+-- endpoint --
+metrics_range
+-- step --
+60s
+-- expected_min_series --
+1
+-- expected_max_series --
+10
+-- expected_samples_per_series --
+5
+-- semantic_checks --
+samples_non_negative
+groupby_labels_present:resource.service.name
+`
+	got, err := parseCorpus(strings.NewReader(in), "test")
+	if err != nil {
+		t.Fatalf("parseCorpus: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 case, got %d", len(got))
+	}
+	c := got[0]
+	if c.Endpoint != "metrics_range" {
+		t.Fatalf("Endpoint = %q", c.Endpoint)
+	}
+	if c.Step != "60s" {
+		t.Fatalf("Step = %q", c.Step)
+	}
+	if c.ExpectedMinSeries != 1 || c.ExpectedMaxSeries != 10 {
+		t.Fatalf("series bounds = %d..%d", c.ExpectedMinSeries, c.ExpectedMaxSeries)
+	}
+	if c.ExpectedSamplesPerSeries != 5 {
+		t.Fatalf("ExpectedSamplesPerSeries = %d", c.ExpectedSamplesPerSeries)
+	}
+	if len(c.SemanticChecks) != 2 {
+		t.Fatalf("SemanticChecks = %v", c.SemanticChecks)
+	}
+	if c.SemanticChecks[0] != "samples_non_negative" {
+		t.Fatalf("SemanticChecks[0] = %q", c.SemanticChecks[0])
+	}
+	if c.SemanticChecks[1] != "groupby_labels_present:resource.service.name" {
+		t.Fatalf("SemanticChecks[1] = %q", c.SemanticChecks[1])
+	}
+}
+
+func TestParseCorpus_MetricsRangeRequiresStep(t *testing.T) {
+	t.Parallel()
+	in := `-- name --
+no_step
+-- query --
+{ } | rate()
+-- endpoint --
+metrics_range
+`
+	if _, err := parseCorpus(strings.NewReader(in), "test"); err == nil {
+		t.Fatal("expected error: metrics_range without step")
+	}
+}
+
+func TestParseCorpus_MetricsRangeSkipReasonBypassesStep(t *testing.T) {
+	t.Parallel()
+	// skip_reason'd metrics_range cases don't need step (the case won't
+	// run; the step omission is just a corpus-author convenience).
+	in := `-- name --
+deferred
+-- query --
+{ } | rate()
+-- endpoint --
+metrics_range
+-- skip_reason --
+deferred to follow-up
+`
+	got, err := parseCorpus(strings.NewReader(in), "test")
+	if err != nil {
+		t.Fatalf("parseCorpus: %v", err)
+	}
+	if got[0].SkipReason != "deferred to follow-up" {
+		t.Fatalf("SkipReason = %q", got[0].SkipReason)
+	}
+}
+
+func TestParseCorpus_MetricsInstantOK(t *testing.T) {
+	t.Parallel()
+	in := `-- name --
+instant
+-- query --
+{ } | rate()
+-- endpoint --
+metrics_instant
+`
+	got, err := parseCorpus(strings.NewReader(in), "test")
+	if err != nil {
+		t.Fatalf("parseCorpus: %v", err)
+	}
+	if got[0].Endpoint != "metrics_instant" {
+		t.Fatalf("Endpoint = %q", got[0].Endpoint)
+	}
+}

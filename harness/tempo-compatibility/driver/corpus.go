@@ -1,6 +1,7 @@
 // Corpus loader for the Tempo / TraceQL compatibility differ
-// (PR 4 of docs/tempo-compliance-plan.md; extended in PR 6 to cover
-// the four tag / tag-values endpoints).
+// (PR 4 of docs/tempo-compliance-plan.md; extended in PR 5 to cover the
+// metrics endpoints and in PR 6 to cover the four tag / tag-values
+// endpoints).
 //
 // The format is a lightweight TXTAR variant — same shape as
 // harness/prometheus-compliance/shadow/corpus.go — so the parser
@@ -8,10 +9,12 @@
 // non-header line as section body. The supported sections:
 //
 //	-- name --                  short identifier, used in the report
-//	-- query --                 the TraceQL expression (search endpoints)
+//	-- query --                 the TraceQL expression (search / metrics
+//	                            endpoints)
 //	-- endpoint --              one of: search | search_recent | traces |
 //	                            tags_v1 | tags_v2 | tag_values_v1 |
-//	                            tag_values_v2
+//	                            tag_values_v2 | metrics_range |
+//	                            metrics_instant
 //	-- traceid_template --      a template like "{svc}/{idx}" (only for `traces`)
 //	-- tag_name --              attribute key whose values to enumerate
 //	                            (tag_values_v1 / tag_values_v2 only)
@@ -19,6 +22,7 @@
 //	                            resource | span | intrinsic | none); empty
 //	                            omits the parameter so both backends return
 //	                            the unfiltered scope set
+//	-- step --                  step duration (e.g. "60s") — only for metrics_range
 //	-- expected_min_traces --   integer; minimum traces both sides must return
 //	-- expected_max_traces --   integer; maximum traces either side may return
 //	-- expected_min_values --   integer; minimum list cardinality for tag /
@@ -34,8 +38,17 @@
 //	                            that should appear in `rootServiceName`
 //	-- expected_root_name_re -- Go regexp; every returned trace's rootTraceName
 //	                            must match
+//	-- expected_min_series --   integer; minimum metrics series both sides must
+//	                            return (metrics endpoints only)
+//	-- expected_max_series --   integer; maximum metrics series either side may
+//	                            return (metrics endpoints only)
+//	-- expected_samples_per_series --   integer; minimum samples per series
+//	                            (metrics endpoints only)
+//	-- semantic_checks --       newline-separated list of semantic-consistency
+//	                            check names; each check runs per-backend against
+//	                            the parsed response (see differ.go::SemanticChecks
+//	                            for the registered names)
 //	-- skip_reason --           if non-empty, the case is parsed but skipped
-//	                            (e.g. `metrics endpoint — lands in PR 5`)
 //
 // Cases are separated by the next `-- name --` header. Lines starting
 // with `#` outside section bodies are comments. Inside a section body,
@@ -81,13 +94,15 @@ type CorpusCase struct {
 
 	// Endpoint selects the HTTP path the differ hits:
 	//
-	//   * search          GET /api/search?q=<TraceQL>
-	//   * search_recent   GET /api/search/recent (TraceQL ignored)
-	//   * traces          GET /api/traces/<id>   (TraceIDTemplate populated)
-	//   * tags_v1         GET /api/search/tags
-	//   * tags_v2         GET /api/v2/search/tags[?scope=<Scope>]
-	//   * tag_values_v1   GET /api/search/tag/{TagName}/values
-	//   * tag_values_v2   GET /api/v2/search/tag/{TagName}/values
+	//   * search           GET /api/search?q=<TraceQL>
+	//   * search_recent    GET /api/search/recent (TraceQL ignored)
+	//   * traces           GET /api/traces/<id>   (TraceIDTemplate populated)
+	//   * tags_v1          GET /api/search/tags
+	//   * tags_v2          GET /api/v2/search/tags[?scope=<Scope>]
+	//   * tag_values_v1    GET /api/search/tag/{TagName}/values
+	//   * tag_values_v2    GET /api/v2/search/tag/{TagName}/values
+	//   * metrics_range    GET /api/metrics/query_range (Step populated)
+	//   * metrics_instant  GET /api/metrics/query
 	//
 	// The seeder pushes data with deterministic trace IDs derived from
 	// (service, traceIdx); see TraceIDTemplate below for the format.
@@ -110,10 +125,16 @@ type CorpusCase struct {
 	// parameter off the URL (Tempo defaults to returning every scope).
 	Scope string
 
+	// Step is only consulted when Endpoint == "metrics_range". The string
+	// is sent verbatim as the URL's `step` parameter (Tempo accepts
+	// "60s", "1m", or plain seconds). An empty Step on a metrics_range
+	// case is a validation error.
+	Step string
+
 	// SkipReason, when non-empty, makes the case parse but skip during
-	// diffing. Used to declare PR-5-shaped cases (metrics endpoints)
-	// in the smoke corpus so the file stays the single source of truth
-	// for the eventual full corpus while keeping PR 4's CI green.
+	// diffing. Used to declare future-shaped cases in the smoke corpus so
+	// the file stays the single source of truth for the eventual full
+	// corpus while keeping CI green.
 	SkipReason string
 
 	// ExpectedMinTraces / ExpectedMaxTraces bound the cardinality both
@@ -144,6 +165,29 @@ type CorpusCase struct {
 	// trace's rootTraceName must match. Compiled at parse time so the
 	// differ runs without per-case regex cost.
 	ExpectedRootNameRE *regexp.Regexp
+
+	// ExpectedMinSeries / ExpectedMaxSeries bound the per-backend metrics
+	// cardinality. Zero (the default) disables the bound. Applies to
+	// metrics_range + metrics_instant endpoints only.
+	ExpectedMinSeries int
+	ExpectedMaxSeries int
+
+	// ExpectedSamplesPerSeries is the minimum samples per series for
+	// metrics_range cases. Zero disables the assertion. (Instant
+	// responses don't carry a samples array — they have a single value
+	// per series — so this is ignored for metrics_instant.)
+	ExpectedSamplesPerSeries int
+
+	// SemanticChecks is the list of per-backend semantic-consistency
+	// check names. Each name is looked up in differ.go::SemanticChecks
+	// at run time; an unknown name surfaces as an assertion reason so
+	// a corpus author who mistypes a check learns from the report rather
+	// than silently passing.
+	//
+	// A check may carry a colon-separated argument, e.g.
+	// "groupby_labels_present:resource.service.name" — the parser stores
+	// the raw "name:arg" string and the check function splits.
+	SemanticChecks []string
 }
 
 // LoadCorpus opens a corpus file and parses it into CorpusCases.
@@ -162,21 +206,26 @@ func LoadCorpus(path string) ([]CorpusCase, error) {
 // constants so the parser + the header-validation helpers share a single
 // source of truth and so unit tests can name them directly.
 const (
-	secName            = "name"
-	secQuery           = "query"
-	secEndpoint        = "endpoint"
-	secTraceIDTemplate = "traceid_template"
-	secTagName         = "tag_name"
-	secScope           = "scope"
-	secSkipReason      = "skip_reason"
-	secMinTraces       = "expected_min_traces"
-	secMaxTraces       = "expected_max_traces"
-	secMinValues       = "expected_min_values"
-	secMaxValues       = "expected_max_values"
-	secValues          = "expected_values"
-	secScopes          = "expected_scopes"
-	secServices        = "expected_services"
-	secRootNameRE      = "expected_root_name_re"
+	secName             = "name"
+	secQuery            = "query"
+	secEndpoint         = "endpoint"
+	secTraceIDTemplate  = "traceid_template"
+	secTagName          = "tag_name"
+	secScope            = "scope"
+	secStep             = "step"
+	secSkipReason       = "skip_reason"
+	secMinTraces        = "expected_min_traces"
+	secMaxTraces        = "expected_max_traces"
+	secMinValues        = "expected_min_values"
+	secMaxValues        = "expected_max_values"
+	secValues           = "expected_values"
+	secScopes           = "expected_scopes"
+	secServices         = "expected_services"
+	secRootNameRE       = "expected_root_name_re"
+	secMinSeries        = "expected_min_series"
+	secMaxSeries        = "expected_max_series"
+	secSamplesPerSeries = "expected_samples_per_series"
+	secSemanticChecks   = "semantic_checks"
 )
 
 // stripCommentLines returns the body with comment-only lines (`# ...`
@@ -215,6 +264,8 @@ func applySection(cur *CorpusCase, section, body string) error {
 		cur.TagName = body
 	case secScope:
 		cur.Scope = body
+	case secStep:
+		cur.Step = body
 	case secSkipReason:
 		cur.SkipReason = body
 	case secMinTraces:
@@ -240,6 +291,14 @@ func applySection(cur *CorpusCase, section, body string) error {
 			return fmt.Errorf("expected_root_name_re: compile %q: %w", body, err)
 		}
 		cur.ExpectedRootNameRE = re
+	case secMinSeries:
+		return applyIntSection(body, "expected_min_series", &cur.ExpectedMinSeries)
+	case secMaxSeries:
+		return applyIntSection(body, "expected_max_series", &cur.ExpectedMaxSeries)
+	case secSamplesPerSeries:
+		return applyIntSection(body, "expected_samples_per_series", &cur.ExpectedSamplesPerSeries)
+	case secSemanticChecks:
+		appendNonEmptyLines(body, &cur.SemanticChecks)
 	}
 	return nil
 }
@@ -247,7 +306,8 @@ func applySection(cur *CorpusCase, section, body string) error {
 // appendNonEmptyLines splits `body` on newlines and appends every
 // trimmed non-empty line to `*dst`. Pulled out so the multi-line
 // subset assertions (expected_services / expected_values /
-// expected_scopes) share one parse path instead of three near-duplicates.
+// expected_scopes / semantic_checks) share one parse path instead of
+// four near-duplicates.
 func appendNonEmptyLines(body string, dst *[]string) {
 	if body == "" {
 		return
@@ -285,9 +345,10 @@ func validateCase(cur CorpusCase, ord int) (CorpusCase, error) {
 	}
 	switch cur.Endpoint {
 	case "search", "search_recent", "traces",
-		"tags_v1", "tags_v2", "tag_values_v1", "tag_values_v2":
+		"tags_v1", "tags_v2", "tag_values_v1", "tag_values_v2",
+		"metrics_range", "metrics_instant":
 	default:
-		return cur, fmt.Errorf("case %q: unknown endpoint %q (want search | search_recent | traces | tags_v1 | tags_v2 | tag_values_v1 | tag_values_v2)", cur.Name, cur.Endpoint)
+		return cur, fmt.Errorf("case %q: unknown endpoint %q (want search | search_recent | traces | tags_v1 | tags_v2 | tag_values_v1 | tag_values_v2 | metrics_range | metrics_instant)", cur.Name, cur.Endpoint)
 	}
 	if cur.Endpoint == "traces" && cur.TraceIDTemplate == "" {
 		return cur, fmt.Errorf("case %q: endpoint=traces requires -- traceid_template --", cur.Name)
@@ -297,6 +358,9 @@ func validateCase(cur CorpusCase, ord int) (CorpusCase, error) {
 	}
 	if cur.Scope != "" && cur.Endpoint != "tags_v2" {
 		return cur, fmt.Errorf("case %q: -- scope -- is only valid for endpoint=tags_v2 (got %s)", cur.Name, cur.Endpoint)
+	}
+	if cur.Endpoint == "metrics_range" && cur.Step == "" && cur.SkipReason == "" {
+		return cur, fmt.Errorf("case %q: endpoint=metrics_range requires -- step -- (e.g. \"60s\")", cur.Name)
 	}
 	return cur, nil
 }
@@ -317,9 +381,10 @@ func isTagEndpoint(ep string) bool {
 func isKnownSection(name string) bool {
 	switch name {
 	case secQuery, secEndpoint, secTraceIDTemplate, secTagName, secScope,
-		secSkipReason,
+		secStep, secSkipReason,
 		secMinTraces, secMaxTraces, secMinValues, secMaxValues,
-		secValues, secScopes, secServices, secRootNameRE:
+		secValues, secScopes, secServices, secRootNameRE,
+		secMinSeries, secMaxSeries, secSamplesPerSeries, secSemanticChecks:
 		return true
 	}
 	return false

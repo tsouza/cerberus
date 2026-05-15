@@ -1,8 +1,11 @@
-# Tempo / TraceQL compatibility smoke corpus (PR 4).
+# Tempo / TraceQL compatibility smoke corpus.
 #
-# Lifted-and-adapted from harness/prometheus-compliance/shadow/
-# traceql_shadow_test.go::traceqlInstantCases() (~20 hand-translated
-# cases). The shadow test runs the SAME 20 categories against a fake
+# PR 4 lifted-and-adapted the cases from harness/prometheus-compliance/
+# shadow/traceql_shadow_test.go::traceqlInstantCases(). PR 5 extends the
+# corpus with /api/metrics/query_range + /api/metrics/query cases and
+# adds the semantic-consistency layer (see differ.go::SemanticConsistency).
+#
+# The shadow test runs the SAME 20 search categories against a fake
 # in-process span set; this corpus runs the SAME categories against
 # real Tempo + real cerberus, fed by harness/.../driver/seeder.go's
 # deterministic OTLP push.
@@ -27,11 +30,16 @@
 #   * Numeric fields compare under 1e-9 relative epsilon.
 #   * Cardinality is reported as a reason but every key-level miss is
 #     also surfaced under missing_in_a / missing_in_b.
+#   * Metrics-endpoint cases canonicalise series by label-set hash; the
+#     differ also runs semantic-consistency assertions per backend
+#     (avg ≡ sum/count, exemplars belong to their parent series).
 #
-# Cases below cover the 7 shadow categories: attribute matchers per
+# Cases below cover the 7 shadow categories (attribute matchers per
 # scope (5), intrinsics (4), structural ops (4), set ops (3), inner
-# aggregates (2), and metrics pipeline (2). PR 5 will flip the metrics
-# pipeline cases from `skip_reason` to active.
+# aggregates (2)) plus 6 metrics-pipeline cases (3 range + 3 instant)
+# and a per-id smoke. Total: 25 cases, of which 4 carry `skip_reason`
+# (the three instant ones — pending cerberus /api/metrics/query —
+# plus the per-id smoke when the seeder fixture is absent).
 
 # --- Attribute matchers per scope (5) ---
 
@@ -250,29 +258,107 @@ search
 -- expected_max_traces --
 500
 
-# --- MetricsPipeline (2) — DEFERRED to PR 5 ---
-# These are wire-shape-different from /api/search (they hit
-# /api/metrics/query_range and return Prom-shape series). Listed here
-# so the smoke set documents the eventual full coverage map; the
-# differ skips them by checking SkipReason.
+# --- Metrics pipeline: /api/metrics/query_range (3) ---
+# These hit cerberus's /api/metrics/query_range (implemented today —
+# see internal/api/tempo/metrics_query_range.go) and Tempo's native
+# /api/metrics/query_range. The wire shape is `{series:[{labels,
+# samples}]}`; the differ canonicalises series by label-set hash and
+# diffs samples under 1e-9 relative epsilon.
+#
+# The `step=60s` window is generous: the fixture spans only ~400s
+# after the anchor, so 60s buckets give us 7 anchors across the
+# query window. The semantic-consistency checks (see SemanticChecks)
+# run alongside the structural diff.
 
 -- name --
-metrics_rate_over_status_error
+metrics_rate_no_groupby
 -- query --
-{ status = error } | rate()
+{ } | rate()
 -- endpoint --
-search
--- skip_reason --
-metrics endpoint — lands in PR 5 (docs/tempo-compliance-plan.md)
+metrics_range
+-- step --
+60s
+-- expected_min_series --
+1
+-- expected_max_series --
+50
+-- expected_samples_per_series --
+1
+-- semantic_checks --
+samples_non_negative
+labels_match_query
 
 -- name --
-metrics_quantile_p95_duration
+metrics_count_over_time_groupby_service
 -- query --
-{ duration > 0 } | quantile_over_time(duration, .95)
+{ } | count_over_time() by (resource.service.name)
 -- endpoint --
-search
+metrics_range
+-- step --
+60s
+-- expected_min_series --
+1
+-- expected_max_series --
+50
+-- semantic_checks --
+samples_non_negative
+groupby_labels_present:resource.service.name
+
+-- name --
+metrics_quantile_over_time_p95
+-- query --
+{ } | quantile_over_time(duration, 0.95)
+-- endpoint --
+metrics_range
+-- step --
+60s
+-- expected_min_series --
+1
+-- expected_max_series --
+50
+-- semantic_checks --
+samples_non_negative
+
+# --- Metrics pipeline: /api/metrics/query (instant — 3) ---
+# Instant variant of the range queries above. Cerberus does not yet
+# implement /api/metrics/query (see internal/api/tempo/handler.go::
+# Mount — only query_range is registered today). These cases are
+# parsed and shipped so the corpus is the single source of truth for
+# the eventual full matrix; the differ skips them via skip_reason
+# until cerberus's /api/metrics/query handler lands.
+#
+# When the handler lands, a follow-up PR removes the skip_reason and
+# the differ exercises both backends' instant responses against the
+# range-vs-instant cross-check (instant ≡ aggregate over the range).
+
+-- name --
+metrics_rate_instant
+-- query --
+{ } | rate()
+-- endpoint --
+metrics_instant
 -- skip_reason --
-metrics endpoint — lands in PR 5 (docs/tempo-compliance-plan.md)
+cerberus /api/metrics/query handler pending (handler.go registers
+only /api/metrics/query_range today); corpus documents the eventual
+shape so the file remains the single source of truth
+
+-- name --
+metrics_count_over_time_instant
+-- query --
+{ } | count_over_time()
+-- endpoint --
+metrics_instant
+-- skip_reason --
+cerberus /api/metrics/query handler pending; see metrics_rate_instant
+
+-- name --
+metrics_avg_over_time_instant
+-- query --
+{ } | avg_over_time(duration)
+-- endpoint --
+metrics_instant
+-- skip_reason --
+cerberus /api/metrics/query handler pending; see metrics_rate_instant
 
 # --- Per-id smoke (1) ---
 # Doesn't map back to a shadow case (the shadow tests evaluate against

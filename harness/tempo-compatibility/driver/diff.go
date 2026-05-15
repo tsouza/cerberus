@@ -56,11 +56,14 @@ func runDiff(args []string) error {
 	if err != nil {
 		return fmt.Errorf("load corpus: %w", err)
 	}
-	if len(cases) < 20 {
+	if len(cases) < 25 {
 		// Same shape as harness/.../shadow/traceql_shadow_test.go's
-		// `len(cases) < 20` guard — protects against a corpus author
-		// accidentally trimming the smoke set below the agreed floor.
-		return fmt.Errorf("smoke corpus shrunk: got %d cases, want >= 20", len(cases))
+		// guard — protects against a corpus author accidentally trimming
+		// the smoke set below the agreed floor. PR 4 set the floor at
+		// 20; PR 5 bumped to 25 after adding three metrics_range + three
+		// metrics_instant cases. Future PRs (tag endpoints, etc.) raise
+		// the floor in lock-step.
+		return fmt.Errorf("smoke corpus shrunk: got %d cases, want >= 25", len(cases))
 	}
 	logger.Info("loaded corpus", "path", *corpusPath, "cases", len(cases))
 
@@ -202,12 +205,12 @@ func diffCase(ctx context.Context, client *http.Client, tc CorpusCase, opts case
 	// Per-side assertions first. They are cheap and surface
 	// "cerberus returned 0 rows where corpus said >=N" before the
 	// diff complains about cardinality.
-	tempoReasons, err := AssertCase(tc, tempoBody, "tempo")
+	tempoReasons, err := assertCaseForEndpoint(tc, tempoBody, "tempo")
 	if err != nil {
 		res.HardError = fmt.Sprintf("assert tempo: %v", err)
 		return res
 	}
-	cerbReasons, err := AssertCase(tc, cerbBody, "cerberus")
+	cerbReasons, err := assertCaseForEndpoint(tc, cerbBody, "cerberus")
 	if err != nil {
 		res.HardError = fmt.Sprintf("assert cerberus: %v", err)
 		return res
@@ -215,14 +218,39 @@ func diffCase(ctx context.Context, client *http.Client, tc CorpusCase, opts case
 	res.Assertions = append(res.Assertions, tempoReasons...)
 	res.Assertions = append(res.Assertions, cerbReasons...)
 
+	// Semantic-consistency layer (PR 5). Runs per-backend invariants
+	// declared on the corpus case (e.g. "samples_non_negative",
+	// "groupby_labels_present:resource.service.name") against each
+	// side's parsed metrics body. This catches the failure mode the
+	// plan calls out: "both backends are wrong but in different ways"
+	// — the structural diff stays Equal because both backends produced
+	// the same wrong shape, but the semantic check fails because the
+	// shape itself violates the invariant.
+	if len(tc.SemanticChecks) > 0 && (tc.Endpoint == "metrics_range" || tc.Endpoint == "metrics_instant") {
+		tempoSem, err := RunSemanticChecks(tc, tempoBody, "tempo")
+		if err != nil {
+			res.HardError = fmt.Sprintf("semantic tempo: %v", err)
+			return res
+		}
+		cerbSem, err := RunSemanticChecks(tc, cerbBody, "cerberus")
+		if err != nil {
+			res.HardError = fmt.Sprintf("semantic cerberus: %v", err)
+			return res
+		}
+		res.Assertions = append(res.Assertions, tempoSem...)
+		res.Assertions = append(res.Assertions, cerbSem...)
+	}
+
 	// Differential diff. The case sets some upper bound on what we
 	// can expect to agree on; the structural diff is independent.
 	// Dispatch by endpoint kind: trace endpoints use the SearchResponse
 	// canonical-key diff; the four tag endpoints diff the string-list
 	// envelope; tag-values v2 additionally checks the Type field per
-	// matched value. Keeping the dispatch here (vs threading a closure
-	// through every helper) keeps the runtime branches local to where
-	// the response shapes diverge.
+	// matched value; metrics endpoints use CompareMetrics. All shapes
+	// share the Diff result type so the report renderer doesn't need a
+	// per-shape branch. Keeping the dispatch here (vs threading a
+	// closure through every helper) keeps the runtime branches local to
+	// where the response shapes diverge.
 	d, err := compareForEndpoint(tc, tempoBody, cerbBody)
 	if err != nil {
 		res.HardError = fmt.Sprintf("diff: %v", err)
@@ -232,12 +260,26 @@ func diffCase(ctx context.Context, client *http.Client, tc CorpusCase, opts case
 	return res
 }
 
+// assertCaseForEndpoint dispatches to AssertCase (search / tag shapes)
+// or AssertMetricsCase (metrics shape) based on the corpus endpoint.
+// Pulled out of diffCase to keep that function under funlen.
+func assertCaseForEndpoint(tc CorpusCase, body []byte, backendLabel string) ([]DiffReason, error) {
+	switch tc.Endpoint {
+	case "metrics_range", "metrics_instant":
+		return AssertMetricsCase(tc, body, backendLabel)
+	default:
+		return AssertCase(tc, body, backendLabel)
+	}
+}
+
 // compareForEndpoint runs the right structural-diff function for the
 // case's endpoint kind. The four tag endpoints share `CompareTagNames`
 // (envelope is a flat string set on V1 + a flatten-the-scopes view on
 // V2) and `CompareTagValues` (envelope is a flat list on V1, typed
 // objects on V2 — the differ unifies on the `Value` field and reports
-// `Type` mismatches as field_mismatch reasons).
+// `Type` mismatches as field_mismatch reasons). Metrics endpoints use
+// `CompareMetrics`; everything else falls back to the search-shape
+// `Compare`.
 func compareForEndpoint(tc CorpusCase, tempoBody, cerbBody []byte) (Diff, error) {
 	switch tc.Endpoint {
 	case "tags_v1":
@@ -248,6 +290,8 @@ func compareForEndpoint(tc CorpusCase, tempoBody, cerbBody []byte) (Diff, error)
 		return CompareTagValues(tempoBody, cerbBody, "tempo", "cerberus", false)
 	case "tag_values_v2":
 		return CompareTagValues(tempoBody, cerbBody, "tempo", "cerberus", true)
+	case "metrics_range", "metrics_instant":
+		return CompareMetrics(tempoBody, cerbBody, "tempo", "cerberus", DefaultDiffOptions())
 	default:
 		return Compare(tempoBody, cerbBody, "tempo", "cerberus", DefaultDiffOptions())
 	}
@@ -255,6 +299,14 @@ func compareForEndpoint(tc CorpusCase, tempoBody, cerbBody []byte) (Diff, error)
 
 // buildURL composes the per-endpoint URL for a corpus case. The
 // `backend` argument is purely for error messages.
+//
+// Metrics endpoints (metrics_range + metrics_instant) match Tempo's
+// reference shape — `q` is the TraceQL metrics-pipeline expression,
+// `start` / `end` are unix seconds, `step` is the bucket size (only
+// for query_range), and `exemplars` would gate exemplar emission if
+// the corpus ever needs to bound it (today we leave it unset so each
+// backend returns its default exemplar count and the differ tolerates
+// the divergence under the relative epsilon).
 func buildURL(base string, tc CorpusCase, backend string, startTS, endTS time.Time, searchLimit int) (string, error) {
 	u, err := url.Parse(strings.TrimRight(base, "/"))
 	if err != nil {
@@ -294,6 +346,20 @@ func buildURL(base string, tc CorpusCase, backend string, startTS, endTS time.Ti
 		q.Set("end", fmt.Sprintf("%d", endTS.Unix()))
 	case "tag_values_v2":
 		u.Path += "/api/v2/search/tag/" + tc.TagName + "/values"
+		q.Set("start", fmt.Sprintf("%d", startTS.Unix()))
+		q.Set("end", fmt.Sprintf("%d", endTS.Unix()))
+	case "metrics_range":
+		u.Path += "/api/metrics/query_range"
+		q.Set("q", tc.Query)
+		q.Set("start", fmt.Sprintf("%d", startTS.Unix()))
+		q.Set("end", fmt.Sprintf("%d", endTS.Unix()))
+		if tc.Step == "" {
+			return "", fmt.Errorf("%s: case %q endpoint=metrics_range needs Step", backend, tc.Name)
+		}
+		q.Set("step", tc.Step)
+	case "metrics_instant":
+		u.Path += "/api/metrics/query"
+		q.Set("q", tc.Query)
 		q.Set("start", fmt.Sprintf("%d", startTS.Unix()))
 		q.Set("end", fmt.Sprintf("%d", endTS.Unix()))
 	default:
