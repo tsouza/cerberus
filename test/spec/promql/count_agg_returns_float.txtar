@@ -1,0 +1,49 @@
+# count(<metric>) over a chDB-seeded gauge must scan cleanly into
+# chclient.Sample.Value (*float64). CH's `count(...)` aggregate
+# returns UInt64; without the chsql/emit_node.go toFloat64 wrap on
+# the plain Aggregate path, clickhouse-go/v2 refuses the coercion
+# at scan time (`converting UInt64 to *float64 is unsupported`) and
+# the prom handler surfaces it as a 502. This is the compat-lane
+# `count(demo_memory_usage_bytes)` 502 made deterministic.
+#
+# Three seeded label-different rows; count(...) collapses them to a
+# single scalar value of 3.0. The matrix path (range_window.go) was
+# already wrapping every reducer in toFloat64; this fixture pins
+# the matching wrap on the plain Aggregate path.
+
+-- query.promql --
+count(demo_memory_usage_bytes)
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('demo_memory_usage_bytes', map('job', 'api', 'instance', 'a'), toDateTime64('2026-01-01 00:00:00', 9), 1024.0),
+    ('demo_memory_usage_bytes', map('job', 'api', 'instance', 'b'), toDateTime64('2026-01-01 00:00:00', 9), 2048.0),
+    ('demo_memory_usage_bytes', map('job', 'db',  'instance', 'a'), toDateTime64('2026-01-01 00:00:00', 9), 4096.0);
+-- expected_rows --
+[
+  ["", {}, "2026-01-01T00:00:01Z", 3.0]
+]
+-- args --
+[0] string = ""
+[1] string = "Map(String,String)"
+[2] int64 = 9
+[3] string = "demo_memory_usage_bytes"
+[4] string = "2026-01-01 00:00:01.000000000"
+[5] int64 = 9
+[6] string = "2026-01-01 00:00:01.000000000"
+[7] int64 = 9
+[8] int64 = 300000000000
+-- chplan --
+Project ["" AS MetricName, CAST(map(), "Map(String,String)") AS Attributes, now64(9) AS TimeUnix, Value AS Value]
+  Aggregate groupBy=[] funcs=[count(Value) AS Value]
+    Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
+      Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
+        Filter predicate=(((MetricName = "demo_memory_usage_bytes") AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+          Scan(otel_metrics_gauge)
+-- sql --
+SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Value` FROM (SELECT toFloat64(count(`Value`)) AS `Value`, count() AS `_cerb_n` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_gauge` PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`))) WHERE `_cerb_n` > 0)

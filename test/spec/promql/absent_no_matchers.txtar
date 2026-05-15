@@ -51,4 +51,4 @@ Project ["" AS MetricName, CAST(map(), "Map(String,String)") AS Attributes, toDa
       Filter predicate=(MetricName = "nonexistent_metric_name")
         Scan(otel_metrics_gauge)
 -- sql --
-SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, toDateTime64(?, ?) AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT * FROM (SELECT count() AS `_cerb_n` FROM (SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` = ?))) WHERE (`_cerb_n` = ?))
+SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, toDateTime64(?, ?) AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT * FROM (SELECT toFloat64(count()) AS `_cerb_n` FROM (SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` = ?))) WHERE (`_cerb_n` = ?))
