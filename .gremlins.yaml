@@ -12,11 +12,11 @@ mutants:
     enabled: true
   invert-bitwise:
     enabled: true
-  invert-bitwise-assignments:
+  invert-bwassign:
     enabled: true
   invert-logical:
     enabled: true
-  invert-loop-ctrl:
+  invert-loopctrl:
     enabled: true
   invert-negatives:
     enabled: true
@@ -44,6 +44,14 @@ excluded-files:
 #            internal/logql        @ 85% — was 65% (nightly: ~94%)
 #            internal/traceql      @ 85% — was 65% (nightly: 100%)
 #   Phase 5: internal/qlcommon     @ 75% — new (label_replace template)
+#
+# Note: the yaml keys `invert-bwassign` and `invert-loopctrl` above
+# match gremlins v0.6.0's `MutantTypeEnabledKey` derivation (lowercase
+# `mt.String()` with `_` → `-`). Earlier revisions of this file used
+# `invert-bitwise-assignments` / `invert-loop-ctrl`, which gremlins
+# silently ignored — those two mutators were defaults-off and thus
+# never ran. Both are now enabled, surfacing extra mutants for
+# `<<= |= &= ^=` and `break / continue` constructs.
 #
 # See `docs/test-strategy.md` § "Gremlins phased rollout" for the
 # rationale + the actual-vs-bar table.
