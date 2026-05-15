@@ -867,6 +867,16 @@ func tryStringLiteral(e parser.Expr) (string, bool) {
 // degenerate `without ()` case (empty Grouping) means "remove nothing",
 // equivalent to partitioning by the full Attributes map; emit a bare
 // ColumnRef so we don't render an empty IN-list (CH rejects that).
+//
+// Range mode (ctx.step > 0): PromQL's topk/bottomk selects K series
+// **per evaluation step**, not K across the whole time range. The inner
+// plan (`wrapRangeLatestPerSeries`) re-aliases the per-step anchor onto
+// `TimeUnix`, so by appending TimeUnix to the partition list the
+// emitter's `LIMIT K BY (<user-partition>, TimeUnix)` selects K rows
+// per anchor — matching Prom's per-step semantics. Without this thread,
+// `LIMIT K BY <user-partition>` collapses every (series, step) pair
+// into a single K-row global window and the matrix pivot loses every
+// step beyond the K-th overall.
 func lowerTopK(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	kF, ok := tryScalarLiteral(a.Param)
 	if !ok {
@@ -910,6 +920,15 @@ func lowerTopK(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chplan.
 				Key: &chplan.LitString{V: label},
 			})
 		}
+	}
+
+	// Range mode: thread the per-step anchor (TimeUnix re-aliased from
+	// anchor_ts by the inner wrapRangeLatestPerSeries) into the partition
+	// list so `LIMIT K BY (..., TimeUnix)` fires per anchor. The instant
+	// path (ctx.step == 0) keeps the original partition shape so the
+	// existing instant-mode fixtures stay byte-stable.
+	if ctx.step > 0 {
+		by = append(by, &chplan.ColumnRef{Name: s.TimestampColumn})
 	}
 
 	return &chplan.TopK{

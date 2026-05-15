@@ -1,0 +1,19 @@
+-- query.promql --
+topk without(instance) (5, demo_memory_usage_bytes)
+-- range_step --
+30s
+-- args --
+[0] string = "demo_memory_usage_bytes"
+[1] int64 = 300000000000
+[2] string = "instance"
+-- chplan --
+TopK k=5 sort=Value DESC by=[mapWithout(Attributes, [instance]), TimeUnix] columns=[MetricName, Attributes, TimeUnix, Value]
+  Project [MetricName AS MetricName, Attributes AS Attributes, anchor_ts AS TimeUnix, lwr_value AS Value]
+    Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes, anchor_ts AS anchor_ts] funcs=[argMax(Value, TimeUnix) AS lwr_value]
+      Filter predicate=((TimeUnix <= anchor_ts) AND (TimeUnix > (anchor_ts - toIntervalNanosecond(300000000000))))
+        CrossJoin
+          StepGrid start=2026-01-01T00:00:00.000000000Z end=2026-01-01T00:05:00.000000000Z step=30s
+          Filter predicate=(MetricName = "demo_memory_usage_bytes")
+            Scan(otel_metrics_gauge)
+-- sql --
+SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `anchor_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `anchor_ts` AS `anchor_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT * FROM (SELECT arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:00:00.000000000', 9) + toIntervalNanosecond(i * 30000000000), range(0, 11))) AS `anchor_ts`) AS L CROSS JOIN (SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` = ?)) AS R) WHERE ((`TimeUnix` <= `anchor_ts`) AND (`TimeUnix` > (`anchor_ts` - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`, `anchor_ts`)) ORDER BY `Value` DESC LIMIT 5 BY mapFilter((k, v) -> NOT (k IN (?)), `Attributes`), `TimeUnix`)
