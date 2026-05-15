@@ -373,3 +373,114 @@ func TestParseQuery_ChDB(t *testing.T) {
 		t.Errorf("unexpected parse data: %+v", parsed.Data)
 	}
 }
+
+// TestQuery_CountAgg_ReturnsFloat_ChDB pins the chsql/emit_node.go
+// toFloat64(count(...)) wrap for the plain Aggregate path. CH's
+// `count()` aggregate returns UInt64; chclient.Sample.Value scans as
+// `*float64`; clickhouse-go/v2 refuses the coercion at scan time and
+// the handler surfaces it as a 502. The matrix path (range_window.go)
+// has long wrapped every reducer in toFloat64; this regression test
+// guards the equivalent wrap on the plain Aggregate path so the
+// compat-lane `count(metric)` / `count by (...) (metric)` queries
+// stop 502'ing.
+//
+// The seed produces a vector with two label-different samples; the
+// outer query collapses them via `count(...)` into a single scalar of
+// 2.0. Without the toFloat64 wrap the handler returns 502.
+func TestQuery_CountAgg_ReturnsFloat_ChDB(t *testing.T) {
+	seedTime := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+	ts := seedTime.Format("2006-01-02 15:04:05.000")
+	seed := gaugeDDL + fmt.Sprintf(`
+INSERT INTO otel_metrics_gauge VALUES
+    ('demo_memory_usage_bytes', map('job', 'api'), toDateTime64('%s', 9), 1024.0),
+    ('demo_memory_usage_bytes', map('job', 'db'),  toDateTime64('%s', 9), 2048.0);`, ts, ts)
+
+	srv, _ := newChDBServer(t, seed)
+	resp, err := http.Get(fmt.Sprintf(
+		"%s/api/v1/query?query=count(demo_memory_usage_bytes)&time=%d",
+		srv.URL, seedTime.Unix()))
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("count(metric): status=%d body=%s", resp.StatusCode, body)
+	}
+	var parsed queryResponse
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v\nbody=%s", err, body)
+	}
+	if parsed.Status != "success" {
+		t.Fatalf("status=%q err=%s", parsed.Status, parsed.Error)
+	}
+	if parsed.Data.ResultType != "vector" {
+		t.Fatalf("resultType=%q, want vector", parsed.Data.ResultType)
+	}
+
+	rawResult, _ := json.Marshal(parsed.Data.Result)
+	var vec []prom.VectorSample
+	if err := json.Unmarshal(rawResult, &vec); err != nil {
+		t.Fatalf("decode vector: %v", err)
+	}
+	if len(vec) != 1 {
+		t.Fatalf("expected 1 series (count collapses all labels), got %d: %+v",
+			len(vec), vec)
+	}
+	if got := vec[0].Value[1]; got != "2" {
+		t.Errorf("count(metric) value: got %v, want \"2\"", got)
+	}
+}
+
+// TestQuery_CountAggBy_ReturnsFloat_ChDB is the `count by (...) (metric)`
+// variant — same wrap requirement, but the Aggregate carries a
+// GroupBy slot so the no-group fast path is bypassed and the regular
+// emitAggregate branch produces the SELECT.
+func TestQuery_CountAggBy_ReturnsFloat_ChDB(t *testing.T) {
+	seedTime := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+	ts := seedTime.Format("2006-01-02 15:04:05.000")
+	seed := gaugeDDL + fmt.Sprintf(`
+INSERT INTO otel_metrics_gauge VALUES
+    ('demo_memory_usage_bytes', map('job', 'api', 'instance', 'a'), toDateTime64('%s', 9), 1024.0),
+    ('demo_memory_usage_bytes', map('job', 'api', 'instance', 'b'), toDateTime64('%s', 9), 2048.0),
+    ('demo_memory_usage_bytes', map('job', 'db', 'instance', 'a'),  toDateTime64('%s', 9), 4096.0);`,
+		ts, ts, ts)
+
+	srv, _ := newChDBServer(t, seed)
+	resp, err := http.Get(fmt.Sprintf(
+		"%s/api/v1/query?query=count%%20by%%20(job)(demo_memory_usage_bytes)&time=%d",
+		srv.URL, seedTime.Unix()))
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("count by (job): status=%d body=%s", resp.StatusCode, body)
+	}
+	var parsed queryResponse
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v\nbody=%s", err, body)
+	}
+	if parsed.Status != "success" {
+		t.Fatalf("status=%q err=%s", parsed.Status, parsed.Error)
+	}
+
+	rawResult, _ := json.Marshal(parsed.Data.Result)
+	var vec []prom.VectorSample
+	if err := json.Unmarshal(rawResult, &vec); err != nil {
+		t.Fatalf("decode vector: %v", err)
+	}
+	if len(vec) != 2 {
+		t.Fatalf("expected 2 grouped series, got %d: %+v", len(vec), vec)
+	}
+	got := map[string]string{}
+	for _, v := range vec {
+		got[v.Metric["job"]] = fmt.Sprintf("%v", v.Value[1])
+	}
+	want := map[string]string{"api": "2", "db": "1"}
+	for job, w := range want {
+		if got[job] != w {
+			t.Errorf("count by (job) for job=%q: got %q, want %q",
+				job, got[job], w)
+		}
+	}
+}

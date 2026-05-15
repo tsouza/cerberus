@@ -424,10 +424,34 @@ func (e *emitter) emitAggregateNoGroup(a *chplan.Aggregate, sub Frag) error {
 	return nil
 }
 
+// intReturningAggregates names the CH aggregates whose natural return
+// type is integer (UInt64 for `count`/`countIf`). The plain Aggregate
+// path projects these into the `Value` column, which the prom/loki
+// cursor scans as `*float64`; clickhouse-go/v2 refuses to coerce
+// UInt64 → *float64 at Scan time and the call surfaces as a 502
+// (`converting UInt64 to *float64 is unsupported`). The matrix path
+// has long wrapped each reducer in `toFloat64(...)` (see
+// chsql/range_window.go::metricsReducerFrag); aggFuncFrag here is the
+// equivalent guard for the instant/aggregate path.
+//
+// `sum`/`min`/`max`/`avg` over the OTel `Value` column (Float64) stay
+// Float64 in CH, so they don't need the wrap. If cerberus ever
+// projects `sum(Duration)` (an Int64 column) we'd need to expand this
+// set — for the metric tables in use today only the count() family
+// breaks the scan.
+var intReturningAggregates = map[string]bool{
+	"count":   true,
+	"countIf": true,
+}
+
 // aggFuncFrag returns a Frag rendering `<name>[(<params>)](<args>) [AS <alias>]`
 // via Builder.ParamAgg + As. The expression-render errors surface from
 // the pre-flight loop in emitAggregate before the Frag ever runs, so the
 // rendering path here is infallible.
+//
+// Aggregates whose CH return type is integer (see intReturningAggregates)
+// are wrapped in `toFloat64(...)` so the resulting column scans cleanly
+// into chclient.Sample.Value (`*float64`).
 func aggFuncFrag(af chplan.AggFunc) Frag {
 	mkExpr := func(x chplan.Expr) func(b *Builder) {
 		return func(b *Builder) { _ = b.Expr(x) }
@@ -441,6 +465,14 @@ func aggFuncFrag(af chplan.AggFunc) Frag {
 		args = append(args, mkExpr(a))
 	}
 	body := func(b *Builder) { b.ParamAgg(af.Name, params, args) }
+	if intReturningAggregates[af.Name] {
+		inner := body
+		body = func(b *Builder) {
+			b.sb.WriteString("toFloat64(")
+			inner(b)
+			b.sb.WriteByte(')')
+		}
+	}
 	return As(body, af.Alias)
 }
 

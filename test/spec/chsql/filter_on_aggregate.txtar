@@ -1,5 +1,5 @@
 -- sql --
-SELECT * FROM (SELECT `Attributes`, count(?) AS `Value` FROM (SELECT * FROM `otel_metrics_gauge`) GROUP BY `Attributes`) WHERE (`Value` > ?)
+SELECT * FROM (SELECT `Attributes`, toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_metrics_gauge`) GROUP BY `Attributes`) WHERE (`Value` > ?)
 -- args --
 [0] int64 = 1
 [1] int64 = 0

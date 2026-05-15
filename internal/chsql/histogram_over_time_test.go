@@ -35,9 +35,11 @@ func TestEmitMetricsHistogramOverTimeBare(t *testing.T) {
 	if !strings.Contains(sql, "log2(`Duration`) / 1000000000 AS `__bucket`") {
 		t.Errorf("expected `log2(Duration) / 1e9 AS __bucket`, SQL=%s", sql)
 	}
-	// count(1) AS Value reducer.
-	if !strings.Contains(sql, "count(?) AS `Value`") {
-		t.Errorf("expected `count(?) AS Value`, SQL=%s", sql)
+	// count(1) AS Value reducer (wrapped in toFloat64 so the column
+	// scans into chclient.Sample.Value's *float64 — clickhouse-go/v2
+	// refuses UInt64 → *float64; see chsql/emit_node.go::aggFuncFrag).
+	if !strings.Contains(sql, "toFloat64(count(?)) AS `Value`") {
+		t.Errorf("expected `toFloat64(count(?)) AS Value`, SQL=%s", sql)
 	}
 	// <attr> >= 2 drop filter.
 	if !strings.Contains(sql, "`Duration` >= 2") {
@@ -145,8 +147,9 @@ func TestEmitRangeWindowHistogramMatrix(t *testing.T) {
 	if !strings.Contains(sql, "log2(`Duration`) / 1000000000 AS `__bucket`") {
 		t.Errorf("expected bucket key in inner SELECT, SQL=%s", sql)
 	}
-	if !strings.Contains(sql, "count(?) AS `Value`") {
-		t.Errorf("expected count(1) reducer in outer SELECT, SQL=%s", sql)
+	// count(1) reducer wrapped in toFloat64 — see the bare-emission test.
+	if !strings.Contains(sql, "toFloat64(count(?)) AS `Value`") {
+		t.Errorf("expected toFloat64(count(1)) reducer in outer SELECT, SQL=%s", sql)
 	}
 	// Outer GROUP BY includes both bucket and anchor.
 	if !strings.Contains(sql, "GROUP BY `__bucket`, `anchor_ts`") {

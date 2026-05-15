@@ -1,7 +1,7 @@
 -- query.traceql --
 {} | rate() by (resource.service.name, span.kind, span.http.method)
 -- sql --
-SELECT `ResourceAttributes`[?] AS `service.name`, `SpanAttributes`[?] AS `kind`, `SpanAttributes`[?] AS `http.method`, count(?) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?) GROUP BY `ResourceAttributes`[?], `SpanAttributes`[?], `SpanAttributes`[?]
+SELECT `ResourceAttributes`[?] AS `service.name`, `SpanAttributes`[?] AS `kind`, `SpanAttributes`[?] AS `http.method`, toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?) GROUP BY `ResourceAttributes`[?], `SpanAttributes`[?], `SpanAttributes`[?]
 -- args --
 [0] string = "service.name"
 [1] string = "kind"
