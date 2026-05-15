@@ -474,6 +474,222 @@ func TestQueryRange_RangeMode_VVOnComparison_ChDB(t *testing.T) {
 	}
 }
 
+// TestQueryRange_RangeMode_QuantileOverTime_ChDB pins
+// `quantile_over_time(phi, metric[range])` under query_range. The
+// `quantile_over_time` lowering routes through `lowerQuantileOverTime`
+// (parameterised first arg) rather than the generic
+// `lowerRangeVectorCall`; the matrix-fan-out gate landed via Pool-AM
+// (#348). This test pins the per-anchor matrix fan-out so any future
+// regression in the gate surfaces immediately rather than at compat
+// time. Pre-Pool-AM cerberus emitted `now64(9)` for every anchor and
+// the matrix pivot collapsed to a single row per series — surfaced
+// as 42 compatibility-lane diffs across the {phi, range} variant
+// grid (Pool-AI's `quantile_over_time(*, demo_memory_usage_bytes[*])`
+// family).
+//
+// Seeded: a single demo_memory_usage_bytes sample per step (every
+// 30s). The 5-minute window holds an increasing number of samples as
+// we advance through the step grid, so a `quantile(0.5)` over each
+// window produces a strictly monotonic series. A regression where
+// the matrix path stayed dormant would surface as either a single
+// repeated value (one anchor at end_ts) or all-zero rows.
+func TestQueryRange_RangeMode_QuantileOverTime_ChDB(t *testing.T) {
+	end := time.Now().UTC()
+	start := end.Add(-5 * time.Minute)
+	step := 30 * time.Second
+	const seedSamples = 11
+
+	seedRows := make([]string, 0, seedSamples)
+	for i := 0; i < seedSamples; i++ {
+		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
+		seedRows = append(seedRows, fmt.Sprintf(
+			`('demo_memory_usage_bytes', map('job', 'api'), toDateTime64('%s', 9), %d.0)`,
+			ts, 100+i,
+		))
+	}
+	seed := gaugeDDL + "\nINSERT INTO otel_metrics_gauge VALUES\n  " +
+		strings.Join(seedRows, ",\n  ") + ";"
+	srv, _ := newChDBServer(t, seed)
+
+	matrix := runRangeModeQueryRange(t, srv.URL,
+		"quantile_over_time(0.5, demo_memory_usage_bytes[5m])", start, end, step)
+	if len(matrix) == 0 {
+		t.Fatalf("expected at least 1 series; got 0")
+	}
+	values := matrix[0].Values
+	// Pre-Pool-AM the matrix path stayed dormant — assert per-step
+	// fan-out (>= 5 distinct anchor rows). Single-row regressions
+	// (Step=0, OuterRange=0 collapse) surface as `len(values) == 1`.
+	if got := len(values); got < 5 {
+		t.Fatalf("expected per-step quantile_over_time matrix (>= 5 samples); got %d: %+v",
+			got, values)
+	}
+	// As each anchor's lookback adds one more high-end sample, the
+	// median moves monotonically upward. All-equal values would
+	// indicate the matrix path is still emitting `now64(9)` for
+	// every anchor and folding to one sample.
+	first := values[0][1]
+	last := values[len(values)-1][1]
+	if first == last {
+		t.Errorf("expected per-step variation across the matrix; got first=last=%q (full row: %+v)",
+			first, values)
+	}
+}
+
+// TestQueryRange_RangeMode_QuantileOverTimeOutOfRange_ChDB pins the
+// out-of-range phi compat-lane shapes (phi=-0.5 → -Inf, phi=1.5 →
+// +Inf) under query_range. Pool-D / Pool-V (PR #322 + #328) folded
+// the out-of-range phi to a value-rewrite Project on top of the
+// RangeWindow; Pool-AM (#348) threads the request's step / OuterRange
+// onto that RangeWindow so the value-rewrite + anchor_ts forwarding
+// both land on every per-step row.
+//
+// The post-Project replaces Value with ±Inf; the per-step row count
+// should match the valid-phi control case (data structure is
+// identical, only the Value scalar changes). chDB renders ±Inf as
+// `-Inf` / `+Inf` via the `(±1.0/0)` inline forms.
+func TestQueryRange_RangeMode_QuantileOverTimeOutOfRange_ChDB(t *testing.T) {
+	end := time.Now().UTC()
+	start := end.Add(-5 * time.Minute)
+	step := 30 * time.Second
+	const seedSamples = 11
+
+	seedRows := make([]string, 0, seedSamples)
+	for i := 0; i < seedSamples; i++ {
+		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
+		seedRows = append(seedRows, fmt.Sprintf(
+			`('demo_memory_usage_bytes', map('job', 'api'), toDateTime64('%s', 9), %d.0)`,
+			ts, 100+i,
+		))
+	}
+	seed := gaugeDDL + "\nINSERT INTO otel_metrics_gauge VALUES\n  " +
+		strings.Join(seedRows, ",\n  ") + ";"
+	srv, _ := newChDBServer(t, seed)
+
+	matrix := runRangeModeQueryRange(t, srv.URL,
+		"quantile_over_time(-0.5, demo_memory_usage_bytes[5m])", start, end, step)
+	if len(matrix) == 0 {
+		t.Fatalf("expected at least 1 series for phi=-0.5; got 0")
+	}
+	values := matrix[0].Values
+	if got := len(values); got < 5 {
+		t.Fatalf("expected per-step matrix for out-of-range phi (>= 5 samples); got %d: %+v",
+			got, values)
+	}
+	// Every row's Value should render as -Inf — chDB matches Prom's
+	// JSON wire format and emits "-Inf" for math.Inf(-1).
+	for i, v := range values {
+		if got := v[1]; got != "-Inf" {
+			t.Errorf("step %d: value=%q want=-Inf (full row: %+v)", i, got, v)
+		}
+	}
+}
+
+// TestQueryRange_RangeMode_Clamp_ChDB pins
+// `clamp(metric, min, max)` under query_range. The bare-selector
+// inner is the per-step LWR Project (canonical 4-column shape) and
+// `projectValueOverInner` wraps it with another canonical Project
+// that re-writes Value with greatest(min, least(max, Value)). The
+// per-step TimeUnix passes through both Project layers via bare
+// ColumnRef references, so each anchor emits its own row.
+//
+// Seeded: 11 samples spaced by step, values 100..110. Min=105,
+// max=108 should clamp each step's value into [105, 108].
+func TestQueryRange_RangeMode_Clamp_ChDB(t *testing.T) {
+	end := time.Now().UTC()
+	start := end.Add(-5 * time.Minute)
+	step := 30 * time.Second
+	const seedSamples = 11
+
+	seedRows := make([]string, 0, seedSamples)
+	for i := 0; i < seedSamples; i++ {
+		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
+		seedRows = append(seedRows, fmt.Sprintf(
+			`('demo_memory_usage_bytes', map('job', 'api'), toDateTime64('%s', 9), %d.0)`,
+			ts, 100+i,
+		))
+	}
+	seed := gaugeDDL + "\nINSERT INTO otel_metrics_gauge VALUES\n  " +
+		strings.Join(seedRows, ",\n  ") + ";"
+	srv, _ := newChDBServer(t, seed)
+
+	matrix := runRangeModeQueryRange(t, srv.URL,
+		"clamp(demo_memory_usage_bytes, 105, 108)", start, end, step)
+	if len(matrix) != 1 {
+		t.Fatalf("expected exactly 1 series, got %d: %+v", len(matrix), matrix)
+	}
+	values := matrix[0].Values
+	// Pin "per-step fan-out fires" rather than an exact count — the
+	// helper truncates start/end to second resolution via `.Unix()`,
+	// so seed rows anchored on `time.Now()` (nanosecond resolution)
+	// can land just outside the request grid's earliest step.
+	// Pre-Pool-AK cerberus collapsed clamp to a single anchor when the
+	// inner per-step LWR was bypassed — surfaced as `len(values) == 1`.
+	if got := len(values); got < 5 {
+		t.Fatalf("expected per-step clamp matrix (>= 5 samples); got %d: %+v",
+			got, values)
+	}
+	// Values 100..110 clamped to [105, 108]:
+	//   100..104 → 105, 105..108 → unchanged, 109..110 → 108.
+	// Assert each clamped row falls inside the [105, 108] band and
+	// the series carries both bound-hits (min-clamped + max-clamped)
+	// in distinct rows — proves the per-step rewrite fires.
+	seenMin, seenMax := false, false
+	for i, v := range values {
+		raw := v[1]
+		switch raw {
+		case "105":
+			seenMin = true
+		case "108":
+			seenMax = true
+		case "106", "107":
+			// inside band, fine
+		default:
+			t.Errorf("step %d: value=%q outside [105, 108] band (full row: %+v)", i, raw, v)
+		}
+	}
+	if !seenMin || !seenMax {
+		t.Errorf("expected the clamped matrix to hit both bounds; seenMin=%v seenMax=%v (full row: %+v)",
+			seenMin, seenMax, values)
+	}
+}
+
+// TestQueryRange_RangeMode_ClampInverted_ChDB pins Prom's "empty when
+// maxVal < minVal" semantic on `clamp(metric, large, small)`. Prom's
+// funcClamp short-circuits to an empty Vector when `maxVal < minVal`
+// (see prometheus/promql/functions.go::clamp). Pre-Pool-AM, cerberus
+// emitted `greatest(min, least(max, Value))` which would force every
+// sample to `min` (a constant). Pool-AM detects degenerate bounds at
+// lowering and wraps the inner tree with a `Filter(LitBool{false})`
+// so no rows survive to the matrix pivot. Surfaced as the compat-
+// lane diff on
+// `clamp(demo_memory_usage_bytes, 1000000000000, 0)`.
+func TestQueryRange_RangeMode_ClampInverted_ChDB(t *testing.T) {
+	end := time.Now().UTC()
+	start := end.Add(-5 * time.Minute)
+	step := 30 * time.Second
+	const seedSamples = 11
+
+	seedRows := make([]string, 0, seedSamples)
+	for i := 0; i < seedSamples; i++ {
+		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
+		seedRows = append(seedRows, fmt.Sprintf(
+			`('demo_memory_usage_bytes', map('job', 'api'), toDateTime64('%s', 9), %d.0)`,
+			ts, 100+i,
+		))
+	}
+	seed := gaugeDDL + "\nINSERT INTO otel_metrics_gauge VALUES\n  " +
+		strings.Join(seedRows, ",\n  ") + ";"
+	srv, _ := newChDBServer(t, seed)
+
+	matrix := runRangeModeQueryRange(t, srv.URL,
+		"clamp(demo_memory_usage_bytes, 1000000000000, 0)", start, end, step)
+	if len(matrix) != 0 {
+		t.Fatalf("expected empty matrix for max<min clamp; got %d series: %+v",
+			len(matrix), matrix)
+	}
+}
+
 // runRangeModeQueryRange is the test helper shared across the Pool-AK
 // range-mode regression cases. Mirrors `runStepLoopRange` but lives
 // in this file so the Pool-AK suite is self-contained for any future
