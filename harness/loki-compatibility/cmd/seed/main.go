@@ -1,30 +1,3 @@
-// Command seed loads the deterministic log fixture used by the LogQL
-// compatibility harness.
-//
-// It does three things:
-//
-//  1. Applies the upstream OTel ClickHouse Exporter DDL (logs signal) via
-//     internal/schema/ddl, so the harness's schema can't drift from what
-//     cerberus's auto-create path produces.
-//  2. Generates a deterministic log stream (3-5 services × ~600 entries
-//     each at 1s spacing, anchored at a fixed timestamp) and fans it out
-//     to both targets:
-//     - ClickHouse via INSERT INTO otel_logs (the path cerberus reads
-//     from when answering LogQL queries).
-//     - Loki via HTTP POST /loki/api/v1/push (the path the reference
-//     target reads from when answering LogQL queries).
-//  3. Polls /loki/api/v1/labels and the CH otel_logs table until both
-//     report non-empty, then prints a summary.
-//
-// The two writes carry the same content modulo each backend's storage
-// shape: same anchor timestamp, same service set, same line bodies.
-// Differences in query results will surface in PR 2's diff driver as
-// genuine LogQL/wire semantics gaps — not as data asymmetry.
-//
-// Replaces no prior file; this is the inaugural Loki-side seeder.
-// Invoked by scripts/run-loki-compatibility.sh against a docker-compose
-// stack exposing CH on localhost:28000 and Loki on localhost:23100
-// (override via CERBERUS_CH_ADDR / LOKI_URL).
 package main
 
 import (
@@ -35,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand"
 	"net/http"
 	"os"
 	"sort"
@@ -43,26 +17,69 @@ import (
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+	"github.com/golang/snappy"
 
+	"github.com/grafana/loki/v3/pkg/logproto"
 	"github.com/tsouza/cerberus/internal/schema/ddl"
+	
 )
 
-// anchor is the fixture's start timestamp. Every generated log entry
-// sits at anchor + i*1s for i in [0, entriesPerService). Keep this in
-// lock-step with scripts/run-loki-compatibility.sh's TESTER_END_TIME
-// default when that lands in PR 3.
 const anchor = "2026-05-11T00:00:00Z"
 
-// services enumerates the synthetic service names mirrored across both
-// targets. Each becomes one Loki stream (`{service="…"}`) and one
-// ResourceAttributes key (`service.name=…`) on the CH side. The count
-// (3-5) matches the per-PR plan in docs/loki-compliance-plan.md.
-var services = []string{"checkout", "payments", "search", "shipping"}
-
-// entriesPerService is the per-stream line count. 600 × 1s = 10 minutes —
-// the upper bound of the plan's 5-10 minute window. Keeping it at the
-// upper bound gives the future diff driver enough range-query depth.
 const entriesPerService = 600
+
+const seedValue = int64(42)
+
+type serviceConfig struct {
+	Name        string
+	ServiceName string
+	Format      string
+	Cluster     string
+	Namespace   string
+	Pod         string
+	Container   string
+}
+
+var serviceConfigs = []serviceConfig{
+	{Name: "web-server", ServiceName: "web-server", Format: "json", Cluster: "cluster-0", Namespace: "namespace-0", Pod: "pod-0", Container: "container-0"},
+	{Name: "database", ServiceName: "database", Format: "json", Cluster: "cluster-0", Namespace: "namespace-0", Pod: "pod-1", Container: "container-0"},
+	{Name: "cache", ServiceName: "cache", Format: "json", Cluster: "cluster-0", Namespace: "namespace-1", Pod: "pod-2", Container: "container-0"},
+	{Name: "auth-service", ServiceName: "auth-service", Format: "json", Cluster: "cluster-0", Namespace: "namespace-1", Pod: "pod-3", Container: "container-0"},
+	{Name: "kafka", ServiceName: "kafka", Format: "json", Cluster: "cluster-1", Namespace: "namespace-2", Pod: "pod-4", Container: "container-1"},
+	{Name: "prometheus", ServiceName: "prometheus", Format: "json", Cluster: "cluster-1", Namespace: "namespace-2", Pod: "pod-5", Container: "container-1"},
+	{Name: "loki", ServiceName: "loki", Format: "logfmt", Cluster: "cluster-1", Namespace: "namespace-3", Pod: "pod-6", Container: "container-1"},
+	{Name: "mimir", ServiceName: "mimir", Format: "logfmt", Cluster: "cluster-1", Namespace: "namespace-3", Pod: "pod-7", Container: "container-1"},
+	{Name: "tempo", ServiceName: "tempo", Format: "logfmt", Cluster: "cluster-1", Namespace: "namespace-4", Pod: "pod-8", Container: "container-1"},
+	{Name: "grafana", ServiceName: "grafana", Format: "logfmt", Cluster: "cluster-1", Namespace: "namespace-4", Pod: "pod-9", Container: "container-1"},
+	{Name: "nginx", ServiceName: "nginx", Format: "unstructured", Cluster: "cluster-0", Namespace: "namespace-0", Pod: "pod-10", Container: "container-0"},
+	{Name: "kubernetes", ServiceName: "kubernetes", Format: "unstructured", Cluster: "cluster-0", Namespace: "namespace-1", Pod: "pod-11", Container: "container-0"},
+	{Name: "syslog", ServiceName: "syslog", Format: "unstructured", Cluster: "cluster-1", Namespace: "namespace-4", Pod: "pod-12", Container: "container-1"},
+}
+
+var httpMethods = []string{"GET", "POST", "PUT", "DELETE", "PATCH"}
+var apiPaths = []string{"/api/v1/users", "/api/v1/products", "/api/v1/orders", "/api/v1/auth/login", "/healthz", "/metrics"}
+var httpStatuses = []int{200, 201, 204, 301, 400, 401, 403, 404, 500, 503}
+var queryTypes = []string{"SELECT", "INSERT", "UPDATE", "DELETE"}
+var dbTables = []string{"users", "products", "orders", "sessions"}
+var cacheOps = []string{"get", "set", "delete", "expire"}
+var authActions = []string{"login", "logout", "password_reset", "token_refresh"}
+var kafkaTopics = []string{"users", "orders", "payments", "events"}
+var kafkaEvents = []string{"producer_send", "consumer_fetch", "partition_assignment"}
+var promComponents = []string{"tsdb", "scrape", "rules", "remote", "web"}
+var promMessages = []string{"Compacting blocks", "Scraping target", "Evaluating rules", "Remote write"}
+var errorMessages = []string{"Invalid request", "Unauthorized access", "Internal server error", "Service unavailable"}
+var dbErrors = []string{"Connection refused", "Deadlock detected", "Unique constraint violation"}
+var cacheErrors = []string{"Connection refused", "Key not found", "Memory limit exceeded"}
+var authErrors = []string{"Invalid credentials", "Session expired", "Too many attempts"}
+var kafkaErrors = []string{"Leader not available", "failed to process request", "Topic authorization failed"}
+var promErrors = []string{"Scrape failed", "failed to evaluate rule", "Remote write failed"}
+var lokiErrors = []string{"failed to process request", "Connection refused", "ingester failed to flush"}
+var mimirErrors = []string{"failed to process request", "Connection refused", "query execution failed"}
+var tempoErrors = []string{"failed to process trace", "Connection refused", "distributor write failed"}
+var grafanaErrors = []string{"Dashboard save failed", "Connection refused", "failed to render panel"}
+var k8sComponents = []string{"kubelet", "kube-scheduler", "kube-controller-manager", "kube-apiserver", "etcd"}
+var k8sMessages = []string{"Started container", "Pulling image", "Created pod", "Scheduled pod", "Node status updated"}
+var nginxPaths = []string{"/", "/api/", "/static/", "/healthz", "/metrics"}
 
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
@@ -158,63 +175,214 @@ func run(logger *slog.Logger) error {
 	return nil
 }
 
-// stream is one logical {service=...} stream that fans out to both Loki
-// (as one /push streams entry) and ClickHouse (as N rows in otel_logs).
 type stream struct {
-	service string
+	config  serviceConfig
+	labels  map[string]string
 	entries []entry
 }
 
 type entry struct {
-	ts   time.Time
-	line string
+	ts    time.Time
+	level string
+	line  string
 }
 
-// buildStreams generates the deterministic fixture. The output is
-// stable across runs: same anchor, same line ordering, same level
-// rotation — so re-running the seeder against a fresh CH + Loki gives
-// byte-identical content.
 func buildStreams(start time.Time) []stream {
+	rng := rand.New(rand.NewSource(seedValue))
 	levels := []string{"INFO", "WARN", "ERROR", "DEBUG"}
-	templates := []string{
-		"%s service=%s msg=request_received path=/api/v1/items rid=%06d",
-		"%s service=%s msg=cache_hit key=tenant-%d duration_ms=%d",
-		"%s service=%s msg=db_query rows=%d duration_ms=%d",
-		"%s service=%s msg=request_completed status=200 duration_ms=%d rid=%06d",
-	}
-	out := make([]stream, 0, len(services))
-	for si, svc := range services {
-		s := stream{service: svc, entries: make([]entry, 0, entriesPerService)}
+	out := make([]stream, 0, len(serviceConfigs))
+
+	for _, sc := range serviceConfigs {
+		labels := map[string]string{
+			"cluster":      sc.Cluster,
+			"namespace":    sc.Namespace,
+			"service":      sc.Name,
+			"service_name": sc.ServiceName,
+			"pod":          sc.Pod,
+			"container":    sc.Container,
+			"env":          "production",
+			"region":       "us-east-1",
+			"datacenter":   "dc1",
+		}
+
+		s := stream{
+			config:  sc,
+			labels:  labels,
+			entries: make([]entry, 0, entriesPerService),
+		}
+
 		for i := 0; i < entriesPerService; i++ {
 			ts := start.Add(time.Duration(i) * time.Second)
-			level := levels[i%len(levels)]
-			// rotate template index across services so coverage of
-			// each line shape is spread evenly — service A starts at
-			// template 0, service B at template 1, etc.
-			tmpl := templates[(i+si)%len(templates)]
+			level := levels[rng.Intn(len(levels))]
 			var line string
-			switch (i + si) % len(templates) {
-			case 0:
-				line = fmt.Sprintf(tmpl, level, svc, i)
-			case 1:
-				line = fmt.Sprintf(tmpl, level, svc, i%17, 5+(i%23))
-			case 2:
-				line = fmt.Sprintf(tmpl, level, svc, i%101, 1+(i%19))
-			case 3:
-				line = fmt.Sprintf(tmpl, level, svc, 2+(i%13), i)
+			switch sc.Format {
+			case "json":
+				line = generateJSONLine(sc.Name, level, ts, rng, i)
+			case "logfmt":
+				line = generateLogfmtLine(sc.Name, level, ts, rng, i)
+			default:
+				line = generateUnstructuredLine(sc.Name, level, ts, rng, i)
 			}
-			s.entries = append(s.entries, entry{ts: ts, line: line})
+			s.entries = append(s.entries, entry{ts: ts, level: level, line: line})
 		}
 		out = append(out, s)
 	}
 	return out
 }
 
-// waitCHReady polls SELECT 1 until ClickHouse answers or ctx expires.
-// The compose healthcheck already gates this, but the seeder may be
-// invoked from run-loki-compatibility.sh against a freshly started
-// container — the extra poll absorbs the ~1s tail where ping passes but
-// Exec doesn't.
+func generateJSONLine(svc string, level string, ts time.Time, rng *rand.Rand, idx int) string {
+	lvl := strings.ToLower(level)
+	tsStr := ts.Format(time.RFC3339)
+	status := httpStatuses[rng.Intn(len(httpStatuses))]
+	durationMs := rng.Intn(1000) + 1
+
+	switch svc {
+	case "web-server":
+		method := httpMethods[rng.Intn(len(httpMethods))]
+		path := apiPaths[rng.Intn(len(apiPaths))]
+		line := fmt.Sprintf(`{"level":"%s","ts":"%s","msg":"HTTP request","method":"%s","path":"%s","status":%d,"duration_ms":%d}`, lvl, tsStr, method, path, status, durationMs)
+		if level == "ERROR" {
+			line = line[:len(line)-1] + fmt.Sprintf(`,"error":"%s"}`, errorMessages[rng.Intn(len(errorMessages))])
+		}
+		return line
+
+	case "database":
+		qType := queryTypes[rng.Intn(len(queryTypes))]
+		table := dbTables[rng.Intn(len(dbTables))]
+		rows := rng.Intn(100) + 1
+		line := fmt.Sprintf(`{"level":"%s","ts":"%s","msg":"Query executed","query_type":"%s","table":"%s","duration_ms":%d,"rows_affected":%d}`, lvl, tsStr, qType, table, durationMs, rows)
+		if level == "ERROR" {
+			errMsg := dbErrors[rng.Intn(len(dbErrors))]
+			line = line[:len(line)-1] + fmt.Sprintf(`,"error":"%s"}`, errMsg)
+		}
+		return line
+
+	case "cache":
+		op := cacheOps[rng.Intn(len(cacheOps))]
+		size := rng.Intn(10000) + 1
+		ttl := rng.Intn(3600) + 60
+		line := fmt.Sprintf(`{"level":"%s","ts":"%s","msg":"Cache operation","operation":"%s","size":%d,"ttl":%d,"duration_ms":%d}`, lvl, tsStr, op, size, ttl, durationMs)
+		if level == "ERROR" {
+			errMsg := cacheErrors[rng.Intn(len(cacheErrors))]
+			line = line[:len(line)-1] + fmt.Sprintf(`,"error":"%s"}`, errMsg)
+		}
+		return line
+
+	case "auth-service":
+		action := authActions[rng.Intn(len(authActions))]
+		success := rng.Intn(2) == 0
+		line := fmt.Sprintf(`{"level":"%s","ts":"%s","msg":"Authentication request","action":"%s","success":%t,"duration_ms":%d}`, lvl, tsStr, action, success, durationMs)
+		if level == "ERROR" {
+			errMsg := authErrors[rng.Intn(len(authErrors))]
+			line = line[:len(line)-1] + fmt.Sprintf(`,"error":"%s"}`, errMsg)
+		}
+		return line
+
+	case "kafka":
+		topic := kafkaTopics[rng.Intn(len(kafkaTopics))]
+		partition := rng.Intn(10)
+		offset := rng.Intn(100000)
+		sz := rng.Intn(10000) + 1
+		line := fmt.Sprintf(`{"level":"%s","ts":"%s","msg":"Kafka event","topic":"%s","partition":%d,"offset":%d,"size":%d}`, lvl, tsStr, topic, partition, offset, sz)
+		if level == "ERROR" {
+			errMsg := kafkaErrors[rng.Intn(len(kafkaErrors))]
+			line = line[:len(line)-1] + fmt.Sprintf(`,"error":"%s"}`, errMsg)
+		}
+		return line
+
+	case "prometheus":
+		comp := promComponents[rng.Intn(len(promComponents))]
+		msg := promMessages[rng.Intn(len(promMessages))]
+		line := fmt.Sprintf(`{"level":"%s","ts":"%s","msg":"%s","component":"%s","duration_ms":%d}`, lvl, tsStr, msg, comp, durationMs)
+		if level == "ERROR" {
+			errMsg := promErrors[rng.Intn(len(promErrors))]
+			line = line[:len(line)-1] + fmt.Sprintf(`,"error":"%s"}`, errMsg)
+		}
+		return line
+
+	default:
+		return fmt.Sprintf(`{"level":"%s","ts":"%s","msg":"generic log entry","duration_ms":%d}`, lvl, tsStr, durationMs)
+	}
+}
+
+func generateLogfmtLine(svc string, level string, ts time.Time, rng *rand.Rand, idx int) string {
+	lvl := strings.ToLower(level)
+	tsStr := ts.Format(time.RFC3339Nano)
+	duration := rng.Intn(1000) + 1
+	streams := rng.Intn(1000)
+	bytes := rng.Intn(10000000)
+	sz := rng.Intn(10000) + 1
+
+	switch svc {
+	case "loki":
+		line := fmt.Sprintf(`level=%s ts=%s msg="ingester request" duration=%dms streams=%d bytes=%d`, lvl, tsStr, duration, streams, bytes)
+		if level == "ERROR" {
+			errMsg := lokiErrors[rng.Intn(len(lokiErrors))]
+			line += fmt.Sprintf(` error="%s"`, errMsg)
+		}
+		return line
+
+	case "mimir":
+		line := fmt.Sprintf(`level=%s ts=%s msg="gRPC request" duration=%dms streams=%d bytes=%d`, lvl, tsStr, duration, streams, bytes)
+		if level == "ERROR" {
+			errMsg := mimirErrors[rng.Intn(len(mimirErrors))]
+			line += fmt.Sprintf(` error="%s"`, errMsg)
+		}
+		return line
+
+	case "tempo":
+		line := fmt.Sprintf(`level=%s ts=%s msg="distributor request" duration=%dms spans=%d bytes=%d`, lvl, tsStr, duration, rng.Intn(10000), bytes)
+		if level == "ERROR" {
+			errMsg := tempoErrors[rng.Intn(len(tempoErrors))]
+			line += fmt.Sprintf(` error="%s"`, errMsg)
+		}
+		return line
+
+	case "grafana":
+		line := fmt.Sprintf(`level=%s ts=%s msg="dashboard request" duration=%dms size=%d status=%d`, lvl, tsStr, duration, sz, httpStatuses[rng.Intn(len(httpStatuses))])
+		if level == "ERROR" {
+			errMsg := grafanaErrors[rng.Intn(len(grafanaErrors))]
+			line += fmt.Sprintf(` error="%s"`, errMsg)
+		}
+		return line
+
+	default:
+		return fmt.Sprintf(`level=%s ts=%s msg="generic log entry" duration=%dms`, lvl, tsStr, duration)
+	}
+}
+
+func generateUnstructuredLine(svc string, level string, ts time.Time, rng *rand.Rand, idx int) string {
+	tsStr := ts.Format("2006-01-02T15:04:05.000000Z")
+	lvl := strings.ToUpper(level)
+
+	switch svc {
+	case "nginx":
+		method := httpMethods[rng.Intn(len(httpMethods))]
+		path := nginxPaths[rng.Intn(len(nginxPaths))]
+		status := httpStatuses[rng.Intn(len(httpStatuses))]
+		sz := rng.Intn(10000)
+		ip := fmt.Sprintf("%d.%d.%d.%d", rng.Intn(256), rng.Intn(256), rng.Intn(256), rng.Intn(256))
+		return fmt.Sprintf(`%s - user [%s] "%s %s HTTP/1.1" %d %d "https://example.com" "curl/7.64.1"`, ip, ts.Format("02/Jan/2006:15:04:05 -0700"), method, path, status, sz)
+
+	case "kubernetes":
+		comp := k8sComponents[rng.Intn(len(k8sComponents))]
+		msg := k8sMessages[rng.Intn(len(k8sMessages))]
+		return fmt.Sprintf(`%s %s [%s] %s: %s`, tsStr, lvl, comp, "I0612", msg)
+
+	case "syslog":
+		pri := 14 + rng.Intn(10)
+		pid := rng.Intn(10000)
+		msg := "Starting service"
+		if level == "ERROR" {
+			msg = "Connection refused"
+		}
+		return fmt.Sprintf(`<%d>hostname systemd[%d]: %s`, pri, pid, msg)
+
+	default:
+		return fmt.Sprintf(`%s %s generic: log entry %d`, tsStr, lvl, idx)
+	}
+}
+
 func waitCHReady(ctx context.Context, conn driver.Conn, logger *slog.Logger) error {
 	deadline := time.Now().Add(30 * time.Second)
 	for {
@@ -234,10 +402,6 @@ func waitCHReady(ctx context.Context, conn driver.Conn, logger *slog.Logger) err
 	}
 }
 
-// waitLokiReady polls Loki /ready until it returns 200. The compose
-// healthcheck already gates this — the extra poll exists for cases
-// where the seeder is invoked directly (e.g. `go run ...` against a
-// hand-started compose stack).
 func waitLokiReady(ctx context.Context, baseURL string, logger *slog.Logger) error {
 	deadline := time.Now().Add(60 * time.Second)
 	url := strings.TrimRight(baseURL, "/") + "/ready"
@@ -269,30 +433,34 @@ func waitLokiReady(ctx context.Context, baseURL string, logger *slog.Logger) err
 	}
 }
 
-// insertCHLogs writes every (service, entry) pair into otel_logs using
-// a single batched INSERT. The label schema mirrors the OTel-CH Exporter
-// shape: service.name on ResourceAttributes, level on LogAttributes,
-// SeverityText pulled from the line's leading token. TraceId / SpanId
-// stay empty — the fixture is synthetic without trace correlation.
-//
-// Column list / order matches sqltemplates/logs_insert.sql verbatim
-// (TimestampTime is `DEFAULT toDateTime(Timestamp)` so we don't write
-// it explicitly; EventName isn't in the upstream insert).
 func insertCHLogs(ctx context.Context, conn driver.Conn, streams []stream) error {
 	batch, err := conn.PrepareBatch(ctx, `INSERT INTO otel_logs (
-        Timestamp, TraceId, SpanId, TraceFlags,
-        SeverityText, SeverityNumber, ServiceName, Body,
-        ResourceSchemaUrl, ResourceAttributes,
-        ScopeSchemaUrl, ScopeName, ScopeVersion, ScopeAttributes,
-        LogAttributes
-    )`)
+		Timestamp, TraceId, SpanId, TraceFlags,
+		SeverityText, SeverityNumber, ServiceName, Body,
+		ResourceSchemaUrl, ResourceAttributes,
+		ScopeSchemaUrl, ScopeName, ScopeVersion, ScopeAttributes,
+		LogAttributes
+	)`)
 	if err != nil {
 		return fmt.Errorf("prepare batch: %w", err)
 	}
 
 	for _, s := range streams {
 		for _, e := range s.entries {
-			level := strings.SplitN(e.line, " ", 2)[0]
+			level := e.level
+			logAttrs := map[string]string{
+				"level":           strings.ToLower(level),
+				"detected_level":  strings.ToLower(level),
+				"cluster":         s.config.Cluster,
+				"namespace":       s.config.Namespace,
+				"service":        s.config.Name,
+				"service_name":   s.config.ServiceName,
+				"pod":            s.config.Pod,
+				"container":      s.config.Container,
+				"env":            "production",
+				"region":         "us-east-1",
+				"datacenter":     "dc1",
+			}
 			if err := batch.Append(
 				e.ts,
 				"",
@@ -300,15 +468,15 @@ func insertCHLogs(ctx context.Context, conn driver.Conn, streams []stream) error
 				uint8(0),
 				level,
 				severityNumber(level),
-				s.service,
+				s.config.ServiceName,
 				e.line,
 				"",
-				map[string]string{"service.name": s.service},
+				map[string]string{"service.name": s.config.ServiceName},
 				"",
 				"cerberus-loki-compat-seeder",
 				"1",
 				map[string]string{},
-				map[string]string{"level": level, "service": s.service},
+				logAttrs,
 			); err != nil {
 				return fmt.Errorf("append: %w", err)
 			}
@@ -320,10 +488,6 @@ func insertCHLogs(ctx context.Context, conn driver.Conn, streams []stream) error
 	return nil
 }
 
-// severityNumber maps the level token to the OTel-CH SeverityNumber
-// scale (https://opentelemetry.io/docs/specs/otel/logs/data-model/).
-// Return type is uint8 so it matches the otel_logs DDL column type
-// without an extra conversion at the call site.
 func severityNumber(level string) uint8 {
 	switch strings.ToUpper(level) {
 	case "TRACE":
@@ -342,49 +506,53 @@ func severityNumber(level string) uint8 {
 	return 0
 }
 
-// pushLoki POSTs the streams to /loki/api/v1/push as one JSON body. The
-// payload shape matches the Loki ingest contract:
-//
-//	{"streams":[{"stream":{"service":"checkout","level":"info"},
-//	              "values":[["<ns_ts>","<line>"], ...]}]}
-//
-// `values` is ordered oldest-first; Loki accepts either direction but
-// preserves the strictly-increasing ordering the fixture builds.
 func pushLoki(ctx context.Context, baseURL string, streams []stream) error {
-	type pushStream struct {
-		Stream map[string]string `json:"stream"`
-		Values [][2]string       `json:"values"`
-	}
-	type pushBody struct {
-		Streams []pushStream `json:"streams"`
-	}
+	pushReq := logproto.PushRequest{}
 
-	body := pushBody{Streams: make([]pushStream, 0, len(streams))}
 	for _, s := range streams {
-		ps := pushStream{
-			Stream: map[string]string{"service": s.service},
-			Values: make([][2]string, 0, len(s.entries)),
+		labelPairs := make([]string, 0, len(s.labels))
+		for k, v := range s.labels {
+			labelPairs = append(labelPairs, fmt.Sprintf(`%s="%s"`, k, v))
 		}
+		sort.Strings(labelPairs)
+		labels := "{" + strings.Join(labelPairs, ", ") + "}"
+
+		entries := make([]logproto.Entry, 0, len(s.entries))
 		for _, e := range s.entries {
-			ps.Values = append(ps.Values, [2]string{
-				fmt.Sprintf("%d", e.ts.UnixNano()),
-				e.line,
+			var sm []logproto.LabelAdapter
+			lvl := strings.ToLower(e.level)
+			if lvl != "" {
+				sm = []logproto.LabelAdapter{
+					{Name: "detected_level", Value: lvl},
+				}
+			}
+			entries = append(entries, logproto.Entry{
+				Timestamp:          e.ts,
+				Line:               e.line,
+				StructuredMetadata: sm,
 			})
 		}
-		body.Streams = append(body.Streams, ps)
+
+		pushReq.Streams = append(pushReq.Streams, logproto.Stream{
+			Labels:  labels,
+			Entries: entries,
+		})
 	}
 
-	raw, err := json.Marshal(body)
+	data, err := pushReq.Marshal()
 	if err != nil {
-		return fmt.Errorf("marshal: %w", err)
+		return fmt.Errorf("marshal push request: %w", err)
 	}
+
+	compressed := snappy.Encode(nil, data)
+
 	url := strings.TrimRight(baseURL, "/") + "/loki/api/v1/push"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(raw))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(compressed))
 	if err != nil {
 		return fmt.Errorf("new request: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "cerberus-loki-compat-seeder/1")
+	req.Header.Set("Content-Type", "application/x-protobuf")
+	req.Header.Set("Content-Encoding", "snappy")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -398,14 +566,7 @@ func pushLoki(ctx context.Context, baseURL string, streams []stream) error {
 	return nil
 }
 
-// verifyBothNonEmpty asserts the PR 1 smoke contract: /loki/api/v1/labels
-// returns non-empty on BOTH the reference Loki and the cerberus side, and
-// the CH otel_logs table is non-empty. Each check has its own short poll
-// loop — Loki's index is asynchronous (a /push returning 200 doesn't
-// guarantee /labels sees the new stream immediately), and cerberus may
-// still be warming its CH connection pool right after compose start.
 func verifyBothNonEmpty(ctx context.Context, conn driver.Conn, lokiURL, cerbURL string, logger *slog.Logger) error {
-	// CH side — direct COUNT against otel_logs. Fast and authoritative.
 	var chCount uint64
 	if err := conn.QueryRow(ctx, "SELECT count() FROM otel_logs").Scan(&chCount); err != nil {
 		return fmt.Errorf("ch count: %w", err)
@@ -415,21 +576,6 @@ func verifyBothNonEmpty(ctx context.Context, conn driver.Conn, lokiURL, cerbURL 
 	}
 	logger.Info("clickhouse otel_logs row count", "rows", chCount)
 
-	// Build a [start, end] window that brackets the anchor with enough
-	// slack to absorb each backend's quirks:
-	//   - Cerberus scans otel_logs by `Timestamp BETWEEN start AND end`,
-	//     so the window MUST cover the anchor (2026-05-11T00:00:00Z →
-	//     anchor + 10min). Without it cerberus's /labels is empty even
-	//     though CH holds the rows.
-	//   - Reference Loki's index is built async by ingest time. When the
-	//     fixture's anchor is in the past relative to system time (as
-	//     happens during CI runs that don't pin the clock), the
-	//     freshly-pushed chunks aren't yet visible under a narrow
-	//     anchor-aligned window — so we widen to [anchor - 1d, now + 1d]
-	//     to absorb any (system clock vs anchor) skew. PR 3's diff
-	//     driver will need to thread per-query time windows correctly;
-	//     the smoke just needs both endpoints to report non-empty
-	//     /labels.
 	anchorTS, err := time.Parse(time.RFC3339, anchor)
 	if err != nil {
 		return fmt.Errorf("parse anchor: %w", err)
@@ -452,10 +598,6 @@ func verifyBothNonEmpty(ctx context.Context, conn driver.Conn, lokiURL, cerbURL 
 	return nil
 }
 
-// waitLabelsNonEmpty polls baseURL + /loki/api/v1/labels for up to 30s
-// and returns once the response carries at least one label name. The
-// [start, end] window is passed as `?start=<ns>&end=<ns>` so cerberus's
-// time-windowed label scan covers the seeded fixture.
 func waitLabelsNonEmpty(ctx context.Context, label, baseURL string, start, end time.Time, logger *slog.Logger) error {
 	deadline := time.Now().Add(30 * time.Second)
 	url := fmt.Sprintf("%s/loki/api/v1/labels?start=%d&end=%d",
@@ -481,9 +623,6 @@ func waitLabelsNonEmpty(ctx context.Context, label, baseURL string, start, end t
 	}
 }
 
-// fetchLokiLabels parses the Loki /labels response shape
-//
-//	{"status":"success","data":["__name__","service",...]}
 func fetchLokiLabels(ctx context.Context, url string) ([]string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
