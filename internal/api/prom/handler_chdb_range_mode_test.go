@@ -1216,6 +1216,207 @@ func TestQueryRange_RangeMode_VVOnCompareGroupLeft_ChDB(t *testing.T) {
 	}
 }
 
+// TestQueryRange_RangeMode_TopK_ChDB pins `topk(K, v)` / `bottomk(K, v)`
+// per-step semantics under `/api/v1/query_range`. Bucket 5 of the
+// post-#350 compat residual audit (docs/compat-residual-audit-
+// 25898791664.md) flagged 8 diffs traceable to the partition list on
+// chplan.TopK omitting the per-step anchor. Pre-fix, the emitter
+// rendered `LIMIT K BY <user-partition>` which collapses N anchors ×
+// M series into a single K-row global window; Prom's semantics select
+// K series per anchor.
+//
+// The fix threads `TimeUnix` (the per-step anchor re-aliased by
+// wrapRangeLatestPerSeries) into TopK.By for range mode, so the
+// emitter renders `LIMIT K BY (..., TimeUnix)` and the per-step matrix
+// surfaces the correct K-per-anchor subset.
+//
+// Seed: 6 distinct series ranked by ascending Value (10, 20, 30, 40,
+// 50, 60). Each series has one sample per step. The bare topk(3, v)
+// should keep the top 3 (Value 60, 50, 40) at EVERY anchor — 3 series
+// × N anchors = 3*N matrix rows. The bottomk(3, v) should keep (10,
+// 20, 30) at every anchor. `topk by(group)` partitions by an extra
+// label so K-per-group-per-step holds; the `without` variants exercise
+// the MapWithoutKeys partition shape.
+func TestQueryRange_RangeMode_TopK_ChDB(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(5 * time.Minute)
+	step := 30 * time.Second
+	const wantSamples = 11
+
+	// Seed: 6 distinct series. Series 1-3 are in group=a (values 10,
+	// 20, 30); series 4-6 are in group=b (values 40, 50, 60). One
+	// sample per series per step (constant value across the time
+	// range so the per-step rank is deterministic).
+	seedRows := make([]string, 0, wantSamples*6)
+	for i := 0; i < wantSamples; i++ {
+		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
+		seedRows = append(seedRows,
+			fmt.Sprintf(`('demo_memory_usage_bytes', map('instance', 's1', 'group', 'a'), toDateTime64('%s', 9), 10.0)`, ts),
+			fmt.Sprintf(`('demo_memory_usage_bytes', map('instance', 's2', 'group', 'a'), toDateTime64('%s', 9), 20.0)`, ts),
+			fmt.Sprintf(`('demo_memory_usage_bytes', map('instance', 's3', 'group', 'a'), toDateTime64('%s', 9), 30.0)`, ts),
+			fmt.Sprintf(`('demo_memory_usage_bytes', map('instance', 's4', 'group', 'b'), toDateTime64('%s', 9), 40.0)`, ts),
+			fmt.Sprintf(`('demo_memory_usage_bytes', map('instance', 's5', 'group', 'b'), toDateTime64('%s', 9), 50.0)`, ts),
+			fmt.Sprintf(`('demo_memory_usage_bytes', map('instance', 's6', 'group', 'b'), toDateTime64('%s', 9), 60.0)`, ts),
+		)
+	}
+	seed := gaugeDDL + "\nINSERT INTO otel_metrics_gauge VALUES\n  " +
+		strings.Join(seedRows, ",\n  ") + ";"
+	srv, _ := newChDBServer(t, seed)
+
+	// Pre-fix: cerberus emitted `LIMIT 3` (or LIMIT K BY <user> alone)
+	// → the whole-query window collapsed to 3 rows TOTAL, leaving
+	// fewer than `wantSamples` distinct anchors in the matrix pivot.
+	// Post-fix: 3 series × N anchors = correct per-step shape.
+	t.Run("topk_bare", func(t *testing.T) {
+		matrix := runRangeModeQueryRange(t, srv.URL,
+			"topk(3, demo_memory_usage_bytes)", start, end, step)
+		// 3 series × N anchors → 3 series in the matrix (each with N
+		// samples). The top-3 by Value are s4 (40), s5 (50), s6 (60).
+		if len(matrix) != 3 {
+			t.Fatalf("topk bare: expected 3 series, got %d: %+v",
+				len(matrix), matrix)
+		}
+		wantInstances := map[string]string{"s4": "40", "s5": "50", "s6": "60"}
+		for _, ms := range matrix {
+			inst := ms.Metric["instance"]
+			want, ok := wantInstances[inst]
+			if !ok {
+				t.Errorf("topk bare: unexpected series instance=%q: %+v", inst, ms.Metric)
+				continue
+			}
+			if len(ms.Values) != wantSamples {
+				t.Errorf("topk bare: instance=%s: expected %d samples per step, got %d (pre-fix would collapse to a global subset): %+v",
+					inst, wantSamples, len(ms.Values), ms.Values)
+				continue
+			}
+			for i, v := range ms.Values {
+				if got := v[1]; got != want {
+					t.Errorf("topk bare: instance=%s step %d: value=%q want=%q (full row: %+v)",
+						inst, i, got, want, v)
+				}
+			}
+		}
+	})
+
+	t.Run("bottomk_bare", func(t *testing.T) {
+		matrix := runRangeModeQueryRange(t, srv.URL,
+			"bottomk(3, demo_memory_usage_bytes)", start, end, step)
+		// Bottom 3 by Value: s1 (10), s2 (20), s3 (30).
+		if len(matrix) != 3 {
+			t.Fatalf("bottomk bare: expected 3 series, got %d: %+v",
+				len(matrix), matrix)
+		}
+		wantInstances := map[string]string{"s1": "10", "s2": "20", "s3": "30"}
+		for _, ms := range matrix {
+			inst := ms.Metric["instance"]
+			want, ok := wantInstances[inst]
+			if !ok {
+				t.Errorf("bottomk bare: unexpected series instance=%q: %+v", inst, ms.Metric)
+				continue
+			}
+			if len(ms.Values) != wantSamples {
+				t.Errorf("bottomk bare: instance=%s: expected %d samples per step, got %d: %+v",
+					inst, wantSamples, len(ms.Values), ms.Values)
+				continue
+			}
+			for i, v := range ms.Values {
+				if got := v[1]; got != want {
+					t.Errorf("bottomk bare: instance=%s step %d: value=%q want=%q (full row: %+v)",
+						inst, i, got, want, v)
+				}
+			}
+		}
+	})
+
+	t.Run("topk_by_group", func(t *testing.T) {
+		// `topk by(group) (2, ...)` keeps the top-2 per `group`. group=a
+		// has values (10, 20, 30) → top-2 = (20, 30); group=b has
+		// values (40, 50, 60) → top-2 = (50, 60). At every anchor we
+		// expect exactly 4 series in the matrix.
+		matrix := runRangeModeQueryRange(t, srv.URL,
+			"topk by(group) (2, demo_memory_usage_bytes)", start, end, step)
+		if len(matrix) != 4 {
+			t.Fatalf("topk by(group): expected 4 series (top-2 per of 2 groups), got %d: %+v",
+				len(matrix), matrix)
+		}
+		wantInstances := map[string]string{"s2": "20", "s3": "30", "s5": "50", "s6": "60"}
+		for _, ms := range matrix {
+			inst := ms.Metric["instance"]
+			want, ok := wantInstances[inst]
+			if !ok {
+				t.Errorf("topk by(group): unexpected series instance=%q: %+v", inst, ms.Metric)
+				continue
+			}
+			if len(ms.Values) != wantSamples {
+				t.Errorf("topk by(group): instance=%s: expected %d samples per step, got %d: %+v",
+					inst, wantSamples, len(ms.Values), ms.Values)
+				continue
+			}
+			for i, v := range ms.Values {
+				if got := v[1]; got != want {
+					t.Errorf("topk by(group): instance=%s step %d: value=%q want=%q (full row: %+v)",
+						inst, i, got, want, v)
+				}
+			}
+		}
+	})
+
+	t.Run("bottomk_without_empty", func(t *testing.T) {
+		// `bottomk(K, v) without()` partitions by the full Attributes
+		// map (per-series). Each (series, step) tuple sits in its own
+		// partition, so `LIMIT K BY (Attributes, TimeUnix)` keeps 1
+		// row per partition — every (series, step) survives. The matrix
+		// therefore has 6 series × N anchors.
+		matrix := runRangeModeQueryRange(t, srv.URL,
+			"bottomk without() (5, demo_memory_usage_bytes)", start, end, step)
+		if len(matrix) != 6 {
+			t.Fatalf("bottomk without(): expected 6 series (per-series partitions), got %d: %+v",
+				len(matrix), matrix)
+		}
+		for _, ms := range matrix {
+			if len(ms.Values) != wantSamples {
+				t.Errorf("bottomk without(): instance=%s: expected %d per-step samples, got %d: %+v",
+					ms.Metric["instance"], wantSamples, len(ms.Values), ms.Values)
+			}
+		}
+	})
+
+	t.Run("topk_without_instance", func(t *testing.T) {
+		// `topk without(instance) (2, ...)` strips `instance` from the
+		// partition shape — partition keys collapse to {group}.
+		// Equivalent to grouping by everything except `instance`, which
+		// here yields 2 groups (a, b). Top-2 per group → 4 series in
+		// the matrix.
+		matrix := runRangeModeQueryRange(t, srv.URL,
+			"topk without(instance) (2, demo_memory_usage_bytes)", start, end, step)
+		if len(matrix) != 4 {
+			t.Fatalf("topk without(instance): expected 4 series, got %d: %+v",
+				len(matrix), matrix)
+		}
+		wantInstances := map[string]string{"s2": "20", "s3": "30", "s5": "50", "s6": "60"}
+		for _, ms := range matrix {
+			inst := ms.Metric["instance"]
+			want, ok := wantInstances[inst]
+			if !ok {
+				t.Errorf("topk without(instance): unexpected series instance=%q: %+v",
+					inst, ms.Metric)
+				continue
+			}
+			if len(ms.Values) != wantSamples {
+				t.Errorf("topk without(instance): instance=%s: expected %d samples per step, got %d: %+v",
+					inst, wantSamples, len(ms.Values), ms.Values)
+				continue
+			}
+			for i, v := range ms.Values {
+				if got := v[1]; got != want {
+					t.Errorf("topk without(instance): instance=%s step %d: value=%q want=%q (full row: %+v)",
+						inst, i, got, want, v)
+				}
+			}
+		}
+	})
+}
+
 // runRangeModeQueryRange is the test helper shared across the Pool-AK
 // range-mode regression cases. Mirrors `runStepLoopRange` but lives
 // in this file so the Pool-AK suite is self-contained for any future
