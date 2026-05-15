@@ -50,13 +50,16 @@ cleanup() {
 trap cleanup EXIT
 
 echo "==> bringing up tempo-compatibility stack"
-# --wait blocks until each service's healthcheck reports `healthy`.
-# 5min compose-level timeout (`--wait-timeout 300`) is generous: the
-# CH boot can take 30-60s on a cold runner, Tempo single-binary boots
-# in <10s, cerberus is <2s. If we time out, the issue is at the
-# infrastructure layer (image pull, cgroup, etc.), not the harness.
+# Step 1: start tempo (no compose-level healthcheck — distroless image,
+# see compose.yml). The driver polls /ready before pushing.
+docker compose up -d --build tempo
+
+# Step 2: `--wait` block on the healthchecked services. 5min compose-
+# level timeout is generous: CH boot can take 30-60s on a cold runner,
+# cerberus is <2s. If we time out, it's an infra-layer issue (image
+# pull, cgroup, etc.), not a harness bug.
 docker compose up -d --build --wait --wait-timeout 300 \
-    clickhouse tempo cerberus-tempo
+    clickhouse cerberus-tempo
 
 echo "==> running tempo-compat-driver seed"
 # `docker compose run --rm` invokes the seeder and removes the

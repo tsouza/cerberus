@@ -92,14 +92,14 @@ services:
       # collisions on the developer machine.
       - "23200:3200"  # HTTP (query API)
       - "24317:4317"  # OTLP gRPC ingest (used by PR 3's seeder)
-    healthcheck:
-      # /ready returns 200 only once Tempo has loaded its config AND
-      # opened the listeners. Reliable single-binary probe.
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3200/ready || exit 1"]
-      interval: 5s
-      timeout: 3s
-      retries: 30
-      start_period: 10s
+    # No Docker-level healthcheck: the grafana/tempo image is distroless
+    # (no sh / wget / curl / nc) and Tempo's binary doesn't expose a
+    # self-ping subcommand suitable for `CMD ["tempo", ...]`. Readiness
+    # is enforced from the driver's pre-push `/ready` poll instead
+    # (see `waitTempoReady` in driver/seeder.go) — same pattern the
+    # loki-compatibility harness uses for the distroless `grafana/loki`
+    # image. The pre-push poll covers the cold-start window between
+    # "container running" and "OTLP gRPC listener accepting Export".
 
   cerberus-tempo:
     image: cerberus:tempo-compatibility
@@ -156,7 +156,9 @@ services:
       CERBERUS_CH_PASSWORD: "cerberus"
     depends_on:
       tempo:
-        condition: service_healthy
+        # Distroless tempo image has no healthcheck (see service definition);
+        # the driver polls /ready before issuing the first OTLP Export.
+        condition: service_started
       cerberus-tempo:
         condition: service_healthy
       clickhouse:

@@ -196,6 +196,10 @@ func runSeed(args []string) error {
 	}
 
 	// --- Tempo side ----------------------------------------------------
+	logger.Info("waiting for tempo /ready", "url", *tempoHTTP)
+	if err := waitTempoReady(ctx, *tempoHTTP, logger); err != nil {
+		return fmt.Errorf("tempo not ready: %w", err)
+	}
 	logger.Info("pushing into tempo via otlp gRPC", "endpoint", *tempoOTLP)
 	if err := pushOTLP(ctx, *tempoOTLP, traces, logger); err != nil {
 		return fmt.Errorf("push otlp: %w", err)
@@ -497,6 +501,43 @@ func statusMessage(s *otlptrace.Status) string {
 		return ""
 	}
 	return s.Message
+}
+
+// waitTempoReady polls Tempo's /ready HTTP endpoint until it returns
+// 200 or ctx expires. Tempo's image is distroless so the docker-compose
+// service has no healthcheck — readiness gating lives here. Tempo's
+// /ready flips to 200 only after the live-store + partition-ring are
+// fully up, which is also exactly the precondition for OTLP Export
+// to succeed.
+func waitTempoReady(ctx context.Context, baseURL string, logger *slog.Logger) error {
+	deadline := time.Now().Add(60 * time.Second)
+	url := strings.TrimRight(baseURL, "/") + "/ready"
+	for {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return err
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return nil
+			}
+		}
+		if time.Now().After(deadline) {
+			if err != nil {
+				return fmt.Errorf("tempo /ready: %w", err)
+			}
+			return fmt.Errorf("tempo /ready returned %d", resp.StatusCode)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
+		logger.Debug("waiting for tempo", "url", url)
+	}
 }
 
 // waitCHReady polls SELECT 1 until ClickHouse answers or ctx expires.
