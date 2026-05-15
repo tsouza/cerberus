@@ -1,0 +1,90 @@
+name: tempo-compatibility
+
+# Status: PR 2 of docs/tempo-compliance-plan.md. The driver this
+# workflow invokes is a STUB that always exits 0. The workflow's job
+# in PR 2 is to prove the Compose stack stands up under GitHub Actions
+# and to wire the dispatch / cron / on-push triggers so PRs 3-4 can
+# focus on the seeder + differ without also debugging CI plumbing.
+#
+# Triggers:
+#   * workflow_dispatch  — manual runs from the GH UI.
+#   * schedule           — nightly (offset from sibling harnesses to
+#                          spread runner load).
+#   * push to main       — informational only. continue-on-error keeps
+#                          the workflow conclusion green so this is not
+#                          a required check by accident; promotion to a
+#                          required PR check is PR 7 of the rollout.
+#
+# Per ~/.claude/CI_STEPS.md, every step uses an official / well-known
+# Action — no `curl | sh` installs. Actions used here:
+#   * actions/checkout@v6        — stdlib.
+#   * docker/setup-buildx-action@v3  — buildkit-backed `docker build`.
+#   * actions/upload-artifact@v7 — report artifact upload.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Nightly at 04:23 UTC. Offset from compatibility.yml (04:11) and
+    # the e2e dashboard run so concurrent runs don't fight for the
+    # ubuntu-latest pool.
+    - cron: '23 4 * * *'
+  push:
+    branches: [main]
+    paths:
+      # Only re-run on changes that could affect the harness wiring.
+      # Cerberus code changes are already covered by the prom + shadow
+      # gates; this harness is about tempo-specific drift.
+      - 'internal/api/tempo/**'
+      - 'internal/traceql/**'
+      - 'harness/tempo-compatibility/**'
+      - '.github/workflows/tempo-compatibility.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tempo-compatibility-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  tempo-compatibility:
+    name: tempo/compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Informational baseline for PR 2 — the stub driver always exits 0,
+    # but the Compose lifecycle (pull tempo image, build cerberus image,
+    # build driver image, wait for healthchecks) can legitimately fail
+    # under runner flake. continue-on-error keeps the workflow badge
+    # green during the rollout. PR 7 of the plan promotes this to a
+    # gated required check once nightly is stable for 7 consecutive
+    # runs (per docs/tempo-compliance-plan.md "Per-PR breakdown").
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+
+      # Buildx gives the Compose build cache, multi-arch support, and a
+      # consistent build backend. The harness uses local build contexts
+      # (cerberus + driver), so no remote registry login is needed.
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Run tempo-compatibility harness
+        id: harness
+        # The script handles its own teardown (cleanup trap on EXIT),
+        # so no explicit `docker compose down` step is needed even on
+        # failure. The continue-on-error at job level keeps a non-zero
+        # rc from turning the workflow conclusion red while we're in
+        # informational mode.
+        run: ./harness/tempo-compatibility/scripts/run-tempo-compatibility.sh
+
+      - name: Upload report
+        # `if: always()` so we capture whatever the driver wrote even
+        # when the harness step failed. In PR 2 the stub doesn't write
+        # a report, so this will typically warn "if-no-files-found";
+        # PRs 3-4 will populate the dir.
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: tempo-compatibility-report
+          path: harness/tempo-compatibility/reports/
+          if-no-files-found: warn
+          retention-days: 30

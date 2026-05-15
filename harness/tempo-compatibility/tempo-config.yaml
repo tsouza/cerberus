@@ -1,0 +1,72 @@
+# Minimal single-binary Tempo config for the compatibility harness.
+#
+# Status: PR 2 of docs/tempo-compliance-plan.md. This file pairs with
+# docker-compose.yml — the `tempo` service mounts it at /etc/tempo.yaml.
+#
+# Design notes:
+#
+#   * Single-binary mode (every component in one process). Compatibility
+#     differential testing wants the simplest possible reference Tempo;
+#     a distributor / ingester / compactor split would buy us nothing
+#     here and would make PR 3's deterministic-seed flow harder to
+#     reason about.
+#
+#   * Local block storage under /var/tempo. No S3 / GCS / MinIO — we
+#     deliberately avoid object-storage dependencies; the harness is
+#     about query parity, not durability or scale.
+#
+#   * Receivers: OTLP gRPC + HTTP only. PR 3's seeder fans the same
+#     OTLP batch into Tempo's :4317 and into cerberus's ingest path,
+#     so we only need OTLP. No Jaeger / Zipkin / Kafka receivers.
+#
+#   * No multitenancy. `multitenancy_enabled: false` (the default)
+#     means the harness driver doesn't have to thread X-Scope-OrgID
+#     through every request. Mirrors how the prom harness skips
+#     tenant headers.
+#
+# When the tempo image pin in docker-compose.yml bumps (in lock-step
+# with the tsouza/tempo go.mod replace), revisit this config: Tempo's
+# config schema occasionally renames fields between minor versions.
+
+server:
+  http_listen_port: 3200
+  grpc_listen_port: 9095
+
+# OTLP-only ingest. PR 3 will push identical OTLP batches to this
+# endpoint and to cerberus's OTLP ingest so the read-back diff has
+# a deterministic shared input.
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+# Snappy compression keeps the WAL + block sizes small without buying
+# a dep on cgo zstd. Matches upstream Tempo's "getting started"
+# example values.
+ingester:
+  max_block_duration: 5m
+
+compactor:
+  compaction:
+    block_retention: 1h
+
+storage:
+  trace:
+    backend: local
+    wal:
+      path: /var/tempo/wal
+    local:
+      path: /var/tempo/blocks
+    pool:
+      max_workers: 2
+      queue_depth: 100
+
+# Tempo refuses to start if `metrics_generator` is configured without
+# a remote_write target. The compatibility harness doesn't exercise
+# the metrics-generator path (PR 5 will add TraceQL metrics queries,
+# but those query against pre-ingested spans). Omit the block entirely
+# so the server starts clean.

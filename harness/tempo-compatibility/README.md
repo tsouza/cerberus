@@ -1,10 +1,12 @@
 # Tempo / TraceQL compatibility harness
 
-> Status: **PR 1 (vendor)** of the rollout described in
-> [`docs/tempo-compliance-plan.md`](../../docs/tempo-compliance-plan.md).
-> This directory currently holds **only** a vendored snapshot of
-> `cmd/tempo-vulture/` + `pkg/httpclient/`. There is no Compose stack,
-> no driver, and no CI yet — those follow in PRs 2-7.
+> Status: **PR 2 (compose + stub driver + nightly workflow)** of the
+> rollout described in [`docs/tempo-compliance-plan.md`](../../docs/tempo-compliance-plan.md).
+> This directory holds the vendored snapshot from PR 1 (`upstream/`),
+> the Docker Compose stack standing up reference Tempo + cerberus +
+> ClickHouse, a STUB driver that exits 0, and a nightly /
+> `workflow_dispatch` GitHub Actions lane (informational, not a
+> required check). The real seeder + diff driver follow in PRs 3-4.
 
 ## Why this harness exists
 
@@ -20,39 +22,41 @@ See [`docs/tempo-compliance-plan.md`](../../docs/tempo-compliance-plan.md)
 for the full landscape analysis, the per-PR breakdown, and the diff
 strategy.
 
-## Layout (current — PR 1)
+## Layout (current — PR 2)
 
 ```text
 harness/tempo-compatibility/
   README.md             this file
-  upstream/             vendored snapshot, see ./upstream/README intent below
+  docker-compose.yml    PR 2 — tempo + cerberus + clickhouse + stub driver
+  tempo-config.yaml     PR 2 — reference Tempo (local block storage)
+  scripts/
+    run-tempo-compatibility.sh  PR 2 — `docker compose up --wait` + driver + teardown
+  driver/                       PR 2 — STUB; PRs 3-4 wire the real seeder + differ
+    Dockerfile          PR 2 — multi-stage build of the driver binary
+    main.go             PR 2 — flag-only stub, prints banner + exits 0
+  upstream/             PR 1 — vendored snapshot (read-only reference)
     LICENSE             AGPL-3.0, copied verbatim from grafana/tempo
     VERSION             exact upstream coordinates of the snapshot
     cmd/tempo-vulture/  long-running canary; reused as seeder pattern
     pkg/httpclient/     Tempo HTTP client; reused by the future driver
 ```
 
-## Layout (planned — PRs 2-7)
+## Layout (planned — PRs 3-7)
 
-PRs 2-7 land the Compose stack + cerberus-owned diff driver alongside
-the vendored snapshot:
+PRs 3-7 grow the driver from stub into the real differ:
 
 ```text
 harness/tempo-compatibility/
-  docker-compose.yml          PR 2 — tempo + cerberus + clickhouse + driver
-  tempo-config.yaml           PR 2 — reference Tempo (local block storage)
-  scripts/                    PR 2 — run-tempo-compatibility.sh
-  driver/                     PR 3+ — cerberus-owned (NOT a fork of vulture)
-    main.go
-    seeder.go
-    corpus.go
-    differ.go
-    report.go
+  driver/
+    main.go             PR 3+ — orchestrator (parses flags, dispatches)
+    seeder.go           PR 3  — push OTLP batches to tempo + cerberus
+    corpus.go           PR 4  — TXTAR loader
+    differ.go           PR 4  — JSON-shape diff
+    report.go           PR 4  — markdown report writer
     corpus/
-      smoke.txtar
-      coverage.txtar
-  expected-failures.json      PR 4+
-  upstream/                   PR 1 — already vendored (this PR)
+      smoke.txtar       PR 4  — 10-query smoke set
+      coverage.txtar    PR 5  — ~40 queries, one per TraceQL feature
+  expected-failures.json  PR 4+
 ```
 
 ## What's in `upstream/`
