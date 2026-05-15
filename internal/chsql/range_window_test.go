@@ -17,7 +17,7 @@ import (
 // shape can't synthesise the matcher-derived label set Prom's
 // funcAbsentOverTime emits.
 //
-//   - stdvar_over_time → arrayReduce('varPop', window_vals)
+//   - stdvar_over_time → two-pass Σ(x-μ)²/N (Welford-equivalent precision)
 //   - deriv            → tupleElement(arrayReduce('simpleLinearRegression', xs, ys), 1)
 //   - resets           → count of adjacent pairs where curr < prev
 //   - changes          → count of adjacent pairs where curr != prev
@@ -48,11 +48,27 @@ func TestRangeWindowGapFunctionsEmit(t *testing.T) {
 			name: "stdvar_over_time",
 			fn:   "stdvar_over_time",
 			wantSubstrs: []string{
-				// Population variance — divides squared deviations by N
-				// (matches Prom's Welford estimator). CH's `varPop`
-				// aggregate is the matching kernel.
-				"arrayReduce('varPop', window_vals)",
+				// Two-pass population variance: Σ(x − μ)² / N with μ
+				// computed as arrayAvg(window_vals) and broadcast via
+				// arrayWithConstant so the lambda sees a per-row scalar.
+				// Replaces the one-pass `arrayReduce('varPop', ...)`
+				// kernel which suffers catastrophic cancellation at
+				// value scale 2^31 (issue #400 bucket 1).
+				"arrayMap((x, m) -> (x - m) * (x - m), window_vals, arrayWithConstant(length(window_vals), arrayAvg(window_vals)))",
+				"arraySum(arrayMap",
+				"/ length(window_vals)",
 				// Empty-window drop in outer SELECT.
+				"length(`window_vals`) >= 1",
+			},
+		},
+		{
+			name: "stddev_over_time",
+			fn:   "stddev_over_time",
+			wantSubstrs: []string{
+				// sqrt of the two-pass variance expression.
+				"sqrt(arraySum(arrayMap",
+				"arrayMap((x, m) -> (x - m) * (x - m), window_vals, arrayWithConstant(length(window_vals), arrayAvg(window_vals)))",
+				"/ length(window_vals)",
 				"length(`window_vals`) >= 1",
 			},
 		},
