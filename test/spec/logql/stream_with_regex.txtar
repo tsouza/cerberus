@@ -8,9 +8,9 @@ SELECT * FROM `otel_logs` WHERE match(`ResourceAttributes`[?], ?)
 -- seed --
 CREATE TABLE otel_logs (
     Body String,
-    ResourceAttributes Map(String, String) MATERIALIZED map('env', 'prod')
+    ResourceAttributes Map(String, String) MATERIALIZED map('env', if(Body = 'm1', 'prod', if(Body = 'm2', 'stg', 'dev')))
 ) ENGINE = Memory;
-INSERT INTO otel_logs (Body) VALUES ('m1'), ('m2');
+INSERT INTO otel_logs (Body) VALUES ('m1'), ('m2'), ('m3');
 -- expected_rows --
 [
   ["m1"],

@@ -10,9 +10,12 @@ SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (`ResourceAttr
 -- seed --
 CREATE TABLE otel_logs (
     Body String,
-    ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api', 'env', 'prod')
+    ResourceAttributes Map(String, String) MATERIALIZED map(
+        'job', if(Body = 'two-other-job', 'web', 'api'),
+        'env', if(Body = 'one-other-env', 'dev', 'prod')
+    )
 ) ENGINE = Memory;
-INSERT INTO otel_logs (Body) VALUES ('one'), ('two');
+INSERT INTO otel_logs (Body) VALUES ('one'), ('two'), ('one-other-env'), ('two-other-job');
 -- expected_rows --
 [
   ["one"],

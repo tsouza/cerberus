@@ -10,9 +10,12 @@ SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (`ResourceAttr
 -- seed --
 CREATE TABLE otel_logs (
     Body String,
-    ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api', 'level', 'error')
+    ResourceAttributes Map(String, String) MATERIALIZED map(
+        'job', 'api',
+        'level', if(Body = 'ts info skip', 'info', 'error')
+    )
 ) ENGINE = Memory;
-INSERT INTO otel_logs (Body) VALUES ('ts error oops'), ('ts error retry');
+INSERT INTO otel_logs (Body) VALUES ('ts error oops'), ('ts error retry'), ('ts info skip');
 -- expected_rows --
 [
   ["ts error oops"],

@@ -8,9 +8,9 @@ SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?)
 -- seed --
 CREATE TABLE otel_logs (
     Body String,
-    ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api')
+    ResourceAttributes Map(String, String) MATERIALIZED map('job', if(Body = 'whitespace', 'api', 'web'))
 ) ENGINE = Memory;
-INSERT INTO otel_logs (Body) VALUES ('whitespace');
+INSERT INTO otel_logs (Body) VALUES ('whitespace'), ('other');
 -- expected_rows --
 [
   ["whitespace"]

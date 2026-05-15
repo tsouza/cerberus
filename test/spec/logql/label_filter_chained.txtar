@@ -13,12 +13,18 @@ SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (position(`Bod
 -- seed --
 CREATE TABLE otel_logs (
     Body String,
-    ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api', 'env', 'prod', 'severity', 'high')
+    ResourceAttributes Map(String, String) MATERIALIZED map(
+        'job', 'api',
+        'env', if(Body = 'error: stg-env', 'stg', 'prod'),
+        'severity', if(Body = 'error: low-sev', 'low', 'high')
+    )
 ) ENGINE = Memory;
 INSERT INTO otel_logs (Body) VALUES
     ('error: ouch'),
     ('info: fine'),
-    ('error: again');
+    ('error: again'),
+    ('error: stg-env'),
+    ('error: low-sev');
 -- expected_rows --
 [
   ["error: ouch"],

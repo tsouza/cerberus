@@ -10,9 +10,12 @@ SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (`ResourceAttr
 -- seed --
 CREATE TABLE otel_logs (
     Body String,
-    ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api', 'level', 'ERROR')
+    ResourceAttributes Map(String, String) MATERIALIZED map(
+        'job', 'api',
+        'level', if(Body = 'info log', 'INFO', 'ERROR')
+    )
 ) ENGINE = Memory;
-INSERT INTO otel_logs (Body) VALUES ('error log one'), ('error log two');
+INSERT INTO otel_logs (Body) VALUES ('error log one'), ('error log two'), ('info log');
 -- expected_rows --
 [
   ["error log one"],
