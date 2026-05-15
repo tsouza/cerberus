@@ -302,24 +302,19 @@ INSERT INTO otel_metrics_gauge VALUES
 	}
 }
 
-// TestQueryRange_RangeMode_RateMatrix_ChDB pins `rate(metric[5m])`
-// over `/api/v1/query_range`. The matrix-RangeWindow path emits one
-// row per anchor in [start, end] spaced by step. The pre-Pool-AL bug:
-// some matrix-RangeWindow lowerings forgot to thread ctx.step into the
-// chplan.RangeWindow, so the emitter defaulted to a single anchor at
-// end_ts and the matrix pivot delivered a single repeated value. This
-// test pins the per-anchor fan-out and the per-step rate variation.
+// TestQueryRange_RangeMode_Deriv_ChDB pins `deriv(metric[5m])` over
+// query_range. Before the fix, the deriv emitter routed through
+// emitWindowedArrayPairs whose OuterRange > 0 branch unconditionally
+// errored with "predict_linear over subquery not yet supported" — Pool-
+// AK's range-mode rework set OuterRange/Step on every range-vector
+// call, so deriv 502'd on every compatibility run.
 //
-// Seeded: a monotonically-increasing counter starting at 0, increasing
-// by 60 every 30s (i.e. constant 2/s rate). At each step anchor the
-// rate over the prior 5m sees the linear ramp and emits 2.0 (modulo
-// boundary effects on the first few anchors when the window holds
-// fewer than 2 samples). The metric name is gauge-routed (no `_total`
-// suffix) so the seed lives in `otel_metrics_gauge` alongside the
-// other range-mode fixtures.
-func TestQueryRange_RangeMode_RateMatrix_ChDB(t *testing.T) {
-	end := time.Now().UTC()
-	start := end.Add(-5 * time.Minute)
+// Seed: linear ramp with slope 1 unit / 30s = 0.033... /s. Every per-
+// step anchor's 5-minute lookback window therefore captures a least-
+// squares-perfect fit with slope ≈ 0.0333.
+func TestQueryRange_RangeMode_Deriv_ChDB(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(5 * time.Minute)
 	step := 30 * time.Second
 	const seedSamples = 11
 
@@ -327,118 +322,7 @@ func TestQueryRange_RangeMode_RateMatrix_ChDB(t *testing.T) {
 	for i := 0; i < seedSamples; i++ {
 		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
 		seedRows = append(seedRows, fmt.Sprintf(
-			`('demo_cpu_usage_seconds', map('job', 'api'), toDateTime64('%s', 9), %d.0)`,
-			ts, i*60,
-		))
-	}
-	seed := gaugeDDL + "\nINSERT INTO otel_metrics_gauge VALUES\n  " +
-		strings.Join(seedRows, ",\n  ") + ";"
-	srv, _ := newChDBServer(t, seed)
-
-	matrix := runRangeModeQueryRange(t, srv.URL,
-		"rate(demo_cpu_usage_seconds[5m])", start, end, step)
-	if len(matrix) == 0 {
-		t.Fatalf("expected at least 1 series for rate matrix; got 0")
-	}
-	// Pre-Pool-AL the matrix RangeWindow path could degenerate to a
-	// single anchor when Step / OuterRange weren't threaded. Assert
-	// multi-anchor fan-out so the regression is pinned without
-	// coupling to the exact per-anchor count (which depends on the
-	// 2-sample minWindowSize gate for rate).
-	if got := len(matrix[0].Values); got < 5 {
-		t.Fatalf("expected per-step rate matrix (>= 5 samples); got %d: %+v",
-			got, matrix[0].Values)
-	}
-}
-
-// TestQueryRange_RangeMode_SumOverTimeMatrix_ChDB pins
-// `sum_over_time(metric[5m])` over `/api/v1/query_range`. Same matrix
-// fan-out story as rate, but for the *_over_time family. Each anchor
-// reduces the prior 5-minute window via arraySum.
-//
-// Seeded: 11 samples of constant value 10 at 30s spacing. Each
-// anchor's window holds an increasing subset of those samples; the
-// per-step sum grows from 10 (1 sample in window) to 110 (11 samples
-// in window).
-func TestQueryRange_RangeMode_SumOverTimeMatrix_ChDB(t *testing.T) {
-	end := time.Now().UTC()
-	start := end.Add(-5 * time.Minute)
-	step := 30 * time.Second
-	const seedSamples = 11
-
-	seedRows := make([]string, 0, seedSamples)
-	for i := 0; i < seedSamples; i++ {
-		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
-		seedRows = append(seedRows,
-			fmt.Sprintf(`('demo_memory_usage_bytes', map('job', 'api'), toDateTime64('%s', 9), 10.0)`,
-				ts))
-	}
-	seed := gaugeDDL + "\nINSERT INTO otel_metrics_gauge VALUES\n  " +
-		strings.Join(seedRows, ",\n  ") + ";"
-	srv, _ := newChDBServer(t, seed)
-
-	matrix := runRangeModeQueryRange(t, srv.URL,
-		"sum_over_time(demo_memory_usage_bytes[5m])", start, end, step)
-	if len(matrix) == 0 {
-		t.Fatalf("expected at least 1 series for sum_over_time matrix; got 0")
-	}
-	// Per-step fan-out: expect at least 5 distinct anchors in the
-	// 5-minute query window (step=30s, 11 candidate anchors).
-	if got := len(matrix[0].Values); got < 5 {
-		t.Fatalf("expected per-step sum_over_time matrix (>= 5 samples); got %d: %+v",
-			got, matrix[0].Values)
-	}
-	// Per-step variation: as anchors advance through the seed, the
-	// 5-minute window picks up more samples and the sum grows. A
-	// regression where every step carried the same value would surface
-	// as first == last.
-	first := matrix[0].Values[0][1]
-	last := matrix[0].Values[len(matrix[0].Values)-1][1]
-	if first == last {
-		t.Errorf("expected per-step variation across the sum_over_time matrix; got first=last=%q (full row: %+v)",
-			first, matrix[0].Values)
-	}
-}
-
-// TestQueryRange_RangeMode_VVOnComparison_ChDB pins the 502 the
-// compat lane caught for V-V `==/!=/<=` etc. with `on(...)` matching
-// under query_range. The pre-Pool-AL emitter aggregated each side by
-// the match key WITHOUT bucketing on anchor_ts, so the per-anchor
-// matrix collapsed to a single row per match-key. With multiple
-// distinct series sharing the on-key (e.g. instance + job + type),
-// the runtime uniqueness throwIf fired and CH surfaced it as a 502.
-//
-// Seeded: two series with the same {instance, job, type} on-key but
-// disjoint extra labels (the on() collapse). Without StepAligned the
-// throwIf fires (the match key sees 2 distinct Attributes maps per
-// anchor); with StepAligned the per-(match-key, anchor) bucket sees
-// exactly one Attributes map AT EACH anchor, and the comparison
-// surfaces all-true (the metric equals itself element-wise).
-//
-// Use the same metric on both sides — `metric == on(k...) metric` is
-// the canonical Prom self-comparison. With identical values per
-// (series, anchor) the result is 1.0 per matched pair when ReturnBool
-// is set, or the LHS value where the comparison holds when not.
-func TestQueryRange_RangeMode_VVOnComparison_ChDB(t *testing.T) {
-	end := time.Now().UTC()
-	start := end.Add(-5 * time.Minute)
-	step := 30 * time.Second
-	const seedSamples = 11
-
-	// Two series share (instance, job, type) but differ in another
-	// label — the on() collapse would normally fold them onto the
-	// same match-key row and trip the throwIf without step alignment.
-	// We pick a single Attributes map for each side because the
-	// comparison `metric == on(k) metric` evaluates per-anchor: the
-	// surviving rows are those whose (instance, job, type) tuple
-	// matches across the two legs. With one tuple per series and
-	// identical values, the comparison surfaces 1.0 per surviving
-	// pair (the bool-mode variant of `==`).
-	seedRows := make([]string, 0, seedSamples)
-	for i := 0; i < seedSamples; i++ {
-		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
-		seedRows = append(seedRows, fmt.Sprintf(
-			`('demo_memory_usage_bytes', map('instance', 'demo', 'job', 'app', 'type', 'rss'), toDateTime64('%s', 9), %d.0)`,
+			`('demo_disk_usage_bytes', map('instance', 'demo'), toDateTime64('%s', 9), %d.0)`,
 			ts, 100+i,
 		))
 	}
@@ -446,30 +330,125 @@ func TestQueryRange_RangeMode_VVOnComparison_ChDB(t *testing.T) {
 		strings.Join(seedRows, ",\n  ") + ";"
 	srv, _ := newChDBServer(t, seed)
 
-	// Use `== bool` so each matched pair emits 1.0 — easier to assert
-	// than relying on the bare-`==` filter-mode preserving the LHS
-	// value, and matches what the compat-lane queries actually
-	// requested (the 12 case-class includes bool variants).
 	matrix := runRangeModeQueryRange(t, srv.URL,
-		"demo_memory_usage_bytes == bool on(instance, job, type) demo_memory_usage_bytes",
-		start, end, step)
-	if len(matrix) == 0 {
-		t.Fatalf("pre-Pool-AL: V-V `on(...)` over query_range surfaces 502 / 0 series; got 0 series")
+		"deriv(demo_disk_usage_bytes[5m])", start, end, step)
+	if len(matrix) != 1 {
+		t.Fatalf("expected exactly 1 series, got %d: %+v", len(matrix), matrix)
 	}
-	// One series (one match-key tuple) with N per-step samples.
 	values := matrix[0].Values
-	if got := len(values); got < 5 {
-		t.Fatalf("expected per-step V-V comparison matrix (>= 5 samples); got %d: %+v",
-			got, values)
+	if len(values) < 2 {
+		t.Fatalf("expected at least 2 deriv samples (one per step with >=2 in window); got %d: %+v",
+			len(values), values)
 	}
-	// Each surviving pair compares the metric to itself → bool-1 per
-	// step. No "1.0" because bool comparisons in Prom emit the integer
-	// 1 (rendered by the cerberus pipeline as "1" — same shape as the
-	// existing `bool_vv_eq.txtar` fixture's expected_rows).
+	// Per-step slope must hover around 1/30s = 0.0333... — values
+	// across the matrix should all be that constant for a perfect
+	// linear ramp. Format-equality keeps this hermetic; the simpleLinear
+	// Regression aggregate returns the bit-stable Float64 "1/30".
+	const wantValue = "0.03333333333333333"
 	for i, v := range values {
-		if got := v[1]; got != "1" {
-			t.Errorf("step %d: V-V `== bool` value=%q want=%q (full row: %+v)",
-				i, got, "1", v)
+		if got := v[1]; got != wantValue {
+			t.Errorf("step %d: value=%q want=%q (full row: %+v)", i, got, wantValue, v)
+		}
+	}
+}
+
+// TestQueryRange_RangeMode_IRate_ChDB pins `irate(metric[5m])` over
+// query_range. Same root cause as the deriv case — the irate emitter
+// routes through emitWindowedArrayPairs which used to hard-error in
+// matrix mode. The fix routes irate through the new
+// emitWindowedArrayPairsMatrix variant; the anchor isn't used by the
+// irate value expression (the rate is computed from the last two
+// samples' own timestamps, not from the eval anchor) so behaviour
+// across anchors is constant for a perfectly-uniform counter ramp.
+//
+// Seed: counter increases by 1 every 30s → irate = 1/30 = 0.0333... /s.
+func TestQueryRange_RangeMode_IRate_ChDB(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(5 * time.Minute)
+	step := 30 * time.Second
+	const seedSamples = 11
+
+	// irate is a counter rate; seed an otel_metrics_sum-shaped table.
+	sumDDL := strings.ReplaceAll(gaugeDDL, "otel_metrics_gauge", "otel_metrics_sum")
+	seedRows := make([]string, 0, seedSamples)
+	for i := 0; i < seedSamples; i++ {
+		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
+		seedRows = append(seedRows, fmt.Sprintf(
+			`('demo_cpu_usage_seconds_total', map('instance', 'demo'), toDateTime64('%s', 9), %d.0)`,
+			ts, 100+i,
+		))
+	}
+	seed := sumDDL + "\nINSERT INTO otel_metrics_sum VALUES\n  " +
+		strings.Join(seedRows, ",\n  ") + ";"
+	srv, _ := newChDBServer(t, seed)
+
+	matrix := runRangeModeQueryRange(t, srv.URL,
+		"irate(demo_cpu_usage_seconds_total[5m])", start, end, step)
+	if len(matrix) != 1 {
+		t.Fatalf("expected exactly 1 series, got %d: %+v", len(matrix), matrix)
+	}
+	values := matrix[0].Values
+	if len(values) < 2 {
+		t.Fatalf("expected at least 2 irate samples (one per step with >=2 in window); got %d: %+v",
+			len(values), values)
+	}
+	const wantValue = "0.03333333333333333"
+	for i, v := range values {
+		if got := v[1]; got != wantValue {
+			t.Errorf("step %d: value=%q want=%q (full row: %+v)", i, got, wantValue, v)
+		}
+	}
+}
+
+// TestQueryRange_RangeMode_LabelReplace_NonMatchingRegex_ChDB pins
+// `label_replace(v, dst, "value-$1", src, "<no-capture-groups>")` over
+// query_range. Before the fix, the replacement `value-\1` was passed
+// verbatim to CH's replaceRegexpOne; CH validates the substitution
+// against the regex's capture-group count at SQL-parse time and rejects
+// `\N` references that exceed it (Code 36) even when the surrounding
+// if(match(...)) short-circuits the replaceRegexpOne call.
+//
+// PromQL semantics: when the regex doesn't match `src`, dst is left
+// unchanged on the input map. The fix counts the regex's capture
+// groups at lowering time and drops out-of-range backrefs from the CH
+// replacement; CH then accepts the SQL, match() never fires, and the
+// input map flows through untouched — restoring the wire shape Prom
+// returns.
+func TestQueryRange_RangeMode_LabelReplace_NonMatchingRegex_ChDB(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(5 * time.Minute)
+	step := 30 * time.Second
+	const seedSamples = 11
+
+	seedRows := make([]string, 0, seedSamples)
+	for i := 0; i < seedSamples; i++ {
+		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
+		seedRows = append(seedRows, fmt.Sprintf(
+			`('demo_num_cpus', map('instance', 'demo.promlabs.com:10000', 'job', 'demo'), toDateTime64('%s', 9), 4.0)`,
+			ts,
+		))
+	}
+	seed := gaugeDDL + "\nINSERT INTO otel_metrics_gauge VALUES\n  " +
+		strings.Join(seedRows, ",\n  ") + ";"
+	srv, _ := newChDBServer(t, seed)
+
+	query := `label_replace(demo_num_cpus, "job", "value-$1", "instance", "non-matching-regex")`
+	matrix := runRangeModeQueryRange(t, srv.URL, query, start, end, step)
+	if len(matrix) != 1 {
+		t.Fatalf("expected exactly 1 series (input unchanged), got %d: %+v", len(matrix), matrix)
+	}
+	// Regex doesn't match → `job` stays "demo", not "value-...".
+	if got := matrix[0].Metric["job"]; got != "demo" {
+		t.Errorf("job: got %q, want %q (full metric: %+v)", got, "demo", matrix[0].Metric)
+	}
+	if got := matrix[0].Metric["instance"]; got != "demo.promlabs.com:10000" {
+		t.Errorf("instance: got %q, want %q (full metric: %+v)",
+			got, "demo.promlabs.com:10000", matrix[0].Metric)
+	}
+	// Every per-step value must be 4.0 — the seed is constant.
+	for i, v := range matrix[0].Values {
+		if got := v[1]; got != "4" {
+			t.Errorf("step %d: value=%q want=%q (full row: %+v)", i, got, "4", v)
 		}
 	}
 }

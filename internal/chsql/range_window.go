@@ -209,33 +209,39 @@ func (e *emitter) emitRangeWindowPredictLinear(r *chplan.RangeWindow) error {
 		return fmt.Errorf("%w: predict_linear requires 1 scalar (t), got %d", ErrUnsupported, len(r.Scalars))
 	}
 	t := r.Scalars[0]
-	anchor := anchorExprFrag(r)
-	return e.emitWindowedArrayPairs(r, func(b *Builder) {
-		// arrayMap to derive xs (seconds from anchor) and ys (values).
-		// window_pairs is Array(Tuple(DateTime64(9), Float64)).
-		//
-		// CH's `simpleLinearRegression(x, y)` is an aggregate — it
-		// rejects raw arrays at the call site (ILLEGAL_TYPE_OF_ARGUMENT).
-		// `arrayReduce('simpleLinearRegression', xs, ys)` is the idiom
-		// for applying an aggregate to parallel array columns
-		// row-by-row, matching the per-series shape the window-array
-		// path produces. Mirrors the stddev_over_time / quantile_over_time
-		// emit paths in this file.
-		b.sb.WriteString("if(length(window_pairs) > 1, ")
-		b.sb.WriteString("tupleElement(arrayReduce('simpleLinearRegression', ")
-		b.sb.WriteString("arrayMap(p -> dateDiff('second', ")
-		anchor(b)
-		b.sb.WriteString(", tupleElement(p, 1)), window_pairs), ")
-		b.sb.WriteString("arrayMap(p -> tupleElement(p, 2), window_pairs)")
-		b.sb.WriteString("), 2) + tupleElement(arrayReduce('simpleLinearRegression', ")
-		b.sb.WriteString("arrayMap(p -> dateDiff('second', ")
-		anchor(b)
-		b.sb.WriteString(", tupleElement(p, 1)), window_pairs), ")
-		b.sb.WriteString("arrayMap(p -> tupleElement(p, 2), window_pairs)")
-		b.sb.WriteString("), 1) * ")
-		b.Arg(t)
-		b.sb.WriteString(", nan)")
-	}, 2)
+	// In matrix mode each row carries its own anchor_ts; the anchor
+	// Frag the factory receives below renders the per-row anchor so the
+	// per-sample x-offset (dateDiff('second', anchor, sample_ts)) is
+	// computed against the anchor of THIS row, not r.End.
+	writer := func(anchor Frag) Frag {
+		return func(b *Builder) {
+			// arrayMap to derive xs (seconds from anchor) and ys (values).
+			// window_pairs is Array(Tuple(DateTime64(9), Float64)).
+			//
+			// CH's `simpleLinearRegression(x, y)` is an aggregate — it
+			// rejects raw arrays at the call site (ILLEGAL_TYPE_OF_ARGUMENT).
+			// `arrayReduce('simpleLinearRegression', xs, ys)` is the idiom
+			// for applying an aggregate to parallel array columns
+			// row-by-row, matching the per-series shape the window-array
+			// path produces. Mirrors the stddev_over_time / quantile_over_time
+			// emit paths in this file.
+			b.sb.WriteString("if(length(window_pairs) > 1, ")
+			b.sb.WriteString("tupleElement(arrayReduce('simpleLinearRegression', ")
+			b.sb.WriteString("arrayMap(p -> dateDiff('second', ")
+			anchor(b)
+			b.sb.WriteString(", tupleElement(p, 1)), window_pairs), ")
+			b.sb.WriteString("arrayMap(p -> tupleElement(p, 2), window_pairs)")
+			b.sb.WriteString("), 2) + tupleElement(arrayReduce('simpleLinearRegression', ")
+			b.sb.WriteString("arrayMap(p -> dateDiff('second', ")
+			anchor(b)
+			b.sb.WriteString(", tupleElement(p, 1)), window_pairs), ")
+			b.sb.WriteString("arrayMap(p -> tupleElement(p, 2), window_pairs)")
+			b.sb.WriteString("), 1) * ")
+			b.Arg(t)
+			b.sb.WriteString(", nan)")
+		}
+	}
+	return e.emitWindowedArrayPairsAnchored(r, writer, 2)
 }
 
 // emitRangeWindowHoltWinters emits SQL for `holt_winters(v[range], sf, tf)`.
@@ -314,7 +320,34 @@ func holtWintersValueExpr(sf, tf float64) string {
 // the result (matches Prom's funcRate / funcIrate / funcPredictLinear,
 // which return no sample for those windows). 0 disables the filter
 // (used by LogQL log_rate, which emits 0 for empty windows).
+//
+// When r.OuterRange > 0, emission switches to the matrix path: each
+// series emits one row per anchor across [End-OuterRange, End] spaced
+// by Step (end-inclusive). The outer SELECT additionally projects the
+// anchor timestamp as `anchor_ts`. The value-writer is invoked with
+// the matrix anchor (`anchor_ts`) so anchor-relative expressions
+// (deriv / predict_linear) compute per-anchor results rather than
+// re-anchoring every row at r.End.
 func (e *emitter) emitWindowedArrayPairs(r *chplan.RangeWindow, valueWriter Frag, minWindowSize int) error {
+	// Anchor-free callers pass a verbatim Frag — the factory ignores
+	// its anchor argument and returns it unchanged. The factory form
+	// below threads the anchor into anchor-aware writers (deriv /
+	// predict_linear) without duplicating the dispatch.
+	return e.emitWindowedArrayPairsAnchored(r, func(_ Frag) Frag { return valueWriter }, minWindowSize)
+}
+
+// emitWindowedArrayPairsAnchored is the anchor-aware variant of
+// emitWindowedArrayPairs. The valueWriter is built lazily from the
+// current anchor Frag — `r.End` in instant mode, `anchor_ts` (from the
+// arrayJoin fanout) in matrix mode — so emitters whose per-window value
+// depends on the eval anchor (deriv, predict_linear) emit one row per
+// anchor with the correct per-anchor anchor, not a single row pinned
+// to r.End.
+//
+// Callers whose value expression doesn't reference the anchor (irate)
+// route through emitWindowedArrayPairs and the factory returns the
+// pre-built writer unchanged.
+func (e *emitter) emitWindowedArrayPairsAnchored(r *chplan.RangeWindow, valueWriterFor func(anchor Frag) Frag, minWindowSize int) error {
 	if r.TimestampColumn == "" {
 		return fmt.Errorf("%w: RangeWindow.TimestampColumn unset", ErrUnsupported)
 	}
@@ -322,8 +355,12 @@ func (e *emitter) emitWindowedArrayPairs(r *chplan.RangeWindow, valueWriter Frag
 		return fmt.Errorf("%w: RangeWindow.ValueColumn unset", ErrUnsupported)
 	}
 	if r.OuterRange > 0 {
-		return fmt.Errorf("%w: predict_linear over subquery not yet supported", ErrUnsupported)
+		if r.Step <= 0 {
+			return fmt.Errorf("%w: RangeWindow.OuterRange > 0 requires Step > 0", ErrUnsupported)
+		}
+		return e.emitWindowedArrayPairsMatrix(r, valueWriterFor, minWindowSize)
 	}
+
 	end := endExprFrag(r)
 	rangeNS := r.Range.Nanoseconds()
 	groupFrags, err := e.collectGroupByFrags(r.GroupBy)
@@ -358,7 +395,7 @@ func (e *emitter) emitWindowedArrayPairs(r *chplan.RangeWindow, valueWriter Frag
 	for _, g := range groupFrags {
 		outerSb.Select(g)
 	}
-	outerSb.Select(rawAs(valueWriter, r.ValueColumn))
+	outerSb.Select(rawAs(valueWriterFor(end), r.ValueColumn))
 	if minWindowSize > 0 {
 		outerSb.Where(windowLenAtLeastFrag("window_pairs", minWindowSize))
 	}
@@ -367,11 +404,86 @@ func (e *emitter) emitWindowedArrayPairs(r *chplan.RangeWindow, valueWriter Frag
 	return nil
 }
 
-// anchorExprFrag returns a Frag rendering the RangeWindow's window
-// anchor (End - Offset, or now64(9) - Offset for the zero-End case).
-// Used by predict_linear to compute per-sample seconds-from-anchor.
-func anchorExprFrag(r *chplan.RangeWindow) Frag {
-	return endExprFrag(r)
+// emitWindowedArrayPairsMatrix is the OuterRange > 0 variant of
+// emitWindowedArrayPairs: each series emits N rows, one per anchor
+// across [End-OuterRange, End] spaced by Step (end-inclusive). Mirrors
+// emitWindowedArrayMatrix but exposes `window_pairs` directly without
+// the `window_vals` / `counter_delta` middle layer the values-only
+// shape needs.
+//
+// SQL skeleton (with N = OuterRange/Step + 1):
+//
+//	SELECT series_key, anchor_ts, <valueFrag> AS value FROM (
+//	  SELECT series_key, anchor_ts,
+//	         arrayFilter(p -> p.1 in [anchor_ts - range, anchor_ts], series_array) AS window_pairs
+//	  FROM (
+//	    SELECT series_key, series_array,
+//	      arrayJoin(arrayMap(i -> <end> - toIntervalNanosecond(i * <step_ns>), range(0, N))) AS anchor_ts
+//	    FROM (
+//	      SELECT series_key, arraySort(groupArray((TimeUnix, Value))) AS series_array
+//	      FROM (<input>) GROUP BY series_key
+//	    )
+//	  )
+//	)
+//
+// The value-writer is built from the per-row anchor `anchor_ts` (not
+// r.End) so anchor-relative shapes (deriv, predict_linear) render the
+// correct per-anchor expression at every row.
+func (e *emitter) emitWindowedArrayPairsMatrix(r *chplan.RangeWindow, valueWriterFor func(anchor Frag) Frag, minWindowSize int) error {
+	end := endExprFrag(r)
+	rangeNS := r.Range.Nanoseconds()
+	stepNS := r.Step.Nanoseconds()
+	// End-inclusive anchor count. Truncating division matches Prom.
+	numAnchors := r.OuterRange.Nanoseconds()/stepNS + 1
+	groupFrags, err := e.collectGroupByFrags(r.GroupBy)
+	if err != nil {
+		return err
+	}
+
+	// Innermost SELECT — groupArray of (ts, value), sorted.
+	innermost := NewQuery()
+	for _, g := range groupFrags {
+		innermost.Select(g)
+	}
+	innermost.Select(rawAs(groupArrayPairFrag(r.TimestampColumn, r.ValueColumn), "series_array"))
+	innerSub, err := e.subqueryFrag(r.Input)
+	if err != nil {
+		return err
+	}
+	innermost.From(innerSub)
+	if len(groupFrags) > 0 {
+		innermost.GroupBy(groupFrags...)
+	}
+
+	// Anchor-fanout SELECT — arrayJoin produces one row per anchor.
+	fanout := NewQuery().From(innermost.Frag())
+	for _, g := range groupFrags {
+		fanout.Select(g)
+	}
+	fanout.Select(Col("series_array"))
+	fanout.Select(rawAs(anchorFanoutFrag(end, stepNS, numAnchors), "anchor_ts"))
+
+	// Window-clamp SELECT — arrayFilter to [anchor_ts - range, anchor_ts].
+	innerMid := NewQuery().From(fanout.Frag())
+	for _, g := range groupFrags {
+		innerMid.Select(g)
+	}
+	innerMid.Select(Col("anchor_ts"))
+	innerMid.Select(rawAs(windowFilterPairsFrag(verbatim("anchor_ts"), rangeNS), "window_pairs"))
+
+	// Outer SELECT — per-(series, anchor) row.
+	outer := NewQuery().From(innerMid.Frag())
+	for _, g := range groupFrags {
+		outer.Select(g)
+	}
+	outer.Select(Col("anchor_ts"))
+	outer.Select(rawAs(valueWriterFor(verbatim("anchor_ts")), r.ValueColumn))
+	if minWindowSize > 0 {
+		outer.Where(windowLenAtLeastFrag("window_pairs", minWindowSize))
+	}
+
+	e.emitSelect(outer)
+	return nil
 }
 
 // endExprFrag returns a Frag rendering `<End> [- toIntervalNanosecond(<offset>)]`.
@@ -935,15 +1047,21 @@ func (e *emitter) emitRangeWindowAbsentOverTime(r *chplan.RangeWindow) error {
 // idiom — but pulls slope only (no `+ slope * t` horizon arithmetic
 // and no t scalar).
 func (e *emitter) emitRangeWindowDeriv(r *chplan.RangeWindow) error {
-	anchor := anchorExprFrag(r)
-	return e.emitWindowedArrayPairs(r, func(b *Builder) {
-		b.sb.WriteString("if(length(window_pairs) > 1, tupleElement(arrayReduce('simpleLinearRegression', ")
-		b.sb.WriteString("arrayMap(p -> dateDiff('second', ")
-		anchor(b)
-		b.sb.WriteString(", tupleElement(p, 1)), window_pairs), ")
-		b.sb.WriteString("arrayMap(p -> tupleElement(p, 2), window_pairs)")
-		b.sb.WriteString("), 1), nan)")
-	}, 2)
+	// In matrix mode each row's anchor is `anchor_ts` from the arrayJoin
+	// fanout; in instant mode it's r.End (or now64(9) for zero-time).
+	// Use the factory form so the per-sample seconds-from-anchor
+	// computation references the correct per-row anchor.
+	writer := func(anchor Frag) Frag {
+		return func(b *Builder) {
+			b.sb.WriteString("if(length(window_pairs) > 1, tupleElement(arrayReduce('simpleLinearRegression', ")
+			b.sb.WriteString("arrayMap(p -> dateDiff('second', ")
+			anchor(b)
+			b.sb.WriteString(", tupleElement(p, 1)), window_pairs), ")
+			b.sb.WriteString("arrayMap(p -> tupleElement(p, 2), window_pairs)")
+			b.sb.WriteString("), 1), nan)")
+		}
+	}
+	return e.emitWindowedArrayPairsAnchored(r, writer, 2)
 }
 
 // emitRangeWindowResets emits SQL for `resets(v[range])`.
