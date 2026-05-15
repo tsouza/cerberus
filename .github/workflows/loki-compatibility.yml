@@ -1,0 +1,115 @@
+name: loki-compatibility
+
+# Status: PR 4 of docs/loki-compliance-plan.md. The diff driver this
+# workflow invokes (built by harness/loki-compatibility/scripts/run-
+# loki-compatibility.sh from the vendored grafana/loki:pkg/logql/bench
+# subtree) lands in PR 3 (#387) on top of the corpus from PR 2 (#369).
+# The PR-1 scaffold (#368) already provided the docker-compose stack +
+# seeder this workflow boots.
+#
+# Like the prometheus/compliance and tempo/compatibility siblings, this
+# lane is informational — the LogQL surface is still landing and the
+# upstream selector vocabulary intentionally mismatches cerberus's
+# seeded fixture today, so a non-zero diff exit is expected. Promotion
+# to a required PR check tracks PR 5 of the plan (cerberus-owned
+# driver with report-format parity) and the wider LogQL milestone
+# graduation in docs/roadmap.md.
+#
+# Triggers:
+#   * push to main       — informational only. The job-level
+#                          continue-on-error keeps the workflow
+#                          conclusion green so this is not a required
+#                          check by accident. Path filter scoped to
+#                          inputs that can affect parity drift.
+#   * schedule           — nightly cron, offset from sibling harnesses
+#                          to spread runner load (compatibility 04:11,
+#                          tempo-compatibility 04:23, this one 04:37).
+#   * workflow_dispatch  — manual runs from the GH UI.
+#
+# Per ~/.claude/CI_STEPS.md, every step uses a first-party / well-known
+# Action — no `curl | sh` installs. Actions used here:
+#   * actions/checkout@v6           — stdlib.
+#   * actions/setup-go@v6           — `go run ./cmd/seed` + `go test -c`
+#                                     for the vendored bench driver.
+#   * docker/setup-buildx-action@v3 — buildkit-backed compose build
+#                                     (clickhouse + reference Loki +
+#                                     cerberus image).
+#   * actions/upload-artifact@v7    — diff report.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      # Restrict to changes that can plausibly shift LogQL parity.
+      # Cerberus-wide refactors are already covered by ci.yml + the
+      # PromQL compatibility lane.
+      - 'internal/api/loki/**'
+      - 'internal/logql/**'
+      - 'harness/loki-compatibility/**'
+      - '.github/workflows/loki-compatibility.yml'
+  schedule:
+    # Nightly at 04:37 UTC. Offset from compatibility.yml (04:11),
+    # tempo-compatibility.yml (04:23) and the e2e dashboard run so
+    # concurrent runs don't fight for the ubuntu-latest pool.
+    - cron: '37 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: loki-compatibility-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  loki-compatibility:
+    name: loki/compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Informational baseline. The run-loki-compatibility.sh script
+    # exits non-zero on any diff (per its documented exit table in
+    # PR 387: rc=1 on diff, rc>=2 on harness failure), and today's
+    # seeded fixture does not satisfy the upstream ${SELECTOR}
+    # vocabulary — see harness/loki-compatibility/cerberus-test-
+    # queries.yml. continue-on-error keeps the workflow badge green
+    # while we're in informational mode. Promotion to a required PR
+    # check tracks PR 5 of the rollout (cerberus-owned driver) and
+    # docs/roadmap.md.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+
+      # The run script does `go run ./cmd/seed` + `go test -tags=
+      # remote_correctness -c` of the vendored bench driver, so we
+      # need a Go toolchain. setup-go honours go.mod's `go` directive
+      # and pulls the matching toolchain.
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      # Buildx gives the Compose build cache + a consistent backend
+      # for the local cerberus image context.
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Run loki-compatibility harness
+        id: harness
+        # The script handles its own teardown via an EXIT trap
+        # (compose down -v + go.mod / go.sum revert), so no explicit
+        # cleanup step is needed even on failure. job-level
+        # continue-on-error keeps a non-zero rc informational.
+        run: ./harness/loki-compatibility/scripts/run-loki-compatibility.sh
+
+      - name: Upload report
+        # `if: always()` so we capture whatever the driver wrote even
+        # when the harness step failed. The script writes the raw
+        # `go test -v` stream to harness/loki-compatibility/reports/
+        # diff.json (PR 3 contract); PR 5 of the rollout will swap in
+        # a cerberus-owned report shape that matches the Prom harness.
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: loki-compatibility-report
+          path: harness/loki-compatibility/reports/
+          if-no-files-found: warn
+          retention-days: 30
