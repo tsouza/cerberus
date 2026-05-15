@@ -1,5 +1,6 @@
 // Corpus loader for the Tempo / TraceQL compatibility differ
-// (PR 4 of docs/tempo-compliance-plan.md).
+// (PR 4 of docs/tempo-compliance-plan.md; extended in PR 6 to cover
+// the four tag / tag-values endpoints).
 //
 // The format is a lightweight TXTAR variant — same shape as
 // harness/prometheus-compliance/shadow/corpus.go — so the parser
@@ -7,11 +8,28 @@
 // non-header line as section body. The supported sections:
 //
 //	-- name --                  short identifier, used in the report
-//	-- query --                 the TraceQL expression
-//	-- endpoint --              one of: search | search_recent | traces
+//	-- query --                 the TraceQL expression (search endpoints)
+//	-- endpoint --              one of: search | search_recent | traces |
+//	                            tags_v1 | tags_v2 | tag_values_v1 |
+//	                            tag_values_v2
 //	-- traceid_template --      a template like "{svc}/{idx}" (only for `traces`)
+//	-- tag_name --              attribute key whose values to enumerate
+//	                            (tag_values_v1 / tag_values_v2 only)
+//	-- scope --                 optional `?scope=` filter for tags_v2 (one of
+//	                            resource | span | intrinsic | none); empty
+//	                            omits the parameter so both backends return
+//	                            the unfiltered scope set
 //	-- expected_min_traces --   integer; minimum traces both sides must return
 //	-- expected_max_traces --   integer; maximum traces either side may return
+//	-- expected_min_values --   integer; minimum list cardinality for tag /
+//	                            tag-values endpoints
+//	-- expected_max_values --   integer; maximum list cardinality for tag /
+//	                            tag-values endpoints
+//	-- expected_values --       newline-separated subset that must appear in
+//	                            the response list (tag-names or tag-values)
+//	-- expected_scopes --       newline-separated subset of scope names
+//	                            (resource / span / intrinsic) that must
+//	                            appear in tags_v2 responses
 //	-- expected_services --     newline-separated list of `service.name` values
 //	                            that should appear in `rootServiceName`
 //	-- expected_root_name_re -- Go regexp; every returned trace's rootTraceName
@@ -63,9 +81,13 @@ type CorpusCase struct {
 
 	// Endpoint selects the HTTP path the differ hits:
 	//
-	//   * search         GET /api/search?q=<TraceQL>
-	//   * search_recent  GET /api/search/recent (TraceQL ignored)
-	//   * traces         GET /api/traces/<id>   (TraceIDTemplate populated)
+	//   * search          GET /api/search?q=<TraceQL>
+	//   * search_recent   GET /api/search/recent (TraceQL ignored)
+	//   * traces          GET /api/traces/<id>   (TraceIDTemplate populated)
+	//   * tags_v1         GET /api/search/tags
+	//   * tags_v2         GET /api/v2/search/tags[?scope=<Scope>]
+	//   * tag_values_v1   GET /api/search/tag/{TagName}/values
+	//   * tag_values_v2   GET /api/v2/search/tag/{TagName}/values
 	//
 	// The seeder pushes data with deterministic trace IDs derived from
 	// (service, traceIdx); see TraceIDTemplate below for the format.
@@ -78,6 +100,16 @@ type CorpusCase struct {
 	// from the binary trace ID keeps the corpus file human-editable.
 	TraceIDTemplate string
 
+	// TagName is the {name} path component for the tag_values_v1 /
+	// tag_values_v2 endpoints. Required for those two endpoints, unused
+	// elsewhere.
+	TagName string
+
+	// Scope is the optional `?scope=` query parameter for tags_v2. One of
+	// "resource" / "span" / "intrinsic" / "none". Empty leaves the
+	// parameter off the URL (Tempo defaults to returning every scope).
+	Scope string
+
 	// SkipReason, when non-empty, makes the case parse but skip during
 	// diffing. Used to declare PR-5-shaped cases (metrics endpoints)
 	// in the smoke corpus so the file stays the single source of truth
@@ -88,6 +120,20 @@ type CorpusCase struct {
 	// backends must agree with. Zero (the default) disables the bound.
 	ExpectedMinTraces int
 	ExpectedMaxTraces int
+
+	// ExpectedMinValues / ExpectedMaxValues bound the list-cardinality
+	// of the tag / tag-values endpoints. Zero disables.
+	ExpectedMinValues int
+	ExpectedMaxValues int
+
+	// ExpectedValues is a subset-must-be-present assertion for the
+	// tag-names list (tags_v1 / tags_v2 flattened) or the tag-values list
+	// (tag_values_v1 / tag_values_v2). Empty disables.
+	ExpectedValues []string
+
+	// ExpectedScopes is a subset-must-be-present assertion for the
+	// tags_v2 response (the `Scopes[*].Name` strings). Empty disables.
+	ExpectedScopes []string
 
 	// ExpectedServices is a set membership assertion: every value listed
 	// here must appear in at least one returned trace's rootServiceName.
@@ -120,9 +166,15 @@ const (
 	secQuery           = "query"
 	secEndpoint        = "endpoint"
 	secTraceIDTemplate = "traceid_template"
+	secTagName         = "tag_name"
+	secScope           = "scope"
 	secSkipReason      = "skip_reason"
 	secMinTraces       = "expected_min_traces"
 	secMaxTraces       = "expected_max_traces"
+	secMinValues       = "expected_min_values"
+	secMaxValues       = "expected_max_values"
+	secValues          = "expected_values"
+	secScopes          = "expected_scopes"
 	secServices        = "expected_services"
 	secRootNameRE      = "expected_root_name_re"
 )
@@ -159,21 +211,26 @@ func applySection(cur *CorpusCase, section, body string) error {
 		cur.Endpoint = body
 	case secTraceIDTemplate:
 		cur.TraceIDTemplate = body
+	case secTagName:
+		cur.TagName = body
+	case secScope:
+		cur.Scope = body
 	case secSkipReason:
 		cur.SkipReason = body
 	case secMinTraces:
 		return applyIntSection(body, "expected_min_traces", &cur.ExpectedMinTraces)
 	case secMaxTraces:
 		return applyIntSection(body, "expected_max_traces", &cur.ExpectedMaxTraces)
+	case secMinValues:
+		return applyIntSection(body, "expected_min_values", &cur.ExpectedMinValues)
+	case secMaxValues:
+		return applyIntSection(body, "expected_max_values", &cur.ExpectedMaxValues)
+	case secValues:
+		appendNonEmptyLines(body, &cur.ExpectedValues)
+	case secScopes:
+		appendNonEmptyLines(body, &cur.ExpectedScopes)
 	case secServices:
-		if body == "" {
-			return nil
-		}
-		for _, line := range strings.Split(body, "\n") {
-			if s := strings.TrimSpace(line); s != "" {
-				cur.ExpectedServices = append(cur.ExpectedServices, s)
-			}
-		}
+		appendNonEmptyLines(body, &cur.ExpectedServices)
 	case secRootNameRE:
 		if body == "" {
 			return nil
@@ -185,6 +242,21 @@ func applySection(cur *CorpusCase, section, body string) error {
 		cur.ExpectedRootNameRE = re
 	}
 	return nil
+}
+
+// appendNonEmptyLines splits `body` on newlines and appends every
+// trimmed non-empty line to `*dst`. Pulled out so the multi-line
+// subset assertions (expected_services / expected_values /
+// expected_scopes) share one parse path instead of three near-duplicates.
+func appendNonEmptyLines(body string, dst *[]string) {
+	if body == "" {
+		return
+	}
+	for _, line := range strings.Split(body, "\n") {
+		if s := strings.TrimSpace(line); s != "" {
+			*dst = append(*dst, s)
+		}
+	}
 }
 
 func applyIntSection(body, name string, dst *int) error {
@@ -205,21 +277,38 @@ func validateCase(cur CorpusCase, ord int) (CorpusCase, error) {
 	if cur.Name == "" {
 		return cur, fmt.Errorf("case missing -- name -- (case #%d)", ord)
 	}
-	if cur.Query == "" && cur.Endpoint != "search_recent" {
-		return cur, fmt.Errorf("case %q missing -- query -- (search_recent is the only endpoint that may omit it)", cur.Name)
-	}
 	if cur.Endpoint == "" {
 		cur.Endpoint = "search"
 	}
+	if !isTagEndpoint(cur.Endpoint) && cur.Query == "" && cur.Endpoint != "search_recent" {
+		return cur, fmt.Errorf("case %q missing -- query -- (search_recent and the four tag endpoints are the only kinds that may omit it)", cur.Name)
+	}
 	switch cur.Endpoint {
-	case "search", "search_recent", "traces":
+	case "search", "search_recent", "traces",
+		"tags_v1", "tags_v2", "tag_values_v1", "tag_values_v2":
 	default:
-		return cur, fmt.Errorf("case %q: unknown endpoint %q (want search | search_recent | traces)", cur.Name, cur.Endpoint)
+		return cur, fmt.Errorf("case %q: unknown endpoint %q (want search | search_recent | traces | tags_v1 | tags_v2 | tag_values_v1 | tag_values_v2)", cur.Name, cur.Endpoint)
 	}
 	if cur.Endpoint == "traces" && cur.TraceIDTemplate == "" {
 		return cur, fmt.Errorf("case %q: endpoint=traces requires -- traceid_template --", cur.Name)
 	}
+	if (cur.Endpoint == "tag_values_v1" || cur.Endpoint == "tag_values_v2") && cur.TagName == "" {
+		return cur, fmt.Errorf("case %q: endpoint=%s requires -- tag_name --", cur.Name, cur.Endpoint)
+	}
+	if cur.Scope != "" && cur.Endpoint != "tags_v2" {
+		return cur, fmt.Errorf("case %q: -- scope -- is only valid for endpoint=tags_v2 (got %s)", cur.Name, cur.Endpoint)
+	}
 	return cur, nil
+}
+
+// isTagEndpoint reports whether the given endpoint is one of the four
+// tag / tag-values endpoints, which all have no TraceQL query slot.
+func isTagEndpoint(ep string) bool {
+	switch ep {
+	case "tags_v1", "tags_v2", "tag_values_v1", "tag_values_v2":
+		return true
+	}
+	return false
 }
 
 // isKnownSection reports whether the given header name is a recognized
@@ -227,8 +316,10 @@ func validateCase(cur CorpusCase, ord int) (CorpusCase, error) {
 // boundary).
 func isKnownSection(name string) bool {
 	switch name {
-	case secQuery, secEndpoint, secTraceIDTemplate, secSkipReason,
-		secMinTraces, secMaxTraces, secServices, secRootNameRE:
+	case secQuery, secEndpoint, secTraceIDTemplate, secTagName, secScope,
+		secSkipReason,
+		secMinTraces, secMaxTraces, secMinValues, secMaxValues,
+		secValues, secScopes, secServices, secRootNameRE:
 		return true
 	}
 	return false

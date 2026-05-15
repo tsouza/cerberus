@@ -217,13 +217,40 @@ func diffCase(ctx context.Context, client *http.Client, tc CorpusCase, opts case
 
 	// Differential diff. The case sets some upper bound on what we
 	// can expect to agree on; the structural diff is independent.
-	d, err := Compare(tempoBody, cerbBody, "tempo", "cerberus", DefaultDiffOptions())
+	// Dispatch by endpoint kind: trace endpoints use the SearchResponse
+	// canonical-key diff; the four tag endpoints diff the string-list
+	// envelope; tag-values v2 additionally checks the Type field per
+	// matched value. Keeping the dispatch here (vs threading a closure
+	// through every helper) keeps the runtime branches local to where
+	// the response shapes diverge.
+	d, err := compareForEndpoint(tc, tempoBody, cerbBody)
 	if err != nil {
 		res.HardError = fmt.Sprintf("diff: %v", err)
 		return res
 	}
 	res.Diff = d
 	return res
+}
+
+// compareForEndpoint runs the right structural-diff function for the
+// case's endpoint kind. The four tag endpoints share `CompareTagNames`
+// (envelope is a flat string set on V1 + a flatten-the-scopes view on
+// V2) and `CompareTagValues` (envelope is a flat list on V1, typed
+// objects on V2 — the differ unifies on the `Value` field and reports
+// `Type` mismatches as field_mismatch reasons).
+func compareForEndpoint(tc CorpusCase, tempoBody, cerbBody []byte) (Diff, error) {
+	switch tc.Endpoint {
+	case "tags_v1":
+		return CompareTagNames(tempoBody, cerbBody, "tempo", "cerberus", false)
+	case "tags_v2":
+		return CompareTagNames(tempoBody, cerbBody, "tempo", "cerberus", true)
+	case "tag_values_v1":
+		return CompareTagValues(tempoBody, cerbBody, "tempo", "cerberus", false)
+	case "tag_values_v2":
+		return CompareTagValues(tempoBody, cerbBody, "tempo", "cerberus", true)
+	default:
+		return Compare(tempoBody, cerbBody, "tempo", "cerberus", DefaultDiffOptions())
+	}
 }
 
 // buildURL composes the per-endpoint URL for a corpus case. The
@@ -250,6 +277,25 @@ func buildURL(base string, tc CorpusCase, backend string, startTS, endTS time.Ti
 			return "", err
 		}
 		u.Path += "/api/traces/" + id
+	case "tags_v1":
+		u.Path += "/api/search/tags"
+		q.Set("start", fmt.Sprintf("%d", startTS.Unix()))
+		q.Set("end", fmt.Sprintf("%d", endTS.Unix()))
+	case "tags_v2":
+		u.Path += "/api/v2/search/tags"
+		q.Set("start", fmt.Sprintf("%d", startTS.Unix()))
+		q.Set("end", fmt.Sprintf("%d", endTS.Unix()))
+		if tc.Scope != "" {
+			q.Set("scope", tc.Scope)
+		}
+	case "tag_values_v1":
+		u.Path += "/api/search/tag/" + tc.TagName + "/values"
+		q.Set("start", fmt.Sprintf("%d", startTS.Unix()))
+		q.Set("end", fmt.Sprintf("%d", endTS.Unix()))
+	case "tag_values_v2":
+		u.Path += "/api/v2/search/tag/" + tc.TagName + "/values"
+		q.Set("start", fmt.Sprintf("%d", startTS.Unix()))
+		q.Set("end", fmt.Sprintf("%d", endTS.Unix()))
 	default:
 		return "", fmt.Errorf("unsupported endpoint %q", tc.Endpoint)
 	}

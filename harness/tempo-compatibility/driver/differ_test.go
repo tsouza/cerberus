@@ -227,6 +227,269 @@ func TestCanonicalizeJSON_StableKeyOrder(t *testing.T) {
 	}
 }
 
+func TestCompareTagNames_V1Identical(t *testing.T) {
+	t.Parallel()
+	a := []byte(`{"tagNames":["a","b","c"]}`)
+	b := []byte(`{"tagNames":["c","b","a"]}`) // different order
+	d, err := CompareTagNames(a, b, "tempo", "cerberus", false)
+	if err != nil {
+		t.Fatalf("CompareTagNames: %v", err)
+	}
+	if !d.Equal {
+		t.Fatalf("expected Equal on identical sets, got %+v", d)
+	}
+	if d.MatchedCount != 3 {
+		t.Fatalf("MatchedCount = %d, want 3", d.MatchedCount)
+	}
+}
+
+func TestCompareTagNames_V1MissingInB(t *testing.T) {
+	t.Parallel()
+	a := []byte(`{"tagNames":["a","b","c"]}`)
+	b := []byte(`{"tagNames":["a","b"]}`)
+	d, err := CompareTagNames(a, b, "tempo", "cerberus", false)
+	if err != nil {
+		t.Fatalf("CompareTagNames: %v", err)
+	}
+	if d.Equal {
+		t.Fatal("expected Equal=false on differing sets")
+	}
+	foundMissing := false
+	foundCard := false
+	for _, r := range d.Reasons {
+		if r.Kind == "missing_in_b" && strings.Contains(r.Detail, `"c"`) {
+			foundMissing = true
+		}
+		if r.Kind == "cardinality" {
+			foundCard = true
+		}
+	}
+	if !foundMissing {
+		t.Errorf("expected missing_in_b reason for 'c', got %+v", d.Reasons)
+	}
+	if !foundCard {
+		t.Errorf("expected cardinality reason, got %+v", d.Reasons)
+	}
+}
+
+func TestCompareTagNames_V2FlattensScopes(t *testing.T) {
+	t.Parallel()
+	a := []byte(`{"scopes":[
+        {"name":"resource","tags":["service.name"]},
+        {"name":"span","tags":["http.method"]},
+        {"name":"intrinsic","tags":["name","kind"]}
+    ]}`)
+	b := []byte(`{"scopes":[
+        {"name":"resource","tags":["service.name"]},
+        {"name":"span","tags":["http.method"]},
+        {"name":"intrinsic","tags":["name","kind"]}
+    ]}`)
+	d, err := CompareTagNames(a, b, "tempo", "cerberus", true)
+	if err != nil {
+		t.Fatalf("CompareTagNames: %v", err)
+	}
+	if !d.Equal {
+		t.Fatalf("expected Equal, got %+v", d)
+	}
+}
+
+func TestCompareTagNames_V2ScopeMismatchSurfaces(t *testing.T) {
+	t.Parallel()
+	// Same tag-names, different scope partition — only happens when the
+	// `?scope=` filter is honoured on one side but not the other. The
+	// differ reports a scope_mismatch reason in addition to the (zero)
+	// tag-name set diff.
+	a := []byte(`{"scopes":[
+        {"name":"resource","tags":["service.name"]}
+    ]}`)
+	b := []byte(`{"scopes":[
+        {"name":"resource","tags":["service.name"]},
+        {"name":"span","tags":[]},
+        {"name":"intrinsic","tags":[]}
+    ]}`)
+	d, err := CompareTagNames(a, b, "tempo", "cerberus", true)
+	if err != nil {
+		t.Fatalf("CompareTagNames: %v", err)
+	}
+	if d.Equal {
+		t.Fatal("expected Equal=false on differing scope partition")
+	}
+	foundScope := false
+	for _, r := range d.Reasons {
+		if r.Kind == "scope_mismatch" {
+			foundScope = true
+		}
+	}
+	if !foundScope {
+		t.Fatalf("expected scope_mismatch reason, got %+v", d.Reasons)
+	}
+}
+
+func TestCompareTagValues_V1SetDiff(t *testing.T) {
+	t.Parallel()
+	a := []byte(`{"tagValues":["checkout","payments","search","shipping"]}`)
+	b := []byte(`{"tagValues":["checkout","payments"]}`)
+	d, err := CompareTagValues(a, b, "tempo", "cerberus", false)
+	if err != nil {
+		t.Fatalf("CompareTagValues: %v", err)
+	}
+	if d.Equal {
+		t.Fatal("expected Equal=false on differing sets")
+	}
+	count := 0
+	for _, r := range d.Reasons {
+		if r.Kind == "missing_in_b" {
+			count++
+		}
+	}
+	if count != 2 {
+		t.Fatalf("expected 2 missing_in_b reasons, got %d (%+v)", count, d.Reasons)
+	}
+}
+
+func TestCompareTagValues_V2TypeMismatchFlagged(t *testing.T) {
+	t.Parallel()
+	a := []byte(`{"tagValues":[{"type":"string","value":"checkout"}]}`)
+	b := []byte(`{"tagValues":[{"type":"int","value":"checkout"}]}`)
+	d, err := CompareTagValues(a, b, "tempo", "cerberus", true)
+	if err != nil {
+		t.Fatalf("CompareTagValues: %v", err)
+	}
+	if d.Equal {
+		t.Fatal("expected Equal=false on type mismatch")
+	}
+	found := false
+	for _, r := range d.Reasons {
+		if r.Kind == "field_mismatch" && strings.Contains(r.Detail, "type") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected type field_mismatch, got %+v", d.Reasons)
+	}
+}
+
+func TestCompareTagValues_V2EmptyBothSides(t *testing.T) {
+	t.Parallel()
+	a := []byte(`{"tagValues":[]}`)
+	b := []byte(`{"tagValues":[]}`)
+	d, err := CompareTagValues(a, b, "tempo", "cerberus", true)
+	if err != nil {
+		t.Fatalf("CompareTagValues: %v", err)
+	}
+	if !d.Equal {
+		t.Fatalf("expected Equal on empty both sides, got %+v", d)
+	}
+}
+
+func TestAssertCase_TagsV2ExpectedValuesAndScopes(t *testing.T) {
+	t.Parallel()
+	tc := CorpusCase{
+		Name:           "x",
+		Endpoint:       "tags_v2",
+		ExpectedValues: []string{"service.name"},
+		ExpectedScopes: []string{"resource"},
+	}
+	body := []byte(`{"scopes":[
+        {"name":"resource","tags":["service.name"]}
+    ]}`)
+	reasons, err := AssertCase(tc, body, "tempo")
+	if err != nil {
+		t.Fatalf("AssertCase: %v", err)
+	}
+	if len(reasons) != 0 {
+		t.Fatalf("expected no reasons, got %+v", reasons)
+	}
+}
+
+func TestAssertCase_TagsV2MissingExpectedScope(t *testing.T) {
+	t.Parallel()
+	tc := CorpusCase{
+		Name:           "x",
+		Endpoint:       "tags_v2",
+		ExpectedScopes: []string{"resource"},
+	}
+	body := []byte(`{"scopes":[
+        {"name":"span","tags":[]}
+    ]}`)
+	reasons, err := AssertCase(tc, body, "cerberus")
+	if err != nil {
+		t.Fatalf("AssertCase: %v", err)
+	}
+	found := false
+	for _, r := range reasons {
+		if strings.Contains(r.Detail, `expected scope "resource"`) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected scope-missing reason, got %+v", reasons)
+	}
+}
+
+func TestAssertCase_TagValuesMinValues(t *testing.T) {
+	t.Parallel()
+	tc := CorpusCase{
+		Name:              "x",
+		Endpoint:          "tag_values_v1",
+		TagName:           "service.name",
+		ExpectedMinValues: 3,
+	}
+	body := []byte(`{"tagValues":["checkout","payments"]}`)
+	reasons, err := AssertCase(tc, body, "tempo")
+	if err != nil {
+		t.Fatalf("AssertCase: %v", err)
+	}
+	if len(reasons) == 0 || !strings.Contains(reasons[0].Detail, "want >= 3") {
+		t.Fatalf("expected min-values reason, got %+v", reasons)
+	}
+}
+
+func TestAssertCase_TagValuesMaxValues(t *testing.T) {
+	t.Parallel()
+	tc := CorpusCase{
+		Name:              "x",
+		Endpoint:          "tag_values_v2",
+		TagName:           "service.name",
+		ExpectedMaxValues: 1,
+	}
+	body := []byte(`{"tagValues":[
+        {"type":"string","value":"checkout"},
+        {"type":"string","value":"payments"}
+    ]}`)
+	reasons, err := AssertCase(tc, body, "tempo")
+	if err != nil {
+		t.Fatalf("AssertCase: %v", err)
+	}
+	if len(reasons) == 0 || !strings.Contains(reasons[0].Detail, "want <= 1") {
+		t.Fatalf("expected max-values reason, got %+v", reasons)
+	}
+}
+
+func TestAssertCase_TagValuesExpectedValuesMissing(t *testing.T) {
+	t.Parallel()
+	tc := CorpusCase{
+		Name:           "x",
+		Endpoint:       "tag_values_v1",
+		TagName:        "service.name",
+		ExpectedValues: []string{"checkout", "shipping"},
+	}
+	body := []byte(`{"tagValues":["checkout","payments"]}`)
+	reasons, err := AssertCase(tc, body, "tempo")
+	if err != nil {
+		t.Fatalf("AssertCase: %v", err)
+	}
+	found := false
+	for _, r := range reasons {
+		if strings.Contains(r.Detail, `"shipping"`) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected reason flagging shipping, got %+v", reasons)
+	}
+}
+
 func TestRenderReport_Roundtrip(t *testing.T) {
 	t.Parallel()
 	results := []CaseResult{
