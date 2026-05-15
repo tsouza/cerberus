@@ -220,9 +220,11 @@ func TestLower_VectorMatch_Cardinality(t *testing.T) {
 		if !strings.Contains(sql, "GROUP BY `MetricName`, `Attributes`)) AS R") {
 			t.Errorf("expected right side per-series aggregation; got:\n%s", sql)
 		}
-		// Output MetricName / TimeUnix come from R (the many side).
-		if !strings.Contains(sql, "SELECT R.`MetricName`,") {
-			t.Errorf("expected output to project R.MetricName; got:\n%s", sql)
+		// Output MetricName is empty (arithmetic V-V drops `__name__`
+		// per PromQL semantics, #355). TimeUnix still comes from R
+		// (the many side).
+		if !strings.Contains(sql, "SELECT ? AS `MetricName`,") {
+			t.Errorf("expected output MetricName to be the empty string (arithmetic V-V drops __name__); got:\n%s", sql)
 		}
 		if !strings.Contains(sql, "R.`TimeUnix`") {
 			t.Errorf("expected output to project R.TimeUnix; got:\n%s", sql)

@@ -1,26 +1,27 @@
 -- query.promql --
 http_server_request_duration_count - ignoring(instance) http_server_request_duration_count
 -- sql --
-SELECT L.`MetricName`, L.`Attributes`, L.`TimeUnix`, (L.`Value` - R.`Value`) AS `Value` FROM (SELECT `_join_MetricName` AS `MetricName`, `_join_Attributes` AS `Attributes`, `_join_TimeUnix` AS `TimeUnix`, `_join_Value` AS `Value` FROM (SELECT argMax(`MetricName`, `TimeUnix`) AS `_join_MetricName`, argMax(`Attributes`, `TimeUnix`) AS `_join_Attributes`, max(`TimeUnix`) AS `_join_TimeUnix`, argMax(`Value`, `TimeUnix`) AS `_join_Value`, throwIf(uniqExact(`Attributes`) > 1, ?) AS _cerberus_match_check FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`)) GROUP BY mapFilter((k, v) -> NOT (k IN (?)), `Attributes`))) AS L INNER JOIN (SELECT `_join_MetricName` AS `MetricName`, `_join_Attributes` AS `Attributes`, `_join_TimeUnix` AS `TimeUnix`, `_join_Value` AS `Value` FROM (SELECT argMax(`MetricName`, `TimeUnix`) AS `_join_MetricName`, argMax(`Attributes`, `TimeUnix`) AS `_join_Attributes`, max(`TimeUnix`) AS `_join_TimeUnix`, argMax(`Value`, `TimeUnix`) AS `_join_Value`, throwIf(uniqExact(`Attributes`) > 1, ?) AS _cerberus_match_check FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`)) GROUP BY mapFilter((k, v) -> NOT (k IN (?)), `Attributes`))) AS R ON mapFilter((k, v) -> NOT (k IN (?)), L.`Attributes`) = mapFilter((k, v) -> NOT (k IN (?)), R.`Attributes`)
+SELECT ? AS `MetricName`, L.`Attributes`, L.`TimeUnix`, (L.`Value` - R.`Value`) AS `Value` FROM (SELECT `_join_MetricName` AS `MetricName`, `_join_Attributes` AS `Attributes`, `_join_TimeUnix` AS `TimeUnix`, `_join_Value` AS `Value` FROM (SELECT argMax(`MetricName`, `TimeUnix`) AS `_join_MetricName`, argMax(`Attributes`, `TimeUnix`) AS `_join_Attributes`, max(`TimeUnix`) AS `_join_TimeUnix`, argMax(`Value`, `TimeUnix`) AS `_join_Value`, throwIf(uniqExact(`Attributes`) > 1, ?) AS _cerberus_match_check FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`)) GROUP BY mapFilter((k, v) -> NOT (k IN (?)), `Attributes`))) AS L INNER JOIN (SELECT `_join_MetricName` AS `MetricName`, `_join_Attributes` AS `Attributes`, `_join_TimeUnix` AS `TimeUnix`, `_join_Value` AS `Value` FROM (SELECT argMax(`MetricName`, `TimeUnix`) AS `_join_MetricName`, argMax(`Attributes`, `TimeUnix`) AS `_join_Attributes`, max(`TimeUnix`) AS `_join_TimeUnix`, argMax(`Value`, `TimeUnix`) AS `_join_Value`, throwIf(uniqExact(`Attributes`) > 1, ?) AS _cerberus_match_check FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`)) GROUP BY mapFilter((k, v) -> NOT (k IN (?)), `Attributes`))) AS R ON mapFilter((k, v) -> NOT (k IN (?)), L.`Attributes`) = mapFilter((k, v) -> NOT (k IN (?)), R.`Attributes`)
 -- args --
-[0] string = "many-to-many matching not allowed: matching labels must be unique on one side"
-[1] string = "http_server_request_duration_count"
-[2] string = "2026-01-01 00:00:01.000000000"
-[3] int64 = 9
-[4] string = "2026-01-01 00:00:01.000000000"
-[5] int64 = 9
-[6] int64 = 300000000000
-[7] string = "instance"
-[8] string = "many-to-many matching not allowed: matching labels must be unique on one side"
-[9] string = "http_server_request_duration_count"
-[10] string = "2026-01-01 00:00:01.000000000"
-[11] int64 = 9
-[12] string = "2026-01-01 00:00:01.000000000"
-[13] int64 = 9
-[14] int64 = 300000000000
-[15] string = "instance"
+[0] string = ""
+[1] string = "many-to-many matching not allowed: matching labels must be unique on one side"
+[2] string = "http_server_request_duration_count"
+[3] string = "2026-01-01 00:00:01.000000000"
+[4] int64 = 9
+[5] string = "2026-01-01 00:00:01.000000000"
+[6] int64 = 9
+[7] int64 = 300000000000
+[8] string = "instance"
+[9] string = "many-to-many matching not allowed: matching labels must be unique on one side"
+[10] string = "http_server_request_duration_count"
+[11] string = "2026-01-01 00:00:01.000000000"
+[12] int64 = 9
+[13] string = "2026-01-01 00:00:01.000000000"
+[14] int64 = 9
+[15] int64 = 300000000000
 [16] string = "instance"
 [17] string = "instance"
+[18] string = "instance"
 -- seed --
 CREATE TABLE otel_metrics_sum (
     MetricName String,
@@ -32,7 +33,7 @@ INSERT INTO otel_metrics_sum VALUES
     ('http_server_request_duration_count', map('job', 'api', 'instance', 'i-1'), toDateTime64('2026-01-01 00:00:00', 9), 50.0);
 -- expected_rows --
 [
-  ["http_server_request_duration_count", {"job": "api", "instance": "i-1"}, "2026-01-01T00:00:00Z", 0.0]
+  ["", {"instance": "i-1", "job": "api"}, "2026-01-01T00:00:00Z", 0]
 ]
 -- chplan --
 VectorJoin op=- match=ignoring(instance) card=one-to-one

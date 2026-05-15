@@ -340,7 +340,14 @@ func lowerVectorScalar(vec parser.Expr, s schema.Metrics, op chplan.BinaryOp, sc
 		return &chplan.Filter{Input: inner, Predicate: opExpr}, nil
 	}
 
-	// Either arithmetic or `bool`-modified comparison — map Value through.
+	// Either arithmetic or `bool`-modified comparison — map Value
+	// through and drop `__name__` per PromQL's derived-sample rule. The
+	// bare-comparison path above (`Filter`) preserves all columns and
+	// is correct: PromQL keeps LHS labels (including `__name__`) when
+	// the comparison filters rather than transforms. See Pool-AU's
+	// audit (#355) — this projection site accounts for ~36 of the 107
+	// `__name__`-retention diffs (scalar-on-{left,right} arithmetic +
+	// scalar `bool` compare + folded-scalar-in-bool cases).
 	newValue := chplan.Expr(opExpr)
 	if isComparison(op) && returnBool {
 		newValue = &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{opExpr}}
@@ -348,7 +355,7 @@ func lowerVectorScalar(vec parser.Expr, s schema.Metrics, op chplan.BinaryOp, sc
 	return &chplan.Project{
 		Input: inner,
 		Projections: []chplan.Projection{
-			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}},
+			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
 			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}},
 			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}},
 			{Expr: newValue, Alias: s.ValueColumn},
