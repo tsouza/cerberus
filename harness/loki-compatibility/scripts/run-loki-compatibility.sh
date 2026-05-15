@@ -6,22 +6,28 @@
 #   1. `docker compose up --wait` brings reference Loki + cerberus + CH up.
 #   2. The Go seeder pushes a deterministic fixture to both targets and
 #      asserts /labels is non-empty (the original PR 1 smoke).
-#   3. `go test -tags=remote_correctness -c` builds the diff driver from
-#      the vendored upstream/loki-bench/ corpus (the binary contains the
-#      single TestRemoteStorageEquality test).
+#   3. Builds the cerberus-owned diff driver (cmd/loki-compliance-tester);
+#      the binary imports the vendored upstream/loki-bench/ corpus loader,
+#      so a `-mod=mod` build is required.
 #   4. The driver runs against -addr-1 (reference Loki :23100) and
-#      -addr-2 (cerberus :29092); its JSON-shaped go-test output is
-#      captured to reports/diff.json.
+#      -addr-2 (cerberus :29092); it emits a structured JSON report
+#      matching the prometheus-compliance harness's shape into
+#      reports/diff.json.
 #   5. The compose stack is torn down on every exit path (success,
 #      driver failure, set -e abort, manual SIGINT) via a cleanup trap.
+#
+# PR 5 of docs/loki-compliance-plan.md swapped the upstream `go test -c`
+# driver for the cerberus-owned `cmd/loki-compliance-tester` so the
+# report shape matches the Prom harness; the build / teardown lifecycle
+# is otherwise unchanged.
 #
 # Exit semantics:
 #
 #   - 0  → smoke + driver passed (no diffs reported on any query case).
 #   - 1  → driver reported at least one diff or run-time failure (the
-#          informational CI lane in PR 4 treats this as non-blocking; a
+#          informational CI lane treats this as non-blocking; a
 #          required-check upgrade is planned per docs/loki-compliance-plan.md
-#          PR 5).
+#          PR 6).
 #   - 2+ → harness itself failed (compose up, seed, build, docker missing,
 #          …). Inspect script output; the report file may be empty.
 #
@@ -37,18 +43,15 @@
 #   DRIVER_SKIP         non-empty: skip the diff driver entirely. Useful
 #                       when the seeder is the bisect target.
 #   DRIVER_REPORT       report file path (default: reports/diff.json).
-#                       NOTE: the PR 3 driver emits `go test -v` text;
-#                       the .json suffix is forward-looking — PR 5's
-#                       cerberus-owned driver will switch this to a
-#                       structured JSON report matching the Prom
-#                       harness's report.json shape. Existing tooling
-#                       that consumes `reports/*.json` should pin the
-#                       output format expectation rather than the path.
-#   DRIVER_TIMEOUT      go-test -timeout flag (default: 10m).
-#   DRIVER_TOLERANCE    -tolerance flag passed through to the driver
-#                       (default: 1e-5; matches upstream remote_test.go).
-#   DRIVER_RANGE_TYPE   -remote-range-type flag (default: range).
-#                       Set "instant" to exercise instant-query mode.
+#                       The driver emits a JSON envelope matching the
+#                       Prom harness's report shape; existing tooling
+#                       can consume both via the same schema.
+#   DRIVER_TIMEOUT      Per-request HTTP timeout (default: 30s).
+#   DRIVER_TOLERANCE    -tolerance flag (default: 1e-5; matches upstream).
+#   DRIVER_RANGE_TYPE   -range-type flag (default: range; 'instant' also valid).
+#   DRIVER_PARALLELISM  -parallelism flag (default: 8).
+#   DRIVER_OVERLAY      Path to cerberus-test-queries.yml overlay; default
+#                       resolves the in-tree file beside this script.
 
 set -eu -o pipefail
 
@@ -57,25 +60,26 @@ REPO_ROOT=$(cd "$ROOT_DIR/../.." && pwd)
 cd "$ROOT_DIR"
 
 REPORT=${DRIVER_REPORT:-"$ROOT_DIR/reports/diff.json"}
-TIMEOUT=${DRIVER_TIMEOUT:-10m}
+TIMEOUT=${DRIVER_TIMEOUT:-30s}
 TOLERANCE=${DRIVER_TOLERANCE:-1e-5}
 RANGE_TYPE=${DRIVER_RANGE_TYPE:-range}
+PARALLELISM=${DRIVER_PARALLELISM:-8}
+OVERLAY=${DRIVER_OVERLAY:-"$ROOT_DIR/cerberus-test-queries.yml"}
 
-TEST_BIN=$(mktemp -t cerberus-loki-equality.XXXXXX.test)
+DRIVER_BIN=$(mktemp -t cerberus-loki-tester.XXXXXX)
 
-# Consolidated cleanup: tear down the compose stack, restore the root
-# go.mod / go.sum (the `-mod=mod` build temporarily promotes the
-# vendored Loki-client + transitive deps to direct entries — we revert
-# so the working tree stays clean), and drop the throwaway test binary.
-# Runs on every exit path (success, driver failure, set -e abort, SIGINT)
-# so a non-zero exit can't leak compose state or a dirty go.mod across
-# re-runs.
+# Consolidated cleanup: tear down the compose stack and drop the
+# throwaway driver binary on every exit path (success, driver failure,
+# set -e abort, SIGINT) so a non-zero exit can't leak compose state
+# across re-runs.
+#
+# Unlike the PR 3 `go test -c` approach, the cerberus-owned driver's
+# import surface (bench-package corpus loader + cerberus's existing
+# Loki / yaml deps) resolves through the root go.mod without the
+# `-mod=mod` promotion, so no go.mod / go.sum revert is needed.
 cleanup() {
     rc=$?
-    rm -f "$TEST_BIN"
-    if [ -d "$REPO_ROOT/.git" ]; then
-        (cd "$REPO_ROOT" && git checkout -- go.mod go.sum 2>/dev/null) || true
-    fi
+    rm -f "$DRIVER_BIN"
     if [ -z "${COMPOSE_KEEP:-}" ]; then
         echo "==> tearing down (set COMPOSE_KEEP=1 to leave running)"
         docker compose down -v || true
@@ -97,60 +101,51 @@ if [ -n "${DRIVER_SKIP:-}" ]; then
     exit 0
 fi
 
-# Build the diff driver from the vendored corpus. The root go.mod pins
-# `ignore ./harness/loki-compatibility/upstream` so default toolchain
-# operations skip this path; an explicit build target requires it. We
-# pass -mod=mod so the test-only Loki-client + transitive deps
-# (aws-sdk-go-v2, azure-sdk, openapi, …) can resolve without
-# permanently polluting the root go.mod — the cleanup trap reverts
-# go.mod/go.sum on every exit path.
-echo "==> building diff driver (go test -tags=remote_correctness -c)"
+# Build the cerberus-owned diff driver. The driver imports the
+# vendored bench package for corpus loading + cerberus's existing
+# Loki / yaml deps for the HTTP + decode path. The root go.mod marks
+# `ignore ./harness/loki-compatibility/upstream`, which keeps
+# `go build ./...` from walking the bench tree as a build target;
+# importing the package by path is still permitted because every
+# transitive dep is already a direct entry in go.mod.
+echo "==> building diff driver (cmd/loki-compliance-tester)"
 (cd "$REPO_ROOT" && \
-    GOFLAGS=-mod=mod go test \
-        -tags=remote_correctness \
-        -c \
-        -o "$TEST_BIN" \
-        ./harness/loki-compatibility/upstream/loki-bench/)
+    go build \
+        -o "$DRIVER_BIN" \
+        ./harness/loki-compatibility/cmd/loki-compliance-tester/)
 
-# The driver's NewQueryRegistry("./queries") loader is relative — cwd
-# must contain the corpus subtree. Running from the vendor dir keeps
-# the test binary unaltered (no patches against upstream).
 echo "==> running diff driver (writing report to $REPORT)"
 echo "    -addr-1=http://localhost:23100  (reference Loki)"
 echo "    -addr-2=http://localhost:29092  (cerberus)"
-echo "    -tolerance=$TOLERANCE -remote-range-type=$RANGE_TYPE -timeout=$TIMEOUT"
+echo "    -tolerance=$TOLERANCE -range-type=$RANGE_TYPE -timeout=$TIMEOUT -parallelism=$PARALLELISM"
 
-# Capture the driver's full stdout/stderr (one "--- PASS"/"--- FAIL"
-# line per query subtest plus the standard `go test -v` framing). PR 5
-# will swap this to the JSON shape the Prom harness uses; for now the
-# raw stream is sufficient for the informational lane. The set +e
-# window is just wide enough to capture the driver's exit code so the
-# report write completes before the script propagates the failure. The
-# cleanup trap still runs.
+# The driver writes structured JSON to `-report` and a single-line
+# summary to stderr. We capture only the summary on console (via tee
+# /dev/null to keep the trap-friendly exit-code propagation); the JSON
+# report lives entirely at the report path. The set +e window is just
+# wide enough to capture the exit code before the script propagates
+# any failure.
 set +e
-(cd "$ROOT_DIR/upstream/loki-bench" && \
-    "$TEST_BIN" \
-        -test.v \
-        -test.timeout="$TIMEOUT" \
-        -test.run=TestRemoteStorageEquality \
-        -addr-1=http://localhost:23100 \
-        -addr-2=http://localhost:29092 \
-        -metadata-dir="$ROOT_DIR" \
-        -tolerance="$TOLERANCE" \
-        -remote-range-type="$RANGE_TYPE" 2>&1) | tee "$REPORT"
-DRIVER_RC=${PIPESTATUS[0]}
+"$DRIVER_BIN" \
+    -addr-1=http://localhost:23100 \
+    -addr-2=http://localhost:29092 \
+    -corpus="$ROOT_DIR/upstream/loki-bench/queries" \
+    -metadata-dir="$ROOT_DIR" \
+    -overlay="$OVERLAY" \
+    -report="$REPORT" \
+    -tolerance="$TOLERANCE" \
+    -range-type="$RANGE_TYPE" \
+    -parallelism="$PARALLELISM" \
+    -timeout="$TIMEOUT"
+DRIVER_RC=$?
 set -e
 
 echo "==> report written to $REPORT"
 echo "==> summary:"
-# go-test -v emits human-readable "--- PASS"/"--- FAIL" markers per
-# subtest. The driver registers each query case as a subtest, so a
-# grep against those is the cheapest summary surface; the report
-# captures the full stream for downstream analysis.
-PASS_COUNT=$(grep -c '^    --- PASS' "$REPORT" 2>/dev/null || echo 0)
-FAIL_COUNT=$(grep -c '^    --- FAIL' "$REPORT" 2>/dev/null || echo 0)
-SKIP_COUNT=$(grep -c '^    --- SKIP' "$REPORT" 2>/dev/null || echo 0)
-printf '    passed=%s failed=%s skipped=%s exit_code=%s\n' \
-    "$PASS_COUNT" "$FAIL_COUNT" "$SKIP_COUNT" "$DRIVER_RC"
+if command -v jq >/dev/null 2>&1; then
+    jq '{total: .totalResults, passed: ([.results[]? | select((.unexpectedFailure // "") == "" and (.diff // "") == "" and (.unexpectedSuccess // false) == false)] | length), diffs: ([.results[]? | select((.diff // "") != "")] | length), unexpected_failures: ([.results[]? | select((.unexpectedFailure // "") != "")] | length), unsupported: ([.results[]? | select((.unsupported // false) == true)] | length), skipped: ([.results[]? | select((.skipReason // "") != "")] | length)}' "$REPORT" 2>/dev/null || echo "    (jq failed to parse $REPORT)"
+else
+    echo "    (install jq for per-bucket summary)"
+fi
 
 exit "$DRIVER_RC"

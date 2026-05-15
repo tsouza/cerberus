@@ -1,11 +1,14 @@
 # Loki / LogQL compatibility harness
 
-> Status: **PR 3 (diff driver wiring)** of the rollout described in
+> Status: **PR 5 (cerberus-owned driver)** of the rollout described in
 > [`docs/loki-compliance-plan.md`](../../docs/loki-compliance-plan.md).
 > The Docker Compose stack, the deterministic seeder, the vendored
-> `pkg/logql/bench/` corpus, and now the diff-driver wiring all live
-> under this directory. The informational CI lane (PR 4) and the
-> cerberus-owned driver replacement (PR 5) are still pending.
+> `pkg/logql/bench/` corpus, and the cerberus-owned diff driver all
+> live under this directory. The driver emits a JSON report whose
+> shape matches `harness/prometheus-compliance/report.json` so the two
+> harnesses share a single downstream analyser. The informational CI
+> lane (PR 4) and the regression / exhaustive corpus expansion (PR 6)
+> are still pending.
 
 ## Why this harness exists
 
@@ -22,33 +25,34 @@ See [`docs/loki-compliance-plan.md`](../../docs/loki-compliance-plan.md)
 for the full landscape analysis, the per-PR breakdown, and the
 license/AGPL containment strategy.
 
-## Layout (current — PR 3)
+## Layout (current — PR 5)
 
 ```text
 harness/loki-compatibility/
   README.md                       this file
   docker-compose.yml              clickhouse + reference loki + cerberus
   loki-config.yaml                reference Loki single-binary config
-  cerberus-test-queries.yml       overlay documenting drops for unsupported LogQL features
+  cerberus-test-queries.yml       overlay listing per-query drops + reasons
   dataset_metadata.json           pinned dataset metadata for ${SELECTOR}/${LABEL_*} expansion
-  reports/                        diff driver output (PR 3); contents gitignored
+  reports/                        diff driver output; contents gitignored
   cmd/
     seed/                         deterministic OTel-shape log seeder
+    loki-compliance-tester/       cerberus-owned diff driver (PR 5; this PR)
   scripts/
-    run-loki-compatibility.sh     smoke + diff driver (this PR)
+    run-loki-compatibility.sh     smoke + diff driver (drives cmd/loki-compliance-tester/)
   upstream/
     loki-bench/                   vendored grafana/loki:pkg/logql/bench snapshot
       LICENSE                     AGPL-3.0, copied verbatim from grafana/loki
       VERSION                     exact upstream coordinates of the snapshot
       query_registry.go           YAML loader + template-variable expander
-      remote_test.go              TestRemoteStorageEquality (build-tagged remote_correctness)
-      metadata.go                 DatasetMetadata + LoadMetadata + bounded sets (PR 3)
-      metadata_resolver.go        ${SELECTOR}/${LABEL_*}/${RANGE} resolver (PR 3)
-      testcase.go                 TestCase shape consumed by the registry (PR 3)
-      assertions_test.go          assertResultNotEmpty + tolerance comparators (PR 3)
-      convert_test.go             loghttp -> promql/parser.Value conversions (PR 3)
-      generator.go                GeneratorConfig + StreamMetadata referenced by metadata.go (PR 3)
-      faker.go                    LogFormat type + helper data referenced by metadata.go (PR 3)
+      remote_test.go              TestRemoteStorageEquality (vestigial; no longer the driver)
+      metadata.go                 DatasetMetadata + LoadMetadata + bounded sets
+      metadata_resolver.go        ${SELECTOR}/${LABEL_*}/${RANGE} resolver
+      testcase.go                 TestCase shape consumed by the registry
+      assertions_test.go          assertResultNotEmpty + tolerance comparators
+      convert_test.go             loghttp -> promql/parser.Value conversions
+      generator.go                GeneratorConfig + StreamMetadata referenced by metadata.go
+      faker.go                    LogFormat type + helper data referenced by metadata.go
       queries/
         schema.json               JSON schema for query YAMLs
         fast/*.yaml               minimal corpus (basic-selectors, simple-metrics, structured-metadata)
@@ -56,7 +60,7 @@ harness/loki-compatibility/
         exhaustive/.gitkeep       placeholder; the driver loads all three suites
 ```
 
-## Layout (planned — PR 4+)
+## Layout (planned — PR 4 + PR 6)
 
 PR 4 lands the informational CI lane:
 
@@ -64,11 +68,10 @@ PR 4 lands the informational CI lane:
 .github/workflows/loki-compatibility.yml  PR 4 — push:main + nightly cron + workflow_dispatch
 ```
 
-PR 5 ports `TestRemoteStorageEquality` into a cerberus-owned driver:
-
-```text
-harness/loki-compatibility/cmd/loki-compliance-tester/  PR 5 — cerberus-owned driver
-```
+PR 6 widens the seeder + regenerates `dataset_metadata.json` so the
+upstream `${SELECTOR}` / `${LABEL_*}` templates resolve against real
+data (the current overlay marks every `fast/` entry as skipped pending
+that work).
 
 ## What's in `upstream/loki-bench/`
 
@@ -86,9 +89,10 @@ tag recorded in [`upstream/loki-bench/VERSION`](upstream/loki-bench/VERSION):
   `${SELECTOR}` / `${LABEL_NAME}` / `${LABEL_VALUE}` template
   expander.
 - `pkg/logql/bench/remote_test.go` — `TestRemoteStorageEquality`,
-  build-tagged `remote_correctness`. Driven by
-  `scripts/run-loki-compatibility.sh`; replaced by a cerberus-owned
-  driver later (plan PR 5).
+  build-tagged `remote_correctness`. The PR 5 cerberus-owned driver
+  (`cmd/loki-compliance-tester/`) is now the entry point; this file
+  is preserved verbatim as upstream reference and for the eventual
+  bump procedure.
 - `pkg/logql/bench/metadata.go`, `metadata_resolver.go`, `testcase.go`,
   `assertions_test.go`, `convert_test.go` — support files
   `remote_test.go` transitively depends on. PR 2 (#369) intentionally
@@ -124,28 +128,28 @@ Same reasoning as `harness/tempo-compatibility/upstream/` (see PR #367):
 
 ### How the vendor builds
 
-`remote_test.go` imports `github.com/grafana/loki/v3/pkg/logcli/client`
-and `github.com/grafana/loki/v3/pkg/loghttp`, which transitively pull
-in the Loki client + dskit + aws-sdk-go-v2 + azure-sdk + OpenAPI
-chain. These are not deps cerberus's main module wants in its
-`go.mod`. The repo isolates them via two complementary mechanisms:
+The PR 5 cerberus-owned driver (`cmd/loki-compliance-tester/`) imports
+the vendored `bench` package for corpus loading (`QueryRegistry`,
+`LoadMetadata`, `MetadataVariableResolver`, `TestCase`). The
+transitive deps `bench` carries (`logproto`, `logql/syntax`,
+`yaml.v3`) are all already direct entries in the root `go.mod`, so
+the driver builds with a plain `go build` — no `-mod=mod` promotion
+and no go.mod / go.sum mutation per invocation.
 
-1. `go.mod`'s `ignore ./harness/loki-compatibility/upstream` directive
-   keeps `go build ./...`, `go test ./...`, and `go vet ./...` away
-   from the vendored path.
-2. `scripts/run-loki-compatibility.sh` invokes
-   `GOFLAGS=-mod=mod go test -tags=remote_correctness -c` to compile
-   the test binary explicitly. The `-mod=mod` flag is the documented
-   override for ignored paths; it transiently writes the extra
-   transitive deps into the repo's `go.mod` and `go.sum` so the build
-   resolves. A cleanup trap then reverts both files (`git checkout --
-   go.mod go.sum`) so the working tree stays clean on every exit path
-   (success, driver failure, `set -e` abort, SIGINT).
+The `ignore ./harness/loki-compatibility/upstream` directive in
+`go.mod` keeps `go build ./...`, `go test ./...`, and `go vet ./...`
+from walking the vendored path as a build target; the bench package
+is still resolvable when imported by path (`ignore` is wildcard
+exclusion, not import isolation). The `ignore` directive is a Go
+1.25+ feature; cerberus pins Go 1.26 via `go.mod`.
 
-The `ignore` directive is a Go 1.25+ feature; cerberus pins Go 1.26
-via `go.mod`. The cleanup pattern matches the
-`harness/prometheus-compliance/scripts/run-compatibility.sh` precedent
-for managing transient mutations during integration runs.
+Earlier PRs (PR 3, #387) used `GOFLAGS=-mod=mod go test
+-tags=remote_correctness -c` to compile the upstream test driver and
+relied on a `git checkout -- go.mod go.sum` cleanup trap to revert
+the transient direct-dep promotion. PR 5 eliminates both pieces:
+the driver lives in cerberus-owned code, builds against the
+already-direct deps, and the run script no longer touches the
+working tree.
 
 ## Cerberus overlay files
 
@@ -153,11 +157,14 @@ Two files at the harness root capture cerberus-specific configuration
 that lives OUTSIDE the AGPL `upstream/` boundary:
 
 - `cerberus-test-queries.yml` — overlay listing per-query divergences
-  cerberus tracks against the upstream corpus. The PR 3 commit
-  documents the entire `fast/` set as deferred to PR 6 (selector
-  vocabulary mismatch between the seeded fixture and the upstream
-  template defaults). The PR 5 cerberus-owned driver will consume
-  this file; until then it's documentary surface for reviewers.
+  cerberus tracks against the upstream corpus. The PR 5 driver
+  consumes this file: entries under `should_skip:` are suppressed
+  before the wire call (recorded in the report as `skipReason` with
+  no failure flag flipped); `should_fail:` is reserved for the Prom-
+  shape `unexpectedSuccess` semantics (expected hard failures). The
+  PR 3 commit documented the entire `fast/` set as deferred to PR 6
+  (selector vocabulary mismatch between the seeded fixture and the
+  upstream template defaults); the driver suppresses those entries.
 - `dataset_metadata.json` — pinned dataset metadata that maps
   `${SELECTOR}` / `${LABEL_NAME}` / `${LABEL_VALUE}` template vars to
   concrete values. The placeholder shipped by PR 2 (#369) is
@@ -186,18 +193,42 @@ just loki-compatibility-down
 
 The run script's contract:
 
-- Exit 0 → no diffs on any query case.
+- Exit 0 → no diffs on any query case (overlay-skipped cases count
+  as passing).
 - Exit 1 → at least one diff or run-time failure (informational; the
   CI lane in PR 4 will treat this as non-blocking until the corpus
   shape matches the seeded fixture per PR 6).
 - Exit 2+ → harness itself failed (compose, seed, build).
 
-The driver's full stream (`go test -v` output, one
-`PASS`/`FAIL`/`SKIP` line per query case) is written to
-`reports/diff.json`. PR 5's cerberus-owned driver will switch this to
-the same JSON shape that
-`harness/prometheus-compliance/report.json` uses so the two harnesses
-share a single downstream analyser.
+The driver writes a structured JSON report to `reports/diff.json`
+whose envelope matches `harness/prometheus-compliance/report.json`:
+
+```json
+{
+  "totalResults": 14,
+  "includePassing": true,
+  "results": [
+    {
+      "testCase": {
+        "query": "{service=\"checkout\"}",
+        "source": "fast/basic-selectors.yaml",
+        "description": "Basic label selector",
+        "kind": "log", "direction": "backward",
+        "start": "2026-05-15T00:00:00Z", "end": "2026-05-15T00:10:00Z",
+        "instant": false
+      },
+      "diff": "",
+      "unexpectedFailure": "",
+      "unexpectedSuccess": false,
+      "unsupported": false,
+      "skipReason": "Pending PR 6 seed expansion …"
+    }
+  ]
+}
+```
+
+Sharing the envelope with the Prom harness means one analyser (and,
+later, one expected-failures reconciliation script) can consume both.
 
 ## Licensing
 
