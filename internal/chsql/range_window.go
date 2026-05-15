@@ -930,12 +930,23 @@ func (e *emitter) emitRangeWindowIncrease(r *chplan.RangeWindow) error {
 // These don't need counter-reset handling — they're straight array
 // aggregations over the window's values.
 //
-// stddev_over_time / stdvar_over_time use CH's
-// `arrayReduce('stddevPop' | 'varPop', ...)` to match Prometheus's
-// `Engine.evalAggrOverTime → varianceOverTime` which builds a Welford
-// running estimator that divides squared deviations by N (population
-// variance / stddev), not by N-1.
+// stddev_over_time / stdvar_over_time use a manual two-pass population
+// variance expression — `arraySum((x - μ)²) / N` with `μ = arrayAvg(vals)`
+// — instead of `arrayReduce('stddevPop' | 'varPop', ...)`. The CH
+// aggregate uses the textbook one-pass `E[X²] − (E[X])²` formula which
+// suffers catastrophic cancellation at value scale 2^31 (the
+// `demo_memory_usage_bytes` regime), causing ULP-level drift vs
+// Prometheus's `Engine.evalAggrOverTime → varianceOverTime` Welford
+// estimator (see issue #400 bucket 1). The two-pass form recovers
+// precision by first computing the mean exactly and then summing
+// squared deviations against it — `arrayWithConstant(N, μ)` broadcasts
+// μ across the window so `arrayMap` evaluates the centred sample once
+// per element. Divisor N matches Prom (population variance).
 func (e *emitter) emitRangeWindowOverTime(r *chplan.RangeWindow) error {
+	// Two-pass population variance: μ = arrayAvg(vals); Σ(x - μ)² / N.
+	// arrayWithConstant materialises the broadcast mean exactly once
+	// per row so the lambda doesn't re-evaluate arrayAvg per element.
+	varPopTwoPass := "arraySum(arrayMap((x, m) -> (x - m) * (x - m), window_vals, arrayWithConstant(length(window_vals), arrayAvg(window_vals)))) / length(window_vals)" //nolint:gosec // G101 false positive: SQL expression for two-pass population variance, not a credential
 	var inner string
 	switch r.Func {
 	case "sum_over_time":
@@ -954,18 +965,24 @@ func (e *emitter) emitRangeWindowOverTime(r *chplan.RangeWindow) error {
 		// Empty window → drop the series (Prom returns no sample).
 		// We mirror with NaN; the engine layer treats NaN as "drop"
 		// when projecting samples. Single-sample windows render the
-		// population stddev which is 0 — matches Prom's Welford
-		// estimator (sum of squared deviations / 1 = 0 when there's
-		// only one sample equal to the running mean).
-		inner = "if(length(window_vals) > 0, arrayReduce('stddevPop', window_vals), nan)"
+		// population stddev which is 0 (Σ (x − μ)² with N=1 and
+		// μ=x gives 0) — matches Prom's Welford estimator.
+		//
+		// Two-pass variance under a sqrt: see the package comment
+		// above for the precision rationale (CH varPop one-pass loses
+		// precision at value scale ≥ 2^31; #400 bucket 1).
+		inner = "if(length(window_vals) > 0, sqrt(" + varPopTwoPass + "), nan)"
 	case "stdvar_over_time":
 		// Population variance (divides by N, not N-1) to match
-		// Prometheus's funcStdvarOverTime / varianceOverTime which
-		// builds a Welford running estimator with divisor N. Same
+		// Prometheus's funcStdvarOverTime / varianceOverTime. Same
 		// empty-window contract as stddev_over_time: drop the series
 		// (we emit NaN; the engine treats NaN as "drop"). Single-sample
-		// window renders 0 (sum of squared deviations / 1 = 0).
-		inner = "if(length(window_vals) > 0, arrayReduce('varPop', window_vals), nan)"
+		// window renders 0 (Σ (x − μ)² with μ=x is 0).
+		//
+		// Two-pass variance: see the package comment above for the
+		// precision rationale (CH varPop one-pass loses precision at
+		// value scale ≥ 2^31; #400 bucket 1).
+		inner = "if(length(window_vals) > 0, " + varPopTwoPass + ", nan)"
 	default:
 		return fmt.Errorf("%w: over-time function %q", ErrUnsupported, r.Func)
 	}
