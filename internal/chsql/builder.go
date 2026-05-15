@@ -301,9 +301,64 @@ func (b *Builder) Expr(x chplan.Expr) error {
 		return b.exprFieldAccess(v)
 	case *chplan.NestedArrayExists:
 		return b.exprNestedArrayExists(v)
+	case *chplan.Lambda:
+		return b.exprLambda(v)
+	case *chplan.BareIdent:
+		b.sb.WriteString(v.Name)
+		return nil
+	case *chplan.Subscript:
+		return b.exprSubscript(v)
 	default:
 		return fmt.Errorf("%w: expr %T", ErrUnsupported, x)
 	}
+}
+
+// exprLambda renders chplan.Lambda. Single-parameter shapes render as
+// `p -> body` (no parens); multi-parameter shapes render as
+// `(p1, p2, …) -> body` (with parens) to match CH's conventional
+// lambda forms across the array-function family.
+func (b *Builder) exprLambda(l *chplan.Lambda) error {
+	if len(l.Params) == 0 {
+		return fmt.Errorf("%w: chplan.Lambda requires at least one parameter", ErrUnsupported)
+	}
+	if len(l.Params) == 1 {
+		b.sb.WriteString(l.Params[0])
+	} else {
+		b.sb.WriteByte('(')
+		for i, p := range l.Params {
+			if i > 0 {
+				b.sb.WriteString(", ")
+			}
+			b.sb.WriteString(p)
+		}
+		b.sb.WriteByte(')')
+	}
+	b.sb.WriteString(" -> ")
+	if l.Body == nil {
+		return fmt.Errorf("%w: chplan.Lambda has nil Body", ErrUnsupported)
+	}
+	return b.Expr(l.Body)
+}
+
+// exprSubscript renders `<container>[<key>]`. No surrounding whitespace.
+// Used by the exp-histogram aggregate-merge path to index into
+// groupArray-collected per-row arrays.
+func (b *Builder) exprSubscript(s *chplan.Subscript) error {
+	if s.Container == nil {
+		return fmt.Errorf("%w: chplan.Subscript has nil Container", ErrUnsupported)
+	}
+	if err := b.Expr(s.Container); err != nil {
+		return err
+	}
+	b.sb.WriteByte('[')
+	if s.Key == nil {
+		return fmt.Errorf("%w: chplan.Subscript has nil Key", ErrUnsupported)
+	}
+	if err := b.Expr(s.Key); err != nil {
+		return err
+	}
+	b.sb.WriteByte(']')
+	return nil
 }
 
 // exprNestedArrayExists renders

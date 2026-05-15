@@ -362,6 +362,15 @@ func printExpr(e chplan.Expr) string {
 	case *chplan.NestedArrayExists:
 		return fmt.Sprintf("nestedArrayExists(%s.%s[%q] %s %s)",
 			v.Column, v.SubField, v.Key, v.Op, printExpr(v.Value))
+	case *chplan.Lambda:
+		if len(v.Params) == 1 {
+			return fmt.Sprintf("%s -> %s", v.Params[0], printExpr(v.Body))
+		}
+		return fmt.Sprintf("(%s) -> %s", strings.Join(v.Params, ", "), printExpr(v.Body))
+	case *chplan.BareIdent:
+		return v.Name
+	case *chplan.Subscript:
+		return fmt.Sprintf("%s[%s]", printExpr(v.Container), printExpr(v.Key))
 	default:
 		return fmt.Sprintf("<unknown:%T>", e)
 	}

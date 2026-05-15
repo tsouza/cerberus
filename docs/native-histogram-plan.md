@@ -62,7 +62,7 @@ phase has a citable reference rather than rediscovering the design.
   - `edge_hq_native_p25.txtar` / `edge_hq_native_p999.txtar` (edge phi
     values).
 
-## Phase 2 (deferred) — aggregated-input native path
+## Phase 2 (shipped) — aggregated-input native path
 
 PromQL's canonical histogram idiom is
 `histogram_quantile(phi, sum by(le)(rate(<metric>[5m])))`. Cerberus's
@@ -72,37 +72,89 @@ classic-histogram path lowers this via `lowerHistogramQuantileAgg` /
 to `sumForEach(BucketCounts)` + `any(ExplicitBounds)` over a
 time-bounded Filter.
 
-For native histograms the same idiom needs:
+The native equivalent is harder because OTel exp-histogram rows carry
+variable-length / variable-offset / variable-scale bucket arrays —
+two series in the same aggregation group may differ along every
+axis. Phase 2 implements the full merge in `lowerHistogramQuantileNativeAgg`
+(`internal/promql/histogram_quantile.go`) as a two-layer chplan:
 
-- **`sumForEach` on PositiveBucketCounts.** The Positive\* arrays have
-  variable length (PositiveOffset shifts the bucket index per series),
-  so the lowering must align the offsets before element-wise sum. The
-  emitted SQL needs an `arrayMap` + `arrayResize` shape to pad
-  per-series arrays to a common offset, or
-  `arrayElement(PositiveBucketCounts, idx - PositiveOffset)`
-  expansion at quantile-walk time.
-- **Scale folding.** Two series in the same aggregation group may
-  carry different Scale values. The OTel spec says implementations
-  should re-bucket to the coarser scale before merging; PromQL
-  parity argues for matching Prom's native-histogram add-merge
-  behaviour (downscale to the minimum Scale across the group).
-- **ZeroCount + ZeroThreshold merging.** ZeroCount sums trivially;
-  ZeroThreshold takes the max across the group (the merged zero
-  bucket spans the largest individual zero bucket).
+- **Inner Aggregate**: groups by the user's `by/without` clause (after
+  dropping `le` — exp histograms have no `le` label) and collects per-row
+  bucket data into groupArrays plus min/max/sum aggregates of the
+  scalar fields:
 
-Routing in `lowerHistogramQuantile` dispatches to the Phase 2 stub
-`lowerHistogramQuantileNativeAgg`
-(`internal/promql/histogram_quantile.go`), which currently returns
-`"histogram_quantile over aggregated native (exp) histograms is not
-yet supported"` while citing this doc. Phase 2 fills the stub in
-mirroring `lowerHistogramQuantileAgg`'s shape (Filter + Aggregate +
-inner-Project + HistogramQuantileNative + Sample-row wrapping).
+  - `min(Scale) AS _hq_merged_scale` — the coarsest Scale across the
+    group, used as the merged distribution's target Scale.
+  - `sum(ZeroCount) AS ZeroCount` — trivially sums (the merged zero
+    bucket count is the sum of individual ZeroCounts).
+  - `max(ZeroThreshold) AS ZeroThreshold` — the merged zero bucket
+    spans the largest individual zero bucket.
+  - `groupArray({Scale, PositiveOffset, PositiveBucketCounts, NegativeOffset, NegativeBucketCounts})`
+    — five aliases (`_hq_scales`, `_hq_pos_offsets`,
+    `_hq_pos_buckets`, `_hq_neg_offsets`, `_hq_neg_buckets`) carrying
+    per-row data through to the wrapping Project.
 
-Pinning regression: `TestLower_HistogramQuantile_OverAggregation_NativeRejected`
-(`internal/promql/histogram_quantile_test.go`) asserts the error
-message mentions native histograms **and** cites this doc. Phase 2
-deletes that test and adds the positive-shape mirror tests alongside
-the classic-agg lowering tests.
+- **Outer Project** (`expHistogramMergeOffsetExpr` +
+  `expHistogramMergeBucketsExpr` in `internal/promql/histogram_quantile.go`)
+  folds the groupArrays into a single merged distribution by:
+
+  - **Scale folding.** Per-row downscale to merged Scale via the
+    canonical "absolute bucket idx >> (origScale - targetScale)"
+    mapping (mirrors `model/histogram/float_histogram.go::targetIdx`
+    in the upstream Prom fork). Uniform-Scale groups (the common
+    case) collapse to identity since `delta = 0`.
+  - **Offset alignment + zero-pad.** Each row's downscaled bucket
+    array contributes to the merged array starting at
+    `PositiveOffset >> delta` (absolute bucket index at merged
+    scale); the merged array spans
+    `[arrayMin(downscaled_start), arrayMax(downscaled_end))` across
+    rows. Rows that don't cover the full range contribute 0 to the
+    uncovered positions (the per-target-bucket sum naturally yields
+    0 when no row contributes a value to that index).
+  - **Element-wise sum.** For each target absolute bucket index `T`
+    in the merged range, the merged bucket count is the sum over
+    rows of `arraySum(arrayMap(j -> if((off_i + j - 1) >> delta_i ==
+    T, arr_i[j], 0), arrayEnumerate(arr_i)))`.
+
+The merge expression is built from the typed chplan `Lambda` /
+`BareIdent` / `Subscript` Expr types introduced for this milestone
+(`internal/chplan/lambda.go`); the chsql emitter renders them as
+`(p1, p2) -> body` / `bare_ident` / `<container>[<key>]`
+respectively, with the lambda body composed of standard chplan
+`FuncCall` / `Binary` / `ColumnRef` / `LitInt` nodes that flow
+through the existing `Builder.Expr` dispatch.
+
+Test coverage (Phase 2):
+
+- Layer 2a (TXTAR + chplan + chDB roundtrip):
+  - `test/spec/promql/histogram_quantile_native_agg.txtar`
+    (`sum by(le)`, two series, uniform Scale).
+  - `test/spec/promql/histogram_quantile_native_agg_p50.txtar`
+    (p50 sanity).
+  - `test/spec/promql/histogram_quantile_native_agg_groupby.txtar`
+    (`sum by(le, service)`, multiple groups).
+  - `test/spec/promql/histogram_quantile_native_agg_mixed_scale.txtar`
+    (two series at different Scales — exercises the consolidation
+    path).
+- Layer 2b (chplan shape):
+  - `TestLower_HistogramQuantile_OverAggregation_Native`
+    (`internal/promql/histogram_quantile_test.go`) — pins the
+    Project / HistogramQuantileNative / Project / Aggregate / Filter
+    / Scan tree shape across `sum by`, `sum without`, bare `rate`,
+    and `increase`.
+  - `TestLower_HistogramQuantile_OverAggregation_Native_LeDropped` —
+    pins the `le`-drop rule on the native side.
+- Layer 6a (end-to-end chDB regression):
+  - `TestQuery_HistogramQuantileNativeAgg_ChDB`
+    (`internal/api/prom/handler_chdb_range_mode_test.go`) — uniform
+    Scale, asserts the interpolated value `~7.294`.
+  - `TestQuery_HistogramQuantileNativeAgg_MixedScale_ChDB` —
+    mixed-Scale merge, asserts the consolidated-then-interpolated
+    value `~3.801` against chDB.
+
+Phase 3 (range-mode) and Phase 4 (negative-side observations) remain
+deferred; the IR contract already carries the columns each phase
+needs.
 
 ## Phase 3 (deferred) — range-mode (per-step anchor grid)
 
@@ -173,13 +225,13 @@ Operators that follow a different convention override the suffix via
 
 ## Test coverage map
 
-| Layer | Path                                                                | Phase 1 | Phase 2 | Phase 3 | Phase 4 |
-| ----- | ------------------------------------------------------------------- | ------- | ------- | ------- | ------- |
-| 2a    | `test/spec/promql/histogram_quantile_native_*.txtar` (chplan + SQL) | yes     | TBD     | TBD     | TBD     |
-| 2b    | `internal/promql/histogram_quantile_native_test.go` (lowering)      | yes     | TBD     | TBD     | n/a     |
-| 3     | `internal/chplan/equal_invariants_test.go` (IR Equal)               | yes     | reuses  | reuses  | reuses  |
-| 5     | `internal/chsql/histogram_quantile_native_test.go` (emitter shape)  | yes     | TBD     | TBD     | TBD     |
-| 6a    | TXTAR `-- seed --` / `-- expected_rows --` chDB roundtrip           | yes     | TBD     | TBD     | TBD     |
+| Layer | Path                                                                              | Phase 1 | Phase 2 | Phase 3 | Phase 4 |
+| ----- | --------------------------------------------------------------------------------- | ------- | ------- | ------- | ------- |
+| 2a    | `test/spec/promql/histogram_quantile_native{,_agg}*.txtar` (chplan + SQL)         | yes     | yes     | TBD     | TBD     |
+| 2b    | `internal/promql/histogram_quantile_{native,}_test.go` (lowering)                 | yes     | yes     | TBD     | n/a     |
+| 3     | `internal/chplan/equal_invariants_test.go` (IR Equal)                             | yes     | reuses  | reuses  | reuses  |
+| 5     | `internal/chsql/histogram_quantile_native_test.go` (emitter shape)                | yes     | reuses  | TBD     | TBD     |
+| 6a    | TXTAR `-- seed --` / `-- expected_rows --` chDB roundtrip + `handler_chdb_*_test` | yes     | yes     | TBD     | TBD     |
 
 Each subsequent phase opens its own PR; the box above tracks which
 layers gain coverage. The Layer 6a roundtrip is the strongest signal

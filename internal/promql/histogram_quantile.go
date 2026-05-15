@@ -529,25 +529,451 @@ func lowerHistogramQuantileNative(vs *parser.VectorSelector, phi float64, s sche
 	}, nil
 }
 
-// lowerHistogramQuantileNativeAgg is the Phase 2 placeholder for the
-// aggregated-input native (exp) histogram path:
-// `histogram_quantile(phi, sum [by/without] (rate(<sel>_exp_hist[r])))`.
+// Aliases used by lowerHistogramQuantileNativeAgg to thread per-row
+// exp-histogram fields through the Aggregate → Project stack. The
+// `_hq_` prefix avoids collision with user-supplied labels (Prom's
+// `__name__` is reserved; cerberus's gkey aliases use `gkey_<n>`;
+// nothing else writes `_hq_*` columns).
+const (
+	hqAggMergedScaleAlias     = "_hq_merged_scale"
+	hqAggScalesArrayAlias     = "_hq_scales"
+	hqAggPosOffsetsArrayAlias = "_hq_pos_offsets"
+	hqAggPosBucketsArrayAlias = "_hq_pos_buckets"
+	hqAggNegOffsetsArrayAlias = "_hq_neg_offsets"
+	hqAggNegBucketsArrayAlias = "_hq_neg_buckets"
+)
+
+// lowerHistogramQuantileNativeAgg builds the chplan tree for
+// `histogram_quantile(phi, sum [by/without] (rate(<sel>_exp_hist[range])))`
+// against the OTel-CH exponential (native) histogram table.
 //
-// The classic-histogram sibling (lowerHistogramQuantileAgg) rewrites
-// the inner chain to sumForEach(BucketCounts) + any(ExplicitBounds)
-// over a time-bounded Filter. The native equivalent needs to align
-// per-series PositiveOffset values before element-wise summing
-// PositiveBucketCounts, downscale series whose Scale differs from the
-// group minimum, sum ZeroCount, and max-merge ZeroThreshold. None of
-// those operations have a single CH primitive, so the lowering needs
-// careful design — see docs/native-histogram-plan.md § Phase 2.
+// The shape of the produced tree mirrors lowerHistogramQuantileAgg's
+// classic-histogram counterpart, but the inner Project does the
+// per-row exp-histogram merge (scale-fold + offset-align + zero-pad)
+// before HistogramQuantileNative walks the merged distribution:
 //
-// Pinned by TestLower_HistogramQuantile_OverAggregation_NativeRejected
-// (internal/promql/histogram_quantile_test.go); Phase 2 deletes the
-// rejection test and adds the positive-shape mirror tests alongside
-// the classic-agg lowering tests.
-func lowerHistogramQuantileNativeAgg(_ histogramAggShape, _ float64, _ schema.Metrics, _ lowerCtx) (chplan.Node, error) {
-	return nil, fmt.Errorf("promql: histogram_quantile over aggregated native (exp) histograms is not yet supported (see docs/native-histogram-plan.md § Phase 2)")
+//	Project [Sample-row contract]
+//	  HistogramQuantileNative phi=phi, groupBy=[Attributes]
+//	    Project [Attributes (rebuilt from gkeys), Scale, ZeroCount, ZeroThreshold,
+//	             PositiveOffset, PositiveBucketCounts,
+//	             NegativeOffset, NegativeBucketCounts]
+//	      Aggregate groupBy=[<user labels>] funcs=[
+//	          min(Scale)                       AS _hq_merged_scale,
+//	          sum(ZeroCount)                   AS ZeroCount,
+//	          max(ZeroThreshold)               AS ZeroThreshold,
+//	          groupArray(Scale)                AS _hq_scales,
+//	          groupArray(PositiveOffset)       AS _hq_pos_offsets,
+//	          groupArray(PositiveBucketCounts) AS _hq_pos_buckets,
+//	          groupArray(NegativeOffset)       AS _hq_neg_offsets,
+//	          groupArray(NegativeBucketCounts) AS _hq_neg_buckets,
+//	      ]
+//	        Filter <metric matchers> AND TimeUnix in (anchor-Range, anchor]
+//	          Scan(otel_metrics_exp_histogram)
+//
+// The merge algorithm in the inner Project (see
+// expHistogramMergeOffsetExpr + expHistogramMergeBucketsExpr) mirrors
+// Prometheus's FloatHistogram.Add semantics:
+//
+//   - Scale folding: per-row downscale to min(Scale) via the canonical
+//     "absolute bucket idx >> (origScale - targetScale)" mapping
+//     (model/histogram/float_histogram.go § targetIdx). Uniform-Scale
+//     groups (the common case) collapse to identity since delta = 0.
+//
+//   - Offset alignment: each row's downscaled bucket array contributes
+//     to the merged array starting at "PositiveOffset >> delta"
+//     (absolute bucket index at merged scale). The merged array spans
+//     [arrayMin(downscaled_offset), arrayMax(downscaled_offset+downscaled_length))
+//     across rows, zero-padding rows that don't cover the full range.
+//
+//   - ZeroCount sums trivially; ZeroThreshold takes the max across
+//     rows (the merged zero bucket spans the largest individual zero
+//     bucket).
+//
+// The `le` label is silently dropped from any user-supplied `by(...)`
+// grouping on the native path too (cerberus's exp histograms never
+// carry an `le` label — the bucket distribution lives in the
+// PositiveBucketCounts array with PositiveOffset shifting the
+// starting absolute index per series). Mirrors classic-agg's behaviour.
+func lowerHistogramQuantileNativeAgg(shape histogramAggShape, phi float64, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	vs := shape.selector
+
+	// Build the Scan + Filter. Same shape as the classic-agg path: the
+	// metric-name + label matchers go through buildPredicate; the
+	// rate's [range] adds the time-bound window.
+	scan := &chplan.Scan{Table: s.ExpHistogramTable}
+	pred := buildPredicate(vs.LabelMatchers, s)
+
+	anchor, err := anchorFromSelector(vs, ctx)
+	if err != nil {
+		return nil, err
+	}
+	if anchor.End.IsZero() && !ctx.end.IsZero() {
+		anchor.End = ctx.end.UTC()
+	}
+	pred = andExpr(pred, timeBoundExpr(s.TimestampColumn, anchor))
+	if shape.windowRange > 0 {
+		pred = andExpr(pred, stalenessLowerBoundExpr(s.TimestampColumn, anchor, shape.windowRange))
+	}
+
+	var input chplan.Node = scan
+	if pred != nil {
+		input = &chplan.Filter{Input: scan, Predicate: pred}
+	}
+
+	// Aggregate: collect per-row exp-histogram fields into groupArrays so
+	// the wrapping Project can fold them into a single merged distribution.
+	// The simple aggregates (min Scale, sum ZeroCount, max ZeroThreshold)
+	// land on the same aggregate so the wrapping Project can refer to
+	// them by alias.
+	groupBy, groupByAliases, attrsRebuild := histogramAggGroupBy(shape.agg, s)
+	aggFuncs := []chplan.AggFunc{
+		{Name: "min", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ScaleColumn}}, Alias: hqAggMergedScaleAlias},
+		{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ZeroCountColumn}}, Alias: s.ZeroCountColumn},
+		{Name: "max", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ZeroThresholdColumn}}, Alias: s.ZeroThresholdColumn},
+		{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ScaleColumn}}, Alias: hqAggScalesArrayAlias},
+		{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.PositiveOffsetColumn}}, Alias: hqAggPosOffsetsArrayAlias},
+		{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.PositiveBucketCountsColumn}}, Alias: hqAggPosBucketsArrayAlias},
+		{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.NegativeOffsetColumn}}, Alias: hqAggNegOffsetsArrayAlias},
+		{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.NegativeBucketCountsColumn}}, Alias: hqAggNegBucketsArrayAlias},
+	}
+	agg := &chplan.Aggregate{
+		Input:              input,
+		GroupBy:            groupBy,
+		GroupByAliases:     groupByAliases,
+		AggFuncs:           aggFuncs,
+		DropEmptyOnNoGroup: true,
+	}
+
+	// Inner Project re-shapes the aggregate output into the exp-histogram
+	// row contract HistogramQuantileNative expects: Attributes (rebuilt
+	// from gkeys) + the merged Scale / ZeroCount / ZeroThreshold +
+	// the folded {Positive,Negative}{Offset,BucketCounts}.
+	rebuilt := &chplan.Project{
+		Input: agg,
+		Projections: []chplan.Projection{
+			{Expr: attrsRebuild, Alias: s.AttributesColumn},
+			{Expr: &chplan.ColumnRef{Name: hqAggMergedScaleAlias}, Alias: s.ScaleColumn},
+			{Expr: &chplan.ColumnRef{Name: s.ZeroCountColumn}, Alias: s.ZeroCountColumn},
+			{Expr: &chplan.ColumnRef{Name: s.ZeroThresholdColumn}, Alias: s.ZeroThresholdColumn},
+			{Expr: expHistogramMergeOffsetExpr(hqAggPosOffsetsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias), Alias: s.PositiveOffsetColumn},
+			{Expr: expHistogramMergeBucketsExpr(hqAggPosOffsetsArrayAlias, hqAggPosBucketsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias), Alias: s.PositiveBucketCountsColumn},
+			{Expr: expHistogramMergeOffsetExpr(hqAggNegOffsetsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias), Alias: s.NegativeOffsetColumn},
+			{Expr: expHistogramMergeBucketsExpr(hqAggNegOffsetsArrayAlias, hqAggNegBucketsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias), Alias: s.NegativeBucketCountsColumn},
+		},
+	}
+
+	hq := &chplan.HistogramQuantileNative{
+		Input:                      rebuilt,
+		Phi:                        phi,
+		ScaleColumn:                s.ScaleColumn,
+		ZeroCountColumn:            s.ZeroCountColumn,
+		ZeroThresholdColumn:        s.ZeroThresholdColumn,
+		PositiveOffsetColumn:       s.PositiveOffsetColumn,
+		PositiveBucketCountsColumn: s.PositiveBucketCountsColumn,
+		NegativeOffsetColumn:       s.NegativeOffsetColumn,
+		NegativeBucketCountsColumn: s.NegativeBucketCountsColumn,
+		GroupBy: []chplan.Expr{
+			&chplan.ColumnRef{Name: s.AttributesColumn},
+		},
+		GroupByAliases:   []string{s.AttributesColumn},
+		MetricNameColumn: s.MetricNameColumn,
+		AttributesColumn: s.AttributesColumn,
+		TimestampColumn:  s.TimestampColumn,
+	}
+
+	// Final Sample-row wrapping, same as the bare-selector / classic-agg paths.
+	return &chplan.Project{
+		Input: hq,
+		Projections: []chplan.Projection{
+			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
+			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+			{Expr: &chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}}, Alias: s.TimestampColumn},
+			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
+		},
+	}, nil
+}
+
+// expHistogramMergeOffsetExpr renders the merged PositiveOffset (or
+// NegativeOffset) for a group of native-histogram rows: the minimum of
+// per-row downscaled-to-merged-scale offsets.
+//
+// Emitted CH expression:
+//
+//	arrayMin(arrayMap((s, off) -> bitShiftRight(off, s - <mergedScale>),
+//	                   <scalesArr>, <offArr>))
+//
+// CH's bitShiftRight on signed Int32 performs arithmetic right shift,
+// matching Prometheus's "(idx >> delta)" semantics for negative bucket
+// indices (sub-1 latencies). When all rows share Scale the delta is 0
+// for every row, so the shift is identity and the merged offset
+// reduces to arrayMin(offArr) — identical to classic-histogram
+// min-offset semantics.
+func expHistogramMergeOffsetExpr(offArrAlias, scalesArrAlias, mergedScaleAlias string) chplan.Expr {
+	return &chplan.FuncCall{
+		Name: "arrayMin",
+		Args: []chplan.Expr{
+			&chplan.FuncCall{
+				Name: "arrayMap",
+				Args: []chplan.Expr{
+					&chplan.Lambda{
+						Params: []string{"s", "off"},
+						Body: &chplan.FuncCall{
+							Name: "bitShiftRight",
+							Args: []chplan.Expr{
+								&chplan.BareIdent{Name: "off"},
+								&chplan.Binary{
+									Op:    chplan.OpSub,
+									Left:  &chplan.BareIdent{Name: "s"},
+									Right: &chplan.ColumnRef{Name: mergedScaleAlias},
+								},
+							},
+						},
+					},
+					&chplan.ColumnRef{Name: scalesArrAlias},
+					&chplan.ColumnRef{Name: offArrAlias},
+				},
+			},
+		},
+	}
+}
+
+// expHistogramMergeBucketsExpr renders the merged PositiveBucketCounts
+// (or NegativeBucketCounts) for a group of native-histogram rows: a
+// scale-folded, offset-aligned, zero-padded, element-wise sum.
+//
+// Algorithm: for each target absolute bucket index `T` in
+// [merged_offset, merged_offset + merged_length), the merged value is
+//
+//	Σ_{row i} arraySum(arrayMap(j ->
+//	    if((off_i + j - 1) >> delta_i == T, arr_i[j], 0),
+//	    arrayEnumerate(arr_i)))
+//
+// where delta_i = scales_arr[i] - merged_scale (per-row downscale
+// distance), j is 1-based (array position inside row i's bucket
+// array), and (off_i + j - 1) is the absolute bucket index of position
+// j at row i's original scale.
+//
+// merged_length is computed as
+//
+//	max((off_i + length(arr_i) - 1) >> delta_i) -
+//	    min(off_i >> delta_i) + 1
+//
+// across rows. Rows with empty bucket arrays contribute zero to every
+// target position (no `j` in arrayEnumerate of empty array).
+func expHistogramMergeBucketsExpr(offArrAlias, bucArrAlias, scalesArrAlias, mergedScaleAlias string) chplan.Expr {
+	const paramT = "t"
+
+	mergedScale := &chplan.ColumnRef{Name: mergedScaleAlias}
+	scalesArr := &chplan.ColumnRef{Name: scalesArrAlias}
+	offArr := &chplan.ColumnRef{Name: offArrAlias}
+	bucArr := &chplan.ColumnRef{Name: bucArrAlias}
+
+	mergedStart, mergedLength := expHistogramMergeBucketsBoundsExpr(scalesArr, offArr, bucArr, mergedScale)
+	rowsSum := expHistogramMergeBucketsRowsSumExpr(scalesArr, offArr, bucArr, mergedScale, mergedStart, paramT)
+
+	// Outer: arrayMap(t -> rowsSum, range(toUInt64(mergedLength))).
+	// `t` is 0-based; the inner expression reconstructs the absolute
+	// target index as mergedStart + t. CH's `range(N)` produces
+	// [0, N) over UInt64; toUInt64 keeps the cast explicit so the SQL
+	// parses cleanly even when mergedLength is computed from signed
+	// values.
+	return &chplan.FuncCall{
+		Name: "arrayMap",
+		Args: []chplan.Expr{
+			&chplan.Lambda{
+				Params: []string{paramT},
+				Body:   rowsSum,
+			},
+			&chplan.FuncCall{
+				Name: "range",
+				Args: []chplan.Expr{
+					&chplan.FuncCall{Name: "toUInt64", Args: []chplan.Expr{mergedLength}},
+				},
+			},
+		},
+	}
+}
+
+// expHistogramMergeBucketsBoundsExpr builds (mergedStart, mergedLength)
+// for the bucket-merge expression. Returned mergedStart is the
+// arrayMin of per-row downscaled offsets; mergedLength is
+// greatest(0, mergedEnd - mergedStart + 1), clamped so an all-empty
+// group produces a zero-length output array.
+func expHistogramMergeBucketsBoundsExpr(scalesArr, offArr, bucArr, mergedScale chplan.Expr) (mergedStart, mergedLength chplan.Expr) {
+	const (
+		paramScalesInner = "sm"
+		paramOffInner    = "om"
+		paramArrInner    = "am"
+	)
+
+	// per-row downscaled start: arrayMap((sm, om) -> bitShiftRight(om, sm - merged_scale), scalesArr, offArr)
+	downscaledStarts := &chplan.FuncCall{
+		Name: "arrayMap",
+		Args: []chplan.Expr{
+			&chplan.Lambda{
+				Params: []string{paramScalesInner, paramOffInner},
+				Body: &chplan.FuncCall{
+					Name: "bitShiftRight",
+					Args: []chplan.Expr{
+						&chplan.BareIdent{Name: paramOffInner},
+						&chplan.Binary{
+							Op:    chplan.OpSub,
+							Left:  &chplan.BareIdent{Name: paramScalesInner},
+							Right: mergedScale,
+						},
+					},
+				},
+			},
+			scalesArr,
+			offArr,
+		},
+	}
+
+	// per-row downscaled end: arrayMap((sm, om, am) -> bitShiftRight(om + length(am) - 1, sm - merged_scale), scalesArr, offArr, bucArr).
+	// Rows with empty arrays produce (om + 0 - 1) = om - 1 — slightly below their start, which is fine since they contribute nothing.
+	downscaledEnds := &chplan.FuncCall{
+		Name: "arrayMap",
+		Args: []chplan.Expr{
+			&chplan.Lambda{
+				Params: []string{paramScalesInner, paramOffInner, paramArrInner},
+				Body: &chplan.FuncCall{
+					Name: "bitShiftRight",
+					Args: []chplan.Expr{
+						&chplan.Binary{
+							Op:   chplan.OpAdd,
+							Left: &chplan.BareIdent{Name: paramOffInner},
+							Right: &chplan.Binary{
+								Op:    chplan.OpSub,
+								Left:  &chplan.FuncCall{Name: "length", Args: []chplan.Expr{&chplan.BareIdent{Name: paramArrInner}}},
+								Right: &chplan.LitInt{V: 1},
+							},
+						},
+						&chplan.Binary{
+							Op:    chplan.OpSub,
+							Left:  &chplan.BareIdent{Name: paramScalesInner},
+							Right: mergedScale,
+						},
+					},
+				},
+			},
+			scalesArr,
+			offArr,
+			bucArr,
+		},
+	}
+
+	mergedStart = &chplan.FuncCall{Name: "arrayMin", Args: []chplan.Expr{downscaledStarts}}
+	mergedEnd := &chplan.FuncCall{Name: "arrayMax", Args: []chplan.Expr{downscaledEnds}}
+	// merged_length = mergedEnd - mergedStart + 1.
+	// Guard the "no rows contribute" case by clamping to 0 via greatest(0, …).
+	mergedLength = &chplan.FuncCall{
+		Name: "greatest",
+		Args: []chplan.Expr{
+			&chplan.LitInt{V: 0},
+			&chplan.Binary{
+				Op: chplan.OpAdd,
+				Left: &chplan.Binary{
+					Op:    chplan.OpSub,
+					Left:  mergedEnd,
+					Right: mergedStart,
+				},
+				Right: &chplan.LitInt{V: 1},
+			},
+		},
+	}
+	return mergedStart, mergedLength
+}
+
+// expHistogramMergeBucketsRowsSumExpr builds the per-target-bucket
+// row-sum used inside the outer arrayMap. For target offset `t`
+// (0-based; absolute index = mergedStart + t), it sums every row's
+// contribution at that bucket: arraySum over rows of the inner
+// arraySum-of-arrayMap that picks bucket[j] when (off + j - 1) >>
+// (s - merged_scale) == mergedStart + t, else 0.
+func expHistogramMergeBucketsRowsSumExpr(scalesArr, offArr, bucArr, mergedScale, mergedStart chplan.Expr, paramT string) chplan.Expr {
+	const (
+		paramScale = "s"
+		paramOff   = "off"
+		paramArr   = "arr"
+		paramJ     = "j"
+	)
+
+	// Inner-most: for one (s, off, arr) tuple and target absolute index T,
+	// arraySum(arrayMap(j -> if(bitShiftRight(off + j - 1, s - merged_scale) = T, arr[j], 0), arrayEnumerate(arr))).
+	innerContrib := &chplan.FuncCall{
+		Name: "arraySum",
+		Args: []chplan.Expr{
+			&chplan.FuncCall{
+				Name: "arrayMap",
+				Args: []chplan.Expr{
+					&chplan.Lambda{
+						Params: []string{paramJ},
+						Body: &chplan.FuncCall{
+							Name: "if",
+							Args: []chplan.Expr{
+								&chplan.Binary{
+									Op: chplan.OpEq,
+									Left: &chplan.FuncCall{
+										Name: "bitShiftRight",
+										Args: []chplan.Expr{
+											&chplan.Binary{
+												Op:   chplan.OpAdd,
+												Left: &chplan.BareIdent{Name: paramOff},
+												Right: &chplan.Binary{
+													Op:    chplan.OpSub,
+													Left:  &chplan.BareIdent{Name: paramJ},
+													Right: &chplan.LitInt{V: 1},
+												},
+											},
+											&chplan.Binary{
+												Op:    chplan.OpSub,
+												Left:  &chplan.BareIdent{Name: paramScale},
+												Right: mergedScale,
+											},
+										},
+									},
+									// target absolute index = mergedStart + t (t is 0-based).
+									Right: &chplan.Binary{
+										Op:    chplan.OpAdd,
+										Left:  mergedStart,
+										Right: &chplan.BareIdent{Name: paramT},
+									},
+								},
+								&chplan.Subscript{
+									Container: &chplan.BareIdent{Name: paramArr},
+									Key:       &chplan.BareIdent{Name: paramJ},
+								},
+								&chplan.LitInt{V: 0},
+							},
+						},
+					},
+					&chplan.FuncCall{
+						Name: "arrayEnumerate",
+						Args: []chplan.Expr{&chplan.BareIdent{Name: paramArr}},
+					},
+				},
+			},
+		},
+	}
+
+	// Sum over rows. arraySum(arrayMap((s, off, arr) -> innerContrib, scalesArr, offArr, bucArr)).
+	return &chplan.FuncCall{
+		Name: "arraySum",
+		Args: []chplan.Expr{
+			&chplan.FuncCall{
+				Name: "arrayMap",
+				Args: []chplan.Expr{
+					&chplan.Lambda{
+						Params: []string{paramScale, paramOff, paramArr},
+						Body:   innerContrib,
+					},
+					scalesArr,
+					offArr,
+					bucArr,
+				},
+			},
+		},
+	}
 }
 
 // unwrapVectorSelector peels ParenExpr / StepInvariantExpr wrappers off

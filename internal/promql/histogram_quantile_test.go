@@ -264,13 +264,137 @@ func TestLower_HistogramQuantile_OverAggregation_LeDropped(t *testing.T) {
 	}
 }
 
-// TestLower_HistogramQuantile_OverAggregation_NativeRejected confirms
-// the aggregated-input path bails out on native (exp) histograms via
-// the Phase 2 stub (lowerHistogramQuantileNativeAgg). The native path's
-// bucket arithmetic differs enough that mirroring the classic-path
-// lowering is a separate milestone — see docs/native-histogram-plan.md
-// § Phase 2 for the deferred design.
-func TestLower_HistogramQuantile_OverAggregation_NativeRejected(t *testing.T) {
+// TestLower_HistogramQuantile_OverAggregation_Native pins the chplan
+// shape for `histogram_quantile(phi, sum by(...) (rate(<sel>_exp_hist[r])))`.
+// Phase 2 (docs/native-histogram-plan.md § Phase 2) replaced the
+// stub-rejection error with a real lowering that mirrors the classic
+// aggregated-input path but threads exp-histogram merge math through
+// the inner Project (scale-fold + offset-align + zero-pad + element-
+// wise sum). The lowering must:
+//
+//   - Produce a Project(HistogramQuantileNative(Project(Aggregate(Filter(Scan))))) tree.
+//   - Drop `le` from any by-clause (same rule as the classic native
+//     path — exp-histogram bucket data lives in PositiveBucketCounts,
+//     not as a per-bucket label).
+//   - Aggregate via min(Scale) + sum(ZeroCount) + max(ZeroThreshold)
+//   - groupArray of every per-row exp-histogram column.
+//   - Filter the Scan to the rate's time window.
+func TestLower_HistogramQuantile_OverAggregation_Native(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+
+	cases := []struct {
+		name    string
+		query   string
+		wantPhi float64
+	}{
+		{
+			name:    "sum by(le) over rate on exp_hist",
+			query:   `histogram_quantile(0.95, sum by(le) (rate(http_server_duration_exp_hist[5m])))`,
+			wantPhi: 0.95,
+		},
+		{
+			name:    "sum by(le, job) over rate on exp_hist",
+			query:   `histogram_quantile(0.99, sum by(le, job) (rate(http_server_duration_exp_hist[5m])))`,
+			wantPhi: 0.99,
+		},
+		{
+			name:    "sum without over rate on exp_hist",
+			query:   `histogram_quantile(0.5, sum without(instance) (rate(http_server_duration_exp_hist[5m])))`,
+			wantPhi: 0.5,
+		},
+		{
+			name:    "bare rate (no sum wrapper) on exp_hist",
+			query:   `histogram_quantile(0.5, rate(http_server_duration_exp_hist[5m]))`,
+			wantPhi: 0.5,
+		},
+		{
+			name:    "increase variant on exp_hist",
+			query:   `histogram_quantile(0.5, sum by(le) (increase(http_server_duration_exp_hist[10m])))`,
+			wantPhi: 0.5,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			expr, err := p.ParseExpr(tc.query)
+			if err != nil {
+				t.Fatalf("ParseExpr: %v", err)
+			}
+			plan, err := promql.Lower(context.Background(), expr, s)
+			if err != nil {
+				t.Fatalf("Lower: %v", err)
+			}
+			pj, ok := plan.(*chplan.Project)
+			if !ok {
+				t.Fatalf("want top-level *chplan.Project, got %T", plan)
+			}
+			hq, ok := pj.Input.(*chplan.HistogramQuantileNative)
+			if !ok {
+				t.Fatalf("want Project.Input = *chplan.HistogramQuantileNative, got %T", pj.Input)
+			}
+			if hq.Phi != tc.wantPhi {
+				t.Errorf("Phi = %v, want %v", hq.Phi, tc.wantPhi)
+			}
+
+			var foundAgg *chplan.Aggregate
+			var foundScan *chplan.Scan
+			chplan.Walk(hq.Input, func(n chplan.Node) bool {
+				switch v := n.(type) {
+				case *chplan.Aggregate:
+					if foundAgg == nil {
+						foundAgg = v
+					}
+				case *chplan.Scan:
+					if foundScan == nil {
+						foundScan = v
+					}
+				}
+				return true
+			})
+			if foundAgg == nil {
+				t.Fatalf("expected an Aggregate node in the tree, found none")
+			}
+			if foundScan == nil {
+				t.Fatalf("expected a Scan node in the tree, found none")
+			}
+			if foundScan.Table != s.ExpHistogramTable {
+				t.Errorf("Scan.Table = %q, want %q", foundScan.Table, s.ExpHistogramTable)
+			}
+
+			// Validate the aggregate function set: min(Scale) +
+			// sum(ZeroCount) + max(ZeroThreshold) + groupArray of every
+			// per-row exp-histogram column.
+			if len(foundAgg.AggFuncs) != 8 {
+				t.Errorf("Aggregate.AggFuncs = %d funcs, want 8", len(foundAgg.AggFuncs))
+			}
+			want := map[string]bool{
+				"min": false, "sum": false, "max": false, "groupArray": false,
+			}
+			for _, af := range foundAgg.AggFuncs {
+				if _, ok := want[af.Name]; ok {
+					want[af.Name] = true
+				}
+			}
+			for name, seen := range want {
+				if !seen {
+					t.Errorf("Aggregate missing expected aggregator %q", name)
+				}
+			}
+		})
+	}
+}
+
+// TestLower_HistogramQuantile_OverAggregation_Native_LeDropped pins the
+// rule that `le` is silently dropped from `sum by(le)` clauses on the
+// native aggregated-input path too. Mirrors
+// TestLower_HistogramQuantile_OverAggregation_LeDropped on the classic
+// side: exp-histogram bucket distribution lives in
+// PositiveBucketCounts (offset by PositiveOffset), not as a per-bucket
+// label, so `sum by(le)` semantically collapses to a single group.
+func TestLower_HistogramQuantile_OverAggregation_Native_LeDropped(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
@@ -280,17 +404,26 @@ func TestLower_HistogramQuantile_OverAggregation_NativeRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseExpr: %v", err)
 	}
-	if _, err := promql.Lower(context.Background(), expr, s); err == nil {
-		t.Fatalf("expected error for aggregated native histogram, got nil")
-	} else {
-		if !strings.Contains(err.Error(), "native") {
-			t.Errorf("error %q should mention native histograms", err.Error())
+	plan, err := promql.Lower(context.Background(), expr, s)
+	if err != nil {
+		t.Fatalf("Lower: %v", err)
+	}
+	pj := plan.(*chplan.Project)
+	hq := pj.Input.(*chplan.HistogramQuantileNative)
+
+	var foundAgg *chplan.Aggregate
+	chplan.Walk(hq.Input, func(n chplan.Node) bool {
+		if v, ok := n.(*chplan.Aggregate); ok {
+			foundAgg = v
 		}
-		// The Phase 2 stub points readers at the deferred design doc so
-		// they can pick up the work without re-deriving the algorithm.
-		if !strings.Contains(err.Error(), "native-histogram-plan.md") {
-			t.Errorf("error %q should cite docs/native-histogram-plan.md", err.Error())
-		}
+		return true
+	})
+	if foundAgg == nil {
+		t.Fatalf("no Aggregate found")
+	}
+	if len(foundAgg.GroupBy) != 0 {
+		t.Errorf("Aggregate.GroupBy = %d expressions, want 0 (le must be dropped, no other labels)",
+			len(foundAgg.GroupBy))
 	}
 }
 
