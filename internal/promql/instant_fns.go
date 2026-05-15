@@ -132,6 +132,21 @@ func lowerClamp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, er
 		if err != nil {
 			return nil, err
 		}
+		// Prom's funcClamp short-circuits to an empty Vector when
+		// `maxVal < minVal` (see prometheus/promql/functions.go::clamp).
+		// The CH-side `greatest(min, least(max, V))` doesn't replicate
+		// that — it would force every sample to `min` — so detect the
+		// degenerate-bounds case at lowering and Filter the inner tree
+		// to zero rows. Surfaced as the compat-lane diff on
+		// `clamp(demo_memory_usage_bytes, 1e12, 0)`: cerberus emitted a
+		// constant 1e12 series across every step while Prom emitted no
+		// series at all.
+		if maxB < minB {
+			return &chplan.Filter{
+				Input:     inner,
+				Predicate: &chplan.LitBool{V: false},
+			}, nil
+		}
 		valueRef := &chplan.ColumnRef{Name: s.ValueColumn}
 		newValue := &chplan.FuncCall{
 			Name: "greatest",
