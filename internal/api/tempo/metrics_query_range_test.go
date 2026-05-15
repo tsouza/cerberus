@@ -369,6 +369,84 @@ func TestMetricsQueryRange_CHFailure(t *testing.T) {
 	}
 }
 
+// TestMetricsQueryRange_LabelWireShape pins the tempopb KeyValue +
+// AnyValue wire shape for `{"labels":[...]}`. Grafana's Tempo datasource
+// (and any other consumer parsing through `gogo/protobuf/jsonpb` against
+// `pkg/tempopb/common/v1.KeyValue`) requires the typed AnyValue envelope
+// `{"key":"k","value":{"stringValue":"v"}}` — the flat string form
+// cerberus used to emit (`{"key":"k","value":"v"}`) silently round-trips
+// to an empty AnyValue on the consumer side. EF #398 caught this in the
+// tempo-compatibility harness; this test pins the fixed wire shape so a
+// future refactor can't quietly regress it.
+func TestMetricsQueryRange_LabelWireShape(t *testing.T) {
+	t.Parallel()
+
+	q := &stubQuerier{samples: []chclient.Sample{{
+		Labels:    map[string]string{"resource.service.name": "frontend"},
+		Timestamp: time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+		Value:     1.0,
+	}}}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	u := metricsQueryRangeURL(srv.URL,
+		"{} | count_over_time() by (resource.service.name)",
+		map[string]string{
+			"start": fixtureStartUnix,
+			"end":   fixtureEndUnix,
+			"step":  "60s",
+		})
+	resp, err := http.Get(u)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+	// Read raw body so we assert wire shape without going through the
+	// MarshalJSON we just defined (i.e. the assertion is on the bytes
+	// Grafana actually receives).
+	raw := readBody(t, resp)
+	wantSub := `"value":{"stringValue":"frontend"}`
+	if !strings.Contains(raw, wantSub) {
+		t.Fatalf("response missing tempopb AnyValue shape %q\nbody=%s", wantSub, raw)
+	}
+	// And the legacy flat shape MUST NOT appear.
+	badSub := `"value":"frontend"`
+	if strings.Contains(raw, badSub) {
+		t.Errorf("response still emits legacy flat label shape %q\nbody=%s", badSub, raw)
+	}
+
+	// Decode through MetricsQueryRangeResponse and verify the in-process
+	// struct still surfaces `frontend` so handler callers stay ergonomic.
+	var body tempo.MetricsQueryRangeResponse
+	if err := json.Unmarshal([]byte(raw), &body); err != nil {
+		t.Fatalf("decode tempopb shape: %v", err)
+	}
+	if len(body.Series) != 1 || len(body.Series[0].Labels) != 1 {
+		t.Fatalf("unexpected shape: %+v", body)
+	}
+	if body.Series[0].Labels[0].Key != "resource.service.name" ||
+		body.Series[0].Labels[0].Value != "frontend" {
+		t.Errorf("decoded label = %+v, want {resource.service.name, frontend}",
+			body.Series[0].Labels[0])
+	}
+
+	// Round-trip: also tolerate the legacy flat shape so an old consumer
+	// pushing data into the type (or an older replay fixture) doesn't
+	// break the decoder side of the contract.
+	legacyJSON := []byte(`{"series":[{"labels":[{"key":"k","value":"v"}],"samples":[]}]}`)
+	var legacy tempo.MetricsQueryRangeResponse
+	if err := json.Unmarshal(legacyJSON, &legacy); err != nil {
+		t.Fatalf("decode legacy flat shape: %v", err)
+	}
+	if len(legacy.Series) != 1 || len(legacy.Series[0].Labels) != 1 ||
+		legacy.Series[0].Labels[0].Key != "k" || legacy.Series[0].Labels[0].Value != "v" {
+		t.Errorf("legacy flat decode = %+v, want {k, v}", legacy.Series[0].Labels)
+	}
+}
+
 // TestMetricsQueryRange_StepDurationForms — accepts integer seconds,
 // float seconds, and Go duration strings interchangeably. Matches the
 // PromQL handler's tolerance so Grafana's Tempo datasource (which can

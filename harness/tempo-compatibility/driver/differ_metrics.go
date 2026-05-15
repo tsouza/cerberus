@@ -14,20 +14,16 @@
 //                        different ways" failure mode the plan calls out.
 //   3. AssertMetricsCase + RunSemanticChecks — driven from diffCase.
 //
-// Both backends' JSON differs slightly in label-value shape:
+// Both backends emit Tempo's tempopb KeyValue + AnyValue label shape
+// on the wire — `{"labels":[{"key":"X","value":{"stringValue":"Y"}}], ...}`
+// — matching `pkg/tempopb/common/v1` rendered via gogo `jsonpb`.
 //
-//   * Cerberus internal/api/tempo/metrics_query_range.go emits
-//     `{"labels":[{"key":"X","value":"Y"}], "samples":[{"timestampMs":..,
-//     "value":..}]}` — a flat string `value`.
-//   * Tempo's tempopb projection (pkg/tempopb/common/v1/common.pb.go's
-//     KeyValue) emits `{"labels":[{"key":"X","value":{"stringValue":"Y"}}], ...}`
-//     — a typed AnyValue.
-//
-// The decoder tolerates either form via a small custom Unmarshaler so
-// the differ compares the extracted string value, not the JSON envelope.
-// This is the "structural diff" mandate from the plan; if cerberus
-// migrates to the proto-shape envelope later, the differ keeps working
-// without a code change.
+// Cerberus's `/api/metrics/query_range` historically emitted a flatter
+// `{"key":"X","value":"Y"}` form; that was fixed to match the tempopb
+// projection (EF #398). The decoder below keeps a fallback path for the
+// flat string shape so old replay fixtures (and any consumer still on
+// the legacy shape) keep round-tripping — the structural diff compares
+// the extracted string value, not the JSON envelope.
 
 package main
 

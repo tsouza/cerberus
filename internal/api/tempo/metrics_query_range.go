@@ -2,6 +2,7 @@ package tempo
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -34,9 +35,87 @@ type MetricsSeries struct {
 }
 
 // MetricsLabel is one (key, value) pair in MetricsSeries.Labels.
+//
+// On the wire it serialises to Tempo's tempopb shape:
+//
+//	{"key":"<k>","value":{"stringValue":"<v>"}}
+//
+// matching `pkg/tempopb/common/v1` KeyValue + AnyValue rendered via
+// `gogo/protobuf/jsonpb` (which honours the `json=stringValue` proto
+// tag, not the Go-side `json:"string_value"` struct tag). Holding the
+// value as a plain Go string in the in-process struct keeps handler /
+// test code ergonomic; the custom MarshalJSON wraps the value in the
+// AnyValue envelope so Grafana's Tempo datasource parses cerberus's
+// metrics responses identically to a reference Tempo backend.
+//
+// See https://github.com/tsouza/cerberus/pull/398 (EF #398) for the
+// shape-divergence finding that motivated this.
 type MetricsLabel struct {
-	Key   string `json:"key"`
-	Value string `json:"value"`
+	Key   string
+	Value string
+}
+
+// metricsLabelWire mirrors the on-wire tempopb KeyValue + AnyValue
+// shape (string variant only — TraceQL group-by keys are always
+// stringified via toString(...) on the SQL side, so other AnyValue
+// variants don't apply here).
+type metricsLabelWire struct {
+	Key   string                `json:"key"`
+	Value metricsLabelValueWire `json:"value"`
+}
+
+type metricsLabelValueWire struct {
+	StringValue string `json:"stringValue"`
+}
+
+// MarshalJSON emits the tempopb KeyValue + AnyValue wire shape.
+func (l MetricsLabel) MarshalJSON() ([]byte, error) {
+	return json.Marshal(metricsLabelWire{
+		Key:   l.Key,
+		Value: metricsLabelValueWire{StringValue: l.Value},
+	})
+}
+
+// UnmarshalJSON parses the tempopb KeyValue + AnyValue wire shape.
+// Also tolerates the legacy flat `{"key":"k","value":"v"}` shape that
+// cerberus used to emit (pre-EF #398), so handler tests + any consumer
+// that bound to the old shape keep round-tripping.
+func (l *MetricsLabel) UnmarshalJSON(data []byte) error {
+	// Probe the raw `value` field first — its JSON shape decides which
+	// path to take. A flat-string value can't be decoded into the typed
+	// metricsLabelWire (struct vs. string), so we'd lose the value in a
+	// single-pass decode.
+	var probe struct {
+		Key   string          `json:"key"`
+		Value json.RawMessage `json:"value"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return fmt.Errorf("metrics label: decode: %w", err)
+	}
+	l.Key = probe.Key
+	if len(probe.Value) == 0 || string(probe.Value) == "null" {
+		l.Value = ""
+		return nil
+	}
+	// Tempopb shape — object with stringValue child.
+	if probe.Value[0] == '{' {
+		var v metricsLabelValueWire
+		if err := json.Unmarshal(probe.Value, &v); err != nil {
+			return fmt.Errorf("metrics label %q value: %w", probe.Key, err)
+		}
+		l.Value = v.StringValue
+		return nil
+	}
+	// Legacy flat-string shape.
+	if probe.Value[0] == '"' {
+		var s string
+		if err := json.Unmarshal(probe.Value, &s); err != nil {
+			return fmt.Errorf("metrics label %q value: %w", probe.Key, err)
+		}
+		l.Value = s
+		return nil
+	}
+	return fmt.Errorf("metrics label %q value: unrecognised shape: %s", probe.Key, string(probe.Value))
 }
 
 // MetricsSample is one point in MetricsSeries.Samples — timestamp in
