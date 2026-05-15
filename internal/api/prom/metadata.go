@@ -13,6 +13,7 @@ import (
 
 	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/chclient"
+	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/promql"
 )
@@ -57,6 +58,13 @@ func (h *Handler) handleLabels(w http.ResponseWriter, r *http.Request) {
 // For the synthetic `__name__` label we union the `MetricName` column
 // across metric tables. For other labels we read `Attributes[<name>]` and
 // drop the empty-string sentinel.
+//
+// Optional `start` / `end` parameters anchor the LWR (latest-with-respect-
+// to-T) window used when lowering each `match[]` selector. Without them
+// the lowering defaults to `now64(9)` and the staleness window may
+// exclude any sample older than the default lookback — the request would
+// then return an empty value list even when matching rows exist in the
+// table.
 func (h *Handler) handleLabelValues(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if name == "" {
@@ -74,12 +82,39 @@ func (h *Handler) handleLabelValues(w http.ResponseWriter, r *http.Request) {
 	}
 	matchers := r.Form["match[]"]
 
+	// `start` / `end` are optional on label/values; when present they
+	// anchor the matcher lowering's eval timestamp so the LWR window
+	// can include samples within the requested range. Parse errors are
+	// reported as bad_data; missing values fall through as zero-time
+	// (handler retains the legacy `now64(9)` default in that case).
+	startRaw := r.Form.Get("start")
+	endRaw := r.Form.Get("end")
+	var startT, endT time.Time
+	if startRaw != "" {
+		t, err := format.ParseTimeProm(startRaw, time.Time{})
+		if err != nil {
+			writeError(w, http.StatusBadRequest, ErrBadData,
+				fmt.Errorf("invalid 'start' parameter: %w", err))
+			return
+		}
+		startT = t
+	}
+	if endRaw != "" {
+		t, err := format.ParseTimeProm(endRaw, time.Time{})
+		if err != nil {
+			writeError(w, http.StatusBadRequest, ErrBadData,
+				fmt.Errorf("invalid 'end' parameter: %w", err))
+			return
+		}
+		endT = t
+	}
+
 	var values []string
 	var err error
 	if len(matchers) == 0 {
 		values, err = h.fetchLabelValues(r.Context(), name)
 	} else {
-		values, err = h.fetchLabelValuesMatched(r.Context(), name, matchers)
+		values, err = h.fetchLabelValuesMatched(r.Context(), name, matchers, startT, endT)
 	}
 	if err != nil {
 		h.respondError(w, err)
@@ -335,11 +370,13 @@ func (h *Handler) fetchLabelNamesMatched(ctx context.Context, matchers []string)
 }
 
 // fetchLabelValuesMatched returns the distinct values of <name> across
-// series matching any of the given match[] selectors.
-func (h *Handler) fetchLabelValuesMatched(ctx context.Context, name string, matchers []string) ([]string, error) {
+// series matching any of the given match[] selectors. The start/end pair
+// is forwarded to matcherSQL via labelValuesForMatcher so the lowering's
+// LWR anchor reflects the request window when present.
+func (h *Handler) fetchLabelValuesMatched(ctx context.Context, name string, matchers []string, start, end time.Time) ([]string, error) {
 	seen := map[string]bool{}
 	for _, m := range matchers {
-		vals, err := h.labelValuesForMatcher(ctx, name, m)
+		vals, err := h.labelValuesForMatcher(ctx, name, m, start, end)
 		if err != nil {
 			return nil, err
 		}
@@ -361,7 +398,7 @@ func (h *Handler) fetchLabelValuesMatched(ctx context.Context, name string, matc
 // matched rows in a `SELECT DISTINCT arrayJoin(mapKeys(Attributes))`
 // to extract its attribute keys.
 func (h *Handler) labelKeysForMatcher(ctx context.Context, matcher string) ([]string, error) {
-	innerSQL, args, err := h.matcherSQL(ctx, matcher)
+	innerSQL, args, err := h.matcherSQL(ctx, matcher, time.Time{}, time.Time{})
 	if err != nil {
 		return nil, err
 	}
@@ -379,9 +416,10 @@ func (h *Handler) labelKeysForMatcher(ctx context.Context, matcher string) ([]st
 
 // labelValuesForMatcher lowers a single match[] selector, then projects
 // the named label's distinct values. `__name__` resolves to MetricName;
-// other labels to `Attributes[<name>]`.
-func (h *Handler) labelValuesForMatcher(ctx context.Context, name, matcher string) ([]string, error) {
-	innerSQL, args, err := h.matcherSQL(ctx, matcher)
+// other labels to `Attributes[<name>]`. start/end anchor the matcher
+// lowering's LWR window (zero-time falls back to the lowering default).
+func (h *Handler) labelValuesForMatcher(ctx context.Context, name, matcher string, start, end time.Time) ([]string, error) {
+	innerSQL, args, err := h.matcherSQL(ctx, matcher, start, end)
 	if err != nil {
 		return nil, err
 	}
@@ -413,12 +451,20 @@ func (h *Handler) labelValuesForMatcher(ctx context.Context, name, matcher strin
 
 // matcherSQL lowers a single matcher to its inner SQL + args. The caller
 // wraps this in whatever projection it needs (DISTINCT mapKeys, etc.).
-func (h *Handler) matcherSQL(ctx context.Context, matcher string) (string, []any, error) {
+// When end is non-zero the lowering threads start/end through to
+// promql.LowerAt so the matcher's LWR window anchors at the request's
+// `end` rather than the lowering default (`now64(9)`).
+func (h *Handler) matcherSQL(ctx context.Context, matcher string, start, end time.Time) (string, []any, error) {
 	expr, err := h.parseExpr(ctx, matcher)
 	if err != nil {
 		return "", nil, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
 	}
-	plan, err := promql.Lower(ctx, expr, h.Schema)
+	var plan chplan.Node
+	if !end.IsZero() {
+		plan, err = promql.LowerAt(ctx, expr, h.Schema, start, end)
+	} else {
+		plan, err = promql.Lower(ctx, expr, h.Schema)
+	}
 	if err != nil {
 		return "", nil, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
 	}
