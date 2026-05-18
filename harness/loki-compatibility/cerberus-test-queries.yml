@@ -47,10 +47,13 @@
 #   - On every Loki tag bump (see ../README.md "Bump procedure"),
 #     re-validate the `source:` paths point at queries that still exist.
 
-# Why the corpus is uniformly skipped today:
+# Why parts of the corpus remain skipped:
 #
-#   The fast/ slice exercises the cerberus-side selector vocabulary the
-#   seeder doesn't write yet (multi-label streams, structured metadata).
+#   The fast/ basic-selector and simple-metrics (count_over_time, count
+#   with line filter) entries were unskipped after the seed expansion added
+#   multi-label streams, structured metadata, and multi-format log lines.
+#   The remaining fast/ entries require LogQL features cerberus has
+#   deferred (detected_level filter, | json, | logfmt parser stages).
 #   The regression/ + exhaustive/ slices exercise LogQL features cerberus
 #   has explicitly deferred per docs/roadmap.md § RC2:
 #
@@ -74,54 +77,28 @@
 #     deferred feature. As cerberus ships each RC2/RC3 LogQL feature,
 #     entries get dropped (or rewritten with a tighter rationale if a
 #     residual gap remains).
-#   - The seeder still emits only `{service=...}` logfmt streams; the
-#     fast/ vocabulary-mismatch skips remain until a follow-up grows
-#     the seed.
+#   - The seed expansion (PR 7+) now writes multi-label streams with
+#     JSON/logfmt/unstructured lines, structured metadata (detected_level),
+#     and error keywords (failed/refused). Entries that only needed
+#     matching selectors have been unskipped.
 
 should_skip:
-  # fast/ — selector vocabulary mismatch (pending seed expansion).
-  - source: "fast/basic-selectors.yaml#Basic label selector"
-    reason: "Seeder writes `{service=...}` streams; ${SELECTOR} would expand against the upstream `{service_name=…,namespace=…,cluster=…,container=…}` vocabulary — no matching streams. Tracked alongside the rest of fast/ pending a seed expansion."
-    since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6"
-  - source: "fast/basic-selectors.yaml#Label selector with line filter"
-    reason: "Same as Basic label selector — selector vocabulary mismatch."
-    since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6"
-  - source: "fast/basic-selectors.yaml#Label selector with regex line filter (case-insensitive)"
-    reason: "Same as Basic label selector — selector vocabulary mismatch."
-    since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6"
-  - source: "fast/basic-selectors.yaml#Label selector with negative regex filter"
-    reason: "Same as Basic label selector — selector vocabulary mismatch."
-    since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6"
-  - source: "fast/basic-selectors.yaml#Label filter expression outside stream selector"
-    reason: "Requires multi-label streams (namespace / service_name / cluster); seeder writes single-label `{service=...}`."
-    since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6"
-  - source: "fast/basic-selectors.yaml#Log query with impossible filter (guarantees empty results, exercises log result cache)"
-    reason: "Selector vocabulary mismatch — same root cause as the other fast/basic-selectors.yaml entries."
-    since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6"
-  - source: "fast/simple-metrics.yaml#Count over time"
-    reason: "Selector vocabulary mismatch — `${SELECTOR}` would expand against label keys (service_name/namespace) the seeder doesn't write."
-    since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6"
+  # fast/ — entries below were unskipped in the seed-expansion PR:
+  #   - All basic-selectors.yaml entries (selector vocabulary now matches).
+  #   - Count over time (selector vocabulary now matches).
+  #   - Count with line filter (selector vocabulary + keyword "level" now present).
+  # Entries still skipped require unimplemented LogQL features (detected_level filters, | json, | logfmt):
   - source: "fast/simple-metrics.yaml#Count with error/warn filter"
-    reason: "Requires `detected_level` structured metadata; seeder writes none."
+    reason: "Requires `| detected_level=~\"error|warn\"` filter; cerberus does not yet support structured-metadata label filters in LogQL pipe expressions."
     since: "2026-05-15"
     jira:  "docs/loki-compliance-plan.md PR 6"
   - source: "fast/simple-metrics.yaml#Rate with error/warn filter"
-    reason: "Requires `detected_level` structured metadata; seeder writes none."
+    reason: "Requires `| detected_level=~\"error|warn\"` filter; cerberus does not yet support structured-metadata label filters in LogQL pipe expressions."
     since: "2026-05-15"
     jira:  "docs/loki-compliance-plan.md PR 6"
-  - source: "fast/simple-metrics.yaml#Count with line filter"
-    reason: "Selector vocabulary mismatch — same root cause as other fast/ entries."
-    since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6"
+  # fast/structured-metadata — requires detected_level filter support and/or parser stages.
   - source: "fast/structured-metadata.yaml#Structured metadata error level filter"
-    reason: "Requires `detected_level` structured-metadata column; seeder writes none."
+    reason: "Requires `| detected_level=\"error\"` structured-metadata filter; cerberus does not yet support structured-metadata label filters in LogQL pipe expressions. Seeder now writes detected_level."
     since: "2026-05-15"
     jira:  "docs/loki-compliance-plan.md PR 6"
   - source: "fast/structured-metadata.yaml#Logfmt parsing with structured metadata filter"
