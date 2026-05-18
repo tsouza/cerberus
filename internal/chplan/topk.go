@@ -10,9 +10,16 @@ package chplan
 // every input column — `by(g1, g2)` only partitions, it does not drop
 // labels.
 //
-// SQL form:
+// SQL form (literal-K, KExpr == nil):
 //
 //	SELECT <Columns> FROM (<input>) ORDER BY <SortExpr> [DESC] LIMIT K [BY <By>...]
+//
+// SQL form (computed-K, KExpr != nil):
+//
+//	SELECT <Columns> FROM (
+//	  SELECT *, row_number() OVER (PARTITION BY <By> ORDER BY <SortExpr> [DESC]) AS _rn
+//	  FROM (<input>)
+//	) WHERE _rn <= (SELECT toUInt64(`Value`) FROM (<KExpr>) LIMIT 1)
 //
 // `Desc=true` renders `ORDER BY ... DESC` (topk). `Desc=false` renders
 // `ORDER BY ... ASC` (bottomk).
@@ -29,9 +36,21 @@ package chplan
 // (MetricName / Attributes / TimeUnix / Value) so downstream
 // consumers (chDB roundtrip runner, handler projection) see a
 // fixed-arity column list rather than the opaque-arity `*`.
+//
+// `KExpr` is the computed-K variant: a chplan subtree whose evaluation
+// yields the K integer at execution time. When non-nil, the emitter
+// uses the row_number() window pattern instead of `LIMIT K [BY …]` —
+// CH does not accept a subquery directly in a LIMIT clause, so the
+// "per-partition top-K with computed K" semantics flow through a
+// rank-based filter. The subtree is expected to produce a single-row
+// vector shape (PromQL `scalar(<vector>)`) whose `Value` column is the
+// K integer; the emitter wraps it as `(SELECT toUInt64(Value) FROM
+// <KExpr> LIMIT 1)`. `K` and `KExpr` are mutually exclusive — set one
+// or the other, never both.
 type TopK struct {
 	Input    Node
 	K        int64
+	KExpr    Node // computed-K subtree (mutually exclusive with K > 0)
 	By       []Expr
 	SortExpr Expr     // value column reference used as the ORDER BY key
 	Desc     bool     // true = topk (DESC), false = bottomk (ASC)
@@ -40,7 +59,12 @@ type TopK struct {
 
 func (*TopK) planNode() {}
 
-func (t *TopK) Children() []Node { return []Node{t.Input} }
+func (t *TopK) Children() []Node {
+	if t.KExpr != nil {
+		return []Node{t.Input, t.KExpr}
+	}
+	return []Node{t.Input}
+}
 
 func (t *TopK) Equal(other Node) bool {
 	o, ok := other.(*TopK)
@@ -64,6 +88,13 @@ func (t *TopK) Equal(other Node) bool {
 		if t.Columns[i] != o.Columns[i] {
 			return false
 		}
+	}
+	if t.KExpr == nil || o.KExpr == nil {
+		if t.KExpr != o.KExpr {
+			return false
+		}
+	} else if !t.KExpr.Equal(o.KExpr) {
+		return false
 	}
 	return t.Input.Equal(o.Input)
 }

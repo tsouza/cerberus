@@ -30,9 +30,23 @@ func TestLower_Aggregate_Errors(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name:    "topk K must be scalar literal",
-			query:   `topk(scalar(up), latency_seconds)`,
-			wantErr: "requires a scalar literal K",
+			// `topk(scalar(<vector>), v)` and `bottomk(scalar(<vector>), v)`
+			// are now lowered into the computed-K shape (KExpr on
+			// chplan.TopK). Other computed-K shapes — `topk(2 + scalar(x), v)`,
+			// `topk(time(), v)`, etc. — still error since the lowering
+			// only recognises `scalar(<vector>)` as a K source.
+			name:    "topk K must be scalar literal or scalar(...)",
+			query:   `topk(time(), latency_seconds)`,
+			wantErr: "must be a scalar literal or scalar(<vector>)",
+		},
+		{
+			// Mixed arithmetic around a scalar() subquery is still
+			// rejected: `2 + scalar(x)` lowers as a vector-scalar binop
+			// at parse time, so tryScalarLiteral returns false and the
+			// computed-K path's scalar(...) detector also fails.
+			name:    "topk K rejects mixed scalar arithmetic",
+			query:   `topk(2 + scalar(latency_seconds), up)`,
+			wantErr: "must be a scalar literal or scalar(<vector>)",
 		},
 		{
 			name:    "topk K must be non-negative integer",
