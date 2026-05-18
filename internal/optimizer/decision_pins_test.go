@@ -11,9 +11,8 @@ package optimizer_test
 //   - The four transpose rules check passthrough columns to decide
 //     whether the rewrite is semantics-preserving.
 //
-// PREWHERE promotion and late-materialisation aren't yet wired as
-// distinct named rules (the doc.go reference is forward-looking — see
-// roadmap RC3). Their semantic deputies in v1 are the
+// PREWHERE promotion and late-materialisation are not wired as
+// distinct named rules. Their semantic deputies in v1 are the
 // FilterRangeWindowTranspose + ProjectionPushdown rules; pin those.
 //
 // Each test asserts on the *plan shape* the rule produces — not on
