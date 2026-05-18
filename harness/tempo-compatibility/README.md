@@ -55,7 +55,7 @@ harness/tempo-compatibility/
     main.go             subcommand dispatcher (seed / diff)
     seeder.go           OTLP push to Tempo + CH INSERT for cerberus
     corpus.go           TXTAR corpus loader (PR 4 + PR 6 tag sections)
-    differ.go           canonical-key + relative-epsilon diff (PR 4) +
+    differ.go           TraceID-keyed + relative-epsilon diff (PR 4) +
                         tag-name / tag-values set diff (PR 6)
     diff.go             `diff` subcommand: HTTP fetch + assertions + report
     corpus/
@@ -85,14 +85,14 @@ The differ runs each corpus case against both Tempo and cerberus via
 `/api/search` (and `/api/traces/<id>` for per-id smoke cases), then
 compares the responses. Two complications drive the diff strategy:
 
-1. **Cerberus's `TraceSummary.TraceID` is synthetic today.** See
-   `internal/api/tempo/handler.go::toTraceSummaries` — the stub key is
-   `MetricName + "|" + Timestamp`, not the real OTLP trace ID hex
-   Tempo returns. A literal byte-equal would false-positive on every
-   case. The differ canonicalises each summary via
-   `H(rootServiceName || rootTraceName)` and compares the canonical-key
-   multisets, exactly the plan's "hash trace IDs deterministically
-   (different orderings of equal sets don't false-positive)" prescription.
+1. **TraceIDs match byte-for-byte across backends.** As of PR #439
+   `internal/api/tempo/handler.go::toTraceSummaries` emits the real
+   hex(TraceId) from ClickHouse, so cerberus and Tempo return identical
+   32-hex-char IDs for the same seeded span set. The differ keys its
+   trace-summary multisets directly on `TraceSummary.TraceID` — no
+   hashing, no canonicalisation. "Different orderings of equal sets
+   don't false-positive" still holds because the index is a TraceID
+   map, not a positional list.
 2. **Per-case expectations are orthogonal to differential equality.** A
    case like `{ resource.service.name = "checkout" }` can carry an
    `expected_min_traces: 1` assertion ("each backend, on its own, must
@@ -112,7 +112,7 @@ endpoints.
 
 | Category                | Endpoint kind     | Wire shape                                      | Diff strategy                                          |
 | ----------------------- | ----------------- | ----------------------------------------------- | ------------------------------------------------------ |
-| Attribute matchers      | `search`          | `{traces:[TraceSummary]}`                       | Canonical-key (rootSvc, rootName) set diff             |
+| Attribute matchers      | `search`          | `{traces:[TraceSummary]}`                       | TraceID set diff (real hex IDs match byte-for-byte)    |
 | Intrinsics              | `search`          | same                                            | same                                                   |
 | Structural ops          | `search`          | same                                            | same                                                   |
 | Set ops                 | `search`          | same                                            | same                                                   |
