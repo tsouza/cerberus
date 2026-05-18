@@ -14,9 +14,10 @@ import (
 // TestLower_Aggregate_Errors covers the aggregate paths whose error
 // messages are observable contract (param / no-param mismatch, computed
 // quantile phi, count_values argument-shape rejections). topk/bottomk
-// now accept `without(...)` (lowered into a MapWithoutKeys partition
-// expression on chplan.TopK.By); count_values `without` is still
-// deferred.
+// and count_values now both accept `without(...)`: topk lowers into a
+// MapWithoutKeys partition expression on chplan.TopK.By, count_values
+// into a MapWithoutKeys group key + mapConcat overlay (see
+// lowerCountValues).
 func TestLower_Aggregate_Errors(t *testing.T) {
 	t.Parallel()
 
@@ -47,11 +48,6 @@ func TestLower_Aggregate_Errors(t *testing.T) {
 			name:    "count_values rejects empty label",
 			query:   `count_values("", up)`,
 			wantErr: "non-empty label name",
-		},
-		{
-			name:    "count_values without not yet supported",
-			query:   `count_values("v", up) without (instance)`,
-			wantErr: "without(...) is not yet supported",
 		},
 		{
 			name:    "quantile needs scalar literal phi",
