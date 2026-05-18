@@ -10,8 +10,8 @@ import (
 	"time"
 )
 
-// TestLokiQueryStreamSelector verifies /loki/api/v1/query (M3.5)
-// returns the `streams` result type for a bare stream selector.
+// TestLokiQueryStreamSelector verifies /loki/api/v1/query returns
+// the `streams` result type for a bare stream selector.
 // The seed (test/e2e/seed/cmd/seed/main.go) inserts 60 log records
 // across 3 services in the last minute, so {service_name="api"}
 // must return at least one stream with values.
@@ -51,8 +51,8 @@ func TestLokiQueryStreamSelector(t *testing.T) {
 	}
 }
 
-// TestLokiQueryRangeCountOverTime verifies the LogQL metric path
-// (M3.3): count_over_time({selector}[5m]) returns a matrix.
+// TestLokiQueryRangeCountOverTime verifies the LogQL metric path:
+// count_over_time({selector}[5m]) returns a matrix.
 func TestLokiQueryRangeCountOverTime(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
