@@ -42,7 +42,7 @@ Top-level reading order for any new contributor (human or agent):
 1. `README.md` — what the project is, quick start.
 2. `docs/roadmap.md` — per-RC plan, milestone tables, exit criteria.
 3. `docs/engine.md` — shared query pipeline (`internal/engine/`), the `Lang` contract, and the extension points each new head plugs into.
-4. `docs/optimizer-research.md` — durable optimizer backlog for RC3.
+4. `docs/optimizer-research.md` — durable optimizer backlog.
 5. `internal/promql/lower.go` — the canonical lowering pattern; mirror it when adding LogQL / TraceQL slices.
 
 ## Common workflows
