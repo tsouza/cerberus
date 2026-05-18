@@ -14,6 +14,7 @@ import (
 	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
+	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/engine"
 	"github.com/tsouza/cerberus/internal/telemetry"
 	traceql_lower "github.com/tsouza/cerberus/internal/traceql"
@@ -42,10 +43,11 @@ type MetricsSeries struct {
 
 // Exemplar is one trace-anchored sample point in MetricsSeries.Exemplars.
 type Exemplar struct {
-	Value     float64 `json:"value"`
-	Timestamp int64   `json:"timestamp_ms"`
-	TraceID   string  `json:"traceID"`
-	SpanID    string  `json:"spanID,omitempty"`
+	Labels    []MetricsLabel `json:"labels"`
+	Value     float64        `json:"value"`
+	Timestamp int64          `json:"timestamp_ms"`
+	TraceID   string         `json:"traceID"`
+	SpanID    string         `json:"spanID,omitempty"`
 }
 
 // MetricsLabel is one (key, value) pair in MetricsSeries.Labels.
@@ -249,9 +251,20 @@ func (h *Handler) handleMetricsQueryRange(w http.ResponseWriter, r *http.Request
 		"traceql", q, "start", start, "end", end, "step", step,
 		"sql", res.SQL, "args", res.Args)
 
+	series := toMetricsSeries(res.Samples, metrics)
+
+	exSQL, exArgs, exErr := chsql.EmitMetricsExemplars(ctx, rw, metrics,
+		h.Schema.TraceIDColumn, h.Schema.SpanIDColumn, 1)
+	if exErr == nil {
+		exSamples, qErr := h.Client.Query(ctx, exSQL, exArgs...)
+		if qErr == nil {
+			attachExemplars(series, exSamples, metrics)
+		}
+	}
+
 	writeEngineHeaders(w, res.Headers)
 	writeJSON(w, http.StatusOK, MetricsQueryRangeResponse{
-		Series: toMetricsSeries(res.Samples, metrics),
+		Series: series,
 	})
 }
 
@@ -456,4 +469,61 @@ func labelsFromSample(attrs map[string]string, labelNames []string) []MetricsLab
 		out = append(out, MetricsLabel{Key: k, Value: attrs[k]})
 	}
 	return out
+}
+
+func attachExemplars(series []MetricsSeries, exSamples []chclient.Sample, m *chplan.MetricsAggregate) {
+	labelNames := metricsLabelNames(m.GroupByAliases, len(m.GroupBy))
+	byKey := make(map[string]*MetricsSeries, len(series))
+	for i := range series {
+		key := format.CanonicalKey(labelsToMap(series[i].Labels))
+		byKey[key] = &series[i]
+	}
+
+	for _, s := range exSamples {
+		traceID := s.Labels["trace:id"]
+		spanID := s.Labels["span:id"]
+		if traceID == "" {
+			continue
+		}
+		groupLabels := make(map[string]string, len(s.Labels))
+		for _, name := range labelNames {
+			if v, ok := s.Labels[name]; ok {
+				groupLabels[name] = v
+			}
+		}
+		key := format.CanonicalKey(groupLabels)
+		ps, ok := byKey[key]
+		if !ok {
+			continue
+		}
+		exLabels := make([]MetricsLabel, 0, 2)
+		exLabels = append(exLabels, MetricsLabel{Key: "trace:id", Value: traceID})
+		if spanID != "" {
+			exLabels = append(exLabels, MetricsLabel{Key: "span:id", Value: spanID})
+		}
+		ps.Exemplars = append(ps.Exemplars, Exemplar{
+			Labels:    exLabels,
+			Value:     s.Value,
+			Timestamp: s.Timestamp.UnixMilli(),
+			TraceID:   traceID,
+			SpanID:    spanID,
+		})
+	}
+
+	for i := range series {
+		if len(series[i].Exemplars) == 0 {
+			series[i].Exemplars = []Exemplar{}
+		}
+		sort.Slice(series[i].Exemplars, func(j, k int) bool {
+			return series[i].Exemplars[j].Timestamp < series[i].Exemplars[k].Timestamp
+		})
+	}
+}
+
+func labelsToMap(labels []MetricsLabel) map[string]string {
+	m := make(map[string]string, len(labels))
+	for _, l := range labels {
+		m[l.Key] = l.Value
+	}
+	return m
 }
