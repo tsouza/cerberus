@@ -539,6 +539,15 @@ func TestMetricsQueryRange_ExemplarsEnvelope(t *testing.T) {
 // chsql.EmitMetricsExemplars projects via the outer `map(...) AS
 // Attributes` column. attachExemplars keys each exemplar against its
 // matching series via the by(...) label canonical key.
+//
+// Note: the stubbed Labels map keys use the lowering alias
+// (`service.name`) rather than the source TraceQL attribute name
+// (`resource.service.name`). The chsql emitter projects the inner
+// SELECT with `ResourceAttributes['service.name'] AS service.name`
+// (alias drops the scope prefix), and the matrix/exemplar wrap
+// projections key the outer `Attributes` map by that alias. So real
+// CH returns Sample.Labels keyed by `service.name`; the stub must
+// mirror that for attachExemplars's by-label match to succeed.
 func TestMetricsQueryRange_ExemplarsPopulated(t *testing.T) {
 	t.Parallel()
 
@@ -547,14 +556,16 @@ func TestMetricsQueryRange_ExemplarsPopulated(t *testing.T) {
 	}
 	q := &stubQuerier{
 		samples: []chclient.Sample{
-			// Matrix branch — one series, two anchors.
+			// Matrix branch — one series, two anchors. Labels are keyed
+			// by the lowering alias (`service.name`), matching what the
+			// chsql emitter projects via the outer `Attributes` map.
 			{
-				Labels:    map[string]string{"resource.service.name": "frontend"},
+				Labels:    map[string]string{"service.name": "frontend"},
 				Timestamp: ts(0),
 				Value:     12,
 			},
 			{
-				Labels:    map[string]string{"resource.service.name": "frontend"},
+				Labels:    map[string]string{"service.name": "frontend"},
 				Timestamp: ts(1),
 				Value:     18,
 			},
@@ -562,22 +573,24 @@ func TestMetricsQueryRange_ExemplarsPopulated(t *testing.T) {
 		samplesBySQL: map[string][]chclient.Sample{
 			// Exemplars branch — one trace-anchored sample per anchor,
 			// carrying the trace:id + span:id pair attachExemplars
-			// surfaces under Exemplar.TraceID / SpanID.
+			// surfaces under Exemplar.TraceID / SpanID. The by(...)
+			// alias key (`service.name`) lets attachExemplars match the
+			// exemplar back to its parent series.
 			"exemplar_trace_id": {
 				{
 					Labels: map[string]string{
-						"resource.service.name": "frontend",
-						"trace:id":              "0123456789abcdef0123456789abcdef",
-						"span:id":               "0011223344556677",
+						"service.name": "frontend",
+						"trace:id":     "0123456789abcdef0123456789abcdef",
+						"span:id":      "0011223344556677",
 					},
 					Timestamp: ts(0),
 					Value:     1,
 				},
 				{
 					Labels: map[string]string{
-						"resource.service.name": "frontend",
-						"trace:id":              "fedcba9876543210fedcba9876543210",
-						"span:id":               "aabbccddeeff0011",
+						"service.name": "frontend",
+						"trace:id":     "fedcba9876543210fedcba9876543210",
+						"span:id":      "aabbccddeeff0011",
 					},
 					Timestamp: ts(1),
 					Value:     1,
