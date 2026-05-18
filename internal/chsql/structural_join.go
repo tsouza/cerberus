@@ -31,6 +31,16 @@ import (
 // iteration. MaxDepth (when > 0) caps the iteration count; 0 means
 // unbounded. The final SELECT inner-joins R against the closure.
 //
+// Negated ops (`!>` / `!<` / `!~` / `!>>` / `!<<`) reuse the relation
+// predicate but swap the final outer INNER JOIN for a LEFT ANTI JOIN
+// keyed (R left, L right) on the same relation. The result is the
+// set of R rows for which no L participates in the relation.
+//
+// Union ops (`&>` / `&<` / `&~` / `&>>` / `&<<`) emit the positive
+// relation twice — once projecting R.*, once projecting L.* — and
+// glue the two arms with UNION DISTINCT. The output is the set of
+// spans on either side that participate in the relation.
+//
 // The direct case uses the QueryBuilder.Join slot; the recursive case
 // uses the QueryBuilder.WithRecursive slot for the WITH RECURSIVE …
 // UNION ALL CTE shape.
@@ -39,7 +49,7 @@ func (e *emitter) emitStructuralJoin(j *chplan.StructuralJoin) error {
 		return fmt.Errorf("%w: StructuralJoin column names unset", ErrUnsupported)
 	}
 
-	switch j.Op {
+	switch j.Op.Positive() {
 	case chplan.StructuralChild, chplan.StructuralParent, chplan.StructuralSibling:
 		return e.emitStructuralDirectJoin(j)
 	case chplan.StructuralDescendant, chplan.StructuralAncestor:
@@ -50,7 +60,12 @@ func (e *emitter) emitStructuralJoin(j *chplan.StructuralJoin) error {
 }
 
 // emitStructuralDirectJoin renders the single-INNER-JOIN form used by
-// `>`, `<`, and `~`. Mirrors the M4.2 seed; MaxDepth is ignored here.
+// `>`, `<`, and `~`. Negated variants (`!>` / `!<` / `!~`) swap the
+// JOIN kind to LEFT ANTI JOIN with R on the left side (so the result
+// projects R rows missing any matching L). Union variants (`&>` /
+// `&<` / `&~`) emit the positive INNER JOIN twice — once projecting
+// R.*, once L.* — joined with UNION DISTINCT. MaxDepth is ignored for
+// all direct flavours.
 func (e *emitter) emitStructuralDirectJoin(j *chplan.StructuralJoin) error {
 	relFrag, err := structuralDirectRelFrag(j)
 	if err != nil {
@@ -66,24 +81,68 @@ func (e *emitter) emitStructuralDirectJoin(j *chplan.StructuralJoin) error {
 		return err
 	}
 
-	sb := NewQuery().
-		Select(verbatim("R.*")).
-		From(aliasedFrag(leftSub, "L")).
-		Join(
-			InnerJoin,
-			aliasedFrag(rightSub, "R"),
-			structuralDirectOnFrag(j, relFrag),
-		)
-	e.emitSelect(sb)
-	return nil
+	switch {
+	case j.Op.IsNegated():
+		// Negated direct: R LEFT ANTI JOIN L on the positive relation.
+		// CH's LEFT ANTI JOIN returns rows from the left input that
+		// have no match on the right; placing R on the left lets the
+		// SELECT R.* projection mirror the positive form.
+		sb := NewQuery().
+			Select(verbatim("R.*")).
+			From(aliasedFrag(rightSub, "R")).
+			Join(
+				LeftAntiJoin,
+				aliasedFrag(leftSub, "L"),
+				structuralDirectOnFrag(j, relFrag),
+			)
+		e.emitSelect(sb)
+		return nil
+	case j.Op.IsUnion():
+		// Union direct: (SELECT R.* FROM L INNER JOIN R ON <rel>)
+		//   UNION DISTINCT
+		// (SELECT L.* FROM L INNER JOIN R ON <rel>).
+		rightArm := NewQuery().
+			Select(verbatim("R.*")).
+			From(aliasedFrag(leftSub, "L")).
+			Join(
+				InnerJoin,
+				aliasedFrag(rightSub, "R"),
+				structuralDirectOnFrag(j, relFrag),
+			)
+		leftArm := NewQuery().
+			Select(verbatim("L.*")).
+			From(aliasedFrag(leftSub, "L")).
+			Join(
+				InnerJoin,
+				aliasedFrag(rightSub, "R"),
+				structuralDirectOnFrag(j, relFrag),
+			)
+		b := NewBuilder()
+		UnionDistinct(rightArm.Frag(), leftArm.Frag())(b)
+		e.splice(b)
+		return nil
+	default:
+		sb := NewQuery().
+			Select(verbatim("R.*")).
+			From(aliasedFrag(leftSub, "L")).
+			Join(
+				InnerJoin,
+				aliasedFrag(rightSub, "R"),
+				structuralDirectOnFrag(j, relFrag),
+			)
+		e.emitSelect(sb)
+		return nil
+	}
 }
 
 // structuralDirectRelFrag returns the relation predicate that pairs
 // with the trace-id equality. The leading `L.<TraceID> = R.<TraceID>
 // AND` glue is composed in structuralDirectOnFrag — this helper just
-// emits the operator-specific clause.
+// emits the operator-specific clause. The predicate is keyed off the
+// positive form of j.Op so negated / union variants share the same
+// shape as their base relation.
 func structuralDirectRelFrag(j *chplan.StructuralJoin) (Frag, error) {
-	switch j.Op {
+	switch j.Op.Positive() {
 	case chplan.StructuralChild:
 		// `A > B`: L.SpanID = R.ParentSpanID.
 		return spanIDPairFrag("L", j.SpanIDColumn, "R", j.ParentSpanIDColumn), nil
@@ -162,12 +221,18 @@ func structuralDirectOnFrag(j *chplan.StructuralJoin, rel Frag) Frag {
 // closure for the join — TraceQL semantics require R to be strictly
 // downstream / upstream of L. We achieve this by excluding the
 // anchor depth (0) from the final projection (depth > 0 filter).
+//
+// Negated recursive variants (`!>>` / `!<<`) reuse the same closure
+// and swap the outer INNER JOIN for a LEFT ANTI JOIN with R on the
+// left side — the R rows that the L-rooted closure does *not* reach.
+// Union recursive variants (`&>>` / `&<<`) emit the closure-keyed
+// INNER JOIN twice (projecting R.* and L.* respectively) joined by
+// UNION DISTINCT, mirroring the direct-union shape.
 func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
-	// Recursive step direction depends on the operator:
-	//   >>  — descendants of L: child's ParentSpanId = closure's SpanId
-	//   <<  — ancestors  of L: parent's SpanId = closure's ParentSpanId
+	// Recursive step direction depends on the *positive* form of the
+	// operator — negated / union variants reuse the same closure.
 	var stepRel Frag
-	switch j.Op {
+	switch j.Op.Positive() {
 	case chplan.StructuralDescendant:
 		stepRel = spanIDPairFrag("t", j.ParentSpanIDColumn, "c", j.SpanIDColumn)
 	case chplan.StructuralAncestor:
@@ -241,18 +306,127 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 		From(verbatim("_struct_closure")).
 		Where(verbatim("_depth > 0"))
 
-	// Outer SELECT R.* FROM (<closure>) AS L INNER JOIN (<R>) AS R ON L.TraceId = R.TraceId AND L.SpanId = R.SpanId.
 	onClause := func(b *Builder) {
 		spanIDPairFrag("L", j.TraceIDColumn, "R", j.TraceIDColumn)(b)
 		b.writeSQL(" AND ")
 		spanIDPairFrag("L", j.SpanIDColumn, "R", j.SpanIDColumn)(b)
 	}
-	sb := NewQuery().
-		Select(verbatim("R.*")).
-		From(aliasedFrag(closure.Frag(), "L")).
-		Join(InnerJoin, aliasedFrag(rightSub, "R"), onClause)
-	e.emitSelect(sb)
-	return nil
+	switch {
+	case j.Op.IsNegated():
+		// Negated recursive: R LEFT ANTI JOIN closure(L). The closure
+		// stays on the right so the SELECT R.* projection holds; the
+		// LEFT ANTI returns R rows the L-rooted closure misses.
+		sb := NewQuery().
+			Select(verbatim("R.*")).
+			From(aliasedFrag(rightSub, "R")).
+			Join(LeftAntiJoin, aliasedFrag(closure.Frag(), "L"), onClause)
+		e.emitSelect(sb)
+		return nil
+	case j.Op.IsUnion():
+		// Union recursive: emit two closure-keyed INNER-JOIN arms —
+		// one projecting R.*, one L.* — and dedup with UNION
+		// DISTINCT. The L arm pulls back to the L subquery via a
+		// second join on the closure so multi-level matches are
+		// recovered, mirroring the positive recursive shape.
+		rightArm := NewQuery().
+			Select(verbatim("R.*")).
+			From(aliasedFrag(closure.Frag(), "L")).
+			Join(InnerJoin, aliasedFrag(rightSub, "R"), onClause)
+		// Closure for the L-projection arm walks in the *inverse*
+		// direction so an R span finds the L spans related to it.
+		// For `&>>` (L ancestor of R) the inverse closure starts at
+		// each R span and walks towards ancestors — matching the L
+		// subquery on the upward-walked SpanIds. We rebuild the
+		// closure with R as the seed and step direction inverted.
+		inverseClosure, err := buildStructuralInverseClosure(j, rightSub, table)
+		if err != nil {
+			return err
+		}
+		leftArm := NewQuery().
+			Select(verbatim("L.*")).
+			From(aliasedFrag(leftSub, "L")).
+			Join(InnerJoin, aliasedFrag(inverseClosure.Frag(), "R"), onClause)
+		b := NewBuilder()
+		UnionDistinct(rightArm.Frag(), leftArm.Frag())(b)
+		e.splice(b)
+		return nil
+	default:
+		// Outer SELECT R.* FROM (<closure>) AS L INNER JOIN (<R>) AS R ON L.TraceId = R.TraceId AND L.SpanId = R.SpanId.
+		sb := NewQuery().
+			Select(verbatim("R.*")).
+			From(aliasedFrag(closure.Frag(), "L")).
+			Join(InnerJoin, aliasedFrag(rightSub, "R"), onClause)
+		e.emitSelect(sb)
+		return nil
+	}
+}
+
+// buildStructuralInverseClosure constructs the recursive CTE used by
+// the L-projection arm of a union recursive structural join. The
+// canonical closure (built in the caller of emitStructuralRecursive)
+// walks from L spans towards R; this helper walks the *inverse*
+// direction so each R span surfaces the L spans connected to it.
+//
+// For `A &>> B` the canonical closure walks down from each L
+// (`t.ParentSpanId = c.SpanId`); the inverse walks up from each R
+// (`t.SpanId = c.ParentSpanId`). The two arms of the UNION DISTINCT
+// thus cover both projection directions, mirroring upstream's
+// `union=true` Span.DescendantOf semantics.
+func buildStructuralInverseClosure(j *chplan.StructuralJoin, rightSub Frag, table string) (*QueryBuilder, error) {
+	var stepRel Frag
+	switch j.Op.Positive() {
+	case chplan.StructuralDescendant:
+		// L &>> R means L is ancestor of R. Inverse closure walks up
+		// from R: t.SpanId = c.ParentSpanId.
+		stepRel = spanIDPairFrag("t", j.SpanIDColumn, "c", j.ParentSpanIDColumn)
+	case chplan.StructuralAncestor:
+		// L &<< R means L is descendant of R. Inverse closure walks
+		// down from R: t.ParentSpanId = c.SpanId.
+		stepRel = spanIDPairFrag("t", j.ParentSpanIDColumn, "c", j.SpanIDColumn)
+	default:
+		return nil, fmt.Errorf("%w: union recursive structural op %q", ErrUnsupported, j.Op)
+	}
+
+	anchor := NewQuery().
+		Select(
+			Col(j.TraceIDColumn),
+			Col(j.SpanIDColumn),
+			Col(j.ParentSpanIDColumn),
+			verbatim("0 AS _depth"),
+		).
+		From(aliasedFrag(rightSub, "_seed"))
+
+	stepOn := func(b *Builder) {
+		spanIDPairFrag("t", j.TraceIDColumn, "c", j.TraceIDColumn)(b)
+		b.writeSQL(" AND ")
+		stepRel(b)
+	}
+	step := NewQuery().
+		Select(
+			qualColFrag("t", j.TraceIDColumn),
+			qualColFrag("t", j.SpanIDColumn),
+			qualColFrag("t", j.ParentSpanIDColumn),
+			verbatim("c._depth + 1"),
+		).
+		From(aliasedFrag(Col(table), "t")).
+		Join(
+			InnerJoin,
+			aliasedFrag(verbatim("_struct_closure_inv"), "c"),
+			stepOn,
+		)
+	if j.MaxDepth > 0 {
+		step.Where(verbatim("c._depth < " + strconv.Itoa(j.MaxDepth)))
+	}
+
+	closure := NewQuery().
+		WithRecursive("_struct_closure_inv", anchor, step).
+		Select(
+			Distinct(Col(j.TraceIDColumn)),
+			Col(j.SpanIDColumn),
+		).
+		From(verbatim("_struct_closure_inv")).
+		Where(verbatim("_depth > 0"))
+	return closure, nil
 }
 
 // findScanTable walks a plan subtree looking for the first chplan.Scan

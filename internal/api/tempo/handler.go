@@ -414,7 +414,16 @@ func wrapWithSampleProjection(plan chplan.Node, s schema.Traces, meta engine.Met
 		// a uniform re-projection layer, branch the wrap projection
 		// on Op to use whichever form CH accepts for this shape.
 		sj := plan.(*chplan.StructuralJoin)
-		switch sj.Op {
+		// Negated variants (`!>`, `!<`, `!~`, `!>>`, `!<<`) and union
+		// variants (`&>`, `&<`, `&~`, `&>>`, `&<<`) share their
+		// positive cousin's outer column-resolution shape: the
+		// emitter rewrites the SELECT for negated forms (R becomes
+		// the FROM source, closure is anti-joined) and emits two
+		// INNER-JOIN arms glued by UNION DISTINCT for union forms.
+		// In both cases the outer scope's bare-column ambiguity (or
+		// lack thereof) mirrors the positive base relation, so we
+		// branch on `Positive()` rather than the raw Op.
+		switch sj.Op.Positive() {
 		case chplan.StructuralDescendant, chplan.StructuralAncestor:
 			return &chplan.Project{Input: plan, Projections: canonicalSampleProjections(s)}
 		default:

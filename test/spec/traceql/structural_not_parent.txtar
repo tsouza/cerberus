@@ -1,0 +1,13 @@
+-- query.traceql --
+{ name = "a" } !< { name = "b" }
+-- sql --
+SELECT R.* FROM (SELECT * FROM `otel_traces` WHERE (`SpanName` = ?)) AS R LEFT ANTI JOIN (SELECT * FROM `otel_traces` WHERE (`SpanName` = ?)) AS L ON L.`TraceId` = R.`TraceId` AND L.`ParentSpanId` = R.`SpanId`
+-- args --
+[0] string = "b"
+[1] string = "a"
+-- chplan --
+StructuralJoin op=!<
+  Filter predicate=(SpanName = "a")
+    Scan(otel_traces)
+  Filter predicate=(SpanName = "b")
+    Scan(otel_traces)
