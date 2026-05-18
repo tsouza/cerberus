@@ -361,32 +361,31 @@ func subqueryAnchor(e *parser.SubqueryExpr, ctx lowerCtx) (evalAnchor, error) {
 	return a, nil
 }
 
-// lowerSubqueryOverAggregate — `<sum/avg/...>(<inner>)[<outer_range>:<step>]`.
+// lowerSubqueryOverAggregate — `<agg>(<inner>)[<outer_range>:<step>]`.
 //
 // The canonical Grafana shape is
 // `max_over_time(sum by(job)(rate(http_requests_total[1m]))[1h:30s])` —
 // at each anchor `t` across `[End - sub.Range, End]` spaced by `step`,
-// evaluate `sum by(job)(rate(http_requests_total[1m]))` at `t`.
+// evaluate `<agg>(<inner>)` at `t`.
 //
-// The lowered tree is a Project[Aggregate[matrix-RangeWindow]]:
+// For per-bucket reducers (sum / count / avg / min / max / quantile)
+// the lowered tree is a Project[Aggregate[matrix-RangeWindow]]:
 //
 //	Project[Attributes = map('<label>', gkey_0, ...), anchor_ts, value]
-//	  Aggregate[GroupBy: [<by-keys via Attributes['<label>'] AS gkey_N>, anchor_ts], AggFuncs: [<op>(value) AS value]]
+//	  Aggregate[GroupBy: [<by/without-keys>, anchor_ts], AggFuncs: [<op>(value) AS value]]
 //	    RangeWindow[matrix shape: per-(series, anchor) Inner-call output]
 //	      <Filter/Scan from the AggregateExpr.Expr lowering>
 //
 // The outer Project re-exposes the canonical (Attributes, anchor_ts,
 // value) shape so a wrapping RangeWindow (the `max_over_time(...)`)
 // can group by Attributes and window over anchor_ts/value without
-// caring that the underlying series identity came from a `by(...)`
-// clause rather than the raw scan's Attributes map.
+// caring that the underlying series identity came from a `by(...)` /
+// `without(...)` clause rather than the raw scan's Attributes map.
 //
-// Only `by(...)` aggregations are supported here. `without(...)`
-// would need the matrix RangeWindow to expose every label that wasn't
-// removed, which the current matrix lowering doesn't do (it groups by
-// the full Attributes map only). Same restriction as the parameterised
-// aggregates QUANTILE / TOPK / BOTTOMK / COUNT_VALUES that change
-// output shape — left to the next milestone.
+// Shape-changing aggregations (`topk` / `bottomk` / `count_values`) are
+// dispatched to dedicated helpers — topk/bottomk preserve every input
+// label and emit a TopK plan node, count_values builds a synthetic
+// label from the per-bucket value via toString().
 func lowerSubqueryOverAggregate(
 	sub *parser.SubqueryExpr,
 	agg *parser.AggregateExpr,
@@ -394,15 +393,17 @@ func lowerSubqueryOverAggregate(
 	s schema.Metrics,
 	ctx lowerCtx,
 ) (chplan.Node, error) {
-	if agg.Without {
-		return nil, fmt.Errorf("promql: subquery over `without(...)` aggregation is not yet supported")
-	}
 	switch agg.Op {
-	case parser.SUM, parser.COUNT, parser.AVG, parser.MIN, parser.MAX:
-		// Supported per-bucket reducers — sum/count/avg/min/max over the
-		// matrix value column produce one value per (anchor, by-key) row.
+	case parser.TOPK, parser.BOTTOMK:
+		return lowerSubqueryOverTopK(sub, agg, step, s, ctx)
+	case parser.COUNT_VALUES:
+		return lowerSubqueryOverCountValues(sub, agg, step, s, ctx)
+	case parser.SUM, parser.COUNT, parser.AVG, parser.MIN, parser.MAX, parser.QUANTILE:
+		// Per-bucket reducers — sum/count/avg/min/max/quantile over the
+		// matrix value column produce one value per (anchor, group-tuple)
+		// row.
 	default:
-		return nil, fmt.Errorf("promql: subquery over %s aggregation is not yet supported",
+		return nil, fmt.Errorf("promql: subquery over %s aggregation is not supported",
 			agg.Op.String())
 	}
 
@@ -415,20 +416,18 @@ func lowerSubqueryOverAggregate(
 		return nil, err
 	}
 
-	// Build the Aggregate's GroupBy: one MapAccess per `by(...)` label
-	// PLUS the per-anchor key so the reducer fires once per (anchor,
-	// label-tuple).
-	groupBy := make([]chplan.Expr, 0, len(agg.Grouping)+1)
-	groupAliases := make([]string, 0, len(agg.Grouping)+1)
-	for i, label := range agg.Grouping {
-		groupBy = append(groupBy, &chplan.MapAccess{
-			Map: &chplan.ColumnRef{Name: s.AttributesColumn},
-			Key: &chplan.LitString{V: label},
-		})
-		groupAliases = append(groupAliases, fmt.Sprintf("gkey_%d", i))
+	// Build the Aggregate's GroupBy. For `by(l1, l2, ...)` one MapAccess
+	// per named label; for `without(l1, l2, ...)` a single MapWithoutKeys
+	// spanning the full Attributes map. Plus the per-anchor key so the
+	// reducer fires once per (anchor, group-tuple). Mirrors lower.go's
+	// `aggregateGroupBy` for the basic / `without` symmetry.
+	groupBy, groupAliases, err := subqueryAggregateGroupBy(agg, s)
+	if err != nil {
+		return nil, err
 	}
-	groupBy = append(groupBy, &chplan.ColumnRef{Name: "anchor_ts"})
-	groupAliases = append(groupAliases, "anchor_ts")
+	const anchorAlias = "anchor_ts"
+	groupBy = append(groupBy, &chplan.ColumnRef{Name: anchorAlias})
+	groupAliases = append(groupAliases, anchorAlias)
 
 	// Build the AggFunc. The matrix RangeWindow emits its windowed
 	// value under `s.ValueColumn` (the schema's canonical PascalCase
@@ -455,16 +454,289 @@ func lowerSubqueryOverAggregate(
 	// RangeWindow's counter_delta arithmetic (always emitted even by
 	// arrayAvg / arrayMax / arrayMin reducers) can do `c - p` without
 	// hitting CH's NO_COMMON_TYPE error on count's UInt64 result.
-	attrsExpr := buildAttributesFromAggregate(agg, groupAliases[:len(agg.Grouping)])
-	return &chplan.Project{
+	groupKeyAliases := groupAliases[:len(groupAliases)-1]
+	attrsExpr := buildAttributesFromAggregate(agg, groupKeyAliases)
+	wrapped := chplan.Node(&chplan.Project{
 		Input: innerAgg,
 		Projections: []chplan.Projection{
 			{Expr: attrsExpr, Alias: s.AttributesColumn},
-			{Expr: &chplan.ColumnRef{Name: "anchor_ts"}, Alias: "anchor_ts"},
+			{Expr: &chplan.ColumnRef{Name: anchorAlias}, Alias: anchorAlias},
 			{
 				Expr: &chplan.FuncCall{
 					Name: "toFloat64",
 					Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}},
+				},
+				Alias: s.ValueColumn,
+			},
+		},
+	})
+	// `quantile(phi, V)` with phi outside [0, 1] is well-defined in
+	// PromQL — phi<0 → -Inf, phi>1 → +Inf. CH's `quantile` aggregate
+	// rejects out-of-range phi at the wire layer, so buildSubqueryAggFunc
+	// has already clamped the emitted phi to 0.5; wrap the Project's
+	// Value column in the PromQL-spec Inf constant so the per-bucket
+	// output matches Prom's funcQuantile semantics. Mirrors
+	// `lowerAggregate`'s `projectValueOverInner` shim — the subquery
+	// aggregate's 3-column output (Attributes, anchor_ts, Value) needs a
+	// matching 3-column wrap rather than the instant-mode 4-column
+	// (MetricName, Attributes, TimeUnix, Value) shape.
+	if agg.Op == parser.QUANTILE {
+		if phi, ok := tryScalarLiteral(agg.Param); ok {
+			if infValue, outOfRange := outOfRangePhiInf(phi); outOfRange {
+				wrapped = &chplan.Project{
+					Input: wrapped,
+					Projections: []chplan.Projection{
+						{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+						{Expr: &chplan.ColumnRef{Name: anchorAlias}, Alias: anchorAlias},
+						{Expr: &chplan.LitFloat{V: infValue}, Alias: s.ValueColumn},
+					},
+				}
+			}
+		}
+	}
+	return wrapped, nil
+}
+
+// subqueryAggregateGroupBy returns the (GroupBy, aliases) pair for the
+// subquery-over-aggregate's inner Aggregate. Mirrors lower.go's
+// `aggregateGroupBy` shape so the by / without symmetry stays
+// consistent: `by(l1, l2)` produces N `Attributes[lN] AS gkey_N`
+// columns; `without(l1, l2)` produces a single `MapWithoutKeys(...) AS
+// gkey_0` column; `without()` (empty Grouping) collapses to a bare
+// `Attributes AS gkey_0` reference because CH's `mapFilter(_ -> NOT (k
+// IN ()))` rejects an empty IN-list.
+func subqueryAggregateGroupBy(agg *parser.AggregateExpr, s schema.Metrics) ([]chplan.Expr, []string, error) {
+	switch {
+	case agg.Without && len(agg.Grouping) == 0:
+		return []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}}, []string{"gkey_0"}, nil
+	case agg.Without:
+		return []chplan.Expr{&chplan.MapWithoutKeys{
+				Map:  &chplan.ColumnRef{Name: s.AttributesColumn},
+				Keys: append([]string(nil), agg.Grouping...),
+			}},
+			[]string{"gkey_0"}, nil
+	}
+	groupBy := make([]chplan.Expr, 0, len(agg.Grouping))
+	aliases := make([]string, 0, len(agg.Grouping))
+	for i, label := range agg.Grouping {
+		groupBy = append(groupBy, &chplan.MapAccess{
+			Map: &chplan.ColumnRef{Name: s.AttributesColumn},
+			Key: &chplan.LitString{V: label},
+		})
+		aliases = append(aliases, fmt.Sprintf("gkey_%d", i))
+	}
+	return groupBy, aliases, nil
+}
+
+// lowerSubqueryOverTopK — `(topk|bottomk)(K, <inner>)[<outer_range>:<step>]`.
+//
+// topk/bottomk preserve every input label — `by(...)` / `without(...)`
+// only partitions. The lowered tree is a TopK over the matrix
+// RangeWindow, with the partition key including the per-anchor column
+// so K series are selected per (group-tuple, anchor) bucket. The
+// matrix already emits the canonical (Attributes, anchor_ts, Value)
+// row shape; TopK preserves those columns so a wrapping RangeWindow
+// (`max_over_time(topk(3, rate(m[1m]))[5m:30s])`) can window over
+// anchor_ts / Value without further reshaping.
+func lowerSubqueryOverTopK(
+	sub *parser.SubqueryExpr,
+	agg *parser.AggregateExpr,
+	step time.Duration,
+	s schema.Metrics,
+	ctx lowerCtx,
+) (chplan.Node, error) {
+	kF, ok := tryScalarLiteral(agg.Param)
+	if !ok {
+		return nil, fmt.Errorf("promql: subquery over %s requires a scalar literal K", agg.Op.String())
+	}
+	if kF < 0 || kF != float64(int64(kF)) {
+		return nil, fmt.Errorf("promql: subquery over %s K must be a non-negative integer literal, got %v",
+			agg.Op.String(), kF)
+	}
+	if kF == 0 {
+		return nil, fmt.Errorf("promql: subquery over %s K must be > 0", agg.Op.String())
+	}
+
+	matrix, err := lowerSubqueryInnerMatrix(sub, agg.Expr, step, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Partition list: by/without keys (in TopK form — see lower.go's
+	// lowerTopK) PLUS anchor_ts so the LIMIT K BY fires per outer-anchor
+	// bucket. Without the anchor key, K series would be selected once
+	// across the whole matrix instead of K per evaluation step.
+	var by []chplan.Expr
+	switch {
+	case agg.Without && len(agg.Grouping) == 0:
+		by = []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}}
+	case agg.Without:
+		by = []chplan.Expr{&chplan.MapWithoutKeys{
+			Map:  &chplan.ColumnRef{Name: s.AttributesColumn},
+			Keys: append([]string(nil), agg.Grouping...),
+		}}
+	default:
+		by = make([]chplan.Expr, 0, len(agg.Grouping))
+		for _, label := range agg.Grouping {
+			by = append(by, &chplan.MapAccess{
+				Map: &chplan.ColumnRef{Name: s.AttributesColumn},
+				Key: &chplan.LitString{V: label},
+			})
+		}
+	}
+	by = append(by, &chplan.ColumnRef{Name: "anchor_ts"})
+
+	return &chplan.TopK{
+		Input:    matrix,
+		K:        int64(kF),
+		By:       by,
+		SortExpr: &chplan.ColumnRef{Name: s.ValueColumn},
+		Desc:     agg.Op == parser.TOPK,
+		Columns: []string{
+			s.AttributesColumn,
+			"anchor_ts",
+			s.ValueColumn,
+		},
+	}, nil
+}
+
+// lowerSubqueryOverCountValues — `count_values("label", <inner>) [by/without (g)] [<outer_range>:<step>]`.
+//
+// For each distinct value of `<inner>` (within each partition + anchor)
+// emit a row whose Attributes carry the unique value as a synthetic
+// label binding (`<label>=<stringified value>`) plus the preserved
+// per-partition labels, and whose Value is the count of input series
+// hitting that value at the anchor. Mirrors lower.go's
+// `lowerCountValues` but adds the per-anchor column to the GROUP BY so
+// the reducer fires once per (anchor, partition, distinct value).
+func lowerSubqueryOverCountValues(
+	sub *parser.SubqueryExpr,
+	agg *parser.AggregateExpr,
+	step time.Duration,
+	s schema.Metrics,
+	ctx lowerCtx,
+) (chplan.Node, error) {
+	label, ok := tryStringLiteral(agg.Param)
+	if !ok {
+		return nil, fmt.Errorf("promql: count_values requires a string-literal label name as the first arg")
+	}
+	if label == "" {
+		return nil, fmt.Errorf("promql: count_values requires a non-empty label name")
+	}
+
+	matrix, err := lowerSubqueryInnerMatrix(sub, agg.Expr, step, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	const (
+		valueKeyAlias = "cv_val"
+		countAlias    = "cv_count"
+		anchorAlias   = "anchor_ts"
+	)
+
+	// Partition-key list (matches lower.go's lowerCountValues by/without
+	// branches), followed by the synthetic value-as-label key and the
+	// per-anchor key so the count reducer fires once per (partition,
+	// distinct value, anchor).
+	var (
+		groupBy []chplan.Expr
+		aliases []string
+	)
+	switch {
+	case agg.Without && len(agg.Grouping) == 0:
+		groupBy = []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}}
+		aliases = []string{"gkey_0"}
+	case agg.Without:
+		groupBy = []chplan.Expr{&chplan.MapWithoutKeys{
+			Map:  &chplan.ColumnRef{Name: s.AttributesColumn},
+			Keys: append([]string(nil), agg.Grouping...),
+		}}
+		aliases = []string{"gkey_0"}
+	default:
+		groupBy = make([]chplan.Expr, 0, len(agg.Grouping))
+		aliases = make([]string, 0, len(agg.Grouping))
+		for i, lbl := range agg.Grouping {
+			groupBy = append(groupBy, &chplan.MapAccess{
+				Map: &chplan.ColumnRef{Name: s.AttributesColumn},
+				Key: &chplan.LitString{V: lbl},
+			})
+			aliases = append(aliases, fmt.Sprintf("gkey_%d", i))
+		}
+	}
+	groupBy = append(groupBy, &chplan.FuncCall{
+		Name: "toString",
+		Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}},
+	})
+	aliases = append(aliases, valueKeyAlias)
+	groupBy = append(groupBy, &chplan.ColumnRef{Name: anchorAlias})
+	aliases = append(aliases, anchorAlias)
+
+	innerAgg := &chplan.Aggregate{
+		Input:          matrix,
+		GroupBy:        groupBy,
+		GroupByAliases: aliases,
+		// Alias count() as cv_count (not Value) so CH's name resolution
+		// in the GROUP BY clause doesn't pick up the aggregate alias
+		// when it sees `toString(Value)` — CH otherwise errors with
+		// `Aggregate function count() AS Value is found in GROUP BY`.
+		// The outer Project re-aliases cv_count back to Value.
+		AggFuncs: []chplan.AggFunc{
+			{Name: "count", Args: []chplan.Expr{}, Alias: countAlias},
+		},
+		// count_values returns one row per distinct value per anchor;
+		// empty input naturally produces no rows.
+		DropEmptyOnNoGroup: false,
+	}
+
+	// Build the Attributes expression for the wrapping Project.
+	// Mirrors lower.go's lowerCountValues: `without(...)` overlays the
+	// synthetic binding onto the partition map via mapConcat;
+	// `by(...)` / no grouping rebuilds the partition map by string-
+	// literal pairs and wraps with MapWithoutEmptyValues to drop
+	// unset-label slots.
+	var attrs chplan.Expr
+	switch {
+	case agg.Without:
+		attrs = &chplan.FuncCall{
+			Name: "mapConcat",
+			Args: []chplan.Expr{
+				&chplan.ColumnRef{Name: "gkey_0"},
+				&chplan.FuncCall{
+					Name: "map",
+					Args: []chplan.Expr{
+						&chplan.LitString{V: label},
+						&chplan.ColumnRef{Name: valueKeyAlias},
+					},
+				},
+			},
+		}
+	default:
+		mapArgs := make([]chplan.Expr, 0, (len(agg.Grouping)+1)*2)
+		for i, lbl := range agg.Grouping {
+			mapArgs = append(mapArgs,
+				&chplan.LitString{V: lbl},
+				&chplan.ColumnRef{Name: aliases[i]},
+			)
+		}
+		mapArgs = append(mapArgs,
+			&chplan.LitString{V: label},
+			&chplan.ColumnRef{Name: valueKeyAlias},
+		)
+		attrs = &chplan.MapWithoutEmptyValues{
+			Map: &chplan.FuncCall{Name: "map", Args: mapArgs},
+		}
+	}
+
+	return &chplan.Project{
+		Input: innerAgg,
+		Projections: []chplan.Projection{
+			{Expr: attrs, Alias: s.AttributesColumn},
+			{Expr: &chplan.ColumnRef{Name: anchorAlias}, Alias: anchorAlias},
+			{
+				Expr: &chplan.FuncCall{
+					Name: "toFloat64",
+					Args: []chplan.Expr{&chplan.ColumnRef{Name: countAlias}},
 				},
 				Alias: s.ValueColumn,
 			},
@@ -521,19 +793,46 @@ func buildSubqueryAggFunc(a *parser.AggregateExpr, valCol string) (chplan.AggFun
 		return chplan.AggFunc{Name: "min", Args: []chplan.Expr{valueArg}, Alias: valCol}, nil
 	case parser.MAX:
 		return chplan.AggFunc{Name: "max", Args: []chplan.Expr{valueArg}, Alias: valCol}, nil
+	case parser.QUANTILE:
+		phi, ok := tryScalarLiteral(a.Param)
+		if !ok {
+			return chplan.AggFunc{}, fmt.Errorf("promql: subquery over quantile(phi, ...) requires a scalar literal phi")
+		}
+		// CH's `quantile(phi)` aggregate errors on phi outside [0, 1].
+		// The lowerSubqueryOverAggregate caller post-Projects the Value
+		// column to ±Inf for out-of-range phi (matching Prom's
+		// funcQuantile semantics) so the clamped value here is never
+		// observed in the final output. Mirrors lower.go's buildAggFunc.
+		emitPhi := phi
+		if _, outOfRange := outOfRangePhiInf(phi); outOfRange {
+			emitPhi = 0.5
+		}
+		return chplan.AggFunc{
+			Name:   "quantile",
+			Params: []chplan.Expr{&chplan.LitFloat{V: emitPhi}},
+			Args:   []chplan.Expr{valueArg},
+			Alias:  valCol,
+		}, nil
 	}
-	return chplan.AggFunc{}, fmt.Errorf("promql: subquery over %s aggregation is not yet supported", a.Op.String())
+	return chplan.AggFunc{}, fmt.Errorf("promql: subquery over %s aggregation is not supported", a.Op.String())
 }
 
 // buildAttributesFromAggregate rebuilds an Attributes map literal from
 // the gkey_N aliases produced by the subquery's inner Aggregate. The
 // result lets a wrapping RangeWindow group by `Attributes` without
 // needing to know that the underlying identity came from a `by(...)`
-// clause.
+// or `without(...)` clause.
 //
 // `by(label1, label2)` → `map('label1', gkey_0, 'label2', gkey_1)`.
 // `by()` (no labels) → empty `Map(String,String)` literal.
+// `without(...)` / `without()` → bare `gkey_0` (the single
+// MapWithoutKeys-derived column already carries the partition map).
 func buildAttributesFromAggregate(agg *parser.AggregateExpr, gkeyAliases []string) chplan.Expr {
+	if agg.Without {
+		// `without(...)` / `without()` — partition map is the single
+		// MapWithoutKeys / bare Attributes column at gkey_0.
+		return &chplan.ColumnRef{Name: gkeyAliases[0]}
+	}
 	if len(agg.Grouping) == 0 {
 		return &chplan.FuncCall{
 			Name: "CAST",
