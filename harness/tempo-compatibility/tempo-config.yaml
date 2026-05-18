@@ -53,17 +53,18 @@ storage:
       path: /var/tempo/wal
     local:
       path: /var/tempo/blocks
-    block:
-      max_block_duration: 2s
 
-# Tighten the ingester flush cadence so the PR-3 smoke read sees
-# spans within seconds of the OTLP push, instead of waiting for the
-# default block duration. Tempo v3 uses ingester.trace_live_period /
-# trace_idle_period / flush_check_period (not the legacy live_store
-# section).
-ingester:
-  trace_idle_period: 1s
-  trace_live_period: 2s
+# NOTE: the previous attempt used `ingester.trace_live_period` etc.
+# and `storage.trace.block.max_block_duration`, but the Tempo image
+# (main-2f74ea8 = v3.0.0-rc.1+) rejects those top-level keys and
+# exits on startup. The `live_store` section below uses the correct
+# field names for this image version. The differ's
+# `Recent-Data-Target: live-store` header is the real fix for the
+# "0 results from Tempo" issue — without it, Tempo only searches
+# completed blocks, not the live store.
+live_store:
+  max_trace_live: 2s
+  max_trace_idle: 1s
   flush_check_period: 1s
 
 usage_report:
