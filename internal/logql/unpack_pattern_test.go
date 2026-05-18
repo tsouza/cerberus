@@ -75,15 +75,16 @@ func TestLowerUnpackPattern_NoSQLImpact(t *testing.T) {
 	}
 }
 
-// TestLowerUnpackPattern_StillRejectsOtherParsers pins that we didn't
-// accidentally light up `| json` / `| regexp` while enabling unpack +
-// pattern (and `| logfmt`) — those stay deferred to RC3.
-func TestLowerUnpackPattern_StillRejectsOtherParsers(t *testing.T) {
+// TestLowerUnpackPattern_AcceptsAllParsers pins that `| json`, `| logfmt`,
+// `| regexp` are lowered alongside `| unpack` / `| pattern`. Used to
+// pin rejection of the json / regexp shapes; both are now supported.
+func TestLowerUnpackPattern_AcceptsAllParsers(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelLogs()
 	cases := []string{
 		`{job="api"} | json`,
+		`{job="api"} | logfmt`,
 		`{job="api"} | regexp "(?P<status>\\d+)"`,
 	}
 	for _, q := range cases {
@@ -93,8 +94,8 @@ func TestLowerUnpackPattern_StillRejectsOtherParsers(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseExpr: %v", err)
 			}
-			if _, err := logql.Lower(context.Background(), expr, s); err == nil {
-				t.Errorf("expected Lower(%q) to error; got nil", q)
+			if _, err := logql.Lower(context.Background(), expr, s); err != nil {
+				t.Errorf("expected Lower(%q) to succeed; got %v", q, err)
 			}
 		})
 	}
