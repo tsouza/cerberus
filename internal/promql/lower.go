@@ -29,9 +29,18 @@ var tracer = otel.Tracer("github.com/tsouza/cerberus/internal/promql")
 // SubqueryExpr (P0 4.5–4.7: bare-vector, over range-vector calls,
 // outer reducer over subquery).
 //
-// Deferred to RC3 / later milestones: nested subqueries, subquery
-// over AggregateExpr, subquery `@ start()`/`@ end()`, native-histogram
-// `histogram_quantile` (PR H, otel_metrics_exp_histogram), exemplars.
+// Deferred to RC3 / later milestones: subquery over `without(...)`
+// aggregations and parameterised aggregates (quantile / topk / bottomk
+// / count_values), subquery `@ start()`/`@ end()` outside the limited
+// support already wired, native-histogram `histogram_quantile`
+// (PR H, otel_metrics_exp_histogram), exemplars. Nested subqueries
+// reachable through the parser (e.g.
+// `max_over_time(rate(m[1m])[5m:30s])[1h:5m]`,
+// `sum_over_time(max_over_time(rate(m[5m])[10m:1m])[1h:5m])`) lower
+// via the Call / ParenExpr / AggregateExpr intermediaries the parser
+// requires between two `SubqueryExpr` nodes; direct
+// `SubqueryExpr.Expr = *SubqueryExpr` is parser-impossible but
+// `lowerSubqueryOverSubquery` handles it defensively.
 // Classic-histogram `histogram_quantile(phi, <selector>)` is supported
 // via lowerHistogramQuantile against the OTel-CH classic histogram
 // table (BucketCounts × ExplicitBounds arrays).

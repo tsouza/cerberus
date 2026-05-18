@@ -284,6 +284,37 @@ func TestParserShape_Subquery(t *testing.T) {
 	}
 }
 
+// TestParserShape_NestedSubqueryRejected pins the parser's type-check
+// guarantee that a `SubqueryExpr`'s body must evaluate to an instant
+// vector. Wrapping a subquery directly in another subquery (a range
+// vector inside `<expr>[range:step]`) is rejected at parse time with
+// the "subquery is only allowed on instant vector" error.
+//
+// This is the invariant that makes `lowerSubqueryOverSubquery` —
+// the recursive branch in `subquery.go` for
+// `SubqueryExpr.Expr = *SubqueryExpr` — unreachable through parsed
+// PromQL. The branch only exists so the lowering stays total over the
+// AST node space for programmatically-built ASTs.
+func TestParserShape_NestedSubqueryRejected(t *testing.T) {
+	t.Parallel()
+	p := parser.NewParser(parser.Options{})
+	cases := []string{
+		`(up[5m:1m])[1h:5m]`,
+		`(rate(m[5m])[10m:1m])[1h:5m]`,
+		`((rate(m[5m])[10m:1m]))[1h:5m]`,
+	}
+	for _, q := range cases {
+		_, err := p.ParseExpr(q)
+		if err == nil {
+			t.Errorf("ParseExpr(%q): want type error, got nil", q)
+			continue
+		}
+		if !strings.Contains(err.Error(), "subquery is only allowed on instant vector") {
+			t.Errorf("ParseExpr(%q): err = %v; want 'subquery is only allowed on instant vector'", q, err)
+		}
+	}
+}
+
 // TestParserShape_GroupLeftInclude pins the cardinality modifier on
 // BinaryExpr.VectorMatching: Card == CardManyToOne and Include set.
 func TestParserShape_GroupLeftInclude(t *testing.T) {
