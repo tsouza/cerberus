@@ -93,7 +93,7 @@ func TestEqual(t *testing.T) {
 		t.Fatalf("VectorJoin: on(job) vs ignoring(job) should not be Equal")
 	}
 
-	// Card and Include must round-trip through Equal — the RC2
+	// Card and Include must round-trip through Equal — the
 	// cardinality-edge fields are observably different plans.
 	vjGroupLeft := *vjSame
 	vjGroupLeft.Card = chplan.CardManyToOne

@@ -7,7 +7,7 @@ name: chdb
 #   1. `probe`     — driver-shim sanity check (`TestChDBProbe`). Validates
 #                    the chdb-go database/sql driver round-trips
 #                    Map(String, String) into a Go map[string]string via
-#                    rows.Scan. Originally the only chDB CI lane (RC8 R8.0).
+#                    rows.Scan. Originally the only chDB CI lane.
 #
 #   2. `roundtrip` — TXTAR seed → SQL → expected_rows differential lane,
 #                    split into a matrix over the three QL heads

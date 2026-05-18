@@ -129,7 +129,7 @@ func asFloat64(e chplan.Expr) chplan.Expr {
 // tsRef is the raw `TimeUnix` column reference used by `timestamp(v)`.
 //
 // Returns nil when name is not a recognised date function — caller
-// translates that into a "not yet supported" error.
+// translates that into an "unsupported" error.
 func dateFnExpr(name string, valueDT, tsRef chplan.Expr) chplan.Expr {
 	switch name {
 	case "year":

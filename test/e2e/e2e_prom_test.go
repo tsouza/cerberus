@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-// TestPromQueryRangeRate exercises the M1.1 RangeWindow SQL path:
+// TestPromQueryRangeRate exercises the RangeWindow SQL path:
 // rate() over a 5-minute window against the seeded counter.
 func TestPromQueryRangeRate(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)

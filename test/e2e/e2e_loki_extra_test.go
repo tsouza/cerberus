@@ -52,9 +52,9 @@ func TestLokiQuery_LineFilterContains(t *testing.T) {
 }
 
 // TestLokiQuery_ParserStageRejection — `{...} | json` returns 422 with
-// the documented "not yet supported" message (regression test for the
-// M3.2 deferral — when RC2 ships parser stages, this test goes red and
-// the deferral marker should be removed).
+// the documented "unsupported" message (regression test for the parser
+// stage gap — if `| json` later ships, this test goes red and the
+// rejection marker should be removed).
 func TestLokiQuery_ParserStageRejection(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

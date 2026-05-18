@@ -5,8 +5,7 @@
 > the same directory as `cmd/shadow/main.go`. The workflow at
 > `.github/workflows/shadow-mode.yml` runs nightly + on pushes to main
 > touching the differential-testing paths; see
-> [`docs/roadmap.md` § RC3](../../../docs/roadmap.md) for the milestone
-> context.
+> [`docs/roadmap.md`](../../../docs/roadmap.md) for the broader context.
 
 ## What "shadow mode" means
 

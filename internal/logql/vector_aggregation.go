@@ -15,9 +15,9 @@ import (
 // excluded ones for `without`), apply the aggregator on the inner
 // stream's `value` column.
 //
-// `topk` / `bottomk` change output shape (K rows per group) and stay
-// deferred to M1.7-style follow-ups; `quantile` requires a parameterised
-// CH aggregate that we already support for PromQL.
+// `topk` / `bottomk` change output shape (K rows per group) and are
+// unsupported; `quantile` requires a parameterised CH aggregate that
+// we already support for PromQL.
 func lowerVectorAggregation(e *syntax.VectorAggregationExpr, s schema.Logs, lc lowerCtx) (chplan.Node, error) {
 	if e.Left == nil {
 		return nil, fmt.Errorf("logql: vector-aggregation has nil inner")
@@ -85,8 +85,8 @@ func vectorAggregationGroupBy(e *syntax.VectorAggregationExpr, s schema.Logs) ([
 
 // buildVectorAggFunc produces the AggFunc for the LogQL operator.
 // Output-shape-changing ops (topk, bottomk, sort, sort_desc, quantile)
-// stay deferred — CH support exists for quantile but the LogQL semantic
-// for K-row-per-group ops needs result shaping.
+// are unsupported — CH support exists for quantile but the LogQL
+// semantic for K-row-per-group ops needs result shaping.
 func buildVectorAggFunc(e *syntax.VectorAggregationExpr, _ schema.Logs) (chplan.AggFunc, error) {
 	const valueAlias = "Value"
 	valueArg := &chplan.ColumnRef{Name: valueAlias}
@@ -108,11 +108,11 @@ func buildVectorAggFunc(e *syntax.VectorAggregationExpr, _ schema.Logs) (chplan.
 		return chplan.AggFunc{Name: "varPop", Args: []chplan.Expr{valueArg}, Alias: valueAlias}, nil
 
 	case syntax.OpTypeTopK, syntax.OpTypeBottomK:
-		return chplan.AggFunc{}, fmt.Errorf("logql: %s changes output shape and lands with M1.7-style result shaping", e.Operation)
+		return chplan.AggFunc{}, fmt.Errorf("logql: %s changes output shape and is unsupported", e.Operation)
 	case syntax.OpTypeSort, syntax.OpTypeSortDesc:
 		return chplan.AggFunc{}, fmt.Errorf("logql: %s requires output ordering rather than aggregation", e.Operation)
 	}
-	return chplan.AggFunc{}, fmt.Errorf("logql: aggregation operation %q is not yet supported", e.Operation)
+	return chplan.AggFunc{}, fmt.Errorf("logql: aggregation operation %q is unsupported", e.Operation)
 }
 
 // wrapVectorAggregateForSample mirrors PromQL's wrapAggregateForSample:

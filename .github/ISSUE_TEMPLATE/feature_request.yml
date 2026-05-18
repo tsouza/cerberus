@@ -1,5 +1,5 @@
 name: Feature request
-description: Suggest a feature, an optimisation, or a deferred-feature lift from RC2/RC3 into earlier scope.
+description: Suggest a feature, an optimisation, or an unimplemented capability.
 labels: [enhancement]
 body:
   - type: markdown
@@ -7,7 +7,7 @@ body:
       value: |
         Before filing:
 
-        - Check [`docs/roadmap.md`](../blob/main/docs/roadmap.md) — your feature may already be planned for RC1/RC2/RC3.
+        - Check [`docs/roadmap.md`](../blob/main/docs/roadmap.md) — your feature may already be planned or tracked.
         - Check the [Roadmap Project](https://github.com/users/tsouza/projects/1) for live status.
         - Check open PRs at <https://github.com/tsouza/cerberus/pulls>.
   - type: textarea
@@ -31,13 +31,13 @@ body:
       label: Alternatives considered
       description: Workarounds, partial solutions, or related features in other tools (Prometheus, Loki, Tempo, VictoriaMetrics, SigNoz, …).
   - type: dropdown
-    id: rc
+    id: scope
     attributes:
-      label: Which RC do you think this fits?
+      label: How would you scope this?
       options:
-        - RC1 — core QL or API surface, full-impact users hit it daily
-        - RC2 — advanced QL / API; nice-to-have for production parity
-        - RC3 — optimizer / performance / advanced testing
+        - Core QL or API surface, full-impact users hit it daily
+        - Advanced QL / API; nice-to-have for production parity
+        - Optimizer / performance / advanced testing
         - Not sure
   - type: checkboxes
     id: terms

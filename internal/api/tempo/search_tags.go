@@ -20,8 +20,8 @@ import (
 // statusMessage, kind (SpanKind), duration, rootServiceName, rootName,
 // traceDuration. Cerberus surfaces the subset we can actually answer
 // /search/tag/<name>/values queries for today; rootServiceName /
-// rootName / traceDuration would require a per-trace pivot that lands
-// with the rest of the trace-summary plumbing in RC2.
+// rootName / traceDuration would require a per-trace pivot that is
+// not implemented.
 var intrinsicTags = []string{
 	"name",
 	"kind",

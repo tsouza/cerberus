@@ -305,7 +305,7 @@ INSERT INTO otel_metrics_gauge VALUES
 // TestQueryRange_RangeMode_Deriv_ChDB pins `deriv(metric[5m])` over
 // query_range. Before the fix, the deriv emitter routed through
 // emitWindowedArrayPairs whose OuterRange > 0 branch unconditionally
-// errored with "predict_linear over subquery not yet supported" — Pool-
+// errored with "predict_linear over subquery is unsupported" — Pool-
 // AK's range-mode rework set OuterRange/Step on every range-vector
 // call, so deriv 502'd on every compatibility run.
 //
@@ -1674,12 +1674,12 @@ func TestQueryRange_RangeMode_TopK_ChDB(t *testing.T) {
 }
 
 // TestQueryRange_RangeMode_AtModifier_Collapse_ChDB pins the
-// `metric @ <fixed_ts>` over `/api/v1/query_range` shape. Pool-AK's PR
-// #347 deferred this as follow-up #2: when an absolute `@<ts>` is set,
-// every step in `[start, end]` evaluates the same fixed-anchor LWR so
-// the StepGrid fan-out wastes CH work. The follow-up collapses the
-// per-step LWR to a single LWR evaluation + broadcast across the step
-// grid via CrossJoin(StepGrid, OneRowPerSeriesLWR).
+// `metric @ <fixed_ts>` over `/api/v1/query_range` shape. When an
+// absolute `@<ts>` is set, every step in `[start, end]` evaluates the
+// same fixed-anchor LWR so the StepGrid fan-out would waste CH work.
+// The collapse rewrites the per-step LWR to a single LWR evaluation +
+// broadcast across the step grid via
+// CrossJoin(StepGrid, OneRowPerSeriesLWR).
 //
 // Response shape must stay unchanged: N matrix samples per series, all
 // carrying the same Value (the LWR result at @ts) at distinct step

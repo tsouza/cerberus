@@ -87,6 +87,6 @@ When one of these is implemented, open a PR — the reference here is the PR des
 3. Adopt Spark Catalyst's `Batch` grouping for the fixpoint driver (§4) — prevents thrashing as the rule set grows. Shipped via #191.
 4. Add a sort-key-aware filter emitter in `internal/chsql` (§3) — first ClickHouse-specific codegen rule. PREWHERE promotion shipped via #196.
 5. Real `RangeWindow` SQL via `groupArray` / ordered-scan patterns (§2 + §5) — shipped through RC1 and refined through RC2.
-6. MV substitution for `otel_metrics_*` rollups (§2 Promscale + §6 Jindal) — the milestone where cerberus commits to a cost model. Shipped via #201 with a simple-heuristic v1; the `costModel` interface stub keeps the seam open for a real estimator in a future release.
+6. MV substitution for `otel_metrics_*` rollups (§2 Promscale + §6 Jindal) — the milestone where cerberus commits to a cost model. Shipped via #201 with a simple-heuristic v1; the `costModel` interface stub keeps the seam open for a real estimator.
 
 The pattern-based `Rule` API itself shipped via #135 — every new rule above lands on top of that API.

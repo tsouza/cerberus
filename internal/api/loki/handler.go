@@ -40,10 +40,9 @@ type Querier interface {
 // Handler implements the Loki HTTP API endpoints cerberus speaks. Mount
 // it via Handler.Mount(mux). The current vertical slice covers
 // /loki/api/v1/query, /loki/api/v1/query_range, /loki/api/v1/index/stats
-// + /index/volume (RC2 P0.3), and — as of this PR — the remaining RC2
-// metadata endpoints /labels, /label/<name>/values, /series,
-// /detected_fields, /patterns (the last stubbed pending its own
-// pattern-discovery workstream).
+// + /index/volume, plus the metadata endpoints /labels,
+// /label/<name>/values, /series, /detected_fields, /patterns (the last
+// stubbed pending its own pattern-discovery workstream).
 type Handler struct {
 	Client    Querier
 	Schema    schema.Logs

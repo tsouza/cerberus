@@ -249,8 +249,8 @@ func escapeSQLString(s string) string {
 //   - Label format (rename):  `{job="api"} | label_format renamed=job`
 //
 // All shapes are log-stream queries (resultType=streams). Metric-form
-// (rate / count_over_time / aggregations) is deferred to a follow-up
-// PR alongside the oracle's evaluator for those shapes.
+// (rate / count_over_time / aggregations) is not generated; the oracle's
+// evaluator does not cover those shapes.
 //
 // EvalTs is anchored to an hour past the dataset's first record so
 // the cerberus handler's instant-lookback (5min) doesn't clip the

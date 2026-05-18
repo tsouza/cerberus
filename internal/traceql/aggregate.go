@@ -75,5 +75,5 @@ func mapAggregateOp(op traceql.AggregateOp) (string, error) {
 	case traceql.AggregateAvg:
 		return "avg", nil
 	}
-	return "", fmt.Errorf("traceql: aggregate op %q is not yet supported", op)
+	return "", fmt.Errorf("traceql: aggregate op %q is unsupported", op)
 }

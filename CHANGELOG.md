@@ -4,7 +4,7 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
-(Work toward v1.0.0-RC3 lands here. See [`docs/roadmap.md`](docs/roadmap.md) for the milestone backlog.)
+(Unreleased changes land here. See [`docs/roadmap.md`](docs/roadmap.md) for the milestone backlog.)
 
 ### Added
 

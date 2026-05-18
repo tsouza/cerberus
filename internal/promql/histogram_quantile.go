@@ -61,7 +61,7 @@ func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chp
 	}
 	phi, ok := tryScalarLiteral(c.Args[0])
 	if !ok {
-		return nil, fmt.Errorf("promql: histogram_quantile requires a scalar-literal phi (computed phi defers to RC3)")
+		return nil, fmt.Errorf("promql: histogram_quantile requires a scalar-literal phi (computed phi is unsupported)")
 	}
 
 	// Recognise the canonical Prom idiom — `sum [by/without](rate(...))`
@@ -96,7 +96,7 @@ func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chp
 
 	vs, ok := unwrapVectorSelector(c.Args[1])
 	if !ok {
-		return nil, fmt.Errorf("promql: histogram_quantile second argument must be a histogram VectorSelector (aggregated forms land in RC3)")
+		return nil, fmt.Errorf("promql: histogram_quantile second argument must be a histogram VectorSelector")
 	}
 
 	if s.IsExpHistogramMetric(vs.Name) {

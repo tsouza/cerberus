@@ -84,7 +84,7 @@ Cerberus already exposes `internal/api/loki/` + has TXTAR fixtures at `test/spec
 
 ## Endpoints exercised
 
-Initially: `/loki/api/v1/query` + `/query_range`. PR 4 expands to `/labels`, `/label/<name>/values`, `/series`, `/index/volume`. `/tail` (WebSocket) + `/detected_fields` deferred until cerberus implements them.
+Initially: `/loki/api/v1/query` + `/query_range`. PR 4 expands to `/labels`, `/label/<name>/values`, `/series`, `/index/volume`. `/tail` (WebSocket) + `/detected_fields` are skipped until cerberus implements them.
 
 ## Per-PR breakdown
 

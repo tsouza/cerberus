@@ -137,7 +137,7 @@ func applyStage(stage syntax.StageExpr, records []property.LogRecord) ([]propert
 	case *syntax.LabelFmtExpr:
 		return applyLabelFmt(st, records), nil
 	default:
-		return nil, fmt.Errorf("oracle/logql: unsupported pipeline stage %T (deferred — generator should not produce this shape)", stage)
+		return nil, fmt.Errorf("oracle/logql: unsupported pipeline stage %T (generator should not produce this shape)", stage)
 	}
 }
 

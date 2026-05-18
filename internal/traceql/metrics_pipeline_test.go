@@ -165,7 +165,7 @@ func TestLowerMetricsPipeline(t *testing.T) {
 	}
 }
 
-// All previously deferred metrics-pipeline forms now lower:
+// Every metrics-pipeline form now lowers:
 //
 //   - `histogram_over_time(...)` → chplan.MetricsHistogramOverTime
 //     (TestLowerHistogramOverTime in histogram_over_time_test.go).
@@ -181,9 +181,8 @@ func TestLowerMetricsPipeline(t *testing.T) {
 //     TestLowerMetricsMultiQuantile below.
 //
 // TestLowerMetricsPipelineUnsupported has therefore been retired.
-// A future deferred form (e.g. an unsupported PipelineElement kind)
-// should land its own focused test rather than reviving a generic
-// "everything that errors" pool.
+// New unsupported PipelineElement kinds should land their own focused
+// test rather than reviving a generic "everything that errors" pool.
 
 // TestLowerMetricsSecondStage asserts that the `| topk(N)` /
 // `| bottomk(N)` / `| > N` / `| < N` / `| >= N` / `| <= N` /

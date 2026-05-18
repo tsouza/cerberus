@@ -20,7 +20,7 @@ package chplan
 //     over the classic-histogram table; for `sum by(...)` aggregation,
 //     a chplan.Aggregate that element-wise-sums the arrays via
 //     `sumForEach` and groups by GroupBy).
-//   - Phi is a scalar literal in [0, 1]; computed phi defers to RC3.
+//   - Phi is a scalar literal in [0, 1]; computed phi is unsupported.
 //   - GroupBy + GroupByAliases match the wrapping Aggregate / Project
 //     contract used elsewhere in the metrics pipeline (PromQL aggregations
 //     drop __name__; the Sample wrapping is the caller's responsibility).

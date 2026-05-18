@@ -35,20 +35,20 @@ type Exemplar struct {
 // unix seconds). The response is the canonical Prom envelope with `data`
 // shaped as []ExemplarSeries.
 //
-// Implementation status (RC2): cerberus's metrics schema does not yet
-// surface OTel exemplars — the OTel ClickHouse Exporter v0.x writes
-// exemplars only into the `otel_traces_*` tables, and `schema.Metrics`
-// has no Exemplars column to point at. We still validate inputs (parse
-// the PromQL, range-check `start`/`end`) so Grafana receives the right
+// Implementation status: cerberus's metrics schema does not surface
+// OTel exemplars — the OTel ClickHouse Exporter v0.x writes exemplars
+// only into the `otel_traces_*` tables, and `schema.Metrics` has no
+// Exemplars column to point at. We still validate inputs (parse the
+// PromQL, range-check `start`/`end`) so Grafana receives the right
 // error envelopes on bad probes, then return `{status:"success",
 // data:[]}` so the exemplars probe doesn't crash the dashboard.
 //
-// A future release can wire the SQL via `internal/chsql.Builder` once
-// `internal/schema/otel.go` exposes an exemplars column (or a
-// sibling-table join target) — extract VectorSelector matchers from
-// the parsed PromQL expression, build a SELECT against the metric's
-// exemplars source with the matcher predicates in WHERE, time-bounded
-// on `[start, end]`, and shape the result rows into ExemplarSeries.
+// Wiring the SQL would mean exposing an exemplars column (or a
+// sibling-table join target) on `internal/schema/otel.go`, extracting
+// VectorSelector matchers from the parsed PromQL expression, building
+// a SELECT against the metric's exemplars source with the matcher
+// predicates in WHERE, time-bounded on `[start, end]`, and shaping
+// the result rows into ExemplarSeries.
 func (h *Handler) handleQueryExemplars(w http.ResponseWriter, r *http.Request) {
 	// r.FormValue merges URL query params with POST form-encoded body
 	// (auto-calling ParseForm). Matches the consistent surface used by

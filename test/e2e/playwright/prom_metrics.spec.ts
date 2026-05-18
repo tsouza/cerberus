@@ -4,10 +4,10 @@ import { test, expect } from '@playwright/test';
  * PromQL via Grafana → cerberus → ClickHouse (otel_metrics_*).
  *
  * Strategy (beyond what smoke.spec.ts covers):
- *   1. rate() over a range — proves the M1.1 windowed-array SQL path
+ *   1. rate() over a range — proves the windowed-array SQL path
  *      reaches CH and decodes back as a matrix.
- *   2. /api/v1/labels — proves M2.3 returns a non-empty list.
- *   3. /api/v1/label/__name__/values — proves M2.4 returns the metric
+ *   2. /api/v1/labels — proves it returns a non-empty list.
+ *   3. /api/v1/label/__name__/values — proves it returns the metric
  *      names we seeded.
  *
  * All go through Grafana's datasource proxy.

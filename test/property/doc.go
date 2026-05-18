@@ -78,7 +78,7 @@
 //     as a secondary sanity check for PromQL.
 //   - oracle/promql/ — from-scratch PromQL evaluator.
 //   - oracle/logql/  — from-scratch LogQL evaluator (log-stream
-//     subset; metric-form queries deferred).
+//     subset; metric-form queries not covered).
 //   - promql_test.go — TestPromQL_Property_FromScratch, the chdb-
 //     tagged PromQL property test.
 //   - logql_test.go  — TestLogQL_Property, the chdb-tagged LogQL

@@ -25,8 +25,8 @@ import (
 //     the comparison (bool modifier off) or Project producing 1.0/0.0
 //     (bool modifier on)
 //   - vector OP vector → VectorJoin with default / `on(...)` /
-//     `ignoring(...)` matching (M1.6) plus `group_left(...)` /
-//     `group_right(...)` cardinality modifiers (RC2 cardinality edges)
+//     `ignoring(...)` matching plus `group_left(...)` /
+//     `group_right(...)` cardinality modifiers
 //   - vector set ops (`and` / `or` / `unless`) → VectorSetOp keyed on
 //     the match-key signature. PromQL's parser enforces many-to-many
 //     for these (no `group_left` / `group_right`); the chsql emitter
@@ -89,7 +89,7 @@ func lowerBinary(b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (chplan.N
 // parser only sets it for set operators (`and`/`or`/`unless`), which
 // promBinaryOp doesn't yet support anyway, but we surface a clean
 // "many-to-many matching not allowed" error to match Prometheus's wording
-// rather than the lower-level "binary op not yet supported".
+// rather than the lower-level "binary op unsupported".
 //
 // The `bool` modifier on a comparison op (`lhs > bool rhs`) threads into
 // `chplan.VectorJoin.ReturnBool`; the emitter wraps the per-pair binary
@@ -515,10 +515,10 @@ func promBinaryOp(op parser.ItemType) (chplan.BinaryOp, error) {
 		// Set ops are dispatched via [lowerVectorSetOp] before this
 		// function is called; reaching here means an internal mis-
 		// routing — surface a clear invariant error rather than a
-		// silently misleading "not yet supported".
+		// silently misleading "unsupported".
 		return "", fmt.Errorf("promql: vector set op %s should route through lowerVectorSetOp", op.String())
 	}
-	return "", fmt.Errorf("promql: binary op %s not yet supported", op.String())
+	return "", fmt.Errorf("promql: binary op %s unsupported", op.String())
 }
 
 func isComparison(op chplan.BinaryOp) bool {

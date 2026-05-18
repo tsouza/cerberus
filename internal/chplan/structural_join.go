@@ -31,8 +31,7 @@ package chplan
 // Direct parent-child (`>` / `<`) and sibling (`~`) emit as a single
 // INNER JOIN on (TraceID, SpanID/ParentSpanID). Recursive forms
 // (`>>` / `<<`) walk the parent chain via a CH `WITH RECURSIVE` CTE
-// — see internal/chsql/structural_join.go for the emission strategy
-// and docs/roadmap.md § RC3 for the deferred-from-RC2 rationale.
+// — see internal/chsql/structural_join.go for the emission strategy.
 //
 // Negated ops reuse the relation predicate but swap the outer join
 // for a `LEFT ANTI JOIN` (direct case) or apply the closure with the

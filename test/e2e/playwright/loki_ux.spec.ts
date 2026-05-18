@@ -189,10 +189,10 @@ test.describe('Loki UX — Logs panel flows', () => {
     expect(body.data.result.length, '≥1 metric series').toBeGreaterThan(0);
   });
 
-  test('parser stage `| json` returns 422 (documented deferral until RC3)', async ({ request }) => {
-    // Grafana surfaces this 422 as a yellow "query not yet supported"
+  test('parser stage `| json` returns 422 (documented as unsupported)', async ({ request }) => {
+    // Grafana surfaces this 422 as a yellow "query unsupported"
     // warning, not a hard red error. Asserting the contract so when
-    // RC3 lands `| json`, this spec goes red and the deferral marker
+    // `| json` lands, this spec goes red and the rejection marker
     // can be removed.
     const q = encodeURIComponent('{service_name="api"} | json');
     const resp = await request.get(`${lokiProxy}/query?query=${q}`);
@@ -202,7 +202,7 @@ test.describe('Loki UX — Logs panel flows', () => {
     expect(String(body.error || '').toLowerCase()).toContain('json');
   });
 
-  test('parser stage `| logfmt` returns 422 (documented deferral)', async ({ request }) => {
+  test('parser stage `| logfmt` returns 422 (documented as unsupported)', async ({ request }) => {
     const q = encodeURIComponent('{service_name="api"} | logfmt');
     const resp = await request.get(`${lokiProxy}/query?query=${q}`);
     expect(resp.status()).toBe(422);

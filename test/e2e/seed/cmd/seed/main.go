@@ -26,7 +26,7 @@
 // `Database` field set on the clickhouse-go Auth struct resolves them on the
 // server side, so no `fmt.Sprintf("INSERT INTO %s.foo", database)` needed —
 // keeps the seeder on the right side of the "no Sprintf-on-SQL" rule
-// (CLAUDE.md § "No raw SQL strings — refactor lands at RC6").
+// (CLAUDE.md § "No raw SQL strings").
 package main
 
 import (
@@ -182,7 +182,7 @@ func insertMetrics(ctx context.Context, conn driver.Conn) error {
 //
 // Uses the underscored `service_name` map key because LogQL's matcher.Name is
 // kept verbatim in cerberus's labelMatcherToExpr; the Prom/OTel naming bridge
-// (`service_name` ↔ `service.name`) is RC2 work.
+// (`service_name` ↔ `service.name`) is not implemented.
 func insertLogs(ctx context.Context, conn driver.Conn) error {
 	return conn.Exec(ctx, insertLogsSQL)
 }

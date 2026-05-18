@@ -1473,7 +1473,7 @@ func buildAggFunc(a *parser.AggregateExpr, s schema.Metrics) (chplan.AggFunc, er
 	case parser.QUANTILE:
 		phi, ok := tryScalarLiteral(a.Param)
 		if !ok {
-			return chplan.AggFunc{}, fmt.Errorf("promql: quantile(phi, ...) requires a scalar literal phi (computed phi defers to M1.7)")
+			return chplan.AggFunc{}, fmt.Errorf("promql: quantile(phi, ...) requires a scalar literal phi (computed phi is unsupported)")
 		}
 		// CH's `quantile(phi)` aggregate errors on phi outside
 		// [0, 1]; clamp the emitted phi to a safe sentinel (0.5)

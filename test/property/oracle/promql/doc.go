@@ -28,7 +28,7 @@
 //     group_left/group_right (and label-include).
 //   - Histograms: histogram_quantile(phi, sum by(le)(rate(<bucket>[
 //     range]))) over classic-histogram (`_bucket`-suffixed) data.
-//     Native histograms are deferred to post-GA.
+//     Native histograms are not covered by the oracle.
 //   - Modifiers: @<ts>, @start(), @end(), offset (positive, zero,
 //     negative).
 //

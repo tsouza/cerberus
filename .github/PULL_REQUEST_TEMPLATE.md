@@ -15,7 +15,7 @@ Roadmap: docs/roadmap.md
 
 ## Roadmap link
 
-<!-- Which milestone does this PR close or move forward? e.g. M1.2 — BinaryExpr lowering. -->
+<!-- Which roadmap item does this PR close or move forward? Cite the docs/roadmap.md row or the relevant docs/*.md plan section. -->
 
 -
 

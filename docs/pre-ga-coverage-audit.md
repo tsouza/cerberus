@@ -118,7 +118,7 @@ which never instruments. They are *contracts*, not code paths.
 | `internal/promql`         | `subquery.go:lowerOuterRangeFnOverSubquery`           | 50.0%      | 50.0%      | **Medium**               | 2b    | Outer range-fn over subquery.                                                                                                               |
 | `internal/promql`         | `subquery.go:buildSubqueryAggFunc`                    | 50.0%      | 50.0%      | **Medium**               | 2b    | Subquery agg-func builder.                                                                                                                  |
 | `internal/promql`         | `subquery.go:lowerSubqueryOverCallSubquery`           | 69.2%      | 69.2%      | **Medium**               | 2b    | Nested-subquery lowering.                                                                                                                   |
-| `internal/promql`         | `histogram_quantile.go:lowerHistogramQuantileNative`  | 53.3%      | 53.3%      | **Medium**               | 2b    | Native-histogram quantile lowering (RC4-era).                                                                                               |
+| `internal/promql`         | `histogram_quantile.go:lowerHistogramQuantileNative`  | 53.3%      | 53.3%      | **Medium**               | 2b    | Native-histogram quantile lowering.                                                                                                         |
 | `internal/promql`         | `histogram_quantile.go:peelWrappers`                  | 60.0%      | 60.0%      | **Medium**               | 2b    | Wrapper-strip helper for histogram_quantile arg.                                                                                            |
 | `internal/promql`         | `histogram_quantile.go:unwrapVectorSelector`          | 66.7%      | 66.7%      | **Medium**               | 2b    | Vector-selector extraction helper.                                                                                                          |
 | `internal/promql`         | `histogram_quantile.go:andExpr`                       | 50.0%      | 50.0%      | **Medium**               | 2b    | Conjunction-builder for native-histogram predicates.                                                                                        |
@@ -198,15 +198,15 @@ which never instruments. They are *contracts*, not code paths.
    operator matrix, asserting `r := fold(l, op, r)` matches a
    bigint/big.Float oracle. Drop into
    `internal/optimizer/property_extended_test.go`.
-6. **PromQL subquery family** (5 functions, 33–69% covered).
-   Subquery support is RC3-era; the gaps here line up with
-   `coverage-baseline.md`'s "subquery-over-aggregate" callout.
-   **Layer 2b lowering** + **Layer 6a chDB roundtrip**. Add fixtures
-   under `test/spec/promql/subquery_*.txtar` with `-- seed --` and
+6. **PromQL subquery family** (5 functions, 33–69% covered). The
+   gaps here line up with `coverage-baseline.md`'s
+   "subquery-over-aggregate" callout. **Layer 2b lowering** +
+   **Layer 6a chDB roundtrip**. Add fixtures under
+   `test/spec/promql/subquery_*.txtar` with `-- seed --` and
    `-- expected_rows --` sections.
 7. **PromQL `histogram_quantile` native-histogram path** (4
    functions, 50–67% covered). Native histograms are still
-   incomplete (RC4). **Layer 2b** + Layer 6a roundtrip with a
+   incomplete. **Layer 2b** + Layer 6a roundtrip with a
    native-histogram-shaped seed.
 8. **`api/tempo` error-classification + projection helpers**
    (`classifySearchErr`, `classifyTraceByIDErr`, `isAggregateShape`,

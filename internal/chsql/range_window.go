@@ -183,7 +183,7 @@ func (e *emitter) emitRangeWindow(r *chplan.RangeWindow) error {
 	case "changes":
 		return e.emitRangeWindowChanges(r)
 	default:
-		return fmt.Errorf("%w: range function %q (lands in M1.1 follow-ups)", ErrUnsupported, r.Func)
+		return fmt.Errorf("%w: range function %q", ErrUnsupported, r.Func)
 	}
 }
 

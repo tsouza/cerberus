@@ -278,7 +278,7 @@ func logqlBinaryOp(op string) (chplan.BinaryOp, error) {
 	case syntax.OpTypeGTE:
 		return chplan.OpGe, nil
 	}
-	return "", fmt.Errorf("logql: binary op %s not yet supported (logical ops `and`/`or`/`unless` defer to follow-ups)", op)
+	return "", fmt.Errorf("logql: binary op %s unsupported (logical ops `and`/`or`/`unless` are not implemented)", op)
 }
 
 // isComparison reports whether op is one of the six comparison ops.

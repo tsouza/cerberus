@@ -22,8 +22,7 @@ const (
 	// `| sum_over_time(<attr>)`.
 	MetricsOpSumOverTime
 	// MetricsOpAvgOverTime corresponds to TraceQL
-	// `| avg_over_time(<attr>)` (deferred at the lowering layer until
-	// the upstream fork exposes accessors).
+	// `| avg_over_time(<attr>)`.
 	MetricsOpAvgOverTime
 	// MetricsOpMinOverTime corresponds to TraceQL
 	// `| min_over_time(<attr>)`.

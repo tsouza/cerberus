@@ -113,7 +113,7 @@ func lowerMetricsSecondStage(inner chplan.Node, ss traceql.SecondStageElement) (
 	case *traceql.ChainedSecondStage:
 		return lowerChainedSecondStage(inner, *v)
 	}
-	return nil, fmt.Errorf("traceql: metrics second-stage element %T is not yet supported", ss)
+	return nil, fmt.Errorf("traceql: metrics second-stage element %T is unsupported", ss)
 }
 
 // lowerTopKBottomK turns `| topk(N)` / `| bottomk(N)` into a
@@ -254,7 +254,7 @@ func lowerFollowingElement(prev chplan.Node, elem traceql.PipelineElement, s sch
 	case *traceql.CoalesceOperation:
 		return lowerCoalesce(prev, s)
 	}
-	return nil, fmt.Errorf("traceql: pipeline tail element %T is not yet supported", elem)
+	return nil, fmt.Errorf("traceql: pipeline tail element %T is unsupported", elem)
 }
 
 // lowerScalarFilter handles `| count() > 0`, `| sum(.duration) >= 1s`,
@@ -311,7 +311,7 @@ func lowerScalarExpr(prev chplan.Node, e traceql.ScalarExpression, s schema.Trac
 	case *traceql.Static:
 		return lowerStatic(*v)
 	}
-	return nil, fmt.Errorf("traceql: scalar expression %T is not yet supported", e)
+	return nil, fmt.Errorf("traceql: scalar expression %T is unsupported", e)
 }
 
 // lowerPipelineElement dispatches a single TraceQL pipeline element to
@@ -326,7 +326,7 @@ func lowerPipelineElement(elem traceql.PipelineElement, s schema.Traces) (chplan
 	case *traceql.SpansetOperation:
 		return lowerSpansetOperation(v, s)
 	}
-	return nil, fmt.Errorf("traceql: pipeline element %T is not yet supported", elem)
+	return nil, fmt.Errorf("traceql: pipeline element %T is unsupported", elem)
 }
 
 // lowerSpansetOperation handles structural relations (`A > B`, `A < B`,
@@ -402,7 +402,7 @@ func lowerSpansetExpr(e traceql.SpansetExpression, s schema.Traces) (chplan.Node
 	case traceql.SpansetOperation:
 		return lowerSpansetOperation(&v, s)
 	}
-	return nil, fmt.Errorf("traceql: spanset expression %T is not yet supported", e)
+	return nil, fmt.Errorf("traceql: spanset expression %T is unsupported", e)
 }
 
 // mapStructuralOp translates Tempo's structural Operator enum to the
@@ -483,7 +483,7 @@ func lowerFieldExpr(e traceql.FieldExpression, s schema.Traces) (chplan.Expr, er
 	case traceql.Static:
 		return lowerStatic(v)
 	}
-	return nil, fmt.Errorf("traceql: field expression %T is not yet supported", e)
+	return nil, fmt.Errorf("traceql: field expression %T is unsupported", e)
 }
 
 // lowerAttributeExpr wraps lowerAttribute with a guard: link- /
@@ -495,7 +495,7 @@ func lowerFieldExpr(e traceql.FieldExpression, s schema.Traces) (chplan.Expr, er
 // can surface the gap rather than ship wrong SQL.
 func lowerAttributeExpr(a traceql.Attribute, s schema.Traces) (chplan.Expr, error) {
 	if a.Scope == traceql.AttributeScopeLink || a.Scope == traceql.AttributeScopeEvent {
-		return nil, fmt.Errorf("traceql: %s.%s used outside a comparison; only equality / inequality / regex filters on link.* and event.* are supported (see RC2 link traversal + span-event queries)", a.Scope, a.Name)
+		return nil, fmt.Errorf("traceql: %s.%s used outside a comparison; only equality / inequality / regex filters on link.* and event.* are supported", a.Scope, a.Name)
 	}
 	return lowerAttribute(a, s), nil
 }
@@ -829,7 +829,7 @@ func lowerStatic(st traceql.Static) (chplan.Expr, error) {
 		}
 		return &chplan.LitString{V: kindString(k)}, nil
 	}
-	return nil, fmt.Errorf("traceql: static literal type %s is not yet supported", st.Type)
+	return nil, fmt.Errorf("traceql: static literal type %s is unsupported", st.Type)
 }
 
 // statusString maps Tempo's Status enum to the StatusCode string the
@@ -906,5 +906,5 @@ func mapBinaryOp(op traceql.Operator) (chplan.BinaryOp, error) {
 	case traceql.OpPower:
 		return chplan.OpPow, nil
 	}
-	return "", fmt.Errorf("traceql: operator %s is not yet supported", op)
+	return "", fmt.Errorf("traceql: operator %s is unsupported", op)
 }

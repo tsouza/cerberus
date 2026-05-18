@@ -77,9 +77,8 @@ func TestSeedScriptsHaveNoInlineCommentsInValues(t *testing.T) {
 // inserts `service.name` (dotted, OTel convention) instead, every
 // Loki E2E test silently returns empty streams.
 //
-// The proper Prom/OTel naming bridge lives in RC2; until then the
-// seed must use the underscored form so cerberus's current code
-// finds the row.
+// The Prom/OTel naming bridge is not implemented; the seed must use
+// the underscored form so cerberus's current code finds the row.
 func TestLogsSeedUsesUnderscoredServiceName(t *testing.T) {
 	t.Parallel()
 
@@ -103,7 +102,7 @@ func TestLogsSeedUsesUnderscoredServiceName(t *testing.T) {
 	logsBlock := content[logsStart : logsStart+logsEnd]
 	mapDottedRE := regexp.MustCompile(`map\(\s*'service\.name'`)
 	if mapDottedRE.MatchString(logsBlock) {
-		t.Errorf("%s: found `map('service.name', ...)` inside the logs INSERT — LogQL stream selectors won't match this; use `service_name` instead until the RC2 Prom/OTel naming bridge lands", seedSource)
+		t.Errorf("%s: found `map('service.name', ...)` inside the logs INSERT — LogQL stream selectors won't match this; use `service_name` instead (Prom/OTel naming bridge is not implemented)", seedSource)
 	}
 }
 

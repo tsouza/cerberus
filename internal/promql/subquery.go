@@ -58,7 +58,7 @@ func lowerSubquery(e *parser.SubqueryExpr, s schema.Metrics, ctx lowerCtx) (chpl
 	case *parser.SubqueryExpr:
 		return lowerSubqueryOverSubquery(e, inner, step, s, ctx)
 	}
-	return nil, fmt.Errorf("promql: subquery over %T is not yet supported", e.Expr)
+	return nil, fmt.Errorf("promql: subquery over %T is unsupported", e.Expr)
 }
 
 // lowerSubqueryOverCall — `<range-vector-fn>(<inner>[<inner_range>])[<outer_range>:<step>]`.
@@ -769,7 +769,7 @@ func lowerSubqueryInnerMatrix(
 	case *parser.VectorSelector:
 		return lowerSubqueryOverVectorSelector(sub, inner, step, s, ctx)
 	}
-	return nil, fmt.Errorf("promql: subquery over aggregation of %T is not yet supported", expr)
+	return nil, fmt.Errorf("promql: subquery over aggregation of %T is unsupported", expr)
 }
 
 // buildSubqueryAggFunc maps a PromQL AggregateExpr to the chplan

@@ -10,7 +10,7 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
-// PromQL micro-benchmarks (Layer 12 — RC2 perf gate). Each Benchmark
+// PromQL micro-benchmarks (Layer 12 perf gate). Each Benchmark
 // times Lower against a pre-parsed expression and reports allocs so a
 // regression in the per-stage cost is visible from `just bench`. The
 // queries here mirror docs/roadmap.md's "representative shape" list:
