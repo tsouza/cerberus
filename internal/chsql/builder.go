@@ -1295,6 +1295,57 @@ func Parametric(name string, params []Frag, args ...Frag) Frag {
 	}
 }
 
+// OrderKey pairs a sort expression with its direction for inline use
+// in window specifications and similar contexts where the QueryBuilder's
+// OrderBy slot isn't a fit. Desc=true renders "<expr> DESC"; false
+// renders the bare expression (ASC is the CH default and is left implicit
+// to match the existing emitter's render of ORDER BY clauses).
+type OrderKey struct {
+	Expr Frag
+	Desc bool
+}
+
+// Window returns a Frag rendering "<fn> OVER (PARTITION BY <p1>, <p2>, ...
+// ORDER BY <o1> [DESC], <o2> [DESC], ...)" — a CH window-function
+// expression. `partitionBy` empty omits the PARTITION BY clause (the
+// window runs over the whole result). `orderBy` empty omits the ORDER BY
+// clause. `fn` is rendered before "OVER (...)" — typically a
+// `Call("row_number")` or `Call("rank")`.
+//
+// Used by chplan.TopK's computed-K path (`topk(scalar(...), v)`) where
+// the K value comes from a scalar subquery and CH's LIMIT clause can't
+// accept that shape. The emitter wraps the topk as
+// `row_number() OVER (PARTITION BY <by> ORDER BY <sort> [DESC]) <= K`
+// so the per-partition top-K survives without a constant LIMIT.
+func Window(fn Frag, partitionBy []Frag, orderBy []OrderKey) Frag {
+	return func(b *Builder) {
+		fn(b)
+		b.sb.WriteString(" OVER (")
+		first := true
+		if len(partitionBy) > 0 {
+			b.sb.WriteString("PARTITION BY ")
+			writeFragList(b, partitionBy)
+			first = false
+		}
+		if len(orderBy) > 0 {
+			if !first {
+				b.sb.WriteByte(' ')
+			}
+			b.sb.WriteString("ORDER BY ")
+			for i, k := range orderBy {
+				if i > 0 {
+					b.sb.WriteString(", ")
+				}
+				k.Expr(b)
+				if k.Desc {
+					b.sb.WriteString(" DESC")
+				}
+			}
+		}
+		b.sb.WriteByte(')')
+	}
+}
+
 // Star returns a Frag rendering "*" — the unqualified wildcard for
 // SELECT *. Use QualStar for the qualified "<table>.*" form.
 func Star() Frag {

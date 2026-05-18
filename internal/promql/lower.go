@@ -1156,9 +1156,12 @@ func tryStringLiteral(e parser.Expr) (string, bool) {
 // into a single K-row global window and the matrix pivot loses every
 // step beyond the K-th overall.
 func lowerTopK(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	// Literal-K fast path (the common case: `topk(5, v)`, `topk(2+3, v)`,
+	// any scalar tree TryFoldScalar can reduce). Falls through to the
+	// computed-K path when the K argument is a `scalar(<vector>)` call.
 	kF, ok := tryScalarLiteral(a.Param)
 	if !ok {
-		return nil, fmt.Errorf("promql: %s requires a scalar literal K (computed K is not yet supported)", a.Op.String())
+		return lowerTopKComputed(a, s, ctx)
 	}
 	if kF < 0 || kF != float64(int64(kF)) {
 		return nil, fmt.Errorf("promql: %s K must be a non-negative integer literal, got %v", a.Op.String(), kF)
@@ -1176,6 +1179,35 @@ func lowerTopK(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chplan.
 		return nil, err
 	}
 
+	by := topKPartition(a, s, ctx)
+
+	return &chplan.TopK{
+		Input:    input,
+		K:        int64(kF),
+		By:       by,
+		SortExpr: &chplan.ColumnRef{Name: s.ValueColumn},
+		Desc:     a.Op == parser.TOPK,
+		Columns: []string{
+			s.MetricNameColumn,
+			s.AttributesColumn,
+			s.TimestampColumn,
+			s.ValueColumn,
+		},
+	}, nil
+}
+
+// topKPartition derives the partition expressions for `topk`/`bottomk`
+// from the aggregation's grouping shape. Shared between the literal-K
+// and computed-K lowering paths because the partition semantics are
+// identical — only the K binding differs.
+//
+// `without (...)` partitions by Attributes minus the listed labels;
+// `without ()` partitions by the full Attributes map (so each series
+// is its own partition); `by (l1, ...)` partitions by the listed
+// label values. Range mode (ctx.step > 0) appends the TimeUnix anchor
+// so the topk fires per evaluation step rather than globally — the
+// PromQL semantics for `topk(K, v)` over a range.
+func topKPartition(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) []chplan.Expr {
 	var by []chplan.Expr
 	switch {
 	case a.Without && len(a.Grouping) == 0:
@@ -1202,16 +1234,71 @@ func lowerTopK(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chplan.
 
 	// Range mode: thread the per-step anchor (TimeUnix re-aliased from
 	// anchor_ts by the inner wrapRangeLatestPerSeries) into the partition
-	// list so `LIMIT K BY (..., TimeUnix)` fires per anchor. The instant
-	// path (ctx.step == 0) keeps the original partition shape so the
-	// existing instant-mode fixtures stay byte-stable.
+	// list so the per-partition top-K fires per anchor. The instant path
+	// (ctx.step == 0) keeps the original partition shape so the existing
+	// instant-mode fixtures stay byte-stable.
 	if ctx.step > 0 {
 		by = append(by, &chplan.ColumnRef{Name: s.TimestampColumn})
 	}
+	return by
+}
+
+// lowerTopKComputed lowers `topk(scalar(<vector>), v)` and
+// `bottomk(scalar(<vector>), v)` — the computed-K case where K is the
+// value of a scalar subquery rather than a literal integer. CH's LIMIT
+// clause requires a constant, so we route the lowering through
+// chplan.TopK's KExpr slot; the emitter then renders a `row_number()
+// OVER (...) <= K` rank filter (see emitTopKComputed).
+//
+// Only `scalar(<vector>)` is accepted as the K shape — mixed forms
+// like `topk(2 + scalar(x), v)` would require constant-folding around
+// the scalar subquery, which is a bigger change deferred to a
+// follow-up. The PromQL parser already type-checks the K arg as
+// scalar-valued, so this is a narrow filter on the lowering surface.
+func lowerTopKComputed(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	// Peel ParenExpr wrappers so `topk((scalar(x)), v)` still routes
+	// here. The parser keeps explicit parens in the AST.
+	param := a.Param
+	for {
+		p, ok := param.(*parser.ParenExpr)
+		if !ok {
+			break
+		}
+		param = p.Expr
+	}
+	call, ok := param.(*parser.Call)
+	if !ok || call.Func == nil || call.Func.Name != "scalar" {
+		return nil, fmt.Errorf("promql: %s K must be a scalar literal or scalar(<vector>); computed-K with other shapes is not yet supported", a.Op.String())
+	}
+	if len(call.Args) != 1 {
+		return nil, fmt.Errorf("promql: %s K: scalar() expects 1 argument, got %d", a.Op.String(), len(call.Args))
+	}
+
+	// Lower the K argument in instant context (step=0). PromQL's
+	// `scalar(v)` produces a single value per eval; range-mode would
+	// fan it out into one row per step, but the emitter's K subquery
+	// reads only the first row (LIMIT 1) so the matrix shape would be
+	// wasted work. Reusing the surrounding ctx (with step > 0) would
+	// also drag a StepGrid CROSS JOIN into the K subtree, bloating the
+	// SQL for no semantic gain — the result vector's shape comes from
+	// `a.Expr`, not the K subtree.
+	kCtx := ctx
+	kCtx.step = 0
+	kExpr, err := lower(call.Args[0], s, kCtx)
+	if err != nil {
+		return nil, fmt.Errorf("promql: %s K: %w", a.Op.String(), err)
+	}
+
+	input, err := lower(a.Expr, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	by := topKPartition(a, s, ctx)
 
 	return &chplan.TopK{
 		Input:    input,
-		K:        int64(kF),
+		KExpr:    kExpr,
 		By:       by,
 		SortExpr: &chplan.ColumnRef{Name: s.ValueColumn},
 		Desc:     a.Op == parser.TOPK,

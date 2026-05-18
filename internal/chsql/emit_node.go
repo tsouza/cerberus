@@ -500,12 +500,25 @@ func (e *emitter) emitLimit(l *chplan.Limit) error {
 // K <= 0 is a programmer error — topk(0, ...) is meaningless and the
 // PromQL lowering should have rejected it upstream; emit an error so
 // the plan tree doesn't silently produce an unbounded result.
+//
+// When t.KExpr != nil (computed-K, e.g. `topk(scalar(metric_count),
+// v)`), the literal-K LIMIT shape is replaced with a `row_number()
+// OVER (PARTITION BY <by> ORDER BY <sortExpr> [DESC]) <= K` predicate
+// because ClickHouse does not accept a subquery directly in a LIMIT
+// clause. The K subquery is wrapped as `(SELECT toUInt64(Value) FROM
+// (<k_subtree>) LIMIT 1)` — PromQL `scalar()` produces a Sample-shape
+// (MetricName, Attributes, TimeUnix, Value) and we read the `Value`
+// column. The integer cast guards against the (rare) case where the
+// scalar evaluates to a non-integer; PromQL semantics truncate.
 func (e *emitter) emitTopK(t *chplan.TopK) error {
-	if t.K <= 0 {
-		return fmt.Errorf("%w: TopK with non-positive K=%d", ErrUnsupported, t.K)
-	}
 	if t.SortExpr == nil {
 		return fmt.Errorf("%w: TopK with nil SortExpr", ErrUnsupported)
+	}
+	if t.KExpr == nil && t.K <= 0 {
+		return fmt.Errorf("%w: TopK with non-positive K=%d", ErrUnsupported, t.K)
+	}
+	if t.KExpr != nil && t.K > 0 {
+		return fmt.Errorf("%w: TopK with both literal K=%d and KExpr set", ErrUnsupported, t.K)
 	}
 	// Pre-flight expressions so chplan errors surface synchronously.
 	if err := (&Builder{}).Expr(t.SortExpr); err != nil {
@@ -515,6 +528,10 @@ func (e *emitter) emitTopK(t *chplan.TopK) error {
 		if err := (&Builder{}).Expr(by); err != nil {
 			return err
 		}
+	}
+
+	if t.KExpr != nil {
+		return e.emitTopKComputed(t)
 	}
 
 	sub, err := e.subqueryFrag(t.Input)
@@ -549,6 +566,84 @@ func (e *emitter) emitTopK(t *chplan.TopK) error {
 	// is empty we emit a bare `SELECT *` so the row arity matches the
 	// inner subquery verbatim.
 	outer := NewQuery().From(inner.Frag())
+	if len(t.Columns) > 0 {
+		cols := make([]Frag, 0, len(t.Columns))
+		for _, c := range t.Columns {
+			cols = append(cols, Col(c))
+		}
+		outer.Select(cols...)
+	}
+	e.emitSelect(outer)
+	return nil
+}
+
+// emitTopKComputed renders the computed-K variant of TopK. CH's LIMIT
+// clause requires a constant integer, so the per-partition top-K with
+// a subquery-derived K flows through a rank-based filter:
+//
+//	SELECT <Columns> FROM (
+//	  SELECT *, row_number() OVER (PARTITION BY <By> ORDER BY <SortExpr> [DESC]) AS _rn
+//	  FROM (<input>)
+//	) WHERE _rn <= (SELECT toUInt64(`Value`) FROM (<KExpr>) LIMIT 1)
+//
+// `By` empty omits PARTITION BY (the rank fires across the whole
+// result). `_rn` is a CH-safe synthetic alias the emitter pins; the
+// canonical PromQL Sample shape (MetricName/Attributes/TimeUnix/Value)
+// does not use leading-underscore columns, so the alias does not
+// collide with the inner subquery's columns.
+//
+// The K subquery is wrapped in `toUInt64(...)` so a non-integer scalar
+// (PromQL semantics permit a float K, truncated to int) does not
+// surface as a CH "cannot compare UInt64 and Float64" error. The
+// trailing `LIMIT 1` guards against the unusual case where the scalar
+// subtree returns multiple rows — CH's scalar-subquery binding refuses
+// non-unique results, and PromQL's `scalar()` is documented to return
+// NaN in that case (which would coerce to 0 here and reject every row).
+func (e *emitter) emitTopKComputed(t *chplan.TopK) error {
+	sub, err := e.subqueryFrag(t.Input)
+	if err != nil {
+		return err
+	}
+	kSub, err := e.subqueryFrag(t.KExpr)
+	if err != nil {
+		return err
+	}
+
+	sortExpr := t.SortExpr
+	sortFrag := func(b *Builder) { _ = b.Expr(sortExpr) }
+
+	partitionBy := make([]Frag, 0, len(t.By))
+	for _, by := range t.By {
+		byExpr := by
+		partitionBy = append(partitionBy, func(b *Builder) { _ = b.Expr(byExpr) })
+	}
+
+	// `row_number() OVER (PARTITION BY <by> ORDER BY <sortExpr> [DESC])`.
+	rankFrag := Window(
+		Call("row_number"),
+		partitionBy,
+		[]OrderKey{{Expr: sortFrag, Desc: t.Desc}},
+	)
+
+	// Inner SELECT projects all input columns + the synthetic rank alias.
+	// `*` forwards every column from the input subquery so the outer
+	// SELECT's column-list (Columns) still resolves; we don't know the
+	// input column list at this layer (it varies per upstream schema).
+	ranked := NewQuery().From(sub).Select(
+		Star(),
+		As(rankFrag, "_rn"),
+	)
+
+	// K subquery: `(SELECT toUInt64(Value) FROM (<k_subtree>) LIMIT 1)`.
+	// The toUInt64 cast handles fractional scalars (PromQL truncates K to
+	// int); LIMIT 1 enforces single-row scalar-subquery semantics.
+	kSelect := NewQuery().
+		Select(Call("toUInt64", Col("Value"))).
+		From(kSub).
+		Limit(1)
+	kSubquery := Subquery(kSelect)
+
+	outer := NewQuery().From(ranked.Frag()).Where(Lte(Col("_rn"), kSubquery))
 	if len(t.Columns) > 0 {
 		cols := make([]Frag, 0, len(t.Columns))
 		for _, c := range t.Columns {

@@ -100,7 +100,11 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		if v.Desc {
 			dir = "DESC"
 		}
-		fmt.Fprintf(b, "%sTopK k=%d sort=%s %s", indent, v.K, printExpr(v.SortExpr), dir)
+		if v.KExpr != nil {
+			fmt.Fprintf(b, "%sTopK k=<expr> sort=%s %s", indent, printExpr(v.SortExpr), dir)
+		} else {
+			fmt.Fprintf(b, "%sTopK k=%d sort=%s %s", indent, v.K, printExpr(v.SortExpr), dir)
+		}
 		if len(v.By) > 0 {
 			bys := make([]string, len(v.By))
 			for i, e := range v.By {
@@ -113,6 +117,10 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		}
 		b.WriteString("\n")
 		printNode(b, v.Input, depth+1)
+		if v.KExpr != nil {
+			fmt.Fprintf(b, "%s  KExpr:\n", indent)
+			printNode(b, v.KExpr, depth+2)
+		}
 	case *chplan.OrderBy:
 		keys := make([]string, len(v.Keys))
 		for i, k := range v.Keys {
