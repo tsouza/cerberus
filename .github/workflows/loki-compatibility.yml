@@ -16,11 +16,10 @@ name: loki-compatibility
 # graduation in docs/roadmap.md.
 #
 # Triggers:
-#   * push to main       — informational only. The job-level
-#                          continue-on-error keeps the workflow
-#                          conclusion green so this is not a required
-#                          check by accident. Path filter scoped to
-#                          inputs that can affect parity drift.
+#   * pull_request       — path-filtered to loki/logql files, so PRs
+#                          that touch parity surface get an early signal.
+#   * push to main       — informational baseline. Path filter scoped
+#                          to inputs that can affect parity drift.
 #   * schedule           — nightly cron, offset from sibling harnesses
 #                          to spread runner load (compatibility 04:11,
 #                          tempo-compatibility 04:23, this one 04:37).
@@ -37,6 +36,13 @@ name: loki-compatibility
 #   * actions/upload-artifact@v7    — diff report.
 
 on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'internal/api/loki/**'
+      - 'internal/logql/**'
+      - 'harness/loki-compatibility/**'
+      - '.github/workflows/loki-compatibility.yml'
   push:
     branches: [main]
     paths:
@@ -66,16 +72,14 @@ jobs:
     name: loki/compatibility
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # Informational baseline. The run-loki-compatibility.sh script
-    # exits non-zero on any diff (per its documented exit table in
-    # PR 387: rc=1 on diff, rc>=2 on harness failure), and today's
-    # seeded fixture does not satisfy the upstream ${SELECTOR}
-    # vocabulary — see harness/loki-compatibility/cerberus-test-
-    # queries.yml. continue-on-error keeps the workflow badge green
-    # while we're in informational mode. Promotion to a required PR
-    # check tracks PR 5 of the rollout (cerberus-owned driver) and
-    # docs/roadmap.md.
-    continue-on-error: true
+    # NOTE: job-level `continue-on-error: true` was removed here.
+    # Previously it combined with `if: always()` on Upload to make
+    # every job-level failure report a green workflow conclusion.
+    # The new contract: the workflow conclusion MUST track the job
+    # conclusion. Upload still runs on failure (`if: always()`),
+    # but the explicit "Fail job if harness step failed" step at
+    # the end re-raises a non-zero exit when the harness step
+    # diverged or crashed, so the workflow badge correctly turns red.
     steps:
       - uses: actions/checkout@v6
 
@@ -96,8 +100,7 @@ jobs:
         id: harness
         # The script handles its own teardown via an EXIT trap
         # (compose down -v + go.mod / go.sum revert), so no explicit
-        # cleanup step is needed even on failure. job-level
-        # continue-on-error keeps a non-zero rc informational.
+        # cleanup step is needed even on failure.
         run: ./harness/loki-compatibility/scripts/run-loki-compatibility.sh
 
       - name: Upload report
@@ -113,3 +116,13 @@ jobs:
           path: harness/loki-compatibility/reports/
           if-no-files-found: warn
           retention-days: 30
+
+      - name: Fail job if harness step failed
+        # Last step in the job. Re-raises the harness step's failure
+        # AFTER the artifact has been emitted, so the workflow
+        # conclusion mirrors the harness outcome instead of being
+        # masked by `if: always()` housekeeping above.
+        if: always() && steps.harness.outcome == 'failure'
+        run: |
+          echo "::error title=loki compatibility suite failed::harness step failed -- see logs and uploaded report"
+          exit 1
