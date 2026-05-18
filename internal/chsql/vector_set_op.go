@@ -11,16 +11,28 @@ import (
 //
 //   - VectorSetAnd (`A and B`): semi-join — keep LHS rows whose match-
 //     key signature appears in B. Rendered as
-//     `SELECT * FROM (<A>) WHERE <sig> IN (SELECT DISTINCT <sig> FROM (<B>))`.
+//     `SELECT MetricName, Attributes, TimeUnix, Value FROM (SELECT * FROM (<A>) WHERE <sig> IN (SELECT DISTINCT <sig> FROM (<B>)))`.
 //
 //   - VectorSetUnless (`A unless B`): anti-join — keep LHS rows whose
 //     match-key signature does NOT appear in B. Rendered as
-//     `SELECT * FROM (<A>) WHERE <sig> NOT IN (SELECT DISTINCT <sig> FROM (<B>))`.
+//     `SELECT MetricName, Attributes, TimeUnix, Value FROM (SELECT * FROM (<A>) WHERE <sig> NOT IN (SELECT DISTINCT <sig> FROM (<B>)))`.
 //
 //   - VectorSetOr (`A or B`): left + anti-right — every LHS row plus
 //     every RHS row whose match-key signature does NOT appear in A.
 //     Rendered as
-//     `(SELECT * FROM (<A>)) UNION ALL (SELECT * FROM (<B>) WHERE <sig> NOT IN (SELECT DISTINCT <sig> FROM (<A>)))`.
+//     `SELECT MetricName, Attributes, TimeUnix, Value FROM ((SELECT * FROM (<A>)) UNION ALL (SELECT * FROM (<B>) WHERE <sig> NOT IN (SELECT DISTINCT <sig> FROM (<A>))))`.
+//
+// The outer `SELECT MetricName, Attributes, TimeUnix, Value` is required
+// for the round-trip test runner, which wraps the Map column in
+// `toJSONString(...)` before handing the SQL to chDB's parquet driver
+// (a bare `SELECT *` over a Map column trips chdb-go's parquet scanner).
+// We isolate the IN / NOT IN / UNION ALL plumbing in an inner sub-SELECT
+// (renderable with `SELECT *` because the Map column never crosses the
+// outer projection boundary) so the outer alias `Attributes` only ever
+// resolves to the subquery's Map column. Inlining the WHERE on the
+// outer SELECT would otherwise make CH's optimizer push the alias
+// rewrite (`toJSONString(Attributes)`) into the WHERE comparison,
+// producing a `String IN Set<Map>` type mismatch.
 //
 // The match-key signature is the full Attributes column (default), or
 // the projected mapFilter expression for `on(...)` / `ignoring(...)`.
@@ -50,31 +62,70 @@ func (e *emitter) emitVectorSetOp(s *chplan.VectorSetOp) error {
 
 	switch s.Op {
 	case chplan.VectorSetAnd:
-		// SELECT * FROM (<A>) WHERE <sig> IN (SELECT DISTINCT <sig> FROM (<B>))
-		sb := NewQuery().
+		// SELECT MetricName, Attributes, TimeUnix, Value
+		//   FROM (SELECT * FROM (<A>) WHERE <sig> IN (SELECT DISTINCT <sig> FROM (<B>)))
+		inner := NewQuery().
 			From(leftFrag).
 			Where(setOpInSubqueryFrag(s.Match, s.AttributesColumn, rightFrag, true /*in*/))
-		e.emitSelect(sb)
+		outer := NewQuery().
+			Select(vectorSetOpOutputCols(s)...).
+			From(inner.Frag())
+		e.emitSelect(outer)
 		return nil
 	case chplan.VectorSetUnless:
-		// SELECT * FROM (<A>) WHERE <sig> NOT IN (SELECT DISTINCT <sig> FROM (<B>))
-		sb := NewQuery().
+		// SELECT MetricName, Attributes, TimeUnix, Value
+		//   FROM (SELECT * FROM (<A>) WHERE <sig> NOT IN (SELECT DISTINCT <sig> FROM (<B>)))
+		inner := NewQuery().
 			From(leftFrag).
 			Where(setOpInSubqueryFrag(s.Match, s.AttributesColumn, rightFrag, false /*notIn*/))
-		e.emitSelect(sb)
+		outer := NewQuery().
+			Select(vectorSetOpOutputCols(s)...).
+			From(inner.Frag())
+		e.emitSelect(outer)
 		return nil
 	case chplan.VectorSetOr:
-		// (SELECT * FROM (<A>)) UNION ALL (SELECT * FROM (<B>) WHERE <sig> NOT IN (SELECT DISTINCT <sig> FROM (<A>)))
+		// SELECT MetricName, Attributes, TimeUnix, Value FROM (
+		//   (SELECT * FROM (<A>))
+		//   UNION ALL
+		//   (SELECT * FROM (<B>)
+		//      WHERE <sig> NOT IN (SELECT DISTINCT <sig> FROM (<A>)))
+		// )
+		//
+		// The UNION ALL must be wrapped in an extra outer paren so the
+		// outer SELECT's FROM clause sees a single subquery; otherwise
+		// the rendered SQL is `… FROM (<left>) UNION ALL (<right>)`,
+		// which parses as a top-level UNION between two whole SELECTs
+		// (and CH then asks for a supertype between the outer SELECT's
+		// projection and the right UNION arm — Map vs. String — and
+		// fails with NO_COMMON_TYPE).
 		leftSelect := NewQuery().From(leftFrag)
 		rightSelect := NewQuery().
 			From(rightFrag).
 			Where(setOpInSubqueryFrag(s.Match, s.AttributesColumn, leftFrag, false /*notIn*/))
-		b := NewBuilder()
-		UnionAll(leftSelect.Frag(), rightSelect.Frag())(b)
-		e.splice(b)
+		outer := NewQuery().
+			Select(vectorSetOpOutputCols(s)...).
+			From(Paren(UnionAll(leftSelect.Frag(), rightSelect.Frag())))
+		e.emitSelect(outer)
 		return nil
 	}
 	return fmt.Errorf("%w: vector set op %q", ErrUnsupported, s.Op)
+}
+
+// vectorSetOpOutputCols returns the explicit projection list a vector
+// set op uses for its outer SELECT. Rendering MetricName / Attributes /
+// TimeUnix / Value explicitly (vs. the implicit `SELECT *`) lets the
+// spec round-trip runner recognise the Map column and wrap it in
+// `toJSONString(...)` before handing the SQL to chDB's parquet driver,
+// which otherwise panics on Map types. The order matches the canonical
+// 4-slot shape every other PromQL emit site pins (vector_join, project,
+// range_window, …).
+func vectorSetOpOutputCols(s *chplan.VectorSetOp) []Frag {
+	return []Frag{
+		Col(s.MetricNameColumn),
+		Col(s.AttributesColumn),
+		Col(s.TimestampColumn),
+		Col(s.ValueColumn),
+	}
 }
 
 func (e *emitter) validateVectorSetOpCols(s *chplan.VectorSetOp) error {
