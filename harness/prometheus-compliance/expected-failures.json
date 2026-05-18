@@ -1,4 +1,5 @@
 {
+  "_comment": "PromQL compatibility diffs against reference Prometheus. Currently 0 diffs (536/536 pass) as of the post-#401/#404/#402 sweep. Each entry must include 'query', 'reason', and 'tracking' fields. See docs/compat-residual-audit-25898791664.md for the full audit history.",
   "$schema": "Comments per entry are required. Each entry must include:",
   "$schema_fields": [
     "query: the PromQL string from promql-test-queries.yml",
