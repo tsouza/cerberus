@@ -111,6 +111,15 @@ if [ "$SEED_RC" -ne 0 ]; then
     exit "$SEED_RC"
 fi
 
+# Tempo v3's /api/search endpoint only queries completed blocks, not the
+# live store. Even with complete_block_timeout: 5s, the block builder needs
+# time to flush, complete, and index each block before /api/search returns
+# results. On CI runners this can take 10-30s after the seeder finishes.
+# The 30s sleep is a conservative upper bound; if Tempo has already
+# indexed by then, the differ proceeds immediately.
+echo "==> waiting 30s for Tempo to flush and index blocks..."
+sleep 30
+
 # Build the diff driver. The driver imports internal/schema/ddl and
 # OTLP gRPC client types via cerberus's go.mod, so it compiles from
 # the repo root like the cerberus binary.
