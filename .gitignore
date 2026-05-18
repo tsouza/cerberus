@@ -51,3 +51,4 @@ test/e2e/playwright/node_modules/
 test/e2e/playwright/test-results/
 test/e2e/playwright/playwright-report/
 .claude/worktrees/
+seed
