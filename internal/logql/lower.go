@@ -188,6 +188,22 @@ func lowerStage(stage syntax.StageExpr, s schema.Logs) (chplan.Expr, error) {
 		return nil, fmt.Errorf("logql: `| json field=\"...\"` parser is not yet supported (deferred from M3.2; revisit in RC3)")
 	case *syntax.LogfmtExpressionParserExpr:
 		return nil, fmt.Errorf("logql: `| logfmt field=\"...\"` parser is not yet supported (deferred from M3.2; revisit in RC3)")
+	case *syntax.DropLabelsExpr:
+		// `| drop foo, bar` removes named keys from the output label set
+		// in Go after the rows return. The matching `*labels.Matcher`
+		// variant (`| drop foo="v"`) drops only when the value matches.
+		// Either way there's no SQL impact — the stream selector +
+		// label filters already constrain which rows are returned; drop
+		// only narrows the label map carried back to the caller. The
+		// API handler pulls the stage out via postProcessExtract.
+		_ = st
+		return nil, nil
+	case *syntax.KeepLabelsExpr:
+		// `| keep foo, bar` is the inverse projection: only the named
+		// labels survive on the output row. Same post-fetch shape as
+		// `| drop` — no SQL impact, applied in Go.
+		_ = st
+		return nil, nil
 	default:
 		return nil, fmt.Errorf("logql: pipeline stage %T is not yet supported", stage)
 	}

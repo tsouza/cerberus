@@ -93,7 +93,7 @@ Most of PromQL isn't lowered yet at the seed stage. Gating now would make every 
 ### LogQL
 
 - **`| json` and `| logfmt` parser stages** — return "not yet supported". Both the bare parsers (`| json`, `| logfmt`) and the expression-select variants (`| json field="..."`, `| logfmt field="..."`) are deferred (`internal/logql/lower.go:184`, `lower.go:186`, `lower.go:188`, `lower.go:189`).
-- **`| pattern` is supported** as a post-fetch stage (no SQL impact), but `| unpack`, `| drop`, and `| keep` are not.
+- **`| pattern`, `| unpack`, `| drop`, and `| keep` are supported** as post-fetch stages (no SQL impact); they extract / project labels in Go after the rows return.
 - **`| unwrap` range aggregations** — `sum_over_time`, `avg_over_time`, `quantile_over_time`, and other value-based ops return "not yet supported" (`internal/logql/range_aggregation.go:30`, `range_aggregation.go:104`, `range_aggregation.go:122`).
 - **Range-aggregation `by` / `without` grouping** — `rate({...}[5m]) by (label)` and similar grouped metric queries return "not yet supported" (`internal/logql/range_aggregation.go:33`).
 

@@ -10,6 +10,7 @@ import (
 	"github.com/grafana/loki/v3/pkg/logql/log/pattern"
 	"github.com/grafana/loki/v3/pkg/logql/syntax"
 	"github.com/grafana/loki/v3/pkg/logqlmodel"
+	"github.com/prometheus/prometheus/model/labels"
 )
 
 // postProcessExtract walks the parsed LogQL expression and pulls out
@@ -33,6 +34,14 @@ import (
 //   - `| pattern "<ip> <_> <method> <path>"` — matches the line against
 //     a Loki pattern expression and adds each named capture to the
 //     labels map. `<_>` skips a segment.
+//   - `| drop foo, bar` / `| drop foo="v"` — remove named labels (or
+//     labels whose value matches the matcher) from the output. Applied
+//     by handing the labels to upstream Loki's `log.DropLabels.Process`
+//     so cerberus inherits its exact semantics (including the
+//     special-error-label preservation).
+//   - `| keep foo, bar` / `| keep foo="v"` — opposite of drop: keep
+//     only the named labels (or labels whose value matches). Also
+//     delegates to upstream Loki's `log.KeepLabels.Process`.
 //
 // Lowering already returns nil-predicate no-ops for these stages so
 // the SQL doesn't try to model them. Returns a transform that maps
@@ -73,6 +82,16 @@ func postProcessExtract(expr syntax.Expr) (lineTransform, error) {
 				}
 				steps = append(steps, step)
 			}
+		case *syntax.DropLabelsExpr, *syntax.KeepLabelsExpr:
+			// In a multi-case type switch v keeps the type-switch
+			// expression's interface type (StageExpr), which is exactly
+			// what newLabelProjectionStep wants — Stage() lives on the
+			// StageExpr interface.
+			step, err := newLabelProjectionStep(v)
+			if err != nil {
+				return nil, err
+			}
+			steps = append(steps, step)
 		}
 	}
 
@@ -334,6 +353,54 @@ func newPatternStep(p string) (lineTransform, error) {
 			}
 			out[name] = string(c)
 		}
+		return line, out
+	}, nil
+}
+
+// newLabelProjectionStep implements `| drop` and `| keep` by delegating
+// to upstream Loki's `log.Stage` machinery. Both StageExprs expose a
+// `Stage()` method that returns the same `log.DropLabels` / `log.KeepLabels`
+// implementation Loki itself runs at query time — cerberus inherits the
+// exact matcher semantics (including the special-error-label
+// preservation and the bare-name vs matcher-form distinction) by
+// reusing the upstream Process call. Field access on the unexported
+// `dropLabels` / `keepLabels` slice is not needed: we operate on the
+// LabelsBuilder shape Loki's Stage expects.
+//
+// Each invocation builds a fresh LabelsBuilder over the input label
+// map, runs Process, and reads the surviving labels back. Labels pass
+// through unchanged in shape; only the membership of the output map
+// differs from the input. The line is never rewritten.
+//
+// Returns a FRESH labels map per row so callers can safely treat the
+// original sample's labels as immutable, consistent with the other
+// label-mutating steps (label_format, unpack, pattern).
+func newLabelProjectionStep(stage syntax.StageExpr) (lineTransform, error) {
+	st, err := stage.Stage()
+	if err != nil {
+		return nil, err
+	}
+	baseBuilder := loglib.NewBaseLabelsBuilder()
+	return func(line string, in map[string]string) (string, map[string]string) {
+		// Convert the input label map into labels.Labels. Order doesn't
+		// matter for Drop/Keep — both iterate via UnsortedLabels — but
+		// labels.FromMap returns a canonicalised set so the hash is
+		// stable across calls with the same content.
+		lbs := labels.FromMap(in)
+		builder := baseBuilder.ForLabels(lbs, labels.StableHash(lbs))
+		builder.Reset()
+		// Process returns (modifiedLine, keepRow). Drop/Keep never
+		// rewrite the line or reject the row — they only mutate the
+		// builder's label set. Discard both return values.
+		_, _ = st.Process(0, []byte(line), builder)
+		// LabelsResult().Labels() returns the surviving label set after
+		// the stage applied. Read it back into a plain map[string]string
+		// so the rest of the pipeline (line_format, label_format, …)
+		// keeps its map-based contract.
+		out := make(map[string]string, len(in))
+		builder.LabelsResult().Labels().Range(func(l labels.Label) {
+			out[l.Name] = l.Value
+		})
 		return line, out
 	}, nil
 }
