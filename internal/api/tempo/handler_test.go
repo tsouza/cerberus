@@ -128,13 +128,21 @@ func TestSearch_Empty(t *testing.T) {
 
 func TestSearch_Query(t *testing.T) {
 	t.Parallel()
+	// hex-TraceID smuggled through the wrap projection via the reserved
+	// __cerberus_traceID label key — toTraceSummaries reads it out so
+	// the response surfaces real per-trace identity (32 hex chars)
+	// rather than the legacy SpanName|Timestamp synthetic key.
+	const wantTraceID = "0123456789abcdef0123456789abcdef"
 	q := &stubQuerier{
 		samples: []chclient.Sample{
 			{
 				MetricName: "GET /api/users",
-				Labels:     map[string]string{"service.name": "frontend"},
-				Timestamp:  time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
-				Value:      150_000_000, // 150ms in nanoseconds
+				Labels: map[string]string{
+					"service.name":       "frontend",
+					"__cerberus_traceID": wantTraceID,
+				},
+				Timestamp: time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+				Value:     150_000_000, // 150ms in nanoseconds
 			},
 		},
 	}
@@ -156,12 +164,113 @@ func TestSearch_Query(t *testing.T) {
 	if len(sr.Traces) != 1 {
 		t.Fatalf("expected 1 trace, got %d", len(sr.Traces))
 	}
+	if sr.Traces[0].TraceID != wantTraceID {
+		t.Errorf("TraceID: got %q, want %q (32 hex chars from the search projection)",
+			sr.Traces[0].TraceID, wantTraceID)
+	}
+	if len(sr.Traces[0].TraceID) != 32 {
+		t.Errorf("TraceID length: got %d, want 32 (hex-encoded 16-byte trace id)",
+			len(sr.Traces[0].TraceID))
+	}
+	if !isHexLower(sr.Traces[0].TraceID) {
+		t.Errorf("TraceID format: got %q, want lowercase hex", sr.Traces[0].TraceID)
+	}
 	if sr.Traces[0].RootServiceName != "frontend" {
 		t.Errorf("expected frontend service, got %q", sr.Traces[0].RootServiceName)
 	}
 	if sr.Traces[0].DurationMs != 150 {
 		t.Errorf("expected 150ms, got %d", sr.Traces[0].DurationMs)
 	}
+}
+
+// TestSearch_GroupsByTraceID asserts that multiple span rows sharing a
+// real TraceID collapse into a single per-trace summary; this is the
+// core behaviour change behind switching from the synthetic
+// (SpanName | Timestamp) key to the real hex(TraceId).
+func TestSearch_GroupsByTraceID(t *testing.T) {
+	t.Parallel()
+	const traceA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const traceB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	q := &stubQuerier{
+		samples: []chclient.Sample{
+			// Two spans on trace A — should collapse into one summary;
+			// DurationMs reflects the max span duration; StartTimeUnixNano
+			// the earliest span timestamp.
+			{
+				MetricName: "POST /api/orders",
+				Labels: map[string]string{
+					"service.name":       "checkout",
+					"__cerberus_traceID": traceA,
+				},
+				Timestamp: time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+				Value:     200_000_000,
+			},
+			{
+				MetricName: "db.query",
+				Labels: map[string]string{
+					"service.name":       "checkout",
+					"__cerberus_traceID": traceA,
+				},
+				Timestamp: time.Date(2026, 5, 12, 10, 0, 1, 0, time.UTC),
+				Value:     50_000_000,
+			},
+			// One span on trace B — separate summary.
+			{
+				MetricName: "GET /healthz",
+				Labels: map[string]string{
+					"service.name":       "frontend",
+					"__cerberus_traceID": traceB,
+				},
+				Timestamp: time.Date(2026, 5, 12, 10, 0, 5, 0, time.UTC),
+				Value:     5_000_000,
+			},
+		},
+	}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/search?q=%7B%7D")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	var sr tempo.SearchResponse
+	if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(sr.Traces) != 2 {
+		t.Fatalf("expected 2 distinct traces (grouped by real TraceID), got %d", len(sr.Traces))
+	}
+	// Results sort ascending by TraceID.
+	if sr.Traces[0].TraceID != traceA {
+		t.Errorf("[0] TraceID: got %q, want %q", sr.Traces[0].TraceID, traceA)
+	}
+	if sr.Traces[1].TraceID != traceB {
+		t.Errorf("[1] TraceID: got %q, want %q", sr.Traces[1].TraceID, traceB)
+	}
+	// DurationMs is the max of {200, 50}ms = 200ms across trace A's two spans.
+	if sr.Traces[0].DurationMs != 200 {
+		t.Errorf("[0] DurationMs: got %d, want 200 (max across grouped spans)",
+			sr.Traces[0].DurationMs)
+	}
+}
+
+// isHexLower reports whether s is a non-empty lowercase hex string.
+// The OTel CH exporter writes TraceId via hex.EncodeToString, which
+// produces lowercase a-f digits.
+func isHexLower(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		switch {
+		case c >= '0' && c <= '9':
+		case c >= 'a' && c <= 'f':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func TestTraceByID_NotFound(t *testing.T) {

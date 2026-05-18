@@ -1,0 +1,29 @@
+-- query.traceql --
+{ resource.service.name = "frontend" } | select(span.http.method)
+-- sql --
+SELECT `TraceId`, `SpanId`, `Timestamp`, `SpanAttributes`[?] AS `http.method` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?))
+-- args --
+[0] string = "http.method"
+[1] string = "service.name"
+[2] string = "frontend"
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    Timestamp DateTime64(9),
+    SpanAttributes Map(String, String),
+    ResourceAttributes Map(String, String)
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    ('0123456789abcdef0123456789abcdef', '0000000000000001', toDateTime64('2026-01-01 00:00:00', 9), map('http.method', 'GET'), map('service.name', 'frontend')),
+    ('fedcba9876543210fedcba9876543210', '0000000000000002', toDateTime64('2026-01-01 00:00:01', 9), map('http.method', 'POST'), map('service.name', 'frontend')),
+    ('aabbccddeeff00112233445566778899', '0000000000000003', toDateTime64('2026-01-01 00:00:02', 9), map('http.method', 'GET'), map('service.name', 'backend'));
+-- expected_rows --
+[
+  ["0123456789abcdef0123456789abcdef", "0000000000000001", "2026-01-01T00:00:00Z", "GET"],
+  ["fedcba9876543210fedcba9876543210", "0000000000000002", "2026-01-01T00:00:01Z", "POST"]
+]
+-- chplan --
+Project [TraceId, SpanId, Timestamp, SpanAttributes["http.method"] AS http.method]
+  Filter predicate=(ResourceAttributes["service.name"] = "frontend")
+    Scan(otel_traces)
