@@ -278,7 +278,7 @@ test.describe('Tempo UX — Search flows', () => {
     // a TraceQL metrics pipeline (`| rate()`, `| count_over_time()`,
     // `| *_over_time(...)` etc.) for inter-service rate + duration.
     // Cerberus answers with Tempo's native series-of-samples envelope:
-    //   {series: [{labels: [{key, value}], samples: [{timestampMs, value}]}]}
+    //   {series: [{labels: [{key, value: {stringValue}}], samples: [{timestampMs, value}]}]}
     // The Playwright suite seeds three traces (see L10 seed); a
     // `| count_over_time() by (resource.service.name)` should return at
     // least one series whose label set names the seeded service.
@@ -305,7 +305,8 @@ test.describe('Tempo UX — Search flows', () => {
       expect(Array.isArray(s.samples), 'series.samples is array').toBe(true);
       for (const lbl of s.labels) {
         expect(typeof lbl.key, 'label.key is string').toBe('string');
-        expect(typeof lbl.value, 'label.value is string').toBe('string');
+        expect(typeof lbl.value, 'label.value is object (AnyValue envelope)').toBe('object');
+        expect(typeof lbl.value.stringValue, 'label.value.stringValue is string').toBe('string');
       }
       for (const smp of s.samples) {
         expect(typeof smp.timestampMs, 'sample.timestampMs is number').toBe('number');
