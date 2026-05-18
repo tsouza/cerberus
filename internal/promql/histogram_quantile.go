@@ -71,6 +71,15 @@ func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chp
 	// the existing error message if the shape isn't recognised).
 	if shape, ok := matchHistogramAggIdiom(c.Args[1]); ok {
 		if s.IsExpHistogramMetric(shape.selector.Name) {
+			// Range mode (ctx.step > 0): fan the exp-histogram merge +
+			// quantile interpolation across the request's step grid.
+			// Modifier-bearing selectors fall back to the instant path
+			// until matrix-anchor handling lands (rare in practice —
+			// Grafana never threads modifiers through histogram_quantile
+			// on query_range).
+			if histogramRangeApplies(ctx) && !hasModifier(shape.selector) {
+				return lowerHistogramQuantileNativeAggRange(shape, phi, s, ctx), nil
+			}
 			return lowerHistogramQuantileNativeAgg(shape, phi, s, ctx)
 		}
 		// Range mode (ctx.step > 0): build a per-step plan that fans the
@@ -91,6 +100,18 @@ func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chp
 	}
 
 	if s.IsExpHistogramMetric(vs.Name) {
+		// Range mode (ctx.step > 0): build a per-step plan that fans the
+		// exponential-histogram quantile interpolation across the
+		// request's step grid. Each anchor independently runs the LWR
+		// projection over the per-row exp-histogram fields and feeds a
+		// merged distribution into HistogramQuantileNative, so the matrix
+		// pivot sees one quantile row per (series, anchor) rather than
+		// the single instant-mode `now64(9)` row repeated for every
+		// step. Modifier-bearing selectors fall back to the instant
+		// path until matrix-anchor handling lands.
+		if histogramRangeApplies(ctx) && !hasModifier(vs) {
+			return lowerHistogramQuantileNativeBareRange(vs, phi, s, ctx), nil
+		}
 		return lowerHistogramQuantileNative(vs, phi, s, ctx)
 	}
 
@@ -472,13 +493,12 @@ func andExpr(a, b chplan.Expr) chplan.Expr {
 // Scan or Filter against the exp-histogram table, then wrap in a
 // Project to satisfy the Sample-row contract downstream.
 //
-// Instant-mode only for now — range-mode (per-step anchor grid) is
-// the Phase 3 follow-up. See docs/native-histogram-plan.md § Phase 3.
-// query_range over a native-histogram metric currently collapses to
-// instant-mode behaviour with TimeUnix = now64(9) for every step
-// (matches pre-#353 classic-path behaviour); fixing this requires the
-// StepGrid + per-anchor lookback rewrite mirroring
-// lowerHistogramQuantileClassicBareRange.
+// This is the instant-mode entry point — query_range traffic dispatches
+// to lowerHistogramQuantileNativeBareRange (bare selector) or
+// lowerHistogramQuantileNativeAggRange (aggregated idiom), which fan
+// the same quantile interpolation across a StepGrid + per-anchor
+// lookback window. The instant lowering keeps `TimeUnix = now64(9)`
+// because instant queries have a single evaluation anchor.
 func lowerHistogramQuantileNative(vs *parser.VectorSelector, phi float64, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	scan := &chplan.Scan{Table: s.ExpHistogramTable}
 	pred := buildPredicate(vs.LabelMatchers, s)

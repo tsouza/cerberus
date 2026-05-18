@@ -276,3 +276,379 @@ func buildHistogramRangeTree(
 		},
 	}
 }
+
+// lowerHistogramQuantileNativeBareRange builds the range-mode plan tree
+// for `histogram_quantile(phi, <bare-exp-hist-VectorSelector>)`.
+//
+// The shape mirrors lowerHistogramQuantileClassicBareRange exactly,
+// substituting the per-row exp-histogram fields (Scale / ZeroCount /
+// ZeroThreshold / PositiveOffset / PositiveBucketCounts /
+// NegativeOffset / NegativeBucketCounts) for the classic-side
+// BucketCounts + ExplicitBounds pair. The per-anchor LWR projects the
+// newest exp-histogram row per (series, anchor) via argMax(<col>, TimeUnix)
+// before HistogramQuantileNative walks the merged distribution.
+//
+// Plan shape (in chsql output order):
+//
+//	Project [MetricName='', Attributes, anchor_ts AS TimeUnix, Value]
+//	  HistogramQuantileNative phi groupBy=[anchor_ts, Attributes]
+//	    Project [anchor_ts, Attributes, Scale, ZeroCount, ZeroThreshold,
+//	             PositiveOffset, PositiveBucketCounts,
+//	             NegativeOffset, NegativeBucketCounts]
+//	      Aggregate groupBy=[anchor_ts, Attributes] funcs=[
+//	          argMax(Scale, TimeUnix), argMax(ZeroCount, TimeUnix),
+//	          argMax(ZeroThreshold, TimeUnix),
+//	          argMax(PositiveOffset, TimeUnix),
+//	          argMax(PositiveBucketCounts, TimeUnix),
+//	          argMax(NegativeOffset, TimeUnix),
+//	          argMax(NegativeBucketCounts, TimeUnix)]
+//	        Filter (TimeUnix > anchor_ts - 5m AND TimeUnix <= anchor_ts)
+//	          CrossJoin(StepGrid(start, end, step), Filter(Scan, <matchers>))
+func lowerHistogramQuantileNativeBareRange(
+	vs *parser.VectorSelector,
+	phi float64,
+	s schema.Metrics,
+	ctx lowerCtx,
+) chplan.Node {
+	scan := &chplan.Scan{Table: s.ExpHistogramTable}
+	pred := buildPredicate(vs.LabelMatchers, s)
+
+	groupBy := []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}}
+	groupByAliases := []string{s.AttributesColumn}
+	attrsRebuild := chplan.Expr(&chplan.ColumnRef{Name: s.AttributesColumn})
+
+	// LWR aggregation: latest exp-histogram fields per (series, anchor).
+	// argMax(<col>, TimeUnix) picks the value at the row with the highest
+	// TimeUnix in the (series, anchor) group, matching the Phase-1 instant-
+	// mode "newest sample" semantic with anchor swapped in for `now64(9)`.
+	expHistAggs := []chplan.AggFunc{
+		{
+			Name: "argMax",
+			Args: []chplan.Expr{
+				&chplan.ColumnRef{Name: s.ScaleColumn},
+				&chplan.ColumnRef{Name: s.TimestampColumn},
+			},
+			Alias: s.ScaleColumn,
+		},
+		{
+			Name: "argMax",
+			Args: []chplan.Expr{
+				&chplan.ColumnRef{Name: s.ZeroCountColumn},
+				&chplan.ColumnRef{Name: s.TimestampColumn},
+			},
+			Alias: s.ZeroCountColumn,
+		},
+		{
+			Name: "argMax",
+			Args: []chplan.Expr{
+				&chplan.ColumnRef{Name: s.ZeroThresholdColumn},
+				&chplan.ColumnRef{Name: s.TimestampColumn},
+			},
+			Alias: s.ZeroThresholdColumn,
+		},
+		{
+			Name: "argMax",
+			Args: []chplan.Expr{
+				&chplan.ColumnRef{Name: s.PositiveOffsetColumn},
+				&chplan.ColumnRef{Name: s.TimestampColumn},
+			},
+			Alias: s.PositiveOffsetColumn,
+		},
+		{
+			Name: "argMax",
+			Args: []chplan.Expr{
+				&chplan.ColumnRef{Name: s.PositiveBucketCountsColumn},
+				&chplan.ColumnRef{Name: s.TimestampColumn},
+			},
+			Alias: s.PositiveBucketCountsColumn,
+		},
+		{
+			Name: "argMax",
+			Args: []chplan.Expr{
+				&chplan.ColumnRef{Name: s.NegativeOffsetColumn},
+				&chplan.ColumnRef{Name: s.TimestampColumn},
+			},
+			Alias: s.NegativeOffsetColumn,
+		},
+		{
+			Name: "argMax",
+			Args: []chplan.Expr{
+				&chplan.ColumnRef{Name: s.NegativeBucketCountsColumn},
+				&chplan.ColumnRef{Name: s.TimestampColumn},
+			},
+			Alias: s.NegativeBucketCountsColumn,
+		},
+	}
+	return buildHistogramNativeRangeTree(
+		scan, pred, instantLookback,
+		groupBy, groupByAliases, attrsRebuild,
+		expHistAggs, phi, s, ctx,
+	)
+}
+
+// lowerHistogramQuantileNativeAggRange builds the range-mode plan tree
+// for `histogram_quantile(phi, sum [by/without] (rate(<sel>_exp_hist[r])))`.
+//
+// The lookback is the rate's [range] duration; the per-anchor aggregation
+// collects per-row exp-histogram fields into groupArrays so the wrapping
+// reshape Project can fold them into a single merged distribution per
+// (anchor, series) via the same expHistogramMergeOffsetExpr /
+// expHistogramMergeBucketsExpr helpers used by the instant path.
+//
+// Plan shape (in chsql output order):
+//
+//	Project [MetricName='', Attributes, anchor_ts AS TimeUnix, Value]
+//	  HistogramQuantileNative phi groupBy=[anchor_ts, Attributes]
+//	    Project [anchor_ts, <attrs-rebuilt>, merged Scale / ZeroCount /
+//	             ZeroThreshold / {Pos,Neg}{Offset,BucketCounts}]
+//	      Aggregate groupBy=[anchor_ts, <user-labels>] funcs=<merge aggs>
+//	        Filter (TimeUnix > anchor_ts - <windowRange> AND TimeUnix <= anchor_ts)
+//	          CrossJoin(StepGrid, Filter(Scan, <matchers>))
+func lowerHistogramQuantileNativeAggRange(
+	shape histogramAggShape,
+	phi float64,
+	s schema.Metrics,
+	ctx lowerCtx,
+) chplan.Node {
+	vs := shape.selector
+	scan := &chplan.Scan{Table: s.ExpHistogramTable}
+	pred := buildPredicate(vs.LabelMatchers, s)
+
+	groupBy, groupByAliases, attrsRebuild := histogramAggGroupBy(shape.agg, s)
+
+	// Per-anchor merge aggregates: collect rows into groupArrays + simple
+	// reducers, matching the instant-mode aggregated path. The wrapping
+	// reshape Project folds them into a single merged distribution.
+	expHistMergeAggs := []chplan.AggFunc{
+		{Name: "min", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ScaleColumn}}, Alias: hqAggMergedScaleAlias},
+		{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ZeroCountColumn}}, Alias: s.ZeroCountColumn},
+		{Name: "max", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ZeroThresholdColumn}}, Alias: s.ZeroThresholdColumn},
+		{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ScaleColumn}}, Alias: hqAggScalesArrayAlias},
+		{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.PositiveOffsetColumn}}, Alias: hqAggPosOffsetsArrayAlias},
+		{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.PositiveBucketCountsColumn}}, Alias: hqAggPosBucketsArrayAlias},
+		{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.NegativeOffsetColumn}}, Alias: hqAggNegOffsetsArrayAlias},
+		{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.NegativeBucketCountsColumn}}, Alias: hqAggNegBucketsArrayAlias},
+	}
+	return buildHistogramNativeRangeTreeMerge(
+		scan, pred, shape.windowRange,
+		groupBy, groupByAliases, attrsRebuild,
+		expHistMergeAggs, phi, s, ctx,
+	)
+}
+
+// buildHistogramNativeRangeTree assembles the bare-selector range-mode
+// plan tree for the native-histogram quantile rewrite. The Aggregate
+// surfaces the per-row exp-histogram fields directly under their
+// schema-canonical names so the wrapping reshape Project can pass them
+// through unchanged into HistogramQuantileNative.
+func buildHistogramNativeRangeTree(
+	scan *chplan.Scan,
+	pred chplan.Expr,
+	lookback time.Duration,
+	userGroupBy []chplan.Expr,
+	userAliases []string,
+	attrsRebuild chplan.Expr,
+	expHistAggs []chplan.AggFunc,
+	phi float64,
+	s schema.Metrics,
+	ctx lowerCtx,
+) chplan.Node {
+	anchorRef := &chplan.ColumnRef{Name: histogramAnchorCol}
+
+	filtered, _ := buildHistogramRangeAnchorJoin(scan, pred, lookback, anchorRef, s, ctx)
+
+	aggGroupBy := append([]chplan.Expr{anchorRef}, userGroupBy...)
+	aggAliases := append([]string{histogramAnchorCol}, userAliases...)
+	agg := &chplan.Aggregate{
+		Input:              filtered,
+		GroupBy:            aggGroupBy,
+		GroupByAliases:     aggAliases,
+		AggFuncs:           expHistAggs,
+		DropEmptyOnNoGroup: true,
+	}
+
+	// Pass-through reshape: anchor_ts + attrs + per-row exp-histogram
+	// fields (already aliased to their schema-canonical names by the
+	// Aggregate).
+	rebuilt := &chplan.Project{
+		Input: agg,
+		Projections: []chplan.Projection{
+			{Expr: anchorRef, Alias: histogramAnchorCol},
+			{Expr: attrsRebuild, Alias: s.AttributesColumn},
+			{Expr: &chplan.ColumnRef{Name: s.ScaleColumn}, Alias: s.ScaleColumn},
+			{Expr: &chplan.ColumnRef{Name: s.ZeroCountColumn}, Alias: s.ZeroCountColumn},
+			{Expr: &chplan.ColumnRef{Name: s.ZeroThresholdColumn}, Alias: s.ZeroThresholdColumn},
+			{Expr: &chplan.ColumnRef{Name: s.PositiveOffsetColumn}, Alias: s.PositiveOffsetColumn},
+			{Expr: &chplan.ColumnRef{Name: s.PositiveBucketCountsColumn}, Alias: s.PositiveBucketCountsColumn},
+			{Expr: &chplan.ColumnRef{Name: s.NegativeOffsetColumn}, Alias: s.NegativeOffsetColumn},
+			{Expr: &chplan.ColumnRef{Name: s.NegativeBucketCountsColumn}, Alias: s.NegativeBucketCountsColumn},
+		},
+	}
+
+	hq := &chplan.HistogramQuantileNative{
+		Input:                      rebuilt,
+		Phi:                        phi,
+		ScaleColumn:                s.ScaleColumn,
+		ZeroCountColumn:            s.ZeroCountColumn,
+		ZeroThresholdColumn:        s.ZeroThresholdColumn,
+		PositiveOffsetColumn:       s.PositiveOffsetColumn,
+		PositiveBucketCountsColumn: s.PositiveBucketCountsColumn,
+		NegativeOffsetColumn:       s.NegativeOffsetColumn,
+		NegativeBucketCountsColumn: s.NegativeBucketCountsColumn,
+		GroupBy: []chplan.Expr{
+			anchorRef,
+			&chplan.ColumnRef{Name: s.AttributesColumn},
+		},
+		GroupByAliases:   []string{histogramAnchorCol, s.AttributesColumn},
+		MetricNameColumn: s.MetricNameColumn,
+		AttributesColumn: s.AttributesColumn,
+		TimestampColumn:  s.TimestampColumn,
+	}
+
+	return &chplan.Project{
+		Input: hq,
+		Projections: []chplan.Projection{
+			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
+			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+			{Expr: anchorRef, Alias: s.TimestampColumn},
+			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
+		},
+	}
+}
+
+// buildHistogramNativeRangeTreeMerge assembles the aggregated-idiom
+// range-mode plan tree for the native-histogram quantile rewrite. The
+// Aggregate surfaces groupArrays + simple reducers; the wrapping
+// reshape Project then folds them into a single merged distribution
+// per (anchor, series) using the same expHistogramMerge* helpers as
+// the instant-mode aggregated path.
+func buildHistogramNativeRangeTreeMerge(
+	scan *chplan.Scan,
+	pred chplan.Expr,
+	lookback time.Duration,
+	userGroupBy []chplan.Expr,
+	userAliases []string,
+	attrsRebuild chplan.Expr,
+	mergeAggs []chplan.AggFunc,
+	phi float64,
+	s schema.Metrics,
+	ctx lowerCtx,
+) chplan.Node {
+	anchorRef := &chplan.ColumnRef{Name: histogramAnchorCol}
+
+	filtered, _ := buildHistogramRangeAnchorJoin(scan, pred, lookback, anchorRef, s, ctx)
+
+	aggGroupBy := append([]chplan.Expr{anchorRef}, userGroupBy...)
+	aggAliases := append([]string{histogramAnchorCol}, userAliases...)
+	agg := &chplan.Aggregate{
+		Input:              filtered,
+		GroupBy:            aggGroupBy,
+		GroupByAliases:     aggAliases,
+		AggFuncs:           mergeAggs,
+		DropEmptyOnNoGroup: true,
+	}
+
+	// Reshape: fold per-row arrays into a single merged distribution.
+	// Mirrors the inner Project in lowerHistogramQuantileNativeAgg.
+	rebuilt := &chplan.Project{
+		Input: agg,
+		Projections: []chplan.Projection{
+			{Expr: anchorRef, Alias: histogramAnchorCol},
+			{Expr: attrsRebuild, Alias: s.AttributesColumn},
+			{Expr: &chplan.ColumnRef{Name: hqAggMergedScaleAlias}, Alias: s.ScaleColumn},
+			{Expr: &chplan.ColumnRef{Name: s.ZeroCountColumn}, Alias: s.ZeroCountColumn},
+			{Expr: &chplan.ColumnRef{Name: s.ZeroThresholdColumn}, Alias: s.ZeroThresholdColumn},
+			{Expr: expHistogramMergeOffsetExpr(hqAggPosOffsetsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias), Alias: s.PositiveOffsetColumn},
+			{Expr: expHistogramMergeBucketsExpr(hqAggPosOffsetsArrayAlias, hqAggPosBucketsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias), Alias: s.PositiveBucketCountsColumn},
+			{Expr: expHistogramMergeOffsetExpr(hqAggNegOffsetsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias), Alias: s.NegativeOffsetColumn},
+			{Expr: expHistogramMergeBucketsExpr(hqAggNegOffsetsArrayAlias, hqAggNegBucketsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias), Alias: s.NegativeBucketCountsColumn},
+		},
+	}
+
+	hq := &chplan.HistogramQuantileNative{
+		Input:                      rebuilt,
+		Phi:                        phi,
+		ScaleColumn:                s.ScaleColumn,
+		ZeroCountColumn:            s.ZeroCountColumn,
+		ZeroThresholdColumn:        s.ZeroThresholdColumn,
+		PositiveOffsetColumn:       s.PositiveOffsetColumn,
+		PositiveBucketCountsColumn: s.PositiveBucketCountsColumn,
+		NegativeOffsetColumn:       s.NegativeOffsetColumn,
+		NegativeBucketCountsColumn: s.NegativeBucketCountsColumn,
+		GroupBy: []chplan.Expr{
+			anchorRef,
+			&chplan.ColumnRef{Name: s.AttributesColumn},
+		},
+		GroupByAliases:   []string{histogramAnchorCol, s.AttributesColumn},
+		MetricNameColumn: s.MetricNameColumn,
+		AttributesColumn: s.AttributesColumn,
+		TimestampColumn:  s.TimestampColumn,
+	}
+
+	return &chplan.Project{
+		Input: hq,
+		Projections: []chplan.Projection{
+			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
+			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+			{Expr: anchorRef, Alias: s.TimestampColumn},
+			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
+		},
+	}
+}
+
+// buildHistogramRangeAnchorJoin renders the pre-Aggregate shape shared
+// by every histogram-range lowering (classic + native, bare + agg):
+// scan-side metric-bounded Filter → CrossJoin against a StepGrid →
+// per-anchor lookback Filter. Returns the filtered subtree plus the
+// joined CrossJoin (the latter exposed so callers that want to wrap
+// the join itself stay flexible). The classic path duplicates this
+// shape inline today; refactoring it to share the same helper is a
+// follow-up — keeping the duplication scoped to one file means we
+// don't churn unrelated callers in this change.
+func buildHistogramRangeAnchorJoin(
+	scan *chplan.Scan,
+	pred chplan.Expr,
+	lookback time.Duration,
+	anchorRef *chplan.ColumnRef,
+	s schema.Metrics,
+	ctx lowerCtx,
+) (filtered, joined chplan.Node) {
+	var rawSide chplan.Node = scan
+	if pred != nil {
+		rawSide = &chplan.Filter{Input: scan, Predicate: pred}
+	}
+
+	stepGrid := &chplan.StepGrid{
+		Start: ctx.start.UTC(),
+		End:   ctx.end.UTC(),
+		Step:  ctx.step,
+	}
+	cj := &chplan.CrossJoin{
+		Left:  stepGrid,
+		Right: rawSide,
+	}
+
+	lwrUpper := &chplan.Binary{
+		Op:    chplan.OpLe,
+		Left:  &chplan.ColumnRef{Name: s.TimestampColumn},
+		Right: anchorRef,
+	}
+	lwrLower := &chplan.Binary{
+		Op:   chplan.OpGt,
+		Left: &chplan.ColumnRef{Name: s.TimestampColumn},
+		Right: &chplan.Binary{
+			Op:   chplan.OpSub,
+			Left: anchorRef,
+			Right: &chplan.FuncCall{
+				Name: "toIntervalNanosecond",
+				Args: []chplan.Expr{&chplan.LitInt{V: lookback.Nanoseconds()}},
+			},
+		},
+	}
+	return &chplan.Filter{
+		Input: cj,
+		Predicate: &chplan.Binary{
+			Op: chplan.OpAnd, Left: lwrUpper, Right: lwrLower,
+		},
+	}, cj
+}

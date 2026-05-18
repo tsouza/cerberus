@@ -152,38 +152,35 @@ Test coverage (Phase 2):
     mixed-Scale merge, asserts the consolidated-then-interpolated
     value `~3.801` against chDB.
 
-Phase 3 (range-mode) and Phase 4 (negative-side observations) remain
-deferred; the IR contract already carries the columns each phase
-needs.
+Phase 4 (negative-side observations) is shipped; the IR contract
+already carries the columns each phase needs.
 
-## Phase 3 (deferred) — range-mode (per-step anchor grid)
+## Phase 3 (shipped) — range-mode (per-step anchor grid)
 
 The classic-histogram per-step rewrite landed via PRs #347 (LWR
 rework) and #353 (classic-bucket range-mode anchor). The native path
-currently bypasses `histogramRangeApplies`
-(`internal/promql/histogram_quantile_range.go`) — `query_range` over a
-native-histogram metric collapses to instant-mode behaviour with
-`TimeUnix = now64(9)`.
+now mirrors that scaffold under the same `histogramRangeApplies` gate
+(`internal/promql/histogram_quantile_range.go`): `query_range` over a
+native-histogram metric emits one quantile row per (series, anchor)
+instead of collapsing to a single `now64(9)` instant.
 
-Phase 3 mirrors `lowerHistogramQuantileClassicBareRange`:
+Two range-mode lowerings live alongside the classic helpers:
 
-- Cross-join a `StepGrid(start, end, step)` with the exp-histogram
-  scan.
-- Filter per-anchor lookback: `TimeUnix > anchor - lookback AND
-  TimeUnix <= anchor`. The lookback is `instantLookback` (5m) for the
-  bare-selector path; Phase 2's aggregated path threads the rate's
-  `[range]` instead.
-- Aggregate per `(anchor, Attributes)` with `argMax(PositiveBucketCounts,
-  TimeUnix)` + `argMax(ZeroCount, TimeUnix)` + etc. (the
-  newest-sample-in-window LWR convention).
-- Surface `anchor_ts AS TimeUnix` in the outer Sample-row Project so
-  the matrix pivot in `internal/api/prom/handler.go` reads one row per
-  step.
+- `lowerHistogramQuantileNativeBareRange` — bare `_exp_hist` selector,
+  per-anchor LWR via `argMax(<col>, TimeUnix)` over every per-row
+  exp-histogram field, lookback = `instantLookback` (5m).
+- `lowerHistogramQuantileNativeAggRange` — the aggregated idiom
+  `sum [by/without](rate(<sel>_exp_hist[r]))`, per-anchor merge via
+  `groupArray`-and-fold (same `expHistogramMergeOffsetExpr` /
+  `expHistogramMergeBucketsExpr` helpers as the instant-mode
+  aggregated path), lookback = the rate's `[range]`.
 
-The shared `buildHistogramRangeTree` helper in
-`internal/promql/histogram_quantile_range.go` can be parameterised on
-the bucket-aggregation function and the inner-Project shape so the
-native path reuses the scaffold.
+Both surface `anchor_ts AS TimeUnix` in the outer Sample-row Project
+so the matrix pivot in `internal/api/prom/handler.go` reads one row
+per step. Modifier-bearing selectors (`@` / `offset`) fall back to the
+instant-mode path until matrix-anchor handling lands — rare in
+practice (Grafana never threads modifiers through `histogram_quantile`
+on `query_range`).
 
 ## Phase 4 (shipped) — negative-side observations
 
@@ -230,11 +227,11 @@ Operators that follow a different convention override the suffix via
 
 | Layer | Path                                                                              | Phase 1 | Phase 2 | Phase 3 | Phase 4 |
 | ----- | --------------------------------------------------------------------------------- | ------- | ------- | ------- | ------- |
-| 2a    | `test/spec/promql/histogram_quantile_native{,_agg}*.txtar` (chplan + SQL)         | yes     | yes     | TBD     | yes     |
-| 2b    | `internal/promql/histogram_quantile_{native,}_test.go` (lowering)                 | yes     | yes     | TBD     | n/a     |
+| 2a    | `test/spec/promql/histogram_quantile_native{,_agg,_range}*.txtar` (chplan + SQL)  | yes     | yes     | yes     | yes     |
+| 2b    | `internal/promql/histogram_quantile_{native,}_test.go` (lowering)                 | yes     | yes     | yes     | n/a     |
 | 3     | `internal/chplan/equal_invariants_test.go` (IR Equal)                             | yes     | reuses  | reuses  | reuses  |
-| 5     | `internal/chsql/histogram_quantile_native_test.go` (emitter shape)                | yes     | reuses  | TBD     | yes     |
-| 6a    | TXTAR `-- seed --` / `-- expected_rows --` chDB roundtrip + `handler_chdb_*_test` | yes     | yes     | TBD     | yes     |
+| 5     | `internal/chsql/histogram_quantile_native_test.go` (emitter shape)                | yes     | reuses  | reuses  | yes     |
+| 6a    | TXTAR `-- seed --` / `-- expected_rows --` chDB roundtrip + `handler_chdb_*_test` | yes     | yes     | yes     | yes     |
 
 Each subsequent phase opens its own PR; the box above tracks which
 layers gain coverage. The Layer 6a roundtrip is the strongest signal
