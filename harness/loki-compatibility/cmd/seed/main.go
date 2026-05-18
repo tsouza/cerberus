@@ -21,7 +21,6 @@ import (
 
 	"github.com/grafana/loki/v3/pkg/logproto"
 	"github.com/tsouza/cerberus/internal/schema/ddl"
-	
 )
 
 const anchor = "2026-05-11T00:00:00Z"
@@ -56,30 +55,32 @@ var serviceConfigs = []serviceConfig{
 	{Name: "syslog", ServiceName: "syslog", Format: "unstructured", Cluster: "cluster-1", Namespace: "namespace-4", Pod: "pod-12", Container: "container-1"},
 }
 
-var httpMethods = []string{"GET", "POST", "PUT", "DELETE", "PATCH"}
-var apiPaths = []string{"/api/v1/users", "/api/v1/products", "/api/v1/orders", "/api/v1/auth/login", "/healthz", "/metrics"}
-var httpStatuses = []int{200, 201, 204, 301, 400, 401, 403, 404, 500, 503}
-var queryTypes = []string{"SELECT", "INSERT", "UPDATE", "DELETE"}
-var dbTables = []string{"users", "products", "orders", "sessions"}
-var cacheOps = []string{"get", "set", "delete", "expire"}
-var authActions = []string{"login", "logout", "password_reset", "token_refresh"}
-var kafkaTopics = []string{"users", "orders", "payments", "events"}
-var kafkaEvents = []string{"producer_send", "consumer_fetch", "partition_assignment"}
-var promComponents = []string{"tsdb", "scrape", "rules", "remote", "web"}
-var promMessages = []string{"Compacting blocks", "Scraping target", "Evaluating rules", "Remote write"}
-var errorMessages = []string{"Invalid request", "Unauthorized access", "Internal server error", "Service unavailable"}
-var dbErrors = []string{"Connection refused", "Deadlock detected", "Unique constraint violation"}
-var cacheErrors = []string{"Connection refused", "Key not found", "Memory limit exceeded"}
-var authErrors = []string{"Invalid credentials", "Session expired", "Too many attempts"}
-var kafkaErrors = []string{"Leader not available", "failed to process request", "Topic authorization failed"}
-var promErrors = []string{"Scrape failed", "failed to evaluate rule", "Remote write failed"}
-var lokiErrors = []string{"failed to process request", "Connection refused", "ingester failed to flush"}
-var mimirErrors = []string{"failed to process request", "Connection refused", "query execution failed"}
-var tempoErrors = []string{"failed to process trace", "Connection refused", "distributor write failed"}
-var grafanaErrors = []string{"Dashboard save failed", "Connection refused", "failed to render panel"}
-var k8sComponents = []string{"kubelet", "kube-scheduler", "kube-controller-manager", "kube-apiserver", "etcd"}
-var k8sMessages = []string{"Started container", "Pulling image", "Created pod", "Scheduled pod", "Node status updated"}
-var nginxPaths = []string{"/", "/api/", "/static/", "/healthz", "/metrics"}
+var (
+	httpMethods    = []string{"GET", "POST", "PUT", "DELETE", "PATCH"}
+	apiPaths       = []string{"/api/v1/users", "/api/v1/products", "/api/v1/orders", "/api/v1/auth/login", "/healthz", "/metrics"}
+	httpStatuses   = []int{200, 201, 204, 301, 400, 401, 403, 404, 500, 503}
+	queryTypes     = []string{"SELECT", "INSERT", "UPDATE", "DELETE"}
+	dbTables       = []string{"users", "products", "orders", "sessions"}
+	cacheOps       = []string{"get", "set", "delete", "expire"}
+	authActions    = []string{"login", "logout", "password_reset", "token_refresh"}
+	kafkaTopics    = []string{"users", "orders", "payments", "events"}
+
+	promComponents = []string{"tsdb", "scrape", "rules", "remote", "web"}
+	promMessages   = []string{"Compacting blocks", "Scraping target", "Evaluating rules", "Remote write"}
+	errorMessages  = []string{"Invalid request", "Unauthorized access", "Internal server error", "Service unavailable"}
+	dbErrors       = []string{"Connection refused", "Deadlock detected", "Unique constraint violation"}
+	cacheErrors    = []string{"Connection refused", "Key not found", "Memory limit exceeded"}
+	authErrors     = []string{"Invalid credentials", "Session expired", "Too many attempts"}
+	kafkaErrors    = []string{"Leader not available", "failed to process request", "Topic authorization failed"}
+	promErrors     = []string{"Scrape failed", "failed to evaluate rule", "Remote write failed"}
+	lokiErrors     = []string{"failed to process request", "Connection refused", "ingester failed to flush"}
+	mimirErrors    = []string{"failed to process request", "Connection refused", "query execution failed"}
+	tempoErrors    = []string{"failed to process trace", "Connection refused", "distributor write failed"}
+	grafanaErrors  = []string{"Dashboard save failed", "Connection refused", "failed to render panel"}
+	k8sComponents  = []string{"kubelet", "kube-scheduler", "kube-controller-manager", "kube-apiserver", "etcd"}
+	k8sMessages    = []string{"Started container", "Pulling image", "Created pod", "Scheduled pod", "Node status updated"}
+	nginxPaths     = []string{"/", "/api/", "/static/", "/healthz", "/metrics"}
+)
 
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
@@ -139,7 +140,8 @@ func run(logger *slog.Logger) error {
 	for _, s := range streams {
 		totalEntries += len(s.entries)
 	}
-	logger.Info("generated fixture",
+	logger.Info(
+		"generated fixture",
 		"streams", len(streams),
 		"entries_per_service", entriesPerService,
 		"total_entries", totalEntries,
@@ -168,7 +170,8 @@ func run(logger *slog.Logger) error {
 	}
 
 	logger.Info("sample log line", "line", streams[0].entries[0].line)
-	logger.Info("seed done",
+	logger.Info(
+		"seed done",
 		"streams", len(streams),
 		"total_entries", totalEntries,
 	)
@@ -188,7 +191,7 @@ type entry struct {
 }
 
 func buildStreams(start time.Time) []stream {
-	rng := rand.New(rand.NewSource(seedValue))
+	rng := rand.New(rand.NewSource(seedValue)) //nosec G404
 	levels := []string{"INFO", "WARN", "ERROR", "DEBUG"}
 	out := make([]stream, 0, len(serviceConfigs))
 
@@ -449,10 +452,10 @@ func insertCHLogs(ctx context.Context, conn driver.Conn, streams []stream) error
 		for _, e := range s.entries {
 			level := e.level
 			logAttrs := map[string]string{
-				"level":           strings.ToLower(level),
-				"detected_level":  strings.ToLower(level),
-				"cluster":         s.config.Cluster,
-				"namespace":       s.config.Namespace,
+				"level":          strings.ToLower(level),
+				"detected_level": strings.ToLower(level),
+				"cluster":        s.config.Cluster,
+				"namespace":      s.config.Namespace,
 				"service":        s.config.Name,
 				"service_name":   s.config.ServiceName,
 				"pod":            s.config.Pod,
