@@ -354,6 +354,10 @@ func (h *Handler) lowerTraceByID(traceID string) (chplan.Node, error) {
 // The keys are namespaced under `__cerberus_*` so they cannot collide
 // with real OTel attribute keys (which by spec are reserved namespaces
 // like `service.*`, `http.*`, etc., never `__*`).
+//
+// searchKeyTraceID reuses the same `__cerberus_traceID` slot on the
+// /api/search path so toTraceSummaries can group spans by real TraceID
+// rather than synthesising a key from (SpanName + Timestamp).
 const (
 	traceByIDKeyTraceID       = "__cerberus_traceID"
 	traceByIDKeySpanID        = "__cerberus_spanID"
@@ -361,6 +365,12 @@ const (
 	traceByIDKeySpanKind      = "__cerberus_spanKind"
 	traceByIDKeyStatusCode    = "__cerberus_statusCode"
 	traceByIDKeySpanAttrsJSON = "__cerberus_spanAttrsJSON"
+
+	// searchKeyTraceID is the reserved Labels key that carries the
+	// hex-encoded TraceId on /api/search responses. Same constant value
+	// as traceByIDKeyTraceID — the two paths never overlap (search keeps
+	// the slot for the trace-id, trace-by-id keeps it for the same).
+	searchKeyTraceID = traceByIDKeyTraceID
 )
 
 // wrapWithSampleProjection adds a Project on top of plan that emits
@@ -456,10 +466,26 @@ func wrapWithSampleProjection(plan chplan.Node, s schema.Traces, meta engine.Met
 // columns. Used for /api/search and the recursive structural-join
 // (`>>` / `<<`) wrap path, where the inner SELECT exposes R's columns
 // unqualified to the outer scope.
+//
+// The Attributes map merges ResourceAttributes with a single
+// reserved-key entry (`__cerberus_traceID` → hex TraceId) so
+// toTraceSummaries can group spans into per-trace summaries by real
+// TraceID rather than synthesising a key from (SpanName + Timestamp).
+// Same mapConcat pattern as traceByIDProjections; the resource keys
+// (`service.*`, `k8s.*`, …) never collide with the `__cerberus_*`
+// namespace so no precedence surprises.
 func canonicalSampleProjections(s schema.Traces) []chplan.Projection {
+	traceIDMap := &chplan.FuncCall{Name: "map", Args: []chplan.Expr{
+		&chplan.LitString{V: searchKeyTraceID},
+		&chplan.ColumnRef{Name: s.TraceIDColumn},
+	}}
+	mergedAttrs := &chplan.FuncCall{Name: "mapConcat", Args: []chplan.Expr{
+		&chplan.ColumnRef{Name: s.ResourceAttributesColumn},
+		traceIDMap,
+	}}
 	return []chplan.Projection{
 		{Expr: &chplan.ColumnRef{Name: s.SpanNameColumn}, Alias: "MetricName"},
-		{Expr: &chplan.ColumnRef{Name: s.ResourceAttributesColumn}, Alias: "Attributes"},
+		{Expr: mergedAttrs, Alias: "Attributes"},
 		{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: "TimeUnix"},
 		// Duration is Int64 (nanoseconds) in OTel-CH; chclient.Sample.Value
 		// is float64 and clickhouse-go's Scan refuses Int64→float64 without
@@ -477,9 +503,17 @@ func canonicalSampleProjections(s schema.Traces) []chplan.Projection {
 // produces `Unknown expression identifier 'SpanName'` because L and R
 // share names).
 func rQualifiedSampleProjections(s schema.Traces) []chplan.Projection {
+	traceIDMap := &chplan.FuncCall{Name: "map", Args: []chplan.Expr{
+		&chplan.LitString{V: searchKeyTraceID},
+		&chplan.ColumnRef{Qualifier: "R", Name: s.TraceIDColumn},
+	}}
+	mergedAttrs := &chplan.FuncCall{Name: "mapConcat", Args: []chplan.Expr{
+		&chplan.ColumnRef{Qualifier: "R", Name: s.ResourceAttributesColumn},
+		traceIDMap,
+	}}
 	return []chplan.Projection{
 		{Expr: &chplan.ColumnRef{Qualifier: "R", Name: s.SpanNameColumn}, Alias: "MetricName"},
-		{Expr: &chplan.ColumnRef{Qualifier: "R", Name: s.ResourceAttributesColumn}, Alias: "Attributes"},
+		{Expr: mergedAttrs, Alias: "Attributes"},
 		{Expr: &chplan.ColumnRef{Qualifier: "R", Name: s.TimestampColumn}, Alias: "TimeUnix"},
 		{Expr: &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{&chplan.ColumnRef{Qualifier: "R", Name: s.DurationColumn}}}, Alias: "Value"},
 	}
@@ -601,14 +635,25 @@ func isAggregateShape(plan chplan.Node) bool {
 
 // toTraceSummaries pivots samples into the per-trace summary shape
 // Tempo's /api/search returns. Each unique TraceID becomes one
-// summary; duration is the max span duration seen for that trace
-// (a coarse proxy until the per-trace aggregate plumbing lands).
+// summary; StartTimeUnixNano is the earliest span timestamp seen and
+// DurationMs is the max span duration (a coarse proxy until per-trace
+// aggregate plumbing lands).
 //
-// Note: chclient.Sample's MetricName carries SpanName here (per the
-// projection above) and Attributes carries ResourceAttributes; we
-// derive RootServiceName from Attributes['service.name'].
+// chclient.Sample's MetricName carries SpanName here (per the wrap
+// projection above) and Attributes carries ResourceAttributes plus a
+// reserved `__cerberus_traceID` entry (searchKeyTraceID); we use the
+// reserved entry as the grouping key so spans share a row when they
+// share a real trace, and derive RootServiceName from
+// Attributes['service.name']. The reserved entry is stripped from
+// the returned RootServiceName lookup since it's namespaced under
+// `__cerberus_*` and never collides with OTel-spec attribute keys.
+//
+// Defensive: samples missing the reserved key (older fixtures, stub
+// queriers in tests) fall back to (SpanName | Timestamp) so partial
+// data still surfaces a row rather than silently dropping.
 func toTraceSummaries(samples []chclient.Sample) []TraceSummary {
 	type acc struct {
+		traceID     string
 		serviceName string
 		traceName   string
 		startNS     int64
@@ -616,15 +661,17 @@ func toTraceSummaries(samples []chclient.Sample) []TraceSummary {
 	}
 	byTrace := map[string]*acc{}
 	for _, s := range samples {
-		// The TraceID lives in the row's labels under a synthetic key —
-		// for the search projection we don't pull it out (handler hits
-		// `/search/tags` defer); instead each unique sample is one span,
-		// and we use the MetricName + Timestamp to summarise. A future
-		// release can include TraceId in the projection if needed.
-		key := s.MetricName + "|" + s.Timestamp.Format("20060102150405.000000000")
+		traceID, hasID := s.Labels[searchKeyTraceID]
+		// Group key prefers the real TraceID so multi-span traces
+		// collapse into one row; fall back to the legacy synthetic
+		// shape only when the projection didn't supply it.
+		key := traceID
+		if !hasID || key == "" {
+			key = s.MetricName + "|" + s.Timestamp.Format("20060102150405.000000000")
+		}
 		a, ok := byTrace[key]
 		if !ok {
-			a = &acc{traceName: s.MetricName}
+			a = &acc{traceID: traceID, traceName: s.MetricName}
 			byTrace[key] = a
 		}
 		if svc, ok := s.Labels["service.name"]; ok {
@@ -640,8 +687,15 @@ func toTraceSummaries(samples []chclient.Sample) []TraceSummary {
 	}
 	out := make([]TraceSummary, 0, len(byTrace))
 	for k, a := range byTrace {
+		// Emit the real TraceID when the projection supplied one;
+		// otherwise surface the synthetic key (back-compat for stub
+		// queriers + older fixtures that never threaded it through).
+		tid := a.traceID
+		if tid == "" {
+			tid = k
+		}
 		out = append(out, TraceSummary{
-			TraceID:           k, // synthetic until we project TraceId
+			TraceID:           tid,
 			RootServiceName:   a.serviceName,
 			RootTraceName:     a.traceName,
 			StartTimeUnixNano: strconv.FormatInt(a.startNS, 10),
