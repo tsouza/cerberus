@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/prometheus/prometheus/promql/parser"
 
@@ -424,6 +425,123 @@ func TestLower_HistogramQuantile_OverAggregation_Native_LeDropped(t *testing.T) 
 	if len(foundAgg.GroupBy) != 0 {
 		t.Errorf("Aggregate.GroupBy = %d expressions, want 0 (le must be dropped, no other labels)",
 			len(foundAgg.GroupBy))
+	}
+}
+
+// TestLower_HistogramQuantile_NativeBareRange pins the chplan shape
+// for `histogram_quantile(phi, <exp-hist-VectorSelector>)` under range
+// mode (LowerAtRange with step > 0): the lowering must fan a per-step
+// LWR window across the StepGrid so each anchor in `[start, end]`
+// produces its own quantile row instead of every step collapsing onto
+// a single `now64(9)` instant. The shape is the CrossJoin + per-anchor
+// Filter + Aggregate variant of the native instant path: the same
+// HistogramQuantileNative IR drives the quantile interpolation, but
+// the GroupBy carries anchor_ts as the leading partition key and the
+// outer Project surfaces anchor_ts as TimeUnix.
+func TestLower_HistogramQuantile_NativeBareRange(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(5 * time.Minute)
+	step := 30 * time.Second
+
+	expr, err := p.ParseExpr(`histogram_quantile(0.95, http_server_duration_exp_hist{service="api"})`)
+	if err != nil {
+		t.Fatalf("ParseExpr: %v", err)
+	}
+	plan, err := promql.LowerAtRange(context.Background(), expr, s, start, end, step)
+	if err != nil {
+		t.Fatalf("LowerAtRange: %v", err)
+	}
+	pj, ok := plan.(*chplan.Project)
+	if !ok {
+		t.Fatalf("want top-level *chplan.Project, got %T", plan)
+	}
+	hq, ok := pj.Input.(*chplan.HistogramQuantileNative)
+	if !ok {
+		t.Fatalf("want Project.Input = *chplan.HistogramQuantileNative, got %T", pj.Input)
+	}
+	if hq.Phi != 0.95 {
+		t.Errorf("Phi = %v, want 0.95", hq.Phi)
+	}
+	// The native range path partitions by anchor_ts + Attributes — that
+	// is the per-step + per-series key the matrix pivot consumes.
+	if len(hq.GroupByAliases) != 2 || hq.GroupByAliases[0] != "anchor_ts" || hq.GroupByAliases[1] != s.AttributesColumn {
+		t.Errorf("GroupByAliases = %v, want [anchor_ts, %s]", hq.GroupByAliases, s.AttributesColumn)
+	}
+	// The outer Project must surface anchor_ts as TimeUnix (rather than
+	// the now64(9) hardcode the instant-mode lowering keeps for one-row
+	// queries).
+	var sawAnchorAsTime bool
+	for _, pr := range pj.Projections {
+		if pr.Alias == s.TimestampColumn {
+			if cr, ok := pr.Expr.(*chplan.ColumnRef); ok && cr.Name == "anchor_ts" {
+				sawAnchorAsTime = true
+			}
+		}
+	}
+	if !sawAnchorAsTime {
+		t.Errorf("outer Project must project anchor_ts AS %s (got projections: %+v)",
+			s.TimestampColumn, pj.Projections)
+	}
+	// The tree must contain a StepGrid + CrossJoin pair — the per-anchor
+	// fan-out scaffold.
+	var sawStepGrid, sawCrossJoin bool
+	chplan.Walk(hq.Input, func(n chplan.Node) bool {
+		switch n.(type) {
+		case *chplan.StepGrid:
+			sawStepGrid = true
+		case *chplan.CrossJoin:
+			sawCrossJoin = true
+		}
+		return true
+	})
+	if !sawStepGrid {
+		t.Errorf("expected a StepGrid in the subtree, found none")
+	}
+	if !sawCrossJoin {
+		t.Errorf("expected a CrossJoin in the subtree, found none")
+	}
+}
+
+// TestLower_HistogramQuantile_NativeBareRange_InstantStillNow64 pins
+// the negative complement: instant-mode lowering (step == 0) keeps the
+// pre-existing `now64(9)` shape so existing fixtures stay byte-stable.
+// Only range mode opts into the StepGrid scaffold.
+func TestLower_HistogramQuantile_NativeBareRange_InstantStillNow64(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+
+	expr, err := p.ParseExpr(`histogram_quantile(0.95, http_server_duration_exp_hist)`)
+	if err != nil {
+		t.Fatalf("ParseExpr: %v", err)
+	}
+	plan, err := promql.Lower(context.Background(), expr, s)
+	if err != nil {
+		t.Fatalf("Lower: %v", err)
+	}
+	pj := plan.(*chplan.Project)
+	// Instant-mode must NOT contain StepGrid/CrossJoin.
+	var sawStepGrid, sawCrossJoin bool
+	chplan.Walk(pj, func(n chplan.Node) bool {
+		switch n.(type) {
+		case *chplan.StepGrid:
+			sawStepGrid = true
+		case *chplan.CrossJoin:
+			sawCrossJoin = true
+		}
+		return true
+	})
+	if sawStepGrid {
+		t.Errorf("instant-mode lowering must not contain a StepGrid")
+	}
+	if sawCrossJoin {
+		t.Errorf("instant-mode lowering must not contain a CrossJoin")
 	}
 }
 

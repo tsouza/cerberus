@@ -53,11 +53,12 @@ package chplan
 // will return a quantile over the positive subset only — documented
 // in the package doc of internal/chsql/histogram_quantile_native.go.
 //
-// Phased work tracker — docs/native-histogram-plan.md captures
-// what's shipped (Phase 1, bare-selector instant mode), what's
-// deferred (Phase 2 aggregated input, Phase 3 range mode, Phase 4
-// negative-side observations), and the regression test pinning the
-// Phase 2 stub error path.
+// Phased work tracker — docs/native-histogram-plan.md captures the
+// full rollout: Phase 1 (bare-selector instant), Phase 2 (aggregated
+// input), Phase 3 (range-mode anchor grid for both bare + aggregated
+// selectors via lowerHistogramQuantileNativeBareRange /
+// lowerHistogramQuantileNativeAggRange), and Phase 4 negative-side
+// observations.
 type HistogramQuantileNative struct {
 	Input Node
 	Phi   float64
