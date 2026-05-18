@@ -462,6 +462,96 @@ var plans = map[string]chplan.Node{
 		Inner:      &chplan.Scan{Table: "otel_traces"},
 	},
 
+	// MetricsSecondStage wraps a MetricsAggregate (instant) — TraceQL's
+	// `| topk(5)` / `| bottomk(3)` / `| > 10` shape applied to the
+	// row-per-series output of a metrics aggregator. The inner aggregate
+	// uses a bare `count(1) AS Value` (no group-by) so the fixture pins
+	// just the second-stage wrap; group-by variants get coverage from
+	// the chplan TXTAR fixtures + the future traceql lowerings.
+	"metrics_second_stage_topk_instant": &chplan.MetricsSecondStage{
+		Input: &chplan.MetricsAggregate{
+			Op:         chplan.MetricsOpRate,
+			ValueAlias: "Value",
+			Inner:      &chplan.Scan{Table: "otel_traces"},
+		},
+		Op:         chplan.SecondStageTopK,
+		K:          5,
+		ValueAlias: "Value",
+	},
+	"metrics_second_stage_bottomk_instant": &chplan.MetricsSecondStage{
+		Input: &chplan.MetricsAggregate{
+			Op:         chplan.MetricsOpRate,
+			ValueAlias: "Value",
+			Inner:      &chplan.Scan{Table: "otel_traces"},
+		},
+		Op:         chplan.SecondStageBottomK,
+		K:          3,
+		ValueAlias: "Value",
+	},
+	"metrics_second_stage_threshold_gt": &chplan.MetricsSecondStage{
+		Input: &chplan.MetricsAggregate{
+			Op:         chplan.MetricsOpRate,
+			ValueAlias: "Value",
+			Inner:      &chplan.Scan{Table: "otel_traces"},
+		},
+		Op:             chplan.SecondStageThreshold,
+		ThresholdOp:    chplan.OpGt,
+		ThresholdValue: 10,
+		ValueAlias:     "Value",
+	},
+	"metrics_second_stage_threshold_lt": &chplan.MetricsSecondStage{
+		Input: &chplan.MetricsAggregate{
+			Op:         chplan.MetricsOpSumOverTime,
+			Attr:       &chplan.ColumnRef{Name: "Duration"},
+			ValueAlias: "Value",
+			Inner:      &chplan.Scan{Table: "otel_traces"},
+		},
+		Op:             chplan.SecondStageThreshold,
+		ThresholdOp:    chplan.OpLt,
+		ThresholdValue: 0.5,
+		ValueAlias:     "Value",
+	},
+	// MetricsSecondStage wrapping a RangeWindow over MetricsAggregate —
+	// the matrix shape. PartitionBy=["anchor_ts"] so `LIMIT K BY
+	// anchor_ts` keeps K series per timestamp bucket (matches Tempo's
+	// per-anchor processTopK semantics).
+	"metrics_second_stage_topk_matrix": &chplan.MetricsSecondStage{
+		Input: &chplan.RangeWindow{
+			Input: &chplan.MetricsAggregate{
+				Op:             chplan.MetricsOpRate,
+				GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: "ServiceName"}},
+				GroupByAliases: []string{"service"},
+				ValueAlias:     "Value",
+				Inner:          &chplan.Scan{Table: "otel_traces"},
+			},
+			Step:            time.Minute,
+			OuterRange:      5 * time.Minute,
+			TimestampColumn: "Timestamp",
+		},
+		Op:          chplan.SecondStageTopK,
+		K:           5,
+		PartitionBy: []string{"anchor_ts"},
+		ValueAlias:  "Value",
+	},
+	// Chained second-stage: `| topk(5) | > 10` nests as an outer
+	// Threshold wrapping an inner TopK.
+	"metrics_second_stage_chained_topk_threshold": &chplan.MetricsSecondStage{
+		Input: &chplan.MetricsSecondStage{
+			Input: &chplan.MetricsAggregate{
+				Op:         chplan.MetricsOpRate,
+				ValueAlias: "Value",
+				Inner:      &chplan.Scan{Table: "otel_traces"},
+			},
+			Op:         chplan.SecondStageTopK,
+			K:          5,
+			ValueAlias: "Value",
+		},
+		Op:             chplan.SecondStageThreshold,
+		ThresholdOp:    chplan.OpGt,
+		ThresholdValue: 10,
+		ValueAlias:     "Value",
+	},
+
 	// RangeWindow wrapping MetricsAggregate — the matrix shape used
 	// by TraceQL's /api/metrics/query_range handler. Each per-span row
 	// is fanned across the N evaluation anchors via arrayJoin(range())
