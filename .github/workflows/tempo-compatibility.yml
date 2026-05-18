@@ -20,7 +20,7 @@ name: tempo-compatibility
 # Per ~/.claude/CI_STEPS.md, every step uses an official / well-known
 # Action — no `curl | sh` installs. Actions used here:
 #   * actions/checkout@v6        — stdlib.
-#   * docker/setup-buildx-action@v3  — buildkit-backed `docker build`.
+#   * docker/setup-buildx-action@v4  — buildkit-backed `docker build`.
 #   * actions/upload-artifact@v7 — report artifact upload.
 
 on:
@@ -69,7 +69,7 @@ jobs:
       # Buildx gives the Compose build cache, multi-arch support, and a
       # consistent build backend. The harness uses local build contexts
       # (cerberus + driver), so no remote registry login is needed.
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       - name: Run tempo-compatibility harness
         id: harness
