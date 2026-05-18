@@ -176,8 +176,8 @@ func TestTemplateFunc_Repeat(t *testing.T) {
 }
 
 // TestTemplateFunc_UnsupportedFailsAtParseTime — `bytes`, `duration`
-// and other deferred funcs surface as "function not defined" at parse
-// time so the user knows the gap immediately.
+// and other unsupported funcs surface as "function not defined" at
+// parse time so the user knows the gap immediately.
 func TestTemplateFunc_UnsupportedFailsAtParseTime(t *testing.T) {
 	t.Parallel()
 	for _, fn := range []string{"bytes", "duration", "fromJson", "b64enc", "indent", "now"} {

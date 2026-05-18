@@ -31,8 +31,8 @@ type Pattern struct {
 // beast and Grafana's pattern panel renders an empty result gracefully.
 // The endpoint exists so Grafana's panel doesn't 404; it validates the
 // caller's parameters (so a broken `query` still returns 400) and then
-// emits {status:"success", data:{patterns:[]}}. A future release can
-// run a drain3-equivalent over the same peek-window used by
+// emits {status:"success", data:{patterns:[]}}. A drain3-equivalent
+// pattern miner could run over the same peek-window used by
 // /detected_fields if there's demand.
 func (h *Handler) handlePatterns(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query().Get("query")
