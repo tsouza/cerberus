@@ -137,6 +137,7 @@ func runSeed(args []string) error {
 		chUser      = fs.String("ch-user", envOr("CERBERUS_CH_USERNAME", "cerberus"), "ClickHouse username")
 		chPassword  = fs.String("ch-password", envOr("CERBERUS_CH_PASSWORD", "cerberus"), "ClickHouse password")
 		smokeWait   = fs.Duration("smoke-wait", 30*time.Second, "max wait for /api/traces/<id> to return spans on both backends")
+		searchWait  = fs.Duration("search-wait", 90*time.Second, "max wait for /api/search?q={} to return traces (Tempo needs time to flush blocks)")
 		overall     = fs.Duration("timeout", 3*time.Minute, "overall dial + push + verify timeout")
 	)
 	if err := fs.Parse(args); err != nil {
@@ -217,8 +218,8 @@ func runSeed(args []string) error {
 		return fmt.Errorf("smoke: %w", err)
 	}
 
-	logger.Info("smoke /api/search?q={} on tempo (live-store)", "deadline", *smokeWait)
-	if err := smokeSearchLiveStore(ctx, logger, *tempoHTTP, *smokeWait); err != nil {
+	logger.Info("smoke /api/search?q={} on tempo (live-store)", "deadline", *searchWait)
+	if err := smokeSearchLiveStore(ctx, logger, *tempoHTTP, *searchWait); err != nil {
 		return fmt.Errorf("smoke search: %w", err)
 	}
 
