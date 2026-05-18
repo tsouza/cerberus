@@ -117,11 +117,31 @@ func (l *Lang) ProjectSamples(plan chplan.Node, meta engine.Meta) chplan.Node {
 		// SELECT site since #310 collapsed the rename Project layer); mirror
 		// it here so the wire-wrap doesn't ColumnRef the pre-#310 lowercase
 		// alias.
+		//
+		// Inner stream-identity column resolution: a bare range-aggregation
+		// (`rate({...}[5m])` / `count_over_time({...}[5m])` / …) leaves the
+		// raw `ResourceAttributes` column in scope, since the RangeWindow's
+		// outer SELECT projects it under its own name. A vector aggregation
+		// (`sum(rate(...))` / `sum by (svc) (count_over_time(...))` / …)
+		// runs through [wrapVectorAggregateForSample], which has already
+		// projected the row into the canonical (MetricName, Attributes,
+		// TimeUnix, Value) Sample contract — at that point `ResourceAttributes`
+		// is gone (the Aggregate's GROUP BY consumed it) and the stream
+		// identity rides under the `Attributes` alias instead. Reading
+		// `ResourceAttributes` in that scope surfaces as 502 'Unknown
+		// expression identifier ResourceAttributes' from ClickHouse. Pick
+		// the right column name based on the inner shape — mirrors the
+		// same `isVectorAggregateSampleShape` switch the binop lowering
+		// applies in [sampleShapeOverLogInner].
+		attrsCol := s.ResourceAttributesColumn
+		if isVectorAggregateSampleShape(plan) {
+			attrsCol = "Attributes"
+		}
 		return &chplan.Project{
 			Input: plan,
 			Projections: []chplan.Projection{
 				{Expr: &chplan.LitString{V: ""}, Alias: "MetricName"},
-				{Expr: &chplan.ColumnRef{Name: s.ResourceAttributesColumn}, Alias: "Attributes"},
+				{Expr: &chplan.ColumnRef{Name: attrsCol}, Alias: "Attributes"},
 				// now64(9) - 5s buffer; see prom handler's synthesizedAnchor
 				// docstring. Avoids toMatrixStepGrid dropping the only row
 				// when CH-now > client-end.

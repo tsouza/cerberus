@@ -83,18 +83,6 @@
 #     matching selectors have been unskipped.
 
 should_skip:
-  # fast/simple-metrics — count_over_time generates SQL referencing the
-  # ResourceAttributes identifier, which cerberus's chsql layer does not
-  # support as a first-class column expression. Known LogQL limitation.
-  - source: "fast/simple-metrics.yaml#Count over time"
-    reason: "Cerberus returns 502: 'Unknown expression identifier ResourceAttributes' — the count_over_time lowering emits a ResourceAttributes column reference that chsql cannot resolve. Known LogQL limitation; tracked in docs/roadmap.md."
-    since: "2026-05-18"
-    jira:  "docs/roadmap.md RC2 LogQL metric-queries / ResourceAttributes support"
-  - source: "fast/simple-metrics.yaml#Count with line filter"
-    reason: "Same ResourceAttributes 502 as Count over time — count_over_time lowering references ResourceAttributes."
-    since: "2026-05-18"
-    jira:  "docs/roadmap.md RC2 LogQL metric-queries / ResourceAttributes support"
-
   # fast/ — entries still skipped require unimplemented LogQL features (detected_level filters, | json, | logfmt):
   - source: "fast/simple-metrics.yaml#Count with error/warn filter"
     reason: "Requires `| detected_level=~\"error|warn\"` filter; cerberus does not yet support structured-metadata label filters in LogQL pipe expressions."

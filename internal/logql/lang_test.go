@@ -106,3 +106,67 @@ func TestProjectSamples_MetricBranchRefsValueColumn(t *testing.T) {
 			attrsRef.Name, s.ResourceAttributesColumn)
 	}
 }
+
+// TestProjectSamples_VectorAggregateRefsAttributes pins the metric-branch
+// wire-wrap against the regression `sum(count_over_time({...}[5m]))`
+// surfaced via the loki-compatibility harness as 502 'Unknown expression
+// identifier ResourceAttributes' from ClickHouse.
+//
+// Root cause: a vector aggregation runs through `wrapVectorAggregateForSample`,
+// which has already projected the row into the canonical (MetricName,
+// Attributes, TimeUnix, Value) Sample contract before reaching the engine
+// wire-wrap. At that point the raw `ResourceAttributes` column is gone (the
+// Aggregate's GROUP BY consumed it) — the stream identity rides under the
+// `Attributes` alias. The previous `Lang.ProjectSamples` blindly ColumnRef'd
+// `s.ResourceAttributesColumn` regardless of inner shape, so the outer SELECT
+// referenced a column that ClickHouse couldn't resolve.
+//
+// The fix mirrors the same `isVectorAggregateSampleShape` switch the binop
+// lowering applies in `sampleShapeOverLogInner` (see internal/logql/binary.go).
+// Construct a synthetic Project carrying the canonical-shape aliases and
+// assert the wrap picks `Attributes` instead of `ResourceAttributes`.
+func TestProjectSamples_VectorAggregateRefsAttributes(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelLogs()
+	l := &logql.Lang{Schema: s}
+
+	// Synthetic plan shaped like `wrapVectorAggregateForSample`'s output:
+	// a *chplan.Project whose Alias list includes "Attributes" — the
+	// canonical-shape marker `isVectorAggregateSampleShape` keys on.
+	plan := &chplan.Project{
+		Input: &chplan.Scan{Table: s.LogsTable},
+		Projections: []chplan.Projection{
+			{Expr: &chplan.LitString{V: ""}, Alias: "MetricName"},
+			{Expr: &chplan.FuncCall{
+				Name: "CAST",
+				Args: []chplan.Expr{
+					&chplan.FuncCall{Name: "map", Args: nil},
+					&chplan.LitString{V: "Map(String,String)"},
+				},
+			}, Alias: "Attributes"},
+			{Expr: &chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}}, Alias: "TimeUnix"},
+			{Expr: &chplan.ColumnRef{Name: "Value"}, Alias: "Value"},
+		},
+	}
+
+	wrapped := l.ProjectSamples(plan, engine.Meta{IsMetric: true})
+
+	proj, ok := wrapped.(*chplan.Project)
+	if !ok {
+		t.Fatalf("ProjectSamples returned %T, want *chplan.Project", wrapped)
+	}
+	attrsSlot := proj.Projections[1]
+	attrsRef, ok := attrsSlot.Expr.(*chplan.ColumnRef)
+	if !ok {
+		t.Fatalf("attributes slot expr: got %T, want *chplan.ColumnRef", attrsSlot.Expr)
+	}
+	if attrsRef.Name != "Attributes" {
+		t.Errorf("attributes slot ColumnRef.Name: got %q, want %q "+
+			"(vector-aggregation already projected stream identity as the "+
+			"`Attributes` alias via wrapVectorAggregateForSample — referencing "+
+			"the raw `ResourceAttributes` column at the outer SELECT site "+
+			"surfaces as 502 from ClickHouse since the Aggregate's GROUP BY "+
+			"consumed it)", attrsRef.Name, "Attributes")
+	}
+}
