@@ -895,6 +895,87 @@ func TestOrderKey_DistinguishesDirection(t *testing.T) {
 	}
 }
 
+func TestVectorSetOp_Equal_Positive(t *testing.T) {
+	t.Parallel()
+	build := func() *chplan.VectorSetOp {
+		return &chplan.VectorSetOp{
+			Left:             &chplan.Scan{Table: "m"},
+			Right:            &chplan.Scan{Table: "m"},
+			Op:               chplan.VectorSetAnd,
+			Match:            chplan.VectorMatch{Labels: []string{"job"}, On: true},
+			MetricNameColumn: "MetricName",
+			AttributesColumn: "Attributes",
+			TimestampColumn:  "TimeUnix",
+			ValueColumn:      "Value",
+		}
+	}
+	if !build().Equal(build()) {
+		t.Fatalf("identical VectorSetOp trees should be Equal")
+	}
+}
+
+func TestVectorSetOp_Equal_Negative_Op(t *testing.T) {
+	t.Parallel()
+	a := &chplan.VectorSetOp{
+		Left: &chplan.Scan{Table: "t"}, Right: &chplan.Scan{Table: "t"},
+		Op: chplan.VectorSetAnd,
+	}
+	b := &chplan.VectorSetOp{
+		Left: &chplan.Scan{Table: "t"}, Right: &chplan.Scan{Table: "t"},
+		Op: chplan.VectorSetUnless,
+	}
+	if a.Equal(b) {
+		t.Errorf("different Op should not be Equal")
+	}
+}
+
+func TestVectorSetOp_Equal_Negative_Match(t *testing.T) {
+	t.Parallel()
+	a := &chplan.VectorSetOp{
+		Left: &chplan.Scan{Table: "t"}, Right: &chplan.Scan{Table: "t"},
+		Op:    chplan.VectorSetOr,
+		Match: chplan.VectorMatch{Labels: []string{"job"}, On: true},
+	}
+	b := &chplan.VectorSetOp{
+		Left: &chplan.Scan{Table: "t"}, Right: &chplan.Scan{Table: "t"},
+		Op:    chplan.VectorSetOr,
+		Match: chplan.VectorMatch{Labels: []string{"instance"}, On: true},
+	}
+	if a.Equal(b) {
+		t.Errorf("different Match should not be Equal")
+	}
+}
+
+func TestVectorSetOp_Equal_Negative_ValueColumn(t *testing.T) {
+	t.Parallel()
+	a := &chplan.VectorSetOp{
+		Left: &chplan.Scan{Table: "t"}, Right: &chplan.Scan{Table: "t"},
+		Op: chplan.VectorSetAnd, ValueColumn: "Value",
+	}
+	b := &chplan.VectorSetOp{
+		Left: &chplan.Scan{Table: "t"}, Right: &chplan.Scan{Table: "t"},
+		Op: chplan.VectorSetAnd, ValueColumn: "V",
+	}
+	if a.Equal(b) {
+		t.Errorf("different ValueColumn should not be Equal")
+	}
+}
+
+func TestVectorSetOp_Equal_Negative_Right(t *testing.T) {
+	t.Parallel()
+	a := &chplan.VectorSetOp{
+		Left: &chplan.Scan{Table: "t"}, Right: &chplan.Scan{Table: "a"},
+		Op: chplan.VectorSetAnd,
+	}
+	b := &chplan.VectorSetOp{
+		Left: &chplan.Scan{Table: "t"}, Right: &chplan.Scan{Table: "b"},
+		Op: chplan.VectorSetAnd,
+	}
+	if a.Equal(b) {
+		t.Errorf("different Right child should not be Equal")
+	}
+}
+
 func TestHistogramQuantile_Equal_Positive(t *testing.T) {
 	t.Parallel()
 	build := func() *chplan.HistogramQuantile {

@@ -219,6 +219,17 @@ func TestVectorJoin_Walk_VisitsBothSides(t *testing.T) {
 	assertSentinels(t, visitScans(root), []string{"vj_left", "vj_right"})
 }
 
+func TestVectorSetOp_Walk_VisitsBothSides(t *testing.T) {
+	t.Parallel()
+	root := &chplan.VectorSetOp{
+		Left:  &chplan.Scan{Table: "vso_left"},
+		Right: &chplan.Scan{Table: "vso_right"},
+		Op:    chplan.VectorSetAnd,
+	}
+	// Pre-order: Left first, Right second.
+	assertSentinels(t, visitScans(root), []string{"vso_left", "vso_right"})
+}
+
 // TestWalk_VisitCountExactlyOnce — for a multi-layer tree, every node
 // must be visited exactly once. Stress-tests both the depth-first order
 // and the no-duplicate-visits property. Each sentinel appears once in

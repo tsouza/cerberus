@@ -12,35 +12,53 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
-// TestLower_Binary_Errors covers the binary-expression shapes lowerBinary
-// still rejects: logical ops (`and`/`or`/`unless`, deferred to a later
-// milestone).
+// TestLower_Binary_VectorSetOps covers the happy path for the vector
+// set operators (`and` / `or` / `unless`). Each shape lowers to a
+// chplan.VectorSetOp; the chsql emitter renders the right
+// IN / NOT IN / UNION ALL shape.
 //
-// Pure scalar-scalar is no longer rejected — TryFoldScalar reduces both
-// sides at lowering time and emits a synthetic 1-row vector; see
-// TestLower_Binary_ScalarOnly_Folds for the happy-path coverage.
+// Pure scalar-scalar is folded at lowering time and emits a synthetic
+// 1-row vector — see TestLower_Binary_ScalarOnly_Folds.
 //
-// group_left / group_right are no longer rejected — RC2 cardinality-edge
-// support added them with explicit cardinality enforcement; see
-// vector_match_test.go for the lowering coverage. The `bool` modifier on
-// vector-vector binops is also no longer rejected — see TestLower_Binary_VV_Bool
-// below for the happy path, and the dedicated V-V `bool` TXTAR fixtures
-// (bool_vv_*.txtar) for end-to-end SQL coverage.
-func TestLower_Binary_Errors(t *testing.T) {
+// group_left / group_right are honoured for arithmetic / comparison
+// V-V binops — see vector_match_test.go. The `bool` modifier on
+// vector-vector binops is exercised by TestLower_Binary_VV_Bool and
+// the dedicated bool_vv_*.txtar fixtures.
+func TestLower_Binary_VectorSetOps(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
 	p := parser.NewParser(parser.Options{})
 
 	cases := []struct {
-		name    string
-		query   string
-		wantErr string
+		name      string
+		query     string
+		wantInSQL []string
 	}{
 		{
-			name:    "logical and deferred",
-			query:   `up and up`,
-			wantErr: "binary op and not yet supported",
+			name:      "and default match",
+			query:     `up and up`,
+			wantInSQL: []string{"`Attributes` IN (", "DISTINCT `Attributes`"},
+		},
+		{
+			name:      "unless default match",
+			query:     `up unless up`,
+			wantInSQL: []string{"`Attributes` NOT IN (", "DISTINCT `Attributes`"},
+		},
+		{
+			name:      "or default match",
+			query:     `up or up`,
+			wantInSQL: []string{"UNION ALL", "NOT IN ("},
+		},
+		{
+			name:      "and ignoring",
+			query:     `up and ignoring(instance) up`,
+			wantInSQL: []string{"mapFilter((k, v) -> NOT (k IN (?)), `Attributes`) IN ("},
+		},
+		{
+			name:      "unless on",
+			query:     `up unless on(job) up`,
+			wantInSQL: []string{"mapFilter((k, v) -> k IN (?), `Attributes`) NOT IN ("},
 		},
 	}
 	for _, tc := range cases {
@@ -50,14 +68,53 @@ func TestLower_Binary_Errors(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseExpr: %v", err)
 			}
-			_, err = promql.Lower(context.Background(), expr, s)
-			if err == nil {
-				t.Fatalf("expected error containing %q, got nil", tc.wantErr)
+			plan, err := promql.Lower(context.Background(), expr, s)
+			if err != nil {
+				t.Fatalf("Lower: %v", err)
 			}
-			if !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("error %q does not contain %q", err.Error(), tc.wantErr)
+			sql, _, err := chsql.Emit(context.Background(), plan)
+			if err != nil {
+				t.Fatalf("Emit: %v", err)
+			}
+			for _, want := range tc.wantInSQL {
+				if !strings.Contains(sql, want) {
+					t.Errorf("expected SQL to contain %q; full SQL:\n%s", want, sql)
+				}
 			}
 		})
+	}
+}
+
+// TestLower_Binary_VectorSetOps_RejectsBool covers the parser-level
+// guard: the `bool` modifier is only allowed on comparison ops; set
+// ops should reject it with the same wording as the arithmetic V-V
+// path.
+func TestLower_Binary_VectorSetOps_RejectsBool(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	p := parser.NewParser(parser.Options{})
+
+	// The PromQL parser doesn't itself reject `up and bool up` —
+	// it's a semantic error caught at lowering. We hand-craft the
+	// BinaryExpr to bypass any parser-level guard so the lowering
+	// path can be exercised in isolation.
+	expr, err := p.ParseExpr(`up and up`)
+	if err != nil {
+		t.Fatalf("ParseExpr: %v", err)
+	}
+	be, ok := expr.(*parser.BinaryExpr)
+	if !ok {
+		t.Fatalf("expected *parser.BinaryExpr, got %T", expr)
+	}
+	be.ReturnBool = true
+	_, err = promql.Lower(context.Background(), be, s)
+	if err == nil {
+		t.Fatal("expected error for set op + bool, got nil")
+	}
+	want := "'bool' modifier is only allowed on comparison binary ops"
+	if !strings.Contains(err.Error(), want) {
+		t.Errorf("error %q does not contain %q", err.Error(), want)
 	}
 }
 
