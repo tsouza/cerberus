@@ -42,7 +42,7 @@ func lowerInstantFn(c *parser.Call, s schema.Metrics, chFn string, ctx lowerCtx)
 	}
 
 	if len(c.Args) != 1 {
-		return nil, fmt.Errorf("promql: %s with %d arguments is not yet supported (instant math fns are unary)",
+		return nil, fmt.Errorf("promql: %s with %d arguments is unsupported (instant math fns are unary)",
 			c.Func.Name, len(c.Args))
 	}
 
@@ -90,8 +90,8 @@ func lowerRoundToNearest(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan
 //	clamp_min(v, min) → greatest(Value, min)
 //	clamp(v, min, max) → greatest(min, least(max, Value))
 //
-// Bounds must be scalar literals at lowering time (computed bounds defer
-// to RC2 when scalars are first-class chplan nodes).
+// Bounds must be scalar literals at lowering time; computed bounds are
+// not supported (scalars are not first-class chplan nodes).
 func lowerClamp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	switch c.Func.Name {
 	case "clamp_max", "clamp_min":

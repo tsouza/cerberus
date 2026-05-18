@@ -24,7 +24,7 @@ func lowerPredictLinear(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.
 	}
 	tSeconds, ok := tryScalarLiteral(c.Args[1])
 	if !ok {
-		return nil, fmt.Errorf("promql: predict_linear requires a scalar-literal predict horizon (computed t defers to RC3)")
+		return nil, fmt.Errorf("promql: predict_linear requires a scalar-literal predict horizon (computed t is unsupported)")
 	}
 	ms, vs, err := matrixAndSelector(c, c.Args[0])
 	if err != nil {
@@ -167,7 +167,7 @@ func lowerQuantileOverTime(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpl
 	}
 	phi, ok := tryScalarLiteral(c.Args[0])
 	if !ok {
-		return nil, fmt.Errorf("promql: quantile_over_time requires a scalar-literal phi (computed phi defers to RC3)")
+		return nil, fmt.Errorf("promql: quantile_over_time requires a scalar-literal phi (computed phi is unsupported)")
 	}
 	ms, vs, err := matrixAndSelector(c, c.Args[1])
 	if err != nil {

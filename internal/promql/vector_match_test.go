@@ -13,7 +13,7 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
-// TestLower_VectorMatch_Cardinality covers the RC2 group_left /
+// TestLower_VectorMatch_Cardinality covers the group_left /
 // group_right cardinality + extra-label edges:
 //
 //   - group_left(<labels>) populates chplan.VectorJoin.Card +
