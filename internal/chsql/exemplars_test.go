@@ -107,4 +107,26 @@ func TestEmitMetricsExemplars_ShapeSanity(t *testing.T) {
 	if len(args) == 0 {
 		t.Errorf("expected non-empty args, got nil")
 	}
+	// The outer SELECT MUST project exactly four aliased columns —
+	// MetricName, Attributes, TimeUnix, Value — because chclient.Cursor
+	// binds the result-set rows positionally to those four fields of
+	// chclient.Sample. Group-by attributes ride inside the Attributes
+	// map (toString(<alias>) per by(...) key) rather than as extra
+	// columns; a 5+ column projection would crash the cursor scan with
+	// a "sql: expected 4 destination arguments in Scan" failure at run
+	// time. Pin the contract via substring checks on the aliased shape.
+	for _, alias := range []string{"AS `MetricName`", "AS `Attributes`", "AS `TimeUnix`", "AS `Value`"} {
+		if !strings.Contains(sql, alias) {
+			t.Errorf("SQL missing required column alias %q\nSQL=%s", alias, sql)
+		}
+	}
+	// And the redundant raw group-alias projection MUST be absent — i.e.
+	// the outer SELECT must not project the by(...) attribute alone as
+	// a column. The group alias only legitimately appears inside the
+	// Attributes map's toString(...) wrapper. Pin on a sequence that
+	// can only show up in the outer SELECT (MetricName comes only from
+	// the outer-shape literal projection).
+	if strings.Contains(sql, "AS `MetricName`, `resource.service.name`") {
+		t.Errorf("SQL still emits group alias as a separate column (breaks 4-column Sample shape)\nSQL=%s", sql)
+	}
 }

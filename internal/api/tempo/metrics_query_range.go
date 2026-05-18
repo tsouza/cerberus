@@ -33,8 +33,12 @@ type MetricsQueryRangeResponse struct {
 //
 // Exemplars is always emitted as a JSON array (never omitted), even
 // when empty, so Grafana's Tempo datasource sees a stable envelope
-// shape; cerberus does not yet populate exemplars (placeholder for a
-// follow-up that wires trace-anchored samples through). See EF #398.
+// shape. The handler populates exemplars via a second SQL query
+// against otel_traces (see chsql.EmitMetricsExemplars): one
+// representative trace per (series, bucket) anchor, projected through
+// the same matrix-shape time window as the metric samples. Series with
+// no matching exemplar spans keep the empty-array envelope contract.
+// See EF #398 for the wire-shape work this closed against.
 type MetricsSeries struct {
 	Labels    []MetricsLabel  `json:"labels"`
 	Samples   []MetricsSample `json:"samples"`

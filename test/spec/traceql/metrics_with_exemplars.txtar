@@ -1,0 +1,29 @@
+-- query.traceql --
+{} | count_over_time() by (resource.service.name)
+-- sql --
+SELECT `ResourceAttributes`[?] AS `service.name`, toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?) GROUP BY `ResourceAttributes`[?]
+-- args --
+[0] string = "service.name"
+[1] int64 = 1
+[2] bool = true
+[3] string = "service.name"
+-- seed --
+CREATE TABLE otel_traces (
+    Timestamp DateTime64(9),
+    TraceId String,
+    SpanId String,
+    ResourceAttributes Map(String, String)
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    (toDateTime64('2026-05-12 10:00:00', 9), '0123456789abcdef0123456789abcdef', '0011223344556677', map('service.name', 'frontend')),
+    (toDateTime64('2026-05-12 10:00:01', 9), 'fedcba9876543210fedcba9876543210', 'aabbccddeeff0011', map('service.name', 'frontend')),
+    (toDateTime64('2026-05-12 10:00:02', 9), '11111111111111111111111111111111', '1111111111111111', map('service.name', 'backend'));
+-- expected_rows --
+[
+  ["backend", 1],
+  ["frontend", 2]
+]
+-- chplan --
+MetricsAggregate op=count_over_time groupBy=[ResourceAttributes["service.name"] AS service.name] valueAlias=Value
+  Filter predicate=true
+    Scan(otel_traces)

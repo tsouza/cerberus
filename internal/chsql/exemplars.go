@@ -8,6 +8,28 @@ import (
 	"github.com/tsouza/cerberus/internal/chplan"
 )
 
+// EmitMetricsExemplars renders the trace-anchored exemplars SQL the
+// Tempo /api/metrics/query_range handler runs alongside the matrix
+// metrics SQL. For each (series, bucket) anchor it picks one
+// representative span — the latest by `ts` within the bucket window —
+// and projects (MetricName, Attributes, TimeUnix, Value) so the result
+// set decodes through chclient.Cursor identically to the matrix-shape
+// rows. The `Attributes` map carries the by(...) group-by labels plus
+// the reserved `trace:id` / `span:id` keys attachExemplars surfaces as
+// Exemplar.TraceID / SpanID on the wire.
+//
+// maxPerSeries caps the number of exemplars emitted per (series,
+// bucket) tuple via `LIMIT N BY <group-aliases>, anchor_ts`. A value
+// of 0 disables the cap (every span in every bucket window flows
+// through, useful only for tests / dev backends).
+//
+// Returns ErrUnsupported when the call is structurally invalid — nil
+// RangeWindow, MetricsAggregate, missing TimestampColumn, missing
+// trace/span ID column names, Step ≤ 0, or Start > End on the range.
+// The handler treats any non-nil error as "best-effort exemplars
+// off" and serves the metric series with an empty Exemplars array;
+// see internal/api/tempo/metrics_query_range.go for the exact
+// fan-out / merge contract.
 func EmitMetricsExemplars(
 	ctx context.Context,
 	rw *chplan.RangeWindow,
@@ -124,15 +146,19 @@ func (e *emitter) emitMetricsExemplars(
 		"anchor_ts",
 	)
 
+	// The outer SELECT MUST project exactly four columns in the order
+	// (MetricName, Attributes, TimeUnix, Value) — chclient.Cursor binds
+	// the result-set rows positionally to those four fields of
+	// chclient.Sample. Group-by attributes ride inside the Attributes
+	// map (keyed by the by(...) alias); they are NOT separate columns.
 	outerSb := NewQuery().From(innerSb.Frag())
 
 	outerSb.Select(As(Lit(""), "MetricName"))
 
-	for _, alias := range groupAliases {
-		a := alias
-		outerSb.Select(func(b *Builder) { b.Ident(a) })
-	}
-
+	// Attributes carries the group-by labels plus the trace:id / span:id
+	// keys attachExemplars reads. Group aliases reference the inner
+	// SELECT (grouped + scalar), so toString(<alias>) is a valid SELECT
+	// item under the outer GROUP BY (alias, anchor_ts).
 	attrMapFrags := make([]Frag, 0, len(groupAliases)*2+4)
 	for _, alias := range groupAliases {
 		a := alias
