@@ -198,8 +198,8 @@ func diffCase(ctx context.Context, client *http.Client, tc CorpusCase, opts case
 		return res
 	}
 
-	tempoBody, tempoStatus, terr := fetchJSON(ctx, client, tempoURL)
-	cerbBody, cerbStatus, cerr := fetchJSON(ctx, client, cerbURL)
+	tempoBody, tempoStatus, terr := fetchJSON(ctx, client, tempoURL, "tempo")
+	cerbBody, cerbStatus, cerr := fetchJSON(ctx, client, cerbURL, "cerberus")
 	res.TempoStatus = tempoStatus
 	res.CerberusStatus = cerbStatus
 	if terr != nil {
@@ -412,13 +412,19 @@ func deriveTraceIDFromTemplate(tmpl string) (string, error) {
 
 // fetchJSON GETs a URL with the Accept: application/json header and
 // returns the body + status. Errors include the response body (up to
-// 2KB) so a CH error message lands in the report.
-func fetchJSON(ctx context.Context, client *http.Client, urlStr string) ([]byte, int, error) {
+// 2KB) so a CH error message lands in the report. When backend is
+// "tempo", the Recent-Data-Target: live-store header is set so Tempo
+// searches the live store (recently-ingested traces) in addition to
+// completed blocks.
+func fetchJSON(ctx context.Context, client *http.Client, urlStr, backend string) ([]byte, int, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
 	if err != nil {
 		return nil, 0, err
 	}
 	req.Header.Set("Accept", "application/json")
+	if backend == "tempo" {
+		req.Header.Set("Recent-Data-Target", "live-store")
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, 0, err
