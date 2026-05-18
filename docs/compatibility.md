@@ -79,3 +79,27 @@ Most of PromQL isn't lowered yet at the seed stage. Gating now would make every 
 - Each subsequent M1.x PR can run `just compatibility` locally and report the pass-rate delta in the PR body (per the [CONTRIBUTING](../CONTRIBUTING.md) test-plan template).
 - The CI run produces an artifact (`compatibility-report` for 30 days) so we can chart progress.
 - When M1.7 closes, flipping the gate is a one-line `continue-on-error: false` + adding the check to branch protection.
+
+## Known limitations (v1.0.0 GA)
+
+### PromQL
+
+- **`and` / `or` / `unless` binary operators** — return "not yet supported" errors. These logical set/vector ops are not lowered (`internal/promql/binary.go:432`).
+- **Nested subqueries and some subquery-over-aggregate shapes** — return "not yet supported". Nested `SubqueryExpr` is explicitly rejected (`internal/promql/subquery.go:59`); subquery over `without(...)` or non-basic aggregations (`quantile`, `topk`, `bottomk`, `count_values`) also errors (`internal/promql/subquery.go:398`, `subquery.go:405`).
+- **`count_values without(...)`** — returns "not yet supported". The `without` variant would require the emitter to reconstruct every label except the removed set, which the current lowering doesn't support (`internal/promql/lower.go:943`).
+- **Computed-K `topk` / `bottomk`** — `topk(scalar(expr), v)` and `bottomk(scalar(expr), v)` where K is not a literal scalar integer are rejected (`internal/promql/lower.go:1077`). Only literal-K forms are supported.
+- **Native histogram `histogram_quantile` range mode** — `histogram_quantile(phi, <metric>_exp_hist)` over `/api/v1/query_range` collapses to instant mode: a single quantile value is computed and repeated at every step. The `now64(9)` timestamp is used for all rows (`internal/promql/histogram_quantile.go:477`). Use `/api/v1/query` for per-instant native-histogram quantiles. Range-mode (Phase 3 StepGrid + per-anchor lookback) is planned for a follow-up release.
+
+### LogQL
+
+- **`| json` and `| logfmt` parser stages** — return "not yet supported". Both the bare parsers (`| json`, `| logfmt`) and the expression-select variants (`| json field="..."`, `| logfmt field="..."`) are deferred (`internal/logql/lower.go:184`, `lower.go:186`, `lower.go:188`, `lower.go:189`).
+- **`| pattern` is supported** as a post-fetch stage (no SQL impact), but `| unpack`, `| drop`, and `| keep` are not.
+- **`| unwrap` range aggregations** — `sum_over_time`, `avg_over_time`, `quantile_over_time`, and other value-based ops return "not yet supported" (`internal/logql/range_aggregation.go:30`, `range_aggregation.go:104`, `range_aggregation.go:122`).
+- **Range-aggregation `by` / `without` grouping** — `rate({...}[5m]) by (label)` and similar grouped metric queries return "not yet supported" (`internal/logql/range_aggregation.go:33`).
+
+### TraceQL
+
+- **Spanset pipeline expressions** — some `PipelineElement` types return "not yet supported" when cerberus encounters them as a pipeline tail (`internal/traceql/lower.go:114`, `lower.go:186`). Second-stage metrics operators (`| topk`, `| bottomk`, `| > N`) are also unsupported (`internal/traceql/lower.go:83`).
+- **Multi-quantile `quantile_over_time`** — `quantile_over_time(0.5,0.95, ...)` with more than one quantile returns "not yet supported" (`internal/traceql/metrics_pipeline.go:108`).
+- **`?scope=` filter on `/api/v2/search/tags`** — not honoured; the handler returns all scopes (resource, span, intrinsic) regardless of the requested scope (`internal/api/tempo/search_tags.go:109`).
+- **Exemplars on metrics-pipeline queries** — the `Exemplars` field is always an empty array. The wire shape is correct but the handler does not yet populate exemplar data (`internal/api/tempo/metrics_query_range.go:36`).
