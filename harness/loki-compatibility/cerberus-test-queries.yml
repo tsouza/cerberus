@@ -22,7 +22,7 @@
 #                    expansion.
 #   - regression/  — vendored in PR 6 (this file). Every entry uses
 #                    features cerberus has deferred to RC2/RC3
-#                    (`| json`, `| logfmt`, `| drop`, `| unwrap`,
+#                    (`| json`, `| logfmt`, `| unwrap`,
 #                    `sum_over_time` / `avg_over_time` /
 #                    `min_over_time` / `max_over_time` /
 #                    `quantile_over_time` / `stddev_over_time`,
@@ -62,7 +62,7 @@
 #     - `| decolorize` — landed
 #     - `| json` / `| logfmt` / `| regexp` / `| json field=...` /
 #       `| logfmt field=...` — RC3 (chsql JSONExtract helpers)
-#     - `| drop` / `| keep` — not in lower.go switch; RC2/RC3
+#     - `| drop` / `| keep` — landed as post-fetch label projection
 #     - numeric / duration / bytes label filters — RC3 (parser-extracted)
 #     - `unwrap` based range aggregations
 #       (sum_over_time, avg_over_time, max_over_time, min_over_time,
@@ -157,28 +157,29 @@ should_skip:
     since: "2026-05-15"
     jira:  "docs/roadmap.md RC3 json parser; docs/loki-compliance-plan.md PR 6"
 
-  # regression/drilldown-patterns.yaml — `| json` / `| logfmt` / `| drop`
-  # + `unwrap` + `by` on range-aggregation. All deferred.
+  # regression/drilldown-patterns.yaml — `| json` / `| logfmt` parser
+  # stages + `unwrap` + `by` on range-aggregation. `| drop` itself
+  # landed in #?; these entries still need the parser stages.
   - source: "regression/drilldown-patterns.yaml#Basic drilldown with json and logfmt parsing"
-    reason: "Uses `| json | logfmt | drop` — cerberus has deferred the `| json` and `| logfmt` parser stages to RC3 (internal/logql/lower.go), and `| drop` is not in the lower.go switch at all (no case for `*syntax.DropLabelsExpr`)."
+    reason: "Uses `| json | logfmt | drop` — `| drop` is now supported as a post-fetch label projection, but the `| json` and `| logfmt` parser stages remain deferred to RC3 (internal/logql/lower.go)."
     since: "2026-05-15"
-    jira:  "docs/roadmap.md RC3 parsers + RC2 R2.x `| drop`; docs/loki-compliance-plan.md PR 6"
+    jira:  "docs/roadmap.md RC3 parsers; docs/loki-compliance-plan.md PR 6"
   - source: "regression/drilldown-patterns.yaml#Drilldown with error level filter"
-    reason: "Same as Basic drilldown — `| json | logfmt | drop` requires parsers + drop stage, both deferred."
+    reason: "Same as Basic drilldown — `| drop` landed but `| json | logfmt` parsers remain deferred to RC3."
     since: "2026-05-15"
-    jira:  "docs/roadmap.md RC3 parsers + RC2 R2.x `| drop`; docs/loki-compliance-plan.md PR 6"
+    jira:  "docs/roadmap.md RC3 parsers; docs/loki-compliance-plan.md PR 6"
   - source: "regression/drilldown-patterns.yaml#Drilldown with error or warn level filter"
-    reason: "Same as Basic drilldown — `| json | logfmt | drop` + boolean `or` over label filter."
+    reason: "Same as Basic drilldown — `| json | logfmt` parsers deferred to RC3 plus boolean `or` over label filter."
     since: "2026-05-15"
-    jira:  "docs/roadmap.md RC3 parsers + RC2 R2.x `| drop`; docs/loki-compliance-plan.md PR 6"
+    jira:  "docs/roadmap.md RC3 parsers; docs/loki-compliance-plan.md PR 6"
   - source: "regression/drilldown-patterns.yaml#Drilldown unwrap query with detected_level grouping"
     reason: "Uses `avg_over_time(... | unwrap duration_seconds(duration))` + `sum by (detected_level)` — `| unwrap` range ops (avg_over_time) and range-aggregation grouping are both deferred to RC2/RC3 (internal/logql/range_aggregation.go)."
     since: "2026-05-15"
     jira:  "docs/roadmap.md RC2 M3.4 grouping + RC2/RC3 unwrap; docs/loki-compliance-plan.md PR 6"
   - source: "regression/drilldown-patterns.yaml#Drilldown count with complex filters"
-    reason: "Uses `| detected_level=... or detected_level=... |~ ... | json | logfmt | drop | level=~...` — multiple deferred features (parsers, drop, complex label-filter or-chain over structured metadata)."
+    reason: "Uses `| detected_level=... or detected_level=... |~ ... | json | logfmt | drop | level=~...` — `| drop` landed but the `| json` and `| logfmt` parsers plus the complex label-filter or-chain over structured metadata remain deferred."
     since: "2026-05-15"
-    jira:  "docs/roadmap.md RC3 parsers + RC2 R2.x `| drop`; docs/loki-compliance-plan.md PR 6"
+    jira:  "docs/roadmap.md RC3 parsers; docs/loki-compliance-plan.md PR 6"
 
   # regression/metric-queries.yaml — every entry is unwrap-based.
   - source: "regression/metric-queries.yaml#Sum over time with duration conversion"
@@ -249,9 +250,9 @@ should_skip:
     since: "2026-05-15"
     jira:  "docs/roadmap.md RC3 logfmt parser; docs/loki-compliance-plan.md PR 6"
   - source: "regression/structured-metadata.yaml#Drilldown pattern with case-insensitive error search"
-    reason: "Upstream pins `skip: true` (numeric `>= 500` label filter). Cerberus also has `| json` / `| logfmt` / `| drop` + numeric label filter all deferred."
+    reason: "Upstream pins `skip: true` (numeric `>= 500` label filter). Cerberus also has `| json` / `| logfmt` + numeric label filter deferred (`| drop` is now supported)."
     since: "2026-05-15"
-    jira:  "docs/roadmap.md RC3 parsers + drop + numeric label filters; docs/loki-compliance-plan.md PR 6"
+    jira:  "docs/roadmap.md RC3 parsers + numeric label filters; docs/loki-compliance-plan.md PR 6"
   - source: "regression/structured-metadata.yaml#Drilldown with failed search and error level"
     reason: "Requires `detected_level` structured metadata + 'failed' keyword in log content; seeder writes neither."
     since: "2026-05-15"

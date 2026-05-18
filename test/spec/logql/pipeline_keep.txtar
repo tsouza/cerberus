@@ -1,0 +1,20 @@
+-- query.logql --
+{job="api"} | keep job
+-- args --
+[0] string = "job"
+[1] string = "api"
+-- sql --
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?)
+-- seed --
+CREATE TABLE otel_logs (
+    Body String,
+    ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api', 'env', 'prod')
+) ENGINE = Memory;
+INSERT INTO otel_logs (Body) VALUES ('hi');
+-- expected_rows --
+[
+  ["hi"]
+]
+-- chplan --
+Filter predicate=(ResourceAttributes["job"] = "api")
+  Scan(otel_logs)

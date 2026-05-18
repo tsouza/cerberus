@@ -247,6 +247,64 @@ func TestParserShape_PatternStage(t *testing.T) {
 	}
 }
 
+// TestParserShape_DropStage pins `*DropLabelsExpr` (with a bare-name
+// labels list reachable via the exported Names() accessor) as the
+// post-fetch label-projection stage shape cerberus's lowering relies
+// on. If upstream relaxes the parser to accept additional matcher
+// shapes or renames the accessor, this test surfaces the breakage.
+func TestParserShape_DropStage(t *testing.T) {
+	t.Parallel()
+	expr := mustParseLogQL(t, `{app="api"} | drop env, pod`)
+	pe, ok := expr.(*syntax.PipelineExpr)
+	if !ok {
+		t.Fatalf("expected *PipelineExpr, got %T", expr)
+	}
+	if len(pe.MultiStages) != 1 {
+		t.Fatalf("len(MultiStages) = %d; want 1", len(pe.MultiStages))
+	}
+	dl, ok := pe.MultiStages[0].(*syntax.DropLabelsExpr)
+	if !ok {
+		t.Fatalf("stage[0] = %T; want *DropLabelsExpr", pe.MultiStages[0])
+	}
+	names := dl.Names()
+	if len(names) != 2 || names[0] != "env" || names[1] != "pod" {
+		t.Errorf("Names() = %v; want [env pod]", names)
+	}
+	if dl.HasNamedMatchers() {
+		t.Errorf("HasNamedMatchers() = true; want false (bare-name list)")
+	}
+}
+
+// TestParserShape_KeepStage pins `*KeepLabelsExpr` as the
+// post-fetch projection sibling of DropLabelsExpr. The
+// KeepLabelsExpr type carries no exported field accessors; cerberus
+// relies on `Stage()` to obtain the upstream `log.KeepLabels`
+// processor. The shape check here also confirms `Stage()` returns
+// a non-nil stage (catching upstream regressions where the parser
+// emits a malformed KeepLabelsExpr).
+func TestParserShape_KeepStage(t *testing.T) {
+	t.Parallel()
+	expr := mustParseLogQL(t, `{app="api"} | keep job, env`)
+	pe, ok := expr.(*syntax.PipelineExpr)
+	if !ok {
+		t.Fatalf("expected *PipelineExpr, got %T", expr)
+	}
+	if len(pe.MultiStages) != 1 {
+		t.Fatalf("len(MultiStages) = %d; want 1", len(pe.MultiStages))
+	}
+	kl, ok := pe.MultiStages[0].(*syntax.KeepLabelsExpr)
+	if !ok {
+		t.Fatalf("stage[0] = %T; want *KeepLabelsExpr", pe.MultiStages[0])
+	}
+	stg, err := kl.Stage()
+	if err != nil {
+		t.Fatalf("Stage(): %v", err)
+	}
+	if stg == nil {
+		t.Errorf("Stage() returned nil; cerberus's post-process needs the upstream stage")
+	}
+}
+
 // TestParserShape_BytesRate pins `*RangeAggregationExpr{Operation:
 // OpRangeTypeBytesRate}` so the byte-counting code path stays
 // observable.
