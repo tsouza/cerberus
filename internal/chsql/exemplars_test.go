@@ -29,10 +29,10 @@ func TestEmitMetricsExemplars_NilRangeWindow(t *testing.T) {
 func TestEmitMetricsExemplars_MissingColumns(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name        string
-		traceIDCol  string
-		spanIDCol   string
-		wantSub     string
+		name       string
+		traceIDCol string
+		spanIDCol  string
+		wantSub    string
 	}{
 		{name: "empty_trace_id", traceIDCol: "", spanIDCol: "SpanId", wantSub: "traceIDCol"},
 		{name: "empty_span_id", traceIDCol: "TraceId", spanIDCol: "", wantSub: "spanIDCol"},
