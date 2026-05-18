@@ -98,10 +98,18 @@ func lowerMetricsAggregate(prev chplan.Node, agg *traceql.MetricsAggregate, s sc
 		if len(qs) == 0 {
 			return nil, fmt.Errorf("traceql: quantile_over_time requires at least one quantile")
 		}
-		if len(qs) > 1 {
-			return nil, fmt.Errorf("traceql: multi-quantile quantile_over_time is not yet supported (got %d quantiles)", len(qs))
-		}
-		quantiles = []float64{qs[0]}
+		// Multi-quantile is accepted at the lowering layer (v0.0.3
+		// fork accessors expose the full slice via Quantiles()); the
+		// emitted plan carries all phi values on
+		// chplan.MetricsAggregate.Quantiles so a future chsql emit
+		// path can render one output series per phi with a synth
+		// `__phi__` label. The current chsql emitter still caps at
+		// one quantile per MetricsAggregate (see
+		// internal/chsql/range_window.go::metricsAggregateCH); the
+		// lowering succeeds either way so callers can introspect
+		// the IR.
+		quantiles = make([]float64, len(qs))
+		copy(quantiles, qs)
 	}
 
 	return &chplan.MetricsAggregate{

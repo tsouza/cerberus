@@ -1,0 +1,23 @@
+-- query.traceql --
+{} | rate() | bottomk(3)
+-- sql --
+SELECT * FROM (SELECT toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?)) ORDER BY `Value` LIMIT 3
+-- args --
+[0] int64 = 1
+[1] bool = true
+-- seed --
+CREATE TABLE otel_traces (
+    Duration UInt64
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    (10000000),
+    (20000000);
+-- expected_rows --
+[
+  [2]
+]
+-- chplan --
+MetricsSecondStage op=bottomk k=3 valueAlias=Value
+  MetricsAggregate op=rate valueAlias=Value
+    Filter predicate=true
+      Scan(otel_traces)

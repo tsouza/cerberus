@@ -2,7 +2,6 @@ package traceql_test
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	tempo "github.com/grafana/tempo/pkg/traceql"
@@ -166,57 +165,88 @@ func TestLowerMetricsPipeline(t *testing.T) {
 	}
 }
 
-// TestLowerMetricsPipelineUnsupported documents the cases that
-// surface as clean errors rather than panicking.
+// All previously deferred metrics-pipeline forms now lower:
 //
-// `histogram_over_time(...)` is no longer here — it lowers to a
-// chplan.MetricsHistogramOverTime node; see TestLowerHistogramOverTime
-// in histogram_over_time_test.go.
+//   - `histogram_over_time(...)` → chplan.MetricsHistogramOverTime
+//     (TestLowerHistogramOverTime in histogram_over_time_test.go).
+//   - `avg_over_time(...)` → chplan.MetricsAggregate{Op:
+//     MetricsOpAvgOverTime} via lowerAverageOverTime, which unwraps
+//     the Tempo fork's exported AverageOverTimeAggregator type
+//     (#430).
+//   - `| topk(N)` / `| bottomk(N)` / `| > N` / chained second-stage
+//     → chplan.MetricsSecondStage via lowerMetricsSecondStage; see
+//     TestLowerMetricsSecondStage below.
+//   - `quantile_over_time(attr, q1, q2, ...)` → multi-element
+//     chplan.MetricsAggregate.Quantiles; see
+//     TestLowerMetricsMultiQuantile below.
 //
-// `| > 0` (MetricsSecondStage) is deferred until the second-stage
-// filter / topk lowering lands.
+// TestLowerMetricsPipelineUnsupported has therefore been retired.
+// A future deferred form (e.g. an unsupported PipelineElement kind)
+// should land its own focused test rather than reviving a generic
+// "everything that errors" pool.
+
+// TestLowerMetricsSecondStage asserts that the `| topk(N)` /
+// `| bottomk(N)` / `| > N` / `| < N` / `| >= N` / `| <= N` /
+// `| == N` / `| != N` and chained second-stage forms lower
+// successfully into a chplan.MetricsSecondStage wrapping the
+// upstream MetricsAggregate.
 //
-// `avg_over_time(...)` is no longer deferred — it lowers to a
-// chplan.MetricsAggregate{Op: MetricsOpAvgOverTime} node via
-// lowerAverageOverTime, which unwraps the Tempo fork's exported
-// AverageOverTimeAggregator type.
-func TestLowerMetricsPipelineUnsupported(t *testing.T) {
+// The wrap order for chained second-stage is bottom-up: each
+// successive element in ChainedSecondStage.Elements() wraps the
+// previous result, so the rightmost source element ends up as
+// the outermost chplan node (matches the chsql inside-out
+// subquery wrap).
+func TestLowerMetricsSecondStage(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelTraces()
 
 	cases := []struct {
-		name       string
-		query      string
-		wantSubstr string
+		name         string
+		query        string
+		wantOuterOp  chplan.SecondStageOp
+		wantK        int64
+		wantThreshOp chplan.BinaryOp
+		wantThreshV  float64
+		wantDepth    int // total chained MetricsSecondStage wraps
 	}{
 		{
-			name:       "quantile_over_time_multi_deferred",
-			query:      `{} | quantile_over_time(duration, 0.5, 0.9, 0.99)`,
-			wantSubstr: "multi-quantile",
+			name:        "topk",
+			query:       `{} | rate() | topk(5)`,
+			wantOuterOp: chplan.SecondStageTopK,
+			wantK:       5,
+			wantDepth:   1,
 		},
 		{
-			// Second-stage topk/bottomk/threshold land in two phases:
-			// the chplan+chsql foundation is in place (see
-			// chplan/metrics_second_stage.go,
-			// chsql/metrics_second_stage.go) but the traceql lowering
-			// is blocked on tsouza/tempo accessors for the
-			// unexported TopKBottomK / MetricsFilter fields. Until
-			// that fork bump lands, the lowering returns a clean
-			// "not yet supported" with a pointer to the foundation.
-			name:       "second_stage_topk_deferred",
-			query:      `{} | rate() | topk(5)`,
-			wantSubstr: "second-stage",
+			name:        "bottomk",
+			query:       `{} | rate() | bottomk(3)`,
+			wantOuterOp: chplan.SecondStageBottomK,
+			wantK:       3,
+			wantDepth:   1,
 		},
 		{
-			name:       "second_stage_bottomk_deferred",
-			query:      `{} | rate() | bottomk(3)`,
-			wantSubstr: "second-stage",
+			name:         "threshold_gt",
+			query:        `{} | rate() > 10`,
+			wantOuterOp:  chplan.SecondStageThreshold,
+			wantThreshOp: chplan.OpGt,
+			wantThreshV:  10,
+			wantDepth:    1,
 		},
 		{
-			name:       "second_stage_threshold_deferred",
-			query:      `{} | rate() | > 10`,
-			wantSubstr: "second-stage",
+			name:         "threshold_le",
+			query:        `{} | rate() <= 1.5`,
+			wantOuterOp:  chplan.SecondStageThreshold,
+			wantThreshOp: chplan.OpLe,
+			wantThreshV:  1.5,
+			wantDepth:    1,
+		},
+		{
+			name:         "chained_topk_threshold",
+			query:        `{} | rate() | topk(5) > 10`,
+			wantOuterOp:  chplan.SecondStageThreshold,
+			wantThreshOp: chplan.OpGt,
+			wantThreshV:  10,
+			wantDepth:    2,
 		},
 	}
 
@@ -227,19 +257,94 @@ func TestLowerMetricsPipelineUnsupported(t *testing.T) {
 
 			expr, err := tempo.Parse(tc.query)
 			if err != nil {
-				// Some forms may fail to parse upstream — the test
-				// is documenting what cerberus surfaces, so a parser
-				// error is acceptable for these deferred forms.
-				return
+				t.Fatalf("Parse(%q): %v", tc.query, err)
 			}
-			_, err = traceql.Lower(context.Background(), expr, s)
-			if err == nil {
-				t.Fatalf("Lower(%q): expected error, got nil", tc.query)
+			plan, err := traceql.Lower(context.Background(), expr, s)
+			if err != nil {
+				t.Fatalf("Lower(%q): %v", tc.query, err)
 			}
-			if !strings.Contains(err.Error(), tc.wantSubstr) {
-				t.Errorf("Lower(%q) error = %q, want substring %q",
-					tc.query, err.Error(), tc.wantSubstr)
+
+			ss, ok := plan.(*chplan.MetricsSecondStage)
+			if !ok {
+				t.Fatalf("expected outermost node to be *chplan.MetricsSecondStage, got %T", plan)
+			}
+			if ss.Op != tc.wantOuterOp {
+				t.Errorf("MetricsSecondStage.Op = %v, want %v", ss.Op, tc.wantOuterOp)
+			}
+			if tc.wantOuterOp == chplan.SecondStageTopK || tc.wantOuterOp == chplan.SecondStageBottomK {
+				if ss.K != tc.wantK {
+					t.Errorf("MetricsSecondStage.K = %d, want %d", ss.K, tc.wantK)
+				}
+			}
+			if tc.wantOuterOp == chplan.SecondStageThreshold {
+				if ss.ThresholdOp != tc.wantThreshOp {
+					t.Errorf("MetricsSecondStage.ThresholdOp = %v, want %v", ss.ThresholdOp, tc.wantThreshOp)
+				}
+				if ss.ThresholdValue != tc.wantThreshV {
+					t.Errorf("MetricsSecondStage.ThresholdValue = %v, want %v", ss.ThresholdValue, tc.wantThreshV)
+				}
+			}
+			if ss.ValueAlias != "Value" {
+				t.Errorf("MetricsSecondStage.ValueAlias = %q, want %q", ss.ValueAlias, "Value")
+			}
+
+			// Walk the nested chain — count how many
+			// MetricsSecondStage wraps stack on top of the
+			// MetricsAggregate.
+			depth := 0
+			cur := chplan.Node(ss)
+			for {
+				inner, ok := cur.(*chplan.MetricsSecondStage)
+				if !ok {
+					break
+				}
+				depth++
+				cur = inner.Input
+			}
+			if depth != tc.wantDepth {
+				t.Errorf("chained MetricsSecondStage depth = %d, want %d", depth, tc.wantDepth)
+			}
+			// Innermost child should be the metrics aggregate.
+			if _, ok := cur.(*chplan.MetricsAggregate); !ok {
+				t.Errorf("expected innermost wrapped node to be *chplan.MetricsAggregate, got %T", cur)
 			}
 		})
+	}
+}
+
+// TestLowerMetricsMultiQuantile asserts that multi-quantile
+// `quantile_over_time(attr, q1, q2, q3)` lowers into a single
+// chplan.MetricsAggregate whose Quantiles slice carries every phi
+// in source order. The chsql emit path for the multi-quantile
+// shape (one output series per phi labelled with `__phi__`) lives
+// outside this lowering test; this case pins the IR contract.
+func TestLowerMetricsMultiQuantile(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelTraces()
+
+	expr, err := tempo.Parse(`{} | quantile_over_time(duration, 0.5, 0.9, 0.99)`)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	plan, err := traceql.Lower(context.Background(), expr, s)
+	if err != nil {
+		t.Fatalf("Lower: %v", err)
+	}
+	ma, ok := plan.(*chplan.MetricsAggregate)
+	if !ok {
+		t.Fatalf("expected *chplan.MetricsAggregate, got %T", plan)
+	}
+	if ma.Op != chplan.MetricsOpQuantileOverTime {
+		t.Errorf("MetricsAggregate.Op = %v, want %v", ma.Op, chplan.MetricsOpQuantileOverTime)
+	}
+	want := []float64{0.5, 0.9, 0.99}
+	if len(ma.Quantiles) != len(want) {
+		t.Fatalf("len(Quantiles) = %d, want %d", len(ma.Quantiles), len(want))
+	}
+	for i := range want {
+		if ma.Quantiles[i] != want[i] {
+			t.Errorf("Quantiles[%d] = %v, want %v", i, ma.Quantiles[i], want[i])
+		}
 	}
 }

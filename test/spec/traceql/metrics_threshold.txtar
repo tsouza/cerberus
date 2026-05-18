@@ -1,0 +1,37 @@
+-- query.traceql --
+{} | rate() > 10
+-- sql --
+SELECT * FROM (SELECT toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?)) WHERE (`Value` > ?)
+-- args --
+[0] int64 = 1
+[1] bool = true
+[2] float64 = 10
+-- seed --
+CREATE TABLE otel_traces (
+    Duration UInt64
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    (10000000),
+    (20000000),
+    (30000000),
+    (40000000),
+    (50000000),
+    (60000000),
+    (70000000),
+    (80000000),
+    (90000000),
+    (100000000),
+    (110000000),
+    (120000000),
+    (130000000),
+    (140000000),
+    (150000000);
+-- expected_rows --
+[
+  [15]
+]
+-- chplan --
+MetricsSecondStage op=threshold threshold=(> 10) valueAlias=Value
+  MetricsAggregate op=rate valueAlias=Value
+    Filter predicate=true
+      Scan(otel_traces)

@@ -1,0 +1,26 @@
+-- query.traceql --
+{ resource.service.name = "checkout" } | rate() | topk(5)
+-- sql --
+SELECT * FROM (SELECT toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?))) ORDER BY `Value` DESC LIMIT 5
+-- args --
+[0] int64 = 1
+[1] string = "service.name"
+[2] string = "checkout"
+-- seed --
+CREATE TABLE otel_traces (
+    ResourceAttributes Map(String, String)
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    (map('service.name', 'checkout')),
+    (map('service.name', 'checkout')),
+    (map('service.name', 'checkout')),
+    (map('service.name', 'inventory'));
+-- expected_rows --
+[
+  [3]
+]
+-- chplan --
+MetricsSecondStage op=topk k=5 valueAlias=Value
+  MetricsAggregate op=rate valueAlias=Value
+    Filter predicate=(ResourceAttributes["service.name"] = "checkout")
+      Scan(otel_traces)
