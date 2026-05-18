@@ -56,14 +56,14 @@ var serviceConfigs = []serviceConfig{
 }
 
 var (
-	httpMethods    = []string{"GET", "POST", "PUT", "DELETE", "PATCH"}
-	apiPaths       = []string{"/api/v1/users", "/api/v1/products", "/api/v1/orders", "/api/v1/auth/login", "/healthz", "/metrics"}
-	httpStatuses   = []int{200, 201, 204, 301, 400, 401, 403, 404, 500, 503}
-	queryTypes     = []string{"SELECT", "INSERT", "UPDATE", "DELETE"}
-	dbTables       = []string{"users", "products", "orders", "sessions"}
-	cacheOps       = []string{"get", "set", "delete", "expire"}
-	authActions    = []string{"login", "logout", "password_reset", "token_refresh"}
-	kafkaTopics    = []string{"users", "orders", "payments", "events"}
+	httpMethods  = []string{"GET", "POST", "PUT", "DELETE", "PATCH"}
+	apiPaths     = []string{"/api/v1/users", "/api/v1/products", "/api/v1/orders", "/api/v1/auth/login", "/healthz", "/metrics"}
+	httpStatuses = []int{200, 201, 204, 301, 400, 401, 403, 404, 500, 503}
+	queryTypes   = []string{"SELECT", "INSERT", "UPDATE", "DELETE"}
+	dbTables     = []string{"users", "products", "orders", "sessions"}
+	cacheOps     = []string{"get", "set", "delete", "expire"}
+	authActions  = []string{"login", "logout", "password_reset", "token_refresh"}
+	kafkaTopics  = []string{"users", "orders", "payments", "events"}
 
 	promComponents = []string{"tsdb", "scrape", "rules", "remote", "web"}
 	promMessages   = []string{"Compacting blocks", "Scraping target", "Evaluating rules", "Remote write"}
@@ -191,7 +191,7 @@ type entry struct {
 }
 
 func buildStreams(start time.Time) []stream {
-	rng := rand.New(rand.NewSource(seedValue)) //nosec G404
+	rng := rand.New(rand.NewSource(seedValue)) // #nosec G404
 	levels := []string{"INFO", "WARN", "ERROR", "DEBUG"}
 	out := make([]stream, 0, len(serviceConfigs))
 
