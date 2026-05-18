@@ -43,7 +43,7 @@ func lowerMetricsPipeline(prev chplan.Node, mp traceql.FirstStageElement, s sche
 	if v, ok := mp.(*traceql.AverageOverTimeAggregator); ok {
 		return lowerAverageOverTime(prev, v, s)
 	}
-	return nil, fmt.Errorf("traceql: metrics pipeline element %T is not yet supported", mp)
+	return nil, fmt.Errorf("traceql: metrics pipeline element %T is unsupported", mp)
 }
 
 // lowerMetricsAggregate maps a single `MetricsAggregate` (rate / sum /
@@ -61,7 +61,7 @@ func lowerMetricsPipeline(prev chplan.Node, mp traceql.FirstStageElement, s sche
 //
 // `quantile_over_time(attr, q1, q2, ...)` is supported only for a
 // single quantile (the common Grafana case). Multi-quantile queries
-// surface a clean "not yet supported" error so the caller can decide
+// surface a clean "unsupported" error so the caller can decide
 // whether to split into N queries.
 //
 // `histogram_over_time(attr)` lowers to a dedicated
@@ -183,7 +183,7 @@ func mapMetricsAggregateOp(op traceql.MetricsAggregateOp) (chplan.MetricsOp, err
 		// to this switch.
 		return chplan.MetricsOpHistogramOverTime, fmt.Errorf("traceql: histogram_over_time must lower via lowerMetricsHistogramOverTime")
 	}
-	return chplan.MetricsOpInvalid, fmt.Errorf("traceql: metrics aggregate op %s is not yet supported", op)
+	return chplan.MetricsOpInvalid, fmt.Errorf("traceql: metrics aggregate op %s is unsupported", op)
 }
 
 // metricsAggregateAttr picks the chplan.Expr for the metric operand.
