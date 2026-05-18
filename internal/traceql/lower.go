@@ -187,12 +187,14 @@ func lowerPipelineElement(elem traceql.PipelineElement, s schema.Traces) (chplan
 }
 
 // lowerSpansetOperation handles structural relations (`A > B`, `A < B`,
-// `A ~ B`, plus the recursive forms `A >> B` / `A << B`) and set
+// `A ~ B`, the recursive forms `A >> B` / `A << B`, plus their negated
+// (`A !> B`, `A !< B`, `A !~ B`, `A !>> B`, `A !<< B`) and union-prefixed
+// (`A &> B`, `A &< B`, `A &~ B`, `A &>> B`, `A &<< B`) variants) and set
 // operations (`A && B`, `A || B`). Multi-hop chains (`A > B > C`) fall
 // out of the binary StructuralJoin shape — the Tempo grammar binds `>`
 // left-associatively, so chained operators parse as nested
 // SpansetOperation nodes that this function recurses into via
-// lowerSpansetExpr. Negated / union-prefixed variants still defer.
+// lowerSpansetExpr.
 func lowerSpansetOperation(op *traceql.SpansetOperation, s schema.Traces) (chplan.Node, error) {
 	left, err := lowerSpansetExpr(op.LHS, s)
 	if err != nil {
@@ -261,7 +263,15 @@ func lowerSpansetExpr(e traceql.SpansetExpression, s schema.Traces) (chplan.Node
 }
 
 // mapStructuralOp translates Tempo's structural Operator enum to the
-// chplan.StructuralOp this emitter understands.
+// chplan.StructuralOp this emitter understands. Covers the positive
+// relations (`>` / `<` / `>>` / `<<` / `~`), their negated variants
+// (`!>` / `!<` / `!>>` / `!<<` / `!~`), and the union-prefixed
+// variants (`&>` / `&<` / `&>>` / `&<<` / `&~`). The negated forms
+// lower to the same StructuralJoin shape with a `Not…` Op constant;
+// the emitter swaps the outer INNER JOIN for a LEFT ANTI JOIN. The
+// union forms lower to a `Union…` Op constant; the emitter emits the
+// positive relation twice (once projecting each side) glued with
+// UNION DISTINCT.
 func mapStructuralOp(op traceql.Operator) (chplan.StructuralOp, error) {
 	switch op {
 	case traceql.OpSpansetChild:
@@ -274,12 +284,26 @@ func mapStructuralOp(op traceql.Operator) (chplan.StructuralOp, error) {
 		return chplan.StructuralAncestor, nil
 	case traceql.OpSpansetSibling:
 		return chplan.StructuralSibling, nil
-	case traceql.OpSpansetNotChild, traceql.OpSpansetNotParent, traceql.OpSpansetNotSibling,
-		traceql.OpSpansetNotAncestor, traceql.OpSpansetNotDescendant,
-		traceql.OpSpansetUnionChild, traceql.OpSpansetUnionParent,
-		traceql.OpSpansetUnionSibling, traceql.OpSpansetUnionAncestor,
-		traceql.OpSpansetUnionDescendant:
-		return "", fmt.Errorf("traceql: spanset op %s is not yet supported (negated / union-prefixed structural variants defer to RC3)", op)
+	case traceql.OpSpansetNotChild:
+		return chplan.StructuralNotChild, nil
+	case traceql.OpSpansetNotParent:
+		return chplan.StructuralNotParent, nil
+	case traceql.OpSpansetNotDescendant:
+		return chplan.StructuralNotDescendant, nil
+	case traceql.OpSpansetNotAncestor:
+		return chplan.StructuralNotAncestor, nil
+	case traceql.OpSpansetNotSibling:
+		return chplan.StructuralNotSibling, nil
+	case traceql.OpSpansetUnionChild:
+		return chplan.StructuralUnionChild, nil
+	case traceql.OpSpansetUnionParent:
+		return chplan.StructuralUnionParent, nil
+	case traceql.OpSpansetUnionDescendant:
+		return chplan.StructuralUnionDescendant, nil
+	case traceql.OpSpansetUnionAncestor:
+		return chplan.StructuralUnionAncestor, nil
+	case traceql.OpSpansetUnionSibling:
+		return chplan.StructuralUnionSibling, nil
 	}
 	return "", fmt.Errorf("traceql: spanset op %s is not a structural relation", op)
 }

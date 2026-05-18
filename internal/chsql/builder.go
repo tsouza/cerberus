@@ -1386,6 +1386,11 @@ const (
 	CrossJoin JoinKind = "CROSS JOIN"
 	// FullJoin renders as "FULL JOIN".
 	FullJoin JoinKind = "FULL JOIN"
+	// LeftAntiJoin renders as "LEFT ANTI JOIN" — ClickHouse-specific
+	// flavour that returns rows from the left side whose ON predicate
+	// matches *no* row on the right. Used by structural_join.go for
+	// the negated TraceQL operators (`!>`, `!<`, `!~`, `!>>`, `!<<`).
+	LeftAntiJoin JoinKind = "LEFT ANTI JOIN"
 )
 
 // joinClause is one entry in a QueryBuilder's join chain. Rendered
