@@ -1,0 +1,31 @@
+-- query.logql --
+{job="api"} | logfmt level="severity" | level="error"
+-- sql --
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (mapConcat(`ResourceAttributes`, map(?, extractKeyValuePairs(`Body`, ?, ?, ?)[?]))[?] = ?)
+-- args --
+[0] string = "job"
+[1] string = "api"
+[2] string = "level"
+[3] string = "="
+[4] string = " "
+[5] string = "\""
+[6] string = "severity"
+[7] string = "level"
+[8] string = "error"
+-- seed --
+CREATE TABLE otel_logs (
+    Body String,
+    ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api')
+) ENGINE = Memory;
+INSERT INTO otel_logs (Body) VALUES
+    ('ts=2025-01-01 severity=error msg="oops"'),
+    ('ts=2025-01-01 severity=info msg="skip"'),
+    ('ts=2025-01-01 severity=error msg="retry"');
+-- expected_rows --
+[
+  ["ts=2025-01-01 severity=error msg=\"oops\""],
+  ["ts=2025-01-01 severity=error msg=\"retry\""]
+]
+-- chplan --
+Filter predicate=((ResourceAttributes["job"] = "api") AND (mapConcat(ResourceAttributes, map("level", extractKeyValuePairs(Body, "=", " ", "\"")["severity"]))["level"] = "error"))
+  Scan(otel_logs)

@@ -111,8 +111,21 @@ func lowerMatchers(e *syntax.MatchersExpr, s schema.Logs, lc lowerCtx) chplan.No
 	return &chplan.Filter{Input: scan, Predicate: pred}
 }
 
-// lowerPipeline handles a stream selector followed by line filters
-// (and, in later milestones, label filters and parsers).
+// lowerPipeline handles a stream selector followed by line / label
+// filters and parser stages.
+//
+// labelsExpr threads the "current labels map" through stage iteration:
+// initially it's the schema's ResourceAttributes column; after a
+// `| logfmt` parser stage it becomes
+// `mapConcat(<prev>, extractKeyValuePairs(Body, '=', ' ', '"'))` so
+// downstream label filters resolve against the parsed key set in
+// addition to the stream-selector labels. Loki's documented contract
+// is "parsed labels appended; on conflict the stream label wins and
+// parsed gets `_extracted` suffix"; the CH-side mapConcat lets parsed
+// keys win on conflict instead. That's an acceptable v1 approximation
+// — the common case is parsed keys that don't shadow stream labels
+// (`level`, `msg`, `duration`, …). Strict Loki conflict semantics
+// stay open as a follow-up.
 func lowerPipeline(e *syntax.PipelineExpr, s schema.Logs, lc lowerCtx) (chplan.Node, error) {
 	inner := lowerMatchers(e.Left, s, lc)
 	pred := chplan.Expr(nil)
@@ -120,10 +133,14 @@ func lowerPipeline(e *syntax.PipelineExpr, s schema.Logs, lc lowerCtx) (chplan.N
 		pred = f.Predicate
 		inner = f.Input
 	}
+	labelsExpr := chplan.Expr(&chplan.ColumnRef{Name: s.ResourceAttributesColumn})
 	for _, stage := range e.MultiStages {
-		next, err := lowerStage(stage, s)
+		next, newLabels, err := lowerStage(stage, s, labelsExpr)
 		if err != nil {
 			return nil, err
+		}
+		if newLabels != nil {
+			labelsExpr = newLabels
 		}
 		// Post-fetch stages (`| line_format`, `| decolorize`) return a
 		// nil predicate — they're applied in Go after the rows return,
@@ -143,12 +160,26 @@ func lowerPipeline(e *syntax.PipelineExpr, s schema.Logs, lc lowerCtx) (chplan.N
 	return &chplan.Filter{Input: inner, Predicate: pred}, nil
 }
 
-func lowerStage(stage syntax.StageExpr, s schema.Logs) (chplan.Expr, error) {
+// lowerStage handles one pipeline stage. Returns up to two values:
+//
+//   - pred: a predicate expression to AND into the pipeline filter
+//     (nil for post-fetch / no-op-in-SQL stages).
+//   - newLabels: a replacement labels-map expression to thread into
+//     subsequent label filters (nil for stages that don't change the
+//     visible label set).
+//
+// labelsExpr is the current "labels map" expression — the base
+// `ResourceAttributes` column, or a `mapConcat(...)` wrapped form after
+// a `| logfmt` stage. Label filters MapAccess against it so they see
+// both stream-selector labels and parser-extracted keys.
+func lowerStage(stage syntax.StageExpr, s schema.Logs, labelsExpr chplan.Expr) (chplan.Expr, chplan.Expr, error) {
 	switch st := stage.(type) {
 	case *syntax.LineFilterExpr:
-		return lowerLineFilter(st, s)
+		p, err := lowerLineFilter(st, s)
+		return p, nil, err
 	case *syntax.LabelFilterExpr:
-		return lowerLabelFilter(st, s)
+		p, err := lowerLabelFilter(st, labelsExpr)
+		return p, nil, err
 	case *syntax.LineFmtExpr:
 		// `| line_format "{{.x}}"` is a post-fetch transform —
 		// applied in the API handler over the streams response, not
@@ -156,18 +187,18 @@ func lowerStage(stage syntax.StageExpr, s schema.Logs) (chplan.Expr, error) {
 		// on it but the handler still sees the LineFmtExpr in the
 		// original parsed expression.
 		_ = st
-		return nil, nil
+		return nil, nil, nil
 	case *syntax.DecolorizeExpr:
 		// Same post-fetch shape: strip ANSI codes from each line
 		// after the rows return. No SQL impact.
-		return nil, nil
+		return nil, nil, nil
 	case *syntax.LabelFmtExpr:
 		// `| label_format new=old, lvl="{{.severity}}"` mutates the
 		// row's label set in Go after the rows return — rename or
 		// template-set per Loki's contract. No SQL impact; the
 		// post-process pipeline pulls the LabelFmtExpr from the
 		// parsed expression on the handler side.
-		return nil, nil
+		return nil, nil, nil
 	case *syntax.LineParserExpr:
 		// `| unpack` and `| pattern` are parser stages that extract
 		// labels from the line in Go after the rows return — they have
@@ -175,19 +206,35 @@ func lowerStage(stage syntax.StageExpr, s schema.Logs) (chplan.Expr, error) {
 		// pulls them out of the parsed expression via postProcessExtract
 		// and applies them per row.
 		//
-		// Other parser stages (`| json`, `| logfmt`, `| regexp`) stay
-		// deferred to RC3 alongside `chsql` JSONExtract helpers.
+		// `| json` / `| regexp` parser stages stay deferred (the
+		// dedicated `| logfmt` syntax types are handled below).
 		switch st.Op {
 		case syntax.OpParserTypeUnpack, syntax.OpParserTypePattern:
-			return nil, nil
+			return nil, nil, nil
 		}
-		return nil, fmt.Errorf("logql: parser stage `| %s` is not yet supported (json/logfmt/regexp parsers deferred from M3.2; revisit in RC3 alongside chsql JSONExtract/extractKeyValuePairs helpers)", st.Op)
+		return nil, nil, fmt.Errorf("logql: parser stage `| %s` is not yet supported (json/regexp parsers deferred from M3.2; revisit in RC3 alongside chsql JSONExtract helpers)", st.Op)
 	case *syntax.LogfmtParserExpr:
-		return nil, fmt.Errorf("logql: `| logfmt` parser is not yet supported (deferred from M3.2; revisit in RC3)")
+		// Bare `| logfmt` — extracts all `key=value` pairs from the
+		// line. Subsequent label filters resolve against
+		// mapConcat(<prev labels>, extractKeyValuePairs(Body, ...)).
+		// Strict / KeepEmpty flags are intentionally ignored for now:
+		// CH's extractKeyValuePairs is lenient (no Strict equivalent)
+		// and always drops bare keys (no KeepEmpty equivalent), which
+		// matches Loki's non-strict default semantics for the common
+		// case.
+		_ = st
+		return nil, logfmtMergeLabels(labelsExpr, s), nil
 	case *syntax.JSONExpressionParserExpr:
-		return nil, fmt.Errorf("logql: `| json field=\"...\"` parser is not yet supported (deferred from M3.2; revisit in RC3)")
+		return nil, nil, fmt.Errorf("logql: `| json field=\"...\"` parser is not yet supported (deferred from M3.2; revisit in RC3)")
 	case *syntax.LogfmtExpressionParserExpr:
-		return nil, fmt.Errorf("logql: `| logfmt field=\"...\"` parser is not yet supported (deferred from M3.2; revisit in RC3)")
+		// Typed `| logfmt foo="bar", baz="qux"` — maps caller-chosen
+		// local names to specific logfmt keys. Resulting labels expose
+		// only the named fields (no implicit merge of all pairs).
+		merged, err := logfmtExpressionMergeLabels(labelsExpr, s, st.Expressions)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, merged, nil
 	case *syntax.DropLabelsExpr:
 		// `| drop foo, bar` removes named keys from the output label set
 		// in Go after the rows return. The matching `*labels.Matcher`
@@ -197,41 +244,123 @@ func lowerStage(stage syntax.StageExpr, s schema.Logs) (chplan.Expr, error) {
 		// only narrows the label map carried back to the caller. The
 		// API handler pulls the stage out via postProcessExtract.
 		_ = st
-		return nil, nil
+		return nil, nil, nil
 	case *syntax.KeepLabelsExpr:
 		// `| keep foo, bar` is the inverse projection: only the named
 		// labels survive on the output row. Same post-fetch shape as
 		// `| drop` — no SQL impact, applied in Go.
 		_ = st
-		return nil, nil
+		return nil, nil, nil
 	default:
-		return nil, fmt.Errorf("logql: pipeline stage %T is not yet supported", stage)
+		return nil, nil, fmt.Errorf("logql: pipeline stage %T is not yet supported", stage)
+	}
+}
+
+// logfmtMergeLabels wraps the current labelsExpr with a
+// `mapConcat(<prev>, extractKeyValuePairs(Body, '=', ' ', '"'))` so
+// subsequent label filters see the union of stream-selector labels
+// and logfmt-parsed key/value pairs. extractKeyValuePairs is the CH
+// built-in that lifts arbitrary `key=value` text into a
+// `Map(String, String)`; the separator / pair-delimiter / quote
+// arguments mirror Loki's logfmt parser defaults.
+func logfmtMergeLabels(prev chplan.Expr, s schema.Logs) chplan.Expr {
+	return &chplan.FuncCall{
+		Name: "mapConcat",
+		Args: []chplan.Expr{
+			prev,
+			extractKVPairs(s),
+		},
+	}
+}
+
+// logfmtExpressionMergeLabels wraps labelsExpr with a `mapConcat` that
+// stitches in only the named extractions (identifier => extracted
+// value). Each expression is `<identifier>="<key-path>"` — for logfmt
+// the path is a top-level key, so the lowering is
+// `extractKeyValuePairs(Body, ...)[<key-path>]`. The result is a
+// `map(<id1>, <val1>, <id2>, <val2>, …)` that mapConcat appends onto
+// the prior label map.
+func logfmtExpressionMergeLabels(prev chplan.Expr, s schema.Logs, exprs []loglib.LabelExtractionExpr) (chplan.Expr, error) {
+	if len(exprs) == 0 {
+		// Defensive: a parser-emitted empty list is shaped like the
+		// bare `| logfmt` form. Treat it as such so we don't drop the
+		// stage entirely.
+		return logfmtMergeLabels(prev, s), nil
+	}
+	kvBase := extractKVPairs(s)
+	args := make([]chplan.Expr, 0, len(exprs)*2)
+	for _, ext := range exprs {
+		if ext.Identifier == "" {
+			return nil, fmt.Errorf("logql: `| logfmt` expression has empty identifier")
+		}
+		// `Expression` is the source key in the logfmt-parsed map.
+		// When the user writes `| logfmt foo` (no `="..."`), Loki's
+		// parser fills `Expression == Identifier` so both forms
+		// resolve identically.
+		key := ext.Expression
+		if key == "" {
+			key = ext.Identifier
+		}
+		args = append(args,
+			&chplan.LitString{V: ext.Identifier},
+			&chplan.MapAccess{
+				Map: kvBase,
+				Key: &chplan.LitString{V: key},
+			},
+		)
+	}
+	return &chplan.FuncCall{
+		Name: "mapConcat",
+		Args: []chplan.Expr{
+			prev,
+			&chplan.FuncCall{Name: "map", Args: args},
+		},
+	}, nil
+}
+
+// extractKVPairs renders the CH built-in
+// `extractKeyValuePairs(<Body>, '=', ' ', '"')` — the Map(String,String)
+// that the `| logfmt` parser stage exposes to downstream label filters.
+// The three delimiter arguments are Loki's logfmt defaults: `=` between
+// key and value, space between pairs, double-quote as the quoting
+// character.
+func extractKVPairs(s schema.Logs) chplan.Expr {
+	return &chplan.FuncCall{
+		Name: "extractKeyValuePairs",
+		Args: []chplan.Expr{
+			&chplan.ColumnRef{Name: s.BodyColumn},
+			&chplan.LitString{V: "="},
+			&chplan.LitString{V: " "},
+			&chplan.LitString{V: "\""},
+		},
 	}
 }
 
 // lowerLabelFilter handles `| label="val"` / `| label=~"regex"` and the
 // boolean conjunctions Loki packs into BinaryLabelFilter. The named
-// label is resolved against ResourceAttributes (parser-extracted labels
-// defer until parser stages are wired up).
-func lowerLabelFilter(f *syntax.LabelFilterExpr, s schema.Logs) (chplan.Expr, error) {
-	return labelFiltererToExpr(f.LabelFilterer, s)
+// label is resolved against labelsExpr — initially the schema's
+// ResourceAttributes column, but after a `| logfmt` parser stage a
+// `mapConcat(ResourceAttributes, extractKeyValuePairs(Body, ...))`
+// wrapper so parsed keys are also visible.
+func lowerLabelFilter(f *syntax.LabelFilterExpr, labelsExpr chplan.Expr) (chplan.Expr, error) {
+	return labelFiltererToExpr(f.LabelFilterer, labelsExpr)
 }
 
-func labelFiltererToExpr(lf loglib.LabelFilterer, s schema.Logs) (chplan.Expr, error) {
+func labelFiltererToExpr(lf loglib.LabelFilterer, labelsExpr chplan.Expr) (chplan.Expr, error) {
 	switch v := lf.(type) {
 	case *loglib.StringLabelFilter:
-		return labelMatcherToExpr(v.Matcher, s), nil
+		return labelMatcherToExpr(v.Matcher, labelsExpr), nil
 	case *loglib.LineFilterLabelFilter:
 		// Loki may wrap a string label filter in this when a line-filter
 		// short-circuit is also possible. Both embed *labels.Matcher and
 		// behave identically for our query-rewrite purposes.
-		return labelMatcherToExpr(v.Matcher, s), nil
+		return labelMatcherToExpr(v.Matcher, labelsExpr), nil
 	case *loglib.BinaryLabelFilter:
-		left, err := labelFiltererToExpr(v.Left, s)
+		left, err := labelFiltererToExpr(v.Left, labelsExpr)
 		if err != nil {
 			return nil, err
 		}
-		right, err := labelFiltererToExpr(v.Right, s)
+		right, err := labelFiltererToExpr(v.Right, labelsExpr)
 		if err != nil {
 			return nil, err
 		}
@@ -241,22 +370,22 @@ func labelFiltererToExpr(lf loglib.LabelFilterer, s schema.Logs) (chplan.Expr, e
 		}
 		return &chplan.Binary{Op: op, Left: left, Right: right}, nil
 	case *loglib.NumericLabelFilter:
-		return nil, fmt.Errorf("logql: numeric label filters are not yet supported (parser-extracted numbers depend on `| json` / `| logfmt` parser stages; both deferred to RC3)")
+		return nil, fmt.Errorf("logql: numeric label filters are not yet supported (parser-extracted numbers require typed lifting beyond the Map(String,String) `| logfmt` exposes; deferred to a follow-up)")
 	case *loglib.DurationLabelFilter, *loglib.BytesLabelFilter:
-		return nil, fmt.Errorf("logql: %T label filter is not yet supported (parser-extracted typed fields depend on `| json` / `| logfmt` stages; deferred to RC3)", lf)
+		return nil, fmt.Errorf("logql: %T label filter is not yet supported (parser-extracted typed fields require typed lifting beyond the Map(String,String) `| logfmt` exposes; deferred to a follow-up)", lf)
 	}
 	return nil, fmt.Errorf("logql: unsupported label filterer %T", lf)
 }
 
 // labelMatcherToExpr renders a Prometheus-style label Matcher against
-// ResourceAttributes. Shared between StringLabelFilter and the
-// short-circuit-friendly LineFilterLabelFilter — both embed the same
-// *labels.Matcher.
-func labelMatcherToExpr(m *labels.Matcher, s schema.Logs) chplan.Expr {
+// labelsExpr — the live "labels map" for the current point in the
+// pipeline. Shared between StringLabelFilter and the short-circuit-
+// friendly LineFilterLabelFilter (both embed the same *labels.Matcher).
+func labelMatcherToExpr(m *labels.Matcher, labelsExpr chplan.Expr) chplan.Expr {
 	return &chplan.Binary{
 		Op: matchOp(m.Type),
 		Left: &chplan.MapAccess{
-			Map: &chplan.ColumnRef{Name: s.ResourceAttributesColumn},
+			Map: labelsExpr,
 			Key: &chplan.LitString{V: m.Name},
 		},
 		Right: &chplan.LitString{V: m.Value},

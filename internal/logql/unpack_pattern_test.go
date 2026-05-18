@@ -76,15 +76,14 @@ func TestLowerUnpackPattern_NoSQLImpact(t *testing.T) {
 }
 
 // TestLowerUnpackPattern_StillRejectsOtherParsers pins that we didn't
-// accidentally light up `| json` / `| logfmt` / `| regexp` while
-// enabling unpack + pattern — those stay deferred to RC3.
+// accidentally light up `| json` / `| regexp` while enabling unpack +
+// pattern (and `| logfmt`) — those stay deferred to RC3.
 func TestLowerUnpackPattern_StillRejectsOtherParsers(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelLogs()
 	cases := []string{
 		`{job="api"} | json`,
-		`{job="api"} | logfmt`,
 		`{job="api"} | regexp "(?P<status>\\d+)"`,
 	}
 	for _, q := range cases {
