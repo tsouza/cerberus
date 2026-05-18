@@ -843,7 +843,8 @@ func wrapRangeWindowPreserveName(rw *chplan.RangeWindow, s schema.Metrics, name 
 // `quantile(0.95, ...)`. The shape-changing aggregates `topk`/`bottomk` are
 // handled separately via lowerTopK — they produce K rows per partition
 // rather than one, so they map to a TopK plan node (CH's `LIMIT K BY`)
-// instead of the regular Aggregate. `count_values` remains deferred.
+// instead of the regular Aggregate. `count_values` is handled separately
+// via lowerCountValues (one row per (partition, distinct value) pair).
 //
 // The Aggregate is wrapped with a Project that re-shapes its output into
 // the Sample contract (MetricName, Attributes, TimeUnix, Value) so the
@@ -918,14 +919,14 @@ func lowerAggregate(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (ch
 	return wrapped, nil
 }
 
-// lowerCountValues lowers `count_values("label", expr) [by(g)]`. The
-// shape is: for each distinct value of `expr` (within each `by` group),
-// emit a row whose Attributes carry the unique value as a synthetic
-// label binding (`<label>=<stringified value>`) plus any `by`-grouped
-// labels, and whose Value is the count of input series that hit that
-// value.
+// lowerCountValues lowers `count_values("label", expr) [by(g) | without(g)]`.
+// The shape is: for each distinct value of `expr` (within each grouped
+// partition), emit a row whose Attributes carry the unique value as a
+// synthetic label binding (`<label>=<stringified value>`) plus the
+// preserved per-partition labels, and whose Value is the count of input
+// series that hit that value.
 //
-// SQL shape (no `by`):
+// SQL shape (no grouping):
 //
 //	SELECT '' AS MetricName,
 //	       CAST(map('<label>', toString(Value)), 'Map(String,String)') AS Attributes,
@@ -943,14 +944,29 @@ func lowerAggregate(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (ch
 //	FROM (<inner>)
 //	GROUP BY Attributes['g'], toString(Value)
 //
-// `without(...)` follows the same path as the other aggregations for
-// compositionality, but `count_values` semantics with `without` are
-// rarely used in practice; we reject it for now to keep the surface
-// small.
+// SQL shape (with `without(g1, g2)`):
+//
+//	SELECT '' AS MetricName,
+//	       mapConcat(gkey_0, map('<label>', cv_val)) AS Attributes,
+//	       now64(9) AS TimeUnix,
+//	       count() AS Value
+//	FROM (<inner>)
+//	GROUP BY mapFilter((k, v) -> NOT (k IN ('g1', 'g2')), Attributes) AS gkey_0,
+//	         toString(Value) AS cv_val
+//
+// SQL shape (with `without()` — degenerate empty without-set):
+//
+//	GROUP BY Attributes AS gkey_0, toString(Value) AS cv_val
+//
+// The without variant follows the same template as `sum without (...)`
+// (see aggregateGroupBy / wrapAggregateForSample): the partition key is
+// the Attributes map with the removed labels stripped via mapFilter, and
+// the output Attributes is that partition map with the synthetic
+// `<label>=cv_val` binding overlaid via `mapConcat`. `mapConcat` is
+// later-key-wins, so when `<label>` collides with a preserved label the
+// count_values binding takes precedence — matching Prometheus's
+// `count_values` semantics where the synthetic label overwrites.
 func lowerCountValues(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	if a.Without {
-		return nil, fmt.Errorf("promql: count_values without(...) is not yet supported")
-	}
 	label, ok := tryStringLiteral(a.Param)
 	if !ok {
 		return nil, fmt.Errorf("promql: count_values requires a string-literal label name as the first arg")
@@ -964,22 +980,57 @@ func lowerCountValues(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (
 		return nil, err
 	}
 
-	// Group keys: the `by(...)` labels (as Attributes map accesses) plus
-	// the value-as-label key (toString(Value)). The value-as-label key
-	// gets its own alias so the wrapping Project can reference it.
-	groupBy := make([]chplan.Expr, 0, len(a.Grouping)+1)
-	aliases := make([]string, 0, len(a.Grouping)+1)
-	for i, lbl := range a.Grouping {
-		groupBy = append(groupBy, &chplan.MapAccess{
-			Map: &chplan.ColumnRef{Name: s.AttributesColumn},
-			Key: &chplan.LitString{V: lbl},
-		})
-		aliases = append(aliases, fmt.Sprintf("gkey_%d", i))
-	}
 	const (
 		valueKeyAlias = "cv_val"
 		countAlias    = "cv_count"
 	)
+
+	// Build the group-key list and the per-key Attributes-map fragment
+	// for the wrapping Project. The two variants differ in how they
+	// partition the input rows:
+	//
+	//   - by(l1, l2, ...) — one Attributes[lbl] MapAccess per named
+	//     label; the wrap reconstructs the partition map by string-
+	//     literal pairs (`map('l1', gkey_0, ...)`) wrapped in
+	//     MapWithoutEmptyValues to drop unset-label slots.
+	//
+	//   - without(l1, l2, ...) — one MapWithoutKeys spanning the full
+	//     Attributes map; the wrap references the single gkey_0 column
+	//     directly and overlays the synthetic `<label>` binding via
+	//     mapConcat.
+	//
+	//   - without() — degenerate "remove nothing" — equivalent to
+	//     grouping by the full Attributes map; the wrap uses the same
+	//     mapConcat overlay path.
+	var (
+		groupBy []chplan.Expr
+		aliases []string
+	)
+	switch {
+	case a.Without && len(a.Grouping) == 0:
+		// `without ()` — partition by the full Attributes map.
+		groupBy = []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}}
+		aliases = []string{"gkey_0"}
+	case a.Without:
+		groupBy = []chplan.Expr{&chplan.MapWithoutKeys{
+			Map:  &chplan.ColumnRef{Name: s.AttributesColumn},
+			Keys: append([]string(nil), a.Grouping...),
+		}}
+		aliases = []string{"gkey_0"}
+	default:
+		groupBy = make([]chplan.Expr, 0, len(a.Grouping))
+		aliases = make([]string, 0, len(a.Grouping))
+		for i, lbl := range a.Grouping {
+			groupBy = append(groupBy, &chplan.MapAccess{
+				Map: &chplan.ColumnRef{Name: s.AttributesColumn},
+				Key: &chplan.LitString{V: lbl},
+			})
+			aliases = append(aliases, fmt.Sprintf("gkey_%d", i))
+		}
+	}
+
+	// Append the value-as-label group key; the wrapping Project
+	// references it by alias to bind the synthetic `<label>` column.
 	groupBy = append(groupBy, &chplan.FuncCall{
 		Name: "toString",
 		Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}},
@@ -1005,22 +1056,46 @@ func lowerCountValues(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (
 		DropEmptyOnNoGroup: false,
 	}
 
-	// Build the Attributes map for the wrapping Project. Each `by`
-	// label binds its gkey_<i> column; the synthetic label binds
-	// cv_val.
-	mapArgs := make([]chplan.Expr, 0, (len(a.Grouping)+1)*2)
-	for i, lbl := range a.Grouping {
+	// Build the Attributes map for the wrapping Project.
+	var attrs chplan.Expr
+	switch {
+	case a.Without:
+		// `without(...)` / `without()` — partition map already lives
+		// in `gkey_0`. Overlay the synthetic `<label>=cv_val` binding
+		// via mapConcat (later-arg-wins, matching Prom's "synthetic
+		// label overwrites collisions" semantics).
+		attrs = &chplan.FuncCall{
+			Name: "mapConcat",
+			Args: []chplan.Expr{
+				&chplan.ColumnRef{Name: "gkey_0"},
+				&chplan.FuncCall{
+					Name: "map",
+					Args: []chplan.Expr{
+						&chplan.LitString{V: label},
+						&chplan.ColumnRef{Name: valueKeyAlias},
+					},
+				},
+			},
+		}
+	default:
+		// `by(g)` / no grouping — reconstruct the partition map by
+		// string-literal pairs and wrap with MapWithoutEmptyValues so
+		// series whose grouped-by label was absent in the OTel-CH
+		// Attributes Map don't surface as `{g=""}` on the wire.
+		mapArgs := make([]chplan.Expr, 0, (len(a.Grouping)+1)*2)
+		for i, lbl := range a.Grouping {
+			mapArgs = append(mapArgs,
+				&chplan.LitString{V: lbl},
+				&chplan.ColumnRef{Name: aliases[i]},
+			)
+		}
 		mapArgs = append(mapArgs,
-			&chplan.LitString{V: lbl},
-			&chplan.ColumnRef{Name: aliases[i]},
+			&chplan.LitString{V: label},
+			&chplan.ColumnRef{Name: valueKeyAlias},
 		)
-	}
-	mapArgs = append(mapArgs,
-		&chplan.LitString{V: label},
-		&chplan.ColumnRef{Name: valueKeyAlias},
-	)
-	attrs := &chplan.MapWithoutEmptyValues{
-		Map: &chplan.FuncCall{Name: "map", Args: mapArgs},
+		attrs = &chplan.MapWithoutEmptyValues{
+			Map: &chplan.FuncCall{Name: "map", Args: mapArgs},
+		}
 	}
 
 	return &chplan.Project{
@@ -1275,9 +1350,9 @@ func aggregateGroupBy(a *parser.AggregateExpr, s schema.Metrics) ([]chplan.Expr,
 }
 
 // buildAggFunc produces the single AggFunc for an aggregation. The output-
-// shape-changing aggregates `topk`/`bottomk` are handled out-of-band via
-// lowerTopK before this function is called. `count_values` (the remaining
-// shape-changer) is still rejected here.
+// shape-changing aggregates `topk`/`bottomk` and `count_values` are handled
+// out-of-band via lowerTopK / lowerCountValues before this function is
+// called. Anything else that reaches the default arm here is rejected.
 func buildAggFunc(a *parser.AggregateExpr, s schema.Metrics) (chplan.AggFunc, error) {
 	valueArg := &chplan.ColumnRef{Name: s.ValueColumn}
 
