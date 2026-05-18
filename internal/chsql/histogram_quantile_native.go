@@ -2,42 +2,68 @@
 // chplan.HistogramQuantileNative against the OTel-CH exponential
 // (native) histogram table.
 //
-// Algorithm (positive-only):
+// Algorithm (full walk — negative + zero + positive):
 //
 //  1. base = pow(2, pow(2, -Scale)). Higher scale = finer buckets.
-//  2. cum = arrayCumSum(arrayConcat([ZeroCount], PositiveBucketCounts)).
-//     Prepending ZeroCount means cum[1] = ZeroCount and cum[i>=2] is
-//     the running total through the (i-1)-th positive bucket.
+//  2. cum = arrayCumSum(arrayConcat(
+//     arrayReverse(NegativeBucketCounts),
+//     [ZeroCount],
+//     PositiveBucketCounts)).
+//     The NegativeBucketCounts array is reversed so that the cum-sum
+//     walks from the most-negative bucket (largest |value|, last in
+//     the original array) toward the least-negative, then through the
+//     zero bucket, then through PositiveBucketCounts in natural
+//     order. arrayReverse([]) = [], so distributions with no negative
+//     observations collapse to the Phase 1 walk
+//     (`arrayConcat([ZeroCount], PositiveBucketCounts)`).
 //  3. total = cum[length(cum)]; target = phi * total.
 //  4. idx = arrayFirstIndex(c -> c >= target, cum) (1-based).
-//  5. Edge cases:
+//     Regions: idx ∈ [1, nlen] is the negative-side walk;
+//     idx = nlen+1 is the zero bucket; idx > nlen+1 is the positive
+//     walk. (nlen = length(NegativeBucketCounts).)
+//  5. fraction = (target - cum[idx-1]) / (cum[idx] - cum[idx-1]).
+//     ClickHouse returns the array element's default (0) for
+//     `cum[0]`, which matches the "no bucket consumed yet" semantics
+//     when idx = 1, so the formula needs no explicit guard.
+//  6. Edge cases:
 //     - total = 0 → NaN.
-//     - phi <= 0 → 0 (non-negative observations; matches Prom's
-//     classic-histogram p0 convention).
-//     - phi >= 1 → pow(base, PositiveOffset + length(PositiveBucketCounts))
-//     i.e. the upper edge of the largest positive bucket.
-//     - idx = 1 → the quantile lands in the zero bucket; return
-//     ZeroThreshold as the safest summary of "we know it's small,
-//     we don't know exactly how small".
-//  6. Otherwise: bucket position is idx - 2 (0-based offset into
-//     PositiveBucketCounts), absolute bucket index is
-//     PositiveOffset + (idx - 2). Log-scale linear interpolation
-//     inside the bucket:
-//     fraction = (target - cum[idx-1]) / (cum[idx] - cum[idx-1])
-//     value    = pow(base, PositiveOffset + (idx - 2) + fraction)
-//     Identity used: upper / lower = base, so a log-linear walk
-//     across the bucket reduces to a single pow() of the
-//     fractional bucket index.
+//     - phi <= 0 → lower edge of the lowest bucket:
+//     `-pow(base, NegativeOffset + length(Negative))` if any
+//     negative observations exist; otherwise 0 (matches Phase 1
+//     convention for non-negative distributions).
+//     - phi >= 1 → upper edge of the highest bucket:
+//     `pow(base, PositiveOffset + length(Positive))` when positive
+//     observations exist; else `ZeroThreshold` when zero bucket is
+//     non-empty; else `-pow(base, NegativeOffset)` (upper edge of
+//     the least-negative bucket).
+//  7. Interpolation, by region:
+//     - Negative bucket (idx ≤ nlen). Original-array 0-based index
+//     within Negative is `nlen - idx`; absolute exp-bucket index is
+//     `NegativeOffset + (nlen - idx)`. The bucket covers
+//     `[-base^(idx+1), -base^idx)`; the cum-sum enters from the
+//     more-negative edge and accumulates toward the less-negative
+//     edge, so
+//     `value = -pow(base, NegativeOffset + (nlen - idx) + 1 - fraction)`.
+//     (fraction=0 → most-negative edge; fraction=1 → least-negative
+//     edge.)
+//     - Zero bucket (idx = nlen+1). Linear interpolation between
+//     `-ZeroThreshold` and `+ZeroThreshold`:
+//     `value = -ZeroThreshold + 2 * ZeroThreshold * fraction`.
+//     - Positive bucket (idx > nlen+1). Position 0-based in
+//     PositiveBucketCounts is `idx - nlen - 2`; absolute bucket
+//     index is `PositiveOffset + (idx - nlen - 2)`. The bucket
+//     covers `(base^idx, base^(idx+1)]`:
+//     `value = pow(base, PositiveOffset + (idx - nlen - 2) + fraction)`.
 //
-// Positive-only limitation: distributions with negative observations
-// have their negative-side buckets ignored. The result is a quantile
-// over the non-negative subset of the distribution, which matches
-// the common case (latency / size) and matches Prom's behaviour on
-// classic histograms whose buckets are non-negative by convention.
-// Extending the emitter to a full positive+zero+negative walk is a
-// follow-up; the IR node already carries the Negative* columns so
-// the change is local to this file. See
-// docs/native-histogram-plan.md § Phase 4 for the deferred design.
+// Phase parity: distributions with empty NegativeBucketCounts and
+// ZeroCount = 0 produce the same numeric output as the original
+// positive-only emitter (idx = 1 only fires when target = 0, which
+// the phi<=0 / total=0 short-circuits already cover). The Phase 1
+// `idx = 1 → ZeroThreshold` branch is subsumed by the zero-bucket
+// linear interpolation: with ZeroCount > 0 and target landing inside
+// the zero band, the interpolation returns a value in
+// `[-ZeroThreshold, +ZeroThreshold]` rather than the fixed upper
+// edge. See docs/native-histogram-plan.md § Phase 4.
 package chsql
 
 import (
@@ -56,8 +82,9 @@ func (e *emitter) emitHistogramQuantileNative(h *chplan.HistogramQuantileNative)
 		return fmt.Errorf("%w: HistogramQuantileNative.Input is nil", ErrUnsupported)
 	}
 	if h.PositiveBucketCountsColumn == "" || h.PositiveOffsetColumn == "" ||
-		h.ScaleColumn == "" || h.ZeroCountColumn == "" || h.ZeroThresholdColumn == "" {
-		return fmt.Errorf("%w: HistogramQuantileNative requires Scale / ZeroCount / ZeroThreshold / PositiveOffset / PositiveBucketCounts column names", ErrUnsupported)
+		h.ScaleColumn == "" || h.ZeroCountColumn == "" || h.ZeroThresholdColumn == "" ||
+		h.NegativeOffsetColumn == "" || h.NegativeBucketCountsColumn == "" {
+		return fmt.Errorf("%w: HistogramQuantileNative requires Scale / ZeroCount / ZeroThreshold / PositiveOffset / PositiveBucketCounts / NegativeOffset / NegativeBucketCounts column names", ErrUnsupported)
 	}
 	// Pre-flight every GroupBy expression so chplan errors surface
 	// synchronously rather than from inside a Frag callback.
@@ -95,6 +122,8 @@ func (e *emitter) emitHistogramQuantileNative(h *chplan.HistogramQuantileNative)
 func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative) Frag {
 	pbc := h.PositiveBucketCountsColumn
 	po := h.PositiveOffsetColumn
+	nbc := h.NegativeBucketCountsColumn
+	no := h.NegativeOffsetColumn
 	scale := h.ScaleColumn
 	zc := h.ZeroCountColumn
 	zt := h.ZeroThresholdColumn
@@ -102,24 +131,28 @@ func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative) Frag {
 	return func(b *Builder) {
 		phi := formatFloat(h.Phi)
 		// base = pow(2, pow(2, -Scale)). Re-rendered inline at each
-		// use; CH's planner CSEs. Inline literal `2` and `arrayConcat`
-		// of `[col]` have no typed Frag (no inline-int / array-literal
+		// use; CH's planner CSEs. Inline literal `2` and array-literal
+		// `[col]` have no typed Frag (no inline-int / array-literal
 		// helpers), so the in-package b.writeSQL path is kept for the
-		// shape's outer layout; the inner pow/arrayCumSum function
-		// shells use typed Call where they would otherwise duplicate
-		// "fn(" + ... + ")" string fragments.
+		// shape's outer layout; the inner pow/arrayCumSum/arrayReverse
+		// function shells use typed Call where they would otherwise
+		// duplicate "fn(" + ... + ")" string fragments.
 		writeBase := func() {
 			b.writeSQL("pow(2, pow(2, -")
 			b.Ident(scale)
 			b.writeSQL("))")
 		}
-		// cum = arrayCumSum(arrayConcat([ZeroCount], PositiveBucketCounts)).
-		// The arrayConcat([col], col) shape uses an array-literal "[col]"
-		// which has no typed Frag; structure preserved via b.writeSQL.
-		// The arrayCumSum wrapper is emitted via typed Call once the
-		// arrayConcat body is rendered.
+		// cum = arrayCumSum(arrayConcat(
+		//         arrayReverse(NegativeBucketCounts),
+		//         [ZeroCount],
+		//         PositiveBucketCounts)).
+		// arrayReverse on an empty array yields [], so the walk
+		// collapses to the Phase 1 shape when NegativeBucketCounts
+		// is empty.
 		cumBody := func(b *Builder) {
-			b.writeSQL("arrayConcat([")
+			b.writeSQL("arrayConcat(")
+			Call("arrayReverse", Col(nbc))(b)
+			b.writeSQL(", [")
 			b.Ident(zc)
 			b.writeSQL("], ")
 			b.Ident(pbc)
@@ -148,6 +181,13 @@ func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative) Frag {
 			writeCum()
 			b.writeSQL(")")
 		}
+		// cum[idx + offset]. offset is a string fragment like " - 1"
+		// or "" — caller-supplied so the same helper covers cum[idx]
+		// (offset="") and cum[idx-1] (offset=" - 1"). idx=1 with
+		// offset=" - 1" indexes cum[0], which CH evaluates to the
+		// array element's default (0) — matches the
+		// "no bucket consumed yet" semantics the fraction formula
+		// needs.
 		writeCumAt := func(offset string) {
 			writeCum()
 			b.writeSQL("[")
@@ -155,61 +195,120 @@ func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative) Frag {
 			b.writeSQL(offset)
 			b.writeSQL("]")
 		}
+		writeNLen := func() {
+			Call("length", Col(nbc))(b)
+		}
+		writePLen := func() {
+			Call("length", Col(pbc))(b)
+		}
+		// fraction = (target - cum[idx-1]) / (cum[idx] - cum[idx-1]).
+		// target = phi * total.
+		writeFraction := func() {
+			b.writeSQL("((")
+			b.writeSQL(phi)
+			b.writeSQL(" * ")
+			writeTotal()
+			b.writeSQL(") - ")
+			writeCumAt(" - 1")
+			b.writeSQL(") / (")
+			writeCumAt("")
+			b.writeSQL(" - ")
+			writeCumAt(" - 1")
+			b.writeSQL(")")
+		}
 
 		// Outer chain:
 		//   if(total = 0, nan,
-		//     if(phi <= 0, 0.0,
-		//       if(phi >= 1, pow(base, PositiveOffset + length(pbc)),
-		//         if(idx = 1, ZeroThreshold,
-		//           pow(base, PositiveOffset + (idx - 2) + fraction)))))
-		// where fraction = (target - cum[idx-1]) / (cum[idx] - cum[idx-1])
-		// and target = phi * total.
+		//     if(phi <= 0, <smallest-bucket lower edge>,
+		//       if(phi >= 1, <largest-bucket upper edge>,
+		//         if(idx <= nlen, <negative interp>,
+		//           if(idx = nlen + 1, <zero interp>,
+		//             <positive interp>)))))
 
 		// if(total = 0, nan, ...
 		b.writeSQL("if(")
 		writeTotal()
 		b.writeSQL(" = 0, nan, ")
-		// if(phi <= 0, 0.0, ...
+		// if(phi <= 0, if(nlen > 0, -pow(base, no + nlen), 0.0), ...
 		b.writeSQL("if(")
 		b.writeSQL(phi)
-		b.writeSQL(" <= 0, 0.0, ")
-		// if(phi >= 1, pow(base, po + length(pbc)), ...
+		b.writeSQL(" <= 0, if(")
+		writeNLen()
+		b.writeSQL(" > 0, -pow(")
+		writeBase()
+		b.writeSQL(", ")
+		b.Ident(no)
+		b.writeSQL(" + ")
+		writeNLen()
+		b.writeSQL("), 0.0), ")
+		// if(phi >= 1, <upper edge>, ...
+		// upper edge:
+		//   if(plen > 0, pow(base, po + plen),
+		//      if(zc > 0, zt, -pow(base, no)))
 		b.writeSQL("if(")
 		b.writeSQL(phi)
-		b.writeSQL(" >= 1, pow(")
+		b.writeSQL(" >= 1, if(")
+		writePLen()
+		b.writeSQL(" > 0, pow(")
 		writeBase()
 		b.writeSQL(", ")
 		b.Ident(po)
 		b.writeSQL(" + ")
-		Call("length", Col(pbc))(b)
-		b.writeSQL("), ")
-		// if(idx = 1, ZeroThreshold, ...
+		writePLen()
+		b.writeSQL("), if(")
+		b.Ident(zc)
+		b.writeSQL(" > 0, ")
+		b.Ident(zt)
+		b.writeSQL(", -pow(")
+		writeBase()
+		b.writeSQL(", ")
+		b.Ident(no)
+		b.writeSQL("))), ")
+		// if(idx <= nlen, <negative interp>, ...
+		// negative interp:
+		//   -pow(base, no + (nlen - idx) + 1 - fraction)
 		b.writeSQL("if(")
 		writeIdx()
-		b.writeSQL(" = 1, ")
-		b.Ident(zt)
+		b.writeSQL(" <= ")
+		writeNLen()
+		b.writeSQL(", -pow(")
+		writeBase()
 		b.writeSQL(", ")
-		// Interpolated case: pow(base, po + (idx - 2) + fraction)
-		// where fraction = (target - cum[idx-1]) / (cum[idx] - cum[idx-1])
-		// and target = phi * total.
-		b.writeSQL("pow(")
+		b.Ident(no)
+		b.writeSQL(" + (")
+		writeNLen()
+		b.writeSQL(" - ")
+		writeIdx()
+		b.writeSQL(") + 1 - ")
+		writeFraction()
+		b.writeSQL("), ")
+		// if(idx = nlen + 1, <zero interp>, <positive interp>)
+		// zero interp:
+		//   -ZeroThreshold + 2 * ZeroThreshold * fraction
+		// positive interp:
+		//   pow(base, po + (idx - nlen - 2) + fraction)
+		b.writeSQL("if(")
+		writeIdx()
+		b.writeSQL(" = ")
+		writeNLen()
+		b.writeSQL(" + 1, -")
+		b.Ident(zt)
+		b.writeSQL(" + 2 * ")
+		b.Ident(zt)
+		b.writeSQL(" * ")
+		writeFraction()
+		b.writeSQL(", pow(")
 		writeBase()
 		b.writeSQL(", ")
 		b.Ident(po)
 		b.writeSQL(" + (")
 		writeIdx()
-		b.writeSQL(" - 2) + ((")
-		b.writeSQL(phi)
-		b.writeSQL(" * ")
-		writeTotal()
-		b.writeSQL(") - ")
-		writeCumAt(" - 1")
-		b.writeSQL(") / (")
-		writeCumAt("")
 		b.writeSQL(" - ")
-		writeCumAt(" - 1")
+		writeNLen()
+		b.writeSQL(" - 2) + ")
+		writeFraction()
 		b.writeSQL("))")
-		// Close: if(idx=1), if(phi>=1), if(phi<=0), if(total=0)
+		// Close: if(idx=nlen+1), if(idx<=nlen), if(phi>=1), if(phi<=0), if(total=0)
 		b.writeSQL("))))")
 	}
 }

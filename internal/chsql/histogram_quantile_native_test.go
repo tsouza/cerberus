@@ -48,6 +48,8 @@ func TestEmit_HistogramQuantileNative_MissingColumns(t *testing.T) {
 		ZeroThresholdColumn:        "ZeroThreshold",
 		PositiveOffsetColumn:       "PositiveOffset",
 		PositiveBucketCountsColumn: "PositiveBucketCounts",
+		NegativeOffsetColumn:       "NegativeOffset",
+		NegativeBucketCountsColumn: "NegativeBucketCounts",
 	}
 
 	cases := []struct {
@@ -56,6 +58,8 @@ func TestEmit_HistogramQuantileNative_MissingColumns(t *testing.T) {
 	}{
 		{"missing PositiveBucketCounts", func(h *chplan.HistogramQuantileNative) { h.PositiveBucketCountsColumn = "" }},
 		{"missing PositiveOffset", func(h *chplan.HistogramQuantileNative) { h.PositiveOffsetColumn = "" }},
+		{"missing NegativeBucketCounts", func(h *chplan.HistogramQuantileNative) { h.NegativeBucketCountsColumn = "" }},
+		{"missing NegativeOffset", func(h *chplan.HistogramQuantileNative) { h.NegativeOffsetColumn = "" }},
 		{"missing Scale", func(h *chplan.HistogramQuantileNative) { h.ScaleColumn = "" }},
 		{"missing ZeroCount", func(h *chplan.HistogramQuantileNative) { h.ZeroCountColumn = "" }},
 		{"missing ZeroThreshold", func(h *chplan.HistogramQuantileNative) { h.ZeroThresholdColumn = "" }},
@@ -78,10 +82,11 @@ func TestEmit_HistogramQuantileNative_MissingColumns(t *testing.T) {
 
 // TestEmit_HistogramQuantileNative_ShapeSanity emits SQL for a
 // well-formed IR node and asserts the key tokens that prove the
-// algorithm landed in the right shape: pow(base, ...) over Positive*
-// columns, the arrayConcat([ZeroCount], PositiveBucketCounts) cum-sum
-// prefix, the ZeroThreshold edge case, and the four if() branches
-// (total=0, phi<=0, phi>=1, idx=1).
+// Phase 4 algorithm landed in the right shape: pow(base, ...),
+// arrayConcat(arrayReverse(NegativeBucketCounts), [ZeroCount],
+// PositiveBucketCounts) cum-sum over the full walk,
+// length(NegativeBucketCounts) boundary, negative/zero/positive
+// interpolation branches, and edge cases (total=0, phi<=0, phi>=1).
 func TestEmit_HistogramQuantileNative_ShapeSanity(t *testing.T) {
 	t.Parallel()
 
@@ -108,12 +113,14 @@ func TestEmit_HistogramQuantileNative_ShapeSanity(t *testing.T) {
 
 	wantTokens := []string{
 		"pow(2, pow(2, -`Scale`))",
-		"arrayConcat([`ZeroCount`], `PositiveBucketCounts`)",
+		"arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)",
 		"arrayFirstIndex(c -> c >= (0.95",
-		"`ZeroThreshold`",
+		"length(`NegativeBucketCounts`)",
 		"`PositiveOffset` + length(`PositiveBucketCounts`)",
 		"0.95 <= 0",
 		"0.95 >= 1",
+		"-`ZeroThreshold`",
+		"2 * `ZeroThreshold`",
 		"FROM `otel_metrics_exp_histogram`",
 	}
 	for _, tok := range wantTokens {
