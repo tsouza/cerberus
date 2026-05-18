@@ -117,9 +117,9 @@ tag recorded in [`upstream/loki-bench/VERSION`](upstream/loki-bench/VERSION):
 
 - `pkg/logql/bench/queries/fast/*.yaml` — the minimal-coverage corpus
   (basic-selectors, simple-metrics, structured-metadata). The
-  `regression/` and `exhaustive/` slices are deferred to PR 6 of the
-  plan; the empty placeholder dirs exist so the driver's
-  three-suite loader doesn't fatal on a missing path.
+  `regression/` and `exhaustive/` slices were vendored separately;
+  empty placeholder dirs in earlier snapshots existed so the driver's
+  three-suite loader didn't fatal on a missing path.
 - `pkg/logql/bench/queries/schema.json` — JSON Schema the YAMLs
   validate against.
 - `pkg/logql/bench/query_registry.go` — `QueryRegistry` plus the
@@ -199,9 +199,10 @@ that lives OUTSIDE the AGPL `upstream/` boundary:
   before the wire call (recorded in the report as `skipReason` with
   no failure flag flipped); `should_fail:` is reserved for the Prom-
   shape `unexpectedSuccess` semantics (expected hard failures). The
-  PR 3 commit documented the entire `fast/` set as deferred to PR 6
-  (selector vocabulary mismatch between the seeded fixture and the
-  upstream template defaults); the driver suppresses those entries.
+  Historical PR 3 commit documented the entire `fast/` set as
+  unimplemented (selector vocabulary mismatch between the seeded
+  fixture and the upstream template defaults); the driver suppresses
+  those entries.
 - `dataset_metadata.json` — pinned dataset metadata that maps
   `${SELECTOR}` / `${LABEL_NAME}` / `${LABEL_VALUE}` template vars to
   concrete values. The placeholder shipped by PR 2 (#369) is

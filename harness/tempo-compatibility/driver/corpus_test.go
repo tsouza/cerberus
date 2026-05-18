@@ -395,19 +395,19 @@ func TestParseCorpus_MetricsRangeSkipReasonBypassesStep(t *testing.T) {
 	// skip_reason'd metrics_range cases don't need step (the case won't
 	// run; the step omission is just a corpus-author convenience).
 	in := `-- name --
-deferred
+skipped
 -- query --
 { } | rate()
 -- endpoint --
 metrics_range
 -- skip_reason --
-deferred to follow-up
+not implemented
 `
 	got, err := parseCorpus(strings.NewReader(in), "test")
 	if err != nil {
 		t.Fatalf("parseCorpus: %v", err)
 	}
-	if got[0].SkipReason != "deferred to follow-up" {
+	if got[0].SkipReason != "not implemented" {
 		t.Fatalf("SkipReason = %q", got[0].SkipReason)
 	}
 }
