@@ -57,7 +57,10 @@
 #   with line filter) entries were unskipped after the seed expansion added
 #   multi-label streams, structured metadata, and multi-format log lines.
 #   The remaining fast/ entries require LogQL features cerberus has
-#   deferred (detected_level filter, | json parser stage).
+#   deferred (`| json` parser stage). The synthesized `detected_level`
+#   label is supported via internal/logql/detected_level.go and no longer
+#   drives any skips on its own — entries that still mention it are
+#   blocked by an unrelated feature in the same pipeline.
 #   The regression/ + exhaustive/ slices exercise LogQL features cerberus
 #   has explicitly deferred per docs/roadmap.md § RC2:
 #
@@ -84,35 +87,30 @@
 #     entries get dropped (or rewritten with a tighter rationale if a
 #     residual gap remains).
 #   - The seed expansion (PR 7+) now writes multi-label streams with
-#     JSON/logfmt/unstructured lines, structured metadata (detected_level),
-#     and error keywords (failed/refused). Entries that only needed
-#     matching selectors have been unskipped.
+#     JSON/logfmt/unstructured lines, structured metadata, and error
+#     keywords (failed/refused). Entries that only needed matching
+#     selectors have been unskipped, and the synthesized `detected_level`
+#     label is supported via the SeverityText-driven multiIf
+#     normalisation in internal/logql/detected_level.go.
 
 should_skip:
-  # fast/ — entries still skipped require unimplemented LogQL features (detected_level filters, | json, | logfmt):
+  # fast/ — entries still skipped require unimplemented LogQL features
+  # (count_over_time / rate ResourceAttributes 502; `| json` parser
+  # stage). The `| detected_level=` synthesized filter itself is
+  # supported via internal/logql/detected_level.go.
   - source: "fast/simple-metrics.yaml#Count with error/warn filter"
-    reason: "Requires `| detected_level=~\"error|warn\"` filter; cerberus does not yet support structured-metadata label filters in LogQL pipe expressions."
+    reason: "`sum(count_over_time(... | detected_level=~\"error|warn\" [...]))` — `detected_level` filter is supported, but the outer `count_over_time` still trips cerberus's ResourceAttributes 502 (see `Count over time` above)."
     since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6"
+    jira:  "docs/roadmap.md RC2 LogQL metric-queries / ResourceAttributes support"
   - source: "fast/simple-metrics.yaml#Rate with error/warn filter"
-    reason: "Requires `| detected_level=~\"error|warn\"` filter; cerberus does not yet support structured-metadata label filters in LogQL pipe expressions."
+    reason: "`sum(rate(... | detected_level=~\"error|warn\" [...]))` — same ResourceAttributes 502 as `Count over time`."
     since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6"
-  # fast/structured-metadata — requires detected_level filter support and/or parser stages.
-  - source: "fast/structured-metadata.yaml#Structured metadata error level filter"
-    reason: "Requires `| detected_level=\"error\"` structured-metadata filter; cerberus does not yet support structured-metadata label filters in LogQL pipe expressions. Seeder now writes detected_level."
-    since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6"
-  - source: "fast/structured-metadata.yaml#Logfmt parsing with structured metadata filter"
-    reason: "`| logfmt` is now supported (extractKeyValuePairs lowering); this query also filters on `detected_level` structured metadata, which cerberus does not yet support."
-    since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6 (structured-metadata)"
-  - source: "fast/structured-metadata.yaml#Logfmt parsing with structured metadata filter first"
-    reason: "`| logfmt` is now supported; the remaining blocker is `detected_level` structured-metadata filtering."
-    since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6 (structured-metadata)"
+    jira:  "docs/roadmap.md RC2 LogQL metric-queries / ResourceAttributes support"
+  # fast/structured-metadata — Logfmt+detected_level pairs
+  # (`| logfmt | detected_level="error"` and the reverse) round-trip
+  # now that both stages are supported; only the `| json` paths remain.
   - source: "fast/structured-metadata.yaml#JSON parsing with structured metadata filter"
-    reason: "Cerberus deferred the `| json` parser stage to RC3 (lower.go JSONExpressionParserExpr returns 'not yet supported'). Also requires `detected_level` + JSON-shaped log lines (seeder emits logfmt)."
+    reason: "Cerberus deferred the `| json` parser stage to RC3 (lower.go JSONExpressionParserExpr returns 'not yet supported'); the seeder emits logfmt-shaped lines, so a JSON-aware extractor would not match anyway."
     since: "2026-05-15"
     jira:  "docs/roadmap.md RC3 json parser; docs/loki-compliance-plan.md PR 6"
   - source: "fast/structured-metadata.yaml#JSON parsing with structured metadata filter first"
@@ -135,11 +133,11 @@ should_skip:
     since: "2026-05-15"
     jira:  "docs/roadmap.md RC3 `| json` parser; docs/loki-compliance-plan.md PR 6"
   - source: "regression/drilldown-patterns.yaml#Drilldown unwrap query with detected_level grouping"
-    reason: "Uses `avg_over_time(... | unwrap duration_seconds(duration))` + `sum by (detected_level)` — `| unwrap` range ops (avg_over_time) and range-aggregation grouping are both deferred to RC2/RC3 (internal/logql/range_aggregation.go)."
+    reason: "Uses `avg_over_time(... | unwrap duration_seconds(duration))` + `sum by (...)` grouping over the synthesized label — `| unwrap` range ops (avg_over_time) and range-aggregation grouping are both deferred to RC2/RC3 (internal/logql/range_aggregation.go). The `detected_level` reference itself lowers fine via internal/logql/detected_level.go."
     since: "2026-05-15"
     jira:  "docs/roadmap.md RC2 M3.4 grouping + RC2/RC3 unwrap; docs/loki-compliance-plan.md PR 6"
   - source: "regression/drilldown-patterns.yaml#Drilldown count with complex filters"
-    reason: "Uses `| detected_level=... or detected_level=... |~ ... | json | logfmt | drop | level=~...` — `| logfmt` and `| drop` are supported, but `| json` and the complex label-filter or-chain over structured metadata remain deferred."
+    reason: "Uses `... |~ ... | json | logfmt | drop | level=~...` with synthesized-label and structured-metadata filters — `| logfmt`, `| drop`, and the `detected_level` filter all lower, but `| json` remains deferred."
     since: "2026-05-15"
     jira:  "docs/roadmap.md RC3 `| json` parser; docs/loki-compliance-plan.md PR 6"
 
@@ -197,32 +195,18 @@ should_skip:
     since: "2026-05-15"
     jira:  "docs/roadmap.md RC3 json parser; docs/loki-compliance-plan.md PR 6"
 
-  # regression/structured-metadata.yaml — `detected_level` + parsers +
-  # numeric label filters.
-  - source: "regression/structured-metadata.yaml#Combined line and metadata filter"
-    reason: "Requires `detected_level` structured metadata; seeder writes none."
-    since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6"
+  # regression/structured-metadata.yaml — remaining entries depend on
+  # `| json` parser stages or numeric label filters. Pure
+  # `detected_level=`/`detected_level=~` filters are supported via
+  # internal/logql/detected_level.go.
   - source: "regression/structured-metadata.yaml#JSON parsing with duration filter and structured metadata"
     reason: "Upstream pins `skip: true` (numeric `> 0.1` label filter unsupported by v2 engine). Cerberus also has `| json` parser deferred to RC3 and numeric label filters deferred to RC3 (lower.go NumericLabelFilter returns 'not yet supported')."
     since: "2026-05-15"
     jira:  "docs/roadmap.md RC3 json parser + numeric label filters; docs/loki-compliance-plan.md PR 6"
-  - source: "regression/structured-metadata.yaml#Logfmt parsing with level filter"
-    reason: "`| logfmt | level=\"error\" | detected_level=\"error\"` — `| logfmt` is now supported, but `detected_level` structured-metadata filtering remains deferred."
-    since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6 (structured-metadata)"
   - source: "regression/structured-metadata.yaml#Drilldown pattern with case-insensitive error search"
     reason: "Upstream pins `skip: true` (numeric `>= 500` label filter). Cerberus also has `| json` + numeric label filters deferred (`| logfmt` and `| drop` are now supported)."
     since: "2026-05-15"
     jira:  "docs/roadmap.md RC3 `| json` parser + numeric label filters; docs/loki-compliance-plan.md PR 6"
-  - source: "regression/structured-metadata.yaml#Drilldown with failed search and error level"
-    reason: "Requires `detected_level` structured metadata + 'failed' keyword in log content; seeder writes neither."
-    since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6"
-  - source: "regression/structured-metadata.yaml#Drilldown with error/warn level and refused search"
-    reason: "Requires `detected_level` structured metadata + 'refused' keyword; seeder writes neither."
-    since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6"
 
   # exhaustive/aggregations.yaml — unwrap + by/without grouping on
   # range aggregations. (`| logfmt` is supported now; the remaining
@@ -256,9 +240,9 @@ should_skip:
     since: "2026-05-15"
     jira:  "docs/roadmap.md RC2 M3.4 grouping; docs/loki-compliance-plan.md PR 6"
   - source: "exhaustive/aggregations.yaml#Count aggregated by detected_level"
-    reason: "Requires `detected_level` structured metadata; seeder writes none."
+    reason: "`sum by (detected_level) (count_over_time(...))` — `detected_level` lowers as a filter via internal/logql/detected_level.go, but using the synthesized label as a vector-aggregation group key requires projecting the multiIf normalisation through count_over_time's grouping path. Range-aggregation `by` grouping is also deferred to RC2 M3.4."
     since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6"
+    jira:  "docs/roadmap.md RC2 M3.4 grouping; docs/loki-compliance-plan.md PR 6"
   - source: "exhaustive/aggregations.yaml#Count aggregated by cluster and namespace"
     reason: "`cluster`/`namespace` labels not in seed; range-aggregation `by` grouping deferred."
     since: "2026-05-15"

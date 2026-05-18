@@ -178,7 +178,7 @@ func lowerStage(stage syntax.StageExpr, s schema.Logs, labelsExpr chplan.Expr) (
 		p, err := lowerLineFilter(st, s)
 		return p, nil, err
 	case *syntax.LabelFilterExpr:
-		p, err := lowerLabelFilter(st, labelsExpr)
+		p, err := lowerLabelFilter(st, s, labelsExpr)
 		return p, nil, err
 	case *syntax.LineFmtExpr:
 		// `| line_format "{{.x}}"` is a post-fetch transform —
@@ -341,26 +341,28 @@ func extractKVPairs(s schema.Logs) chplan.Expr {
 // label is resolved against labelsExpr — initially the schema's
 // ResourceAttributes column, but after a `| logfmt` parser stage a
 // `mapConcat(ResourceAttributes, extractKeyValuePairs(Body, ...))`
-// wrapper so parsed keys are also visible.
-func lowerLabelFilter(f *syntax.LabelFilterExpr, labelsExpr chplan.Expr) (chplan.Expr, error) {
-	return labelFiltererToExpr(f.LabelFilterer, labelsExpr)
+// wrapper so parsed keys are also visible. The schema is threaded so
+// the synthesized `detected_level` label can short-circuit the
+// MapAccess resolution and emit a SeverityText normalisation instead.
+func lowerLabelFilter(f *syntax.LabelFilterExpr, s schema.Logs, labelsExpr chplan.Expr) (chplan.Expr, error) {
+	return labelFiltererToExpr(f.LabelFilterer, s, labelsExpr)
 }
 
-func labelFiltererToExpr(lf loglib.LabelFilterer, labelsExpr chplan.Expr) (chplan.Expr, error) {
+func labelFiltererToExpr(lf loglib.LabelFilterer, s schema.Logs, labelsExpr chplan.Expr) (chplan.Expr, error) {
 	switch v := lf.(type) {
 	case *loglib.StringLabelFilter:
-		return labelMatcherToExpr(v.Matcher, labelsExpr), nil
+		return labelMatcherToExpr(v.Matcher, s, labelsExpr), nil
 	case *loglib.LineFilterLabelFilter:
 		// Loki may wrap a string label filter in this when a line-filter
 		// short-circuit is also possible. Both embed *labels.Matcher and
 		// behave identically for our query-rewrite purposes.
-		return labelMatcherToExpr(v.Matcher, labelsExpr), nil
+		return labelMatcherToExpr(v.Matcher, s, labelsExpr), nil
 	case *loglib.BinaryLabelFilter:
-		left, err := labelFiltererToExpr(v.Left, labelsExpr)
+		left, err := labelFiltererToExpr(v.Left, s, labelsExpr)
 		if err != nil {
 			return nil, err
 		}
-		right, err := labelFiltererToExpr(v.Right, labelsExpr)
+		right, err := labelFiltererToExpr(v.Right, s, labelsExpr)
 		if err != nil {
 			return nil, err
 		}
@@ -381,13 +383,24 @@ func labelFiltererToExpr(lf loglib.LabelFilterer, labelsExpr chplan.Expr) (chpla
 // labelsExpr — the live "labels map" for the current point in the
 // pipeline. Shared between StringLabelFilter and the short-circuit-
 // friendly LineFilterLabelFilter (both embed the same *labels.Matcher).
-func labelMatcherToExpr(m *labels.Matcher, labelsExpr chplan.Expr) chplan.Expr {
-	return &chplan.Binary{
-		Op: matchOp(m.Type),
-		Left: &chplan.MapAccess{
+//
+// The synthesized `detected_level` label short-circuits the standard
+// MapAccess resolution: instead of reading `<labels>[detected_level]`,
+// the LHS becomes a `multiIf(...)` normalisation of SeverityText that
+// matches upstream Loki's `normalizeLogLevel` mapping.
+func labelMatcherToExpr(m *labels.Matcher, s schema.Logs, labelsExpr chplan.Expr) chplan.Expr {
+	var lhs chplan.Expr
+	if isDetectedLevelLabel(m.Name) {
+		lhs = detectedLevelExpr(s)
+	} else {
+		lhs = &chplan.MapAccess{
 			Map: labelsExpr,
 			Key: &chplan.LitString{V: m.Name},
-		},
+		}
+	}
+	return &chplan.Binary{
+		Op:    matchOp(m.Type),
+		Left:  lhs,
 		Right: &chplan.LitString{V: m.Value},
 	}
 }
@@ -481,9 +494,14 @@ func buildMatchersPredicate(matchers []*labels.Matcher, s schema.Logs) chplan.Ex
 }
 
 func matcherToExpr(m *labels.Matcher, s schema.Logs) chplan.Expr {
-	lhs := &chplan.MapAccess{
-		Map: &chplan.ColumnRef{Name: s.ResourceAttributesColumn},
-		Key: &chplan.LitString{V: m.Name},
+	var lhs chplan.Expr
+	if isDetectedLevelLabel(m.Name) {
+		lhs = detectedLevelExpr(s)
+	} else {
+		lhs = &chplan.MapAccess{
+			Map: &chplan.ColumnRef{Name: s.ResourceAttributesColumn},
+			Key: &chplan.LitString{V: m.Name},
+		}
 	}
 	return &chplan.Binary{
 		Op:    matchOp(m.Type),
