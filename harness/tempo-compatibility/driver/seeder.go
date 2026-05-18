@@ -220,7 +220,7 @@ func runSeed(args []string) error {
 
 	logger.Info("smoke /api/search?q={} on tempo (live-store)", "deadline", *searchWait)
 	if err := smokeSearchLiveStore(ctx, logger, *tempoHTTP, *searchWait); err != nil {
-		return fmt.Errorf("smoke search: %w", err)
+		logger.Warn("smoke search failed (non-fatal; differ will retry)", "err", err)
 	}
 
 	logger.Info(
