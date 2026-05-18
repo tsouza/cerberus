@@ -56,7 +56,7 @@ func lowerSubquery(e *parser.SubqueryExpr, s schema.Metrics, ctx lowerCtx) (chpl
 	case *parser.BinaryExpr:
 		return lowerSubqueryOverBinary(e, inner, step, s, ctx)
 	case *parser.SubqueryExpr:
-		return nil, fmt.Errorf("promql: nested subqueries are not yet supported (deferred to RC3)")
+		return lowerSubqueryOverSubquery(e, inner, step, s, ctx)
 	}
 	return nil, fmt.Errorf("promql: subquery over %T is not yet supported", e.Expr)
 }
@@ -551,6 +551,62 @@ func buildAttributesFromAggregate(agg *parser.AggregateExpr, gkeyAliases []strin
 		)
 	}
 	return &chplan.FuncCall{Name: "map", Args: args}
+}
+
+// lowerSubqueryOverSubquery handles `<inner-sub>[<outer-range>:<step>]` —
+// a SubqueryExpr whose body is itself a *parser.SubqueryExpr.
+//
+// PromQL's parser type system forbids this shape: SubqueryExpr.Expr
+// must evaluate to an instant vector and a SubqueryExpr produces a
+// range vector. So a parser-produced AST will never reach here.
+// We still handle the shape defensively to keep the lowering pipeline
+// total over the AST node space (e.g. for AST built programmatically
+// by an optimizer rewrite, or for any future parser change that
+// relaxes the type check).
+//
+// Semantics: the inner subquery's matrix is treated as the source of
+// per-(series, t_inner) samples; the outer subquery picks the latest
+// in-window sample per outer anchor. We widen the inner's `Range` to
+// cover the union of outer + inner ranges so every outer anchor's
+// lookback finds inner anchors (same trick as
+// `lowerSubqueryOverCallSubquery`), then wrap with an Identity-mode
+// RangeWindow on the outer's step grid (same shape as
+// `lowerSubqueryOverVectorSelector`).
+func lowerSubqueryOverSubquery(
+	sub *parser.SubqueryExpr,
+	innerSub *parser.SubqueryExpr,
+	step time.Duration,
+	s schema.Metrics,
+	ctx lowerCtx,
+) (chplan.Node, error) {
+	if innerSub.Range <= 0 {
+		return nil, fmt.Errorf("promql: inner subquery range must be positive, got %s", innerSub.Range)
+	}
+
+	widened := *innerSub
+	widened.Range = sub.Range + innerSub.Range
+	wideInner, err := lowerSubquery(&widened, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	anchor, err := subqueryAnchor(sub, ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return &chplan.RangeWindow{
+		Input:           wideInner,
+		Identity:        true,
+		Range:           step,
+		OuterRange:      sub.Range,
+		Step:            step,
+		End:             anchor.End,
+		Offset:          anchor.Offset,
+		TimestampColumn: "anchor_ts",
+		ValueColumn:     s.ValueColumn,
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
+	}, nil
 }
 
 // lowerSubqueryOverCallSubquery handles the nested-subquery shape
