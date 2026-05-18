@@ -55,40 +55,6 @@ func TestQuery_InvalidLogQL(t *testing.T) {
 	}
 }
 
-// TestQuery_ParserStageRejection — `{...} | json` is parsed by the
-// LogQL syntax library but cerberus's lowering rejects parser stages
-// (M3.2 deferral). Regression test: the deferral error message has to
-// stay stable until the feature actually ships in RC2.
-func TestQuery_ParserStageRejection(t *testing.T) {
-	t.Parallel()
-
-	srv := newServer(&stubQuerier{})
-	t.Cleanup(srv.Close)
-
-	resp, err := http.Get(srv.URL + `/loki/api/v1/query?query=%7Bjob%3D%22api%22%7D%20%7C%20json`)
-	if err != nil {
-		t.Fatalf("GET: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusUnprocessableEntity {
-		t.Fatalf("status: got %d, want 422 (UnprocessableEntity)", resp.StatusCode)
-	}
-	var env loki.Response
-	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if env.Status != "error" {
-		t.Errorf("status: got %q, want error", env.Status)
-	}
-	// Message should mention "json" or "parser" so an operator looking
-	// at Grafana's error UI can see what was rejected.
-	if !strings.Contains(strings.ToLower(env.Error), "json") &&
-		!strings.Contains(strings.ToLower(env.Error), "parser") {
-		t.Errorf("error message %q should mention `json` or `parser`", env.Error)
-	}
-}
-
 // TestQuery_UpstreamError — stub Querier returns a CH error → 502
 // with Loki error envelope.
 func TestQuery_UpstreamError(t *testing.T) {

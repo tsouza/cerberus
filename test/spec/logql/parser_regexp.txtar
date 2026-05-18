@@ -1,0 +1,30 @@
+-- query.logql --
+{job="api"} | regexp "(?P<status>\\d{3})" | status="500"
+-- sql --
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (mapConcat(`ResourceAttributes`, map(?, extractAllGroupsHorizontal(`Body`, ?)[?][?]))[?] = ?)
+-- args --
+[0] string = "job"
+[1] string = "api"
+[2] string = "status"
+[3] string = "(?P<status>\\d{3})"
+[4] int64 = 1
+[5] int64 = 1
+[6] string = "status"
+[7] string = "500"
+-- seed --
+CREATE TABLE otel_logs (
+    Body String,
+    ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api')
+) ENGINE = Memory;
+INSERT INTO otel_logs (Body) VALUES
+    ('GET /api 500 took=12ms'),
+    ('GET /api 200 took=5ms'),
+    ('POST /api 500 took=22ms');
+-- expected_rows --
+[
+  ["GET /api 500 took=12ms"],
+  ["POST /api 500 took=22ms"]
+]
+-- chplan --
+Filter predicate=((ResourceAttributes["job"] = "api") AND (mapConcat(ResourceAttributes, map("status", extractAllGroupsHorizontal(Body, "(?P<status>\\d{3})")[1][1]))["status"] = "500"))
+  Scan(otel_logs)

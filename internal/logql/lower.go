@@ -10,9 +10,11 @@ package logql
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"time"
 
 	loglib "github.com/grafana/loki/v3/pkg/logql/log"
+	"github.com/grafana/loki/v3/pkg/logql/log/jsonexpr"
 	"github.com/grafana/loki/v3/pkg/logql/syntax"
 	"github.com/prometheus/prometheus/model/labels"
 	"go.opentelemetry.io/otel"
@@ -115,17 +117,22 @@ func lowerMatchers(e *syntax.MatchersExpr, s schema.Logs, lc lowerCtx) chplan.No
 // filters and parser stages.
 //
 // labelsExpr threads the "current labels map" through stage iteration:
-// initially it's the schema's ResourceAttributes column; after a
-// `| logfmt` parser stage it becomes
-// `mapConcat(<prev>, extractKeyValuePairs(Body, '=', ' ', '"'))` so
-// downstream label filters resolve against the parsed key set in
-// addition to the stream-selector labels. Loki's documented contract
-// is "parsed labels appended; on conflict the stream label wins and
-// parsed gets `_extracted` suffix"; the CH-side mapConcat lets parsed
-// keys win on conflict instead. That's an acceptable v1 approximation
-// — the common case is parsed keys that don't shadow stream labels
-// (`level`, `msg`, `duration`, …). Strict Loki conflict semantics
-// stay open as a follow-up.
+// initially it's the schema's ResourceAttributes column; after a parser
+// stage (`| logfmt`, `| json`, `| regexp`) it becomes a mapConcat that
+// folds the parsed key/value pairs onto the prior labels map. The exact
+// inner expression varies by parser:
+//
+//   - `| logfmt`  → extractKeyValuePairs(Body, '=', ' ', '"')
+//   - `| json`    → CAST(JSONExtractKeysAndValues(Body, 'String') AS Map(...))
+//   - `| regexp`  → map(<name>, extractAllGroupsHorizontal(Body, <pat>)[i][1], ...)
+//
+// Downstream label filters resolve against this composite labels map.
+// Loki's documented contract is "parsed labels appended; on conflict
+// the stream label wins and parsed gets `_extracted` suffix"; the
+// CH-side mapConcat lets parsed keys win on conflict instead. That's
+// an acceptable v1 approximation — the common case is parsed keys that
+// don't shadow stream labels (`level`, `msg`, `duration`, …). Strict
+// Loki conflict semantics stay open as a follow-up.
 func lowerPipeline(e *syntax.PipelineExpr, s schema.Logs, lc lowerCtx) (chplan.Node, error) {
 	inner := lowerMatchers(e.Left, s, lc)
 	pred := chplan.Expr(nil)
@@ -206,13 +213,22 @@ func lowerStage(stage syntax.StageExpr, s schema.Logs, labelsExpr chplan.Expr) (
 		// pulls them out of the parsed expression via postProcessExtract
 		// and applies them per row.
 		//
-		// `| json` / `| regexp` parser stages stay deferred (the
-		// dedicated `| logfmt` syntax types are handled below).
+		// `| json` and `| regexp` lower to a labels-map merge so
+		// subsequent label filters resolve against the parsed keys —
+		// mirroring how `| logfmt` is handled below.
 		switch st.Op {
 		case syntax.OpParserTypeUnpack, syntax.OpParserTypePattern:
 			return nil, nil, nil
+		case syntax.OpParserTypeJSON:
+			return nil, jsonBareMergeLabels(labelsExpr, s), nil
+		case syntax.OpParserTypeRegexp:
+			merged, err := regexpMergeLabels(labelsExpr, s, st.Param)
+			if err != nil {
+				return nil, nil, err
+			}
+			return nil, merged, nil
 		}
-		return nil, nil, fmt.Errorf("logql: parser stage `| %s` is not yet supported (json/regexp parsers deferred from M3.2; revisit in RC3 alongside chsql JSONExtract helpers)", st.Op)
+		return nil, nil, fmt.Errorf("logql: parser stage `| %s` is not yet supported", st.Op)
 	case *syntax.LogfmtParserExpr:
 		// Bare `| logfmt` — extracts all `key=value` pairs from the
 		// line. Subsequent label filters resolve against
@@ -225,7 +241,15 @@ func lowerStage(stage syntax.StageExpr, s schema.Logs, labelsExpr chplan.Expr) (
 		_ = st
 		return nil, logfmtMergeLabels(labelsExpr, s), nil
 	case *syntax.JSONExpressionParserExpr:
-		return nil, nil, fmt.Errorf("logql: `| json field=\"...\"` parser is not yet supported (deferred from M3.2; revisit in RC3)")
+		// Typed `| json foo="response.code", bar="status"` — maps
+		// caller-chosen local names to specific JSON paths. Resulting
+		// labels expose only the named fields (no implicit merge of all
+		// top-level keys).
+		merged, err := jsonExpressionMergeLabels(labelsExpr, s, st.Expressions)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, merged, nil
 	case *syntax.LogfmtExpressionParserExpr:
 		// Typed `| logfmt foo="bar", baz="qux"` — maps caller-chosen
 		// local names to specific logfmt keys. Resulting labels expose
@@ -334,6 +358,182 @@ func extractKVPairs(s schema.Logs) chplan.Expr {
 			&chplan.LitString{V: "\""},
 		},
 	}
+}
+
+// jsonBareMergeLabels wraps the current labelsExpr with a
+// `mapConcat(<prev>, CAST(JSONExtractKeysAndValues(Body, 'String') AS
+// Map(String,String)))` so subsequent label filters see the union of
+// stream-selector labels and JSON-parsed top-level key/value pairs.
+//
+// JSONExtractKeysAndValues(json, 'String') returns
+// `Array(Tuple(String, String))` for the top-level object keys with each
+// value cast to String. CAST to Map(String, String) gives the same shape
+// the rest of the pipeline expects (mirrors the `| logfmt` lowering).
+// Nested objects stringify to their JSON form rather than flattening to
+// `parent_child` keys — that's an approximation of Loki's bare `| json`
+// semantics; the common flat-object case is exact.
+func jsonBareMergeLabels(prev chplan.Expr, s schema.Logs) chplan.Expr {
+	return &chplan.FuncCall{
+		Name: "mapConcat",
+		Args: []chplan.Expr{
+			prev,
+			&chplan.FuncCall{
+				Name: "CAST",
+				Args: []chplan.Expr{
+					&chplan.FuncCall{
+						Name: "JSONExtractKeysAndValues",
+						Args: []chplan.Expr{
+							&chplan.ColumnRef{Name: s.BodyColumn},
+							&chplan.LitString{V: "String"},
+						},
+					},
+					&chplan.LitString{V: "Map(String,String)"},
+				},
+			},
+		},
+	}
+}
+
+// jsonExpressionMergeLabels wraps labelsExpr with a `mapConcat` that
+// stitches in only the named JSON extractions (identifier => extracted
+// value). Each expression is `<identifier>="<json-path>"`. The lowering
+// parses each JSON path via Loki's own jsonexpr parser (matching Loki's
+// supported syntax: dot-notation, `[index]` bracket, quoted keys) and
+// renders `JSONExtractString(Body, <segment...>)` with one variadic
+// argument per path segment — CH treats string segments as object keys
+// and integer segments as array indexes, the same shape Loki's runtime
+// expects.
+func jsonExpressionMergeLabels(prev chplan.Expr, s schema.Logs, exprs []loglib.LabelExtractionExpr) (chplan.Expr, error) {
+	if len(exprs) == 0 {
+		// Defensive: a parser-emitted empty list is shaped like the
+		// bare `| json` form. Treat it as such so we don't drop the
+		// stage entirely.
+		return jsonBareMergeLabels(prev, s), nil
+	}
+	args := make([]chplan.Expr, 0, len(exprs)*2)
+	for _, ext := range exprs {
+		if ext.Identifier == "" {
+			return nil, fmt.Errorf("logql: `| json` expression has empty identifier")
+		}
+		path := ext.Expression
+		if path == "" {
+			// Loki fills Expression == Identifier when the user writes
+			// the bare-identifier form `| json foo`.
+			path = ext.Identifier
+		}
+		extract, err := jsonExtractStringExpr(s, path)
+		if err != nil {
+			return nil, err
+		}
+		args = append(args,
+			&chplan.LitString{V: ext.Identifier},
+			extract,
+		)
+	}
+	return &chplan.FuncCall{
+		Name: "mapConcat",
+		Args: []chplan.Expr{
+			prev,
+			&chplan.FuncCall{Name: "map", Args: args},
+		},
+	}, nil
+}
+
+// jsonExtractStringExpr renders `JSONExtractString(Body, segment1,
+// segment2, ...)` for a Loki JSON path string. Segments come from the
+// jsonexpr parser as `[]interface{}` — strings for object keys, ints
+// for array indexes. CH's JSONExtractString accepts that exact variadic
+// shape natively.
+func jsonExtractStringExpr(s schema.Logs, path string) (chplan.Expr, error) {
+	segments, err := jsonexpr.Parse(path, false)
+	if err != nil {
+		return nil, fmt.Errorf("logql: invalid `| json` path %q: %w", path, err)
+	}
+	args := make([]chplan.Expr, 0, len(segments)+1)
+	args = append(args, &chplan.ColumnRef{Name: s.BodyColumn})
+	for _, seg := range segments {
+		switch v := seg.(type) {
+		case string:
+			args = append(args, &chplan.LitString{V: v})
+		case int:
+			args = append(args, &chplan.LitInt{V: int64(v)})
+		default:
+			return nil, fmt.Errorf("logql: unsupported JSON path segment type %T in %q", seg, path)
+		}
+	}
+	return &chplan.FuncCall{Name: "JSONExtractString", Args: args}, nil
+}
+
+// regexpMergeLabels lowers a `| regexp "<pattern>"` stage to a label-map
+// merge. The pattern is compiled in Go so we can discover the
+// named-capture positions (Go's regexp/syntax matches RE2 — the same
+// engine CH uses for extractAllGroupsHorizontal). Each named capture
+// becomes a key in a `map(<name>, extractAllGroupsHorizontal(Body,
+// <pattern>)[<i>][1], ...)` literal that gets mapConcat'd onto the
+// running labels expression. The `[i][1]` indexing reaches into group
+// `i`'s array of matches and picks the first — Loki's regexp parser
+// records only the first match per group on each line.
+func regexpMergeLabels(prev chplan.Expr, s schema.Logs, pattern string) (chplan.Expr, error) {
+	if pattern == "" {
+		return nil, fmt.Errorf("logql: `| regexp` requires a non-empty pattern")
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, fmt.Errorf("logql: invalid `| regexp` pattern %q: %w", pattern, err)
+	}
+	type namedGroup struct {
+		index int
+		name  string
+	}
+	var named []namedGroup
+	seen := map[string]struct{}{}
+	for i, n := range re.SubexpNames() {
+		if i == 0 || n == "" {
+			continue
+		}
+		if _, dup := seen[n]; dup {
+			return nil, fmt.Errorf("logql: `| regexp` pattern has duplicate named capture %q", n)
+		}
+		seen[n] = struct{}{}
+		named = append(named, namedGroup{index: i, name: n})
+	}
+	if len(named) == 0 {
+		return nil, fmt.Errorf("logql: `| regexp` pattern %q has no named captures", pattern)
+	}
+	groupsCall := func() *chplan.FuncCall {
+		return &chplan.FuncCall{
+			Name: "extractAllGroupsHorizontal",
+			Args: []chplan.Expr{
+				&chplan.ColumnRef{Name: s.BodyColumn},
+				&chplan.LitString{V: pattern},
+			},
+		}
+	}
+	mapArgs := make([]chplan.Expr, 0, len(named)*2)
+	for _, g := range named {
+		mapArgs = append(mapArgs,
+			&chplan.LitString{V: g.name},
+			// extractAllGroupsHorizontal(...)[<group>][1] — group i,
+			// first match. CH 1-indexes both dimensions. Allocate a
+			// fresh FuncCall per named capture so the chplan tree
+			// stays free of shared sub-pointers an optimizer rule
+			// might rewrite in place.
+			&chplan.MapAccess{
+				Map: &chplan.MapAccess{
+					Map: groupsCall(),
+					Key: &chplan.LitInt{V: int64(g.index)},
+				},
+				Key: &chplan.LitInt{V: 1},
+			},
+		)
+	}
+	return &chplan.FuncCall{
+		Name: "mapConcat",
+		Args: []chplan.Expr{
+			prev,
+			&chplan.FuncCall{Name: "map", Args: mapArgs},
+		},
+	}, nil
 }
 
 // lowerLabelFilter handles `| label="val"` / `| label=~"regex"` and the
