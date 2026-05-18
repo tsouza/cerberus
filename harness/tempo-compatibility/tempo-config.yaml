@@ -49,6 +49,12 @@ distributor:
 storage:
   trace:
     backend: local
+    # Blocklist poll controls how often queriers discover new searchable
+    # blocks. The default is 5m; with the harness pushing data and then
+    # immediately querying, a 5m poll means /api/search won't find the
+    # data for up to 10m (2× poll interval). Reducing to 2s ensures the
+    # querier discovers flushed blocks within seconds.
+    blocklist_poll: 2s
     wal:
       path: /var/tempo/wal
     local:
@@ -64,12 +70,11 @@ storage:
 #   complete_block_timeout  (not storage.trace.block.complete_block_timeout)
 #
 # The Search API (/api/search) only searches completed blocks, not live
-# traces. FindByTraceID (/api/traces/<id>) searches both. Setting
-# complete_block_timeout to 5s (instead of Tempo's default 5m) ensures
-# blocks become searchable soon after the head block is cut. The seeder's
-# smokeSearchLiveStore polls /api/search with a timeout; if it still
-# times out on slow runners, the check is non-fatal (the differ will
-# retry).
+# traces. FindByTraceID (/api/traces/<id>) searches both. Two config
+# levers ensure /api/search returns data within seconds of push:
+#   1. live_store settings (below) cut and flush blocks aggressively
+#   2. blocklist_poll: 2s (above) ensures queriers discover flushed blocks
+#      quickly (default is 5m, which means 10m staleness window).
 live_store:
   max_trace_live: 2s
   max_trace_idle: 1s
