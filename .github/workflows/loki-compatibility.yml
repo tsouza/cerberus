@@ -31,7 +31,7 @@ name: loki-compatibility
 #   * actions/checkout@v6           — stdlib.
 #   * actions/setup-go@v6           — `go run ./cmd/seed` + `go test -c`
 #                                     for the vendored bench driver.
-#   * docker/setup-buildx-action@v3 — buildkit-backed compose build
+#   * docker/setup-buildx-action@v4 — buildkit-backed compose build
 #                                     (clickhouse + reference Loki +
 #                                     cerberus image).
 #   * actions/upload-artifact@v7    — diff report.
@@ -90,7 +90,7 @@ jobs:
 
       # Buildx gives the Compose build cache + a consistent backend
       # for the local cerberus image context.
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       - name: Run loki-compatibility harness
         id: harness
