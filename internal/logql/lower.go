@@ -134,6 +134,19 @@ func lowerMatchers(e *syntax.MatchersExpr, s schema.Logs, lc lowerCtx) chplan.No
 // don't shadow stream labels (`level`, `msg`, `duration`, …). Strict
 // Loki conflict semantics stay open as a follow-up.
 func lowerPipeline(e *syntax.PipelineExpr, s schema.Logs, lc lowerCtx) (chplan.Node, error) {
+	node, _, err := lowerPipelineWithLabels(e, s, lc)
+	return node, err
+}
+
+// lowerPipelineWithLabels is the underlying pipeline lowering. It returns
+// the final "labels map" expression alongside the Node so range-aggregation
+// callers (range_aggregation.go) can plumb `| unwrap` post-filters against
+// the same labels map the pipeline produced for ordinary label filters.
+//
+// The returned labelsExpr is the schema's ResourceAttributes column when
+// no parser stage ran; otherwise it carries a `mapConcat(...)` wrapper
+// that adds parsed keys (see [logfmtMergeLabels]).
+func lowerPipelineWithLabels(e *syntax.PipelineExpr, s schema.Logs, lc lowerCtx) (chplan.Node, chplan.Expr, error) {
 	inner := lowerMatchers(e.Left, s, lc)
 	pred := chplan.Expr(nil)
 	if f, ok := inner.(*chplan.Filter); ok {
@@ -144,7 +157,7 @@ func lowerPipeline(e *syntax.PipelineExpr, s schema.Logs, lc lowerCtx) (chplan.N
 	for _, stage := range e.MultiStages {
 		next, newLabels, err := lowerStage(stage, s, labelsExpr)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if newLabels != nil {
 			labelsExpr = newLabels
@@ -162,9 +175,9 @@ func lowerPipeline(e *syntax.PipelineExpr, s schema.Logs, lc lowerCtx) (chplan.N
 		}
 	}
 	if pred == nil {
-		return inner, nil
+		return inner, labelsExpr, nil
 	}
-	return &chplan.Filter{Input: inner, Predicate: pred}, nil
+	return &chplan.Filter{Input: inner, Predicate: pred}, labelsExpr, nil
 }
 
 // lowerStage handles one pipeline stage. Returns up to two values:
@@ -572,11 +585,98 @@ func labelFiltererToExpr(lf loglib.LabelFilterer, s schema.Logs, labelsExpr chpl
 		}
 		return &chplan.Binary{Op: op, Left: left, Right: right}, nil
 	case *loglib.NumericLabelFilter:
-		return nil, fmt.Errorf("logql: numeric label filters are not yet supported (parser-extracted numbers require typed lifting beyond the Map(String,String) `| logfmt` exposes; deferred to a follow-up)")
-	case *loglib.DurationLabelFilter, *loglib.BytesLabelFilter:
-		return nil, fmt.Errorf("logql: %T label filter is not yet supported (parser-extracted typed fields require typed lifting beyond the Map(String,String) `| logfmt` exposes; deferred to a follow-up)", lf)
+		return numericLabelFilterExpr(v, labelsExpr), nil
+	case *loglib.DurationLabelFilter:
+		return durationLabelFilterExpr(v, labelsExpr), nil
+	case *loglib.BytesLabelFilter:
+		return bytesLabelFilterExpr(v, labelsExpr), nil
 	}
 	return nil, fmt.Errorf("logql: unsupported label filterer %T", lf)
+}
+
+// numericLabelFilterExpr lowers `| field > 5` / `>= 5` / `< 5` / `<= 5`
+// / `= 5` / `!= 5` to a numeric comparison on the parsed Float64 value
+// of the named label. The label value is interpreted via
+// `toFloat64OrZero(labelsExpr['<name>'])` — matching Loki's runtime
+// `strconv.ParseFloat` shape — and compared with the literal value at
+// CH evaluation time so a non-parseable value falls through as 0.
+func numericLabelFilterExpr(f *loglib.NumericLabelFilter, labelsExpr chplan.Expr) chplan.Expr {
+	lhs := &chplan.FuncCall{
+		Name: "toFloat64OrZero",
+		Args: []chplan.Expr{&chplan.MapAccess{
+			Map: labelsExpr,
+			Key: &chplan.LitString{V: f.Name},
+		}},
+	}
+	return &chplan.Binary{
+		Op:    labelFilterOp(f.Type),
+		Left:  lhs,
+		Right: &chplan.LitFloat{V: f.Value},
+	}
+}
+
+// durationLabelFilterExpr lowers `| field > 5s` and friends. Loki's
+// parser has already converted the right-hand-side spec to a
+// time.Duration; we compare the parsed-from-string seconds against the
+// duration converted to seconds. The label string is parsed with CH's
+// `parseTimeDelta` which understands Loki's Go-duration shape ("1.5s",
+// "200ms", "1m30s", "1h"). `parseTimeDelta` returns Float64 seconds —
+// matching the units of the duration literal we emit.
+func durationLabelFilterExpr(f *loglib.DurationLabelFilter, labelsExpr chplan.Expr) chplan.Expr {
+	lhs := &chplan.FuncCall{
+		Name: "parseTimeDelta",
+		Args: []chplan.Expr{&chplan.MapAccess{
+			Map: labelsExpr,
+			Key: &chplan.LitString{V: f.Name},
+		}},
+	}
+	return &chplan.Binary{
+		Op:    labelFilterOp(f.Type),
+		Left:  lhs,
+		Right: &chplan.LitFloat{V: f.Value.Seconds()},
+	}
+}
+
+// bytesLabelFilterExpr lowers `| field > 1KB` and friends. Loki's
+// parser has already converted the right-hand-side spec to a `uint64`
+// byte count; we compare the parsed-from-string byte count against the
+// literal. The label string is parsed with CH's `parseReadableSize`
+// which understands "1KB", "1MiB", "1.5G", etc. — covering the
+// `humanize.ParseBytes` shape Loki's runtime uses. `parseReadableSize`
+// returns Float64 bytes; we cast the right-hand-side accordingly.
+func bytesLabelFilterExpr(f *loglib.BytesLabelFilter, labelsExpr chplan.Expr) chplan.Expr {
+	lhs := &chplan.FuncCall{
+		Name: "parseReadableSize",
+		Args: []chplan.Expr{&chplan.MapAccess{
+			Map: labelsExpr,
+			Key: &chplan.LitString{V: f.Name},
+		}},
+	}
+	return &chplan.Binary{
+		Op:    labelFilterOp(f.Type),
+		Left:  lhs,
+		Right: &chplan.LitFloat{V: float64(f.Value)},
+	}
+}
+
+// labelFilterOp maps a LogQL LabelFilterType (the value-comparison enum
+// for numeric / duration / bytes filters) onto a chplan BinaryOp.
+func labelFilterOp(t loglib.LabelFilterType) chplan.BinaryOp {
+	switch t {
+	case loglib.LabelFilterEqual:
+		return chplan.OpEq
+	case loglib.LabelFilterNotEqual:
+		return chplan.OpNe
+	case loglib.LabelFilterGreaterThan:
+		return chplan.OpGt
+	case loglib.LabelFilterGreaterThanOrEqual:
+		return chplan.OpGe
+	case loglib.LabelFilterLesserThan:
+		return chplan.OpLt
+	case loglib.LabelFilterLesserThanOrEqual:
+		return chplan.OpLe
+	}
+	return chplan.OpEq
 }
 
 // labelMatcherToExpr renders a Prometheus-style label Matcher against

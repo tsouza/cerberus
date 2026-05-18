@@ -1,0 +1,15 @@
+-- query.logql --
+{job="api"} | logfmt | status > 400
+-- args --
+[0] string = "job"
+[1] string = "api"
+[2] string = "="
+[3] string = " "
+[4] string = "\""
+[5] string = "status"
+[6] float64 = 400
+-- chplan --
+Filter predicate=((ResourceAttributes["job"] = "api") AND (toFloat64OrZero(mapConcat(ResourceAttributes, extractKeyValuePairs(Body, "=", " ", "\""))["status"]) > 400))
+  Scan(otel_logs)
+-- sql --
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (toFloat64OrZero(mapConcat(`ResourceAttributes`, extractKeyValuePairs(`Body`, ?, ?, ?))[?]) > ?)
