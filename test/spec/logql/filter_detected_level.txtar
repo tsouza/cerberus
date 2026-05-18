@@ -1,0 +1,53 @@
+-- query.logql --
+{job="api"} | detected_level="error"
+-- sql --
+SELECT * FROM `otel_logs` WHERE (multiIf(((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (lower(`SeverityText`) = ?), ?, (lower(`SeverityText`) = ?), ?, lower(`SeverityText`)) = ?) AND (`ResourceAttributes`[?] = ?)
+-- args --
+[0] string = "trace"
+[1] string = "trc"
+[2] string = "trace"
+[3] string = "debug"
+[4] string = "dbg"
+[5] string = "debug"
+[6] string = "info"
+[7] string = "inf"
+[8] string = "information"
+[9] string = "info"
+[10] string = "warn"
+[11] string = "wrn"
+[12] string = "warning"
+[13] string = "warn"
+[14] string = "error"
+[15] string = "err"
+[16] string = "error"
+[17] string = "critical"
+[18] string = "critical"
+[19] string = "fatal"
+[20] string = "fatal"
+[21] string = "error"
+[22] string = "job"
+[23] string = "api"
+-- seed --
+CREATE TABLE otel_logs (
+    Body String,
+    SeverityText LowCardinality(String) MATERIALIZED multiIf(
+        Body = 'line-warn', 'WARN',
+        Body = 'line-info', 'INFO',
+        Body = 'line-debug', 'DEBUG',
+        Body = 'line-fatal', 'FATAL',
+        'ERROR'),
+    ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api')
+) ENGINE = Memory;
+INSERT INTO otel_logs (Body) VALUES
+    ('line-err'),
+    ('line-warn'),
+    ('line-info'),
+    ('line-debug'),
+    ('line-fatal');
+-- expected_rows --
+[
+  ["line-err"]
+]
+-- chplan --
+Filter predicate=((ResourceAttributes["job"] = "api") AND (multiIf(((lower(SeverityText) = "trace") OR (lower(SeverityText) = "trc")), "trace", ((lower(SeverityText) = "debug") OR (lower(SeverityText) = "dbg")), "debug", (((lower(SeverityText) = "info") OR (lower(SeverityText) = "inf")) OR (lower(SeverityText) = "information")), "info", (((lower(SeverityText) = "warn") OR (lower(SeverityText) = "wrn")) OR (lower(SeverityText) = "warning")), "warn", ((lower(SeverityText) = "error") OR (lower(SeverityText) = "err")), "error", (lower(SeverityText) = "critical"), "critical", (lower(SeverityText) = "fatal"), "fatal", lower(SeverityText)) = "error"))
+  Scan(otel_logs)
