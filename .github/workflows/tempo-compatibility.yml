@@ -4,18 +4,17 @@ name: tempo-compatibility
 # workflow invokes runs both subcommands in sequence: seed (push OTLP
 # into Tempo + INSERT into ClickHouse for cerberus + smoke
 # /api/traces/<id>) then diff (TXTAR corpus through /api/search +
-# /api/traces; markdown report under reports/). continue-on-error is
-# preserved at the job level so the workflow stays an informational
-# baseline until PR 7 promotes it to a required check.
+# /api/traces; markdown report under reports/).
 #
 # Triggers:
 #   * workflow_dispatch  — manual runs from the GH UI.
 #   * schedule           — nightly (offset from sibling harnesses to
 #                          spread runner load).
-#   * push to main       — informational only. continue-on-error keeps
-#                          the workflow conclusion green so this is not
-#                          a required check by accident; promotion to a
-#                          required PR check is PR 7 of the rollout.
+#   * push to main       — informational only; promotion to a required
+#                          PR check is PR 7 of the rollout.
+#   * pull_request       — path-filtered to tempo files so PRs that
+#                          touch the harness or traceql surface get
+#                          early signal.
 #
 # Per ~/.claude/CI_STEPS.md, every step uses an official / well-known
 # Action — no `curl | sh` installs. Actions used here:
@@ -24,6 +23,13 @@ name: tempo-compatibility
 #   * actions/upload-artifact@v7 — report artifact upload.
 
 on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'internal/api/tempo/**'
+      - 'internal/traceql/**'
+      - 'harness/tempo-compatibility/**'
+      - '.github/workflows/tempo-compatibility.yml'
   workflow_dispatch:
   schedule:
     # Nightly at 04:23 UTC. Offset from compatibility.yml (04:11) and
@@ -33,9 +39,6 @@ on:
   push:
     branches: [main]
     paths:
-      # Only re-run on changes that could affect the harness wiring.
-      # Cerberus code changes are already covered by the prom + shadow
-      # gates; this harness is about tempo-specific drift.
       - 'internal/api/tempo/**'
       - 'internal/traceql/**'
       - 'harness/tempo-compatibility/**'
@@ -53,16 +56,6 @@ jobs:
     name: tempo/compatibility
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # Informational baseline through PR 6. The Compose lifecycle (pull
-    # tempo image, build cerberus image, build driver image, wait for
-    # healthchecks) can legitimately fail under runner flake, and the
-    # PR-4 differ runs without --fail-on-diff so a per-case structural
-    # regression also stays informational. continue-on-error keeps the
-    # workflow badge green during the rollout. PR 7 of the plan
-    # promotes this to a gated required check once nightly is stable
-    # for 7 consecutive runs (per docs/tempo-compliance-plan.md
-    # "Per-PR breakdown").
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v6
 
@@ -89,3 +82,9 @@ jobs:
           path: harness/tempo-compatibility/reports/
           if-no-files-found: warn
           retention-days: 30
+
+      - name: Fail job if harness step failed
+        if: always() && steps.harness.outcome == 'failure'
+        run: |
+          echo "::error title=tempo compatibility suite failed::harness step failed -- see logs and uploaded report"
+          exit 1
