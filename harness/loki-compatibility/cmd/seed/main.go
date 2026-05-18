@@ -26,7 +26,9 @@ import (
 
 const anchor = "2026-05-11T00:00:00Z"
 
-const entriesPerService = 600
+const entriesPerService = 1440
+
+const entryInterval = 1 * time.Minute
 
 const seedValue = int64(42)
 
@@ -147,7 +149,7 @@ func run(logger *slog.Logger) error {
 		"entries_per_service", entriesPerService,
 		"total_entries", totalEntries,
 		"anchor", anchor,
-		"span_seconds", entriesPerService,
+		"span", int64(entryInterval.Seconds())*int64(entriesPerService),
 	)
 
 	logger.Info("inserting into clickhouse otel_logs")
@@ -216,7 +218,7 @@ func buildStreams(start time.Time) []stream {
 		}
 
 		for i := 0; i < entriesPerService; i++ {
-			ts := start.Add(time.Duration(i) * time.Second)
+			ts := start.Add(time.Duration(i) * entryInterval)
 			level := levels[rng.Intn(len(levels))]
 			var line string
 			switch sc.Format {
