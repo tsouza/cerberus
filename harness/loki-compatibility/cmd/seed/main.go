@@ -191,7 +191,7 @@ type entry struct {
 }
 
 func buildStreams(start time.Time) []stream {
-	rng := rand.New(rand.NewSource(seedValue)) // #nosec G404
+	rng := rand.New(rand.NewSource(seedValue)) //nolint:gosec
 	levels := []string{"INFO", "WARN", "ERROR", "DEBUG"}
 	out := make([]stream, 0, len(serviceConfigs))
 
