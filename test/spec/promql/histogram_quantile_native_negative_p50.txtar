@@ -22,7 +22,7 @@ SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, now64(?) AS `TimeUnix`, 
 [16] int64 = 9
 [17] int64 = 300000000000
 -- seed --
-CREATE TABLE IF NOT EXISTS otel_metrics_exp_histogram (
+CREATE TABLE otel_metrics_exp_histogram (
     MetricName String,
     Attributes Map(String, String),
     TimeUnix DateTime64(9),
