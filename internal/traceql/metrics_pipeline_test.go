@@ -191,6 +191,29 @@ func TestLowerMetricsPipelineUnsupported(t *testing.T) {
 			query:      `{} | quantile_over_time(duration, 0.5, 0.9, 0.99)`,
 			wantSubstr: "multi-quantile",
 		},
+		{
+			// Second-stage topk/bottomk/threshold land in two phases:
+			// the chplan+chsql foundation is in place (see
+			// chplan/metrics_second_stage.go,
+			// chsql/metrics_second_stage.go) but the traceql lowering
+			// is blocked on tsouza/tempo accessors for the
+			// unexported TopKBottomK / MetricsFilter fields. Until
+			// that fork bump lands, the lowering returns a clean
+			// "not yet supported" with a pointer to the foundation.
+			name:       "second_stage_topk_deferred",
+			query:      `{} | rate() | topk(5)`,
+			wantSubstr: "second-stage",
+		},
+		{
+			name:       "second_stage_bottomk_deferred",
+			query:      `{} | rate() | bottomk(3)`,
+			wantSubstr: "second-stage",
+		},
+		{
+			name:       "second_stage_threshold_deferred",
+			query:      `{} | rate() | > 10`,
+			wantSubstr: "second-stage",
+		},
 	}
 
 	for _, tc := range cases {

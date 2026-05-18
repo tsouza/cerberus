@@ -174,6 +174,20 @@ func TestMetricsHistogramOverTime_Walk_VisitsInner(t *testing.T) {
 	assertSentinels(t, visitScans(root), []string{"mhot_inner"})
 }
 
+func TestMetricsSecondStage_Walk_VisitsInput(t *testing.T) {
+	t.Parallel()
+	root := &chplan.MetricsSecondStage{
+		Input: &chplan.MetricsAggregate{
+			Op:    chplan.MetricsOpRate,
+			Inner: &chplan.Scan{Table: "mss_input"},
+		},
+		Op:         chplan.SecondStageTopK,
+		K:          5,
+		ValueAlias: "Value",
+	}
+	assertSentinels(t, visitScans(root), []string{"mss_input"})
+}
+
 func TestSetOperation_Walk_VisitsBothSides(t *testing.T) {
 	t.Parallel()
 	root := &chplan.SetOperation{
@@ -415,6 +429,21 @@ func TestChildren_MetricsHistogramOverTimeReturnsExactlyInner(t *testing.T) {
 	kids := m.Children()
 	if len(kids) != 1 || kids[0] != inner {
 		t.Errorf("MetricsHistogramOverTime.Children() should return [Inner], got %v", kids)
+	}
+}
+
+func TestChildren_MetricsSecondStageReturnsExactlyInput(t *testing.T) {
+	t.Parallel()
+	input := &chplan.Scan{Table: "t"}
+	m := &chplan.MetricsSecondStage{
+		Input:      input,
+		Op:         chplan.SecondStageTopK,
+		K:          3,
+		ValueAlias: "Value",
+	}
+	kids := m.Children()
+	if len(kids) != 1 || kids[0] != input {
+		t.Errorf("MetricsSecondStage.Children() should return [Input], got %v", kids)
 	}
 }
 

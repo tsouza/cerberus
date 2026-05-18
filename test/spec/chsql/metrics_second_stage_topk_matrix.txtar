@@ -1,0 +1,9 @@
+-- args --
+[0] int64 = 1
+-- sql --
+SELECT * FROM (SELECT `service`, `anchor_ts`, toFloat64(count(?)) / 60 AS `Value` FROM (SELECT `ServiceName` AS `service`, `Timestamp` AS `ts`, arrayJoin(arrayMap(i -> now64(9) - toIntervalNanosecond(i * 60000000000), range(0, 6))) AS `anchor_ts` FROM (SELECT * FROM `otel_traces`)) WHERE ts >= anchor_ts - toIntervalNanosecond(60000000000) AND ts <= anchor_ts GROUP BY `service`, `anchor_ts`) ORDER BY `Value` DESC LIMIT 5 BY `anchor_ts`
+-- chplan --
+MetricsSecondStage op=topk k=5 partitionBy=[anchor_ts] valueAlias=Value
+  RangeWindow func= range=0s step=1m0s outerRange=5m0s ts=Timestamp
+    MetricsAggregate op=rate groupBy=[ServiceName AS service] valueAlias=Value
+      Scan(otel_traces)

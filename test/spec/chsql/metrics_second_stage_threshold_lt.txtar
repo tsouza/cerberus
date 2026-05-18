@@ -1,0 +1,8 @@
+-- args --
+[0] float64 = 0.5
+-- sql --
+SELECT * FROM (SELECT sum(`Duration`) AS `Value` FROM (SELECT * FROM `otel_traces`)) WHERE (`Value` < ?)
+-- chplan --
+MetricsSecondStage op=threshold threshold=(< 0.5) valueAlias=Value
+  MetricsAggregate op=sum_over_time attr=Duration valueAlias=Value
+    Scan(otel_traces)

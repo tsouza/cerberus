@@ -99,7 +99,7 @@ Most of PromQL isn't lowered yet at the seed stage. Gating now would make every 
 
 ### TraceQL
 
-- **Spanset pipeline expressions** — some `PipelineElement` types return "not yet supported" when cerberus encounters them as a pipeline tail (`internal/traceql/lower.go:114`, `lower.go:186`). Second-stage metrics operators (`| topk`, `| bottomk`, `| > N`) are also unsupported (`internal/traceql/lower.go:83`).
+- **Spanset pipeline expressions** — some `PipelineElement` types return "not yet supported" when cerberus encounters them as a pipeline tail (`internal/traceql/lower.go:114`, `lower.go:186`). Second-stage metrics operators (`| topk`, `| bottomk`, `| > N`) have a landed chplan + chsql IR (`internal/chplan/metrics_second_stage.go`, `internal/chsql/metrics_second_stage.go`) but the TraceQL lowering layer still returns "not yet supported" (`internal/traceql/lower.go:83`) pending tsouza/tempo accessors on the upstream-unexported `TopKBottomK` / `MetricsFilter` fields.
 - **Multi-quantile `quantile_over_time`** — `quantile_over_time(0.5,0.95, ...)` with more than one quantile returns "not yet supported" (`internal/traceql/metrics_pipeline.go:108`).
 - **`?scope=` filter on `/api/v2/search/tags`** — not honoured; the handler returns all scopes (resource, span, intrinsic) regardless of the requested scope (`internal/api/tempo/search_tags.go:109`).
 - **Exemplars on metrics-pipeline queries** — the `Exemplars` field is always an empty array. The wire shape is correct but the handler does not yet populate exemplar data (`internal/api/tempo/metrics_query_range.go:36`).

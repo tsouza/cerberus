@@ -215,6 +215,25 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		if v.Inner != nil {
 			printNode(b, v.Inner, depth+1)
 		}
+	case *chplan.MetricsSecondStage:
+		fmt.Fprintf(b, "%sMetricsSecondStage op=%s", indent, v.Op)
+		switch v.Op {
+		case chplan.SecondStageTopK, chplan.SecondStageBottomK:
+			fmt.Fprintf(b, " k=%d", v.K)
+		case chplan.SecondStageThreshold:
+			fmt.Fprintf(b, " threshold=(%s %s)", v.ThresholdOp,
+				strconv.FormatFloat(v.ThresholdValue, 'g', -1, 64))
+		}
+		if len(v.PartitionBy) > 0 {
+			fmt.Fprintf(b, " partitionBy=[%s]", strings.Join(v.PartitionBy, ", "))
+		}
+		if v.ValueAlias != "" {
+			fmt.Fprintf(b, " valueAlias=%s", v.ValueAlias)
+		}
+		b.WriteString("\n")
+		if v.Input != nil {
+			printNode(b, v.Input, depth+1)
+		}
 	case *chplan.MetricsHistogramOverTime:
 		gb := make([]string, len(v.GroupBy))
 		for i, e := range v.GroupBy {

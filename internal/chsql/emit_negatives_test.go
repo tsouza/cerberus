@@ -109,6 +109,93 @@ func TestEmit_RangeWindowUnknownFunc(t *testing.T) {
 	}
 }
 
+// TestEmit_MetricsSecondStage_Errors — MetricsSecondStage rejects
+// invalid shapes loud rather than silently producing degenerate SQL:
+//
+//   - Nil Input → ErrUnsupported (Input is required; no parent to
+//     project from).
+//   - Empty ValueAlias → ErrUnsupported (no column to sort or filter).
+//   - Topk with K=0 → ErrUnsupported (LIMIT 0 disables the second-stage
+//     intent; TraceQL's parser already rejects this, so it's a lowering
+//     bug if it reaches the emitter).
+//   - Threshold with an unsupported op (e.g. OpAnd) → ErrUnsupported.
+//   - Unknown SecondStageOp (zero value SecondStageInvalid) →
+//     ErrUnsupported.
+func TestEmit_MetricsSecondStage_Errors(t *testing.T) {
+	t.Parallel()
+
+	baseInput := func() chplan.Node {
+		return &chplan.MetricsAggregate{
+			Op:         chplan.MetricsOpRate,
+			ValueAlias: "Value",
+			Inner:      &chplan.Scan{Table: "otel_traces"},
+		}
+	}
+
+	cases := []struct {
+		name string
+		ms   *chplan.MetricsSecondStage
+	}{
+		{
+			"nil Input",
+			&chplan.MetricsSecondStage{
+				Input:      nil,
+				Op:         chplan.SecondStageTopK,
+				K:          5,
+				ValueAlias: "Value",
+			},
+		},
+		{
+			"empty ValueAlias",
+			&chplan.MetricsSecondStage{
+				Input:      baseInput(),
+				Op:         chplan.SecondStageTopK,
+				K:          5,
+				ValueAlias: "",
+			},
+		},
+		{
+			"topk with K=0",
+			&chplan.MetricsSecondStage{
+				Input:      baseInput(),
+				Op:         chplan.SecondStageTopK,
+				K:          0,
+				ValueAlias: "Value",
+			},
+		},
+		{
+			"threshold with non-comparison op",
+			&chplan.MetricsSecondStage{
+				Input:          baseInput(),
+				Op:             chplan.SecondStageThreshold,
+				ThresholdOp:    chplan.OpAnd,
+				ThresholdValue: 10,
+				ValueAlias:     "Value",
+			},
+		},
+		{
+			"SecondStageInvalid op",
+			&chplan.MetricsSecondStage{
+				Input:      baseInput(),
+				Op:         chplan.SecondStageInvalid,
+				ValueAlias: "Value",
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, _, err := chsql.Emit(context.Background(), tc.ms)
+			if err == nil {
+				t.Fatalf("Emit(%s) returned nil error", tc.name)
+			}
+			if !errors.Is(err, chsql.ErrUnsupported) {
+				t.Errorf("expected wrapped ErrUnsupported; got %v", err)
+			}
+		})
+	}
+}
+
 // TestEmit_StructuralJoinMissingColumns — StructuralJoin needs
 // TraceIDColumn / SpanIDColumn / ParentSpanIDColumn set; emit must
 // reject early.

@@ -589,6 +589,10 @@ func isAggregateShape(plan chplan.Node) bool {
 		// TraceQL metrics-pipeline output: same SELECT-list shape as
 		// chplan.Aggregate (group-keys + Value alias).
 		return true
+	case *chplan.MetricsSecondStage:
+		// TraceQL second-stage transforms (topk / bottomk / threshold)
+		// preserve the inner aggregate's SELECT-list shape — recurse.
+		return isAggregateShape(v.Input)
 	case *chplan.Filter:
 		return isAggregateShape(v.Input)
 	case *chplan.Project:

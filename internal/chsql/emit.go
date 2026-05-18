@@ -76,6 +76,8 @@ func (e *emitter) emitNode(n chplan.Node) error {
 		return e.emitAggregate(v)
 	case *chplan.MetricsAggregate:
 		return e.emitMetricsAggregate(v)
+	case *chplan.MetricsSecondStage:
+		return e.emitMetricsSecondStage(v)
 	case *chplan.MetricsHistogramOverTime:
 		return e.emitMetricsHistogramOverTime(v)
 	case *chplan.RangeWindow:

@@ -1,0 +1,8 @@
+-- args --
+[0] int64 = 1
+-- sql --
+SELECT * FROM (SELECT toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_traces`)) ORDER BY `Value` DESC LIMIT 5
+-- chplan --
+MetricsSecondStage op=topk k=5 valueAlias=Value
+  MetricsAggregate op=rate valueAlias=Value
+    Scan(otel_traces)

@@ -80,7 +80,17 @@ func lowerRoot(expr *traceql.RootExpr, s schema.Traces) (chplan.Node, error) {
 		}
 	}
 	if expr.MetricsSecondStage != nil {
-		return nil, fmt.Errorf("traceql: metrics second-stage operators (`| topk`, `| bottomk`, `| > N`) are not yet supported")
+		// chplan.MetricsSecondStage + chsql.emitMetricsSecondStage now
+		// carry the IR + SQL for `| topk(N)` / `| bottomk(N)` / `| > N`
+		// (see internal/chplan/metrics_second_stage.go +
+		// internal/chsql/metrics_second_stage.go). Wiring the lowering
+		// here is blocked on tsouza/tempo:cerberus-accessors exposing
+		// accessors on the upstream-unexported TopKBottomK.{op,limit}
+		// and MetricsFilter.{op,value} fields (mirrors the
+		// MetricsAggregate accessors added for #143). The fork bump
+		// lands as a follow-up; until then the IR + emitter foundation
+		// is callable directly from chplan-shape tests.
+		return nil, fmt.Errorf("traceql: metrics second-stage operators (`| topk`, `| bottomk`, `| > N`) are not yet supported (chplan + chsql IR landed; lowering wiring blocked on tsouza/tempo SecondStageElement accessors)")
 	}
 	return plan, nil
 }
