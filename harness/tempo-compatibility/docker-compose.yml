@@ -128,12 +128,18 @@ services:
       retries: 30
 
   tempo-compat-driver:
-    # PR 4: the driver now exposes two real subcommands — `seed` (push
-    # fixture into both backends) and `diff` (run TXTAR corpus, write
-    # markdown report). The run-tempo-compatibility script invokes
-    # them in sequence; the default `command:` keeps `seed` so an ad-hoc
-    # `docker compose run --rm tempo-compat-driver` still does the
-    # right thing during local debugging.
+    # The script (run-tempo-compatibility.sh) runs the seeder and differ
+    # as Go binaries on the host, connecting to Docker-published ports
+    # on localhost. This avoids Docker DNS resolution failures on CI
+    # runners (see the script header for details).
+    #
+    # This service definition is retained for optional in-Docker
+    # debugging: `docker compose run --rm tempo-compat-driver seed`
+    # or `docker compose run --rm tempo-compat-driver diff` still
+    # works inside the compose network. The env vars below set
+    # Docker-internal hostnames that resolve only from within the
+    # compose network; the Go flag defaults use localhost + published
+    # ports for host execution.
     #
     # Build context widened from `./driver` to the repo root so the
     # driver can `import "github.com/tsouza/cerberus/internal/schema/ddl"`

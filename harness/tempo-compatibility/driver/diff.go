@@ -36,8 +36,8 @@ func runDiff(args []string) error {
 	fs := flag.NewFlagSet("diff", flag.ContinueOnError)
 	var (
 		corpusPath  = fs.String("corpus", envOr("CORPUS_PATH", "/corpus/smoke.txtar"), "path to the TXTAR corpus file")
-		tempoHTTP   = fs.String("tempo-http", envOr("TEMPO_HTTP_URL", "http://tempo:3200"), "Tempo HTTP base URL")
-		cerberusURL = fs.String("cerberus", envOr("CERBERUS_URL", "http://cerberus-tempo:29092"), "cerberus HTTP base URL")
+		tempoHTTP   = fs.String("tempo-http", envOr("TEMPO_HTTP_URL", "http://localhost:23200"), "Tempo HTTP base URL")
+		cerberusURL = fs.String("cerberus", envOr("CERBERUS_URL", "http://localhost:29092"), "cerberus HTTP base URL")
 		reportPath  = fs.String("report", envOr("REPORT_PATH", "/reports/diff.md"), "markdown report output path")
 		overall     = fs.Duration("timeout", 5*time.Minute, "overall driver timeout")
 		perReq      = fs.Duration("request-timeout", 30*time.Second, "per-HTTP-request timeout")

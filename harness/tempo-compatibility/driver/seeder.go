@@ -129,10 +129,10 @@ type fixtureTrace struct {
 func runSeed(args []string) error {
 	fs := flag.NewFlagSet("seed", flag.ContinueOnError)
 	var (
-		tempoOTLP   = fs.String("tempo-otlp", envOr("TEMPO_OTLP_ADDR", "tempo:4317"), "Tempo OTLP gRPC endpoint (host:port)")
-		tempoHTTP   = fs.String("tempo-http", envOr("TEMPO_HTTP_URL", "http://tempo:3200"), "Tempo HTTP base URL (read-back / smoke)")
-		cerberusURL = fs.String("cerberus", envOr("CERBERUS_URL", "http://cerberus-tempo:29092"), "cerberus HTTP base URL (read-back / smoke)")
-		chAddr      = fs.String("ch-addr", envOr("CERBERUS_CH_ADDR", "clickhouse:9000"), "ClickHouse host:port (CH-side write path)")
+		tempoOTLP   = fs.String("tempo-otlp", envOr("TEMPO_OTLP_ADDR", "localhost:24317"), "Tempo OTLP gRPC endpoint (host:port)")
+		tempoHTTP   = fs.String("tempo-http", envOr("TEMPO_HTTP_URL", "http://localhost:23200"), "Tempo HTTP base URL (read-back / smoke)")
+		cerberusURL = fs.String("cerberus", envOr("CERBERUS_URL", "http://localhost:29092"), "cerberus HTTP base URL (read-back / smoke)")
+		chAddr      = fs.String("ch-addr", envOr("CERBERUS_CH_ADDR", "localhost:29100"), "ClickHouse host:port (CH-side write path)")
 		chDatabase  = fs.String("ch-database", envOr("CERBERUS_CH_DATABASE", "otel"), "ClickHouse database")
 		chUser      = fs.String("ch-user", envOr("CERBERUS_CH_USERNAME", "cerberus"), "ClickHouse username")
 		chPassword  = fs.String("ch-password", envOr("CERBERUS_CH_PASSWORD", "cerberus"), "ClickHouse password")
