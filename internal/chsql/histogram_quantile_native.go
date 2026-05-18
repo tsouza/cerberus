@@ -6,9 +6,9 @@
 //
 //  1. base = pow(2, pow(2, -Scale)). Higher scale = finer buckets.
 //  2. cum = arrayCumSum(arrayConcat(
-//             arrayReverse(NegativeBucketCounts),
-//             [ZeroCount],
-//             PositiveBucketCounts)).
+//     arrayReverse(NegativeBucketCounts),
+//     [ZeroCount],
+//     PositiveBucketCounts)).
 //     The NegativeBucketCounts array is reversed so that the cum-sum
 //     walks from the most-negative bucket (largest |value|, last in
 //     the original array) toward the least-negative, then through the
@@ -28,32 +28,32 @@
 //  6. Edge cases:
 //     - total = 0 → NaN.
 //     - phi <= 0 → lower edge of the lowest bucket:
-//       `-pow(base, NegativeOffset + length(Negative))` if any
-//       negative observations exist; otherwise 0 (matches Phase 1
-//       convention for non-negative distributions).
+//     `-pow(base, NegativeOffset + length(Negative))` if any
+//     negative observations exist; otherwise 0 (matches Phase 1
+//     convention for non-negative distributions).
 //     - phi >= 1 → upper edge of the highest bucket:
-//       `pow(base, PositiveOffset + length(Positive))` when positive
-//       observations exist; else `ZeroThreshold` when zero bucket is
-//       non-empty; else `-pow(base, NegativeOffset)` (upper edge of
-//       the least-negative bucket).
+//     `pow(base, PositiveOffset + length(Positive))` when positive
+//     observations exist; else `ZeroThreshold` when zero bucket is
+//     non-empty; else `-pow(base, NegativeOffset)` (upper edge of
+//     the least-negative bucket).
 //  7. Interpolation, by region:
 //     - Negative bucket (idx ≤ nlen). Original-array 0-based index
-//       within Negative is `nlen - idx`; absolute exp-bucket index is
-//       `NegativeOffset + (nlen - idx)`. The bucket covers
-//       `[-base^(idx+1), -base^idx)`; the cum-sum enters from the
-//       more-negative edge and accumulates toward the less-negative
-//       edge, so
-//       `value = -pow(base, NegativeOffset + (nlen - idx) + 1 - fraction)`.
-//       (fraction=0 → most-negative edge; fraction=1 → least-negative
-//       edge.)
+//     within Negative is `nlen - idx`; absolute exp-bucket index is
+//     `NegativeOffset + (nlen - idx)`. The bucket covers
+//     `[-base^(idx+1), -base^idx)`; the cum-sum enters from the
+//     more-negative edge and accumulates toward the less-negative
+//     edge, so
+//     `value = -pow(base, NegativeOffset + (nlen - idx) + 1 - fraction)`.
+//     (fraction=0 → most-negative edge; fraction=1 → least-negative
+//     edge.)
 //     - Zero bucket (idx = nlen+1). Linear interpolation between
-//       `-ZeroThreshold` and `+ZeroThreshold`:
-//       `value = -ZeroThreshold + 2 * ZeroThreshold * fraction`.
+//     `-ZeroThreshold` and `+ZeroThreshold`:
+//     `value = -ZeroThreshold + 2 * ZeroThreshold * fraction`.
 //     - Positive bucket (idx > nlen+1). Position 0-based in
-//       PositiveBucketCounts is `idx - nlen - 2`; absolute bucket
-//       index is `PositiveOffset + (idx - nlen - 2)`. The bucket
-//       covers `(base^idx, base^(idx+1)]`:
-//       `value = pow(base, PositiveOffset + (idx - nlen - 2) + fraction)`.
+//     PositiveBucketCounts is `idx - nlen - 2`; absolute bucket
+//     index is `PositiveOffset + (idx - nlen - 2)`. The bucket
+//     covers `(base^idx, base^(idx+1)]`:
+//     `value = pow(base, PositiveOffset + (idx - nlen - 2) + fraction)`.
 //
 // Phase parity: distributions with empty NegativeBucketCounts and
 // ZeroCount = 0 produce the same numeric output as the original
