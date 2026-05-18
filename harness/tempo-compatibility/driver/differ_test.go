@@ -24,23 +24,40 @@ func TestCompare_Identical(t *testing.T) {
 	}
 }
 
-func TestCompare_IgnoresTraceIDDifference(t *testing.T) {
+func TestCompare_TraceIDMismatchSurfaces(t *testing.T) {
 	t.Parallel()
-	// Tempo returns a real trace ID; cerberus today returns a synthetic
-	// key. The differ canonicalises on (rootServiceName, rootTraceName)
-	// so the two should still match.
+	// As of PR #439 cerberus emits the real hex(TraceId), so the differ
+	// keys directly on TraceID. Two traces with the same root names but
+	// different TraceIDs are no longer canonicalised together — they
+	// surface as missing_in_a / missing_in_b. This guards the contract
+	// that the differ relies on byte-equal TraceIDs across backends.
 	a := []byte(`{"traces":[
-        {"traceID":"aaaaaaaaaaaaaaaa","rootServiceName":"checkout","rootTraceName":"GET /api/checkout/0","durationMs":150,"startTimeUnixNano":"1000"}
+        {"traceID":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","rootServiceName":"checkout","rootTraceName":"GET /api/checkout/0","durationMs":150,"startTimeUnixNano":"1000"}
     ]}`)
 	b := []byte(`{"traces":[
-        {"traceID":"synthetic|key","rootServiceName":"checkout","rootTraceName":"GET /api/checkout/0","durationMs":150,"startTimeUnixNano":"1000"}
+        {"traceID":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","rootServiceName":"checkout","rootTraceName":"GET /api/checkout/0","durationMs":150,"startTimeUnixNano":"1000"}
     ]}`)
 	d, err := Compare(a, b, "tempo", "cerberus", DefaultDiffOptions())
 	if err != nil {
 		t.Fatalf("Compare: %v", err)
 	}
-	if !d.Equal {
-		t.Fatalf("expected canonical-key match, got reasons=%v", d.Reasons)
+	if d.Equal {
+		t.Fatalf("expected Equal=false on differing TraceIDs, got %+v", d)
+	}
+	foundMissingInA, foundMissingInB := false, false
+	for _, r := range d.Reasons {
+		if r.Kind == "missing_in_a" && strings.Contains(r.Detail, "bbbbbbbb") {
+			foundMissingInA = true
+		}
+		if r.Kind == "missing_in_b" && strings.Contains(r.Detail, "aaaaaaaa") {
+			foundMissingInB = true
+		}
+	}
+	if !foundMissingInA {
+		t.Fatalf("expected missing_in_a reason for tempo-only TraceID, got %+v", d.Reasons)
+	}
+	if !foundMissingInB {
+		t.Fatalf("expected missing_in_b reason for cerberus-only TraceID, got %+v", d.Reasons)
 	}
 }
 
@@ -130,16 +147,21 @@ func TestCompare_InvalidJSONFails(t *testing.T) {
 	}
 }
 
-func TestCanonicalKey_DeterministicAcrossInvocations(t *testing.T) {
+func TestTraceKey_UsesRawTraceID(t *testing.T) {
 	t.Parallel()
-	t1 := TraceSummary{RootServiceName: "checkout", RootTraceName: "GET /api/checkout/0"}
-	t2 := TraceSummary{RootServiceName: "checkout", RootTraceName: "GET /api/checkout/0"}
-	if CanonicalKey(t1) != CanonicalKey(t2) {
-		t.Fatal("expected identical canonical key for identical inputs")
+	// Since PR #439, cerberus and Tempo both emit the real hex(TraceId),
+	// so the differ keys directly on TraceID. The root names are not
+	// part of the key — only the TraceID is — guaranteeing two traces
+	// with the same TraceID align even if their root names differ
+	// (which would then surface as a field_mismatch under the match).
+	t1 := TraceSummary{TraceID: "00000000000000000000000000000001", RootServiceName: "checkout", RootTraceName: "GET /api/checkout/0"}
+	t2 := TraceSummary{TraceID: "00000000000000000000000000000001", RootServiceName: "payments", RootTraceName: "POST /api/payments/0"}
+	if traceKey(t1) != traceKey(t2) {
+		t.Fatal("expected identical traceKey for identical TraceID")
 	}
-	t3 := TraceSummary{RootServiceName: "checkout", RootTraceName: "GET /api/checkout/1"}
-	if CanonicalKey(t1) == CanonicalKey(t3) {
-		t.Fatal("expected different canonical keys for different root names")
+	t3 := TraceSummary{TraceID: "00000000000000000000000000000002", RootServiceName: "checkout", RootTraceName: "GET /api/checkout/0"}
+	if traceKey(t1) == traceKey(t3) {
+		t.Fatal("expected different traceKey for different TraceID")
 	}
 }
 

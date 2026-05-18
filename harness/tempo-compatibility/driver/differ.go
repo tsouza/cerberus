@@ -8,26 +8,20 @@
 // `DiffReason`, never collapsed into a single boolean, so the markdown
 // report can surface actionable detail per case.
 //
-// Why not byte-equal? Cerberus's `TraceSummary.TraceID` is synthetic
-// today (see internal/api/tempo/handler.go::toTraceSummaries — the
-// stub key is `MetricName + "|" + Timestamp`, not the real 16-byte
-// OTLP trace ID hex). Tempo's TraceID is the real hex. A literal
-// byte-equal would false-positive on every case until cerberus
-// projects the real TraceId column through to the search summary —
-// outside PR 4's scope. The plan calls this out explicitly:
-// "hash trace IDs deterministically (different orderings of equal
-// sets don't false-positive)".
+// As of PR #439, cerberus emits the real hex(TraceId) on
+// `/api/search` (see internal/api/tempo/handler.go::toTraceSummaries),
+// so both backends produce identical 32-hex-char TraceIDs for the
+// same seeded span set. The differ keys its trace-summary multisets
+// directly on `TraceSummary.TraceID` — no hashing, no canonicalisation.
+// "Different orderings of equal sets don't false-positive" still holds
+// because the index is a map keyed by TraceID, not a positional list.
 //
 // So the differ:
 //
-//   1. Canonicalises each TraceSummary by deriving a stable key
-//      `H(rootServiceName || rootTraceName)`. Both backends produce
-//      the same hash for the same trace because they read the same
-//      seeded fixture.
-//   2. Sorts the trace list by the canonical key on each side.
-//   3. Diffs the canonical-key multisets (matches "different
-//      orderings of equal sets don't false-positive").
-//   4. For matched entries, diffs the per-summary fields under a
+//   1. Indexes each TraceSummary by its real hex(TraceId).
+//   2. Diffs the TraceID multisets directly (the index is a map, so
+//      order on either side is irrelevant).
+//   3. For matched entries, diffs the per-summary fields under a
 //      relative-epsilon tolerance for `DurationMs` (clock vs
 //      duration-column drift across backends is real).
 //
@@ -37,8 +31,6 @@
 package main
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -75,16 +67,12 @@ type TraceSummary struct {
 	DurationMs        int    `json:"durationMs,omitempty"`
 }
 
-// CanonicalKey is the per-trace hash used to align the two backends'
-// trace lists. Format: hex(SHA-256(rootServiceName + "\x00" +
-// rootTraceName)) truncated to 16 hex chars (8 bytes of entropy is
-// plenty: 100 traces would collide with p ≈ 100²/(2·2⁶⁴) ≈ 2.7e-16).
-//
-// Truncation keeps the key short in the markdown report. The full
-// 64-hex hash is fine too — only readability suffers.
-func CanonicalKey(t TraceSummary) string {
-	h := sha256.Sum256([]byte(t.RootServiceName + "\x00" + t.RootTraceName))
-	return hex.EncodeToString(h[:8])
+// traceKey is the per-trace identifier used to align the two backends'
+// trace lists. Since PR #439, cerberus and Tempo both emit the real
+// hex(TraceId) on `/api/search`, so the raw TraceID string is the
+// natural key — no canonicalisation needed.
+func traceKey(t TraceSummary) string {
+	return t.TraceID
 }
 
 // DiffOptions controls numeric-field tolerance. Mirrors the prom
@@ -117,8 +105,8 @@ type DiffReason struct {
 type Diff struct {
 	// Equal is true iff the two sides match within tolerances.
 	Equal bool
-	// MatchedCount is the number of canonical-key intersections that
-	// survived field-level diffing.
+	// MatchedCount is the number of TraceID intersections that survived
+	// field-level diffing.
 	MatchedCount int
 	// Reasons enumerates every mismatch in deterministic order.
 	Reasons []DiffReason
@@ -222,15 +210,14 @@ func decodeSearch(body []byte) (SearchResponse, error) {
 	return out, nil
 }
 
-// indexByKey deduplicates by CanonicalKey, keeping the first occurrence
-// — a single backend should never return two traces with the same
-// (rootServiceName, rootTraceName) for the corpus shapes we ship in
-// PR 4 (the seeder gives every trace a unique name); if it does, the
-// per-field diff will catch any inconsistency in the second copy.
+// indexByKey deduplicates by traceKey (the real hex(TraceId)), keeping
+// the first occurrence — a single backend should never return two
+// traces with the same TraceID; if it does, the per-field diff will
+// catch any inconsistency in the second copy.
 func indexByKey(ts []TraceSummary) map[string]TraceSummary {
 	out := make(map[string]TraceSummary, len(ts))
 	for _, t := range ts {
-		k := CanonicalKey(t)
+		k := traceKey(t)
 		if _, dup := out[k]; dup {
 			continue
 		}
@@ -239,17 +226,15 @@ func indexByKey(ts []TraceSummary) map[string]TraceSummary {
 	return out
 }
 
-// compareSummary diffs two same-canonical-key TraceSummaries. The
-// `aLabel` / `bLabel` strings end up in the reasons so a downstream
-// reader knows which side reported which value.
+// compareSummary diffs two same-TraceID TraceSummaries. The `aLabel` /
+// `bLabel` strings end up in the reasons so a downstream reader knows
+// which side reported which value.
 func compareSummary(key string, a, b TraceSummary, aLabel, bLabel string, opts DiffOptions) []DiffReason {
 	var reasons []DiffReason
 
 	if a.RootServiceName != b.RootServiceName {
-		// CanonicalKey hashes (rootServiceName, rootTraceName), so a
-		// mismatch here only happens on hash collision — but we still
-		// report it because a future canonical-key change would surface
-		// here first.
+		// Same TraceID, different rootServiceName — a real backend
+		// regression in how span -> trace rollup picks the root.
 		reasons = append(reasons, DiffReason{
 			Kind:   "field_mismatch",
 			Detail: fmt.Sprintf("key %s: rootServiceName %s=%q vs %s=%q", key, aLabel, a.RootServiceName, bLabel, b.RootServiceName),
