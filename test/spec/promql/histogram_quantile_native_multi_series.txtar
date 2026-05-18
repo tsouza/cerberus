@@ -17,11 +17,13 @@ CREATE TABLE otel_metrics_exp_histogram (
     ZeroCount UInt64,
     ZeroThreshold Float64,
     PositiveOffset Int32,
-    PositiveBucketCounts Array(UInt64)
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
 ) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
 INSERT INTO otel_metrics_exp_histogram VALUES
-    ('http_server_duration_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 0, 0, 0.0, 0, [1, 2, 3]),
-    ('http_server_duration_exp_hist', map('service', 'web'), toDateTime64('2026-01-01 00:00:00', 9), 0, 0, 0.0, 0, [4, 4, 2]);
+    ('http_server_duration_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 0, 0, 0.0, 0, [1, 2, 3], 0, []),
+    ('http_server_duration_exp_hist', map('service', 'web'), toDateTime64('2026-01-01 00:00:00', 9), 0, 0, 0.0, 0, [4, 4, 2], 0, []);
 -- expected_rows --
 [
   ["", {"service": "api"}, "2026-01-01T00:00:01Z", 7.464263932294459],

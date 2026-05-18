@@ -24,7 +24,9 @@ CREATE TABLE otel_metrics_exp_histogram (
 INSERT INTO otel_metrics_exp_histogram VALUES
     ('http_server_duration_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 1.0, 0, 2, 1.0, 1, [2,3], 1, [1,2]);
 -- expected_rows --
-[]
+[
+  ["", {"service": "api"}, "2026-01-01T00:00:01Z", -8]
+]
 -- chplan --
 Project ["" AS MetricName, Attributes AS Attributes, now64(9) AS TimeUnix, Value AS Value]
   HistogramQuantileNative phi=0 groupBy=[Attributes AS Attributes]
