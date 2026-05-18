@@ -252,14 +252,33 @@ func labelFiltererToExpr(lf loglib.LabelFilterer, s schema.Logs) (chplan.Expr, e
 // ResourceAttributes. Shared between StringLabelFilter and the
 // short-circuit-friendly LineFilterLabelFilter — both embed the same
 // *labels.Matcher.
+//
+// The synthesized `detected_level` label routes to a special-case
+// expression that normalises the OTel `SeverityText` column to Loki's
+// canonical lowercase level set, rather than a plain
+// `ResourceAttributes['detected_level']` lookup — see
+// [detectedLevelExpr] for the derivation table and scope notes.
 func labelMatcherToExpr(m *labels.Matcher, s schema.Logs) chplan.Expr {
+	lhs := matcherLHS(m, s)
 	return &chplan.Binary{
-		Op: matchOp(m.Type),
-		Left: &chplan.MapAccess{
-			Map: &chplan.ColumnRef{Name: s.ResourceAttributesColumn},
-			Key: &chplan.LitString{V: m.Name},
-		},
+		Op:    matchOp(m.Type),
+		Left:  lhs,
 		Right: &chplan.LitString{V: m.Value},
+	}
+}
+
+// matcherLHS returns the chplan expression that represents the
+// matched-against value for a label matcher. Synthesized labels
+// (`detected_level` today; future entries can grow this dispatch)
+// route to their own expression; ordinary labels fall back to a
+// `ResourceAttributes[<name>]` lookup.
+func matcherLHS(m *labels.Matcher, s schema.Logs) chplan.Expr {
+	if isDetectedLevelLabel(m.Name) {
+		return detectedLevelExpr(s)
+	}
+	return &chplan.MapAccess{
+		Map: &chplan.ColumnRef{Name: s.ResourceAttributesColumn},
+		Key: &chplan.LitString{V: m.Name},
 	}
 }
 
@@ -352,13 +371,9 @@ func buildMatchersPredicate(matchers []*labels.Matcher, s schema.Logs) chplan.Ex
 }
 
 func matcherToExpr(m *labels.Matcher, s schema.Logs) chplan.Expr {
-	lhs := &chplan.MapAccess{
-		Map: &chplan.ColumnRef{Name: s.ResourceAttributesColumn},
-		Key: &chplan.LitString{V: m.Name},
-	}
 	return &chplan.Binary{
 		Op:    matchOp(m.Type),
-		Left:  lhs,
+		Left:  matcherLHS(m, s),
 		Right: &chplan.LitString{V: m.Value},
 	}
 }
