@@ -50,13 +50,10 @@ type Exemplar struct {
 // exemplars source with the matcher predicates in WHERE, time-bounded
 // on `[start, end]`, and shape the result rows into ExemplarSeries.
 func (h *Handler) handleQueryExemplars(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodPost {
-		_ = r.ParseForm()
-	}
-	q := r.URL.Query().Get("query")
-	if q == "" && r.Method == http.MethodPost {
-		q = r.PostForm.Get("query")
-	}
+	// r.FormValue merges URL query params with POST form-encoded body
+	// (auto-calling ParseForm). Matches the consistent surface used by
+	// handleQuery / handleQueryRange.
+	q := r.FormValue("query")
 	if q == "" {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing query parameter"))
 		return
@@ -66,20 +63,12 @@ func (h *Handler) handleQueryExemplars(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	startRaw := r.URL.Query().Get("start")
-	endRaw := r.URL.Query().Get("end")
-	if startRaw == "" && r.Method == http.MethodPost {
-		startRaw = r.PostForm.Get("start")
-	}
-	if endRaw == "" && r.Method == http.MethodPost {
-		endRaw = r.PostForm.Get("end")
-	}
-	start, err := format.ParseTimeProm(startRaw, time.Time{})
+	start, err := format.ParseTimeProm(r.FormValue("start"), time.Time{})
 	if err != nil || start.IsZero() {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing or invalid 'start' parameter"))
 		return
 	}
-	end, err := format.ParseTimeProm(endRaw, time.Time{})
+	end, err := format.ParseTimeProm(r.FormValue("end"), time.Time{})
 	if err != nil || end.IsZero() {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing or invalid 'end' parameter"))
 		return

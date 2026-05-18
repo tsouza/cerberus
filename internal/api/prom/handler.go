@@ -125,11 +125,10 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 // param, parses it, and returns the pretty-printed string. Grafana's
 // query editor uses this to format on save.
 func (h *Handler) handleFormatQuery(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query().Get("query")
-	if q == "" && r.Method == http.MethodPost {
-		_ = r.ParseForm()
-		q = r.PostForm.Get("query")
-	}
+	// r.FormValue merges URL query params with POST form-encoded body
+	// (auto-calling ParseForm). Matches the consistent surface used by
+	// handleQuery / handleQueryRange.
+	q := r.FormValue("query")
 	if q == "" {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing query parameter"))
 		return
@@ -151,11 +150,10 @@ func (h *Handler) handleFormatQuery(w http.ResponseWriter, r *http.Request) {
 // signals "parsed OK" via the Type field — enough for Grafana's
 // inline syntax check. Full nested-AST serialization is a follow-up.
 func (h *Handler) handleParseQuery(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query().Get("query")
-	if q == "" && r.Method == http.MethodPost {
-		_ = r.ParseForm()
-		q = r.PostForm.Get("query")
-	}
+	// r.FormValue merges URL query params with POST form-encoded body
+	// (auto-calling ParseForm). Matches the consistent surface used by
+	// handleQuery / handleQueryRange.
+	q := r.FormValue("query")
 	if q == "" {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing query parameter"))
 		return
