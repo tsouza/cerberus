@@ -20,6 +20,7 @@ import (
 	"github.com/golang/snappy"
 
 	"github.com/grafana/loki/v3/pkg/logproto"
+
 	"github.com/tsouza/cerberus/internal/schema/ddl"
 )
 
@@ -233,7 +234,7 @@ func buildStreams(start time.Time) []stream {
 	return out
 }
 
-func generateJSONLine(svc string, level string, ts time.Time, rng *rand.Rand, idx int) string {
+func generateJSONLine(svc, level string, ts time.Time, rng *rand.Rand, idx int) string {
 	lvl := strings.ToLower(level)
 	tsStr := ts.Format(time.RFC3339)
 	status := httpStatuses[rng.Intn(len(httpStatuses))]
@@ -308,7 +309,7 @@ func generateJSONLine(svc string, level string, ts time.Time, rng *rand.Rand, id
 	}
 }
 
-func generateLogfmtLine(svc string, level string, ts time.Time, rng *rand.Rand, idx int) string {
+func generateLogfmtLine(svc, level string, ts time.Time, rng *rand.Rand, idx int) string {
 	lvl := strings.ToLower(level)
 	tsStr := ts.Format(time.RFC3339Nano)
 	duration := rng.Intn(1000) + 1
@@ -354,7 +355,7 @@ func generateLogfmtLine(svc string, level string, ts time.Time, rng *rand.Rand, 
 	}
 }
 
-func generateUnstructuredLine(svc string, level string, ts time.Time, rng *rand.Rand, idx int) string {
+func generateUnstructuredLine(svc, level string, ts time.Time, rng *rand.Rand, idx int) string {
 	tsStr := ts.Format("2006-01-02T15:04:05.000000Z")
 	lvl := strings.ToUpper(level)
 
