@@ -54,18 +54,24 @@ storage:
     local:
       path: /var/tempo/blocks
 
-# NOTE: the previous attempt used `ingester.trace_live_period` etc.
-# and `storage.trace.block.max_block_duration`, but the Tempo image
-# (main-2f74ea8 = v3.0.0-rc.1+) rejects those top-level keys and
-# exits on startup. The `live_store` section below uses the correct
-# field names for this image version. The differ's
-# `Recent-Data-Target: live-store` header is the real fix for the
-# "0 results from Tempo" issue — without it, Tempo only searches
-# completed blocks, not the live store.
+# Tighten the live-store flush cadence so the harness smoke read sees
+# spans within seconds of the OTLP push. Tempo v3 replaced the legacy
+# ingester module with live_store, so the YAML key is live_store (not
+# ingester). Field names match modules/livestore/config.go:
+#   max_trace_live   (not trace_live_period)
+#   max_trace_idle   (not trace_idle_period)
+#   max_block_duration  (not storage.trace.block.max_block_duration)
+#
+# The Search API (/api/search) only searches blocks, not live traces.
+# Live traces are only searched by FindByTraceID (/api/traces/<id>).
+# So traces must be cut to the head block before search returns them.
+# With these settings, data should be searchable within ~2-3s of push.
 live_store:
   max_trace_live: 2s
   max_trace_idle: 1s
   flush_check_period: 1s
+  max_block_duration: 2s
+  complete_block_timeout: 5m
 
 usage_report:
   reporting_enabled: false
