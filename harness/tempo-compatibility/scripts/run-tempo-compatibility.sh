@@ -42,6 +42,7 @@ cd "$ROOT_DIR"
 
 REPORT_DIR=${REPORT_DIR:-"$ROOT_DIR/reports"}
 mkdir -p "$REPORT_DIR"
+chmod a+w "$REPORT_DIR"
 
 # Consolidated cleanup: tear down the compose stack on every exit path
 # (success, driver failure, set -e abort, SIGINT). Without this, a
@@ -102,6 +103,7 @@ DIFF_FLAGS=""
 if [ -n "${FAIL_ON_DIFF:-}" ]; then
     DIFF_FLAGS="--fail-on-diff"
 fi
+DIFF_FLAGS="$DIFF_FLAGS --expected-failures /expected-failures.json"
 
 echo "==> running tempo-compat-driver diff"
 set +e

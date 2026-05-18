@@ -17,6 +17,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -43,6 +44,7 @@ func runDiff(args []string) error {
 		failOnDiff  = fs.Bool("fail-on-diff", false, "exit non-zero if any case reports a diff (otherwise just write report)")
 		searchLimit = fs.Int("search-limit", 200, "Tempo /api/search ?limit= value")
 		anchorIn    = fs.String("anchor", anchor, "fixture anchor RFC3339; used to compute search start/end window")
+		efPath      = fs.String("expected-failures", envOr("EXPECTED_FAILURES", ""), "path to expected-failures JSON; cases listed there are exempt from --fail-on-diff")
 	)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -51,6 +53,16 @@ func runDiff(args []string) error {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	ctx, cancel := context.WithTimeout(context.Background(), *overall)
 	defer cancel()
+
+	var efSet map[string]struct{}
+	if *efPath != "" {
+		var err error
+		efSet, err = loadExpectedFailures(*efPath)
+		if err != nil {
+			return fmt.Errorf("load expected failures: %w", err)
+		}
+		logger.Info("loaded expected failures", "path", *efPath, "count", len(efSet))
+	}
 
 	cases, err := LoadCorpus(*corpusPath)
 	if err != nil {
@@ -107,13 +119,21 @@ func runDiff(args []string) error {
 	// the workflow level). The differ still respects --fail-on-diff so
 	// a local repro can hard-fail on a regression.
 	if *failOnDiff {
+		var unexpected int
 		for _, r := range results {
 			if r.Skipped {
 				continue
 			}
 			if r.HardError != "" || !r.Diff.Equal || len(r.Assertions) > 0 {
-				return fmt.Errorf("diffs reported; see %s", *reportPath)
+				if _, ok := efSet[r.Case.Name]; ok {
+					logger.Info("expected failure", "name", r.Case.Name)
+					continue
+				}
+				unexpected++
 			}
+		}
+		if unexpected > 0 {
+			return fmt.Errorf("%d unexpected diffs reported; see %s", unexpected, *reportPath)
 		}
 	}
 	return nil
@@ -425,6 +445,26 @@ func fetchJSON(ctx context.Context, client *http.Client, urlStr string) ([]byte,
 // deliberately simple — a top-level summary line + per-case sections —
 // so the report renders well as a GH Actions artefact preview and is
 // readable as plaintext in the terminal.
+type expectedFailuresJSON struct {
+	Failures []string `json:"failures"`
+}
+
+func loadExpectedFailures(path string) (map[string]struct{}, error) {
+	data, err := os.ReadFile(path) //nolint:gosec // G304: path is a trusted CLI argument
+	if err != nil {
+		return nil, err
+	}
+	var doc expectedFailuresJSON
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	out := make(map[string]struct{}, len(doc.Failures))
+	for _, name := range doc.Failures {
+		out[name] = struct{}{}
+	}
+	return out, nil
+}
+
 func writeReport(path string, results []CaseResult) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return fmt.Errorf("mkdir report dir: %w", err)
