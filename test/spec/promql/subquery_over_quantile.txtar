@@ -16,7 +16,7 @@ INSERT INTO otel_metrics_sum VALUES
     ('http_requests_total', map('job', 'api', 'instance', 'b'), toDateTime64('2026-01-01 00:00:00', 9), 60.0);
 -- expected_rows --
 [
-  [{"job": "api"}, 0.3208333333333333]
+  [{"job": "api"}, 0.32083333333333336]
 ]
 -- args --
 [0] string = "job"
