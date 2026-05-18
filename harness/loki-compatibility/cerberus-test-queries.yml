@@ -83,37 +83,6 @@
 #     matching selectors have been unskipped.
 
 should_skip:
-  # fast/basic-selectors — 6 entries re-skipped after seed-expansion PR
-  # uncovered a reference-Loki indexing lag: the harness pushes data and
-  # queries immediately, but Loki's ingester hasn't flushed to the index
-  # yet, so the baseline returns empty. Cerberus returns the same empty
-  # result (no diff) but the runner marks it unexpected-failure because
-  # the baseline couldn't provide ground-truth. Root cause: reference Loki
-  # needs longer index-settle time; tracked separately.
-  - source: "fast/basic-selectors.yaml#Basic label selector"
-    reason: "Reference Loki baseline returns empty (ingester indexing lag on CI); cerberus returns empty too — no diff possible. Re-skip until harness adds index-settle wait."
-    since: "2026-05-18"
-    jira:  "#428 follow-up: add reference-Loki index-settle wait"
-  - source: "fast/basic-selectors.yaml#Label selector with line filter"
-    reason: "Same as Basic label selector — reference Loki baseline returns empty due to indexing lag."
-    since: "2026-05-18"
-    jira:  "#428 follow-up: add reference-Loki index-settle wait"
-  - source: "fast/basic-selectors.yaml#Label selector with regex line filter (case-insensitive)"
-    reason: "Same as Basic label selector — reference Loki baseline returns empty due to indexing lag."
-    since: "2026-05-18"
-    jira:  "#428 follow-up: add reference-Loki index-settle wait"
-  - source: "fast/basic-selectors.yaml#Label selector with negative regex filter"
-    reason: "Same as Basic label selector — reference Loki baseline returns empty due to indexing lag."
-    since: "2026-05-18"
-    jira:  "#428 follow-up: add reference-Loki index-settle wait"
-  - source: "fast/basic-selectors.yaml#Label filter expression outside stream selector"
-    reason: "Same as Basic label selector — reference Loki baseline returns empty due to indexing lag."
-    since: "2026-05-18"
-    jira:  "#428 follow-up: add reference-Loki index-settle wait"
-  - source: "fast/basic-selectors.yaml#Log query with impossible filter (guarantees empty results, exercises log result cache)"
-    reason: "Same as Basic label selector — reference Loki baseline returns empty due to indexing lag."
-    since: "2026-05-18"
-    jira:  "#428 follow-up: add reference-Loki index-settle wait"
   # fast/simple-metrics — count_over_time generates SQL referencing the
   # ResourceAttributes identifier, which cerberus's chsql layer does not
   # support as a first-class column expression. Known LogQL limitation.

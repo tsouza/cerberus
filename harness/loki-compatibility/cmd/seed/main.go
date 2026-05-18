@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -94,6 +95,10 @@ func main() {
 }
 
 func run(logger *slog.Logger) error {
+	// `-timeout` worst-case budget:
+	//   waitCHReady (30s) + waitLokiReady (60s) + insertCHLogs / pushLoki
+	//   + waitLokiIndexSettle (30s) + waitLabelsNonEmpty × 2 (60s)
+	// 3 minutes is the bare minimum; 4 leaves headroom for slow CI runners.
 	var (
 		addr     = flag.String("addr", envOr("CERBERUS_CH_ADDR", "localhost:28000"), "ClickHouse host:port")
 		database = flag.String("database", envOr("CERBERUS_CH_DATABASE", "otel"), "ClickHouse database")
@@ -101,7 +106,7 @@ func run(logger *slog.Logger) error {
 		password = flag.String("password", envOr("CERBERUS_CH_PASSWORD", "cerberus"), "ClickHouse password")
 		lokiURL  = flag.String("loki-url", envOr("LOKI_URL", "http://localhost:23100"), "Reference Loki base URL")
 		cerbURL  = flag.String("cerberus-url", envOr("CERBERUS_URL", "http://localhost:29092"), "cerberus LogQL base URL")
-		timeout  = flag.Duration("timeout", 2*time.Minute, "overall dial + push + verify timeout")
+		timeout  = flag.Duration("timeout", 4*time.Minute, "overall dial + push + verify timeout")
 	)
 	flag.Parse()
 
@@ -168,7 +173,7 @@ func run(logger *slog.Logger) error {
 	}
 
 	logger.Info("verifying /labels is non-empty on both targets")
-	if err := verifyBothNonEmpty(ctx, conn, *lokiURL, *cerbURL, logger); err != nil {
+	if err := verifyBothNonEmpty(ctx, conn, *lokiURL, *cerbURL, streams, logger); err != nil {
 		return fmt.Errorf("verify: %w", err)
 	}
 
@@ -572,7 +577,7 @@ func pushLoki(ctx context.Context, baseURL string, streams []stream) error {
 	return nil
 }
 
-func verifyBothNonEmpty(ctx context.Context, conn driver.Conn, lokiURL, cerbURL string, logger *slog.Logger) error {
+func verifyBothNonEmpty(ctx context.Context, conn driver.Conn, lokiURL, cerbURL string, streams []stream, logger *slog.Logger) error {
 	var chCount uint64
 	if err := conn.QueryRow(ctx, "SELECT count() FROM otel_logs").Scan(&chCount); err != nil {
 		return fmt.Errorf("ch count: %w", err)
@@ -591,6 +596,25 @@ func verifyBothNonEmpty(ctx context.Context, conn driver.Conn, lokiURL, cerbURL 
 	if end.Before(anchorTS.Add(time.Hour)) {
 		end = anchorTS.Add(time.Hour)
 	}
+
+	// Before checking /labels non-empty on both targets, wait for the
+	// reference Loki ingester to flush its in-memory chunks into the
+	// TSDB index. Without this wait, /labels and /series can return
+	// non-zero rows quickly (the WAL is visible) while a /query_range
+	// against the same time window still scans empty (the TSDB index
+	// hasn't seen the chunks). That race manifested as the 6 entries
+	// PR #429 had to re-skip in cerberus-test-queries.yml under the
+	// `fast/basic-selectors.yaml` group — the diff driver saw both
+	// backends return empty and flagged the case as ambiguous because
+	// reference Loki provided no ground-truth to diff against.
+	//
+	// Cerberus reads CH directly so its visibility is bounded by the
+	// INSERT round-trip (sub-second). We only need this gate on the
+	// reference target.
+	if err := waitLokiIndexSettle(ctx, lokiURL, streams, start, end, logger); err != nil {
+		return err
+	}
+
 	for _, target := range []struct {
 		label, base string
 	}{
@@ -602,6 +626,184 @@ func verifyBothNonEmpty(ctx context.Context, conn driver.Conn, lokiURL, cerbURL 
 		}
 	}
 	return nil
+}
+
+// waitLokiIndexSettle polls the reference Loki's /loki/api/v1/labels and
+// /loki/api/v1/series until both surface the full cardinality of the
+// seeded fixture, or the deadline expires. Mirrors the WAL→block flush
+// wait the tempo-compatibility seeder uses for /api/traces (see
+// harness/tempo-compatibility/driver/seeder.go `smokeTraceByID` /
+// `pollTraceSpanCount`): the seeder has just finished pushing logs, so
+// the ingester needs a moment to flush in-memory chunks into the TSDB
+// index before a /query_range against the same window returns rows.
+//
+// Settle criteria (BOTH must hold):
+//
+//   - /labels returns >= the expected count of resource label keys
+//     (cluster, namespace, service, service_name, pod, container, env,
+//     region, datacenter — 9 keys from the seed; Loki may also surface
+//     `detected_level` from structured metadata, so we tolerate >=).
+//   - /series with `match[]={service_name=~".+"}` returns >= the expected
+//     stream count (len(streams), which equals len(serviceConfigs) = 13).
+//     Every seeded stream carries `service_name`, so the regex selects
+//     all of them. A non-zero `/series` body is the strongest pre-query
+//     signal that chunks have been indexed: Loki resolves /series
+//     against the same TSDB index a log query consults.
+//
+// Poll: 1s interval, 30s deadline, progress log every 5s — see the
+// `settle*` constants inside. Mirrors the cadence in waitTempoReady /
+// pollTraceSpanCount over in the tempo-compatibility seeder.
+func waitLokiIndexSettle(ctx context.Context, baseURL string, streams []stream, start, end time.Time, logger *slog.Logger) error {
+	const (
+		settleTimeout    = 30 * time.Second
+		settleInterval   = 1 * time.Second
+		settleProgressAt = 5 * time.Second
+	)
+
+	expectedLabels := expectedLabelKeys(streams)
+	expectedStreams := len(streams)
+
+	logger.Info(
+		"waiting for reference loki index to settle",
+		"url", baseURL,
+		"expected_label_keys_min", len(expectedLabels),
+		"expected_streams_min", expectedStreams,
+		"timeout", settleTimeout,
+	)
+
+	labelsURL := fmt.Sprintf("%s/loki/api/v1/labels?start=%d&end=%d",
+		strings.TrimRight(baseURL, "/"), start.UnixNano(), end.UnixNano())
+	// Match every seeded stream by requiring `service_name` to be present.
+	// All 13 streams carry that label by construction (see buildStreams);
+	// `=~".+"` is the canonical "any non-empty value" form Loki accepts.
+	seriesURL := fmt.Sprintf("%s/loki/api/v1/series?match%%5B%%5D=%s&start=%d&end=%d",
+		strings.TrimRight(baseURL, "/"),
+		url.QueryEscape(`{service_name=~".+"}`),
+		start.UnixNano(), end.UnixNano())
+
+	begin := time.Now()
+	deadline := begin.Add(settleTimeout)
+	lastProgress := begin
+	var lastLabels []string
+	var lastSeriesCount int
+	var lastErr error
+
+	for {
+		labels, err := fetchLokiLabels(ctx, labelsURL)
+		if err != nil {
+			lastErr = fmt.Errorf("/labels: %w", err)
+		} else {
+			lastLabels = labels
+		}
+		seriesCount, serr := fetchLokiSeriesCount(ctx, seriesURL)
+		if serr != nil {
+			lastErr = fmt.Errorf("/series: %w", serr)
+		} else {
+			lastSeriesCount = seriesCount
+		}
+
+		labelKeysOK := err == nil && hasAllLabels(labels, expectedLabels)
+		seriesOK := serr == nil && seriesCount >= expectedStreams
+		if labelKeysOK && seriesOK {
+			sort.Strings(labels)
+			logger.Info(
+				"loki index settled",
+				"labels", labels,
+				"series", seriesCount,
+				"elapsed", time.Since(begin).Round(time.Millisecond),
+			)
+			return nil
+		}
+
+		if time.Since(lastProgress) >= settleProgressAt {
+			logger.Info(
+				"still waiting for loki index settle",
+				"labels_seen", len(lastLabels),
+				"labels_needed", len(expectedLabels),
+				"series_seen", lastSeriesCount,
+				"series_needed", expectedStreams,
+				"remaining", time.Until(deadline).Round(time.Second),
+			)
+			lastProgress = time.Now()
+		}
+
+		if time.Now().After(deadline) {
+			if lastErr != nil {
+				return fmt.Errorf("loki index settle: last error: %w (labels=%d/%d series=%d/%d after %s)",
+					lastErr, len(lastLabels), len(expectedLabels), lastSeriesCount, expectedStreams, settleTimeout)
+			}
+			return fmt.Errorf("loki index settle: timed out (labels=%d/%d series=%d/%d after %s)",
+				len(lastLabels), len(expectedLabels), lastSeriesCount, expectedStreams, settleTimeout)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(settleInterval):
+		}
+	}
+}
+
+// expectedLabelKeys returns the sorted set of resource label keys that
+// the seeder writes on every stream. Derived from `buildStreams` so a
+// drift between the seed shape and the settle check would compile-fail
+// rather than silently skew the gate.
+func expectedLabelKeys(streams []stream) []string {
+	if len(streams) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(streams[0].labels))
+	for _, s := range streams {
+		for k := range s.labels {
+			seen[k] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for k := range seen {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func hasAllLabels(actual, expected []string) bool {
+	set := make(map[string]struct{}, len(actual))
+	for _, a := range actual {
+		set[a] = struct{}{}
+	}
+	for _, e := range expected {
+		if _, ok := set[e]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// fetchLokiSeriesCount calls /loki/api/v1/series and returns the number
+// of distinct label sets in the response body. The endpoint encodes its
+// response as `{"status":"success","data":[{...labelset...}, ...]}`; we
+// only need the cardinality of `data` to gauge ingester→index visibility.
+func fetchLokiSeriesCount(ctx context.Context, u string) (int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return 0, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return 0, fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
+	}
+	var out struct {
+		Status string                       `json:"status"`
+		Data   []map[string]json.RawMessage `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return 0, err
+	}
+	return len(out.Data), nil
 }
 
 func waitLabelsNonEmpty(ctx context.Context, label, baseURL string, start, end time.Time, logger *slog.Logger) error {
