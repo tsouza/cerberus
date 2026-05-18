@@ -1,0 +1,51 @@
+-- query.promql --
+http_server_request_duration_count or http_server_request_duration_sum
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum VALUES
+    ('http_server_request_duration_count', map('job', 'api'),   toDateTime64('2026-01-01 00:00:00', 9), 10.0),
+    ('http_server_request_duration_count', map('job', 'other'), toDateTime64('2026-01-01 00:00:00', 9), 20.0),
+    ('http_server_request_duration_sum',   map('job', 'api'),   toDateTime64('2026-01-01 00:00:00', 9), 25.0),
+    ('http_server_request_duration_sum',   map('job', 'extra'), toDateTime64('2026-01-01 00:00:00', 9), 50.0);
+-- expected_rows --
+[
+  ["http_server_request_duration_count", {"job": "api"}, "2026-01-01T00:00:00Z", 10],
+  ["http_server_request_duration_count", {"job": "other"}, "2026-01-01T00:00:00Z", 20],
+  ["http_server_request_duration_sum", {"job": "extra"}, "2026-01-01T00:00:00Z", 50]
+]
+-- args --
+[0] string = "http_server_request_duration_count"
+[1] string = "2026-01-01 00:00:01.000000000"
+[2] int64 = 9
+[3] string = "2026-01-01 00:00:01.000000000"
+[4] int64 = 9
+[5] int64 = 300000000000
+[6] string = "http_server_request_duration_sum"
+[7] string = "2026-01-01 00:00:01.000000000"
+[8] int64 = 9
+[9] string = "2026-01-01 00:00:01.000000000"
+[10] int64 = 9
+[11] int64 = 300000000000
+[12] string = "http_server_request_duration_count"
+[13] string = "2026-01-01 00:00:01.000000000"
+[14] int64 = 9
+[15] string = "2026-01-01 00:00:01.000000000"
+[16] int64 = 9
+[17] int64 = 300000000000
+-- chplan --
+VectorSetOp op=or match=default
+  Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
+    Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
+      Filter predicate=(((MetricName = "http_server_request_duration_count") AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+        Scan(otel_metrics_sum)
+  Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
+    Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
+      Filter predicate=(((MetricName = "http_server_request_duration_sum") AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+        Scan(otel_metrics_sum)
+-- sql --
+SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value` FROM ((SELECT * FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`))) UNION ALL (SELECT * FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`)) WHERE `Attributes` NOT IN ((SELECT DISTINCT `Attributes` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`))))))

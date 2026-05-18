@@ -27,8 +27,11 @@ import (
 //   - vector OP vector → VectorJoin with default / `on(...)` /
 //     `ignoring(...)` matching (M1.6) plus `group_left(...)` /
 //     `group_right(...)` cardinality modifiers (RC2 cardinality edges)
-//
-// Logical ops (`and`/`or`/`unless`) defer to a later milestone.
+//   - vector set ops (`and` / `or` / `unless`) → VectorSetOp keyed on
+//     the match-key signature. PromQL's parser enforces many-to-many
+//     for these (no `group_left` / `group_right`); the chsql emitter
+//     renders them as IN / NOT IN against a DISTINCT signature
+//     subquery, or as a left + anti-right UNION ALL for `or`.
 func lowerBinary(b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	// Scalar-only fold first: when BOTH sides resolve to a constant we
 	// materialise a 1-row synthetic vector with the folded value.
@@ -40,6 +43,16 @@ func lowerBinary(b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (chplan.N
 	// path below.
 	if v, ok := TryFoldScalar(b); ok {
 		return syntheticScalarVector(&chplan.LitFloat{V: v}, nil, s, ctx), nil
+	}
+
+	// Vector set operators (`and` / `or` / `unless`) take a separate
+	// path: their result rows come from one side verbatim (and / unless)
+	// or are a union of both sides (or) — there's no per-pair value
+	// expression. PromQL's parser enforces many-to-many matching for
+	// these, so the cardinality modifiers we honour for arithmetic /
+	// comparison V-V binops don't apply.
+	if b.Op.IsSetOperator() {
+		return lowerVectorSetOp(b, s, ctx)
 	}
 
 	op, err := promBinaryOp(b.Op)
@@ -400,8 +413,77 @@ func rewriteAnchorToTimeUnix(expr chplan.Expr, s schema.Metrics) chplan.Expr {
 	return expr
 }
 
+// lowerVectorSetOp lowers a PromQL vector set operator (`and`, `or`,
+// `unless`) into a chplan.VectorSetOp node. Each side lowers
+// independently to a row-per-series shape (instant) or a row-per-
+// (series, anchor) shape (range); the chsql emitter then filters /
+// unions them by their match-key signature.
+//
+// PromQL's parser enforces many-to-many matching for set ops — it
+// upgrades CardOneToOne to CardManyToMany at parse time, and rejects
+// `group_left` / `group_right` explicitly ("set operations must
+// always be many-to-many"). So this lowering deliberately ignores
+// `b.VectorMatching.Card` / `b.VectorMatching.Include`: there is no
+// cardinality knob to honour, only the match-key shape.
+//
+// The match-key signature defaults to the full Attributes map.
+// `on(labels)` projects only the named keys; `ignoring(labels)`
+// projects the complement. The emitter uses the same
+// matchKeyGroupExpr helper as VectorJoin so the signature shape
+// stays in sync across both V-V binop families.
+func lowerVectorSetOp(b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	kind, err := promVectorSetOpKind(b.Op)
+	if err != nil {
+		return nil, err
+	}
+	if b.ReturnBool {
+		return nil, fmt.Errorf("promql: 'bool' modifier is only allowed on comparison binary ops")
+	}
+
+	left, err := lower(b.LHS, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+	right, err := lower(b.RHS, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	match := chplan.VectorMatch{}
+	if b.VectorMatching != nil {
+		match.Labels = append([]string(nil), b.VectorMatching.MatchingLabels...)
+		match.On = b.VectorMatching.On
+	}
+
+	return &chplan.VectorSetOp{
+		Left:             left,
+		Right:            right,
+		Op:               kind,
+		Match:            match,
+		MetricNameColumn: s.MetricNameColumn,
+		AttributesColumn: s.AttributesColumn,
+		TimestampColumn:  s.TimestampColumn,
+		ValueColumn:      s.ValueColumn,
+	}, nil
+}
+
+// promVectorSetOpKind maps a PromQL parser set-op token to the chplan
+// VectorSetOpKind constant.
+func promVectorSetOpKind(op parser.ItemType) (chplan.VectorSetOpKind, error) {
+	switch op {
+	case parser.LAND:
+		return chplan.VectorSetAnd, nil
+	case parser.LOR:
+		return chplan.VectorSetOr, nil
+	case parser.LUNLESS:
+		return chplan.VectorSetUnless, nil
+	}
+	return "", fmt.Errorf("promql: not a vector set operator: %s", op.String())
+}
+
 // promBinaryOp maps a PromQL parser op to the chplan op. Arithmetic and
-// comparison ops are handled here; logical ops (and/or/unless) defer.
+// comparison ops are handled here; vector set ops (and / or / unless)
+// take a separate path via [lowerVectorSetOp].
 func promBinaryOp(op parser.ItemType) (chplan.BinaryOp, error) {
 	switch op {
 	case parser.ADD:
@@ -429,7 +511,14 @@ func promBinaryOp(op parser.ItemType) (chplan.BinaryOp, error) {
 	case parser.GTE:
 		return chplan.OpGe, nil
 	}
-	return "", fmt.Errorf("promql: binary op %s not yet supported (logical ops `and`/`or`/`unless` land in M1.x follow-ups)", op.String())
+	if op.IsSetOperator() {
+		// Set ops are dispatched via [lowerVectorSetOp] before this
+		// function is called; reaching here means an internal mis-
+		// routing — surface a clear invariant error rather than a
+		// silently misleading "not yet supported".
+		return "", fmt.Errorf("promql: vector set op %s should route through lowerVectorSetOp", op.String())
+	}
+	return "", fmt.Errorf("promql: binary op %s not yet supported", op.String())
 }
 
 func isComparison(op chplan.BinaryOp) bool {

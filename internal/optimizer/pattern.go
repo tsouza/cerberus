@@ -57,6 +57,7 @@ var (
 	KindLimit          = NodeKind{t: reflect.TypeOf((*chplan.Limit)(nil))}
 	KindOrderBy        = NodeKind{t: reflect.TypeOf((*chplan.OrderBy)(nil))}
 	KindVectorJoin     = NodeKind{t: reflect.TypeOf((*chplan.VectorJoin)(nil))}
+	KindVectorSetOp    = NodeKind{t: reflect.TypeOf((*chplan.VectorSetOp)(nil))}
 	KindStructuralJoin = NodeKind{t: reflect.TypeOf((*chplan.StructuralJoin)(nil))}
 	KindTopK           = NodeKind{t: reflect.TypeOf((*chplan.TopK)(nil))}
 )
