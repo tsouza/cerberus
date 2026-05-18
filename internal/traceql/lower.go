@@ -80,19 +80,152 @@ func lowerRoot(expr *traceql.RootExpr, s schema.Traces) (chplan.Node, error) {
 		}
 	}
 	if expr.MetricsSecondStage != nil {
-		// chplan.MetricsSecondStage + chsql.emitMetricsSecondStage now
-		// carry the IR + SQL for `| topk(N)` / `| bottomk(N)` / `| > N`
-		// (see internal/chplan/metrics_second_stage.go +
-		// internal/chsql/metrics_second_stage.go). Wiring the lowering
-		// here is blocked on tsouza/tempo:cerberus-accessors exposing
-		// accessors on the upstream-unexported TopKBottomK.{op,limit}
-		// and MetricsFilter.{op,value} fields (mirrors the
-		// MetricsAggregate accessors added for #143). The fork bump
-		// lands as a follow-up; until then the IR + emitter foundation
-		// is callable directly from chplan-shape tests.
-		return nil, fmt.Errorf("traceql: metrics second-stage operators (`| topk`, `| bottomk`, `| > N`) are not yet supported (chplan + chsql IR landed; lowering wiring blocked on tsouza/tempo SecondStageElement accessors)")
+		plan, err = lowerMetricsSecondStage(plan, expr.MetricsSecondStage)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return plan, nil
+}
+
+// lowerMetricsSecondStage wraps the metrics-aggregate subtree with a
+// chplan.MetricsSecondStage carrying the `| topk(N)` / `| bottomk(N)`
+// / `| > N` / `| < N` / `| >= N` / `| <= N` / `| == N` / `| != N`
+// transform. Chained second-stage (`| topk(5) | > 10`) is supported
+// via traceql.ChainedSecondStage: each element wraps the previous
+// result in document order, so the rightmost element ends up as the
+// outermost chplan node (which matches the chsql emitter's
+// inside-out subquery wrap).
+//
+// The IR + chsql emit foundation landed in PR #437. This lowering
+// became wireable once tsouza/tempo v0.0.3-cerberus-accessors
+// exposed Op() / Limit() / Value() / Elements() / Separators()
+// accessors on the upstream-unexported SecondStageElement variants
+// (mirrors the MetricsAggregate accessor pattern from #143).
+func lowerMetricsSecondStage(inner chplan.Node, ss traceql.SecondStageElement) (chplan.Node, error) {
+	switch v := ss.(type) {
+	case *traceql.TopKBottomK:
+		return lowerTopKBottomK(inner, v)
+	case *traceql.MetricsFilter:
+		return lowerMetricsFilter(inner, v)
+	case traceql.ChainedSecondStage:
+		return lowerChainedSecondStage(inner, v)
+	case *traceql.ChainedSecondStage:
+		return lowerChainedSecondStage(inner, *v)
+	}
+	return nil, fmt.Errorf("traceql: metrics second-stage element %T is not yet supported", ss)
+}
+
+// lowerTopKBottomK turns `| topk(N)` / `| bottomk(N)` into a
+// chplan.MetricsSecondStage wrap with discriminator SecondStageTopK
+// or SecondStageBottomK. K is the upstream limit; the emitter
+// renders `ORDER BY Value <DESC|ASC> LIMIT K` and treats PartitionBy
+// (empty here — TraceQL instant-metrics path; matrix path supplied
+// by the /api/metrics/query_range handler via a wrapping
+// RangeWindow) as the per-anchor key.
+func lowerTopKBottomK(inner chplan.Node, t *traceql.TopKBottomK) (chplan.Node, error) {
+	op, err := mapSecondStageOp(t.Op())
+	if err != nil {
+		return nil, err
+	}
+	limit := t.Limit()
+	if limit <= 0 {
+		return nil, fmt.Errorf("traceql: %s(%d): limit must be > 0", t.Op(), limit)
+	}
+	return &chplan.MetricsSecondStage{
+		Input:      inner,
+		Op:         op,
+		K:          int64(limit),
+		ValueAlias: metricsValueAlias,
+	}, nil
+}
+
+// lowerMetricsFilter turns `| > N` / `| < N` / `| >= N` / `| <= N`
+// / `| == N` / `| != N` into a chplan.MetricsSecondStage with
+// discriminator SecondStageThreshold. The chsql emitter renders the
+// wrap as `WHERE Value <Op> <Value>` on the inner aggregate's row
+// shape.
+func lowerMetricsFilter(inner chplan.Node, f *traceql.MetricsFilter) (chplan.Node, error) {
+	op, err := mapBinaryOp(f.Op())
+	if err != nil {
+		return nil, fmt.Errorf("traceql: metrics filter operator %s: %w", f.Op(), err)
+	}
+	if !isThresholdBinaryOp(op) {
+		return nil, fmt.Errorf("traceql: metrics filter operator %s is not a supported threshold comparison", f.Op())
+	}
+	return &chplan.MetricsSecondStage{
+		Input:          inner,
+		Op:             chplan.SecondStageThreshold,
+		ThresholdOp:    op,
+		ThresholdValue: f.Value(),
+		ValueAlias:     metricsValueAlias,
+	}, nil
+}
+
+// lowerChainedSecondStage walks ChainedSecondStage.Elements() in
+// source order, wrapping the previous result in each successive
+// second-stage node. The first element wraps the upstream metrics
+// aggregate (`inner`); each subsequent element wraps the previous
+// chplan.MetricsSecondStage. The rightmost element in the TraceQL
+// source ends up as the outermost chplan node, matching the
+// inside-out subquery wrap the chsql emitter renders (see
+// test/spec/chsql/metrics_second_stage_chained_topk_threshold.txtar).
+//
+// Separators() carries the pipeline punctuation upstream uses for
+// String() round-trip fidelity. The lowering does not care about
+// the punctuation per se (it's a chained pipe stream — the wrapping
+// order is what matters), but the accessor existence keeps the
+// upstream contract explicit for future regression cases.
+func lowerChainedSecondStage(inner chplan.Node, c traceql.ChainedSecondStage) (chplan.Node, error) {
+	elements := c.Elements()
+	if len(elements) == 0 {
+		return nil, fmt.Errorf("traceql: chained second-stage has no elements")
+	}
+	// Validate Separators() length matches Elements() so a future
+	// upstream change (e.g. dropping a separator slot) trips this
+	// check rather than silently dropping a wrap.
+	if seps := c.Separators(); len(seps) != len(elements) {
+		return nil, fmt.Errorf("traceql: chained second-stage element/separator length mismatch (%d vs %d)", len(elements), len(seps))
+	}
+	current := inner
+	for _, el := range elements {
+		next, err := lowerMetricsSecondStage(current, el)
+		if err != nil {
+			return nil, err
+		}
+		current = next
+	}
+	return current, nil
+}
+
+// mapSecondStageOp translates Tempo's SecondStageOp (OpTopK /
+// OpBottomK) to the chplan discriminator. Reserved-for-future
+// SecondStageOp values surface as a clean unsupported error rather
+// than collapse to SecondStageInvalid (which the emitter would
+// reject anyway).
+func mapSecondStageOp(op traceql.SecondStageOp) (chplan.SecondStageOp, error) {
+	switch op {
+	case traceql.OpTopK:
+		return chplan.SecondStageTopK, nil
+	case traceql.OpBottomK:
+		return chplan.SecondStageBottomK, nil
+	}
+	return chplan.SecondStageInvalid, fmt.Errorf("traceql: second-stage op %s is not supported", op)
+}
+
+// isThresholdBinaryOp reports whether op is one of the six
+// comparison operators Tempo's `MetricsFilter.validate()` accepts
+// (>, >=, <, <=, =, !=). Mirrors chsql.isThresholdOp; duplicated
+// here because the chsql helper is unexported and importing
+// chsql from a lowering package would create the wrong dep
+// direction (chsql consumes chplan; chsql consuming lowering would
+// invert the layering).
+func isThresholdBinaryOp(op chplan.BinaryOp) bool {
+	switch op {
+	case chplan.OpGt, chplan.OpGe, chplan.OpLt, chplan.OpLe, chplan.OpEq, chplan.OpNe:
+		return true
+	}
+	return false
 }
 
 // lowerFollowingElement layers a pipeline element onto the previous
