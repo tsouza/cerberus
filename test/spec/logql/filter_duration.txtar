@@ -1,0 +1,15 @@
+-- query.logql --
+{job="api"} | logfmt | latency > 500ms
+-- args --
+[0] string = "job"
+[1] string = "api"
+[2] string = "="
+[3] string = " "
+[4] string = "\""
+[5] string = "latency"
+[6] float64 = 0.5
+-- chplan --
+Filter predicate=((ResourceAttributes["job"] = "api") AND (parseTimeDelta(mapConcat(ResourceAttributes, extractKeyValuePairs(Body, "=", " ", "\""))["latency"]) > 0.5))
+  Scan(otel_logs)
+-- sql --
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (parseTimeDelta(mapConcat(`ResourceAttributes`, extractKeyValuePairs(`Body`, ?, ?, ?))[?]) > ?)

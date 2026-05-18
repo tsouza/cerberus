@@ -1,0 +1,15 @@
+-- query.logql --
+{job="api"} | logfmt | size > 10KB
+-- args --
+[0] string = "job"
+[1] string = "api"
+[2] string = "="
+[3] string = " "
+[4] string = "\""
+[5] string = "size"
+[6] float64 = 10000
+-- chplan --
+Filter predicate=((ResourceAttributes["job"] = "api") AND (parseReadableSize(mapConcat(ResourceAttributes, extractKeyValuePairs(Body, "=", " ", "\""))["size"]) > 10000))
+  Scan(otel_logs)
+-- sql --
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (parseReadableSize(mapConcat(`ResourceAttributes`, extractKeyValuePairs(`Body`, ?, ?, ?))[?]) > ?)

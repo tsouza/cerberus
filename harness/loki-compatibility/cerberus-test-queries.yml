@@ -20,28 +20,25 @@
 #   - fast/        — vendored verbatim in PR 2; selector-vocabulary skips
 #                    documented since 2026-05-15 pending a future seed
 #                    expansion.
-#   - regression/  — vendored in PR 6 (this file). Every entry uses
-#                    features cerberus has not yet shipped
-#                    (`| unwrap`,
-#                    `sum_over_time` / `avg_over_time` /
-#                    `min_over_time` / `max_over_time` /
-#                    `quantile_over_time` / `stddev_over_time`,
-#                    range-aggregation `by`/`without` grouping,
-#                    numeric label filters, `detected_level` structured
-#                    metadata filtering). `| logfmt`, `| json`, and
-#                    `| regexp` parser stages are all supported now;
-#                    skipped entries that mention them cite the *other*
-#                    blocker in the same pipeline.
-#                    All are listed below.
-#   - exhaustive/  — vendored in PR 6 (this file). Same posture: every
-#                    entry leans on a feature still in flight.
+#   - regression/  — vendored in PR 6 (this file). Most entries now run
+#                    against cerberus; the remaining skips cite the
+#                    specific gap they hit (`| json`/`| regexp` parser
+#                    stages, `detected_level` structured-metadata label,
+#                    or upstream-pinned `skip: true` rows). `| logfmt`,
+#                    `| unwrap`, range aggregations on unwrapped values,
+#                    range-aggregation `by`/`without` grouping, and
+#                    numeric/duration/bytes label filters are all wired
+#                    so entries that only needed those have been dropped.
+#   - exhaustive/  — vendored in PR 6 (this file). Same posture as
+#                    regression/: most entries lifted, residual skips cite
+#                    the surviving feature gap.
 #
 # Maintenance:
 #
 #   - Reviewers add an entry when a vendored query exercises a LogQL
 #     feature cerberus hasn't shipped, OR when the runner surfaces a
-#     persistent diff vs the reference Loki on a feature roadmap.md
-#     deferred.
+#     persistent diff vs the reference Loki on a feature listed under
+#     docs/roadmap.md.
 #   - Empty should_skip / should_fail are fine. The runner consumes
 #     this overlay via `--overlay harness/loki-compatibility/cerberus-test-queries.yml`
 #     (wired in PR 5's cerberus-owned compliance tester). Each matched
@@ -57,40 +54,46 @@
 #   The fast/ basic-selector and simple-metrics (count_over_time, count
 #   with line filter) entries were unskipped after the seed expansion added
 #   multi-label streams, structured metadata, and multi-format log lines.
-#   The remaining fast/ entries require the `detected_level` structured-
-#   metadata label filter, which cerberus has not yet shipped.
-#   The regression/ + exhaustive/ slices exercise LogQL features
-#   cerberus has not yet shipped:
+#   The remaining fast/ entries require LogQL features cerberus has not
+#   yet implemented (detected_level filter, | json parser stage).
+#   The regression/ + exhaustive/ slices were originally enrolled in
+#   bulk; entries that only depended on features that have since landed
+#   were dropped. Surviving skips fall into:
 #
 #     - `| unpack` / `| pattern` — post-fetch (cerberus supports parse-only)
 #     - `| line_format` / `| label_format` — landed via #128/#130
 #     - `| decolorize` — landed
-#     - `| logfmt` / `| json` / `| regexp` (bare + typed) — landed
-#       parser stages; entries mentioning them below are blocked by
-#       *other* features in the same pipeline.
-#     - `| drop` / `| keep` — landed as post-fetch label projection
-#     - numeric / duration / bytes label filters — open (parser-extracted typed values)
-#     - `unwrap` based range aggregations
-#       (sum_over_time, avg_over_time, max_over_time, min_over_time,
-#       stddev_over_time, stdvar_over_time, quantile_over_time, first_over_time,
-#       last_over_time) — open
-#     - `by`/`without` grouping on range aggregations — open
-#     - `detected_level` structured-metadata label filter — open
+#     - `| logfmt` (bare + typed `| logfmt foo="bar"`) — landed via
+#       extractKeyValuePairs lowering.
+#     - `| json` / `| regexp` / `| json field=...` — pending chsql
+#       JSONExtract helpers.
+#     - `| drop` / `| keep` — landed as post-fetch label projection.
+#     - Numeric / duration / bytes label filters — landed via
+#       `toFloat64OrZero` / `parseTimeDelta` / `parseReadableSize` on the
+#       parser-extracted label string.
+#     - `| unwrap` (bare + `duration(...)` / `duration_seconds(...)` /
+#       `bytes(...)`) — landed; per-row Value built from the live
+#       labelsExpr the same way `| logfmt` exposes parsed keys.
+#     - Range aggregations on unwrapped values (sum_over_time,
+#       avg_over_time, min/max/stddev/stdvar_over_time, and
+#       quantile_over_time) — landed; reuse the same chsql range-window
+#       emitters the PromQL head ships.
+#     - `by`/`without` grouping on range aggregations — landed; inner
+#       Project synthesises a `map(...)` / `mapFilter(...)` group key.
 #
-# Resolution path:
+# Resolution path (per docs/loki-compliance-plan.md PR 6):
 #
-#   - PR 6 vendors the regression/ + exhaustive/ subdirs verbatim and
-#     enrolls every entry into should_skip below, citing the specific
-#     blocker. As cerberus ships each LogQL feature, entries get dropped
-#     (or rewritten with a tighter rationale if a residual gap remains).
-#   - The seed expansion (PR 7+) now writes multi-label streams with
+#   - PR 6 vendored the regression/ + exhaustive/ subdirs verbatim and
+#     enrolled every entry. As each LogQL feature lands, the matching
+#     overlay rows are dropped (or rewritten with a tighter rationale if
+#     a residual gap remains, e.g. structured-metadata `detected_level`).
+#   - The seed expansion now writes multi-label streams with
 #     JSON/logfmt/unstructured lines, structured metadata (detected_level),
 #     and error keywords (failed/refused). Entries that only needed
 #     matching selectors have been unskipped.
 
 should_skip:
-  # fast/ — entries still skipped require the detected_level structured-metadata
-  # filter (the parser stages and `| logfmt` are now supported):
+  # fast/ — entries still skipped require unimplemented LogQL features (detected_level filters, | json, | logfmt):
   - source: "fast/simple-metrics.yaml#Count with error/warn filter"
     reason: "Requires `| detected_level=~\"error|warn\"` filter; cerberus does not yet support structured-metadata label filters in LogQL pipe expressions."
     since: "2026-05-15"
@@ -113,98 +116,59 @@ should_skip:
     since: "2026-05-15"
     jira:  "docs/loki-compliance-plan.md PR 6 (structured-metadata)"
   - source: "fast/structured-metadata.yaml#JSON parsing with structured metadata filter"
-    reason: "`| json` is now supported, but this query also filters on `detected_level` structured metadata and the seeder emits logfmt-shaped lines rather than JSON, so the parser has nothing to extract."
+    reason: "Cerberus does not yet wire the `| json` parser stage (lower.go JSONExpressionParserExpr returns 'not yet supported'). Also requires `detected_level` + JSON-shaped log lines (seeder emits logfmt)."
     since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6 (structured-metadata)"
+    jira:  "docs/loki-compliance-plan.md PR 6 (`| json` parser)"
   - source: "fast/structured-metadata.yaml#JSON parsing with structured metadata filter first"
-    reason: "Upstream already pins `skip: true` (dataobj-engine schema gap). Listed explicitly so a future upstream `skip: false` flip doesn't silently re-enable on cerberus before the seeder emits JSON-shaped lines and `detected_level` filtering lands."
+    reason: "Upstream already pins `skip: true` (dataobj-engine schema gap). Listed explicitly so a future upstream `skip: false` flip doesn't silently re-enable on cerberus before the `| json` parser lands."
     since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6 (structured-metadata)"
+    jira:  "docs/loki-compliance-plan.md PR 6 (`| json` parser)"
 
-  # regression/drilldown-patterns.yaml — remaining entries blocked by
-  # `unwrap` + `by` on range-aggregation or `detected_level` filter.
-  # (`| logfmt`, `| json`, `| regexp`, `| drop` are supported.)
-  - source: "regression/drilldown-patterns.yaml#Drilldown unwrap query with detected_level grouping"
-    reason: "Uses `avg_over_time(... | unwrap duration_seconds(duration))` + `sum by (detected_level)` — `| unwrap` range ops (avg_over_time) and range-aggregation grouping are both still open (internal/logql/range_aggregation.go)."
+  # regression/drilldown-patterns.yaml — `| json` parser stage remains
+  # the only blocker now that `| unwrap` + range-aggregation grouping land.
+  - source: "regression/drilldown-patterns.yaml#Basic drilldown with json and logfmt parsing"
+    reason: "Uses `| json | logfmt | drop` — `| logfmt` and `| drop` are supported, but `| json` is not yet wired (internal/logql/lower.go)."
     since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6"
+    jira:  "docs/loki-compliance-plan.md PR 6 (`| json` parser)"
+  - source: "regression/drilldown-patterns.yaml#Drilldown with error level filter"
+    reason: "Same as Basic drilldown — `| json` parser is the remaining blocker."
+    since: "2026-05-15"
+    jira:  "docs/loki-compliance-plan.md PR 6 (`| json` parser)"
+  - source: "regression/drilldown-patterns.yaml#Drilldown with error or warn level filter"
+    reason: "Same as Basic drilldown — `| json` parser is the remaining blocker."
+    since: "2026-05-15"
+    jira:  "docs/loki-compliance-plan.md PR 6 (`| json` parser)"
   - source: "regression/drilldown-patterns.yaml#Drilldown count with complex filters"
-    reason: "Uses `| detected_level=... or detected_level=... |~ ... | json | logfmt | drop | level=~...` — the parser stages and `| drop` are supported, but the `detected_level` structured-metadata or-chain still needs structured-metadata filter support."
+    reason: "Uses `| detected_level=... or detected_level=... |~ ... | json | logfmt | drop | level=~...` — `| logfmt` / `| drop` are supported, but `| json` and the complex label-filter or-chain over structured metadata remain unsupported."
     since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6 (structured-metadata)"
+    jira:  "docs/loki-compliance-plan.md PR 6 (`| json` parser)"
 
-  # regression/metric-queries.yaml — every entry is unwrap-based.
-  - source: "regression/metric-queries.yaml#Sum over time with duration conversion"
-    reason: "`sum_over_time(... | unwrap duration(duration))` — `sum_over_time` (RangeWindow non-counter) on unwrapped values and `| unwrap` itself are deferred to RC2/RC3 (internal/logql/range_aggregation.go only supports rate/count_over_time/bytes_rate/bytes_over_time today). `| logfmt` is now supported but cannot unblock this on its own."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap range ops; docs/loki-compliance-plan.md PR 6"
-  - source: "regression/metric-queries.yaml#Average over time with duration conversion"
-    reason: "`avg_over_time(... | unwrap)` — `avg_over_time` not supported on unwrapped values."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap range ops; docs/loki-compliance-plan.md PR 6"
-  - source: "regression/metric-queries.yaml#Rate of unwrapped values"
-    reason: "`rate(... | unwrap)` — `unwrap` requires parser-extracted numeric values; deferred."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap; docs/loki-compliance-plan.md PR 6"
-  - source: "regression/metric-queries.yaml#Duration seconds conversion with avg"
-    reason: "`sum by (level) (avg_over_time(... | unwrap duration_seconds(duration)))` — `avg_over_time` on unwrap + range-aggregation `by` grouping are still deferred; `| logfmt` is now supported."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap + grouping; docs/loki-compliance-plan.md PR 6"
-  - source: "regression/metric-queries.yaml#Duration seconds with sum over time"
-    reason: "`sum_over_time(... | unwrap)` — same deferred features as the rest of regression/metric-queries.yaml."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap; docs/loki-compliance-plan.md PR 6"
-  - source: "regression/metric-queries.yaml#Average of duration seconds conversion"
-    reason: "`avg_over_time(... | unwrap duration_seconds(duration))` — avg_over_time on unwrap is deferred."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap range ops; docs/loki-compliance-plan.md PR 6"
-  - source: "regression/metric-queries.yaml#Bytes conversion with sum"
-    reason: "`sum_over_time(... | logfmt | unwrap bytes)` — `| logfmt` is now supported, but `sum_over_time` on unwrap remains deferred."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap; docs/loki-compliance-plan.md PR 6"
-  - source: "regression/metric-queries.yaml#Bytes grouped by level"
-    reason: "`sum by (level) (sum_over_time(... | unwrap bytes))` — sum_over_time + unwrap + range-agg grouping all deferred."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2 M3.4 grouping + unwrap; docs/loki-compliance-plan.md PR 6"
-  - source: "regression/metric-queries.yaml#Logfmt size unwrap"
-    reason: "`sum_over_time(... | logfmt | unwrap size)` — `| logfmt` is now supported, but `sum_over_time` on unwrap remains deferred."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap range ops; docs/loki-compliance-plan.md PR 6"
-  - source: "regression/metric-queries.yaml#Min over time with unwrap"
-    reason: "`min(min_over_time(... | unwrap))` — min_over_time + unwrap deferred."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap range ops; docs/loki-compliance-plan.md PR 6"
-  - source: "regression/metric-queries.yaml#Max over time with unwrap"
-    reason: "`max(max_over_time(... | unwrap))` — max_over_time + unwrap deferred."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap range ops; docs/loki-compliance-plan.md PR 6"
-  - source: "regression/metric-queries.yaml#Logfmt status unwrap"
-    reason: "`avg_over_time(... | logfmt | unwrap status)` — `| logfmt` is now supported, but `avg_over_time` on unwrap remains deferred."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap range ops; docs/loki-compliance-plan.md PR 6"
+  # regression/metric-queries.yaml — most unwrap entries now run; the
+  # surviving skip is the upstream-pinned `HTTP status code distribution`
+  # row.
   - source: "regression/metric-queries.yaml#HTTP status code distribution"
-    reason: "Upstream pins `skip: true` (JSONParserErr on generated data). Listed for explicitness — even with `| json` now supported on cerberus, the upstream skip flag still keeps this case out of the comparison."
+    reason: "Upstream pins `skip: true` (JSONParserErr on generated data). `| json` parser is also unwired on cerberus."
     since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6"
+    jira:  "docs/loki-compliance-plan.md PR 6 (`| json` parser)"
 
-  # regression/structured-metadata.yaml — `detected_level` + parsers +
-  # numeric label filters.
+  # regression/structured-metadata.yaml — `detected_level` + `| json`
+  # parsers are the remaining blockers.
   - source: "regression/structured-metadata.yaml#Combined line and metadata filter"
     reason: "Requires `detected_level` structured metadata; seeder writes none."
     since: "2026-05-15"
     jira:  "docs/loki-compliance-plan.md PR 6"
   - source: "regression/structured-metadata.yaml#JSON parsing with duration filter and structured metadata"
-    reason: "Upstream pins `skip: true` (numeric `> 0.1` label filter unsupported by v2 engine). Cerberus also has numeric label filters open (lower.go NumericLabelFilter returns 'not yet supported'). `| json` is now supported but cannot unblock this on its own."
+    reason: "Upstream pins `skip: true` (numeric `> 0.1` label filter unsupported by v2 engine). Cerberus also requires the `| json` parser to feed the numeric label."
     since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6"
+    jira:  "docs/loki-compliance-plan.md PR 6 (`| json` parser)"
   - source: "regression/structured-metadata.yaml#Logfmt parsing with level filter"
-    reason: "`| logfmt | level=\"error\" | detected_level=\"error\"` — `| logfmt` is now supported, but `detected_level` structured-metadata filtering remains deferred."
+    reason: "`| logfmt | level=\"error\" | detected_level=\"error\"` — `| logfmt` is supported, but `detected_level` structured-metadata filtering is not yet wired."
     since: "2026-05-15"
     jira:  "docs/loki-compliance-plan.md PR 6 (structured-metadata)"
   - source: "regression/structured-metadata.yaml#Drilldown pattern with case-insensitive error search"
-    reason: "Upstream pins `skip: true` (numeric `>= 500` label filter). Cerberus also has numeric label filters open. `| logfmt`, `| json`, and `| drop` are supported."
+    reason: "Upstream pins `skip: true` (numeric `>= 500` label filter). Cerberus also needs the `| json` parser for the upstream pipeline."
     since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6"
+    jira:  "docs/loki-compliance-plan.md PR 6 (`| json` parser)"
   - source: "regression/structured-metadata.yaml#Drilldown with failed search and error level"
     reason: "Requires `detected_level` structured metadata + 'failed' keyword in log content; seeder writes neither."
     since: "2026-05-15"
@@ -214,251 +178,87 @@ should_skip:
     since: "2026-05-15"
     jira:  "docs/loki-compliance-plan.md PR 6"
 
-  # exhaustive/aggregations.yaml — unwrap + by/without grouping on
-  # range aggregations. (`| logfmt` is supported now; the remaining
-  # blocker on these entries is the unwrap/grouping pair.)
-  - source: "exhaustive/aggregations.yaml#Average over time with unwrap - no grouping"
-    reason: "`avg_over_time(... | logfmt | unwrap duration(duration))` — `| logfmt` is now supported, but `avg_over_time` on unwrap is still deferred."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap range ops; docs/loki-compliance-plan.md PR 6"
-  - source: "exhaustive/aggregations.yaml#Average over time with line filter and unwrap"
-    reason: "Same as `Average over time with unwrap - no grouping` — `avg_over_time` on unwrap deferred."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap range ops; docs/loki-compliance-plan.md PR 6"
-  - source: "exhaustive/aggregations.yaml#Min over time with unwrap"
-    reason: "`min_over_time(... | unwrap)` — min_over_time + unwrap deferred."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap; docs/loki-compliance-plan.md PR 6"
-  - source: "exhaustive/aggregations.yaml#Max over time with unwrap"
-    reason: "`max_over_time(... | unwrap)` — max_over_time + unwrap deferred."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap; docs/loki-compliance-plan.md PR 6"
+  # exhaustive/aggregations.yaml — most entries lifted now that `| unwrap`,
+  # value range aggs, and range-agg grouping land. Remaining skips are
+  # seed-gap entries (labels the seeder doesn't emit yet).
   - source: "exhaustive/aggregations.yaml#Count aggregated by pod"
-    reason: "`sum by (pod)` on a label key the seeder doesn't write. Also requires range-aggregation `by` grouping which cerberus has deferred."
+    reason: "`sum by (pod)` on a label key the seeder doesn't write."
     since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2 M3.4 grouping; docs/loki-compliance-plan.md PR 6"
+    jira:  "docs/loki-compliance-plan.md PR 6 (seed gap)"
   - source: "exhaustive/aggregations.yaml#Count aggregated by namespace"
-    reason: "Same — `namespace` label not in seed; range-aggregation `by` grouping deferred."
+    reason: "`namespace` label not in seed."
     since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2 M3.4 grouping; docs/loki-compliance-plan.md PR 6"
+    jira:  "docs/loki-compliance-plan.md PR 6 (seed gap)"
   - source: "exhaustive/aggregations.yaml#Count aggregated by service_name"
-    reason: "Seeder writes `service` not `service_name`; also range-aggregation `by` grouping deferred."
+    reason: "Seeder writes `service` not `service_name`."
     since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2 M3.4 grouping; docs/loki-compliance-plan.md PR 6"
+    jira:  "docs/loki-compliance-plan.md PR 6 (seed gap)"
   - source: "exhaustive/aggregations.yaml#Count aggregated by detected_level"
     reason: "Requires `detected_level` structured metadata; seeder writes none."
     since: "2026-05-15"
     jira:  "docs/loki-compliance-plan.md PR 6"
   - source: "exhaustive/aggregations.yaml#Count aggregated by cluster and namespace"
-    reason: "`cluster`/`namespace` labels not in seed; range-aggregation `by` grouping deferred."
+    reason: "`cluster` / `namespace` labels not in seed."
     since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2 M3.4 grouping; docs/loki-compliance-plan.md PR 6"
+    jira:  "docs/loki-compliance-plan.md PR 6 (seed gap)"
   - source: "exhaustive/aggregations.yaml#Count aggregated by service_name and container"
-    reason: "`service_name`/`container` labels not in seed; range-aggregation `by` grouping deferred."
+    reason: "`service_name` / `container` labels not in seed."
     since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2 M3.4 grouping; docs/loki-compliance-plan.md PR 6"
-  - source: "exhaustive/aggregations.yaml#JSON duration by level"
-    reason: "`sum_over_time(... | logfmt | unwrap duration(duration))` + `sum by (level)` — `| logfmt` is now supported, but `sum_over_time` on unwrap and range-aggregation grouping are still deferred."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap + RC2 M3.4 grouping; docs/loki-compliance-plan.md PR 6"
-  - source: "exhaustive/aggregations.yaml#Loki duration unwrap with logfmt"
-    reason: "Same as `JSON duration by level` — `sum_over_time` on unwrap + grouping deferred."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap + RC2 M3.4 grouping; docs/loki-compliance-plan.md PR 6"
-  - source: "exhaustive/aggregations.yaml#Max of min duration by level"
-    reason: "`max by (level) (min_over_time(... | unwrap))` — min_over_time + unwrap + grouping deferred."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap range ops + grouping; docs/loki-compliance-plan.md PR 6"
-  - source: "exhaustive/aggregations.yaml#Avg duration by level"
-    reason: "`avg by (level) (avg_over_time(... | unwrap))` — avg_over_time + unwrap + grouping deferred."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap range ops + grouping; docs/loki-compliance-plan.md PR 6"
-  - source: "exhaustive/aggregations.yaml#Max avg duration without grouping"
-    reason: "`max by () (avg_over_time(... | unwrap))` — empty-by + avg_over_time + unwrap deferred."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap range ops + grouping; docs/loki-compliance-plan.md PR 6"
-  - source: "exhaustive/aggregations.yaml#Max avg duration by level without service_name"
-    reason: "`max by (level) (... without (service_name))` — avg_over_time + unwrap + outer `without` deferred."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap range ops + grouping; docs/loki-compliance-plan.md PR 6"
-  - source: "exhaustive/aggregations.yaml#Max sum without grouping modifier"
-    reason: "`max without () (sum_over_time(... | unwrap))` — sum_over_time + unwrap deferred; also empty `without ()` shape."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap range ops; docs/loki-compliance-plan.md PR 6"
-  - source: "exhaustive/aggregations.yaml#Avg duration without grouping"
-    reason: "`avg_over_time(... | unwrap)` with no outer aggregation — avg_over_time + unwrap deferred."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap range ops; docs/loki-compliance-plan.md PR 6"
-  - source: "exhaustive/aggregations.yaml#Sum duration without outer aggregation"
-    reason: "`sum_over_time(... | unwrap)` with no outer aggregation — sum_over_time + unwrap deferred."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap range ops; docs/loki-compliance-plan.md PR 6"
+    jira:  "docs/loki-compliance-plan.md PR 6 (seed gap)"
 
-  # exhaustive/unwrap-aggregations.yaml — uniformly unwrap-based; many
-  # entries also use stddev_over_time / quantile_over_time (upstream-skipped).
+  # exhaustive/unwrap-aggregations.yaml — `| json`-based and
+  # upstream-pinned entries remain; everything else now runs.
   - source: "exhaustive/unwrap-aggregations.yaml#Rate of unwrapped values - no grouping"
-    reason: "`rate(... | json | unwrap duration_ms)` — `| json` is now supported, but `unwrap` on parser-extracted values remains open."
+    reason: "`rate(... | json | unwrap duration_ms)` — `| json` parser is not yet wired."
     since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6"
-  - source: "exhaustive/unwrap-aggregations.yaml#Rate with grouping by level"
-    reason: "`sum by (level) (rate(... | unwrap))` — rate on unwrap + range-aggregation grouping deferred."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2 M3.4 grouping + unwrap; docs/loki-compliance-plan.md PR 6"
-  - source: "exhaustive/unwrap-aggregations.yaml#Rate with duration conversion"
-    reason: "`rate(... | logfmt | unwrap duration_seconds(duration))` — `| logfmt` is now supported, but `rate` on unwrap remains deferred."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap; docs/loki-compliance-plan.md PR 6"
+    jira:  "docs/loki-compliance-plan.md PR 6 (`| json` parser)"
   - source: "exhaustive/unwrap-aggregations.yaml#Sum over time - no grouping"
-    reason: "`sum_over_time(... | json | unwrap duration_ms)` — `| json` is now supported, but `sum_over_time` on unwrap remains open."
+    reason: "`sum_over_time(... | json | unwrap duration_ms)` — `| json` parser is the remaining blocker."
     since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6"
-  - source: "exhaustive/unwrap-aggregations.yaml#Sum over time with top-level aggregation"
-    reason: "`sum(sum_over_time(... | logfmt | unwrap))` — `| logfmt` is now supported, but `sum_over_time` on unwrap remains deferred."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap; docs/loki-compliance-plan.md PR 6"
-  - source: "exhaustive/unwrap-aggregations.yaml#Sum over time grouped by single label"
-    reason: "`sum by (level) (sum_over_time(... | unwrap))` — sum_over_time + unwrap + range-agg grouping deferred."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2 M3.4 grouping + unwrap; docs/loki-compliance-plan.md PR 6"
-  - source: "exhaustive/unwrap-aggregations.yaml#Sum over time grouped by multiple labels"
-    reason: "Same as `Sum over time grouped by single label`."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2 M3.4 grouping + unwrap; docs/loki-compliance-plan.md PR 6"
-  - source: "exhaustive/unwrap-aggregations.yaml#Sum over time with without clause"
-    reason: "`sum without (...) (sum_over_time(... | unwrap))` — `without` grouping + sum_over_time + unwrap deferred."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2 M3.4 grouping + unwrap; docs/loki-compliance-plan.md PR 6"
-  - source: "exhaustive/unwrap-aggregations.yaml#Sum over time with bytes"
-    reason: "`sum_over_time(... | logfmt | unwrap bytes)` — `| logfmt` is now supported, but `sum_over_time` on unwrap remains deferred."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap; docs/loki-compliance-plan.md PR 6"
-  - source: "exhaustive/unwrap-aggregations.yaml#Average over time - no grouping"
-    reason: "`avg_over_time(... | unwrap)` — avg_over_time + unwrap deferred."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap range ops; docs/loki-compliance-plan.md PR 6"
-  - source: "exhaustive/unwrap-aggregations.yaml#Average over time with top-level aggregation"
-    reason: "`avg(avg_over_time(... | unwrap))` — avg_over_time + unwrap deferred."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap range ops; docs/loki-compliance-plan.md PR 6"
-  - source: "exhaustive/unwrap-aggregations.yaml#Average over time grouped by level"
-    reason: "`avg by (level) (avg_over_time(... | unwrap))` — avg_over_time + unwrap + grouping deferred."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap + grouping; docs/loki-compliance-plan.md PR 6"
-  - source: "exhaustive/unwrap-aggregations.yaml#Average duration with conversion"
-    reason: "`avg_over_time(... | unwrap duration_seconds(duration))` — avg_over_time + unwrap deferred."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap range ops; docs/loki-compliance-plan.md PR 6"
-  - source: "exhaustive/unwrap-aggregations.yaml#Max over time - no grouping"
-    reason: "`max_over_time(... | unwrap)` — max_over_time + unwrap deferred."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap range ops; docs/loki-compliance-plan.md PR 6"
-  - source: "exhaustive/unwrap-aggregations.yaml#Max over time with top-level aggregation"
-    reason: "`max(max_over_time(... | unwrap))` — max_over_time + unwrap deferred."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap range ops; docs/loki-compliance-plan.md PR 6"
-  - source: "exhaustive/unwrap-aggregations.yaml#Max over time grouped by level"
-    reason: "`max by (level) (max_over_time(... | unwrap))` — max_over_time + unwrap + grouping deferred."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap + grouping; docs/loki-compliance-plan.md PR 6"
-  - source: "exhaustive/unwrap-aggregations.yaml#Max duration with conversion"
-    reason: "`max_over_time(... | unwrap duration_seconds(duration))` — max_over_time + unwrap deferred."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap range ops; docs/loki-compliance-plan.md PR 6"
-  - source: "exhaustive/unwrap-aggregations.yaml#Min over time - no grouping"
-    reason: "`min_over_time(... | unwrap)` — min_over_time + unwrap deferred."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap range ops; docs/loki-compliance-plan.md PR 6"
-  - source: "exhaustive/unwrap-aggregations.yaml#Min over time with top-level aggregation"
-    reason: "`min(min_over_time(... | unwrap))` — min_over_time + unwrap deferred."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap range ops; docs/loki-compliance-plan.md PR 6"
-  - source: "exhaustive/unwrap-aggregations.yaml#Min over time grouped by level"
-    reason: "`min by (level) (min_over_time(... | unwrap))` — min_over_time + unwrap + grouping deferred."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap + grouping; docs/loki-compliance-plan.md PR 6"
-  - source: "exhaustive/unwrap-aggregations.yaml#Min duration with conversion"
-    reason: "`min_over_time(... | unwrap duration_seconds(duration))` — min_over_time + unwrap deferred."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap range ops; docs/loki-compliance-plan.md PR 6"
-  - source: "exhaustive/unwrap-aggregations.yaml#Count over time with unwrap"
-    reason: "`count_over_time(... | unwrap)` — even though `count_over_time` is supported, applying it through `| unwrap` requires parser-extracted numeric values that cerberus has deferred (lower.go RangeAggregationExpr.Unwrap returns 'not yet supported')."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap range ops; docs/loki-compliance-plan.md PR 6"
-  - source: "exhaustive/unwrap-aggregations.yaml#Sum over time grouped by level"
-    reason: "`sum by (level) (sum_over_time(... | unwrap))` — sum_over_time + unwrap + grouping deferred."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap + grouping; docs/loki-compliance-plan.md PR 6"
+    jira:  "docs/loki-compliance-plan.md PR 6 (`| json` parser)"
   - source: "exhaustive/unwrap-aggregations.yaml#Standard variance over time"
-    reason: "Upstream pins `skip: true` (stddev_over_time/stdvar_over_time unsupported by v2 engine). Cerberus also has stdvar_over_time deferred."
+    reason: "Upstream pins `skip: true` (stddev_over_time / stdvar_over_time unsupported by Loki's v2 engine)."
     since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap range ops; docs/loki-compliance-plan.md PR 6"
+    jira:  "docs/loki-compliance-plan.md PR 6 (upstream skip)"
   - source: "exhaustive/unwrap-aggregations.yaml#Standard variance grouped by level"
-    reason: "Upstream pins `skip: true` (stddev_over_time unsupported)."
+    reason: "Upstream pins `skip: true` (stddev_over_time unsupported by Loki's v2 engine)."
     since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap range ops; docs/loki-compliance-plan.md PR 6"
+    jira:  "docs/loki-compliance-plan.md PR 6 (upstream skip)"
   - source: "exhaustive/unwrap-aggregations.yaml#Standard deviation over time"
-    reason: "Upstream pins `skip: true` (stddev_over_time unsupported)."
+    reason: "Upstream pins `skip: true` (stddev_over_time unsupported by Loki's v2 engine)."
     since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap range ops; docs/loki-compliance-plan.md PR 6"
+    jira:  "docs/loki-compliance-plan.md PR 6 (upstream skip)"
   - source: "exhaustive/unwrap-aggregations.yaml#Standard deviation grouped by level"
-    reason: "Upstream pins `skip: true` (stddev_over_time unsupported)."
+    reason: "Upstream pins `skip: true` (stddev_over_time unsupported by Loki's v2 engine)."
     since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap range ops; docs/loki-compliance-plan.md PR 6"
+    jira:  "docs/loki-compliance-plan.md PR 6 (upstream skip)"
   - source: "exhaustive/unwrap-aggregations.yaml#Quantile over time - p50 (median)"
-    reason: "Upstream pins `skip: true` (quantile_over_time unsupported by v2 engine)."
+    reason: "Upstream pins `skip: true` (quantile_over_time unsupported by Loki's v2 engine)."
     since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap range ops; docs/loki-compliance-plan.md PR 6"
+    jira:  "docs/loki-compliance-plan.md PR 6 (upstream skip)"
   - source: "exhaustive/unwrap-aggregations.yaml#Quantile over time - p90"
-    reason: "Upstream pins `skip: true` (quantile_over_time unsupported)."
+    reason: "Upstream pins `skip: true` (quantile_over_time unsupported by Loki's v2 engine)."
     since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap range ops; docs/loki-compliance-plan.md PR 6"
+    jira:  "docs/loki-compliance-plan.md PR 6 (upstream skip)"
   - source: "exhaustive/unwrap-aggregations.yaml#Quantile over time - p95"
-    reason: "Upstream pins `skip: true` (quantile_over_time unsupported)."
+    reason: "Upstream pins `skip: true` (quantile_over_time unsupported by Loki's v2 engine)."
     since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap range ops; docs/loki-compliance-plan.md PR 6"
+    jira:  "docs/loki-compliance-plan.md PR 6 (upstream skip)"
   - source: "exhaustive/unwrap-aggregations.yaml#Quantile over time - p99"
-    reason: "Upstream pins `skip: true` (quantile_over_time unsupported)."
+    reason: "Upstream pins `skip: true` (quantile_over_time unsupported by Loki's v2 engine)."
     since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap range ops; docs/loki-compliance-plan.md PR 6"
+    jira:  "docs/loki-compliance-plan.md PR 6 (upstream skip)"
   - source: "exhaustive/unwrap-aggregations.yaml#P99 latency grouped by level"
-    reason: "Upstream pins `skip: true` (quantile_over_time unsupported)."
+    reason: "Upstream pins `skip: true` (quantile_over_time unsupported by Loki's v2 engine)."
     since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap range ops; docs/loki-compliance-plan.md PR 6"
+    jira:  "docs/loki-compliance-plan.md PR 6 (upstream skip)"
   - source: "exhaustive/unwrap-aggregations.yaml#P99 duration with conversion"
-    reason: "Upstream pins `skip: true` (quantile_over_time unsupported)."
+    reason: "Upstream pins `skip: true` (quantile_over_time unsupported by Loki's v2 engine)."
     since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap range ops; docs/loki-compliance-plan.md PR 6"
-  - source: "exhaustive/unwrap-aggregations.yaml#Duration seconds conversion"
-    reason: "`avg_over_time(... | unwrap duration_seconds(duration))` — avg_over_time + unwrap deferred. (Two upstream entries share this description on lines 539 and 555; one overlay row covers both.)"
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap range ops; docs/loki-compliance-plan.md PR 6"
-  - source: "exhaustive/unwrap-aggregations.yaml#Logfmt size unwrap"
-    reason: "`sum_over_time(... | logfmt | unwrap size)` — `| logfmt` is now supported, but `sum_over_time` on unwrap remains deferred."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap; docs/loki-compliance-plan.md PR 6"
-  - source: "exhaustive/unwrap-aggregations.yaml#Empty by() clause"
-    reason: "`max by () (max_over_time(... | unwrap))` — max_over_time + unwrap + range-agg grouping deferred."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap + grouping; docs/loki-compliance-plan.md PR 6"
+    jira:  "docs/loki-compliance-plan.md PR 6 (upstream skip)"
   - source: "exhaustive/unwrap-aggregations.yaml#Without multiple labels"
-    reason: "`sum without (namespace, cluster) (sum_over_time(... | unwrap))` — `without` grouping + sum_over_time + unwrap deferred."
+    reason: "`sum without (namespace, cluster) (sum_over_time(... | unwrap))` — `namespace` / `cluster` labels not in seed."
     since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap + grouping; docs/loki-compliance-plan.md PR 6"
-  - source: "exhaustive/unwrap-aggregations.yaml#Nested aggregations"
-    reason: "`max(avg by (level) (avg_over_time(... | unwrap)))` — avg_over_time + unwrap + grouping deferred."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap + grouping; docs/loki-compliance-plan.md PR 6"
-  - source: "exhaustive/unwrap-aggregations.yaml#Unwrap with line filter"
-    reason: "`sum_over_time(... |= \"level\" | logfmt | unwrap)` — `| logfmt` is now supported, but `sum_over_time` on unwrap remains deferred."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap; docs/loki-compliance-plan.md PR 6"
-  - source: "exhaustive/unwrap-aggregations.yaml#Unwrap with regex line filter"
-    reason: "Same as `Unwrap with line filter` — `sum_over_time` on unwrap deferred."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap; docs/loki-compliance-plan.md PR 6"
-  - source: "exhaustive/unwrap-aggregations.yaml#Unwrap with label filter after parsing"
-    reason: "`sum by (level) (sum_over_time(... | logfmt | level != \"\" | duration != \"\" | unwrap))` — sum_over_time + unwrap + logfmt parser + range-agg grouping + post-parse string label filter (level != \"\") all combined; the unwrap path is the hard block."
-    since: "2026-05-15"
-    jira:  "docs/roadmap.md RC2/RC3 unwrap + grouping; docs/loki-compliance-plan.md PR 6"
+    jira:  "docs/loki-compliance-plan.md PR 6 (seed gap)"
 
 should_fail: []
