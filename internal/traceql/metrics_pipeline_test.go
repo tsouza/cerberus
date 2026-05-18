@@ -86,6 +86,16 @@ func TestLowerMetricsPipeline(t *testing.T) {
 			wantOp: chplan.MetricsOpCountOverTime, wantAttr: false, wantGroup: 2, hasFilter: true,
 		},
 		{
+			name:   "avg_over_time_attr",
+			query:  `{} | avg_over_time(duration)`,
+			wantOp: chplan.MetricsOpAvgOverTime, wantAttr: true, wantGroup: 0, hasFilter: true,
+		},
+		{
+			name:   "avg_over_time_by_label",
+			query:  `{} | avg_over_time(duration) by (resource.service.name)`,
+			wantOp: chplan.MetricsOpAvgOverTime, wantAttr: true, wantGroup: 1, hasFilter: true,
+		},
+		{
 			name:   "quantile_over_time_single",
 			query:  `{} | quantile_over_time(duration, 0.95)`,
 			wantOp: chplan.MetricsOpQuantileOverTime, wantAttr: true, wantGroup: 0, hasFilter: true,
@@ -159,18 +169,17 @@ func TestLowerMetricsPipeline(t *testing.T) {
 // TestLowerMetricsPipelineUnsupported documents the cases that
 // surface as clean errors rather than panicking.
 //
-// `avg_over_time(...)` is deferred because Tempo parses it into an
-// unexported `*averageOverTimeAggregator` rather than a
-// `*MetricsAggregate` — the cerberus-accessors fork hasn't exposed
-// accessors on that type yet, and the post-#148 rule forbids
-// reflect/unsafe on parser AST.
-//
 // `histogram_over_time(...)` is no longer here — it lowers to a
-// chplan.MetricsHistogramOverTime node as of this PR; see
-// TestLowerHistogramOverTime in histogram_over_time_test.go.
+// chplan.MetricsHistogramOverTime node; see TestLowerHistogramOverTime
+// in histogram_over_time_test.go.
 //
 // `| > 0` (MetricsSecondStage) is deferred until the second-stage
 // filter / topk lowering lands.
+//
+// `avg_over_time(...)` is no longer deferred — it lowers to a
+// chplan.MetricsAggregate{Op: MetricsOpAvgOverTime} node via
+// lowerAverageOverTime, which unwraps the Tempo fork's exported
+// AverageOverTimeAggregator type.
 func TestLowerMetricsPipelineUnsupported(t *testing.T) {
 	t.Parallel()
 
@@ -181,11 +190,6 @@ func TestLowerMetricsPipelineUnsupported(t *testing.T) {
 		query      string
 		wantSubstr string
 	}{
-		{
-			name:       "avg_over_time_deferred",
-			query:      `{} | avg_over_time(duration)`,
-			wantSubstr: "not yet supported",
-		},
 		{
 			name:       "quantile_over_time_multi_deferred",
 			query:      `{} | quantile_over_time(duration, 0.5, 0.9, 0.99)`,

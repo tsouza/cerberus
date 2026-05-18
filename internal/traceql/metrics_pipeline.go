@@ -40,15 +40,9 @@ func lowerMetricsPipeline(prev chplan.Node, mp traceql.FirstStageElement, s sche
 	if v, ok := mp.(*traceql.MetricsAggregate); ok {
 		return lowerMetricsAggregate(prev, v, s)
 	}
-	// Tempo parses `| avg_over_time(attr)` into an unexported
-	// `*averageOverTimeAggregator` rather than a `*MetricsAggregate`
-	// (see pkg/traceql/engine_metrics_average.go). The fork hasn't
-	// exposed accessors on that type yet; rather than reach for
-	// reflect/unsafe (forbidden post-#148), surface a clean
-	// not-yet-supported error here. A follow-up fork patch can add
-	// `Attribute()` / `GroupBy()` accessors and a small adapter; the
-	// CH aggregate it would lower to (`avg`) is already wired in
-	// mapMetricsAggregateOp below.
+	if v, ok := mp.(*traceql.AverageOverTimeAggregator); ok {
+		return lowerAverageOverTime(prev, v, s)
+	}
 	return nil, fmt.Errorf("traceql: metrics pipeline element %T is not yet supported", mp)
 }
 
@@ -116,6 +110,40 @@ func lowerMetricsAggregate(prev chplan.Node, agg *traceql.MetricsAggregate, s sc
 		GroupBy:        groupBy,
 		GroupByAliases: groupAliases,
 		Quantiles:      quantiles,
+		ValueAlias:     metricsValueAlias,
+		Inner:          prev,
+	}, nil
+}
+
+// lowerAverageOverTime lowers Tempo's dedicated
+// *traceql.AverageOverTimeAggregator (the unexported
+// averageOverTimeAggregator surfaced via the exported type alias in the
+// cerberus-accessors fork) into a chplan.MetricsAggregate with
+// Op=MetricsOpAvgOverTime.
+//
+// Tempo parses `| avg_over_time(attr)` into
+// *averageOverTimeAggregator rather than *MetricsAggregate because
+// avg_over_time uses a Kahan-summation weighted-average algorithm that
+// doesn't fit MetricsAggregate's generic init() switch. For cerberus's
+// purposes the lowering is identical — we emit `avg(<attr>)` in CH SQL
+// — so we just unwrap the accessor fields and produce the same
+// chplan.MetricsAggregate node.
+func lowerAverageOverTime(prev chplan.Node, agg *traceql.AverageOverTimeAggregator, s schema.Traces) (chplan.Node, error) {
+	attr, err := metricsAggregateAttr(traceql.MetricsAggregateAvgOverTime, agg.Attribute(), s)
+	if err != nil {
+		return nil, err
+	}
+
+	groupBy, groupAliases, err := lowerMetricsGroupBy(agg.GroupBy(), s)
+	if err != nil {
+		return nil, err
+	}
+
+	return &chplan.MetricsAggregate{
+		Op:             chplan.MetricsOpAvgOverTime,
+		Attr:           attr,
+		GroupBy:        groupBy,
+		GroupByAliases: groupAliases,
 		ValueAlias:     metricsValueAlias,
 		Inner:          prev,
 	}, nil

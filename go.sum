@@ -710,8 +710,8 @@ github.com/tsouza/opentelemetry-collector-contrib/pkg/translator/jaeger v0.0.1-c
 github.com/tsouza/opentelemetry-collector-contrib/pkg/translator/jaeger v0.0.1-cerberus-ddl/go.mod h1:oH8MAPQVje+h6zawzcX9O5heDyXm3hhvTUl0SqTE6cs=
 github.com/tsouza/prometheus v0.0.1-cerberus-parser h1:RjX9HKGVHPxLbtGKSbzWJ3bGFsmOEORWG2DX2Spg6oY=
 github.com/tsouza/prometheus v0.0.1-cerberus-parser/go.mod h1:orN7+39ySpDpDwh+EbN7UYpMHYNXrl0rabkpVMfMN4g=
-github.com/tsouza/tempo v0.0.1-cerberus-accessors h1:Iovv/sEnVBPYblpboa9pJIQrkFvICjbZszgVV0YT7i4=
-github.com/tsouza/tempo v0.0.1-cerberus-accessors/go.mod h1:tV3Pl9la00Ti1stc4RMsIa41zkx1i3mtxKKy13vXwt4=
+github.com/tsouza/tempo v0.0.2-cerberus-accessors h1:jbKl366btg5rIzeo4Dt6iQzjneouSMKaJBzMHlEc9iM=
+github.com/tsouza/tempo v0.0.2-cerberus-accessors/go.mod h1:tV3Pl9la00Ti1stc4RMsIa41zkx1i3mtxKKy13vXwt4=
 github.com/ttacon/chalk v0.0.0-20160626202418-22c06c80ed31/go.mod h1:onvgF043R+lC5RZ8IT9rBXDaEDnpnw/Cl+HFiw+v/7Q=
 github.com/tv42/httpunix v0.0.0-20150427012821-b75d8614f926/go.mod h1:9ESjWnEqriFuLhtthL60Sar/7RFoluCcXsuvEwTV5KM=
 github.com/twmb/franz-go v1.21.0 h1:J3uB/poWgHD6VIilER2uCPFAZHDRXVFT+11pBgRKod4=
