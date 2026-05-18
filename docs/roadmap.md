@@ -34,7 +34,7 @@ Closed the advanced-QL + deferred-API backlog plus the schema-source-of-truth mi
 
 Highlights:
 
-- **PromQL** — subqueries (P0 4.1–4.11) including nested subqueries through Call / ParenExpr / AggregateExpr intermediaries (`max_over_time(rate(m[5m])[10m:1m])[1h:5m]`, `min_over_time(avg_over_time(max_over_time(rate(m[1m])[5m:30s])[1h:5m])[2h:10m])`), `predict_linear` / `holt_winters` / `@start()` / `@end()`, `histogram_quantile` over classic + native (exp) histograms, `group_left` / `group_right` cardinality edges. Subquery-over-aggregator with `without(...)` or parameterised aggregates (`quantile`, `topk`, `bottomk`, `count_values`) is deferred to RC3.
+- **PromQL** — subqueries (P0 4.1–4.11) including nested subqueries through Call / ParenExpr / AggregateExpr intermediaries (`max_over_time(rate(m[5m])[10m:1m])[1h:5m]`, `min_over_time(avg_over_time(max_over_time(rate(m[1m])[5m:30s])[1h:5m])[2h:10m])`), `predict_linear` / `holt_winters` / `@start()` / `@end()`, `histogram_quantile` over classic + native (exp) histograms, `group_left` / `group_right` cardinality edges. Subquery-over-aggregator with `without(...)` or parameterised aggregates (`quantile`, `topk`, `bottomk`, `count_values`) remains unsupported.
 - **LogQL** — `| unpack`, `| pattern`, `| line_format`, `| decolorize`, `| label_format` (with Loki template funcs), `| drop` / `| keep` (post-fetch label projection via upstream `log.DropLabels` / `log.KeepLabels`), `bytes_*` alignment, `/api/v1/tail` WebSocket (bounded send buffer + `ctx.Done()` drop), `/labels`, `/label/.../values`, `/series`, `/detected_fields`, `/patterns`, `/index/stats`, `/index/volume`.
 - **TraceQL** — `status = error` / `kind = client` enum statics, `sum / avg / max / min` over inner attributes, link traversal + span-event queries, set ops, `group / coalesce` pipeline elements, `histogram_over_time`, MetricsPipeline lowering, multi-hop + recursive `>>` / `<<` chains via CH `WITH RECURSIVE` CTEs.
 - **Tempo HTTP API** — `/api/search/recent`, `/api/search/tags`, `/api/search/tag/<n>/values`, `/api/metrics/query_range`.
@@ -418,7 +418,7 @@ The `prometheus/compliance` differential against reference Prometheus has been t
 - **Tempo** — `harness/tempo-compatibility/upstream/` snapshot of `cmd/tempo-vulture` + `pkg/httpclient` landed via #367 (PR 1 of 4 per [`docs/tempo-compliance-plan.md`](tempo-compliance-plan.md)). Driver + Compose stack + CI follow in PRs 2-4.
 - **Loki** — adoption plan [`docs/loki-compliance-plan.md`](loki-compliance-plan.md) shipped in #332; vendor snapshot of `grafana/loki:pkg/logql/bench/` + `TestRemoteStorageEquality` (PR 1 of 6) in flight as Pool-CA.
 
-Both harnesses are explicitly **not** GA blockers — the scaffolding is the GA gate, not pass-rates against them. Cerberus already passes ~1500 lines of LogQL and ~1100 lines of TraceQL TXTAR fixtures (Layers 1, 2a, 6b, 6c, 7) plus property tests with from-scratch oracles (#330, #331). The Loki/Tempo harnesses are post-GA truth-sources that mirror the role `prometheus/compliance` plays for PromQL.
+Both harnesses are explicitly **not** GA blockers — the scaffolding is the GA gate, not pass-rates against them. Cerberus already passes ~1500 lines of LogQL and ~1100 lines of TraceQL TXTAR fixtures (Layers 1, 2a, 6b, 6c, 7) plus property tests with from-scratch oracles (#330, #331). The Loki/Tempo harnesses are truth-sources that mirror the role `prometheus/compliance` plays for PromQL.
 
 ---
 
