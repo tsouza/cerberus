@@ -53,15 +53,18 @@ storage:
       path: /var/tempo/wal
     local:
       path: /var/tempo/blocks
+    block:
+      max_block_duration: 2s
 
-# Tighten the live-store flush cadence so the PR-3 smoke read sees
+# Tighten the ingester flush cadence so the PR-3 smoke read sees
 # spans within seconds of the OTLP push, instead of waiting for the
-# default ingester block duration.
-live_store:
-  max_trace_live: 2s
-  max_trace_idle: 1s
+# default block duration. Tempo v3 uses ingester.trace_live_period /
+# trace_idle_period / flush_check_period (not the legacy live_store
+# section).
+ingester:
+  trace_idle_period: 1s
+  trace_live_period: 2s
   flush_check_period: 1s
-  max_block_duration: 2s
 
 usage_report:
   reporting_enabled: false

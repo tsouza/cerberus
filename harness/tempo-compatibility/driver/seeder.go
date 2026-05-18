@@ -157,7 +157,8 @@ func runSeed(args []string) error {
 	for _, t := range traces {
 		totalSpans += len(t.spans)
 	}
-	logger.Info("generated fixture",
+	logger.Info(
+		"generated fixture",
 		"services", len(services),
 		"traces", len(traces),
 		"total_spans", totalSpans,
@@ -207,7 +208,8 @@ func runSeed(args []string) error {
 
 	// --- Smoke ---------------------------------------------------------
 	firstID := hex.EncodeToString(traces[0].traceID[:])
-	logger.Info("smoke /api/traces/<id> on both backends",
+	logger.Info(
+		"smoke /api/traces/<id> on both backends",
 		"trace_id", firstID,
 		"deadline", *smokeWait,
 	)
@@ -215,7 +217,13 @@ func runSeed(args []string) error {
 		return fmt.Errorf("smoke: %w", err)
 	}
 
-	logger.Info("seed done",
+	logger.Info("smoke /api/search?q={} on tempo (live-store)", "deadline", *smokeWait)
+	if err := smokeSearchLiveStore(ctx, logger, *tempoHTTP, *smokeWait); err != nil {
+		return fmt.Errorf("smoke search: %w", err)
+	}
+
+	logger.Info(
+		"seed done",
 		"traces", len(traces),
 		"total_spans", totalSpans,
 	)
@@ -377,7 +385,8 @@ func pushOTLP(ctx context.Context, addr string, traces []*fixtureTrace, logger *
 	// healthcheck already gates compose `up --wait` for us, and the
 	// first Export() call surfaces unreachable-server errors precisely
 	// (vs grpc.WithBlock's opaque "context deadline exceeded").
-	conn, err := grpc.NewClient(addr,
+	conn, err := grpc.NewClient(
+		addr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
 	if err != nil {
@@ -586,7 +595,8 @@ func smokeTraceByID(ctx context.Context, logger *slog.Logger, tempoHTTP, cerberu
 		return fmt.Errorf("cerberus trace-by-id: %w", err)
 	}
 
-	logger.Info("smoke result",
+	logger.Info(
+		"smoke result",
 		"trace_id", traceID,
 		"tempo_spans", tempoCount,
 		"cerberus_spans", cerberusCount,
@@ -600,7 +610,8 @@ func smokeTraceByID(ctx context.Context, logger *slog.Logger, tempoHTTP, cerberu
 	if tempoCount != cerberusCount {
 		// Not fatal at PR-3's contract ("non-zero on both"), but log
 		// loudly. The real per-span equivalence diff lands in PR 4.
-		logger.Warn("span count mismatch between backends — PR 4 will surface this as a corpus diff",
+		logger.Warn(
+			"span count mismatch between backends — PR 4 will surface this as a corpus diff",
 			"tempo_spans", tempoCount,
 			"cerberus_spans", cerberusCount,
 		)
@@ -719,6 +730,65 @@ func decodeCerberusSpanCount(r io.Reader) (int, error) {
 		total += len(b.Spans)
 	}
 	return total, nil
+}
+
+// smokeSearchLiveStore polls Tempo's /api/search?q={} with the
+// Recent-Data-Target: live-store header until the response contains at
+// least one trace. This catches the failure mode where Tempo's search
+// only scans completed blocks (which may not have been flushed yet) and
+// returns 0 results while cerberus returns many.
+func smokeSearchLiveStore(ctx context.Context, logger *slog.Logger, tempoHTTP string, deadline time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, deadline)
+	defer cancel()
+
+	url := strings.TrimRight(tempoHTTP, "/") + "/api/search?q=%7B%7D"
+	for {
+		n, err := fetchSearchResultCount(ctx, url)
+		if err == nil && n > 0 {
+			logger.Info("tempo search returned traces", "count", n)
+			return nil
+		}
+		if ctx.Err() != nil {
+			if err != nil {
+				return fmt.Errorf("tempo search: %w", errors.Join(ctx.Err(), err))
+			}
+			return fmt.Errorf("tempo search returned 0 traces after %s", deadline)
+		}
+		logger.Debug("retrying tempo search", "url", url, "err", err, "traces", n)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(1 * time.Second):
+		}
+	}
+}
+
+// fetchSearchResultCount issues one GET against /api/search with the
+// Recent-Data-Target: live-store header and returns the number of
+// traces in the response.
+func fetchSearchResultCount(ctx context.Context, url string) (int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Recent-Data-Target", "live-store")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _, _ = io.Copy(io.Discard, resp.Body); _ = resp.Body.Close() }()
+	if resp.StatusCode/100 != 2 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return 0, fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
+	}
+	var raw struct {
+		Traces []json.RawMessage `json:"traces"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return 0, fmt.Errorf("decode search response: %w", err)
+	}
+	return len(raw.Traces), nil
 }
 
 // envOr returns the env value or `fallback` if the env var is unset
