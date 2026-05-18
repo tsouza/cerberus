@@ -27,13 +27,29 @@ type stubQuerier struct {
 	// picks the row set, with the bare `strings` field acting as the
 	// default fallback.
 	stringsBySQL map[string][]string
+	// samplesBySQL lets tests stub multiple back-to-back Query calls
+	// against different SQL shapes (e.g. /api/metrics/query_range
+	// issues one matrix-shape query and one exemplars-shape query); the
+	// first substring match against the incoming SQL picks the row set,
+	// with the bare `samples` field acting as the default fallback.
+	samplesBySQL map[string][]chclient.Sample
+	// queriedSQLs records every SQL string Query was invoked with, in
+	// arrival order. Lets tests assert that BOTH the matrix and the
+	// exemplars queries actually fired.
+	queriedSQLs []string
 }
 
 func (s *stubQuerier) Query(_ context.Context, sql string, args ...any) ([]chclient.Sample, error) {
 	s.lastSQL = sql
 	s.lastArgs = args
+	s.queriedSQLs = append(s.queriedSQLs, sql)
 	if s.err != nil {
 		return nil, s.err
+	}
+	for needle, rows := range s.samplesBySQL {
+		if strings.Contains(sql, needle) {
+			return rows, nil
+		}
 	}
 	return s.samples, nil
 }

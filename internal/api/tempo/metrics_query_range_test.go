@@ -487,14 +487,23 @@ func TestMetricsQueryRange_StepDurationForms(t *testing.T) {
 // populates them. Grafana's Tempo datasource expects the field, so
 // omitting it (or rendering it as null) destabilises the envelope. See
 // EF #398 for the broader Tempo metrics shape parity work.
+//
+// Sub-test guard: feed a stub that returns the matrix-shape sample but
+// NO exemplar samples (samplesBySQL with an `exemplar_trace_id` needle
+// returns nil). The empty-array envelope contract still holds.
 func TestMetricsQueryRange_ExemplarsEnvelope(t *testing.T) {
 	t.Parallel()
 
-	q := &stubQuerier{samples: []chclient.Sample{{
-		Labels:    map[string]string{},
-		Timestamp: time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
-		Value:     1.0,
-	}}}
+	q := &stubQuerier{
+		samples: []chclient.Sample{{
+			Labels:    map[string]string{},
+			Timestamp: time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+			Value:     1.0,
+		}},
+		samplesBySQL: map[string][]chclient.Sample{
+			"exemplar_trace_id": nil,
+		},
+	}
 	srv := newServer(q, "v1.0.0-test")
 	t.Cleanup(srv.Close)
 
@@ -514,5 +523,158 @@ func TestMetricsQueryRange_ExemplarsEnvelope(t *testing.T) {
 	raw := readBody(t, resp)
 	if !strings.Contains(raw, `"exemplars":[]`) {
 		t.Fatalf("response missing empty exemplars array\nbody=%s", raw)
+	}
+}
+
+// TestMetricsQueryRange_ExemplarsPopulated exercises the end-to-end
+// data path now that the exemplars query landed: the handler fires
+// BOTH a matrix-shape query (anchor-fanout / Sample projection) and an
+// exemplars-shape query (argMax over `exemplar_trace_id` /
+// `exemplar_span_id`), then merges them so each MetricsSeries surfaces
+// trace-anchored Exemplar entries.
+//
+// Stub layout: the matrix branch returns one sample per anchor; the
+// exemplars branch returns a Sample whose Labels map carries the
+// `trace:id`, `span:id`, and the by(...) alias values — same shape
+// chsql.EmitMetricsExemplars projects via the outer `map(...) AS
+// Attributes` column. attachExemplars keys each exemplar against its
+// matching series via the by(...) label canonical key.
+func TestMetricsQueryRange_ExemplarsPopulated(t *testing.T) {
+	t.Parallel()
+
+	ts := func(min int) time.Time {
+		return time.Date(2026, 5, 12, 10, min, 0, 0, time.UTC)
+	}
+	q := &stubQuerier{
+		samples: []chclient.Sample{
+			// Matrix branch — one series, two anchors.
+			{
+				Labels:    map[string]string{"resource.service.name": "frontend"},
+				Timestamp: ts(0),
+				Value:     12,
+			},
+			{
+				Labels:    map[string]string{"resource.service.name": "frontend"},
+				Timestamp: ts(1),
+				Value:     18,
+			},
+		},
+		samplesBySQL: map[string][]chclient.Sample{
+			// Exemplars branch — one trace-anchored sample per anchor,
+			// carrying the trace:id + span:id pair attachExemplars
+			// surfaces under Exemplar.TraceID / SpanID.
+			"exemplar_trace_id": {
+				{
+					Labels: map[string]string{
+						"resource.service.name": "frontend",
+						"trace:id":              "0123456789abcdef0123456789abcdef",
+						"span:id":               "0011223344556677",
+					},
+					Timestamp: ts(0),
+					Value:     1,
+				},
+				{
+					Labels: map[string]string{
+						"resource.service.name": "frontend",
+						"trace:id":              "fedcba9876543210fedcba9876543210",
+						"span:id":               "aabbccddeeff0011",
+					},
+					Timestamp: ts(1),
+					Value:     1,
+				},
+			},
+		},
+	}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	u := metricsQueryRangeURL(srv.URL,
+		"{} | count_over_time() by (resource.service.name)",
+		map[string]string{
+			"start": fixtureStartUnix,
+			"end":   fixtureEndUnix,
+			"step":  "60s",
+		})
+	resp, err := http.Get(u)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+
+	// The handler must have issued BOTH the matrix-shape query and the
+	// exemplars-shape query (recorded via samplesBySQL needle).
+	var matrixFired, exemplarFired bool
+	for _, sql := range q.queriedSQLs {
+		if strings.Contains(sql, "exemplar_trace_id") {
+			exemplarFired = true
+		} else if strings.Contains(sql, "arrayJoin") {
+			matrixFired = true
+		}
+	}
+	if !matrixFired {
+		t.Errorf("expected a matrix-shape (arrayJoin fanout) query to fire; saw %d SQL statements", len(q.queriedSQLs))
+	}
+	if !exemplarFired {
+		t.Errorf("expected an exemplars-shape (argMax over exemplar_trace_id) query to fire; saw %d SQL statements", len(q.queriedSQLs))
+	}
+
+	var body tempo.MetricsQueryRangeResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Series) != 1 {
+		t.Fatalf("expected 1 series, got %d: %+v", len(body.Series), body)
+	}
+	got := body.Series[0]
+	if len(got.Samples) != 2 {
+		t.Errorf("expected 2 samples, got %d", len(got.Samples))
+	}
+	if len(got.Exemplars) != 2 {
+		t.Fatalf("expected 2 exemplars, got %d: %+v", len(got.Exemplars), got.Exemplars)
+	}
+
+	// Exemplars must be sorted ascending by timestamp and carry the
+	// stubbed (TraceID, SpanID) pairs verbatim — attachExemplars
+	// reads `trace:id` / `span:id` off Sample.Labels and projects them
+	// to the Exemplar.{TraceID,SpanID} fields plus the labels slice.
+	if got.Exemplars[0].Timestamp >= got.Exemplars[1].Timestamp {
+		t.Errorf("exemplars not sorted ascending: %+v", got.Exemplars)
+	}
+	wantTraceIDs := []string{
+		"0123456789abcdef0123456789abcdef",
+		"fedcba9876543210fedcba9876543210",
+	}
+	wantSpanIDs := []string{
+		"0011223344556677",
+		"aabbccddeeff0011",
+	}
+	for i, want := range wantTraceIDs {
+		if got.Exemplars[i].TraceID != want {
+			t.Errorf("exemplar[%d].TraceID = %q, want %q", i, got.Exemplars[i].TraceID, want)
+		}
+	}
+	for i, want := range wantSpanIDs {
+		if got.Exemplars[i].SpanID != want {
+			t.Errorf("exemplar[%d].SpanID = %q, want %q", i, got.Exemplars[i].SpanID, want)
+		}
+	}
+
+	// And the Exemplar.Labels slice must carry the trace:id + span:id
+	// MetricsLabel entries so consumers binding to the labels array
+	// (rather than the typed scalar fields) see the same data.
+	for i, ex := range got.Exemplars {
+		if len(ex.Labels) != 2 {
+			t.Errorf("exemplar[%d].Labels: got %d entries, want 2: %+v", i, len(ex.Labels), ex.Labels)
+			continue
+		}
+		if ex.Labels[0].Key != "trace:id" || ex.Labels[0].Value != wantTraceIDs[i] {
+			t.Errorf("exemplar[%d].Labels[0] = %+v, want {trace:id, %q}", i, ex.Labels[0], wantTraceIDs[i])
+		}
+		if ex.Labels[1].Key != "span:id" || ex.Labels[1].Value != wantSpanIDs[i] {
+			t.Errorf("exemplar[%d].Labels[1] = %+v, want {span:id, %q}", i, ex.Labels[1], wantSpanIDs[i])
+		}
 	}
 }
