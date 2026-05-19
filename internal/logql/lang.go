@@ -190,11 +190,18 @@ func (l *Lang) ProjectSamples(plan chplan.Node, meta engine.Meta) chplan.Node {
 	// can't ride in Value — instead we put it in MetricName (also a String)
 	// and write a 0.0 placeholder into Value. toStreamsWithTransform reads
 	// back from Sample.MetricName as the line content.
+	//
+	// The Attributes column is wrapped in [withDetectedLevel] so the
+	// emitted row carries `detected_level` as a synthesized label
+	// whenever SeverityText is populated. Loki's stream-label contract
+	// surfaces detected_level as part of stream identity, so cerberus's
+	// /query streams response splits into one Stream per detected_level
+	// (matching upstream Loki's wire shape).
 	return &chplan.Project{
 		Input: plan,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.ColumnRef{Name: s.BodyColumn}, Alias: "MetricName"},
-			{Expr: &chplan.ColumnRef{Name: s.ResourceAttributesColumn}, Alias: "Attributes"},
+			{Expr: withDetectedLevel(s, &chplan.ColumnRef{Name: s.ResourceAttributesColumn}), Alias: "Attributes"},
 			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: "TimeUnix"},
 			// Wrap the placeholder zero in toFloat64 so CH returns the column
 			// as Float64; without the cast a bare `0` literal becomes UInt8

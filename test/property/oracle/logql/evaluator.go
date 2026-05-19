@@ -44,19 +44,58 @@ func Evaluate(d property.Dataset, q property.Query) property.Outcome {
 	// sees the same series identity cerberus's handler produces. The
 	// handler's toStreamsWithTransform path groups by the
 	// CanonicalKey of the (post-format) labels — match that here.
+	//
+	// Each row's labels also carry the synthesized `detected_level`
+	// derived from the record's SeverityText — Loki surfaces this as a
+	// stream-identity dimension whenever the source row has severity
+	// metadata, and cerberus's wire-wrap (Lang.ProjectSamples on the
+	// log-stream branch) mirrors that. Strip the detection at the
+	// oracle so the comparator sees the same shape.
 	out := property.Outcome{Rows: make([]property.OutcomeRow, 0, len(records))}
 	for _, r := range records {
+		labels := copyLabels(r.ResourceAttributes)
+		if lvl := normaliseLogLevel(r.SeverityText); lvl != "" {
+			labels["detected_level"] = lvl
+		}
 		// TimestampMs is unix milliseconds, matching the prom-side
 		// convention. Cerberus's stream-wire format uses nanos, but
 		// the property runner normalises to milliseconds (the
 		// generator works in nanos so we divide once here).
 		out.Rows = append(out.Rows, property.OutcomeRow{
-			Labels:      copyLabels(r.ResourceAttributes),
+			Labels:      labels,
 			TimestampMs: r.TimestampNanos / int64(1e6),
 			Line:        r.Body,
 		})
 	}
 	return out
+}
+
+// normaliseLogLevel mirrors cerberus's [internal/logql.normaliseLevelExpr]
+// — maps the case-insensitive forms upstream Loki accepts onto the
+// canonical lowercase level strings. Empty input returns the empty
+// string so the caller can skip the label entirely (matches the
+// `mapFilter((k, v) -> v != ”, ...)` shape on the SQL side).
+func normaliseLogLevel(severity string) string {
+	switch strings.ToLower(severity) {
+	case "":
+		return ""
+	case "trace", "trc":
+		return "trace"
+	case "debug", "dbg":
+		return "debug"
+	case "info", "inf", "information":
+		return "info"
+	case "warn", "wrn", "warning":
+		return "warn"
+	case "error", "err":
+		return "error"
+	case "critical":
+		return "critical"
+	case "fatal":
+		return "fatal"
+	default:
+		return strings.ToLower(severity)
+	}
 }
 
 // applyExpr walks the parsed LogQL expression and returns the records

@@ -4,6 +4,7 @@ sum(count_over_time({service_name="web-server"} |= "level" [5m]))
 CREATE TABLE otel_logs (
     Timestamp DateTime64(9),
     Body String,
+    SeverityText LowCardinality(String) DEFAULT '',
     ResourceAttributes Map(String, String)
 ) ENGINE = Memory;
 INSERT INTO otel_logs (Timestamp, Body, ResourceAttributes) VALUES
@@ -15,19 +16,42 @@ INSERT INTO otel_logs (Timestamp, Body, ResourceAttributes) VALUES
   ["", {}, "2026-01-01T00:00:01Z", 2.0]
 ]
 -- sql --
-SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Value` FROM (SELECT sum(`Value`) AS `Value`, count() AS `_cerb_n` FROM (SELECT `ResourceAttributes`, toFloat64(length(window_vals)) AS `Value` FROM (SELECT `ResourceAttributes`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `ResourceAttributes`, arrayFilter(p -> tupleElement(p, 1) > now64(9) - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= now64(9), series_array) AS `window_pairs` FROM (SELECT `ResourceAttributes`, arraySort(groupArray((`Timestamp`, `Value`))) AS `series_array` FROM (SELECT `ResourceAttributes`, `Timestamp`, ? AS `Value` FROM (SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (position(`Body`, ?) > 0))) GROUP BY `ResourceAttributes`))) WHERE length(`window_vals`) >= 1)) WHERE `_cerb_n` > 0)
+SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Value` FROM (SELECT sum(`Value`) AS `Value`, count() AS `_cerb_n` FROM (SELECT `ResourceAttributes`, toFloat64(length(window_vals)) AS `Value` FROM (SELECT `ResourceAttributes`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `ResourceAttributes`, arrayFilter(p -> tupleElement(p, 1) > now64(9) - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= now64(9), series_array) AS `window_pairs` FROM (SELECT `ResourceAttributes`, arraySort(groupArray((`Timestamp`, `Value`))) AS `series_array` FROM (SELECT mapConcat(`ResourceAttributes`, mapFilter((k, v) -> (v != ?), map(?, multiIf(((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (lower(`SeverityText`) = ?), ?, (lower(`SeverityText`) = ?), ?, lower(`SeverityText`))))) AS `ResourceAttributes`, `Timestamp`, ? AS `Value` FROM (SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (position(`Body`, ?) > 0))) GROUP BY `ResourceAttributes`))) WHERE length(`window_vals`) >= 1)) WHERE `_cerb_n` > 0)
 -- args --
 [0] string = ""
 [1] string = "Map(String,String)"
 [2] int64 = 9
-[3] int64 = 1
-[4] string = "service_name"
-[5] string = "web-server"
-[6] string = "level"
+[3] string = ""
+[4] string = "detected_level"
+[5] string = "trace"
+[6] string = "trc"
+[7] string = "trace"
+[8] string = "debug"
+[9] string = "dbg"
+[10] string = "debug"
+[11] string = "info"
+[12] string = "inf"
+[13] string = "information"
+[14] string = "info"
+[15] string = "warn"
+[16] string = "wrn"
+[17] string = "warning"
+[18] string = "warn"
+[19] string = "error"
+[20] string = "err"
+[21] string = "error"
+[22] string = "critical"
+[23] string = "critical"
+[24] string = "fatal"
+[25] string = "fatal"
+[26] int64 = 1
+[27] string = "service_name"
+[28] string = "web-server"
+[29] string = "level"
 -- chplan --
 Project ["" AS MetricName, CAST(map(), "Map(String,String)") AS Attributes, now64(9) AS TimeUnix, Value AS Value]
   Aggregate groupBy=[] funcs=[sum(Value) AS Value]
     RangeWindow func=count_over_time range=5m0s step=0s ts=Timestamp value=Value groupBy=[ResourceAttributes]
-      Project [ResourceAttributes, Timestamp, 1 AS Value]
+      Project [mapConcat(ResourceAttributes, mapFilter((k, v) -> (v != ""), map("detected_level", multiIf(((lower(SeverityText) = "trace") OR (lower(SeverityText) = "trc")), "trace", ((lower(SeverityText) = "debug") OR (lower(SeverityText) = "dbg")), "debug", (((lower(SeverityText) = "info") OR (lower(SeverityText) = "inf")) OR (lower(SeverityText) = "information")), "info", (((lower(SeverityText) = "warn") OR (lower(SeverityText) = "wrn")) OR (lower(SeverityText) = "warning")), "warn", ((lower(SeverityText) = "error") OR (lower(SeverityText) = "err")), "error", (lower(SeverityText) = "critical"), "critical", (lower(SeverityText) = "fatal"), "fatal", lower(SeverityText))))) AS ResourceAttributes, Timestamp, 1 AS Value]
         Filter predicate=((ResourceAttributes["service_name"] = "web-server") AND lineContent(Body, "level", substr))
           Scan(otel_logs)

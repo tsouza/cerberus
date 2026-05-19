@@ -4,6 +4,7 @@ sum(rate({job="api"}[1m]))
 CREATE TABLE otel_logs (
     Timestamp DateTime64(9),
     Body String,
+    SeverityText LowCardinality(String) DEFAULT '',
     ResourceAttributes Map(String, String)
 ) ENGINE = Memory;
 INSERT INTO otel_logs (Timestamp, Body, ResourceAttributes) VALUES
@@ -18,19 +19,42 @@ INSERT INTO otel_logs (Timestamp, Body, ResourceAttributes) VALUES
   ["", {}, "2026-01-01T00:00:01Z", 0.1]
 ]
 -- sql --
-SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Value` FROM (SELECT sum(`Value`) AS `Value`, count() AS `_cerb_n` FROM (SELECT `ResourceAttributes`, if(length(window_vals) > 0, arraySum(window_vals) / ?, 0.0) AS `Value` FROM (SELECT `ResourceAttributes`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `ResourceAttributes`, arrayFilter(p -> tupleElement(p, 1) > now64(9) - toIntervalNanosecond(60000000000) AND tupleElement(p, 1) <= now64(9), series_array) AS `window_pairs` FROM (SELECT `ResourceAttributes`, arraySort(groupArray((`Timestamp`, `Value`))) AS `series_array` FROM (SELECT `ResourceAttributes`, `Timestamp`, ? AS `Value` FROM (SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?))) GROUP BY `ResourceAttributes`))))) WHERE `_cerb_n` > 0)
+SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Value` FROM (SELECT sum(`Value`) AS `Value`, count() AS `_cerb_n` FROM (SELECT `ResourceAttributes`, if(length(window_vals) > 0, arraySum(window_vals) / ?, 0.0) AS `Value` FROM (SELECT `ResourceAttributes`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `ResourceAttributes`, arrayFilter(p -> tupleElement(p, 1) > now64(9) - toIntervalNanosecond(60000000000) AND tupleElement(p, 1) <= now64(9), series_array) AS `window_pairs` FROM (SELECT `ResourceAttributes`, arraySort(groupArray((`Timestamp`, `Value`))) AS `series_array` FROM (SELECT mapConcat(`ResourceAttributes`, mapFilter((k, v) -> (v != ?), map(?, multiIf(((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (lower(`SeverityText`) = ?), ?, (lower(`SeverityText`) = ?), ?, lower(`SeverityText`))))) AS `ResourceAttributes`, `Timestamp`, ? AS `Value` FROM (SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?))) GROUP BY `ResourceAttributes`))))) WHERE `_cerb_n` > 0)
 -- args --
 [0] string = ""
 [1] string = "Map(String,String)"
 [2] int64 = 9
 [3] float64 = 60
-[4] int64 = 1
-[5] string = "job"
-[6] string = "api"
+[4] string = ""
+[5] string = "detected_level"
+[6] string = "trace"
+[7] string = "trc"
+[8] string = "trace"
+[9] string = "debug"
+[10] string = "dbg"
+[11] string = "debug"
+[12] string = "info"
+[13] string = "inf"
+[14] string = "information"
+[15] string = "info"
+[16] string = "warn"
+[17] string = "wrn"
+[18] string = "warning"
+[19] string = "warn"
+[20] string = "error"
+[21] string = "err"
+[22] string = "error"
+[23] string = "critical"
+[24] string = "critical"
+[25] string = "fatal"
+[26] string = "fatal"
+[27] int64 = 1
+[28] string = "job"
+[29] string = "api"
 -- chplan --
 Project ["" AS MetricName, CAST(map(), "Map(String,String)") AS Attributes, now64(9) AS TimeUnix, Value AS Value]
   Aggregate groupBy=[] funcs=[sum(Value) AS Value]
     RangeWindow func=log_rate range=1m0s step=0s ts=Timestamp value=Value groupBy=[ResourceAttributes]
-      Project [ResourceAttributes, Timestamp, 1 AS Value]
+      Project [mapConcat(ResourceAttributes, mapFilter((k, v) -> (v != ""), map("detected_level", multiIf(((lower(SeverityText) = "trace") OR (lower(SeverityText) = "trc")), "trace", ((lower(SeverityText) = "debug") OR (lower(SeverityText) = "dbg")), "debug", (((lower(SeverityText) = "info") OR (lower(SeverityText) = "inf")) OR (lower(SeverityText) = "information")), "info", (((lower(SeverityText) = "warn") OR (lower(SeverityText) = "wrn")) OR (lower(SeverityText) = "warning")), "warn", ((lower(SeverityText) = "error") OR (lower(SeverityText) = "err")), "error", (lower(SeverityText) = "critical"), "critical", (lower(SeverityText) = "fatal"), "fatal", lower(SeverityText))))) AS ResourceAttributes, Timestamp, 1 AS Value]
         Filter predicate=(ResourceAttributes["job"] = "api")
           Scan(otel_logs)

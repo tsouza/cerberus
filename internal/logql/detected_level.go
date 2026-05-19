@@ -130,3 +130,53 @@ func anyEqual(expr chplan.Expr, variants []string) chplan.Expr {
 	}
 	return out
 }
+
+// withDetectedLevel wraps a labels-map expression so the result carries
+// the synthesized `detected_level` key whenever the row's SeverityText
+// is non-empty. The emitted shape is
+//
+//	mapConcat(
+//	    <baseLabels>,
+//	    mapFilter((k, v) -> v != '', map('detected_level', multiIf(...))))
+//
+// `mapFilter` drops the `detected_level` entry when the row's
+// SeverityText is empty (the multiIf default branch returns
+// `lower(”) = ”`), so rows without a severity-bearing column don't
+// gain a spurious empty-string label. The shape mirrors Loki's stream-
+// identity contract: `detected_level` is part of the output stream
+// label set whenever the upstream row carries severity metadata, and
+// absent otherwise.
+//
+// Used by both the log-stream projection (Lang.ProjectSamples for log
+// queries, where the surfaced label splits the streams response into
+// one Stream per detected_level) and the bare range-aggregation
+// projection (lowerRangeAggregation when no by/without grouping, where
+// the augmented identity drives the RangeWindow GROUP BY to emit one
+// series per detected_level).
+func withDetectedLevel(s schema.Logs, baseLabels chplan.Expr) chplan.Expr {
+	levelMap := &chplan.FuncCall{
+		Name: "map",
+		Args: []chplan.Expr{
+			&chplan.LitString{V: detectedLevelLabel},
+			detectedLevelExpr(s),
+		},
+	}
+	filtered := &chplan.FuncCall{
+		Name: "mapFilter",
+		Args: []chplan.Expr{
+			&chplan.Lambda{
+				Params: []string{"k", "v"},
+				Body: &chplan.Binary{
+					Op:    chplan.OpNe,
+					Left:  &chplan.BareIdent{Name: "v"},
+					Right: &chplan.LitString{V: ""},
+				},
+			},
+			levelMap,
+		},
+	}
+	return &chplan.FuncCall{
+		Name: "mapConcat",
+		Args: []chplan.Expr{baseLabels, filtered},
+	}
+}
