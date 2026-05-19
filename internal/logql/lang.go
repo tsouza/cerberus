@@ -191,17 +191,27 @@ func (l *Lang) ProjectSamples(plan chplan.Node, meta engine.Meta) chplan.Node {
 	// and write a 0.0 placeholder into Value. toStreamsWithTransform reads
 	// back from Sample.MetricName as the line content.
 	//
-	// The Attributes column is wrapped in [withDetectedLevel] so the
-	// emitted row carries `detected_level` as a synthesized label
-	// whenever SeverityText is populated. Loki's stream-label contract
-	// surfaces detected_level as part of stream identity, so cerberus's
-	// /query streams response splits into one Stream per detected_level
-	// (matching upstream Loki's wire shape).
+	// The Attributes column is wrapped in [withDetectedLevel] ONLY when
+	// the query explicitly references `detected_level` / `level` (in a
+	// matcher, label filter, or grouping clause). Reference Loki only
+	// surfaces the synthesized severity label when the query asks for
+	// it; auto-injecting it on every log query splits a single stream
+	// into one per severity, breaking the
+	// `fast/basic-selectors.yaml :: streams[0] entry count` compat-
+	// harness invariant for bare selector queries. When the user does
+	// reference `detected_level` (e.g. `{job="api"} |
+	// detected_level="error"`), the wrap kicks in so the streams
+	// response carries the synthesized label that downstream consumers
+	// expect.
+	attrsExpr := chplan.Expr(&chplan.ColumnRef{Name: s.ResourceAttributesColumn})
+	if expr, _ := meta.Extra["expr"].(syntax.Expr); queryReferencesDetectedLevel(expr) {
+		attrsExpr = withDetectedLevel(s, attrsExpr)
+	}
 	return &chplan.Project{
 		Input: plan,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.ColumnRef{Name: s.BodyColumn}, Alias: "MetricName"},
-			{Expr: withDetectedLevel(s, &chplan.ColumnRef{Name: s.ResourceAttributesColumn}), Alias: "Attributes"},
+			{Expr: attrsExpr, Alias: "Attributes"},
 			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: "TimeUnix"},
 			// Wrap the placeholder zero in toFloat64 so CH returns the column
 			// as Float64; without the cast a bare `0` literal becomes UInt8
