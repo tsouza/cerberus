@@ -27,7 +27,7 @@ import (
 // metrics_query_handler.go): step = end - start (one bucket), then
 // each series's first Samples entry becomes the InstantSeries.Value.
 // Cerberus follows the same shape so the differ's CompareMetrics
-// (harness/tempo-compatibility/driver/differ_metrics.go) can canonicalise
+// (compatibility/tempo/driver/differ_metrics.go) can canonicalise
 // both backends' responses without a shape-specific branch.
 type MetricsQueryInstantResponse struct {
 	Series []MetricsInstantSeries `json:"series"`

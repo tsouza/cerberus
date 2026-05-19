@@ -7,7 +7,7 @@
 #                 test-cerberus.yml)
 #
 # Seeding is no longer a compose service — the fixture is loaded by
-# `go run ./harness/prometheus-compliance/cmd/seed/` invoked from
+# `go run ./compatibility/prometheus/cmd/seed/` invoked from
 # scripts/run-compatibility.sh. The seeder reuses internal/schema/ddl so
 # the harness schema can't drift from cerberus's own DDL.
 #
@@ -15,7 +15,7 @@
 #   ./scripts/run-compatibility.sh
 # or:
 #   docker compose up --wait
-#   go run ./harness/prometheus-compliance/cmd/seed/
+#   go run ./compatibility/prometheus/cmd/seed/
 #   ../upstream/promql/cmd/promql-compliance-tester ...
 #   docker compose down -v
 

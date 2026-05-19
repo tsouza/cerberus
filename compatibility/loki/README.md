@@ -5,20 +5,20 @@
 > The Docker Compose stack, the deterministic seeder, the vendored
 > `pkg/logql/bench/` corpus, and the cerberus-owned diff driver all
 > live under this directory. The driver emits a JSON report whose
-> shape matches `harness/prometheus-compliance/report.json` so the two
+> shape matches `compatibility/prometheus/report.json` so the two
 > harnesses share a single downstream analyser. The informational CI
 > lane (PR 4) and the regression / exhaustive corpus expansion (PR 6)
 > are still pending.
 
 ## Why this harness exists
 
-Cerberus already has `harness/prometheus-compliance/` (PromQL parity vs
+Cerberus already has `compatibility/prometheus/` (PromQL parity vs
 reference Prometheus). The Loki / LogQL surface has no upstream
 `loki-conformance` repo; the closest analogue is
 `grafana/loki:pkg/logql/bench/` — a YAML query corpus plus a
 `TestRemoteStorageEquality` build-tagged Go test driver. This harness
 vendors that snapshot verbatim (the same posture
-`harness/prometheus-compliance/upstream/` takes vs `prometheus/compliance`),
+`compatibility/prometheus/upstream/` takes vs `prometheus/compliance`),
 runs reference Loki and cerberus side-by-side, and diffs the responses.
 
 See [`docs/loki-compliance-plan.md`](../../docs/loki-compliance-plan.md)
@@ -28,7 +28,7 @@ license/AGPL containment strategy.
 ## Layout (current — PR 5)
 
 ```text
-harness/loki-compatibility/
+compatibility/loki/
   README.md                       this file
   docker-compose.yml              clickhouse + reference loki + cerberus
   loki-config.yaml                reference Loki single-binary config
@@ -65,7 +65,7 @@ harness/loki-compatibility/
 PR 4 lands the informational CI lane:
 
 ```text
-.github/workflows/loki-compatibility.yml  PR 4 — push:main + nightly cron + workflow_dispatch
+.github/workflows/compatibility.yml       PR 4 — push:main + nightly cron + workflow_dispatch (compatibility/loki job)
 ```
 
 PR 6 widens the seeder + regenerates `dataset_metadata.json` so the
@@ -150,7 +150,7 @@ snapshot here pins `grafana/loki` directly rather than the fork tag.
 
 ### Why vendor, not import via `go.mod`
 
-Same reasoning as `harness/tempo-compatibility/upstream/` (see PR #367):
+Same reasoning as `compatibility/tempo/upstream/` (see PR #367):
 
 1. **Reference material, not a build dependency.** The driver wiring
    reads the vendored sources directly. Vendoring lets reviewers see
@@ -173,7 +173,7 @@ transitive deps `bench` carries (`logproto`, `logql/syntax`,
 the driver builds with a plain `go build` — no `-mod=mod` promotion
 and no go.mod / go.sum mutation per invocation.
 
-The `ignore ./harness/loki-compatibility/upstream` directive in
+The `ignore ./compatibility/loki/upstream` directive in
 `go.mod` keeps `go build ./...`, `go test ./...`, and `go vet ./...`
 from walking the vendored path as a build target; the bench package
 is still resolvable when imported by path (`ignore` is wildcard
@@ -239,7 +239,7 @@ The run script's contract:
 - Exit 2+ → harness itself failed (compose, seed, build).
 
 The driver writes a structured JSON report to `reports/diff.json`
-whose envelope matches `harness/prometheus-compliance/report.json`:
+whose envelope matches `compatibility/prometheus/report.json`:
 
 ```json
 {
@@ -304,26 +304,26 @@ git clone --depth=1 -b "$TAG" https://github.com/grafana/loki /tmp/loki-upstream
 
 # 3. Wipe + re-copy the vendored paths. The `vendored_paths:` block in
 #    upstream/loki-bench/VERSION is the canonical inventory.
-rm -rf harness/loki-compatibility/upstream/loki-bench/{queries,LICENSE,*.go}
-mkdir -p harness/loki-compatibility/upstream/loki-bench/queries/fast \
-         harness/loki-compatibility/upstream/loki-bench/queries/regression \
-         harness/loki-compatibility/upstream/loki-bench/queries/exhaustive
-touch    harness/loki-compatibility/upstream/loki-bench/queries/regression/.gitkeep \
-         harness/loki-compatibility/upstream/loki-bench/queries/exhaustive/.gitkeep
+rm -rf compatibility/loki/upstream/loki-bench/{queries,LICENSE,*.go}
+mkdir -p compatibility/loki/upstream/loki-bench/queries/fast \
+         compatibility/loki/upstream/loki-bench/queries/regression \
+         compatibility/loki/upstream/loki-bench/queries/exhaustive
+touch    compatibility/loki/upstream/loki-bench/queries/regression/.gitkeep \
+         compatibility/loki/upstream/loki-bench/queries/exhaustive/.gitkeep
 cp /tmp/loki-upstream/pkg/logql/bench/queries/fast/*.yaml \
-   harness/loki-compatibility/upstream/loki-bench/queries/fast/
+   compatibility/loki/upstream/loki-bench/queries/fast/
 cp /tmp/loki-upstream/pkg/logql/bench/queries/schema.json \
-   harness/loki-compatibility/upstream/loki-bench/queries/schema.json
+   compatibility/loki/upstream/loki-bench/queries/schema.json
 for f in query_registry remote_test metadata metadata_resolver testcase \
          assertions_test convert_test generator faker; do
     cp "/tmp/loki-upstream/pkg/logql/bench/${f}.go" \
-       "harness/loki-compatibility/upstream/loki-bench/${f}.go"
+       "compatibility/loki/upstream/loki-bench/${f}.go"
 done
 cp /tmp/loki-upstream/LICENSE \
-   harness/loki-compatibility/upstream/loki-bench/LICENSE
+   compatibility/loki/upstream/loki-bench/LICENSE
 
 # 4. Update upstream/loki-bench/VERSION with the new tag + commit SHA.
-$EDITOR harness/loki-compatibility/upstream/loki-bench/VERSION
+$EDITOR compatibility/loki/upstream/loki-bench/VERSION
 
 # 5. PR the diff. Reviewer checks the bump procedure was followed
 #    verbatim; no sanitisation of vendored sources is permitted.
@@ -333,5 +333,5 @@ $EDITOR harness/loki-compatibility/upstream/loki-bench/VERSION
 
 - [`docs/loki-compliance-plan.md`](../../docs/loki-compliance-plan.md) — the rollout plan
 - [`docs/upstream-forks.md`](../../docs/upstream-forks.md) — how the `tsouza/loki` fork is wired (and why the bench corpus is outside it)
-- [`harness/prometheus-compliance/`](../prometheus-compliance/) — sibling Prom harness
-- [`harness/tempo-compatibility/`](../tempo-compatibility/) — sibling Tempo harness, PR 1 (#367)
+- [`compatibility/prometheus/`](../prometheus/) — sibling Prom harness
+- [`compatibility/tempo/`](../tempo/) — sibling Tempo harness, PR 1 (#367)

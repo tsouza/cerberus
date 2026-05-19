@@ -82,9 +82,9 @@ jobs:
         with:
           globs: |
             **/*.md
-            !harness/prometheus-compliance/upstream/**
-            !harness/tempo-compatibility/upstream/**
-            !harness/loki-compatibility/upstream/**
+            !compatibility/prometheus/upstream/**
+            !compatibility/tempo/upstream/**
+            !compatibility/loki/upstream/**
             !**/node_modules/**
 
   # `forbid-skip` is the GA test-discipline gate. The maintainer's
@@ -104,11 +104,11 @@ jobs:
   # in differ test data, `errors.New("not implemented")` interface
   # stubs, `skipped := 0` counters).
   #
-  # Vendored upstream snapshots under `harness/*/upstream/**` and
-  # `compatibility/*/upstream/**` are excluded — reference material
-  # outside cerberus's authorship boundary (and pinned by their
-  # respective VERSION files). Runs in parallel with `check` + `lint`;
-  # flip on as a required status check via branch protection.
+  # Vendored upstream snapshots under `compatibility/*/upstream/**`
+  # are excluded — reference material outside cerberus's authorship
+  # boundary (and pinned by their respective VERSION files). Runs in
+  # parallel with `check` + `lint`; flip on as a required status check
+  # via branch protection.
   forbid-skip:
     name: forbid-skip
     runs-on: ubuntu-latest
@@ -118,7 +118,6 @@ jobs:
         run: |
           if git ls-files -z -- \
               '*_test.go' \
-              ':!:harness/*/upstream/**' \
               ':!:compatibility/*/upstream/**' \
               | xargs -0 grep -nE 't\.Skip[fN]?\(' --; then
             echo "::error::t.Skip / t.Skipf / t.SkipNow found in test files — fix the bug, do not skip"
@@ -129,7 +128,6 @@ jobs:
           if git ls-files -z -- \
               '*_test.go' \
               '*.txtar' \
-              ':!:harness/*/upstream/**' \
               ':!:compatibility/*/upstream/**' \
               | xargs -0 grep -niEH 'deferred to (RC[0-9]+|a follow-up|future|next release|post-GA)|post-GA|not yet (supported|implemented|wired)|skipped pending|RC[2-9] (parsers|grouping|cleanup|follow-up)|M[0-9]\.[0-9] (milestone|follow-up)' --; then
             echo "::error::forward-looking-promise wording found in test files or TXTAR fixtures — implement the feature or remove the comment, do not punt"

@@ -8,29 +8,30 @@
 #   cerberus      cerberus under test, listens on :29092 (matches
 #                 test-cerberus.yml when that lands in PR 2)
 #
-# Seeding is invoked by `go run ./harness/loki-compatibility/cmd/seed/`
+# Seeding is invoked by `go run ./compatibility/loki/cmd/seed/`
 # from scripts/run-loki-compatibility.sh — it pushes the same
 # deterministic log streams to both Loki (/loki/api/v1/push) and the CH
 # `otel_logs` table.
 #
-# Port allocation mirrors the prometheus-compliance harness but offset by
-# one so the two stacks can coexist on the same dev host:
-#   prometheus-compliance  CH 29000/28123, prom :29090, cerberus :29091
-#   loki-compatibility     CH 28000/28223, loki :23100, cerberus :29092
+# Port allocation mirrors the prometheus compatibility harness but offset
+# by one so the two stacks can coexist on the same dev host:
+#   compatibility/prometheus  CH 29000/28123, prom :29090, cerberus :29091
+#   compatibility/loki        CH 28000/28223, loki :23100, cerberus :29092
 #
 # Usage:
 #   ./scripts/run-loki-compatibility.sh
 # or:
 #   docker compose up --wait
-#   go run ./harness/loki-compatibility/cmd/seed/
+#   go run ./compatibility/loki/cmd/seed/
 #   docker compose down -v
 
 name: cerberus-loki-compatibility
 
 services:
   clickhouse:
-    # Use the Ubuntu-base image, NOT -alpine. Per the prometheus-compliance
-    # harness's PR #245 finding, `clickhouse/clickhouse-server:24.8-alpine`
+    # Use the Ubuntu-base image, NOT -alpine. Per the prometheus
+    # compatibility harness's PR #245 finding,
+    # `clickhouse/clickhouse-server:24.8-alpine`
     # on GH Actions runners stalls in the entrypoint script for 5+ min
     # (never starts the server, never binds 8123). The Ubuntu-base variant
     # boots in ~10-20s on the same runners.

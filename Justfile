@@ -175,11 +175,11 @@ lint:
 
 # Lint all Markdown files (run via npm exec; no global Node deps).
 lint-md:
-    npm exec --yes -- markdownlint-cli2@{{MARKDOWNLINT_VERSION}} "**/*.md" "!harness/prometheus-compliance/upstream/**" "!**/node_modules/**"
+    npm exec --yes -- markdownlint-cli2@{{MARKDOWNLINT_VERSION}} "**/*.md" "!compatibility/prometheus/upstream/**" "!**/node_modules/**"
 
 # Auto-fix Markdown lint issues where possible.
 fmt-md:
-    npm exec --yes -- markdownlint-cli2@{{MARKDOWNLINT_VERSION}} --fix "**/*.md" "!harness/prometheus-compliance/upstream/**" "!**/node_modules/**"
+    npm exec --yes -- markdownlint-cli2@{{MARKDOWNLINT_VERSION}} --fix "**/*.md" "!compatibility/prometheus/upstream/**" "!**/node_modules/**"
 
 # Format Go code.
 fmt:
@@ -390,41 +390,41 @@ e2e: e2e-up e2e-seed e2e-wait-otel e2e-run e2e-playwright e2e-down
 
 # Run the PromQL compatibility suite end-to-end. Slow; expect minutes.
 # Sets up the Docker Compose stack (reference Prom + cerberus + CH + seeder),
-# runs the upstream tester, writes harness/prometheus-compliance/report.json.
+# runs the upstream tester, writes compatibility/prometheus/report.json.
 compatibility:
-    ./harness/prometheus-compliance/scripts/run-compatibility.sh
+    ./compatibility/prometheus/scripts/run-compatibility.sh
 
 # Keep the compatibility stack running after the tester finishes (for debugging).
 compatibility-keep:
-    COMPOSE_KEEP=1 ./harness/prometheus-compliance/scripts/run-compatibility.sh
+    COMPOSE_KEEP=1 ./compatibility/prometheus/scripts/run-compatibility.sh
 
 # Tear down the compatibility stack manually.
 compatibility-down:
-    cd harness/prometheus-compliance && docker compose down -v
+    cd compatibility/prometheus && docker compose down -v
 
 # === Compatibility (LogQL — Loki compatibility harness) ===
 
 # Run the LogQL compatibility harness end-to-end. Brings up reference
 # Loki + cerberus + ClickHouse, seeds both, builds the diff driver from
 # the vendored upstream/loki-bench corpus, runs TestRemoteStorageEquality
-# against both endpoints, writes harness/loki-compatibility/reports/diff.json.
-# See harness/loki-compatibility/README.md + docs/loki-compliance-plan.md.
+# against both endpoints, writes compatibility/loki/reports/diff.json.
+# See compatibility/loki/README.md + docs/loki-compliance-plan.md.
 loki-compatibility:
-    ./harness/loki-compatibility/scripts/run-loki-compatibility.sh
+    ./compatibility/loki/scripts/run-loki-compatibility.sh
 
 # Run the smoke (compose + seed + /labels assertion) without the diff
 # driver. Useful when the seeder is the bisect target.
 loki-compatibility-smoke:
-    DRIVER_SKIP=1 ./harness/loki-compatibility/scripts/run-loki-compatibility.sh
+    DRIVER_SKIP=1 ./compatibility/loki/scripts/run-loki-compatibility.sh
 
 # Keep the Loki compatibility stack running after the run finishes
 # (for debugging /loki/api/v1/* + ClickHouse manually).
 loki-compatibility-keep:
-    COMPOSE_KEEP=1 ./harness/loki-compatibility/scripts/run-loki-compatibility.sh
+    COMPOSE_KEEP=1 ./compatibility/loki/scripts/run-loki-compatibility.sh
 
 # Tear down the Loki compatibility stack manually.
 loki-compatibility-down:
-    cd harness/loki-compatibility && docker compose down -v
+    cd compatibility/loki && docker compose down -v
 # === Tempo / TraceQL compatibility harness ===
 
 # Run the Tempo / TraceQL compatibility harness end-to-end. Slow; expect
@@ -434,15 +434,15 @@ loki-compatibility-down:
 # for cerberus, then smokes /api/traces/<id> on both backends.
 # PR 3 of docs/tempo-compliance-plan.md — diff driver lands in PR 4.
 tempo-compatibility:
-    ./harness/tempo-compatibility/scripts/run-tempo-compatibility.sh
+    ./compatibility/tempo/scripts/run-tempo-compatibility.sh
 
 # Keep the tempo-compatibility stack running after the driver finishes (for debugging).
 tempo-compatibility-keep:
-    COMPOSE_KEEP=1 ./harness/tempo-compatibility/scripts/run-tempo-compatibility.sh
+    COMPOSE_KEEP=1 ./compatibility/tempo/scripts/run-tempo-compatibility.sh
 
 # Tear down the tempo-compatibility stack manually.
 tempo-compatibility-down:
-    cd harness/tempo-compatibility && docker compose down -v
+    cd compatibility/tempo && docker compose down -v
 
 # === Compatibility — all three heads ===
 
@@ -453,7 +453,7 @@ tempo-compatibility-down:
 # sub-recipe tears its own compose stack down on every exit path.
 # Slow — expect tens of minutes. Use the per-head recipes for iteration.
 # Exit semantics: fails fast on the first non-zero recipe; the report
-# files for each head land under harness/*/reports/ regardless.
+# files for each head land under compatibility/*/reports/ regardless.
 compatibility-all: compatibility loki-compatibility tempo-compatibility
 
 # === Shadow-mode differential testing (RC3 R3.9) ===
@@ -463,10 +463,10 @@ compatibility-all: compatibility loki-compatibility tempo-compatibility
 # http://localhost:9090). The oracle is wired to internal/promshim/local
 # and evaluates against a seeded in-memory dataset; native errors are
 # expected when CERBERUS_URL points at nothing.
-# See harness/prometheus-compliance/shadow/README.md.
-shadow-mode CORPUS="harness/prometheus-compliance/shadow/corpus/smoke.txt" STRATEGY="prefer-native":
+# See compatibility/prometheus/shadow/README.md.
+shadow-mode CORPUS="compatibility/prometheus/shadow/corpus/smoke.txt" STRATEGY="prefer-native":
     @echo "==> building shadow-mode harness"
-    go build -trimpath -o bin/shadow ./harness/prometheus-compliance/shadow/cmd/shadow
+    go build -trimpath -o bin/shadow ./compatibility/prometheus/shadow/cmd/shadow
     @echo "==> running shadow-mode (strategy={{STRATEGY}})"
     ./bin/shadow \
         --corpus {{CORPUS}} \

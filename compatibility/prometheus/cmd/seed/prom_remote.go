@@ -14,7 +14,7 @@
 // in docker-compose.yml via `--web.enable-remote-write-receiver`).
 //
 // Production cerberus does NOT include this code path — the seeder
-// (`harness/prometheus-compliance/cmd/seed/`) is harness-only and never
+// (`compatibility/prometheus/cmd/seed/`) is harness-only and never
 // compiled into the cerberus binary. The user's contract is "cerberus is
 // for querying"; remote-write stays in test infrastructure.
 

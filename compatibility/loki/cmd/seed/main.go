@@ -632,7 +632,7 @@ func verifyBothNonEmpty(ctx context.Context, conn driver.Conn, lokiURL, cerbURL 
 // /loki/api/v1/series until both surface the full cardinality of the
 // seeded fixture, or the deadline expires. Mirrors the WAL→block flush
 // wait the tempo-compatibility seeder uses for /api/traces (see
-// harness/tempo-compatibility/driver/seeder.go `smokeTraceByID` /
+// compatibility/tempo/driver/seeder.go `smokeTraceByID` /
 // `pollTraceSpanCount`): the seeder has just finished pushing logs, so
 // the ingester needs a moment to flush in-memory chunks into the TSDB
 // index before a /query_range against the same window returns rows.

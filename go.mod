@@ -354,6 +354,6 @@ replace (
 	github.com/open-telemetry/opentelemetry-collector-contrib/pkg/translator/jaeger => github.com/tsouza/opentelemetry-collector-contrib/pkg/translator/jaeger v0.0.1-cerberus-ddl
 )
 
-ignore ./harness/tempo-compatibility/upstream
+ignore ./compatibility/tempo/upstream
 
-ignore ./harness/loki-compatibility/upstream
+ignore ./compatibility/loki/upstream

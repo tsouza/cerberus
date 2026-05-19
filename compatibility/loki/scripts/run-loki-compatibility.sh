@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # LogQL compatibility harness entry point.
 #
-# Lifecycle (mirrors harness/prometheus-compliance/scripts/run-compatibility.sh):
+# Lifecycle (mirrors compatibility/prometheus/scripts/run-compatibility.sh):
 #
 #   1. `docker compose up --wait` brings reference Loki + cerberus + CH up.
 #   2. The Go seeder pushes a deterministic fixture to both targets and
@@ -32,7 +32,7 @@
 #          …). Inspect script output; the report file may be empty.
 #
 # Usage:
-#   ./harness/loki-compatibility/scripts/run-loki-compatibility.sh   full lifecycle
+#   ./compatibility/loki/scripts/run-loki-compatibility.sh   full lifecycle
 #   COMPOSE_KEEP=1 ./...                                             leave stack up after run
 #   DRIVER_SKIP=1 ./...                                              run smoke only (skip diff)
 #
@@ -94,7 +94,7 @@ echo "==> bringing up loki-compatibility stack (compose up --wait)"
 docker compose up -d --build --wait clickhouse loki cerberus
 
 echo "==> running seeder (go run ./cmd/seed)"
-(cd "$REPO_ROOT" && go run ./harness/loki-compatibility/cmd/seed/)
+(cd "$REPO_ROOT" && go run ./compatibility/loki/cmd/seed/)
 
 if [ -n "${DRIVER_SKIP:-}" ]; then
     echo "==> DRIVER_SKIP set — finishing after smoke"
@@ -104,7 +104,7 @@ fi
 # Build the cerberus-owned diff driver. The driver imports the
 # vendored bench package for corpus loading + cerberus's existing
 # Loki / yaml deps for the HTTP + decode path. The root go.mod marks
-# `ignore ./harness/loki-compatibility/upstream`, which keeps
+# `ignore ./compatibility/loki/upstream`, which keeps
 # `go build ./...` from walking the bench tree as a build target;
 # importing the package by path is still permitted because every
 # transitive dep is already a direct entry in go.mod.
@@ -112,7 +112,7 @@ echo "==> building diff driver (cmd/loki-compliance-tester)"
 (cd "$REPO_ROOT" && \
     go build \
         -o "$DRIVER_BIN" \
-        ./harness/loki-compatibility/cmd/loki-compliance-tester/)
+        ./compatibility/loki/cmd/loki-compliance-tester/)
 
 echo "==> running diff driver (writing report to $REPORT)"
 echo "    -addr-1=http://localhost:23100  (reference Loki)"

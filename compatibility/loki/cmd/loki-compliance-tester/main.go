@@ -1,7 +1,7 @@
 // Command loki-compliance-tester runs the LogQL compatibility corpus
 // (vendored from grafana/loki:pkg/logql/bench/) against two live Loki
 // HTTP endpoints, diffs the responses with float tolerance, and emits a
-// JSON report whose shape matches harness/prometheus-compliance's
+// JSON report whose shape matches compatibility/prometheus's
 // promql-compliance-tester (i.e. the `prometheus/compliance` reference
 // driver).
 //
@@ -61,7 +61,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	bench "github.com/tsouza/cerberus/harness/loki-compatibility/upstream/loki-bench"
+	bench "github.com/tsouza/cerberus/compatibility/loki/upstream/loki-bench"
 )
 
 func main() {
@@ -153,7 +153,7 @@ func run() error {
 }
 
 // Overlay mirrors the cerberus-test-queries.yml schema documented in
-// harness/loki-compatibility/cerberus-test-queries.yml. The runner
+// compatibility/loki/cerberus-test-queries.yml. The runner
 // consults `ShouldSkip` to decide whether to include a case (when
 // `-include-skipped=false`); the `ShouldFail` slot is plumbed for
 // future use (analogue of prometheus/compliance's `should_fail` —
@@ -940,7 +940,7 @@ func floatEqual(a, b, tol float64) bool {
 // Report mirrors the prometheus/compliance JSON shape so cerberus-side
 // tooling (informational CI lane today, the future PR 6 expected-failures
 // reconciliation script) can consume both harness reports with a single
-// schema. See harness/prometheus-compliance/upstream/promql/output/json.go.
+// schema. See compatibility/prometheus/upstream/promql/output/json.go.
 type Report struct {
 	TotalResults   int      `json:"totalResults"`
 	IncludePassing bool     `json:"includePassing"`

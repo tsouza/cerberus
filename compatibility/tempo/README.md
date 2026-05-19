@@ -29,12 +29,12 @@
 
 ## Why this harness exists
 
-Cerberus already has `harness/prometheus-compliance/` (PromQL parity vs reference
+Cerberus already has `compatibility/prometheus/` (PromQL parity vs reference
 Prometheus) and a sibling shadow-mode harness for in-process diffs. The
 Tempo / TraceQL surface has **no upstream "tempo-compliance" repo** — the
 closest analogue is `cmd/tempo-vulture`, Grafana's deterministic seed +
 read-back canary. The plan forks vulture's seeder pattern into a
-cerberus-owned diff driver, similar to how `harness/prometheus-compliance/`
+cerberus-owned diff driver, similar to how `compatibility/prometheus/`
 reuses `prometheus/compliance/promql/`.
 
 See [`docs/tempo-compliance-plan.md`](../../docs/tempo-compliance-plan.md)
@@ -44,7 +44,7 @@ strategy.
 ## Layout (current — PR 6)
 
 ```text
-harness/tempo-compatibility/
+compatibility/tempo/
   README.md             this file
   docker-compose.yml    tempo + cerberus + clickhouse + driver
   tempo-config.yaml     reference Tempo (local block storage)
@@ -72,7 +72,7 @@ harness/tempo-compatibility/
 ## Layout (planned — PRs 5 + 7)
 
 ```text
-harness/tempo-compatibility/
+compatibility/tempo/
   driver/
     corpus/
       coverage.txtar    PR 5 — metrics endpoints
@@ -101,7 +101,7 @@ compares the responses. Two complications drive the diff strategy:
    markdown summary so a single regression doesn't mask the other.
 
 Numeric fields (durationMs, startTimeUnixNano) compare under a 1e-9
-relative epsilon — same defaults as `harness/prometheus-compliance/shadow`.
+relative epsilon — same defaults as `compatibility/prometheus/shadow`.
 
 ## Corpus categories
 
@@ -181,7 +181,7 @@ actually imports a subset of this code, we exclude the vendor from
 the module graph via a `go.mod` `ignore` directive:
 
 ```text
-ignore ./harness/tempo-compatibility/upstream
+ignore ./compatibility/tempo/upstream
 ```
 
 The directive is a Go 1.25+ feature; cerberus already pins Go 1.26
@@ -214,15 +214,15 @@ grep '^replace github.com/grafana/tempo' go.mod
 git clone --depth=1 -b vX.Y.Z https://github.com/tsouza/tempo /tmp/tempo-upstream
 
 # 3. Wipe the existing snapshot and re-copy.
-rm -rf harness/tempo-compatibility/upstream/{cmd,pkg,LICENSE}
-mkdir -p harness/tempo-compatibility/upstream/{cmd,pkg}
-cp -r /tmp/tempo-upstream/cmd/tempo-vulture  harness/tempo-compatibility/upstream/cmd/
-cp -r /tmp/tempo-upstream/pkg/httpclient     harness/tempo-compatibility/upstream/pkg/
-cp    /tmp/tempo-upstream/LICENSE            harness/tempo-compatibility/upstream/LICENSE
+rm -rf compatibility/tempo/upstream/{cmd,pkg,LICENSE}
+mkdir -p compatibility/tempo/upstream/{cmd,pkg}
+cp -r /tmp/tempo-upstream/cmd/tempo-vulture  compatibility/tempo/upstream/cmd/
+cp -r /tmp/tempo-upstream/pkg/httpclient     compatibility/tempo/upstream/pkg/
+cp    /tmp/tempo-upstream/LICENSE            compatibility/tempo/upstream/LICENSE
 
 # 4. Update upstream/VERSION with the new fork tag + commit SHA and
 #    the matching upstream/main base commit.
-$EDITOR harness/tempo-compatibility/upstream/VERSION
+$EDITOR compatibility/tempo/upstream/VERSION
 
 # 5. PR the diff. Reviewer checks the bump procedure was followed
 #    verbatim; no sanitisation of vendored sources is permitted.
@@ -238,10 +238,10 @@ is the verbatim copy.
 Cerberus itself is independently licensed (see the repo root `LICENSE`);
 the AGPL terms apply only to the vendored subtree under `upstream/`.
 The driver code that lands in PRs 3+ will live OUTSIDE `upstream/`
-(under `harness/tempo-compatibility/driver/`) and is cerberus-licensed.
+(under `compatibility/tempo/driver/`) and is cerberus-licensed.
 
 ## Related docs
 
 - [`docs/tempo-compliance-plan.md`](../../docs/tempo-compliance-plan.md) — the rollout plan
 - [`docs/upstream-forks.md`](../../docs/upstream-forks.md) — how the `tsouza/tempo` fork is wired
-- [`harness/prometheus-compliance/`](../prometheus-compliance/) — sibling harness, the template this one mirrors
+- [`compatibility/prometheus/`](../prometheus/) — sibling harness, the template this one mirrors

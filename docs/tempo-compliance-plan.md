@@ -34,7 +34,7 @@ Cerberus's `harness/compatibility/` runs `prometheus/compliance` against a refer
 ## Proposed layout
 
 ```text
-harness/tempo-compatibility/
+compatibility/tempo/
   docker-compose.yml              # tempo + cerberus + clickhouse + driver
   tempo-config.yaml               # reference Tempo (local block storage)
   scripts/run-tempo-compatibility.sh
@@ -109,7 +109,7 @@ Intentional mismatches → `expected-failures.json` with comment, same as Prom h
 
 ## Per-PR breakdown
 
-1. **PR 1 (vendor)**: snapshot `cmd/tempo-vulture/` + `pkg/httpclient/` under `harness/tempo-compatibility/upstream/`. No CI yet.
+1. **PR 1 (vendor)**: snapshot `cmd/tempo-vulture/` + `pkg/httpclient/` under `compatibility/tempo/upstream/`. No CI yet.
 2. **PR 2 (compose)**: `docker-compose.yml`, `tempo-config.yaml`, `scripts/run-tempo-compatibility.sh`. Driver is a stub returning 0. Wires `.github/workflows/tempo-compatibility.yml` with `workflow_dispatch` + nightly only.
 3. **PR 3 (seeder)**: implement `driver/seeder.go`: write same deterministic OTLP batch to both Tempo's `:4317` and cerberus's OTLP ingest. 30s replication wait. Smoke: `/api/traces/<id>` on both returns the same span count.
 4. **PR 4 (read corpus + smoke diff)**: implement `driver/corpus.go` + `driver/differ.go`. Lift the 20 cases from `shadow/traceql_shadow_test.go`. CI runs nightly; markdown report as artifact.

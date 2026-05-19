@@ -6,7 +6,7 @@
 //     sets. The author writes both sides; the framework checks the SQL
 //     text and (optionally) the row equality. Catches regressions to the
 //     known-good shapes.
-//  2. harness/prometheus-compliance/ — reference-impl-driven differential testing:
+//  2. compatibility/prometheus/ — reference-impl-driven differential testing:
 //     a fixed Prometheus + cerberus pair both ingest the same OTel
 //     fixture and the same canned queries are diffed against the
 //     reference Prometheus instance over HTTP. Catches drift against

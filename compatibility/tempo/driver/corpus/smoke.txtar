@@ -1,6 +1,6 @@
 # Tempo / TraceQL compatibility smoke corpus.
 #
-# PR 4 lifted-and-adapted the cases from harness/prometheus-compliance/
+# PR 4 lifted-and-adapted the cases from compatibility/prometheus/
 # shadow/traceql_shadow_test.go::traceqlInstantCases(). PR 5 extended the
 # corpus with /api/metrics/query_range + /api/metrics/query cases and
 # added the semantic-consistency layer (see differ.go::SemanticConsistency).

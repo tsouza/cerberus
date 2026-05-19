@@ -281,7 +281,7 @@ func compareSummary(key string, a, b TraceSummary, aLabel, bLabel string, opts D
 	return reasons
 }
 
-// valuesClose mirrors harness/prometheus-compliance/shadow/differ.go's
+// valuesClose mirrors compatibility/prometheus/shadow/differ.go's
 // helper so the two harnesses share semantics.
 func valuesClose(a, b float64, opts DiffOptions) bool {
 	if math.IsNaN(a) && math.IsNaN(b) {

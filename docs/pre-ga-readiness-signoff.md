@@ -116,7 +116,7 @@ The 13 diffs cluster on:
 - `label_replace(demo_num_cpus, "job", "value-$1", "nonexistent-src", "(.*)")` (1 entry) — addressed by open PR #390 (`label_replace non-existent src residual`).
 - `avg_over_time(rate(demo_cpu_usage_seconds_total[1m])[2m:10s])` (1 entry) — subquery-over-rate diff.
 
-`harness/prometheus-compliance/expected-failures.json` currently has an **empty `failures` array** — all 13 are raw diffs, not allowlisted. The GA target is **≤ 5 allowlisted diffs each with an upstream-rationale comment**, so Pool-BG needs to either land patches that close the remaining diffs or land allowlist entries with rationales. Both are valid GA-clearing paths; the doc + the allowlist comment requirement enforces audit hygiene either way.
+`compatibility/prometheus/expected-failures.json` currently has an **empty `failures` array** — all 13 are raw diffs, not allowlisted. The GA target is **≤ 5 allowlisted diffs each with an upstream-rationale comment**, so Pool-BG needs to either land patches that close the remaining diffs or land allowlist entries with rationales. Both are valid GA-clearing paths; the doc + the allowlist comment requirement enforces audit hygiene either way.
 
 ## CLAUDE.md hard-rule cross-check
 
@@ -161,10 +161,10 @@ Every still-open PR and every still-pending follow-up that touches a NEEDS-WORK 
 | ---- | ---------------------------------------------------------------------------------- | --------------------------------------------- | ----------- | --------------------------------------------------------------- |
 | #391 | `chore(deps): bump pgregory.net/rapid from 1.2.0 to 1.3.0 in the go-deps group`    | `dependabot/go_modules/go-deps-77b3277776`    | MERGEABLE   | Dependabot; all required checks green; can auto-merge.          |
 | #390 | `fix(promql): round half-to-even + label_replace non-existent src residual`        | `fix/promql-round-and-label-replace-residual` | MERGEABLE   | `lint` job failing; closes 2 of the 13 compat diffs once green. |
-| #387 | `feat(harness/loki-compatibility): wire diff driver into run script + just recipe` | `feat/loki-compliance-diff-driver`            | MERGEABLE   | Loki compliance scaffolding PR 2 of 6.                          |
-| #385 | `feat(harness/tempo-compatibility): implement deterministic OTLP seeder`           | `feat/tempo-compliance-seeder`                | MERGEABLE   | `lint` job failing; Tempo PR 2 of 4.                            |
+| #387 | `feat(compatibility/loki): wire diff driver into run script + just recipe` | `feat/loki-compliance-diff-driver`            | MERGEABLE   | Loki compliance scaffolding PR 2 of 6.                          |
+| #385 | `feat(compatibility/tempo): implement deterministic OTLP seeder`           | `feat/tempo-compliance-seeder`                | MERGEABLE   | `lint` job failing; Tempo PR 2 of 4.                            |
 | #383 | `test(spec/logql): cover vector-vector binary ops + literal-vector paths`          | `test/logql-vector-vector-coverage`           | MERGEABLE   | Test-coverage backfill; not GA-gating.                          |
-| #369 | `feat(harness/loki-compatibility): vendor pkg/logql/bench corpus`                  | `feat/loki-compliance-vendor-bench`           | MERGEABLE   | Loki compliance scaffolding PR 1 of 6 (Pool-CA).                |
+| #369 | `feat(compatibility/loki): vendor pkg/logql/bench corpus`                  | `feat/loki-compliance-vendor-bench`           | MERGEABLE   | Loki compliance scaffolding PR 1 of 6 (Pool-CA).                |
 
 ### Pending follow-ups (not PRs yet)
 

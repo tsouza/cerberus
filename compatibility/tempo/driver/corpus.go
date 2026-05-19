@@ -4,7 +4,7 @@
 // endpoints).
 //
 // The format is a lightweight TXTAR variant — same shape as
-// harness/prometheus-compliance/shadow/corpus.go — so the parser
+// compatibility/prometheus/shadow/corpus.go — so the parser
 // looks at single-line `-- section --` headers and treats every
 // non-header line as section body. The supported sections:
 //
@@ -62,7 +62,7 @@
 // between them without the trailing case's last section accidentally
 // swallowing the comment.
 //
-// Why a custom shape (and not lift `harness/prometheus-compliance/shadow`'s
+// Why a custom shape (and not lift `compatibility/prometheus/shadow`'s
 // loader)? The sibling loader is PromQL-specific (it has a
 // `-- expected_strategy --` slot that means nothing for TraceQL). The
 // section-header machinery is trivially small (~80 lines) so duplicating
@@ -387,7 +387,7 @@ func isKnownSection(name string) bool {
 }
 
 // parseCorpus is the unit-testable inner driver. Mirrors the shape of
-// harness/prometheus-compliance/shadow/corpus.go::parseCorpus so the
+// compatibility/prometheus/shadow/corpus.go::parseCorpus so the
 // two loaders evolve in step.
 func parseCorpus(r io.Reader, source string) ([]CorpusCase, error) {
 	var (

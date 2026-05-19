@@ -19,16 +19,16 @@
 # DNS resolution failures ("lookup tempo on 127.0.0.11:53: server
 # misbehaving") that occur when the driver runs inside Docker on some
 # CI runner configurations. Matches the pattern used by the sibling
-# Loki harness (harness/loki-compatibility/).
+# Loki harness (compatibility/loki/).
 #
 # Usage:
-#   ./harness/tempo-compatibility/scripts/run-tempo-compatibility.sh   full lifecycle (seed → diff)
+#   ./compatibility/tempo/scripts/run-tempo-compatibility.sh   full lifecycle (seed → diff)
 #   COMPOSE_KEEP=1 ./...                                               leave stack up after run
 #   FAIL_ON_DIFF=1 ./...                                               exit non-zero on diffs
 #
 # Env:
 #   REPORT_DIR     where the driver writes diff.md (default:
-#                  harness/tempo-compatibility/reports/).
+#                  compatibility/tempo/reports/).
 #   COMPOSE_KEEP   non-empty: leave the compose stack running after the
 #                  differ completes (useful for poking at /api/traces
 #                  and the otel_traces table manually).
@@ -57,7 +57,7 @@ DRIVER_BIN=$(mktemp -t cerberus-tempo-compat-driver.XXXXXX)
 # Consolidated cleanup: tear down the compose stack and drop the
 # throwaway driver binary on every exit path (success, driver failure,
 # set -e abort, SIGINT) so a non-zero exit can't leak compose state
-# across re-runs. Same pattern as harness/loki-compatibility/scripts/
+# across re-runs. Same pattern as compatibility/loki/scripts/
 # run-loki-compatibility.sh.
 cleanup() {
     rc=$?
@@ -95,13 +95,13 @@ docker compose up -d --build --wait --wait-timeout 300 \
 # optional in-Docker debugging (`docker compose run --rm
 # tempo-compat-driver`).
 
-echo "==> running seeder (go run ./harness/tempo-compatibility/driver/ seed)"
+echo "==> running seeder (go run ./compatibility/tempo/driver/ seed)"
 # Note: NO `|| true` here. The driver's exit code is meaningful — masking
 # it would let regressions land green (the same trap that bit the PromQL
 # harness pre-#298). The cleanup trap still tears down the stack on a
 # non-zero exit.
 set +e
-(cd "$REPO_ROOT" && go run ./harness/tempo-compatibility/driver/ seed)
+(cd "$REPO_ROOT" && go run ./compatibility/tempo/driver/ seed)
 SEED_RC=$?
 set -e
 
@@ -124,7 +124,7 @@ sleep 30
 # OTLP gRPC client types via cerberus's go.mod, so it compiles from
 # the repo root like the cerberus binary.
 echo "==> building diff driver"
-(cd "$REPO_ROOT" && go build -o "$DRIVER_BIN" ./harness/tempo-compatibility/driver/)
+(cd "$REPO_ROOT" && go build -o "$DRIVER_BIN" ./compatibility/tempo/driver/)
 
 # After seed, run the differ against the same backends. The differ
 # emits a markdown report under $REPORT_DIR; in informational mode

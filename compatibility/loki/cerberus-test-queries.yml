@@ -1,6 +1,6 @@
 # Cerberus overlay for the vendored grafana/loki:pkg/logql/bench corpus.
 #
-# This file lives OUTSIDE harness/loki-compatibility/upstream/loki-bench/ so
+# This file lives OUTSIDE compatibility/loki/upstream/loki-bench/ so
 # cerberus-side curation doesn't leak into the AGPL-3.0 vendor subtree.
 #
 # Schema (mirrors prometheus/compliance's test-queries.yml posture):
@@ -40,7 +40,7 @@
 #     persistent diff vs the reference Loki on a feature listed under
 #     docs/roadmap.md.
 #   - Empty should_skip / should_fail are fine. The runner consumes
-#     this overlay via `--overlay harness/loki-compatibility/cerberus-test-queries.yml`
+#     this overlay via `--overlay compatibility/loki/cerberus-test-queries.yml`
 #     (wired in PR 5's cerberus-owned compliance tester). Each matched
 #     entry suppresses the case before it hits the wire and records the
 #     reason in the result row's `skipReason` field.

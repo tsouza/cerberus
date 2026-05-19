@@ -35,7 +35,7 @@ COPY . .
 RUN CGO_ENABLED=0 go build \
     -trimpath -ldflags="-s -w" \
     -o /out/driver \
-    ./harness/tempo-compatibility/driver
+    ./compatibility/tempo/driver
 
 FROM gcr.io/distroless/static-debian12:nonroot
 

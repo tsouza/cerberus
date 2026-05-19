@@ -28,7 +28,7 @@ inside each layer.
 | 6c    | TraceQL chDB roundtrip              | PR #263 open   | `test/spec/traceql/*.txtar` (61 fixtures)                                                                                                                                                        | Same as 6a for TraceQL                                                                                               | Same as 6a                                                                            |
 | 7     | HTTP handler conformance            | merged #250    | `internal/api/{prom,loki,tempo}/conformance_test.go` (~138 cases)                                                                                                                                | Wire-format drift, error envelope shape, header pins, range-param parsing, admission control                         | Real-network failure modes (covered by Layer 11) and UX flows (Layer 10)              |
 | 8     | System / process lifecycle          | merged #249    | `internal/config/`, `internal/api/health/`, `cmd/cerberus/`, telemetry, schema/ddl (87 tests)                                                                                                    | Env-var contract, `/readyz` TTL coalescing, OTel telemetry attributes, signal-driven shutdown                        | Cross-process behaviour — Compose / k3d (Layer 10)                                    |
-| 9     | Differential shadow harness         | PR #262 open   | `harness/prometheus-compliance/shadow/*_test.go` (116 new tests)                                                                                                                                 | Cerberus vs. reference engine drift on PromQL / LogQL / TraceQL corpora                                              | Implementation-defined corners that both sides handle the same                        |
+| 9     | Differential shadow harness         | PR #262 open   | `compatibility/prometheus/shadow/*_test.go` (116 new tests)                                                                                                                                 | Cerberus vs. reference engine drift on PromQL / LogQL / TraceQL corpora                                              | Implementation-defined corners that both sides handle the same                        |
 | 10    | Playwright UX flows                 | PR #261 open   | `test/e2e/playwright/*.spec.ts` (~58 new tests across 4 specs)                                                                                                                                   | Grafana Explore / Logs / Trace panel request sequences against cerberus's three datasource APIs                      | Pure backend logic — Layers 1–8                                                       |
 | 11    | Chaos / failure-mode                | merged #253    | `internal/{chclient,api/{prom,loki,tempo,admit}}/chaos_test.go`, `test/regression/goleak_test.go` (70 tests, surfaced #259 `rowsCursor.Close` race; CH-disconnect circuit breaker added in #305) | CH-failure, mid-stream cursor faults, goroutine leaks, panic-mid-handler slot release, CH-disconnect circuit breaker | Long-tail platform-specific failures                                                  |
 | 12    | Perf benchmarks + alloc regressions | merged #251    | `internal/*/*_bench_test.go` (29 `BenchmarkXxx` + 11 `TestAllocs_Xxx`)                                                                                                                           | Allocation count regressions per pipeline stage; bounded-RSS streaming cursor                                        | Wall-clock perf regressions — left to `perf-benchmark.yml` benchstat                  |
@@ -267,7 +267,7 @@ oracle with the from-scratch evaluator.
 
 ### Conformance with shadow differential (Layer 9)
 
-Add a case to the corpus in `harness/prometheus-compliance/shadow/cmd/`.
+Add a case to the corpus in `compatibility/prometheus/shadow/cmd/`.
 Each case names a parsed query plus a deterministic seed; the
 harness diffs cerberus's `VectorResult` against the reference
 engine's via `shadow.Compare`. The `shadow-mode.yml` workflow runs
@@ -302,6 +302,6 @@ investigation.
 1. This file — what each layer covers, where it lives, how to add.
 2. `test/spec/runner.go` + `runner_chdb.go` — the TXTAR runner.
 3. `test/property/doc.go` — the property pyramid + phase plan.
-4. `harness/prometheus-compliance/shadow/README.md` — the differential harness.
+4. `compatibility/prometheus/shadow/README.md` — the differential harness.
 5. `internal/chplan/equal_invariants_test.go` — the canonical IR
    invariant pattern to mirror for a new Node / Expr type.

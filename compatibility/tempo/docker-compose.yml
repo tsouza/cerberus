@@ -6,7 +6,7 @@
 #
 # Services:
 #   clickhouse           OTel-schema CH instance (auth: cerberus/cerberus,
-#                        db: otel). Matches harness/prometheus-compliance's
+#                        db: otel). Matches compatibility/prometheus's
 #                        Ubuntu-base image choice — see the inline note on
 #                        the alpine variant regression.
 #   tempo                Reference grafana/tempo single-binary, listens on
@@ -34,7 +34,7 @@ name: cerberus-tempo-compatibility
 services:
   clickhouse:
     # Use the Ubuntu-base image, NOT -alpine. Per PR #245's finding on
-    # the sibling prometheus-compliance harness, the alpine variant on
+    # the sibling prometheus compatibility harness, the alpine variant on
     # GH Actions runners stalls in the entrypoint for 5+ min (never
     # starts the server, never binds 8123). The Ubuntu-base variant
     # boots in ~10-20s on the same runners. A future maintainer: do
@@ -78,7 +78,7 @@ services:
     # is built from that exact upstream commit, so it is the precisely-
     # matching image. When the tsouza/tempo replace tag bumps, bump the
     # tag here in lock-step (the procedure is documented in
-    # harness/tempo-compatibility/README.md alongside the vendor bump).
+    # compatibility/tempo/README.md alongside the vendor bump).
     #
     # See docs/tempo-compliance-plan.md "Open question 2" for the
     # version-drift discussion.
@@ -97,7 +97,7 @@ services:
     # self-ping subcommand suitable for `CMD ["tempo", ...]`. Readiness
     # is enforced from the driver's pre-push `/ready` poll instead
     # (see `waitTempoReady` in driver/seeder.go) — same pattern the
-    # loki-compatibility harness uses for the distroless `grafana/loki`
+    # loki compatibility harness uses for the distroless `grafana/loki`
     # image. The pre-push poll covers the cold-start window between
     # "container running" and "OTLP gRPC listener accepting Export".
 
@@ -148,7 +148,7 @@ services:
     image: cerberus-tempo-compat-driver:pr4
     build:
       context: ../..
-      dockerfile: harness/tempo-compatibility/driver/Dockerfile
+      dockerfile: compatibility/tempo/driver/Dockerfile
     command: ["seed"]
     environment:
       # Targets are reachable on the compose network by service name.

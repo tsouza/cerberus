@@ -36,8 +36,8 @@ docs/
 *.md
 LICENSE
 
-# Compose / k8s / harness — image build does not need these.
+# Compose / k8s / compatibility harnesses — image build does not need these.
 docker-compose.yml
 test/e2e/k3s/
 test/e2e/grafana/
-harness/
+compatibility/

@@ -7,7 +7,7 @@ import (
 
 	"github.com/prometheus/prometheus/model/labels"
 
-	"github.com/tsouza/cerberus/harness/prometheus-compliance/shadow"
+	"github.com/tsouza/cerberus/compatibility/prometheus/shadow"
 	"github.com/tsouza/cerberus/internal/promshim/local"
 )
 
@@ -33,7 +33,7 @@ import (
 // Spinning up real Prometheus would gain us nothing — the engine API the
 // promshim wraps is the exact upstream engine. Keeping the oracle in-process
 // also means the shadow workflow runs without containers (the heavyweight
-// reference lives in `harness/prometheus-compliance/`'s Docker Compose stack).
+// reference lives in `compatibility/prometheus/`'s Docker Compose stack).
 type localOracle struct {
 	engine *local.Engine
 	store  *local.SampleStore
