@@ -1,0 +1,30 @@
+-- query.logql --
+{level="error"} | logfmt | level_extracted="warn"
+-- seed --
+CREATE TABLE otel_logs (
+    Body String,
+    ResourceAttributes Map(String, String) MATERIALIZED map('level', 'error')
+) ENGINE = Memory;
+INSERT INTO otel_logs (Body) VALUES
+    ('ts=2025-01-01 level=warn msg="picks-up"'),
+    ('ts=2025-01-01 level=info msg="rejected"'),
+    ('ts=2025-01-01 level=warn msg="also-picks-up"');
+-- expected_rows --
+[
+  ["ts=2025-01-01 level=warn msg=\"picks-up\""],
+  ["ts=2025-01-01 level=warn msg=\"also-picks-up\""]
+]
+-- args --
+[0] string = "level"
+[1] string = "error"
+[2] string = "_extracted"
+[3] string = "="
+[4] string = " "
+[5] string = "\""
+[6] string = "level_extracted"
+[7] string = "warn"
+-- chplan --
+Filter predicate=((ResourceAttributes["level"] = "error") AND (mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\"")))["level_extracted"] = "warn"))
+  Scan(otel_logs)
+-- sql --
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), extractKeyValuePairs(`Body`, ?, ?, ?)))[?] = ?)

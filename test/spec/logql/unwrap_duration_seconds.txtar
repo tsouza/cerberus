@@ -1,19 +1,20 @@
 -- query.logql --
 sum_over_time({job="api"} | logfmt | unwrap duration_seconds(latency) [5m])
 -- args --
-[0] string = "="
-[1] string = " "
-[2] string = "\""
-[3] string = "latency"
-[4] string = "job"
-[5] string = "api"
+[0] string = "_extracted"
+[1] string = "="
+[2] string = " "
+[3] string = "\""
+[4] string = "latency"
+[5] string = "job"
+[6] string = "api"
 -- chplan --
 RangeWindow func=sum_over_time range=5m0s step=0s ts=Timestamp value=Value groupBy=[ResourceAttributes]
-  Project [ResourceAttributes, Timestamp, parseTimeDelta(mapConcat(ResourceAttributes, extractKeyValuePairs(Body, "=", " ", "\""))["latency"]) AS Value]
+  Project [ResourceAttributes, Timestamp, parseTimeDelta(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\"")))["latency"]) AS Value]
     Filter predicate=(ResourceAttributes["job"] = "api")
       Scan(otel_logs)
 -- sql --
-SELECT `ResourceAttributes`, arraySum(window_vals) AS `Value` FROM (SELECT `ResourceAttributes`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `ResourceAttributes`, arrayFilter(p -> tupleElement(p, 1) > now64(9) - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= now64(9), series_array) AS `window_pairs` FROM (SELECT `ResourceAttributes`, arraySort(groupArray((`Timestamp`, `Value`))) AS `series_array` FROM (SELECT `ResourceAttributes`, `Timestamp`, parseTimeDelta(mapConcat(`ResourceAttributes`, extractKeyValuePairs(`Body`, ?, ?, ?))[?]) AS `Value` FROM (SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?))) GROUP BY `ResourceAttributes`))) WHERE length(`window_vals`) >= 1
+SELECT `ResourceAttributes`, arraySum(window_vals) AS `Value` FROM (SELECT `ResourceAttributes`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `ResourceAttributes`, arrayFilter(p -> tupleElement(p, 1) > now64(9) - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= now64(9), series_array) AS `window_pairs` FROM (SELECT `ResourceAttributes`, arraySort(groupArray((`Timestamp`, `Value`))) AS `series_array` FROM (SELECT `ResourceAttributes`, `Timestamp`, parseTimeDelta(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), extractKeyValuePairs(`Body`, ?, ?, ?)))[?]) AS `Value` FROM (SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?))) GROUP BY `ResourceAttributes`))) WHERE length(`window_vals`) >= 1
 -- seed --
 CREATE TABLE otel_logs (
     Timestamp DateTime64(9),

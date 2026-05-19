@@ -3,11 +3,12 @@
 -- args --
 [0] string = "job"
 [1] string = "api"
-[2] string = "="
-[3] string = " "
-[4] string = "\""
-[5] string = "latency"
-[6] float64 = 0.5
+[2] string = "_extracted"
+[3] string = "="
+[4] string = " "
+[5] string = "\""
+[6] string = "latency"
+[7] float64 = 0.5
 -- seed --
 CREATE TABLE otel_logs (
     Body String,
@@ -23,7 +24,7 @@ INSERT INTO otel_logs (Body) VALUES
   ["ts=2026-01-01 latency=2s msg=\"very_slow\""]
 ]
 -- chplan --
-Filter predicate=((ResourceAttributes["job"] = "api") AND (parseTimeDelta(mapConcat(ResourceAttributes, extractKeyValuePairs(Body, "=", " ", "\""))["latency"]) > 0.5))
+Filter predicate=((ResourceAttributes["job"] = "api") AND (parseTimeDelta(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\"")))["latency"]) > 0.5))
   Scan(otel_logs)
 -- sql --
-SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (parseTimeDelta(mapConcat(`ResourceAttributes`, extractKeyValuePairs(`Body`, ?, ?, ?))[?]) > ?)
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (parseTimeDelta(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), extractKeyValuePairs(`Body`, ?, ?, ?)))[?]) > ?)
