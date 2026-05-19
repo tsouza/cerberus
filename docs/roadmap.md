@@ -2,7 +2,7 @@
 
 This document is the public-facing narrative for the path to `v1.0.0`. Status by milestone lives in the [GitHub Project](https://github.com/users/tsouza/projects) — _Cerberus v1.0.0 Roadmap_. Per-PR-level reasoning lives in the PR descriptions themselves; we don't use GitHub Issues.
 
-> **GA status:** every RC1–RC8 feature milestone has shipped; the project board's feature columns are drained. Outstanding pre-GA work is the **compatibility lane** (drive `prometheus/compliance` diffs from 46 → ≤ 5) and the **Loki + Tempo compliance harness scaffolding** (Phase 1 of each adoption plan). The maintainer cuts `v1.0.0` from the last green main once those gates close — see [§ GA exit criteria](#ga-exit-criteria).
+> **GA status:** every RC1–RC8 feature milestone has shipped; the project board's feature columns are drained. The maximal-GA push that ran across the last few hours of merges drove out the remaining correctness gaps surfaced by the from-scratch oracles (TraceQL second-stage + structural ops, LogQL parser stages + `/loki/api/v1/patterns`, PromQL binary set ops + computed-K topk + native-histogram range mode) and closed the audit-burn discipline lane (forbid-skip CI gate, deferred-Close logging, form-parsing consistency, gremlins efficacy raised to 95% across all 7 phases). The three compatibility harnesses (`compatibility/{prometheus,loki,tempo}`) now publish per-head parity scores to a `compat-scores` orphan branch consumed by shields.io badges in the README. Outstanding pre-GA work is **(a)** flipping the three harness lanes from informational to required PR checks (policy-pending), **(b)** the chDB Layer 6 → required PR check flip (also policy-pending), and **(c)** the in-flight Prom `query_exemplars` handler wire-up (PR B + PR C; chsql emit + plan landed via #516 + #518). The maintainer cuts `v1.0.0` from the last green main once those gates close — see [§ GA exit criteria](#ga-exit-criteria).
 
 ## At a glance
 
@@ -394,7 +394,67 @@ With the test pyramid in place, the from-scratch PromQL oracle (#272, Phase 1 PR
 
 **Coverage baseline:** `docs/coverage.md` published as the GA-prep coverage baseline with per-package thresholds (#292).
 
-**GA readiness:** with these PRs merged the per-RC feature columns of the project board are fully drained. Pre-GA work continues on the compatibility lane (see [§ Compatibility lane progress](#compatibility-lane-progress)) and the Loki + Tempo compliance harness scaffolding (Phase 1 vendor + adoption plans; see the same section). [§ GA exit criteria](#ga-exit-criteria) lists every gate that must be green for `v1.0.0`.
+### Maximal-GA push — TraceQL → LogQL → PromQL-extras → audit-burn
+
+After the post-RC8 correctness wave settled, a final four-phase GA push drove out the remaining gaps the from-scratch oracles surfaced and tightened the audit-burn discipline. Each sub-phase ships as its own PR; the order below mirrors the phase boundaries:
+
+**Phase 1 — TraceQL completion (second-stage + structural + metrics pipeline):**
+
+- `avg_over_time` metrics pipeline lowering (#430).
+- Negated and union structural operators (#434).
+- `MetricsSecondStage` IR + emit for `TopK` / `BottomK` / `Threshold` (#437).
+- Second-stage lowering wire-up + multi-quantile (#448).
+- `?scope=` filter honoured on `/api/v2/search/tags` (#405); v1 partial behaviour matches upstream Tempo (tracked in [`docs/compatibility.md`](compatibility.md) § Known limitations).
+- `toFloat64OrZero` wrap on Map-subscript aggregate inputs (#493).
+- Re-alias structural-join keys to bare names for nested wrap (#489) + drop `R.` qualifier on outer projection (#497).
+- Tempo-canonical scope-prefixed group-by labels (#481), real hex TraceIDs in `/api/search` (#439), `__phi__` label threaded through multi-quantile metrics (#471).
+- WAL ingestion slack widened so old-anchor spans aren't clamped (#501).
+
+**Phase 2 — LogQL completion (parser stages + range aggs + patterns endpoint):**
+
+- `| json` and `| regexp` parser stages (#449).
+- `| logfmt` parser stage (bare + typed forms) (#441) + logfmt-extracted keys that shadow stream labels get suffixed (#478).
+- `| drop` and `| keep` post-fetch label projection (#436).
+- Unwrap forms + range aggregations + `by` / `without` + numeric / duration / bytes filters (#450).
+- `detected_level` synthesised label (#446).
+- `/loki/api/v1/patterns` real drain implementation: plan (#513), wire-up (#514), peek-window drain train (#517), chDB roundtrip + conformance tests (#519). Wire shape aligned to upstream contract (#514).
+- `LiteralExpr` / `VectorExpr` / `BinOpExpr` / `LabelReplaceExpr` lowering (#333).
+- `label_replace` `$N` backrefs translated to CH regex syntax (#357).
+- Project `Attributes` (not `ResourceAttributes`) post vector-aggregate (#433, #455).
+- Index-settle fix for Loki compatibility harness (#502).
+
+**Phase 3 — PromQL extras (binary set ops + computed-K topk + subqueries + native histograms):**
+
+- `and` / `or` / `unless` binary set operators (#443).
+- `count_values without(...)` aggregation (#444).
+- Computed-K `topk` / `bottomk` (scalar subquery as K) (#445).
+- Subquery over `without` / `quantile` / `topk` / `bottomk` / `count_values` (#447).
+- Directly-nested `SubqueryExpr` (dead-code rewrite + docs) (#438).
+- Native-histogram `histogram_quantile` range mode (StepGrid + per-anchor lookback) (#453).
+- `query_exemplars` plan + chsql emit (#516 + #518); handler wire-up (PR B) + tests (PR C) tracked in [`docs/prom-exemplars-impl-plan.md`](prom-exemplars-impl-plan.md).
+- Multi-quantile `quantile_over_time` fan-out (#460).
+
+**Phase 4 — audit-burn (no-skip discipline + consistency + observability):**
+
+- `forbid-skip` CI gate rejects `not implemented` / `skipped` / `deferred` in tests + TXTAR (#458, #461) and bare-phrase rewrites of descriptive prose (#465 / #466 / #467 / #468 / #469).
+- `r.FormValue` consistency across query handlers (#431).
+- Deferred `Close` errors logged instead of discarded (#512).
+- Centralised reserved-key consts + `label_replace` loop-control observability (#491, #504).
+- Forward-looking RC* / deferred / post-GA wording scrubbed from comments, error strings, docs (#454); compatibility harness path rename `harness/* → compatibility/*` (#462); harness `SkipReason` mechanisms dropped from corpus parser and differ (#463 / #464).
+- chsql test helpers swapped to `strconv.FormatInt` (#500).
+- TXTAR seeding rounds: 14+14+11+14+16 PromQL edge fixtures (#507–#510), 5+5+5+4+6+7 LogQL fixtures (#472–#477, #479), 7+8+10+16+8 TraceQL fixtures (#480, #482, #483, #485, #486), plus the final tempo seal (#515) — Layer 6 chDB roundtrip coverage at 100% of opted-in fixtures across PromQL / LogQL / TraceQL.
+
+**Gremlins efficacy raised to 95% across all 7 phases:**
+
+- Threshold raise (#488); per-phase kill work: chplan #495, chsql #498, optimizer #496, logql #494, qlcommon #499 + #504 (100%). Gremlins-action JSON-output gate + awk parse fix (#492 / #490).
+
+**Compat-score system (live, badge-backed):**
+
+- Drivers report per-case diffs (downgraded from hard fail) (#503).
+- Workflow uploads + publishes score JSON to the `compat-scores` orphan branch (#505).
+- shields.io badges in README for `compatibility/{prometheus,loki,tempo}` (#506).
+
+**GA readiness:** with the maximal-GA push merged the per-RC feature columns of the project board are fully drained **and** the three compatibility harnesses report parity scores live on the README via the shields.io endpoint. Pre-GA work narrows to the in-flight Prom `query_exemplars` handler wire-up (PRs B + C) and the policy-pending lane promotions (informational → required PR checks for `compatibility/{prometheus,loki,tempo}` and chDB Layer 6). [§ GA exit criteria](#ga-exit-criteria) lists every gate that must be green for `v1.0.0`.
 
 ---
 
@@ -409,16 +469,16 @@ The `prometheus/compliance` differential against reference Prometheus has been t
 | Post-V-V `on(...)` step-aligned join (#348)                  | 0          | 273         | Pool-AT closed the 12 unexpected failures (V-V `on()` cardinality + matrix fan-out alignment).                                                                                                                                                                                                              |
 | Post-#350 audit baseline (#355)                              | 12         | 183         | Audit run after #350; isolated 12 V-V `on()` cardinality regressions tracked separately and clustered the 183 diffs into 8 buckets in [`docs/compat-residual-audit-25898791664.md`](compat-residual-audit-25898791664.md).                                                                                  |
 | Post 8-bucket sweep (#358–#366; see audit doc)               | 0          | 46          | All 8 buckets addressed: `__name__` strip (#359), `(start, end]` window (#358), `extrapolatedRate` correction (#366), `offset` + `label_replace` missing-src (#360), `time()` per-step (#362), `absent_over_time` synth labels (#361), `topk`/`bottomk` per-step (#363), `@<ts>` collapse (#364).           |
-| Pool-BG residual sweep (in flight)                           | 0          | ≤ 5 target  | Final cleanup pass on the long tail of leverage-3 diffs after the audit re-ranks against the post-#366 corpus.                                                                                                                                                                                              |
+| Post-E-wave residual sweep (#400 audit + follow-ups)         | 0          | 0           | Down to `expected-failures.failures: []` on `main`; reports 536/536 on the post-PromLabs corpus. See [`docs/compat-residual-audit-postE.md`](compat-residual-audit-postE.md).                                                                                                                               |
 
-**Target for GA:** 0 unexpected failures + ≤ 5 expected diffs, each with an entry in `compatibility/prometheus/expected-failures.json` carrying an upstream rationale (per the CLAUDE.md allowlist-hygiene rule).
+**Target for GA:** 0 unexpected failures + 0 expected diffs (per-head parity score published as a shields.io badge via the `compat-scores` orphan branch — see #503 / #505 / #506). Any future regression that needs an allowlist entry must land in `compatibility/prometheus/expected-failures.json` carrying an upstream rationale (per the CLAUDE.md allowlist-hygiene rule).
 
-**Loki + Tempo compliance harness scaffolding (Phase 1 in flight):**
+**Loki + Tempo compliance harnesses (full driver + CI lanes complete):**
 
-- **Tempo** — `compatibility/tempo/upstream/` snapshot of `cmd/tempo-vulture` + `pkg/httpclient` landed via #367 (PR 1 of 4 per [`docs/tempo-compliance-plan.md`](tempo-compliance-plan.md)). Driver + Compose stack + CI follow in PRs 2-4.
-- **Loki** — adoption plan [`docs/loki-compliance-plan.md`](loki-compliance-plan.md) shipped in #332; vendor snapshot of `grafana/loki:pkg/logql/bench/` + `TestRemoteStorageEquality` (PR 1 of 6) in flight as Pool-CA.
+- **Tempo** — `compatibility/tempo/` carries the full stack: vendored `cmd/tempo-vulture` + `pkg/httpclient` (#367), Docker Compose driver (#370), deterministic OTLP seeder (#385), search + tags + tag-values + metrics endpoints (#395 / #397 / #398), trace-anchored exemplars (#411), CI lane informational at first then promoted with `pull_request:` trigger + `continue-on-error: false` (#418). Tempo-canonical scope-prefixed group-by labels and real hex TraceIDs landed via #481 / #439. Per-head compat-score JSON published to the orphan branch (#503 / #505) and surfaced as a shields.io badge in the README (#506).
+- **Loki** — adoption plan [`docs/loki-compliance-plan.md`](loki-compliance-plan.md) (#332), vendored `pkg/logql/bench` corpus (#369), Compose + seeder + run script (#368 / #387), cerberus-owned compliance tester (#396), expanded multi-label / multi-format / structured-metadata seeder (#412), expanded regression + exhaustive corpus slices (#399), index-settle fix (#502), CI lane promoted with `pull_request:` trigger + `continue-on-error: false` (#417). Per-head compat-score JSON published + surfaced as a shields.io badge (#503 / #505 / #506).
 
-Both harnesses are explicitly **not** GA blockers — the scaffolding is the GA gate, not pass-rates against them. Cerberus already passes ~1500 lines of LogQL and ~1100 lines of TraceQL TXTAR fixtures (Layers 1, 2a, 6b, 6c, 7) plus property tests with from-scratch oracles (#330, #331). The Loki/Tempo harnesses are truth-sources that mirror the role `prometheus/compliance` plays for PromQL.
+Each harness now publishes its parity percentage to a stable `compat-scores` orphan-branch endpoint that shields.io renders inline at the top of the README. The lanes are still **informational** (drivers report-only and per-case diffs report-only — #503); flipping them from informational to required PR checks is a policy gate, not a scaffolding gate. Cerberus already passes ~1500 lines of LogQL and ~1100 lines of TraceQL TXTAR fixtures (Layers 1, 2a, 6b, 6c, 7) plus property tests with from-scratch oracles (#330, #331). The Loki/Tempo harnesses are truth-sources that mirror the role `prometheus/compliance` plays for PromQL.
 
 ---
 
@@ -428,20 +488,24 @@ Both harnesses are explicitly **not** GA blockers — the scaffolding is the GA 
 
 | Gate                                                                       | State at this roadmap revision                                                                                                                                                                                                                                                                              |
 | -------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Required PR checks green** (`check` + `lint` + `forbid-skip`)            | Green on `main`; required-status-check list enforced via branch protection.                                                                                                                                                                                                                                 |
+| **Required PR checks green** (`check` + `lint` + `forbid-skip`)            | **MET** — green on `main`; `forbid-skip` rejects the broad `not implemented` / `skipped` / `deferred` pattern (#458, #461) and the bare-phrase variant (#465 / #466 / #467 / #468 / #469); required-status-check list enforced via branch protection.                                                       |
 | **Compatibility suite: 0 unexpected failures**                             | **MET** post-#348 (was 12 in earlier baselines).                                                                                                                                                                                                                                                            |
-| **Compatibility suite: ≤ 5 expected diffs, each with rationale**           | In flight — current run shows 46 diffs after the 8-bucket sweep; Pool-BG residual sweep targets ≤ 5. Each remaining diff must land in `compatibility/prometheus/expected-failures.json` with an upstream rationale comment.                                                                                 |
+| **Compatibility suite: 0 expected diffs**                                  | **MET** — `compatibility/prometheus/expected-failures.failures: []` on `main`; harness reports 536/536. Compat-score JSON published per head (#503) + per-job step summary + commit to the `compat-scores` orphan branch (#505) + shields.io badge in the README (#506).                                    |
 | **All RC1–RC8 feature milestones shipped**                                 | **MET** — every R{1..8}.x row in this roadmap is `shipped` / `shipped via #N`.                                                                                                                                                                                                                              |
-| **chDB roundtrip lanes (Layers 6a / 6b / 6c) green nightly**               | **MET** — PromQL (63 fixtures), LogQL (39 fixtures), TraceQL (61 fixtures) all opt-in via `-- seed --` / `-- expected_rows --`; nightly `chdb` workflow tracks.                                                                                                                                             |
+| **chDB roundtrip lanes (Layers 6a / 6b / 6c) green nightly**               | **MET** — PromQL, LogQL, TraceQL fixtures opt in via `-- seed --` / `-- expected_rows --` and round-trip cleanly on the nightly `chdb` workflow; 100% of opted-in fixtures across the three QL trees after the seed sweep (#470–#511 + #515 sealed the last fixture). Lane → required is policy-pending.    |
 | **Oracle property tests pass at `N=500`**                                  | **MET** — PromQL (#272/#284), LogQL (#331), TraceQL (#330) all wired into `property.yml`'s nightly run.                                                                                                                                                                                                     |
 | **Shadow-mode lane diff < 5% native-SQL gap**                              | **MET** — wired via #136 (scaffold) + #326 (oracle defaults flipped); `shadow-mode` workflow runs on push-to-main + nightly.                                                                                                                                                                                |
-| **Mutation kill scores meet phased thresholds**                            | **MET** — phase 1 (chplan @ 90%), phase 2 (chsql @ 85%), phase 3 (optimizer @ 85%), phase 4 (parsers @ 85%), phase 5 (qlcommon @ 75%). Bars raised by Pool-CJ from the initial onboarding floors (80/75/70/65) once nightly kill rates settled in the 90-100% band.                                         |
-| **Loki + Tempo compliance harness scaffolding landed**                     | In flight — Tempo PR 1 of 4 merged (#367); Loki PR 1 of 6 in flight as Pool-CA. Scaffolding = vendor + plan committed; pass-rates not part of the GA cut.                                                                                                                                                   |
+| **Mutation kill scores meet phased thresholds**                            | **MET** — all 7 phases (chplan / chsql / optimizer / promql / logql / traceql / qlcommon) sit at 95% efficacy after the floor was raised across the board (#488); per-phase kill work via #494 / #495 / #496 / #498 / #499 / #504; JSON-output gate via #490 / #492.                                        |
+| **Loki + Tempo compliance harnesses landed**                               | **MET (scaffolding)** — Tempo: vendor + driver + Compose + endpoints + CI merged via #367 / #370 / #385 / #395 / #397 / #398 / #411 / #418 / #424 / #427. Loki: corpus + seeder + driver + CI via #332 / #368 / #369 / #387 / #396 / #399 / #412 / #417 / #502. Lanes → required is policy-pending.         |
 | **`go-arch-lint` coupling rules green**                                    | **MET** — wired via #323; `lint` job runs it on every PR.                                                                                                                                                                                                                                                   |
 | **Self-observability (RC4): one span per request, self-dashboard renders** | **MET** — RC4 closed (#208 + provisioned dashboards).                                                                                                                                                                                                                                                       |
 | **12-factor scale-out: `docker compose up` works, HPA recipe smokes**      | **MET** — RC5 closed (R5.1–R5.7; #218 HPA, #219 admission control, #220 docker-compose).                                                                                                                                                                                                                    |
 | **No raw SQL strings in `internal/`**                                      | **MET** — RC6 closed; `chsql.Raw` / `chsql.Concat` retired (#207); `Builder.WriteSQL` is unexported; typed Frag surface is the only public emission API.                                                                                                                                                    |
 | **Engine framework owns the shared pipeline**                              | **MET** — RC7 closed (#227 / #228 / #230 + #232 headers); each `internal/api/{prom,loki,tempo}/handler.go` is a thin HTTP shell.                                                                                                                                                                            |
+| **`/loki/api/v1/patterns` returns real drain clusters**                    | **MET** — endpoint backed by upstream `grafana/loki/v3/pkg/pattern/drain`: plan (#513), wire-up (#514), peek-window train (#517), chDB roundtrip + conformance tests (#519).                                                                                                                                |
+| **`/api/v1/query_exemplars` reads OTel-CH Exemplars column**               | In flight — plan (#516) + chsql emit (#518) merged; handler wire-up (PR B) + chDB conformance tests (PR C) tracked in [`docs/prom-exemplars-impl-plan.md`](prom-exemplars-impl-plan.md).                                                                                                                    |
+| **Compatibility lanes promoted from informational to required**            | Policy-pending — `compatibility/{prometheus,loki,tempo}` all run on `push: main` + nightly + `pull_request:` (#416 / #417 / #418) and report green; flipping `continue-on-error: false` + listing them as required-status-checks is a maintainer call.                                                      |
+| **chDB Layer 6 promoted from nightly to required PR check**                | Policy-pending — the `chdb` workflow's TXTAR roundtrip matrix (#340) is green per head; promotion to required is the same maintainer call as the compatibility lanes (#389 already promoted probe + roundtrip; the TXTAR matrix flip is the residual).                                                      |
 
 ---
 
