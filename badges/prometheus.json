@@ -2,8 +2,5 @@
   "schemaVersion": 1,
   "label": "PromQL compat",
   "message": "100.00%",
-  "color": "brightgreen",
-  "passed": 536,
-  "total": 536,
-  "percent": 100
+  "color": "brightgreen"
 }
