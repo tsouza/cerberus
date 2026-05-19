@@ -69,6 +69,12 @@ jobs:
       # `--threshold-efficacy ${{ matrix.efficacy }} ${{ matrix.scope }}`.
       - name: gremlins unleash
         uses: go-gremlins/gremlins-action@v1
+        env:
+          # Auth the action's release-asset download so it doesn't
+          # hit GitHub's 60-req/hour unauthenticated rate limit
+          # (which causes the install step to fail mid-burst, see
+          # run 26120689458).
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           version: v0.6.0
           args: --output gremlins.json ${{ matrix.scope }}
