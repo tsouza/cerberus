@@ -2,8 +2,5 @@
   "schemaVersion": 1,
   "label": "TraceQL compat",
   "message": "12.12%",
-  "color": "red",
-  "passed": 4,
-  "total": 33,
-  "percent": 12.12
+  "color": "red"
 }
