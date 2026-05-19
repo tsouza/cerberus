@@ -7,6 +7,24 @@
 [3] string = "error"
 -- sql --
 SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (`ResourceAttributes`[?] = ?)
+-- seed --
+CREATE TABLE otel_logs (
+    Body String,
+    ResourceAttributes Map(String, String) MATERIALIZED map(
+        'job', 'api',
+        'level', if(Body LIKE 'm1%', 'error', if(Body LIKE 'm2%', 'error', if(Body LIKE 'm3%', 'warn', 'info')))
+    )
+) ENGINE = Memory;
+INSERT INTO otel_logs (Body) VALUES
+    ('m1 ts error db timeout'),
+    ('m2 ts error upstream gone'),
+    ('m3 ts warn slow query'),
+    ('m4 ts info background sync');
+-- expected_rows --
+[
+  ["m1 ts error db timeout"],
+  ["m2 ts error upstream gone"]
+]
 -- chplan --
 Filter predicate=((ResourceAttributes["job"] = "api") AND (ResourceAttributes["level"] = "error"))
   Scan(otel_logs)

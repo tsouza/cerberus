@@ -7,6 +7,23 @@
 [3] string = "^$"
 -- sql --
 SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND NOT match(`ResourceAttributes`[?], ?)
+-- seed --
+CREATE TABLE otel_logs (
+    Body String,
+    ResourceAttributes Map(String, String) MATERIALIZED map(
+        'job', 'api',
+        'msg', if(Body = 'r3-blank', '', if(Body LIKE 'r1%', 'hello', 'quick'))
+    )
+) ENGINE = Memory;
+INSERT INTO otel_logs (Body) VALUES
+    ('r1 hello world'),
+    ('r2 quick test'),
+    ('r3-blank');
+-- expected_rows --
+[
+  ["r1 hello world"],
+  ["r2 quick test"]
+]
 -- chplan --
 Filter predicate=((ResourceAttributes["job"] = "api") AND (ResourceAttributes["msg"] !~ "^$"))
   Scan(otel_logs)
