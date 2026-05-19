@@ -5,6 +5,16 @@ SELECT * FROM `otel_traces` WHERE arrayExists(x -> x[?] > ?, `Events`.`Attribute
 -- args --
 [0] string = "duration"
 [1] int64 = 100000000
+-- seed --
+CREATE TABLE otel_traces (
+    _idx UInt64,
+    `Events.Attributes` Array(Map(String, Int64)) MATERIALIZED if(_idx = 0, [map('duration', toInt64(200000000))], [map('duration', toInt64(50000000))])
+) ENGINE = MergeTree ORDER BY _idx;
+INSERT INTO otel_traces (_idx) VALUES (0), (1);
+-- expected_rows --
+[
+  [0]
+]
 -- chplan --
 Filter predicate=nestedArrayExists(Events.Attributes["duration"] > 100000000)
   Scan(otel_traces)
