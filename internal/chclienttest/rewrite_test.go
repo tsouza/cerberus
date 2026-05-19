@@ -26,6 +26,22 @@ func TestRewriteMapProjections(t *testing.T) {
 			want: "SELECT `MetricName`, `TimeUnix`, `Value` FROM `otel_metrics_gauge`",
 		},
 		{
+			// EmitQueryExemplars projects `attrs_arr[i] AS \`ExemplarAttributes\``
+			// — a Map(LowCardinality(String),String) Subscript at the outer
+			// SELECT. Without the toJSONString wrap chDB's parquet driver
+			// panics scanning the column as a Go string.
+			name: "exemplar attributes via subscript",
+			in: "SELECT `MetricName`, `Attributes`, `ServiceName`, " +
+				"ts[i] AS `Timestamp`, val[i] AS `Value`, " +
+				"tid[i] AS `TraceID`, sid[i] AS `SpanID`, " +
+				"attrs_arr[i] AS `ExemplarAttributes` FROM (SELECT 1) AS sub",
+			want: "SELECT `MetricName`, toJSONString(`Attributes`) AS `Attributes`, " +
+				"`ServiceName`, " +
+				"ts[i] AS `Timestamp`, val[i] AS `Value`, " +
+				"tid[i] AS `TraceID`, sid[i] AS `SpanID`, " +
+				"toJSONString(attrs_arr[i]) AS `ExemplarAttributes` FROM (SELECT 1) AS sub",
+		},
+		{
 			name: "non-select passthrough",
 			in:   "INSERT INTO `otel_metrics_gauge` VALUES (1)",
 			want: "INSERT INTO `otel_metrics_gauge` VALUES (1)",
