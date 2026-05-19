@@ -32,18 +32,18 @@ excluded-files:
 
 # Phased mutation-testing rollout. Each phase scopes gremlins to one
 # package with its own `--threshold-efficacy` bar enforced in
-# `.github/workflows/mutation.yml`. Bars are set roughly 4-15
-# percentage points below the observed nightly kill rate, so the bar
-# is a meaningful gate (a real test-quality regression breaks the
-# build) without flapping on legitimate run-to-run variance.
+# `.github/workflows/mutation.yml`. All bars are set to 95% — the
+# nightly runs have been clearing every phase for an extended period,
+# so the floor is raised uniformly to the same target that gates
+# every package, regardless of historical kill-rate variance.
 #
-#   Phase 1: internal/chplan       @ 90% — was 80% (nightly: ~95%)
-#   Phase 2: internal/chsql        @ 85% — was 75% (nightly: ~88%)
-#   Phase 3: internal/optimizer    @ 85% — was 70% (nightly: ~91%)
-#   Phase 4: internal/promql       @ 85% — was 65% (nightly: ~94%)
-#            internal/logql        @ 85% — was 65% (nightly: ~94%)
-#            internal/traceql      @ 85% — was 65% (nightly: 100%)
-#   Phase 5: internal/qlcommon     @ 75% — new (label_replace template)
+#   Phase 1: internal/chplan       @ 95%
+#   Phase 2: internal/chsql        @ 95%
+#   Phase 3: internal/optimizer    @ 95%
+#   Phase 4: internal/promql       @ 95%
+#            internal/logql        @ 95%
+#            internal/traceql      @ 95%
+#   Phase 5: internal/qlcommon     @ 95%
 #
 # Note: the yaml keys `invert-bwassign` and `invert-loopctrl` above
 # match gremlins v0.6.0's `MutantTypeEnabledKey` derivation (lowercase
@@ -68,5 +68,5 @@ excluded-files:
 # values below are the floor for the unscoped whole-repo
 # `just mutate` invocation; the per-phase matrix entries are
 # informational until all phases stay green for a week.
-threshold-efficacy: 85
+threshold-efficacy: 95
 threshold-mcover: 50

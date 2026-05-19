@@ -41,13 +41,13 @@ inside each layer.
 | `lint`                          | `.github/workflows/ci.yml` (job `lint`)       | PRs + push                      | Required                                  | `golangci-lint` v2 + markdownlint + commitlint                             |
 | `dashboard` (E2E)               | `.github/workflows/e2e.yml` (job `dashboard`) | push-to-main + nightly + manual | Informational                             | k3d + cerberus + Grafana + Playwright (Layer 10)                           |
 | `compatibility`                 | `.github/workflows/compatibility.yml`         | push-to-main + nightly + manual | Informational today; required at v1.0 cut | `prometheus/compliance` differential (PromQL truth-source)                 |
-| `mutation` (`phase1`)           | `.github/workflows/mutation.yml` (matrix)     | push-to-main + nightly + manual | Informational                             | gremlins on `internal/chplan` @ 90% efficacy                               |
-| `mutation` (`phase2`)           | Same workflow, separate matrix entry          | push-to-main + nightly + manual | Informational                             | gremlins on `internal/chsql` @ 85% efficacy                                |
-| `mutation` (`phase3-optimizer`) | Same workflow, separate matrix entry          | push-to-main + nightly + manual | Informational                             | gremlins on `internal/optimizer` @ 85% efficacy                            |
-| `mutation` (`phase4-promql`)    | Same workflow, separate matrix entry          | push-to-main + nightly + manual | Informational                             | gremlins on `internal/promql` @ 85% efficacy                               |
-| `mutation` (`phase4-logql`)     | Same workflow, separate matrix entry          | push-to-main + nightly + manual | Informational                             | gremlins on `internal/logql` @ 85% efficacy                                |
-| `mutation` (`phase4-traceql`)   | Same workflow, separate matrix entry          | push-to-main + nightly + manual | Informational                             | gremlins on `internal/traceql` @ 85% efficacy                              |
-| `mutation` (`phase5-qlcommon`)  | Same workflow, separate matrix entry          | push-to-main + nightly + manual | Informational                             | gremlins on `internal/qlcommon` @ 75% efficacy                             |
+| `mutation` (`phase1`)           | `.github/workflows/mutation.yml` (matrix)     | push-to-main + nightly + manual | Informational                             | gremlins on `internal/chplan` @ 95% efficacy                               |
+| `mutation` (`phase2`)           | Same workflow, separate matrix entry          | push-to-main + nightly + manual | Informational                             | gremlins on `internal/chsql` @ 95% efficacy                                |
+| `mutation` (`phase3-optimizer`) | Same workflow, separate matrix entry          | push-to-main + nightly + manual | Informational                             | gremlins on `internal/optimizer` @ 95% efficacy                            |
+| `mutation` (`phase4-promql`)    | Same workflow, separate matrix entry          | push-to-main + nightly + manual | Informational                             | gremlins on `internal/promql` @ 95% efficacy                               |
+| `mutation` (`phase4-logql`)     | Same workflow, separate matrix entry          | push-to-main + nightly + manual | Informational                             | gremlins on `internal/logql` @ 95% efficacy                                |
+| `mutation` (`phase4-traceql`)   | Same workflow, separate matrix entry          | push-to-main + nightly + manual | Informational                             | gremlins on `internal/traceql` @ 95% efficacy                              |
+| `mutation` (`phase5-qlcommon`)  | Same workflow, separate matrix entry          | push-to-main + nightly + manual | Informational                             | gremlins on `internal/qlcommon` @ 95% efficacy                             |
 | `chdb`                          | `.github/workflows/chdb.yml`                  | nightly + manual                | Informational                             | TXTAR chDB roundtrip (Layer 6a/6b/6c) + handler tests under `-tags chdb`   |
 | `property`                      | `.github/workflows/property.yml`              | push-to-main + nightly + manual | Informational                             | Oracle property tests under `./test/property/...` with rapid `N=500`       |
 | `shadow-mode`                   | `.github/workflows/shadow-mode.yml`           | push-to-main + nightly + manual | Informational                             | Layer 9 differential corpora                                               |
@@ -87,19 +87,20 @@ rollout uses a workflow matrix where each entry scopes
 flag. The global `.gremlins.yaml` value is the floor for the unscoped
 whole-repo `just mutate`.
 
-The bar per phase is set roughly 4-15 percentage points below the
-observed nightly kill rate so the gate is meaningful — a real test
-regression breaks the build — without flapping on legitimate
-run-to-run variance. The "May 2026 raise" column captures the bump
-landed in PR #378 which closed the gap between threshold and actuals.
+All phases now sit at the same 95% efficacy bar. The earlier per-phase
+spread (75-90%) was sized to sit a few percentage points below the
+observed nightly kill rate so the gate was meaningful without flapping
+on legitimate run-to-run variance. After an extended period of nightly
+runs clearing every phase at or above 95%, the floor is unified to a
+single GA-quality target.
 
-| Phase | Package                                        | Target efficacy | May 2026 raise | Status                              |
-| ----- | ---------------------------------------------- | --------------- | -------------- | ----------------------------------- |
-| 1     | `internal/chplan`                              | 90%             | 80% -> 90%     | Rolled out, informational (PR #260) |
-| 2     | `internal/chsql`                               | 85%             | 75% -> 85%     | Rolled out, informational (PR #268) |
-| 3     | `internal/optimizer`                           | 85%             | 70% -> 85%     | Rolled out, informational           |
-| 4     | `internal/{promql,logql,traceql}` + `lower.go` | 85%             | 65% -> 85%     | Rolled out, informational           |
-| 5     | `internal/qlcommon` (label_replace template)   | 75%             | new            | Rolled out, informational           |
+| Phase | Package                                        | Target efficacy | History                       | Status                              |
+| ----- | ---------------------------------------------- | --------------- | ----------------------------- | ----------------------------------- |
+| 1     | `internal/chplan`                              | 95%             | 80% -> 90% -> 95%             | Rolled out, informational (PR #260) |
+| 2     | `internal/chsql`                               | 95%             | 75% -> 85% -> 95%             | Rolled out, informational (PR #268) |
+| 3     | `internal/optimizer`                           | 95%             | 70% -> 85% -> 95%             | Rolled out, informational           |
+| 4     | `internal/{promql,logql,traceql}` + `lower.go` | 95%             | 65% -> 85% -> 95%             | Rolled out, informational           |
+| 5     | `internal/qlcommon` (label_replace template)   | 95%             | 75% -> 95%                    | Rolled out, informational           |
 
 Promotion to a required PR gate is gated on all phases: once they
 stay green for a week of nightly runs, `mutation` becomes a required
