@@ -5,6 +5,17 @@
 [1] string = "exception"
 -- sql --
 SELECT * FROM `otel_traces` WHERE arrayExists(x -> x[?] = ?, `Events`.`Attributes`)
+-- seed --
+CREATE TABLE otel_traces (
+    _idx UInt64,
+    `Events.Attributes` Array(Map(String, String)) MATERIALIZED if(_idx = 0, [map('name', 'exception')], if(_idx = 1, [map('name', 'log'), map('name', 'exception')], [map('name', 'heartbeat')]))
+) ENGINE = MergeTree ORDER BY _idx;
+INSERT INTO otel_traces (_idx) VALUES (0), (1), (2);
+-- expected_rows --
+[
+  [0],
+  [1]
+]
 -- chplan --
 Filter predicate=nestedArrayExists(Events.Attributes["name"] = "exception")
   Scan(otel_traces)

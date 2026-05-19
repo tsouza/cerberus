@@ -5,6 +5,20 @@
 [1] int64 = 5
 -- sql --
 SELECT * FROM `otel_traces` WHERE (toFloat64(`ResourceAttributes`[?]) <= ?)
+-- seed --
+CREATE TABLE otel_traces (
+    Duration UInt64,
+    ResourceAttributes Map(String, String) MATERIALIZED if(Duration = 10000000, map('replicas', '3'), if(Duration = 20000000, map('replicas', '5'), map('replicas', '10')))
+) ENGINE = MergeTree ORDER BY Duration;
+INSERT INTO otel_traces (Duration) VALUES
+    (10000000),
+    (20000000),
+    (30000000);
+-- expected_rows --
+[
+  [10000000],
+  [20000000]
+]
 -- chplan --
 Filter predicate=(toFloat64(ResourceAttributes["replicas"]) <= 5)
   Scan(otel_traces)

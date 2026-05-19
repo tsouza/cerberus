@@ -7,6 +7,21 @@
 [3] int64 = 500000000
 -- sql --
 SELECT * FROM (SELECT avg(`Duration`) AS `Value` FROM (SELECT * FROM `otel_traces` PREWHERE (`StatusCode` = ?) WHERE (`ResourceAttributes`[?] = ?))) WHERE (`Value` > ?)
+-- seed --
+CREATE TABLE otel_traces (
+    Duration UInt64,
+    StatusCode String,
+    ResourceAttributes Map(String, String) MATERIALIZED map('service.name', 'x')
+) ENGINE = MergeTree ORDER BY Duration;
+INSERT INTO otel_traces (Duration, StatusCode) VALUES
+    (600000000, 'Error'),
+    (800000000, 'Error'),
+    (1000000000, 'Error'),
+    (50000000, 'Ok');
+-- expected_rows --
+[
+  [800000000.0]
+]
 -- chplan --
 Filter predicate=(Value > 500000000)
   Aggregate groupBy=[] funcs=[avg(Duration) AS Value]

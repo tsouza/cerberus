@@ -6,6 +6,21 @@
 [2] string = "http.method"
 -- sql --
 SELECT `SpanAttributes`[?] AS `GroupKey`, any(`TraceId`) AS `TraceId`, any(`SpanId`) AS `SpanId`, min(`Timestamp`) AS `Timestamp` FROM (SELECT * FROM `otel_traces` WHERE ?) GROUP BY `SpanAttributes`[?]
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    Timestamp DateTime64(9),
+    SpanAttributes Map(String, String)
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    ('a0000000000000000000000000000001', '0000000000000001', toDateTime64('2026-01-01 00:00:00', 9), map('http.method', 'GET')),
+    ('a0000000000000000000000000000002', '0000000000000002', toDateTime64('2026-01-01 00:00:00', 9), map('http.method', 'POST'));
+-- expected_rows --
+[
+  ["GET", "a0000000000000000000000000000001", "0000000000000001", "2026-01-01T00:00:00Z"],
+  ["POST", "a0000000000000000000000000000002", "0000000000000002", "2026-01-01T00:00:00Z"]
+]
 -- chplan --
 Aggregate groupBy=[SpanAttributes["http.method"] AS GroupKey] funcs=[any(TraceId) AS TraceId, any(SpanId) AS SpanId, min(Timestamp) AS Timestamp]
   Filter predicate=true
