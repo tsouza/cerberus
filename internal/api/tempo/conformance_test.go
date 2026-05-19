@@ -181,8 +181,11 @@ func TestConformance_TempoSearchTagsWire(t *testing.T) {
 		if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
 			t.Fatalf("decode: %v", err)
 		}
+		// Default V1 envelope mirrors upstream Tempo: dynamic attribute
+		// keys only — intrinsics are reserved for the explicit
+		// `scope=intrinsic` carve-out tested below.
 		if len(r.TagNames) == 0 {
-			t.Errorf("TagNames empty; expected at least intrinsics")
+			t.Errorf("TagNames empty; expected dynamic attribute keys")
 		}
 	})
 	t.Run("v2", func(t *testing.T) {

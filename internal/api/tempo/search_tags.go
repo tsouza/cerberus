@@ -12,23 +12,48 @@ import (
 
 // intrinsicTags is the static list of Tempo "intrinsic" attribute names
 // that aren't stored as map entries on the span row — they're dedicated
-// columns. Upstream Tempo emits them alongside the dynamic attribute
-// keys in the /api/search/tags response so the autocomplete UI knows
-// about them.
+// columns or per-trace derived fields. Upstream Tempo emits them in the
+// /api/v2/search/tags response (the intrinsic scope) so the autocomplete
+// UI knows about them.
 //
-// The list mirrors the documented intrinsics: name, status (StatusCode),
-// statusMessage, kind (SpanKind), duration, rootServiceName, rootName,
-// traceDuration. Cerberus surfaces the subset we can actually answer
-// /search/tag/<name>/values queries for today; rootServiceName /
-// rootName / traceDuration would require a per-trace pivot that is
-// not implemented.
+// The list mirrors upstream `pkg/search.GetVirtualIntrinsicValues()` —
+// the 25-element canonical Tempo intrinsic inventory split into the
+// "bare" form (`name`, `duration`, …) and the scoped form (`span:name`,
+// `span:duration`, …). Keeping cardinality + spelling identical is the
+// gate the compatibility differ uses to assert parity on tags_v2.
+//
+// `parent` (the bare alias for `span:parentID`) is intentionally
+// omitted: upstream does not surface it from `GetVirtualIntrinsicValues`,
+// so emitting it would put cerberus one tag ahead of Tempo and fail the
+// set-equality diff.
 var intrinsicTags = []string{
-	"name",
+	// Bare intrinsics (legacy / unscoped form).
+	"duration",
+	"event:name",
+	"event:timeSinceStart",
+	"instrumentation:name",
+	"instrumentation:version",
 	"kind",
+	"link:spanID",
+	"link:traceID",
+	"name",
+	"rootName",
+	"rootServiceName",
 	"status",
 	"statusMessage",
-	"duration",
-	"parent",
+	"traceDuration",
+	// Scoped intrinsics (span: / trace: prefixed canonical form).
+	"span:duration",
+	"span:id",
+	"span:kind",
+	"span:name",
+	"span:parentID",
+	"span:status",
+	"span:statusMessage",
+	"trace:duration",
+	"trace:id",
+	"trace:rootName",
+	"trace:rootService",
 }
 
 // SearchTagsResponse is the V1 response body of /api/search/tags. Tempo
@@ -158,7 +183,11 @@ func (h *Handler) respondTags(w http.ResponseWriter, r *http.Request, v2 bool) {
 	all := make([]string, 0, len(resourceTags)+len(spanTags)+len(intrinsicTags))
 	all = append(all, resourceTags...)
 	all = append(all, spanTags...)
-	if scope == tagScopeNone || scope == tagScopeIntrinsic {
+	// V1 mirrors upstream Tempo: intrinsics only surface when the caller
+	// asks for `scope=intrinsic` explicitly. The default (and `scope=none`)
+	// returns dynamic attributes only — leaking intrinsics here puts the
+	// V1 envelope out of parity with reference Tempo on tags_v1_all.
+	if scope == tagScopeIntrinsic {
 		all = append(all, intrinsicTags...)
 	}
 	writeJSON(w, http.StatusOK, SearchTagsResponse{TagNames: sortedUnique(all)})
@@ -222,7 +251,8 @@ func buildSearchTagsSQL(s schema.Traces, mapCol string, start, end time.Time) (s
 // operand flows through chsql.Col.
 func distinctMapKeysFrag(col string) chsql.Frag {
 	return chsql.Distinct(
-		chsql.Call("arrayJoin",
+		chsql.Call(
+			"arrayJoin",
 			chsql.Call("mapKeys", chsql.Col(col)),
 		),
 	)
