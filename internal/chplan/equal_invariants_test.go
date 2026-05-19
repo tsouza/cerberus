@@ -1562,3 +1562,415 @@ func TestAggregate_Equal_Positive_WithParameterisedAggFunc(t *testing.T) {
 		t.Errorf("identical parameterised AggFunc inside Aggregate should be Equal")
 	}
 }
+
+// -----------------------------------------------------------------------
+// Mutation-coverage tests — these pin field-by-field branches of the
+// chained `||` and `==`-nil checks in Equal so gremlins INVERT_LOGICAL /
+// CONDITIONALS_NEGATION mutants on a single operand cannot survive.
+//
+// The shape: each chained `if A != ... || B != ... || ...` block needs
+// at least one negative case per inner operand. Without per-operand
+// coverage, a mutant flipping `||` to `&&` (or negating one operand)
+// stays alive whenever a coarser test still observes inequality via a
+// neighbouring operand.
+// -----------------------------------------------------------------------
+
+func TestAbsentOverTime_Equal_Negative_End(t *testing.T) {
+	t.Parallel()
+	mk := func(end time.Time) *chplan.AbsentOverTime {
+		return &chplan.AbsentOverTime{
+			Input: &chplan.Scan{Table: "t"},
+			Start: time.Unix(0, 0).UTC(),
+			End:   end,
+		}
+	}
+	a := mk(time.Unix(100, 0).UTC())
+	b := mk(time.Unix(200, 0).UTC())
+	if a.Equal(b) {
+		t.Errorf("different End should not be Equal")
+	}
+}
+
+func TestAbsentOverTime_Equal_Negative_TimestampColumn(t *testing.T) {
+	t.Parallel()
+	a := &chplan.AbsentOverTime{Input: &chplan.Scan{Table: "t"}, TimestampColumn: "TimeUnix"}
+	b := &chplan.AbsentOverTime{Input: &chplan.Scan{Table: "t"}, TimestampColumn: "Timestamp"}
+	if a.Equal(b) {
+		t.Errorf("different TimestampColumn should not be Equal")
+	}
+}
+
+func TestAbsentOverTime_Equal_Negative_ValueColumn(t *testing.T) {
+	t.Parallel()
+	a := &chplan.AbsentOverTime{Input: &chplan.Scan{Table: "t"}, ValueColumn: "Value"}
+	b := &chplan.AbsentOverTime{Input: &chplan.Scan{Table: "t"}, ValueColumn: "V"}
+	if a.Equal(b) {
+		t.Errorf("different ValueColumn should not be Equal")
+	}
+}
+
+func TestAbsentOverTime_Equal_Negative_MetricNameColumn(t *testing.T) {
+	t.Parallel()
+	a := &chplan.AbsentOverTime{Input: &chplan.Scan{Table: "t"}, MetricNameColumn: "MetricName"}
+	b := &chplan.AbsentOverTime{Input: &chplan.Scan{Table: "t"}, MetricNameColumn: "Name"}
+	if a.Equal(b) {
+		t.Errorf("different MetricNameColumn should not be Equal")
+	}
+}
+
+func TestAbsentOverTime_Equal_Negative_AttributesColumn(t *testing.T) {
+	t.Parallel()
+	a := &chplan.AbsentOverTime{Input: &chplan.Scan{Table: "t"}, AttributesColumn: "Attributes"}
+	b := &chplan.AbsentOverTime{Input: &chplan.Scan{Table: "t"}, AttributesColumn: "Attrs"}
+	if a.Equal(b) {
+		t.Errorf("different AttributesColumn should not be Equal")
+	}
+}
+
+func TestVectorJoin_Equal_Negative_MetricNameColumn(t *testing.T) {
+	t.Parallel()
+	a := &chplan.VectorJoin{
+		Left: &chplan.Scan{Table: "t"}, Right: &chplan.Scan{Table: "t"},
+		Op: chplan.OpAdd, MetricNameColumn: "MetricName",
+	}
+	b := &chplan.VectorJoin{
+		Left: &chplan.Scan{Table: "t"}, Right: &chplan.Scan{Table: "t"},
+		Op: chplan.OpAdd, MetricNameColumn: "Name",
+	}
+	if a.Equal(b) {
+		t.Errorf("different MetricNameColumn should not be Equal")
+	}
+}
+
+func TestVectorJoin_Equal_Negative_AttributesColumn(t *testing.T) {
+	t.Parallel()
+	a := &chplan.VectorJoin{
+		Left: &chplan.Scan{Table: "t"}, Right: &chplan.Scan{Table: "t"},
+		Op: chplan.OpAdd, AttributesColumn: "Attributes",
+	}
+	b := &chplan.VectorJoin{
+		Left: &chplan.Scan{Table: "t"}, Right: &chplan.Scan{Table: "t"},
+		Op: chplan.OpAdd, AttributesColumn: "Attrs",
+	}
+	if a.Equal(b) {
+		t.Errorf("different AttributesColumn should not be Equal")
+	}
+}
+
+func TestVectorJoin_Equal_Negative_TimestampColumn(t *testing.T) {
+	t.Parallel()
+	a := &chplan.VectorJoin{
+		Left: &chplan.Scan{Table: "t"}, Right: &chplan.Scan{Table: "t"},
+		Op: chplan.OpAdd, TimestampColumn: "TimeUnix",
+	}
+	b := &chplan.VectorJoin{
+		Left: &chplan.Scan{Table: "t"}, Right: &chplan.Scan{Table: "t"},
+		Op: chplan.OpAdd, TimestampColumn: "Timestamp",
+	}
+	if a.Equal(b) {
+		t.Errorf("different TimestampColumn should not be Equal")
+	}
+}
+
+// TestVectorJoin_Equal_Negative_RightOnly exercises the `Left.Equal &&
+// Right.Equal` tail: Left children match, Right children differ. A
+// mutant flipping `&&` to `||` would falsely report Equal here because
+// `Left.Equal(Left)` is true.
+func TestVectorJoin_Equal_Negative_RightOnly(t *testing.T) {
+	t.Parallel()
+	a := &chplan.VectorJoin{
+		Left: &chplan.Scan{Table: "shared"}, Right: &chplan.Scan{Table: "a"},
+		Op: chplan.OpAdd,
+	}
+	b := &chplan.VectorJoin{
+		Left: &chplan.Scan{Table: "shared"}, Right: &chplan.Scan{Table: "b"},
+		Op: chplan.OpAdd,
+	}
+	if a.Equal(b) {
+		t.Errorf("different Right child (Left equal) should not be Equal")
+	}
+}
+
+func TestVectorJoin_Equal_Negative_LeftOnly(t *testing.T) {
+	t.Parallel()
+	a := &chplan.VectorJoin{
+		Left: &chplan.Scan{Table: "a"}, Right: &chplan.Scan{Table: "shared"},
+		Op: chplan.OpAdd,
+	}
+	b := &chplan.VectorJoin{
+		Left: &chplan.Scan{Table: "b"}, Right: &chplan.Scan{Table: "shared"},
+		Op: chplan.OpAdd,
+	}
+	if a.Equal(b) {
+		t.Errorf("different Left child (Right equal) should not be Equal")
+	}
+}
+
+func TestVectorSetOp_Equal_Negative_MetricNameColumn(t *testing.T) {
+	t.Parallel()
+	a := &chplan.VectorSetOp{
+		Left: &chplan.Scan{Table: "t"}, Right: &chplan.Scan{Table: "t"},
+		Op: chplan.VectorSetAnd, MetricNameColumn: "MetricName",
+	}
+	b := &chplan.VectorSetOp{
+		Left: &chplan.Scan{Table: "t"}, Right: &chplan.Scan{Table: "t"},
+		Op: chplan.VectorSetAnd, MetricNameColumn: "Name",
+	}
+	if a.Equal(b) {
+		t.Errorf("different MetricNameColumn should not be Equal")
+	}
+}
+
+func TestVectorSetOp_Equal_Negative_AttributesColumn(t *testing.T) {
+	t.Parallel()
+	a := &chplan.VectorSetOp{
+		Left: &chplan.Scan{Table: "t"}, Right: &chplan.Scan{Table: "t"},
+		Op: chplan.VectorSetAnd, AttributesColumn: "Attributes",
+	}
+	b := &chplan.VectorSetOp{
+		Left: &chplan.Scan{Table: "t"}, Right: &chplan.Scan{Table: "t"},
+		Op: chplan.VectorSetAnd, AttributesColumn: "Attrs",
+	}
+	if a.Equal(b) {
+		t.Errorf("different AttributesColumn should not be Equal")
+	}
+}
+
+func TestVectorSetOp_Equal_Negative_TimestampColumn(t *testing.T) {
+	t.Parallel()
+	a := &chplan.VectorSetOp{
+		Left: &chplan.Scan{Table: "t"}, Right: &chplan.Scan{Table: "t"},
+		Op: chplan.VectorSetAnd, TimestampColumn: "TimeUnix",
+	}
+	b := &chplan.VectorSetOp{
+		Left: &chplan.Scan{Table: "t"}, Right: &chplan.Scan{Table: "t"},
+		Op: chplan.VectorSetAnd, TimestampColumn: "Timestamp",
+	}
+	if a.Equal(b) {
+		t.Errorf("different TimestampColumn should not be Equal")
+	}
+}
+
+func TestStructuralJoin_Equal_Negative_SpanIDColumn(t *testing.T) {
+	t.Parallel()
+	a := &chplan.StructuralJoin{
+		Left: &chplan.Scan{Table: "t"}, Right: &chplan.Scan{Table: "t"},
+		Op: chplan.StructuralChild, TraceIDColumn: "TraceId", SpanIDColumn: "SpanId",
+	}
+	b := &chplan.StructuralJoin{
+		Left: &chplan.Scan{Table: "t"}, Right: &chplan.Scan{Table: "t"},
+		Op: chplan.StructuralChild, TraceIDColumn: "TraceId", SpanIDColumn: "Span_Id",
+	}
+	if a.Equal(b) {
+		t.Errorf("different SpanIDColumn should not be Equal")
+	}
+}
+
+// TestStructuralJoin_Equal_Negative_RightOnly exercises the `Left.Equal
+// && Right.Equal` tail at line 157. Left children match, Right
+// children differ — a mutant flipping `&&` to `||` would falsely
+// report Equal here.
+func TestStructuralJoin_Equal_Negative_RightOnly(t *testing.T) {
+	t.Parallel()
+	a := &chplan.StructuralJoin{
+		Left: &chplan.Scan{Table: "shared"}, Right: &chplan.Scan{Table: "a"},
+		Op: chplan.StructuralChild,
+	}
+	b := &chplan.StructuralJoin{
+		Left: &chplan.Scan{Table: "shared"}, Right: &chplan.Scan{Table: "b"},
+		Op: chplan.StructuralChild,
+	}
+	if a.Equal(b) {
+		t.Errorf("different Right child (Left equal) should not be Equal")
+	}
+}
+
+func TestStructuralJoin_Equal_Negative_LeftOnly(t *testing.T) {
+	t.Parallel()
+	a := &chplan.StructuralJoin{
+		Left: &chplan.Scan{Table: "a"}, Right: &chplan.Scan{Table: "shared"},
+		Op: chplan.StructuralChild,
+	}
+	b := &chplan.StructuralJoin{
+		Left: &chplan.Scan{Table: "b"}, Right: &chplan.Scan{Table: "shared"},
+		Op: chplan.StructuralChild,
+	}
+	if a.Equal(b) {
+		t.Errorf("different Left child (Right equal) should not be Equal")
+	}
+}
+
+// TestTopK_Equal_SortExprNilAsymmetric pins the
+// `t.SortExpr == nil || o.SortExpr == nil` branch. Original returns
+// false via the inner `t.SortExpr != o.SortExpr` pointer compare; a
+// mutant flipping `||` to `&&` falls into `t.SortExpr.Equal(o.SortExpr)`
+// which dereferences the nil receiver.
+func TestTopK_Equal_SortExprNilAsymmetric(t *testing.T) {
+	t.Parallel()
+	a := &chplan.TopK{Input: &chplan.Scan{Table: "t"}, K: 3}
+	b := &chplan.TopK{
+		Input:    &chplan.Scan{Table: "t"},
+		K:        3,
+		SortExpr: &chplan.ColumnRef{Name: "Value"},
+	}
+	if a.Equal(b) {
+		t.Errorf("nil vs non-nil SortExpr should not be Equal")
+	}
+	if b.Equal(a) {
+		t.Errorf("nil vs non-nil SortExpr should not be Equal (reverse)")
+	}
+}
+
+func TestTopK_Equal_SortExprNilBoth(t *testing.T) {
+	t.Parallel()
+	a := &chplan.TopK{Input: &chplan.Scan{Table: "t"}, K: 3}
+	b := &chplan.TopK{Input: &chplan.Scan{Table: "t"}, K: 3}
+	if !a.Equal(b) {
+		t.Errorf("both SortExpr nil with equal sibling fields should be Equal")
+	}
+}
+
+// TestTopK_Equal_KExprNilAsymmetric pins the
+// `t.KExpr == nil || o.KExpr == nil` branch + the per-operand `==`
+// checks. Together these three positions on line 92 are exercised:
+//
+//   - `||` flipped to `&&` (line 92:20): one side nil, other non-nil →
+//     mutant falls into `t.KExpr.Equal(o.KExpr)` and dereferences nil.
+//   - `t.KExpr == nil` negated (line 92:13): a-side nil, b-side nil →
+//     original takes the `return false` (via inner pointer compare) /
+//     fall-through; mutant flips the branch direction.
+//   - `o.KExpr == nil` negated (line 92:31): mirror image.
+func TestTopK_Equal_KExprNilAsymmetric(t *testing.T) {
+	t.Parallel()
+	a := &chplan.TopK{
+		Input:    &chplan.Scan{Table: "t"},
+		K:        3,
+		SortExpr: &chplan.ColumnRef{Name: "Value"},
+	}
+	b := &chplan.TopK{
+		Input:    &chplan.Scan{Table: "t"},
+		K:        3,
+		SortExpr: &chplan.ColumnRef{Name: "Value"},
+		KExpr:    &chplan.Scan{Table: "k"},
+	}
+	if a.Equal(b) {
+		t.Errorf("nil vs non-nil KExpr should not be Equal")
+	}
+	if b.Equal(a) {
+		t.Errorf("nil vs non-nil KExpr should not be Equal (reverse)")
+	}
+}
+
+func TestTopK_Equal_KExprNilBothEqualByValue(t *testing.T) {
+	t.Parallel()
+	// Both KExpr nil; everything else identical → must be Equal. A
+	// CONDITIONALS_NEGATION mutant on `t.KExpr == nil` flips it to
+	// `!= nil`; under that, the branch is skipped and the code falls
+	// through to `t.KExpr.Equal(o.KExpr)` which panics on nil receiver.
+	a := &chplan.TopK{
+		Input:    &chplan.Scan{Table: "t"},
+		K:        3,
+		SortExpr: &chplan.ColumnRef{Name: "Value"},
+	}
+	b := &chplan.TopK{
+		Input:    &chplan.Scan{Table: "t"},
+		K:        3,
+		SortExpr: &chplan.ColumnRef{Name: "Value"},
+	}
+	if !a.Equal(b) {
+		t.Errorf("both KExpr nil with equal sibling fields should be Equal")
+	}
+}
+
+func TestTopK_Equal_KExprBothNonNil(t *testing.T) {
+	t.Parallel()
+	a := &chplan.TopK{
+		Input:    &chplan.Scan{Table: "t"},
+		K:        3,
+		SortExpr: &chplan.ColumnRef{Name: "Value"},
+		KExpr:    &chplan.Scan{Table: "k1"},
+	}
+	b := &chplan.TopK{
+		Input:    &chplan.Scan{Table: "t"},
+		K:        3,
+		SortExpr: &chplan.ColumnRef{Name: "Value"},
+		KExpr:    &chplan.Scan{Table: "k2"},
+	}
+	if a.Equal(b) {
+		t.Errorf("different non-nil KExpr should not be Equal")
+	}
+}
+
+// TestTopK_Equal_KExprStructurallyEqualDifferentInstances pins the
+// `o.KExpr == nil` operand at line 92:31. Original sees both non-nil,
+// skips the outer block, and calls `t.KExpr.Equal(o.KExpr)` which
+// performs a structural comparison and returns true. A
+// CONDITIONALS_NEGATION mutant flipping `o.KExpr == nil` to
+// `o.KExpr != nil` makes the outer condition true (because both are
+// non-nil), enters the block, and pointer-compares `t.KExpr !=
+// o.KExpr` — which is true for two distinct allocations of
+// structurally-equal Scans, so the mutant returns false where the
+// original returns true.
+func TestTopK_Equal_KExprStructurallyEqualDifferentInstances(t *testing.T) {
+	t.Parallel()
+	a := &chplan.TopK{
+		Input:    &chplan.Scan{Table: "t"},
+		K:        3,
+		SortExpr: &chplan.ColumnRef{Name: "Value"},
+		KExpr:    &chplan.Scan{Table: "k"},
+	}
+	b := &chplan.TopK{
+		Input:    &chplan.Scan{Table: "t"},
+		K:        3,
+		SortExpr: &chplan.ColumnRef{Name: "Value"},
+		KExpr:    &chplan.Scan{Table: "k"}, // distinct allocation, same shape
+	}
+	if !a.Equal(b) {
+		t.Errorf("structurally-equal KExpr (different instances) should be Equal")
+	}
+}
+
+// TestHistogramQuantileNative_Equal_InputNilAsymmetric pins the
+// `h.Input == nil || o.Input == nil` branch. Mutating `||` to `&&`
+// makes the original-side dereference `h.Input.Equal(o.Input)` on a
+// nil receiver when only one side has a nil Input.
+func TestHistogramQuantileNative_Equal_InputNilAsymmetric(t *testing.T) {
+	t.Parallel()
+	a := &chplan.HistogramQuantileNative{Phi: 0.5}
+	b := &chplan.HistogramQuantileNative{Phi: 0.5, Input: &chplan.Scan{Table: "t"}}
+	if a.Equal(b) {
+		t.Errorf("nil vs non-nil Input should not be Equal")
+	}
+	if b.Equal(a) {
+		t.Errorf("nil vs non-nil Input should not be Equal (reverse)")
+	}
+}
+
+func TestHistogramQuantileNative_Equal_InputNilBoth(t *testing.T) {
+	t.Parallel()
+	a := &chplan.HistogramQuantileNative{Phi: 0.5}
+	b := &chplan.HistogramQuantileNative{Phi: 0.5}
+	if !a.Equal(b) {
+		t.Errorf("both Input nil with equal sibling fields should be Equal")
+	}
+}
+
+// TestMetricsHistogramOverTime_Equal_InnerNilBoth pins line 117's
+// `if m.Inner == nil { return true }` early-return. A
+// CONDITIONALS_NEGATION mutant flips `==` to `!=`; with both Inner
+// nil, the mutant skips the `return true` and falls through to
+// `m.Inner.Equal(o.Inner)` which dereferences a nil receiver.
+func TestMetricsHistogramOverTime_Equal_InnerNilBoth(t *testing.T) {
+	t.Parallel()
+	a := &chplan.MetricsHistogramOverTime{
+		Attr:        &chplan.ColumnRef{Name: "Duration"},
+		BucketAlias: "__bucket",
+	}
+	b := &chplan.MetricsHistogramOverTime{
+		Attr:        &chplan.ColumnRef{Name: "Duration"},
+		BucketAlias: "__bucket",
+	}
+	if !a.Equal(b) {
+		t.Errorf("both Inner nil with equal sibling fields should be Equal")
+	}
+}
