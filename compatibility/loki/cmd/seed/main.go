@@ -97,8 +97,10 @@ func main() {
 func run(logger *slog.Logger) error {
 	// `-timeout` worst-case budget:
 	//   waitCHReady (30s) + waitLokiReady (60s) + insertCHLogs / pushLoki
-	//   + waitLokiIndexSettle (30s) + waitLabelsNonEmpty × 2 (60s)
-	// 3 minutes is the bare minimum; 4 leaves headroom for slow CI runners.
+	//   + flushLoki (synchronous, ingester-bound) + waitLokiIndexSettle
+	//   (30s) + waitLabelsNonEmpty × 2 (60s)
+	// 3 minutes is the bare minimum; 4 leaves headroom for slow CI runners
+	// and the post-flush TSDB index-build pass.
 	var (
 		addr     = flag.String("addr", envOr("CERBERUS_CH_ADDR", "localhost:28000"), "ClickHouse host:port")
 		database = flag.String("database", envOr("CERBERUS_CH_DATABASE", "otel"), "ClickHouse database")
@@ -170,6 +172,21 @@ func run(logger *slog.Logger) error {
 	logger.Info("pushing into loki", "url", *lokiURL)
 	if err := pushLoki(ctx, *lokiURL, streams); err != nil {
 		return fmt.Errorf("push loki: %w", err)
+	}
+
+	// Force the reference Loki ingester to flush its in-memory chunks
+	// into the TSDB index. Without this, the seed timestamps (anchored
+	// at `2026-05-11T00:00:00Z`, drifting further into the past as
+	// real time advances) age past `query_ingesters_within` (default
+	// 3h) and `/loki/api/v1/series` returns 0 — even though the
+	// chunks are still in the ingester's WAL and `/labels` happily
+	// surfaces them. The flush handler is synchronous (returns 204
+	// after `sweepUsers(immediate=true)` drains all chunks), so the
+	// subsequent settle wait is effectively just guarding against
+	// the TSDB indexer's post-flush index-build pass.
+	logger.Info("flushing loki ingester to tsdb", "url", *lokiURL)
+	if err := flushLoki(ctx, *lokiURL); err != nil {
+		return fmt.Errorf("flush loki: %w", err)
 	}
 
 	logger.Info("verifying /labels is non-empty on both targets")
@@ -577,6 +594,46 @@ func pushLoki(ctx context.Context, baseURL string, streams []stream) error {
 	return nil
 }
 
+// flushLoki POSTs to the reference Loki's `/flush` endpoint, which is
+// the ingester's `FlushHandler` (single-binary exposes it on the same
+// HTTP listener as `/loki/api/v1/*`). The handler calls
+// `sweepUsers(immediate=true, mayRemoveStreams=true)` and blocks until
+// every in-memory chunk has been uploaded to the configured object
+// store (filesystem in the harness) and indexed into the TSDB. Success
+// returns 204 No Content.
+//
+// Without this call, the seed's hard-coded `2026-05-11T00:00:00Z`
+// anchor ages past the default `chunk_idle_period` (30m) +
+// `max_chunk_age` (2h) thresholds the ingester uses to decide when to
+// rotate a chunk to the store; the chunks then linger in memory and
+// `/loki/api/v1/series` against the seed time-window returns 0 because
+// the TSDB has nothing to scan (the ingester is skipped by the
+// querier's 3h `query_ingesters_within` gate for windows that lie
+// entirely in the past). Forcing the flush populates the TSDB so the
+// settle gate (waitLokiIndexSettle) succeeds reliably regardless of
+// how far the seed anchor has drifted from real time.
+//
+// The flush is intended for local testing per Loki's own docs — which
+// is exactly the harness's lifecycle.
+func flushLoki(ctx context.Context, baseURL string) error {
+	flushURL := strings.TrimRight(baseURL, "/") + "/flush"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, flushURL, nil)
+	if err != nil {
+		return fmt.Errorf("new request: %w", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("do: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode/100 != 2 {
+		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("loki /flush returned %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return nil
+}
+
 func verifyBothNonEmpty(ctx context.Context, conn driver.Conn, lokiURL, cerbURL string, streams []stream, logger *slog.Logger) error {
 	var chCount uint64
 	if err := conn.QueryRow(ctx, "SELECT count() FROM otel_logs").Scan(&chCount); err != nil {
@@ -643,12 +700,16 @@ func verifyBothNonEmpty(ctx context.Context, conn driver.Conn, lokiURL, cerbURL 
 //     (cluster, namespace, service, service_name, pod, container, env,
 //     region, datacenter — 9 keys from the seed; Loki may also surface
 //     `detected_level` from structured metadata, so we tolerate >=).
-//   - /series with `match[]={service_name=~".+"}` returns >= the expected
+//   - /series with `match[]={service_name!=""}` returns >= the expected
 //     stream count (len(streams), which equals len(serviceConfigs) = 13).
-//     Every seeded stream carries `service_name`, so the regex selects
-//     all of them. A non-zero `/series` body is the strongest pre-query
-//     signal that chunks have been indexed: Loki resolves /series
-//     against the same TSDB index a log query consults.
+//     Every seeded stream carries `service_name`, so the not-empty
+//     matcher selects all of them. A non-zero `/series` body is the
+//     strongest pre-query signal that chunks have been indexed: Loki
+//     resolves /series against the same TSDB index a log query consults.
+//     (We avoid the more obvious `=~".+"` form because Loki's TSDB
+//     index treats `service_name` as a discovery-managed label and
+//     returns a partial set under that regex shape — see the seriesURL
+//     comment below.)
 //
 // Poll: 1s interval, 30s deadline, progress log every 5s — see the
 // `settle*` constants inside. Mirrors the cadence in waitTempoReady /
@@ -673,12 +734,19 @@ func waitLokiIndexSettle(ctx context.Context, baseURL string, streams []stream, 
 
 	labelsURL := fmt.Sprintf("%s/loki/api/v1/labels?start=%d&end=%d",
 		strings.TrimRight(baseURL, "/"), start.UnixNano(), end.UnixNano())
-	// Match every seeded stream by requiring `service_name` to be present.
-	// All 13 streams carry that label by construction (see buildStreams);
-	// `=~".+"` is the canonical "any non-empty value" form Loki accepts.
+	// Match every seeded stream by requiring `service_name` to be
+	// non-empty. All 13 streams carry that label by construction (see
+	// buildStreams). We use `!=""` rather than `=~".+"` because Loki's
+	// TSDB index treats `service_name` as a discovery-managed label
+	// and a `=~".+"` regex match against it returns a partial set (10
+	// of the 13 streams under the harness's seed) — `!=""` exercises
+	// the not-empty path the index implements correctly. The
+	// equivalent `{env="production"}` matcher would also work; we
+	// stay on `service_name` to keep the gate's intent ("we have
+	// every seeded service indexed") legible.
 	seriesURL := fmt.Sprintf("%s/loki/api/v1/series?match%%5B%%5D=%s&start=%d&end=%d",
 		strings.TrimRight(baseURL, "/"),
-		url.QueryEscape(`{service_name=~".+"}`),
+		url.QueryEscape(`{service_name!=""}`),
 		start.UnixNano(), end.UnixNano())
 
 	begin := time.Now()
