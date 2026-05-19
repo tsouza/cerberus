@@ -9,8 +9,8 @@
 // `sql:` + `args:` against an ephemeral in-process chDB session and
 // asserts the resulting rows match `expected_rows:`.
 //
-// Fixtures without those sections are skipped (the default text-
-// equality check in internal/promql/lower_test.go still gates them).
+// Fixtures without those sections fall through to text-equality only
+// (the default check in internal/promql/lower_test.go still gates them).
 package promql_spec_test
 
 import (
