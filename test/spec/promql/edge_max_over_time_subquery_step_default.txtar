@@ -9,3 +9,17 @@ RangeWindow func=max_over_time range=1h0m0s step=0s ts=anchor_ts value=Value gro
   RangeWindow func=rate range=5m0s step=1m0s outerRange=1h0m0s ts=TimeUnix value=Value groupBy=[Attributes]
     Filter predicate=(MetricName = "http_requests_total")
       Scan(otel_metrics_sum)
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum VALUES
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:59:31', 9), 10.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 40.0);
+-- expected_rows --
+[
+  [{"job": "api"}, 0.1367816091954023]
+]

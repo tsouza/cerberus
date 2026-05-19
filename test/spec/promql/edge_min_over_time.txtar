@@ -8,3 +8,18 @@ SELECT `Attributes`, if(length(window_vals) > 0, arrayMin(window_vals), nan) AS 
 RangeWindow func=min_over_time range=10m0s step=0s ts=TimeUnix value=Value groupBy=[Attributes]
   Filter predicate=(MetricName = "temperature")
     Scan(otel_metrics_gauge)
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('temperature', map('host', 'a'), toDateTime64('2025-12-31 23:55:00', 9), 5.0),
+    ('temperature', map('host', 'a'), toDateTime64('2025-12-31 23:58:00', 9), 3.0),
+    ('temperature', map('host', 'a'), toDateTime64('2026-01-01 00:00:00', 9), 7.0);
+-- expected_rows --
+[
+  [{"host": "a"}, 3]
+]
