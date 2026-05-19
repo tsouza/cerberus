@@ -327,6 +327,107 @@ func TestMVSubstitution_DifferingNonEmptyValueColumnSkips(t *testing.T) {
 	}
 }
 
+// TestMVSubstitution_InstantQueryStepZeroStillApplies pins the
+// `rw.Step > 0` half of the Step/Window guard at
+// mv_substitution.go:235 inside rollupApplies:
+//
+//	if rw.Step > 0 && rw.Step < c.Window { return false }
+//
+// Step==0 means "instant query" — the rollup still applies as long as
+// the range covers at least one bucket. Flipping `>` to `>=` (gremlins
+// CONDITIONALS_BOUNDARY) would make the guard fire for Step==0 with
+// any non-zero window (`0 >= 0 && 0 < W` = true), declining the
+// substitution even though the doc comment says instant queries land
+// on the most recent bucket and the rule should still fire.
+//
+// Input: a sum_over_time RangeWindow with Step=0 (instant query
+// shape), Range=1h, Window=5m on the registry. The original code
+// reaches the (1) check, sees `0 > 0 = false`, skips it, falls
+// through the Range/Window checks (1h ≥ 5m, 1h%5m==0), and applies the
+// rule. The mutant fires the guard and declines.
+func TestMVSubstitution_InstantQueryStepZeroStillApplies(t *testing.T) {
+	t.Parallel()
+
+	rollup := schema.Rollup{
+		BaseTable:   "otel_metrics_sum",
+		RollupTable: "otel_metrics_sum_5m",
+		Window:      5 * time.Minute,
+		AggOp:       schema.RollupAggSum,
+		ValueColumn: "Sum",
+	}
+	plan := &chplan.RangeWindow{
+		Input:           &chplan.Scan{Table: "otel_metrics_sum"},
+		Func:            "sum_over_time",
+		Range:           time.Hour,
+		Step:            0, // instant query
+		TimestampColumn: "TimeUnix",
+		ValueColumn:     "Value",
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+	}
+
+	rule := optimizer.MVSubstitution([]schema.Rollup{rollup}, "Value")
+	out, changed := rule.Apply(plan)
+	if !changed {
+		t.Fatalf("expected rule to fire for instant query (Step=0); changed=false (CONDITIONALS_BOUNDARY mutant `>` → `>=` blocks substitution)")
+	}
+	rw, ok := out.(*chplan.RangeWindow)
+	if !ok {
+		t.Fatalf("expected *RangeWindow, got %T", out)
+	}
+	scan, ok := rw.Input.(*chplan.Scan)
+	if !ok {
+		t.Fatalf("expected Scan child, got %T", rw.Input)
+	}
+	if scan.Table != "otel_metrics_sum_5m" {
+		t.Errorf("expected Scan.Table rewritten to %q, got %q", "otel_metrics_sum_5m", scan.Table)
+	}
+}
+
+// TestCapturePattern_PreservesInnerBindings pins the `inner == nil`
+// branch at pattern.go:140 inside capturePattern.Match:
+//
+//	if inner == nil { inner = Bindings{} }
+//
+// Capture wraps an inner pattern and adds its own (name, node)
+// binding. When the inner pattern returns a non-nil Bindings map
+// (e.g., it itself is a Capture), the outer Capture must add to that
+// existing map rather than reinitialise it. Flipping `==` to `!=`
+// (gremlins CONDITIONALS_NEGATION) would reinitialise on every match
+// where the inner already produced bindings — dropping the inner's
+// captures entirely.
+//
+// Input: a nested Capture pair `Capture("outer", Capture("inner",
+// Kind(KindScan)))` matched against a Scan. The match must yield both
+// "outer" and "inner" bindings pointing at the same Scan.
+func TestCapturePattern_PreservesInnerBindings(t *testing.T) {
+	t.Parallel()
+
+	scan := &chplan.Scan{Table: "otel_logs"}
+	pat := optimizer.Capture(
+		"outer",
+		optimizer.Capture("inner", optimizer.Kind(optimizer.KindScan)),
+	)
+
+	b, ok := pat.Match(scan)
+	if !ok {
+		t.Fatalf("expected nested Capture to match a Scan")
+	}
+	gotOuter, hasOuter := b.Get("outer")
+	if !hasOuter {
+		t.Fatalf("expected outer binding to be present")
+	}
+	if gotOuter != scan {
+		t.Errorf("outer binding mismatch: got %p, want %p", gotOuter, scan)
+	}
+	gotInner, hasInner := b.Get("inner")
+	if !hasInner {
+		t.Fatalf("expected inner binding to be preserved by outer Capture (CONDITIONALS_NEGATION mutant `==` → `!=` would reinit the bindings map and drop 'inner')")
+	}
+	if gotInner != scan {
+		t.Errorf("inner binding mismatch: got %p, want %p", gotInner, scan)
+	}
+}
+
 // TestMVSubstitution_SkipsRollupForOtherBaseTableButKeepsLater pins
 // the `continue` at mv_substitution.go:163 inside the
 // candidate-collection loop:
