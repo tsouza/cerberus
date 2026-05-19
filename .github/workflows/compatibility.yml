@@ -16,6 +16,20 @@ name: compatibility
 #   * docker/setup-buildx-action@v4 — buildkit-backed compose build.
 #   * taiki-e/install-action@v2     — installs `just`.
 #   * actions/upload-artifact@v7    — per-head report upload.
+#
+# Each job ALSO:
+#   - appends the head's compat percent / passed-over-total to
+#     $GITHUB_STEP_SUMMARY so the workflow summary page surfaces the
+#     three scores side by side without the reader having to download
+#     the artifact;
+#   - on `push: main` only (NOT pull_request / cron / workflow_dispatch),
+#     commits the head's `compat-score.json` to the `compat-scores`
+#     orphan branch at `badges/<head>.json`. That branch is the
+#     long-lived "shields.io endpoint badge" source — README badges hit
+#     a stable raw URL under it. The orphan branch is intentionally NOT
+#     covered by branch-protection rules (covering it would create an
+#     infinite check-rerun loop). First-run bootstrap creates the
+#     orphan branch in-place via `git checkout --orphan compat-scores`.
 
 on:
   pull_request:
@@ -55,7 +69,16 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  # `contents: write` is required for the "Publish score to compat-scores
+  # branch" step (push: main only) — it commits per-head `compat-score.json`
+  # files to the `compat-scores` orphan branch so shields.io can read them
+  # via a stable raw URL. The orphan branch lives in the same repo, so a
+  # repo-scoped GITHUB_TOKEN with write access is enough; no PAT needed.
+  # Other event types (pull_request, schedule, workflow_dispatch) never
+  # reach the publish step (it is gated by `if: github.event_name == 'push'
+  # && github.ref == 'refs/heads/main'`), so they effectively run as
+  # read-only despite the elevated grant.
+  contents: write
 
 concurrency:
   group: compatibility-${{ github.ref }}
@@ -129,14 +152,123 @@ jobs:
             echo "no report produced (harness step likely failed before tester ran)"
           fi
 
+      - name: Append score to step summary
+        # Mirrors the loki / tempo jobs: emits a one-row markdown table
+        # row to $GITHUB_STEP_SUMMARY so the workflow's summary page shows
+        # the at-a-glance parity score next to the per-job log link. The
+        # three jobs format identically (head / passed-over-total /
+        # percent) so the rendered summary is readable when all three
+        # rows land together.
+        if: always()
+        run: |
+          set -euo pipefail
+          score="compatibility/prometheus/compat-score.json"
+          if [ -f "$score" ]; then
+            percent=$(jq -r .percent "$score")
+            passed=$(jq -r .passed "$score")
+            total=$(jq -r .total "$score")
+            {
+              echo "### compatibility/prometheus"
+              echo ""
+              echo "| head | passed/total | percent |"
+              echo "|------|--------------|---------|"
+              echo "| prometheus | ${passed}/${total} | ${percent}% |"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "no compat-score.json produced (harness step likely failed before scorer ran)"
+          fi
+
       - name: Upload report
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: compatibility-prometheus-report
-          path: compatibility/prometheus/report.json
+          # Glob picks up both the upstream tester's report.json AND the
+          # shields.io endpoint-badge compat-score.json the prom scorer
+          # emits next to it. `if-no-files-found: warn` keeps the upload
+          # step green when the harness crashed before producing either
+          # file (the explicit "Fail job" step still re-raises the
+          # underlying failure).
+          path: |
+            compatibility/prometheus/report.json
+            compatibility/prometheus/compat-score.json
           if-no-files-found: warn
           retention-days: 30
+
+      - name: Publish score to compat-scores branch
+        # Only push: main triggers the publish; pull_request / schedule /
+        # workflow_dispatch all short-circuit at the `if:` gate. The
+        # compat-scores branch
+        # is an orphan branch in the same repo that holds shields.io
+        # endpoint-badge JSON at badges/<head>.json — README badges hit
+        # the raw URL https://raw.githubusercontent.com/tsouza/cerberus/
+        # compat-scores/badges/<head>.json.
+        #
+        # First-run bootstrap: if origin/compat-scores doesn't exist yet,
+        # we create it as an --orphan branch with just the badges/ tree.
+        # Subsequent runs fast-forward over the previous tip.
+        #
+        # Concurrency: the three head jobs (prometheus / loki / tempo)
+        # may finish near-simultaneously and race to push to the same
+        # branch. We retry on "non-fast-forward" rejections by
+        # re-fetching the latest tip, re-applying our update, and
+        # pushing again — capped at MAX_ATTEMPTS to avoid an infinite
+        # loop if the remote is fundamentally unreachable.
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          HEAD: prometheus
+          SRC: compatibility/prometheus/compat-score.json
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ ! -f "$SRC" ]; then
+            echo "no score file at $SRC; nothing to publish"
+            exit 0
+          fi
+          git config user.name "cerberus-compat-bot"
+          git config user.email "cerberus-compat-bot@users.noreply.github.com"
+          # Stash the score file before we switch branches so it survives
+          # the checkout (it lives under a path that the orphan tree may
+          # not contain).
+          tmp=$(mktemp)
+          cp "$SRC" "$tmp"
+
+          MAX_ATTEMPTS=5
+          attempt=1
+          while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
+            echo "==> publish attempt $attempt / $MAX_ATTEMPTS"
+            git fetch origin compat-scores 2>/dev/null || true
+            if git rev-parse --verify origin/compat-scores >/dev/null 2>&1; then
+              git checkout -B compat-scores origin/compat-scores
+            else
+              # Orphan-bootstrap on first run: detach, clear the index +
+              # working tree, then commit the badges/ directory as the
+              # branch's initial state.
+              git checkout --orphan compat-scores
+              git rm -rf . 2>/dev/null || true
+              git clean -fdx
+            fi
+            mkdir -p badges
+            cp "$tmp" "badges/${HEAD}.json"
+            git add badges/
+            if git diff --staged --quiet; then
+              echo "score unchanged; no commit needed"
+              exit 0
+            fi
+            git commit -m "compat-scores: update ${HEAD} score"
+            if git push origin compat-scores; then
+              echo "==> published ${HEAD} score on attempt $attempt"
+              exit 0
+            fi
+            echo "==> push rejected (likely concurrent update); retrying"
+            # Reset our local branch state so the next iteration starts
+            # from a clean tree before re-fetching.
+            git reset --hard
+            attempt=$((attempt + 1))
+            sleep $((attempt * 2))
+          done
+          echo "::error title=compat-scores publish failed::could not push ${HEAD} score after $MAX_ATTEMPTS attempts"
+          exit 1
 
       - name: Fail job if compatibility step failed
         # Last step in the job. Re-raises the harness step's failure
@@ -166,10 +298,31 @@ jobs:
           FAIL_ON_DIFF: "1"
         run: ./compatibility/tempo/scripts/run-tempo-compatibility.sh
 
+      - name: Append score to step summary
+        if: always()
+        run: |
+          set -euo pipefail
+          score="compatibility/tempo/reports/compat-score.json"
+          if [ -f "$score" ]; then
+            percent=$(jq -r .percent "$score")
+            passed=$(jq -r .passed "$score")
+            total=$(jq -r .total "$score")
+            {
+              echo "### compatibility/tempo"
+              echo ""
+              echo "| head | passed/total | percent |"
+              echo "|------|--------------|---------|"
+              echo "| tempo | ${passed}/${total} | ${percent}% |"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "no compat-score.json produced (harness step likely failed before driver ran)"
+          fi
+
       - name: Upload report
         # `if: always()` so we capture whatever the driver wrote even
-        # when the harness step failed. The differ writes diff.md under
-        # this directory; the seeder leaves it empty.
+        # when the harness step failed. The differ writes diff.md and
+        # compat-score.json under this directory; the seeder leaves it
+        # empty. Globbing the entire reports/ tree picks up both.
         if: always()
         uses: actions/upload-artifact@v7
         with:
@@ -177,6 +330,59 @@ jobs:
           path: compatibility/tempo/reports/
           if-no-files-found: warn
           retention-days: 30
+
+      - name: Publish score to compat-scores branch
+        # See the prometheus job for the orphan-branch contract. Only
+        # push: main reaches this step; other event types short-circuit.
+        # Includes a retry loop so the three head jobs can safely race
+        # against the same orphan branch.
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          HEAD: tempo
+          SRC: compatibility/tempo/reports/compat-score.json
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ ! -f "$SRC" ]; then
+            echo "no score file at $SRC; nothing to publish"
+            exit 0
+          fi
+          git config user.name "cerberus-compat-bot"
+          git config user.email "cerberus-compat-bot@users.noreply.github.com"
+          tmp=$(mktemp)
+          cp "$SRC" "$tmp"
+
+          MAX_ATTEMPTS=5
+          attempt=1
+          while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
+            echo "==> publish attempt $attempt / $MAX_ATTEMPTS"
+            git fetch origin compat-scores 2>/dev/null || true
+            if git rev-parse --verify origin/compat-scores >/dev/null 2>&1; then
+              git checkout -B compat-scores origin/compat-scores
+            else
+              git checkout --orphan compat-scores
+              git rm -rf . 2>/dev/null || true
+              git clean -fdx
+            fi
+            mkdir -p badges
+            cp "$tmp" "badges/${HEAD}.json"
+            git add badges/
+            if git diff --staged --quiet; then
+              echo "score unchanged; no commit needed"
+              exit 0
+            fi
+            git commit -m "compat-scores: update ${HEAD} score"
+            if git push origin compat-scores; then
+              echo "==> published ${HEAD} score on attempt $attempt"
+              exit 0
+            fi
+            echo "==> push rejected (likely concurrent update); retrying"
+            git reset --hard
+            attempt=$((attempt + 1))
+            sleep $((attempt * 2))
+          done
+          echo "::error title=compat-scores publish failed::could not push ${HEAD} score after $MAX_ATTEMPTS attempts"
+          exit 1
 
       - name: Fail job if harness step failed
         if: always() && steps.harness.outcome == 'failure'
@@ -218,10 +424,31 @@ jobs:
         # cleanup step is needed even on failure.
         run: ./compatibility/loki/scripts/run-loki-compatibility.sh
 
+      - name: Append score to step summary
+        if: always()
+        run: |
+          set -euo pipefail
+          score="compatibility/loki/reports/compat-score.json"
+          if [ -f "$score" ]; then
+            percent=$(jq -r .percent "$score")
+            passed=$(jq -r .passed "$score")
+            total=$(jq -r .total "$score")
+            {
+              echo "### compatibility/loki"
+              echo ""
+              echo "| head | passed/total | percent |"
+              echo "|------|--------------|---------|"
+              echo "| loki | ${passed}/${total} | ${percent}% |"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "no compat-score.json produced (harness step likely failed before driver ran)"
+          fi
+
       - name: Upload report
         # `if: always()` so we capture whatever the driver wrote even
         # when the harness step failed. The script writes the raw
-        # `go test -v` stream to compatibility/loki/reports/diff.json.
+        # `go test -v` stream to compatibility/loki/reports/diff.json
+        # and the loki driver writes compat-score.json next to it.
         if: always()
         uses: actions/upload-artifact@v7
         with:
@@ -229,6 +456,59 @@ jobs:
           path: compatibility/loki/reports/
           if-no-files-found: warn
           retention-days: 30
+
+      - name: Publish score to compat-scores branch
+        # See the prometheus job for the orphan-branch contract. Only
+        # push: main reaches this step; other event types short-circuit.
+        # Includes a retry loop so the three head jobs can safely race
+        # against the same orphan branch.
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          HEAD: loki
+          SRC: compatibility/loki/reports/compat-score.json
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ ! -f "$SRC" ]; then
+            echo "no score file at $SRC; nothing to publish"
+            exit 0
+          fi
+          git config user.name "cerberus-compat-bot"
+          git config user.email "cerberus-compat-bot@users.noreply.github.com"
+          tmp=$(mktemp)
+          cp "$SRC" "$tmp"
+
+          MAX_ATTEMPTS=5
+          attempt=1
+          while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
+            echo "==> publish attempt $attempt / $MAX_ATTEMPTS"
+            git fetch origin compat-scores 2>/dev/null || true
+            if git rev-parse --verify origin/compat-scores >/dev/null 2>&1; then
+              git checkout -B compat-scores origin/compat-scores
+            else
+              git checkout --orphan compat-scores
+              git rm -rf . 2>/dev/null || true
+              git clean -fdx
+            fi
+            mkdir -p badges
+            cp "$tmp" "badges/${HEAD}.json"
+            git add badges/
+            if git diff --staged --quiet; then
+              echo "score unchanged; no commit needed"
+              exit 0
+            fi
+            git commit -m "compat-scores: update ${HEAD} score"
+            if git push origin compat-scores; then
+              echo "==> published ${HEAD} score on attempt $attempt"
+              exit 0
+            fi
+            echo "==> push rejected (likely concurrent update); retrying"
+            git reset --hard
+            attempt=$((attempt + 1))
+            sleep $((attempt * 2))
+          done
+          echo "::error title=compat-scores publish failed::could not push ${HEAD} score after $MAX_ATTEMPTS attempts"
+          exit 1
 
       - name: Fail job if harness step failed
         # Last step in the job. Re-raises the harness step's failure
