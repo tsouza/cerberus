@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -417,7 +418,7 @@ func TestEmitMetricsExemplars_RangeDurationFallback(t *testing.T) {
 			}
 			// The rangeNS literal appears as the toIntervalNanosecond
 			// argument inside the windowTsLowerBound predicate.
-			wantSub := "toIntervalNanosecond(" + intToString(c.wantRangeNS) + ")"
+			wantSub := "toIntervalNanosecond(" + strconv.FormatInt(c.wantRangeNS, 10) + ")"
 			if !strings.Contains(sql, wantSub) {
 				t.Errorf("SQL missing %q.\nSQL: %s", wantSub, sql)
 			}
@@ -1933,28 +1934,4 @@ func TestEmitMetricsExemplars_AttributesMapCapacity185(t *testing.T) {
 	if !strings.Contains(sql, "toString(`span`)") {
 		t.Errorf("expected toString(span), SQL=%s", sql)
 	}
-}
-
-// intToString avoids importing strconv just for this conversion in a
-// single test site.
-func intToString(n int64) string {
-	if n == 0 {
-		return "0"
-	}
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	var buf [20]byte
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	if neg {
-		i--
-		buf[i] = '-'
-	}
-	return string(buf[i:])
 }
