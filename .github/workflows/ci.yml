@@ -82,9 +82,9 @@ jobs:
         with:
           globs: |
             **/*.md
-            !harness/prometheus-compliance/upstream/**
-            !harness/tempo-compatibility/upstream/**
-            !harness/loki-compatibility/upstream/**
+            !compatibility/prometheus/upstream/**
+            !compatibility/tempo/upstream/**
+            !compatibility/loki/upstream/**
             !**/node_modules/**
 
   # `forbid-skip` is the GA test-discipline gate. The maintainer's
@@ -105,11 +105,11 @@ jobs:
   # The maintainer's NON-NEGOTIABLE GA rule is "absolutely nothing is
   # skipped / not implemented / deferred." This gate enforces it.
   #
-  # Vendored upstream snapshots under `harness/*/upstream/**` and
-  # `compatibility/*/upstream/**` are excluded — reference material
-  # outside cerberus's authorship boundary (and pinned by their
-  # respective VERSION files). Runs in parallel with `check` + `lint`;
-  # flip on as a required status check via branch protection.
+  # Vendored upstream snapshots under `compatibility/*/upstream/**`
+  # are excluded — reference material outside cerberus's authorship
+  # boundary (and pinned by their respective VERSION files). Runs in
+  # parallel with `check` + `lint`; flip on as a required status check
+  # via branch protection.
   forbid-skip:
     name: forbid-skip
     runs-on: ubuntu-latest
@@ -119,7 +119,6 @@ jobs:
         run: |
           if git ls-files -z -- \
               '*_test.go' \
-              ':!:harness/*/upstream/**' \
               ':!:compatibility/*/upstream/**' \
               | xargs -0 grep -nE 't\.Skip[fN]?\(' --; then
             echo "::error::t.Skip / t.Skipf / t.SkipNow found in test files — fix the bug, do not skip"
@@ -130,7 +129,6 @@ jobs:
           if git ls-files -z -- \
               '*_test.go' \
               '*.txtar' \
-              ':!:harness/*/upstream/**' \
               ':!:compatibility/*/upstream/**' \
               | xargs -0 grep -niEH 'not implemented|\bskipped\b|\bdeferred\b' --; then
             echo "::error::discipline-erosion wording (\"not implemented\" / \"skipped\" / \"deferred\") found in test files or TXTAR fixtures — implement the feature, rewrite to a neutral verb (dropped / excluded / rejected / bypassed), or remove the comment"

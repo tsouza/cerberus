@@ -66,10 +66,10 @@
 
 version: 3
 
-# Bound the linter to the in-repo Go packages. test/, harness/, cmd/
-# code is checked by golangci-lint but exempt from arch-lint — they
-# legitimately reach across the IR / SQL / driver layers for fixtures
-# and entrypoints.
+# Bound the linter to the in-repo Go packages. test/, compatibility/,
+# cmd/ code is checked by golangci-lint but exempt from arch-lint —
+# they legitimately reach across the IR / SQL / driver layers for
+# fixtures and entrypoints.
 workdir: internal
 
 # Enforce only internal component-layering rules. Vendor (third-party

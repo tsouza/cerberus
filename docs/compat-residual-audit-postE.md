@@ -345,6 +345,6 @@ but lossy at large scale) that needs maintainer sign-off, not a bug.
   on residual diffs reaching zero (or the allowlist absorbing them).
 - **Loki / Tempo compatibility.** Out of scope for this audit; the
   loki-compatibility lane is gated separately
-  (`harness/loki-compatibility/`) and Tempo is still in scaffolding
-  (`harness/tempo-compatibility/`). Both follow the same
+  (`compatibility/loki/`) and Tempo is still in scaffolding
+  (`compatibility/tempo/`). Both follow the same
   audit-then-prioritise pattern when their first compat runs land.

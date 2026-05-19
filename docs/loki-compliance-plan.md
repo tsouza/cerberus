@@ -40,7 +40,7 @@ Other Grafana artefacts:
 ## Proposed layout
 
 ```text
-harness/loki-compatibility/
+compatibility/loki/
   README.md
   docker-compose.yml                  # clickhouse + loki (reference) + cerberus
   test-cerberus.yml                   # endpoint config (addr-1=loki, addr-2=cerberus)
@@ -79,8 +79,8 @@ Cerberus already exposes `internal/api/loki/` + has TXTAR fixtures at `test/spec
 
 ## Diff strategy
 
-- **PR 1 path**: reuse upstream `TestRemoteStorageEquality` verbatim. Vendor `remote_test.go` under `harness/loki-compatibility/upstream/loki-bench/`, build with `-tags=remote_correctness`. Pass `-addr-1=http://loki:3100` (reference) + `-addr-2=http://cerberus:29092` (test). Normalisers (`sortVector` / `sortMatrix` / `sortStreams`) + `1e-5` tolerance.
-- **PR 5 path** (later): cerberus-owned driver under `harness/loki-compatibility/cmd/loki-compliance-tester/` so the report shape matches the Prom report.
+- **PR 1 path**: reuse upstream `TestRemoteStorageEquality` verbatim. Vendor `remote_test.go` under `compatibility/loki/upstream/loki-bench/`, build with `-tags=remote_correctness`. Pass `-addr-1=http://loki:3100` (reference) + `-addr-2=http://cerberus:29092` (test). Normalisers (`sortVector` / `sortMatrix` / `sortStreams`) + `1e-5` tolerance.
+- **PR 5 path** (later): cerberus-owned driver under `compatibility/loki/cmd/loki-compliance-tester/` so the report shape matches the Prom report.
 
 ## Endpoints exercised
 
@@ -97,7 +97,7 @@ Initially: `/loki/api/v1/query` + `/query_range`. PR 4 expands to `/labels`, `/l
 
 ## Open questions
 
-- **License**: Grafana Loki is **AGPLv3**. Vendoring `pkg/logql/bench/queries/*.yaml` + `remote_test.go` extends AGPL into cerberus's test corpus path. Mitigation: isolate AGPL files under `harness/loki-compatibility/upstream/loki-bench/` with upstream `LICENSE` preserved (same posture as `harness/compatibility/upstream/promql/`). Reviewer: confirm cerberus's main `LICENSE` doesn't cover the harness `upstream/` dir.
+- **License**: Grafana Loki is **AGPLv3**. Vendoring `pkg/logql/bench/queries/*.yaml` + `remote_test.go` extends AGPL into cerberus's test corpus path. Mitigation: isolate AGPL files under `compatibility/loki/upstream/loki-bench/` with upstream `LICENSE` preserved (same posture as `harness/compatibility/upstream/promql/`). Reviewer: confirm cerberus's main `LICENSE` doesn't cover the harness `upstream/` dir.
 - **Template-variable resolution**: `${SELECTOR}` / `${LABEL_NAME}` / `${LABEL_VALUE}` need a `dataset_metadata.json` mapped to the seeded fixture. Pre-discover locally; commit the JSON.
 - **Loki version pin**: pick `grafana/loki:X.Y.Z`. The parser fork `tsouza/loki:v3.0.0-cerberus-parser` is syntax source-of-truth; runtime container should match the major.
 - **`should_fail` semantics**: Prom corpus has this; Loki bench doesn't. PR 6 may need a cerberus-side flag for queries expected to fail-fast.

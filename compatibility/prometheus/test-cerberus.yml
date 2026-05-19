@@ -1,0 +1,19 @@
+# PromQL compatibility tester config for cerberus.
+#
+# Pointed at by `scripts/run-compatibility.sh`; consumed by the upstream
+# `promql-compliance-tester` binary at compatibility/prometheus/upstream/promql/cmd/.
+#
+# Reference target  = stock Prometheus on the docker-compose stack
+# Test target       = cerberus on the docker-compose stack
+#
+# Both ingest the same deterministic OTel fixture. Differences in results
+# are reported by the tester; documented deviations go in
+# expected-failures.json (kept empty until we have known semantic gaps).
+
+reference_target_config:
+  query_url: 'http://localhost:29090'
+
+test_target_config:
+  query_url: 'http://localhost:29091'
+
+query_tweaks: []

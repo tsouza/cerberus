@@ -5,8 +5,8 @@ name: shadow-mode
 # Evaluates each PromQL query in the corpus against (a) cerberus's native
 # HTTP path and (b) the in-process Prometheus engine oracle that lives at
 # `internal/promshim/local/`, then diffs the two result vectors. The CLI
-# entrypoint is `harness/prometheus-compliance/shadow/cmd/shadow`; see the
-# README in `harness/prometheus-compliance/shadow/` for the strategy matrix and
+# entrypoint is `compatibility/prometheus/shadow/cmd/shadow`; see the
+# README in `compatibility/prometheus/shadow/` for the strategy matrix and
 # exit codes.
 #
 # Triggers:
@@ -26,14 +26,14 @@ on:
       - 'internal/chplan/**'
       - 'internal/api/prom/**'
       - 'internal/promshim/local/**'
-      - 'harness/prometheus-compliance/shadow/**'
+      - 'compatibility/prometheus/shadow/**'
       - '.github/workflows/shadow-mode.yml'
   workflow_dispatch:
     inputs:
       corpus:
         description: 'Path to a corpus TXTAR file'
         required: false
-        default: 'harness/prometheus-compliance/shadow/corpus/smoke.txt'
+        default: 'compatibility/prometheus/shadow/corpus/smoke.txt'
       strategy:
         description: 'Diff strategy: prefer-native | force-native | oracle-only'
         required: false
@@ -66,7 +66,7 @@ jobs:
           tool: just
 
       - name: Build harness
-        run: go build -trimpath -o bin/shadow ./harness/prometheus-compliance/shadow/cmd/shadow
+        run: go build -trimpath -o bin/shadow ./compatibility/prometheus/shadow/cmd/shadow
 
       - name: Run shadow-mode against smoke corpus
         env:
@@ -76,7 +76,7 @@ jobs:
           # against the seeded dataset. Set vars.SHADOW_CERBERUS_URL to
           # point at a live cerberus when running under workflow_dispatch.
           CERBERUS_URL: ${{ vars.SHADOW_CERBERUS_URL || 'http://localhost:9090' }}
-          SHADOW_CORPUS: ${{ github.event.inputs.corpus || 'harness/prometheus-compliance/shadow/corpus/smoke.txt' }}
+          SHADOW_CORPUS: ${{ github.event.inputs.corpus || 'compatibility/prometheus/shadow/corpus/smoke.txt' }}
           SHADOW_STRATEGY: ${{ github.event.inputs.strategy || 'force-native' }}
         run: |
           ./bin/shadow \

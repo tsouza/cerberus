@@ -18,10 +18,10 @@ Cerberus is in healthy shape going into GA:
   Everything else lives above 50 %, most packages above 80 %.
 - **Zero `unused` findings.** No dead exported symbols flagged by
   `staticcheck`/`unused`.
-- **Three real TODO/FIXME markers**, all in `harness/prometheus-compliance/`
+- **Three real TODO/FIXME markers**, all in `compatibility/prometheus/`
   YAML — narrative reminders, not code debt.
 - **`CLAUDE.md` has narrow staleness pockets** (PR-in-flight phrasing,
-  missing `harness/tempo-compatibility/`, partial `docs/` listing) but
+  missing `compatibility/tempo/`, partial `docs/` listing) but
   the hard-rule and architecture sections all match reality.
 
 ## 1. Lint baseline
@@ -51,18 +51,18 @@ catch first?" signal — none of these are current violations.
 Search: `grep -rEn "(TODO|FIXME|XXX|HACK)" --include=*.go --include=*.md
 --include=*.yml --include=*.yaml .` (excluding `harness/*/upstream/`).
 
-| File:line                                                     | Category           | Note                                                             |
-| ------------------------------------------------------------- | ------------------ | ---------------------------------------------------------------- |
-| `internal/schema/ddl/idempotency_test.go:290`                 | False positive     | `context.TODO()` API call, not a marker.                         |
-| `internal/schema/ddl/idempotency_test.go:293`                 | False positive     | `context.TODO()` API call, not a marker.                         |
-| `docs/compat-residual-audit-25898791664.md:522`               | Comment-only note  | Audit doc text referencing a now-resolved upstream TODO.         |
-| `harness/prometheus-compliance/cerberus-test-queries.yml:41`  | Deferred behaviour | "Add tests for staleness support."                               |
-| `harness/prometheus-compliance/cerberus-test-queries.yml:113` | Comment-only note  | "Check this more systematically for every node type?"            |
-| `harness/prometheus-compliance/cerberus-test-queries.yml:128` | Deferred behaviour | "Add non-explicit many-to-one / one-to-many that errors."        |
-| `harness/prometheus-compliance/cerberus-test-queries.yml:129` | Deferred behaviour | "Add many-to-many match that errors."                            |
-| `.golangci.yml:14`                                            | Deferred behaviour | "tighten to 30 once `writeInto` is broken up by `emit_node.go`." |
-| `.golangci.yml:19`                                            | Deferred behaviour | "tighten `max-complexity` to 25 once `writeInto` is decomposed." |
-| `.golangci.yml:34`                                            | Deferred behaviour | "deduplicate the per-type fold helpers and tighten back to 200." |
+| File:line                                                | Category           | Note                                                             |
+| -------------------------------------------------------- | ------------------ | ---------------------------------------------------------------- |
+| `internal/schema/ddl/idempotency_test.go:290`            | False positive     | `context.TODO()` API call, not a marker.                         |
+| `internal/schema/ddl/idempotency_test.go:293`            | False positive     | `context.TODO()` API call, not a marker.                         |
+| `docs/compat-residual-audit-25898791664.md:522`          | Comment-only note  | Audit doc text referencing a now-resolved upstream TODO.         |
+| `compatibility/prometheus/cerberus-test-queries.yml:41`  | Deferred behaviour | "Add tests for staleness support."                               |
+| `compatibility/prometheus/cerberus-test-queries.yml:113` | Comment-only note  | "Check this more systematically for every node type?"            |
+| `compatibility/prometheus/cerberus-test-queries.yml:128` | Deferred behaviour | "Add non-explicit many-to-one / one-to-many that errors."        |
+| `compatibility/prometheus/cerberus-test-queries.yml:129` | Deferred behaviour | "Add many-to-many match that errors."                            |
+| `.golangci.yml:14`                                       | Deferred behaviour | "tighten to 30 once `writeInto` is broken up by `emit_node.go`." |
+| `.golangci.yml:19`                                       | Deferred behaviour | "tighten `max-complexity` to 25 once `writeInto` is decomposed." |
+| `.golangci.yml:34`                                       | Deferred behaviour | "deduplicate the per-type fold helpers and tighten back to 200." |
 
 **Categorisation:**
 
@@ -209,7 +209,7 @@ allows; deduplicating is a roadmap item for the constant-fold refactor.
 | ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
 | Hard rules → required CI            | "Required CI checks: `check` + `lint`."                                                                                                | `ci.yml` defines both jobs; `e2e.yml`'s `dashboard` runs only on main pushes + nightly + manual dispatch.                                                                                                                                                                                                                                                                        | **Current.**               |
 | Hard rules → dashboard E2E          | "`dashboard` full-stack smoke ... lives as the `dashboard` job inside `.github/workflows/e2e.yml`."                                    | True. But `e2e.yml` also defines a sibling `startup-bench` job that CLAUDE.md doesn't mention.                                                                                                                                                                                                                                                                                   | **Mild gap.**              |
-| Architecture map                    | "`harness/prometheus-compliance/`"                                                                                                     | True. **But:** `harness/tempo-compatibility/` (vendored tempo-vulture + httpclient snapshot, landed PR #367) is NOT mentioned.                                                                                                                                                                                                                                                   | **Stale — missing entry.** |
+| Architecture map                    | "`compatibility/prometheus/`"                                                                                                          | True. **But:** `compatibility/tempo/` (vendored tempo-vulture + httpclient snapshot, landed PR #367) is NOT mentioned.                                                                                                                                                                                                                                                           | **Stale — missing entry.** |
 | Architecture map (`test/spec/`)     | "[incoming via PR #265]"                                                                                                               | `test/spec/chplan_print.go` exists and is in active use. PR #265 has landed.                                                                                                                                                                                                                                                                                                     | **Stale phrasing.**        |
 | Architecture map (`test/property/`) | "Phase 1 PR 1 in flight ... oracle/bridge.go temporary bridge to promshim/local (replaced by from-scratch evaluator in Phase 1 PR 2)." | Phase 1 PR 2 has **landed** — `test/property/oracle/promql/` (the from-scratch evaluator) exists and `bridge.go`'s own doc comment says "As of Phase 1 PR 2 the canonical oracle is the from-scratch PromQL evaluator".                                                                                                                                                          | **Stale phrasing.**        |
 | Architecture map (`docs/`)          | "roadmap.md, optimizer-research.md, compatibility.md, engine.md, observability.md, 12factor.md, test-strategy.md, …"                   | Missing from the ellipsis: `chsql-audit.md`, `coverage-baseline.md`, `engine-evaluation.md`, `health.md`, `loki-compliance-plan.md`, `sql-builder-evaluation.md`, `tempo-compliance-plan.md`, `test-spec-audit.md`, `upstream-forks.md`. The ellipsis is correct ("…") but a few of these are linked from the same file (e.g. `sql-builder-evaluation.md`, `upstream-forks.md`). | **Mild gap.**              |
@@ -242,8 +242,8 @@ None.
    functions (`QueryCursor`, `QueryPlanCursor`) — the cursor variants of
    the otherwise-fully-covered `Query` / `QueryPlan`. Adding a cursor-shape
    test fixture would close the gap.
-3. **CLAUDE.md → `harness/tempo-compatibility/` missing.** The
-   architecture map should list it alongside `harness/prometheus-compliance/`
+3. **CLAUDE.md → `compatibility/tempo/` missing.** The
+   architecture map should list it alongside `compatibility/prometheus/`
    so onboarding agents know where TraceQL harness work lives.
 4. **CLAUDE.md → stale "in flight" / "incoming" phrasing for property
    tests + PR #265.** Both have landed; the phrasing implies otherwise.

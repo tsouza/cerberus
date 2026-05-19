@@ -1,0 +1,181 @@
+# Docker Compose stack for the TraceQL / Tempo compatibility harness.
+#
+# Status: PR 2 of the rollout described in docs/tempo-compliance-plan.md.
+# This file stands up the Compose stack and wires a STUB driver that just
+# exits 0. The real seeder + diff driver land in PRs 3-4.
+#
+# Services:
+#   clickhouse           OTel-schema CH instance (auth: cerberus/cerberus,
+#                        db: otel). Matches compatibility/prometheus's
+#                        Ubuntu-base image choice — see the inline note on
+#                        the alpine variant regression.
+#   tempo                Reference grafana/tempo single-binary, listens on
+#                        :3200 (HTTP) and :4317 (OTLP gRPC). Pinned to the
+#                        commit-hash tag that matches the tsouza/tempo
+#                        replace target in go.mod — see the inline note
+#                        on the version pin.
+#   cerberus-tempo       cerberus under test, listens on :29092. Same
+#                        Dockerfile.local image as the prom harness; the
+#                        cerberus binary serves Prom/Loki/Tempo on the
+#                        same CERBERUS_HTTP_ADDR.
+#   tempo-compat-driver  STUB driver (./driver). Reads -tempo / -cerberus /
+#                        -corpus / -report flags, prints "stub" and exits 0.
+#                        Replaced by PRs 3-4 with the real seeder + differ.
+#
+# Usage:
+#   ./scripts/run-tempo-compatibility.sh
+# or:
+#   docker compose up --wait
+#   docker compose run --rm tempo-compat-driver
+#   docker compose down -v
+
+name: cerberus-tempo-compatibility
+
+services:
+  clickhouse:
+    # Use the Ubuntu-base image, NOT -alpine. Per PR #245's finding on
+    # the sibling prometheus compatibility harness, the alpine variant on
+    # GH Actions runners stalls in the entrypoint for 5+ min (never
+    # starts the server, never binds 8123). The Ubuntu-base variant
+    # boots in ~10-20s on the same runners. A future maintainer: do
+    # NOT innocently switch to -alpine here without re-validating
+    # against the GH-runner musl/scheduling regression that bit the
+    # PromQL harness.
+    image: clickhouse/clickhouse-server:24.8
+    environment:
+      CLICKHOUSE_DB: otel
+      CLICKHOUSE_USER: cerberus
+      CLICKHOUSE_PASSWORD: cerberus
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    healthcheck:
+      # Talking SQL over the local CH client is more reliable than
+      # `wget /ping`: the HTTP listener (:8123) binds slightly before
+      # the SQL engine is ready to answer queries. Matches the pattern
+      # PR #245 settled on for the PromQL harness.
+      test: ["CMD-SHELL", "clickhouse-client --query 'SELECT 1' 2>/dev/null || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 36
+      start_period: 30s
+    ports:
+      - "29100:9000"
+      - "28124:8123"
+
+  tempo:
+    # Pin to the commit-hash tag that matches the tsouza/tempo replace
+    # target in go.mod. Reasoning:
+    #
+    #   go.mod replace: github.com/grafana/tempo =>
+    #       github.com/tsouza/tempo v0.0.1-cerberus-accessors
+    #
+    #   tsouza/tempo cerberus-accessors branches from grafana/tempo
+    #   commit 2f74ea818de1377e6ac9dd15117fa284c9c6ba36
+    #   (= `v3.0.0-rc.1-7-g2f74ea818`, see harness/.../upstream/VERSION).
+    #
+    # Tempo's pkg/traceql parser ships in the server binary, so a Docker
+    # image that lags or leads the fork's branch point will diff against
+    # cerberus for purely-parser reasons. `grafana/tempo:main-2f74ea8`
+    # is built from that exact upstream commit, so it is the precisely-
+    # matching image. When the tsouza/tempo replace tag bumps, bump the
+    # tag here in lock-step (the procedure is documented in
+    # compatibility/tempo/README.md alongside the vendor bump).
+    #
+    # See docs/tempo-compliance-plan.md "Open question 2" for the
+    # version-drift discussion.
+    image: grafana/tempo:main-2f74ea8
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./tempo-config.yaml:/etc/tempo.yaml:ro
+    ports:
+      # Host port offsets keep this harness coexistable with the
+      # sibling PromQL harness and the e2e k3d stack without port
+      # collisions on the developer machine.
+      - "23200:3200"  # HTTP (query API)
+      - "24317:4317"  # OTLP gRPC ingest (used by PR 3's seeder)
+    # No Docker-level healthcheck: the grafana/tempo image is distroless
+    # (no sh / wget / curl / nc) and Tempo's binary doesn't expose a
+    # self-ping subcommand suitable for `CMD ["tempo", ...]`. Readiness
+    # is enforced from the driver's pre-push `/ready` poll instead
+    # (see `waitTempoReady` in driver/seeder.go) — same pattern the
+    # loki compatibility harness uses for the distroless `grafana/loki`
+    # image. The pre-push poll covers the cold-start window between
+    # "container running" and "OTLP gRPC listener accepting Export".
+
+  cerberus-tempo:
+    image: cerberus:tempo-compatibility
+    build:
+      context: ../..
+      dockerfile: Dockerfile.local
+    environment:
+      CERBERUS_HTTP_ADDR: ":29092"
+      CERBERUS_CH_ADDR: "clickhouse:9000"
+      CERBERUS_CH_DATABASE: "otel"
+      CERBERUS_CH_USERNAME: "cerberus"
+      CERBERUS_CH_PASSWORD: "cerberus"
+      CERBERUS_CH_DIAL_TIMEOUT: "10s"
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    ports:
+      - "29092:29092"
+    healthcheck:
+      # Matches the prom harness: probing `--version` proves the binary
+      # is reachable in the container without depending on schema /
+      # network state.
+      test: ["CMD", "/usr/local/bin/cerberus", "--version"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  tempo-compat-driver:
+    # The script (run-tempo-compatibility.sh) runs the seeder and differ
+    # as Go binaries on the host, connecting to Docker-published ports
+    # on localhost. This avoids Docker DNS resolution failures on CI
+    # runners (see the script header for details).
+    #
+    # This service definition is retained for optional in-Docker
+    # debugging: `docker compose run --rm tempo-compat-driver seed`
+    # or `docker compose run --rm tempo-compat-driver diff` still
+    # works inside the compose network. The env vars below set
+    # Docker-internal hostnames that resolve only from within the
+    # compose network; the Go flag defaults use localhost + published
+    # ports for host execution.
+    #
+    # Build context widened from `./driver` to the repo root so the
+    # driver can `import "github.com/tsouza/cerberus/internal/schema/ddl"`
+    # and the OTLP gRPC client types via cerberus's go.mod. Mirrors
+    # how Dockerfile.local builds the cerberus binary.
+    image: cerberus-tempo-compat-driver:pr4
+    build:
+      context: ../..
+      dockerfile: compatibility/tempo/driver/Dockerfile
+    command: ["seed"]
+    environment:
+      # Targets are reachable on the compose network by service name.
+      # The seeder honours flags or these env vars (`flag.String`'s
+      # default is `envOr(...)`).
+      TEMPO_OTLP_ADDR: "tempo:4317"
+      TEMPO_HTTP_URL: "http://tempo:3200"
+      CERBERUS_URL: "http://cerberus-tempo:29092"
+      CERBERUS_CH_ADDR: "clickhouse:9000"
+      CERBERUS_CH_DATABASE: "otel"
+      CERBERUS_CH_USERNAME: "cerberus"
+      CERBERUS_CH_PASSWORD: "cerberus"
+    depends_on:
+      tempo:
+        # Distroless tempo image has no healthcheck (see service definition);
+        # the driver polls /ready before issuing the first OTLP Export.
+        condition: service_started
+      cerberus-tempo:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    volumes:
+      # `reports/` receives the differ's markdown output (PR 4). The
+      # seeder doesn't write here; the mount is mandatory for `diff`.
+      - ./reports:/reports
+      # `corpus/` is the TXTAR source the differ reads. Mount read-only
+      # so a defensive write in the driver can't accidentally rewrite
+      # the source-of-truth corpus from inside the container.
+      - ./driver/corpus:/corpus:ro
+      - ./expected-failures.json:/expected-failures.json:ro

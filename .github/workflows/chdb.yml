@@ -59,7 +59,7 @@ on:
       - 'internal/chclient/**'
       - 'internal/chclienttest/**'
       - 'test/spec/**'
-      - 'harness/prometheus-compliance/cmd/seed/**'
+      - 'compatibility/prometheus/cmd/seed/**'
       - 'go.mod'
       - 'go.sum'
       - '.github/workflows/chdb.yml'

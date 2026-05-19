@@ -1,0 +1,264 @@
+# Cerberus overlay for the vendored grafana/loki:pkg/logql/bench corpus.
+#
+# This file lives OUTSIDE compatibility/loki/upstream/loki-bench/ so
+# cerberus-side curation doesn't leak into the AGPL-3.0 vendor subtree.
+#
+# Schema (mirrors prometheus/compliance's test-queries.yml posture):
+#
+#   should_skip:
+#     - source: "<suite>/<file>.yaml#<description>"
+#       reason: "free-form English; cite roadmap milestone or upstream issue"
+#       since:  "<YYYY-MM-DD>"  # when the skip was added; for drift audits
+#       jira:   "<roadmap-ref>" # optional, e.g. "RC2 R2.x" or "#<PR>"
+#
+#   should_fail:
+#     # Same shape; for queries we EXPECT to round-trip but want to track
+#     # as known-broken. Initially unused.
+#
+# Suites covered by `<suite>/` (per docs/loki-compliance-plan.md PR 6):
+#
+#   - fast/        — vendored verbatim in PR 2; selector-vocabulary skips
+#                    documented since 2026-05-15 pending a future seed
+#                    expansion.
+#   - regression/  — vendored in PR 6 (this file). Most entries now run
+#                    against cerberus; the remaining skips cite the
+#                    specific gap they hit (`| json`/`| regexp` parser
+#                    stages, `detected_level` structured-metadata label,
+#                    or upstream-pinned `skip: true` rows). `| logfmt`,
+#                    `| unwrap`, range aggregations on unwrapped values,
+#                    range-aggregation `by`/`without` grouping, and
+#                    numeric/duration/bytes label filters are all wired
+#                    so entries that only needed those have been dropped.
+#   - exhaustive/  — vendored in PR 6 (this file). Same posture as
+#                    regression/: most entries lifted, residual skips cite
+#                    the surviving feature gap.
+#
+# Maintenance:
+#
+#   - Reviewers add an entry when a vendored query exercises a LogQL
+#     feature cerberus hasn't shipped, OR when the runner surfaces a
+#     persistent diff vs the reference Loki on a feature listed under
+#     docs/roadmap.md.
+#   - Empty should_skip / should_fail are fine. The runner consumes
+#     this overlay via `--overlay compatibility/loki/cerberus-test-queries.yml`
+#     (wired in PR 5's cerberus-owned compliance tester). Each matched
+#     entry suppresses the case before it hits the wire and records the
+#     reason in the result row's `skipReason` field.
+#   - When a query's status changes (e.g. cerberus implements the
+#     feature), drop the entry and let CI verify the diff is clean.
+#   - On every Loki tag bump (see ../README.md "Bump procedure"),
+#     re-validate the `source:` paths point at queries that still exist.
+
+# Why parts of the corpus remain skipped:
+#
+#   The fast/ basic-selector and simple-metrics (count_over_time, count
+#   with line filter) entries were unskipped after the seed expansion added
+#   multi-label streams, structured metadata, and multi-format log lines.
+#   The remaining fast/ entries require LogQL features cerberus has not
+#   yet implemented (detected_level filter, | json parser stage).
+#   The regression/ + exhaustive/ slices were originally enrolled in
+#   bulk; entries that only depended on features that have since landed
+#   were dropped. Surviving skips fall into:
+#
+#     - `| unpack` / `| pattern` — post-fetch (cerberus supports parse-only)
+#     - `| line_format` / `| label_format` — landed via #128/#130
+#     - `| decolorize` — landed
+#     - `| logfmt` (bare + typed `| logfmt foo="bar"`) — landed via
+#       extractKeyValuePairs lowering.
+#     - `| json` / `| regexp` / `| json field=...` — pending chsql
+#       JSONExtract helpers.
+#     - `| drop` / `| keep` — landed as post-fetch label projection.
+#     - Numeric / duration / bytes label filters — landed via
+#       `toFloat64OrZero` / `parseTimeDelta` / `parseReadableSize` on the
+#       parser-extracted label string.
+#     - `| unwrap` (bare + `duration(...)` / `duration_seconds(...)` /
+#       `bytes(...)`) — landed; per-row Value built from the live
+#       labelsExpr the same way `| logfmt` exposes parsed keys.
+#     - Range aggregations on unwrapped values (sum_over_time,
+#       avg_over_time, min/max/stddev/stdvar_over_time, and
+#       quantile_over_time) — landed; reuse the same chsql range-window
+#       emitters the PromQL head ships.
+#     - `by`/`without` grouping on range aggregations — landed; inner
+#       Project synthesises a `map(...)` / `mapFilter(...)` group key.
+#
+# Resolution path (per docs/loki-compliance-plan.md PR 6):
+#
+#   - PR 6 vendored the regression/ + exhaustive/ subdirs verbatim and
+#     enrolled every entry. As each LogQL feature lands, the matching
+#     overlay rows are dropped (or rewritten with a tighter rationale if
+#     a residual gap remains, e.g. structured-metadata `detected_level`).
+#   - The seed expansion now writes multi-label streams with
+#     JSON/logfmt/unstructured lines, structured metadata (detected_level),
+#     and error keywords (failed/refused). Entries that only needed
+#     matching selectors have been unskipped.
+
+should_skip:
+  # fast/ — entries still skipped require unimplemented LogQL features (detected_level filters, | json, | logfmt):
+  - source: "fast/simple-metrics.yaml#Count with error/warn filter"
+    reason: "Requires `| detected_level=~\"error|warn\"` filter; cerberus does not yet support structured-metadata label filters in LogQL pipe expressions."
+    since: "2026-05-15"
+    jira:  "docs/loki-compliance-plan.md PR 6"
+  - source: "fast/simple-metrics.yaml#Rate with error/warn filter"
+    reason: "Requires `| detected_level=~\"error|warn\"` filter; cerberus does not yet support structured-metadata label filters in LogQL pipe expressions."
+    since: "2026-05-15"
+    jira:  "docs/loki-compliance-plan.md PR 6"
+  # fast/structured-metadata — requires detected_level filter support and/or parser stages.
+  - source: "fast/structured-metadata.yaml#Structured metadata error level filter"
+    reason: "Requires `| detected_level=\"error\"` structured-metadata filter; cerberus does not yet support structured-metadata label filters in LogQL pipe expressions. Seeder now writes detected_level."
+    since: "2026-05-15"
+    jira:  "docs/loki-compliance-plan.md PR 6"
+  - source: "fast/structured-metadata.yaml#Logfmt parsing with structured metadata filter"
+    reason: "`| logfmt` is now supported (extractKeyValuePairs lowering); this query also filters on `detected_level` structured metadata, which cerberus does not yet support."
+    since: "2026-05-15"
+    jira:  "docs/loki-compliance-plan.md PR 6 (structured-metadata)"
+  - source: "fast/structured-metadata.yaml#Logfmt parsing with structured metadata filter first"
+    reason: "`| logfmt` is now supported; the remaining blocker is `detected_level` structured-metadata filtering."
+    since: "2026-05-15"
+    jira:  "docs/loki-compliance-plan.md PR 6 (structured-metadata)"
+  - source: "fast/structured-metadata.yaml#JSON parsing with structured metadata filter"
+    reason: "Cerberus does not yet wire the `| json` parser stage (lower.go JSONExpressionParserExpr returns 'not yet supported'). Also requires `detected_level` + JSON-shaped log lines (seeder emits logfmt)."
+    since: "2026-05-15"
+    jira:  "docs/loki-compliance-plan.md PR 6 (`| json` parser)"
+  - source: "fast/structured-metadata.yaml#JSON parsing with structured metadata filter first"
+    reason: "Upstream already pins `skip: true` (dataobj-engine schema gap). Listed explicitly so a future upstream `skip: false` flip doesn't silently re-enable on cerberus before the `| json` parser lands."
+    since: "2026-05-15"
+    jira:  "docs/loki-compliance-plan.md PR 6 (`| json` parser)"
+
+  # regression/drilldown-patterns.yaml — `| json` parser stage remains
+  # the only blocker now that `| unwrap` + range-aggregation grouping land.
+  - source: "regression/drilldown-patterns.yaml#Basic drilldown with json and logfmt parsing"
+    reason: "Uses `| json | logfmt | drop` — `| logfmt` and `| drop` are supported, but `| json` is not yet wired (internal/logql/lower.go)."
+    since: "2026-05-15"
+    jira:  "docs/loki-compliance-plan.md PR 6 (`| json` parser)"
+  - source: "regression/drilldown-patterns.yaml#Drilldown with error level filter"
+    reason: "Same as Basic drilldown — `| json` parser is the remaining blocker."
+    since: "2026-05-15"
+    jira:  "docs/loki-compliance-plan.md PR 6 (`| json` parser)"
+  - source: "regression/drilldown-patterns.yaml#Drilldown with error or warn level filter"
+    reason: "Same as Basic drilldown — `| json` parser is the remaining blocker."
+    since: "2026-05-15"
+    jira:  "docs/loki-compliance-plan.md PR 6 (`| json` parser)"
+  - source: "regression/drilldown-patterns.yaml#Drilldown count with complex filters"
+    reason: "Uses `| detected_level=... or detected_level=... |~ ... | json | logfmt | drop | level=~...` — `| logfmt` / `| drop` are supported, but `| json` and the complex label-filter or-chain over structured metadata remain unsupported."
+    since: "2026-05-15"
+    jira:  "docs/loki-compliance-plan.md PR 6 (`| json` parser)"
+
+  # regression/metric-queries.yaml — most unwrap entries now run; the
+  # surviving skip is the upstream-pinned `HTTP status code distribution`
+  # row.
+  - source: "regression/metric-queries.yaml#HTTP status code distribution"
+    reason: "Upstream pins `skip: true` (JSONParserErr on generated data). `| json` parser is also unwired on cerberus."
+    since: "2026-05-15"
+    jira:  "docs/loki-compliance-plan.md PR 6 (`| json` parser)"
+
+  # regression/structured-metadata.yaml — `detected_level` + `| json`
+  # parsers are the remaining blockers.
+  - source: "regression/structured-metadata.yaml#Combined line and metadata filter"
+    reason: "Requires `detected_level` structured metadata; seeder writes none."
+    since: "2026-05-15"
+    jira:  "docs/loki-compliance-plan.md PR 6"
+  - source: "regression/structured-metadata.yaml#JSON parsing with duration filter and structured metadata"
+    reason: "Upstream pins `skip: true` (numeric `> 0.1` label filter unsupported by v2 engine). Cerberus also requires the `| json` parser to feed the numeric label."
+    since: "2026-05-15"
+    jira:  "docs/loki-compliance-plan.md PR 6 (`| json` parser)"
+  - source: "regression/structured-metadata.yaml#Logfmt parsing with level filter"
+    reason: "`| logfmt | level=\"error\" | detected_level=\"error\"` — `| logfmt` is supported, but `detected_level` structured-metadata filtering is not yet wired."
+    since: "2026-05-15"
+    jira:  "docs/loki-compliance-plan.md PR 6 (structured-metadata)"
+  - source: "regression/structured-metadata.yaml#Drilldown pattern with case-insensitive error search"
+    reason: "Upstream pins `skip: true` (numeric `>= 500` label filter). Cerberus also needs the `| json` parser for the upstream pipeline."
+    since: "2026-05-15"
+    jira:  "docs/loki-compliance-plan.md PR 6 (`| json` parser)"
+  - source: "regression/structured-metadata.yaml#Drilldown with failed search and error level"
+    reason: "Requires `detected_level` structured metadata + 'failed' keyword in log content; seeder writes neither."
+    since: "2026-05-15"
+    jira:  "docs/loki-compliance-plan.md PR 6"
+  - source: "regression/structured-metadata.yaml#Drilldown with error/warn level and refused search"
+    reason: "Requires `detected_level` structured metadata + 'refused' keyword; seeder writes neither."
+    since: "2026-05-15"
+    jira:  "docs/loki-compliance-plan.md PR 6"
+
+  # exhaustive/aggregations.yaml — most entries lifted now that `| unwrap`,
+  # value range aggs, and range-agg grouping land. Remaining skips are
+  # seed-gap entries (labels the seeder doesn't emit yet).
+  - source: "exhaustive/aggregations.yaml#Count aggregated by pod"
+    reason: "`sum by (pod)` on a label key the seeder doesn't write."
+    since: "2026-05-15"
+    jira:  "docs/loki-compliance-plan.md PR 6 (seed gap)"
+  - source: "exhaustive/aggregations.yaml#Count aggregated by namespace"
+    reason: "`namespace` label not in seed."
+    since: "2026-05-15"
+    jira:  "docs/loki-compliance-plan.md PR 6 (seed gap)"
+  - source: "exhaustive/aggregations.yaml#Count aggregated by service_name"
+    reason: "Seeder writes `service` not `service_name`."
+    since: "2026-05-15"
+    jira:  "docs/loki-compliance-plan.md PR 6 (seed gap)"
+  - source: "exhaustive/aggregations.yaml#Count aggregated by detected_level"
+    reason: "Requires `detected_level` structured metadata; seeder writes none."
+    since: "2026-05-15"
+    jira:  "docs/loki-compliance-plan.md PR 6"
+  - source: "exhaustive/aggregations.yaml#Count aggregated by cluster and namespace"
+    reason: "`cluster` / `namespace` labels not in seed."
+    since: "2026-05-15"
+    jira:  "docs/loki-compliance-plan.md PR 6 (seed gap)"
+  - source: "exhaustive/aggregations.yaml#Count aggregated by service_name and container"
+    reason: "`service_name` / `container` labels not in seed."
+    since: "2026-05-15"
+    jira:  "docs/loki-compliance-plan.md PR 6 (seed gap)"
+
+  # exhaustive/unwrap-aggregations.yaml — `| json`-based and
+  # upstream-pinned entries remain; everything else now runs.
+  - source: "exhaustive/unwrap-aggregations.yaml#Rate of unwrapped values - no grouping"
+    reason: "`rate(... | json | unwrap duration_ms)` — `| json` parser is not yet wired."
+    since: "2026-05-15"
+    jira:  "docs/loki-compliance-plan.md PR 6 (`| json` parser)"
+  - source: "exhaustive/unwrap-aggregations.yaml#Sum over time - no grouping"
+    reason: "`sum_over_time(... | json | unwrap duration_ms)` — `| json` parser is the remaining blocker."
+    since: "2026-05-15"
+    jira:  "docs/loki-compliance-plan.md PR 6 (`| json` parser)"
+  - source: "exhaustive/unwrap-aggregations.yaml#Standard variance over time"
+    reason: "Upstream pins `skip: true` (stddev_over_time / stdvar_over_time unsupported by Loki's v2 engine)."
+    since: "2026-05-15"
+    jira:  "docs/loki-compliance-plan.md PR 6 (upstream skip)"
+  - source: "exhaustive/unwrap-aggregations.yaml#Standard variance grouped by level"
+    reason: "Upstream pins `skip: true` (stddev_over_time unsupported by Loki's v2 engine)."
+    since: "2026-05-15"
+    jira:  "docs/loki-compliance-plan.md PR 6 (upstream skip)"
+  - source: "exhaustive/unwrap-aggregations.yaml#Standard deviation over time"
+    reason: "Upstream pins `skip: true` (stddev_over_time unsupported by Loki's v2 engine)."
+    since: "2026-05-15"
+    jira:  "docs/loki-compliance-plan.md PR 6 (upstream skip)"
+  - source: "exhaustive/unwrap-aggregations.yaml#Standard deviation grouped by level"
+    reason: "Upstream pins `skip: true` (stddev_over_time unsupported by Loki's v2 engine)."
+    since: "2026-05-15"
+    jira:  "docs/loki-compliance-plan.md PR 6 (upstream skip)"
+  - source: "exhaustive/unwrap-aggregations.yaml#Quantile over time - p50 (median)"
+    reason: "Upstream pins `skip: true` (quantile_over_time unsupported by Loki's v2 engine)."
+    since: "2026-05-15"
+    jira:  "docs/loki-compliance-plan.md PR 6 (upstream skip)"
+  - source: "exhaustive/unwrap-aggregations.yaml#Quantile over time - p90"
+    reason: "Upstream pins `skip: true` (quantile_over_time unsupported by Loki's v2 engine)."
+    since: "2026-05-15"
+    jira:  "docs/loki-compliance-plan.md PR 6 (upstream skip)"
+  - source: "exhaustive/unwrap-aggregations.yaml#Quantile over time - p95"
+    reason: "Upstream pins `skip: true` (quantile_over_time unsupported by Loki's v2 engine)."
+    since: "2026-05-15"
+    jira:  "docs/loki-compliance-plan.md PR 6 (upstream skip)"
+  - source: "exhaustive/unwrap-aggregations.yaml#Quantile over time - p99"
+    reason: "Upstream pins `skip: true` (quantile_over_time unsupported by Loki's v2 engine)."
+    since: "2026-05-15"
+    jira:  "docs/loki-compliance-plan.md PR 6 (upstream skip)"
+  - source: "exhaustive/unwrap-aggregations.yaml#P99 latency grouped by level"
+    reason: "Upstream pins `skip: true` (quantile_over_time unsupported by Loki's v2 engine)."
+    since: "2026-05-15"
+    jira:  "docs/loki-compliance-plan.md PR 6 (upstream skip)"
+  - source: "exhaustive/unwrap-aggregations.yaml#P99 duration with conversion"
+    reason: "Upstream pins `skip: true` (quantile_over_time unsupported by Loki's v2 engine)."
+    since: "2026-05-15"
+    jira:  "docs/loki-compliance-plan.md PR 6 (upstream skip)"
+  - source: "exhaustive/unwrap-aggregations.yaml#Without multiple labels"
+    reason: "`sum without (namespace, cluster) (sum_over_time(... | unwrap))` — `namespace` / `cluster` labels not in seed."
+    since: "2026-05-15"
+    jira:  "docs/loki-compliance-plan.md PR 6 (seed gap)"
+
+should_fail: []
