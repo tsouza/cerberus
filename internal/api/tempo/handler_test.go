@@ -713,6 +713,101 @@ func TestSearch_StructuralJoin_RootSurfaced(t *testing.T) {
 	}
 }
 
+// TestSearch_StructuralJoin_DurationMsRecovered pins the duration
+// arm of the root-lookup follow-up: the initial /api/search result
+// set carries only matched child spans whose per-row Sample.Value
+// captures the *child's* duration (here 20-60ms), but Tempo's wire
+// spec reports `durationMs` as the **trace-wide** wall-clock span
+// (here 150ms). The follow-up CH query's Aggregate computes
+// (max(Timestamp + Duration) - min(Timestamp)) across every span of
+// each affected trace and surfaces the result via the canonical
+// Sample.Value slot; applyRootMetadata reads it back as
+// rootMetadata.TraceDurationNs and rewrites summary.DurationMs.
+//
+// Mirrors the 4 Tempo-compat cases pre-fix reported durationMs=20
+// (per-child) instead of 150 (trace-wide):
+// descendant_op_payments_to_consumer, direct_parent_op_checkout_to_child,
+// set_and_checkout_and_status_error, status_eq_error.
+func TestSearch_StructuralJoin_DurationMsRecovered(t *testing.T) {
+	t.Parallel()
+	const (
+		traceID    = "17"
+		rootSpanID = "1"
+	)
+	q := &stubQuerier{
+		// First (search) query returns two child rows for traceID —
+		// neither is a root span, and each per-row Sample.Value
+		// reports the child's own Duration (20ms / 40ms). Without
+		// the follow-up duration patch, toTraceSummaries reports
+		// DurationMs = max(40ms, 20ms) = 40ms — but Tempo says 150ms.
+		samples: []chclient.Sample{
+			{
+				MetricName: "checkout.child.2",
+				Labels: map[string]string{
+					"service.name":            "checkout",
+					"__cerberus_traceID":      traceID,
+					"__cerberus_parentSpanID": rootSpanID,
+				},
+				Timestamp: time.Date(2026, 5, 12, 10, 0, 0, 30_000_000, time.UTC),
+				Value:     40_000_000,
+			},
+			{
+				MetricName: "checkout.child.0",
+				Labels: map[string]string{
+					"service.name":            "checkout",
+					"__cerberus_traceID":      traceID,
+					"__cerberus_parentSpanID": rootSpanID,
+				},
+				Timestamp: time.Date(2026, 5, 12, 10, 0, 0, 10_000_000, time.UTC),
+				Value:     20_000_000,
+			},
+		},
+		// Second (root-lookup) query returns the trace-wide
+		// envelope: Value carries 150_000_000 ns (= 150 ms), the
+		// derived (TraceEndNs - TraceStartNs).
+		samplesBySQL: map[string][]chclient.Sample{
+			"RootSpanName": {
+				{
+					MetricName: "POST /api/checkout/17",
+					Labels: map[string]string{
+						"service.name":       "checkout",
+						"__cerberus_traceID": traceID,
+					},
+					Timestamp: time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+					Value:     150_000_000,
+				},
+			},
+		},
+	}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/search?q=%7B%20status%20%3D%20error%20%7D")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+	var sr tempo.SearchResponse
+	if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(sr.Traces) != 1 {
+		t.Fatalf("expected 1 trace, got %d (%+v)", len(sr.Traces), sr.Traces)
+	}
+	if got := sr.Traces[0].DurationMs; got != 150 {
+		t.Errorf("DurationMs: got %d, want 150 (trace-wide ns / 1e6, recovered via root-lookup follow-up; child-only result set under-reported pre-fix)", got)
+	}
+	// Confirm the root metadata also flowed through, so we know the
+	// duration patch shares the same lookup row.
+	if sr.Traces[0].RootTraceName != "POST /api/checkout/17" {
+		t.Errorf("RootTraceName: got %q, want %q",
+			sr.Traces[0].RootTraceName, "POST /api/checkout/17")
+	}
+}
+
 // TestSearch_SQLProjectsParentSpanId pins the SQL emitted by the search
 // path against an OTel-CH default schema. The ParentSpanId column must
 // appear in the projection so toTraceSummaries can resolve the root
