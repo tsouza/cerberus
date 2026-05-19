@@ -11,6 +11,30 @@
 [7] string = "fatal"
 -- sql --
 SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (((`ResourceAttributes`[?] = ?) OR (`ResourceAttributes`[?] = ?)) OR (`ResourceAttributes`[?] = ?))
+-- seed --
+CREATE TABLE otel_logs (
+    Body String,
+    ResourceAttributes Map(String, String) MATERIALIZED map(
+        'job', 'api',
+        'level',
+            if(Body = 'r1-err', 'error',
+            if(Body = 'r2-warn', 'warn',
+            if(Body = 'r3-fatal', 'fatal',
+            if(Body = 'r4-info', 'info', 'debug'))))
+    )
+) ENGINE = Memory;
+INSERT INTO otel_logs (Body) VALUES
+    ('r1-err'),
+    ('r2-warn'),
+    ('r3-fatal'),
+    ('r4-info'),
+    ('r5-debug');
+-- expected_rows --
+[
+  ["r1-err"],
+  ["r2-warn"],
+  ["r3-fatal"]
+]
 -- chplan --
 Filter predicate=((ResourceAttributes["job"] = "api") AND (((ResourceAttributes["level"] = "error") OR (ResourceAttributes["level"] = "warn")) OR (ResourceAttributes["level"] = "fatal")))
   Scan(otel_logs)
