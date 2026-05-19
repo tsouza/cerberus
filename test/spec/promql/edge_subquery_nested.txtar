@@ -9,3 +9,16 @@ RangeWindow func=max_over_time range=1h0m0s step=0s ts=anchor_ts value=Value gro
   RangeWindow func=avg_over_time range=5m0s step=5m0s outerRange=1h0m0s ts=TimeUnix value=Value groupBy=[Attributes]
     Filter predicate=(MetricName = "up")
       Scan(otel_metrics_gauge)
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('up', map('instance', 'a'), toDateTime64('2026-01-01 00:00:00', 9), 42.0);
+-- expected_rows --
+[
+  [{"instance": "a"}, 42]
+]
