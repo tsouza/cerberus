@@ -62,36 +62,36 @@ func TestReplacementToCH(t *testing.T) {
 		// Targeted mutation-kill cases pinning the gremlins CONDITIONALS_
 		// BOUNDARY / INVERT_LOGICAL / ARITHMETIC_BASE / REMOVE_SELF_
 		// ASSIGNMENTS mutants on the multi-digit-preserve and `${N}`
-		// branches at lines 105 / 122 / 124 in `label_replace.go`. Each
-		// row below is calibrated so the original implementation
-		// produces the listed `want`, and at least one boundary-mutated
-		// variant produces an observably different string (or panics).
-		// Treat these as low-level guards — the user-facing semantics
-		// are already covered above; these only widen the discriminator
-		// set the mutation tool can use to prove the boundaries are
-		// load-bearing.
+		// branches inside `replacementStep` (the digit lookahead at the
+		// `next >= '0' && next <= '9'` arm, and the brace-block parse at
+		// the `next == '{'` arm). Each row below is calibrated so the
+		// original implementation produces the listed `want`, and at
+		// least one boundary-mutated variant produces an observably
+		// different string (or panics). Treat these as low-level guards
+		// — the user-facing semantics are already covered above; these
+		// only widen the discriminator set the mutation tool can use to
+		// prove the boundaries are load-bearing.
 		//
 		//  * `multi_digit_unbraced_nine` pins the `<= '9'` upper bound
-		//    of the inner multi-digit lookahead at line 105:65. Char
-		//    at i+2 is exactly '9', so the boundary mutant `< '9'`
-		//    misses the branch and emits the single-digit form `\19`
-		//    instead of the verbatim `$19`.
+		//    of the inner multi-digit lookahead inside the `next >= '0'`
+		//    case. Char at i+2 is exactly '9', so the boundary mutant
+		//    `< '9'` misses the branch and emits the single-digit form
+		//    `\19` instead of the verbatim `$19`.
 		{"multi_digit_unbraced_nine", "$19", nineCaptureRegex, "$19"},
 		//  * `braced_zero_with_caps` pins the `>= '0'` lower bound of
-		//    the braced digit check at line 122:42. Char at i+2 is
-		//    exactly '0', so the boundary mutant `> '0'` skips the
-		//    branch and falls through to write the literal `${0}`
-		//    instead of the canonical `\0`.
+		//    the braced digit check inside the `next == '{'` case. Char
+		//    at i+2 is exactly '0', so the boundary mutant `> '0'`
+		//    skips the branch and falls through to write the literal
+		//    `${0}` instead of the canonical `\0`.
 		{"braced_zero_with_caps", "${0}", nineCaptureRegex, `\0`},
-		//  * `braced_nine_with_caps` pins both the `<= '9'` upper
-		//    bound of the braced digit check at line 122:65 AND the
-		//    `n <= allowed` capture-count gate at line 124:20. Char at
-		//    i+2 is exactly '9' and the regex has exactly 9 capture
-		//    groups, so both boundary mutants (`< '9'` and `< allowed`)
-		//    diverge from the canonical `\9`.
+		//  * `braced_nine_with_caps` pins both the `<= '9'` upper bound
+		//    of the braced digit check AND the `n <= allowed` capture-
+		//    count gate. Char at i+2 is exactly '9' and the regex has
+		//    exactly 9 capture groups, so both boundary mutants (`< '9'`
+		//    and `< allowed`) diverge from the canonical `\9`.
 		{"braced_nine_with_caps", "${9}", nineCaptureRegex, `\9`},
 		//  * `braced_non_digit_inner` pins both INVERT_LOGICAL mutants
-		//    on the chained `&&` at line 122:26 / 122:49. The char at
+		//    on the chained `&&` in the brace-block parse. The char at
 		//    i+2 is a non-digit (`x`), so the original short-circuits
 		//    on `'x' <= '9'` and falls through to the literal-write
 		//    path. Either `&&` → `||` mutation upgrades the partial
@@ -99,9 +99,9 @@ func TestReplacementToCH(t *testing.T) {
 		//    drops the entire `${x}` from the output.
 		{"braced_non_digit_inner", "${x}", nineCaptureRegex, "${x}"},
 		//  * `braced_truncated_digit` pins the ARITHMETIC_BASE mutant
-		//    on `i+3` at line 122:8 AND the CONDITIONALS_BOUNDARY
-		//    mutant on `<` at line 122:11. The input is one byte short
-		//    of a closing `}`, so the original short-circuits on
+		//    on `i+3` AND the CONDITIONALS_BOUNDARY mutant on `<` in
+		//    the brace-block parse. The input is one byte short of a
+		//    closing `}`, so the original short-circuits on
 		//    `i+3 < len` (3 < 3 == false). The `i-3` mutant evaluates
 		//    `-3 < 3` as true and continues into the OOB `escaped[i+3]`
 		//    read; the `<=` mutant evaluates `3 <= 3` as true and does
@@ -167,45 +167,47 @@ func TestEmptyCapturesReplacement(t *testing.T) {
 		// Targeted mutation-kill cases pinning the gremlins CONDITIONALS_
 		// BOUNDARY / INVERT_LOGICAL / ARITHMETIC_BASE / REMOVE_SELF_
 		// ASSIGNMENTS mutants on the multi-digit-preserve and `${N}`
-		// branches at lines 195 / 205 / 206 in `label_replace.go`. The
-		// mirror of the ReplacementToCH cases above, recalibrated for
-		// the empty-captures resolver (numbered captures collapse to
-		// "" instead of `\N`, so the original on the consuming branch
-		// returns the empty string).
+		// branches inside `emptyCapturesStep`. The mirror of the
+		// ReplacementToCH cases above, recalibrated for the empty-
+		// captures resolver (numbered captures collapse to "" instead
+		// of `\N`, so the original on the consuming branch returns the
+		// empty string).
 		//
 		//  * `multi_digit_unbraced_nine` pins the `<= '9'` upper bound
-		//    at line 195:56. Char at i+2 is '9'; the boundary mutant
-		//    `< '9'` falls into the single-digit-collapse branch and
-		//    emits the trailing `9` alone instead of the verbatim
-		//    `$19`.
+		//    of the multi-digit lookahead inside the `next >= '0'` case.
+		//    Char at i+2 is '9'; the boundary mutant `< '9'` falls into
+		//    the single-digit-collapse branch and emits the trailing
+		//    `9` alone instead of the verbatim `$19`.
 		{"multi_digit_unbraced_nine", "$19", "$19"},
-		//  * `braced_zero` pins the `>= '0'` lower bound at line 205:36.
-		//    Char at i+2 is '0'; the boundary mutant `> '0'` skips the
-		//    consuming branch and writes the literal `${0}` instead of
-		//    the empty result the original produces.
+		//  * `braced_zero` pins the `>= '0'` lower bound in the brace-
+		//    block parse. Char at i+2 is '0'; the boundary mutant
+		//    `> '0'` skips the consuming branch and writes the literal
+		//    `${0}` instead of the empty result the original produces.
 		{"braced_zero", "${0}", ""},
-		//  * `braced_nine` pins the `<= '9'` upper bound at line 205:56.
-		//    Char at i+2 is '9'; the boundary mutant `< '9'` skips the
-		//    consuming branch and writes the literal `${9}` instead of
-		//    the empty result.
+		//  * `braced_nine` pins the `<= '9'` upper bound in the brace-
+		//    block parse. Char at i+2 is '9'; the boundary mutant
+		//    `< '9'` skips the consuming branch and writes the literal
+		//    `${9}` instead of the empty result.
 		{"braced_nine", "${9}", ""},
 		//  * `braced_non_digit_inner` pins both INVERT_LOGICAL mutants
-		//    on the chained `&&` at line 205:23 / 205:43. Char at i+2
+		//    on the chained `&&` in the brace-block parse. Char at i+2
 		//    is non-digit; either `&&` → `||` swap upgrades the partial
 		//    truth into a full match and erases the brace block.
 		{"braced_non_digit_inner", "${x}", "${x}"},
-		//  * `braced_truncated_digit` pins ARITHMETIC_BASE on `i+3` at
-		//    line 205:8 AND CONDITIONALS_BOUNDARY on `<` at line 205:11.
+		//  * `braced_truncated_digit` pins ARITHMETIC_BASE on `i+3`
+		//    AND CONDITIONALS_BOUNDARY on `<` in the brace-block parse.
 		//    Same mechanism as the ReplacementToCH twin: the OOB
 		//    `repl[i+3]` read panics under either mutant.
 		{"braced_truncated_digit", "${1", "${1"},
-		//  * `braced_with_trailing_text` pins the REMOVE_SELF_ASSIGNMENTS
-		//    mutant at line 206:7 (`i += 3` → `i = 3`). The literal
-		//    prefix `xy` shifts the `${1}` to offset 2, so the original
-		//    advances `i` to 5 (consuming the brace block) and lands
-		//    on `z`; the mutant resets `i` to 3, which lands on the
-		//    digit `1` inside the brace block, replays the suffix as
-		//    plain text and emits `xy1}z` instead of `xyz`.
+		//  * `braced_with_trailing_text` pins the ARITHMETIC_BASE
+		//    mutant on the `return 4` step value of the brace-block
+		//    branch. The literal prefix `xy` shifts the `${1}` to
+		//    offset 2; the original returns step 4 (consuming the
+		//    brace block) so the next iteration lands on `z`. If the
+		//    consumed-byte count is mutated to 1 the next iteration
+		//    lands on the digit `1` inside the brace block, replays
+		//    the suffix as plain text and emits `xy1}z` instead of
+		//    `xyz`.
 		{"braced_with_trailing_text", "xy${1}z", "xyz"},
 	}
 	for _, tc := range cases {
