@@ -1,5 +1,21 @@
 -- query.logql --
 avg_over_time({job="api"} | logfmt | unwrap latency [5m]) by (level)
+-- seed --
+CREATE TABLE otel_logs (
+    Timestamp DateTime64(9),
+    Body String,
+    ResourceAttributes Map(String, String)
+) ENGINE = Memory;
+INSERT INTO otel_logs (Timestamp, Body, ResourceAttributes) VALUES
+    (toDateTime64('2025-12-31 23:58:00', 9), 'latency=10 path=/a', map('job', 'api', 'level', 'info')),
+    (toDateTime64('2026-01-01 00:00:00', 9), 'latency=20 path=/b', map('job', 'api', 'level', 'info')),
+    (toDateTime64('2025-12-31 23:58:00', 9), 'latency=100 path=/c', map('job', 'api', 'level', 'error')),
+    (toDateTime64('2026-01-01 00:00:00', 9), 'latency=200 path=/d', map('job', 'api', 'level', 'error'));
+-- expected_rows --
+[
+  [{"level": "error"}, 150.0],
+  [{"level": "info"}, 15.0]
+]
 -- args --
 [0] string = "level"
 [1] string = "level"

@@ -1,5 +1,22 @@
 -- query.logql --
 sum(rate({job="api"}[1m]))
+-- seed --
+CREATE TABLE otel_logs (
+    Timestamp DateTime64(9),
+    Body String,
+    ResourceAttributes Map(String, String)
+) ENGINE = Memory;
+INSERT INTO otel_logs (Timestamp, Body, ResourceAttributes) VALUES
+    (toDateTime64('2025-12-31 23:59:10', 9), 'a', map('job', 'api')),
+    (toDateTime64('2025-12-31 23:59:20', 9), 'b', map('job', 'api')),
+    (toDateTime64('2025-12-31 23:59:30', 9), 'c', map('job', 'api')),
+    (toDateTime64('2025-12-31 23:59:40', 9), 'd', map('job', 'api')),
+    (toDateTime64('2025-12-31 23:59:50', 9), 'e', map('job', 'api')),
+    (toDateTime64('2026-01-01 00:00:00', 9), 'f', map('job', 'api'));
+-- expected_rows --
+[
+  ["", {}, "2026-01-01T00:00:01Z", 0.1]
+]
 -- sql --
 SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Value` FROM (SELECT sum(`Value`) AS `Value`, count() AS `_cerb_n` FROM (SELECT `ResourceAttributes`, if(length(window_vals) > 0, arraySum(window_vals) / ?, 0.0) AS `Value` FROM (SELECT `ResourceAttributes`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `ResourceAttributes`, arrayFilter(p -> tupleElement(p, 1) > now64(9) - toIntervalNanosecond(60000000000) AND tupleElement(p, 1) <= now64(9), series_array) AS `window_pairs` FROM (SELECT `ResourceAttributes`, arraySort(groupArray((`Timestamp`, `Value`))) AS `series_array` FROM (SELECT `ResourceAttributes`, `Timestamp`, ? AS `Value` FROM (SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?))) GROUP BY `ResourceAttributes`))))) WHERE `_cerb_n` > 0)
 -- args --
