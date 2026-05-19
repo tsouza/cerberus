@@ -1,5 +1,22 @@
 -- query.promql --
 up{job!~"backend.*"}
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('up', map('job', 'backend-api'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
+    ('up', map('job', 'backend-worker'), toDateTime64('2026-01-01 00:00:00', 9), 2.0),
+    ('up', map('job', 'frontend'), toDateTime64('2026-01-01 00:00:00', 9), 3.0),
+    ('up', map('job', 'database'), toDateTime64('2026-01-01 00:00:00', 9), 4.0);
+-- expected_rows --
+[
+  ["up", {"job": "database"}, "2026-01-01T00:00:00Z", 4.0],
+  ["up", {"job": "frontend"}, "2026-01-01T00:00:00Z", 3.0]
+]
 -- sql --
 SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_gauge` PREWHERE (`MetricName` = ?) AND NOT match(`Attributes`[?], ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`)
 -- args --
