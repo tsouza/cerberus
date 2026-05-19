@@ -82,22 +82,71 @@ Most of PromQL isn't lowered yet at the seed stage. Gating now would make every 
 
 ## Known limitations (v1.0.0 GA)
 
+The three compatibility harnesses (`compatibility/{prometheus,loki,tempo}`) all
+pass cleanly on `main`: Prom 536/536 with `expected-failures.failures: []`,
+Loki 0 skipped queries, Tempo 0 expected-failures. The items below are not
+caught by the harness corpus but are real semantic gaps tracked toward GA.
+
 ### PromQL
 
-- **Nested subqueries** — nested subqueries through `Call` / `ParenExpr` / `AggregateExpr` intermediaries — including the canonical Grafana shape `max_over_time(rate(m[5m])[10m:1m])[1h:5m]` and the deeper `min_over_time(avg_over_time(max_over_time(rate(m[1m])[5m:30s])[1h:5m])[2h:10m])` — lower correctly. Subquery over `by(...)` / `without(...)` aggregations (`sum` / `avg` / `count` / `min` / `max` / `quantile` / `topk` / `bottomk` / `count_values`) also lowers. PromQL's parser type system rejects a direct `<subquery>[range:step]` (a SubqueryExpr inside a SubqueryExpr) at parse time with the "subquery is only allowed on instant vector" error; cerberus's `lowerSubqueryOverSubquery` handles the parser-impossible AST shape defensively for any optimizer rewrite that might produce it.
-- **Computed-K `topk` / `bottomk`** — `topk(scalar(expr), v)` and `bottomk(scalar(expr), v)` where K is not a literal scalar integer are rejected (`internal/promql/lower.go:1077`). Only literal-K forms are supported.
-- **Native histogram `histogram_quantile` range mode** — `histogram_quantile(phi, <metric>_exp_hist)` over `/api/v1/query_range` collapses to instant mode: a single quantile value is computed and repeated at every step. The `now64(9)` timestamp is used for all rows (`internal/promql/histogram_quantile.go:477`). Use `/api/v1/query` for per-instant native-histogram quantiles. Range-mode (Phase 3 StepGrid + per-anchor lookback) is planned for a follow-up release.
+No outstanding limitations on the PromQL parsing / lowering surface. Previous
+entries (nested subqueries, computed-K `topk`/`bottomk`, native-histogram
+`histogram_quantile` range mode) all lowered to chplan + chsql by their
+respective RC tasks and round-trip cleanly under the chDB suite. The
+`compatibility/prometheus` harness is the source of truth — see the
+`prometheus-compliance` job on every push to `main`.
 
 ### LogQL
 
-- **`| json` and `| regexp` parser stages** — return "not yet supported". Both the bare parsers (`| json`, `| regexp`) and the `| json field="..."` expression-select variant pending chsql `JSONExtract` helpers (`internal/logql/lower.go`).
-- **`| pattern`, `| unpack`, `| drop`, `| keep`, and `| logfmt` are supported**. `| pattern`, `| unpack`, `| drop`, `| keep` extract / project labels in Go after the rows return (no SQL impact). `| logfmt` (bare and `| logfmt field="..."`) lowers to `extractKeyValuePairs(Body, '=', ' ', '"')` and merges the parsed keys into the labels map for downstream string-equality / regex label filters. Loki's stream-label-wins-on-conflict contract is enforced at SQL emit time: bare `| logfmt` wraps the extracted map in a `mapApply` that suffixes any colliding key with `_extracted`; typed `| logfmt foo="..."` wraps each destination identifier in an `if(mapContains(ResourceAttributes, '<id>'), '<id>_extracted', '<id>')` (see `internal/logql/lower.go`).
-- **Typed label filters (numeric / duration / bytes) are supported** — `| size > 10KB`, `| latency > 500ms`, `| status > 400` lower to `parseReadableSize` / `parseTimeDelta` / `toFloat64OrZero` comparisons against the label string. They share the `labelsExpr` threaded through parser stages so post-parse filters work.
-- **`| unwrap` and value-based range aggregations are supported** — `sum_over_time`, `avg_over_time`, `min_over_time`, `max_over_time`, `stddev_over_time`, `stdvar_over_time`, and `quantile_over_time(<phi>, ...)` all read the unwrapped value from the live `labelsExpr` and feed the same chsql RangeWindow emitter the PromQL head uses. Unwrap variants `unwrap foo` (raw), `unwrap duration(foo)` / `unwrap duration_seconds(foo)` (CH `parseTimeDelta` → Float64 seconds), and `unwrap bytes(foo)` (CH `parseReadableSize` → Float64 bytes) are all wired.
-- **Range-aggregation `by` / `without` grouping is supported** — `avg_over_time({...} | logfmt | unwrap latency [5m]) by (level)` and friends synthesise a `map(...)` / `mapFilter(...)` group key in the inner Project so the RangeWindow GROUP BY collapses per-group rather than per-stream.
+All parser stages (`| json`, `| logfmt`, `| regexp`, `| pattern`, `| unpack`,
+`| drop`, `| keep`), label filters (string, numeric, duration, bytes), unwrap
+forms (raw, `duration_seconds(...)`, `bytes(...)`), and value-based range
+aggregations (`sum_over_time`, `avg_over_time`, `min_over_time`,
+`max_over_time`, `stddev_over_time`, `stdvar_over_time`,
+`quantile_over_time(<phi>, ...)`) lower to SQL and round-trip in the chDB
+suite. Range-aggregation `by` / `without` grouping is wired. Loki's
+stream-label-wins-on-conflict contract is enforced at SQL emit time for
+`| logfmt`: bare extraction wraps the extracted map in a `mapApply` that
+suffixes any colliding key with `_extracted`; typed `| logfmt foo="..."`
+wraps each destination identifier in an `if(mapContains(ResourceAttributes,
+'<id>'), '<id>_extracted', '<id>')` (`internal/logql/lower.go`).
 
 ### TraceQL
 
-- **Spanset pipeline expressions** — some `PipelineElement` types return "not yet supported" when cerberus encounters them as a pipeline tail (`internal/traceql/lower.go:114`, `lower.go:186`). Second-stage metrics operators (`| topk`, `| bottomk`, `| > N`) have a landed chplan + chsql IR (`internal/chplan/metrics_second_stage.go`, `internal/chsql/metrics_second_stage.go`) but the TraceQL lowering layer still returns "not yet supported" (`internal/traceql/lower.go:83`) pending tsouza/tempo accessors on the upstream-unexported `TopKBottomK` / `MetricsFilter` fields.
-- **Multi-quantile `quantile_over_time` is supported** — `quantile_over_time(<attr>, p1, p2, ...)` lowers into a chplan.MetricsAggregate whose `Quantiles` slice carries every phi (`internal/traceql/metrics_pipeline.go`), and the chsql emitter (`internal/chsql/range_window.go`) renders one output series per phi tagged with a synthetic `__phi__` label. The CH-side aggregator is `quantiles(p1, p2, ...)(<attr>)` (single scan returning Array(Float64)); the wrapping SELECT fans the array out via `arrayJoin` + `tupleElement` so each (group, anchor, phi) tuple becomes one row.
-- **`?scope=` filter on `/api/v2/search/tags`** — not honoured; the handler returns all scopes (resource, span, intrinsic) regardless of the requested scope (`internal/api/tempo/search_tags.go:109`).
+- **TraceQL chained-structural `R.*` projection (compat-harness blind spot)** —
+  certain multi-hop structural-join lowerings emit `SELECT R.* FROM (SELECT R.*
+  FROM <left> AS L INNER JOIN <right> AS R ON ...) AS L INNER JOIN <right2> AS R
+  ON L.TraceId = R.TraceId`. CH's analyzer rejects the outer reference because
+  the inner `R.*` keeps its qualifier when re-aliased to outer `L`. The
+  emitter must project explicit columns (or re-qualify on wrap) when wrapping a
+  structural join in an outer subquery. Affects `multi_hop_chain`,
+  `recursive_mixed`, `edge_chain_ancestor_3` / `_descendant_3` / `_mixed_5` /
+  `_child_5`. Tracked in the GA punch list.
+- **Map-valued aggregate inputs missing `toFloat64` cast** — `max(SpanAttributes[k])`
+  returns `String` (Map values are stringly typed); the outer `WHERE Value > 100`
+  then fails with `NO_COMMON_TYPE: no supertype for String, UInt8`. The
+  emitter needs an explicit `toFloat64` cast on Map-valued aggregate inputs,
+  mirroring the existing wrap on `parseReadableSize` (the unwrap-bytes path).
+  Affects `edge_inner_max_attr` and likely event/link numeric comparisons.
+  Tracked in the GA punch list.
+- **`?scope=` filter on `/api/v1/search/tags` (v1)** — partially honoured;
+  the v1 endpoint always includes resource and span tags regardless of the
+  requested scope, narrowing only intrinsic tags
+  (`internal/api/tempo/search_tags.go:158-164`). The v2 endpoint
+  (`/api/v2/search/tags`) honours the filter for all three scopes
+  (`search_tags.go:143-156`). The v1 partial behaviour matches upstream Tempo's
+  documented contract and may stay as-is post-GA pending an explicit upstream
+  clarification.
+
+### Placeholder endpoints
+
+These two endpoints accept the request, validate inputs, and return a
+well-formed empty envelope. Real implementations are tracked in
+[`docs/roadmap.md`](roadmap.md):
+
+- **`/loki/api/v1/patterns`** — empty `patterns` array. Real implementation
+  will vendor `grafana/loki/pkg/pattern/drain` (faceair drain3 port) and emit
+  one cluster per pattern over the query range.
+- **`/api/v1/query_exemplars`** (PromQL) — empty `data` array. Real
+  implementation will read exemplar columns from `otel_traces_*` via the
+  schema abstraction.
