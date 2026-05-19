@@ -141,13 +141,18 @@ func histogramBucketFrag(attr chplan.Expr, isDuration bool) Frag {
 //	  FROM (<Inner>)
 //	  WHERE <Attr> >= 2
 //	)
-//	WHERE ts >= anchor_ts - toIntervalNanosecond(<range_ns>)
+//	WHERE ts >  anchor_ts - toIntervalNanosecond(<range_ns>)
 //	  AND ts <= anchor_ts
 //	GROUP BY [<group cols>,] `__bucket`, anchor_ts
 //
 // The bucket column is computed in the inner SELECT (alongside the
 // arrayJoined anchors) so the outer WHERE / GROUP BY can reference it
 // by alias without recomputing the log2.
+//
+// The per-anchor window is left-open / right-closed
+// (`(anchor_ts - range, anchor_ts]`) — same bucket semantics as the
+// non-histogram metrics emitter (emitRangeWindowMetrics) and Tempo
+// upstream's `IntervalMapperQueryRange`.
 func (e *emitter) emitRangeWindowHistogram(r *chplan.RangeWindow, m *chplan.MetricsHistogramOverTime) error {
 	if r.TimestampColumn == "" {
 		return fmt.Errorf("%w: RangeWindow.TimestampColumn unset (required for MetricsHistogramOverTime input)", ErrUnsupported)
@@ -246,10 +251,11 @@ func (e *emitter) emitRangeWindowHistogram(r *chplan.RangeWindow, m *chplan.Metr
 	}
 	outerSb.Select(aggFuncFrag(countFunc))
 
-	// WHERE: ts ∈ [anchor_ts - range, anchor_ts].
+	// WHERE: ts ∈ (anchor_ts - range, anchor_ts] — left-open /
+	// right-closed, matching Tempo's IntervalMapperQueryRange.
 	outerSb.Where(
 		func(b *Builder) {
-			b.sb.WriteString("ts >= anchor_ts - toIntervalNanosecond(")
+			b.sb.WriteString("ts > anchor_ts - toIntervalNanosecond(")
 			b.sb.WriteString(strconv.FormatInt(rangeNS, 10))
 			b.sb.WriteByte(')')
 		},

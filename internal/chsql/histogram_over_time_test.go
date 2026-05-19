@@ -157,6 +157,48 @@ func TestEmitRangeWindowHistogramMatrix(t *testing.T) {
 	}
 }
 
+// TestEmitRangeWindowHistogramLeftOpenWindow pins the per-anchor
+// bucket boundary for the histogram matrix path: the WHERE clause uses
+// `ts > anchor_ts - toIntervalNanosecond(...)` (not `ts >=`) so the
+// per-anchor window is left-open / right-closed, matching Tempo's
+// `IntervalMapperQueryRange.interval` semantics. Mirrors
+// TestRangeWindowMetricsLeftOpenWindow for the non-histogram metrics
+// emitter; same off-by-one bug class would otherwise surface as
+// histogram-bucket counts drifting from Tempo by 1 at step boundaries.
+func TestEmitRangeWindowHistogramLeftOpenWindow(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 5, 13, 12, 5, 0, 0, time.UTC)
+	plan := &chplan.RangeWindow{
+		Input: &chplan.MetricsHistogramOverTime{
+			Attr:        &chplan.ColumnRef{Name: "Duration"},
+			IsDuration:  true,
+			BucketAlias: "__bucket",
+			ValueAlias:  "Value",
+			Inner:       &chplan.Scan{Table: "otel_traces"},
+		},
+		Step:            time.Minute,
+		Range:           time.Minute,
+		Start:           start,
+		End:             end,
+		TimestampColumn: "Timestamp",
+	}
+	sql, _, err := chsql.Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if !strings.Contains(sql, "ts > anchor_ts - toIntervalNanosecond(") {
+		t.Errorf("expected strict lower bound `ts > anchor_ts - toIntervalNanosecond(...)`; SQL=%s", sql)
+	}
+	if strings.Contains(sql, "ts >= anchor_ts - toIntervalNanosecond(") {
+		t.Errorf("lower bound must be strict (`>`), not inclusive (`>=`); SQL=%s", sql)
+	}
+	if !strings.Contains(sql, "ts <= anchor_ts") {
+		t.Errorf("expected right-closed upper bound `ts <= anchor_ts`; SQL=%s", sql)
+	}
+}
+
 // TestEmitRangeWindowHistogramRejectsZeroStep guards the matrix path's
 // Step > 0 invariant — without it the arrayJoin range would divide
 // by zero.
