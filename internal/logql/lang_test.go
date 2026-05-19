@@ -306,20 +306,18 @@ func TestProjectSamples_VectorAggregateOverMatrixForwardsTimeUnix(t *testing.T) 
 // TestProjectSamples_LogQuerySurfacesDetectedLevelWhenReferenced pins
 // the log-stream branch's Attributes slot to a `mapConcat(...)` that
 // folds the synthesized `detected_level` label onto the row's
-// ResourceAttributes WHEN the query explicitly references the label.
+// ResourceAttributes when the query explicitly references the label.
 //
-// Reference Loki only surfaces `detected_level` as a stream-identity
-// label when the query asks for it (matcher, label filter, or grouping
-// clause). Cerberus mirrors that here: a query like `{job="api"} |
-// detected_level="error"` produces an Attributes slot wrapped with the
-// detected_level augmentation, so downstream stream-identity layers
-// see the synthesized severity dimension.
-//
-// Pair with [TestProjectSamples_BareLogQueryDoesNotSurfaceDetectedLevel]
-// which pins the no-reference path — that's the loki-compat
-// `fast/basic-selectors.yaml :: streams[0] entry count` invariant
-// (cerberus auto-injecting `detected_level` on every log query split
-// each stream into one per severity).
+// Reference Loki surfaces `detected_level` as a stream-identity label
+// whenever severity is detectable in the underlying records (stream /
+// structured-metadata labels, parser-stage extraction, or content
+// scan). Cerberus mirrors that broadly — see
+// [TestProjectSamples_BareLogQueryAlsoSurfacesDetectedLevel] for the
+// bare-selector path and
+// [TestProjectSamples_ParserStageQuerySurfacesDetectedLevel] for the
+// parser-stage path. This test keeps the explicit-reference shape
+// pinned so a regression that loses the wrap on the most common
+// "user typed detected_level" path is caught synchronously.
 func TestProjectSamples_LogQuerySurfacesDetectedLevelWhenReferenced(t *testing.T) {
 	t.Parallel()
 
@@ -371,20 +369,25 @@ func TestProjectSamples_LogQuerySurfacesDetectedLevelWhenReferenced(t *testing.T
 	}
 }
 
-// TestProjectSamples_BareLogQueryDoesNotSurfaceDetectedLevel pins the
-// inverse path: a bare selector query (`{service="api"}`) without any
-// `detected_level` / `level` reference must NOT gain the synthesized
-// label in its Attributes projection.
+// TestProjectSamples_BareLogQueryAlsoSurfacesDetectedLevel pins the
+// bare-selector path: a query like `{service="api"}` with no
+// parser stage, no `detected_level` / `level` reference, and no
+// grouping clause MUST still wrap its Attributes projection in
+// `mapConcat(...)` so the output stream identity carries the
+// synthesized severity label.
 //
-// Reference Loki only surfaces `detected_level` on queries that ask
-// for it; auto-injecting on every log query splits a single Loki
-// stream into one per severity, breaking the `fast/basic-selectors.yaml
-// :: streams[0] entry count` loki-compat invariant (4 cases failed
-// with `expected=246-338 actual=360-361` because cerberus emitted 4
-// streams per service where reference Loki emits 1). This test pins
-// the no-reference path so a regression to unconditional injection is
+// Reference Loki surfaces `detected_level` on every log query whose
+// underlying records have detectable severity (stream /
+// structured-metadata labels, parser-stage extraction, or content
+// scan). The loki-compat `fast/basic-selectors.yaml` cases all return
+// 3-4 Streams per query (one per detected_level value), so cerberus
+// must split the same way. An earlier restrictive gate (PR #556) had
+// the bare-selector path skip the wrap; that produced
+// `streams length: expected=4 actual=1` regressions for every
+// fast/basic-selectors case (~5 cases below baseline). This test
+// pins the broad-wrap behavior so a re-narrowing of the trigger is
 // caught synchronously rather than via the compat harness.
-func TestProjectSamples_BareLogQueryDoesNotSurfaceDetectedLevel(t *testing.T) {
+func TestProjectSamples_BareLogQueryAlsoSurfacesDetectedLevel(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelLogs()
@@ -410,23 +413,147 @@ func TestProjectSamples_BareLogQueryDoesNotSurfaceDetectedLevel(t *testing.T) {
 	if attrsSlot.Alias != "Attributes" {
 		t.Fatalf("attributes slot alias: got %q, want %q", attrsSlot.Alias, "Attributes")
 	}
-	// Must be a bare ColumnRef on ResourceAttributes — the conditional
-	// wrap must skip the mapConcat augmentation when the query has no
-	// `detected_level` / `level` reference. A FuncCall here would mean
-	// the unconditional auto-injection reappeared.
-	colRef, ok := attrsSlot.Expr.(*chplan.ColumnRef)
+	// Must be a `mapConcat(...)` — the helper that folds the
+	// synthesized `detected_level` label onto the row's
+	// ResourceAttributes. A bare ColumnRef here would mean the
+	// gate over-restricted again and the bare-selector path lost
+	// stream-identity parity with reference Loki.
+	fn, ok := attrsSlot.Expr.(*chplan.FuncCall)
 	if !ok {
-		t.Fatalf("attributes slot expr: got %T, want *chplan.ColumnRef "+
-			"(bare selector query must NOT wrap Attributes in mapConcat — "+
-			"auto-injecting detected_level on every log query splits each "+
-			"stream into one per severity, breaking the loki-compat "+
-			"fast/basic-selectors entry-count invariant)",
+		t.Fatalf("attributes slot expr: got %T, want *chplan.FuncCall "+
+			"(bare selector query must wrap Attributes in mapConcat — "+
+			"reference Loki surfaces detected_level on every log query "+
+			"with detectable severity, and cerberus mirrors that to keep "+
+			"the loki-compat fast/basic-selectors `streams length` "+
+			"comparison aligned)",
 			attrsSlot.Expr)
 	}
-	if colRef.Name != s.ResourceAttributesColumn {
-		t.Errorf("attributes slot ColumnRef.Name: got %q, want %q "+
-			"(schema's ResourceAttributesColumn)",
-			colRef.Name, s.ResourceAttributesColumn)
+	if fn.Name != "mapConcat" {
+		t.Errorf("attributes slot FuncCall.Name: got %q, want %q "+
+			"(bare selector must fold detected_level via mapConcat)",
+			fn.Name, "mapConcat")
+	}
+}
+
+// TestProjectSamples_ParserStageQuerySurfacesDetectedLevel pins the
+// parser-stage path: queries that use `| logfmt`, `| json`,
+// `| regexp ...`, `| pattern ...`, or `| unpack` must also wrap their
+// Attributes slot in `mapConcat(...)`.
+//
+// Reference Loki's detection pipeline reads `level` out of
+// parser-extracted attributes when the line is structured (JSON /
+// logfmt) and emits `detected_level` as part of stream identity. The
+// loki-compat seeder writes both `level` and `detected_level` into
+// `LogAttributes` for every row, and cerberus's SeverityText column
+// is always populated, so a query like `{cluster="c1"} | logfmt`
+// surfaces detected_level on every output stream. The wrap mirrors
+// that. (Parser-extracted `level` continues to flow through the
+// label-filter / grouping paths via the labels-map merge — see
+// `internal/logql/lower.go::logfmtMergeLabels`.)
+func TestProjectSamples_ParserStageQuerySurfacesDetectedLevel(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelLogs()
+	l := &logql.Lang{Schema: s}
+
+	for _, q := range []string{
+		// Bare logfmt parser — extracts all `key=value` pairs.
+		`{cluster="c1"} | logfmt`,
+		// Logfmt + non-level label filter.
+		`{cluster="c1"} | logfmt | duration != ""`,
+		// Bare JSON parser — extracts top-level keys.
+		`{cluster="c1"} | json`,
+		// Regexp parser with named captures.
+		`{cluster="c1"} | regexp "(?P<method>\\w+) (?P<path>\\S+)"`,
+		// Pattern parser — Go-side post-fetch stage.
+		`{cluster="c1"} | pattern "<method> <path>"`,
+		// Unpack parser — JSON-decode wrapper labels.
+		`{cluster="c1"} | unpack`,
+	} {
+		t.Run(q, func(t *testing.T) {
+			t.Parallel()
+			expr, err := syntax.ParseExpr(q)
+			if err != nil {
+				t.Fatalf("ParseExpr: %v", err)
+			}
+			plan := &chplan.Scan{Table: s.LogsTable}
+			wrapped := l.ProjectSamples(plan, engine.Meta{
+				IsMetric: false,
+				Extra:    map[string]any{"expr": expr},
+			})
+			proj := wrapped.(*chplan.Project)
+			attrsSlot := proj.Projections[1]
+			fn, ok := attrsSlot.Expr.(*chplan.FuncCall)
+			if !ok {
+				t.Fatalf("attributes slot expr: got %T, want *chplan.FuncCall (mapConcat) "+
+					"for parser-stage query %q — parser stages should still surface "+
+					"detected_level alongside their extracted keys", attrsSlot.Expr, q)
+			}
+			if fn.Name != "mapConcat" {
+				t.Errorf("attributes slot FuncCall.Name: got %q, want %q for query %q",
+					fn.Name, "mapConcat", q)
+			}
+		})
+	}
+}
+
+// TestProjectSamples_LineFilterQuerySurfacesDetectedLevel pins the
+// line-filter and label-filter paths: queries that combine a stream
+// selector with a line filter (`|=`, `!=`, `|~`, `!~`) or a label
+// filter on a non-level key (`| namespace="x"`) must also wrap their
+// Attributes slot in `mapConcat(...)`.
+//
+// Reference Loki splits these queries into one Stream per
+// detected_level value (or, for filters that select a single severity,
+// emits a single Stream carrying the matched detected_level). The
+// `fast/basic-selectors.yaml :: |~ "(?i)error"` case is the canonical
+// regression — Loki returns 1 Stream with `detected_level: error`
+// while cerberus previously returned 1 Stream without the label, so
+// the `streams[0] labels differ` comparison failed.
+func TestProjectSamples_LineFilterQuerySurfacesDetectedLevel(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelLogs()
+	l := &logql.Lang{Schema: s}
+
+	for _, q := range []string{
+		// Substring line filter.
+		`{cluster="c1"} |= "level"`,
+		// Case-insensitive regex line filter — the canonical compat
+		// regression: Loki surfaces detected_level=error on lines
+		// matching "(?i)error".
+		`{cluster="c1"} |~ "(?i)error"`,
+		// Negative regex line filter.
+		`{cluster="c1"} !~ "(?i)debug"`,
+		// Label filter on a non-level key.
+		`{cluster="c1"} | namespace = "namespace-0"`,
+		// Impossible-match line filter (cache test).
+		`{cluster="c1"} |= "this will not hit any line"`,
+	} {
+		t.Run(q, func(t *testing.T) {
+			t.Parallel()
+			expr, err := syntax.ParseExpr(q)
+			if err != nil {
+				t.Fatalf("ParseExpr: %v", err)
+			}
+			plan := &chplan.Scan{Table: s.LogsTable}
+			wrapped := l.ProjectSamples(plan, engine.Meta{
+				IsMetric: false,
+				Extra:    map[string]any{"expr": expr},
+			})
+			proj := wrapped.(*chplan.Project)
+			attrsSlot := proj.Projections[1]
+			fn, ok := attrsSlot.Expr.(*chplan.FuncCall)
+			if !ok {
+				t.Fatalf("attributes slot expr: got %T, want *chplan.FuncCall (mapConcat) "+
+					"for line-filter / label-filter query %q — reference Loki "+
+					"surfaces detected_level on these too", attrsSlot.Expr, q)
+			}
+			if fn.Name != "mapConcat" {
+				t.Errorf("attributes slot FuncCall.Name: got %q, want %q for query %q",
+					fn.Name, "mapConcat", q)
+			}
+		})
 	}
 }
 

@@ -221,92 +221,64 @@ func withDetectedLevel(s schema.Logs, baseLabels chplan.Expr) chplan.Expr {
 	}
 }
 
-// queryReferencesDetectedLevel reports whether the parsed LogQL
-// expression references the synthesized severity dimension anywhere
-// the user could observe it. Used by the log-stream projection in
-// [Lang.ProjectSamples] to gate the `withDetectedLevel` wrap so a bare
-// selector query (`{service="api"}`) doesn't gain a spurious
-// `detected_level` stream label that would split its single Loki
-// stream into one per severity (the loki-compat
-// fast/basic-selectors.yaml regression: cerberus emitted 4 streams per
-// service where reference Loki emits 1, because reference Loki only
-// surfaces `detected_level` on queries that explicitly reference it).
+// queryShouldSurfaceDetectedLevel reports whether the parsed LogQL
+// expression should carry the synthesized `detected_level` label on its
+// output stream identity. Used by the log-stream projection in
+// [Lang.ProjectSamples] to gate the `withDetectedLevel` wrap.
 //
-// The detection covers four user-visible forms:
+// Reference Loki surfaces `detected_level` as a stream-identity label
+// whenever the underlying records carry severity metadata that the
+// detection pipeline can resolve to a canonical level value. The
+// detection sources are (mirrored from
+// `github.com/grafana/loki/pkg/distributor/field_detection.go::extractLogLevel`):
 //
-//  1. Stream-selector matchers — `{detected_level="error"}`,
-//     `{level="warn"}`. The matcher name lands in
-//     [syntax.MatchersExpr.Mts].
-//  2. Pipe-stage label filters — `| detected_level="error"`,
-//     `| level=~"warn|error"`. The filter exposes its referenced label
-//     names via [log.LabelFilterer.RequiredLabelNames].
-//  3. Vector-aggregation grouping — `sum by (detected_level) (...)`,
-//     `sum by (level) (...)`, plus the `without (...)` mirror. The
-//     grouping labels live in [syntax.VectorAggregationExpr.Grouping].
-//  4. Range-aggregation grouping — `count_over_time({...}[5m]) by
-//     (detected_level)`, plus `without`. The grouping labels live in
-//     [syntax.RangeAggregationExpr.Grouping].
+//  1. Stream / structured-metadata label named `detected_level` /
+//     `level` / `severity` / `severity_text` / …
+//  2. Parser-stage extraction (`| logfmt`, `| json`, `| regexp ...`,
+//     `| pattern ...`, `| unpack`) that surfaces a `level` key from the
+//     log line's structured payload.
+//  3. Content scan over the log line (JSON / logfmt / keyword scan
+//     for ERROR / WARN / INFO / DEBUG / TRACE / FATAL / CRITICAL).
 //
-// Pipe stages that COULD produce a `level` key as part of their
-// parser-extracted labels (`| logfmt`, `| json`, `| regexp ...`,
-// `| pattern ...`, `| label_format ...`) don't count: the parser-
-// extracted `level` is itself a label-filter-context lookup against
-// the augmented labels map (see [isDetectedLevelLabel] vs
-// [isDetectedLevelGroupingLabel]) and doesn't drive the synthesized
-// SeverityText projection. Only an explicit reference at one of the
-// four sites above pulls `detected_level` into stream identity.
+// Cerberus's seeder always populates the OTel `SeverityText` column,
+// so every log row that reaches the projection carries a non-empty
+// severity value. The `mapFilter` inside [withDetectedLevel] drops the
+// `detected_level` entry when `SeverityText` is empty, so the wrap is
+// idempotent on rows without severity — there's no observable downside
+// to applying it broadly.
 //
-// Both `detected_level` and its `level` short alias trigger the wrap —
-// upstream Loki treats them as the same dimension once severity
-// detection settles, and the stream-identity layer surfaces the
-// canonical `detected_level` regardless of which form the user wrote.
-func queryReferencesDetectedLevel(expr syntax.Expr) bool {
-	if expr == nil {
-		return false
-	}
-	var found bool
-	expr.Walk(func(e syntax.Expr) bool {
-		if found {
-			return false
-		}
-		switch v := e.(type) {
-		case *syntax.MatchersExpr:
-			for _, m := range v.Mts {
-				if isDetectedLevelGroupingLabel(m.Name) {
-					found = true
-					return false
-				}
-			}
-		case *syntax.LabelFilterExpr:
-			if v.LabelFilterer == nil {
-				return true
-			}
-			for _, name := range v.RequiredLabelNames() {
-				if isDetectedLevelGroupingLabel(name) {
-					found = true
-					return false
-				}
-			}
-		case *syntax.VectorAggregationExpr:
-			if v.Grouping != nil {
-				for _, g := range v.Grouping.Groups {
-					if isDetectedLevelGroupingLabel(g) {
-						found = true
-						return false
-					}
-				}
-			}
-		case *syntax.RangeAggregationExpr:
-			if v.Grouping != nil {
-				for _, g := range v.Grouping.Groups {
-					if isDetectedLevelGroupingLabel(g) {
-						found = true
-						return false
-					}
-				}
-			}
-		}
-		return true
-	})
-	return found
+// In light of that, the gate is permissive: every log-stream query
+// triggers the wrap. The previous restrictive gate (only when the user
+// referenced `detected_level` / `level` explicitly) caused the
+// loki-compat `fast/basic-selectors.yaml` regressions where Loki splits
+// the response into one Stream per detected_level even for queries
+// that never name the label (bare selectors, line filters, label
+// filters on unrelated keys). Returning true universally restores
+// stream-identity parity with reference Loki.
+//
+// Pipe stages with parser-extracted `level` keys (`| logfmt`,
+// `| json`, `| regexp ...`, `| pattern ...`, `| label_format ...`)
+// keep going through their existing label-filter-context lookups —
+// see [isDetectedLevelLabel] vs [isDetectedLevelGroupingLabel] for
+// the matcher / grouping split. The wrap surfaces `detected_level`
+// alongside any parser-derived keys; both can coexist in the output
+// label map without conflict (Loki's reference response carries both
+// when applicable).
+//
+// The function still walks the AST defensively so a `nil` expression
+// (only the metric branch should hit ProjectSamples without an `expr`
+// in [engine.Meta.Extra], but the log branch is the documented caller)
+// returns false rather than panicking. The walk is otherwise a no-op
+// for log queries — every log-shaped expression returns true. Metric
+// queries don't reach this code path (the metric branch in
+// [Lang.ProjectSamples] doesn't consult this gate).
+func queryShouldSurfaceDetectedLevel(expr syntax.Expr) bool {
+	// Every parsed log-stream expression triggers the wrap. The
+	// signature stays AST-aware so future revisions can re-gate
+	// specific shapes (e.g., `| drop detected_level` if/when cerberus
+	// honours the drop-stage label set) without re-plumbing the
+	// projection site. A nil expression (defensive: callers should
+	// always populate `engine.Meta.Extra["expr"]`) opts out so the
+	// wrap doesn't run against an empty AST.
+	return expr != nil
 }
