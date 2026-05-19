@@ -415,10 +415,111 @@ func TestConformance_LokiDetectedFieldsWire(t *testing.T) {
 	}
 }
 
-// TestConformance_LokiPatternsWire — empty-data envelope. Cerberus
-// doesn't run pattern discovery yet; the test pins the wire-stable
-// `data:[]` shape (top-level array, matching upstream Loki's
-// `WriteQueryPatternsResponseJSON`).
+// TestConformance_LokiPatternsBasic — non-empty-data envelope. With
+// the drain wire-up live (PR #517), feeding canned (Timestamp, Body)
+// rows through the stub Querier produces a real cluster on the
+// response. This conformance test pins the wire shape Grafana decodes:
+//
+//   - `data` is a top-level JSON array (NOT `{patterns:[...]}` — that
+//     legacy wrapper was dropped in #514 to match upstream Loki's
+//     `WriteQueryPatternsResponseJSON`),
+//   - each element decodes into `loki.Pattern{Pattern, Level, Samples}`,
+//   - each `samples[i]` is a 2-tuple `[unix_seconds, count]`. The first
+//     slot is unix SECONDS (not ms/ns) per upstream's
+//     `sample.Timestamp.Unix()` projection.
+//
+// The drain-internals assertions (cluster count, template content) live
+// in patterns_test.go; this test focuses on the wire envelope alone so
+// a future tokeniser tweak in drain doesn't churn the conformance pin.
+func TestConformance_LokiPatternsBasic(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+	// 5 canned (Timestamp, Body) rows feeding the stub Querier — drain
+	// folds them into >=1 clusters when the handler trains on them.
+	// Drain rejects lines with fewer than 4 tokens, so each body
+	// includes at least four space-separated chunks (path, status,
+	// latency suffix) to satisfy the minimum.
+	q := &stubQuerier{
+		tsLines: []chclient.TimestampedLine{
+			{Timestamp: base, Body: "GET /api/foo/1 status=200 latency=5ms"},
+			{Timestamp: base.Add(1 * time.Second), Body: "GET /api/foo/2 status=200 latency=7ms"},
+			{Timestamp: base.Add(2 * time.Second), Body: "GET /api/foo/3 status=200 latency=4ms"},
+			{Timestamp: base.Add(3 * time.Second), Body: "GET /api/foo/4 status=200 latency=11ms"},
+			{Timestamp: base.Add(4 * time.Second), Body: "GET /api/foo/5 status=200 latency=9ms"},
+		},
+	}
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL +
+		`/loki/api/v1/patterns?query=%7Bjob%3D%22api%22%7D&start=1778760000&end=1778763600`)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+	}
+
+	// Decode the envelope. The crucial pin is that `data` is a top-level
+	// array, not a struct — a `{patterns:[...]}` wrapper would fail this
+	// decode because the field shape no longer matches.
+	var env struct {
+		Status string         `json:"status"`
+		Data   []loki.Pattern `json:"data"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil {
+		t.Fatalf("decode: %v body=%s", err, body)
+	}
+	if env.Status != "success" {
+		t.Errorf("status: got %q, want success", env.Status)
+	}
+	if env.Data == nil {
+		t.Fatalf("expected non-nil Data slice (JSON []); got nil — body=%s", body)
+	}
+	if len(env.Data) < 1 {
+		t.Fatalf("expected >=1 cluster after 5 trained lines; got %d — body=%s",
+			len(env.Data), body)
+	}
+	// Per-element pins: each Pattern decodes with the
+	// {Pattern, Level, Samples} shape (#514) and each Samples element is
+	// a 2-tuple [unix_seconds, count]. We pick a window such that every
+	// sample timestamp falls in unix-seconds range — 2026-05-14T12:00:00Z
+	// = 1778760000, so a sample at +/-1d is well within the second-scale
+	// range that distinguishes from ms (+10^3) / ns (+10^9).
+	const baseUnix = int64(1778760000)
+	for i, p := range env.Data {
+		if p.Pattern == "" {
+			t.Errorf("env.Data[%d].Pattern is empty", i)
+		}
+		// Level is "" in this slice (PR B emits empty level — see
+		// patterns.go doc + plan §5).
+		if p.Level != "" {
+			t.Errorf("env.Data[%d].Level=%q want empty (PR B does not bucket by level)", i, p.Level)
+		}
+		for j, s := range p.Samples {
+			// unix_seconds for 2026-05-14T12:00:00Z is ~1.78e9. unix_ms
+			// would be ~1.78e12, unix_ns ~1.78e18. A ±1d window catches
+			// any mis-shifted unit while tolerating drain's bucketing
+			// rounding (TimeResolution=10s, so a sample could trail the
+			// last training timestamp by up to 10s).
+			if s[0] < baseUnix-86400 || s[0] > baseUnix+86400 {
+				t.Errorf("env.Data[%d].Samples[%d][0] = %d; expected unix SECONDS near %d (a ms/ns mis-shift would be 10^3/10^9 too large)",
+					i, j, s[0], baseUnix)
+			}
+			if s[1] <= 0 {
+				t.Errorf("env.Data[%d].Samples[%d][1] = %d; expected positive count", i, j, s[1])
+			}
+		}
+	}
+}
+
+// TestConformance_LokiPatternsWire — empty-data envelope. Wired before
+// drain landed; pins the wire-stable `data:[]` shape (top-level array,
+// matching upstream Loki's `WriteQueryPatternsResponseJSON`) when the
+// stub returns zero rows from the peek window.
 func TestConformance_LokiPatternsWire(t *testing.T) {
 	t.Parallel()
 
