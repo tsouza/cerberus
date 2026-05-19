@@ -1,7 +1,37 @@
+# Bare histogram quantile (no sum-by-le wrapper). Attributes flow through
+# unchanged so each (Attributes, anchor_ts) becomes its own row.
+# Two services seeded; matcher filters to service="api" only.
+# Buckets [1,2,3] / bounds [0.1,0.5,1.0]: cumsum=[1,3,6], 0.95*6=5.7,
+# arrayFirstIndex hits length -> returns 1.0.
+
 -- query.promql --
 histogram_quantile(0.95, http_server_request_duration{service="api"})
 -- range_step --
 30s
+-- seed --
+CREATE TABLE otel_metrics_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    BucketCounts Array(UInt64),
+    ExplicitBounds Array(Float64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_histogram VALUES
+    ('http_server_request_duration', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), [1, 2, 3], [0.1, 0.5, 1.0]),
+    ('http_server_request_duration', map('service', 'web'), toDateTime64('2026-01-01 00:00:00', 9), [4, 4, 2], [0.1, 0.5, 1.0]);
+-- expected_rows --
+[
+  ["", {"service": "api"}, "2026-01-01T00:00:00Z", 1.0],
+  ["", {"service": "api"}, "2026-01-01T00:00:30Z", 1.0],
+  ["", {"service": "api"}, "2026-01-01T00:01:00Z", 1.0],
+  ["", {"service": "api"}, "2026-01-01T00:01:30Z", 1.0],
+  ["", {"service": "api"}, "2026-01-01T00:02:00Z", 1.0],
+  ["", {"service": "api"}, "2026-01-01T00:02:30Z", 1.0],
+  ["", {"service": "api"}, "2026-01-01T00:03:00Z", 1.0],
+  ["", {"service": "api"}, "2026-01-01T00:03:30Z", 1.0],
+  ["", {"service": "api"}, "2026-01-01T00:04:00Z", 1.0],
+  ["", {"service": "api"}, "2026-01-01T00:04:30Z", 1.0]
+]
 -- args --
 [0] string = ""
 [1] string = "http_server_request_duration"

@@ -17,6 +17,25 @@
 demo_memory_usage_bytes offset -5m
 -- range_step --
 1m
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('demo_memory_usage_bytes', map('instance', 'a'), toDateTime64('2026-01-01 00:03:00', 9), 100.0),
+    ('demo_memory_usage_bytes', map('instance', 'a'), toDateTime64('2026-01-01 00:06:00', 9), 200.0);
+-- expected_rows --
+[
+  ["demo_memory_usage_bytes", {"instance": "a"}, "2026-01-01T00:00:00Z", 100.0],
+  ["demo_memory_usage_bytes", {"instance": "a"}, "2026-01-01T00:01:00Z", 200.0],
+  ["demo_memory_usage_bytes", {"instance": "a"}, "2026-01-01T00:02:00Z", 200.0],
+  ["demo_memory_usage_bytes", {"instance": "a"}, "2026-01-01T00:03:00Z", 200.0],
+  ["demo_memory_usage_bytes", {"instance": "a"}, "2026-01-01T00:04:00Z", 200.0],
+  ["demo_memory_usage_bytes", {"instance": "a"}, "2026-01-01T00:05:00Z", 200.0]
+]
 -- args --
 [0] string = "demo_memory_usage_bytes"
 [1] int64 = -300000000000
