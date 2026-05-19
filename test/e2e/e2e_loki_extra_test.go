@@ -51,11 +51,11 @@ func TestLokiQuery_LineFilterContains(t *testing.T) {
 	}
 }
 
-// TestLokiQuery_ParserStageRejection — `{...} | json` returns 422 with
-// the documented "unsupported" message (regression test for the parser
-// stage gap — if `| json` later ships, this test goes red and the
-// rejection marker should be removed).
-func TestLokiQuery_ParserStageRejection(t *testing.T) {
+// TestLokiQuery_JSONParserStage — `{...} | json` parses + executes; the
+// endpoint returns a 200 envelope with the documented success shape.
+// Pins the regression: before the parser stage shipped, the same query
+// was rejected with 422.
+func TestLokiQuery_JSONParserStage(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -68,23 +68,17 @@ func TestLokiQuery_ParserStageRejection(t *testing.T) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode != http.StatusUnprocessableEntity {
-		t.Fatalf("status: got %d, want 422", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", resp.StatusCode)
 	}
 	var env struct {
 		Status string `json:"status"`
-		Error  string `json:"error"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if env.Status != "error" {
-		t.Errorf("status: got %q, want error", env.Status)
-	}
-	// The message should mention `json` or `parser` so it's debuggable.
-	if !strings.Contains(strings.ToLower(env.Error), "json") &&
-		!strings.Contains(strings.ToLower(env.Error), "parser") {
-		t.Errorf("error message %q should mention json or parser", env.Error)
+	if env.Status != "success" {
+		t.Errorf("status: got %q, want success", env.Status)
 	}
 }
 
