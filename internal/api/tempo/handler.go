@@ -169,9 +169,26 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	h.Logger.Debug("cerberus tempo search", "traceql", q, "sql", res.SQL, "args", res.Args)
 
+	summaries, missingRoots := toTraceSummaries(res.Samples)
+	if len(missingRoots) > 0 {
+		// The result set lacked a root row for some traces — typical
+		// for structural-join queries (the join projects only matched
+		// children) and filter predicates that never match the root
+		// (`{ status = error }`, `{ kind = consumer }`). Issue a
+		// follow-up lookup against otel_traces filtered to root spans
+		// of the affected TraceIDs and patch RootServiceName /
+		// RootTraceName before responding.
+		roots, lookupErr := h.resolveTraceRoots(ctx, missingRoots)
+		if lookupErr != nil {
+			h.Logger.Warn("cerberus tempo root-span lookup failed",
+				"err", lookupErr, "missing", len(missingRoots))
+		} else {
+			applyRootMetadata(summaries, roots)
+		}
+	}
 	writeEngineHeaders(w, res.Headers)
 	writeJSON(w, http.StatusOK, SearchResponse{
-		Traces:  toTraceSummaries(res.Samples),
+		Traces:  summaries,
 		Metrics: SearchMetrics{InspectedTraces: len(res.Samples)},
 	})
 }
@@ -257,9 +274,19 @@ func (h *Handler) handleSearchRecent(w http.ResponseWriter, r *http.Request) {
 	}
 	h.Logger.Debug("cerberus tempo search/recent", "limit", limit, "sql", res.SQL, "args", res.Args)
 
+	summaries, missingRoots := toTraceSummaries(res.Samples)
+	if len(missingRoots) > 0 {
+		roots, lookupErr := h.resolveTraceRoots(ctx, missingRoots)
+		if lookupErr != nil {
+			h.Logger.Warn("cerberus tempo root-span lookup failed",
+				"err", lookupErr, "missing", len(missingRoots))
+		} else {
+			applyRootMetadata(summaries, roots)
+		}
+	}
 	writeEngineHeaders(w, res.Headers)
 	writeJSON(w, http.StatusOK, SearchResponse{
-		Traces:  toTraceSummaries(res.Samples),
+		Traces:  summaries,
 		Metrics: SearchMetrics{InspectedTraces: len(res.Samples)},
 	})
 }
@@ -893,9 +920,14 @@ func spansetAggregateSampleProjections() []chplan.Projection {
 //     multiple roots (broken trace), the earliest by start time wins —
 //     same fallback Tempo uses internally.
 //   - When no row in the matched set is a root (truncated trace; the
-//     matcher only hit children), fall back to the earliest span's
-//     metadata. This degrades gracefully — the search response still
-//     surfaces *something* identifying the trace.
+//     matcher only hit children, the common case for structural-join
+//     queries and `{ status = error }` against fixtures where only
+//     child spans satisfy the predicate), the second return value
+//     surfaces the missing-root TraceIDs so the caller can issue a
+//     follow-up root-lookup query (see resolveTraceRoots) and patch
+//     RootServiceName / RootTraceName before responding. Until that
+//     follow-up resolves, the summary anchors on the earliest-span
+//     fallback so a response is always emitted.
 //
 // Defensive: samples missing the reserved trace-ID key (older fixtures,
 // stub queriers in tests) fall back to (SpanName | Timestamp) so
@@ -904,7 +936,15 @@ func spansetAggregateSampleProjections() []chplan.Projection {
 // classification (since we can't tell — older fixtures pre-date the
 // reserved slot); the trace's RootService/RootTraceName then anchor
 // on the earliest-span fallback path.
-func toTraceSummaries(samples []chclient.Sample) []TraceSummary {
+//
+// Returns (summaries, missingRootTraceIDs). `missingRootTraceIDs`
+// contains the stripped-zero-form TraceID of every trace whose result
+// set lacked a true root span — the structural-join SQL only returns
+// the join's right-side rows (no root row by construction), and many
+// filter queries (`{ status = error }`, `{ kind = consumer }`) only
+// match child spans. resolveTraceRoots fetches the real root from
+// otel_traces and patches the affected summaries.
+func toTraceSummaries(samples []chclient.Sample) ([]TraceSummary, []string) {
 	type acc struct {
 		traceID     string
 		serviceName string
@@ -922,6 +962,13 @@ func toTraceSummaries(samples []chclient.Sample) []TraceSummary {
 		earliestStartNS int64
 		// hasRoot is true once we've seen a span with ParentSpanId == "".
 		hasRoot bool
+		// sawParentSlot is true once any of the trace's rows supplied
+		// the reserved `__cerberus_parentSpanID` slot. When false the
+		// shaper can't distinguish root from child (e.g. legacy fixtures
+		// + stub queriers that never populate the slot), so the
+		// missing-root follow-up lookup is suppressed and the
+		// earliest-span fallback handles the trace alone.
+		sawParentSlot bool
 		// hasTraceDurationNs is set the first time a row supplies the
 		// `__cerberus_traceDurationNs` reserved-key entry. Once true,
 		// `durationNS` carries the trace-wide span and per-row Sample.
@@ -981,6 +1028,9 @@ func toTraceSummaries(samples []chclient.Sample) []TraceSummary {
 		// "did we get the projection" signal independently of the
 		// emptiness check.
 		parentID, hasParentSlot := s.Labels[searchKeyParentSpanID]
+		if hasParentSlot {
+			a.sawParentSlot = true
+		}
 		isRoot := hasParentSlot && (parentID == "" || parentID == "0")
 		svc := s.Labels["service.name"]
 		switch {
@@ -1001,6 +1051,7 @@ func toTraceSummaries(samples []chclient.Sample) []TraceSummary {
 		}
 	}
 	out := make([]TraceSummary, 0, len(byTrace))
+	var missing []string
 	for k, a := range byTrace {
 		// Emit the real TraceID when the projection supplied one;
 		// otherwise surface the synthetic key (back-compat for stub
@@ -1016,9 +1067,20 @@ func toTraceSummaries(samples []chclient.Sample) []TraceSummary {
 			StartTimeUnixNano: strconv.FormatInt(a.startNS, 10),
 			DurationMs:        int(a.durationNS / 1_000_000),
 		})
+		// Only flag traces where we actually have a real TraceID, the
+		// projection populated the __cerberus_parentSpanID slot for at
+		// least one row (so we can trust "no root present"), and no
+		// row in the result set was a root span. The synthetic-key
+		// fallback path (no real TraceID) can't be looked up; the
+		// no-parent-slot path is the legacy fixture / stub-querier
+		// shape and stays on the earliest-span anchor.
+		if a.traceID != "" && a.sawParentSlot && !a.hasRoot {
+			missing = append(missing, a.traceID)
+		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].TraceID < out[j].TraceID })
-	return out
+	sort.Strings(missing)
+	return out, missing
 }
 
 // groupBatches converts a flat span list into Tempo's `batches` shape
