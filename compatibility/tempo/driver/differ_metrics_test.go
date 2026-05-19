@@ -46,6 +46,94 @@ func TestMetricsLabel_UnmarshalEmptyAnyValue(t *testing.T) {
 	}
 }
 
+// TestMetricsSample_TimestampMs_NumberWire pins the cerberus-side wire
+// shape: `timestampMs` is a JSON number. Both endpoints' decoders must
+// keep handling it after the FlexInt64 swap.
+func TestMetricsSample_TimestampMs_NumberWire(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"series":[{"labels":[{"key":"k","value":"v"}],"samples":[{"timestampMs":1747000000,"value":1.5}]}]}`)
+	m, err := decodeMetrics(body)
+	if err != nil {
+		t.Fatalf("decodeMetrics number-shape timestamp: %v", err)
+	}
+	if got := m.Series[0].Samples[0].TimestampMs; got != 1747000000 {
+		t.Fatalf("TimestampMs = %d, want 1747000000", got)
+	}
+}
+
+// TestMetricsSample_TimestampMs_StringWire pins the recent Tempo wire
+// shape: `timestampMs` is a JSON string holding a base-10 int64. The
+// upstream protobuf-to-JSON projection emits int64 fields as strings
+// to dodge JS-number precision loss. Before FlexInt64 this body failed
+// to decode with `json: cannot unmarshal string into Go struct field
+// MetricsSample.series.samples.timestampMs of type int64`, which then
+// surfaced in the compatibility report as ERROR for the three metrics
+// cases (count_over_time, quantile_over_time, rate_no_groupby).
+func TestMetricsSample_TimestampMs_StringWire(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"series":[{"labels":[{"key":"k","value":"v"}],"samples":[{"timestampMs":"1747000000","value":1.5}]}]}`)
+	m, err := decodeMetrics(body)
+	if err != nil {
+		t.Fatalf("decodeMetrics string-shape timestamp: %v", err)
+	}
+	if got := m.Series[0].Samples[0].TimestampMs; got != 1747000000 {
+		t.Fatalf("TimestampMs = %d, want 1747000000", got)
+	}
+}
+
+// TestMetricsExemplar_TimestampMs_StringWire covers the exemplar path
+// because exemplars use the same JSON projection as samples — Tempo
+// string-encodes both.
+func TestMetricsExemplar_TimestampMs_StringWire(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"series":[{
+		"labels":[{"key":"k","value":"v"}],
+		"samples":[{"timestampMs":"1000","value":1}],
+		"exemplars":[{"timestampMs":"1500","value":1.2,"labels":[{"key":"k","value":"v"}]}]
+	}]}`)
+	m, err := decodeMetrics(body)
+	if err != nil {
+		t.Fatalf("decodeMetrics exemplar string-shape timestamp: %v", err)
+	}
+	if got := m.Series[0].Exemplars[0].TimestampMs; got != 1500 {
+		t.Fatalf("Exemplar TimestampMs = %d, want 1500", got)
+	}
+}
+
+// TestMetricsSample_TimestampMs_Malformed pins the loud-fail behaviour
+// on a malformed body so a bad wire shape still produces a decode
+// error (rather than silently zero-filling the timestamp).
+func TestMetricsSample_TimestampMs_Malformed(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"series":[{"labels":[],"samples":[{"timestampMs":"not-a-number","value":1}]}]}`)
+	if _, err := decodeMetrics(body); err == nil {
+		t.Fatal("expected decode error for non-integer string timestamp, got nil")
+	}
+}
+
+// TestCompareMetrics_MixedTimestampWire is the cross-shape parity case
+// that motivated the fix: tempo-side string-encoded `timestampMs`,
+// cerberus-side number-encoded `timestampMs`. Same numeric value, same
+// label set, same float value — the differ must report Equal=true.
+func TestCompareMetrics_MixedTimestampWire(t *testing.T) {
+	t.Parallel()
+	tempoSide := []byte(`{"series":[
+		{"labels":[{"key":"k","value":"v"}],
+		 "samples":[{"timestampMs":"1747000000","value":1.5}]}
+	]}`)
+	cerberusSide := []byte(`{"series":[
+		{"labels":[{"key":"k","value":"v"}],
+		 "samples":[{"timestampMs":1747000000,"value":1.5}]}
+	]}`)
+	d, err := CompareMetrics(tempoSide, cerberusSide, "tempo", "cerberus", DefaultDiffOptions())
+	if err != nil {
+		t.Fatalf("CompareMetrics: %v", err)
+	}
+	if !d.Equal {
+		t.Fatalf("expected Equal across mixed timestampMs wire shapes, got reasons=%v", d.Reasons)
+	}
+}
+
 func TestCompareMetrics_Identical(t *testing.T) {
 	t.Parallel()
 	body := []byte(`{"series":[

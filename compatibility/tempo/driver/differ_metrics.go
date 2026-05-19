@@ -34,8 +34,40 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 )
+
+// FlexInt64 is an int64 that decodes from either a JSON number or a
+// JSON string-encoded integer. Tempo's /api/metrics response encodes
+// `timestampMs` as a JSON string in recent tags (the protobuf-to-JSON
+// projection emits int64 fields as strings to dodge JS-number precision
+// loss), while cerberus emits the same field as a plain number. The
+// differ needs to decode both shapes.
+//
+// The underlying type is int64 so existing callers that read the field
+// (`%d` formatting, `<` comparisons, arithmetic) keep working without
+// any conversion.
+type FlexInt64 int64
+
+// UnmarshalJSON accepts either a JSON number or a JSON string holding
+// a base-10 integer. Any other shape (object, bool, null) returns an
+// error so a malformed body still fails loudly.
+func (f *FlexInt64) UnmarshalJSON(b []byte) error {
+	// Strip outer quotes if present so we can parse the inner integer
+	// uniformly. JSON strings are guaranteed to start with `"` and end
+	// with `"`; everything else is forwarded to strconv as-is.
+	s := string(b)
+	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		s = s[1 : len(s)-1]
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return fmt.Errorf("FlexInt64: cannot parse %q as int64: %w", string(b), err)
+	}
+	*f = FlexInt64(n)
+	return nil
+}
 
 // MetricsResponse is the differ-side struct mirroring Tempo's
 // /api/metrics/query_range envelope (and the /api/metrics/query
@@ -127,10 +159,12 @@ func (l *MetricsLabel) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// MetricsSample is a single (timestampMs, value) point.
+// MetricsSample is a single (timestampMs, value) point. TimestampMs
+// uses FlexInt64 so the differ accepts both wire shapes Tempo and
+// cerberus emit (number vs string-encoded int64); see FlexInt64.
 type MetricsSample struct {
-	TimestampMs int64   `json:"timestampMs"`
-	Value       float64 `json:"value"`
+	TimestampMs FlexInt64 `json:"timestampMs"`
+	Value       float64   `json:"value"`
 }
 
 // MetricsExemplar is one exemplar attached to a series. The Labels are
@@ -139,7 +173,7 @@ type MetricsSample struct {
 type MetricsExemplar struct {
 	Labels      []MetricsLabel `json:"labels,omitempty"`
 	Value       float64        `json:"value"`
-	TimestampMs int64          `json:"timestampMs"`
+	TimestampMs FlexInt64      `json:"timestampMs"`
 }
 
 // metricsCanonicalKey produces the differ-internal series identifier
