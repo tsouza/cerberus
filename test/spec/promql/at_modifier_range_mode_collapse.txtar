@@ -2,6 +2,29 @@
 up @ 1767225600
 -- range_step --
 30s
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('up', map('instance', 'a'), toDateTime64('2026-01-01 00:00:00', 9), 1.0);
+-- expected_rows --
+[
+  ["up", {"instance": "a"}, "2026-01-01T00:00:00Z", 1],
+  ["up", {"instance": "a"}, "2026-01-01T00:00:30Z", 1],
+  ["up", {"instance": "a"}, "2026-01-01T00:01:00Z", 1],
+  ["up", {"instance": "a"}, "2026-01-01T00:01:30Z", 1],
+  ["up", {"instance": "a"}, "2026-01-01T00:02:00Z", 1],
+  ["up", {"instance": "a"}, "2026-01-01T00:02:30Z", 1],
+  ["up", {"instance": "a"}, "2026-01-01T00:03:00Z", 1],
+  ["up", {"instance": "a"}, "2026-01-01T00:03:30Z", 1],
+  ["up", {"instance": "a"}, "2026-01-01T00:04:00Z", 1],
+  ["up", {"instance": "a"}, "2026-01-01T00:04:30Z", 1],
+  ["up", {"instance": "a"}, "2026-01-01T00:05:00Z", 1]
+]
 -- args --
 [0] string = "up"
 [1] string = "2026-01-01 00:00:00.000000000"

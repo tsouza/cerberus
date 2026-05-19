@@ -12,6 +12,28 @@
 time() + http_requests_total
 -- range_step --
 30s
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum VALUES
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 5000.0);
+-- expected_rows --
+[
+  ["", {"job": "api"}, "2026-01-01T00:00:00Z", 1767230600],
+  ["", {"job": "api"}, "2026-01-01T00:00:30Z", 1767230630],
+  ["", {"job": "api"}, "2026-01-01T00:01:00Z", 1767230660],
+  ["", {"job": "api"}, "2026-01-01T00:01:30Z", 1767230690],
+  ["", {"job": "api"}, "2026-01-01T00:02:00Z", 1767230720],
+  ["", {"job": "api"}, "2026-01-01T00:02:30Z", 1767230750],
+  ["", {"job": "api"}, "2026-01-01T00:03:00Z", 1767230780],
+  ["", {"job": "api"}, "2026-01-01T00:03:30Z", 1767230810],
+  ["", {"job": "api"}, "2026-01-01T00:04:00Z", 1767230840],
+  ["", {"job": "api"}, "2026-01-01T00:04:30Z", 1767230870]
+]
 -- args --
 [0] string = ""
 [1] int64 = 1000000000
