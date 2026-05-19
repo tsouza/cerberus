@@ -115,7 +115,7 @@ func TestPropertyConstantFoldSemantic_RowSetEquivalent(t *testing.T) {
 	// Literal comparison pairs that semantic fold reduces to LitBool.
 	// All operands sit underneath a wrapping `<binary> AND <leaf>`,
 	// so the binary must collapse to a Bool — arithmetic ops like
-	// OpAdd are skipped (CH would reject `1+2 AND <bool>` typing).
+	// OpAdd are excluded (CH would reject `1+2 AND <bool>` typing).
 	literalPairs := []struct {
 		op   chplan.BinaryOp
 		l, r int64
