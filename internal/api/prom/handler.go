@@ -39,6 +39,7 @@ type Querier interface {
 	QueryStrings(ctx context.Context, sql string, args ...any) ([]string, error)
 	QueryLabelSets(ctx context.Context, sql string, args ...any) ([]map[string]string, error)
 	QueryMetricMeta(ctx context.Context, sql, metricType string, args ...any) ([]chclient.MetricMetaRow, error)
+	QueryExemplars(ctx context.Context, sql string, args ...any) ([]chclient.ExemplarRow, error)
 }
 
 // Handler implements the Prometheus HTTP API endpoints cerberus speaks.

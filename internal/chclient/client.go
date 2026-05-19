@@ -447,6 +447,76 @@ func (c *Client) QueryIndexVolume(ctx context.Context, sql string, args ...any) 
 	return out, nil
 }
 
+// ExemplarRow is one fanned-out exemplar tuple decoded from the SQL
+// produced by chsql.EmitQueryExemplars. The eight columns project the
+// per-data-point series identity (MetricName / Attributes /
+// ServiceName), the per-exemplar `Exemplars.<field>` array elements
+// (Timestamp / Value / TraceID / SpanID / ExemplarAttributes), and are
+// scanned positionally in the order the emitter projects them.
+//
+// Wire-shape consumers (see [internal/api/prom.handleQueryExemplars])
+// group these rows by `(MetricName, Attributes, ServiceName)` into
+// ExemplarSeries; the per-exemplar columns become the inner Exemplar
+// entries with `trace_id` / `span_id` merged into Labels via the
+// reserved-key precedence rules documented on the PromQL exemplars
+// endpoint plan.
+type ExemplarRow struct {
+	MetricName         string
+	Attributes         map[string]string
+	ServiceName        string
+	Timestamp          time.Time
+	Value              float64
+	TraceID            string
+	SpanID             string
+	ExemplarAttributes map[string]string
+}
+
+// QueryExemplars runs sql expecting the eight-column row shape
+// chsql.EmitQueryExemplars produces and decodes each row into an
+// [ExemplarRow]. Scan binds positionally; the SQL column order is the
+// emitter's contract.
+//
+// Guarded by the circuit breaker (see [Client] doc).
+func (c *Client) QueryExemplars(ctx context.Context, sql string, args ...any) ([]ExemplarRow, error) {
+	if !c.br.allow() {
+		return nil, fmt.Errorf("chclient: query: %w", ErrCircuitOpen)
+	}
+	ctx, span := startExecuteSpan(ctx, sql)
+	defer span.End()
+	defer flushProgress(ctx)
+	rows, err := c.conn.Query(ctx, sql, args...)
+	c.br.record(err)
+	if err != nil {
+		span.RecordError(err)
+		return nil, fmt.Errorf("chclient: query: %w", err)
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+
+	var out []ExemplarRow
+	for rows.Next() {
+		var r ExemplarRow
+		if err := rows.Scan(
+			&r.MetricName,
+			&r.Attributes,
+			&r.ServiceName,
+			&r.Timestamp,
+			&r.Value,
+			&r.TraceID,
+			&r.SpanID,
+			&r.ExemplarAttributes,
+		); err != nil {
+			return nil, fmt.Errorf("chclient: scan: %w", err)
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("chclient: rows.Err: %w", err)
+	}
+	return out, nil
+}
+
 // QueryLabelSets runs sql and decodes each row into a Map(String,String)
 // label set. Used by /api/v1/series.
 //

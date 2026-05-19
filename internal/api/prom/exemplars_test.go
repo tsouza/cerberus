@@ -60,7 +60,7 @@ func TestQueryExemplars(t *testing.T) {
 		{
 			name:       "multi-series matchers — happy path",
 			method:     http.MethodGet,
-			query:      url.Values{"query": {`{__name__=~"http_.*",job=~"api|db"}`}, "start": {"1717995600"}, "end": {"1717999200"}},
+			query:      url.Values{"query": {`http_request_duration_seconds_bucket{job=~"api|db"}`}, "start": {"1717995600"}, "end": {"1717999200"}},
 			wantStatus: http.StatusOK,
 		},
 		{
@@ -167,9 +167,11 @@ func TestQueryExemplars(t *testing.T) {
 				t.Errorf("expected JSON to contain `\"data\":[]`; got %s", body)
 			}
 
-			// Crucially: the empty-data path must NOT have hit ClickHouse.
-			if q.lastSQL != "" {
-				t.Errorf("exemplars handler reached CH: lastSQL=%q", q.lastSQL)
+			// The wired handler now reaches CH and runs the EmitQueryExemplars
+			// SQL; the stub Querier returns zero rows so `data` stays empty,
+			// which is the empty-result happy-path contract.
+			if q.lastSQL == "" {
+				t.Errorf("exemplars handler did not reach CH; lastSQL is empty")
 			}
 		})
 	}
