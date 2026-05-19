@@ -1,5 +1,20 @@
 -- query.promql --
 up
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('up', map('instance', 'a'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
+    ('up', map('instance', 'b'), toDateTime64('2026-01-01 00:00:00', 9), 0.0);
+-- expected_rows --
+[
+  ["up", {"instance": "a"}, "2026-01-01T00:00:00Z", 1],
+  ["up", {"instance": "b"}, "2026-01-01T00:00:00Z", 0]
+]
 -- args --
 [0] string = "up"
 [1] string = "2026-01-01 00:00:01.000000000"
