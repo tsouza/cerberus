@@ -191,20 +191,29 @@ func (l *Lang) ProjectSamples(plan chplan.Node, meta engine.Meta) chplan.Node {
 	// and write a 0.0 placeholder into Value. toStreamsWithTransform reads
 	// back from Sample.MetricName as the line content.
 	//
-	// The Attributes column is wrapped in [withDetectedLevel] ONLY when
-	// the query explicitly references `detected_level` / `level` (in a
-	// matcher, label filter, or grouping clause). Reference Loki only
-	// surfaces the synthesized severity label when the query asks for
-	// it; auto-injecting it on every log query splits a single stream
-	// into one per severity, breaking the
-	// `fast/basic-selectors.yaml :: streams[0] entry count` compat-
-	// harness invariant for bare selector queries. When the user does
-	// reference `detected_level` (e.g. `{job="api"} |
-	// detected_level="error"`), the wrap kicks in so the streams
-	// response carries the synthesized label that downstream consumers
-	// expect.
+	// The Attributes column is wrapped in [withDetectedLevel] so the
+	// emitted stream identity carries the synthesized severity label
+	// whenever the row's `SeverityText` is non-empty. Reference Loki
+	// surfaces `detected_level` on every log query that returns rows
+	// whose severity can be detected from stream / structured-metadata
+	// labels, parser-stage extraction, or content scan (see
+	// `queryShouldSurfaceDetectedLevel`'s doc comment for the upstream
+	// detection sources cerberus mirrors). The wrap's inner mapFilter
+	// drops the `detected_level` entry on rows without severity, so a
+	// query that lands on severity-free data sees no change in its
+	// stream label set.
+	//
+	// The earlier restrictive gate (only when the user explicitly
+	// named `detected_level` / `level` in a matcher / filter /
+	// grouping) caused the `fast/basic-selectors.yaml` regressions —
+	// reference Loki splits bare selector queries into one Stream per
+	// detected_level value, but cerberus collapsed them into a single
+	// Stream because the gate never fired. The broadened predicate
+	// restores stream-identity parity for bare selectors, line
+	// filters, label filters on unrelated keys, and parser-stage
+	// queries (`| logfmt`, `| json`, `| regexp ...`).
 	attrsExpr := chplan.Expr(&chplan.ColumnRef{Name: s.ResourceAttributesColumn})
-	if expr, _ := meta.Extra["expr"].(syntax.Expr); queryReferencesDetectedLevel(expr) {
+	if expr, _ := meta.Extra["expr"].(syntax.Expr); queryShouldSurfaceDetectedLevel(expr) {
 		attrsExpr = withDetectedLevel(s, attrsExpr)
 	}
 	return &chplan.Project{
