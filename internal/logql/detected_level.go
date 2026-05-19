@@ -281,7 +281,7 @@ func queryReferencesDetectedLevel(expr syntax.Expr) bool {
 			if v.LabelFilterer == nil {
 				return true
 			}
-			for _, name := range v.LabelFilterer.RequiredLabelNames() {
+			for _, name := range v.RequiredLabelNames() {
 				if isDetectedLevelGroupingLabel(name) {
 					found = true
 					return false
