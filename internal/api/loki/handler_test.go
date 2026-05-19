@@ -371,6 +371,117 @@ func containsArg(args []any, want string) bool {
 	return false
 }
 
+// TestQuery_Streams_DropsOTelDottedLabels — when the CH row carries
+// both the OTel-form `service.name` AND the Loki-form `service_name`
+// (the canonical wire-format key), the Stream envelope cerberus
+// returns must only surface the normalised underscore form. Without
+// the filter the response is a superset of what reference Loki emits,
+// and the loki-compat differential harness rejects the row with
+// `streams[0] labels differ: ... actual=map[... service.name:tempo
+// service_name:tempo]`. The seeder in PR #525 intentionally writes
+// both forms into ResourceAttributes so dotted-form stream-selectors
+// continue to match at the WHERE layer; only the OUTPUT envelope
+// needs to drop the redundant sibling.
+func TestQuery_Streams_DropsOTelDottedLabels(t *testing.T) {
+	t.Parallel()
+
+	ts := time.Date(2026, 5, 12, 12, 0, 0, 0, time.UTC)
+	q := &stubQuerier{
+		samples: []chclient.Sample{
+			{
+				MetricName: "row 1",
+				Labels: map[string]string{
+					"service.name":   "tempo",
+					"service_name":   "tempo",
+					"k8s.pod.name":   "pod-0",
+					"k8s_pod_name":   "pod-0",
+					"detected_level": "info",
+					// Dotted key with NO underscore sibling — must pass through
+					// (the only signal that a sibling exists in the map is the
+					// underscore form, so without it we can't tell whether the
+					// dot is OTel-form or a legitimately dotted name).
+					"orphan.key": "value",
+				},
+				Timestamp: ts,
+			},
+		},
+	}
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + `/loki/api/v1/query?query=%7Bservice_name%3D%22tempo%22%7D`)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+
+	var parsed queryResponse
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if parsed.Data.ResultType != "streams" {
+		t.Fatalf("resultType=%q, want streams", parsed.Data.ResultType)
+	}
+	raw, _ := json.Marshal(parsed.Data.Result)
+	var streams []loki.Stream
+	if err := json.Unmarshal(raw, &streams); err != nil {
+		t.Fatalf("decode streams: %v", err)
+	}
+	if len(streams) != 1 {
+		t.Fatalf("expected 1 stream, got %d: %+v", len(streams), streams)
+	}
+	got := streams[0].Stream
+	if _, ok := got["service.name"]; ok {
+		t.Errorf("expected service.name to be DROPPED from output (sibling service_name present); got %v", got)
+	}
+	if got["service_name"] != "tempo" {
+		t.Errorf("expected service_name=tempo to be PRESERVED; got %v", got)
+	}
+	if _, ok := got["k8s.pod.name"]; ok {
+		t.Errorf("expected k8s.pod.name to be DROPPED (sibling k8s_pod_name present); got %v", got)
+	}
+	if got["k8s_pod_name"] != "pod-0" {
+		t.Errorf("expected k8s_pod_name=pod-0 to be PRESERVED; got %v", got)
+	}
+	if got["detected_level"] != "info" {
+		t.Errorf("expected detected_level=info to be PRESERVED (non-dotted key); got %v", got)
+	}
+	if got["orphan.key"] != "value" {
+		t.Errorf("expected orphan.key=value to be PRESERVED (no underscore sibling); got %v", got)
+	}
+}
+
+// TestQuery_Streams_OTelFilterDoesNotAffectSelector — the dotted-form
+// filter applies strictly to the OUTPUT label map. LogQL itself
+// restricts label identifiers to [a-zA-Z_][a-zA-Z0-9_]*, so dotted
+// selectors are syntactic 400s at the parser layer (not a behavior
+// the filter could change). The harness seeder writes both
+// `service.name` and `service_name` into ResourceAttributes so the
+// canonical underscore-form selector still resolves through the
+// Map[..] subscript at the CH layer. This test pins that path.
+func TestQuery_Streams_OTelFilterDoesNotAffectSelector(t *testing.T) {
+	t.Parallel()
+
+	q := &stubQuerier{}
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + `/loki/api/v1/query?query=%7Bservice_name%3D%22tempo%22%7D`)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	if got := q.LastSQL(); !strings.Contains(got, "ResourceAttributes") {
+		t.Errorf("expected WHERE clause to project against ResourceAttributes; got SQL: %q", got)
+	}
+}
+
 // TestQueryRange_BadInput covers the validation contract on
 // /loki/api/v1/query_range.
 func TestQueryRange_BadInput(t *testing.T) {
