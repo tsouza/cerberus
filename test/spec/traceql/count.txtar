@@ -1,24 +1,27 @@
 -- query.traceql --
 { resource.service.name = "frontend" } | count() > 0
--- sql --
-SELECT * FROM (SELECT toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?))) WHERE (`Value` > ?)
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanName String,
+    Timestamp DateTime64(9),
+    ResourceAttributes Map(String, String)
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    ('t1', 'span', toDateTime64('2024-01-01 00:00:00', 9), map('service.name', 'backend')),
+    ('t2', 'span', toDateTime64('2024-01-01 00:00:01', 9), map('service.name', 'db')),
+    ('t3', 'span', toDateTime64('2024-01-01 00:00:02', 9), map('service.name', 'cache'));
 -- args --
 [0] int64 = 1
 [1] string = "service.name"
 [2] string = "frontend"
 [3] int64 = 0
--- seed --
-CREATE TABLE otel_traces (
-    ResourceAttributes Map(String, String)
-) ENGINE = Memory;
-INSERT INTO otel_traces VALUES
-    (map('service.name', 'backend')),
-    (map('service.name', 'db')),
-    (map('service.name', 'cache'));
--- expected_rows --
-[]
 -- chplan --
 Filter predicate=(Value > 0)
-  Aggregate groupBy=[] funcs=[count(1) AS Value]
+  Aggregate groupBy=[TraceId AS TraceId] funcs=[count(1) AS Value, any(SpanName) AS MetricName, any(ResourceAttributes) AS ResourceAttrs, min(Timestamp) AS TimeUnix]
     Filter predicate=(ResourceAttributes["service.name"] = "frontend")
       Scan(otel_traces)
+-- sql --
+SELECT * FROM (SELECT `TraceId` AS `TraceId`, toFloat64(count(?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, min(`Timestamp`) AS `TimeUnix` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) GROUP BY `TraceId`) WHERE (`Value` > ?)
+-- expected_rows --
+[]

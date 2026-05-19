@@ -1,5 +1,21 @@
 -- query.traceql --
 { resource.service.name = "x" && span.http.status_code > 200 } | count() > 10
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String DEFAULT 't1',
+    SpanName String DEFAULT 'span',
+    Timestamp DateTime64(9) DEFAULT toDateTime64('2024-01-01 00:00:00', 9) + toIntervalSecond(toInt64(Duration)),
+    Duration UInt64,
+    ResourceAttributes Map(String, String) DEFAULT if(Duration < 12, map('service.name', 'x'), map('service.name', 'y')),
+    SpanAttributes Map(String, String) DEFAULT if(Duration < 12, map('http.status_code', '500'), map('http.status_code', '100'))
+) ENGINE = MergeTree ORDER BY Duration;
+INSERT INTO otel_traces (Duration) VALUES
+    (0), (1), (2), (3), (4), (5), (6), (7), (8), (9), (10), (11),
+    (12), (13), (14);
+-- expected_rows --
+[
+  ["t1", 12, "span", {"service.name": "x"}, "2024-01-01T00:00:00Z"]
+]
 -- args --
 [0] int64 = 1
 [1] string = "service.name"
@@ -7,23 +23,10 @@
 [3] string = "http.status_code"
 [4] int64 = 200
 [5] int64 = 10
--- sql --
-SELECT * FROM (SELECT toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?) AND (toFloat64(`SpanAttributes`[?]) > ?))) WHERE (`Value` > ?)
--- seed --
-CREATE TABLE otel_traces (
-    Duration UInt64,
-    ResourceAttributes Map(String, String) MATERIALIZED if(Duration < 12, map('service.name', 'x'), map('service.name', 'y')),
-    SpanAttributes Map(String, String) MATERIALIZED if(Duration < 12, map('http.status_code', '500'), map('http.status_code', '100'))
-) ENGINE = MergeTree ORDER BY Duration;
-INSERT INTO otel_traces (Duration) VALUES
-    (0), (1), (2), (3), (4), (5), (6), (7), (8), (9), (10), (11),
-    (12), (13), (14);
--- expected_rows --
-[
-  [12.0]
-]
 -- chplan --
 Filter predicate=(Value > 10)
-  Aggregate groupBy=[] funcs=[count(1) AS Value]
+  Aggregate groupBy=[TraceId AS TraceId] funcs=[count(1) AS Value, any(SpanName) AS MetricName, any(ResourceAttributes) AS ResourceAttrs, min(Timestamp) AS TimeUnix]
     Filter predicate=((ResourceAttributes["service.name"] = "x") AND (toFloat64(SpanAttributes["http.status_code"]) > 200))
       Scan(otel_traces)
+-- sql --
+SELECT * FROM (SELECT `TraceId` AS `TraceId`, toFloat64(count(?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, min(`Timestamp`) AS `TimeUnix` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?) AND (toFloat64(`SpanAttributes`[?]) > ?)) GROUP BY `TraceId`) WHERE (`Value` > ?)

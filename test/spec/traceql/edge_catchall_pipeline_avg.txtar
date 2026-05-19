@@ -1,17 +1,13 @@
 -- query.traceql --
 { resource.service.name = "x" && status = error } | avg(duration) > 500ms
--- args --
-[0] string = "Error"
-[1] string = "service.name"
-[2] string = "x"
-[3] int64 = 500000000
--- sql --
-SELECT * FROM (SELECT avg(`Duration`) AS `Value` FROM (SELECT * FROM `otel_traces` PREWHERE (`StatusCode` = ?) WHERE (`ResourceAttributes`[?] = ?))) WHERE (`Value` > ?)
 -- seed --
 CREATE TABLE otel_traces (
+    TraceId String DEFAULT 't1',
+    SpanName String DEFAULT 'span',
+    Timestamp DateTime64(9) DEFAULT toDateTime64('2024-01-01 00:00:00', 9),
     Duration UInt64,
     StatusCode String,
-    ResourceAttributes Map(String, String) MATERIALIZED map('service.name', 'x')
+    ResourceAttributes Map(String, String) DEFAULT map('service.name', 'x')
 ) ENGINE = MergeTree ORDER BY Duration;
 INSERT INTO otel_traces (Duration, StatusCode) VALUES
     (600000000, 'Error'),
@@ -20,10 +16,17 @@ INSERT INTO otel_traces (Duration, StatusCode) VALUES
     (50000000, 'Ok');
 -- expected_rows --
 [
-  [800000000.0]
+  ["t1", 800000000, "span", {"service.name": "x"}, "2024-01-01T00:00:00Z"]
 ]
+-- args --
+[0] string = "Error"
+[1] string = "service.name"
+[2] string = "x"
+[3] int64 = 500000000
 -- chplan --
 Filter predicate=(Value > 500000000)
-  Aggregate groupBy=[] funcs=[avg(Duration) AS Value]
+  Aggregate groupBy=[TraceId AS TraceId] funcs=[avg(Duration) AS Value, any(SpanName) AS MetricName, any(ResourceAttributes) AS ResourceAttrs, min(Timestamp) AS TimeUnix]
     Filter predicate=((ResourceAttributes["service.name"] = "x") AND (StatusCode = "Error"))
       Scan(otel_traces)
+-- sql --
+SELECT * FROM (SELECT `TraceId` AS `TraceId`, avg(`Duration`) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, min(`Timestamp`) AS `TimeUnix` FROM (SELECT * FROM `otel_traces` PREWHERE (`StatusCode` = ?) WHERE (`ResourceAttributes`[?] = ?)) GROUP BY `TraceId`) WHERE (`Value` > ?)

@@ -1,27 +1,30 @@
 -- query.traceql --
 { resource.service.name = "frontend" } | max(duration) > 500ms
--- sql --
-SELECT * FROM (SELECT max(`Duration`) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?))) WHERE (`Value` > ?)
--- args --
-[0] string = "service.name"
-[1] string = "frontend"
-[2] int64 = 500000000
 -- seed --
 CREATE TABLE otel_traces (
+    TraceId String,
+    SpanName String,
+    Timestamp DateTime64(9),
     ResourceAttributes Map(String, String),
     Duration UInt64
 ) ENGINE = Memory;
 INSERT INTO otel_traces VALUES
-    (map('service.name', 'frontend'), 200000000),
-    (map('service.name', 'frontend'), 600000000),
-    (map('service.name', 'frontend'), 400000000),
-    (map('service.name', 'backend'),  900000000);
--- expected_rows --
-[
-  [600000000]
-]
+    ('t1', 'span', toDateTime64('2024-01-01 00:00:00', 9), map('service.name', 'frontend'), 200000000),
+    ('t1', 'span', toDateTime64('2024-01-01 00:00:01', 9), map('service.name', 'frontend'), 600000000),
+    ('t1', 'span', toDateTime64('2024-01-01 00:00:02', 9), map('service.name', 'frontend'), 400000000),
+    ('t2', 'span', toDateTime64('2024-01-01 00:00:03', 9), map('service.name', 'backend'),  900000000);
+-- args --
+[0] string = "service.name"
+[1] string = "frontend"
+[2] int64 = 500000000
 -- chplan --
 Filter predicate=(Value > 500000000)
-  Aggregate groupBy=[] funcs=[max(Duration) AS Value]
+  Aggregate groupBy=[TraceId AS TraceId] funcs=[max(Duration) AS Value, any(SpanName) AS MetricName, any(ResourceAttributes) AS ResourceAttrs, min(Timestamp) AS TimeUnix]
     Filter predicate=(ResourceAttributes["service.name"] = "frontend")
       Scan(otel_traces)
+-- sql --
+SELECT * FROM (SELECT `TraceId` AS `TraceId`, max(`Duration`) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, min(`Timestamp`) AS `TimeUnix` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) GROUP BY `TraceId`) WHERE (`Value` > ?)
+-- expected_rows --
+[
+  ["t1", 600000000, "span", {"service.name": "frontend"}, "2024-01-01T00:00:00Z"]
+]

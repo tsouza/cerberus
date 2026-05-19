@@ -511,6 +511,69 @@ func TestSearch_SQLProjectsParentSpanId(t *testing.T) {
 	}
 }
 
+// TestSearch_SpansetAggregate_PerTrace asserts that
+// `{ ... } | count() > 0` returns one summary per matching trace
+// with real rootServiceName / rootTraceName fields, NOT a single
+// corpus-wide row with empty envelope. Mirrors the
+// count_spans_per_trace tempo-compat case.
+func TestSearch_SpansetAggregate_PerTrace(t *testing.T) {
+	t.Parallel()
+	const (
+		traceA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		traceB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+		traceC = "cccccccccccccccccccccccccccccccc"
+	)
+	q := &stubQuerier{
+		samples: []chclient.Sample{
+			{
+				MetricName: "POST /api/orders",
+				Labels:     map[string]string{"service.name": "checkout", "__cerberus_traceID": traceA},
+				Timestamp:  time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+				Value:      3,
+			},
+			{
+				MetricName: "GET /healthz",
+				Labels:     map[string]string{"service.name": "frontend", "__cerberus_traceID": traceB},
+				Timestamp:  time.Date(2026, 5, 12, 10, 0, 5, 0, time.UTC),
+				Value:      2,
+			},
+			{
+				MetricName: "db.query",
+				Labels:     map[string]string{"service.name": "db", "__cerberus_traceID": traceC},
+				Timestamp:  time.Date(2026, 5, 12, 10, 0, 10, 0, time.UTC),
+				Value:      1,
+			},
+		},
+	}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/search?q=%7B%20resource.service.name%20%3D~%20%22.%2B%22%20%7D%20%7C%20count%28%29%20%3E%200")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+	var sr tempo.SearchResponse
+	if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(sr.Traces) != 3 {
+		t.Fatalf("expected 3 traces (one per matching TraceID), got %d", len(sr.Traces))
+	}
+	if sr.Traces[0].TraceID != traceA || sr.Traces[0].RootServiceName != "checkout" || sr.Traces[0].RootTraceName != "POST /api/orders" {
+		t.Errorf("trace A summary mismatch: %+v", sr.Traces[0])
+	}
+	if sr.Traces[1].TraceID != traceB || sr.Traces[1].RootServiceName != "frontend" || sr.Traces[1].RootTraceName != "GET /healthz" {
+		t.Errorf("trace B summary mismatch: %+v", sr.Traces[1])
+	}
+	if sr.Traces[2].TraceID != traceC || sr.Traces[2].RootServiceName != "db" || sr.Traces[2].RootTraceName != "db.query" {
+		t.Errorf("trace C summary mismatch: %+v", sr.Traces[2])
+	}
+}
+
 // isHexLower reports whether s is a non-empty lowercase hex string.
 // The OTel CH exporter writes TraceId via hex.EncodeToString, which
 // produces lowercase a-f digits.

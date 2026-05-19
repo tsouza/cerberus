@@ -71,6 +71,7 @@ func tolerantRowsErr(err error) error {
 var mapColumnNames = []string{
 	"Attributes",
 	"ResourceAttributes",
+	"ResourceAttrs",
 	"ScopeAttributes",
 	"SpanAttributes",
 }
