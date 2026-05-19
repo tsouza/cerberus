@@ -9,7 +9,7 @@ import (
 
 func TestCompute_FullyPassing(t *testing.T) {
 	t.Parallel()
-	s := Compute("tempo compat", 10, 10)
+	s := Compute("TraceQL compat", 10, 10)
 	if s.Color != "brightgreen" {
 		t.Fatalf("100%% should be brightgreen, got %q", s.Color)
 	}
@@ -22,7 +22,7 @@ func TestCompute_FullyPassing(t *testing.T) {
 	if s.SchemaVersion != 1 {
 		t.Fatalf("schemaVersion = %d, want 1", s.SchemaVersion)
 	}
-	if s.Label != "tempo compat" {
+	if s.Label != "TraceQL compat" {
 		t.Fatalf("label = %q", s.Label)
 	}
 	if s.Passed != 10 || s.Total != 10 {
@@ -98,7 +98,7 @@ func TestWrite_RoundTripsThroughJSON(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "nested", "compat-score.json")
 
-	in := Compute("loki compat", 17, 20)
+	in := Compute("LogQL compat", 17, 20)
 	if err := Write(path, in); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
