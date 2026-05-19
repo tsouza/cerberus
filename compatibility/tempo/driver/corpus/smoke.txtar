@@ -487,8 +487,18 @@ shipping
 tag_values_v2_service_name
 -- endpoint --
 tag_values_v2
+# Tempo's V2 tag-values endpoint runs `traceql.ParseIdentifier` over
+# the URL `{name}` segment and rejects bare dotted forms like
+# `service.name` (the dotted parts parse as two attribute references,
+# not as one quoted-attribute name). The accepted forms are TraceQL
+# identifiers: intrinsics (`name`, `kind`, ...), scoped attributes
+# (`resource.x`, `span.x`), or the auto-scope leading-dot form (`.x`).
+# We pick the leading-dot form here so a single fixture exercises both
+# backends symmetrically — Tempo and cerberus both treat it as
+# auto-scope (union both maps), and the seeded `service.name` lives
+# in ResourceAttributes so the union still surfaces it.
 -- tag_name --
-service.name
+.service.name
 -- expected_min_values --
 1
 -- expected_max_values --
@@ -503,8 +513,11 @@ shipping
 tag_values_v2_deployment_env
 -- endpoint --
 tag_values_v2
+# Same scoped-form rationale as tag_values_v2_service_name: bare
+# `deployment.env` is rejected by Tempo's V2 parser, leading-dot form
+# resolves to auto-scope and finds the resource-attributes entry.
 -- tag_name --
-deployment.env
+.deployment.env
 -- expected_min_values --
 1
 -- expected_max_values --
@@ -518,8 +531,11 @@ compat-test
 tag_values_v2_unknown_tag_empty
 -- endpoint --
 tag_values_v2
+# `.nonexistent.tag` is a valid TraceQL identifier (leading-dot
+# auto-scope) that simply isn't present in the seed; both backends
+# return an empty `tagValues` list.
 -- tag_name --
-this.tag.does.not.exist
+.nonexistent.tag
 # Both backends should return an empty `tagValues` list for an unknown
 # attribute key — the result is the empty subset of a never-populated
 # CH map column. Differ surfaces a cardinality match on len=0 with no

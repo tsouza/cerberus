@@ -214,3 +214,187 @@ func TestSearchTagValuesV2_IntrinsicType(t *testing.T) {
 		t.Errorf("expected type=duration, got %+v", body.TagValues)
 	}
 }
+
+// TestSearchTagValuesV2_LeadingDotAutoScope — the scoped leading-dot
+// form `.service.name` is the canonical TraceQL identifier shape that
+// Tempo's V2 URL parser accepts. Cerberus must resolve it to the bare
+// attribute key (`service.name`) and query both attribute maps (Tempo's
+// auto-scope semantics). Compatibility-harness fixture uses this form.
+func TestSearchTagValuesV2_LeadingDotAutoScope(t *testing.T) {
+	t.Parallel()
+	q := &stubQuerier{strings: []string{"frontend", "backend"}}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/v2/search/tag/.service.name/values")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+	var body tempo.SearchTagValuesResponseV2
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.TagValues) != 2 {
+		t.Errorf("expected 2 values, got %v", body.TagValues)
+	}
+	// Auto-scope must touch both maps via arrayJoin, identical to the
+	// bare-name V1 dynamic-attribute path.
+	for _, want := range []string{
+		"`SpanAttributes`[",
+		"`ResourceAttributes`[",
+		"arrayJoin(",
+	} {
+		if !strings.Contains(q.lastSQL, want) {
+			t.Errorf("SQL missing %q for `.service.name`\n  got: %s", want, q.lastSQL)
+		}
+	}
+	// The bound key is the bare attribute name, NOT the leading-dot
+	// form — the parser strips the scope sigil. Mirrors Tempo's
+	// behaviour: `traceql.ParseIdentifier(".service.name")` yields
+	// Attribute{Scope: None, Name: "service.name"}.
+	hits := 0
+	for _, a := range q.lastArgs {
+		if s, ok := a.(string); ok && s == "service.name" {
+			hits++
+		}
+	}
+	if hits < 4 {
+		t.Errorf("expected key %q bound >=4 times, got %d in %v",
+			"service.name", hits, q.lastArgs)
+	}
+}
+
+// TestSearchTagValuesV2_ResourceScope — `resource.service.name` is the
+// explicit-scope TraceQL form. Cerberus must narrow the lookup to the
+// ResourceAttributes column only (no SpanAttributes leg in the SQL).
+func TestSearchTagValuesV2_ResourceScope(t *testing.T) {
+	t.Parallel()
+	q := &stubQuerier{strings: []string{"frontend"}}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/v2/search/tag/resource.service.name/values")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+	if !strings.Contains(q.lastSQL, "`ResourceAttributes`[") {
+		t.Errorf("expected ResourceAttributes lookup, got: %s", q.lastSQL)
+	}
+	if strings.Contains(q.lastSQL, "`SpanAttributes`[") {
+		t.Errorf("resource scope should NOT touch SpanAttributes, got: %s", q.lastSQL)
+	}
+	if strings.Contains(q.lastSQL, "arrayJoin(") {
+		t.Errorf("single-scope path should NOT emit arrayJoin union, got: %s", q.lastSQL)
+	}
+	// Bound key is the bare attribute name after stripping the scope.
+	hits := 0
+	for _, a := range q.lastArgs {
+		if s, ok := a.(string); ok && s == "service.name" {
+			hits++
+		}
+	}
+	if hits < 2 {
+		t.Errorf("expected key %q bound >=2 times, got %d in %v",
+			"service.name", hits, q.lastArgs)
+	}
+}
+
+// TestSearchTagValuesV2_SpanScope — `span.http.method` narrows to the
+// SpanAttributes column only.
+func TestSearchTagValuesV2_SpanScope(t *testing.T) {
+	t.Parallel()
+	q := &stubQuerier{strings: []string{"GET", "POST"}}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/v2/search/tag/span.http.method/values")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+	if !strings.Contains(q.lastSQL, "`SpanAttributes`[") {
+		t.Errorf("expected SpanAttributes lookup, got: %s", q.lastSQL)
+	}
+	if strings.Contains(q.lastSQL, "`ResourceAttributes`[") {
+		t.Errorf("span scope should NOT touch ResourceAttributes, got: %s", q.lastSQL)
+	}
+	// Bound key is the bare attribute name after stripping the scope.
+	hits := 0
+	for _, a := range q.lastArgs {
+		if s, ok := a.(string); ok && s == "http.method" {
+			hits++
+		}
+	}
+	if hits < 2 {
+		t.Errorf("expected key %q bound >=2 times, got %d in %v",
+			"http.method", hits, q.lastArgs)
+	}
+}
+
+// TestSearchTagValues_ScopedFormParityWithBare — the scoped
+// `.service.name` form (Tempo-acceptable) and the bare `service.name`
+// form (V1 backward-compat) MUST produce equivalent SQL: identical
+// arrayJoin shape over both maps with the same bare key bound as the
+// positional arg. This is the cross-form parity contract the
+// compatibility-harness fixture relies on — Tempo only accepts the
+// scoped form on V2, but cerberus's two paths must converge on the
+// same data.
+func TestSearchTagValues_ScopedFormParityWithBare(t *testing.T) {
+	t.Parallel()
+	for _, urlPath := range []string{
+		"/api/search/tag/service.name/values",
+		"/api/search/tag/.service.name/values",
+		"/api/v2/search/tag/service.name/values",
+		"/api/v2/search/tag/.service.name/values",
+	} {
+		urlPath := urlPath
+		t.Run(urlPath, func(t *testing.T) {
+			t.Parallel()
+			q := &stubQuerier{strings: []string{"frontend", "backend"}}
+			srv := newServer(q, "v1.0.0-test")
+			t.Cleanup(srv.Close)
+
+			resp, err := http.Get(srv.URL + urlPath)
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status=%d for %s", resp.StatusCode, urlPath)
+			}
+			// All four URLs land on the auto-scope arrayJoin path.
+			for _, want := range []string{
+				"`SpanAttributes`[",
+				"`ResourceAttributes`[",
+				"arrayJoin(",
+			} {
+				if !strings.Contains(q.lastSQL, want) {
+					t.Errorf("%s: SQL missing %q\n  got: %s", urlPath, want, q.lastSQL)
+				}
+			}
+			// Bound key is the bare `service.name`, regardless of which
+			// URL form the caller used.
+			hits := 0
+			for _, a := range q.lastArgs {
+				if s, ok := a.(string); ok && s == "service.name" {
+					hits++
+				}
+			}
+			if hits < 4 {
+				t.Errorf("%s: expected key bound >=4 times, got %d in %v",
+					urlPath, hits, q.lastArgs)
+			}
+		})
+	}
+}
