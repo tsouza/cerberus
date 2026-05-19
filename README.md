@@ -1,18 +1,17 @@
 # cerberus
 
-> Drop-in **Prometheus / Loki / Tempo** HTTP gateway for **ClickHouse**.
-> Keep Grafana, alerting, and your CLI tooling. Swap the backend.
+**Drop-in Prometheus / Loki / Tempo HTTP gateway for ClickHouse.**
+Keep Grafana, alerting, and your CLI tooling. Swap the backend.
 
 > [!WARNING]
-> ## ALPHA — NOT PRODUCTION-READY
->
-> Cerberus is **alpha quality**. `v1.0.0-RC3` is the latest tag; **RC4
-> through the rest of the `v1.0.0` roadmap is still owed** —
-> correctness, performance, and operational hardening. Two of the three
-> compatibility harnesses (LogQL, TraceQL) are **mid-rollout and not yet
-> gating PRs**. Treat this as a preview for evaluation and experiments,
-> **not** a drop-in replacement for a running Prom / Loki / Tempo
-> deployment. Expect breaking changes between RC tags.
+> **ALPHA QUALITY — NOT PRODUCTION-READY.** Cerberus is mid-build.
+> `v1.0.0-RC3` is the latest tag; **RC4 through the rest of the
+> `v1.0.0` roadmap is still owed** — correctness, performance, and
+> operational hardening. Two of the three compatibility harnesses
+> (LogQL, TraceQL) are **mid-rollout and not yet gating PRs**. Treat
+> this as a preview for evaluation and experiments, **not** a drop-in
+> replacement for a running Prom / Loki / Tempo deployment. Expect
+> breaking changes between RC tags.
 
 [![CI](https://github.com/tsouza/cerberus/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tsouza/cerberus/actions/workflows/ci.yml)
 [![Mutation](https://github.com/tsouza/cerberus/actions/workflows/mutation.yml/badge.svg?branch=main)](https://github.com/tsouza/cerberus/actions/workflows/mutation.yml)
