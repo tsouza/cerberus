@@ -1,7 +1,7 @@
 -- query.traceql --
 { name = "a" } !< { name = "b" }
 -- sql --
-SELECT R.* FROM (SELECT * FROM `otel_traces` WHERE (`SpanName` = ?)) AS R LEFT ANTI JOIN (SELECT * FROM `otel_traces` WHERE (`SpanName` = ?)) AS L ON L.`TraceId` = R.`TraceId` AND L.`ParentSpanId` = R.`SpanId`
+SELECT R.`TraceId` AS `TraceId`, R.`SpanId` AS `SpanId`, R.`ParentSpanId` AS `ParentSpanId`, R.* EXCEPT (`TraceId`, `SpanId`, `ParentSpanId`) FROM (SELECT * FROM `otel_traces` WHERE (`SpanName` = ?)) AS R LEFT ANTI JOIN (SELECT * FROM `otel_traces` WHERE (`SpanName` = ?)) AS L ON L.`TraceId` = R.`TraceId` AND L.`ParentSpanId` = R.`SpanId`
 -- args --
 [0] string = "b"
 [1] string = "a"

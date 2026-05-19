@@ -66,6 +66,14 @@ func (e *emitter) emitStructuralJoin(j *chplan.StructuralJoin) error {
 // `&<` / `&~`) emit the positive INNER JOIN twice — once projecting
 // R.*, once L.* — joined with UNION DISTINCT. MaxDepth is ignored for
 // all direct flavours.
+//
+// The projection list re-aliases the join-key columns (TraceId,
+// SpanId, ParentSpanId) to their bare names instead of letting `R.*`
+// pass through with the `R.` qualifier baked into the output column
+// names. CH 25.8's analyzer otherwise refuses `L.TraceId` against a
+// subquery whose only matching identifier is `R.TraceId` — see
+// https://github.com/tsouza/cerberus/issues/57 for the failing nested-
+// structural-join repro and the chDB error trace.
 func (e *emitter) emitStructuralDirectJoin(j *chplan.StructuralJoin) error {
 	relFrag, err := structuralDirectRelFrag(j)
 	if err != nil {
@@ -81,6 +89,9 @@ func (e *emitter) emitStructuralDirectJoin(j *chplan.StructuralJoin) error {
 		return err
 	}
 
+	rightProj := structuralProjectionFrags(j, "R")
+	leftProj := structuralProjectionFrags(j, "L")
+
 	switch {
 	case j.Op.IsNegated():
 		// Negated direct: R LEFT ANTI JOIN L on the positive relation.
@@ -88,7 +99,7 @@ func (e *emitter) emitStructuralDirectJoin(j *chplan.StructuralJoin) error {
 		// have no match on the right; placing R on the left lets the
 		// SELECT R.* projection mirror the positive form.
 		sb := NewQuery().
-			Select(verbatim("R.*")).
+			Select(rightProj...).
 			From(aliasedFrag(rightSub, "R")).
 			Join(
 				LeftAntiJoin,
@@ -102,7 +113,7 @@ func (e *emitter) emitStructuralDirectJoin(j *chplan.StructuralJoin) error {
 		//   UNION DISTINCT
 		// (SELECT L.* FROM L INNER JOIN R ON <rel>).
 		rightArm := NewQuery().
-			Select(verbatim("R.*")).
+			Select(rightProj...).
 			From(aliasedFrag(leftSub, "L")).
 			Join(
 				InnerJoin,
@@ -110,7 +121,7 @@ func (e *emitter) emitStructuralDirectJoin(j *chplan.StructuralJoin) error {
 				structuralDirectOnFrag(j, relFrag),
 			)
 		leftArm := NewQuery().
-			Select(verbatim("L.*")).
+			Select(leftProj...).
 			From(aliasedFrag(leftSub, "L")).
 			Join(
 				InnerJoin,
@@ -123,7 +134,7 @@ func (e *emitter) emitStructuralDirectJoin(j *chplan.StructuralJoin) error {
 		return nil
 	default:
 		sb := NewQuery().
-			Select(verbatim("R.*")).
+			Select(rightProj...).
 			From(aliasedFrag(leftSub, "L")).
 			Join(
 				InnerJoin,
@@ -132,6 +143,63 @@ func (e *emitter) emitStructuralDirectJoin(j *chplan.StructuralJoin) error {
 			)
 		e.emitSelect(sb)
 		return nil
+	}
+}
+
+// structuralProjectionFrags returns the projection list for a structural
+// join's outer SELECT, rendered with bare aliases for the join-key
+// columns so the result can be wrapped in a parent subquery without
+// losing column resolvability.
+//
+// Shape (side = "R"):
+//
+//	R.`TraceId` AS `TraceId`, R.`SpanId` AS `SpanId`,
+//	R.`ParentSpanId` AS `ParentSpanId`, R.* EXCEPT (`TraceId`, `SpanId`,
+//	`ParentSpanId`)
+//
+// The explicit aliases on the leading three columns force CH to emit
+// them as bare names; the `* EXCEPT (...)` tail covers every other
+// column on the side without duplicating the keys. When this SELECT
+// becomes the inner side of a nested structural join, the outer's
+// `L.TraceId` reference resolves against the bare alias — sidestepping
+// CH 25.8's analyzer rejecting `L.TraceId` when the only available
+// identifier in the subquery was the qualified `R.TraceId`.
+func structuralProjectionFrags(j *chplan.StructuralJoin, side string) []Frag {
+	traceID := j.TraceIDColumn
+	spanID := j.SpanIDColumn
+	parentSpanID := j.ParentSpanIDColumn
+	return []Frag{
+		aliasedSideCol(side, traceID, traceID),
+		aliasedSideCol(side, spanID, spanID),
+		aliasedSideCol(side, parentSpanID, parentSpanID),
+		starExceptKeys(side, traceID, spanID, parentSpanID),
+	}
+}
+
+// aliasedSideCol renders `<side>.<col> AS <alias>` with `col` and
+// `alias` both backtick-quoted.
+func aliasedSideCol(side, col, alias string) Frag {
+	return func(b *Builder) {
+		writeSideCol(b, side, col)
+		b.writeSQL(" AS ")
+		b.Ident(alias)
+	}
+}
+
+// starExceptKeys renders `<side>.* EXCEPT (<k1>, <k2>, <k3>)` with each
+// key backtick-quoted. Used in tandem with the leading aliased-key
+// projections to pass through every other column without re-emitting
+// the keys twice.
+func starExceptKeys(side, k1, k2, k3 string) Frag {
+	return func(b *Builder) {
+		b.writeSQL(side)
+		b.writeSQL(".* EXCEPT (")
+		b.Ident(k1)
+		b.writeSQL(", ")
+		b.Ident(k2)
+		b.writeSQL(", ")
+		b.Ident(k3)
+		b.writeSQL(")")
 	}
 }
 
@@ -311,13 +379,15 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 		b.writeSQL(" AND ")
 		spanIDPairFrag("L", j.SpanIDColumn, "R", j.SpanIDColumn)(b)
 	}
+	rightProj := structuralProjectionFrags(j, "R")
+	leftProj := structuralProjectionFrags(j, "L")
 	switch {
 	case j.Op.IsNegated():
 		// Negated recursive: R LEFT ANTI JOIN closure(L). The closure
 		// stays on the right so the SELECT R.* projection holds; the
 		// LEFT ANTI returns R rows the L-rooted closure misses.
 		sb := NewQuery().
-			Select(verbatim("R.*")).
+			Select(rightProj...).
 			From(aliasedFrag(rightSub, "R")).
 			Join(LeftAntiJoin, aliasedFrag(closure.Frag(), "L"), onClause)
 		e.emitSelect(sb)
@@ -329,7 +399,7 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 		// second join on the closure so multi-level matches are
 		// recovered, mirroring the positive recursive shape.
 		rightArm := NewQuery().
-			Select(verbatim("R.*")).
+			Select(rightProj...).
 			From(aliasedFrag(closure.Frag(), "L")).
 			Join(InnerJoin, aliasedFrag(rightSub, "R"), onClause)
 		// Closure for the L-projection arm walks in the *inverse*
@@ -343,7 +413,7 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 			return err
 		}
 		leftArm := NewQuery().
-			Select(verbatim("L.*")).
+			Select(leftProj...).
 			From(aliasedFrag(leftSub, "L")).
 			Join(InnerJoin, aliasedFrag(inverseClosure.Frag(), "R"), onClause)
 		b := NewBuilder()
@@ -353,7 +423,7 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 	default:
 		// Outer SELECT R.* FROM (<closure>) AS L INNER JOIN (<R>) AS R ON L.TraceId = R.TraceId AND L.SpanId = R.SpanId.
 		sb := NewQuery().
-			Select(verbatim("R.*")).
+			Select(rightProj...).
 			From(aliasedFrag(closure.Frag(), "L")).
 			Join(InnerJoin, aliasedFrag(rightSub, "R"), onClause)
 		e.emitSelect(sb)

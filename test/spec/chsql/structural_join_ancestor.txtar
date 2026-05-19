@@ -1,5 +1,5 @@
 -- sql --
-SELECT R.* FROM (WITH RECURSIVE _struct_closure AS (SELECT `TraceId`, `SpanId`, `ParentSpanId`, 0 AS _depth FROM (SELECT * FROM `otel_traces`) AS _seed UNION ALL SELECT t.`TraceId`, t.`SpanId`, t.`ParentSpanId`, c._depth + 1 FROM `otel_traces` AS t INNER JOIN _struct_closure AS c ON t.`TraceId` = c.`TraceId` AND t.`SpanId` = c.`ParentSpanId`) SELECT DISTINCT `TraceId`, `SpanId` FROM _struct_closure WHERE _depth > 0) AS L INNER JOIN (SELECT * FROM `otel_traces`) AS R ON L.`TraceId` = R.`TraceId` AND L.`SpanId` = R.`SpanId`
+SELECT R.`TraceId` AS `TraceId`, R.`SpanId` AS `SpanId`, R.`ParentSpanId` AS `ParentSpanId`, R.* EXCEPT (`TraceId`, `SpanId`, `ParentSpanId`) FROM (WITH RECURSIVE _struct_closure AS (SELECT `TraceId`, `SpanId`, `ParentSpanId`, 0 AS _depth FROM (SELECT * FROM `otel_traces`) AS _seed UNION ALL SELECT t.`TraceId`, t.`SpanId`, t.`ParentSpanId`, c._depth + 1 FROM `otel_traces` AS t INNER JOIN _struct_closure AS c ON t.`TraceId` = c.`TraceId` AND t.`SpanId` = c.`ParentSpanId`) SELECT DISTINCT `TraceId`, `SpanId` FROM _struct_closure WHERE _depth > 0) AS L INNER JOIN (SELECT * FROM `otel_traces`) AS R ON L.`TraceId` = R.`TraceId` AND L.`SpanId` = R.`SpanId`
 -- args --
 (none)
 -- chplan --
