@@ -1935,3 +1935,254 @@ func TestEmitMetricsExemplars_AttributesMapCapacity185(t *testing.T) {
 		t.Errorf("expected toString(span), SQL=%s", sql)
 	}
 }
+
+// TestEmitVectorJoin_OutputAttrsBareVsMerge kills the INVERT_LOGICAL
+// flip at vector_join.go:362 (`manySide == "" || len(j.Include) == 0`).
+// Original `||` takes the bare-side branch when EITHER cardinality is
+// OneToOne OR no Include labels are supplied; the `&&` mutant only
+// takes that branch when BOTH hold. We drive a `CardOneToOne` plan
+// with a non-empty Include slice and pin that the bare branch fires:
+// the SQL must NOT contain `mapConcat(` (the merge branch's prefix)
+// while it MUST contain the side-bare attributes column.
+func TestEmitVectorJoin_OutputAttrsBareVsMerge(t *testing.T) {
+	t.Parallel()
+	// CardOneToOne + Include=[label] — original emits bare L.Attributes
+	// because manySide=="" satisfies the OR; mutant takes the merge
+	// branch and emits mapConcat(L.Attributes, mapFilter(...)).
+	plan := &chplan.VectorJoin{
+		Left:             &chplan.Scan{Table: "otel_metrics_sum"},
+		Right:            &chplan.Scan{Table: "otel_metrics_sum"},
+		Op:               chplan.OpAdd,
+		Match:            chplan.VectorMatch{Labels: []string{"job"}, On: true},
+		Card:             chplan.CardOneToOne,
+		Include:          []string{"foo"},
+		MetricNameColumn: "MetricName",
+		AttributesColumn: "Attributes",
+		TimestampColumn:  "TimeUnix",
+		ValueColumn:      "Value",
+	}
+	sql, _, err := Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if strings.Contains(sql, "mapConcat(") {
+		t.Errorf("expected bare-side Attributes (no mapConcat) for CardOneToOne even with non-empty Include.\nSQL=%s", sql)
+	}
+	if !strings.Contains(sql, "L.`Attributes`") {
+		t.Errorf("expected L.Attributes bare projection.\nSQL=%s", sql)
+	}
+}
+
+// TestEmitMetricsHistogramOverTimeMatrix_AliasFallbackDistinct kills
+// the two CONDITIONALS_NEGATION mutants at
+// histogram_over_time.go:203 (`bucketAlias == ""`) and 207
+// (`valueAlias == ""`) inside the matrix path
+// (emitRangeWindowHistogram). The pre-existing
+// TestEmitMetricsHistogramOverTimeBucketAliasFallback hits only the
+// INSTANT path; the matrix mutants survived because no test wraps a
+// MetricsHistogramOverTime in a RangeWindow while supplying
+// user-provided aliases distinct from the fallbacks. Each sub-test
+// uses a non-empty alias that differs from the default — original
+// keeps it; the `!=` mutant overwrites it with the fallback.
+func TestEmitMetricsHistogramOverTimeMatrix_AliasFallbackDistinct(t *testing.T) {
+	t.Parallel()
+	start := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 5, 13, 12, 5, 0, 0, time.UTC)
+	cases := []struct {
+		name         string
+		bucketAlias  string
+		valueAlias   string
+		wantBucket   string
+		wantValue    string
+		denyBucket   string
+		denyValue    string
+		denyAnyOther []string
+	}{
+		{
+			name:        "bucket=user_bucket, value=user_value (matrix)",
+			bucketAlias: "user_bucket",
+			valueAlias:  "user_value",
+			wantBucket:  "AS `user_bucket`",
+			wantValue:   "AS `user_value`",
+			denyBucket:  "AS `__bucket`",
+			denyValue:   "AS `Value`",
+		},
+		{
+			name:        "bucket empty (defaults to __bucket), value=user_value",
+			bucketAlias: "",
+			valueAlias:  "user_value",
+			wantBucket:  "AS `__bucket`",
+			wantValue:   "AS `user_value`",
+			denyValue:   "AS `Value`",
+		},
+		{
+			name:        "bucket=user_bucket, value empty (defaults to Value)",
+			bucketAlias: "user_bucket",
+			valueAlias:  "",
+			wantBucket:  "AS `user_bucket`",
+			wantValue:   "AS `Value`",
+			denyBucket:  "AS `__bucket`",
+		},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			plan := &chplan.RangeWindow{
+				Input: &chplan.MetricsHistogramOverTime{
+					Attr:        &chplan.ColumnRef{Name: "Duration"},
+					IsDuration:  true,
+					BucketAlias: c.bucketAlias,
+					ValueAlias:  c.valueAlias,
+					Inner:       &chplan.Scan{Table: "otel_traces"},
+				},
+				Step:            time.Minute,
+				Range:           time.Minute,
+				Start:           start,
+				End:             end,
+				TimestampColumn: "Timestamp",
+			}
+			sql, _, err := Emit(context.Background(), plan)
+			if err != nil {
+				t.Fatalf("Emit: %v", err)
+			}
+			if !strings.Contains(sql, c.wantBucket) {
+				t.Errorf("missing %q.\nSQL: %s", c.wantBucket, sql)
+			}
+			if !strings.Contains(sql, c.wantValue) {
+				t.Errorf("missing %q.\nSQL: %s", c.wantValue, sql)
+			}
+			if c.denyBucket != "" && strings.Contains(sql, c.denyBucket) {
+				t.Errorf("unexpected fallback %q present.\nSQL: %s", c.denyBucket, sql)
+			}
+			if c.denyValue != "" && strings.Contains(sql, c.denyValue) {
+				t.Errorf("unexpected fallback %q present.\nSQL: %s", c.denyValue, sql)
+			}
+		})
+	}
+}
+
+// TestEmitAggregateNoGroup_AliasPreservation kills the
+// CONDITIONALS_NEGATION at emit_node.go:409 (`alias == ""`). With the
+// `!=` mutant: a non-empty user alias is OVERWRITTEN by the synthetic
+// `_cerb_agg_<i>` fallback (the assignment now runs for non-empty
+// strings), and the outer SELECT references the synthetic name. With
+// the original: the user-provided alias survives onto both the inner
+// AggFunc and the outer Col. Driving the no-group path needs
+// `GroupBy=[]` + `DropEmptyOnNoGroup=true`.
+func TestEmitAggregateNoGroup_AliasPreservation(t *testing.T) {
+	t.Parallel()
+	plan := &chplan.Aggregate{
+		AggFuncs: []chplan.AggFunc{
+			{Name: "count", Args: []chplan.Expr{&chplan.LitInt{V: 1}}, Alias: "user_value"},
+		},
+		DropEmptyOnNoGroup: true,
+		Input:              &chplan.Scan{Table: "otel_traces"},
+	}
+	sql, _, err := Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	// The user-supplied alias MUST appear as the AS-suffix on the
+	// inner aggregate; the mutant replaces it with `_cerb_agg_0`.
+	if !strings.Contains(sql, "AS `user_value`") {
+		t.Errorf("expected user-supplied alias preserved on AggFunc.\nSQL=%s", sql)
+	}
+	// And the synthetic fallback MUST NOT appear for this aggregate
+	// (no empty-alias entries).
+	if strings.Contains(sql, "_cerb_agg_") {
+		t.Errorf("synthetic alias unexpectedly emitted — mutant overwrote user alias.\nSQL=%s", sql)
+	}
+}
+
+// TestWithRecursive_NilPanicMessage kills the INVERT_LOGICAL flip at
+// builder.go:1654:23 (`c.Anchor == nil || c.Recursive == nil`). The
+// pre-existing TestWithRecursive_AnchorOrRecursiveNil only checks that
+// SOME panic happens — with the `&&` mutant, the "anchor nil only"
+// case skips the explicit guard, falls through to `c.Anchor.writeInto`
+// and panics on the nil dereference instead. Both original and mutant
+// panic; gremlins called the mutant LIVED. Pinning the panic MESSAGE
+// distinguishes: the original guard emits a deterministic string, the
+// nil-deref produces a runtime.Error with a different shape.
+func TestWithRecursive_NilPanicMessage(t *testing.T) {
+	t.Parallel()
+	const wantMsg = "chsql: WithRecursive requires non-nil anchor and recursive"
+	cases := []struct {
+		name      string
+		anchor    *QueryBuilder
+		recursive *QueryBuilder
+	}{
+		{"anchor nil, recursive non-nil", nil, NewQuery().From(Col("t"))},
+		{"recursive nil, anchor non-nil", NewQuery().From(Col("t")), nil},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			defer func() {
+				r := recover()
+				if r == nil {
+					t.Fatalf("expected panic for %s", c.name)
+				}
+				msg, ok := r.(string)
+				if !ok {
+					t.Fatalf("expected string panic, got %T: %v", r, r)
+				}
+				if msg != wantMsg {
+					t.Errorf("panic message = %q, want %q", msg, wantMsg)
+				}
+			}()
+			q := NewQuery().WithRecursive("foo", c.anchor, c.recursive).From(Col("foo"))
+			_, _ = q.Build()
+		})
+	}
+}
+
+// TestPartitionPrewhere_LastWhereRetainsExactConjunct kills the
+// CONDITIONALS_BOUNDARY at emit_node.go:262 (`len(whereExprs) > 0`)
+// and indirectly hardens partitionPrewhere's "promote-all-but-last"
+// guard. The mutant `>= 0` would emit an empty `WHERE` clause as
+// `WHERE ` (no operand) which CH rejects. We assert the SQL contains
+// a `WHERE` clause exactly when the partitioning leaves a non-empty
+// where bucket, by routing two cheap predicates through a Filter
+// over a wide-column-bearing schema (otel_traces with SELECT * to
+// engage projectionTouchesWide) and pinning the exact shape that
+// stayed in WHERE.
+func TestPartitionPrewhere_LastWhereRetainsExactConjunct(t *testing.T) {
+	t.Parallel()
+	// otel_traces has wide columns registered; with no explicit
+	// Columns (SELECT *) projectionTouchesWide returns true and
+	// partitionPrewhere engages. Two cheap conjuncts → original
+	// promotes one to PREWHERE and keeps one in WHERE.
+	a := &chplan.Binary{Op: chplan.OpEq, Left: &chplan.ColumnRef{Name: "ServiceName"}, Right: &chplan.LitString{V: "api"}}
+	b := &chplan.Binary{Op: chplan.OpEq, Left: &chplan.ColumnRef{Name: "SpanName"}, Right: &chplan.LitString{V: "GET /"}}
+	plan := &chplan.Filter{
+		Predicate: &chplan.Binary{Op: chplan.OpAnd, Left: a, Right: b},
+		Input:     &chplan.Scan{Table: "otel_traces"},
+	}
+	sql, _, err := Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	// PREWHERE must render — confirms the partition fired.
+	if !strings.Contains(sql, "PREWHERE ") {
+		t.Fatalf("expected PREWHERE clause from cheap-cols partition.\nSQL=%s", sql)
+	}
+	// WHERE must render with a concrete operand. The boundary mutant
+	// `>= 0` would also call sb.Where when whereExprs is empty,
+	// producing `WHERE ` with no operand; assert WHERE is followed by
+	// a backtick-quoted identifier (the retained predicate's left
+	// column).
+	idx := strings.Index(sql, "WHERE ")
+	if idx < 0 {
+		t.Fatalf("expected WHERE clause in SQL.\nSQL=%s", sql)
+	}
+	tail := sql[idx+len("WHERE "):]
+	// Original: a Binary conjunct renders with surrounding parens
+	// (mirroring chsql.Builder.Expr's wrapping of an AND/comparison)
+	// so the tail starts with `(`. The mutant's empty WHERE clause
+	// would leave the slice empty or start with a clause keyword.
+	if len(tail) == 0 || tail[0] != '(' {
+		t.Errorf("WHERE has no operand (mutant emitted empty clause).\nSQL=%s", sql)
+	}
+}
