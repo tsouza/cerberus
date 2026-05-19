@@ -43,7 +43,14 @@ func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs, lc low
 		return nil, fmt.Errorf("logql: range-aggregation has nil inner")
 	}
 
-	inner, labelsExpr, err := lowerLogRange(e.Left, s, lc)
+	// Extend the pre-scan timestamp clamp's left bound by the range
+	// aggregation's [interval] (plus offset, if any) so the leftmost
+	// anchors of a matrix-mode evaluation see the full
+	// `(anchor_ts - range, anchor_ts]` window rather than a truncated
+	// `[start, anchor_ts]` slice. Mirrors reference Loki / Prom, which
+	// have no equivalent pre-scan clamp. See lowerCtx.withMatcherWindowExtension.
+	innerLc := lc.withMatcherWindowExtension(e.Left.Interval + e.Left.Offset)
+	inner, labelsExpr, err := lowerLogRange(e.Left, s, innerLc)
 	if err != nil {
 		return nil, err
 	}

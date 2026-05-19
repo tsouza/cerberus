@@ -172,6 +172,90 @@ func TestRangeModeAsymmetric(t *testing.T) {
 	}
 }
 
+// TestWithMatcherWindowExtension pins the start-backshift behaviour of
+// [lowerCtx.withMatcherWindowExtension]. The helper is the entry point
+// the range-aggregation lowering uses to widen the pre-scan
+// `Timestamp >= start AND Timestamp <= end` clamp's left bound by the
+// `[range]` selector's interval so the leftmost per-anchor windows in a
+// matrix evaluation still see the full `(anchor_ts - range, anchor_ts]`
+// slice. Three behaviours are pinned:
+//
+//   - A positive extension on a context with a window moves Start back
+//     by exactly the requested duration. End and Step stay untouched.
+//   - A non-positive extension (including zero) is a no-op. Callers
+//     compute `interval + offset` and can pass a negative result when
+//     offset is forward-shifting; the helper must absorb that without
+//     touching the bounds.
+//   - A positive extension against a context with NO window is a no-op
+//     — the pre-scan clamp would not be emitted anyway, so widening the
+//     hypothetical Start could only confuse downstream telemetry.
+func TestWithMatcherWindowExtension(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(time.Hour)
+	step := time.Minute
+
+	cases := []struct {
+		name      string
+		lc        lowerCtx
+		extension time.Duration
+		wantStart time.Time
+		wantEnd   time.Time
+		wantStep  time.Duration
+	}{
+		{
+			name:      "positive extension on windowed range ctx -> Start moves back",
+			lc:        lowerCtx{Start: start, End: end, Step: step},
+			extension: 5 * time.Minute,
+			wantStart: start.Add(-5 * time.Minute),
+			wantEnd:   end,
+			wantStep:  step,
+		},
+		{
+			name:      "zero extension is a no-op",
+			lc:        lowerCtx{Start: start, End: end, Step: step},
+			extension: 0,
+			wantStart: start,
+			wantEnd:   end,
+			wantStep:  step,
+		},
+		{
+			name:      "negative extension is a no-op (forward-shift offset)",
+			lc:        lowerCtx{Start: start, End: end, Step: step},
+			extension: -time.Minute,
+			wantStart: start,
+			wantEnd:   end,
+			wantStep:  step,
+		},
+		{
+			name:      "no window -> positive extension is a no-op",
+			lc:        lowerCtx{},
+			extension: 5 * time.Minute,
+			wantStart: time.Time{},
+			wantEnd:   time.Time{},
+			wantStep:  0,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := tc.lc.withMatcherWindowExtension(tc.extension)
+			if !got.Start.Equal(tc.wantStart) {
+				t.Fatalf("withMatcherWindowExtension(%v).Start = %v, want %v", tc.extension, got.Start, tc.wantStart)
+			}
+			if !got.End.Equal(tc.wantEnd) {
+				t.Fatalf("withMatcherWindowExtension(%v).End = %v, want %v", tc.extension, got.End, tc.wantEnd)
+			}
+			if got.Step != tc.wantStep {
+				t.Fatalf("withMatcherWindowExtension(%v).Step = %v, want %v", tc.extension, got.Step, tc.wantStep)
+			}
+		})
+	}
+}
+
 // TestIsMatrixRangeWindowBoundary pins the `v.OuterRange > 0` boundary
 // in [isMatrixRangeWindow]. A CONDITIONALS_BOUNDARY mutant flips `> 0`
 // to `>= 0`, which would classify a zero-OuterRange instant RangeWindow

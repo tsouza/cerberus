@@ -67,6 +67,35 @@ func (c lowerCtx) rangeMode() bool {
 	return c.Step > 0 && c.hasTimeWindow()
 }
 
+// withMatcherWindowExtension returns a copy of c with Start moved back
+// by `extension`. Range-aggregation lowerings call this before threading
+// the context into the inner LogSelectorExpr lowering so the pre-scan
+// `Timestamp >= start AND Timestamp <= end` clamp (see andFoldTimeWindow)
+// keeps the per-anchor `(anchor_ts - range, anchor_ts]` windows complete
+// at the left edge of the matrix.
+//
+// Without the extension, the leftmost anchors of a /query_range matrix
+// (anchor = Start, Start + Step, …, up to Start + range) evaluate against
+// truncated windows — only the [Start, anchor] portion survives the
+// outer clamp. Reference Loki / Prom evaluators read across the full
+// (anchor - range, anchor] window because they have no equivalent
+// pre-scan clamp. The fix mirrors that behaviour by extending the clamp
+// back to `Start - max(range + offset)` whenever a range aggregation
+// lowering descends into its inner selector.
+//
+// A non-positive extension is a no-op so callers can pass `Interval -
+// Offset` without checking for zero. An extension stays clamped to the
+// query's actual range — instant queries (Step == 0) and bare matcher
+// queries still emit the unmodified clamp.
+func (c lowerCtx) withMatcherWindowExtension(extension time.Duration) lowerCtx {
+	if extension <= 0 || !c.hasTimeWindow() {
+		return c
+	}
+	out := c
+	out.Start = c.Start.Add(-extension)
+	return out
+}
+
 // Lower turns a parsed LogQL expression into a chplan tree. No time
 // window is injected — callers that know the request's [start, end]
 // should use [LowerAt] instead.
