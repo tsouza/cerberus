@@ -1865,7 +1865,7 @@ func TestTopK_Equal_KExprNilBothEqualByValue(t *testing.T) {
 	t.Parallel()
 	// Both KExpr nil; everything else identical → must be Equal. A
 	// CONDITIONALS_NEGATION mutant on `t.KExpr == nil` flips it to
-	// `!= nil`; under that, the branch is skipped and the code falls
+	// `!= nil`; under that, the branch is bypassed and the code falls
 	// through to `t.KExpr.Equal(o.KExpr)` which panics on nil receiver.
 	a := &chplan.TopK{
 		Input:    &chplan.Scan{Table: "t"},
