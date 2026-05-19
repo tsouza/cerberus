@@ -9,13 +9,15 @@ import (
 )
 
 type patternsResponse struct {
-	Status string            `json:"status"`
-	Data   loki.PatternsData `json:"data"`
+	Status string         `json:"status"`
+	Data   []loki.Pattern `json:"data"`
 }
 
 // TestPatterns_StubResult — until the pattern-discovery subsystem
 // lands, /patterns returns success with an empty pattern list. Grafana
-// renders this gracefully (the panel just shows "no data").
+// renders this gracefully (the panel just shows "no data"). The wire
+// shape pins `data` as a top-level JSON array (not a `{patterns:[...]}`
+// wrapper) — matches upstream Loki's `WriteQueryPatternsResponseJSON`.
 func TestPatterns_StubResult(t *testing.T) {
 	t.Parallel()
 
@@ -39,8 +41,8 @@ func TestPatterns_StubResult(t *testing.T) {
 	if out.Status != "success" {
 		t.Fatalf("status=%q", out.Status)
 	}
-	if out.Data.Patterns == nil || len(out.Data.Patterns) != 0 {
-		t.Fatalf("patterns=%+v want []", out.Data.Patterns)
+	if out.Data == nil || len(out.Data) != 0 {
+		t.Fatalf("data=%+v want []", out.Data)
 	}
 }
 
