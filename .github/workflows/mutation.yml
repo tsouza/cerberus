@@ -15,17 +15,16 @@ jobs:
     # Per-phase mutation kill-zone. gremlins v0.6.0 has no per-package
     # threshold, so each phase runs as its own matrix entry scoped to a
     # single package with its own --threshold-efficacy bar. The bar in
-    # `.gremlins.yaml` (currently 85) is the floor for the unscoped
+    # `.gremlins.yaml` (currently 95) is the floor for the unscoped
     # whole-repo `just mutate` invocation only — the matrix below
-    # overrides it per phase. All matrix entries stay informational
-    # until all six packages stay green for a week of nightly runs; the
-    # workflow stays on push-to-main + nightly + dispatch.
+    # mirrors it per phase. All matrix entries stay informational on
+    # push-to-main + nightly + dispatch; promotion to a required PR
+    # gate happens after every phase stays green for a week at 95%.
     #
-    # Bars set roughly 4-15 percentage points below the observed
-    # nightly kill rate — see `docs/test-strategy.md` § "Gremlins
-    # phased rollout" for the actual-vs-bar table. Raise the bar by
-    # editing both the matrix entry and the table; never lower it
-    # without a follow-up PR that re-establishes the headroom.
+    # All phases sit at 95% efficacy: the nightly runs have been
+    # clearing every phase for an extended period, so the floor is
+    # unified. Never lower a bar without a follow-up PR that
+    # re-establishes the headroom + a clear test-quality rationale.
     name: gremlins ${{ matrix.phase }} (${{ matrix.scope }} @ ${{ matrix.efficacy }}%)
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -35,25 +34,25 @@ jobs:
         include:
           - phase: phase1
             scope: ./internal/chplan
-            efficacy: 90
+            efficacy: 95
           - phase: phase2
             scope: ./internal/chsql
-            efficacy: 85
+            efficacy: 95
           - phase: phase3-optimizer
             scope: ./internal/optimizer
-            efficacy: 85
+            efficacy: 95
           - phase: phase4-promql
             scope: ./internal/promql
-            efficacy: 85
+            efficacy: 95
           - phase: phase4-logql
             scope: ./internal/logql
-            efficacy: 85
+            efficacy: 95
           - phase: phase4-traceql
             scope: ./internal/traceql
-            efficacy: 85
+            efficacy: 95
           - phase: phase5-qlcommon
             scope: ./internal/qlcommon
-            efficacy: 75
+            efficacy: 95
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
