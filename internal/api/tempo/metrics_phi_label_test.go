@@ -8,11 +8,16 @@ import (
 )
 
 // TestMetricsLabelNames_PhiLabelAddedForMultiQuantile pins the contract
-// that the response label list includes the synthetic `__phi__` label
-// when MetricsAggregate.Quantiles carries more than one phi value. The
-// chsql multi-quantile fan-out projects an extra column with that
-// alias; the handler must surface it as a wire-format label so each
-// (group × phi) becomes its own response series.
+// that the response label list ends with `p` for every
+// `quantile_over_time` MetricsAggregate (single or multi-phi, with or
+// without a `by(...)` clause). Tempo's HistogramAggregator
+// (engine_metrics.go) appends `Label{"p", NewStaticFloat(q)}` to every
+// per-phi series; cerberus surfaces the same wire key so the
+// tempo-compat differ canonicalises both backends identically.
+//
+// Non-quantile ops keep the existing behaviour: ungrouped surfaces
+// `["__name__"]` (Tempo's UngroupedAggregator wire shape), grouped
+// surfaces the by(...) display names only.
 func TestMetricsLabelNames_PhiLabelAddedForMultiQuantile(t *testing.T) {
 	t.Parallel()
 
@@ -22,45 +27,67 @@ func TestMetricsLabelNames_PhiLabelAddedForMultiQuantile(t *testing.T) {
 		want []string
 	}{
 		{
-			// Ungrouped (no by(...) + single quantile) is the
-			// UngroupedAggregator-equivalent shape — Tempo's wire
-			// surface for that case is `{__name__="<op>"}`. We surface
-			// the same `__name__` label key (the value is injected by
-			// wrapMetricsForSample via m.Op.String()).
+			// Ungrouped quantile_over_time with a single phi: Tempo's
+			// HistogramAggregator surfaces `{p="<phi>"}`, NOT
+			// `{__name__="quantile_over_time"}`, because quantile is
+			// routed through HistogramAggregator rather than
+			// UngroupedAggregator.
 			name: "no_groupby_single_quantile",
-			m:    &chplan.MetricsAggregate{Quantiles: []float64{0.95}},
-			want: []string{"__name__"},
+			m: &chplan.MetricsAggregate{
+				Op:        chplan.MetricsOpQuantileOverTime,
+				Quantiles: []float64{0.95},
+			},
+			want: []string{"p"},
 		},
 		{
 			name: "no_groupby_multi_quantile",
-			m:    &chplan.MetricsAggregate{Quantiles: []float64{0.5, 0.9, 0.99}},
-			want: []string{"__phi__"},
+			m: &chplan.MetricsAggregate{
+				Op:        chplan.MetricsOpQuantileOverTime,
+				Quantiles: []float64{0.5, 0.9, 0.99},
+			},
+			want: []string{"p"},
 		},
 		{
 			name: "groupby_single_quantile",
 			m: &chplan.MetricsAggregate{
+				Op:             chplan.MetricsOpQuantileOverTime,
 				GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: "x"}},
 				GroupByAliases: []string{"service"},
 				Quantiles:      []float64{0.95},
 			},
-			want: []string{"service"},
+			want: []string{"service", "p"},
 		},
 		{
 			name: "groupby_multi_quantile",
 			m: &chplan.MetricsAggregate{
+				Op:             chplan.MetricsOpQuantileOverTime,
 				GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: "x"}},
 				GroupByAliases: []string{"service"},
 				Quantiles:      []float64{0.5, 0.99},
 			},
-			want: []string{"service", "__phi__"},
+			want: []string{"service", "p"},
 		},
 		{
+			// Grouped non-quantile ops drop the `p` label entirely —
+			// the `by(...)` labels stand alone.
 			name: "non_quantile_op_with_quantiles_unset",
 			m: &chplan.MetricsAggregate{
+				Op:             chplan.MetricsOpAvgOverTime,
 				GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: "x"}},
 				GroupByAliases: []string{"region"},
 			},
 			want: []string{"region"},
+		},
+		{
+			// Ungrouped non-quantile ops surface `["__name__"]`
+			// (Tempo's UngroupedAggregator wire shape — the `__name__`
+			// value is filled in by wrapMetricsForSample via
+			// m.Op.String()).
+			name: "no_groupby_non_quantile",
+			m: &chplan.MetricsAggregate{
+				Op: chplan.MetricsOpRate,
+			},
+			want: []string{"__name__"},
 		},
 	}
 
@@ -77,12 +104,15 @@ func TestMetricsLabelNames_PhiLabelAddedForMultiQuantile(t *testing.T) {
 // TestWrapMetricsForSample_MultiQuantileAttrsIncludePhi pins the
 // Attributes map's shape: when len(Quantiles) > 1 the projected map
 // must reference both the group columns and the synthetic `__phi__`
-// column produced by the chsql fan-out.
+// column produced by the chsql fan-out — surfaced on the wire under
+// the Tempo-canonical `p` key (matching HistogramAggregator's
+// `Label{"p", NewStaticFloat(q)}` per-series label).
 func TestWrapMetricsForSample_MultiQuantileAttrsIncludePhi(t *testing.T) {
 	t.Parallel()
 
 	rw := &chplan.RangeWindow{}
 	m := &chplan.MetricsAggregate{
+		Op:             chplan.MetricsOpQuantileOverTime,
 		GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: "x"}},
 		GroupByAliases: []string{"service"},
 		Quantiles:      []float64{0.5, 0.9},
@@ -104,12 +134,15 @@ func TestWrapMetricsForSample_MultiQuantileAttrsIncludePhi(t *testing.T) {
 		t.Fatalf("Attributes expr = %T (%v), want *chplan.FuncCall(map)", attrsExpr, attrsExpr)
 	}
 
-	// Args are (key, value) pairs. Look for the __phi__ key + matching value.
-	foundPhiKey := false
+	// Args are (key, value) pairs. The wire key is `p`; the SQL column
+	// alias is the unexported `__phi__` constant — they intentionally
+	// diverge so the wire shape mirrors Tempo while the SQL stream stays
+	// recognisable as the multi-phi fan-out output.
+	foundPKey := false
 	foundPhiCol := false
 	for i, arg := range call.Args {
-		if lit, ok := arg.(*chplan.LitString); ok && lit.V == "__phi__" {
-			foundPhiKey = true
+		if lit, ok := arg.(*chplan.LitString); ok && lit.V == "p" {
+			foundPKey = true
 			if i+1 < len(call.Args) {
 				if col, ok := call.Args[i+1].(*chplan.ColumnRef); ok && col.Name == "__phi__" {
 					foundPhiCol = true
@@ -117,23 +150,26 @@ func TestWrapMetricsForSample_MultiQuantileAttrsIncludePhi(t *testing.T) {
 			}
 		}
 	}
-	if !foundPhiKey {
-		t.Errorf("map args do not include '__phi__' literal key:\n  %v", call.Args)
+	if !foundPKey {
+		t.Errorf("map args do not include 'p' literal key:\n  %v", call.Args)
 	}
 	if !foundPhiCol {
-		t.Errorf("map args do not pair '__phi__' key with __phi__ ColumnRef")
+		t.Errorf("map args do not pair 'p' wire key with the __phi__ SQL ColumnRef")
 	}
 }
 
-// TestWrapMetricsForSample_SingleQuantileNoPhiKey pins the inverse:
-// single-quantile or non-quantile aggregates must NOT inject __phi__
-// into the Attributes map (the chsql emitter doesn't project the
-// column in that path).
-func TestWrapMetricsForSample_SingleQuantileNoPhiKey(t *testing.T) {
+// TestWrapMetricsForSample_SingleQuantilePLabelLiteral pins the
+// single-phi quantile_over_time contract: the Attributes map carries a
+// `('p', '<phi_str>')` pair with the phi as an inline literal, because
+// the chsql emitter doesn't project a per-row phi column in the
+// single-phi path. The wire shape stays consistent with the multi-phi
+// branch — both surface a `p` label per series.
+func TestWrapMetricsForSample_SingleQuantilePLabelLiteral(t *testing.T) {
 	t.Parallel()
 
 	rw := &chplan.RangeWindow{}
 	m := &chplan.MetricsAggregate{
+		Op:             chplan.MetricsOpQuantileOverTime,
 		GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: "x"}},
 		GroupByAliases: []string{"service"},
 		Quantiles:      []float64{0.95},
@@ -142,11 +178,72 @@ func TestWrapMetricsForSample_SingleQuantileNoPhiKey(t *testing.T) {
 
 	node := wrapMetricsForSample(rw, m)
 	proj := node.(*chplan.Project)
-	attrsExpr := proj.Projections[1].Expr.(*chplan.FuncCall)
+	call := proj.Projections[1].Expr.(*chplan.FuncCall)
 
-	for _, arg := range attrsExpr.Args {
+	foundPLit := false
+	for i, arg := range call.Args {
+		if lit, ok := arg.(*chplan.LitString); ok && lit.V == "p" {
+			if i+1 < len(call.Args) {
+				if v, ok := call.Args[i+1].(*chplan.LitString); ok && v.V == "0.95" {
+					foundPLit = true
+				}
+			}
+		}
+		// Reject any leak of the SQL-side `__phi__` alias into the
+		// single-phi path — the chsql emitter doesn't project that
+		// column here.
 		if lit, ok := arg.(*chplan.LitString); ok && strings.Contains(lit.V, "__phi__") {
-			t.Errorf("single-quantile map args unexpectedly include __phi__ key: %v", attrsExpr.Args)
+			t.Errorf("single-quantile map args unexpectedly include __phi__ key: %v", call.Args)
+		}
+		if col, ok := arg.(*chplan.ColumnRef); ok && col.Name == "__phi__" {
+			t.Errorf("single-quantile map args unexpectedly reference __phi__ ColumnRef: %v", call.Args)
+		}
+	}
+	if !foundPLit {
+		t.Errorf("single-phi quantile_over_time: expected ('p', '0.95') literal pair, got %v", call.Args)
+	}
+}
+
+// TestWrapMetricsForSample_UngroupedQuantileSurfacesPLabel pins the
+// ungrouped quantile path: no `by(...)` clause and a single phi must
+// emit `{p="<phi>"}` (NOT `{__name__="quantile_over_time"}`) because
+// Tempo routes quantile_over_time through HistogramAggregator rather
+// than UngroupedAggregator. This is the case the tempo-compat differ
+// caught with `missing_in_a` for the metrics_quantile_over_time_p95
+// case before the fix.
+func TestWrapMetricsForSample_UngroupedQuantileSurfacesPLabel(t *testing.T) {
+	t.Parallel()
+
+	rw := &chplan.RangeWindow{}
+	m := &chplan.MetricsAggregate{
+		Op:         chplan.MetricsOpQuantileOverTime,
+		Quantiles:  []float64{0.95},
+		ValueAlias: "Value",
+	}
+
+	node := wrapMetricsForSample(rw, m)
+	proj := node.(*chplan.Project)
+	call := proj.Projections[1].Expr.(*chplan.FuncCall)
+
+	// Expect exactly one (key, value) pair: ('p', '0.95').
+	if len(call.Args) != 2 {
+		t.Fatalf("ungrouped quantile_over_time: expected 2 map args (one pair), got %d: %v",
+			len(call.Args), call.Args)
+	}
+	key, ok := call.Args[0].(*chplan.LitString)
+	if !ok || key.V != "p" {
+		t.Errorf("Attributes map[0] (key) = %v, want LitString{p}", call.Args[0])
+	}
+	val, ok := call.Args[1].(*chplan.LitString)
+	if !ok || val.V != "0.95" {
+		t.Errorf("Attributes map[1] (value) = %v, want LitString{0.95}", call.Args[1])
+	}
+
+	// And the `__name__` synthetic label MUST NOT appear — that's the
+	// UngroupedAggregator path, which quantile_over_time skips.
+	for _, arg := range call.Args {
+		if lit, ok := arg.(*chplan.LitString); ok && lit.V == "__name__" {
+			t.Errorf("ungrouped quantile_over_time leaked __name__ label: %v", call.Args)
 		}
 	}
 }
@@ -302,7 +399,7 @@ func TestWrapMetricsForSample_DisplayNameKeysAttributesMap(t *testing.T) {
 
 // TestWrapMetricsForSample_UngroupedAttachesMetricName pins the
 // UngroupedAggregator parity contract: when a TraceQL metrics-pipeline
-// query carries no `by(...)` clause and isn't a multi-quantile fan-out,
+// query carries no `by(...)` clause and isn't a quantile aggregate,
 // the Attributes projection must emit `map('__name__', '<op>')` rather
 // than an empty Map(String,String). That mirrors Tempo's reference
 // engine (pkg/traceql.UngroupedAggregator.Series) which attaches a
@@ -310,6 +407,12 @@ func TestWrapMetricsForSample_DisplayNameKeysAttributesMap(t *testing.T) {
 // from emitting the divergent empty-labels series the Tempo compat
 // differ flagged as `missing_in_a series key e3b0c44298fc1c14` (the
 // sha256 prefix of the empty string).
+//
+// quantile_over_time is excluded here on purpose — Tempo routes it
+// through HistogramAggregator rather than UngroupedAggregator, so the
+// ungrouped wire shape is `{p="<phi>"}`. See
+// TestWrapMetricsForSample_UngroupedQuantileSurfacesPLabel for that
+// branch.
 func TestWrapMetricsForSample_UngroupedAttachesMetricName(t *testing.T) {
 	t.Parallel()
 
@@ -322,7 +425,6 @@ func TestWrapMetricsForSample_UngroupedAttachesMetricName(t *testing.T) {
 		{name: "count_over_time", op: chplan.MetricsOpCountOverTime, wantVal: "count_over_time"},
 		{name: "avg_over_time", op: chplan.MetricsOpAvgOverTime, wantVal: "avg_over_time"},
 		{name: "sum_over_time", op: chplan.MetricsOpSumOverTime, wantVal: "sum_over_time"},
-		{name: "quantile_over_time", op: chplan.MetricsOpQuantileOverTime, wantVal: "quantile_over_time"},
 	}
 
 	for _, tc := range cases {
@@ -360,11 +462,15 @@ func TestWrapMetricsForSample_UngroupedAttachesMetricName(t *testing.T) {
 }
 
 // TestMetricsLabelNames_UngroupedIncludesMetricName pins the helper-side
-// contract: an ungrouped MetricsAggregate (no GroupBy + no multi-phi)
-// surfaces `["__name__"]` so labelsFromSample orders the synthetic
-// label deterministically before any other key the SQL projection
-// might surface. Tempo's UngroupedAggregator wire shape is the upstream
+// contract: an ungrouped non-quantile MetricsAggregate surfaces
+// `["__name__"]` so labelsFromSample orders the synthetic label
+// deterministically before any other key the SQL projection might
+// surface. Tempo's UngroupedAggregator wire shape is the upstream
 // reference (pkg/traceql.UngroupedAggregator.Series).
+//
+// Ungrouped quantile_over_time surfaces `["p"]` instead — see
+// TestMetricsLabelNames_PhiLabelAddedForMultiQuantile / the dedicated
+// wrap test (HistogramAggregator parity).
 func TestMetricsLabelNames_UngroupedIncludesMetricName(t *testing.T) {
 	t.Parallel()
 
@@ -372,14 +478,14 @@ func TestMetricsLabelNames_UngroupedIncludesMetricName(t *testing.T) {
 	if !equalSlice(got, []string{"__name__"}) {
 		t.Fatalf("metricsLabelNames(ungrouped rate) = %v, want [__name__]", got)
 	}
-	// multi-phi takes precedence (the fan-out adds its own column);
-	// the __name__ injection only fires when there's truly nothing
-	// else on the wire.
+	// quantile_over_time takes the `p` branch (HistogramAggregator
+	// parity); the `__name__` injection only fires when the op is
+	// routed through UngroupedAggregator upstream.
 	got = metricsLabelNames(&chplan.MetricsAggregate{
 		Op:        chplan.MetricsOpQuantileOverTime,
 		Quantiles: []float64{0.5, 0.9},
 	})
-	if !equalSlice(got, []string{"__phi__"}) {
-		t.Fatalf("metricsLabelNames(ungrouped multi-quantile) = %v, want [__phi__]", got)
+	if !equalSlice(got, []string{"p"}) {
+		t.Fatalf("metricsLabelNames(ungrouped multi-quantile) = %v, want [p]", got)
 	}
 }
