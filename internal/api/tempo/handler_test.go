@@ -412,11 +412,20 @@ func TestSearch_RootSpanResolution_MultipleRoots(t *testing.T) {
 }
 
 // TestSearch_RootSpanResolution_TruncatedTrace covers the truncated-set
-// fallback: when the matcher only matches child spans (the root is in
-// the trace but not in this search result set), the shaper falls back
-// to the earliest-by-timestamp span's metadata. This degrades
-// gracefully — the response surfaces *something* identifying the
-// trace rather than dropping the row.
+// fallback: when the matcher only matches child spans AND the
+// follow-up root-lookup against otel_traces returns no row for that
+// trace (the trace's root was never collected — true truncation), the
+// shaper falls back to the earliest-by-timestamp span's metadata so
+// the response surfaces *something* identifying the trace rather than
+// dropping the row.
+//
+// The structural-join / status-filter / set-op compat cases hit the
+// non-truncated path: their result set lacks a root row but
+// otel_traces does carry one, so resolveTraceRoots recovers it (see
+// TestSearch_StructuralJoin_RootSurfaced). This test is the
+// degradation envelope: when the follow-up also misses, we keep the
+// earliest-child anchor rather than silently dropping the RootTraceName
+// field.
 func TestSearch_RootSpanResolution_TruncatedTrace(t *testing.T) {
 	t.Parallel()
 	const traceID = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
@@ -444,6 +453,12 @@ func TestSearch_RootSpanResolution_TruncatedTrace(t *testing.T) {
 				Value:     50_000_000,
 			},
 		},
+		// The follow-up root-lookup query carries the
+		// `RootSpanName` alias in its outer Project. Stub it with an
+		// empty row set so the truncated-trace fallback fires.
+		samplesBySQL: map[string][]chclient.Sample{
+			"RootSpanName": {},
+		},
 	}
 	srv := newServer(q, "v1.0.0-test")
 	t.Cleanup(srv.Close)
@@ -460,7 +475,8 @@ func TestSearch_RootSpanResolution_TruncatedTrace(t *testing.T) {
 	if len(sr.Traces) != 1 {
 		t.Fatalf("expected 1 trace, got %d", len(sr.Traces))
 	}
-	// Earliest child wins when no root is in the result set.
+	// Earliest child wins when no root is in either the result set
+	// OR the follow-up root lookup.
 	if sr.Traces[0].RootTraceName != "child.early" {
 		t.Errorf("RootTraceName: got %q, want %q (earliest child when root absent)",
 			sr.Traces[0].RootTraceName, "child.early")
@@ -541,6 +557,159 @@ func TestSearch_RootSpanResolution_StrippedZero(t *testing.T) {
 	if got.RootServiceName != "payments" {
 		t.Errorf("RootServiceName: got %q, want %q",
 			got.RootServiceName, "payments")
+	}
+}
+
+// TestSearch_StructuralJoin_RootSurfaced pins the fix for the four
+// remaining tempo-compat regressions (status_eq_error,
+// descendant_op_payments_to_consumer, direct_parent_op_checkout_to_child,
+// set_and_checkout_and_status_error). Each query's result set carries
+// only **child** spans — the structural join projects R-side rows,
+// `{ status = error }` matches only the children that report error
+// status, set ops like `&&` only return rows satisfying every leg —
+// so no row in the original result is a root span (every
+// __cerberus_parentSpanID is a non-empty / non-zero hex value pointing
+// at the actual root).
+//
+// The handler must detect the missing-root case, issue a follow-up
+// query against otel_traces filtered to
+// `ParentSpanId IN (”, '0000000000000000') AND TraceId IN (...)`, and
+// patch RootServiceName / RootTraceName on the affected summaries
+// before responding. This test stubs both stages: the first query
+// returns child rows; the second returns the recovered root for one
+// of the two traces and nothing for the other (modelling a true
+// truncation), letting us assert both code paths.
+func TestSearch_StructuralJoin_RootSurfaced(t *testing.T) {
+	t.Parallel()
+	const (
+		traceWithRoot = "17" // the stripped form (rootSpanID for child rows is the same)
+		traceNoRoot   = "abc"
+		rootSpanID    = "1"
+	)
+	q := &stubQuerier{
+		// First (search) query returns two child rows on traceWithRoot
+		// and one child row on traceNoRoot — neither trace's result
+		// set contains its true root span (per structural-join /
+		// status-filter semantics).
+		samples: []chclient.Sample{
+			{
+				MetricName: "checkout.child.2",
+				Labels: map[string]string{
+					"service.name":            "checkout",
+					"__cerberus_traceID":      traceWithRoot,
+					"__cerberus_parentSpanID": rootSpanID,
+				},
+				Timestamp: time.Date(2026, 5, 12, 10, 0, 0, 30_000_000, time.UTC),
+				Value:     40_000_000,
+			},
+			{
+				MetricName: "checkout.child.0",
+				Labels: map[string]string{
+					"service.name":            "checkout",
+					"__cerberus_traceID":      traceWithRoot,
+					"__cerberus_parentSpanID": rootSpanID,
+				},
+				Timestamp: time.Date(2026, 5, 12, 10, 0, 0, 10_000_000, time.UTC),
+				Value:     20_000_000,
+			},
+			{
+				MetricName: "payments.child.4",
+				Labels: map[string]string{
+					"service.name":            "payments",
+					"__cerberus_traceID":      traceNoRoot,
+					"__cerberus_parentSpanID": rootSpanID,
+				},
+				Timestamp: time.Date(2026, 5, 12, 10, 0, 0, 50_000_000, time.UTC),
+				Value:     60_000_000,
+			},
+		},
+		// Second (root-lookup) query returns the recovered root for
+		// traceWithRoot only — traceNoRoot is truncated. The follow-up
+		// emits the canonical Sample envelope so chclient decodes it
+		// positionally; the Attributes carry the stripped TraceID and
+		// the recovered service.name.
+		samplesBySQL: map[string][]chclient.Sample{
+			"RootSpanName": {
+				{
+					MetricName: "GET /api/checkout/17",
+					Labels: map[string]string{
+						"service.name":       "checkout",
+						"__cerberus_traceID": traceWithRoot,
+					},
+					Timestamp: time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+					Value:     0,
+				},
+			},
+		},
+	}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/search?q=%7B%20status%20%3D%20error%20%7D")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+	var sr tempo.SearchResponse
+	if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(sr.Traces) != 2 {
+		t.Fatalf("expected 2 traces, got %d (%+v)", len(sr.Traces), sr.Traces)
+	}
+	// Locate traces by ID — the slice is sorted by TraceID.
+	var withRoot, noRoot tempo.TraceSummary
+	for _, tr := range sr.Traces {
+		switch tr.TraceID {
+		case traceWithRoot:
+			withRoot = tr
+		case traceNoRoot:
+			noRoot = tr
+		}
+	}
+	if withRoot.RootTraceName != "GET /api/checkout/17" {
+		t.Errorf("withRoot.RootTraceName: got %q, want %q (recovered from follow-up lookup, not the child)",
+			withRoot.RootTraceName, "GET /api/checkout/17")
+	}
+	if withRoot.RootServiceName != "checkout" {
+		t.Errorf("withRoot.RootServiceName: got %q, want %q",
+			withRoot.RootServiceName, "checkout")
+	}
+	// Truncated trace: follow-up returned nothing; the earliest-span
+	// fallback ("payments.child.4") stays in place so the summary
+	// still identifies the trace.
+	if noRoot.RootTraceName != "payments.child.4" {
+		t.Errorf("noRoot.RootTraceName: got %q, want %q (earliest-span fallback when follow-up returns no root)",
+			noRoot.RootTraceName, "payments.child.4")
+	}
+
+	// At least two SQL queries should have been issued (search + lookup).
+	if len(q.queriedSQLs) < 2 {
+		t.Errorf("expected ≥2 CH queries (search + root lookup), got %d: %v",
+			len(q.queriedSQLs), q.queriedSQLs)
+	}
+	// The lookup SQL must filter on (TraceId, ParentSpanId).
+	var lookupSQL string
+	for _, sql := range q.queriedSQLs {
+		if strings.Contains(sql, "RootSpanName") {
+			lookupSQL = sql
+			break
+		}
+	}
+	if lookupSQL == "" {
+		t.Fatalf("no follow-up root-lookup query was issued; queries=%v", q.queriedSQLs)
+	}
+	if !strings.Contains(lookupSQL, "argMin") {
+		t.Errorf("lookup SQL must use argMin to pick the per-trace root span; got %s", lookupSQL)
+	}
+	if !strings.Contains(lookupSQL, "ParentSpanId") {
+		t.Errorf("lookup SQL must filter on ParentSpanId; got %s", lookupSQL)
+	}
+	if !strings.Contains(lookupSQL, "TraceId") {
+		t.Errorf("lookup SQL must filter on TraceId; got %s", lookupSQL)
 	}
 }
 
