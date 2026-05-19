@@ -115,3 +115,131 @@ func TestRegexpMergeLabelsSkipsUnnamedSubexps(t *testing.T) {
 		t.Fatalf("regexpMergeLabels(%q) inner map key = %q, want %q", pattern, key.V, "name")
 	}
 }
+
+// TestRangeModeAsymmetric pins the two guards that gate the matrix
+// RangeWindow shape: `lowerCtx.rangeMode` reads
+// `c.Step > 0 && c.hasTimeWindow()`. Two mutations target this line:
+//
+//   - INVERT_LOGICAL flips `&&` to `||`, which makes the Step > 0 leg
+//     alone (or hasTimeWindow alone) trip range-mode and emit a matrix
+//     shape against an instant query — the engine would then look for a
+//     per-row `anchor_ts` column that the inner instant lowering does
+//     not produce.
+//   - CONDITIONALS_BOUNDARY flips `> 0` to `>= 0`, which makes a Step of
+//     exactly zero satisfy the predicate. A range-mode flag without a
+//     real Step would divide-by-zero in the matrix emitter's anchor
+//     grid.
+//
+// Pin the four corners so both mutations diverge from the original.
+func TestRangeModeAsymmetric(t *testing.T) {
+	t.Parallel()
+
+	someTS := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	cases := []struct {
+		name  string
+		start time.Time
+		end   time.Time
+		step  time.Duration
+		want  bool
+	}{
+		// Step == 0 with a real window → rangeMode is false. The
+		// CONDITIONALS_BOUNDARY mutant (`Step >= 0`) would flip this to
+		// true because `0 >= 0`.
+		{name: "step zero with window -> instant", start: someTS, end: someTS.Add(time.Hour), step: 0, want: false},
+		// Step > 0 without a window → rangeMode is false. The
+		// INVERT_LOGICAL mutant (`||`) would flip this to true because
+		// the Step > 0 leg alone satisfies the disjunction.
+		{name: "step set without window -> instant", start: time.Time{}, end: time.Time{}, step: time.Minute, want: false},
+		// Both legs satisfied → rangeMode is true. The original requires
+		// both; either mutant would also return true here, so this case
+		// guards the positive side of the conjunction.
+		{name: "both step and window -> range", start: someTS, end: someTS.Add(time.Hour), step: time.Minute, want: true},
+		// Neither leg satisfied → rangeMode is false. Both mutants also
+		// return false; this case anchors the baseline.
+		{name: "neither step nor window -> instant", start: time.Time{}, end: time.Time{}, step: 0, want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			lc := lowerCtx{Start: tc.start, End: tc.end, Step: tc.step}
+			if got := lc.rangeMode(); got != tc.want {
+				t.Fatalf("rangeMode() = %v, want %v (start=%v end=%v step=%v)", got, tc.want, tc.start, tc.end, tc.step)
+			}
+		})
+	}
+}
+
+// TestIsMatrixRangeWindowBoundary pins the `v.OuterRange > 0` boundary
+// in [isMatrixRangeWindow]. A CONDITIONALS_BOUNDARY mutant flips `> 0`
+// to `>= 0`, which would classify a zero-OuterRange instant RangeWindow
+// as a matrix node. The caller — vector-aggregation lowering — would
+// then add a non-existent `anchor_ts` column to the GROUP BY and the
+// emitter would fail at SQL build time.
+//
+// Pin the boundary explicitly: OuterRange == 0 must report false,
+// any positive duration must report true.
+func TestIsMatrixRangeWindowBoundary(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name        string
+		outerRange  time.Duration
+		want        bool
+		description string
+	}{
+		{name: "OuterRange zero -> instant", outerRange: 0, want: false, description: "boundary: must be strictly positive"},
+		{name: "OuterRange positive -> matrix", outerRange: time.Hour, want: true},
+		// 1 nanosecond is the smallest positive duration that still
+		// satisfies `> 0`; pin it as a separate case so a downgrade to
+		// `>= 1ms` (or any other threshold) also surfaces.
+		{name: "OuterRange one ns -> matrix", outerRange: time.Nanosecond, want: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			rw := &chplan.RangeWindow{OuterRange: tc.outerRange}
+			if got := isMatrixRangeWindow(rw); got != tc.want {
+				t.Fatalf("isMatrixRangeWindow(OuterRange=%v) = %v, want %v (%s)", tc.outerRange, got, tc.want, tc.description)
+			}
+		})
+	}
+}
+
+// TestIsMatrixRangeWindowWalksWrappers pins the recursive walk through
+// the value-rewrite Projects / Filters that preserve the inner RangeWindow
+// shape. Without the recursion, a vector-aggregation over a Project-wrapped
+// matrix RangeWindow would never add `anchor_ts` to its GROUP BY.
+func TestIsMatrixRangeWindowWalksWrappers(t *testing.T) {
+	t.Parallel()
+
+	matrix := &chplan.RangeWindow{OuterRange: time.Hour}
+	instant := &chplan.RangeWindow{OuterRange: 0}
+
+	cases := []struct {
+		name string
+		node chplan.Node
+		want bool
+	}{
+		{name: "bare matrix", node: matrix, want: true},
+		{name: "bare instant", node: instant, want: false},
+		{name: "Project over matrix", node: &chplan.Project{Input: matrix}, want: true},
+		{name: "Filter over matrix", node: &chplan.Filter{Input: matrix}, want: true},
+		{name: "Project over instant", node: &chplan.Project{Input: instant}, want: false},
+		{name: "nested wrappers over matrix", node: &chplan.Project{Input: &chplan.Filter{Input: matrix}}, want: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := isMatrixRangeWindow(tc.node); got != tc.want {
+				t.Fatalf("isMatrixRangeWindow(%s) = %v, want %v", tc.name, got, tc.want)
+			}
+		})
+	}
+}
