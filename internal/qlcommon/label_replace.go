@@ -80,61 +80,87 @@ func ReplacementToCH(repl, regex string) string {
 
 	var b strings.Builder
 	b.Grow(len(escaped))
-	for i := 0; i < len(escaped); i++ {
-		c := escaped[i]
-		if c != '$' {
-			b.WriteByte(c)
-			continue
-		}
-		// Lone `$` at end of string — preserve.
-		if i+1 >= len(escaped) {
-			b.WriteByte('$')
-			continue
-		}
-		next := escaped[i+1]
-		switch {
-		case next == '$':
-			// `$$` → literal `$`.
-			b.WriteByte('$')
-			i++
-		case next >= '0' && next <= '9':
-			// `$N` → `\N` (single digit only — `$10` is preserved
-			// verbatim per upstream Go regexp semantics, but CH
-			// has no `\10`, so we'd mistranslate either way; preserving
-			// keeps the failure visible rather than silently wrong).
-			if i+2 < len(escaped) && escaped[i+2] >= '0' && escaped[i+2] <= '9' {
-				b.WriteByte('$')
-				continue
-			}
-			n := int(next - '0')
-			// `\0` references the whole match and is always valid; for
-			// numbered captures, only emit `\N` if the regex actually
-			// has N capture groups. Out-of-range refs are dropped so
-			// CH's substitution validator stays happy.
-			if n == 0 || n <= allowed {
-				b.WriteByte('\\')
-				b.WriteByte(next)
-			}
-			i++
-		case next == '{':
-			// `${N}` (single digit) → `\N`. Anything else (named
-			// captures, multi-digit indices) is preserved verbatim.
-			if i+3 < len(escaped) && escaped[i+2] >= '0' && escaped[i+2] <= '9' && escaped[i+3] == '}' {
-				n := int(escaped[i+2] - '0')
-				if n == 0 || n <= allowed {
-					b.WriteByte('\\')
-					b.WriteByte(escaped[i+2])
-				}
-				i += 3
-				continue
-			}
-			b.WriteByte('$')
-		default:
-			// `$<letter>` etc. — preserve verbatim.
-			b.WriteByte('$')
-		}
+	// Step-based loop: each branch returns the number of input bytes it
+	// consumed via `step`, and the for-iterator advances `i` by that
+	// amount. Phrasing the loop this way (rather than using `continue` /
+	// `break` inside an inner `switch`) makes every per-iteration choice
+	// observable in the iterator clause — without it the gremlins
+	// INVERT_LOOPCTRL operator could swap `continue` ↔ `break` inside
+	// dead-end switch cases and the swap would be unkillable because no
+	// statements ran between the keyword and the iterator step. See PR
+	// #499 (the mutant-kill tests) and the follow-up PR that landed this
+	// refactor for the full diagnosis.
+	for i := 0; i < len(escaped); {
+		step := replacementStep(&b, escaped, i, allowed)
+		i += step
 	}
 	return b.String()
+}
+
+// replacementStep handles a single dispatch step of ReplacementToCH at
+// offset `i` of `escaped`. It writes the translated bytes to `b` and
+// returns the number of input bytes it consumed (always >= 1, so the
+// outer loop always makes progress).
+//
+// Splitting this out of the loop body keeps the per-iteration consumed
+// count observable in the caller's iterator clause, so the gremlins
+// INVERT_LOOPCTRL operator can't swap `continue` ↔ `break` and produce
+// an equivalent mutant — the dispatch keywords don't live in a `for`
+// scope at all here.
+func replacementStep(b *strings.Builder, escaped string, i, allowed int) int {
+	c := escaped[i]
+	if c != '$' {
+		b.WriteByte(c)
+		return 1
+	}
+	// Lone `$` at end of string — preserve.
+	if i+1 >= len(escaped) {
+		b.WriteByte('$')
+		return 1
+	}
+	next := escaped[i+1]
+	switch {
+	case next == '$':
+		// `$$` → literal `$`.
+		b.WriteByte('$')
+		return 2
+	case next >= '0' && next <= '9':
+		// `$N` → `\N` (single digit only — `$10` is preserved
+		// verbatim per upstream Go regexp semantics, but CH
+		// has no `\10`, so we'd mistranslate either way; preserving
+		// keeps the failure visible rather than silently wrong).
+		if i+2 < len(escaped) && escaped[i+2] >= '0' && escaped[i+2] <= '9' {
+			b.WriteByte('$')
+			return 1
+		}
+		n := int(next - '0')
+		// `\0` references the whole match and is always valid; for
+		// numbered captures, only emit `\N` if the regex actually
+		// has N capture groups. Out-of-range refs are dropped so
+		// CH's substitution validator stays happy.
+		if n == 0 || n <= allowed {
+			b.WriteByte('\\')
+			b.WriteByte(next)
+		}
+		return 2
+	case next == '{':
+		// `${N}` (single digit) → `\N`. Anything else (named
+		// captures, multi-digit indices) is preserved verbatim.
+		if i+3 < len(escaped) && escaped[i+2] >= '0' && escaped[i+2] <= '9' && escaped[i+3] == '}' {
+			n := int(escaped[i+2] - '0')
+			if n == 0 || n <= allowed {
+				b.WriteByte('\\')
+				b.WriteByte(escaped[i+2])
+			}
+			return 4
+		}
+		b.WriteByte('$')
+		return 1
+	default:
+		// `$<letter>` etc. — preserve verbatim.
+		b.WriteByte('$')
+		return 1
+	}
 }
 
 // EmptyCapturesReplacement returns the result of substituting Go's
@@ -170,47 +196,65 @@ func ReplacementToCH(repl, regex string) string {
 func EmptyCapturesReplacement(repl string) string {
 	var b strings.Builder
 	b.Grow(len(repl))
-	for i := 0; i < len(repl); i++ {
-		c := repl[i]
-		if c != '$' {
-			b.WriteByte(c)
-			continue
-		}
-		// Lone `$` at end of string — preserve.
-		if i+1 >= len(repl) {
-			b.WriteByte('$')
-			continue
-		}
-		next := repl[i+1]
-		switch {
-		case next == '$':
-			// `$$` → literal `$`.
-			b.WriteByte('$')
-			i++
-		case next >= '0' && next <= '9':
-			// `$N` → "" (capture N is empty for an empty-string match).
-			// Two-digit `$10`+ is preserved verbatim — `ReplacementToCH`
-			// makes the same opt-out, so the regex compile / CH parse
-			// error surfaces consistently.
-			if i+2 < len(repl) && repl[i+2] >= '0' && repl[i+2] <= '9' {
-				b.WriteByte('$')
-				continue
-			}
-			// Single-digit numbered capture → empty. Skip past the digit.
-			i++
-		case next == '{':
-			// `${N}` (single digit) → "". Anything else (named captures,
-			// multi-digit indices) is preserved verbatim — same opt-out
-			// as `ReplacementToCH`.
-			if i+3 < len(repl) && repl[i+2] >= '0' && repl[i+2] <= '9' && repl[i+3] == '}' {
-				i += 3
-				continue
-			}
-			b.WriteByte('$')
-		default:
-			// `$<letter>` etc. — preserve verbatim.
-			b.WriteByte('$')
-		}
+	// Step-based loop — see ReplacementToCH for the same rationale: the
+	// dispatch keywords moved into a helper so the gremlins
+	// INVERT_LOOPCTRL operator has no `continue`/`break` to swap inside
+	// a dead-end switch case.
+	for i := 0; i < len(repl); {
+		step := emptyCapturesStep(&b, repl, i)
+		i += step
 	}
 	return b.String()
+}
+
+// emptyCapturesStep handles a single dispatch step of
+// EmptyCapturesReplacement at offset `i` of `repl`. It writes the
+// translated bytes to `b` and returns the number of input bytes it
+// consumed (always >= 1).
+//
+// Mirrors replacementStep but resolves numbered captures to the empty
+// string instead of CH's `\N` form. See replacementStep for the
+// mutation-testing rationale behind the extraction.
+func emptyCapturesStep(b *strings.Builder, repl string, i int) int {
+	c := repl[i]
+	if c != '$' {
+		b.WriteByte(c)
+		return 1
+	}
+	// Lone `$` at end of string — preserve.
+	if i+1 >= len(repl) {
+		b.WriteByte('$')
+		return 1
+	}
+	next := repl[i+1]
+	switch {
+	case next == '$':
+		// `$$` → literal `$`.
+		b.WriteByte('$')
+		return 2
+	case next >= '0' && next <= '9':
+		// `$N` → "" (capture N is empty for an empty-string match).
+		// Two-digit `$10`+ is preserved verbatim — `ReplacementToCH`
+		// makes the same opt-out, so the regex compile / CH parse
+		// error surfaces consistently.
+		if i+2 < len(repl) && repl[i+2] >= '0' && repl[i+2] <= '9' {
+			b.WriteByte('$')
+			return 1
+		}
+		// Single-digit numbered capture → empty. Skip past the digit.
+		return 2
+	case next == '{':
+		// `${N}` (single digit) → "". Anything else (named captures,
+		// multi-digit indices) is preserved verbatim — same opt-out
+		// as `ReplacementToCH`.
+		if i+3 < len(repl) && repl[i+2] >= '0' && repl[i+2] <= '9' && repl[i+3] == '}' {
+			return 4
+		}
+		b.WriteByte('$')
+		return 1
+	default:
+		// `$<letter>` etc. — preserve verbatim.
+		b.WriteByte('$')
+		return 1
+	}
 }
