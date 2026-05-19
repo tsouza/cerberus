@@ -79,7 +79,7 @@ func (h *Handler) handleIndexVolume(w http.ResponseWriter, r *http.Request) {
 	result := make([]VectorSample, 0, len(rows))
 	for _, row := range rows {
 		result = append(result, VectorSample{
-			Metric: row.Labels,
+			Metric: dropOTelDottedLabels(row.Labels),
 			Value:  [2]any{stamp, strconv.FormatUint(row.Bytes, 10)},
 		})
 	}
