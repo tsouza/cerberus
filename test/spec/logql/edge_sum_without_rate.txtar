@@ -13,6 +13,22 @@ sum without (instance, pod) (rate({job="api"}[5m]))
 [9] string = "pod"
 -- sql --
 SELECT ? AS `MetricName`, `gkey_0` AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT mapFilter((k, v) -> NOT (k IN (?, ?)), `ResourceAttributes`) AS `gkey_0`, sum(`Value`) AS `Value` FROM (SELECT `ResourceAttributes`, if(length(window_vals) > 0, arraySum(window_vals) / ?, 0.0) AS `Value` FROM (SELECT `ResourceAttributes`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `ResourceAttributes`, arrayFilter(p -> tupleElement(p, 1) > now64(9) - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= now64(9), series_array) AS `window_pairs` FROM (SELECT `ResourceAttributes`, arraySort(groupArray((`Timestamp`, `Value`))) AS `series_array` FROM (SELECT `ResourceAttributes`, `Timestamp`, ? AS `Value` FROM (SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?))) GROUP BY `ResourceAttributes`)))) GROUP BY mapFilter((k, v) -> NOT (k IN (?, ?)), `ResourceAttributes`))
+-- seed --
+CREATE TABLE otel_logs (
+    Timestamp DateTime64(9),
+    Body String,
+    ResourceAttributes Map(String, String)
+) ENGINE = Memory;
+INSERT INTO otel_logs (Timestamp, Body, ResourceAttributes) VALUES
+    (toDateTime64('2025-12-31 23:58:00', 9), 'a', map('job', 'api', 'pod', 'p1', 'instance', 'i1', 'dc', 'us-east')),
+    (toDateTime64('2025-12-31 23:59:00', 9), 'b', map('job', 'api', 'pod', 'p1', 'instance', 'i1', 'dc', 'us-east')),
+    (toDateTime64('2026-01-01 00:00:00', 9), 'c', map('job', 'api', 'pod', 'p1', 'instance', 'i1', 'dc', 'us-east')),
+    (toDateTime64('2025-12-31 23:58:00', 9), 'd', map('job', 'api', 'pod', 'p2', 'instance', 'i2', 'dc', 'us-east')),
+    (toDateTime64('2026-01-01 00:00:00', 9), 'e', map('job', 'api', 'pod', 'p2', 'instance', 'i2', 'dc', 'us-east'));
+-- expected_rows --
+[
+  ["", {"dc": "us-east", "job": "api"}, "2026-01-01T00:00:01Z", 0.016666666666666666]
+]
 -- chplan --
 Project ["" AS MetricName, gkey_0 AS Attributes, now64(9) AS TimeUnix, Value AS Value]
   Aggregate groupBy=[mapWithout(ResourceAttributes, [instance, pod]) AS gkey_0] funcs=[sum(Value) AS Value]
