@@ -227,11 +227,15 @@ jobs:
           fi
           git config user.name "cerberus-compat-bot"
           git config user.email "cerberus-compat-bot@users.noreply.github.com"
-          # Stash the score file before we switch branches so it survives
-          # the checkout (it lives under a path that the orphan tree may
-          # not contain).
+          # Stash a shields-compatible subset of the score file before we
+          # switch branches: the rich score file (passed / total / percent)
+          # is great for the artifact + step-summary, but shields.io's
+          # endpoint-badge schema is strict and rejects unknown keys with
+          # an "invalid properties: passed, total, percent" SVG title.
+          # Strip to the four schema-spec keys here so the orphan-branch
+          # JSON renders cleanly.
           tmp=$(mktemp)
-          cp "$SRC" "$tmp"
+          jq '{schemaVersion, label, message, color}' "$SRC" > "$tmp"
 
           MAX_ATTEMPTS=5
           attempt=1
@@ -349,8 +353,11 @@ jobs:
           fi
           git config user.name "cerberus-compat-bot"
           git config user.email "cerberus-compat-bot@users.noreply.github.com"
+          # Strip cerberus-only bookkeeping (passed / total / percent)
+          # before publishing: shields.io rejects unknown keys on the
+          # endpoint-badge schema with an "invalid properties" SVG title.
           tmp=$(mktemp)
-          cp "$SRC" "$tmp"
+          jq '{schemaVersion, label, message, color}' "$SRC" > "$tmp"
 
           MAX_ATTEMPTS=5
           attempt=1
@@ -475,8 +482,11 @@ jobs:
           fi
           git config user.name "cerberus-compat-bot"
           git config user.email "cerberus-compat-bot@users.noreply.github.com"
+          # Strip cerberus-only bookkeeping (passed / total / percent)
+          # before publishing: shields.io rejects unknown keys on the
+          # endpoint-badge schema with an "invalid properties" SVG title.
           tmp=$(mktemp)
-          cp "$SRC" "$tmp"
+          jq '{schemaVersion, label, message, color}' "$SRC" > "$tmp"
 
           MAX_ATTEMPTS=5
           attempt=1
