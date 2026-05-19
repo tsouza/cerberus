@@ -14,9 +14,10 @@
 //     query through both backends via /api/search, /api/traces/<id>,
 //     /api/metrics/query_range, and /api/metrics/query, applies per-
 //     side assertions + semantic-consistency invariants, computes the
-//     structural diff, and emits a markdown report under /reports/.
-//     Returns 0 (informational baseline) by default; pass
-//     --fail-on-diff to make any diff non-zero.
+//     structural diff, and emits a markdown report under /reports/
+//     plus a shields.io endpoint-badge score JSON. Report-only: exit
+//     code is 0 on parity drift; only driver-wide hard errors (corpus
+//     load, report write) escalate to a non-zero rc.
 //
 // The two-way "OTLP into Tempo, INSERT into CH" split is documented in
 // docs/tempo-compliance-plan.md's "Open question 1": cerberus is
@@ -84,8 +85,9 @@ subcommands:
           equivalent rows into ClickHouse otel_traces; smoke-poll
           /api/traces/<id> on both backends.
   diff    run the TraceQL corpus through both backends, emit a
-          markdown diff report under /reports/. Default exit code is
-          0 (informational); pass --fail-on-diff to bubble per-case
-          regressions up to a non-zero rc.
+          markdown diff report under /reports/ and a shields.io
+          endpoint-badge score JSON. Report-only: exit code is 0 on
+          parity drift; only driver-wide hard errors (corpus load,
+          report write) escalate to a non-zero rc.
 `, version)
 }

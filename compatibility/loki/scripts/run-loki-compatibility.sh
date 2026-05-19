@@ -21,15 +21,15 @@
 # report shape matches the Prom harness; the build / teardown lifecycle
 # is otherwise unchanged.
 #
-# Exit semantics:
+# Exit semantics (post task #68 / "compat is informational"):
 #
-#   - 0  → smoke + driver passed (no diffs reported on any query case).
-#   - 1  → driver reported at least one diff or run-time failure (the
-#          informational CI lane treats this as non-blocking; a
-#          required-check upgrade is planned per docs/loki-compliance-plan.md
-#          PR 6).
-#   - 2+ → harness itself failed (compose up, seed, build, docker missing,
-#          …). Inspect script output; the report file may be empty.
+#   - 0  → smoke + driver completed. Parity drift (diffs, unexpected
+#          failures) is captured in the JSON report + the shields.io
+#          endpoint-badge compat-score.json, NOT in the exit code.
+#   - 1+ → harness itself failed (compose up, seed, build, docker
+#          missing, file write, …) OR the driver hit a hard error
+#          before it could write the report. Inspect script output;
+#          the report file may be empty or partial.
 #
 # Usage:
 #   ./compatibility/loki/scripts/run-loki-compatibility.sh   full lifecycle
@@ -46,6 +46,9 @@
 #                       The driver emits a JSON envelope matching the
 #                       Prom harness's report shape; existing tooling
 #                       can consume both via the same schema.
+#   DRIVER_SCORE        compat-score.json file path (default:
+#                       reports/compat-score.json). shields.io endpoint-
+#                       badge contract; see compatibility/internal/score.
 #   DRIVER_TIMEOUT      Per-request HTTP timeout (default: 30s).
 #   DRIVER_TOLERANCE    -tolerance flag (default: 1e-5; matches upstream).
 #   DRIVER_RANGE_TYPE   -range-type flag (default: range; 'instant' also valid).
@@ -60,6 +63,7 @@ REPO_ROOT=$(cd "$ROOT_DIR/../.." && pwd)
 cd "$ROOT_DIR"
 
 REPORT=${DRIVER_REPORT:-"$ROOT_DIR/reports/diff.json"}
+SCORE=${DRIVER_SCORE:-"$ROOT_DIR/reports/compat-score.json"}
 TIMEOUT=${DRIVER_TIMEOUT:-30s}
 TOLERANCE=${DRIVER_TOLERANCE:-1e-5}
 RANGE_TYPE=${DRIVER_RANGE_TYPE:-range}
@@ -133,6 +137,7 @@ set +e
     -metadata-dir="$ROOT_DIR" \
     -overlay="$OVERLAY" \
     -report="$REPORT" \
+    -score="$SCORE" \
     -tolerance="$TOLERANCE" \
     -range-type="$RANGE_TYPE" \
     -parallelism="$PARALLELISM" \
@@ -141,6 +146,7 @@ DRIVER_RC=$?
 set -e
 
 echo "==> report written to $REPORT"
+echo "==> score written to $SCORE"
 echo "==> summary:"
 if command -v jq >/dev/null 2>&1; then
     jq '{total: .totalResults, passed: ([.results[]? | select((.unexpectedFailure // "") == "" and (.diff // "") == "" and (.unexpectedSuccess // false) == false)] | length), diffs: ([.results[]? | select((.diff // "") != "")] | length), unexpected_failures: ([.results[]? | select((.unexpectedFailure // "") != "")] | length), unsupported: ([.results[]? | select((.unsupported // false) == true)] | length), skipped: ([.results[]? | select((.skipReason // "") != "")] | length)}' "$REPORT" 2>/dev/null || echo "    (jq failed to parse $REPORT)"

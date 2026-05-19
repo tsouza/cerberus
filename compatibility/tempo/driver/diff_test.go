@@ -248,6 +248,35 @@ func TestBuildURL_MetricsRangeMissingStepFails(t *testing.T) {
 	}
 }
 
+func TestComputeScore_AllVariants(t *testing.T) {
+	t.Parallel()
+	// One pass (no HardError, Equal diff, no assertions), three
+	// failure modes — each must count toward total but NOT toward
+	// passed.
+	results := []CaseResult{
+		{Diff: Diff{Equal: true}},                                                           // pass
+		{Diff: Diff{Equal: true}},                                                           // pass
+		{HardError: "tempo fetch: dial tcp: refused", Diff: Diff{}},                         // per-case hard error
+		{Diff: Diff{Equal: false, Reasons: []DiffReason{{Kind: "cardinality"}}}},            // diff
+		{Diff: Diff{Equal: true}, Assertions: []DiffReason{{Kind: "samples_non_negative"}}}, // assertion fail
+	}
+	passed, total := computeScore(results)
+	if total != 5 {
+		t.Fatalf("total = %d, want 5", total)
+	}
+	if passed != 2 {
+		t.Fatalf("passed = %d, want 2", passed)
+	}
+}
+
+func TestComputeScore_EmptyResults(t *testing.T) {
+	t.Parallel()
+	passed, total := computeScore(nil)
+	if passed != 0 || total != 0 {
+		t.Fatalf("(passed, total) = (%d, %d), want (0, 0)", passed, total)
+	}
+}
+
 func TestBuildURL_MetricsInstant(t *testing.T) {
 	t.Parallel()
 	tc := CorpusCase{
