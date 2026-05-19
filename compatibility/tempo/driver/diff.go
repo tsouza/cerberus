@@ -88,15 +88,14 @@ func runDiff(args []string) error {
 	if err != nil {
 		return fmt.Errorf("load corpus: %w", err)
 	}
-	if len(cases) < 30 {
+	if len(cases) < 25 {
 		// Same shape as harness/.../shadow/traceql_shadow_test.go's
 		// guard — protects against a corpus author accidentally trimming
 		// the smoke set below the agreed floor. PR 4 set the floor at
 		// 20; PR 5 bumped to 25 after adding three metrics_range + three
-		// metrics_instant cases; PR 6 bumped to 30 after adding tag /
-		// tag-values cases (less the three tag_values_v2 entries that
-		// Tempo's parser rejects on dotted URL-segment IDs).
-		return fmt.Errorf("smoke corpus shrunk: got %d cases, want >= 30", len(cases))
+		// metrics_instant cases. Future PRs (tag endpoints, etc.) raise
+		// the floor in lock-step.
+		return fmt.Errorf("smoke corpus shrunk: got %d cases, want >= 25", len(cases))
 	}
 	logger.Info("loaded corpus", "path", *corpusPath, "cases", len(cases))
 
