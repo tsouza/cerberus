@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -36,8 +37,15 @@ const (
 )
 
 // TestMetricsQueryRange_SingleSeriesNoGroupBy — a bare `| rate()` over
-// the full spans table returns a single series (no labels). Three
-// anchor rows in, three samples out, sorted by timestamp ascending.
+// the full spans table returns a single series (no labels). The handler
+// zero-fills the matrix step grid for count/rate operators so the
+// response covers every anchor across [start, end] spaced by step —
+// matching Tempo's StepAggregator pre-allocating one CountOverTimeAggregator
+// per interval. With a 3-minute fixture window and 60s step that's
+// 4 anchors (10:00, 10:01, 10:02, 10:03); the stub returns observed
+// values at the first three, the fill injects a 0-valued sample at the
+// trailing anchor so the samples stream matches the wire-grid Tempo
+// emits.
 func TestMetricsQueryRange_SingleSeriesNoGroupBy(t *testing.T) {
 	t.Parallel()
 
@@ -79,18 +87,22 @@ func TestMetricsQueryRange_SingleSeriesNoGroupBy(t *testing.T) {
 	if len(s.Labels) != 0 {
 		t.Errorf("expected zero labels for ungrouped query, got %+v", s.Labels)
 	}
-	if len(s.Samples) != 3 {
-		t.Fatalf("expected 3 samples, got %d", len(s.Samples))
+	// 3-minute window @ 60s step → 4 anchors after zero-fill (10:00 /
+	// 10:01 / 10:02 / 10:03), with the trailing anchor synthesised at
+	// value 0 since the stub didn't observe a span there.
+	if len(s.Samples) != 4 {
+		t.Fatalf("expected 4 samples (3 observed + 1 zero-fill), got %d: %+v", len(s.Samples), s.Samples)
 	}
-	// Sorted ascending: 0.5, 1.5, 2.0 in that order.
-	for i, want := range []float64{0.5, 1.5, 2.0} {
+	// Sorted ascending: 0.5, 1.5, 2.0, 0 (fill) in that order.
+	for i, want := range []float64{0.5, 1.5, 2.0, 0.0} {
 		if s.Samples[i].Value != want {
 			t.Errorf("sample[%d].Value = %v, want %v", i, s.Samples[i].Value, want)
 		}
 	}
-	if s.Samples[0].TimestampMs >= s.Samples[1].TimestampMs ||
-		s.Samples[1].TimestampMs >= s.Samples[2].TimestampMs {
-		t.Errorf("samples not sorted ascending by timestamp: %+v", s.Samples)
+	for i := 1; i < len(s.Samples); i++ {
+		if s.Samples[i-1].TimestampMs >= s.Samples[i].TimestampMs {
+			t.Errorf("samples not sorted ascending by timestamp: %+v", s.Samples)
+		}
 	}
 
 	// The handler should have asked the matrix-shape SQL emitter (an
@@ -162,8 +174,18 @@ func TestMetricsQueryRange_MultiSeriesGroupBy(t *testing.T) {
 	if _, ok := byService["backend"]; !ok {
 		t.Errorf("missing 'backend' series: %+v", body.Series)
 	}
-	if len(byService["frontend"].Samples) != 2 {
-		t.Errorf("expected 2 samples for frontend, got %d", len(byService["frontend"].Samples))
+	// Each series's samples cover the full matrix grid: 4 anchors over
+	// the 3-minute window @ 60s step, with two observed values (mins
+	// 0 / 1) and two zero-filled anchors (mins 2 / 3) so the response
+	// shape matches Tempo's StepAggregator emit (count_over_time over
+	// empty buckets surfaces as 0, not as a missing sample).
+	if len(byService["frontend"].Samples) != 4 {
+		t.Errorf("expected 4 samples for frontend (2 observed + 2 zero-fill), got %d: %+v",
+			len(byService["frontend"].Samples), byService["frontend"].Samples)
+	}
+	if len(byService["backend"].Samples) != 4 {
+		t.Errorf("expected 4 samples for backend (2 observed + 2 zero-fill), got %d: %+v",
+			len(byService["backend"].Samples), byService["backend"].Samples)
 	}
 }
 
@@ -201,6 +223,148 @@ func TestMetricsQueryRange_EmptyResult(t *testing.T) {
 	if len(body.Series) != 0 {
 		t.Fatalf("expected 0 series, got %d", len(body.Series))
 	}
+}
+
+// TestMetricsQueryRange_ZeroFillCountOverTime pins the contract that
+// `count_over_time` (and `rate`) responses zero-fill the full matrix
+// step grid across [start, end] — even buckets where no spans landed —
+// to match Tempo's reference engine_metrics.go StepAggregator, which
+// pre-allocates one CountOverTimeAggregator per interval (default
+// Sample()=0). Without this, the tempo-compat differ trips on
+// `samples count tempo=N vs cerberus=M` for count/rate queries whose
+// seeded data only spans a few buckets of the request window.
+//
+// Setup: 3-minute window @ 60s step → 4 anchors (10:00 / 10:01 / 10:02
+// / 10:03). The CH stub returns exactly one row (10:01); the handler
+// must surface a 4-sample stream with the missing three anchors at
+// value 0.
+func TestMetricsQueryRange_ZeroFillCountOverTime(t *testing.T) {
+	t.Parallel()
+
+	mid := time.Date(2026, 5, 12, 10, 1, 0, 0, time.UTC)
+	q := &stubQuerier{samples: []chclient.Sample{{
+		MetricName: "",
+		Labels:     map[string]string{},
+		Timestamp:  mid,
+		Value:      7.0,
+	}}}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	u := metricsQueryRangeURL(srv.URL, "{} | count_over_time()", map[string]string{
+		"start": fixtureStartUnix,
+		"end":   fixtureEndUnix,
+		"step":  "60s",
+	})
+	resp, err := http.Get(u)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+
+	var body tempo.MetricsQueryRangeResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Series) != 1 {
+		t.Fatalf("expected 1 series, got %d: %+v", len(body.Series), body)
+	}
+	s := body.Series[0]
+	if len(s.Samples) != 4 {
+		t.Fatalf("expected 4 samples (1 observed + 3 zero-fill), got %d: %+v", len(s.Samples), s.Samples)
+	}
+	// Samples MUST be sorted ascending by timestamp and the observed
+	// sample's value must survive the fill verbatim. Missing anchors
+	// land at 0.
+	wantValues := []float64{0.0, 7.0, 0.0, 0.0}
+	for i, want := range wantValues {
+		if s.Samples[i].Value != want {
+			t.Errorf("sample[%d].Value = %v, want %v (full stream: %+v)", i, s.Samples[i].Value, want, s.Samples)
+		}
+	}
+	for i := 1; i < len(s.Samples); i++ {
+		if s.Samples[i-1].TimestampMs >= s.Samples[i].TimestampMs {
+			t.Errorf("samples not sorted ascending: %+v", s.Samples)
+		}
+	}
+	// Sample timestamps must exactly cover the matrix anchor grid the
+	// chsql emitter produced — `end - i*step` for i in [0, N). Verify
+	// the first / last anchors line up with fixtureStartUnix /
+	// fixtureEndUnix so the wire grid aligns with what Tempo returns
+	// for the same request.
+	startMs := mustParseUnix(t, fixtureStartUnix).UnixMilli()
+	endMs := mustParseUnix(t, fixtureEndUnix).UnixMilli()
+	if s.Samples[0].TimestampMs != startMs {
+		t.Errorf("first sample ts = %d, want fixtureStart=%d", s.Samples[0].TimestampMs, startMs)
+	}
+	if s.Samples[len(s.Samples)-1].TimestampMs != endMs {
+		t.Errorf("last sample ts = %d, want fixtureEnd=%d", s.Samples[len(s.Samples)-1].TimestampMs, endMs)
+	}
+}
+
+// TestMetricsQueryRange_ZeroFillSkippedForAvgOverTime pins the contract
+// that the zero-fill pass only fires for count_over_time / rate. For
+// sum / avg / min / max / quantile_over_time, Tempo's
+// OverTimeAggregator initialises val=NaN and the ToProto loop skips
+// NaN samples, so the observed-only emission cerberus produces today
+// is the wire-correct match — zero-filling would inject false zeros
+// where Tempo emits nothing.
+func TestMetricsQueryRange_ZeroFillSkippedForAvgOverTime(t *testing.T) {
+	t.Parallel()
+
+	mid := time.Date(2026, 5, 12, 10, 1, 0, 0, time.UTC)
+	q := &stubQuerier{samples: []chclient.Sample{{
+		MetricName: "",
+		Labels:     map[string]string{},
+		Timestamp:  mid,
+		Value:      42.0,
+	}}}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	u := metricsQueryRangeURL(srv.URL, "{} | avg_over_time(duration)", map[string]string{
+		"start": fixtureStartUnix,
+		"end":   fixtureEndUnix,
+		"step":  "60s",
+	})
+	resp, err := http.Get(u)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+	var body tempo.MetricsQueryRangeResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Series) != 1 {
+		t.Fatalf("expected 1 series, got %d", len(body.Series))
+	}
+	s := body.Series[0]
+	if len(s.Samples) != 1 {
+		t.Errorf("expected 1 observed sample for avg_over_time (no zero-fill), got %d: %+v",
+			len(s.Samples), s.Samples)
+	}
+	if s.Samples[0].Value != 42.0 {
+		t.Errorf("expected observed sample value 42, got %v", s.Samples[0].Value)
+	}
+}
+
+// mustParseUnix parses a unix-seconds string and returns a UTC time,
+// failing the test on parse error. Mirrors parseTempoTime's heuristics
+// but tightened to the int64-only path the fixture timestamps use.
+func mustParseUnix(t *testing.T, raw string) time.Time {
+	t.Helper()
+	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		t.Fatalf("parse fixture unix %q: %v", raw, err)
+	}
+	return time.Unix(n, 0).UTC()
 }
 
 // TestMetricsQueryRange_BadInputs covers the 4xx surface: missing or
@@ -647,8 +811,12 @@ func TestMetricsQueryRange_ExemplarsPopulated(t *testing.T) {
 		t.Fatalf("expected 1 series, got %d: %+v", len(body.Series), body)
 	}
 	got := body.Series[0]
-	if len(got.Samples) != 2 {
-		t.Errorf("expected 2 samples, got %d", len(got.Samples))
+	// Matrix grid is 4 anchors (3-min window @ 60s step); two are
+	// observed (mins 0 / 1), the trailing pair (mins 2 / 3) are
+	// zero-filled so the count_over_time response matches Tempo's
+	// StepAggregator emit.
+	if len(got.Samples) != 4 {
+		t.Errorf("expected 4 samples (2 observed + 2 zero-fill), got %d: %+v", len(got.Samples), got.Samples)
 	}
 	if len(got.Exemplars) != 2 {
 		t.Fatalf("expected 2 exemplars, got %d: %+v", len(got.Exemplars), got.Exemplars)

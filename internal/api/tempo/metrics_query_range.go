@@ -256,6 +256,23 @@ func (h *Handler) handleMetricsQueryRange(w http.ResponseWriter, r *http.Request
 		"sql", res.SQL, "args", res.Args)
 
 	series := toMetricsSeries(res.Samples, metrics)
+	// Zero-fill the matrix step grid for count/rate operators so the
+	// response shape matches Tempo's reference engine_metrics.go: its
+	// StepAggregator pre-allocates one CountOverTimeAggregator per
+	// interval whose default Sample() is 0 (count starts at zero), so
+	// empty buckets surface as 0-valued samples across the full
+	// [Start, End] grid. Cerberus's matrix SQL emits one row per
+	// (group, anchor) bucket only when at least one span falls in
+	// (anchor_ts - range, anchor_ts]; without this post-step empty
+	// buckets disappear, dropping samples count from N to (#observed
+	// buckets) — the smoke corpus's count_over_time_groupby_service
+	// case showed tempo=121 vs cerberus=2 against the same seeded
+	// dataset for that reason. Tempo's OverTimeAggregator (sum / avg /
+	// min / max / quantile) initialises its value to NaN, and the
+	// ToProto loop skips NaN samples — so those operators already
+	// match cerberus's observed-only emission without a zero-fill
+	// pass.
+	series = zeroFillMatrixGrid(series, metrics, start, end, step)
 
 	exSQL, exArgs, exErr := chsql.EmitMetricsExemplars(ctx, rw, metrics,
 		h.Schema.TraceIDColumn, h.Schema.SpanIDColumn, 1)
@@ -384,7 +401,8 @@ func wrapMetricsForSample(rw *chplan.RangeWindow, m *chplan.MetricsAggregate) ch
 			)
 		}
 		if multiPhi {
-			args = append(args,
+			args = append(
+				args,
 				&chplan.LitString{V: tempoMultiQuantilePhiLabel},
 				&chplan.ColumnRef{Name: tempoMultiQuantilePhiLabel},
 			)
@@ -506,6 +524,97 @@ func toMetricsSeries(samples []chclient.Sample, m *chplan.MetricsAggregate) []Me
 		})
 	}
 	return out
+}
+
+// zeroFillMatrixGrid extends each series's Samples to the full matrix
+// step grid for `| count_over_time()` and `| rate()` queries, inserting
+// 0-valued samples for anchors that had no observed spans.
+//
+// Tempo's reference metrics engine pre-allocates one
+// CountOverTimeAggregator per interval (engine_metrics.go::StepAggregator)
+// whose default Sample() is 0; its ToProto path emits the full grid for
+// count/rate. Cerberus's matrix SQL only emits rows for (group, anchor)
+// pairs where at least one span lands in (anchor_ts - range, anchor_ts],
+// so without this fill the response loses every empty bucket and the
+// differ trips on `samples count tempo=N vs cerberus=M`.
+//
+// The fill anchors mirror the chsql emitter's
+// arrayJoin(arrayMap(i -> End - i*Step, range(0, N))) grid:
+// anchor[i] = end - i*step for i in [0, N), with N = (end-start)/step + 1.
+// In ascending timestamp order that yields [start, start+step, ...,
+// end-step, end]. Each series is filled independently; series that
+// never observed any span are left absent (matches Tempo's
+// SpanAggregator.Observe gating).
+//
+// No-op when:
+//   - step <= 0 (defensive — the handler rejects step <= 0 upstream,
+//     so this branch only fires under tests that bypass the request
+//     validator),
+//   - start / end aren't both set (the chsql matrix path falls back to
+//     a single anchor at End in that case; one sample per series is
+//     fine without a fill),
+//   - the metrics op isn't count_over_time / rate (sum / avg / min /
+//     max / quantile share Tempo's NaN-skip semantics — see
+//     OverTimeAggregator initialisation in engine_metrics.go),
+//   - the input slice is empty (no observed series → no zero-fill;
+//     mirrors Tempo's behaviour of only initialising entries via
+//     SpanAggregator.Observe).
+func zeroFillMatrixGrid(series []MetricsSeries, m *chplan.MetricsAggregate, start, end time.Time, step time.Duration) []MetricsSeries {
+	if len(series) == 0 || step <= 0 || start.IsZero() || end.IsZero() {
+		return series
+	}
+	if m.Op != chplan.MetricsOpCountOverTime && m.Op != chplan.MetricsOpRate {
+		return series
+	}
+	span := end.Sub(start)
+	if span < 0 {
+		return series
+	}
+	stepNS := step.Nanoseconds()
+	if stepNS <= 0 {
+		return series
+	}
+	// N = span/step + 1 matches chsql's numAnchors so the post-fill
+	// grid exactly aligns with the matrix anchor set the emitter
+	// produced.
+	n := span.Nanoseconds()/stepNS + 1
+	if n <= 1 {
+		return series
+	}
+	// Pre-compute the anchor grid as DateTime64-precision unix-milli
+	// values so the merge below operates on integer keys (the wire
+	// shape's TimestampMs).
+	anchors := make([]int64, 0, n)
+	for i := int64(0); i < n; i++ {
+		anchorTS := end.Add(-time.Duration(i) * step)
+		anchors = append(anchors, anchorTS.UnixMilli())
+	}
+	// Anchors come back end-down; reorder to ascending so the merged
+	// samples slice ends up sorted (toMetricsSeries already sorts each
+	// series ascending; we keep the invariant after fill).
+	sort.Slice(anchors, func(i, j int) bool { return anchors[i] < anchors[j] })
+
+	for i := range series {
+		present := make(map[int64]struct{}, len(series[i].Samples))
+		for _, s := range series[i].Samples {
+			present[s.TimestampMs] = struct{}{}
+		}
+		out := make([]MetricsSample, 0, len(anchors))
+		for _, ts := range anchors {
+			if _, ok := present[ts]; ok {
+				continue
+			}
+			out = append(out, MetricsSample{TimestampMs: ts, Value: 0})
+		}
+		if len(out) == 0 {
+			continue
+		}
+		series[i].Samples = append(series[i].Samples, out...)
+		sort.Slice(series[i].Samples, func(a, b int) bool {
+			return series[i].Samples[a].TimestampMs < series[i].Samples[b].TimestampMs
+		})
+	}
+	return series
 }
 
 // labelsFromSample materialises the {key,value} pair slice for one
