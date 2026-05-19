@@ -5,6 +5,24 @@ SELECT R.* FROM (SELECT * FROM `otel_traces` WHERE (`SpanName` = ?)) AS R LEFT A
 -- args --
 [0] string = "b"
 [1] string = "a"
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    ParentSpanId String,
+    SpanName String
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    ('t1', 's1', '',   'a'),
+    ('t1', 's2', 's1', 'b'),
+    ('t2', 's3', '',   'c'),
+    ('t2', 's4', 's3', 'b'),
+    ('t3', 's5', '',   'b');
+-- expected_rows --
+[
+  ["t2", "s4", "s3", "b"],
+  ["t3", "s5", "", "b"]
+]
 -- chplan --
 StructuralJoin op=!>
   Filter predicate=(SpanName = "a")

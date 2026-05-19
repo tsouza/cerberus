@@ -9,6 +9,20 @@ SELECT R.* FROM (WITH RECURSIVE _struct_closure AS (SELECT `TraceId`, `SpanId`, 
 [3] string = "b"
 [4] string = "service.name"
 [5] string = "c"
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    ParentSpanId String,
+    _svc String,
+    ResourceAttributes Map(String, String) MATERIALIZED map('service.name', _svc)
+) ENGINE = Memory;
+INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, _svc) VALUES
+    ('t1', 's1', '',   'a'),
+    ('t1', 's2', 's1', 'b'),
+    ('t1', 's3', 's2', 'c');
+-- expected_rows --
+[]
 -- chplan --
 StructuralJoin op=>>
   SetOperation op=&&
