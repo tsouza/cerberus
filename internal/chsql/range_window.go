@@ -826,22 +826,33 @@ func (e *emitter) emitRangeWindowMetrics(r *chplan.RangeWindow, m *chplan.Metric
 		return nil
 	}
 
-	// Multi-phi wrap layer 1: project group cols + anchor_ts +
-	// arrayJoin'd (phi, value) tuple under `phi_val`.
-	fanout := NewQuery().From(outerSb.Frag())
+	e.emitSelect(emitMultiQuantileMatrixWrap(outerSb.Frag(), groupAliases, m.Quantiles, m.ValueAlias))
+	return nil
+}
+
+// emitMultiQuantileMatrixWrap builds the two extra SELECTs that fan a
+// per-(group, anchor) `quantiles(...)` Array(Float64) result out into
+// one row per phi tagged with the synthetic `__phi__` label.
+//
+//   - Layer 1 (fanout): SELECTs the group aliases + anchor_ts +
+//     arrayJoin'd (phi, value) tuple under the `phi_val` alias.
+//   - Layer 2 (final): splits `phi_val` into the synthetic `__phi__`
+//     label + the Float64 value column. The two-tuple is split via
+//     tupleElement here (rather than fused into the arrayJoin lambda)
+//     so the SELECT-list stays readable and the inner arrayJoin
+//     produces just one row per (group, anchor, phi) tuple as intended.
+//
+// Mirrors the bare-emit multi-phi wrap in emitMetricsAggregate but
+// retains the matrix-shape `anchor_ts` carry-through.
+func emitMultiQuantileMatrixWrap(inner Frag, groupAliases []string, quantiles []float64, valueAlias string) *QueryBuilder {
+	fanout := NewQuery().From(inner)
 	for _, alias := range groupAliases {
 		a := alias
 		fanout.Select(func(b *Builder) { b.Ident(a) })
 	}
 	fanout.Select(Col("anchor_ts"))
-	fanout.Select(rawAs(metricsMultiQuantileFanoutFrag(m.Quantiles, "qs_array"), "phi_val"))
+	fanout.Select(rawAs(metricsMultiQuantileFanoutFrag(quantiles, "qs_array"), "phi_val"))
 
-	// Multi-phi wrap layer 2: split phi_val into the synthetic
-	// `__phi__` label + the Float64 `Value` column. The two-tuple
-	// is split via tupleElement here (rather than fused into the
-	// arrayJoin lambda) so the SELECT-list stays readable and the
-	// inner arrayJoin produces just one row per (group, anchor, phi)
-	// tuple as intended.
 	final := NewQuery().From(fanout.Frag())
 	for _, alias := range groupAliases {
 		a := alias
@@ -849,9 +860,8 @@ func (e *emitter) emitRangeWindowMetrics(r *chplan.RangeWindow, m *chplan.Metric
 	}
 	final.Select(Col("anchor_ts"))
 	final.Select(As(Call("tupleElement", BareIdent("phi_val"), InlineLit(int64(1))), metricsMultiQuantilePhiLabel))
-	final.Select(As(Call("tupleElement", BareIdent("phi_val"), InlineLit(int64(2))), m.ValueAlias))
-	e.emitSelect(final)
-	return nil
+	final.Select(As(Call("tupleElement", BareIdent("phi_val"), InlineLit(int64(2))), valueAlias))
+	return final
 }
 
 // anchorFanoutFrag returns a Frag rendering
