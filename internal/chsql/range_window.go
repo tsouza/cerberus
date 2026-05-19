@@ -665,9 +665,19 @@ func formatFloat(v float64) string {
 //	         arrayJoin(arrayMap(i -> <anchor_base> - toIntervalNanosecond(i * <step_ns>), range(0, <N>))) AS anchor_ts
 //	  FROM (<Inner>)
 //	)
-//	WHERE ts >= anchor_ts - toIntervalNanosecond(<range_ns>)
+//	WHERE ts >  anchor_ts - toIntervalNanosecond(<range_ns>)
 //	  AND ts <= anchor_ts
 //	GROUP BY [<group cols>,] anchor_ts
+//
+// The bucket is left-open / right-closed — `(anchor_ts - range, anchor_ts]`
+// — matching Tempo upstream's `IntervalMapperQueryRange` semantics
+// (`(start, start+step], (start+step, start+2*step], …`; see
+// `pkg/traceql/engine_metrics.go`'s `IntervalMapperQueryRange.interval`).
+// A sample at exactly `anchor_ts` belongs to *this* anchor (right edge
+// included); a sample at exactly `anchor_ts - range` belongs to the
+// *previous* anchor (left edge excluded). The earlier `ts >=` form
+// double-counted samples landing on step boundaries — flipping `>=` to
+// `>` closes the off-by-one against Tempo's per-anchor counts.
 //
 // `<reducer>` depends on m.Op:
 //
@@ -806,7 +816,8 @@ func (e *emitter) emitRangeWindowMetrics(r *chplan.RangeWindow, m *chplan.Metric
 		outerSb.Select(As(reducerFrag, m.ValueAlias))
 	}
 
-	// WHERE: ts ∈ [anchor_ts - range, anchor_ts].
+	// WHERE: ts ∈ (anchor_ts - range, anchor_ts] — left-open /
+	// right-closed, matching Tempo's IntervalMapperQueryRange.
 	outerSb.Where(
 		windowTsLowerBoundFrag(rangeNS),
 		verbatim("ts <= anchor_ts"),
@@ -885,12 +896,22 @@ func anchorFanoutFrag(end Frag, stepNS, numAnchors int64) Frag {
 }
 
 // windowTsLowerBoundFrag returns a Frag rendering
-// `ts >= anchor_ts - toIntervalNanosecond(<rangeNS>)`. The companion
+// `ts >  anchor_ts - toIntervalNanosecond(<rangeNS>)`. The companion
 // upper bound is the literal `ts <= anchor_ts` (no parameters); both
 // are spliced into the outer SELECT's WHERE clause.
+//
+// The lower bound is *strict* (`>`, not `>=`) so the bucket is
+// left-open / right-closed — `(anchor_ts - range, anchor_ts]` —
+// matching Tempo upstream's `IntervalMapperQueryRange.interval`
+// semantics (`(start, start+step], (start+step, start+2*step], …`).
+// A sample sitting exactly on a step boundary belongs to *one* anchor
+// (the one whose right edge is that timestamp), not two; using `>=`
+// here would double-count boundary samples between adjacent anchors
+// when `range == step` and surface as a per-anchor off-by-one against
+// Tempo's reference counts.
 func windowTsLowerBoundFrag(rangeNS int64) Frag {
 	return func(b *Builder) {
-		b.sb.WriteString("ts >= anchor_ts - toIntervalNanosecond(")
+		b.sb.WriteString("ts > anchor_ts - toIntervalNanosecond(")
 		b.sb.WriteString(strconv.FormatInt(rangeNS, 10))
 		b.sb.WriteByte(')')
 	}

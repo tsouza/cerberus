@@ -68,6 +68,70 @@ func TestRangeWindowMetricsExplicitTimeGrid(t *testing.T) {
 	}
 }
 
+// TestRangeWindowMetricsLeftOpenWindow pins the per-anchor bucket
+// boundary: cerberus emits `ts > anchor_ts - toIntervalNanosecond(...)`
+// (not `ts >=`) for the matrix-path WHERE clause, so the per-anchor
+// window is left-open / right-closed — matching Tempo upstream's
+// `IntervalMapperQueryRange.interval` semantics
+// (`(start, start+step], (start+step, start+2*step], …`).
+//
+// Without the strict `>` a sample landing exactly on a step boundary
+// gets counted in TWO adjacent anchors, surfacing as a per-anchor
+// off-by-one against Tempo's reference counts (`metrics_count_over_time_*`
+// + `metrics_rate_*` cases in the Tempo compat suite — fixed by the
+// commit this test guards).
+func TestRangeWindowMetricsLeftOpenWindow(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		op   chplan.MetricsOp
+		attr chplan.Expr
+		q    []float64
+	}{
+		{name: "rate", op: chplan.MetricsOpRate},
+		{name: "count_over_time", op: chplan.MetricsOpCountOverTime},
+		{name: "sum_over_time", op: chplan.MetricsOpSumOverTime, attr: &chplan.ColumnRef{Name: "Duration"}},
+		{name: "avg_over_time", op: chplan.MetricsOpAvgOverTime, attr: &chplan.ColumnRef{Name: "Duration"}},
+		{name: "quantile_over_time", op: chplan.MetricsOpQuantileOverTime, attr: &chplan.ColumnRef{Name: "Duration"}, q: []float64{0.95}},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			plan := &chplan.RangeWindow{
+				Input: &chplan.MetricsAggregate{
+					Op:         c.op,
+					Attr:       c.attr,
+					Quantiles:  c.q,
+					ValueAlias: "Value",
+					Inner:      &chplan.Scan{Table: "otel_traces"},
+				},
+				Step:            time.Minute,
+				OuterRange:      5 * time.Minute,
+				TimestampColumn: "Timestamp",
+			}
+			sql, _, err := chsql.Emit(context.Background(), plan)
+			if err != nil {
+				t.Fatalf("Emit %s: %v", c.name, err)
+			}
+			// Lower bound must be strict (`>`, not `>=`) so a sample at
+			// exactly anchor_ts - range belongs only to the previous
+			// anchor, not also to this one.
+			if !strings.Contains(sql, "ts > anchor_ts - toIntervalNanosecond(") {
+				t.Errorf("%s: expected strict lower bound `ts > anchor_ts - toIntervalNanosecond(...)`; SQL=%s", c.name, sql)
+			}
+			if strings.Contains(sql, "ts >= anchor_ts - toIntervalNanosecond(") {
+				t.Errorf("%s: lower bound must be strict (`>`), not inclusive (`>=`); SQL=%s", c.name, sql)
+			}
+			// Upper bound stays right-closed (anchor_ts is included).
+			if !strings.Contains(sql, "ts <= anchor_ts") {
+				t.Errorf("%s: expected right-closed upper bound `ts <= anchor_ts`; SQL=%s", c.name, sql)
+			}
+		})
+	}
+}
+
 // TestRangeWindowMetricsRejectsZeroStep guards the matrix path's
 // Step > 0 invariant — without it the inner arrayJoin range would
 // divide by zero.

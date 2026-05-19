@@ -1,7 +1,7 @@
 -- args --
 [0] int64 = 1
 -- sql --
-SELECT `service`, `anchor_ts`, toFloat64(count(?)) AS `Value` FROM (SELECT `ServiceName` AS `service`, `Timestamp` AS `ts`, arrayJoin(arrayMap(i -> now64(9) - toIntervalNanosecond(i * 60000000000), range(0, 11))) AS `anchor_ts` FROM (SELECT * FROM `otel_traces`)) WHERE ts >= anchor_ts - toIntervalNanosecond(60000000000) AND ts <= anchor_ts GROUP BY `service`, `anchor_ts`
+SELECT `service`, `anchor_ts`, toFloat64(count(?)) AS `Value` FROM (SELECT `ServiceName` AS `service`, `Timestamp` AS `ts`, arrayJoin(arrayMap(i -> now64(9) - toIntervalNanosecond(i * 60000000000), range(0, 11))) AS `anchor_ts` FROM (SELECT * FROM `otel_traces`)) WHERE ts > anchor_ts - toIntervalNanosecond(60000000000) AND ts <= anchor_ts GROUP BY `service`, `anchor_ts`
 -- chplan --
 RangeWindow func= range=0s step=1m0s outerRange=10m0s ts=Timestamp
   MetricsAggregate op=count_over_time groupBy=[ServiceName AS service] valueAlias=Value
