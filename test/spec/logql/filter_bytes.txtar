@@ -3,11 +3,12 @@
 -- args --
 [0] string = "job"
 [1] string = "api"
-[2] string = "="
-[3] string = " "
-[4] string = "\""
-[5] string = "size"
-[6] float64 = 10000
+[2] string = "_extracted"
+[3] string = "="
+[4] string = " "
+[5] string = "\""
+[6] string = "size"
+[7] float64 = 10000
 -- seed --
 CREATE TABLE otel_logs (
     Body String,
@@ -23,7 +24,7 @@ INSERT INTO otel_logs (Body) VALUES
   ["ts=2026-01-01 size=100KB msg=\"large\""]
 ]
 -- chplan --
-Filter predicate=((ResourceAttributes["job"] = "api") AND (parseReadableSize(mapConcat(ResourceAttributes, extractKeyValuePairs(Body, "=", " ", "\""))["size"]) > 10000))
+Filter predicate=((ResourceAttributes["job"] = "api") AND (parseReadableSize(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\"")))["size"]) > 10000))
   Scan(otel_logs)
 -- sql --
-SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (parseReadableSize(mapConcat(`ResourceAttributes`, extractKeyValuePairs(`Body`, ?, ?, ?))[?]) > ?)
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (parseReadableSize(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), extractKeyValuePairs(`Body`, ?, ?, ?)))[?]) > ?)

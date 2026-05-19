@@ -128,11 +128,15 @@ func lowerMatchers(e *syntax.MatchersExpr, s schema.Logs, lc lowerCtx) chplan.No
 //
 // Downstream label filters resolve against this composite labels map.
 // Loki's documented contract is "parsed labels appended; on conflict
-// the stream label wins and parsed gets `_extracted` suffix"; the
-// CH-side mapConcat lets parsed keys win on conflict instead. That's
-// an acceptable v1 approximation — the common case is parsed keys that
-// don't shadow stream labels (`level`, `msg`, `duration`, …). Strict
-// Loki conflict semantics stay open as a follow-up.
+// the stream label wins and parsed gets `_extracted` suffix". For
+// `| logfmt` cerberus enforces that on the SQL side: the merge wraps
+// extracted keys in a `mapApply` (or, for typed `| logfmt foo="..."`,
+// a per-identifier `if(...)`) that suffixes the destination name when
+// the stream column already carries it. See [logfmtMergeLabels] and
+// [logfmtExpressionMergeLabels] for the exact lowering shape. Strict
+// conflict semantics for the other parser families (`| json`,
+// `| regexp`) remain a known approximation — extracted keys win on
+// conflict there — and are tracked separately.
 func lowerPipeline(e *syntax.PipelineExpr, s schema.Logs, lc lowerCtx) (chplan.Node, error) {
 	node, _, err := lowerPipelineWithLabels(e, s, lc)
 	return node, err
@@ -293,19 +297,43 @@ func lowerStage(stage syntax.StageExpr, s schema.Logs, labelsExpr chplan.Expr) (
 	}
 }
 
+// duplicateSuffix mirrors `loglib.duplicateSuffix` (unexported in
+// upstream Loki). When a parser-extracted key would shadow a
+// stream-selector label, Loki appends this suffix to the extracted
+// key so the stream label wins on collision and the extracted value
+// is still reachable under the suffixed name. Cerberus mirrors that
+// disambiguation contract on the SQL side (see [logfmtMergeLabels]
+// + [logfmtExpressionMergeLabels]) and on the Go-side
+// post-processing path (`internal/api/loki/post_process.go`).
+const duplicateSuffix = "_extracted"
+
 // logfmtMergeLabels wraps the current labelsExpr with a
-// `mapConcat(<prev>, extractKeyValuePairs(Body, '=', ' ', '"'))` so
-// subsequent label filters see the union of stream-selector labels
-// and logfmt-parsed key/value pairs. extractKeyValuePairs is the CH
-// built-in that lifts arbitrary `key=value` text into a
-// `Map(String, String)`; the separator / pair-delimiter / quote
-// arguments mirror Loki's logfmt parser defaults.
+// `mapConcat(<prev>, <renamed extracted>)` so subsequent label filters
+// see the union of stream-selector labels and logfmt-parsed key/value
+// pairs — with stream-selector labels winning on key collisions.
+//
+// The renamed-extracted form is
+//
+//	mapApply(
+//	    (k, v) -> (if(mapContains(<stream>, k), concat(k, '_extracted'), k), v),
+//	    extractKeyValuePairs(Body, '=', ' ', '"'))
+//
+// where `<stream>` is the schema's ResourceAttributes column (NOT
+// `prev`, which may itself include parser-extracted keys from an
+// earlier parser stage in the same pipeline). Loki's reference
+// implementation (`LabelsBuilder.Add` → `BaseHas`) only suffixes when
+// the parsed name collides with a stream label, not when it collides
+// with another parser stage's output — cerberus matches that.
+// extractKeyValuePairs is the CH built-in that lifts arbitrary
+// `key=value` text into a `Map(String, String)`; the separator /
+// pair-delimiter / quote arguments mirror Loki's logfmt parser
+// defaults.
 func logfmtMergeLabels(prev chplan.Expr, s schema.Logs) chplan.Expr {
 	return &chplan.FuncCall{
 		Name: "mapConcat",
 		Args: []chplan.Expr{
 			prev,
-			extractKVPairs(s),
+			renameExtractedOnCollision(s, extractKVPairs(s)),
 		},
 	}
 }
@@ -315,8 +343,11 @@ func logfmtMergeLabels(prev chplan.Expr, s schema.Logs) chplan.Expr {
 // value). Each expression is `<identifier>="<key-path>"` — for logfmt
 // the path is a top-level key, so the lowering is
 // `extractKeyValuePairs(Body, ...)[<key-path>]`. The result is a
-// `map(<id1>, <val1>, <id2>, <val2>, …)` that mapConcat appends onto
-// the prior label map.
+// `map(<rename(id1)>, <val1>, <rename(id2)>, <val2>, …)` where
+// `<rename(id)>` is `if(mapContains(<stream>, '<id>'), '<id>_extracted',
+// '<id>')` — same conflict-resolution contract as [logfmtMergeLabels],
+// applied at SQL-emit time for each user-chosen identifier since the
+// identifier set is known statically.
 func logfmtExpressionMergeLabels(prev chplan.Expr, s schema.Logs, exprs []loglib.LabelExtractionExpr) (chplan.Expr, error) {
 	if len(exprs) == 0 {
 		// Defensive: a parser-emitted empty list is shaped like the
@@ -339,7 +370,7 @@ func logfmtExpressionMergeLabels(prev chplan.Expr, s schema.Logs, exprs []loglib
 			key = ext.Identifier
 		}
 		args = append(args,
-			&chplan.LitString{V: ext.Identifier},
+			renameIdentifierOnCollision(s, ext.Identifier),
 			&chplan.MapAccess{
 				Map: kvBase,
 				Key: &chplan.LitString{V: key},
@@ -353,6 +384,80 @@ func logfmtExpressionMergeLabels(prev chplan.Expr, s schema.Logs, exprs []loglib
 			&chplan.FuncCall{Name: "map", Args: args},
 		},
 	}, nil
+}
+
+// renameExtractedOnCollision wraps a Map(String,String) expression with
+// a `mapApply` that renames any key that already exists in the stream's
+// label set. The CH shape is
+//
+//	mapApply(
+//	    (k, v) -> (if(mapContains(<stream>, k), concat(k, '_extracted'), k), v),
+//	    <extracted>)
+//
+// Used by the bare `| logfmt` form where the extracted-key set is
+// unknown at SQL-emit time, so the rename has to happen per-key inside
+// the lambda.
+func renameExtractedOnCollision(s schema.Logs, extracted chplan.Expr) chplan.Expr {
+	streamCol := &chplan.ColumnRef{Name: s.ResourceAttributesColumn}
+	return &chplan.FuncCall{
+		Name: "mapApply",
+		Args: []chplan.Expr{
+			&chplan.Lambda{
+				Params: []string{"k", "v"},
+				Body: &chplan.FuncCall{
+					Name: "tuple",
+					Args: []chplan.Expr{
+						&chplan.FuncCall{
+							Name: "if",
+							Args: []chplan.Expr{
+								&chplan.FuncCall{
+									Name: "mapContains",
+									Args: []chplan.Expr{
+										streamCol,
+										&chplan.BareIdent{Name: "k"},
+									},
+								},
+								&chplan.FuncCall{
+									Name: "concat",
+									Args: []chplan.Expr{
+										&chplan.BareIdent{Name: "k"},
+										&chplan.LitString{V: duplicateSuffix},
+									},
+								},
+								&chplan.BareIdent{Name: "k"},
+							},
+						},
+						&chplan.BareIdent{Name: "v"},
+					},
+				},
+			},
+			extracted,
+		},
+	}
+}
+
+// renameIdentifierOnCollision returns a chplan.Expr that resolves at
+// query time to either `<id>` (when the stream's label set does not
+// contain `<id>`) or `<id>_extracted` (when it does). Used by typed
+// `| logfmt foo="..."` lowering where each destination identifier is
+// known statically — the rename is a per-key `if(mapContains(<stream>,
+// '<id>'), '<id>_extracted', '<id>')` evaluated once per row instead
+// of via mapApply.
+func renameIdentifierOnCollision(s schema.Logs, id string) chplan.Expr {
+	return &chplan.FuncCall{
+		Name: "if",
+		Args: []chplan.Expr{
+			&chplan.FuncCall{
+				Name: "mapContains",
+				Args: []chplan.Expr{
+					&chplan.ColumnRef{Name: s.ResourceAttributesColumn},
+					&chplan.LitString{V: id},
+				},
+			},
+			&chplan.LitString{V: id + duplicateSuffix},
+			&chplan.LitString{V: id},
+		},
+	}
 }
 
 // extractKVPairs renders the CH built-in
