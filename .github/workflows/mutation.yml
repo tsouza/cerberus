@@ -62,7 +62,26 @@ jobs:
       - name: Install gremlins
         run: go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0
       - name: gremlins unleash
+        # gremlins v0.6.0's `--threshold-efficacy` flag is documented as
+        # a quality gate ("makes gremlins exit with an error if values
+        # are not met") but in practice the binary exits 0 regardless
+        # of the threshold. Parse the reported efficacy ourselves and
+        # exit non-zero when the matrix `efficacy` floor isn't met.
+        # When upstream fixes the exit-code behaviour, drop the awk
+        # block and let `--threshold-efficacy` do the gating.
         run: |
+          set -euo pipefail
           gremlins unleash \
             --threshold-efficacy ${{ matrix.efficacy }} \
-            ${{ matrix.scope }}
+            ${{ matrix.scope }} | tee gremlins.log
+          awk -v threshold=${{ matrix.efficacy }} '
+            /Test efficacy:/ {
+              measured = $3
+              gsub(/[^0-9.]/, "", measured)
+              if ((measured + 0) < (threshold + 0)) {
+                printf("::error::gremlins efficacy %s%% < threshold %s%%\n", measured, threshold)
+                exit 1
+              }
+              printf("::notice::gremlins efficacy %s%% >= threshold %s%%\n", measured, threshold)
+            }
+          ' gremlins.log
