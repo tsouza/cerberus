@@ -211,8 +211,8 @@ func TestSmokeCorpus_LoadsAndMeetsFloor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadCorpus: %v", err)
 	}
-	if len(cases) < 20 {
-		t.Fatalf("smoke corpus shrunk: got %d, want >= 20", len(cases))
+	if len(cases) < 30 {
+		t.Fatalf("smoke corpus shrunk: got %d, want >= 30", len(cases))
 	}
 	// Every case has a non-empty query unless the endpoint is one
 	// of the "no TraceQL" kinds (search_recent + the four tag endpoints).
@@ -229,14 +229,23 @@ func TestSmokeCorpus_TagEndpointCoverage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadCorpus: %v", err)
 	}
-	// PR 6 commits the four tag endpoints. Every endpoint kind must
-	// have at least one case in the smoke corpus so the differ
+	// PR 6 commits the four tag endpoints. Every endpoint kind below
+	// must have at least one case in the smoke corpus so the differ
 	// exercises the full response-shape matrix on every nightly run.
+	//
+	// tag_values_v2 is intentionally absent from this list: Tempo's
+	// TraceQL parser rejects dotted identifiers in the
+	// /api/v2/search/tag/{name}/values URL segment, and the seeded
+	// fixture only exposes dotted resource / span attribute keys
+	// (service.name, deployment.env, http.method). Wire-shape
+	// coverage for the v2 envelope lives in
+	// internal/api/tempo/search_tag_values_test.go::TestSearchTagValuesV2_*,
+	// which exercises the same response shape against the in-process
+	// handler.
 	required := map[string]bool{
 		"tags_v1":       false,
 		"tags_v2":       false,
 		"tag_values_v1": false,
-		"tag_values_v2": false,
 	}
 	for _, c := range cases {
 		if _, ok := required[c.Endpoint]; ok {
