@@ -29,8 +29,6 @@ status_error
 search
 -- expected_min_traces --
 0
--- skip_reason --
-metrics endpoint
 `
 	got, err := parseCorpus(strings.NewReader(in), "test")
 	if err != nil {
@@ -51,8 +49,8 @@ metrics endpoint
 	if len(got[0].ExpectedServices) != 1 || got[0].ExpectedServices[0] != "checkout" {
 		t.Fatalf("case[0] services = %v", got[0].ExpectedServices)
 	}
-	if got[1].SkipReason != "metrics endpoint" {
-		t.Fatalf("case[1] skip = %q", got[1].SkipReason)
+	if got[1].Name != "status_error" {
+		t.Fatalf("case[1] name = %q", got[1].Name)
 	}
 }
 
@@ -155,6 +153,24 @@ y
 	}
 }
 
+// TestParseCorpus_SkipReasonNoLongerRecognized pins the removal of the
+// per-case opt-out mechanism. The parser must reject `-- skip_reason --`
+// as an unknown section so a corpus author can't reintroduce the
+// "stub it for later" workflow that the harness intentionally lacks.
+func TestParseCorpus_SkipReasonNoLongerRecognized(t *testing.T) {
+	t.Parallel()
+	in := `-- name --
+x
+-- query --
+{ }
+-- skip_reason --
+nope
+`
+	if _, err := parseCorpus(strings.NewReader(in), "test"); err == nil {
+		t.Fatal("expected error: skip_reason is no longer a recognized section")
+	}
+}
+
 func TestParseCorpus_EmptyFails(t *testing.T) {
 	t.Parallel()
 	if _, err := parseCorpus(strings.NewReader("# only comments\n"), "test"); err == nil {
@@ -198,12 +214,9 @@ func TestSmokeCorpus_LoadsAndMeetsFloor(t *testing.T) {
 	if len(cases) < 20 {
 		t.Fatalf("smoke corpus shrunk: got %d, want >= 20", len(cases))
 	}
-	// Every active case has a non-empty query unless the endpoint is one
+	// Every case has a non-empty query unless the endpoint is one
 	// of the "no TraceQL" kinds (search_recent + the four tag endpoints).
 	for _, c := range cases {
-		if c.SkipReason != "" {
-			continue
-		}
 		if c.Query == "" && c.Endpoint != "search_recent" && !isTagEndpoint(c.Endpoint) {
 			t.Fatalf("case %q: empty query but endpoint=%q", c.Name, c.Endpoint)
 		}
@@ -217,7 +230,7 @@ func TestSmokeCorpus_TagEndpointCoverage(t *testing.T) {
 		t.Fatalf("LoadCorpus: %v", err)
 	}
 	// PR 6 commits the four tag endpoints. Every endpoint kind must
-	// have at least one active case in the smoke corpus so the differ
+	// have at least one case in the smoke corpus so the differ
 	// exercises the full response-shape matrix on every nightly run.
 	required := map[string]bool{
 		"tags_v1":       false,
@@ -226,16 +239,13 @@ func TestSmokeCorpus_TagEndpointCoverage(t *testing.T) {
 		"tag_values_v2": false,
 	}
 	for _, c := range cases {
-		if c.SkipReason != "" {
-			continue
-		}
 		if _, ok := required[c.Endpoint]; ok {
 			required[c.Endpoint] = true
 		}
 	}
 	for ep, seen := range required {
 		if !seen {
-			t.Errorf("smoke corpus lacks an active case for endpoint=%q", ep)
+			t.Errorf("smoke corpus lacks a case for endpoint=%q", ep)
 		}
 	}
 }
@@ -387,28 +397,6 @@ metrics_range
 `
 	if _, err := parseCorpus(strings.NewReader(in), "test"); err == nil {
 		t.Fatal("expected error: metrics_range without step")
-	}
-}
-
-func TestParseCorpus_MetricsRangeSkipReasonBypassesStep(t *testing.T) {
-	t.Parallel()
-	// skip_reason'd metrics_range cases don't need step (the case won't
-	// run; the step omission is just a corpus-author convenience).
-	in := `-- name --
-skipped
--- query --
-{ } | rate()
--- endpoint --
-metrics_range
--- skip_reason --
-not implemented
-`
-	got, err := parseCorpus(strings.NewReader(in), "test")
-	if err != nil {
-		t.Fatalf("parseCorpus: %v", err)
-	}
-	if got[0].SkipReason != "not implemented" {
-		t.Fatalf("SkipReason = %q", got[0].SkipReason)
 	}
 }
 
