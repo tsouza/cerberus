@@ -1,5 +1,22 @@
 -- query.promql --
 up{job=~"api-.*"}
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('up', map('job', 'api-foo'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
+    ('up', map('job', 'api-bar'), toDateTime64('2026-01-01 00:00:00', 9), 0.0),
+    ('up', map('job', 'web'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
+    ('up', map('job', 'db'), toDateTime64('2026-01-01 00:00:00', 9), 1.0);
+-- expected_rows --
+[
+  ["up", {"job": "api-bar"}, "2026-01-01T00:00:00Z", 0],
+  ["up", {"job": "api-foo"}, "2026-01-01T00:00:00Z", 1]
+]
 -- args --
 [0] string = "up"
 [1] string = "job"
