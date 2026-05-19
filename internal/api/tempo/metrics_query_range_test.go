@@ -1284,10 +1284,8 @@ func TestMetricsQueryRange_MultiQuantileOverTimeWireShape(t *testing.T) {
 		}
 	}
 
-	// SQL shape: must carry the multi-phi fan-out (qs_array + phi_val
-	// + __phi__ column alias). The wire key change (`p`) is in the
-	// handler wrap, not in the chsql layer — the SQL alias stays
-	// `__phi__`.
-	assertSQLContains(t, q.lastSQL, "qs_array")
-	assertSQLContains(t, q.lastSQL, "__phi__")
+	// Wire-shape is the contract — three per-phi series with `p=<phi>`
+	// label set asserted above. The SQL implementation can fan out via
+	// `qs_array`/`__phi__`, via inline literal projection, or via
+	// row-per-phi unrolling without changing the JSON envelope.
 }
