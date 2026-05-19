@@ -38,23 +38,10 @@
 #
 # Cases below cover the 7 shadow categories (attribute matchers per
 # scope (5), intrinsics (4), structural ops (4), set ops (3), inner
-# aggregates (2)) plus 6 metrics-pipeline cases (3 range + 3 instant),
-# a per-id smoke, and 5 tag / tag-values endpoints. Total: 30 cases —
-# the three metrics_instant cases activated alongside the cerberus
-# /api/metrics/query handler (see internal/api/tempo/metrics_query_instant.go).
-#
-# Tempo's TraceQL parser rejects dotted identifiers in the
-# `/api/v2/search/tag/{name}/values` URL segment with HTTP 400
-# ("failed to parse identifier: unknown identifier"). The seeded
-# fixture only exposes dotted resource / span attributes
-# (service.name, deployment.env, http.method), so no
-# tag_values_v2 case lifts a real attribute against a real value list
-# without tripping the parser. Those cases are excluded from the
-# corpus rather than carried as a permanent ERROR row; tag_values_v2
-# response-envelope coverage lives in
-# internal/api/tempo/search_tag_values_test.go::TestSearchTagValuesV2_*
-# (handler-level), which exercises the same wire shape against the
-# in-process server.
+# aggregates (2)) plus 6 metrics-pipeline cases (3 range + 3 instant)
+# and a per-id smoke. Total: 25 cases — the three metrics_instant
+# cases activated alongside the cerberus /api/metrics/query handler
+# (see internal/api/tempo/metrics_query_instant.go).
 
 # --- Attribute matchers per scope (5) ---
 
@@ -496,12 +483,48 @@ payments
 search
 shipping
 
-# Three tag_values_v2 cases (tag_values_v2_service_name,
-# tag_values_v2_deployment_env, tag_values_v2_unknown_tag_empty) were
-# excluded by the harness fix-up: Tempo's TraceQL parser rejects
-# dotted identifiers in the URL `tag` segment with HTTP 400
-# ("failed to parse identifier ...: unknown identifier") and the
-# seeded fixture only exposes dotted resource / span attribute keys
-# (service.name, deployment.env, http.method). Restoring them would
-# require either an upstream Tempo parser change or a fixture that
-# seeds a non-dotted attribute key against the v2 endpoint.
+-- name --
+tag_values_v2_service_name
+-- endpoint --
+tag_values_v2
+-- tag_name --
+service.name
+-- expected_min_values --
+1
+-- expected_max_values --
+50
+-- expected_values --
+checkout
+payments
+search
+shipping
+
+-- name --
+tag_values_v2_deployment_env
+-- endpoint --
+tag_values_v2
+-- tag_name --
+deployment.env
+-- expected_min_values --
+1
+-- expected_max_values --
+20
+# Every seeded span carries deployment.env="compat-test"; only one
+# value lives in this attribute today.
+-- expected_values --
+compat-test
+
+-- name --
+tag_values_v2_unknown_tag_empty
+-- endpoint --
+tag_values_v2
+-- tag_name --
+this.tag.does.not.exist
+# Both backends should return an empty `tagValues` list for an unknown
+# attribute key — the result is the empty subset of a never-populated
+# CH map column. Differ surfaces a cardinality match on len=0 with no
+# missing_in_* reasons.
+-- expected_min_values --
+0
+-- expected_max_values --
+0
