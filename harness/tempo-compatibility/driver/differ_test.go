@@ -527,10 +527,6 @@ func TestRenderReport_Roundtrip(t *testing.T) {
 			Assertions: []DiffReason{{Kind: "assertion", Detail: "got 4, want >= 5"}},
 		},
 		{
-			Case:    CorpusCase{Name: "skip_case", Endpoint: "search", Query: "{ z = 3 }", SkipReason: "pr5"},
-			Skipped: true,
-		},
-		{
 			Case:      CorpusCase{Name: "err_case", Endpoint: "search", Query: "{ q = 4 }"},
 			HardError: "tempo fetch: connection refused",
 		},
@@ -543,18 +539,15 @@ func TestRenderReport_Roundtrip(t *testing.T) {
 	for _, want := range []string{
 		"# Tempo / TraceQL compatibility — diff report",
 		"## Summary",
-		"- Cases: 4",
+		"- Cases: 3",
 		"- Passed: 1",
-		"- Skipped: 1",
 		"- Diff: 1",
 		"- Hard errors: 1",
 		"### `pass_case`",
 		"### `diff_case`",
-		"### `skip_case`",
 		"### `err_case`",
 		"status: PASS",
 		"status: DIFF (1 reasons)",
-		"status: SKIPPED (pr5)",
 		"status: ERROR — tempo fetch: connection refused",
 	} {
 		if !strings.Contains(report, want) {
