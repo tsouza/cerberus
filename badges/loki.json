@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "label": "loki compat",
+  "label": "LogQL compat",
   "message": "0.00%",
   "color": "red",
   "passed": 0,
