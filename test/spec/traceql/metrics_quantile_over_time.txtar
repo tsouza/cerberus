@@ -1,10 +1,11 @@
 -- query.traceql --
 {} | quantile_over_time(duration, 0.95)
 -- sql --
-SELECT quantile(?)(`Duration`) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?)
+SELECT quantile(?)((`Duration` / ?)) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?)
 -- args --
 [0] float64 = 0.95
-[1] bool = true
+[1] float64 = 1e+09
+[2] bool = true
 -- seed --
 CREATE TABLE otel_traces (
     Duration UInt64
@@ -17,9 +18,9 @@ INSERT INTO otel_traces VALUES
     (100000000);
 -- expected_rows --
 [
-  [100000000.0]
+  [0.1]
 ]
 -- chplan --
-MetricsAggregate op=quantile_over_time attr=Duration quantiles=[0.95] valueAlias=Value
+MetricsAggregate op=quantile_over_time attr=(Duration / 1e+09) quantiles=[0.95] valueAlias=Value
   Filter predicate=true
     Scan(otel_traces)
