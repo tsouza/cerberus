@@ -3,7 +3,8 @@
 // HTTP endpoints, diffs the responses with float tolerance, and emits a
 // JSON report whose shape matches compatibility/prometheus's
 // promql-compliance-tester (i.e. the `prometheus/compliance` reference
-// driver).
+// driver). It also emits a shields.io endpoint-badge score JSON when
+// `-score` is set.
 //
 // This is PR 5 of docs/loki-compliance-plan.md — the cerberus-owned
 // replacement for the `go test -tags=remote_correctness -c` approach
@@ -11,6 +12,14 @@
 // into a `.json` file; downstream tooling (informational CI lane, future
 // expected-failures triage) needs the same structured report the Prom
 // harness ships so a single reconciliation script can consume both.
+//
+// Per task #68, the driver is report-only: it always exits 0 on the
+// parity-drift path. Diffs, unexpected failures, and unexpected
+// successes are recorded in the JSON report AND included in the
+// compat-score JSON's denominator, but they do not change the exit
+// code. Only driver-wide hard errors (corpus load, file write) escalate
+// to a non-zero rc. The pre-#68 `os.Exit(1)` on `pass != len(results)`
+// was deleted at the same time.
 //
 // Lifecycle:
 //
@@ -29,7 +38,8 @@
 //  4. Writes the report to `-report` (default: stdout) in the Prom-shape
 //     JSON envelope (`{totalResults, includePassing, results: [...]}`),
 //     with each result carrying `testCase`, `diff`, `unexpectedFailure`,
-//     `unexpectedSuccess`, `unsupported`.
+//     `unexpectedSuccess`, `unsupported`. When `-score` is set, also
+//     writes a shields.io endpoint-badge JSON to that path.
 //
 // The binary imports the vendored upstream/loki-bench/ package; the
 // root go.mod marks that path `ignore` so it's excluded from
@@ -56,11 +66,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/tsouza/cerberus/compatibility/internal/score"
 	bench "github.com/tsouza/cerberus/compatibility/loki/upstream/loki-bench"
 )
 
@@ -78,6 +88,7 @@ type flags struct {
 	metadataDir string
 	overlayPath string
 	reportPath  string
+	scorePath   string
 	tolerance   float64
 	rangeType   string
 	seed        int64
@@ -94,6 +105,7 @@ func parseFlags() flags {
 	flag.StringVar(&f.metadataDir, "metadata-dir", ".", "Directory containing dataset_metadata.json")
 	flag.StringVar(&f.overlayPath, "overlay", "", "Optional cerberus-test-queries.yml overlay (skip/fail per source key)")
 	flag.StringVar(&f.reportPath, "report", "", "Report output path; empty writes to stdout")
+	flag.StringVar(&f.scorePath, "score", "", "shields.io endpoint-badge score JSON output path; empty means do not write")
 	flag.Float64Var(&f.tolerance, "tolerance", 1e-5, "Float comparison tolerance (matches upstream remote_test.go default)")
 	flag.StringVar(&f.rangeType, "range-type", "range", "Query range type: 'range' or 'instant'")
 	flag.Int64Var(&f.seed, "seed", 42, "Random seed for query template resolution (matches upstream default)")
@@ -143,13 +155,49 @@ func run() error {
 	fmt.Fprintf(os.Stderr, "==> summary: total=%d passed=%d diffs=%d unexpected_failures=%d unsupported=%d\n",
 		len(results), pass, diffs, unfail, unsupp)
 
-	if pass != len(results) {
-		// Non-zero exit indicates "at least one diff or runtime failure",
-		// matching the Prom tester's semantics. The informational CI lane
-		// treats this as non-blocking until the corpus stabilises.
-		os.Exit(1)
+	// Per task #68, the driver is report-only: parity drift is captured
+	// in the JSON report + compat-score.json, but never in the exit
+	// code. Hard errors (corpus load failure, file write failure) still
+	// return a non-zero rc — those are infrastructure failures, not
+	// parity drift. A previous revision called os.Exit(1) when any case
+	// diff'd; that semantic moved out of the driver and is now derived
+	// from compat-score.json by downstream tooling.
+	if f.scorePath != "" {
+		// The score's denominator includes every case the driver
+		// attempted that wasn't an overlay-driven skip. Diffs,
+		// unexpected failures (including baseline failures + unsupported
+		// markers), and unexpected successes all contribute to total
+		// but not to passed. Overlay-skipped cases are excluded entirely:
+		// they're documented as out-of-scope rather than as parity
+		// gaps, so counting them would penalise the score for
+		// intentional exclusions.
+		passed, total := scoreCounts(results)
+		s := score.Compute("loki compat", passed, total)
+		if err := score.Write(f.scorePath, s); err != nil {
+			return fmt.Errorf("writing score: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "==> score: passed=%d total=%d percent=%.2f color=%s -> %s\n",
+			passed, total, s.Percent, s.Color, f.scorePath)
 	}
 	return nil
+}
+
+// scoreCounts derives (passed, total) for the compat-score JSON.
+// Overlay-driven skips (cases the cerberus-test-queries.yml flagged as
+// out-of-scope) are excluded from both counts so they don't penalise
+// the score; everything else (passes, diffs, unexpected failures /
+// successes) contributes to the denominator.
+func scoreCounts(results []Result) (passed, total int) {
+	for _, r := range results {
+		if r.SkipReason != "" {
+			continue
+		}
+		total++
+		if r.success() {
+			passed++
+		}
+	}
+	return passed, total
 }
 
 // Overlay mirrors the cerberus-test-queries.yml schema documented in
@@ -305,14 +353,19 @@ func writeReport(path string, payload []byte) error {
 // compareAll runs every test case in parallel and collects results.
 // Concurrency is capped at `parallelism` via a buffered work-token
 // channel — same shape as the Prom tester's main.go.
+//
+// Note: this used to maintain an `allSuccess` flag for the
+// "exit non-zero on any diff" semantic the driver shipped before task
+// #68. Under report-only, the driver always returns 0 from run() on
+// the parity-drift path; the score JSON + the per-result fields carry
+// the signal. The pre-#68 `allSuccess atomic.Bool` was removed at the
+// same time the exit-on-diff branch was deleted.
 func compareAll(cases []loadedCase, f flags, overlay *Overlay, isInstant bool) []Result {
 	httpClient := &http.Client{Timeout: f.timeout}
 	results := make([]Result, len(cases))
 
 	workCh := make(chan struct{}, max(1, f.parallelism))
 	var wg sync.WaitGroup
-	var allSuccess atomic.Bool
-	allSuccess.Store(true)
 
 	for i, lc := range cases {
 		i, lc := i, lc
@@ -342,7 +395,6 @@ func compareAll(cases []loadedCase, f flags, overlay *Overlay, isInstant bool) [
 				continue
 			}
 			results[i] = Result{TestCase: tc, UnexpectedFailure: "expansion: " + lc.expandErr.Error()}
-			allSuccess.Store(false)
 			continue
 		}
 
@@ -366,11 +418,7 @@ func compareAll(cases []loadedCase, f flags, overlay *Overlay, isInstant bool) [
 			defer wg.Done()
 			defer func() { <-workCh }()
 
-			res := compareOne(httpClient, f, lc.tc, suiteFile, isInstant)
-			results[i] = res
-			if !res.success() {
-				allSuccess.Store(false)
-			}
+			results[i] = compareOne(httpClient, f, lc.tc, suiteFile, isInstant)
 		}()
 	}
 

@@ -10,9 +10,11 @@
 #             backends resolve the first trace ID with non-zero spans.
 #   2. diff — read the TXTAR corpus, run every TraceQL query through
 #             both backends, write a markdown diff report to
-#             $REPORT_DIR/diff.md. Default: informational (script
-#             returns 0 even if the corpus diffs); set FAIL_ON_DIFF=1
-#             to bubble per-case regressions up to a non-zero rc.
+#             $REPORT_DIR/diff.md AND a shields.io endpoint-badge score
+#             JSON to $REPORT_DIR/compat-score.json. Report-only: the
+#             differ exits 0 even when parity diffs are present; only
+#             driver-wide hard errors (compose up failure, seed failure,
+#             corpus load failure) escalate to a non-zero rc.
 #
 # The seeder and differ run as Go binaries on the CI runner (host),
 # connecting to Docker-published ports on localhost. This avoids Docker
@@ -24,23 +26,20 @@
 # Usage:
 #   ./compatibility/tempo/scripts/run-tempo-compatibility.sh   full lifecycle (seed → diff)
 #   COMPOSE_KEEP=1 ./...                                               leave stack up after run
-#   FAIL_ON_DIFF=1 ./...                                               exit non-zero on diffs
 #
 # Env:
-#   REPORT_DIR     where the driver writes diff.md (default:
-#                  compatibility/tempo/reports/).
+#   REPORT_DIR     where the driver writes diff.md and compat-score.json
+#                  (default: compatibility/tempo/reports/).
 #   COMPOSE_KEEP   non-empty: leave the compose stack running after the
 #                  differ completes (useful for poking at /api/traces
 #                  and the otel_traces table manually).
-#   FAIL_ON_DIFF   non-empty: forward --fail-on-diff to the differ so
-#                  the script exits non-zero on any case that reported
-#                  a structural diff / assertion / hard error.
 #
 # Exit codes:
-#   0  seed + diff completed (informational mode) OR with FAIL_ON_DIFF
-#      set, every corpus case passed.
-#   non-zero  stack failed to come up OR seeder failed OR (with
-#             FAIL_ON_DIFF set) the differ reported a regression.
+#   0         seed + diff completed; parity drift is captured in
+#             compat-score.json, not in the exit code.
+#   non-zero  stack failed to come up OR seeder failed OR differ hit
+#             a hard error (corpus load, report write, etc.). Parity
+#             drift never reaches this branch.
 
 set -eu -o pipefail
 
@@ -126,19 +125,14 @@ sleep 30
 echo "==> building diff driver"
 (cd "$REPO_ROOT" && go build -o "$DRIVER_BIN" ./compatibility/tempo/driver/)
 
-# After seed, run the differ against the same backends. The differ
-# emits a markdown report under $REPORT_DIR; in informational mode
-# (default) it returns 0 even if the report contains diffs so the
-# workflow stays a baseline. Set FAIL_ON_DIFF=1 to bubble regressions
-# up to a non-zero rc — useful for `just`-style local repro and for
-# the eventual PR 7 promotion to a required check.
-DIFF_FLAGS=""
-if [ -n "${FAIL_ON_DIFF:-}" ]; then
-    DIFF_FLAGS="--fail-on-diff"
-fi
-DIFF_FLAGS="$DIFF_FLAGS --expected-failures $ROOT_DIR/expected-failures.json"
+# After seed, run the differ against the same backends. Report-only:
+# parity drift is captured in compat-score.json (shields.io endpoint
+# badge JSON) and the markdown diff report; the driver returns 0 even
+# when cases diverge. Only driver-wide hard errors (corpus load failure,
+# report write failure) escalate to a non-zero rc.
+DIFF_FLAGS="--expected-failures $ROOT_DIR/expected-failures.json"
 
-echo "==> running diff driver (writing report to $REPORT_DIR/diff.md)"
+echo "==> running diff driver (writing report to $REPORT_DIR/diff.md, score to $REPORT_DIR/compat-score.json)"
 echo "    --tempo-http=http://localhost:23200  (reference Tempo)"
 echo "    --cerberus=http://localhost:29092  (cerberus)"
 set +e
@@ -147,11 +141,13 @@ set +e
     --cerberus=http://localhost:29092 \
     --corpus="$ROOT_DIR/driver/corpus/smoke.txtar" \
     --report="$REPORT_DIR/diff.md" \
+    --score="$REPORT_DIR/compat-score.json" \
     $DIFF_FLAGS
 DIFF_RC=$?
 set -e
 
 echo "==> differ exited with rc=$DIFF_RC"
 echo "==> report at $REPORT_DIR/diff.md"
+echo "==> score at $REPORT_DIR/compat-score.json"
 
 exit "$DIFF_RC"

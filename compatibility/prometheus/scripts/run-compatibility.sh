@@ -3,8 +3,17 @@
 #
 # Brings up the docker-compose stack (reference Prometheus + cerberus +
 # ClickHouse + seeder), builds the upstream promql-compliance-tester
-# binary, runs it pointed at the two endpoints, and writes the JSON
-# report to compatibility/prometheus/report.json.
+# binary, runs it pointed at the two endpoints, writes the JSON report
+# to compatibility/prometheus/report.json, and emits a shields.io
+# endpoint-badge compat-score JSON next to it.
+#
+# Per task #68 ("compat is informational" workstream), this harness is
+# report-only: per-case parity diffs no longer fail the run. The
+# upstream tester still exits non-zero when any case diff'd (it has
+# no "report-only" flag), but the wrapping script ignores that exit
+# as long as it can read + score the report. Only hard infrastructure
+# failures (compose-up, build, missing report.json, scorer failure)
+# escalate to a non-zero rc.
 #
 # Tests are RUN_ONCE here; reconciliation against expected-failures.json
 # is done by a follow-up Go script (lands in M1.x — for the seed we just
@@ -16,6 +25,10 @@
 #
 # Env:
 #   TESTER_OUTPUT     report file path (default: compatibility/prometheus/report.json)
+#   TESTER_SCORE      compat-score.json output path (default:
+#                     compatibility/prometheus/compat-score.json).
+#                     Shields.io endpoint-badge contract — see
+#                     compatibility/internal/score for the schema.
 #   TESTER_QUERIES    queries yaml (default: compatibility/prometheus/cerberus-test-queries.yml,
 #                     a curated copy of upstream/promql/promql-test-queries.yml
 #                     with corpus-incompatible should_fail entries removed —
@@ -41,6 +54,12 @@ ROOT_DIR=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT_DIR"
 
 OUTPUT=${TESTER_OUTPUT:-"$ROOT_DIR/report.json"}
+# Score JSON lives next to report.json so today's workflow (which
+# uploads the single report.json file as an artifact) can be widened
+# in task #69 to include the score with a single path-glob change.
+# A dedicated reports/ sub-dir (like compatibility/{loki,tempo}/
+# reports/) would have required the workflow change up-front.
+SCORE=${TESTER_SCORE:-"$ROOT_DIR/compat-score.json"}
 QUERIES=${TESTER_QUERIES:-"$ROOT_DIR/cerberus-test-queries.yml"}
 END_TIME=${TESTER_END_TIME:-"2026-05-11T01:00:00Z"}
 RANGE=${TESTER_RANGE:-3600}
@@ -63,16 +82,17 @@ TESTER_BIN="$ROOT_DIR/upstream/promql/cmd/promql-compliance-tester/promql-compli
 # overlay carries CI-volatile values (END_TIME / RANGE) which are
 # expected to differ per local invocation and per CI dispatch.
 OVERLAY=$(mktemp -t cerberus-compat-overlay.XXXXXX.yml)
+SCORER_BIN=$(mktemp -t cerberus-prom-scorer.XXXXXX)
 
-# Consolidated cleanup: remove the overlay AND tear down the compose
-# stack on every exit path (success, tester failure, set -e abort,
-# manual SIGINT). Without this, a non-zero tester exit propagated by
-# `set -e` would leak the stack across re-runs — local repros, in
-# particular, would inherit dirty CH state and confuse subsequent
-# debugging.
+# Consolidated cleanup: remove the overlay + scorer binary AND tear
+# down the compose stack on every exit path (success, tester failure,
+# set -e abort, manual SIGINT). Without this, a non-zero tester exit
+# propagated by `set -e` would leak the stack across re-runs — local
+# repros, in particular, would inherit dirty CH state and confuse
+# subsequent debugging.
 cleanup() {
     rc=$?
-    rm -f "$OVERLAY"
+    rm -f "$OVERLAY" "$SCORER_BIN"
     if [ -z "${COMPOSE_KEEP:-}" ]; then
         echo "==> tearing down (set COMPOSE_KEEP=1 to leave running)"
         docker compose down -v || true
@@ -88,15 +108,20 @@ query_time_parameters:
 EOF
 
 echo "==> running tester"
-# Note: NO `|| true` here. The tester's exit code is meaningful:
+# The upstream tester's exit code:
 #   - 0 → every test passed (no diffs, no unexpected failures)
 #   - 1 → at least one diff / unexpected failure (allSuccess=false in
 #         the tester's main.go), OR log.Fatalf on a corpus-vs-tester
 #         mismatch (e.g. should_fail entry that no longer fails)
 #   - 2 → flag parse / config load / build error
-# The `set +e` window is just wide enough to capture the exit code so
-# we can emit the report summary before propagating the failure. The
-# cleanup trap tears down the compose stack on every exit path.
+#
+# Per task #68, RC=1 (parity drift) is no longer a harness failure:
+# the report.json captures the drift and the scorer below renders it
+# into compat-score.json. RC=2 (config / flag / build error) is still
+# a hard failure because there's no usable report to score. We
+# distinguish the two by checking whether report.json was produced
+# AND parses as JSON with a non-null results array — if so, RC=1 is
+# parity drift; otherwise it's hard.
 set +e
 "$TESTER_BIN" \
     -config-file "$ROOT_DIR/test-cerberus.yml" \
@@ -110,4 +135,26 @@ echo "==> report written to $OUTPUT"
 echo "==> summary:"
 jq '{total: ([.results[]?] | length), passed: ([.results[]? | select((.unexpectedFailure // "") == "" and (.diff // "") == "")] | length), diffs: ([.results[]? | select((.diff // "") != "")] | length), unexpected_failures: ([.results[]? | select((.unexpectedFailure // "") != "")] | length)}' "$OUTPUT" 2>/dev/null || echo "(install jq for summary)"
 
-exit "$TESTER_RC"
+# Hard-error gate: if the tester didn't even produce a parseable JSON
+# report, the run is infrastructure-broken. Bail with the tester's
+# rc so the workflow turns red.
+if ! jq -e '.results | type == "array"' "$OUTPUT" >/dev/null 2>&1; then
+    echo "==> report not parseable as JSON with .results array; treating as hard failure"
+    exit "$TESTER_RC"
+fi
+
+# Build + run the in-tree scorer. The scorer reads report.json and
+# writes the shields.io endpoint-badge compat-score JSON to $SCORE.
+# Its own exit is propagated — a scorer failure means the harness
+# can't produce the downstream artefact, which IS a hard failure.
+echo "==> building prometheus-compat-scorer"
+(cd "$ROOT_DIR/../.." && go build -o "$SCORER_BIN" ./compatibility/prometheus/cmd/scorer)
+
+mkdir -p "$(dirname "$SCORE")"
+"$SCORER_BIN" -report "$OUTPUT" -score "$SCORE"
+
+echo "==> score written to $SCORE"
+if [ "$TESTER_RC" -ne 0 ]; then
+    echo "==> tester rc=$TESTER_RC was parity drift (report.json present); exiting 0"
+fi
+exit 0

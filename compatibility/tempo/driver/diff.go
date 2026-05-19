@@ -1,6 +1,6 @@
 // Diff subcommand: drives the TraceQL corpus through both backends,
 // applies per-case assertions, computes the structural diff, and
-// emits a markdown report.
+// emits a markdown report PLUS a shields.io endpoint-badge score JSON.
 //
 // PR 4 of docs/tempo-compliance-plan.md. Smoke is the only corpus
 // shipped today (~20 cases lifted from the in-tree shadow corpus);
@@ -9,6 +9,14 @@
 //
 // Flag surface mirrors the seeder so a script that scripts the seeder
 // can re-target the differ with the same env-or-flag triple.
+//
+// Per task #68, the driver is report-only. Per-case parity failures
+// (mismatches, assertion failures, per-case HTTP errors) are recorded
+// in the markdown report AND included in the compat-score JSON's
+// denominator, but they do not change the exit code. Only driver-wide
+// hard errors (corpus load failure, write failure) bubble up. The
+// score JSON drives the downstream badge; CI uses the artifact, not
+// the exit code, to track drift over time.
 
 package main
 
@@ -29,9 +37,21 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/tsouza/cerberus/compatibility/internal/score"
 )
 
 // runDiff is the subcommand entry point. Wired from main.go.
+//
+// Per task #68 ("compat is informational" workstream), the driver is
+// report-only: parity drift no longer fails the run. Only driver-wide
+// HARD errors (corpus load failure, report-write failure, anchor parse
+// error) bubble up to a non-zero exit. Per-case errors (HTTP 5xx from
+// either backend, value mismatch, schema diff, missing trace) are
+// recorded in the markdown report AND counted as diffs in the
+// compat-score JSON, but they do not change the exit code. The score
+// JSON is the downstream signal — the badge color drops, but CI stays
+// green.
 func runDiff(args []string) error {
 	fs := flag.NewFlagSet("diff", flag.ContinueOnError)
 	var (
@@ -39,12 +59,12 @@ func runDiff(args []string) error {
 		tempoHTTP   = fs.String("tempo-http", envOr("TEMPO_HTTP_URL", "http://localhost:23200"), "Tempo HTTP base URL")
 		cerberusURL = fs.String("cerberus", envOr("CERBERUS_URL", "http://localhost:29092"), "cerberus HTTP base URL")
 		reportPath  = fs.String("report", envOr("REPORT_PATH", "/reports/diff.md"), "markdown report output path")
+		scorePath   = fs.String("score", envOr("SCORE_PATH", "/reports/compat-score.json"), "shields.io endpoint-badge score JSON output path")
 		overall     = fs.Duration("timeout", 5*time.Minute, "overall driver timeout")
 		perReq      = fs.Duration("request-timeout", 30*time.Second, "per-HTTP-request timeout")
-		failOnDiff  = fs.Bool("fail-on-diff", false, "exit non-zero if any case reports a diff (otherwise just write report)")
 		searchLimit = fs.Int("search-limit", 200, "Tempo /api/search ?limit= value")
 		anchorIn    = fs.String("anchor", anchor, "fixture anchor RFC3339; used to compute search start/end window")
-		efPath      = fs.String("expected-failures", envOr("EXPECTED_FAILURES", ""), "path to expected-failures JSON; cases listed there are exempt from --fail-on-diff")
+		efPath      = fs.String("expected-failures", envOr("EXPECTED_FAILURES", ""), "path to expected-failures JSON; cases listed there are flagged in the markdown report but still count as parity diffs in the compat-score JSON")
 	)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -110,25 +130,52 @@ func runDiff(args []string) error {
 	}
 	logger.Info("wrote markdown report", "path", *reportPath)
 
-	// Per the plan: PR 4 is informational only (continue-on-error at
-	// the workflow level). The differ still respects --fail-on-diff so
-	// a local repro can hard-fail on a regression.
-	if *failOnDiff {
-		var unexpected int
-		for _, r := range results {
-			if r.HardError != "" || !r.Diff.Equal || len(r.Assertions) > 0 {
-				if _, ok := efSet[r.Case.Name]; ok {
-					logger.Info("expected failure", "name", r.Case.Name)
-					continue
-				}
-				unexpected++
-			}
-		}
-		if unexpected > 0 {
-			return fmt.Errorf("%d unexpected diffs reported; see %s", unexpected, *reportPath)
+	// Compute the shields.io endpoint-badge score JSON. Per-case parity
+	// failures count toward total — including expected-failures, which
+	// are documented gaps but still real parity divergence. A passing
+	// case is one that matched the reference backend with no diff and
+	// no assertion failures. The expected-failures list is logged for
+	// visibility but no longer governs the exit code.
+	passed, total := computeScore(results)
+	for _, r := range results {
+		if _, ok := efSet[r.Case.Name]; ok {
+			logger.Info("expected failure (counted as diff in score)", "name", r.Case.Name)
 		}
 	}
+	s := score.Compute("tempo compat", passed, total)
+	if err := score.Write(*scorePath, s); err != nil {
+		return fmt.Errorf("write score: %w", err)
+	}
+	logger.Info(
+		"wrote compat score",
+		"path", *scorePath,
+		"passed", passed,
+		"total", total,
+		"percent", s.Percent,
+		"color", s.Color,
+	)
+
 	return nil
+}
+
+// computeScore tallies (passed, total) from the per-case results.
+//
+// Total includes every case the driver attempted — passes, structural
+// diffs, assertion failures, and per-case hard errors (HTTP 5xx, body
+// parse failures). A per-case hard error means cerberus couldn't even
+// produce a comparable response, which is itself a parity gap and
+// belongs in the denominator. The only failure mode that's NOT counted
+// here is driver-wide (corpus load, anchor parse, write failure) —
+// those return an error from runDiff before this is called, and no
+// score JSON is written.
+func computeScore(results []CaseResult) (passed, total int) {
+	for _, r := range results {
+		total++
+		if r.HardError == "" && r.Diff.Equal && len(r.Assertions) == 0 {
+			passed++
+		}
+	}
+	return passed, total
 }
 
 // CaseResult is one corpus case's outcome. Populated incrementally

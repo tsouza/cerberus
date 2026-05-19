@@ -12,13 +12,15 @@
 #   docker compose build tempo-compat-driver
 # Run:
 #   docker compose run --rm tempo-compat-driver seed
-#   docker compose run --rm tempo-compat-driver diff [--fail-on-diff]
+#   docker compose run --rm tempo-compat-driver diff
 #
 # Subcommands (see driver/main.go):
 #   seed   PR 3 — push OTLP to Tempo + INSERT into ClickHouse +
 #                 smoke-poll /api/traces on both backends.
 #   diff   PR 4 — read TXTAR corpus, run TraceQL through both backends
-#                 via /api/search + /api/traces, write markdown report.
+#                 via /api/search + /api/traces, write markdown report
+#                 + shields.io endpoint-badge score JSON. Report-only;
+#                 parity drift does not change the exit code.
 
 FROM golang:1.26 AS build
 WORKDIR /src
