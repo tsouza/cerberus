@@ -1,25 +1,57 @@
 name: compatibility
 
+# Unified compatibility CI for all three heads (PromQL / LogQL / TraceQL).
+#
+# Each head has its own job; the job-level `name:` is `compatibility/<head>`
+# so the per-job status check shows up in PR status / branch protection as
+# that string. The harness directories live under `compatibility/<head>/`
+# (parallel to `internal/`), and each job's path filter is scoped to the
+# inputs that can plausibly shift parity for that head — a refactor inside
+# `internal/promql/` does not need to rerun the LogQL or TraceQL stacks.
+#
+# Per ~/.claude/CI_STEPS.md, every step uses an official / well-known
+# Action — no `curl | sh` installs. Actions used here:
+#   * actions/checkout@v6           — stdlib.
+#   * actions/setup-go@v6           — `go run ./cmd/seed` + driver builds.
+#   * docker/setup-buildx-action@v4 — buildkit-backed compose build.
+#   * taiki-e/install-action@v2     — installs `just`.
+#   * actions/upload-artifact@v7    — per-head report upload.
+
 on:
   pull_request:
     branches: [main]
     paths:
       - 'internal/promql/**'
+      - 'internal/logql/**'
+      - 'internal/traceql/**'
       - 'internal/api/prom/**'
-      - 'harness/prometheus-compliance/**'
+      - 'internal/api/loki/**'
+      - 'internal/api/tempo/**'
+      - 'compatibility/**'
       - '.github/workflows/compatibility.yml'
   push:
     branches: [main]
     paths:
       - 'internal/promql/**'
+      - 'internal/logql/**'
+      - 'internal/traceql/**'
+      - 'internal/api/prom/**'
+      - 'internal/api/loki/**'
+      - 'internal/api/tempo/**'
       - 'internal/chsql/**'
       - 'internal/optimizer/**'
       - 'internal/chplan/**'
-      - 'harness/prometheus-compliance/**'
+      - 'compatibility/**'
       - '.github/workflows/compatibility.yml'
   schedule:
-    # nightly at 04:11 UTC (offset from e2e to spread load)
+    # Nightly cron entries are offset to spread runner load across the
+    # three heads + the e2e dashboard run on the ubuntu-latest pool:
+    #   prometheus  04:11 UTC
+    #   tempo       04:23 UTC
+    #   loki        04:37 UTC
     - cron: '11 4 * * *'
+    - cron: '23 4 * * *'
+    - cron: '37 4 * * *'
   workflow_dispatch:
 
 permissions:
@@ -30,14 +62,14 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  compatibility:
-    name: prometheus/compliance
+  prometheus:
+    name: compatibility/prometheus
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # NOTE: job-level `continue-on-error: true` was REMOVED here on
     # purpose. Previously it combined with `if: always()` on Summarise
     # / Upload to make every job-level failure (e.g. CH container
-    # unhealthy → `docker compose up` aborts) report a green workflow
+    # unhealthy -> `docker compose up` aborts) report a green workflow
     # conclusion. 20+ consecutive main pushes ran red-at-job /
     # green-at-workflow before this was caught.
     #
@@ -48,9 +80,6 @@ jobs:
     # re-raises a non-zero exit when the harness step diverged or
     # crashed, so the workflow badge / GH Project status correctly
     # turns red.
-    #
-    # Promoting this to a required PR check at RC1 cut is a separate
-    # decision tracked in docs/roadmap.md.
     steps:
       - uses: actions/checkout@v6
         with:
@@ -75,10 +104,10 @@ jobs:
         env:
           # The tester binary needs Go 1.21+; we already have it from setup-go.
           # The seed window anchors at 2026-05-11T00:00:00Z (see
-          # harness/prometheus-compliance/cmd/seed/main.go).
+          # compatibility/prometheus/cmd/seed/main.go).
           TESTER_END_TIME: "2026-05-11T01:00:00Z"
           TESTER_RANGE: "3600"
-        run: ./harness/prometheus-compliance/scripts/run-compatibility.sh
+        run: ./compatibility/prometheus/scripts/run-compatibility.sh
 
       - name: Summarise report
         if: always()
@@ -89,13 +118,13 @@ jobs:
           # `== null` checks counted passes as failures and vice versa.
           # `// ""` normalises both null + empty to "" so the partition
           # is consistent.
-          if [ -f harness/prometheus-compliance/report.json ]; then
+          if [ -f compatibility/prometheus/report.json ]; then
             jq '{
               total: ([.results[]?] | length),
               passed: ([.results[]? | select((.unexpectedFailure // "") == "" and (.diff // "") == "")] | length),
               diffs: ([.results[]? | select((.diff // "") != "")] | length),
               unexpected_failures: ([.results[]? | select((.unexpectedFailure // "") != "")] | length)
-            }' harness/prometheus-compliance/report.json
+            }' compatibility/prometheus/report.json
           else
             echo "no report produced (harness step likely failed before tester ran)"
           fi
@@ -104,8 +133,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: compatibility-report
-          path: harness/prometheus-compliance/report.json
+          name: compatibility-prometheus-report
+          path: compatibility/prometheus/report.json
           if-no-files-found: warn
           retention-days: 30
 
@@ -116,5 +145,97 @@ jobs:
         # being masked by `if: always()` housekeeping above.
         if: always() && steps.compat.outcome == 'failure'
         run: |
-          echo "::error title=compatibility suite failed::compatibility harness (steps.compat) exited non-zero — see the 'Run compatibility harness' step log and the uploaded compatibility-report artifact"
+          echo "::error title=compatibility/prometheus suite failed::compatibility harness (steps.compat) exited non-zero — see the 'Run compatibility harness' step log and the uploaded compatibility-prometheus-report artifact"
+          exit 1
+
+  tempo:
+    name: compatibility/tempo
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      # Buildx gives the Compose build cache, multi-arch support, and a
+      # consistent build backend. The harness uses local build contexts
+      # (cerberus + driver), so no remote registry login is needed.
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Run tempo-compatibility harness
+        id: harness
+        env:
+          FAIL_ON_DIFF: "1"
+        run: ./compatibility/tempo/scripts/run-tempo-compatibility.sh
+
+      - name: Upload report
+        # `if: always()` so we capture whatever the driver wrote even
+        # when the harness step failed. The differ writes diff.md under
+        # this directory; the seeder leaves it empty.
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: compatibility-tempo-report
+          path: compatibility/tempo/reports/
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Fail job if harness step failed
+        if: always() && steps.harness.outcome == 'failure'
+        run: |
+          echo "::error title=compatibility/tempo suite failed::harness step failed -- see logs and uploaded report"
+          exit 1
+
+  loki:
+    name: compatibility/loki
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # NOTE: job-level `continue-on-error: true` was removed here.
+    # Previously it combined with `if: always()` on Upload to make
+    # every job-level failure report a green workflow conclusion.
+    # The new contract: the workflow conclusion MUST track the job
+    # conclusion. Upload still runs on failure (`if: always()`),
+    # but the explicit "Fail job if harness step failed" step at
+    # the end re-raises a non-zero exit when the harness step
+    # diverged or crashed, so the workflow badge correctly turns red.
+    steps:
+      - uses: actions/checkout@v6
+
+      # The run script does `go run ./cmd/seed` + `go test -c` of the
+      # vendored bench driver, so we need a Go toolchain. setup-go
+      # honours go.mod's `go` directive and pulls the matching toolchain.
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      # Buildx gives the Compose build cache + a consistent backend
+      # for the local cerberus image context.
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Run loki-compatibility harness
+        id: harness
+        # The script handles its own teardown via an EXIT trap
+        # (compose down -v + go.mod / go.sum revert), so no explicit
+        # cleanup step is needed even on failure.
+        run: ./compatibility/loki/scripts/run-loki-compatibility.sh
+
+      - name: Upload report
+        # `if: always()` so we capture whatever the driver wrote even
+        # when the harness step failed. The script writes the raw
+        # `go test -v` stream to compatibility/loki/reports/diff.json.
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: compatibility-loki-report
+          path: compatibility/loki/reports/
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Fail job if harness step failed
+        # Last step in the job. Re-raises the harness step's failure
+        # AFTER the artifact has been emitted, so the workflow
+        # conclusion mirrors the harness outcome instead of being
+        # masked by `if: always()` housekeeping above.
+        if: always() && steps.harness.outcome == 'failure'
+        run: |
+          echo "::error title=compatibility/loki suite failed::harness step failed -- see logs and uploaded report"
           exit 1
