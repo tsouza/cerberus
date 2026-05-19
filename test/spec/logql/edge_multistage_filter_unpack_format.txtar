@@ -6,6 +6,20 @@
 [2] string = "packed"
 -- sql --
 SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (position(`Body`, ?) > 0)
+-- seed --
+CREATE TABLE otel_logs (
+    Body String,
+    ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api')
+) ENGINE = Memory;
+INSERT INTO otel_logs (Body) VALUES
+    ('p1 packed pod=p1 level=info msg=first'),
+    ('p2 packed pod=p2 level=error msg=second'),
+    ('p3 unrelated line with no marker');
+-- expected_rows --
+[
+  ["p1 packed pod=p1 level=info msg=first"],
+  ["p2 packed pod=p2 level=error msg=second"]
+]
 -- chplan --
 Filter predicate=((ResourceAttributes["job"] = "api") AND lineContent(Body, "packed", substr))
   Scan(otel_logs)

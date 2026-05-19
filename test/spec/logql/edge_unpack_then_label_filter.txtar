@@ -7,6 +7,27 @@
 [3] string = "warn|error"
 -- sql --
 SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND match(`ResourceAttributes`[?], ?)
+-- seed --
+CREATE TABLE otel_logs (
+    Body String,
+    ResourceAttributes Map(String, String) MATERIALIZED map(
+        'job', 'api',
+        'level',
+            if(Body = 'u1', 'warn',
+            if(Body = 'u2', 'error',
+            if(Body = 'u3', 'info', 'debug')))
+    )
+) ENGINE = Memory;
+INSERT INTO otel_logs (Body) VALUES
+    ('u1'),
+    ('u2'),
+    ('u3'),
+    ('u4');
+-- expected_rows --
+[
+  ["u1"],
+  ["u2"]
+]
 -- chplan --
 Filter predicate=((ResourceAttributes["job"] = "api") AND (ResourceAttributes["level"] =~ "warn|error"))
   Scan(otel_logs)
