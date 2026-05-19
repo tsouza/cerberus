@@ -93,13 +93,13 @@ the `tsouza/opentelemetry-collector-contrib:cerberus-ddl` fork.
 
 **Tables that carry exemplars:**
 
-| Table                       | Per-sample value columns                                            | Exemplars column |
-| --------------------------- | ------------------------------------------------------------------- | ---------------- |
-| `otel_metrics_gauge`        | `Value Float64`                                                     | `Exemplars Nested(...)` |
-| `otel_metrics_sum`          | `Value Float64`                                                     | `Exemplars Nested(...)` |
-| `otel_metrics_histogram`    | `Count UInt64`, `Sum Float64`, `BucketCounts Array(UInt64)`         | `Exemplars Nested(...)` |
-| `otel_metrics_exp_histogram`| `Count UInt64`, `Sum Float64`, `PositiveBucketCounts Array(UInt64)` | `Exemplars Nested(...)` |
-| `otel_metrics_summary`      | `Count UInt64`, `Sum Float64`, `ValueAtQuantiles Nested(...)`       | **(none)**       |
+| Table                        | Per-sample value columns                                            | Exemplars column        |
+| ---------------------------- | ------------------------------------------------------------------- | ----------------------- |
+| `otel_metrics_gauge`         | `Value Float64`                                                     | `Exemplars Nested(...)` |
+| `otel_metrics_sum`           | `Value Float64`                                                     | `Exemplars Nested(...)` |
+| `otel_metrics_histogram`     | `Count UInt64`, `Sum Float64`, `BucketCounts Array(UInt64)`         | `Exemplars Nested(...)` |
+| `otel_metrics_exp_histogram` | `Count UInt64`, `Sum Float64`, `PositiveBucketCounts Array(UInt64)` | `Exemplars Nested(...)` |
+| `otel_metrics_summary`       | `Count UInt64`, `Sum Float64`, `ValueAtQuantiles Nested(...)`       | **(none)**              |
 
 The summary table does NOT have an `Exemplars` column upstream; PromQL queries
 that name a summary-shaped metric should return an empty `data:[]` for the
@@ -281,7 +281,7 @@ The arrayJoin-of-Nested shape is not currently expressed by an existing
 emitter. The plan adds:
 
 - A new emitter function `EmitQueryExemplars(ctx, plan, schema) (sql,
-  args, error)` (or as a method on `*emitter`) that handles the
+args, error)` (or as a method on `*emitter`) that handles the
   scan-and-Nested-arrayJoin shape end-to-end. Layer-1 (`emit.go`) routes
   to it when the plan root is the exemplars Project shape; alternatively
   it lives behind a dedicated entrypoint the handler calls directly,
@@ -290,7 +290,7 @@ emitter. The plan adds:
   existing `Call("arrayJoin", ...)` + `Subscript(arr, i)` combination
   already covers it; the new helper is a thin wrapper that takes a list
   of Nested sub-field names and emits the `WITH ts AS ...,
-  arrayJoin(arrayEnumerate(ts)) AS i ... SELECT ts[i], val[i], ...` shape
+arrayJoin(arrayEnumerate(ts)) AS i ... SELECT ts[i], val[i], ...` shape
   via the existing typed API. The contract is **no raw SQL strings** —
   the helper composes via `WithClause` / `Subscript` / `Call`, not
   string interpolation.
@@ -344,7 +344,7 @@ Scope:
   via the typed builder.
 - Build the outer `SELECT MetricName, Attributes, ServiceName, ts[i], val[i],
   tid[i], sid[i], attrs_arr[i] FROM <table> WHERE <predicate> AND TimeUnix
-  >= ... AND TimeUnix <= ... AND length(ts) > 0`.
+  > = ... AND TimeUnix <= ... AND length(ts) > 0`.
 - Unit tests for the SQL shape with golden output covering all four metrics
   tables (gauge / sum / histogram / exp_histogram).
 - Negative tests: missing `ExemplarsColumn` schema field returns
@@ -384,7 +384,7 @@ Updates `internal/api/prom/exemplars.go` to:
 4. Build the matcher predicate via the existing
    `buildPredicate(v.LabelMatchers, s)`.
 5. Call `chsql.EmitQueryExemplars(ctx, table, predicate, start, end,
-   h.Schema)`.
+h.Schema)`.
 6. Run the SQL via `h.Client.QueryExemplars(ctx, sql, args)` — a new method
    on the `Querier` interface that returns a typed row slice (or a generic
    cursor that the handler decodes into ExemplarSeries).
@@ -392,7 +392,7 @@ Updates `internal/api/prom/exemplars.go` to:
    group into one `ExemplarSeries`, emit per-row Exemplars with the
    `trace_id` / `span_id` reserved-key merge described in § 3.
 8. Return the envelope via the existing `writeJSON(..., Response{Status:
-   "success", Data: <series slice>})` path.
+"success", Data: <series slice>})` path.
 
 Scope:
 
@@ -429,7 +429,7 @@ Scope:
   comparator from `test/spec/runner_chdb.go`).
 - Integration with the seed loader: the `-- seed --` section needs to emit
   `INSERT INTO otel_metrics_sum (..., Exemplars.TimeUnix, Exemplars.Value,
-  ...) VALUES (..., [t1, t2], [v1, v2], ...)` rows — the Nested-column
+...) VALUES (..., [t1, t2], [v1, v2], ...)` rows — the Nested-column
   insert shape. The chDB runner already handles Nested inserts for
   `otel_logs.LogAttributes`; the metrics tables follow the same convention.
 
@@ -561,5 +561,3 @@ PR C does not change production code; it is fixture + asserts.
   PR B implements the merge in the row → ExemplarSeries projection;
   unit tests exercise both branches (FilteredAttributes carries a
   collision, and TraceId is empty).
-</content>
-</invoke>
