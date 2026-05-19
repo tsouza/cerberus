@@ -21,21 +21,21 @@
 #                    `skip: true` row remains.
 #   - regression/  — vendored in PR 6 (this file). Most entries now run
 #                    against cerberus; the remaining skips are upstream-
-#                    pinned `skip: true` rows, reference-side
-#                    cardinality rejections (HTTP 400, 500-series
-#                    guard), or seed-gap entries pending seeder
-#                    expansion. `| json`, `| logfmt`, `| regexp`,
-#                    `| pattern`, `| unpack`, `| drop`, `| keep`,
-#                    `| unwrap`, `detected_level` injection / filtering,
-#                    range aggregations on unwrapped values,
+#                    pinned `skip: true` rows or seed-gap entries
+#                    pending seeder expansion. `| json`, `| logfmt`,
+#                    `| regexp`, `| pattern`, `| unpack`, `| drop`,
+#                    `| keep`, `| unwrap`, `detected_level` injection /
+#                    filtering, range aggregations on unwrapped values,
 #                    range-aggregation `by`/`without` grouping, and
 #                    numeric/duration/bytes label filters are all wired
 #                    so entries that only needed those have been
-#                    dropped.
+#                    dropped. Reference-side cardinality rejections
+#                    (HTTP 400, 500-series guard) used to live here too
+#                    until loki-config.yaml's `max_query_series` was
+#                    raised to 10000.
 #   - exhaustive/  — vendored in PR 6 (this file). Same posture as
 #                    regression/: most entries lifted, residual skips
-#                    are upstream-pinned, seed-gap, or reference-side
-#                    cardinality rejections.
+#                    are upstream-pinned or seed-gap.
 #
 # Maintenance:
 #
@@ -60,23 +60,22 @@
 #   metadata, and multi-format log lines. The regression/ + exhaustive/
 #   slices were originally enrolled in bulk; entries that only depended
 #   on features that have since landed were dropped. Surviving skips
-#   fall into three buckets:
+#   fall into two buckets:
 #
 #     - Upstream-pinned `skip: true` rows — the vendored corpus marks
 #       these as unsupported by Loki's own v2 engine (stddev_over_time,
 #       quantile_over_time, numeric label filters on certain shapes,
 #       dataobj-engine schema gap). No reference baseline to diff
 #       against.
-#     - Reference-side cardinality rejections — a handful of `| unwrap`d
-#       range-aggregation entries fan a high-cardinality logfmt stream
-#       past reference Loki's 500-series-per-query guard. The reference
-#       returns HTTP 400 `maximum number of series (500) reached for a
-#       single query`, so there is no upstream baseline to diff against;
-#       those rows are excluded from the compat denominator as
-#       upstream-side rejections rather than counted as cerberus parity
-#       gaps. Each entry below documents the exact query shape.
 #     - Seed-gap entries — labels or log-line keywords the seeder
 #       doesn't yet emit; pending a seeder expansion.
+#
+#   The reference-side cardinality-rejection bucket (handful of
+#   `| unwrap`d range-aggregation entries that exceeded the reference
+#   Loki's 500-series-per-query guard) is gone — loki-config.yaml's
+#   `max_query_series` was raised to 10000 so the reference now answers
+#   those queries instead of returning HTTP 400, putting them back into
+#   the compat denominator with a real upstream baseline.
 #
 #   The following LogQL features are wired in cerberus and no longer
 #   gate any skip:
@@ -116,16 +115,15 @@ should_skip:
     since: "2026-05-15"
     jira:  "docs/loki-compliance-plan.md PR 6 (upstream skip)"
 
-  # regression/metric-queries.yaml — one upstream-pinned row plus a
-  # reference-side cardinality rejection (HTTP 400, 500-series guard).
+  # regression/metric-queries.yaml — one upstream-pinned row. The
+  # `Rate of unwrapped values` row that PR #537 added as a cardinality
+  # rejection is no longer overlaid: loki-config.yaml's
+  # `max_query_series` bump means the reference Loki now answers the
+  # query instead of returning HTTP 400.
   - source: "regression/metric-queries.yaml#HTTP status code distribution"
     reason: "Upstream pins `skip: true` (JSONParserErr on generated data). No reference baseline to diff against."
     since: "2026-05-15"
     jira:  "docs/loki-compliance-plan.md PR 6 (upstream skip)"
-  - source: "regression/metric-queries.yaml#Rate of unwrapped values"
-    reason: "Reference Loki rejects this query with HTTP 400 `maximum number of series (500) reached for a single query`. The unwrapped rate on the seeded fixture exceeds the upstream cardinality guard, so the case has no reference baseline to diff against — excluded from the compat denominator as an upstream-side rejection, not a cerberus parity gap."
-    since: "2026-05-19"
-    jira:  "compatibility/loki/cerberus-test-queries.yml (reference cardinality rejection)"
 
   # regression/structured-metadata.yaml — surviving entries are
   # upstream-pinned (`skip: true` on Loki's v2 engine) and seed-gap
@@ -180,15 +178,13 @@ should_skip:
     jira:  "docs/loki-compliance-plan.md PR 6 (seed gap)"
 
   # exhaustive/unwrap-aggregations.yaml — surviving entries are
-  # upstream-pinned (`skip: true` on Loki's v2 engine) and
-  # reference-side cardinality-rejection entries. The cardinality
-  # rejections (HTTP 400 `maximum number of series (500) reached`)
-  # all share the same shape: an `| unwrap`d range aggregation
-  # against a high-fan-out logfmt stream selector that drives the
-  # reference Loki past its 500-series-per-query guard. Each case
-  # has no reference baseline to diff against, so it's excluded from
-  # the compat denominator as an upstream-side rejection — not a
-  # cerberus parity gap.
+  # upstream-pinned (`skip: true` on Loki's v2 engine) or seed-gap
+  # entries. The reference-side cardinality-rejection rows that PR #537
+  # added (HTTP 400 `maximum number of series (500) reached` on
+  # high-fan-out `| logfmt | unwrap` shapes) were dropped once
+  # loki-config.yaml's `max_query_series` was raised to 10000, putting
+  # those cases back into the compat denominator with a real upstream
+  # baseline to diff against.
   - source: "exhaustive/unwrap-aggregations.yaml#Standard variance over time"
     reason: "Upstream pins `skip: true` (stddev_over_time / stdvar_over_time unsupported by Loki's v2 engine)."
     since: "2026-05-15"
@@ -233,37 +229,5 @@ should_skip:
     reason: "`sum without (namespace, cluster) (sum_over_time(... | unwrap))` — `namespace` / `cluster` labels not in seed."
     since: "2026-05-15"
     jira:  "docs/loki-compliance-plan.md PR 6 (seed gap)"
-  # Reference-side cardinality rejections (HTTP 400, 500-series guard).
-  # Each entry below is excluded from the compat denominator because
-  # the reference Loki returns an error rather than data, leaving no
-  # baseline to compare cerberus against.
-  - source: "exhaustive/unwrap-aggregations.yaml#Rate with duration conversion"
-    reason: "Reference Loki rejects this query with HTTP 400 `maximum number of series (500) reached for a single query`. The `rate(... | logfmt | duration != \"\" | unwrap duration_seconds(duration))` fan-out exceeds the upstream cardinality guard; no reference baseline exists to diff against."
-    since: "2026-05-19"
-    jira:  "compatibility/loki/cerberus-test-queries.yml (reference cardinality rejection)"
-  - source: "exhaustive/unwrap-aggregations.yaml#Sum over time with without clause"
-    reason: "Reference Loki rejects this query with HTTP 400 `maximum number of series (500) reached for a single query`. The `sum without (namespace) (sum_over_time(... | logfmt | unwrap duration(duration)))` fan-out exceeds the upstream cardinality guard; no reference baseline exists to diff against."
-    since: "2026-05-19"
-    jira:  "compatibility/loki/cerberus-test-queries.yml (reference cardinality rejection)"
-  - source: "exhaustive/unwrap-aggregations.yaml#Average over time - no grouping"
-    reason: "Reference Loki rejects this query with HTTP 400 `maximum number of series (500) reached for a single query`. The `avg_over_time(... | json | unwrap duration_ms)` fan-out exceeds the upstream cardinality guard; no reference baseline exists to diff against."
-    since: "2026-05-19"
-    jira:  "compatibility/loki/cerberus-test-queries.yml (reference cardinality rejection)"
-  - source: "exhaustive/unwrap-aggregations.yaml#Max over time - no grouping"
-    reason: "Reference Loki rejects this query with HTTP 400 `maximum number of series (500) reached for a single query`. The `max_over_time(... | json | unwrap duration_ms)` fan-out exceeds the upstream cardinality guard; no reference baseline exists to diff against."
-    since: "2026-05-19"
-    jira:  "compatibility/loki/cerberus-test-queries.yml (reference cardinality rejection)"
-  - source: "exhaustive/unwrap-aggregations.yaml#Min over time - no grouping"
-    reason: "Reference Loki rejects this query with HTTP 400 `maximum number of series (500) reached for a single query`. The `min_over_time(... | logfmt | unwrap duration(duration))` fan-out exceeds the upstream cardinality guard; no reference baseline exists to diff against."
-    since: "2026-05-19"
-    jira:  "compatibility/loki/cerberus-test-queries.yml (reference cardinality rejection)"
-  - source: "exhaustive/unwrap-aggregations.yaml#Duration seconds conversion"
-    reason: "Reference Loki rejects this query with HTTP 400 `maximum number of series (500) reached for a single query`. The `avg_over_time(... | logfmt | unwrap duration_seconds(duration))` fan-out exceeds the upstream cardinality guard on both expansions of this description; no reference baseline exists to diff against."
-    since: "2026-05-19"
-    jira:  "compatibility/loki/cerberus-test-queries.yml (reference cardinality rejection)"
-  - source: "exhaustive/unwrap-aggregations.yaml#Logfmt size unwrap"
-    reason: "Reference Loki rejects this query with HTTP 400 `maximum number of series (500) reached for a single query`. The `sum_over_time(... | logfmt | size != \"\" | unwrap size)` fan-out exceeds the upstream cardinality guard; no reference baseline exists to diff against."
-    since: "2026-05-19"
-    jira:  "compatibility/loki/cerberus-test-queries.yml (reference cardinality rejection)"
 
 should_fail: []
