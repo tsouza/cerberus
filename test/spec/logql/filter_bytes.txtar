@@ -8,6 +8,20 @@
 [4] string = "\""
 [5] string = "size"
 [6] float64 = 10000
+-- seed --
+CREATE TABLE otel_logs (
+    Body String,
+    ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api')
+) ENGINE = Memory;
+INSERT INTO otel_logs (Body) VALUES
+    ('ts=2026-01-01 size=5KB msg="small"'),
+    ('ts=2026-01-01 size=20KB msg="medium"'),
+    ('ts=2026-01-01 size=100KB msg="large"');
+-- expected_rows --
+[
+  ["ts=2026-01-01 size=20KB msg=\"medium\""],
+  ["ts=2026-01-01 size=100KB msg=\"large\""]
+]
 -- chplan --
 Filter predicate=((ResourceAttributes["job"] = "api") AND (parseReadableSize(mapConcat(ResourceAttributes, extractKeyValuePairs(Body, "=", " ", "\""))["size"]) > 10000))
   Scan(otel_logs)
