@@ -333,16 +333,69 @@ func classifyTraceByIDErr(err error) int {
 // lowerTraceByID builds a chplan tree equivalent to the TraceQL
 // `{ traceID = "<id>" }` query without going through the parser.
 // Cheaper than re-parsing for every trace lookup.
+//
+// The OTel-CH exporter writes TraceId as a 32-char lowercase hex string
+// (see compatibility/tempo/driver/seeder.go: `hex.EncodeToString(s.TraceId)`),
+// but Tempo's wire format strips leading zeros from trace IDs, and most
+// Grafana installations forward the stripped form back on /api/traces/{id}.
+// normaliseTraceID pads the inbound traceID back to the 32-char shape so
+// the WHERE comparison matches the column value regardless of whether the
+// caller sent the stripped or padded form.
 func (h *Handler) lowerTraceByID(traceID string) (chplan.Node, error) {
 	pred := &chplan.Binary{
 		Op:    chplan.OpEq,
 		Left:  &chplan.ColumnRef{Name: h.Schema.TraceIDColumn},
-		Right: &chplan.LitString{V: traceID},
+		Right: &chplan.LitString{V: normaliseTraceID(traceID)},
 	}
 	return &chplan.Filter{
 		Input:     &chplan.Scan{Table: h.Schema.SpansTable},
 		Predicate: pred,
 	}, nil
+}
+
+// normaliseTraceID returns the canonical 32-char lowercase-hex form of
+// the trace-id Tempo's wire format uses on storage (see OTel-CH
+// exporter's `hex.EncodeToString`). Tempo's response shaper strips
+// leading zeros (so `0000…ab` becomes `ab`), and Grafana echoes that
+// stripped form back on /api/traces/{id}/. We restore the padding here
+// so the WHERE comparison in lowerTraceByID hits the column value.
+//
+// Input shape is permissive: any length up to 32 hex chars, padded with
+// leading zeros on the left; anything longer is returned unchanged so a
+// caller's already-canonical 32-char form round-trips byte-for-byte and
+// a malformed/longer id surfaces via the downstream CH not-found path
+// rather than getting silently rewritten here. Lowercases the input so
+// callers that uppercased their hex still resolve.
+func normaliseTraceID(s string) string {
+	if len(s) >= 32 {
+		return strings.ToLower(s)
+	}
+	return strings.Repeat("0", 32-len(s)) + strings.ToLower(s)
+}
+
+// stripLeadingHexZeros returns a chplan expression that emits the hex
+// value of `col` with leading zeros removed, matching Tempo's wire
+// format for trace IDs and span IDs. The OTel-CH exporter writes both
+// as fixed-width lowercase-hex strings (32 chars for TraceId, 16 chars
+// for SpanId / ParentSpanId); Tempo's /api/search + /api/traces/{id}
+// shapers trim leading zeros so e.g. `0000…ab` becomes `ab`.
+//
+// The CH expression `replaceRegexpOne(col, '^0+([0-9a-f])', '\\1')`
+// strips a run of leading zeros but always retains at least one hex
+// digit — so an all-zero TraceId renders as a single `0` rather than
+// collapsing to the empty string, and an already-empty value (root
+// span's ParentSpanId is "" on the wire) round-trips unchanged because
+// the regex doesn't match. Lowercase-only character class matches the
+// OTel-CH `hex.EncodeToString` output verbatim.
+func stripLeadingHexZeros(col string) chplan.Expr {
+	return &chplan.FuncCall{
+		Name: "replaceRegexpOne",
+		Args: []chplan.Expr{
+			&chplan.ColumnRef{Name: col},
+			&chplan.LitString{V: "^0+([0-9a-f])"},
+			&chplan.LitString{V: "\\1"},
+		},
+	}
 }
 
 // Reserved keys used by wrapWithSampleProjection to smuggle trace-detail
@@ -477,16 +530,16 @@ func wrapWithSampleProjection(plan chplan.Node, s schema.Traces, meta engine.Met
 // unqualified to the outer scope.
 //
 // The Attributes map merges ResourceAttributes with a single
-// reserved-key entry (`__cerberus_traceID` → hex TraceId) so
-// toTraceSummaries can group spans into per-trace summaries by real
-// TraceID rather than synthesising a key from (SpanName + Timestamp).
-// Same mapConcat pattern as traceByIDProjections; the resource keys
-// (`service.*`, `k8s.*`, …) never collide with the `__cerberus_*`
-// namespace so no precedence surprises.
+// reserved-key entry (`__cerberus_traceID` → leading-zero-stripped hex
+// TraceId) so toTraceSummaries can group spans into per-trace summaries
+// by real TraceID rather than synthesising a key from (SpanName +
+// Timestamp). Same mapConcat pattern as traceByIDProjections; the
+// resource keys (`service.*`, `k8s.*`, …) never collide with the
+// `__cerberus_*` namespace so no precedence surprises.
 func canonicalSampleProjections(s schema.Traces) []chplan.Projection {
 	traceIDMap := &chplan.FuncCall{Name: "map", Args: []chplan.Expr{
 		&chplan.LitString{V: searchKeyTraceID},
-		&chplan.ColumnRef{Name: s.TraceIDColumn},
+		stripLeadingHexZeros(s.TraceIDColumn),
 	}}
 	mergedAttrs := &chplan.FuncCall{Name: "mapConcat", Args: []chplan.Expr{
 		&chplan.ColumnRef{Name: s.ResourceAttributesColumn},
@@ -522,7 +575,7 @@ func canonicalSampleProjections(s schema.Traces) []chplan.Projection {
 func rQualifiedSampleProjections(s schema.Traces) []chplan.Projection {
 	traceIDMap := &chplan.FuncCall{Name: "map", Args: []chplan.Expr{
 		&chplan.LitString{V: searchKeyTraceID},
-		&chplan.ColumnRef{Name: s.TraceIDColumn},
+		stripLeadingHexZeros(s.TraceIDColumn),
 	}}
 	mergedAttrs := &chplan.FuncCall{Name: "mapConcat", Args: []chplan.Expr{
 		&chplan.ColumnRef{Name: s.ResourceAttributesColumn},
@@ -554,11 +607,11 @@ func traceByIDProjections(s schema.Traces) []chplan.Projection {
 	// satisfies CH's homogeneous-value-type requirement.
 	metaKVPairs := []chplan.Expr{
 		&chplan.LitString{V: traceByIDKeyTraceID},
-		&chplan.ColumnRef{Name: s.TraceIDColumn},
+		stripLeadingHexZeros(s.TraceIDColumn),
 		&chplan.LitString{V: traceByIDKeySpanID},
-		&chplan.ColumnRef{Name: s.SpanIDColumn},
+		stripLeadingHexZeros(s.SpanIDColumn),
 		&chplan.LitString{V: traceByIDKeyParentSpanID},
-		&chplan.ColumnRef{Name: s.ParentSpanIDColumn},
+		stripLeadingHexZeros(s.ParentSpanIDColumn),
 		&chplan.LitString{V: traceByIDKeySpanKind},
 		// SpanKind / StatusCode are LowCardinality(String); cast to
 		// String so the mapConcat homogeneous-value-type requirement
