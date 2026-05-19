@@ -215,6 +215,60 @@ func (c *Client) QueryTimestampedLines(ctx context.Context, query string, args .
 	return out, nil
 }
 
+// QueryExemplars runs sql expecting the 8-column shape EmitQueryExemplars
+// projects (MetricName, Attributes, ServiceName, Timestamp, Value,
+// TraceID, SpanID, ExemplarAttributes). Used by /api/v1/query_exemplars.
+// Map(String,String) columns are wrapped server-side in toJSONString(...)
+// by rewriteMapProjections and decoded back on the Go side per the chDB
+// driver Map-panic probe.
+func (c *Client) QueryExemplars(ctx context.Context, query string, args ...any) ([]chclient.ExemplarRow, error) {
+	if c.err != nil {
+		return nil, c.err
+	}
+	rewritten := rewriteMapProjections(query)
+	rows, err := c.db.QueryContext(ctx, rewritten, args...)
+	if err != nil {
+		return nil, fmt.Errorf("chclienttest: query: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []chclient.ExemplarRow
+	for rows.Next() {
+		var (
+			r           chclient.ExemplarRow
+			attrsJSON   string
+			exAttrsJSON string
+		)
+		if err := rows.Scan(
+			&r.MetricName,
+			&attrsJSON,
+			&r.ServiceName,
+			&r.Timestamp,
+			&r.Value,
+			&r.TraceID,
+			&r.SpanID,
+			&exAttrsJSON,
+		); err != nil {
+			return nil, fmt.Errorf("chclienttest: scan: %w", err)
+		}
+		attrs, err := decodeMapJSON(attrsJSON)
+		if err != nil {
+			return nil, err
+		}
+		exAttrs, err := decodeMapJSON(exAttrsJSON)
+		if err != nil {
+			return nil, err
+		}
+		r.Attributes = attrs
+		r.ExemplarAttributes = exAttrs
+		out = append(out, r)
+	}
+	if err := tolerantRowsErr(rows.Err()); err != nil {
+		return nil, fmt.Errorf("chclienttest: rows.Err: %w", err)
+	}
+	return out, nil
+}
+
 // QueryLabelSets runs sql expecting a single Map(String,String) column
 // per row. The column is rewritten to toJSONString(…) and decoded back
 // on the Go side.
