@@ -23,6 +23,6 @@ INSERT INTO otel_traces VALUES
   ["frontend", "200", 3]
 ]
 -- chplan --
-MetricsAggregate op=count_over_time groupBy=[ResourceAttributes["service.name"] AS service.name, SpanAttributes["http.status_code"] AS http.status_code] valueAlias=Value
+MetricsAggregate op=count_over_time groupBy=[ResourceAttributes["service.name"] AS service.name|resource.service.name, SpanAttributes["http.status_code"] AS http.status_code|span.http.status_code] valueAlias=Value
   Filter predicate=true
     Scan(otel_traces)

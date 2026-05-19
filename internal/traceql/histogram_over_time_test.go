@@ -83,6 +83,10 @@ func TestLowerHistogramOverTime(t *testing.T) {
 				t.Errorf("GroupBy / GroupByAliases length mismatch: %d vs %d",
 					len(h.GroupBy), len(h.GroupByAliases))
 			}
+			if len(h.GroupBy) > 0 && len(h.GroupBy) != len(h.GroupByDisplayNames) {
+				t.Errorf("GroupBy / GroupByDisplayNames length mismatch: %d vs %d",
+					len(h.GroupBy), len(h.GroupByDisplayNames))
+			}
 			if h.Inner == nil {
 				t.Errorf("Inner is nil; want the spanset tree")
 			}

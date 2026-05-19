@@ -540,14 +540,16 @@ func TestMetricsQueryRange_ExemplarsEnvelope(t *testing.T) {
 // Attributes` column. attachExemplars keys each exemplar against its
 // matching series via the by(...) label canonical key.
 //
-// Note: the stubbed Labels map keys use the lowering alias
-// (`service.name`) rather than the source TraceQL attribute name
-// (`resource.service.name`). The chsql emitter projects the inner
-// SELECT with `ResourceAttributes['service.name'] AS service.name`
-// (alias drops the scope prefix), and the matrix/exemplar wrap
-// projections key the outer `Attributes` map by that alias. So real
-// CH returns Sample.Labels keyed by `service.name`; the stub must
-// mirror that for attachExemplars's by-label match to succeed.
+// Note: the stubbed Labels map keys use the Tempo-canonical wire form
+// (`resource.service.name`) rather than the SQL-side alias
+// (`service.name`). The chsql emitter projects the inner SELECT with
+// `ResourceAttributes['service.name'] AS service.name` (the SQL alias
+// drops the scope prefix to keep column names compact), but the outer
+// matrix and exemplar projections key the `Attributes` map by the
+// scope-prefixed display name so the wire shape matches upstream
+// Tempo's metrics-query response. attachExemplars matches each
+// exemplar to its parent series via canonical label-set hash, so both
+// the matrix branch and exemplars branch must agree on the key form.
 func TestMetricsQueryRange_ExemplarsPopulated(t *testing.T) {
 	t.Parallel()
 
@@ -557,15 +559,17 @@ func TestMetricsQueryRange_ExemplarsPopulated(t *testing.T) {
 	q := &stubQuerier{
 		samples: []chclient.Sample{
 			// Matrix branch — one series, two anchors. Labels are keyed
-			// by the lowering alias (`service.name`), matching what the
-			// chsql emitter projects via the outer `Attributes` map.
+			// by the Tempo-canonical scope-prefixed wire name
+			// (`resource.service.name`), matching what
+			// wrapMetricsForSample projects via the outer `Attributes`
+			// map.
 			{
-				Labels:    map[string]string{"service.name": "frontend"},
+				Labels:    map[string]string{"resource.service.name": "frontend"},
 				Timestamp: ts(0),
 				Value:     12,
 			},
 			{
-				Labels:    map[string]string{"service.name": "frontend"},
+				Labels:    map[string]string{"resource.service.name": "frontend"},
 				Timestamp: ts(1),
 				Value:     18,
 			},
@@ -574,23 +578,24 @@ func TestMetricsQueryRange_ExemplarsPopulated(t *testing.T) {
 			// Exemplars branch — one trace-anchored sample per anchor,
 			// carrying the trace:id + span:id pair attachExemplars
 			// surfaces under Exemplar.TraceID / SpanID. The by(...)
-			// alias key (`service.name`) lets attachExemplars match the
-			// exemplar back to its parent series.
+			// display key (`resource.service.name`) lets
+			// attachExemplars match the exemplar back to its parent
+			// series by canonical label-set hash.
 			"exemplar_trace_id": {
 				{
 					Labels: map[string]string{
-						"service.name": "frontend",
-						"trace:id":     "0123456789abcdef0123456789abcdef",
-						"span:id":      "0011223344556677",
+						"resource.service.name": "frontend",
+						"trace:id":              "0123456789abcdef0123456789abcdef",
+						"span:id":               "0011223344556677",
 					},
 					Timestamp: ts(0),
 					Value:     1,
 				},
 				{
 					Labels: map[string]string{
-						"service.name": "frontend",
-						"trace:id":     "fedcba9876543210fedcba9876543210",
-						"span:id":      "aabbccddeeff0011",
+						"resource.service.name": "frontend",
+						"trace:id":              "fedcba9876543210fedcba9876543210",
+						"span:id":               "aabbccddeeff0011",
 					},
 					Timestamp: ts(1),
 					Value:     1,
@@ -688,6 +693,97 @@ func TestMetricsQueryRange_ExemplarsPopulated(t *testing.T) {
 		}
 		if ex.Labels[1].Key != "span:id" || ex.Labels[1].Value != wantSpanIDs[i] {
 			t.Errorf("exemplar[%d].Labels[1] = %+v, want {span:id, %q}", i, ex.Labels[1], wantSpanIDs[i])
+		}
+	}
+}
+
+// TestMetricsQueryRange_ResourceLabelWireShape conforms cerberus's
+// metrics-query response to upstream Tempo's wire shape for
+// resource-scoped group-by labels.
+//
+// Upstream Tempo emits the full scope-prefixed form
+// `resource.service.name` on the response Labels list for a
+// `by (resource.service.name)` clause (see grafana/tempo
+// `pkg/traceql.Attribute.String` and `engine_metrics.go::labelsFor`;
+// the upstream integration test `integration/api/query_range_test.go`
+// pins `label.Key == "resource.res_attr"` for the equivalent query).
+//
+// Cerberus's SQL emitter aliases the inner SELECT column as the bare
+// path (`AS service.name`) to keep CH column names short, but the
+// matrix-shape outer wrap projects the `Attributes` map with the
+// Tempo-canonical scope-prefixed key — so the chclient.Sample.Labels
+// the handler decodes carries `resource.service.name`, and the JSON
+// envelope mirrors that. This test feeds a stub Sample whose Labels
+// map uses the wire-canonical key (matching what the matrix SQL would
+// produce post-wrap) and asserts the JSON `labels[].key` reads
+// `resource.service.name`.
+func TestMetricsQueryRange_ResourceLabelWireShape(t *testing.T) {
+	t.Parallel()
+
+	ts := func(min int) time.Time {
+		return time.Date(2026, 5, 12, 10, min, 0, 0, time.UTC)
+	}
+	q := &stubQuerier{samples: []chclient.Sample{
+		// The matrix outer SELECT emits `map('resource.service.name', toString(service.name), ...)`
+		// — see wrapMetricsForSample. The decoded Sample.Labels map is
+		// therefore keyed by the scope-prefixed wire form, not the bare
+		// SQL alias. The stub mirrors that contract.
+		{Labels: map[string]string{"resource.service.name": "frontend"}, Timestamp: ts(0), Value: 12},
+		{Labels: map[string]string{"resource.service.name": "frontend"}, Timestamp: ts(1), Value: 18},
+		{Labels: map[string]string{"resource.service.name": "backend"}, Timestamp: ts(0), Value: 3},
+	}}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	u := metricsQueryRangeURL(srv.URL,
+		"{} | count_over_time() by (resource.service.name)",
+		map[string]string{
+			"start": fixtureStartUnix,
+			"end":   fixtureEndUnix,
+			"step":  "60s",
+		})
+	resp, err := http.Get(u)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+
+	raw := readBody(t, resp)
+	// The Tempo-canonical wire key MUST appear verbatim (the assertion
+	// is on the bytes Grafana / a tempopb consumer actually reads).
+	wantSub := `"key":"resource.service.name"`
+	if !strings.Contains(raw, wantSub) {
+		t.Fatalf("response missing wire-canonical resource-scope key %q\nbody=%s", wantSub, raw)
+	}
+	// And the bare-alias form (the SQL-side alias) MUST NOT appear as a
+	// response key — that would mean the wrap leaked the alias to the
+	// wire instead of the scope-prefixed display name.
+	badSub := `"key":"service.name"`
+	if strings.Contains(raw, badSub) {
+		t.Errorf("response surfaces bare SQL alias %q where the Tempo-canonical form is required\nbody=%s",
+			badSub, raw)
+	}
+
+	// Decode the response through the typed struct and verify every
+	// series's first (and only) label carries the prefixed key.
+	var body tempo.MetricsQueryRangeResponse
+	if err := json.NewDecoder(strings.NewReader(raw)).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Series) != 2 {
+		t.Fatalf("expected 2 series, got %d: %+v", len(body.Series), body)
+	}
+	for i, s := range body.Series {
+		if len(s.Labels) != 1 {
+			t.Errorf("series[%d]: expected 1 label, got %+v", i, s.Labels)
+			continue
+		}
+		if s.Labels[0].Key != "resource.service.name" {
+			t.Errorf("series[%d].Labels[0].Key = %q, want %q",
+				i, s.Labels[0].Key, "resource.service.name")
 		}
 	}
 }

@@ -349,6 +349,16 @@ const tempoMultiQuantilePhiLabel = "__phi__"
 // when there's no GroupBy); MetricName is empty (TraceQL has no
 // __name__); anchor_ts arrives as DateTime64(9) → time.Time on the wire.
 //
+// The Attributes map's keys are the Tempo-canonical wire names from
+// metricsLabelNames (scope-prefixed `resource.service.name`,
+// `span.http.method`, etc., mirroring upstream Tempo's response shape).
+// The values still reference the SQL-side bare aliases via attrAliases
+// — the SELECT-list column for `by (resource.service.name)` is aliased
+// as `service.name`, while the row's Attributes map key is
+// `resource.service.name`. Decoupling the two slices lets the chsql
+// emitter keep emitting compact column aliases without disturbing the
+// wire shape Grafana's Tempo datasource consumes.
+//
 // When MetricsAggregate.Quantiles carries multiple phi values, the chsql
 // emitter projects an extra `__phi__` String column per row; this wrap
 // includes it as a synthetic Attributes entry so each (group × phi)
@@ -414,15 +424,31 @@ func metricsOuterGroupAliases(groupBy []chplan.Expr, aliases []string) []string 
 }
 
 // metricsLabelNames returns the user-facing label names the response's
-// {key,value} pairs surface — the lowering's GroupByAliases with a
-// fallback ("group_0", ...) for any empty alias slot, plus the
+// {key,value} pairs surface — the lowering's GroupByDisplayNames (the
+// Tempo-canonical scope-prefixed wire form such as
+// `resource.service.name`, `span.http.method`, or a bare intrinsic name
+// like `kind`), with a fallback to GroupByAliases (bare attribute
+// path) when the lowering didn't populate the display slice, and a
+// further fallback ("group_0", ...) for any empty slot. Plus the
 // synthetic `__phi__` label when MetricsAggregate.Quantiles carries
 // more than one phi value (the chsql multi-quantile fan-out adds the
 // extra column to the matrix shape).
+//
+// Aligning with the upstream Tempo response shape: the reference
+// /api/metrics/query_range emits `resource.service.name` for a
+// `by (resource.service.name)` clause — see grafana/tempo
+// `pkg/traceql.Attribute.String` and the metrics-engine `labelsFor`
+// loop, plus the integration test in `integration/api/query_range_test.go`
+// that asserts `label.Key == "resource.res_attr"` for a
+// `by (resource.res_attr)` query.
 func metricsLabelNames(m *chplan.MetricsAggregate) []string {
 	n := len(m.GroupBy)
 	out := make([]string, 0, n+1)
 	for i := 0; i < n; i++ {
+		if i < len(m.GroupByDisplayNames) && m.GroupByDisplayNames[i] != "" {
+			out = append(out, m.GroupByDisplayNames[i])
+			continue
+		}
 		if i < len(m.GroupByAliases) && m.GroupByAliases[i] != "" {
 			out = append(out, m.GroupByAliases[i])
 			continue

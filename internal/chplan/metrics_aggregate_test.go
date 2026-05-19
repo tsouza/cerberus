@@ -91,6 +91,24 @@ func TestMetricsAggregateEqual(t *testing.T) {
 		t.Errorf("different GroupByAliases should not be Equal")
 	}
 
+	// GroupByDisplayNames diff — populated on one side, empty on the
+	// other (the legacy / non-TraceQL path leaves it empty).
+	withDisplay := *same
+	withDisplay.GroupByDisplayNames = []string{"resource.service.name"}
+	if base.Equal(&withDisplay) {
+		t.Errorf("display-name presence should differentiate Equal")
+	}
+	if withDisplay.Equal(base) {
+		t.Errorf("display-name presence should differentiate Equal (other side)")
+	}
+
+	// GroupByDisplayNames diff — different prefixes (resource vs. span).
+	otherDisplay := withDisplay
+	otherDisplay.GroupByDisplayNames = []string{"span.service.name"}
+	if withDisplay.Equal(&otherDisplay) {
+		t.Errorf("different GroupByDisplayNames should not be Equal")
+	}
+
 	// GroupBy len diff.
 	moreGroup := *same
 	moreGroup.GroupBy = append([]chplan.Expr{}, same.GroupBy...)
