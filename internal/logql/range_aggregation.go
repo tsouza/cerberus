@@ -136,6 +136,23 @@ func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs, lc low
 	// drops every sample. Mirrors the PromQL side in lowerMatrixCall
 	// (internal/promql/lower.go::lowerMatrixCall) which sets the same
 	// fields when ctx.step > 0.
+	//
+	// This applies UNIFORMLY across both the bare-selector matrix
+	// shapes (`count_over_time({...}[5m])`, `rate({...}[5m])`) and the
+	// pipeline / unwrap matrix shapes (`sum_over_time({...} | logfmt |
+	// unwrap duration [5m])`, `avg_over_time({...} | json | unwrap
+	// duration_ms [5m])`, `min_over_time` / `max_over_time` / `rate` on
+	// unwrapped values, etc.). The single propagation block above runs
+	// after lowerLogRange returns — which collapses both the
+	// MatchersExpr-only path and the PipelineExpr-with-unwrap path into
+	// the same `inner` Node — so the matrix RangeWindow shape is
+	// guaranteed for every range-aggregation flavour the lowering
+	// supports. The unwrap-PostFilter wrap above mutates `inner` into a
+	// Filter(...) but does NOT touch `rw`, so the matrix-shape fields
+	// stay set regardless of how many post-filters the unwrap clause
+	// carries. See [TestLowerRangeAggregationMatrixShapeUnwrap] for the
+	// pin against a regression that re-introduces the day-old-data
+	// instant-anchor bug for the unwrap path.
 	if lc.rangeMode() {
 		rw.Start = lc.Start.UTC()
 		rw.End = lc.End.UTC()
