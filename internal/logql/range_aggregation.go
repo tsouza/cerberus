@@ -262,9 +262,19 @@ func unwrapValueExpr(u *syntax.UnwrapExpr, labelsExpr chplan.Expr) (chplan.Expr,
 			Args: []chplan.Expr{access},
 		}, nil
 	case syntax.OpConvBytes:
+		// `parseReadableSize` returns UInt64 (CH 24.x+); wrap in
+		// `toFloat64` so the downstream windowed-array math (especially
+		// the counter_delta arrayMap that does `if(c < p, c, c - p)`)
+		// can resolve a common type — chDB refuses to mix UInt64
+		// branches with their signed-subtraction siblings. Aligns with
+		// the comment above and matches the `length(Body)` path in
+		// `rangeValueExpr` which is also toFloat64-wrapped.
 		return &chplan.FuncCall{
-			Name: "parseReadableSize",
-			Args: []chplan.Expr{access},
+			Name: "toFloat64",
+			Args: []chplan.Expr{&chplan.FuncCall{
+				Name: "parseReadableSize",
+				Args: []chplan.Expr{access},
+			}},
 		}, nil
 	}
 	return nil, fmt.Errorf("logql: unsupported unwrap conversion %q", u.Operation)
