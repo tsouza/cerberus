@@ -2,9 +2,12 @@ package logql
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/grafana/loki/v3/pkg/logql/syntax"
+
+	"github.com/tsouza/cerberus/internal/schema"
 )
 
 // TestIncludeLabelsFromBinop pins the surface of [includeLabelsFromBinop]:
@@ -79,5 +82,58 @@ func TestIncludeLabelsFromBinopNil(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Fatalf("includeLabelsFromBinop(nil) = %v, want empty slice", got)
+	}
+}
+
+// TestLowerBinaryRejectsNilLeg pins the defensive guard at the top of
+// [lowerBinary]: when *either* the LHS (SampleExpr) or the RHS leg of a
+// BinOpExpr is nil — a shape the upstream parser shouldn't normally
+// hand us — the helper returns a clear error instead of dereferencing
+// the nil leg and panicking.
+//
+// The guard reads `if b.SampleExpr == nil || b.RHS == nil`; a single-leg
+// nil must trip it. Parse a real binop first so the rest of the struct
+// (Op, Opts) stays parser-valid, then drop one leg to nil and confirm
+// the helper rejects it.
+func TestLowerBinaryRejectsNilLeg(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		mut  func(*syntax.BinOpExpr)
+	}{
+		{
+			name: "nil RHS",
+			mut:  func(b *syntax.BinOpExpr) { b.RHS = nil },
+		},
+		{
+			name: "nil LHS (SampleExpr)",
+			mut:  func(b *syntax.BinOpExpr) { b.SampleExpr = nil },
+		},
+	}
+
+	s := schema.DefaultOTelLogs()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			expr, err := syntax.ParseExpr(`rate({app="api"}[1m]) + rate({app="db"}[1m])`)
+			if err != nil {
+				t.Fatalf("ParseExpr: %v", err)
+			}
+			binop, ok := expr.(*syntax.BinOpExpr)
+			if !ok {
+				t.Fatalf("expected *syntax.BinOpExpr, got %T", expr)
+			}
+			tc.mut(binop)
+
+			_, err = lowerBinary(binop, s, lowerCtx{})
+			if err == nil {
+				t.Fatalf("lowerBinary with %s: want error, got nil", tc.name)
+			}
+			if !strings.Contains(err.Error(), "nil leg") {
+				t.Fatalf("lowerBinary with %s: error %q does not mention 'nil leg'", tc.name, err.Error())
+			}
+		})
 	}
 }
