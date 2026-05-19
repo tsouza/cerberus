@@ -408,15 +408,18 @@ func isWildcardProjection(p string) bool {
 	return false
 }
 
-// substituteNow64 rewrites every `now64(...)` reference in the emitted
-// SQL to the deterministic [nowAnchorLiteral] so instant queries that
-// project the wall-clock as `TimeUnix` (PromQL aggregations, histogram
-// quantiles, subqueries, predict_linear, holt_winters) produce a
-// repeatable cell in `expected_rows:`. Without this, the outer
-// projection would scan as the wall-clock at test execution time and
-// never match a written-in-stone fixture row.
+// substituteNow64 rewrites every `now64(...)` and `now()` reference in
+// the emitted SQL to the deterministic [nowAnchorLiteral] so instant
+// queries that project the wall-clock as `TimeUnix` (PromQL
+// aggregations, histogram quantiles, subqueries, predict_linear,
+// holt_winters) or read the wall-clock as a DateTime through `now()`
+// (PromQL zero-arg date functions like `day_of_month()` / `hour()` /
+// `month()` lower to `toDayOfMonth(now())` etc.) produce a repeatable
+// cell in `expected_rows:`. Without this, the outer projection would
+// scan as the wall-clock at test execution time and never match a
+// written-in-stone fixture row.
 //
-// Two shapes appear in the corpus:
+// Three shapes appear in the corpus:
 //
 //   - `now64(?)` — parameterized; the trailing `?` is bound to an
 //     int64 precision arg in `args:`. We strip the corresponding
@@ -427,6 +430,15 @@ func isWildcardProjection(p string) bool {
 //     predict_linear, and holt_winters lowerings. No args slot to
 //     consume.
 //
+//   - `now()` — emitted by the zero-arg PromQL date-function lowerings
+//     (`day_of_month()` / `day_of_week()` / `days_in_month()` /
+//     `hour()` / `minute()` / `month()` / `year()`). CH's date
+//     accessors accept DateTime64 the same way they accept DateTime,
+//     so substituting the full [nowAnchorLiteral] (which is a
+//     DateTime64(9)) preserves type compatibility with `toYear`,
+//     `toMonth`, `toDayOfMonth`, `toDayOfWeek`, `toLastDayOfMonth`,
+//     `toHour`, `toMinute`. No args slot to consume.
+//
 // The function tracks `?` placeholder offsets while scanning so the
 // args list is mutated in lock-step. This is a test-infra workaround
 // for the inherent non-determinism of wall-clock projections in
@@ -436,7 +448,7 @@ func isWildcardProjection(p string) bool {
 // together.
 func substituteNow64(query string, args []any) (string, []any) {
 	// Fast-path: nothing to do when neither shape is present.
-	if !strings.Contains(query, "now64(") {
+	if !strings.Contains(query, "now64(") && !strings.Contains(query, "now()") {
 		return query, args
 	}
 
@@ -506,6 +518,19 @@ func substituteNow64(query string, args []any) (string, []any) {
 					continue
 				}
 			}
+		}
+
+		// Match `now()` — the zero-arg DateTime form emitted by PromQL
+		// zero-arg date functions. Substitute with the deterministic
+		// DateTime64 anchor literal; CH's `toYear`/`toMonth`/
+		// `toDayOfMonth`/`toDayOfWeek`/`toLastDayOfMonth`/`toHour`/
+		// `toMinute` accept DateTime64 the same as DateTime, so the
+		// type widening is invisible at the call site. No args slot
+		// to consume.
+		if c == 'n' && strings.HasPrefix(query[i:], "now()") {
+			out.WriteString(nowAnchorLiteral)
+			i += len("now()") - 1
+			continue
 		}
 
 		// Generic `?` placeholder: copy the arg through.

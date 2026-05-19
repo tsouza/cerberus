@@ -13,6 +13,20 @@
 # test instead).
 -- query.promql --
 time() < http_requests_total
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum VALUES
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 9999999999.0),
+    ('http_requests_total', map('job', 'db'), toDateTime64('2026-01-01 00:00:00', 9), 5.0);
+-- expected_rows --
+[
+  ["http_requests_total", {"job": "api"}, "2026-01-01T00:00:00Z", 9999999999]
+]
 -- args --
 [0] string = "http_requests_total"
 [1] string = "2026-01-01 00:00:01.000000000"
