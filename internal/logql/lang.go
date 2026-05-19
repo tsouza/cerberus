@@ -38,10 +38,20 @@ import (
 // + lower contract without an HTTP window). The handler constructs a
 // fresh *Lang per request; the long-lived bits (Schema) come from the
 // Handler so per-request allocation is cheap.
+//
+// Step carries the request's `step` for /loki/api/v1/query_range metric
+// queries. When > 0, the range-aggregation lowering switches to the
+// matrix RangeWindow shape (one row per anchor across [Start, End]
+// spaced by Step) so the emitter fans across the step grid instead of
+// anchoring at `now64(9)`. Without this, a metric query whose seeded
+// data lies outside the last 5 minutes of wall-clock returns an empty
+// matrix (the compat-harness 0/55 regression that surfaced when the
+// seed window drifted away from wall-clock).
 type Lang struct {
 	Schema schema.Logs
 	Start  time.Time
 	End    time.Time
+	Step   time.Duration
 }
 
 // errorTypes mirrors the Loki errorType vocabulary the handler emits.
@@ -75,7 +85,7 @@ func (l *Lang) Parse(ctx context.Context, query string) (chplan.Node, engine.Met
 	}
 
 	lowerT := telemetry.ObserveStage(telemetry.StageLower)
-	plan, err := LowerAt(ctx, expr, l.Schema, l.Start, l.End)
+	plan, err := LowerAtRange(ctx, expr, l.Schema, l.Start, l.End, l.Step)
 	lowerT.Done(ctx)
 	if err != nil {
 		return nil, engine.Meta{}, &httperr.Error{
@@ -137,19 +147,40 @@ func (l *Lang) ProjectSamples(plan chplan.Node, meta engine.Meta) chplan.Node {
 		if isVectorAggregateSampleShape(plan) {
 			attrsCol = "Attributes"
 		}
+		// TimeUnix source:
+		//   - Matrix-shape RangeWindow (OuterRange > 0): the inner SELECT
+		//     exposes the per-row anchor under the literal column
+		//     `anchor_ts`. Forward it so toMatrixStepGrid sees one row per
+		//     anchor across the request's step grid. Without this, the
+		//     outer synthesised `now64(9) - 5s` collapses every per-step
+		//     row into a single point — the matrix pivot then sees one
+		//     sample per series instead of one per step.
+		//   - Vector aggregate over matrix RangeWindow: the inner
+		//     `wrapVectorAggregateForSample` already projected TimeUnix
+		//     from the per-anchor bucket alias. Forward the existing
+		//     `TimeUnix` column rather than overwrite it.
+		//   - Instant shape: synthesise `now64(9) - 5s` as before so the
+		//     matrix pivot doesn't drop the only row when CH-now beats
+		//     the client-end timestamp.
+		var tsExpr chplan.Expr
+		switch {
+		case isVectorAggregateSampleShape(plan):
+			tsExpr = &chplan.ColumnRef{Name: "TimeUnix"}
+		case isMatrixRangeWindow(plan):
+			tsExpr = &chplan.ColumnRef{Name: "anchor_ts"}
+		default:
+			tsExpr = &chplan.Binary{
+				Op:    chplan.OpSub,
+				Left:  &chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}},
+				Right: &chplan.FuncCall{Name: "toIntervalNanosecond", Args: []chplan.Expr{&chplan.LitInt{V: 5_000_000_000}}},
+			}
+		}
 		return &chplan.Project{
 			Input: plan,
 			Projections: []chplan.Projection{
 				{Expr: &chplan.LitString{V: ""}, Alias: "MetricName"},
 				{Expr: &chplan.ColumnRef{Name: attrsCol}, Alias: "Attributes"},
-				// now64(9) - 5s buffer; see prom handler's synthesizedAnchor
-				// docstring. Avoids toMatrixStepGrid dropping the only row
-				// when CH-now > client-end.
-				{Expr: &chplan.Binary{
-					Op:    chplan.OpSub,
-					Left:  &chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}},
-					Right: &chplan.FuncCall{Name: "toIntervalNanosecond", Args: []chplan.Expr{&chplan.LitInt{V: 5_000_000_000}}},
-				}, Alias: "TimeUnix"},
+				{Expr: tsExpr, Alias: "TimeUnix"},
 				{Expr: &chplan.ColumnRef{Name: rangeAggSynthValueColumn}, Alias: "Value"},
 			},
 		}

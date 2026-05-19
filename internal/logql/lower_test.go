@@ -23,12 +23,15 @@ var fixtureDir = filepath.Join("..", "..", "test", "spec", "logql")
 // the LogQL in `query.logql`, lowers it, emits SQL, and compares the
 // result to the recorded `sql` + `args` sections.
 //
-// Fixtures may optionally declare `start:` and `end:` sections (both
-// RFC3339Nano timestamps) — when present the lowering uses
-// [logql.LowerAt] so the emitted SQL carries a Timestamp BETWEEN
-// predicate matching what the Loki handler threads through at request
-// time. Fixtures without those sections lower via [logql.Lower] (no
-// time window) so the existing fixture corpus remains stable.
+// Fixtures may optionally declare `start:` / `end:` / `step:` sections.
+// `start:` + `end:` (both RFC3339Nano) thread a [start, end] window
+// through [logql.LowerAt], so the emitted SQL carries a Timestamp
+// BETWEEN predicate above every Scan(LogsTable). Adding a `step:`
+// duration (e.g. `1m`) lifts the lowering to [logql.LowerAtRange] so
+// range-aggregation lowerings switch to the matrix RangeWindow shape
+// (one row per anchor across [start, end] spaced by step). Fixtures
+// without any of these sections lower via [logql.Lower] (no time
+// window) so the existing fixture corpus remains stable.
 func TestLower(t *testing.T) {
 	t.Parallel()
 
@@ -46,15 +49,18 @@ func TestLower(t *testing.T) {
 			t.Fatalf("ParseExpr(%q): %v", query, err)
 		}
 
-		start, end, err := readWindowSections(c)
+		start, end, step, err := readWindowSections(c)
 		if err != nil {
 			t.Fatalf("window sections: %v", err)
 		}
 
 		var plan chplan.Node
-		if start.IsZero() && end.IsZero() {
+		switch {
+		case start.IsZero() && end.IsZero():
 			plan, err = logql.Lower(context.Background(), expr, s)
-		} else {
+		case step > 0:
+			plan, err = logql.LowerAtRange(context.Background(), expr, s, start, end, step)
+		default:
 			plan, err = logql.LowerAt(context.Background(), expr, s, start, end)
 		}
 		if err != nil {
@@ -73,17 +79,21 @@ func TestLower(t *testing.T) {
 	})
 }
 
-// readWindowSections pulls optional `start:` / `end:` RFC3339Nano
-// sections from c. Missing or empty sections return zero times so the
-// caller falls back to the no-window Lower path.
-func readWindowSections(c *spec.Case) (time.Time, time.Time, error) {
-	var start, end time.Time
+// readWindowSections pulls optional `start:` / `end:` (RFC3339Nano) and
+// `step:` (Go duration) sections from c. Missing or empty sections
+// return zero values so the caller falls back to the no-window Lower
+// path (or the no-step LowerAt path when only start/end are set).
+func readWindowSections(c *spec.Case) (time.Time, time.Time, time.Duration, error) {
+	var (
+		start, end time.Time
+		step       time.Duration
+	)
 	if v, ok := c.Section("start"); ok {
 		v = strings.TrimSpace(v)
 		if v != "" {
 			t, err := time.Parse(time.RFC3339Nano, v)
 			if err != nil {
-				return time.Time{}, time.Time{}, fmt.Errorf("start: %w", err)
+				return time.Time{}, time.Time{}, 0, fmt.Errorf("start: %w", err)
 			}
 			start = t
 		}
@@ -93,12 +103,22 @@ func readWindowSections(c *spec.Case) (time.Time, time.Time, error) {
 		if v != "" {
 			t, err := time.Parse(time.RFC3339Nano, v)
 			if err != nil {
-				return time.Time{}, time.Time{}, fmt.Errorf("end: %w", err)
+				return time.Time{}, time.Time{}, 0, fmt.Errorf("end: %w", err)
 			}
 			end = t
 		}
 	}
-	return start, end, nil
+	if v, ok := c.Section("step"); ok {
+		v = strings.TrimSpace(v)
+		if v != "" {
+			d, err := time.ParseDuration(v)
+			if err != nil {
+				return time.Time{}, time.Time{}, 0, fmt.Errorf("step: %w", err)
+			}
+			step = d
+		}
+	}
+	return start, end, step, nil
 }
 
 func formatArgs(args []any) string {

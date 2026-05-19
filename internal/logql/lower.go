@@ -35,15 +35,36 @@ var tracer = otel.Tracer("github.com/tsouza/cerberus/internal/logql")
 // is filtered down to the requested wire-format window at the SQL layer
 // (the previous behaviour returned every matching log row regardless of
 // the requested window — a Loki wire-format contract violation).
+//
+// Step carries the request's `step` for /loki/api/v1/query_range metric
+// queries. When > 0 (and the [Start, End] window is non-zero), the
+// range-aggregation lowering sets RangeWindow.{Start,End,Step,OuterRange}
+// so the emitter fans across the request's step grid via the matrix
+// path (one row per anchor in [Start, End], spaced by Step) instead of
+// the instant-eval shape that anchors at `now64(9)`. Without this, a
+// metric query whose seeded data lies outside the last 5 minutes of
+// wall-clock returns an empty matrix because the windowed-array filter
+// `arrayFilter(p -> tupleElement(p,1) > now64(9) - <range>, ...)` drops
+// every sample. Mirrors the PromQL LowerAtRange / lowerCtx.step shape
+// in internal/promql/lower.go.
 type lowerCtx struct {
 	Start time.Time
 	End   time.Time
+	Step  time.Duration
 }
 
 // hasTimeWindow reports whether the context carries a non-degenerate
 // [Start, End] pair to inject as a BETWEEN predicate.
 func (c lowerCtx) hasTimeWindow() bool {
 	return !c.Start.IsZero() && !c.End.IsZero()
+}
+
+// rangeMode reports whether the context carries a request step grid
+// (a non-zero Step on top of a non-zero [Start, End] pair). The
+// range-aggregation lowering switches to the matrix RangeWindow shape
+// only when this is true.
+func (c lowerCtx) rangeMode() bool {
+	return c.Step > 0 && c.hasTimeWindow()
 }
 
 // Lower turns a parsed LogQL expression into a chplan tree. No time
@@ -60,6 +81,15 @@ func Lower(ctx context.Context, expr syntax.Expr, s schema.Logs) (chplan.Node, e
 // passes start == end == ts (or [time-step, time] per Loki convention).
 func LowerAt(ctx context.Context, expr syntax.Expr, s schema.Logs, start, end time.Time) (chplan.Node, error) {
 	return lowerWithCtx(ctx, expr, s, lowerCtx{Start: start, End: end})
+}
+
+// LowerAtRange is the range-mode variant of [LowerAt]: it threads a
+// step duration alongside [start, end] so range-aggregation lowerings
+// can emit the matrix RangeWindow shape (one row per anchor across
+// [start, end] spaced by step). Mirrors PromQL's LowerAtRange. Step ≤ 0
+// falls back to the instant shape (same as LowerAt).
+func LowerAtRange(ctx context.Context, expr syntax.Expr, s schema.Logs, start, end time.Time, step time.Duration) (chplan.Node, error) {
+	return lowerWithCtx(ctx, expr, s, lowerCtx{Start: start, End: end, Step: step})
 }
 
 func lowerWithCtx(ctx context.Context, expr syntax.Expr, s schema.Logs, lc lowerCtx) (chplan.Node, error) {
@@ -369,7 +399,8 @@ func logfmtExpressionMergeLabels(prev chplan.Expr, s schema.Logs, exprs []loglib
 		if key == "" {
 			key = ext.Identifier
 		}
-		args = append(args,
+		args = append(
+			args,
 			renameIdentifierOnCollision(s, ext.Identifier),
 			&chplan.MapAccess{
 				Map: kvBase,
@@ -543,7 +574,8 @@ func jsonExpressionMergeLabels(prev chplan.Expr, s schema.Logs, exprs []loglib.L
 		if err != nil {
 			return nil, err
 		}
-		args = append(args,
+		args = append(
+			args,
 			&chplan.LitString{V: ext.Identifier},
 			extract,
 		)
@@ -629,7 +661,8 @@ func regexpMergeLabels(prev chplan.Expr, s schema.Logs, pattern string) (chplan.
 	}
 	mapArgs := make([]chplan.Expr, 0, len(named)*2)
 	for _, g := range named {
-		mapArgs = append(mapArgs,
+		mapArgs = append(
+			mapArgs,
 			&chplan.LitString{V: g.name},
 			// extractAllGroupsHorizontal(...)[<group>][1] — group i,
 			// first match. CH 1-indexes both dimensions. Allocate a

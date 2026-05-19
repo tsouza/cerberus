@@ -170,3 +170,133 @@ func TestProjectSamples_VectorAggregateRefsAttributes(t *testing.T) {
 			"consumed it)", attrsRef.Name, "Attributes")
 	}
 }
+
+// TestProjectSamples_MatrixRangeWindowRefsAnchorTs pins the metric-branch
+// wire-wrap against the loki-compatibility 0/55 regression where every
+// LogQL metric query (`count_over_time` / `rate` / `*_over_time`) over a
+// /loki/api/v1/query_range request returned an empty matrix.
+//
+// Root cause: LogQL's range-aggregation lowering left RangeWindow.Start /
+// End / Step / OuterRange zero, so the chsql emitter took the instant
+// path and anchored the windowed-array filter at `now64(9)`. Any query
+// whose seeded data lay outside the last 5 minutes of wall-clock (the
+// compat harness seeds day-old data) had every sample filtered out by
+// `arrayFilter(p -> tupleElement(p,1) > now64(9) - <range>, ...)`.
+//
+// The fix wires `lc.Step` + `lc.Start` / `lc.End` into the RangeWindow
+// so the matrix path fires (one row per anchor across [Start, End]
+// spaced by Step). The matrix RangeWindow exposes the per-row anchor
+// under the literal column `anchor_ts`; ProjectSamples must forward it
+// into the canonical TimeUnix slot — otherwise the outer synth
+// `now64(9) - 5s` collapses every per-step row into one point and the
+// matrix pivot drops everything but one sample per series.
+//
+// Mirrors the PromQL side's matrix-shape handling in
+// `wrapWithSampleProjection` (internal/api/prom/handler.go).
+func TestProjectSamples_MatrixRangeWindowRefsAnchorTs(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelLogs()
+	l := &logql.Lang{Schema: s}
+
+	// Synthetic matrix-shape RangeWindow: OuterRange + Step set the same
+	// way logql.LowerAtRange does when handed a non-zero step. The
+	// emitter's matrix path projects `anchor_ts` per row; ProjectSamples
+	// must rename it to TimeUnix on the outer SELECT.
+	plan := &chplan.RangeWindow{
+		Input:           &chplan.Scan{Table: s.LogsTable},
+		Func:            "count_over_time",
+		Range:           5 * time.Minute,
+		Step:            time.Minute,
+		OuterRange:      time.Hour,
+		Start:           time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		End:             time.Date(2026, 1, 1, 1, 0, 0, 0, time.UTC),
+		TimestampColumn: s.TimestampColumn,
+		ValueColumn:     "Value",
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.ResourceAttributesColumn}},
+	}
+
+	wrapped := l.ProjectSamples(plan, engine.Meta{IsMetric: true})
+
+	proj, ok := wrapped.(*chplan.Project)
+	if !ok {
+		t.Fatalf("ProjectSamples returned %T, want *chplan.Project", wrapped)
+	}
+	tsSlot := proj.Projections[2]
+	if tsSlot.Alias != "TimeUnix" {
+		t.Errorf("ts slot alias: got %q, want %q", tsSlot.Alias, "TimeUnix")
+	}
+	tsRef, ok := tsSlot.Expr.(*chplan.ColumnRef)
+	if !ok {
+		t.Fatalf("ts slot expr: got %T, want *chplan.ColumnRef (matrix path "+
+			"must forward the inner `anchor_ts` column; a synth now64-based "+
+			"expression would collapse every per-step row into one point)",
+			tsSlot.Expr)
+	}
+	if tsRef.Name != "anchor_ts" {
+		t.Errorf("ts slot ColumnRef.Name: got %q, want %q (matrix-shape "+
+			"RangeWindow exposes the per-row anchor under the literal column "+
+			"`anchor_ts`; synthing `now64(9) - 5s` here would drop every "+
+			"per-step row outside the matrix pivot's 5-minute lookback)",
+			tsRef.Name, "anchor_ts")
+	}
+}
+
+// TestProjectSamples_VectorAggregateOverMatrixForwardsTimeUnix pins the
+// "vector aggregation over a matrix-shape RangeWindow" path against the
+// sibling regression: `sum(count_over_time({...}[5m]))` over query_range.
+//
+// Inner shape: `wrapVectorAggregateForSample` re-aliases the Aggregate's
+// per-anchor bucket column to `TimeUnix` so the canonical Sample contract
+// carries one row per step. ProjectSamples must forward that existing
+// `TimeUnix` column rather than overwrite it with `now64(9) - 5s`; the
+// overwrite would collapse every per-step row into one point and the
+// matrix pivot would emit one sample per series instead of one per step.
+func TestProjectSamples_VectorAggregateOverMatrixForwardsTimeUnix(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelLogs()
+	l := &logql.Lang{Schema: s}
+
+	// Synthetic vector-aggregate output (matches `wrapVectorAggregateForSample`
+	// in range mode where bucket_ts → TimeUnix). The presence of an
+	// "Attributes" alias is the canonical-shape marker; the TimeUnix slot
+	// is a `bucket_ts` ColumnRef (re-aliased to TimeUnix by the inner
+	// Project) carrying the per-anchor timestamp.
+	plan := &chplan.Project{
+		Input: &chplan.Scan{Table: s.LogsTable},
+		Projections: []chplan.Projection{
+			{Expr: &chplan.LitString{V: ""}, Alias: "MetricName"},
+			{Expr: &chplan.FuncCall{
+				Name: "CAST",
+				Args: []chplan.Expr{
+					&chplan.FuncCall{Name: "map", Args: nil},
+					&chplan.LitString{V: "Map(String,String)"},
+				},
+			}, Alias: "Attributes"},
+			{Expr: &chplan.ColumnRef{Name: "bucket_ts"}, Alias: "TimeUnix"},
+			{Expr: &chplan.ColumnRef{Name: "Value"}, Alias: "Value"},
+		},
+	}
+
+	wrapped := l.ProjectSamples(plan, engine.Meta{IsMetric: true})
+
+	proj, ok := wrapped.(*chplan.Project)
+	if !ok {
+		t.Fatalf("ProjectSamples returned %T, want *chplan.Project", wrapped)
+	}
+	tsSlot := proj.Projections[2]
+	tsRef, ok := tsSlot.Expr.(*chplan.ColumnRef)
+	if !ok {
+		t.Fatalf("ts slot expr: got %T, want *chplan.ColumnRef "+
+			"(vector-aggregate path must forward the inner `TimeUnix` column; "+
+			"a synth now64-based expression would collapse every per-step "+
+			"row into one point)", tsSlot.Expr)
+	}
+	if tsRef.Name != "TimeUnix" {
+		t.Errorf("ts slot ColumnRef.Name: got %q, want %q (vector-aggregate "+
+			"already projected the per-anchor bucket alias as the canonical "+
+			"`TimeUnix` slot via wrapVectorAggregateForSample — overwriting "+
+			"with synth now64 would drop per-step rows)", tsRef.Name, "TimeUnix")
+	}
+}

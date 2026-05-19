@@ -38,6 +38,20 @@ func lowerVectorAggregation(e *syntax.VectorAggregationExpr, s schema.Logs, lc l
 		return nil, err
 	}
 
+	// In range mode the inner plan is a matrix-shape RangeWindow that
+	// exposes a per-row `anchor_ts` column (the eval anchor for that
+	// row). The aggregation MUST include that anchor in its GROUP BY
+	// keys — otherwise CH collapses every per-step row of a series-set
+	// into one aggregate and the wire matrix has a single value per
+	// series instead of one per step. Mirrors the PromQL aggregate
+	// lowering's `rangeBucketed` path in internal/promql/lower.go.
+	const bucketAlias = "bucket_ts"
+	rangeBucketed := lc.rangeMode() && isMatrixRangeWindow(input)
+	if rangeBucketed {
+		groupBy = append(groupBy, &chplan.ColumnRef{Name: "anchor_ts"})
+		aliases = append(aliases, bucketAlias)
+	}
+
 	agg := &chplan.Aggregate{
 		Input:              input,
 		GroupBy:            groupBy,
@@ -45,7 +59,11 @@ func lowerVectorAggregation(e *syntax.VectorAggregationExpr, s schema.Logs, lc l
 		AggFuncs:           []chplan.AggFunc{aggFunc},
 		DropEmptyOnNoGroup: true,
 	}
-	return wrapVectorAggregateForSample(agg, e, s, aliases), nil
+	userAliases := aliases
+	if rangeBucketed {
+		userAliases = aliases[:len(aliases)-1]
+	}
+	return wrapVectorAggregateForSample(agg, e, s, userAliases, rangeBucketed, bucketAlias), nil
 }
 
 // vectorAggregationGroupBy mirrors PromQL aggregateGroupBy, but Loki's
@@ -125,9 +143,15 @@ func buildVectorAggFunc(e *syntax.VectorAggregationExpr, _ schema.Logs) (chplan.
 //	Attributes  = map('lbl0', gkey_0, ...)    for `by (...)`
 //	            | gkey_0                        for `without (...)` (mapFilter output)
 //	            | empty Map(String,String)      for unaggregated
-//	TimeUnix    = now64(9)
+//	TimeUnix    = now64(9)                      (instant mode)
+//	            | <bucketAlias>                  (range mode: per-anchor anchor_ts)
 //	Value       = <agg alias>
-func wrapVectorAggregateForSample(agg *chplan.Aggregate, e *syntax.VectorAggregationExpr, s schema.Logs, aliases []string) chplan.Node {
+//
+// In range mode (rangeBucketed=true) the inner Aggregate carries the
+// per-anchor timestamp under bucketAlias; the outer Project re-aliases
+// it to TimeUnix so the canonical Sample shape exposes one row per step
+// instead of collapsing to one row per series at `now64(9)`.
+func wrapVectorAggregateForSample(agg *chplan.Aggregate, e *syntax.VectorAggregationExpr, s schema.Logs, aliases []string, rangeBucketed bool, bucketAlias string) chplan.Node {
 	var attrs chplan.Expr
 	switch {
 	case len(aliases) == 0:
@@ -152,12 +176,17 @@ func wrapVectorAggregateForSample(agg *chplan.Aggregate, e *syntax.VectorAggrega
 		valueCol      = "Value"
 	)
 
+	tsExpr := chplan.Expr(&chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}})
+	if rangeBucketed {
+		tsExpr = &chplan.ColumnRef{Name: bucketAlias}
+	}
+
 	return &chplan.Project{
 		Input: agg,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: metricNameCol},
 			{Expr: attrs, Alias: attrsCol},
-			{Expr: &chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}}, Alias: tsCol},
+			{Expr: tsExpr, Alias: tsCol},
 			{Expr: &chplan.ColumnRef{Name: "Value"}, Alias: valueCol},
 		},
 	}
