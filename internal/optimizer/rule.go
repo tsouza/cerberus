@@ -307,11 +307,21 @@ func rewriteChildren(n chplan.Node, fn func(chplan.Node) (chplan.Node, bool)) (c
 		return &cp, true
 	case *chplan.TopK:
 		newInput, ch := fn(v.Input)
-		if !ch {
+		var newKExpr chplan.Node
+		kCh := false
+		if v.KExpr != nil {
+			newKExpr, kCh = fn(v.KExpr)
+		}
+		if !ch && !kCh {
 			return v, false
 		}
 		cp := *v
-		cp.Input = newInput
+		if ch {
+			cp.Input = newInput
+		}
+		if kCh {
+			cp.KExpr = newKExpr
+		}
 		return &cp, true
 	}
 	return n, false
