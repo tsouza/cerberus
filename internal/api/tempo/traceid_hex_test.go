@@ -138,6 +138,37 @@ func TestCanonicalSampleProjections_StripsTraceIDLeadingZeros(t *testing.T) {
 	}
 }
 
+// TestSpansetAggregateSampleProjections_StripsTraceIDLeadingZeros pins
+// the wrap-projection used for `{ ... } | count() > 0`,
+// `| avg(duration) > 0`, and the other per-trace spanset aggregates
+// (see internal/traceql/aggregate.go). The inner Aggregate's
+// `GroupBy: [TraceId]` exposes the raw 32-char zero-padded hex from
+// the OTel-CH column; the outer wrap projection must route it
+// through stripLeadingHexZeros so the `__cerberus_traceID` reserved
+// label arrives at the shadow-mode differ in Tempo's
+// leading-zero-stripped form. Without this strip the differ pairs
+// cerberus rows (e.g. `00af843259b0a78f5cbe59e11cbaf66b`) against
+// Tempo (`af843259b0a78f5cbe59e11cbaf66b`) by mismatched keys,
+// generating spurious missing_in_a / missing_in_b reasons across the
+// spanset-aggregate compat cases.
+func TestSpansetAggregateSampleProjections_StripsTraceIDLeadingZeros(t *testing.T) {
+	t.Parallel()
+
+	projs := spansetAggregateSampleProjections()
+
+	plan := &chplan.Project{
+		Input:       &chplan.Scan{Table: "inner_aggregate"},
+		Projections: projs,
+	}
+	sql, _, err := chsql.Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	if !strings.Contains(sql, "replaceRegexpOne(`TraceId`,") {
+		t.Errorf("spanset-aggregate projection must wrap TraceId in replaceRegexpOne; got:\n%s", sql)
+	}
+}
+
 // TestTraceByIDProjections_StripsAllIDColumns covers the
 // /api/traces/{id} response path. TraceId, SpanId, and ParentSpanId
 // all need the leading-zero strip to match Tempo's response shape.
