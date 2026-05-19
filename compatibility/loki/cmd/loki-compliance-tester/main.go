@@ -172,7 +172,7 @@ func run() error {
 		// gaps, so counting them would penalise the score for
 		// intentional exclusions.
 		passed, total := scoreCounts(results)
-		s := score.Compute("loki compat", passed, total)
+		s := score.Compute("LogQL compat", passed, total)
 		if err := score.Write(f.scorePath, s); err != nil {
 			return fmt.Errorf("writing score: %w", err)
 		}

@@ -98,7 +98,7 @@ func run() error {
 	var (
 		reportPath = flag.String("report", "", "promql-compliance-tester report JSON (required)")
 		scorePath  = flag.String("score", "", "shields.io endpoint-badge score JSON output (required)")
-		label      = flag.String("label", "prometheus compat", "badge label text")
+		label      = flag.String("label", "PromQL compat", "badge label text")
 	)
 	flag.Parse()
 

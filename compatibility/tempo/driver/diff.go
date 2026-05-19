@@ -142,7 +142,7 @@ func runDiff(args []string) error {
 			logger.Info("expected failure (counted as diff in score)", "name", r.Case.Name)
 		}
 	}
-	s := score.Compute("tempo compat", passed, total)
+	s := score.Compute("TraceQL compat", passed, total)
 	if err := score.Write(*scorePath, s); err != nil {
 		return fmt.Errorf("write score: %w", err)
 	}

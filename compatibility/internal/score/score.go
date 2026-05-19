@@ -39,7 +39,7 @@ type Score struct {
 	// a v2 contract.
 	SchemaVersion int `json:"schemaVersion"`
 
-	// Label is the badge's left-hand text (e.g. "tempo compat").
+	// Label is the badge's left-hand text (e.g. "TraceQL compat").
 	Label string `json:"label"`
 
 	// Message is the badge's right-hand text — by convention the
