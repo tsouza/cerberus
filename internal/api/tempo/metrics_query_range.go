@@ -259,9 +259,18 @@ func (h *Handler) handleMetricsQueryRange(w http.ResponseWriter, r *http.Request
 
 	exSQL, exArgs, exErr := chsql.EmitMetricsExemplars(ctx, rw, metrics,
 		h.Schema.TraceIDColumn, h.Schema.SpanIDColumn, 1)
-	if exErr == nil {
+	if exErr != nil {
+		// Emit failure: the matrix response still ships with an empty
+		// `Exemplars` array per Tempo's wire shape. Warn so production
+		// can see this rather than silently degrade.
+		h.Logger.Warn("cerberus tempo metrics_query_range exemplars emit failed (matrix returns without exemplars)", "err", exErr)
+	} else {
 		exSamples, qErr := h.Client.Query(ctx, exSQL, exArgs...)
-		if qErr == nil {
+		if qErr != nil {
+			// Execution failure: same wire shape applies. Warn so a
+			// transient CH failure doesn't go unnoticed.
+			h.Logger.Warn("cerberus tempo metrics_query_range exemplars query failed (matrix returns without exemplars)", "err", qErr)
+		} else {
 			attachExemplars(series, exSamples, metrics)
 		}
 	}
