@@ -93,16 +93,17 @@ jobs:
   # via `git ls-files` (already excludes .gitignored paths) and fails
   # the build if any match.
   #
-  # The second step rejects forward-looking-promise wording in test
-  # files and TXTAR fixtures — the exact phrases PR #454's scrub
-  # eliminated: "deferred to RC*", "deferred to a follow-up",
-  # "post-GA", "not yet supported", "not yet implemented",
-  # "skipped pending", "M[0-9].[0-9]" milestone refs, and bare
-  # `RC[2-9]` references tied to feature gates. The bare words
-  # "deferred" / "skipped" / "not implemented" are NOT banned — they
-  # have legitimate uses (Go `defer` discussions, SkipReason values
-  # in differ test data, `errors.New("not implemented")` interface
-  # stubs, `skipped := 0` counters).
+  # The second step rejects "not implemented" / `\bskipped\b` /
+  # `\bdeferred\b` in test files and TXTAR fixtures. The rule is
+  # intentionally broad: bare words count, not just phrase patterns.
+  # Every usage is a discipline-erosion smell — implementable, or
+  # rewritable to a neutral verb (dropped / excluded / rejected /
+  # bypassed), or removable. A Go variable named `skipped`, a counter
+  # `errors.New("not implemented")`, a comment saying "the deferred
+  # routine" — all count.
+  #
+  # The maintainer's NON-NEGOTIABLE GA rule is "absolutely nothing is
+  # skipped / not implemented / deferred." This gate enforces it.
   #
   # Vendored upstream snapshots under `harness/*/upstream/**` and
   # `compatibility/*/upstream/**` are excluded — reference material
@@ -124,14 +125,14 @@ jobs:
             echo "::error::t.Skip / t.Skipf / t.SkipNow found in test files — fix the bug, do not skip"
             exit 1
           fi
-      - name: Reject forward-looking-promise wording in tests + fixtures
+      - name: Reject "not implemented" / "skipped" / "deferred" in tests + fixtures
         run: |
           if git ls-files -z -- \
               '*_test.go' \
               '*.txtar' \
               ':!:harness/*/upstream/**' \
               ':!:compatibility/*/upstream/**' \
-              | xargs -0 grep -niEH 'deferred to (RC[0-9]+|a follow-up|future|next release|post-GA)|post-GA|not yet (supported|implemented|wired)|skipped pending|RC[2-9] (parsers|grouping|cleanup|follow-up)|M[0-9]\.[0-9] (milestone|follow-up)' --; then
-            echo "::error::forward-looking-promise wording found in test files or TXTAR fixtures — implement the feature or remove the comment, do not punt"
+              | xargs -0 grep -niEH 'not implemented|\bskipped\b|\bdeferred\b' --; then
+            echo "::error::discipline-erosion wording (\"not implemented\" / \"skipped\" / \"deferred\") found in test files or TXTAR fixtures — implement the feature, rewrite to a neutral verb (dropped / excluded / rejected / bypassed), or remove the comment"
             exit 1
           fi
