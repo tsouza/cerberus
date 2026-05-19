@@ -319,30 +319,120 @@ func TestMetricsQueryRange_ZeroFillCountOverTime(t *testing.T) {
 	}
 }
 
-// TestMetricsQueryRange_ZeroFillSkippedForAvgOverTime pins the contract
-// that the zero-fill pass only fires for count_over_time / rate. For
-// sum / avg / min / max / quantile_over_time, Tempo's
-// OverTimeAggregator initialises val=NaN and the ToProto loop skips
-// NaN samples, so the observed-only emission cerberus produces today
-// is the wire-correct match — zero-filling would inject false zeros
-// where Tempo emits nothing.
-func TestMetricsQueryRange_ZeroFillSkippedForAvgOverTime(t *testing.T) {
+// TestMetricsQueryRange_ZeroFillSkippedForOverTimeAggs pins the
+// contract that the zero-fill pass does NOT fire for sum / avg / min /
+// max _over_time. Tempo's OverTimeAggregator initialises its value to
+// NaN and the SeriesSet.ToProto loop skips NaN samples
+// (`pkg/traceql/engine_metrics.go`'s OverTimeAggregator + ToProto), so
+// the observed-only emission cerberus produces is the wire-correct
+// match — zero-filling would inject false zeros where Tempo emits
+// nothing.
+//
+// `quantile_over_time` is the inverse case (HistogramAggregator.Results
+// emits 0.0 at empty buckets, not NaN) and is asserted by
+// TestMetricsQueryRange_ZeroFillQuantileOverTime below.
+func TestMetricsQueryRange_ZeroFillSkippedForOverTimeAggs(t *testing.T) {
+	t.Parallel()
+
+	mid := time.Date(2026, 5, 12, 10, 1, 0, 0, time.UTC)
+
+	cases := []struct {
+		name  string
+		query string
+		op    string
+	}{
+		{"avg_over_time", "{} | avg_over_time(duration)", "avg_over_time"},
+		{"sum_over_time", "{} | sum_over_time(duration)", "sum_over_time"},
+		{"min_over_time", "{} | min_over_time(duration)", "min_over_time"},
+		{"max_over_time", "{} | max_over_time(duration)", "max_over_time"},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			q := &stubQuerier{samples: []chclient.Sample{{
+				MetricName: "",
+				// Matrix-shape SQL projects `map('__name__',
+				// '<op>')` for ungrouped queries (see
+				// wrapMetricsForSample); stub mimics the cursor's
+				// surfaced Labels map.
+				Labels:    map[string]string{"__name__": tc.op},
+				Timestamp: mid,
+				Value:     42.0,
+			}}}
+			srv := newServer(q, "v1.0.0-test")
+			t.Cleanup(srv.Close)
+
+			u := metricsQueryRangeURL(srv.URL, tc.query, map[string]string{
+				"start": fixtureStartUnix,
+				"end":   fixtureEndUnix,
+				"step":  "60s",
+			})
+			resp, err := http.Get(u)
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status=%d body=%s", resp.StatusCode, readBody(t, resp))
+			}
+			var body tempo.MetricsQueryRangeResponse
+			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if len(body.Series) != 1 {
+				t.Fatalf("expected 1 series, got %d", len(body.Series))
+			}
+			s := body.Series[0]
+			if len(s.Samples) != 1 {
+				t.Errorf("expected 1 observed sample for %s (no zero-fill), got %d: %+v",
+					tc.op, len(s.Samples), s.Samples)
+			}
+			if len(s.Samples) > 0 && s.Samples[0].Value != 42.0 {
+				t.Errorf("expected observed sample value 42, got %v", s.Samples[0].Value)
+			}
+		})
+	}
+}
+
+// TestMetricsQueryRange_ZeroFillQuantileOverTime pins the contract
+// that quantile_over_time responses zero-fill the full matrix step
+// grid across [start, end] — even buckets where no spans landed — to
+// match Tempo's reference HistogramAggregator. Its Results method
+// explicitly sets `ts.Values[i] = 0.0` for any interval whose bucket
+// list is empty (`pkg/traceql/engine_metrics.go`), so ToProto walks
+// every anchor and emits a 0-valued sample rather than NaN-skipping
+// it. Without this fill the tempo-compat differ trips on
+// `metrics_quantile_over_time_p95: samples count tempo=121 vs
+// cerberus=3` against the same seeded dataset (PR #562 unblocked the
+// per-phi label shape; this case is what surfaced the bucket-count
+// gap once the label shape stopped masking it).
+//
+// Setup: 3-minute window @ 60s step → 4 anchors (10:00 / 10:01 / 10:02
+// / 10:03). The CH stub returns exactly one row (10:01) carrying the
+// `p="0.95"` HistogramAggregator label cerberus surfaces for the
+// single-phi branch; the handler must surface a 4-sample stream with
+// the missing three anchors at value 0.
+func TestMetricsQueryRange_ZeroFillQuantileOverTime(t *testing.T) {
 	t.Parallel()
 
 	mid := time.Date(2026, 5, 12, 10, 1, 0, 0, time.UTC)
 	q := &stubQuerier{samples: []chclient.Sample{{
 		MetricName: "",
-		// Matrix-shape SQL projects `map('__name__', 'avg_over_time')`
-		// for ungrouped queries (see wrapMetricsForSample); stub mimics
-		// the cursor's surfaced Labels map.
-		Labels:    map[string]string{"__name__": "avg_over_time"},
+		// Matrix-shape SQL projects `map('p', '0.95')` for the
+		// single-phi quantile branch — wrapMetricsForSample injects
+		// the inline-literal phi as the wire label, mirroring Tempo's
+		// HistogramAggregator emit shape.
+		Labels:    map[string]string{"p": "0.95"},
 		Timestamp: mid,
-		Value:     42.0,
+		Value:     0.5,
 	}}}
 	srv := newServer(q, "v1.0.0-test")
 	t.Cleanup(srv.Close)
 
-	u := metricsQueryRangeURL(srv.URL, "{} | avg_over_time(duration)", map[string]string{
+	u := metricsQueryRangeURL(srv.URL, "{} | quantile_over_time(duration, 0.95)", map[string]string{
 		"start": fixtureStartUnix,
 		"end":   fixtureEndUnix,
 		"step":  "60s",
@@ -355,20 +445,44 @@ func TestMetricsQueryRange_ZeroFillSkippedForAvgOverTime(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status=%d body=%s", resp.StatusCode, readBody(t, resp))
 	}
+
 	var body tempo.MetricsQueryRangeResponse
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	if len(body.Series) != 1 {
-		t.Fatalf("expected 1 series, got %d", len(body.Series))
+		t.Fatalf("expected 1 series, got %d: %+v", len(body.Series), body)
 	}
 	s := body.Series[0]
-	if len(s.Samples) != 1 {
-		t.Errorf("expected 1 observed sample for avg_over_time (no zero-fill), got %d: %+v",
-			len(s.Samples), s.Samples)
+	if len(s.Samples) != 4 {
+		t.Fatalf("expected 4 samples (1 observed + 3 zero-fill), got %d: %+v", len(s.Samples), s.Samples)
 	}
-	if s.Samples[0].Value != 42.0 {
-		t.Errorf("expected observed sample value 42, got %v", s.Samples[0].Value)
+	// Samples MUST be sorted ascending by timestamp and the observed
+	// sample's value must survive the fill verbatim. Missing anchors
+	// land at 0 (Tempo HistogramAggregator parity).
+	wantValues := []float64{0.0, 0.5, 0.0, 0.0}
+	for i, want := range wantValues {
+		if s.Samples[i].Value != want {
+			t.Errorf("sample[%d].Value = %v, want %v (full stream: %+v)", i, s.Samples[i].Value, want, s.Samples)
+		}
+	}
+	for i := 1; i < len(s.Samples); i++ {
+		if s.Samples[i-1].TimestampMs >= s.Samples[i].TimestampMs {
+			t.Errorf("samples not sorted ascending: %+v", s.Samples)
+		}
+	}
+	// Sample timestamps must exactly cover the matrix anchor grid the
+	// chsql emitter produced — `end - i*step` for i in [0, N). Verify
+	// the first / last anchors line up with fixtureStartUnix /
+	// fixtureEndUnix so the wire grid aligns with what Tempo returns
+	// for the same request.
+	startMs := mustParseUnix(t, fixtureStartUnix).UnixMilli()
+	endMs := mustParseUnix(t, fixtureEndUnix).UnixMilli()
+	if s.Samples[0].TimestampMs != startMs {
+		t.Errorf("first sample ts = %d, want fixtureStart=%d", s.Samples[0].TimestampMs, startMs)
+	}
+	if s.Samples[len(s.Samples)-1].TimestampMs != endMs {
+		t.Errorf("last sample ts = %d, want fixtureEnd=%d", s.Samples[len(s.Samples)-1].TimestampMs, endMs)
 	}
 }
 
