@@ -411,6 +411,15 @@ func stripLeadingHexZeros(col string) chplan.Expr {
 // searchKeyTraceID reuses the same `__cerberus_traceID` slot on the
 // /api/search path so toTraceSummaries can group spans by real TraceID
 // rather than synthesising a key from (SpanName + Timestamp).
+//
+// searchKeyParentSpanID reuses the same `__cerberus_parentSpanID` slot
+// on the /api/search path so toTraceSummaries can identify the per-trace
+// root span — the row where ParentSpanId is empty. Without this, the
+// shaper anchors RootServiceName / RootTraceName on whichever span CH
+// happens to return first, which for multi-span traces is typically a
+// child span (Tempo's wire spec says rootTraceName is the name of the
+// span at the top of the trace tree). See toTraceSummaries for the
+// resolution logic and the fallback rules for broken or truncated traces.
 const (
 	traceByIDKeyTraceID       = "__cerberus_traceID"
 	traceByIDKeySpanID        = "__cerberus_spanID"
@@ -424,6 +433,11 @@ const (
 	// as traceByIDKeyTraceID — the two paths never overlap (search keeps
 	// the slot for the trace-id, trace-by-id keeps it for the same).
 	searchKeyTraceID = traceByIDKeyTraceID
+	// searchKeyParentSpanID is the reserved Labels key carrying the
+	// hex-encoded ParentSpanId on /api/search responses. Reuses the
+	// traceByIDKeyParentSpanID slot — same constant value, same
+	// namespace; the two paths never overlap.
+	searchKeyParentSpanID = traceByIDKeyParentSpanID
 )
 
 // wrapWithSampleProjection adds a Project on top of plan that emits
@@ -529,21 +543,30 @@ func wrapWithSampleProjection(plan chplan.Node, s schema.Traces, meta engine.Met
 // (`>>` / `<<`) wrap path, where the inner SELECT exposes R's columns
 // unqualified to the outer scope.
 //
-// The Attributes map merges ResourceAttributes with a single
-// reserved-key entry (`__cerberus_traceID` → leading-zero-stripped hex
-// TraceId) so toTraceSummaries can group spans into per-trace summaries
-// by real TraceID rather than synthesising a key from (SpanName +
-// Timestamp). Same mapConcat pattern as traceByIDProjections; the
-// resource keys (`service.*`, `k8s.*`, …) never collide with the
-// `__cerberus_*` namespace so no precedence surprises.
+// The Attributes map merges ResourceAttributes with two reserved-key
+// entries:
+//   - `__cerberus_traceID` → leading-zero-stripped hex TraceId — so
+//     toTraceSummaries can group spans into per-trace summaries by real
+//     TraceID rather than synthesising a key from (SpanName + Timestamp).
+//   - `__cerberus_parentSpanID` → leading-zero-stripped hex ParentSpanId
+//     — so toTraceSummaries can resolve the root span per trace (Tempo's
+//     wire spec anchors rootServiceName / rootTraceName on the span where
+//     ParentSpanId is empty, not the first span returned by the
+//     underlying engine).
+//
+// Same mapConcat pattern as traceByIDProjections; the resource keys
+// (`service.*`, `k8s.*`, …) never collide with the `__cerberus_*`
+// namespace so no precedence surprises.
 func canonicalSampleProjections(s schema.Traces) []chplan.Projection {
-	traceIDMap := &chplan.FuncCall{Name: "map", Args: []chplan.Expr{
+	reservedMap := &chplan.FuncCall{Name: "map", Args: []chplan.Expr{
 		&chplan.LitString{V: searchKeyTraceID},
 		stripLeadingHexZeros(s.TraceIDColumn),
+		&chplan.LitString{V: searchKeyParentSpanID},
+		stripLeadingHexZeros(s.ParentSpanIDColumn),
 	}}
 	mergedAttrs := &chplan.FuncCall{Name: "mapConcat", Args: []chplan.Expr{
 		&chplan.ColumnRef{Name: s.ResourceAttributesColumn},
-		traceIDMap,
+		reservedMap,
 	}}
 	return []chplan.Projection{
 		{Expr: &chplan.ColumnRef{Name: s.SpanNameColumn}, Alias: "MetricName"},
@@ -573,13 +596,15 @@ func canonicalSampleProjections(s schema.Traces) []chplan.Projection {
 // for parity with the historical descendant/ancestor split, but both
 // arms now emit identical projections.
 func rQualifiedSampleProjections(s schema.Traces) []chplan.Projection {
-	traceIDMap := &chplan.FuncCall{Name: "map", Args: []chplan.Expr{
+	reservedMap := &chplan.FuncCall{Name: "map", Args: []chplan.Expr{
 		&chplan.LitString{V: searchKeyTraceID},
 		stripLeadingHexZeros(s.TraceIDColumn),
+		&chplan.LitString{V: searchKeyParentSpanID},
+		stripLeadingHexZeros(s.ParentSpanIDColumn),
 	}}
 	mergedAttrs := &chplan.FuncCall{Name: "mapConcat", Args: []chplan.Expr{
 		&chplan.ColumnRef{Name: s.ResourceAttributesColumn},
-		traceIDMap,
+		reservedMap,
 	}}
 	return []chplan.Projection{
 		{Expr: &chplan.ColumnRef{Name: s.SpanNameColumn}, Alias: "MetricName"},
@@ -714,17 +739,32 @@ func isAggregateShape(plan chplan.Node) bool {
 // aggregate plumbing lands).
 //
 // chclient.Sample's MetricName carries SpanName here (per the wrap
-// projection above) and Attributes carries ResourceAttributes plus a
-// reserved `__cerberus_traceID` entry (searchKeyTraceID); we use the
-// reserved entry as the grouping key so spans share a row when they
-// share a real trace, and derive RootServiceName from
-// Attributes['service.name']. The reserved entry is stripped from
-// the returned RootServiceName lookup since it's namespaced under
-// `__cerberus_*` and never collides with OTel-spec attribute keys.
+// projection above) and Attributes carries ResourceAttributes plus
+// two reserved entries:
+//   - `__cerberus_traceID` (searchKeyTraceID) — the grouping key so
+//     multi-span traces collapse into one summary row.
+//   - `__cerberus_parentSpanID` (searchKeyParentSpanID) — used to
+//     identify the per-trace root span (Tempo's wire spec anchors
+//     rootServiceName / rootTraceName on the span at the top of the
+//     trace tree, where ParentSpanId is empty/unset, not whichever
+//     span the underlying engine happens to return first).
 //
-// Defensive: samples missing the reserved key (older fixtures, stub
-// queriers in tests) fall back to (SpanName | Timestamp) so partial
-// data still surfaces a row rather than silently dropping.
+// Root-span resolution:
+//   - Prefer the row where ParentSpanId == "" (the actual root). Among
+//     multiple roots (broken trace), the earliest by start time wins —
+//     same fallback Tempo uses internally.
+//   - When no row in the matched set is a root (truncated trace; the
+//     matcher only hit children), fall back to the earliest span's
+//     metadata. This degrades gracefully — the search response still
+//     surfaces *something* identifying the trace.
+//
+// Defensive: samples missing the reserved trace-ID key (older fixtures,
+// stub queriers in tests) fall back to (SpanName | Timestamp) so
+// partial data still surfaces a row rather than silently dropping.
+// Samples missing the parent-span-id key default to a non-root
+// classification (since we can't tell — older fixtures pre-date the
+// reserved slot); the trace's RootService/RootTraceName then anchor
+// on the earliest-span fallback path.
 func toTraceSummaries(samples []chclient.Sample) []TraceSummary {
 	type acc struct {
 		traceID     string
@@ -732,6 +772,17 @@ func toTraceSummaries(samples []chclient.Sample) []TraceSummary {
 		traceName   string
 		startNS     int64
 		durationNS  int64
+		// rootStartNS pins the timestamp of the best root-span candidate
+		// seen so far (smallest start time wins ties). 0 means "no
+		// root span seen yet"; we anchor on the earliest-span fallback
+		// in that case.
+		rootStartNS int64
+		// earliestStartNS pins the earliest-by-timestamp span seen,
+		// regardless of root status. Used as the fallback anchor for
+		// truncated traces where no root is in the matched set.
+		earliestStartNS int64
+		// hasRoot is true once we've seen a span with ParentSpanId == "".
+		hasRoot bool
 	}
 	byTrace := map[string]*acc{}
 	for _, s := range samples {
@@ -745,11 +796,8 @@ func toTraceSummaries(samples []chclient.Sample) []TraceSummary {
 		}
 		a, ok := byTrace[key]
 		if !ok {
-			a = &acc{traceID: traceID, traceName: s.MetricName}
+			a = &acc{traceID: traceID}
 			byTrace[key] = a
-		}
-		if svc, ok := s.Labels["service.name"]; ok {
-			a.serviceName = svc
 		}
 		ns := s.Timestamp.UnixNano()
 		if a.startNS == 0 || ns < a.startNS {
@@ -757,6 +805,33 @@ func toTraceSummaries(samples []chclient.Sample) []TraceSummary {
 		}
 		if int64(s.Value) > a.durationNS {
 			a.durationNS = int64(s.Value)
+		}
+
+		// Resolve root-span metadata. The reserved __cerberus_parentSpanID
+		// slot carries the parent ID; empty means this row is the root.
+		// When the slot is missing (older fixtures / stub queriers),
+		// treat every row as a non-root candidate so the fallback path
+		// runs — `parentID, hasParentSlot := ...` captures the
+		// "did we get the projection" signal independently of the
+		// emptiness check.
+		parentID, hasParentSlot := s.Labels[searchKeyParentSpanID]
+		isRoot := hasParentSlot && parentID == ""
+		svc := s.Labels["service.name"]
+		switch {
+		case isRoot && (!a.hasRoot || ns < a.rootStartNS):
+			// First root, or an earlier root (broken trace with
+			// multiple ParentSpanId="" spans — Tempo picks the
+			// earliest by start time, we mirror that).
+			a.hasRoot = true
+			a.rootStartNS = ns
+			a.serviceName = svc
+			a.traceName = s.MetricName
+		case !a.hasRoot && (a.earliestStartNS == 0 || ns < a.earliestStartNS):
+			// No root seen yet (truncated trace) — anchor on the
+			// earliest-by-timestamp child as a graceful fallback.
+			a.earliestStartNS = ns
+			a.serviceName = svc
+			a.traceName = s.MetricName
 		}
 	}
 	out := make([]TraceSummary, 0, len(byTrace))
