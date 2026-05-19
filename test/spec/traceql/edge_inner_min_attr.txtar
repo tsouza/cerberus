@@ -6,22 +6,22 @@
 [2] string = "x"
 [3] int64 = 3
 -- sql --
-SELECT * FROM (SELECT min(`SpanAttributes`[?]) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?))) WHERE (`Value` < ?)
+SELECT * FROM (SELECT min(toFloat64OrZero(`SpanAttributes`[?])) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?))) WHERE (`Value` < ?)
 -- seed --
 CREATE TABLE otel_traces (
     ResourceAttributes Map(String, String),
-    SpanAttributes Map(String, UInt64)
+    SpanAttributes Map(String, String)
 ) ENGINE = Memory;
 INSERT INTO otel_traces VALUES
-    (map('service.name', 'x'), map('attempts', 1)),
-    (map('service.name', 'x'), map('attempts', 5)),
-    (map('service.name', 'x'), map('attempts', 9));
+    (map('service.name', 'x'), map('attempts', '1')),
+    (map('service.name', 'x'), map('attempts', '5')),
+    (map('service.name', 'x'), map('attempts', '9'));
 -- expected_rows --
 [
-  [1]
+  [1.0]
 ]
 -- chplan --
 Filter predicate=(Value < 3)
-  Aggregate groupBy=[] funcs=[min(SpanAttributes["attempts"]) AS Value]
+  Aggregate groupBy=[] funcs=[min(toFloat64OrZero(SpanAttributes["attempts"])) AS Value]
     Filter predicate=(ResourceAttributes["service.name"] = "x")
       Scan(otel_traces)

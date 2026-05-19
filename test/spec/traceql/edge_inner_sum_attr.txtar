@@ -6,22 +6,22 @@
 [2] string = "x"
 [3] int64 = 1000
 -- sql --
-SELECT * FROM (SELECT sum(`SpanAttributes`[?]) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?))) WHERE (`Value` > ?)
+SELECT * FROM (SELECT sum(toFloat64OrZero(`SpanAttributes`[?])) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?))) WHERE (`Value` > ?)
 -- seed --
 CREATE TABLE otel_traces (
     ResourceAttributes Map(String, String),
-    SpanAttributes Map(String, UInt64)
+    SpanAttributes Map(String, String)
 ) ENGINE = Memory;
 INSERT INTO otel_traces VALUES
-    (map('service.name', 'x'), map('size', 400)),
-    (map('service.name', 'x'), map('size', 500)),
-    (map('service.name', 'x'), map('size', 600));
+    (map('service.name', 'x'), map('size', '400')),
+    (map('service.name', 'x'), map('size', '500')),
+    (map('service.name', 'x'), map('size', '600'));
 -- expected_rows --
 [
-  [1500]
+  [1500.0]
 ]
 -- chplan --
 Filter predicate=(Value > 1000)
-  Aggregate groupBy=[] funcs=[sum(SpanAttributes["size"]) AS Value]
+  Aggregate groupBy=[] funcs=[sum(toFloat64OrZero(SpanAttributes["size"])) AS Value]
     Filter predicate=(ResourceAttributes["service.name"] = "x")
       Scan(otel_traces)
