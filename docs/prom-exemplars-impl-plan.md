@@ -478,7 +478,7 @@ PR C does not change production code; it is fixture + asserts.
   `compatibility/prometheus/expected-failures.json` already lists the
   exemplars-related queries; PR C closes those entries (or downgrades them
   to "passes" once the implementation lands). Confirm by re-running
-  `just compatibility` locally and updating the failure list in the same PR.
+  `just compat-promql` locally and updating the failure list in the same PR.
 
 ## 7 — Open questions and risks
 

@@ -7,7 +7,7 @@ Today (M0.6) the harness lands as **informational** — the workflow runs but do
 ## Local run
 
 ```sh
-just compatibility
+just compat-promql
 ```
 
 This:
@@ -21,9 +21,9 @@ This:
 Set `COMPOSE_KEEP=1` to leave the stack running for poking around:
 
 ```sh
-just compatibility-keep
+just compat-promql-keep
 # inspect things; then
-just compatibility-down
+just compat-promql-down
 ```
 
 ## Reading the report
@@ -76,7 +76,7 @@ If the case is cerberus-specific (e.g. OTel-CH schema quirk), add it as a TXTAR 
 
 Most of PromQL isn't lowered yet at the seed stage. Gating now would make every PR red. The harness lands now so:
 
-- Each subsequent M1.x PR can run `just compatibility` locally and report the pass-rate delta in the PR body (per the [CONTRIBUTING](../CONTRIBUTING.md) test-plan template).
+- Each subsequent M1.x PR can run `just compat-promql` locally and report the pass-rate delta in the PR body (per the [CONTRIBUTING](../CONTRIBUTING.md) test-plan template).
 - The CI run produces an artifact (`compatibility-prometheus-report` for 30 days) so we can chart progress.
 - When M1.7 closes, flipping the gate is a one-line `continue-on-error: false` + adding the check to branch protection.
 

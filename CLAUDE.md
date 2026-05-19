@@ -53,7 +53,7 @@ Top-level reading order for any new contributor (human or agent):
 - **Add a property test** — add a row to the generator + oracle under `test/property/{gen,oracle}/` and a case to `test/property/promql_test.go`. The framework wires `rapid.Check` → dataset gen → chDB exec → oracle → comparator; you only swap the data shape + oracle. Build-tagged `chdb`; runs in the `chdb` workflow only.
 - **Bump parser deps** — use the `/cerberus:bump-parser-deps` skill. Runs `go get -u` on the three upstream parsers, runs `go mod tidy`, captures the diff for the PR description.
 - **Run E2E locally** — `just e2e-up && just e2e-seed && just e2e-run && just e2e-down`.
-- **Run the compatibility suite** — `just compatibility`. Diffs cerberus against reference Prometheus on a deterministic OTel fixture.
+- **Run the compatibility suite** — `just compat-promql`. Diffs cerberus against reference Prometheus on a deterministic OTel fixture.
 - **Find which test layer covers a class of bug** — see [`docs/test-strategy.md`](docs/test-strategy.md) for the layer map + per-layer "catches X / misses Y" guidance.
 
 ## Toolchain notes
