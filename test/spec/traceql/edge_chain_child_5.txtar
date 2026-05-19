@@ -16,8 +16,11 @@ CREATE TABLE otel_traces (
     TraceId String,
     SpanId String,
     ParentSpanId String,
+    SpanName String DEFAULT '',
+    Duration UInt64 DEFAULT 0,
+    Timestamp UInt64 DEFAULT 0,
     _svc String,
-    ResourceAttributes Map(String, String) MATERIALIZED map('service.name', _svc)
+    ResourceAttributes Map(String, String) DEFAULT map('service.name', _svc)
 ) ENGINE = Memory;
 INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, _svc) VALUES
     ('a0000000000000000000000000000001', '0000000000000001', '',                 'a'),
@@ -28,10 +31,10 @@ INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, _svc) VALUES
     ('a0000000000000000000000000000002', '0000000000000010', '',                 'e');
 -- expected_rows --
 [
-  ["a0000000000000000000000000000001", "0000000000000005", "0000000000000004", "e"]
+  ["a0000000000000000000000000000001", "0000000000000005", "0000000000000004", "", 0, 0, {"service.name": "e"}]
 ]
 -- sql --
-SELECT R.`TraceId` AS `TraceId`, R.`SpanId` AS `SpanId`, R.`ParentSpanId` AS `ParentSpanId`, R.* EXCEPT (`TraceId`, `SpanId`, `ParentSpanId`) FROM (SELECT R.`TraceId` AS `TraceId`, R.`SpanId` AS `SpanId`, R.`ParentSpanId` AS `ParentSpanId`, R.* EXCEPT (`TraceId`, `SpanId`, `ParentSpanId`) FROM (SELECT R.`TraceId` AS `TraceId`, R.`SpanId` AS `SpanId`, R.`ParentSpanId` AS `ParentSpanId`, R.* EXCEPT (`TraceId`, `SpanId`, `ParentSpanId`) FROM (SELECT R.`TraceId` AS `TraceId`, R.`SpanId` AS `SpanId`, R.`ParentSpanId` AS `ParentSpanId`, R.* EXCEPT (`TraceId`, `SpanId`, `ParentSpanId`) FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) AS L INNER JOIN (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) AS R ON L.`TraceId` = R.`TraceId` AND L.`SpanId` = R.`ParentSpanId`) AS L INNER JOIN (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) AS R ON L.`TraceId` = R.`TraceId` AND L.`SpanId` = R.`ParentSpanId`) AS L INNER JOIN (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) AS R ON L.`TraceId` = R.`TraceId` AND L.`SpanId` = R.`ParentSpanId`) AS L INNER JOIN (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) AS R ON L.`TraceId` = R.`TraceId` AND L.`SpanId` = R.`ParentSpanId`
+SELECT R.`TraceId` AS `TraceId`, R.`SpanId` AS `SpanId`, R.`ParentSpanId` AS `ParentSpanId`, R.`SpanName` AS `SpanName`, R.`Duration` AS `Duration`, R.`Timestamp` AS `Timestamp`, R.`ResourceAttributes` AS `ResourceAttributes` FROM (SELECT R.`TraceId` AS `TraceId`, R.`SpanId` AS `SpanId`, R.`ParentSpanId` AS `ParentSpanId`, R.`SpanName` AS `SpanName`, R.`Duration` AS `Duration`, R.`Timestamp` AS `Timestamp`, R.`ResourceAttributes` AS `ResourceAttributes` FROM (SELECT R.`TraceId` AS `TraceId`, R.`SpanId` AS `SpanId`, R.`ParentSpanId` AS `ParentSpanId`, R.`SpanName` AS `SpanName`, R.`Duration` AS `Duration`, R.`Timestamp` AS `Timestamp`, R.`ResourceAttributes` AS `ResourceAttributes` FROM (SELECT R.`TraceId` AS `TraceId`, R.`SpanId` AS `SpanId`, R.`ParentSpanId` AS `ParentSpanId`, R.`SpanName` AS `SpanName`, R.`Duration` AS `Duration`, R.`Timestamp` AS `Timestamp`, R.`ResourceAttributes` AS `ResourceAttributes` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) AS L INNER JOIN (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) AS R ON L.`TraceId` = R.`TraceId` AND L.`SpanId` = R.`ParentSpanId`) AS L INNER JOIN (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) AS R ON L.`TraceId` = R.`TraceId` AND L.`SpanId` = R.`ParentSpanId`) AS L INNER JOIN (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) AS R ON L.`TraceId` = R.`TraceId` AND L.`SpanId` = R.`ParentSpanId`) AS L INNER JOIN (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) AS R ON L.`TraceId` = R.`TraceId` AND L.`SpanId` = R.`ParentSpanId`
 -- chplan --
 StructuralJoin op=>
   StructuralJoin op=>

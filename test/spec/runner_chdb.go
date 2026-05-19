@@ -177,6 +177,16 @@ func expandStarProjection(query string) string {
 func rewriteMapProjections(query string) string {
 	head, tail := splitOuterSelect(query)
 	if head == "" {
+		// Top-level UNION (`(SELECT ...) UNION DISTINCT (SELECT ...)`):
+		// rewrite each branch independently so a Map column projected
+		// at the union level still reaches chdb-go as JSON. Without
+		// this, chdb-go's parquet driver panics with `index out of
+		// range` when a Map cell flows through the unioned result.
+		// Surfaced by the structural-union TXTAR fixtures after
+		// PR #523 added ResourceAttributes to the wrap projection.
+		if rewritten, ok := rewriteUnionMapProjections(query); ok {
+			return rewritten
+		}
 		return query
 	}
 	projs := splitProjections(head)
@@ -192,6 +202,73 @@ func rewriteMapProjections(query string) string {
 		projs[i] = "toJSONString(" + expr + ") AS `" + alias + "`"
 	}
 	return "SELECT " + strings.Join(projs, ", ") + tail
+}
+
+// rewriteUnionMapProjections walks a top-level UNION query
+// (`(SELECT ...) UNION DISTINCT (SELECT ...) UNION DISTINCT (...) ...`)
+// and rewrites Map columns inside each parenthesised branch. Returns
+// (rewritten, true) on success, ("", false) when the shape doesn't
+// match the expected union form. Branches that don't parse as
+// `SELECT ... FROM ...` are left alone.
+func rewriteUnionMapProjections(query string) (string, bool) {
+	query = strings.TrimSpace(query)
+	if !strings.HasPrefix(query, "(") {
+		return "", false
+	}
+	var out strings.Builder
+	rewrote := false
+	i := 0
+	for i < len(query) {
+		// Skip whitespace + UNION glue between branches.
+		for i < len(query) && (query[i] == ' ' || query[i] == '\n' || query[i] == '\t' || query[i] == '\r') {
+			out.WriteByte(query[i])
+			i++
+		}
+		if i >= len(query) {
+			break
+		}
+		if query[i] == '(' {
+			// Find the matching `)` at depth 0.
+			depth := 0
+			end := -1
+			for j := i; j < len(query); j++ {
+				switch query[j] {
+				case '(':
+					depth++
+				case ')':
+					depth--
+					if depth == 0 {
+						end = j
+					}
+				}
+				if end >= 0 {
+					break
+				}
+			}
+			if end < 0 {
+				return "", false
+			}
+			inner := query[i+1 : end]
+			rewrittenInner := rewriteMapProjections(strings.TrimSpace(inner))
+			if rewrittenInner != strings.TrimSpace(inner) {
+				rewrote = true
+			}
+			out.WriteByte('(')
+			out.WriteString(rewrittenInner)
+			out.WriteByte(')')
+			i = end + 1
+			continue
+		}
+		// Non-paren token (UNION DISTINCT, UNION ALL, etc.) — copy through.
+		for i < len(query) && query[i] != '(' {
+			out.WriteByte(query[i])
+			i++
+		}
+	}
+	if !rewrote {
+		return "", false
+	}
+	return out.String(), true
 }
 
 // mapColAlias derives the implicit projection alias for a bare column

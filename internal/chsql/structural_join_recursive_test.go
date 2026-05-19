@@ -115,12 +115,15 @@ func TestEmitStructuralRecursive_PreservesLeftArgs(t *testing.T) {
 // stripping projection shape that the emitter uses so nested structural
 // joins compose without CH 25.8's analyzer rejecting `L.TraceId`
 // against an inner subquery whose only matching identifier is
-// `R.TraceId`. The projection list MUST start with explicit
-// `R.<key> AS <key>` aliases for each of (TraceId, SpanId, ParentSpanId)
-// and end with `R.* EXCEPT (...)`. Re-emitted naïvely as `SELECT R.*`,
-// the inner subquery output carries the `R.` qualifier on every column
-// (verified by the chDB roundtrip in test/spec/traceql/multi_hop_chain.
-// txtar; see task #57 for the full failing trace).
+// `R.TraceId`. The projection list MUST include explicit `R.<key> AS
+// <key>` aliases for each of (TraceId, SpanId, ParentSpanId). Re-
+// emitted naïvely as `SELECT R.*`, the inner subquery output carries
+// the `R.` qualifier on every column (verified by the chDB roundtrip
+// in test/spec/traceql/multi_hop_chain.txtar; see task #57 for the
+// full failing trace).
+//
+// When ExtraProjectionColumns is empty the projection falls back to
+// `R.* EXCEPT (TraceId, SpanId, ParentSpanId)` for the non-key tail.
 func TestEmitStructuralJoin_NestedJoinKeyProjection(t *testing.T) {
 	t.Parallel()
 
@@ -158,7 +161,8 @@ func TestEmitStructuralJoin_NestedJoinKeyProjection(t *testing.T) {
 		}
 	}
 
-	// The `R.* EXCEPT (...)` tail keeps all non-key columns flowing
+	// With ExtraProjectionColumns empty (chplan-direct construction),
+	// the `R.* EXCEPT (...)` tail keeps all non-key columns flowing
 	// through without duplicating the keys already projected with
 	// explicit aliases.
 	wantExcept := "R.* EXCEPT (`TraceId`, `SpanId`, `ParentSpanId`)"
@@ -170,10 +174,55 @@ func TestEmitStructuralJoin_NestedJoinKeyProjection(t *testing.T) {
 	// Bare `SELECT R.*` (with NO accompanying alias projections) is
 	// the precise shape that broke the multi-hop chain — guard against
 	// regression to that exact form. We allow `R.* EXCEPT (...)` (which
-	// is what the new emitter produces) but reject a standalone `R.*`
-	// projection that the parent subquery would expand qualifier-first.
+	// is what the legacy emitter produces) but reject a standalone
+	// `R.*` projection that the parent subquery would expand
+	// qualifier-first.
 	if strings.Contains(sql, "SELECT R.* FROM") {
 		t.Errorf("regression: emitter reverted to bare `SELECT R.* FROM ...` (qualifier survives wrap).\n  got: %s",
 			sql)
+	}
+}
+
+// TestEmitStructuralJoin_ExplicitProjection pins the explicit-column
+// projection shape the emitter renders when StructuralJoin.
+// ExtraProjectionColumns is populated. CH 25.8 drops `R.*`-introduced
+// columns from outer-scope resolution when the JOIN sides share column
+// names (otel_traces self-join), so the explicit list is what lets the
+// Tempo API-layer wrap projection reference (SpanName, Duration,
+// Timestamp, ResourceAttributes) without `Unknown identifier` errors.
+// See tempo compat report 26098988786 for the failing repro.
+func TestEmitStructuralJoin_ExplicitProjection(t *testing.T) {
+	t.Parallel()
+
+	extras := []string{"SpanName", "Duration", "Timestamp", "ResourceAttributes"}
+	plan := &chplan.StructuralJoin{
+		Left:                   &chplan.Scan{Table: "otel_traces"},
+		Right:                  &chplan.Scan{Table: "otel_traces"},
+		Op:                     chplan.StructuralChild,
+		TraceIDColumn:          "TraceId",
+		SpanIDColumn:           "SpanId",
+		ParentSpanIDColumn:     "ParentSpanId",
+		ExtraProjectionColumns: extras,
+	}
+	sql, _, err := chsql.Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+
+	// Every extra column must appear as an explicit `R.<col> AS <col>`
+	// alias so the wrap subquery exposes it bare-name to the outer
+	// scope.
+	for _, col := range extras {
+		want := "R.`" + col + "` AS `" + col + "`"
+		if !strings.Contains(sql, want) {
+			t.Errorf("explicit projection missing bare-alias for %s.\n  want substring: %s\n  got: %s",
+				col, want, sql)
+		}
+	}
+
+	// The `R.* EXCEPT (...)` fallback must NOT be present — the
+	// explicit list replaces it entirely.
+	if strings.Contains(sql, "R.* EXCEPT") {
+		t.Errorf("explicit projection should not emit `R.* EXCEPT` tail.\n  got: %s", sql)
 	}
 }

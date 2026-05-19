@@ -1800,6 +1800,36 @@ func TestStructuralJoin_Equal_Negative_LeftOnly(t *testing.T) {
 	}
 }
 
+// TestStructuralJoin_Equal_Negative_ExtraProjectionColumns pins the
+// element-wise compare of ExtraProjectionColumns in Equal. Mutants that
+// drop the loop (or replace the index compare with a no-op) get caught
+// here. Two trees that differ only in their extra-projection column
+// lists must not compare Equal.
+func TestStructuralJoin_Equal_Negative_ExtraProjectionColumns(t *testing.T) {
+	t.Parallel()
+	a := &chplan.StructuralJoin{
+		Left: &chplan.Scan{Table: "t"}, Right: &chplan.Scan{Table: "t"},
+		Op:                     chplan.StructuralChild,
+		ExtraProjectionColumns: []string{"SpanName"},
+	}
+	b := &chplan.StructuralJoin{
+		Left: &chplan.Scan{Table: "t"}, Right: &chplan.Scan{Table: "t"},
+		Op:                     chplan.StructuralChild,
+		ExtraProjectionColumns: []string{"Duration"},
+	}
+	if a.Equal(b) {
+		t.Errorf("different ExtraProjectionColumns content should not be Equal")
+	}
+	c := &chplan.StructuralJoin{
+		Left: &chplan.Scan{Table: "t"}, Right: &chplan.Scan{Table: "t"},
+		Op:                     chplan.StructuralChild,
+		ExtraProjectionColumns: []string{"SpanName", "Duration"},
+	}
+	if a.Equal(c) {
+		t.Errorf("different ExtraProjectionColumns length should not be Equal")
+	}
+}
+
 // TestTopK_Equal_SortExprNilAsymmetric pins the
 // `t.SortExpr == nil || o.SortExpr == nil` branch. Original returns
 // false via the inner `t.SortExpr != o.SortExpr` pointer compare; a
