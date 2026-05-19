@@ -267,7 +267,9 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() {
-		_ = cursor.Close()
+		if err := cursor.Close(); err != nil {
+			h.Logger.Warn("cerberus prom: cursor close failed", "err", err)
+		}
 	}()
 
 	result, err := matrixFromCursor(cursor, start, end, step)
