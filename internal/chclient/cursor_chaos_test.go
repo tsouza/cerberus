@@ -198,7 +198,9 @@ func (r *genRows) Scan(dest ...any) error {
 	return nil
 }
 
-func (r *genRows) ScanStruct(any) error             { return errors.New("not implemented") }
+func (r *genRows) ScanStruct(any) error {
+	return errors.New("test mock: ScanStruct unused by cursor-chaos tests")
+}
 func (r *genRows) ColumnTypes() []driver.ColumnType { return nil }
 func (r *genRows) Totals(...any) error              { return nil }
 func (r *genRows) Columns() []string                { return nil }
