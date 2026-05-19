@@ -47,6 +47,11 @@ type stubQuerier struct {
 	// /series canned label-set rows.
 	labelSets    []map[string]string
 	labelSetsErr error
+
+	// /patterns canned (Timestamp, Body) tuples; drain consumes them
+	// as the peek-window training set.
+	tsLines    []chclient.TimestampedLine
+	tsLinesErr error
 }
 
 func (s *stubQuerier) Query(_ context.Context, sql string, args ...any) ([]chclient.Sample, error) {
@@ -90,6 +95,18 @@ func (s *stubQuerier) QueryStrings(_ context.Context, sql string, args ...any) (
 	s.lastSQL = sql
 	s.lastArgs = args
 	rows, err := s.stringRows, s.stringsErr
+	s.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func (s *stubQuerier) QueryTimestampedLines(_ context.Context, sql string, args ...any) ([]chclient.TimestampedLine, error) {
+	s.mu.Lock()
+	s.lastSQL = sql
+	s.lastArgs = args
+	rows, err := s.tsLines, s.tsLinesErr
 	s.mu.Unlock()
 	if err != nil {
 		return nil, err

@@ -44,6 +44,11 @@ type tailStubQuerier struct {
 	// /index/volume canned response.
 	volumeRows []chclient.IndexVolumeRow
 	volumeErr  error
+
+	// /patterns canned (Timestamp, Body) tuples (unused by /tail; held
+	// to satisfy the Querier interface).
+	tsLines    []chclient.TimestampedLine
+	tsLinesErr error
 }
 
 func (s *tailStubQuerier) Query(_ context.Context, sql string, args ...any) ([]chclient.Sample, error) {
@@ -80,6 +85,12 @@ func (s *tailStubQuerier) QueryStrings(_ context.Context, _ string, _ ...any) ([
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.stringRows, s.stringsErr
+}
+
+func (s *tailStubQuerier) QueryTimestampedLines(_ context.Context, _ string, _ ...any) ([]chclient.TimestampedLine, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.tsLines, s.tsLinesErr
 }
 
 func (s *tailStubQuerier) QueryLabelSets(_ context.Context, _ string, _ ...any) ([]map[string]string, error) {

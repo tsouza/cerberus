@@ -258,6 +258,54 @@ func (c *Client) QueryStrings(ctx context.Context, sql string, args ...any) ([]s
 	return out, nil
 }
 
+// TimestampedLine is one (Timestamp, Body) tuple from the peek-window
+// SQL backing /loki/api/v1/patterns. The timestamp is the row's
+// DateTime64 value verbatim; the body is the raw log line. The drain
+// template miner consumes the pair via [drain.Drain.Train], which takes
+// the timestamp as unix nanoseconds.
+type TimestampedLine struct {
+	Timestamp time.Time
+	Body      string
+}
+
+// QueryTimestampedLines runs sql and decodes a (DateTime64, String)
+// two-column result set into a flat slice. Used by /loki/api/v1/patterns
+// to feed the drain template miner — drain needs both the line body and
+// a timestamp to bucket per-cluster samples.
+//
+// Guarded by the circuit breaker (see [Client] doc).
+func (c *Client) QueryTimestampedLines(ctx context.Context, sql string, args ...any) ([]TimestampedLine, error) {
+	if !c.br.allow() {
+		return nil, fmt.Errorf("chclient: query: %w", ErrCircuitOpen)
+	}
+	ctx, span := startExecuteSpan(ctx, sql)
+	defer span.End()
+	defer flushProgress(ctx)
+	rows, err := c.conn.Query(ctx, sql, args...)
+	c.br.record(err)
+	if err != nil {
+		span.RecordError(err)
+		return nil, fmt.Errorf("chclient: query: %w", err)
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+
+	var out []TimestampedLine
+	for rows.Next() {
+		var ts time.Time
+		var body string
+		if err := rows.Scan(&ts, &body); err != nil {
+			return nil, fmt.Errorf("chclient: scan: %w", err)
+		}
+		out = append(out, TimestampedLine{Timestamp: ts, Body: body})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("chclient: rows.Err: %w", err)
+	}
+	return out, nil
+}
+
 // MetricMetaRow is one row from the metadata-discovery query — a metric
 // name plus its OTel description and unit text and the cerberus-derived
 // Prom-style type (gauge / counter / histogram).

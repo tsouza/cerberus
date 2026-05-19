@@ -207,6 +207,10 @@ func (s *lokiStub) QueryStrings(_ context.Context, _ string, _ ...any) ([]string
 	return nil, nil
 }
 
+func (s *lokiStub) QueryTimestampedLines(_ context.Context, _ string, _ ...any) ([]chclient.TimestampedLine, error) {
+	return nil, nil
+}
+
 func (s *lokiStub) QueryIndexStats(_ context.Context, _ string, _ ...any) (chclient.IndexStatsRow, error) {
 	return chclient.IndexStatsRow{}, nil
 }

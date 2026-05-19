@@ -32,6 +32,7 @@ import (
 type Querier interface {
 	Query(ctx context.Context, sql string, args ...any) ([]chclient.Sample, error)
 	QueryStrings(ctx context.Context, sql string, args ...any) ([]string, error)
+	QueryTimestampedLines(ctx context.Context, sql string, args ...any) ([]chclient.TimestampedLine, error)
 	QueryIndexStats(ctx context.Context, sql string, args ...any) (chclient.IndexStatsRow, error)
 	QueryIndexVolume(ctx context.Context, sql string, args ...any) ([]chclient.IndexVolumeRow, error)
 	QueryLabelSets(ctx context.Context, sql string, args ...any) ([]map[string]string, error)
@@ -41,8 +42,7 @@ type Querier interface {
 // it via Handler.Mount(mux). The current vertical slice covers
 // /loki/api/v1/query, /loki/api/v1/query_range, /loki/api/v1/index/stats
 // + /index/volume, plus the metadata endpoints /labels,
-// /label/<name>/values, /series, /detected_fields, /patterns (the last
-// stubbed pending its own pattern-discovery workstream).
+// /label/<name>/values, /series, /detected_fields, /patterns.
 type Handler struct {
 	Client    Querier
 	Schema    schema.Logs
@@ -91,7 +91,8 @@ func New(client Querier, s schema.Logs, logger *slog.Logger) *Handler {
 // the metadata endpoints (/labels, /label/{name}/values, /series,
 // /detected_fields, /patterns) cover what Grafana's logs UI queries to
 // populate label autocomplete, the streams chooser, and the patterns
-// panel.
+// panel. /patterns trains a drain template miner over the peek window
+// (see docs/loki-patterns-impl-plan.md § 3 PR B).
 func (h *Handler) Mount(mux *http.ServeMux) {
 	// Route every endpoint through the cerberus.queries.* counter +
 	// duration middleware. WebSocket /tail is included — a
