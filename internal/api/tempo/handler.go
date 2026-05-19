@@ -802,10 +802,20 @@ func aggregateCarriesSpansetEnvelope(a *chplan.Aggregate) bool {
 // float64 — same wire shape as canonicalSampleProjections but
 // reading from the Aggregate's projected columns rather than the
 // raw spans-table columns.
+//
+// The `TraceId` column the inner Aggregate exposes is the raw
+// fixed-width OTel-CH value (32 lowercase-hex chars); Tempo's wire
+// format strips leading zeros, so we route it through
+// stripLeadingHexZeros — same treatment canonicalSampleProjections
+// applies to the scan-level TraceId column. Without the strip, the
+// shadow-mode differ pairs cerberus rows by `00af…66b` against
+// Tempo's `af…66b`, generating spurious missing_in_a / missing_in_b
+// reasons across the spanset-aggregate compat cases (e.g.
+// `avg_duration_per_trace_status_ok`).
 func spansetAggregateSampleProjections() []chplan.Projection {
 	traceIDMap := &chplan.FuncCall{Name: "map", Args: []chplan.Expr{
 		&chplan.LitString{V: searchKeyTraceID},
-		&chplan.ColumnRef{Name: "TraceId"},
+		stripLeadingHexZeros("TraceId"),
 	}}
 	mergedAttrs := &chplan.FuncCall{Name: "mapConcat", Args: []chplan.Expr{
 		&chplan.ColumnRef{Name: "ResourceAttrs"},
