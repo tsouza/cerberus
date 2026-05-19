@@ -101,11 +101,6 @@ func runDiff(args []string) error {
 
 	for _, tc := range cases {
 		tc := tc
-		if tc.SkipReason != "" {
-			logger.Info("skipping case", "name", tc.Name, "reason", tc.SkipReason)
-			results = append(results, CaseResult{Case: tc, Skipped: true})
-			continue
-		}
 		logger.Info("diffing case", "name", tc.Name, "endpoint", tc.Endpoint)
 		results = append(results, diffCase(ctx, client, tc, opts))
 	}
@@ -121,9 +116,6 @@ func runDiff(args []string) error {
 	if *failOnDiff {
 		var unexpected int
 		for _, r := range results {
-			if r.Skipped {
-				continue
-			}
 			if r.HardError != "" || !r.Diff.Equal || len(r.Assertions) > 0 {
 				if _, ok := efSet[r.Case.Name]; ok {
 					logger.Info("expected failure", "name", r.Case.Name)
@@ -144,10 +136,6 @@ func runDiff(args []string) error {
 // partial info when a step failed.
 type CaseResult struct {
 	Case CorpusCase
-
-	// Skipped means the case carried a SkipReason; the report lists
-	// these in a separate section.
-	Skipped bool
 
 	// HardError is set when the case failed before the diff could run
 	// (URL build, HTTP error, non-2xx status). Mutually exclusive with
@@ -484,12 +472,10 @@ func writeReport(path string, results []CaseResult) error {
 }
 
 func renderReport(w io.Writer, results []CaseResult) error {
-	var total, passed, diffed, asserted, skipped, hardErr int
+	var total, passed, diffed, asserted, hardErr int
 	for _, r := range results {
 		total++
 		switch {
-		case r.Skipped:
-			skipped++
 		case r.HardError != "":
 			hardErr++
 		case !r.Diff.Equal:
@@ -520,9 +506,6 @@ func renderReport(w io.Writer, results []CaseResult) error {
 		return err
 	}
 	if _, err := fmt.Fprintf(w, "- Passed: %d\n", passed); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(w, "- Skipped: %d\n", skipped); err != nil {
 		return err
 	}
 	if _, err := fmt.Fprintf(w, "- Diff: %d\n", diffed); err != nil {
@@ -569,10 +552,6 @@ func renderCase(w io.Writer, r CaseResult) error {
 		return err
 	}
 	switch {
-	case r.Skipped:
-		if _, err := fmt.Fprintf(w, "- status: SKIPPED (%s)\n", r.Case.SkipReason); err != nil {
-			return err
-		}
 	case r.HardError != "":
 		if _, err := fmt.Fprintf(w, "- status: ERROR — %s\n", r.HardError); err != nil {
 			return err
@@ -590,7 +569,7 @@ func renderCase(w io.Writer, r CaseResult) error {
 			return err
 		}
 	}
-	if !r.Skipped && r.HardError == "" {
+	if r.HardError == "" {
 		if _, err := fmt.Fprintf(w, "- tempo HTTP: %d  cerberus HTTP: %d\n", r.TempoStatus, r.CerberusStatus); err != nil {
 			return err
 		}
