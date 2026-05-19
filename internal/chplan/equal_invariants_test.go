@@ -1178,6 +1178,35 @@ func TestMetricsHistogramOverTime_Equal_Negative_InnerNilPresence(t *testing.T) 
 	}
 }
 
+func TestMetricsHistogramOverTime_Equal_Negative_GroupByDisplayNames(t *testing.T) {
+	t.Parallel()
+	// Same SQL alias on both sides, but only one side carries the
+	// Tempo-canonical display name. Equal must split them apart so the
+	// IR comparator (used by optimizer-rule rewrite tests + Walk
+	// invariants) catches a regression that drops the display-name
+	// slot.
+	a := &chplan.MetricsHistogramOverTime{
+		GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: "X"}},
+		GroupByAliases: []string{"service.name"},
+		Inner:          &chplan.Scan{Table: "t"},
+	}
+	b := &chplan.MetricsHistogramOverTime{
+		GroupBy:             []chplan.Expr{&chplan.ColumnRef{Name: "X"}},
+		GroupByAliases:      []string{"service.name"},
+		GroupByDisplayNames: []string{"resource.service.name"},
+		Inner:               &chplan.Scan{Table: "t"},
+	}
+	if a.Equal(b) || b.Equal(a) {
+		t.Errorf("display-name presence should differentiate Equal in both directions")
+	}
+	// Same alias, different display prefixes.
+	c := *b
+	c.GroupByDisplayNames = []string{"span.service.name"}
+	if b.Equal(&c) {
+		t.Errorf("different GroupByDisplayNames should not be Equal")
+	}
+}
+
 // -----------------------------------------------------------------------
 // Expr Equal tests — coverage parallel to node_negatives_test.go,
 // focused on positive cases the existing file does not exercise.

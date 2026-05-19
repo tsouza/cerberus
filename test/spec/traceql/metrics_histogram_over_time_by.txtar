@@ -21,6 +21,6 @@ INSERT INTO otel_traces VALUES
   ["frontend", 1.0e-08, 3]
 ]
 -- chplan --
-MetricsHistogramOverTime attr=Duration duration=true groupBy=[ResourceAttributes["service.name"] AS service.name] bucketAlias=__bucket valueAlias=Value
+MetricsHistogramOverTime attr=Duration duration=true groupBy=[ResourceAttributes["service.name"] AS service.name|resource.service.name] bucketAlias=__bucket valueAlias=Value
   Filter predicate=true
     Scan(otel_traces)

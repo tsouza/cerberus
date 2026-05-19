@@ -27,6 +27,6 @@ INSERT INTO otel_traces VALUES
   ["frontend", "Client", "GET", 5]
 ]
 -- chplan --
-MetricsAggregate op=rate groupBy=[ResourceAttributes["service.name"] AS service.name, SpanAttributes["kind"] AS kind, SpanAttributes["http.method"] AS http.method] valueAlias=Value
+MetricsAggregate op=rate groupBy=[ResourceAttributes["service.name"] AS service.name|resource.service.name, SpanAttributes["kind"] AS kind|span.kind, SpanAttributes["http.method"] AS http.method|span.http.method] valueAlias=Value
   Filter predicate=true
     Scan(otel_traces)

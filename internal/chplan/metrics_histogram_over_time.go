@@ -37,6 +37,17 @@ package chplan
 //     duration cases — duration attrs encode as nanos already).
 //   - GroupBy: the user-supplied `by(...)` label expressions; parallel
 //     to GroupByAliases for SELECT-list aliasing.
+//   - GroupByAliases: SQL SELECT-list alias for each GroupBy entry.
+//     Bare-named for resource / span attributes (`service.name`,
+//     `http.method`) so the chsql emitter renders `AS \`<bare>\`` with no
+//     scope prefix in the column name.
+//   - GroupByDisplayNames: optional parallel slice carrying the
+//     TraceQL-canonical wire label name for each GroupBy entry — the
+//     scope-prefixed form (`resource.service.name`, `span.http.method`)
+//     that the Tempo metrics-query response surfaces. When empty the
+//     Tempo handler falls back to GroupByAliases. Mirrors the same field
+//     on MetricsAggregate; see that type for the cross-reference to
+//     Tempo's upstream wire shape.
 //   - BucketAlias: the SELECT-list alias for the synthesised bucket
 //     column. The TraceQL runtime uses the internal label name
 //     "__bucket"; cerberus mirrors that so downstream `/api/metrics/query_range`
@@ -46,13 +57,14 @@ package chplan
 //   - Inner: the underlying spanset relation — typically a Filter
 //     / Scan tree from the `{...}` selector.
 type MetricsHistogramOverTime struct {
-	Attr           Expr
-	IsDuration     bool
-	GroupBy        []Expr
-	GroupByAliases []string
-	BucketAlias    string
-	ValueAlias     string
-	Inner          Node
+	Attr                Expr
+	IsDuration          bool
+	GroupBy             []Expr
+	GroupByAliases      []string
+	GroupByDisplayNames []string
+	BucketAlias         string
+	ValueAlias          string
+	Inner               Node
 }
 
 func (*MetricsHistogramOverTime) planNode() {}
@@ -88,6 +100,14 @@ func (m *MetricsHistogramOverTime) Equal(other Node) bool {
 	}
 	for i := range m.GroupByAliases {
 		if m.GroupByAliases[i] != o.GroupByAliases[i] {
+			return false
+		}
+	}
+	if len(m.GroupByDisplayNames) != len(o.GroupByDisplayNames) {
+		return false
+	}
+	for i := range m.GroupByDisplayNames {
+		if m.GroupByDisplayNames[i] != o.GroupByDisplayNames[i] {
 			return false
 		}
 	}

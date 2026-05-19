@@ -134,6 +134,9 @@ func TestLowerMetricsPipeline(t *testing.T) {
 			if len(ma.GroupBy) != len(ma.GroupByAliases) {
 				t.Errorf("GroupBy/GroupByAliases length mismatch: %d vs %d", len(ma.GroupBy), len(ma.GroupByAliases))
 			}
+			if len(ma.GroupBy) > 0 && len(ma.GroupBy) != len(ma.GroupByDisplayNames) {
+				t.Errorf("GroupBy/GroupByDisplayNames length mismatch: %d vs %d", len(ma.GroupBy), len(ma.GroupByDisplayNames))
+			}
 
 			// Walk the inner subtree: Scan, optionally wrapped by Filter.
 			inner := ma.Inner

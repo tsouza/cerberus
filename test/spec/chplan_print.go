@@ -201,11 +201,15 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 	case *chplan.MetricsAggregate:
 		gb := make([]string, len(v.GroupBy))
 		for i, e := range v.GroupBy {
-			if i < len(v.GroupByAliases) && v.GroupByAliases[i] != "" {
-				gb[i] = fmt.Sprintf("%s AS %s", printExpr(e), v.GroupByAliases[i])
-			} else {
-				gb[i] = printExpr(e)
+			alias := ""
+			if i < len(v.GroupByAliases) {
+				alias = v.GroupByAliases[i]
 			}
+			display := ""
+			if i < len(v.GroupByDisplayNames) {
+				display = v.GroupByDisplayNames[i]
+			}
+			gb[i] = formatGroupByEntry(printExpr(e), alias, display)
 		}
 		fmt.Fprintf(b, "%sMetricsAggregate op=%s", indent, v.Op)
 		if v.Attr != nil {
@@ -250,11 +254,15 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 	case *chplan.MetricsHistogramOverTime:
 		gb := make([]string, len(v.GroupBy))
 		for i, e := range v.GroupBy {
-			if i < len(v.GroupByAliases) && v.GroupByAliases[i] != "" {
-				gb[i] = fmt.Sprintf("%s AS %s", printExpr(e), v.GroupByAliases[i])
-			} else {
-				gb[i] = printExpr(e)
+			alias := ""
+			if i < len(v.GroupByAliases) {
+				alias = v.GroupByAliases[i]
 			}
+			display := ""
+			if i < len(v.GroupByDisplayNames) {
+				display = v.GroupByDisplayNames[i]
+			}
+			gb[i] = formatGroupByEntry(printExpr(e), alias, display)
 		}
 		fmt.Fprintf(b, "%sMetricsHistogramOverTime", indent)
 		if v.Attr != nil {
@@ -450,4 +458,26 @@ func printVectorCard(c chplan.VectorCard) string {
 		return "one-to-many"
 	}
 	return "unknown"
+}
+
+// formatGroupByEntry renders one MetricsAggregate / MetricsHistogramOverTime
+// group-by entry for the IR snapshot. When the lowering populated a
+// display name (the Tempo-canonical wire form, e.g.
+// `resource.service.name`) that differs from the SQL alias (the bare
+// `service.name`) the snapshot surfaces both via the `AS alias|display`
+// suffix so a reader can tell which name the SQL emitter uses (alias)
+// vs. which name the Tempo handler surfaces on the wire (display).
+// When they agree (e.g. unscoped attributes, intrinsics like `kind`)
+// only the alias prints, keeping legacy fixtures byte-stable.
+func formatGroupByEntry(expr, alias, display string) string {
+	switch {
+	case alias == "" && display == "":
+		return expr
+	case alias == "" || alias == display:
+		return fmt.Sprintf("%s AS %s", expr, display)
+	case display == "":
+		return fmt.Sprintf("%s AS %s", expr, alias)
+	default:
+		return fmt.Sprintf("%s AS %s|%s", expr, alias, display)
+	}
 }

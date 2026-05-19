@@ -20,6 +20,6 @@ INSERT INTO otel_traces VALUES
   ["frontend", 3]
 ]
 -- chplan --
-MetricsAggregate op=rate groupBy=[ResourceAttributes["service.name"] AS service.name] valueAlias=Value
+MetricsAggregate op=rate groupBy=[ResourceAttributes["service.name"] AS service.name|resource.service.name] valueAlias=Value
   Filter predicate=true
     Scan(otel_traces)

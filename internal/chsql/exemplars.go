@@ -126,6 +126,22 @@ func (e *emitter) emitMetricsExemplars(
 	}
 
 	groupAliases := outerGroupAliases(m.GroupBy, m.GroupByAliases)
+	// Attributes-map keys: prefer the lowering's display names (the
+	// Tempo-canonical scope-prefixed form, e.g. `resource.service.name`)
+	// so the exemplar response uses the same wire labels as the matrix
+	// shape. Falls back to the SQL alias when the lowering didn't
+	// populate display names (PromQL paths leave them empty; no
+	// behaviour change for those). The KEYS of the resulting Attributes
+	// map are the wire labels; the VALUES still reference the SQL-side
+	// alias via Col(alias).
+	groupDisplayNames := make([]string, len(groupAliases))
+	for i, alias := range groupAliases {
+		if i < len(m.GroupByDisplayNames) && m.GroupByDisplayNames[i] != "" {
+			groupDisplayNames[i] = m.GroupByDisplayNames[i]
+			continue
+		}
+		groupDisplayNames[i] = alias
+	}
 
 	innerSb := NewQuery().From(inner)
 	for i, g := range m.GroupBy {
@@ -158,12 +174,20 @@ func (e *emitter) emitMetricsExemplars(
 	// Attributes carries the group-by labels plus the trace:id / span:id
 	// keys attachExemplars reads. Group aliases reference the inner
 	// SELECT (grouped + scalar), so toString(<alias>) is a valid SELECT
-	// item under the outer GROUP BY (alias, anchor_ts).
+	// item under the outer GROUP BY (alias, anchor_ts). The KEY side of
+	// the map uses the Tempo-canonical display name (e.g.
+	// `resource.service.name`) so the exemplar wire shape matches the
+	// matrix-shape labels produced by
+	// internal/api/tempo/metrics_query_range.go::wrapMetricsForSample;
+	// attachExemplars matches each exemplar to its parent series by
+	// canonical label-set hash, so the two label-key projections must
+	// agree.
 	attrMapFrags := make([]Frag, 0, len(groupAliases)*2+4)
-	for _, alias := range groupAliases {
+	for i, alias := range groupAliases {
 		a := alias
+		display := groupDisplayNames[i]
 		attrMapFrags = append(attrMapFrags,
-			Lit(a),
+			Lit(display),
 			Call("toString", Col(a)),
 		)
 	}

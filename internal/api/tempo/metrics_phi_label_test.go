@@ -157,3 +157,140 @@ func equalSlice(a, b []string) bool {
 	}
 	return true
 }
+
+// TestMetricsLabelNames_TempoCanonicalDisplay pins the
+// metricsLabelNames contract on the chplan-IR side: when the
+// MetricsAggregate carries GroupByDisplayNames, those names win over
+// the SQL aliases — the handler surfaces the scope-prefixed wire form
+// to Grafana, not the bare alias used inside the SQL emit.
+//
+// Mirrors upstream Tempo's response shape; see the long comment on
+// metricsLabelNames for the upstream cross-references. The test is
+// purely on the helper rather than the full handler so a regression
+// surfaces at the right altitude (a wrong label-name selection inside
+// the helper, not a wrong JSON marshal).
+func TestMetricsLabelNames_TempoCanonicalDisplay(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		aliases []string
+		display []string
+		want    []string
+	}{
+		{
+			name:    "resource scope: display wins, prefix appears",
+			aliases: []string{"service.name"},
+			display: []string{"resource.service.name"},
+			want:    []string{"resource.service.name"},
+		},
+		{
+			name:    "span scope: same shape, different prefix",
+			aliases: []string{"http.method"},
+			display: []string{"span.http.method"},
+			want:    []string{"span.http.method"},
+		},
+		{
+			name:    "intrinsic: display == alias (no scope prefix)",
+			aliases: []string{"kind"},
+			display: []string{"kind"},
+			want:    []string{"kind"},
+		},
+		{
+			name:    "mixed: order preserved across resource/intrinsic/span",
+			aliases: []string{"service.name", "kind", "http.method"},
+			display: []string{"resource.service.name", "kind", "span.http.method"},
+			want:    []string{"resource.service.name", "kind", "span.http.method"},
+		},
+		{
+			name:    "legacy / non-TraceQL: empty display, fallback to aliases",
+			aliases: []string{"service.name"},
+			display: nil,
+			want:    []string{"service.name"},
+		},
+		{
+			name:    "partial display: per-slot fallback to alias for blank slots",
+			aliases: []string{"service.name", "http.method"},
+			display: []string{"resource.service.name", ""},
+			want:    []string{"resource.service.name", "http.method"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			groupBy := make([]chplan.Expr, len(tc.aliases))
+			for i := range groupBy {
+				groupBy[i] = &chplan.ColumnRef{Name: tc.aliases[i]}
+			}
+			got := metricsLabelNames(&chplan.MetricsAggregate{
+				GroupBy:             groupBy,
+				GroupByAliases:      tc.aliases,
+				GroupByDisplayNames: tc.display,
+			})
+			if !equalSlice(got, tc.want) {
+				t.Fatalf("metricsLabelNames = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestWrapMetricsForSample_DisplayNameKeysAttributesMap pins the
+// Attributes-map projection contract on the matrix-shape wrap: the
+// LHS (KEY) of each `map(<key>, toString(<col>))` pair uses the
+// Tempo-canonical display name when one is set, while the RHS (VALUE)
+// keeps referencing the SQL-side alias. The two slices decouple
+// deliberately — the chsql emitter aliases the SELECT column as the
+// bare path for compact column names, and the wire layer prefixes the
+// scope for upstream Tempo parity.
+func TestWrapMetricsForSample_DisplayNameKeysAttributesMap(t *testing.T) {
+	t.Parallel()
+
+	rw := &chplan.RangeWindow{}
+	m := &chplan.MetricsAggregate{
+		GroupBy:             []chplan.Expr{&chplan.ColumnRef{Name: "x"}},
+		GroupByAliases:      []string{"service.name"},
+		GroupByDisplayNames: []string{"resource.service.name"},
+		ValueAlias:          "Value",
+	}
+
+	node := wrapMetricsForSample(rw, m)
+	proj, ok := node.(*chplan.Project)
+	if !ok {
+		t.Fatalf("wrapMetricsForSample: got %T, want *chplan.Project", node)
+	}
+	if len(proj.Projections) < 2 {
+		t.Fatalf("project has %d projections, want >= 2", len(proj.Projections))
+	}
+	call, ok := proj.Projections[1].Expr.(*chplan.FuncCall)
+	if !ok || call.Name != "map" {
+		t.Fatalf("Attributes expr = %T (%v), want *chplan.FuncCall(map)", proj.Projections[1].Expr, proj.Projections[1].Expr)
+	}
+	if len(call.Args) < 2 {
+		t.Fatalf("map call has %d args, want >= 2", len(call.Args))
+	}
+	keyLit, ok := call.Args[0].(*chplan.LitString)
+	if !ok {
+		t.Fatalf("map arg[0] = %T, want *chplan.LitString (the KEY)", call.Args[0])
+	}
+	if keyLit.V != "resource.service.name" {
+		t.Errorf("Attributes map key = %q, want %q (Tempo-canonical wire form)",
+			keyLit.V, "resource.service.name")
+	}
+	// And the VALUE side wraps toString around the SQL-side alias, not
+	// the display name.
+	valueCall, ok := call.Args[1].(*chplan.FuncCall)
+	if !ok || valueCall.Name != "toString" {
+		t.Fatalf("map arg[1] = %T (%v), want toString(<alias>)", call.Args[1], call.Args[1])
+	}
+	if len(valueCall.Args) != 1 {
+		t.Fatalf("toString call has %d args, want 1", len(valueCall.Args))
+	}
+	colRef, ok := valueCall.Args[0].(*chplan.ColumnRef)
+	if !ok {
+		t.Fatalf("toString arg = %T, want *chplan.ColumnRef (the SQL alias)", valueCall.Args[0])
+	}
+	if colRef.Name != "service.name" {
+		t.Errorf("toString column ref = %q, want %q (the bare SQL alias)",
+			colRef.Name, "service.name")
+	}
+}

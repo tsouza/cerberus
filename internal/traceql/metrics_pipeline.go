@@ -88,7 +88,7 @@ func lowerMetricsAggregate(prev chplan.Node, agg *traceql.MetricsAggregate, s sc
 		return nil, err
 	}
 
-	groupBy, groupAliases, err := lowerMetricsGroupBy(agg.GroupBy(), s)
+	groupBy, groupAliases, groupDisplay, err := lowerMetricsGroupBy(agg.GroupBy(), s)
 	if err != nil {
 		return nil, err
 	}
@@ -111,13 +111,14 @@ func lowerMetricsAggregate(prev chplan.Node, agg *traceql.MetricsAggregate, s sc
 	}
 
 	return &chplan.MetricsAggregate{
-		Op:             cop,
-		Attr:           attr,
-		GroupBy:        groupBy,
-		GroupByAliases: groupAliases,
-		Quantiles:      quantiles,
-		ValueAlias:     metricsValueAlias,
-		Inner:          prev,
+		Op:                  cop,
+		Attr:                attr,
+		GroupBy:             groupBy,
+		GroupByAliases:      groupAliases,
+		GroupByDisplayNames: groupDisplay,
+		Quantiles:           quantiles,
+		ValueAlias:          metricsValueAlias,
+		Inner:               prev,
 	}, nil
 }
 
@@ -140,18 +141,19 @@ func lowerAverageOverTime(prev chplan.Node, agg *traceql.AverageOverTimeAggregat
 		return nil, err
 	}
 
-	groupBy, groupAliases, err := lowerMetricsGroupBy(agg.GroupBy(), s)
+	groupBy, groupAliases, groupDisplay, err := lowerMetricsGroupBy(agg.GroupBy(), s)
 	if err != nil {
 		return nil, err
 	}
 
 	return &chplan.MetricsAggregate{
-		Op:             chplan.MetricsOpAvgOverTime,
-		Attr:           attr,
-		GroupBy:        groupBy,
-		GroupByAliases: groupAliases,
-		ValueAlias:     metricsValueAlias,
-		Inner:          prev,
+		Op:                  chplan.MetricsOpAvgOverTime,
+		Attr:                attr,
+		GroupBy:             groupBy,
+		GroupByAliases:      groupAliases,
+		GroupByDisplayNames: groupDisplay,
+		ValueAlias:          metricsValueAlias,
+		Inner:               prev,
 	}, nil
 }
 
@@ -229,46 +231,74 @@ func lowerMetricsHistogramOverTime(prev chplan.Node, agg *traceql.MetricsAggrega
 	}
 	attrExpr := lowerAttribute(attr, s)
 
-	groupBy, groupAliases, err := lowerMetricsGroupBy(agg.GroupBy(), s)
+	groupBy, groupAliases, groupDisplay, err := lowerMetricsGroupBy(agg.GroupBy(), s)
 	if err != nil {
 		return nil, err
 	}
 
 	return &chplan.MetricsHistogramOverTime{
-		Attr:           attrExpr,
-		IsDuration:     attr.Intrinsic == traceql.IntrinsicDuration,
-		GroupBy:        groupBy,
-		GroupByAliases: groupAliases,
-		BucketAlias:    histogramBucketAlias,
-		ValueAlias:     metricsValueAlias,
-		Inner:          prev,
+		Attr:                attrExpr,
+		IsDuration:          attr.Intrinsic == traceql.IntrinsicDuration,
+		GroupBy:             groupBy,
+		GroupByAliases:      groupAliases,
+		GroupByDisplayNames: groupDisplay,
+		BucketAlias:         histogramBucketAlias,
+		ValueAlias:          metricsValueAlias,
+		Inner:               prev,
 	}, nil
 }
 
 // lowerMetricsGroupBy turns a TraceQL `by (<attr>, <attr>, ...)` list
-// into the chplan grouping expressions + parallel alias slice.
+// into the chplan grouping expressions + parallel alias slice + parallel
+// display-name slice.
 //
 // Each `by` attribute lowers via the same accessor lowerAttribute uses
 // for spanset matchers, so resource.* / span.* / intrinsics all resolve
 // to the right carrier (column ref for intrinsics, FieldAccess for map
-// keys). The alias is the attribute's TraceQL name — that lets the
-// /api/metrics/query_range handler decode the SELECT row back into a
-// labelled series without re-parsing the source.
+// keys).
 //
-// Returns (nil, nil, nil) when the `by(...)` list is empty — that
+// Two parallel name slices come back:
+//
+//   - aliases: the SQL SELECT-list alias. For a scoped attribute this is
+//     the bare `attr.Name` (e.g. `service.name` for `resource.service.name`)
+//     so the emitter renders `AS \`service.name\`` — keeping the column
+//     name short and identifying the carrier-side payload only. Locking
+//     in the bare form preserves the existing TXTAR SQL fixtures.
+//   - display: the Tempo-canonical wire label name (`attr.String()`).
+//     For a resource-scoped attribute this is `resource.service.name`;
+//     for a span-scoped attribute, `span.http.method`; for an intrinsic
+//     such as `kind`, just `kind`. The Tempo metrics-query handler
+//     uses this name when projecting the response's `Labels` map so the
+//     wire shape matches upstream Tempo's `pkg/traceql.Labels.String`
+//     output (which calls `Attribute.String()` per the engine_metrics
+//     `labelsFor` loop). The SQL emitter ignores this slice; only the
+//     /api/metrics handler reads it.
+//
+// Returns (nil, nil, nil, nil) when the `by(...)` list is empty — that
 // matches chplan.Aggregate's convention for "no grouping".
-func lowerMetricsGroupBy(attrs []traceql.Attribute, s schema.Traces) ([]chplan.Expr, []string, error) {
+func lowerMetricsGroupBy(attrs []traceql.Attribute, s schema.Traces) ([]chplan.Expr, []string, []string, error) {
 	if len(attrs) == 0 {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	exprs := make([]chplan.Expr, 0, len(attrs))
 	aliases := make([]string, 0, len(attrs))
+	display := make([]string, 0, len(attrs))
 	for _, a := range attrs {
 		if a == (traceql.Attribute{}) {
-			return nil, nil, fmt.Errorf("traceql: empty by(...) group key")
+			return nil, nil, nil, fmt.Errorf("traceql: empty by(...) group key")
 		}
 		exprs = append(exprs, lowerAttribute(a, s))
+		// SQL alias is the bare attribute path (`a.Name` is set by
+		// traceql.NewAttribute / NewScopedAttribute / NewIntrinsic to
+		// either the carrier-map key, e.g. `service.name`, or the
+		// intrinsic's source-text name, e.g. `kind`). Locking in the
+		// bare form keeps every TXTAR SQL fixture stable across this
+		// change. The Tempo-canonical wire name (the scope-prefixed
+		// `Attribute.String()` form) ships on GroupByDisplayNames so
+		// the /api/metrics handler can surface it without the chsql
+		// emitter caring.
 		aliases = append(aliases, a.Name)
+		display = append(display, a.String())
 	}
-	return exprs, aliases, nil
+	return exprs, aliases, display, nil
 }

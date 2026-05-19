@@ -22,6 +22,6 @@ INSERT INTO otel_traces VALUES
   ["Client", "frontend", 4]
 ]
 -- chplan --
-MetricsAggregate op=count_over_time groupBy=[SpanKind AS kind, ResourceAttributes["service.name"] AS service.name] valueAlias=Value
+MetricsAggregate op=count_over_time groupBy=[SpanKind AS kind, ResourceAttributes["service.name"] AS service.name|resource.service.name] valueAlias=Value
   Filter predicate=true
     Scan(otel_traces)

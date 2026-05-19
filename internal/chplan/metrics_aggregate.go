@@ -99,6 +99,20 @@ func (o MetricsOp) String() string {
 //     Nil for rate and count_over_time (no operand at the source).
 //   - GroupBy: the `by(...)` label expressions; parallel to GroupByAliases
 //     for SELECT-list aliasing (mirrors chplan.Aggregate).
+//   - GroupByAliases: SQL SELECT-list alias for each GroupBy entry.
+//     Bare-named (e.g. `service.name`) so the chsql emitter renders
+//     `AS \`service.name\`` regardless of TraceQL scope.
+//   - GroupByDisplayNames: optional parallel slice carrying the
+//     TraceQL-canonical wire label name for each GroupBy entry — the
+//     scope-prefixed form (`resource.service.name`, `span.http.method`,
+//     intrinsic name like `kind`) that the Tempo metrics-query response
+//     surfaces. When empty (PromQL/LogQL paths never populate it) the
+//     Tempo handler falls back to GroupByAliases, preserving the
+//     historical wire shape for non-TraceQL callers. Tempo emits the
+//     full scope-prefixed key (see upstream
+//     `pkg/traceql.Attribute.String` + the metrics-engine label-build
+//     loop) so cerberus mirrors that shape on the response without
+//     altering the SQL-side alias used for column projection.
 //   - Quantiles: the quantile values for MetricsOpQuantileOverTime;
 //     today the lowering accepts a single quantile, so len(Quantiles)
 //     is always 1 for that op. Empty for all other ops.
@@ -113,13 +127,14 @@ func (o MetricsOp) String() string {
 // TimestampColumn slot; the per-span Timestamp column is the matrix
 // shape's bucket key.
 type MetricsAggregate struct {
-	Op             MetricsOp
-	Attr           Expr
-	GroupBy        []Expr
-	GroupByAliases []string
-	Quantiles      []float64
-	ValueAlias     string
-	Inner          Node
+	Op                  MetricsOp
+	Attr                Expr
+	GroupBy             []Expr
+	GroupByAliases      []string
+	GroupByDisplayNames []string
+	Quantiles           []float64
+	ValueAlias          string
+	Inner               Node
 }
 
 func (*MetricsAggregate) planNode() {}
@@ -153,6 +168,14 @@ func (m *MetricsAggregate) Equal(other Node) bool {
 	}
 	for i := range m.GroupByAliases {
 		if m.GroupByAliases[i] != o.GroupByAliases[i] {
+			return false
+		}
+	}
+	if len(m.GroupByDisplayNames) != len(o.GroupByDisplayNames) {
+		return false
+	}
+	for i := range m.GroupByDisplayNames {
+		if m.GroupByDisplayNames[i] != o.GroupByDisplayNames[i] {
 			return false
 		}
 	}
