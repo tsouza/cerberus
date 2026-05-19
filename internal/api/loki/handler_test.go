@@ -455,13 +455,13 @@ func TestQuery_Streams_DropsOTelDottedLabels(t *testing.T) {
 }
 
 // TestQuery_Streams_OTelFilterDoesNotAffectSelector — the dotted-form
-// filter applies strictly to the OUTPUT label map. The stream selector
-// that matched `service.name="tempo"` continues to reach the SQL
-// WHERE clause via the lowering pipeline, which runs against the raw
-// ResourceAttributes map at the CH layer. This test pins the
-// invariant by issuing a `{service.name="tempo"}` selector and
-// asserting the SQL still references ResourceAttributes (the WHERE
-// rewriter projects the dotted key into the Map subscript).
+// filter applies strictly to the OUTPUT label map. LogQL itself
+// restricts label identifiers to [a-zA-Z_][a-zA-Z0-9_]*, so dotted
+// selectors are syntactic 400s at the parser layer (not a behavior
+// the filter could change). The harness seeder writes both
+// `service.name` and `service_name` into ResourceAttributes so the
+// canonical underscore-form selector still resolves through the
+// Map[..] subscript at the CH layer. This test pins that path.
 func TestQuery_Streams_OTelFilterDoesNotAffectSelector(t *testing.T) {
 	t.Parallel()
 
@@ -469,7 +469,7 @@ func TestQuery_Streams_OTelFilterDoesNotAffectSelector(t *testing.T) {
 	srv := newServer(q)
 	t.Cleanup(srv.Close)
 
-	resp, err := http.Get(srv.URL + `/loki/api/v1/query?query=%7Bservice.name%3D%22tempo%22%7D`)
+	resp, err := http.Get(srv.URL + `/loki/api/v1/query?query=%7Bservice_name%3D%22tempo%22%7D`)
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
