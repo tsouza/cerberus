@@ -474,20 +474,37 @@ func insertCHLogs(ctx context.Context, conn driver.Conn, streams []stream) error
 	}
 
 	for _, s := range streams {
+		// resourceAttrs carries the stream-identity labels — the same nine
+		// keys the seeder hands to Loki via pushLoki's stream label set.
+		// Cerberus's LogQL stream selector resolves `{label=value}`
+		// matchers against this map (see
+		// internal/logql/lower.go::matcherToExpr → `ResourceAttributes[<key>]`).
+		// Mirrors the OTel-CH exporter's resource → ResourceAttributes
+		// mapping; Loki's own data model treats stream labels as
+		// resource-level too, so this keeps the two backends comparable.
+		// `service.name` is duplicated alongside the bare `service_name`
+		// key because the OTel-CH schema also surfaces it via the
+		// dedicated `ServiceName` column for /labels parity.
+		resourceAttrs := map[string]string{
+			"cluster":      s.config.Cluster,
+			"namespace":    s.config.Namespace,
+			"service":      s.config.Name,
+			"service_name": s.config.ServiceName,
+			"service.name": s.config.ServiceName,
+			"pod":          s.config.Pod,
+			"container":    s.config.Container,
+			"env":          "production",
+			"region":       "us-east-1",
+			"datacenter":   "dc1",
+		}
 		for _, e := range s.entries {
 			level := e.level
+			// LogAttributes carries per-record attributes — the severity
+			// markers Loki materialises as structured metadata. Stream
+			// labels live in resourceAttrs above, not here.
 			logAttrs := map[string]string{
 				"level":          strings.ToLower(level),
 				"detected_level": strings.ToLower(level),
-				"cluster":        s.config.Cluster,
-				"namespace":      s.config.Namespace,
-				"service":        s.config.Name,
-				"service_name":   s.config.ServiceName,
-				"pod":            s.config.Pod,
-				"container":      s.config.Container,
-				"env":            "production",
-				"region":         "us-east-1",
-				"datacenter":     "dc1",
 			}
 			if err := batch.Append(
 				e.ts,
@@ -499,7 +516,7 @@ func insertCHLogs(ctx context.Context, conn driver.Conn, streams []stream) error
 				s.config.ServiceName,
 				e.line,
 				"",
-				map[string]string{"service.name": s.config.ServiceName},
+				resourceAttrs,
 				"",
 				"cerberus-loki-compat-seeder",
 				"1",
