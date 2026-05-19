@@ -10,6 +10,25 @@
 [6] string = "prod"
 -- sql --
 SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (position(`Body`, ?) > 0) AND (position(`Body`, ?) = 0) AND match(`Body`, ?) AND NOT match(`Body`, ?) AND (position(`Body`, ?) > 0)
+-- seed --
+CREATE TABLE otel_logs (
+    Body String,
+    ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api')
+) ENGINE = Memory;
+INSERT INTO otel_logs (Body) VALUES
+    ('error 503 in prod'),
+    ('error 502 prod backend'),
+    ('error 200 in prod'),
+    ('error 504 prod debug session'),
+    ('test: error 500 prod'),
+    ('error 500 staging'),
+    ('error 599 prod fallback');
+-- expected_rows --
+[
+  ["error 503 in prod"],
+  ["error 502 prod backend"],
+  ["error 599 prod fallback"]
+]
 -- chplan --
 Filter predicate=((ResourceAttributes["job"] = "api") AND ((((lineContent(Body, "error", substr) AND lineContent(Body, "debug", substr,not)) AND lineContent(Body, "5[0-9]{2}", regex)) AND lineContent(Body, "^test", regex,not)) AND lineContent(Body, "prod", substr)))
   Scan(otel_logs)

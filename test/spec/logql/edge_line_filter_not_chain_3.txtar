@@ -8,6 +8,24 @@
 [4] string = "trace"
 -- sql --
 SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (position(`Body`, ?) = 0) AND (position(`Body`, ?) = 0) AND (position(`Body`, ?) = 0)
+-- seed --
+CREATE TABLE otel_logs (
+    Body String,
+    ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api')
+) ENGINE = Memory;
+INSERT INTO otel_logs (Body) VALUES
+    ('warn: pool exhausted'),
+    ('error: request failed'),
+    ('info: started server'),
+    ('debug: handler entered'),
+    ('trace: span emitted'),
+    ('fatal: panic recovered');
+-- expected_rows --
+[
+  ["warn: pool exhausted"],
+  ["error: request failed"],
+  ["fatal: panic recovered"]
+]
 -- chplan --
 Filter predicate=((ResourceAttributes["job"] = "api") AND ((lineContent(Body, "info", substr,not) AND lineContent(Body, "debug", substr,not)) AND lineContent(Body, "trace", substr,not)))
   Scan(otel_logs)

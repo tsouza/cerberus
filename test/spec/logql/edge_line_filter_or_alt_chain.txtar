@@ -8,6 +8,25 @@
 [4] string = "panic"
 -- sql --
 SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (((position(`Body`, ?) > 0) OR (position(`Body`, ?) > 0)) OR (position(`Body`, ?) > 0))
+-- seed --
+CREATE TABLE otel_logs (
+    Body String,
+    ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api')
+) ENGINE = Memory;
+INSERT INTO otel_logs (Body) VALUES
+    ('error: connection refused'),
+    ('fatal: out of memory'),
+    ('panic: nil dereference'),
+    ('info: heartbeat ok'),
+    ('warn: retry queued'),
+    ('debug: error masked by panic recovery');
+-- expected_rows --
+[
+  ["error: connection refused"],
+  ["fatal: out of memory"],
+  ["panic: nil dereference"],
+  ["debug: error masked by panic recovery"]
+]
 -- chplan --
 Filter predicate=((ResourceAttributes["job"] = "api") AND ((lineContent(Body, "error", substr) OR lineContent(Body, "fatal", substr)) OR lineContent(Body, "panic", substr)))
   Scan(otel_logs)

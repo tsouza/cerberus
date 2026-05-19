@@ -8,6 +8,23 @@
 [4] string = "timeout"
 -- sql --
 SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (position(`Body`, ?) > 0) AND (position(`Body`, ?) > 0) AND (position(`Body`, ?) > 0)
+-- seed --
+CREATE TABLE otel_logs (
+    Body String,
+    ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api')
+) ENGINE = Memory;
+INSERT INTO otel_logs (Body) VALUES
+    ('error: db query timeout exceeded'),
+    ('error: db query failed'),
+    ('warn: timeout on db pool'),
+    ('error queue overflow timeout'),
+    ('info: request served'),
+    ('error: db pool timeout after retry');
+-- expected_rows --
+[
+  ["error: db query timeout exceeded"],
+  ["error: db pool timeout after retry"]
+]
 -- chplan --
 Filter predicate=((ResourceAttributes["job"] = "api") AND ((lineContent(Body, "error", substr) AND lineContent(Body, "db", substr)) AND lineContent(Body, "timeout", substr)))
   Scan(otel_logs)
