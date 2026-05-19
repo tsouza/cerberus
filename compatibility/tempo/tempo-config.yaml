@@ -75,7 +75,27 @@ storage:
 #   1. live_store settings (below) cut and flush blocks aggressively
 #   2. blocklist_poll: 2s (above) ensures queriers discover flushed blocks
 #      quickly (default is 5m, which means 10m staleness window).
+#
+# wal.ingestion_time_range_slack widens the window Tempo accepts for span
+# timestamps relative to ingest wall-clock. Default is 2 minutes:
+# tempodb/wal/wal.go: c.IngestionSlack = 2 * time.Minute. When span
+# Start/End fall outside [now-slack, now+slack], modules/livestore/
+# instance.go:445-454 clamps the span's recorded start/end up to "now",
+# and the block's StartTime/EndTime BlockMeta uses the clamped values.
+# That clamping causes /api/search?start=<X>&end=<Y> to find zero blocks
+# whenever X/Y is more than 2 minutes outside the ingest wall-clock, even
+# though /api/traces/<id> still returns the trace (traceID lookup is not
+# time-range filtered). The differ uses anchor=2026-05-11T00:00:00Z (a
+# fixed point shared by prom/loki/tempo seeders for cross-harness
+# reproducibility) which drifts further from "now" each day. Picking
+# 8760h (= 1 year) gives the harness ~12 months of stable behavior
+# against the same anchor before requiring another bump — long enough
+# that the day-to-day clock drift doesn't surface as a TraceQL parity
+# regression, short enough that genuinely-stale fixtures still warn via
+# WarnOutsideIngestionSlack (tempodb/encoding/common/slackTimeRange.go).
 live_store:
+  wal:
+    ingestion_time_range_slack: 8760h
   max_trace_live: 2s
   max_trace_idle: 1s
   flush_check_period: 1s

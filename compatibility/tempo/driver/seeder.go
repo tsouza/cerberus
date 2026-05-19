@@ -50,6 +50,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -218,8 +219,15 @@ func runSeed(args []string) error {
 		return fmt.Errorf("smoke: %w", err)
 	}
 
-	logger.Info("smoke /api/search?q={} on tempo (live-store)", "deadline", *searchWait)
-	if err := smokeSearchLiveStore(ctx, logger, *tempoHTTP, *searchWait); err != nil {
+	// Smoke search uses the same time window the differ later builds
+	// (anchor ± 1h, see compatibility/tempo/driver/diff.go::runDiff).
+	// Without start/end the request short-circuits inside Tempo's
+	// search_sharder.go to ingester-only, which is empty after the
+	// live-store has flushed traces to backend blocks.
+	searchStart := startAt.Add(-1 * time.Hour)
+	searchEnd := startAt.Add(1 * time.Hour)
+	logger.Info("smoke /api/search on tempo", "deadline", *searchWait, "start", searchStart, "end", searchEnd)
+	if err := smokeSearchLiveStore(ctx, logger, *tempoHTTP, searchStart, searchEnd, *searchWait); err != nil {
 		logger.Warn("smoke search failed (non-fatal; differ will retry)", "err", err)
 	}
 
@@ -733,18 +741,32 @@ func decodeCerberusSpanCount(r io.Reader) (int, error) {
 	return total, nil
 }
 
-// smokeSearchLiveStore polls Tempo's /api/search?q={} with the
-// Recent-Data-Target: live-store header until the response contains at
-// least one trace. This catches the failure mode where Tempo's search
-// only scans completed blocks (which may not have been flushed yet) and
-// returns 0 results while cerberus returns many.
-func smokeSearchLiveStore(ctx context.Context, logger *slog.Logger, tempoHTTP string, deadline time.Duration) error {
+// smokeSearchLiveStore polls Tempo's /api/search until the response
+// contains at least one trace. This catches the failure mode where the
+// live-store hasn't flushed traces to backend blocks yet AND the
+// blocklist_poll hasn't picked up freshly-flushed blocks.
+//
+// The query passes start/end covering the fixture's span timestamps so
+// the backend block search path is exercised (modules/frontend/
+// search_sharder.go:140 short-circuits when start or end is unset and
+// queries the ingester only — useless on a flushed live-store).
+//
+// The Recent-Data-Target: live-store header is intentionally unset:
+// Tempo v3 parses it via pkg/api/http.go::ParseRecentDataTargetHeader
+// but no module in this build branches on the result, so it's a no-op
+// either way and setting it just propagated a misleading "live data
+// queried" promise to log readers.
+func smokeSearchLiveStore(ctx context.Context, logger *slog.Logger, tempoHTTP string, start, end time.Time, deadline time.Duration) error {
 	ctx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
 
-	url := strings.TrimRight(tempoHTTP, "/") + "/api/search?q=%7B%7D"
+	q := url.Values{}
+	q.Set("q", "{}")
+	q.Set("start", fmt.Sprintf("%d", start.Unix()))
+	q.Set("end", fmt.Sprintf("%d", end.Unix()))
+	target := strings.TrimRight(tempoHTTP, "/") + "/api/search?" + q.Encode()
 	for {
-		n, err := fetchSearchResultCount(ctx, url)
+		n, err := fetchSearchResultCount(ctx, target)
 		if err == nil && n > 0 {
 			logger.Info("tempo search returned traces", "count", n)
 			return nil
@@ -755,7 +777,7 @@ func smokeSearchLiveStore(ctx context.Context, logger *slog.Logger, tempoHTTP st
 			}
 			return fmt.Errorf("tempo search returned 0 traces after %s", deadline)
 		}
-		logger.Debug("retrying tempo search", "url", url, "err", err, "traces", n)
+		logger.Debug("retrying tempo search", "url", target, "err", err, "traces", n)
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -764,16 +786,14 @@ func smokeSearchLiveStore(ctx context.Context, logger *slog.Logger, tempoHTTP st
 	}
 }
 
-// fetchSearchResultCount issues one GET against /api/search with the
-// Recent-Data-Target: live-store header and returns the number of
-// traces in the response.
+// fetchSearchResultCount issues one GET against /api/search and returns
+// the number of traces in the response.
 func fetchSearchResultCount(ctx context.Context, url string) (int, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return 0, err
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Recent-Data-Target", "live-store")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return 0, err
