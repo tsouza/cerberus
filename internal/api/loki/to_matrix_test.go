@@ -10,12 +10,17 @@ import (
 	"github.com/tsouza/cerberus/internal/chclient"
 )
 
-// Layer 7 unit tests for toMatrixStepGrid — the per-step bucketing
-// helper /loki/api/v1/query_range hands to the metric path. Pool-CI's
-// coverage audit (#375) flagged this function at 26.7%; the cases
-// below pin every branch of the step walk: standard alignment, single
-// sample, empty buckets, multi-stream interleaving, boundary
-// inclusion, 5-min lookback, and label-set canonicalisation.
+// Layer 7 unit tests for toMatrixStepGrid — the per-anchor pivot
+// helper /loki/api/v1/query_range hands to the metric path. The
+// matrix-shape RangeWindow emitter (internal/chsql/range_window.go::
+// emitWindowedArrayMatrix) already fans the per-step grid into one
+// row per (series, anchor) and drops empty-window anchors at the
+// `WHERE length(window_vals) >= N` filter, so the pivot is a trivial
+// row → sample copy with no step-grid iteration or lookback
+// carry-forward (mirrors api/prom's matrixFromCursor). The cases
+// below pin: standard alignment, single sample, empty buckets,
+// multi-stream interleaving, boundary inclusion, out-of-range
+// clipping, and label-set canonicalisation.
 
 // stepGridFixture wires the boilerplate every case shares: epoch
 // anchor, helper to add a sample at a step-offset, deterministic
@@ -97,11 +102,13 @@ func TestToMatrixStepGrid_StandardAlignment(t *testing.T) {
 	}
 }
 
-// TestToMatrixStepGrid_SingleSample — one sample in a 5-minute
-// window. The sample sits at step anchor t=0 (epoch). The 5-min
-// lookback means every subsequent anchor within 300s of t=0 also
-// emits the same value (staleness carry-forward). Anchor at t=330s
-// is >300s away → dropped.
+// TestToMatrixStepGrid_SingleSample — one sample inside the request
+// window. The matrix-shape RangeWindow already produced exactly one
+// row at the sample's anchor; the pivot copies it through as a
+// single point at the sample's own timestamp (no lookback carry-
+// forward across empty anchors — that LVF behaviour was the cause
+// of the loki-compat ~250-anchor inflation on sparse `by (level)`
+// queries).
 func TestToMatrixStepGrid_SingleSample(t *testing.T) {
 	t.Parallel()
 
@@ -112,36 +119,25 @@ func TestToMatrixStepGrid_SingleSample(t *testing.T) {
 		{Labels: labels, Timestamp: f.at(0), Value: 42},
 	}
 
-	// Step every 30s out to 330s (12 anchors: 0, 30, …, 330).
 	got := toMatrixStepGrid(samples, f.at(0), f.at(330), 30*time.Second)
 	if len(got) != 1 {
 		t.Fatalf("expected 1 series, got %d", len(got))
 	}
-	// Anchors 0..300 (inclusive, 11 of them) emit the carried-
-	// forward value 42; anchor 330 is >300s past the sample so
-	// the lookback drops it.
-	if len(got[0].Values) != 11 {
-		t.Fatalf("expected 11 carried-forward steps (0..300s of lookback), got %d", len(got[0].Values))
+	if len(got[0].Values) != 1 {
+		t.Fatalf("expected 1 emitted point (single per-anchor row), got %d: %+v", len(got[0].Values), got[0].Values)
 	}
-	// All carried-forward values must equal "42".
-	for i, v := range got[0].Values {
-		if v[1] != "42" {
-			t.Errorf("step %d: value=%v, want \"42\"", i, v[1])
-		}
+	if got[0].Values[0][1] != "42" {
+		t.Errorf("value=%v, want \"42\"", got[0].Values[0][1])
 	}
-	// The stamps are the step anchors, not the sample timestamp.
-	for i, v := range got[0].Values {
-		want := floatStamp(f.at(i * 30))
-		if v[0] != want {
-			t.Errorf("step %d: stamp=%v, want %v", i, v[0], want)
-		}
+	if got[0].Values[0][0] != floatStamp(f.at(0)) {
+		t.Errorf("stamp=%v, want %v", got[0].Values[0][0], floatStamp(f.at(0)))
 	}
 }
 
-// TestToMatrixStepGrid_LeadingEmptyBuckets — when no sample exists
-// at-or-before a step anchor, the step is dropped (NOT zero-filled).
-// First sample at t=120s; anchors at 0, 30, 60, 90 fall before any
-// sample → cursor == 0 → continue branch.
+// TestToMatrixStepGrid_LeadingEmptyBuckets — only the samples the
+// SQL emitted survive the pivot; nothing back-fills the leading
+// (or trailing) anchors that had no per-anchor row. Two input
+// samples at t=120 and t=150 → two output points.
 func TestToMatrixStepGrid_LeadingEmptyBuckets(t *testing.T) {
 	t.Parallel()
 
@@ -157,27 +153,22 @@ func TestToMatrixStepGrid_LeadingEmptyBuckets(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("expected 1 series, got %d", len(got))
 	}
-	// Anchors with output: 120, 150, 180. Anchors 0, 30, 60, 90
-	// have no preceding sample → dropped (NOT zero-filled).
-	if len(got[0].Values) != 3 {
-		t.Fatalf("expected 3 emitted steps (120, 150, 180), got %d: %+v", len(got[0].Values), got[0].Values)
+	if len(got[0].Values) != 2 {
+		t.Fatalf("expected 2 emitted points (one per per-anchor row), got %d: %+v", len(got[0].Values), got[0].Values)
 	}
 	wantStamps := []float64{
 		floatStamp(f.at(120)),
 		floatStamp(f.at(150)),
-		floatStamp(f.at(180)),
 	}
 	for i, want := range wantStamps {
 		if got[0].Values[i][0] != want {
-			t.Errorf("step %d: stamp=%v, want %v", i, got[0].Values[i][0], want)
+			t.Errorf("point %d: stamp=%v, want %v", i, got[0].Values[i][0], want)
 		}
 	}
-	// Latest-at-or-before semantics: t=120 sees value 7,
-	// t=150 sees 8 (newer), t=180 carries forward 8.
-	wantVals := []string{"7", "8", "8"}
+	wantVals := []string{"7", "8"}
 	for i, want := range wantVals {
 		if got[0].Values[i][1] != want {
-			t.Errorf("step %d: value=%v, want %v", i, got[0].Values[i][1], want)
+			t.Errorf("point %d: value=%v, want %v", i, got[0].Values[i][1], want)
 		}
 	}
 }
@@ -203,9 +194,10 @@ func TestToMatrixStepGrid_AllEmpty(t *testing.T) {
 // TestToMatrixStepGrid_MultiStreamInterleaving — three distinct
 // label sets with different sample density. Pins:
 //  1. distinct label sets emit distinct series,
-//  2. per-series cursor advances independently (one series's
+//  2. per-series rows pass through independently (one series's
 //     sample timeline doesn't bleed into another's),
-//  3. label-set identity is the CanonicalKey shape.
+//  3. label-set identity is the CanonicalKey shape,
+//  4. per-series points equal the per-series input row count.
 func TestToMatrixStepGrid_MultiStreamInterleaving(t *testing.T) {
 	t.Parallel()
 
@@ -227,9 +219,9 @@ func TestToMatrixStepGrid_MultiStreamInterleaving(t *testing.T) {
 		{Labels: jobB, Timestamp: f.at(90), Value: 11},
 		{Labels: jobC, Timestamp: f.at(30), Value: 99},
 	}
-	// Interleave the input order to stress the sort.Slice path
-	// inside toMatrixStepGrid (the function pre-sorts each series
-	// by timestamp before walking).
+	// Shuffle the input order to stress the per-series pre-sort
+	// (the pivot still sorts each series's rows by Timestamp
+	// before emitting so wire order stays ascending).
 	samples = []chclient.Sample{
 		samples[4], samples[7], samples[0], samples[5],
 		samples[2], samples[6], samples[1], samples[3],
@@ -251,28 +243,23 @@ func TestToMatrixStepGrid_MultiStreamInterleaving(t *testing.T) {
 		t.Errorf("got[2].job=%q, want cron", got[2].Metric["job"])
 	}
 
-	// Series A: 5 anchors emit (0, 30, 60, 90, 120).
+	// Series A: 5 input rows → 5 output points.
 	if len(got[0].Values) != 5 {
 		t.Errorf("series A: expected 5 values, got %d: %+v", len(got[0].Values), got[0].Values)
 	}
-	// Series B: anchors 60, 90, 120 emit (120 carries forward 11
-	// via lookback). Anchors 0 and 30 are leading-empty.
-	if len(got[1].Values) != 3 {
-		t.Errorf("series B: expected 3 values, got %d: %+v", len(got[1].Values), got[1].Values)
+	// Series B: 2 input rows → 2 output points (60, 90).
+	if len(got[1].Values) != 2 {
+		t.Errorf("series B: expected 2 values, got %d: %+v", len(got[1].Values), got[1].Values)
 	}
-	if got[1].Values[0][1] != "10" || got[1].Values[1][1] != "11" || got[1].Values[2][1] != "11" {
-		t.Errorf("series B values=%+v, want [10 11 11]", got[1].Values)
+	if got[1].Values[0][1] != "10" || got[1].Values[1][1] != "11" {
+		t.Errorf("series B values=%+v, want [10 11]", got[1].Values)
 	}
-	// Series C: anchors 30, 60, 90, 120 all carry forward 99
-	// (single sample at 30s, lookback covers them all). Anchor
-	// 0 has no preceding sample → dropped.
-	if len(got[2].Values) != 4 {
-		t.Errorf("series C: expected 4 values, got %d: %+v", len(got[2].Values), got[2].Values)
+	// Series C: 1 input row → 1 output point at t=30s.
+	if len(got[2].Values) != 1 {
+		t.Errorf("series C: expected 1 value, got %d: %+v", len(got[2].Values), got[2].Values)
 	}
-	for i, v := range got[2].Values {
-		if v[1] != "99" {
-			t.Errorf("series C step %d: value=%v, want 99", i, v[1])
-		}
+	if got[2].Values[0][1] != "99" {
+		t.Errorf("series C value=%v, want 99", got[2].Values[0][1])
 	}
 }
 
@@ -314,45 +301,45 @@ func TestToMatrixStepGrid_BoundaryInclusion(t *testing.T) {
 	}
 }
 
-// TestToMatrixStepGrid_LookbackDrop — a sample older than 5 minutes
-// at a given anchor doesn't carry forward: the staleness window is
-// strictly `> lookback` (the >, not >=, branch is the one this
-// pins). One sample at t=0; anchors at 5m exactly (carried) and
-// 5m1s (dropped).
-func TestToMatrixStepGrid_LookbackDrop(t *testing.T) {
+// TestToMatrixStepGrid_OutOfRangeClip — rows whose Timestamp falls
+// outside `[start, end]` are clipped from the output (a drifted
+// server-side `now64(9)` on the instant fallback shape can land a
+// row past `end`; the pivot must not surface it on the wire).
+func TestToMatrixStepGrid_OutOfRangeClip(t *testing.T) {
 	t.Parallel()
 
 	f := newFixture()
 	labels := map[string]string{"job": "api"}
 	samples := []chclient.Sample{
-		{Labels: labels, Timestamp: f.at(0), Value: 1},
+		{Labels: labels, Timestamp: f.at(-30), Value: 1}, // before start
+		{Labels: labels, Timestamp: f.at(0), Value: 2},   // == start (kept)
+		{Labels: labels, Timestamp: f.at(60), Value: 3},  // inside (kept)
+		{Labels: labels, Timestamp: f.at(120), Value: 4}, // == end (kept)
+		{Labels: labels, Timestamp: f.at(150), Value: 5}, // past end
 	}
 
-	// First call: range [0, 300s], step 300s. Two anchors: 0, 300s.
-	// Anchor 300s is exactly lookback away (`t.Sub(latest) == lookback`)
-	// — the `>` comparison keeps it.
-	got := toMatrixStepGrid(samples, f.at(0), f.at(300), 300*time.Second)
+	got := toMatrixStepGrid(samples, f.at(0), f.at(120), 30*time.Second)
 	if len(got) != 1 {
 		t.Fatalf("expected 1 series, got %d", len(got))
 	}
-	if len(got[0].Values) != 2 {
-		t.Errorf("expected 2 values at lookback boundary; got %d: %+v",
-			len(got[0].Values), got[0].Values)
+	if len(got[0].Values) != 3 {
+		t.Fatalf("expected 3 in-range values, got %d: %+v", len(got[0].Values), got[0].Values)
 	}
-
-	// Second call: range [0, 301s], step 301s. Anchor at 301s is
-	// 1 second past the lookback — dropped via the `>` branch.
-	got = toMatrixStepGrid(samples, f.at(0), f.at(301), 301*time.Second)
-	if len(got) != 1 {
-		t.Fatalf("expected 1 series, got %d", len(got))
+	wantStamps := []float64{
+		floatStamp(f.at(0)),
+		floatStamp(f.at(60)),
+		floatStamp(f.at(120)),
 	}
-	if len(got[0].Values) != 1 {
-		t.Errorf("expected only anchor 0 to emit (anchor 301s dropped by lookback); got %d: %+v",
-			len(got[0].Values), got[0].Values)
+	for i, want := range wantStamps {
+		if got[0].Values[i][0] != want {
+			t.Errorf("point %d: stamp=%v, want %v", i, got[0].Values[i][0], want)
+		}
 	}
-	// The one surviving anchor is at t=0.
-	if got[0].Values[0][0] != floatStamp(f.at(0)) {
-		t.Errorf("surviving stamp=%v, want %v", got[0].Values[0][0], floatStamp(f.at(0)))
+	wantVals := []string{"2", "3", "4"}
+	for i, want := range wantVals {
+		if got[0].Values[i][1] != want {
+			t.Errorf("point %d: value=%v, want %v", i, got[0].Values[i][1], want)
+		}
 	}
 }
 
@@ -430,6 +417,46 @@ func TestToMatrixStepGrid_LabelSetIdentity(t *testing.T) {
 	}
 	if len(got[0].Values) != 2 {
 		t.Errorf("expected 2 step values from collapsed series, got %d", len(got[0].Values))
+	}
+}
+
+// TestToMatrixStepGrid_NoCarryForwardOverEmptyAnchors — the
+// loki-compat regression scenario: a sparse `by (level)` series
+// where the inner SQL filter (`WHERE length(window_vals) >= 1`)
+// has already dropped empty-window anchors, leaving N rows scattered
+// across the request window. The pivot must emit exactly N points,
+// NOT back-fill the dropped anchors with the previous sample's
+// value via the pre-existing last-value-forward lookback. Two
+// samples at t=0 and t=600 with a step grid that would have visited
+// every 60s anchor in between → 2 output points, not 11.
+func TestToMatrixStepGrid_NoCarryForwardOverEmptyAnchors(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture()
+	labels := map[string]string{"level": "info"}
+
+	// Two non-adjacent samples (10 minutes apart). Under the old
+	// LVF semantics with a 5m lookback, anchors at 0, 60, …, 300
+	// would all carry forward the first sample (6 points), then
+	// anchors at 600, 660, …, 900 would carry forward the second
+	// (6 points) — 12 total. The pass-through pivot emits 2.
+	samples := []chclient.Sample{
+		{Labels: labels, Timestamp: f.at(0), Value: 1},
+		{Labels: labels, Timestamp: f.at(600), Value: 2},
+	}
+
+	got := toMatrixStepGrid(samples, f.at(0), f.at(900), 60*time.Second)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 series, got %d", len(got))
+	}
+	if len(got[0].Values) != 2 {
+		t.Fatalf("expected 2 emitted points (NO carry-forward), got %d: %+v", len(got[0].Values), got[0].Values)
+	}
+	if got[0].Values[0][0] != floatStamp(f.at(0)) || got[0].Values[0][1] != "1" {
+		t.Errorf("point 0=%+v, want (%v, \"1\")", got[0].Values[0], floatStamp(f.at(0)))
+	}
+	if got[0].Values[1][0] != floatStamp(f.at(600)) || got[0].Values[1][1] != "2" {
+		t.Errorf("point 1=%+v, want (%v, \"2\")", got[0].Values[1], floatStamp(f.at(600)))
 	}
 }
 
