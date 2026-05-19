@@ -10,16 +10,20 @@ import (
 	"github.com/tsouza/cerberus/internal/api/tempo"
 )
 
-// TestSearchTags_UnionsMapsAndIntrinsics — the V1 endpoint returns the
+// TestSearchTags_UnionsDynamicAttributes — the V1 endpoint returns the
 // sorted, de-duplicated union of:
 //   - keys returned by the ResourceAttributes lookup,
-//   - keys returned by the SpanAttributes lookup,
-//   - the static intrinsic-span list.
+//   - keys returned by the SpanAttributes lookup.
+//
+// Intrinsics are NOT included on the default V1 envelope — upstream
+// Tempo only adds them when the caller passes `?scope=intrinsic` (see
+// `pkg/tempopb`'s SearchTagsRequest handling). The cerberus V1 path
+// mirrors that carve-out so the tags_v1_all compatibility case passes.
 //
 // stringsBySQL routes each CH call by the column it qualifies on, so
 // the test can give distinct row sets to the two lookups even though
 // they share the chclient.QueryStrings entry point.
-func TestSearchTags_UnionsMapsAndIntrinsics(t *testing.T) {
+func TestSearchTags_UnionsDynamicAttributes(t *testing.T) {
 	t.Parallel()
 	q := &stubQuerier{stringsBySQL: map[string][]string{
 		"`ResourceAttributes`": {"service.name", "host"},
@@ -41,12 +45,16 @@ func TestSearchTags_UnionsMapsAndIntrinsics(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 
-	for _, want := range []string{
-		"service.name", "host", "http.method", // dynamic
-		"name", "kind", "status", "duration", // intrinsics
-	} {
+	// Dynamic keys must surface; intrinsics MUST NOT — default V1 only
+	// carries the dynamic attribute set (upstream parity).
+	for _, want := range []string{"service.name", "host", "http.method"} {
 		if !contains(body.TagNames, want) {
-			t.Errorf("missing tag %q in response: %v", want, body.TagNames)
+			t.Errorf("missing dynamic tag %q in response: %v", want, body.TagNames)
+		}
+	}
+	for _, leaked := range []string{"name", "kind", "status", "duration", "statusMessage"} {
+		if contains(body.TagNames, leaked) {
+			t.Errorf("intrinsic %q leaked into default V1 envelope: %v", leaked, body.TagNames)
 		}
 	}
 	// De-dup: `host` appears in both maps but only once.
@@ -155,7 +163,8 @@ func TestSearchTags_CHFailure(t *testing.T) {
 
 // TestSearchTags_EmptyArray — an empty CH result still produces
 // `{"tagNames":[]}` (non-nil) so Grafana's JSON decoder doesn't choke
-// on `null`. Plus the static intrinsic list still surfaces.
+// on `null`. Default V1 has no intrinsics, so the slice is fully
+// empty when CH returns no rows.
 func TestSearchTags_EmptyArray(t *testing.T) {
 	t.Parallel()
 	q := &stubQuerier{strings: nil}
@@ -174,9 +183,12 @@ func TestSearchTags_EmptyArray(t *testing.T) {
 	if body.TagNames == nil {
 		t.Fatalf("expected non-nil tagNames slice (empty CH result), got nil")
 	}
-	// Intrinsics are static — should always be present.
-	if !contains(body.TagNames, "name") {
-		t.Errorf("expected intrinsic `name` even with empty CH result: %v", body.TagNames)
+	// Default V1 must not surface intrinsics — they're reserved for the
+	// `?scope=intrinsic` carve-out.
+	for _, leaked := range []string{"name", "kind", "status", "duration", "statusMessage"} {
+		if contains(body.TagNames, leaked) {
+			t.Errorf("intrinsic %q leaked into default V1 envelope: %v", leaked, body.TagNames)
+		}
 	}
 }
 
@@ -392,6 +404,206 @@ func TestSearchTags_V1ScopeFilter(t *testing.T) {
 			t.Fatalf("status=%d want 400", resp.StatusCode)
 		}
 	})
+}
+
+// TestSearchTagsV2_IntrinsicListMatchesTempo — pins the V2 intrinsic
+// list to exactly the 25-element inventory upstream Tempo emits from
+// `pkg/search.GetVirtualIntrinsicValues()`. Reference Tempo on /tags/v2
+// surfaces this set verbatim regardless of dynamic data; the
+// compatibility differ requires set-equality with that list for the
+// tags_v2_intrinsic case to pass.
+//
+// Bare + scoped forms (e.g. `name` AND `span:name`) coexist because
+// upstream surfaces both — the autocomplete UI accepts either.
+func TestSearchTagsV2_IntrinsicListMatchesTempo(t *testing.T) {
+	t.Parallel()
+	q := &stubQuerier{stringsBySQL: map[string][]string{
+		"`ResourceAttributes`": nil,
+		"`SpanAttributes`":     nil,
+	}}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/v2/search/tags?scope=intrinsic")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+	var body tempo.SearchTagsResponseV2
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Scopes) != 1 || body.Scopes[0].Name != "intrinsic" {
+		t.Fatalf("expected exactly one `intrinsic` scope, got %+v", body.Scopes)
+	}
+	got := body.Scopes[0].Tags
+
+	// Canonical Tempo list, kept in lockstep with upstream
+	// pkg/search.GetVirtualIntrinsicValues().
+	want := []string{
+		"duration",
+		"event:name",
+		"event:timeSinceStart",
+		"instrumentation:name",
+		"instrumentation:version",
+		"kind",
+		"link:spanID",
+		"link:traceID",
+		"name",
+		"rootName",
+		"rootServiceName",
+		"span:duration",
+		"span:id",
+		"span:kind",
+		"span:name",
+		"span:parentID",
+		"span:status",
+		"span:statusMessage",
+		"status",
+		"statusMessage",
+		"trace:duration",
+		"trace:id",
+		"trace:rootName",
+		"trace:rootService",
+		"traceDuration",
+	}
+	if len(got) != len(want) {
+		t.Errorf("V2 intrinsic count=%d want=%d got=%v", len(got), len(want), got)
+	}
+	gotSet := map[string]bool{}
+	for _, s := range got {
+		gotSet[s] = true
+	}
+	for _, w := range want {
+		if !gotSet[w] {
+			t.Errorf("missing canonical intrinsic %q in V2 response: %v", w, got)
+		}
+	}
+	wantSet := map[string]bool{}
+	for _, s := range want {
+		wantSet[s] = true
+	}
+	for _, g := range got {
+		if !wantSet[g] {
+			t.Errorf("V2 emitted unexpected intrinsic %q (not in upstream list): %v", g, got)
+		}
+	}
+	// `parent` was the legacy cerberus alias for `span:parentID`. It's
+	// NOT part of upstream's list and must not leak — otherwise cerberus
+	// goes one tag ahead of Tempo on the set-equality diff.
+	if contains(got, "parent") {
+		t.Errorf("V2 leaked legacy `parent` intrinsic (not in upstream): %v", got)
+	}
+}
+
+// TestSearchTags_V1OmitsIntrinsicsByDefault — pins the V1 no-leak rule:
+// without explicit `?scope=intrinsic`, the envelope must carry zero
+// intrinsics regardless of whether the caller passed `?scope=none`,
+// `?scope=all`, or no scope at all. Matches upstream Tempo's
+// `tag_handlers.go` carve-out (intrinsics only when `Scope ==
+// ParamScopeIntrinsic`) so the tags_v1_all compat case passes.
+func TestSearchTags_V1OmitsIntrinsicsByDefault(t *testing.T) {
+	t.Parallel()
+	// Every intrinsic that previously leaked into V1.
+	leakedBefore := []string{
+		"name", "kind", "status", "statusMessage", "duration",
+		// Plus all the new ones — none of them should appear either.
+		"rootName", "rootServiceName", "traceDuration",
+		"span:name", "span:kind", "trace:id",
+		"event:name", "link:spanID", "instrumentation:name",
+	}
+	for _, query := range []string{"", "?scope=none", "?scope=all"} {
+		query := query
+		t.Run("query="+query, func(t *testing.T) {
+			t.Parallel()
+			q := &stubQuerier{stringsBySQL: map[string][]string{
+				"`ResourceAttributes`": {"service.name"},
+				"`SpanAttributes`":     {"http.method"},
+			}}
+			srv := newServer(q, "v1.0.0-test")
+			t.Cleanup(srv.Close)
+
+			resp, err := http.Get(srv.URL + "/api/search/tags" + query)
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status=%d body=%s", resp.StatusCode, readBody(t, resp))
+			}
+			var body tempo.SearchTagsResponse
+			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			// Dynamic keys must still surface.
+			if !contains(body.TagNames, "service.name") {
+				t.Errorf("default V1 missing dynamic key `service.name`: %v", body.TagNames)
+			}
+			// No intrinsic must surface.
+			for _, leaked := range leakedBefore {
+				if contains(body.TagNames, leaked) {
+					t.Errorf("default V1 leaked intrinsic %q: %v", leaked, body.TagNames)
+				}
+			}
+		})
+	}
+}
+
+// TestSearchTagsV2_WireShape — pins the V2 envelope so future
+// regressions in JSON-marshal land surface here rather than in the
+// compat differ. The envelope must be `{"scopes":[{"name":...,
+// "tags":[...]}]}` with each requested scope present exactly once.
+func TestSearchTagsV2_WireShape(t *testing.T) {
+	t.Parallel()
+	q := &stubQuerier{stringsBySQL: map[string][]string{
+		"`ResourceAttributes`": {"service.name"},
+		"`SpanAttributes`":     {"http.method"},
+	}}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/v2/search/tags")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+	body := readBody(t, resp)
+	if !strings.Contains(body, `"scopes":`) {
+		t.Errorf("V2 envelope missing top-level `scopes` key: %s", body)
+	}
+	if !strings.Contains(body, `"name":`) || !strings.Contains(body, `"tags":`) {
+		t.Errorf("V2 scope entry missing `name`/`tags` keys: %s", body)
+	}
+}
+
+// TestSearchTags_V1WireShape — pins the V1 envelope so future JSON
+// regressions surface here rather than in the compat differ. The
+// envelope must be `{"tagNames":[...]}` — never `null`, even when CH
+// returns no rows.
+func TestSearchTags_V1WireShape(t *testing.T) {
+	t.Parallel()
+	q := &stubQuerier{strings: nil}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/search/tags")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	body := readBody(t, resp)
+	if !strings.Contains(body, `"tagNames":`) {
+		t.Errorf("V1 envelope missing `tagNames` key: %s", body)
+	}
+	if strings.Contains(body, `"tagNames":null`) {
+		t.Errorf("V1 envelope emitted null `tagNames` (must be `[]`): %s", body)
+	}
 }
 
 // contains is a small helper so test failures point at the missing
