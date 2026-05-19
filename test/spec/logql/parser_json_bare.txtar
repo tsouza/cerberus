@@ -20,8 +20,8 @@ INSERT INTO otel_logs (Body) VALUES
     ('{"ts":"2025-01-01","level":"error","msg":"retry"}');
 -- expected_rows --
 [
-  ["{\"ts\":\"2025-01-01\",\"level\":\"error\",\"msg\":\"oops\"}"],
-  ["{\"ts\":\"2025-01-01\",\"level\":\"error\",\"msg\":\"retry\"}"]
+  [{"level": "error", "msg": "oops", "ts": "2025-01-01"}],
+  [{"level": "error", "msg": "retry", "ts": "2025-01-01"}]
 ]
 -- chplan --
 Filter predicate=((ResourceAttributes["job"] = "api") AND (mapConcat(ResourceAttributes, CAST(JSONExtractKeysAndValues(Body, "String"), "Map(String,String)"))["level"] = "error"))
