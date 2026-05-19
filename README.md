@@ -296,7 +296,7 @@ Quick reference:
 | **Property**     | Oracle-based property tests with `rapid` shrinking and chDB execution             | `go test -tags chdb ./test/property/...`            |
 | **Integration**  | `chclient` against a real ClickHouse via testcontainers                           | `go test -tags=integration ./internal/chclient/...` |
 | **E2E**          | k3d cluster with CH + Grafana + cerberus; Grafana Playwright smoke                | `just e2e`                                          |
-| **Compat**       | Differential parity vs reference Prom / Loki / Tempo                              | `just compat-all` (per-head recipes below)              |
+| **Compat**       | Differential parity vs reference Prom / Loki / Tempo                              | `just compat-all` (per-head recipes below)          |
 | **Mutation**     | Gremlins matrix — see `docs/test-strategy.md` § "Gremlins phased rollout" for bar | `just mutate` (slow, nightly in CI)                 |
 
 ## Quick start
