@@ -316,16 +316,23 @@ func projectValueOverLogInner(inner chplan.Node, s schema.Logs, newValue chplan.
 		}
 	}
 	// Vector-aggregation output (post-wrapVectorAggregateForSample) and
-	// the synthetic literal/vector(...) output both expose the
-	// canonical (MetricName, Attributes, TimeUnix, Value) shape via
-	// the LogQL Sample contract. lowerLiteral / lowerVector keep only
-	// (ResourceAttributes, Value), so we forward whichever subset is
-	// in scope by emitting an aliased projection that the emitter
-	// resolves at SQL-build time.
+	// the synthetic literal/vector(...) output expose different
+	// stream-identity columns: a vector aggregation has already been
+	// projected to the canonical (MetricName, Attributes, TimeUnix,
+	// Value) shape — at that point `ResourceAttributes` is gone (the
+	// Aggregate's GROUP BY consumed it) and identity rides under
+	// `Attributes`. lowerLiteral / lowerVector / label_replace keep
+	// only (ResourceAttributes, Value). Pick the right column based on
+	// inner shape — mirrors the same switch sampleShapeOverLogInner
+	// uses (see also Lang.ProjectSamples).
+	attrsCol := s.ResourceAttributesColumn
+	if isVectorAggregateSampleShape(inner) {
+		attrsCol = "Attributes"
+	}
 	return &chplan.Project{
 		Input: inner,
 		Projections: []chplan.Projection{
-			{Expr: &chplan.ColumnRef{Name: s.ResourceAttributesColumn}},
+			{Expr: &chplan.ColumnRef{Name: attrsCol}},
 			{Expr: newValue, Alias: rangeAggSynthValueColumn},
 		},
 	}
