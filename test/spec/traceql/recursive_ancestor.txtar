@@ -7,6 +7,25 @@ SELECT R.* FROM (WITH RECURSIVE _struct_closure AS (SELECT `TraceId`, `SpanId`, 
 [1] string = "leaf"
 [2] string = "service.name"
 [3] string = "root"
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    ParentSpanId String,
+    _svc String,
+    ResourceAttributes Map(String, String) MATERIALIZED map('service.name', _svc)
+) ENGINE = Memory;
+INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, _svc) VALUES
+    ('a0000000000000000000000000000001', '0000000000000001', '',                 'root'),
+    ('a0000000000000000000000000000001', '0000000000000002', '0000000000000001', 'mid'),
+    ('a0000000000000000000000000000001', '0000000000000003', '0000000000000002', 'leaf'),
+    ('a0000000000000000000000000000001', '0000000000000004', '0000000000000003', 'leafer'),
+    ('a0000000000000000000000000000002', '0000000000000010', '',                 'leaf'),
+    ('a0000000000000000000000000000002', '0000000000000011', '',                 'root');
+-- expected_rows --
+[
+  ["a0000000000000000000000000000001", "0000000000000001", "", "root"]
+]
 -- chplan --
 StructuralJoin op=<<
   Filter predicate=(ResourceAttributes["service.name"] = "leaf")

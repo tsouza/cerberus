@@ -6,6 +6,24 @@ SELECT L.* FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)
 [0] string = "service.name"
 [1] string = "a"
 [2] int64 = 1000000000
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    Duration UInt64,
+    _svc String,
+    ResourceAttributes Map(String, String) MATERIALIZED map('service.name', _svc)
+) ENGINE = Memory;
+INSERT INTO otel_traces (TraceId, SpanId, Duration, _svc) VALUES
+    ('a0000000000000000000000000000001', '0000000000000001', 500000000,  'a'),
+    ('a0000000000000000000000000000001', '0000000000000002', 2000000000, 'a'),
+    ('a0000000000000000000000000000001', '0000000000000003', 3000000000, 'b'),
+    ('a0000000000000000000000000000002', '0000000000000010', 5000000000, 'a');
+-- expected_rows --
+[
+  ["a0000000000000000000000000000001", "0000000000000002", 2000000000, "a"],
+  ["a0000000000000000000000000000002", "0000000000000010", 5000000000, "a"]
+]
 -- chplan --
 SetOperation op=&&
   Filter predicate=(ResourceAttributes["service.name"] = "a")
