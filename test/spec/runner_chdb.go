@@ -86,6 +86,80 @@ func isMapColumn(name string) bool {
 	return false
 }
 
+// expandStarProjection rewrites a top-level `SELECT * FROM (SELECT
+// <projs> FROM ...) ...` into `SELECT <alias-list> FROM (SELECT
+// <projs> FROM ...) ...` so the subsequent [rewriteMapProjections]
+// pass can wrap Map-typed columns in `toJSONString(...)`. cerberus's
+// emitter sometimes hoists a star projection over a fully-aliased
+// inner SELECT (e.g. the `Filter ... Project ...` lowering shape of
+// `<scalar> < metric`); without expansion, the outer `*` carries the
+// inner Map column through unwrapped and chdb-go's parquet driver
+// panics with `could not cast to type: MAP`.
+//
+// The transform is conservative: it fires only when the outer
+// projection is exactly `*` and the inner subquery starts with
+// `SELECT ` (case-insensitive). Anything else passes through. The
+// inner subquery's projections are re-rendered as their aliases
+// (preferring explicit `AS <alias>` over the implicit form), which
+// lets the outer SELECT name the columns and the Map-wrap pass do
+// its work without touching the inner shape.
+func expandStarProjection(query string) string {
+	head, tail := splitOuterSelect(query)
+	if head == "" || strings.TrimSpace(head) != "*" {
+		return query
+	}
+	// `tail` starts with " FROM "; the next non-space token should be
+	// `(` opening an inner subquery whose projection list we can
+	// borrow. Bail out otherwise.
+	rest := strings.TrimSpace(strings.TrimPrefix(tail, " FROM "))
+	if !strings.HasPrefix(rest, "(") {
+		return query
+	}
+	// Find the matching `)` for the subquery.
+	depth := 0
+	end := -1
+	for i := 0; i < len(rest); i++ {
+		switch rest[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				end = i
+			}
+		}
+		if end >= 0 {
+			break
+		}
+	}
+	if end < 0 {
+		return query
+	}
+	inner := strings.TrimSpace(rest[1:end])
+	innerHead, _ := splitOuterSelect(inner)
+	if innerHead == "" {
+		return query
+	}
+	innerProjs := splitProjections(innerHead)
+	aliases := make([]string, 0, len(innerProjs))
+	for _, p := range innerProjs {
+		expr, alias := splitAlias(p)
+		if alias == "" {
+			alias = mapColAlias(strings.TrimSpace(expr))
+		}
+		// Bail when the inner projection is itself a star, a
+		// function call, or anything else that doesn't reduce to a
+		// stable column name. Returning the original query keeps
+		// the existing Map-panic failure mode for shapes the
+		// rewriter cannot canonically enumerate.
+		if alias == "" || alias == "*" || strings.ContainsAny(alias, "()`") {
+			return query
+		}
+		aliases = append(aliases, "`"+alias+"`")
+	}
+	return "SELECT " + strings.Join(aliases, ", ") + tail
+}
+
 // rewriteMapProjections wraps any top-level SELECT projection whose
 // alias is a known Map column in toJSONString(...). The transform
 // fires on the OUTER SELECT only — subqueries keep their Map columns
@@ -536,6 +610,7 @@ func RunRoundTrip(t *testing.T, c *Case) {
 	// the args side is global, and ordering them this way keeps the
 	// argIdx accounting in substituteNow64 simple.
 	query, queryArgs := substituteNow64(rt.SQL, rt.Args)
+	query = expandStarProjection(query)
 	query = rewriteMapProjections(query)
 	colCount := extractProjectionCount(query)
 
