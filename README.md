@@ -3,6 +3,17 @@
 > Drop-in **Prometheus / Loki / Tempo** HTTP gateway for **ClickHouse**.
 > Keep Grafana, alerting, and your CLI tooling. Swap the backend.
 
+> [!WARNING]
+> ## ALPHA — NOT PRODUCTION-READY
+>
+> Cerberus is **alpha quality**. `v1.0.0-RC3` is the latest tag; **RC4
+> through the rest of the `v1.0.0` roadmap is still owed** —
+> correctness, performance, and operational hardening. Two of the three
+> compatibility harnesses (LogQL, TraceQL) are **mid-rollout and not yet
+> gating PRs**. Treat this as a preview for evaluation and experiments,
+> **not** a drop-in replacement for a running Prom / Loki / Tempo
+> deployment. Expect breaking changes between RC tags.
+
 [![CI](https://github.com/tsouza/cerberus/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tsouza/cerberus/actions/workflows/ci.yml)
 [![Mutation](https://github.com/tsouza/cerberus/actions/workflows/mutation.yml/badge.svg?branch=main)](https://github.com/tsouza/cerberus/actions/workflows/mutation.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -48,19 +59,22 @@ optimised ClickHouse SQL underneath.
 
 ## Status
 
-> **`v1.0.0` candidate.** Cerberus has shipped the full RC1–RC8
-> backlog: PromQL / LogQL / TraceQL parse + lowering, the pattern-based
-> optimizer (transposes, PREWHERE promotion, late materialisation, MV
-> substitution), the typed `chsql` SQL emitter, the shared
-> `internal/engine` pipeline, full self-observability (`slog` + OTel
-> traces + OTLP-exported metrics), 12-factor packaging (`/readyz`,
-> admission control, `docker compose up` for one-command local dev),
-> and the chDB-backed round-trip + property test suites. Upstream
-> parser shims are retired via the
-> [`tsouza/tempo:cerberus-accessors`](https://github.com/tsouza/tempo/tree/cerberus-accessors)
-> fork; the schema source of truth is
-> [`tsouza/opentelemetry-collector-contrib:cerberus-ddl`](https://github.com/tsouza/opentelemetry-collector-contrib/tree/cerberus-ddl).
-> See [`CHANGELOG.md`](CHANGELOG.md) for the per-release breakdown.
+**Alpha — `v1.0.0-RC3` is the latest tag.** RC1, RC2, and RC3 have
+shipped: PromQL / LogQL / TraceQL parse + lowering, the pattern-based
+optimizer (transposes, PREWHERE promotion, late materialisation, MV
+substitution), the typed `chsql` SQL emitter, the shared
+`internal/engine` pipeline, full self-observability (`slog` + OTel
+traces + OTLP-exported metrics), 12-factor packaging (`/readyz`,
+admission control, `docker compose up` for one-command local dev), and
+the chDB-backed round-trip + property test suites. Upstream parser
+shims are retired via the
+[`tsouza/tempo:cerberus-accessors`](https://github.com/tsouza/tempo/tree/cerberus-accessors)
+fork; the schema source of truth is
+[`tsouza/opentelemetry-collector-contrib:cerberus-ddl`](https://github.com/tsouza/opentelemetry-collector-contrib/tree/cerberus-ddl).
+
+**RC4 and the rest of the v1.0.0 roadmap are still owed** — see
+[`docs/roadmap.md`](docs/roadmap.md) for what's left and
+[`CHANGELOG.md`](CHANGELOG.md) for the per-release breakdown.
 
 ## Architecture
 
@@ -283,14 +297,15 @@ Loki + Tempo). ClickHouse data persists in a named volume; use
 
 ### From a published release
 
-Pull the container image (`:latest` is **only** advanced by stable
-releases; RC / alpha / beta tags don't move it):
+Pull the container image. Cerberus is alpha, so pin an RC tag — `:latest`
+is **only** advanced by stable releases (none yet) and won't move until
+`v1.0.0` cuts:
 
 ```sh
-docker pull ghcr.io/tsouza/cerberus:v1.0.0
+docker pull ghcr.io/tsouza/cerberus:v1.0.0-RC3
 docker run --rm -p 8080:8080 \
   -e CERBERUS_CH_ADDR=clickhouse:9000 \
-  ghcr.io/tsouza/cerberus:v1.0.0
+  ghcr.io/tsouza/cerberus:v1.0.0-RC3
 ```
 
 Or download a prebuilt binary from the [release page](https://github.com/tsouza/cerberus/releases)
