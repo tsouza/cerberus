@@ -7,6 +7,26 @@
 [1] string = "b"
 [2] string = "a"
 [3] string = "b"
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    ParentSpanId String,
+    SpanName String
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    ('t1', 's1', '',   'a'),
+    ('t1', 's2', 's1', 'b'),
+    ('t2', 's3', '',   'c'),
+    ('t2', 's4', 's3', 'd'),
+    ('t3', 's5', '',   'a'),
+    ('t3', 's6', 's5', 'c'),
+    ('t4', 's7', '',   'b');
+-- expected_rows --
+[
+  ["t1", "s1", "", "a"],
+  ["t1", "s2", "s1", "b"]
+]
 -- chplan --
 StructuralJoin op=&>
   Filter predicate=(SpanName = "a")
