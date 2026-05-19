@@ -234,7 +234,7 @@ func TestEngine_QueryPlan_IsTraceByID_SkipsOptimizer(t *testing.T) {
 			t.Fatalf("QueryPlan: unexpected err: %v", err)
 		}
 		if strings.Contains(res.SQL, rewrittenTable) {
-			t.Errorf("SQL: contains rewritten table %q; optimizer should have been skipped. SQL=%q",
+			t.Errorf("SQL: contains rewritten table %q; optimizer should have been bypassed. SQL=%q",
 				rewrittenTable, res.SQL)
 		}
 		if !strings.Contains(res.SQL, originalTable) {

@@ -74,8 +74,8 @@ func TestSignalNotifyContext_TerminatesOnSIGINT(t *testing.T) {
 	}
 }
 
-// TestSignalNotifyContext_StopReleasesHandler confirms the deferred
-// stop() unhooks the signal handler so a second test in the same
+// TestSignalNotifyContext_StopReleasesHandler confirms the stop()
+// callback unhooks the signal handler so a second test in the same
 // process doesn't see stray cancellations from the first test's
 // signal.
 func TestSignalNotifyContext_StopReleasesHandler(t *testing.T) {

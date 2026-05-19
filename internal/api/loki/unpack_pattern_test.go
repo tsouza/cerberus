@@ -90,10 +90,10 @@ func TestUnpack_SkipsNonStringValues(t *testing.T) {
 	_, gotLabels := tx(line, map[string]string{"job": "api"})
 
 	if _, ok := gotLabels["count"]; ok {
-		t.Errorf("non-string `count` should be skipped; got %q", gotLabels["count"])
+		t.Errorf("non-string `count` should be dropped; got %q", gotLabels["count"])
 	}
 	if _, ok := gotLabels["nested"]; ok {
-		t.Errorf("object-valued `nested` should be skipped")
+		t.Errorf("object-valued `nested` should be dropped")
 	}
 	if gotLabels["pod"] != "web-1" {
 		t.Errorf("string-valued `pod` should be extracted; got %q", gotLabels["pod"])
@@ -101,7 +101,7 @@ func TestUnpack_SkipsNonStringValues(t *testing.T) {
 }
 
 // TestPattern_NamedCaptures — the canonical case: each named segment
-// in the pattern becomes a label. `<_>` segments are skipped.
+// in the pattern becomes a label. `<_>` segments are dropped.
 func TestPattern_NamedCaptures(t *testing.T) {
 	t.Parallel()
 

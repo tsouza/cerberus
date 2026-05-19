@@ -56,7 +56,7 @@ func TestCollectColumnRefs(t *testing.T) {
 			want: []string{"ServiceName"},
 		},
 		{
-			name: "qualified column refs skipped",
+			name: "qualified column refs dropped",
 			expr: &chplan.ColumnRef{Name: "SpanName", Qualifier: "R"},
 			want: nil,
 		},

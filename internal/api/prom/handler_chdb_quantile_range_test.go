@@ -90,7 +90,7 @@ func TestQueryRange_QuantileOverTimeOutOfRange_ChDB(t *testing.T) {
 		// otel_metrics_sum which the test seed doesn't populate; the
 		// gauge-side avg_over_time exercises the same chplan shape).
 		// Pre-fix this also 502'd against real CH (the txtar roundtrip
-		// skipped wrapWithSampleProjection, so this regression was
+		// bypassed wrapWithSampleProjection, so this regression was
 		// hidden in the existing chDB lane).
 		{"abs-over-avg_over_time", "abs(avg_over_time(latency_ms[5m]))"},
 	}
