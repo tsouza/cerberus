@@ -28,6 +28,16 @@ const defaultDetectedFieldsLineLimit = 1000
 // payload exposing thousands of unique keys.
 const defaultDetectedFieldsLimit = 1000
 
+// detectedFieldsCardinalityCap caps the per-field value SET size used
+// to compute the response cardinality count. Only the cardinality
+// number is reported on the wire (not the values themselves), so the
+// cap defends against memory blow-up on high-cardinality fields like
+// `request_id` / `trace_id` / `user_id`. Cardinality numbers above the
+// cap saturate; for realistic Loki streams 1024 distinct values is
+// well above the threshold where the field stops being useful as a
+// faceting dimension anyway.
+const detectedFieldsCardinalityCap = 1024
+
 // DetectedField is one entry in the /detected_fields response. Mirrors
 // the upstream Loki shape Grafana expects.
 type DetectedField struct {
@@ -175,7 +185,7 @@ func detectFields(lines []string, limit int) []DetectedField {
 		// Cap the per-field value set to defend against blow-up on
 		// high-cardinality fields (request_id, etc.) — we only need the
 		// cardinality COUNT, not the actual values.
-		if len(a.values) < 1024 {
+		if len(a.values) < detectedFieldsCardinalityCap {
 			a.values[raw] = struct{}{}
 		}
 	}
