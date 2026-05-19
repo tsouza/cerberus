@@ -208,14 +208,40 @@ oracle, which is what catches the gap between "the SQL we emit looks
 right" and "the rows ClickHouse returns are right". Each harness lives
 under `compatibility/<head>/`.
 
-| Head    | Reference                          | Corpus                                                                                              | Driver                                                                                              | Today                                                                       |
-| ------- | ---------------------------------- | --------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| PromQL  | Reference Prometheus               | Vendored [`prometheus/compliance/promql/promql-test-queries.yml`](https://github.com/prometheus/compliance) | Upstream `promql-compliance-tester`, pointed at cerberus + reference Prom side-by-side              | `536/536` pass, allow-list empty                                            |
-| LogQL   | Reference Loki single-binary       | Vendored [`grafana/loki:pkg/logql/bench/queries/{fast,regression,exhaustive}`](https://github.com/grafana/loki/tree/main/pkg/logql/bench/queries) | Cerberus-owned `loki-compliance-tester` (shape-compatible JSON report with the Prom driver)         | Stack + seeder + driver landed (PR 5 of rollout); corpus expansion pending  |
-| TraceQL | Reference Tempo monolith           | Cerberus-owned TXTAR corpus patterned on `cmd/tempo-vulture`                                        | Cerberus-owned driver (`seed` + `diff` subcommands; OTLP push to Tempo + CH `INSERT` to cerberus)   | Search + per-id + tag / tag-values endpoints (PR 6 of rollout); metrics pending |
+### PromQL — `prometheus/compliance`
 
-Each harness ships as Docker Compose: reference + cerberus + ClickHouse
-+ a one-shot seeder. Local execution:
+- **Reference**: bundled Prometheus engine, queried side-by-side with cerberus.
+- **Corpus**: vendored
+  [`prometheus/compliance/promql/promql-test-queries.yml`](https://github.com/prometheus/compliance).
+- **Driver**: upstream `promql-compliance-tester`.
+- **Today**: **536/536** cases pass, `expected-failures.json` allow-list empty.
+
+### LogQL — `grafana/loki:pkg/logql/bench`
+
+- **Reference**: Loki single-binary container, queried side-by-side with cerberus.
+- **Corpus**: vendored
+  [`grafana/loki:pkg/logql/bench/queries/{fast,regression,exhaustive}`](https://github.com/grafana/loki/tree/main/pkg/logql/bench/queries).
+- **Driver**: cerberus-owned `loki-compliance-tester`, shape-compatible
+  JSON report with the Prom driver so both feed a single downstream
+  analyser.
+- **Today**: stack + seeder + driver landed (PR 5 of rollout); corpus
+  expansion pending (PR 6 widens the seeder + regenerates
+  `dataset_metadata.json` so the `${SELECTOR}` / `${LABEL_*}` templates
+  resolve).
+
+### TraceQL — cerberus-owned driver
+
+- **Reference**: Tempo monolithic container.
+- **Corpus**: cerberus-owned TXTAR corpus, patterned on `cmd/tempo-vulture`.
+- **Driver**: cerberus-owned binary with `seed` + `diff` subcommands
+  (OTLP push to Tempo + direct CH `INSERT` to cerberus, both from one
+  in-memory fixture so per-span fields stay 1:1 across both read paths).
+- **Today**: `/api/search`, `/api/traces/<id>`, and the four tag /
+  tag-values endpoints (V1 + V2) land in PR 6; metrics endpoints
+  (`/api/metrics/query_range` + `/api/metrics/query`) ship in PR 5.
+
+Each harness ships as a Docker Compose stack — reference engine,
+cerberus, ClickHouse, and a one-shot seeder. Local execution:
 
 ```sh
 just compatibility            # PromQL — prometheus/compliance
