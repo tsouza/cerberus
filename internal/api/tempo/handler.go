@@ -414,12 +414,15 @@ func stripLeadingHexZeros(col string) chplan.Expr {
 //
 // searchKeyParentSpanID reuses the same `__cerberus_parentSpanID` slot
 // on the /api/search path so toTraceSummaries can identify the per-trace
-// root span — the row where ParentSpanId is empty. Without this, the
-// shaper anchors RootServiceName / RootTraceName on whichever span CH
-// happens to return first, which for multi-span traces is typically a
-// child span (Tempo's wire spec says rootTraceName is the name of the
-// span at the top of the trace tree). See toTraceSummaries for the
-// resolution logic and the fallback rules for broken or truncated traces.
+// root span — the row where ParentSpanId is empty (legacy / stub
+// queriers) or `"0"` (the post-strip form of `0000000000000000`, the
+// on-disk shape for a true root span; stripLeadingHexZeros always
+// retains ≥ 1 hex digit). Without this, the shaper anchors
+// RootServiceName / RootTraceName on whichever span CH happens to
+// return first, which for multi-span traces is typically a child span
+// (Tempo's wire spec says rootTraceName is the name of the span at the
+// top of the trace tree). See toTraceSummaries for the resolution
+// logic and the fallback rules for broken or truncated traces.
 const (
 	traceByIDKeyTraceID       = "__cerberus_traceID"
 	traceByIDKeySpanID        = "__cerberus_spanID"
@@ -961,14 +964,24 @@ func toTraceSummaries(samples []chclient.Sample) []TraceSummary {
 		}
 
 		// Resolve root-span metadata. The reserved __cerberus_parentSpanID
-		// slot carries the parent ID; empty means this row is the root.
+		// slot carries the parent ID; empty (or a single "0") means this
+		// row is the root. The OTel-CH exporter writes ParentSpanId as a
+		// 16-char lowercase-hex string and the canonical/r-qualified
+		// projections route it through stripLeadingHexZeros — the regex
+		// `^0+([0-9a-f])` always retains ≥ 1 hex digit, so an all-zero
+		// ParentSpanId (`0000000000000000`, the on-disk form for a true
+		// root span) collapses to `"0"` rather than `""`. We accept both
+		// the legacy pre-strip empty form (older fixtures / stub
+		// queriers) and the post-strip `"0"` form so the same shaper
+		// works on either projection variant.
+		//
 		// When the slot is missing (older fixtures / stub queriers),
 		// treat every row as a non-root candidate so the fallback path
 		// runs — `parentID, hasParentSlot := ...` captures the
 		// "did we get the projection" signal independently of the
 		// emptiness check.
 		parentID, hasParentSlot := s.Labels[searchKeyParentSpanID]
-		isRoot := hasParentSlot && parentID == ""
+		isRoot := hasParentSlot && (parentID == "" || parentID == "0")
 		svc := s.Labels["service.name"]
 		switch {
 		case isRoot && (!a.hasRoot || ns < a.rootStartNS):

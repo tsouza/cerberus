@@ -471,6 +471,79 @@ func TestSearch_RootSpanResolution_TruncatedTrace(t *testing.T) {
 	}
 }
 
+// TestSearch_RootSpanResolution_StrippedZero pins the post-strip root
+// classification: the OTel-CH exporter stores ParentSpanId as a 16-char
+// lowercase-hex string, and the search projection routes it through
+// stripLeadingHexZeros — the regex `^0+([0-9a-f])` always retains ≥ 1
+// hex digit, so an all-zero ParentSpanId (the on-disk form for a true
+// root span) renders as `"0"` rather than `""`. The shaper must treat
+// `"0"` as a root marker; without this, structural-join queries (`>>`,
+// `<<`, `>`, `<`) report a child span's name as rootTraceName because
+// the search projection's per-trace root row is mis-classified.
+//
+// Pins the failure-mode behind descendant_op_payments_to_consumer /
+// direct_parent_op_checkout_to_child / set_and_checkout_and_status_error
+// / status_eq_error in the Tempo compat report — see PR description.
+func TestSearch_RootSpanResolution_StrippedZero(t *testing.T) {
+	t.Parallel()
+	const traceID = "ffffffffffffffffffffffffffffffff"
+	const rootSpanID = "1"
+	q := &stubQuerier{
+		samples: []chclient.Sample{
+			// Child span — parent points at the root, which after
+			// stripLeadingHexZeros renders as "1".
+			{
+				MetricName: "payments.child.3",
+				Labels: map[string]string{
+					"service.name":            "payments",
+					"__cerberus_traceID":      traceID,
+					"__cerberus_parentSpanID": rootSpanID,
+				},
+				Timestamp: time.Date(2026, 5, 12, 10, 0, 0, 25_000_000, time.UTC),
+				Value:     30_000_000,
+			},
+			// The actual root span — on-disk ParentSpanId is
+			// "0000000000000000", which stripLeadingHexZeros collapses
+			// to "0" (single hex digit, never empty). The shaper must
+			// accept this as a root marker.
+			{
+				MetricName: "GET /api/payments/1",
+				Labels: map[string]string{
+					"service.name":            "payments",
+					"__cerberus_traceID":      traceID,
+					"__cerberus_parentSpanID": "0",
+				},
+				Timestamp: time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+				Value:     120_000_000,
+			},
+		},
+	}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/search?q=%7B%20status%20%3D%20error%20%7D")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	var sr tempo.SearchResponse
+	if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(sr.Traces) != 1 {
+		t.Fatalf("expected 1 trace, got %d", len(sr.Traces))
+	}
+	got := sr.Traces[0]
+	if got.RootTraceName != "GET /api/payments/1" {
+		t.Errorf("RootTraceName: got %q, want %q (stripped-zero parent must classify as root)",
+			got.RootTraceName, "GET /api/payments/1")
+	}
+	if got.RootServiceName != "payments" {
+		t.Errorf("RootServiceName: got %q, want %q",
+			got.RootServiceName, "payments")
+	}
+}
+
 // TestSearch_SQLProjectsParentSpanId pins the SQL emitted by the search
 // path against an OTel-CH default schema. The ParentSpanId column must
 // appear in the projection so toTraceSummaries can resolve the root
