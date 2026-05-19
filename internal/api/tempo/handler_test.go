@@ -498,8 +498,16 @@ func TestSearch_SQLProjectsParentSpanId(t *testing.T) {
 	if !strings.Contains(q.lastSQL, "ParentSpanId") {
 		t.Errorf("emitted SQL must project ParentSpanId; got %s", q.lastSQL)
 	}
-	if !strings.Contains(q.lastSQL, "__cerberus_parentSpanID") {
-		t.Errorf("emitted SQL must include reserved __cerberus_parentSpanID slot; got %s", q.lastSQL)
+	// The reserved key string is parameterised — find it in the args.
+	var sawParentSpanIDKey bool
+	for _, a := range q.lastArgs {
+		if s, ok := a.(string); ok && s == "__cerberus_parentSpanID" {
+			sawParentSpanIDKey = true
+			break
+		}
+	}
+	if !sawParentSpanIDKey {
+		t.Errorf("emitted SQL args must include reserved __cerberus_parentSpanID slot; got args=%v", q.lastArgs)
 	}
 }
 
