@@ -512,7 +512,7 @@ func TestConformance_QueryExemplarsWire(t *testing.T) {
 	cases := []url.Values{
 		{"query": {"up"}, "start": {"1717995600"}, "end": {"1717999200"}},
 		{"query": {`up{job="api"}`}, "start": {"1717995600"}, "end": {"1717999200"}},
-		{"query": {`{__name__=~"http_.*"}`}, "start": {"1717995600"}, "end": {"1717999200"}},
+		{"query": {`up{instance=~".*"}`}, "start": {"1717995600"}, "end": {"1717999200"}},
 	}
 	for i, qs := range cases {
 		qs := qs
@@ -1066,5 +1066,9 @@ func (b *blockingQuerier) QueryLabelSets(_ context.Context, _ string, _ ...any) 
 }
 
 func (b *blockingQuerier) QueryMetricMeta(_ context.Context, _, _ string, _ ...any) ([]chclient.MetricMetaRow, error) {
+	return nil, nil
+}
+
+func (b *blockingQuerier) QueryExemplars(_ context.Context, _ string, _ ...any) ([]chclient.ExemplarRow, error) {
 	return nil, nil
 }

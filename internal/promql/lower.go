@@ -609,6 +609,28 @@ func buildPredicate(matchers []*labels.Matcher, s schema.Metrics) chplan.Expr {
 	return out
 }
 
+// BuildMatcherPredicate is the exported wrapper around [buildPredicate]
+// for callers outside the promql package (notably the
+// /api/v1/query_exemplars handler in internal/api/prom) that need to
+// turn a VectorSelector's matcher list into the same chplan.Expr the
+// PromQL `/query` and `/query_range` lowering paths produce.
+//
+// The two paths must share the matcher → predicate translation so the
+// exemplars endpoint applies the same Attributes-map lookup, the same
+// regex semantics, and the same MetricName-column routing the rest of
+// PromQL uses. Sharing keeps "what does `label=~regex` mean" defined
+// in exactly one place; future schema-aware matcher rewrites (e.g.
+// pushing `service.name` to [schema.Metrics.ServiceNameColumn] instead
+// of the Attributes map) land in [matcherToExpr] and flow to every
+// caller automatically.
+//
+// Returns nil for an empty matcher list — callers fold a nil
+// predicate into "no WHERE clause" rather than emitting a `WHERE true`
+// equivalent.
+func BuildMatcherPredicate(matchers []*labels.Matcher, s schema.Metrics) chplan.Expr {
+	return buildPredicate(matchers, s)
+}
+
 func matcherToExpr(m *labels.Matcher, s schema.Metrics) chplan.Expr {
 	var lhs chplan.Expr
 	if m.Name == model.MetricNameLabel {
@@ -1084,12 +1106,14 @@ func lowerCountValues(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (
 		// Attributes Map don't surface as `{g=""}` on the wire.
 		mapArgs := make([]chplan.Expr, 0, (len(a.Grouping)+1)*2)
 		for i, lbl := range a.Grouping {
-			mapArgs = append(mapArgs,
+			mapArgs = append(
+				mapArgs,
 				&chplan.LitString{V: lbl},
 				&chplan.ColumnRef{Name: aliases[i]},
 			)
 		}
-		mapArgs = append(mapArgs,
+		mapArgs = append(
+			mapArgs,
 			&chplan.LitString{V: label},
 			&chplan.ColumnRef{Name: valueKeyAlias},
 		)

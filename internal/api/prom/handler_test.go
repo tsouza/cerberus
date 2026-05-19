@@ -18,13 +18,15 @@ import (
 )
 
 type stubQuerier struct {
-	samples   []chclient.Sample
-	strings   []string
-	labelSets []map[string]string
-	metaRows  []chclient.MetricMetaRow
-	err       error
-	lastSQL   string
-	lastArgs  []any
+	samples      []chclient.Sample
+	strings      []string
+	labelSets    []map[string]string
+	metaRows     []chclient.MetricMetaRow
+	exemplarRows []chclient.ExemplarRow
+	err          error
+	exemplarsErr error
+	lastSQL      string
+	lastArgs     []any
 }
 
 func (s *stubQuerier) Query(_ context.Context, sql string, args ...any) ([]chclient.Sample, error) {
@@ -70,6 +72,18 @@ func (s *stubQuerier) QueryMetricMeta(_ context.Context, sql, _ string, args ...
 		return nil, s.err
 	}
 	return s.metaRows, nil
+}
+
+func (s *stubQuerier) QueryExemplars(_ context.Context, sql string, args ...any) ([]chclient.ExemplarRow, error) {
+	s.lastSQL = sql
+	s.lastArgs = args
+	if s.exemplarsErr != nil {
+		return nil, s.exemplarsErr
+	}
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.exemplarRows, nil
 }
 
 func newServer(q prom.Querier) *httptest.Server {

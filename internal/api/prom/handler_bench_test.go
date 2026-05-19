@@ -107,6 +107,10 @@ func (c *cursorQuerier) QueryMetricMeta(_ context.Context, _, _ string, _ ...any
 	return nil, nil
 }
 
+func (c *cursorQuerier) QueryExemplars(_ context.Context, _ string, _ ...any) ([]chclient.ExemplarRow, error) {
+	return nil, nil
+}
+
 // BenchmarkHandleQuery_Small drives the instant /api/v1/query path with
 // a single-sample CH response. The expected target is sub-millisecond
 // per request on the bench host; deviations point at envelope-cost

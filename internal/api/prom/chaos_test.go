@@ -97,6 +97,14 @@ func (c *chaosQuerier) QueryMetricMeta(_ context.Context, _, _ string, _ ...any)
 	return nil, nil
 }
 
+func (c *chaosQuerier) QueryExemplars(_ context.Context, _ string, _ ...any) ([]chclient.ExemplarRow, error) {
+	c.calls.Add(1)
+	if c.err != nil {
+		return nil, c.err
+	}
+	return nil, nil
+}
+
 // chaosCursor surfaces a transport-style error after N rows.
 type chaosCursor struct {
 	samples   []chclient.Sample
@@ -397,6 +405,10 @@ func (f *flakyQuerier) QueryLabelSets(_ context.Context, _ string, _ ...any) ([]
 }
 
 func (f *flakyQuerier) QueryMetricMeta(_ context.Context, _, _ string, _ ...any) ([]chclient.MetricMetaRow, error) {
+	return nil, nil
+}
+
+func (f *flakyQuerier) QueryExemplars(_ context.Context, _ string, _ ...any) ([]chclient.ExemplarRow, error) {
 	return nil, nil
 }
 

@@ -76,6 +76,10 @@ func (s *promStub) QueryMetricMeta(_ context.Context, _, _ string, _ ...any) ([]
 	return nil, nil
 }
 
+func (s *promStub) QueryExemplars(_ context.Context, _ string, _ ...any) ([]chclient.ExemplarRow, error) {
+	return nil, nil
+}
+
 type goleakSliceCursor struct {
 	samples []chclient.Sample
 	idx     int
@@ -399,6 +403,10 @@ func (f *failingProm) QueryLabelSets(_ context.Context, _ string, _ ...any) ([]m
 }
 
 func (f *failingProm) QueryMetricMeta(_ context.Context, _, _ string, _ ...any) ([]chclient.MetricMetaRow, error) {
+	return nil, f.err
+}
+
+func (f *failingProm) QueryExemplars(_ context.Context, _ string, _ ...any) ([]chclient.ExemplarRow, error) {
 	return nil, f.err
 }
 
