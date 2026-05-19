@@ -71,17 +71,31 @@ func lowerVectorAggregation(e *syntax.VectorAggregationExpr, s schema.Logs, lc l
 // in OTel-CH). The output shape exposes group-key columns as
 // `gkey_0`, `gkey_1`, ... so the wrapping Project can build a
 // Map(String, String) Attributes column from them.
+//
+// The synthesized `detected_level` label (and its `level` alias) is
+// special-cased: instead of accessing the RangeWindow's downstream
+// ResourceAttributes column under a key the seeder doesn't write, the
+// group-key expression resolves to the same SeverityText-derived
+// `multiIf(...)` normalisation upstream Loki's `normalizeLogLevel`
+// produces. Without this, `sum by (level) (...)` collapses every record
+// into one empty-value group (the user-facing reason 15 loki-compat
+// `matrix length: expected=4 actual=1` failures persisted post-PR #545).
 func vectorAggregationGroupBy(e *syntax.VectorAggregationExpr, s schema.Logs) ([]chplan.Expr, []string) {
 	if e.Grouping == nil {
 		return nil, nil
 	}
 	if e.Grouping.Without {
 		// `without (k1, k2)`: group by the full ResourceAttributes map
-		// minus the excluded keys.
+		// minus the excluded keys. Normalise `level` to its
+		// `detected_level` canonical form so the exclusion strips the
+		// synthesized-severity key the inner range-aggregation
+		// projection added (via withDetectedLevel). Mirroring the
+		// `by (...)` alias surface keeps the two grouping shapes
+		// symmetric.
 		return []chplan.Expr{
 				&chplan.MapWithoutKeys{
 					Map:  &chplan.ColumnRef{Name: s.ResourceAttributesColumn},
-					Keys: append([]string(nil), e.Grouping.Groups...),
+					Keys: canonicalLevelKeys(e.Grouping.Groups),
 				},
 			},
 			[]string{"gkey_0"}
@@ -92,13 +106,79 @@ func vectorAggregationGroupBy(e *syntax.VectorAggregationExpr, s schema.Logs) ([
 	out := make([]chplan.Expr, 0, len(e.Grouping.Groups))
 	aliases := make([]string, 0, len(e.Grouping.Groups))
 	for i, label := range e.Grouping.Groups {
-		out = append(out, &chplan.MapAccess{
-			Map: &chplan.ColumnRef{Name: s.ResourceAttributesColumn},
-			Key: &chplan.LitString{V: label},
-		})
+		out = append(out, levelAwareGroupKey(label, s))
 		aliases = append(aliases, fmt.Sprintf("gkey_%d", i))
 	}
 	return out, aliases
+}
+
+// levelAwareGroupKey returns the chplan expression that resolves to the
+// group-by value for `label` in a vector-aggregation context (outer
+// `sum by (...)` / `max without (...)`, etc., wrapping a range
+// aggregation). The `detected_level` family (`detected_level` and its
+// `level` alias) reaches through the augmented `ResourceAttributes` map
+// under the canonical `detected_level` key — the inner range
+// aggregation's [withDetectedLevel] projection is what populates that
+// key from SeverityText (see detected_level.go). Reading the
+// synthesized key from the map (rather than re-deriving from
+// `SeverityText`) keeps the outer aggregation SQL self-contained:
+// SeverityText is only visible inside the inner Scan, and the outer
+// SELECT only sees the (ResourceAttributes, Value) tuple the RangeWindow
+// projected.
+//
+// Other labels fall back to the standard map lookup. The inner
+// range-aggregation `by/without` uses the SeverityText-derived
+// expression directly via [levelAwareRangeGroupKey] because at that
+// layer SeverityText is still in scope.
+func levelAwareGroupKey(label string, s schema.Logs) chplan.Expr {
+	if isDetectedLevelGroupingLabel(label) {
+		return &chplan.MapAccess{
+			Map: &chplan.ColumnRef{Name: s.ResourceAttributesColumn},
+			Key: &chplan.LitString{V: detectedLevelLabel},
+		}
+	}
+	return &chplan.MapAccess{
+		Map: &chplan.ColumnRef{Name: s.ResourceAttributesColumn},
+		Key: &chplan.LitString{V: label},
+	}
+}
+
+// levelAwareRangeGroupKey is the inner-range-aggregation companion of
+// [levelAwareGroupKey]: it resolves the `detected_level` family
+// (`detected_level` and its `level` alias) to the
+// SeverityText-derived `multiIf(...)` expression directly, because the
+// inner Project still has `SeverityText` in scope (the Project rides
+// directly above the per-row Scan/Filter). The outer
+// vector-aggregation reads from the post-RangeWindow scope where
+// SeverityText is no longer visible, so it has to reach through the
+// augmented map's `detected_level` key instead.
+func levelAwareRangeGroupKey(label string, s schema.Logs) chplan.Expr {
+	if isDetectedLevelGroupingLabel(label) {
+		return detectedLevelExpr(s)
+	}
+	return &chplan.MapAccess{
+		Map: &chplan.ColumnRef{Name: s.ResourceAttributesColumn},
+		Key: &chplan.LitString{V: label},
+	}
+}
+
+// canonicalLevelKeys returns the input `groups` with every
+// `detected_level`-family key (`detected_level` itself + its `level`
+// alias) normalised to the canonical `detected_level` form. Used by
+// the `without (...)` lowering so the exclusion strips the synthesized
+// key the inner range-aggregation projection added via
+// withDetectedLevel — both `without (level)` and
+// `without (detected_level)` reach the same downstream map shape.
+func canonicalLevelKeys(groups []string) []string {
+	out := make([]string, len(groups))
+	for i, g := range groups {
+		if isDetectedLevelGroupingLabel(g) {
+			out[i] = detectedLevelLabel
+			continue
+		}
+		out[i] = g
+	}
+	return out
 }
 
 // buildVectorAggFunc produces the AggFunc for the LogQL operator.

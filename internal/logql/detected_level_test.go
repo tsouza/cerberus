@@ -88,6 +88,197 @@ func TestDetectedLevel_StreamSelector(t *testing.T) {
 	}
 }
 
+// TestDetectedLevel_GroupingLevelAliasesToDetectedLevel pins the
+// `sum by (level) (...)` fix. With this fix, a vector aggregation
+// `by (level)` resolves the synthesized severity dimension through the
+// augmented `ResourceAttributes[detected_level]` map lookup — the
+// outer SELECT can't see `SeverityText` (the inner RangeWindow only
+// exposes the (ResourceAttributes, Value) tuple), so the synthesized
+// key has to ride in the map. Without the alias, the outer would read
+// `ResourceAttributes[level]`, which the OTel-CH seeder writes to
+// nothing on the loki-compat fixture, and all 4 severity series would
+// collapse to a single empty-value group (the 15 `matrix length:
+// expected=4 actual=1` failures this PR clears).
+func TestDetectedLevel_GroupingLevelAliasesToDetectedLevel(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelLogs()
+	expr, err := syntax.ParseExpr(`sum by (level) (count_over_time({app="api"}[5m]))`)
+	if err != nil {
+		t.Fatalf("ParseExpr: %v", err)
+	}
+	plan, err := lower(expr, s, lowerCtx{})
+	if err != nil {
+		t.Fatalf("lower: %v", err)
+	}
+
+	// Walk to the outer Aggregate's GroupBy. The fix routes both `level`
+	// and `detected_level` aliases to a MapAccess on
+	// ResourceAttributes[detected_level].
+	outerProject, ok := plan.(*chplan.Project)
+	if !ok {
+		t.Fatalf("lower top is %T; want *chplan.Project", plan)
+	}
+	outerAgg, ok := outerProject.Input.(*chplan.Aggregate)
+	if !ok {
+		t.Fatalf("Project.Input is %T; want *chplan.Aggregate", outerProject.Input)
+	}
+	if got, want := len(outerAgg.GroupBy), 1; got != want {
+		t.Fatalf("GroupBy length = %d; want %d", got, want)
+	}
+	ma, ok := outerAgg.GroupBy[0].(*chplan.MapAccess)
+	if !ok {
+		t.Fatalf("GroupBy[0] = %T; want *chplan.MapAccess (synthesized lookup)", outerAgg.GroupBy[0])
+	}
+	col, ok := ma.Map.(*chplan.ColumnRef)
+	if !ok || col.Name != s.ResourceAttributesColumn {
+		t.Fatalf("GroupBy MapAccess.Map = %v; want ColumnRef(%q)", ma.Map, s.ResourceAttributesColumn)
+	}
+	keyLit, ok := ma.Key.(*chplan.LitString)
+	if !ok || keyLit.V != detectedLevelLabel {
+		t.Fatalf("GroupBy MapAccess.Key = %v; want %q (level alias canonicalised to detected_level)", ma.Key, detectedLevelLabel)
+	}
+}
+
+// TestDetectedLevel_RangeAggregationLevelByUsesSeverityText pins the
+// inner range-aggregation `by (level)` form. At the inner Project
+// layer, `SeverityText` is still in scope, so the group-key value
+// embeds the full multiIf normalisation directly — the outer
+// MapAccess-via-`detected_level` approach can't apply because the
+// inner Project IS what populates the augmented map (and at this
+// layer the map hasn't been augmented yet).
+func TestDetectedLevel_RangeAggregationLevelByUsesSeverityText(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelLogs()
+	expr, err := syntax.ParseExpr(`avg_over_time({app="api"} | logfmt | unwrap latency [5m]) by (level)`)
+	if err != nil {
+		t.Fatalf("ParseExpr: %v", err)
+	}
+	plan, err := lower(expr, s, lowerCtx{})
+	if err != nil {
+		t.Fatalf("lower: %v", err)
+	}
+
+	// Walk past the RangeWindow → Project → look at the identity
+	// projection's expression. It should be a `map(...)` whose value
+	// for `level` is the multiIf normalisation (a FuncCall named
+	// multiIf), not a MapAccess on ResourceAttributes.
+	rw, ok := plan.(*chplan.RangeWindow)
+	if !ok {
+		t.Fatalf("lower top is %T; want *chplan.RangeWindow", plan)
+	}
+	proj, ok := rw.Input.(*chplan.Project)
+	if !ok {
+		t.Fatalf("RangeWindow.Input is %T; want *chplan.Project", rw.Input)
+	}
+	if len(proj.Projections) == 0 {
+		t.Fatalf("Project has no projections")
+	}
+	mapCall, ok := proj.Projections[0].Expr.(*chplan.FuncCall)
+	if !ok || mapCall.Name != "map" {
+		t.Fatalf("identity projection = %v; want FuncCall(map, ...)", proj.Projections[0].Expr)
+	}
+	// args = ["level", <levelExpr>] for `by (level)`.
+	if got, want := len(mapCall.Args), 2; got != want {
+		t.Fatalf("map call args = %d; want %d", got, want)
+	}
+	keyLit, ok := mapCall.Args[0].(*chplan.LitString)
+	if !ok || keyLit.V != "level" {
+		t.Fatalf("map call args[0] = %v; want LitString(\"level\")", mapCall.Args[0])
+	}
+	multiIf, ok := mapCall.Args[1].(*chplan.FuncCall)
+	if !ok || multiIf.Name != "multiIf" {
+		t.Fatalf("map call args[1] = %v; want FuncCall(multiIf, ...) (SeverityText-derived expression)", mapCall.Args[1])
+	}
+}
+
+// TestDetectedLevel_GroupingDetectedLevelCanonical pins the canonical
+// form: `by (detected_level)` and `by (level)` produce structurally
+// identical plans. The MapAccess key is always `detected_level` because
+// the inner range aggregation's augmentation populates that canonical
+// key (not the `level` alias).
+func TestDetectedLevel_GroupingDetectedLevelCanonical(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelLogs()
+	for _, alias := range []string{"level", "detected_level"} {
+		t.Run(alias, func(t *testing.T) {
+			t.Parallel()
+			expr, err := syntax.ParseExpr(`sum by (` + alias + `) (count_over_time({app="api"}[5m]))`)
+			if err != nil {
+				t.Fatalf("ParseExpr: %v", err)
+			}
+			plan, err := lower(expr, s, lowerCtx{})
+			if err != nil {
+				t.Fatalf("lower: %v", err)
+			}
+			outerProject := plan.(*chplan.Project)
+			outerAgg := outerProject.Input.(*chplan.Aggregate)
+			ma := outerAgg.GroupBy[0].(*chplan.MapAccess)
+			keyLit := ma.Key.(*chplan.LitString)
+			if keyLit.V != detectedLevelLabel {
+				t.Errorf("by (%s): MapAccess.Key = %q; want canonical %q", alias, keyLit.V, detectedLevelLabel)
+			}
+		})
+	}
+}
+
+// TestDetectedLevel_LabelFilterLevelDoesNotAlias pins that the `level`
+// short alias does NOT apply in label-filter context — pipelines like
+// `{job="api"} | logfmt | level="error"` resolve `level` through the
+// labels map (so parser-extracted keys still win) rather than routing
+// to the SeverityText-derived expression. This is the boundary case
+// the [isDetectedLevelGroupingLabel] / [isDetectedLevelLabel] split
+// guards: matchers take the strict path so parser stages keep
+// working, aggregation grouping takes the broader path so
+// `by (level)` matches upstream Loki.
+func TestDetectedLevel_LabelFilterLevelDoesNotAlias(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelLogs()
+	expr, err := syntax.ParseExpr(`{job="api"} | logfmt | level="error"`)
+	if err != nil {
+		t.Fatalf("ParseExpr: %v", err)
+	}
+	plan, err := lower(expr, s, lowerCtx{})
+	if err != nil {
+		t.Fatalf("lower: %v", err)
+	}
+	// The `level="error"` filter must lower to a MapAccess on the
+	// parser-augmented labels map (which is itself a mapConcat over
+	// ResourceAttributes + extracted keys), not to a multiIf on
+	// SeverityText. Walk the predicate tree and assert the level
+	// matcher's LHS is a MapAccess, not a FuncCall named multiIf.
+	filt, ok := plan.(*chplan.Filter)
+	if !ok {
+		t.Fatalf("lower top is %T; want *chplan.Filter", plan)
+	}
+	var sawMapAccessLevel bool
+	walkExprTree(filt.Predicate, func(e chplan.Expr) {
+		bin, ok := e.(*chplan.Binary)
+		if !ok || bin.Op != chplan.OpEq {
+			return
+		}
+		rhs, ok := bin.Right.(*chplan.LitString)
+		if !ok || rhs.V != "error" {
+			return
+		}
+		ma, ok := bin.Left.(*chplan.MapAccess)
+		if !ok {
+			return
+		}
+		keyLit, ok := ma.Key.(*chplan.LitString)
+		if !ok || keyLit.V != "level" {
+			return
+		}
+		sawMapAccessLevel = true
+	})
+	if !sawMapAccessLevel {
+		t.Errorf("expected MapAccess(<labels>, \"level\") = \"error\" filter; got plan %v", filt.Predicate)
+	}
+}
+
 // TestDetectedLevel_NoColumnRefToDetectedLevelLabel verifies that no
 // stray `ResourceAttributes["detected_level"]` MapAccess survives in
 // the lowered tree — the synthesized normalisation should fully

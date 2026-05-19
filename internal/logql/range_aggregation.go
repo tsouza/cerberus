@@ -341,6 +341,12 @@ func unwrapValueExpr(u *syntax.UnwrapExpr, labelsExpr chplan.Expr) (chplan.Expr,
 //	`by (k1, k2)`      → map('k1', RA['k1'], 'k2', RA['k2'])
 //	`by ()`            → map()       (single all-collapsed group)
 //	`without (k1, k2)` → mapFilter((k,v) -> NOT (k IN ('k1','k2')), RA)
+//
+// The `detected_level` family (`detected_level` + its `level` alias) is
+// resolved to the SeverityText-derived `multiIf(...)` normalisation
+// rather than a literal map lookup the seeder doesn't write — mirrors
+// the vector-aggregation alias surface so the two grouping layers
+// behave consistently.
 func rangeAggregationGroupBy(e *syntax.RangeAggregationExpr, s schema.Logs) (chplan.Expr, error) {
 	if e.Grouping == nil {
 		return nil, nil
@@ -348,7 +354,7 @@ func rangeAggregationGroupBy(e *syntax.RangeAggregationExpr, s schema.Logs) (chp
 	if e.Grouping.Without {
 		return &chplan.MapWithoutKeys{
 			Map:  &chplan.ColumnRef{Name: s.ResourceAttributesColumn},
-			Keys: append([]string(nil), e.Grouping.Groups...),
+			Keys: canonicalLevelKeys(e.Grouping.Groups),
 		}, nil
 	}
 	args := make([]chplan.Expr, 0, len(e.Grouping.Groups)*2)
@@ -356,10 +362,7 @@ func rangeAggregationGroupBy(e *syntax.RangeAggregationExpr, s schema.Logs) (chp
 		args = append(
 			args,
 			&chplan.LitString{V: label},
-			&chplan.MapAccess{
-				Map: &chplan.ColumnRef{Name: s.ResourceAttributesColumn},
-				Key: &chplan.LitString{V: label},
-			},
+			levelAwareRangeGroupKey(label, s),
 		)
 	}
 	return &chplan.FuncCall{Name: "map", Args: args}, nil
