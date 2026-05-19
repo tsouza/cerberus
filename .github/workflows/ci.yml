@@ -91,8 +91,21 @@ jobs:
   # NON-NEGOTIABLE rule is "no t.Skip in test files — fix the bug, do
   # not skip." Greps `*_test.go` for `t.Skip` / `t.Skipf` / `t.SkipNow`
   # via `git ls-files` (already excludes .gitignored paths) and fails
-  # the build if any match. Vendored upstream snapshots under
-  # `harness/*/upstream/**` are excluded — they're reference material
+  # the build if any match.
+  #
+  # The second step rejects forward-looking-promise wording in test
+  # files and TXTAR fixtures — the exact phrases PR #454's scrub
+  # eliminated: "deferred to RC*", "deferred to a follow-up",
+  # "post-GA", "not yet supported", "not yet implemented",
+  # "skipped pending", "M[0-9].[0-9]" milestone refs, and bare
+  # `RC[2-9]` references tied to feature gates. The bare words
+  # "deferred" / "skipped" / "not implemented" are NOT banned — they
+  # have legitimate uses (Go `defer` discussions, SkipReason values
+  # in differ test data, `errors.New("not implemented")` interface
+  # stubs, `skipped := 0` counters).
+  #
+  # Vendored upstream snapshots under `harness/*/upstream/**` and
+  # `compatibility/*/upstream/**` are excluded — reference material
   # outside cerberus's authorship boundary (and pinned by their
   # respective VERSION files). Runs in parallel with `check` + `lint`;
   # flip on as a required status check via branch protection.
@@ -106,7 +119,19 @@ jobs:
           if git ls-files -z -- \
               '*_test.go' \
               ':!:harness/*/upstream/**' \
+              ':!:compatibility/*/upstream/**' \
               | xargs -0 grep -nE 't\.Skip[fN]?\(' --; then
             echo "::error::t.Skip / t.Skipf / t.SkipNow found in test files — fix the bug, do not skip"
+            exit 1
+          fi
+      - name: Reject forward-looking-promise wording in tests + fixtures
+        run: |
+          if git ls-files -z -- \
+              '*_test.go' \
+              '*.txtar' \
+              ':!:harness/*/upstream/**' \
+              ':!:compatibility/*/upstream/**' \
+              | xargs -0 grep -niEH 'deferred to (RC[0-9]+|a follow-up|future|next release|post-GA)|post-GA|not yet (supported|implemented|wired)|skipped pending|RC[2-9] (parsers|grouping|cleanup|follow-up)|M[0-9]\.[0-9] (milestone|follow-up)' --; then
+            echo "::error::forward-looking-promise wording found in test files or TXTAR fixtures — implement the feature or remove the comment, do not punt"
             exit 1
           fi
