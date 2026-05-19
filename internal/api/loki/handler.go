@@ -357,12 +357,33 @@ func toVector(samples []chclient.Sample, ts time.Time) []VectorSample {
 	return out
 }
 
-// toMatrixStepGrid mirrors api/prom's per-step bucketing. Walks
-// [start, end] at `step`, each series emits one Sample per step =
-// the latest at-or-before that step (5-min lookback).
-func toMatrixStepGrid(samples []chclient.Sample, start, end time.Time, step time.Duration) []MatrixSample {
-	const lookback = 5 * time.Minute
-
+// toMatrixStepGrid pivots the per-anchor sample stream into Loki's
+// "matrix" wire shape: one MatrixSample per distinct series, each
+// carrying one (timestamp, value) point per row the SQL returned for
+// that series. The matrix-shape RangeWindow emitter (see
+// internal/chsql/range_window.go::emitWindowedArrayMatrix) already
+// fans the per-step grid out as one row per (series, anchor) and
+// drops empty-window anchors via `WHERE length(window_vals) >= N`;
+// the pivot is a trivial row → sample copy keyed by canonical series
+// key, with NO step-grid iteration or carry-forward.
+//
+// Mirrors api/prom's matrixFromCursor (post Pool-AK rework): the
+// previous last-value-forward implementation with a 5-minute lookback
+// over-counted anchors at the request boundary. With sparse
+// `by (level)` series — where the inner SQL legitimately drops empty
+// 5m windows — the LVF would back-fill the dropped anchors with the
+// previous sample's value, inflating the per-series point count
+// (~1345 emitted vs ~1071 expected against reference Loki on the
+// loki-compat 24h/1m/5m matrix queries).
+//
+// Rows whose Timestamp falls outside `[start, end]` are clipped so a
+// drifted server-side anchor (e.g. instant fallback to now64(9))
+// never lands a stray point past the request window.
+//
+// The `step` argument is preserved for signature symmetry with the
+// pre-PR call shape but is unused: the per-row anchor timestamp is
+// authoritative.
+func toMatrixStepGrid(samples []chclient.Sample, start, end time.Time, _ time.Duration) []MatrixSample {
 	type seriesState struct {
 		labels map[string]string
 		rows   []chclient.Sample
@@ -384,20 +405,12 @@ func toMatrixStepGrid(samples []chclient.Sample, start, end time.Time, step time
 	out := make([]MatrixSample, 0, len(bySeries))
 	for _, st := range bySeries {
 		ms := MatrixSample{Metric: dropOTelDottedLabels(st.labels)}
-		cursor := 0
-		for t := start; !t.After(end); t = t.Add(step) {
-			for cursor < len(st.rows) && !st.rows[cursor].Timestamp.After(t) {
-				cursor++
-			}
-			if cursor == 0 {
+		for _, r := range st.rows {
+			if r.Timestamp.Before(start) || r.Timestamp.After(end) {
 				continue
 			}
-			latest := st.rows[cursor-1]
-			if t.Sub(latest.Timestamp) > lookback {
-				continue
-			}
-			stamp := float64(t.UnixMilli()) / 1e3
-			ms.Values = append(ms.Values, [2]any{stamp, strconv.FormatFloat(latest.Value, 'f', -1, 64)})
+			stamp := float64(r.Timestamp.UnixMilli()) / 1e3
+			ms.Values = append(ms.Values, [2]any{stamp, strconv.FormatFloat(r.Value, 'f', -1, 64)})
 		}
 		if len(ms.Values) > 0 {
 			out = append(out, ms)
