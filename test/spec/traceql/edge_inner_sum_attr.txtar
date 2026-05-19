@@ -7,6 +7,19 @@
 [3] int64 = 1000
 -- sql --
 SELECT * FROM (SELECT sum(`SpanAttributes`[?]) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?))) WHERE (`Value` > ?)
+-- seed --
+CREATE TABLE otel_traces (
+    ResourceAttributes Map(String, String),
+    SpanAttributes Map(String, UInt64)
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    (map('service.name', 'x'), map('size', 400)),
+    (map('service.name', 'x'), map('size', 500)),
+    (map('service.name', 'x'), map('size', 600));
+-- expected_rows --
+[
+  [1500]
+]
 -- chplan --
 Filter predicate=(Value > 1000)
   Aggregate groupBy=[] funcs=[sum(SpanAttributes["size"]) AS Value]

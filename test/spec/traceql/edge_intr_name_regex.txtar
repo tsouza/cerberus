@@ -4,6 +4,19 @@
 [0] string = "GET.*"
 -- sql --
 SELECT * FROM `otel_traces` WHERE match(`SpanName`, ?)
+-- seed --
+CREATE TABLE otel_traces (
+    SpanName String
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    ('GET /home'),
+    ('GET /api/users'),
+    ('POST /checkout');
+-- expected_rows --
+[
+  ["GET /home"],
+  ["GET /api/users"]
+]
 -- chplan --
 Filter predicate=(SpanName =~ "GET.*")
   Scan(otel_traces)

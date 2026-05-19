@@ -230,6 +230,50 @@ func splitOuterSelect(query string) (head string, tail string) {
 	return "", ""
 }
 
+// peelUnionPrefix strips leading `(...)` wrappers from a UNION-shaped
+// query so the inner SELECT becomes visible. It handles the recursive
+// `((SELECT ...) UNION DISTINCT (SELECT ...)) UNION DISTINCT (SELECT ...)`
+// shape that cerberus emits for n-way `||` set operations. Used only by
+// extractProjectionCount so we can count the leading branch's columns;
+// the rewriteMapProjections pass still operates on the unmodified query
+// because the Map columns survive the union without being projected at
+// the outer level (each branch already projects them).
+func peelUnionPrefix(query string) string {
+	query = strings.TrimSpace(query)
+	for strings.HasPrefix(query, "(") {
+		// Find the matching `)` at depth 0.
+		depth := 0
+		end := -1
+		for i := 0; i < len(query); i++ {
+			switch query[i] {
+			case '(':
+				depth++
+			case ')':
+				depth--
+				if depth == 0 {
+					end = i
+				}
+			}
+			if end >= 0 {
+				break
+			}
+		}
+		if end < 0 {
+			return query
+		}
+		// `(<inner>) <maybe UNION...>` — descend into <inner> if it
+		// starts with SELECT (or another paren) at the head.
+		inner := strings.TrimSpace(query[1:end])
+		innerUpper := strings.ToUpper(inner)
+		if strings.HasPrefix(innerUpper, "SELECT ") || strings.HasPrefix(inner, "(") {
+			query = inner
+			continue
+		}
+		break
+	}
+	return query
+}
+
 // splitProjections splits a projection list on depth-0 commas.
 // Quoted strings (single-quotes, backticks) shield commas. The
 // returned slices have leading/trailing whitespace trimmed.
@@ -319,8 +363,13 @@ func unquoteBackticks(s string) string {
 // projections appear in structural-join lowerings (`SELECT R.* FROM
 // ...`) where the fixture seed schema determines the actual column
 // count.
+//
+// For top-level UNION queries (`(SELECT ...) UNION DISTINCT (SELECT ...)`),
+// the function peels the outer paren / UNION wrappers down to the first
+// branch's SELECT — every UNION branch shares the same projection shape
+// by construction so any branch's count is authoritative.
 func extractProjectionCount(query string) int {
-	head, _ := splitOuterSelect(query)
+	head, _ := splitOuterSelect(peelUnionPrefix(query))
 	if head == "" {
 		return 0
 	}

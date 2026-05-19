@@ -4,6 +4,19 @@
 [0] string = "timeout.*"
 -- sql --
 SELECT * FROM `otel_traces` WHERE match(`StatusMessage`, ?)
+-- seed --
+CREATE TABLE otel_traces (
+    StatusMessage String
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    ('ok'),
+    ('timeout reached'),
+    ('timeout occurred');
+-- expected_rows --
+[
+  ["timeout reached"],
+  ["timeout occurred"]
+]
 -- chplan --
 Filter predicate=(StatusMessage =~ "timeout.*")
   Scan(otel_traces)

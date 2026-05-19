@@ -5,6 +5,17 @@
 [1] string = "api"
 -- sql --
 SELECT * FROM `otel_traces` PREWHERE `ParentSpanId` WHERE (`ResourceAttributes`[?] = ?)
+-- seed --
+CREATE TABLE otel_traces (
+    _idx UInt64,
+    ParentSpanId UInt8 MATERIALIZED if(_idx = 0, toUInt8(0), toUInt8(1)),
+    ResourceAttributes Map(String, String) MATERIALIZED map('service.name', if(_idx = 2, 'frontend', 'api'))
+) ENGINE = MergeTree ORDER BY _idx;
+INSERT INTO otel_traces (_idx) VALUES (0), (1), (2);
+-- expected_rows --
+[
+  [1]
+]
 -- chplan --
 Filter predicate=(ParentSpanId AND (ResourceAttributes["service.name"] = "api"))
   Scan(otel_traces)

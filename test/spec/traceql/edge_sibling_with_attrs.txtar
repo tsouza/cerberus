@@ -8,6 +8,23 @@
 [4] string = "y"
 -- sql --
 SELECT R.* FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) AS L INNER JOIN (SELECT * FROM `otel_traces` PREWHERE (`Duration` > ?) WHERE (`ResourceAttributes`[?] = ?)) AS R ON L.`TraceId` = R.`TraceId` AND L.`ParentSpanId` = R.`ParentSpanId` AND L.`SpanId` != R.`SpanId`
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    ParentSpanId String,
+    Duration UInt64,
+    _svc String,
+    ResourceAttributes Map(String, String) MATERIALIZED map('service.name', _svc)
+) ENGINE = MergeTree ORDER BY TraceId;
+INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, Duration, _svc) VALUES
+    ('t1', 's1', 'p1', 500000000, 'x'),
+    ('t1', 's2', 'p1', 2000000000, 'y'),
+    ('t2', 's3', 'p2', 500000000, 'y');
+-- expected_rows --
+[
+  ["t1", "s2", "p1", 2000000000, "y"]
+]
 -- chplan --
 StructuralJoin op=~
   Filter predicate=(ResourceAttributes["service.name"] = "x")

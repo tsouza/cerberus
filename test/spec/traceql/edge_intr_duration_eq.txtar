@@ -4,6 +4,18 @@
 [0] int64 = 1000000000
 -- sql --
 SELECT * FROM `otel_traces` WHERE (`Duration` = ?)
+-- seed --
+CREATE TABLE otel_traces (
+    Duration UInt64
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    (500000000),
+    (1000000000),
+    (2000000000);
+-- expected_rows --
+[
+  [1000000000]
+]
 -- chplan --
 Filter predicate=(Duration = 1000000000)
   Scan(otel_traces)

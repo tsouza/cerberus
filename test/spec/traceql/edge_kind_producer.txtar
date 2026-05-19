@@ -4,6 +4,18 @@
 [0] string = "Producer"
 -- sql --
 SELECT * FROM `otel_traces` WHERE (`SpanKind` = ?)
+-- seed --
+CREATE TABLE otel_traces (
+    SpanKind String
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    ('Server'),
+    ('Consumer'),
+    ('Producer');
+-- expected_rows --
+[
+  ["Producer"]
+]
 -- chplan --
 Filter predicate=(SpanKind = "Producer")
   Scan(otel_traces)
