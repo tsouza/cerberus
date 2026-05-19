@@ -204,7 +204,11 @@ func metricsAggregateAttr(op traceql.MetricsAggregateOp, attr traceql.Attribute,
 	if attr == (traceql.Attribute{}) {
 		return nil, fmt.Errorf("traceql: %s requires an attribute operand", op)
 	}
-	return lowerAttribute(attr, s), nil
+	// Map(String, String) coercion: see coerceMapNumericAggInput in
+	// aggregate.go. `*_over_time(span.foo)` resolves to a FieldAccess
+	// against SpanAttributes (typed String); wrap so the downstream CH
+	// aggregate (`max`/`min`/`sum`/`avg`/`quantiles`) sees a Float64.
+	return coerceMapNumericAggInput(lowerAttribute(attr, s)), nil
 }
 
 // histogramBucketAlias is the SELECT-list alias for the bucket column

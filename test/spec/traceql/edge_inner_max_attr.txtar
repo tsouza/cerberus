@@ -6,9 +6,22 @@
 [2] string = "x"
 [3] int64 = 100
 -- sql --
-SELECT * FROM (SELECT max(`SpanAttributes`[?]) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?))) WHERE (`Value` > ?)
+SELECT * FROM (SELECT max(toFloat64OrZero(`SpanAttributes`[?])) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?))) WHERE (`Value` > ?)
+-- seed --
+CREATE TABLE otel_traces (
+    ResourceAttributes Map(String, String),
+    SpanAttributes Map(String, String)
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    (map('service.name', 'x'), map('latency_ms', '50')),
+    (map('service.name', 'x'), map('latency_ms', '150')),
+    (map('service.name', 'x'), map('latency_ms', '200'));
+-- expected_rows --
+[
+  [200.0]
+]
 -- chplan --
 Filter predicate=(Value > 100)
-  Aggregate groupBy=[] funcs=[max(SpanAttributes["latency_ms"]) AS Value]
+  Aggregate groupBy=[] funcs=[max(toFloat64OrZero(SpanAttributes["latency_ms"])) AS Value]
     Filter predicate=(ResourceAttributes["service.name"] = "x")
       Scan(otel_traces)

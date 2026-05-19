@@ -50,6 +50,15 @@ func lowerAggregate(prev chplan.Node, agg traceql.Aggregate, s schema.Traces) (c
 		return nil, err
 	}
 
+	// Map(String, String) coercion: when the aggregate input is a
+	// FieldAccess against SpanAttributes / ResourceAttributes the value
+	// is a String. ClickHouse refuses `max(String) > 100` with
+	// NO_COMMON_TYPE; wrap in `toFloat64OrZero(...)` at lowering time so
+	// the aggregate sees a Float64 and the downstream numeric
+	// comparison resolves. Intrinsic ColumnRefs (Duration etc.) lower
+	// to a bare ColumnRef and pass through unchanged.
+	arg = coerceMapNumericAggInput(arg)
+
 	return &chplan.Aggregate{
 		Input: prev,
 		AggFuncs: []chplan.AggFunc{{
@@ -58,6 +67,32 @@ func lowerAggregate(prev chplan.Node, agg traceql.Aggregate, s schema.Traces) (c
 			Alias: valueAlias,
 		}},
 	}, nil
+}
+
+// coerceMapNumericAggInput wraps Map-subscript expressions
+// (`SpanAttributes['foo']`, `ResourceAttributes['foo']`) with
+// `toFloat64OrZero(...)` so they can flow into a numeric CH aggregate
+// (`max`/`min`/`sum`/`avg`/`quantiles`). The OTel-CH attribute carriers
+// are typed `Map(String, String)`, so a bare subscript returns String —
+// CH then refuses to compare the aggregate against a numeric literal
+// with NO_COMMON_TYPE.
+//
+// The `OrZero` variant silently coerces strings that don't parse as
+// numbers (matches Loki's silent-fallback for typed label filters via
+// PR #479).
+//
+// Pass-through for everything else: intrinsic ColumnRefs (Duration,
+// already Int64) need no cast; pre-wrapped FuncCalls (e.g. an
+// arithmetic Binary that was already coerced) keep their existing
+// shape.
+func coerceMapNumericAggInput(expr chplan.Expr) chplan.Expr {
+	if _, ok := expr.(*chplan.FieldAccess); ok {
+		return &chplan.FuncCall{
+			Name: "toFloat64OrZero",
+			Args: []chplan.Expr{expr},
+		}
+	}
+	return expr
 }
 
 // mapAggregateOp turns a TraceQL AggregateOp into the CH agg function

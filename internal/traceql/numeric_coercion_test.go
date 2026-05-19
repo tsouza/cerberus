@@ -87,6 +87,54 @@ func TestNumericAttrCoercion(t *testing.T) {
 			wantSubstr: "`Duration` > ?",
 			notSubstr:  "toFloat64(`Duration`",
 		},
+		{
+			// Aggregate-input coercion: `max(span.foo)` against a
+			// Map(String, String) attribute reads as String; without the
+			// wrap CH rejects `max(String) > 100` with NO_COMMON_TYPE.
+			// coerceMapNumericAggInput wraps the FieldAccess with
+			// toFloat64OrZero so the aggregate sees a Float64.
+			name:       "max_span_attr_wraps_aggregate_input",
+			query:      `{} | max(span.latency_ms) > 100`,
+			wantSubstr: "max(toFloat64OrZero(`SpanAttributes`[?]))",
+		},
+		{
+			name:       "min_span_attr_wraps_aggregate_input",
+			query:      `{} | min(span.attempts) < 3`,
+			wantSubstr: "min(toFloat64OrZero(`SpanAttributes`[?]))",
+		},
+		{
+			name:       "sum_span_attr_wraps_aggregate_input",
+			query:      `{} | sum(span.size) > 1000`,
+			wantSubstr: "sum(toFloat64OrZero(`SpanAttributes`[?]))",
+		},
+		{
+			name:       "avg_resource_attr_wraps_aggregate_input",
+			query:      `{} | avg(resource.replicas) > 1`,
+			wantSubstr: "avg(toFloat64OrZero(`ResourceAttributes`[?]))",
+		},
+		{
+			// Intrinsic duration aggregates lower to a bare ColumnRef so
+			// the coercion guard leaves them untouched. The existing
+			// avg_duration / metrics_max_over_time fixtures pin this
+			// shape; the unit case anchors the negative half of the
+			// aggregate-input rule.
+			name:      "avg_duration_intrinsic_not_wrapped",
+			query:     `{} | avg(duration) > 100ms`,
+			notSubstr: "toFloat64OrZero(`Duration`",
+		},
+		{
+			// metrics-pipeline aggregates take the same coercion path
+			// via metricsAggregateAttr — `max_over_time(span.foo)` over
+			// a Map(String, String) carrier needs the same wrap.
+			name:       "max_over_time_span_attr_wraps_aggregate_input",
+			query:      `{} | max_over_time(span.latency_ms)`,
+			wantSubstr: "max(toFloat64OrZero(`SpanAttributes`[?]))",
+		},
+		{
+			name:       "quantile_over_time_span_attr_wraps_aggregate_input",
+			query:      `{} | quantile_over_time(span.latency_ms, 0.95)`,
+			wantSubstr: "quantile(?)(toFloat64OrZero(`SpanAttributes`[?]))",
+		},
 	}
 
 	for _, tc := range cases {
