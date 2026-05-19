@@ -5,6 +5,16 @@ SELECT * FROM `otel_traces` WHERE arrayExists(x -> x[?] > ?, `Links`.`Attributes
 -- args --
 [0] string = "http_status"
 [1] int64 = 500
+-- seed --
+CREATE TABLE otel_traces (
+    _idx UInt64,
+    `Links.Attributes` Array(Map(String, Int64)) MATERIALIZED if(_idx = 0, [map('http_status', toInt64(900))], [map('http_status', toInt64(200))])
+) ENGINE = MergeTree ORDER BY _idx;
+INSERT INTO otel_traces (_idx) VALUES (0), (1);
+-- expected_rows --
+[
+  [0]
+]
 -- chplan --
 Filter predicate=nestedArrayExists(Links.Attributes["http_status"] > 500)
   Scan(otel_traces)
