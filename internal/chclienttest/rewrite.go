@@ -25,8 +25,15 @@ func tolerantRowsErr(err error) error {
 // the query against chDB. We don't have type information here; the
 // rewrite is a textual transform keyed off this list. Extend the list
 // if a new Map column lands in the schema.
+//
+// ExemplarAttributes is the alias the chsql.EmitQueryExemplars outer
+// SELECT projects for `Exemplars.FilteredAttributes` (a Map(LowCardinality
+// (String),String)). Without the toJSONString wrap chDB's parquet driver
+// panics decoding the column as a Go string in the chclienttest scan
+// path — same Map-panic probe Attributes / ResourceAttributes hit.
 var mapColumnNames = []string{
 	"Attributes",
+	"ExemplarAttributes",
 	"ResourceAttributes",
 	"ScopeAttributes",
 	"SpanAttributes",

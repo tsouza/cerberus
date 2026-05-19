@@ -503,6 +503,170 @@ func TestConformance_ParseQueryWire(t *testing.T) {
 	}
 }
 
+// TestConformance_PromExemplarsBasic pins the populated-data envelope
+// shape for `/api/v1/query_exemplars`. The stub Querier returns two
+// canned ExemplarRow values (one row per series across two series),
+// the handler groups them into ExemplarSeries via groupExemplars, and
+// the response JSON is decoded against the upstream-documented wire
+// vocabulary (`seriesLabels` / `exemplars` / `labels` / `value` /
+// `timestamp`).
+//
+// Wire-shape contract pinned here:
+//   - top-level `data` is an array of objects (not a `{result, …}`
+//     wrapper — `/query_exemplars` is shaped differently to
+//     `/query` / `/query_range`);
+//   - per-element `seriesLabels` is a flat `map[string]string`
+//     (NOT nested under a `metric` key the way `/query` does);
+//   - per-exemplar `timestamp` decodes as `float64` — numeric, not
+//     stringified the way Sample.Value is. Distinguishes exemplar
+//     wire shape from Sample, which stringifies for precision per
+//     the Prom JSON envelope.
+//
+// The handler requires a literal `__name__` matcher (PR #520); the
+// test request includes one (`up{job="api"}`) so the chsql emitter is
+// reached — exercising the full handler → groupExemplars → JSON path
+// rather than the early-return error path.
+func TestConformance_PromExemplarsBasic(t *testing.T) {
+	t.Parallel()
+
+	ts := time.Date(2026, 5, 14, 12, 0, 0, 123_456_789, time.UTC)
+	rows := []chclient.ExemplarRow{
+		{
+			MetricName:         "up",
+			Attributes:         map[string]string{"job": "api"},
+			ServiceName:        "checkout",
+			Timestamp:          ts,
+			Value:              0.125,
+			TraceID:            "trace-a1",
+			SpanID:             "span-a1",
+			ExemplarAttributes: map[string]string{"request_id": "req-a1"},
+		},
+		{
+			MetricName:         "up",
+			Attributes:         map[string]string{"job": "db"},
+			ServiceName:        "checkout",
+			Timestamp:          ts.Add(50 * time.Millisecond),
+			Value:              0.500,
+			TraceID:            "trace-b1",
+			SpanID:             "span-b1",
+			ExemplarAttributes: map[string]string{"request_id": "req-b1"},
+		},
+	}
+
+	srv := newServer(&stubQuerier{exemplarRows: rows})
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + `/api/v1/query_exemplars?query=up%7Bjob%3D%22api%22%7D` +
+		`&start=` + strconv.FormatInt(ts.Add(-1*time.Minute).Unix(), 10) +
+		`&end=` + strconv.FormatInt(ts.Add(1*time.Minute).Unix(), 10))
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+	}
+
+	// Step 1: decode the envelope into the loosest shape compatible
+	// with the contract. Each `data` element is decoded as an
+	// `any` map; subsequent assertions inspect that map's surface to
+	// pin the field-name vocabulary and the float64 timestamp shape.
+	var env struct {
+		Status string                   `json:"status"`
+		Data   []map[string]interface{} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(body), &env); err != nil {
+		t.Fatalf("decode envelope: %v body=%s", err, body)
+	}
+	if env.Status != "success" {
+		t.Errorf("status: got %q, want success", env.Status)
+	}
+	// Two distinct (MetricName, Attributes, ServiceName) keys in the
+	// canned rows ⇒ two ExemplarSeries in the response.
+	if got, want := len(env.Data), 2; got != want {
+		t.Fatalf("len(data) = %d; want %d", got, want)
+	}
+
+	for i, elem := range env.Data {
+		// `seriesLabels` MUST be a flat object — NOT nested under a
+		// `metric` key the way Prom's /query envelope wraps the
+		// series identity. The handler shape is intentionally
+		// distinct to match Prom's documented `/query_exemplars`
+		// wire contract.
+		sl, ok := elem["seriesLabels"].(map[string]interface{})
+		if !ok {
+			t.Errorf("data[%d]: seriesLabels not a flat object: %T = %v",
+				i, elem["seriesLabels"], elem["seriesLabels"])
+			continue
+		}
+		// Every label value MUST be a string — Prom's wire format
+		// stringifies labels regardless of source type, and the Go
+		// type-switch below confirms the JSON map[string]string
+		// decoded as a flat map of string values.
+		for k, v := range sl {
+			if _, ok := v.(string); !ok {
+				t.Errorf("data[%d].seriesLabels[%q] = %T (%v); want string",
+					i, k, v, v)
+			}
+		}
+		// `__name__` MUST be populated — groupExemplars overlays the
+		// resolved metric name via format.WithMetricName.
+		if sl["__name__"] != "up" {
+			t.Errorf("data[%d].seriesLabels[__name__] = %v; want 'up'", i, sl["__name__"])
+		}
+
+		exemplars, ok := elem["exemplars"].([]interface{})
+		if !ok {
+			t.Errorf("data[%d]: exemplars not an array: %T", i, elem["exemplars"])
+			continue
+		}
+		if got, want := len(exemplars), 1; got != want {
+			t.Errorf("data[%d]: len(exemplars) = %d; want %d", i, got, want)
+		}
+		for j, raw := range exemplars {
+			ex, ok := raw.(map[string]interface{})
+			if !ok {
+				t.Errorf("data[%d].exemplars[%d] not an object: %T", i, j, raw)
+				continue
+			}
+			// `timestamp` MUST decode as float64. Distinguishes
+			// exemplar wire shape from Sample.Value, which is
+			// stringified for precision.
+			if _, ok := ex["timestamp"].(float64); !ok {
+				t.Errorf("data[%d].exemplars[%d].timestamp = %T (%v); want float64 (numeric, not stringified)",
+					i, j, ex["timestamp"], ex["timestamp"])
+			}
+			// `value` is also numeric float64 (NOT stringified).
+			if _, ok := ex["value"].(float64); !ok {
+				t.Errorf("data[%d].exemplars[%d].value = %T (%v); want float64",
+					i, j, ex["value"], ex["value"])
+			}
+			// `labels` is a flat map[string]string with `trace_id`
+			// and `span_id` overlaid from the dedicated columns.
+			labels, ok := ex["labels"].(map[string]interface{})
+			if !ok {
+				t.Errorf("data[%d].exemplars[%d].labels not a flat object: %T",
+					i, j, ex["labels"])
+				continue
+			}
+			for k, v := range labels {
+				if _, ok := v.(string); !ok {
+					t.Errorf("data[%d].exemplars[%d].labels[%q] = %T; want string",
+						i, j, k, v)
+				}
+			}
+			if labels["trace_id"] == "" || labels["trace_id"] == nil {
+				t.Errorf("data[%d].exemplars[%d].labels[trace_id] empty; want non-empty",
+					i, j)
+			}
+			if labels["span_id"] == "" || labels["span_id"] == nil {
+				t.Errorf("data[%d].exemplars[%d].labels[span_id] empty; want non-empty",
+					i, j)
+			}
+		}
+	}
+}
+
 // TestConformance_QueryExemplarsWire — empty-data envelope shape. The
 // data array is non-nil (`[]`, not `null`) so Grafana's exemplars probe
 // distinguishes the two.
