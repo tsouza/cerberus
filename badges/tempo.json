@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "label": "tempo compat",
+  "label": "TraceQL compat",
   "message": "12.12%",
   "color": "red",
   "passed": 4,
