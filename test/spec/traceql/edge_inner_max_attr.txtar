@@ -6,12 +6,13 @@ CREATE TABLE otel_traces (
     SpanName String,
     Timestamp DateTime64(9),
     ResourceAttributes Map(String, String),
-    SpanAttributes Map(String, String)
+    SpanAttributes Map(String, String),
+    Duration UInt64
 ) ENGINE = Memory;
 INSERT INTO otel_traces VALUES
-    ('t1', 'span', toDateTime64('2024-01-01 00:00:00', 9), map('service.name', 'x'), map('latency_ms', '50')),
-    ('t1', 'span', toDateTime64('2024-01-01 00:00:01', 9), map('service.name', 'x'), map('latency_ms', '150')),
-    ('t1', 'span', toDateTime64('2024-01-01 00:00:02', 9), map('service.name', 'x'), map('latency_ms', '200'));
+    ('t1', 'span', toDateTime64('2024-01-01 00:00:00', 9), map('service.name', 'x'), map('latency_ms', '50'),  50000000),
+    ('t1', 'span', toDateTime64('2024-01-01 00:00:01', 9), map('service.name', 'x'), map('latency_ms', '150'), 150000000),
+    ('t1', 'span', toDateTime64('2024-01-01 00:00:02', 9), map('service.name', 'x'), map('latency_ms', '200'), 200000000);
 -- args --
 [0] string = "latency_ms"
 [1] string = "service.name"
@@ -19,12 +20,12 @@ INSERT INTO otel_traces VALUES
 [3] int64 = 100
 -- chplan --
 Filter predicate=(Value > 100)
-  Aggregate groupBy=[TraceId AS TraceId] funcs=[max(toFloat64OrZero(SpanAttributes["latency_ms"])) AS Value, any(SpanName) AS MetricName, any(ResourceAttributes) AS ResourceAttrs, min(Timestamp) AS TimeUnix]
+  Aggregate groupBy=[TraceId AS TraceId] funcs=[max(toFloat64OrZero(SpanAttributes["latency_ms"])) AS Value, any(SpanName) AS MetricName, any(ResourceAttributes) AS ResourceAttrs, min(Timestamp) AS TimeUnix, min(toUnixTimestamp64Nano(Timestamp)) AS TraceStartNs, max((toUnixTimestamp64Nano(Timestamp) + toInt64(Duration))) AS TraceEndNs]
     Filter predicate=(ResourceAttributes["service.name"] = "x")
       Scan(otel_traces)
 -- sql --
-SELECT * FROM (SELECT `TraceId` AS `TraceId`, max(toFloat64OrZero(`SpanAttributes`[?])) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, min(`Timestamp`) AS `TimeUnix` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) GROUP BY `TraceId`) WHERE (`Value` > ?)
+SELECT * FROM (SELECT `TraceId` AS `TraceId`, max(toFloat64OrZero(`SpanAttributes`[?])) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) GROUP BY `TraceId`) WHERE (`Value` > ?)
 -- expected_rows --
 [
-  ["t1", 200, "span", {"service.name": "x"}, "2024-01-01T00:00:00Z"]
+  ["t1", 200, "span", {"service.name": "x"}, "2024-01-01T00:00:00Z", 1704067200000000000, 1704067202200000000]
 ]

@@ -574,6 +574,164 @@ func TestSearch_SpansetAggregate_PerTrace(t *testing.T) {
 	}
 }
 
+// TestSearch_SpansetAggregate_DurationMsReflectsWholeTrace pins the
+// Tempo wire spec: /api/search's `durationMs` is the **whole-trace**
+// wall-clock span (`max(span.end) - min(span.start)` across every
+// span in the trace), not the matched span's per-row Duration. The
+// spanset-aggregate wrap-projection threads the derived value via
+// the reserved `__cerberus_traceDurationNs` label slot so
+// toTraceSummaries reports it verbatim — matching Tempo for the
+// count_spans_per_trace + avg_duration_per_trace_status_ok compat
+// cases (each ~100 rows of per-trace samples).
+//
+// Pre-fix shape: durationMs = max(per-row Duration) which on a
+// multi-span trace under-reports vs Tempo's actual root-span span;
+// for `| count()` the per-row Value is the count integer and the
+// shaper effectively reported 0ms.
+func TestSearch_SpansetAggregate_DurationMsReflectsWholeTrace(t *testing.T) {
+	t.Parallel()
+	const traceID = "1131bf7acf51ccb10aef0ec7e31bf71f"
+	// One row per trace (the spanset-aggregate inner SELECT collapses
+	// all spans of a trace into one row), carrying the derived
+	// __cerberus_traceDurationNs = 150_000_000 ns (= 150 ms).
+	q := &stubQuerier{
+		samples: []chclient.Sample{
+			{
+				MetricName: "POST /api/orders",
+				Labels: map[string]string{
+					"service.name":               "checkout",
+					"__cerberus_traceID":         traceID,
+					"__cerberus_traceDurationNs": "150000000",
+				},
+				Timestamp: time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+				// Value carries the aggregate (count=3) — must NOT bleed
+				// into durationMs once the reserved-key slot is present.
+				Value: 3,
+			},
+		},
+	}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/search?q=%7B%7D%20%7C%20count%28%29%20%3E%200")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	var sr tempo.SearchResponse
+	if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(sr.Traces) != 1 {
+		t.Fatalf("expected 1 trace, got %d", len(sr.Traces))
+	}
+	if got := sr.Traces[0].DurationMs; got != 150 {
+		t.Errorf("DurationMs: got %d, want 150 (trace-wide ns / 1e6, not per-row Sample.Value=3)", got)
+	}
+	if got := sr.Traces[0].TraceID; got != traceID {
+		t.Errorf("TraceID: got %q, want %q", got, traceID)
+	}
+}
+
+// TestSearch_SpansetAggregate_DurationMsMultiSpanReplaysAggregate
+// stress-tests the multi-row shape: when the stub returns multiple
+// rows for the same trace (spanset-aggregate today emits one row
+// per trace but the shaper must be resilient if a future projection
+// duplicates rows), the trace-duration reserved slot overrides the
+// per-row Sample.Value fallback regardless of arrival order.
+func TestSearch_SpansetAggregate_DurationMsMultiSpanReplaysAggregate(t *testing.T) {
+	t.Parallel()
+	const traceID = "118b9e55fa97da56152b463462b61607"
+	q := &stubQuerier{
+		samples: []chclient.Sample{
+			// First row — no reserved slot (older fixture / partial
+			// projection). The shaper picks up Sample.Value (50 ns).
+			{
+				MetricName: "GET /a",
+				Labels: map[string]string{
+					"service.name":       "checkout",
+					"__cerberus_traceID": traceID,
+				},
+				Timestamp: time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+				Value:     50_000_000,
+			},
+			// Second row — carries the derived trace-wide duration.
+			// Must overwrite the Sample.Value-based pick from row 1.
+			{
+				MetricName: "GET /a",
+				Labels: map[string]string{
+					"service.name":               "checkout",
+					"__cerberus_traceID":         traceID,
+					"__cerberus_traceDurationNs": "150000000",
+				},
+				Timestamp: time.Date(2026, 5, 12, 10, 0, 1, 0, time.UTC),
+				Value:     2,
+			},
+		},
+	}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/search?q=%7B%7D")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	var sr tempo.SearchResponse
+	if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(sr.Traces) != 1 {
+		t.Fatalf("expected 1 trace, got %d", len(sr.Traces))
+	}
+	if got := sr.Traces[0].DurationMs; got != 150 {
+		t.Errorf("DurationMs: got %d, want 150 (reserved-slot wins over Sample.Value fallback)", got)
+	}
+}
+
+// TestSearch_SpansetAggregate_SQLProjectsTraceDurationNs pins the
+// SQL emitted by the spanset-aggregate path: the inner Aggregate
+// must surface `TraceStartNs` + `TraceEndNs` aliases and the outer
+// wrap-projection must merge their difference into Attributes via
+// the `__cerberus_traceDurationNs` reserved key. Without this
+// substring pin a regression in either the aggregate lowering or
+// the wrap projection would silently drop the trace-wide duration.
+func TestSearch_SpansetAggregate_SQLProjectsTraceDurationNs(t *testing.T) {
+	t.Parallel()
+	q := &stubQuerier{}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	// `{ resource.service.name = "frontend" } | count() > 0`
+	resp, err := http.Get(srv.URL + "/api/search?q=%7B%20resource.service.name%20%3D%20%22frontend%22%20%7D%20%7C%20count%28%29%20%3E%200")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+	// Inner aggregate must surface the two new aliases.
+	if !strings.Contains(q.lastSQL, "TraceStartNs") {
+		t.Errorf("emitted SQL must project TraceStartNs aggregate; got %s", q.lastSQL)
+	}
+	if !strings.Contains(q.lastSQL, "TraceEndNs") {
+		t.Errorf("emitted SQL must project TraceEndNs aggregate; got %s", q.lastSQL)
+	}
+	// Outer wrap must thread the derived duration through the
+	// reserved-key slot.
+	var sawDurationKey bool
+	for _, a := range q.lastArgs {
+		if s, ok := a.(string); ok && s == "__cerberus_traceDurationNs" {
+			sawDurationKey = true
+			break
+		}
+	}
+	if !sawDurationKey {
+		t.Errorf("emitted SQL args must include reserved __cerberus_traceDurationNs slot; got args=%v", q.lastArgs)
+	}
+}
+
 // isHexLower reports whether s is a non-empty lowercase hex string.
 // The OTel CH exporter writes TraceId via hex.EncodeToString, which
 // produces lowercase a-f digits.
