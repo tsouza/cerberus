@@ -438,6 +438,17 @@ const (
 	// traceByIDKeyParentSpanID slot — same constant value, same
 	// namespace; the two paths never overlap.
 	searchKeyParentSpanID = traceByIDKeyParentSpanID
+	// searchKeyTraceDurationNs is the reserved Labels key carrying
+	// the **whole-trace** wall-clock duration in nanoseconds. The
+	// spanset-aggregate wrap-projection populates it as
+	// `TraceEndNs - TraceStartNs` (see
+	// spansetAggregateSampleProjections); toTraceSummaries reads it
+	// and surfaces durationMs = ns / 1e6 so the response matches
+	// Tempo's wire spec, which reports the trace-wide span — not the
+	// matched row's own Duration column. Non-aggregate paths leave
+	// the slot empty and fall back to chclient.Sample.Value (the
+	// per-row Duration), preserving the historical shape.
+	searchKeyTraceDurationNs = "__cerberus_traceDurationNs"
 )
 
 // wrapWithSampleProjection adds a Project on top of plan that emits
@@ -796,12 +807,14 @@ func aggregateCarriesSpansetEnvelope(a *chplan.Aggregate) bool {
 // when the plan root is the per-trace spanset Aggregate shape
 // produced by internal/traceql/aggregate.go. The inner Aggregate
 // already emits the per-trace envelope columns (MetricName,
-// ResourceAttrs, TimeUnix) alongside (TraceId, Value); this outer
-// Project merges the TraceId into Attributes via the
-// `__cerberus_traceID` reserved-key pattern and casts Value to
-// float64 — same wire shape as canonicalSampleProjections but
-// reading from the Aggregate's projected columns rather than the
-// raw spans-table columns.
+// ResourceAttrs, TimeUnix) alongside (TraceId, Value, TraceStartNs,
+// TraceEndNs); this outer Project merges TraceId into Attributes via
+// the `__cerberus_traceID` reserved-key pattern, threads the derived
+// whole-trace duration `(TraceEndNs - TraceStartNs)` via
+// `__cerberus_traceDurationNs`, and casts Value to float64 — same
+// wire shape as canonicalSampleProjections but reading from the
+// Aggregate's projected columns rather than the raw spans-table
+// columns.
 //
 // The `TraceId` column the inner Aggregate exposes is the raw
 // fixed-width OTel-CH value (32 lowercase-hex chars); Tempo's wire
@@ -812,10 +825,28 @@ func aggregateCarriesSpansetEnvelope(a *chplan.Aggregate) bool {
 // Tempo's `af…66b`, generating spurious missing_in_a / missing_in_b
 // reasons across the spanset-aggregate compat cases (e.g.
 // `avg_duration_per_trace_status_ok`).
+//
+// Tempo's /api/search wire spec reports `durationMs` as the
+// **whole-trace** wall-clock span (max-end minus min-start across
+// every span in the trace), not the matched span's per-row Duration.
+// Surfacing the derived `TraceEndNs - TraceStartNs` via the reserved
+// `__cerberus_traceDurationNs` slot lets toTraceSummaries report the
+// trace-wide duration while keeping the non-aggregate path's
+// per-row-Duration semantics intact (the slot is absent there, so
+// the shaper falls back to Sample.Value).
 func spansetAggregateSampleProjections() []chplan.Projection {
+	traceDurationNs := &chplan.Binary{
+		Op:    chplan.OpSub,
+		Left:  &chplan.ColumnRef{Name: "TraceEndNs"},
+		Right: &chplan.ColumnRef{Name: "TraceStartNs"},
+	}
 	traceIDMap := &chplan.FuncCall{Name: "map", Args: []chplan.Expr{
 		&chplan.LitString{V: searchKeyTraceID},
 		stripLeadingHexZeros("TraceId"),
+		&chplan.LitString{V: searchKeyTraceDurationNs},
+		// toString keeps the merged Map(String,String) homogeneous;
+		// the shaper parses the int back out on the Go side.
+		&chplan.FuncCall{Name: "toString", Args: []chplan.Expr{traceDurationNs}},
 	}}
 	mergedAttrs := &chplan.FuncCall{Name: "mapConcat", Args: []chplan.Expr{
 		&chplan.ColumnRef{Name: "ResourceAttrs"},
@@ -832,12 +863,15 @@ func spansetAggregateSampleProjections() []chplan.Projection {
 // toTraceSummaries pivots samples into the per-trace summary shape
 // Tempo's /api/search returns. Each unique TraceID becomes one
 // summary; StartTimeUnixNano is the earliest span timestamp seen and
-// DurationMs is the max span duration (a coarse proxy until per-trace
-// aggregate plumbing lands).
+// DurationMs reports the **whole-trace** wall-clock span (max-end
+// minus min-start across every span in the trace) for the
+// spanset-aggregate path, falling back to the max per-row Sample.Value
+// when the reserved `__cerberus_traceDurationNs` slot is absent (non-
+// aggregate /api/search rows, older fixtures, stub queriers).
 //
 // chclient.Sample's MetricName carries SpanName here (per the wrap
 // projection above) and Attributes carries ResourceAttributes plus
-// two reserved entries:
+// three reserved entries:
 //   - `__cerberus_traceID` (searchKeyTraceID) — the grouping key so
 //     multi-span traces collapse into one summary row.
 //   - `__cerberus_parentSpanID` (searchKeyParentSpanID) — used to
@@ -845,6 +879,11 @@ func spansetAggregateSampleProjections() []chplan.Projection {
 //     rootServiceName / rootTraceName on the span at the top of the
 //     trace tree, where ParentSpanId is empty/unset, not whichever
 //     span the underlying engine happens to return first).
+//   - `__cerberus_traceDurationNs` (searchKeyTraceDurationNs) — the
+//     derived whole-trace duration (`max(span.end) - min(span.start)`)
+//     in nanoseconds, populated by spansetAggregateSampleProjections.
+//     Matches Tempo's /api/search wire spec for durationMs: a
+//     trace-wide span, not the matched row's own Duration.
 //
 // Root-span resolution:
 //   - Prefer the row where ParentSpanId == "" (the actual root). Among
@@ -880,6 +919,12 @@ func toTraceSummaries(samples []chclient.Sample) []TraceSummary {
 		earliestStartNS int64
 		// hasRoot is true once we've seen a span with ParentSpanId == "".
 		hasRoot bool
+		// hasTraceDurationNs is set the first time a row supplies the
+		// `__cerberus_traceDurationNs` reserved-key entry. Once true,
+		// `durationNS` carries the trace-wide span and per-row Sample.
+		// Value contributions are ignored — they would otherwise pull
+		// the value back to the max single-span duration.
+		hasTraceDurationNs bool
 	}
 	byTrace := map[string]*acc{}
 	for _, s := range samples {
@@ -900,7 +945,18 @@ func toTraceSummaries(samples []chclient.Sample) []TraceSummary {
 		if a.startNS == 0 || ns < a.startNS {
 			a.startNS = ns
 		}
-		if int64(s.Value) > a.durationNS {
+		// Whole-trace duration takes precedence when the wrap-projection
+		// surfaced one. The spanset-aggregate path emits a single row
+		// per trace so we just overwrite; the guard against per-row-
+		// Duration fallback ensures a mixed-shape stream (older fixture
+		// rows + aggregate rows on the same trace) doesn't pull the
+		// value down to a single span's max.
+		if v, ok := s.Labels[searchKeyTraceDurationNs]; ok && v != "" {
+			if ns, err := strconv.ParseInt(v, 10, 64); err == nil && ns >= 0 {
+				a.durationNS = ns
+				a.hasTraceDurationNs = true
+			}
+		} else if !a.hasTraceDurationNs && int64(s.Value) > a.durationNS {
 			a.durationNS = int64(s.Value)
 		}
 

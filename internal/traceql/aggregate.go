@@ -40,6 +40,15 @@ const (
 	aggMetricNameAlias    = "MetricName"
 	aggResourceAttrsAlias = "ResourceAttrs"
 	aggTimeUnixAlias      = "TimeUnix"
+	// aggTraceStartNsAlias / aggTraceEndNsAlias name the two per-trace
+	// timestamp aggregates used to derive the per-trace duration. Tempo's
+	// /api/search returns `durationMs` as the **whole-trace** wall-clock
+	// span — `max(span.end) - min(span.start)` across every span in the
+	// trace — not the matched span's own duration. The shaper subtracts
+	// the two aliases in the wrap-projection layer (see
+	// internal/api/tempo/handler.go: spansetAggregateSampleProjections).
+	aggTraceStartNsAlias = "TraceStartNs"
+	aggTraceEndNsAlias   = "TraceEndNs"
 )
 
 // lowerAggregate handles `| count()`, `| sum(...)`, `| avg(...)`,
@@ -101,8 +110,69 @@ func lowerAggregate(prev chplan.Node, agg traceql.Aggregate, s schema.Traces) (c
 		Input:          prev,
 		GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: s.TraceIDColumn}},
 		GroupByAliases: []string{aggTraceIDAlias},
-		AggFuncs:       []chplan.AggFunc{valueFunc, anyAggFunc(s.SpanNameColumn, aggMetricNameAlias), anyAggFunc(s.ResourceAttributesColumn, aggResourceAttrsAlias), minAggFunc(s.TimestampColumn, aggTimeUnixAlias)},
+		AggFuncs: []chplan.AggFunc{
+			valueFunc,
+			anyAggFunc(s.SpanNameColumn, aggMetricNameAlias),
+			anyAggFunc(s.ResourceAttributesColumn, aggResourceAttrsAlias),
+			minAggFunc(s.TimestampColumn, aggTimeUnixAlias),
+			traceStartNsAggFunc(s.TimestampColumn),
+			traceEndNsAggFunc(s.TimestampColumn, s.DurationColumn),
+		},
 	}, nil
+}
+
+// traceStartNsAggFunc returns `min(toUnixTimestamp64Nano(<Timestamp>))
+// AS TraceStartNs` — the earliest span-start across the trace, in
+// nanoseconds since the Unix epoch. Paired with traceEndNsAggFunc so
+// the wrap-projection can derive the per-trace wall-clock duration
+// (max(end) - min(start)) for Tempo's `durationMs` field.
+//
+// The cast to Int64 ns is what lets the difference fall out as a
+// plain integer — `min(Timestamp)` returns DateTime64 and the typed
+// chplan Binary lacks an interval-aware subtraction, so we project
+// the value as nanoseconds up-front.
+func traceStartNsAggFunc(timestampColumn string) chplan.AggFunc {
+	return chplan.AggFunc{
+		Name: "min",
+		Args: []chplan.Expr{
+			&chplan.FuncCall{
+				Name: "toUnixTimestamp64Nano",
+				Args: []chplan.Expr{&chplan.ColumnRef{Name: timestampColumn}},
+			},
+		},
+		Alias: aggTraceStartNsAlias,
+	}
+}
+
+// traceEndNsAggFunc returns `max(toUnixTimestamp64Nano(<Timestamp>) +
+// toInt64(<Duration>)) AS TraceEndNs` — the latest span-end across
+// the trace, in nanoseconds since the Unix epoch. The OTel-CH
+// `Duration` column is UInt64 nanoseconds; coercing to Int64 keeps
+// the sum Int64 so CH does not promote to a wider unsigned type that
+// `min(...)` would refuse to subtract.
+//
+// Pairing this with traceStartNsAggFunc lets the wrap-projection
+// derive the per-trace wall-clock duration as the simple integer
+// difference `TraceEndNs - TraceStartNs` (see
+// internal/api/tempo/handler.go: spansetAggregateSampleProjections).
+func traceEndNsAggFunc(timestampColumn, durationColumn string) chplan.AggFunc {
+	return chplan.AggFunc{
+		Name: "max",
+		Args: []chplan.Expr{
+			&chplan.Binary{
+				Op: chplan.OpAdd,
+				Left: &chplan.FuncCall{
+					Name: "toUnixTimestamp64Nano",
+					Args: []chplan.Expr{&chplan.ColumnRef{Name: timestampColumn}},
+				},
+				Right: &chplan.FuncCall{
+					Name: "toInt64",
+					Args: []chplan.Expr{&chplan.ColumnRef{Name: durationColumn}},
+				},
+			},
+		},
+		Alias: aggTraceEndNsAlias,
+	}
 }
 
 // anyAggFunc returns an `any(<col>) AS <alias>` AggFunc — the

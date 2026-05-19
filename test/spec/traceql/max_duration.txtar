@@ -19,12 +19,12 @@ INSERT INTO otel_traces VALUES
 [2] int64 = 500000000
 -- chplan --
 Filter predicate=(Value > 500000000)
-  Aggregate groupBy=[TraceId AS TraceId] funcs=[max(Duration) AS Value, any(SpanName) AS MetricName, any(ResourceAttributes) AS ResourceAttrs, min(Timestamp) AS TimeUnix]
+  Aggregate groupBy=[TraceId AS TraceId] funcs=[max(Duration) AS Value, any(SpanName) AS MetricName, any(ResourceAttributes) AS ResourceAttrs, min(Timestamp) AS TimeUnix, min(toUnixTimestamp64Nano(Timestamp)) AS TraceStartNs, max((toUnixTimestamp64Nano(Timestamp) + toInt64(Duration))) AS TraceEndNs]
     Filter predicate=(ResourceAttributes["service.name"] = "frontend")
       Scan(otel_traces)
 -- sql --
-SELECT * FROM (SELECT `TraceId` AS `TraceId`, max(`Duration`) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, min(`Timestamp`) AS `TimeUnix` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) GROUP BY `TraceId`) WHERE (`Value` > ?)
+SELECT * FROM (SELECT `TraceId` AS `TraceId`, max(`Duration`) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) GROUP BY `TraceId`) WHERE (`Value` > ?)
 -- expected_rows --
 [
-  ["t1", 600000000, "span", {"service.name": "frontend"}, "2024-01-01T00:00:00Z"]
+  ["t1", 600000000, "span", {"service.name": "frontend"}, "2024-01-01T00:00:00Z", 1704067200000000000, 1704067202400000000]
 ]

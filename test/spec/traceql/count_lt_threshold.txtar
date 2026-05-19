@@ -5,15 +5,16 @@ CREATE TABLE otel_traces (
     TraceId String,
     SpanName String,
     Timestamp DateTime64(9),
-    ResourceAttributes Map(String, String)
+    ResourceAttributes Map(String, String),
+    Duration UInt64
 ) ENGINE = Memory;
 INSERT INTO otel_traces VALUES
-    ('t1', 'span', toDateTime64('2024-01-01 00:00:00', 9), map('service.name', 'frontend')),
-    ('t1', 'span', toDateTime64('2024-01-01 00:00:01', 9), map('service.name', 'frontend')),
-    ('t1', 'span', toDateTime64('2024-01-01 00:00:02', 9), map('service.name', 'frontend')),
-    ('t2', 'span', toDateTime64('2024-01-01 00:00:03', 9), map('service.name', 'frontend')),
-    ('t2', 'span', toDateTime64('2024-01-01 00:00:04', 9), map('service.name', 'frontend')),
-    ('t3', 'span', toDateTime64('2024-01-01 00:00:05', 9), map('service.name', 'backend'));
+    ('t1', 'span', toDateTime64('2024-01-01 00:00:00', 9), map('service.name', 'frontend'), 10000000),
+    ('t1', 'span', toDateTime64('2024-01-01 00:00:01', 9), map('service.name', 'frontend'), 20000000),
+    ('t1', 'span', toDateTime64('2024-01-01 00:00:02', 9), map('service.name', 'frontend'), 30000000),
+    ('t2', 'span', toDateTime64('2024-01-01 00:00:03', 9), map('service.name', 'frontend'), 10000000),
+    ('t2', 'span', toDateTime64('2024-01-01 00:00:04', 9), map('service.name', 'frontend'), 20000000),
+    ('t3', 'span', toDateTime64('2024-01-01 00:00:05', 9), map('service.name', 'backend'),  10000000);
 -- args --
 [0] int64 = 1
 [1] string = "service.name"
@@ -21,13 +22,13 @@ INSERT INTO otel_traces VALUES
 [3] int64 = 10
 -- chplan --
 Filter predicate=(Value < 10)
-  Aggregate groupBy=[TraceId AS TraceId] funcs=[count(1) AS Value, any(SpanName) AS MetricName, any(ResourceAttributes) AS ResourceAttrs, min(Timestamp) AS TimeUnix]
+  Aggregate groupBy=[TraceId AS TraceId] funcs=[count(1) AS Value, any(SpanName) AS MetricName, any(ResourceAttributes) AS ResourceAttrs, min(Timestamp) AS TimeUnix, min(toUnixTimestamp64Nano(Timestamp)) AS TraceStartNs, max((toUnixTimestamp64Nano(Timestamp) + toInt64(Duration))) AS TraceEndNs]
     Filter predicate=(ResourceAttributes["service.name"] = "frontend")
       Scan(otel_traces)
 -- sql --
-SELECT * FROM (SELECT `TraceId` AS `TraceId`, toFloat64(count(?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, min(`Timestamp`) AS `TimeUnix` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) GROUP BY `TraceId`) WHERE (`Value` < ?)
+SELECT * FROM (SELECT `TraceId` AS `TraceId`, toFloat64(count(?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) GROUP BY `TraceId`) WHERE (`Value` < ?)
 -- expected_rows --
 [
-  ["t1", 3, "span", {"service.name": "frontend"}, "2024-01-01T00:00:00Z"],
-  ["t2", 2, "span", {"service.name": "frontend"}, "2024-01-01T00:00:03Z"]
+  ["t1", 3, "span", {"service.name": "frontend"}, "2024-01-01T00:00:00Z", 1704067200000000000, 1704067202030000000],
+  ["t2", 2, "span", {"service.name": "frontend"}, "2024-01-01T00:00:03Z", 1704067203000000000, 1704067204020000000]
 ]

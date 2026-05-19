@@ -5,12 +5,13 @@ CREATE TABLE otel_traces (
     TraceId String,
     SpanName String,
     Timestamp DateTime64(9),
-    ResourceAttributes Map(String, String)
+    ResourceAttributes Map(String, String),
+    Duration UInt64
 ) ENGINE = Memory;
 INSERT INTO otel_traces VALUES
-    ('t1', 'span', toDateTime64('2024-01-01 00:00:00', 9), map('service.name', 'backend')),
-    ('t2', 'span', toDateTime64('2024-01-01 00:00:01', 9), map('service.name', 'db')),
-    ('t3', 'span', toDateTime64('2024-01-01 00:00:02', 9), map('service.name', 'cache'));
+    ('t1', 'span', toDateTime64('2024-01-01 00:00:00', 9), map('service.name', 'backend'), 10000000),
+    ('t2', 'span', toDateTime64('2024-01-01 00:00:01', 9), map('service.name', 'db'),      20000000),
+    ('t3', 'span', toDateTime64('2024-01-01 00:00:02', 9), map('service.name', 'cache'),   30000000);
 -- args --
 [0] int64 = 1
 [1] string = "service.name"
@@ -18,10 +19,10 @@ INSERT INTO otel_traces VALUES
 [3] int64 = 0
 -- chplan --
 Filter predicate=(Value > 0)
-  Aggregate groupBy=[TraceId AS TraceId] funcs=[count(1) AS Value, any(SpanName) AS MetricName, any(ResourceAttributes) AS ResourceAttrs, min(Timestamp) AS TimeUnix]
+  Aggregate groupBy=[TraceId AS TraceId] funcs=[count(1) AS Value, any(SpanName) AS MetricName, any(ResourceAttributes) AS ResourceAttrs, min(Timestamp) AS TimeUnix, min(toUnixTimestamp64Nano(Timestamp)) AS TraceStartNs, max((toUnixTimestamp64Nano(Timestamp) + toInt64(Duration))) AS TraceEndNs]
     Filter predicate=(ResourceAttributes["service.name"] = "frontend")
       Scan(otel_traces)
 -- sql --
-SELECT * FROM (SELECT `TraceId` AS `TraceId`, toFloat64(count(?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, min(`Timestamp`) AS `TimeUnix` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) GROUP BY `TraceId`) WHERE (`Value` > ?)
+SELECT * FROM (SELECT `TraceId` AS `TraceId`, toFloat64(count(?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) GROUP BY `TraceId`) WHERE (`Value` > ?)
 -- expected_rows --
 []
