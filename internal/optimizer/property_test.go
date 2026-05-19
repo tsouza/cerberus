@@ -147,11 +147,11 @@ func TestPropertyOptimizerSemanticEquivalence(t *testing.T) {
 	opt := optimizer.Default()
 
 	tried := 0
-	skipped := 0
+	dropped := 0
 	for tried < n {
 		plan := generatePlan(rng, 0)
 		if plan == nil {
-			skipped++
+			dropped++
 			continue
 		}
 
@@ -160,7 +160,7 @@ func TestPropertyOptimizerSemanticEquivalence(t *testing.T) {
 			// Generator produced something the emitter can't render
 			// (e.g. a degenerate Projection list). Skip — this is
 			// not what the property checks.
-			skipped++
+			dropped++
 			continue
 		}
 
@@ -180,7 +180,7 @@ func TestPropertyOptimizerSemanticEquivalence(t *testing.T) {
 		tried++
 	}
 	if testing.Verbose() {
-		t.Logf("property check: %d plans verified (%d skipped) against seed %d", tried, skipped, seed)
+		t.Logf("property check: %d plans verified (%d dropped) against seed %d", tried, dropped, seed)
 	}
 }
 
