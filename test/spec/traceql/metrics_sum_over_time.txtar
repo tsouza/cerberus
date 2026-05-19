@@ -1,9 +1,10 @@
 -- query.traceql --
 {} | sum_over_time(duration)
 -- sql --
-SELECT sum(`Duration`) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?)
+SELECT sum((`Duration` / ?)) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?)
 -- args --
-[0] bool = true
+[0] float64 = 1e+09
+[1] bool = true
 -- seed --
 CREATE TABLE otel_traces (
     Duration UInt64
@@ -14,9 +15,9 @@ INSERT INTO otel_traces VALUES
     (200000000);
 -- expected_rows --
 [
-  [350000000]
+  [0.35]
 ]
 -- chplan --
-MetricsAggregate op=sum_over_time attr=Duration valueAlias=Value
+MetricsAggregate op=sum_over_time attr=(Duration / 1e+09) valueAlias=Value
   Filter predicate=true
     Scan(otel_traces)

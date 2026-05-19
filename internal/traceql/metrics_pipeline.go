@@ -196,6 +196,19 @@ func mapMetricsAggregateOp(op traceql.MetricsAggregateOp) (chplan.MetricsOp, err
 // The "no attribute supplied" sentinel is the zero-value `Attribute{}`
 // (same convention Tempo's runtime uses at
 // ast_metrics.go: `a.attr != (Attribute{})`).
+//
+// Unit conversion for `duration`: the OTel-CH `Duration` column is
+// Int64 nanoseconds. Tempo's reference engine emits metric values in
+// fractional seconds — its sumOverTimeAggregator / averageOverTimeAggregator
+// / quantileOverTimeAggregator all read `Span.DurationNanos()` and
+// divide by 1e9 before producing the per-bucket sample. To match Tempo's
+// wire shape (so the differ's `metrics_avg_over_time_instant` and
+// kin compare against a Tempo-side value in seconds, not raw ns), we
+// wrap the lowered duration expression in `<expr> / 1e9` at lowering
+// time when the operand is the `duration` intrinsic. The wrap applies
+// to sum / avg / min / max / quantile aggregations — all the
+// duration-aware *_over_time forms; rate / count_over_time fall out of
+// the switch above before this code runs.
 func metricsAggregateAttr(op traceql.MetricsAggregateOp, attr traceql.Attribute, s schema.Traces) (chplan.Expr, error) {
 	switch op {
 	case traceql.MetricsAggregateRate, traceql.MetricsAggregateCountOverTime:
@@ -208,7 +221,39 @@ func metricsAggregateAttr(op traceql.MetricsAggregateOp, attr traceql.Attribute,
 	// aggregate.go. `*_over_time(span.foo)` resolves to a FieldAccess
 	// against SpanAttributes (typed String); wrap so the downstream CH
 	// aggregate (`max`/`min`/`sum`/`avg`/`quantiles`) sees a Float64.
-	return coerceMapNumericAggInput(lowerAttribute(attr, s)), nil
+	expr := coerceMapNumericAggInput(lowerAttribute(attr, s))
+	if attr.Intrinsic == traceql.IntrinsicDuration {
+		expr = durationNsToSeconds(expr)
+	}
+	return expr, nil
+}
+
+// nanosecondsPerSecond is the divisor used to rebase Int64-ns duration
+// values into fractional seconds for duration-based metrics
+// aggregations. Mirrors Tempo's `nanosToSec` constant
+// (pkg/traceql/engine_metrics.go: 1e9 in the
+// average/sum/quantileOverTime aggregators) so cerberus emits values in
+// the same unit Tempo's wire shape uses.
+const nanosecondsPerSecond = 1e9
+
+// durationNsToSeconds wraps the lowered duration expression in
+// `<expr> / 1e9`. Kept as a tiny helper so the unit-conversion site is
+// easy to spot — the only callers are metricsAggregateAttr (the
+// MetricsAggregate operand) and any future second-stage shapers that
+// need the same rebase.
+//
+// Why a typed chplan.Binary rather than a CH-side `toFloat64(...) /
+// 1e9` FuncCall: the chsql emitter renders Binary{OpDiv} as the bare
+// SQL `/` operator and ClickHouse already promotes the
+// `Int64 / Float64` arithmetic to Float64 — no explicit cast required.
+// The result feeds straight into `sum` / `avg` / `min` / `max` /
+// `quantile`, which all accept Float64.
+func durationNsToSeconds(e chplan.Expr) chplan.Expr {
+	return &chplan.Binary{
+		Op:    chplan.OpDiv,
+		Left:  e,
+		Right: &chplan.LitFloat{V: nanosecondsPerSecond},
+	}
 }
 
 // histogramBucketAlias is the SELECT-list alias for the bucket column

@@ -1,13 +1,14 @@
 -- query.traceql --
 {} | max_over_time(duration) by (resource.service.name, span.http.method)
 -- sql --
-SELECT `ResourceAttributes`[?] AS `service.name`, `SpanAttributes`[?] AS `http.method`, max(`Duration`) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?) GROUP BY `ResourceAttributes`[?], `SpanAttributes`[?]
+SELECT `ResourceAttributes`[?] AS `service.name`, `SpanAttributes`[?] AS `http.method`, max((`Duration` / ?)) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?) GROUP BY `ResourceAttributes`[?], `SpanAttributes`[?]
 -- args --
 [0] string = "service.name"
 [1] string = "http.method"
-[2] bool = true
-[3] string = "service.name"
-[4] string = "http.method"
+[2] float64 = 1e+09
+[3] bool = true
+[4] string = "service.name"
+[5] string = "http.method"
 -- seed --
 CREATE TABLE otel_traces (
     ResourceAttributes Map(String, String),
@@ -20,9 +21,9 @@ INSERT INTO otel_traces VALUES
     (map('service.name', 'frontend'), map('http.method', 'GET'),  75000000);
 -- expected_rows --
 [
-  ["frontend", "GET", 100000000]
+  ["frontend", "GET", 0.1]
 ]
 -- chplan --
-MetricsAggregate op=max_over_time attr=Duration groupBy=[ResourceAttributes["service.name"] AS service.name|resource.service.name, SpanAttributes["http.method"] AS http.method|span.http.method] valueAlias=Value
+MetricsAggregate op=max_over_time attr=(Duration / 1e+09) groupBy=[ResourceAttributes["service.name"] AS service.name|resource.service.name, SpanAttributes["http.method"] AS http.method|span.http.method] valueAlias=Value
   Filter predicate=true
     Scan(otel_traces)

@@ -1,9 +1,10 @@
 -- query.traceql --
 {} | min_over_time(duration)
 -- sql --
-SELECT min(`Duration`) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?)
+SELECT min((`Duration` / ?)) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?)
 -- args --
-[0] bool = true
+[0] float64 = 1e+09
+[1] bool = true
 -- seed --
 CREATE TABLE otel_traces (
     Duration UInt64
@@ -14,9 +15,9 @@ INSERT INTO otel_traces VALUES
     (100000000);
 -- expected_rows --
 [
-  [50000000]
+  [0.05]
 ]
 -- chplan --
-MetricsAggregate op=min_over_time attr=Duration valueAlias=Value
+MetricsAggregate op=min_over_time attr=(Duration / 1e+09) valueAlias=Value
   Filter predicate=true
     Scan(otel_traces)

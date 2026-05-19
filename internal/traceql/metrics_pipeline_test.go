@@ -168,6 +168,111 @@ func TestLowerMetricsPipeline(t *testing.T) {
 	}
 }
 
+// TestLowerMetricsPipeline_DurationSeconds pins the duration-to-seconds
+// unit conversion for the *_over_time aggregations.
+//
+// The OTel-CH Duration column is Int64 nanoseconds; Tempo's reference
+// engine emits metric values in fractional seconds (its
+// sumOverTimeAggregator / averageOverTimeAggregator /
+// quantileOverTimeAggregator all divide by 1e9 in
+// pkg/traceql/engine_metrics.go). Cerberus matches that wire shape by
+// wrapping the lowered Duration expression in `<expr> / 1e9` at
+// lowering time. The wrap applies to every duration-aware *_over_time
+// aggregation (sum / avg / min / max / quantile) — count_over_time and
+// rate take no operand and fall through the early return in
+// metricsAggregateAttr, so this test does not exercise them.
+//
+// Without the wrap, the Tempo compat differ flagged
+// `metrics_avg_over_time_instant` with a ~1e9 ratio between cerberus
+// (raw ns) and Tempo (seconds); pinning the shape here keeps that bug
+// from regressing.
+func TestLowerMetricsPipeline_DurationSeconds(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelTraces()
+
+	cases := []struct {
+		name  string
+		query string
+	}{
+		{"sum_over_time_duration", `{} | sum_over_time(duration)`},
+		{"avg_over_time_duration", `{} | avg_over_time(duration)`},
+		{"min_over_time_duration", `{} | min_over_time(duration)`},
+		{"max_over_time_duration", `{} | max_over_time(duration)`},
+		{"quantile_over_time_duration", `{} | quantile_over_time(duration, 0.95)`},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			expr, err := tempo.Parse(tc.query)
+			if err != nil {
+				t.Fatalf("Parse(%q): %v", tc.query, err)
+			}
+			plan, err := traceql.Lower(context.Background(), expr, s)
+			if err != nil {
+				t.Fatalf("Lower(%q): %v", tc.query, err)
+			}
+			ma, ok := plan.(*chplan.MetricsAggregate)
+			if !ok {
+				t.Fatalf("expected *chplan.MetricsAggregate, got %T", plan)
+			}
+			// Operand must be a (Duration / 1e9) Binary node so the CH
+			// aggregate (sum / avg / min / max / quantile) reduces over
+			// seconds rather than raw nanoseconds.
+			bin, ok := ma.Attr.(*chplan.Binary)
+			if !ok {
+				t.Fatalf("expected MetricsAggregate.Attr to be *chplan.Binary, got %T", ma.Attr)
+			}
+			if bin.Op != chplan.OpDiv {
+				t.Errorf("Binary.Op = %v, want %v", bin.Op, chplan.OpDiv)
+			}
+			col, ok := bin.Left.(*chplan.ColumnRef)
+			if !ok {
+				t.Fatalf("expected Binary.Left to be *chplan.ColumnRef, got %T", bin.Left)
+			}
+			if col.Name != s.DurationColumn {
+				t.Errorf("Binary.Left.Name = %q, want %q", col.Name, s.DurationColumn)
+			}
+			div, ok := bin.Right.(*chplan.LitFloat)
+			if !ok {
+				t.Fatalf("expected Binary.Right to be *chplan.LitFloat, got %T", bin.Right)
+			}
+			if div.V != 1e9 {
+				t.Errorf("Binary.Right.V = %v, want 1e9", div.V)
+			}
+		})
+	}
+}
+
+// TestLowerMetricsPipeline_NonDurationAttrUnwrapped guards the
+// negative case: only the `duration` intrinsic gets the ns→s rebase.
+// Span-attribute operands (`span.<attr>`) and resource-attribute
+// operands carry user-defined units and must NOT be divided by 1e9.
+func TestLowerMetricsPipeline_NonDurationAttrUnwrapped(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelTraces()
+
+	expr, err := tempo.Parse(`{} | sum_over_time(span.bytes)`)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	plan, err := traceql.Lower(context.Background(), expr, s)
+	if err != nil {
+		t.Fatalf("Lower: %v", err)
+	}
+	ma, ok := plan.(*chplan.MetricsAggregate)
+	if !ok {
+		t.Fatalf("expected *chplan.MetricsAggregate, got %T", plan)
+	}
+	if _, isBin := ma.Attr.(*chplan.Binary); isBin {
+		t.Errorf("non-duration operand must not be wrapped in /1e9 Binary; got %T", ma.Attr)
+	}
+}
+
 // Every metrics-pipeline form now lowers:
 //
 //   - `histogram_over_time(...)` → chplan.MetricsHistogramOverTime

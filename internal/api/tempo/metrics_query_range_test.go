@@ -372,6 +372,127 @@ func TestMetricsQueryRange_ZeroFillSkippedForAvgOverTime(t *testing.T) {
 	}
 }
 
+// TestMetricsQueryRange_DurationAggInSeconds pins the contract that
+// duration-based *_over_time aggregations emit values in seconds, not
+// raw nanoseconds. The OTel-CH Duration column is Int64 ns; Tempo's
+// reference engine divides by 1e9 before producing the InstantSeries
+// value (see pkg/traceql/engine_metrics.go: sumOverTimeAggregator /
+// averageOverTimeAggregator / quantileOverTimeAggregator all
+// divide-by-1e9). Cerberus matches by wrapping the lowered Duration
+// expression in `<expr> / 1e9` at lowering time
+// (internal/traceql/metrics_pipeline.go: metricsAggregateAttr); this
+// test asserts the wrap survives end-to-end by probing the emitted SQL.
+//
+// Without the wrap the Tempo compat differ flagged
+// `metrics_avg_over_time_instant` with a ~1e9 ratio between cerberus
+// (raw ns) and Tempo (seconds). Pinning the SQL shape here keeps that
+// regression from re-emerging.
+func TestMetricsQueryRange_DurationAggInSeconds(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name  string
+		query string
+		op    string // expected __name__ label value
+	}{
+		{"avg_over_time", "{} | avg_over_time(duration)", "avg_over_time"},
+		{"sum_over_time", "{} | sum_over_time(duration)", "sum_over_time"},
+		{"min_over_time", "{} | min_over_time(duration)", "min_over_time"},
+		{"max_over_time", "{} | max_over_time(duration)", "max_over_time"},
+		{"quantile_over_time", "{} | quantile_over_time(duration, 0.95)", "quantile_over_time"},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			mid := time.Date(2026, 5, 12, 10, 1, 0, 0, time.UTC)
+			q := &stubQuerier{samples: []chclient.Sample{{
+				MetricName: "",
+				Labels:     map[string]string{"__name__": tc.op},
+				Timestamp:  mid,
+				// Seed a value mimicking what CH would return after
+				// the `/ 1e9` divisor — a sub-second duration. The
+				// stub does not actually run SQL, so we're asserting
+				// the handler propagates the value verbatim; the
+				// real ns→s rebase happens server-side in the
+				// emitted SQL and is asserted via assertSQLContains
+				// below.
+				Value: 0.5,
+			}}}
+			srv := newServer(q, "v1.0.0-test")
+			t.Cleanup(srv.Close)
+
+			u := metricsQueryRangeURL(srv.URL, tc.query, map[string]string{
+				"start": fixtureStartUnix,
+				"end":   fixtureEndUnix,
+				"step":  "60s",
+			})
+			resp, err := http.Get(u)
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status=%d body=%s", resp.StatusCode, readBody(t, resp))
+			}
+
+			// The emitted SQL must contain the `/ ?` division that
+			// rebases the raw-ns Duration column into fractional
+			// seconds before the per-bucket reducer (sum / avg / min
+			// / max / quantile) sees it. Without this guard, a
+			// future refactor that bypasses metricsAggregateAttr's
+			// duration branch would silently regress every Tempo
+			// compat case that consumes the `Duration` intrinsic.
+			assertSQLContains(t, q.lastSQL, "`Duration` / ?")
+
+			// The 1e9 divisor must appear in the args list — locks in
+			// the parameterised form rather than an inline literal
+			// (the chplan IR carries data through `?` placeholders).
+			foundDivisor := false
+			for _, a := range q.lastArgs {
+				if f, ok := a.(float64); ok && f == 1e9 {
+					foundDivisor = true
+					break
+				}
+			}
+			if !foundDivisor {
+				t.Errorf("expected 1e9 divisor in args, got %v", q.lastArgs)
+			}
+
+			// The stubbed sub-second value must surface verbatim in
+			// the response — the handler does not (and must not)
+			// further rescale the Value.
+			var body tempo.MetricsQueryRangeResponse
+			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if len(body.Series) != 1 {
+				t.Fatalf("expected 1 series, got %d: %+v", len(body.Series), body)
+			}
+			// Find the sample that matches the stubbed Timestamp;
+			// other anchors get zero-fill or NaN-skip per Op
+			// (irrelevant to this test — we care about value
+			// fidelity for the observed bucket).
+			midMs := mid.UnixMilli()
+			var observed *tempo.MetricsSample
+			for i := range body.Series[0].Samples {
+				if body.Series[0].Samples[i].TimestampMs == midMs {
+					observed = &body.Series[0].Samples[i]
+					break
+				}
+			}
+			if observed == nil {
+				t.Fatalf("no sample matches stubbed timestamp %d: %+v", midMs, body.Series[0].Samples)
+			}
+			if observed.Value != 0.5 {
+				t.Errorf("expected sub-second value 0.5 to pass through unchanged, got %v", observed.Value)
+			}
+		})
+	}
+}
+
 // mustParseUnix parses a unix-seconds string and returns a UTC time,
 // failing the test on parse error. Mirrors parseTempoTime's heuristics
 // but tightened to the int64-only path the fixture timestamps use.
