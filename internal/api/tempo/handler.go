@@ -506,15 +506,29 @@ func wrapWithSampleProjection(plan chplan.Node, s schema.Traces, meta engine.Met
 		default:
 			return &chplan.Project{Input: plan, Projections: rQualifiedSampleProjections(s)}
 		}
+	case isSpansetAggregateShape(plan):
+		// `| count()` / `| avg()` / `| sum()` / `| min()` / `| max()`
+		// — second-stage spanset aggregates lowered by
+		// internal/traceql/aggregate.go. The Aggregate groups by
+		// TraceId so the per-trace search envelope is preserved (one
+		// row per matching trace). lowerAggregate piggybacks the
+		// envelope columns onto the AggFuncs list (`any(SpanName) AS
+		// MetricName`, `any(ResourceAttributes) AS ResourceAttrs`,
+		// `min(Timestamp) AS TimeUnix`) so the wrap projection just
+		// reads them out + merges the TraceId into Attributes via
+		// mapConcat (same `__cerberus_traceID` reserved-key pattern as
+		// canonicalSampleProjections).
+		return &chplan.Project{Input: plan, Projections: spansetAggregateSampleProjections()}
 	case isAggregateShape(plan):
-		// Aggregate output is just (group-keys, agg-func-aliases). SpanName
-		// and Duration aren't in scope; synthesise the missing pieces.
-		// The aggregate's alias is "Value" by convention (set by
-		// internal/traceql/aggregate.go); other code shapes that emit a
-		// different alias would need to thread it through. count() has
-		// no GROUP BY so ResourceAttributes isn't in scope either — use
-		// an empty Map(String,String) CAST, same pattern as PromQL's
-		// emptyAttrsMap helper.
+		// MetricsAggregate / MetricsSecondStage output is just
+		// (group-keys, agg-func-aliases). SpanName / Timestamp /
+		// Duration aren't in scope; synthesise the missing pieces.
+		// The aggregate's alias is "Value" by convention. The metrics
+		// paths bypass wrapWithSampleProjection (see
+		// metrics_query_range.go / metrics_query_instant.go), so this
+		// branch only fires when a metrics-pipeline query somehow
+		// lands on /api/search; the empty-MetricName synthesis keeps
+		// the response shape sane.
 		return &chplan.Project{Input: plan, Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: "MetricName"},
 			{Expr: emptyAttrsMap(), Alias: "Attributes"},
@@ -730,6 +744,79 @@ func isAggregateShape(plan chplan.Node) bool {
 		return false
 	}
 	return false
+}
+
+// isSpansetAggregateShape reports whether the plan's root is the
+// per-trace spanset aggregate shape produced by
+// internal/traceql/aggregate.go: a *chplan.Aggregate whose AggFuncs
+// list carries the envelope-column aliases (MetricName /
+// ResourceAttrs / TimeUnix) alongside Value. The scalar-filter HAVING
+// wrap (`| count() > 0`) puts a Filter on top — recurse through
+// Filter so both `| count()` and `| count() > 0` hit this branch.
+// MetricsAggregate / MetricsSecondStage (metrics-pipeline output)
+// deliberately fall through; the metrics search-envelope shape is
+// distinct (no TraceId group key, no `__cerberus_traceID` thread).
+func isSpansetAggregateShape(plan chplan.Node) bool {
+	switch v := plan.(type) {
+	case *chplan.Aggregate:
+		return aggregateCarriesSpansetEnvelope(v)
+	case *chplan.Filter:
+		return isSpansetAggregateShape(v.Input)
+	}
+	return false
+}
+
+// aggregateCarriesSpansetEnvelope reports whether a *chplan.Aggregate
+// has the envelope-column aliases (MetricName, ResourceAttrs,
+// TimeUnix) in its AggFuncs list — the marker that
+// internal/traceql/aggregate.go's lowerAggregate produced it (vs e.g.
+// a hand-rolled aggregate from a future call-site). The check keys
+// off alias presence rather than a structural type so the wrap
+// projection stays decoupled from the lowering layer.
+func aggregateCarriesSpansetEnvelope(a *chplan.Aggregate) bool {
+	wanted := map[string]bool{
+		"MetricName":    false,
+		"ResourceAttrs": false,
+		"TimeUnix":      false,
+	}
+	for _, af := range a.AggFuncs {
+		if _, ok := wanted[af.Alias]; ok {
+			wanted[af.Alias] = true
+		}
+	}
+	for _, found := range wanted {
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+// spansetAggregateSampleProjections returns the wrap-projection used
+// when the plan root is the per-trace spanset Aggregate shape
+// produced by internal/traceql/aggregate.go. The inner Aggregate
+// already emits the per-trace envelope columns (MetricName,
+// ResourceAttrs, TimeUnix) alongside (TraceId, Value); this outer
+// Project merges the TraceId into Attributes via the
+// `__cerberus_traceID` reserved-key pattern and casts Value to
+// float64 — same wire shape as canonicalSampleProjections but
+// reading from the Aggregate's projected columns rather than the
+// raw spans-table columns.
+func spansetAggregateSampleProjections() []chplan.Projection {
+	traceIDMap := &chplan.FuncCall{Name: "map", Args: []chplan.Expr{
+		&chplan.LitString{V: searchKeyTraceID},
+		&chplan.ColumnRef{Name: "TraceId"},
+	}}
+	mergedAttrs := &chplan.FuncCall{Name: "mapConcat", Args: []chplan.Expr{
+		&chplan.ColumnRef{Name: "ResourceAttrs"},
+		traceIDMap,
+	}}
+	return []chplan.Projection{
+		{Expr: &chplan.ColumnRef{Name: "MetricName"}, Alias: "MetricName"},
+		{Expr: mergedAttrs, Alias: "Attributes"},
+		{Expr: &chplan.ColumnRef{Name: "TimeUnix"}, Alias: "TimeUnix"},
+		{Expr: &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}}, Alias: "Value"},
+	}
 }
 
 // toTraceSummaries pivots samples into the per-trace summary shape

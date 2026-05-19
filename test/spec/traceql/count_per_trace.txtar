@@ -1,0 +1,34 @@
+-- query.traceql --
+{ resource.service.name =~ ".+" } | count() > 0
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanName String,
+    Timestamp DateTime64(9),
+    ResourceAttributes Map(String, String)
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    ('t1', 'GET /a', toDateTime64('2024-01-01 00:00:00', 9), map('service.name', 'frontend')),
+    ('t1', 'GET /a', toDateTime64('2024-01-01 00:00:01', 9), map('service.name', 'frontend')),
+    ('t1', 'db.query', toDateTime64('2024-01-01 00:00:02', 9), map('service.name', 'backend')),
+    ('t2', 'GET /b', toDateTime64('2024-01-01 00:00:03', 9), map('service.name', 'checkout')),
+    ('t2', 'cache.get', toDateTime64('2024-01-01 00:00:04', 9), map('service.name', 'cache')),
+    ('t3', 'POST /c', toDateTime64('2024-01-01 00:00:05', 9), map('service.name', 'orders'));
+-- args --
+[0] int64 = 1
+[1] string = "service.name"
+[2] string = ".+"
+[3] int64 = 0
+-- chplan --
+Filter predicate=(Value > 0)
+  Aggregate groupBy=[TraceId AS TraceId] funcs=[count(1) AS Value, any(SpanName) AS MetricName, any(ResourceAttributes) AS ResourceAttrs, min(Timestamp) AS TimeUnix]
+    Filter predicate=(ResourceAttributes["service.name"] =~ ".+")
+      Scan(otel_traces)
+-- sql --
+SELECT * FROM (SELECT `TraceId` AS `TraceId`, toFloat64(count(?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, min(`Timestamp`) AS `TimeUnix` FROM (SELECT * FROM `otel_traces` WHERE match(`ResourceAttributes`[?], ?)) GROUP BY `TraceId`) WHERE (`Value` > ?)
+-- expected_rows --
+[
+  ["t1", 3, "GET /a", {"service.name": "frontend"}, "2024-01-01T00:00:00Z"],
+  ["t2", 2, "GET /b", {"service.name": "checkout"}, "2024-01-01T00:00:03Z"],
+  ["t3", 1, "POST /c", {"service.name": "orders"}, "2024-01-01T00:00:05Z"]
+]

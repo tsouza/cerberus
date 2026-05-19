@@ -1,27 +1,30 @@
 -- query.traceql --
 { resource.service.name = "x" } | sum(span.size) > 1000
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanName String,
+    Timestamp DateTime64(9),
+    ResourceAttributes Map(String, String),
+    SpanAttributes Map(String, String)
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    ('t1', 'span', toDateTime64('2024-01-01 00:00:00', 9), map('service.name', 'x'), map('size', '400')),
+    ('t1', 'span', toDateTime64('2024-01-01 00:00:01', 9), map('service.name', 'x'), map('size', '500')),
+    ('t1', 'span', toDateTime64('2024-01-01 00:00:02', 9), map('service.name', 'x'), map('size', '600'));
 -- args --
 [0] string = "size"
 [1] string = "service.name"
 [2] string = "x"
 [3] int64 = 1000
--- sql --
-SELECT * FROM (SELECT sum(toFloat64OrZero(`SpanAttributes`[?])) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?))) WHERE (`Value` > ?)
--- seed --
-CREATE TABLE otel_traces (
-    ResourceAttributes Map(String, String),
-    SpanAttributes Map(String, String)
-) ENGINE = Memory;
-INSERT INTO otel_traces VALUES
-    (map('service.name', 'x'), map('size', '400')),
-    (map('service.name', 'x'), map('size', '500')),
-    (map('service.name', 'x'), map('size', '600'));
--- expected_rows --
-[
-  [1500.0]
-]
 -- chplan --
 Filter predicate=(Value > 1000)
-  Aggregate groupBy=[] funcs=[sum(toFloat64OrZero(SpanAttributes["size"])) AS Value]
+  Aggregate groupBy=[TraceId AS TraceId] funcs=[sum(toFloat64OrZero(SpanAttributes["size"])) AS Value, any(SpanName) AS MetricName, any(ResourceAttributes) AS ResourceAttrs, min(Timestamp) AS TimeUnix]
     Filter predicate=(ResourceAttributes["service.name"] = "x")
       Scan(otel_traces)
+-- sql --
+SELECT * FROM (SELECT `TraceId` AS `TraceId`, sum(toFloat64OrZero(`SpanAttributes`[?])) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, min(`Timestamp`) AS `TimeUnix` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) GROUP BY `TraceId`) WHERE (`Value` > ?)
+-- expected_rows --
+[
+  ["t1", 1500, "span", {"service.name": "x"}, "2024-01-01T00:00:00Z"]
+]

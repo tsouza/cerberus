@@ -1,26 +1,30 @@
 -- query.traceql --
 { span.http.status_code >= 400 } | sum(span.http.status_code) > 0
--- sql --
-SELECT * FROM (SELECT sum(toFloat64OrZero(`SpanAttributes`[?])) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE (toFloat64(`SpanAttributes`[?]) >= ?))) WHERE (`Value` > ?)
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanName String,
+    Timestamp DateTime64(9),
+    ResourceAttributes Map(String, String),
+    SpanAttributes Map(String, String)
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    ('t1', 'span', toDateTime64('2024-01-01 00:00:00', 9), map(), map('http.status_code', '500')),
+    ('t1', 'span', toDateTime64('2024-01-01 00:00:01', 9), map(), map('http.status_code', '404')),
+    ('t2', 'span', toDateTime64('2024-01-01 00:00:02', 9), map(), map('http.status_code', '200'));
 -- args --
 [0] string = "http.status_code"
 [1] string = "http.status_code"
 [2] int64 = 400
 [3] int64 = 0
--- seed --
-CREATE TABLE otel_traces (
-    SpanAttributes Map(String, String)
-) ENGINE = Memory;
-INSERT INTO otel_traces VALUES
-    (map('http.status_code', '500')),
-    (map('http.status_code', '404')),
-    (map('http.status_code', '200'));
--- expected_rows --
-[
-  [904.0]
-]
 -- chplan --
 Filter predicate=(Value > 0)
-  Aggregate groupBy=[] funcs=[sum(toFloat64OrZero(SpanAttributes["http.status_code"])) AS Value]
+  Aggregate groupBy=[TraceId AS TraceId] funcs=[sum(toFloat64OrZero(SpanAttributes["http.status_code"])) AS Value, any(SpanName) AS MetricName, any(ResourceAttributes) AS ResourceAttrs, min(Timestamp) AS TimeUnix]
     Filter predicate=(toFloat64(SpanAttributes["http.status_code"]) >= 400)
       Scan(otel_traces)
+-- sql --
+SELECT * FROM (SELECT `TraceId` AS `TraceId`, sum(toFloat64OrZero(`SpanAttributes`[?])) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, min(`Timestamp`) AS `TimeUnix` FROM (SELECT * FROM `otel_traces` WHERE (toFloat64(`SpanAttributes`[?]) >= ?)) GROUP BY `TraceId`) WHERE (`Value` > ?)
+-- expected_rows --
+[
+  ["t1", 904, "span", {}, "2024-01-01T00:00:00Z"]
+]

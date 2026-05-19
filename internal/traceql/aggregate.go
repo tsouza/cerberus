@@ -13,60 +13,125 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
+// Aggregate output-column aliases for the second-stage spanset
+// aggregates (`| count()`, `| sum(...)`, `| avg(...)`, `| max(...)`,
+// `| min(...)`).
+//
+// TraceQL semantics make the spanset aggregates trace-scoped: `{ ... }
+// | count() > 0` returns one row per matching trace, NOT a single
+// corpus-wide row. The lowering therefore groups by TraceId and
+// piggybacks the per-trace envelope columns (representative SpanName,
+// merged ResourceAttributes, earliest Timestamp) onto the Aggregate's
+// AggFunc list so the wrap projection (internal/api/tempo/handler.go:
+// wrapWithSampleProjection's aggregate-shape branch) can surface a
+// real per-trace summary instead of synthesising empty
+// rootServiceName / rootTraceName fields.
+//
+// `aggResourceAttrsAlias` names an `any(ResourceAttributes)`
+// projection on the inner Aggregate; the wrap-projection then merges
+// it with `map('__cerberus_traceID', TraceId)` via mapConcat in an
+// outer Project layer. This split keeps the Aggregate pure (group
+// keys + aggregate calls only — no derived expressions wrapping both)
+// while still threading the per-trace identity into the search
+// envelope.
+const (
+	aggTraceIDAlias       = "TraceId"
+	aggValueAlias         = "Value"
+	aggMetricNameAlias    = "MetricName"
+	aggResourceAttrsAlias = "ResourceAttrs"
+	aggTimeUnixAlias      = "TimeUnix"
+)
+
 // lowerAggregate handles `| count()`, `| sum(...)`, `| avg(...)`,
 // `| max(...)`, `| min(...)`. count() has no inner expression — we
 // aggregate the constant 1 per row. The other four read the inner
 // FieldExpression via the upstream-fork-exposed Aggregate.InnerExpr()
 // accessor (github.com/tsouza/tempo:cerberus-accessors) — see
 // docs/upstream-forks.md.
+//
+// Per-trace identity is preserved by grouping on TraceId and
+// piggybacking representative envelope columns (SpanName,
+// ResourceAttributes, Timestamp) via `any(...)` / `min(...)`
+// aggregates so the search envelope surfaces real
+// rootServiceName / rootTraceName / startTime values for each
+// returned trace rather than collapsing the whole corpus into one row.
 func lowerAggregate(prev chplan.Node, agg traceql.Aggregate, s schema.Traces) (chplan.Node, error) {
 	chFunc, err := mapAggregateOp(agg.Op())
 	if err != nil {
 		return nil, err
 	}
 
-	const valueAlias = "Value"
-
-	// count() takes no inner expression — aggregate a constant.
+	var valueFunc chplan.AggFunc
 	if agg.Op() == traceql.AggregateCount {
-		return &chplan.Aggregate{
-			Input: prev,
-			AggFuncs: []chplan.AggFunc{{
-				Name:  chFunc,
-				Args:  []chplan.Expr{&chplan.LitInt{V: 1}},
-				Alias: valueAlias,
-			}},
-		}, nil
-	}
+		// count() takes no inner expression — aggregate a constant.
+		valueFunc = chplan.AggFunc{
+			Name:  chFunc,
+			Args:  []chplan.Expr{&chplan.LitInt{V: 1}},
+			Alias: aggValueAlias,
+		}
+	} else {
+		// sum/avg/max/min — read the inner FieldExpression via the fork
+		// accessor and lower it.
+		inner := agg.InnerExpr()
+		if inner == nil {
+			return nil, fmt.Errorf("traceql: aggregate `%s` has nil inner expression", agg.Op())
+		}
+		arg, err := lowerFieldExpr(inner, s)
+		if err != nil {
+			return nil, err
+		}
 
-	// sum/avg/max/min — read the inner FieldExpression via the fork
-	// accessor and lower it.
-	inner := agg.InnerExpr()
-	if inner == nil {
-		return nil, fmt.Errorf("traceql: aggregate `%s` has nil inner expression", agg.Op())
-	}
-	arg, err := lowerFieldExpr(inner, s)
-	if err != nil {
-		return nil, err
-	}
+		// Map(String, String) coercion: when the aggregate input is a
+		// FieldAccess against SpanAttributes / ResourceAttributes the value
+		// is a String. ClickHouse refuses `max(String) > 100` with
+		// NO_COMMON_TYPE; wrap in `toFloat64OrZero(...)` at lowering time so
+		// the aggregate sees a Float64 and the downstream numeric
+		// comparison resolves. Intrinsic ColumnRefs (Duration etc.) lower
+		// to a bare ColumnRef and pass through unchanged.
+		arg = coerceMapNumericAggInput(arg)
 
-	// Map(String, String) coercion: when the aggregate input is a
-	// FieldAccess against SpanAttributes / ResourceAttributes the value
-	// is a String. ClickHouse refuses `max(String) > 100` with
-	// NO_COMMON_TYPE; wrap in `toFloat64OrZero(...)` at lowering time so
-	// the aggregate sees a Float64 and the downstream numeric
-	// comparison resolves. Intrinsic ColumnRefs (Duration etc.) lower
-	// to a bare ColumnRef and pass through unchanged.
-	arg = coerceMapNumericAggInput(arg)
-
-	return &chplan.Aggregate{
-		Input: prev,
-		AggFuncs: []chplan.AggFunc{{
+		valueFunc = chplan.AggFunc{
 			Name:  chFunc,
 			Args:  []chplan.Expr{arg},
-			Alias: valueAlias,
-		}},
+			Alias: aggValueAlias,
+		}
+	}
+
+	return &chplan.Aggregate{
+		Input:          prev,
+		GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: s.TraceIDColumn}},
+		GroupByAliases: []string{aggTraceIDAlias},
+		AggFuncs:       []chplan.AggFunc{valueFunc, anyAggFunc(s.SpanNameColumn, aggMetricNameAlias), anyAggFunc(s.ResourceAttributesColumn, aggResourceAttrsAlias), minAggFunc(s.TimestampColumn, aggTimeUnixAlias)},
 	}, nil
+}
+
+// anyAggFunc returns an `any(<col>) AS <alias>` AggFunc — the
+// per-trace envelope helper used by lowerAggregate to surface a
+// representative SpanName / ResourceAttributes value alongside the
+// numeric Value. `any` picks an arbitrary row's value within the
+// group; for ResourceAttributes that's fine because every span in a
+// trace shares the same service identity in the OTel-CH layout (the
+// resource map is denormalised per-span). For SpanName a real
+// implementation would surface the root span via `argMin(SpanName,
+// Timestamp)`; we use `any` for the first cut so the canonical-row
+// shape is identical regardless of the inner span-set.
+func anyAggFunc(col, alias string) chplan.AggFunc {
+	return chplan.AggFunc{
+		Name:  "any",
+		Args:  []chplan.Expr{&chplan.ColumnRef{Name: col}},
+		Alias: alias,
+	}
+}
+
+// minAggFunc returns a `min(<col>) AS <alias>` AggFunc — used to
+// derive the per-trace earliest Timestamp for the search envelope's
+// startTimeUnixNano field.
+func minAggFunc(col, alias string) chplan.AggFunc {
+	return chplan.AggFunc{
+		Name:  "min",
+		Args:  []chplan.Expr{&chplan.ColumnRef{Name: col}},
+		Alias: alias,
+	}
 }
 
 // coerceMapNumericAggInput wraps Map-subscript expressions
