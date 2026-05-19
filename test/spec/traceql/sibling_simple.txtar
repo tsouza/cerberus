@@ -5,6 +5,24 @@ SELECT R.* FROM (SELECT * FROM `otel_traces` WHERE (`SpanName` = ?)) AS L INNER 
 -- args --
 [0] string = "parent"
 [1] string = "sibling"
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    ParentSpanId String,
+    SpanName String
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    ('a0000000000000000000000000000001', '0000000000000010', '',                 'root'),
+    ('a0000000000000000000000000000001', '0000000000000011', '0000000000000010', 'parent'),
+    ('a0000000000000000000000000000001', '0000000000000012', '0000000000000010', 'sibling'),
+    ('a0000000000000000000000000000001', '0000000000000013', '0000000000000011', 'child'),
+    ('a0000000000000000000000000000002', '0000000000000020', '',                 'parent'),
+    ('a0000000000000000000000000000002', '0000000000000021', '0000000000000020', 'sibling');
+-- expected_rows --
+[
+  ["a0000000000000000000000000000001", "0000000000000012", "0000000000000010", "sibling"]
+]
 -- chplan --
 StructuralJoin op=~
   Filter predicate=(SpanName = "parent")

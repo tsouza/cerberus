@@ -7,6 +7,24 @@
 [1] string = "a"
 [2] string = "service.name"
 [3] string = "b"
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    _svc String,
+    ResourceAttributes Map(String, String) MATERIALIZED map('service.name', _svc)
+) ENGINE = Memory;
+INSERT INTO otel_traces (TraceId, SpanId, _svc) VALUES
+    ('a0000000000000000000000000000001', '0000000000000001', 'a'),
+    ('a0000000000000000000000000000001', '0000000000000002', 'b'),
+    ('a0000000000000000000000000000001', '0000000000000003', 'c'),
+    ('a0000000000000000000000000000002', '0000000000000010', 'a');
+-- expected_rows --
+[
+  ["a0000000000000000000000000000001", "0000000000000001", "a"],
+  ["a0000000000000000000000000000001", "0000000000000002", "b"],
+  ["a0000000000000000000000000000002", "0000000000000010", "a"]
+]
 -- chplan --
 SetOperation op=||
   Filter predicate=(ResourceAttributes["service.name"] = "a")

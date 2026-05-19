@@ -238,12 +238,39 @@ func unquoteBackticks(s string) string {
 // re-splitting the outer SELECT's projection list on depth-0 commas.
 // Used to size the scan-target slice without calling
 // rows.ColumnTypes() (which panics on Map columns per the chDB probe).
+//
+// Returns 0 when the outer projection list contains a `*` wildcard
+// (bare `*`, `R.*`, etc.) — the caller falls back to `rows.Columns()`
+// to size the destination slice once the query has executed. Wildcard
+// projections appear in structural-join lowerings (`SELECT R.* FROM
+// ...`) where the fixture seed schema determines the actual column
+// count.
 func extractProjectionCount(query string) int {
 	head, _ := splitOuterSelect(query)
 	if head == "" {
 		return 0
 	}
-	return len(splitProjections(head))
+	projs := splitProjections(head)
+	for _, p := range projs {
+		if isWildcardProjection(p) {
+			return 0
+		}
+	}
+	return len(projs)
+}
+
+// isWildcardProjection reports whether p is a `*` or `<qualifier>.*`
+// projection. The qualifier may be a bare identifier or a backtick-
+// quoted alias.
+func isWildcardProjection(p string) bool {
+	p = strings.TrimSpace(p)
+	if p == "*" {
+		return true
+	}
+	if i := strings.LastIndex(p, "."); i >= 0 {
+		return strings.TrimSpace(p[i+1:]) == "*"
+	}
+	return false
 }
 
 // substituteNow64 rewrites every `now64(...)` reference in the emitted
@@ -511,9 +538,6 @@ func RunRoundTrip(t *testing.T, c *Case) {
 	query, queryArgs := substituteNow64(rt.SQL, rt.Args)
 	query = rewriteMapProjections(query)
 	colCount := extractProjectionCount(query)
-	if colCount == 0 {
-		t.Fatalf("fixture %s: cannot determine SELECT projection count from sql", c.Name)
-	}
 
 	rows, err := db.Query(query, queryArgs...)
 	if err != nil {
@@ -521,6 +545,22 @@ func RunRoundTrip(t *testing.T, c *Case) {
 			query, queryArgs, err)
 	}
 	defer func() { _ = rows.Close() }()
+
+	if colCount == 0 {
+		// Wildcard outer projection (`SELECT R.* FROM ...`): the
+		// fixture seed determines the actual column count. `rows.
+		// Columns()` returns names without instantiating the
+		// driver's column-type table, so it sidesteps the Map
+		// `rows.ColumnTypes()` panic.
+		cols, cerr := rows.Columns()
+		if cerr != nil {
+			t.Fatalf("rows.Columns: %v", cerr)
+		}
+		colCount = len(cols)
+		if colCount == 0 {
+			t.Fatalf("fixture %s: cannot determine SELECT projection count from sql", c.Name)
+		}
+	}
 
 	got := make([][]any, 0, len(rt.ExpectedRows))
 	for rows.Next() {

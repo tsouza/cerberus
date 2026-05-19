@@ -7,6 +7,23 @@ SELECT R.* FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)
 [1] string = "frontend"
 [2] string = "service.name"
 [3] string = "api"
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    ParentSpanId String,
+    _svc String,
+    ResourceAttributes Map(String, String) MATERIALIZED map('service.name', _svc)
+) ENGINE = Memory;
+INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, _svc) VALUES
+    ('a0000000000000000000000000000001', '0000000000000001', '',                 'frontend'),
+    ('a0000000000000000000000000000001', '0000000000000002', '0000000000000001', 'api'),
+    ('a0000000000000000000000000000001', '0000000000000003', '0000000000000002', 'db'),
+    ('a0000000000000000000000000000002', '0000000000000010', '',                 'api');
+-- expected_rows --
+[
+  ["a0000000000000000000000000000001", "0000000000000002", "0000000000000001", "api"]
+]
 -- chplan --
 StructuralJoin op=>
   Filter predicate=(ResourceAttributes["service.name"] = "frontend")
