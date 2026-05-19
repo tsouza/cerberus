@@ -52,7 +52,9 @@ func (r *fakeRows) Scan(dest ...any) error {
 	return nil
 }
 
-func (r *fakeRows) ScanStruct(any) error             { return errors.New("test mock: ScanStruct unused by cursor tests") }
+func (r *fakeRows) ScanStruct(any) error {
+	return errors.New("test mock: ScanStruct unused by cursor tests")
+}
 func (r *fakeRows) ColumnTypes() []driver.ColumnType { return nil }
 func (r *fakeRows) Totals(...any) error              { return nil }
 func (r *fakeRows) Columns() []string                { return nil }

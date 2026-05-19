@@ -91,7 +91,9 @@ func (r *chaosRows) Scan(dest ...any) error {
 	return nil
 }
 
-func (r *chaosRows) ScanStruct(any) error             { return errors.New("test mock: ScanStruct unused by chaos tests") }
+func (r *chaosRows) ScanStruct(any) error {
+	return errors.New("test mock: ScanStruct unused by chaos tests")
+}
 func (r *chaosRows) ColumnTypes() []driver.ColumnType { return nil }
 func (r *chaosRows) Totals(...any) error              { return nil }
 func (r *chaosRows) Columns() []string                { return nil }
