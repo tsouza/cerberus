@@ -195,8 +195,8 @@ func rewriteMapProjections(query string) string {
 }
 
 // mapColAlias derives the implicit projection alias for a bare column
-// reference. Handles both `\`Col\`` (unqualified) and `Q.\`Col\``
-// (qualifier-prefixed, e.g. the `L.\`Attributes\`` form vector_join
+// reference. Handles both `\`Col\“ (unqualified) and `Q.\`Col\“
+// (qualifier-prefixed, e.g. the `L.\`Attributes\“ form vector_join
 // emits) so the surrounding Map-rewrite pass can recognise Attributes
 // projected through the join's left / right side.
 func mapColAlias(s string) string {
@@ -314,7 +314,7 @@ func splitProjections(s string) []string {
 	return out
 }
 
-// splitAlias separates `<expr> AS \`alias\`` into (expr, alias). When
+// splitAlias separates `<expr> AS \`alias\“ into (expr, alias). When
 // no AS clause is present returns (s, "").
 func splitAlias(s string) (expr, alias string) {
 	// Find the last depth-0 " AS " (case-insensitive). Backtick-
@@ -382,13 +382,25 @@ func extractProjectionCount(query string) int {
 	return len(projs)
 }
 
-// isWildcardProjection reports whether p is a `*` or `<qualifier>.*`
-// projection. The qualifier may be a bare identifier or a backtick-
-// quoted alias.
+// isWildcardProjection reports whether p is a `*`, `<qualifier>.*`, or
+// `<qualifier>.* EXCEPT (...)` projection. The qualifier may be a
+// bare identifier or a backtick-quoted alias. The `EXCEPT` variant
+// surfaces in the structural-join emitter's projection list (which
+// pairs explicit join-key aliases with `R.* EXCEPT (TraceId, ...)`
+// to keep all non-key columns flowing through without duplicating
+// the keys); the runner can't know the post-EXCEPT column count at
+// parse time, so the caller falls back to `rows.Columns()` for sizing.
 func isWildcardProjection(p string) bool {
 	p = strings.TrimSpace(p)
 	if p == "*" {
 		return true
+	}
+	// `<qualifier>.* EXCEPT (...)` — wildcard with an exclusion list.
+	// We strip a trailing parenthesised `EXCEPT (...)` clause (case-
+	// insensitive) before checking the bare-wildcard suffix.
+	upper := strings.ToUpper(p)
+	if idx := strings.LastIndex(upper, " EXCEPT "); idx >= 0 {
+		p = strings.TrimSpace(p[:idx])
 	}
 	if i := strings.LastIndex(p, "."); i >= 0 {
 		return strings.TrimSpace(p[i+1:]) == "*"
@@ -429,10 +441,10 @@ func substituteNow64(query string, args []any) (string, []any) {
 	}
 
 	var (
-		out      strings.Builder
-		newArgs  = make([]any, 0, len(args))
-		argIdx   int
-		inStr    byte
+		out     strings.Builder
+		newArgs = make([]any, 0, len(args))
+		argIdx  int
+		inStr   byte
 	)
 	out.Grow(len(query))
 
