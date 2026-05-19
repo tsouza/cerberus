@@ -366,13 +366,41 @@ func lowerSpansetOperation(op *traceql.SpansetOperation, s schema.Traces) (chpla
 		return nil, err
 	}
 	return &chplan.StructuralJoin{
-		Left:               left,
-		Right:              right,
-		Op:                 relation,
-		TraceIDColumn:      s.TraceIDColumn,
-		SpanIDColumn:       s.SpanIDColumn,
-		ParentSpanIDColumn: s.ParentSpanIDColumn,
+		Left:                   left,
+		Right:                  right,
+		Op:                     relation,
+		TraceIDColumn:          s.TraceIDColumn,
+		SpanIDColumn:           s.SpanIDColumn,
+		ParentSpanIDColumn:     s.ParentSpanIDColumn,
+		ExtraProjectionColumns: structuralExtraProjectionColumns(s),
 	}, nil
+}
+
+// structuralExtraProjectionColumns returns the non-key column list the
+// structural-join wrap subquery must expose as bare-name aliases so the
+// Tempo API-layer wrap projection (rQualifiedSampleProjections in
+// internal/api/tempo/handler.go) can reference them without the
+// `Unknown identifier 'SpanName' in scope` CH 25.8 analyzer rejection
+// exposed by tempo compat run 26098988786.
+//
+// The list mirrors the schema columns the canonical/sample wrap
+// projections read: SpanName, Duration, Timestamp, ResourceAttributes.
+// Adding a column the wrap projection reads goes through this helper
+// so the Tempo handler stays the source of truth for "what the search
+// envelope needs".
+func structuralExtraProjectionColumns(s schema.Traces) []string {
+	cols := make([]string, 0, 4)
+	for _, col := range []string{
+		s.SpanNameColumn,
+		s.DurationColumn,
+		s.TimestampColumn,
+		s.ResourceAttributesColumn,
+	} {
+		if col != "" {
+			cols = append(cols, col)
+		}
+	}
+	return cols
 }
 
 // mapSetOp identifies the TraceQL operators that lower to a

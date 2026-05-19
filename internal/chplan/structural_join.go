@@ -123,6 +123,19 @@ func (op StructuralOp) Positive() StructuralOp {
 // useful for cost control on deep traces; the optimizer may set this
 // from a configured ceiling. For the direct ops (`>` / `<` / `~`) the
 // field is ignored: those always emit a single-level INNER JOIN.
+//
+// ExtraProjectionColumns lists non-key columns the emitter should re-
+// expose as bare-name aliases in the wrap subquery (in addition to the
+// three join keys). The emitter renders each as `R.<col> AS <col>`
+// (and likewise for L on union variants) so an outer consumer can
+// reference them as either bare names or qualified through the wrap.
+// CH 25.8's analyzer drops `R.*`-introduced columns from outer-scope
+// resolution when the JOIN's L and R sides have colliding column
+// names — `R.SpanName` and bare `SpanName` both fail to resolve
+// against `R.* EXCEPT (...)` in a wrap subquery. Listing the columns
+// here keeps them resolvable. Empty falls back to the legacy `R.*
+// EXCEPT (TraceId, SpanId, ParentSpanId)` shape — used by tests that
+// construct StructuralJoin directly without populating the field.
 type StructuralJoin struct {
 	Left, Right Node
 	Op          StructuralOp
@@ -130,6 +143,8 @@ type StructuralJoin struct {
 	TraceIDColumn      string
 	SpanIDColumn       string
 	ParentSpanIDColumn string
+
+	ExtraProjectionColumns []string
 
 	MaxDepth int
 }
@@ -153,6 +168,14 @@ func (j *StructuralJoin) Equal(other Node) bool {
 	}
 	if j.MaxDepth != o.MaxDepth {
 		return false
+	}
+	if len(j.ExtraProjectionColumns) != len(o.ExtraProjectionColumns) {
+		return false
+	}
+	for i := range j.ExtraProjectionColumns {
+		if j.ExtraProjectionColumns[i] != o.ExtraProjectionColumns[i] {
+			return false
+		}
 	}
 	return j.Left.Equal(o.Left) && j.Right.Equal(o.Right)
 }

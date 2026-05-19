@@ -147,33 +147,47 @@ func (e *emitter) emitStructuralDirectJoin(j *chplan.StructuralJoin) error {
 }
 
 // structuralProjectionFrags returns the projection list for a structural
-// join's outer SELECT, rendered with bare aliases for the join-key
-// columns so the result can be wrapped in a parent subquery without
-// losing column resolvability.
+// join's outer SELECT, rendered with bare aliases for every column the
+// downstream consumer might reach for so the result can be wrapped in
+// a parent subquery without losing column resolvability.
 //
-// Shape (side = "R"):
+// Shape (side = "R", ExtraProjectionColumns = [SpanName, Duration,
+// Timestamp, ResourceAttributes]):
 //
 //	R.`TraceId` AS `TraceId`, R.`SpanId` AS `SpanId`,
-//	R.`ParentSpanId` AS `ParentSpanId`, R.* EXCEPT (`TraceId`, `SpanId`,
-//	`ParentSpanId`)
+//	R.`ParentSpanId` AS `ParentSpanId`, R.`SpanName` AS `SpanName`,
+//	R.`Duration` AS `Duration`, R.`Timestamp` AS `Timestamp`,
+//	R.`ResourceAttributes` AS `ResourceAttributes`
 //
-// The explicit aliases on the leading three columns force CH to emit
-// them as bare names; the `* EXCEPT (...)` tail covers every other
-// column on the side without duplicating the keys. When this SELECT
-// becomes the inner side of a nested structural join, the outer's
-// `L.TraceId` reference resolves against the bare alias — sidestepping
-// CH 25.8's analyzer rejecting `L.TraceId` when the only available
-// identifier in the subquery was the qualified `R.TraceId`.
+// CH 25.8's analyzer drops `R.*`-introduced columns from outer-scope
+// resolution when the JOIN's L and R sides have colliding column names
+// (the otel_traces self-join is the canonical case): `R.SpanName` and
+// bare `SpanName` both fail to resolve against `R.* EXCEPT (...)` in a
+// wrap subquery. Listing each column the consumer will read here
+// forces CH to expose them as bare-name aliases that the outer scope
+// can resolve.
+//
+// When `ExtraProjectionColumns` is empty the helper falls back to the
+// legacy `R.* EXCEPT (<keys>)` shape — kept for tests that construct
+// StructuralJoin directly without populating the schema columns the
+// API-layer wrap projection reads.
 func structuralProjectionFrags(j *chplan.StructuralJoin, side string) []Frag {
 	traceID := j.TraceIDColumn
 	spanID := j.SpanIDColumn
 	parentSpanID := j.ParentSpanIDColumn
-	return []Frag{
+	frags := []Frag{
 		aliasedSideCol(side, traceID, traceID),
 		aliasedSideCol(side, spanID, spanID),
 		aliasedSideCol(side, parentSpanID, parentSpanID),
-		starExceptKeys(side, traceID, spanID, parentSpanID),
 	}
+	if len(j.ExtraProjectionColumns) == 0 {
+		frags = append(frags, starExceptKeys(side, traceID, spanID, parentSpanID))
+		return frags
+	}
+	for _, col := range j.ExtraProjectionColumns {
+		frags = append(frags, aliasedSideCol(side, col, col))
+	}
+	return frags
 }
 
 // aliasedSideCol renders `<side>.<col> AS <alias>` with `col` and

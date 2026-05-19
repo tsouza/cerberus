@@ -7,15 +7,17 @@
 [3] string = "service.name"
 [4] string = "y"
 -- sql --
-SELECT R.`TraceId` AS `TraceId`, R.`SpanId` AS `SpanId`, R.`ParentSpanId` AS `ParentSpanId`, R.* EXCEPT (`TraceId`, `SpanId`, `ParentSpanId`) FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) AS L INNER JOIN (SELECT * FROM `otel_traces` PREWHERE (`Duration` > ?) WHERE (`ResourceAttributes`[?] = ?)) AS R ON L.`TraceId` = R.`TraceId` AND L.`ParentSpanId` = R.`ParentSpanId` AND L.`SpanId` != R.`SpanId`
+SELECT R.`TraceId` AS `TraceId`, R.`SpanId` AS `SpanId`, R.`ParentSpanId` AS `ParentSpanId`, R.`SpanName` AS `SpanName`, R.`Duration` AS `Duration`, R.`Timestamp` AS `Timestamp`, R.`ResourceAttributes` AS `ResourceAttributes` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) AS L INNER JOIN (SELECT * FROM `otel_traces` PREWHERE (`Duration` > ?) WHERE (`ResourceAttributes`[?] = ?)) AS R ON L.`TraceId` = R.`TraceId` AND L.`ParentSpanId` = R.`ParentSpanId` AND L.`SpanId` != R.`SpanId`
 -- seed --
 CREATE TABLE otel_traces (
     TraceId String,
     SpanId String,
     ParentSpanId String,
+    SpanName String DEFAULT '',
     Duration UInt64,
+    Timestamp UInt64 DEFAULT 0,
     _svc String,
-    ResourceAttributes Map(String, String) MATERIALIZED map('service.name', _svc)
+    ResourceAttributes Map(String, String) DEFAULT map('service.name', _svc)
 ) ENGINE = MergeTree ORDER BY TraceId;
 INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, Duration, _svc) VALUES
     ('t1', 's1', 'p1', 500000000, 'x'),
@@ -23,7 +25,7 @@ INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, Duration, _svc) VALUES
     ('t2', 's3', 'p2', 500000000, 'y');
 -- expected_rows --
 [
-  ["t1", "s2", "p1", 2000000000, "y"]
+  ["t1", "s2", "p1", "", 2000000000, 0, {"service.name": "y"}]
 ]
 -- chplan --
 StructuralJoin op=~
