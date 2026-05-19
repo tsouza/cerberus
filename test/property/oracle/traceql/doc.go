@@ -15,21 +15,19 @@
 //
 // TraceQL evaluates over spans. A spanset is the per-trace bucket of
 // spans matching the upstream filter; pipeline operators reduce or
-// transform the spanset.
+// transform the spanset on a per-trace basis.
 //
 //  1. Spanset filter (`{ <attr> = <value> }`): each span is
 //     evaluated against the predicate; surviving spans form the
-//     spanset. Per-trace grouping is implicit in Tempo's engine but
-//     irrelevant for the count() aggregation today — the evaluator
-//     keeps a flat span list because count() across all matching
-//     spans equals count() per-trace summed across traces (each of
-//     the generator's spans lives in its own trace).
-//  2. count() aggregate: returns the number of spans in the spanset.
-//     With a scalar filter (`| count() > N`), the trace is included
-//     in the result only when the predicate holds. Cerberus's wire
-//     surface returns the count value as a single sample (one row
-//     in the search response) when the predicate is satisfied,
-//     zero rows when it isn't — the evaluator mirrors that shape.
+//     per-trace spanset.
+//  2. count() aggregate: returns the number of matching spans IN A
+//     TRACE. With a scalar filter (`| count() > N`), every trace
+//     whose per-trace count satisfies the predicate is included in
+//     the result; traces whose count fails the predicate are
+//     dropped. Cerberus's wire surface emits one chclient.Sample
+//     per surviving trace (the Aggregate groups by TraceId — see
+//     internal/api/tempo/handler.go's isSpansetAggregateShape) so
+//     the evaluator mirrors that per-trace shape.
 //
 // # Wire-shape comparison
 //
@@ -39,10 +37,12 @@
 //
 //   - Selector-only query: one outcome row per matching span, all
 //     stamped with the same empty label set so the framework's
-//     comparator counts rows-per-group.
-//   - count() query that passes: ONE outcome row (count emitted as a
-//     single trace summary in cerberus's response).
-//   - count() query that fails: ZERO outcome rows.
+//     comparator counts rows-per-group. The generator stamps each
+//     span on its own TraceID so per-trace and per-span counts
+//     coincide.
+//   - count() query: one outcome row per matching trace whose
+//     per-trace count satisfies `count() OP N` (zero rows when no
+//     trace's count satisfies the predicate).
 //
 // The framework's CompareOutcomes diff is multiset-aware over the
 // empty-label group, so the row count is what we compare. Tempo's
