@@ -12,6 +12,23 @@ clamp(temperature, -100, 100)
 [8] int64 = 300000000000
 -- sql --
 SELECT ? AS `MetricName`, `Attributes`, `TimeUnix`, greatest(?, least(?, `Value`)) AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_gauge` PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`))
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('temperature', map('host', 'a'), toDateTime64('2026-01-01 00:00:00', 9), -150.0),
+    ('temperature', map('host', 'b'), toDateTime64('2026-01-01 00:00:00', 9), 0.0),
+    ('temperature', map('host', 'c'), toDateTime64('2026-01-01 00:00:00', 9), 200.0);
+-- expected_rows --
+[
+  ["", {"host": "a"}, "2026-01-01T00:00:00Z", -100],
+  ["", {"host": "b"}, "2026-01-01T00:00:00Z", 0],
+  ["", {"host": "c"}, "2026-01-01T00:00:00Z", 100]
+]
 -- chplan --
 Project ["" AS MetricName, Attributes, TimeUnix, greatest(-100, least(100, Value)) AS Value]
   Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
