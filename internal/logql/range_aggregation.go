@@ -69,13 +69,28 @@ func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs, lc low
 		return nil, err
 	}
 
-	identityProj := chplan.Projection{Expr: &chplan.ColumnRef{Name: s.ResourceAttributesColumn}}
+	// Default identity: the raw ResourceAttributes column, augmented with
+	// the synthesized `detected_level` label so each distinct severity
+	// becomes its own series. Loki's stream-identity contract includes
+	// detected_level as a structural dimension whenever the upstream row
+	// carries severity metadata; the RangeWindow's GROUP BY (keyed on
+	// the ResourceAttributesColumn alias) then collapses one row per
+	// (stream, detected_level) tuple — matching upstream Loki's matrix
+	// shape (16 of the 19 loki-compat failures came from cerberus
+	// collapsing 4 levels into 1 series here).
+	identityProj := chplan.Projection{
+		Expr:  withDetectedLevel(s, &chplan.ColumnRef{Name: s.ResourceAttributesColumn}),
+		Alias: s.ResourceAttributesColumn,
+	}
 	if groupBy != nil {
 		// With `by (...)` / `without (...)` the inner Project replaces
 		// the per-stream identity with the group-key map so the
 		// RangeWindow GROUP BY (still keyed on the
 		// ResourceAttributesColumn) collapses per-group rather than
-		// per-stream. The alias matches the column name the outer
+		// per-stream. The user-supplied grouping is authoritative: we
+		// do NOT auto-inject detected_level on top of an explicit
+		// `by (...)` / `without (...)` clause — that would defeat the
+		// caller's intent. The alias matches the column name the outer
 		// RangeWindow expects.
 		identityProj = chplan.Projection{Expr: groupBy, Alias: s.ResourceAttributesColumn}
 	}

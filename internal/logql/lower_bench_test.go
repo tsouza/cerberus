@@ -73,9 +73,13 @@ func TestAllocs_Lower(t *testing.T) {
 		maxAvg float64
 	}{
 		// Baselines: 15 / 21 / 25 — ceilings = baseline × ~3.
+		// `metric_form` was lifted from 80 → 100 when detected_level was
+		// added as a synthesised identity dimension on bare range
+		// aggregations (mapConcat + mapFilter + multiIf nodes added to
+		// every count_over_time / rate / ... lowering).
 		{"stream_matcher", `{job="api"}`, 45},
 		{"line_filter_chain", `{job="api"} |= "error" |~ "5[0-9]{2}"`, 70},
-		{"metric_form", `count_over_time({job="api"}[5m])`, 80},
+		{"metric_form", `count_over_time({job="api"}[5m])`, 100},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

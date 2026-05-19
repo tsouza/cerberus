@@ -300,3 +300,60 @@ func TestProjectSamples_VectorAggregateOverMatrixForwardsTimeUnix(t *testing.T) 
 			"with synth now64 would drop per-step rows)", tsRef.Name, "TimeUnix")
 	}
 }
+
+// TestProjectSamples_LogQuerySurfacesDetectedLevel pins the log-stream
+// branch's Attributes slot to a `mapConcat(...)` that folds the
+// synthesized `detected_level` label onto the row's ResourceAttributes.
+//
+// Loki's stream-identity contract surfaces `detected_level` as a
+// structural label whenever the upstream row carries a severity-bearing
+// column. Cerberus mirrors that on the wire: the
+// `toStreamsWithTransform` pivot keys on `format.CanonicalKey(labels)`,
+// so adding `detected_level` to the labels map splits the streams
+// response into one Stream per distinct severity — matching upstream's
+// shape on a multi-level seed.
+//
+// The pre-detected_level wire-wrap projected `ResourceAttributes`
+// directly; this test pins the upgrade so a regression that reverts to
+// the bare column ref is caught synchronously rather than via the
+// loki-compat harness's "streams length: expected=4 actual=1" failure.
+func TestProjectSamples_LogQuerySurfacesDetectedLevel(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelLogs()
+	l := &logql.Lang{Schema: s}
+
+	// Log-stream queries lower to a Scan (or Filter(Scan)) — no inner
+	// Project layer. ProjectSamples wraps with the wire-shape projection.
+	plan := &chplan.Scan{Table: s.LogsTable}
+	wrapped := l.ProjectSamples(plan, engine.Meta{IsMetric: false})
+
+	proj, ok := wrapped.(*chplan.Project)
+	if !ok {
+		t.Fatalf("ProjectSamples returned %T, want *chplan.Project", wrapped)
+	}
+	if len(proj.Projections) != 4 {
+		t.Fatalf("got %d projections, want 4 (MetricName, Attributes, TimeUnix, Value)",
+			len(proj.Projections))
+	}
+
+	attrsSlot := proj.Projections[1]
+	if attrsSlot.Alias != "Attributes" {
+		t.Fatalf("attributes slot alias: got %q, want %q", attrsSlot.Alias, "Attributes")
+	}
+	// Must be a mapConcat(...) — the helper that folds detected_level
+	// onto the row's ResourceAttributes. A bare ColumnRef would mean
+	// the log-stream branch dropped the augmentation.
+	fn, ok := attrsSlot.Expr.(*chplan.FuncCall)
+	if !ok {
+		t.Fatalf("attributes slot expr: got %T, want *chplan.FuncCall "+
+			"(log-stream wire-wrap must wrap ResourceAttributes in a "+
+			"mapConcat that adds the synthesized `detected_level` label)",
+			attrsSlot.Expr)
+	}
+	if fn.Name != "mapConcat" {
+		t.Errorf("attributes slot FuncCall.Name: got %q, want %q "+
+			"(log-stream wire-wrap must fold detected_level via mapConcat)",
+			fn.Name, "mapConcat")
+	}
+}
