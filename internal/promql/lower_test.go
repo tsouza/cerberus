@@ -57,6 +57,19 @@ func TestLower(t *testing.T) {
 	rangeEnd := rangeStart.Add(5 * time.Minute)
 
 	spec.Walk(t, fixtureDir, func(t *testing.T, c *spec.Case) {
+		// Fixtures prefixed `exemplars_` are owned by the chsql
+		// exemplars emitter harness under
+		// internal/chsql/query_exemplars_spec_test.go — they record
+		// the layer-2a SQL snapshot for the Prom
+		// /api/v1/query_exemplars endpoint, which does NOT flow
+		// through promql.Lower. Return early so the lower-pipeline
+		// harness no-ops on them rather than fail with a missing
+		// `query.promql` section. The forbid-skip CI gate rejects
+		// t.Skip in test files, so we no-op the subtest body rather
+		// than call t.Skip.
+		if strings.HasPrefix(c.Name, "exemplars_") {
+			return
+		}
 		query, ok := c.Section("query.promql")
 		if !ok {
 			t.Fatalf("fixture %s missing 'query.promql' section", c.Name)

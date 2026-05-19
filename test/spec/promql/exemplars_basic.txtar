@@ -1,0 +1,8 @@
+-- sql --
+SELECT `MetricName`, `Attributes`, `ServiceName`, ts[i] AS `Timestamp`, val[i] AS `Value`, tid[i] AS `TraceID`, sid[i] AS `SpanID`, attrs_arr[i] AS `ExemplarAttributes` FROM (SELECT `MetricName`, `Attributes`, `ServiceName`, `Exemplars`.`TimeUnix` AS `ts`, `Exemplars`.`Value` AS `val`, `Exemplars`.`TraceId` AS `tid`, `Exemplars`.`SpanId` AS `sid`, `Exemplars`.`FilteredAttributes` AS `attrs_arr`, arrayJoin(arrayEnumerate(`Exemplars`.`TimeUnix`)) AS `i` FROM `otel_metrics_sum` WHERE (`MetricName` = ?) AND `TimeUnix` >= toDateTime64(?, ?) AND `TimeUnix` <= toDateTime64(?, ?) AND length(`Exemplars`.`TimeUnix`) > 0)
+-- args --
+[0] string = "http_request_duration_seconds"
+[1] string = "2026-01-01 00:00:00.000000000"
+[2] int64 = 9
+[3] string = "2026-01-01 01:00:00.000000000"
+[4] int64 = 9
