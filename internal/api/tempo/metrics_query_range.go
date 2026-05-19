@@ -256,22 +256,33 @@ func (h *Handler) handleMetricsQueryRange(w http.ResponseWriter, r *http.Request
 		"sql", res.SQL, "args", res.Args)
 
 	series := toMetricsSeries(res.Samples, metrics)
-	// Zero-fill the matrix step grid for count/rate operators so the
-	// response shape matches Tempo's reference engine_metrics.go: its
-	// StepAggregator pre-allocates one CountOverTimeAggregator per
-	// interval whose default Sample() is 0 (count starts at zero), so
-	// empty buckets surface as 0-valued samples across the full
-	// [Start, End] grid. Cerberus's matrix SQL emits one row per
-	// (group, anchor) bucket only when at least one span falls in
-	// (anchor_ts - range, anchor_ts]; without this post-step empty
-	// buckets disappear, dropping samples count from N to (#observed
-	// buckets) — the smoke corpus's count_over_time_groupby_service
-	// case showed tempo=121 vs cerberus=2 against the same seeded
-	// dataset for that reason. Tempo's OverTimeAggregator (sum / avg /
-	// min / max / quantile) initialises its value to NaN, and the
-	// ToProto loop skips NaN samples — so those operators already
-	// match cerberus's observed-only emission without a zero-fill
-	// pass.
+	// Zero-fill the matrix step grid for count/rate AND quantile
+	// operators so the response shape matches Tempo's reference
+	// engine_metrics.go. Two distinct upstream code paths converge on a
+	// "zero-fill every anchor across [Start, End]" emit shape:
+	//
+	//   - count_over_time / rate: StepAggregator pre-allocates one
+	//     CountOverTimeAggregator per interval whose default Sample()
+	//     is 0, so ToProto walks all intervals and emits 0 for empty
+	//     buckets.
+	//   - quantile_over_time: HistogramAggregator.Results explicitly
+	//     sets `ts.Values[i] = 0.0` for any interval with no buckets
+	//     (`if len(in.hist[i].Buckets) == 0 { ts.Values[i] = 0.0 }`),
+	//     so ToProto again emits a value at every anchor.
+	//
+	// Cerberus's matrix SQL emits one row per (group, anchor) bucket
+	// only when at least one span falls in (anchor_ts - range,
+	// anchor_ts]; without this post-step empty buckets disappear,
+	// dropping samples count from N to (#observed buckets) — the smoke
+	// corpus's count_over_time_groupby_service case showed tempo=121 vs
+	// cerberus=2 (and quantile_over_time_p95 showed tempo=121 vs
+	// cerberus=3) against the same seeded dataset for that reason.
+	//
+	// Tempo's OverTimeAggregator (sum / avg / min / max) initialises
+	// its value to NaN, and the ToProto loop skips NaN samples — those
+	// operators already match cerberus's observed-only emission without
+	// a zero-fill pass, so the fill is intentionally scoped to
+	// count/rate/quantile only.
 	series = zeroFillMatrixGrid(series, metrics, start, end, step)
 
 	exSQL, exArgs, exErr := chsql.EmitMetricsExemplars(ctx, rw, metrics,
@@ -639,16 +650,32 @@ func toMetricsSeries(samples []chclient.Sample, m *chplan.MetricsAggregate) []Me
 }
 
 // zeroFillMatrixGrid extends each series's Samples to the full matrix
-// step grid for `| count_over_time()` and `| rate()` queries, inserting
-// 0-valued samples for anchors that had no observed spans.
+// step grid for `| count_over_time()`, `| rate()`, and
+// `| quantile_over_time(...)` queries, inserting 0-valued samples for
+// anchors that had no observed spans.
 //
-// Tempo's reference metrics engine pre-allocates one
-// CountOverTimeAggregator per interval (engine_metrics.go::StepAggregator)
-// whose default Sample() is 0; its ToProto path emits the full grid for
-// count/rate. Cerberus's matrix SQL only emits rows for (group, anchor)
-// pairs where at least one span lands in (anchor_ts - range, anchor_ts],
-// so without this fill the response loses every empty bucket and the
-// differ trips on `samples count tempo=N vs cerberus=M`.
+// Two upstream Tempo aggregators emit zeros (rather than NaN) for
+// empty buckets, so each anchor across [Start, End] surfaces as a
+// sample on the wire:
+//
+//   - count_over_time / rate: StepAggregator pre-allocates one
+//     CountOverTimeAggregator per interval whose default Sample() is 0
+//     (count starts at zero) — `pkg/traceql/engine_metrics.go`'s
+//     StepAggregator pre-fills the vector slice with
+//     NewCountOverTimeAggregator() instances before any Observe runs.
+//   - quantile_over_time: HistogramAggregator.Results explicitly sets
+//     `ts.Values[i] = 0.0` when `len(in.hist[i].Buckets) == 0`
+//     (`pkg/traceql/engine_metrics.go`). Both paths then run through
+//     SeriesSet.ToProto, which only skips a sample if its value is
+//     math.NaN — 0.0 survives and reaches the wire.
+//
+// Cerberus's matrix SQL only emits rows for (group, anchor) pairs
+// where at least one span lands in (anchor_ts - range, anchor_ts], so
+// without this fill the response loses every empty bucket and the
+// differ trips on `samples count tempo=N vs cerberus=M` (see PR #550
+// for count/rate; the quantile gap surfaced as
+// `metrics_quantile_over_time_p95: samples count tempo=121 vs
+// cerberus=3` once #562 unblocked the per-phi label shape).
 //
 // The fill anchors mirror the chsql emitter's
 // arrayJoin(arrayMap(i -> End - i*Step, range(0, N))) grid:
@@ -656,7 +683,9 @@ func toMetricsSeries(samples []chclient.Sample, m *chplan.MetricsAggregate) []Me
 // In ascending timestamp order that yields [start, start+step, ...,
 // end-step, end]. Each series is filled independently; series that
 // never observed any span are left absent (matches Tempo's
-// SpanAggregator.Observe gating).
+// SpanAggregator.Observe gating — HistogramAggregator only initialises
+// per-series interval slices when at least one span lands in the
+// query window).
 //
 // No-op when:
 //   - step <= 0 (defensive — the handler rejects step <= 0 upstream,
@@ -665,9 +694,10 @@ func toMetricsSeries(samples []chclient.Sample, m *chplan.MetricsAggregate) []Me
 //   - start / end aren't both set (the chsql matrix path falls back to
 //     a single anchor at End in that case; one sample per series is
 //     fine without a fill),
-//   - the metrics op isn't count_over_time / rate (sum / avg / min /
-//     max / quantile share Tempo's NaN-skip semantics — see
-//     OverTimeAggregator initialisation in engine_metrics.go),
+//   - the metrics op isn't count_over_time / rate / quantile_over_time
+//     (sum / avg / min / max share Tempo's NaN-skip semantics — see
+//     OverTimeAggregator initialisation in engine_metrics.go, which
+//     starts val=NaN and the ToProto loop skips NaN-valued samples),
 //   - the input slice is empty (no observed series → no zero-fill;
 //     mirrors Tempo's behaviour of only initialising entries via
 //     SpanAggregator.Observe).
@@ -675,7 +705,7 @@ func zeroFillMatrixGrid(series []MetricsSeries, m *chplan.MetricsAggregate, star
 	if len(series) == 0 || step <= 0 || start.IsZero() || end.IsZero() {
 		return series
 	}
-	if m.Op != chplan.MetricsOpCountOverTime && m.Op != chplan.MetricsOpRate {
+	if !metricsOpZeroFillsEmptyBuckets(m.Op) {
 		return series
 	}
 	span := end.Sub(start)
@@ -727,6 +757,26 @@ func zeroFillMatrixGrid(series []MetricsSeries, m *chplan.MetricsAggregate, star
 		})
 	}
 	return series
+}
+
+// metricsOpZeroFillsEmptyBuckets reports whether the given
+// MetricsAggregate.Op surfaces 0-valued samples for empty buckets on
+// Tempo's wire (rather than NaN-skipping them). The two upstream code
+// paths that produce zeros are StepAggregator + CountOverTimeAggregator
+// (for `count_over_time` and `rate` — the underlying counter aggregator
+// starts at zero) and HistogramAggregator.Results (for
+// `quantile_over_time` — explicitly sets `ts.Values[i] = 0.0` when the
+// bucket has no histogram entries). All other operators reach the wire
+// via OverTimeAggregator's NaN-init path, so cerberus's observed-only
+// emission already matches Tempo's output and needs no fill.
+func metricsOpZeroFillsEmptyBuckets(op chplan.MetricsOp) bool {
+	switch op {
+	case chplan.MetricsOpCountOverTime,
+		chplan.MetricsOpRate,
+		chplan.MetricsOpQuantileOverTime:
+		return true
+	}
+	return false
 }
 
 // labelsFromSample materialises the {key,value} pair slice for one
