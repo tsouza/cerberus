@@ -787,4 +787,3 @@ func TestMetricsQueryRange_ResourceLabelWireShape(t *testing.T) {
 		}
 	}
 }
-

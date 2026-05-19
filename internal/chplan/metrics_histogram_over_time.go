@@ -39,7 +39,7 @@ package chplan
 //     to GroupByAliases for SELECT-list aliasing.
 //   - GroupByAliases: SQL SELECT-list alias for each GroupBy entry.
 //     Bare-named for resource / span attributes (`service.name`,
-//     `http.method`) so the chsql emitter renders `AS \`<bare>\`` with no
+//     `http.method`) so the chsql emitter renders `AS \`<bare>\“ with no
 //     scope prefix in the column name.
 //   - GroupByDisplayNames: optional parallel slice carrying the
 //     TraceQL-canonical wire label name for each GroupBy entry — the

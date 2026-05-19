@@ -101,7 +101,7 @@ func (o MetricsOp) String() string {
 //     for SELECT-list aliasing (mirrors chplan.Aggregate).
 //   - GroupByAliases: SQL SELECT-list alias for each GroupBy entry.
 //     Bare-named (e.g. `service.name`) so the chsql emitter renders
-//     `AS \`service.name\`` regardless of TraceQL scope.
+//     `AS \`service.name\“ regardless of TraceQL scope.
 //   - GroupByDisplayNames: optional parallel slice carrying the
 //     TraceQL-canonical wire label name for each GroupBy entry — the
 //     scope-prefixed form (`resource.service.name`, `span.http.method`,

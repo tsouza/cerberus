@@ -261,7 +261,7 @@ func lowerMetricsHistogramOverTime(prev chplan.Node, agg *traceql.MetricsAggrega
 //
 //   - aliases: the SQL SELECT-list alias. For a scoped attribute this is
 //     the bare `attr.Name` (e.g. `service.name` for `resource.service.name`)
-//     so the emitter renders `AS \`service.name\`` — keeping the column
+//     so the emitter renders `AS \`service.name\“ — keeping the column
 //     name short and identifying the carrier-side payload only. Locking
 //     in the bare form preserves the existing TXTAR SQL fixtures.
 //   - display: the Tempo-canonical wire label name (`attr.String()`).
