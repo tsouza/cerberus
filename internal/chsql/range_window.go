@@ -16,6 +16,12 @@ import (
 //
 // When a RangeWindow wraps a MetricsAggregate the matrix path is taken
 // instead (see emitRangeWindowMetrics).
+//
+// Multi-phi quantile_over_time (len(m.Quantiles) > 1) is the only shape
+// that needs a wrapping outer SELECT: the inner aggregator returns a
+// single Array(Float64) column, and the outer SELECT arrayJoins it
+// against a parallel phi-string array to fan out one row per phi value
+// tagged with the synthetic `__phi__` label.
 func (e *emitter) emitMetricsAggregate(m *chplan.MetricsAggregate) error {
 	name, params, args, err := metricsAggregateCH(m)
 	if err != nil {
@@ -47,17 +53,35 @@ func (e *emitter) emitMetricsAggregate(m *chplan.MetricsAggregate) error {
 		return err
 	}
 
+	multi := m.Op == chplan.MetricsOpQuantileOverTime && len(m.Quantiles) > 1
+
 	sb := NewQuery().From(sub)
+	// For the multi-phi path the outer SELECTs need to reference each
+	// group column by a stable alias. Use outerGroupAliases (which
+	// falls back to "g0", "g1", ... for un-aliased groups) so the
+	// outer SELECT-list can pluck the values regardless of whether
+	// the source GroupByAliases was set.
+	multiGroupAliases := outerGroupAliases(m.GroupBy, m.GroupByAliases)
 	for i, g := range m.GroupBy {
 		expr := g
-		alias := ""
-		if i < len(m.GroupByAliases) {
+		var alias string
+		if multi {
+			alias = multiGroupAliases[i]
+		} else if i < len(m.GroupByAliases) {
 			alias = m.GroupByAliases[i]
 		}
 		sb.SelectAs(func(b *Builder) { _ = b.Expr(expr) }, alias)
 	}
-	af := chplan.AggFunc{Name: name, Params: params, Args: args, Alias: m.ValueAlias}
-	sb.Select(aggFuncFrag(af))
+	if multi {
+		// Inner SELECT: project the `quantiles(p1, p2, ...)(Attr)`
+		// Array(Float64) under an internal alias; the outer SELECT
+		// fans it out via arrayJoin + tupleElement.
+		af := chplan.AggFunc{Name: name, Params: params, Args: args, Alias: ""}
+		sb.Select(rawAs(aggFuncFrag(af), "qs_array"))
+	} else {
+		af := chplan.AggFunc{Name: name, Params: params, Args: args, Alias: m.ValueAlias}
+		sb.Select(aggFuncFrag(af))
+	}
 	if len(m.GroupBy) > 0 {
 		groupFrags := make([]Frag, 0, len(m.GroupBy))
 		for _, g := range m.GroupBy {
@@ -66,7 +90,32 @@ func (e *emitter) emitMetricsAggregate(m *chplan.MetricsAggregate) error {
 		}
 		sb.GroupBy(groupFrags...)
 	}
-	e.emitSelect(sb)
+
+	if !multi {
+		e.emitSelect(sb)
+		return nil
+	}
+
+	// Multi-phi wrap layer 1: arrayJoin the per-(group) quantiles
+	// array into one row per phi, tagged with a (phi, value) tuple
+	// under the `phi_val` alias.
+	outer := NewQuery().From(sb.Frag())
+	for _, alias := range multiGroupAliases {
+		a := alias
+		outer.Select(func(b *Builder) { b.Ident(a) })
+	}
+	outer.Select(rawAs(metricsMultiQuantileFanoutFrag(m.Quantiles, "qs_array"), "phi_val"))
+
+	// Multi-phi wrap layer 2: split phi_val into the synthetic
+	// `__phi__` label + the Float64 `Value` column.
+	final := NewQuery().From(outer.Frag())
+	for _, alias := range multiGroupAliases {
+		a := alias
+		final.Select(func(b *Builder) { b.Ident(a) })
+	}
+	final.Select(As(Call("tupleElement", BareIdent("phi_val"), InlineLit(int64(1))), metricsMultiQuantilePhiLabel))
+	final.Select(As(Call("tupleElement", BareIdent("phi_val"), InlineLit(int64(2))), m.ValueAlias))
+	e.emitSelect(final)
 	return nil
 }
 
@@ -78,7 +127,11 @@ func (e *emitter) emitMetricsAggregate(m *chplan.MetricsAggregate) error {
 // rate / count_over_time → `count(1)` (the rate-specific per-bucket
 // division by seconds lives on the matrix-path emitter, not here).
 // *_over_time(attr) → the matching CH aggregate over Attr.
-// quantile_over_time(attr, q) → `quantile(q)(Attr)`.
+// quantile_over_time(attr, q) → `quantile(q)(Attr)` for the single-phi
+// case; `quantiles(q1, q2, ...)(Attr)` (returns Array(Float64)) for the
+// multi-phi case — the per-phi fanout into individual output series
+// happens in the wrapping emitter (emitMetricsAggregate /
+// emitRangeWindowMetrics), not here.
 func metricsAggregateCH(m *chplan.MetricsAggregate) (
 	name string,
 	params []chplan.Expr,
@@ -112,12 +165,66 @@ func metricsAggregateCH(m *chplan.MetricsAggregate) (
 		if m.Attr == nil {
 			return "", nil, nil, fmt.Errorf("%w: %s requires Attr", ErrUnsupported, m.Op)
 		}
-		if len(m.Quantiles) != 1 {
-			return "", nil, nil, fmt.Errorf("%w: MetricsAggregate quantile expects exactly 1 quantile, got %d", ErrUnsupported, len(m.Quantiles))
+		if len(m.Quantiles) == 0 {
+			return "", nil, nil, fmt.Errorf("%w: MetricsAggregate quantile requires at least 1 quantile", ErrUnsupported)
 		}
-		return "quantile", []chplan.Expr{&chplan.LitFloat{V: m.Quantiles[0]}}, []chplan.Expr{m.Attr}, nil
+		if len(m.Quantiles) == 1 {
+			return "quantile", []chplan.Expr{&chplan.LitFloat{V: m.Quantiles[0]}}, []chplan.Expr{m.Attr}, nil
+		}
+		// Multi-phi: emit `quantiles(p1, p2, ...)(Attr)` which returns
+		// an Array(Float64) of size N. The wrapping emitter (bare or
+		// matrix) is responsible for the per-phi fanout into N output
+		// rows tagged with the synthetic `__phi__` label.
+		ps := make([]chplan.Expr, len(m.Quantiles))
+		for i, q := range m.Quantiles {
+			ps[i] = &chplan.LitFloat{V: q}
+		}
+		return "quantiles", ps, []chplan.Expr{m.Attr}, nil
 	}
 	return "", nil, nil, fmt.Errorf("%w: MetricsAggregate op %s", ErrUnsupported, m.Op)
+}
+
+// metricsMultiQuantilePhiLabel is the SELECT-list alias for the
+// synthetic per-phi label projected by the multi-quantile fanout.
+// Each output series of `quantile_over_time(attr, p1, p2, ...)` carries
+// one row per phi value tagged with this label, with the value formatted
+// as a decimal string (no trailing zeros) — "0.5" reads "0.5" (not
+// "0.500000"); aligned with Tempo upstream's per-quantile label
+// production in pkg/traceql/engine_metrics.go.
+const metricsMultiQuantilePhiLabel = "__phi__"
+
+// metricsMultiQuantileFanoutFrag returns a Frag rendering the per-(group,
+// anchor) fanout from a `quantiles(p1, p2, ...)(...) AS qs_array` column
+// into N (phi, value) tuples via arrayJoin + arrayMap over a parallel
+// `[p1, p2, ...]` string-literal array. The result is intended to be
+// aliased (typically as `phi_val`) and then split via tupleElement(...)
+// in an outer SELECT:
+//
+//	arrayJoin(arrayMap((phi, q) -> (phi, toFloat64(q)),
+//	                   ['p1', 'p2', ...],
+//	                   <qs_col>))
+//
+// The phi values are emitted as inline string literals (formatted via
+// formatFloat → strconv.FormatFloat('f', -1, 64)) so the resulting
+// `__phi__` label reads "0.5" / "0.95" / "0.99" — query-shape constants,
+// not user data; emitting inline keeps both the SQL stream and the
+// per-phi label string stable regardless of driver float formatting.
+func metricsMultiQuantileFanoutFrag(qs []float64, qsCol string) Frag {
+	phiElems := make([]Frag, len(qs))
+	for i, q := range qs {
+		phiStr := formatFloat(q)
+		phiElems[i] = InlineLit(phiStr)
+	}
+	body := Tuple(BareIdent("phi"), Call("toFloat64", BareIdent("q")))
+	return Call(
+		"arrayJoin",
+		Call(
+			"arrayMap",
+			Lambda2("phi", "q", body),
+			Array(phiElems...),
+			BareIdent(qsCol),
+		),
+	)
 }
 
 // emitRangeWindow lowers a chplan.RangeWindow to ClickHouse SQL using the
@@ -567,7 +674,11 @@ func formatFloat(v float64) string {
 //   - Rate: `count(1) / <range_seconds>`
 //   - CountOverTime: `count(1)`
 //   - Sum/Min/Max/AvgOverTime: `sum/min/max/avg(metric_arg)`
-//   - QuantileOverTime: `quantile(q)(metric_arg)`
+//   - QuantileOverTime (single phi): `quantile(q)(metric_arg)`
+//   - QuantileOverTime (multi phi): `quantiles(p1, p2, ...)(metric_arg)`
+//     returning Array(Float64), then a wrapping outer SELECT
+//     arrayJoins the per-(group, anchor) array into one row per phi
+//     tagged with the synthetic `__phi__` label.
 //
 // `<anchor_base>` is r.End (or now64(9) for the zero-time fixture).
 // Range defaults to Step when r.Range is zero (matches Tempo's TraceQL
@@ -636,6 +747,8 @@ func (e *emitter) emitRangeWindowMetrics(r *chplan.RangeWindow, m *chplan.Metric
 		return err
 	}
 
+	multi := m.Op == chplan.MetricsOpQuantileOverTime && len(m.Quantiles) > 1
+
 	// Inner SELECT: fan each Inner row across N anchors, projecting
 	// group-by cols, the timestamp as `ts`, [the metric operand as
 	// metric_arg,] and the anchor_ts. Group-by columns are aliased
@@ -671,8 +784,27 @@ func (e *emitter) emitRangeWindowMetrics(r *chplan.RangeWindow, m *chplan.Metric
 		outerSb.Select(func(b *Builder) { b.Ident(a) })
 	}
 	outerSb.Select(Col("anchor_ts"))
-	reducerFrag := metricsReducerFrag(m.Op, chName, params, args, rangeSeconds)
-	outerSb.Select(As(reducerFrag, m.ValueAlias))
+	if multi {
+		// Multi-phi: the reducer is `quantiles(p1, p2, ...)(metric_arg)`,
+		// returning Array(Float64). Project under `qs_array` without
+		// the toFloat64 wrap (it would clobber the array shape); the
+		// outer wrapping SELECT below fans the array out per-phi.
+		// Rewrite the args to reference the inner-SELECT alias
+		// `metric_arg` (mirrors metricsReducerFrag's translation).
+		argFrags := make([]func(b *Builder), 0, len(args))
+		for range args {
+			argFrags = append(argFrags, func(b *Builder) { b.Ident("metric_arg") })
+		}
+		paramFrags := make([]func(b *Builder), 0, len(params))
+		for _, p := range params {
+			expr := p
+			paramFrags = append(paramFrags, func(b *Builder) { _ = b.Expr(expr) })
+		}
+		outerSb.Select(rawAs(func(b *Builder) { b.ParamAgg(chName, paramFrags, argFrags) }, "qs_array"))
+	} else {
+		reducerFrag := metricsReducerFrag(m.Op, chName, params, args, rangeSeconds)
+		outerSb.Select(As(reducerFrag, m.ValueAlias))
+	}
 
 	// WHERE: ts ∈ [anchor_ts - range, anchor_ts].
 	outerSb.Where(
@@ -689,8 +821,47 @@ func (e *emitter) emitRangeWindowMetrics(r *chplan.RangeWindow, m *chplan.Metric
 	groupFrags = append(groupFrags, Col("anchor_ts"))
 	outerSb.GroupBy(groupFrags...)
 
-	e.emitSelect(outerSb)
+	if !multi {
+		e.emitSelect(outerSb)
+		return nil
+	}
+
+	e.emitSelect(emitMultiQuantileMatrixWrap(outerSb.Frag(), groupAliases, m.Quantiles, m.ValueAlias))
 	return nil
+}
+
+// emitMultiQuantileMatrixWrap builds the two extra SELECTs that fan a
+// per-(group, anchor) `quantiles(...)` Array(Float64) result out into
+// one row per phi tagged with the synthetic `__phi__` label.
+//
+//   - Layer 1 (fanout): SELECTs the group aliases + anchor_ts +
+//     arrayJoin'd (phi, value) tuple under the `phi_val` alias.
+//   - Layer 2 (final): splits `phi_val` into the synthetic `__phi__`
+//     label + the Float64 value column. The two-tuple is split via
+//     tupleElement here (rather than fused into the arrayJoin lambda)
+//     so the SELECT-list stays readable and the inner arrayJoin
+//     produces just one row per (group, anchor, phi) tuple as intended.
+//
+// Mirrors the bare-emit multi-phi wrap in emitMetricsAggregate but
+// retains the matrix-shape `anchor_ts` carry-through.
+func emitMultiQuantileMatrixWrap(inner Frag, groupAliases []string, quantiles []float64, valueAlias string) *QueryBuilder {
+	fanout := NewQuery().From(inner)
+	for _, alias := range groupAliases {
+		a := alias
+		fanout.Select(func(b *Builder) { b.Ident(a) })
+	}
+	fanout.Select(Col("anchor_ts"))
+	fanout.Select(rawAs(metricsMultiQuantileFanoutFrag(quantiles, "qs_array"), "phi_val"))
+
+	final := NewQuery().From(fanout.Frag())
+	for _, alias := range groupAliases {
+		a := alias
+		final.Select(func(b *Builder) { b.Ident(a) })
+	}
+	final.Select(Col("anchor_ts"))
+	final.Select(As(Call("tupleElement", BareIdent("phi_val"), InlineLit(int64(1))), metricsMultiQuantilePhiLabel))
+	final.Select(As(Call("tupleElement", BareIdent("phi_val"), InlineLit(int64(2))), valueAlias))
+	return final
 }
 
 // anchorFanoutFrag returns a Frag rendering

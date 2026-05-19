@@ -59,10 +59,11 @@ func lowerMetricsPipeline(prev chplan.Node, mp traceql.FirstStageElement, s sche
 // chplan.Aggregate shape via internal/chsql/range_window.go's
 // emitMetricsAggregate.
 //
-// `quantile_over_time(attr, q1, q2, ...)` is supported only for a
-// single quantile (the common Grafana case). Multi-quantile queries
-// surface a clean "unsupported" error so the caller can decide
-// whether to split into N queries.
+// `quantile_over_time(attr, q1, q2, ...)` is supported for any number
+// of phi values; the IR carries the full slice on
+// chplan.MetricsAggregate.Quantiles and the chsql emit path (see
+// internal/chsql/range_window.go) fans out one output series per phi
+// tagged with a synthetic `__phi__` label.
 //
 // `histogram_over_time(attr)` lowers to a dedicated
 // chplan.MetricsHistogramOverTime node — the per-bucket value is a
@@ -101,13 +102,10 @@ func lowerMetricsAggregate(prev chplan.Node, agg *traceql.MetricsAggregate, s sc
 		// Multi-quantile is accepted at the lowering layer (v0.0.3
 		// fork accessors expose the full slice via Quantiles()); the
 		// emitted plan carries all phi values on
-		// chplan.MetricsAggregate.Quantiles so a future chsql emit
-		// path can render one output series per phi with a synth
-		// `__phi__` label. The current chsql emitter still caps at
-		// one quantile per MetricsAggregate (see
-		// internal/chsql/range_window.go::metricsAggregateCH); the
-		// lowering succeeds either way so callers can introspect
-		// the IR.
+		// chplan.MetricsAggregate.Quantiles. The chsql emitter
+		// (internal/chsql/range_window.go::metricsAggregateCH plus
+		// the bare/matrix emit fanout) renders one output series per
+		// phi tagged with the synthetic `__phi__` label.
 		quantiles = make([]float64, len(qs))
 		copy(quantiles, qs)
 	}

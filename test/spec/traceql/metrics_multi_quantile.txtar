@@ -1,0 +1,29 @@
+-- query.traceql --
+{} | quantile_over_time(duration, 0.5, 0.9, 0.99)
+-- sql --
+SELECT tupleElement(phi_val, 1) AS `__phi__`, tupleElement(phi_val, 2) AS `Value` FROM (SELECT arrayJoin(arrayMap((phi, q) -> (phi, toFloat64(q)), ['0.5', '0.9', '0.99'], qs_array)) AS phi_val FROM (SELECT quantiles(?, ?, ?)(`Duration`) AS qs_array FROM (SELECT * FROM `otel_traces` WHERE ?)))
+-- args --
+[0] float64 = 0.5
+[1] float64 = 0.9
+[2] float64 = 0.99
+[3] bool = true
+-- seed --
+CREATE TABLE otel_traces (
+    Duration UInt64
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    (100000000),
+    (100000000),
+    (100000000),
+    (100000000),
+    (100000000);
+-- expected_rows --
+[
+  ["0.5", 100000000.0],
+  ["0.9", 100000000.0],
+  ["0.99", 100000000.0]
+]
+-- chplan --
+MetricsAggregate op=quantile_over_time attr=Duration quantiles=[0.5, 0.9, 0.99] valueAlias=Value
+  Filter predicate=true
+    Scan(otel_traces)

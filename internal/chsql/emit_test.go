@@ -461,6 +461,18 @@ var plans = map[string]chplan.Node{
 		ValueAlias: "Value",
 		Inner:      &chplan.Scan{Table: "otel_traces"},
 	},
+	// Multi-phi quantile_over_time pins the instant-shape fanout:
+	// inner SELECT computes `quantiles(p1, p2, ...)(<attr>)` returning
+	// Array(Float64), the outer SELECT arrayJoins the array against a
+	// parallel phi-string array to produce one row per phi tagged
+	// with the synthetic `__phi__` label.
+	"metrics_aggregate_quantile_over_time_multi_bare": &chplan.MetricsAggregate{
+		Op:         chplan.MetricsOpQuantileOverTime,
+		Attr:       &chplan.ColumnRef{Name: "Duration"},
+		Quantiles:  []float64{0.5, 0.9, 0.99},
+		ValueAlias: "Value",
+		Inner:      &chplan.Scan{Table: "otel_traces"},
+	},
 
 	// MetricsSecondStage wraps a MetricsAggregate (instant) — TraceQL's
 	// `| topk(5)` / `| bottomk(3)` / `| > 10` shape applied to the
@@ -598,6 +610,40 @@ var plans = map[string]chplan.Node{
 			Quantiles:  []float64{0.95},
 			ValueAlias: "Value",
 			Inner:      &chplan.Scan{Table: "otel_traces"},
+		},
+		Step:            time.Minute,
+		OuterRange:      5 * time.Minute,
+		TimestampColumn: "Timestamp",
+	},
+	// Multi-phi quantile_over_time over the matrix path: the inner
+	// SELECT computes the per-(group, anchor) `quantiles(p1, p2, ...)`
+	// array; two wrapping SELECTs fan the array out into one row per
+	// (group, anchor, phi) tuple with the synthetic `__phi__` label.
+	"range_window_metrics_quantile_over_time_multi_attr": &chplan.RangeWindow{
+		Input: &chplan.MetricsAggregate{
+			Op:         chplan.MetricsOpQuantileOverTime,
+			Attr:       &chplan.ColumnRef{Name: "Duration"},
+			Quantiles:  []float64{0.5, 0.9, 0.99},
+			ValueAlias: "Value",
+			Inner:      &chplan.Scan{Table: "otel_traces"},
+		},
+		Step:            time.Minute,
+		OuterRange:      5 * time.Minute,
+		TimestampColumn: "Timestamp",
+	},
+	// Multi-phi quantile_over_time matrix path with a group-by label:
+	// each (service, anchor, phi) tuple becomes one output row. Pins
+	// the synthetic-alias path that synthesises "g0" / "g1" / ...
+	// when GroupByAliases is empty.
+	"range_window_metrics_quantile_over_time_multi_by_attr": &chplan.RangeWindow{
+		Input: &chplan.MetricsAggregate{
+			Op:             chplan.MetricsOpQuantileOverTime,
+			Attr:           &chplan.ColumnRef{Name: "Duration"},
+			Quantiles:      []float64{0.5, 0.9, 0.99},
+			GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: "ServiceName"}},
+			GroupByAliases: []string{"service"},
+			ValueAlias:     "Value",
+			Inner:          &chplan.Scan{Table: "otel_traces"},
 		},
 		Step:            time.Minute,
 		OuterRange:      5 * time.Minute,

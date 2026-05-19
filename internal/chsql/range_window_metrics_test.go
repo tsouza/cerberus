@@ -147,6 +147,97 @@ func TestMetricsAggregateRequiresAttr(t *testing.T) {
 	}
 }
 
+// TestMetricsAggregateMultiQuantileBare exercises the bare-emit fan-out
+// for `quantile_over_time(attr, p1, p2, ...)` with N > 1: the inner
+// SELECT aggregates `quantiles(p1, p2, ...)(Attr)` (returning
+// Array(Float64)), and the wrapping SELECT layers fan the array out
+// into one row per phi tagged with the synthetic `__phi__` label.
+//
+// The test pins the structural markers (`quantiles(?, ?, ?)`, the
+// `__phi__` label projection, the inline phi-string array) so the
+// emit shape stays stable under future refactors.
+func TestMetricsAggregateMultiQuantileBare(t *testing.T) {
+	t.Parallel()
+
+	plan := &chplan.MetricsAggregate{
+		Op:         chplan.MetricsOpQuantileOverTime,
+		Attr:       &chplan.ColumnRef{Name: "Duration"},
+		Quantiles:  []float64{0.5, 0.9, 0.99},
+		ValueAlias: "Value",
+		Inner:      &chplan.Scan{Table: "otel_traces"},
+	}
+	sql, args, err := chsql.Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	wantSubstrings := []string{
+		"quantiles(?, ?, ?)(`Duration`)",
+		"AS qs_array",
+		"['0.5', '0.9', '0.99']",
+		"AS phi_val",
+		"tupleElement(phi_val, 1) AS `__phi__`",
+		"tupleElement(phi_val, 2) AS `Value`",
+	}
+	for _, s := range wantSubstrings {
+		if !strings.Contains(sql, s) {
+			t.Errorf("expected SQL to contain %q; got %s", s, sql)
+		}
+	}
+	wantArgs := []any{0.5, 0.9, 0.99}
+	if len(args) != len(wantArgs) {
+		t.Fatalf("len(args) = %d, want %d: %v", len(args), len(wantArgs), args)
+	}
+	for i, a := range wantArgs {
+		if args[i] != a {
+			t.Errorf("args[%d] = %v, want %v", i, args[i], a)
+		}
+	}
+}
+
+// TestRangeWindowMetricsMultiQuantile exercises the matrix-path
+// fan-out for multi-phi `quantile_over_time`. The middle SELECT
+// computes the per-(group, anchor) `quantiles(...)` array; two
+// wrapping SELECTs fan the array out into one row per
+// (group, anchor, phi) tuple tagged with `__phi__`.
+func TestRangeWindowMetricsMultiQuantile(t *testing.T) {
+	t.Parallel()
+
+	plan := &chplan.RangeWindow{
+		Input: &chplan.MetricsAggregate{
+			Op:         chplan.MetricsOpQuantileOverTime,
+			Attr:       &chplan.ColumnRef{Name: "Duration"},
+			Quantiles:  []float64{0.5, 0.9, 0.99},
+			ValueAlias: "Value",
+			Inner:      &chplan.Scan{Table: "otel_traces"},
+		},
+		Step:            time.Minute,
+		OuterRange:      5 * time.Minute,
+		TimestampColumn: "Timestamp",
+	}
+	sql, args, err := chsql.Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	wantSubstrings := []string{
+		"quantiles(?, ?, ?)(`metric_arg`) AS qs_array",
+		"['0.5', '0.9', '0.99']",
+		"AS phi_val",
+		"tupleElement(phi_val, 1) AS `__phi__`",
+		"tupleElement(phi_val, 2) AS `Value`",
+		"`anchor_ts`",
+	}
+	for _, s := range wantSubstrings {
+		if !strings.Contains(sql, s) {
+			t.Errorf("expected SQL to contain %q; got %s", s, sql)
+		}
+	}
+	// 3 phi args; the matrix path's eval-grid timestamps are inline
+	// literals so no other args bind.
+	if len(args) != 3 {
+		t.Fatalf("len(args) = %d, want 3 (one per phi): %v", len(args), args)
+	}
+}
+
 // TestRangeWindowMetricsReducerIsFloat64 pins the Value-column type
 // invariant: every metrics-pipeline op in the matrix path must wrap the
 // per-bucket reducer in `toFloat64(...)` so chclient.Sample.Value
