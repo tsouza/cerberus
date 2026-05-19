@@ -27,16 +27,22 @@ func metricsQueryInstantURL(base, q string, params map[string]string) string {
 
 // TestMetricsQueryInstant_SingleSeriesNoGroupBy — bare `| rate()` over
 // the full spans table returns a single series with one (labels, value)
-// tuple. Validates the response envelope is `{series: [{labels: [],
-// value: N}]}` — no `samples` array.
+// tuple. Validates the response envelope is
+// `{series: [{labels: [{__name__: rate}], value: N}]}` — no `samples`
+// array. Cerberus mirrors Tempo's UngroupedAggregator wire shape
+// (`{__name__="<op>"}`) rather than emitting an empty label set; see
+// wrapMetricsForSample for the cross-reference.
 func TestMetricsQueryInstant_SingleSeriesNoGroupBy(t *testing.T) {
 	t.Parallel()
 
 	q := &stubQuerier{samples: []chclient.Sample{
 		// With step=end-start the inner RangeWindow emits exactly one
 		// anchor per series; the handler propagates that single sample
-		// as the InstantSeries value.
-		{MetricName: "", Labels: map[string]string{}, Timestamp: time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC), Value: 42.0},
+		// as the InstantSeries value. The matrix SQL emits the
+		// `map('__name__', 'rate')` Attributes projection for the
+		// ungrouped case (see wrapMetricsForSample), so the stub
+		// mimics what the CH cursor would surface as Labels.
+		{MetricName: "", Labels: map[string]string{"__name__": "rate"}, Timestamp: time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC), Value: 42.0},
 	}}
 	srv := newServer(q, "v1.0.0-test")
 	t.Cleanup(srv.Close)
@@ -63,8 +69,13 @@ func TestMetricsQueryInstant_SingleSeriesNoGroupBy(t *testing.T) {
 		t.Fatalf("expected 1 series, got %d: %+v", len(body.Series), body)
 	}
 	s := body.Series[0]
-	if len(s.Labels) != 0 {
-		t.Errorf("expected zero labels for ungrouped query, got %+v", s.Labels)
+	// Ungrouped instant queries surface a single `__name__=<op>` label
+	// (matching Tempo's UngroupedAggregator wire shape) so the response
+	// is keyed by at least one label rather than the empty label set
+	// that previously diverged from Tempo and caused the differ to
+	// flag `missing_in_a series key e3b0c44298fc1c14`.
+	if len(s.Labels) != 1 || s.Labels[0].Key != "__name__" || s.Labels[0].Value != "rate" {
+		t.Errorf("expected single {__name__=rate} label for ungrouped rate(), got %+v", s.Labels)
 	}
 	if s.Value != 42.0 {
 		t.Errorf("expected value 42, got %v", s.Value)

@@ -52,11 +52,17 @@ func TestMetricsQueryRange_SingleSeriesNoGroupBy(t *testing.T) {
 	ts := func(min int) time.Time {
 		return time.Date(2026, 5, 12, 10, min, 0, 0, time.UTC)
 	}
+	// The matrix-shape SQL emits `map('__name__', 'rate')` for the
+	// ungrouped Attributes projection (mirroring Tempo's
+	// UngroupedAggregator wire shape — see
+	// wrapMetricsForSample's doc-comment). The stub mimics that wire
+	// projection so the handler's response-shaper sees the same
+	// Labels map a real CH cursor would surface.
 	q := &stubQuerier{samples: []chclient.Sample{
 		// Intentionally out of order — handler must sort within each series.
-		{MetricName: "", Labels: map[string]string{}, Timestamp: ts(2), Value: 2.0},
-		{MetricName: "", Labels: map[string]string{}, Timestamp: ts(0), Value: 0.5},
-		{MetricName: "", Labels: map[string]string{}, Timestamp: ts(1), Value: 1.5},
+		{MetricName: "", Labels: map[string]string{"__name__": "rate"}, Timestamp: ts(2), Value: 2.0},
+		{MetricName: "", Labels: map[string]string{"__name__": "rate"}, Timestamp: ts(0), Value: 0.5},
+		{MetricName: "", Labels: map[string]string{"__name__": "rate"}, Timestamp: ts(1), Value: 1.5},
 	}}
 	srv := newServer(q, "v1.0.0-test")
 	t.Cleanup(srv.Close)
@@ -84,8 +90,13 @@ func TestMetricsQueryRange_SingleSeriesNoGroupBy(t *testing.T) {
 		t.Fatalf("expected 1 series, got %d: %+v", len(body.Series), body)
 	}
 	s := body.Series[0]
-	if len(s.Labels) != 0 {
-		t.Errorf("expected zero labels for ungrouped query, got %+v", s.Labels)
+	// Ungrouped queries surface a single `__name__=<op>` label per
+	// series (matching Tempo's UngroupedAggregator wire shape) — never
+	// an empty label set. Previously cerberus emitted `{}` here and the
+	// Tempo differ flagged the divergence as
+	// `missing_in_a series key e3b0c44298fc1c14 (sha256("") prefix)`.
+	if len(s.Labels) != 1 || s.Labels[0].Key != "__name__" || s.Labels[0].Value != "rate" {
+		t.Errorf("expected single {__name__=rate} label for ungrouped rate(), got %+v", s.Labels)
 	}
 	// 3-minute window @ 60s step → 4 anchors after zero-fill (10:00 /
 	// 10:01 / 10:02 / 10:03), with the trailing anchor synthesised at
@@ -244,9 +255,12 @@ func TestMetricsQueryRange_ZeroFillCountOverTime(t *testing.T) {
 	mid := time.Date(2026, 5, 12, 10, 1, 0, 0, time.UTC)
 	q := &stubQuerier{samples: []chclient.Sample{{
 		MetricName: "",
-		Labels:     map[string]string{},
-		Timestamp:  mid,
-		Value:      7.0,
+		// Matrix-shape SQL projects `map('__name__', 'count_over_time')`
+		// for ungrouped queries (see wrapMetricsForSample); stub mimics
+		// the cursor's surfaced Labels map.
+		Labels:    map[string]string{"__name__": "count_over_time"},
+		Timestamp: mid,
+		Value:     7.0,
 	}}}
 	srv := newServer(q, "v1.0.0-test")
 	t.Cleanup(srv.Close)
@@ -318,9 +332,12 @@ func TestMetricsQueryRange_ZeroFillSkippedForAvgOverTime(t *testing.T) {
 	mid := time.Date(2026, 5, 12, 10, 1, 0, 0, time.UTC)
 	q := &stubQuerier{samples: []chclient.Sample{{
 		MetricName: "",
-		Labels:     map[string]string{},
-		Timestamp:  mid,
-		Value:      42.0,
+		// Matrix-shape SQL projects `map('__name__', 'avg_over_time')`
+		// for ungrouped queries (see wrapMetricsForSample); stub mimics
+		// the cursor's surfaced Labels map.
+		Labels:    map[string]string{"__name__": "avg_over_time"},
+		Timestamp: mid,
+		Value:     42.0,
 	}}}
 	srv := newServer(q, "v1.0.0-test")
 	t.Cleanup(srv.Close)

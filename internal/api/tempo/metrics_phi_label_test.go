@@ -22,9 +22,14 @@ func TestMetricsLabelNames_PhiLabelAddedForMultiQuantile(t *testing.T) {
 		want []string
 	}{
 		{
+			// Ungrouped (no by(...) + single quantile) is the
+			// UngroupedAggregator-equivalent shape — Tempo's wire
+			// surface for that case is `{__name__="<op>"}`. We surface
+			// the same `__name__` label key (the value is injected by
+			// wrapMetricsForSample via m.Op.String()).
 			name: "no_groupby_single_quantile",
 			m:    &chplan.MetricsAggregate{Quantiles: []float64{0.95}},
-			want: nil,
+			want: []string{"__name__"},
 		},
 		{
 			name: "no_groupby_multi_quantile",
@@ -292,5 +297,89 @@ func TestWrapMetricsForSample_DisplayNameKeysAttributesMap(t *testing.T) {
 	if colRef.Name != "service.name" {
 		t.Errorf("toString column ref = %q, want %q (the bare SQL alias)",
 			colRef.Name, "service.name")
+	}
+}
+
+// TestWrapMetricsForSample_UngroupedAttachesMetricName pins the
+// UngroupedAggregator parity contract: when a TraceQL metrics-pipeline
+// query carries no `by(...)` clause and isn't a multi-quantile fan-out,
+// the Attributes projection must emit `map('__name__', '<op>')` rather
+// than an empty Map(String,String). That mirrors Tempo's reference
+// engine (pkg/traceql.UngroupedAggregator.Series) which attaches a
+// single `__name__=<op_name>` label per series, and stops cerberus
+// from emitting the divergent empty-labels series the Tempo compat
+// differ flagged as `missing_in_a series key e3b0c44298fc1c14` (the
+// sha256 prefix of the empty string).
+func TestWrapMetricsForSample_UngroupedAttachesMetricName(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		op      chplan.MetricsOp
+		wantVal string
+	}{
+		{name: "rate", op: chplan.MetricsOpRate, wantVal: "rate"},
+		{name: "count_over_time", op: chplan.MetricsOpCountOverTime, wantVal: "count_over_time"},
+		{name: "avg_over_time", op: chplan.MetricsOpAvgOverTime, wantVal: "avg_over_time"},
+		{name: "sum_over_time", op: chplan.MetricsOpSumOverTime, wantVal: "sum_over_time"},
+		{name: "quantile_over_time", op: chplan.MetricsOpQuantileOverTime, wantVal: "quantile_over_time"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rw := &chplan.RangeWindow{}
+			m := &chplan.MetricsAggregate{
+				Op:         tc.op,
+				ValueAlias: "Value",
+			}
+			node := wrapMetricsForSample(rw, m)
+			proj, ok := node.(*chplan.Project)
+			if !ok {
+				t.Fatalf("wrapMetricsForSample: got %T, want *chplan.Project", node)
+			}
+			if len(proj.Projections) < 2 {
+				t.Fatalf("project has %d projections, want >= 2", len(proj.Projections))
+			}
+			call, ok := proj.Projections[1].Expr.(*chplan.FuncCall)
+			if !ok || call.Name != "map" {
+				t.Fatalf("Attributes expr = %T (%v), want *chplan.FuncCall(map)", proj.Projections[1].Expr, proj.Projections[1].Expr)
+			}
+			if len(call.Args) != 2 {
+				t.Fatalf("map args = %d, want 2 ({__name__, <op>}): %+v", len(call.Args), call.Args)
+			}
+			keyLit, ok := call.Args[0].(*chplan.LitString)
+			if !ok || keyLit.V != "__name__" {
+				t.Errorf("map arg[0] = %v, want LitString(__name__)", call.Args[0])
+			}
+			valLit, ok := call.Args[1].(*chplan.LitString)
+			if !ok || valLit.V != tc.wantVal {
+				t.Errorf("map arg[1] = %v, want LitString(%q)", call.Args[1], tc.wantVal)
+			}
+		})
+	}
+}
+
+// TestMetricsLabelNames_UngroupedIncludesMetricName pins the helper-side
+// contract: an ungrouped MetricsAggregate (no GroupBy + no multi-phi)
+// surfaces `["__name__"]` so labelsFromSample orders the synthetic
+// label deterministically before any other key the SQL projection
+// might surface. Tempo's UngroupedAggregator wire shape is the upstream
+// reference (pkg/traceql.UngroupedAggregator.Series).
+func TestMetricsLabelNames_UngroupedIncludesMetricName(t *testing.T) {
+	t.Parallel()
+
+	got := metricsLabelNames(&chplan.MetricsAggregate{Op: chplan.MetricsOpRate})
+	if !equalSlice(got, []string{"__name__"}) {
+		t.Fatalf("metricsLabelNames(ungrouped rate) = %v, want [__name__]", got)
+	}
+	// multi-phi takes precedence (the fan-out adds its own column);
+	// the __name__ injection only fires when there's truly nothing
+	// else on the wire.
+	got = metricsLabelNames(&chplan.MetricsAggregate{
+		Op:        chplan.MetricsOpQuantileOverTime,
+		Quantiles: []float64{0.5, 0.9},
+	})
+	if !equalSlice(got, []string{"__phi__"}) {
+		t.Fatalf("metricsLabelNames(ungrouped multi-quantile) = %v, want [__phi__]", got)
 	}
 }
