@@ -359,12 +359,31 @@ func unwrapMetricsAggregate(plan chplan.Node) (*chplan.MetricsAggregate, bool) {
 // stream and surface it as a wire-format label.
 const tempoMultiQuantilePhiLabel = "__phi__"
 
+// tempoMetricNameLabel mirrors the Prometheus-style `__name__` label
+// Tempo's UngroupedAggregator (engine_metrics.go) attaches to the
+// single series an ungrouped metrics-pipeline query returns. The
+// reference engine emits `{__name__="rate"}` for `{} | rate()` and
+// `{__name__="avg_over_time"}` for `{} | avg_over_time(duration)`,
+// rather than an empty label set, so Grafana's Tempo datasource (and
+// the differ in compatibility/tempo) can always key series by at least
+// one label. Cerberus mirrors that shape so an ungrouped response
+// canonicalises identically across the two backends.
+const tempoMetricNameLabel = "__name__"
+
 // wrapMetricsForSample maps the matrix-shape RangeWindow's outer SELECT
 // (g0/<alias>..., anchor_ts, Value) into chclient.Sample's positional
 // shape (MetricName, Attributes, TimeUnix, Value). Attributes becomes
-// `map('<label>', toString(<alias>), ...)` (or an empty Map(String,String)
-// when there's no GroupBy); MetricName is empty (TraceQL has no
-// __name__); anchor_ts arrives as DateTime64(9) → time.Time on the wire.
+// `map('<label>', toString(<alias>), ...)`; when the query has no
+// `by(...)` clause the map carries a single
+// `('__name__', '<op-name>')` entry mirroring Tempo's UngroupedAggregator
+// (see `pkg/traceql.UngroupedAggregator.Series`), so an ungrouped
+// response is keyed by at least one label rather than emitting the
+// empty `{}` label set that previously diverged from the reference
+// engine's `{__name__="rate"}` / `{__name__="count_over_time"}` shape.
+// MetricName is empty on the chclient.Sample tuple (TraceQL has no
+// per-row metric name beyond the synthetic `__name__` carried in
+// Attributes); anchor_ts arrives as DateTime64(9) → time.Time on the
+// wire.
 //
 // The Attributes map's keys are the Tempo-canonical wire names from
 // metricsLabelNames (scope-prefixed `resource.service.name`,
@@ -386,9 +405,23 @@ func wrapMetricsForSample(rw *chplan.RangeWindow, m *chplan.MetricsAggregate) ch
 	multiPhi := len(m.Quantiles) > 1
 
 	var attrs chplan.Expr
-	if len(m.GroupBy) == 0 && !multiPhi {
-		attrs = emptyAttrsMap()
-	} else {
+	switch {
+	case len(m.GroupBy) == 0 && !multiPhi:
+		// Ungrouped: emit Tempo's UngroupedAggregator-style
+		// `{__name__="<op>"}` label so the response series is keyed by
+		// `__name__` rather than the empty label set. The constant
+		// op-name comes from chplan.MetricsOp.String() (rate /
+		// count_over_time / avg_over_time / quantile_over_time / ...),
+		// matching the upstream wire form
+		// LabelsFromArgs(labels.MetricName, op.String()).
+		attrs = &chplan.FuncCall{
+			Name: "map",
+			Args: []chplan.Expr{
+				&chplan.LitString{V: tempoMetricNameLabel},
+				&chplan.LitString{V: m.Op.String()},
+			},
+		}
+	default:
 		args := make([]chplan.Expr, 0, (len(m.GroupBy)+1)*2)
 		for i := range m.GroupBy {
 			args = append(
@@ -452,6 +485,12 @@ func metricsOuterGroupAliases(groupBy []chplan.Expr, aliases []string) []string 
 // more than one phi value (the chsql multi-quantile fan-out adds the
 // extra column to the matrix shape).
 //
+// For ungrouped metrics queries (no `by(...)` clause and no multi-phi
+// fan-out) the slice is `["__name__"]` so labelsFromSample preserves
+// the order expected by Tempo's UngroupedAggregator wire shape (a
+// single `__name__=<op>` label per series — see wrapMetricsForSample's
+// doc-comment for the upstream reference).
+//
 // Aligning with the upstream Tempo response shape: the reference
 // /api/metrics/query_range emits `resource.service.name` for a
 // `by (resource.service.name)` clause — see grafana/tempo
@@ -461,6 +500,10 @@ func metricsOuterGroupAliases(groupBy []chplan.Expr, aliases []string) []string 
 // `by (resource.res_attr)` query.
 func metricsLabelNames(m *chplan.MetricsAggregate) []string {
 	n := len(m.GroupBy)
+	multiPhi := len(m.Quantiles) > 1
+	if n == 0 && !multiPhi {
+		return []string{tempoMetricNameLabel}
+	}
 	out := make([]string, 0, n+1)
 	for i := 0; i < n; i++ {
 		if i < len(m.GroupByDisplayNames) && m.GroupByDisplayNames[i] != "" {
@@ -473,7 +516,7 @@ func metricsLabelNames(m *chplan.MetricsAggregate) []string {
 		}
 		out = append(out, "group_"+strconv.Itoa(i))
 	}
-	if len(m.Quantiles) > 1 {
+	if multiPhi {
 		out = append(out, tempoMultiQuantilePhiLabel)
 	}
 	return out

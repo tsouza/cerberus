@@ -182,16 +182,33 @@ func (e *emitter) emitMetricsExemplars(
 	// attachExemplars matches each exemplar to its parent series by
 	// canonical label-set hash, so the two label-key projections must
 	// agree.
-	attrMapFrags := make([]Frag, 0, len(groupAliases)*2+4)
+	attrMapFrags := make([]Frag, 0, len(groupAliases)*2+6)
 	for i, alias := range groupAliases {
 		a := alias
 		display := groupDisplayNames[i]
-		attrMapFrags = append(attrMapFrags,
+		attrMapFrags = append(
+			attrMapFrags,
 			Lit(display),
 			Call("toString", Col(a)),
 		)
 	}
-	attrMapFrags = append(attrMapFrags,
+	// Ungrouped queries surface a single `{__name__="<op>"}` series in
+	// the matrix-shape response (mirroring Tempo's UngroupedAggregator;
+	// see internal/api/tempo/metrics_query_range.go::wrapMetricsForSample).
+	// The exemplar response keys series by the same canonical label-set
+	// hash via attachExemplars, so the exemplar Attributes must carry
+	// the same `__name__=<op>` entry — otherwise the exemplar's
+	// canonical key drifts to the empty label set and no series in the
+	// matrix shape matches.
+	if len(groupAliases) == 0 {
+		attrMapFrags = append(
+			attrMapFrags,
+			Lit("__name__"),
+			Lit(m.Op.String()),
+		)
+	}
+	attrMapFrags = append(
+		attrMapFrags,
 		Lit("trace:id"),
 		Call("argMax", Col("exemplar_trace_id"), Col("ts")),
 		Lit("span:id"),
