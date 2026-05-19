@@ -103,6 +103,23 @@ func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs, lc low
 		ValueColumn:     rangeAggSynthValueColumn,
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.ResourceAttributesColumn}},
 	}
+	// Range mode: fan the range function across the request's step grid
+	// so each anchor in [Start, End] (spaced by Step) emits one row per
+	// series with the per-anchor function value. Without this, the
+	// emitter anchors at `now64(9)` — a query whose [start, end] window
+	// lies outside the last 5 minutes of wall-clock (e.g. compatibility
+	// harnesses seeding day-old data) yields an empty matrix because the
+	// windowed-array filter
+	// `arrayFilter(p -> tupleElement(p,1) > now64(9) - <range>, ...)`
+	// drops every sample. Mirrors the PromQL side in lowerMatrixCall
+	// (internal/promql/lower.go::lowerMatrixCall) which sets the same
+	// fields when ctx.step > 0.
+	if lc.rangeMode() {
+		rw.Start = lc.Start.UTC()
+		rw.End = lc.End.UTC()
+		rw.Step = lc.Step
+		rw.OuterRange = lc.End.Sub(lc.Start)
+	}
 	if e.Operation == syntax.OpRangeTypeQuantile {
 		if e.Params == nil {
 			return nil, fmt.Errorf("logql: quantile_over_time requires a phi parameter")
@@ -165,6 +182,26 @@ func applyUnwrapPostFilters(inner chplan.Node, filters []loglib.LabelFilterer, s
 // one place keeps the two layers from drifting like they did between
 // #310 and the e2e-failures it surfaced.
 const rangeAggSynthValueColumn = "Value"
+
+// isMatrixRangeWindow reports whether plan's root (walking past
+// value-rewrite Projects / Filters that preserve the inner shape) is a
+// matrix-shape RangeWindow — one emitting N rows per series across
+// [Start, End] spaced by Step, exposing `anchor_ts` as a per-row
+// column. Used by both [Lang.ProjectSamples] (to forward `anchor_ts`
+// into the canonical TimeUnix slot) and [lowerVectorAggregation] (to
+// include `anchor_ts` in the GROUP BY so per-step rows don't collapse).
+// Mirrors prom's isMatrixRangeWindow in internal/api/prom/handler.go.
+func isMatrixRangeWindow(plan chplan.Node) bool {
+	switch v := plan.(type) {
+	case *chplan.RangeWindow:
+		return v.OuterRange > 0
+	case *chplan.Project:
+		return isMatrixRangeWindow(v.Input)
+	case *chplan.Filter:
+		return isMatrixRangeWindow(v.Input)
+	}
+	return false
+}
 
 // rangeValueExpr returns the per-row Value the RangeWindow aggregates.
 //
@@ -301,7 +338,8 @@ func rangeAggregationGroupBy(e *syntax.RangeAggregationExpr, s schema.Logs) (chp
 	}
 	args := make([]chplan.Expr, 0, len(e.Grouping.Groups)*2)
 	for _, label := range e.Grouping.Groups {
-		args = append(args,
+		args = append(
+			args,
 			&chplan.LitString{V: label},
 			&chplan.MapAccess{
 				Map: &chplan.ColumnRef{Name: s.ResourceAttributesColumn},

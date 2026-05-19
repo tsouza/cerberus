@@ -194,7 +194,7 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := h.Engine.Query(r.Context(), h.langForRequest(start, end), q)
+	res, err := h.Engine.Query(r.Context(), h.langForRangeRequest(start, end, step), q)
 	if err != nil {
 		h.respondError(w, classifyEngineErr(err))
 		return
@@ -224,6 +224,20 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 // requested window.
 func (h *Handler) langForRequest(start, end time.Time) *logql.Lang {
 	return &logql.Lang{Schema: h.Schema, Start: start, End: end}
+}
+
+// langForRangeRequest builds a per-request *logql.Lang carrying the
+// request's [start, end, step] for metric queries. The engine threads
+// Step alongside Start / End so range-aggregation lowerings switch to
+// the matrix RangeWindow shape (one row per anchor across [start, end]
+// spaced by step). Without this, metric queries whose seeded data
+// lies outside the last 5 minutes of wall-clock return an empty matrix
+// because the windowed-array filter anchors at `now64(9)`. Log queries
+// also use this entry point — Step is harmless on the non-metric path
+// since lowerCtx.rangeMode() only fires inside the range-aggregation
+// lowering.
+func (h *Handler) langForRangeRequest(start, end time.Time, step time.Duration) *logql.Lang {
+	return &logql.Lang{Schema: h.Schema, Start: start, End: end, Step: step}
 }
 
 // writeEngineHeaders stamps the X-Cerberus-* response headers populated
