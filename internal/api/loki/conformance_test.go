@@ -524,6 +524,11 @@ func TestConformance_LokiErrorEnvelope(t *testing.T) {
 			path:     "/loki/api/v1/index/volume?query=%7Bjob%3D%22api%22%7D&start=1&end=60",
 			wantCode: http.StatusBadGateway, wantKind: loki.ErrInternal,
 		},
+		{
+			name: "502_patterns_ch_failure", stub: &stubQuerier{tsLinesErr: errors.New("ch failure")},
+			path:     "/loki/api/v1/patterns?query=%7Bjob%3D%22api%22%7D&start=1&end=60",
+			wantCode: http.StatusBadGateway, wantKind: loki.ErrInternal,
+		},
 	}
 	for _, c := range cases {
 		c := c

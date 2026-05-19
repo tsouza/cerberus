@@ -185,6 +185,36 @@ func (c *Client) QueryStrings(ctx context.Context, query string, args ...any) ([
 	return out, nil
 }
 
+// QueryTimestampedLines runs sql and decodes a (DateTime64, String)
+// two-column result set into chclient.TimestampedLine tuples. Used by
+// /loki/api/v1/patterns to feed the drain template miner.
+func (c *Client) QueryTimestampedLines(ctx context.Context, query string, args ...any) ([]chclient.TimestampedLine, error) {
+	if c.err != nil {
+		return nil, c.err
+	}
+	rows, err := c.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("chclienttest: query: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []chclient.TimestampedLine
+	for rows.Next() {
+		var (
+			ts   time.Time
+			body string
+		)
+		if err := rows.Scan(&ts, &body); err != nil {
+			return nil, fmt.Errorf("chclienttest: scan: %w", err)
+		}
+		out = append(out, chclient.TimestampedLine{Timestamp: ts, Body: body})
+	}
+	if err := tolerantRowsErr(rows.Err()); err != nil {
+		return nil, fmt.Errorf("chclienttest: rows.Err: %w", err)
+	}
+	return out, nil
+}
+
 // QueryLabelSets runs sql expecting a single Map(String,String) column
 // per row. The column is rewritten to toJSONString(…) and decoded back
 // on the Go side.
