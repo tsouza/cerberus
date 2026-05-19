@@ -1,0 +1,30 @@
+-- query.logql --
+{job="api"} |~ "(?i)error"
+-- sql --
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND match(`Body`, ?)
+-- args --
+[0] string = "job"
+[1] string = "api"
+[2] string = "(?i)error"
+-- seed --
+CREATE TABLE otel_logs (
+    Body String,
+    ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api')
+) ENGINE = Memory;
+INSERT INTO otel_logs (Body) VALUES
+    ('level=error msg=lowercase'),
+    ('level=ERROR msg=uppercase'),
+    ('level=Error msg=titlecase'),
+    ('level=ErRoR msg=mixedcase'),
+    ('level=info msg=clean'),
+    ('level=warn msg=alert');
+-- expected_rows --
+[
+  ["level=ERROR msg=uppercase"],
+  ["level=ErRoR msg=mixedcase"],
+  ["level=Error msg=titlecase"],
+  ["level=error msg=lowercase"]
+]
+-- chplan --
+Filter predicate=((ResourceAttributes["job"] = "api") AND lineContent(Body, "(?i)error", regex))
+  Scan(otel_logs)
