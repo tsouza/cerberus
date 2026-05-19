@@ -211,10 +211,11 @@ the same convention:
   realistic peek window.
 
 If the team prefers a TXTAR-style golden, add one under
-`test/spec/logql/loki_patterns_basic.txtar` with `-- seed --` + `-- input --`
-+ `-- expected_rows --` sections, exercised by the `runner_chdb.go` driver.
-The metadata-endpoint precedent (`detected_fields`, etc.) is "no TXTAR",
-so PR C defaults to the `_test.go` approach.
+`test/spec/logql/loki_patterns_basic.txtar` with `-- seed --` plus
+`-- input --` plus `-- expected_rows --` sections, exercised by the
+`runner_chdb.go` driver. The metadata-endpoint precedent
+(`detected_fields`, etc.) is "no TXTAR", so PR C defaults to the
+`_test.go` approach.
 
 ## 4 — Test plan: determinism
 
@@ -236,8 +237,8 @@ given that ORDER BY. Test assertions:
 - **String stability — assert structure, not exact string.** Drain's
   `Stringer` produces tokens like `GET /api/<*> 200` where `<*>` is the
   variable-token placeholder controlled by `cfg.ParamString`. Tests assert
-  via `strings.Contains(pattern, "GET")` + `strings.Contains(pattern, "200")`
-  + a `strings.Count(pattern, "<*>")` constraint, not against a frozen
+  via `strings.Contains(pattern, "GET")` and `strings.Contains(pattern, "200")`
+  plus a `strings.Count(pattern, "<*>")` constraint, not against a frozen
   exact-string. This avoids golden churn if drain's tokenizer changes its
   whitespace handling across upstream bumps.
 - **Empty input is empty output.** `QueryStrings` returning zero rows
