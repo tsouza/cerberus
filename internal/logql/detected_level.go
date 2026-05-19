@@ -10,6 +10,16 @@ import (
 // from the record's structured-metadata `detected_level` label or the
 // record's `severity_text` / OTel `SeverityText` field.
 //
+// `level` is Loki's documented short alias — `pkg/distributor/field_detection.go`
+// treats `level`, `LEVEL`, `Level`, `severity`, `SEVERITY`, `Severity`,
+// `lvl`, `LVL`, and `Lvl` as the source labels detection scans. Once
+// detection settles, downstream consumers see both `detected_level` and
+// `level` referring to the same normalised value. Cerberus mirrors the
+// alias surface here so a user query that uses `by (level)` /
+// `without (level)` resolves against the synthesized SeverityText-derived
+// expression rather than collapsing every record into an empty-value
+// group (since cerberus's ResourceAttributes map has no bare `level` key).
+//
 // Upstream Loki's reference derivation
 // (`github.com/grafana/loki/pkg/distributor/field_detection.go::extractLogLevel`)
 // is layered:
@@ -35,12 +45,40 @@ import (
 // harness exercises rely on SeverityText, and emitting the broader
 // shape would double the CH expression size without changing the
 // observable result.
-const detectedLevelLabel = "detected_level"
+const (
+	detectedLevelLabel = "detected_level"
+	// levelLabelAlias is the short alias Loki accepts as equivalent to
+	// `detected_level` once severity detection settles. The aggregation
+	// grouping path (by/without) routes both forms through the same
+	// SeverityText-derived expression so a query that uses either form
+	// returns the same series set. Label-filter / stream-selector matchers
+	// keep the literal-key semantics so a `| logfmt | level="error"`
+	// pipeline still resolves `level` against the parser-extracted map.
+	levelLabelAlias = "level"
+)
 
 // isDetectedLevelLabel reports whether a matcher name targets the
-// synthesized `detected_level` label.
+// synthesized `detected_level` label by its canonical name. Label-filter
+// and stream-selector matchers use this to route ONLY the
+// `detected_level` form through the SeverityText-derived expression —
+// the `level` short alias keeps the literal-key path so parser-extracted
+// `level` (from `| logfmt`, `| json`, etc.) still resolves through
+// labelsExpr.
 func isDetectedLevelLabel(name string) bool {
 	return name == detectedLevelLabel
+}
+
+// isDetectedLevelGroupingLabel reports whether `name` references the
+// synthesized severity dimension in an aggregation `by(...)` / `without(...)`
+// clause. Both `detected_level` and its `level` short alias resolve here
+// because the downstream identity map (Project + RangeWindow) carries
+// only the canonical `detected_level` key — never a raw `level` —
+// regardless of whether the user wrote one form or the other. Matchers
+// take the stricter [isDetectedLevelLabel] path because parser stages
+// produce a real `level` key in the labels map that should win over
+// the synthesized expression.
+func isDetectedLevelGroupingLabel(name string) bool {
+	return name == detectedLevelLabel || name == levelLabelAlias
 }
 
 // detectedLevelExpr returns the chplan expression that computes the
