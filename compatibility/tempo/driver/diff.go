@@ -186,8 +186,8 @@ func diffCase(ctx context.Context, client *http.Client, tc CorpusCase, opts case
 		return res
 	}
 
-	tempoBody, tempoStatus, terr := fetchJSON(ctx, client, tempoURL, "tempo")
-	cerbBody, cerbStatus, cerr := fetchJSON(ctx, client, cerbURL, "cerberus")
+	tempoBody, tempoStatus, terr := fetchJSON(ctx, client, tempoURL)
+	cerbBody, cerbStatus, cerr := fetchJSON(ctx, client, cerbURL)
 	res.TempoStatus = tempoStatus
 	res.CerberusStatus = cerbStatus
 	if terr != nil {
@@ -400,19 +400,22 @@ func deriveTraceIDFromTemplate(tmpl string) (string, error) {
 
 // fetchJSON GETs a URL with the Accept: application/json header and
 // returns the body + status. Errors include the response body (up to
-// 2KB) so a CH error message lands in the report. When backend is
-// "tempo", the Recent-Data-Target: live-store header is set so Tempo
-// searches the live store (recently-ingested traces) in addition to
-// completed blocks.
-func fetchJSON(ctx context.Context, client *http.Client, urlStr, backend string) ([]byte, int, error) {
+// 2KB) so a CH error message lands in the report.
+//
+// Earlier revisions also set Recent-Data-Target: live-store on tempo
+// requests, intending to expand the search domain to recently-ingested
+// traces still in the live store. That header is parsed by Tempo
+// (pkg/api/http.go::ParseRecentDataTargetHeader) but no module branches
+// on its value in the version this harness pins, so it was a no-op
+// either way. Dropped to avoid implying a behaviour we don't actually
+// get; the differ's start/end window is what makes backend block search
+// surface the seeded data.
+func fetchJSON(ctx context.Context, client *http.Client, urlStr string) ([]byte, int, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
 	if err != nil {
 		return nil, 0, err
 	}
 	req.Header.Set("Accept", "application/json")
-	if backend == "tempo" {
-		req.Header.Set("Recent-Data-Target", "live-store")
-	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, 0, err
