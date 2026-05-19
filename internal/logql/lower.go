@@ -243,6 +243,116 @@ func lowerPipelineWithLabels(e *syntax.PipelineExpr, s schema.Logs, lc lowerCtx)
 	return &chplan.Filter{Input: inner, Predicate: pred}, labelsExpr, nil
 }
 
+// PipelineLabelsExpr re-walks the parsed LogQL expression and returns the
+// final labels-map expression a log-stream query would project as its
+// per-row Attributes column. The returned shape mirrors the live
+// labelsExpr that [lowerPipelineWithLabels] threads through pipeline
+// stages — the schema's ResourceAttributes column when no parser stage
+// fired, or a `mapConcat(...)` wrapper folding parser-extracted keys
+// onto the prior labels map (see [logfmtMergeLabels] / [jsonBareMergeLabels]
+// / [regexpMergeLabels] / [logfmtExpressionMergeLabels] /
+// [jsonExpressionMergeLabels]).
+//
+// Returns nil when expr is nil, when expr is a non-log shape (metric
+// queries hit a different ProjectSamples branch), or when the pipeline
+// has no parser stage (the caller can fall back to ResourceAttributes
+// directly).
+//
+// Used by [Lang.ProjectSamples]'s log-stream branch to surface
+// parser-extracted keys (`| logfmt`, `| json`, `| regexp ...`) as
+// per-row Attributes so [toStreamsWithTransform] groups one Stream per
+// unique (resource-label, extracted-key) tuple — matching reference
+// Loki's stream-identity contract (PR #570). Without this hook the
+// projection would only carry the raw ResourceAttributes column and a
+// query like `{cluster="c"} | logfmt` would collapse hundreds of
+// reference-Loki streams into a handful, regressing the loki-compat
+// differential.
+//
+// The implementation re-walks rather than re-using the lowering's
+// labelsExpr because Parse → ProjectSamples threads through engine.Meta,
+// not through the Lower call stack, and storing a chplan.Expr in
+// Meta.Extra would tie the engine type to chplan. The walk is cheap
+// (linear in stage count) and the lowering itself is the source-of-truth
+// for the per-stage merge shape — the helpers below dispatch to the
+// same constructors.
+func PipelineLabelsExpr(expr syntax.Expr, s schema.Logs) (chplan.Expr, error) {
+	pipe, ok := expr.(*syntax.PipelineExpr)
+	if !ok {
+		return nil, nil
+	}
+	labelsExpr := chplan.Expr(&chplan.ColumnRef{Name: s.ResourceAttributesColumn})
+	for _, stage := range pipe.MultiStages {
+		merged, err := pipelineStageLabels(stage, s, labelsExpr)
+		if err != nil {
+			return nil, err
+		}
+		if merged != nil {
+			labelsExpr = merged
+		}
+	}
+	return labelsExpr, nil
+}
+
+// pipelineStageLabels returns the post-stage labels-map expression for a
+// single pipeline stage, or nil if the stage doesn't alter the visible
+// label set. Mirrors the `newLabels` branch of [lowerStage] but isolates
+// the labels-only walk from the predicate-side concerns so callers that
+// only need the final labels expression don't pay for predicate
+// construction.
+func pipelineStageLabels(stage syntax.StageExpr, s schema.Logs, labelsExpr chplan.Expr) (chplan.Expr, error) {
+	switch st := stage.(type) {
+	case *syntax.LineParserExpr:
+		switch st.Op {
+		case syntax.OpParserTypeUnpack, syntax.OpParserTypePattern:
+			return nil, nil
+		case syntax.OpParserTypeJSON:
+			return jsonBareMergeLabels(labelsExpr, s), nil
+		case syntax.OpParserTypeRegexp:
+			return regexpMergeLabels(labelsExpr, s, st.Param)
+		}
+		return nil, nil
+	case *syntax.LogfmtParserExpr:
+		return logfmtMergeLabels(labelsExpr, s), nil
+	case *syntax.JSONExpressionParserExpr:
+		return jsonExpressionMergeLabels(labelsExpr, s, st.Expressions)
+	case *syntax.LogfmtExpressionParserExpr:
+		return logfmtExpressionMergeLabels(labelsExpr, s, st.Expressions)
+	}
+	return nil, nil
+}
+
+// HasParserStage reports whether the parsed LogQL expression contains a
+// parser stage (`| logfmt`, `| json`, `| regexp ...`, typed-variants)
+// that the SQL lowering folds into the labels map. Used by
+// [Lang.ProjectSamples] to gate the parser-extracted labels surface —
+// when true, the projection uses [PipelineLabelsExpr]'s output for the
+// Attributes column so per-row labels include extracted keys.
+//
+// `| unpack` and `| pattern` return false: those parsers extract their
+// labels in Go after the rows return (see post_process.go), not in SQL,
+// so the SQL projection has nothing to surface for them — the
+// post-process step mutates the labels map per-row instead.
+func HasParserStage(expr syntax.Expr) bool {
+	pipe, ok := expr.(*syntax.PipelineExpr)
+	if !ok {
+		return false
+	}
+	for _, stage := range pipe.MultiStages {
+		switch st := stage.(type) {
+		case *syntax.LineParserExpr:
+			switch st.Op {
+			case syntax.OpParserTypeJSON, syntax.OpParserTypeRegexp:
+				return true
+			}
+		case *syntax.LogfmtParserExpr,
+			*syntax.JSONExpressionParserExpr,
+			*syntax.LogfmtExpressionParserExpr:
+			return true
+		}
+	}
+	return false
+}
+
 // lowerStage handles one pipeline stage. Returns up to two values:
 //
 //   - pred: a predicate expression to AND into the pipeline filter

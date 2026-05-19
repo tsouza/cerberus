@@ -557,6 +557,152 @@ func TestProjectSamples_LineFilterQuerySurfacesDetectedLevel(t *testing.T) {
 	}
 }
 
+// TestProjectSamples_ParserStageSurfacesExtractedLabels pins the
+// parser-stage label surface — queries with `| logfmt`, `| json`,
+// `| regexp ...`, or their typed-variants MUST project the merged
+// (resource-label, extracted-key) map as `Attributes`, not just the
+// raw ResourceAttributes column.
+//
+// Root cause this guards against: cerberus previously projected
+// `mapConcat(ResourceAttributes, detected_level_map)` for every log
+// query — losing the parser-extracted keys that the labels-merge
+// (`| logfmt` → `mapConcat(ResourceAttributes, extractKeyValuePairs)`)
+// only used for WHERE-side label filters. Downstream
+// `toStreamsWithTransform` groups by the projected label set, so
+// without the merged labels it collapsed reference Loki's hundreds
+// of streams (one per unique extracted-key tuple) into single-digit
+// counts in the loki-compat differential.
+//
+// The assertion drills into the nested mapConcat: the OUTER wrap is
+// the `withDetectedLevel` mapConcat; its first argument MUST be the
+// parser-merge mapConcat whose own first argument is the raw
+// ResourceAttributes column. A flat `mapConcat(ResourceAttributes,
+// detected_level_map)` would mean the parser-stage labels never
+// landed on the row's Attributes — the regression this test pins.
+func TestProjectSamples_ParserStageSurfacesExtractedLabels(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelLogs()
+	l := &logql.Lang{Schema: s}
+
+	for _, q := range []string{
+		// Bare logfmt: extracts all `key=value` pairs.
+		`{cluster="c1"} | logfmt`,
+		// Bare JSON: extracts all top-level keys.
+		`{cluster="c1"} | json`,
+		// Typed logfmt: extracts named fields only.
+		`{cluster="c1"} | logfmt level="lvl", app="application"`,
+		// Typed JSON: extracts named JSON paths only.
+		`{cluster="c1"} | json level="lvl", code="status.code"`,
+		// Regexp parser with named captures.
+		`{cluster="c1"} | regexp "(?P<method>\\w+) (?P<path>\\S+)"`,
+	} {
+		t.Run(q, func(t *testing.T) {
+			t.Parallel()
+			expr, err := syntax.ParseExpr(q)
+			if err != nil {
+				t.Fatalf("ParseExpr: %v", err)
+			}
+			plan := &chplan.Scan{Table: s.LogsTable}
+			wrapped := l.ProjectSamples(plan, engine.Meta{
+				IsMetric: false,
+				Extra:    map[string]any{"expr": expr},
+			})
+			proj := wrapped.(*chplan.Project)
+			attrsSlot := proj.Projections[1]
+
+			// Outer wrap is withDetectedLevel's mapConcat. Drill into
+			// arg[0] to find the parser-merge mapConcat. A leaf
+			// ColumnRef there would be the regression: parser-stage
+			// labels never landed on the row's projected Attributes.
+			outer, ok := attrsSlot.Expr.(*chplan.FuncCall)
+			if !ok {
+				t.Fatalf("attributes slot expr: got %T, want *chplan.FuncCall", attrsSlot.Expr)
+			}
+			if outer.Name != "mapConcat" {
+				t.Fatalf("outer FuncCall.Name: got %q, want %q", outer.Name, "mapConcat")
+			}
+			if len(outer.Args) != 2 {
+				t.Fatalf("outer mapConcat args: got %d, want 2", len(outer.Args))
+			}
+			inner, ok := outer.Args[0].(*chplan.FuncCall)
+			if !ok {
+				t.Fatalf("outer arg[0]: got %T, want *chplan.FuncCall (parser-stage "+
+					"merge mapConcat); a bare ColumnRef here means parser-extracted "+
+					"keys are not landing on the row's Attributes — the precise "+
+					"regression that collapsed reference Loki's hundreds of streams "+
+					"per `| logfmt` / `| json` query into a handful on the "+
+					"loki-compat differential", outer.Args[0])
+			}
+			if inner.Name != "mapConcat" {
+				t.Errorf("inner parser-merge FuncCall.Name: got %q, want %q", inner.Name, "mapConcat")
+			}
+		})
+	}
+}
+
+// TestProjectSamples_NoParserStage_KeepsBareResourceAttributes pins the
+// negative path: when the query has no SQL-side parser stage, the
+// projection MUST keep the bare ResourceAttributes column under the
+// outer withDetectedLevel wrap. Regression coverage for the parser-stage
+// branch over-firing on plain selectors / line filters / `| unpack` /
+// `| pattern` (the latter two are Go-side post-fetch stages that the
+// SQL projection should not try to surface).
+func TestProjectSamples_NoParserStage_KeepsBareResourceAttributes(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelLogs()
+	l := &logql.Lang{Schema: s}
+
+	for _, q := range []string{
+		`{cluster="c1"}`,
+		`{cluster="c1"} |= "error"`,
+		`{cluster="c1"} | namespace="ns-0"`,
+		`{cluster="c1"} | unpack`,
+		`{cluster="c1"} | pattern "<method> <path>"`,
+	} {
+		t.Run(q, func(t *testing.T) {
+			t.Parallel()
+			expr, err := syntax.ParseExpr(q)
+			if err != nil {
+				t.Fatalf("ParseExpr: %v", err)
+			}
+			plan := &chplan.Scan{Table: s.LogsTable}
+			wrapped := l.ProjectSamples(plan, engine.Meta{
+				IsMetric: false,
+				Extra:    map[string]any{"expr": expr},
+			})
+			proj := wrapped.(*chplan.Project)
+			attrsSlot := proj.Projections[1]
+			outer, ok := attrsSlot.Expr.(*chplan.FuncCall)
+			if !ok {
+				t.Fatalf("attributes slot expr: got %T, want *chplan.FuncCall "+
+					"(detected_level wrap)", attrsSlot.Expr)
+			}
+			if outer.Name != "mapConcat" {
+				t.Fatalf("outer FuncCall.Name: got %q, want %q", outer.Name, "mapConcat")
+			}
+			// arg[0] must be the bare ResourceAttributes ColumnRef — NOT
+			// another mapConcat. A nested mapConcat would mean the
+			// parser-stage surface is firing on queries that don't have
+			// a SQL-side parser stage.
+			ref, ok := outer.Args[0].(*chplan.ColumnRef)
+			if !ok {
+				t.Fatalf("outer arg[0]: got %T, want *chplan.ColumnRef "+
+					"(the bare ResourceAttributes column when no SQL-side parser "+
+					"stage is present); nesting another mapConcat here would mean "+
+					"the parser-stage surface is over-firing on plain selectors "+
+					"/ line filters / post-fetch parsers (`| unpack`, `| pattern`)",
+					outer.Args[0])
+			}
+			if ref.Name != s.ResourceAttributesColumn {
+				t.Errorf("outer arg[0] ColumnRef.Name: got %q, want %q",
+					ref.Name, s.ResourceAttributesColumn)
+			}
+		})
+	}
+}
+
 // TestProjectSamples_LogQueryWithDetectedLevelFilterTriggersWrap is a
 // focused coverage point for the label-filter reference path — the
 // `| detected_level="error"` form must trigger the wrap even though

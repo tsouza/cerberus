@@ -212,8 +212,27 @@ func (l *Lang) ProjectSamples(plan chplan.Node, meta engine.Meta) chplan.Node {
 	// restores stream-identity parity for bare selectors, line
 	// filters, label filters on unrelated keys, and parser-stage
 	// queries (`| logfmt`, `| json`, `| regexp ...`).
+	//
+	// When the parsed pipeline carries a SQL-side parser stage
+	// (`| logfmt`, `| json`, `| regexp ...`, typed-variants), the
+	// projection swaps the bare `ResourceAttributes` column for the
+	// pipeline's final labels-map expression (see [PipelineLabelsExpr])
+	// so each row carries the union of stream-selector labels and
+	// parser-extracted keys. [toStreamsWithTransform] groups by the
+	// projected label set, so unique (resource-label, extracted-key)
+	// tuples land in distinct Streams — matching reference Loki's
+	// stream-identity contract. Without this swap the projection only
+	// surfaces ResourceAttributes and a query like
+	// `{cluster="c"} | logfmt` collapses hundreds of upstream-Loki
+	// streams into a single one, regressing the loki-compat diff.
+	expr, _ := meta.Extra["expr"].(syntax.Expr)
 	attrsExpr := chplan.Expr(&chplan.ColumnRef{Name: s.ResourceAttributesColumn})
-	if expr, _ := meta.Extra["expr"].(syntax.Expr); queryShouldSurfaceDetectedLevel(expr) {
+	if HasParserStage(expr) {
+		if parsed, err := PipelineLabelsExpr(expr, s); err == nil && parsed != nil {
+			attrsExpr = parsed
+		}
+	}
+	if queryShouldSurfaceDetectedLevel(expr) {
 		attrsExpr = withDetectedLevel(s, attrsExpr)
 	}
 	return &chplan.Project{
