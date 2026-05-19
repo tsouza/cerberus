@@ -98,7 +98,7 @@ func run(logger *slog.Logger) error {
 	// `-timeout` worst-case budget:
 	//   waitCHReady (30s) + waitLokiReady (60s) + insertCHLogs / pushLoki
 	//   + flushLoki (synchronous, ingester-bound) + waitLokiIndexSettle
-	//   (30s) + waitLabelsNonEmpty × 2 (60s)
+	//   (90s) + waitLabelsNonEmpty × 2 (60s)
 	// 3 minutes is the bare minimum; 4 leaves headroom for slow CI runners
 	// and the post-flush TSDB index-build pass.
 	var (
@@ -728,12 +728,19 @@ func verifyBothNonEmpty(ctx context.Context, conn driver.Conn, lokiURL, cerbURL 
 //     returns a partial set under that regex shape — see the seriesURL
 //     comment below.)
 //
-// Poll: 1s interval, 30s deadline, progress log every 5s — see the
+// Poll: 1s interval, 90s deadline, progress log every 5s — see the
 // `settle*` constants inside. Mirrors the cadence in waitTempoReady /
 // pollTraceSpanCount over in the tempo-compatibility seeder.
+//
+// settleTimeout headroom rationale: the original 30s budget (PR #66)
+// flaked intermittently in CI when one of 13 streams lagged the rest
+// through Loki's ingester → TSDB flush path (observed in run
+// 26126374652: labels=9/9, series=12/13 after 30s). 90s absorbs the
+// slow-ingester tail without changing the steady-state cost — happy-path
+// runs still return in ~2-3s when all series land together.
 func waitLokiIndexSettle(ctx context.Context, baseURL string, streams []stream, start, end time.Time, logger *slog.Logger) error {
 	const (
-		settleTimeout    = 30 * time.Second
+		settleTimeout    = 90 * time.Second
 		settleInterval   = 1 * time.Second
 		settleProgressAt = 5 * time.Second
 	)
