@@ -159,7 +159,7 @@ func metricsInstantQueryParam(r *http.Request) string {
 // sample; the sort is defensive against a future RangeWindow that
 // returns multiple anchors.
 func toMetricsInstantSeries(samples []chclient.Sample, m *chplan.MetricsAggregate) []MetricsInstantSeries {
-	labelNames := metricsLabelNames(m.GroupByAliases, len(m.GroupBy))
+	labelNames := metricsLabelNames(m)
 
 	type bucket struct {
 		labels   []MetricsLabel

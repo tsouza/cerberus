@@ -334,21 +334,35 @@ func unwrapMetricsAggregate(plan chplan.Node) (*chplan.MetricsAggregate, bool) {
 	return nil, false
 }
 
+// tempoMultiQuantilePhiLabel is the synthetic label name the chsql
+// multi-quantile fan-out projects when MetricsAggregate.Quantiles
+// holds more than one phi. Lockstep with chsql's
+// `metricsMultiQuantilePhiLabel` (range_window.go) — both must agree
+// on the column alias so the handler can read it out of the row
+// stream and surface it as a wire-format label.
+const tempoMultiQuantilePhiLabel = "__phi__"
+
 // wrapMetricsForSample maps the matrix-shape RangeWindow's outer SELECT
 // (g0/<alias>..., anchor_ts, Value) into chclient.Sample's positional
 // shape (MetricName, Attributes, TimeUnix, Value). Attributes becomes
 // `map('<label>', toString(<alias>), ...)` (or an empty Map(String,String)
 // when there's no GroupBy); MetricName is empty (TraceQL has no
 // __name__); anchor_ts arrives as DateTime64(9) → time.Time on the wire.
+//
+// When MetricsAggregate.Quantiles carries multiple phi values, the chsql
+// emitter projects an extra `__phi__` String column per row; this wrap
+// includes it as a synthetic Attributes entry so each (group × phi)
+// pair becomes its own response series.
 func wrapMetricsForSample(rw *chplan.RangeWindow, m *chplan.MetricsAggregate) chplan.Node {
 	attrAliases := metricsOuterGroupAliases(m.GroupBy, m.GroupByAliases)
-	labelNames := metricsLabelNames(m.GroupByAliases, len(m.GroupBy))
+	labelNames := metricsLabelNames(m)
+	multiPhi := len(m.Quantiles) > 1
 
 	var attrs chplan.Expr
-	if len(m.GroupBy) == 0 {
+	if len(m.GroupBy) == 0 && !multiPhi {
 		attrs = emptyAttrsMap()
 	} else {
-		args := make([]chplan.Expr, 0, len(m.GroupBy)*2)
+		args := make([]chplan.Expr, 0, (len(m.GroupBy)+1)*2)
 		for i := range m.GroupBy {
 			args = append(
 				args,
@@ -357,6 +371,12 @@ func wrapMetricsForSample(rw *chplan.RangeWindow, m *chplan.MetricsAggregate) ch
 					Name: "toString",
 					Args: []chplan.Expr{&chplan.ColumnRef{Name: attrAliases[i]}},
 				},
+			)
+		}
+		if multiPhi {
+			args = append(args,
+				&chplan.LitString{V: tempoMultiQuantilePhiLabel},
+				&chplan.ColumnRef{Name: tempoMultiQuantilePhiLabel},
 			)
 		}
 		attrs = &chplan.FuncCall{Name: "map", Args: args}
@@ -395,15 +415,22 @@ func metricsOuterGroupAliases(groupBy []chplan.Expr, aliases []string) []string 
 
 // metricsLabelNames returns the user-facing label names the response's
 // {key,value} pairs surface — the lowering's GroupByAliases with a
-// fallback ("group_0", ...) for any empty alias slot.
-func metricsLabelNames(aliases []string, n int) []string {
-	out := make([]string, 0, n)
+// fallback ("group_0", ...) for any empty alias slot, plus the
+// synthetic `__phi__` label when MetricsAggregate.Quantiles carries
+// more than one phi value (the chsql multi-quantile fan-out adds the
+// extra column to the matrix shape).
+func metricsLabelNames(m *chplan.MetricsAggregate) []string {
+	n := len(m.GroupBy)
+	out := make([]string, 0, n+1)
 	for i := 0; i < n; i++ {
-		if i < len(aliases) && aliases[i] != "" {
-			out = append(out, aliases[i])
+		if i < len(m.GroupByAliases) && m.GroupByAliases[i] != "" {
+			out = append(out, m.GroupByAliases[i])
 			continue
 		}
 		out = append(out, "group_"+strconv.Itoa(i))
+	}
+	if len(m.Quantiles) > 1 {
+		out = append(out, tempoMultiQuantilePhiLabel)
 	}
 	return out
 }
@@ -413,7 +440,7 @@ func metricsLabelNames(aliases []string, n int) []string {
 // into one series, samples sorted ascending by timestamp. Series order
 // is deterministic (sorted by canonical label-set key).
 func toMetricsSeries(samples []chclient.Sample, m *chplan.MetricsAggregate) []MetricsSeries {
-	labelNames := metricsLabelNames(m.GroupByAliases, len(m.GroupBy))
+	labelNames := metricsLabelNames(m)
 
 	type bucket struct {
 		labels  []MetricsLabel
@@ -485,7 +512,7 @@ func labelsFromSample(attrs map[string]string, labelNames []string) []MetricsLab
 }
 
 func attachExemplars(series []MetricsSeries, exSamples []chclient.Sample, m *chplan.MetricsAggregate) {
-	labelNames := metricsLabelNames(m.GroupByAliases, len(m.GroupBy))
+	labelNames := metricsLabelNames(m)
 	byKey := make(map[string]*MetricsSeries, len(series))
 	for i := range series {
 		key := format.CanonicalKey(labelsToMap(series[i].Labels))
