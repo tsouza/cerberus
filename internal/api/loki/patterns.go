@@ -5,19 +5,11 @@ import (
 	"net/http"
 )
 
-// PatternsData is the body of a /loki/api/v1/patterns response. Each
-// pattern is a {pattern, samples} object where samples is a slice of
-// (unix_ms, count) tuples — matching Loki's documented schema.
-//
-// Cerberus's first cut returns an empty pattern list (see handler
-// docstring for the deferral rationale). The type is concrete so we can
-// fill it in without changing the wire shape later.
-type PatternsData struct {
-	Patterns []Pattern `json:"patterns"`
-}
-
 // Pattern is one detected log-line template plus its time-bucketed
-// sample counts.
+// sample counts. The upstream Loki contract (verified against
+// `pkg/util/marshal/marshal.go:WriteQueryPatternsResponseJSON`) emits
+// each sample as a `[unix_seconds, count]` 2-tuple — the timestamp is
+// `sample.Timestamp.Unix()`, which strips the millisecond component.
 type Pattern struct {
 	Pattern string     `json:"pattern"`
 	Samples [][2]int64 `json:"samples"`
@@ -31,9 +23,14 @@ type Pattern struct {
 // beast and Grafana's pattern panel renders an empty result gracefully.
 // The endpoint exists so Grafana's panel doesn't 404; it validates the
 // caller's parameters (so a broken `query` still returns 400) and then
-// emits {status:"success", data:{patterns:[]}}. A drain3-equivalent
-// pattern miner could run over the same peek-window used by
-// /detected_fields if there's demand.
+// emits `{status:"success", data:[]}`. A drain3-equivalent pattern
+// miner could run over the same peek-window used by /detected_fields if
+// there's demand (see `docs/loki-patterns-impl-plan.md` PR B).
+//
+// Note the wire shape: `data` is a top-level array of pattern series,
+// NOT a `{patterns: [...]}` wrapper. This matches upstream Loki's
+// `WriteQueryPatternsResponseJSON` exactly so Grafana's pattern panel
+// decodes cerberus responses without any client-side compatibility shim.
 func (h *Handler) handlePatterns(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query().Get("query")
 	if q == "" {
@@ -51,6 +48,6 @@ func (h *Handler) handlePatterns(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, Response{
 		Status: "success",
-		Data:   PatternsData{Patterns: []Pattern{}},
+		Data:   []Pattern{},
 	})
 }

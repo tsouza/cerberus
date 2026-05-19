@@ -417,7 +417,8 @@ func TestConformance_LokiDetectedFieldsWire(t *testing.T) {
 
 // TestConformance_LokiPatternsWire — empty-data envelope. Cerberus
 // doesn't run pattern discovery yet; the test pins the wire-stable
-// `data:{patterns:[]}` shape.
+// `data:[]` shape (top-level array, matching upstream Loki's
+// `WriteQueryPatternsResponseJSON`).
 func TestConformance_LokiPatternsWire(t *testing.T) {
 	t.Parallel()
 
@@ -441,14 +442,14 @@ func TestConformance_LokiPatternsWire(t *testing.T) {
 				t.Fatalf("status=%d body=%s", resp.StatusCode, body)
 			}
 			var env struct {
-				Status string            `json:"status"`
-				Data   loki.PatternsData `json:"data"`
+				Status string         `json:"status"`
+				Data   []loki.Pattern `json:"data"`
 			}
 			if err := json.Unmarshal(body, &env); err != nil {
 				t.Fatalf("decode: %v", err)
 			}
-			if env.Data.Patterns == nil {
-				t.Errorf("expected non-nil Patterns slice (JSON []); got nil — body=%s", body)
+			if env.Data == nil {
+				t.Errorf("expected non-nil Data slice (JSON []); got nil — body=%s", body)
 			}
 		})
 	}
