@@ -1,6 +1,8 @@
 package logql
 
 import (
+	"github.com/grafana/loki/v3/pkg/logql/syntax"
+
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/schema"
 )
@@ -217,4 +219,94 @@ func withDetectedLevel(s schema.Logs, baseLabels chplan.Expr) chplan.Expr {
 		Name: "mapConcat",
 		Args: []chplan.Expr{baseLabels, filtered},
 	}
+}
+
+// queryReferencesDetectedLevel reports whether the parsed LogQL
+// expression references the synthesized severity dimension anywhere
+// the user could observe it. Used by the log-stream projection in
+// [Lang.ProjectSamples] to gate the `withDetectedLevel` wrap so a bare
+// selector query (`{service="api"}`) doesn't gain a spurious
+// `detected_level` stream label that would split its single Loki
+// stream into one per severity (the loki-compat
+// fast/basic-selectors.yaml regression: cerberus emitted 4 streams per
+// service where reference Loki emits 1, because reference Loki only
+// surfaces `detected_level` on queries that explicitly reference it).
+//
+// The detection covers four user-visible forms:
+//
+//  1. Stream-selector matchers — `{detected_level="error"}`,
+//     `{level="warn"}`. The matcher name lands in
+//     [syntax.MatchersExpr.Mts].
+//  2. Pipe-stage label filters — `| detected_level="error"`,
+//     `| level=~"warn|error"`. The filter exposes its referenced label
+//     names via [log.LabelFilterer.RequiredLabelNames].
+//  3. Vector-aggregation grouping — `sum by (detected_level) (...)`,
+//     `sum by (level) (...)`, plus the `without (...)` mirror. The
+//     grouping labels live in [syntax.VectorAggregationExpr.Grouping].
+//  4. Range-aggregation grouping — `count_over_time({...}[5m]) by
+//     (detected_level)`, plus `without`. The grouping labels live in
+//     [syntax.RangeAggregationExpr.Grouping].
+//
+// Pipe stages that COULD produce a `level` key as part of their
+// parser-extracted labels (`| logfmt`, `| json`, `| regexp ...`,
+// `| pattern ...`, `| label_format ...`) don't count: the parser-
+// extracted `level` is itself a label-filter-context lookup against
+// the augmented labels map (see [isDetectedLevelLabel] vs
+// [isDetectedLevelGroupingLabel]) and doesn't drive the synthesized
+// SeverityText projection. Only an explicit reference at one of the
+// four sites above pulls `detected_level` into stream identity.
+//
+// Both `detected_level` and its `level` short alias trigger the wrap —
+// upstream Loki treats them as the same dimension once severity
+// detection settles, and the stream-identity layer surfaces the
+// canonical `detected_level` regardless of which form the user wrote.
+func queryReferencesDetectedLevel(expr syntax.Expr) bool {
+	if expr == nil {
+		return false
+	}
+	var found bool
+	expr.Walk(func(e syntax.Expr) bool {
+		if found {
+			return false
+		}
+		switch v := e.(type) {
+		case *syntax.MatchersExpr:
+			for _, m := range v.Mts {
+				if isDetectedLevelGroupingLabel(m.Name) {
+					found = true
+					return false
+				}
+			}
+		case *syntax.LabelFilterExpr:
+			if v.LabelFilterer == nil {
+				return true
+			}
+			for _, name := range v.LabelFilterer.RequiredLabelNames() {
+				if isDetectedLevelGroupingLabel(name) {
+					found = true
+					return false
+				}
+			}
+		case *syntax.VectorAggregationExpr:
+			if v.Grouping != nil {
+				for _, g := range v.Grouping.Groups {
+					if isDetectedLevelGroupingLabel(g) {
+						found = true
+						return false
+					}
+				}
+			}
+		case *syntax.RangeAggregationExpr:
+			if v.Grouping != nil {
+				for _, g := range v.Grouping.Groups {
+					if isDetectedLevelGroupingLabel(g) {
+						found = true
+						return false
+					}
+				}
+			}
+		}
+		return true
+	})
+	return found
 }

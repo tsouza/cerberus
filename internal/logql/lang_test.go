@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/grafana/loki/v3/pkg/logql/syntax"
+
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/engine"
 	"github.com/tsouza/cerberus/internal/logql"
@@ -301,32 +303,41 @@ func TestProjectSamples_VectorAggregateOverMatrixForwardsTimeUnix(t *testing.T) 
 	}
 }
 
-// TestProjectSamples_LogQuerySurfacesDetectedLevel pins the log-stream
-// branch's Attributes slot to a `mapConcat(...)` that folds the
-// synthesized `detected_level` label onto the row's ResourceAttributes.
+// TestProjectSamples_LogQuerySurfacesDetectedLevelWhenReferenced pins
+// the log-stream branch's Attributes slot to a `mapConcat(...)` that
+// folds the synthesized `detected_level` label onto the row's
+// ResourceAttributes WHEN the query explicitly references the label.
 //
-// Loki's stream-identity contract surfaces `detected_level` as a
-// structural label whenever the upstream row carries a severity-bearing
-// column. Cerberus mirrors that on the wire: the
-// `toStreamsWithTransform` pivot keys on `format.CanonicalKey(labels)`,
-// so adding `detected_level` to the labels map splits the streams
-// response into one Stream per distinct severity — matching upstream's
-// shape on a multi-level seed.
+// Reference Loki only surfaces `detected_level` as a stream-identity
+// label when the query asks for it (matcher, label filter, or grouping
+// clause). Cerberus mirrors that here: a query like `{job="api"} |
+// detected_level="error"` produces an Attributes slot wrapped with the
+// detected_level augmentation, so downstream stream-identity layers
+// see the synthesized severity dimension.
 //
-// The pre-detected_level wire-wrap projected `ResourceAttributes`
-// directly; this test pins the upgrade so a regression that reverts to
-// the bare column ref is caught synchronously rather than via the
-// loki-compat harness's "streams length: expected=4 actual=1" failure.
-func TestProjectSamples_LogQuerySurfacesDetectedLevel(t *testing.T) {
+// Pair with [TestProjectSamples_BareLogQueryDoesNotSurfaceDetectedLevel]
+// which pins the no-reference path — that's the loki-compat
+// `fast/basic-selectors.yaml :: streams[0] entry count` invariant
+// (cerberus auto-injecting `detected_level` on every log query split
+// each stream into one per severity).
+func TestProjectSamples_LogQuerySurfacesDetectedLevelWhenReferenced(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelLogs()
 	l := &logql.Lang{Schema: s}
 
+	expr, err := syntax.ParseExpr(`{job="api"} | detected_level="error"`)
+	if err != nil {
+		t.Fatalf("ParseExpr: %v", err)
+	}
+
 	// Log-stream queries lower to a Scan (or Filter(Scan)) — no inner
 	// Project layer. ProjectSamples wraps with the wire-shape projection.
 	plan := &chplan.Scan{Table: s.LogsTable}
-	wrapped := l.ProjectSamples(plan, engine.Meta{IsMetric: false})
+	wrapped := l.ProjectSamples(plan, engine.Meta{
+		IsMetric: false,
+		Extra:    map[string]any{"expr": expr},
+	})
 
 	proj, ok := wrapped.(*chplan.Project)
 	if !ok {
@@ -342,18 +353,124 @@ func TestProjectSamples_LogQuerySurfacesDetectedLevel(t *testing.T) {
 		t.Fatalf("attributes slot alias: got %q, want %q", attrsSlot.Alias, "Attributes")
 	}
 	// Must be a mapConcat(...) — the helper that folds detected_level
-	// onto the row's ResourceAttributes. A bare ColumnRef would mean
-	// the log-stream branch dropped the augmentation.
+	// onto the row's ResourceAttributes. A bare ColumnRef here would
+	// mean the conditional wrap missed the explicit `|
+	// detected_level=...` reference.
 	fn, ok := attrsSlot.Expr.(*chplan.FuncCall)
 	if !ok {
 		t.Fatalf("attributes slot expr: got %T, want *chplan.FuncCall "+
-			"(log-stream wire-wrap must wrap ResourceAttributes in a "+
-			"mapConcat that adds the synthesized `detected_level` label)",
+			"(wire-wrap must wrap ResourceAttributes in a mapConcat that "+
+			"adds the synthesized `detected_level` label when the query "+
+			"explicitly references it)",
 			attrsSlot.Expr)
 	}
 	if fn.Name != "mapConcat" {
 		t.Errorf("attributes slot FuncCall.Name: got %q, want %q "+
-			"(log-stream wire-wrap must fold detected_level via mapConcat)",
-			fn.Name, "mapConcat")
+			"(wire-wrap must fold detected_level via mapConcat when "+
+			"referenced)", fn.Name, "mapConcat")
+	}
+}
+
+// TestProjectSamples_BareLogQueryDoesNotSurfaceDetectedLevel pins the
+// inverse path: a bare selector query (`{service="api"}`) without any
+// `detected_level` / `level` reference must NOT gain the synthesized
+// label in its Attributes projection.
+//
+// Reference Loki only surfaces `detected_level` on queries that ask
+// for it; auto-injecting on every log query splits a single Loki
+// stream into one per severity, breaking the `fast/basic-selectors.yaml
+// :: streams[0] entry count` loki-compat invariant (4 cases failed
+// with `expected=246-338 actual=360-361` because cerberus emitted 4
+// streams per service where reference Loki emits 1). This test pins
+// the no-reference path so a regression to unconditional injection is
+// caught synchronously rather than via the compat harness.
+func TestProjectSamples_BareLogQueryDoesNotSurfaceDetectedLevel(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelLogs()
+	l := &logql.Lang{Schema: s}
+
+	expr, err := syntax.ParseExpr(`{service="api"}`)
+	if err != nil {
+		t.Fatalf("ParseExpr: %v", err)
+	}
+
+	plan := &chplan.Scan{Table: s.LogsTable}
+	wrapped := l.ProjectSamples(plan, engine.Meta{
+		IsMetric: false,
+		Extra:    map[string]any{"expr": expr},
+	})
+
+	proj, ok := wrapped.(*chplan.Project)
+	if !ok {
+		t.Fatalf("ProjectSamples returned %T, want *chplan.Project", wrapped)
+	}
+
+	attrsSlot := proj.Projections[1]
+	if attrsSlot.Alias != "Attributes" {
+		t.Fatalf("attributes slot alias: got %q, want %q", attrsSlot.Alias, "Attributes")
+	}
+	// Must be a bare ColumnRef on ResourceAttributes — the conditional
+	// wrap must skip the mapConcat augmentation when the query has no
+	// `detected_level` / `level` reference. A FuncCall here would mean
+	// the unconditional auto-injection reappeared.
+	colRef, ok := attrsSlot.Expr.(*chplan.ColumnRef)
+	if !ok {
+		t.Fatalf("attributes slot expr: got %T, want *chplan.ColumnRef "+
+			"(bare selector query must NOT wrap Attributes in mapConcat — "+
+			"auto-injecting detected_level on every log query splits each "+
+			"stream into one per severity, breaking the loki-compat "+
+			"fast/basic-selectors entry-count invariant)",
+			attrsSlot.Expr)
+	}
+	if colRef.Name != s.ResourceAttributesColumn {
+		t.Errorf("attributes slot ColumnRef.Name: got %q, want %q "+
+			"(schema's ResourceAttributesColumn)",
+			colRef.Name, s.ResourceAttributesColumn)
+	}
+}
+
+// TestProjectSamples_LogQueryWithDetectedLevelFilterTriggersWrap is a
+// focused coverage point for the label-filter reference path — the
+// `| detected_level="error"` form must trigger the wrap even though
+// the matcher itself sits in a pipe stage rather than the stream
+// selector. Same expectation as the explicit-matcher variant.
+func TestProjectSamples_LogQueryWithDetectedLevelFilterTriggersWrap(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelLogs()
+	l := &logql.Lang{Schema: s}
+
+	for _, q := range []string{
+		// label-filter form (pipe stage)
+		`{job="api"} | detected_level="error"`,
+		// short-alias label filter
+		`{job="api"} | level=~"error|warn"`,
+		// stream-selector form
+		`{detected_level="error"}`,
+	} {
+		t.Run(q, func(t *testing.T) {
+			t.Parallel()
+			expr, err := syntax.ParseExpr(q)
+			if err != nil {
+				t.Fatalf("ParseExpr: %v", err)
+			}
+			plan := &chplan.Scan{Table: s.LogsTable}
+			wrapped := l.ProjectSamples(plan, engine.Meta{
+				IsMetric: false,
+				Extra:    map[string]any{"expr": expr},
+			})
+			proj := wrapped.(*chplan.Project)
+			attrsSlot := proj.Projections[1]
+			fn, ok := attrsSlot.Expr.(*chplan.FuncCall)
+			if !ok {
+				t.Fatalf("attributes slot expr: got %T, want *chplan.FuncCall (mapConcat) for query %q",
+					attrsSlot.Expr, q)
+			}
+			if fn.Name != "mapConcat" {
+				t.Errorf("attributes slot FuncCall.Name: got %q, want %q for query %q",
+					fn.Name, "mapConcat", q)
+			}
+		})
 	}
 }
