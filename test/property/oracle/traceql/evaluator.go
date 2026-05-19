@@ -17,19 +17,26 @@ import (
 // Returns property.Outcome carrying:
 //
 //   - one row per matching span (labels: empty map) when the query is a
-//     bare selector;
-//   - exactly one row (labels: empty map) when the query carries a
-//     `| count() OP N` filter and the predicate is satisfied;
-//   - zero rows when the predicate is not satisfied;
+//     bare selector — Tempo's /api/search emits one TraceSummary per
+//     matching trace, and the generator stamps each span on its own
+//     TraceID so the per-trace and per-span counts coincide;
+//   - one row per matching trace whose per-trace count satisfies the
+//     `| count() OP N` predicate (labels: empty map). TraceQL's
+//     pipeline aggregates are trace-scoped per the spec —
+//     `{ ... } | count() > 0` returns one row per matching trace, not
+//     a single corpus-wide aggregate;
+//   - zero rows when no trace's per-trace count satisfies the
+//     predicate;
 //   - an Err otherwise (parse failure / unsupported shape).
 //
-// The single-row count shape mirrors Tempo's /api/search wire shape:
-// cerberus's handler emits one chclient.Sample row when count() passes
-// the scalar filter, zero rows when it doesn't — see
-// internal/api/tempo/handler.go's classifySearchErr path. The
-// framework's comparator counts rows-per-empty-label-key, so this
-// alignment lets the same CompareOutcomes diff catch drift on both
-// shapes.
+// The per-trace row shape mirrors Tempo's /api/search wire shape after
+// cerberus PR #536: the inner Aggregate groups by TraceId and emits
+// one chclient.Sample per matching trace (see
+// internal/api/tempo/handler.go's isSpansetAggregateShape +
+// spansetAggregateSampleProjections branch). The framework's
+// comparator counts rows-per-empty-label-key, so emitting one
+// empty-label row per matching trace lines up with the cerberus side's
+// `inspectedTraces == len(res.Samples)`.
 func Evaluate(d property.Dataset, q property.Query) property.Outcome {
 	parsed, err := parseQuery(q.String)
 	if err != nil {
@@ -38,20 +45,25 @@ func Evaluate(d property.Dataset, q property.Query) property.Outcome {
 
 	spans := filterSpans(d, parsed.selector)
 	if parsed.hasCount {
-		count := int64(len(spans))
-		if !compareCount(count, parsed.countOp, parsed.countN) {
-			return property.Outcome{Rows: nil}
+		// Trace-scoped count: group surviving spans by TraceID, then
+		// emit one outcome row per trace whose per-trace count
+		// satisfies `count() OP N`. Mirrors the per-trace aggregate
+		// cerberus emits (one chclient.Sample per matching TraceId)
+		// — see PR #536. The generator stamps each span on its own
+		// TraceID, so per-trace counts are usually 1; the predicate
+		// arithmetic still has to hold for the trace to surface.
+		perTrace := groupByTraceID(spans)
+		rows := make([]property.OutcomeRow, 0, len(perTrace))
+		for _, count := range perTrace {
+			if compareCount(count, parsed.countOp, parsed.countN) {
+				rows = append(rows, property.OutcomeRow{
+					Labels:      map[string]string{},
+					TimestampMs: 0,
+					Value:       0,
+				})
+			}
 		}
-		// Predicate holds → one outcome row. Cerberus's wire response
-		// surfaces this as a single chclient.Sample (the Aggregate
-		// path projects MetricName="", Value=count) which the
-		// handler reports as `inspectedTraces == 1`. We mirror that:
-		// one row, empty labels, no per-row payload — the
-		// comparator's per-group row-count check is the equivalence
-		// we're asserting.
-		return property.Outcome{Rows: []property.OutcomeRow{
-			{Labels: map[string]string{}, TimestampMs: 0, Value: 0},
-		}}
+		return property.Outcome{Rows: rows}
 	}
 
 	// Selector-only: one row per matching span. Labels stay empty so
@@ -73,10 +85,24 @@ func Evaluate(d property.Dataset, q property.Query) property.Outcome {
 	return property.Outcome{Rows: rows}
 }
 
+// groupByTraceID buckets surviving spans by TraceID and returns each
+// bucket's per-trace count. The generator stamps each span on its own
+// TraceID via deterministicTraceID(i, …) so most buckets are size 1,
+// but the helper is shape-agnostic — a future generator widening
+// (multi-span traces) flows through unchanged.
+func groupByTraceID(spans []spanView) map[string]int64 {
+	out := map[string]int64{}
+	for _, s := range spans {
+		out[s.traceID]++
+	}
+	return out
+}
+
 // spanView is the oracle's per-span snapshot: just the fields the
 // evaluator needs to apply the selector and aggregate. Built once per
 // Evaluate call from the dataset's MetricsModel series.
 type spanView struct {
+	traceID       string
 	service       string
 	name          string
 	startTimeMs   int64
@@ -85,7 +111,9 @@ type spanView struct {
 
 // filterSpans pivots the dataset's MetricsModel into the spanView
 // shape and applies the selector predicate. Only one selector kind is
-// supported today: `resource.service.name = "<value>"`.
+// supported today: `resource.service.name = "<value>"`. The TraceID
+// is threaded through so trace-scoped aggregates (`| count()`) can
+// bucket by trace identity rather than flattening across the corpus.
 func filterSpans(d property.Dataset, sel selector) []spanView {
 	if d.Metrics == nil {
 		return nil
@@ -105,6 +133,7 @@ func filterSpans(d property.Dataset, sel selector) []spanView {
 			durFloat = s.Points[0].Value
 		}
 		out = append(out, spanView{
+			traceID:       s.Labels["__traceID__"],
 			service:       svc,
 			name:          s.MetricName,
 			startTimeMs:   startMs,
