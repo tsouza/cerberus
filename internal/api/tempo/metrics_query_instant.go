@@ -131,9 +131,18 @@ func (h *Handler) handleMetricsQueryInstant(w http.ResponseWriter, r *http.Reque
 		"traceql", q, "start", start, "end", end, "step", step,
 		"sql", res.SQL, "args", res.Args)
 
+	// quantile_over_time: same bucket-shape → quantile collapse as in
+	// the range handler — Tempo's reference engine routes the instant
+	// shape through the same HistogramAggregator, so the post-processor
+	// runs before the instant projection.
+	samples := res.Samples
+	if metrics.Op == chplan.MetricsOpQuantileOverTime {
+		samples = postProcessQuantileBuckets(samples, metrics)
+	}
+
 	writeEngineHeaders(w, res.Headers)
 	writeJSON(w, http.StatusOK, MetricsQueryInstantResponse{
-		Series: toMetricsInstantSeries(res.Samples, metrics),
+		Series: toMetricsInstantSeries(samples, metrics),
 	})
 }
 

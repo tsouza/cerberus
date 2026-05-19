@@ -225,6 +225,9 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 			}
 			fmt.Fprintf(b, " quantiles=[%s]", strings.Join(qs, ", "))
 		}
+		if v.IsDuration {
+			b.WriteString(" duration=true")
+		}
 		if v.ValueAlias != "" {
 			fmt.Fprintf(b, " valueAlias=%s", v.ValueAlias)
 		}
