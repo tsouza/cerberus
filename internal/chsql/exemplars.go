@@ -3,6 +3,7 @@ package chsql
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	"github.com/tsouza/cerberus/internal/cerbtrace"
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -192,15 +193,23 @@ func (e *emitter) emitMetricsExemplars(
 			Call("toString", Col(a)),
 		)
 	}
-	// Ungrouped queries surface a single `{__name__="<op>"}` series in
-	// the matrix-shape response (mirroring Tempo's UngroupedAggregator;
-	// see internal/api/tempo/metrics_query_range.go::wrapMetricsForSample).
-	// The exemplar response keys series by the same canonical label-set
-	// hash via attachExemplars, so the exemplar Attributes must carry
-	// the same `__name__=<op>` entry — otherwise the exemplar's
-	// canonical key drifts to the empty label set and no series in the
-	// matrix shape matches.
-	if len(groupAliases) == 0 {
+	// quantile_over_time series are keyed by a `p="<phi>"` label
+	// (mirroring Tempo's HistogramAggregator; see
+	// internal/api/tempo/metrics_query_range.go::wrapMetricsForSample).
+	// Other ungrouped ops are keyed by `__name__="<op>"` (Tempo's
+	// UngroupedAggregator wire shape). The exemplar response keys
+	// series by the same canonical label-set hash via attachExemplars,
+	// so the exemplar Attributes must carry the same per-op entry —
+	// otherwise the exemplar's canonical key drifts and no series in
+	// the matrix shape matches.
+	switch {
+	case m.Op == chplan.MetricsOpQuantileOverTime && len(m.Quantiles) == 1:
+		attrMapFrags = append(
+			attrMapFrags,
+			Lit("p"),
+			Lit(strconv.FormatFloat(m.Quantiles[0], 'f', -1, 64)),
+		)
+	case len(groupAliases) == 0 && m.Op != chplan.MetricsOpQuantileOverTime:
 		attrMapFrags = append(
 			attrMapFrags,
 			Lit("__name__"),

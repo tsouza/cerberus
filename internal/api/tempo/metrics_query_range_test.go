@@ -393,13 +393,17 @@ func TestMetricsQueryRange_DurationAggInSeconds(t *testing.T) {
 	cases := []struct {
 		name  string
 		query string
-		op    string // expected __name__ label value
+		// labels mimics the row Labels the matrix SQL projects for this
+		// op. Non-quantile ungrouped ops surface `__name__=<op>` (Tempo
+		// UngroupedAggregator parity); quantile_over_time surfaces
+		// `p=<phi>` (Tempo HistogramAggregator parity).
+		labels map[string]string
 	}{
-		{"avg_over_time", "{} | avg_over_time(duration)", "avg_over_time"},
-		{"sum_over_time", "{} | sum_over_time(duration)", "sum_over_time"},
-		{"min_over_time", "{} | min_over_time(duration)", "min_over_time"},
-		{"max_over_time", "{} | max_over_time(duration)", "max_over_time"},
-		{"quantile_over_time", "{} | quantile_over_time(duration, 0.95)", "quantile_over_time"},
+		{"avg_over_time", "{} | avg_over_time(duration)", map[string]string{"__name__": "avg_over_time"}},
+		{"sum_over_time", "{} | sum_over_time(duration)", map[string]string{"__name__": "sum_over_time"}},
+		{"min_over_time", "{} | min_over_time(duration)", map[string]string{"__name__": "min_over_time"}},
+		{"max_over_time", "{} | max_over_time(duration)", map[string]string{"__name__": "max_over_time"}},
+		{"quantile_over_time", "{} | quantile_over_time(duration, 0.95)", map[string]string{"p": "0.95"}},
 	}
 
 	for _, tc := range cases {
@@ -410,7 +414,7 @@ func TestMetricsQueryRange_DurationAggInSeconds(t *testing.T) {
 			mid := time.Date(2026, 5, 12, 10, 1, 0, 0, time.UTC)
 			q := &stubQuerier{samples: []chclient.Sample{{
 				MetricName: "",
-				Labels:     map[string]string{"__name__": tc.op},
+				Labels:     tc.labels,
 				Timestamp:  mid,
 				// Seed a value mimicking what CH would return after
 				// the `/ 1e9` divisor — a sub-second duration. The
@@ -1092,4 +1096,199 @@ func TestMetricsQueryRange_ResourceLabelWireShape(t *testing.T) {
 				i, s.Labels[0].Key, "resource.service.name")
 		}
 	}
+}
+
+// TestMetricsQueryRange_QuantileOverTimeWireShape pins the
+// HistogramAggregator parity contract for `quantile_over_time` end to
+// end: every per-phi series MUST carry a `p="<phi>"` label and MUST
+// NOT carry `__name__="quantile_over_time"`. Tempo routes
+// quantile_over_time through HistogramAggregator
+// (engine_metrics.go::HistogramAggregator.Results), which appends
+// `Label{"p", NewStaticFloat(q)}` to every series — so the
+// tempo-compat differ canonicalises each series under that key. Before
+// this fix cerberus emitted the UngroupedAggregator-style
+// `{__name__="quantile_over_time"}` shape (PR #554) which diverged
+// from Tempo and tripped the differ on `missing_in_a` for
+// metrics_quantile_over_time_p95.
+//
+// Covers both ungrouped (`{p="0.95"}`) and grouped
+// (`{resource.service.name="...", p="0.95"}`) wire shapes; the
+// single-phi label value is injected as an inline literal because the
+// chsql single-phi path doesn't project a per-row phi column.
+func TestMetricsQueryRange_QuantileOverTimeWireShape(t *testing.T) {
+	t.Parallel()
+
+	ts := time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC)
+
+	cases := []struct {
+		name      string
+		query     string
+		labels    map[string]string
+		wantPairs []tempo.MetricsLabel // ordered, matches metricsLabelNames output
+	}{
+		{
+			name:   "ungrouped_single_phi",
+			query:  "{} | quantile_over_time(duration, 0.95)",
+			labels: map[string]string{"p": "0.95"},
+			wantPairs: []tempo.MetricsLabel{
+				{Key: "p", Value: "0.95"},
+			},
+		},
+		{
+			name:  "grouped_single_phi",
+			query: "{} | quantile_over_time(duration, 0.95) by (resource.service.name)",
+			labels: map[string]string{
+				"resource.service.name": "frontend",
+				"p":                     "0.95",
+			},
+			wantPairs: []tempo.MetricsLabel{
+				{Key: "resource.service.name", Value: "frontend"},
+				{Key: "p", Value: "0.95"},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			q := &stubQuerier{samples: []chclient.Sample{{
+				MetricName: "",
+				Labels:     tc.labels,
+				Timestamp:  ts,
+				Value:      0.5,
+			}}}
+			srv := newServer(q, "v1.0.0-test")
+			t.Cleanup(srv.Close)
+
+			u := metricsQueryRangeURL(srv.URL, tc.query, map[string]string{
+				"start": fixtureStartUnix,
+				"end":   fixtureEndUnix,
+				"step":  "60s",
+			})
+			resp, err := http.Get(u)
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status=%d body=%s", resp.StatusCode, readBody(t, resp))
+			}
+
+			var body tempo.MetricsQueryRangeResponse
+			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if len(body.Series) != 1 {
+				t.Fatalf("expected 1 series, got %d: %+v", len(body.Series), body)
+			}
+			gotLabels := body.Series[0].Labels
+			if len(gotLabels) != len(tc.wantPairs) {
+				t.Fatalf("labels = %d entries, want %d: got=%+v want=%+v",
+					len(gotLabels), len(tc.wantPairs), gotLabels, tc.wantPairs)
+			}
+			for i, want := range tc.wantPairs {
+				if gotLabels[i].Key != want.Key || gotLabels[i].Value != want.Value {
+					t.Errorf("labels[%d] = %+v, want %+v", i, gotLabels[i], want)
+				}
+			}
+
+			// `__name__` MUST NOT appear: HistogramAggregator path
+			// doesn't go through UngroupedAggregator, so the Tempo
+			// reference response has no metric-name synthetic.
+			for _, l := range gotLabels {
+				if l.Key == "__name__" {
+					t.Errorf("quantile_over_time leaked __name__ label: %+v", gotLabels)
+				}
+			}
+
+			// The chsql single-phi path emits `quantile(?)(...)` (not
+			// the multi-phi `quantiles(...)` fan-out); confirm the SQL
+			// shape so a future refactor that swaps the SQL emit can't
+			// silently re-introduce a `__phi__` column for single-phi.
+			assertSQLContains(t, q.lastSQL, "quantile(?)")
+			if strings.Contains(q.lastSQL, "qs_array") {
+				t.Errorf("single-phi quantile SQL unexpectedly fans out via qs_array: %s", q.lastSQL)
+			}
+		})
+	}
+}
+
+// TestMetricsQueryRange_MultiQuantileOverTimeWireShape pins the
+// multi-phi quantile_over_time wire shape: the chsql fan-out projects
+// one row per (group, anchor, phi) tuple with the synthetic `__phi__`
+// SQL column carrying the phi string, surfaced on the wire under the
+// Tempo-canonical `p` key. Each phi value becomes its own
+// MetricsSeries.
+//
+// Mirrors Tempo's HistogramAggregator emitting one TimeSeries per phi
+// per group (engine_metrics.go::HistogramAggregator.Results) labelled
+// `Label{"p", NewStaticFloat(q)}`.
+func TestMetricsQueryRange_MultiQuantileOverTimeWireShape(t *testing.T) {
+	t.Parallel()
+
+	ts := time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC)
+
+	// One row per phi — matches what the chsql multi-phi fan-out
+	// (arrayJoin of (phi, value) tuples) projects after the wrap maps
+	// `__phi__` to the wire key `p`.
+	q := &stubQuerier{samples: []chclient.Sample{
+		{Labels: map[string]string{"p": "0.5"}, Timestamp: ts, Value: 0.1},
+		{Labels: map[string]string{"p": "0.9"}, Timestamp: ts, Value: 0.2},
+		{Labels: map[string]string{"p": "0.99"}, Timestamp: ts, Value: 0.3},
+	}}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	u := metricsQueryRangeURL(srv.URL,
+		"{} | quantile_over_time(duration, 0.5, 0.9, 0.99)",
+		map[string]string{
+			"start": fixtureStartUnix,
+			"end":   fixtureEndUnix,
+			"step":  "60s",
+		})
+	resp, err := http.Get(u)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+
+	var body tempo.MetricsQueryRangeResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Series) != 3 {
+		t.Fatalf("expected 3 per-phi series, got %d: %+v", len(body.Series), body)
+	}
+	// Each series must carry exactly one label `{p="<phi>"}`. Series
+	// order is deterministic via the canonical-key sort in
+	// toMetricsSeries (sorted by "p=<phi>\n" key) — verify each phi
+	// shows up exactly once rather than depending on the sort order.
+	gotPhis := map[string]bool{}
+	for _, s := range body.Series {
+		if len(s.Labels) != 1 {
+			t.Errorf("expected 1 label per series, got %+v", s.Labels)
+			continue
+		}
+		if s.Labels[0].Key != "p" {
+			t.Errorf("expected label key 'p', got %q", s.Labels[0].Key)
+		}
+		gotPhis[s.Labels[0].Value] = true
+	}
+	for _, want := range []string{"0.5", "0.9", "0.99"} {
+		if !gotPhis[want] {
+			t.Errorf("missing per-phi series for p=%q: gotPhis=%v", want, gotPhis)
+		}
+	}
+
+	// SQL shape: must carry the multi-phi fan-out (qs_array + phi_val
+	// + __phi__ column alias). The wire key change (`p`) is in the
+	// handler wrap, not in the chsql layer — the SQL alias stays
+	// `__phi__`.
+	assertSQLContains(t, q.lastSQL, "qs_array")
+	assertSQLContains(t, q.lastSQL, "__phi__")
 }

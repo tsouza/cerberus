@@ -351,12 +351,14 @@ func unwrapMetricsAggregate(plan chplan.Node) (*chplan.MetricsAggregate, bool) {
 	return nil, false
 }
 
-// tempoMultiQuantilePhiLabel is the synthetic label name the chsql
+// tempoMultiQuantilePhiLabel is the synthetic alias the chsql
 // multi-quantile fan-out projects when MetricsAggregate.Quantiles
 // holds more than one phi. Lockstep with chsql's
 // `metricsMultiQuantilePhiLabel` (range_window.go) — both must agree
 // on the column alias so the handler can read it out of the row
-// stream and surface it as a wire-format label.
+// stream. The wire-side label key is `tempoQuantileLabel` ("p"),
+// mirroring Tempo's HistogramAggregator (engine_metrics.go) which
+// appends `Label{"p", NewStaticFloat(q)}` to each per-quantile series.
 const tempoMultiQuantilePhiLabel = "__phi__"
 
 // tempoMetricNameLabel mirrors the Prometheus-style `__name__` label
@@ -368,7 +370,26 @@ const tempoMultiQuantilePhiLabel = "__phi__"
 // the differ in compatibility/tempo) can always key series by at least
 // one label. Cerberus mirrors that shape so an ungrouped response
 // canonicalises identically across the two backends.
+//
+// `quantile_over_time` is the lone exception — Tempo routes it through
+// HistogramAggregator rather than UngroupedAggregator, so the wire
+// shape is `{p="<phi>"}` (see tempoQuantileLabel) instead of
+// `{__name__="quantile_over_time"}`. wrapMetricsForSample +
+// metricsLabelNames branch on Op to honour that.
 const tempoMetricNameLabel = "__name__"
+
+// tempoQuantileLabel mirrors the `p` label Tempo's HistogramAggregator
+// (engine_metrics.go) appends to every series produced by
+// `quantile_over_time(...)`. The label value is the phi formatted via
+// `strconv.FormatFloat('f', -1, 64)` (e.g. 0.95 → "0.95") — matching
+// what the differ in compatibility/tempo extracts from Tempo's
+// `doubleValue` AnyValue via `fmt.Sprint(*anyV.DoubleValue)` and what
+// chsql's `metricsMultiQuantileFanoutFrag` projects via `formatFloat`
+// for the multi-phi fan-out column. Per-phi series are emitted whether
+// or not the query carries a `by(...)` clause: ungrouped queries get
+// `{p="<phi>"}` rather than `{__name__="quantile_over_time"}` because
+// Tempo's UngroupedAggregator is not on the quantile path.
+const tempoQuantileLabel = "p"
 
 // wrapMetricsForSample maps the matrix-shape RangeWindow's outer SELECT
 // (g0/<alias>..., anchor_ts, Value) into chclient.Sample's positional
@@ -395,33 +416,31 @@ const tempoMetricNameLabel = "__name__"
 // emitter keep emitting compact column aliases without disturbing the
 // wire shape Grafana's Tempo datasource consumes.
 //
-// When MetricsAggregate.Quantiles carries multiple phi values, the chsql
-// emitter projects an extra `__phi__` String column per row; this wrap
-// includes it as a synthetic Attributes entry so each (group × phi)
-// pair becomes its own response series.
+// `quantile_over_time` follows the HistogramAggregator path in Tempo
+// (engine_metrics.go: NewHistogramAggregator + Results) rather than
+// UngroupedAggregator, so every output series carries a `p="<phi>"`
+// label and never `__name__="quantile_over_time"`. The single-phi
+// branch injects the phi string as an inline literal because the chsql
+// emitter doesn't project a per-row phi column in that case; the
+// multi-phi branch surfaces the synthetic `__phi__` column produced by
+// the chsql fan-out under the wire-canonical `p` key so each
+// (group × phi) pair becomes its own response series.
 func wrapMetricsForSample(rw *chplan.RangeWindow, m *chplan.MetricsAggregate) chplan.Node {
 	attrAliases := metricsOuterGroupAliases(m.GroupBy, m.GroupByAliases)
 	labelNames := metricsLabelNames(m)
 	multiPhi := len(m.Quantiles) > 1
+	isQuantile := m.Op == chplan.MetricsOpQuantileOverTime
 
 	var attrs chplan.Expr
 	switch {
-	case len(m.GroupBy) == 0 && !multiPhi:
-		// Ungrouped: emit Tempo's UngroupedAggregator-style
-		// `{__name__="<op>"}` label so the response series is keyed by
-		// `__name__` rather than the empty label set. The constant
-		// op-name comes from chplan.MetricsOp.String() (rate /
-		// count_over_time / avg_over_time / quantile_over_time / ...),
-		// matching the upstream wire form
-		// LabelsFromArgs(labels.MetricName, op.String()).
-		attrs = &chplan.FuncCall{
-			Name: "map",
-			Args: []chplan.Expr{
-				&chplan.LitString{V: tempoMetricNameLabel},
-				&chplan.LitString{V: m.Op.String()},
-			},
-		}
-	default:
+	case isQuantile:
+		// quantile_over_time is special: Tempo's HistogramAggregator
+		// appends `Label{"p", NewStaticFloat(q)}` to every per-phi
+		// series, regardless of whether the query has a `by(...)`
+		// clause. The chsql emitter projects a `__phi__` String column
+		// for the multi-phi fan-out, but the single-phi path returns
+		// just the value column — so the handler injects the phi as an
+		// inline literal in that branch.
 		args := make([]chplan.Expr, 0, (len(m.GroupBy)+1)*2)
 		for i := range m.GroupBy {
 			args = append(
@@ -433,11 +452,44 @@ func wrapMetricsForSample(rw *chplan.RangeWindow, m *chplan.MetricsAggregate) ch
 				},
 			)
 		}
+		args = append(args, &chplan.LitString{V: tempoQuantileLabel})
 		if multiPhi {
+			args = append(args, &chplan.ColumnRef{Name: tempoMultiQuantilePhiLabel})
+		} else if len(m.Quantiles) == 1 {
+			args = append(args, &chplan.LitString{V: formatPhi(m.Quantiles[0])})
+		} else {
+			// MetricsAggregate.Quantiles is empty — the chsql emitter
+			// would reject this earlier with ErrUnsupported, but
+			// defensively project an empty string so the response shape
+			// stays self-consistent rather than crashing on
+			// args[len-1].
+			args = append(args, &chplan.LitString{V: ""})
+		}
+		attrs = &chplan.FuncCall{Name: "map", Args: args}
+	case len(m.GroupBy) == 0:
+		// Ungrouped non-quantile: emit Tempo's UngroupedAggregator-style
+		// `{__name__="<op>"}` label so the response series is keyed by
+		// `__name__` rather than the empty label set. The constant
+		// op-name comes from chplan.MetricsOp.String() (rate /
+		// count_over_time / avg_over_time / ...), matching the upstream
+		// wire form LabelsFromArgs(labels.MetricName, op.String()).
+		attrs = &chplan.FuncCall{
+			Name: "map",
+			Args: []chplan.Expr{
+				&chplan.LitString{V: tempoMetricNameLabel},
+				&chplan.LitString{V: m.Op.String()},
+			},
+		}
+	default:
+		args := make([]chplan.Expr, 0, len(m.GroupBy)*2)
+		for i := range m.GroupBy {
 			args = append(
 				args,
-				&chplan.LitString{V: tempoMultiQuantilePhiLabel},
-				&chplan.ColumnRef{Name: tempoMultiQuantilePhiLabel},
+				&chplan.LitString{V: labelNames[i]},
+				&chplan.FuncCall{
+					Name: "toString",
+					Args: []chplan.Expr{&chplan.ColumnRef{Name: attrAliases[i]}},
+				},
 			)
 		}
 		attrs = &chplan.FuncCall{Name: "map", Args: args}
@@ -452,6 +504,18 @@ func wrapMetricsForSample(rw *chplan.RangeWindow, m *chplan.MetricsAggregate) ch
 			{Expr: &chplan.ColumnRef{Name: m.ValueAlias}, Alias: "Value"},
 		},
 	}
+}
+
+// formatPhi renders a phi value (0 <= phi <= 1) into the wire-format
+// string Tempo's HistogramAggregator surfaces on the `p` label. Mirrors
+// `strconv.FormatFloat(v, 'f', -1, 64)` — what chsql's
+// metricsMultiQuantileFanoutFrag uses for the inline-literal phi
+// strings in the multi-phi fan-out, and what `fmt.Sprint(float64)`
+// returns when the differ stringifies Tempo's `doubleValue` AnyValue.
+// Stable for the phi values cerberus accepts (0 → "0", 0.5 → "0.5",
+// 0.95 → "0.95", 1 → "1").
+func formatPhi(v float64) string {
+	return strconv.FormatFloat(v, 'f', -1, 64)
 }
 
 // metricsOuterGroupAliases mirrors the unexported chsql.outerGroupAliases:
@@ -480,16 +544,21 @@ func metricsOuterGroupAliases(groupBy []chplan.Expr, aliases []string) []string 
 // `resource.service.name`, `span.http.method`, or a bare intrinsic name
 // like `kind`), with a fallback to GroupByAliases (bare attribute
 // path) when the lowering didn't populate the display slice, and a
-// further fallback ("group_0", ...) for any empty slot. Plus the
-// synthetic `__phi__` label when MetricsAggregate.Quantiles carries
-// more than one phi value (the chsql multi-quantile fan-out adds the
-// extra column to the matrix shape).
+// further fallback ("group_0", ...) for any empty slot.
 //
-// For ungrouped metrics queries (no `by(...)` clause and no multi-phi
-// fan-out) the slice is `["__name__"]` so labelsFromSample preserves
-// the order expected by Tempo's UngroupedAggregator wire shape (a
-// single `__name__=<op>` label per series — see wrapMetricsForSample's
-// doc-comment for the upstream reference).
+// For `quantile_over_time` the slice ends with `"p"` — every per-phi
+// series carries that label (Tempo HistogramAggregator parity). This
+// holds whether or not the query has a `by(...)` clause, and whether
+// the chsql emit is single-phi (no extra column; wrapMetricsForSample
+// injects the phi as a literal) or multi-phi (the chsql fan-out
+// projects a `__phi__` String column that wrapMetricsForSample
+// references and surfaces under the wire key `p`).
+//
+// For ungrouped non-quantile metrics queries the slice is
+// `["__name__"]` so labelsFromSample preserves the order expected by
+// Tempo's UngroupedAggregator wire shape (a single `__name__=<op>`
+// label per series — see wrapMetricsForSample's doc-comment for the
+// upstream reference).
 //
 // Aligning with the upstream Tempo response shape: the reference
 // /api/metrics/query_range emits `resource.service.name` for a
@@ -500,8 +569,8 @@ func metricsOuterGroupAliases(groupBy []chplan.Expr, aliases []string) []string 
 // `by (resource.res_attr)` query.
 func metricsLabelNames(m *chplan.MetricsAggregate) []string {
 	n := len(m.GroupBy)
-	multiPhi := len(m.Quantiles) > 1
-	if n == 0 && !multiPhi {
+	isQuantile := m.Op == chplan.MetricsOpQuantileOverTime
+	if n == 0 && !isQuantile {
 		return []string{tempoMetricNameLabel}
 	}
 	out := make([]string, 0, n+1)
@@ -516,8 +585,8 @@ func metricsLabelNames(m *chplan.MetricsAggregate) []string {
 		}
 		out = append(out, "group_"+strconv.Itoa(i))
 	}
-	if multiPhi {
-		out = append(out, tempoMultiQuantilePhiLabel)
+	if isQuantile {
+		out = append(out, tempoQuantileLabel)
 	}
 	return out
 }
