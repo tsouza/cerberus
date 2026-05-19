@@ -504,27 +504,35 @@ func canonicalSampleProjections(s schema.Traces) []chplan.Projection {
 	}
 }
 
-// rQualifiedSampleProjections mirrors canonicalSampleProjections but
-// reaches into R's columns via the `R.<col>` qualifier. Used for direct
-// structural ops (`>` / `<` / `~`) where the inner `SELECT R.* FROM
-// (otel_traces) L INNER JOIN (otel_traces) R ON …` keeps R's columns
-// addressable only as `R.<col>` at the outer scope (bare `<col>`
-// produces `Unknown expression identifier 'SpanName'` because L and R
-// share names).
+// rQualifiedSampleProjections is preserved for direct structural ops
+// (`>` / `<` / `~`) where the lowering wraps the join in an inner
+// `SELECT R.TraceId AS TraceId, R.SpanId AS SpanId, R.ParentSpanId AS
+// ParentSpanId, R.* EXCEPT (TraceId, SpanId, ParentSpanId) FROM
+// (otel_traces) L INNER JOIN (otel_traces) R ON …` (see chsql
+// structural-join wrap landed in PR #489). After that wrap, R's
+// columns are exposed at the inner subquery's output without any
+// qualifier, so the outer projections must use bare names — adding
+// `R.` would produce `Unknown expression identifier 'R.SpanName' in
+// scope` because the outer FROM is the un-aliased wrap subquery.
+//
+// This function is the bare-column equivalent of canonicalSample
+// Projections; the call-site branch on `Op.Positive()` is preserved
+// for parity with the historical descendant/ancestor split, but both
+// arms now emit identical projections.
 func rQualifiedSampleProjections(s schema.Traces) []chplan.Projection {
 	traceIDMap := &chplan.FuncCall{Name: "map", Args: []chplan.Expr{
 		&chplan.LitString{V: searchKeyTraceID},
-		&chplan.ColumnRef{Qualifier: "R", Name: s.TraceIDColumn},
+		&chplan.ColumnRef{Name: s.TraceIDColumn},
 	}}
 	mergedAttrs := &chplan.FuncCall{Name: "mapConcat", Args: []chplan.Expr{
-		&chplan.ColumnRef{Qualifier: "R", Name: s.ResourceAttributesColumn},
+		&chplan.ColumnRef{Name: s.ResourceAttributesColumn},
 		traceIDMap,
 	}}
 	return []chplan.Projection{
-		{Expr: &chplan.ColumnRef{Qualifier: "R", Name: s.SpanNameColumn}, Alias: "MetricName"},
+		{Expr: &chplan.ColumnRef{Name: s.SpanNameColumn}, Alias: "MetricName"},
 		{Expr: mergedAttrs, Alias: "Attributes"},
-		{Expr: &chplan.ColumnRef{Qualifier: "R", Name: s.TimestampColumn}, Alias: "TimeUnix"},
-		{Expr: &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{&chplan.ColumnRef{Qualifier: "R", Name: s.DurationColumn}}}, Alias: "Value"},
+		{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: "TimeUnix"},
+		{Expr: &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.DurationColumn}}}, Alias: "Value"},
 	}
 }
 
