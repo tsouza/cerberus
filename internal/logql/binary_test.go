@@ -7,6 +7,7 @@ import (
 
 	"github.com/grafana/loki/v3/pkg/logql/syntax"
 
+	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
@@ -135,5 +136,72 @@ func TestLowerBinaryRejectsNilLeg(t *testing.T) {
 				t.Fatalf("lowerBinary with %s: error %q does not mention 'nil leg'", tc.name, err.Error())
 			}
 		})
+	}
+}
+
+// TestLowerVectorScalarBoolModifierGate pins the
+// `isComparison(op) && returnBool` gate inside [lowerVectorScalar]. The
+// guard determines whether the comparison's Bool-typed result is
+// re-wrapped in `toFloat64(...)` before flowing into Value.
+//
+// An INVERT_LOGICAL mutant flips `&&` to `||`, causing two divergent
+// behaviours:
+//
+//   - non-comparison op + returnBool == true: original keeps Value as
+//     the raw Binary node; mutant wraps it in toFloat64. The Project's
+//     Value projection differs by node type.
+//   - comparison op + returnBool == false: the second guard
+//     (`isComparison(op) && !returnBool`) short-circuits to a Filter
+//     return, so the two mutants converge — this case can't tell them
+//     apart, but the non-comparison case above already does.
+//
+// We exercise the non-comparison branch directly to surface the mutant.
+// LogQL syntax doesn't permit `bool` on non-comparison ops, but the
+// lowering function accepts any (op, returnBool) pair, so we call it
+// with `op=OpAdd, returnBool=true` to pin the gate. The resulting
+// Project's Value projection MUST be a `*chplan.Binary` — the mutant
+// would wrap it in a `toFloat64` *chplan.FuncCall instead.
+func TestLowerVectorScalarBoolModifierGate(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelLogs()
+
+	// `rate({app="api"}[1m])` lowers to a RangeWindow — the inner
+	// shape `projectValueOverLogInner` recognises and projects to
+	// (ResourceAttributes, Value).
+	vecExpr, err := syntax.ParseExpr(`rate({app="api"}[1m])`)
+	if err != nil {
+		t.Fatalf("ParseExpr: %v", err)
+	}
+
+	node, err := lowerVectorScalar(vecExpr, s, chplan.OpAdd, 5, false /*scalarOnLeft*/, true /*returnBool*/, lowerCtx{})
+	if err != nil {
+		t.Fatalf("lowerVectorScalar: %v", err)
+	}
+
+	proj, ok := node.(*chplan.Project)
+	if !ok {
+		t.Fatalf("lowerVectorScalar returned %T, want *chplan.Project", node)
+	}
+
+	// Find the Value projection. projectValueOverLogInner places
+	// it under the `Value` alias (rangeAggSynthValueColumn).
+	var valueExpr chplan.Expr
+	for _, p := range proj.Projections {
+		if p.Alias == rangeAggSynthValueColumn {
+			valueExpr = p.Expr
+			break
+		}
+	}
+	if valueExpr == nil {
+		t.Fatalf("lowerVectorScalar: Project has no `Value` projection (alias=%q)", rangeAggSynthValueColumn)
+	}
+
+	// Non-comparison op with returnBool=true: the gate is false in
+	// the original (because `isComparison(OpAdd)` is false), so
+	// Value stays as the raw Binary node. The mutant `||` flips the
+	// gate to true and re-wraps Value in `toFloat64(...)`.
+	if _, ok := valueExpr.(*chplan.Binary); !ok {
+		t.Fatalf("lowerVectorScalar: Value projection is %T, want *chplan.Binary — the && gate was inverted (toFloat64 wrap leaked through on a non-comparison op)", valueExpr)
 	}
 }
