@@ -114,12 +114,20 @@ test.describe('Loki UX — Logs panel flows', () => {
     expect(typeof body.data.line_limit, 'data.line_limit is numeric').toBe('number');
   });
 
-  test('patterns: the /patterns endpoint returns the data.patterns envelope', async ({
+  test('patterns: the /patterns endpoint extracts drain clusters from log bodies', async ({
     request,
   }) => {
-    // Grafana's "Patterns" tab calls /loki/api/v1/patterns. Cerberus's
-    // first cut returns an empty `patterns: []` envelope (drain3 isn't
-    // wired yet) — the wire-shape assertion still pins the contract.
+    // Grafana's "Patterns" tab calls /loki/api/v1/patterns. The handler
+    // trains a per-request drain instance over the matched stream's peek
+    // window and projects the resulting clusters onto the upstream
+    // `WriteQueryPatternsResponseJSON` wire shape:
+    //   {"status":"success","data":[
+    //      {"pattern":"...","level":"","samples":[[ts_seconds, count], ...]},
+    //      ...
+    //   ]}
+    // The seed body cycles five distinct templates with a varying
+    // `id=<n>` suffix, so drain produces at least one cluster for the
+    // `{service_name="api"}` selector.
     const { start, end } = last5MinWindow();
     const q = encodeURIComponent('{service_name="api"}');
     const url = `${lokiProxy}/patterns?query=${q}&start=${start * 1e9}&end=${end * 1e9}`;
@@ -127,7 +135,19 @@ test.describe('Loki UX — Logs panel flows', () => {
     expect(resp.status(), 'patterns status').toBe(200);
     const body = await resp.json();
     expect(body.status).toBe('success');
-    expect(Array.isArray(body.data.patterns), 'data.patterns is an array').toBe(true);
+    expect(Array.isArray(body.data), 'data is an array of clusters').toBe(true);
+    expect(body.data.length, '≥1 drain cluster').toBeGreaterThan(0);
+    const cluster = body.data[0];
+    expect(typeof cluster.pattern, 'cluster.pattern is a string').toBe('string');
+    expect(cluster.pattern.length, 'cluster.pattern is non-empty').toBeGreaterThan(0);
+    expect(Array.isArray(cluster.samples), 'cluster.samples is an array').toBe(true);
+    expect(cluster.samples.length, '≥1 sample bucket').toBeGreaterThan(0);
+    for (const sample of cluster.samples) {
+      expect(Array.isArray(sample), 'sample is a [ts_seconds, count] tuple').toBe(true);
+      expect(sample.length, 'tuple has 2 elements').toBe(2);
+      expect(typeof sample[0], 'ts_seconds is numeric').toBe('number');
+      expect(typeof sample[1], 'count is numeric').toBe('number');
+    }
   });
 
   test('time range: query_range strictly contains every value in [start, end]', async ({
@@ -189,25 +209,34 @@ test.describe('Loki UX — Logs panel flows', () => {
     expect(body.data.result.length, '≥1 metric series').toBeGreaterThan(0);
   });
 
-  test('parser stage `| json` returns 422 (documented as unsupported)', async ({ request }) => {
-    // Grafana surfaces this 422 as a yellow "query unsupported"
-    // warning, not a hard red error. Asserting the contract so when
-    // `| json` lands, this spec goes red and the rejection marker
-    // can be removed.
+  test('parser stage `| json` returns the success envelope', async ({ request }) => {
+    // `| json` parses each line as a JSON object and lifts every
+    // top-level key into a label, so downstream filter / format
+    // stages can reference them. The seed bodies are plain text
+    // (`<message> id=<n>`) — non-JSON lines pass through with no
+    // extra labels extracted, which is the documented upstream
+    // behaviour. The contract under test is the envelope: the
+    // parser stage is implemented, so the handler returns 200 with
+    // a `status: "success"` body, not a 422 rejection.
     const q = encodeURIComponent('{service_name="api"} | json');
     const resp = await request.get(`${lokiProxy}/query?query=${q}`);
-    expect(resp.status(), '422 unprocessable entity').toBe(422);
+    expect(resp.status(), '| json parses cleanly').toBe(200);
     const body = await resp.json();
-    expect(body.status).toBe('error');
-    expect(String(body.error || '').toLowerCase()).toContain('json');
+    expect(body.status).toBe('success');
+    expect(body.data.resultType).toBe('streams');
   });
 
-  test('parser stage `| logfmt` returns 422 (documented as unsupported)', async ({ request }) => {
+  test('parser stage `| logfmt` returns the success envelope', async ({ request }) => {
+    // `| logfmt` parses each line as `key=value` pairs and lifts the
+    // extracted keys into stream labels. Mirrors the `| json` flow
+    // above; the seed bodies are plain text without `k=v` pairs, so
+    // no extra labels surface, but the envelope contract still holds.
     const q = encodeURIComponent('{service_name="api"} | logfmt');
     const resp = await request.get(`${lokiProxy}/query?query=${q}`);
-    expect(resp.status()).toBe(422);
+    expect(resp.status(), '| logfmt parses cleanly').toBe(200);
     const body = await resp.json();
-    expect(body.status).toBe('error');
+    expect(body.status).toBe('success');
+    expect(body.data.resultType).toBe('streams');
   });
 
   test('post-fetch `| line_format` renders templated lines', async ({ request }) => {
