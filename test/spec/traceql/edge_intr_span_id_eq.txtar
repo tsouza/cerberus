@@ -4,6 +4,18 @@
 [0] string = "deadbeef"
 -- sql --
 SELECT * FROM `otel_traces` WHERE (`SpanId` = ?)
+-- seed --
+CREATE TABLE otel_traces (
+    SpanId String
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    ('0000000000000001'),
+    ('deadbeef'),
+    ('fedcba9876543210');
+-- expected_rows --
+[
+  ["deadbeef"]
+]
 -- chplan --
 Filter predicate=(SpanId = "deadbeef")
   Scan(otel_traces)

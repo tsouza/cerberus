@@ -7,6 +7,23 @@
 [3] string = "Error"
 -- sql --
 SELECT L.* FROM (SELECT L.* FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) AS `L` INNER JOIN (SELECT * FROM `otel_traces` WHERE (`Duration` > ?)) AS `R` ON `L`.`TraceId` = `R`.`TraceId` AND `L`.`SpanId` = `R`.`SpanId`) AS `L` INNER JOIN (SELECT * FROM `otel_traces` WHERE (`StatusCode` = ?)) AS `R` ON `L`.`TraceId` = `R`.`TraceId` AND `L`.`SpanId` = `R`.`SpanId`
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    Duration UInt64,
+    StatusCode String,
+    _svc String,
+    ResourceAttributes Map(String, String) MATERIALIZED map('service.name', _svc)
+) ENGINE = MergeTree ORDER BY TraceId;
+INSERT INTO otel_traces (TraceId, SpanId, Duration, StatusCode, _svc) VALUES
+    ('t1', 's1', 2000000000, 'Error', 'a'),
+    ('t2', 's2', 500000000, 'Ok', 'b'),
+    ('t3', 's3', 3000000000, 'Error', 'c');
+-- expected_rows --
+[
+  ["t1", "s1", 2000000000, "Error", "a"]
+]
 -- chplan --
 SetOperation op=&&
   SetOperation op=&&

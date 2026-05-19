@@ -9,6 +9,22 @@
 [5] string = "c"
 -- sql --
 ((SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) UNION DISTINCT (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?))) UNION DISTINCT (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?))
+-- seed --
+CREATE TABLE otel_traces (
+    _svc String,
+    ResourceAttributes Map(String, String) MATERIALIZED map('service.name', _svc)
+) ENGINE = MergeTree ORDER BY _svc;
+INSERT INTO otel_traces (_svc) VALUES
+    ('a'),
+    ('b'),
+    ('c'),
+    ('d');
+-- expected_rows --
+[
+  ["a"],
+  ["b"],
+  ["c"]
+]
 -- chplan --
 SetOperation op=||
   SetOperation op=||
