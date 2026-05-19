@@ -136,12 +136,19 @@ func (h *Handler) handleTail(w http.ResponseWriter, r *http.Request) {
 		h.Logger.Warn("cerberus loki tail upgrade failed", "err", err)
 		return
 	}
-	defer func() { _ = conn.Close() }()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			h.Logger.Warn("cerberus loki tail: websocket close failed", "err", err)
+		}
+	}()
 
 	tx, err := postProcessExtract(expr)
 	if err != nil {
 		// postProcessExtract failure on a log-stream query is unexpected
 		// (the pipeline parsed fine above); send an error frame and exit.
+		// The write error (if any) is intentionally discarded: the
+		// connection is about to be closed by the deferred Close above,
+		// so logging a separate write failure adds noise without signal.
 		_ = conn.WriteJSON(Response{
 			Status:    "error",
 			ErrorType: ErrBadData,
@@ -257,6 +264,10 @@ func (h *Handler) runTailLoop(ctx context.Context, conn *websocket.Conn, cfg tai
 // writes the JSON frame with a bounded write deadline. Caller is
 // responsible for tearing the connection down on error.
 func writeTailChunk(conn *websocket.Conn, streams []Stream) error {
+	// SetWriteDeadline only fails if the underlying connection has
+	// already been torn down — in which case the WriteJSON below will
+	// surface the real failure to the caller. Discarding this error is
+	// intentional, not silenced.
 	_ = conn.SetWriteDeadline(time.Now().Add(tailWriteTimeout))
 	return conn.WriteJSON(tailResponse{
 		Streams:        streams,
