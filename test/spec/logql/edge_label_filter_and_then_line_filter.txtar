@@ -8,6 +8,25 @@
 [4] string = "timeout"
 -- sql --
 SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (`ResourceAttributes`[?] = ?) AND (position(`Body`, ?) > 0)
+-- seed --
+CREATE TABLE otel_logs (
+    Body String,
+    ResourceAttributes Map(String, String) MATERIALIZED map(
+        'job', 'api',
+        'level', if(Body LIKE 'i%', 'info', 'error')
+    )
+) ENGINE = Memory;
+INSERT INTO otel_logs (Body) VALUES
+    ('e1-timeout reading upstream'),
+    ('e2-timeout opening db'),
+    ('e3-no-match-here'),
+    ('i1-timeout but info level'),
+    ('i2-info quiet');
+-- expected_rows --
+[
+  ["e1-timeout reading upstream"],
+  ["e2-timeout opening db"]
+]
 -- chplan --
 Filter predicate=(((ResourceAttributes["job"] = "api") AND (ResourceAttributes["level"] = "error")) AND lineContent(Body, "timeout", substr))
   Scan(otel_logs)

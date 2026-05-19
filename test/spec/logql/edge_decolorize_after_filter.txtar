@@ -6,6 +6,21 @@
 [2] string = "error"
 -- sql --
 SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (position(`Body`, ?) > 0)
+-- seed --
+CREATE TABLE otel_logs (
+    Body String,
+    ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api')
+) ENGINE = Memory;
+INSERT INTO otel_logs (Body) VALUES
+    ('\x1b[31merror\x1b[0m red ansi'),
+    ('\x1b[1;33mwarn\x1b[0m yellow'),
+    ('\x1b[32mok\x1b[0m green'),
+    ('plain error no color');
+-- expected_rows --
+[
+  ["\u001b[31merror\u001b[0m red ansi"],
+  ["plain error no color"]
+]
 -- chplan --
 Filter predicate=((ResourceAttributes["job"] = "api") AND lineContent(Body, "error", substr))
   Scan(otel_logs)

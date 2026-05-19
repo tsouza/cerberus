@@ -5,6 +5,20 @@
 [1] string = "api"
 -- sql --
 SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?)
+-- seed --
+CREATE TABLE otel_logs (
+    Body String,
+    ResourceAttributes Map(String, String) MATERIALIZED map(
+        'job', 'api',
+        'severity', if(Body = 'tpl1', 'critical', 'normal')
+    )
+) ENGINE = Memory;
+INSERT INTO otel_logs (Body) VALUES ('tpl1'), ('tpl2');
+-- expected_rows --
+[
+  ["tpl1"],
+  ["tpl2"]
+]
 -- chplan --
 Filter predicate=(ResourceAttributes["job"] = "api")
   Scan(otel_logs)
