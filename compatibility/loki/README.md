@@ -214,19 +214,19 @@ that lives OUTSIDE the AGPL `upstream/` boundary:
 
 ```sh
 # Full lifecycle: compose up, seed, build driver, diff, tear down.
-just loki-compatibility
+just compat-logql
 
 # Smoke only (skip the diff driver — useful for bisecting the seeder).
-DRIVER_SKIP=1 just loki-compatibility
+DRIVER_SKIP=1 just compat-logql
 
 # Keep the stack up after the run for manual poking.
-just loki-compatibility-keep
+just compat-logql-keep
 
 # Instant-query mode (default is range).
-DRIVER_RANGE_TYPE=instant just loki-compatibility
+DRIVER_RANGE_TYPE=instant just compat-logql
 
 # Tear the stack down manually.
-just loki-compatibility-down
+just compat-logql-down
 ```
 
 The run script's contract:

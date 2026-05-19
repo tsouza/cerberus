@@ -354,7 +354,7 @@ against the same backing ClickHouse:
   ClickHouse connection inputs as cerberus does, so a single set of
   credentials drives both the long-lived server and the one-shot
   task.
-- **Compatibility harness** — `just compatibility` boots cerberus
+- **Compatibility harness** — `just compat-promql` boots cerberus
   alongside upstream Prometheus and diffs the two against a shared
   fixture. Again, a one-shot process; cerberus stays unchanged.
 

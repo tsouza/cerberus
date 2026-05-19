@@ -190,7 +190,7 @@ Once those three flip, the readiness score moves to 14 / 14 (100%) and the maint
 
 ## What this audit explicitly did NOT do
 
-- It did not run `just test` / `just lint` / `just compatibility`
+- It did not run `just test` / `just lint` / `just compat-promql`
   locally (per the CLAUDE.md "no local validation" rule).
 - It did not modify any code or workflow files.
 - It did not open a sub-PR for any of the NEEDS-WORK rows — those

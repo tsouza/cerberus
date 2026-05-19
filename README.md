@@ -243,10 +243,10 @@ Each harness ships as a Docker Compose stack — reference engine,
 cerberus, ClickHouse, and a one-shot seeder. Local execution:
 
 ```sh
-just compatibility            # PromQL — prometheus/compliance
-just loki-compatibility       # LogQL — grafana/loki pkg/logql/bench
-just tempo-compatibility      # TraceQL — tempo-vulture-patterned driver
-just compatibility-all        # run all three
+just compat-promql      # PromQL  — prometheus/compliance
+just compat-logql       # LogQL   — grafana/loki pkg/logql/bench
+just compat-traceql     # TraceQL — tempo-vulture-patterned driver
+just compat-all         # run all three
 ```
 
 The unified workflow at
@@ -296,7 +296,7 @@ Quick reference:
 | **Property**     | Oracle-based property tests with `rapid` shrinking and chDB execution             | `go test -tags chdb ./test/property/...`            |
 | **Integration**  | `chclient` against a real ClickHouse via testcontainers                           | `go test -tags=integration ./internal/chclient/...` |
 | **E2E**          | k3d cluster with CH + Grafana + cerberus; Grafana Playwright smoke                | `just e2e`                                          |
-| **Compat**       | Differential parity vs reference Prom / Loki / Tempo                              | `just compatibility-all` (per-head recipes below)   |
+| **Compat**       | Differential parity vs reference Prom / Loki / Tempo                              | `just compat-all` (per-head recipes below)          |
 | **Mutation**     | Gremlins matrix — see `docs/test-strategy.md` § "Gremlins phased rollout" for bar | `just mutate` (slow, nightly in CI)                 |
 
 ## Quick start

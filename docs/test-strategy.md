@@ -68,7 +68,7 @@ in the relevant section below.
 | chDB handler tests    | `just test-chdb`                                                | `go test -tags chdb ./internal/chclienttest/... ./internal/api/...`                            |
 | Property framework    | `go test -tags chdb ./test/property/...`                        | Oracle property test (`pgregory.net/rapid` shrinking) — requires libchdb                       |
 | E2E (k3d + Grafana)   | `just e2e-up && just e2e-seed && just e2e-run && just e2e-down` | Full Playwright suite under `test/e2e/playwright/` runs via `just e2e-playwright`              |
-| Compatibility harness | `just compatibility`                                            | `prometheus/compliance` Docker Compose harness                                                 |
+| Compatibility harness | `just compat-promql`                                            | `prometheus/compliance` Docker Compose harness                                                 |
 | Mutation (whole-repo) | `just mutate`                                                   | Slow (minutes) — global `.gremlins.yaml` threshold; informational                              |
 | Mutation (chDB lane)  | `just mutate-chdb`                                              | Tighter kill criterion via `-t chdb -i` against `internal/optimizer/` + `internal/chsql/`      |
 | Fuzz one head         | `just fuzz QL=promql DURATION=60s`                              | Bounded fuzz run against `internal/<ql>/FuzzParse`                                             |

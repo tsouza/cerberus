@@ -391,15 +391,15 @@ e2e: e2e-up e2e-seed e2e-wait-otel e2e-run e2e-playwright e2e-down
 # Run the PromQL compatibility suite end-to-end. Slow; expect minutes.
 # Sets up the Docker Compose stack (reference Prom + cerberus + CH + seeder),
 # runs the upstream tester, writes compatibility/prometheus/report.json.
-compatibility:
+compat-promql:
     ./compatibility/prometheus/scripts/run-compatibility.sh
 
 # Keep the compatibility stack running after the tester finishes (for debugging).
-compatibility-keep:
+compat-promql-keep:
     COMPOSE_KEEP=1 ./compatibility/prometheus/scripts/run-compatibility.sh
 
 # Tear down the compatibility stack manually.
-compatibility-down:
+compat-promql-down:
     cd compatibility/prometheus && docker compose down -v
 
 # === Compatibility (LogQL — Loki compatibility harness) ===
@@ -409,21 +409,21 @@ compatibility-down:
 # the vendored upstream/loki-bench corpus, runs TestRemoteStorageEquality
 # against both endpoints, writes compatibility/loki/reports/diff.json.
 # See compatibility/loki/README.md + docs/loki-compliance-plan.md.
-loki-compatibility:
+compat-logql:
     ./compatibility/loki/scripts/run-loki-compatibility.sh
 
 # Run the smoke (compose + seed + /labels assertion) without the diff
 # driver. Useful when the seeder is the bisect target.
-loki-compatibility-smoke:
+compat-logql-smoke:
     DRIVER_SKIP=1 ./compatibility/loki/scripts/run-loki-compatibility.sh
 
 # Keep the Loki compatibility stack running after the run finishes
 # (for debugging /loki/api/v1/* + ClickHouse manually).
-loki-compatibility-keep:
+compat-logql-keep:
     COMPOSE_KEEP=1 ./compatibility/loki/scripts/run-loki-compatibility.sh
 
 # Tear down the Loki compatibility stack manually.
-loki-compatibility-down:
+compat-logql-down:
     cd compatibility/loki && docker compose down -v
 # === Tempo / TraceQL compatibility harness ===
 
@@ -433,15 +433,15 @@ loki-compatibility-down:
 # deterministic OTLP batch to Tempo and an equivalent INSERT into CH
 # for cerberus, then smokes /api/traces/<id> on both backends.
 # PR 3 of docs/tempo-compliance-plan.md — diff driver lands in PR 4.
-tempo-compatibility:
+compat-traceql:
     ./compatibility/tempo/scripts/run-tempo-compatibility.sh
 
 # Keep the tempo-compatibility stack running after the driver finishes (for debugging).
-tempo-compatibility-keep:
+compat-traceql-keep:
     COMPOSE_KEEP=1 ./compatibility/tempo/scripts/run-tempo-compatibility.sh
 
 # Tear down the tempo-compatibility stack manually.
-tempo-compatibility-down:
+compat-traceql-down:
     cd compatibility/tempo && docker compose down -v
 
 # === Compatibility — all three heads ===
@@ -454,7 +454,7 @@ tempo-compatibility-down:
 # Slow — expect tens of minutes. Use the per-head recipes for iteration.
 # Exit semantics: fails fast on the first non-zero recipe; the report
 # files for each head land under compatibility/*/reports/ regardless.
-compatibility-all: compatibility loki-compatibility tempo-compatibility
+compat-all: compat-promql compat-logql compat-traceql
 
 # === Shadow-mode differential testing (RC3 R3.9) ===
 

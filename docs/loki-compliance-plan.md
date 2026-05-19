@@ -90,9 +90,9 @@ Initially: `/loki/api/v1/query` + `/query_range`. PR 4 expands to `/labels`, `/l
 
 1. **PR 1 — scaffold** (compose + reference Loki + cerberus + seed). No corpus yet. `docker compose up --wait` brings reference Loki up at `:23100` and cerberus at `:29092`. Seeder pushes 5-10 minutes of deterministic log streams to both endpoints. Smoke: `/labels` non-empty on both.
 2. **PR 2 — vendor `pkg/logql/bench/`** subtree + minimal corpus. Pull `queries/fast/*.yaml`, `schema.json`, `query_registry.go`, `remote_test.go`. Add `cerberus-test-queries.yml` overlay documenting drops for unsupported LogQL features per `docs/roadmap.md`. Pinned `dataset_metadata.json`.
-3. **PR 3 — `scripts/run-loki-compatibility.sh` + just recipe.** Build the test driver (`go test -tags=remote_correctness -c`), point at the two endpoints, write report. Add `just loki-compatibility`.
+3. **PR 3 — `scripts/run-loki-compatibility.sh` + just recipe.** Build the test driver (`go test -tags=remote_correctness -c`), point at the two endpoints, write report. Add `just compat-logql`.
 4. **PR 4 — informational lane** in `.github/workflows/loki-compatibility.yml`. Trigger: `push: main` + nightly cron + `workflow_dispatch`. Report uploaded as artifact. Initially NOT a required check (matches Prom precedent).
-5. **PR 5 (later) — cerberus-owned driver** replacing the Go test entry. Port `TestRemoteStorageEquality`'s diff loop into `cmd/loki-compliance-tester/` so it emits the same JSON shape as the Prom tester. Add `just compatibility-all`.
+5. **PR 5 (later) — cerberus-owned driver** replacing the Go test entry. Port `TestRemoteStorageEquality`'s diff loop into `cmd/loki-compliance-tester/` so it emits the same JSON shape as the Prom tester. Add `just compat-all`.
 6. **PR 6 — expand corpus.** Add `queries/regression/` + slices of `queries/exhaustive/` as cerberus's LogQL coverage grows. Track in `cerberus-test-queries.yml` header.
 
 ## Open questions
