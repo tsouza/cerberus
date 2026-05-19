@@ -30,9 +30,20 @@ import (
 )
 
 // Score is the shields.io endpoint-badge envelope plus the cerberus
-// bookkeeping fields. The JSON tag set matches the shields contract
-// for the label/message/color fields; the extra fields are tolerated
-// by shields (it ignores unknown keys) and surface in downstream tools.
+// bookkeeping fields. The schemaVersion / label / message / color tags
+// match the shields contract; passed / total / percent are
+// cerberus-side bookkeeping consumed by the workflow's step-summary
+// step + the artifact upload.
+//
+// Shields.io's endpoint-badge schema is STRICT — it rejects unknown
+// properties and renders the SVG with "invalid properties: passed,
+// total, percent" instead of the badge text if the JSON carries
+// extras. The workflow strips the rich shape to the four
+// shields-spec keys at publish time (see the "Publish score to
+// compat-scores branch" step in .github/workflows/compatibility.yml,
+// the `jq '{schemaVersion, label, message, color}' "$SRC" > "$tmp"`
+// line). Do NOT push this struct directly to the compat-scores
+// orphan branch — go through the workflow's strip path.
 type Score struct {
 	// SchemaVersion is the shields.io endpoint-badge schema version.
 	// Pinned at 1 — bump in lock-step with shields if/when they ship
