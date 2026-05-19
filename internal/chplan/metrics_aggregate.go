@@ -133,8 +133,20 @@ type MetricsAggregate struct {
 	GroupByAliases      []string
 	GroupByDisplayNames []string
 	Quantiles           []float64
-	ValueAlias          string
-	Inner               Node
+	// IsDuration tags MetricsOpQuantileOverTime over a duration-typed
+	// operand. Tempo's HistogramAggregator bucketises duration values in
+	// nanoseconds (`Log2Bucketize(d)`) and divides the resulting bucket
+	// edge by 1e9 so the bucket label reads in fractional seconds; for
+	// non-duration numeric operands the bucket edge is the raw
+	// `Log2Bucketize(uint64(v))`. The chsql matrix emitter mirrors that
+	// dual contract by emitting `pow(2, ceil(log2(toFloat64(metric_arg) *
+	// 1000000000))) / 1000000000` when IsDuration=true and the bare
+	// `pow(2, ceil(log2(toFloat64(metric_arg))))` otherwise. The
+	// post-processor in internal/api/tempo/metrics_query_range.go feeds
+	// those bucket edges into `traceql.Log2QuantileWithBucket` per phi.
+	IsDuration bool
+	ValueAlias string
+	Inner      Node
 }
 
 func (*MetricsAggregate) planNode() {}
@@ -146,7 +158,7 @@ func (m *MetricsAggregate) Equal(other Node) bool {
 	if !ok {
 		return false
 	}
-	if m.Op != o.Op || m.ValueAlias != o.ValueAlias {
+	if m.Op != o.Op || m.ValueAlias != o.ValueAlias || m.IsDuration != o.IsDuration {
 		return false
 	}
 	if (m.Attr == nil) != (o.Attr == nil) {

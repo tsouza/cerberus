@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	upstreamTraceql "github.com/grafana/tempo/pkg/traceql"
+
 	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -255,7 +257,19 @@ func (h *Handler) handleMetricsQueryRange(w http.ResponseWriter, r *http.Request
 		"traceql", q, "start", start, "end", end, "step", step,
 		"sql", res.SQL, "args", res.Args)
 
-	series := toMetricsSeries(res.Samples, metrics)
+	// quantile_over_time: the matrix SQL emits `(group, anchor, bucket,
+	// count)` tuples; collapse them into the per-(group, phi, anchor)
+	// scalar wire shape via Tempo's `Log2QuantileWithBucket`. The
+	// remainder of the pipeline (toMetricsSeries / zeroFillMatrixGrid)
+	// sees pre-collapsed `chclient.Sample` values where each entry
+	// already carries the synthetic `p=<phi>` label and `Value` is the
+	// per-anchor quantile.
+	samples := res.Samples
+	if metrics.Op == chplan.MetricsOpQuantileOverTime {
+		samples = postProcessQuantileBuckets(samples, metrics)
+	}
+
+	series := toMetricsSeries(samples, metrics)
 	// Zero-fill the matrix step grid for count/rate AND quantile
 	// operators so the response shape matches Tempo's reference
 	// engine_metrics.go. Two distinct upstream code paths converge on a
@@ -362,16 +376,6 @@ func unwrapMetricsAggregate(plan chplan.Node) (*chplan.MetricsAggregate, bool) {
 	return nil, false
 }
 
-// tempoMultiQuantilePhiLabel is the synthetic alias the chsql
-// multi-quantile fan-out projects when MetricsAggregate.Quantiles
-// holds more than one phi. Lockstep with chsql's
-// `metricsMultiQuantilePhiLabel` (range_window.go) — both must agree
-// on the column alias so the handler can read it out of the row
-// stream. The wire-side label key is `tempoQuantileLabel` ("p"),
-// mirroring Tempo's HistogramAggregator (engine_metrics.go) which
-// appends `Label{"p", NewStaticFloat(q)}` to each per-quantile series.
-const tempoMultiQuantilePhiLabel = "__phi__"
-
 // tempoMetricNameLabel mirrors the Prometheus-style `__name__` label
 // Tempo's UngroupedAggregator (engine_metrics.go) attaches to the
 // single series an ungrouped metrics-pipeline query returns. The
@@ -389,14 +393,27 @@ const tempoMultiQuantilePhiLabel = "__phi__"
 // metricsLabelNames branch on Op to honour that.
 const tempoMetricNameLabel = "__name__"
 
+// tempoQuantileBucketLabel mirrors the `__bucket` synthetic label
+// Tempo's HistogramAggregator uses internally on the metrics-engine
+// hot path (pkg/traceql/engine_metrics.go, `internalLabelBucket`).
+// The chsql matrix-path quantile emitter projects each row's
+// power-of-two bucket edge under this label so the post-processor in
+// the Tempo handler can recover the bucket alongside the count and
+// drive `pkg/traceql.Log2QuantileWithBucket` per phi. The
+// post-processor strips this label before emitting the final wire
+// shape — Tempo's reference engine never surfaces `__bucket` to the
+// client; it's purely an internal-routing key.
+const tempoQuantileBucketLabel = "__bucket"
+
 // tempoQuantileLabel mirrors the `p` label Tempo's HistogramAggregator
 // (engine_metrics.go) appends to every series produced by
 // `quantile_over_time(...)`. The label value is the phi formatted via
 // `strconv.FormatFloat('f', -1, 64)` (e.g. 0.95 → "0.95") — matching
 // what the differ in compatibility/tempo extracts from Tempo's
 // `doubleValue` AnyValue via `fmt.Sprint(*anyV.DoubleValue)` and what
-// chsql's `metricsMultiQuantileFanoutFrag` projects via `formatFloat`
-// for the multi-phi fan-out column. Per-phi series are emitted whether
+// the post-processor (`postProcessQuantileBuckets`) writes onto each
+// per-phi series after collapsing the bucket-shape row stream. Per-phi
+// series are emitted whether
 // or not the query carries a `by(...)` clause: ungrouped queries get
 // `{p="<phi>"}` rather than `{__name__="quantile_over_time"}` because
 // Tempo's UngroupedAggregator is not on the quantile path.
@@ -430,28 +447,31 @@ const tempoQuantileLabel = "p"
 // `quantile_over_time` follows the HistogramAggregator path in Tempo
 // (engine_metrics.go: NewHistogramAggregator + Results) rather than
 // UngroupedAggregator, so every output series carries a `p="<phi>"`
-// label and never `__name__="quantile_over_time"`. The single-phi
-// branch injects the phi string as an inline literal because the chsql
-// emitter doesn't project a per-row phi column in that case; the
-// multi-phi branch surfaces the synthetic `__phi__` column produced by
-// the chsql fan-out under the wire-canonical `p` key so each
-// (group × phi) pair becomes its own response series.
+// label and never `__name__="quantile_over_time"`. The matrix SQL
+// emits one row per (group, anchor, bucket) tuple — the chsql side
+// projects each row's power-of-two bucket edge under the synthetic
+// `__bucket` label; the handler's `postProcessQuantileBuckets` then
+// collapses those rows via `traceql.Log2QuantileWithBucket(phi,
+// buckets)` per phi (independent of len(m.Quantiles)) and synthesises
+// the wire `p="<phi>"` label on each emitted series.
 func wrapMetricsForSample(rw *chplan.RangeWindow, m *chplan.MetricsAggregate) chplan.Node {
 	attrAliases := metricsOuterGroupAliases(m.GroupBy, m.GroupByAliases)
 	labelNames := metricsLabelNames(m)
-	multiPhi := len(m.Quantiles) > 1
 	isQuantile := m.Op == chplan.MetricsOpQuantileOverTime
 
 	var attrs chplan.Expr
 	switch {
 	case isQuantile:
-		// quantile_over_time is special: Tempo's HistogramAggregator
-		// appends `Label{"p", NewStaticFloat(q)}` to every per-phi
-		// series, regardless of whether the query has a `by(...)`
-		// clause. The chsql emitter projects a `__phi__` String column
-		// for the multi-phi fan-out, but the single-phi path returns
-		// just the value column — so the handler injects the phi as an
-		// inline literal in that branch.
+		// quantile_over_time emits `(group, anchor, bucket, count)` rows
+		// out of the chsql matrix path — see
+		// `emitRangeWindowMetricsQuantileBuckets`. The post-processor
+		// (`postProcessQuantileBuckets`) folds the per-bucket counts into
+		// Tempo's `Log2QuantileWithBucket` per phi to produce the
+		// per-(group, phi, anchor) wire value. Until that fold happens,
+		// the row stream needs the bucket-edge `__bucket` column
+		// surfaced as a label so the post-processor can pluck it out of
+		// `chclient.Sample.Labels`; the post-processor strips the
+		// `__bucket` label before emitting the final series.
 		args := make([]chplan.Expr, 0, (len(m.GroupBy)+1)*2)
 		for i := range m.GroupBy {
 			args = append(
@@ -463,19 +483,14 @@ func wrapMetricsForSample(rw *chplan.RangeWindow, m *chplan.MetricsAggregate) ch
 				},
 			)
 		}
-		args = append(args, &chplan.LitString{V: tempoQuantileLabel})
-		if multiPhi {
-			args = append(args, &chplan.ColumnRef{Name: tempoMultiQuantilePhiLabel})
-		} else if len(m.Quantiles) == 1 {
-			args = append(args, &chplan.LitString{V: formatPhi(m.Quantiles[0])})
-		} else {
-			// MetricsAggregate.Quantiles is empty — the chsql emitter
-			// would reject this earlier with ErrUnsupported, but
-			// defensively project an empty string so the response shape
-			// stays self-consistent rather than crashing on
-			// args[len-1].
-			args = append(args, &chplan.LitString{V: ""})
-		}
+		args = append(
+			args,
+			&chplan.LitString{V: tempoQuantileBucketLabel},
+			&chplan.FuncCall{
+				Name: "toString",
+				Args: []chplan.Expr{&chplan.ColumnRef{Name: tempoQuantileBucketLabel}},
+			},
+		)
 		attrs = &chplan.FuncCall{Name: "map", Args: args}
 	case len(m.GroupBy) == 0:
 		// Ungrouped non-quantile: emit Tempo's UngroupedAggregator-style
@@ -519,14 +534,140 @@ func wrapMetricsForSample(rw *chplan.RangeWindow, m *chplan.MetricsAggregate) ch
 
 // formatPhi renders a phi value (0 <= phi <= 1) into the wire-format
 // string Tempo's HistogramAggregator surfaces on the `p` label. Mirrors
-// `strconv.FormatFloat(v, 'f', -1, 64)` — what chsql's
-// metricsMultiQuantileFanoutFrag uses for the inline-literal phi
-// strings in the multi-phi fan-out, and what `fmt.Sprint(float64)`
-// returns when the differ stringifies Tempo's `doubleValue` AnyValue.
-// Stable for the phi values cerberus accepts (0 → "0", 0.5 → "0.5",
-// 0.95 → "0.95", 1 → "1").
+// `strconv.FormatFloat(v, 'f', -1, 64)` — what
+// `postProcessQuantileBuckets` writes onto each per-phi series and what
+// `fmt.Sprint(float64)` returns when the differ stringifies Tempo's
+// `doubleValue` AnyValue. Stable for the phi values cerberus accepts
+// (0 → "0", 0.5 → "0.5", 0.95 → "0.95", 1 → "1").
 func formatPhi(v float64) string {
 	return strconv.FormatFloat(v, 'f', -1, 64)
+}
+
+// postProcessQuantileBuckets folds the chsql matrix-path quantile row
+// stream — one row per (group, anchor, bucket) tuple carrying a count
+// and the synthetic `__bucket` label — into the per-(group, phi,
+// anchor) wire shape Tempo's HistogramAggregator emits.
+//
+// For each (group_labels_minus_bucket, anchor) pair, the per-bucket
+// counts feed `pkg/traceql.Log2QuantileWithBucket(phi, buckets)` from
+// the cerberus-accessors Tempo fork — the same power-of-two
+// bucket-interpolation routine `HistogramAggregator.Results` runs
+// upstream. The post-processor then emits one `chclient.Sample` per
+// (group_labels_minus_bucket, phi, anchor) with a synthetic
+// `p="<phi>"` label.
+//
+// Why a post-processor rather than rendering the algorithm as CH SQL:
+// the upstream algorithm is non-trivial (boundary handling for
+// p100, exponential interpolation between bucket maxima, plus an
+// edge-case sample-count rounding rule) and is being tweaked over
+// time in Tempo upstream. Reusing the upstream function via the
+// cerberus-accessors fork keeps the two backends bit-for-bit aligned
+// even as Tempo refines the algorithm.
+//
+// Returns a fresh `[]chclient.Sample`; the input slice is read-only.
+func postProcessQuantileBuckets(samples []chclient.Sample, m *chplan.MetricsAggregate) []chclient.Sample {
+	if len(samples) == 0 || len(m.Quantiles) == 0 {
+		return samples
+	}
+
+	// Group key: (canonical-label-set-minus-bucket, anchor-ts-unix-nanos)
+	// → ordered list of (bucket-edge, count). The canonical key uses the
+	// same separator format format.CanonicalKey produces so series keying
+	// stays consistent with toMetricsSeries downstream.
+	type bucketEntry struct {
+		max   float64
+		count int
+	}
+	type groupKey struct {
+		labelsKey string
+		anchorNS  int64
+	}
+	type groupState struct {
+		labels  map[string]string
+		anchor  time.Time
+		buckets []bucketEntry
+	}
+	groups := map[groupKey]*groupState{}
+	keyOrder := []groupKey{}
+
+	for _, s := range samples {
+		bucketStr, ok := s.Labels[tempoQuantileBucketLabel]
+		if !ok {
+			// Defensive: a row without the synthetic bucket label is
+			// either an upstream chsql-emit bug or a leaked input from
+			// a different code path. Skip the row rather than
+			// double-counting under a zero bucket; the differ surfaces
+			// the missing samples as a count gap, which is the
+			// debuggable signal.
+			continue
+		}
+		bucket, err := strconv.ParseFloat(bucketStr, 64)
+		if err != nil {
+			continue
+		}
+		// Strip the bucket label from the group-identifying set so two
+		// rows that share (group, anchor) but differ in bucket coalesce
+		// into the same group.
+		groupLabels := make(map[string]string, len(s.Labels))
+		for k, v := range s.Labels {
+			if k == tempoQuantileBucketLabel {
+				continue
+			}
+			groupLabels[k] = v
+		}
+		gk := groupKey{
+			labelsKey: format.CanonicalKey(groupLabels),
+			anchorNS:  s.Timestamp.UnixNano(),
+		}
+		g, ok := groups[gk]
+		if !ok {
+			g = &groupState{labels: groupLabels, anchor: s.Timestamp}
+			groups[gk] = g
+			keyOrder = append(keyOrder, gk)
+		}
+		g.buckets = append(g.buckets, bucketEntry{max: bucket, count: int(s.Value)})
+	}
+
+	// Deterministic emission order: sort keyOrder by (labelsKey,
+	// anchorNS) so the post-processed stream is stable run-to-run.
+	sort.Slice(keyOrder, func(i, j int) bool {
+		if keyOrder[i].labelsKey != keyOrder[j].labelsKey {
+			return keyOrder[i].labelsKey < keyOrder[j].labelsKey
+		}
+		return keyOrder[i].anchorNS < keyOrder[j].anchorNS
+	})
+
+	out := make([]chclient.Sample, 0, len(keyOrder)*len(m.Quantiles))
+	for _, gk := range keyOrder {
+		g := groups[gk]
+		// Tempo's Log2QuantileWithBucket walks buckets in ascending
+		// `Max` order — the upstream HistogramAggregator records into a
+		// `Histogram.Buckets` slice in insertion order and the per-
+		// quantile loop assumes ascending Max. Sort here so a row
+		// stream that surfaces buckets in arbitrary CH-internal order
+		// still feeds the algorithm correctly.
+		sort.Slice(g.buckets, func(i, j int) bool {
+			return g.buckets[i].max < g.buckets[j].max
+		})
+		buckets := make([]upstreamTraceql.HistogramBucket, len(g.buckets))
+		for i, b := range g.buckets {
+			buckets[i] = upstreamTraceql.HistogramBucket{Max: b.max, Count: b.count}
+		}
+		for _, phi := range m.Quantiles {
+			value, _ := upstreamTraceql.Log2QuantileWithBucket(phi, buckets)
+			labels := make(map[string]string, len(g.labels)+1)
+			for k, v := range g.labels {
+				labels[k] = v
+			}
+			labels[tempoQuantileLabel] = formatPhi(phi)
+			out = append(out, chclient.Sample{
+				Labels:    labels,
+				Timestamp: g.anchor,
+				Value:     value,
+			})
+		}
+	}
+	return out
 }
 
 // metricsOuterGroupAliases mirrors the unexported chsql.outerGroupAliases:

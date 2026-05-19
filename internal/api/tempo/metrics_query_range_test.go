@@ -411,23 +411,24 @@ func TestMetricsQueryRange_ZeroFillSkippedForOverTimeAggs(t *testing.T) {
 // gap once the label shape stopped masking it).
 //
 // Setup: 3-minute window @ 60s step → 4 anchors (10:00 / 10:01 / 10:02
-// / 10:03). The CH stub returns exactly one row (10:01) carrying the
-// `p="0.95"` HistogramAggregator label cerberus surfaces for the
-// single-phi branch; the handler must surface a 4-sample stream with
+// / 10:03). The CH stub returns exactly one bucket-shape row at the
+// middle anchor (10:01) — the post-processor synthesises the `p="0.95"`
+// label and runs `Log2QuantileWithBucket(0.95, [...])` to produce the
+// per-anchor value; the handler then surfaces a 4-sample stream with
 // the missing three anchors at value 0.
 func TestMetricsQueryRange_ZeroFillQuantileOverTime(t *testing.T) {
 	t.Parallel()
 
 	mid := time.Date(2026, 5, 12, 10, 1, 0, 0, time.UTC)
+	// Single bucket at 0.5s holding 5 samples — Log2QuantileWithBucket
+	// for p=0.95 over a single 0.5s bucket returns the bucket's Max
+	// (0.5) because the per-quantile sample-count walk consumes the
+	// whole bucket and reports `b.Max`.
 	q := &stubQuerier{samples: []chclient.Sample{{
 		MetricName: "",
-		// Matrix-shape SQL projects `map('p', '0.95')` for the
-		// single-phi quantile branch — wrapMetricsForSample injects
-		// the inline-literal phi as the wire label, mirroring Tempo's
-		// HistogramAggregator emit shape.
-		Labels:    map[string]string{"p": "0.95"},
-		Timestamp: mid,
-		Value:     0.5,
+		Labels:     map[string]string{"__bucket": "0.5"},
+		Timestamp:  mid,
+		Value:      5,
 	}}}
 	srv := newServer(q, "v1.0.0-test")
 	t.Cleanup(srv.Close)
@@ -510,14 +511,26 @@ func TestMetricsQueryRange_DurationAggInSeconds(t *testing.T) {
 		// labels mimics the row Labels the matrix SQL projects for this
 		// op. Non-quantile ungrouped ops surface `__name__=<op>` (Tempo
 		// UngroupedAggregator parity); quantile_over_time surfaces
-		// `p=<phi>` (Tempo HistogramAggregator parity).
+		// `__bucket=<float>` (the bucket-shape row stream the
+		// post-processor consumes — Tempo HistogramAggregator wire
+		// shape is synthesised by `postProcessQuantileBuckets`).
 		labels map[string]string
+		// stubValue picks the Value the stub returns. Per-bucket counts
+		// for quantile_over_time are integer-typed (CH `count(1)`); the
+		// other ops carry the metric value directly. Tracked separately
+		// so the quantile post-processor sees a count rather than a
+		// pre-quantile float.
+		stubValue float64
 	}{
-		{"avg_over_time", "{} | avg_over_time(duration)", map[string]string{"__name__": "avg_over_time"}},
-		{"sum_over_time", "{} | sum_over_time(duration)", map[string]string{"__name__": "sum_over_time"}},
-		{"min_over_time", "{} | min_over_time(duration)", map[string]string{"__name__": "min_over_time"}},
-		{"max_over_time", "{} | max_over_time(duration)", map[string]string{"__name__": "max_over_time"}},
-		{"quantile_over_time", "{} | quantile_over_time(duration, 0.95)", map[string]string{"p": "0.95"}},
+		{"avg_over_time", "{} | avg_over_time(duration)", map[string]string{"__name__": "avg_over_time"}, 0.5},
+		{"sum_over_time", "{} | sum_over_time(duration)", map[string]string{"__name__": "sum_over_time"}, 0.5},
+		{"min_over_time", "{} | min_over_time(duration)", map[string]string{"__name__": "min_over_time"}, 0.5},
+		{"max_over_time", "{} | max_over_time(duration)", map[string]string{"__name__": "max_over_time"}, 0.5},
+		// Bucket at 0.5s → Log2QuantileWithBucket(0.95, [{0.5, 5}])
+		// returns 0.5 (the bucket Max, since the per-quantile walk
+		// consumes the whole single bucket and reports b.Max). That's
+		// what surfaces in the Value column of the response sample.
+		{"quantile_over_time", "{} | quantile_over_time(duration, 0.95)", map[string]string{"__bucket": "0.5"}, 5},
 	}
 
 	for _, tc := range cases {
@@ -537,7 +550,7 @@ func TestMetricsQueryRange_DurationAggInSeconds(t *testing.T) {
 				// real ns→s rebase happens server-side in the
 				// emitted SQL and is asserted via assertSQLContains
 				// below.
-				Value: 0.5,
+				Value: tc.stubValue,
 			}}}
 			srv := newServer(q, "v1.0.0-test")
 			t.Cleanup(srv.Close)
@@ -1220,45 +1233,55 @@ func TestMetricsQueryRange_ResourceLabelWireShape(t *testing.T) {
 // (engine_metrics.go::HistogramAggregator.Results), which appends
 // `Label{"p", NewStaticFloat(q)}` to every series — so the
 // tempo-compat differ canonicalises each series under that key. Before
-// this fix cerberus emitted the UngroupedAggregator-style
-// `{__name__="quantile_over_time"}` shape (PR #554) which diverged
-// from Tempo and tripped the differ on `missing_in_a` for
-// metrics_quantile_over_time_p95.
+// the bucket-shape rewrite cerberus delegated quantile computation to
+// CH's `quantile()` aggregate, whose linear interpolation diverged
+// from Tempo's power-of-two histogram. Now the matrix SQL returns
+// `(group, anchor, bucket, count)` tuples and the handler post-processor
+// (`postProcessQuantileBuckets`) calls `Log2QuantileWithBucket` per phi.
 //
 // Covers both ungrouped (`{p="0.95"}`) and grouped
-// (`{resource.service.name="...", p="0.95"}`) wire shapes; the
-// single-phi label value is injected as an inline literal because the
-// chsql single-phi path doesn't project a per-row phi column.
+// (`{resource.service.name="...", p="0.95"}`) wire shapes; the post-
+// processor synthesises the `p` label from `MetricsAggregate.Quantiles`,
+// strips the synthetic `__bucket` label from each row, and emits one
+// series per (group, phi).
 func TestMetricsQueryRange_QuantileOverTimeWireShape(t *testing.T) {
 	t.Parallel()
 
 	ts := time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC)
 
 	cases := []struct {
-		name      string
-		query     string
-		labels    map[string]string
-		wantPairs []tempo.MetricsLabel // ordered, matches metricsLabelNames output
+		name           string
+		query          string
+		stubSamples    []chclient.Sample
+		wantPairs      []tempo.MetricsLabel
+		wantSampleSize int
 	}{
 		{
-			name:   "ungrouped_single_phi",
-			query:  "{} | quantile_over_time(duration, 0.95)",
-			labels: map[string]string{"p": "0.95"},
+			name:  "ungrouped_single_phi",
+			query: "{} | quantile_over_time(duration, 0.95)",
+			stubSamples: []chclient.Sample{
+				{Labels: map[string]string{"__bucket": "0.125"}, Timestamp: ts, Value: 5},
+			},
 			wantPairs: []tempo.MetricsLabel{
 				{Key: "p", Value: "0.95"},
 			},
+			wantSampleSize: 1,
 		},
 		{
 			name:  "grouped_single_phi",
 			query: "{} | quantile_over_time(duration, 0.95) by (resource.service.name)",
-			labels: map[string]string{
-				"resource.service.name": "frontend",
-				"p":                     "0.95",
+			stubSamples: []chclient.Sample{
+				{
+					Labels:    map[string]string{"resource.service.name": "frontend", "__bucket": "0.125"},
+					Timestamp: ts,
+					Value:     5,
+				},
 			},
 			wantPairs: []tempo.MetricsLabel{
 				{Key: "resource.service.name", Value: "frontend"},
 				{Key: "p", Value: "0.95"},
 			},
+			wantSampleSize: 1,
 		},
 	}
 
@@ -1267,12 +1290,7 @@ func TestMetricsQueryRange_QuantileOverTimeWireShape(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			q := &stubQuerier{samples: []chclient.Sample{{
-				MetricName: "",
-				Labels:     tc.labels,
-				Timestamp:  ts,
-				Value:      0.5,
-			}}}
+			q := &stubQuerier{samples: tc.stubSamples}
 			srv := newServer(q, "v1.0.0-test")
 			t.Cleanup(srv.Close)
 
@@ -1315,25 +1333,28 @@ func TestMetricsQueryRange_QuantileOverTimeWireShape(t *testing.T) {
 				if l.Key == "__name__" {
 					t.Errorf("quantile_over_time leaked __name__ label: %+v", gotLabels)
 				}
+				if l.Key == "__bucket" {
+					t.Errorf("quantile_over_time leaked __bucket label to wire: %+v", gotLabels)
+				}
 			}
 
-			// Single-phi quantile MUST NOT use the multi-phi
-			// `qs_array`/`__phi__` SQL fan-out (that would synthesise a
-			// `__phi__` column that downstream wraps into the wire `p`
-			// label per-row instead of via the inline literal).
-			if strings.Contains(q.lastSQL, "qs_array") {
-				t.Errorf("single-phi quantile SQL unexpectedly fans out via qs_array: %s", q.lastSQL)
+			// SQL must take the bucket-shape route — no CH-side
+			// `quantile()` / `quantiles()` call (those would compute
+			// the wrong quantile per Tempo's HistogramAggregator).
+			for _, banned := range []string{"quantile(?)", "quantiles(?", "qs_array"} {
+				if strings.Contains(q.lastSQL, banned) {
+					t.Errorf("matrix quantile SQL must not contain %q: %s", banned, q.lastSQL)
+				}
 			}
 		})
 	}
 }
 
 // TestMetricsQueryRange_MultiQuantileOverTimeWireShape pins the
-// multi-phi quantile_over_time wire shape: the chsql fan-out projects
-// one row per (group, anchor, phi) tuple with the synthetic `__phi__`
-// SQL column carrying the phi string, surfaced on the wire under the
-// Tempo-canonical `p` key. Each phi value becomes its own
-// MetricsSeries.
+// multi-phi quantile_over_time wire shape: the post-processor
+// (`postProcessQuantileBuckets`) fans the bucket-shape row stream out
+// into one series per phi, each carrying a `p="<phi>"` label whose
+// value is `strconv.FormatFloat(phi, 'f', -1, 64)`.
 //
 // Mirrors Tempo's HistogramAggregator emitting one TimeSeries per phi
 // per group (engine_metrics.go::HistogramAggregator.Results) labelled
@@ -1343,13 +1364,14 @@ func TestMetricsQueryRange_MultiQuantileOverTimeWireShape(t *testing.T) {
 
 	ts := time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC)
 
-	// One row per phi — matches what the chsql multi-phi fan-out
-	// (arrayJoin of (phi, value) tuples) projects after the wrap maps
-	// `__phi__` to the wire key `p`.
+	// One bucket-shape row — three distinct power-of-two buckets fed
+	// into the post-processor. The post-processor calls
+	// Log2QuantileWithBucket(phi, buckets) per phi, so three phis →
+	// three per-phi output series sharing the same (empty) group key.
 	q := &stubQuerier{samples: []chclient.Sample{
-		{Labels: map[string]string{"p": "0.5"}, Timestamp: ts, Value: 0.1},
-		{Labels: map[string]string{"p": "0.9"}, Timestamp: ts, Value: 0.2},
-		{Labels: map[string]string{"p": "0.99"}, Timestamp: ts, Value: 0.3},
+		{Labels: map[string]string{"__bucket": "0.125"}, Timestamp: ts, Value: 5},
+		{Labels: map[string]string{"__bucket": "0.25"}, Timestamp: ts, Value: 3},
+		{Labels: map[string]string{"__bucket": "0.5"}, Timestamp: ts, Value: 2},
 	}}
 	srv := newServer(q, "v1.0.0-test")
 	t.Cleanup(srv.Close)
@@ -1399,7 +1421,7 @@ func TestMetricsQueryRange_MultiQuantileOverTimeWireShape(t *testing.T) {
 	}
 
 	// Wire-shape is the contract — three per-phi series with `p=<phi>`
-	// label set asserted above. The SQL implementation can fan out via
-	// `qs_array`/`__phi__`, via inline literal projection, or via
-	// row-per-phi unrolling without changing the JSON envelope.
+	// label set asserted above. The internal routing (bucket-shape SQL
+	// + Tempo's Log2QuantileWithBucket post-processor) is exercised
+	// through the wire shape rather than pinned to SQL substrings.
 }

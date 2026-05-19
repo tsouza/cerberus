@@ -700,6 +700,17 @@ func (e *emitter) emitRangeWindowMetrics(r *chplan.RangeWindow, m *chplan.Metric
 	if r.Step <= 0 {
 		return fmt.Errorf("%w: RangeWindow wrapping MetricsAggregate requires Step > 0", ErrUnsupported)
 	}
+	// quantile_over_time takes the bucket-shape route: emit one row per
+	// (group, anchor, bucket) with `count(1)` and let the Tempo handler
+	// (internal/api/tempo/metrics_query_range.go) post-process via
+	// pkg/traceql.Log2QuantileWithBucket so the wire matches Tempo's
+	// HistogramAggregator. Native CH `quantile` / `quantiles` aggregates
+	// would diverge from Tempo's power-of-two bucket-interpolation
+	// algorithm; routing through the bucket shape keeps the upstream
+	// algorithm authoritative.
+	if m.Op == chplan.MetricsOpQuantileOverTime {
+		return e.emitRangeWindowMetricsQuantileBuckets(r, m)
+	}
 	chName, params, args, err := metricsAggregateCH(m)
 	if err != nil {
 		return err
@@ -757,8 +768,6 @@ func (e *emitter) emitRangeWindowMetrics(r *chplan.RangeWindow, m *chplan.Metric
 		return err
 	}
 
-	multi := m.Op == chplan.MetricsOpQuantileOverTime && len(m.Quantiles) > 1
-
 	// Inner SELECT: fan each Inner row across N anchors, projecting
 	// group-by cols, the timestamp as `ts`, [the metric operand as
 	// metric_arg,] and the anchor_ts. Group-by columns are aliased
@@ -794,27 +803,8 @@ func (e *emitter) emitRangeWindowMetrics(r *chplan.RangeWindow, m *chplan.Metric
 		outerSb.Select(func(b *Builder) { b.Ident(a) })
 	}
 	outerSb.Select(Col("anchor_ts"))
-	if multi {
-		// Multi-phi: the reducer is `quantiles(p1, p2, ...)(metric_arg)`,
-		// returning Array(Float64). Project under `qs_array` without
-		// the toFloat64 wrap (it would clobber the array shape); the
-		// outer wrapping SELECT below fans the array out per-phi.
-		// Rewrite the args to reference the inner-SELECT alias
-		// `metric_arg` (mirrors metricsReducerFrag's translation).
-		argFrags := make([]func(b *Builder), 0, len(args))
-		for range args {
-			argFrags = append(argFrags, func(b *Builder) { b.Ident("metric_arg") })
-		}
-		paramFrags := make([]func(b *Builder), 0, len(params))
-		for _, p := range params {
-			expr := p
-			paramFrags = append(paramFrags, func(b *Builder) { _ = b.Expr(expr) })
-		}
-		outerSb.Select(rawAs(func(b *Builder) { b.ParamAgg(chName, paramFrags, argFrags) }, "qs_array"))
-	} else {
-		reducerFrag := metricsReducerFrag(m.Op, chName, params, args, rangeSeconds)
-		outerSb.Select(As(reducerFrag, m.ValueAlias))
-	}
+	reducerFrag := metricsReducerFrag(m.Op, chName, params, args, rangeSeconds)
+	outerSb.Select(As(reducerFrag, m.ValueAlias))
 
 	// WHERE: ts ∈ (anchor_ts - range, anchor_ts] — left-open /
 	// right-closed, matching Tempo's IntervalMapperQueryRange.
@@ -832,47 +822,182 @@ func (e *emitter) emitRangeWindowMetrics(r *chplan.RangeWindow, m *chplan.Metric
 	groupFrags = append(groupFrags, Col("anchor_ts"))
 	outerSb.GroupBy(groupFrags...)
 
-	if !multi {
-		e.emitSelect(outerSb)
-		return nil
-	}
-
-	e.emitSelect(emitMultiQuantileMatrixWrap(outerSb.Frag(), groupAliases, m.Quantiles, m.ValueAlias))
+	e.emitSelect(outerSb)
 	return nil
 }
 
-// emitMultiQuantileMatrixWrap builds the two extra SELECTs that fan a
-// per-(group, anchor) `quantiles(...)` Array(Float64) result out into
-// one row per phi tagged with the synthetic `__phi__` label.
+// emitRangeWindowMetricsQuantileBuckets renders quantile_over_time in
+// the matrix path as a `(group, anchor, bucket, count)` row stream. The
+// Tempo handler (internal/api/tempo/metrics_query_range.go) groups those
+// rows by (group, anchor) and calls upstream
+// `pkg/traceql.Log2QuantileWithBucket(phi, buckets)` per phi to compute
+// the per-anchor quantile value — mirroring Tempo's HistogramAggregator
+// (engine_metrics.go) so the wire reading aligns with the reference
+// engine's power-of-two bucket interpolation.
 //
-//   - Layer 1 (fanout): SELECTs the group aliases + anchor_ts +
-//     arrayJoin'd (phi, value) tuple under the `phi_val` alias.
-//   - Layer 2 (final): splits `phi_val` into the synthetic `__phi__`
-//     label + the Float64 value column. The two-tuple is split via
-//     tupleElement here (rather than fused into the arrayJoin lambda)
-//     so the SELECT-list stays readable and the inner arrayJoin
-//     produces just one row per (group, anchor, phi) tuple as intended.
+// SQL skeleton:
 //
-// Mirrors the bare-emit multi-phi wrap in emitMetricsAggregate but
-// retains the matrix-shape `anchor_ts` carry-through.
-func emitMultiQuantileMatrixWrap(inner Frag, groupAliases []string, quantiles []float64, valueAlias string) *QueryBuilder {
-	fanout := NewQuery().From(inner)
-	for _, alias := range groupAliases {
-		a := alias
-		fanout.Select(func(b *Builder) { b.Ident(a) })
+//	SELECT [<group cols>,] anchor_ts,
+//	       pow(2, ceil(log2(toFloat64(metric_arg) [* 1e9]))) [/ 1e9] AS `__bucket`,
+//	       toFloat64(count(1)) AS Value
+//	FROM (
+//	  SELECT [<group cols>,] <TimestampColumn> AS ts, <Attr> AS metric_arg,
+//	         arrayJoin(arrayMap(i -> <anchor_base> - toIntervalNanosecond(i * <step_ns>), range(0, <N>))) AS anchor_ts
+//	  FROM (<Inner>)
+//	)
+//	WHERE ts >  anchor_ts - toIntervalNanosecond(<range_ns>)
+//	  AND ts <= anchor_ts
+//	  AND <metric_arg-in-nanos>  >= 2     -- Tempo's bucketize* drops <2
+//	GROUP BY [<group cols>,] anchor_ts, `__bucket`
+//
+// The `<metric_arg-in-nanos> >= 2` filter mirrors Tempo's
+// bucketizeDuration / bucketizeAttribute "if d < 2 return nil" guard. For
+// duration operands `metric_arg` is already `Duration / 1e9` (the
+// cerberus-side seconds rebase), so the filter expands to
+// `metric_arg * 1e9 >= 2` — i.e. raw `Duration >= 2` nanoseconds. For
+// non-duration numeric operands the cerberus lowering passes the value
+// unchanged, so the filter is `metric_arg >= 2`.
+//
+// The bucket alias is the wire-format-stable `__bucket` literal — same
+// alias `MetricsHistogramOverTime` uses (`histogramBucketAlias` /
+// `internalLabelBucket` in Tempo) so downstream readers can pick the
+// bucket out of the row stream by a stable name.
+func (e *emitter) emitRangeWindowMetricsQuantileBuckets(r *chplan.RangeWindow, m *chplan.MetricsAggregate) error {
+	if m.Attr == nil {
+		return fmt.Errorf("%w: quantile_over_time matrix path requires MetricsAggregate.Attr", ErrUnsupported)
 	}
-	fanout.Select(Col("anchor_ts"))
-	fanout.Select(rawAs(metricsMultiQuantileFanoutFrag(quantiles, "qs_array"), "phi_val"))
+	if len(m.Quantiles) == 0 {
+		return fmt.Errorf("%w: quantile_over_time matrix path requires at least one phi", ErrUnsupported)
+	}
+	if m.Inner == nil {
+		return fmt.Errorf("%w: quantile_over_time matrix path requires MetricsAggregate.Inner", ErrUnsupported)
+	}
 
-	final := NewQuery().From(fanout.Frag())
+	// Pre-flight expressions so chplan errors surface synchronously.
+	if err := (&Builder{}).Expr(m.Attr); err != nil {
+		return err
+	}
+	for _, g := range m.GroupBy {
+		if err := (&Builder{}).Expr(g); err != nil {
+			return err
+		}
+	}
+
+	end := endExprFrag(r)
+	stepNS := r.Step.Nanoseconds()
+	rangeDur := r.Range
+	if rangeDur == 0 {
+		rangeDur = r.Step
+	}
+	rangeNS := rangeDur.Nanoseconds()
+
+	var numAnchors int64
+	switch {
+	case r.OuterRange > 0:
+		numAnchors = r.OuterRange.Nanoseconds()/stepNS + 1
+	case !r.Start.IsZero() && !r.End.IsZero():
+		span := r.End.Sub(r.Start).Nanoseconds()
+		if span < 0 {
+			return fmt.Errorf("%w: RangeWindow.Start > End", ErrUnsupported)
+		}
+		numAnchors = span/stepNS + 1
+	default:
+		numAnchors = 1
+	}
+
+	inner, err := e.subqueryFrag(m.Inner)
+	if err != nil {
+		return err
+	}
+
+	groupAliases := outerGroupAliases(m.GroupBy, m.GroupByAliases)
+	innerSb := NewQuery().From(inner)
+	for i, g := range m.GroupBy {
+		expr := g
+		alias := groupAliases[i]
+		innerSb.SelectAs(func(b *Builder) { _ = b.Expr(expr) }, alias)
+	}
+	tsCol := r.TimestampColumn
+	innerSb.SelectAs(func(b *Builder) { b.Ident(tsCol) }, "ts")
+	attr := m.Attr
+	innerSb.SelectAs(func(b *Builder) { _ = b.Expr(attr) }, "metric_arg")
+	innerSb.SelectAs(anchorFanoutFrag(end, stepNS, numAnchors), "anchor_ts")
+
+	outerSb := NewQuery().From(innerSb.Frag())
 	for _, alias := range groupAliases {
 		a := alias
-		final.Select(func(b *Builder) { b.Ident(a) })
+		outerSb.Select(func(b *Builder) { b.Ident(a) })
 	}
-	final.Select(Col("anchor_ts"))
-	final.Select(As(Call("tupleElement", BareIdent("phi_val"), InlineLit(int64(1))), metricsMultiQuantilePhiLabel))
-	final.Select(As(Call("tupleElement", BareIdent("phi_val"), InlineLit(int64(2))), valueAlias))
-	return final
+	outerSb.Select(Col("anchor_ts"))
+	outerSb.SelectAs(quantileBucketFrag(m.IsDuration), metricsQuantileBucketAlias)
+	outerSb.Select(As(verbatim("toFloat64(count(1))"), m.ValueAlias))
+
+	// WHERE: ts ∈ (anchor_ts - range, anchor_ts] AND raw-value >= 2.
+	outerSb.Where(
+		windowTsLowerBoundFrag(rangeNS),
+		verbatim("ts <= anchor_ts"),
+		quantileMetricArgMinFrag(m.IsDuration),
+	)
+
+	// GROUP BY group aliases + anchor_ts + bucket.
+	groupFrags := make([]Frag, 0, len(groupAliases)+2)
+	for _, alias := range groupAliases {
+		a := alias
+		groupFrags = append(groupFrags, func(b *Builder) { b.Ident(a) })
+	}
+	groupFrags = append(groupFrags, Col("anchor_ts"), Col(metricsQuantileBucketAlias))
+	outerSb.GroupBy(groupFrags...)
+
+	e.emitSelect(outerSb)
+	return nil
+}
+
+// metricsQuantileBucketAlias is the SELECT-list alias the matrix-path
+// quantile_over_time emitter assigns to its per-row bucket column.
+// Mirrors Tempo's internal `__bucket` label name (engine_metrics.go,
+// `internalLabelBucket`) so the Tempo handler's
+// `postProcessQuantileBuckets` can pick the bucket value out of the
+// row stream by a stable name. The Tempo handler holds its own
+// matching constant (`tempoQuantileBucketLabel` in
+// internal/api/tempo/metrics_query_range.go); both must agree on the
+// literal "__bucket".
+const metricsQuantileBucketAlias = "__bucket"
+
+// quantileBucketFrag renders the per-row bucket key. Mirrors Tempo's
+// `Log2Bucketize(v) [/ time.Second]` (pkg/traceql/engine_metrics.go).
+//
+//   - duration operands: cerberus's lowering already projects
+//     `metric_arg = Duration / 1e9`. To recover the raw nanosecond value
+//     for the `Log2Bucketize(d) = 2^ceil(log2(d))` formula, multiply by
+//     1e9 inside the log2; divide the resulting power-of-two back by 1e9
+//     to keep the bucket label in fractional seconds, matching
+//     bucketizeDuration's wire shape.
+//   - non-duration operands: `metric_arg` carries the raw numeric value;
+//     emit `pow(2, ceil(log2(toFloat64(metric_arg))))` verbatim.
+//
+// The 1e9 divisor renders as the literal `1000000000` so the emitted
+// SQL has no bound argument for the unit-conversion constant (it's
+// query-shape, not user data) — same idiom used by
+// `histogramBucketFrag` in internal/chsql/histogram_over_time.go.
+func quantileBucketFrag(isDuration bool) Frag {
+	if isDuration {
+		return verbatim("pow(2, ceil(log2(toFloat64(metric_arg) * 1000000000))) / 1000000000")
+	}
+	return verbatim("pow(2, ceil(log2(toFloat64(metric_arg))))")
+}
+
+// quantileMetricArgMinFrag renders the `metric_arg >= 2` filter that
+// mirrors Tempo's bucketize* "if d < 2 return nil" guard
+// (pkg/traceql/ast_metrics.go, bucketizeDuration / bucketizeAttribute).
+// For duration operands the cerberus lowering pre-divides by 1e9, so
+// the filter expands to `metric_arg * 1e9 >= 2` (i.e. raw `Duration >=
+// 2` nanoseconds). For non-duration numeric operands the filter is the
+// bare `metric_arg >= 2`.
+func quantileMetricArgMinFrag(isDuration bool) Frag {
+	if isDuration {
+		return verbatim("metric_arg * 1000000000 >= 2")
+	}
+	return verbatim("metric_arg >= 2")
 }
 
 // anchorFanoutFrag returns a Frag rendering

@@ -258,12 +258,16 @@ func TestMetricsAggregateMultiQuantileBare(t *testing.T) {
 	}
 }
 
-// TestRangeWindowMetricsMultiQuantile exercises the matrix-path
-// fan-out for multi-phi `quantile_over_time`. The middle SELECT
-// computes the per-(group, anchor) `quantiles(...)` array; two
-// wrapping SELECTs fan the array out into one row per
-// (group, anchor, phi) tuple tagged with `__phi__`.
-func TestRangeWindowMetricsMultiQuantile(t *testing.T) {
+// TestRangeWindowMetricsQuantileBuckets exercises the matrix-path
+// emit for `quantile_over_time(...)`: the SQL projects one row per
+// (group, anchor, bucket) with `pow(2, ceil(log2(toFloat64(metric_arg))))`
+// as the synthetic `__bucket` column and `toFloat64(count(1))` as the
+// per-bucket count. The Tempo handler post-processes those rows via
+// `pkg/traceql.Log2QuantileWithBucket` to produce the per-(group,
+// anchor, phi) wire value — so the SQL no longer carries the phi
+// constants and no longer calls CH's `quantile` / `quantiles` aggregate
+// (whose interpolation diverges from Tempo's HistogramAggregator).
+func TestRangeWindowMetricsQuantileBuckets(t *testing.T) {
 	t.Parallel()
 
 	plan := &chplan.RangeWindow{
@@ -283,22 +287,68 @@ func TestRangeWindowMetricsMultiQuantile(t *testing.T) {
 		t.Fatalf("Emit: %v", err)
 	}
 	wantSubstrings := []string{
-		"quantiles(?, ?, ?)(`metric_arg`) AS qs_array",
-		"['0.5', '0.9', '0.99']",
-		"AS phi_val",
-		"tupleElement(phi_val, 1) AS `__phi__`",
-		"tupleElement(phi_val, 2) AS `Value`",
-		"`anchor_ts`",
+		"pow(2, ceil(log2(toFloat64(metric_arg))))",
+		"AS `__bucket`",
+		"toFloat64(count(1)) AS `Value`",
+		"metric_arg >= 2",
+		"GROUP BY `anchor_ts`, `__bucket`",
 	}
 	for _, s := range wantSubstrings {
 		if !strings.Contains(sql, s) {
 			t.Errorf("expected SQL to contain %q; got %s", s, sql)
 		}
 	}
-	// 3 phi args; the matrix path's eval-grid timestamps are inline
-	// literals so no other args bind.
-	if len(args) != 3 {
-		t.Fatalf("len(args) = %d, want 3 (one per phi): %v", len(args), args)
+	// No CH-side quantile call — the phi values are consumed by the
+	// post-processor in internal/api/tempo/metrics_query_range.go.
+	for _, banned := range []string{"quantile(?)", "quantiles(?", "qs_array", "phi_val", "__phi__"} {
+		if strings.Contains(sql, banned) {
+			t.Errorf("matrix quantile SQL must not contain %q (post-processor handles phi): got %s", banned, sql)
+		}
+	}
+	// The phi values do not bind to the SQL anymore — the matrix
+	// quantile emitter drives only the bucket projection.
+	if len(args) != 0 {
+		t.Fatalf("len(args) = %d, want 0 (post-processor consumes phi): %v", len(args), args)
+	}
+}
+
+// TestRangeWindowMetricsQuantileBucketsDuration pins the duration-aware
+// branch of `quantileBucketFrag`: when MetricsAggregate.IsDuration is
+// true the bucket key carries the `* 1e9` / `/ 1e9` rebase so the
+// upstream `Log2Bucketize(d) / time.Second` formula reads bucket edges
+// in fractional seconds. The min-value filter expands to
+// `metric_arg * 1e9 >= 2` so the original-nanosecond `>= 2` guard from
+// `bucketizeDuration` survives the seconds rebase.
+func TestRangeWindowMetricsQuantileBucketsDuration(t *testing.T) {
+	t.Parallel()
+
+	plan := &chplan.RangeWindow{
+		Input: &chplan.MetricsAggregate{
+			Op:         chplan.MetricsOpQuantileOverTime,
+			Attr:       &chplan.ColumnRef{Name: "Duration"},
+			Quantiles:  []float64{0.95},
+			IsDuration: true,
+			ValueAlias: "Value",
+			Inner:      &chplan.Scan{Table: "otel_traces"},
+		},
+		Step:            time.Minute,
+		OuterRange:      5 * time.Minute,
+		TimestampColumn: "Timestamp",
+	}
+	sql, _, err := chsql.Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	wantSubstrings := []string{
+		"pow(2, ceil(log2(toFloat64(metric_arg) * 1000000000))) / 1000000000",
+		"AS `__bucket`",
+		"toFloat64(count(1)) AS `Value`",
+		"metric_arg * 1000000000 >= 2",
+	}
+	for _, s := range wantSubstrings {
+		if !strings.Contains(sql, s) {
+			t.Errorf("expected SQL to contain %q; got %s", s, sql)
+		}
 	}
 }
 

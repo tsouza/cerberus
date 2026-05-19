@@ -1,7 +1,6 @@
 package tempo
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -101,13 +100,17 @@ func TestMetricsLabelNames_PhiLabelAddedForMultiQuantile(t *testing.T) {
 	}
 }
 
-// TestWrapMetricsForSample_MultiQuantileAttrsIncludePhi pins the
-// Attributes map's shape: when len(Quantiles) > 1 the projected map
-// must reference both the group columns and the synthetic `__phi__`
-// column produced by the chsql fan-out — surfaced on the wire under
-// the Tempo-canonical `p` key (matching HistogramAggregator's
-// `Label{"p", NewStaticFloat(q)}` per-series label).
-func TestWrapMetricsForSample_MultiQuantileAttrsIncludePhi(t *testing.T) {
+// TestWrapMetricsForSample_QuantileAttrsIncludeBucket pins the
+// Attributes map's shape for the bucket-shape matrix path: every
+// quantile_over_time projection (single or multi-phi, with or without
+// `by(...)`) must reference the group columns plus the synthetic
+// `__bucket` column produced by the chsql matrix-path quantile emitter.
+// The post-processor (`postProcessQuantileBuckets`) consumes the
+// `__bucket` label off each row to drive `Log2QuantileWithBucket`, then
+// strips the label before emitting the per-phi `p="<phi>"` wire shape
+// — so the SQL-side projection key is `__bucket`, not the
+// HistogramAggregator-style `p`.
+func TestWrapMetricsForSample_QuantileAttrsIncludeBucket(t *testing.T) {
 	t.Parallel()
 
 	rw := &chplan.RangeWindow{}
@@ -134,37 +137,44 @@ func TestWrapMetricsForSample_MultiQuantileAttrsIncludePhi(t *testing.T) {
 		t.Fatalf("Attributes expr = %T (%v), want *chplan.FuncCall(map)", attrsExpr, attrsExpr)
 	}
 
-	// Args are (key, value) pairs. The wire key is `p`; the SQL column
-	// alias is the unexported `__phi__` constant — they intentionally
-	// diverge so the wire shape mirrors Tempo while the SQL stream stays
-	// recognisable as the multi-phi fan-out output.
-	foundPKey := false
-	foundPhiCol := false
+	// Args are (key, value) pairs. The SQL-side key is `__bucket`; the
+	// value is `toString(__bucket)` so the row stream can pluck the
+	// bucket-edge float out of `chclient.Sample.Labels` as a string.
+	foundBucketKey := false
+	foundBucketCol := false
 	for i, arg := range call.Args {
-		if lit, ok := arg.(*chplan.LitString); ok && lit.V == "p" {
-			foundPKey = true
+		if lit, ok := arg.(*chplan.LitString); ok && lit.V == "__bucket" {
+			foundBucketKey = true
 			if i+1 < len(call.Args) {
-				if col, ok := call.Args[i+1].(*chplan.ColumnRef); ok && col.Name == "__phi__" {
-					foundPhiCol = true
+				if fc, ok := call.Args[i+1].(*chplan.FuncCall); ok && fc.Name == "toString" {
+					if len(fc.Args) == 1 {
+						if col, ok := fc.Args[0].(*chplan.ColumnRef); ok && col.Name == "__bucket" {
+							foundBucketCol = true
+						}
+					}
 				}
 			}
 		}
+		// The `p` label is synthesised by the post-processor, not by
+		// the wrap-side projection — reject any leak that would
+		// double-tag rows with `p` at the SQL layer.
+		if lit, ok := arg.(*chplan.LitString); ok && lit.V == "p" {
+			t.Errorf("quantile wrap unexpectedly projects the 'p' label at the SQL layer (post-processor owns it):\n  %v", call.Args)
+		}
 	}
-	if !foundPKey {
-		t.Errorf("map args do not include 'p' literal key:\n  %v", call.Args)
+	if !foundBucketKey {
+		t.Errorf("map args do not include '__bucket' literal key:\n  %v", call.Args)
 	}
-	if !foundPhiCol {
-		t.Errorf("map args do not pair 'p' wire key with the __phi__ SQL ColumnRef")
+	if !foundBucketCol {
+		t.Errorf("map args do not pair '__bucket' wire key with toString(`__bucket`)")
 	}
 }
 
-// TestWrapMetricsForSample_SingleQuantilePLabelLiteral pins the
-// single-phi quantile_over_time contract: the Attributes map carries a
-// `('p', '<phi_str>')` pair with the phi as an inline literal, because
-// the chsql emitter doesn't project a per-row phi column in the
-// single-phi path. The wire shape stays consistent with the multi-phi
-// branch — both surface a `p` label per series.
-func TestWrapMetricsForSample_SingleQuantilePLabelLiteral(t *testing.T) {
+// TestWrapMetricsForSample_SingleQuantileAlsoBucketShape mirrors the
+// multi-phi test above but for a single phi — the bucket-shape SQL
+// route is independent of len(Quantiles) since the post-processor fans
+// rows across all phis after the bucket count has been computed.
+func TestWrapMetricsForSample_SingleQuantileAlsoBucketShape(t *testing.T) {
 	t.Parallel()
 
 	rw := &chplan.RangeWindow{}
@@ -180,38 +190,41 @@ func TestWrapMetricsForSample_SingleQuantilePLabelLiteral(t *testing.T) {
 	proj := node.(*chplan.Project)
 	call := proj.Projections[1].Expr.(*chplan.FuncCall)
 
-	foundPLit := false
-	for i, arg := range call.Args {
-		if lit, ok := arg.(*chplan.LitString); ok && lit.V == "p" {
-			if i+1 < len(call.Args) {
-				if v, ok := call.Args[i+1].(*chplan.LitString); ok && v.V == "0.95" {
-					foundPLit = true
-				}
-			}
+	foundBucket := false
+	for _, arg := range call.Args {
+		if lit, ok := arg.(*chplan.LitString); ok && lit.V == "__bucket" {
+			// Skip the literal key itself; the bucketKey + value pair
+			// is checked together in TestWrapMetricsForSample_QuantileAttrsIncludeBucket.
+			foundBucket = true
 		}
-		// Reject any leak of the SQL-side `__phi__` alias into the
-		// single-phi path — the chsql emitter doesn't project that
-		// column here.
-		if lit, ok := arg.(*chplan.LitString); ok && strings.Contains(lit.V, "__phi__") {
-			t.Errorf("single-quantile map args unexpectedly include __phi__ key: %v", call.Args)
+		// Reject any leak of an SQL-projected `p` literal — the
+		// post-processor owns the per-phi label.
+		if lit, ok := arg.(*chplan.LitString); ok && lit.V == "p" {
+			t.Errorf("single-quantile map args unexpectedly include 'p' literal key: %v", call.Args)
 		}
 		if col, ok := arg.(*chplan.ColumnRef); ok && col.Name == "__phi__" {
 			t.Errorf("single-quantile map args unexpectedly reference __phi__ ColumnRef: %v", call.Args)
 		}
 	}
-	if !foundPLit {
-		t.Errorf("single-phi quantile_over_time: expected ('p', '0.95') literal pair, got %v", call.Args)
+	if !foundBucket {
+		t.Errorf("single-phi quantile_over_time: expected '__bucket' literal key in map args, got %v", call.Args)
 	}
 }
 
-// TestWrapMetricsForSample_UngroupedQuantileSurfacesPLabel pins the
-// ungrouped quantile path: no `by(...)` clause and a single phi must
-// emit `{p="<phi>"}` (NOT `{__name__="quantile_over_time"}`) because
-// Tempo routes quantile_over_time through HistogramAggregator rather
-// than UngroupedAggregator. This is the case the tempo-compat differ
-// caught with `missing_in_a` for the metrics_quantile_over_time_p95
-// case before the fix.
-func TestWrapMetricsForSample_UngroupedQuantileSurfacesPLabel(t *testing.T) {
+// TestWrapMetricsForSample_UngroupedQuantileSurfacesBucket pins the
+// ungrouped quantile path's SQL-layer projection: no `by(...)` clause
+// and any number of phis must emit `('__bucket', toString(__bucket))`
+// — the bucket-shape row stream the post-processor expects — NOT
+// `('__name__', 'quantile_over_time')` (UngroupedAggregator path) and
+// NOT `('p', '<phi>')` (the post-processor synthesises the `p` label
+// after collapsing bucket counts via `Log2QuantileWithBucket`).
+//
+// This regression test guards against any future revival of the
+// SQL-side `p`-label projection — Tempo routes quantile through
+// HistogramAggregator, but the bucket-shape route lets cerberus reuse
+// the upstream quantile algorithm verbatim rather than duplicating it
+// in CH SQL.
+func TestWrapMetricsForSample_UngroupedQuantileSurfacesBucket(t *testing.T) {
 	t.Parallel()
 
 	rw := &chplan.RangeWindow{}
@@ -225,25 +238,32 @@ func TestWrapMetricsForSample_UngroupedQuantileSurfacesPLabel(t *testing.T) {
 	proj := node.(*chplan.Project)
 	call := proj.Projections[1].Expr.(*chplan.FuncCall)
 
-	// Expect exactly one (key, value) pair: ('p', '0.95').
+	// Expect exactly one (key, value) pair: ('__bucket',
+	// toString(__bucket)).
 	if len(call.Args) != 2 {
 		t.Fatalf("ungrouped quantile_over_time: expected 2 map args (one pair), got %d: %v",
 			len(call.Args), call.Args)
 	}
 	key, ok := call.Args[0].(*chplan.LitString)
-	if !ok || key.V != "p" {
-		t.Errorf("Attributes map[0] (key) = %v, want LitString{p}", call.Args[0])
+	if !ok || key.V != "__bucket" {
+		t.Errorf("Attributes map[0] (key) = %v, want LitString{__bucket}", call.Args[0])
 	}
-	val, ok := call.Args[1].(*chplan.LitString)
-	if !ok || val.V != "0.95" {
-		t.Errorf("Attributes map[1] (value) = %v, want LitString{0.95}", call.Args[1])
+	val, ok := call.Args[1].(*chplan.FuncCall)
+	if !ok || val.Name != "toString" {
+		t.Errorf("Attributes map[1] (value) = %v, want toString(...) call", call.Args[1])
 	}
 
-	// And the `__name__` synthetic label MUST NOT appear — that's the
-	// UngroupedAggregator path, which quantile_over_time skips.
+	// Neither the `__name__` UngroupedAggregator label nor the `p`
+	// HistogramAggregator label may appear at the SQL projection layer
+	// — both are owned by other code paths.
 	for _, arg := range call.Args {
-		if lit, ok := arg.(*chplan.LitString); ok && lit.V == "__name__" {
-			t.Errorf("ungrouped quantile_over_time leaked __name__ label: %v", call.Args)
+		if lit, ok := arg.(*chplan.LitString); ok {
+			if lit.V == "__name__" {
+				t.Errorf("ungrouped quantile_over_time leaked __name__ label: %v", call.Args)
+			}
+			if lit.V == "p" {
+				t.Errorf("ungrouped quantile_over_time leaked SQL-side 'p' label (post-processor owns it): %v", call.Args)
+			}
 		}
 	}
 }
