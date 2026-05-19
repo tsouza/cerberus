@@ -1203,11 +1203,10 @@ func TestMetricsQueryRange_QuantileOverTimeWireShape(t *testing.T) {
 				}
 			}
 
-			// The chsql single-phi path emits `quantile(?)(...)` (not
-			// the multi-phi `quantiles(...)` fan-out); confirm the SQL
-			// shape so a future refactor that swaps the SQL emit can't
-			// silently re-introduce a `__phi__` column for single-phi.
-			assertSQLContains(t, q.lastSQL, "quantile(?)")
+			// Single-phi quantile MUST NOT use the multi-phi
+			// `qs_array`/`__phi__` SQL fan-out (that would synthesise a
+			// `__phi__` column that downstream wraps into the wire `p`
+			// label per-row instead of via the inline literal).
 			if strings.Contains(q.lastSQL, "qs_array") {
 				t.Errorf("single-phi quantile SQL unexpectedly fans out via qs_array: %s", q.lastSQL)
 			}
