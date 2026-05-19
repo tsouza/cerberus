@@ -5,6 +5,20 @@
 [1] int64 = 100
 -- sql --
 SELECT * FROM `otel_traces` WHERE (toFloat64(`SpanAttributes`[?]) >= ?)
+-- seed --
+CREATE TABLE otel_traces (
+    Duration UInt64,
+    SpanAttributes Map(String, String) MATERIALIZED if(Duration = 50000000, map('timeout', '50'), if(Duration = 100000000, map('timeout', '100'), map('timeout', '250')))
+) ENGINE = MergeTree ORDER BY Duration;
+INSERT INTO otel_traces (Duration) VALUES
+    (50000000),
+    (100000000),
+    (250000000);
+-- expected_rows --
+[
+  [100000000],
+  [250000000]
+]
 -- chplan --
 Filter predicate=(toFloat64(SpanAttributes["timeout"]) >= 100)
   Scan(otel_traces)

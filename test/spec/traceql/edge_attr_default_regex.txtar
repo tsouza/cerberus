@@ -5,6 +5,20 @@
 [1] string = "/api/.*"
 -- sql --
 SELECT * FROM `otel_traces` WHERE match(`SpanAttributes`[?], ?)
+-- seed --
+CREATE TABLE otel_traces (
+    Duration UInt64,
+    SpanAttributes Map(String, String) MATERIALIZED if(Duration = 10000000, map('path', '/api/users'), if(Duration = 20000000, map('path', '/api/orders'), map('path', '/healthz')))
+) ENGINE = MergeTree ORDER BY Duration;
+INSERT INTO otel_traces (Duration) VALUES
+    (10000000),
+    (20000000),
+    (30000000);
+-- expected_rows --
+[
+  [10000000],
+  [20000000]
+]
 -- chplan --
 Filter predicate=(SpanAttributes["path"] =~ "/api/.*")
   Scan(otel_traces)
