@@ -48,7 +48,12 @@
 //	                            check names; each check runs per-backend against
 //	                            the parsed response (see differ.go::SemanticChecks
 //	                            for the registered names)
-//	-- skip_reason --           if non-empty, the case is parsed but skipped
+//
+// There is intentionally no opt-out marker on a per-case basis: a case
+// that can't run is removed from the corpus, not flagged. Keeping the
+// corpus a strict declaration of "this must diff cleanly" eliminates the
+// "stub it for later" failure mode where a future contributor forgets to
+// turn the case back on once the missing functionality lands.
 //
 // Cases are separated by the next `-- name --` header. Lines starting
 // with `#` outside section bodies are comments. Inside a section body,
@@ -79,7 +84,7 @@ import (
 // CorpusCase is one entry parsed out of the TXTAR file.
 //
 // Every field except Name + Query + Endpoint is optional; the differ
-// applies whichever assertions are populated and skips the rest. That
+// applies whichever assertions are populated and ignores the rest. That
 // keeps the corpus author free to add narrow per-case assertions without
 // having to populate the whole schema.
 type CorpusCase struct {
@@ -130,12 +135,6 @@ type CorpusCase struct {
 	// "60s", "1m", or plain seconds). An empty Step on a metrics_range
 	// case is a validation error.
 	Step string
-
-	// SkipReason, when non-empty, makes the case parse but skip during
-	// diffing. Used to declare future-shaped cases in the smoke corpus so
-	// the file stays the single source of truth for the eventual full
-	// corpus while keeping CI green.
-	SkipReason string
 
 	// ExpectedMinTraces / ExpectedMaxTraces bound the cardinality both
 	// backends must agree with. Zero (the default) disables the bound.
@@ -213,7 +212,6 @@ const (
 	secTagName          = "tag_name"
 	secScope            = "scope"
 	secStep             = "step"
-	secSkipReason       = "skip_reason"
 	secMinTraces        = "expected_min_traces"
 	secMaxTraces        = "expected_max_traces"
 	secMinValues        = "expected_min_values"
@@ -266,8 +264,6 @@ func applySection(cur *CorpusCase, section, body string) error {
 		cur.Scope = body
 	case secStep:
 		cur.Step = body
-	case secSkipReason:
-		cur.SkipReason = body
 	case secMinTraces:
 		return applyIntSection(body, "expected_min_traces", &cur.ExpectedMinTraces)
 	case secMaxTraces:
@@ -359,7 +355,7 @@ func validateCase(cur CorpusCase, ord int) (CorpusCase, error) {
 	if cur.Scope != "" && cur.Endpoint != "tags_v2" {
 		return cur, fmt.Errorf("case %q: -- scope -- is only valid for endpoint=tags_v2 (got %s)", cur.Name, cur.Endpoint)
 	}
-	if cur.Endpoint == "metrics_range" && cur.Step == "" && cur.SkipReason == "" {
+	if cur.Endpoint == "metrics_range" && cur.Step == "" {
 		return cur, fmt.Errorf("case %q: endpoint=metrics_range requires -- step -- (e.g. \"60s\")", cur.Name)
 	}
 	return cur, nil
@@ -381,7 +377,7 @@ func isTagEndpoint(ep string) bool {
 func isKnownSection(name string) bool {
 	switch name {
 	case secQuery, secEndpoint, secTraceIDTemplate, secTagName, secScope,
-		secStep, secSkipReason,
+		secStep,
 		secMinTraces, secMaxTraces, secMinValues, secMaxValues,
 		secValues, secScopes, secServices, secRootNameRE,
 		secMinSeries, secMaxSeries, secSamplesPerSeries, secSemanticChecks:

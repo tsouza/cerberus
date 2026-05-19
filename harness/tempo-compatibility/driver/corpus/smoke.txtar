@@ -3,10 +3,9 @@
 # PR 4 lifted-and-adapted the cases from harness/prometheus-compliance/
 # shadow/traceql_shadow_test.go::traceqlInstantCases(). PR 5 extended the
 # corpus with /api/metrics/query_range + /api/metrics/query cases and
-# added the semantic-consistency layer (see differ.go::SemanticConsistency);
-# the three metrics_instant cases were stubbed via `skip_reason` while
-# the cerberus /api/metrics/query handler was pending and were turned
-# on when the handler landed.
+# added the semantic-consistency layer (see differ.go::SemanticConsistency).
+# The three metrics_instant cases activated alongside the cerberus
+# /api/metrics/query handler (see internal/api/tempo/metrics_query_instant.go).
 #
 # The shadow test runs the SAME 20 search categories against a fake
 # in-process span set; this corpus runs the SAME categories against
