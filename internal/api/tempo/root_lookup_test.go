@@ -69,6 +69,35 @@ func TestBuildRootLookupPlan_SQLShape(t *testing.T) {
 		}
 	}
 
+	// Trace-duration aggregates: the inner Aggregate must surface
+	// TraceStartNs (min of toUnixTimestamp64Nano(Timestamp)) and
+	// TraceEndNs (max of toUnixTimestamp64Nano(Timestamp) +
+	// toInt64(Duration)) so the outer Project can derive
+	// `TraceEndNs - TraceStartNs` as the trace-wide wall-clock span
+	// in nanoseconds, threaded through the canonical Value slot for
+	// the shaper's applyRootMetadata to pick up.
+	for _, alias := range []string{"TraceStartNs", "TraceEndNs"} {
+		if !strings.Contains(sql, alias) {
+			t.Errorf("SQL must project trace-duration aggregate %q; got %s", alias, sql)
+		}
+	}
+	if !strings.Contains(sql, "toUnixTimestamp64Nano") {
+		t.Errorf("SQL must cast Timestamp to nanoseconds via toUnixTimestamp64Nano; got %s", sql)
+	}
+	if !strings.Contains(sql, "toInt64") {
+		t.Errorf("SQL must cast Duration to Int64 so the sum stays signed; got %s", sql)
+	}
+	// The root-span identifying aggregates must use argMinIf so the
+	// (ParentSpanId IN ('', '0000000000000000')) condition carries
+	// inside the same GROUP BY group as the unconditional trace
+	// start / end aggregates. The previous shape filtered with WHERE
+	// ParentSpanId IN (...) AND ..., which would have scoped the
+	// trace-duration aggregates to root spans only and under-
+	// reported by definition.
+	if !strings.Contains(sql, "argMinIf") {
+		t.Errorf("SQL must use argMinIf so root-span identity scopes ParentSpanId without restricting the trace-duration aggregates; got %s", sql)
+	}
+
 	// Args must include each TraceID padded to 32-char lowercase hex
 	// so the equality match hits the otel_traces.TraceId column.
 	// padTraceIDs pads to 32 chars: "17" → 30 zeros + "17", "abc" → 29
@@ -190,5 +219,62 @@ func TestApplyRootMetadata_EmptyRootsNoop(t *testing.T) {
 	applyRootMetadata(summaries, nil)
 	if summaries[0].RootServiceName != "fallback" || summaries[0].RootTraceName != "fallback" {
 		t.Errorf("empty roots must leave summaries untouched; got %+v", summaries[0])
+	}
+}
+
+// TestApplyRootMetadata_PatchesDurationMs covers the duration-patch
+// arm: the follow-up lookup query surfaces the whole-trace wall-
+// clock span via rootMetadata.TraceDurationNs, and the merge step
+// must convert it to milliseconds and overwrite the per-row
+// Sample.Value fallback toTraceSummaries computed from matched
+// child spans. Mirrors the structural-join / status-filter compat
+// cases that pre-fix reported durationMs from a single child span
+// instead of the trace-wide span Tempo emits.
+func TestApplyRootMetadata_PatchesDurationMs(t *testing.T) {
+	t.Parallel()
+	summaries := []TraceSummary{
+		// trace a: per-row fallback computed 20ms; the follow-up
+		// lookup recovers the trace-wide 150ms span.
+		{TraceID: "a", DurationMs: 20},
+		// trace b: lookup recovered no positive duration (e.g. a
+		// single-instant trace, or a fixture with no spans seeded
+		// post-search-window) — the per-row fallback (80ms) stays.
+		{TraceID: "b", DurationMs: 80},
+		// trace c: lookup absent (true truncation) — DurationMs
+		// untouched.
+		{TraceID: "c", DurationMs: 60},
+	}
+	roots := map[string]rootMetadata{
+		"a": {ServiceName: "checkout", SpanName: "POST /api/checkout", TraceDurationNs: 150_000_000},
+		"b": {ServiceName: "frontend", SpanName: "GET /healthz"},
+	}
+	applyRootMetadata(summaries, roots)
+
+	if got := summaries[0].DurationMs; got != 150 {
+		t.Errorf("trace a DurationMs: got %d, want 150 (lookup-recovered trace-wide span)", got)
+	}
+	if got := summaries[1].DurationMs; got != 80 {
+		t.Errorf("trace b DurationMs: got %d, want 80 (lookup carried no duration; per-row fallback preserved)", got)
+	}
+	if got := summaries[2].DurationMs; got != 60 {
+		t.Errorf("trace c DurationMs: got %d, want 60 (lookup absent; per-row fallback preserved)", got)
+	}
+}
+
+// TestApplyRootMetadata_NegativeDurationIgnored guards against the
+// (defensively-handled) corrupt-fixture path where TraceEndNs <
+// TraceStartNs leaks through resolveTraceRoots. The patch must not
+// rewrite DurationMs to a negative integer.
+func TestApplyRootMetadata_NegativeDurationIgnored(t *testing.T) {
+	t.Parallel()
+	summaries := []TraceSummary{
+		{TraceID: "a", DurationMs: 42},
+	}
+	roots := map[string]rootMetadata{
+		"a": {ServiceName: "svc", SpanName: "name", TraceDurationNs: -1},
+	}
+	applyRootMetadata(summaries, roots)
+	if summaries[0].DurationMs != 42 {
+		t.Errorf("negative TraceDurationNs must be ignored; got DurationMs=%d", summaries[0].DurationMs)
 	}
 }
