@@ -539,7 +539,7 @@ func RunRoundTrip(t *testing.T, c *Case) {
 		}
 		row := make([]any, colCount)
 		for i, v := range cells {
-			row[i] = decodeCell(v)
+			row[i] = decodeCell(v, rt.RawStrings)
 		}
 		got = append(got, row)
 	}
@@ -680,15 +680,26 @@ func sortRows(rows [][]any) {
 // driver returns a string; we try JSON-decode and fall back to the
 // raw string. time.Time values are normalized to RFC3339Nano so
 // fixture authors can write them as quoted strings.
-func decodeCell(v any) any {
+//
+// When rawStrings is true the JSON-decode pass on String/[]byte cells
+// is skipped — the runner returns the raw string. Fixtures opt in
+// via the `raw_strings:` section when they need to assert literal
+// brace-prefixed payloads against the SQL output.
+func decodeCell(v any, rawStrings bool) any {
 	switch x := v.(type) {
 	case nil:
 		return nil
 	case time.Time:
 		return x.UTC().Format(time.RFC3339Nano)
 	case []byte:
+		if rawStrings {
+			return string(x)
+		}
 		return decodeBytes(x)
 	case string:
+		if rawStrings {
+			return x
+		}
 		return decodeString(x)
 	default:
 		return v

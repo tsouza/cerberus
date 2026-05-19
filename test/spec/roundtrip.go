@@ -26,6 +26,16 @@
 //     Go side (per the chDB driver probe, native Map scan panics in
 //     parquet-go inside chdb-go v1.11.0).
 //
+//   - `raw_strings:` (optional, presence-only) — disables the runner's
+//     heuristic JSON-decoding of String/[]byte cells. Without it, any
+//     cell whose string content starts with `{` or `[` is decoded
+//     into a map/slice value before comparison, and expected_rows
+//     must mirror the decoded shape. With it, the runner returns the
+//     raw string, and expected_rows asserts the literal payload — the
+//     correct mode for fixtures that exercise JSON pass-through (e.g.
+//     `| json`/`| logfmt` on log lines that contain brace-prefixed
+//     content).
+//
 // We chose JSON over TSV for `expected_rows:` because Map columns
 // embed nested structure that TSV cannot represent without an
 // escaping convention, and because reflect.DeepEqual on the decoded
@@ -72,6 +82,15 @@ type RoundTripSections struct {
 	// Args is the bound []any matching the `?` placeholders in SQL,
 	// parsed from the `args:` text format the emitter writes.
 	Args []any
+
+	// RawStrings disables the runner's heuristic JSON-decoding of
+	// String/[]byte cells (decodeString in runner_chdb.go promotes
+	// `{...}`/`[...]`-prefixed strings to map/slice values). Opt in
+	// when a fixture asserts a literal brace-prefixed payload — its
+	// expected_rows would otherwise have to mirror the decoded shape
+	// and lose round-trip fidelity with the actual SQL output. Set
+	// by the presence of the `raw_strings:` section in the fixture.
+	RawStrings bool
 
 	// expectedRowsPresent records whether the fixture authored an
 	// `expected_rows:` section at all (even an empty `[]`), so
@@ -121,6 +140,9 @@ func LoadRoundTrip(c *Case) (*RoundTripSections, error) {
 			return nil, fmt.Errorf("args: %w", err)
 		}
 		out.Args = args
+	}
+	if _, ok := c.Section("raw_strings"); ok {
+		out.RawStrings = true
 	}
 	return out, nil
 }
