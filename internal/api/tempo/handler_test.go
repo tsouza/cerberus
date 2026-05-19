@@ -271,6 +271,238 @@ func TestSearch_GroupsByTraceID(t *testing.T) {
 	}
 }
 
+// TestSearch_RootSpanResolution asserts that when a trace contains
+// multiple spans (one root with ParentSpanId="" and several children
+// pointing at the root), the response shaper anchors RootServiceName
+// and RootTraceName on the root span — not on whichever child the
+// underlying engine happens to return first. This is the Tempo wire
+// spec: rootTraceName is the name of the span at the top of the trace
+// tree.
+//
+// Pins the bug behind ~4 Tempo compat cases (status_eq_error /
+// set_or_two_kinds / set_and_checkout_and_status_error /
+// descendant_op_payments_to_consumer / direct_parent_op_checkout_to_child)
+// — see PR description for the before/after wire shape.
+func TestSearch_RootSpanResolution(t *testing.T) {
+	t.Parallel()
+	const traceID = "cccccccccccccccccccccccccccccccc"
+	const rootSpanID = "0000000000000001"
+	q := &stubQuerier{
+		samples: []chclient.Sample{
+			// A child span (returned first by CH; this is exactly the
+			// scenario that produced rootTraceName="checkout.child.2"
+			// in the Tempo compat diff).
+			{
+				MetricName: "checkout.child.2",
+				Labels: map[string]string{
+					"service.name":            "checkout",
+					"__cerberus_traceID":      traceID,
+					"__cerberus_parentSpanID": rootSpanID,
+				},
+				Timestamp: time.Date(2026, 5, 12, 10, 0, 0, 30_000_000, time.UTC),
+				Value:     40_000_000,
+			},
+			// Another child.
+			{
+				MetricName: "checkout.child.0",
+				Labels: map[string]string{
+					"service.name":            "checkout",
+					"__cerberus_traceID":      traceID,
+					"__cerberus_parentSpanID": rootSpanID,
+				},
+				Timestamp: time.Date(2026, 5, 12, 10, 0, 0, 10_000_000, time.UTC),
+				Value:     20_000_000,
+			},
+			// The actual root span — ParentSpanId is empty. The shaper
+			// must anchor RootServiceName + RootTraceName here.
+			{
+				MetricName: "GET /api/checkout/17",
+				Labels: map[string]string{
+					"service.name":            "checkout",
+					"__cerberus_traceID":      traceID,
+					"__cerberus_parentSpanID": "",
+				},
+				Timestamp: time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+				Value:     150_000_000,
+			},
+		},
+	}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/search?q=%7B%20status%20%3D%20error%20%7D")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	var sr tempo.SearchResponse
+	if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(sr.Traces) != 1 {
+		t.Fatalf("expected 1 trace, got %d", len(sr.Traces))
+	}
+	got := sr.Traces[0]
+	if got.RootTraceName != "GET /api/checkout/17" {
+		t.Errorf("RootTraceName: got %q, want %q (the span where ParentSpanId='', not a child)",
+			got.RootTraceName, "GET /api/checkout/17")
+	}
+	if got.RootServiceName != "checkout" {
+		t.Errorf("RootServiceName: got %q, want %q",
+			got.RootServiceName, "checkout")
+	}
+}
+
+// TestSearch_RootSpanResolution_MultipleRoots covers the broken-trace
+// fallback: when two spans both have ParentSpanId="" (the trace was
+// chopped during collection so multiple roots are present), Tempo
+// anchors on the earliest by start time. The shaper mirrors that.
+func TestSearch_RootSpanResolution_MultipleRoots(t *testing.T) {
+	t.Parallel()
+	const traceID = "dddddddddddddddddddddddddddddddd"
+	q := &stubQuerier{
+		samples: []chclient.Sample{
+			// Later "root" (broken trace).
+			{
+				MetricName: "later-root",
+				Labels: map[string]string{
+					"service.name":            "svcB",
+					"__cerberus_traceID":      traceID,
+					"__cerberus_parentSpanID": "",
+				},
+				Timestamp: time.Date(2026, 5, 12, 10, 0, 5, 0, time.UTC),
+				Value:     100_000_000,
+			},
+			// Earlier "root" — should win.
+			{
+				MetricName: "earliest-root",
+				Labels: map[string]string{
+					"service.name":            "svcA",
+					"__cerberus_traceID":      traceID,
+					"__cerberus_parentSpanID": "",
+				},
+				Timestamp: time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+				Value:     200_000_000,
+			},
+		},
+	}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/search?q=%7B%7D")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	var sr tempo.SearchResponse
+	if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(sr.Traces) != 1 {
+		t.Fatalf("expected 1 trace, got %d", len(sr.Traces))
+	}
+	if sr.Traces[0].RootTraceName != "earliest-root" {
+		t.Errorf("RootTraceName: got %q, want %q (earliest of multiple roots)",
+			sr.Traces[0].RootTraceName, "earliest-root")
+	}
+	if sr.Traces[0].RootServiceName != "svcA" {
+		t.Errorf("RootServiceName: got %q, want %q",
+			sr.Traces[0].RootServiceName, "svcA")
+	}
+}
+
+// TestSearch_RootSpanResolution_TruncatedTrace covers the truncated-set
+// fallback: when the matcher only matches child spans (the root is in
+// the trace but not in this search result set), the shaper falls back
+// to the earliest-by-timestamp span's metadata. This degrades
+// gracefully — the response surfaces *something* identifying the
+// trace rather than dropping the row.
+func TestSearch_RootSpanResolution_TruncatedTrace(t *testing.T) {
+	t.Parallel()
+	const traceID = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	const rootSpanID = "0000000000000099"
+	q := &stubQuerier{
+		samples: []chclient.Sample{
+			{
+				MetricName: "child.late",
+				Labels: map[string]string{
+					"service.name":            "svcLate",
+					"__cerberus_traceID":      traceID,
+					"__cerberus_parentSpanID": rootSpanID,
+				},
+				Timestamp: time.Date(2026, 5, 12, 10, 0, 5, 0, time.UTC),
+				Value:     100_000_000,
+			},
+			{
+				MetricName: "child.early",
+				Labels: map[string]string{
+					"service.name":            "svcEarly",
+					"__cerberus_traceID":      traceID,
+					"__cerberus_parentSpanID": rootSpanID,
+				},
+				Timestamp: time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+				Value:     50_000_000,
+			},
+		},
+	}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/search?q=%7B%7D")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	var sr tempo.SearchResponse
+	if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(sr.Traces) != 1 {
+		t.Fatalf("expected 1 trace, got %d", len(sr.Traces))
+	}
+	// Earliest child wins when no root is in the result set.
+	if sr.Traces[0].RootTraceName != "child.early" {
+		t.Errorf("RootTraceName: got %q, want %q (earliest child when root absent)",
+			sr.Traces[0].RootTraceName, "child.early")
+	}
+	if sr.Traces[0].RootServiceName != "svcEarly" {
+		t.Errorf("RootServiceName: got %q, want %q",
+			sr.Traces[0].RootServiceName, "svcEarly")
+	}
+}
+
+// TestSearch_SQLProjectsParentSpanId pins the SQL emitted by the search
+// path against an OTel-CH default schema. The ParentSpanId column must
+// appear in the projection so toTraceSummaries can resolve the root
+// span — without this column the shaper has no way to identify which
+// row is the root.
+func TestSearch_SQLProjectsParentSpanId(t *testing.T) {
+	t.Parallel()
+	q := &stubQuerier{}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/search?q=%7B%20resource.service.name%20%3D%20%22frontend%22%20%7D")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+	// The wrap-projection's reserved map must include
+	// '__cerberus_parentSpanID' → ParentSpanId so the shaper can
+	// classify each row's root status. Substring search keeps the
+	// pin robust against unrelated SQL whitespace / arg-positional
+	// shifts.
+	if !strings.Contains(q.lastSQL, "ParentSpanId") {
+		t.Errorf("emitted SQL must project ParentSpanId; got %s", q.lastSQL)
+	}
+	if !strings.Contains(q.lastSQL, "__cerberus_parentSpanID") {
+		t.Errorf("emitted SQL must include reserved __cerberus_parentSpanID slot; got %s", q.lastSQL)
+	}
+}
+
 // isHexLower reports whether s is a non-empty lowercase hex string.
 // The OTel CH exporter writes TraceId via hex.EncodeToString, which
 // produces lowercase a-f digits.
