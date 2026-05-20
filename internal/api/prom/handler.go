@@ -61,6 +61,15 @@ type Handler struct {
 	// unconstrained behaviour.
 	Limiter *admit.Limiter
 
+	// parser is the single PromQL parser instance the handler uses for
+	// every parse path. The scalar-fold short-circuit (parseExpr,
+	// invoked from tryScalarFold) AND the engine path (executeInstant /
+	// executeRangeStreaming, which construct lang values with
+	// `Parser: h.parser`) share this same interface value, so the two
+	// paths cannot drift on promparser.Options. New(...) is the only
+	// construction site; lang values borrow the field by interface
+	// identity. The invariant is pinned by
+	// TestHandlerLang_ParserOptionsAligned.
 	parser promparser.Parser
 }
 
