@@ -12,16 +12,125 @@ import (
 	traceql_lower "github.com/tsouza/cerberus/internal/traceql"
 )
 
-// This file exports a narrow set of the Tempo HTTP-handler internals
-// the sibling `internal/api/tempo/grpc` package needs to answer the
-// StreamingQuerier metrics RPCs (MetricsQueryRange + MetricsQueryInstant)
-// without duplicating the parse + lower + wrap + execute + post-process
-// pipeline encoded in handleMetricsQueryRange / handleMetricsQueryInstant.
-// The exports keep the HTTP surface as the source of truth for behaviour
-// — the gRPC surface only diverges on the wire envelope (tempopb
-// TimeSeries / InstantSeries vs the JSON MetricsSeries / MetricsInstantSeries
-// shapes the HTTP handler returns). See .claude/plans/tempo-grpc-streaming-design.md
-// §3 + §6 for the single-frame strategy this enables.
+// This file exports a narrow, deliberately-small surface of the Tempo
+// HTTP-handler internals the sibling `internal/api/tempo/grpc` package
+// needs to answer the StreamingQuerier RPCs without duplicating the
+// parse + lower + emit + execute + post-process pipelines the HTTP
+// handler already encodes. Two surfaces live here:
+//
+//  - **Tag RPC helpers** — SearchTags / SearchTagsV2 / SearchTagValues /
+//    SearchTagValuesV2 wrappers around the unexported scope-resolve +
+//    DISTINCT-attribute-key lookup the HTTP handler performs.
+//  - **Metrics RPC helpers** — ExecMetricsRange / ExecMetricsInstant
+//    drive the full MetricsQueryRange / MetricsQueryInstant pipeline
+//    end-to-end and return the post-quantile-collapse, post-zero-fill,
+//    post-exemplar-attach series the HTTP handler returns.
+//
+// Keeping every export in a single file means PR 2 (gRPC Search),
+// PR 3 (gRPC tags), and PR 4 (gRPC metrics) each touch one new gRPC
+// file plus this one — the parallel rollout doesn't fan into the
+// handler.go diff. See .claude/plans/tempo-grpc-streaming-design.md
+// §3 + §6 for the single-frame strategy the metrics helpers enable.
+
+// TagScope is the canonical scope keyword the V2 endpoint partitions
+// results on; aliased here so the grpc handler doesn't need to import
+// the package-private constants.
+const (
+	TagScopeNone      = tagScopeNone
+	TagScopeResource  = tagScopeResource
+	TagScopeSpan      = tagScopeSpan
+	TagScopeIntrinsic = tagScopeIntrinsic
+)
+
+// IntrinsicTags returns a defensive copy of the static intrinsic-tag
+// inventory the V2 endpoint emits in the `intrinsic` scope bucket.
+// Mirrors upstream Tempo's `pkg/search.GetVirtualIntrinsicValues()`
+// — see the in-package documentation on `intrinsicTags`.
+func IntrinsicTags() []string {
+	return append([]string(nil), intrinsicTags...)
+}
+
+// ParseTagScope normalises the SearchTagsRequest.Scope proto field
+// against the upstream Tempo allowlist. Empty / "none" / "all" all
+// collapse to TagScopeNone (every scope). Returns an error suitable
+// for codes.InvalidArgument on any unrecognised value.
+func ParseTagScope(raw string) (string, error) {
+	return parseTagScope(raw)
+}
+
+// FetchTagKeys runs the DISTINCT mapKeys lookup for the given
+// attribute map column (Handler.Schema.AttributesColumn for span
+// keys, Handler.Schema.ResourceAttributesColumn for resource keys).
+// The (sorted, de-duplicated) string slice is the same one the HTTP
+// V1 / V2 envelopes are built from.
+func (h *Handler) FetchTagKeys(ctx context.Context, mapCol string, start, end time.Time) ([]string, error) {
+	return h.fetchTagKeys(ctx, mapCol, start, end)
+}
+
+// SortedUnique returns the de-duplicated, lexicographically sorted
+// view of in (empty input → empty non-nil slice). Exported so the
+// gRPC tag-list handlers can share the same final-shaping step the
+// HTTP handler does.
+func SortedUnique(in []string) []string {
+	return sortedUnique(in)
+}
+
+// ResolvedTagName mirrors the unexported resolvedTagName layout. The
+// grpc handler branches on IsIntrinsic + (IntrinsicCol /
+// IntrinsicName) vs (Key, MapScope) to pick the right SQL.
+type ResolvedTagName struct {
+	IsIntrinsic   bool
+	IntrinsicCol  string
+	IntrinsicName string
+	Key           string
+	// MapScope encodes which attribute map(s) a dynamic-attribute
+	// lookup should consult: 0 (any), 1 (resource), 2 (span). The
+	// constants live as package-private values inside the tempo
+	// package; the grpc handler treats them as opaque and just
+	// passes the struct back into BuildTagValuesSQL.
+	mapScope attrMapScope
+}
+
+// ResolveTagName parses the URL-path / RPC-field tag name as a
+// TraceQL identifier and maps it onto the cerberus lookup pipeline.
+// The returned error is non-nil only on a parser-rejected bare
+// dotted form; callers that want V2-strict parsing reject when err
+// != nil.
+func (h *Handler) ResolveTagName(name string) (ResolvedTagName, error) {
+	r, err := resolveTagName(name, h.Schema)
+	return ResolvedTagName{
+		IsIntrinsic:   r.IsIntrinsic,
+		IntrinsicCol:  r.IntrinsicCol,
+		IntrinsicName: r.IntrinsicName,
+		Key:           r.Key,
+		mapScope:      r.MapScope,
+	}, err
+}
+
+// FetchTagValues runs the right CH lookup for a resolved tag — the
+// intrinsic-column DISTINCT projection when r.IsIntrinsic, otherwise
+// the dynamic-attribute arrayJoin form against the appropriate
+// SpanAttributes / ResourceAttributes map(s). Returns the sorted,
+// de-duplicated value list plus the Tempo V2 type label (see
+// intrinsicType — "string" for dynamic attributes).
+func (h *Handler) FetchTagValues(ctx context.Context, r ResolvedTagName, start, end time.Time) (values []string, valueType string, err error) {
+	var (
+		sqlStr string
+		args   []any
+	)
+	if r.IsIntrinsic {
+		sqlStr, args = buildIntrinsicValuesSQL(h.Schema, r.IntrinsicCol, start, end)
+		valueType = intrinsicType(r.IntrinsicName)
+	} else {
+		sqlStr, args = buildAttributeValuesSQL(h.Schema, r.Key, r.mapScope, start, end)
+		valueType = "string"
+	}
+	raw, err := h.Client.QueryStrings(ctx, sqlStr, args...)
+	if err != nil {
+		return nil, "", err
+	}
+	return sortedUnique(raw), valueType, nil
+}
 
 // ExecMetricsRangeResult is the post-execution intermediate shape the
 // gRPC MetricsQueryRange RPC translates into tempopb.TimeSeries. Each
