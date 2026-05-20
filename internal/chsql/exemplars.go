@@ -162,6 +162,9 @@ func (e *emitter) emitMetricsExemplars(
 		anchorFanoutFrag(end, stepNS, numAnchors),
 		"anchor_ts",
 	)
+	// Same Start/End pushdown as emitRangeWindowMetrics — see
+	// maybePushInnerScanTimeBounds.
+	maybePushInnerScanTimeBounds(innerSb, rw, tsCol, rangeNS)
 
 	// The outer SELECT MUST project exactly four columns in the order
 	// (MetricName, Attributes, TimeUnix, Value) — chclient.Cursor binds
