@@ -307,11 +307,18 @@ func (h *Handler) tryScalarFold(ctx context.Context, query string) (float64, boo
 // parseExpr wraps the prom parser in a `parse` pipeline-stage span. The
 // QL identifier and the (truncated) query string land on the span as
 // `cerberus.ql` + `cerberus.query`.
+//
+// Before parsing, the query passes through normalizeDottedSelectors,
+// which rewrites OTel-style dotted metric names (e.g.
+// `http.server.request.duration`) to the explicit `{__name__="..."}`
+// form. PromQL's parser only accepts ASCII identifiers in selector
+// position; the rewrite lets users keep typing the OTel name they see
+// in Grafana's metric picker without a 400 parse error.
 func (h *Handler) parseExpr(ctx context.Context, query string) (promparser.Expr, error) {
 	_, span := tracer.Start(ctx, cerbtrace.SpanParse,
 		trace.WithAttributes(cerbtrace.ParseAttrs("promql", query)...))
 	defer span.End()
-	expr, err := h.parser.ParseExpr(query)
+	expr, err := h.parser.ParseExpr(normalizeDottedSelectors(query))
 	if err != nil {
 		span.RecordError(err)
 		return nil, err
