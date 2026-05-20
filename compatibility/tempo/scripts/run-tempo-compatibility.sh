@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Tempo / TraceQL compatibility harness entry point.
 #
-# Status: PR 4 of docs/tempo-compliance-plan.md. The driver runs in two
-# phases sequentially:
+# The driver runs in two phases sequentially:
 #
 #   1. seed — push a deterministic OTLP batch to Tempo's :4317 AND
 #             insert the same fixture into ClickHouse so cerberus reads

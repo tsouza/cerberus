@@ -1,12 +1,11 @@
 # syntax=docker/dockerfile:1
 # Multi-stage build for the Tempo / TraceQL compatibility driver.
 #
-# Status: PR 4 of docs/tempo-compliance-plan.md. The driver exposes
-# `seed` (PR 3) + `diff` (PR 4) subcommands; both compile from the same
-# binary so the compose image is stable across PR-level rollout. The
-# repo-root build context lets the driver import
-# `internal/schema/ddl` and the OTLP gRPC client types via cerberus's
-# go.mod (same shape as Dockerfile.local for the cerberus binary).
+# The driver exposes `seed` + `diff` subcommands; both compile from the
+# same binary so the compose image is stable. The repo-root build
+# context lets the driver import `internal/schema/ddl` and the OTLP
+# gRPC client types via cerberus's go.mod (same shape as
+# Dockerfile.local for the cerberus binary).
 #
 # Build:
 #   docker compose build tempo-compat-driver

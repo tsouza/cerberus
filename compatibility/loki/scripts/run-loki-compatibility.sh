@@ -16,10 +16,8 @@
 #   5. The compose stack is torn down on every exit path (success,
 #      driver failure, set -e abort, manual SIGINT) via a cleanup trap.
 #
-# PR 5 of docs/loki-compliance-plan.md swapped the upstream `go test -c`
-# driver for the cerberus-owned `cmd/loki-compliance-tester` so the
-# report shape matches the Prom harness; the build / teardown lifecycle
-# is otherwise unchanged.
+# The driver is the cerberus-owned `cmd/loki-compliance-tester`, whose
+# JSON report shape matches the Prom harness.
 #
 # Exit semantics (post task #68 / "compat is informational"):
 #

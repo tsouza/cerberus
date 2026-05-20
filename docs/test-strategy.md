@@ -34,19 +34,19 @@ inside each layer.
 
 ## CI gates
 
-| Gate                          | Workflow                                      | Trigger                         | Required PR check? | Scope                                                                      |
-| ----------------------------- | --------------------------------------------- | ------------------------------- | ------------------ | -------------------------------------------------------------------------- |
-| `check`                       | `.github/workflows/ci.yml` (job `check`)      | PRs + push                      | Required           | `go test -race -cover ./...` (Layers 1, 2a, 2b, 3, 4, 5, 7, 8, 11 default) |
-| `lint`                        | `.github/workflows/ci.yml` (job `lint`)       | PRs + push                      | Required           | `golangci-lint` v2 + markdownlint + commitlint                             |
-| `forbid-skip`                 | `.github/workflows/ci.yml` (job `forbid-skip`)| PRs + push                      | Required           | `t.Skip*` + discipline-erosion wording + soft-assertion + skip-additions   |
-| `probe`                       | `.github/workflows/chdb.yml` (job `probe`)    | PRs + push                      | Required           | chDB driver sanity (`TestChDBProbe`)                                       |
-| `roundtrip (<ql>)`            | `.github/workflows/chdb.yml` matrix           | PRs + push                      | Required           | TXTAR chDB roundtrip for promql / logql / traceql (Layer 6a-c)             |
-| `compatibility/<head>`        | `.github/workflows/compatibility.yml` matrix  | PRs (path-match) + push + nightly | Required (on path) | Differential vs reference Prom / Loki / Tempo                              |
-| `dashboard` (E2E)             | `.github/workflows/e2e.yml` (job `dashboard`) | push-to-main + nightly + manual | Informational      | k3d + cerberus + Grafana + Playwright (Layer 10)                           |
-| `mutation` (per phase)        | `.github/workflows/mutation.yml` matrix       | push-to-main + nightly + manual | Informational      | gremlins on each of `chplan` / `chsql` / `optimizer` / `promql` / `logql` / `traceql` / `qlcommon` @ 95% efficacy |
-| `property`                    | `.github/workflows/property.yml`              | push-to-main + nightly + manual | Informational      | rapid-driven property tests (Layer 4 + 6 cross-check)                      |
-| `shadow-mode`                 | `.github/workflows/shadow-mode.yml`           | manual                          | Informational      | Cerberus-vs-reference engine for selected corpus subset                    |
-| `perf-benchmark`              | `.github/workflows/perf-benchmark.yml`        | manual                          | Informational      | benchstat-based perf regression                                            |
+| Gate                          | Workflow                                       | Trigger                           | Required PR check? | Scope                                                                                                             |
+| ----------------------------- | ---------------------------------------------- | --------------------------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------- |
+| `check`                       | `.github/workflows/ci.yml` (job `check`)       | PRs + push                        | Required           | `go test -race -cover ./...` (Layers 1, 2a, 2b, 3, 4, 5, 7, 8, 11 default)                                        |
+| `lint`                        | `.github/workflows/ci.yml` (job `lint`)        | PRs + push                        | Required           | `golangci-lint` v2 + markdownlint + commitlint                                                                    |
+| `forbid-skip`                 | `.github/workflows/ci.yml` (job `forbid-skip`) | PRs + push                        | Required           | `t.Skip*` + discipline-erosion wording + soft-assertion + skip-additions                                          |
+| `probe`                       | `.github/workflows/chdb.yml` (job `probe`)     | PRs + push                        | Required           | chDB driver sanity (`TestChDBProbe`)                                                                              |
+| `roundtrip (<ql>)`            | `.github/workflows/chdb.yml` matrix            | PRs + push                        | Required           | TXTAR chDB roundtrip for promql / logql / traceql (Layer 6a-c)                                                    |
+| `compatibility/<head>`        | `.github/workflows/compatibility.yml` matrix   | PRs (path-match) + push + nightly | Required (on path) | Differential vs reference Prom / Loki / Tempo                                                                     |
+| `dashboard` (E2E)             | `.github/workflows/e2e.yml` (job `dashboard`)  | push-to-main + nightly + manual   | Informational      | k3d + cerberus + Grafana + Playwright (Layer 10)                                                                  |
+| `mutation` (per phase)        | `.github/workflows/mutation.yml` matrix        | push-to-main + nightly + manual   | Informational      | gremlins on each of `chplan` / `chsql` / `optimizer` / `promql` / `logql` / `traceql` / `qlcommon` @ 95% efficacy |
+| `property`                    | `.github/workflows/property.yml`               | push-to-main + nightly + manual   | Informational      | rapid-driven property tests (Layer 4 + 6 cross-check)                                                             |
+| `shadow-mode`                 | `.github/workflows/shadow-mode.yml`            | manual                            | Informational      | Cerberus-vs-reference engine for selected corpus subset                                                           |
+| `perf-benchmark`              | `.github/workflows/perf-benchmark.yml`         | manual                            | Informational      | benchstat-based perf regression                                                                                   |
 
 ## Per-layer guidance
 
@@ -162,7 +162,7 @@ wall-clock comparisons live in `perf-benchmark.yml` (manual dispatch).
 `test/property/` runs rapid-driven property tests under the `chdb`
 build tag. The architecture is:
 
-```
+```text
 test/property/
   framework.go        — rapid.Check driver + comparator
   gen/                — random data + query generators per head
@@ -192,15 +192,15 @@ runs as its own matrix entry in `.github/workflows/mutation.yml`. The
 gate is informational on push-to-main; flipped to required when a
 phase has held the 95% efficacy floor for a stable streak.
 
-| Phase             | Package              | Efficacy floor |
-| ----------------- | -------------------- | -------------- |
-| `phase1`          | `internal/chplan`    | 95%            |
-| `phase2`          | `internal/chsql`     | 95%            |
-| `phase3-optimizer`| `internal/optimizer` | 95%            |
-| `phase4-promql`   | `internal/promql`    | 95%            |
-| `phase4-logql`    | `internal/logql`     | 95%            |
-| `phase4-traceql`  | `internal/traceql`   | 95%            |
-| `phase5-qlcommon` | `internal/qlcommon`  | 95%            |
+| Phase              | Package              | Efficacy floor |
+| ------------------ | -------------------- | -------------- |
+| `phase1`           | `internal/chplan`    | 95%            |
+| `phase2`           | `internal/chsql`     | 95%            |
+| `phase3-optimizer` | `internal/optimizer` | 95%            |
+| `phase4-promql`    | `internal/promql`    | 95%            |
+| `phase4-logql`     | `internal/logql`     | 95%            |
+| `phase4-traceql`   | `internal/traceql`   | 95%            |
+| `phase5-qlcommon`  | `internal/qlcommon`  | 95%            |
 
 A surviving mutant is either (a) a legitimately weak assertion that
 needs strengthening, (b) a functionally-equivalent mutation (`<` vs

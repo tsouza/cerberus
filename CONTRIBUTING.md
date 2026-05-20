@@ -81,8 +81,8 @@ map. Headline:
 - **Compatibility** — PromQL / LogQL / TraceQL differential harnesses
   against reference Prom / Loki / Tempo; informational scores
   published to the `compat-scores` branch.
-- **E2E (k3d + Grafana Playwright)** — path-gated on `internal/api/**`
-  + `test/e2e/k3s/**` + `test/e2e/grafana/**`; merge gate when touched.
+- **E2E (k3d + Grafana Playwright)** — path-gated on `internal/api/**`,
+  `test/e2e/k3s/**`, `test/e2e/grafana/**`; merge gate when touched.
 - **Mutation** — Gremlins nightly; per-phase 95% efficacy threshold.
 
 ## Project memory and AI assistants

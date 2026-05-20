@@ -178,8 +178,9 @@ ships only the compiled binary and root CA bundle.
 
 Local development reads the same env vars and connects to the same
 ClickHouse / OTel collector shapes as production. `docker compose up`
-or `just e2e-up` (k3d) spin up the full stack — ClickHouse + collector
-+ Grafana — so the development feedback loop exercises the same code
+or `just e2e-up` (k3d) spin up the full stack — ClickHouse, the OTel
+collector, and Grafana — so the development feedback loop exercises
+the same code
 paths the production deployment will. The compatibility harnesses
 (`compatibility/prometheus/`, `compatibility/loki/`,
 `compatibility/tempo/`) run the same docker-compose stacks against

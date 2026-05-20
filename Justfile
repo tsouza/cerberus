@@ -87,9 +87,7 @@ bench:
 # lanes, merged via in-line awk because gocovmerge can't reconcile
 # block-boundary drift between the two compilations). Writes
 # cover.out, cover-chdb.out, and cover-merged.out, then prints the
-# total + a per-package summary sorted by coverage. See
-# docs/coverage-baseline.md for what the numbers mean and which
-# packages are intentionally under-tested.
+# total + a per-package summary sorted by coverage.
 #
 # Requires chDB for the second lane (`just chdb-install`). If
 # libchdb.so isn't present, the recipe still emits cover.out and
@@ -427,7 +425,7 @@ compat-promql-down:
 # Loki + cerberus + ClickHouse, seeds both, builds the diff driver from
 # the vendored upstream/loki-bench corpus, runs TestRemoteStorageEquality
 # against both endpoints, writes compatibility/loki/reports/diff.json.
-# See compatibility/loki/README.md + docs/loki-compliance-plan.md.
+# See compatibility/loki/README.md for the harness layout.
 compat-logql:
     ./compatibility/loki/scripts/run-loki-compatibility.sh
 
@@ -450,8 +448,7 @@ compat-logql-down:
 # minutes. Sets up the Docker Compose stack (reference Tempo +
 # cerberus + CH + seeder driver), runs the seeder which pushes a
 # deterministic OTLP batch to Tempo and an equivalent INSERT into CH
-# for cerberus, then smokes /api/traces/<id> on both backends.
-# PR 3 of docs/tempo-compliance-plan.md — diff driver lands in PR 4.
+# for cerberus, then runs the differ over the TXTAR corpus.
 compat-traceql:
     ./compatibility/tempo/scripts/run-tempo-compatibility.sh
 
@@ -467,9 +464,9 @@ compat-traceql-down:
 
 # Run all three compatibility harnesses sequentially: PromQL
 # (prometheus/compliance), LogQL (vendored grafana/loki:pkg/logql/bench
-# + cerberus-owned tester), TraceQL (tempo-compatibility stub until
-# docs/tempo-compliance-plan.md PRs 3-4 wire the real differ). Each
-# sub-recipe tears its own compose stack down on every exit path.
+# + cerberus-owned tester), TraceQL (TXTAR corpus + cerberus-owned
+# differ over /api/search + tags + metrics endpoints). Each sub-recipe
+# tears its own compose stack down on every exit path.
 # Slow — expect tens of minutes. Use the per-head recipes for iteration.
 # Exit semantics: fails fast on the first non-zero recipe; the report
 # files for each head land under compatibility/*/reports/ regardless.
