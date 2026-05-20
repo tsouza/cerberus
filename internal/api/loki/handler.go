@@ -121,10 +121,38 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	register("POST /loki/api/v1/series", h.handleSeries)
 	register("GET /loki/api/v1/detected_fields", h.handleDetectedFields)
 	register("POST /loki/api/v1/detected_fields", h.handleDetectedFields)
+	register("GET /loki/api/v1/detected_labels", h.handleDetectedLabels)
+	register("POST /loki/api/v1/detected_labels", h.handleDetectedLabels)
 	register("GET /loki/api/v1/patterns", h.handlePatterns)
 	register("POST /loki/api/v1/patterns", h.handlePatterns)
 	// /tail is WebSocket-upgrade only; no POST counterpart in upstream Loki.
 	register("GET /loki/api/v1/tail", h.handleTail)
+
+	// JSON-shaped 404 fallback for unmatched /loki/api/v1/* routes. Without
+	// this, http.ServeMux serves Go's plain-text "404 page not found"
+	// body, which trips Grafana 11.2+ — the Loki datasource probes feature
+	// endpoints (e.g. /detected_labels on older cerberus) and expects a
+	// JSON envelope even on misses. Registering the catch-all on the
+	// prefix keeps unrelated routes (/, /healthz, /metrics, the Prom and
+	// Tempo paths) untouched.
+	mux.HandleFunc("/loki/api/", h.handleLokiNotFound)
+}
+
+// handleLokiNotFound serves a JSON-shaped 404 for unmatched /loki/* paths.
+// Mirrors the wire envelope writeError emits on real 400/500s so Grafana
+// parses the body uniformly regardless of which route missed.
+func (h *Handler) handleLokiNotFound(w http.ResponseWriter, r *http.Request) {
+	writeError(w, http.StatusNotFound, ErrBadData, errLokiPathNotFound{path: r.URL.Path})
+}
+
+// errLokiPathNotFound is a tiny typed error so the 404 body carries the
+// request path back to the operator (Grafana surfaces the `error` field
+// in datasource health checks). Implementing error keeps writeError's
+// signature untouched.
+type errLokiPathNotFound struct{ path string }
+
+func (e errLokiPathNotFound) Error() string {
+	return "unknown loki endpoint: " + e.path
 }
 
 func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
