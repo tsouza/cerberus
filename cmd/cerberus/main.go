@@ -15,8 +15,6 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel"
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 
 	"github.com/tsouza/cerberus/internal/api/admit"
 	"github.com/tsouza/cerberus/internal/api/health"
@@ -235,34 +233,7 @@ func run() error {
 	tempoGRPCService := tempogrpc.NewService(tempoHandler, tempoLimiter, logger.With("api", "tempo-grpc"))
 	grpcServer := tempogrpc.NewServer(tempoGRPCService)
 
-	// h2c content-type dispatcher: HTTP/2 requests whose Content-Type
-	// is application/grpc (or a parameterised variant like
-	// `application/grpc+proto`) go to the gRPC server; everything else
-	// flows to the existing HTTP rootMux. Wrapping the dispatcher in
-	// h2c.NewHandler upgrades cleartext HTTP/2 (PRI preamble) without
-	// requiring TLS, so cerberus accepts:
-	//
-	//   * HTTP/1.1 clients (Grafana HTTP datasource, curl, healthz)
-	//   * HTTP/2 clients via prior-knowledge (grpc-go default)
-	//   * HTTP/2 upgrades from HTTP/1.1 (h2c-aware proxies)
-	//
-	// on the same socket. Behind a TLS-terminating proxy (ingress-
-	// nginx, Envoy, Cloud Run) the proxy negotiates h2 with the client
-	// and forwards h2c upstream — the standard pattern. See
-	// docs/operations.md#port-binding for the deployment story.
-	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.ProtoMajor == 2 && strings.HasPrefix(r.Header.Get("Content-Type"), "application/grpc") {
-			grpcServer.ServeHTTP(w, r)
-			return
-		}
-		rootMux.ServeHTTP(w, r)
-	})
-
-	srv := &http.Server{
-		Addr:              cfg.HTTPAddr,
-		Handler:           h2c.NewHandler(dispatcher, &http2.Server{}),
-		ReadHeaderTimeout: 5 * time.Second,
-	}
+	srv := buildDualStackServer(cfg.HTTPAddr, rootMux, grpcServer)
 
 	serverErr := make(chan error, 1)
 	go func() {
@@ -297,4 +268,41 @@ func run() error {
 	}
 	logger.Info("cerberus stopped")
 	return nil
+}
+
+// buildDualStackServer wires an http.Server that serves HTTP/1.1 (for
+// existing Prom/Loki/Tempo HTTP handlers + /healthz + /readyz) AND
+// unencrypted HTTP/2 (for the Tempo gRPC StreamingQuerier) on the same
+// listener. A content-type dispatcher routes HTTP/2 + application/grpc
+// requests to the gRPC server; everything else flows to the HTTP mux.
+//
+// Cerberus accepts:
+//
+//   - HTTP/1.1 clients (Grafana HTTP datasource, curl, /healthz)
+//   - HTTP/2 clients via prior-knowledge (grpc-go default)
+//   - HTTP/2 upgrades from HTTP/1.1 (h2c-aware proxies)
+//
+// Go 1.24+ `http.Server.Protocols` supersedes the deprecated
+// `golang.org/x/net/http2/h2c.NewHandler` wrap — same wire behaviour,
+// no extra dep. Behind a TLS-terminating proxy (ingress-nginx, Envoy,
+// Cloud Run) the proxy negotiates h2 with the client and forwards
+// h2c upstream — the standard pattern. See
+// docs/operations.md#port-binding.
+func buildDualStackServer(addr string, rootMux, grpcServer http.Handler) *http.Server {
+	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.ProtoMajor == 2 && strings.HasPrefix(r.Header.Get("Content-Type"), "application/grpc") {
+			grpcServer.ServeHTTP(w, r)
+			return
+		}
+		rootMux.ServeHTTP(w, r)
+	})
+	protocols := new(http.Protocols)
+	protocols.SetHTTP1(true)
+	protocols.SetUnencryptedHTTP2(true)
+	return &http.Server{
+		Addr:              addr,
+		Handler:           dispatcher,
+		Protocols:         protocols,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
 }
