@@ -2259,3 +2259,150 @@ func TestEmitWindowedArrayPairsAnchored_MinWindowZero(t *testing.T) {
 		t.Errorf("minWindowSize=0 must skip the length filter entirely.\nSQL=%s", sql)
 	}
 }
+
+// TestEmitWindowedArrayPairsAnchored_OuterRangeStepGuard kills the
+// `r.Step <= 0` boundary at range_window.go:463. The OuterRange>0 path
+// requires Step>0 to drive the anchor fanout; the guard rejects Step=0
+// loudly so the downstream `OuterRange.Nanoseconds() / stepNS` doesn't
+// divide by zero. The boundary mutant `< 0` lets Step=0 slip through
+// and would either panic or emit garbage SQL. Calling the unexported
+// helper directly is the most reliable way to hit the guard — Emit()
+// callers thread chplan.RangeWindow through dispatch before reaching
+// here, but the guard's contract is on the value of r.Step alone.
+func TestEmitWindowedArrayPairsAnchored_OuterRangeStepGuard(t *testing.T) {
+	t.Parallel()
+	e := &emitter{}
+	r := &chplan.RangeWindow{
+		Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+		Range:           time.Minute,
+		OuterRange:      5 * time.Minute,
+		Step:            0, // boundary: original rejects, mutant accepts.
+		TimestampColumn: "TimeUnix",
+		ValueColumn:     "Value",
+	}
+	writer := func(_ Frag) Frag { return verbatim("0") }
+	err := e.emitWindowedArrayPairsAnchored(r, writer, 2)
+	if err == nil {
+		t.Fatalf("expected error for OuterRange>0 with Step=0 (boundary mutant let it through); SQL=%s", e.b.String())
+	}
+	if !errors.Is(err, ErrUnsupported) {
+		t.Errorf("expected ErrUnsupported for Step=0 guard, got %v", err)
+	}
+	// Sanity: a positive Step is accepted (the guard does not over-reject).
+	e2 := &emitter{}
+	r2 := *r
+	r2.Step = time.Minute
+	if err := e2.emitWindowedArrayPairsAnchored(&r2, writer, 2); err != nil {
+		t.Fatalf("Step=1m should succeed, got %v", err)
+	}
+}
+
+// TestEmitWindowedArrayPairsMatrix_AnchorArithmetic kills two
+// ARITHMETIC_BASE mutants at range_window.go:542
+// (`r.OuterRange.Nanoseconds()/stepNS + 1`). The `/` becomes `*` /
+// `%` / `-` / `+`; the `+` becomes `-` / `*` / `%` / `/`. The matrix
+// emitter rendered by emitWindowedArrayPairsMatrix is reached from
+// predict_linear / holt_winters / deriv when OuterRange>0; pinning the
+// `range(0, N)` literal to the expected anchor count distinguishes the
+// original from every arithmetic mutant.
+//
+// Setup: OuterRange = 4m, Step = 1m → numAnchors = 4/1 + 1 = 5 anchors.
+// - Mutant `/` → `*` : 4*1 (in ns) is enormous, not 5.
+// - Mutant `+` → `-` : 4/1 - 1 = 3, not 5.
+// - Mutant `+` → `*` : 4/1 * 1 = 4, not 5.
+// - Mutant `/` → `-` : huge/negative ns value, not 5.
+func TestEmitWindowedArrayPairsMatrix_AnchorArithmetic(t *testing.T) {
+	t.Parallel()
+	e := &emitter{}
+	r := &chplan.RangeWindow{
+		Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+		Range:           time.Minute,
+		OuterRange:      4 * time.Minute,
+		Step:            time.Minute,
+		TimestampColumn: "TimeUnix",
+		ValueColumn:     "Value",
+		Start:           time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC),
+		End:             time.Date(2026, 5, 13, 12, 5, 0, 0, time.UTC),
+	}
+	writer := func(_ Frag) Frag { return verbatim("0") }
+	if err := e.emitWindowedArrayPairsMatrix(r, writer, 2); err != nil {
+		t.Fatalf("emitWindowedArrayPairsMatrix: %v", err)
+	}
+	sql := e.b.String()
+	if !strings.Contains(sql, "range(0, 5)") {
+		t.Errorf("expected anchor fanout `range(0, 5)` for OuterRange=4m, Step=1m.\nSQL=%s", sql)
+	}
+	// Defensive: the off-by-one / different-operator mutants land on
+	// neighbouring literals. `%` and `-` produce small wrong counts;
+	// `*` and `+` blow up to enormous nanosecond magnitudes that no
+	// reasonable `range(0, N)` literal matches.
+	for _, bad := range []string{"range(0, 4)", "range(0, 3)", "range(0, 1)", "range(0, 0)"} {
+		if strings.Contains(sql, bad) {
+			t.Errorf("unexpected anchor literal %q (arithmetic mutant).\nSQL=%s", bad, sql)
+		}
+	}
+}
+
+// TestEmitWindowedArrayPairsMatrix_GroupByNegation kills the
+// CONDITIONALS_NEGATION at range_window.go:559 (`len(groupFrags) > 0`
+// inverted). With a non-empty GroupBy the original emits `GROUP BY`
+// in the innermost SELECT so the per-series groupArray collapses each
+// series into one array; the mutant `<= 0` skips the GROUP BY and
+// rolls every input row into a single super-series — wrong shape, no
+// per-series fanout.
+func TestEmitWindowedArrayPairsMatrix_GroupByNegation(t *testing.T) {
+	t.Parallel()
+	e := &emitter{}
+	r := &chplan.RangeWindow{
+		Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+		Range:           time.Minute,
+		OuterRange:      2 * time.Minute,
+		Step:            time.Minute,
+		TimestampColumn: "TimeUnix",
+		ValueColumn:     "Value",
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+		Start:           time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC),
+		End:             time.Date(2026, 5, 13, 12, 3, 0, 0, time.UTC),
+	}
+	writer := func(_ Frag) Frag { return verbatim("0") }
+	if err := e.emitWindowedArrayPairsMatrix(r, writer, 2); err != nil {
+		t.Fatalf("emitWindowedArrayPairsMatrix: %v", err)
+	}
+	sql := e.b.String()
+	if !strings.Contains(sql, "GROUP BY") {
+		t.Errorf("expected GROUP BY clause for non-empty GroupBy (negation mutant dropped it).\nSQL=%s", sql)
+	}
+	if !strings.Contains(sql, "Attributes") {
+		t.Errorf("expected `Attributes` group key surfaced in the SQL.\nSQL=%s", sql)
+	}
+}
+
+// TestEmitWindowedArrayPairsMatrix_MinWindowNegation kills the
+// CONDITIONALS_NEGATION at range_window.go:592 (`minWindowSize > 0`
+// inverted). Every production caller passes minWindowSize ∈ {1, 2},
+// so the original emits a `WHERE length(window_pairs) >= N` clause to
+// drop empty-window anchors. The mutant `<= 0` evaluates false for
+// every production minWindowSize and skips the WHERE, leaking empty
+// anchors into the outer aggregation.
+func TestEmitWindowedArrayPairsMatrix_MinWindowNegation(t *testing.T) {
+	t.Parallel()
+	e := &emitter{}
+	r := &chplan.RangeWindow{
+		Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+		Range:           time.Minute,
+		OuterRange:      2 * time.Minute,
+		Step:            time.Minute,
+		TimestampColumn: "TimeUnix",
+		ValueColumn:     "Value",
+		Start:           time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC),
+		End:             time.Date(2026, 5, 13, 12, 3, 0, 0, time.UTC),
+	}
+	writer := func(_ Frag) Frag { return verbatim("0") }
+	if err := e.emitWindowedArrayPairsMatrix(r, writer, 2); err != nil {
+		t.Fatalf("emitWindowedArrayPairsMatrix: %v", err)
+	}
+	sql := e.b.String()
+	if !strings.Contains(sql, "length(`window_pairs`) >= 2") {
+		t.Errorf("expected `length(window_pairs) >= 2` filter (negation mutant dropped it).\nSQL=%s", sql)
+	}
+}
