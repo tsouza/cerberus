@@ -207,6 +207,12 @@ func (e *Engine) QueryPlan(ctx context.Context, lang Lang, plan chplan.Node, met
 		return Result{}, fmt.Errorf("engine: nil plan")
 	}
 
+	// Inflight bookkeeping. Deferred decrement balances the counter
+	// across panics, early returns, and context cancellations. Sibling
+	// instrumentation lives on QueryPlanCursor so the streaming path
+	// gets the same gauge bump.
+	defer telemetry.ObserveQueryInflight(ctx, lang.Name())()
+
 	// Wrap-projection. The adapter owns the per-language switch
 	// (canonical vs. derived vs. structural-join shape); the engine
 	// applies it unconditionally.
@@ -311,6 +317,13 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 	if !ok {
 		return CursorResult{}, fmt.Errorf("engine: client does not implement CursorQuerier")
 	}
+
+	// Inflight bookkeeping — symmetrical with QueryPlan so the gauge
+	// covers both the eager and streaming pipelines. Cursor consumers
+	// hold the gauge for the duration of the engine call only (until
+	// QueryPlanCursor returns); the cursor's subsequent drain isn't
+	// "in engine" anymore and shouldn't double-count.
+	defer telemetry.ObserveQueryInflight(ctx, lang.Name())()
 
 	plan = lang.ProjectSamples(plan, meta)
 	if !meta.IsTraceByID {

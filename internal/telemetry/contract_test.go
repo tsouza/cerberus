@@ -30,6 +30,7 @@ func TestMetricNames_PublicContract(t *testing.T) {
 	telemetry.ObserveStage(telemetry.StageExecute).Done(t.Context())
 	telemetry.RecordRulesApplied(t.Context(), 1)
 	telemetry.RecordClickHouseProgress(t.Context(), "promql", 100, 2000)
+	telemetry.ObserveQueryInflight(t.Context(), "promql")()
 
 	var rm metricdata.ResourceMetrics
 	if err := reader.Collect(t.Context(), &rm); err != nil {
@@ -43,6 +44,7 @@ func TestMetricNames_PublicContract(t *testing.T) {
 		"cerberus_optimizer_rules_applied":         false,
 		"cerberus_clickhouse_rows_read":            false,
 		"cerberus_clickhouse_bytes_read":           false,
+		"cerberus_query_inflight":                  false,
 	}
 	for _, sm := range rm.ScopeMetrics {
 		if !strings.HasSuffix(sm.Scope.Name, "internal/telemetry") {

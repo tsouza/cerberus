@@ -248,3 +248,91 @@ func TestInstall_NilFallsBackToNoop(t *testing.T) {
 	// Should be a no-op, not a panic.
 	telemetry.ObserveStage(telemetry.StageEmit).Done(context.Background())
 }
+
+// inflightValue reads the (signed) cumulative value the manual reader
+// reports for cerberus_query_inflight for the given ql label. Returns
+// 0 when the metric / label combination hasn't been recorded yet.
+func inflightValue(t *testing.T, reader *metric.ManualReader, ql string) int64 {
+	t.Helper()
+	sm := collect(t, reader)
+	for _, m := range sm.Metrics {
+		if m.Name != "cerberus_query_inflight" {
+			continue
+		}
+		sum, ok := m.Data.(metricdata.Sum[int64])
+		if !ok {
+			t.Fatalf("query_inflight: unexpected data type %T", m.Data)
+		}
+		for _, dp := range sum.DataPoints {
+			if v, _ := dp.Attributes.Value("cerberus.ql"); v.AsString() == ql {
+				return dp.Value
+			}
+		}
+	}
+	return 0
+}
+
+// TestObserveQueryInflight_IncrementDecrement covers the inc/dec
+// round-trip: a single ObserveQueryInflight call must leave the gauge
+// at 1; invoking the returned closure must restore it to 0. This is
+// the synthetic-engine-call surrogate — exercises the defer pattern
+// without standing up a chclient stub.
+func TestObserveQueryInflight_IncrementDecrement(t *testing.T) {
+	reader := installManualReader(t)
+
+	dec := telemetry.ObserveQueryInflight(t.Context(), "promql")
+	if got := inflightValue(t, reader, "promql"); got != 1 {
+		t.Fatalf("after increment: got %d want 1", got)
+	}
+	dec()
+	if got := inflightValue(t, reader, "promql"); got != 0 {
+		t.Fatalf("after decrement: got %d want 0", got)
+	}
+}
+
+// TestObserveQueryInflight_BalancedAcrossPanic anchors the defer
+// contract: even when the caller panics between increment and the
+// decrement defer, the gauge must return to zero. This is the
+// property the engine relies on — Engine.QueryPlan defers the
+// decrement so panics in optimize / emit / execute don't strand a
+// stuck +1 on the gauge.
+func TestObserveQueryInflight_BalancedAcrossPanic(t *testing.T) {
+	reader := installManualReader(t)
+
+	func() {
+		defer func() {
+			// Swallow the panic; we only care that the decrement
+			// defer still fired.
+			_ = recover()
+		}()
+		defer telemetry.ObserveQueryInflight(t.Context(), "logql")()
+		panic("synthetic engine failure")
+	}()
+
+	if got := inflightValue(t, reader, "logql"); got != 0 {
+		t.Fatalf("post-panic inflight: got %d want 0 (defer must decrement)", got)
+	}
+}
+
+// TestObserveQueryInflight_PerLanguageLabels confirms the cerberus.ql
+// attribute lands on the gauge so the dashboard's
+// `sum by (cerberus_ql) (cerberus_query_inflight)` pivot resolves
+// the three head identifiers independently.
+func TestObserveQueryInflight_PerLanguageLabels(t *testing.T) {
+	reader := installManualReader(t)
+
+	decProm := telemetry.ObserveQueryInflight(t.Context(), "promql")
+	decLoki := telemetry.ObserveQueryInflight(t.Context(), "logql")
+	decTempo := telemetry.ObserveQueryInflight(t.Context(), "traceql")
+	t.Cleanup(func() {
+		decProm()
+		decLoki()
+		decTempo()
+	})
+
+	for _, ql := range []string{"promql", "logql", "traceql"} {
+		if got := inflightValue(t, reader, ql); got != 1 {
+			t.Errorf("inflight[%s]: got %d want 1", ql, got)
+		}
+	}
+}

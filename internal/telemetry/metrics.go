@@ -98,6 +98,14 @@ type Instruments struct {
 	// reported reading per query (sum across Progress events).
 	// Attribute: cerberus.ql.
 	ClickHouseBytesRead metric.Int64Histogram
+
+	// QueryInflight is the count of currently-executing engine
+	// queries — incremented at engine entry, decremented (via defer)
+	// at engine return so panics + early-returns + cancellations
+	// still balance. Attribute: cerberus.ql. The cerberus-self
+	// dashboard panel queries `sum by (cerberus_ql)
+	// (cerberus_query_inflight)`.
+	QueryInflight metric.Int64UpDownCounter
 }
 
 var (
@@ -184,6 +192,14 @@ func mustBuild(meter metric.Meter) *Instruments {
 	if err != nil {
 		panic("telemetry: build bytes_read: " + err.Error())
 	}
+	queryInflight, err := meter.Int64UpDownCounter(
+		"cerberus_query_inflight",
+		metric.WithDescription("Currently-executing engine queries, by language."),
+		metric.WithUnit("{query}"),
+	)
+	if err != nil {
+		panic("telemetry: build query_inflight: " + err.Error())
+	}
 	return &Instruments{
 		QueriesTotal:        queriesTotal,
 		QueryDuration:       queryDuration,
@@ -191,6 +207,7 @@ func mustBuild(meter metric.Meter) *Instruments {
 		RulesApplied:        rulesApplied,
 		ClickHouseRowsRead:  chRows,
 		ClickHouseBytesRead: chBytes,
+		QueryInflight:       queryInflight,
 	}
 }
 
@@ -279,6 +296,25 @@ func (t *QueryTimer) Done(ctx context.Context, result string) {
 // it doesn't need a stopwatch wrapper.
 func RecordRulesApplied(ctx context.Context, n int) {
 	Get().RulesApplied.Record(ctx, int64(n))
+}
+
+// ObserveQueryInflight increments the QueryInflight gauge for ql and
+// returns a closure that decrements it. The idiomatic call pattern is:
+//
+//	defer telemetry.ObserveQueryInflight(ctx, "promql")()
+//
+// The deferred decrement covers panics, early returns, and context
+// cancellations so the gauge stays balanced across every engine code
+// path. ql is one of "promql" / "logql" / "traceql"; the value lands on
+// the cerberus.ql attribute so the dashboard's `sum by (cerberus_ql)`
+// pivot resolves.
+func ObserveQueryInflight(ctx context.Context, ql string) func() {
+	attrs := metric.WithAttributes(AttrQL.String(ql))
+	inst := Get()
+	inst.QueryInflight.Add(ctx, 1, attrs)
+	return func() {
+		inst.QueryInflight.Add(ctx, -1, attrs)
+	}
 }
 
 // RecordClickHouseProgress records the (rows, bytes) summary the
