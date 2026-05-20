@@ -26,3 +26,40 @@ datasources:
     access: proxy
     url: http://cerberus:8080
     editable: false
+  # ---------------------------------------------------------------------
+  # Grafana 11.x ships three built-in drilldown apps preinstalled:
+  #   - grafana-metricsdrilldown-app  (Explore Metrics)
+  #   - grafana-lokiexplore-app       (Explore Logs)
+  #   - grafana-exploretraces-app     (Explore Traces)
+  # Each app's factory defaults reference Grafana Cloud's canonical
+  # datasource UIDs — `grafanacloud-metrics`, `grafanacloud-logs`,
+  # `grafanacloud-traces`. With those UIDs absent the app boot logs
+  # "Datasource grafanacloud-* was not found" on every page load and
+  # the drilldown UI falls back to a generic "select a datasource"
+  # picker.
+  #
+  # Aliasing the three UIDs to the cerberus backend gives the apps a
+  # real target out of the box: open `/a/grafana-metricsdrilldown-app/trail`
+  # and the metric scoping queries hit cerberus's Prom head; same for
+  # logs and traces. Users can still pick the `Cerberus-*` aliases by
+  # name; both reference the same physical backend.
+  - name: grafanacloud-metrics
+    uid: grafanacloud-metrics
+    type: prometheus
+    access: proxy
+    url: http://cerberus:8080
+    editable: false
+    jsonData:
+      timeInterval: 15s
+  - name: grafanacloud-logs
+    uid: grafanacloud-logs
+    type: loki
+    access: proxy
+    url: http://cerberus:8080
+    editable: false
+  - name: grafanacloud-traces
+    uid: grafanacloud-traces
+    type: tempo
+    access: proxy
+    url: http://cerberus:8080
+    editable: false

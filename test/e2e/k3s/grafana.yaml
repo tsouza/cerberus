@@ -29,6 +29,34 @@ data:
         access: proxy
         url: http://cerberus:8080
         editable: false
+      # Aliases for Grafana 11.x built-in drilldown apps. Each app's
+      # factory defaults reference Grafana Cloud's canonical
+      # `grafanacloud-{metrics,logs,traces}` UIDs; without those
+      # entries the apps log "Datasource grafanacloud-* was not
+      # found" on every page load. Routing the aliases to the same
+      # cerberus backend turns the drilldown UIs into usable
+      # surfaces against this stack. Mirror of
+      # test/e2e/grafana/compose/datasources/cerberus.yaml.
+      - name: grafanacloud-metrics
+        uid: grafanacloud-metrics
+        type: prometheus
+        access: proxy
+        url: http://cerberus:8080
+        editable: false
+        jsonData:
+          timeInterval: 15s
+      - name: grafanacloud-logs
+        uid: grafanacloud-logs
+        type: loki
+        access: proxy
+        url: http://cerberus:8080
+        editable: false
+      - name: grafanacloud-traces
+        uid: grafanacloud-traces
+        type: tempo
+        access: proxy
+        url: http://cerberus:8080
+        editable: false
 ---
 apiVersion: v1
 kind: Service
