@@ -272,10 +272,14 @@ func TestHTTPServer_ListenAndServeErrServerClosed(t *testing.T) {
 	}
 }
 
-// TestHTTPServer_Shutdown_BlocksNewConnections: a request issued
-// *after* Shutdown returned must fail to connect (the listener is
-// closed). Pin the contract that distinguishes Shutdown from a
-// keep-alive drain.
+// TestHTTPServer_Shutdown_BlocksNewConnections: after Shutdown the
+// underlying listener is closed — Accept must return net.ErrClosed.
+// Pin the contract that distinguishes Shutdown from a keep-alive
+// drain. (We intentionally do NOT dial the freed port: on busy CI
+// runners the kernel can hand the same ephemeral port to an unrelated
+// listener between Shutdown and the dial, and the test would flake on
+// an OS-level race that has nothing to do with our shutdown contract.
+// Accept() returning ErrClosed is the load-bearing signal.)
 func TestHTTPServer_Shutdown_BlocksNewConnections(t *testing.T) {
 	srv := &http.Server{
 		Handler:           http.NewServeMux(),
@@ -286,7 +290,12 @@ func TestHTTPServer_Shutdown_BlocksNewConnections(t *testing.T) {
 		t.Fatalf("listen: %v", err)
 	}
 	addr := ln.Addr().String()
-	go func() { _ = srv.Serve(ln) }()
+
+	// Wrap the listener so we can observe Accept returns after Shutdown
+	// closes it. http.Server calls ln.Close() inside Shutdown.
+	acceptErr := make(chan error, 1)
+	wrapped := &acceptRecorder{Listener: ln, errCh: acceptErr}
+	go func() { _ = srv.Serve(wrapped) }()
 
 	// Sanity-check the listener is up.
 	conn, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
@@ -300,10 +309,35 @@ func TestHTTPServer_Shutdown_BlocksNewConnections(t *testing.T) {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		t.Fatalf("Shutdown: %v", err)
 	}
-	// After Shutdown the listener is closed; a fresh dial errors.
-	if _, err := net.DialTimeout("tcp", addr, 250*time.Millisecond); err == nil {
-		t.Errorf("dial after shutdown succeeded; want refused/timeout")
+
+	// After Shutdown the listener's Accept loop must exit with
+	// net.ErrClosed — that's the kernel-level signal that no new
+	// connection can be served by this server.
+	select {
+	case got := <-acceptErr:
+		if !errors.Is(got, net.ErrClosed) {
+			t.Errorf("Accept after Shutdown returned %v; want net.ErrClosed", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Accept did not return after Shutdown")
 	}
+}
+
+// acceptRecorder wraps a net.Listener and forwards the first non-nil
+// Accept error to errCh. http.Server.Shutdown calls ln.Close, which
+// makes the in-flight Accept return net.ErrClosed.
+type acceptRecorder struct {
+	net.Listener
+	errCh chan<- error
+	once  sync.Once
+}
+
+func (a *acceptRecorder) Accept() (net.Conn, error) {
+	c, err := a.Listener.Accept()
+	if err != nil {
+		a.once.Do(func() { a.errCh <- err })
+	}
+	return c, err
 }
 
 // TestHTTPServer_GoroutineDeltaWithinBound is a lightweight goroutine-leak
