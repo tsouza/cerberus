@@ -47,7 +47,7 @@ import (
 //
 // Selectors carrying `@`/offset modifiers fall through to the instant-
 // mode path; range-mode matrix-anchor handling for histogram_quantile
-// under modifiers is not implemented. In practice the modifier-bearing
+// under modifiers falls back to instant mode. In practice the modifier-bearing
 // shapes are rare (Grafana never emits them on query_range), so the
 // instant-mode fallback is byte-stable for the existing fixtures and
 // the range-mode rewrite covers the wire-shape Grafana actually drives.

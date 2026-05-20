@@ -76,6 +76,16 @@ pre-push:
           echo "lefthook: discipline-erosion wording — rewrite to a neutral verb (dropped / excluded / rejected / bypassed) or remove"
           exit 1
         fi
+    forbid-not-implemented-prod:
+      tags: discipline
+      run: |
+        if git ls-files -z -- \
+            'internal/**/*.go' \
+            ':!:internal/**/*_test.go' \
+            | xargs -0 grep -niEH 'not implemented' --; then
+          echo "lefthook: \"not implemented\" in production code — implement the feature or rewrite to a factual verb (rejected / unsupported / falls back)"
+          exit 1
+        fi
     forbid-soft-assert:
       tags: discipline
       run: |

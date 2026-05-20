@@ -32,7 +32,7 @@ import (
 //   - vector OP vector — VectorJoin over both sides projected to the
 //     Sample-shape, threading `Opts.ReturnBool` into VectorJoin.
 //
-// Logical ops (`and` / `or` / `unless`) are not implemented.
+// Logical ops (`and` / `or` / `unless`) are rejected at lowering.
 func lowerBinary(b *syntax.BinOpExpr, s schema.Logs, lc lowerCtx) (chplan.Node, error) {
 	// BinOpExpr stores parse errors in an unexported `err` field; the
 	// parser surfaces them at ParseExpr time before lowering reaches us.
@@ -144,7 +144,7 @@ func lowerVectorScalar(vec syntax.Expr, s schema.Logs, op chplan.BinaryOp, scala
 // The `bool` modifier threads into VectorJoin.ReturnBool — mirroring
 // PromQL's exact behaviour: comparison ops yield 1.0 / 0.0 per matched
 // pair rather than dropping non-matching rows. Logical ops
-// (`and`/`or`/`unless`) are not implemented.
+// (`and`/`or`/`unless`) are rejected upstream of this call.
 func lowerVectorVector(b *syntax.BinOpExpr, s schema.Logs, op chplan.BinaryOp, returnBool bool, vm *syntax.VectorMatching, lc lowerCtx) (chplan.Node, error) {
 	if returnBool && !isComparison(op) {
 		return nil, fmt.Errorf("logql: 'bool' modifier is only allowed on comparison binary ops")
@@ -245,7 +245,7 @@ func includeLabelsFromBinop(b *syntax.BinOpExpr) []string {
 
 // logqlBinaryOp maps a LogQL parser op string to the chplan op enum.
 // Arithmetic and comparison ops are handled here; logical ops
-// (`and` / `or` / `unless`) are not implemented.
+// (`and` / `or` / `unless`) are rejected as unsupported.
 func logqlBinaryOp(op string) (chplan.BinaryOp, error) {
 	switch op {
 	case syntax.OpTypeAdd:
@@ -273,7 +273,7 @@ func logqlBinaryOp(op string) (chplan.BinaryOp, error) {
 	case syntax.OpTypeGTE:
 		return chplan.OpGe, nil
 	}
-	return "", fmt.Errorf("logql: binary op %s unsupported (logical ops `and`/`or`/`unless` are not implemented)", op)
+	return "", fmt.Errorf("logql: binary op %s unsupported (logical ops `and`/`or`/`unless` are not supported)", op)
 }
 
 // isComparison reports whether op is one of the six comparison ops.
