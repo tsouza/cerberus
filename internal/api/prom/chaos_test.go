@@ -2,6 +2,7 @@ package prom_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +16,31 @@ import (
 	"github.com/tsouza/cerberus/internal/api/prom"
 	"github.com/tsouza/cerberus/internal/chclient"
 )
+
+// assertPromErrorEnvelope decodes body as a Prom error response and
+// asserts every field Grafana actually reads off the wire: status =
+// "error", errorType matches the expected kind, and the error message
+// is non-empty. The pre-strengthening shape — `strings.Contains(body,
+// "error")` — would have silently accepted any payload that happened
+// to contain the substring "error" anywhere (including a metric named
+// `query_errors_total`), giving false confidence that the envelope
+// was being rendered.
+func assertPromErrorEnvelope(t *testing.T, body, wantKind string) {
+	t.Helper()
+	var env prom.Response
+	if err := json.Unmarshal([]byte(body), &env); err != nil {
+		t.Fatalf("error body not parseable JSON: %v; body=%s", err, body)
+	}
+	if env.Status != "error" {
+		t.Errorf("envelope.status: got %q, want \"error\"; body=%s", env.Status, body)
+	}
+	if env.ErrorType != wantKind {
+		t.Errorf("envelope.errorType: got %q, want %q; body=%s", env.ErrorType, wantKind, body)
+	}
+	if env.Error == "" {
+		t.Errorf("envelope.error: empty (Grafana renders this string); body=%s", body)
+	}
+}
 
 // Layer 11 — failure-mode tests for the Prom handler. Each scenario
 // injects a CH-side failure (connection refused, mid-stream drop, slow
@@ -155,9 +181,7 @@ func TestCH_UpstreamError_Returns502(t *testing.T) {
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("status: got %d, want 502; body=%s", resp.StatusCode, body)
 	}
-	if !strings.Contains(body, "error") {
-		t.Errorf("body missing error envelope: %s", body)
-	}
+	assertPromErrorEnvelope(t, body, prom.ErrInternal)
 }
 
 // TestCH_DropMidQuery_RangeReturns502 — mid-stream cursor failure on
@@ -188,6 +212,7 @@ func TestCH_DropMidQuery_RangeReturns502(t *testing.T) {
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("status: got %d, want 502; body=%s", resp.StatusCode, body)
 	}
+	assertPromErrorEnvelope(t, body, prom.ErrInternal)
 }
 
 // TestCH_SlowResponse_RespectsClientCancel — the handler must honor
@@ -270,15 +295,29 @@ func TestCH_ManyRequestsUnderError_NoLeak(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	const N = 100
-	for range N {
+	for i := range N {
 		resp, err := http.Get(srv.URL + "/api/v1/query?query=up")
 		if err != nil {
 			t.Fatalf("GET: %v", err)
 		}
+		// Sample the envelope on every 25th response — every Nth call
+		// keeps the JSON decode out of the hot path while still
+		// catching a regression in which the handler stops rendering
+		// the Prom envelope after some number of requests (e.g. a
+		// pooled-Builder reset bug). One sample at i=0 anchors the
+		// happy path; the trailing one (i=N-1) anchors steady-state.
+		if i == 0 || i == N-1 || i%25 == 0 {
+			body := readBody(t, resp)
+			if resp.StatusCode != http.StatusBadGateway {
+				t.Fatalf("iter %d status: got %d, want 502; body=%s", i, resp.StatusCode, body)
+			}
+			assertPromErrorEnvelope(t, body, prom.ErrInternal)
+			continue
+		}
 		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
 		if resp.StatusCode != http.StatusBadGateway {
-			t.Fatalf("status: got %d, want 502", resp.StatusCode)
+			t.Fatalf("iter %d status: got %d, want 502", i, resp.StatusCode)
 		}
 	}
 	if got := int(q.calls.Load()); got != N {
@@ -295,27 +334,38 @@ func TestCH_ConcurrentRequestsUnderChaos_AllFail(t *testing.T) {
 	srv := newServer(q)
 	t.Cleanup(srv.Close)
 
+	// Capture status + the envelope shape of one sampled response per
+	// worker. Asserting the envelope on every concurrent caller would
+	// triple the test runtime; sampling one per worker still catches a
+	// regression in which the 502 path becomes a non-Prom-envelope
+	// body (e.g. a raw error string slipping through).
+	type result struct {
+		code int
+		body string
+	}
 	var wg sync.WaitGroup
-	done := make(chan int, 32)
+	done := make(chan result, 32)
 	for range 32 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			resp, err := http.Get(srv.URL + "/api/v1/query?query=up")
 			if err != nil {
-				done <- 0
+				done <- result{0, ""}
 				return
 			}
-			_ = resp.Body.Close()
-			done <- resp.StatusCode
+			body := readBody(t, resp)
+			done <- result{resp.StatusCode, body}
 		}()
 	}
 	wg.Wait()
 	close(done)
-	for code := range done {
-		if code != http.StatusBadGateway {
-			t.Errorf("code: got %d, want 502", code)
+	for r := range done {
+		if r.code != http.StatusBadGateway {
+			t.Errorf("code: got %d, want 502; body=%s", r.code, r.body)
+			continue
 		}
+		assertPromErrorEnvelope(t, r.body, prom.ErrInternal)
 	}
 }
 
@@ -367,9 +417,13 @@ func TestCH_BadQuery_400ErrorEnvelope(t *testing.T) {
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status: got %d, want 400; body=%s", resp.StatusCode, body)
 	}
-	if !strings.Contains(body, prom.ErrBadData) {
-		t.Errorf("body missing %q: %s", prom.ErrBadData, body)
-	}
+	// Full envelope shape — pre-strengthening the assertion was
+	// `strings.Contains(body, prom.ErrBadData)`, which would match
+	// the string "bad_data" appearing anywhere in the body (e.g.
+	// inside a metric name a regex matcher echoed back). Decoding
+	// JSON + asserting the errorType field is the contract Grafana's
+	// Prom datasource reads.
+	assertPromErrorEnvelope(t, body, prom.ErrBadData)
 }
 
 // flakyQuerier fails the first Query call, then succeeds. Models the
