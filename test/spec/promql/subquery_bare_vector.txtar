@@ -18,14 +18,14 @@ INSERT INTO otel_metrics_gauge VALUES
     ('up', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 1.0);
 -- expected_rows --
 [
-  [{"job": "api"}, "2025-12-31T23:56:01Z", 1.0],
-  [{"job": "api"}, "2025-12-31T23:57:01Z", 1.0],
-  [{"job": "api"}, "2025-12-31T23:58:01Z", 1.0],
-  [{"job": "api"}, "2025-12-31T23:59:01Z", 1.0],
-  [{"job": "api"}, "2026-01-01T00:00:01Z", 1.0]
+  [{"job": "api"}, "2025-12-31T23:56:01Z", "2025-12-31T23:56:01Z", 1],
+  [{"job": "api"}, "2025-12-31T23:57:01Z", "2025-12-31T23:57:01Z", 1],
+  [{"job": "api"}, "2025-12-31T23:58:01Z", "2025-12-31T23:58:01Z", 1],
+  [{"job": "api"}, "2025-12-31T23:59:01Z", "2025-12-31T23:59:01Z", 1],
+  [{"job": "api"}, "2026-01-01T00:00:01Z", "2026-01-01T00:00:01Z", 1]
 ]
 -- sql --
-SELECT `Attributes`, `anchor_ts`, if(length(window_vals) > 0, window_vals[length(window_vals)], nan) AS `Value` FROM (SELECT `Attributes`, `anchor_ts`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `Attributes`, `anchor_ts`, arrayFilter(p -> tupleElement(p, 1) > anchor_ts - toIntervalNanosecond(60000000000) AND tupleElement(p, 1) <= anchor_ts, series_array) AS `window_pairs` FROM (SELECT `Attributes`, `series_array`, arrayJoin(arrayMap(i -> now64(9) - toIntervalNanosecond(i * 60000000000), range(0, 6))) AS `anchor_ts` FROM (SELECT `Attributes`, arraySort(groupArray((`TimeUnix`, `Value`))) AS `series_array` FROM (SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` = ?)) GROUP BY `Attributes`)))) WHERE length(`window_vals`) >= 1
+SELECT `Attributes`, `anchor_ts`, anchor_ts AS `TimeUnix`, if(length(window_vals) > 0, window_vals[length(window_vals)], nan) AS `Value` FROM (SELECT `Attributes`, `anchor_ts`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `Attributes`, `anchor_ts`, arrayFilter(p -> tupleElement(p, 1) > anchor_ts - toIntervalNanosecond(60000000000) AND tupleElement(p, 1) <= anchor_ts, series_array) AS `window_pairs` FROM (SELECT `Attributes`, `series_array`, arrayJoin(arrayMap(i -> now64(9) - toIntervalNanosecond(i * 60000000000), range(0, 6))) AS `anchor_ts` FROM (SELECT `Attributes`, arraySort(groupArray((`TimeUnix`, `Value`))) AS `series_array` FROM (SELECT * FROM `otel_metrics_gauge` WHERE (`MetricName` = ?)) GROUP BY `Attributes`)))) WHERE length(`window_vals`) >= 1
 -- chplan --
 RangeWindow func= range=1m0s step=1m0s outerRange=5m0s identity=true ts=TimeUnix value=Value groupBy=[Attributes]
   Filter predicate=(MetricName = "up")
