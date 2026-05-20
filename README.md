@@ -299,7 +299,7 @@ Docker Compose, Kubernetes, or a bare-metal supervisor — see
 ```sh
 git clone https://github.com/tsouza/cerberus.git && cd cerberus
 docker compose up --wait
-open http://localhost:3000   # Grafana (admin/admin); cerberus on :8080
+open http://localhost:3000   # Grafana (auto-login as admin); cerberus on :8080
 ```
 
 The stack builds cerberus from the repo, boots a single-node ClickHouse,

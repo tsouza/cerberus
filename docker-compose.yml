@@ -137,8 +137,16 @@ services:
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
+      # Anonymous-Admin + disabled login form means the user opens
+      # http://localhost:3000 and lands directly on the home dashboard
+      # with full edit rights — no admin/admin prompt to navigate. The
+      # admin user above still exists for API automation; the signout
+      # menu is hidden so the in-browser session can't accidentally
+      # drop to a "logged out" state with no way back in.
       GF_AUTH_ANONYMOUS_ENABLED: "true"
-      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_AUTH_DISABLE_SIGNOUT_MENU: "true"
       GF_USERS_DEFAULT_THEME: dark
       GF_FEATURE_TOGGLES_ENABLE: traceqlSearch
     volumes:
