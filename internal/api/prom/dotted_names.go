@@ -21,7 +21,7 @@ import "strings"
 // the query fail to parse.
 //
 // The rewrite walks the query as runes, tracking:
-//   - whether we're inside `"…"` / `'…'` / `` `…` `` strings (skip rewrites
+//   - whether we're inside `"…"` / `'…'` / “ `…` “ strings (skip rewrites
 //     so a string literal `"a.b.c"` isn't molested)
 //   - whether the current rune-position is a valid identifier-start
 //     position (after start-of-string, whitespace, or any of the
