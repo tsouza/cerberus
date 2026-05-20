@@ -292,7 +292,7 @@ func TestObserveQueryInflight_IncrementDecrement(t *testing.T) {
 
 // TestObserveQueryInflight_BalancedAcrossPanic anchors the defer
 // contract: even when the caller panics between increment and the
-// deferred decrement, the gauge must return to zero. This is the
+// decrement defer, the gauge must return to zero. This is the
 // property the engine relies on — Engine.QueryPlan defers the
 // decrement so panics in optimize / emit / execute don't strand a
 // stuck +1 on the gauge.
@@ -301,8 +301,8 @@ func TestObserveQueryInflight_BalancedAcrossPanic(t *testing.T) {
 
 	func() {
 		defer func() {
-			// Swallow the panic; we only care that the deferred
-			// decrement still fired.
+			// Swallow the panic; we only care that the decrement
+			// defer still fired.
 			_ = recover()
 		}()
 		defer telemetry.ObserveQueryInflight(t.Context(), "logql")()
