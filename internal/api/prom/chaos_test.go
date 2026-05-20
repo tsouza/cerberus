@@ -25,7 +25,7 @@ import (
 // to contain the substring "error" anywhere (including a metric named
 // `query_errors_total`), giving false confidence that the envelope
 // was being rendered.
-func assertPromErrorEnvelope(t *testing.T, body string, wantKind string) {
+func assertPromErrorEnvelope(t *testing.T, body, wantKind string) {
 	t.Helper()
 	var env prom.Response
 	if err := json.Unmarshal([]byte(body), &env); err != nil {
