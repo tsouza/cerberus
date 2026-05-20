@@ -409,6 +409,65 @@ func TestConformance_MetadataWire(t *testing.T) {
 	}
 }
 
+// TestConformance_RulesEndpoints pins the empty-envelope shape for
+// `/api/v1/rules` + `/api/v1/alerts`. Grafana's Prom datasource polls
+// both on every page load to gate the "Alert Rules" / "Alerts" UI
+// affordances; a 404 here logs noisy "Failed to load resource" errors
+// in every user's console and degrades the alerting UI.
+//
+// The wire shape matches upstream Prometheus exactly: status:"success",
+// data:{groups:[]} for /rules, data:{alerts:[]} for /alerts.
+func TestConformance_RulesEndpoints(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		path    string
+		dataKey string
+	}{
+		{"rules_empty", "/api/v1/rules", "groups"},
+		{"alerts_empty", "/api/v1/alerts", "alerts"},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			srv := newServer(&stubQuerier{})
+			t.Cleanup(srv.Close)
+
+			resp, err := http.Get(srv.URL + tc.path)
+			if err != nil {
+				t.Fatalf("GET %s: %v", tc.path, err)
+			}
+			body := readBody(t, resp)
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status=%d body=%s — a 404 here surfaces as "+
+					"a noisy 'Failed to load resource' on every Grafana "+
+					"page load", resp.StatusCode, body)
+			}
+			var env struct {
+				Status string                     `json:"status"`
+				Data   map[string]json.RawMessage `json:"data"`
+			}
+			if err := json.Unmarshal([]byte(body), &env); err != nil {
+				t.Fatalf("decode: %v\nbody=%s", err, body)
+			}
+			if env.Status != "success" {
+				t.Errorf("status: got %q, want success", env.Status)
+			}
+			raw, ok := env.Data[tc.dataKey]
+			if !ok {
+				t.Fatalf("data missing %q key; got keys: %v", tc.dataKey, env.Data)
+			}
+			// Must be an array (empty or otherwise), never null —
+			// upstream clients iterate without nil-checking.
+			if string(raw) != "[]" {
+				t.Errorf("data.%s: got %s, want []", tc.dataKey, string(raw))
+			}
+		})
+	}
+}
+
 // TestConformance_FormatQueryWire — `/api/v1/format_query` returns
 // `data: <string>` (the pretty-printed query). Three payloads cover
 // trivial / function / matcher forms.

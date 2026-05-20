@@ -120,6 +120,11 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	register("POST /api/v1/parse_query", h.handleParseQuery)
 	register("GET /api/v1/query_exemplars", h.handleQueryExemplars)
 	register("POST /api/v1/query_exemplars", h.handleQueryExemplars)
+	// Alerting / recording-rules probe endpoints. cerberus has no rule
+	// engine — return the canonical empty envelope an unconfigured
+	// upstream Prometheus would, so Grafana's per-page probe is quiet.
+	register("GET /api/v1/rules", h.handleRules)
+	register("GET /api/v1/alerts", h.handleAlerts)
 }
 
 // handleFormatQuery implements `/api/v1/format_query`. Takes a `query`
