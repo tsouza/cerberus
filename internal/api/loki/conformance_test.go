@@ -426,6 +426,50 @@ func TestConformance_LokiDetectedFieldsWire(t *testing.T) {
 	}
 }
 
+// TestConformance_LokiDetectedLabelsWire pins the
+// `{"detectedLabels":[{"label":"...","cardinality":N}, ...]}` envelope
+// Grafana 11.2+ expects from /loki/api/v1/detected_labels. Mirrors the
+// detected_fields wire test above so a future schema tweak surfaces here
+// rather than only in Grafana's UI.
+func TestConformance_LokiDetectedLabelsWire(t *testing.T) {
+	t.Parallel()
+
+	q := &stubQuerier{
+		labelSets: []map[string]string{
+			{"job": "api", "instance": "host-1"},
+			{"job": "api", "instance": "host-2"},
+		},
+	}
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL +
+		`/loki/api/v1/detected_labels?query=%7Bjob%3D%22api%22%7D&start=1717995600&end=1717999200`)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+	}
+	var env loki.DetectedLabelsData
+	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(env.DetectedLabels) != 2 {
+		t.Fatalf("got %d labels, want 2: %+v", len(env.DetectedLabels), env.DetectedLabels)
+	}
+	for _, dl := range env.DetectedLabels {
+		if dl.Label == "" {
+			t.Errorf("empty label name in entry %+v", dl)
+		}
+		if dl.Cardinality == 0 {
+			t.Errorf("zero cardinality for label %q", dl.Label)
+		}
+	}
+}
+
 // TestConformance_LokiPatternsBasic — non-empty-data envelope. With
 // the drain wire-up live (PR #517), feeding canned (Timestamp, Body)
 // rows through the stub Querier produces a real cluster on the
