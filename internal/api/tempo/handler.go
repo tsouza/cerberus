@@ -171,6 +171,11 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	}
 	register("GET /api/echo", h.handleEcho)
 	register("GET /api/status/version", h.handleVersion)
+	// Grafana's Tempo datasource probes /api/status/buildinfo on every
+	// page load to gate streaming-search + metrics-summary feature
+	// flags. Tempo OSS responds with the same shape /status/version
+	// emits — share the handler so cerberus answers both consistently.
+	register("GET /api/status/buildinfo", h.handleVersion)
 	register("GET /api/search", h.handleSearch)
 	register("GET /api/search/recent", h.handleSearchRecent)
 	register("GET /api/search/tags", h.handleSearchTags)

@@ -58,25 +58,41 @@ func TestConformance_TempoEchoWire(t *testing.T) {
 	}
 }
 
-// TestConformance_TempoVersionWire — VersionResponse round-trip.
+// TestConformance_TempoVersionWire — VersionResponse round-trip on both
+// /api/status/version (Tempo's documented endpoint) and
+// /api/status/buildinfo (Grafana's per-page probe). cerberus serves the
+// same VersionResponse shape from both routes so Grafana's "loadBuildInfo"
+// poll stops 404'ing.
 func TestConformance_TempoVersionWire(t *testing.T) {
 	t.Parallel()
-	srv := newServer(&stubQuerier{}, "v1.2.3-test")
-	t.Cleanup(srv.Close)
-	resp, err := http.Get(srv.URL + "/api/status/version")
-	if err != nil {
-		t.Fatalf("GET: %v", err)
-	}
-	defer resp.Body.Close()
-	var v tempo.VersionResponse
-	if err := json.NewDecoder(resp.Body).Decode(&v); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if v.Version != "v1.2.3-test" {
-		t.Errorf("version: got %q, want v1.2.3-test", v.Version)
-	}
-	if !strings.HasPrefix(v.GoVersion, "go") {
-		t.Errorf("goVersion: got %q, want a string starting with go", v.GoVersion)
+	for _, path := range []string{"/api/status/version", "/api/status/buildinfo"} {
+		path := path
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+			srv := newServer(&stubQuerier{}, "v1.2.3-test")
+			t.Cleanup(srv.Close)
+			resp, err := http.Get(srv.URL + path)
+			if err != nil {
+				t.Fatalf("GET %s: %v", path, err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status=%d on %s — Grafana's Tempo probe lands "+
+					"on /api/status/buildinfo per page load; a 404 here "+
+					"surfaces as 'Failure in retrieving build information' "+
+					"in every user's console", resp.StatusCode, path)
+			}
+			var v tempo.VersionResponse
+			if err := json.NewDecoder(resp.Body).Decode(&v); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if v.Version != "v1.2.3-test" {
+				t.Errorf("version: got %q, want v1.2.3-test", v.Version)
+			}
+			if !strings.HasPrefix(v.GoVersion, "go") {
+				t.Errorf("goVersion: got %q, want a string starting with go", v.GoVersion)
+			}
+		})
 	}
 }
 
