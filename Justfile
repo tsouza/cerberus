@@ -429,6 +429,22 @@ e2e-down:
 # collector to populate real OTel data, then run the test matrix.
 e2e: e2e-up e2e-seed e2e-wait-otel e2e-run e2e-playwright e2e-down
 
+# Run the compose-stack Grafana catch-net spec locally. Assumes the
+# quickstart compose stack is already up (`docker compose up --wait`).
+# Drives Grafana through every provisioned dashboard and asserts every
+# /api/ds/query + /api/dashboards/* response is 2xx with no tunneled
+# per-target error. Mirrors the Playwright step the compose-smoke CI
+# job runs.
+compose-grafana-smoke:
+    @echo "==> compose-grafana-smoke playwright catch-net"
+    cd test/e2e/playwright && \
+        ( [ -f package-lock.json ] && npm ci || npm install --no-audit --no-fund ) && \
+        npx playwright install --with-deps chromium && \
+        GRAFANA_BASE_URL=http://localhost:3000 \
+        GRAFANA_URL=http://localhost:3000 \
+        CERBERUS_URL=http://localhost:8080 \
+        npx playwright test compose_grafana_smoke.spec.ts --reporter=list
+
 # === Compatibility (prometheus/compliance differential harness) ===
 
 # Run the PromQL compatibility suite end-to-end. Slow; expect minutes.

@@ -20,6 +20,15 @@ name: compose-smoke
 # port mismatch would leave the container healthy but the host
 # unreachable — exactly the kind of regression the quickstart README
 # users would hit.
+#
+# On top of the curl smokes, the job also runs a Playwright catch-net
+# spec (`compose_grafana_smoke.spec.ts`) that drives Grafana through
+# every provisioned dashboard. This catches the class of bug where
+# Grafana 200s a `/api/ds/query` request but tunnels per-target errors
+# inside `body.results.<refId>.error` — invisible to curl smokes and
+# to direct cerberus-API tests. The Playwright step is informational
+# on day 1 (`continue-on-error: true`); flip it to a hard failure once
+# it has 1 week of green runs.
 
 on:
   pull_request:
@@ -65,8 +74,60 @@ jobs:
           # Datasource health is a separate per-datasource probe.
           grep -q '"database":[[:space:]]*"ok"' /tmp/grafana-health.json
 
+      # ---- Playwright dashboard catch-net ----
+      # Drives Grafana through every provisioned dashboard, captures
+      # /api/ds/query + /api/dashboards/* traffic, and asserts every
+      # response is 2xx with no tunneled per-target error. This is the
+      # gate that catches the class of bug where Grafana 200s a
+      # ds/query but the body carries .results.<refId>.error — invisible
+      # to curl smokes and to direct cerberus-API tests.
+      #
+      # Gate posture: informational on day 1. `continue-on-error: true`
+      # means the job stays green while we let the lane stabilise; flip
+      # it to a hard failure once it's had ~1 week of green runs.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: test/e2e/playwright/package-lock.json
+
+      - name: install Playwright deps
+        working-directory: test/e2e/playwright
+        run: |
+          # npm ci needs a lockfile; fall back to `npm install` if the
+          # repo doesn't ship one yet (the existing playwright suite
+          # uses the same pattern in the k3d e2e job).
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install --no-audit --no-fund
+          fi
+          npx playwright install --with-deps chromium
+
+      - name: playwright compose-grafana-smoke (informational)
+        id: playwright_smoke
+        continue-on-error: true
+        working-directory: test/e2e/playwright
+        env:
+          GRAFANA_BASE_URL: http://localhost:3000
+          GRAFANA_URL: http://localhost:3000
+          CERBERUS_URL: http://localhost:8080
+        run: |
+          npx playwright test compose_grafana_smoke.spec.ts --reporter=list
+
+      - name: upload Playwright report on failure
+        if: steps.playwright_smoke.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: compose-grafana-smoke-report
+          path: |
+            test/e2e/playwright/playwright-report
+            test/e2e/playwright/test-results
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: dump compose state + logs on failure
-        if: failure()
+        if: failure() || steps.playwright_smoke.outcome == 'failure'
         run: |
           echo "=== compose ps ==="
           docker compose ps
