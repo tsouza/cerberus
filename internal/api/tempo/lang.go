@@ -19,9 +19,22 @@ import (
 // into a single bucket; carrying the stage in the wrapped error chain
 // preserves the per-stage HTTP-status mapping the inlined handler
 // used to return.
+//
+// ErrParseStage / ErrLowerStage are the exported aliases; the gRPC
+// Search RPC chains them via errors.Is to map user-facing query errors
+// onto codes.InvalidArgument (parser + lower) while keeping
+// emit/execute on codes.Internal — sibling of classifySearchErr's
+// HTTP-status mapping.
 var (
 	errParseStage = errors.New("traceql parse stage")
 	errLowerStage = errors.New("traceql lower stage")
+
+	// ErrParseStage / ErrLowerStage re-export the parse / lower stage
+	// markers so external callers (e.g. the gRPC StreamingQuerier
+	// surface) can errors.Is against them without depending on the
+	// unexported sentinels.
+	ErrParseStage = errParseStage
+	ErrLowerStage = errLowerStage
 )
 
 // traceqlLang adapts the TraceQL head to engine.Lang. Parse runs the

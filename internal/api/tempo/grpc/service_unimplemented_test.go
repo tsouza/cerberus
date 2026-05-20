@@ -18,12 +18,12 @@ import (
 )
 
 // TestUnimplemented_AllRPCsReturnUnimplemented is the proof-of-life
-// for the PR 1 scaffold slice: every one of the seven StreamingQuerier
-// RPCs must dial, the gRPC handshake must complete, and the server
-// must answer codes.Unimplemented. PRs 2-4 swap the
-// UnimplementedStreamingQuerierServer embedded methods out one by one;
-// when they do, the matching subtest below moves out of this file and
-// into the per-RPC suite.
+// for the gRPC scaffold: every StreamingQuerier RPC that has not yet
+// been ported must dial, the gRPC handshake must complete, and the
+// server must answer codes.Unimplemented. PR 2 ported Search out of
+// this matrix and into search_test.go (the subtest below is gone);
+// PRs 3 + 4 continue the same migration for the tag-list and metrics
+// RPCs.
 //
 // The test uses bufconn (the standard in-memory gRPC transport) so it
 // doesn't need a real network listener and stays hermetic — no port
@@ -93,13 +93,10 @@ func TestUnimplemented_AllRPCsReturnUnimplemented(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	t.Cleanup(cancel)
 
-	t.Run("Search", func(t *testing.T) {
-		stream, err := client.Search(ctx, &tempopb.SearchRequest{Query: "{}"})
-		if err != nil {
-			t.Fatalf("open stream: %v", err)
-		}
-		assertUnimplemented(t, "Search", drainErr(t, stream))
-	})
+	// Search has been ported (PR 2 — see search.go + search_test.go).
+	// The matrix below covers the six RPCs that remain
+	// Unimplemented today; the dropped Search subtest is now
+	// exercised end-to-end against the streaming pipeline.
 
 	t.Run("SearchTags", func(t *testing.T) {
 		stream, err := client.SearchTags(ctx, &tempopb.SearchTagsRequest{})
@@ -181,11 +178,15 @@ func TestServer_AdmitDisabledPath(t *testing.T) {
 
 	// One sanity check is enough — the Unimplemented matrix is
 	// covered above; this test exists only to pin that the nil-Limiter
-	// construction path works end-to-end.
+	// construction path works end-to-end. Use SearchTags rather than
+	// Search because PR 2 ported Search to a real handler (a nil
+	// Handler would return codes.Internal here, not the Unimplemented
+	// status this test asserts on); SearchTags remains Unimplemented
+	// until PR 3, which is the right shape for the admit-disabled probe.
 	client := tempopb.NewStreamingQuerierClient(conn)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	t.Cleanup(cancel)
-	stream, err := client.Search(ctx, &tempopb.SearchRequest{Query: "{}"})
+	stream, err := client.SearchTags(ctx, &tempopb.SearchTagsRequest{})
 	if err != nil {
 		t.Fatalf("open stream: %v", err)
 	}
