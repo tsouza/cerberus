@@ -115,6 +115,114 @@ func TestDefaultOTelMetricsTableFor(t *testing.T) {
 	}
 }
 
+// TestHistogramCompanionColumn pins the routing of classic-histogram
+// `_count` / `_sum` companion suffixes to the OTel-CH histogram-row
+// Count / Sum columns under the BARE metric name. The Prometheus
+// convention exposes a classic histogram as three companion series
+// (`<X>_bucket`, `<X>_count`, `<X>_sum`); OTel-CH stores all three on
+// a single row keyed by `<X>` (no suffix), so PromQL queries against
+// the suffixed names must reroute to the histogram table + project
+// the matching column as `Value`. Without this routing every
+// `rate(<X>_count[5m])` / `rate(<X>_sum[5m]) / rate(<X>_count[5m])`
+// Grafana panel silently returned "No data" (cerberus task #193).
+//
+// `_total` (the OTel-CH counter convention) is explicitly NOT routed
+// here — counter routing stays on the existing TableFor heuristic.
+//
+// Mirrors the precedent in
+// internal/api/prom/exemplars.go::exemplarsTableFor, which already
+// adopts the same `_count`/`_sum` → histogram-table routing for the
+// exemplars endpoint.
+func TestHistogramCompanionColumn(t *testing.T) {
+	t.Parallel()
+	m := DefaultOTelMetrics()
+
+	cases := []struct {
+		name              string
+		input             string
+		wantBare          string
+		wantValueColumn   string
+		wantIsHistCompCol bool
+	}{
+		{
+			name:              "count_suffix_strips_and_routes_to_Count",
+			input:             "http_server_request_duration_count",
+			wantBare:          "http_server_request_duration",
+			wantValueColumn:   m.CountColumn,
+			wantIsHistCompCol: true,
+		},
+		{
+			name:              "sum_suffix_strips_and_routes_to_Sum",
+			input:             "http_server_request_duration_sum",
+			wantBare:          "http_server_request_duration",
+			wantValueColumn:   m.SumColumn,
+			wantIsHistCompCol: true,
+		},
+		{
+			name:              "total_suffix_is_NOT_a_companion",
+			input:             "http_server_requests_total",
+			wantBare:          "http_server_requests_total",
+			wantValueColumn:   "",
+			wantIsHistCompCol: false,
+		},
+		{
+			name:              "bucket_suffix_is_NOT_a_companion_handled_by_stripBucketSuffix",
+			input:             "http_server_request_duration_bucket",
+			wantBare:          "http_server_request_duration_bucket",
+			wantValueColumn:   "",
+			wantIsHistCompCol: false,
+		},
+		{
+			name:              "bare_metric_name_unchanged",
+			input:             "up",
+			wantBare:          "up",
+			wantValueColumn:   "",
+			wantIsHistCompCol: false,
+		},
+		{
+			name:              "empty_input_unchanged",
+			input:             "",
+			wantBare:          "",
+			wantValueColumn:   "",
+			wantIsHistCompCol: false,
+		},
+		{
+			name:              "boundary_just_count_strips_to_empty_bare",
+			input:             "_count",
+			wantBare:          "",
+			wantValueColumn:   m.CountColumn,
+			wantIsHistCompCol: true,
+		},
+		{
+			name:              "boundary_just_sum_strips_to_empty_bare",
+			input:             "_sum",
+			wantBare:          "",
+			wantValueColumn:   m.SumColumn,
+			wantIsHistCompCol: true,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			bare, col, ok := m.HistogramCompanionColumn(tc.input)
+			if ok != tc.wantIsHistCompCol {
+				t.Fatalf("HistogramCompanionColumn(%q): ok = %v, want %v",
+					tc.input, ok, tc.wantIsHistCompCol)
+			}
+			if bare != tc.wantBare {
+				t.Errorf("HistogramCompanionColumn(%q): bare = %q, want %q",
+					tc.input, bare, tc.wantBare)
+			}
+			if col != tc.wantValueColumn {
+				t.Errorf("HistogramCompanionColumn(%q): valueColumn = %q, want %q",
+					tc.input, col, tc.wantValueColumn)
+			}
+		})
+	}
+}
+
 // TestDefaultOTelMetricsRollups pins the canonical OTel sum rollups
 // the upstream exporter writes when rollup tables are enabled. The
 // MV-substitution optimizer rule reads this list to find candidates; if the upstream exporter ships a new rollup window we

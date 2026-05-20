@@ -331,6 +331,55 @@ func (m Metrics) IsExpHistogramMetric(metricName string) bool {
 	return hasSuffix(metricName, m.ExpHistogramSuffix)
 }
 
+// HistogramCompanionColumn reports whether the given PromQL metric name
+// is a classic-histogram companion series — i.e. a `<base>_count` or
+// `<base>_sum` reference that, in the OTel-CH layout, lives as a column
+// on a single row written under the bare `<base>` name in the
+// histogram table rather than as its own MetricName.
+//
+// Returns:
+//
+//   - `bareName`  — `<base>` (suffix stripped) when applicable, or the
+//     unchanged input when the suffix doesn't match.
+//   - `valueColumn` — the OTel-CH column to project as the
+//     PromQL `Value` for this companion: [Metrics.CountColumn] for
+//     `_count`, [Metrics.SumColumn] for `_sum`. Empty when not applicable.
+//   - `ok` — true when the rewrite applies.
+//
+// Rationale: the Prometheus convention exposes classic-histogram series
+// under three companion names — `<base>_bucket`, `<base>_count`,
+// `<base>_sum`. The OTel-CH exporter stores all three pieces of
+// information on a single row written under the bare metric name
+// (`<base>`), with `BucketCounts` / `Count` / `Sum` as columns. So a
+// PromQL `rate(<base>_count[5m])` against the OTel-CH layout must
+// translate to `rate(toFloat64(Count)[5m])` over rows filtered by
+// `MetricName='<base>'` against the histogram table — anything else
+// silently returns "No data".
+//
+// This is the `_count` / `_sum` analogue of the `_bucket` suffix strip
+// done by `stripBucketSuffix` (PR #637 / #182). All three suffixes are
+// classic-histogram companion conventions; the OTel-CH histogram
+// exporter never writes data under any of them.
+//
+// Disambiguation: in principle a deployment could expose a counter
+// under a name that happens to end in `_count` or `_sum`. The OTel-CH
+// counter convention uses `_total`, so the collision is rare in
+// practice, and the exemplars handler already adopts the same routing
+// (see internal/api/prom/exemplars.go::exemplarsTableFor). If
+// `_count` / `_sum` ever needs to fall back to the sum-table reading
+// for a deployment that doesn't follow OTel-CH conventions, that's a
+// future config-driven extension; for the v0.1 seed the routing is
+// unconditional.
+func (m Metrics) HistogramCompanionColumn(metricName string) (bareName, valueColumn string, ok bool) {
+	if hasSuffix(metricName, "_count") {
+		return metricName[:len(metricName)-len("_count")], m.CountColumn, true
+	}
+	if hasSuffix(metricName, "_sum") {
+		return metricName[:len(metricName)-len("_sum")], m.SumColumn, true
+	}
+	return metricName, "", false
+}
+
 // TableFor picks which metrics table a PromQL metric name belongs in. For
 // the v0.1 seed we use a Prom-naming heuristic — `_count`, `_total`, `_sum`,
 // `_bucket` suffixes are treated as cumulative (Sum table); everything else
