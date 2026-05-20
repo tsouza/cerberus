@@ -1016,3 +1016,77 @@ func TestConformance_LokiAdmitIndependentFromOthers(t *testing.T) {
 		t.Errorf("nil-limiter handler must admit every request: got %d/%d", admitted, n)
 	}
 }
+
+// TestConformance_LokiGrafanaMsTimestamps_ResourcesProxy is the
+// request-level pin for #194 on the Loki side. Grafana 11.x's Loki
+// datasource sends 13-digit ms `start` / `end` timestamps over
+// `/api/datasources/uid/<ds>/resources/...`; cerberus must decode them
+// as milliseconds. The pre-fix `>1e12 → ns` heuristic interpreted a
+// 13-digit ms value as nanoseconds → year-58353 → ClickHouse
+// `toDateTime64` overflow → HTTP 500 → empty Grafana panels.
+//
+// Drives ms-shaped bounds through both range-query endpoints; HTTP 200
+// is the only acceptable outcome. A 500 here is the canary that the
+// ms / ns split regressed.
+func TestConformance_LokiGrafanaMsTimestamps_ResourcesProxy(t *testing.T) {
+	t.Parallel()
+
+	// 2025-01-26 ≈ 1_737_864_000_000 ms; 1 hour later.
+	const startMs = "1737000000000"
+	const endMs = "1737003600000"
+	const q = `{job="api"}`
+
+	cases := []struct {
+		name string
+		path string
+	}{
+		{"query", "/loki/api/v1/query?query=" + url.QueryEscape(q) + "&time=" + endMs},
+		{
+			"query-range",
+			"/loki/api/v1/query_range?query=" + url.QueryEscape(q) +
+				"&start=" + startMs + "&end=" + endMs + "&step=60s",
+		},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			srv := newServer(&stubQuerier{})
+			t.Cleanup(srv.Close)
+			resp, err := http.Get(srv.URL + c.path)
+			if err != nil {
+				t.Fatalf("GET %s: %v", c.path, err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				body, _ := io.ReadAll(resp.Body)
+				t.Fatalf("status=%d body=%s (ms→ns misroute regression)", resp.StatusCode, body)
+			}
+		})
+	}
+}
+
+// TestConformance_LokiLogcliNanosTimestamps pins the ns branch on the
+// Loki side. The `logcli` client emits 19-digit ns timestamps; the
+// 1e15 split must keep routing them to time.Unix(0, n) (i.e., they
+// stay ns, not get misread as ms → year-2554 → also broken).
+func TestConformance_LokiLogcliNanosTimestamps(t *testing.T) {
+	t.Parallel()
+
+	const startNs = "1700000000000000000"
+	const endNs = "1700000060000000000"
+	const q = `{job="api"}`
+
+	srv := newServer(&stubQuerier{})
+	t.Cleanup(srv.Close)
+	resp, err := http.Get(srv.URL + "/loki/api/v1/query_range?query=" + url.QueryEscape(q) +
+		"&start=" + startNs + "&end=" + endNs + "&step=60s")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status=%d body=%s (ns branch regression)", resp.StatusCode, body)
+	}
+}
