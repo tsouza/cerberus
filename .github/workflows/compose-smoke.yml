@@ -85,11 +85,14 @@ jobs:
       # Gate posture: informational on day 1. `continue-on-error: true`
       # means the job stays green while we let the lane stabilise; flip
       # it to a hard failure once it's had ~1 week of green runs.
+      # No npm cache here — the playwright suite doesn't currently
+      # ship a package-lock.json, and setup-node's cache lookup hard-
+      # fails before the install fallback below ever runs when the
+      # cache-dependency-path is unresolvable. Re-add cache: npm once a
+      # lockfile lands under test/e2e/playwright/.
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: npm
-          cache-dependency-path: test/e2e/playwright/package-lock.json
 
       - name: install Playwright deps
         working-directory: test/e2e/playwright
