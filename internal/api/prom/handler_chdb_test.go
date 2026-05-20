@@ -239,6 +239,80 @@ func TestQuery_ScalarFold_ChDB(t *testing.T) {
 	}
 }
 
+// TestQuery_VectorVectorSynthBinop_ChDB exercises the Grafana PromQL
+// CheckHealth probe shape `vector(N)+vector(N)` end-to-end against
+// chDB. Pre-fix this returned a 502 with `converting UInt16 to *float64
+// is unsupported` — the clickhouse-go/v2 driver renders Go's
+// `float64(1.0)` as the SQL literal `1` (no decimal, fmt.Sprint fallback
+// in its bind.go::format), CH narrows that to `UInt8`, the synthetic-
+// fold Value projection's `(? OP ?)` expression promotes to `UInt16`,
+// and the chclient cursor refuses to scan a UInt16 column into
+// `chclient.Sample.Value` (`*float64`). The fix wraps the synthetic
+// LitFloat in `toFloat64(...)` at [syntheticScalarVector], which keeps
+// the Value column Float64 across the V-V binop fold.
+//
+// Mirrors [internal/api/loki/conformance_test.go::
+// TestConformance_LokiQueryConstantArithmetic_HealthProbe] for the
+// PromQL side — but executes against a real chDB session rather than a
+// stub so the UInt8 → UInt16 → *float64 scan path is exercised.
+//
+// Unlike `1+1` (which TryFoldScalar short-circuits to a scalar without
+// touching CH), `vector(N)+vector(N)` is rejected by the fold (LHS /
+// RHS are Calls, not NumberLiterals) and flows through lowering / emit
+// / chDB execution / chclient scan — the exact path where the
+// narrowing surfaces.
+func TestQuery_VectorVectorSynthBinop_ChDB(t *testing.T) {
+	cases := []struct {
+		name      string
+		query     string
+		wantValue string
+	}{
+		{"add", "vector(1)+vector(1)", "2"},
+		{"sub", "vector(3)-vector(1)", "2"},
+		{"mul", "vector(2)*vector(3)", "6"},
+		{"div", "vector(8)/vector(2)", "4"},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			srv, _ := newChDBServer(t, gaugeDDL)
+			resp, err := http.Get(srv.URL + "/api/v1/query?query=" + tc.query)
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			body := readBody(t, resp)
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status=%d body=%s — Grafana PromQL CheckHealth "+
+					"probe lands here; a non-200 surfaces as 'Unable to "+
+					"connect with Prometheus' on every Grafana page load",
+					resp.StatusCode, body)
+			}
+			var parsed queryResponse
+			if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+				t.Fatalf("unmarshal: %v\nbody=%s", err, body)
+			}
+			if parsed.Status != "success" {
+				t.Fatalf("status=%q err=%s body=%s", parsed.Status, parsed.Error, body)
+			}
+			if parsed.Data.ResultType != "vector" {
+				t.Fatalf("resultType=%q, want vector; body=%s",
+					parsed.Data.ResultType, body)
+			}
+			rawResult, _ := json.Marshal(parsed.Data.Result)
+			var vec []prom.VectorSample
+			if err := json.Unmarshal(rawResult, &vec); err != nil {
+				t.Fatalf("decode vector: %v", err)
+			}
+			if len(vec) != 1 {
+				t.Fatalf("expected 1 synthetic sample, got %d: %+v", len(vec), vec)
+			}
+			if got := vec[0].Value[1]; got != tc.wantValue {
+				t.Errorf("Value: got %q, want %q (folded V-V scalar)", got, tc.wantValue)
+			}
+		})
+	}
+}
+
 func TestQuery_UpstreamError_ChDB(t *testing.T) {
 	// NewChDBWithError synthesises a Querier that errors every call —
 	// the proxy for an unreachable ClickHouse. The handler should

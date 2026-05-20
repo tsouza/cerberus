@@ -9,6 +9,27 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
+// synthFloatValue wraps a float literal in `toFloat64(...)` so the
+// emitted Value column is Float64 on the wire regardless of what CH
+// types the bound parameter as. Without the wrap, the clickhouse-go/v2
+// driver renders an integer-valued `float64(1.0)` as the SQL literal
+// `1` (no decimal — its `bind.go::format()` has no `case float64` and
+// falls through to `fmt.Sprint(v)`, which uses Go's `%v` for float64
+// and prints `1` for whole numbers). CH narrows that to `UInt8`, and
+// `UInt8 OP UInt8` promotes to `UInt16`. Once it lands in
+// `chclient.Sample.Value` (declared `float64`), the driver refuses the
+// conversion with `converting UInt16 to *float64 is unsupported. try
+// using *uint16` — surfaced as the Grafana PromQL datasource
+// CheckHealth probe's 502 on `vector(1)+vector(1)`.
+//
+// Mirrors the same wrap [internal/logql/literal.go::synthFloatValue]
+// applies on the LogQL side (PR #634) and the per-callsite wrap
+// [internal/promql/absent.go] uses for the PromQL `absent(...)`
+// Value(1) shape (the original site, predating the others).
+func synthFloatValue(v float64) chplan.Expr {
+	return &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{&chplan.LitFloat{V: v}}}
+}
+
 // syntheticScalarVector builds a Project-over-(OneRow|StepGrid) plan
 // that materialises a synthetic sample with empty labels and the
 // supplied value/timestamp expressions. Used by `time()`,
@@ -37,7 +58,17 @@ import (
 // range) when nil — every callsite except the `time()` lowering wants
 // the eval anchor's wall-clock representation rather than the
 // timestamp-as-value reflection that `time()` uses.
+//
+// Bare `*chplan.LitFloat` valueExpr arguments are wrapped in
+// `toFloat64(...)` before projection — see [synthFloatValue] for the
+// failure mode this guards against. Pre-wrapped expressions (`time()`'s
+// `toFloat64(toUnixTimestamp64Nano(...))`, the date-fn `asFloat64(...)`
+// path, the scalar-binop fold's [foldSyntheticBinary] output) pass
+// through unchanged so the existing byte-stable fixtures don't shift.
 func syntheticScalarVector(valueExpr, timeExpr chplan.Expr, s schema.Metrics, ctx lowerCtx) chplan.Node {
+	if lit, ok := valueExpr.(*chplan.LitFloat); ok {
+		valueExpr = synthFloatValue(lit.V)
+	}
 	if ctx.step > 0 {
 		if timeExpr == nil {
 			timeExpr = &chplan.ColumnRef{Name: "anchor_ts"}

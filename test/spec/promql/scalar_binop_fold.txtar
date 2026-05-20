@@ -17,7 +17,7 @@ CREATE TABLE otel_metrics_gauge (
 [2] int64 = 9
 [3] float64 = 3
 -- chplan --
-Project ["" AS MetricName, CAST(map(), "Map(String,String)") AS Attributes, now64(9) AS TimeUnix, 3 AS Value]
+Project ["" AS MetricName, CAST(map(), "Map(String,String)") AS Attributes, now64(9) AS TimeUnix, toFloat64(3) AS Value]
   OneRow
 -- sql --
-SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, ? AS `Value` FROM (SELECT 1)
+SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT 1)
