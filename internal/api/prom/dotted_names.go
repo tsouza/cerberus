@@ -101,18 +101,17 @@ func normalizeDottedSelectors(q string) string {
 				tok = strings.TrimRight(tok, ".")
 			}
 			if strings.Contains(tok, ".") {
-				out.WriteString(`{__name__="`)
-				out.WriteString(tok)
-				out.WriteString(`"}`)
+				i = emitDottedSelector(&out, q, tok, j, trailingDot)
 			} else {
 				out.WriteString(tok)
+				if trailingDot {
+					// Emit the dot that we stripped so the parser
+					// still sees the surrounding tokens (rare path —
+					// defensive).
+					out.WriteByte('.')
+				}
+				i = j
 			}
-			if trailingDot {
-				// Emit the dot that we stripped so the parser still
-				// sees the surrounding tokens (rare path — defensive).
-				out.WriteByte('.')
-			}
-			i = j
 			identStart = false
 			continue
 		}
@@ -123,6 +122,52 @@ func normalizeDottedSelectors(q string) string {
 		i++
 	}
 	return out.String()
+}
+
+// emitDottedSelector writes the `{__name__="<tok>"…}` selector form
+// for a confirmed dotted token, folding into an adjacent
+// `{label=…}` group when present so the parser sees a single,
+// well-formed selector instead of two adjacent ones (which is a
+// parse error upstream — `{__name__="x"}{job="api"}` →
+// `unexpected "{"`).
+//
+// Return value is the new `i` cursor: the byte index in `q` to resume
+// scanning from. `j` is the position just past the consumed token (or
+// just past the consumed trailing dot, when one was present).
+//
+// trailingDot indicates the caller stripped a trailing `.` off `tok`;
+// when set, we emit the bare-form selector + the dot back into the
+// stream and skip the fold-into-`{` shortcut (a stray dot between the
+// token and `{` means the input is already malformed; the parser
+// surfaces a clean error from there).
+func emitDottedSelector(out *strings.Builder, q, tok string, j int, trailingDot bool) int {
+	if trailingDot {
+		out.WriteString(`{__name__="`)
+		out.WriteString(tok)
+		out.WriteString(`"}`)
+		out.WriteByte('.')
+		return j
+	}
+	// Look ahead for an adjacent `{…}` label-matcher group.
+	if j < len(q) && q[j] == '{' {
+		if j+1 < len(q) && q[j+1] == '}' {
+			// Empty `{}` — collapse to a single matcher group.
+			out.WriteString(`{__name__="`)
+			out.WriteString(tok)
+			out.WriteString(`"}`)
+			return j + 2
+		}
+		// Populated `{...}` — splice `__name__="<tok>",` into it.
+		out.WriteString(`{__name__="`)
+		out.WriteString(tok)
+		out.WriteString(`",`)
+		return j + 1 // consume the leading `{`
+	}
+	// Bare form — no adjacent matcher group.
+	out.WriteString(`{__name__="`)
+	out.WriteString(tok)
+	out.WriteString(`"}`)
+	return j
 }
 
 // openString reports whether `ch` opens a string literal and, if so,

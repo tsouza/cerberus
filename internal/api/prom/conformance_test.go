@@ -1310,3 +1310,125 @@ func (b *blockingQuerier) QueryMetricMeta(_ context.Context, _, _ string, _ ...a
 func (b *blockingQuerier) QueryExemplars(_ context.Context, _ string, _ ...any) ([]chclient.ExemplarRow, error) {
 	return nil, nil
 }
+
+// --- Section H: dotted metric names end-to-end -------------------------
+//
+// Drives OTel-style dotted metric names through the real `/api/v1/query`
+// handler — i.e. the full parse → lower → emit pipeline behind the
+// normalizeDottedSelectors rewrite. The unit-layer tests in
+// dotted_names_test.go assert string-level rewrites and parser-roundtrip;
+// this layer pins that the HTTP handler returns 200 (not 400 parse
+// error) for every query shape Grafana's metric picker can land on.
+//
+// One case per selector shape — bare metric, function-wrapped (rate),
+// aggregation-wrapped (sum by le rate), label-matcher-attached. The
+// last shape is the one that motivated the brace-fold fix in
+// normalizeDottedSelectors: `<dotted>{labels}` rewrites to
+// `{__name__="<dotted>",labels}` — splicing into the existing matcher
+// group — instead of emitting two adjacent selectors, which the PromQL
+// parser rejects upstream as "unexpected `{`".
+
+func TestConformance_DottedMetricNames(t *testing.T) {
+	t.Parallel()
+
+	ts := time.Date(2026, 5, 12, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name     string
+		query    string
+		wantName string // the dotted MetricName that should be bound to the CH args
+	}{
+		{
+			name:     "bare_dotted_selector",
+			query:    `http.server.request.duration`,
+			wantName: "http.server.request.duration",
+		},
+		{
+			name:     "dotted_inside_rate",
+			query:    `rate(http.server.request.duration[5m])`,
+			wantName: "http.server.request.duration",
+		},
+		{
+			name:     "dotted_inside_aggregation",
+			query:    `sum by (le) (rate(http.server.request.duration_bucket[5m]))`,
+			wantName: "http.server.request.duration_bucket",
+		},
+		{
+			name:     "dotted_with_label_matcher",
+			query:    `http.server.request.duration{job="api"}`,
+			wantName: "http.server.request.duration",
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			// Stub returns one synthetic sample so the response is a
+			// non-empty vector — the test cares about HTTP 200 + the
+			// MetricName flowing through the SQL bind, not the exact
+			// pivot shape (other tests cover that).
+			q := &stubQuerier{
+				samples: []chclient.Sample{
+					{
+						MetricName: "http.server.request.duration",
+						Labels:     map[string]string{"job": "api"},
+						Timestamp:  ts,
+						Value:      1.0,
+					},
+				},
+			}
+			srv := newServer(q)
+			t.Cleanup(srv.Close)
+
+			u := srv.URL + "/api/v1/query?query=" + url.QueryEscape(tc.query) +
+				"&time=" + strconv.FormatInt(ts.Unix(), 10)
+			resp, err := http.Get(u)
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			body := readBody(t, resp)
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status: got %d, want 200; body=%s", resp.StatusCode, body)
+			}
+
+			// Envelope shape: handler reached the success path (a 400
+			// parse error would have surfaced as `status:"error",
+			// errorType:"bad_data"`).
+			var env struct {
+				Status    string `json:"status"`
+				ErrorType string `json:"errorType"`
+				Error     string `json:"error"`
+				Data      struct {
+					ResultType string `json:"resultType"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal([]byte(body), &env); err != nil {
+				t.Fatalf("decode: %v body=%s", err, body)
+			}
+			if env.Status != "success" {
+				t.Fatalf("status: got %q (errorType=%q error=%q); want success",
+					env.Status, env.ErrorType, env.Error)
+			}
+
+			// The dotted name must have reached the CH bind layer as
+			// the MetricName arg — i.e. the rewrite landed in the
+			// __name__ matcher position, was lowered into a Filter,
+			// and emitted as a parameterised CH predicate. If the
+			// rewrite silently dropped the dotted token, this would
+			// fail. (Iterate args; the eval-ts predicate appends
+			// later args, so the dotted name lands somewhere in
+			// lastArgs but not necessarily first.)
+			foundName := false
+			for _, a := range q.lastArgs {
+				if s, ok := a.(string); ok && s == tc.wantName {
+					foundName = true
+					break
+				}
+			}
+			if !foundName {
+				t.Errorf("dotted MetricName %q not bound to SQL args: %v\nsql=%s",
+					tc.wantName, q.lastArgs, q.lastSQL)
+			}
+		})
+	}
+}

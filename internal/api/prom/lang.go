@@ -75,7 +75,13 @@ func (l *lang) Parse(ctx context.Context, query string) (chplan.Node, engine.Met
 	parseT := telemetry.ObserveStage(telemetry.StageParse)
 	_, span := tracer.Start(ctx, cerbtrace.SpanParse,
 		trace.WithAttributes(cerbtrace.ParseAttrs("promql", query)...))
-	expr, err := l.Parser.ParseExpr(query)
+	// Rewrite OTel-style dotted metric names to `{__name__="..."}` form
+	// before handing to the parser. The handler-level parseExpr path
+	// does the same rewrite for the scalar-fold short-circuit; doing it
+	// here makes the engine path (Query / QueryCursor) symmetric, so a
+	// query like `rate(http.server.request.duration[5m])` parses on
+	// both paths instead of failing with `unexpected character: '.'`.
+	expr, err := l.Parser.ParseExpr(normalizeDottedSelectors(query))
 	if err != nil {
 		span.RecordError(err)
 		span.End()
