@@ -2,6 +2,18 @@ package prom
 
 import "strings"
 
+// stringState tracks which (if any) string literal the dotted-selector
+// rewriter is currently inside. Package-scoped so the small helpers
+// below can share it with normalizeDottedSelectors.
+type stringState int
+
+const (
+	outside stringState = iota
+	inDouble
+	inSingle
+	inBacktick
+)
+
 // normalizeDottedSelectors rewrites OTel-style dotted metric names in
 // selector position to the explicit `{__name__="..."}` form so the
 // PromQL parser — which only accepts ASCII identifiers matching
@@ -54,72 +66,19 @@ func normalizeDottedSelectors(q string) string {
 	var out strings.Builder
 	out.Grow(len(q) + 32)
 
-	type stringState int
-	const (
-		outside stringState = iota
-		inDouble
-		inSingle
-		inBacktick
-	)
-
 	state := outside
 	identStart := true // start-of-input is identifier-position
 	i := 0
 	for i < len(q) {
 		ch := q[i]
-		switch state {
-		case inDouble:
-			out.WriteByte(ch)
-			if ch == '\\' && i+1 < len(q) {
-				out.WriteByte(q[i+1])
-				i += 2
-				continue
-			}
-			if ch == '"' {
-				state = outside
-			}
-			i++
-			identStart = false
-			continue
-		case inSingle:
-			out.WriteByte(ch)
-			if ch == '\\' && i+1 < len(q) {
-				out.WriteByte(q[i+1])
-				i += 2
-				continue
-			}
-			if ch == '\'' {
-				state = outside
-			}
-			i++
-			identStart = false
-			continue
-		case inBacktick:
-			out.WriteByte(ch)
-			if ch == '`' {
-				state = outside
-			}
-			i++
+		if state != outside {
+			i, state = advanceInString(&out, q, i, state)
 			identStart = false
 			continue
 		}
 
-		// outside any string
-		switch ch {
-		case '"':
-			state = inDouble
-			out.WriteByte(ch)
-			i++
-			identStart = false
-			continue
-		case '\'':
-			state = inSingle
-			out.WriteByte(ch)
-			i++
-			identStart = false
-			continue
-		case '`':
-			state = inBacktick
+		if next, ok := openString(ch); ok {
+			state = next
 			out.WriteByte(ch)
 			i++
 			identStart = false
@@ -164,6 +123,41 @@ func normalizeDottedSelectors(q string) string {
 		i++
 	}
 	return out.String()
+}
+
+// openString reports whether `ch` opens a string literal and, if so,
+// the string state we enter. Returned `ok=false` means `ch` is not a
+// string-opening delimiter.
+func openString(ch byte) (stringState, bool) {
+	switch ch {
+	case '"':
+		return inDouble, true
+	case '\'':
+		return inSingle, true
+	case '`':
+		return inBacktick, true
+	}
+	return outside, false
+}
+
+// advanceInString copies one rune (or one escape pair) from `q` at
+// position `i` into `out`, updating the string state when the closing
+// delimiter is seen. Backticked strings do not honour `\` escapes (raw
+// strings); double / single quoted strings do.
+func advanceInString(out *strings.Builder, q string, i int, state stringState) (int, stringState) {
+	ch := q[i]
+	out.WriteByte(ch)
+	if state != inBacktick && ch == '\\' && i+1 < len(q) {
+		out.WriteByte(q[i+1])
+		return i + 2, state
+	}
+	switch {
+	case state == inDouble && ch == '"',
+		state == inSingle && ch == '\'',
+		state == inBacktick && ch == '`':
+		state = outside
+	}
+	return i + 1, state
 }
 
 func isIdentStart(b byte) bool {
