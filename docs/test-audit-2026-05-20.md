@@ -16,14 +16,15 @@ The cerberus test suite is **broadly healthy**, with three actionable hotspots
 that warrant follow-up PRs:
 
 1. **`internal/logql/range_aggregation.go`** — 6–9 surviving mutants on
-   window/anchor numeric coefficients indicate tests pin SQL *shape* but not
-   *exact values*. Strengthening assertions here is the highest-leverage win.
+   window/anchor numeric coefficients indicate tests pin SQL _shape_ but not
+   _exact values_. Strengthening assertions here is the highest-leverage win.
 2. **`compatibility/tempo/driver/differ.go:267`** — asymmetric "skip blanks"
    logic on `StartTimeUnixNano` could mask a real field-omission regression.
 3. **`internal/api/loki/conformance_test.go:109`** — `query_range` empty case
    only asserts `resultType`, not actual content.
 
 **Surprises** (counter to the surface-scan verdict):
+
 - The Loki `should_skip` overlay is **24 entries**, not 13 — initial scan
   undercounted by missing the `exhaustive/unwrap-aggregations.yaml` upstream-
   pinned cluster (10 entries for `stddev_over_time` / `quantile_over_time` —
@@ -34,33 +35,34 @@ that warrant follow-up PRs:
   survivors). Those packages are belt-and-braces tested.
 
 **Top-line metrics**:
-| Layer | Status |
-| --- | --- |
-| 9 required PR checks (`check` / `lint` / `forbid-skip` / `probe` / 3× `roundtrip` / 3× `compatibility`) | All green at baseline commit |
-| Mutation efficacy (7 phases) | 96.77% aggregate (2305 killed / 77 lived / 2382 total) |
-| TXTAR fixture count | 585 (promql 249 + traceql 133 + logql 109 + chsql 62 + optimizer 23 + codegen 9) |
-| `should_skip` overlay (Loki) | 24 entries — 18 KEEP, 4 STRENGTHEN-REASON, 0 REMOVE |
-| `expected-failures.json` (Prom + Tempo) | 0 entries (empty) |
-| Historical test-removal anti-patterns | 3 confirmed (#563/#429/#537), all subsequently unblocked |
+
+| Layer                                                                                                   | Status                                                                           |
+| ------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| 9 required PR checks (`check` / `lint` / `forbid-skip` / `probe` / 3× `roundtrip` / 3× `compatibility`) | All green at baseline commit                                                     |
+| Mutation efficacy (7 phases)                                                                            | 96.77% aggregate (2305 killed / 77 lived / 2382 total)                           |
+| TXTAR fixture count                                                                                     | 585 (promql 249 + traceql 133 + logql 109 + chsql 62 + optimizer 23 + codegen 9) |
+| `should_skip` overlay (Loki)                                                                            | 24 entries — 18 KEEP, 4 STRENGTHEN-REASON, 0 REMOVE                              |
+| `expected-failures.json` (Prom + Tempo)                                                                 | 0 entries (empty)                                                                |
+| Historical test-removal anti-patterns                                                                   | 3 confirmed (#563/#429/#537), all subsequently unblocked                         |
 
 ## 2. Test landscape inventory
 
 12 testing layers. Required PR gates marked **★**.
 
-| # | Layer | Location | Invoked via | Trigger | Gate |
-| --- | --- | --- | --- | --- | --- |
-| 1 | Unit tests | `internal/`, `cmd/`, `compatibility/` (54 `_test.go` files) | `just test` → `go test -race ./...` | `ci.yml :: check` | ★ Required |
-| 2 | TXTAR golden | `test/spec/{promql,logql,traceql,chsql,optimizer,codegen}/` (585 files) | embedded in `just test` (text-equality lane) | `ci.yml :: check` | ★ Required |
-| 3 | chDB roundtrip | `test/spec/<ql>/roundtrip_chdb_test.go` + `internal/chclienttest/` (build-tag `chdb`) | `just spec-chdb` | `chdb.yml :: roundtrip` matrix | ★ Required |
-| 4 | Probe | `internal/api/health/` + `TestChDBProbe` | `just test-chdb` | `chdb.yml :: probe` | ★ Required (TBD — task #89) |
-| 5 | Property | `test/property/` (`pgregory.net/rapid` + from-scratch oracles) | `go test -tags chdb -rapid.checks=500 ./test/property/...` | `property.yml` | Informational (nightly + push-to-main) |
-| 6 | Regression meta | `test/regression/{goleak,justfile,seed}_test.go` | embedded in `just test` | `ci.yml :: check` | ★ Required |
-| 7 | e2e (k3d + Grafana + Playwright) | `test/e2e/` (+ `playwright/`, `k3s/`, `grafana/`, `seed/`) | `just e2e` (full lifecycle) | `e2e.yml :: dashboard` | Informational (push-to-main + nightly) |
-| 8 | Compatibility harnesses (3 heads) | `compatibility/{prometheus,loki,tempo}/` (driver + corpus + docker-compose) | `just compat-{promql,logql,traceql}` | `compatibility.yml` (matrix) | ★ Required (on path match) |
-| 9 | Mutation (7 phases) | `.gremlins.yaml` + per-package matrix | `just mutate` / per-phase matrix | `mutation.yml` (95% threshold per phase) | Informational (nightly + push-to-main) |
-| 10 | Shadow-mode | `compatibility/prometheus/shadow/` | `just shadow-mode` | `shadow-mode.yml` | Informational (manual) |
-| 11 | Conformance | `internal/api/{prom,loki,tempo}/conformance_test.go` | embedded in `just test` | `ci.yml :: check` | ★ Required (HTTP wire-format pinning) |
-| 12 | forbid-skip | `.github/workflows/ci.yml:113-136` regex | grep at CI time | `ci.yml :: forbid-skip` | ★ Required |
+| #   | Layer                             | Location                                                                              | Invoked via                                                | Trigger                                  | Gate                                   |
+| --- | --------------------------------- | ------------------------------------------------------------------------------------- | ---------------------------------------------------------- | ---------------------------------------- | -------------------------------------- |
+| 1   | Unit tests                        | `internal/`, `cmd/`, `compatibility/` (54 `_test.go` files)                           | `just test` → `go test -race ./...`                        | `ci.yml :: check`                        | ★ Required                             |
+| 2   | TXTAR golden                      | `test/spec/{promql,logql,traceql,chsql,optimizer,codegen}/` (585 files)               | embedded in `just test` (text-equality lane)               | `ci.yml :: check`                        | ★ Required                             |
+| 3   | chDB roundtrip                    | `test/spec/<ql>/roundtrip_chdb_test.go` + `internal/chclienttest/` (build-tag `chdb`) | `just spec-chdb`                                           | `chdb.yml :: roundtrip` matrix           | ★ Required                             |
+| 4   | Probe                             | `internal/api/health/` + `TestChDBProbe`                                              | `just test-chdb`                                           | `chdb.yml :: probe`                      | ★ Required (TBD — task #89)            |
+| 5   | Property                          | `test/property/` (`pgregory.net/rapid` + from-scratch oracles)                        | `go test -tags chdb -rapid.checks=500 ./test/property/...` | `property.yml`                           | Informational (nightly + push-to-main) |
+| 6   | Regression meta                   | `test/regression/{goleak,justfile,seed}_test.go`                                      | embedded in `just test`                                    | `ci.yml :: check`                        | ★ Required                             |
+| 7   | e2e (k3d + Grafana + Playwright)  | `test/e2e/` (+ `playwright/`, `k3s/`, `grafana/`, `seed/`)                            | `just e2e` (full lifecycle)                                | `e2e.yml :: dashboard`                   | Informational (push-to-main + nightly) |
+| 8   | Compatibility harnesses (3 heads) | `compatibility/{prometheus,loki,tempo}/` (driver + corpus + docker-compose)           | `just compat-{promql,logql,traceql}`                       | `compatibility.yml` (matrix)             | ★ Required (on path match)             |
+| 9   | Mutation (7 phases)               | `.gremlins.yaml` + per-package matrix                                                 | `just mutate` / per-phase matrix                           | `mutation.yml` (95% threshold per phase) | Informational (nightly + push-to-main) |
+| 10  | Shadow-mode                       | `compatibility/prometheus/shadow/`                                                    | `just shadow-mode`                                         | `shadow-mode.yml`                        | Informational (manual)                 |
+| 11  | Conformance                       | `internal/api/{prom,loki,tempo}/conformance_test.go`                                  | embedded in `just test`                                    | `ci.yml :: check`                        | ★ Required (HTTP wire-format pinning)  |
+| 12  | forbid-skip                       | `.github/workflows/ci.yml:113-136` regex                                              | grep at CI time                                            | `ci.yml :: forbid-skip`                  | ★ Required                             |
 
 **Spine of correctness**: layers 1+2+3+6+11+12 (`check` + `chdb roundtrip` +
 `forbid-skip`) catch unit / golden / wire-shape / discipline regressions on
@@ -72,27 +74,27 @@ broader / nightly / informational coverage.
 7 gremlins phases, latest successful run = nightly 2026-05-20 (run IDs
 omitted — see `mutation.yml` artifacts of run-id 26143128549).
 
-| Phase | Total | Killed | Lived | Efficacy | Verdict |
-| --- | --- | --- | --- | --- | --- |
-| **chplan** | 266 | 266 | 0 | **100.00%** | perfect |
-| chsql | 525 | 499 | 26 | 95.05% | strong (24 acceptable boundary mutants) |
-| optimizer | 174 | 169 | 5 | 97.13% | strong (loop / boundary equivalents) |
-| promql | 875 | 846 | 29 | 96.69% | 5–7 weak in `label_fns.go` float arithmetic |
-| logql | 334 | 318 | 16 | 95.21% | **8–9 weak in `range_aggregation.go`** + 2 in `detected_level.go` |
-| traceql | 123 | 122 | 1 | 99.19% | sole survivor is acceptable boundary |
-| **qlcommon** | 85 | 85 | 0 | **100.00%** | perfect |
-| **TOTAL** | **2382** | **2305** | **77** | **96.77%** | strong |
+| Phase        | Total    | Killed   | Lived  | Efficacy    | Verdict                                                           |
+| ------------ | -------- | -------- | ------ | ----------- | ----------------------------------------------------------------- |
+| **chplan**   | 266      | 266      | 0      | **100.00%** | perfect                                                           |
+| chsql        | 525      | 499      | 26     | 95.05%      | strong (24 acceptable boundary mutants)                           |
+| optimizer    | 174      | 169      | 5      | 97.13%      | strong (loop / boundary equivalents)                              |
+| promql       | 875      | 846      | 29     | 96.69%      | 5–7 weak in `label_fns.go` float arithmetic                       |
+| logql        | 334      | 318      | 16     | 95.21%      | **8–9 weak in `range_aggregation.go`** + 2 in `detected_level.go` |
+| traceql      | 123      | 122      | 1      | 99.19%      | sole survivor is acceptable boundary                              |
+| **qlcommon** | 85       | 85       | 0      | **100.00%** | perfect                                                           |
+| **TOTAL**    | **2382** | **2305** | **77** | **96.77%**  | strong                                                            |
 
 **Survivor classification**: 55–60 acceptable (71–78%) · 10–15 weak-assertion
 (13–19%) · 2–3 missing-test (3–4%).
 
 ### 3.1 Top weak-assertion hotspots (PR-worthy)
 
-| Rank | File:line | Mutation type | Suggested fix |
-| --- | --- | --- | --- |
-| **#1** | `internal/logql/range_aggregation.go:52, 61, 116, 256, 469, 513` | `ARITHMETIC_BASE` × 6 | Tests pin SQL shape; add value-range assertions on the emitted window/anchor coefficients (e.g., `step_ns`, `range_ns`, `offset_ns`). Likely targets: `TestEmit*Matrix*` + `TestLowerRangeAggregation*Shape*` |
-| #2 | `internal/logql/detected_level.go:143:44, 143:46` | `ARITHMETIC_BASE` × 2 adjacent | Level extraction constant (mask/shift). Add a `level=info`/`level=warn`/`level=error`/`level=debug` matrix that exercises the exact boundary of the mask. |
-| #3 | `internal/promql/label_fns.go:81:39, 83:79` | `ARITHMETIC_BASE` + `INVERT_NEGATIVES` × 4 | Float comparison/arithmetic in label-fn helpers. Tests pass on signed-magnitude inputs; add cases where the mutation would flip sign in a non-obvious way (`label_replace` with empty `\\1` capture, `label_join` with single-element separator). |
+| Rank   | File:line                                                        | Mutation type                              | Suggested fix                                                                                                                                                                                                                                     |
+| ------ | ---------------------------------------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **#1** | `internal/logql/range_aggregation.go:52, 61, 116, 256, 469, 513` | `ARITHMETIC_BASE` × 6                      | Tests pin SQL shape; add value-range assertions on the emitted window/anchor coefficients (e.g., `step_ns`, `range_ns`, `offset_ns`). Likely targets: `TestEmit*Matrix*` + `TestLowerRangeAggregation*Shape*`                                     |
+| #2     | `internal/logql/detected_level.go:143:44, 143:46`                | `ARITHMETIC_BASE` × 2 adjacent             | Level extraction constant (mask/shift). Add a `level=info`/`level=warn`/`level=error`/`level=debug` matrix that exercises the exact boundary of the mask.                                                                                         |
+| #3     | `internal/promql/label_fns.go:81:39, 83:79`                      | `ARITHMETIC_BASE` + `INVERT_NEGATIVES` × 4 | Float comparison/arithmetic in label-fn helpers. Tests pass on signed-magnitude inputs; add cases where the mutation would flip sign in a non-obvious way (`label_replace` with empty `\\1` capture, `label_join` with single-element separator). |
 
 ### 3.2 Acceptable survivors (no action)
 
@@ -124,7 +126,7 @@ if got.StartTimeUnixNano == "" || want.StartTimeUnixNano == "" {
 }
 ```
 
-**Concern (HIGH)**: blank-skipping is *asymmetric to absence*. If cerberus
+**Concern (HIGH)**: blank-skipping is _asymmetric to absence_. If cerberus
 ever regresses to omitting `StartTimeUnixNano` (e.g., a future refactor
 breaks the field projection), this differ will silently accept the
 divergence. Reference Tempo's output is the source of truth — if it has the
@@ -132,6 +134,7 @@ field, cerberus should too. The differ should fail if exactly one side has
 the field present.
 
 **Suggested fix**: replace the blank-skip with:
+
 ```go
 if (got.StartTimeUnixNano == "") != (want.StartTimeUnixNano == "") {
     return diff{...} // asymmetric absence is a divergence
@@ -142,6 +145,7 @@ if got.StartTimeUnixNano != "" {
 ```
 
 Other findings on this differ:
+
 - `DurationMs` comparison uses integer equality with epsilon fallback. The
   fallback path is reachable when the two backends report durations in
   different precisions. **MEDIUM** — defensible but warrants a comment
@@ -173,11 +177,12 @@ fail-not-skip behavior is correct (it surfaces the case for triage, not
 silently passes).
 
 Other findings:
+
 - `tolerance = 1e-5` (10,000× looser than Prom/Tempo's `1e-9`). **MEDIUM** —
   matches upstream `remote_test.go`, but no comment explaining why Loki
   warrants looser tolerance.
 - `normaliseTypedResult()` sorts streams/vector/matrix by `(labelsCmp,
-  timestamp)`. Applied symmetrically. Clean.
+timestamp)`. Applied symmetrically. Clean.
 - `diffStreams()` does byte-for-byte line match (no tolerance). Correct.
 
 ## 5. Property-oracle audit — CLEAN
@@ -202,6 +207,7 @@ that silently passes.
 ## 6. Conformance audit
 
 ### 6.1 Prom conformance — CLEAN
+
 `internal/api/prom/conformance_test.go`. Tests assert status + Content-Type
 header + envelope (`resultType`, `data.result`). Content validation depth
 is acceptable — sample-pair length, value stringification, label-set keys
@@ -221,6 +227,7 @@ would still pass this test.
 explicitly.
 
 Other findings:
+
 - `TestConformance_LokiQueryWire:32-107` — `wantStreams > 0` check only
   triggers if non-zero. Empty case validates decoding-success but not the
   array's cardinality. **MEDIUM** — same pattern as the HIGH but smaller
@@ -263,6 +270,7 @@ or an upstream-skip marker.
 
 Loki-bench's vendored corpus carries 14 `skip: true` entries that cerberus
 inherits transparently:
+
 - `fast/structured-metadata.yaml` (1) — dataobj-engine schema gap
 - `regression/structured-metadata.yaml` (2) — numeric label filters
 - `regression/metric-queries.yaml` (1) — `JSONParserErr`
@@ -276,11 +284,11 @@ inherits transparently:
 Confirmed 3 anti-patterns from PR-history sweep (#100–#583). All three were
 subsequently unblocked.
 
-| PR | What was removed | Why wrong | Unblocked by |
-| --- | --- | --- | --- |
-| **#563** | 3 TXTAR cases (`tag_values_v2_*`) from Tempo corpus | Reference Tempo's parser rejection is a query-scoping issue, not a cerberus bug | #564 (revert) + #566 (proper fix: scope fixtures to `.service.name` form) |
-| **#429** | 8 `should_skip` entries in Loki overlay for `count_over_time` + `detected_level` | Underlying lowering features needed implementation, not skipping | #450 (LogQL unwrap + range agg stack) → #568 (stale-skip cleanup) |
-| **#537** | 9 `should_skip` entries for cardinality-rejected cases | Test infrastructure tunable; harness Loki config could raise `max_query_series` | #569 (raise `max_query_series: 10000`, re-enable all 9) |
+| PR       | What was removed                                                                 | Why wrong                                                                       | Unblocked by                                                              |
+| -------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| **#563** | 3 TXTAR cases (`tag_values_v2_*`) from Tempo corpus                              | Reference Tempo's parser rejection is a query-scoping issue, not a cerberus bug | #564 (revert) + #566 (proper fix: scope fixtures to `.service.name` form) |
+| **#429** | 8 `should_skip` entries in Loki overlay for `count_over_time` + `detected_level` | Underlying lowering features needed implementation, not skipping                | #450 (LogQL unwrap + range agg stack) → #568 (stale-skip cleanup)         |
+| **#537** | 9 `should_skip` entries for cardinality-rejected cases                           | Test infrastructure tunable; harness Loki config could raise `max_query_series` | #569 (raise `max_query_series: 10000`, re-enable all 9)                   |
 
 No new anti-patterns found in #100-#583. The cluster of 3 is contained;
 follow-up unblock-PRs landed within 2-40 commits.
@@ -290,17 +298,17 @@ follow-up unblock-PRs landed within 2-40 commits.
 Sorted by leverage. Each row maps to a separate PR. ★ = mechanical /
 always-on regardless of findings.
 
-| # | PR | What lands | Leverage |
-| --- | --- | --- | --- |
-| **1** | **★ PR-α** — `should_skip` CI guard | New `ci.yml` step that fails on any PR adding `should_skip:` to `cerberus-test-queries.yml` without a non-empty `reason:` AND a `jira:` URL or inline GH-issue link | Prevents repeat of #429/#537 |
-| **2** | **★ PR-β** — broaden `forbid-skip` regex | Extend `ci.yml :: forbid-skip` to reject `assert.Contains(x, "")`, `defer recover()`, empty-slice `ElementsMatch`. Test against codebase first (should produce 0 hits today) | Discipline pin against fake-pass patterns |
-| **3** | PR-γ — `logql/range_aggregation.go` mutation kills | Add value-range assertions for window/anchor coefficients; kill 6 ARITHMETIC_BASE survivors | Strongest weak-test hotspot in audit |
-| **4** | PR-δ — Tempo differ `StartTimeUnixNano` blank-skip | Replace asymmetric blank-skip with "fail on asymmetric absence" | Closes the only HIGH-severity differ concern |
-| **5** | PR-ε — Loki conformance empty `query_range` | Strengthen `wantStreams == 0` case to assert `len(streams) == 0` explicitly | Closes the HIGH-severity conformance concern |
-| **6** | PR-ζ — Tempo conformance nil-vs-empty | Strengthen `TestConformance_TempoSearch*Wire` to require `Traces != nil` for empty cases | Closes 2 MEDIUM conformance concerns |
-| **7** | PR-η — `logql/detected_level.go:143` mutation kills | Add level-boundary matrix exercising the mask/shift constants | 2 ARITHMETIC_BASE survivors |
-| **8** | PR-θ — `promql/label_fns.go` mutation kills | Add cases for `label_replace` with empty capture / `label_join` with single-element separator | 4 float-arith survivors |
-| **9** | PR-ι — STRENGTHEN-REASON sweep | Clarify the 4 `detected_level` overlay entries' reasons (Phase 2 seeder vs deliberate scope) | Hygiene; preempts future audit nit |
+| #     | PR                                                  | What lands                                                                                                                                                                   | Leverage                                     |
+| ----- | --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| **1** | **★ PR-α** — `should_skip` CI guard                 | New `ci.yml` step that fails on any PR adding `should_skip:` to `cerberus-test-queries.yml` without a non-empty `reason:` AND a `jira:` URL or inline GH-issue link          | Prevents repeat of #429/#537                 |
+| **2** | **★ PR-β** — broaden `forbid-skip` regex            | Extend `ci.yml :: forbid-skip` to reject `assert.Contains(x, "")`, `defer recover()`, empty-slice `ElementsMatch`. Test against codebase first (should produce 0 hits today) | Discipline pin against fake-pass patterns    |
+| **3** | PR-γ — `logql/range_aggregation.go` mutation kills  | Add value-range assertions for window/anchor coefficients; kill 6 ARITHMETIC_BASE survivors                                                                                  | Strongest weak-test hotspot in audit         |
+| **4** | PR-δ — Tempo differ `StartTimeUnixNano` blank-skip  | Replace asymmetric blank-skip with "fail on asymmetric absence"                                                                                                              | Closes the only HIGH-severity differ concern |
+| **5** | PR-ε — Loki conformance empty `query_range`         | Strengthen `wantStreams == 0` case to assert `len(streams) == 0` explicitly                                                                                                  | Closes the HIGH-severity conformance concern |
+| **6** | PR-ζ — Tempo conformance nil-vs-empty               | Strengthen `TestConformance_TempoSearch*Wire` to require `Traces != nil` for empty cases                                                                                     | Closes 2 MEDIUM conformance concerns         |
+| **7** | PR-η — `logql/detected_level.go:143` mutation kills | Add level-boundary matrix exercising the mask/shift constants                                                                                                                | 2 ARITHMETIC_BASE survivors                  |
+| **8** | PR-θ — `promql/label_fns.go` mutation kills         | Add cases for `label_replace` with empty capture / `label_join` with single-element separator                                                                                | 4 float-arith survivors                      |
+| **9** | PR-ι — STRENGTHEN-REASON sweep                      | Clarify the 4 `detected_level` overlay entries' reasons (Phase 2 seeder vs deliberate scope)                                                                                 | Hygiene; preempts future audit nit           |
 
 Total: 9 follow-up PRs. Mechanical PRs (1, 2, 4, 5, 6, 9) can land same-day.
 Mutation-kill PRs (3, 7, 8) take longer (need test design that genuinely
