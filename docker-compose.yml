@@ -4,30 +4,36 @@
 #   open http://localhost:3000   # Grafana (admin/admin)
 #
 # Services:
-#   clickhouse   single-node CH server, OTel-aware (db=otel, user/pass=cerberus).
-#                Named volume `clickhouse-data` survives `docker compose down`
-#                so seed rows persist across restarts. Use `down -v` to wipe.
-#   cerberus     built from the repo-root `Dockerfile.local` (same image the
-#                k3d E2E uses). Auto-creates the OTel-CH schema on startup via
-#                CERBERUS_AUTO_CREATE_SCHEMA=true, so no separate init job.
-#   seed         one-shot Go program that inserts the deterministic OTel
-#                fixture rows from test/e2e/seed/cmd/seed. Exits after a
-#                successful run; doesn't block the long-lived services from
-#                being ready.
-#   grafana      pre-provisioned with cerberus as three datasources
-#                (Prometheus / Loki / Tempo). Provisioning files live under
-#                `test/e2e/grafana/compose/`.
-#
-# The OTLP exporter wiring (cerberus -> OTel Collector -> CH) is intentionally
-# omitted: the self-telemetry OTLP code path and the cerberus-self dashboard
-# both land later in RC4. Add an `otel-collector` service alongside cerberus
-# once those land — see test/e2e/k3s/otel-collector.yaml for the config shape.
+#   clickhouse      single-node CH server, OTel-aware (db=otel,
+#                   user/pass=cerberus). Named volume `clickhouse-data`
+#                   survives `docker compose down` so seed rows persist
+#                   across restarts. Use `down -v` to wipe.
+#   otel-collector  OpenTelemetry Collector configured for the compose
+#                   stack (OTLP gRPC :4317 in, clickhouseexporter out).
+#                   Closes the dogfood loop: cerberus emits self-telemetry
+#                   over OTLP -> collector writes to ClickHouse -> cerberus
+#                   queries it back through its own Prom/Loki/Tempo APIs.
+#                   Config: test/e2e/otel-collector/compose-config.yaml.
+#   cerberus        built from the repo-root `Dockerfile.local` (same image
+#                   the k3d E2E uses). Auto-creates the OTel-CH schema on
+#                   startup via CERBERUS_AUTO_CREATE_SCHEMA=true, so no
+#                   separate init job. Exports OTLP to `otel-collector:4317`.
+#   seed            one-shot Go program that inserts the deterministic OTel
+#                   fixture rows from test/e2e/seed/cmd/seed. Exits after a
+#                   successful run; doesn't block the long-lived services
+#                   from being ready.
+#   grafana         pre-provisioned with cerberus as three datasources
+#                   (Prometheus / Loki / Tempo). Provisioning files live
+#                   under `test/e2e/grafana/compose/`.
 #
 # Default host port map:
 #   3000  -> grafana
 #   8080  -> cerberus (Prom + Loki + Tempo HTTP APIs)
 #   8123  -> clickhouse HTTP
 #   9000  -> clickhouse native protocol
+#   (otel-collector's OTLP port :4317 stays on the cerberus-dev network;
+#   no host port mapping needed since only the cerberus container talks
+#   to it.)
 
 name: cerberus
 
@@ -75,6 +81,30 @@ services:
       retries: 36
       start_period: 30s
 
+  otel-collector:
+    # Pinned to the same upstream-contrib release the k3d E2E uses
+    # (test/e2e/k3s/otel-collector.yaml). Bump both together.
+    #
+    # No `healthcheck:` block: the contrib image is FROM scratch — no
+    # shell, no wget, no curl, no nc — so the standard HTTP/TCP probe
+    # commands are not callable. Cerberus's OTLP exporter retries in
+    # the background, so a slow-starting collector won't fail
+    # cerberus's own startup. `condition: service_started` on the
+    # cerberus dependency below is sufficient; the OTel demo's compose
+    # stack uses the same pattern.
+    image: otel/opentelemetry-collector-contrib:0.116.1
+    networks: [cerberus-dev]
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./test/e2e/otel-collector/compose-config.yaml:/etc/otel/config.yaml:ro
+    environment:
+      # Mirror the k3d gateway's memory cap so a misbehaving exporter
+      # backlog can't push the collector OOMKill in the dev stack.
+      GOMEMLIMIT: "400MiB"
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+
   cerberus:
     image: cerberus:dev
     pull_policy: build
@@ -94,9 +124,22 @@ services:
       # CERBERUS_AUTO_CREATE_SCHEMA   apply the OTel-CH DDL on startup so a
       # fresh CH volume is queryable without a separate migration step.
       CERBERUS_AUTO_CREATE_SCHEMA: "true"
+      # CERBERUS_OTLP_*       export self-telemetry (metrics + logs +
+      # traces) to the in-stack OTel Collector over OTLP/gRPC. Closes
+      # the dogfood loop: cerberus emits -> collector writes to CH ->
+      # cerberus queries it back through its own APIs. Insecure is
+      # safe inside the cerberus-dev docker network.
+      CERBERUS_OTLP_ENDPOINT: "otel-collector:4317"
+      CERBERUS_OTLP_INSECURE: "true"
     depends_on:
       clickhouse:
         condition: service_healthy
+      otel-collector:
+        # service_started — the contrib image is FROM scratch with no
+        # probe binaries, so a real healthcheck isn't expressible.
+        # Cerberus's OTLP gRPC exporter retries in the background, so
+        # racing the collector start at boot is safe.
+        condition: service_started
     ports:
       - "8080:8080"
     healthcheck:
