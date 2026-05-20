@@ -85,8 +85,61 @@ func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs, lc low
 	// (stream, detected_level) tuple — matching upstream Loki's matrix
 	// shape (16 of the 19 loki-compat failures came from cerberus
 	// collapsing 4 levels into 1 series here).
+	//
+	// Unwrap variant: when the range aggregation carries an `| unwrap`
+	// clause and no explicit `by/without` grouping, the series identity
+	// MUST include every parser-extracted label EXCEPT the unwrap
+	// target — Loki's `LabelExtractorWithStages` treats no-grouping as
+	// `without (unwrapIdent)`, so each unique (parser-extracted-keys
+	// minus target) labelset becomes its own series. Without this the
+	// outer matrix collapses every distinct combination into a single
+	// detected-level series — the symptom is `matrix length: expected=
+	// 1440 actual=4` against the loki-compat 24h unwrap-aggregations
+	// corpus (each minute of seeded data produces a unique post-parser
+	// labelset because the JSON/logfmt payload carries varying fields
+	// like `request_id`, `status`, `user_agent`).
+	//
+	// Two-stage Project for the unwrap+parser shape: ClickHouse rejects a
+	// `mapFilter((k, v) -> NOT (k IN [...]), mapConcat(RA, mapApply(...)))`
+	// composition with `Recursive lambda ... (UNSUPPORTED_METHOD)` because
+	// the inner `mapApply` lambda references the outer `ResourceAttributes`
+	// column — CH disallows lambdas-inside-lambda-source when the inner
+	// lambda escapes its scope. We materialise the parser-merged labels
+	// into an intermediate `_logql_merged_labels` column via an inner
+	// Project, then the outer Project applies the strip + detected_level
+	// wrap against a plain column reference (no nested lambda). The
+	// matching value-expression also reads from the materialised column
+	// so the per-row unwrap value stays consistent with the identity.
+	innerNode := inner
+	identityBase := chplan.Expr(&chplan.ColumnRef{Name: s.ResourceAttributesColumn})
+	valueExpr := value
+	if e.Left.Unwrap != nil && hasParserMergedLabels(labelsExpr, s) {
+		const mergedAlias = "_logql_merged_labels"
+		innerNode = &chplan.Project{
+			Input: inner,
+			Projections: []chplan.Projection{
+				{Expr: &chplan.ColumnRef{Name: s.ResourceAttributesColumn}},
+				{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}},
+				{Expr: &chplan.ColumnRef{Name: s.BodyColumn}},
+				{Expr: &chplan.ColumnRef{Name: s.SeverityColumn}},
+				{Expr: labelsExpr, Alias: mergedAlias},
+			},
+		}
+		mergedCol := &chplan.ColumnRef{Name: mergedAlias}
+		identityBase = &chplan.MapWithoutKeys{Map: mergedCol, Keys: []string{e.Left.Unwrap.Identifier}}
+		valueExpr, err = rangeValueExprFromMerged(e, mergedCol)
+		if err != nil {
+			return nil, err
+		}
+	} else if e.Left.Unwrap != nil {
+		// No parser stage (or empty merge): the unwrap target is a
+		// stream label that already lives in ResourceAttributes. Strip
+		// it directly — CH handles `mapFilter(NOT IN, RA)` natively
+		// since RA is a plain column reference.
+		identityBase = &chplan.MapWithoutKeys{Map: labelsExpr, Keys: []string{e.Left.Unwrap.Identifier}}
+	}
 	identityProj := chplan.Projection{
-		Expr:  withDetectedLevel(s, &chplan.ColumnRef{Name: s.ResourceAttributesColumn}),
+		Expr:  withDetectedLevel(s, identityBase),
 		Alias: s.ResourceAttributesColumn,
 	}
 	if groupBy != nil {
@@ -104,10 +157,10 @@ func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs, lc low
 	projections := []chplan.Projection{
 		identityProj,
 		{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}},
-		{Expr: value, Alias: rangeAggSynthValueColumn},
+		{Expr: valueExpr, Alias: rangeAggSynthValueColumn},
 	}
 	projected := &chplan.Project{
-		Input:       inner,
+		Input:       innerNode,
 		Projections: projections,
 	}
 
@@ -354,6 +407,46 @@ func unwrapValueExpr(u *syntax.UnwrapExpr, labelsExpr chplan.Expr) (chplan.Expr,
 		}, nil
 	}
 	return nil, fmt.Errorf("logql: unsupported unwrap conversion %q", u.Operation)
+}
+
+// hasParserMergedLabels reports whether labelsExpr carries a parser-stage
+// `mapConcat(...)` wrap on top of the raw ResourceAttributes column. Used
+// by [lowerRangeAggregation] to gate the two-stage Project rewrite: when
+// the parser-merged labels expression nests a lambda-bearing call (e.g.
+// `mapApply` from `logfmtMergeLabels`'s rename-on-collision shape),
+// wrapping it inside the outer identity's `mapFilter` triggers
+// ClickHouse's `Recursive lambda (UNSUPPORTED_METHOD)` error. The fix
+// materialises labelsExpr into an intermediate column so the outer
+// `mapFilter`'s source is a plain column reference.
+//
+// Detection: any expression that ISN'T a bare ColumnRef on the resource-
+// attributes column needs the materialise rewrite. The parser-stage
+// helpers ([logfmtMergeLabels] / [jsonBareMergeLabels] / [regexpMergeLabels]
+// / [logfmtExpressionMergeLabels] / [jsonExpressionMergeLabels]) all
+// return a `mapConcat(prev, …)` shape, so this predicate captures every
+// parser flavour without enumerating them.
+func hasParserMergedLabels(labelsExpr chplan.Expr, s schema.Logs) bool {
+	col, ok := labelsExpr.(*chplan.ColumnRef)
+	if !ok {
+		return true
+	}
+	return col.Name != s.ResourceAttributesColumn
+}
+
+// rangeValueExprFromMerged is the materialised-column variant of
+// [rangeValueExpr]: the unwrap value extraction reads from the
+// pre-materialised `_logql_merged_labels` column instead of re-evaluating
+// the full parser-merge expression. Used in the two-stage Project path
+// when [hasParserMergedLabels] returns true.
+//
+// Mirrors [unwrapValueExpr] but binds the merged-labels reference to a
+// column ref. Byte / line counters and the no-unwrap branches go
+// unchanged — they don't reference labelsExpr.
+func rangeValueExprFromMerged(e *syntax.RangeAggregationExpr, mergedCol chplan.Expr) (chplan.Expr, error) {
+	if e.Left.Unwrap == nil {
+		return nil, fmt.Errorf("logql: rangeValueExprFromMerged called without `| unwrap`")
+	}
+	return unwrapValueExpr(e.Left.Unwrap, mergedCol)
 }
 
 // rangeAggregationGroupBy returns the chplan group-key expressions for
