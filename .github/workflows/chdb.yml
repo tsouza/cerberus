@@ -40,30 +40,11 @@ name: chdb
 on:
   push:
     branches: [main]
+  # PR trigger has no `paths:` filter so `probe` and `roundtrip (<ql>)`
+  # always appear in the PR rollup. Required for promoting them to
+  # required-status-checks — a path-skipped check leaves the rollup
+  # missing entries and would block merges of pure-docs PRs.
   pull_request:
-    # Scope the PR trigger to changes that can plausibly affect
-    # SQL emission, plan IR, parser lowering, fixtures, the chDB
-    # roundtrip plumbing, or the HTTP handlers that exercise the
-    # chDB-tagged handler tests. Broad enough that anything touching
-    # the round-trip surface fires the lane; tight enough that pure
-    # docs / unrelated CI tweaks don't pay the libchdb cost.
-    paths:
-      - 'internal/api/**'
-      - 'internal/chsql/**'
-      - 'internal/promql/**'
-      - 'internal/logql/**'
-      - 'internal/traceql/**'
-      - 'internal/chplan/**'
-      - 'internal/optimizer/**'
-      - 'internal/engine/**'
-      - 'internal/chclient/**'
-      - 'internal/chclienttest/**'
-      - 'test/spec/**'
-      - 'compatibility/prometheus/cmd/seed/**'
-      - 'go.mod'
-      - 'go.sum'
-      - '.github/workflows/chdb.yml'
-      - 'Justfile'
   workflow_dispatch:
   schedule:
     # nightly at 04:00 UTC
