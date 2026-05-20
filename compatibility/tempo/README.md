@@ -75,7 +75,7 @@ Two complications drive the diff strategy:
    markdown summary so a single regression doesn't mask the other.
 
 Numeric fields (durationMs, startTimeUnixNano) compare under a 1e-9
-relative epsilon — same defaults as `compatibility/prometheus/shadow`.
+relative epsilon.
 
 ## Corpus categories
 

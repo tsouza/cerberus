@@ -14,8 +14,7 @@
 //  4. The from-scratch oracle (oracle/promql.Evaluate) evaluates the
 //     query against an in-memory mirror of the dataset, implementing
 //     PromQL semantics directly off the spec (no delegation to
-//     Prometheus's engine). The bridge oracle is still available as
-//     [oracle.BridgePromQLOracle] but is no longer the default.
+//     Prometheus's engine).
 //  5. Cerberus evaluates the query via its real HTTP handler — a
 //     httptest.Server in front of the chDB-backed prom.Handler. The
 //     handler runs the full parse → lower → optimize → emit → execute

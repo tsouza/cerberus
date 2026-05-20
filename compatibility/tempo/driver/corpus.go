@@ -1,9 +1,8 @@
 // Corpus loader for the Tempo / TraceQL compatibility differ.
 //
-// The format is a lightweight TXTAR variant — same shape as
-// compatibility/prometheus/shadow/corpus.go — so the parser
-// looks at single-line `-- section --` headers and treats every
-// non-header line as section body. The supported sections:
+// The format is a lightweight TXTAR variant — the parser looks at
+// single-line `-- section --` headers and treats every non-header
+// line as section body. The supported sections:
 //
 //	-- name --                  short identifier, used in the report
 //	-- query --                 the TraceQL expression (search / metrics
@@ -59,11 +58,9 @@
 // between them without the trailing case's last section accidentally
 // swallowing the comment.
 //
-// Why a custom shape (and not lift `compatibility/prometheus/shadow`'s
-// loader)? The sibling loader is PromQL-specific (it has a
-// `-- expected_strategy --` slot that means nothing for TraceQL). The
-// section-header machinery is trivially small (~80 lines) so duplicating
-// is cheaper than carving a generic core out of the prom shadow corpus.
+// The section-header machinery is trivially small (~80 lines) so
+// owning a TraceQL-specific loader is cheaper than carving a
+// generic core.
 // If we ever need a third copy, factor a small `txtar.Parser` then.
 
 package main
@@ -383,9 +380,7 @@ func isKnownSection(name string) bool {
 	return false
 }
 
-// parseCorpus is the unit-testable inner driver. Mirrors the shape of
-// compatibility/prometheus/shadow/corpus.go::parseCorpus so the
-// two loaders evolve in step.
+// parseCorpus is the unit-testable inner driver.
 func parseCorpus(r io.Reader, source string) ([]CorpusCase, error) {
 	var (
 		out      []CorpusCase

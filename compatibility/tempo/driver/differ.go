@@ -280,8 +280,8 @@ func compareSummary(key string, a, b TraceSummary, aLabel, bLabel string, opts D
 	return reasons
 }
 
-// valuesClose mirrors compatibility/prometheus/shadow/differ.go's
-// helper so the two harnesses share semantics.
+// valuesClose compares two floats with absolute + relative tolerance,
+// treating NaN+NaN as equal.
 func valuesClose(a, b float64, opts DiffOptions) bool {
 	if math.IsNaN(a) && math.IsNaN(b) {
 		return true

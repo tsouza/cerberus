@@ -471,21 +471,3 @@ compat-traceql-down:
 # Exit semantics: fails fast on the first non-zero recipe; the report
 # files for each head land under compatibility/*/reports/ regardless.
 compat-all: compat-promql compat-logql compat-traceql
-
-# === Shadow-mode differential testing (RC3 R3.9) ===
-
-# Build + run the shadow-mode harness against a corpus.
-# Expects a running cerberus reachable at $CERBERUS_URL (default
-# http://localhost:9090). The oracle is wired to internal/promshim/local
-# and evaluates against a seeded in-memory dataset; native errors are
-# expected when CERBERUS_URL points at nothing.
-# See compatibility/prometheus/shadow/README.md.
-shadow-mode CORPUS="compatibility/prometheus/shadow/corpus/smoke.txt" STRATEGY="prefer-native":
-    @echo "==> building shadow-mode harness"
-    go build -trimpath -o bin/shadow ./compatibility/prometheus/shadow/cmd/shadow
-    @echo "==> running shadow-mode (strategy={{STRATEGY}})"
-    ./bin/shadow \
-        --corpus {{CORPUS}} \
-        --strategy {{STRATEGY}} \
-        --cerberus-url "${CERBERUS_URL:-http://localhost:9090}" \
-        --report shadow-report.json

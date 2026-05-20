@@ -261,7 +261,7 @@ path taken. The default path leaves it empty. An optimizer rule
 that rewrites the plan to read from a materialised view, a
 pre-aggregated table, or any other alternative storage can stamp
 the strategy by setting it on a marker node the engine reads back
-after the optimizer pass. This is the seat for shadow-mode /
+after the optimizer pass. This is the seat for future
 fallback-evaluator work — adding a new strategy means writing the
 rule that detects when it applies and the label that identifies
 it, without touching the engine's loop.

@@ -258,9 +258,8 @@ type DatasetGen func(t *rapid.T) Dataset
 // the oracle can't evaluate is a generator bug, not a cerberus bug.
 type QueryGen func(t *rapid.T, d Dataset) Query
 
-// OracleFn evaluates q against d using the independent specification.
-// In Phase 1 PR 1 this is bridged to promshim/local; PR 2 replaces it
-// with a from-scratch evaluator.
+// OracleFn evaluates q against d using the independent specification
+// (a from-scratch evaluator under oracle/, not delegating to the SUT).
 type OracleFn func(d Dataset, q Query) Outcome
 
 // CerberusFn runs the cerberus pipeline against the dataset (seeded

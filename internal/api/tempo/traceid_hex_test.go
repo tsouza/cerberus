@@ -145,11 +145,11 @@ func TestCanonicalSampleProjections_StripsTraceIDLeadingZeros(t *testing.T) {
 // `GroupBy: [TraceId]` exposes the raw 32-char zero-padded hex from
 // the OTel-CH column; the outer wrap projection must route it
 // through stripLeadingHexZeros so the `__cerberus_traceID` reserved
-// label arrives at the shadow-mode differ in Tempo's
-// leading-zero-stripped form. Without this strip the differ pairs
-// cerberus rows (e.g. `00af843259b0a78f5cbe59e11cbaf66b`) against
-// Tempo (`af843259b0a78f5cbe59e11cbaf66b`) by mismatched keys,
-// generating spurious missing_in_a / missing_in_b reasons across the
+// label arrives at the compat differ in Tempo's leading-zero-stripped
+// form. Without this strip the differ pairs cerberus rows (e.g.
+// `00af843259b0a78f5cbe59e11cbaf66b`) against Tempo
+// (`af843259b0a78f5cbe59e11cbaf66b`) by mismatched keys, generating
+// spurious missing_in_a / missing_in_b reasons across the
 // spanset-aggregate compat cases.
 func TestSpansetAggregateSampleProjections_StripsTraceIDLeadingZeros(t *testing.T) {
 	t.Parallel()
