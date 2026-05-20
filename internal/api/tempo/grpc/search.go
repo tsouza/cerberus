@@ -79,7 +79,7 @@ func (s *Service) Search(req *tempopb.SearchRequest, stream tempopb.StreamingQue
 	if err != nil {
 		return mapEngineError(err)
 	}
-	defer res.Cursor.Close()
+	defer func() { _ = res.Cursor.Close() }()
 
 	// Drain the cursor into a samples slice. The toTraceSummaries
 	// shaper requires the full result set to group spans by TraceID;
@@ -136,6 +136,7 @@ func (s *Service) Search(req *tempopb.SearchRequest, stream tempopb.StreamingQue
 	if err := stream.Send(&tempopb.SearchResponse{
 		Traces: tail,
 		Metrics: &tempopb.SearchMetrics{
+			//nolint:gosec // search result count is bounded by CH row LIMIT; overflow would require > 4B summaries which the engine can't materialise.
 			InspectedTraces: uint32(len(summaries)),
 		},
 	}); err != nil {
@@ -198,7 +199,8 @@ func toTempopbTraceMetadata(t tempo.TraceSummary) *tempopb.TraceSearchMetadata {
 		RootServiceName:   t.RootServiceName,
 		RootTraceName:     t.RootTraceName,
 		StartTimeUnixNano: startNs,
-		DurationMs:        uint32(t.DurationMs),
+		//nolint:gosec // DurationMs is sourced from a TraceSummary populated by dateDiff(ms, …) over CH spans; field tops out at int32 in practice — uint32 cannot overflow.
+		DurationMs: uint32(t.DurationMs),
 	}
 }
 
