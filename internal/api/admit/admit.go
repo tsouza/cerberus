@@ -1,15 +1,17 @@
 // Package admit provides per-handler concurrency caps for cerberus's
-// HTTP listener. Each cerberus replica accepts unlimited inbound
-// requests by default; under sustained load that fans out into
+// HTTP and gRPC listeners. Each cerberus replica accepts unlimited
+// inbound requests by default; under sustained load that fans out into
 // hundreds of slow ClickHouse queries running in parallel, which
 // exhausts CH's thread pool and drags every concurrent request's
 // latency down with the saturated ones.
 //
 // A Limiter caps the number of in-flight handler invocations for a
 // given API head (Prom / Loki / Tempo). When a new request arrives at
-// the cap, the limiter rejects it immediately with HTTP 503 and a
-// `Retry-After: 1` header so well-behaved clients back off and retry
-// — fail-fast on the slow few rather than degrading service for
+// the cap, the limiter rejects it immediately — HTTP 503 with a
+// `Retry-After: 1` header for HTTP callers (Middleware), gRPC
+// `codes.ResourceExhausted` for streaming RPC callers
+// (StreamInterceptor) — so well-behaved clients back off and retry,
+// failing fast on the slow few rather than degrading service for
 // everyone.
 //
 // The limiter is opt-out (`CERBERUS_ADMIT_DISABLED=true`) for local /
@@ -27,6 +29,9 @@ import (
 	"go.opentelemetry.io/otel/metric"
 
 	"golang.org/x/sync/semaphore"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // meterName is the instrumentation-scope identifier stamped on the
@@ -163,4 +168,33 @@ func (l *Limiter) Head() string {
 		return ""
 	}
 	return l.head
+}
+
+// StreamInterceptor returns a grpc.StreamServerInterceptor that
+// enforces the same admission cap as Middleware does for HTTP. On a
+// saturated limiter the interceptor short-circuits with
+// `codes.ResourceExhausted`; the gRPC equivalent of the HTTP 503 +
+// `Retry-After: 1` pair the Middleware writes. The status code is the
+// canonical signal for "back off and retry" in gRPC clients (Grafana's
+// Go gRPC client honours it via the standard retry policy).
+//
+// A nil *Limiter returns a pass-through interceptor — symmetrical with
+// Middleware so the `CERBERUS_ADMIT_DISABLED=true` path stays
+// allocation-free. The interceptor uses the stream's context for the
+// rejection counter attribution so the per-RPC trace context flows
+// into the recorded metric.
+func (l *Limiter) StreamInterceptor() grpc.StreamServerInterceptor {
+	if l == nil {
+		return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+			return handler(srv, ss)
+		}
+	}
+	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		release, ok := l.Acquire(ss.Context())
+		if !ok {
+			return status.Errorf(codes.ResourceExhausted, "admission control: server saturated")
+		}
+		defer release()
+		return handler(srv, ss)
+	}
 }

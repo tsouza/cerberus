@@ -88,6 +88,35 @@ up` exposes `8080:8080`, `test/e2e/k3s/cerberus.yaml` declares a
 listens on `:8080`. No env-var translation is needed between deployment
 targets.
 
+### HTTP/2 (h2c) + gRPC on the same port
+
+The same `:8080` socket accepts three protocol shapes:
+
+- **HTTP/1.1** — the Prometheus, Loki, and Tempo HTTP datasources, plus
+  `/healthz` and `/readyz` probes, plus Loki's WebSocket tail
+  (`/loki/api/v1/tail`).
+- **HTTP/2 cleartext (h2c)** — `application/grpc` content-type traffic
+  flows into the embedded gRPC server. Cerberus serves the Tempo
+  `StreamingQuerier` gRPC surface that Grafana's Tempo datasource opens
+  when the user enables the "Streaming" toggle in datasource settings.
+- **HTTP/2 prior-knowledge** — Go gRPC clients (Grafana's backend
+  client included) connect directly without an upgrade dance.
+
+The dispatch happens at the handler layer: an `h2c.NewHandler` wraps a
+content-type-aware dispatcher that routes `application/grpc` requests
+into the `*grpc.Server` and everything else into the existing HTTP
+mux. This keeps deployment topology unchanged — one container port,
+one `Service` port, one ingress rule.
+
+Behind a TLS-terminating proxy (ingress-nginx, Envoy, Cloud Run): the
+proxy negotiates HTTP/2 with the client and forwards h2c upstream to
+cerberus. This is the standard pattern for in-cluster gRPC services
+and needs no cerberus-side configuration.
+
+For direct internet exposure you would need a `tls.Config` on the
+listener (`CERBERUS_TLS_CERT`/`_KEY`) — not currently implemented;
+deploy behind a TLS-terminating proxy or sidecar.
+
 ## Scaling
 
 Cerberus scales horizontally by adding replicas. Because the process is

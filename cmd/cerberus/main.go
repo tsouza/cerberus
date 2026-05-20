@@ -9,17 +9,21 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
 
 	"go.opentelemetry.io/otel"
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
 
 	"github.com/tsouza/cerberus/internal/api/admit"
 	"github.com/tsouza/cerberus/internal/api/health"
 	"github.com/tsouza/cerberus/internal/api/loki"
 	"github.com/tsouza/cerberus/internal/api/prom"
 	"github.com/tsouza/cerberus/internal/api/tempo"
+	tempogrpc "github.com/tsouza/cerberus/internal/api/tempo/grpc"
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/config"
 	"github.com/tsouza/cerberus/internal/engine"
@@ -220,9 +224,43 @@ func run() error {
 	healthHandler.Mount(rootMux)
 	rootMux.Handle("/", tracedAPI)
 
+	// Tempo gRPC StreamingQuerier — PR 1 (scaffold) of the Tempo gRPC
+	// rollout. The service shares the Tempo HTTP handler's Engine +
+	// schema + admit limiter so the eventual streaming RPC bodies (PRs
+	// 2-4) and the existing HTTP handlers run the same parse + lower +
+	// emit pipeline against the same backend. Today every RPC returns
+	// codes.Unimplemented via the embedded
+	// UnimplementedStreamingQuerierServer; PRs 2-4 fill in real bodies
+	// one RPC group at a time.
+	tempoGRPCService := tempogrpc.NewService(tempoHandler, tempoLimiter, logger.With("api", "tempo-grpc"))
+	grpcServer := tempogrpc.NewServer(tempoGRPCService)
+
+	// h2c content-type dispatcher: HTTP/2 requests whose Content-Type
+	// is application/grpc (or a parameterised variant like
+	// `application/grpc+proto`) go to the gRPC server; everything else
+	// flows to the existing HTTP rootMux. Wrapping the dispatcher in
+	// h2c.NewHandler upgrades cleartext HTTP/2 (PRI preamble) without
+	// requiring TLS, so cerberus accepts:
+	//
+	//   * HTTP/1.1 clients (Grafana HTTP datasource, curl, healthz)
+	//   * HTTP/2 clients via prior-knowledge (grpc-go default)
+	//   * HTTP/2 upgrades from HTTP/1.1 (h2c-aware proxies)
+	//
+	// on the same socket. Behind a TLS-terminating proxy (ingress-
+	// nginx, Envoy, Cloud Run) the proxy negotiates h2 with the client
+	// and forwards h2c upstream — the standard pattern. See
+	// docs/operations.md#port-binding for the deployment story.
+	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.ProtoMajor == 2 && strings.HasPrefix(r.Header.Get("Content-Type"), "application/grpc") {
+			grpcServer.ServeHTTP(w, r)
+			return
+		}
+		rootMux.ServeHTTP(w, r)
+	})
+
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           rootMux,
+		Handler:           h2c.NewHandler(dispatcher, &http2.Server{}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -246,6 +284,12 @@ func run() error {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("graceful shutdown: %w", err)
 	}
+	// Drain any in-flight gRPC streams before tearing telemetry down.
+	// GracefulStop blocks until every active RPC returns or its
+	// stream is closed by the HTTP/2 transport (which srv.Shutdown
+	// has already done). With no in-flight streams it returns
+	// immediately, so this is a no-op on the happy path.
+	grpcServer.GracefulStop()
 	// Flush any pending OTLP batches before the process exits. Noop
 	// when telemetry was disabled (Endpoint == "").
 	if err := providers.Shutdown(shutdownCtx); err != nil {
