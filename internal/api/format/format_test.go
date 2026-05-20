@@ -120,6 +120,13 @@ func TestParseTimeProm(t *testing.T) {
 		{"unix-seconds", "1700000000", time.Unix(1_700_000_000, 0).UTC(), false},
 		{"unix-fractional", "1700000000.5", time.Unix(1_700_000_000, 500_000_000).UTC(), false},
 		{"rfc3339", "2024-01-02T03:04:05Z", time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC), false},
+		// Grafana's Prom datasource sends ms over `resources/` proxy.
+		// Routing >= 1e12 to the ms branch protects every Prom handler
+		// from the toDateTime64('58353-12-31', 9) overflow.
+		{"unix-millis-13digit", "1700000000000", time.Unix(1_700_000_000, 0).UTC(), false},
+		{"unix-millis-with-frac", "1700000000123", time.Unix(1_700_000_000, 123_000_000).UTC(), false},
+		{"boundary-1e12-minus-1", "999999999999", time.Unix(999_999_999_999, 0).UTC(), false}, // stays seconds
+		{"boundary-1e12-exact", "1000000000000", time.UnixMilli(1_000_000_000_000).UTC(), false},
 		{"bogus", "not-a-time", time.Time{}, true},
 	}
 	for _, tc := range tests {

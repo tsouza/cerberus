@@ -677,6 +677,11 @@ func TestConformance_QueryExemplarsWire(t *testing.T) {
 		{"query": {"up"}, "start": {"1717995600"}, "end": {"1717999200"}},
 		{"query": {`up{job="api"}`}, "start": {"1717995600"}, "end": {"1717999200"}},
 		{"query": {`up{instance=~".*"}`}, "start": {"1717995600"}, "end": {"1717999200"}},
+		// Grafana 11.x sends ms over the `resources/` proxy path for
+		// the exemplars endpoint. Anything routed as seconds would
+		// overflow toDateTime64 — pin the contract so the regression
+		// surfaces here, not as a 502 in Grafana's UI.
+		{"query": {"up"}, "start": {"1717995600000"}, "end": {"1717999200000"}},
 	}
 	for i, qs := range cases {
 		qs := qs
@@ -884,6 +889,11 @@ func TestConformance_PromRangeTimeMatrix(t *testing.T) {
 		{"rfc3339", "2024-01-01T00:00:00Z", "2024-01-01T01:00:00Z", "60s", http.StatusOK},
 		{"rfc3339_with_nanos", "2024-01-01T00:00:00.123Z", "2024-01-01T01:00:00.456Z", "30s", http.StatusOK},
 		{"go_duration_step", "1717995600", "1717999200", "5m", http.StatusOK},
+		// Grafana's Prom datasource ships start/end as 13-digit ms when
+		// it routes through `resources/` proxy. Anything < year 33658
+		// expressed as seconds (i.e. >= 1e12) is parsed as ms — anything
+		// else stays on the seconds path.
+		{"unix_millis_int", "1717995600000", "1717999200000", "60", http.StatusOK},
 		// invalid forms
 		{"empty_start", "", "1717999200", "60", http.StatusBadRequest},
 		{"garbage_start", "tomorrow", "1717999200", "60", http.StatusBadRequest},
@@ -938,6 +948,11 @@ func TestConformance_PromQueryTimeMatrix(t *testing.T) {
 		{"empty_uses_now", "", http.StatusOK},
 		{"garbage", "tomorrow", http.StatusBadRequest},
 		{"negative_is_still_unix", "-100", http.StatusOK}, // unix seconds accepts negatives
+		// Grafana sends ms over `resources/`; the >=1e12 heuristic
+		// routes it to UnixMilli so toDateTime64('58353-...') no longer
+		// overflows. Both 13-digit and 14-digit ms forms must pass.
+		{"unix_millis_13digit", "1717995600000", http.StatusOK},
+		{"unix_millis_with_subms_frac", "1717995600123", http.StatusOK},
 	}
 	for _, c := range cases {
 		c := c

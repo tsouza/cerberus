@@ -21,22 +21,33 @@ func ParseDuration(raw string) (time.Duration, error) {
 }
 
 // ParseTimeProm parses a Prometheus-API time parameter — Unix-seconds
-// float or RFC3339 timestamp. Empty input falls back to def.
+// float, Unix-milliseconds int, or RFC3339 timestamp. Empty input falls
+// back to def.
 //
-// Loki accepts an additional integer-nanoseconds form, so it uses
-// ParseTimeLoki instead. Keeping the two heads explicit avoids
-// surprising one API with the other's input shape (a 13-digit Prom
-// epoch-millis timestamp must not be reinterpreted as nanoseconds).
+// Grafana's Prometheus datasource plugin sends millisecond timestamps
+// when it routes through `/api/datasources/uid/<ds>/resources/...`
+// (the JS frontend never converts to seconds on that path). Treating
+// a 13-digit ms value as seconds yields a year ~58353 timestamp and
+// overflows ClickHouse's `toDateTime64`, so the heuristic below routes
+// values >= 1e12 to the ms branch. Plain seconds (~1.78e9 today) and
+// fractional seconds stay on the float branch.
+//
+// Loki accepts integer-nanoseconds as well — handled by ParseTimeLoki.
 func ParseTimeProm(raw string, def time.Time) (time.Time, error) {
 	if raw == "" {
 		return def, nil
+	}
+	if n, err := strconv.ParseInt(raw, 10, 64); err == nil && n >= 1_000_000_000_000 {
+		// >= 1e12 ⇒ milliseconds. A seconds value this large would be
+		// year ~33658, which no real client sends deliberately.
+		return time.UnixMilli(n).UTC(), nil
 	}
 	if f, err := strconv.ParseFloat(raw, 64); err == nil {
 		return time.Unix(int64(f), int64((f-float64(int64(f)))*1e9)).UTC(), nil
 	}
 	t, err := time.Parse(time.RFC3339Nano, raw)
 	if err != nil {
-		return time.Time{}, errors.New("time parameter must be Unix seconds or RFC3339")
+		return time.Time{}, errors.New("time parameter must be Unix seconds/milliseconds or RFC3339")
 	}
 	return t.UTC(), nil
 }
