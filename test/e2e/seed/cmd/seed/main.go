@@ -110,14 +110,16 @@ func run(ctx context.Context) error {
 // Static SQL — no string interpolation. Table names are unqualified; the
 // clickhouse-go Auth.Database resolves them server-side.
 const (
-	// `up` is seeded as a 5-minute sliding window of samples (one per
-	// 15 s = 20 samples per series, 2 series = 40 rows) so any
-	// subquery / range query that runs within ~5 minutes of `e2e-seed`
-	// finds at least one sample. A single-timestamp seed
-	// (the previous shape) was timing-sensitive: by the time the
-	// Playwright dashboard tests ran (~3–5 min after seed), the
-	// subquery `up[1m:30s]` looked back 1 min from request_time and
-	// missed the seed timestamp, returning 0 series intermittently.
+	// `up` is seeded as a 10-minute sliding window of samples centred on
+	// the seed timestamp (one per 15 s = 40 samples per series, 2 series
+	// = 80 rows) spanning [seed_now - 300 s, seed_now + 285 s]. A
+	// past-only window was timing-sensitive: if Playwright's
+	// `up[1m:30s]` evaluation landed more than 60 s after the seed
+	// completed (common on slow CI), the lookback window had already
+	// slid past every seeded sample and the query returned 0 series.
+	// Spanning past + future gives every 1m/5m range or subquery in the
+	// suite enough overlap to find samples regardless of CI timing
+	// jitter within ±4 min of seed.
 	insertGaugeSQL = `INSERT INTO otel_metrics_gauge
   (ResourceAttributes, MetricName, MetricDescription, MetricUnit, Attributes, StartTimeUnix, TimeUnix, Value)
 SELECT
@@ -126,10 +128,10 @@ SELECT
     'Is the scrape target up',
     '1',
     map('job', 'api'),
-    now64(9) - INTERVAL number * 15 SECOND,
-    now64(9) - INTERVAL number * 15 SECOND,
+    now64(9) + INTERVAL ((number - 20) * 15) SECOND,
+    now64(9) + INTERVAL ((number - 20) * 15) SECOND,
     1.0
-FROM numbers(20)
+FROM numbers(40)
 UNION ALL
 SELECT
     map('service.name', 'db'),
@@ -137,18 +139,26 @@ SELECT
     'Is the scrape target up',
     '1',
     map('job', 'db'),
-    now64(9) - INTERVAL number * 15 SECOND,
-    now64(9) - INTERVAL number * 15 SECOND,
+    now64(9) + INTERVAL ((number - 20) * 15) SECOND,
+    now64(9) + INTERVAL ((number - 20) * 15) SECOND,
     0.0
-FROM numbers(20)`
+FROM numbers(40)`
 
-	// 300 samples at 1 s cadence covers a 5-minute sliding window. A
-	// previous shape inserted only 60 samples (1 min span); by the time
-	// Playwright reached `prom_ux.spec.ts:178` — typically ~60-120 s
-	// after the e2e-wait-otel gate cleared — a 1-minute `rate()` window
-	// at request_time had slid past every seeded sample and returned
-	// 0 series. Matching the gauge seed's 5-minute span gives every
-	// 1m/5m/range query in the suite enough overlap to find ≥2 samples.
+	// 600 samples at 1 s cadence cover a 10-minute window centred on
+	// the seed timestamp: [seed_now - 300 s, seed_now + 299 s]. A
+	// past-only span was timing-sensitive: if Playwright's
+	// `rate(http_server_request_duration_count[1m])` evaluation
+	// (`prom_ux.spec.ts:180`, target B) landed more than 60 s after
+	// the seed completed — common on slow CI — the 1 min lookback
+	// window at request_time had slid past every seeded sample and
+	// returned 0 series. Spanning past + future gives any 1m/5m
+	// rate() window enough overlap to find ≥2 samples regardless of
+	// CI timing jitter within ±4 min of seed.
+	//
+	// The value formula `1000 + number * 5` is monotone-with-time
+	// (number = 0 is the earliest sample at seed_now - 300 s; number
+	// = 599 is the latest at seed_now + 299 s), which is the shape
+	// rate() expects for a counter.
 	insertSumSQL = `INSERT INTO otel_metrics_sum
   (ResourceAttributes, MetricName, MetricDescription, MetricUnit, Attributes, StartTimeUnix, TimeUnix, Value, Flags, AggregationTemporality, IsMonotonic)
 SELECT
@@ -157,13 +167,13 @@ SELECT
     'HTTP request count by status',
     '1',
     map('job', 'api', 'http_status', '200'),
-    now64(9) - INTERVAL number SECOND,
-    now64(9) - INTERVAL number SECOND,
+    now64(9) + INTERVAL (number - 300) SECOND,
+    now64(9) + INTERVAL (number - 300) SECOND,
     toFloat64(1000 + number * 5),
     toUInt32(0),
     toInt32(2),
     true
-FROM numbers(300)`
+FROM numbers(600)`
 
 	insertLogsSQL = `INSERT INTO otel_logs
   (Timestamp, TimestampTime, TraceId, SpanId, SeverityText, SeverityNumber, ServiceName, Body, ResourceAttributes, LogAttributes)
@@ -195,11 +205,12 @@ VALUES
   (now64(9) - INTERVAL 29 SECOND, 'a0000000000000000000000000000003', '0000000000000007', '0000000000000006', 'cache.refresh',    'Client', 'db',       map('service.name', 'db'),       map('db.system',   'redis'),                                40000000, 'Ok')`
 )
 
-// insertMetrics inserts the two `up` gauge series + 300 counter samples for
-// rate(). The gauge spans 5 minutes (20 samples × 15 s) and the counter spans
-// 5 minutes (300 samples × 1 s) so a 1m/5m `rate()` window in any Playwright
-// spec — which can fire ~60-120 s after the e2e-wait-otel gate clears — keeps
-// ≥2 samples in the lookback window.
+// insertMetrics inserts the two `up` gauge series + 600 counter samples for
+// rate(). Both seeds span a 10-minute window centred on the seed timestamp —
+// the gauge with 40 samples × 15 s and the counter with 600 samples × 1 s —
+// so a 1m/5m `rate()` or subquery in any Playwright spec retains ≥2 samples
+// in its lookback window regardless of how much CI scheduling jitter lands
+// between `e2e-seed` and the Playwright request (within ±4 min of seed).
 func insertMetrics(ctx context.Context, conn driver.Conn) error {
 	if err := conn.Exec(ctx, insertGaugeSQL); err != nil {
 		return fmt.Errorf("gauge: %w", err)
