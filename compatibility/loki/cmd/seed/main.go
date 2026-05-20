@@ -755,13 +755,16 @@ func verifyBothNonEmpty(ctx context.Context, conn driver.Conn, lokiURL, cerbURL 
 // 26126374652: labels=9/9, series=12/13 after 30s). 90s absorbs the
 // slow-ingester tail without changing the steady-state cost — happy-path
 // runs still return in ~2-3s when all series land together.
-func waitLokiIndexSettle(ctx context.Context, baseURL string, streams []stream, start, end time.Time, logger *slog.Logger) error {
-	const (
-		settleTimeout    = 90 * time.Second
-		settleInterval   = 1 * time.Second
-		settleProgressAt = 5 * time.Second
-	)
+// Settle-gate cadence. Declared as `var` (not `const`) so unit tests can
+// shrink the budget — production keeps the 90s/1s/5s shape the function
+// doc-comment pins. Do not mutate at runtime outside of tests.
+var (
+	settleTimeout    = 90 * time.Second
+	settleInterval   = 1 * time.Second
+	settleProgressAt = 5 * time.Second
+)
 
+func waitLokiIndexSettle(ctx context.Context, baseURL string, streams []stream, start, end time.Time, logger *slog.Logger) error {
 	expectedLabels := expectedLabelKeys(streams)
 	expectedStreams := len(streams)
 
