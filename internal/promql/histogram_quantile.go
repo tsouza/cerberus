@@ -2,13 +2,57 @@ package promql
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/prometheus/common/model"
+	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/schema"
 )
+
+// stripBucketSuffix returns a copy of matchers where any
+// `__name__=<X>_bucket` matcher has the `_bucket` suffix removed.
+//
+// The Prometheus classic-histogram convention exposes one time series per
+// bucket under the name `<metric>_bucket` with a `le=<bound>` label
+// distinguishing them. OTel-CH stores the same data as one row per
+// observation with parallel `BucketCounts` × `ExplicitBounds` arrays
+// under the bare metric name (`<metric>`, no suffix), so a query
+// like `rate(http_server_request_duration_seconds_bucket[5m])` must
+// be translated to a filter against `MetricName='http_server_request_duration_seconds'`
+// to find any rows.
+//
+// Strip is applied at every classic-histogram lowering path (bare or
+// aggregated, instant or range). The exponential / native-histogram
+// path uses its own metric-name routing (ExpHistogramSuffix) so it
+// doesn't share this behaviour.
+func stripBucketSuffix(matchers []*labels.Matcher) []*labels.Matcher {
+	out := make([]*labels.Matcher, len(matchers))
+	for i, m := range matchers {
+		if m.Name == model.MetricNameLabel && m.Type == labels.MatchEqual && strings.HasSuffix(m.Value, "_bucket") {
+			// labels.NewMatcher recompiles a regex when applicable; for
+			// MatchEqual that's cheap. Build a fresh matcher rather
+			// than mutating the input — the parser may reuse the
+			// matcher slice across lowering passes.
+			copied, err := labels.NewMatcher(m.Type, m.Name, strings.TrimSuffix(m.Value, "_bucket"))
+			if err != nil {
+				// Defensive: NewMatcher only errors on regex compile;
+				// MatchEqual cannot. Forward the original on the
+				// near-impossible failure path so the lowering still
+				// produces a valid plan.
+				out[i] = m
+				continue
+			}
+			out[i] = copied
+			continue
+		}
+		out[i] = m
+	}
+	return out
+}
 
 // lowerHistogramQuantile handles `histogram_quantile(phi, X)`. X is
 // either:
@@ -126,12 +170,14 @@ func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chp
 		return lowerHistogramQuantileClassicBareRange(vs, phi, s, ctx), nil
 	}
 
-	// Target the classic-histogram table directly — the metric name is
-	// not required to carry a `_bucket` suffix (OTel-CH classic
+	// Target the classic-histogram table directly. OTel-CH classic
 	// histograms are one row per series with parallel BucketCounts +
-	// ExplicitBounds arrays; there is no `le` label).
+	// ExplicitBounds arrays (no `le` label per row), under the bare
+	// metric name. Strip the conventional `_bucket` suffix off the
+	// `__name__` matcher so a Grafana query of
+	// `rate(<X>_bucket[5m])` filters against `MetricName='<X>'`.
 	scan := &chplan.Scan{Table: s.HistogramTable}
-	pred := buildPredicate(vs.LabelMatchers, s)
+	pred := buildPredicate(stripBucketSuffix(vs.LabelMatchers), s)
 	if hasModifier(vs) {
 		anchor, err := anchorFromSelector(vs, ctx)
 		if err != nil {
@@ -301,9 +347,10 @@ func lowerHistogramQuantileAgg(shape histogramAggShape, phi float64, s schema.Me
 
 	// Build the Scan + Filter. The metric-name matcher and any
 	// user-supplied label matchers go straight through buildPredicate;
-	// the rate's [range] adds the time-bound window.
+	// the rate's [range] adds the time-bound window. `_bucket` suffix
+	// strip mirrors the bare-selector path — see stripBucketSuffix.
 	scan := &chplan.Scan{Table: s.HistogramTable}
-	pred := buildPredicate(vs.LabelMatchers, s)
+	pred := buildPredicate(stripBucketSuffix(vs.LabelMatchers), s)
 
 	anchor, err := anchorFromSelector(vs, ctx)
 	if err != nil {

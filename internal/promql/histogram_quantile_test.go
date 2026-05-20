@@ -9,6 +9,7 @@ import (
 	"github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/tsouza/cerberus/internal/chplan"
+	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
 )
@@ -589,6 +590,104 @@ func TestLower_HistogramQuantile_Errors(t *testing.T) {
 				t.Fatalf("expected error containing %q, got nil", tc.wantErr)
 			} else if !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("error %q does not contain %q", err.Error(), tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestLower_HistogramQuantile_BucketSuffixStrip pins the Grafana
+// classic-histogram dashboard pattern:
+//
+//	histogram_quantile(0.95, sum by (le) (rate(<X>_bucket[5m])))
+//
+// OTel-CH stores the same data as one row per observation under the
+// bare metric name `<X>` (no `_bucket` suffix; the BucketCounts +
+// ExplicitBounds arrays carry the distribution). Pre-fix, cerberus
+// passed the `__name__='<X>_bucket'` matcher through verbatim, the
+// emitted WHERE filtered the histogram table for a non-existent
+// MetricName, and every dashboard p95 panel rendered "No data".
+//
+// The fix (stripBucketSuffix in histogram_quantile.go) trims `_bucket`
+// off the `__name__` matcher before the predicate emits. Pin both:
+//
+//  1. The emitted SQL filters on the BARE name (no `_bucket`).
+//  2. The SQL does NOT carry the unstripped `_bucket`-suffixed form.
+//
+// Coverage at every classic-histogram entry point:
+//   - bare selector (instant): `histogram_quantile(phi, <X>_bucket)`
+//   - aggregated (instant):    `histogram_quantile(phi, sum by(le) (rate(<X>_bucket[r])))`
+//   - bare selector (range):   same as bare-instant under range mode
+//   - aggregated (range):      same as agg-instant under range mode
+func TestLower_HistogramQuantile_BucketSuffixStrip(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+
+	// Same metric across all cases — `cerberus_queries_duration_seconds`
+	// mirrors the actual self-telemetry histogram the dashboard targets.
+	const bare = "cerberus_queries_duration_seconds"
+	const suffixed = bare + "_bucket"
+
+	cases := []struct {
+		name    string
+		query   string
+		ctxStep time.Duration // 0 == instant, > 0 == range mode
+	}{
+		{
+			name:  "bare_instant",
+			query: `histogram_quantile(0.95, ` + suffixed + `)`,
+		},
+		{
+			name:  "agg_instant",
+			query: `histogram_quantile(0.95, sum by (le) (rate(` + suffixed + `[5m])))`,
+		},
+		{
+			name:    "bare_range",
+			query:   `histogram_quantile(0.95, ` + suffixed + `)`,
+			ctxStep: 30 * time.Second,
+		},
+		{
+			name:    "agg_range",
+			query:   `histogram_quantile(0.95, sum by (le) (rate(` + suffixed + `[5m])))`,
+			ctxStep: 30 * time.Second,
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			expr, err := p.ParseExpr(tc.query)
+			if err != nil {
+				t.Fatalf("ParseExpr: %v", err)
+			}
+			var plan chplan.Node
+			if tc.ctxStep > 0 {
+				start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+				end := start.Add(time.Hour)
+				plan, err = promql.LowerAtRange(context.Background(), expr, s, start, end, tc.ctxStep)
+			} else {
+				plan, err = promql.Lower(context.Background(), expr, s)
+			}
+			if err != nil {
+				t.Fatalf("Lower: %v", err)
+			}
+			sql, _, err := chsql.Emit(context.Background(), plan)
+			if err != nil {
+				t.Fatalf("Emit: %v", err)
+			}
+			if strings.Contains(sql, suffixed) {
+				t.Errorf("emitted SQL contains the unstripped suffixed name %q — "+
+					"the histogram table is keyed by the BARE metric name; "+
+					"a `_bucket`-suffixed predicate matches zero rows and "+
+					"every dashboard p95 panel reads 'No data'.\nfull SQL:\n%s",
+					suffixed, sql)
+			}
+			if !strings.Contains(sql, bare) {
+				t.Errorf("emitted SQL does not contain the bare metric name %q — "+
+					"the strip dropped too much or the histogram path is "+
+					"misrouting to a non-histogram table.\nfull SQL:\n%s",
+					bare, sql)
 			}
 		})
 	}
