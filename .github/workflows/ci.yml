@@ -115,6 +115,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          # The new-should_skip-additions guard diffs against
+          # origin/main, so we need both refs reachable.
+          fetch-depth: 0
       - name: Reject t.Skip in test files
         run: |
           if git ls-files -z -- \
@@ -157,3 +161,17 @@ jobs:
             echo "::error::soft-assertion or silent-recover pattern found — replace assert.Contains(x, \"\") with the actual substring, replace assert.ElementsMatch(x, []T{}) with len(x) == 0, replace defer recover() with assert.Panics(t, func(){...}, \"reason\")"
             exit 1
           fi
+      # Reject net-new `should_skip:` entries in compatibility overlays
+      # that lack a tracking ref. Surfaced by the 2026-05-20 test audit
+      # (docs/test-audit-2026-05-20.md PR-alpha) as a discipline pin
+      # against the #429 / #537 anti-pattern (skips that masked real
+      # bugs and lingered for weeks before someone wired the fix).
+      #
+      # Self-test: scripts/check-skip-additions.sh --self-test.
+      - name: Guard new should_skip entries
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: origin/${{ github.base_ref }}
+        run: |
+          scripts/check-skip-additions.sh --self-test
+          scripts/check-skip-additions.sh
