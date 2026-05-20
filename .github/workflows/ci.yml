@@ -138,6 +138,22 @@ jobs:
             echo "::error::discipline-erosion wording (\"not implemented\" / \"skipped\" / \"deferred\") found in test files or TXTAR fixtures — implement the feature, rewrite to a neutral verb (dropped / excluded / rejected / bypassed), or remove the comment"
             exit 1
           fi
+      # Production code (non-test) must not advertise "not implemented".
+      # The bare words "skipped" / "deferred" are *not* gated here
+      # because Go has legitimate uses of both — `defer` statements
+      # described in docstrings, runtime "X is skipped" behaviour
+      # prose — that would all false-positive. "not implemented" has
+      # no legitimate prod meaning: either implement the feature or
+      # rewrite to a factual verb (rejected / unsupported / falls back).
+      - name: Reject "not implemented" in production code
+        run: |
+          if git ls-files -z -- \
+              'internal/**/*.go' \
+              ':!:internal/**/*_test.go' \
+              | xargs -0 grep -niEH 'not implemented' --; then
+            echo "::error::\"not implemented\" found in production code — implement the feature or rewrite to a factual verb (rejected / unsupported / falls back)"
+            exit 1
+          fi
       # Reject soft-assertion patterns that look like real verification
       # but pass tautologically — a discipline pin against fake-pass
       # regressions.

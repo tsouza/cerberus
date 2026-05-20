@@ -7,7 +7,7 @@ package tempo
 // SearchResponse is the body of `GET /api/search`. Tempo's `traces`
 // array contains one trace summary per match; `metrics` carries
 // aggregate counts (cerberus reports an empty metrics block — the
-// per-search aggregate plumbing is not implemented).
+// aggregate fields are reported as zeros).
 type SearchResponse struct {
 	Traces  []TraceSummary `json:"traces"`
 	Metrics SearchMetrics  `json:"metrics,omitempty"`
@@ -25,8 +25,8 @@ type TraceSummary struct {
 }
 
 // SearchMetrics is Tempo's per-search aggregate block. Cerberus
-// reports zeros — the aggregate plumbing is not implemented; the shape
-// is here so the response stays parseable by Grafana.
+// reports the aggregate fields as zeros; the shape is here so the
+// response stays parseable by Grafana.
 type SearchMetrics struct {
 	InspectedTraces int `json:"inspectedTraces"`
 	InspectedBytes  int `json:"inspectedBytes"`
