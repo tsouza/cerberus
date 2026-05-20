@@ -101,6 +101,52 @@ func New(client Querier, s schema.Traces, version string, logger *slog.Logger) *
 	}
 }
 
+// Lang exposes the TraceQL engine.Lang adapter wired into the Handler.
+// Sibling surfaces (the gRPC StreamingQuerier in internal/api/tempo/grpc)
+// reuse this so the parse + lower + wrap-projection pipeline is shared
+// byte-for-byte with the HTTP /api/search path — the only divergence is
+// the response serialisation.
+func (h *Handler) Lang() engine.Lang { return h.lang }
+
+// ToTraceSummaries is the package-level export of the toTraceSummaries
+// shaper used by /api/search. The gRPC Search RPC (see
+// internal/api/tempo/grpc/search.go) calls it to translate the cursor's
+// chclient.Sample stream into the per-trace summary shape that maps
+// onto tempopb.TraceSearchMetadata.
+//
+// Returns (summaries, missingRootTraceIDs); see toTraceSummaries for
+// the per-row grouping + root-resolution semantics. Equivalent to
+// calling toTraceSummaries directly inside the tempo package; the
+// re-export exists purely so external callers don't depend on an
+// unexported helper.
+func ToTraceSummaries(samples []chclient.Sample) ([]TraceSummary, []string) {
+	return toTraceSummaries(samples)
+}
+
+// ResolveMissingRoots issues the follow-up CH lookup that recovers root-
+// span identity + trace-wide duration for traces whose result set
+// lacked a true root row (typical for structural-join queries and
+// `{ status = error }` style predicates that only match child spans),
+// then patches the affected summaries in place. Mirrors the HTTP
+// handler's post-search resolution step so the gRPC Search RPC produces
+// byte-equivalent trace metadata for the same TraceQL input.
+//
+// `missing` may be nil/empty (no-op fast path). Returns a non-nil error
+// only when the follow-up CH query fails — callers typically log + ignore
+// (the earliest-span fallback in summaries stays in place), matching the
+// HTTP handler's "best-effort" semantics.
+func (h *Handler) ResolveMissingRoots(ctx context.Context, summaries []TraceSummary, missing []string) error {
+	if len(missing) == 0 {
+		return nil
+	}
+	roots, err := h.resolveTraceRoots(ctx, missing)
+	if err != nil {
+		return err
+	}
+	applyRootMetadata(summaries, roots)
+	return nil
+}
+
 // Mount registers the Tempo-compatible endpoints under /api/ on mux.
 // /api/echo + /api/status/version satisfy Grafana's datasource health
 // check; /api/search runs a TraceQL query; /api/traces/{id} fetches a
