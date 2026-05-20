@@ -3,6 +3,7 @@ package prom
 import (
 	"testing"
 
+	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/model/labels"
 	promparser "github.com/prometheus/prometheus/promql/parser"
 )
@@ -19,10 +20,10 @@ func TestNormalizeDottedSelectors_ParserRoundtrip(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		name         string
-		in           string
-		wantDotted   []string // dotted names that must appear as __name__ matchers
-		wantVectors  int      // minimum VectorSelector count
+		name        string
+		in          string
+		wantDotted  []string // dotted names that must appear as __name__ matchers
+		wantVectors int      // minimum VectorSelector count
 	}{
 		{
 			name:        "bare_dotted_metric",
@@ -162,7 +163,7 @@ func collectMetricNames(expr promparser.Expr) []string {
 		}
 		// Prefer matcher-form name (the rewrite always emits this).
 		for _, m := range vs.LabelMatchers {
-			if m.Name == labels.MetricName && m.Type == labels.MatchEqual {
+			if m.Name == model.MetricNameLabel && m.Type == labels.MatchEqual {
 				names = append(names, m.Value)
 				return nil
 			}
