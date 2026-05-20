@@ -12,9 +12,11 @@ import { test, expect } from '@playwright/test';
  *
  * Seed shape (test/e2e/seed/cmd/seed/main.go):
  *   • otel_metrics_gauge: 2× `up` series, Attributes.job ∈ {api, db}
- *   • otel_metrics_sum:   60× `http_server_request_duration_count`,
+ *   • otel_metrics_sum:   300× `http_server_request_duration_count`,
  *                         Attributes.job = api, Attributes.http_status = 200,
- *                         spaced 1s apart over the last minute.
+ *                         spaced 1s apart over the last 5 minutes so any
+ *                         1m/5m `rate()` window run within the Playwright
+ *                         execution timeframe finds ≥2 samples.
  */
 
 const promProxy = '/api/datasources/proxy/uid/cerberus-prometheus/api/v1';

@@ -142,6 +142,13 @@ SELECT
     0.0
 FROM numbers(20)`
 
+	// 300 samples at 1 s cadence covers a 5-minute sliding window. A
+	// previous shape inserted only 60 samples (1 min span); by the time
+	// Playwright reached `prom_ux.spec.ts:178` — typically ~60-120 s
+	// after the e2e-wait-otel gate cleared — a 1-minute `rate()` window
+	// at request_time had slid past every seeded sample and returned
+	// 0 series. Matching the gauge seed's 5-minute span gives every
+	// 1m/5m/range query in the suite enough overlap to find ≥2 samples.
 	insertSumSQL = `INSERT INTO otel_metrics_sum
   (ResourceAttributes, MetricName, MetricDescription, MetricUnit, Attributes, StartTimeUnix, TimeUnix, Value, Flags, AggregationTemporality, IsMonotonic)
 SELECT
@@ -156,7 +163,7 @@ SELECT
     toUInt32(0),
     toInt32(2),
     true
-FROM numbers(60)`
+FROM numbers(300)`
 
 	insertLogsSQL = `INSERT INTO otel_logs
   (Timestamp, TimestampTime, TraceId, SpanId, SeverityText, SeverityNumber, ServiceName, Body, ResourceAttributes, LogAttributes)
@@ -188,9 +195,11 @@ VALUES
   (now64(9) - INTERVAL 29 SECOND, 'a0000000000000000000000000000003', '0000000000000007', '0000000000000006', 'cache.refresh',    'Client', 'db',       map('service.name', 'db'),       map('db.system',   'redis'),                                40000000, 'Ok')`
 )
 
-// insertMetrics inserts the two `up` gauge series + 60 counter samples for
-// rate() — preserved verbatim from the previous test/e2e/seed/otel_metrics.sql.
-// PR8's Playwright smoke queries these.
+// insertMetrics inserts the two `up` gauge series + 300 counter samples for
+// rate(). The gauge spans 5 minutes (20 samples × 15 s) and the counter spans
+// 5 minutes (300 samples × 1 s) so a 1m/5m `rate()` window in any Playwright
+// spec — which can fire ~60-120 s after the e2e-wait-otel gate clears — keeps
+// ≥2 samples in the lookback window.
 func insertMetrics(ctx context.Context, conn driver.Conn) error {
 	if err := conn.Exec(ctx, insertGaugeSQL); err != nil {
 		return fmt.Errorf("gauge: %w", err)
