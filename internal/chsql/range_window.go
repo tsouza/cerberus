@@ -247,7 +247,7 @@ func metricsMultiQuantileFanoutFrag(qs []float64, qsCol string) Frag {
 // arrayJoin fans out one row per anchor across [End-OuterRange, End]
 // spaced by Step (end-inclusive), and the outer SELECT projects the
 // anchor timestamp alongside the per-anchor value. Used by PromQL
-// subqueries (P0 #4).
+// subqueries.
 //
 // When r.Identity is true, Func is ignored and the per-window value is
 // the last sample in the window — used by bare-vector subqueries like
@@ -1191,9 +1191,9 @@ func outerGroupAliases(groupBy []chplan.Expr, aliases []string) []string {
 
 // emitRangeWindowIdentity emits the "last value in window" shape used
 // by bare-vector subqueries (`up[5m:1m]`). Functionally equivalent to
-// last_over_time but lowered from a SubqueryExpr (P0 #4.5) rather than
-// a Call. Drops anchors whose window is empty (1+ samples required to
-// have a "last").
+// last_over_time but lowered from a SubqueryExpr rather than a Call.
+// Drops anchors whose window is empty (1+ samples required to have a
+// "last").
 func (e *emitter) emitRangeWindowIdentity(r *chplan.RangeWindow) error {
 	return e.emitWindowedArray(r, verbatim("if(length(window_vals) > 0, window_vals[length(window_vals)], nan)"), 1)
 }

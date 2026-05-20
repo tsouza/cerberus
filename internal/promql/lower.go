@@ -26,15 +26,8 @@ var tracer = otel.Tracer("github.com/tsouza/cerberus/internal/promql")
 // range-vector Call (`rate` / `increase` / `delta` / `*_over_time`),
 // instant-vector Call (`abs`, `sqrt`, `ln`, ...), AggregateExpr with
 // `by (...)`, ParenExpr, BinaryExpr with scalar/vector arithmetic,
-// SubqueryExpr (P0 4.5–4.7: bare-vector, over range-vector calls,
-// outer reducer over subquery).
-//
-// Deferred to RC3 / later milestones: subquery over `without(...)`
-// aggregations and parameterised aggregates (quantile / topk / bottomk
-// / count_values), subquery `@ start()`/`@ end()` outside the limited
-// support already wired, native-histogram `histogram_quantile`
-// (PR H, otel_metrics_exp_histogram), exemplars. Nested subqueries
-// reachable through the parser (e.g.
+// SubqueryExpr (bare-vector, over range-vector calls, outer reducer
+// over subquery). Nested subqueries reachable through the parser (e.g.
 // `max_over_time(rate(m[1m])[5m:30s])[1h:5m]`,
 // `sum_over_time(max_over_time(rate(m[5m])[10m:1m])[1h:5m])`) lower
 // via the Call / ParenExpr / AggregateExpr intermediaries the parser
@@ -668,8 +661,8 @@ func matchOp(t labels.MatchType) chplan.BinaryOp {
 // path: a MatrixSelector means a range-vector function (rate, increase,
 // *_over_time); the clamp family takes a vector + scalar bounds; everything
 // else is treated as an instant-vector math function (abs, sqrt, ln, ...)
-// if recognised. Other functions surface a clear "not yet supported"
-// error pointing at the relevant milestone.
+// if recognised. Unrecognised functions surface a clear "unsupported"
+// error to the caller.
 func lowerCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	// `quantile_over_time(phi, v[range])` takes a scalar first; the
 	// range-vector lives at c.Args[1]. Route it before the generic
@@ -809,10 +802,9 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 	// The matcher's `__name__` value must be a single equality matcher
 	// (`metric_name{...}`) for `metricNameFromMatchers` to return a
 	// non-empty string. Regex `__name__=~"foo|bar"` falls through to
-	// the existing empty-MetricName behaviour — the structural fix to
-	// thread per-series names through the windowed aggregation is a
-	// larger change deferred until a query in that shape surfaces in
-	// the compat lane.
+	// the existing empty-MetricName behaviour — threading per-series
+	// names through the windowed aggregation is a larger structural
+	// change not modelled here.
 	if c.Func.Name == "last_over_time" || c.Func.Name == "first_over_time" {
 		return wrapRangeWindowPreserveName(rw, s, metricNameFromMatchers(vs.LabelMatchers)), nil
 	}
@@ -1276,8 +1268,8 @@ func topKPartition(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) []ch
 //
 // Only `scalar(<vector>)` is accepted as the K shape — mixed forms
 // like `topk(2 + scalar(x), v)` would require constant-folding around
-// the scalar subquery, which is a bigger change deferred to a
-// follow-up. The PromQL parser already type-checks the K arg as
+// the scalar subquery, which is a larger structural change not
+// modelled here. The PromQL parser already type-checks the K arg as
 // scalar-valued, so this is a narrow filter on the lowering surface.
 func lowerTopKComputed(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	// Peel ParenExpr wrappers so `topk((scalar(x)), v)` still routes

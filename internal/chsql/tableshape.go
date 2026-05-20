@@ -11,9 +11,9 @@ import "github.com/tsouza/cerberus/internal/schema"
 // columns (large strings, Maps, Arrays) that PREWHERE wants to avoid
 // reading until predicates have culled the row set.
 //
-// SkipIndexColumns is reserved for future use (registered Bloom-filter
-// or set indexes). The current default tables expose none — the field
-// is plumbed so an override can populate it without a schema migration.
+// SkipIndexColumns names columns covered by registered Bloom-filter
+// or set indexes. The default tables expose none — the field is
+// plumbed so an override can populate it without a schema migration.
 type TableShape struct {
 	SortColumns      []string
 	WideColumns      []string

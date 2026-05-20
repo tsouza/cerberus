@@ -1,8 +1,8 @@
 // Package traceql lowers Tempo TraceQL queries into the shared cerberus
-// chplan IR. The seed (M4.1) covers the SpansetFilter form: attribute
-// matchers like `{ .service.name = "x" }`, `{ duration > 100ms }`,
-// `{ span.http.status_code >= 500 }`. Structural operators (`>>`/`>`),
-// aggregators, time filters, and `| select(...)` land in M4.2-M4.4.
+// chplan IR. Covers the SpansetFilter form (attribute matchers like
+// `{ .service.name = "x" }`, `{ duration > 100ms }`,
+// `{ span.http.status_code >= 500 }`), structural operators
+// (`>>`/`>`), aggregators, time filters, and `| select(...)`.
 package traceql
 
 import (
@@ -61,10 +61,10 @@ func lowerRoot(expr *traceql.RootExpr, s schema.Traces) (chplan.Node, error) {
 		return nil, err
 	}
 
-	// Subsequent pipeline elements layer onto the previous result. M4.3
-	// supports `| count()` / `| sum(...)` / `| avg(...)` / `| max(...)`
-	// / `| min(...)`. Other follow-on stages (scalar filter, group /
-	// coalesce / select) defer to M4.4.
+	// Subsequent pipeline elements layer onto the previous result.
+	// Aggregators (`| count()` / `| sum(...)` / `| avg(...)` /
+	// `| max(...)` / `| min(...)`) and follow-on stages (scalar filter,
+	// group / coalesce / select) are handled by lowerFollowingElement.
 	for _, el := range expr.Pipeline.Elements[1:] {
 		next, err := lowerFollowingElement(plan, el, s)
 		if err != nil {
@@ -314,9 +314,10 @@ func lowerScalarExpr(prev chplan.Node, e traceql.ScalarExpression, s schema.Trac
 	return nil, fmt.Errorf("traceql: scalar expression %T is unsupported", e)
 }
 
-// lowerPipelineElement dispatches a single TraceQL pipeline element to
-// its corresponding lowering routine. Currently SpansetFilter and
-// SpansetOperation; aggregates / select / scalar filters defer.
+// lowerPipelineElement dispatches the first TraceQL pipeline element to
+// its corresponding lowering routine: SpansetFilter or SpansetOperation.
+// Aggregates, select, and scalar filters appear only as following
+// elements and are dispatched by lowerFollowingElement.
 func lowerPipelineElement(elem traceql.PipelineElement, s schema.Traces) (chplan.Node, error) {
 	switch v := elem.(type) {
 	case *traceql.SpansetFilter:

@@ -41,8 +41,8 @@ func envOverride(key, def string) string {
 // DefaultOTelMetricsFromEnv returns DefaultOTelMetrics() with any
 // CERBERUS_SCHEMA_METRICS_*_TABLE env overrides applied. Unset or
 // whitespace-only values leave the corresponding field at its default.
-// Non-table fields (column names, rollups, suffixes) are not yet
-// overridable — extend the surface here if a deployment demonstrates
+// Non-table fields (column names, rollups, suffixes) are not exposed
+// as overrides — extend the surface here if a deployment demonstrates
 // the need.
 func DefaultOTelMetricsFromEnv() Metrics {
 	m := DefaultOTelMetrics()

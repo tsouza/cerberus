@@ -12,10 +12,6 @@
 // type stays inside the adapter, lowering happens inside Lang.Parse,
 // and the sample-row reshaping that used to live in each handler's
 // wrapWithSampleProjection helper moves behind Lang.ProjectSamples.
-//
-// This scaffolding is intentionally additive — the handlers continue
-// to orchestrate the pipeline directly until per-head port milestones
-// rewrite them against Engine.
 package engine
 
 import (
@@ -68,7 +64,7 @@ func strategyFor(meta Meta) string {
 // requires only the row-returning Query method since adapters lower to
 // a plan that emits chclient.Sample rows. Streaming / strings /
 // label-set callers go straight to their handler's Querier — the
-// engine's surface is intentionally narrow for now.
+// engine's surface is intentionally narrow.
 type Querier interface {
 	Query(ctx context.Context, sql string, args ...any) ([]chclient.Sample, error)
 }

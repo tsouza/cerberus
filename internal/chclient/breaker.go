@@ -154,12 +154,12 @@ func (b *breaker) allow() bool {
 			return false
 		}
 		// Probe completed but state machine hasn't been driven to
-		// CLOSED yet (record() always sets state); if we land here
-		// we admit a fresh probe. In practice this branch is
+		// CLOSED (record() always sets state); if we land here we
+		// admit a fresh probe. In practice this branch is
 		// unreachable because record() either closes the circuit
-		// or re-opens it before releasing probeInFlight, but the
-		// guard makes the state machine defensive against a future
-		// edit that splits record into two phases.
+		// or re-opens it before releasing probeInFlight; the guard
+		// makes the state machine defensive if record is ever
+		// split into two phases.
 		b.probeInFlight = true
 		return true
 	default:

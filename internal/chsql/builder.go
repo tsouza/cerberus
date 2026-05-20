@@ -1228,9 +1228,8 @@ func Subquery(s Subqueryable) Frag {
 // PreRenderedSQL adapts an already-rendered (sql, args) pair into a
 // Subqueryable so it can flow through Subquery without raw-string
 // composition. Holds an opaque CH SQL string plus its positional args;
-// reserved for legacy chsql.Emit output that pre-dates the
-// QueryBuilder migration. A future port can move chsql.Emit to return
-// a *QueryBuilder directly and retire this type.
+// the adapter exists for legacy chsql.Emit output that pre-dates the
+// QueryBuilder migration.
 //
 // Don't reach for this for newly written code — compose with
 // QueryBuilder + typed Frags instead.
@@ -1458,8 +1457,7 @@ type joinClause struct {
 //	WITH RECURSIVE <name> AS (<anchor> UNION ALL <recursive>)
 //
 // Non-recursive CTEs render the anchor alone (no UNION ALL). Only
-// recursive CTEs are wired up today — the non-recursive case is
-// reserved for a future port if needed.
+// recursive CTEs are wired up; the non-recursive shape is unused.
 type cteClause struct {
 	Name      string
 	Anchor    *QueryBuilder
@@ -1563,8 +1561,8 @@ func (s *QueryBuilder) Join(kind JoinKind, src, on Frag) *QueryBuilder {
 //
 // Multiple WithRecursive calls chain — rendered as a single
 // `WITH RECURSIVE <n1> AS (...), <n2> AS (...)` head per CH syntax.
-// Only structural_join.go uses one CTE per emit today; the multi-CTE
-// shape is reserved for future ports.
+// Only structural_join.go uses one CTE per emit; the multi-CTE shape
+// is unused.
 //
 // Passing a nil anchor or recursive panics at render time.
 func (s *QueryBuilder) WithRecursive(name string, anchor, recursive *QueryBuilder) *QueryBuilder {

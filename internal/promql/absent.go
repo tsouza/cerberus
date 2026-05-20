@@ -39,11 +39,10 @@ import (
 //
 // Compared to Prom's `funcAbsent`, this lowering checks for the
 // existence of *any* sample matching `v`'s matchers in the configured
-// metric table — it does not (yet) apply the same instant-vector
-// staleness window the bare-selector LWR wrap uses. That tightening is
-// safe to layer on later: for the compatibility-harness fixtures and
-// the OTel-CH gauge tables, "metric has zero rows in the table" is the
-// signal that matters.
+// metric table — it does not apply the same instant-vector staleness
+// window the bare-selector LWR wrap uses. For the compatibility-harness
+// fixtures and the OTel-CH gauge tables, "metric has zero rows in the
+// table" is the signal that matters.
 func lowerAbsent(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	if len(c.Args) != 1 {
 		return nil, fmt.Errorf("promql: absent() expects 1 argument, got %d", len(c.Args))

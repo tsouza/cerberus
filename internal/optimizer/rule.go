@@ -102,9 +102,9 @@ func NewWithBatches(batches ...Batch) *Driver {
 //     load-bearing here.
 //   - "optimizer.projection" (FixedPoint) — ProjectionPushdown may
 //     iterate as pushdown unused-column elimination cascades through
-//     nested Projects. Today only one pass changes anything, but the
-//     strategy leaves room for follow-up rules to land in this batch
-//     without changing wiring.
+//     nested Projects. Only one pass changes anything in the current
+//     rule set, but the FixedPoint strategy lets additional rules join
+//     the batch without changing wiring.
 //   - "optimizer.mv-substitution" (FixedPoint) — MVSubstitution
 //     rewrites `RangeWindow(Scan(base))` to `RangeWindow(Scan(rollup))`
 //     when the operator has declared a pre-aggregated rollup whose

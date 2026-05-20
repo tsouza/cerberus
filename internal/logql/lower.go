@@ -1,10 +1,8 @@
 // Package logql lowers Loki LogQL queries into the shared cerberus chplan
-// IR. The seed (M3.1) covers stream selectors with `=`/`!=`/`=~`/`!~`
-// label matchers and the line-filter family (`|=`, `!=`, `|~`, `!~`).
-//
-// Subsequent milestones add label filters (`| label="v"`), parsers
-// (`| json`, `| logfmt`), the metric form (rate, count_over_time, ...),
-// and aggregations.
+// IR. Covers stream selectors with `=`/`!=`/`=~`/`!~` label matchers,
+// the line-filter family (`|=`, `!=`, `|~`, `!~`), label filters
+// (`| label="v"`), parsers (`| json`, `| logfmt`), the metric form
+// (rate, count_over_time, ...), and aggregations.
 package logql
 
 import (
@@ -419,7 +417,7 @@ func lowerStage(stage syntax.StageExpr, s schema.Logs, labelsExpr chplan.Expr) (
 		// Bare `| logfmt` — extracts all `key=value` pairs from the
 		// line. Subsequent label filters resolve against
 		// mapConcat(<prev labels>, extractKeyValuePairs(Body, ...)).
-		// Strict / KeepEmpty flags are intentionally ignored for now:
+		// Strict / KeepEmpty flags are intentionally ignored:
 		// CH's extractKeyValuePairs is lenient (no Strict equivalent)
 		// and always drops bare keys (no KeepEmpty equivalent), which
 		// matches Loki's non-strict default semantics for the common

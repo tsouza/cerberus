@@ -34,9 +34,8 @@ import (
 //   - `any(ExplicitBounds)` — picking one representative bounds array
 //     (every row of the same metric in OTel-CH carries the same bounds).
 //
-// The native (exp-histogram) path still requires a bare VectorSelector
-// for now — the same idiom over native histograms lands in a later
-// milestone.
+// The native (exp-histogram) path requires a bare VectorSelector; the
+// `rate(...)`-wrapped idiom is not modelled on the native side.
 //
 // Routing decision: the metric-name suffix configured on
 // schema.Metrics.ExpHistogramSuffix (default `"_exp_hist"`) selects
@@ -53,8 +52,8 @@ import (
 // The result is wrapped in a Project to match the Sample contract
 // downstream — `MetricName=”` (Prom quantile drops __name__),
 // `Attributes` reconstructed from the per-row Attributes column,
-// `TimeUnix = now64(9)` (instant eval anchor; M2.1 plumbs real eval
-// time), `Value` from the interpolated quantile.
+// `TimeUnix = now64(9)` (instant eval anchor), `Value` from the
+// interpolated quantile.
 func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	if len(c.Args) != 2 {
 		return nil, fmt.Errorf("promql: histogram_quantile expects 2 arguments, got %d", len(c.Args))
