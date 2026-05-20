@@ -141,7 +141,8 @@ func TestConformance_LokiQueryRangeWire(t *testing.T) {
 			}
 			var env struct {
 				Data struct {
-					ResultType string `json:"resultType"`
+					ResultType string            `json:"resultType"`
+					Result     []json.RawMessage `json:"result"`
 				} `json:"data"`
 			}
 			if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
@@ -149,6 +150,16 @@ func TestConformance_LokiQueryRangeWire(t *testing.T) {
 			}
 			if env.Data.ResultType != c.wantType {
 				t.Errorf("resultType: got %q, want %q", env.Data.ResultType, c.wantType)
+			}
+			// `result` must serialise as the empty JSON array []
+			// (not null) when stubQuerier returns no samples — the
+			// wire contract guarantees the key is always present so
+			// upstream Loki clients can iterate without nil-checking.
+			if env.Data.Result == nil {
+				t.Errorf("result: got null, want empty JSON array []")
+			}
+			if len(env.Data.Result) != 0 {
+				t.Errorf("result: got %d items, want 0 (stubQuerier returns no samples)", len(env.Data.Result))
 			}
 		})
 	}
