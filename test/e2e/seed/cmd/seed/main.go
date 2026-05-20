@@ -110,11 +110,39 @@ func run(ctx context.Context) error {
 // Static SQL — no string interpolation. Table names are unqualified; the
 // clickhouse-go Auth.Database resolves them server-side.
 const (
+	// `up` is seeded as a 5-minute sliding window of samples (one per
+	// 15 s = 20 samples per series, 2 series = 40 rows) so any
+	// subquery / range query that runs within ~5 minutes of `e2e-seed`
+	// finds at least one sample. A single-timestamp seed
+	// (the previous shape) was timing-sensitive: by the time the
+	// Playwright dashboard tests ran (~3–5 min after seed), the
+	// subquery `up[1m:30s]` looked back 1 min from request_time and
+	// missed the seed timestamp, returning 0 series intermittently.
+	// See docs/test-audit-2026-05-20.md follow-up + e2e run
+	// 26147340075 for the failure mode.
 	insertGaugeSQL = `INSERT INTO otel_metrics_gauge
   (ResourceAttributes, MetricName, MetricDescription, MetricUnit, Attributes, StartTimeUnix, TimeUnix, Value)
-VALUES
-  ({'service.name': 'api'}, 'up', 'Is the scrape target up', '1', {'job': 'api'}, now64(9), now64(9), 1.0),
-  ({'service.name': 'db'},  'up', 'Is the scrape target up', '1', {'job': 'db'},  now64(9), now64(9), 0.0)`
+SELECT
+    map('service.name', 'api'),
+    'up',
+    'Is the scrape target up',
+    '1',
+    map('job', 'api'),
+    now64(9) - INTERVAL number * 15 SECOND,
+    now64(9) - INTERVAL number * 15 SECOND,
+    1.0
+FROM numbers(20)
+UNION ALL
+SELECT
+    map('service.name', 'db'),
+    'up',
+    'Is the scrape target up',
+    '1',
+    map('job', 'db'),
+    now64(9) - INTERVAL number * 15 SECOND,
+    now64(9) - INTERVAL number * 15 SECOND,
+    0.0
+FROM numbers(20)`
 
 	insertSumSQL = `INSERT INTO otel_metrics_sum
   (ResourceAttributes, MetricName, MetricDescription, MetricUnit, Attributes, StartTimeUnix, TimeUnix, Value, Flags, AggregationTemporality, IsMonotonic)
