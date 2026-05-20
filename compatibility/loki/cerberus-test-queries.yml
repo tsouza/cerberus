@@ -149,6 +149,17 @@ should_skip:
     since: "2026-05-15"
     jira:  "docs/loki-compliance-plan.md PR 6"
 
+  # regression/drilldown-patterns.yaml — seed-gap entry. The case requires
+  # the `duration` content keyword but the checked-in dataset_metadata.json
+  # only exposes {debug, error, failed, level, refused} in `by_keyword`
+  # (the seeder emits `duration_ms` / `duration=...ms` substrings but the
+  # metadata snapshot is conservative). Resolver rejects with
+  # `no streams with keyword: duration` before the query hits the wire.
+  - source: "regression/drilldown-patterns.yaml#Drilldown count with complex filters"
+    reason: "Requires `duration` content keyword; dataset_metadata.json's `by_keyword` only exposes {debug, error, failed, level, refused}. ${SELECTOR} expansion rejects before the case can run."
+    since: "2026-05-20"
+    jira:  "docs/loki-compliance-plan.md PR 6 (seed-metadata gap)"
+
   # exhaustive/aggregations.yaml — most entries lifted now that `| unwrap`,
   # value range aggs, and range-agg grouping land. Remaining skips are
   # seed-gap entries (labels the seeder doesn't emit yet).
