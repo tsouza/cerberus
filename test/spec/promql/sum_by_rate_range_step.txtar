@@ -1,0 +1,69 @@
+# Regression: `sum by (X) (rate(metric[range]))` in range mode (Step > 0)
+# used to fail at CH with `Unknown expression identifier 'bucket_ts'` —
+# the inner Aggregate's `TimeUnix AS bucket_ts` projection had no
+# `TimeUnix` column to read from because the rate emitter's matrix
+# outer SELECT only surfaced `anchor_ts`. The fix projects an additional
+# `anchor_ts AS TimeUnix` alias so the wrapping Aggregate's per-step
+# GROUP BY (ColumnRef{TimestampColumn}, see internal/promql/lower.go
+# `bucket_ts` branch) resolves. The cerberus-self dashboard's
+# request-rate panel exercises exactly this shape.
+
+-- query.promql --
+sum by(cerberus_ql) (rate(cerberus_queries_total[5m]))
+-- range_step --
+30s
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum VALUES
+    ('cerberus_queries_total', map('cerberus_ql', 'promql'), toDateTime64('2026-01-01 00:00:00', 9), 0.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'promql'), toDateTime64('2026-01-01 00:01:00', 9), 12.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'promql'), toDateTime64('2026-01-01 00:02:00', 9), 24.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'promql'), toDateTime64('2026-01-01 00:03:00', 9), 36.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'promql'), toDateTime64('2026-01-01 00:04:00', 9), 48.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'promql'), toDateTime64('2026-01-01 00:05:00', 9), 60.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'logql'), toDateTime64('2026-01-01 00:00:00', 9), 0.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'logql'), toDateTime64('2026-01-01 00:01:00', 9), 6.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'logql'), toDateTime64('2026-01-01 00:02:00', 9), 12.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'logql'), toDateTime64('2026-01-01 00:03:00', 9), 18.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'logql'), toDateTime64('2026-01-01 00:04:00', 9), 24.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'logql'), toDateTime64('2026-01-01 00:05:00', 9), 30.0);
+-- expected_rows --
+[
+  ["", {"cerberus_ql": "logql"}, "2026-01-01T00:01:00Z", 0.02],
+  ["", {"cerberus_ql": "logql"}, "2026-01-01T00:01:30Z", 0.03],
+  ["", {"cerberus_ql": "logql"}, "2026-01-01T00:02:00Z", 0.04],
+  ["", {"cerberus_ql": "logql"}, "2026-01-01T00:02:30Z", 0.05],
+  ["", {"cerberus_ql": "logql"}, "2026-01-01T00:03:00Z", 0.06],
+  ["", {"cerberus_ql": "logql"}, "2026-01-01T00:03:30Z", 0.07],
+  ["", {"cerberus_ql": "logql"}, "2026-01-01T00:04:00Z", 0.08],
+  ["", {"cerberus_ql": "logql"}, "2026-01-01T00:04:30Z", 0.09],
+  ["", {"cerberus_ql": "logql"}, "2026-01-01T00:05:00Z", 0.1],
+  ["", {"cerberus_ql": "promql"}, "2026-01-01T00:01:00Z", 0.04],
+  ["", {"cerberus_ql": "promql"}, "2026-01-01T00:01:30Z", 0.06],
+  ["", {"cerberus_ql": "promql"}, "2026-01-01T00:02:00Z", 0.08],
+  ["", {"cerberus_ql": "promql"}, "2026-01-01T00:02:30Z", 0.1],
+  ["", {"cerberus_ql": "promql"}, "2026-01-01T00:03:00Z", 0.12],
+  ["", {"cerberus_ql": "promql"}, "2026-01-01T00:03:30Z", 0.14],
+  ["", {"cerberus_ql": "promql"}, "2026-01-01T00:04:00Z", 0.16],
+  ["", {"cerberus_ql": "promql"}, "2026-01-01T00:04:30Z", 0.18],
+  ["", {"cerberus_ql": "promql"}, "2026-01-01T00:05:00Z", 0.2]
+]
+-- args --
+[0] string = ""
+[1] string = "cerberus_ql"
+[2] string = "cerberus_ql"
+[3] string = "cerberus_queries_total"
+[4] string = "cerberus_ql"
+-- chplan --
+Project ["" AS MetricName, mapWithoutEmpty(map("cerberus_ql", gkey_0)) AS Attributes, bucket_ts AS TimeUnix, Value AS Value]
+  Aggregate groupBy=[Attributes["cerberus_ql"] AS gkey_0, TimeUnix AS bucket_ts] funcs=[sum(Value) AS Value]
+    RangeWindow func=rate range=5m0s step=30s outerRange=5m0s ts=TimeUnix value=Value groupBy=[Attributes] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+      Filter predicate=(MetricName = "cerberus_queries_total")
+        Scan(otel_metrics_sum)
+-- sql --
+SELECT ? AS `MetricName`, mapFilter((k, v) -> v != '', map(?, `gkey_0`)) AS `Attributes`, `bucket_ts` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes`[?] AS `gkey_0`, `TimeUnix` AS `bucket_ts`, sum(`Value`) AS `Value` FROM (SELECT `Attributes`, `anchor_ts`, anchor_ts AS `TimeUnix`, if(sampled_interval > 0, counter_delta * (sampled_interval + if(counter_delta > 0 AND first_val >= 0, least(duration_to_start, sampled_interval * first_val / counter_delta), duration_to_start) + duration_to_end) / sampled_interval / 300, nan) AS `Value` FROM (SELECT `Attributes`, `anchor_ts`, `window_vals`, `counter_delta`, `first_val`, toFloat64(dateDiff('nanosecond', first_ts, last_ts)) / 1e9 AS `sampled_interval`, if(toFloat64(dateDiff('nanosecond', anchor_ts - toIntervalNanosecond(300000000000), first_ts)) / 1e9 >= 1.1 * sampled_interval / (length(window_vals) - 1), sampled_interval / (length(window_vals) - 1) / 2, toFloat64(dateDiff('nanosecond', anchor_ts - toIntervalNanosecond(300000000000), first_ts)) / 1e9) AS `duration_to_start`, if(toFloat64(dateDiff('nanosecond', last_ts, anchor_ts)) / 1e9 >= 1.1 * sampled_interval / (length(window_vals) - 1), sampled_interval / (length(window_vals) - 1) / 2, toFloat64(dateDiff('nanosecond', last_ts, anchor_ts)) / 1e9) AS `duration_to_end` FROM (SELECT `Attributes`, `anchor_ts`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta`, tupleElement(window_pairs[1], 1) AS `first_ts`, tupleElement(window_pairs[length(window_pairs)], 1) AS `last_ts`, tupleElement(window_pairs[1], 2) AS `first_val` FROM (SELECT `Attributes`, `anchor_ts`, arrayFilter(p -> tupleElement(p, 1) > anchor_ts - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= anchor_ts, series_array) AS `window_pairs` FROM (SELECT `Attributes`, `series_array`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(0, 11))) AS `anchor_ts` FROM (SELECT `Attributes`, arraySort(groupArray((`TimeUnix`, `Value`))) AS `series_array` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` = ?)) GROUP BY `Attributes`))))) WHERE length(`window_vals`) >= 2) GROUP BY `Attributes`[?], `TimeUnix`)

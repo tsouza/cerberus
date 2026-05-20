@@ -582,6 +582,12 @@ func (e *emitter) emitWindowedArrayPairsMatrix(r *chplan.RangeWindow, valueWrite
 		outer.Select(g)
 	}
 	outer.Select(Col("anchor_ts"))
+	// See emitWindowedArrayExtrapolatedMatrix for the rationale: surface
+	// anchor_ts under the schema timestamp column so a wrapping
+	// Aggregate's per-step GROUP BY (ColumnRef{TimestampColumn}) resolves.
+	if r.TimestampColumn != "" && r.TimestampColumn != "anchor_ts" {
+		outer.Select(As(verbatim("anchor_ts"), r.TimestampColumn))
+	}
 	outer.Select(rawAs(valueWriterFor(verbatim("anchor_ts")), r.ValueColumn))
 	if minWindowSize > 0 {
 		outer.Where(windowLenAtLeastFrag("window_pairs", minWindowSize))
@@ -1759,6 +1765,19 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 		outer.Select(g)
 	}
 	outer.Select(Col("anchor_ts"))
+	// Also surface anchor_ts under the schema timestamp column name so an
+	// outer Aggregate that injected `ColumnRef{TimestampColumn}` into its
+	// per-step GROUP BY (see internal/promql/lower.go `bucket_ts` branch)
+	// resolves the reference. Without this alias, `sum by (X) (rate(m[5m]))`
+	// in range mode fails at CH with `Unknown expression identifier
+	// 'bucket_ts'` — the inner Aggregate's `TimeUnix AS bucket_ts`
+	// projection has no `TimeUnix` to read from. Keeping the bare
+	// `anchor_ts` column intact so downstream `wrapWithSampleProjection`
+	// (api/prom/handler.go) and the histogram/instant_fn callers that
+	// still read `anchor_ts` directly continue to work.
+	if r.TimestampColumn != "" && r.TimestampColumn != "anchor_ts" {
+		outer.Select(As(verbatim("anchor_ts"), r.TimestampColumn))
+	}
 	outer.Select(As(extrapolatedValueFrag(kind, rangeSeconds), r.ValueColumn))
 	outer.Where(windowLenAtLeastFrag("window_vals", 2))
 
@@ -2108,6 +2127,12 @@ func (e *emitter) emitWindowedArrayMatrix(r *chplan.RangeWindow, value Frag, min
 		outer.Select(g)
 	}
 	outer.Select(Col("anchor_ts"))
+	// See emitWindowedArrayExtrapolatedMatrix for the rationale: surface
+	// anchor_ts under the schema timestamp column so a wrapping
+	// Aggregate's per-step GROUP BY (ColumnRef{TimestampColumn}) resolves.
+	if r.TimestampColumn != "" && r.TimestampColumn != "anchor_ts" {
+		outer.Select(As(verbatim("anchor_ts"), r.TimestampColumn))
+	}
 	outer.Select(As(value, r.ValueColumn))
 	if minWindowSize > 0 {
 		outer.Where(windowLenAtLeastFrag("window_vals", minWindowSize))

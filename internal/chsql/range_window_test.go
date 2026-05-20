@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
@@ -126,6 +127,75 @@ func TestRangeWindowGapFunctionsEmit(t *testing.T) {
 				if !strings.Contains(sql, want) {
 					t.Errorf("Emit(%s) missing substring %q\nSQL: %s", tc.fn, want, sql)
 				}
+			}
+		})
+	}
+}
+
+// TestRangeWindowMatrixSurfacesTimestampColumn asserts the three
+// matrix-shape emitters (rate / increase / delta extrapolation; the
+// over-time family via emitWindowedArrayMatrix; deriv / irate via
+// emitWindowedArrayPairsMatrix) all project `anchor_ts AS <TimestampColumn>`
+// in the outer SELECT. Regression for the "Unknown expression identifier
+// 'bucket_ts'" 400 that broke `sum by (X) (rate(metric[5m]))` in range
+// mode — the wrapping Aggregate's per-step GROUP BY (injected by
+// internal/promql/lower.go's `bucket_ts` branch) references
+// `s.TimestampColumn`, which only existed because the inner RangeWindow
+// surfaces it under that alias on top of the existing `anchor_ts`.
+func TestRangeWindowMatrixSurfacesTimestampColumn(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(5 * time.Minute)
+	step := 30 * time.Second
+	rangeDur := 5 * time.Minute
+
+	base := func(fn string) *chplan.RangeWindow {
+		return &chplan.RangeWindow{
+			Input:           &chplan.Scan{Table: "otel_metrics_sum"},
+			Func:            fn,
+			Range:           rangeDur,
+			Start:           start,
+			End:             end,
+			Step:            step,
+			OuterRange:      end.Sub(start),
+			TimestampColumn: "TimeUnix",
+			ValueColumn:     "Value",
+			GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+		}
+	}
+
+	cases := []string{
+		// extrapolated matrix (counter-reset arithmetic):
+		"rate", "increase", "delta",
+		// values-only matrix:
+		"sum_over_time", "count_over_time", "min_over_time", "max_over_time",
+		// pairs matrix:
+		"deriv", "irate",
+	}
+
+	for _, fn := range cases {
+		fn := fn
+		t.Run(fn, func(t *testing.T) {
+			t.Parallel()
+			sql, _, err := chsql.Emit(context.Background(), base(fn))
+			if err != nil {
+				t.Fatalf("Emit(%s): %v", fn, err)
+			}
+			// Outer SELECT must surface anchor_ts under the schema's
+			// timestamp-column name so a wrapping Aggregate's per-step
+			// GROUP BY references resolve.
+			want := "anchor_ts AS `TimeUnix`"
+			if !strings.Contains(sql, want) {
+				t.Errorf("Emit(%s) missing %q in outer SELECT — outer Aggregate "+
+					"with `GroupBy: ColumnRef{TimeUnix}` will fail at CH with "+
+					"`Unknown expression identifier`.\nSQL: %s", fn, want, sql)
+			}
+			// The bare `anchor_ts` passthrough must remain — downstream
+			// `wrapWithSampleProjection` (api/prom/handler.go) and the
+			// histogram/instant-fn callers still read it by that name.
+			if !strings.Contains(sql, "`anchor_ts`") {
+				t.Errorf("Emit(%s) dropped bare `anchor_ts` column\nSQL: %s", fn, sql)
 			}
 		})
 	}
