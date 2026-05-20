@@ -1,0 +1,98 @@
+# OpenTelemetry Collector config for the repo-root docker-compose quickstart.
+#
+# This is the compose-flavoured cousin of test/e2e/k3s/otel-collector.yaml,
+# stripped of every k8s-specific receiver (k8s_cluster, k8s_events,
+# kubeletstats, filelog) and the agent/gateway split that only makes
+# sense in a cluster. Compose has a single collector instance:
+#
+#   cerberus -> otel-collector (OTLP/gRPC :4317) -> clickhouseexporter -> CH
+#
+# Cerberus reaches the collector over the cerberus-dev docker network at
+# `otel-collector:4317`. The collector then writes to the same
+# `clickhouse` service the cerberus query path reads from, so the
+# dogfood loop closes: cerberus emits self-telemetry, the collector
+# persists it in CH, and cerberus's own Prom/Loki/Tempo APIs can query
+# it back through Grafana.
+#
+# The clickhouseexporter rides the upstream sqltemplates package — the
+# same set internal/schema/ddl uses — so the table shapes
+# (otel_logs / otel_metrics_* / otel_traces) cannot drift from what
+# cerberus expects to query.
+extensions:
+  # health_check exposes :13133/ on the cerberus-dev network. The
+  # compose stack itself doesn't bind a `healthcheck:` against it
+  # (the upstream contrib image is FROM scratch — no wget/curl/nc to
+  # call out from inside the container), but the endpoint is left
+  # enabled so an operator can curl it from a sidecar / from the host
+  # via `docker compose exec -T otel-collector` (where applicable) to
+  # confirm the pipelines are live.
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+  batch:
+    send_batch_size: 1024
+    timeout: 5s
+  # Ensure every record carries a service.name even when the sender
+  # forgot to set one. Mirrors the k3s gateway's defaults.
+  resource:
+    attributes:
+      - key: service.name
+        value: cerberus-otel-collector
+        action: insert
+      - key: deployment.environment
+        value: compose
+        action: upsert
+
+exporters:
+  clickhouse:
+    endpoint: tcp://clickhouse:9000?dial_timeout=10s
+    database: otel
+    username: cerberus
+    password: cerberus
+    ttl: 0
+    create_schema: true
+    logs_table_name: otel_logs
+    traces_table_name: otel_traces
+    metrics_table_name: otel_metrics
+    timeout: 10s
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 30s
+      max_elapsed_time: 5m
+    sending_queue:
+      enabled: true
+      num_consumers: 4
+      queue_size: 1000
+
+service:
+  extensions: [health_check]
+  telemetry:
+    logs:
+      level: info
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [clickhouse]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [clickhouse]
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [clickhouse]
