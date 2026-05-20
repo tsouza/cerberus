@@ -12,16 +12,18 @@ it to surface drift.
 
 ## 1. Executive summary
 
-The cerberus test suite is **broadly healthy**, with three actionable hotspots
+The cerberus test suite is **broadly healthy**, with two actionable hotspots
 that warrant follow-up PRs:
 
 1. **`internal/logql/range_aggregation.go`** — 6–9 surviving mutants on
    window/anchor numeric coefficients indicate tests pin SQL _shape_ but not
    _exact values_. Strengthening assertions here is the highest-leverage win.
-2. **`compatibility/tempo/driver/differ.go:267`** — asymmetric "skip blanks"
-   logic on `StartTimeUnixNano` could mask a real field-omission regression.
-3. **`internal/api/loki/conformance_test.go:109`** — `query_range` empty case
+2. **`internal/api/loki/conformance_test.go:109`** — `query_range` empty case
    only asserts `resultType`, not actual content.
+
+(The Tempo differ `StartTimeUnixNano` "blank-skip" pattern initially flagged
+HIGH in §4.2 turned out to be a documented design choice — see §4.2 for the
+demotion rationale.)
 
 **Surprises** (counter to the surface-scan verdict):
 
@@ -113,36 +115,71 @@ symmetric across cerberus and reference Prom. `AbsEpsilon/RelEpsilon = 1e-9`
 (tight). `labelKey()` sorts alphabetically. Timestamp comparison is exact.
 NaN/Inf handled in `valuesClose()` with documented semantics.
 
-### 4.2 Tempo differ — **1 HIGH concern**
+### 4.2 Tempo differ — **documented design choice (initially flagged HIGH; demoted)**
 
-`compatibility/tempo/driver/differ.go:267-279`:
+`compatibility/tempo/driver/differ.go:264-279`:
 
 ```go
-// StartTimeUnixNano: if either side is empty, skip the compare
-if got.StartTimeUnixNano == "" || want.StartTimeUnixNano == "" {
-    // skip
-} else {
-    // compare ...
+// StartTimeUnixNano is a string in the JSON shape; treat blank on
+// either side as a non-comparison rather than a mismatch so older
+// Tempo builds (which omit this field) don't false-positive.
+if a.StartTimeUnixNano != "" && b.StartTimeUnixNano != "" && a.StartTimeUnixNano != b.StartTimeUnixNano {
+    // ... epsilon-tolerant compare
 }
 ```
 
-**Concern (HIGH)**: blank-skipping is _asymmetric to absence_. If cerberus
-ever regresses to omitting `StartTimeUnixNano` (e.g., a future refactor
-breaks the field projection), this differ will silently accept the
-divergence. Reference Tempo's output is the source of truth — if it has the
-field, cerberus should too. The differ should fail if exactly one side has
-the field present.
+**Initial framing (HIGH)**: blank-skipping looked _asymmetric to absence_ —
+if cerberus regressed to omitting `StartTimeUnixNano`, the differ would
+silently accept the divergence. The suggested fix was to fail on asymmetric
+presence: `if (a.X == "") != (b.X == "")`.
 
-**Suggested fix**: replace the blank-skip with:
+**Demotion rationale (after re-reading the code + verifying upstream
+semantics)**:
 
-```go
-if (got.StartTimeUnixNano == "") != (want.StartTimeUnixNano == "") {
-    return diff{...} // asymmetric absence is a divergence
-}
-if got.StartTimeUnixNano != "" {
-    // compare values
-}
-```
+1. The blank-skip behavior is **explicitly documented in the differ**: the
+   inline comment at line 264-266 names the failure mode it protects
+   against — "older Tempo builds (which omit this field) don't
+   false-positive". The shape decision was deliberate, not accidental.
+2. The differ's general "skip blanks" rule is also documented at lines
+   178-181 (intersection-loop preamble) and 57-61 (TraceSummary
+   struct comment): _"differ tolerates either side missing fields by
+   skipping that field's compare … and cerberus can each legitimately
+   omit `StartTimeUnixNano` in some builds"_.
+3. Upstream Tempo around the harness's pinned commit
+   (`grafana/tempo:main-2f74ea8`, `v3.0.0-rc.1-7-g2f74ea818`) **can
+   legitimately emit `startTimeUnixNano` as the sentinel `0` value** —
+   `combineSearchResults` uses `0` as "not yet set" and gogoproto's
+   stdmarshalers can omit zero-valued int64 fields. Rootless traces
+   (where the indexed result set has only child spans, or block-split
+   traces) follow a similar pattern for `rootServiceName` /
+   `rootTraceName`: empty until the frontend post-processor rewrites
+   them to the `RootSpanNotYetReceivedText` placeholder.
+4. Cerberus's own emission path
+   (`internal/api/tempo/handler.go::toTraceSummaries`) **always**
+   populates `StartTimeUnixNano` as `strconv.FormatInt(a.startNS, 10)`
+   — i.e., cerberus never produces a blank value (worst case is
+   `"0"`). The asymmetry the audit feared (cerberus drops, Tempo
+   keeps) is structurally precluded by the emitter; the only side
+   that ever produces blank is Tempo, on rootless/empty-block traces
+   that are legitimate states upstream surfaces.
+5. **Tightening to `(a == "") != (b == "")` would introduce false
+   positives** on every rootless-trace fixture the harness exercises,
+   precisely the scenario the existing comment names. The current
+   compat run sits at 33/33 green; tightening would flake it without
+   catching a concrete regression class (cerberus has no path to emit
+   blank in the first place).
+
+**Status**: **acceptable** — keep the blank-skip as-is. The rule's
+intent is documented in the code, the upstream asymmetry it absorbs is
+real, and cerberus's emitter precludes the regression the audit
+feared. Treat optional-field blank-skip on this differ as documented
+design, not a HIGH concern.
+
+**Note for future audits**: don't re-flag this pattern unless empirical
+evidence shows asymmetric divergence in a compat-run report (i.e.,
+cerberus produces blank `StartTimeUnixNano` for a case Tempo
+populates). Cite the inline comment at `differ.go:264-266` when
+demoting.
 
 Other findings on this differ:
 
@@ -151,6 +188,11 @@ Other findings on this differ:
   different precisions. **MEDIUM** — defensible but warrants a comment
   explaining when the fallback fires.
 - Trace ID handling uses raw hex strings on both sides since PR #439. Clean.
+- `RootServiceName` / `RootTraceName` use _strict_ equality (lines
+  235, 243), not the blank-skip pattern — so the audit's "same
+  pattern" framing was wrong here too. A future audit can revisit if
+  rootless-trace fixtures start surfacing as `field_mismatch`
+  noise.
 
 ### 4.3 Loki compliance tester — **1 HIGH concern (mitigated)**
 
@@ -303,16 +345,17 @@ always-on regardless of findings.
 | **1** | **★ PR-α** — `should_skip` CI guard                 | New `ci.yml` step that fails on any PR adding `should_skip:` to `cerberus-test-queries.yml` without a non-empty `reason:` AND a `jira:` URL or inline GH-issue link          | Prevents repeat of #429/#537                 |
 | **2** | **★ PR-β** — broaden `forbid-skip` regex            | Extend `ci.yml :: forbid-skip` to reject `assert.Contains(x, "")`, `defer recover()`, empty-slice `ElementsMatch`. Test against codebase first (should produce 0 hits today) | Discipline pin against fake-pass patterns    |
 | **3** | PR-γ — `logql/range_aggregation.go` mutation kills  | Add value-range assertions for window/anchor coefficients; kill 6 ARITHMETIC_BASE survivors                                                                                  | Strongest weak-test hotspot in audit         |
-| **4** | PR-δ — Tempo differ `StartTimeUnixNano` blank-skip  | Replace asymmetric blank-skip with "fail on asymmetric absence"                                                                                                              | Closes the only HIGH-severity differ concern |
-| **5** | PR-ε — Loki conformance empty `query_range`         | Strengthen `wantStreams == 0` case to assert `len(streams) == 0` explicitly                                                                                                  | Closes the HIGH-severity conformance concern |
-| **6** | PR-ζ — Tempo conformance nil-vs-empty               | Strengthen `TestConformance_TempoSearch*Wire` to require `Traces != nil` for empty cases                                                                                     | Closes 2 MEDIUM conformance concerns         |
-| **7** | PR-η — `logql/detected_level.go:143` mutation kills | Add level-boundary matrix exercising the mask/shift constants                                                                                                                | 2 ARITHMETIC_BASE survivors                  |
-| **8** | PR-θ — `promql/label_fns.go` mutation kills         | Add cases for `label_replace` with empty capture / `label_join` with single-element separator                                                                                | 4 float-arith survivors                      |
-| **9** | PR-ι — STRENGTHEN-REASON sweep                      | Clarify the 4 `detected_level` overlay entries' reasons (Phase 2 seeder vs deliberate scope)                                                                                 | Hygiene; preempts future audit nit           |
+| **4** | PR-ε — Loki conformance empty `query_range`         | Strengthen `wantStreams == 0` case to assert `len(streams) == 0` explicitly                                                                                                  | Closes the HIGH-severity conformance concern |
+| **5** | PR-ζ — Tempo conformance nil-vs-empty               | Strengthen `TestConformance_TempoSearch*Wire` to require `Traces != nil` for empty cases                                                                                     | Closes 2 MEDIUM conformance concerns         |
+| **6** | PR-η — `logql/detected_level.go:143` mutation kills | Add level-boundary matrix exercising the mask/shift constants                                                                                                                | 2 ARITHMETIC_BASE survivors                  |
+| **7** | PR-θ — `promql/label_fns.go` mutation kills         | Add cases for `label_replace` with empty capture / `label_join` with single-element separator                                                                                | 4 float-arith survivors                      |
+| **8** | PR-ι — STRENGTHEN-REASON sweep                      | Clarify the 4 `detected_level` overlay entries' reasons (Phase 2 seeder vs deliberate scope)                                                                                 | Hygiene; preempts future audit nit           |
 
-Total: 9 follow-up PRs. Mechanical PRs (1, 2, 4, 5, 6, 9) can land same-day.
-Mutation-kill PRs (3, 7, 8) take longer (need test design that genuinely
-distinguishes the mutated value).
+Total: 8 follow-up PRs (PR-δ "Tempo differ blank-skip tightening"
+dropped after re-reading the code; see §4.2 for the demotion
+rationale). Mechanical PRs (1, 2, 4, 5, 8) can land same-day.
+Mutation-kill PRs (3, 6, 7) take longer (need test design that
+genuinely distinguishes the mutated value).
 
 ## 10. Audit metadata
 
