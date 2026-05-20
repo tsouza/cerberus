@@ -66,8 +66,8 @@ func metricNames(sm metricdata.ScopeMetrics) []string {
 
 // TestObserveQuery_RecordsCounterAndDuration covers the QueryTimer
 // happy path: a single Done(ResultOK) call must bump
-// cerberus.queries.total by one and record a point on
-// cerberus.queries.duration.seconds with matching attributes.
+// cerberus_queries_total by one and record a point on
+// cerberus_queries_duration_seconds with matching attributes.
 func TestObserveQuery_RecordsCounterAndDuration(t *testing.T) {
 	reader := installManualReader(t)
 
@@ -75,7 +75,7 @@ func TestObserveQuery_RecordsCounterAndDuration(t *testing.T) {
 	tm.Done(t.Context(), telemetry.ResultOK)
 
 	sm := collect(t, reader)
-	total := findMetric(t, sm, "cerberus.queries.total")
+	total := findMetric(t, sm, "cerberus_queries_total")
 	sum, ok := total.Data.(metricdata.Sum[int64])
 	if !ok {
 		t.Fatalf("queries.total: unexpected data type %T", total.Data)
@@ -95,7 +95,7 @@ func TestObserveQuery_RecordsCounterAndDuration(t *testing.T) {
 		t.Errorf("result attr: got %v ok=%v", v.AsString(), ok)
 	}
 
-	dur := findMetric(t, sm, "cerberus.queries.duration.seconds")
+	dur := findMetric(t, sm, "cerberus_queries_duration_seconds")
 	hist, ok := dur.Data.(metricdata.Histogram[float64])
 	if !ok {
 		t.Fatalf("queries.duration: unexpected data type %T", dur.Data)
@@ -121,7 +121,7 @@ func TestObserveStage_RecordsHistogram(t *testing.T) {
 	}
 
 	sm := collect(t, reader)
-	m := findMetric(t, sm, "cerberus.pipeline.stage.duration.seconds")
+	m := findMetric(t, sm, "cerberus_pipeline_stage_duration_seconds")
 	hist, ok := m.Data.(metricdata.Histogram[float64])
 	if !ok {
 		t.Fatalf("stage.duration: unexpected data type %T", m.Data)
@@ -141,7 +141,7 @@ func TestRecordRulesApplied_RecordsHistogram(t *testing.T) {
 	telemetry.RecordRulesApplied(t.Context(), 3)
 
 	sm := collect(t, reader)
-	m := findMetric(t, sm, "cerberus.optimizer.rules_applied")
+	m := findMetric(t, sm, "cerberus_optimizer_rules_applied")
 	hist, ok := m.Data.(metricdata.Histogram[int64])
 	if !ok {
 		t.Fatalf("rules_applied: unexpected data type %T", m.Data)
@@ -159,12 +159,12 @@ func TestRecordClickHouseProgress(t *testing.T) {
 	telemetry.RecordClickHouseProgress(t.Context(), "promql", 1234, 56789)
 
 	sm := collect(t, reader)
-	rows := findMetric(t, sm, "cerberus.clickhouse.rows_read")
+	rows := findMetric(t, sm, "cerberus_clickhouse_rows_read")
 	rh, ok := rows.Data.(metricdata.Histogram[int64])
 	if !ok || len(rh.DataPoints) != 1 || rh.DataPoints[0].Sum != 1234 {
 		t.Fatalf("rows_read: got %+v want sum=1234", rh.DataPoints)
 	}
-	bytes := findMetric(t, sm, "cerberus.clickhouse.bytes_read")
+	bytes := findMetric(t, sm, "cerberus_clickhouse_bytes_read")
 	bh, ok := bytes.Data.(metricdata.Histogram[int64])
 	if !ok || len(bh.DataPoints) != 1 || bh.DataPoints[0].Sum != 56789 {
 		t.Fatalf("bytes_read: got %+v want sum=56789", bh.DataPoints)
@@ -195,7 +195,7 @@ func TestQueryMiddleware_ResultOK(t *testing.T) {
 	_ = resp.Body.Close()
 
 	sm := collect(t, reader)
-	total := findMetric(t, sm, "cerberus.queries.total")
+	total := findMetric(t, sm, "cerberus_queries_total")
 	sum := total.Data.(metricdata.Sum[int64])
 	if len(sum.DataPoints) != 1 {
 		t.Fatalf("queries.total DPs: got %d want 1", len(sum.DataPoints))
@@ -229,7 +229,7 @@ func TestQueryMiddleware_ResultError(t *testing.T) {
 	_ = resp.Body.Close()
 
 	sm := collect(t, reader)
-	total := findMetric(t, sm, "cerberus.queries.total")
+	total := findMetric(t, sm, "cerberus_queries_total")
 	sum := total.Data.(metricdata.Sum[int64])
 	if len(sum.DataPoints) != 1 {
 		t.Fatalf("queries.total DPs: got %d want 1", len(sum.DataPoints))

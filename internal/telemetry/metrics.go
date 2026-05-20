@@ -137,31 +137,31 @@ func Reset() {
 // rename that violates the syntax surfaces loudly at first use.
 func mustBuild(meter metric.Meter) *Instruments {
 	queriesTotal, err := meter.Int64Counter(
-		"cerberus.queries.total",
+		"cerberus_queries_total",
 		metric.WithDescription("Total queries handled, by language / route / result."),
 		metric.WithUnit("{query}"),
 	)
 	if err != nil {
-		panic("telemetry: build queries.total: " + err.Error())
+		panic("telemetry: build queries_total: " + err.Error())
 	}
 	queryDuration, err := meter.Float64Histogram(
-		"cerberus.queries.duration.seconds",
+		"cerberus_queries_duration_seconds",
 		metric.WithDescription("End-to-end query wall-clock, seconds."),
 		metric.WithUnit("s"),
 	)
 	if err != nil {
-		panic("telemetry: build queries.duration: " + err.Error())
+		panic("telemetry: build queries_duration: " + err.Error())
 	}
 	stageDuration, err := meter.Float64Histogram(
-		"cerberus.pipeline.stage.duration.seconds",
+		"cerberus_pipeline_stage_duration_seconds",
 		metric.WithDescription("Per-stage pipeline wall-clock, seconds."),
 		metric.WithUnit("s"),
 	)
 	if err != nil {
-		panic("telemetry: build stage.duration: " + err.Error())
+		panic("telemetry: build stage_duration: " + err.Error())
 	}
 	rulesApplied, err := meter.Int64Histogram(
-		"cerberus.optimizer.rules_applied",
+		"cerberus_optimizer_rules_applied",
 		metric.WithDescription("Optimizer rule invocations that changed the plan."),
 		metric.WithUnit("{rule}"),
 	)
@@ -169,7 +169,7 @@ func mustBuild(meter metric.Meter) *Instruments {
 		panic("telemetry: build rules_applied: " + err.Error())
 	}
 	chRows, err := meter.Int64Histogram(
-		"cerberus.clickhouse.rows_read",
+		"cerberus_clickhouse_rows_read",
 		metric.WithDescription("ClickHouse rows read per query (sum of Progress events)."),
 		metric.WithUnit("{row}"),
 	)
@@ -177,7 +177,7 @@ func mustBuild(meter metric.Meter) *Instruments {
 		panic("telemetry: build rows_read: " + err.Error())
 	}
 	chBytes, err := meter.Int64Histogram(
-		"cerberus.clickhouse.bytes_read",
+		"cerberus_clickhouse_bytes_read",
 		metric.WithDescription("ClickHouse bytes read per query (sum of Progress events)."),
 		metric.WithUnit("By"),
 	)
@@ -232,7 +232,8 @@ func (t *StageTimer) Done(ctx context.Context) {
 	if t == nil {
 		return
 	}
-	Get().StageDuration.Record(ctx, time.Since(t.start).Seconds(),
+	Get().StageDuration.Record(
+		ctx, time.Since(t.start).Seconds(),
 		metric.WithAttributes(AttrStage.String(t.stage)),
 	)
 }
