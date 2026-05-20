@@ -41,7 +41,15 @@ volumes:
 
 services:
   clickhouse:
-    image: clickhouse/clickhouse-server:24.8-alpine
+    # Use the Ubuntu-base image, NOT -alpine. Per PR #245's finding on
+    # the startup-bench job and PR #297's fix for the compatibility
+    # harnesses, `clickhouse/clickhouse-server:24.8-alpine` stalls in the
+    # entrypoint script for 5+ min (create-user → restart sequence never
+    # completes, port 8123 never binds). The Ubuntu-base variant boots in
+    # ~10-20s on the same hosts. A future maintainer: do NOT innocently
+    # switch back to -alpine without re-validating against the musl /
+    # scheduling regression that bit #245.
+    image: clickhouse/clickhouse-server:24.8
     networks: [cerberus-dev]
     environment:
       CLICKHOUSE_DB: otel
@@ -54,10 +62,18 @@ services:
       - "8123:8123"
       - "9000:9000"
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8123/ping"]
-      interval: 2s
-      timeout: 2s
-      retries: 30
+      # `clickhouse-client --query 'SELECT 1'` is more reliable than
+      # `wget /ping`: the HTTP listener (:8123) binds slightly before
+      # the SQL engine is ready to answer queries. Talking SQL over the
+      # local unix socket as the default user proves end-to-end
+      # readiness (mirrors compatibility/{prometheus,loki,tempo} after
+      # PR #297). start_period + retries cover the entrypoint's
+      # create-user → restart sequence on first boot.
+      test: ["CMD-SHELL", "clickhouse-client --query 'SELECT 1' 2>/dev/null || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 36
+      start_period: 30s
 
   cerberus:
     image: cerberus:dev
