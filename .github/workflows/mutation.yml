@@ -59,20 +59,14 @@ jobs:
         with:
           go-version-file: 'go.mod'
           cache: true
-      # Install gremlins via taiki-e/install-action — the generic
-      # Rust/Go-ecosystem installer honours GITHUB_TOKEN natively
-      # for its release-asset fetches, avoiding the 60-req/hour
-      # unauthenticated GitHub API rate limit that the upstream
-      # `go-gremlins/gremlins-action@v1` hit when 6 matrix jobs
-      # queued release-list calls (see run 26129317141 — passing
-      # GITHUB_TOKEN env to the action did not help because the
-      # action does not honour it). Pin to gremlins 0.6.0 exact.
+      # We install gremlins directly via `go install` so we don't
+      # depend on a third-party Action's release-download path.
+      # setup-go's module cache keeps subsequent runs fast.
       # Use `--output` for structured JSON (gremlins exits 0 even
       # when `--threshold-efficacy` is violated in v0.6.0, so we
       # do the gating ourselves against the parsed JSON below).
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: gremlins@0.6.0
+      - name: install gremlins
+        run: go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0
       - name: gremlins unleash
         run: gremlins unleash --output gremlins.json ${{ matrix.scope }}
       - name: enforce efficacy threshold
