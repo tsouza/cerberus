@@ -135,9 +135,33 @@ func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCt
 		table = s.TableFor(metricName)
 	}
 
+	// Classic-histogram companion routing: `<base>_count` / `<base>_sum`
+	// are Prom-convention companion names whose data lives, in the OTel-CH
+	// layout, as `Count` / `Sum` columns on rows written under the bare
+	// `<base>` name in the histogram table. Reroute the scan + strip the
+	// suffix off the `__name__` matcher + alias the column as `Value` so
+	// the downstream Sample-row contract holds. Mirrors stripBucketSuffix
+	// (PR #637) for the `_bucket` companion, and the exemplars handler's
+	// routing in internal/api/prom/exemplars.go::exemplarsTableFor.
+	matchers := v.LabelMatchers
+	var companionValueColumn string
+	if bare, col, ok := s.HistogramCompanionColumn(metricName); ok && s.HistogramTable != "" {
+		table = s.HistogramTable
+		matchers = rewriteMetricName(matchers, bare)
+		companionValueColumn = col
+	}
+
 	scan := &chplan.Scan{Table: table}
 
-	pred := buildPredicate(v.LabelMatchers, s)
+	pred := buildPredicate(matchers, s)
+	// Build the input subtree the LWR / range-vector pipeline consumes.
+	// For the classic-histogram companion path we project the source
+	// column (Count / Sum) as `Value` so downstream nodes still see the
+	// canonical (MetricName, Attributes, TimeUnix, Value) shape.
+	var selectorInput chplan.Node = scan
+	if companionValueColumn != "" {
+		selectorInput = wrapHistogramCompanionProject(scan, companionValueColumn, s)
+	}
 
 	// Resolve the effective evaluation anchor for this selector.
 	// `@`/offset modifiers shadow the surrounding ctx; absent a
@@ -163,9 +187,9 @@ func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCt
 			}
 		}
 		if pred == nil {
-			return scan, nil
+			return selectorInput, nil
 		}
-		return &chplan.Filter{Input: scan, Predicate: pred}, nil
+		return &chplan.Filter{Input: selectorInput, Predicate: pred}, nil
 	}
 	// Range mode (ctx.step > 0): build the per-step LWR by cross-joining
 	// the raw scan with a StepGrid and collapsing latest-per-(series,
@@ -180,15 +204,80 @@ func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCt
 		// CrossJoin so the matrix pivot still receives one row per
 		// (series, step).
 		if hasAbsoluteAt(v) {
-			return wrapRangeAbsoluteAtBroadcast(scan, pred, anchor, ctx, s), nil
+			return wrapRangeAbsoluteAtBroadcast(selectorInput, pred, anchor, ctx, s), nil
 		}
-		return wrapRangeLatestPerSeries(scan, pred, anchor, ctx, s), nil
+		return wrapRangeLatestPerSeries(selectorInput, pred, anchor, ctx, s), nil
 	}
 	// Instant-vector context: the LWR wrapper applies both the
 	// `Timestamp <= anchor` upper bound and the staleness lower
 	// bound, so we DON'T pre-add the modifier's timeBoundExpr here —
 	// that would duplicate the upper-bound predicate.
-	return wrapInstantLatestPerSeries(scan, pred, anchor, s), nil
+	return wrapInstantLatestPerSeries(selectorInput, pred, anchor, s), nil
+}
+
+// wrapHistogramCompanionProject wraps a histogram-table Scan in a
+// Project that synthesises the canonical Sample-row shape:
+// `(MetricName, Attributes, TimeUnix, toFloat64(<col>) AS Value)`. The
+// LWR / RangeWindow / Aggregate nodes downstream reference
+// `s.ValueColumn` ("Value") generically — projecting the histogram-row
+// `Count` / `Sum` column under that alias keeps the rest of the
+// lowering pipeline schema-agnostic about which companion suffix it's
+// servicing.
+//
+// `toFloat64` is required because OTel-CH's histogram `Count` is
+// `UInt64` while the canonical PromQL `Value` is `Float64`. CH would
+// otherwise silently up-cast inside arithmetic, but emitting the cast
+// here keeps the downstream rate / arithmetic expressions consistent
+// with the gauge / sum-table path (where `Value` is already
+// `Float64`).
+func wrapHistogramCompanionProject(scan *chplan.Scan, sourceColumn string, s schema.Metrics) chplan.Node {
+	return &chplan.Project{
+		Input: scan,
+		Projections: []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
+			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
+			{
+				Expr: &chplan.FuncCall{
+					Name: "toFloat64",
+					Args: []chplan.Expr{&chplan.ColumnRef{Name: sourceColumn}},
+				},
+				Alias: s.ValueColumn,
+			},
+		},
+	}
+}
+
+// rewriteMetricName returns a copy of matchers where any
+// `__name__=<X>` (MatchEqual) matcher carries the supplied bare name in
+// place of `<X>`. Used by the classic-histogram companion rewrite to
+// strip the `_count` / `_sum` suffix from the `__name__` matcher so the
+// emitted filter resolves against the bare metric name OTel-CH writes.
+//
+// Non-`__name__` matchers and non-Equal `__name__` matchers (e.g.
+// `__name__=~"foo|bar"`) flow through unchanged: the bare-name strip
+// only applies to a single equality matcher, which is the only shape
+// `metricNameFromMatchers` recognises in the first place.
+//
+// Copy-on-write semantics mirror stripBucketSuffix: a fresh slice +
+// fresh matcher are allocated, the input is never mutated. The parser
+// can reuse the matcher slice across lowering passes and a mutation
+// here would silently bleed back into later passes.
+func rewriteMetricName(matchers []*labels.Matcher, bareName string) []*labels.Matcher {
+	out := make([]*labels.Matcher, len(matchers))
+	for i, m := range matchers {
+		if m.Name == model.MetricNameLabel && m.Type == labels.MatchEqual && m.Value != bareName {
+			copied, err := labels.NewMatcher(m.Type, m.Name, bareName)
+			if err != nil {
+				out[i] = m
+				continue
+			}
+			out[i] = copied
+			continue
+		}
+		out[i] = m
+	}
+	return out
 }
 
 // wrapInstantLatestPerSeries adds the LWR + staleness predicates on
@@ -213,7 +302,7 @@ func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCt
 // The outer Project re-aliases back to the canonical names so the
 // surrounding plan tree continues to see the same `MetricName /
 // Attributes / TimeUnix / Value` shape.
-func wrapInstantLatestPerSeries(scan *chplan.Scan, pred chplan.Expr, anchor evalAnchor, s schema.Metrics) chplan.Node {
+func wrapInstantLatestPerSeries(scan chplan.Node, pred chplan.Expr, anchor evalAnchor, s schema.Metrics) chplan.Node {
 	lwr := timeBoundExpr(s.TimestampColumn, anchor)
 	staleness := stalenessLowerBoundExpr(s.TimestampColumn, anchor, instantLookback)
 	combined := pred
@@ -286,7 +375,7 @@ func wrapInstantLatestPerSeries(scan *chplan.Scan, pred chplan.Expr, anchor eval
 // before — the difference vs the instant LWR wrap is that each (series)
 // produces N rows (one per step inside `[start, end]` that had data) rather
 // than a single row at `end_ts`.
-func wrapRangeLatestPerSeries(scan *chplan.Scan, pred chplan.Expr, anchor evalAnchor, ctx lowerCtx, s schema.Metrics) chplan.Node {
+func wrapRangeLatestPerSeries(scan chplan.Node, pred chplan.Expr, anchor evalAnchor, ctx lowerCtx, s schema.Metrics) chplan.Node {
 	const (
 		anchorCol     = "anchor_ts"
 		lwrValueAlias = "lwr_value"
@@ -444,7 +533,7 @@ func wrapRangeLatestPerSeries(scan *chplan.Scan, pred chplan.Expr, anchor evalAn
 // matchers stay on the bare scan (the optimizer promotes them as usual).
 //
 // Closes follow-up #2 from Pool-AK's PR #347.
-func wrapRangeAbsoluteAtBroadcast(scan *chplan.Scan, pred chplan.Expr, anchor evalAnchor, ctx lowerCtx, s schema.Metrics) chplan.Node {
+func wrapRangeAbsoluteAtBroadcast(scan chplan.Node, pred chplan.Expr, anchor evalAnchor, ctx lowerCtx, s schema.Metrics) chplan.Node {
 	// Inner: LWR collapsed once at the pinned anchor. The filter is the
 	// same shape wrapInstantLatestPerSeries uses — Timestamp <= anchor
 	// AND Timestamp > anchor - lookback — with offset (if any) folded
