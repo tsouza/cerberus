@@ -62,6 +62,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -466,6 +467,29 @@ func compareOne(c *http.Client, f flags, tc bench.TestCase, suiteFile string, is
 
 	expected := normaliseTypedResult(out[0].value)
 	actual := normaliseTypedResult(out[1].value)
+	// Cases tagged `empty-result` in the upstream YAML are designed to
+	// return no rows (e.g. `${SELECTOR} |= "this will not hit any line"`
+	// in fast/basic-selectors.yaml — the filter literal can never match
+	// a seeded log line by construction). For those cases a baseline-
+	// empty response is the expected outcome, so we treat
+	// baseline-empty + actual-empty as a parity pass and flip the
+	// diff direction: actual-non-empty means cerberus returned rows
+	// reference Loki did not, which is a real shape mismatch.
+	if isExpectedEmptyCase(tc) {
+		switch {
+		case expected.isEmpty() && actual.isEmpty():
+			return result
+		case expected.isEmpty() && !actual.isEmpty():
+			result.Diff = "baseline empty (expected) but test endpoint returned rows"
+			return result
+		case !expected.isEmpty() && actual.isEmpty():
+			result.UnexpectedFailure = "test endpoint returned empty"
+			return result
+		}
+		// Fall through to the diff path when both sides have rows —
+		// the case may carry the tag for the cache exercise reason
+		// even though the seeded data happens to flow through.
+	}
 	if expected.isEmpty() {
 		// Same convention as upstream `assertResultNotEmpty`: we don't
 		// flip a comparison failure on an empty baseline because the
@@ -482,6 +506,18 @@ func compareOne(c *http.Client, f flags, tc bench.TestCase, suiteFile string, is
 		result.Diff = diff
 	}
 	return result
+}
+
+// isExpectedEmptyCase returns true when the upstream YAML tags this
+// case as intentionally empty. The fast/basic-selectors.yaml entry
+// `Log query with impossible filter ...` is the canonical example —
+// the corpus author plugs in a filter literal that cannot match any
+// seeded line. Without this signal the harness would flag every such
+// case as `baseline returned empty` and force a should_skip overlay,
+// turning an honest differential ("both endpoints agree on empty")
+// into a silenced row.
+func isExpectedEmptyCase(tc bench.TestCase) bool {
+	return slices.Contains(tc.Tags, "empty-result")
 }
 
 // stripSourceLine strips the trailing `:<line>` from a bench source path.
