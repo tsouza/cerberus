@@ -78,12 +78,57 @@ test('compose: home, drilldown app, and every provisioned dashboard load without
 
   // 2. Fixed surfaces the maintainer keeps hitting that the dynamic
   //    dashboard loop misses entirely.
+  //
+  //    Explore-mode entries each exercise one of the regressions a 2026-05-20
+  //    corner-sweep surfaced and four PRs (#630–#633) fixed:
+  //      - prom-up:                 Grafana sends ms-timestamps over
+  //                                 /api/datasources/uid/.../resources/...
+  //                                 — overflow before #630 made every
+  //                                 Prom Explore page 502.
+  //      - prom-cerberus-metric:    the self-telemetry stream the
+  //                                 cerberus-self dashboard targets;
+  //                                 catches dotted-vs-underscored regressions.
+  //      - loki-allstreams:         exercises `/loki/api/v1/query_range`
+  //                                 with a permissive selector; also
+  //                                 triggers the Loki CheckHealth probe
+  //                                 (`vector(1)+vector(1)`) on the
+  //                                 datasource — caught the ResourceAttributes
+  //                                 scope error fixed by #631.
+  //      - tempo-search:            `{}` against `/api/search`; also fires
+  //                                 the buildinfo probe (#633) + the V2
+  //                                 tag-values probe.
+  const exploreLeft = (ds: string, kind: 'prom' | 'loki' | 'tempo', expr: string) => {
+    const queryType = kind === 'loki' ? 'range' : undefined;
+    const state: any = {
+      datasource: ds,
+      queries: [{ refId: 'A', expr, datasource: { type: kind, uid: ds }, queryType }],
+      range: { from: 'now-1h', to: 'now' },
+    };
+    return `${baseURL}/explore?orgId=1&left=${encodeURIComponent(JSON.stringify(state))}`;
+  };
+
   const fixedSurfaces: Surface[] = [
     { kind: 'home', label: '/', url: `${baseURL}/` },
     {
       kind: 'app:lokiexplore',
       label: '/a/grafana-lokiexplore-app',
       url: `${baseURL}/a/grafana-lokiexplore-app/explore?var-ds=cerberus-loki`,
+    },
+    { kind: 'explore:prom', label: 'prom up', url: exploreLeft('cerberus-prometheus', 'prom', 'up') },
+    {
+      kind: 'explore:prom',
+      label: 'prom cerberus_queries_total',
+      url: exploreLeft('cerberus-prometheus', 'prom', 'cerberus_queries_total'),
+    },
+    {
+      kind: 'explore:loki',
+      label: 'loki {service_name=~".+"}',
+      url: exploreLeft('cerberus-loki', 'loki', '{service_name=~".+"}'),
+    },
+    {
+      kind: 'explore:tempo',
+      label: 'tempo {}',
+      url: exploreLeft('cerberus-tempo', 'tempo', '{}'),
     },
   ];
 
@@ -145,14 +190,21 @@ test('compose: home, drilldown app, and every provisioned dashboard load without
     for (const resp of captured) {
       const status = resp.status();
       if (status < 200 || status > 299) {
+        const method = resp.request().method();
+        const path = stripBase(resp.url(), baseURL);
+        if (isKnownTolerated404(status, path)) {
+          // Documented surface that cerberus does not yet implement and
+          // whose 404 has no UI / dashboard consequence. The list is
+          // narrow on purpose — see isKnownTolerated404 for the
+          // per-path rationale.
+          continue;
+        }
         let body = '';
         try {
           body = await resp.text();
         } catch {
           body = '<unreadable>';
         }
-        const method = resp.request().method();
-        const path = stripBase(resp.url(), baseURL);
         failures.push(
           `[${surface.kind}:${surface.label}] http: ${method} ${path} → ${status}\n  body: ${truncate(body, 800)}`,
         );
@@ -213,6 +265,47 @@ test('compose: home, drilldown app, and every provisioned dashboard load without
       failures.push(
         `[${surface.kind}:${surface.label}] panel-error: panel "${title}"\n  message: ${truncate(message, 400)}`,
       );
+    }
+  }
+
+  // 4. Datasource-health probes. Grafana calls
+  //    `/api/datasources/uid/<uid>/health` per datasource on every page
+  //    load + when the user clicks "Save & test". A non-200 here
+  //    surfaces in the Grafana UI as a red "Unable to connect"
+  //    banner — exactly the failure mode #631 + #633 fixed.
+  //
+  //    Probing these explicitly catches regressions even when no
+  //    dashboard / Explore page happens to trigger the probe under
+  //    the load-state we waited for above.
+  // cerberus-tempo is intentionally excluded: Grafana's Tempo
+  // datasource plugin does not implement a backend CheckHealth method,
+  // so `/api/datasources/uid/cerberus-tempo/health` always returns 404
+  // with `{"messageId":"plugin.notImplemented",...}` — that's a Grafana
+  // plugin shape, not a cerberus 404. The Tempo per-page-load buildinfo
+  // probe + the dashboard-driven /api/ds/query sweep above still cover
+  // the cerberus tempo surface for regressions (see #633).
+  const probedDatasources = ['cerberus-prometheus', 'cerberus-loki'];
+  for (const ds of probedDatasources) {
+    const resp = await request.get(`${baseURL}/api/datasources/uid/${ds}/health`);
+    const body = await resp.text();
+    if (resp.status() < 200 || resp.status() > 299) {
+      failures.push(
+        `[health:${ds}] datasource health probe → ${resp.status()}\n  body: ${truncate(body, 600)}`,
+      );
+      continue;
+    }
+    // Grafana's contract for /health is `{status, message}`; "ERROR"
+    // is the documented failure value (mirrors the red UI banner).
+    try {
+      const parsed = JSON.parse(body) as { status?: string; message?: string };
+      if (parsed.status && parsed.status !== 'OK' && parsed.status !== 'success') {
+        failures.push(
+          `[health:${ds}] datasource health status=${parsed.status} message=${truncate(parsed.message ?? '', 240)}`,
+        );
+      }
+    } catch {
+      // non-JSON body is suspicious for /health but not fatal on its
+      // own; the 2xx check above is the load-bearing assertion.
     }
   }
 
@@ -318,4 +411,31 @@ function truncate(s: string, n: number): string {
 
 function stripBase(url: string, base: string): string {
   return url.startsWith(base) ? url.slice(base.length) : url;
+}
+
+/**
+ * Surfaces whose 404 has no user-visible consequence and that we
+ * therefore tolerate while the corresponding implementation PR lands.
+ *
+ * Keep this list intentionally narrow — each entry is a known gap
+ * tracked by an open PR. When the PR merges, drop the entry so the
+ * catch-net snaps back to "every captured request is 2xx".
+ *
+ * Current entries:
+ *
+ *   * `/api/datasources/uid/cerberus-prometheus/resources/api/v1/rules`
+ *   * `/api/datasources/uid/cerberus-prometheus/resources/api/v1/alerts`
+ *     Grafana's Prom datasource polls /api/v1/rules + /api/v1/alerts on
+ *     every Explore / page load to gate the "Alert Rules" / "Alerts"
+ *     UI affordances. cerberus is a query gateway with no rule engine,
+ *     so PR #632 ships an empty-envelope stub. Until #632 merges,
+ *     tolerate the 404 — the affordance simply renders empty, no panel
+ *     or dashboard surface degrades.
+ */
+function isKnownTolerated404(status: number, path: string): boolean {
+  if (status !== 404) return false;
+  return (
+    path.includes('/api/datasources/uid/cerberus-prometheus/resources/api/v1/rules') ||
+    path.includes('/api/datasources/uid/cerberus-prometheus/resources/api/v1/alerts')
+  );
 }

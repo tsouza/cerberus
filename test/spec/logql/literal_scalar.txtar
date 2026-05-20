@@ -14,7 +14,7 @@ CREATE TABLE otel_logs (
   [{}, 42.0]
 ]
 -- chplan --
-Project [CAST(map(), "Map(String,String)") AS ResourceAttributes, 42 AS Value]
+Project [CAST(map(), "Map(String,String)") AS ResourceAttributes, toFloat64(42) AS Value]
   OneRow
 -- sql --
-SELECT CAST(map(), ?) AS `ResourceAttributes`, ? AS `Value` FROM (SELECT 1)
+SELECT CAST(map(), ?) AS `ResourceAttributes`, toFloat64(?) AS `Value` FROM (SELECT 1)
