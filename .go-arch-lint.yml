@@ -32,8 +32,6 @@
 #     api-admit       — shared admission-control middleware.
 #     api-format      — wire-format helpers shared across handlers.
 #     api-health      — readiness probe.
-#     promshim-local  — Prometheus-engine reference shim for property
-#                       tests (test-only consumer).
 #     schema-ddl      — OTel-CH DDL helpers (config consumes; isolated).
 #     chclienttest    — chclient test helpers.
 #
@@ -108,7 +106,6 @@ components:
   api-admit:      { in: api/admit }
   api-format:     { in: api/format }
   api-health:     { in: api/health }
-  promshim-local: { in: promshim/local }
   chclienttest:   { in: chclienttest }
   qlcommon:       { in: qlcommon }
 
@@ -124,7 +121,6 @@ commonComponents:
   - api-admit
   - api-format
   - api-health
-  - promshim-local
   - chclienttest
   - qlcommon
 

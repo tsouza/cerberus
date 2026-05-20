@@ -1,14 +1,12 @@
 // Package promql is the from-scratch PromQL evaluator that serves as
 // the independent specification for cerberus's property-testing
-// framework. Unlike test/property/oracle/bridge.go — which delegates to
-// Prometheus's own promql.Engine via internal/promshim/local — this
-// package reimplements the subset of PromQL semantics the property
-// test exercises, in cerberus's tree, from the [PromQL semantics
-// documentation] and the canonical engine behavior. The whole point is
-// to catch bugs cerberus shares with upstream Prometheus: when the
-// bridge oracle agrees with cerberus on a buggy answer, that bug is
-// invisible — but the from-scratch oracle, derived from the spec
-// rather than the same code, will surface it.
+// framework. The package reimplements the subset of PromQL semantics
+// the property test exercises, derived from the [PromQL semantics
+// documentation] and the canonical engine behavior — NOT delegating to
+// Prometheus's own promql.Engine. The whole point is to catch bugs
+// cerberus would share with upstream Prometheus: if the oracle
+// delegated back to Prom's engine and they agreed on a buggy answer,
+// the bug would be invisible.
 //
 // # MVP coverage (Phase 1 PR 2)
 //

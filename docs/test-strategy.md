@@ -1,12 +1,11 @@
 # Test strategy
 
-Cerberus is tested in 12 layers, ordered roughly cheapest-and-fastest
+Cerberus is tested in 11 layers, ordered roughly cheapest-and-fastest
 to slowest-and-most-realistic. Each layer pins a different class of
 contract: AST shape, plan-IR invariants, optimizer behaviour, emitted
 SQL bytes, semantic equivalence under chDB execution, HTTP wire
-conformance, process lifecycle, differential agreement against
-reference engines, browser UX, failure-mode resilience, performance
-ceilings.
+conformance, process lifecycle, browser UX, failure-mode resilience,
+performance ceilings.
 
 This document is the canonical map of what each layer covers, where
 the tests live, which CI gates run them, and how to add a new test
@@ -25,27 +24,25 @@ inside each layer.
 | 6a    | PromQL chDB roundtrip               | `test/spec/promql/*.txtar` (`-- seed --` / `-- expected_rows --`)                                 | Optimizer/emitter rewrites that change the row set                                                                   | Behaviour outside the seeded corpus                                         |
 | 6b    | LogQL chDB roundtrip                | `test/spec/logql/*.txtar`                                                                         | Same as 6a for LogQL                                                                                                 | Same as 6a                                                                  |
 | 6c    | TraceQL chDB roundtrip              | `test/spec/traceql/*.txtar`                                                                       | Same as 6a for TraceQL                                                                                               | Same as 6a                                                                  |
-| 7     | HTTP handler conformance            | `internal/api/{prom,loki,tempo}/conformance_test.go`                                              | Wire-format drift, error envelope shape, header pins, range-param parsing, admission control                         | Real-network failure modes (Layer 11) and UX flows (Layer 10)               |
-| 8     | System / process lifecycle          | `internal/config/`, `internal/api/health/`, `cmd/cerberus/`, `internal/telemetry/`, `schema/ddl/` | Env-var contract, `/readyz` TTL coalescing, OTel telemetry attributes, signal-driven shutdown                        | Cross-process behaviour — Compose / k3d (Layer 10)                          |
-| 9     | Differential shadow harness         | `compatibility/prometheus/shadow/*_test.go`                                                       | Cerberus vs. reference engine drift on PromQL / LogQL / TraceQL corpora                                              | Implementation-defined corners that both sides handle the same              |
-| 10    | Playwright UX flows                 | `test/e2e/playwright/*.spec.ts`                                                                   | Grafana Explore / Logs / Trace panel request sequences against cerberus's three datasource APIs                      | Pure backend logic — Layers 1–8                                             |
-| 11    | Chaos / failure-mode                | `internal/{chclient,api/{prom,loki,tempo,admit}}/chaos_test.go`, `test/regression/goleak_test.go` | CH-failure, mid-stream cursor faults, goroutine leaks, panic-mid-handler slot release, CH-disconnect circuit breaker | Long-tail platform-specific failures                                        |
-| 12    | Perf benchmarks + alloc regressions | `internal/*/*_bench_test.go`                                                                      | Allocation count regressions per pipeline stage; bounded-RSS streaming cursor                                        | Wall-clock perf regressions — left to `perf-benchmark.yml` benchstat        |
+| 7     | HTTP handler conformance            | `internal/api/{prom,loki,tempo}/conformance_test.go`                                              | Wire-format drift, error envelope shape, header pins, range-param parsing, admission control                         | Real-network failure modes (Layer 10) and UX flows (Layer 9)                |
+| 8     | System / process lifecycle          | `internal/config/`, `internal/api/health/`, `cmd/cerberus/`, `internal/telemetry/`, `schema/ddl/` | Env-var contract, `/readyz` TTL coalescing, OTel telemetry attributes, signal-driven shutdown                        | Cross-process behaviour — Compose / k3d (Layer 9)                           |
+| 9     | Playwright UX flows                 | `test/e2e/playwright/*.spec.ts`                                                                   | Grafana Explore / Logs / Trace panel request sequences against cerberus's three datasource APIs                      | Pure backend logic — Layers 1–8                                             |
+| 10    | Chaos / failure-mode                | `internal/{chclient,api/{prom,loki,tempo,admit}}/chaos_test.go`, `test/regression/goleak_test.go` | CH-failure, mid-stream cursor faults, goroutine leaks, panic-mid-handler slot release, CH-disconnect circuit breaker | Long-tail platform-specific failures                                        |
+| 11    | Perf benchmarks + alloc regressions | `internal/*/*_bench_test.go`                                                                      | Allocation count regressions per pipeline stage; bounded-RSS streaming cursor                                        | Wall-clock perf regressions — left to `perf-benchmark.yml` benchstat        |
 
 ## CI gates
 
 | Gate                          | Workflow                                       | Trigger                           | Required PR check? | Scope                                                                                                             |
 | ----------------------------- | ---------------------------------------------- | --------------------------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------- |
-| `check`                       | `.github/workflows/ci.yml` (job `check`)       | PRs + push                        | Required           | `go test -race -cover ./...` (Layers 1, 2a, 2b, 3, 4, 5, 7, 8, 11 default)                                        |
+| `check`                       | `.github/workflows/ci.yml` (job `check`)       | PRs + push                        | Required           | `go test -race -cover ./...` (Layers 1, 2a, 2b, 3, 4, 5, 7, 8, 10 default)                                        |
 | `lint`                        | `.github/workflows/ci.yml` (job `lint`)        | PRs + push                        | Required           | `golangci-lint` v2 + markdownlint + commitlint                                                                    |
 | `forbid-skip`                 | `.github/workflows/ci.yml` (job `forbid-skip`) | PRs + push                        | Required           | `t.Skip*` + discipline-erosion wording + soft-assertion + skip-additions                                          |
 | `probe`                       | `.github/workflows/chdb.yml` (job `probe`)     | PRs + push                        | Required           | chDB driver sanity (`TestChDBProbe`)                                                                              |
 | `roundtrip (<ql>)`            | `.github/workflows/chdb.yml` matrix            | PRs + push                        | Required           | TXTAR chDB roundtrip for promql / logql / traceql (Layer 6a-c)                                                    |
 | `compatibility/<head>`        | `.github/workflows/compatibility.yml` matrix   | PRs (path-match) + push + nightly | Required (on path) | Differential vs reference Prom / Loki / Tempo                                                                     |
-| `dashboard` (E2E)             | `.github/workflows/e2e.yml` (job `dashboard`)  | push-to-main + nightly + manual   | Informational      | k3d + cerberus + Grafana + Playwright (Layer 10)                                                                  |
+| `dashboard` (E2E)             | `.github/workflows/e2e.yml` (job `dashboard`)  | push-to-main + nightly + manual   | Informational      | k3d + cerberus + Grafana + Playwright (Layer 9)                                                                   |
 | `mutation` (per phase)        | `.github/workflows/mutation.yml` matrix        | push-to-main + nightly + manual   | Informational      | gremlins on each of `chplan` / `chsql` / `optimizer` / `promql` / `logql` / `traceql` / `qlcommon` @ 95% efficacy |
 | `property`                    | `.github/workflows/property.yml`               | push-to-main + nightly + manual   | Informational      | rapid-driven property tests (Layer 4 + 6 cross-check)                                                             |
-| `shadow-mode`                 | `.github/workflows/shadow-mode.yml`            | manual                            | Informational      | Cerberus-vs-reference engine for selected corpus subset                                                           |
 | `perf-benchmark`              | `.github/workflows/perf-benchmark.yml`         | manual                            | Informational      | benchstat-based perf regression                                                                                   |
 
 ## Per-layer guidance
@@ -127,22 +124,14 @@ Covers env-var parsing (`internal/config/`), `/healthz` + `/readyz`
 TTL coalescing, OTel resource attribute composition, schema DDL
 idempotency, and signal-driven shutdown.
 
-### Layer 9 — Differential shadow harness
-
-Local cerberus is evaluated alongside a reference engine
-(`promshim/local` for PromQL — the wrapped Prometheus engine, not the
-SUT) on the same query / dataset; rows diff to bytes. The harness
-complements the compatibility harness by running per-PR against a
-broader random corpus.
-
-### Layer 10 — Playwright UX flows
+### Layer 9 — Playwright UX flows
 
 `test/e2e/playwright/*.spec.ts` boots a k3d cluster (cerberus +
 ClickHouse + Grafana + telemetrygen), provisions the cerberus
 datasources, and walks Explore / Dashboard / Logs / Trace panel
 flows.
 
-### Layer 11 — Chaos / failure-mode
+### Layer 10 — Chaos / failure-mode
 
 `internal/{chclient,api/...}/chaos_test.go` injects CH connection
 drops, mid-stream cursor faults, panic-mid-handler, and the
@@ -150,7 +139,7 @@ drops, mid-stream cursor faults, panic-mid-handler, and the
 breaker shields cerberus from amplifying transient CH outages into a
 503 storm.
 
-### Layer 12 — Perf + alloc regressions
+### Layer 11 — Perf + alloc regressions
 
 `BenchmarkXxx` measures per-stage allocation counts via
 `testing.AllocsPerRun`. `TestAllocs_Xxx` pins documented zero-alloc

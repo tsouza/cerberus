@@ -851,9 +851,9 @@ func aggregateCarriesSpansetEnvelope(a *chplan.Aggregate) bool {
 // format strips leading zeros, so we route it through
 // stripLeadingHexZeros — same treatment canonicalSampleProjections
 // applies to the scan-level TraceId column. Without the strip, the
-// shadow-mode differ pairs cerberus rows by `00af…66b` against
-// Tempo's `af…66b`, generating spurious missing_in_a / missing_in_b
-// reasons across the spanset-aggregate compat cases (e.g.
+// compat differ pairs cerberus rows by `00af…66b` against Tempo's
+// `af…66b`, generating spurious missing_in_a / missing_in_b reasons
+// across the spanset-aggregate compat cases (e.g.
 // `avg_duration_per_trace_status_ok`).
 //
 // Tempo's /api/search wire spec reports `durationMs` as the

@@ -26,11 +26,11 @@ internal/
   config/                    runtime config (env-driven)
 cmd/cerberus/                main entrypoint
 test/spec/                   TXTAR golden tests (input QL → SQL/plan + `-- chplan --` IR snapshots + optional `-- seed --` / `-- expected_rows --` chDB roundtrip). `test/spec/chplan_print.go` is the deterministic IR pretty-printer used by Layer 2a snapshots.
-test/property/               oracle-based property tests (`pgregory.net/rapid` shrinking + chDB execution); `gen/` random data + query generators; `oracle/` from-scratch evaluator (replaced the earlier `promshim/local` bridge in Phase 1).
+test/property/               oracle-based property tests (`pgregory.net/rapid` shrinking + chDB execution); `gen/` random data + query generators; `oracle/` from-scratch evaluator.
 test/regression/             meta-tests that pin past CI failures so they can't silently recur — goleak detectors across every handler entrypoint (added by #253), justfile-shape pins, seed-program invariants.
 test/e2e/                    k3d cluster + Grafana playwright smoke
 test/e2e/{k3s,grafana}/      k3d manifests + Grafana provisioning (datasources, dashboards) consumed by the smoke
-compatibility/prometheus/    prometheus/compliance Docker Compose harness + shadow-mode differential testing
+compatibility/prometheus/    prometheus/compliance Docker Compose harness — PromQL differential testing
 compatibility/loki/          LogQL differential harness vs reference Loki + vendored `grafana/loki:pkg/logql/bench` corpus
 compatibility/tempo/         TraceQL differential harness vs reference Tempo + vendored `cmd/tempo-vulture` / `pkg/httpclient` snapshot
 docs/                        engine.md, compatibility.md, test-strategy.md, observability.md, operations.md, upstream-forks.md, health.md, …

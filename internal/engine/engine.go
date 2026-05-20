@@ -154,9 +154,8 @@ type Result struct {
 	// Args is the positional argument list bound to SQL's `?`
 	// placeholders.
 	Args []any
-	// Strategy is a free-form label for the execution path taken —
-	// reserved for the shadow-mode / fallback-evaluator work. Empty
-	// today.
+	// Strategy is a free-form label for the execution path taken.
+	// Empty today; reserved for future fallback-evaluator wiring.
 	Strategy string
 	// CHMillis is the wall-clock time spent in Client.Query, in
 	// milliseconds. Replaces the per-handler chMillisCounter for

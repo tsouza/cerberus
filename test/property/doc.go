@@ -18,41 +18,11 @@
 //     reports — so the developer reading the failure sees a one-series,
 //     one-point dataset and a two-token query rather than a 4kB blob.
 //
-// # Phase 1 PR 1 (this drop) — framework scaffolding
-//
-// This PR lands the framework infrastructure. The oracle is a TEMPORARY
-// bridge to Prometheus's own promql.Engine (via internal/promshim/local),
-// which means the "differential" property — "cerberus matches the oracle
-// for every random query" — degenerates here to "cerberus matches
-// Prometheus's engine for the MVP query set". That's not a from-scratch
-// independent specification; it's a sanity check that the framework
-// plumbing (rapid → dataset → chDB → cerberus → oracle → comparator)
-// works end-to-end.
-//
-// The reason this is still useful as a landing PR:
-//
-//   - The framework infrastructure (generators, chDB session, comparator,
-//     shrinking driver) is the load-bearing part. Replacing the oracle
-//     is a follow-up of bounded scope (Phase 1 PR 2).
-//   - Even with a bridge oracle, the MVP test still exercises every
-//     generator path and every comparator branch on each run. A bug in
-//     the generator (e.g. producing a label that no series carries) or
-//     in the comparator (e.g. losing a sample on the cerberus side) is
-//     surfaced loud and early.
-//   - Cerberus's own end-to-end pipeline (HTTP → parse → lower → optimize
-//     → emit → execute → response shape) is exercised on every iteration
-//     against a real chDB session, catching pipeline-level regressions
-//     the spec/ fixtures don't reach (they pin a SQL string rather than
-//     a result shape).
-//
-// # Phase 1 PR 2 (follow-up) — from-scratch oracle
-//
-// PR 2 replaces oracle/bridge.go with an in-tree, from-scratch PromQL
-// evaluator that reads the same MetricsModel. At that point the test
-// stops being a "cerberus vs. Prometheus" sanity check and becomes a
+// The oracle is an in-tree, from-scratch PromQL evaluator that reads
+// the same MetricsModel the generators populate. This makes the test a
 // true differential property: cerberus must match an INDEPENDENT
-// specification of PromQL semantics, written against the same model
-// the generators populate.
+// specification of PromQL semantics, not delegate back to Prometheus's
+// own engine.
 //
 // # File layout
 //
@@ -74,8 +44,6 @@
 //     from-scratch oracle's accept-set.
 //   - gen/logql.go — random LogQL dataset + query generator (logs
 //     mirror; log-stream selectors with `|=` / `!=` / `| label_format`).
-//   - oracle/bridge.go — temporary bridge to promshim/local; retained
-//     as a secondary sanity check for PromQL.
 //   - oracle/promql/ — from-scratch PromQL evaluator.
 //   - oracle/logql/  — from-scratch LogQL evaluator (log-stream
 //     subset; metric-form queries not covered).
