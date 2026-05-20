@@ -35,7 +35,7 @@ func lowerLiteral(e *syntax.LiteralExpr, s schema.Logs) (chplan.Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	return syntheticLogScalar(&chplan.LitFloat{V: v}, s), nil
+	return syntheticLogScalar(synthFloatValue(v), s), nil
 }
 
 // lowerVector handles LogQL's `VectorExpr` — `vector(5)` and friends.
@@ -47,7 +47,28 @@ func lowerVector(e *syntax.VectorExpr, s schema.Logs) (chplan.Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	return syntheticLogScalar(&chplan.LitFloat{V: v}, s), nil
+	return syntheticLogScalar(synthFloatValue(v), s), nil
+}
+
+// synthFloatValue wraps a float literal in `toFloat64(...)` so the
+// emitted Value column is Float64 on the wire regardless of what CH
+// types the bound parameter as. Without the wrap, the clickhouse-go/v2
+// driver renders an integer-valued `float64(1.0)` as the SQL literal
+// `1` (no decimal — its `format()` falls through to `fmt.Sprint(v)`
+// which uses Go's `%v` for float64 and prints `1` for whole numbers).
+// CH narrows that to `UInt8`, and `UInt8 OP UInt8` promotes to
+// `UInt16`. Once it lands in `chclient.Sample.Value` (declared `float64`),
+// the driver refuses the conversion with
+// `converting UInt16 to *float64 is unsupported. try using *uint16`
+// — surfaced as the Grafana Loki datasource health-probe 502 on
+// `vector(1)+vector(1)`. Wrapping in `toFloat64(?)` forces CH to keep
+// the column as Float64 through any downstream arithmetic.
+//
+// Mirrors the same wrap [internal/promql/absent.go] uses for the
+// PromQL `absent(...)` Value(1) shape (added under the same UInt8 ->
+// *float64 failure mode).
+func synthFloatValue(v float64) chplan.Expr {
+	return &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{&chplan.LitFloat{V: v}}}
 }
 
 // syntheticLogScalar builds a Project-over-OneRow that materialises a
