@@ -9,8 +9,8 @@ import "github.com/tsouza/cerberus/internal/chplan"
 // schema-resolution invariants.
 //
 // AnalyzerRule borrows the DataFusion `AnalyzerRule` vs `OptimizerRule`
-// distinction (see docs/optimizer-research.md § 4): analyzer rules are
-// **must-run** and **idempotent** — exactly one pass produces a canonical
+// distinction: analyzer rules are **must-run** and **idempotent** —
+// exactly one pass produces a canonical
 // tree that subsequent (heuristic) optimizer rules consume. The Driver
 // enforces both contracts:
 //

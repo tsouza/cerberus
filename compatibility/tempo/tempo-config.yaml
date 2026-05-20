@@ -1,7 +1,6 @@
 # Minimal single-binary Tempo config for the compatibility harness.
-#
-# Status: PR 3 of docs/tempo-compliance-plan.md. This file pairs with
-# docker-compose.yml — the `tempo` service mounts it at /etc/tempo.yaml.
+# Pairs with docker-compose.yml — the `tempo` service mounts it at
+# /etc/tempo.yaml.
 #
 # Why this shape (v3.0-rc1):
 #

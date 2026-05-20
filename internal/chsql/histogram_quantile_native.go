@@ -62,8 +62,7 @@
 // `idx = 1 → ZeroThreshold` branch is subsumed by the zero-bucket
 // linear interpolation: with ZeroCount > 0 and target landing inside
 // the zero band, the interpolation returns a value in
-// `[-ZeroThreshold, +ZeroThreshold]` rather than the fixed upper
-// edge. See docs/native-histogram-plan.md § Phase 4.
+// `[-ZeroThreshold, +ZeroThreshold]` rather than the fixed upper edge.
 package chsql
 
 import (

@@ -3,13 +3,11 @@
 // chDB-backed pin for the PromQL `%` operator emit. PromQL's binary
 // modulo follows Go's `math.Mod` (IEEE 754 remainder via Plauger
 // iteration), not the naive `x - y*trunc(x/y)` formula. ClickHouse's
-// `%` operator and `modulo(...)` / `moduloLegacy(...)` / `fmod(...)`
-// (which doesn't exist; see #400 Bucket 2 audit) all implement the
-// truncation form — at scale `>=2^30` the rounding error in
+// `%` operator and `modulo(...)` / `moduloLegacy(...)` all implement
+// the truncation form — at scale `>=2^30` the rounding error in
 // `y*trunc(x/y)` cancels visibly against `x`, producing exactly 0
-// where Go's iterative algorithm preserves a small residual. The
-// post-E-wave audit (docs/compat-residual-audit-postE.md) flagged
-// two compat queries hitting this:
+// where Go's iterative algorithm preserves a small residual. Two
+// compat queries hit this:
 //
 //	demo_memory_usage_bytes % 1.2345
 //	demo_memory_usage_bytes % (1 * 2 + 4 / 6 - 10)        // == -22/3 = -7.333...

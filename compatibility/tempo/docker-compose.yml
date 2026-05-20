@@ -1,9 +1,5 @@
 # Docker Compose stack for the TraceQL / Tempo compatibility harness.
 #
-# Status: PR 2 of the rollout described in docs/tempo-compliance-plan.md.
-# This file stands up the Compose stack and wires a STUB driver that just
-# exits 0. The real seeder + diff driver land in PRs 3-4.
-#
 # Services:
 #   clickhouse           OTel-schema CH instance (auth: cerberus/cerberus,
 #                        db: otel). Matches compatibility/prometheus's
@@ -75,13 +71,9 @@ services:
     # Tempo's pkg/traceql parser ships in the server binary, so a Docker
     # image that lags or leads the fork's branch point will diff against
     # cerberus for purely-parser reasons. `grafana/tempo:main-2f74ea8`
-    # is built from that exact upstream commit, so it is the precisely-
-    # matching image. When the tsouza/tempo replace tag bumps, bump the
-    # tag here in lock-step (the procedure is documented in
-    # compatibility/tempo/README.md alongside the vendor bump).
-    #
-    # See docs/tempo-compliance-plan.md "Open question 2" for the
-    # version-drift discussion.
+    # is built from the exact upstream commit the tsouza/tempo fork
+    # branches from. Bump the tag here in lock-step when the tsouza/tempo
+    # replace tag moves (procedure in compatibility/tempo/README.md).
     image: grafana/tempo:main-2f74ea8
     command: ["-config.file=/etc/tempo.yaml"]
     volumes:

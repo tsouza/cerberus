@@ -174,10 +174,9 @@ func lowerVectorVector(b *parser.BinaryExpr, s schema.Metrics, op chplan.BinaryO
 	// TimeUnix, so we rewrite ColumnRef{anchor_ts} → ColumnRef{TimeUnix}
 	// before splicing.
 	//
-	// Bucket 6 from docs/compat-residual-audit-25898791664.md: the
-	// `time() <op> metric` and `metric <op> time()` shapes collapse to
-	// empty without this. Gated on default matching for the same
-	// reasons as the both-synthetic fold above.
+	// The `time() <op> metric` and `metric <op> time()` shapes collapse
+	// to empty without this rewrite. Gated on default matching for the
+	// same reasons as the both-synthetic fold above.
 	if isDefaultMatching(b.VectorMatching) {
 		lSynth := isSyntheticScalarPlan(left, s)
 		rSynth := isSyntheticScalarPlan(right, s)

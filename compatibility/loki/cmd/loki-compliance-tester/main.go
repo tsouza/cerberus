@@ -6,20 +6,11 @@
 // driver). It also emits a shields.io endpoint-badge score JSON when
 // `-score` is set.
 //
-// This is PR 5 of docs/loki-compliance-plan.md — the cerberus-owned
-// replacement for the `go test -tags=remote_correctness -c` approach
-// wired in PR 3 (#387). The previous approach piped `go test -v` lines
-// into a `.json` file; downstream tooling (informational CI lane, future
-// expected-failures triage) needs the same structured report the Prom
-// harness ships so a single reconciliation script can consume both.
-//
-// Per task #68, the driver is report-only: it always exits 0 on the
-// parity-drift path. Diffs, unexpected failures, and unexpected
-// successes are recorded in the JSON report AND included in the
-// compat-score JSON's denominator, but they do not change the exit
-// code. Only driver-wide hard errors (corpus load, file write) escalate
-// to a non-zero rc. The pre-#68 `os.Exit(1)` on `pass != len(results)`
-// was deleted at the same time.
+// The driver is report-only: it always exits 0 on the parity-drift
+// path. Diffs, unexpected failures, and unexpected successes are
+// recorded in the JSON report AND included in the compat-score JSON's
+// denominator, but they do not change the exit code. Only driver-wide
+// hard errors (corpus load, file write) escalate to a non-zero rc.
 //
 // Lifecycle:
 //

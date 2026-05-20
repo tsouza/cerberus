@@ -36,8 +36,6 @@ archives:
       - LICENSE
       - README.md
       - CHANGELOG.md
-      - docs/roadmap.md
-      - docs/optimizer-research.md
 
 checksum:
   name_template: "checksums.txt"

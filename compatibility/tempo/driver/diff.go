@@ -2,17 +2,13 @@
 // applies per-case assertions, computes the structural diff, and
 // emits a markdown report PLUS a shields.io endpoint-badge score JSON.
 //
-// PR 4 of docs/tempo-compliance-plan.md. Smoke is the only corpus
-// shipped today (~20 cases lifted from the in-tree shadow corpus);
-// metrics endpoints + tag endpoints land in PRs 5+6. The subcommand
-// is wired into main.go's switch on os.Args[1].
+// The subcommand is wired into main.go's switch on os.Args[1]. Flag
+// surface mirrors the seeder so a script that scripts the seeder can
+// re-target the differ with the same env-or-flag triple.
 //
-// Flag surface mirrors the seeder so a script that scripts the seeder
-// can re-target the differ with the same env-or-flag triple.
-//
-// Per task #68, the driver is report-only. Per-case parity failures
-// (mismatches, assertion failures, per-case HTTP errors) are recorded
-// in the markdown report AND included in the compat-score JSON's
+// The driver is report-only: per-case parity failures (mismatches,
+// assertion failures, per-case HTTP errors) are recorded in the
+// markdown report AND included in the compat-score JSON's
 // denominator, but they do not change the exit code. Only driver-wide
 // hard errors (corpus load failure, write failure) bubble up. The
 // score JSON drives the downstream badge; CI uses the artifact, not

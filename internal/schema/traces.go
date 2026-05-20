@@ -72,10 +72,10 @@ type Traces struct {
 	// WideColumns lists the "fat" columns on the spans table — columns
 	// whose per-row payload is large enough that fetching them dominates
 	// the IO cost of a Scan. The chsql late-materialisation rewrite
-	// (see docs/optimizer-research.md § 3) checks this list when a
-	// Project+Limit+Filter+Scan stack lands on this table: if any
-	// of the projection's columns are wide, the inner SELECT skips them
-	// and an outer JOIN back fetches them only for the surviving rows.
+	// checks this list when a Project+Limit+Filter+Scan stack lands on
+	// this table: if any of the projection's columns are wide, the
+	// inner SELECT skips them and an outer JOIN back fetches them only
+	// for the surviving rows.
 	//
 	// For the OTel-CH default this is `SpanAttributes` +
 	// `ResourceAttributes` + the two Nested columns (`Events`, `Links`).
@@ -90,8 +90,7 @@ type Traces struct {
 }
 
 // HasUniqueRowKey reports whether RowKey is non-empty — the precondition
-// for the late-materialisation rewrite (see docs/optimizer-research.md §
-// 3).
+// for the late-materialisation rewrite.
 func (t Traces) HasUniqueRowKey() bool { return len(t.RowKey) > 0 }
 
 // DefaultOTelTraces returns the schema produced by the upstream OTel

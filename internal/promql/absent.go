@@ -175,15 +175,12 @@ func lowerAbsent(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 // -> in_window, sample_ts_arr). See
 // internal/chsql/absent_over_time.go for the SQL skeleton.
 //
-// Cerberus previously routed `absent_over_time` through the regular
-// per-series RangeWindow path which emitted `if(length(window_vals) >
-// 0, NaN, 1.0)` per (series, anchor) — wrong labels (original series
-// labels, not the matcher-synthesised set) AND wrong shape (per-series
-// NaN rows the matrix pivot didn't drop). Bucket 4 of
-// docs/compat-residual-audit-25898791664.md attributes 6 compat lane
-// diffs to this divergence; replacing the lowering with the dedicated
-// AbsentOverTime node closes those diffs by emitting Prom's
-// single-synthesised-series shape directly.
+// The dedicated AbsentOverTime node emits Prom's single-synthesised-
+// series shape directly. Routing this through the regular per-series
+// RangeWindow path would emit `if(length(window_vals) > 0, NaN, 1.0)`
+// per (series, anchor) — wrong labels (original series labels, not
+// the matcher-synthesised set) AND wrong shape (per-series NaN rows
+// the matrix pivot didn't drop).
 func lowerAbsentOverTime(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	if len(c.Args) != 1 {
 		return nil, fmt.Errorf("promql: absent_over_time() expects 1 argument, got %d", len(c.Args))

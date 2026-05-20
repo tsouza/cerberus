@@ -14,13 +14,12 @@ import (
 // positional `?` argument slice that the chclient driver binds.
 //
 // Builder is the public, named version of the private emitter struct in
-// emit.go. The architectural intent (per docs/sql-builder-evaluation.md)
-// is to expose the same `strings.Builder` + `[]any` args primitives the
-// emitter uses, plus a handful of CH-specific helpers (MapAt, MapKeys,
-// MapFilterExcept, Now64, SubtractNanos, DateTime64Lit, Lambda,
-// ParamAgg) and a QueryBuilder with first-class PREWHERE, JOIN, and
-// WITH RECURSIVE slots so the optimizer rules can compose SQL fragments
-// without re-parsing rendered strings.
+// emit.go. It exposes the same `strings.Builder` + `[]any` args
+// primitives the emitter uses, plus a handful of CH-specific helpers
+// (MapAt, MapKeys, MapFilterExcept, Now64, SubtractNanos,
+// DateTime64Lit, Lambda, ParamAgg) and a QueryBuilder with first-class
+// PREWHERE, JOIN, and WITH RECURSIVE slots so the optimizer rules can
+// compose SQL fragments without re-parsing rendered strings.
 //
 // The zero value is ready to use.
 type Builder struct {

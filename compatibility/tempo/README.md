@@ -1,47 +1,32 @@
 # Tempo / TraceQL compatibility harness
 
-> Status: **PR 6 (tags + tag-values)** of the rollout described in
-> [`docs/tempo-compliance-plan.md`](../../docs/tempo-compliance-plan.md).
-> This directory holds the vendored snapshot from PR 1 (`upstream/`),
-> the Docker Compose stack standing up reference Tempo + cerberus +
-> ClickHouse, the driver binary with two subcommands — `seed` (push
-> deterministic OTLP batch to both backends, smoke `/api/traces/<id>`)
-> and `diff` (run the TXTAR corpus through both backends, write a
-> markdown diff report) — and a nightly / `workflow_dispatch` GitHub
-> Actions lane (informational, not a required check). The smoke corpus
-> now covers `/api/search`, `/api/traces/<id>`, and the four tag /
-> tag-values endpoints (V1 + V2); the metrics endpoints
-> (`/api/metrics/query_range` + `/api/metrics/query`) ship in PR 5.
->
-> ## Ingest path (PR 3 vs the original plan)
->
-> docs/tempo-compliance-plan.md "Open question 1" flagged a choice:
-> seed cerberus via OTLP or via direct CH INSERT. **PR 3 settles on
-> direct CH INSERT** because cerberus is read-only over OTLP — its
-> HTTP layer answers Prom / Loki / Tempo queries by reading from a CH
-> instance whose tables are populated by the OTel-CH exporter in real
-> deployments. Running a full collector + exporter pipeline inside the
-> harness just to seed would re-test the exporter (already covered
-> upstream), not cerberus's read path. The Tempo side, by contrast,
-> has no out-of-band ingest path and must take OTLP. Both writes are
-> derived from one in-memory fixture so per-span fields stay 1:1
-> across both read paths.
+TraceQL parity is measured by seeding reference Tempo and cerberus
+from the same deterministic OTLP batch and diffing the wire responses
+for every case in a cerberus-owned TXTAR corpus.
 
 ## Why this harness exists
 
-Cerberus already has `compatibility/prometheus/` (PromQL parity vs reference
-Prometheus) and a sibling shadow-mode harness for in-process diffs. The
-Tempo / TraceQL surface has **no upstream "tempo-compliance" repo** — the
-closest analogue is `cmd/tempo-vulture`, Grafana's deterministic seed +
-read-back canary. The plan forks vulture's seeder pattern into a
-cerberus-owned diff driver, similar to how `compatibility/prometheus/`
-reuses `prometheus/compliance/promql/`.
+Cerberus mirrors the posture taken by `compatibility/prometheus/` for
+PromQL parity, but the Tempo / TraceQL surface has **no upstream
+"tempo-compliance" repo**. The closest analogue is
+`cmd/tempo-vulture`, Grafana's deterministic seed + read-back canary.
+This harness vendors `cmd/tempo-vulture/` and `pkg/httpclient/` from
+the `tsouza/tempo` fork as reference material under `upstream/`,
+drives both backends from a cerberus-owned driver
+(`driver/`), and writes JSON + markdown reports whose envelope matches
+the Prom harness's so one downstream analyser handles both.
 
-See [`docs/tempo-compliance-plan.md`](../../docs/tempo-compliance-plan.md)
-for the full landscape analysis, the per-PR breakdown, and the diff
-strategy.
+## Ingest path
 
-## Layout (current — PR 6)
+Both backends are seeded from one in-memory OTLP fixture. Tempo
+receives the OTLP push directly (it has no out-of-band ingest path);
+cerberus receives a direct ClickHouse INSERT (cerberus is read-only —
+its HTTP layer answers Prom / Loki / Tempo queries by reading from a
+CH instance whose tables are populated by the OTel-CH exporter in
+production). Both writes are derived from one in-memory fixture so
+per-span fields stay 1:1 across the two read paths.
+
+## Layout
 
 ```text
 compatibility/tempo/
@@ -54,38 +39,27 @@ compatibility/tempo/
     Dockerfile          repo-root context multi-stage build
     main.go             subcommand dispatcher (seed / diff)
     seeder.go           OTLP push to Tempo + CH INSERT for cerberus
-    corpus.go           TXTAR corpus loader (PR 4 + PR 6 tag sections)
-    differ.go           TraceID-keyed + relative-epsilon diff (PR 4) +
-                        tag-name / tag-values set diff (PR 6)
+    corpus.go           TXTAR corpus loader
+    differ.go           TraceID-keyed + relative-epsilon diff
+    differ_metrics.go   metrics endpoint diff (samples / labels / timestamps)
     diff.go             `diff` subcommand: HTTP fetch + assertions + report
-    corpus/
-      smoke.txtar       trace search + per-id (PR 4) + tag / tag-values
-                        endpoints (PR 6)
+    corpus/             TXTAR cases — search / per-id / tags / tag-values / metrics
   reports/              driver report output (gitignored)
-  upstream/             PR 1 — vendored snapshot (read-only reference)
+  upstream/             vendored grafana/tempo snapshot (read-only reference)
     LICENSE             AGPL-3.0, copied verbatim from grafana/tempo
     VERSION             exact upstream coordinates of the snapshot
     cmd/tempo-vulture/  long-running canary; reused as seeder pattern
-    pkg/httpclient/     Tempo HTTP client; reused by the future driver
+    pkg/httpclient/     Tempo HTTP client; consumed by the driver
 ```
 
-## Layout (planned — PRs 5 + 7)
-
-```text
-compatibility/tempo/
-  driver/
-    corpus/
-      coverage.txtar    PR 5 — metrics endpoints
-  expected-failures.json  PR 5+
-```
-
-## Differ design (PR 4)
+## Differ design
 
 The differ runs each corpus case against both Tempo and cerberus via
-`/api/search` (and `/api/traces/<id>` for per-id smoke cases), then
-compares the responses. Two complications drive the diff strategy:
+`/api/search` (and `/api/traces/<id>` for per-id smoke cases, plus the
+tag, tag-values, and metrics endpoints), then compares the responses.
+Two complications drive the diff strategy:
 
-1. **TraceIDs match byte-for-byte across backends.** As of PR #439
+1. **TraceIDs match byte-for-byte across backends.**
    `internal/api/tempo/handler.go::toTraceSummaries` emits the real
    hex(TraceId) from ClickHouse, so cerberus and Tempo return identical
    32-hex-char IDs for the same seeded span set. The differ keys its
@@ -106,9 +80,7 @@ relative epsilon — same defaults as `compatibility/prometheus/shadow`.
 ## Corpus categories
 
 The TXTAR corpus is the single source of truth for which Tempo HTTP
-shapes the differ exercises. PR 4 lifted the trace-search categories
-from the shadow harness; PR 6 added the four tag / tag-values
-endpoints.
+shapes the differ exercises.
 
 | Category                | Endpoint kind     | Wire shape                                      | Diff strategy                                          |
 | ----------------------- | ----------------- | ----------------------------------------------- | ------------------------------------------------------ |
@@ -117,15 +89,14 @@ endpoints.
 | Structural ops          | `search`          | same                                            | same                                                   |
 | Set ops                 | `search`          | same                                            | same                                                   |
 | Inner aggregates        | `search`          | same                                            | same                                                   |
-| Metrics pipeline        | `search` (PR 5)   | Prom series envelope                            | Semantic invariants + structural diff (lands PR 5)     |
+| Metrics pipeline        | `metrics_*`       | Prom series envelope                            | Semantic invariants + structural diff                  |
 | Per-id round trip       | `traces`          | `{trace:{...}}`                                 | Trace-ID derivation from seeder template + status-2xx  |
 | Tag names V1            | `tags_v1`         | `{tagNames:[string]}`                           | Set diff over the flat list                            |
 | Tag names V2            | `tags_v2`         | `{scopes:[{name, tags}]}`                       | Set diff over flattened tags + per-scope-name diff     |
 | Tag values V1           | `tag_values_v1`   | `{tagValues:[string]}`                          | Set diff over the flat list                            |
 | Tag values V2           | `tag_values_v2`   | `{tagValues:[{type, value}]}`                   | Set diff over `Value` + `Type`-field diff on overlap   |
 
-The PR 6 corpus pins three classes of subset assertion on the tag
-endpoints:
+The tag endpoints pin three classes of subset assertion:
 
 - **Always-present keys** (`service.name`, `http.method`) — the seeder
   writes these on every span, so both backends MUST surface them in the
@@ -138,58 +109,51 @@ endpoints:
   backends must return an empty `tagValues` list, exercising the
   graceful-empty branches of each side's lookup code.
 
-Cerberus today ignores the `?scope=` filter on `tags_v2` and returns
-every scope regardless. PR 6's `tags_v2_resource` / `tags_v2_span` /
-`tags_v2_intrinsic` cases will surface that gap as a `scope_mismatch`
-reason in the markdown report — informational on the nightly job, not a
-hard fail.
-
 ## What's in `upstream/`
 
-A pure, unmodified snapshot of two paths from `github.com/grafana/tempo`,
-brought in via the `github.com/tsouza/tempo` fork that already gates
-cerberus's tempo dependency (see `docs/upstream-forks.md`). The
-cerberus-accessors branch only patches `pkg/traceql/`; the two paths
+A pure, unmodified snapshot of two paths from
+`github.com/grafana/tempo`, brought in via the `github.com/tsouza/tempo`
+fork that already gates cerberus's tempo dependency (see
+[`docs/upstream-forks.md`](../../docs/upstream-forks.md)). The
+`cerberus-accessors` branch only patches `pkg/traceql/`; the two paths
 vendored here (`cmd/tempo-vulture/` and `pkg/httpclient/`) are
 byte-identical between the fork tag and the upstream commit it tracks.
 
 Exact coordinates live in [`upstream/VERSION`](upstream/VERSION).
 
-### Why vendor, not import via `go.mod`?
+### Why vendor, not import via `go.mod`
 
 `github.com/grafana/tempo` is already in `go.mod` via the replace
 directive that points at `github.com/tsouza/tempo`, so we **could**
 just import `pkg/httpclient` directly. We vendor instead because:
 
-1. **PR 1 is reference material, not a build dependency.** The future
-   driver (PR 3) will decide which subset to import, copy outright,
-   or rewrite. Vendoring lets reviewers read the seeder pattern in
-   the diff without grepping `~/go/pkg/mod/`.
-2. **`cmd/tempo-vulture` is a `package main`**, not importable. Vendoring
-   it keeps the source visible for the driver author to adapt.
+1. **Reference material, not a build dependency.** The driver imports
+   only a narrow subset of this code; vendoring lets reviewers read
+   the seeder pattern in the diff without grepping `~/go/pkg/mod/`.
+2. **`cmd/tempo-vulture` is a `package main`**, not importable.
+   Vendoring it keeps the source visible for the driver to adapt.
 3. **Snapshot stability.** A future bump of the tsouza/tempo replace
    tag won't silently move the seeder pattern under our feet; the
    snapshot here is pinned and explicit.
 
 ### Why the vendor isn't compiled
 
-The vendor's imports (e.g. `github.com/go-test/deep`, `go.uber.org/zap`,
-`github.com/jsternberg/zap-logfmt`, `github.com/grafana/tempo/integration/util`)
-are not in cerberus's `go.mod` and would pull in heavy transitive deps
-just to compile vulture's `main` package. Until the driver (PR 3)
-actually imports a subset of this code, we exclude the vendor from
-the module graph via a `go.mod` `ignore` directive:
+The vendor's imports (e.g. `github.com/go-test/deep`,
+`go.uber.org/zap`, `github.com/jsternberg/zap-logfmt`,
+`github.com/grafana/tempo/integration/util`) are not in cerberus's
+`go.mod` and would pull in heavy transitive deps just to compile
+vulture's `main` package. The vendor is excluded from the module
+graph via a `go.mod` `ignore` directive:
 
 ```text
 ignore ./compatibility/tempo/upstream
 ```
 
-The directive is a Go 1.25+ feature; cerberus already pins Go 1.26
-via `go.mod`. With it in place:
+With it in place:
 
 - `go build ./...` and `go test ./...` skip the vendor entirely.
 - `go vet ./...` skips the vendor entirely.
-- The vendored sources remain on disk for reference + future PRs.
+- The vendored sources remain on disk for reference.
 
 ## Bump procedure
 
@@ -200,8 +164,8 @@ manual re-snapshot only when:
 
 1. Upstream Grafana adds a meaningful capability to `cmd/tempo-vulture`
    or `pkg/httpclient` that the cerberus driver wants to mirror, **or**
-2. The cerberus driver (PR 3+) starts depending on a specific behaviour
-   of the vendored code and we want a known-good baseline.
+2. The cerberus driver starts depending on a specific behaviour of
+   the vendored code and we want a known-good baseline.
 
 To re-snapshot:
 
@@ -232,16 +196,17 @@ $EDITOR compatibility/tempo/upstream/VERSION
 
 `grafana/tempo` was relicensed from Apache-2.0 to **AGPL-3.0** in
 [grafana/tempo#660](https://github.com/grafana/tempo/pull/660). The
-vendored snapshot inherits AGPL-3.0, and [`upstream/LICENSE`](upstream/LICENSE)
-is the verbatim copy.
+vendored snapshot inherits AGPL-3.0, and
+[`upstream/LICENSE`](upstream/LICENSE) is the verbatim copy.
 
-Cerberus itself is independently licensed (see the repo root `LICENSE`);
-the AGPL terms apply only to the vendored subtree under `upstream/`.
-The driver code that lands in PRs 3+ will live OUTSIDE `upstream/`
-(under `compatibility/tempo/driver/`) and is cerberus-licensed.
+Cerberus itself is independently licensed (see the repo root
+`LICENSE`); the AGPL terms apply only to the vendored subtree under
+`upstream/`. The driver code under `compatibility/tempo/driver/`
+lives OUTSIDE `upstream/` and is cerberus-licensed.
 
 ## Related docs
 
-- [`docs/tempo-compliance-plan.md`](../../docs/tempo-compliance-plan.md) — the rollout plan
+- [`docs/compatibility.md`](../../docs/compatibility.md) — cross-head playbook
 - [`docs/upstream-forks.md`](../../docs/upstream-forks.md) — how the `tsouza/tempo` fork is wired
-- [`compatibility/prometheus/`](../prometheus/) — sibling harness, the template this one mirrors
+- [`compatibility/prometheus/`](../prometheus/) — sibling Prom harness
+- [`compatibility/loki/`](../loki/) — sibling Loki harness

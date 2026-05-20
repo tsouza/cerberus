@@ -52,13 +52,6 @@ package chplan
 // case (computed phi). Distributions that do contain negative samples
 // will return a quantile over the positive subset only — documented
 // in the package doc of internal/chsql/histogram_quantile_native.go.
-//
-// Phased work tracker — docs/native-histogram-plan.md captures the
-// full rollout: Phase 1 (bare-selector instant), Phase 2 (aggregated
-// input), Phase 3 (range-mode anchor grid for both bare + aggregated
-// selectors via lowerHistogramQuantileNativeBareRange /
-// lowerHistogramQuantileNativeAggRange), and Phase 4 negative-side
-// observations.
 type HistogramQuantileNative struct {
 	Input Node
 	Phi   float64

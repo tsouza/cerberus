@@ -29,9 +29,8 @@ end-to-end against a running cluster.
 Cerberus uses the standard library's [`log/slog`](https://pkg.go.dev/log/slog)
 for structured logging. Records fan out to **two sinks simultaneously**:
 
-1. **stderr** — text or JSON per `CERBERUS_LOG_FORMAT`, satisfying
-   factor XI of the [12-factor methodology](12factor.md#factor-xi--logs)
-   so `kubectl logs` / `docker logs` tail cleanly.
+1. **stderr** — text or JSON per `CERBERUS_LOG_FORMAT`, so
+   `kubectl logs` / `docker logs` tail cleanly.
 2. **OTLP gRPC** — every record bridged via
    [`go.opentelemetry.io/contrib/bridges/otelslog`](https://pkg.go.dev/go.opentelemetry.io/contrib/bridges/otelslog)
    to the same collector endpoint that receives traces and metrics.

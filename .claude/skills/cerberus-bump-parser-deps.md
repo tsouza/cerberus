@@ -39,7 +39,7 @@ User says:
    go mod tidy
    ```
 
-   (Tempo uses `@main` because its v1.x tag is stale — see `docs/optimizer-research.md` notes.)
+   (Tempo uses `@main` because its v1.x tag is stale.)
 
 4. **Try to build**:
 

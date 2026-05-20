@@ -3,11 +3,11 @@
 # check-skip-additions.sh — guard against new `should_skip:` overlay
 # entries that lack an unblock-PR / tracking reference.
 #
-# History (see docs/test-audit-2026-05-20.md §8): PRs #429 and #537
-# added `should_skip:` rows to silence failing Loki compat cases instead
-# of fixing the underlying lowering / harness gap. Two of those skip-PRs
-# stayed merged for weeks before someone wired the proper fix. This
-# guard rejects the same shape going forward.
+# Background: PRs #429 and #537 added `should_skip:` rows to silence
+# failing Loki compat cases instead of fixing the underlying lowering /
+# harness gap. Two of those skip-PRs stayed merged for weeks before
+# someone wired the proper fix. This guard rejects the same shape going
+# forward.
 #
 # Rule: any net-new `should_skip:` YAML entry added to a tracked overlay
 # file must carry one of:
@@ -239,7 +239,7 @@ should_skip:
   - source: "fast/example.yaml#good-entry"
     reason: "tracked"
     since: "2026-05-20"
-    jira:  "docs/loki-compliance-plan.md PR 6"
+    jira:  "upstream-engine-limitation"
 EOF
   if ! inspect_block "$tmpdir/case_b.yml" 1 5; then
     printf 'self-test FAILED: case B (jira populated) should have been accepted\n' >&2
@@ -291,7 +291,7 @@ main() {
   if [[ $total_violations -gt 0 ]]; then
     local plural
     if [[ $total_violations -eq 1 ]]; then plural="y"; else plural="ies"; fi
-    printf '\n::error::%d new should_skip entr%s missing tracking ref. Each new entry must include a non-empty `jira:` field, a `link:` field, or a `#NNN` GitHub issue/PR reference inside `reason:`. Background: docs/test-audit-2026-05-20.md PR-alpha — prevents the #429/#537 anti-pattern (skips that masked real bugs).\n' \
+    printf '\n::error::%d new should_skip entr%s missing tracking ref. Each new entry must include a non-empty `jira:` field, a `link:` field, or a `#NNN` GitHub issue/PR reference inside `reason:`. Background: prevents the #429/#537 anti-pattern (skips that masked real bugs).\n' \
       "$total_violations" "$plural" >&2
     exit 1
   fi

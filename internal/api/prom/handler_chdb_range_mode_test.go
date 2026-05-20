@@ -461,10 +461,10 @@ func TestQueryRange_RangeMode_LabelReplace_NonMatchingRegex_ChDB(t *testing.T) {
 // (non-empty, so the `mapFilter((k, v) -> v != '', ...)` outer-most
 // drop pass keeps it).
 //
-// Bucket 8 from docs/compat-residual-audit-25898791664.md. Pre-fix
-// the compat lane reported `job` as absent on cerberus while Prom
-// emitted `job="value-"`; this test pins the post-fix behaviour so
-// the regression can't silently recur.
+// Pins the post-fix behaviour for `label_replace` over a missing src
+// label: the compat lane previously reported `job` as absent on
+// cerberus while Prom emitted `job="value-"`. Pre-write this so the
+// regression can't silently recur.
 func TestQueryRange_RangeMode_LabelReplace_MissingSrc_ChDB(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	end := start.Add(5 * time.Minute)
@@ -806,9 +806,8 @@ func TestQueryRange_RangeMode_RateMatrix_ChDB(t *testing.T) {
 //
 // Pre-fix the same anchor would emit counter_delta/60 = 20/60 =
 // 0.333... — the raw "counter delta divided by range" shortcut without
-// extrapolation. The test asserts the new 0.6666... value to pin
-// Bucket 3 of the post-#350 compat audit
-// (docs/compat-residual-audit-25898791664.md).
+// extrapolation. The test pins the new 0.6666... value so the
+// extrapolation regression can't silently recur.
 func TestQueryRange_RangeMode_RateExtrapolation_ChDB(t *testing.T) {
 	// Deterministic eval window so the extrapolation factor is
 	// reproducible across machines. start=1970-01-01T00:04:00Z matches
@@ -1103,12 +1102,11 @@ const expHistogramDDL = `CREATE TABLE otel_metrics_exp_histogram (
 
 // TestQuery_HistogramQuantileNativeAgg_ChDB pins
 // `histogram_quantile(phi, sum by(le)(rate(<sel>_exp_hist[r])))` over
-// `/api/v1/query` against the OTel-CH exp-histogram table. Phase 2 of
-// docs/native-histogram-plan.md replaced the stub-rejection error with
-// a real lowering: an aggregate that collects per-row exp-histogram
-// fields into groupArrays + a wrapping Project that does the
-// scale-fold + offset-align + zero-pad + element-wise sum, before
-// HistogramQuantileNative walks the merged distribution.
+// `/api/v1/query` against the OTel-CH exp-histogram table. The
+// lowering aggregates per-row exp-histogram fields into groupArrays
+// and a wrapping Project does the scale-fold + offset-align +
+// zero-pad + element-wise sum, before HistogramQuantileNative walks
+// the merged distribution.
 //
 // Seed: two series sharing Scale=0 with parallel positive bucket
 // arrays [1,2,3] and [3,4,3], both at PositiveOffset=0 → merged

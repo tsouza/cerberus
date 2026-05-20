@@ -7,8 +7,7 @@ body:
       value: |
         Before filing:
 
-        - Check [`docs/roadmap.md`](../blob/main/docs/roadmap.md) — your feature may already be planned or tracked.
-        - Check the [Roadmap Project](https://github.com/users/tsouza/projects/1) for live status.
+        - Search existing issues at <https://github.com/tsouza/cerberus/issues>.
         - Check open PRs at <https://github.com/tsouza/cerberus/pulls>.
   - type: textarea
     id: motivation
