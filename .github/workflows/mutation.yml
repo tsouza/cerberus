@@ -1,6 +1,25 @@
 name: mutation
 
+# Per-PR trigger is path-filtered to the 7 mutation-phased packages so
+# only QL / optimizer / chplan / chsql / qlcommon-touching PRs pay the
+# full matrix cost. Documentation / harness-only PRs skip the lane.
+# Informational on push-to-main + nightly + dispatch + PRs; promotion
+# to required PR gate happens after every phase stays green for a week
+# at 95%.
+
 on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'internal/chplan/**'
+      - 'internal/chsql/**'
+      - 'internal/optimizer/**'
+      - 'internal/promql/**'
+      - 'internal/logql/**'
+      - 'internal/traceql/**'
+      - 'internal/qlcommon/**'
+      - '.gremlins.yaml'
+      - '.github/workflows/mutation.yml'
   push:
     branches: [main]
   schedule:

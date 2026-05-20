@@ -15,6 +15,20 @@ name: perf-benchmark
 # GOMAXPROCS=1 to avoid the multi-core sampling cost.
 
 on:
+  pull_request:
+    branches: [main]
+    paths:
+      # Hot paths whose changes can plausibly move benchmarks.
+      - 'internal/promql/**'
+      - 'internal/logql/**'
+      - 'internal/traceql/**'
+      - 'internal/chplan/**'
+      - 'internal/chsql/**'
+      - 'internal/optimizer/**'
+      - 'internal/chclient/**'
+      - 'internal/api/format/**'
+      - 'internal/api/prom/**'
+      - '.github/workflows/perf-benchmark.yml'
   schedule:
     # Sunday 04:00 UTC.
     - cron: '0 4 * * 0'

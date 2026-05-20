@@ -32,17 +32,12 @@ name: compatibility
 #     orphan branch in-place via `git checkout --orphan compat-scores`.
 
 on:
+  # PR trigger has no `paths:` filter so the three head checks always
+  # appear in the rollup. This is intentional for the
+  # required-status-checks promotion: path-skipped checks would leave
+  # the rollup missing entries and block merges.
   pull_request:
     branches: [main]
-    paths:
-      - 'internal/promql/**'
-      - 'internal/logql/**'
-      - 'internal/traceql/**'
-      - 'internal/api/prom/**'
-      - 'internal/api/loki/**'
-      - 'internal/api/tempo/**'
-      - 'compatibility/**'
-      - '.github/workflows/compatibility.yml'
   push:
     branches: [main]
     paths:
