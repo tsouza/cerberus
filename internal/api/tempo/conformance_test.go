@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -651,5 +652,66 @@ func TestConformance_TempoAdmitNilPassesThrough(t *testing.T) {
 	wg.Wait()
 	if hits.Load() != 25 {
 		t.Errorf("nil limiter must admit every request: got %d/25", hits.Load())
+	}
+}
+
+// TestConformance_TempoGrafanaMsTimestamps_ResourcesProxy is the
+// request-level pin for #194 on the Tempo side. Grafana 11.x's Tempo
+// datasource sends 13-digit ms `start` / `end` timestamps over
+// `/api/datasources/uid/<ds>/resources/...`; cerberus must decode them
+// as milliseconds (not nanoseconds → year-58353 → ClickHouse
+// `toDateTime64` overflow → HTTP 500 → empty Grafana panels).
+//
+// Drives ms-shaped bounds through every Tempo endpoint that consumes
+// parseTempoStartEnd:
+//   - /api/search
+//   - /api/search/tags
+//   - /api/search/tag/{name}/values
+//   - /api/metrics/query_range
+//   - /api/metrics/query   (instant)
+//
+// Each call must return HTTP 200; a 500 here means the heuristic
+// regressed and a real ms timestamp was misrouted into the ns branch.
+func TestConformance_TempoGrafanaMsTimestamps_ResourcesProxy(t *testing.T) {
+	t.Parallel()
+
+	// 2025-01-26 ≈ 1_737_864_000_000 ms; 1 hour later.
+	const startMs = "1737000000000"
+	const endMs = "1737003600000"
+
+	cases := []struct {
+		name string
+		path string
+	}{
+		{"search", "/api/search?start=" + startMs + "&end=" + endMs},
+		{"search-tags", "/api/search/tags?start=" + startMs + "&end=" + endMs},
+		{"search-tag-values", "/api/search/tag/service.name/values?start=" + startMs + "&end=" + endMs},
+		{
+			"metrics-query-range",
+			"/api/metrics/query_range?q=" + url.QueryEscape("{} | rate()") +
+				"&start=" + startMs + "&end=" + endMs + "&step=60s",
+		},
+		{
+			"metrics-query-instant",
+			"/api/metrics/query?q=" + url.QueryEscape("{} | rate()") +
+				"&start=" + startMs + "&end=" + endMs,
+		},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			srv := newServer(&stubQuerier{}, "v1.0.0-test")
+			t.Cleanup(srv.Close)
+			resp, err := http.Get(srv.URL + c.path)
+			if err != nil {
+				t.Fatalf("GET %s: %v", c.path, err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				body, _ := io.ReadAll(resp.Body)
+				t.Fatalf("status=%d body=%s (ms→ns misroute regression)", resp.StatusCode, body)
+			}
+		})
 	}
 }

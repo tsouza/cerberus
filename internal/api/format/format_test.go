@@ -158,8 +158,22 @@ func TestParseTimeLoki(t *testing.T) {
 	}{
 		{"empty-defaults", "", def, false},
 		{"unix-seconds", "1700000000", time.Unix(1_700_000_000, 0).UTC(), false},
-		{"unix-nanos", "1700000000000000000", time.Unix(0, 1_700_000_000_000_000_000).UTC(), false},
+		{"unix-fractional", "1700000000.5", time.Unix(1_700_000_000, 500_000_000).UTC(), false},
 		{"rfc3339", "2024-01-02T03:04:05Z", time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC), false},
+		// #194: Grafana 11.x emits ms over the Loki `resources/` proxy
+		// (just like Prom). A 13-digit ms value used to land in the ns
+		// branch and overflow ClickHouse's toDateTime64; the parser
+		// now routes 1e12..1e15 to time.UnixMilli.
+		{"unix-millis-13digit-boundary", "1000000000000", time.UnixMilli(1_000_000_000_000).UTC(), false},
+		{"unix-millis-grafana-shape", "1737000000000", time.UnixMilli(1_737_000_000_000).UTC(), false},
+		{"unix-millis-with-frac", "1700000000123", time.UnixMilli(1_700_000_000_123).UTC(), false},
+		{"unix-millis-1_5e12", "1500000000000", time.UnixMilli(1_500_000_000_000).UTC(), false},
+		{"boundary-1e12-minus-1-stays-seconds", "999999999999", time.Unix(999_999_999_999, 0).UTC(), false},
+		// `logcli` and other ns-native Loki clients keep working: the
+		// >=1e15 branch still routes to time.Unix(0, n).
+		{"unix-nanos-1e15-boundary", "1000000000000000", time.Unix(0, 1_000_000_000_000_000).UTC(), false},
+		{"unix-nanos-logcli-shape", "1700000000000000000", time.Unix(0, 1_700_000_000_000_000_000).UTC(), false},
+		{"unix-nanos-2e18", "2000000000000000000", time.Unix(0, 2_000_000_000_000_000_000).UTC(), false},
 		{"bogus", "not-a-time", time.Time{}, true},
 	}
 	for _, tc := range tests {
