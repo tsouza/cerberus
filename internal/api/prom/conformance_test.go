@@ -1333,24 +1333,29 @@ func TestConformance_DottedMetricNames(t *testing.T) {
 
 	ts := time.Date(2026, 5, 12, 12, 0, 0, 0, time.UTC)
 	cases := []struct {
-		name  string
-		query string
+		name     string
+		query    string
+		wantName string // the dotted MetricName that should be bound to the CH args
 	}{
 		{
-			name:  "bare_dotted_selector",
-			query: `http.server.request.duration`,
+			name:     "bare_dotted_selector",
+			query:    `http.server.request.duration`,
+			wantName: "http.server.request.duration",
 		},
 		{
-			name:  "dotted_inside_rate",
-			query: `rate(http.server.request.duration[5m])`,
+			name:     "dotted_inside_rate",
+			query:    `rate(http.server.request.duration[5m])`,
+			wantName: "http.server.request.duration",
 		},
 		{
-			name:  "dotted_inside_aggregation",
-			query: `sum by (le) (rate(http.server.request.duration_bucket[5m]))`,
+			name:     "dotted_inside_aggregation",
+			query:    `sum by (le) (rate(http.server.request.duration_bucket[5m]))`,
+			wantName: "http.server.request.duration_bucket",
 		},
 		{
-			name:  "dotted_with_label_matcher",
-			query: `http.server.request.duration{job="api"}`,
+			name:     "dotted_with_label_matcher",
+			query:    `http.server.request.duration{job="api"}`,
+			wantName: "http.server.request.duration",
 		},
 	}
 
@@ -1411,18 +1416,18 @@ func TestConformance_DottedMetricNames(t *testing.T) {
 			// and emitted as a parameterised CH predicate. If the
 			// rewrite silently dropped the dotted token, this would
 			// fail. (Iterate args; the eval-ts predicate appends
-			// later args, so "http.server.request.duration" lands
-			// somewhere in lastArgs but not necessarily first.)
+			// later args, so the dotted name lands somewhere in
+			// lastArgs but not necessarily first.)
 			foundName := false
 			for _, a := range q.lastArgs {
-				if s, ok := a.(string); ok && s == "http.server.request.duration" {
+				if s, ok := a.(string); ok && s == tc.wantName {
 					foundName = true
 					break
 				}
 			}
 			if !foundName {
-				t.Errorf("dotted MetricName not bound to SQL args: %v\nsql=%s",
-					q.lastArgs, q.lastSQL)
+				t.Errorf("dotted MetricName %q not bound to SQL args: %v\nsql=%s",
+					tc.wantName, q.lastArgs, q.lastSQL)
 			}
 		})
 	}
