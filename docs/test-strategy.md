@@ -39,11 +39,11 @@ inside each layer.
 | `forbid-skip`                 | `.github/workflows/ci.yml` (job `forbid-skip`) | PRs + push                        | Required           | `t.Skip*` + discipline-erosion wording + soft-assertion + skip-additions                                          |
 | `probe`                       | `.github/workflows/chdb.yml` (job `probe`)     | PRs + push                        | Required           | chDB driver sanity (`TestChDBProbe`)                                                                              |
 | `roundtrip (<ql>)`            | `.github/workflows/chdb.yml` matrix            | PRs + push                        | Required           | TXTAR chDB roundtrip for promql / logql / traceql (Layer 6a-c)                                                    |
-| `compatibility/<head>`        | `.github/workflows/compatibility.yml` matrix   | PRs (path-match) + push + nightly | Required (on path) | Differential vs reference Prom / Loki / Tempo                                                                     |
+| `compatibility/<head>`        | `.github/workflows/compatibility.yml` matrix   | PRs + push + nightly              | Required           | Differential vs reference Prom / Loki / Tempo                                                                     |
 | `dashboard` (E2E)             | `.github/workflows/e2e.yml` (job `dashboard`)  | push-to-main + nightly + manual   | Informational      | k3d + cerberus + Grafana + Playwright (Layer 9)                                                                   |
-| `mutation` (per phase)        | `.github/workflows/mutation.yml` matrix        | push-to-main + nightly + manual   | Informational      | gremlins on each of `chplan` / `chsql` / `optimizer` / `promql` / `logql` / `traceql` / `qlcommon` @ 95% efficacy |
+| `mutation` (per phase)        | `.github/workflows/mutation.yml` matrix        | PRs (path-match) + push + nightly | Informational      | gremlins on each of `chplan` / `chsql` / `optimizer` / `promql` / `logql` / `traceql` / `qlcommon` @ 95% efficacy |
 | `property`                    | `.github/workflows/property.yml`               | push-to-main + nightly + manual   | Informational      | rapid-driven property tests (Layer 4 + 6 cross-check)                                                             |
-| `perf-benchmark`              | `.github/workflows/perf-benchmark.yml`         | manual                            | Informational      | benchstat-based perf regression                                                                                   |
+| `perf-benchmark`              | `.github/workflows/perf-benchmark.yml`         | PRs (path-match) + weekly + manual| Informational      | benchstat-based perf regression                                                                                   |
 
 ## Per-layer guidance
 
