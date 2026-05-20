@@ -1,0 +1,29 @@
+# Grafana dashboard-provisioning config for the repo-root docker-compose.yml
+# stack. Tells Grafana to scan /etc/grafana/provisioning/dashboards/cerberus
+# for JSON dashboards and load them under the "Cerberus" folder.
+#
+# Two starter dashboards ship with the compose quickstart:
+#   - cerberus-self.json: cerberus's own observability surface (per-head
+#     request rate, latency quantiles, error rate, in-flight, admission
+#     rejections, recent ERROR logs, slow-query traces). Wired as the
+#     home dashboard via GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH so
+#     opening localhost:3000 lands directly on it.
+#   - otel-fixture-explorer.json: tours the seed fixture (top services by
+#     request rate, log-severity histogram, trace error rate, recent spans).
+#     A useful "what's in this CH database?" first-look for demo users.
+#
+# The k3d e2e stack at test/e2e/k3s/ has its own ConfigMap-based provisioning
+# (grafana-dashboards.yaml) — keep the two in sync when adding new dashboards.
+apiVersion: 1
+providers:
+  - name: cerberus
+    orgId: 1
+    folder: Cerberus
+    type: file
+    disableDeletion: true
+    editable: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: false
+    options:
+      path: /etc/grafana/provisioning/dashboards/cerberus
+      foldersFromFilesStructure: false
