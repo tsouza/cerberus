@@ -1,10 +1,17 @@
-# Lefthook config. Lightweight hooks only — heavy validation runs in CI.
-# Maintainer rule: never run `just test`, `golangci-lint run`, or `go build`
-# locally as a pre-commit step. Trust the hook + CI.
+# Lefthook config. Two stages:
 #
-# Install: `just hooks-install` (one-shot; installs the lefthook binary
-# via `go install` and activates the git hooks). See also CLAUDE.md
-# § "No local validation; lefthook + CI own it."
+#   pre-commit — fast formatters on staged files only (sub-second).
+#   pre-push   — heavier static checks (golangci-lint, markdown verify,
+#                forbid-skip discipline grep) that mirror what the
+#                `check` + `lint` + `forbid-skip` CI gates would run.
+#                Lives on push, not commit, so the inner-loop stays
+#                fast — one ~70s wait per push instead of per commit.
+#
+# Install: `just hooks-install` (one-shot; installs the lefthook
+# binary via `go install` and activates the git hooks). See also
+# CLAUDE.md § "No local validation; lefthook + CI own it."
+#
+# Escape hatch for WIP pushes: `LEFTHOOK=0 git push` skips all hooks.
 
 pre-commit:
   parallel: true
@@ -32,15 +39,62 @@ pre-commit:
       run: |
         markdownlint-cli2 --fix {staged_files}
 
+# pre-push runs once per `git push`. The three commands mirror the
+# CI gates (check / lint / forbid-skip) so a push that would have
+# failed CI fails locally first instead of round-tripping through
+# the runner. Set `LEFTHOOK=0` to bypass for WIP pushes.
+pre-push:
+  parallel: true
+  commands:
+    golangci-lint:
+      tags: lint
+      run: |
+        golangci-lint run ./...
+    markdownlint:
+      tags: lint
+      glob: "*.md"
+      run: |
+        markdownlint-cli2 {all_files}
+    forbid-skip-t-skip:
+      tags: discipline
+      run: |
+        if git ls-files -z -- \
+            '*_test.go' \
+            ':!:compatibility/*/upstream/**' \
+            | xargs -0 grep -nE 't\.Skip[fN]?\(' --; then
+          echo "lefthook: t.Skip / t.Skipf / t.SkipNow in test files — fix the bug, do not skip"
+          exit 1
+        fi
+    forbid-skip-wording:
+      tags: discipline
+      run: |
+        if git ls-files -z -- \
+            '*_test.go' \
+            '*.txtar' \
+            ':!:compatibility/*/upstream/**' \
+            | xargs -0 grep -niEH 'not implemented|\bskipped\b|\bdeferred\b' --; then
+          echo "lefthook: discipline-erosion wording — rewrite to a neutral verb (dropped / excluded / rejected / bypassed) or remove"
+          exit 1
+        fi
+    forbid-soft-assert:
+      tags: discipline
+      run: |
+        if git ls-files -z -- \
+            '*_test.go' \
+            ':!:compatibility/*/upstream/**' \
+            | xargs -0 grep -nEH 'assert\.Contains\([^,]+,\s*""\s*\)|assert\.ElementsMatch\([^,]+,\s*\[\][^)]*\{\s*\}\s*\)|defer recover\(\)|defer func\(\)\s*\{\s*_ = recover\(\)' --; then
+          echo "lefthook: soft-assertion or silent-recover pattern — assert specific content / use assert.Panics"
+          exit 1
+        fi
+
 commit-msg:
   commands:
     commitlint:
       run: |
         npx --no -- commitlint --edit {1}
 
-# Intentionally NOT in pre-commit:
-# - go build / go test / golangci-lint run / just test / just lint
-# Those run in CI (.github/workflows/ci.yml :: `check` + `lint` jobs).
-# Running them locally duplicates CI work + slows the inner loop. See
-# CLAUDE.md hard rule: "lefthook handles formatters; CI handles
-# everything else."
+# Intentionally NOT in any hook:
+# - go test / just test / go build — these need full module state and
+#   are CI-only. The pre-push gate above runs golangci-lint, which
+#   covers ~95% of the failures that would land in `check` without
+#   the full-test cost.
