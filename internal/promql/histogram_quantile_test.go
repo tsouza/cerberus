@@ -672,10 +672,18 @@ func TestLower_HistogramQuantile_BucketSuffixStrip(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Lower: %v", err)
 			}
-			sql, _, err := chsql.Emit(context.Background(), plan)
+			sql, args, err := chsql.Emit(context.Background(), plan)
 			if err != nil {
 				t.Fatalf("Emit: %v", err)
 			}
+			// The chsql emitter renders string literals (including the
+			// MetricName predicate value) as `?` placeholders carried in
+			// the `args` slice — they don't appear inlined in the SQL.
+			// Check both: (a) the SQL text never carries the suffixed
+			// name (no path inlines `_bucket`), (b) the args carry the
+			// BARE name and never the suffixed name, and (c) the SQL
+			// targets the classic-histogram table (so the strip didn't
+			// misroute the lowering to a non-histogram table).
 			if strings.Contains(sql, suffixed) {
 				t.Errorf("emitted SQL contains the unstripped suffixed name %q — "+
 					"the histogram table is keyed by the BARE metric name; "+
@@ -683,11 +691,35 @@ func TestLower_HistogramQuantile_BucketSuffixStrip(t *testing.T) {
 					"every dashboard p95 panel reads 'No data'.\nfull SQL:\n%s",
 					suffixed, sql)
 			}
-			if !strings.Contains(sql, bare) {
-				t.Errorf("emitted SQL does not contain the bare metric name %q — "+
+			if !strings.Contains(sql, "`"+s.HistogramTable+"`") {
+				t.Errorf("emitted SQL does not target the classic-histogram table %q — "+
 					"the strip dropped too much or the histogram path is "+
 					"misrouting to a non-histogram table.\nfull SQL:\n%s",
-					bare, sql)
+					s.HistogramTable, sql)
+			}
+			var sawBare, sawSuffixed bool
+			for _, a := range args {
+				str, ok := a.(string)
+				if !ok {
+					continue
+				}
+				if str == bare {
+					sawBare = true
+				}
+				if str == suffixed {
+					sawSuffixed = true
+				}
+			}
+			if sawSuffixed {
+				t.Errorf("emitted SQL params carry the unstripped suffixed name %q — "+
+					"the histogram table is keyed by the BARE metric name; "+
+					"a `_bucket`-suffixed predicate matches zero rows.\nargs: %v",
+					suffixed, args)
+			}
+			if !sawBare {
+				t.Errorf("emitted SQL params do not carry the bare metric name %q — "+
+					"the strip dropped too much.\nargs: %v",
+					bare, args)
 			}
 		})
 	}
