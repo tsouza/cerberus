@@ -250,6 +250,20 @@ chdb-install:
 K3D_CLUSTER := "cerberus-e2e"
 CERBERUS_IMAGE := "cerberus:e2e"
 
+# External images referenced by test/e2e/k3s/*.yaml. Kept in sync with the
+# manifests by convention; a stale entry surfaces as a `Pending` /
+# `ImagePullBackOff` pod once that image is no longer pre-loaded. When you
+# bump a version in a manifest, bump it here too — both sides MUST agree.
+#
+# Why pre-pull: a fresh k3d cluster's containerd hits the registry directly
+# (DockerHub + GHCR). DockerHub's anonymous-pull rate limit is shared across
+# GHA-runner IP pools and intermittently fires at ~1/20 e2e runs, leaving
+# ClickHouse stuck in `ImagePullBackOff` past the 180 s deployment wait. By
+# pulling on the host docker daemon (which has its own auth + cache) and
+# importing into k3d via the API, we never go through containerd's pull
+# path. See run 26136032208 for the symptom.
+E2E_EXTERNAL_IMAGES := "clickhouse/clickhouse-server:24.8-alpine ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.116.0 grafana/grafana:11.4.0 otel/opentelemetry-collector-contrib:0.116.1"
+
 # Boot the k3d cluster, build cerberus image, import it, apply manifests, wait for pods.
 # Host ports map via the k3d loadbalancer to NodePorts on the k3s nodes:
 #   host:8080 -> LB -> NodePort 30080 (cerberus svc)
@@ -264,8 +278,13 @@ e2e-up: e2e-down
         --wait
     @echo "==> building cerberus image"
     docker build -t {{CERBERUS_IMAGE}} -f Dockerfile.local .
-    @echo "==> importing image into k3d"
-    k3d image import {{CERBERUS_IMAGE}} -c {{K3D_CLUSTER}}
+    @echo "==> pre-pulling external images on host docker"
+    @for img in {{E2E_EXTERNAL_IMAGES}}; do \
+        echo "    docker pull $img"; \
+        docker pull "$img" >/dev/null || { echo "ERROR: docker pull $img failed" >&2; exit 1; }; \
+    done
+    @echo "==> importing images into k3d ({{K3D_CLUSTER}})"
+    k3d image import {{CERBERUS_IMAGE}} {{E2E_EXTERNAL_IMAGES}} -c {{K3D_CLUSTER}}
     @echo "==> applying manifests"
     kubectl apply -k test/e2e/k3s/
     @echo "==> waiting for pods (up to 3 min)"
