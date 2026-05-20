@@ -2406,3 +2406,164 @@ func TestEmitWindowedArrayPairsMatrix_MinWindowNegation(t *testing.T) {
 		t.Errorf("expected `length(window_pairs) >= 2` filter (negation mutant dropped it).\nSQL=%s", sql)
 	}
 }
+
+// TestEmitRangeWindowMetricsQuantileBuckets_SpanBoundary kills the
+// CONDITIONALS_BOUNDARY at range_window.go:911 (`if span < 0`). The
+// mutant flips `<` to `<=`, which rejects Start == End (span == 0) — a
+// legitimate single-anchor grid the original accepts. We assert that
+// Start == End succeeds (the original branch) and Start > End errors
+// (the original-rejection branch the mutant would still hit). Both
+// halves are needed: the success case fails under the mutant, the
+// error case keeps a `<` → `>` flip from being equivalent.
+func TestEmitRangeWindowMetricsQuantileBuckets_SpanBoundary(t *testing.T) {
+	t.Parallel()
+
+	mkPlan := func(start, end time.Time) *chplan.RangeWindow {
+		return &chplan.RangeWindow{
+			Input: &chplan.MetricsAggregate{
+				Op:         chplan.MetricsOpQuantileOverTime,
+				Attr:       &chplan.ColumnRef{Name: "Duration"},
+				Quantiles:  []float64{0.95},
+				ValueAlias: "Value",
+				Inner:      &chplan.Scan{Table: "otel_traces"},
+			},
+			Step:            time.Minute,
+			Range:           time.Minute,
+			Start:           start,
+			End:             end,
+			TimestampColumn: "Timestamp",
+		}
+	}
+
+	t0 := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
+
+	// span == 0 — original accepts (numAnchors = 0/stepNS + 1 = 1);
+	// mutant `<= 0` rejects with ErrUnsupported.
+	t.Run("span_zero_accepted", func(t *testing.T) {
+		t.Parallel()
+		sql, _, err := Emit(context.Background(), mkPlan(t0, t0))
+		if err != nil {
+			t.Fatalf("Start == End must succeed (boundary mutant rejected): %v", err)
+		}
+		if !strings.Contains(sql, "range(0, 1)") {
+			t.Errorf("expected `range(0, 1)` for span==0 single-anchor grid; SQL=%s", sql)
+		}
+	})
+
+	// span < 0 — original rejects with ErrUnsupported; mutant identical
+	// on this branch. The assertion pins the negative-span guard so a
+	// later refactor doesn't silently drop it.
+	t.Run("span_negative_rejected", func(t *testing.T) {
+		t.Parallel()
+		later := t0.Add(5 * time.Minute)
+		_, _, err := Emit(context.Background(), mkPlan(later, t0))
+		if err == nil {
+			t.Fatalf("Start > End must error (ErrUnsupported)")
+		}
+		if !errors.Is(err, ErrUnsupported) {
+			t.Errorf("expected ErrUnsupported for Start > End, got %v", err)
+		}
+	})
+}
+
+// TestEmitRangeWindowMetricsQuantileBuckets_SpanAnchorArithmetic kills
+// the two ARITHMETIC_BASE mutants at range_window.go:914
+// (`span/stepNS + 1`). The `/` mutates to `*` / `%` / `-` / `+`; the
+// `+` mutates to `-` / `*` / `%` / `/`. Setup: Start=t0, End=t0+4m,
+// Step=1m → span = 240s (in ns), span/stepNS = 4, numAnchors = 5.
+// Pinning the `range(0, 5)` literal in the emitted SQL distinguishes
+// the original count from every arithmetic mutant:
+//   - `/` → `*`: nanosecond product is enormous, not 5.
+//   - `+` → `-`: 4 - 1 = 3, not 5.
+//   - `+` → `*`: 4 * 1 = 4, not 5.
+//   - `/` → `-`: 240e9 - 60e9 ≈ 1.8e11, not 5.
+//   - `/` → `+`: 240e9 + 60e9, not 5.
+//   - `+` → `%`: 4 % 1 = 0, not 5.
+func TestEmitRangeWindowMetricsQuantileBuckets_SpanAnchorArithmetic(t *testing.T) {
+	t.Parallel()
+	t0 := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
+	plan := &chplan.RangeWindow{
+		Input: &chplan.MetricsAggregate{
+			Op:         chplan.MetricsOpQuantileOverTime,
+			Attr:       &chplan.ColumnRef{Name: "Duration"},
+			Quantiles:  []float64{0.95},
+			ValueAlias: "Value",
+			Inner:      &chplan.Scan{Table: "otel_traces"},
+		},
+		Step:            time.Minute,
+		Range:           time.Minute,
+		Start:           t0,
+		End:             t0.Add(4 * time.Minute),
+		TimestampColumn: "Timestamp",
+	}
+	sql, _, err := Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if !strings.Contains(sql, "range(0, 5)") {
+		t.Errorf("expected `range(0, 5)` for span=4m, step=1m (4/1+1=5); SQL=%s", sql)
+	}
+	// Off-by-one / wrong-operator neighbours that arithmetic mutants land on.
+	for _, bad := range []string{"range(0, 4)", "range(0, 3)", "range(0, 0)", "range(0, 1)"} {
+		if strings.Contains(sql, bad) {
+			t.Errorf("unexpected anchor literal %q (arithmetic mutant); SQL=%s", bad, sql)
+		}
+	}
+}
+
+// TestEmitWindowedArray_MinWindowZeroBoundary kills the
+// CONDITIONALS_BOUNDARY at range_window.go:2098 (`minWindowSize > 0`).
+// The mutant flips `>` to `>=`; with minWindowSize=0 the mutant adds
+// `WHERE length(window_vals) >= 0` (always true) while the original
+// skips the WHERE entirely. Production callers all pass minWindowSize
+// ∈ {1, 2}; reaching the boundary requires the unexported emitter.
+func TestEmitWindowedArray_MinWindowZeroBoundary(t *testing.T) {
+	t.Parallel()
+	e := &emitter{}
+	r := &chplan.RangeWindow{
+		Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+		Range:           time.Minute,
+		TimestampColumn: "TimeUnix",
+		ValueColumn:     "Value",
+	}
+	if err := e.emitWindowedArray(r, verbatim("0"), 0); err != nil {
+		t.Fatalf("emitWindowedArray: %v", err)
+	}
+	sql := e.b.String()
+	if strings.Contains(sql, "length(`window_vals`) >= 0") {
+		t.Errorf("minWindowSize=0 must not gate on window length; mutant `>= 0` leaked.\nSQL=%s", sql)
+	}
+	if strings.Contains(sql, "length(`window_vals`) >=") {
+		t.Errorf("minWindowSize=0 must skip the length filter entirely.\nSQL=%s", sql)
+	}
+}
+
+// TestEmitWindowedArrayMatrix_MinWindowZeroBoundary kills the
+// CONDITIONALS_BOUNDARY at range_window.go:2192 (`minWindowSize > 0`)
+// inside emitWindowedArrayMatrix. Same shape as the non-matrix kill
+// above: with minWindowSize=0 the mutant `>= 0` leaks an
+// always-true `WHERE length(window_vals) >= 0`; the original skips
+// the WHERE entirely. Reached via OuterRange > 0 with Step > 0 so the
+// matrix path dispatches.
+func TestEmitWindowedArrayMatrix_MinWindowZeroBoundary(t *testing.T) {
+	t.Parallel()
+	e := &emitter{}
+	r := &chplan.RangeWindow{
+		Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+		Range:           time.Minute,
+		OuterRange:      2 * time.Minute,
+		Step:            time.Minute,
+		TimestampColumn: "TimeUnix",
+		ValueColumn:     "Value",
+	}
+	if err := e.emitWindowedArrayMatrix(r, verbatim("0"), 0); err != nil {
+		t.Fatalf("emitWindowedArrayMatrix: %v", err)
+	}
+	sql := e.b.String()
+	if strings.Contains(sql, "length(`window_vals`) >= 0") {
+		t.Errorf("matrix minWindowSize=0 must not gate on window length; mutant `>= 0` leaked.\nSQL=%s", sql)
+	}
+	if strings.Contains(sql, "length(`window_vals`) >=") {
+		t.Errorf("matrix minWindowSize=0 must skip the length filter entirely.\nSQL=%s", sql)
+	}
+}
