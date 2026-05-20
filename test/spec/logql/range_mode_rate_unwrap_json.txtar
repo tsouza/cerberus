@@ -24,7 +24,6 @@ INSERT INTO otel_logs (Timestamp, Body, ResourceAttributes) VALUES
   [{"path": "/a", "service_name": "api", "status": "200"}, "2026-01-01T00:00:00Z", 0.03333333333333333],
   [{"path": "/a", "service_name": "api", "status": "200"}, "2026-01-01T00:00:30Z", 0.1],
   [{"path": "/a", "service_name": "api", "status": "200"}, "2026-01-01T00:01:00Z", 0.1],
-  [{"path": "/b", "service_name": "api", "status": "500"}, "2026-01-01T00:00:00Z", 0],
   [{"path": "/b", "service_name": "api", "status": "500"}, "2026-01-01T00:00:30Z", 0.1],
   [{"path": "/b", "service_name": "api", "status": "500"}, "2026-01-01T00:01:00Z", 0.4]
 ]
