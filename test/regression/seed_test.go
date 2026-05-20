@@ -131,6 +131,41 @@ func TestMetricsSeedHasHistogramTable(t *testing.T) {
 	}
 }
 
+// TestLokiBenchTagsImpossibleFilterAsEmptyResult guards against an
+// upstream re-vendor of grafana/loki:pkg/logql/bench/queries/ that
+// drops the `empty-result` tag on the
+// `fast/basic-selectors.yaml#Log query with impossible filter ...`
+// entry. The cerberus diff driver
+// (compatibility/loki/cmd/loki-compliance-tester/main.go) keys its
+// "baseline-empty is the expected outcome" branch on that tag — losing
+// it would silently flip the case back into a `baseline returned empty`
+// row in the compat report, masking real parity drift behind a
+// harness-shape false positive. See PR introducing this regression.
+func TestLokiBenchTagsImpossibleFilterAsEmptyResult(t *testing.T) {
+	t.Parallel()
+
+	const corpusPath = "../../compatibility/loki/upstream/loki-bench/queries/fast/basic-selectors.yaml"
+	buf, err := os.ReadFile(corpusPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", corpusPath, err)
+	}
+	content := string(buf)
+
+	// The impossible-filter entry — pinned by both the description and the
+	// `empty-result` tag literal the driver reads at runtime. An upstream
+	// rename of either drops parity for this case, so we require both.
+	const (
+		description = "Log query with impossible filter (guarantees empty results, exercises log result cache)"
+		tagLiteral  = "- empty-result"
+	)
+	if !strings.Contains(content, description) {
+		t.Errorf("%s: expected description %q — corpus may have been re-vendored under a different label", corpusPath, description)
+	}
+	if !strings.Contains(content, tagLiteral) {
+		t.Errorf("%s: expected `%s` tag — the diff driver relies on it to treat baseline-empty as the parity-expected outcome (otherwise the case shows up as `baseline returned empty`)", corpusPath, tagLiteral)
+	}
+}
+
 // TestTracesSeedHasFrontendAndApiServices guards against silent seed
 // drift breaking the existing TraceQL E2E tests, which assert that
 // {resource.service.name="frontend"} returns rows and the trace ID
