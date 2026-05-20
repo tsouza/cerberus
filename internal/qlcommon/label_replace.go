@@ -49,7 +49,7 @@ import (
 //     `${name}`, `$10` etc.) is preserved verbatim so we don't silently
 //     mistranslate a shape we don't fully support.
 //
-// regex is the regex string the replacement will be applied against;
+// regex is the regex string the replacement is applied against;
 // it's used to count capture groups so out-of-range backrefs can be
 // rewritten to the empty string. CH validates `replaceRegexpOne`'s
 // substitution string against the regex's capture-group count at SQL-

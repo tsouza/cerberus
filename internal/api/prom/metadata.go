@@ -135,8 +135,8 @@ func (h *Handler) handleLabelValues(w http.ResponseWriter, r *http.Request) {
 
 // MetricMetaEntry is one entry in the per-metric metadata array Prometheus
 // emits from /api/v1/metadata. Cerberus emits exactly one entry per
-// metric for now (multiple entries would be required only if the same
-// metric appears in multiple types — uncommon).
+// metric (multiple entries would be required only if the same metric
+// appears in multiple types — uncommon).
 type MetricMetaEntry struct {
 	Type string `json:"type"`
 	Help string `json:"help"`
@@ -263,9 +263,6 @@ func truncateMetadata(in map[string][]MetricMetaEntry, limit int) map[string][]M
 // is expected to be a single VectorSelector; the union of distinct label
 // sets across all matchers is returned (Prom convention: each entry
 // includes the synthetic `__name__` label).
-//
-// Time-range filtering (start/end) is parsed but not yet pushed into the
-// SQL — lands with M2.7.
 func (h *Handler) handleSeries(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)

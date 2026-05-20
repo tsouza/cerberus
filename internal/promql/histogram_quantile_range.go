@@ -46,11 +46,11 @@ import (
 // per-step anchor_ts.
 //
 // Selectors carrying `@`/offset modifiers fall through to the instant-
-// mode path: matrix-anchor handling for histogram_quantile under
-// modifiers is a follow-up. In practice the modifier-bearing shapes are
-// rare (Grafana never emits them on query_range), so the instant-mode
-// fallback is byte-stable for the existing fixtures and the range-mode
-// rewrite covers the wire-shape Grafana actually drives.
+// mode path; range-mode matrix-anchor handling for histogram_quantile
+// under modifiers is not implemented. In practice the modifier-bearing
+// shapes are rare (Grafana never emits them on query_range), so the
+// instant-mode fallback is byte-stable for the existing fixtures and
+// the range-mode rewrite covers the wire-shape Grafana actually drives.
 
 const histogramAnchorCol = "anchor_ts"
 
@@ -602,9 +602,8 @@ func buildHistogramNativeRangeTreeMerge(
 // per-anchor lookback Filter. Returns the filtered subtree plus the
 // joined CrossJoin (the latter exposed so callers that want to wrap
 // the join itself stay flexible). The classic path duplicates this
-// shape inline today; refactoring it to share the same helper is a
-// follow-up — keeping the duplication scoped to one file means we
-// don't churn unrelated callers in this change.
+// shape inline; the duplication is scoped to one file so unrelated
+// callers stay untouched.
 func buildHistogramRangeAnchorJoin(
 	scan *chplan.Scan,
 	pred chplan.Expr,

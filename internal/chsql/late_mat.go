@@ -58,10 +58,9 @@ type lateMatShape struct {
 //
 // The registry is populated from the default OTel-CH schema at package
 // init time. Custom-schema deployments overriding table names via
-// Config currently bypass the rewrite — the registry keys on the
-// default table names. Threading custom schemas into chsql is left to
-// a follow-up; the seed value here is the OTel default + a small
-// indirection layer that future PRs can extend.
+// Config bypass the rewrite — the registry keys on the default table
+// names. The seed value here is the OTel default plus a small
+// indirection layer.
 func lateMatShapeFor(table string) (lateMatShape, bool) {
 	s, ok := lateMatShapes[table]
 	return s, ok

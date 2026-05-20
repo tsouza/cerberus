@@ -32,8 +32,7 @@ import (
 //   - vector OP vector — VectorJoin over both sides projected to the
 //     Sample-shape, threading `Opts.ReturnBool` into VectorJoin.
 //
-// Logical ops (`and` / `or` / `unless`) defer to a later milestone in
-// line with the PromQL surface.
+// Logical ops (`and` / `or` / `unless`) are not implemented.
 func lowerBinary(b *syntax.BinOpExpr, s schema.Logs, lc lowerCtx) (chplan.Node, error) {
 	// BinOpExpr stores parse errors in an unexported `err` field; the
 	// parser surfaces them at ParseExpr time before lowering reaches us.
@@ -145,7 +144,7 @@ func lowerVectorScalar(vec syntax.Expr, s schema.Logs, op chplan.BinaryOp, scala
 // The `bool` modifier threads into VectorJoin.ReturnBool — mirroring
 // PromQL's exact behaviour: comparison ops yield 1.0 / 0.0 per matched
 // pair rather than dropping non-matching rows. Logical ops
-// (`and`/`or`/`unless`) defer to a later milestone.
+// (`and`/`or`/`unless`) are not implemented.
 func lowerVectorVector(b *syntax.BinOpExpr, s schema.Logs, op chplan.BinaryOp, returnBool bool, vm *syntax.VectorMatching, lc lowerCtx) (chplan.Node, error) {
 	if returnBool && !isComparison(op) {
 		return nil, fmt.Errorf("logql: 'bool' modifier is only allowed on comparison binary ops")
@@ -231,10 +230,6 @@ func vectorMatchingFromOpts(vm *syntax.VectorMatching) (chplan.VectorCard, chpla
 //
 // Sources `b.Opts.VectorMatching.Include`. The returned slice is a fresh
 // copy — callers may retain or mutate it without aliasing the parser AST.
-//
-// Pre-thread for #393: aggregation lowering will read this to project
-// the join-side include labels onto the aggregation output. The helper
-// itself does not yet feed any caller — that wiring lands in a follow-up.
 func includeLabelsFromBinop(b *syntax.BinOpExpr) []string {
 	if b == nil || b.Opts == nil || b.Opts.VectorMatching == nil {
 		return []string{}
@@ -250,7 +245,7 @@ func includeLabelsFromBinop(b *syntax.BinOpExpr) []string {
 
 // logqlBinaryOp maps a LogQL parser op string to the chplan op enum.
 // Arithmetic and comparison ops are handled here; logical ops
-// (`and` / `or` / `unless`) defer to a later milestone.
+// (`and` / `or` / `unless`) are not implemented.
 func logqlBinaryOp(op string) (chplan.BinaryOp, error) {
 	switch op {
 	case syntax.OpTypeAdd:

@@ -13,15 +13,14 @@ import (
 // defaultSubqueryStep is the step cerberus substitutes when a subquery
 // omits an explicit `step` (`expr[5m:]`). Prom defines empty-step
 // semantics as "use the engine's eval step"; cerberus doesn't thread
-// that through lowering yet (M2.1 territory) so we hardcode 1m, which
-// matches Prom's default eval step.
+// that through lowering, so we hardcode 1m, which matches Prom's
+// default eval step.
 const defaultSubqueryStep = time.Minute
 
-// lowerSubquery handles `<expr>[<range>:<step>]`. P0 4.5 scope: the
-// inner is a `*parser.VectorSelector` (`up[5m:1m]`). Inner ranges over
-// other call shapes (`rate(m[5m])[1h:5m]`) land in P0 4.6; outer
-// range-vector functions over a subquery (`max_over_time(...)[1h:5m]`)
-// land in P0 4.7.
+// lowerSubquery handles `<expr>[<range>:<step>]`. Supports VectorSelector
+// inners (`up[5m:1m]`), inner Call shapes (`rate(m[5m])[1h:5m]`), and
+// outer range-vector functions over a subquery
+// (`max_over_time(...)[1h:5m]`) via the switch below.
 //
 // The lowered shape is a matrix-mode RangeWindow with Identity=true
 // (the "last value in window" emission). Each anchor across
@@ -714,12 +713,14 @@ func lowerSubqueryOverCountValues(
 	default:
 		mapArgs := make([]chplan.Expr, 0, (len(agg.Grouping)+1)*2)
 		for i, lbl := range agg.Grouping {
-			mapArgs = append(mapArgs,
+			mapArgs = append(
+				mapArgs,
 				&chplan.LitString{V: lbl},
 				&chplan.ColumnRef{Name: aliases[i]},
 			)
 		}
-		mapArgs = append(mapArgs,
+		mapArgs = append(
+			mapArgs,
 			&chplan.LitString{V: label},
 			&chplan.ColumnRef{Name: valueKeyAlias},
 		)
@@ -844,7 +845,8 @@ func buildAttributesFromAggregate(agg *parser.AggregateExpr, gkeyAliases []strin
 	}
 	args := make([]chplan.Expr, 0, len(agg.Grouping)*2)
 	for i, label := range agg.Grouping {
-		args = append(args,
+		args = append(
+			args,
 			&chplan.LitString{V: label},
 			&chplan.ColumnRef{Name: gkeyAliases[i]},
 		)

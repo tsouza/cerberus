@@ -55,10 +55,6 @@ type MetricsInstantSeries struct {
 // also accepts RFC3339). `step` is unused at the wire level — the
 // handler synthesises it from end-start so the chplan.RangeWindow
 // emits exactly one anchor.
-//
-// Closes the EF noted on #398: PR 5 corpus stubbed three
-// metrics_instant cases with `skip_reason: cerberus /api/metrics/query
-// handler pending`; this handler removes that skip.
 func (h *Handler) handleMetricsQueryInstant(w http.ResponseWriter, r *http.Request) {
 	q := metricsInstantQueryParam(r)
 	if q == "" {

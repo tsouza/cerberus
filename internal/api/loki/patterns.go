@@ -39,10 +39,10 @@ type Pattern struct {
 }
 
 // nilLimits satisfies drain.Limits with no per-tenant JSON tokenisation
-// hints. Cerberus is single-tenant for now; the upstream pattern
-// ingester uses this hook to tokenise specific JSON fields differently,
-// but the format passed to drain.New ignores it for FormatUnknown (the
-// generic punctuation tokeniser).
+// hints. Cerberus is single-tenant; the upstream pattern ingester uses
+// this hook to tokenise specific JSON fields differently, but the
+// format passed to drain.New ignores it for FormatUnknown (the generic
+// punctuation tokeniser).
 type nilLimits struct{}
 
 func (nilLimits) PatternIngesterTokenizableJSONFields(string) []string { return nil }
@@ -183,7 +183,7 @@ func minePatterns(lines []chclient.TimestampedLine) []Pattern {
 		}
 		out = append(out, Pattern{
 			Pattern: s,
-			Level:   "", // per-level bucketing lands in a follow-up PR — see plan § 5.
+			Level:   "",
 			Samples: projectSamples(c.Samples()),
 		})
 	}

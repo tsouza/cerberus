@@ -282,17 +282,15 @@ func commutesWith(promFunc string, aggOp schema.RollupAggOp) bool {
 // costModel picks one rollup from a slate of candidates that all
 // pass the safety conditions on MVSubstitution.
 //
-// v1 ships exactly one implementation — firstApplicableCostModel —
-// which returns the first candidate (and so requires callers to list
+// The current implementation is firstApplicableCostModel, which
+// returns the first candidate (and so requires callers to list
 // rollups coarsest-first in the registry; the default schema does).
-// v2 will introduce a real estimator that compares scan-cost / row
-// cardinality across overlapping candidates; the interface exists so
-// that swap is local to this file rather than rippling through the
+// The interface allows swapping in a real scan-cost / cardinality
+// estimator locally to this file rather than rippling through the
 // rule.
 //
-// Not exported. v1 callers don't construct one — they invoke
-// MVSubstitution which wires firstApplicableCostModel itself. v2 will
-// flip the visibility once a second impl exists.
+// Not exported. Callers don't construct one — they invoke
+// MVSubstitution which wires firstApplicableCostModel itself.
 type costModel interface {
 	Pick(candidates []schema.Rollup) schema.Rollup
 }

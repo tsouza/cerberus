@@ -149,7 +149,7 @@ func (h *Handler) handleFormatQuery(w http.ResponseWriter, r *http.Request) {
 // param, parses it, and returns the AST. Upstream Prometheus returns
 // a rich nested-node tree; cerberus returns a minimal shape that
 // signals "parsed OK" via the Type field — enough for Grafana's
-// inline syntax check. Full nested-AST serialization is a follow-up.
+// inline syntax check.
 func (h *Handler) handleParseQuery(w http.ResponseWriter, r *http.Request) {
 	// r.FormValue merges URL query params with POST form-encoded body
 	// (auto-calling ParseForm). Matches the consistent surface used by
@@ -527,7 +527,7 @@ func wrapWithSampleProjection(plan chplan.Node, s schema.Metrics) chplan.Node {
 // isMatrixRangeWindow reports whether the plan root is a matrix-shape
 // RangeWindow — i.e., one that emits N rows per series (one per anchor
 // across [End-OuterRange, End] spaced by Step) and exposes `anchor_ts`
-// as a per-row column. Set by PromQL subquery lowering (P0 4.5+).
+// as a per-row column. Set by PromQL subquery lowering.
 //
 // "Plan root" here is "after walking past any value-rewrite Projects"
 // — `projectValueOverInner` (RangeWindow case) drops a Project on top

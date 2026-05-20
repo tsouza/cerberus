@@ -35,7 +35,7 @@ package chplan
 //     (Scale, ZeroCount, PositiveOffset, PositiveBucketCounts,
 //     NegativeOffset, NegativeBucketCounts). Typically Scan or
 //     Filter over otel_metrics_exp_histogram.
-//   - Phi is a scalar literal in [0, 1]; computed phi defers to RC3.
+//   - Phi is a scalar literal in [0, 1]; computed phi is not modelled.
 //   - GroupBy + GroupByAliases name the per-series projection from
 //     the inner subquery. The emitter projects each `<expr> AS <alias>`
 //     in the outer SELECT so the wrapping Sample projection can pick

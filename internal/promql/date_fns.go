@@ -94,10 +94,7 @@ func lowerDateFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 // The SQL works against real CH 24.x, but using the dedicated
 // `chplan.OneRow` source is cleaner: it bypasses the qualified-table
 // emit path entirely and reuses the same `SELECT 1` shape that
-// `time()` / `vector(scalar)` already rely on. The `Scan{Database:...}`
-// shape now has no remaining callers in the PromQL head; the
-// emitter's `scanTableFrag` qualified branch can be retired in a
-// follow-up cleanup.
+// `time()` / `vector(scalar)` already rely on.
 //
 // In range mode (ctx.step > 0) the source is swapped for a StepGrid
 // emitting one anchor per step in `[start, end]`; `now()` references
