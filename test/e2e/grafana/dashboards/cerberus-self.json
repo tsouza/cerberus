@@ -323,7 +323,7 @@
         "type": "prometheus",
         "uid": "cerberus-prometheus"
       },
-      "description": "ClickHouse rows and bytes read per cerberus query, summed over the selected range. Backed by the cerberus_ch_rows_read_total / cerberus_ch_bytes_read_total counters shipped by R4.4.",
+      "description": "ClickHouse rows and bytes read per cerberus query, summed over the selected range. Backed by the cerberus_clickhouse_rows_read / cerberus_clickhouse_bytes_read counters shipped by R4.4.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -413,7 +413,7 @@
             "uid": "cerberus-prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(rate(cerberus_ch_rows_read_total{service_name=\"cerberus\"}[5m]))",
+          "expr": "sum(rate(cerberus_clickhouse_rows_read{service_name=\"cerberus\"}[5m]))",
           "legendFormat": "rows/s",
           "range": true,
           "refId": "A"
@@ -424,7 +424,7 @@
             "uid": "cerberus-prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(rate(cerberus_ch_bytes_read_total{service_name=\"cerberus\"}[5m]))",
+          "expr": "sum(rate(cerberus_clickhouse_bytes_read{service_name=\"cerberus\"}[5m]))",
           "legendFormat": "bytes/s",
           "range": true,
           "refId": "B"
