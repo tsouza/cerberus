@@ -20,11 +20,11 @@ import (
 // preserves the per-stage HTTP-status mapping the inlined handler
 // used to return.
 //
-// ErrParseStage / ErrLowerStage are the exported aliases; the gRPC
-// Search RPC chains them via errors.Is to map user-facing query errors
-// onto codes.InvalidArgument (parser + lower) while keeping
-// emit/execute on codes.Internal — sibling of classifySearchErr's
-// HTTP-status mapping.
+// ErrParseStage / ErrLowerStage are the exported aliases the sibling
+// gRPC handler (internal/api/tempo/grpc) chains via errors.Is to map
+// user-facing query errors onto codes.InvalidArgument (parser + lower)
+// while keeping emit/execute on codes.Internal — sibling of
+// classifySearchErr's HTTP-status mapping.
 var (
 	errParseStage = errors.New("traceql parse stage")
 	errLowerStage = errors.New("traceql lower stage")
