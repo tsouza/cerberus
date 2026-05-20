@@ -51,11 +51,28 @@ func TestNormalizeDottedSelectors(t *testing.T) {
 		},
 		// dotted metric with label matcher — Grafana's metric picker
 		// drops the user into this shape when they pick a metric AND
-		// add a label filter.
+		// add a label filter. The rewrite folds the `__name__`
+		// matcher INTO the existing `{…}` group; emitting two
+		// adjacent selectors (`{__name__="x"}{job="api"}`) is a
+		// parse error upstream ("unexpected `{`").
 		{
 			name: "dotted_with_label_filter",
 			in:   `http.server.request.duration{job="api"}`,
-			want: `{__name__="http.server.request.duration"}{job="api"}`,
+			want: `{__name__="http.server.request.duration",job="api"}`,
+		},
+		// dotted metric with empty `{}` — collapse to a single
+		// matcher group, no trailing comma.
+		{
+			name: "dotted_with_empty_braces",
+			in:   `http.server.request.duration{}`,
+			want: `{__name__="http.server.request.duration"}`,
+		},
+		// dotted metric with multi-matcher group preserves every
+		// user-provided matcher after the spliced `__name__`.
+		{
+			name: "dotted_with_multi_matcher",
+			in:   `http.server.request.duration{job="api",code=~"5.."}`,
+			want: `{__name__="http.server.request.duration",job="api",code=~"5.."}`,
 		},
 		// string content must not be rewritten — a dotted string inside
 		// `"..."` is a label-value, not a metric name.
@@ -84,7 +101,7 @@ func TestNormalizeDottedSelectors(t *testing.T) {
 		{
 			name: "histogram_quantile_classic_dotted",
 			in:   `histogram_quantile(0.95, sum by (le) (rate(http.server.duration_bucket{job="api"}[5m])))`,
-			want: `histogram_quantile(0.95, sum by (le) (rate({__name__="http.server.duration_bucket"}{job="api"}[5m])))`,
+			want: `histogram_quantile(0.95, sum by (le) (rate({__name__="http.server.duration_bucket",job="api"}[5m])))`,
 		},
 		// empty input must round-trip
 		{
