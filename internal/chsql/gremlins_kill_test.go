@@ -2187,18 +2187,22 @@ func TestPartitionPrewhere_LastWhereRetainsExactConjunct(t *testing.T) {
 	}
 }
 
-// TestEmitWindowedArrayMatrix_LogRateMinWindowZero kills the
-// `minWindowSize > 0` boundary at range_window.go:1947 inside
-// emitWindowedArrayMatrix. The values-only matrix path is reached
-// with minWindowSize = 0 only via `log_rate` (LogQL's `rate({...}[r])`,
-// which emits 0 for empty windows rather than dropping them). All
-// other matrix-path callers pass a positive minWindowSize, so the
-// mutant `>= 0` was indistinguishable from the original on the
-// existing fixtures — exercising the log_rate + OuterRange combo
-// forces the boundary to bite (the mutant would append
-// `WHERE length(window_vals) >= 0`, a no-op filter the LogRate
-// semantics explicitly disallow).
-func TestEmitWindowedArrayMatrix_LogRateMinWindowZero(t *testing.T) {
+// TestEmitWindowedArrayMatrix_LogRateMinWindowOne kills the
+// `minWindowSize > 0` boundary at range_window.go inside
+// emitWindowedArrayMatrix for the `log_rate` path. LogQL's
+// `rate({...}[r])` (and `bytes_rate`) lower to log_rate; in matrix
+// mode each (series, anchor) row must be dropped when its window is
+// empty so the outer aggregation sees only anchors with at least one
+// contributing sample. The mutant `>= 0` would emit a no-op filter
+// instead of the actual `>= 1` predicate; the assertion below catches
+// both the missing-filter mutant and the `>= 0` boundary mutant.
+//
+// Pins the trim semantics that aligns cerberus with Loki's
+// batchRangeVectorIterator (range_vector.go::popBack drops series
+// once their window goes empty, so At() never returns a sample at an
+// empty anchor) and prevents the matrix-length drift the loki-compat
+// suite catches as `matrix[0] series length: expected=1382 actual=1441`.
+func TestEmitWindowedArrayMatrix_LogRateMinWindowOne(t *testing.T) {
 	t.Parallel()
 	plan := &chplan.RangeWindow{
 		Input:           &chplan.Scan{Table: "otel_logs"},
@@ -2213,15 +2217,14 @@ func TestEmitWindowedArrayMatrix_LogRateMinWindowZero(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
-	// LogRate matrix MUST NOT emit a window-length filter — its
-	// semantics are sum/range with a 0 fallback for empty windows.
+	// LogRate matrix MUST gate on a non-empty window so empty anchors
+	// don't contaminate the outer aggregation. The `>= 1` predicate is
+	// the only acceptable form; `>= 0` is the boundary mutant.
 	if strings.Contains(sql, "length(`window_vals`) >= 0") {
-		t.Errorf("LogRate matrix unexpectedly emitted >= 0 length filter (boundary mutant).\nSQL=%s", sql)
+		t.Errorf("LogRate matrix emitted no-op `>= 0` filter (boundary mutant).\nSQL=%s", sql)
 	}
-	// Defence in depth: any `length(window_vals) >= N` at all is wrong
-	// for the LogRate path; the original skips the WHERE entirely.
-	if strings.Contains(sql, "length(`window_vals`) >=") {
-		t.Errorf("LogRate matrix must not gate on window length.\nSQL=%s", sql)
+	if !strings.Contains(sql, "length(`window_vals`) >= 1") {
+		t.Errorf("LogRate matrix must drop empty-window rows via `length(window_vals) >= 1`.\nSQL=%s", sql)
 	}
 }
 

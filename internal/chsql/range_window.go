@@ -1205,17 +1205,32 @@ func (e *emitter) emitRangeWindowIdentity(r *chplan.RangeWindow) error {
 //
 // range_seconds binds as a parameter via the value-writer callback so
 // the emitter stays free of new Sprintf-on-SQL instances. The
-// empty-window guard is delegated to chsql.IfNonZero.
+// empty-window guard is delegated to chsql.IfNonZero — defensive
+// belt-and-suspenders with the minWindowSize filter below, so a row
+// that did sneak through with an empty array would still render `0.0`
+// rather than dividing by zero.
 //
-// LogQL semantics emit `0` for an empty window (it's a sum-based
-// metric, not counter-reset arithmetic), so the empty-window-drop
-// filter on the outer SELECT is OFF (minWindowSize = 0).
+// Empty windows are dropped from the result (matrix and instant
+// alike): Loki's batchRangeVectorIterator only keeps series whose
+// window holds 1+ samples (range_vector.go::popBack deletes series
+// once their window goes empty; At() then emits one Sample per
+// remaining series). The outer step grid therefore exposes one row
+// per (series, anchor) tuple where the inner window has at least one
+// matching log line — anchors whose window was empty contribute no
+// row to the matrix at all. Mirroring that requires
+// minWindowSize = 1 so the WHERE clause drops the empty-window rows
+// rather than zero-filling every step grid anchor. Without this an
+// outer `sum(rate({...}[5m]))` over a sparse stream produces one row
+// per step grid anchor (e.g. 1441 anchors for a 24h/1m grid) instead
+// of one row per anchor with contributing samples — see the
+// matrix-length drift the loki-compat suite flagged
+// (`matrix[0] series length: expected=1382 actual=1441`).
 func (e *emitter) emitRangeWindowLogRate(r *chplan.RangeWindow) error {
 	rangeSeconds := r.Range.Seconds()
 	return e.emitWindowedArray(r, IfNonZero(
 		Call("arraySum", BareIdent("window_vals")),
 		Lit(rangeSeconds),
-	), 0)
+	), 1)
 }
 
 // emitRangeWindowRate emits SQL for `rate(metric[range])`.
@@ -1362,8 +1377,10 @@ func (e *emitter) emitRangeWindowDeriv(r *chplan.RangeWindow) error {
 // `if(curr < prev, 1, 0)` indicator + arraySum reduces to the count.
 func (e *emitter) emitRangeWindowResets(r *chplan.RangeWindow) error {
 	value := Cast(
-		Call("arraySum",
-			Call("arrayMap",
+		Call(
+			"arraySum",
+			Call(
+				"arrayMap",
 				Lambda2("p", "c", If(
 					Lt(BareIdent("c"), BareIdent("p")),
 					InlineLit(int64(1)),
@@ -1395,8 +1412,10 @@ func (e *emitter) emitRangeWindowResets(r *chplan.RangeWindow) error {
 // streams (rare in practice, and the goldens cover only finite values).
 func (e *emitter) emitRangeWindowChanges(r *chplan.RangeWindow) error {
 	value := Cast(
-		Call("arraySum",
-			Call("arrayMap",
+		Call(
+			"arraySum",
+			Call(
+				"arrayMap",
 				Lambda2("p", "c", If(
 					Neq(BareIdent("c"), BareIdent("p")),
 					InlineLit(int64(1)),
