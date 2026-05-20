@@ -21,11 +21,15 @@ import (
 	"os"
 	"time"
 
+	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	otellog "go.opentelemetry.io/otel/log"
+	lognoop "go.opentelemetry.io/otel/log/noop"
 	"go.opentelemetry.io/otel/metric"
 	metricnoop "go.opentelemetry.io/otel/metric/noop"
+	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -47,12 +51,13 @@ type Config struct {
 	ServiceVersion string
 }
 
-// Providers bundles the trace + meter providers cerberus installed as
-// globals plus a Shutdown closure that flushes both. Shutdown is safe
-// to call multiple times; the first call wins.
+// Providers bundles the trace, meter, and logger providers cerberus
+// installed as globals plus a Shutdown closure that flushes all three.
+// Shutdown is safe to call multiple times; the first call wins.
 type Providers struct {
 	TracerProvider trace.TracerProvider
 	MeterProvider  metric.MeterProvider
+	LoggerProvider otellog.LoggerProvider
 
 	shutdown func(context.Context) error
 }
@@ -76,6 +81,7 @@ func New(ctx context.Context, cfg Config) (*Providers, error) {
 		return &Providers{
 			TracerProvider: tracenoop.NewTracerProvider(),
 			MeterProvider:  metricnoop.NewMeterProvider(),
+			LoggerProvider: lognoop.NewLoggerProvider(),
 		}, nil
 	}
 
@@ -97,19 +103,31 @@ func New(ctx context.Context, cfg Config) (*Providers, error) {
 		return nil, fmt.Errorf("metric exporter: %w", err)
 	}
 
+	lp, logShutdown, err := newLoggerProvider(ctx, cfg, res)
+	if err != nil {
+		_ = traceShutdown(ctx)
+		_ = metricShutdown(ctx)
+		return nil, fmt.Errorf("log exporter: %w", err)
+	}
+
 	return &Providers{
 		TracerProvider: tp,
 		MeterProvider:  mp,
+		LoggerProvider: lp,
 		shutdown: func(ctx context.Context) error {
-			// Best-effort: try both, return the first error so the
-			// operator still sees a signal but neither half blocks
-			// the other.
+			// Best-effort: try all three, return the first error so
+			// the operator still sees a signal but none blocks the
+			// others.
 			tErr := traceShutdown(ctx)
 			mErr := metricShutdown(ctx)
+			lErr := logShutdown(ctx)
 			if tErr != nil {
 				return tErr
 			}
-			return mErr
+			if mErr != nil {
+				return mErr
+			}
+			return lErr
 		},
 	}, nil
 }
@@ -165,6 +183,42 @@ func newMeterProvider(ctx context.Context, cfg Config, res *resource.Resource) (
 		sdkmetric.WithResource(res),
 	)
 	return mp, mp.Shutdown, nil
+}
+
+// newLoggerProvider builds the OTLP gRPC logger provider that gives
+// the third o11y pillar (logs) the same wire-level treatment as traces
+// and metrics. The slog handler bridge (see `bridges/otelslog`) wraps
+// this provider in `cmd/cerberus/main.go` so every record emitted via
+// `slog.Default()` lands in the collector's otel_logs pipeline
+// alongside the trace and metric streams. Without this, cerberus would
+// rely on the k8s container-log → filelog-receiver path — which (a)
+// requires a sidecar/DaemonSet, (b) round-trips slog records through
+// text format losing structured attributes, and (c) wouldn't work in
+// non-k8s deployments.
+func newLoggerProvider(ctx context.Context, cfg Config, res *resource.Resource) (
+	*sdklog.LoggerProvider, func(context.Context) error, error,
+) {
+	opts := []otlploggrpc.Option{
+		otlploggrpc.WithEndpoint(cfg.Endpoint),
+	}
+	if cfg.Insecure {
+		opts = append(opts, otlploggrpc.WithInsecure())
+	}
+	if len(cfg.Headers) > 0 {
+		opts = append(opts, otlploggrpc.WithHeaders(cfg.Headers))
+	}
+	if cfg.Timeout > 0 {
+		opts = append(opts, otlploggrpc.WithTimeout(cfg.Timeout))
+	}
+	exp, err := otlploggrpc.New(ctx, opts...)
+	if err != nil {
+		return nil, nil, err
+	}
+	lp := sdklog.NewLoggerProvider(
+		sdklog.WithProcessor(sdklog.NewBatchProcessor(exp)),
+		sdklog.WithResource(res),
+	)
+	return lp, lp.Shutdown, nil
 }
 
 // hostnameFunc resolves the hostname used for service.instance.id. The
