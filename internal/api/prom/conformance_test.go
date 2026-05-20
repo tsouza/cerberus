@@ -421,9 +421,9 @@ func TestConformance_RulesEndpoints(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		name     string
-		path     string
-		dataKey  string
+		name    string
+		path    string
+		dataKey string
 	}{
 		{"rules_empty", "/api/v1/rules", "groups"},
 		{"alerts_empty", "/api/v1/alerts", "alerts"},
@@ -446,7 +446,7 @@ func TestConformance_RulesEndpoints(t *testing.T) {
 					"page load", resp.StatusCode, body)
 			}
 			var env struct {
-				Status string                 `json:"status"`
+				Status string                     `json:"status"`
 				Data   map[string]json.RawMessage `json:"data"`
 			}
 			if err := json.Unmarshal([]byte(body), &env); err != nil {
