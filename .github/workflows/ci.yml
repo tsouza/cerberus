@@ -134,3 +134,26 @@ jobs:
             echo "::error::discipline-erosion wording (\"not implemented\" / \"skipped\" / \"deferred\") found in test files or TXTAR fixtures — implement the feature, rewrite to a neutral verb (dropped / excluded / rejected / bypassed), or remove the comment"
             exit 1
           fi
+      # Reject soft-assertion patterns that look like real verification
+      # but pass tautologically. Surfaced by the 2026-05-20 test audit
+      # (docs/test-audit-2026-05-20.md §9 PR-β) as a discipline pin
+      # against future fake-pass regressions.
+      #
+      # Patterns rejected:
+      #   - assert.Contains(x, "")           — empty string matches anything
+      #   - assert.ElementsMatch(x, []...{}) — empty slice trivially matches
+      #   - defer recover()                  — silently swallows panics
+      #   - defer func() { _ = recover() }   — explicit silent recover
+      #
+      # Today's codebase produces zero hits (audited 2026-05-20). New
+      # additions must use the matching deep-assertion form: assert
+      # actual content, assert specific panic, or remove the recover.
+      - name: Reject soft-assertion / silent-recover patterns
+        run: |
+          if git ls-files -z -- \
+              '*_test.go' \
+              ':!:compatibility/*/upstream/**' \
+              | xargs -0 grep -nEH 'assert\.Contains\([^,]+,\s*""\s*\)|assert\.ElementsMatch\([^,]+,\s*\[\][^)]*\{\s*\}\s*\)|defer recover\(\)|defer func\(\)\s*\{\s*_ = recover\(\)' --; then
+            echo "::error::soft-assertion or silent-recover pattern found — replace assert.Contains(x, \"\") with the actual substring, replace assert.ElementsMatch(x, []T{}) with len(x) == 0, replace defer recover() with assert.Panics(t, func(){...}, \"reason\")"
+            exit 1
+          fi
