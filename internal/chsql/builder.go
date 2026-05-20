@@ -754,10 +754,9 @@ func Lit(v any) Frag {
 // clauses. None of these take user input; the surrounding emitter
 // shape pins their lexical form.
 //
-// This is the package-private successor to the public chsql.Raw that
-// was retired. External packages can't call it; in-package callers
-// reach for it sparingly and only for emitter-controlled synthetic
-// tokens. The public typed Frag surface (Call, BareIdent,
+// Package-private: external packages can't call it; in-package
+// callers reach for it sparingly and only for emitter-controlled
+// synthetic tokens. The public typed Frag surface (Call, BareIdent,
 // InlineLit, Subscript, Array, If, Lambda1, Subquery, …) covers the
 // general case.
 func verbatim(sql string) Frag {

@@ -106,8 +106,8 @@ promql/parser      pkg/logql/syntax         pkg/traceql        ← reference ups
  ┌──────────────────────────────────────────────────┐
  │           internal/chsql — typed emitter         │   • parameterised, escape-free
  │  QueryBuilder slots + typed Frag constructors;   │   • PREWHERE promotion on Filter(Scan)
- │  no raw SQL by construction (writeSQL is         │   • sort-key-aware predicate ordering
- │  unexported, chsql.Raw / Concat are gone)        │   • streaming clickhouse-go/v2 cursor
+ │  the typed surface is closed — external packages │   • sort-key-aware predicate ordering
+ │  cannot compose raw SQL by construction          │   • streaming clickhouse-go/v2 cursor
  └──────────────────────────────────────────────────┘
                        │
                        ▼
@@ -156,11 +156,9 @@ through `QueryBuilder` slots (`.Select` / `.From` / `.Where` /
 `.WithRecursive`); expressions compose through typed `Frag`
 constructors (`Eq`, `And`, `Or`, `Paren`, `Cast`, `In`, `Like`, `Add`,
 `Call`, `Array`, `Subscript`, `If`, `Lambda1`, `Subquery`,
-`BareIdent`, `InlineLit`, …). `Builder.writeSQL` is unexported and the
-`chsql.Raw` / `chsql.Concat` public escape hatches are gone. **External
-packages cannot produce raw SQL by construction** — the typed Frag
-surface is closed, and adding a new shape means adding a new typed
-constructor.
+`BareIdent`, `InlineLit`, …). **External packages cannot produce raw
+SQL by construction** — the typed Frag surface is closed, and adding a
+new shape means adding a new typed constructor.
 
 The emitter is also CH-native rather than ANSI-ish:
 
