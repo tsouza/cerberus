@@ -93,10 +93,12 @@ func TestUnimplemented_AllRPCsReturnUnimplemented(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	t.Cleanup(cancel)
 
-	// Search has been ported (PR 2 — see search.go + search_test.go).
-	// The matrix below covers the six RPCs that remain
-	// Unimplemented today; the dropped Search subtest is now
-	// exercised end-to-end against the streaming pipeline.
+	// Search has been ported (search.go + search_test.go) and the two
+	// metrics RPCs have been ported (metrics.go + metrics_test.go).
+	// The matrix below covers the four tag-list RPCs that remain
+	// Unimplemented today; the dropped subtests are exercised
+	// end-to-end against the streaming pipeline in their per-RPC
+	// suites.
 
 	t.Run("SearchTags", func(t *testing.T) {
 		stream, err := client.SearchTags(ctx, &tempopb.SearchTagsRequest{})
@@ -128,22 +130,6 @@ func TestUnimplemented_AllRPCsReturnUnimplemented(t *testing.T) {
 			t.Fatalf("open stream: %v", err)
 		}
 		assertUnimplemented(t, "SearchTagValuesV2", drainErr(t, stream))
-	})
-
-	t.Run("MetricsQueryRange", func(t *testing.T) {
-		stream, err := client.MetricsQueryRange(ctx, &tempopb.QueryRangeRequest{Query: "{} | rate()"})
-		if err != nil {
-			t.Fatalf("open stream: %v", err)
-		}
-		assertUnimplemented(t, "MetricsQueryRange", drainErr(t, stream))
-	})
-
-	t.Run("MetricsQueryInstant", func(t *testing.T) {
-		stream, err := client.MetricsQueryInstant(ctx, &tempopb.QueryInstantRequest{Query: "{} | rate()"})
-		if err != nil {
-			t.Fatalf("open stream: %v", err)
-		}
-		assertUnimplemented(t, "MetricsQueryInstant", drainErr(t, stream))
 	})
 }
 
