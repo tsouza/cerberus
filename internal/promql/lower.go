@@ -437,7 +437,7 @@ func wrapRangeLatestPerSeries(scan chplan.Node, pred chplan.Expr, anchor evalAnc
 	// the optimizer already promotes. The `(scan, pred)` split keeps the
 	// downstream PREWHERE path unchanged; when pred is nil (no matchers)
 	// the scan flows directly into the CrossJoin.
-	var rawSide chplan.Node = scan
+	rawSide := scan
 	if pred != nil {
 		rawSide = &chplan.Filter{Input: scan, Predicate: pred}
 	}
