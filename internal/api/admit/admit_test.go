@@ -1,6 +1,7 @@
 package admit_test
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +11,9 @@ import (
 
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/tsouza/cerberus/internal/api/admit"
 )
@@ -282,5 +286,116 @@ func TestRejectedCounter(t *testing.T) {
 	}
 	if sum != 2 {
 		t.Fatalf("rejected_total: want 2, got %d", sum)
+	}
+}
+
+// fakeServerStream is the minimal grpc.ServerStream stub the
+// StreamInterceptor tests need to drive the interceptor through its
+// Acquire/Release/Reject paths without standing up a real gRPC
+// transport. Only Context() is consulted by the interceptor.
+type fakeServerStream struct {
+	grpc.ServerStream
+	ctx context.Context
+}
+
+func (f *fakeServerStream) Context() context.Context { return f.ctx }
+
+func TestStreamInterceptorBelowCap(t *testing.T) {
+	t.Parallel()
+	l := admit.New("tempo", 2)
+	var hits atomic.Int32
+	interceptor := l.StreamInterceptor()
+	handler := func(srv any, ss grpc.ServerStream) error {
+		hits.Add(1)
+		return nil
+	}
+	for range 5 {
+		stream := &fakeServerStream{ctx: t.Context()}
+		if err := interceptor(nil, stream, &grpc.StreamServerInfo{}, handler); err != nil {
+			t.Fatalf("interceptor: %v", err)
+		}
+	}
+	if hits.Load() != 5 {
+		t.Fatalf("want 5 handler hits, got %d", hits.Load())
+	}
+}
+
+func TestStreamInterceptorRejectsAtCap(t *testing.T) {
+	t.Parallel()
+	l := admit.New("tempo", 1)
+	// Hold the slot so the next request through the interceptor hits
+	// the cap.
+	rel, ok := l.Acquire(t.Context())
+	if !ok {
+		t.Fatalf("setup acquire: want ok")
+	}
+	defer rel()
+
+	interceptor := l.StreamInterceptor()
+	handler := func(srv any, ss grpc.ServerStream) error {
+		t.Fatalf("handler must not run when limiter is full")
+		return nil
+	}
+	stream := &fakeServerStream{ctx: t.Context()}
+	err := interceptor(nil, stream, &grpc.StreamServerInfo{}, handler)
+	if err == nil {
+		t.Fatalf("want ResourceExhausted, got nil")
+	}
+	st, ok := status.FromError(err)
+	if !ok {
+		t.Fatalf("want grpc status, got %v", err)
+	}
+	if st.Code() != codes.ResourceExhausted {
+		t.Fatalf("code: want ResourceExhausted, got %s", st.Code())
+	}
+}
+
+func TestStreamInterceptorNilLimiterPassesThrough(t *testing.T) {
+	t.Parallel()
+	var l *admit.Limiter
+	var hits atomic.Int32
+	interceptor := l.StreamInterceptor()
+	handler := func(srv any, ss grpc.ServerStream) error {
+		hits.Add(1)
+		return nil
+	}
+	for range 10 {
+		stream := &fakeServerStream{ctx: t.Context()}
+		if err := interceptor(nil, stream, &grpc.StreamServerInfo{}, handler); err != nil {
+			t.Fatalf("interceptor: %v", err)
+		}
+	}
+	if hits.Load() != 10 {
+		t.Fatalf("want 10 hits, got %d", hits.Load())
+	}
+}
+
+func TestStreamInterceptorReleasesOnHandlerError(t *testing.T) {
+	t.Parallel()
+	// A handler error must still release the slot so subsequent
+	// requests can acquire. Mirrors the HTTP Middleware's defer-release
+	// guarantee.
+	l := admit.New("tempo", 1)
+	interceptor := l.StreamInterceptor()
+	wantErr := status.Error(codes.Internal, "boom")
+	handler := func(srv any, ss grpc.ServerStream) error {
+		return wantErr
+	}
+	stream := &fakeServerStream{ctx: t.Context()}
+	if err := interceptor(nil, stream, &grpc.StreamServerInfo{}, handler); err != wantErr {
+		t.Fatalf("want handler error pass-through, got %v", err)
+	}
+	// Slot must have been released — second call still succeeds.
+	hit := false
+	handler2 := func(srv any, ss grpc.ServerStream) error {
+		hit = true
+		return nil
+	}
+	stream2 := &fakeServerStream{ctx: t.Context()}
+	if err := interceptor(nil, stream2, &grpc.StreamServerInfo{}, handler2); err != nil {
+		t.Fatalf("second call: want ok, got %v", err)
+	}
+	if !hit {
+		t.Fatalf("handler2 did not run — slot was not released after error")
 	}
 }
