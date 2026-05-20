@@ -147,16 +147,42 @@ jobs:
       #   - assert.ElementsMatch(x, []...{}) — empty slice trivially matches
       #   - defer recover()                  — silently swallows panics
       #   - defer func() { _ = recover() }   — explicit silent recover
+      #     (single-line AND multi-line; perl slurp catches both)
       #
       # New additions must use the matching deep-assertion form: assert
       # actual content, assert specific panic, or remove the recover.
       - name: Reject soft-assertion / silent-recover patterns
         run: |
+          fail=0
           if git ls-files -z -- \
               '*_test.go' \
               ':!:compatibility/*/upstream/**' \
-              | xargs -0 grep -nEH 'assert\.Contains\([^,]+,\s*""\s*\)|assert\.ElementsMatch\([^,]+,\s*\[\][^)]*\{\s*\}\s*\)|defer recover\(\)|defer func\(\)\s*\{\s*_ = recover\(\)' --; then
-            echo "::error::soft-assertion or silent-recover pattern found — replace assert.Contains(x, \"\") with the actual substring, replace assert.ElementsMatch(x, []T{}) with len(x) == 0, replace defer recover() with assert.Panics(t, func(){...}, \"reason\")"
+              | xargs -0 grep -nEH 'assert\.Contains\([^,]+,\s*""\s*\)|assert\.ElementsMatch\([^,]+,\s*\[\][^)]*\{\s*\}\s*\)' --; then
+            fail=1
+          fi
+          # Multi-line silent-recover scan. Catches both the bare
+          # `defer recover()` form and the `defer func() { ... _ =
+          # recover() ... }()` block — including variants where comments
+          # or blank lines sit between the brace and the recover. The
+          # `[^{}]*` clamp keeps the match inside a single brace level
+          # so it does not over-reach into surrounding bodies, while
+          # `_\s*=\s*recover` discriminates a silent swallow from the
+          # legitimate `r := recover(); if r == nil { t.Fatal(...) }`
+          # assert-the-panic pattern used elsewhere in the repo.
+          matches=$(git ls-files -z -- '*_test.go' ':!:compatibility/*/upstream/**' \
+            | xargs -0 perl -0777 -ne '
+                while (/defer\s+recover\s*\(\s*\)|defer\s+func\s*\(\s*\)\s*\{[^{}]*_\s*=\s*recover\s*\(\s*\)/g) {
+                  my $pre = substr($_, 0, $-[0]);
+                  my $line = ($pre =~ tr/\n//) + 1;
+                  print "$ARGV:$line: silent-recover pattern\n";
+                }
+              ')
+          if [ -n "$matches" ]; then
+            printf '%s\n' "$matches"
+            fail=1
+          fi
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::soft-assertion or silent-recover pattern found — replace assert.Contains(x, \"\") with the actual substring, replace assert.ElementsMatch(x, []T{}) with len(x) == 0, replace defer recover() / defer func(){_ = recover()}() with assert.Panics(t, func(){...}, \"reason\")"
             exit 1
           fi
       # Reject net-new `should_skip:` entries in compatibility overlays

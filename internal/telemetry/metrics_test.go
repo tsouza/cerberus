@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
@@ -299,15 +300,10 @@ func TestObserveQueryInflight_IncrementDecrement(t *testing.T) {
 func TestObserveQueryInflight_BalancedAcrossPanic(t *testing.T) {
 	reader := installManualReader(t)
 
-	func() {
-		defer func() {
-			// Swallow the panic; we only care that the decrement
-			// defer still fired.
-			_ = recover()
-		}()
+	assert.Panics(t, func() {
 		defer telemetry.ObserveQueryInflight(t.Context(), "logql")()
 		panic("synthetic engine failure")
-	}()
+	}, "synthetic panic must propagate; the defer-decrement is what we verify after")
 
 	if got := inflightValue(t, reader, "logql"); got != 0 {
 		t.Fatalf("post-panic inflight: got %d want 0 (defer must decrement)", got)

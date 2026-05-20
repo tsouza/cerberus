@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+
 	"github.com/tsouza/cerberus/internal/api/admit"
 )
 
@@ -200,12 +202,9 @@ func TestAdmit_MiddlewareUnderHandlerPanic_ReleasesSlot(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/x", nil)
 
-	func() {
-		defer func() {
-			_ = recover() // swallow the panic to keep the test running
-		}()
+	assert.Panics(t, func() {
 		h.ServeHTTP(rec, req)
-	}()
+	}, "inner handler must propagate its panic; middleware does not catch")
 
 	// The slot must be free again — subsequent Acquire succeeds.
 	rel, ok := l.Acquire(t.Context())

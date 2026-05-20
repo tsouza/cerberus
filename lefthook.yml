@@ -79,10 +79,29 @@ pre-push:
     forbid-soft-assert:
       tags: discipline
       run: |
+        fail=0
         if git ls-files -z -- \
             '*_test.go' \
             ':!:compatibility/*/upstream/**' \
-            | xargs -0 grep -nEH 'assert\.Contains\([^,]+,\s*""\s*\)|assert\.ElementsMatch\([^,]+,\s*\[\][^)]*\{\s*\}\s*\)|defer recover\(\)|defer func\(\)\s*\{\s*_ = recover\(\)' --; then
+            | xargs -0 grep -nEH 'assert\.Contains\([^,]+,\s*""\s*\)|assert\.ElementsMatch\([^,]+,\s*\[\][^)]*\{\s*\}\s*\)' --; then
+          fail=1
+        fi
+        # Multi-line silent-recover scan — mirrors the CI `forbid-skip`
+        # gate so the inner loop catches both single-line and
+        # multi-line `defer func() { _ = recover() }()` blocks.
+        matches=$(git ls-files -z -- '*_test.go' ':!:compatibility/*/upstream/**' \
+          | xargs -0 perl -0777 -ne '
+              while (/defer\s+recover\s*\(\s*\)|defer\s+func\s*\(\s*\)\s*\{[^{}]*_\s*=\s*recover\s*\(\s*\)/g) {
+                my $pre = substr($_, 0, $-[0]);
+                my $line = ($pre =~ tr/\n//) + 1;
+                print "$ARGV:$line: silent-recover pattern\n";
+              }
+            ')
+        if [ -n "$matches" ]; then
+          printf '%s\n' "$matches"
+          fail=1
+        fi
+        if [ "$fail" -ne 0 ]; then
           echo "lefthook: soft-assertion or silent-recover pattern — assert specific content / use assert.Panics"
           exit 1
         fi
