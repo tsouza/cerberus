@@ -72,10 +72,16 @@ func run() error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
+	// Stage-1 logger: stderr-only, used until telemetry providers
+	// are built below. The startup log lines that come next describe
+	// the OTLP target itself, so they have to land before the OTel
+	// bridge is wired (and would be useless once the bridge is wired
+	// — they can't ship before the exporter is up).
 	logger := config.NewLogger(os.Stderr, cfg.Log)
 	slog.SetDefault(logger)
 
-	logger.Info("cerberus starting",
+	logger.Info(
+		"cerberus starting",
 		"version", Version,
 		"http_addr", cfg.HTTPAddr,
 		"ch_addr", cfg.ClickHouse.Addr,
@@ -100,7 +106,8 @@ func run() error {
 	// probe should not gate on it, so we seed it true.
 	var schemaReady atomic.Bool
 	if cfg.AutoCreateSchema {
-		logger.Info("auto-creating OTel ClickHouse schema",
+		logger.Info(
+			"auto-creating OTel ClickHouse schema",
 			"database", cfg.ClickHouse.Database,
 			"signals", "metrics,logs,traces",
 		)
@@ -133,8 +140,21 @@ func run() error {
 	}
 	installOTel(providers.TracerProvider)
 	otel.SetMeterProvider(providers.MeterProvider)
+
+	// Stage-2 logger: now that the OTLP log exporter is built, fan
+	// every slog record out to BOTH the stderr handler (12-factor
+	// stream / `kubectl logs` readability) AND the OTel slog bridge
+	// (records ship via OTLP gRPC to the collector → CH `otel_logs`,
+	// landing alongside the same binary's traces and metrics so a
+	// self-dashboard works against a running cluster). With the
+	// endpoint empty, providers.LoggerProvider is the no-op
+	// LoggerProvider — bridge is a no-op, only stderr is written.
+	logger = config.NewTelemetryLogger(os.Stderr, cfg.Log, providers.LoggerProvider)
+	slog.SetDefault(logger)
+
 	if cfg.OTLP.Endpoint != "" {
-		logger.Info("OTLP exporters enabled",
+		logger.Info(
+			"OTLP exporters enabled",
 			"endpoint", cfg.OTLP.Endpoint,
 			"insecure", cfg.OTLP.Insecure,
 		)
@@ -150,7 +170,8 @@ func run() error {
 		promLimiter = admit.New("prom", cfg.Admit.MaxInflightProm)
 		lokiLimiter = admit.New("loki", cfg.Admit.MaxInflightLoki)
 		tempoLimiter = admit.New("tempo", cfg.Admit.MaxInflightTempo)
-		logger.Info("admission control enabled",
+		logger.Info(
+			"admission control enabled",
 			"prom", cfg.Admit.MaxInflightProm,
 			"loki", cfg.Admit.MaxInflightLoki,
 			"tempo", cfg.Admit.MaxInflightTempo,

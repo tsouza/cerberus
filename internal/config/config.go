@@ -12,8 +12,11 @@ import (
 	"strings"
 	"time"
 
+	otellog "go.opentelemetry.io/otel/log"
+
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/schema"
+	"github.com/tsouza/cerberus/internal/telemetry"
 )
 
 // Config is the cerberus runtime configuration.
@@ -244,16 +247,54 @@ func admitFromEnv() (AdmitConfig, error) {
 // (e.g. via slog.SetDefault) if global propagation is desired. Accepting
 // io.Writer keeps the helper trivially testable (a *bytes.Buffer drops
 // straight in).
+//
+// This builds the **stderr-only** logger used during startup, before
+// telemetry providers exist. Once `telemetry.New` returns, the caller
+// should replace the slog default with `NewTelemetryLogger`, which
+// adds the OTLP-log bridge while preserving the same stderr stream
+// shape.
 func NewLogger(w io.Writer, cfg LogConfig) *slog.Logger {
+	return slog.New(newLocalHandler(w, cfg))
+}
+
+// NewTelemetryLogger builds the post-startup logger that fans every
+// record out to (a) the stderr handler this function would have
+// returned via NewLogger (text or json per LogConfig), AND (b) an
+// OTel slog bridge backed by `provider`. When `provider` is the no-op
+// LoggerProvider (telemetry disabled), the result is functionally
+// identical to NewLogger — every record still hits stderr, nothing
+// is exported.
+//
+// The fan-out gives cerberus the third o11y pillar over OTLP: the
+// same records that print to `kubectl logs` also land in the
+// collector's `otel_logs` table next to its traces and metrics.
+//
+// The provider parameter takes `any` to avoid an import cycle with
+// `internal/telemetry`; the actual value must satisfy
+// `go.opentelemetry.io/otel/log.LoggerProvider`. A nil provider
+// returns a stderr-only logger.
+func NewTelemetryLogger(w io.Writer, cfg LogConfig, provider any) *slog.Logger {
+	local := newLocalHandler(w, cfg)
+	if provider == nil {
+		return slog.New(local)
+	}
+	lp, ok := provider.(otellog.LoggerProvider)
+	if !ok {
+		// Defensive: a non-LoggerProvider argument means the
+		// caller's import wiring is broken; fall back to stderr.
+		return slog.New(local)
+	}
+	return slog.New(telemetry.NewSlogHandler(local, lp))
+}
+
+func newLocalHandler(w io.Writer, cfg LogConfig) slog.Handler {
 	opts := &slog.HandlerOptions{Level: cfg.Level}
-	var h slog.Handler
 	switch cfg.Format {
 	case "json":
-		h = slog.NewJSONHandler(w, opts)
+		return slog.NewJSONHandler(w, opts)
 	default:
-		h = slog.NewTextHandler(w, opts)
+		return slog.NewTextHandler(w, opts)
 	}
-	return slog.New(h)
 }
 
 // otlpFromEnv parses the CERBERUS_OTLP_* env vars into an OTLPConfig.

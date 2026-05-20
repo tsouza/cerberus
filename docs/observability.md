@@ -4,14 +4,21 @@ Cerberus is its own first-class observability customer: it queries OTel-CH
 metrics + logs + traces, and it ships the same shape of telemetry back into
 that store so a self-dashboard works against a running cluster.
 
-The self-observability stack covers four pillars:
+The self-observability stack covers all three OTel pillars over the
+same OTLP gRPC transport. Each pillar exports to the same collector,
+which writes to the same ClickHouse tables cerberus queries on its
+Grafana-facing side — the deployment dogfoods itself end-to-end.
 
-| Pillar                | Surface                                                                                          |
-| --------------------- | ------------------------------------------------------------------------------------------------ |
-| Structured logging    | `log/slog`, env-configurable format / level (this page)                                          |
-| HTTP request tracing  | `otelhttp.NewHandler` wraps every Prom / Loki / Tempo endpoint — one span per HTTP request       |
-| Pipeline tracing      | Custom spans around parse / lower / optimize / emit / execute give per-stage timings             |
-| Self-metrics + OTLP   | Request count + latency + CH roundtrip + in-flight gauge, exported via OTLP gRPC                 |
+| Pillar      | Surface                                                                                      |
+| ----------- | -------------------------------------------------------------------------------------------- |
+| **Logs**    | `log/slog` → `bridges/otelslog` → OTLP gRPC → `otel_logs` (this page §Logging)               |
+| **Traces**  | `otelhttp.NewHandler` (one span per HTTP request) + parse/lower/optimize/emit/execute stages |
+| **Metrics** | Request count + latency + stage duration + CH rows/bytes + in-flight, all OTLP-exported      |
+
+Resource attributes (`service.name = cerberus`, `service.version`,
+`service.instance.id`) are attached identically to every span, metric
+data point, AND log record so a Grafana dashboard can pivot on them
+across all three signal types.
 
 The k3s manifest at `test/e2e/k3s/otel-collector.yaml` and the provisioned
 `test/e2e/grafana/dashboards/cerberus-self.json` wire the full export path
@@ -20,9 +27,20 @@ end-to-end against a running cluster.
 ## Logging
 
 Cerberus uses the standard library's [`log/slog`](https://pkg.go.dev/log/slog)
-for structured logging. Logs are written as an event stream to `stderr`
-(factor XI of the [12-factor methodology](12factor.md#factor-xi--logs))
-— cerberus never owns the sink. Two env vars steer the handler:
+for structured logging. Records fan out to **two sinks simultaneously**:
+
+1. **stderr** — text or JSON per `CERBERUS_LOG_FORMAT`, satisfying
+   factor XI of the [12-factor methodology](12factor.md#factor-xi--logs)
+   so `kubectl logs` / `docker logs` tail cleanly.
+2. **OTLP gRPC** — every record bridged via
+   [`go.opentelemetry.io/contrib/bridges/otelslog`](https://pkg.go.dev/go.opentelemetry.io/contrib/bridges/otelslog)
+   to the same collector endpoint that receives traces and metrics.
+   Records land in `otel_logs` with full structured attributes
+   preserved (no text-format round-trip).
+
+The OTLP sink is enabled whenever `CERBERUS_OTLP_ENDPOINT` is set;
+unset means no-op bridge (stderr-only fallback). Two env vars steer the
+stderr-side handler:
 
 | Env var               | Default | Allowed values                                       | Effect                                |
 | --------------------- | ------- | ---------------------------------------------------- | ------------------------------------- |
@@ -45,7 +63,7 @@ observability — a typo never ships to prod undetected.
 - **`Debug`** — per-request SQL + arg traces. Off in prod by default; flip to
   `debug` to capture the lowered SQL for a complaint window.
 - **`Info`** — lifecycle events only (`cerberus starting`, `HTTP listener
-  ready`, `signal received, shutting down`, `cerberus stopped`).
+ready`, `signal received, shutting down`, `cerberus stopped`).
 - **`Warn`** — recoverable conditions where the request can still be served
   meaningfully or the client is at fault (e.g. WebSocket upgrade rejected
   by the peer in the Loki `/tail` handler).
@@ -90,15 +108,15 @@ Deployments with a customised CH layout — renamed tables, sharded
 clusters, alternate database conventions — override the table names via
 env vars at startup; nothing rebuild-related is required.
 
-| Variable                                      | Default                      | Effect                                                        |
-| --------------------------------------------- | ---------------------------- | ------------------------------------------------------------- |
-| `CERBERUS_SCHEMA_METRICS_GAUGE_TABLE`         | `otel_metrics_gauge`         | Gauge-metrics table name.                                     |
-| `CERBERUS_SCHEMA_METRICS_SUM_TABLE`           | `otel_metrics_sum`           | Sum / counter metrics table name.                             |
-| `CERBERUS_SCHEMA_METRICS_HISTOGRAM_TABLE`     | `otel_metrics_histogram`     | Classic histogram metrics table name.                         |
-| `CERBERUS_SCHEMA_METRICS_EXP_HISTOGRAM_TABLE` | `otel_metrics_exp_histogram` | Exponential / native histogram metrics table name.            |
-| `CERBERUS_SCHEMA_METRICS_SUMMARY_TABLE`       | `otel_metrics_summary`       | Summary metrics table name.                                   |
-| `CERBERUS_SCHEMA_LOGS_TABLE`                  | `otel_logs`                  | Logs table name read by the Loki API.                         |
-| `CERBERUS_SCHEMA_TRACES_TABLE`                | `otel_traces`                | Spans table name read by the Tempo API.                       |
+| Variable                                      | Default                      | Effect                                             |
+| --------------------------------------------- | ---------------------------- | -------------------------------------------------- |
+| `CERBERUS_SCHEMA_METRICS_GAUGE_TABLE`         | `otel_metrics_gauge`         | Gauge-metrics table name.                          |
+| `CERBERUS_SCHEMA_METRICS_SUM_TABLE`           | `otel_metrics_sum`           | Sum / counter metrics table name.                  |
+| `CERBERUS_SCHEMA_METRICS_HISTOGRAM_TABLE`     | `otel_metrics_histogram`     | Classic histogram metrics table name.              |
+| `CERBERUS_SCHEMA_METRICS_EXP_HISTOGRAM_TABLE` | `otel_metrics_exp_histogram` | Exponential / native histogram metrics table name. |
+| `CERBERUS_SCHEMA_METRICS_SUMMARY_TABLE`       | `otel_metrics_summary`       | Summary metrics table name.                        |
+| `CERBERUS_SCHEMA_LOGS_TABLE`                  | `otel_logs`                  | Logs table name read by the Loki API.              |
+| `CERBERUS_SCHEMA_TRACES_TABLE`                | `otel_traces`                | Spans table name read by the Tempo API.            |
 
 The active ClickHouse **database** is set by `CERBERUS_CH_DATABASE`
 (default `otel`) — that single knob covers both the connection's
