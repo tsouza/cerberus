@@ -113,7 +113,7 @@ should_skip:
   - source: "fast/structured-metadata.yaml#JSON parsing with structured metadata filter first"
     reason: "Upstream already pins `skip: true` (dataobj-engine schema gap). Listed explicitly so a future upstream `skip: false` flip doesn't silently re-enable on cerberus without revisiting the dataobj-engine baseline."
     since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6 (upstream skip)"
+    jira: "docs/loki-compliance-plan.md PR 6 (upstream skip)"
 
   # regression/metric-queries.yaml — one upstream-pinned row. The
   # `Rate of unwrapped values` row that PR #537 added as a cardinality
@@ -123,31 +123,66 @@ should_skip:
   - source: "regression/metric-queries.yaml#HTTP status code distribution"
     reason: "Upstream pins `skip: true` (JSONParserErr on generated data). No reference baseline to diff against."
     since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6 (upstream skip)"
+    jira: "docs/loki-compliance-plan.md PR 6 (upstream skip)"
 
   # regression/structured-metadata.yaml — surviving entries are
   # upstream-pinned (`skip: true` on Loki's v2 engine) and seed-gap
   # entries pending seeder expansion.
   - source: "regression/structured-metadata.yaml#Combined line and metadata filter"
-    reason: "Requires `detected_level` structured metadata; seeder writes none."
+    reason: |
+      Reference Loki produces no `detected_level` derived label without
+      structured-metadata input on the indexed path. Cerberus's seeder
+      emits OTel logs via the upstream ClickHouse exporter, which
+      carries SeverityText but not the structured-metadata block shape
+      reference Loki indexes for `detected_level` filtering — so the
+      reference returns empty on the line+metadata combination and the
+      diff records `baseline returned empty`. Cerberus's own
+      `detected_level` synthesis (`internal/logql/detected_level.go`)
+      is exercised by other corpus cases that don't depend on
+      reference-side structured-metadata indexing. Re-enable once the
+      harness's structured-metadata seed gap is closed.
     since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6"
+    jira: "docs/loki-compliance-plan.md PR 6 (harness seed-gap cluster)"
   - source: "regression/structured-metadata.yaml#JSON parsing with duration filter and structured metadata"
     reason: "Upstream pins `skip: true` (numeric `> 0.1` label filter unsupported by Loki's v2 engine on this shape)."
     since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6 (upstream skip)"
+    jira: "docs/loki-compliance-plan.md PR 6 (upstream skip)"
   - source: "regression/structured-metadata.yaml#Drilldown pattern with case-insensitive error search"
     reason: "Upstream pins `skip: true` (numeric `>= 500` label filter unsupported by Loki's v2 engine on this shape)."
     since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6 (upstream skip)"
+    jira: "docs/loki-compliance-plan.md PR 6 (upstream skip)"
   - source: "regression/structured-metadata.yaml#Drilldown with failed search and error level"
-    reason: "Requires `detected_level` structured metadata + 'failed' keyword in log content; seeder writes neither."
+    reason: |
+      Same structured-metadata gap as the line+metadata combined-filter
+      entry above. Reference Loki computes `detected_level` from
+      structured-metadata input it has indexed; cerberus's seeder
+      flows OTel records through the upstream ClickHouse exporter
+      shape (SeverityText present, structured-metadata block shape
+      absent), so the reference baseline for the `detected_level="error"`
+      + `|~ "(?i)failed"` shape comes back empty and the diff records
+      `baseline returned empty`. Cerberus's `detected_level` synthesis
+      (`internal/logql/detected_level.go`) drives the canonical path on
+      cerberus's side from SeverityText. Re-enable once the harness's
+      structured-metadata seed gap is closed.
     since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6"
+    jira: "docs/loki-compliance-plan.md PR 6 (harness seed-gap cluster)"
   - source: "regression/structured-metadata.yaml#Drilldown with error/warn level and refused search"
-    reason: "Requires `detected_level` structured metadata + 'refused' keyword; seeder writes neither."
+    reason: |
+      Same structured-metadata gap as the two filter rows above, this
+      time on the regex form `detected_level=~"error|warn"` combined
+      with a `|~ "(?i)refused"` line filter. Reference Loki returns
+      empty because its `detected_level` derived label has no
+      structured-metadata input from the harness's upstream ClickHouse
+      exporter seed shape — SeverityText is populated but the
+      structured-metadata block reference Loki indexes for
+      `detected_level` is not. The diff records `baseline returned
+      empty`. Cerberus's `detected_level` synthesis
+      (`internal/logql/detected_level.go`) maps both literal-equality
+      and regex matcher shapes off SeverityText already, so the
+      cerberus-side path is covered by other corpus cases. Re-enable
+      once the harness's structured-metadata seed gap is closed.
     since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6"
+    jira: "docs/loki-compliance-plan.md PR 6 (harness seed-gap cluster)"
 
   # exhaustive/aggregations.yaml — most entries lifted now that `| unwrap`,
   # value range aggs, and range-agg grouping land. Remaining skips are
@@ -155,27 +190,41 @@ should_skip:
   - source: "exhaustive/aggregations.yaml#Count aggregated by pod"
     reason: "`sum by (pod)` on a label key the seeder doesn't write."
     since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6 (seed gap)"
+    jira: "docs/loki-compliance-plan.md PR 6 (seed gap)"
   - source: "exhaustive/aggregations.yaml#Count aggregated by namespace"
     reason: "`namespace` label not in seed."
     since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6 (seed gap)"
+    jira: "docs/loki-compliance-plan.md PR 6 (seed gap)"
   - source: "exhaustive/aggregations.yaml#Count aggregated by service_name"
     reason: "Seeder writes `service` not `service_name`."
     since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6 (seed gap)"
+    jira: "docs/loki-compliance-plan.md PR 6 (seed gap)"
   - source: "exhaustive/aggregations.yaml#Count aggregated by detected_level"
-    reason: "Requires `detected_level` structured metadata; seeder writes none."
+    reason: |
+      Aggregation grouping flavour of the same structured-metadata
+      gap: `sum by (detected_level) (count_over_time(...))` partitions
+      its output streams by reference Loki's `detected_level` derived
+      label, which the reference computes from structured-metadata
+      input. The harness's seeder emits OTel records through the
+      upstream ClickHouse exporter shape (SeverityText present,
+      structured-metadata block absent), so reference Loki has no
+      input to split the count series by `detected_level` and the
+      diff records `baseline returned empty`. Cerberus's
+      `detected_level` synthesis
+      (`internal/logql/detected_level.go`) drives the equivalent
+      grouping on cerberus's side from SeverityText and is covered by
+      other corpus cases. Re-enable once the harness's
+      structured-metadata seed gap is closed.
     since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6"
+    jira: "docs/loki-compliance-plan.md PR 6 (harness seed-gap cluster)"
   - source: "exhaustive/aggregations.yaml#Count aggregated by cluster and namespace"
     reason: "`cluster` / `namespace` labels not in seed."
     since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6 (seed gap)"
+    jira: "docs/loki-compliance-plan.md PR 6 (seed gap)"
   - source: "exhaustive/aggregations.yaml#Count aggregated by service_name and container"
     reason: "`service_name` / `container` labels not in seed."
     since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6 (seed gap)"
+    jira: "docs/loki-compliance-plan.md PR 6 (seed gap)"
 
   # exhaustive/unwrap-aggregations.yaml — surviving entries are
   # upstream-pinned (`skip: true` on Loki's v2 engine) or seed-gap
@@ -188,46 +237,46 @@ should_skip:
   - source: "exhaustive/unwrap-aggregations.yaml#Standard variance over time"
     reason: "Upstream pins `skip: true` (stddev_over_time / stdvar_over_time unsupported by Loki's v2 engine)."
     since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6 (upstream skip)"
+    jira: "docs/loki-compliance-plan.md PR 6 (upstream skip)"
   - source: "exhaustive/unwrap-aggregations.yaml#Standard variance grouped by level"
     reason: "Upstream pins `skip: true` (stddev_over_time unsupported by Loki's v2 engine)."
     since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6 (upstream skip)"
+    jira: "docs/loki-compliance-plan.md PR 6 (upstream skip)"
   - source: "exhaustive/unwrap-aggregations.yaml#Standard deviation over time"
     reason: "Upstream pins `skip: true` (stddev_over_time unsupported by Loki's v2 engine)."
     since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6 (upstream skip)"
+    jira: "docs/loki-compliance-plan.md PR 6 (upstream skip)"
   - source: "exhaustive/unwrap-aggregations.yaml#Standard deviation grouped by level"
     reason: "Upstream pins `skip: true` (stddev_over_time unsupported by Loki's v2 engine)."
     since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6 (upstream skip)"
+    jira: "docs/loki-compliance-plan.md PR 6 (upstream skip)"
   - source: "exhaustive/unwrap-aggregations.yaml#Quantile over time - p50 (median)"
     reason: "Upstream pins `skip: true` (quantile_over_time unsupported by Loki's v2 engine)."
     since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6 (upstream skip)"
+    jira: "docs/loki-compliance-plan.md PR 6 (upstream skip)"
   - source: "exhaustive/unwrap-aggregations.yaml#Quantile over time - p90"
     reason: "Upstream pins `skip: true` (quantile_over_time unsupported by Loki's v2 engine)."
     since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6 (upstream skip)"
+    jira: "docs/loki-compliance-plan.md PR 6 (upstream skip)"
   - source: "exhaustive/unwrap-aggregations.yaml#Quantile over time - p95"
     reason: "Upstream pins `skip: true` (quantile_over_time unsupported by Loki's v2 engine)."
     since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6 (upstream skip)"
+    jira: "docs/loki-compliance-plan.md PR 6 (upstream skip)"
   - source: "exhaustive/unwrap-aggregations.yaml#Quantile over time - p99"
     reason: "Upstream pins `skip: true` (quantile_over_time unsupported by Loki's v2 engine)."
     since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6 (upstream skip)"
+    jira: "docs/loki-compliance-plan.md PR 6 (upstream skip)"
   - source: "exhaustive/unwrap-aggregations.yaml#P99 latency grouped by level"
     reason: "Upstream pins `skip: true` (quantile_over_time unsupported by Loki's v2 engine)."
     since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6 (upstream skip)"
+    jira: "docs/loki-compliance-plan.md PR 6 (upstream skip)"
   - source: "exhaustive/unwrap-aggregations.yaml#P99 duration with conversion"
     reason: "Upstream pins `skip: true` (quantile_over_time unsupported by Loki's v2 engine)."
     since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6 (upstream skip)"
+    jira: "docs/loki-compliance-plan.md PR 6 (upstream skip)"
   - source: "exhaustive/unwrap-aggregations.yaml#Without multiple labels"
     reason: "`sum without (namespace, cluster) (sum_over_time(... | unwrap))` — `namespace` / `cluster` labels not in seed."
     since: "2026-05-15"
-    jira:  "docs/loki-compliance-plan.md PR 6 (seed gap)"
+    jira: "docs/loki-compliance-plan.md PR 6 (seed gap)"
 
 should_fail: []
