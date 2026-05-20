@@ -37,12 +37,12 @@ func TestMetricNames_PublicContract(t *testing.T) {
 	}
 
 	want := map[string]bool{
-		"cerberus.queries.total":                   false,
-		"cerberus.queries.duration.seconds":        false,
-		"cerberus.pipeline.stage.duration.seconds": false,
-		"cerberus.optimizer.rules_applied":         false,
-		"cerberus.clickhouse.rows_read":            false,
-		"cerberus.clickhouse.bytes_read":           false,
+		"cerberus_queries_total":                   false,
+		"cerberus_queries_duration_seconds":        false,
+		"cerberus_pipeline_stage_duration_seconds": false,
+		"cerberus_optimizer_rules_applied":         false,
+		"cerberus_clickhouse_rows_read":            false,
+		"cerberus_clickhouse_bytes_read":           false,
 	}
 	for _, sm := range rm.ScopeMetrics {
 		if !strings.HasSuffix(sm.Scope.Name, "internal/telemetry") {
@@ -82,12 +82,12 @@ func TestMetricUnits_PublicContract(t *testing.T) {
 	}
 
 	wantUnits := map[string]string{
-		"cerberus.queries.total":                   "{query}",
-		"cerberus.queries.duration.seconds":        "s",
-		"cerberus.pipeline.stage.duration.seconds": "s",
-		"cerberus.optimizer.rules_applied":         "{rule}",
-		"cerberus.clickhouse.rows_read":            "{row}",
-		"cerberus.clickhouse.bytes_read":           "By",
+		"cerberus_queries_total":                   "{query}",
+		"cerberus_queries_duration_seconds":        "s",
+		"cerberus_pipeline_stage_duration_seconds": "s",
+		"cerberus_optimizer_rules_applied":         "{rule}",
+		"cerberus_clickhouse_rows_read":            "{row}",
+		"cerberus_clickhouse_bytes_read":           "By",
 	}
 	for _, sm := range rm.ScopeMetrics {
 		if !strings.HasSuffix(sm.Scope.Name, "internal/telemetry") {
@@ -129,7 +129,7 @@ func TestAttributeKeys_PublicContract(t *testing.T) {
 		}
 		for _, m := range sm.Metrics {
 			switch m.Name {
-			case "cerberus.queries.total":
+			case "cerberus_queries_total":
 				sum := m.Data.(metricdata.Sum[int64])
 				if len(sum.DataPoints) == 0 {
 					t.Fatalf("queries.total: empty")
@@ -140,7 +140,7 @@ func TestAttributeKeys_PublicContract(t *testing.T) {
 						t.Errorf("queries.total: missing attr %q", key)
 					}
 				}
-			case "cerberus.pipeline.stage.duration.seconds":
+			case "cerberus_pipeline_stage_duration_seconds":
 				hist := m.Data.(metricdata.Histogram[float64])
 				if len(hist.DataPoints) == 0 {
 					t.Fatalf("stage.duration: empty")
@@ -230,7 +230,7 @@ func TestReset_RebuildsInstrumentsAgainstNewProvider(t *testing.T) {
 			continue
 		}
 		for _, m := range sm.Metrics {
-			if m.Name != "cerberus.queries.total" {
+			if m.Name != "cerberus_queries_total" {
 				continue
 			}
 			sum := m.Data.(metricdata.Sum[int64])
@@ -267,7 +267,7 @@ func TestObserveQuery_RoutePopulatedFromExplicitArgument(t *testing.T) {
 			continue
 		}
 		for _, m := range sm.Metrics {
-			if m.Name != "cerberus.queries.total" {
+			if m.Name != "cerberus_queries_total" {
 				continue
 			}
 			sum := m.Data.(metricdata.Sum[int64])

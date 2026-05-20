@@ -48,12 +48,12 @@ func TestTelemetryInstall_ManualReader(t *testing.T) {
 	}
 
 	want := map[string]bool{
-		"cerberus.queries.total":                   false,
-		"cerberus.queries.duration.seconds":        false,
-		"cerberus.pipeline.stage.duration.seconds": false,
-		"cerberus.optimizer.rules_applied":         false,
-		"cerberus.clickhouse.rows_read":            false,
-		"cerberus.clickhouse.bytes_read":           false,
+		"cerberus_queries_total":                   false,
+		"cerberus_queries_duration_seconds":        false,
+		"cerberus_pipeline_stage_duration_seconds": false,
+		"cerberus_optimizer_rules_applied":         false,
+		"cerberus_clickhouse_rows_read":            false,
+		"cerberus_clickhouse_bytes_read":           false,
 	}
 	for _, sm := range rm.ScopeMetrics {
 		if !strings.HasSuffix(sm.Scope.Name, "internal/telemetry") {
