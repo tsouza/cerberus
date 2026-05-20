@@ -114,7 +114,10 @@ func (h *Handler) handleTail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	expr, err := syntax.ParseExpr(q)
+	// Normalise OTel-dotted stream-selector keys before parsing so
+	// `{service.name="api"}` survives the LogQL grammar; see
+	// internal/logql/dotted_labels.go.
+	expr, err := syntax.ParseExpr(logql.NormalizeDottedLabels(q))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return

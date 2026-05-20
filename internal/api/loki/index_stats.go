@@ -176,7 +176,11 @@ func exprFrag(x chplan.Expr) (chsql.Frag, error) {
 // stream-selector matchers. Both raw log-stream and metric-form queries
 // are accepted; pipeline stages and aggregation wrappers are stripped.
 func selectorMatchers(q string) ([]*labels.Matcher, error) {
-	expr, err := syntax.ParseExpr(q)
+	// Normalise OTel-dotted stream-selector keys before parsing so
+	// queries like `{service.name="api"}` survive the upstream LogQL
+	// grammar. See internal/logql/dotted_labels.go for the rewrite
+	// contract.
+	expr, err := syntax.ParseExpr(logql.NormalizeDottedLabels(q))
 	if err != nil {
 		return nil, err
 	}
