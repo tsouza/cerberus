@@ -311,6 +311,13 @@ func TestConformance_TempoSearchTagValuesWire(t *testing.T) {
 // TestConformance_TempoTraceByIDWire — 200 with batches when found, 404
 // with error envelope when not. The error envelope is Tempo's distinct
 // shape: {traceID, spanID, error, message}.
+//
+// Also pins the Content-Type negotiation under Accept: the bare /
+// `application/json` paths keep the documented JSON envelope; the
+// `application/protobuf` / `application/x-protobuf` / `application/grpc`
+// paths flip to Content-Type: application/protobuf (Grafana 11.x's
+// Tempo plugin requires this; a JSON body surfaces as
+// `proto: illegal wireType …` on the Grafana side).
 func TestConformance_TempoTraceByIDWire(t *testing.T) {
 	t.Parallel()
 
@@ -356,6 +363,58 @@ func TestConformance_TempoTraceByIDWire(t *testing.T) {
 		}
 		if er.TraceID != "abc123" || !er.Error {
 			t.Errorf("envelope: got %+v, want traceID=abc123, error=true", er)
+		}
+	})
+
+	// Accept-header negotiation — both the JSON and proto branches
+	// stamp the documented Content-Type. The proto branch is what
+	// Grafana 11.x's Tempo datasource plugin actually sends; the JSON
+	// branch keeps existing callers (curl, conformance harnesses,
+	// dashboards using the /api/ds/query proxy) working.
+	t.Run("content_type_negotiation", func(t *testing.T) {
+		t.Parallel()
+		q := &stubQuerier{samples: []chclient.Sample{{
+			MetricName: "x", Labels: map[string]string{"service.name": "frontend"},
+			Timestamp: time.Now(), Value: 1,
+		}}}
+		srv := newServer(q, "v1.0.0-test")
+		t.Cleanup(srv.Close)
+
+		// Each row: Accept header value → wantContentType substring.
+		// Empty contains check ("") means "not application/protobuf";
+		// the JSON branch routes through httperr.WriteJSON whose
+		// Content-Type is "application/json".
+		cases := []struct {
+			accept string
+			wantCT string // substring assertion
+		}{
+			{"", "application/json"},
+			{"application/json", "application/json"},
+			{"application/protobuf", "application/protobuf"},
+			{"application/x-protobuf", "application/protobuf"},
+			{"application/grpc", "application/protobuf"},
+			// Multi-value Accept (Grafana's plugin sometimes sends
+			// `application/protobuf, application/json;q=0.9`): the
+			// proto entry wins.
+			{"application/protobuf, application/json;q=0.9", "application/protobuf"},
+		}
+		for _, tc := range cases {
+			req, err := http.NewRequest("GET", srv.URL+"/api/traces/abc123", nil)
+			if err != nil {
+				t.Fatalf("NewRequest: %v", err)
+			}
+			if tc.accept != "" {
+				req.Header.Set("Accept", tc.accept)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("Accept=%q: GET: %v", tc.accept, err)
+			}
+			resp.Body.Close()
+			if !strings.Contains(resp.Header.Get("Content-Type"), tc.wantCT) {
+				t.Errorf("Accept=%q: Content-Type=%q, want substring %q",
+					tc.accept, resp.Header.Get("Content-Type"), tc.wantCT)
+			}
 		}
 	})
 }
