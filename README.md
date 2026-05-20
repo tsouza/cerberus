@@ -280,8 +280,8 @@ Quick reference:
 | ---------------- | --------------------------------------------------------------------------------- | --------------------------------------------------- |
 | **Unit**         | Per-package logic, `Equal` contracts, optimizer rule kernels, Frag goldens        | `just test`                                         |
 | **Spec (TXTAR)** | `<QL> → expected SQL` + chplan IR snapshots + optional chDB roundtrip             | `just test`; `just spec-chdb` for roundtrip lane    |
-| **Property**     | Oracle-based property tests with `rapid` shrinking and chDB execution             | `go test -tags chdb ./test/property/...`            |
-| **Integration**  | `chclient` against a real ClickHouse via testcontainers                           | `go test -tags=integration ./internal/chclient/...` |
+| **Property**     | Oracle-based property tests with `rapid` shrinking and chDB execution             | `just property`                                     |
+| **Integration**  | `chclient` against a real ClickHouse via testcontainers                           | `just chclient-integration`                         |
 | **E2E**          | k3d cluster with CH + Grafana + cerberus; Grafana Playwright smoke                | `just e2e`                                          |
 | **Compat**       | Differential parity vs reference Prom / Loki / Tempo                              | `just compat-all` (per-head recipes below)          |
 | **Mutation**     | Gremlins matrix — see `docs/test-strategy.md` § "Gremlins phased rollout" for bar | `just mutate` (slow, nightly in CI)                 |

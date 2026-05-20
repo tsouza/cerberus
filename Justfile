@@ -74,6 +74,18 @@ spec-chdb:
 test-chdb:
     go test -tags chdb -count=1 ./internal/chclienttest/... ./internal/api/...
 
+# Run the chDB-tagged property tests (rapid + from-scratch oracle).
+# Requires libchdb.so (see `just chdb-install`). Local default is rapid's
+# 100 iterations; the nightly `property` CI workflow overrides to 500.
+property:
+    go test -tags chdb -count=1 ./test/property/...
+
+# Run the chclient testcontainers integration tests against a real
+# ClickHouse container. Requires Docker. Gated behind the `integration`
+# build tag so regular `just test` doesn't pull in Docker.
+chclient-integration:
+    go test -race -tags=integration ./internal/chclient/...
+
 # Run the FuzzParse target for one parser head for a bounded duration.
 # Usage: `just fuzz QL=promql DURATION=60s` (defaults).
 fuzz QL="promql" DURATION="60s":
