@@ -711,22 +711,39 @@ func verifyBothNonEmpty(ctx context.Context, conn driver.Conn, lokiURL, cerbURL 
 // the ingester needs a moment to flush in-memory chunks into the TSDB
 // index before a /query_range against the same window returns rows.
 //
-// Settle criteria (BOTH must hold):
+// Settle criteria (BOTH must hold at any point during the wait, not
+// necessarily concurrently in the same tick — see the latch rationale
+// below):
 //
-//   - /labels returns >= the expected count of resource label keys
-//     (cluster, namespace, service, service_name, pod, container, env,
-//     region, datacenter — 9 keys from the seed; Loki may also surface
-//     `detected_level` from structured metadata, so we tolerate >=).
-//   - /series with `match[]={service_name!=""}` returns >= the expected
-//     stream count (len(streams), which equals len(serviceConfigs) = 13).
-//     Every seeded stream carries `service_name`, so the not-empty
-//     matcher selects all of them. A non-zero `/series` body is the
-//     strongest pre-query signal that chunks have been indexed: Loki
-//     resolves /series against the same TSDB index a log query consults.
-//     (We avoid the more obvious `=~".+"` form because Loki's TSDB
-//     index treats `service_name` as a discovery-managed label and
-//     returns a partial set under that regex shape — see the seriesURL
-//     comment below.)
+//   - /labels has at some point returned >= the expected count of
+//     resource label keys (cluster, namespace, service, service_name,
+//     pod, container, env, region, datacenter — 9 keys from the seed;
+//     Loki may also surface `detected_level` from structured metadata,
+//     so we tolerate >=).
+//   - /series with `match[]={service_name!=""}` has at some point
+//     returned >= the expected stream count (len(streams), which
+//     equals len(serviceConfigs) = 13). Every seeded stream carries
+//     `service_name`, so the not-empty matcher selects all of them. A
+//     non-zero `/series` body is the strongest pre-query signal that
+//     chunks have been indexed: Loki resolves /series against the same
+//     TSDB index a log query consults. (We avoid the more obvious
+//     `=~".+"` form because Loki's TSDB index treats `service_name` as
+//     a discovery-managed label and returns a partial set under that
+//     regex shape — see the seriesURL comment below.)
+//
+// Latch rationale: Loki's ingester serves /labels + /series from
+// in-memory chunks first, then transparently flips to the BoltDB-backed
+// TSDB index after the periodic chunk flush. During the cutover window
+// (typically a few seconds) /labels can transiently return zero — the
+// in-memory chunks are gone, the BoltDB shipper hasn't yet persisted
+// the freshly-flushed index files. Run 26132714829 hit exactly this
+// shape: both endpoints returned the full cardinality at T=5–25s, then
+// /labels dropped to 0 at T=30s and never recovered before the 90s
+// timeout — even though the harness had clear evidence the index was
+// already fully populated. The latches turn the gate into "have we
+// ever seen the full set" rather than "is the full set visible right
+// now"; once a side latches it stays latched, so a transient regression
+// during the flush window can't unstick a previously-observed signal.
 //
 // Poll: 1s interval, 90s deadline, progress log every 5s — see the
 // `settle*` constants inside. Mirrors the cadence in waitTempoReady /
@@ -779,6 +796,11 @@ func waitLokiIndexSettle(ctx context.Context, baseURL string, streams []stream, 
 	var lastLabels []string
 	var lastSeriesCount int
 	var lastErr error
+	// High-water-mark latches: once each side has been observed at or
+	// above its threshold, the gate considers that side satisfied even
+	// if a subsequent poll regresses (see the latch rationale in the
+	// function-level doc comment).
+	var labelsLatched, seriesLatched bool
 
 	for {
 		labels, err := fetchLokiLabels(ctx, labelsURL)
@@ -796,12 +818,17 @@ func waitLokiIndexSettle(ctx context.Context, baseURL string, streams []stream, 
 
 		labelKeysOK := err == nil && hasAllLabels(labels, expectedLabels)
 		seriesOK := serr == nil && seriesCount >= expectedStreams
-		if labelKeysOK && seriesOK {
-			sort.Strings(labels)
+		labelsLatched = labelsLatched || labelKeysOK
+		seriesLatched = seriesLatched || seriesOK
+		if labelsLatched && seriesLatched {
+			sort.Strings(lastLabels)
 			logger.Info(
 				"loki index settled",
-				"labels", labels,
-				"series", seriesCount,
+				"labels_now", lastLabels,
+				"labels_now_count", len(lastLabels),
+				"labels_needed", len(expectedLabels),
+				"series_now", lastSeriesCount,
+				"series_needed", expectedStreams,
 				"elapsed", time.Since(begin).Round(time.Millisecond),
 			)
 			return nil
@@ -812,8 +839,10 @@ func waitLokiIndexSettle(ctx context.Context, baseURL string, streams []stream, 
 				"still waiting for loki index settle",
 				"labels_seen", len(lastLabels),
 				"labels_needed", len(expectedLabels),
+				"labels_latched", labelsLatched,
 				"series_seen", lastSeriesCount,
 				"series_needed", expectedStreams,
+				"series_latched", seriesLatched,
 				"remaining", time.Until(deadline).Round(time.Second),
 			)
 			lastProgress = time.Now()
@@ -821,11 +850,11 @@ func waitLokiIndexSettle(ctx context.Context, baseURL string, streams []stream, 
 
 		if time.Now().After(deadline) {
 			if lastErr != nil {
-				return fmt.Errorf("loki index settle: last error: %w (labels=%d/%d series=%d/%d after %s)",
-					lastErr, len(lastLabels), len(expectedLabels), lastSeriesCount, expectedStreams, settleTimeout)
+				return fmt.Errorf("loki index settle: last error: %w (labels_latched=%t series_latched=%t labels_now=%d/%d series_now=%d/%d after %s)",
+					lastErr, labelsLatched, seriesLatched, len(lastLabels), len(expectedLabels), lastSeriesCount, expectedStreams, settleTimeout)
 			}
-			return fmt.Errorf("loki index settle: timed out (labels=%d/%d series=%d/%d after %s)",
-				len(lastLabels), len(expectedLabels), lastSeriesCount, expectedStreams, settleTimeout)
+			return fmt.Errorf("loki index settle: timed out (labels_latched=%t series_latched=%t labels_now=%d/%d series_now=%d/%d after %s)",
+				labelsLatched, seriesLatched, len(lastLabels), len(expectedLabels), lastSeriesCount, expectedStreams, settleTimeout)
 		}
 		select {
 		case <-ctx.Done():

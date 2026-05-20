@@ -51,4 +51,13 @@ test/e2e/playwright/node_modules/
 test/e2e/playwright/test-results/
 test/e2e/playwright/playwright-report/
 .claude/worktrees/
-seed
+# Compiled compatibility-seeder binary (the `seed/` package source dir
+# itself must not be ignored, so we anchor the pattern to the binary
+# location rather than using the bare `seed` filename — `seed` without
+# a leading slash matches every path component named `seed` anywhere
+# in the tree, which silently shadowed test files like
+# compatibility/loki/cmd/seed/main_test.go).
+/seed
+/compatibility/loki/cmd/seed/seed
+/compatibility/prometheus/cmd/seed/seed
+/test/e2e/seed/cmd/seed/seed
