@@ -77,7 +77,12 @@ func lowerHistogramQuantileClassicBareRange(
 	ctx lowerCtx,
 ) chplan.Node {
 	scan := &chplan.Scan{Table: s.HistogramTable}
-	pred := buildPredicate(vs.LabelMatchers, s)
+	// `_bucket` suffix strip — see stripBucketSuffix in
+	// histogram_quantile.go. Grafana classic-histogram dashboards
+	// fire `rate(<X>_bucket[r])`; the OTel-CH histogram row carries
+	// the bare `<X>` MetricName, so the strip is what makes the
+	// filter find rows.
+	pred := buildPredicate(stripBucketSuffix(vs.LabelMatchers), s)
 
 	groupBy := []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}}
 	groupByAliases := []string{s.AttributesColumn}
@@ -121,7 +126,9 @@ func lowerHistogramQuantileClassicAggRange(
 ) chplan.Node {
 	vs := shape.selector
 	scan := &chplan.Scan{Table: s.HistogramTable}
-	pred := buildPredicate(vs.LabelMatchers, s)
+	// `_bucket` suffix strip — see stripBucketSuffix in
+	// histogram_quantile.go.
+	pred := buildPredicate(stripBucketSuffix(vs.LabelMatchers), s)
 
 	groupBy, groupByAliases, attrsRebuild := histogramAggGroupBy(shape.agg, s)
 	bucketAggs := []chplan.AggFunc{
