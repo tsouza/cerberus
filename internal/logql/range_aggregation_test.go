@@ -440,3 +440,430 @@ func TestLowerVectorAggregationNestedMatrixBucketsOnTimeUnix(t *testing.T) {
 		t.Errorf("emitted SQL missing `GROUP BY `TimeUnix`` (nested matrix bucket lost)\nsql=%s", sqlStr)
 	}
 }
+
+// TestLowerRangeAggregationExtendsMatcherWindowByIntervalPlusOffset pins
+// the arithmetic on line 52 of [lowerRangeAggregation]:
+//
+//	innerLc := lc.withMatcherWindowExtension(e.Left.Interval + e.Left.Offset)
+//
+// The `+` is the load-bearing operator — the inner Scan/Filter's pre-scan
+// timestamp clamp must extend back by `Interval + Offset` so the leftmost
+// matrix anchor sees its full `(anchor - range, anchor]` window. An
+// ARITHMETIC_BASE mutant flips `+` to `-`; the extension would be
+// `Interval - Offset` (a smaller value), and the leftmost anchors of a
+// /query_range matrix would silently truncate.
+//
+// Concrete asymmetric values are required so `+` and `-` produce
+// observably distinct timestamps:
+//   - Interval = 10m, Offset = 3m
+//   - Original (`+`): extension = 13m → inner clamp Start = T - 13m
+//   - Mutant  (`-`): extension =  7m → inner clamp Start = T -  7m
+//
+// The pre-scan clamp's lower bound renders as a `toDateTime64(?, 9)`
+// FuncCall whose first arg is the formatted timestamp string. The test
+// asserts that the EXACT expected timestamp string surfaces in the
+// emitted args (and that the mutant's `-` value does NOT).
+func TestLowerRangeAggregationExtendsMatcherWindowByIntervalPlusOffset(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelLogs()
+
+	// Anchor-friendly fixture: T = 2026-01-01 12:00:00 UTC.
+	// Interval = 10m, Offset = 3m → expected extension = 13m.
+	// Sole condition: the `+` and `-` results must be observably distinct
+	// — 13m vs 7m gives two unambiguous timestamps in the args list.
+	start := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	end := start.Add(1 * time.Hour)
+	step := time.Minute
+
+	query := `rate({app="api"}[10m] offset 3m)`
+	expr, err := syntax.ParseExpr(query)
+	if err != nil {
+		t.Fatalf("ParseExpr(%q): %v", query, err)
+	}
+	ra, ok := expr.(*syntax.RangeAggregationExpr)
+	if !ok {
+		t.Fatalf("ParseExpr(%q) -> %T, want *syntax.RangeAggregationExpr", query, expr)
+	}
+	if ra.Left.Interval != 10*time.Minute {
+		t.Fatalf("fixture invalid: Interval = %v, want 10m", ra.Left.Interval)
+	}
+	if ra.Left.Offset != 3*time.Minute {
+		t.Fatalf("fixture invalid: Offset = %v, want 3m", ra.Left.Offset)
+	}
+
+	plan, err := lowerRangeAggregation(ra, s, lowerCtx{Start: start, End: end, Step: step})
+	if err != nil {
+		t.Fatalf("lowerRangeAggregation: %v", err)
+	}
+
+	_, args, err := chsql.Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("chsql.Emit: %v", err)
+	}
+
+	// The pre-scan clamp's lower bound MUST carry the timestamp that
+	// matches `start - (Interval + Offset) = start - 13m` exactly.
+	// Format mirrors [timeLiteralExpr] in lower.go.
+	wantExtended := start.Add(-(ra.Left.Interval + ra.Left.Offset)).Format("2006-01-02 15:04:05.000000000")
+	if !argsContain(args, wantExtended) {
+		t.Errorf("emitted SQL args do not carry extended Start %q (expected `+` arithmetic)\nargs=%v", wantExtended, args)
+	}
+
+	// Defensive: the `-` mutant would produce `start - (Interval -
+	// Offset) = start - 7m`. That timestamp MUST NOT appear, otherwise
+	// the mutation survives. We compute the same way the mutant would
+	// to keep the assertion symmetric with the killer above.
+	wrongShorter := start.Add(-(ra.Left.Interval - ra.Left.Offset)).Format("2006-01-02 15:04:05.000000000")
+	if argsContain(args, wrongShorter) {
+		t.Errorf("emitted SQL args carry the `-` mutant's Start %q — ARITHMETIC_BASE mutation may have flipped `+` to `-`\nargs=%v", wrongShorter, args)
+	}
+}
+
+// TestLowerRangeAggregationBareUnwrapSkipsMaterialisedColumn pins the
+// `&&` boundary on line 116 of [lowerRangeAggregation] AND the `!=`
+// invariant on line 469 of [hasParserMergedLabels]:
+//
+//	if e.Left.Unwrap != nil && hasParserMergedLabels(labelsExpr, s) {
+//	    // materialise into `_logql_merged_labels` intermediate column
+//	}
+//
+//	func hasParserMergedLabels(...) bool {
+//	    ...
+//	    return col.Name != s.ResourceAttributesColumn
+//	}
+//
+// A bare-unwrap query (no `| logfmt` / `| json` / `| regexp` parser
+// stage) reads its labels map directly from ResourceAttributes — so
+// [hasParserMergedLabels] must return false, the line-116 condition
+// short-circuits to the else-if branch, and the SQL never references
+// the `_logql_merged_labels` intermediate alias.
+//
+// Two LIVED mutants both surface as the SAME observable regression on
+// this fixture, so the single assertion kills both at once:
+//
+//   - Line 116 INVERT_LOGICAL: `&&` → `||`. With Unwrap non-nil the
+//     condition is now always true regardless of hasParserMergedLabels;
+//     the materialised-column branch fires even on bare unwrap.
+//
+//   - Line 469 CONDITIONALS_NEGATION: `!=` → `==`. With labelsExpr =
+//     `ColumnRef(ResourceAttributes)`, hasParserMergedLabels returns
+//     true instead of false; line 116's condition becomes true; the
+//     materialised-column branch fires.
+//
+// Both mutations cause the bare-unwrap SQL to carry the
+// `_logql_merged_labels` alias the materialised Project introduces.
+// Assert its absence — the original code path keeps the SQL lean.
+func TestLowerRangeAggregationBareUnwrapSkipsMaterialisedColumn(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelLogs()
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(time.Hour)
+	step := time.Minute
+
+	// Bare unwrap: the unwrap target is a stream label (`latency` lives
+	// directly in ResourceAttributes — no parser stage interpolates).
+	// labelsExpr stays as `ColumnRef(ResourceAttributes)`, so
+	// hasParserMergedLabels MUST return false and the SQL MUST NOT
+	// reference `_logql_merged_labels`.
+	query := `sum_over_time({app="api"} | unwrap latency [5m])`
+	expr, err := syntax.ParseExpr(query)
+	if err != nil {
+		t.Fatalf("ParseExpr(%q): %v", query, err)
+	}
+	ra, ok := expr.(*syntax.RangeAggregationExpr)
+	if !ok {
+		t.Fatalf("ParseExpr(%q) -> %T, want *syntax.RangeAggregationExpr", query, expr)
+	}
+	if ra.Left.Unwrap == nil {
+		t.Fatalf("fixture invalid: Unwrap is nil")
+	}
+
+	plan, err := lowerRangeAggregation(ra, s, lowerCtx{Start: start, End: end, Step: step})
+	if err != nil {
+		t.Fatalf("lowerRangeAggregation: %v", err)
+	}
+
+	sqlStr, _, err := chsql.Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("chsql.Emit: %v", err)
+	}
+
+	// The materialised-column alias `_logql_merged_labels` is the
+	// fingerprint of the two-stage Project path. If it appears in the
+	// emitted SQL for a bare-unwrap query, EITHER:
+	//   - line 116's `&&` flipped to `||` (mutant entered the branch
+	//     despite hasParserMergedLabels == false), OR
+	//   - line 469's `!=` flipped to `==` (hasParserMergedLabels
+	//     reported true for a bare ResourceAttributes ColumnRef).
+	if strings.Contains(sqlStr, "_logql_merged_labels") {
+		t.Errorf("bare-unwrap SQL unexpectedly carries the `_logql_merged_labels` alias\n"+
+			"  → INVERT_LOGICAL on line 116 (`&&` → `||`) OR\n"+
+			"  → CONDITIONALS_NEGATION on line 469 (`!=` → `==`) lived\nsql=%s", sqlStr)
+	}
+
+	// Companion positive assertion: the bare-unwrap path MUST surface
+	// the `MapWithoutKeys` strip via the `mapFilter((k, v) -> NOT (k IN
+	// (?)), ...)` shape compiled from the else-if branch. Without it
+	// the test only checks one direction of the toggle.
+	if !strings.Contains(sqlStr, "mapFilter((k, v) -> NOT (k IN") {
+		t.Errorf("bare-unwrap SQL missing the else-if branch's mapFilter strip shape\nsql=%s", sqlStr)
+	}
+}
+
+// TestLowerRangeAggregationParserUnwrapMaterialisesIntermediateColumn
+// is the dual of [TestLowerRangeAggregationBareUnwrapSkipsMaterialisedColumn]:
+// when the unwrap query DOES carry a parser stage, the SQL MUST surface
+// the `_logql_merged_labels` materialised-column alias. Together with
+// the bare-unwrap test, this pins both legs of the line-116 `&&`
+// condition and the line-469 `!=` return so a flipped operator can't
+// pass both halves silently.
+//
+// The line-116 INVERT_LOGICAL mutant flips `&&` to `||`. With Unwrap
+// non-nil AND hasParserMergedLabels true, both legs of the original
+// `&&` are true so the mutant's `||` also evaluates true — the test
+// covers this case to confirm the happy path stays intact (no false
+// positive from the dual assertion).
+//
+// The line-469 CONDITIONALS_NEGATION mutant flips `!=` to `==`. With a
+// parser stage labelsExpr is a `mapConcat(...)` (not a ColumnRef), so
+// the ok-cast `col, ok := labelsExpr.(*chplan.ColumnRef)` is false and
+// hasParserMergedLabels returns true via the first return statement —
+// the mutant on the second return doesn't fire here. This test pins
+// that the parser path still materialises so the bare-unwrap test
+// above genuinely isolates the mutation.
+func TestLowerRangeAggregationParserUnwrapMaterialisesIntermediateColumn(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelLogs()
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(time.Hour)
+	step := time.Minute
+
+	// Parser stage `| logfmt` wraps labelsExpr in a mapConcat — the
+	// non-ColumnRef path of hasParserMergedLabels — so line 116 fires
+	// and the materialised intermediate column appears.
+	query := `sum_over_time({app="api"} | logfmt | unwrap latency [5m])`
+	expr, err := syntax.ParseExpr(query)
+	if err != nil {
+		t.Fatalf("ParseExpr(%q): %v", query, err)
+	}
+	ra := expr.(*syntax.RangeAggregationExpr)
+
+	plan, err := lowerRangeAggregation(ra, s, lowerCtx{Start: start, End: end, Step: step})
+	if err != nil {
+		t.Fatalf("lowerRangeAggregation: %v", err)
+	}
+
+	sqlStr, _, err := chsql.Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("chsql.Emit: %v", err)
+	}
+
+	if !strings.Contains(sqlStr, "_logql_merged_labels") {
+		t.Errorf("parser-unwrap SQL missing the `_logql_merged_labels` materialised alias\nsql=%s", sqlStr)
+	}
+}
+
+// TestLowerRangeAggregationUnwrapPostFilterPreservesStreamSelector pins
+// the `pred == nil` accumulator branch on line 256 of
+// [applyUnwrapPostFilters]:
+//
+//	if pred == nil {
+//	    pred = extra
+//	} else {
+//	    pred = &chplan.Binary{Op: chplan.OpAnd, Left: pred, Right: extra}
+//	}
+//
+// On entry, `pred` is initialised from the inner Filter's Predicate
+// (which carries the stream-selector matchers AND any time-window
+// clamp). The original `==` takes the AND-fold branch on the first
+// post-filter iteration when `pred` is already non-nil — preserving
+// the stream selector.
+//
+// A CONDITIONALS_NEGATION mutant flips `==` to `!=`:
+//   - With pred = P (non-nil from f.Predicate), `P != nil` is true →
+//     `pred = extra` REPLACES the accumulated predicate with just the
+//     post-filter. The stream selector ("app" = "api") and the
+//     time-window clamp are SILENTLY DROPPED from the emitted SQL.
+//
+// The killer assertion: every component of the inner predicate MUST
+// surface in the emitted args:
+//   - "app" + "api"            — stream matcher
+//   - "status"                 — post-filter MapAccess key
+//   - the formatted Start time — time-window lower bound
+//
+// The existing [TestLowerRangeAggregationAppliesUnwrapPostFilters] only
+// checks "status" survives — a `!=` mutant would still emit "status"
+// (the post-filter replaces, not omits) but would drop the stream
+// selector and the time clamp. This stricter assertion catches that.
+func TestLowerRangeAggregationUnwrapPostFilterPreservesStreamSelector(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelLogs()
+	// Asymmetric Start so the formatted timestamp is unique in args.
+	start := time.Date(2026, 3, 17, 9, 42, 18, 0, time.UTC)
+	end := start.Add(time.Hour)
+	step := time.Minute
+
+	query := `sum_over_time({app="api"} | logfmt | unwrap latency | status > 100 [5m])`
+	expr, err := syntax.ParseExpr(query)
+	if err != nil {
+		t.Fatalf("ParseExpr(%q): %v", query, err)
+	}
+	ra := expr.(*syntax.RangeAggregationExpr)
+	if ra.Left.Unwrap == nil {
+		t.Fatalf("fixture invalid: Unwrap is nil")
+	}
+	if len(ra.Left.Unwrap.PostFilters) == 0 {
+		t.Fatalf("fixture invalid: PostFilters is empty")
+	}
+
+	plan, err := lowerRangeAggregation(ra, s, lowerCtx{Start: start, End: end, Step: step})
+	if err != nil {
+		t.Fatalf("lowerRangeAggregation: %v", err)
+	}
+
+	_, args, err := chsql.Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("chsql.Emit: %v", err)
+	}
+
+	// The post-filter key MUST be present — both original and mutant
+	// reach this point. Pinning it keeps the test symmetric with the
+	// existing TestLowerRangeAggregationAppliesUnwrapPostFilters but
+	// is not the load-bearing assertion.
+	if !argsContain(args, "status") {
+		t.Fatalf("emitted SQL args missing post-filter key %q\nargs=%v", "status", args)
+	}
+
+	// LOAD-BEARING: stream selector survives the post-filter AND-fold.
+	// A `==` → `!=` mutant on line 256 would replace `pred` with the
+	// post-filter on its first iteration, dropping the stream
+	// selector. Both "app" (the matcher's label key) and "api" (its
+	// value) MUST surface as bound args.
+	for _, want := range []string{"app", "api"} {
+		if !argsContain(args, want) {
+			t.Errorf("emitted SQL args missing stream-selector token %q "+
+				"— line 256 `pred == nil` may have flipped to `!=`, "+
+				"replacing the stream predicate with just the post-filter\nargs=%v",
+				want, args)
+		}
+	}
+
+	// LOAD-BEARING: time-window lower-bound clamp survives the post-
+	// filter AND-fold. The pre-scan clamp uses the EXTENDED
+	// `innerLc.Start = start - (Interval + Offset) = start - 5m`
+	// (rendered by [timeLiteralExpr]). The formatted timestamp MUST
+	// appear in the args; a line-256 mutation that drops the clamp
+	// would erase it.
+	extendedStart := start.Add(-(ra.Left.Interval + ra.Left.Offset))
+	wantExtendedStart := extendedStart.Format("2006-01-02 15:04:05.000000000")
+	if !argsContain(args, wantExtendedStart) {
+		t.Errorf("emitted SQL args missing pre-scan clamp lower-bound %q "+
+			"— line 256 mutation may have dropped the time-window predicate\nargs=%v",
+			wantExtendedStart, args)
+	}
+}
+
+// TestRangeAggregationGroupByEmitsLabelKeyAndValuePairs pins the args
+// shape produced by [rangeAggregationGroupBy] for the explicit `by
+// (...)` grouping path:
+//
+//	args := make([]chplan.Expr, 0, len(e.Grouping.Groups)*2)
+//	for _, label := range e.Grouping.Groups {
+//	    args = append(args,
+//	        &chplan.LitString{V: label},
+//	        levelAwareRangeGroupKey(label, s),
+//	    )
+//	}
+//
+// Each label contributes EXACTLY TWO entries: the literal key followed
+// by the value expression. For N labels the resulting `map(...)`
+// FuncCall has 2*N args.
+//
+// An ARITHMETIC_BASE mutant on line 513 flips the initial capacity hint
+// `*2` to `/2`. The behaviour is OBSERVATIONALLY EQUIVALENT at the SQL
+// surface — `append` grows the slice on demand, so the final FuncCall
+// carries the same args regardless of initial capacity — but the test
+// still pins the 2-per-label shape so any future refactor that
+// genuinely DROPS args (e.g., a typo that appends only the literal or
+// only the value) would be caught at the layer-1 unit-test boundary.
+//
+// The shape assertion uses three group labels so the test would also
+// catch a regression that capped the args at the (possibly truncated)
+// initial capacity instead of growing — even though Go's `append`
+// makes that scenario impossible without an explicit `[:cap]` slice.
+func TestRangeAggregationGroupByEmitsLabelKeyAndValuePairs(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelLogs()
+
+	// Three labels exercise len(Groups)*2 = 6 (mutant: 6/2 = 3
+	// capacity, still grown by append to 6 final length). LogQL's
+	// parser only accepts `by (...)` on the range-level for the
+	// quantile/avg/min/max family — `sum_over_time` rejects it. We
+	// use `avg_over_time` here so the RangeAggregationExpr's
+	// Grouping is populated directly without an outer
+	// VectorAggregationExpr wrap.
+	query := `avg_over_time({app="api"} | logfmt | unwrap latency [5m]) by (region, tenant, env)`
+	expr, err := syntax.ParseExpr(query)
+	if err != nil {
+		t.Fatalf("ParseExpr(%q): %v", query, err)
+	}
+	ra, ok := expr.(*syntax.RangeAggregationExpr)
+	if !ok {
+		t.Fatalf("ParseExpr(%q) -> %T, want *syntax.RangeAggregationExpr", query, expr)
+	}
+	if ra.Grouping == nil || len(ra.Grouping.Groups) != 3 {
+		t.Fatalf("fixture invalid: Grouping=%v Groups=%v", ra.Grouping, ra.Grouping)
+	}
+
+	got, err := rangeAggregationGroupBy(ra, s)
+	if err != nil {
+		t.Fatalf("rangeAggregationGroupBy: %v", err)
+	}
+	fc, ok := got.(*chplan.FuncCall)
+	if !ok {
+		t.Fatalf("rangeAggregationGroupBy -> %T, want *chplan.FuncCall", got)
+	}
+	if fc.Name != "map" {
+		t.Errorf("FuncCall.Name = %q, want %q", fc.Name, "map")
+	}
+
+	// Two args per label: alternating LitString{label} + key
+	// expression. Three labels → 6 args. A regression that emits
+	// only one arg per label (or one for every two) would surface
+	// here. The `*2` ARITHMETIC_BASE mutant on the slice-cap hint
+	// stays observationally equivalent (append grows on demand)
+	// but the structural assertion still pins the surface area.
+	wantArgs := len(ra.Grouping.Groups) * 2
+	if len(fc.Args) != wantArgs {
+		t.Errorf("map(...) arg count = %d, want %d (one key + one value per label)",
+			len(fc.Args), wantArgs)
+	}
+
+	// Every odd-indexed arg MUST be the label literal at its index/2
+	// position; every even-indexed arg MUST be the value expression
+	// (non-LitString, since [levelAwareRangeGroupKey] returns a
+	// MapAccess / multiIf wrap, never a bare literal).
+	for i, label := range ra.Grouping.Groups {
+		keyIdx := i * 2
+		valIdx := i*2 + 1
+		if keyIdx >= len(fc.Args) || valIdx >= len(fc.Args) {
+			break
+		}
+		lit, ok := fc.Args[keyIdx].(*chplan.LitString)
+		if !ok {
+			t.Errorf("arg[%d] = %T, want *chplan.LitString for label %q", keyIdx, fc.Args[keyIdx], label)
+			continue
+		}
+		if lit.V != label {
+			t.Errorf("arg[%d].V = %q, want %q", keyIdx, lit.V, label)
+		}
+		if _, isLit := fc.Args[valIdx].(*chplan.LitString); isLit {
+			t.Errorf("arg[%d] is a *chplan.LitString — expected a value expression for label %q", valIdx, label)
+		}
+	}
+}
