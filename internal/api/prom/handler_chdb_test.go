@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -276,7 +277,12 @@ func TestQuery_VectorVectorSynthBinop_ChDB(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			srv, _ := newChDBServer(t, gaugeDDL)
-			resp, err := http.Get(srv.URL + "/api/v1/query?query=" + tc.query)
+			// url.QueryEscape so the binop's `+` isn't decoded to a
+			// space by net/http — Grafana sends pre-encoded queries,
+			// mirror that here so the parser sees `vector(N)+vector(N)`
+			// rather than `vector(N) vector(N)` (the latter is a parse
+			// error: `unexpected identifier "vector"`).
+			resp, err := http.Get(srv.URL + "/api/v1/query?query=" + url.QueryEscape(tc.query))
 			if err != nil {
 				t.Fatalf("GET: %v", err)
 			}
