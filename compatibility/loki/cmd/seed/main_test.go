@@ -62,8 +62,8 @@ func TestWaitLokiIndexSettle_StickyAbsorbsTransientRegression(t *testing.T) {
 			// two endpoints never overlap in a single tick, so the
 			// pre-sticky gate would time out here.
 			var data []map[string]string
-			switch {
-			case n == 2:
+			switch n {
+			case 2:
 				data = []map[string]string{
 					{"k": "a"},
 					{"k": "b"},
