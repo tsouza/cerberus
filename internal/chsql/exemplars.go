@@ -162,14 +162,9 @@ func (e *emitter) emitMetricsExemplars(
 		anchorFanoutFrag(end, stepNS, numAnchors),
 		"anchor_ts",
 	)
-	// Same Start/End pushdown as emitRangeWindowMetrics — pin the
-	// otel_traces scan to the (Start - range, End] window so CH can
-	// prune partitions by the Timestamp key. Conditional on bounds
-	// being set to keep the unbounded shapes byte-stable.
-	if !rw.Start.IsZero() && !rw.End.IsZero() {
-		lo, hi := innerScanTsBoundsFrags(tsCol, rw.Start, rw.End, rangeNS)
-		innerSb.Where(lo, hi)
-	}
+	// Same Start/End pushdown as emitRangeWindowMetrics — see
+	// maybePushInnerScanTimeBounds.
+	maybePushInnerScanTimeBounds(innerSb, rw, tsCol, rangeNS)
 
 	// The outer SELECT MUST project exactly four columns in the order
 	// (MetricName, Attributes, TimeUnix, Value) — chclient.Cursor binds

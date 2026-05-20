@@ -797,16 +797,11 @@ func (e *emitter) emitRangeWindowMetrics(r *chplan.RangeWindow, m *chplan.Metric
 		anchorFanoutFrag(end, stepNS, numAnchors),
 		"anchor_ts",
 	)
-	// Push the (Start - range, End] time bound onto the wrapping SELECT
-	// over m.Inner so CH can prune partitions / granules by the
-	// otel_traces Timestamp key. Conditional on Start/End being set —
-	// the PromQL subquery-internal shapes (Range/Step/OuterRange only)
-	// keep their current emitter output byte-stable. See
-	// innerScanTsBoundsFrags for the rationale.
-	if !r.Start.IsZero() && !r.End.IsZero() {
-		lo, hi := innerScanTsBoundsFrags(tsCol, r.Start, r.End, rangeNS)
-		innerSb.Where(lo, hi)
-	}
+	// Push (Start - range, End] onto the wrapping SELECT over m.Inner
+	// for CH partition / granule pruning. Gated so subquery-internal
+	// shapes (no Start/End grid) stay byte-stable. See
+	// maybePushInnerScanTimeBounds.
+	maybePushInnerScanTimeBounds(innerSb, r, tsCol, rangeNS)
 
 	// Outer SELECT: GROUP BY group cols + anchor_ts; apply the
 	// per-bucket reducer.
@@ -939,12 +934,8 @@ func (e *emitter) emitRangeWindowMetricsQuantileBuckets(r *chplan.RangeWindow, m
 	innerSb.SelectAs(func(b *Builder) { _ = b.Expr(attr) }, "metric_arg")
 	innerSb.SelectAs(anchorFanoutFrag(end, stepNS, numAnchors), "anchor_ts")
 	// Same Start/End pushdown as emitRangeWindowMetrics — see
-	// innerScanTsBoundsFrags. Conditional so the unbounded
-	// subquery-internal shapes stay byte-stable.
-	if !r.Start.IsZero() && !r.End.IsZero() {
-		lo, hi := innerScanTsBoundsFrags(tsCol, r.Start, r.End, rangeNS)
-		innerSb.Where(lo, hi)
-	}
+	// maybePushInnerScanTimeBounds.
+	maybePushInnerScanTimeBounds(innerSb, r, tsCol, rangeNS)
 
 	outerSb := NewQuery().From(innerSb.Frag())
 	for _, alias := range groupAliases {
@@ -1065,28 +1056,42 @@ func windowTsLowerBoundFrag(rangeNS int64) Frag {
 	}
 }
 
+// maybePushInnerScanTimeBounds pushes the (Start - range, End] time
+// bound onto `innerSb` (the wrapping SELECT over the MetricsAggregate
+// Inner subquery) so ClickHouse can prune partitions / granules by the
+// otel_traces Timestamp key — without the bounds the fan-out
+// `arrayJoin(range(0, N))` shape would force a full-table scan
+// (~31× row blowup per anchor) which routinely outlasts Grafana's
+// request timeout on the TraceQL /api/metrics/query_range path.
+//
+// The pushdown is gated on BOTH Start and End being set — the PromQL
+// subquery-internal RangeWindow shapes (Range / Step / OuterRange only,
+// no explicit grid) rely on the bounds being absent to stay byte-stable
+// against pinned snapshots. The `&&` gate is load-bearing: with either
+// bound zero the WHERE clause is suppressed entirely. Shared by
+// emitRangeWindowMetrics, emitRangeWindowMetricsQuantileBuckets, and
+// emitMetricsExemplars so the three matrix-shape emitters keep a single
+// pushdown contract.
+func maybePushInnerScanTimeBounds(innerSb *QueryBuilder, rw *chplan.RangeWindow, tsCol string, rangeNS int64) {
+	if rw.Start.IsZero() || rw.End.IsZero() {
+		return
+	}
+	lo, hi := innerScanTsBoundsFrags(tsCol, rw.Start, rw.End, rangeNS)
+	innerSb.Where(lo, hi)
+}
+
 // innerScanTsBoundsFrags returns the two Frags that pin the input scan
 // to the (Start - range, End] window:
 //
 //	<tsCol> >  <Start> - toIntervalNanosecond(<rangeNS>)
 //	<tsCol> <= <End>
 //
-// The bounds are pushed onto the wrapping SELECT over the MetricsAggregate
-// Inner subquery so ClickHouse can use the table's Timestamp partition /
-// order key for granule pruning — without the bounds the fan-out
-// `arrayJoin(range(0, N))` shape would force a full-table scan of
-// otel_traces (~31× row blowup per anchor) which routinely outlasts
-// Grafana's request timeout on the TraceQL /api/metrics/query_range path.
-//
 // Strict lower / inclusive upper matches the per-anchor `(anchor_ts -
 // range, anchor_ts]` window the outer SELECT later applies: any row that
 // could land in any anchor on the [Start, End] grid satisfies
-// `tsCol > Start - range AND tsCol <= End`.
-//
-// Callers MUST gate this on `!start.IsZero() && !end.IsZero()` — the
-// existing PromQL subquery-internal RangeWindow shapes (only Range / Step
-// / OuterRange set) rely on the bounds being absent to stay byte-stable
-// against pinned snapshots.
+// `tsCol > Start - range AND tsCol <= End`. See
+// maybePushInnerScanTimeBounds for the gating contract callers go
+// through.
 func innerScanTsBoundsFrags(tsCol string, start, end time.Time, rangeNS int64) (Frag, Frag) {
 	startFrag := timeOrNowFrag(start)
 	endFrag := timeOrNowFrag(end)
