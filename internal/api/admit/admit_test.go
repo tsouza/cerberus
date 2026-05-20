@@ -266,9 +266,10 @@ func TestRejectedCounter(t *testing.T) {
 	}
 	var found bool
 	var sum int64
+	var sawQL, sawReason bool
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
-			if m.Name != "cerberus.admit.rejected_total" {
+			if m.Name != "cerberus_admit_rejected_total" {
 				continue
 			}
 			found = true
@@ -278,14 +279,26 @@ func TestRejectedCounter(t *testing.T) {
 			}
 			for _, dp := range sumData.DataPoints {
 				sum += dp.Value
+				if v, ok := dp.Attributes.Value("cerberus.ql"); ok && v.AsString() == "promql" {
+					sawQL = true
+				}
+				if v, ok := dp.Attributes.Value("reason"); ok && v.AsString() == admit.ReasonCapExceeded {
+					sawReason = true
+				}
 			}
 		}
 	}
 	if !found {
-		t.Fatalf("cerberus.admit.rejected_total not exported")
+		t.Fatalf("cerberus_admit_rejected_total not exported")
 	}
 	if sum != 2 {
 		t.Fatalf("rejected_total: want 2, got %d", sum)
+	}
+	if !sawQL {
+		t.Errorf("rejected_total: missing cerberus.ql=promql attribute")
+	}
+	if !sawReason {
+		t.Errorf("rejected_total: missing reason=%q attribute", admit.ReasonCapExceeded)
 	}
 }
 

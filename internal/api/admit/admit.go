@@ -40,11 +40,43 @@ import (
 // drilling into rejection events.
 const meterName = "github.com/tsouza/cerberus/internal/api/admit"
 
-// attrHead labels the rejection counter with the API head whose
-// limiter rejected the request — "prom" / "loki" / "tempo". The
-// values match the head identifiers used elsewhere in cerberus so
-// dashboards can join admit rejections against query totals.
-const attrHead = attribute.Key("cerberus.admit.head")
+// attrQL labels the rejection counter with the query language the
+// limiter is fronting — "promql" / "logql" / "traceql". Mirrors the
+// cerberus.ql attribute set by internal/telemetry on the
+// per-query counters, so the cerberus-self dashboard's
+// `sum by (cerberus_ql, reason) (rate(cerberus_admit_rejected_total[5m]))`
+// panel resolves consistently across both metric sources.
+const attrQL = attribute.Key("cerberus.ql")
+
+// attrReason labels the rejection counter with the rejection cause.
+// The limiter currently has exactly one rejection path: the weighted
+// semaphore was at its cap when Acquire ran. Future paths (e.g.,
+// queue-timeout, route-disabled) should add to this vocabulary
+// rather than overload an existing value.
+const attrReason = attribute.Key("reason")
+
+// ReasonCapExceeded is emitted on the reason attribute when Acquire
+// is called while the limiter's semaphore is saturated. It's the only
+// rejection path the limiter has today.
+const ReasonCapExceeded = "cap_exceeded"
+
+// headToQL maps the API-head identifier ("prom" / "loki" / "tempo")
+// used to construct a Limiter onto the query-language string
+// ("promql" / "logql" / "traceql") cerberus uses everywhere else in
+// its telemetry. Unknown heads fall through to the raw value so a
+// future head ("otlp"?) still produces a usable metric label.
+func headToQL(head string) string {
+	switch head {
+	case "prom":
+		return "promql"
+	case "loki":
+		return "logql"
+	case "tempo":
+		return "traceql"
+	default:
+		return head
+	}
+}
 
 // Limiter caps concurrent in-flight requests for one API head. The
 // zero value is unusable; build via New. A nil *Limiter is a sentinel
@@ -60,6 +92,7 @@ const attrHead = attribute.Key("cerberus.admit.head")
 // every callsite today uses weight 1.
 type Limiter struct {
 	head     string
+	ql       string
 	sem      *semaphore.Weighted
 	rejected metric.Int64Counter
 }
@@ -89,8 +122,12 @@ func newWithProvider(head string, cap int, mp metric.MeterProvider) *Limiter {
 	}
 	meter := mp.Meter(meterName)
 	rejected, err := meter.Int64Counter(
-		"cerberus.admit.rejected_total",
-		metric.WithDescription("Requests rejected by the per-handler concurrency cap."),
+		"cerberus_admit_rejected_total",
+		metric.WithDescription(
+			"Requests rejected by the per-handler concurrency cap. "+
+				"Labels: cerberus.ql (promql / logql / traceql), "+
+				"reason (cap_exceeded).",
+		),
 		metric.WithUnit("{request}"),
 	)
 	if err != nil {
@@ -101,6 +138,7 @@ func newWithProvider(head string, cap int, mp metric.MeterProvider) *Limiter {
 	}
 	return &Limiter{
 		head:     head,
+		ql:       headToQL(head),
 		sem:      semaphore.NewWeighted(int64(cap)),
 		rejected: rejected,
 	}
@@ -117,7 +155,10 @@ func (l *Limiter) Acquire(ctx context.Context) (release func(), ok bool) {
 		return func() {}, true
 	}
 	if !l.sem.TryAcquire(1) {
-		l.rejected.Add(ctx, 1, metric.WithAttributes(attrHead.String(l.head)))
+		l.rejected.Add(ctx, 1, metric.WithAttributes(
+			attrQL.String(l.ql),
+			attrReason.String(ReasonCapExceeded),
+		))
 		return func() {}, false
 	}
 	released := false
