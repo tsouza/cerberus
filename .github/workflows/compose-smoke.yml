@@ -26,9 +26,9 @@ name: compose-smoke
 # every provisioned dashboard. This catches the class of bug where
 # Grafana 200s a `/api/ds/query` request but tunnels per-target errors
 # inside `body.results.<refId>.error` — invisible to curl smokes and
-# to direct cerberus-API tests. The Playwright step is informational
-# on day 1 (`continue-on-error: true`); flip it to a hard failure once
-# it has 1 week of green runs.
+# to direct cerberus-API tests. The step hard-fails the job; once a
+# fix cycle confirms the gate is steady, promote `compose-smoke` to
+# a required status check on branch protection.
 
 on:
   pull_request:
@@ -82,9 +82,12 @@ jobs:
       # ds/query but the body carries .results.<refId>.error — invisible
       # to curl smokes and to direct cerberus-API tests.
       #
-      # Gate posture: informational on day 1. `continue-on-error: true`
-      # means the job stays green while we let the lane stabilise; flip
-      # it to a hard failure once it's had ~1 week of green runs.
+      # Gate posture: hard fail. A non-2xx response or a tunneled
+      # per-target error in a /api/ds/query body fails the job — that
+      # was the gap that let dashboard-load regressions land on main
+      # for hours unnoticed. Promote compose-smoke to a required
+      # status check on branch protection once a fix cycle confirms
+      # the gate is steady.
       # No npm cache here — the playwright suite doesn't currently
       # ship a package-lock.json, and setup-node's cache lookup hard-
       # fails before the install fallback below ever runs when the
@@ -107,9 +110,8 @@ jobs:
           fi
           npx playwright install --with-deps chromium
 
-      - name: playwright compose-grafana-smoke (informational)
+      - name: playwright compose-grafana-smoke
         id: playwright_smoke
-        continue-on-error: true
         working-directory: test/e2e/playwright
         env:
           GRAFANA_BASE_URL: http://localhost:3000
