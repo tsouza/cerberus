@@ -494,6 +494,7 @@ func TestQueryRange_BadInput(t *testing.T) {
 		{"missing start", `/loki/api/v1/query_range?query=%7Bjob%3D%22api%22%7D&end=1717999200&step=60`},
 		{"missing end", `/loki/api/v1/query_range?query=%7Bjob%3D%22api%22%7D&start=1717995600&step=60`},
 		{"end before start", `/loki/api/v1/query_range?query=%7Bjob%3D%22api%22%7D&start=1717999200&end=1717995600&step=60`},
+		{"invalid limit", `/loki/api/v1/query_range?query=%7Bjob%3D%22api%22%7D&start=1717995600&end=1717999200&step=60&limit=-5`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -508,5 +509,243 @@ func TestQueryRange_BadInput(t *testing.T) {
 				t.Fatalf("expected 400, got %d", resp.StatusCode)
 			}
 		})
+	}
+}
+
+// TestQuery_Streams_RespectsLimitParameter pins the wire-format
+// contract that /query honours Loki's `limit` URL parameter on
+// log-stream queries: the response surfaces AT MOST `limit` entries
+// across all returned streams. The bug this guards against was
+// cerberus ignoring `limit` entirely — the
+// `regression/drilldown-patterns.yaml#Basic drilldown with json and
+// logfmt parsing` loki-compat case surfaced this as `streams length:
+// expected=1000 actual=1440`. With per-entry-unique parser-extracted
+// labels (which is what a `| json | logfmt` pipeline produces against
+// the loki-compat seed), every entry collapses into its own Stream,
+// so an unbounded sample stream becomes a stream-count mismatch on
+// the wire.
+//
+// The test uses a parser-stage-free query so the labels are constant
+// across rows — collapsing into a single Stream — and asserts the
+// entry count inside that stream is exactly `limit`. A bare selector
+// with 5 underlying CH rows + `limit=3` should produce one Stream
+// with three entries; without the clamp it would surface all five.
+func TestQuery_Streams_RespectsLimitParameter(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 5, 12, 12, 0, 0, 0, time.UTC)
+	q := &stubQuerier{
+		samples: []chclient.Sample{
+			{MetricName: "line-1", Labels: map[string]string{"job": "api"}, Timestamp: base},
+			{MetricName: "line-2", Labels: map[string]string{"job": "api"}, Timestamp: base.Add(1 * time.Second)},
+			{MetricName: "line-3", Labels: map[string]string{"job": "api"}, Timestamp: base.Add(2 * time.Second)},
+			{MetricName: "line-4", Labels: map[string]string{"job": "api"}, Timestamp: base.Add(3 * time.Second)},
+			{MetricName: "line-5", Labels: map[string]string{"job": "api"}, Timestamp: base.Add(4 * time.Second)},
+		},
+	}
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + `/loki/api/v1/query?query=%7Bjob%3D%22api%22%7D&limit=3`)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+
+	var parsed queryResponse
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	raw, _ := json.Marshal(parsed.Data.Result)
+	var streams []loki.Stream
+	if err := json.Unmarshal(raw, &streams); err != nil {
+		t.Fatalf("decode streams: %v", err)
+	}
+	if len(streams) != 1 {
+		t.Fatalf("expected 1 stream (constant labelset), got %d", len(streams))
+	}
+	if got, want := len(streams[0].Values), 3; got != want {
+		t.Fatalf("stream values: got %d, want %d (the 3 latest entries surfaced under direction=backward default)", got, want)
+	}
+	// The latest three timestamps should be line-3, line-4, line-5
+	// — direction=backward orders descending so the response carries
+	// them most-recent-first. Verify by extracting the line bodies
+	// (the second tuple slot in each value).
+	got := map[string]bool{}
+	for _, v := range streams[0].Values {
+		got[v[1]] = true
+	}
+	for _, want := range []string{"line-3", "line-4", "line-5"} {
+		if !got[want] {
+			t.Errorf("expected limit=3 backward clamp to surface %q, got values %v", want, streams[0].Values)
+		}
+	}
+	for _, dropped := range []string{"line-1", "line-2"} {
+		if got[dropped] {
+			t.Errorf("expected limit=3 backward clamp to drop %q, got values %v", dropped, streams[0].Values)
+		}
+	}
+}
+
+// TestQuery_Streams_CollapsesPerEntryLabelsToStreamCount mirrors the
+// loki-compat `regression/drilldown-patterns.yaml#Basic drilldown
+// with json and logfmt parsing` case where each entry has unique
+// parser-extracted labels so every entry surfaces as its own stream.
+// Without the limit clamp every entry would be its own stream, blowing
+// past Loki's documented `limit` ceiling; with the clamp the
+// per-entry-unique labelset still produces one stream per surviving
+// entry, but the total entry count (== stream count) honours the
+// caller's `limit`. Acts as a direct regression test for the
+// "1000 vs 1440" diff the loki-compat differential surfaces.
+func TestQuery_Streams_CollapsesPerEntryLabelsToStreamCount(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 5, 12, 12, 0, 0, 0, time.UTC)
+	samples := make([]chclient.Sample, 0, 10)
+	for i := 0; i < 10; i++ {
+		samples = append(samples, chclient.Sample{
+			MetricName: "line-" + strconv.Itoa(i),
+			// Per-entry-unique label so every entry surfaces as
+			// its own Stream — mirrors the parser-stage shape
+			// (json + logfmt extract caller-varying keys per row).
+			Labels:    map[string]string{"job": "api", "request_id": strconv.Itoa(i)},
+			Timestamp: base.Add(time.Duration(i) * time.Second),
+		})
+	}
+	q := &stubQuerier{samples: samples}
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + `/loki/api/v1/query?query=%7Bjob%3D%22api%22%7D&limit=4`)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+
+	var parsed queryResponse
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	raw, _ := json.Marshal(parsed.Data.Result)
+	var streams []loki.Stream
+	if err := json.Unmarshal(raw, &streams); err != nil {
+		t.Fatalf("decode streams: %v", err)
+	}
+	if got, want := len(streams), 4; got != want {
+		t.Fatalf("streams length: got %d, want %d (limit=4 clamp, one stream per unique parser-extracted labelset)", got, want)
+	}
+}
+
+// TestQueryRange_Streams_DefaultLimitClampsResponse pins the
+// default-limit behaviour: a /query_range request with no `limit`
+// parameter clamps the response to Loki's documented 100-entry
+// default. Without the clamp every CH row would surface — a
+// long-window log query against a multi-thousand-entry seed would
+// return more entries than `limit=100` callers expect, breaking
+// downstream tools that paginate against Loki's contract.
+func TestQueryRange_Streams_DefaultLimitClampsResponse(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 5, 12, 12, 0, 0, 0, time.UTC)
+	samples := make([]chclient.Sample, 0, 250)
+	for i := 0; i < 250; i++ {
+		samples = append(samples, chclient.Sample{
+			MetricName: "line-" + strconv.Itoa(i),
+			Labels:     map[string]string{"job": "api"},
+			Timestamp:  base.Add(time.Duration(i) * time.Second),
+		})
+	}
+	q := &stubQuerier{samples: samples}
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	start := strconv.FormatInt(base.Unix(), 10)
+	end := strconv.FormatInt(base.Add(300*time.Second).Unix(), 10)
+	resp, err := http.Get(srv.URL + `/loki/api/v1/query_range?query=%7Bjob%3D%22api%22%7D&start=` + start + `&end=` + end + `&step=60`)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+
+	var parsed queryResponse
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	raw, _ := json.Marshal(parsed.Data.Result)
+	var streams []loki.Stream
+	if err := json.Unmarshal(raw, &streams); err != nil {
+		t.Fatalf("decode streams: %v", err)
+	}
+	if len(streams) != 1 {
+		t.Fatalf("expected 1 stream (constant labelset), got %d", len(streams))
+	}
+	if got, want := len(streams[0].Values), 100; got != want {
+		t.Fatalf("default-limit clamp: got %d entries, want %d (Loki documented default)", got, want)
+	}
+}
+
+// TestQuery_Streams_RespectsForwardDirection pins the wire-format
+// contract that `direction=forward` flips the limit clamp to surface
+// the EARLIEST N entries rather than the latest. The loki-bench
+// harness sets every log case to backward (forward is unsupported by
+// Loki's v2 engine) but the handler still has to accept the parameter
+// per Loki's documented API.
+func TestQuery_Streams_RespectsForwardDirection(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 5, 12, 12, 0, 0, 0, time.UTC)
+	q := &stubQuerier{
+		samples: []chclient.Sample{
+			{MetricName: "line-1", Labels: map[string]string{"job": "api"}, Timestamp: base},
+			{MetricName: "line-2", Labels: map[string]string{"job": "api"}, Timestamp: base.Add(1 * time.Second)},
+			{MetricName: "line-3", Labels: map[string]string{"job": "api"}, Timestamp: base.Add(2 * time.Second)},
+			{MetricName: "line-4", Labels: map[string]string{"job": "api"}, Timestamp: base.Add(3 * time.Second)},
+			{MetricName: "line-5", Labels: map[string]string{"job": "api"}, Timestamp: base.Add(4 * time.Second)},
+		},
+	}
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + `/loki/api/v1/query?query=%7Bjob%3D%22api%22%7D&limit=2&direction=forward`)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+
+	var parsed queryResponse
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	raw, _ := json.Marshal(parsed.Data.Result)
+	var streams []loki.Stream
+	if err := json.Unmarshal(raw, &streams); err != nil {
+		t.Fatalf("decode streams: %v", err)
+	}
+	if len(streams) != 1 {
+		t.Fatalf("expected 1 stream, got %d", len(streams))
+	}
+	if got, want := len(streams[0].Values), 2; got != want {
+		t.Fatalf("stream values: got %d, want %d", got, want)
+	}
+	got := map[string]bool{}
+	for _, v := range streams[0].Values {
+		got[v[1]] = true
+	}
+	for _, want := range []string{"line-1", "line-2"} {
+		if !got[want] {
+			t.Errorf("expected limit=2 forward clamp to surface %q, got values %v", want, streams[0].Values)
+		}
 	}
 }

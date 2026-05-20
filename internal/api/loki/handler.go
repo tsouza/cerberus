@@ -139,6 +139,12 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return
 	}
+	limit, err := parseLogLimit(r.URL.Query().Get("limit"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, ErrBadData, err)
+		return
+	}
+	dir := parseLogDirection(r.URL.Query().Get("direction"))
 
 	// Instant /query: collapse the window onto a single point. Per
 	// upstream Loki contract the evaluation lookback is the previous
@@ -154,7 +160,7 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 	expr, _ := res.Meta.Extra["expr"].(syntax.Expr)
 	h.Logger.Debug("cerberus loki query", "logql", q, "sql", res.SQL, "args", res.Args)
 
-	data, err := buildInstantData(expr, res.Samples, ts, h.Schema)
+	data, err := buildInstantData(expr, res.Samples, ts, h.Schema, limit, dir)
 	if err != nil {
 		h.respondError(w, err)
 		return
@@ -193,6 +199,12 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("'end' must be after 'start'"))
 		return
 	}
+	limit, err := parseLogLimit(r.URL.Query().Get("limit"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, ErrBadData, err)
+		return
+	}
+	dir := parseLogDirection(r.URL.Query().Get("direction"))
 
 	res, err := h.Engine.Query(r.Context(), h.langForRangeRequest(start, end, step), q)
 	if err != nil {
@@ -202,7 +214,7 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 	expr, _ := res.Meta.Extra["expr"].(syntax.Expr)
 	h.Logger.Debug("cerberus loki query_range", "logql", q, "sql", res.SQL, "args", res.Args)
 
-	data, err := buildRangeData(expr, res.Samples, start, end, step, h.Schema)
+	data, err := buildRangeData(expr, res.Samples, start, end, step, h.Schema, limit, dir)
 	if err != nil {
 		h.respondError(w, err)
 		return
@@ -293,8 +305,10 @@ func classifyEngineErr(err error) error {
 
 // buildInstantData turns the sample stream into a Loki instant-query
 // data body. Metric queries produce a vector; log queries produce
-// streams.
-func buildInstantData(expr syntax.Expr, samples []chclient.Sample, ts time.Time, _ schema.Logs) (*QueryData, error) {
+// streams. The limit + direction control how many log entries to
+// surface and in what order (Loki applies `limit` to the TOTAL entry
+// count across all streams, not per-stream).
+func buildInstantData(expr syntax.Expr, samples []chclient.Sample, ts time.Time, _ schema.Logs, limit int, dir logDirection) (*QueryData, error) {
 	if logql.IsMetricQuery(expr) {
 		return &QueryData{
 			ResultType: "vector",
@@ -305,6 +319,7 @@ func buildInstantData(expr syntax.Expr, samples []chclient.Sample, ts time.Time,
 	if err != nil {
 		return nil, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
 	}
+	samples = clampLogSamples(samples, limit, dir)
 	return &QueryData{
 		ResultType: "streams",
 		Result:     toStreamsWithTransform(samples, tx),
@@ -313,8 +328,9 @@ func buildInstantData(expr syntax.Expr, samples []chclient.Sample, ts time.Time,
 
 // buildRangeData turns the sample stream into a Loki range-query data
 // body. Metric queries produce a matrix (per-step latest value per
-// series). Log queries produce streams.
-func buildRangeData(expr syntax.Expr, samples []chclient.Sample, start, end time.Time, step time.Duration, _ schema.Logs) (*QueryData, error) {
+// series). Log queries produce streams; limit + direction follow the
+// same `total entries across all streams` rule as [buildInstantData].
+func buildRangeData(expr syntax.Expr, samples []chclient.Sample, start, end time.Time, step time.Duration, _ schema.Logs, limit int, dir logDirection) (*QueryData, error) {
 	if logql.IsMetricQuery(expr) {
 		return &QueryData{
 			ResultType: "matrix",
@@ -325,10 +341,110 @@ func buildRangeData(expr syntax.Expr, samples []chclient.Sample, start, end time
 	if err != nil {
 		return nil, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
 	}
+	samples = clampLogSamples(samples, limit, dir)
 	return &QueryData{
 		ResultType: "streams",
 		Result:     toStreamsWithTransform(samples, tx),
 	}, nil
+}
+
+// logDirection is the wire-format direction parameter — "backward"
+// (most-recent-first, the default) or "forward". Used to order log
+// entries when applying the `limit` clamp so the surfaced subset
+// matches reference Loki's truncation rule (latest N for backward,
+// earliest N for forward). Metric queries ignore this field; their
+// matrix / vector emitters carry their own per-anchor ordering.
+type logDirection int
+
+const (
+	// directionBackward returns the most-recent N entries — Loki's
+	// default and the only direction the loki-bench harness exercises
+	// for log queries (forward log queries are unsupported by Loki's
+	// v2 engine, see fast/basic-selectors.yaml).
+	directionBackward logDirection = iota
+	directionForward
+)
+
+// Loki's documented limit defaults. The default + ceiling mirror the
+// upstream `pkg/loghttp/params.go::defaultQueryLimit` /
+// `maxQueryLimit` constants — a request with no `limit` parameter
+// returns up to 100 entries; values above 5000 are clamped to 5000
+// rather than rejected so a misbehaving client doesn't trigger
+// runaway memory growth.
+const (
+	defaultLogQueryLimit = 100
+	maxLogQueryLimit     = 5000
+)
+
+// parseLogLimit reads the URL's `limit` query parameter, clamping at
+// [maxLogQueryLimit] and defaulting to [defaultLogQueryLimit] when
+// absent. Non-positive or non-numeric values fail with a 400-mapped
+// error so a Grafana / loki-bench client that passes garbage sees
+// the same diagnostic shape upstream Loki emits.
+func parseLogLimit(raw string) (int, error) {
+	if raw == "" {
+		return defaultLogQueryLimit, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return 0, errors.New("'limit' must be a positive integer")
+	}
+	if n > maxLogQueryLimit {
+		n = maxLogQueryLimit
+	}
+	return n, nil
+}
+
+// parseLogDirection maps the URL's `direction` query parameter onto
+// the [logDirection] enum. Unknown / empty values fall back to
+// backward (the Loki documented default — the loki-bench harness
+// also sends explicit "backward" for every log case).
+func parseLogDirection(raw string) logDirection {
+	if strings.EqualFold(raw, "forward") {
+		return directionForward
+	}
+	return directionBackward
+}
+
+// clampLogSamples sorts samples by timestamp (direction-aware) and
+// truncates to limit. Loki's wire contract applies `limit` to the
+// TOTAL entry count across all streams — not per-stream — so we sort
+// the flat sample slice first and let [toStreamsWithTransform] group
+// the surviving subset into Streams by labelset. Without this clamp,
+// a query whose underlying SQL returns more rows than limit would
+// over-surface the response: reference Loki would return e.g. 1000
+// streams (one per unique post-parser labelset for the latest 1000
+// entries) where cerberus returned every matching row as its own
+// stream (the loki-compat `regression/drilldown-patterns.yaml#Basic
+// drilldown with json and logfmt parsing` case surfaced as `streams
+// length: expected=1000 actual=1440`).
+//
+// Samples come back from the engine in CH's natural ORDER BY-free
+// order; sorting here is authoritative for the wire-format response
+// since the chsql emitter for log Scans doesn't currently project an
+// ORDER BY clause. Sorting before truncation keeps the chosen subset
+// stable across CH execution-plan changes.
+//
+// limit <= 0 is treated as "no clamp" so test callers that don't
+// care about the cap can pass 0; the production handler always
+// passes a positive value out of [parseLogLimit].
+func clampLogSamples(samples []chclient.Sample, limit int, dir logDirection) []chclient.Sample {
+	if len(samples) == 0 {
+		return samples
+	}
+	if dir == directionBackward {
+		sort.SliceStable(samples, func(i, j int) bool {
+			return samples[i].Timestamp.After(samples[j].Timestamp)
+		})
+	} else {
+		sort.SliceStable(samples, func(i, j int) bool {
+			return samples[i].Timestamp.Before(samples[j].Timestamp)
+		})
+	}
+	if limit > 0 && len(samples) > limit {
+		samples = samples[:limit]
+	}
+	return samples
 }
 
 // toVector groups samples by label set, picks the latest per series.
