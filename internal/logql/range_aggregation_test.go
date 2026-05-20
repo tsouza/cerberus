@@ -218,3 +218,122 @@ func TestLowerRangeAggregationMatrixShapeUnwrap(t *testing.T) {
 		})
 	}
 }
+
+// TestLowerRangeAggregationUnwrapStripsTargetFromIdentity pins the
+// stream-identity contract for the unwrap+parser path: Loki's
+// `LabelExtractorWithStages` treats no-grouping as `without (labelName)`,
+// so every parser-extracted label survives the metric extraction EXCEPT
+// the unwrap target itself. Cerberus previously collapsed the identity
+// down to bare ResourceAttributes (+ detected_level), so any query whose
+// log payload carries varying parser-extracted keys returned just a
+// handful of series where reference Loki returned hundreds. The
+// loki-compat 24h/1m corpus surfaces this as `matrix length:
+// expected=1440 actual=4` for the 11 unwrap matrix cases that drove
+// PR #574 — see compatibility/loki/upstream/loki-bench/queries/
+// {regression/metric-queries.yaml,exhaustive/unwrap-aggregations.yaml}.
+//
+// The fix materialises the parser-merged labels into the
+// `_logql_merged_labels` intermediate column (see [lowerRangeAggregation])
+// and strips the unwrap target via `MapWithoutKeys{..., [unwrapIdent]}`
+// against that materialised column reference. CH's "Recursive lambda
+// (UNSUPPORTED_METHOD)" error fires when the strip's `mapFilter` source
+// is itself a `mapApply`-bearing expression (e.g. `logfmtMergeLabels`),
+// so the two-stage Project is load-bearing — pin both the IR shape
+// (intermediate column present, identity strips the target) and the
+// downstream-SQL invariant (no recursive lambda at the strip site).
+func TestLowerRangeAggregationUnwrapStripsTargetFromIdentity(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelLogs()
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(24 * time.Hour)
+	step := time.Minute
+
+	cases := []struct {
+		name             string
+		query            string
+		wantStrippedKey  string
+		wantMergedColumn bool
+	}{
+		{
+			name:             "rate-unwrap-duration-logfmt",
+			query:            `rate({app="api"} | logfmt | duration != "" | unwrap duration(duration) [5m])`,
+			wantStrippedKey:  "duration",
+			wantMergedColumn: true,
+		},
+		{
+			name:             "rate-unwrap-duration_ms-json",
+			query:            `rate({app="api"} | json | unwrap duration_ms [5m])`,
+			wantStrippedKey:  "duration_ms",
+			wantMergedColumn: true,
+		},
+		{
+			name:             "sum_over_time-unwrap-latency-logfmt",
+			query:            `sum_over_time({app="api"} | logfmt | unwrap latency [5m])`,
+			wantStrippedKey:  "latency",
+			wantMergedColumn: true,
+		},
+		{
+			name:             "avg_over_time-unwrap-duration_seconds-logfmt",
+			query:            `avg_over_time({app="api"} | logfmt | duration != "" | unwrap duration_seconds(duration) [5m])`,
+			wantStrippedKey:  "duration",
+			wantMergedColumn: true,
+		},
+		{
+			name:             "min_over_time-unwrap-bytes-logfmt",
+			query:            `min_over_time({app="api"} | logfmt | unwrap bytes(size) [5m])`,
+			wantStrippedKey:  "size",
+			wantMergedColumn: true,
+		},
+		{
+			name:             "max_over_time-unwrap-json",
+			query:            `max_over_time({app="api"} | json | unwrap duration_ms [5m])`,
+			wantStrippedKey:  "duration_ms",
+			wantMergedColumn: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			expr, err := syntax.ParseExpr(tc.query)
+			if err != nil {
+				t.Fatalf("ParseExpr(%q): %v", tc.query, err)
+			}
+			ra, ok := expr.(*syntax.RangeAggregationExpr)
+			if !ok {
+				t.Fatalf("ParseExpr(%q) -> %T, want *syntax.RangeAggregationExpr", tc.query, expr)
+			}
+
+			plan, err := lowerRangeAggregation(ra, s, lowerCtx{Start: start, End: end, Step: step})
+			if err != nil {
+				t.Fatalf("lowerRangeAggregation(%q): %v", tc.query, err)
+			}
+
+			sqlStr, _, err := chsql.Emit(context.Background(), plan)
+			if err != nil {
+				t.Fatalf("chsql.Emit(%q): %v", tc.query, err)
+			}
+
+			// Identity strip: the `mapFilter(NOT (k IN (?)), ...)`
+			// shape compiled from `MapWithoutKeys{..., [target]}`
+			// must surface in the emitted SQL. Without it, the
+			// inner Project's identity collapses to bare
+			// ResourceAttributes and 1440-series reference-Loki
+			// behaviour regresses to cerberus's pre-fix 4-series
+			// shape.
+			if !strings.Contains(sqlStr, "mapFilter((k, v) -> NOT (k IN") {
+				t.Errorf("%q: emitted SQL missing strip-via-mapFilter shape\nsql=%s", tc.query, sqlStr)
+			}
+			// Materialised intermediate column: the two-stage
+			// Project rewrite is load-bearing — without it, the
+			// outer `mapFilter` sees a `mapApply`-bearing source
+			// (logfmt's rename-on-collision shape) and CH rejects
+			// with `Recursive lambda (UNSUPPORTED_METHOD)`.
+			if tc.wantMergedColumn && !strings.Contains(sqlStr, "_logql_merged_labels") {
+				t.Errorf("%q: emitted SQL missing _logql_merged_labels materialised column (two-stage Project lost)\nsql=%s", tc.query, sqlStr)
+			}
+		})
+	}
+}
