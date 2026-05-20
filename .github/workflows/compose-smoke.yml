@@ -1,0 +1,84 @@
+name: compose-smoke
+
+# Smoke test for the repo-root quickstart compose stack
+# (`docker compose up --wait`). The dashboard / k3d e2e job uses k3d,
+# not docker-compose; without this lane the quickstart stack has zero
+# PR coverage and silently breaks when a contributor edits
+# docker-compose.yml / Dockerfile.local / Grafana provisioning / the
+# cerberus binary.
+#
+# What it does:
+#   1. `docker compose up --wait` — build cerberus, bring up CH +
+#      cerberus + grafana, wait for all healthchecks to go green.
+#   2. Curl cerberus's /healthz + /readyz and Grafana's /api/health
+#      from the host. Confirms the published port maps are right and
+#      the service contracts are honoured end-to-end.
+#   3. Teardown with `docker compose down -v`.
+#
+# Why the curl smokes matter on top of `--wait`: `--wait` only checks
+# the in-container healthcheck. A wrong `ports:` map or a published
+# port mismatch would leave the container healthy but the host
+# unreachable — exactly the kind of regression the quickstart README
+# users would hit.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compose-smoke-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  smoke:
+    name: compose-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: docker compose up --wait
+        run: |
+          # --wait-timeout caps the wait at 5 min. Cold runners need
+          # ~30-60s for the Go build + ~10-20s for CH first-boot; 300s
+          # is generous slack.
+          docker compose up --wait --wait-timeout 300
+
+      - name: smoke cerberus /healthz + /readyz
+        run: |
+          curl -fsS --max-time 5 http://localhost:8080/healthz
+          curl -fsS --max-time 5 http://localhost:8080/readyz
+
+      - name: smoke Grafana /api/health
+        run: |
+          curl -fsS --max-time 5 http://localhost:3000/api/health \
+            | tee /tmp/grafana-health.json
+          # `database: ok` is the load-bearing field for "Grafana
+          # itself is up and its internal SQLite is responsive".
+          # Datasource health is a separate per-datasource probe.
+          grep -q '"database":[[:space:]]*"ok"' /tmp/grafana-health.json
+
+      - name: dump compose state + logs on failure
+        if: failure()
+        run: |
+          echo "=== compose ps ==="
+          docker compose ps
+          echo "=== clickhouse logs (last 200) ==="
+          docker compose logs --tail=200 clickhouse || true
+          echo "=== cerberus logs (last 200) ==="
+          docker compose logs --tail=200 cerberus || true
+          echo "=== grafana logs (last 200) ==="
+          docker compose logs --tail=200 grafana || true
+          echo "=== seed logs (last 200) ==="
+          docker compose logs --tail=200 seed || true
+
+      - name: teardown
+        if: always()
+        run: docker compose down -v --remove-orphans
