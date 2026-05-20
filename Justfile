@@ -343,15 +343,19 @@ e2e-seed:
     @echo "==> seed done"
 
 # Wait until the OTel collector has populated real data in every signal
-# table (logs / traces / one of the metrics tables). Bootstraps the
-# pipeline before tests rely on it — telemetrygen + kubeletstats take
-# ~30-60s to flush a first batch through the gateway.
+# table (logs / traces / one of the metrics tables) AND the metric table
+# carries ≥60 s of history. Bootstraps the pipeline before tests rely on
+# it — telemetrygen + kubeletstats take ~30-60s to flush a first batch
+# through the gateway, and 1m-windowed queries (rate(x[1m]), up[1m:30s])
+# need a 60s span of TimeUnix values before they return a vector.
 #
 # Polls every 5s for up to 3 min; fails the recipe if any signal stays
-# empty. Uses `kubectl exec` against the ClickHouse pod so it does not
-# need a host-side port-forward.
+# empty or the metric stream never reaches 60 s of spread. Uses
+# `kubectl exec` against the ClickHouse pod so it does not need a
+# host-side port-forward. Spread is asserted on whichever metric table
+# (sum or gauge) carries non-zero rows first.
 e2e-wait-otel:
-    @echo "==> waiting for real OTel data in ClickHouse"
+    @echo "==> waiting for real OTel data + ≥60s metric history in ClickHouse"
     @deadline=$(($(date +%s) + 180)); \
         while [ $(date +%s) -lt $deadline ]; do \
             logs=$(kubectl -n cerberus exec deploy/clickhouse -- clickhouse-client \
@@ -366,14 +370,24 @@ e2e-wait-otel:
             gauge=$(kubectl -n cerberus exec deploy/clickhouse -- clickhouse-client \
                 --user cerberus --password cerberus --database otel \
                 --query "SELECT count() FROM otel_metrics_gauge" 2>/dev/null || echo 0); \
-            echo "    logs=$logs traces=$traces metrics_sum=$sum metrics_gauge=$gauge"; \
-            if [ "$logs" -gt 0 ] && [ "$traces" -gt 0 ] && { [ "$sum" -gt 0 ] || [ "$gauge" -gt 0 ]; }; then \
-                echo "==> OTel pipeline is live"; \
+            spread=0; \
+            if [ "$sum" -gt 0 ]; then \
+                spread=$(kubectl -n cerberus exec deploy/clickhouse -- clickhouse-client \
+                    --user cerberus --password cerberus --database otel \
+                    --query "SELECT toUInt64(dateDiff('second', min(TimeUnix), max(TimeUnix))) FROM otel_metrics_sum" 2>/dev/null || echo 0); \
+            elif [ "$gauge" -gt 0 ]; then \
+                spread=$(kubectl -n cerberus exec deploy/clickhouse -- clickhouse-client \
+                    --user cerberus --password cerberus --database otel \
+                    --query "SELECT toUInt64(dateDiff('second', min(TimeUnix), max(TimeUnix))) FROM otel_metrics_gauge" 2>/dev/null || echo 0); \
+            fi; \
+            echo "    logs=$logs traces=$traces metrics_sum=$sum metrics_gauge=$gauge spread=${spread}s"; \
+            if [ "$logs" -gt 0 ] && [ "$traces" -gt 0 ] && { [ "$sum" -gt 0 ] || [ "$gauge" -gt 0 ]; } && [ "$spread" -ge 60 ]; then \
+                echo "==> OTel pipeline is live with ≥60s of metric history"; \
                 exit 0; \
             fi; \
             sleep 5; \
         done; \
-        echo "==> timeout waiting for OTel data"; \
+        echo "==> timeout waiting for OTel data / metric history span"; \
         exit 1
 
 # Run Go E2E HTTP tests against the deployed stack.
