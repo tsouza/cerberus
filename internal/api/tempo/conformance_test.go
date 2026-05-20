@@ -125,6 +125,16 @@ func TestConformance_TempoSearchWire(t *testing.T) {
 			if sr.Traces == nil {
 				t.Errorf("Traces is nil; should be empty slice, not nil")
 			}
+			// Cardinality: empty sample input must produce an
+			// empty Traces array; non-empty input must produce at
+			// least one trace. A regression that silently swaps
+			// shapes would slip past the nil-check alone.
+			switch {
+			case len(c.samples) == 0 && len(sr.Traces) != 0:
+				t.Errorf("Traces length: got %d, want 0 with no samples", len(sr.Traces))
+			case len(c.samples) > 0 && len(sr.Traces) == 0:
+				t.Errorf("Traces length: got 0, want non-empty (%d sample(s) seeded)", len(c.samples))
+			}
 		})
 	}
 }
@@ -155,6 +165,12 @@ func TestConformance_TempoSearchRecentWire(t *testing.T) {
 	}
 	if sr.Traces == nil {
 		t.Errorf("Traces is nil; should be slice")
+	}
+	// Cardinality: stubQuerier returned 1 sample, so /api/search/recent
+	// must surface at least one trace. A regression that drops the
+	// projection on this endpoint would still pass the nil-check alone.
+	if len(sr.Traces) == 0 {
+		t.Errorf("Traces length: got 0, want non-empty (1 sample seeded)")
 	}
 }
 
