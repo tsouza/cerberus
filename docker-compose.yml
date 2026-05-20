@@ -185,12 +185,19 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: admin
       # Anonymous-Admin + disabled login form means the user opens
       # http://localhost:3000 and lands directly on the home dashboard
-      # with full edit rights — no admin/admin prompt to navigate. The
-      # admin user above still exists for API automation; the signout
-      # menu is hidden so the in-browser session can't accidentally
-      # drop to a "logged out" state with no way back in.
+      # with full edit rights — no admin/admin prompt to navigate.
+      # Basic auth is also disabled because Grafana 11+ still emits a
+      # `WWW-Authenticate: Basic` challenge header on some routes when
+      # basic auth is enabled (even with the form disabled) — browsers
+      # then pop their native credentials modal. Killing basic auth
+      # removes that prompt entirely. API automation in this stack
+      # uses Grafana service accounts / API keys, not basic auth, so
+      # nothing else depends on it. The signout menu is hidden so the
+      # in-browser session can't accidentally drop to a "logged out"
+      # state with no way back in.
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_BASIC_ENABLED: "false"
       GF_AUTH_DISABLE_LOGIN_FORM: "true"
       GF_AUTH_DISABLE_SIGNOUT_MENU: "true"
       GF_USERS_DEFAULT_THEME: dark
