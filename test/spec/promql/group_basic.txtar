@@ -1,0 +1,51 @@
+# PromQL `group(<vector>)` collapses every input series to a single
+# constant 1.0 sample with no labels. The lowering emits
+# `any(toFloat64(1))` (NOT `any(1)`) — the `toFloat64(...)` wrap
+# matters because `any(1)` would let CH narrow the bound `int64(1)`
+# literal to UInt8, and clickhouse-go/v2 refuses to convert UInt8 →
+# *float64 at Scan time (`converting UInt8 to *float64 is
+# unsupported`), surfacing as a 502 in the prom handler.
+#
+# `count_agg_returns_float.txtar` is the analogous pin for plain
+# `count(...)`; this fixture is the `group(...)` mirror. The chDB
+# round-trip layer is the load-bearing test — it exercises the same
+# code path the prom-handler 502 came from (typed Scan into
+# chclient.Sample.Value).
+
+-- query.promql --
+group(up)
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('up', map('job', 'api', 'instance', 'a'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
+    ('up', map('job', 'api', 'instance', 'b'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
+    ('up', map('job', 'web', 'instance', 'a'), toDateTime64('2026-01-01 00:00:00', 9), 1.0);
+-- expected_rows --
+[
+  ["", {}, "2026-01-01T00:00:01Z", 1.0]
+]
+-- args --
+[0] string = ""
+[1] string = "Map(String,String)"
+[2] int64 = 9
+[3] int64 = 1
+[4] string = "up"
+[5] string = "2026-01-01 00:00:01.000000000"
+[6] int64 = 9
+[7] string = "2026-01-01 00:00:01.000000000"
+[8] int64 = 9
+[9] int64 = 300000000000
+-- chplan --
+Project ["" AS MetricName, CAST(map(), "Map(String,String)") AS Attributes, now64(9) AS TimeUnix, Value AS Value]
+  Aggregate groupBy=[] funcs=[any(toFloat64(1)) AS Value]
+    Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
+      Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
+        Filter predicate=(((MetricName = "up") AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+          Scan(otel_metrics_gauge)
+-- sql --
+SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Value` FROM (SELECT any(toFloat64(?)) AS `Value`, count() AS `_cerb_n` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_gauge` PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`))) WHERE `_cerb_n` > 0)

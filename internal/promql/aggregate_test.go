@@ -7,9 +7,65 @@ import (
 
 	"github.com/prometheus/prometheus/promql/parser"
 
+	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
 )
+
+// TestLower_Group_WrapsLitInOToFloat64 pins the fix for the
+// `group(...)` 502: CH narrows the bound `int64(1)` literal to UInt8,
+// `any(UInt8)` returns UInt8, and clickhouse-go/v2's typed Scan into
+// `chclient.Sample.Value` (`*float64`) errors with
+// `converting UInt8 to *float64 is unsupported`. The lowering wraps
+// the literal in `toFloat64(...)` so the column projects as Float64
+// on the wire regardless of CH's narrowing inference. Mirrors the
+// analogous `count(...)` wrap pinned by
+// test/spec/promql/count_agg_returns_float.txtar.
+//
+// `intReturningAggregates` (chsql/emit_node.go) can't carry this fix
+// because `any(...)` is also used over Float64 (`any(Value)`) and
+// Array(Float64) (`any(ExplicitBounds)` in histogram_quantile) — an
+// unconditional outer toFloat64 wrap would break the latter. The fix
+// lives at the literal, not the aggregate-name dispatch.
+//
+// The chDB round-trip layer (test/spec/promql/group_basic.txtar /
+// group_by_job.txtar) exercises the end-to-end Scan path; this unit
+// pin keeps the SQL byte-shape stable so an accidental regression in
+// `lower.go` surfaces here rather than only at the chDB layer.
+func TestLower_Group_WrapsLitInOToFloat64(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	p := parser.NewParser(parser.Options{})
+
+	for _, q := range []string{`group(up)`, `group by (job) (up)`} {
+		q := q
+		t.Run(q, func(t *testing.T) {
+			t.Parallel()
+			expr, err := p.ParseExpr(q)
+			if err != nil {
+				t.Fatalf("ParseExpr(%q): %v", q, err)
+			}
+			plan, err := promql.Lower(context.Background(), expr, s)
+			if err != nil {
+				t.Fatalf("Lower(%q): %v", q, err)
+			}
+			sql, _, err := chsql.Emit(context.Background(), plan)
+			if err != nil {
+				t.Fatalf("Emit: %v", err)
+			}
+			// `any(toFloat64(?))` is the canonical wrapped shape;
+			// the bare `any(?)` (no inner toFloat64) is what
+			// produces the UInt8 → *float64 502.
+			if !strings.Contains(sql, "any(toFloat64(?))") {
+				t.Errorf("group lowering missing any(toFloat64(?)) wrap.\nSQL: %s", sql)
+			}
+			if strings.Contains(sql, "any(?) AS `Value`") {
+				t.Errorf("group lowering still emits unwrapped any(?) — UInt8 narrowing path.\nSQL: %s", sql)
+			}
+		})
+	}
+}
 
 // TestLower_Aggregate_Errors covers the aggregate paths whose error
 // messages are observable contract (param / no-param mismatch, computed

@@ -1476,13 +1476,35 @@ func buildAggFunc(a *parser.AggregateExpr, s schema.Metrics) (chplan.AggFunc, er
 
 	case parser.GROUP:
 		// PromQL `group(...)` returns 1 for every label combination; emit
-		// `any(1)` which yields a constant 1 per CH group.
+		// `any(toFloat64(1))` which yields a constant 1.0 per CH group.
+		//
+		// The `1` literal is wrapped in `toFloat64(...)` because the
+		// clickhouse-go/v2 driver renders Go `int64(1)` as the SQL
+		// literal `1` and CH narrows that to `UInt8`. `any(UInt8)`
+		// returns UInt8, and the downstream cursor scans Value as
+		// `*float64`. The driver refuses to convert UInt8 → *float64
+		// at Scan time (`converting UInt8 to *float64 is unsupported`)
+		// and the prom handler surfaces it as a 502. Wrapping in
+		// `toFloat64(?)` forces CH to project Float64 on the wire
+		// regardless of the bound literal's inferred type. Mirrors the
+		// same wrap in [lowerAbsent] and [syntheticScalarVector]'s
+		// callers. Cannot piggy-back on
+		// `chsql/emit_node.go::intReturningAggregates` because `any`
+		// over a Float64 / Array(Float64) column (e.g.
+		// `any(ExplicitBounds)` in histogram_quantile) must NOT be
+		// wrapped, so the fix has to be at the literal — not the
+		// aggregate-name dispatch.
 		if a.Param != nil {
 			return chplan.AggFunc{}, fmt.Errorf("promql: group() does not take a parameter")
 		}
 		return chplan.AggFunc{
-			Name:  "any",
-			Args:  []chplan.Expr{&chplan.LitInt{V: 1}},
+			Name: "any",
+			Args: []chplan.Expr{
+				&chplan.FuncCall{
+					Name: "toFloat64",
+					Args: []chplan.Expr{&chplan.LitInt{V: 1}},
+				},
+			},
 			Alias: s.ValueColumn,
 		}, nil
 
