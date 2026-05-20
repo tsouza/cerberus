@@ -23,7 +23,10 @@
 #                   successful run; doesn't block the long-lived services
 #                   from being ready.
 #   grafana         pre-provisioned with cerberus as three datasources
-#                   (Prometheus / Loki / Tempo). Provisioning files live
+#                   (Prometheus / Loki / Tempo) and two starter dashboards
+#                   under the "Cerberus" folder — `cerberus-self` (self-obs;
+#                   set as home dashboard) and `otel-fixture-explorer`
+#                   (tour of the seed fixture). Provisioning files live
 #                   under `test/e2e/grafana/compose/`.
 #
 # Default host port map:
@@ -192,8 +195,17 @@ services:
       GF_AUTH_DISABLE_SIGNOUT_MENU: "true"
       GF_USERS_DEFAULT_THEME: dark
       GF_FEATURE_TOGGLES_ENABLE: traceqlSearch
+      # Land directly on the cerberus-self dashboard instead of an empty
+      # home page. Path is the in-container mount location of the JSON,
+      # not a Grafana URL or UID.
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/provisioning/dashboards/cerberus/cerberus-self.json
     volumes:
       - ./test/e2e/grafana/compose/datasources:/etc/grafana/provisioning/datasources:ro
+      # Dashboard provider config tells Grafana to scan the `cerberus`
+      # subdir for JSON dashboards; the dashboards themselves live one
+      # level down so the provider's `path:` matches the mount point.
+      - ./test/e2e/grafana/compose/dashboards-provider.yaml:/etc/grafana/provisioning/dashboards/provider.yaml:ro
+      - ./test/e2e/grafana/compose/dashboards:/etc/grafana/provisioning/dashboards/cerberus:ro
     ports:
       - "3000:3000"
     depends_on:
