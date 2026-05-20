@@ -276,13 +276,18 @@ func applyUnwrapPostFilters(inner chplan.Node, filters []loglib.LabelFilterer, s
 const rangeAggSynthValueColumn = "Value"
 
 // isMatrixRangeWindow reports whether plan's root (walking past
-// value-rewrite Projects / Filters that preserve the inner shape) is a
-// matrix-shape RangeWindow — one emitting N rows per series across
-// [Start, End] spaced by Step, exposing `anchor_ts` as a per-row
-// column. Used by both [Lang.ProjectSamples] (to forward `anchor_ts`
-// into the canonical TimeUnix slot) and [lowerVectorAggregation] (to
-// include `anchor_ts` in the GROUP BY so per-step rows don't collapse).
-// Mirrors prom's isMatrixRangeWindow in internal/api/prom/handler.go.
+// value-rewrite Projects / Filters / Aggregates that preserve the inner
+// matrix shape) bottoms out at a matrix-shape RangeWindow — one emitting
+// N rows per series across [Start, End] spaced by Step, exposing
+// `anchor_ts` as a per-row column. Used by both [Lang.ProjectSamples]
+// (to forward `anchor_ts` into the canonical TimeUnix slot) and
+// [lowerVectorAggregation] (to include the per-anchor column in the
+// GROUP BY so per-step rows don't collapse). The Aggregate case lets
+// nested aggregations (`max(avg by (level) (matrix))`) recognise the
+// matrix shape — the inner Aggregate carries its own per-anchor bucket
+// (re-aliased to TimeUnix by the wrap Project), and the outer
+// aggregation must re-bucket on it. Mirrors prom's isMatrixRangeWindow
+// in internal/api/prom/handler.go.
 func isMatrixRangeWindow(plan chplan.Node) bool {
 	switch v := plan.(type) {
 	case *chplan.RangeWindow:
@@ -291,8 +296,39 @@ func isMatrixRangeWindow(plan chplan.Node) bool {
 		return isMatrixRangeWindow(v.Input)
 	case *chplan.Filter:
 		return isMatrixRangeWindow(v.Input)
+	case *chplan.Aggregate:
+		return isMatrixRangeWindow(v.Input)
 	}
 	return false
+}
+
+// matrixBucketColumn returns the per-anchor bucket-timestamp column
+// name visible to the outer SELECT for a matrix-shape plan. The
+// LogQL matrix pipeline exposes the anchor column under two distinct
+// names depending on how deeply nested the aggregation chain is:
+//
+//   - Direct matrix RangeWindow (or one wrapped in a value-shape Project
+//     / Filter) → "anchor_ts": the RangeWindow emits one row per
+//     (series, anchor) carrying `anchor_ts` as a plain column.
+//
+//   - Vector-aggregation matrix wrap → "TimeUnix": the inner Aggregate
+//     groups by `anchor_ts AS bucket_ts`, then [wrapVectorAggregateForSample]
+//     re-aliases `bucket_ts` to `TimeUnix` so the canonical Sample shape
+//     surfaces. Outer aggregations consume that Project as input, so
+//     their bucket reference is `TimeUnix`, not `anchor_ts` (which is no
+//     longer in scope past the inner Aggregate's projection).
+//
+// Callers are expected to gate on [isMatrixRangeWindow] first.
+func matrixBucketColumn(plan chplan.Node) string {
+	switch v := plan.(type) {
+	case *chplan.Aggregate:
+		return "TimeUnix"
+	case *chplan.Project:
+		return matrixBucketColumn(v.Input)
+	case *chplan.Filter:
+		return matrixBucketColumn(v.Input)
+	}
+	return "anchor_ts"
 }
 
 // rangeValueExpr returns the per-row Value the RangeWindow aggregates.

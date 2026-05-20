@@ -337,3 +337,106 @@ func TestLowerRangeAggregationUnwrapStripsTargetFromIdentity(t *testing.T) {
 		})
 	}
 }
+
+// TestIsMatrixRangeWindowWalksNestedAggregation pins the
+// nested-aggregation traversal in [isMatrixRangeWindow]: the helper
+// MUST walk through `*chplan.Aggregate` so the outer
+// `lowerVectorAggregation` recognises `max(avg by (level)
+// (avg_over_time(...)))` and friends as matrix-shape inputs. The
+// inner aggregation wraps its Aggregate in a Project that
+// re-projects bucket_ts to TimeUnix — without the Aggregate case,
+// the helper returns false at the inner Aggregate boundary and the
+// outer aggregation drops the per-anchor bucket from GROUP BY,
+// collapsing the matrix into a single row. The user-facing symptom
+// is `test endpoint returned empty` on
+// `compatibility/loki/.../exhaustive/unwrap-aggregations.yaml`'s
+// "Nested aggregations" case (the only remaining cerberus-side Loki
+// compat failure post-#577 / #574 / #578).
+func TestIsMatrixRangeWindowWalksNestedAggregation(t *testing.T) {
+	t.Parallel()
+
+	// Build the minimal nested-aggregation shape: a matrix RangeWindow
+	// wrapped in an Aggregate wrapped in a Project (the canonical
+	// [wrapVectorAggregateForSample] output the outer aggregation
+	// consumes as input). The Project alone, the Aggregate alone, and
+	// the full nest must each report true so the helper covers every
+	// depth between bare RangeWindow and a multi-deep stack.
+	rw := &chplan.RangeWindow{Func: "avg_over_time", OuterRange: time.Hour}
+	agg := &chplan.Aggregate{Input: rw, GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "anchor_ts"}}, GroupByAliases: []string{"bucket_ts"}}
+	proj := &chplan.Project{Input: agg, Projections: []chplan.Projection{{Expr: &chplan.ColumnRef{Name: "bucket_ts"}, Alias: "TimeUnix"}}}
+
+	if !isMatrixRangeWindow(proj) {
+		t.Errorf("isMatrixRangeWindow(Project(Aggregate(RangeWindow))) = false, want true — nested-aggregation matrix shape lost")
+	}
+	if !isMatrixRangeWindow(agg) {
+		t.Errorf("isMatrixRangeWindow(Aggregate(RangeWindow)) = false, want true — Aggregate case missing from helper")
+	}
+	if !isMatrixRangeWindow(rw) {
+		t.Errorf("isMatrixRangeWindow(RangeWindow{OuterRange>0}) = false, want true — base case regressed")
+	}
+
+	// matrixBucketColumn must dispatch on plan depth: a bare RangeWindow
+	// (or a value-shape Project/Filter over one) surfaces `anchor_ts`;
+	// once an Aggregate is in the stack the wrap Project re-aliases
+	// the bucket to `TimeUnix` and `anchor_ts` is no longer in scope.
+	if got := matrixBucketColumn(rw); got != "anchor_ts" {
+		t.Errorf("matrixBucketColumn(RangeWindow) = %q, want %q", got, "anchor_ts")
+	}
+	if got := matrixBucketColumn(agg); got != "TimeUnix" {
+		t.Errorf("matrixBucketColumn(Aggregate(RangeWindow)) = %q, want %q", got, "TimeUnix")
+	}
+	if got := matrixBucketColumn(proj); got != "TimeUnix" {
+		t.Errorf("matrixBucketColumn(Project(Aggregate(RangeWindow))) = %q, want %q", got, "TimeUnix")
+	}
+}
+
+// TestLowerVectorAggregationNestedMatrixBucketsOnTimeUnix pins the
+// downstream effect of [isMatrixRangeWindow] + [matrixBucketColumn]:
+// when the outer aggregation lowers
+// `max(avg by (level) (avg_over_time(...)))` in range mode, the
+// emitted SQL MUST GROUP BY `TimeUnix` (not `anchor_ts`, which is no
+// longer in scope past the inner Aggregate's projection). A regression
+// that re-introduces the bare RangeWindow check would emit either no
+// bucket GROUP BY (collapsing the matrix) or reference `anchor_ts`
+// (CH error: unknown column).
+func TestLowerVectorAggregationNestedMatrixBucketsOnTimeUnix(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelLogs()
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(time.Hour)
+	step := time.Minute
+
+	query := `max(avg by (level) (avg_over_time({app="api"} | logfmt | duration != "" | unwrap duration(duration) [5m])))`
+	expr, err := syntax.ParseExpr(query)
+	if err != nil {
+		t.Fatalf("ParseExpr(%q): %v", query, err)
+	}
+	va, ok := expr.(*syntax.VectorAggregationExpr)
+	if !ok {
+		t.Fatalf("ParseExpr(%q) -> %T, want *syntax.VectorAggregationExpr", query, expr)
+	}
+
+	plan, err := lowerVectorAggregation(va, s, lowerCtx{Start: start, End: end, Step: step})
+	if err != nil {
+		t.Fatalf("lowerVectorAggregation(%q): %v", query, err)
+	}
+
+	sqlStr, _, err := chsql.Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("chsql.Emit: %v", err)
+	}
+
+	// The outer max(...) is no-grouping; in range mode it must still
+	// bucket on the inner aggregation's TimeUnix column. A regression
+	// that re-instates the bare-RangeWindow check skips the GROUP BY
+	// entirely and the emitter falls through to `emitAggregateNoGroup`
+	// — the test asserts the outer SELECT carries `GROUP BY` referencing
+	// `TimeUnix` and rejects an `anchor_ts`-only bucket reference (the
+	// inner RangeWindow's bucket is still in scope under that name, but
+	// it's been re-projected by the inner wrap, so the outer aggregate
+	// cannot reach it).
+	if !strings.Contains(sqlStr, "GROUP BY `TimeUnix`") {
+		t.Errorf("emitted SQL missing `GROUP BY `TimeUnix`` (nested matrix bucket lost)\nsql=%s", sqlStr)
+	}
+}

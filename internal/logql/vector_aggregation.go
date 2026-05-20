@@ -38,17 +38,27 @@ func lowerVectorAggregation(e *syntax.VectorAggregationExpr, s schema.Logs, lc l
 		return nil, err
 	}
 
-	// In range mode the inner plan is a matrix-shape RangeWindow that
-	// exposes a per-row `anchor_ts` column (the eval anchor for that
-	// row). The aggregation MUST include that anchor in its GROUP BY
-	// keys — otherwise CH collapses every per-step row of a series-set
-	// into one aggregate and the wire matrix has a single value per
-	// series instead of one per step. Mirrors the PromQL aggregate
-	// lowering's `rangeBucketed` path in internal/promql/lower.go.
+	// In range mode the inner plan is a matrix-shape RangeWindow (or a
+	// nested aggregation that bottoms out at one) that exposes a
+	// per-row anchor-timestamp column. The aggregation MUST include
+	// that anchor in its GROUP BY keys — otherwise CH collapses every
+	// per-step row of a series-set into one aggregate and the wire
+	// matrix has a single value per series instead of one per step.
+	// Mirrors the PromQL aggregate lowering's `rangeBucketed` path in
+	// internal/promql/lower.go.
+	//
+	// The bucket column's name depends on plan depth: a direct matrix
+	// RangeWindow surfaces `anchor_ts`; a nested vector-aggregation
+	// surfaces `TimeUnix` (the wrap Project re-aliases `bucket_ts` to
+	// match the canonical Sample shape). [matrixBucketColumn] resolves
+	// which column the input exposes so nested aggregations
+	// (`max(avg by (level) (avg_over_time(...)))`) bucket correctly
+	// instead of collapsing the whole matrix into one row.
 	const bucketAlias = "bucket_ts"
 	rangeBucketed := lc.rangeMode() && isMatrixRangeWindow(input)
 	if rangeBucketed {
-		groupBy = append(groupBy, &chplan.ColumnRef{Name: "anchor_ts"})
+		bucketCol := matrixBucketColumn(input)
+		groupBy = append(groupBy, &chplan.ColumnRef{Name: bucketCol})
 		aliases = append(aliases, bucketAlias)
 	}
 

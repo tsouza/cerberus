@@ -12,35 +12,44 @@ import (
 
 // TestLowerVectorAggregationRangeBucketedGate pins the
 // `lc.rangeMode() && isMatrixRangeWindow(input)` gate inside
-// [lowerVectorAggregation]. The flag controls whether `anchor_ts` is
-// added to the Aggregate's GROUP BY so per-step rows survive the
-// aggregation collapse.
+// [lowerVectorAggregation]. The flag controls whether the per-anchor
+// bucket column is added to the Aggregate's GROUP BY so per-step rows
+// survive the aggregation collapse.
 //
 // An INVERT_LOGICAL mutant flips `&&` to `||`, causing two divergent
 // behaviours:
 //
-//   - range mode + non-matrix inner (e.g. an outer aggregation wrapping
-//     an inner aggregation): original keeps rangeBucketed=false;
-//     mutant turns it on and references a non-existent `anchor_ts`
-//     column.
+//   - range mode + non-matrix inner (e.g. an outer aggregation
+//     wrapping a `vector(N)` literal): original keeps
+//     rangeBucketed=false; mutant turns it on and references a
+//     non-existent `anchor_ts` / `TimeUnix` column.
 //   - instant mode + matrix inner: not constructible — matrix shape is
 //     only produced under range mode.
 //
-// Pin the first case: lower a doubly-nested `sum by (job) (sum by
-// (job) (rate(...)))` under [LowerAtRange] and inspect the OUTER
-// Aggregate's GROUP BY. The original lowering leaves it with a single
-// expression (the by-key access); the mutant prepends `anchor_ts` and
-// the GROUP BY length grows to two.
+// Pin the first case via `sum by (job) (vector(1))` lowered under
+// [LowerAtRange]. `vector(...)` lowers to a Project over `chplan.OneRow`
+// (see [lowerVector] / [syntheticLogScalar]) — a truly non-matrix
+// shape that `isMatrixRangeWindow` will reject regardless of how
+// many Aggregate / Project / Filter layers it walks through. The
+// original lowering keeps the outer Aggregate at one GroupBy
+// expression (the `by (job)` map-access); the mutant prepends the
+// bucket and the GROUP BY length grows to two.
+//
+// Doubly-nested aggregations over a matrix (e.g. `sum by (job) (sum
+// by (job) (rate(...)))`) DO surface a matrix RangeWindow through
+// the inner Aggregate — see [TestIsMatrixRangeWindowWalksNestedAggregation]
+// — so they're NOT suitable as the gate-isolation fixture; their
+// outer aggregation correctly buckets per anchor.
 func TestLowerVectorAggregationRangeBucketedGate(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelLogs()
 
-	// Nested aggregation: the outer `sum by (job)` sees an inner that
-	// is a *chplan.Project over *chplan.Aggregate — not a matrix
-	// RangeWindow. `isMatrixRangeWindow` returns false; the original
-	// keeps rangeBucketed=false; the mutant turns it on.
-	query := `sum by (job) (sum by (job) (rate({app="api"}[5m])))`
+	// Non-matrix inner: `vector(1)` lowers to Project(OneRow), which
+	// bottoms out at a non-matrix node. `isMatrixRangeWindow` returns
+	// false; the original keeps rangeBucketed=false; the mutant turns
+	// it on.
+	query := `sum by (job) (vector(1))`
 	expr, err := syntax.ParseExpr(query)
 	if err != nil {
 		t.Fatalf("ParseExpr(%q): %v", query, err)
@@ -68,17 +77,16 @@ func TestLowerVectorAggregationRangeBucketedGate(t *testing.T) {
 		t.Fatalf("lower(%q): Project.Input is %T, want *chplan.Aggregate", query, outerProject.Input)
 	}
 
-	// The outer Aggregate's inner is the inner sum's Project. Confirm
-	// — this anchors the test fixture against future changes.
+	// The outer Aggregate's inner is the `vector(1)` Project.
 	if _, ok := outerAgg.Input.(*chplan.Project); !ok {
-		t.Fatalf("outer Aggregate.Input is %T, want *chplan.Project (inner sample-shape wrapper)", outerAgg.Input)
+		t.Fatalf("outer Aggregate.Input is %T, want *chplan.Project (vector synthetic-scalar wrapper)", outerAgg.Input)
 	}
 
 	// Original: GroupBy carries one entry (the `by (job)` map-access
-	// on ResourceAttributes). The mutant `||` would append `anchor_ts`
-	// → GroupBy length 2.
+	// on ResourceAttributes). The mutant `||` would append the
+	// bucket column → GroupBy length 2.
 	if got, want := len(outerAgg.GroupBy), 1; got != want {
-		t.Fatalf("outer Aggregate.GroupBy length = %d, want %d (rangeBucketed gate leaked through — `anchor_ts` was appended to a non-matrix inner)", got, want)
+		t.Fatalf("outer Aggregate.GroupBy length = %d, want %d (rangeBucketed gate leaked through — bucket column was appended to a non-matrix inner)", got, want)
 	}
 
 	// Anchor the alias count to the same number — the mutant also
