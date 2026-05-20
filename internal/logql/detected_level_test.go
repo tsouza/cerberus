@@ -395,3 +395,192 @@ func isMatchOp(op chplan.BinaryOp) bool {
 	}
 	return false
 }
+
+// canonicalLevelGroups mirrors the (variants, canonical) table inside
+// [normaliseLevelExpr] so the assertions below can pin the documented
+// 7-level order without re-importing the unexported `group` struct.
+// Order matches the source — upstream Loki's `normalizeLogLevel` switch
+// (trace / debug / info / warn / error / critical / fatal).
+var canonicalLevelGroups = []struct {
+	variants  []string
+	canonical string
+}{
+	{[]string{"trace", "trc"}, "trace"},
+	{[]string{"debug", "dbg"}, "debug"},
+	{[]string{"info", "inf", "information"}, "info"},
+	{[]string{"warn", "wrn", "warning"}, "warn"},
+	{[]string{"error", "err"}, "error"},
+	{[]string{"critical"}, "critical"},
+	{[]string{"fatal"}, "fatal"},
+}
+
+// TestNormaliseLevelExpr_MultiIfArgsCapacityAndShape kills the two
+// adjacent ARITHMETIC_BASE mutants reported by the gremlins phase-4
+// run at `detected_level.go:143:44` (the `*` in `len(groups)*2+1`)
+// and `:143:46` (the `+` in the same expression). The mutation site
+// is the slice-capacity hint passed to `make([]chplan.Expr, 0,
+// len(groups)*2+1)` — `*` flipping to `/` (or `%`) and `+` flipping
+// to `-` (or `*`) change the pre-allocated capacity but `append`
+// silently grows past it, so a semantic-only test cannot observe the
+// difference. This test pins:
+//
+//  1. `len(Args) == 2*len(canonicalLevelGroups)+1` (the load-bearing
+//     count: 7 (cond, literal) pairs plus the trailing default
+//     branch) — documents the arithmetic so a structural mutation
+//     elsewhere shows up immediately.
+//  2. `cap(Args) == 2*len(canonicalLevelGroups)+1` (the direct kill:
+//     `make([]T, 0, N)` returns a slice with `cap == N` before any
+//     append, and the 15 subsequent appends never exceed that
+//     capacity — so the final `cap` equals the hint). Any
+//     ARITHMETIC_BASE mutation on `*` or `+` at col 44/46 shifts the
+//     allocated capacity, triggers an `append`-driven re-allocation
+//     with Go's runtime growth strategy, and produces a final `cap`
+//     that is NOT 15 (the original mutants would yield e.g. 4, 8,
+//     16, or 26 depending on the operator). Asserting `cap == 15`
+//     exactly catches each shift.
+//
+// The cap assertion is the only direct kill for a slice-capacity
+// arithmetic mutant — append's growth strategy hides the change from
+// length-only tests, and the SQL the emitter prints from the
+// resulting FuncCall is byte-identical regardless of how the
+// underlying slice was allocated.
+func TestNormaliseLevelExpr_MultiIfArgsCapacityAndShape(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelLogs()
+	expr := detectedLevelExpr(s)
+
+	fn, ok := expr.(*chplan.FuncCall)
+	if !ok {
+		t.Fatalf("detectedLevelExpr returned %T; want *chplan.FuncCall (multiIf)", expr)
+	}
+	if fn.Name != "multiIf" {
+		t.Fatalf("FuncCall.Name = %q; want %q", fn.Name, "multiIf")
+	}
+
+	wantLen := 2*len(canonicalLevelGroups) + 1
+	if got := len(fn.Args); got != wantLen {
+		t.Fatalf("len(multiIf.Args) = %d; want %d (7 (cond, literal) pairs + 1 default)", got, wantLen)
+	}
+
+	// Kill: a `*2+1` → `*3+1` mutation pre-allocates cap=22, then 15
+	// appends fit without re-growing, so final cap=22. A `*2+1` →
+	// `*2-1` mutation pre-allocates cap=13, the 14th append triggers
+	// runtime growth (typical schedule: doubles to 26), so final
+	// cap=26. Either way, the cap is NOT 15. Asserting cap == 15
+	// pins the exact arithmetic.
+	if got, want := cap(fn.Args), wantLen; got != want {
+		t.Fatalf("cap(multiIf.Args) = %d; want %d (mutant `*` → `/`/`%%` or `+` → `-`/`*` at detected_level.go:143:44 / :143:46 would shift the capacity hint and re-allocate via append's growth schedule)", got, want)
+	}
+}
+
+// TestNormaliseLevelExpr_CanonicalLevelOrder pins the exact (cond,
+// literal) pair structure of the multiIf chain. The 14 paired slots
+// follow the canonical 7-level enumeration trace / debug / info /
+// warn / error / critical / fatal — in that order — and the 15th
+// (default) slot is the lowercased pass-through. A regression that
+// drops a group, reorders the groups, or swaps an OR-chain for an
+// unrelated condition will fail here. Combined with the cap test
+// above this also serves as a structural backstop: it forces the
+// `args` slice to actually be built end-to-end, so a capacity
+// mutation can't quietly survive by also short-circuiting the loop.
+func TestNormaliseLevelExpr_CanonicalLevelOrder(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelLogs()
+	fn := detectedLevelExpr(s).(*chplan.FuncCall)
+
+	for i, g := range canonicalLevelGroups {
+		// Each group emits two args: the OR-chain comparison at index
+		// 2*i, the canonical literal at index 2*i+1.
+		condIdx := 2 * i
+		litIdx := 2*i + 1
+
+		// The condition is either a plain `Binary{Op: Eq}` (for
+		// single-variant groups like "critical" / "fatal") or a left-
+		// folded OR-chain over the variants (multi-variant groups).
+		// Either way the RHS of every leaf equality is one of the
+		// variant LitStrings — collect them and compare set-wise.
+		gotVariants := collectEqRHSLiterals(fn.Args[condIdx])
+		if len(gotVariants) != len(g.variants) {
+			t.Fatalf("group %d (%s): condition compares %d variants %v; want %d %v", i, g.canonical, len(gotVariants), gotVariants, len(g.variants), g.variants)
+		}
+		for _, want := range g.variants {
+			if !containsString(gotVariants, want) {
+				t.Errorf("group %d (%s): variant %q missing from condition (got %v)", i, g.canonical, want, gotVariants)
+			}
+		}
+
+		// The canonical literal at the paired slot.
+		canonLit, ok := fn.Args[litIdx].(*chplan.LitString)
+		if !ok {
+			t.Fatalf("group %d (%s): args[%d] = %T; want *chplan.LitString", i, g.canonical, litIdx, fn.Args[litIdx])
+		}
+		if canonLit.V != g.canonical {
+			t.Errorf("group %d: canonical literal at args[%d] = %q; want %q", i, litIdx, canonLit.V, g.canonical)
+		}
+	}
+
+	// The trailing default branch is the lowercased pass-through —
+	// `lower(SeverityText)` — represented as a FuncCall(lower,
+	// ColumnRef(SeverityText)). A mutation on `+1` that drops the
+	// default slot would shorten Args to 14 and trip the len check
+	// above; this assertion pins the SHAPE of the default branch so
+	// a refactor that swaps it for something else (e.g. an empty
+	// string fall-through) still trips a test.
+	defaultIdx := 2 * len(canonicalLevelGroups)
+	defaultCall, ok := fn.Args[defaultIdx].(*chplan.FuncCall)
+	if !ok {
+		t.Fatalf("default branch at args[%d] = %T; want *chplan.FuncCall (lower(...))", defaultIdx, fn.Args[defaultIdx])
+	}
+	if defaultCall.Name != "lower" {
+		t.Errorf("default branch FuncCall.Name = %q; want %q", defaultCall.Name, "lower")
+	}
+	if len(defaultCall.Args) != 1 {
+		t.Fatalf("default branch lower() args = %d; want 1", len(defaultCall.Args))
+	}
+	colRef, ok := defaultCall.Args[0].(*chplan.ColumnRef)
+	if !ok {
+		t.Fatalf("default branch lower() arg = %T; want *chplan.ColumnRef", defaultCall.Args[0])
+	}
+	if colRef.Name != s.SeverityColumn {
+		t.Errorf("default branch lower() column = %q; want %q (schema SeverityColumn)", colRef.Name, s.SeverityColumn)
+	}
+}
+
+// collectEqRHSLiterals walks an OR-chain of `Binary{Op: Eq}`
+// comparisons (the shape `anyEqual` emits) and returns every RHS
+// LitString value. Single-variant groups bottom out at one leaf;
+// multi-variant groups produce a left-folded chain whose leaves are
+// the variant comparisons.
+func collectEqRHSLiterals(e chplan.Expr) []string {
+	var out []string
+	var walk func(chplan.Expr)
+	walk = func(node chplan.Expr) {
+		bin, ok := node.(*chplan.Binary)
+		if !ok {
+			return
+		}
+		switch bin.Op {
+		case chplan.OpOr:
+			walk(bin.Left)
+			walk(bin.Right)
+		case chplan.OpEq:
+			lit, ok := bin.Right.(*chplan.LitString)
+			if ok {
+				out = append(out, lit.V)
+			}
+		}
+	}
+	walk(e)
+	return out
+}
+
+func containsString(xs []string, want string) bool {
+	for _, x := range xs {
+		if x == want {
+			return true
+		}
+	}
+	return false
+}
