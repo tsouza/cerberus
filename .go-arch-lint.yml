@@ -97,6 +97,10 @@ components:
   api-loki:  { in: api/loki }
   api-prom:  { in: api/prom }
   api-tempo: { in: api/tempo }
+  # gRPC StreamingQuerier surface mounted alongside the HTTP Tempo
+  # handler. Imports the HTTP handler so the gRPC RPCs can route to the
+  # same engine + chsql + chplan layers (no duplicated lowering).
+  api-tempo-grpc: { in: api/tempo/grpc }
   # Cross-cutting utility packages — see commonComponents below.
   schema:         { in: schema }
   schema-ddl:     { in: schema/ddl }
@@ -200,6 +204,15 @@ deps:
       - promql
   api-tempo:
     mayDependOn:
+      - chplan
+      - chsql
+      - chclient
+      - engine
+      - optimizer
+      - traceql
+  api-tempo-grpc:
+    mayDependOn:
+      - api-tempo
       - chplan
       - chsql
       - chclient
