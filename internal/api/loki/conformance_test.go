@@ -106,6 +106,49 @@ func TestConformance_LokiQueryWire(t *testing.T) {
 	}
 }
 
+// TestConformance_LokiQueryConstantArithmetic_HealthProbe pins the Grafana
+// Loki CheckHealth probe shape — `vector(1)+vector(1)` (and friends) —
+// against the regression where the metric-branch wire-wrap blindly
+// ColumnRef'd `ResourceAttributes` over a top-level VectorJoin output.
+// ClickHouse returned `code: 47 Unknown expression identifier
+// 'ResourceAttributes'`, which Grafana surfaced as a red "Unable to
+// connect with Loki" banner on every page load.
+//
+// The fix extends `isVectorAggregateSampleShape` in internal/logql/binary.go
+// to also recognise VectorJoin (its emitter projects under the canonical
+// `Attributes` alias). Pin all four arithmetic ops + a literal-vector mix
+// so a future refactor of the helper can't silently drop the branch.
+func TestConformance_LokiQueryConstantArithmetic_HealthProbe(t *testing.T) {
+	t.Parallel()
+
+	cases := []string{
+		`vector(1)+vector(1)`,
+		`vector(1)-vector(1)`,
+		`vector(2)*vector(3)`,
+		`vector(8)/vector(2)`,
+	}
+	for _, q := range cases {
+		q := q
+		t.Run(q, func(t *testing.T) {
+			t.Parallel()
+			srv := newServer(&stubQuerier{})
+			t.Cleanup(srv.Close)
+			resp, err := http.Get(srv.URL + "/loki/api/v1/query?query=" + url.QueryEscape(q))
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			defer resp.Body.Close()
+			body, _ := io.ReadAll(resp.Body)
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status=%d body=%s — Grafana's Loki CheckHealth "+
+					"probe lands here; a non-200 surfaces as 'Unable to "+
+					"connect with Loki' on every Grafana page load",
+					resp.StatusCode, string(body))
+			}
+		})
+	}
+}
+
 // TestConformance_LokiQueryRangeWire — `/loki/api/v1/query_range` for
 // metric and log queries returns the matching matrix / streams shape.
 func TestConformance_LokiQueryRangeWire(t *testing.T) {

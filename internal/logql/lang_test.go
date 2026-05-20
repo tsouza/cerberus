@@ -303,6 +303,80 @@ func TestProjectSamples_VectorAggregateOverMatrixForwardsTimeUnix(t *testing.T) 
 	}
 }
 
+// TestProjectSamples_VectorVectorBinopRefsAttributes pins the metric-branch
+// wire-wrap against the Grafana Loki datasource health-check regression:
+// `vector(1) + vector(1)` (Grafana's CheckHealth probe) lowered to a
+// VectorJoin whose emitter projects `L.Attributes` / `L.TimeUnix` /
+// `L.Value`. The previous Lang.ProjectSamples saw a top-level VectorJoin
+// (not a *chplan.Project), fell through to the default branch, and
+// ColumnRef'd the raw `ResourceAttributes` column at the outer wrap —
+// ClickHouse returned `code: 47 Unknown expression identifier
+// 'ResourceAttributes'` (and Grafana surfaced "Unable to connect with
+// Loki" in red on every page load even though log queries worked).
+//
+// The fix extends `isVectorAggregateSampleShape` to recognise VectorJoin
+// as canonical-Sample-shape since its emitter projects under the
+// `Attributes` alias by construction. Pin that here so any future
+// refactor of the helper can't silently drop the VectorJoin branch.
+func TestProjectSamples_VectorVectorBinopRefsAttributes(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelLogs()
+	l := &logql.Lang{Schema: s}
+
+	// Synthetic VectorJoin output — the exact node shape lowerVectorVector
+	// produces for `vector(1) + vector(1)`. The legs themselves don't
+	// matter for the ProjectSamples wrap; only the top-level type does.
+	leftLeg := &chplan.Project{
+		Input: &chplan.OneRow{},
+		Projections: []chplan.Projection{
+			{Expr: &chplan.LitString{V: ""}, Alias: "MetricName"},
+			{Expr: &chplan.LitString{V: ""}, Alias: "Attributes"},
+			{Expr: &chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}}, Alias: "TimeUnix"},
+			{Expr: &chplan.LitFloat{V: 1}, Alias: "Value"},
+		},
+	}
+	plan := &chplan.VectorJoin{
+		Left:             leftLeg,
+		Right:            leftLeg,
+		Op:               chplan.OpAdd,
+		MetricNameColumn: "MetricName",
+		AttributesColumn: "Attributes",
+		TimestampColumn:  "TimeUnix",
+		ValueColumn:      "Value",
+	}
+
+	wrapped := l.ProjectSamples(plan, engine.Meta{IsMetric: true})
+
+	proj, ok := wrapped.(*chplan.Project)
+	if !ok {
+		t.Fatalf("ProjectSamples returned %T, want *chplan.Project", wrapped)
+	}
+	attrsSlot := proj.Projections[1]
+	attrsRef, ok := attrsSlot.Expr.(*chplan.ColumnRef)
+	if !ok {
+		t.Fatalf("attributes slot expr: got %T, want *chplan.ColumnRef", attrsSlot.Expr)
+	}
+	if attrsRef.Name != "Attributes" {
+		t.Errorf("attributes slot ColumnRef.Name: got %q, want %q "+
+			"(VectorJoin's emitter projects `L.Attributes` / `L.TimeUnix` / "+
+			"`L.Value` so the post-join scope exposes `Attributes`, not "+
+			"`ResourceAttributes` — outer wrap must follow suit)",
+			attrsRef.Name, "Attributes")
+	}
+	tsSlot := proj.Projections[2]
+	tsRef, ok := tsSlot.Expr.(*chplan.ColumnRef)
+	if !ok {
+		t.Fatalf("ts slot expr: got %T, want *chplan.ColumnRef", tsSlot.Expr)
+	}
+	if tsRef.Name != "TimeUnix" {
+		t.Errorf("ts slot ColumnRef.Name: got %q, want %q (VectorJoin "+
+			"output exposes TimeUnix from L.TimeUnix; the default synth "+
+			"`now64(9) - 5s` would land outside the join's per-row "+
+			"timestamp scope)", tsRef.Name, "TimeUnix")
+	}
+}
+
 // TestProjectSamples_LogQuerySurfacesDetectedLevelWhenReferenced pins
 // the log-stream branch's Attributes slot to a `mapConcat(...)` that
 // folds the synthesized `detected_level` label onto the row's

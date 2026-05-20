@@ -374,13 +374,27 @@ func sampleShapeOverLogInner(inner chplan.Node, s schema.Logs) chplan.Node {
 }
 
 // isVectorAggregateSampleShape reports whether inner already carries the
-// canonical Sample contract — i.e. came out of
-// [wrapVectorAggregateForSample]. The signal is a top-level
-// `*chplan.Project` whose alias list includes `Attributes`; that's the
-// only LogQL lowering that produces an `Attributes`-aliased projection
-// (RangeWindow / lowerLiteral / lowerVector / label_replace all alias
-// `ResourceAttributes`).
+// canonical Sample contract (MetricName, Attributes, TimeUnix, Value)
+// — i.e. came out of [wrapVectorAggregateForSample] or
+// [lowerVectorVector]. The signal is one of:
+//
+//   - a top-level `*chplan.Project` whose alias list includes
+//     `Attributes` (RangeWindow / lowerLiteral / lowerVector /
+//     label_replace all alias `ResourceAttributes`, so the
+//     `Attributes` alias is specific to the vector-aggregate
+//     re-shape).
+//   - a top-level `*chplan.VectorJoin` — its emitter projects
+//     `L.Attributes` / `L.TimeUnix` / `L.Value` (with the value-fold
+//     `L.Value <op> R.Value`) so the post-join scope already exposes
+//     `Attributes`, not `ResourceAttributes`. Without this branch a
+//     query like `vector(1) + vector(1)` (Grafana's Loki health probe)
+//     surfaces as ClickHouse `code: 47 Unknown expression identifier
+//     'ResourceAttributes'` when [Lang.ProjectSamples] wraps the join
+//     output.
 func isVectorAggregateSampleShape(n chplan.Node) bool {
+	if _, ok := n.(*chplan.VectorJoin); ok {
+		return true
+	}
 	p, ok := n.(*chplan.Project)
 	if !ok {
 		return false
