@@ -1,5 +1,4 @@
-// Seeder implementation for the Tempo / TraceQL compatibility harness
-// (PR 3 of docs/tempo-compliance-plan.md).
+// Seeder implementation for the Tempo / TraceQL compatibility harness.
 //
 // What this file does, end to end:
 //
@@ -9,10 +8,8 @@
 //     the seeder against fresh backends produces byte-identical content.
 //  2. Push the fixture into the reference Tempo via OTLP gRPC :4317.
 //  3. Insert the fixture into ClickHouse `otel_traces` (the read path
-//     cerberus uses to answer Tempo HTTP queries). The cerberus binary
-//     itself is **read-only over OTLP** — see the top-of-file comment in
-//     `main.go` and docs/tempo-compliance-plan.md "Open question 1" for
-//     the architectural reasoning.
+//     cerberus uses to answer Tempo HTTP queries). Cerberus is read-only
+//     over OTLP — its ingest is the OTel-CH exporter writing to CH.
 //  4. Poll `/api/traces/<first-trace-id>` on both backends with a 30s
 //     deadline and assert each returns the same non-zero span count.
 //
@@ -73,13 +70,11 @@ import (
 // in the same wall-clock window when re-running compatibility locally.
 const anchor = "2026-05-11T00:00:00Z"
 
-// fixture-shape constants. Sized to match docs/tempo-compliance-plan.md
-// PR 3's stated target (3-5 services × 100 traces × 5 spans ≈ 1500
-// spans). Concrete pick: 4 services × 25 traces × variable spans
-// (3..5 round-robin). 4 × 25 × ~4 ≈ 400 spans — well above the
-// "non-zero span count" smoke assertion and small enough that the
-// gRPC ExportTraceServiceRequest stays under the default 4MB message
-// limit without a custom dial option.
+// fixture-shape constants. 4 services × 25 traces × variable spans
+// (3..5 round-robin) ≈ 400 spans — well above the smoke assertion's
+// "non-zero span count" floor and small enough that the gRPC
+// ExportTraceServiceRequest stays under the default 4MB message limit
+// without a custom dial option.
 const (
 	traceCount         = 25
 	rootSpanDurationNs = int64(150 * time.Millisecond)

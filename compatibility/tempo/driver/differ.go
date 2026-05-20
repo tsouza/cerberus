@@ -1,5 +1,4 @@
-// Differ for the Tempo / TraceQL compatibility harness
-// (PR 4 of docs/tempo-compliance-plan.md).
+// Differ for the Tempo / TraceQL compatibility harness.
 //
 // The differ runs each corpus case against both backends (reference
 // Tempo + cerberus) and produces a structured Diff describing what
@@ -8,11 +7,11 @@
 // `DiffReason`, never collapsed into a single boolean, so the markdown
 // report can surface actionable detail per case.
 //
-// As of PR #439, cerberus emits the real hex(TraceId) on
-// `/api/search` (see internal/api/tempo/handler.go::toTraceSummaries),
-// so both backends produce identical 32-hex-char TraceIDs for the
-// same seeded span set. The differ keys its trace-summary multisets
-// directly on `TraceSummary.TraceID` — no hashing, no canonicalisation.
+// Cerberus emits the real hex(TraceId) on `/api/search` (see
+// internal/api/tempo/handler.go::toTraceSummaries), so both backends
+// produce identical 32-hex-char TraceIDs for the same seeded span set.
+// The differ keys its trace-summary multisets directly on
+// `TraceSummary.TraceID` — no hashing, no canonicalisation.
 // "Different orderings of equal sets don't false-positive" still holds
 // because the index is a map keyed by TraceID, not a positional list.
 //

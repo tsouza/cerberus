@@ -1,9 +1,6 @@
 <!--
 PR title: Conventional Commits subject (e.g. `feat(promql): support offset modifier`).
 commitlint runs on the PR commits + the squash-merge subject.
-
-Project tracker: https://github.com/users/tsouza/projects/1
-Roadmap: docs/roadmap.md
 -->
 
 ## Summary
@@ -13,12 +10,6 @@ Roadmap: docs/roadmap.md
 -
 -
 
-## Roadmap link
-
-<!-- Which roadmap item does this PR close or move forward? Cite the docs/roadmap.md row or the relevant docs/*.md plan section. -->
-
--
-
 ## Test plan
 
 <!-- Check every line you actually ran. Add lines specific to the change. -->
@@ -26,9 +17,9 @@ Roadmap: docs/roadmap.md
 - [ ] `just lint` clean
 - [ ] `just test` passes (race + spec)
 - [ ] New / updated TXTAR fixture(s) reviewed: <paths>
-- [ ] Compatibility pass rate moved (if PromQL-touching): <before> → <after>
+- [ ] Compatibility pass rate moved (if QL-touching): <before> → <after>
 - [ ] CI green
 
 ## Notes for reviewers
 
-<!-- Anything non-obvious: trade-offs, deferrals, rationale for an allowlist entry, etc. -->
+<!-- Anything non-obvious: trade-offs, rationale for an allowlist entry, etc. -->

@@ -4,14 +4,11 @@
 Keep Grafana, alerting, and your CLI tooling. Swap the backend.
 
 > [!WARNING]
-> **ALPHA QUALITY — NOT PRODUCTION-READY.** Cerberus is mid-build.
-> `v1.0.0-RC3` is the latest tag; **RC4 through the rest of the
-> `v1.0.0` roadmap is still owed** — correctness, performance, and
-> operational hardening. Two of the three compatibility harnesses
-> (LogQL, TraceQL) are **mid-rollout and not yet gating PRs**. Treat
-> this as a preview for evaluation and experiments, **not** a drop-in
-> replacement for a running Prom / Loki / Tempo deployment. Expect
-> breaking changes between RC tags.
+> **ALPHA QUALITY — NOT PRODUCTION-READY.** Cerberus is pre-1.0;
+> correctness, performance, and operational hardening are still
+> being shaken out. Treat this as a preview for evaluation and
+> experiments, **not** a drop-in replacement for a running Prom /
+> Loki / Tempo deployment. Expect breaking changes between releases.
 
 [![CI](https://github.com/tsouza/cerberus/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tsouza/cerberus/actions/workflows/ci.yml)
 [![Mutation](https://github.com/tsouza/cerberus/actions/workflows/mutation.yml/badge.svg?branch=main)](https://github.com/tsouza/cerberus/actions/workflows/mutation.yml)
@@ -58,22 +55,17 @@ optimised ClickHouse SQL underneath.
 
 ## Status
 
-**Alpha — `v1.0.0-RC3` is the latest tag.** RC1, RC2, and RC3 have
-shipped: PromQL / LogQL / TraceQL parse + lowering, the pattern-based
-optimizer (transposes, PREWHERE promotion, late materialisation, MV
-substitution), the typed `chsql` SQL emitter, the shared
-`internal/engine` pipeline, full self-observability (`slog` + OTel
-traces + OTLP-exported metrics), 12-factor packaging (`/readyz`,
-admission control, `docker compose up` for one-command local dev), and
-the chDB-backed round-trip + property test suites. Upstream parser
-shims are retired via the
+**Alpha — pre-1.0.** PromQL, LogQL, and TraceQL parse + lowering are
+in place; the pattern-based optimiser, the typed `chsql` SQL emitter,
+and the shared `internal/engine` pipeline drive every query end to
+end. Self-observability is wired across all three OTel pillars (logs +
+metrics + traces, all OTLP-exported); operational scaffolding
+(`/readyz`, admission control, `docker compose up` for one-command
+local dev) is in place. Upstream parser shims are routed through the
 [`tsouza/tempo:cerberus-accessors`](https://github.com/tsouza/tempo/tree/cerberus-accessors)
 fork; the schema source of truth is
 [`tsouza/opentelemetry-collector-contrib:cerberus-ddl`](https://github.com/tsouza/opentelemetry-collector-contrib/tree/cerberus-ddl).
-
-**RC4 and the rest of the v1.0.0 roadmap are still owed** — see
-[`docs/roadmap.md`](docs/roadmap.md) for what's left and
-[`CHANGELOG.md`](CHANGELOG.md) for the per-release breakdown.
+See [`CHANGELOG.md`](CHANGELOG.md) for the per-release breakdown.
 
 ## Architecture
 
@@ -154,9 +146,7 @@ pipeline ships:
 | FixedPoint — MV substitution     | `MVSubstitution`                                                                                  | Swaps `RangeWindow(Scan(otel_metrics_*))` to a pre-aggregated rollup view when the rewrite is safe |
 
 The optimiser is gated by termination, decision-pin, rule-interaction,
-property, and gremlins (mutation) tests — see
-[`docs/optimizer-research.md`](docs/optimizer-research.md) for the
-backlog and the DataFusion `AnalyzerRule` / `OptimizerRule` rationale.
+property, and gremlins (mutation) tests.
 
 ### Typed SQL — `internal/chsql`
 
@@ -257,24 +247,21 @@ workflow commits a fresh `compat-score.json` to the orphan
 `compat-scores` branch under `badges/<head>.json` — the source the
 shields.io endpoint badges at the top of this README read from.
 
-**Today's gating posture is informational on all three.** The PromQL
-harness flips to a required PR check at the `v1.0.0` cut. The LogQL
-and TraceQL harnesses become required checks at the end of their
-respective rollouts (PR 7 each — see
-[`docs/loki-compliance-plan.md`](docs/loki-compliance-plan.md) and
-[`docs/tempo-compliance-plan.md`](docs/tempo-compliance-plan.md)).
+All three harnesses run informationally today; they are wired through
+the same CI workflow and per-head shields.io badges read off the
+`compat-scores` orphan branch.
 
 **Allow-list discipline.** Each harness directory carries an
-`expected-failures.json` listing queries where cerberus knowingly
-diverges. Every entry requires a written reason — upstream parser
+`expected-failures.json` (PromQL) or `cerberus-test-queries.yml`
+overlay (LogQL / TraceQL) listing queries where cerberus knowingly
+diverges. Every entry requires a written reason — an upstream parser
 quirk that ClickHouse-side execution can't sensibly reproduce, a
-documented OTel-CH schema difference, or a deferred-to-a-future-RC
-gap with a doc link. Reviewers gate every addition. The PromQL
-allow-list is currently empty.
+documented OTel-CH schema difference, or a harness-side seed
+limitation. Reviewers gate every addition.
 
 See [`docs/compatibility.md`](docs/compatibility.md) for the full
 playbook (local reproduction, report shape, adding test cases,
-known limitations).
+allowlist conventions).
 
 ## Testing
 
@@ -301,10 +288,11 @@ Quick reference:
 
 ## Quick start
 
-Cerberus is a [12-factor app](docs/12factor.md): one stateless binary,
-configured entirely via environment variables, treating ClickHouse and
-the optional OTel collector as attached resources. The same image runs
-unchanged under Docker Compose, Kubernetes, or a bare-metal supervisor.
+Cerberus is a single stateless binary configured entirely via
+environment variables, treating ClickHouse and the optional OTel
+collector as attached resources. The same image runs unchanged under
+Docker Compose, Kubernetes, or a bare-metal supervisor — see
+[`docs/operations.md`](docs/operations.md) for the runtime contract.
 
 ### Docker Compose (one-command local dev)
 
@@ -322,15 +310,14 @@ Loki + Tempo). ClickHouse data persists in a named volume; use
 
 ### From a published release
 
-Pull the container image. Cerberus is alpha, so pin an RC tag — `:latest`
-is **only** advanced by stable releases (none yet) and won't move until
-`v1.0.0` cuts:
+Pull the container image. Cerberus is alpha, so pin an explicit tag —
+`:latest` only moves with stable releases:
 
 ```sh
-docker pull ghcr.io/tsouza/cerberus:v1.0.0-RC3
+docker pull ghcr.io/tsouza/cerberus:<tag>
 docker run --rm -p 8080:8080 \
   -e CERBERUS_CH_ADDR=clickhouse:9000 \
-  ghcr.io/tsouza/cerberus:v1.0.0-RC3
+  ghcr.io/tsouza/cerberus:<tag>
 ```
 
 Or download a prebuilt binary from the [release page](https://github.com/tsouza/cerberus/releases)

@@ -47,10 +47,10 @@ type Logs struct {
 	// WideColumns lists the "fat" columns on the logs table — columns
 	// whose per-row payload is large enough that fetching them dominates
 	// the IO cost of a Scan. The chsql late-materialisation rewrite
-	// (see docs/optimizer-research.md § 3) checks this list when a
-	// Project+Limit+Filter+Scan stack lands on this table: if any
-	// of the projection's columns are wide, the inner SELECT skips them
-	// and an outer JOIN back fetches them only for the surviving rows.
+	// checks this list when a Project+Limit+Filter+Scan stack lands on
+	// this table: if any of the projection's columns are wide, the
+	// inner SELECT skips them and an outer JOIN back fetches them only
+	// for the surviving rows.
 	//
 	// For the OTel-CH default this is `Body` + `ResourceAttributes` +
 	// `LogAttributes` — each can carry hundreds of bytes per row.
@@ -73,9 +73,8 @@ type Logs struct {
 }
 
 // HasUniqueRowKey reports whether RowKey is non-empty — the precondition
-// for the late-materialisation rewrite (see docs/optimizer-research.md §
-// 3). Custom-schema users with non-unique storage layouts leave RowKey
-// empty to skip the rewrite.
+// for the late-materialisation rewrite. Custom-schema users with
+// non-unique storage layouts leave RowKey empty to bypass the rewrite.
 func (l Logs) HasUniqueRowKey() bool { return len(l.RowKey) > 0 }
 
 // DefaultOTelLogs returns the schema produced by the upstream OTel
@@ -101,8 +100,8 @@ func DefaultOTelLogs() Logs {
 		// defers fetching these until after filter+limit.
 		WideColumns: []string{"Body", "ResourceAttributes", "LogAttributes"},
 		// (Timestamp, TraceId, SpanId) uniquely identifies an OTel-CH
-		// log row when ingestion carries trace context. See WideColumns
-		// godoc + docs/optimizer-research.md § 3.
+		// log row when ingestion carries trace context. See the
+		// WideColumns godoc above.
 		RowKey: []string{"Timestamp", "TraceId", "SpanId"},
 	}
 }

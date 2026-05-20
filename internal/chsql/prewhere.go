@@ -134,10 +134,10 @@ func sortRankFor(cols []string, shape TableShape) int {
 	return best
 }
 
-// orderedConjuncts partitions conjuncts into the three buckets described
-// in docs/optimizer-research.md § 3 — sort-prefix predicates first,
-// then skip-index predicates, then everything else — preserving input
-// order within each bucket. Within the sort-prefix bucket conjuncts are
+// orderedConjuncts partitions conjuncts into three buckets — sort-prefix
+// predicates first, then skip-index predicates, then everything else —
+// preserving input order within each bucket. Within the sort-prefix
+// bucket conjuncts are
 // further ordered by ascending SortColumns rank so the earliest sort
 // column emits first; ties are broken by input order to keep the SQL
 // deterministic for the goldens.

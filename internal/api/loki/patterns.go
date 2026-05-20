@@ -30,10 +30,8 @@ const defaultPatternsLineLimit = 1000
 // `sample.Timestamp.Unix()`, which strips the millisecond component.
 //
 // Level mirrors upstream's per-cluster `detected_level` discriminant.
-// PR B emits `""` for every cluster (one drain instance for all
-// severities, no per-level bucketing). PR C+ wires the multi-instance
-// path that splits clusters by SeverityText — see
-// `docs/loki-patterns-impl-plan.md` § 5.
+// Cerberus emits `""` for every cluster (one drain instance for all
+// severities, no per-level bucketing).
 type Pattern struct {
 	Pattern string     `json:"pattern"`
 	Level   string     `json:"level"`
@@ -69,11 +67,9 @@ func (nilLimits) PatternIngesterTokenizableJSONFields(string) []string { return 
 // order every time"; the SQL emits `ORDER BY Timestamp DESC LIMIT N` so
 // chDB returns rows in deterministic order.
 //
-// Level inference lands in a follow-up PR (see
-// `docs/loki-patterns-impl-plan.md` § 5). PR B trains a single drain
-// instance for all severities and emits `level:""` for every cluster;
-// Grafana's pattern panel renders both with-level and without-level
-// payloads.
+// Cerberus trains a single drain instance for all severities and emits
+// `level:""` for every cluster; Grafana's pattern panel renders both
+// with-level and without-level payloads.
 func (h *Handler) handlePatterns(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query().Get("query")
 	if q == "" {

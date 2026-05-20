@@ -46,7 +46,7 @@ type Exemplar struct {
 // anything else); cerberus mirrors that. The response is the canonical
 // Prom envelope with `data` shaped as []ExemplarSeries.
 //
-// Implementation flow (matches docs/prom-exemplars-impl-plan.md §5 PR B):
+// Implementation flow:
 //
 //  1. Validate the query / start / end parameters (existing behaviour).
 //  2. Parse the PromQL, walk through any ParenExpr, and require a single
@@ -54,10 +54,9 @@ type Exemplar struct {
 //     upstream Prometheus also restricts this endpoint to one selector.
 //  3. Resolve the target table via [exemplarsTableFor]. Summary metrics
 //     short-circuit with `data:[]` since the OTel-CH summary table has
-//     no Exemplars column upstream (per the plan, summary returns empty
-//     rather than 400 — exemplars are a histogram concept and clients
-//     should not see an error for a legitimately exemplar-free metric
-//     type).
+//     no Exemplars column upstream — exemplars are a histogram concept
+//     and clients should not see an error for a legitimately
+//     exemplar-free metric type.
 //  4. Build the matcher predicate via the same
 //     [promql.BuildMatcherPredicate] helper PromQL `handleQuery` /
 //     `handleQueryRange` use.

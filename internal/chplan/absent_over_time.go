@@ -33,10 +33,8 @@ type SynthLabel struct {
 // the regular per-series RangeWindow path which emitted one row per
 // (input series, anchor) with `if(length(window_vals) > 0, NaN, 1.0)`
 // as the value — carrying the original series labels instead of the
-// matcher-derived synthesised labels. That produced six diffs in the
-// prometheus/compliance lane (see Bucket 4 of
-// docs/compat-residual-audit-25898791664.md): wrong labels AND extra
-// per-series NaN rows the matrix pivot didn't drop.
+// matcher-derived synthesised labels. That produced wrong labels AND
+// extra per-series NaN rows the matrix pivot didn't drop.
 //
 // The shape this node renders:
 //

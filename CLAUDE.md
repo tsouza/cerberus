@@ -5,12 +5,12 @@ Drop-in **Prometheus / Loki / Tempo** HTTP gateway for **ClickHouse**. Parses ea
 ## Hard rules (non-negotiable)
 
 - **PR-per-change.** No direct pushes to `main` — branch protection rejects them. Required CI checks: `check` + `lint`. The `dashboard` full-stack smoke (k3d + cerberus + Grafana + Playwright; lives as the `dashboard` job inside `.github/workflows/e2e.yml`) runs on push-to-main + nightly + manual dispatch only — it is informational on merges, not a PR gate. Linear history; force-push and deletion are off. **Never use `gh pr merge --admin`** — every PR must merge cleanly with all required checks green. If a required check is failing, fix the code or fix the workflow; don't bypass. Branch protection has `enforce_admins: true` and the personal token doesn't grant override.
-- **Agent-driven work goes through PRs, not Issues.** When *you* (an AI assistant) are doing the work, capture intent in the PR description — don't open an issue to track follow-up. Backlog narratives live in `docs/*.md` files ([`docs/roadmap.md`](docs/roadmap.md), [`docs/optimizer-research.md`](docs/optimizer-research.md)); milestone status lives in the [`Cerberus v1.0.0 Roadmap` GitHub Project](https://github.com/users/tsouza/projects/1) (RC / Workstream / Area / Status fields). Human contributors (or the maintainer) **are welcome to open issues** for bug reports, design discussions, feature proposals — the issues feature is on. The rule is about agent workflow hygiene, not project policy.
+- **Agent-driven work goes through PRs, not Issues.** When *you* (an AI assistant) are doing the work, capture intent in the PR description — don't open an issue to track follow-up. Human contributors (or the maintainer) **are welcome to open issues** for bug reports, design discussions, feature proposals — the issues feature is on. The rule is about agent workflow hygiene, not project policy.
 - **Conventional Commits**, enforced by `commitlint` (see `.commitlintrc.json`). The `subject-case` rule is relaxed so Dependabot's `Bump X from Y to Z` subjects pass.
 - **Justfile is the canonical task runner.** `just` lists every recipe. Don't reach for `go test ./...` directly when `just test` exists — the recipe sets the race flag, the cover profile, and the right toolchain.
 - **No local validation; lefthook + CI own it.** Don't run `just test`, `just lint`, `go test`, `golangci-lint run`, `go build`, or `markdownlint-cli2` manually as a pre-flight before pushing. The repo's `lefthook.yml` runs lightweight formatters (`gofumpt` / `goimports` / `markdownlint-cli2 --fix`) on staged files at commit time, and the `commit-msg` hook validates Conventional Commits via `commitlint`. CI (`check` + `lint` jobs) runs the heavy validation. New contributors run `just hooks-install` once after cloning; agents trust the hook + CI and don't pre-flight.
 - **Compatibility is the source of truth for PromQL.** `compatibility.yml` runs on main pushes + nightly + manual dispatch and acts as the informational baseline; a future cut can re-enable the `pull_request:` trigger and add `compatibility/prometheus` to required checks. An entry in `compatibility/prometheus/expected-failures.json` requires a comment explaining the upstream rationale.
-- **No raw SQL strings — typed chsql API only.** Use `internal/chsql.Builder` / `chsql.QueryBuilder` — the custom CH-flavored builder API (see [`docs/sql-builder-evaluation.md`](docs/sql-builder-evaluation.md) for the build-vs-buy decision and [`docs/roadmap.md` § RC6](docs/roadmap.md#rc6--type-safe-sql-via-custom-internalchsqlbuilder) for the milestone sequence). Compose clauses via typed `QueryBuilder` slots (`.Select` / `.From` / `.Where` / `.GroupBy` / `.OrderBy` / `.Limit` / `.Prewhere` / `.Join` / `.WithRecursive`) and expressions via typed Frags (`Eq` / `And` / `Or` / `Paren` / `Cast` / `In` / `Like` / `Add` / `Call` / `Array` / `Subscript` / `If` / `Lambda1` / `Subquery` / `BareIdent` / `InlineLit` / etc.). `Builder.writeSQL` is unexported and the `chsql.Raw` / `chsql.Concat` public escape hatches are gone — external packages cannot raw-write SQL by construction. The typed-Frag surface is closed: add new typed constructors when a shape isn't covered, never compose SQL via string concatenation. Reviewer discipline + the typed API are the enforcement.
+- **No raw SQL strings — typed chsql API only.** Use `internal/chsql.Builder` / `chsql.QueryBuilder` — the custom CH-flavored builder API. Compose clauses via typed `QueryBuilder` slots (`.Select` / `.From` / `.Where` / `.GroupBy` / `.OrderBy` / `.Limit` / `.Prewhere` / `.Join` / `.WithRecursive`) and expressions via typed Frags (`Eq` / `And` / `Or` / `Paren` / `Cast` / `In` / `Like` / `Add` / `Call` / `Array` / `Subscript` / `If` / `Lambda1` / `Subquery` / `BareIdent` / `InlineLit` / etc.). `Builder.writeSQL` is unexported and the `chsql.Raw` / `chsql.Concat` public escape hatches are gone — external packages cannot raw-write SQL by construction. The typed-Frag surface is closed: add new typed constructors when a shape isn't covered, never compose SQL via string concatenation. Reviewer discipline + the typed API are the enforcement.
 
 ## Architecture map
 
@@ -33,7 +33,7 @@ test/e2e/{k3s,grafana}/      k3d manifests + Grafana provisioning (datasources, 
 compatibility/prometheus/    prometheus/compliance Docker Compose harness + shadow-mode differential testing
 compatibility/loki/          LogQL differential harness vs reference Loki + vendored `grafana/loki:pkg/logql/bench` corpus
 compatibility/tempo/         TraceQL differential harness vs reference Tempo + vendored `cmd/tempo-vulture` / `pkg/httpclient` snapshot
-docs/                        roadmap.md, optimizer-research.md, compatibility.md, engine.md, observability.md, 12factor.md, test-strategy.md, …
+docs/                        engine.md, compatibility.md, test-strategy.md, observability.md, operations.md, upstream-forks.md, health.md, …
 ```
 
 See [`docs/test-strategy.md`](docs/test-strategy.md) for the canonical 12-layer test map, the CI-gate inventory, the gremlins phased rollout, and the property-test phase plan.
@@ -41,9 +41,9 @@ See [`docs/test-strategy.md`](docs/test-strategy.md) for the canonical 12-layer 
 Top-level reading order for any new contributor (human or agent):
 
 1. `README.md` — what the project is, quick start.
-2. `docs/roadmap.md` — per-RC plan, milestone tables, exit criteria.
-3. `docs/engine.md` — shared query pipeline (`internal/engine/`), the `Lang` contract, and the extension points each new head plugs into.
-4. `docs/optimizer-research.md` — durable optimizer backlog.
+2. `docs/engine.md` — shared query pipeline (`internal/engine/`), the `Lang` contract, and the extension points each new head plugs into.
+3. `docs/operations.md` — runtime contract: configuration, lifecycle, scaling.
+4. `docs/test-strategy.md` — 12-layer test map + CI gate inventory.
 5. `internal/promql/lower.go` — the canonical lowering pattern; mirror it when adding LogQL / TraceQL slices.
 
 ## Common workflows
@@ -105,6 +105,5 @@ Local SSH config has two GitHub identities:
 ## Pointers if you're lost
 
 - "How does this PR ship?" → branch + push + `gh pr create` → CI must pass → squash-merge with `gh pr merge --squash --delete-branch`.
-- "Where do I add this feature?" → check `docs/roadmap.md` first; the milestone tells you which package + which fixture dir.
-- "Which RC does this belong to?" → roadmap tables make this explicit. When in doubt, add a comment to the PR asking.
+- "Where do I add this feature?" → match the layer to the head: `internal/{promql,logql,traceql}/` for parse + lowering, `internal/chplan/` for the shared IR, `internal/optimizer/` for rewrites, `internal/chsql/` for SQL emission, `internal/api/{prom,loki,tempo}/` for HTTP handlers. Fixtures live in `test/spec/<head>/`.
 - "Can I update the Project from a PR?" → yes, the repo is linked. Move the matching draft item to `In Progress` when you start, `Done` when the PR merges (or wire a workflow that does it).

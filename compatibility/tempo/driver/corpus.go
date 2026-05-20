@@ -1,7 +1,4 @@
-// Corpus loader for the Tempo / TraceQL compatibility differ
-// (PR 4 of docs/tempo-compliance-plan.md; extended in PR 5 to cover the
-// metrics endpoints and in PR 6 to cover the four tag / tag-values
-// endpoints).
+// Corpus loader for the Tempo / TraceQL compatibility differ.
 //
 // The format is a lightweight TXTAR variant — same shape as
 // compatibility/prometheus/shadow/corpus.go — so the parser

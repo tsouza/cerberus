@@ -7,20 +7,19 @@
 #
 #   should_skip:
 #     - source: "<suite>/<file>.yaml#<description>"
-#       reason: "free-form English; cite roadmap milestone or upstream issue"
+#       reason: "free-form English describing why this query is excluded"
 #       since:  "<YYYY-MM-DD>"  # when the skip was added; for drift audits
-#       jira:   "<roadmap-ref>" # optional, e.g. "RC2 R2.x" or "#<PR>"
+#       jira:   "<tracker-ref>" # GH issue / PR number or short kind tag
 #
 #   should_fail:
 #     # Same shape; for queries we EXPECT to round-trip but want to track
 #     # as known-broken. Initially unused.
 #
-# Suites covered by `<suite>/` (per docs/loki-compliance-plan.md PR 6):
+# Suite coverage:
 #
-#   - fast/        — vendored verbatim in PR 2; one upstream-pinned
+#   - fast/        — minimal-coverage corpus; one upstream-pinned
 #                    `skip: true` row remains.
-#   - regression/  — vendored in PR 6 (this file). Most entries now run
-#                    against cerberus; the remaining skips are upstream-
+#   - regression/  — enrolled wholesale; residual skips are upstream-
 #                    pinned `skip: true` rows or seed-gap entries
 #                    pending seeder expansion. `| json`, `| logfmt`,
 #                    `| regexp`, `| pattern`, `| unpack`, `| drop`,
@@ -30,26 +29,23 @@
 #                    numeric/duration/bytes label filters are all wired
 #                    so entries that only needed those have been
 #                    dropped. Reference-side cardinality rejections
-#                    (HTTP 400, 500-series guard) used to live here too
-#                    until loki-config.yaml's `max_query_series` was
-#                    raised to 10000.
-#   - exhaustive/  — vendored in PR 6 (this file). Same posture as
-#                    regression/: most entries lifted, residual skips
-#                    are upstream-pinned or seed-gap.
+#                    used to live here too until loki-config.yaml's
+#                    `max_query_series` was raised to 10000.
+#   - exhaustive/  — enrolled wholesale; same posture as regression/.
 #
 # Maintenance:
 #
 #   - Reviewers add an entry when a vendored query exercises a LogQL
 #     feature cerberus hasn't shipped, OR when the runner surfaces a
-#     persistent diff vs the reference Loki on a feature listed under
-#     docs/roadmap.md.
+#     persistent diff vs the reference Loki.
 #   - Empty should_skip / should_fail are fine. The runner consumes
-#     this overlay via `--overlay compatibility/loki/cerberus-test-queries.yml`
-#     (wired in PR 5's cerberus-owned compliance tester). Each matched
-#     entry suppresses the case before it hits the wire and records the
-#     reason in the result row's `skipReason` field.
+#     this overlay via `--overlay compatibility/loki/cerberus-test-queries.yml`.
+#     Each matched entry suppresses the case before it hits the wire
+#     and records the reason in the result row's `skipReason` field.
 #   - When a query's status changes (e.g. cerberus implements the
 #     feature), drop the entry and let CI verify the diff is clean.
+#   - The `scripts/check-skip-additions.sh` CI gate rejects net-new
+#     entries that lack a `jira:` / `link:` / `#NNN` tracker reference.
 #   - On every Loki tag bump (see ../README.md "Bump procedure"),
 #     re-validate the `source:` paths point at queries that still exist.
 
@@ -95,15 +91,15 @@
 #       avg_over_time, min/max_over_time, etc.)
 #     - `by`/`without` grouping on range aggregations
 #
-# Resolution path (per docs/loki-compliance-plan.md PR 6):
+# Resolution path:
 #
-#   - PR 6 vendored the regression/ + exhaustive/ subdirs verbatim and
-#     enrolled every entry. As each LogQL feature lands, the matching
-#     overlay rows are dropped and CI verifies the diff is clean.
-#   - The seed expansion now writes multi-label streams with
-#     JSON/logfmt/unstructured lines, structured metadata
-#     (detected_level), and error keywords (failed/refused). Entries
-#     that only needed matching selectors have been unskipped.
+#   - regression/ + exhaustive/ are enrolled verbatim. As each LogQL
+#     feature lands, the matching overlay rows are dropped and CI
+#     verifies the diff is clean.
+#   - The seeder writes multi-label streams with JSON/logfmt/unstructured
+#     lines, structured metadata (detected_level), and error keywords
+#     (failed/refused). Entries that only needed matching selectors have
+#     been unskipped.
 
 should_skip:
   # fast/structured-metadata — entry kept here is upstream-pinned

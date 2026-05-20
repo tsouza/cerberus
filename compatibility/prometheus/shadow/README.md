@@ -4,8 +4,7 @@
 > (`internal/promshim/local/`) is wired into the CLI via `oracle.go` in
 > the same directory as `cmd/shadow/main.go`. The workflow at
 > `.github/workflows/shadow-mode.yml` runs nightly + on pushes to main
-> touching the differential-testing paths; see
-> [`docs/roadmap.md`](../../../docs/roadmap.md) for the broader context.
+> touching the differential-testing paths.
 
 ## What "shadow mode" means
 

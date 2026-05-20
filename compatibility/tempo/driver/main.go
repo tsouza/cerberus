@@ -3,15 +3,13 @@
 // stack has a single binary with a stable flag surface; behaviour is
 // selected via the first positional argument (the "subcommand"):
 //
-//   - `seed`    (PR 3) writes the same deterministic OTLP batch to
-//     the reference Tempo (via OTLP gRPC :4317) and to ClickHouse's
-//     `otel_traces` table (the read path cerberus uses to answer Tempo
-//     HTTP queries). After both writes complete it polls
-//     `/api/traces/<first-id>` on both backends and reports the per-
-//     backend span count. The contract is: stack comes up, seed
-//     pushes to both targets, the smoke trace-id resolves on both.
-//   - `diff`    (PR 4 + PR 5) reads a TXTAR corpus, runs every TraceQL
-//     query through both backends via /api/search, /api/traces/<id>,
+//   - `seed` writes the same deterministic OTLP batch to the reference
+//     Tempo (via OTLP gRPC :4317) and to ClickHouse's `otel_traces`
+//     table (the read path cerberus uses to answer Tempo HTTP queries).
+//     After both writes complete it polls `/api/traces/<first-id>` on
+//     both backends and reports the per-backend span count.
+//   - `diff` reads a TXTAR corpus, runs every TraceQL query through
+//     both backends via /api/search, /api/traces/<id>,
 //     /api/metrics/query_range, and /api/metrics/query, applies per-
 //     side assertions + semantic-consistency invariants, computes the
 //     structural diff, and emits a markdown report under /reports/
@@ -19,21 +17,10 @@
 //     code is 0 on parity drift; only driver-wide hard errors (corpus
 //     load, report write) escalate to a non-zero rc.
 //
-// The two-way "OTLP into Tempo, INSERT into CH" split is documented in
-// docs/tempo-compliance-plan.md's "Open question 1": cerberus is
-// **read-only over OTLP**. The HTTP layer answers Prom / Loki / Tempo
-// queries by reading from a CH instance whose tables are populated by
-// the OTel-CH exporter in a real deployment. The compatibility harness
-// can't run a full collector → exporter pipeline just to seed (that
-// would re-test the exporter, not cerberus's read path), so it inserts
-// directly into `otel_traces` with the same shape the exporter would
-// produce. The Tempo side, by contrast, has no out-of-band ingest path
-// and must take OTLP. Both writes are derived from one in-memory
-// fixture so per-span fields stay 1:1 between the two read paths.
-//
-// Single binary, multiple subcommands keeps the docker-compose flag
-// surface stable: the same image gets re-invoked across PRs by changing
-// the `command:` array, not by swapping images.
+// Cerberus is read-only over OTLP — its ingest is the OTel-CH exporter
+// writing to CH. The harness therefore writes to Tempo via OTLP and to
+// cerberus's CH directly, derived from one in-memory fixture so
+// per-span fields stay 1:1 between the two read paths.
 package main
 
 import (

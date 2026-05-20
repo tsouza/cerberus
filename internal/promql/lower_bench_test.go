@@ -13,9 +13,9 @@ import (
 // PromQL micro-benchmarks (Layer 12 perf gate). Each Benchmark
 // times Lower against a pre-parsed expression and reports allocs so a
 // regression in the per-stage cost is visible from `just bench`. The
-// queries here mirror docs/roadmap.md's "representative shape" list:
-// one instant selector, one range-rate, one binary, one aggregation,
-// one subquery.
+// queries here cover one shape from each major lowering family: one
+// instant selector, one range-rate, one binary, one aggregation, one
+// subquery.
 
 // parsePromQL is a benchmark-helper. Reuses one parser to avoid
 // counting the parser-setup cost across iterations.

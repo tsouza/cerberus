@@ -1,156 +1,83 @@
 # Loki / LogQL compatibility harness
 
-> Status: **PR 5 (cerberus-owned driver)** of the rollout described in
-> [`docs/loki-compliance-plan.md`](../../docs/loki-compliance-plan.md).
-> The Docker Compose stack, the deterministic seeder, the vendored
-> `pkg/logql/bench/` corpus, and the cerberus-owned diff driver all
-> live under this directory. The driver emits a JSON report whose
-> shape matches `compatibility/prometheus/report.json` so the two
-> harnesses share a single downstream analyser. The informational CI
-> lane (PR 4) and the regression / exhaustive corpus expansion (PR 6)
-> are still pending.
+LogQL parity is measured by running reference Loki and cerberus
+side-by-side against the same deterministic OTel-shape log fixture and
+diffing the wire responses for every query in the corpus.
 
 ## Why this harness exists
 
-Cerberus already has `compatibility/prometheus/` (PromQL parity vs
-reference Prometheus). The Loki / LogQL surface has no upstream
-`loki-conformance` repo; the closest analogue is
+Cerberus mirrors the posture taken by `compatibility/prometheus/` for
+PromQL parity, but the Loki / LogQL surface has no upstream
+`loki-conformance` repo. The closest analogue is
 `grafana/loki:pkg/logql/bench/` — a YAML query corpus plus a
 `TestRemoteStorageEquality` build-tagged Go test driver. This harness
-vendors that snapshot verbatim (the same posture
-`compatibility/prometheus/upstream/` takes vs `prometheus/compliance`),
-runs reference Loki and cerberus side-by-side, and diffs the responses.
+vendors that snapshot verbatim under `upstream/loki-bench/`, drives
+both backends from a cerberus-owned compliance tester
+(`cmd/loki-compliance-tester/`), and emits a JSON report whose
+envelope matches the Prom harness's so one downstream analyser handles
+both.
 
-See [`docs/loki-compliance-plan.md`](../../docs/loki-compliance-plan.md)
-for the full landscape analysis, the per-PR breakdown, and the
-license/AGPL containment strategy.
-
-## Layout (current — PR 5)
+## Layout
 
 ```text
 compatibility/loki/
   README.md                       this file
   docker-compose.yml              clickhouse + reference loki + cerberus
   loki-config.yaml                reference Loki single-binary config
-  cerberus-test-queries.yml       overlay listing per-query drops + reasons
-  dataset_metadata.json           pinned dataset metadata for ${SELECTOR}/${LABEL_*} expansion
-  reports/                        diff driver output; contents gitignored
+  cerberus-test-queries.yml       overlay: per-query drops + reasons
+  dataset_metadata.json           pinned dataset metadata for ${SELECTOR}/${LABEL_*}
+  reports/                        diff driver output (gitignored)
   cmd/
     seed/                         deterministic OTel-shape log seeder
-    loki-compliance-tester/       cerberus-owned diff driver (PR 5; this PR)
+    loki-compliance-tester/       cerberus-owned diff driver
   scripts/
-    run-loki-compatibility.sh     smoke + diff driver (drives cmd/loki-compliance-tester/)
+    run-loki-compatibility.sh     compose + seed + diff + tear-down
   upstream/
     loki-bench/                   vendored grafana/loki:pkg/logql/bench snapshot
       LICENSE                     AGPL-3.0, copied verbatim from grafana/loki
       VERSION                     exact upstream coordinates of the snapshot
       query_registry.go           YAML loader + template-variable expander
-      remote_test.go              TestRemoteStorageEquality (vestigial; no longer the driver)
+      remote_test.go              upstream TestRemoteStorageEquality (vestigial)
       metadata.go                 DatasetMetadata + LoadMetadata + bounded sets
       metadata_resolver.go        ${SELECTOR}/${LABEL_*}/${RANGE} resolver
       testcase.go                 TestCase shape consumed by the registry
       assertions_test.go          assertResultNotEmpty + tolerance comparators
       convert_test.go             loghttp -> promql/parser.Value conversions
-      generator.go                GeneratorConfig + StreamMetadata referenced by metadata.go
-      faker.go                    LogFormat type + helper data referenced by metadata.go
+      generator.go                GeneratorConfig + StreamMetadata
+      faker.go                    LogFormat type + helper data
       queries/
         schema.json               JSON schema for query YAMLs
         fast/*.yaml               minimal corpus (basic-selectors, simple-metrics, structured-metadata)
-        regression/.gitkeep       placeholder; the driver loads all three suites
-        exhaustive/.gitkeep       placeholder; the driver loads all three suites
+        regression/*.yaml         regression slice
+        exhaustive/*.yaml         exhaustive slice
 ```
 
-## Layout (planned — PR 4 + PR 6)
+## Upstream corpus
 
-PR 4 lands the informational CI lane:
+The snapshot pins `grafana/loki` directly: the `tsouza/loki` fork
+tracks `pkg/logql/syntax/`, `pkg/logql/log/`, and `pkg/logqlmodel/`,
+so `pkg/logql/bench/` is outside the fork's watch boundary.
 
-```text
-.github/workflows/compatibility.yml       PR 4 — push:main + nightly cron + workflow_dispatch (compatibility/loki job)
-```
+Vendored paths (the authoritative inventory is in
+`upstream/loki-bench/VERSION`):
 
-PR 6 widens the seeder + regenerates `dataset_metadata.json` so the
-upstream `${SELECTOR}` / `${LABEL_*}` templates resolve against real
-data (the current overlay marks every `fast/` entry as skipped pending
-that work).
-
-## Upstream corpus (PR 2)
-
-PR 2 (#369) introduced the AGPL-scoped vendor under
-`upstream/loki-bench/`. The snapshot pins `grafana/loki` directly (the
-`tsouza/loki` fork watches only `pkg/logql/syntax/`, `pkg/logql/log/`,
-and `pkg/logqlmodel/`, so `pkg/logql/bench/` is outside the fork
-boundary). PR 2 vendored:
-
-- `pkg/logql/bench/queries/fast/*.yaml` — minimal-coverage corpus
-  (basic-selectors, simple-metrics, structured-metadata).
+- `pkg/logql/bench/queries/fast/*.yaml`, `regression/*.yaml`,
+  `exhaustive/*.yaml` — the query corpus.
 - `pkg/logql/bench/queries/schema.json` — JSON Schema the YAMLs
   validate against.
 - `pkg/logql/bench/query_registry.go` — `QueryRegistry` plus the
   `${SELECTOR}` / `${LABEL_NAME}` / `${LABEL_VALUE}` template
   expander.
-- `pkg/logql/bench/remote_test.go` — upstream `TestRemoteStorageEquality`,
-  build-tagged `remote_correctness`. PR 5 supersedes it with the
-  cerberus-owned driver, but the file remains as upstream reference.
-- `LICENSE` — AGPL-3.0, copied verbatim from the upstream repo root
-  and scoped to the `upstream/loki-bench/` subtree only.
-- `VERSION` — exact upstream coordinates (tag + commit SHA + the
-  `vendored_paths:` block that doubles as the bump-procedure
-  inventory).
-
-The PR 2 commit also widened `.github/workflows/ci.yml`'s `forbid-skip`
-git ls-files pathspec to exclude `harness/*/upstream/**`. The vendored
-`remote_test.go` has two `t.Skip()` calls (legitimate "flag not set"
-gating that's part of upstream's driver protocol); the forbid-skip
-rule applies to cerberus-authored tests and is preserved everywhere
-else.
-
-PR 3 (#387) expanded the snapshot to include the support files
-(`metadata.go`, `metadata_resolver.go`, `testcase.go`,
-`assertions_test.go`, `convert_test.go`, `generator.go`, `faker.go`)
-so `go test -c` resolves cleanly without sanitising upstream sources.
-See the section below for the full current inventory.
-
-## What's in `upstream/loki-bench/`
-
-A pure, unmodified snapshot of these paths from `grafana/loki` at the
-tag recorded in [`upstream/loki-bench/VERSION`](upstream/loki-bench/VERSION):
-
-- `pkg/logql/bench/queries/fast/*.yaml` — the minimal-coverage corpus
-  (basic-selectors, simple-metrics, structured-metadata). The
-  `regression/` and `exhaustive/` slices were vendored separately;
-  empty placeholder dirs in earlier snapshots existed so the driver's
-  three-suite loader didn't fatal on a missing path.
-- `pkg/logql/bench/queries/schema.json` — JSON Schema the YAMLs
-  validate against.
-- `pkg/logql/bench/query_registry.go` — `QueryRegistry` plus the
-  `${SELECTOR}` / `${LABEL_NAME}` / `${LABEL_VALUE}` template
-  expander.
-- `pkg/logql/bench/remote_test.go` — `TestRemoteStorageEquality`,
-  build-tagged `remote_correctness`. The PR 5 cerberus-owned driver
-  (`cmd/loki-compliance-tester/`) is now the entry point; this file
-  is preserved verbatim as upstream reference and for the eventual
-  bump procedure.
-- `pkg/logql/bench/metadata.go`, `metadata_resolver.go`, `testcase.go`,
-  `assertions_test.go`, `convert_test.go` — support files
-  `remote_test.go` transitively depends on. PR 2 (#369) intentionally
-  shipped a partial vendor (driver + corpus only); PR 3 expanded the
-  snapshot to the full set so the `go test -c` build resolves
-  cleanly without sanitising upstream sources.
-- `pkg/logql/bench/generator.go`, `faker.go` — referenced by
-  `metadata.go` for the `GeneratorConfig` / `StreamMetadata` /
-  `LogFormat` type surface. Never invoked at run time by
-  `TestRemoteStorageEquality`; included verbatim so the package
-  type-checks without local patches.
+- `pkg/logql/bench/remote_test.go` — upstream
+  `TestRemoteStorageEquality`, build-tagged `remote_correctness`.
+  Preserved verbatim as upstream reference; the cerberus-owned driver
+  is now the active entry point.
+- `metadata.go`, `metadata_resolver.go`, `testcase.go`,
+  `assertions_test.go`, `convert_test.go`, `generator.go`, `faker.go`
+  — support files `remote_test.go` transitively depends on.
 - `LICENSE` — AGPL-3.0 from upstream, scoped to this subtree only.
 
-Cerberus's `tsouza/loki` fork (the replace target in `go.mod`) only
-tracks `pkg/logql/syntax/`, `pkg/logql/log/`, and `pkg/logqlmodel/` —
-`pkg/logql/bench/` is outside the fork's watch boundary, so the
-snapshot here pins `grafana/loki` directly rather than the fork tag.
-
 ### Why vendor, not import via `go.mod`
-
-Same reasoning as `compatibility/tempo/upstream/` (see PR #367):
 
 1. **Reference material, not a build dependency.** The driver wiring
    reads the vendored sources directly. Vendoring lets reviewers see
@@ -159,34 +86,22 @@ Same reasoning as `compatibility/tempo/upstream/` (see PR #367):
 2. **`remote_test.go` is build-tagged `remote_correctness`.** It's a
    test driver, not library code; cerberus's main build doesn't need
    it.
-3. **Snapshot stability.** A future bump of any Loki transitive dep
-   won't silently move the corpus shape under us — the snapshot is
-   pinned explicitly here.
+3. **Snapshot stability.** A Loki transitive-dep bump cannot silently
+   move the corpus shape — the snapshot is pinned explicitly here.
 
 ### How the vendor builds
 
-The PR 5 cerberus-owned driver (`cmd/loki-compliance-tester/`) imports
-the vendored `bench` package for corpus loading (`QueryRegistry`,
+The cerberus-owned driver (`cmd/loki-compliance-tester/`) imports the
+vendored `bench` package for corpus loading (`QueryRegistry`,
 `LoadMetadata`, `MetadataVariableResolver`, `TestCase`). The
 transitive deps `bench` carries (`logproto`, `logql/syntax`,
-`yaml.v3`) are all already direct entries in the root `go.mod`, so
-the driver builds with a plain `go build` — no `-mod=mod` promotion
-and no go.mod / go.sum mutation per invocation.
+`yaml.v3`) are already direct entries in the root `go.mod`, so the
+driver builds with a plain `go build`.
 
-The `ignore ./compatibility/loki/upstream` directive in
-`go.mod` keeps `go build ./...`, `go test ./...`, and `go vet ./...`
-from walking the vendored path as a build target; the bench package
-is still resolvable when imported by path (`ignore` is wildcard
-exclusion, not import isolation). The `ignore` directive is a Go
-1.25+ feature; cerberus pins Go 1.26 via `go.mod`.
-
-Earlier PRs (PR 3, #387) used `GOFLAGS=-mod=mod go test
--tags=remote_correctness -c` to compile the upstream test driver and
-relied on a `git checkout -- go.mod go.sum` cleanup trap to revert
-the transient direct-dep promotion. PR 5 eliminates both pieces:
-the driver lives in cerberus-owned code, builds against the
-already-direct deps, and the run script no longer touches the
-working tree.
+The `ignore ./compatibility/loki/upstream` directive in `go.mod`
+keeps `go build ./...`, `go test ./...`, and `go vet ./...` from
+walking the vendored path as a build target; the bench package is
+still resolvable when imported by path.
 
 ## Cerberus overlay files
 
@@ -194,21 +109,17 @@ Two files at the harness root capture cerberus-specific configuration
 that lives OUTSIDE the AGPL `upstream/` boundary:
 
 - `cerberus-test-queries.yml` — overlay listing per-query divergences
-  cerberus tracks against the upstream corpus. The PR 5 driver
-  consumes this file: entries under `should_skip:` are suppressed
-  before the wire call (recorded in the report as `skipReason` with
-  no failure flag flipped); `should_fail:` is reserved for the Prom-
-  shape `unexpectedSuccess` semantics (expected hard failures). The
-  Historical PR 3 commit documented the entire `fast/` set as
-  unimplemented (selector vocabulary mismatch between the seeded
-  fixture and the upstream template defaults); the driver suppresses
-  those entries.
+  cerberus tracks against the upstream corpus. Entries under
+  `should_skip:` are suppressed before the wire call (recorded in the
+  report as `skipReason` with no failure flag flipped);
+  `should_fail:` is reserved for the Prom-shape `unexpectedSuccess`
+  semantics (expected hard failures). Every entry requires a non-empty
+  `reason:` plus a `jira:` reference; the CI gate at
+  `scripts/check-skip-additions.sh` rejects new entries that omit
+  either.
 - `dataset_metadata.json` — pinned dataset metadata that maps
   `${SELECTOR}` / `${LABEL_NAME}` / `${LABEL_VALUE}` template vars to
-  concrete values. The placeholder shipped by PR 2 (#369) is
-  preserved verbatim — it predates the PR 1 seeder's actual label
-  vocabulary, which is the gap PR 6 closes by extending the seeder
-  and regenerating this file via `cmd/discover/`.
+  concrete values produced by the seeder under `cmd/seed/`.
 
 ## Running the harness
 
@@ -229,13 +140,11 @@ DRIVER_RANGE_TYPE=instant just compat-logql
 just compat-logql-down
 ```
 
-The run script's contract:
+The run script's exit codes:
 
 - Exit 0 → no diffs on any query case (overlay-skipped cases count
   as passing).
-- Exit 1 → at least one diff or run-time failure (informational; the
-  CI lane in PR 4 will treat this as non-blocking until the corpus
-  shape matches the seeded fixture per PR 6).
+- Exit 1 → at least one diff or run-time failure.
 - Exit 2+ → harness itself failed (compose, seed, build).
 
 The driver writes a structured JSON report to `reports/diff.json`
@@ -259,26 +168,27 @@ whose envelope matches `compatibility/prometheus/report.json`:
       "unexpectedFailure": "",
       "unexpectedSuccess": false,
       "unsupported": false,
-      "skipReason": "Pending PR 6 seed expansion …"
+      "skipReason": ""
     }
   ]
 }
 ```
 
-Sharing the envelope with the Prom harness means one analyser (and,
-later, one expected-failures reconciliation script) can consume both.
+Sharing the envelope with the Prom harness means one analyser (and
+one expected-failures reconciliation script) consumes both.
 
 ## Licensing
 
-`grafana/loki` is **AGPL-3.0** ([upstream LICENSE](https://github.com/grafana/loki/blob/main/LICENSE)).
+`grafana/loki` is **AGPL-3.0**
+([upstream LICENSE](https://github.com/grafana/loki/blob/main/LICENSE)).
 The vendored snapshot inherits AGPL-3.0, and
 [`upstream/loki-bench/LICENSE`](upstream/loki-bench/LICENSE) is the
 verbatim copy.
 
 Cerberus itself is independently licensed (see the repo root
 `LICENSE`); the AGPL terms apply only to the vendored subtree under
-`upstream/loki-bench/`. The driver scripts (under `scripts/` plus
-`cmd/`) live OUTSIDE `upstream/` and are cerberus-licensed.
+`upstream/loki-bench/`. The driver scripts (`scripts/` plus `cmd/`)
+live OUTSIDE `upstream/` and are cerberus-licensed.
 
 ## Bump procedure
 
@@ -305,11 +215,7 @@ git clone --depth=1 -b "$TAG" https://github.com/grafana/loki /tmp/loki-upstream
 # 3. Wipe + re-copy the vendored paths. The `vendored_paths:` block in
 #    upstream/loki-bench/VERSION is the canonical inventory.
 rm -rf compatibility/loki/upstream/loki-bench/{queries,LICENSE,*.go}
-mkdir -p compatibility/loki/upstream/loki-bench/queries/fast \
-         compatibility/loki/upstream/loki-bench/queries/regression \
-         compatibility/loki/upstream/loki-bench/queries/exhaustive
-touch    compatibility/loki/upstream/loki-bench/queries/regression/.gitkeep \
-         compatibility/loki/upstream/loki-bench/queries/exhaustive/.gitkeep
+mkdir -p compatibility/loki/upstream/loki-bench/queries/{fast,regression,exhaustive}
 cp /tmp/loki-upstream/pkg/logql/bench/queries/fast/*.yaml \
    compatibility/loki/upstream/loki-bench/queries/fast/
 cp /tmp/loki-upstream/pkg/logql/bench/queries/schema.json \
@@ -331,7 +237,7 @@ $EDITOR compatibility/loki/upstream/loki-bench/VERSION
 
 ## Related docs
 
-- [`docs/loki-compliance-plan.md`](../../docs/loki-compliance-plan.md) — the rollout plan
+- [`docs/compatibility.md`](../../docs/compatibility.md) — cross-head playbook
 - [`docs/upstream-forks.md`](../../docs/upstream-forks.md) — how the `tsouza/loki` fork is wired (and why the bench corpus is outside it)
 - [`compatibility/prometheus/`](../prometheus/) — sibling Prom harness
-- [`compatibility/tempo/`](../tempo/) — sibling Tempo harness, PR 1 (#367)
+- [`compatibility/tempo/`](../tempo/) — sibling Tempo harness

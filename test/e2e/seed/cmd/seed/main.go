@@ -118,8 +118,6 @@ const (
 	// Playwright dashboard tests ran (~3–5 min after seed), the
 	// subquery `up[1m:30s]` looked back 1 min from request_time and
 	// missed the seed timestamp, returning 0 series intermittently.
-	// See docs/test-audit-2026-05-20.md follow-up + e2e run
-	// 26147340075 for the failure mode.
 	insertGaugeSQL = `INSERT INTO otel_metrics_gauge
   (ResourceAttributes, MetricName, MetricDescription, MetricUnit, Attributes, StartTimeUnix, TimeUnix, Value)
 SELECT

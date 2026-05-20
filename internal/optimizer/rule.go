@@ -14,8 +14,7 @@
 // its rules iterate. Batches run sequentially in the order Default()
 // returns them; within a batch, rules run in declared order.
 //
-// Rules themselves split into two contracts (DataFusion-style; see
-// docs/optimizer-research.md § 4):
+// Rules themselves split into two contracts (DataFusion-style):
 //
 //   - AnalyzerRule — semantic / must-run / idempotent. Lives in an
 //     Analyzer-strategy batch and runs before any OptimizerRule sees
@@ -79,10 +78,9 @@ func NewWithBatches(batches ...Batch) *Driver {
 	return &Driver{batches: batches}
 }
 
-// Default returns a Driver configured with all the seed v0.1 rules
-// grouped into Catalyst-style batches. The split borrows the DataFusion
-// `AnalyzerRule` vs `OptimizerRule` distinction (see
-// docs/optimizer-research.md § 4):
+// Default returns a Driver configured with all the seed rules grouped
+// into Catalyst-style batches. The split borrows the DataFusion
+// `AnalyzerRule` vs `OptimizerRule` distinction:
 //
 //   - "analyzer.constant-fold-semantic" (Analyzer, must-run) —
 //     ConstantFoldSemantic reduces literal-only arithmetic / comparison

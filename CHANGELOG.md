@@ -4,7 +4,7 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
-(Unreleased changes land here. See [`docs/roadmap.md`](docs/roadmap.md) for the milestone backlog.)
+(Unreleased changes land here.)
 
 ### Added
 
@@ -12,7 +12,7 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [v1.0.0-RC2]
 
-The advanced-QL + deferred-API release. Closes the RC2 backlog from [`docs/roadmap.md`](docs/roadmap.md) § RC2: PromQL subqueries (P0 4.1–4.11), `predict_linear` / `holt_winters` / `@start()` / `@end()`, `histogram_quantile` over both classic and native (exp) histograms, `group_left` / `group_right` cardinality edges; LogQL `| unpack`, `| pattern`, `| line_format`, `| decolorize`, `| label_format` template stages with Loki template funcs, `bytes_*` alignment, `/api/v1/tail` WebSocket, `/labels`, `/label/.../values`, `/series`, `/detected_fields`, `/patterns`, `/index/stats`, `/index/volume`; TraceQL `status = error` / `kind = client` enum statics, `sum / avg / max / min` over inner attributes, link traversal + span-event queries, set ops, `group / coalesce` pipeline elements, `histogram_over_time`, MetricsPipeline lowering, Tempo `/api/search/recent`, `/api/search/tags`, `/api/search/tag/<n>/values`, `/api/metrics/query_range`. The Tempo `unsafe.Pointer` shim is retired via the [`tsouza/tempo:cerberus-accessors`](https://github.com/tsouza/tempo/tree/cerberus-accessors) fork; the OTel CH Exporter schema is now the source of truth via the [`tsouza/opentelemetry-collector-contrib:cerberus-ddl`](https://github.com/tsouza/opentelemetry-collector-contrib/tree/cerberus-ddl) fork (no more hand-maintained DDL). ~71 PRs merged since `v1.0.0-RC1`.
+The advanced-QL release: PromQL subqueries (P0 4.1–4.11), `predict_linear` / `holt_winters` / `@start()` / `@end()`, `histogram_quantile` over both classic and native (exp) histograms, `group_left` / `group_right` cardinality edges; LogQL `| unpack`, `| pattern`, `| line_format`, `| decolorize`, `| label_format` template stages with Loki template funcs, `bytes_*` alignment, `/api/v1/tail` WebSocket, `/labels`, `/label/.../values`, `/series`, `/detected_fields`, `/patterns`, `/index/stats`, `/index/volume`; TraceQL `status = error` / `kind = client` enum statics, `sum / avg / max / min` over inner attributes, link traversal + span-event queries, set ops, `group / coalesce` pipeline elements, `histogram_over_time`, MetricsPipeline lowering, Tempo `/api/search/recent`, `/api/search/tags`, `/api/search/tag/<n>/values`, `/api/metrics/query_range`. The Tempo `unsafe.Pointer` shim is retired via the [`tsouza/tempo:cerberus-accessors`](https://github.com/tsouza/tempo/tree/cerberus-accessors) fork; the OTel CH Exporter schema is now the source of truth via the [`tsouza/opentelemetry-collector-contrib:cerberus-ddl`](https://github.com/tsouza/opentelemetry-collector-contrib/tree/cerberus-ddl) fork (no more hand-maintained DDL). ~71 PRs merged since `v1.0.0-RC1`.
 
 ### Added
 

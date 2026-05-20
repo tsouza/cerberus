@@ -8,9 +8,9 @@ import "github.com/tsouza/cerberus/internal/chplan"
 // the computed Lit (`1+2 → 3`, `1=0 → false`).
 //
 // This is the **semantic / must-run** flavour of constant folding
-// (DataFusion `AnalyzerRule` shape — see analyzer.go + § 4 of
-// docs/optimizer-research.md). Downstream rules assume that
-// pure-literal subtrees have already collapsed to a single Lit: a
+// (DataFusion `AnalyzerRule` shape — see analyzer.go). Downstream
+// rules assume that pure-literal subtrees have already collapsed to a
+// single Lit: a
 // PREWHERE-promotion rule that distinguishes `WHERE false` from
 // `WHERE 1=0` would silently miss the latter without this pass.
 //

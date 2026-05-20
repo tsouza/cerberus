@@ -6,10 +6,6 @@ ClickHouse result. The three HTTP heads (Prometheus, Loki, Tempo)
 each plug in as a `Lang` adapter; the engine owns the parse →
 optimize → emit → execute loop and the telemetry around it.
 
-This page describes the engine as it ships today. It is the
-reference doc — for the design rationale that produced this shape
-see [`docs/engine-evaluation.md`](engine-evaluation.md).
-
 ## Overview
 
 Cerberus has one shared query pipeline, not three. Each query

@@ -20,8 +20,7 @@
 //
 // The optimizer borrows DataFusion's distinction between AnalyzerRule
 // (semantic / must-run / idempotent) and OptimizerRule (heuristic /
-// optional / may iterate) — see docs/optimizer-research.md § 4 for the
-// rationale and the DataFusion docs at
+// optional / may iterate) — see the DataFusion docs at
 // https://docs.rs/datafusion-optimizer/latest/datafusion_optimizer/ for
 // the upstream contract. Spark Catalyst and DuckDB make a similar cut;
 // the Tsinghua "Selective Late Materialization" paper takes it as a
@@ -71,8 +70,7 @@
 // conditions — and an unexported `costModel` interface stub so v2
 // can swap in a real estimator (per Jindal VLDB 2018 §4–§6) without
 // touching the rule. See mv_substitution.go for the safety-condition
-// breakdown and docs/optimizer-research.md § 6 for the design
-// rationale.
+// breakdown.
 //
 // # File layout
 //

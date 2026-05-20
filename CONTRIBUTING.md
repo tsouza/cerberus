@@ -48,12 +48,12 @@ If `direnv allow` complains, `eval "$(direnv export bash)"` once per shell.
 
 ## Pull request flow
 
-1. **Pick a milestone.** [`docs/roadmap.md`](docs/roadmap.md) lists every RC1 milestone (M0.1 → M5.4) with one-line outcomes. Lower-numbered milestones generally come first.
-2. **Branch from current `main`.** Branch names match the work: `seed/m1.2-binary-expr`, `chore/bump-grafana-deps`, `fix/range-window-counter-reset`.
+1. **Open an issue first if the work is non-trivial.** Sketches, design questions, and bug reports go through GitHub Issues so the direction can be agreed before code lands.
+2. **Branch from current `main`.** Branch names match the work: `feat/promql-binary-expr`, `chore/bump-grafana-deps`, `fix/range-window-counter-reset`.
 3. **Write the failing fixture first.** For QL changes, that's a TXTAR under `test/spec/<ql>/`. Use the `/cerberus:add-fixture` skill if you're driving Claude Code.
 4. **Implement + iterate.** `just test` for the inner loop; `just lint` before pushing.
-5. **Commit with Conventional Commits.** Examples in [`docs/roadmap.md`](docs/roadmap.md) milestone tables.
-6. **Push + open PR.** Title matches the commit subject; body explains *why* + a Test plan checklist. Link the milestone draft in the [Project](https://github.com/users/tsouza/projects/1).
+5. **Commit with Conventional Commits.** Type + scope enforced by `commitlint`.
+6. **Push + open PR.** Title matches the commit subject; body explains *why* + a Test plan checklist.
 7. **CI green → squash-merge.** Branch deleted on merge.
 
 ### A good PR description
@@ -74,12 +74,16 @@ If you're touching the compatibility harness, include the JSON diff (`compatibil
 
 ## Testing layers
 
-`docs/roadmap.md` has the full table. Headline:
+[`docs/test-strategy.md`](docs/test-strategy.md) is the canonical layer
+map. Headline:
 
 - **Unit + spec (TXTAR)** — run on every PR; merge gate.
-- **PromQL compatibility** — `prometheus/compliance` Docker harness; merge gate for PRs touching `internal/promql/**`, `internal/chsql/**`, `internal/optimizer/**`.
-- **E2E (k3d + Grafana playwright)** — path-gated on `internal/api/**` + `test/e2e/k3s/**` + `test/e2e/grafana/**`; merge gate when touched.
-- **Mutation** — Gremlins nightly; informational, investigated weekly.
+- **Compatibility** — PromQL / LogQL / TraceQL differential harnesses
+  against reference Prom / Loki / Tempo; informational scores
+  published to the `compat-scores` branch.
+- **E2E (k3d + Grafana Playwright)** — path-gated on `internal/api/**`
+  + `test/e2e/k3s/**` + `test/e2e/grafana/**`; merge gate when touched.
+- **Mutation** — Gremlins nightly; per-phase 95% efficacy threshold.
 
 ## Project memory and AI assistants
 

@@ -3,8 +3,7 @@ package optimizer
 // Strategy describes how a Batch's rules are applied to the plan tree.
 //
 // Three cases ship today (mirroring Spark Catalyst's `Optimizer.scala`
-// plus DataFusion's analyzer/optimizer split — see
-// docs/optimizer-research.md § 4):
+// plus DataFusion's analyzer/optimizer split):
 //
 //   - Once — run every rule in the batch exactly once, in declared
 //     order. Use for genuinely-idempotent passes where re-running adds

@@ -91,8 +91,7 @@ func New(client Querier, s schema.Logs, logger *slog.Logger) *Handler {
 // the metadata endpoints (/labels, /label/{name}/values, /series,
 // /detected_fields, /patterns) cover what Grafana's logs UI queries to
 // populate label autocomplete, the streams chooser, and the patterns
-// panel. /patterns trains a drain template miner over the peek window
-// (see docs/loki-patterns-impl-plan.md § 3 PR B).
+// panel. /patterns trains a drain template miner over the peek window.
 func (h *Handler) Mount(mux *http.ServeMux) {
 	// Route every endpoint through the cerberus.queries.* counter +
 	// duration middleware. WebSocket /tail is included — a

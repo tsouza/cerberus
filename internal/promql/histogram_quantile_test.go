@@ -267,11 +267,10 @@ func TestLower_HistogramQuantile_OverAggregation_LeDropped(t *testing.T) {
 
 // TestLower_HistogramQuantile_OverAggregation_Native pins the chplan
 // shape for `histogram_quantile(phi, sum by(...) (rate(<sel>_exp_hist[r])))`.
-// Phase 2 (docs/native-histogram-plan.md § Phase 2) replaced the
-// stub-rejection error with a real lowering that mirrors the classic
-// aggregated-input path but threads exp-histogram merge math through
-// the inner Project (scale-fold + offset-align + zero-pad + element-
-// wise sum). The lowering must:
+// The native lowering mirrors the classic aggregated-input path but
+// threads exp-histogram merge math through the inner Project
+// (scale-fold + offset-align + zero-pad + element-wise sum). The
+// lowering must:
 //
 //   - Produce a Project(HistogramQuantileNative(Project(Aggregate(Filter(Scan))))) tree.
 //   - Drop `le` from any by-clause (same rule as the classic native

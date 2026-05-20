@@ -1,10 +1,6 @@
 // Differ + semantic-consistency layer for the Tempo /api/metrics/*
-// endpoints (PR 5 of docs/tempo-compliance-plan.md).
-//
-// PR 4's differ.go handles /api/search exclusively; PR 5 extends the
-// driver with metrics endpoints. Rather than retrofit Compare() to
-// switch on response shape, this file owns the metrics-side pipeline
-// end to end:
+// endpoints. The sibling differ.go covers /api/search; this file owns
+// the metrics-side pipeline end to end:
 //
 //   1. CompareMetrics  — structural diff of two MetricsResponse bodies
 //                        (label-set canonicalisation, sample epsilon).
