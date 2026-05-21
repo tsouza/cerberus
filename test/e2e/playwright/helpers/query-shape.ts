@@ -46,6 +46,18 @@ const METRIC_NAME_REGEX = /([a-zA-Z_:][a-zA-Z0-9_:]*)_bucket/;
  * draft of this helper did — inverts the label-shape rule for any
  * `without` panel and produces false-positive failures.
  *
+ * NOTE: this is the *syntactic* extractor — it returns every label
+ * keyword the user wrote inside `by(…)`. Some PromQL functions
+ * consume their inner aggregation labels and do NOT propagate them
+ * to the result series (notably `histogram_quantile(...)` consumes
+ * the `le` bucket-boundary label). The label-shape assertion runs
+ * against the *result* series, so callers comparing the rule
+ * against a response must use `expectedByKeys` (below), which
+ * subtracts the consumed labels per top-level call. Using
+ * `extractByKeys` directly against a response produces
+ * mathematically-impossible-to-satisfy assertions for any
+ * `histogram_quantile(... by (le, …) ...)` panel.
+ *
  * Examples:
  *   extractByKeys('sum by (a, b) (foo)')              → ['a', 'b']
  *   extractByKeys('count by (k) (rate(foo[5m]))')     → ['k']
@@ -55,6 +67,79 @@ const METRIC_NAME_REGEX = /([a-zA-Z_:][a-zA-Z0-9_:]*)_bucket/;
  */
 export function extractByKeys(expr: string): string[] {
   return extractKeysWithRegex(expr, BY_REGEX);
+}
+
+/**
+ * Labels that the listed top-level PromQL calls consume from their
+ * inner aggregation and therefore strip from the result series. The
+ * label-shape rule asserts against the *result*, so these labels
+ * MUST be subtracted before comparing the rule to the response.
+ *
+ * `histogram_quantile(q, <inner-bucketed-sum>)` — `le` is the bucket
+ * boundary label; the quantile collapses it into a scalar per
+ * remaining grouping. A panel like `histogram_quantile(0.95,
+ * sum by (le, cerberus_ql) (rate(foo_bucket[5m])))` produces series
+ * with `cerberus_ql` only, never `le`.
+ *
+ * The map is intentionally narrow — extend it only when a new
+ * top-level call is added that consumes inner aggregation labels.
+ * The default (function not listed) is "consumes nothing", which is
+ * the safe-by-default choice for label-shape: a missing entry
+ * surfaces as a real label-shape failure rather than a silent pass.
+ */
+const CONSUMED_BY_TOP_LEVEL_CALL: Record<string, readonly string[]> = {
+  histogram_quantile: ['le'],
+};
+
+/**
+ * Match the top-level PromQL call name (the outermost identifier
+ * before the first `(`). Returns null when the expression is not a
+ * function call — e.g. a bare metric name or a binary expression.
+ *
+ * The match is anchored on the start of the expression after
+ * leading whitespace; nested calls deeper in the AST aren't the
+ * top-level. We don't need a full PromQL parser here — the
+ * consumed-label table is small and the matched form is
+ * unambiguous.
+ */
+function topLevelCallName(expr: string): string | null {
+  const m = /^\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/.exec(expr);
+  return m ? (m[1] ?? null) : null;
+}
+
+/**
+ * The set of `by(…)` keys that MUST appear on the response series.
+ *
+ * Same as `extractByKeys`, with one refinement: if the top-level
+ * call consumes labels from its inner aggregation (currently only
+ * `histogram_quantile` → `le`), those labels are subtracted because
+ * they are gone from the result series by the time the response
+ * reaches the spec.
+ *
+ * This is the helper the panel-shape spec should call when asking
+ * "which labels must the response carry?" `extractByKeys` remains
+ * available for callers that need the raw syntactic extraction
+ * (the helpers.spec.ts unit tests use it to pin parser shape).
+ *
+ * Examples:
+ *   expectedByKeys('sum by (a, b) (foo)')
+ *     → ['a', 'b']
+ *   expectedByKeys('histogram_quantile(0.95, sum by (le, k) (rate(foo_bucket[5m])))')
+ *     → ['k']                       // le is consumed by histogram_quantile
+ *   expectedByKeys('histogram_quantile(0.95, sum by (le) (rate(foo_bucket[5m])))')
+ *     → []                          // every inner key is consumed
+ *   expectedByKeys('sum without (instance) (foo)')
+ *     → []                          // no by-clause
+ */
+export function expectedByKeys(expr: string): string[] {
+  const raw = extractByKeys(expr);
+  if (raw.length === 0) return raw;
+  const call = topLevelCallName(expr);
+  if (call === null) return raw;
+  const consumed = CONSUMED_BY_TOP_LEVEL_CALL[call];
+  if (consumed === undefined) return raw;
+  const consumedSet = new Set(consumed);
+  return raw.filter((k) => !consumedSet.has(k));
 }
 
 /**

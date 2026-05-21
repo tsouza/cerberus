@@ -32,6 +32,7 @@ import {
   assertLabelAbsent,
   assertLabelShape,
   assertNoFabricatedValue,
+  expectedByKeys,
   extractByKeys,
   extractDataSourceProxyURL,
   extractHistogramName,
@@ -68,6 +69,42 @@ test('extractByKeys ignores without-clauses entirely', () => {
   // drops. Conflating them was the bug the phase-1 split fixes.
   expect(extractByKeys('sum without (instance) (foo)')).toEqual([]);
   expect(extractByKeys('sum by (a) (sum without (b) (foo))')).toEqual(['a']);
+});
+
+test('expectedByKeys passes raw by-keys through for plain aggregations', () => {
+  // No top-level call consumes labels here — `expectedByKeys` is
+  // identity-mod-dedup over `extractByKeys`.
+  expect(expectedByKeys('sum by (a, b) (foo)')).toEqual(['a', 'b']);
+  expect(expectedByKeys('count by (k) (rate(foo[5m]))')).toEqual(['k']);
+  expect(expectedByKeys('sum(foo)')).toEqual([]);
+});
+
+test('expectedByKeys subtracts le when histogram_quantile is the top-level call', () => {
+  // The load-bearing case for this helper: the N2/N11/N14 spec
+  // wrote `assertLabelShape` against `by(le, cerberus_ql)` extracted
+  // from a histogram_quantile expression, but the quantile collapses
+  // `le` into a scalar before returning — so the result series have
+  // `cerberus_ql` only. The raw `extractByKeys` is therefore
+  // mathematically-impossible-to-satisfy on the response; the
+  // semantic `expectedByKeys` is what the spec must use.
+  expect(
+    expectedByKeys(
+      'histogram_quantile(0.95, sum by (le, cerberus_ql) (rate(cerberus_queries_duration_seconds_bucket[5m])))',
+    ),
+  ).toEqual(['cerberus_ql']);
+  expect(
+    expectedByKeys(
+      'histogram_quantile(0.95, sum by (le) (rate(foo_bucket[5m])))',
+    ),
+  ).toEqual([]);
+});
+
+test('expectedByKeys leaves le alone when histogram_quantile is NOT the top-level call', () => {
+  // Defence-in-depth: a panel that aggregates by `le` outside a
+  // `histogram_quantile` call legitimately surfaces `le` on the
+  // response (uncommon but valid). Only the top-level
+  // histogram_quantile path consumes the bucket-boundary label.
+  expect(expectedByKeys('sum by (le, k) (foo_bucket)')).toEqual(['le', 'k']);
 });
 
 test('extractWithoutKeys parses a single without-clause', () => {
