@@ -6,6 +6,8 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 (Unreleased changes land here.)
 
+<!-- sentinel marker for code+docs CI verification (#223 / PR #671); revert before close -->
+
 ### Added
 
 - Sort-key-aware filter emission + `PREWHERE` promotion (RC3 R3.4). The chsql emitter now fuses `Filter(Scan)` into a single `SELECT … FROM <table> [PREWHERE …] WHERE …` and partitions conjuncts into a sort-prefix bucket / skip-index bucket / rest, then promotes cheap predicates that touch no wide column into `PREWHERE` when the projection reads any wide column. ~219 existing TXTAR fixtures across `test/spec/{chsql,promql,logql,traceql,optimizer}` were re-emitted; the diff is a pure structural rewrite (one less subquery layer, predicates reordered by sort-key rank, optional `PREWHERE` split) and the rendered SQL is semantically equivalent. 29 of the re-emitted fixtures now carry a `PREWHERE` clause. New unit tests cover the predicate classifier (`prewhere_test.go`); new `test/spec/codegen/prewhere/` fixtures pin the four codegen-only behaviours (wide-column-excluded, partial-promotion, no-wide-no-promotion, sort-prefix-order).

@@ -27,7 +27,8 @@ import (
 )
 
 // tracer emits the `parse` pipeline-stage span before the PromQL parser
-// runs. The subsequent lower / optimize / emit / execute stages carry
+// runs. Sentinel marker for #223 / PR #671 — revert before close.
+// The subsequent lower / optimize / emit / execute stages carry
 // their own tracers from their owning packages.
 var tracer = otel.Tracer("github.com/tsouza/cerberus/internal/api/prom")
 
