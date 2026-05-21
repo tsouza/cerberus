@@ -27,7 +27,19 @@ func lowerVectorAggregation(e *syntax.VectorAggregationExpr, s schema.Logs, lc l
 	if !ok {
 		return nil, fmt.Errorf("logql: vector-aggregation inner is not an Expr (%T)", e.Left)
 	}
-	input, err := lower(innerExpr, s, lc)
+	// Thread the outer by-clause labels down so the inner range
+	// aggregation's identity wrap surfaces any top-level OTel-CH
+	// scalar columns this aggregate groups by (SeverityText,
+	// ServiceName, ...). The `without` clause is intentionally NOT
+	// plumbed — exclusion semantics don't reference specific columns
+	// to surface, they only strip keys from the existing identity.
+	// See [lowerCtx.OuterByLabels] and [withDetectedLevelAndColumns]
+	// for the consumer side.
+	innerLc := lc
+	if e.Grouping != nil && !e.Grouping.Without && len(e.Grouping.Groups) > 0 {
+		innerLc = lc.withOuterByLabels(e.Grouping.Groups)
+	}
+	input, err := lower(innerExpr, s, innerLc)
 	if err != nil {
 		return nil, err
 	}
@@ -151,6 +163,23 @@ func levelAwareGroupKey(label string, s schema.Logs) chplan.Expr {
 			Key: &chplan.LitString{V: detectedLevelLabel},
 		}
 	}
+	if col, ok := topLevelLogColumnFor(label, s); ok {
+		// Top-level OTel-CH columns (SeverityText, ServiceName, ...)
+		// surface in the post-RangeWindow scope only as keys inside
+		// the augmented identity map (see [withDetectedLevel] — the
+		// inner range Project inflates the map with these columns when
+		// the outer by-clause references them via OuterByLabels). The
+		// outer aggregate reads them back via MapAccess on the column
+		// name, matching the key the wrap wrote. Without this branch
+		// `attributeLookupColumn` would look up the column name in
+		// ResourceAttributes (where it isn't present) and the
+		// aggregate would collapse every row into one
+		// `{<col>:""}` series — the bug task #218 fixed.
+		return &chplan.MapAccess{
+			Map: &chplan.ColumnRef{Name: s.ResourceAttributesColumn},
+			Key: &chplan.LitString{V: col},
+		}
+	}
 	return attributeLookupColumn(s.ResourceAttributesColumn, label)
 }
 
@@ -166,6 +195,17 @@ func levelAwareGroupKey(label string, s schema.Logs) chplan.Expr {
 func levelAwareRangeGroupKey(label string, s schema.Logs) chplan.Expr {
 	if isDetectedLevelGroupingLabel(label) {
 		return detectedLevelExpr(s)
+	}
+	if col, ok := topLevelLogColumnFor(label, s); ok {
+		// At the inner range-aggregation layer the top-level OTel
+		// column (SeverityText, ServiceName, ...) is still in scope —
+		// the inner Project reads directly from the Scan — so the
+		// group-key resolves to a plain ColumnRef rather than a map
+		// lookup. The outer aggregation's
+		// [levelAwareGroupKey] hops through the augmented
+		// ResourceAttributes map instead, since the post-RangeWindow
+		// scope only exposes the identity map.
+		return topLevelColumnRef(col)
 	}
 	return attributeLookupColumn(s.ResourceAttributesColumn, label)
 }

@@ -344,6 +344,22 @@ test('compose: home, drilldown app, and every provisioned dashboard load without
   const partitionFailures = await driveCerberusQLPartition(page, baseURL);
   failures.push(...partitionFailures);
 
+  // 7. LogQL by-severity partition sweep.
+  //
+  //    The otel-fixture-explorer dashboard's "Log volume by severity"
+  //    panel fires `sum by (SeverityText) (rate({service_name=~".+"}
+  //    [5m]))`. SeverityText is a top-level otel_logs column, not a
+  //    key inside ResourceAttributes — pre-fix, the lowering looked it
+  //    up as `ResourceAttributes['SeverityText']` and the panel
+  //    collapsed every row into a single anonymous series. Task #218
+  //    plumbed the outer by-clause down so the inner range identity
+  //    surfaces SeverityText into the augmented map. The sweep asserts
+  //    the panel's response renders ≥ 2 distinct severity legend
+  //    entries (compose seeds INFO / WARN / ERROR rows, so a healthy
+  //    stack yields 3).
+  const severityFailures = await driveSeverityPartition(page, baseURL);
+  failures.push(...severityFailures);
+
   if (failures.length > 0) {
     const header = `compose-grafana-smoke caught ${failures.length} failure(s) across ${surfaces.length} surface(s):`;
     const surfaceList = surfaces
@@ -666,6 +682,126 @@ async function driveCerberusQLPartition(
     failures.push(
       `[partition:${panelTitle}] expected ≥ 2 grouped series (cerberus_ql=promql/logql/traceql) but saw ${maxSeries}\n  ` +
         `regression of task #214 — dotted-OTel-key lookup fell back to a single anonymous bucket`,
+    );
+  }
+
+  return failures;
+}
+
+/**
+ * Drive the otel-fixture-explorer → "Log volume by severity" panel and
+ * assert the LogQL `sum by (SeverityText) (rate(...))` lowering returns
+ * at least 2 distinct severity series.
+ *
+ * Pre-fix bug shape (task #218): the LogQL lowering resolved every
+ * outer by-clause label as `ResourceAttributes[<label>]`. SeverityText
+ * is a top-level otel_logs column (not a key inside ResourceAttributes),
+ * so the lookup returned the empty string for every row and the panel
+ * collapsed every severity into a single `{SeverityText:""}` series.
+ * The fix plumbs the outer by-clause down through lowerCtx so the
+ * inner range identity wrap surfaces SeverityText into the augmented
+ * map, and the outer Aggregate reads it back via MapAccess.
+ *
+ * The assertion targets the /api/ds/query response the panel fires:
+ * the JSON envelope's `data.result` array must carry at least 2
+ * entries. The compose seeder writes INFO / WARN / ERROR rows
+ * (test/e2e/seed/cmd/seed/main.go) so a healthy stack yields 3; we
+ * assert ≥ 2 to tolerate a stack where one severity momentarily has
+ * no samples.
+ *
+ * If the panel isn't provisioned in the current stack (compose
+ * variant without the otel-fixture-explorer dashboard) the function
+ * returns cleanly — the dashboard sweep above already covers the
+ * "panel exists" case.
+ */
+async function driveSeverityPartition(
+  page: Page,
+  baseURL: string,
+): Promise<string[]> {
+  const failures: string[] = [];
+
+  // Capture ds/query responses BEFORE navigation so the panel's
+  // initial fetch is in our buffer when the load settles.
+  const captured: { url: string; body: string; status: number }[] = [];
+  const onResponse = async (resp: Response) => {
+    const url = resp.url();
+    if (!url.includes('/api/ds/query')) return;
+    let body = '';
+    try {
+      body = await resp.text();
+    } catch {
+      body = '';
+    }
+    captured.push({ url, body, status: resp.status() });
+  };
+  page.on('response', onResponse);
+
+  try {
+    await page.goto(`${baseURL}/d/otel-fixture-explorer`, {
+      waitUntil: 'domcontentloaded',
+      timeout: 90_000,
+    });
+    await page
+      .waitForLoadState('networkidle', { timeout: 45_000 })
+      .catch(() => {});
+  } finally {
+    page.off('response', onResponse);
+  }
+
+  const panelTitle = 'Log volume by severity';
+  const panelLocator = page.locator(
+    `[data-testid="data-testid Panel header ${panelTitle}"]`,
+  );
+  if ((await panelLocator.count()) === 0) {
+    return failures;
+  }
+
+  // Find a ds/query response whose body references `SeverityText`
+  // (the panel's group-by key). Grafana 11.x stringifies the parsed
+  // LogQL into the response envelope alongside the result, so
+  // `body.includes('SeverityText')` narrows to the panel's request
+  // without parsing the JSON.
+  const panelResponses = captured.filter((c) => c.body.includes('SeverityText'));
+  if (panelResponses.length === 0) {
+    failures.push(
+      `[partition:${panelTitle}] no /api/ds/query response referenced SeverityText — Grafana may have served the panel from cache; rerun with cleared session if seen`,
+    );
+    return failures;
+  }
+
+  let maxSeries = 0;
+  for (const resp of panelResponses) {
+    if (resp.status < 200 || resp.status > 299) {
+      failures.push(
+        `[partition:${panelTitle}] /api/ds/query → ${resp.status}\n  url: ${resp.url}\n  body: ${truncate(resp.body, 600)}`,
+      );
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(resp.body) as {
+        results?: Record<string, { frames?: Array<{ schema?: { fields?: unknown[] } }> }>;
+      };
+      const results = parsed.results ?? {};
+      for (const refID of Object.keys(results)) {
+        const frames = results[refID]?.frames ?? [];
+        if (frames.length > maxSeries) {
+          maxSeries = frames.length;
+        }
+      }
+    } catch (err) {
+      failures.push(
+        `[partition:${panelTitle}] response body is not valid JSON: ${truncate(
+          (err as Error).message,
+          200,
+        )}\n  body: ${truncate(resp.body, 600)}`,
+      );
+    }
+  }
+
+  if (maxSeries < 2) {
+    failures.push(
+      `[partition:${panelTitle}] expected ≥ 2 grouped severity series (INFO/WARN/ERROR seed) but saw ${maxSeries}\n  ` +
+        `regression of task #218 — top-level OTel column lookup collapsed to a single empty-string bucket`,
     );
   }
 

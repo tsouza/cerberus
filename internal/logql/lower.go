@@ -50,6 +50,33 @@ type lowerCtx struct {
 	Start time.Time
 	End   time.Time
 	Step  time.Duration
+
+	// OuterByLabels carries the by-clause labels of an enclosing
+	// vector aggregation (`sum by (SeverityText, ServiceName) (rate(...))`)
+	// down into the inner range aggregation's identity Project. When
+	// one of these labels names a top-level OTel-CH scalar column
+	// (SeverityText, ServiceName, SeverityNumber, ...) that lives
+	// outside ResourceAttributes, the inner range Project surfaces it
+	// into the augmented identity map so the outer Aggregate's
+	// `ResourceAttributes[<label>]` lookup resolves to the column's
+	// per-row value rather than the empty string. Without this plumb,
+	// `sum by (SeverityText) (rate({}[5m]))` collapsed every row into
+	// one series `{SeverityText:""}` because `SeverityText` is a
+	// top-level otel_logs column, not a key inside the
+	// ResourceAttributes Map. See [withDetectedLevel] for the wrap
+	// that consumes this list and [topLevelLogColumnFor] for the
+	// label→column resolution.
+	OuterByLabels []string
+}
+
+// withOuterByLabels returns a copy of c with OuterByLabels set to
+// labels. Used by [lowerVectorAggregation] before recursing into the
+// inner range aggregation so the inner identity can surface any
+// top-level OTel-CH columns the outer by-clause references.
+func (c lowerCtx) withOuterByLabels(labels []string) lowerCtx {
+	out := c
+	out.OuterByLabels = labels
+	return out
 }
 
 // hasTimeWindow reports whether the context carries a non-degenerate

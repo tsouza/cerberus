@@ -139,7 +139,7 @@ func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs, lc low
 		identityBase = &chplan.MapWithoutKeys{Map: labelsExpr, Keys: []string{e.Left.Unwrap.Identifier}}
 	}
 	identityProj := chplan.Projection{
-		Expr:  withDetectedLevel(s, identityBase),
+		Expr:  withDetectedLevelAndColumns(s, identityBase, lc.OuterByLabels),
 		Alias: s.ResourceAttributesColumn,
 	}
 	if groupBy != nil {
