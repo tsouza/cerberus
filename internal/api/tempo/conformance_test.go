@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -98,8 +99,25 @@ func TestConformance_TempoVersionWire(t *testing.T) {
 }
 
 // TestConformance_TempoSearchWire — empty + happy + multi-trace payloads.
+//
+// Also pins the spec-compliant traceID hex shape (issue #209): every
+// hex-shaped traceID on /api/search must be exactly 32 lowercase-hex
+// chars (the canonical hex encoding of OTel's 16-byte TraceId).
+// Cerberus historically stripped leading zeros to mirror reference
+// Tempo's wire-format defect; this property-style assertion catches
+// any regression that re-introduces stripping on the OUTPUT side
+// regardless of which sample shape drives the projection.
 func TestConformance_TempoSearchWire(t *testing.T) {
 	t.Parallel()
+
+	// Spec: TraceId is fixed 16 bytes → 32 lowercase-hex chars on
+	// the wire. Anything shorter is a spec violation.
+	traceIDHex := regexp.MustCompile(`^[0-9a-f]{32}$`)
+	// Hex-shape sentinel — used to skip synthetic-key fallback
+	// rows (e.g. `MetricName|TimestampNs`) that don't carry a real
+	// hex traceID, so we only apply the canonical-shape rule where
+	// the projection actually surfaced a hex value.
+	hexLike := regexp.MustCompile(`^[0-9a-f]+$`)
 
 	ts := time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC)
 	cases := []struct {
@@ -118,6 +136,39 @@ func TestConformance_TempoSearchWire(t *testing.T) {
 				{MetricName: "GET /api/users", Labels: map[string]string{"service.name": "frontend"}, Timestamp: ts, Value: 100_000_000},
 			},
 			path: "/api/search?q=%7B%20resource.service.name%20%3D%20%22frontend%22%20%7D",
+		},
+		{
+			// Issue #209: the projection now surfaces the OTel-CH
+			// column verbatim, so a leading-zero traceID must
+			// arrive as the canonical 32-char form, NOT the legacy
+			// stripped shape. Seeds two traces whose canonical hex
+			// starts with `00…` so any future reintroduction of
+			// zero-stripping surfaces here as a < 32-char wire
+			// value and trips the regex below.
+			name: "leading_zero_trace_ids_padded",
+			samples: []chclient.Sample{
+				{
+					MetricName: "GET /api/users",
+					Labels: map[string]string{
+						"service.name":            "frontend",
+						"__cerberus_traceID":      "00af843259b0a78f5cbe59e11cbaf66b",
+						"__cerberus_parentSpanID": "0000000000000000",
+					},
+					Timestamp: ts,
+					Value:     100_000_000,
+				},
+				{
+					MetricName: "POST /api/orders",
+					Labels: map[string]string{
+						"service.name":            "backend",
+						"__cerberus_traceID":      "00000000000000000000000000000001",
+						"__cerberus_parentSpanID": "0000000000000000",
+					},
+					Timestamp: ts,
+					Value:     200_000_000,
+				},
+			},
+			path: "/api/search?q=%7B%7D",
 		},
 	}
 	for _, c := range cases {
@@ -152,7 +203,99 @@ func TestConformance_TempoSearchWire(t *testing.T) {
 			case len(c.samples) > 0 && len(sr.Traces) == 0:
 				t.Errorf("Traces length: got 0, want non-empty (%d sample(s) seeded)", len(c.samples))
 			}
+			// Property: every hex-shaped traceID on the wire must
+			// match the OTel canonical 32-char lowercase-hex shape
+			// (issue #209). Skip synthetic-key fallback rows whose
+			// IDs aren't hex-only (e.g. `MetricName|Timestamp`).
+			for _, tr := range sr.Traces {
+				if tr.TraceID == "" || !hexLike.MatchString(tr.TraceID) {
+					continue
+				}
+				if !traceIDHex.MatchString(tr.TraceID) {
+					t.Errorf("traceID %q (len=%d) violates OTel canonical "+
+						"32-char hex shape; cerberus must NOT strip leading "+
+						"zeros on output (issue #209)",
+						tr.TraceID, len(tr.TraceID))
+				}
+			}
 		})
+	}
+}
+
+// TestConformance_TempoTraceByIDWire_HexShape pins the wire-format
+// invariant on /api/traces/{id}: every per-span TraceID / SpanID
+// surfacing in the JSON response must match the OTel canonical hex
+// shape (32 chars for trace IDs, 16 chars for span IDs, lowercase
+// hex). Issue #209.
+//
+// Seeds a span row whose IDs start with leading zeros (the worst-case
+// shape — reference Tempo's legacy wire layer would strip these) and
+// asserts both fields round-trip as the canonical fixed-width form.
+func TestConformance_TempoTraceByIDWire_HexShape(t *testing.T) {
+	t.Parallel()
+
+	const traceIDHex = "0000000000000000af843259b0a78f5c"
+	const spanIDHex = "00000000000000ab"
+	const parentSpanIDHex = "0000000000000000"
+
+	q := &stubQuerier{
+		samples: []chclient.Sample{{
+			MetricName: "GET /api/users",
+			Labels: map[string]string{
+				"service.name":             "frontend",
+				"__cerberus_traceID":       traceIDHex,
+				"__cerberus_spanID":        spanIDHex,
+				"__cerberus_parentSpanID":  parentSpanIDHex,
+				"__cerberus_spanKind":      "SPAN_KIND_SERVER",
+				"__cerberus_statusCode":    "STATUS_CODE_OK",
+				"__cerberus_spanAttrsJSON": "{}",
+			},
+			Timestamp: time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+			Value:     100_000_000,
+		}},
+	}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/traces/" + traceIDHex)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+	}
+	var tr tempo.TraceByIDResponse
+	if err := json.NewDecoder(resp.Body).Decode(&tr); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	trace32 := regexp.MustCompile(`^[0-9a-f]{32}$`)
+	span16 := regexp.MustCompile(`^[0-9a-f]{16}$`)
+	sawSpan := false
+	for _, b := range tr.Batches {
+		for _, sp := range b.Spans {
+			sawSpan = true
+			if !trace32.MatchString(sp.TraceID) {
+				t.Errorf("SpanEntry.TraceID = %q (len=%d), want canonical "+
+					"32-char hex (issue #209)", sp.TraceID, len(sp.TraceID))
+			}
+			if !span16.MatchString(sp.SpanID) {
+				t.Errorf("SpanEntry.SpanID = %q (len=%d), want canonical "+
+					"16-char hex (issue #209)", sp.SpanID, len(sp.SpanID))
+			}
+			// ParentSpanId may legitimately be empty on the wire
+			// (root span via the legacy fixture shape); when
+			// present it must match the canonical 16-char form.
+			if sp.ParentSpanID != "" && !span16.MatchString(sp.ParentSpanID) {
+				t.Errorf("SpanEntry.ParentSpanID = %q (len=%d), want canonical "+
+					"16-char hex (issue #209)", sp.ParentSpanID, len(sp.ParentSpanID))
+			}
+		}
+	}
+	if !sawSpan {
+		t.Fatalf("response carried no spans; cannot exercise hex-shape invariant")
 	}
 }
 

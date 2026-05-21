@@ -73,12 +73,13 @@ func TestNormaliseTraceID(t *testing.T) {
 	}
 }
 
-// TestStripLeadingHexZeros_RendersExpectedSQL pins the SQL shape emitted
-// by the leading-zero-stripping projection. The actual byte-level
-// stripping is exercised end-to-end by the Tempo compatibility harness
-// (which runs CH); this test guards the chsql contract — the function
-// name + argument shape that CH consumes.
-func TestStripLeadingHexZeros_RendersExpectedSQL(t *testing.T) {
+// TestStripLeadingHexZeros_EmitsBareColumn pins the EMIT-side contract
+// post-#209: `stripLeadingHexZeros` is a passthrough — the SQL must
+// reference the column directly and must NOT wrap it in
+// `replaceRegexpOne` (the legacy zero-stripping shape that violated
+// the OTel / Tempo wire-format spec). Guards against accidental
+// re-introduction of stripping on the response path.
+func TestStripLeadingHexZeros_EmitsBareColumn(t *testing.T) {
 	t.Parallel()
 
 	plan := &chplan.Project{
@@ -92,34 +93,30 @@ func TestStripLeadingHexZeros_RendersExpectedSQL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("emit: %v", err)
 	}
-	if !strings.Contains(sql, "replaceRegexpOne(`TraceId`,") {
-		t.Errorf("SQL missing replaceRegexpOne(`TraceId`, ...) call; got:\n%s", sql)
+	if strings.Contains(sql, "replaceRegexpOne") {
+		t.Errorf("SQL must not call replaceRegexpOne on trace-id columns "+
+			"(spec violation — issue #209); got:\n%s", sql)
 	}
-	// The two regex literals ride positional args; we don't pin their
-	// indices because the emitter may re-order, but they must be present.
-	wantLit := []string{"^0+([0-9a-f])", `\1`}
-	for _, want := range wantLit {
-		found := false
+	if !strings.Contains(sql, "`TraceId`") {
+		t.Errorf("SQL must reference TraceId column directly; got:\n%s", sql)
+	}
+	// The historical zero-strip regex literals must NOT bind as args.
+	for _, lit := range []string{"^0+([0-9a-f])", `\1`} {
 		for _, a := range args {
-			if s, ok := a.(string); ok && s == want {
-				found = true
-				break
+			if s, ok := a.(string); ok && s == lit {
+				t.Errorf("unexpected zero-strip regex literal %q in bound args %v", lit, args)
 			}
-		}
-		if !found {
-			t.Errorf("expected arg %q not in %v", want, args)
 		}
 	}
 }
 
-// TestCanonicalSampleProjections_StripsTraceIDLeadingZeros verifies the
-// /api/search projection routes TraceId through stripLeadingHexZeros so
-// the wire format matches Tempo's leading-zero-stripped shape. Without
-// this strip the canonical-key differ pairs the two backends'
-// summaries by mismatched keys (cerberus `00af…66b` vs Tempo
-// `af…66b`), generating spurious missing_in_a / missing_in_b reasons
-// per case.
-func TestCanonicalSampleProjections_StripsTraceIDLeadingZeros(t *testing.T) {
+// TestCanonicalSampleProjections_PreservesFullTraceID pins the EMIT
+// side of the /api/search projection: TraceId and ParentSpanId must
+// flow into the canonical Sample envelope WITHOUT being wrapped in
+// `replaceRegexpOne` (issue #209). The OTel-CH exporter already
+// writes the canonical 32-/16-char lowercase-hex form, so the wire
+// response must surface that exact form.
+func TestCanonicalSampleProjections_PreservesFullTraceID(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelTraces()
@@ -133,25 +130,30 @@ func TestCanonicalSampleProjections_StripsTraceIDLeadingZeros(t *testing.T) {
 	if err != nil {
 		t.Fatalf("emit: %v", err)
 	}
-	if !strings.Contains(sql, "replaceRegexpOne(`"+s.TraceIDColumn+"`,") {
-		t.Errorf("canonical search projection must wrap TraceId in replaceRegexpOne; got:\n%s", sql)
+	if strings.Contains(sql, "replaceRegexpOne(`"+s.TraceIDColumn+"`,") {
+		t.Errorf("canonical search projection must NOT wrap %s in "+
+			"replaceRegexpOne (spec violation — issue #209); got:\n%s",
+			s.TraceIDColumn, sql)
+	}
+	if strings.Contains(sql, "replaceRegexpOne(`"+s.ParentSpanIDColumn+"`,") {
+		t.Errorf("canonical search projection must NOT wrap %s in "+
+			"replaceRegexpOne (spec violation — issue #209); got:\n%s",
+			s.ParentSpanIDColumn, sql)
+	}
+	if !strings.Contains(sql, "`"+s.TraceIDColumn+"`") {
+		t.Errorf("canonical search projection must reference %s directly; got:\n%s",
+			s.TraceIDColumn, sql)
 	}
 }
 
-// TestSpansetAggregateSampleProjections_StripsTraceIDLeadingZeros pins
-// the wrap-projection used for `{ ... } | count() > 0`,
-// `| avg(duration) > 0`, and the other per-trace spanset aggregates
-// (see internal/traceql/aggregate.go). The inner Aggregate's
-// `GroupBy: [TraceId]` exposes the raw 32-char zero-padded hex from
-// the OTel-CH column; the outer wrap projection must route it
-// through stripLeadingHexZeros so the `__cerberus_traceID` reserved
-// label arrives at the compat differ in Tempo's leading-zero-stripped
-// form. Without this strip the differ pairs cerberus rows (e.g.
-// `00af843259b0a78f5cbe59e11cbaf66b`) against Tempo
-// (`af843259b0a78f5cbe59e11cbaf66b`) by mismatched keys, generating
-// spurious missing_in_a / missing_in_b reasons across the
-// spanset-aggregate compat cases.
-func TestSpansetAggregateSampleProjections_StripsTraceIDLeadingZeros(t *testing.T) {
+// TestSpansetAggregateSampleProjections_PreservesFullTraceID pins the
+// wrap-projection used for per-trace spanset aggregates (`{ ... } |
+// count() > 0`, `| avg(duration) > 0`, etc; see
+// internal/traceql/aggregate.go). The TraceId column the inner
+// Aggregate exposes must reach the `__cerberus_traceID` reserved-
+// label slot verbatim — no `replaceRegexpOne` wrapping — so the
+// canonical 32-char form survives to the wire (issue #209).
+func TestSpansetAggregateSampleProjections_PreservesFullTraceID(t *testing.T) {
 	t.Parallel()
 
 	projs := spansetAggregateSampleProjections()
@@ -164,15 +166,21 @@ func TestSpansetAggregateSampleProjections_StripsTraceIDLeadingZeros(t *testing.
 	if err != nil {
 		t.Fatalf("emit: %v", err)
 	}
-	if !strings.Contains(sql, "replaceRegexpOne(`TraceId`,") {
-		t.Errorf("spanset-aggregate projection must wrap TraceId in replaceRegexpOne; got:\n%s", sql)
+	if strings.Contains(sql, "replaceRegexpOne(`TraceId`,") {
+		t.Errorf("spanset-aggregate projection must NOT wrap TraceId in "+
+			"replaceRegexpOne (spec violation — issue #209); got:\n%s", sql)
+	}
+	if !strings.Contains(sql, "`TraceId`") {
+		t.Errorf("spanset-aggregate projection must reference TraceId directly; got:\n%s", sql)
 	}
 }
 
-// TestTraceByIDProjections_StripsAllIDColumns covers the
+// TestTraceByIDProjections_PreservesFullIDColumns covers the
 // /api/traces/{id} response path. TraceId, SpanId, and ParentSpanId
-// all need the leading-zero strip to match Tempo's response shape.
-func TestTraceByIDProjections_StripsAllIDColumns(t *testing.T) {
+// must all flow through the projection WITHOUT leading-zero stripping
+// so the wire payload conforms to the OTel / Tempo canonical hex
+// shapes (issue #209).
+func TestTraceByIDProjections_PreservesFullIDColumns(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelTraces()
@@ -187,9 +195,14 @@ func TestTraceByIDProjections_StripsAllIDColumns(t *testing.T) {
 		t.Fatalf("emit: %v", err)
 	}
 	for _, col := range []string{s.TraceIDColumn, s.SpanIDColumn, s.ParentSpanIDColumn} {
-		needle := "replaceRegexpOne(`" + col + "`,"
-		if !strings.Contains(sql, needle) {
-			t.Errorf("trace-by-id projection must wrap %s in replaceRegexpOne; SQL:\n%s", col, sql)
+		bad := "replaceRegexpOne(`" + col + "`,"
+		if strings.Contains(sql, bad) {
+			t.Errorf("trace-by-id projection must NOT wrap %s in "+
+				"replaceRegexpOne (spec violation — issue #209); SQL:\n%s", col, sql)
+		}
+		direct := "`" + col + "`"
+		if !strings.Contains(sql, direct) {
+			t.Errorf("trace-by-id projection must reference %s directly; SQL:\n%s", col, sql)
 		}
 	}
 }
