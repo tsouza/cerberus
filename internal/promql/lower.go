@@ -226,6 +226,34 @@ func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCt
 	// bug. The Project lands between the Scan/Filter and the per-mode
 	// wraps so PREWHERE-eligible matchers stay on the raw Scan
 	// (the optimizer's promotion path is untouched).
+	//
+	// Order-of-operations for `pred`: when the augmenting Project
+	// kicks in it preserves only the canonical Sample quadruple
+	// (MetricName, Attributes, TimeUnix, Value) on its output side —
+	// any raw scan column the matcher predicate references
+	// (`ServiceName` in particular, via the `service_name` coalesce
+	// chain from PR #679 / task #232) goes out of scope above the
+	// Project. The downstream LWR / range-vector wrappers would then
+	// apply the matcher Filter ON TOP of the augmented Project and CH
+	// rejects the query with `Unknown expression or function
+	// identifier 'ServiceName'` (HTTP 502, error 47 — caught by PR
+	// #681's Phase-3 filter-drill sweep on
+	// `topk(10, sum by (service_name) (rate({__name__=~".+",service_name="api"}[5m])))`).
+	// The fix sinks `pred` to a Filter immediately above the raw
+	// scan-side input BEFORE augmenting — at that layer every raw
+	// column (including ServiceName) is still in scope and the
+	// optimizer's PREWHERE promotion path still sees the matcher
+	// Filter directly above the Scan. The downstream wrappers then
+	// receive `pred=nil` and only attach the LWR / staleness time
+	// bounds (which reference TimeUnix, preserved by the augment).
+	//
+	// The bucket-suffix case at L188-204 bakes pred into the
+	// fan-out's inner Filter and zeroes pred before this point, so
+	// the branch below is a no-op for that path.
+	if pred != nil && augmentAttributesForOuterBy(s, ctx.outerByLabels) != nil {
+		selectorInput = &chplan.Filter{Input: selectorInput, Predicate: pred}
+		pred = nil
+	}
 	selectorInput = augmentSelectorAttributes(selectorInput, ctx, s)
 
 	if ctx.inRangeVector {
