@@ -1,4 +1,10 @@
-import { test, expect, type Response, type Page } from '@playwright/test';
+import {
+  test,
+  expect,
+  type Response,
+  type Page,
+  type APIRequestContext,
+} from '@playwright/test';
 
 /**
  * Compose-stack Grafana catch-net.
@@ -63,8 +69,14 @@ test('compose: home, drilldown app, and every provisioned dashboard load without
   request,
 }, testInfo) => {
   // The drilldown app + multi-surface sweep is heavier than the old
-  // dashboard-only loop; bump the overall budget to 6 minutes.
-  testInfo.setTimeout(360_000);
+  // dashboard-only loop; bump the overall budget to 8 minutes. The
+  // extra 2 minutes (vs the prior 6m budget) absorbs the ~95s self-
+  // traffic seed `driveCerberusQLPartition` now runs before its
+  // [5m]-rate panel assertion (see seedCerberusSelfTraffic) — without
+  // that seed, fresh compose stacks flaked when the lower-volume
+  // `traceql` head landed only a single OTel export inside the rate
+  // window (#664/#681/#682 on 2026-05-21).
+  testInfo.setTimeout(480_000);
 
   const baseURL = process.env.GRAFANA_BASE_URL ?? 'http://localhost:3000';
 
@@ -344,7 +356,7 @@ test('compose: home, drilldown app, and every provisioned dashboard load without
   //    legend / table renders ≥ 2 distinct grouped series — the three
   //    cerberus heads (`promql`, `logql`, `traceql`) are the seed
   //    contract, and any ≥ 2 catches the regression cleanly.
-  const partitionFailures = await driveCerberusQLPartition(page, baseURL);
+  const partitionFailures = await driveCerberusQLPartition(page, baseURL, request);
   failures.push(...partitionFailures);
 
   // 7. LogQL by-severity partition sweep.
@@ -594,8 +606,39 @@ async function driveTraceClick(page: Page, baseURL: string): Promise<string[]> {
 async function driveCerberusQLPartition(
   page: Page,
   baseURL: string,
+  request: APIRequestContext,
 ): Promise<string[]> {
   const failures: string[] = [];
+
+  // Seed cerberus self-traffic across the rate-window boundary BEFORE
+  // navigating to the dashboard.
+  //
+  // Why this exists: the panel fires
+  //   `sum by (cerberus_ql) (rate(cerberus_queries_total[5m]))`
+  // and `rate()` needs ≥ 2 distinct samples per series inside the
+  // window. `cerberus_queries_total` is fed by cerberus's OTel SDK
+  // `PeriodicReader` (internal/telemetry/telemetry.go), which exports
+  // on its 60s default interval. On a freshly-started compose stack,
+  // the surfaces sweep above hits each head only a handful of times —
+  // enough for the dashboard-load assertions, but borderline for the
+  // ≥ 2-samples-per-cerberus_ql contract. PRs #664/#681/#682 flaked
+  // here exactly when the lower-volume head (`traceql`) landed only a
+  // single export batch inside the rate window.
+  //
+  // The fix fires two self-traffic bursts straddling an OTel export
+  // boundary, guaranteeing the next two exports land monotonically-
+  // increasing counter values for promql / logql / traceql:
+  //   t=0    burst 1: 6 hits each to /api/v1/query (prom),
+  //          /loki/api/v1/query (loki), /api/search (tempo)
+  //   t=75s  burst 2: same shape — counter grows, next export
+  //          publishes a sample distinct from burst 1's
+  //   t=95s  proceed: ≥2 samples per cerberus_ql now inside [5m]
+  //
+  // 95s seed > 60s OTel interval × 1, so even a worst-case "burst 1
+  // landed just before an export tick" still leaves ≥ 1 export between
+  // bursts. The 6-hit count per burst tolerates a single sporadic
+  // request failure without dropping a head off the legend.
+  await seedCerberusSelfTraffic(request, baseURL);
 
   // Capture ds/query responses BEFORE navigation so the panel's
   // initial fetch is in our buffer when the load settles.
@@ -935,6 +978,84 @@ async function collectPanelErrors(
         return { title, message };
       }),
     );
+}
+
+/**
+ * Fire two self-traffic bursts at cerberus, spaced across an OTel
+ * export boundary, so the next two PeriodicReader exports publish
+ * monotonically-increasing samples of `cerberus_queries_total` for
+ * each `cerberus_ql` label value (promql / logql / traceql).
+ *
+ * Burst-1 → wait 75s → burst-2 → wait 20s. Total ≈ 95s. With cerberus's
+ * SDK default 60s metric export interval, this guarantees at least one
+ * export tick lands between the two bursts (so the second sample's
+ * counter value is strictly greater than the first), and a final tick
+ * has time to flush burst-2 to ClickHouse before the panel query fires.
+ *
+ * Errors per individual request are swallowed: the partition assertion
+ * downstream needs ≥ 2 of the three heads on the legend, so a single
+ * sporadic failure shouldn't tip a healthy stack into a false-flake.
+ * Burst sizes are sized at 6 so even half-failing is fine.
+ */
+async function seedCerberusSelfTraffic(
+  request: APIRequestContext,
+  grafanaBaseURL: string,
+): Promise<void> {
+  // Cerberus URL: env override (the compose-smoke job sets CERBERUS_URL),
+  // else fall back to the Grafana datasource-proxy path — works in both
+  // direct-host and proxied configurations.
+  const cerberusURL = process.env.CERBERUS_URL;
+  const headTargets: Array<{
+    ql: 'promql' | 'logql' | 'traceql';
+    direct: string;
+    proxied: string;
+  }> = [
+    {
+      ql: 'promql',
+      direct: '/api/v1/query?query=up',
+      proxied: '/api/datasources/proxy/uid/cerberus-prometheus/api/v1/query?query=up',
+    },
+    {
+      ql: 'logql',
+      direct: `/loki/api/v1/query?query=${encodeURIComponent('{service_name=~".+"}')}`,
+      proxied: `/api/datasources/proxy/uid/cerberus-loki/loki/api/v1/query?query=${encodeURIComponent(
+        '{service_name=~".+"}',
+      )}`,
+    },
+    {
+      ql: 'traceql',
+      direct: `/api/search?q=${encodeURIComponent('{}')}`,
+      proxied: `/api/datasources/proxy/uid/cerberus-tempo/api/search?q=${encodeURIComponent('{}')}`,
+    },
+  ];
+
+  const fireBurst = async () => {
+    const HITS_PER_HEAD = 6;
+    for (const t of headTargets) {
+      for (let i = 0; i < HITS_PER_HEAD; i++) {
+        const url = cerberusURL
+          ? `${cerberusURL}${t.direct}`
+          : `${grafanaBaseURL}${t.proxied}`;
+        try {
+          await request.get(url, { timeout: 5_000 });
+        } catch {
+          // Sporadic individual failures are tolerated — the downstream
+          // assertion only needs ≥ 2 of the three heads on the legend.
+        }
+      }
+    }
+  };
+
+  await fireBurst();
+  // Wait long enough that a 60s OTel PeriodicReader export tick lands
+  // between bursts. 75s > 60s × 1, so even a worst-case "burst 1 landed
+  // just before an export" still publishes a sample with the burst-1
+  // counter value before burst 2 grows it.
+  await new Promise<void>((resolve) => setTimeout(resolve, 75_000));
+  await fireBurst();
+  // Give the post-burst-2 export tick + collector flush + CH insert time
+  // to settle so the panel's [5m] window sees both samples.
+  await new Promise<void>((resolve) => setTimeout(resolve, 20_000));
 }
 
 function truncate(s: string, n: number): string {
