@@ -309,6 +309,27 @@ test('compose: home, drilldown app, and every provisioned dashboard load without
     }
   }
 
+  // 5. Trace-click drill-through.
+  //
+  //    Grafana 11.x's Tempo datasource plugin sends
+  //    `Accept: application/protobuf` to `/api/traces/{id}` and
+  //    `proto.Unmarshal`-s the body into a `tempopb.Trace`. cerberus
+  //    used to always return JSON, which surfaced on the Grafana side
+  //    as `proto: illegal wireType …` → an `/api/ds/query` 500 + a red
+  //    "Query error" banner in the trace view. The fix is the proto
+  //    Accept branch on the cerberus handler; this drill-through
+  //    asserts the round trip is clean.
+  //
+  //    We locate the "Slow cerberus traces" panel on cerberus-self,
+  //    click the first row's trace-ID link, wait for Grafana's
+  //    `/explore` navigation, and re-run the same `/api/ds/query` +
+  //    DOM error sweeps over the new view. If no traces exist on the
+  //    dev stack (the seeder hasn't run, or the dashboard panel
+  //    renders "No data"), the click is a no-op — we skip the
+  //    assertion rather than fail on missing fixture data.
+  const traceClickFailures = await driveTraceClick(page, baseURL);
+  failures.push(...traceClickFailures);
+
   if (failures.length > 0) {
     const header = `compose-grafana-smoke caught ${failures.length} failure(s) across ${surfaces.length} surface(s):`;
     const surfaceList = surfaces
@@ -321,6 +342,145 @@ test('compose: home, drilldown app, and every provisioned dashboard load without
     throw new Error(`${header}\n${detail}`);
   }
 });
+
+/**
+ * Drive the cerberus-self → "Slow cerberus traces" panel → click a
+ * trace row → land on /explore drill-through and assert no
+ * ds/query 500, no DOM error banner, no "illegal wireType" text.
+ *
+ * Returns a list of failure strings (empty if the flow is clean OR
+ * if no clickable trace row exists on the panel — both are
+ * acceptable states on the compose-stack catch-net, which only
+ * asserts when there's something to click).
+ */
+async function driveTraceClick(page: Page, baseURL: string): Promise<string[]> {
+  const failures: string[] = [];
+
+  // 1. Navigate to the cerberus-self dashboard and wait for panels to settle.
+  await page.goto(`${baseURL}/d/cerberus-self`, {
+    waitUntil: 'domcontentloaded',
+    timeout: 90_000,
+  });
+  await page
+    .waitForLoadState('networkidle', { timeout: 45_000 })
+    .catch(() => {
+      // Stuck loading is reported by the sweep above; here we just
+      // proceed with whatever rendered.
+    });
+
+  // 2. Find a clickable trace-ID link inside the panel header
+  //    "Slow cerberus traces". The Grafana table panel renders the
+  //    `traceID` column as anchor `<a>` elements whose href starts
+  //    with `/explore?...` — that's the affordance we want.
+  const panelTitle = 'Slow cerberus traces (>100ms)';
+  const panelLocator = page.locator(
+    `[data-testid="data-testid Panel header ${panelTitle}"]`,
+  );
+  if ((await panelLocator.count()) === 0) {
+    // Dashboard not provisioned in this stack — nothing to click; the
+    // dashboard sweep above already covers the "panel exists" case.
+    return failures;
+  }
+
+  // The link selector tolerates Grafana 11.x's two anchor renderings
+  // (data-link cell vs button-style cell). We restrict by panel
+  // ancestry so we don't pick a link from a sibling panel.
+  const panelContainer = panelLocator
+    .locator(
+      'xpath=ancestor::*[@data-testid and starts-with(@data-testid, "data-testid Panel container")][1]',
+    )
+    .first();
+  const traceLink = panelContainer
+    .locator('a[href*="/explore"]')
+    .first();
+
+  // Wait briefly for the panel data to settle; if the panel renders
+  // "No data" the count stays 0 and we skip the click.
+  const linkCount = await traceLink.count();
+  if (linkCount === 0) {
+    return failures;
+  }
+
+  // 3. Subscribe to responses BEFORE the click so we catch the
+  //    /api/ds/query the drill-through fires.
+  const captured: Response[] = [];
+  const onResponse = (resp: Response) => {
+    if (resp.url().includes('/api/ds/query')) {
+      captured.push(resp);
+    }
+  };
+  page.on('response', onResponse);
+
+  try {
+    await Promise.all([
+      page.waitForURL(/\/explore/, { timeout: 60_000 }).catch(() => {}),
+      traceLink.click({ timeout: 10_000 }),
+    ]);
+    await page
+      .waitForLoadState('networkidle', { timeout: 45_000 })
+      .catch(() => {});
+  } finally {
+    page.off('response', onResponse);
+  }
+
+  // 4a. /api/ds/query status sweep over what the click fired.
+  for (const resp of captured) {
+    const status = resp.status();
+    if (status >= 500) {
+      let body = '';
+      try {
+        body = await resp.text();
+      } catch {
+        body = '<unreadable>';
+      }
+      failures.push(
+        `[trace-click] /api/ds/query → ${status}\n  body: ${truncate(body, 800)}`,
+      );
+    }
+  }
+
+  // 4b. /api/ds/query tunneled-error sweep — Grafana 200s the
+  //     request and pushes the error string into the body. The proto
+  //     decode failure surfaces here verbatim:
+  //     `failed to convert tempo response to Otlp: proto: illegal wireType N`.
+  for (const resp of captured) {
+    if (resp.status() < 200 || resp.status() > 299) continue;
+    let parsed: { results?: Record<string, { error?: string }> };
+    try {
+      parsed = (await resp.json()) as typeof parsed;
+    } catch {
+      continue;
+    }
+    for (const [refId, target] of Object.entries(parsed.results ?? {})) {
+      if (target && typeof target.error === 'string' && target.error.length > 0) {
+        failures.push(
+          `[trace-click] ds-query: refId=${refId}\n  error: ${truncate(target.error, 800)}`,
+        );
+      }
+    }
+  }
+
+  // 4c. DOM-level "Query error" / "illegal wireType" / "plugin.downstreamError"
+  //     sweep. Grafana's red error banner aria-labels itself with the
+  //     plugin error string, and the body sometimes shows the same
+  //     text in a `role="alert"` container.
+  const alerts = await page
+    .locator('[role="alert"]')
+    .evaluateAll((nodes) => nodes.map((n) => n.textContent ?? ''));
+  for (const text of alerts) {
+    const lc = text.toLowerCase();
+    if (
+      lc.includes('illegal wiretype') ||
+      lc.includes('plugin.downstreamerror') ||
+      lc.includes('query error') ||
+      lc.includes('failed to convert tempo response')
+    ) {
+      failures.push(`[trace-click] DOM alert: ${truncate(text, 400)}`);
+    }
+  }
+
+  return failures;
+}
 
 /**
  * Find panels still in the loading state. Returns the panel titles.

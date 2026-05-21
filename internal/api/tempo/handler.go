@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/gogo/protobuf/proto"
+	"github.com/grafana/tempo/pkg/tempopb"
 	"github.com/grafana/tempo/pkg/traceql"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
@@ -376,8 +378,26 @@ func (h *Handler) handleTraceByID(w http.ResponseWriter, r *http.Request) {
 	h.Logger.Debug("cerberus tempo traceByID", "trace_id", traceID, "sql", res.SQL, "args", res.Args)
 
 	writeEngineHeaders(w, res.Headers)
+
+	// Grafana 11.x's Tempo datasource plugin sends
+	// `Accept: application/protobuf` and proto.Unmarshal-s the response
+	// body into a *tempopb.Trace; a JSON body surfaces on the Grafana
+	// side as "proto: illegal wireType …" and the "click trace" UX
+	// fails. Negotiate up-front so both the empty (404) and the
+	// happy-path (200) branches emit the right wire format. See
+	// handler_trace_proto.go for the Accept-header allow-list and the
+	// proto sibling of groupBatches.
+	proto := negotiateTraceByIDProto(r.Header.Get("Accept"))
+
 	if len(res.Samples) == 0 {
-		// Tempo's "trace not found" shape — Grafana renders the right UI.
+		// Tempo's "trace not found" shape. Reference Tempo returns an
+		// empty proto-encoded *tempopb.Trace under Accept: protobuf
+		// (Grafana renders the same "trace not found" UI from an empty
+		// trace) and the JSON error envelope under Accept: json.
+		if proto {
+			writeTraceProto(w, http.StatusNotFound, &tempopb.Trace{})
+			return
+		}
 		writeJSON(w, http.StatusNotFound, ErrorResponse{
 			TraceID: traceID, SpanID: "", Error: true,
 			Message: fmt.Sprintf("trace not found: %s", traceID),
@@ -385,6 +405,10 @@ func (h *Handler) handleTraceByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if proto {
+		writeTraceProto(w, http.StatusOK, groupBatchesProto(res.Samples))
+		return
+	}
 	writeJSON(w, http.StatusOK, TraceByIDResponse{
 		Batches: groupBatches(res.Samples),
 	})
@@ -1221,6 +1245,31 @@ func splitTraceByIDLabels(labels map[string]string) (resourceAttrs, spanAttrs, m
 // encoding identically across all three handlers.
 func writeJSON(w http.ResponseWriter, status int, body any) {
 	httperr.WriteJSON(w, status, body)
+}
+
+// writeTraceProto marshals a *tempopb.Trace and writes it with
+// Content-Type: application/protobuf so Grafana's Tempo plugin can
+// proto.Unmarshal the body directly. Mirrors reference Tempo's
+// `/api/traces/{id}` Accept-protobuf branch (see
+// grafana/tempo:cmd/tempo/app/...querier.go) — same Content-Type,
+// same payload shape (root *tempopb.Trace), same status semantics.
+//
+// On marshal failure we fall back to a JSON error envelope rather
+// than half-writing a malformed proto body: a partial proto blob
+// surfaces in Grafana as a generic "illegal wireType" message that
+// hides the underlying cause, while the JSON envelope at least lets
+// the operator see what the marshal error was.
+func writeTraceProto(w http.ResponseWriter, status int, t *tempopb.Trace) {
+	b, err := proto.Marshal(t)
+	if err != nil {
+		httperr.WriteJSON(w, http.StatusInternalServerError, ErrorResponse{
+			Error: true, Message: fmt.Sprintf("proto marshal: %v", err),
+		})
+		return
+	}
+	w.Header().Set("Content-Type", "application/protobuf")
+	w.WriteHeader(status)
+	_, _ = w.Write(b)
 }
 
 // writeError emits Tempo's distinct error envelope
