@@ -74,13 +74,20 @@ jobs:
           # tsouza/gremlins@v0.6.0-cerberus-sigterm-consume fork
           # converts the in-flight mutants from LIVED to NOT_COVERED
           # on SIGTERM, but the runner cancellation still kills the
-          # step before `gremlins.json` is written. Capping workers
-          # at 2 keeps peak RSS under the runner ceiling so the run
-          # completes and the efficacy gate has a JSON to grade.
+          # step before `gremlins.json` is written. Round-4 capped
+          # workers at 2 — log run 77177071151 confirms the cap
+          # engaged (`--workers "2"` echoed in the install line) and
+          # the runner still received a shutdown signal at the
+          # 3m18s mark while still in the NOT-COVERED discovery
+          # phase (no LIVED mutants emitted, no gremlins.json
+          # written). Dropping to workers=1 serialises the `go test`
+          # fan-out so peak RSS is bounded by a single mutant's
+          # working set; round-5 verifies whether the runner ceiling
+          # is satisfied by single-stream execution alone.
           - phase: phase4-logql
             scope: ./internal/logql
             efficacy: 95
-            workers: 2
+            workers: 1
           - phase: phase4-traceql
             scope: ./internal/traceql
             efficacy: 95
