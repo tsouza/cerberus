@@ -11,6 +11,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/cerbtrace"
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -718,16 +719,99 @@ func matcherToExpr(m *labels.Matcher, s schema.Metrics) chplan.Expr {
 	if m.Name == model.MetricNameLabel {
 		lhs = &chplan.ColumnRef{Name: s.MetricNameColumn}
 	} else {
-		lhs = &chplan.MapAccess{
-			Map: &chplan.ColumnRef{Name: s.AttributesColumn},
-			Key: &chplan.LitString{V: m.Name},
-		}
+		lhs = attributeLookup(s.AttributesColumn, m.Name)
 	}
 	return &chplan.Binary{
 		Op:    matchOp(m.Type),
 		Left:  lhs,
 		Right: &chplan.LitString{V: m.Value},
 	}
+}
+
+// attributeLookup returns the chplan.Expr that resolves a Prom matcher
+// name `key` against the CH Map column `col`. For names with no
+// rewritable underscore (e.g. `job`, `__name__`) it returns a plain
+// MapAccess — byte-stable with the pre-#658 emit shape so the existing
+// fixtures keep matching.
+//
+// For names with at least one rewritable underscore (e.g. `cerberus_ql`)
+// it emits a left-associative `if(mapContains(col, k1), col[k1],
+// col[k2])` chain over every candidate from
+// [format.PromLabelToOTelCandidates]. The chain returns the first
+// matching value or the last candidate's empty-default — which
+// matches Prometheus's "label absent → empty string" semantics for
+// the matcher comparison.
+//
+// Why not `coalesce(col[k1], col[k2])`? CH's `Attributes['missing']`
+// returns the value-type's default (empty string for `Map(String,
+// String)`), not NULL, so `coalesce` would short-circuit on the very
+// first lookup even when the row's actual key is the dotted form.
+// `mapContains` distinguishes "key present with empty value" from
+// "key absent" cleanly. The runtime cost is one extra `mapContains`
+// per candidate beyond the first — CH evaluates this against the
+// column's per-row map and the optimizer can hoist common
+// sub-expressions, so the overhead is bounded.
+//
+// Fixture impact: every PromQL fixture whose matcher name contains an
+// internal underscore now emits the if-chain. The chplan IR snapshot
+// expands accordingly; `just update-golden` regenerates the SQL +
+// chplan sections in lock-step.
+func attributeLookup(col, key string) chplan.Expr {
+	if !format.PromLabelNeedsDottedFallback(key) {
+		return &chplan.MapAccess{
+			Map: &chplan.ColumnRef{Name: col},
+			Key: &chplan.LitString{V: key},
+		}
+	}
+	candidates := format.PromLabelToOTelCandidates(key)
+	if len(candidates) <= 1 {
+		// Belt-and-braces — `PromLabelNeedsDottedFallback` already
+		// returned true so we expect >= 2 candidates. Falling through
+		// to the bare MapAccess keeps the contract sane if the helper
+		// ever drifts.
+		return &chplan.MapAccess{
+			Map: &chplan.ColumnRef{Name: col},
+			Key: &chplan.LitString{V: key},
+		}
+	}
+	// Build the if-chain right-associatively so the leftmost candidate
+	// (the underscored input) wins when present:
+	//
+	//   if(mapContains(col, k0), col[k0],
+	//     if(mapContains(col, k1), col[k1],
+	//       ... col[kN-1]))
+	//
+	// The terminal branch is a bare MapAccess against the last
+	// candidate — when no candidate's key is present, the empty-string
+	// default matches Prom's "absent label" semantics for matcher
+	// comparison.
+	mapRef := &chplan.ColumnRef{Name: col}
+	last := candidates[len(candidates)-1]
+	var chain chplan.Expr = &chplan.MapAccess{
+		Map: mapRef,
+		Key: &chplan.LitString{V: last},
+	}
+	for i := len(candidates) - 2; i >= 0; i-- {
+		k := candidates[i]
+		chain = &chplan.FuncCall{
+			Name: "if",
+			Args: []chplan.Expr{
+				&chplan.FuncCall{
+					Name: "mapContains",
+					Args: []chplan.Expr{
+						mapRef,
+						&chplan.LitString{V: k},
+					},
+				},
+				&chplan.MapAccess{
+					Map: mapRef,
+					Key: &chplan.LitString{V: k},
+				},
+				chain,
+			},
+		}
+	}
+	return chain
 }
 
 func matchOp(t labels.MatchType) chplan.BinaryOp {
@@ -1124,10 +1208,10 @@ func lowerCountValues(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (
 		groupBy = make([]chplan.Expr, 0, len(a.Grouping))
 		aliases = make([]string, 0, len(a.Grouping))
 		for i, lbl := range a.Grouping {
-			groupBy = append(groupBy, &chplan.MapAccess{
-				Map: &chplan.ColumnRef{Name: s.AttributesColumn},
-				Key: &chplan.LitString{V: lbl},
-			})
+			// Mirror the matcher-side dotted-fallback so
+			// `count_values(...) by (cerberus_ql)` partitions over
+			// both the underscored and dotted CH key forms.
+			groupBy = append(groupBy, attributeLookup(s.AttributesColumn, lbl))
 			aliases = append(aliases, fmt.Sprintf("gkey_%d", i))
 		}
 	}
@@ -1330,10 +1414,10 @@ func topKPartition(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) []ch
 	default:
 		by = make([]chplan.Expr, 0, len(a.Grouping))
 		for _, label := range a.Grouping {
-			by = append(by, &chplan.MapAccess{
-				Map: &chplan.ColumnRef{Name: s.AttributesColumn},
-				Key: &chplan.LitString{V: label},
-			})
+			// Dotted-fallback parity with the matcher / non-topk
+			// aggregation path: `topk(K, v) by (cerberus_ql)` partitions
+			// across both the underscored and dotted CH-keyed rows.
+			by = append(by, attributeLookup(s.AttributesColumn, label))
 		}
 	}
 
@@ -1533,10 +1617,13 @@ func aggregateGroupBy(a *parser.AggregateExpr, s schema.Metrics) ([]chplan.Expr,
 	}
 	out := make([]chplan.Expr, 0, len(a.Grouping))
 	for _, label := range a.Grouping {
-		out = append(out, &chplan.MapAccess{
-			Map: &chplan.ColumnRef{Name: s.AttributesColumn},
-			Key: &chplan.LitString{V: label},
-		})
+		// Re-use the matcher-side dotted-fallback helper so a
+		// `sum by (cerberus_ql)` clause hits both the underscored AND
+		// dotted row keys, matching the resolution `cerberus_ql{...}`
+		// gets from buildPredicate. Without parity here the grouping
+		// would collapse every dotted-keyed row into a single "" bucket
+		// while the matcher path saw them as distinct series.
+		out = append(out, attributeLookup(s.AttributesColumn, label))
 	}
 	return out, nil
 }

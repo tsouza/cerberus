@@ -489,10 +489,7 @@ func histogramAggGroupBy(agg *parser.AggregateExpr, s schema.Metrics) ([]chplan.
 	mapArgs := make([]chplan.Expr, 0, len(labels)*2)
 	for i, label := range labels {
 		alias := fmt.Sprintf("gkey_%d", i)
-		groupBy[i] = &chplan.MapAccess{
-			Map: &chplan.ColumnRef{Name: s.AttributesColumn},
-			Key: &chplan.LitString{V: label},
-		}
+		groupBy[i] = attributeLookup(s.AttributesColumn, label)
 		aliases[i] = alias
 		mapArgs = append(
 			mapArgs,

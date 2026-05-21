@@ -1,6 +1,155 @@
 package format
 
-import "sort"
+import (
+	"sort"
+	"strings"
+)
+
+// PromLabelToOTelCandidates returns the list of OTel-attribute-key
+// candidates a Prom matcher name `s` could resolve to inside CH-stored
+// rows. The first candidate is always `s` verbatim — the canonical
+// Prom-grammar form callers already wrote. Subsequent candidates are
+// the dotted re-expansions: every subset of the underscore positions
+// in `s` is rewritten as a `.`, in order from "most underscores
+// remain" to "every underscore is a dot". Leading underscores are
+// preserved verbatim (Prom's `_1invalid` shape never came from a
+// dotted form).
+//
+// Rationale: OTel writes attribute keys with dots (`service.name`,
+// `cerberus.ql`, `http.request.method`). PR #657 normalised the
+// WIRE-EMIT side so Grafana shows underscored aliases in the label
+// picker, but the LOOKUP side of every PromQL matcher still hits
+// `Attributes[<verbatim key>]`. When the user types `cerberus_ql`
+// the lookup misses because the row's key is `cerberus.ql`. Listing
+// all dotted re-expansions lets the caller emit a coalesce / if-chain
+// against the Map so the lookup hits regardless of which form the
+// data was written under.
+//
+// Ambiguity: `cerberus_query_total` could mean `cerberus.query.total`,
+// `cerberus.query_total`, `cerberus_query.total`, or the original
+// `cerberus_query_total`. The function enumerates every subset of the
+// `_` positions; for `k` rewritable underscores it emits `2^k`
+// candidates (deduped against `s` itself). To keep query SQL bounded
+// the enumeration caps at `maxRewritableUnderscores = 6`
+// (`2^6 = 64` candidates). Beyond the cap the function falls back to
+// the two endpoints: `s` verbatim, plus the all-dots form. Real-world
+// OTel keys carry 1-4 dots; the cap only kicks in for pathological
+// names.
+//
+// Output ordering: `s` is always candidates[0]; the rest are sorted
+// alphabetically so the emitted coalesce chain is deterministic
+// across runs (regenerated golden snapshots stay byte-stable).
+//
+// Empty input returns `[""]` — callers can detect the "nothing to
+// expand" shape via `len(out) == 1`. A name with no rewritable
+// underscores (e.g. `job`, `__name__`) returns `[s]` as well; callers
+// short-circuit when the slice has a single entry and emit the plain
+// MapAccess they always did.
+func PromLabelToOTelCandidates(s string) []string {
+	if s == "" {
+		return []string{""}
+	}
+	// Prom's synthetic labels (`__name__`, `__address__`,
+	// `__metrics_path__`, ...) carry leading `__`. They never originate
+	// as OTel-dotted keys, so the function returns them verbatim — no
+	// dotted re-expansion.
+	if strings.HasPrefix(s, "__") {
+		return []string{s}
+	}
+	// Strip a single leading underscore from the "rewritable" set:
+	// Prom's leading-underscore is a grammar marker (`_1invalid` from
+	// `1invalid`) and never originated as a dotted segment.
+	start := 0
+	if start < len(s) && s[start] == '_' {
+		start++
+	}
+	// Collect the indices of every internal underscore — those are the
+	// positions we may rewrite to `.`.
+	var positions []int
+	for i := start; i < len(s); i++ {
+		if s[i] == '_' {
+			positions = append(positions, i)
+		}
+	}
+	if len(positions) == 0 {
+		return []string{s}
+	}
+
+	const maxRewritableUnderscores = 6
+	if len(positions) > maxRewritableUnderscores {
+		// Fallback: emit just `s` + the all-dots expansion. Two-entry
+		// shape keeps the emitter footprint small for pathologically
+		// long names.
+		allDots := []byte(s)
+		for _, p := range positions {
+			allDots[p] = '.'
+		}
+		out := []string{s, string(allDots)}
+		// Dedup in case s == allDots is impossible (positions non-empty),
+		// but keep the explicit check for symmetry with the powerset path.
+		if out[1] == out[0] {
+			return out[:1]
+		}
+		return out
+	}
+
+	// Enumerate the powerset of `positions` — every subset is the set
+	// of underscores that become dots. Bit i of the mask flips
+	// positions[i].
+	total := 1 << len(positions)
+	seen := make(map[string]struct{}, total)
+	out := make([]string, 0, total)
+	seen[s] = struct{}{}
+	out = append(out, s)
+	buf := make([]byte, len(s))
+	for mask := 1; mask < total; mask++ {
+		copy(buf, s)
+		for i, p := range positions {
+			if mask&(1<<i) != 0 {
+				buf[p] = '.'
+			}
+		}
+		v := string(buf)
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	// Stable order: keep `s` first (so callers that only want the
+	// canonical form can read [0]), sort the rest alphabetically.
+	if len(out) > 2 {
+		rest := out[1:]
+		sort.Strings(rest)
+	}
+	return out
+}
+
+// PromLabelNeedsDottedFallback reports whether `s` has at least one
+// candidate dotted expansion — i.e. the underlying CH row might hold
+// the key under a dotted form even though the matcher addresses the
+// underscored one. The function short-circuits the powerset
+// enumeration with a simple "any internal underscore?" check; callers
+// in lowering paths use this to gate the coalesce-emit branch so the
+// fast path stays a single MapAccess when no rewrite is possible.
+func PromLabelNeedsDottedFallback(s string) bool {
+	// Prom synthetic labels (`__name__`, `__address__`, ...) are never
+	// OTel-dotted; align with the PromLabelToOTelCandidates early-out
+	// so the two functions agree on what's "rewritable".
+	if strings.HasPrefix(s, "__") {
+		return false
+	}
+	start := 0
+	if start < len(s) && s[start] == '_' {
+		start++
+	}
+	for i := start; i < len(s); i++ {
+		if s[i] == '_' {
+			return true
+		}
+	}
+	return false
+}
 
 // OTelToPromLabel returns s rewritten so it satisfies the Prometheus
 // label-name grammar `[a-zA-Z_][a-zA-Z0-9_]*`.

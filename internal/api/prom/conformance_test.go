@@ -1584,3 +1584,62 @@ func TestConformance_LabelValuesGrammar(t *testing.T) {
 		}
 	}
 }
+
+// TestConformance_UnderscoredMatcherEmitsDottedFallback pins the
+// matcher-side resolution for underscored Prom-grammar names that
+// could resolve to a dotted OTel-canonical key in storage. Without
+// this fallback, a user query like `sum by (cerberus_ql) (...)` hits
+// `Attributes['cerberus_ql']` which misses every row stored with the
+// dotted `cerberus.ql` key — Grafana's "by language" panel collapses
+// to a single anonymous "Value" bucket. The fix emits an if-chain
+// over [format.PromLabelToOTelCandidates] so the lookup hits either
+// form.
+//
+// The assertion targets the captured SQL string: both `mapContains`
+// and the two candidate keys must appear in BOTH the WHERE matcher
+// position and the GROUP BY aggregation position.
+func TestConformance_UnderscoredMatcherEmitsDottedFallback(t *testing.T) {
+	t.Parallel()
+
+	stub := &stubQuerier{samples: nil}
+	srv := newServer(stub)
+	t.Cleanup(srv.Close)
+
+	q := url.QueryEscape(`sum by (cerberus_ql) (rate(cerberus_queries_total[5m]))`)
+	resp, err := http.Get(srv.URL + "/api/v1/query?query=" + q + "&time=1717999200")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d (expected 200; query lowering should succeed even with empty result)", resp.StatusCode)
+	}
+	if stub.lastSQL == "" {
+		t.Fatalf("stub.lastSQL is empty; expected handler to have invoked the CH client")
+	}
+	// The lowered SQL must reference the dotted-fallback machinery in
+	// the GROUP BY (`cerberus_ql` → tries `cerberus.ql`). Both
+	// `mapContains` and both candidate keys MUST appear in args.
+	if !strings.Contains(stub.lastSQL, "mapContains") {
+		t.Errorf("SQL is missing the mapContains gate that drives the dotted-fallback chain\nSQL: %s", stub.lastSQL)
+	}
+	var sawUnderscore, sawDotted bool
+	for _, a := range stub.lastArgs {
+		s, ok := a.(string)
+		if !ok {
+			continue
+		}
+		if s == "cerberus_ql" {
+			sawUnderscore = true
+		}
+		if s == "cerberus.ql" {
+			sawDotted = true
+		}
+	}
+	if !sawUnderscore {
+		t.Errorf("expected `cerberus_ql` candidate key in bound args; got %v", stub.lastArgs)
+	}
+	if !sawDotted {
+		t.Errorf("expected `cerberus.ql` dotted-expansion candidate key in bound args; got %v", stub.lastArgs)
+	}
+}

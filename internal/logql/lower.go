@@ -18,6 +18,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/cerbtrace"
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -968,16 +969,90 @@ func labelMatcherToExpr(m *labels.Matcher, s schema.Logs, labelsExpr chplan.Expr
 	if isDetectedLevelLabel(m.Name) {
 		lhs = detectedLevelExpr(s)
 	} else {
-		lhs = &chplan.MapAccess{
-			Map: labelsExpr,
-			Key: &chplan.LitString{V: m.Name},
-		}
+		lhs = attributeLookupExpr(labelsExpr, m.Name)
 	}
 	return &chplan.Binary{
 		Op:    matchOp(m.Type),
 		Left:  lhs,
 		Right: &chplan.LitString{V: m.Value},
 	}
+}
+
+// attributeLookupExpr returns the chplan.Expr that resolves an
+// underscored Loki label `key` against the live `labelsMap` (the
+// schema's ResourceAttributes column or a `mapConcat(...)` wrapping it
+// after a parser stage). For names with no rewritable underscore (e.g.
+// `job`, `__error__`) it returns a plain MapAccess — byte-stable with
+// the pre-#658 emit shape so the existing fixtures keep matching.
+//
+// For names with at least one rewritable underscore (e.g.
+// `cerberus_ql`) it emits a left-associative `if(mapContains(m, k1),
+// m[k1], m[k2])` chain over every candidate from
+// [format.PromLabelToOTelCandidates]. CH's `Attributes['missing']`
+// returns the value-type default (empty string) rather than NULL, so
+// `coalesce` would short-circuit on the first lookup even when the
+// row's actual key is the dotted form; `mapContains` cleanly
+// distinguishes "present with empty value" from "absent".
+//
+// Mirrors `internal/promql/lower.go::attributeLookup`. The two heads
+// share the [format.PromLabelToOTelCandidates] heuristic so a Grafana
+// dashboard mixing Prom + Loki panels by `{cerberus_ql=...}` /
+// `cerberus_ql{...}` gets symmetric resolution.
+func attributeLookupExpr(labelsMap chplan.Expr, key string) chplan.Expr {
+	if !format.PromLabelNeedsDottedFallback(key) {
+		return &chplan.MapAccess{Map: labelsMap, Key: &chplan.LitString{V: key}}
+	}
+	// Dotted-fallback is meaningful only when `labelsMap` points at the
+	// OTel-shaped ResourceAttributes column directly — that's where
+	// keys can be stored in dotted form. After a parser stage (`|
+	// logfmt`, `| json`) the labels map is a mapConcat(...) /
+	// mapApply(...) wrapper whose extracted keys come from the log
+	// payload, NOT from OTel semantic conventions, so dotted-fallback
+	// would just duplicate the complex sub-expression three times for
+	// no semantic gain. Restrict the fallback to bare ColumnRef
+	// carriers; everything else takes the single-MapAccess fast path.
+	if _, isBareCol := labelsMap.(*chplan.ColumnRef); !isBareCol {
+		return &chplan.MapAccess{Map: labelsMap, Key: &chplan.LitString{V: key}}
+	}
+	candidates := format.PromLabelToOTelCandidates(key)
+	if len(candidates) <= 1 {
+		return &chplan.MapAccess{Map: labelsMap, Key: &chplan.LitString{V: key}}
+	}
+	last := candidates[len(candidates)-1]
+	var chain chplan.Expr = &chplan.MapAccess{
+		Map: labelsMap,
+		Key: &chplan.LitString{V: last},
+	}
+	for i := len(candidates) - 2; i >= 0; i-- {
+		k := candidates[i]
+		chain = &chplan.FuncCall{
+			Name: "if",
+			Args: []chplan.Expr{
+				&chplan.FuncCall{
+					Name: "mapContains",
+					Args: []chplan.Expr{
+						labelsMap,
+						&chplan.LitString{V: k},
+					},
+				},
+				&chplan.MapAccess{
+					Map: labelsMap,
+					Key: &chplan.LitString{V: k},
+				},
+				chain,
+			},
+		}
+	}
+	return chain
+}
+
+// attributeLookupColumn is the column-name convenience wrapper for
+// attributeLookupExpr — re-uses the same dotted-fallback chain against
+// a bare ColumnRef. Used by stream-selector matchers and the metric-
+// form aggregation group-by where the labels map is always the
+// schema's ResourceAttributes column.
+func attributeLookupColumn(col, key string) chplan.Expr {
+	return attributeLookupExpr(&chplan.ColumnRef{Name: col}, key)
 }
 
 // lowerLineFilter handles `|=`, `!=`, `|~`, `!~` against the Body column.
@@ -1073,10 +1148,7 @@ func matcherToExpr(m *labels.Matcher, s schema.Logs) chplan.Expr {
 	if isDetectedLevelLabel(m.Name) {
 		lhs = detectedLevelExpr(s)
 	} else {
-		lhs = &chplan.MapAccess{
-			Map: &chplan.ColumnRef{Name: s.ResourceAttributesColumn},
-			Key: &chplan.LitString{V: m.Name},
-		}
+		lhs = attributeLookupColumn(s.ResourceAttributesColumn, m.Name)
 	}
 	return &chplan.Binary{
 		Op:    matchOp(m.Type),

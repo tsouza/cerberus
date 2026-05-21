@@ -186,6 +186,115 @@ func TestNormalizeLabelNames(t *testing.T) {
 	}
 }
 
+// TestPromLabelToOTelCandidates pins the dotted-expansion heuristic
+// used by the PromQL / LogQL matcher lowering paths. Cerberus emits a
+// coalesce / if-chain over the returned candidates so a `cerberus_ql`
+// matcher hits both the underscored row (if written that way) and the
+// dotted `cerberus.ql` row (the OTel-canonical form). Without this
+// expansion, every "by language" dashboard panel against a freshly-
+// ingested OTel stream collapses to a single anonymous "Value" series.
+func TestPromLabelToOTelCandidates(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want []string
+	}{
+		{"empty", "", []string{""}},
+		{"no-underscore", "job", []string{"job"}},
+		{"name-label", "__name__", []string{"__name__"}},
+		{"single-internal", "cerberus_ql", []string{"cerberus_ql", "cerberus.ql"}},
+		{
+			"two-internal",
+			"service_name_full",
+			[]string{
+				"service_name_full",
+				"service.name.full",
+				"service.name_full",
+				"service_name.full",
+			},
+		},
+		{
+			"three-internal",
+			"http_request_method_v2",
+			[]string{
+				"http_request_method_v2",
+				"http.request.method.v2",
+				"http.request.method_v2",
+				"http.request_method.v2",
+				"http.request_method_v2",
+				"http_request.method.v2",
+				"http_request.method_v2",
+				"http_request_method.v2",
+			},
+		},
+		// Leading-underscore is preserved (it's a Prom grammar marker
+		// from a leading-digit OTel source like `1xx` → `_1xx`).
+		{
+			"leading-underscore",
+			"_1invalid",
+			[]string{"_1invalid"},
+		},
+		// `__name__` flows through unchanged because the only
+		// underscores are leading / trailing markers, not internal.
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := format.PromLabelToOTelCandidates(tc.in)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("PromLabelToOTelCandidates(%q) =\n  got:  %v\n  want: %v", tc.in, got, tc.want)
+			}
+			if len(got) == 0 || got[0] != tc.in {
+				t.Fatalf("first candidate must be the input verbatim; got %v", got)
+			}
+		})
+	}
+}
+
+// TestPromLabelToOTelCandidatesCap pins the powerset cap — beyond 6
+// rewritable underscores the function falls back to two endpoints
+// (verbatim + all-dots) so the emitted coalesce chain stays bounded.
+func TestPromLabelToOTelCandidatesCap(t *testing.T) {
+	// 8 internal underscores → 256 powerset entries without the cap,
+	// 2 entries with it.
+	in := "a_b_c_d_e_f_g_h_i"
+	got := format.PromLabelToOTelCandidates(in)
+	if len(got) != 2 {
+		t.Fatalf("powerset cap not applied: got %d candidates, want 2", len(got))
+	}
+	if got[0] != in {
+		t.Fatalf("first candidate must be input verbatim: got %q", got[0])
+	}
+	if got[1] != "a.b.c.d.e.f.g.h.i" {
+		t.Fatalf("fallback candidate must be all-dots: got %q", got[1])
+	}
+}
+
+// TestPromLabelNeedsDottedFallback pins the gate function that
+// lowering paths use to short-circuit single-key emission when no
+// rewrite is possible. The "fast path" stays a plain MapAccess for
+// `job`, `__name__`, etc.
+func TestPromLabelNeedsDottedFallback(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"", false},
+		{"job", false},
+		{"__name__", false},
+		{"_1invalid", false},
+		{"cerberus_ql", true},
+		{"service_name", true},
+		{"_lead_internal", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			if got := format.PromLabelNeedsDottedFallback(tc.in); got != tc.want {
+				t.Fatalf("PromLabelNeedsDottedFallback(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestNormalizeLabelNamesNoStrayBytes is a property-shape test pinning
 // the conformance contract: every output of NormalizeLabelNames matches
 // `^[a-zA-Z_][a-zA-Z0-9_]*$`. Catches future regressions where a new

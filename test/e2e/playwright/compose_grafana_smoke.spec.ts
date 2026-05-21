@@ -330,6 +330,20 @@ test('compose: home, drilldown app, and every provisioned dashboard load without
   const traceClickFailures = await driveTraceClick(page, baseURL);
   failures.push(...traceClickFailures);
 
+  // 6. Underscored-OTel-label partition sweep.
+  //
+  //    The cerberus-self dashboard's "Query rate by language" panel
+  //    fires `sum by (cerberus_ql) (rate(cerberus_queries_total[5m]))`.
+  //    OTel writes the `cerberus.ql` attribute under the dotted form
+  //    in storage; the matcher-side lookup must cross the
+  //    dot↔underscore boundary or the partition collapses to a
+  //    single anonymous "Value" series. The sweep asserts the panel's
+  //    legend / table renders ≥ 2 distinct grouped series — the three
+  //    cerberus heads (`promql`, `logql`, `traceql`) are the seed
+  //    contract, and any ≥ 2 catches the regression cleanly.
+  const partitionFailures = await driveCerberusQLPartition(page, baseURL);
+  failures.push(...partitionFailures);
+
   if (failures.length > 0) {
     const header = `compose-grafana-smoke caught ${failures.length} failure(s) across ${surfaces.length} surface(s):`;
     const surfaceList = surfaces
@@ -529,6 +543,130 @@ async function driveTraceClick(page: Page, baseURL: string): Promise<string[]> {
     ) {
       failures.push(`[trace-click] DOM alert: ${truncate(text, 400)}`);
     }
+  }
+
+  return failures;
+}
+
+/**
+ * Drive the cerberus-self → "Query rate by language" panel and assert
+ * the underscored-matcher → dotted-OTel-attribute fallback emits at
+ * least 2 distinct grouped series.
+ *
+ * Pre-fix bug shape (task #214): `sum by (cerberus_ql) (...)` would
+ * emit `Attributes['cerberus_ql']` which misses every CH row whose
+ * attribute key is the OTel-canonical dotted form `cerberus.ql` —
+ * collapsing the panel to a single anonymous "Value" series. The
+ * /promql/lower.go `attributeLookup` helper now emits an
+ * `if(mapContains(...), ...)` chain over the dot↔underscore
+ * candidates so the lookup hits either form.
+ *
+ * The assertion targets the /api/ds/query response the panel fires:
+ * the JSON envelope's `data.result` array must carry at least 2
+ * entries. Three cerberus heads (`promql`, `logql`, `traceql`) seed
+ * the underlying counter so a healthy stack yields 3; we assert ≥ 2
+ * to tolerate a stack where a single head momentarily has no traffic.
+ *
+ * If the panel isn't provisioned in the current stack (compose
+ * variant without the cerberus-self dashboard) the function returns
+ * cleanly — the dashboard sweep above already covers the "panel
+ * exists" case.
+ */
+async function driveCerberusQLPartition(
+  page: Page,
+  baseURL: string,
+): Promise<string[]> {
+  const failures: string[] = [];
+
+  // Capture ds/query responses BEFORE navigation so the panel's
+  // initial fetch is in our buffer when the load settles.
+  const captured: { url: string; body: string; status: number }[] = [];
+  const onResponse = async (resp: Response) => {
+    const url = resp.url();
+    if (!url.includes('/api/ds/query')) return;
+    let body = '';
+    try {
+      body = await resp.text();
+    } catch {
+      body = '';
+    }
+    captured.push({ url, body, status: resp.status() });
+  };
+  page.on('response', onResponse);
+
+  try {
+    await page.goto(`${baseURL}/d/cerberus-self`, {
+      waitUntil: 'domcontentloaded',
+      timeout: 90_000,
+    });
+    await page
+      .waitForLoadState('networkidle', { timeout: 45_000 })
+      .catch(() => {});
+  } finally {
+    page.off('response', onResponse);
+  }
+
+  // The panel may not be provisioned in every stack variant. The
+  // dashboard sweep already failed loudly if the dashboard 404s, so
+  // here we just no-op when the panel header isn't present.
+  const panelTitle = 'Query rate by language';
+  const panelLocator = page.locator(
+    `[data-testid="data-testid Panel header ${panelTitle}"]`,
+  );
+  if ((await panelLocator.count()) === 0) {
+    return failures;
+  }
+
+  // Find a ds/query response whose body references `cerberus_ql`
+  // (the panel's group-by key). Grafana 11.x stringifies the parsed
+  // PromQL into the response envelope alongside the result, so
+  // `body.includes('cerberus_ql')` narrows to the panel's request
+  // without parsing the JSON.
+  const panelResponses = captured.filter((c) => c.body.includes('cerberus_ql'));
+  if (panelResponses.length === 0) {
+    failures.push(
+      `[partition:${panelTitle}] no /api/ds/query response referenced cerberus_ql — Grafana may have served the panel from cache; rerun with cleared session if seen`,
+    );
+    return failures;
+  }
+
+  let maxSeries = 0;
+  for (const resp of panelResponses) {
+    if (resp.status < 200 || resp.status > 299) {
+      failures.push(
+        `[partition:${panelTitle}] /api/ds/query → ${resp.status}\n  url: ${resp.url}\n  body: ${truncate(resp.body, 600)}`,
+      );
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(resp.body) as {
+        results?: Record<string, { frames?: Array<{ schema?: { fields?: unknown[] } }> }>;
+      };
+      const results = parsed.results ?? {};
+      for (const refID of Object.keys(results)) {
+        const frames = results[refID]?.frames ?? [];
+        // Each grouped series renders as a separate frame; the
+        // "Value" field of each frame's schema carries the
+        // `cerberus_ql=...` label. Frames count = series count.
+        if (frames.length > maxSeries) {
+          maxSeries = frames.length;
+        }
+      }
+    } catch (err) {
+      failures.push(
+        `[partition:${panelTitle}] response body is not valid JSON: ${truncate(
+          (err as Error).message,
+          200,
+        )}\n  body: ${truncate(resp.body, 600)}`,
+      );
+    }
+  }
+
+  if (maxSeries < 2) {
+    failures.push(
+      `[partition:${panelTitle}] expected ≥ 2 grouped series (cerberus_ql=promql/logql/traceql) but saw ${maxSeries}\n  ` +
+        `regression of task #214 — dotted-OTel-key lookup fell back to a single anonymous bucket`,
+    );
   }
 
   return failures;
