@@ -1,7 +1,7 @@
 -- query.traceql --
 {} | quantile_over_time(duration, 0.5, 0.9, 0.99)
 -- sql --
-SELECT tupleElement(phi_val, 1) AS `__phi__`, tupleElement(phi_val, 2) AS `Value` FROM (SELECT arrayJoin(arrayMap((phi, q) -> (phi, toFloat64(q)), ['0.5', '0.9', '0.99'], qs_array)) AS phi_val FROM (SELECT quantiles(?, ?, ?)((`Duration` / ?)) AS qs_array FROM (SELECT * FROM `otel_traces` WHERE ?)))
+SELECT tupleElement(phi_val, 1) AS `__phi__`, tupleElement(phi_val, 2) AS `Value` FROM (SELECT arrayJoin(arrayMap((phi, q) -> (phi, toFloat64(q)), ['0.5', '0.9', '0.99'], qs_array)) AS phi_val FROM (SELECT quantiles(toFloat64(?), toFloat64(?), toFloat64(?))((`Duration` / toFloat64(?))) AS qs_array FROM (SELECT * FROM `otel_traces` WHERE ?)))
 -- args --
 [0] float64 = 0.5
 [1] float64 = 0.9

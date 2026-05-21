@@ -2,7 +2,7 @@
 [0] string = "http_requests_total"
 [1] float64 = 0.5
 -- sql --
-SELECT * FROM `otel_metrics_gauge` PREWHERE (`MetricName` = ?) WHERE (`Value` > ?)
+SELECT * FROM `otel_metrics_gauge` PREWHERE (`MetricName` = ?) WHERE (`Value` > toFloat64(?))
 -- chplan --
 Filter predicate=((MetricName = "http_requests_total") AND (Value > 0.5))
   Scan(otel_metrics_gauge)

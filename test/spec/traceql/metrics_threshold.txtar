@@ -1,7 +1,7 @@
 -- query.traceql --
 {} | rate() > 10
 -- sql --
-SELECT * FROM (SELECT toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?)) WHERE (`Value` > ?)
+SELECT * FROM (SELECT toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?)) WHERE (`Value` > toFloat64(?))
 -- args --
 [0] int64 = 1
 [1] bool = true

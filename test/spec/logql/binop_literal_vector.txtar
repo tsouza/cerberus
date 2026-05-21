@@ -54,7 +54,7 @@ INSERT INTO otel_logs (Timestamp, Body, ResourceAttributes) VALUES
 -- chplan --
 VectorJoin op=* match=on() card=one-to-one
   Project ["" AS MetricName, ResourceAttributes AS Attributes, now64(9) AS TimeUnix, Value AS Value]
-    Project [CAST(map(), "Map(String,String)") AS ResourceAttributes, toFloat64(5) AS Value]
+    Project [CAST(map(), "Map(String,String)") AS ResourceAttributes, 5 AS Value]
       OneRow
   Project ["" AS MetricName, ResourceAttributes AS Attributes, now64(9) AS TimeUnix, Value AS Value]
     RangeWindow func=count_over_time range=5m0s step=0s ts=Timestamp value=Value groupBy=[ResourceAttributes]

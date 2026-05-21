@@ -576,7 +576,7 @@ func TestMetricsQueryRange_DurationAggInSeconds(t *testing.T) {
 			// future refactor that bypasses metricsAggregateAttr's
 			// duration branch would silently regress every Tempo
 			// compat case that consumes the `Duration` intrinsic.
-			assertSQLContains(t, q.lastSQL, "`Duration` / ?")
+			assertSQLContains(t, q.lastSQL, "`Duration` / toFloat64(?)")
 
 			// The 1e9 divisor must appear in the args list — locks in
 			// the parameterised form rather than an inline literal

@@ -8,15 +8,14 @@ import (
 
 	"github.com/prometheus/prometheus/promql/parser"
 
-	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
 // TestSyntheticScalarVector_WrapsLitFloatInToFloat64 pins the wrap of
-// the synthetic-vector Value projection at the `vector(N)`,
-// scalar-only-binop fold, and `time() OP time()` callsites. Without the
+// the synthetic-vector Value projection at the `vector(N)` and
+// scalar-only-binop fold callsites on the emitted SQL. Without the
 // wrap, `vector(1)+vector(1)` (Grafana's PromQL CheckHealth probe
 // shape) returns 502 with:
 //
@@ -31,10 +30,11 @@ import (
 // chclient cursor refuses to scan a UInt16 column into
 // `chclient.Sample.Value` (`*float64`).
 //
-// Mirrors [internal/logql/literal_test.go::TestLowerVectorWrapsValueInToFloat64]
-// for the PromQL side. Pinning the wrap at the lowering site means a
-// future refactor of [syntheticScalarVector] / [foldSyntheticBinary]
-// can't drop it without breaking the Grafana datasource health probe.
+// Post-#190 the wrap is contributed centrally by
+// [internal/chsql/Builder.Expr]'s LitFloat case rather than by a
+// per-callsite helper, so the lowering emits a bare `*chplan.LitFloat`
+// and the SQL surface carries the `toFloat64(?)` wrap. Mirrors
+// [internal/logql/literal_test.go::TestLowerVectorWrapsValueInToFloat64].
 func TestSyntheticScalarVector_WrapsLitFloatInToFloat64(t *testing.T) {
 	t.Parallel()
 
@@ -68,34 +68,17 @@ func TestSyntheticScalarVector_WrapsLitFloatInToFloat64(t *testing.T) {
 			if err != nil {
 				t.Fatalf("LowerAt: %v", err)
 			}
-			proj, ok := plan.(*chplan.Project)
-			if !ok {
-				t.Fatalf("plan: got %T, want *chplan.Project", plan)
+			sql, _, err := chsql.Emit(context.Background(), plan)
+			if err != nil {
+				t.Fatalf("Emit: %v", err)
 			}
-			if len(proj.Projections) != 4 {
-				t.Fatalf("Projections: got %d, want 4", len(proj.Projections))
-			}
-			valueProj := proj.Projections[3]
-			if valueProj.Alias != s.ValueColumn {
-				t.Fatalf("Value projection alias: got %q, want %q",
-					valueProj.Alias, s.ValueColumn)
-			}
-			fc, ok := valueProj.Expr.(*chplan.FuncCall)
-			if !ok {
-				t.Fatalf("Value expr: got %T, want *chplan.FuncCall — the "+
-					"toFloat64 wrap is missing and CH will type the column "+
-					"as UInt8, surfacing as `UInt16 to *float64 unsupported` "+
-					"on any V-V binop over synthetic scalars (Grafana PromQL "+
-					"CheckHealth probe `vector(1)+vector(1)`)", valueProj.Expr)
-			}
-			if fc.Name != "toFloat64" {
-				t.Errorf("Value expr func name: got %q, want %q", fc.Name, "toFloat64")
-			}
-			if len(fc.Args) != 1 {
-				t.Fatalf("toFloat64 args: got %d, want 1", len(fc.Args))
-			}
-			if _, ok := fc.Args[0].(*chplan.LitFloat); !ok {
-				t.Fatalf("toFloat64 arg: got %T, want *chplan.LitFloat", fc.Args[0])
+			if !strings.Contains(sql, "toFloat64(?)") {
+				t.Fatalf("expected emitted SQL to wrap LitFloat in "+
+					"toFloat64(?) — without it, CH narrows to UInt8 and "+
+					"the Sample Scan fails with "+
+					"`UInt16 to *float64 unsupported` on the Grafana "+
+					"PromQL CheckHealth probe shape `vector(1)+vector(1)`. "+
+					"SQL:\n%s", sql)
 			}
 		})
 	}
@@ -105,9 +88,10 @@ func TestSyntheticScalarVector_WrapsLitFloatInToFloat64(t *testing.T) {
 // `foldSyntheticBinary` Value composition: when both legs of a V-V
 // binop lower to the synthetic-scalar shape (e.g. `vector(1)+vector(1)`)
 // the resulting Value slot must compose `toFloat64(?) OP toFloat64(?)`
-// — not bare `? OP ?`. The per-leg wrap is contributed by
-// [syntheticScalarVector]; this test asserts the composition survives
-// the fold rather than being unwrapped by [foldSyntheticBinary].
+// — not bare `? OP ?`. Post-#190 the wrap is contributed by the
+// central [internal/chsql/Builder.Expr] LitFloat case; this test
+// asserts that both LitFloat operands carry the wrap on the way out
+// rather than collapsing to a single shared `toFloat64`.
 //
 // The emitted SQL is the canonical proxy for "the wrap survives": the
 // presence of `toFloat64(?)` on both sides of the binop expression
