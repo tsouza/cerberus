@@ -164,7 +164,16 @@ jobs:
           GRAFANA_URL: http://localhost:3000
           CERBERUS_URL: http://localhost:8080
         run: |
-          npx playwright test compose_grafana_smoke.spec.ts --reporter=list
+          # Phase-1 panel-shape spec (iterate-panel-shape.spec.ts) runs
+          # alongside the catch-net smoke. It enumerates every
+          # provisioned dashboard, finds every aggregating panel
+          # target, and asserts the by(...) / without(...) label-shape
+          # rule against cerberus's /api/v1/query_range — pinning the
+          # N2/N11/N14 sweep findings so they can't silently regress.
+          npx playwright test \
+            compose_grafana_smoke.spec.ts \
+            iterate-panel-shape.spec.ts \
+            --reporter=list
 
       - name: upload Playwright report on failure
         if: steps.playwright_smoke.outcome == 'failure'

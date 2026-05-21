@@ -19,8 +19,15 @@
  * helpers/assertions.ts; don't reach into the parser.
  */
 
+// The two clause regexes are kept separate so the label-shape rule
+// can distinguish them: `by(k)` requires `k` to be PRESENT on every
+// returned series; `without(k)` requires `k` to be ABSENT. The
+// previous unified regex returned both modes' keys collapsed into a
+// single set, which inverts the semantics for any `without` panel.
 const BY_REGEX =
-  /\b(?:sum|count|avg|min|max|stddev|stdvar|topk|bottomk|group)\s*(?:by|without)\s*\(\s*([^)]+)\s*\)/g;
+  /\b(?:sum|count|avg|min|max|stddev|stdvar|topk|bottomk|group)\s+by\s*\(\s*([^)]*)\s*\)/g;
+const WITHOUT_REGEX =
+  /\b(?:sum|count|avg|min|max|stddev|stdvar|topk|bottomk|group)\s+without\s*\(\s*([^)]*)\s*\)/g;
 const HISTOGRAM_REGEX = /\bhistogram_quantile\s*\(\s*[^,]+,\s*([\s\S]+?)\s*\)\s*$/;
 const METRIC_NAME_REGEX = /([a-zA-Z_:][a-zA-Z0-9_:]*)_bucket/;
 
@@ -32,20 +39,50 @@ const METRIC_NAME_REGEX = /([a-zA-Z_:][a-zA-Z0-9_:]*)_bucket/;
  * label-shape assertion uses it as a *set* of expected labels, so
  * a duplicate (e.g. `sum by (a) (sum by (a) (…))`) is collapsed.
  *
+ * Crucially, this function ONLY matches the `by(…)` modifier; the
+ * inverse `without(…)` modifier carries opposite semantics ("drop
+ * these labels", not "keep these labels") and is handled by
+ * `extractWithoutKeys`. Conflating the two — which an earlier
+ * draft of this helper did — inverts the label-shape rule for any
+ * `without` panel and produces false-positive failures.
+ *
  * Examples:
  *   extractByKeys('sum by (a, b) (foo)')              → ['a', 'b']
  *   extractByKeys('count by (k) (rate(foo[5m]))')     → ['k']
  *   extractByKeys('sum(foo)')                          → []
  *   extractByKeys('sum by (a) (count by (b) (foo))')  → ['a', 'b']
+ *   extractByKeys('sum without (instance) (foo)')      → []
  */
 export function extractByKeys(expr: string): string[] {
+  return extractKeysWithRegex(expr, BY_REGEX);
+}
+
+/**
+ * Extract the union of every `without (…)` key list found in `expr`.
+ *
+ * Returns an empty array when the expression has no `without` clause.
+ * The label-shape rule consumes this list as the set of labels that
+ * must be ABSENT from every returned series — the semantic inverse
+ * of `extractByKeys`.
+ *
+ * Examples:
+ *   extractWithoutKeys('sum without (instance) (foo)')   → ['instance']
+ *   extractWithoutKeys('sum by (a) (foo)')                → []
+ *   extractWithoutKeys('sum(foo)')                         → []
+ *   extractWithoutKeys('sum without (a, b) (sum without (a) (foo))') → ['a', 'b']
+ */
+export function extractWithoutKeys(expr: string): string[] {
+  return extractKeysWithRegex(expr, WITHOUT_REGEX);
+}
+
+function extractKeysWithRegex(expr: string, regex: RegExp): string[] {
   const seen = new Set<string>();
   const ordered: string[] = [];
   let match: RegExpExecArray | null;
   // Reset lastIndex defensively — the regex is module-scoped and
   // sticky semantics could leak between calls.
-  BY_REGEX.lastIndex = 0;
-  while ((match = BY_REGEX.exec(expr)) !== null) {
+  regex.lastIndex = 0;
+  while ((match = regex.exec(expr)) !== null) {
     const inner = match[1] ?? '';
     for (const raw of inner.split(',')) {
       const key = raw.trim();

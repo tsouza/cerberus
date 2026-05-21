@@ -29,11 +29,13 @@ import {
   type Panel,
   type PanelTarget,
   assertHistogramComplete,
+  assertLabelAbsent,
   assertLabelShape,
   assertNoFabricatedValue,
   extractByKeys,
   extractDataSourceProxyURL,
   extractHistogramName,
+  extractWithoutKeys,
   isHistogramQuantile,
   iterateDashboards,
   iteratePanels,
@@ -59,6 +61,30 @@ test('extractByKeys dedupes keys across nested by-clauses', () => {
 test('extractByKeys handles multi-aggregator family', () => {
   expect(extractByKeys('count by (k) (rate(foo[5m]))')).toEqual(['k']);
   expect(extractByKeys('avg by (x, y) (foo)')).toEqual(['x', 'y']);
+});
+
+test('extractByKeys ignores without-clauses entirely', () => {
+  // The two modifiers have inverted semantics — `by` keeps, `without`
+  // drops. Conflating them was the bug the phase-1 split fixes.
+  expect(extractByKeys('sum without (instance) (foo)')).toEqual([]);
+  expect(extractByKeys('sum by (a) (sum without (b) (foo))')).toEqual(['a']);
+});
+
+test('extractWithoutKeys parses a single without-clause', () => {
+  expect(extractWithoutKeys('sum without (instance) (foo)')).toEqual([
+    'instance',
+  ]);
+});
+
+test('extractWithoutKeys returns empty for a no-without aggregation', () => {
+  expect(extractWithoutKeys('sum by (a, b) (foo)')).toEqual([]);
+  expect(extractWithoutKeys('sum(foo)')).toEqual([]);
+});
+
+test('extractWithoutKeys dedupes keys across nested without-clauses', () => {
+  expect(
+    extractWithoutKeys('sum without (a, b) (sum without (a) (foo))'),
+  ).toEqual(['a', 'b']);
 });
 
 test('isHistogramQuantile detects the call shape', () => {
@@ -129,6 +155,54 @@ test('assertLabelShape throws when a key is missing', () => {
 
 test('assertLabelShape no-ops when byKeys is empty', () => {
   expect(() => assertLabelShape({ results: {} }, [])).not.toThrow();
+});
+
+test('assertLabelAbsent passes when none of the without-keys appear', () => {
+  expect(() =>
+    assertLabelAbsent(
+      {
+        results: {
+          A: {
+            frames: [
+              {
+                schema: {
+                  fields: [{ name: 'Value', labels: { job: 'cerberus' } }],
+                },
+              },
+            ],
+          },
+        },
+      },
+      ['instance'],
+    ),
+  ).not.toThrow();
+});
+
+test('assertLabelAbsent throws when a without-key leaks through', () => {
+  expect(() =>
+    assertLabelAbsent(
+      {
+        results: {
+          A: {
+            frames: [
+              {
+                schema: {
+                  fields: [
+                    { name: 'Value', labels: { instance: 'host-1' } },
+                  ],
+                },
+              },
+            ],
+          },
+        },
+      },
+      ['instance'],
+    ),
+  ).toThrow(/leaked=\[instance\]/);
+});
+
+test('assertLabelAbsent no-ops when withoutKeys is empty', () => {
+  expect(() => assertLabelAbsent({ results: {} }, [])).not.toThrow();
 });
 
 test('assertHistogramComplete passes on a non-empty frame', () => {
