@@ -260,6 +260,24 @@ func (b *Builder) Expr(x chplan.Expr) error {
 		b.Arg(v.V)
 		return nil
 	case *chplan.LitFloat:
+		// LitFloat values are passed to b.Arg as `?` placeholders,
+		// and callers that project the bound value back as a
+		// `Float64` column wrap the placeholder in `toFloat64(?)`
+		// at the emission site (see internal/chsql/absent_over_time.go,
+		// internal/chsql/exemplars.go, internal/chsql/vector_join.go,
+		// and the `group(...)` / `count(...)` / `absent_over_time(...)`
+		// PromQL lowerings — #634, #644, #646). The wrap exists
+		// because clickhouse-go/v2's bind.go::format() has no
+		// `case float64:` branch: integer-valued `float64` values
+		// (e.g. `float64(1.0)`) fall through to `fmt.Sprint(v)`,
+		// which renders the bare SQL literal `1` (no decimal).
+		// ClickHouse then narrows the parameter to `UInt8`, and the
+		// chclient cursor's typed `*float64` scan path errors with
+		// `converting UInt8 to *float64 is unsupported`. Tracked
+		// upstream at https://github.com/ClickHouse/clickhouse-go/issues/1862;
+		// drop the toFloat64 wraps once that lands and we bump past
+		// the fixed clickhouse-go version.
+		//
 		// Non-finite float64 values (±Inf / NaN) cannot ride the
 		// positional `?` parameter slot: clickhouse-go and chdb-go
 		// both render them via fmt.Sprint / strconv.AppendFloat,
