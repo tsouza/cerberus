@@ -270,7 +270,13 @@ func parseExprTraced(ctx context.Context, query string) (syntax.Expr, error) {
 	_, span := tracer.Start(ctx, cerbtrace.SpanParse,
 		trace.WithAttributes(cerbtrace.ParseAttrs("logql", query)...))
 	defer span.End()
-	expr, err := syntax.ParseExpr(query)
+	// Rewrite OTel-dotted stream-selector keys (`service.name` →
+	// `service_name`) before the parser sees them. Without this, a
+	// Grafana query landing on cerberus from the Loki datasource hits
+	// `parse error … unexpected '.'`. The OTel-CH schema stores both
+	// forms on each row, so the underscored matcher targets the same
+	// data the dotted form would.
+	expr, err := syntax.ParseExpr(normalizeLokiDottedLabels(query))
 	if err != nil {
 		span.RecordError(err)
 		return nil, err
