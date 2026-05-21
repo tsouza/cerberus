@@ -416,8 +416,15 @@ func keysOf(m map[string][]prom.MetricMetaEntry) []string {
 func TestLabelValues_DottedSource_ChDB(t *testing.T) {
 	seedTime := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 	ts := seedTime.Format("2006-01-02 15:04:05.000")
-	seed := metaShapedGaugeDDL + fmt.Sprintf(`
-INSERT INTO otel_metrics_gauge (MetricName, MetricDescription, MetricUnit, Attributes, TimeUnix, Value) VALUES
+	// Seed into otel_metrics_sum: `cerberus_queries_total` carries the
+	// `_total` suffix so Metrics.TableFor routes the matched-listing
+	// path's `match[]=cerberus_queries_total` selector to the sum table.
+	// The unmatched-listing path scans every metric table via
+	// metricTables(), so the values still surface for Pin 1 — and the
+	// gauge / histogram tables are still created so each UNION arm
+	// targets a real table (chDB errors on missing-table reads).
+	seed := metaShapedGaugeDDL + metaShapedSumDDL + metaShapedHistogramDDL + fmt.Sprintf(`
+INSERT INTO otel_metrics_sum (MetricName, MetricDescription, MetricUnit, Attributes, TimeUnix, Value) VALUES
     ('cerberus_queries_total', '', '', map('cerberus.ql', 'promql',  'route', '/api/v1/query'),  toDateTime64('%s', 9), 1.0),
     ('cerberus_queries_total', '', '', map('cerberus.ql', 'logql',   'route', '/loki/api/query'), toDateTime64('%s', 9), 1.0),
     ('cerberus_queries_total', '', '', map('cerberus.ql', 'traceql', 'route', '/api/traces'),     toDateTime64('%s', 9), 1.0);`,
