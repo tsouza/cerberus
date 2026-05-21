@@ -16,6 +16,7 @@ Drop-in **Prometheus / Loki / Tempo** HTTP gateway for **ClickHouse**. Parses ea
   - New contributors run `just hooks-install` once after cloning; agents trust the hooks + CI and don't pre-flight manually.
 - **Compatibility is the source of truth for PromQL.** `compatibility.yml` runs on main pushes + nightly + manual dispatch and acts as the informational baseline; a future cut can re-enable the `pull_request:` trigger and add `compatibility/prometheus` to required checks. An entry in `compatibility/prometheus/expected-failures.json` requires a comment explaining the upstream rationale.
 - **No raw SQL strings — typed chsql API only.** Use `internal/chsql.Builder` / `chsql.QueryBuilder` — the custom CH-flavored builder API. Compose clauses via typed `QueryBuilder` slots (`.Select` / `.From` / `.Where` / `.GroupBy` / `.OrderBy` / `.Limit` / `.Prewhere` / `.Join` / `.WithRecursive`) and expressions via typed Frags (`Eq` / `And` / `Or` / `Paren` / `Cast` / `In` / `Like` / `Add` / `Call` / `Array` / `Subscript` / `If` / `Lambda1` / `Subquery` / `BareIdent` / `InlineLit` / etc.). The typed-Frag surface is closed by construction: external packages cannot raw-write SQL. Add new typed constructors when a shape isn't covered; never compose SQL via string concatenation. Reviewer discipline + the typed API are the enforcement.
+- **Subagent worktree isolation — stay in your assigned path.** When the harness dispatches you with an isolated worktree under `.claude/worktrees/agent-<id>/`, every git / filesystem operation you make MUST happen inside that path. **Never `cd /home/thiago/workspace/cerberus`** (or any other cerberus checkout) — the main checkout shares the same `.git` object store but is on a different branch, so a `git commit` or `git checkout` run from there will land your work on whichever branch another concurrent agent has checked out (see "Why this is a hard rule" below). Use the worktree path the runtime gave you verbatim: pass absolute paths to `Bash`, `Read`, `Write`, and `Edit` calls (or `cd` once at the top of a compound command). If a tool call resets cwd between invocations, re-anchor with an absolute path every time — don't trust the inherited cwd. See [Subagent worktree isolation](#subagent-worktree-isolation) for the recovery procedure if you suspect contamination has already happened.
 
 ## Architecture map
 
@@ -112,3 +113,27 @@ Local SSH config has two GitHub identities:
 - "How does this PR ship?" → branch + push + `gh pr create` → CI must pass → squash-merge with `gh pr merge --squash --delete-branch`.
 - "Where do I add this feature?" → match the layer to the head: `internal/{promql,logql,traceql}/` for parse + lowering, `internal/chplan/` for the shared IR, `internal/optimizer/` for rewrites, `internal/chsql/` for SQL emission, `internal/api/{prom,loki,tempo}/` for HTTP handlers. Fixtures live in `test/spec/<head>/`.
 - "Can I update the Project from a PR?" → yes, the repo is linked. Move the matching draft item to `In Progress` when you start, `Done` when the PR merges (or wire a workflow that does it).
+
+## Subagent worktree isolation
+
+The dispatcher gives every subagent its own worktree under `.claude/worktrees/agent-<id>/`, on its own per-agent branch (typically `worktree-agent-<id>` or a task-specific branch you create off `origin/main`). The main checkout at `/home/thiago/workspace/cerberus` is itself a worktree of the same repo — it shares the `.git` object DB but is on whatever branch the maintainer last had checked out (often the most recent task branch — `git worktree list` showed e.g. `fix/tempo-search-traceid-zero-pad-emit` while three different subagents were running concurrently on unrelated tasks).
+
+### Why this is a hard rule
+
+Three separate post-mortems (issues #207, #209, #210) reported the same shape: an agent doing work in its isolation worktree somehow saw commits land on the main checkout's branch, or saw an unrelated branch's commits show up in their tree. The investigation under task #213 traced the root cause to subagents using `/home/thiago/workspace/cerberus` (the main checkout path) for git / file operations — the path their briefing pasted in as "the cerberus repo" — instead of their assigned `.claude/worktrees/agent-<id>/` path. When two agents both ran `git commit` from the main checkout, their commits stacked onto whichever branch was currently checked out there, contaminating an unrelated PR. The same root cause hits `Edit` and `Write` tool calls — if you pass `/home/thiago/workspace/cerberus/<file>` as `file_path`, the edit lands in the main checkout's working tree, not your worktree's.
+
+Git's worktree machinery itself does protect against the obvious failure modes — the same branch can't be checked out in two worktrees, and each worktree has its own `.git/worktrees/<id>/HEAD` ref — but **none of that helps if you run git from the wrong path.** The protection is path-based, not agent-based.
+
+### Recovery procedure (if contamination is suspected)
+
+1. `cd` into your assigned worktree path (`/home/thiago/workspace/cerberus/.claude/worktrees/agent-<your-id>/`).
+2. `git worktree list` — verify your worktree shows up with the expected branch name. If it doesn't, you have been operating in the wrong tree the whole time.
+3. From your assigned worktree, run `git log --oneline origin/main..HEAD` and compare against the work you actually did. Any commit you don't recognize is contamination.
+4. From the main checkout (`/home/thiago/workspace/cerberus`), run `git status` and `git log --oneline` on whichever branch is checked out there. Uncommitted edits or commits you authored that don't belong to that branch's PR are the bleed-through.
+5. If the bleed-through is uncommitted: from the main checkout, `git checkout -- <files>` to revert (only when you are certain nothing else is in flight there — when in doubt, ask the maintainer rather than `git checkout --` a shared tree). Then re-apply the change in the correct worktree using the correct absolute path.
+6. If the bleed-through is committed: cherry-pick contaminated commits onto the correct branch (`git cherry-pick <sha>` from inside the right worktree), then revert them from the wrong one (`git revert <sha>` + push). Don't `git reset --hard` a shared branch — that rewrites history other agents may have pushed.
+7. Open a follow-up note on task #213 with the contamination SHAs / file paths + which worktree paths were involved, so the pattern doesn't repeat silently.
+
+### Defence-in-depth (future work)
+
+Documentation is the cheapest fix and the one this section implements. A more durable option is for the dispatcher to use `git worktree add --detach .claude/worktrees/agent-<id>` then have the subagent create its own branch — that way no branch is shared between the main checkout and any worktree, and a stray `git commit` from the wrong path lands on a detached HEAD that's trivially recoverable. That structural change is tracked separately; until it lands, the rule above is the gate.
