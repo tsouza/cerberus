@@ -8,8 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/grafana/loki/v3/pkg/logql/syntax"
-
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/logql"
@@ -44,9 +42,13 @@ func TestLower(t *testing.T) {
 		}
 		query = strings.TrimSpace(query)
 
-		expr, err := syntax.ParseExpr(query)
+		// Use the permissive parser so fixtures can exercise shapes
+		// strict ParseExpr rejects as "empty-compatible" (e.g.
+		// `{label=~".*"}`) — the gateway accepts these per
+		// logql.ParseExprPermissive's contract.
+		expr, err := logql.ParseExprPermissive(query)
 		if err != nil {
-			t.Fatalf("ParseExpr(%q): %v", query, err)
+			t.Fatalf("ParseExprPermissive(%q): %v", query, err)
 		}
 
 		start, end, step, err := readWindowSections(c)
