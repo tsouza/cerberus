@@ -68,26 +68,57 @@ jobs:
             efficacy: 95
             workers: 0
           # phase4-logql historically OOM-killed the ubuntu-latest
-          # runner (~7 GB RAM) at the 3-minute mark when gremlins
-          # spawned `runtime.NumCPU()` (4) parallel `go test` workers
-          # against the heavy logql parser corpus. The
-          # tsouza/gremlins@v0.6.0-cerberus-sigterm-consume fork
-          # converts the in-flight mutants from LIVED to NOT_COVERED
-          # on SIGTERM, but the runner cancellation still kills the
-          # step before `gremlins.json` is written. Round-4 capped
-          # workers at 2 — log run 77177071151 confirms the cap
-          # engaged (`--workers "2"` echoed in the install line) and
-          # the runner still received a shutdown signal at the
-          # 3m18s mark while still in the NOT-COVERED discovery
-          # phase (no LIVED mutants emitted, no gremlins.json
-          # written). Dropping to workers=1 serialises the `go test`
-          # fan-out so peak RSS is bounded by a single mutant's
-          # working set; round-5 verifies whether the runner ceiling
-          # is satisfied by single-stream execution alone.
-          - phase: phase4-logql
+          # runner (~7 GB RAM) at the 3-minute mark. Rounds 1-3
+          # tried gremlins' default `runtime.NumCPU()` workers and
+          # the runner died ~3 min in. Round 4 capped workers at 2,
+          # round 5 dropped to workers=1, and round 6's job log
+          # (77180086677, 2026-05-21T13:13:26Z) confirmed
+          # `--workers "1"` engaged, every emitted mutant was KILLED
+          # (no LIVED), gremlins.json never written, and the runner
+          # received a shutdown signal at the same ~3m37s mark. The
+          # bottleneck is therefore NOT parallel `go test` fan-out
+          # but cumulative runner RSS growth from gremlins'
+          # long-lived process state + each mutant's full
+          # `go test ./internal/logql` cycle dragging the heavy
+          # LogQL parser dep graph (loki + prometheus + dskit +
+          # memberlist) through the linker. Workers=1 alone cannot
+          # land below the ceiling because the wall-clock budget
+          # before OOM admits ~80 of ~300+ mutants in the package.
+          #
+          # Round 7 splits phase4-logql into three sibling matrix
+          # entries, each scoped to `./internal/logql` but with
+          # `--exclude-files` regexes that carve the source set
+          # into roughly equal slices so each runner job finishes
+          # its slice before the cumulative RSS curve crosses the
+          # ceiling. The three slices keep the same 95% efficacy
+          # bar individually — splitting by file is purely a
+          # runner-budget knob, not a quality concession. The
+          # `tsouza/gremlins@v0.6.0-cerberus-sigterm-consume` fork
+          # still records any cancelled-in-flight mutants as
+          # NOT_RUN via `--on-shutdown-status=not-run`.
+          - phase: phase4-logql-lower
             scope: ./internal/logql
             efficacy: 95
             workers: 1
+            # Mutate only lower.go (~50 KB, the package's largest
+            # source file). Excludes every other logql source.
+            exclude_files: '(binary|detected_level|dotted_labels|literal|label_fns|top_level_columns|range_aggregation|vector_aggregation|lang)\.go$'
+          - phase: phase4-logql-aggregation
+            scope: ./internal/logql
+            efficacy: 95
+            workers: 1
+            # Mutate range_aggregation.go + vector_aggregation.go +
+            # lang.go (~54 KB total). Excludes everything else.
+            exclude_files: '(binary|detected_level|dotted_labels|literal|label_fns|top_level_columns|lower)\.go$'
+          - phase: phase4-logql-other
+            scope: ./internal/logql
+            efficacy: 95
+            workers: 1
+            # Mutate binary.go + detected_level.go +
+            # dotted_labels.go + literal.go + label_fns.go +
+            # top_level_columns.go (~49 KB total). Excludes the
+            # two heaviest slices above.
+            exclude_files: '(lower|range_aggregation|vector_aggregation|lang)\.go$'
           - phase: phase4-traceql
             scope: ./internal/traceql
             efficacy: 95
@@ -125,6 +156,9 @@ jobs:
           args=(unleash --output gremlins.json --on-shutdown-status=not-run)
           if [ "${{ matrix.workers }}" != "0" ]; then
             args+=(--workers "${{ matrix.workers }}")
+          fi
+          if [ -n "${{ matrix.exclude_files }}" ]; then
+            args+=(--exclude-files "${{ matrix.exclude_files }}")
           fi
           args+=("${{ matrix.scope }}")
           gremlins "${args[@]}"
