@@ -42,6 +42,20 @@ type MatrixSample struct {
 // numeric values as strings to preserve precision; we match that exactly.
 type Sample [2]any
 
+// BuildInfo is the body of `/api/v1/status/buildinfo`. Mirrors the
+// upstream Prometheus `PrometheusVersion` shape (web/api/v1/api.go) so
+// Grafana's Prom datasource per-page probe parses cerberus's reply
+// without datasource-specific quirks. Wrapped in the standard
+// {status, data} envelope by handleBuildInfo.
+type BuildInfo struct {
+	Version   string `json:"version"`
+	Revision  string `json:"revision"`
+	Branch    string `json:"branch"`
+	BuildUser string `json:"buildUser"`
+	BuildDate string `json:"buildDate"`
+	GoVersion string `json:"goVersion"`
+}
+
 // errorType constants mirror Prometheus's documented error vocabulary.
 const (
 	ErrBadData   = "bad_data"

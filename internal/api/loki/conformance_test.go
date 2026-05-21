@@ -1172,3 +1172,145 @@ func TestConformance_LokiLabelsGrammar(t *testing.T) {
 		}
 	}
 }
+
+// TestConformance_LokiFormatQueryWire pins the wire shape of
+// `/loki/api/v1/format_query`. The endpoint mirrors Prom's
+// /api/v1/format_query — `{status:"success", data:<formatted>}` — but
+// runs the upstream LogQL syntax parser instead. Asserts the success
+// envelope across a representative set of LogQL shapes (stream
+// selector, log pipeline, range aggregation), plus the error path
+// when the `query` parameter is missing.
+func TestConformance_LokiFormatQueryWire(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		path string
+	}{
+		{"selector", `/loki/api/v1/format_query?query=` + url.QueryEscape(`{job="api"}`)},
+		{"pipeline", `/loki/api/v1/format_query?query=` + url.QueryEscape(`{job="api"} |= "boom"`)},
+		{"range_agg", `/loki/api/v1/format_query?query=` + url.QueryEscape(`rate({job="api"}[5m])`)},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			srv := newServer(&stubQuerier{})
+			t.Cleanup(srv.Close)
+
+			resp, err := http.Get(srv.URL + c.path)
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			body := readBody(t, resp)
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+			}
+			if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "application/json") {
+				t.Errorf("Content-Type: got %q, want application/json", ct)
+			}
+			var env struct {
+				Status string `json:"status"`
+				Data   string `json:"data"`
+			}
+			if err := json.Unmarshal([]byte(body), &env); err != nil {
+				t.Fatalf("decode: %v body=%s", err, body)
+			}
+			if env.Status != "success" {
+				t.Errorf("status: got %q, want success", env.Status)
+			}
+			if env.Data == "" {
+				t.Errorf("data: empty pretty-printed string in body=%s", body)
+			}
+		})
+	}
+
+	// Missing-query parameter mirrors Prom's /api/v1/format_query:
+	// 400 with `{status:"error", errorType:"bad_data"}`.
+	t.Run("missing_query", func(t *testing.T) {
+		t.Parallel()
+		srv := newServer(&stubQuerier{})
+		t.Cleanup(srv.Close)
+
+		resp, err := http.Get(srv.URL + "/loki/api/v1/format_query")
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		body := readBody(t, resp)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("status: got %d, want 400; body=%s", resp.StatusCode, body)
+		}
+		var env struct {
+			Status    string `json:"status"`
+			ErrorType string `json:"errorType"`
+		}
+		if err := json.Unmarshal([]byte(body), &env); err != nil {
+			t.Fatalf("decode: %v body=%s", err, body)
+		}
+		if env.Status != "error" {
+			t.Errorf("status: got %q, want error", env.Status)
+		}
+		if env.ErrorType != loki.ErrBadData {
+			t.Errorf("errorType: got %q, want %q", env.ErrorType, loki.ErrBadData)
+		}
+	})
+}
+
+// TestConformance_LokiBuildInfoWire pins the wire shape of
+// `/loki/api/v1/status/buildinfo`. Per the Loki HTTP API documentation
+// (docs/sources/reference/loki-http-api.md), this endpoint returns a
+// FLAT top-level JSON object — `{version, revision, branch, buildUser,
+// buildDate, goVersion}` — NOT wrapped in the `{status, data}` envelope
+// the rest of the /loki/api/v1/* surface uses. Grafana's Loki
+// datasource per-page probe relies on the flat shape. Asserts:
+//
+//   - HTTP 200;
+//   - Content-Type carries "application/json";
+//   - the top-level body has NO `status` field (catching accidental
+//     envelope wrapping);
+//   - `goVersion` is non-empty (runtime.Version() is always populated).
+func TestConformance_LokiBuildInfoWire(t *testing.T) {
+	t.Parallel()
+
+	srv := newServer(&stubQuerier{})
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/loki/api/v1/status/buildinfo")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "application/json") {
+		t.Errorf("Content-Type: got %q, want application/json", ct)
+	}
+
+	// Decode into the typed BuildInfo to pin the field names. The flat
+	// (un-enveloped) shape means the top-level object IS the BuildInfo
+	// — a {status, data} wrap would leave every field zero here.
+	var info loki.BuildInfo
+	if err := json.Unmarshal([]byte(body), &info); err != nil {
+		t.Fatalf("decode: %v body=%s", err, body)
+	}
+	if info.GoVersion == "" {
+		t.Errorf("goVersion should be populated by runtime.Version(); got empty; body=%s", body)
+	}
+
+	// Catch accidental envelope wrapping: the upstream Loki contract
+	// for /status/buildinfo is flat. A `status` field at the top level
+	// signals someone wrapped the body in the {status, data} envelope
+	// the rest of the API uses; Grafana would then fail to find the
+	// version fields it expects.
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(body), &raw); err != nil {
+		t.Fatalf("decode raw: %v body=%s", err, body)
+	}
+	if _, ok := raw["status"]; ok {
+		t.Errorf("buildinfo body must NOT carry a top-level `status` envelope; got body=%s", body)
+	}
+	if _, ok := raw["data"]; ok {
+		t.Errorf("buildinfo body must NOT carry a top-level `data` envelope; got body=%s", body)
+	}
+}

@@ -44,6 +44,22 @@ type VectorSample struct {
 	Value  [2]any            `json:"value"`
 }
 
+// BuildInfo is the body of `/loki/api/v1/status/buildinfo`. Mirrors
+// the upstream Loki `BuildInfo` shape (pkg/ui/cluster.go). Unlike the
+// `{status, data}` envelope the rest of the Loki API uses, the
+// buildinfo response is a flat top-level JSON object — see
+// docs/sources/reference/loki-http-api.md "Show build information"
+// — so Grafana's Loki datasource per-page probe can decode it without
+// peeling an extra layer.
+type BuildInfo struct {
+	Version   string `json:"version"`
+	Revision  string `json:"revision"`
+	Branch    string `json:"branch"`
+	BuildUser string `json:"buildUser"`
+	BuildDate string `json:"buildDate"`
+	GoVersion string `json:"goVersion"`
+}
+
 // errorType constants mirror Loki's documented error vocabulary, which
 // is itself aligned with Prometheus's.
 const (

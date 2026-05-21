@@ -196,10 +196,12 @@ func run() error {
 	promHandler := prom.New(client, cfg.Schema, logger.With("api", "prom"))
 	promHandler.Engine = &engine.Engine{Optimizer: promHandler.Optimizer, Client: client}
 	promHandler.Limiter = promLimiter
+	promHandler.Version = Version
 	promHandler.Mount(traceMux)
 
 	lokiHandler := loki.New(client, cfg.Logs, logger.With("api", "loki"))
 	lokiHandler.Limiter = lokiLimiter
+	lokiHandler.Version = Version
 	lokiHandler.Mount(traceMux)
 
 	tempoHandler := tempo.New(client, cfg.Traces, Version, logger.With("api", "tempo"))

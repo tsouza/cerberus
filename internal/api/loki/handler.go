@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -68,6 +69,14 @@ type Handler struct {
 	// Limiter caps in-flight Loki API requests. nil disables the
 	// admission middleware. Wired from CERBERUS_ADMIT_LOKI.
 	Limiter *admit.Limiter
+
+	// Version is the cerberus build identifier surfaced via
+	// `/loki/api/v1/status/buildinfo`. Wired from cmd/cerberus's
+	// build-time `Version` var so Grafana's Loki datasource per-page
+	// probe sees a real value; left empty in tests (the buildinfo
+	// handler still returns 200 with empty-string fields, matching
+	// upstream Loki's behaviour when build metadata is unset).
+	Version string
 }
 
 // New constructs a Handler with the seed optimizer wired in.
@@ -127,6 +136,14 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	register("POST /loki/api/v1/patterns", h.handlePatterns)
 	// /tail is WebSocket-upgrade only; no POST counterpart in upstream Loki.
 	register("GET /loki/api/v1/tail", h.handleTail)
+	// Format-query + build-info probes. Grafana's Loki datasource hits
+	// /status/buildinfo on every page load to gate feature flags
+	// (LogQL editor capabilities, label-browser presence) and uses
+	// /format_query when the query-editor's "Format query" button is
+	// pressed. Neither endpoint touches ClickHouse.
+	register("GET /loki/api/v1/format_query", h.handleFormatQuery)
+	register("POST /loki/api/v1/format_query", h.handleFormatQuery)
+	register("GET /loki/api/v1/status/buildinfo", h.handleBuildInfo)
 
 	// JSON-shaped 404 fallback for unmatched /loki/api/v1/* routes. Without
 	// this, http.ServeMux serves Go's plain-text "404 page not found"
@@ -153,6 +170,43 @@ type errLokiPathNotFound struct{ path string }
 
 func (e errLokiPathNotFound) Error() string {
 	return "unknown loki endpoint: " + e.path
+}
+
+// handleFormatQuery implements `/loki/api/v1/format_query`. Takes a
+// `query` parameter, parses it with the upstream LogQL syntax parser,
+// and returns the pretty-printed string. Grafana's logs query editor
+// uses this to format on save / on the explicit "Format query" button.
+// Wrapped in the standard {status, data} envelope so the Loki
+// datasource decodes it identically to /labels and /series.
+func (h *Handler) handleFormatQuery(w http.ResponseWriter, r *http.Request) {
+	q := r.FormValue("query")
+	if q == "" {
+		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing query parameter"))
+		return
+	}
+	expr, err := syntax.ParseExpr(q)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, ErrBadData, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, Response{
+		Status: "success",
+		Data:   expr.String(),
+	})
+}
+
+// handleBuildInfo implements `/loki/api/v1/status/buildinfo`. Returns
+// the upstream Loki BuildInfo shape (version / revision / branch /
+// buildUser / buildDate / goVersion) as a flat top-level JSON object —
+// the Loki API documents this endpoint's body as the BuildInfo struct
+// directly, NOT wrapped in the {status, data} envelope the rest of
+// the v1 surface uses. Grafana parses this body to decide which LogQL
+// features to enable in the query editor.
+func (h *Handler) handleBuildInfo(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, BuildInfo{
+		Version:   h.Version,
+		GoVersion: runtime.Version(),
+	})
 }
 
 func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
