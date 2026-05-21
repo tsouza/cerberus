@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/grafana/loki/v3/pkg/logql/syntax"
 	"github.com/prometheus/prometheus/model/labels"
 
 	"github.com/tsouza/cerberus/internal/api/format"
@@ -116,8 +115,12 @@ func (h *Handler) handleTail(w http.ResponseWriter, r *http.Request) {
 
 	// Normalise OTel-dotted stream-selector keys before parsing so
 	// `{service.name="api"}` survives the LogQL grammar; see
-	// internal/logql/dotted_labels.go.
-	expr, err := syntax.ParseExpr(logql.NormalizeDottedLabels(q))
+	// internal/logql/dotted_labels.go. Use the permissive parser so a
+	// Grafana Drilldown tail with the canonical match-all matcher
+	// (`{service_name=~".*"}`) reaches /tail instead of bouncing at the
+	// upstream "empty-compatible" rejection — see
+	// logql.ParseExprPermissive.
+	expr, err := logql.ParseExprPermissive(logql.NormalizeDottedLabels(q))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return

@@ -179,8 +179,11 @@ func selectorMatchers(q string) ([]*labels.Matcher, error) {
 	// Normalise OTel-dotted stream-selector keys before parsing so
 	// queries like `{service.name="api"}` survive the upstream LogQL
 	// grammar. See internal/logql/dotted_labels.go for the rewrite
-	// contract.
-	expr, err := syntax.ParseExpr(logql.NormalizeDottedLabels(q))
+	// contract. Use the permissive parser so a Grafana Drilldown panel
+	// with the canonical match-all matcher (`{service_name=~".*"}`)
+	// reaches /index/stats instead of bouncing at the upstream
+	// "empty-compatible" rejection — see logql.ParseExprPermissive.
+	expr, err := logql.ParseExprPermissive(logql.NormalizeDottedLabels(q))
 	if err != nil {
 		return nil, err
 	}

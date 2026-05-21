@@ -3,6 +3,7 @@ package logql
 import (
 	"context"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/grafana/loki/v3/pkg/logql/syntax"
@@ -277,10 +278,61 @@ func parseExprTraced(ctx context.Context, query string) (syntax.Expr, error) {
 	// `parse error … unexpected '.'`. The OTel-CH schema stores both
 	// forms on each row, so the underscored matcher targets the same
 	// data the dotted form would.
-	expr, err := syntax.ParseExpr(normalizeLokiDottedLabels(query))
+	expr, err := ParseExprPermissive(normalizeLokiDottedLabels(query))
 	if err != nil {
 		span.RecordError(err)
 		return nil, err
 	}
 	return expr, nil
+}
+
+// ParseExprPermissive parses a LogQL expression with cerberus's
+// permissive contract: shapes upstream Loki rejects as
+// "empty-compatible" matchers (e.g. `{label=~".*"}` — Loki's
+// SplitFiltersAndMatchers drops the matcher entirely as a no-op, then
+// `validateMatchers` rejects the now-empty matcher set with "queries
+// require at least one regexp or equality matcher that does not have
+// an empty-compatible value") are accepted instead.
+//
+// Rationale: cerberus is a query gateway, not an index-scoped store.
+// Upstream Loki's rejection exists because its chunk index is keyed by
+// label set and a match-all matcher would force a full-store fan-out;
+// cerberus translates to a ClickHouse WHERE predicate that the CH
+// optimiser already prunes (PREWHERE / MV substitution / sparse-index
+// skip), so a `{service_name=~".*"}` query is well-defined and lowers
+// to `match(ResourceAttributes['service_name'], '.*')` — equivalent to
+// `service_name!=""` on rows where the label is present, plus the
+// rows where it's absent (RA[missing] = ” in CH; `match(”, '.*')`
+// returns 1). The Grafana "Logs Drilldown" UX hits this shape every
+// time the user clears all label filters but keeps the data source
+// selected, so the rejection surfaces as a confusing 400 instead of
+// the expected "all streams" result.
+//
+// Implementation: try the strict ParseExpr first (the common case —
+// every well-formed Loki query passes). On the specific
+// empty-compatible rejection, retry with ParseExprWithoutValidation —
+// the parser-stage errors (`e.err` fields on BinOpExpr / LiteralExpr /
+// VectorExpr / VectorAggregationExpr / LabelReplaceExpr) are populated
+// during parsing itself, so the permissive path still surfaces them
+// downstream when cerberus's lowering walks the AST.
+//
+// Detection is by error-message substring because the upstream
+// errAtleastOneEqualityMatcherRequired constant is unexported.
+// `empty-compatible` is unique to that single rejection path in
+// vendored Loki v3.0.0-cerberus-parser, so the substring is stable
+// across the corpus the cerberus-forks-monitor rebases.
+//
+// Exported so handlers outside the logql package
+// (internal/api/loki/index_stats.go's selectorMatchers,
+// internal/api/loki/tail.go) can share the same permissive contract
+// without re-importing the upstream syntax package directly.
+func ParseExprPermissive(query string) (syntax.Expr, error) {
+	expr, err := syntax.ParseExpr(query)
+	if err == nil {
+		return expr, nil
+	}
+	if !strings.Contains(err.Error(), "empty-compatible") {
+		return nil, err
+	}
+	return syntax.ParseExprWithoutValidation(query)
 }
