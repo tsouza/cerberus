@@ -41,33 +41,6 @@ func schemaTopLevelColumn(s schema.Metrics, labelName string) string {
 	return ""
 }
 
-// promqlTopLevelColumnsReferencedBy returns the set of dedicated CH
-// column names that the labels in `labels` route to via
-// [schemaTopLevelColumn]. Order is preserved against the first
-// occurrence; duplicates are dropped so the augmenting Project that
-// consumes this list emits a deterministic map shape.
-//
-// Used by [augmentAttributesForOuterBy] to inflate the inner LWR /
-// RangeWindow input's Attributes map with exactly the top-level columns
-// the outer aggregation's by-clause references. Mirrors the LogQL
-// [internal/logql.topLevelColumnsReferencedBy] from PR #666 / task #218.
-func promqlTopLevelColumnsReferencedBy(labels []string, s schema.Metrics) []string {
-	if len(labels) == 0 {
-		return nil
-	}
-	seen := make(map[string]bool, len(labels))
-	out := make([]string, 0, len(labels))
-	for _, lbl := range labels {
-		col := schemaTopLevelColumn(s, lbl)
-		if col == "" || seen[col] {
-			continue
-		}
-		seen[col] = true
-		out = append(out, col)
-	}
-	return out
-}
-
 // promqlTopLevelKeysForOuterBy returns the list of Prom-grammar label
 // names that the inner augmenting Project should synthesise into
 // Attributes. The names are normalised to the underscored form

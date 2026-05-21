@@ -831,10 +831,9 @@ func BuildMatcherPredicate(matchers []*labels.Matcher, s schema.Metrics) chplan.
 //     [attributeLookup]).
 func matcherToExpr(m *labels.Matcher, s schema.Metrics) chplan.Expr {
 	var lhs chplan.Expr
-	switch {
-	case m.Name == model.MetricNameLabel:
+	if m.Name == model.MetricNameLabel {
 		lhs = &chplan.ColumnRef{Name: s.MetricNameColumn}
-	default:
+	} else {
 		mapLookup := attributeLookup(s.AttributesColumn, m.Name)
 		if col := schemaTopLevelColumn(s, m.Name); col != "" {
 			lhs = &chplan.FuncCall{
