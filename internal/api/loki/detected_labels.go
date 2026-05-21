@@ -7,6 +7,7 @@ import (
 
 	"github.com/prometheus/prometheus/model/labels"
 
+	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/logql"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -128,9 +129,11 @@ func buildDetectedLabelsSQL(s schema.Logs, matchers []*labels.Matcher, start, en
 func summariseDetectedLabels(rows []map[string]string) []DetectedLabel {
 	values := map[string]map[string]struct{}{}
 	for _, m := range rows {
-		// Mirror /series: drop the OTel-dotted siblings so the result
-		// envelope matches the normalised Loki form Grafana expects.
-		m = dropOTelDottedLabels(m)
+		// Mirror /series: normalise OTel-dotted keys to the Prom/Loki
+		// grammar so the result envelope matches the wire form Grafana
+		// expects (and so collision policy collapses dotted+underscored
+		// siblings to a single bucket).
+		m = format.NormalizeLabelMap(m)
 		for k, v := range m {
 			if v == "" {
 				continue

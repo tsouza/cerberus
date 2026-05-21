@@ -1432,3 +1432,155 @@ func TestConformance_DottedMetricNames(t *testing.T) {
 		})
 	}
 }
+
+// TestConformance_LabelsGrammar pins the wire-emit OTel→Prom label
+// normalisation: every key returned by /api/v1/labels MUST match the
+// Prometheus label-name grammar `[a-zA-Z_][a-zA-Z0-9_]*`. The raw
+// `Attributes` map in ClickHouse carries OTel-original dotted keys
+// (`service.name`, `http.request.method`, `cerberus.ql`, ...);
+// without normalisation, every Grafana panel doing `sum by (cerberus_ql)`
+// silently broke because PromQL grammar forbids `.` in identifiers.
+// This test feeds the handler a mix of dotted and underscored keys and
+// asserts the wire envelope projects only the Prom-grammar form.
+//
+// Collision policy (per the task brief): when both `service.name` and
+// `service_name` exist with different contents, the underscored form
+// wins — the dotted form is the OTel telemetry alias and the
+// underscored form is the user's intended Prom-style identifier.
+func TestConformance_LabelsGrammar(t *testing.T) {
+	t.Parallel()
+
+	// Mix every shape the bug repro saw plus a natural-form collision
+	// pair.
+	rows := []string{
+		"cerberus.ql",
+		"cerberus.route",
+		"http.request.method",
+		"http.response.status_code",
+		"http.route",
+		"http_status",
+		"job",
+		"network.protocol.name",
+		"network.protocol.version",
+		"result",
+		"server.address",
+		"server.port",
+		"stage",
+		"url.scheme",
+		// Collision: both forms present. Natural wins.
+		"service.name",
+		"service_name",
+	}
+	srv := newServer(&stubQuerier{strings: rows})
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/v1/labels")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+	}
+	var env struct {
+		Status string   `json:"status"`
+		Data   []string `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(body), &env); err != nil {
+		t.Fatalf("decode: %v body=%s", err, body)
+	}
+	if env.Status != "success" {
+		t.Fatalf("status=%q", env.Status)
+	}
+
+	// Pin 1: every emitted key matches Prom label grammar — zero
+	// characters outside `[a-zA-Z0-9_]`.
+	for _, k := range env.Data {
+		for i := 0; i < len(k); i++ {
+			c := k[i]
+			switch {
+			case c >= 'a' && c <= 'z':
+			case c >= 'A' && c <= 'Z':
+			case c == '_':
+			case c >= '0' && c <= '9' && i > 0:
+			default:
+				t.Errorf("key %q has stray byte at offset %d (0x%02x); full data=%v",
+					k, i, c, env.Data)
+			}
+		}
+	}
+
+	// Pin 2: collision policy — `service.name` was rewritten away,
+	// only `service_name` survives.
+	seen := map[string]struct{}{}
+	for _, k := range env.Data {
+		seen[k] = struct{}{}
+	}
+	if _, ok := seen["service.name"]; ok {
+		t.Errorf("expected `service.name` to be normalised away; got %v", env.Data)
+	}
+	if _, ok := seen["service_name"]; !ok {
+		t.Errorf("expected `service_name` to survive normalisation; got %v", env.Data)
+	}
+
+	// Pin 3: spot-check that the headline keys from the bug repro
+	// surface in their underscored form.
+	for _, want := range []string{
+		"cerberus_ql", "http_request_method",
+		"http_response_status_code", "url_scheme",
+	} {
+		if _, ok := seen[want]; !ok {
+			t.Errorf("expected normalised key %q in result; got %v", want, env.Data)
+		}
+	}
+}
+
+// TestConformance_LabelValuesGrammar pins the /api/v1/label/__name__/values
+// path: metric-name values must satisfy Prom's metric-name grammar
+// `[a-zA-Z_:][a-zA-Z0-9_:]*`. OTel may store dotted metric names
+// (`http.server.duration`) that PromQL's selector position can't
+// reference directly without `normalizeDottedSelectors` wrapping —
+// surfacing the normalised form on the wire keeps Grafana's metric
+// picker honest.
+func TestConformance_LabelValuesGrammar(t *testing.T) {
+	t.Parallel()
+
+	rows := []string{
+		"http.server.duration",
+		"http.server.request.duration",
+		"already_ok",
+		"with:colon", // colons are valid for metric names
+	}
+	srv := newServer(&stubQuerier{strings: rows})
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/v1/label/__name__/values")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+	}
+	var env struct {
+		Status string   `json:"status"`
+		Data   []string `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(body), &env); err != nil {
+		t.Fatalf("decode: %v body=%s", err, body)
+	}
+	for _, v := range env.Data {
+		for i := 0; i < len(v); i++ {
+			c := v[i]
+			switch {
+			case c >= 'a' && c <= 'z':
+			case c >= 'A' && c <= 'Z':
+			case c == '_', c == ':':
+			case c >= '0' && c <= '9' && i > 0:
+			default:
+				t.Errorf("metric value %q has stray byte at offset %d (0x%02x); full data=%v",
+					v, i, c, env.Data)
+			}
+		}
+	}
+}

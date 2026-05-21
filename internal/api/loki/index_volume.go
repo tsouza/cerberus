@@ -10,6 +10,7 @@ import (
 
 	"github.com/prometheus/prometheus/model/labels"
 
+	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/logql"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -79,7 +80,7 @@ func (h *Handler) handleIndexVolume(w http.ResponseWriter, r *http.Request) {
 	result := make([]VectorSample, 0, len(rows))
 	for _, row := range rows {
 		result = append(result, VectorSample{
-			Metric: dropOTelDottedLabels(row.Labels),
+			Metric: format.NormalizeLabelMap(row.Labels),
 			Value:  [2]any{stamp, strconv.FormatUint(row.Bytes, 10)},
 		})
 	}

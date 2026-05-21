@@ -37,7 +37,9 @@ func TestLabels_HappyPath(t *testing.T) {
 	if out.Status != "success" {
 		t.Fatalf("status=%q", out.Status)
 	}
-	want := []string{"instance", "job", "service.name"}
+	// `service.name` is rewritten to `service_name` by the wire-emit
+	// normalisation (PromQL/Loki grammar forbids `.` in identifiers).
+	want := []string{"instance", "job", "service_name"}
 	if len(out.Data) != len(want) {
 		t.Fatalf("data=%v want=%v", out.Data, want)
 	}

@@ -674,7 +674,7 @@ func toVector(samples []chclient.Sample, ts time.Time) []VectorSample {
 
 	bySeries := map[string]latest{}
 	for _, s := range samples {
-		labels := format.WithMetricName(s.Labels, s.MetricName)
+		labels := format.NormalizeLabelMap(format.WithMetricName(s.Labels, s.MetricName))
 		key := format.CanonicalKey(labels)
 		cur, ok := bySeries[key]
 		if !ok || s.Timestamp.After(cur.ts) {
@@ -734,7 +734,7 @@ func matrixFromCursor(
 	bySeries := map[string]*seriesState{}
 	for cursor.Next() {
 		s := cursor.Sample()
-		labels := format.WithMetricName(s.Labels, s.MetricName)
+		labels := format.NormalizeLabelMap(format.WithMetricName(s.Labels, s.MetricName))
 		key := format.CanonicalKey(labels)
 		st, ok := bySeries[key]
 		if !ok {

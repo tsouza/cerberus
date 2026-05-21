@@ -141,17 +141,16 @@ func orJoinedFrag(fragments []chsql.Frag) chsql.Frag {
 // guarantees uniqueness at the row level but the Map iteration order on
 // the Go side is non-deterministic, so we re-sort here.
 //
-// Each row is also passed through dropOTelDottedLabels so the wire
-// envelope matches Loki's normalised-form output rather than carrying
-// both OTel- and Loki-form siblings (see the helper doc for the
-// rationale). Filtering before dedupe is important: two rows that
-// differ only by a redundant `.`-form key would otherwise dedupe to
-// two entries when Loki sees one.
+// Each row is passed through `format.NormalizeLabelMap` so OTel-dotted
+// keys (`service.name`, `k8s.pod.name`) surface as their underscored
+// Loki/Prom-grammar form. Normalising before dedupe is important: two
+// rows that differ only by a dotted-vs-underscored alias collapse to
+// one entry, matching Loki's wire envelope.
 func dedupeLabelSets(in []map[string]string) []map[string]string {
 	seen := make(map[string]struct{}, len(in))
 	out := make([]map[string]string, 0, len(in))
 	for _, m := range in {
-		m = dropOTelDottedLabels(m)
+		m = format.NormalizeLabelMap(m)
 		if len(m) == 0 {
 			continue
 		}
