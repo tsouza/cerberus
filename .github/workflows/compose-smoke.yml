@@ -179,6 +179,14 @@ jobs:
           # no-fabricated-value rule for histogram_quantile over
           # bucket-less metrics. Closes N5 / N6.
           #
+          # Phase-3 filter-drill spec (iterate-filter-drill.spec.ts)
+          # rides the same dashboard enumeration: for every panel
+          # with a by(...) clause it re-fires the query with a
+          # `{<key>="<value>"}` matcher synthesised from a baseline-
+          # observed value and asserts the filtered series count is
+          # in (0, baseline] — the Q3-resolved subset rule. Pins
+          # N3/N15 (matcher-path drill regressions).
+          #
           # Phase-4 single-panel-kiosk spec
           # (iterate-panel-kiosk.spec.ts) iterates every provisioned
           # dashboard + every panel, opens the panel in single-panel
@@ -191,6 +199,7 @@ jobs:
             compose_grafana_smoke.spec.ts \
             iterate-panel-shape.spec.ts \
             iterate-histogram-completeness.spec.ts \
+            iterate-filter-drill.spec.ts \
             iterate-panel-kiosk.spec.ts \
             --reporter=list
 

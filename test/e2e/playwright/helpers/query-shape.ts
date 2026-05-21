@@ -216,3 +216,306 @@ export function extractHistogramName(expr: string): string | null {
   if (!nameMatch) return null;
   return nameMatch[1] ?? null;
 }
+
+// PromQL identifiers that aren't metric-name selectors — they appear
+// in identifier position but introduce keywords / call-shaped clauses.
+// `by` / `without` / `on` / `ignoring` / `group_left` / `group_right`
+// are all followed by `(`, which the selector-finder already excludes;
+// the entries here cover the bare-keyword cases (`and`, `or`, `unless`,
+// `offset`, `bool`) plus the call-style ones for defence in depth.
+const PROMQL_KEYWORDS = new Set<string>([
+  // Binary operators / modifiers in identifier position.
+  'and',
+  'or',
+  'unless',
+  'offset',
+  'bool',
+  'by',
+  'without',
+  'on',
+  'ignoring',
+  'group_left',
+  'group_right',
+  'start',
+  'end',
+  'atan2',
+  // Aggregation operators. These always take a `(...)` argument
+  // list (optionally with a `by(...)` or `without(...)` clause
+  // *between* the name and the parens). The walker peeks one token
+  // ahead and would otherwise see the `by` / `without` keyword
+  // rather than the `(`, so we have to mark the aggregator names
+  // explicitly. (When the aggregator is followed directly by `(`,
+  // the walker's `next === '('` branch catches it; this set covers
+  // the `sum by (...) (...)` shape.)
+  'sum',
+  'avg',
+  'min',
+  'max',
+  'count',
+  'stddev',
+  'stdvar',
+  'topk',
+  'bottomk',
+  'group',
+  'quantile',
+  'count_values',
+]);
+
+/**
+ * True iff `expr` already constrains label `key` via a matcher of any
+ * kind (`=`, `!=`, `=~`, `!~`) in any of its `{...}` selector blocks.
+ *
+ * Used by the filter-drill spec to skip targets whose expression
+ * already carries a hardcoded matcher for the label we'd otherwise
+ * drill on — drilling there would either be a no-op (the value
+ * matches the hardcoded one) or contradict the existing matcher (the
+ * value differs, producing an empty set that isn't a regression
+ * signal). Either way the drill isn't informative; the spec excludes
+ * the target.
+ *
+ * The match is conservative — we only look at `<key>` appearing in
+ * matcher position (`<key><op>`); a label appearing as a `by(...)`
+ * key or as a function-arg name doesn't count.
+ *
+ * Examples:
+ *   expressionHasMatcherFor('rate(foo{cerberus_ql="promql"}[5m])', 'cerberus_ql')
+ *     → true
+ *   expressionHasMatcherFor('rate(foo[5m])', 'cerberus_ql')         → false
+ *   expressionHasMatcherFor('rate(foo{job="x"}[5m])', 'cerberus_ql') → false
+ *   expressionHasMatcherFor('sum by (cerberus_ql) (foo)', 'cerberus_ql')
+ *     → false                                                       // by() isn't a matcher
+ */
+export function expressionHasMatcherFor(expr: string, key: string): boolean {
+  // Find every `{...}` block and look for `<key>\s*(=|!=|=~|!~)`
+  // inside it. The outer block matcher is non-greedy and balanced-
+  // brace-free, which matches PromQL's selector syntax — selectors
+  // don't nest.
+  const blocks = expr.match(/\{[^{}]*\}/g) ?? [];
+  const matcherRegex = new RegExp(
+    `(?:^|[\\s,{])${escapeRegex(key)}\\s*(=~|!~|!=|=)`,
+  );
+  for (const b of blocks) {
+    if (matcherRegex.test(b)) return true;
+  }
+  return false;
+}
+
+/**
+ * Re-write `expr` to add a `<key>="<value>"` matcher to every vector
+ * selector. This is the load-bearing helper for the phase-3
+ * filter-drill spec: given a panel's baseline expression and a
+ * (label, value) pair observed in the baseline response, produce
+ * the filtered expression to fire as the drill-down probe.
+ *
+ * Two injection paths:
+ *
+ *   - Selector already has a `{...}` block: append `,<key>="<value>"`
+ *     just before the closing `}`. An empty block (`{}`) becomes
+ *     `{<key>="<value>"}`.
+ *   - Bare metric name (no `{...}` block): synthesise
+ *     `<metric>{<key>="<value>"}`.
+ *
+ * Identifiers immediately followed by `(` are PromQL function calls
+ * (`rate(...)`, `histogram_quantile(...)`, `sum(...)`) and are NOT
+ * vector selectors — they're skipped. Bare keywords (`and`, `or`,
+ * `unless`, `offset`, `bool`, plus the call-shape ones for defence
+ * in depth) are likewise skipped.
+ *
+ * The value is quoted with double quotes; embedded `"` and `\` are
+ * escaped per PromQL string-literal grammar. Callers shouldn't pass
+ * a value containing a literal newline — those don't occur in real
+ * label values and the helper doesn't try to model them.
+ *
+ * Examples:
+ *   addLabelFilter('rate(foo[5m])', 'cerberus_ql', 'promql')
+ *     → 'rate(foo{cerberus_ql="promql"}[5m])'
+ *   addLabelFilter('sum by (cerberus_ql) (rate(cerberus_queries_total[5m]))', 'cerberus_ql', 'promql')
+ *     → 'sum by (cerberus_ql) (rate(cerberus_queries_total{cerberus_ql="promql"}[5m]))'
+ *   addLabelFilter('rate(foo{job="x"}[5m])', 'cerberus_ql', 'promql')
+ *     → 'rate(foo{job="x",cerberus_ql="promql"}[5m])'
+ *   addLabelFilter('rate({__name__=~".+"}[5m])', 'service_name', 'cerberus')
+ *     → 'rate({__name__=~".+",service_name="cerberus"}[5m])'
+ *   addLabelFilter('histogram_quantile(0.95, sum by (le, cerberus_ql) (rate(foo_bucket[5m])))', 'cerberus_ql', 'promql')
+ *     → 'histogram_quantile(0.95, sum by (le, cerberus_ql) (rate(foo_bucket{cerberus_ql="promql"}[5m])))'
+ */
+export function addLabelFilter(
+  expr: string,
+  key: string,
+  value: string,
+): string {
+  const matcher = `${key}="${escapeMatcherValue(value)}"`;
+
+  // First pass: inject into every existing `{...}` selector block.
+  // Empty `{}` becomes `{<matcher>}`; non-empty appends `,<matcher>`.
+  // This catches the `{__name__=~".+"}`-style metric-less selectors
+  // that the bare-name pass below wouldn't see.
+  let out = expr.replace(/\{([^{}]*)\}/g, (_full, inner: string) => {
+    const trimmed = inner.trim();
+    if (trimmed === '') return `{${matcher}}`;
+    return `{${inner},${matcher}}`;
+  });
+
+  // Second pass: synthesise `{<matcher>}` after any bare metric name
+  // (identifier NOT followed by `(`, NOT already followed by `{...}`,
+  // and not a reserved word). We walk the string token-by-token so
+  // we can skip `{...}` blocks and string literals as a whole — the
+  // identifiers *inside* those (e.g. label keys, regex literals) are
+  // not selectors and must not be touched.
+  return walkAndInjectBare(out, matcher);
+}
+
+// Walk `expr` left to right; for every bare metric-name selector
+// (identifier in selector position, not followed by `{...}` or `(`),
+// emit `<ident>{matcher}` in place of `<ident>`. Skips strings and
+// `{...}` blocks wholesale — identifiers inside them are not
+// selectors.
+function walkAndInjectBare(expr: string, matcher: string): string {
+  let out = '';
+  let i = 0;
+  while (i < expr.length) {
+    const c = expr[i] ?? '';
+    // String literal — copy until the matching closing quote,
+    // respecting backslash escapes. PromQL accepts ", ', and `
+    // delimiters.
+    if (c === '"' || c === "'" || c === '`') {
+      const quote = c;
+      out += c;
+      i++;
+      while (i < expr.length) {
+        const ch = expr[i] ?? '';
+        out += ch;
+        if (ch === '\\' && quote !== '`') {
+          // Escape sequence: copy next char verbatim.
+          i++;
+          if (i < expr.length) {
+            out += expr[i];
+            i++;
+          }
+          continue;
+        }
+        if (ch === quote) {
+          i++;
+          break;
+        }
+        i++;
+      }
+      continue;
+    }
+    // `{...}` block — copy the whole thing. Selectors don't nest,
+    // so a flat counter suffices.
+    if (c === '{') {
+      let depth = 1;
+      out += c;
+      i++;
+      while (i < expr.length && depth > 0) {
+        const ch = expr[i] ?? '';
+        out += ch;
+        if (ch === '"' || ch === "'" || ch === '`') {
+          // skip string in case label values include `{` / `}`
+          const q = ch;
+          i++;
+          while (i < expr.length) {
+            const sc = expr[i] ?? '';
+            out += sc;
+            if (sc === '\\' && q !== '`') {
+              i++;
+              if (i < expr.length) {
+                out += expr[i];
+                i++;
+              }
+              continue;
+            }
+            if (sc === q) {
+              i++;
+              break;
+            }
+            i++;
+          }
+          continue;
+        }
+        if (ch === '{') depth++;
+        else if (ch === '}') depth--;
+        i++;
+      }
+      continue;
+    }
+    // Identifier — collect, then decide whether to inject.
+    if (/[a-zA-Z_:]/.test(c)) {
+      // Word-boundary: an identifier preceded by `.` is a field
+      // access (TraceQL `resource.service.name`), not a fresh
+      // selector. The PromQL parser doesn't use dots in identifiers
+      // but the spec uses this helper for promql only — defence in
+      // depth.
+      const prev = i > 0 ? (expr[i - 1] ?? '') : '';
+      if (/[A-Za-z0-9_:.]/.test(prev)) {
+        out += c;
+        i++;
+        continue;
+      }
+      let j = i;
+      while (j < expr.length && /[a-zA-Z0-9_:]/.test(expr[j] ?? '')) j++;
+      const ident = expr.slice(i, j);
+      out += ident;
+      i = j;
+      // Skip whitespace to peek at the next significant char.
+      let k = i;
+      while (k < expr.length && /\s/.test(expr[k] ?? '')) k++;
+      const next = k < expr.length ? (expr[k] ?? '') : '';
+      // Grouping-modifier keywords (`by`, `without`, `on`,
+      // `ignoring`, `group_left`, `group_right`) followed by `(` —
+      // the `(...)` block is a label list (or a series of label
+      // names), not a selector. Skip the whole block so the walker
+      // doesn't inject into the label names. This check has to come
+      // BEFORE the generic `next === '('` branch, otherwise `by` is
+      // mistaken for a function call and the inner label-list is
+      // walked as if it were a function argument list.
+      if (
+        next === '(' &&
+        (ident === 'by' ||
+          ident === 'without' ||
+          ident === 'on' ||
+          ident === 'ignoring' ||
+          ident === 'group_left' ||
+          ident === 'group_right')
+      ) {
+        // Copy whitespace + balanced (...) block verbatim.
+        out += expr.slice(i, k + 1); // through the opening `(`
+        i = k + 1;
+        let depth = 1;
+        while (i < expr.length && depth > 0) {
+          const ch = expr[i] ?? '';
+          out += ch;
+          if (ch === '(') depth++;
+          else if (ch === ')') depth--;
+          i++;
+        }
+        continue;
+      }
+      // Function call → not a selector.
+      if (next === '(') continue;
+      // Already has a `{...}` block → first pass handled it.
+      if (next === '{') continue;
+      // Other keywords (bare `and`, `or`, `unless`, `offset`, `bool`,
+      // plus the aggregator names when used with a `by(...)` /
+      // `without(...)` modifier between the aggregator and the
+      // `(args)` block) → not selectors.
+      if (PROMQL_KEYWORDS.has(ident)) continue;
+      // Inject the synthesised selector block.
+      out += `{${matcher}}`;
+      continue;
+    }
+    // Any other character — copy verbatim.
+    out += c;
+    i++;
+  }
+  return out;
+}
+
+function escapeMatcherValue(v: string): string {
+  // PromQL string literal escaping: backslash, double quote.
+  return v.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}

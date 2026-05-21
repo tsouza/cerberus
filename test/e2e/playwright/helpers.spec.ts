@@ -28,11 +28,14 @@ import {
   type Dashboard,
   type Panel,
   type PanelTarget,
+  addLabelFilter,
   assertHistogramComplete,
   assertLabelAbsent,
   assertLabelShape,
   assertNoFabricatedValue,
+  assertSubsetByCount,
   expectedByKeys,
+  expressionHasMatcherFor,
   extractByKeys,
   extractDataSourceProxyURL,
   extractHistogramName,
@@ -334,6 +337,132 @@ test('extractDataSourceProxyURL throws when no uid is resolvable', () => {
   const target: PanelTarget = { refId: 'A' };
   expect(() => extractDataSourceProxyURL(dashboard, panel, target)).toThrow(
     /no datasource uid/,
+  );
+});
+
+test('addLabelFilter injects into a bare metric name', () => {
+  expect(addLabelFilter('rate(foo[5m])', 'cerberus_ql', 'promql')).toBe(
+    'rate(foo{cerberus_ql="promql"}[5m])',
+  );
+});
+
+test('addLabelFilter appends to an existing non-empty selector block', () => {
+  expect(
+    addLabelFilter('rate(foo{job="x"}[5m])', 'cerberus_ql', 'promql'),
+  ).toBe('rate(foo{job="x",cerberus_ql="promql"}[5m])');
+});
+
+test('addLabelFilter populates an empty selector block', () => {
+  expect(addLabelFilter('rate(foo{}[5m])', 'cerberus_ql', 'promql')).toBe(
+    'rate(foo{cerberus_ql="promql"}[5m])',
+  );
+});
+
+test('addLabelFilter handles metric-less selectors like {__name__=~".+"}', () => {
+  expect(
+    addLabelFilter('rate({__name__=~".+"}[5m])', 'service_name', 'cerberus'),
+  ).toBe('rate({__name__=~".+",service_name="cerberus"}[5m])');
+});
+
+test('addLabelFilter walks through aggregation wrappers untouched', () => {
+  expect(
+    addLabelFilter(
+      'sum by (cerberus_ql) (rate(cerberus_queries_total[5m]))',
+      'cerberus_ql',
+      'promql',
+    ),
+  ).toBe(
+    'sum by (cerberus_ql) (rate(cerberus_queries_total{cerberus_ql="promql"}[5m]))',
+  );
+});
+
+test('addLabelFilter handles histogram_quantile + inner by(le, k)', () => {
+  expect(
+    addLabelFilter(
+      'histogram_quantile(0.95, sum by (le, cerberus_ql) (rate(cerberus_queries_duration_seconds_bucket[5m])))',
+      'cerberus_ql',
+      'promql',
+    ),
+  ).toBe(
+    'histogram_quantile(0.95, sum by (le, cerberus_ql) (rate(cerberus_queries_duration_seconds_bucket{cerberus_ql="promql"}[5m])))',
+  );
+});
+
+test('addLabelFilter does not mistake `m` in `[5m]` for an identifier', () => {
+  // Regression guard: a naive identifier regex matches `m` in the
+  // duration suffix `5m`. The walker uses a word-boundary check that
+  // excludes preceding digits.
+  const out = addLabelFilter('rate(foo[5m])', 'k', 'v');
+  expect(out).toBe('rate(foo{k="v"}[5m])');
+  expect(out).not.toContain('m{');
+});
+
+test('addLabelFilter escapes embedded double-quotes and backslashes in the value', () => {
+  expect(addLabelFilter('foo', 'k', 'a"b')).toBe('foo{k="a\\"b"}');
+  expect(addLabelFilter('foo', 'k', 'a\\b')).toBe('foo{k="a\\\\b"}');
+});
+
+test('addLabelFilter does not mutate label values inside existing matchers', () => {
+  // The string literal `"x"` must be copied verbatim — the `x` is not
+  // a fresh metric-name selector.
+  expect(addLabelFilter('foo{job="x"} or bar', 'k', 'v')).toBe(
+    'foo{job="x",k="v"} or bar{k="v"}',
+  );
+});
+
+test('addLabelFilter respects function calls and PromQL keywords', () => {
+  // `rate(`, `sum(`, `histogram_quantile(` are all function calls
+  // (followed by `(`) and never selectors. `or`, `and`, `unless` are
+  // keywords. Only the metric names `foo` / `bar` get the injection.
+  expect(
+    addLabelFilter('rate(foo[5m]) or rate(bar[5m])', 'k', 'v'),
+  ).toBe('rate(foo{k="v"}[5m]) or rate(bar{k="v"}[5m])');
+});
+
+test('expressionHasMatcherFor finds a matcher in any selector block', () => {
+  expect(
+    expressionHasMatcherFor(
+      'rate(foo{cerberus_ql="promql"}[5m])',
+      'cerberus_ql',
+    ),
+  ).toBe(true);
+  expect(
+    expressionHasMatcherFor('rate(foo{job="x"}[5m])', 'cerberus_ql'),
+  ).toBe(false);
+  expect(expressionHasMatcherFor('rate(foo[5m])', 'cerberus_ql')).toBe(false);
+});
+
+test('expressionHasMatcherFor does not confuse by(...) keys for matchers', () => {
+  // `sum by (cerberus_ql)` doesn't constrain the label — it just
+  // groups by it. The drill-down spec must still be willing to
+  // filter on cerberus_ql.
+  expect(
+    expressionHasMatcherFor('sum by (cerberus_ql) (foo)', 'cerberus_ql'),
+  ).toBe(false);
+});
+
+test('expressionHasMatcherFor handles all matcher operators', () => {
+  expect(expressionHasMatcherFor('foo{k="a"}', 'k')).toBe(true);
+  expect(expressionHasMatcherFor('foo{k!="a"}', 'k')).toBe(true);
+  expect(expressionHasMatcherFor('foo{k=~"a"}', 'k')).toBe(true);
+  expect(expressionHasMatcherFor('foo{k!~"a"}', 'k')).toBe(true);
+});
+
+test('assertSubsetByCount passes when filtered is non-empty + ≤ baseline', () => {
+  expect(() => assertSubsetByCount(3, 10, 'panel:foo')).not.toThrow();
+  expect(() => assertSubsetByCount(10, 10, 'panel:foo')).not.toThrow();
+  expect(() => assertSubsetByCount(1, 1, 'panel:foo')).not.toThrow();
+});
+
+test('assertSubsetByCount throws when filtered is zero', () => {
+  expect(() => assertSubsetByCount(0, 10, 'panel:foo')).toThrow(
+    /returned 0 series/,
+  );
+});
+
+test('assertSubsetByCount throws when filtered exceeds baseline', () => {
+  expect(() => assertSubsetByCount(11, 10, 'panel:foo')).toThrow(
+    /filtered=11 > baseline=10/,
   );
 });
 
