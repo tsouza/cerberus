@@ -217,9 +217,15 @@ func vectorMatchingFromOpts(vm *syntax.VectorMatching) (chplan.VectorCard, chpla
 	}
 
 	match.On = vm.On
-	if len(vm.MatchingLabels) > 0 {
-		match.Labels = append([]string(nil), vm.MatchingLabels...)
-	}
+	// `append([]string(nil), nil...)` returns nil and
+	// `append([]string(nil), []string{}...)` also returns nil, so the
+	// guard `if len(vm.MatchingLabels) > 0` is observationally a no-op:
+	// it produced the same nil `match.Labels` on the empty path.
+	// Removing it lets the assignment also serve as a clear-copy of any
+	// caller-allocated slice (we never alias the parser's MatchingLabels)
+	// and eliminates a CONDITIONALS_BOUNDARY mutation site that was
+	// equivalent under append's nil-input semantics.
+	match.Labels = append([]string(nil), vm.MatchingLabels...)
 	return card, match, include, nil
 }
 

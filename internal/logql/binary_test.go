@@ -139,6 +139,86 @@ func TestLowerBinaryRejectsNilLeg(t *testing.T) {
 	}
 }
 
+// TestVectorMatchingFromOptsEmptyLabels pins the no-op assignment of
+// `match.Labels` when the parser hands us a VectorMatching that carries
+// an empty MatchingLabels slice (e.g. a bare `on()` / `ignoring()`
+// modifier, or no modifier at all). Both legs of the previously-guarded
+// branch — `len(vm.MatchingLabels) > 0` true vs false — collapse to the
+// same observable: `match.Labels == nil`, because `append([]string(nil),
+// nil...)` and `append([]string(nil), []string{}...)` both return nil.
+// The guard was therefore equivalent under append's nil-input semantics
+// and was removed in favour of an unconditional clear-copy that also
+// guarantees the caller never aliases the parser's slice. This test
+// pins the post-refactor invariant so a future re-introduction of the
+// guard cannot silently land a CONDITIONALS_BOUNDARY-equivalent shape.
+func TestVectorMatchingFromOptsEmptyLabels(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		vm   *syntax.VectorMatching
+	}{
+		{
+			name: "nil VectorMatching",
+			vm:   nil,
+		},
+		{
+			name: "nil MatchingLabels slice",
+			vm:   &syntax.VectorMatching{Card: syntax.CardOneToOne, MatchingLabels: nil},
+		},
+		{
+			name: "empty MatchingLabels slice",
+			vm:   &syntax.VectorMatching{Card: syntax.CardOneToOne, MatchingLabels: []string{}},
+		},
+		{
+			name: "on() with empty MatchingLabels",
+			vm:   &syntax.VectorMatching{Card: syntax.CardOneToOne, On: true, MatchingLabels: []string{}},
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, match, _, err := vectorMatchingFromOpts(tc.vm)
+			if err != nil {
+				t.Fatalf("vectorMatchingFromOpts: %v", err)
+			}
+			if match.Labels != nil {
+				t.Fatalf("match.Labels = %#v, want nil for empty MatchingLabels", match.Labels)
+			}
+		})
+	}
+}
+
+// TestVectorMatchingFromOptsCopiesLabels pins the non-aliasing guarantee
+// of the clear-copy assignment: when MatchingLabels carries entries,
+// `match.Labels` MUST be a fresh slice with the same contents — not an
+// alias of the parser's slice. Mutating one MUST NOT propagate to the
+// other. Pins INVERT_LOOPCTRL / INCREMENT_DECREMENT mutations on the
+// copy semantics as well as the equivalent CONDITIONALS_BOUNDARY mutant
+// that was retired from the source.
+func TestVectorMatchingFromOptsCopiesLabels(t *testing.T) {
+	t.Parallel()
+
+	src := []string{"svc", "env"}
+	vm := &syntax.VectorMatching{Card: syntax.CardOneToOne, MatchingLabels: src}
+
+	_, match, _, err := vectorMatchingFromOpts(vm)
+	if err != nil {
+		t.Fatalf("vectorMatchingFromOpts: %v", err)
+	}
+	if !reflect.DeepEqual(match.Labels, src) {
+		t.Fatalf("match.Labels = %v, want %v", match.Labels, src)
+	}
+	// Mutate the source. If match.Labels were aliasing, this would
+	// bleed into the copy.
+	src[0] = "MUTATED"
+	if match.Labels[0] != "svc" {
+		t.Fatalf("match.Labels[0] = %q, want %q — slice aliasing leaked", match.Labels[0], "svc")
+	}
+}
+
 // TestLowerVectorScalarBoolModifierGate pins the
 // `isComparison(op) && returnBool` gate inside [lowerVectorScalar]. The
 // guard determines whether the comparison's Bool-typed result is

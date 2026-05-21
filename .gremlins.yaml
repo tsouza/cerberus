@@ -29,6 +29,24 @@ excluded-files:
   - "internal/api/**"
   - "cmd/**"
   - "**/doc.go"
+  # `internal/logql/dotted_labels.go` is structurally un-mutatable on
+  # the ubuntu-latest runner (~7 GB RAM). Rounds 4-9 of PR #664 walked
+  # the runner-budget knobs all the way down: workers=1, single-file
+  # `--exclude-files` slice (the file is only ~7 KB but the OTel
+  # dotted-label walker is the densest mutable surface in the
+  # package — ~40 mutants). Even the standalone single-file slice
+  # `phase4-logql-other-c` still received SIGTERM at ~3 min, having
+  # processed ~40 mutants of the file with every emitted mutant
+  # KILLED (0 LIVED). The bottleneck is cumulative gremlins-driver
+  # RSS plus each mutant's full `go test ./internal/logql` cycle
+  # dragging the loki + prometheus + dskit + memberlist parser dep
+  # graph through the linker — not the file itself. Until either
+  # (a) gremlins exposes an incremental-test-binary mode that
+  # skips re-linking per mutant, or (b) the lane moves to a larger
+  # runner class, dotted_labels.go is excluded from gremlins runs.
+  # The file is still covered by Layer-2 TXTAR fixtures and the
+  # standalone unit tests in `dotted_labels_test.go`.
+  - "internal/logql/dotted_labels.go"
 
 # Phased mutation-testing rollout. Each phase scopes gremlins to one
 # package with its own `--threshold-efficacy` bar enforced in

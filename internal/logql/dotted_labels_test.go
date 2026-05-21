@@ -194,6 +194,44 @@ func TestNormalizeLokiDottedLabels(t *testing.T) {
 			in:   `{a="\",b.c="d"}`,
 			want: `{a="\",b.c="d"}`,
 		},
+		// backtick string containing a backslash followed by the
+		// closing backtick. Loki's backtick-string grammar treats `\`
+		// as a LITERAL byte (no escape interpretation), so the closing
+		// backtick MUST end the string and a subsequent `b.c=...`
+		// matcher MUST still be rewritten.
+		//
+		// Pins the FIRST `&&` (col 29) in
+		// `state != lokiInBacktick && ch == '\\' && i+1 < len(q)` at
+		// lokiAdvanceInString. An INVERT_LOGICAL mutant `&&` → `||`
+		// makes the escape branch fire even inside backtick strings,
+		// which would consume the closing backtick as the "escaped
+		// char" and leave the walker permanently inside the string —
+		// the trailing `b.c` would then NOT be rewritten.
+		{
+			name: "backtick_with_backslash_then_dotted_key",
+			in:   "{a=`x\\`, b.c=\"y\"}",
+			want: "{a=`x\\`, b_c=\"y\"}",
+		},
+		// double-quoted string with a single-byte body that does NOT
+		// contain a backslash. The escape branch MUST stay dormant so
+		// the closing `"` at the next position ends the string and a
+		// subsequent `c.d=...` matcher MUST be rewritten.
+		//
+		// Pins the SECOND `&&` (col 43) in
+		// `state != lokiInBacktick && ch == '\\' && i+1 < len(q)`. An
+		// INVERT_LOGICAL mutant turning the second `&&` into `||`
+		// expands the predicate to
+		// `(state != lokiInBacktick && ch == '\\') || i+1 < len(q)` —
+		// which fires the escape path on EVERY non-final byte
+		// regardless of backslash presence. With a single-byte body
+		// the mutant swallows the closing `"` as the "escaped byte",
+		// leaving the walker permanently inside the string and
+		// skipping the trailing `c.d` rewrite.
+		{
+			name: "double_string_one_byte_body_then_dotted_key",
+			in:   `{a="b",c.d="y"}`,
+			want: `{a="b",c_d="y"}`,
+		},
 		// trailing top-level dotted token AFTER a closed selector.
 		// The `}` MUST decrement depth back to 0 (not increment); if
 		// the decrement were flipped to an increment, the subsequent
@@ -205,6 +243,115 @@ func TestNormalizeLokiDottedLabels(t *testing.T) {
 			name: "trailing_top_level_after_selector",
 			in:   `{a.b="c"},x.y="z"`,
 			want: `{a_b="c"},x.y="z"`,
+		},
+		// Trailing backslash inside a double-quoted string at end-of-
+		// input. The escape-branch guard `i+1 < len(q)` in
+		// lokiAdvanceInString MUST stay strict-less-than: a
+		// CONDITIONALS_BOUNDARY mutant flipping `<` to `<=` would
+		// admit `i+1 == len(q)` and then dereference `q[i+1]` past
+		// the end of the input, panicking the test. Original output
+		// preserves the unterminated string verbatim so the upstream
+		// parser surfaces a clean error. The `a.` prefix is there
+		// just to clear the early-return ContainsRune('.') fast path
+		// so the walker actually runs.
+		{
+			name: "trailing_backslash_in_double_string_eof",
+			in:   `{a.b="x\`,
+			want: `{a_b="x\`,
+		},
+		// Backslash inside a double-quoted string followed by a `"`
+		// then a top-level dotted token. The escape branch MUST fire
+		// (consume the `"` as the escaped byte) so the string
+		// continues — a CONDITIONALS_NEGATION mutant flipping `<` to
+		// `>=` makes the escape predicate uniformly false for normal
+		// (i.e., non-EOF) positions, dropping the escape consume.
+		// With the mutant the second `"` closes the string early and
+		// `c.d` at top level inside braces gets rewritten — distinct
+		// output. The leading dotted key fires the early-return-guard
+		// path so the walker enters the loop.
+		{
+			name: "escape_in_double_string_then_dotted_label",
+			in:   `{a.b="x\"y",c.d="z"}`,
+			want: `{a_b="x\"y",c_d="z"}`,
+		},
+		// Bottom-of-loop fall-through advance: a single non-special
+		// character `=` outside any selector. The fall-through `i++`
+		// at the end of the for-loop body MUST advance: an
+		// INCREMENT_DECREMENT mutant flipping `i++` to `i--` lands
+		// `i` at -1 on the next iteration and panics on `q[-1]`.
+		// The `.` is required to clear the ContainsRune('.') early-
+		// return; the `=` lands the walker at the bottom fall-through
+		// path (not whitespace, not `{`/`}`/`,`, not string-open, not
+		// ident-at-keystart-with-depth>0).
+		{
+			name: "bottom_fallthrough_advance_top_level",
+			in:   `=.`,
+			want: `=.`,
+		},
+		// Whitespace-inside-selector advance: the whitespace case
+		// MUST advance `i` past the space. An INCREMENT_DECREMENT
+		// mutant flipping the whitespace-case `i++` to `i--` sends
+		// `i` back to `{`, depth re-increments, and the walker
+		// loops without progress (or, on a leading-space input,
+		// lands at `q[-1]` and panics). The trailing `.` guarantees
+		// the ContainsRune early-return path is bypassed; the
+		// leading-space case puts the whitespace branch at i=0 so
+		// the mutant's underflow is the simplest possible panic.
+		{
+			name: "leading_whitespace_top_level_with_dot",
+			in:   ` .`,
+			want: ` .`,
+		},
+		// Top-of-walker arithmetic guard: a leading tab at index 0
+		// pins the `next := i + 1` advance baked into every walker
+		// branch. An ARITHMETIC_BASE mutant flipping `+` to `-`
+		// lands `next = -1` on the first iteration; the loop check
+		// `i < len(q)` then admits `i = -1` and `q[-1]` panics. The
+		// trailing `.` clears the ContainsRune('.') early-return.
+		{
+			name: "leading_tab_top_level_with_dot",
+			in:   "\t.",
+			want: "\t.",
+		},
+		// Backtick string containing TWO non-special bytes then the
+		// closing backtick. Pins the per-state split inside
+		// lokiAdvanceInString: a CONDITIONALS_NEGATION mutant flipping
+		// `state == lokiInBacktick` to `!=` makes the walker fall
+		// through to the escape / quote-close branches, which then
+		// fire on `x` → escape consumes `y`, and the trailing dotted
+		// `c.d` would NOT be rewritten because state stays Backtick
+		// past the synthetic close. Original output preserves the
+		// backtick body and rewrites `c.d` to `c_d`.
+		{
+			name: "backtick_body_then_dotted_key_no_backslash",
+			in:   "{a=`xy`, c.d=\"z\"}",
+			want: "{a=`xy`, c_d=\"z\"}",
+		},
+		// Backtick closing char inside lokiAdvanceInString. Pins
+		// `if ch == '`'` against CONDITIONALS_NEGATION: with `!=`,
+		// the close-quote detector fires on EVERY non-backtick byte
+		// inside backticks, dropping the walker back to outside on
+		// the very first body byte. The trailing dotted `c.d`
+		// would then be rewritten (mutant) vs preserved verbatim
+		// (unmutated) because under the mutant we exit the backtick
+		// state immediately while the unmutated walker stays in
+		// the string until the actual `` ` `` close.
+		{
+			name: "backtick_with_internal_dotted_then_trailing_key",
+			in:   "{a=`b.c`, d.e=\"f\"}",
+			want: "{a=`b.c`, d_e=\"f\"}",
+		},
+		// Single-quoted string with internal dot. Pins
+		// lokiAdvanceInString's `if state == lokiInSingle && ch == '\''`
+		// branch — a CONDITIONALS_NEGATION mutant on either side of
+		// that compound flips the close-quote behaviour and either
+		// closes early (rewriting a dot that should stay inside the
+		// string) or never closes (leaving the trailing dotted key
+		// un-rewritten).
+		{
+			name: "single_quoted_string_with_dotted_value_then_key",
+			in:   `{a='b.c', d.e="f"}`,
+			want: `{a='b.c', d_e="f"}`,
 		},
 	}
 

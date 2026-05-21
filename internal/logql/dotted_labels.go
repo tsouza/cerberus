@@ -73,39 +73,33 @@ func normalizeLokiDottedLabels(q string) string {
 	depth := 0       // `{` nesting depth — rewrite only fires when depth > 0
 	keyStart := true // next non-space rune at this position starts a label key
 
-	i := 0
-	for i < len(q) {
+	// Single-advance walker. Every iteration of the outer loop ends with
+	// exactly one `i = next` assignment computed by the inner step. This
+	// collapses the `i++` mutation surface (gremlins INCREMENT_DECREMENT
+	// would otherwise have to be killed independently in every per-token
+	// branch) down to a single `next := i + 1` site that any "first byte
+	// reaches the walker" test panics on under the `i--` mutation.
+	for i := 0; i < len(q); {
 		ch := q[i]
-		if state != lokiOutside {
-			i, state = lokiAdvanceInString(&out, q, i, state)
-			keyStart = false
-			continue
-		}
+		next := i + 1
+		nextKeyStart := false
 
-		if next, ok := lokiOpenString(ch); ok {
-			state = next
+		switch {
+		case state != lokiOutside:
+			next, state = lokiAdvanceInString(&out, q, i, state)
+		case isLokiStringOpen(ch):
+			state = lokiOpenStringState(ch)
 			out.WriteByte(ch)
-			i++
-			keyStart = false
-			continue
-		}
-
-		switch ch {
-		case '{':
+		case ch == '{':
 			out.WriteByte(ch)
 			depth++
-			keyStart = true
-			i++
-			continue
-		case '}':
+			nextKeyStart = true
+		case ch == '}':
 			out.WriteByte(ch)
 			if depth > 0 {
 				depth--
 			}
-			keyStart = false
-			i++
-			continue
-		case ',':
+		case ch == ',':
 			// keyStart is unconditionally set on `,`; the `depth > 0`
 			// guard at the rewrite site below suppresses top-level
 			// commas so a stray `a.b , c.d` outside braces still falls
@@ -113,45 +107,74 @@ func normalizeLokiDottedLabels(q string) string {
 			// here eliminates a semantically-equivalent boundary
 			// mutation that the previous `depth > 0` form admitted.
 			out.WriteByte(ch)
-			keyStart = true
-			i++
-			continue
-		case ' ', '\t', '\n', '\r':
+			nextKeyStart = true
+		case ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r':
+			// Whitespace preserves keyStart across the gap between `{`
+			// and the first label key, so `{  service.name=…}` still
+			// rewrites the dotted token.
 			out.WriteByte(ch)
-			i++
-			// keyStart is preserved across whitespace inside braces
-			continue
+			nextKeyStart = keyStart
+		case keyStart && depth > 0 && lokiIsIdentStart(ch):
+			next = lokiConsumeIdentToken(&out, q, i)
+		default:
+			out.WriteByte(ch)
 		}
 
-		if keyStart && depth > 0 && lokiIsIdentStart(ch) {
-			j := i + 1
-			for j < len(q) && (lokiIsIdentCont(q[j]) || q[j] == '.') {
-				j++
-			}
-			tok := q[i:j]
-			// Trailing dot would be malformed input; leave verbatim so
-			// the parser surfaces a clean error.
-			if strings.HasSuffix(tok, ".") {
-				out.WriteString(tok)
-				i = j
-				keyStart = false
-				continue
-			}
-			if strings.Contains(tok, ".") {
-				out.WriteString(strings.ReplaceAll(tok, ".", "_"))
-			} else {
-				out.WriteString(tok)
-			}
-			i = j
-			keyStart = false
-			continue
-		}
-
-		out.WriteByte(ch)
-		keyStart = false
-		i++
+		i = next
+		keyStart = nextKeyStart
 	}
 	return out.String()
+}
+
+// lokiConsumeIdentToken greedy-consumes one
+// `[a-zA-Z_]([a-zA-Z0-9_]|\.)*` token starting at q[i], writes its
+// rewritten (or verbatim) form to out, and returns the index past the
+// token. A trailing-dot token is left verbatim — that's malformed input
+// and we want the downstream parser to surface a clean error rather
+// than the rewrite mangling it into an underscore-suffixed identifier.
+func lokiConsumeIdentToken(out *strings.Builder, q string, i int) int {
+	j := i + 1
+	for j < len(q) && (lokiIsIdentCont(q[j]) || q[j] == '.') {
+		j++
+	}
+	tok := q[i:j]
+	if strings.HasSuffix(tok, ".") {
+		out.WriteString(tok)
+		return j
+	}
+	if strings.Contains(tok, ".") {
+		out.WriteString(strings.ReplaceAll(tok, ".", "_"))
+	} else {
+		out.WriteString(tok)
+	}
+	return j
+}
+
+// isLokiStringOpen reports whether ch begins a Loki string literal —
+// the three openers are `"`, `'`, and the backtick character.
+// Separating the opener test from the state lookup lets the walker
+// `switch` over byte-equality cases so gremlins'
+// CONDITIONALS_NEGATION on the compound `state == lokiOutside && open`
+// guard can't survive — opening a string is a single observable byte
+// event the round-trip + verbatim-string tests pin from both legs.
+func isLokiStringOpen(ch byte) bool {
+	return ch == '"' || ch == '\'' || ch == '`'
+}
+
+// lokiOpenStringState returns the in-string state corresponding to a
+// string-opener byte. Callers must gate this with isLokiStringOpen —
+// passing a non-opener byte panics, which is exactly the kind of
+// fail-loud signal a hypothetical bypass mutation would trip on.
+func lokiOpenStringState(ch byte) lokiStringState {
+	switch ch {
+	case '"':
+		return lokiInDouble
+	case '\'':
+		return lokiInSingle
+	case '`':
+		return lokiInBacktick
+	}
+	panic("lokiOpenStringState: not a string opener")
 }
 
 // lokiStringState mirrors stringState in internal/api/prom/dotted_names.go —
@@ -166,29 +189,30 @@ const (
 	lokiInBacktick
 )
 
-func lokiOpenString(ch byte) (lokiStringState, bool) {
-	switch ch {
-	case '"':
-		return lokiInDouble, true
-	case '\'':
-		return lokiInSingle, true
-	case '`':
-		return lokiInBacktick, true
-	}
-	return lokiOutside, false
-}
-
 func lokiAdvanceInString(out *strings.Builder, q string, i int, state lokiStringState) (int, lokiStringState) {
 	ch := q[i]
 	out.WriteByte(ch)
-	if state != lokiInBacktick && ch == '\\' && i+1 < len(q) {
+	// Per-state advance: backtick strings have NO escape grammar (Loki
+	// treats `\` as a literal byte), while double / single strings honour
+	// `\X` as a two-byte literal pair. Splitting on state up-front makes
+	// the escape-branch guard a single-operator compare (`ch == '\\'`)
+	// rather than the compound `state != lokiInBacktick && ch == '\\'`
+	// the previous form carried — every mutation on the surviving
+	// operators is killed by one of the in-string TXTAR tests.
+	if state == lokiInBacktick {
+		if ch == '`' {
+			state = lokiOutside
+		}
+		return i + 1, state
+	}
+	if ch == '\\' && i+1 < len(q) {
 		out.WriteByte(q[i+1])
 		return i + 2, state
 	}
-	switch {
-	case state == lokiInDouble && ch == '"',
-		state == lokiInSingle && ch == '\'',
-		state == lokiInBacktick && ch == '`':
+	if state == lokiInDouble && ch == '"' {
+		state = lokiOutside
+	}
+	if state == lokiInSingle && ch == '\'' {
 		state = lokiOutside
 	}
 	return i + 1, state
