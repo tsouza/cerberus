@@ -44,6 +44,12 @@ jobs:
         if: github.event_name == 'pull_request'
         uses: dorny/paths-filter@v3
         with:
+          # `every` makes the negation patterns subtractive: a file is
+          # in `code` iff it matches `**` AND does NOT match any of the
+          # `!`-prefixed doc patterns. Under the default `some`
+          # quantifier, `**` matches everything and the negations never
+          # fire — every PR would be flagged as code-touching.
+          predicate-quantifier: 'every'
           # `code` matches "any changed file that is NOT documentation".
           # The `!`-prefixed patterns subtract docs files from the `**`
           # baseline. If `code == 'false'` after the filter runs, every
