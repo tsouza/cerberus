@@ -1176,11 +1176,68 @@ func matcherToExpr(m *labels.Matcher, s schema.Logs) chplan.Expr {
 		lhs = detectedLevelExpr(s)
 	} else {
 		lhs = attributeLookupColumn(s.ResourceAttributesColumn, m.Name)
+		if col := resourceFallbackColumn(s, m.Name); col != "" {
+			lhs = resourceAttributeFallbackLHS(col, lhs)
+		}
 	}
 	return &chplan.Binary{
 		Op:    matchOp(m.Type),
 		Left:  lhs,
 		Right: &chplan.LitString{V: m.Value},
+	}
+}
+
+// resourceFallbackColumn returns the dedicated top-level CH column name
+// that mirrors a Prom/Loki resource-attribute label, or "" if the label
+// has no such fallback. The OTel ClickHouse Exporter hoists a fixed set
+// of OTel semantic-convention resource attributes out of the
+// ResourceAttributes map into named columns (most prominently
+// `service.name` → `ServiceName`) — rows ingested through that path
+// carry the value ONLY in the top-level column, leaving
+// `ResourceAttributes['service.name']` empty. A matcher lowering that
+// reads from the map alone misses every such row, which is exactly the
+// failure cerberus's own logs exhibited in task #217: cerberus itself
+// emits via the OTel collector → CH exporter pipeline, so its rows
+// carry `ServiceName='cerberus'` with no map entry, and
+// `{service_name="cerberus"}` returned zero streams.
+//
+// The mapping table is intentionally narrow — only labels whose
+// fallback column is part of the OTel-CH default schema. New entries
+// require both a schema.Logs field and an upstream OTel-CH exporter
+// promotion to land. Custom-schema users who clear the corresponding
+// schema.Logs field (e.g. `ServiceNameColumn=""`) opt out: the helper
+// returns "" so the lowering stays map-only.
+func resourceFallbackColumn(s schema.Logs, labelName string) string {
+	switch labelName {
+	case "service_name":
+		return s.ServiceNameColumn
+	}
+	return ""
+}
+
+// resourceAttributeFallbackLHS wraps a ResourceAttributes-lookup chain
+// in a coalesce that prefers the dedicated top-level column when it
+// carries a non-empty value. The CH idiom is
+// `coalesce(nullIf(<col>, ”), <map lookup>)`: `nullIf` rewrites the
+// String-default-empty sentinel back to NULL so `coalesce` selects the
+// map fallback when the top-level column was unpopulated. The full
+// shape lands on the lhs of every match operator (=, !=, =~, !~) so the
+// matcher's logical contract holds regardless of which storage shape
+// the row used — both presence and ABSENCE of `service.name=cerberus`
+// resolve correctly when the producer wrote it to either side.
+func resourceAttributeFallbackLHS(topCol string, mapLookup chplan.Expr) chplan.Expr {
+	return &chplan.FuncCall{
+		Name: "coalesce",
+		Args: []chplan.Expr{
+			&chplan.FuncCall{
+				Name: "nullIf",
+				Args: []chplan.Expr{
+					&chplan.ColumnRef{Name: topCol},
+					&chplan.LitString{V: ""},
+				},
+			},
+			mapLookup,
+		},
 	}
 }
 

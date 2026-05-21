@@ -11,7 +11,8 @@ CREATE TABLE otel_logs (
     Timestamp DateTime64(9),
     Body String,
     SeverityText LowCardinality(String) DEFAULT '',
-    ResourceAttributes Map(String, String)
+    ResourceAttributes Map(String, String),
+    ServiceName String DEFAULT ''
 ) ENGINE = Memory;
 INSERT INTO otel_logs (Timestamp, Body, ResourceAttributes) VALUES
     (toDateTime64('2026-01-01 00:00:00', 9), 'a', map('service_name', 'web-server')),
@@ -50,18 +51,19 @@ INSERT INTO otel_logs (Timestamp, Body, ResourceAttributes) VALUES
 [21] string = "fatal"
 [22] string = "fatal"
 [23] int64 = 1
-[24] string = "2025-12-31 23:55:00.000000000"
-[25] int64 = 9
-[26] string = "2026-01-01 00:01:00.000000000"
-[27] int64 = 9
-[28] string = "service_name"
-[29] string = "service_name"
-[30] string = "service.name"
-[31] string = "web-server"
+[24] string = ""
+[25] string = "service_name"
+[26] string = "service_name"
+[27] string = "service.name"
+[28] string = "web-server"
+[29] string = "2025-12-31 23:55:00.000000000"
+[30] int64 = 9
+[31] string = "2026-01-01 00:01:00.000000000"
+[32] int64 = 9
 -- chplan --
 RangeWindow func=count_over_time range=5m0s step=30s outerRange=1m0s ts=Timestamp value=Value groupBy=[ResourceAttributes] start=2026-01-01T00:00:00Z end=2026-01-01T00:01:00Z
   Project [mapConcat(ResourceAttributes, mapFilter((k, v) -> (v != ""), map("detected_level", multiIf(((lower(SeverityText) = "trace") OR (lower(SeverityText) = "trc")), "trace", ((lower(SeverityText) = "debug") OR (lower(SeverityText) = "dbg")), "debug", (((lower(SeverityText) = "info") OR (lower(SeverityText) = "inf")) OR (lower(SeverityText) = "information")), "info", (((lower(SeverityText) = "warn") OR (lower(SeverityText) = "wrn")) OR (lower(SeverityText) = "warning")), "warn", ((lower(SeverityText) = "error") OR (lower(SeverityText) = "err")), "error", (lower(SeverityText) = "critical"), "critical", (lower(SeverityText) = "fatal"), "fatal", lower(SeverityText))))) AS ResourceAttributes, Timestamp, 1 AS Value]
-    Filter predicate=((if(mapContains(ResourceAttributes, "service_name"), ResourceAttributes["service_name"], ResourceAttributes["service.name"]) = "web-server") AND ((Timestamp >= toDateTime64("2025-12-31 23:55:00.000000000", 9)) AND (Timestamp <= toDateTime64("2026-01-01 00:01:00.000000000", 9))))
+    Filter predicate=((coalesce(nullIf(ServiceName, ""), if(mapContains(ResourceAttributes, "service_name"), ResourceAttributes["service_name"], ResourceAttributes["service.name"])) = "web-server") AND ((Timestamp >= toDateTime64("2025-12-31 23:55:00.000000000", 9)) AND (Timestamp <= toDateTime64("2026-01-01 00:01:00.000000000", 9))))
       Scan(otel_logs)
 -- sql --
-SELECT `ResourceAttributes`, `anchor_ts`, anchor_ts AS `Timestamp`, toFloat64(length(window_vals)) AS `Value` FROM (SELECT `ResourceAttributes`, `anchor_ts`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `ResourceAttributes`, `anchor_ts`, arrayFilter(p -> tupleElement(p, 1) > anchor_ts - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= anchor_ts, series_array) AS `window_pairs` FROM (SELECT `ResourceAttributes`, `series_array`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:01:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(0, 3))) AS `anchor_ts` FROM (SELECT `ResourceAttributes`, arraySort(groupArray((`Timestamp`, `Value`))) AS `series_array` FROM (SELECT mapConcat(`ResourceAttributes`, mapFilter((k, v) -> (v != ?), map(?, multiIf(((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (lower(`SeverityText`) = ?), ?, (lower(`SeverityText`) = ?), ?, lower(`SeverityText`))))) AS `ResourceAttributes`, `Timestamp`, ? AS `Value` FROM (SELECT * FROM `otel_logs` WHERE (`Timestamp` >= toDateTime64(?, ?)) AND (`Timestamp` <= toDateTime64(?, ?)) AND (if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?]) = ?))) GROUP BY `ResourceAttributes`)))) WHERE length(`window_vals`) >= 1
+SELECT `ResourceAttributes`, `anchor_ts`, anchor_ts AS `Timestamp`, toFloat64(length(window_vals)) AS `Value` FROM (SELECT `ResourceAttributes`, `anchor_ts`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `ResourceAttributes`, `anchor_ts`, arrayFilter(p -> tupleElement(p, 1) > anchor_ts - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= anchor_ts, series_array) AS `window_pairs` FROM (SELECT `ResourceAttributes`, `series_array`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:01:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(0, 3))) AS `anchor_ts` FROM (SELECT `ResourceAttributes`, arraySort(groupArray((`Timestamp`, `Value`))) AS `series_array` FROM (SELECT mapConcat(`ResourceAttributes`, mapFilter((k, v) -> (v != ?), map(?, multiIf(((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (lower(`SeverityText`) = ?), ?, (lower(`SeverityText`) = ?), ?, lower(`SeverityText`))))) AS `ResourceAttributes`, `Timestamp`, ? AS `Value` FROM (SELECT * FROM `otel_logs` WHERE (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?])) = ?) AND (`Timestamp` >= toDateTime64(?, ?)) AND (`Timestamp` <= toDateTime64(?, ?)))) GROUP BY `ResourceAttributes`)))) WHERE length(`window_vals`) >= 1

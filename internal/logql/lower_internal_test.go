@@ -327,3 +327,53 @@ func TestIsMatrixRangeWindowWalksWrappers(t *testing.T) {
 		})
 	}
 }
+
+// TestResourceFallbackColumn pins the table of Prom-label-name → CH
+// top-level-column entries that anchor the OTel-CH resource-attribute
+// fallback. The matcher lowering reads this helper to decide whether
+// to wrap the ResourceAttributes lookup in a coalesce(nullIf(...), ...)
+// against a dedicated column. Adding a new entry requires both a
+// schema.Logs field AND an upstream OTel-CH exporter that promotes the
+// label out of the map — the helper deliberately stays narrow so a
+// regression that silently expands the table is loud in this test.
+func TestResourceFallbackColumn(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelLogs()
+	cases := []struct {
+		name  string
+		label string
+		want  string
+	}{
+		{name: "service_name resolves to ServiceName", label: "service_name", want: "ServiceName"},
+		{name: "job has no top-level column", label: "job", want: ""},
+		{name: "k8s_pod_name has no top-level column", label: "k8s_pod_name", want: ""},
+		{name: "detected_level has no top-level column", label: "detected_level", want: ""},
+		{name: "unknown label has no top-level column", label: "totally_unknown_label", want: ""},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := resourceFallbackColumn(s, tc.label); got != tc.want {
+				t.Errorf("resourceFallbackColumn(%q) = %q, want %q", tc.label, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestResourceFallbackColumn_RespectsSchemaOverride pins the
+// custom-schema opt-out: a user whose CH layout has no dedicated
+// ServiceName column clears `schema.Logs.ServiceNameColumn` and the
+// helper returns "" so the matcher lowering stays on the map-only
+// path. Without this, the lowering would emit a coalesce against a
+// non-existent column and every query against that schema would 500.
+func TestResourceFallbackColumn_RespectsSchemaOverride(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelLogs()
+	s.ServiceNameColumn = ""
+	if got := resourceFallbackColumn(s, "service_name"); got != "" {
+		t.Errorf("resourceFallbackColumn with cleared ServiceNameColumn = %q, want \"\"", got)
+	}
+}
