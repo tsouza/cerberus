@@ -44,8 +44,51 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # See `.github/workflows/ci.yml` for the rationale + filter convention.
+  # Docs-only PRs short-circuit the smoke job (Docker compose build +
+  # Grafana Playwright catch-net are pointless when no code changed).
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    outputs:
+      docs_only: ${{ steps.compute.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@v6
+        if: github.event_name == 'pull_request'
+
+      - id: filter
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            code:
+              - '**'
+              - '!**/*.md'
+              - '!**/*.markdown'
+              - '!docs/**'
+              - '!LICENSE*'
+              - '!CHANGELOG.md'
+              - '!.markdownlint*'
+              - '!CLAUDE.md'
+              - '!AGENTS.md'
+              - '!README*'
+
+      - id: compute
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            if [ "${{ steps.filter.outputs.code }}" = "false" ]; then
+              echo "docs_only=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+          fi
+
   smoke:
     name: compose-smoke
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
