@@ -75,6 +75,15 @@ jobs:
         env:
           GRAFANA_URL: http://localhost:3000
           CERBERUS_URL: http://localhost:8080
+        # `npx playwright test` with no spec filter auto-discovers
+        # every `*.spec.ts` under test/e2e/playwright/. That includes
+        # the phase-5 `iterate-time-ranges.spec.ts` matrix sweep,
+        # which is deliberately NOT in `.github/workflows/compose-smoke.yml`
+        # (Q2 decision — too expensive for PR gate; nightly-only per
+        # /home/thiago/.claude/plans/e2e-enhance.md §9). Any future
+        # nightly-only spec should follow the same pattern: just add
+        # the file here and skip it from compose-smoke's explicit
+        # invocation list.
         run: npx playwright test
 
       - name: Upload Playwright report on failure

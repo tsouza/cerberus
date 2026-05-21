@@ -31,7 +31,7 @@ concrete iteration:
 | 2     | (extends `compose_panel_shape`)      | `assertions.assertHistogramComplete`, `assertions.assertNoFabricatedValue`, `probes`                                                                |
 | 3     | `iterate-filter-drill.spec.ts`       | `dashboard`, `query-shape` (`addLabelFilter`, `expressionHasMatcherFor`, `expectedByKeys`), `assertions` (`assertSubsetByCount`), `sweep`, `probes` |
 | 4     | `compose_panel_kiosk.spec.ts`        | `dashboard`, `dom`, `assertions`                                                                                                                    |
-| 5     | `compose_variable_matrix.spec.ts`    | `dashboard`, `sweep`, `assertions`                                                                                                                  |
+| 5     | `iterate-time-ranges.spec.ts`        | `dashboard`, `query-shape`, `assertions`, `sweep`, `probes` — nightly-only (e2e.yml `dashboard` job), NOT compose-smoke (Q2)                        |
 | 6     | `compose_drilldown_apps.spec.ts`     | `drilldown`, `dom`, `assertions`                                                                                                                    |
 
 The existing `compose_grafana_smoke.spec.ts` is untouched in this PR;
