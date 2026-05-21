@@ -1,0 +1,42 @@
+-- query.promql --
+http_server_request_duration_bucket{le="2"}
+-- seed --
+CREATE TABLE otel_metrics_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    BucketCounts Array(UInt64),
+    ExplicitBounds Array(Float64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_histogram VALUES
+    ('http_server_request_duration', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 21, 10.0, [1, 2, 3, 4, 5, 6], [1.0, 2.0, 3.0, 4.0, 5.0]);
+-- expected_rows --
+[
+  ["http_server_request_duration_bucket", {"le": "2", "service": "api"}, "2026-01-01T00:00:00Z", 3]
+]
+-- args --
+[0] string = "http_server_request_duration_bucket"
+[1] string = "le"
+[2] string = "+Inf"
+[3] int64 = 1
+[4] string = "http_server_request_duration"
+[5] string = "le"
+[6] string = "2"
+[7] string = "2026-01-01 00:00:01.000000000"
+[8] int64 = 9
+[9] string = "2026-01-01 00:00:01.000000000"
+[10] int64 = 9
+[11] int64 = 300000000000
+-- chplan --
+Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
+  Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
+    Filter predicate=((TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9)) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+      Filter predicate=(Attributes["le"] = "2")
+        Project ["http_server_request_duration_bucket" AS MetricName, mapConcat(Attributes, map("le", if((le_idx > length(ExplicitBounds)), "+Inf", toString(ExplicitBounds[le_idx])))) AS Attributes, TimeUnix AS TimeUnix, toFloat64(arraySum(arraySlice(BucketCounts, 1, le_idx))) AS Value]
+          Project [MetricName AS MetricName, Attributes AS Attributes, TimeUnix AS TimeUnix, ExplicitBounds AS ExplicitBounds, BucketCounts AS BucketCounts, arrayJoin(arrayEnumerate(BucketCounts)) AS le_idx]
+            Filter predicate=(MetricName = "http_server_request_duration")
+              Scan(otel_metrics_histogram)
+-- sql --
+SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT * FROM (SELECT ? AS `MetricName`, mapConcat(`Attributes`, map(?, if((le_idx > length(`ExplicitBounds`)), ?, toString(`ExplicitBounds`[le_idx])))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, toFloat64(arraySum(arraySlice(`BucketCounts`, ?, le_idx))) AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `TimeUnix` AS `TimeUnix`, `ExplicitBounds` AS `ExplicitBounds`, `BucketCounts` AS `BucketCounts`, arrayJoin(arrayEnumerate(`BucketCounts`)) AS `le_idx` FROM (SELECT * FROM `otel_metrics_histogram` WHERE (`MetricName` = ?)))) WHERE (`Attributes`[?] = ?)) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)
