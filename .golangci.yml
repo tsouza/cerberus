@@ -128,6 +128,15 @@ linters:
     lll:
       line-length: 280
   exclusions:
+    # Drop sibling agent worktrees from discovery. Lefthook pre-push runs
+    # `golangci-lint run ./...` from the active worktree root; without this
+    # exclusion any file under `.claude/worktrees/<other-agent>/...` (a
+    # parallel worktree's tree) gets reachable via explicit path / IDE
+    # integration and surfaces lint findings unrelated to the committer's
+    # change. The pattern is anchored on the literal segment so it matches
+    # both `.claude/worktrees/agent-…/…` and any nested re-entry.
+    paths:
+      - \.claude/worktrees
     rules:
       - path: _test\.go
         linters:
