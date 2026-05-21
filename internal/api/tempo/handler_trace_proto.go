@@ -105,8 +105,10 @@ func groupBatchesProto(samples []chclient.Sample) *tempopb.Trace {
 			// DurationNanos is carried as Value on the Sample; the proto
 			// shape has no Duration field, so we encode start + end so
 			// EndTimeUnixNano - StartTimeUnixNano = the duration the JSON
-			// path exposes verbatim.
-			EndTimeUnixNano: uint64(s.Timestamp.UnixNano()) + uint64(int64(s.Value)),
+			// path exposes verbatim. durationNanosFromValue clamps the
+			// float64 duration to a non-negative uint64 so the gosec G115
+			// signed-to-unsigned conversion check stays happy on the cast.
+			EndTimeUnixNano: uint64(s.Timestamp.UnixNano()) + durationNanosFromValue(s.Value),
 			Status:          &tracev1.Status{Code: statusCodeFromCH(meta[traceByIDKeyStatusCode])},
 			Attributes:      attrMapToKVList(spanAttrs),
 		})
@@ -116,6 +118,20 @@ func groupBatchesProto(samples []chclient.Sample) *tempopb.Trace {
 		out.ResourceSpans = append(out.ResourceSpans, bucket[k])
 	}
 	return out
+}
+
+// durationNanosFromValue converts the float64 duration carried on
+// chclient.Sample.Value into the uint64 EndTimeUnixNano expects.
+// Negative durations (a CH typing bug or a row that slipped past the
+// duration_ns >= 0 invariant) are clamped to zero so the resulting
+// EndTimeUnixNano never wraps below StartTimeUnixNano — and so gosec
+// G115 (signed→unsigned conversion) stays satisfied with the cast
+// being unconditionally non-negative.
+func durationNanosFromValue(v float64) uint64 {
+	if v <= 0 {
+		return 0
+	}
+	return uint64(v)
 }
 
 // attrMapToKVList renders a string→string attribute map into the
