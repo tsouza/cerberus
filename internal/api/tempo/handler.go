@@ -475,29 +475,28 @@ func normaliseTraceID(s string) string {
 	return strings.Repeat("0", 32-len(s)) + strings.ToLower(s)
 }
 
-// stripLeadingHexZeros returns a chplan expression that emits the hex
-// value of `col` with leading zeros removed, matching Tempo's wire
-// format for trace IDs and span IDs. The OTel-CH exporter writes both
-// as fixed-width lowercase-hex strings (32 chars for TraceId, 16 chars
-// for SpanId / ParentSpanId); Tempo's /api/search + /api/traces/{id}
-// shapers trim leading zeros so e.g. `0000…ab` becomes `ab`.
+// stripLeadingHexZeros historically emitted `replaceRegexpOne(col,
+// '^0+([0-9a-f])', '\\1')` to mirror reference Tempo's habit of
+// stripping leading zeros from trace IDs and span IDs on the wire.
+// That behaviour violates the OTel / Tempo spec: a TraceId is a
+// fixed-width 16-byte value and its hex representation MUST be 32
+// lowercase-hex chars; a SpanId is 8 bytes / 16 hex chars. Reference
+// Tempo's own zero-stripping was a long-standing wire-format defect
+// that clients had to work around — cerberus shouldn't propagate it
+// (issue #209).
 //
-// The CH expression `replaceRegexpOne(col, '^0+([0-9a-f])', '\\1')`
-// strips a run of leading zeros but always retains at least one hex
-// digit — so an all-zero TraceId renders as a single `0` rather than
-// collapsing to the empty string, and an already-empty value (root
-// span's ParentSpanId is "" on the wire) round-trips unchanged because
-// the regex doesn't match. Lowercase-only character class matches the
-// OTel-CH `hex.EncodeToString` output verbatim.
+// The function is retained as a passthrough so every existing call
+// site keeps compiling without churn. The OTel-CH exporter writes
+// TraceId / SpanId / ParentSpanId as canonical fixed-width lowercase-
+// hex strings (`hex.EncodeToString`), so returning the bare column
+// ref yields the spec-compliant 32-/16-char form verbatim on the wire.
+//
+// Input parsing on the `/api/traces/{id}` path still accepts both the
+// padded and the leading-zero-stripped form (see normaliseTraceID) so
+// clients that round-trip via legacy reference-Tempo wire payloads
+// continue to resolve.
 func stripLeadingHexZeros(col string) chplan.Expr {
-	return &chplan.FuncCall{
-		Name: "replaceRegexpOne",
-		Args: []chplan.Expr{
-			&chplan.ColumnRef{Name: col},
-			&chplan.LitString{V: "^0+([0-9a-f])"},
-			&chplan.LitString{V: "\\1"},
-		},
-	}
+	return &chplan.ColumnRef{Name: col}
 }
 
 // Reserved keys used by wrapWithSampleProjection to smuggle trace-detail
@@ -1086,16 +1085,16 @@ func toTraceSummaries(samples []chclient.Sample) ([]TraceSummary, []string) {
 		}
 
 		// Resolve root-span metadata. The reserved __cerberus_parentSpanID
-		// slot carries the parent ID; empty (or a single "0") means this
-		// row is the root. The OTel-CH exporter writes ParentSpanId as a
-		// 16-char lowercase-hex string and the canonical/r-qualified
-		// projections route it through stripLeadingHexZeros — the regex
-		// `^0+([0-9a-f])` always retains ≥ 1 hex digit, so an all-zero
-		// ParentSpanId (`0000000000000000`, the on-disk form for a true
-		// root span) collapses to `"0"` rather than `""`. We accept both
-		// the legacy pre-strip empty form (older fixtures / stub
-		// queriers) and the post-strip `"0"` form so the same shaper
-		// works on either projection variant.
+		// slot carries the parent ID; an empty value (`""`), a single
+		// `"0"`, or the full 16-zero hex string (`"0000000000000000"`)
+		// all mean this row is the root span. The OTel-CH exporter
+		// writes ParentSpanId as a 16-char lowercase-hex string; the
+		// canonical/r-qualified projections now surface that column
+		// verbatim (post-#209 fix: no more leading-zero stripping on
+		// the OUTPUT side), so a true root span arrives as the full
+		// 16-char zero hex. The `""` / `"0"` forms are accepted for
+		// back-compat with legacy fixtures, stub queriers, and the
+		// pre-fix stripped projection variant respectively.
 		//
 		// When the slot is missing (older fixtures / stub queriers),
 		// treat every row as a non-root candidate so the fallback path
@@ -1106,7 +1105,7 @@ func toTraceSummaries(samples []chclient.Sample) ([]TraceSummary, []string) {
 		if hasParentSlot {
 			a.sawParentSlot = true
 		}
-		isRoot := hasParentSlot && (parentID == "" || parentID == "0")
+		isRoot := hasParentSlot && (parentID == "" || parentID == "0" || parentID == "0000000000000000")
 		svc := s.Labels["service.name"]
 		switch {
 		case isRoot && (!a.hasRoot || ns < a.rootStartNS):
