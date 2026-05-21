@@ -54,24 +54,41 @@ jobs:
           - phase: phase1
             scope: ./internal/chplan
             efficacy: 95
+            workers: 0
           - phase: phase2
             scope: ./internal/chsql
             efficacy: 95
+            workers: 0
           - phase: phase3-optimizer
             scope: ./internal/optimizer
             efficacy: 95
+            workers: 0
           - phase: phase4-promql
             scope: ./internal/promql
             efficacy: 95
+            workers: 0
+          # phase4-logql historically OOM-killed the ubuntu-latest
+          # runner (~7 GB RAM) at the 3-minute mark when gremlins
+          # spawned `runtime.NumCPU()` (4) parallel `go test` workers
+          # against the heavy logql parser corpus. The
+          # tsouza/gremlins@v0.6.0-cerberus-sigterm-consume fork
+          # converts the in-flight mutants from LIVED to NOT_COVERED
+          # on SIGTERM, but the runner cancellation still kills the
+          # step before `gremlins.json` is written. Capping workers
+          # at 2 keeps peak RSS under the runner ceiling so the run
+          # completes and the efficacy gate has a JSON to grade.
           - phase: phase4-logql
             scope: ./internal/logql
             efficacy: 95
+            workers: 2
           - phase: phase4-traceql
             scope: ./internal/traceql
             efficacy: 95
+            workers: 0
           - phase: phase5-qlcommon
             scope: ./internal/qlcommon
             efficacy: 95
+            workers: 0
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
@@ -93,8 +110,17 @@ jobs:
       # https://github.com/go-gremlins/gremlins/pull/283
       - name: install gremlins
         run: go install github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-sigterm-consume
+      # `workers: 0` keeps gremlins' default (runtime.NumCPU()); a
+      # non-zero value caps the parallel `go test` fan-out per the
+      # comment above the matrix entry.
       - name: gremlins unleash
-        run: gremlins unleash --output gremlins.json --on-shutdown-status=not-run ${{ matrix.scope }}
+        run: |
+          args=(unleash --output gremlins.json --on-shutdown-status=not-run)
+          if [ "${{ matrix.workers }}" != "0" ]; then
+            args+=(--workers "${{ matrix.workers }}")
+          fi
+          args+=("${{ matrix.scope }}")
+          gremlins "${args[@]}"
       - name: enforce efficacy threshold
         run: |
           set -euo pipefail
