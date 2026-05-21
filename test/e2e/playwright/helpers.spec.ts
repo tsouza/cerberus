@@ -29,16 +29,21 @@ import {
   type Panel,
   type PanelTarget,
   addLabelFilter,
+  addLogQLLabelFilter,
+  addTraceQLAttributeFilter,
   assertHistogramComplete,
   assertLabelAbsent,
   assertLabelShape,
   assertNoFabricatedValue,
   assertSubsetByCount,
   expectedByKeys,
+  expectedByKeysForDsType,
   expressionHasMatcherFor,
   extractByKeys,
   extractDataSourceProxyURL,
   extractHistogramName,
+  extractLogQLByKeys,
+  extractTraceQLByKeys,
   extractWithoutKeys,
   isHistogramQuantile,
   iterateDashboards,
@@ -481,6 +486,268 @@ test('iterateDrilldownApps returns three apps including the three built-ins', ()
   // contaminate the module-level constant.
   apps.pop();
   expect(DRILLDOWN_APPS.length).toBe(3);
+});
+
+// --- LogQL filter helpers (Phase 3b) ---------------------------------------
+
+test('addLogQLLabelFilter appends to a bare non-empty stream selector', () => {
+  expect(
+    addLogQLLabelFilter('{service_name="cerberus"}', 'level', 'error'),
+  ).toBe('{service_name="cerberus",level="error"}');
+});
+
+test('addLogQLLabelFilter populates an empty stream selector', () => {
+  expect(addLogQLLabelFilter('{}', 'service_name', 'cerberus')).toBe(
+    '{service_name="cerberus"}',
+  );
+});
+
+test('addLogQLLabelFilter only touches the stream selector, not the pipeline', () => {
+  // The label-filter stage `| SeverityText="ERROR"` is a post-parse
+  // predicate, not a stream matcher. Injection must NOT add a second
+  // `level="error"` after the pipe.
+  expect(
+    addLogQLLabelFilter(
+      '{service_name="cerberus"} | SeverityText="ERROR"',
+      'level',
+      'error',
+    ),
+  ).toBe(
+    '{service_name="cerberus",level="error"} | SeverityText="ERROR"',
+  );
+});
+
+test('addLogQLLabelFilter survives a line_format stage with embedded braces', () => {
+  // `| line_format "{{.foo}}"` carries `{{` / `}}` inside a string
+  // literal. A naive `\{[^{}]*\}` regex would carve `{.foo}` out of
+  // it; the walker skips string literals as a whole.
+  expect(
+    addLogQLLabelFilter(
+      '{service_name="cerberus"} | json | line_format "{{.foo}}"',
+      'level',
+      'error',
+    ),
+  ).toBe(
+    '{service_name="cerberus",level="error"} | json | line_format "{{.foo}}"',
+  );
+});
+
+test('addLogQLLabelFilter walks into a sum-by-rate aggregation', () => {
+  // The drill key (`SeverityText`) is distinct from the matcher
+  // already inside the stream selector (`service_name=~".+"`), so the
+  // helper injects rather than no-oping. This mirrors what the
+  // iterator does after filtering out already-matched keys via
+  // `expressionHasMatcherFor`.
+  expect(
+    addLogQLLabelFilter(
+      'sum by (SeverityText) (rate({service_name=~".+"}[5m]))',
+      'SeverityText',
+      'ERROR',
+    ),
+  ).toBe(
+    'sum by (SeverityText) (rate({service_name=~".+",SeverityText="ERROR"}[5m]))',
+  );
+});
+
+test('addLogQLLabelFilter is idempotent when the key is already matched', () => {
+  // The iterator filters out keys with an existing matcher upstream,
+  // but the helper itself is also a no-op defensively.
+  expect(addLogQLLabelFilter('{level="error"}', 'level', 'error')).toBe(
+    '{level="error"}',
+  );
+  expect(
+    addLogQLLabelFilter('{service_name="cerberus",level=~"e.*"}', 'level', 'x'),
+  ).toBe('{service_name="cerberus",level=~"e.*"}');
+});
+
+test('addLogQLLabelFilter escapes embedded double-quotes and backslashes in the value', () => {
+  expect(addLogQLLabelFilter('{a="b"}', 'k', 'a"b')).toBe(
+    '{a="b",k="a\\"b"}',
+  );
+  expect(addLogQLLabelFilter('{a="b"}', 'k', 'a\\b')).toBe(
+    '{a="b",k="a\\\\b"}',
+  );
+});
+
+test('addLogQLLabelFilter handles binary expressions over two stream selectors', () => {
+  // LogQL binary ops (`or`, `and`) over two metric-shape selectors are
+  // valid; each stream-selector block must get the matcher.
+  expect(
+    addLogQLLabelFilter(
+      'rate({a="1"}[5m]) or rate({b="2"}[5m])',
+      'env',
+      'prod',
+    ),
+  ).toBe('rate({a="1",env="prod"}[5m]) or rate({b="2",env="prod"}[5m])');
+});
+
+test('addLogQLLabelFilter does not touch a label-filter-stage matcher', () => {
+  // `| level="error"` is a pipeline-stage filter, not a stream matcher.
+  // Injecting `level` into the *stream* selector is correct; the
+  // post-pipe expression stays untouched.
+  expect(
+    addLogQLLabelFilter(
+      '{service_name="cerberus"} | level="error"',
+      'env',
+      'prod',
+    ),
+  ).toBe('{service_name="cerberus",env="prod"} | level="error"');
+});
+
+test('extractLogQLByKeys parses LogQL sum-by aggregation', () => {
+  expect(
+    extractLogQLByKeys(
+      'sum by (SeverityText) (rate({service_name=~".+"}[5m]))',
+    ),
+  ).toEqual(['SeverityText']);
+});
+
+test('extractLogQLByKeys returns empty for a non-aggregating log query', () => {
+  expect(
+    extractLogQLByKeys('{service_name="cerberus"} | SeverityText="ERROR"'),
+  ).toEqual([]);
+});
+
+// --- TraceQL filter helpers (Phase 3b) -------------------------------------
+
+test('addTraceQLAttributeFilter appends to a non-empty spanset with `&&`', () => {
+  expect(
+    addTraceQLAttributeFilter(
+      '{ status = error }',
+      'resource.service.name',
+      'cerberus',
+    ),
+  ).toBe('{ status = error && resource.service.name="cerberus" }');
+});
+
+test('addTraceQLAttributeFilter populates an empty spanset', () => {
+  expect(
+    addTraceQLAttributeFilter('{}', 'resource.service.name', 'cerberus'),
+  ).toBe('{ resource.service.name="cerberus" }');
+});
+
+test('addTraceQLAttributeFilter survives a pad-free spanset', () => {
+  // `{status=error}` (no padding) should still get a sensible
+  // `&&`-joined matcher rather than malforming into `{status=error&&…}`.
+  expect(
+    addTraceQLAttributeFilter('{status=error}', 'span.kind', 'server'),
+  ).toBe('{status=error && span.kind="server" }');
+});
+
+test('addTraceQLAttributeFilter handles dotted attribute keys', () => {
+  // TraceQL attributes are dotted paths — the matcher must serialise
+  // verbatim, not get reinterpreted as a regex / member-access shape.
+  expect(
+    addTraceQLAttributeFilter(
+      '{ duration > 100ms }',
+      'resource.service.name',
+      'cerberus',
+    ),
+  ).toBe('{ duration > 100ms && resource.service.name="cerberus" }');
+});
+
+test('addTraceQLAttributeFilter only touches the spanset, not the pipeline', () => {
+  // The pipeline `| rate() by (resource.service.name)` carries the
+  // aggregation key but is NOT a filter — the matcher belongs in the
+  // spanset before the pipe.
+  expect(
+    addTraceQLAttributeFilter(
+      '{ status = error } | rate() by (resource.service.name)',
+      'span.kind',
+      'server',
+    ),
+  ).toBe(
+    '{ status = error && span.kind="server" } | rate() by (resource.service.name)',
+  );
+});
+
+test('addTraceQLAttributeFilter is idempotent when the attribute is already matched', () => {
+  expect(
+    addTraceQLAttributeFilter(
+      '{ resource.service.name = "cerberus" }',
+      'resource.service.name',
+      'cerberus',
+    ),
+  ).toBe('{ resource.service.name = "cerberus" }');
+});
+
+test('addTraceQLAttributeFilter ignores `{` inside string literals', () => {
+  // A trace-attribute value containing `{` would otherwise look like a
+  // nested spanset. The walker treats it as opaque.
+  expect(
+    addTraceQLAttributeFilter(
+      '{ resource.service.name = "weird{value" }',
+      'span.kind',
+      'server',
+    ),
+  ).toBe(
+    '{ resource.service.name = "weird{value" && span.kind="server" }',
+  );
+});
+
+test('addTraceQLAttributeFilter escapes embedded double-quotes and backslashes in the value', () => {
+  expect(
+    addTraceQLAttributeFilter('{}', 'span.label', 'a"b'),
+  ).toBe('{ span.label="a\\"b" }');
+  expect(addTraceQLAttributeFilter('{}', 'span.label', 'a\\b')).toBe(
+    '{ span.label="a\\\\b" }',
+  );
+});
+
+test('extractTraceQLByKeys parses `| rate() by (k)` pipeline', () => {
+  expect(
+    extractTraceQLByKeys(
+      '{ status = error } | rate() by (resource.service.name)',
+    ),
+  ).toEqual(['resource.service.name']);
+});
+
+test('extractTraceQLByKeys parses count_over_time/sum_over_time aggregations', () => {
+  expect(
+    extractTraceQLByKeys(
+      '{ resource.service.name = "x" } | count_over_time() by (span.kind)',
+    ),
+  ).toEqual(['span.kind']);
+  expect(
+    extractTraceQLByKeys(
+      '{ resource.service.name != "" } | sum_over_time(duration) by (resource.service.name, span.name)',
+    ),
+  ).toEqual(['resource.service.name', 'span.name']);
+});
+
+test('extractTraceQLByKeys returns empty for a bare spanset', () => {
+  expect(extractTraceQLByKeys('{ resource.service.name != "" }')).toEqual(
+    [],
+  );
+});
+
+test('expectedByKeysForDsType dispatches per dsType', () => {
+  expect(
+    expectedByKeysForDsType(
+      'sum by (cerberus_ql) (rate(cerberus_queries_total[5m]))',
+      'prometheus',
+    ),
+  ).toEqual(['cerberus_ql']);
+  expect(
+    expectedByKeysForDsType(
+      'histogram_quantile(0.95, sum by (le, k) (rate(foo_bucket[5m])))',
+      'prometheus',
+    ),
+  ).toEqual(['k']); // le subtracted by expectedByKeys
+  expect(
+    expectedByKeysForDsType(
+      'sum by (SeverityText) (rate({service_name=~".+"}[5m]))',
+      'loki',
+    ),
+  ).toEqual(['SeverityText']);
+  expect(
+    expectedByKeysForDsType(
+      '{ status = error } | rate() by (resource.service.name)',
+      'tempo',
+    ),
+  ).toEqual(['resource.service.name']);
+  // Unknown dsType → empty (the iterator skips these targets).
+  expect(expectedByKeysForDsType('rate(foo[5m])', 'opentsdb')).toEqual([]);
 });
 
 // --- Live-Grafana tests -----------------------------------------------------

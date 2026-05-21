@@ -519,3 +519,339 @@ function escapeMatcherValue(v: string): string {
 function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
+
+// LogQL aggregation `by(...)` keys — the LogQL aggregation syntax
+// mirrors PromQL's (`sum by(k) (rate({...}[5m]))`), so `extractByKeys`
+// already covers it. The standalone helper here exists for symmetry
+// with the TraceQL extractor and so the iterator-spec doesn't have to
+// know that LogQL re-uses the PromQL regex.
+//
+// Examples:
+//   extractLogQLByKeys('sum by (SeverityText) (rate({service_name=~".+"}[5m]))')
+//     → ['SeverityText']
+//   extractLogQLByKeys('{service_name="cerberus"} | SeverityText="ERROR"')
+//     → []                                  // not an aggregation
+export function extractLogQLByKeys(expr: string): string[] {
+  return extractByKeys(expr);
+}
+
+// TraceQL aggregation `by(...)` clauses sit on the pipeline metric
+// functions (`| rate() by (k)`, `| count_over_time() by (k)`), NOT
+// behind a PromQL-style aggregator prefix. The PromQL `BY_REGEX`
+// therefore misses them; this extractor walks every `\| <fn>() by(...)`
+// occurrence and unions the labels.
+//
+// The dotted attribute keys TraceQL uses (`resource.service.name`,
+// `span.http.method`) survive verbatim — the inner regex is
+// `[^)]*` which permits dots.
+//
+// Examples:
+//   extractTraceQLByKeys('{ status = error } | rate() by (resource.service.name)')
+//     → ['resource.service.name']
+//   extractTraceQLByKeys('{ resource.service.name = "x" } | count_over_time() by (span.kind)')
+//     → ['span.kind']
+//   extractTraceQLByKeys('{ resource.service.name != "" }')
+//     → []                                  // bare spanset, no aggregation
+const TRACEQL_BY_REGEX =
+  /\|\s*(?:rate|count_over_time|sum_over_time|avg_over_time|max_over_time|min_over_time|quantile_over_time|histogram_over_time|count|sum|avg|max|min)\s*\([^)]*\)\s*by\s*\(\s*([^)]*)\s*\)/g;
+export function extractTraceQLByKeys(expr: string): string[] {
+  return extractKeysWithRegex(expr, TRACEQL_BY_REGEX);
+}
+
+/**
+ * Per-dsType by-key extractor — the iterator-spec calls this to pick
+ * the set of labels worth drilling on for a panel target.
+ *
+ *   - `prometheus` → `expectedByKeys` (with `histogram_quantile` → `le`
+ *     consumed-label subtraction).
+ *   - `loki`       → `extractLogQLByKeys` (LogQL aggregation mirrors
+ *     PromQL syntactically; the PromQL regex covers it).
+ *   - `tempo`      → `extractTraceQLByKeys` (TraceQL `| <fn>() by(k)`
+ *     pipeline syntax).
+ *
+ * Returns `[]` for any other / unknown dsType — the iterator skips
+ * panels with no extractable by-keys, so the default-empty behaviour
+ * is safe-by-omission rather than a silent surprise.
+ */
+export function expectedByKeysForDsType(
+  expr: string,
+  dsType: string,
+): string[] {
+  if (dsType === 'prometheus') return expectedByKeys(expr);
+  if (dsType === 'loki') return extractLogQLByKeys(expr);
+  if (dsType === 'tempo') return extractTraceQLByKeys(expr);
+  return [];
+}
+
+/**
+ * Re-write a LogQL `expr` to add a `<key>="<value>"` matcher to every
+ * stream-selector `{...}` block. The LogQL grammar splits an
+ * expression into:
+ *
+ *   - The stream selector — a brace block of `key=value` matchers.
+ *     This is the part the filter-drill spec needs to constrain.
+ *   - An optional pipeline — `| <stage> | <stage> …` where each stage
+ *     is a parser (`json`, `logfmt`), a label filter
+ *     (`| SeverityText="ERROR"`), or a line-format expression.
+ *
+ * We inject into the stream selector ONLY: the pipeline part is left
+ * untouched even when stages carry `key="value"`-shaped label filters
+ * (those are post-parsing predicates, not stream matchers).
+ *
+ * Two injection paths, mirroring `addLabelFilter`:
+ *
+ *   - Stream selector already has matchers: append `,<key>="<value>"`
+ *     just before the closing `}`. An empty selector (`{}`) becomes
+ *     `{<key>="<value>"}`.
+ *   - Stream selector already constrains `<key>` via any matcher: the
+ *     rewrite is a no-op for that block (idempotent — drilling on a
+ *     label that's already pinned would either tautologise or
+ *     contradict).
+ *
+ * Aggregating queries such as `sum by (X) (rate({…}[5m]))` are
+ * handled implicitly: the brace block inside is the stream selector,
+ * and the walker injects into it just like in the bare case.
+ *
+ * The walker skips string literals (`"…"`, `` `…` ``) so a
+ * `| line_format "{{.foo}}"` stage doesn't get parsed as a brace
+ * block.
+ *
+ * Examples:
+ *   addLogQLLabelFilter('{service_name="cerberus"}', 'level', 'error')
+ *     → '{service_name="cerberus",level="error"}'
+ *   addLogQLLabelFilter(
+ *     '{service_name="cerberus"} | json | line_format "{{.foo}}"',
+ *     'level', 'error',
+ *   )
+ *     → '{service_name="cerberus",level="error"} | json | line_format "{{.foo}}"'
+ *   addLogQLLabelFilter(
+ *     'sum by (SeverityText) (rate({service_name=~".+"} [5m]))',
+ *     'service_name', 'cerberus',
+ *   )
+ *     → 'sum by (SeverityText) (rate({service_name=~".+",service_name="cerberus"} [5m]))'
+ *     (note: the iterator filters out a key that already has a matcher,
+ *      so in practice this idempotent-by-spec path is unreached; see
+ *      the idempotent-key variant below for the no-op case)
+ *   addLogQLLabelFilter('{}', 'service_name', 'cerberus')
+ *     → '{service_name="cerberus"}'
+ *   addLogQLLabelFilter('{level="error"}', 'level', 'error')
+ *     → '{level="error"}'                                // idempotent
+ */
+export function addLogQLLabelFilter(
+  expr: string,
+  key: string,
+  value: string,
+): string {
+  const matcher = `${key}="${escapeMatcherValue(value)}"`;
+  return rewriteTopLevelBraceBlocks(expr, (inner) =>
+    injectIntoCommaSeparatedBlock(inner, key, matcher),
+  );
+}
+
+/**
+ * Re-write a TraceQL `expr` to add an attribute filter
+ * `<key>="<value>"` to every spanset `{ … }` block. TraceQL spansets
+ * differ from PromQL/LogQL selectors in two ways:
+ *
+ *   - Conjunction is `&&` (whitespace-padded), not `,`.
+ *   - Attribute keys are dotted paths (`resource.service.name`,
+ *     `span.http.method`), not bare identifiers.
+ *
+ * Injection paths:
+ *
+ *   - Spanset already has conditions: append ` && <key>="<value>"`
+ *     just before the closing `}`. The surrounding whitespace is
+ *     preserved: a TraceQL idiom is `{ a = b }` (single-space pads
+ *     on both sides of the brace contents), so we emit the same.
+ *   - Empty spanset (`{}` or `{ }`): becomes `{ <key>="<value>" }`.
+ *   - Spanset already constrains `<key>` via any matcher: no-op
+ *     (idempotent — the iterator filters these out upstream, this is
+ *     defence-in-depth).
+ *
+ * Aggregating queries such as `{ status = error } | rate() by (k)`
+ * are handled implicitly: only the leading spanset is touched; the
+ * pipeline is left as-is.
+ *
+ * The walker skips string literals (`"…"`) so an attribute value
+ * containing `{` or `}` doesn't get mistaken for a brace block.
+ *
+ * Examples:
+ *   addTraceQLAttributeFilter('{ status = error }', 'resource.service.name', 'cerberus')
+ *     → '{ status = error && resource.service.name="cerberus" }'
+ *   addTraceQLAttributeFilter('{}', 'resource.service.name', 'cerberus')
+ *     → '{ resource.service.name="cerberus" }'
+ *   addTraceQLAttributeFilter(
+ *     '{ status = error } | rate() by (resource.service.name)',
+ *     'span.kind', 'server',
+ *   )
+ *     → '{ status = error && span.kind="server" } | rate() by (resource.service.name)'
+ *   addTraceQLAttributeFilter(
+ *     '{ resource.service.name = "cerberus" }', 'resource.service.name', 'cerberus',
+ *   )
+ *     → '{ resource.service.name = "cerberus" }'                  // idempotent
+ */
+export function addTraceQLAttributeFilter(
+  expr: string,
+  key: string,
+  value: string,
+): string {
+  const matcher = `${key}="${escapeMatcherValue(value)}"`;
+  return rewriteTopLevelBraceBlocks(expr, (inner) =>
+    injectIntoSpansetBlock(inner, key, matcher),
+  );
+}
+
+// Walk `expr`, identify every top-level `{…}` brace block (i.e. a
+// brace pair not nested inside another brace block and not inside a
+// string literal), and call `rewriteInner(inner)` to produce the
+// replacement contents. Returns the rewritten expression.
+//
+// LogQL stream selectors and TraceQL spansets share this top-level
+// brace shape; only the *contents* differ (comma- vs `&&`-separated).
+function rewriteTopLevelBraceBlocks(
+  expr: string,
+  rewriteInner: (inner: string) => string,
+): string {
+  let out = '';
+  let i = 0;
+  while (i < expr.length) {
+    const c = expr[i] ?? '';
+    if (c === '"' || c === "'" || c === '`') {
+      // String literal — copy verbatim, respecting backslash escapes
+      // for the double-/single-quote forms (`backtick` strings are raw
+      // in PromQL/LogQL, no escape processing).
+      const quote = c;
+      out += c;
+      i++;
+      while (i < expr.length) {
+        const ch = expr[i] ?? '';
+        out += ch;
+        if (ch === '\\' && quote !== '`') {
+          i++;
+          if (i < expr.length) {
+            out += expr[i];
+            i++;
+          }
+          continue;
+        }
+        if (ch === quote) {
+          i++;
+          break;
+        }
+        i++;
+      }
+      continue;
+    }
+    if (c === '{') {
+      // Find the matching closing `}` at this depth, skipping nested
+      // string literals. LogQL/TraceQL brace blocks don't nest, so a
+      // flat counter suffices.
+      let depth = 1;
+      let j = i + 1;
+      let innerEnd = -1;
+      while (j < expr.length) {
+        const ch = expr[j] ?? '';
+        if (ch === '"' || ch === "'" || ch === '`') {
+          const q = ch;
+          j++;
+          while (j < expr.length) {
+            const sc = expr[j] ?? '';
+            if (sc === '\\' && q !== '`') {
+              j++;
+              if (j < expr.length) j++;
+              continue;
+            }
+            if (sc === q) {
+              j++;
+              break;
+            }
+            j++;
+          }
+          continue;
+        }
+        if (ch === '{') {
+          depth++;
+          j++;
+          continue;
+        }
+        if (ch === '}') {
+          depth--;
+          if (depth === 0) {
+            innerEnd = j;
+            break;
+          }
+          j++;
+          continue;
+        }
+        j++;
+      }
+      if (innerEnd === -1) {
+        // Unbalanced — copy the `{` and continue. The expression is
+        // malformed; the caller will see whatever the parser does
+        // with it.
+        out += c;
+        i++;
+        continue;
+      }
+      const inner = expr.slice(i + 1, innerEnd);
+      out += `{${rewriteInner(inner)}}`;
+      i = innerEnd + 1;
+      continue;
+    }
+    out += c;
+    i++;
+  }
+  return out;
+}
+
+// Inject `matcher` into the comma-separated contents of a
+// LogQL/PromQL brace block. Idempotent on `key`: if any existing
+// matcher in the block already constrains `key`, returns `inner`
+// unchanged.
+function injectIntoCommaSeparatedBlock(
+  inner: string,
+  key: string,
+  matcher: string,
+): string {
+  if (innerHasMatcherForKey(inner, key)) return inner;
+  const trimmed = inner.trim();
+  if (trimmed === '') return matcher;
+  // Preserve trailing whitespace that some LogQL examples carry
+  // between matchers and the closing brace (e.g. `{a="b"} `). The
+  // typical compact form has no trailing space.
+  return `${inner},${matcher}`;
+}
+
+// Inject `matcher` into the `&&`-separated contents of a TraceQL
+// spanset. Idempotent on `key`: if any existing matcher in the
+// spanset already constrains `key`, returns `inner` unchanged.
+function injectIntoSpansetBlock(
+  inner: string,
+  key: string,
+  matcher: string,
+): string {
+  if (innerHasMatcherForKey(inner, key)) return inner;
+  const trimmed = inner.trim();
+  if (trimmed === '') return ` ${matcher} `;
+  // Preserve the leading/trailing pad style that TraceQL examples
+  // commonly use (`{ status = error }`). When the original block was
+  // pad-free (`{status=error}`), we still emit a single space on
+  // either side of the `&&` for readability; the TraceQL parser
+  // accepts both forms.
+  const leading = /^\s*/.exec(inner)?.[0] ?? '';
+  const trailing = /\s*$/.exec(inner)?.[0] ?? '';
+  return `${leading}${trimmed} && ${matcher}${trailing === '' ? ' ' : trailing}`;
+}
+
+// True iff `inner` (the body of a brace block) already constrains
+// `key` via any matcher operator. Shared by both injection paths.
+//
+// The boundary class admits: start-of-block, whitespace, `,`, `{`,
+// and `&` (the second `&` of `&&` is whitespace-padded in idiomatic
+// TraceQL, but a packed form `a=b&&c=d` is also valid).
+function innerHasMatcherForKey(inner: string, key: string): boolean {
+  const re = new RegExp(
+    `(?:^|[\\s,{&])${escapeRegex(key)}\\s*(=~|!~|!=|>=|<=|=|>|<)`,
+  );
+  return re.test(inner);
+}
