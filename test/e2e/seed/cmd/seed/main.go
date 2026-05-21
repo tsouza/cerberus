@@ -120,10 +120,24 @@ const (
 	// Spanning past + future gives every 1m/5m range or subquery in the
 	// suite enough overlap to find samples regardless of CI timing
 	// jitter within ±4 min of seed.
+	// `ServiceName` is set explicitly alongside `ResourceAttributes`
+	// so the rows match the shape the upstream OTel-CH exporter would
+	// emit (the exporter copies `ResAttr['service.name']` into the
+	// dedicated `ServiceName LowCardinality(String)` column on every
+	// metrics insert — see `GetServiceName` in
+	// internal/metrics/metrics_model.go of the collector-contrib
+	// exporter). Skipping the column left `ServiceName=''` on every
+	// seeded row, which broke the otel-fixture-explorer "Top services
+	// by metric rate" panel after PR #679's `sum by (service_name)`
+	// lowering started coalescing the dedicated column with the
+	// Attributes-map key (the empty top-level column collapsed every
+	// row into a single anonymous bucket — exactly the N2/N11/N14
+	// shape the phase-1 sweep pins).
 	insertGaugeSQL = `INSERT INTO otel_metrics_gauge
-  (ResourceAttributes, MetricName, MetricDescription, MetricUnit, Attributes, StartTimeUnix, TimeUnix, Value)
+  (ResourceAttributes, ServiceName, MetricName, MetricDescription, MetricUnit, Attributes, StartTimeUnix, TimeUnix, Value)
 SELECT
     map('service.name', 'api'),
+    'api',
     'up',
     'Is the scrape target up',
     '1',
@@ -135,6 +149,7 @@ FROM numbers(40)
 UNION ALL
 SELECT
     map('service.name', 'db'),
+    'db',
     'up',
     'Is the scrape target up',
     '1',
@@ -159,10 +174,15 @@ FROM numbers(40)`
 	// (number = 0 is the earliest sample at seed_now - 300 s; number
 	// = 599 is the latest at seed_now + 299 s), which is the shape
 	// rate() expects for a counter.
+	// Same `ServiceName` discipline as `insertGaugeSQL` — the
+	// otel_metrics_sum row needs the dedicated LowCardinality column
+	// populated to match the upstream OTel-CH exporter shape, otherwise
+	// `sum by (service_name)` partitions over an empty column.
 	insertSumSQL = `INSERT INTO otel_metrics_sum
-  (ResourceAttributes, MetricName, MetricDescription, MetricUnit, Attributes, StartTimeUnix, TimeUnix, Value, Flags, AggregationTemporality, IsMonotonic)
+  (ResourceAttributes, ServiceName, MetricName, MetricDescription, MetricUnit, Attributes, StartTimeUnix, TimeUnix, Value, Flags, AggregationTemporality, IsMonotonic)
 SELECT
     map('service.name', 'api'),
+    'api',
     'http_server_request_duration_count',
     'HTTP request count by status',
     '1',
