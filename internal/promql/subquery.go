@@ -518,10 +518,7 @@ func subqueryAggregateGroupBy(agg *parser.AggregateExpr, s schema.Metrics) ([]ch
 	groupBy := make([]chplan.Expr, 0, len(agg.Grouping))
 	aliases := make([]string, 0, len(agg.Grouping))
 	for i, label := range agg.Grouping {
-		groupBy = append(groupBy, &chplan.MapAccess{
-			Map: &chplan.ColumnRef{Name: s.AttributesColumn},
-			Key: &chplan.LitString{V: label},
-		})
+		groupBy = append(groupBy, attributeLookup(s.AttributesColumn, label))
 		aliases = append(aliases, fmt.Sprintf("gkey_%d", i))
 	}
 	return groupBy, aliases, nil
@@ -577,10 +574,7 @@ func lowerSubqueryOverTopK(
 	default:
 		by = make([]chplan.Expr, 0, len(agg.Grouping))
 		for _, label := range agg.Grouping {
-			by = append(by, &chplan.MapAccess{
-				Map: &chplan.ColumnRef{Name: s.AttributesColumn},
-				Key: &chplan.LitString{V: label},
-			})
+			by = append(by, attributeLookup(s.AttributesColumn, label))
 		}
 	}
 	by = append(by, &chplan.ColumnRef{Name: "anchor_ts"})
@@ -656,10 +650,7 @@ func lowerSubqueryOverCountValues(
 		groupBy = make([]chplan.Expr, 0, len(agg.Grouping))
 		aliases = make([]string, 0, len(agg.Grouping))
 		for i, lbl := range agg.Grouping {
-			groupBy = append(groupBy, &chplan.MapAccess{
-				Map: &chplan.ColumnRef{Name: s.AttributesColumn},
-				Key: &chplan.LitString{V: lbl},
-			})
+			groupBy = append(groupBy, attributeLookup(s.AttributesColumn, lbl))
 			aliases = append(aliases, fmt.Sprintf("gkey_%d", i))
 		}
 	}

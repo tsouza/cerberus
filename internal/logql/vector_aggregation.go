@@ -142,15 +142,16 @@ func vectorAggregationGroupBy(e *syntax.VectorAggregationExpr, s schema.Logs) ([
 // layer SeverityText is still in scope.
 func levelAwareGroupKey(label string, s schema.Logs) chplan.Expr {
 	if isDetectedLevelGroupingLabel(label) {
+		// `detected_level` is a synthesised key the inner range
+		// aggregation writes verbatim into the augmented map, so it
+		// always lives under the underscored form — no dotted-fallback
+		// needed.
 		return &chplan.MapAccess{
 			Map: &chplan.ColumnRef{Name: s.ResourceAttributesColumn},
 			Key: &chplan.LitString{V: detectedLevelLabel},
 		}
 	}
-	return &chplan.MapAccess{
-		Map: &chplan.ColumnRef{Name: s.ResourceAttributesColumn},
-		Key: &chplan.LitString{V: label},
-	}
+	return attributeLookupColumn(s.ResourceAttributesColumn, label)
 }
 
 // levelAwareRangeGroupKey is the inner-range-aggregation companion of
@@ -166,10 +167,7 @@ func levelAwareRangeGroupKey(label string, s schema.Logs) chplan.Expr {
 	if isDetectedLevelGroupingLabel(label) {
 		return detectedLevelExpr(s)
 	}
-	return &chplan.MapAccess{
-		Map: &chplan.ColumnRef{Name: s.ResourceAttributesColumn},
-		Key: &chplan.LitString{V: label},
-	}
+	return attributeLookupColumn(s.ResourceAttributesColumn, label)
 }
 
 // canonicalLevelKeys returns the input `groups` with every

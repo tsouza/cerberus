@@ -411,10 +411,12 @@ func unwrapValueExpr(u *syntax.UnwrapExpr, labelsExpr chplan.Expr) (chplan.Expr,
 	if u.Identifier == "" {
 		return nil, fmt.Errorf("logql: `| unwrap` has empty identifier")
 	}
-	access := &chplan.MapAccess{
-		Map: labelsExpr,
-		Key: &chplan.LitString{V: u.Identifier},
-	}
+	// `| unwrap foo` pulls the value out of the live labels map for the
+	// current point in the pipeline. After a parser stage the labels
+	// map may carry the value under a dotted OTel-canonical form (e.g.
+	// `cerberus.duration_ms` rather than `cerberus_duration_ms`), so
+	// the dotted-fallback chain hits either shape.
+	access := attributeLookupExpr(labelsExpr, u.Identifier)
 	switch u.Operation {
 	case "":
 		return &chplan.FuncCall{
