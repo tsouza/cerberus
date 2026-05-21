@@ -1585,6 +1585,95 @@ func TestConformance_LabelValuesGrammar(t *testing.T) {
 	}
 }
 
+// TestConformance_ServiceNameMatcherRoutesToTopLevelColumn pins task
+// #232: `{service_name="cerberus"}` (and the dotted-canonical sibling)
+// must hit the dedicated OTel-CH `ServiceName LowCardinality(String)`
+// column via `coalesce(nullIf(ServiceName, ”),
+// Attributes['service.name']-fallback)` — not just the Attributes-map
+// lookup. Without this routing every OTel-collector-routed row
+// (which carries the value ONLY in the top-level column with no
+// Attributes entry) silently returns the empty string and the
+// selector returns zero series. Mirrors LogQL's task #217 fix
+// (PR #669) and the exemplars handler's ServiceName precedence.
+//
+// The assertion targets the captured SQL: `coalesce(nullIf(`ServiceName`
+// + the literal `”` empty-sentinel must appear so the matcher's lhs
+// reads from the dedicated column first.
+func TestConformance_ServiceNameMatcherRoutesToTopLevelColumn(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name  string
+		query string
+	}{
+		{"underscored", `cerberus_queries_total{service_name="cerberus"}`},
+		{"dotted", `cerberus_queries_total{"service.name"="cerberus"}`},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			stub := &stubQuerier{samples: nil}
+			srv := newServer(stub)
+			t.Cleanup(srv.Close)
+
+			q := url.QueryEscape(tc.query)
+			resp, err := http.Get(srv.URL + "/api/v1/query?query=" + q + "&time=1717999200")
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status=%d (expected 200)", resp.StatusCode)
+			}
+			if stub.lastSQL == "" {
+				t.Fatalf("stub.lastSQL is empty; expected handler to have invoked the CH client")
+			}
+			if !strings.Contains(stub.lastSQL, "coalesce(nullIf(`ServiceName`") {
+				t.Errorf("SQL is missing the `coalesce(nullIf(ServiceName, ''), ...)` routing for the service.name matcher\nSQL: %s", stub.lastSQL)
+			}
+		})
+	}
+}
+
+// TestConformance_ServiceNameByClauseAugmentsAttributes pins the
+// outer-aggregation by-clause shape for task #232: `sum by
+// (service_name) (rate(...))` must inflate the per-row Attributes
+// with a synthesised `service_name` key sourced from the top-level
+// `ServiceName` column. Without this, every row collapses into a
+// single `{service_name:""}` bucket because `Attributes['service_name']`
+// returns the empty string for OTel-collector-routed rows.
+//
+// The assertion targets the captured SQL: `mapConcat(`Attributes`,
+// mapFilter(...))` + `toString(`ServiceName`)` must appear in the
+// inner subquery so the augmenting Project lands above the Scan.
+func TestConformance_ServiceNameByClauseAugmentsAttributes(t *testing.T) {
+	t.Parallel()
+
+	stub := &stubQuerier{samples: nil}
+	srv := newServer(stub)
+	t.Cleanup(srv.Close)
+
+	q := url.QueryEscape(`sum by (service_name) (rate(cerberus_queries_total[5m]))`)
+	resp, err := http.Get(srv.URL + "/api/v1/query?query=" + q + "&time=1717999200")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d (expected 200)", resp.StatusCode)
+	}
+	if stub.lastSQL == "" {
+		t.Fatalf("stub.lastSQL is empty; expected handler to have invoked the CH client")
+	}
+	if !strings.Contains(stub.lastSQL, "mapConcat(`Attributes`") {
+		t.Errorf("SQL is missing the `mapConcat(Attributes, ...)` augmentation for the service_name by-clause\nSQL: %s", stub.lastSQL)
+	}
+	if !strings.Contains(stub.lastSQL, "toString(`ServiceName`)") {
+		t.Errorf("SQL is missing the `toString(ServiceName)` synthesised key for the service_name by-clause\nSQL: %s", stub.lastSQL)
+	}
+}
+
 // TestConformance_UnderscoredMatcherEmitsDottedFallback pins the
 // matcher-side resolution for underscored Prom-grammar names that
 // could resolve to a dotted OTel-canonical key in storage. Without
