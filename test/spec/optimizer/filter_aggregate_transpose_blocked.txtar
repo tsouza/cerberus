@@ -1,7 +1,7 @@
 -- optimized --
-SELECT * FROM (SELECT `job`, sum(`Value`) AS `sum_value` FROM (SELECT * FROM `otel_metrics_gauge`) GROUP BY `job`) WHERE (`sum_value` > ?)
+SELECT * FROM (SELECT `job`, sum(`Value`) AS `sum_value` FROM (SELECT * FROM `otel_metrics_gauge`) GROUP BY `job`) WHERE (`sum_value` > toFloat64(?))
 -- unoptimized --
-SELECT * FROM (SELECT `job`, sum(`Value`) AS `sum_value` FROM (SELECT * FROM `otel_metrics_gauge`) GROUP BY `job`) WHERE (`sum_value` > ?)
+SELECT * FROM (SELECT `job`, sum(`Value`) AS `sum_value` FROM (SELECT * FROM `otel_metrics_gauge`) GROUP BY `job`) WHERE (`sum_value` > toFloat64(?))
 -- chplan_optimized --
 Filter predicate=(sum_value > 0)
   Aggregate groupBy=[job] funcs=[sum(Value) AS sum_value]

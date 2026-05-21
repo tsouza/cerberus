@@ -2,7 +2,7 @@
 [0] int64 = 1
 [1] float64 = 10
 -- sql --
-SELECT * FROM (SELECT toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_traces`)) WHERE (`Value` > ?)
+SELECT * FROM (SELECT toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_traces`)) WHERE (`Value` > toFloat64(?))
 -- chplan --
 MetricsSecondStage op=threshold threshold=(> 10) valueAlias=Value
   MetricsAggregate op=rate valueAlias=Value

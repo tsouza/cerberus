@@ -1,7 +1,7 @@
 -- query.traceql --
 {} | max_over_time(duration)
 -- sql --
-SELECT max((`Duration` / ?)) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?)
+SELECT max((`Duration` / toFloat64(?))) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?)
 -- args --
 [0] float64 = 1e+09
 [1] bool = true

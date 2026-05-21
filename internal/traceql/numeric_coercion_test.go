@@ -51,7 +51,7 @@ func TestNumericAttrCoercion(t *testing.T) {
 		{
 			name:       "float_gt_wraps_field_access",
 			query:      `{ span.cpu.usage > 0.5 }`,
-			wantSubstr: "toFloat64(`SpanAttributes`[?]) > ?",
+			wantSubstr: "toFloat64(`SpanAttributes`[?]) > toFloat64(?)",
 		},
 		{
 			name:       "resource_attr_coerces",
@@ -133,7 +133,7 @@ func TestNumericAttrCoercion(t *testing.T) {
 		{
 			name:       "quantile_over_time_span_attr_wraps_aggregate_input",
 			query:      `{} | quantile_over_time(span.latency_ms, 0.95)`,
-			wantSubstr: "quantile(?)(toFloat64OrZero(`SpanAttributes`[?]))",
+			wantSubstr: "quantile(toFloat64(?))(toFloat64OrZero(`SpanAttributes`[?]))",
 		},
 	}
 

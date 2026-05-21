@@ -1,7 +1,7 @@
 -- query.traceql --
 {} | sum_over_time(duration)
 -- sql --
-SELECT sum((`Duration` / ?)) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?)
+SELECT sum((`Duration` / toFloat64(?))) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?)
 -- args --
 [0] float64 = 1e+09
 [1] bool = true

@@ -1,7 +1,7 @@
 -- query.traceql --
 { .ratio = 0.95 }
 -- sql --
-SELECT * FROM `otel_traces` WHERE (toFloat64(`SpanAttributes`[?]) = ?)
+SELECT * FROM `otel_traces` WHERE (toFloat64(`SpanAttributes`[?]) = toFloat64(?))
 -- args --
 [0] string = "ratio"
 [1] float64 = 0.95

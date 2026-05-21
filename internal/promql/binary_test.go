@@ -195,22 +195,22 @@ func TestLower_Binary_VectorScalar(t *testing.T) {
 		{
 			name:      "vector times scalar",
 			query:     `up * 2`,
-			wantInSQL: []string{"`Value` * ?", "AS `Value`"},
+			wantInSQL: []string{"`Value` * toFloat64(?)", "AS `Value`"},
 		},
 		{
 			name:      "scalar minus vector preserves order",
 			query:     `100 - up`,
-			wantInSQL: []string{"? - `Value`"},
+			wantInSQL: []string{"toFloat64(?) - `Value`"},
 		},
 		{
 			name:      "vector div scalar",
 			query:     `metric / 1000`,
-			wantInSQL: []string{"`Value` / ?"},
+			wantInSQL: []string{"`Value` / toFloat64(?)"},
 		},
 		{
 			name:      "negated scalar unwraps",
 			query:     `up * -1`,
-			wantInSQL: []string{"`Value` * ?"},
+			wantInSQL: []string{"`Value` * toFloat64(?)"},
 		},
 	}
 	for _, tc := range cases {

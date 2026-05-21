@@ -43,7 +43,7 @@ INSERT INTO otel_metrics_gauge VALUES
 [8] string = "x"
 [9] int64 = 0
 -- chplan --
-Project ["" AS MetricName, map("job", "x") AS Attributes, toDateTime64("2026-01-01 00:00:01.000000000", 9) AS TimeUnix, toFloat64(1) AS Value]
+Project ["" AS MetricName, map("job", "x") AS Attributes, toDateTime64("2026-01-01 00:00:01.000000000", 9) AS TimeUnix, 1 AS Value]
   Filter predicate=(_cerb_n = 0)
     Aggregate groupBy=[] funcs=[count() AS _cerb_n]
       Filter predicate=((Attributes["job"] = "x") AND (MetricName = "nonexistent_metric_name"))

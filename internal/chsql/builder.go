@@ -293,7 +293,27 @@ func (b *Builder) Expr(x chplan.Expr) error {
 		if writeInlineNonFinite(b, v.V) {
 			return nil
 		}
+		// Finite floats are wrapped in `toFloat64(?)` unconditionally.
+		// The clickhouse-go/v2 driver renders Go `float64(N.0)` as the
+		// bare SQL literal `N` (no decimal: its `bind.go::format()` has
+		// no `case float64` and falls through to `fmt.Sprint`, which
+		// uses Go's `%v` for float64 and prints `1` for whole numbers).
+		// CH then narrows to `UInt8`, `UInt8 OP UInt8` promotes to
+		// `UInt16`, and `chclient.Sample.Value` (declared `float64`)
+		// fails the `UInt8/UInt16 -> *float64` Scan conversion with
+		// `converting UInt8 to *float64 is unsupported. try using
+		// *uint8` — surfaced as the 502 Grafana sees on
+		// `vector(1)+vector(1)` health-probes, `absent(<empty>)`,
+		// `group(...)`, the LogQL `1+1` reduce path, etc. Wrapping
+		// every LitFloat emission in `toFloat64(?)` pins the wire
+		// shape to Float64 from the start so no downstream cast or
+		// narrow can chip it down. `toFloat64(toFloat64(x))` is a
+		// CH-side no-op so the legacy per-callsite wraps that
+		// predated this central fix remain semantically harmless
+		// (they just emit `toFloat64(toFloat64(?))`).
+		b.sb.WriteString("toFloat64(")
 		b.Arg(v.V)
+		b.sb.WriteByte(')')
 		return nil
 	case *chplan.LitBool:
 		b.Arg(v.V)

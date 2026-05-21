@@ -1,5 +1,5 @@
 -- sql --
-SELECT * FROM `otel_metrics_gauge` PREWHERE (`MetricName` = ?) WHERE (((`job` = ?) AND (`Value` > ?)) OR (`MetricName` = ?))
+SELECT * FROM `otel_metrics_gauge` PREWHERE (`MetricName` = ?) WHERE (((`job` = ?) AND (`Value` > toFloat64(?))) OR (`MetricName` = ?))
 -- args --
 [0] string = "up"
 [1] string = "api"

@@ -1,5 +1,5 @@
 -- sql --
-SELECT `Attributes`, quantile(?)(`Value`) AS `p95` FROM (SELECT * FROM `otel_metrics_gauge`) GROUP BY `Attributes`
+SELECT `Attributes`, quantile(toFloat64(?))(`Value`) AS `p95` FROM (SELECT * FROM `otel_metrics_gauge`) GROUP BY `Attributes`
 -- args --
 [0] float64 = 0.95
 -- chplan --

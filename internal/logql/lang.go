@@ -241,10 +241,11 @@ func (l *Lang) ProjectSamples(plan chplan.Node, meta engine.Meta) chplan.Node {
 			{Expr: &chplan.ColumnRef{Name: s.BodyColumn}, Alias: "MetricName"},
 			{Expr: attrsExpr, Alias: "Attributes"},
 			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: "TimeUnix"},
-			// Wrap the placeholder zero in toFloat64 so CH returns the column
-			// as Float64; without the cast a bare `0` literal becomes UInt8
-			// and clickhouse-go's Scan rejects UInt8 → *float64.
-			{Expr: &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{&chplan.LitFloat{V: 0}}}, Alias: "Value"},
+			// LitFloat is wrapped centrally in toFloat64(?) by
+			// internal/chsql/Builder.Expr; without that pin CH would
+			// narrow the bare `0` placeholder to UInt8 and clickhouse-go's
+			// Sample Scan would reject UInt8 → *float64.
+			{Expr: &chplan.LitFloat{V: 0}, Alias: "Value"},
 		},
 	}
 }
