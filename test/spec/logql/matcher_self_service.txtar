@@ -1,33 +1,48 @@
 -- query.logql --
 {service_name="cerberus"}
 -- seed --
+-- ResourceAttributes + ServiceName are MATERIALIZED on Body so the
+-- four storage shapes (cerberus-self, seed-underscored, seed-dotted,
+-- negative) are encoded by one Body value each. MATERIALIZED columns
+-- are excluded from `SELECT *` but remain queryable in WHERE, so the
+-- runner's `SELECT * FROM otel_logs WHERE ...` returns just the two
+-- inserted columns — sidestepping the chdb-go Parquet driver's
+-- well-known panic on Map column scans without changing what the
+-- matcher predicate evaluates against.
 CREATE TABLE otel_logs (
     Timestamp DateTime64(9),
     Body String,
-    ResourceAttributes Map(String, String),
-    ServiceName String DEFAULT ''
+    ResourceAttributes Map(String, String) MATERIALIZED multiIf(
+        Body = 'self-row', CAST(map() AS Map(String, String)),
+        Body = 'seed-underscored', map('service_name', 'cerberus'),
+        Body = 'seed-dotted', map('service.name', 'cerberus'),
+        Body = 'other-row', map('service_name', 'other'),
+        CAST(map() AS Map(String, String))
+    ),
+    ServiceName String MATERIALIZED multiIf(
+        Body = 'self-row', 'cerberus',
+        Body = 'other-row', 'other',
+        ''
+    )
 ) ENGINE = Memory;
 -- Cerberus-self shape: ResourceAttributes empty, ServiceName promoted by
 -- the OTel collector → CH exporter. The matcher must still hit the row.
-INSERT INTO otel_logs (Timestamp, Body, ResourceAttributes, ServiceName) VALUES
-    (toDateTime64('2026-05-20 12:00:00.000000000', 9), 'self-row', map(), 'cerberus');
 -- Seed shape: value lives in the underscored map key (Grafana panels +
--- the conformance corpus write this form). The matcher must hit too.
-INSERT INTO otel_logs (Timestamp, Body, ResourceAttributes, ServiceName) VALUES
-    (toDateTime64('2026-05-20 12:01:00.000000000', 9), 'seed-underscored', map('service_name', 'cerberus'), '');
+-- the conformance corpus write this form).
 -- OTel-semantic-convention dotted shape. The map fallback must still
 -- resolve when neither the top-level column nor the underscored key
 -- carry the value.
-INSERT INTO otel_logs (Timestamp, Body, ResourceAttributes, ServiceName) VALUES
-    (toDateTime64('2026-05-20 12:02:00.000000000', 9), 'seed-dotted', map('service.name', 'cerberus'), '');
 -- Negative: a row with a different service name. Must NOT match.
-INSERT INTO otel_logs (Timestamp, Body, ResourceAttributes, ServiceName) VALUES
-    (toDateTime64('2026-05-20 12:03:00.000000000', 9), 'other-row', map('service_name', 'other'), 'other');
+INSERT INTO otel_logs (Timestamp, Body) VALUES
+    (toDateTime64('2026-05-20 12:00:00.000000000', 9), 'self-row'),
+    (toDateTime64('2026-05-20 12:01:00.000000000', 9), 'seed-underscored'),
+    (toDateTime64('2026-05-20 12:02:00.000000000', 9), 'seed-dotted'),
+    (toDateTime64('2026-05-20 12:03:00.000000000', 9), 'other-row');
 -- expected_rows --
 [
-  ["2026-05-20T12:00:00Z", "self-row", {}, "cerberus"],
-  ["2026-05-20T12:01:00Z", "seed-underscored", {"service_name":"cerberus"}, ""],
-  ["2026-05-20T12:02:00Z", "seed-dotted", {"service.name":"cerberus"}, ""]
+  ["2026-05-20T12:00:00Z", "self-row"],
+  ["2026-05-20T12:01:00Z", "seed-underscored"],
+  ["2026-05-20T12:02:00Z", "seed-dotted"]
 ]
 -- args --
 [0] string = ""
