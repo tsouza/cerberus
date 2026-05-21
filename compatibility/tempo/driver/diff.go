@@ -229,6 +229,16 @@ func diffCase(ctx context.Context, client *http.Client, tc CorpusCase, opts case
 		return res
 	}
 
+	// The trace-by-id endpoint uses a proto-aware sibling differ (see
+	// diffTracesEndpoint + proto_fetch.go) — that path fetches BOTH
+	// JSON and proto on each side so the differ catches the wire-format
+	// divergence #199/#650 fixed (cerberus silently returning JSON when
+	// a client asked for proto). Every other endpoint stays on JSON.
+	if tc.Endpoint == "traces" {
+		diffTracesEndpoint(ctx, client, tempoURL, cerbURL, &res)
+		return res
+	}
+
 	tempoBody, tempoStatus, terr := fetchJSON(ctx, client, tempoURL)
 	cerbBody, cerbStatus, cerr := fetchJSON(ctx, client, cerbURL)
 	res.TempoStatus = tempoStatus
@@ -444,6 +454,11 @@ func deriveTraceIDFromTemplate(tmpl string) (string, error) {
 // fetchJSON GETs a URL with the Accept: application/json header and
 // returns the body + status. Errors include the response body (up to
 // 2KB) so a CH error message lands in the report.
+//
+// Used for every endpoint except trace-by-id. The trace-by-id path
+// uses fetchProto in lock-step (see proto_fetch.go::fetchProto +
+// diffTracesEndpoint) so the differ also exercises the wire format
+// Grafana actually asks for on /api/traces/<id>.
 //
 // Earlier revisions also set Recent-Data-Target: live-store on tempo
 // requests, intending to expand the search domain to recently-ingested
