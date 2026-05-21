@@ -63,3 +63,27 @@ test('tempo /api/traces/<id> returns batches for a seeded trace', async ({ reque
     expect(Array.isArray(batch.spans), 'batch has spans array').toBe(true);
   }
 });
+
+/**
+ * Grafana 11.x's Tempo datasource defaults to `tempoApiVersion >= v2`,
+ * which switches every trace drill-down from `/api/traces/<id>` to
+ * `/api/v2/traces/<id>`. Before cerberus aliased the v2 path to the
+ * same handler, the modern UI 404'd every click. This test pins both
+ * URLs against the same seeded trace and asserts the bodies are
+ * byte-identical — the v2 bump is URL-only per upstream Tempo
+ * (compatibility/tempo/upstream/pkg/httpclient/client.go ships
+ * QueryTrace + QueryTraceV2 differing only in path).
+ */
+test('tempo /api/v2/traces/<id> is a byte-for-byte alias of v1', async ({ request }) => {
+  const traceID = 'a0000000000000000000000000000001';
+  const [v1Resp, v2Resp] = await Promise.all([
+    request.get(`${tempoProxy}/traces/${traceID}`),
+    request.get(`${tempoProxy}/v2/traces/${traceID}`),
+  ]);
+  expect(v1Resp.status(), 'tempo v1 status').toBe(200);
+  expect(v2Resp.status(), 'tempo v2 status').toBe(200);
+
+  const v1Body = await v1Resp.text();
+  const v2Body = await v2Resp.text();
+  expect(v2Body, 'v2 body identical to v1').toBe(v1Body);
+});

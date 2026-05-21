@@ -312,6 +312,18 @@ func TestConformance_TempoSearchTagValuesWire(t *testing.T) {
 // with error envelope when not. The error envelope is Tempo's distinct
 // shape: {traceID, spanID, error, message}.
 //
+// Drives BOTH the v1 (`/api/traces/<id>`) and the v2
+// (`/api/v2/traces/<id>`) URLs and asserts byte-identical bodies for the
+// same input. Grafana 11.x's Tempo datasource defaults to
+// `tempoApiVersion >= v2` for newly-provisioned datasources, so the v2
+// URL is what the modern UI actually hits when drilling into a trace.
+// Upstream Tempo's QueryTrace + QueryTraceV2 (see
+// compatibility/tempo/upstream/pkg/httpclient/client.go) differ only in
+// path — the response body is the same trace shape — so cerberus must
+// alias the route to keep both datasource versions working. Before the
+// alias landed, the v2 URL 404'd unconditionally and every modern
+// Grafana trace drill-down broke (cerberus task #208).
+//
 // Also pins the Content-Type negotiation under Accept: the bare /
 // `application/json` paths keep the documented JSON envelope; the
 // `application/protobuf` / `application/x-protobuf` / `application/grpc`
@@ -321,48 +333,88 @@ func TestConformance_TempoSearchTagValuesWire(t *testing.T) {
 func TestConformance_TempoTraceByIDWire(t *testing.T) {
 	t.Parallel()
 
+	// Both URLs must resolve to the same handler and produce
+	// byte-identical bodies. The v2 entries are the new gate added by
+	// PR fix/tempo-v2-traces-alias; the v1 entries remain the
+	// historical contract.
+	pathVariants := []struct {
+		name string
+		path string
+	}{
+		{name: "v1", path: "/api/traces/abc123"},
+		{name: "v2", path: "/api/v2/traces/abc123"},
+	}
+
 	t.Run("found", func(t *testing.T) {
 		t.Parallel()
-		q := &stubQuerier{samples: []chclient.Sample{{
-			MetricName: "x", Labels: map[string]string{"service.name": "frontend"},
-			Timestamp: time.Now(), Value: 1,
-		}}}
-		srv := newServer(q, "v1.0.0-test")
-		t.Cleanup(srv.Close)
-		resp, err := http.Get(srv.URL + "/api/traces/abc123")
-		if err != nil {
-			t.Fatalf("GET: %v", err)
+		// Capture each variant's body to a shared map (test runs are
+		// sequential within this sub-test so the map write is safe).
+		// A fixed Timestamp keeps the response deterministic for the
+		// byte-level cross-check below.
+		fixedTime := time.Unix(1700000000, 0).UTC()
+		sample := chclient.Sample{
+			MetricName: "x",
+			Labels:     map[string]string{"service.name": "frontend"},
+			Timestamp:  fixedTime,
+			Value:      1,
 		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("status=%d", resp.StatusCode)
+		bodies := map[string][]byte{}
+		for _, pv := range pathVariants {
+			q := &stubQuerier{samples: []chclient.Sample{sample}}
+			srv := newServer(q, "v1.0.0-test")
+			t.Cleanup(srv.Close)
+			resp, err := http.Get(srv.URL + pv.path)
+			if err != nil {
+				t.Fatalf("%s: GET: %v", pv.name, err)
+			}
+			raw, readErr := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if readErr != nil {
+				t.Fatalf("%s: read body: %v", pv.name, readErr)
+			}
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("%s: status=%d body=%q", pv.name, resp.StatusCode, raw)
+			}
+			var r tempo.TraceByIDResponse
+			if err := json.Unmarshal(raw, &r); err != nil {
+				t.Fatalf("%s: decode: %v", pv.name, err)
+			}
+			if r.Batches == nil {
+				t.Errorf("%s: Batches nil; expected non-nil", pv.name)
+			}
+			bodies[pv.name] = raw
 		}
-		var r tempo.TraceByIDResponse
-		if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
-			t.Fatalf("decode: %v", err)
-		}
-		if r.Batches == nil {
-			t.Errorf("Batches nil; expected non-nil")
+		// v1 vs v2 must be byte-identical — same handler, same input.
+		// If v2 ever diverges (different status, different shape, an
+		// added/removed field), this fails loudly.
+		if v1, v2 := bodies["v1"], bodies["v2"]; string(v1) != string(v2) {
+			t.Errorf("v1 vs v2 body diverged:\n v1=%s\n v2=%s", v1, v2)
 		}
 	})
 	t.Run("not_found", func(t *testing.T) {
 		t.Parallel()
-		srv := newServer(&stubQuerier{samples: nil}, "v1.0.0-test")
-		t.Cleanup(srv.Close)
-		resp, err := http.Get(srv.URL + "/api/traces/abc123")
-		if err != nil {
-			t.Fatalf("GET: %v", err)
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusNotFound {
-			t.Fatalf("status=%d, want 404", resp.StatusCode)
-		}
-		var er tempo.ErrorResponse
-		if err := json.NewDecoder(resp.Body).Decode(&er); err != nil {
-			t.Fatalf("decode: %v", err)
-		}
-		if er.TraceID != "abc123" || !er.Error {
-			t.Errorf("envelope: got %+v, want traceID=abc123, error=true", er)
+		for _, pv := range pathVariants {
+			pv := pv
+			t.Run(pv.name, func(t *testing.T) {
+				t.Parallel()
+				srv := newServer(&stubQuerier{samples: nil}, "v1.0.0-test")
+				t.Cleanup(srv.Close)
+				resp, err := http.Get(srv.URL + pv.path)
+				if err != nil {
+					t.Fatalf("GET: %v", err)
+				}
+				defer resp.Body.Close()
+				if resp.StatusCode != http.StatusNotFound {
+					t.Fatalf("status=%d, want 404", resp.StatusCode)
+				}
+				var er tempo.ErrorResponse
+				if err := json.NewDecoder(resp.Body).Decode(&er); err != nil {
+					t.Fatalf("decode: %v", err)
+				}
+				if er.TraceID != "abc123" || !er.Error {
+					t.Errorf("envelope: got %+v, want traceID=abc123, error=true", er)
+				}
+			})
 		}
 	})
 
@@ -398,22 +450,27 @@ func TestConformance_TempoTraceByIDWire(t *testing.T) {
 			// proto entry wins.
 			{"application/protobuf, application/json;q=0.9", "application/protobuf"},
 		}
-		for _, tc := range cases {
-			req, err := http.NewRequest("GET", srv.URL+"/api/traces/abc123", nil)
-			if err != nil {
-				t.Fatalf("NewRequest: %v", err)
-			}
-			if tc.accept != "" {
-				req.Header.Set("Accept", tc.accept)
-			}
-			resp, err := http.DefaultClient.Do(req)
-			if err != nil {
-				t.Fatalf("Accept=%q: GET: %v", tc.accept, err)
-			}
-			resp.Body.Close()
-			if !strings.Contains(resp.Header.Get("Content-Type"), tc.wantCT) {
-				t.Errorf("Accept=%q: Content-Type=%q, want substring %q",
-					tc.accept, resp.Header.Get("Content-Type"), tc.wantCT)
+		// The same negotiation must hold for both the v1 and v2 URLs —
+		// Grafana 11.x's plugin hits v2 by default and expects the same
+		// Content-Type switching behavior the v1 path has shipped with.
+		for _, pv := range pathVariants {
+			for _, tc := range cases {
+				req, err := http.NewRequest("GET", srv.URL+pv.path, nil)
+				if err != nil {
+					t.Fatalf("NewRequest: %v", err)
+				}
+				if tc.accept != "" {
+					req.Header.Set("Accept", tc.accept)
+				}
+				resp, err := http.DefaultClient.Do(req)
+				if err != nil {
+					t.Fatalf("%s Accept=%q: GET: %v", pv.name, tc.accept, err)
+				}
+				resp.Body.Close()
+				if !strings.Contains(resp.Header.Get("Content-Type"), tc.wantCT) {
+					t.Errorf("%s Accept=%q: Content-Type=%q, want substring %q",
+						pv.name, tc.accept, resp.Header.Get("Content-Type"), tc.wantCT)
+				}
 			}
 		}
 	})
@@ -472,6 +529,19 @@ func TestConformance_TempoErrorEnvelope(t *testing.T) {
 			name: "404_trace_not_found",
 			stub: &stubQuerier{samples: nil},
 			path: "/api/traces/abc123", wantCode: http.StatusNotFound,
+		},
+		// v2 URL mirrors the v1 route — Grafana 11.x's Tempo plugin
+		// defaults to `tempoApiVersion >= v2`, so error envelopes must
+		// hold on both paths.
+		{
+			name: "502_trace_by_id_v2_ch_failure",
+			stub: &stubQuerier{err: errors.New("ch failure")},
+			path: "/api/v2/traces/abc123", wantCode: http.StatusBadGateway,
+		},
+		{
+			name: "404_trace_not_found_v2",
+			stub: &stubQuerier{samples: nil},
+			path: "/api/v2/traces/abc123", wantCode: http.StatusNotFound,
 		},
 	}
 	for _, c := range cases {
