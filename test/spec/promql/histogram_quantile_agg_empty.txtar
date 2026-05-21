@@ -1,0 +1,49 @@
+# N6 regression: when the histogram table has zero rows matching the
+# selector, `histogram_quantile(0.95, sum by(le)(rate(<X>_bucket[5m])))`
+# must return EMPTY — not a default `metric:{}, value=4.75` row from
+# walking over an empty histogram array.
+#
+# The agg-path lowering (`lowerHistogramQuantileAgg`) sets the inner
+# Aggregate's `DropEmptyOnNoGroup: true` flag so CH's
+# "1-row-of-zeros over empty input" default for aggregates without
+# GROUP BY collapses to zero rows. The downstream HistogramQuantile
+# then sees an empty input and produces no rows.
+#
+# This fixture pins that contract — a missing-metric query must round-
+# trip to zero rows, not a synthesised default quantile.
+
+-- query.promql --
+histogram_quantile(0.95, sum by (le) (rate(missing_metric_bucket[5m])))
+-- seed --
+CREATE TABLE otel_metrics_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    BucketCounts Array(UInt64),
+    ExplicitBounds Array(Float64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_histogram VALUES
+    ('http_server_request_duration', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 10, 5.0, [3, 4, 3], [0.1, 0.5, 1.0]);
+-- expected_rows --
+[]
+-- args --
+[0] string = ""
+[1] int64 = 9
+[2] string = "Map(String,String)"
+[3] string = "missing_metric"
+[4] string = "2026-01-01 00:00:01.000000000"
+[5] int64 = 9
+[6] string = "2026-01-01 00:00:01.000000000"
+[7] int64 = 9
+[8] int64 = 300000000000
+-- chplan --
+Project ["" AS MetricName, Attributes AS Attributes, now64(9) AS TimeUnix, Value AS Value]
+  HistogramQuantile phi=0.95 groupBy=[Attributes AS Attributes]
+    Project [CAST(map(), "Map(String,String)") AS Attributes, BucketCounts AS BucketCounts, ExplicitBounds AS ExplicitBounds]
+      Aggregate groupBy=[] funcs=[sumForEach(BucketCounts) AS BucketCounts, any(ExplicitBounds) AS ExplicitBounds]
+        Filter predicate=(((MetricName = "missing_metric") AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+          Scan(otel_metrics_histogram)
+-- sql --
+SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes` AS `Attributes`, if(length(`BucketCounts`) = 0, nan, if(arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`)) = 0, nan, if(0.95 <= 0, 0.0, if(0.95 >= 1, `ExplicitBounds`[length(`ExplicitBounds`)], if(arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) = length(arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))), `ExplicitBounds`[length(`ExplicitBounds`)], (if(arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) = 1, 0.0, `ExplicitBounds`[arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - 1]) + (`ExplicitBounds`[arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`)))] - if(arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) = 1, 0.0, `ExplicitBounds`[arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - 1])) * ((0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - if(arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) = 1, 0.0, arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - 1])) / (arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`)))] - if(arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) = 1, 0.0, arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[arrayFirstIndex(c -> c >= (0.95 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - 1])))))))) AS `Value` FROM (SELECT CAST(map(), ?) AS `Attributes`, `BucketCounts` AS `BucketCounts`, `ExplicitBounds` AS `ExplicitBounds` FROM (SELECT `BucketCounts`, `ExplicitBounds` FROM (SELECT sumForEach(`BucketCounts`) AS `BucketCounts`, any(`ExplicitBounds`) AS `ExplicitBounds`, count() AS `_cerb_n` FROM (SELECT * FROM `otel_metrics_histogram` PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) WHERE `_cerb_n` > 0)))

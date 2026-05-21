@@ -144,9 +144,26 @@ func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCt
 	// the downstream Sample-row contract holds. Mirrors stripBucketSuffix
 	// (PR #637) for the `_bucket` companion, and the exemplars handler's
 	// routing in internal/api/prom/exemplars.go::exemplarsTableFor.
+	//
+	// `<base>_bucket` takes a parallel-but-distinct path: the OTel-CH
+	// histogram row stores per-bucket counts as the `BucketCounts` array
+	// with `ExplicitBounds` carrying the bucket edges. Prom exposes the
+	// same data as N+1 separate series under `<base>_bucket{le=<bound>}`,
+	// so the bare-selector lowering fans the array into N+1 Sample-shape
+	// rows via arrayJoin. See wrapHistogramBucketFanout for the plan
+	// shape. The bucket suffix is detected via isClassicBucketSelector;
+	// the matcher-strip + `le` matcher split happens in splitBucketMatchers.
 	matchers := v.LabelMatchers
 	var companionValueColumn string
-	if bare, col, ok := s.HistogramCompanionColumn(metricName); ok && s.HistogramTable != "" {
+	var bucketSuffixed string
+	var bucketLeMatchers []*labels.Matcher
+	if bareBucket, ok := isClassicBucketSelector(metricName, s); ok {
+		table = s.HistogramTable
+		bucketSuffixed = metricName
+		var scanMatchers []*labels.Matcher
+		scanMatchers, bucketLeMatchers = splitBucketMatchers(matchers, bareBucket)
+		matchers = scanMatchers
+	} else if bare, col, ok := s.HistogramCompanionColumn(metricName); ok && s.HistogramTable != "" {
 		table = s.HistogramTable
 		matchers = rewriteMetricName(matchers, bare)
 		companionValueColumn = col
@@ -159,8 +176,33 @@ func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCt
 	// For the classic-histogram companion path we project the source
 	// column (Count / Sum) as `Value` so downstream nodes still see the
 	// canonical (MetricName, Attributes, TimeUnix, Value) shape.
+	//
+	// For the `_bucket` companion path the fan-out is more involved —
+	// arrayJoin over BucketCounts × ExplicitBounds produces N+1 rows per
+	// source row with the synthetic `le` label baked into Attributes.
+	// Any user-supplied `le` matcher applies AFTER the fan-out as an
+	// outer Filter on `Attributes['le']` (the column doesn't exist on
+	// the raw scan row).
 	var selectorInput chplan.Node = scan
-	if companionValueColumn != "" {
+	switch {
+	case bucketSuffixed != "":
+		// The scan-side filter (non-le matchers) feeds into the
+		// fan-out Project, then the post-fanout filter applies any
+		// `le=<bound>` matcher the user wrote against the synthesized
+		// `Attributes['le']` key.
+		var fanInput chplan.Node = scan
+		if pred != nil {
+			fanInput = &chplan.Filter{Input: scan, Predicate: pred}
+		}
+		selectorInput = wrapHistogramBucketFanout(fanInput, bucketSuffixed, s)
+		if lePred := buildPredicate(bucketLeMatchers, s); lePred != nil {
+			selectorInput = &chplan.Filter{Input: selectorInput, Predicate: lePred}
+		}
+		// `pred` is already baked into the fan-out's input Filter (or
+		// nil when there were no scan-side matchers), so the LWR /
+		// range-vector wrapper below must NOT re-apply it.
+		pred = nil
+	case companionValueColumn != "":
 		selectorInput = wrapHistogramCompanionProject(scan, companionValueColumn, s)
 	}
 
