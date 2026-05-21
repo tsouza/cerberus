@@ -244,6 +244,64 @@ func TestNormalizeLokiDottedLabels(t *testing.T) {
 			in:   `{a.b="c"},x.y="z"`,
 			want: `{a_b="c"},x.y="z"`,
 		},
+		// Trailing backslash inside a double-quoted string at end-of-
+		// input. The escape-branch guard `i+1 < len(q)` in
+		// lokiAdvanceInString MUST stay strict-less-than: a
+		// CONDITIONALS_BOUNDARY mutant flipping `<` to `<=` would
+		// admit `i+1 == len(q)` and then dereference `q[i+1]` past
+		// the end of the input, panicking the test. Original output
+		// preserves the unterminated string verbatim so the upstream
+		// parser surfaces a clean error. The `a.` prefix is there
+		// just to clear the early-return ContainsRune('.') fast path
+		// so the walker actually runs.
+		{
+			name: "trailing_backslash_in_double_string_eof",
+			in:   `{a.b="x\`,
+			want: `{a_b="x\`,
+		},
+		// Backslash inside a double-quoted string followed by a `"`
+		// then a top-level dotted token. The escape branch MUST fire
+		// (consume the `"` as the escaped byte) so the string
+		// continues — a CONDITIONALS_NEGATION mutant flipping `<` to
+		// `>=` makes the escape predicate uniformly false for normal
+		// (i.e., non-EOF) positions, dropping the escape consume.
+		// With the mutant the second `"` closes the string early and
+		// `c.d` at top level inside braces gets rewritten — distinct
+		// output. The leading dotted key fires the early-return-guard
+		// path so the walker enters the loop.
+		{
+			name: "escape_in_double_string_then_dotted_label",
+			in:   `{a.b="x\"y",c.d="z"}`,
+			want: `{a_b="x\"y",c_d="z"}`,
+		},
+		// Bottom-of-loop fall-through advance: a single non-special
+		// character `=` outside any selector. The fall-through `i++`
+		// at the end of the for-loop body MUST advance: an
+		// INCREMENT_DECREMENT mutant flipping `i++` to `i--` lands
+		// `i` at -1 on the next iteration and panics on `q[-1]`.
+		// The `.` is required to clear the ContainsRune('.') early-
+		// return; the `=` lands the walker at the bottom fall-through
+		// path (not whitespace, not `{`/`}`/`,`, not string-open, not
+		// ident-at-keystart-with-depth>0).
+		{
+			name: "bottom_fallthrough_advance_top_level",
+			in:   `=.`,
+			want: `=.`,
+		},
+		// Whitespace-inside-selector advance: the whitespace case
+		// MUST advance `i` past the space. An INCREMENT_DECREMENT
+		// mutant flipping the whitespace-case `i++` to `i--` sends
+		// `i` back to `{`, depth re-increments, and the walker
+		// loops without progress (or, on a leading-space input,
+		// lands at `q[-1]` and panics). The trailing `.` guarantees
+		// the ContainsRune early-return path is bypassed; the
+		// leading-space case puts the whitespace branch at i=0 so
+		// the mutant's underflow is the simplest possible panic.
+		{
+			name: "leading_whitespace_top_level_with_dot",
+			in:   ` .`,
+			want: ` .`,
+		},
 	}
 
 	for _, tc := range cases {
