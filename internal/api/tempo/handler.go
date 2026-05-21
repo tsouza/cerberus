@@ -364,6 +364,19 @@ func (h *Handler) handleTraceByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Reference Tempo's `/api/traces/{id}` rejects malformed IDs with
+	// 400 (`invalid trace id`) before any storage lookup: only 16-char
+	// (span-id-sized, retained for compatibility with older clients) or
+	// 32-char hex strings are valid trace IDs. Without this gate, a
+	// `curl /api/traces/ZZZZ` would surface as 404 ("trace not found")
+	// and Grafana's Tempo plugin would render the wrong UX. Lower-case
+	// up front so mixed-case input matches `^[0-9a-f]{16,32}$`.
+	traceID = strings.ToLower(traceID)
+	if !isValidTraceID(traceID) {
+		writeError(w, http.StatusBadRequest, "", "", fmt.Errorf("invalid trace id"))
+		return
+	}
+
 	// Build the lowered query: { traceID = "<id>" }.
 	plan, err := h.lowerTraceByID(traceID)
 	if err != nil {
@@ -1282,6 +1295,29 @@ func writeTraceProto(w http.ResponseWriter, status int, t *tempopb.Trace) {
 	w.Header().Set("Content-Type", "application/protobuf")
 	w.WriteHeader(status)
 	_, _ = w.Write(b)
+}
+
+// isValidTraceID mirrors reference Tempo's trace-id grammar on the
+// `/api/traces/{id}` (v1 + v2) wire: a lowercase hex string of length
+// 16 or 32. Callers must `strings.ToLower` the input first so
+// upper-case IDs are accepted (Grafana sometimes emits upper-case);
+// the length check here is on the lowered string so it stays
+// allocation-free in the hot path. Anything else — non-hex bytes,
+// off-by-one length, empty — is a 400 ("invalid trace id") before
+// the engine lookup, matching upstream behaviour.
+func isValidTraceID(id string) bool {
+	switch len(id) {
+	case 16, 32:
+	default:
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // writeError emits Tempo's distinct error envelope

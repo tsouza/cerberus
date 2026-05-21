@@ -1176,7 +1176,7 @@ func TestTraceByID_NotFound(t *testing.T) {
 	srv := newServer(q, "v1.0.0-test")
 	t.Cleanup(srv.Close)
 
-	resp, err := http.Get(srv.URL + "/api/traces/abc123")
+	resp, err := http.Get(srv.URL + "/api/traces/0123456789abcdef")
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
@@ -1188,7 +1188,7 @@ func TestTraceByID_NotFound(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&er); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if !er.Error || er.TraceID != "abc123" {
+	if !er.Error || er.TraceID != "0123456789abcdef" {
 		t.Fatalf("unexpected error body: %+v", er)
 	}
 }
@@ -1208,7 +1208,7 @@ func TestTraceByID_Found(t *testing.T) {
 	srv := newServer(q, "v1.0.0-test")
 	t.Cleanup(srv.Close)
 
-	resp, err := http.Get(srv.URL + "/api/traces/abc123")
+	resp, err := http.Get(srv.URL + "/api/traces/0123456789abcdef")
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
@@ -1266,7 +1266,7 @@ func TestResponseHeaders_EngineInstrumentation(t *testing.T) {
 	})
 
 	t.Run("traceByID_short_circuit", func(t *testing.T) {
-		resp, err := http.Get(srv.URL + "/api/traces/abc123")
+		resp, err := http.Get(srv.URL + "/api/traces/0123456789abcdef")
 		if err != nil {
 			t.Fatalf("GET: %v", err)
 		}
