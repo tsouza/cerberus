@@ -29,11 +29,14 @@ import {
   type Panel,
   type PanelTarget,
   assertHistogramComplete,
+  assertLabelAbsent,
   assertLabelShape,
   assertNoFabricatedValue,
+  expectedByKeys,
   extractByKeys,
   extractDataSourceProxyURL,
   extractHistogramName,
+  extractWithoutKeys,
   isHistogramQuantile,
   iterateDashboards,
   iteratePanels,
@@ -59,6 +62,66 @@ test('extractByKeys dedupes keys across nested by-clauses', () => {
 test('extractByKeys handles multi-aggregator family', () => {
   expect(extractByKeys('count by (k) (rate(foo[5m]))')).toEqual(['k']);
   expect(extractByKeys('avg by (x, y) (foo)')).toEqual(['x', 'y']);
+});
+
+test('extractByKeys ignores without-clauses entirely', () => {
+  // The two modifiers have inverted semantics — `by` keeps, `without`
+  // drops. Conflating them was the bug the phase-1 split fixes.
+  expect(extractByKeys('sum without (instance) (foo)')).toEqual([]);
+  expect(extractByKeys('sum by (a) (sum without (b) (foo))')).toEqual(['a']);
+});
+
+test('expectedByKeys passes raw by-keys through for plain aggregations', () => {
+  // No top-level call consumes labels here — `expectedByKeys` is
+  // identity-mod-dedup over `extractByKeys`.
+  expect(expectedByKeys('sum by (a, b) (foo)')).toEqual(['a', 'b']);
+  expect(expectedByKeys('count by (k) (rate(foo[5m]))')).toEqual(['k']);
+  expect(expectedByKeys('sum(foo)')).toEqual([]);
+});
+
+test('expectedByKeys subtracts le when histogram_quantile is the top-level call', () => {
+  // The load-bearing case for this helper: the N2/N11/N14 spec
+  // wrote `assertLabelShape` against `by(le, cerberus_ql)` extracted
+  // from a histogram_quantile expression, but the quantile collapses
+  // `le` into a scalar before returning — so the result series have
+  // `cerberus_ql` only. The raw `extractByKeys` is therefore
+  // mathematically-impossible-to-satisfy on the response; the
+  // semantic `expectedByKeys` is what the spec must use.
+  expect(
+    expectedByKeys(
+      'histogram_quantile(0.95, sum by (le, cerberus_ql) (rate(cerberus_queries_duration_seconds_bucket[5m])))',
+    ),
+  ).toEqual(['cerberus_ql']);
+  expect(
+    expectedByKeys(
+      'histogram_quantile(0.95, sum by (le) (rate(foo_bucket[5m])))',
+    ),
+  ).toEqual([]);
+});
+
+test('expectedByKeys leaves le alone when histogram_quantile is NOT the top-level call', () => {
+  // Defence-in-depth: a panel that aggregates by `le` outside a
+  // `histogram_quantile` call legitimately surfaces `le` on the
+  // response (uncommon but valid). Only the top-level
+  // histogram_quantile path consumes the bucket-boundary label.
+  expect(expectedByKeys('sum by (le, k) (foo_bucket)')).toEqual(['le', 'k']);
+});
+
+test('extractWithoutKeys parses a single without-clause', () => {
+  expect(extractWithoutKeys('sum without (instance) (foo)')).toEqual([
+    'instance',
+  ]);
+});
+
+test('extractWithoutKeys returns empty for a no-without aggregation', () => {
+  expect(extractWithoutKeys('sum by (a, b) (foo)')).toEqual([]);
+  expect(extractWithoutKeys('sum(foo)')).toEqual([]);
+});
+
+test('extractWithoutKeys dedupes keys across nested without-clauses', () => {
+  expect(
+    extractWithoutKeys('sum without (a, b) (sum without (a) (foo))'),
+  ).toEqual(['a', 'b']);
 });
 
 test('isHistogramQuantile detects the call shape', () => {
@@ -129,6 +192,54 @@ test('assertLabelShape throws when a key is missing', () => {
 
 test('assertLabelShape no-ops when byKeys is empty', () => {
   expect(() => assertLabelShape({ results: {} }, [])).not.toThrow();
+});
+
+test('assertLabelAbsent passes when none of the without-keys appear', () => {
+  expect(() =>
+    assertLabelAbsent(
+      {
+        results: {
+          A: {
+            frames: [
+              {
+                schema: {
+                  fields: [{ name: 'Value', labels: { job: 'cerberus' } }],
+                },
+              },
+            ],
+          },
+        },
+      },
+      ['instance'],
+    ),
+  ).not.toThrow();
+});
+
+test('assertLabelAbsent throws when a without-key leaks through', () => {
+  expect(() =>
+    assertLabelAbsent(
+      {
+        results: {
+          A: {
+            frames: [
+              {
+                schema: {
+                  fields: [
+                    { name: 'Value', labels: { instance: 'host-1' } },
+                  ],
+                },
+              },
+            ],
+          },
+        },
+      },
+      ['instance'],
+    ),
+  ).toThrow(/leaked=\[instance\]/);
+});
+
+test('assertLabelAbsent no-ops when withoutKeys is empty', () => {
+  expect(() => assertLabelAbsent({ results: {} }, [])).not.toThrow();
 });
 
 test('assertHistogramComplete passes on a non-empty frame', () => {

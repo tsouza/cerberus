@@ -81,6 +81,45 @@ export function assertLabelShape(
 }
 
 /**
+ * For each key in `withoutKeys`, assert that NO frame in the response
+ * carries that key in `schema.fields[].labels`.
+ *
+ * The semantic inverse of `assertLabelShape`: `sum without (instance)`
+ * means "drop the `instance` label", so the returned series MUST NOT
+ * carry it. A regression that ignored the `without` modifier and
+ * collapsed everything anyway would surface as `instance` re-appearing
+ * on the wire — exactly the shape this assertion catches.
+ */
+export function assertLabelAbsent(
+  response: DsQueryResponse,
+  withoutKeys: string[],
+): void {
+  if (withoutKeys.length === 0) return;
+  const observed = new Set<string>();
+  for (const target of Object.values(response.results ?? {})) {
+    for (const frame of target.frames ?? []) {
+      for (const field of frame.schema?.fields ?? []) {
+        for (const labelKey of Object.keys(field.labels ?? {})) {
+          observed.add(labelKey);
+        }
+      }
+    }
+  }
+  const leaked = withoutKeys.filter((k) => observed.has(k));
+  if (leaked.length > 0) {
+    throw new Error(
+      `assertLabelAbsent: labels [${withoutKeys.join(
+        ', ',
+      )}] should be dropped by the without(...) modifier, but observed=[${[
+        ...observed,
+      ]
+        .sort()
+        .join(', ')}]; leaked=[${leaked.join(', ')}]`,
+    );
+  }
+}
+
+/**
  * Assert that a `histogram_quantile(...)` response over `<name>` (the
  * metric root without `_bucket`) is non-empty.
  *
