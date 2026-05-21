@@ -170,9 +170,18 @@ jobs:
           # target, and asserts the by(...) / without(...) label-shape
           # rule against cerberus's /api/v1/query_range — pinning the
           # N2/N11/N14 sweep findings so they can't silently regress.
+          #
+          # Phase-2 histogram-completeness spec
+          # (iterate-histogram-completeness.spec.ts) iterates the same
+          # dashboard surface but selects histogram_quantile(...)
+          # targets, asserts the underlying _bucket / _count / _sum
+          # companion series exist on the wire, and pins the
+          # no-fabricated-value rule for histogram_quantile over
+          # bucket-less metrics. Closes N5 / N6.
           npx playwright test \
             compose_grafana_smoke.spec.ts \
             iterate-panel-shape.spec.ts \
+            iterate-histogram-completeness.spec.ts \
             --reporter=list
 
       - name: upload Playwright report on failure
