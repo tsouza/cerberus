@@ -487,15 +487,19 @@ func TestSearch_RootSpanResolution_TruncatedTrace(t *testing.T) {
 	}
 }
 
-// TestSearch_RootSpanResolution_StrippedZero pins the post-strip root
-// classification: the OTel-CH exporter stores ParentSpanId as a 16-char
-// lowercase-hex string, and the search projection routes it through
-// stripLeadingHexZeros — the regex `^0+([0-9a-f])` always retains ≥ 1
-// hex digit, so an all-zero ParentSpanId (the on-disk form for a true
-// root span) renders as `"0"` rather than `""`. The shaper must treat
-// `"0"` as a root marker; without this, structural-join queries (`>>`,
-// `<<`, `>`, `<`) report a child span's name as rootTraceName because
-// the search projection's per-trace root row is mis-classified.
+// TestSearch_RootSpanResolution_StrippedZero pins root classification
+// for the legacy stripped form of an all-zero ParentSpanId: a single
+// `"0"`. The pre-#209 search projection routed ParentSpanId through
+// `replaceRegexpOne(col, '^0+([0-9a-f])', '\\1')` which collapsed
+// `"0000000000000000"` to `"0"`. The shaper still accepts the `"0"`
+// form for back-compat with the historical projection variant.
+// Without it, structural-join queries (`>>`, `<<`, `>`, `<`) would
+// report a child span's name as rootTraceName because the search
+// projection's per-trace root row would be mis-classified.
+//
+// See TestSearch_RootSpanResolution_FullHexZero for the post-#209
+// canonical form (the full 16-char zero hex the OTel-CH exporter
+// writes and the current passthrough projection surfaces verbatim).
 //
 // Pins the failure-mode behind descendant_op_payments_to_consumer /
 // direct_parent_op_checkout_to_child / set_and_checkout_and_status_error
@@ -557,6 +561,85 @@ func TestSearch_RootSpanResolution_StrippedZero(t *testing.T) {
 	if got.RootServiceName != "payments" {
 		t.Errorf("RootServiceName: got %q, want %q",
 			got.RootServiceName, "payments")
+	}
+}
+
+// TestSearch_RootSpanResolution_FullHexZero pins root classification
+// for the canonical post-#209 wire shape: the OTel-CH exporter writes
+// an all-zero ParentSpanId as the full 16-char zero hex string
+// (`"0000000000000000"`) and the search projection now surfaces that
+// column verbatim (no more `replaceRegexpOne`-driven stripping). The
+// shaper must classify a row whose `__cerberus_parentSpanID` slot
+// holds the 16-char zero hex as a root span; without it the same
+// structural-join regressions covered by the stripped-zero sibling
+// test would resurface on traces that include a true OTel root span.
+//
+// Also pins the spec-side invariant: the TraceID emitted on the wire
+// is the canonical 32-char lowercase-hex form (issue #209), NOT the
+// leading-zero-stripped variant the legacy reference-Tempo wire
+// format used.
+func TestSearch_RootSpanResolution_FullHexZero(t *testing.T) {
+	t.Parallel()
+	const traceID = "00af843259b0a78f5cbe59e11cbaf66b"
+	const rootSpanID = "0000000000000001"
+	const rootParentID = "0000000000000000"
+	q := &stubQuerier{
+		samples: []chclient.Sample{
+			// Child span — parent points at the root span (full 16-char hex).
+			{
+				MetricName: "payments.child.3",
+				Labels: map[string]string{
+					"service.name":            "payments",
+					"__cerberus_traceID":      traceID,
+					"__cerberus_parentSpanID": rootSpanID,
+				},
+				Timestamp: time.Date(2026, 5, 12, 10, 0, 0, 25_000_000, time.UTC),
+				Value:     30_000_000,
+			},
+			// The actual root span — on-disk ParentSpanId is the full
+			// 16-char zero hex. The shaper must accept this as a root
+			// marker.
+			{
+				MetricName: "GET /api/payments/1",
+				Labels: map[string]string{
+					"service.name":            "payments",
+					"__cerberus_traceID":      traceID,
+					"__cerberus_parentSpanID": rootParentID,
+				},
+				Timestamp: time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+				Value:     120_000_000,
+			},
+		},
+	}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/search?q=%7B%20status%20%3D%20error%20%7D")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	var sr tempo.SearchResponse
+	if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(sr.Traces) != 1 {
+		t.Fatalf("expected 1 trace, got %d", len(sr.Traces))
+	}
+	got := sr.Traces[0]
+	if got.RootTraceName != "GET /api/payments/1" {
+		t.Errorf("RootTraceName: got %q, want %q (full-16-char-zero parent must classify as root)",
+			got.RootTraceName, "GET /api/payments/1")
+	}
+	if got.RootServiceName != "payments" {
+		t.Errorf("RootServiceName: got %q, want %q", got.RootServiceName, "payments")
+	}
+	// Spec assertion (issue #209): the traceID surfaces verbatim as
+	// the canonical 32-char lowercase-hex form, NOT in the legacy
+	// leading-zero-stripped shape (which would be 30 chars here).
+	if got.TraceID != traceID {
+		t.Errorf("TraceID on wire: got %q (len=%d), want %q (len=32, spec-canonical OTel hex)",
+			got.TraceID, len(got.TraceID), traceID)
 	}
 }
 

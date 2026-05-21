@@ -70,9 +70,10 @@ type rootMetadata struct {
 // not just the root row. argMinIf isolates the root-span identity
 // inside the same group so the query stays a single round trip.
 //
-// Result is keyed by the stripped-zero TraceID (the form the original
-// /api/search shaper used). Returns an empty map when traceIDs is
-// empty; never returns nil on success.
+// Result is keyed by the canonical 32-char lowercase-hex TraceID (the
+// form the /api/search shaper surfaces on the wire post-#209; pre-fix,
+// this was the leading-zero-stripped variant). Returns an empty map
+// when traceIDs is empty; never returns nil on success.
 func (h *Handler) resolveTraceRoots(ctx context.Context, traceIDs []string) (map[string]rootMetadata, error) {
 	if len(traceIDs) == 0 {
 		return map[string]rootMetadata{}, nil
@@ -91,9 +92,10 @@ func (h *Handler) resolveTraceRoots(ctx context.Context, traceIDs []string) (map
 
 	out := make(map[string]rootMetadata, len(samples))
 	for _, s := range samples {
-		// The aggregate's Attributes map carries the stripped TraceID
-		// under searchKeyTraceID (`__cerberus_traceID`) and the root
-		// span's service.name under the canonical `service.name` key.
+		// The aggregate's Attributes map carries the canonical 32-char
+		// TraceID under searchKeyTraceID (`__cerberus_traceID`) and the
+		// root span's service.name under the canonical `service.name`
+		// key.
 		tid := s.Labels[searchKeyTraceID]
 		if tid == "" {
 			continue
