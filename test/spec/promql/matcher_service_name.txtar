@@ -29,8 +29,8 @@ INSERT INTO otel_metrics_sum VALUES
     ('cerberus_queries_total', map('route', '/api/traces'),    'db',       toDateTime64('2026-01-01 00:00:00', 9), 42.0);
 -- expected_rows --
 [
-  ["cerberus_queries_total", {"route": "/api/v1/query"}, "2026-01-01T00:00:01Z", 7.0],
-  ["cerberus_queries_total", {"route": "/api/v1/series"}, "2026-01-01T00:00:01Z", 3.0]
+  ["cerberus_queries_total", {"route": "/api/v1/query"}, "2026-01-01T00:00:00Z", 7.0],
+  ["cerberus_queries_total", {"route": "/api/v1/series"}, "2026-01-01T00:00:00Z", 3.0]
 ]
 -- args --
 [0] string = "cerberus_queries_total"
