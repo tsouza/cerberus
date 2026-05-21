@@ -401,3 +401,88 @@ func keysOf(m map[string][]prom.MetricMetaEntry) []string {
 	sort.Strings(out)
 	return out
 }
+
+// TestLabelValues_DottedSource_ChDB pins task #215 N4: a request to
+// `/api/v1/label/cerberus_ql/values` against rows that store the OTel-
+// canonical dotted sibling `cerberus.ql` (no underscored sibling)
+// must surface the dotted-storage values. Without the multi-candidate
+// fan-out in unionLabelValuesSQL the endpoint returns `[]` and
+// Grafana's label picker shows no entries for the language partition.
+//
+// Seeds three rows under `cerberus.ql` (one per language) and asserts
+// the handler returns the three values plus the `route` label values
+// for the unrelated sanity check (`route` carries no internal
+// underscore so it hits the byte-stable single-arm path).
+func TestLabelValues_DottedSource_ChDB(t *testing.T) {
+	seedTime := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+	ts := seedTime.Format("2006-01-02 15:04:05.000")
+	// Seed into otel_metrics_sum: `cerberus_queries_total` carries the
+	// `_total` suffix so Metrics.TableFor routes the matched-listing
+	// path's `match[]=cerberus_queries_total` selector to the sum table.
+	// The unmatched-listing path scans every metric table via
+	// metricTables(), so the values still surface for Pin 1 — and the
+	// gauge / histogram tables are still created so each UNION arm
+	// targets a real table (chDB errors on missing-table reads).
+	seed := metaShapedGaugeDDL + metaShapedSumDDL + metaShapedHistogramDDL + fmt.Sprintf(`
+INSERT INTO otel_metrics_sum (MetricName, MetricDescription, MetricUnit, Attributes, TimeUnix, Value) VALUES
+    ('cerberus_queries_total', '', '', map('cerberus.ql', 'promql',  'route', '/api/v1/query'),  toDateTime64('%s', 9), 1.0),
+    ('cerberus_queries_total', '', '', map('cerberus.ql', 'logql',   'route', '/loki/api/query'), toDateTime64('%s', 9), 1.0),
+    ('cerberus_queries_total', '', '', map('cerberus.ql', 'traceql', 'route', '/api/traces'),     toDateTime64('%s', 9), 1.0);`,
+		ts, ts, ts)
+
+	srv, _ := newChDBServer(t, seed)
+
+	// Pin 1: unmatched listing — `/api/v1/label/cerberus_ql/values`
+	// surfaces every dotted-source value.
+	resp, err := http.Get(srv.URL + "/api/v1/label/cerberus_ql/values")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+	}
+	var parsed metadataResponse
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v\nbody=%s", err, body)
+	}
+	var values []string
+	if err := json.Unmarshal(parsed.Data, &values); err != nil {
+		t.Fatalf("decode data: %v\nbody=%s", err, body)
+	}
+	sort.Strings(values)
+	want := []string{"logql", "promql", "traceql"}
+	if !equalStringSlice(values, want) {
+		t.Errorf("unmatched listing: expected %v, got %v", want, values)
+	}
+
+	// Pin 2: matched listing — a `match[]` selector that touches the
+	// dotted-key rows still fans out across candidates so the SELECT
+	// projection picks up the dotted form. Use a matcher on `route`
+	// (no internal underscore → bare lookup) to scope the rows, then
+	// project `cerberus_ql` values across them.
+	start := seedTime.Add(-5 * time.Minute).Unix()
+	end := seedTime.Unix()
+	url := srv.URL + "/api/v1/label/cerberus_ql/values?" +
+		"match%5B%5D=cerberus_queries_total" +
+		fmt.Sprintf("&start=%d&end=%d", start, end)
+	resp, err = http.Get(url)
+	if err != nil {
+		t.Fatalf("GET match: %v", err)
+	}
+	body = readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+	}
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		t.Fatalf("unmarshal match: %v\nbody=%s", err, body)
+	}
+	values = nil
+	if err := json.Unmarshal(parsed.Data, &values); err != nil {
+		t.Fatalf("decode data match: %v\nbody=%s", err, body)
+	}
+	sort.Strings(values)
+	if !equalStringSlice(values, want) {
+		t.Errorf("matched listing: expected %v, got %v", want, values)
+	}
+}

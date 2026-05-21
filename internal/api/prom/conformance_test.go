@@ -1643,3 +1643,105 @@ func TestConformance_UnderscoredMatcherEmitsDottedFallback(t *testing.T) {
 		t.Errorf("expected `cerberus.ql` dotted-expansion candidate key in bound args; got %v", stub.lastArgs)
 	}
 }
+
+// TestConformance_LabelValuesEmitsDottedFallback pins task #215 N4:
+// the `/api/v1/label/<name>/values` endpoint must enumerate both the
+// underscored Prom-grammar form AND every dotted re-expansion when the
+// caller's label name carries an internal underscore. Without the
+// fan-out the listing endpoint queries `Attributes['cerberus_ql']`
+// verbatim, returns `[]`, and Grafana's label picker shows an empty
+// value list for OTel-stored series that wrote the dotted sibling.
+//
+// The assertion targets the captured SQL string: both candidate keys
+// must appear in the bound args so each (table x candidate) UNION arm
+// covers a different storage spelling.
+func TestConformance_LabelValuesEmitsDottedFallback(t *testing.T) {
+	t.Parallel()
+
+	stub := &stubQuerier{strings: nil}
+	srv := newServer(stub)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/v1/label/cerberus_ql/values")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d (expected 200; the handler should succeed even with empty result)", resp.StatusCode)
+	}
+	if stub.lastSQL == "" {
+		t.Fatalf("stub.lastSQL is empty; expected handler to have invoked the CH client")
+	}
+	var sawUnderscore, sawDotted bool
+	for _, a := range stub.lastArgs {
+		s, ok := a.(string)
+		if !ok {
+			continue
+		}
+		if s == "cerberus_ql" {
+			sawUnderscore = true
+		}
+		if s == "cerberus.ql" {
+			sawDotted = true
+		}
+	}
+	if !sawUnderscore {
+		t.Errorf("expected `cerberus_ql` candidate key in bound args (unmatched listing); got %v\nSQL: %s",
+			stub.lastArgs, stub.lastSQL)
+	}
+	if !sawDotted {
+		t.Errorf("expected `cerberus.ql` dotted-expansion candidate key in bound args (unmatched listing); got %v\nSQL: %s",
+			stub.lastArgs, stub.lastSQL)
+	}
+}
+
+// TestConformance_LabelValuesMatchedEmitsDottedFallback is the
+// `match[]` companion to TestConformance_LabelValuesEmitsDottedFallback:
+// when the listing endpoint takes a `match[]` selector, the SELECT
+// projection still has to fan out across underscore↔dot candidates so
+// the matched-row distinct-values projection picks up the dotted
+// storage form. Without the fan-out, a panel that drills into a
+// label-key via a matcher returns an empty result for OTel-dotted
+// sources even when the underlying rows exist.
+func TestConformance_LabelValuesMatchedEmitsDottedFallback(t *testing.T) {
+	t.Parallel()
+
+	stub := &stubQuerier{strings: nil}
+	srv := newServer(stub)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL +
+		"/api/v1/label/cerberus_ql/values?match%5B%5D=cerberus_queries_total")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	if stub.lastSQL == "" {
+		t.Fatalf("stub.lastSQL is empty; expected handler to have invoked the CH client")
+	}
+	var sawUnderscore, sawDotted bool
+	for _, a := range stub.lastArgs {
+		s, ok := a.(string)
+		if !ok {
+			continue
+		}
+		if s == "cerberus_ql" {
+			sawUnderscore = true
+		}
+		if s == "cerberus.ql" {
+			sawDotted = true
+		}
+	}
+	if !sawUnderscore {
+		t.Errorf("expected `cerberus_ql` candidate key in matched-listing args; got %v\nSQL: %s",
+			stub.lastArgs, stub.lastSQL)
+	}
+	if !sawDotted {
+		t.Errorf("expected `cerberus.ql` candidate key in matched-listing args; got %v\nSQL: %s",
+			stub.lastArgs, stub.lastSQL)
+	}
+}

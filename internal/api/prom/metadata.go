@@ -441,16 +441,42 @@ func (h *Handler) labelValuesForMatcher(ctx context.Context, name, matcher strin
 		})
 	}
 	attrsCol := h.Schema.AttributesColumn
-	// chsql.Subquery splices the matcher's args inline at the FROM
-	// position; QueryBuilder renders SELECT → FROM → WHERE so the final
-	// args slice naturally interleaves as [SELECT-MapAt-key, matcher args,
-	// WHERE-MapAt-key, WHERE-empty-sentinel] — no manual splicing.
-	sb := chsql.NewQuery().
-		Select(chsql.As(distinctMapAtFrag(attrsCol, name), "value")).
-		From(matcherSubqueryFrag(innerSQL, args)).
-		Where(mapAtNotEmptyFrag(attrsCol, name)).
+	candidates := labelValueCandidates(name)
+	// Fast-path: a single candidate (the typical `job` / `instance`
+	// shape) emits the legacy single-arm SQL — keeps byte-stable with
+	// the pre-#664 fixtures.
+	if len(candidates) == 1 {
+		sb := chsql.NewQuery().
+			Select(chsql.As(distinctMapAtFrag(attrsCol, candidates[0]), "value")).
+			From(matcherSubqueryFrag(innerSQL, args)).
+			Where(mapAtNotEmptyFrag(attrsCol, candidates[0])).
+			OrderBy(chsql.Col("value"), false)
+		sql, combined := sb.Build()
+		return timeCH(ctx, func() ([]string, error) {
+			return h.Client.QueryStrings(ctx, sql, combined...)
+		})
+	}
+	// Multi-candidate fan-out: emit one UNION arm per candidate over the
+	// SAME matcher subquery so a user-supplied `cerberus_ql` reaches both
+	// the underscored and dotted storage forms. The matcher subquery is
+	// expressed as a PreRenderedSQL Frag so its args land inline at each
+	// arm's FROM position; the matcher SQL itself runs once per arm at
+	// CH-time but the optimizer hoists the shared scan into a CTE for
+	// the multi-candidate case (and the typical 2-candidate fan-out is
+	// bounded by the same 64-candidate cap the matcher chain honours).
+	parts := make([]chsql.Frag, 0, len(candidates))
+	for _, k := range candidates {
+		arm := chsql.NewQuery().
+			Select(chsql.As(distinctMapAtFrag(attrsCol, k), "value")).
+			From(matcherSubqueryFrag(innerSQL, args)).
+			Where(mapAtNotEmptyFrag(attrsCol, k))
+		parts = append(parts, arm.Frag())
+	}
+	outer := chsql.NewQuery().
+		Select(chsql.As(distinctIdent("value"), "")).
+		From(chsql.Paren(chsql.UnionAll(parts...))).
 		OrderBy(chsql.Col("value"), false)
-	sql, combined := sb.Build()
+	sql, combined := outer.Build()
 	return timeCH(ctx, func() ([]string, error) {
 		return h.Client.QueryStrings(ctx, sql, combined...)
 	})
@@ -552,26 +578,58 @@ func (h *Handler) unionMetricNamesSQL() string {
 
 // unionLabelValuesSQL returns the distinct Attributes[?] values across
 // tables, skipping the empty-string sentinel that mapAccess yields when
-// a key is absent. Returns (sql, args). Each table arm binds three
-// args: the label name (SELECT MapAt), the label name (WHERE MapAt),
-// and the empty-string sentinel (WHERE Lit("")) — args lists 3*N
-// entries in [name, name, ""] groups per arm.
+// a key is absent. Returns (sql, args). Each (table × candidate) pair
+// binds three args: the candidate key (SELECT MapAt), the same key
+// (WHERE MapAt), and the empty-string sentinel (WHERE Lit("")). The
+// candidate set comes from [format.PromLabelToOTelCandidates] so a
+// user-supplied `cerberus_ql` also reaches rows that store the OTel
+// dotted form `cerberus.ql`. Without the fan-out
+// `/api/v1/label/cerberus_ql/values` returned `[]` because PR #657
+// normalised the LISTING side but kept the per-name lookup hitting
+// `Attributes['cerberus_ql']` verbatim — the storage rows wrote the
+// OTel dotted sibling and the underscored Map key was absent.
+//
+// Mirrors the matcher-side `attributeLookup` chain in
+// `internal/promql/lower.go`: both query and listing surfaces now
+// resolve the same Prom-grammar → OTel-key candidates the same way.
 func (h *Handler) unionLabelValuesSQL(name string) (string, []any) {
 	tables := h.metricTables()
 	attrsCol := h.Schema.AttributesColumn
-	parts := make([]chsql.Frag, 0, len(tables))
+	candidates := labelValueCandidates(name)
+	parts := make([]chsql.Frag, 0, len(tables)*len(candidates))
 	for _, t := range tables {
-		arm := chsql.NewQuery().
-			Select(chsql.As(distinctMapAtFrag(attrsCol, name), "value")).
-			From(chsql.Col(t)).
-			Where(mapAtNotEmptyFrag(attrsCol, name))
-		parts = append(parts, arm.Frag())
+		for _, k := range candidates {
+			arm := chsql.NewQuery().
+				Select(chsql.As(distinctMapAtFrag(attrsCol, k), "value")).
+				From(chsql.Col(t)).
+				Where(mapAtNotEmptyFrag(attrsCol, k))
+			parts = append(parts, arm.Frag())
+		}
 	}
 	outer := chsql.NewQuery().
 		Select(chsql.As(distinctIdent("value"), "")).
 		From(chsql.Paren(chsql.UnionAll(parts...))).
 		OrderBy(chsql.Col("value"), false)
 	return outer.Build()
+}
+
+// labelValueCandidates returns the candidate Attributes-map keys for a
+// /api/v1/label/<name>/values lookup. Names that don't carry any
+// rewritable underscore (`job`, `__name__`, ...) short-circuit to the
+// single-element list — preserves the pre-#663 byte-stable SQL for
+// keys that never needed dot↔underscore aliasing. Names with at least
+// one rewritable underscore (`cerberus_ql`, `http_request_method`)
+// expand via [format.PromLabelToOTelCandidates] so the lookup hits
+// both the underscored and dotted storage forms.
+func labelValueCandidates(name string) []string {
+	if !format.PromLabelNeedsDottedFallback(name) {
+		return []string{name}
+	}
+	out := format.PromLabelToOTelCandidates(name)
+	if len(out) == 0 {
+		return []string{name}
+	}
+	return out
 }
 
 // metricTables returns the configured metric-table names in a stable
