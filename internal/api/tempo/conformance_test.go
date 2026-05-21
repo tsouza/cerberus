@@ -484,8 +484,8 @@ func TestConformance_TempoTraceByIDWire(t *testing.T) {
 		name string
 		path string
 	}{
-		{name: "v1", path: "/api/traces/abc123"},
-		{name: "v2", path: "/api/v2/traces/abc123"},
+		{name: "v1", path: "/api/traces/0123456789abcdef"},
+		{name: "v2", path: "/api/v2/traces/0123456789abcdef"},
 	}
 
 	t.Run("found", func(t *testing.T) {
@@ -554,8 +554,8 @@ func TestConformance_TempoTraceByIDWire(t *testing.T) {
 				if err := json.NewDecoder(resp.Body).Decode(&er); err != nil {
 					t.Fatalf("decode: %v", err)
 				}
-				if er.TraceID != "abc123" || !er.Error {
-					t.Errorf("envelope: got %+v, want traceID=abc123, error=true", er)
+				if er.TraceID != "0123456789abcdef" || !er.Error {
+					t.Errorf("envelope: got %+v, want traceID=0123456789abcdef, error=true", er)
 				}
 			})
 		}
@@ -666,12 +666,12 @@ func TestConformance_TempoErrorEnvelope(t *testing.T) {
 		{
 			name: "502_trace_by_id_ch_failure",
 			stub: &stubQuerier{err: errors.New("ch failure")},
-			path: "/api/traces/abc123", wantCode: http.StatusBadGateway,
+			path: "/api/traces/0123456789abcdef", wantCode: http.StatusBadGateway,
 		},
 		{
 			name: "404_trace_not_found",
 			stub: &stubQuerier{samples: nil},
-			path: "/api/traces/abc123", wantCode: http.StatusNotFound,
+			path: "/api/traces/0123456789abcdef", wantCode: http.StatusNotFound,
 		},
 		// v2 URL mirrors the v1 route — Grafana 11.x's Tempo plugin
 		// defaults to `tempoApiVersion >= v2`, so error envelopes must
@@ -679,12 +679,12 @@ func TestConformance_TempoErrorEnvelope(t *testing.T) {
 		{
 			name: "502_trace_by_id_v2_ch_failure",
 			stub: &stubQuerier{err: errors.New("ch failure")},
-			path: "/api/v2/traces/abc123", wantCode: http.StatusBadGateway,
+			path: "/api/v2/traces/0123456789abcdef", wantCode: http.StatusBadGateway,
 		},
 		{
 			name: "404_trace_not_found_v2",
 			stub: &stubQuerier{samples: nil},
-			path: "/api/v2/traces/abc123", wantCode: http.StatusNotFound,
+			path: "/api/v2/traces/0123456789abcdef", wantCode: http.StatusNotFound,
 		},
 	}
 	for _, c := range cases {
@@ -803,8 +803,11 @@ func TestConformance_TempoStartEndMatrix(t *testing.T) {
 // --- Section E: trace-id edge cases -------------------------------------
 
 // TestConformance_TempoTraceIDEdge — special characters in the trace
-// path segment are passed to CH safely (parameterised) — no panic, no
-// SQL injection. We expect 404 (no rows match) but no crash.
+// path segment are rejected up-front by the 16-/32-hex grammar gate
+// with 400 ("invalid trace id"), matching reference Tempo. The gate
+// runs before any CH lookup, so SQL injection / panic / crash paths
+// are unreachable from these inputs — covered by inspection of the
+// handler, this test pins the wire-format response.
 func TestConformance_TempoTraceIDEdge(t *testing.T) {
 	t.Parallel()
 
@@ -824,9 +827,9 @@ func TestConformance_TempoTraceIDEdge(t *testing.T) {
 				t.Fatalf("GET: %v", err)
 			}
 			defer resp.Body.Close()
-			if resp.StatusCode != http.StatusNotFound {
+			if resp.StatusCode != http.StatusBadRequest {
 				body, _ := io.ReadAll(resp.Body)
-				t.Errorf("status: got %d, want 404; body=%s", resp.StatusCode, body)
+				t.Errorf("status: got %d, want 400; body=%s", resp.StatusCode, body)
 			}
 		})
 	}

@@ -305,7 +305,10 @@ func TestHandleTraceByID_AcceptProto_NotFound(t *testing.T) {
 	srv := newServer(q, "v1.0.0-test")
 	t.Cleanup(srv.Close)
 
-	req, err := http.NewRequest("GET", srv.URL+"/api/traces/missing", nil)
+	// Valid 32-hex grammar so the 16-/32-hex gate passes; the
+	// stubQuerier returns no rows, exercising the proto-encoded
+	// not-found branch.
+	req, err := http.NewRequest("GET", srv.URL+"/api/traces/00000000000000000000000000000000", nil)
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}

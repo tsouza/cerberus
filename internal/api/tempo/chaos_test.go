@@ -79,7 +79,7 @@ func TestTempoCH_TraceByID_UpstreamError_Returns502(t *testing.T) {
 	srv := newServer(q, "v1.0.0-test")
 	t.Cleanup(srv.Close)
 
-	resp, err := http.Get(srv.URL + "/api/traces/abc123")
+	resp, err := http.Get(srv.URL + "/api/traces/0123456789abcdef")
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
