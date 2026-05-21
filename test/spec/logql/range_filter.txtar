@@ -5,21 +5,23 @@
 -- end --
 2026-05-14T12:05:00Z
 -- sql --
-SELECT * FROM `otel_logs` WHERE (`Timestamp` >= toDateTime64(?, ?)) AND (`Timestamp` <= toDateTime64(?, ?)) AND (if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?]) = ?)
+SELECT * FROM `otel_logs` WHERE (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?])) = ?) AND (`Timestamp` >= toDateTime64(?, ?)) AND (`Timestamp` <= toDateTime64(?, ?))
 -- args --
-[0] string = "2026-05-14 12:03:20.000000000"
-[1] int64 = 9
-[2] string = "2026-05-14 12:05:00.000000000"
-[3] int64 = 9
-[4] string = "service_name"
-[5] string = "service_name"
-[6] string = "service.name"
-[7] string = "api"
+[0] string = ""
+[1] string = "service_name"
+[2] string = "service_name"
+[3] string = "service.name"
+[4] string = "api"
+[5] string = "2026-05-14 12:03:20.000000000"
+[6] int64 = 9
+[7] string = "2026-05-14 12:05:00.000000000"
+[8] int64 = 9
 -- seed --
 CREATE TABLE otel_logs (
     Timestamp DateTime64(9),
     Body String MATERIALIZED '',
-    ResourceAttributes Map(String, String) MATERIALIZED map('service_name', 'api')
+    ResourceAttributes Map(String, String) MATERIALIZED map('service_name', 'api'),
+    ServiceName String DEFAULT ''
 ) ENGINE = Memory;
 INSERT INTO otel_logs (Timestamp) VALUES
     (toDateTime64('2026-05-14 12:00:00.000000000', 9)),
@@ -33,5 +35,5 @@ INSERT INTO otel_logs (Timestamp) VALUES
   ["2026-05-14T12:05:00Z"]
 ]
 -- chplan --
-Filter predicate=((if(mapContains(ResourceAttributes, "service_name"), ResourceAttributes["service_name"], ResourceAttributes["service.name"]) = "api") AND ((Timestamp >= toDateTime64("2026-05-14 12:03:20.000000000", 9)) AND (Timestamp <= toDateTime64("2026-05-14 12:05:00.000000000", 9))))
+Filter predicate=((coalesce(nullIf(ServiceName, ""), if(mapContains(ResourceAttributes, "service_name"), ResourceAttributes["service_name"], ResourceAttributes["service.name"])) = "api") AND ((Timestamp >= toDateTime64("2026-05-14 12:03:20.000000000", 9)) AND (Timestamp <= toDateTime64("2026-05-14 12:05:00.000000000", 9))))
   Scan(otel_logs)

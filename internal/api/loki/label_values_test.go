@@ -101,6 +101,108 @@ func TestLabelValues_Selector(t *testing.T) {
 	}
 }
 
+// TestLabelValues_ServiceName_FallsBackToServiceNameColumn pins the
+// task-#217 fix: `/loki/api/v1/label/service_name/values` must surface
+// values stored under any of the three OTel-CH shapes — the dedicated
+// `ServiceName` column (where the OTel collector → CH exporter routes
+// `service.name` for cerberus-self rows), the underscored map key
+// (`ResourceAttributes['service_name']`, used by the seed fixtures and
+// Grafana panels), and the OTel-semantic-convention dotted key
+// (`ResourceAttributes['service.name']`).
+//
+// Before the fix the endpoint queried `ResourceAttributes['service_name']`
+// only, so cerberus's own logs were invisible on `service_name` while
+// `/label/service.name/values` returned just `["cerberus"]` — the
+// inverse set described in N8 / N9 of the task brief.
+func TestLabelValues_ServiceName_FallsBackToServiceNameColumn(t *testing.T) {
+	t.Parallel()
+
+	q := &stubQuerier{stringRows: []string{"cerberus", "api", "db", "frontend"}}
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + `/loki/api/v1/label/service_name/values`)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+
+	lastSQL := q.LastSQL()
+	lastArgs := q.LastArgs()
+
+	// The dedicated `ServiceName` column appears in the UNION ALL — the
+	// arm that surfaces cerberus-self rows whose value is promoted out
+	// of the map.
+	if !strings.Contains(lastSQL, "`ServiceName`") {
+		t.Errorf("SQL missing ServiceName column arm: %q", lastSQL)
+	}
+	// Both candidate map keys are bound as positional args — the
+	// underscored form (used by seed fixtures) AND the dotted form
+	// (OTel semantic convention). Without both, the inverse N8/N9
+	// failure modes return.
+	hasUnderscored, hasDotted := false, false
+	for _, a := range lastArgs {
+		if s, ok := a.(string); ok {
+			if s == "service_name" {
+				hasUnderscored = true
+			}
+			if s == "service.name" {
+				hasDotted = true
+			}
+		}
+	}
+	if !hasUnderscored {
+		t.Errorf("missing underscored map-key arg: %v", lastArgs)
+	}
+	if !hasDotted {
+		t.Errorf("missing dotted map-key arg: %v", lastArgs)
+	}
+	// Label name never leaks as a SQL literal.
+	if strings.Contains(lastSQL, "'service_name'") || strings.Contains(lastSQL, "'service.name'") {
+		t.Errorf("label name leaked into SQL string: %q", lastSQL)
+	}
+	// UNION ALL across the storage-shape arms.
+	if !strings.Contains(lastSQL, "UNION ALL") {
+		t.Errorf("expected UNION ALL across storage shapes: %q", lastSQL)
+	}
+}
+
+// TestLabelValues_DottedServiceName_MirrorsUnderscored pins the
+// inverse direction: `/loki/api/v1/label/service.name/values` (the
+// dotted-form endpoint) also surfaces the same UNION across the
+// `ServiceName` column + the dotted/underscored map keys. Before the
+// fix the dotted endpoint read `ResourceAttributes['service.name']`
+// alone and returned `["cerberus"]` — the orthogonal slice to the
+// underscored endpoint's `["api","db","frontend"]`. After the fix the
+// two endpoints return the same set.
+func TestLabelValues_DottedServiceName_MirrorsUnderscored(t *testing.T) {
+	t.Parallel()
+
+	q := &stubQuerier{stringRows: []string{"cerberus", "api", "db"}}
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + `/loki/api/v1/label/service.name/values`)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+
+	lastSQL := q.LastSQL()
+	if !strings.Contains(lastSQL, "`ServiceName`") {
+		t.Errorf("dotted-name endpoint missing ServiceName column arm: %q", lastSQL)
+	}
+	if !strings.Contains(lastSQL, "UNION ALL") {
+		t.Errorf("dotted-name endpoint missing UNION ALL: %q", lastSQL)
+	}
+}
+
 // TestLabelValues_BadInput — broken selector or empty label name → 400.
 func TestLabelValues_BadInput(t *testing.T) {
 	t.Parallel()
