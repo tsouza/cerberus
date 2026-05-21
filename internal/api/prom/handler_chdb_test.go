@@ -564,3 +564,77 @@ INSERT INTO otel_metrics_gauge VALUES
 		}
 	}
 }
+
+// TestQuery_InstantStalenessLookback_5mBoundary pins the canonical
+// Prometheus instant-query staleness lookback to 5 minutes
+// (`internal/promql/modifiers.go::instantLookback`). The instant path
+// at `/api/v1/query` MUST include any sample whose TimeUnix is strictly
+// within the last 5m of the eval timestamp and MUST exclude samples
+// older than 5m — sparsely-emitted metrics (`up`, scrape probes,
+// `cerberus_queries_total` during quiet windows) only show up at all
+// because reference Prometheus's 5-minute lookback carries the latest
+// sample forward to the instant query's eval time.
+//
+// Without this regression pin, shortening the lookback or zeroing it
+// silently re-introduces the "instant `up` empty / range `up` matrix of
+// 1" bug shape — Grafana's `up == 0` alert rule evaluates against the
+// instant endpoint, so the bug also silently breaks alert evaluation.
+//
+// The boundary is left-open / right-closed: `TimeUnix > eval - 5m AND
+// TimeUnix <= eval`. The 2m-old seed (well inside the window) MUST
+// surface; the 6m-old seed (just outside) MUST NOT.
+func TestQuery_InstantStalenessLookback_5mBoundary(t *testing.T) {
+	cases := []struct {
+		name      string
+		ageFromTs time.Duration // how far before eval ts the sample is seeded
+		wantLen   int
+	}{
+		// Inside the 5m window — Prom default staleness includes this.
+		{"within_window_2m", 2 * time.Minute, 1},
+		// Just outside — 6m > 5m so the LWR lower bound excludes it.
+		{"outside_window_6m", 6 * time.Minute, 0},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			evalTime := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+			sampleTime := evalTime.Add(-tc.ageFromTs)
+			sampleTs := sampleTime.Format("2006-01-02 15:04:05.000")
+			seed := gaugeDDL + fmt.Sprintf(`
+INSERT INTO otel_metrics_gauge VALUES
+    ('up', map('job', 'api'), toDateTime64('%s', 9), 1.0);`, sampleTs)
+
+			srv, _ := newChDBServer(t, seed)
+			resp, err := http.Get(fmt.Sprintf("%s/api/v1/query?query=up&time=%d",
+				srv.URL, evalTime.Unix()))
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			body := readBody(t, resp)
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+			}
+
+			var parsed queryResponse
+			if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+				t.Fatalf("unmarshal: %v\nbody=%s", err, body)
+			}
+			if parsed.Status != "success" {
+				t.Fatalf("status=%q err=%s", parsed.Status, parsed.Error)
+			}
+			if parsed.Data.ResultType != "vector" {
+				t.Fatalf("resultType=%q, want vector", parsed.Data.ResultType)
+			}
+
+			rawResult, _ := json.Marshal(parsed.Data.Result)
+			var vec []prom.VectorSample
+			if err := json.Unmarshal(rawResult, &vec); err != nil {
+				t.Fatalf("decode vector: %v", err)
+			}
+			if len(vec) != tc.wantLen {
+				t.Fatalf("seed age=%s: expected %d series, got %d: %+v",
+					tc.ageFromTs, tc.wantLen, len(vec), vec)
+			}
+		})
+	}
+}
