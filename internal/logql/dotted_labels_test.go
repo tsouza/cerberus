@@ -134,6 +134,78 @@ func TestNormalizeLokiDottedLabels(t *testing.T) {
 			in:   `{service_name="my.svc"}`,
 			want: `{service_name="my.svc"}`,
 		},
+		// short dotted-key input (< 16 bytes) — exercises the
+		// `strings.Builder.Grow(len(q) + 16)` path with an input where
+		// `len(q) - 16` would be negative. An ARITHMETIC_BASE mutation
+		// that flips `+` to `-` panics at Grow, so this case pins the
+		// growth-hint arithmetic.
+		{
+			name: "short_input_under_grow_pad",
+			in:   `{a.b=""}`,
+			want: `{a_b=""}`,
+		},
+		// top-level dotted token MUST round-trip verbatim. The rewrite
+		// only fires inside `{ … }` stream-selector braces; a bare
+		// `a.b` outside braces is some other construct (function
+		// invocation, range duration, …) and must not be molested.
+		// Pins the depth-guard at the rewrite site against
+		// INVERT_LOGICAL (`&&` → `||`) and CONDITIONALS_BOUNDARY
+		// (`>` → `>=`) mutations on the `keyStart && depth > 0` check.
+		{
+			name: "noop_top_level_dotted_token",
+			in:   `a.b="c"`,
+			want: `a.b="c"`,
+		},
+		// stray closing brace BEFORE the selector. The walker MUST
+		// guard the `depth--` decrement with `depth > 0` so an
+		// unmatched `}` doesn't push depth negative — otherwise the
+		// next `{` brings depth back up to 0 (not 1) and the rewrite
+		// inside is silently disabled. Pins the close-brace decrement
+		// guard against CONDITIONALS_BOUNDARY / CONDITIONALS_NEGATION
+		// on `if depth > 0`.
+		{
+			name: "stray_close_before_selector",
+			in:   `}{a.b="c"}`,
+			want: `}{a_b="c"}`,
+		},
+		// unclosed brace with a dotted token at end-of-string. The
+		// token-consume loop MUST stop at `j < len(q)` strictly — a
+		// CONDITIONALS_BOUNDARY mutation flipping `<` to `<=` would
+		// dereference past the end of the input and panic. Output is
+		// the rewritten token with no trailing close-brace (matching
+		// the input shape so the downstream parser surfaces a clean
+		// `unexpected EOF` instead of a corrupted query).
+		{
+			name: "unclosed_brace_token_at_end",
+			in:   `{a.b`,
+			want: `{a_b`,
+		},
+		// escape-in-double-string with a subsequent dotted token. The
+		// double-quoted string must honour `\"` so the closing-quote
+		// detector skips past the escaped quote; if the escape branch
+		// were inverted to fire only on backtick strings (a
+		// CONDITIONALS_NEGATION mutation on the
+		// `state != lokiInBacktick` predicate), the synthetic close
+		// would land the walker outside the string mid-content, and
+		// the next `b.c` would wrongly rewrite. The byte output here
+		// pins both legs.
+		{
+			name: "escape_in_double_string_preserves_trailing_key",
+			in:   `{a="\",b.c="d"}`,
+			want: `{a="\",b.c="d"}`,
+		},
+		// trailing top-level dotted token AFTER a closed selector.
+		// The `}` MUST decrement depth back to 0 (not increment); if
+		// the decrement were flipped to an increment, the subsequent
+		// `,` would land at depth > 0 and the trailing `x.y` would
+		// be wrongly rewritten. Pins the close-brace
+		// INCREMENT_DECREMENT (`depth--` → `depth++`) and the
+		// CONDITIONALS_NEGATION on the close-brace guard.
+		{
+			name: "trailing_top_level_after_selector",
+			in:   `{a.b="c"},x.y="z"`,
+			want: `{a_b="c"},x.y="z"`,
+		},
 	}
 
 	for _, tc := range cases {

@@ -146,4 +146,3 @@ func TestDottedLabels_LabelsHandler(t *testing.T) {
 		t.Errorf("body missing success status: %s", body)
 	}
 }
-

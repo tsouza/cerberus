@@ -106,8 +106,14 @@ func normalizeLokiDottedLabels(q string) string {
 			i++
 			continue
 		case ',':
+			// keyStart is unconditionally set on `,`; the `depth > 0`
+			// guard at the rewrite site below suppresses top-level
+			// commas so a stray `a.b , c.d` outside braces still falls
+			// through unchanged. Keeping the assignment unconditional
+			// here eliminates a semantically-equivalent boundary
+			// mutation that the previous `depth > 0` form admitted.
 			out.WriteByte(ch)
-			keyStart = depth > 0
+			keyStart = true
 			i++
 			continue
 		case ' ', '\t', '\n', '\r':
