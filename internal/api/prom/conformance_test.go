@@ -1674,6 +1674,81 @@ func TestConformance_ServiceNameByClauseAugmentsAttributes(t *testing.T) {
 	}
 }
 
+// TestConformance_ServiceNameMatcherWithByClauseCrossProduct pins
+// task #236 (PR #681 / Phase-3 filter-drill regression): a query
+// that BOTH matches on `service_name` AND aggregates `by
+// (service_name)` must keep the matcher's `ServiceName` column-ref
+// in scope at the layer the matcher Filter applies. Pre-fix the
+// inner augmenting Project (from PR #679 / task #232) projected
+// only the canonical Sample quadruple (MetricName, Attributes,
+// TimeUnix, Value) on its output — the matcher pred's
+// `coalesce(nullIf(ServiceName, ”), ...)` reference then sat ABOVE
+// the augment in the LWR / range-vector wrap, and CH rejected the
+// query with `Unknown expression or function identifier
+// 'ServiceName'` (HTTP 502, error 47) on the cross-product shape
+// `topk(10, sum by (service_name) (rate({__name__=~".+",service_name="api"}[5m])))`.
+// The fix sinks the matcher pred Filter BELOW the augmenting
+// Project so `ServiceName` resolves against the raw Scan row.
+//
+// The assertion targets the captured SQL: a single response (200 +
+// non-empty `stub.lastSQL`) is sufficient — the regression mode is
+// the handler returning 502 with an empty `stub.lastSQL` because
+// the CH client never received a parseable query. We additionally
+// require the augment + coalesce shapes co-exist in the same SQL
+// so the two PR #679 paths still both fire on this cross-product.
+func TestConformance_ServiceNameMatcherWithByClauseCrossProduct(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name  string
+		query string
+	}{
+		{
+			name:  "instant_sum_by_with_matcher",
+			query: `sum by (service_name) (rate(cerberus_queries_total{service_name="api"}[5m]))`,
+		},
+		{
+			name:  "instant_topk_sum_by_with_matcher_metricless",
+			query: `topk(10, sum by (service_name) (rate({__name__=~".+",service_name="api"}[5m])))`,
+		},
+		{
+			name:  "instant_sum_by_with_matcher_count_over_time",
+			query: `sum by (service_name) (count_over_time(cerberus_queries_total{service_name="api"}[5m]))`,
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			stub := &stubQuerier{samples: nil}
+			srv := newServer(stub)
+			t.Cleanup(srv.Close)
+
+			q := url.QueryEscape(tc.query)
+			resp, err := http.Get(srv.URL + "/api/v1/query?query=" + q + "&time=1717999200")
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status=%d (expected 200; cross-product matcher + by-clause must lower cleanly)", resp.StatusCode)
+			}
+			if stub.lastSQL == "" {
+				t.Fatalf("stub.lastSQL is empty; expected handler to have invoked the CH client (502 regression shape)")
+			}
+			if !strings.Contains(stub.lastSQL, "coalesce(nullIf(`ServiceName`") {
+				t.Errorf("SQL is missing the `coalesce(nullIf(ServiceName, ''), ...)` matcher routing\nSQL: %s", stub.lastSQL)
+			}
+			if !strings.Contains(stub.lastSQL, "mapConcat(`Attributes`") {
+				t.Errorf("SQL is missing the `mapConcat(Attributes, ...)` by-clause augmentation\nSQL: %s", stub.lastSQL)
+			}
+			if !strings.Contains(stub.lastSQL, "toString(`ServiceName`)") {
+				t.Errorf("SQL is missing the `toString(ServiceName)` synthesised key for the by-clause\nSQL: %s", stub.lastSQL)
+			}
+		})
+	}
+}
+
 // TestConformance_UnderscoredMatcherEmitsDottedFallback pins the
 // matcher-side resolution for underscored Prom-grammar names that
 // could resolve to a dotted OTel-canonical key in storage. Without

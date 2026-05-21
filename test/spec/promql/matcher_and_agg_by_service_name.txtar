@@ -1,0 +1,80 @@
+# Task #236 — cross-product of the two PR #679 / task #232 paths:
+# the matcher BOTH references `service_name` AND the outer
+# aggregation aggregates `by (service_name)`. Pre-fix the inner
+# augmenting Project (PR #679) projected only the canonical Sample
+# quadruple (MetricName, Attributes, TimeUnix, Value) on its output;
+# the matcher predicate's `coalesce(nullIf(ServiceName, ''), ...)`
+# `ServiceName` column-ref then sat ABOVE the augment in the LWR
+# wrap, and CH rejected the query with `Unknown expression or
+# function identifier 'ServiceName'` (HTTP 502, error 47). The bug
+# fired on PR #681's Phase-3 filter-drill sweep against the
+# `topk(10, sum by (service_name) (rate({__name__=~".+",
+# service_name="api"}[5m])))` panel — the unfiltered baseline ran,
+# the drill-down with `service_name="api"` was the regression.
+#
+# Fix: sink the matcher predicate Filter to a layer BELOW the
+# augmenting Project (immediately above the raw Scan) so the
+# `ServiceName` column resolves against the raw scan row. The LWR /
+# range-vector wrapper above the augment receives `pred=nil` and
+# only attaches the TimeUnix bounds (which the augment preserves).
+#
+# Seed mirrors `agg_by_service_name.txtar`'s shape: rows with
+# `ServiceName='api'|'db'|'cerberus'` carry the value ONLY in the
+# top-level column (no Attributes['service_name'] entry) so the
+# coalesce → top-level path is the only one that resolves the
+# matcher. Expected: only the single `api` row survives, grouped
+# under `{service_name:"api"}`.
+
+-- query.promql --
+sum by (service_name) (cerberus_queries_total{service_name="api"})
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    ServiceName LowCardinality(String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum VALUES
+    ('cerberus_queries_total', map('route', '/api/v1/query'),  'cerberus', toDateTime64('2026-01-01 00:00:00', 9), 7.0),
+    ('cerberus_queries_total', map('route', '/api/v1/series'), 'cerberus', toDateTime64('2026-01-01 00:00:00', 9), 3.0),
+    ('cerberus_queries_total', map('route', '/loki/api/query'),'api',      toDateTime64('2026-01-01 00:00:00', 9), 99.0),
+    ('cerberus_queries_total', map('route', '/api/traces'),    'db',       toDateTime64('2026-01-01 00:00:00', 9), 42.0);
+-- expected_rows --
+[
+  ["", {"service_name": "api"}, "2026-01-01T00:00:01Z", 99.0]
+]
+-- args --
+[0] string = ""
+[1] string = "service_name"
+[2] int64 = 9
+[3] string = "service_name"
+[4] string = "service_name"
+[5] string = "service.name"
+[6] string = ""
+[7] string = "service_name"
+[8] string = "cerberus_queries_total"
+[9] string = ""
+[10] string = "service_name"
+[11] string = "service_name"
+[12] string = "service.name"
+[13] string = "api"
+[14] string = "2026-01-01 00:00:01.000000000"
+[15] int64 = 9
+[16] string = "2026-01-01 00:00:01.000000000"
+[17] int64 = 9
+[18] int64 = 300000000000
+[19] string = "service_name"
+[20] string = "service_name"
+[21] string = "service.name"
+-- chplan --
+Project ["" AS MetricName, mapWithoutEmpty(map("service_name", gkey_0)) AS Attributes, now64(9) AS TimeUnix, Value AS Value]
+  Aggregate groupBy=[if(mapContains(Attributes, "service_name"), Attributes["service_name"], Attributes["service.name"]) AS gkey_0] funcs=[sum(Value) AS Value]
+    Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
+      Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
+        Filter predicate=((TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9)) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+          Project [MetricName AS MetricName, mapConcat(Attributes, mapFilter((k, v) -> (v != ""), map("service_name", toString(ServiceName)))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+            Filter predicate=((coalesce(nullIf(ServiceName, ""), if(mapContains(Attributes, "service_name"), Attributes["service_name"], Attributes["service.name"])) = "api") AND (MetricName = "cerberus_queries_total"))
+              Scan(otel_metrics_sum)
+-- sql --
+SELECT ? AS `MetricName`, mapFilter((k, v) -> v != '', map(?, `gkey_0`)) AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT if(mapContains(`Attributes`, ?), `Attributes`[?], `Attributes`[?]) AS `gkey_0`, sum(`Value`) AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapConcat(`Attributes`, mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`)))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE (`MetricName` = ?) WHERE (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`Attributes`, ?), `Attributes`[?], `Attributes`[?])) = ?))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)) GROUP BY if(mapContains(`Attributes`, ?), `Attributes`[?], `Attributes`[?]))
