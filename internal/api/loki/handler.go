@@ -493,7 +493,7 @@ func toVector(samples []chclient.Sample, ts time.Time) []VectorSample {
 	stamp := float64(ts.UnixMilli()) / 1e3
 	for _, l := range bySeries {
 		out = append(out, VectorSample{
-			Metric: dropOTelDottedLabels(l.labels),
+			Metric: format.NormalizeLabelMap(l.labels),
 			Value:  [2]any{stamp, strconv.FormatFloat(l.value, 'f', -1, 64)},
 		})
 	}
@@ -547,7 +547,7 @@ func toMatrixStepGrid(samples []chclient.Sample, start, end time.Time, _ time.Du
 
 	out := make([]MatrixSample, 0, len(bySeries))
 	for _, st := range bySeries {
-		ms := MatrixSample{Metric: dropOTelDottedLabels(st.labels)}
+		ms := MatrixSample{Metric: format.NormalizeLabelMap(st.labels)}
 		for _, r := range st.rows {
 			if r.Timestamp.Before(start) || r.Timestamp.After(end) {
 				continue
@@ -604,52 +604,13 @@ func toStreamsWithTransform(samples []chclient.Sample, tx lineTransform) []Strea
 	out := make([]Stream, 0, len(bySeries))
 	for _, a := range bySeries {
 		sort.Slice(a.values, func(i, j int) bool { return a.values[i][0] < a.values[j][0] })
-		out = append(out, Stream{Stream: dropOTelDottedLabels(a.labels), Values: a.values})
-	}
-	return out
-}
-
-// dropOTelDottedLabels returns a copy of in with the OTel-form dotted
-// label keys removed. Loki only surfaces the normalised underscore
-// form (`service_name`, `k8s_pod_name`, …) in Stream response
-// envelopes — even though the underlying ingest pipeline retains the
-// dotted form on `ResourceAttributes` for stream-selector matching.
-// Cerberus reads ResourceAttributes verbatim, so without this filter
-// the wire-format envelope is a superset of Loki's: differential
-// harnesses see `actual=map[... service.name:tempo service_name:tempo]`
-// against Loki's `map[... service_name:tempo]` and reject the row.
-//
-// The filter drops any key K satisfying BOTH:
-//
-//  1. K contains a `.` (OTel-form heuristic), AND
-//  2. The map already contains the `.` → `_` replacement (the
-//     normalised sibling). The companion sibling is the canonical
-//     value the receiver promtail-shim writes for stream-selector
-//     compatibility (PR #525) — when both forms are present, the
-//     dotted form is the redundant one.
-//
-// Returns a fresh map so callers can treat the input as immutable
-// (the wider response shape contracts assume per-sample label
-// allocations don't alias across rows). Drops nothing on empty /
-// nil input — same shape goes through.
-//
-// Only the OUTPUT label envelope is filtered: the WHERE-clause
-// label-matching path runs against the raw ResourceAttributes map at
-// the SQL layer, so dotted-form selectors (`{service.name="x"}`)
-// keep matching. The filter sits strictly in the response-shaper.
-func dropOTelDottedLabels(in map[string]string) map[string]string {
-	if len(in) == 0 {
-		return in
-	}
-	out := make(map[string]string, len(in))
-	for k, v := range in {
-		if strings.ContainsRune(k, '.') {
-			sibling := strings.ReplaceAll(k, ".", "_")
-			if _, ok := in[sibling]; ok {
-				continue
-			}
-		}
-		out[k] = v
+		// NormalizeLabelMap rewrites every OTel-dotted key to Loki's
+		// (and Prom's) `[a-zA-Z_][a-zA-Z0-9_]*` grammar; the
+		// already-underscored sibling wins on collisions. The
+		// WHERE-clause matching path stays bound to raw ResourceAttributes
+		// at the SQL layer so dotted-form selectors (`{service.name="x"}`)
+		// keep matching.
+		out = append(out, Stream{Stream: format.NormalizeLabelMap(a.labels), Values: a.values})
 	}
 	return out
 }

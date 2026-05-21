@@ -371,18 +371,18 @@ func containsArg(args []any, want string) bool {
 	return false
 }
 
-// TestQuery_Streams_DropsOTelDottedLabels — when the CH row carries
-// both the OTel-form `service.name` AND the Loki-form `service_name`
-// (the canonical wire-format key), the Stream envelope cerberus
-// returns must only surface the normalised underscore form. Without
-// the filter the response is a superset of what reference Loki emits,
-// and the loki-compat differential harness rejects the row with
-// `streams[0] labels differ: ... actual=map[... service.name:tempo
-// service_name:tempo]`. The seeder in PR #525 intentionally writes
-// both forms into ResourceAttributes so dotted-form stream-selectors
-// continue to match at the WHERE layer; only the OUTPUT envelope
-// needs to drop the redundant sibling.
-func TestQuery_Streams_DropsOTelDottedLabels(t *testing.T) {
+// TestQuery_Streams_NormalisesOTelDottedLabels — every dotted OTel
+// key on the OUTPUT envelope is rewritten to the Prom/Loki-grammar
+// underscored form. When both `service.name` and `service_name` are
+// present (the seeder in PR #525 writes both into ResourceAttributes
+// so dotted-form stream-selectors keep matching at the WHERE layer),
+// the underscored form wins on collision per the NormalizeLabelMap
+// policy. A solo dotted key with no underscored sibling — e.g.
+// `orphan.key` — is normalised to `orphan_key` rather than left as
+// `orphan.key`; the older behaviour of preserving solo dotted keys
+// was the proximate cause of every `sum by (orphan_key)` panel
+// silently returning empty because PromQL grammar forbids `.`.
+func TestQuery_Streams_NormalisesOTelDottedLabels(t *testing.T) {
 	t.Parallel()
 
 	ts := time.Date(2026, 5, 12, 12, 0, 0, 0, time.UTC)
@@ -396,10 +396,8 @@ func TestQuery_Streams_DropsOTelDottedLabels(t *testing.T) {
 					"k8s.pod.name":   "pod-0",
 					"k8s_pod_name":   "pod-0",
 					"detected_level": "info",
-					// Dotted key with NO underscore sibling — must pass through
-					// (the only signal that a sibling exists in the map is the
-					// underscore form, so without it we can't tell whether the
-					// dot is OTel-form or a legitimately dotted name).
+					// Dotted key with NO underscore sibling — now normalised
+					// to `orphan_key` so it's actually selectable from PromQL.
 					"orphan.key": "value",
 				},
 				Timestamp: ts,
@@ -435,13 +433,13 @@ func TestQuery_Streams_DropsOTelDottedLabels(t *testing.T) {
 	}
 	got := streams[0].Stream
 	if _, ok := got["service.name"]; ok {
-		t.Errorf("expected service.name to be DROPPED from output (sibling service_name present); got %v", got)
+		t.Errorf("expected service.name to be NORMALISED out (sibling service_name wins); got %v", got)
 	}
 	if got["service_name"] != "tempo" {
 		t.Errorf("expected service_name=tempo to be PRESERVED; got %v", got)
 	}
 	if _, ok := got["k8s.pod.name"]; ok {
-		t.Errorf("expected k8s.pod.name to be DROPPED (sibling k8s_pod_name present); got %v", got)
+		t.Errorf("expected k8s.pod.name to be NORMALISED out (sibling k8s_pod_name wins); got %v", got)
 	}
 	if got["k8s_pod_name"] != "pod-0" {
 		t.Errorf("expected k8s_pod_name=pod-0 to be PRESERVED; got %v", got)
@@ -449,8 +447,25 @@ func TestQuery_Streams_DropsOTelDottedLabels(t *testing.T) {
 	if got["detected_level"] != "info" {
 		t.Errorf("expected detected_level=info to be PRESERVED (non-dotted key); got %v", got)
 	}
-	if got["orphan.key"] != "value" {
-		t.Errorf("expected orphan.key=value to be PRESERVED (no underscore sibling); got %v", got)
+	if _, ok := got["orphan.key"]; ok {
+		t.Errorf("expected orphan.key to be NORMALISED to orphan_key; got %v", got)
+	}
+	if got["orphan_key"] != "value" {
+		t.Errorf("expected orphan_key=value (normalised from orphan.key); got %v", got)
+	}
+	// Every output key must satisfy Prom/Loki label grammar.
+	for k := range got {
+		for i := 0; i < len(k); i++ {
+			c := k[i]
+			switch {
+			case c >= 'a' && c <= 'z':
+			case c >= 'A' && c <= 'Z':
+			case c == '_':
+			case c >= '0' && c <= '9' && i > 0:
+			default:
+				t.Errorf("output key %q has invalid char at offset %d", k, i)
+			}
+		}
 	}
 }
 

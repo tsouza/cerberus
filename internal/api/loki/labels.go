@@ -7,6 +7,7 @@ import (
 
 	"github.com/prometheus/prometheus/model/labels"
 
+	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/logql"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -54,9 +55,12 @@ func (h *Handler) handleLabels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Defensive: drop empties + ensure stable ordering for Grafana's
-	// dropdowns. Loki itself returns the list sorted.
-	out := dedupeAndSort(vals)
+	// Pass through Prom/Loki-grammar normalisation so OTel-dotted keys
+	// (`service.name`, `k8s.pod.name`) surface as their underscored
+	// form on the wire — Grafana's label autocomplete cannot parse `.`
+	// in a label identifier position. dedupeAndSort still runs as a
+	// belt-and-braces order/empty guard.
+	out := dedupeAndSort(format.NormalizeLabelNames(vals))
 
 	writeJSON(w, http.StatusOK, Response{
 		Status: "success",

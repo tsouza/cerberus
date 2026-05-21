@@ -317,10 +317,14 @@ func groupExemplars(rows []chclient.ExemplarRow, metricName string) []ExemplarSe
 		seriesLabels := format.WithMetricName(r.Attributes, name)
 		if r.ServiceName != "" {
 			// The dedicated LowCardinality column is the OTel exporter's
-			// reserved place for service.name; surface it under the same
-			// canonical wire label PromQL clients expect.
+			// reserved place for service.name. Stamp it under the OTel
+			// key first, then let NormalizeLabelMap collapse it to the
+			// Prom-grammar `service_name` form — that way an Attributes
+			// entry under the same key (or its underscored sibling) is
+			// honoured by the collision-policy in one place.
 			seriesLabels["service.name"] = r.ServiceName
 		}
+		seriesLabels = format.NormalizeLabelMap(seriesLabels)
 		key := format.CanonicalKey(seriesLabels)
 		b, ok := bySeries[key]
 		if !ok {
@@ -363,8 +367,12 @@ func projectExemplar(r chclient.ExemplarRow) Exemplar {
 	if r.SpanID != "" {
 		out["span_id"] = r.SpanID
 	}
+	// Per-exemplar label keys obey the same Prom grammar — Grafana's
+	// exemplar overlay parses them as label identifiers when rendering
+	// the trace-link tooltip. Dotted OTel keys (`http.target`,
+	// `code.namespace`) surface as `http_target` / `code_namespace`.
 	return Exemplar{
-		Labels:    out,
+		Labels:    format.NormalizeLabelMap(out),
 		Value:     r.Value,
 		Timestamp: timestampSeconds(r.Timestamp),
 	}

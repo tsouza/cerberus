@@ -159,10 +159,14 @@ func (h *Handler) handleMetadata(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Group by metric name; each metric gets a slice of entries.
+	// Group by metric name; each metric gets a slice of entries. Names
+	// pass through Prom's metric-name grammar (`OTelToPromMetric`) so
+	// OTel-dotted metric names (`http.server.duration`) surface as the
+	// underscored form expected by `/api/v1/label/__name__/values`.
 	grouped := make(map[string][]MetricMetaEntry, len(rows))
 	for _, row := range rows {
-		grouped[row.Name] = append(grouped[row.Name], MetricMetaEntry{
+		name := format.OTelToPromMetric(row.Name)
+		grouped[name] = append(grouped[name], MetricMetaEntry{
 			Type: row.Type,
 			Help: row.Description,
 			Unit: row.Unit,
@@ -307,7 +311,11 @@ func (h *Handler) handleSeries(w http.ResponseWriter, r *http.Request) {
 }
 
 // fetchLabelNames unions the Attributes-map keys across the metric tables
-// and prepends `__name__`. The returned slice is sorted.
+// and prepends `__name__`. The returned slice is sorted + normalised to
+// Prom's `[a-zA-Z_][a-zA-Z0-9_]*` label-name grammar — OTel telemetry
+// stores dotted keys (`service.name`, `http.request.method`) that PromQL
+// grammar forbids in identifier position; without the rewrite, panels
+// doing `sum by (service_name)` silently produce empty matrices.
 func (h *Handler) fetchLabelNames(ctx context.Context) ([]string, error) {
 	sql := h.unionLabelNamesSQL()
 	names, err := timeCH(ctx, func() ([]string, error) {
@@ -316,7 +324,7 @@ func (h *Handler) fetchLabelNames(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
 	}
-	out := append([]string{model.MetricNameLabel}, names...)
+	out := format.NormalizeLabelNames(append([]string{model.MetricNameLabel}, names...))
 	sort.Strings(out)
 	return out, nil
 }
@@ -330,6 +338,11 @@ func (h *Handler) fetchLabelValues(ctx context.Context, name string) ([]string, 
 		if err != nil {
 			return nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
 		}
+		// Metric-name values pass through Prom's metric-name grammar
+		// (`[a-zA-Z_:][a-zA-Z0-9_:]*`); OTel may store dotted forms
+		// (`http.server.duration`) that the PromQL selector position
+		// can't reference directly.
+		values = normalizeMetricValues(values)
 		sort.Strings(values)
 		return values, nil
 	}
@@ -346,22 +359,19 @@ func (h *Handler) fetchLabelValues(ctx context.Context, name string) ([]string, 
 
 // fetchLabelNamesMatched returns the distinct label names of series
 // matching any of the given match[] selectors. The synthetic `__name__`
-// is always included if at least one selector matches anything.
+// is always included if at least one selector matches anything. Names
+// pass through Prom-grammar normalisation before dedupe; see
+// `format.NormalizeLabelNames` for the collision policy.
 func (h *Handler) fetchLabelNamesMatched(ctx context.Context, matchers []string) ([]string, error) {
-	seen := map[string]bool{model.MetricNameLabel: true}
+	collected := []string{model.MetricNameLabel}
 	for _, m := range matchers {
 		keys, err := h.labelKeysForMatcher(ctx, m)
 		if err != nil {
 			return nil, err
 		}
-		for _, k := range keys {
-			seen[k] = true
-		}
+		collected = append(collected, keys...)
 	}
-	out := make([]string, 0, len(seen))
-	for k := range seen {
-		out = append(out, k)
-	}
+	out := format.NormalizeLabelNames(collected)
 	sort.Strings(out)
 	return out, nil
 }
@@ -489,7 +499,7 @@ func (h *Handler) fetchSeries(ctx context.Context, matcher string) ([]map[string
 
 	seen := make(map[string]map[string]string)
 	for _, s := range samples {
-		labels := format.WithMetricName(s.Labels, s.MetricName)
+		labels := format.NormalizeLabelMap(format.WithMetricName(s.Labels, s.MetricName))
 		key := format.CanonicalKey(labels)
 		if _, ok := seen[key]; !ok {
 			seen[key] = labels
@@ -621,6 +631,41 @@ func mapAtNotEmptyFrag(col, key string) chsql.Frag {
 // (and chsql.PreRenderedSQL).
 func matcherSubqueryFrag(sql string, args []any) chsql.Frag {
 	return chsql.Subquery(chsql.PreRenderedSQL{SQL: sql, Args: args})
+}
+
+// normalizeMetricValues runs each candidate through OTelToPromMetric
+// (Prom's metric-name grammar) and de-dupes the result. Collision
+// policy: a naturally-shaped entry wins over a rewrite that would
+// land on the same target. Used on `/api/v1/label/__name__/values`.
+func normalizeMetricValues(in []string) []string {
+	if len(in) == 0 {
+		return in
+	}
+	natural := make(map[string]struct{}, len(in))
+	for _, s := range in {
+		if s != "" && s == format.OTelToPromMetric(s) {
+			natural[s] = struct{}{}
+		}
+	}
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		n := format.OTelToPromMetric(s)
+		if n == "" {
+			continue
+		}
+		if n != s {
+			if _, ok := natural[n]; ok {
+				continue
+			}
+		}
+		if _, ok := seen[n]; ok {
+			continue
+		}
+		seen[n] = struct{}{}
+		out = append(out, n)
+	}
+	return out
 }
 
 // validLabelName mirrors the Prometheus label-name grammar: [a-zA-Z_][a-zA-Z0-9_]*.

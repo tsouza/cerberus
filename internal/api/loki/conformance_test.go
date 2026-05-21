@@ -1090,3 +1090,85 @@ func TestConformance_LokiLogcliNanosTimestamps(t *testing.T) {
 		t.Fatalf("status=%d body=%s (ns branch regression)", resp.StatusCode, body)
 	}
 }
+
+// TestConformance_LokiLabelsGrammar pins the wire-emit OTel→Loki label
+// normalisation: every key returned by /loki/api/v1/labels matches the
+// Prom/Loki label-name grammar `[a-zA-Z_][a-zA-Z0-9_]*`. Loki stores
+// OTel-original dotted keys in `ResourceAttributes` for stream-selector
+// matching; the wire envelope rewrites them so Grafana panels keying
+// off `service_name` / `k8s_pod_name` don't have to second-guess
+// whether the underlying column is dotted or underscored.
+//
+// Collision policy: when both `service.name` and `service_name` exist,
+// the natural underscored form wins (the dotted form is the OTel
+// telemetry alias).
+func TestConformance_LokiLabelsGrammar(t *testing.T) {
+	t.Parallel()
+
+	rows := []string{
+		"deployment.environment",
+		"service.instance.id",
+		"service.name",
+		"service.version",
+		"service_name", // sibling — wins on collision
+		"k8s.pod.name",
+		"k8s_pod_name", // sibling — wins on collision
+		"detected_level",
+	}
+	srv := newServer(&stubQuerier{stringRows: rows})
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/loki/api/v1/labels?start=1717995600&end=1717999200")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+	}
+	var env struct {
+		Status string   `json:"status"`
+		Data   []string `json:"data"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil {
+		t.Fatalf("decode: %v body=%s", err, body)
+	}
+
+	for _, k := range env.Data {
+		for i := 0; i < len(k); i++ {
+			c := k[i]
+			switch {
+			case c >= 'a' && c <= 'z':
+			case c >= 'A' && c <= 'Z':
+			case c == '_':
+			case c >= '0' && c <= '9' && i > 0:
+			default:
+				t.Errorf("key %q has stray byte at offset %d (0x%02x); full data=%v",
+					k, i, c, env.Data)
+			}
+		}
+	}
+
+	seen := map[string]struct{}{}
+	for _, k := range env.Data {
+		seen[k] = struct{}{}
+	}
+	for _, dotted := range []string{
+		"deployment.environment", "service.instance.id",
+		"service.name", "service.version", "k8s.pod.name",
+	} {
+		if _, ok := seen[dotted]; ok {
+			t.Errorf("dotted key %q must be normalised away; got data=%v", dotted, env.Data)
+		}
+	}
+	for _, want := range []string{
+		"deployment_environment", "service_instance_id",
+		"service_name", "service_version", "k8s_pod_name",
+		"detected_level",
+	} {
+		if _, ok := seen[want]; !ok {
+			t.Errorf("expected normalised key %q in result; got %v", want, env.Data)
+		}
+	}
+}
