@@ -178,10 +178,20 @@ jobs:
           # companion series exist on the wire, and pins the
           # no-fabricated-value rule for histogram_quantile over
           # bucket-less metrics. Closes N5 / N6.
+          #
+          # Phase-4 single-panel-kiosk spec
+          # (iterate-panel-kiosk.spec.ts) iterates every provisioned
+          # dashboard + every panel, opens the panel in single-panel
+          # kiosk view (`?viewPanel=<id>&kiosk`), asserts the body
+          # renders, no role=alert error banner appears, and no
+          # browser console errors fire. ESCs back to the grid view
+          # and asserts the back-nav leaves no stuck-loading panel or
+          # orphaned modal behind. Closes N13 (latent).
           npx playwright test \
             compose_grafana_smoke.spec.ts \
             iterate-panel-shape.spec.ts \
             iterate-histogram-completeness.spec.ts \
+            iterate-panel-kiosk.spec.ts \
             --reporter=list
 
       - name: upload Playwright report on failure
