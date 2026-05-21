@@ -302,6 +302,57 @@ func TestNormalizeLokiDottedLabels(t *testing.T) {
 			in:   ` .`,
 			want: ` .`,
 		},
+		// Top-of-walker arithmetic guard: a leading tab at index 0
+		// pins the `next := i + 1` advance baked into every walker
+		// branch. An ARITHMETIC_BASE mutant flipping `+` to `-`
+		// lands `next = -1` on the first iteration; the loop check
+		// `i < len(q)` then admits `i = -1` and `q[-1]` panics. The
+		// trailing `.` clears the ContainsRune('.') early-return.
+		{
+			name: "leading_tab_top_level_with_dot",
+			in:   "\t.",
+			want: "\t.",
+		},
+		// Backtick string containing TWO non-special bytes then the
+		// closing backtick. Pins the per-state split inside
+		// lokiAdvanceInString: a CONDITIONALS_NEGATION mutant flipping
+		// `state == lokiInBacktick` to `!=` makes the walker fall
+		// through to the escape / quote-close branches, which then
+		// fire on `x` → escape consumes `y`, and the trailing dotted
+		// `c.d` would NOT be rewritten because state stays Backtick
+		// past the synthetic close. Original output preserves the
+		// backtick body and rewrites `c.d` to `c_d`.
+		{
+			name: "backtick_body_then_dotted_key_no_backslash",
+			in:   "{a=`xy`, c.d=\"z\"}",
+			want: "{a=`xy`, c_d=\"z\"}",
+		},
+		// Backtick closing char inside lokiAdvanceInString. Pins
+		// `if ch == '`'` against CONDITIONALS_NEGATION: with `!=`,
+		// the close-quote detector fires on EVERY non-backtick byte
+		// inside backticks, dropping the walker back to outside on
+		// the very first body byte. The trailing dotted `c.d`
+		// would then be rewritten (mutant) vs preserved verbatim
+		// (unmutated) because under the mutant we exit the backtick
+		// state immediately while the unmutated walker stays in
+		// the string until the actual `` ` `` close.
+		{
+			name: "backtick_with_internal_dotted_then_trailing_key",
+			in:   "{a=`b.c`, d.e=\"f\"}",
+			want: "{a=`b.c`, d_e=\"f\"}",
+		},
+		// Single-quoted string with internal dot. Pins
+		// lokiAdvanceInString's `if state == lokiInSingle && ch == '\''`
+		// branch — a CONDITIONALS_NEGATION mutant on either side of
+		// that compound flips the close-quote behaviour and either
+		// closes early (rewriting a dot that should stay inside the
+		// string) or never closes (leaving the trailing dotted key
+		// un-rewritten).
+		{
+			name: "single_quoted_string_with_dotted_value_then_key",
+			in:   `{a='b.c', d.e="f"}`,
+			want: `{a='b.c', d_e="f"}`,
+		},
 	}
 
 	for _, tc := range cases {
