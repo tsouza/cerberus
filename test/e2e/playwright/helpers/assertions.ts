@@ -10,9 +10,11 @@
  *
  * Zero 404 toleration: `assertNon200ResponseClass` does NOT carry an
  * allow-list. Every non-2xx captured during a sweep is a failure. The
- * existing `isKnownTolerated404` in compose_grafana_smoke.spec.ts is
- * being retired and MUST NOT be ported here (resolved decision Q5,
- * /home/thiago/.claude/plans/e2e-enhance.md §9).
+ * legacy `isKnownTolerated404` allow-list in
+ * compose_grafana_smoke.spec.ts was retired in task #230 (PR
+ * test/e2e-phase-7-retire-404-allow-list) once its last two entries
+ * began returning 200. Do NOT reintroduce an allow-list here
+ * (resolved decision Q5, /home/thiago/.claude/plans/e2e-enhance.md §9.5).
  */
 
 import type { Request } from '@playwright/test';
@@ -234,11 +236,11 @@ export function assertSubsetByCount(
  * Assert the response class of a captured Playwright request is 2xx.
  *
  * This is the zero-404-toleration gate (Q5 in the design doc). The
- * existing `isKnownTolerated404` allow-list in
- * compose_grafana_smoke.spec.ts MUST NOT be ported here. Every
- * non-2xx is a failure; the fix is either to implement the endpoint
- * or to remove the surface from the iteration, not to extend an
- * allow-list.
+ * legacy `isKnownTolerated404` allow-list in
+ * compose_grafana_smoke.spec.ts was retired in task #230 and MUST
+ * NOT be ported here. Every non-2xx is a failure; the fix is either
+ * to implement the endpoint or to remove the surface from the
+ * iteration, not to extend an allow-list.
  *
  * The function only needs the Playwright Request handle to extract
  * `method()` + `url()` for the failure message; the status comes

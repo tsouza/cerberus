@@ -187,18 +187,21 @@ test('compose: home, drilldown app, and every provisioned dashboard load without
     }
 
     // 3a. HTTP status sweep over every captured response.
+    //
+    // Zero 404 toleration (Q5, /home/thiago/.claude/plans/e2e-enhance.md
+    // §9.5): every non-2xx captured during the sweep is a failure. The
+    // prior `isKnownTolerated404` allow-list was retired in PR
+    // test/e2e-phase-7-retire-404-allow-list (task #230) — its last
+    // remaining entries (`/api/v1/rules` + `/api/v1/alerts`) became 200
+    // when PR #632 merged. The fix for any new 404 is to implement the
+    // endpoint or to remove that surface from the iteration, not to
+    // extend an allow-list. The new iterate-* specs already enforce the
+    // same policy via helpers/assertions.ts::assertNon200ResponseClass.
     for (const resp of captured) {
       const status = resp.status();
       if (status < 200 || status > 299) {
         const method = resp.request().method();
         const path = stripBase(resp.url(), baseURL);
-        if (isKnownTolerated404(status, path)) {
-          // Documented surface that cerberus does not yet implement and
-          // whose 404 has no UI / dashboard consequence. The list is
-          // narrow on purpose — see isKnownTolerated404 for the
-          // per-path rationale.
-          continue;
-        }
         let body = '';
         try {
           body = await resp.text();
@@ -942,29 +945,27 @@ function stripBase(url: string, base: string): string {
   return url.startsWith(base) ? url.slice(base.length) : url;
 }
 
-/**
- * Surfaces whose 404 has no user-visible consequence and that we
- * therefore tolerate while the corresponding implementation PR lands.
+/*
+ * `isKnownTolerated404` retired in task #230 (PR
+ * test/e2e-phase-7-retire-404-allow-list).
  *
- * Keep this list intentionally narrow — each entry is a known gap
- * tracked by an open PR. When the PR merges, drop the entry so the
- * catch-net snaps back to "every captured request is 2xx".
+ * The function previously allow-listed two Grafana-polled Prom paths
+ * (`/api/v1/rules`, `/api/v1/alerts`) while their backing stubs were
+ * still in flight. Both endpoints now return 200 (empty envelopes)
+ * after PR #632 merged on 2026-05-20:
  *
- * Current entries:
+ *   $ curl -s http://localhost:8080/api/v1/rules
+ *   {"status":"success","data":{"groups":[]}}
+ *   $ curl -s http://localhost:8080/api/v1/alerts
+ *   {"status":"success","data":{"alerts":[]}}
  *
- *   * `/api/datasources/uid/cerberus-prometheus/resources/api/v1/rules`
- *   * `/api/datasources/uid/cerberus-prometheus/resources/api/v1/alerts`
- *     Grafana's Prom datasource polls /api/v1/rules + /api/v1/alerts on
- *     every Explore / page load to gate the "Alert Rules" / "Alerts"
- *     UI affordances. cerberus is a query gateway with no rule engine,
- *     so PR #632 ships an empty-envelope stub. Until #632 merges,
- *     tolerate the 404 — the affordance simply renders empty, no panel
- *     or dashboard surface degrades.
+ * Per resolved decision Q5 in /home/thiago/.claude/plans/e2e-enhance.md
+ * §9.5 — "NO toleration. Every 404 surfaced during the sweep is a bug,
+ * not a tolerated state" — the helper and its allow-list are removed
+ * outright. New non-2xx responses fail the sweep at step 3a; the fix
+ * is to implement the endpoint or to drop the surface from the
+ * iteration, not to re-introduce an allow-list. The phase-1..4
+ * iterate-* specs enforce the same policy via
+ * helpers/assertions.ts::assertNon200ResponseClass, which by design
+ * carries no allow-list parameter.
  */
-function isKnownTolerated404(status: number, path: string): boolean {
-  if (status !== 404) return false;
-  return (
-    path.includes('/api/datasources/uid/cerberus-prometheus/resources/api/v1/rules') ||
-    path.includes('/api/datasources/uid/cerberus-prometheus/resources/api/v1/alerts')
-  );
-}

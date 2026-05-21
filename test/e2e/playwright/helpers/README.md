@@ -71,11 +71,13 @@ When bumping:
 ### Q5 — zero 404 toleration
 
 `assertNon200ResponseClass` does NOT carry a tolerated-status allow
-list. The existing `isKnownTolerated404` in
-`compose_grafana_smoke.spec.ts` is retired (will be removed when
-phase 1 lands). Every non-2xx during a sweep is a failure; the fix
-is either to implement the endpoint or to remove that surface from
-the iteration, not to extend the allow-list.
+list. The legacy `isKnownTolerated404` in
+`compose_grafana_smoke.spec.ts` was retired in task #230 (PR
+`test/e2e-phase-7-retire-404-allow-list`) once its last two entries
+(`/api/v1/rules` + `/api/v1/alerts`) began returning 200 after PR #632
+merged. Every non-2xx during a sweep is a failure; the fix is either
+to implement the endpoint or to remove that surface from the
+iteration, not to extend the allow-list.
 
 ### Q3 — filter-drill subset rule is ≤ baseline count
 
