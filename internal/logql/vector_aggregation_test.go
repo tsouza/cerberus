@@ -146,3 +146,127 @@ func TestLowerVectorAggregationRangeBucketedHonoursMatrixInner(t *testing.T) {
 		t.Fatalf("last GroupBy ColumnRef.Name = %q, want %q", last.Name, "anchor_ts")
 	}
 }
+
+// TestLowerVectorAggregationByTopLevelColumn pins the fix for task #218:
+// `sum by (SeverityText) (rate({}[5m]))` (and the same pattern for any
+// top-level OTel-CH scalar column the schema names) must produce one
+// output series per distinct column value rather than collapsing every
+// row into a single `{SeverityText:""}` series.
+//
+// Pre-fix flow: `levelAwareGroupKey("SeverityText", s)` returned
+// `attributeLookupColumn(ResourceAttributes, "SeverityText")` — a Map
+// access against a key that is never present (SeverityText is a
+// top-level otel_logs column, not a key inside ResourceAttributes), so
+// the outer Aggregate's GROUP BY column was always the empty string.
+//
+// Post-fix flow: the inner range Project's `withDetectedLevelAndColumns`
+// wrap inflates the augmented identity map with a synthesised
+// `SeverityText` key carrying `toString(SeverityText)`, AND the outer
+// Aggregate's GROUP BY reads `ResourceAttributes['SeverityText']` from
+// that map. The two layers agree on the key, so distinct severities
+// produce distinct rows.
+//
+// This test walks the lowered plan and asserts the augmented-identity
+// map carries the `SeverityText` synthesised key. The TXTAR fixture
+// `test/spec/logql/agg_by_severity.txtar` exercises the end-to-end
+// chDB round-trip (4 distinct severity rows survive the Aggregate).
+func TestLowerVectorAggregationByTopLevelColumn(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelLogs()
+	const query = `sum by (SeverityText) (rate({job="api"}[5m]))`
+	expr, err := syntax.ParseExpr(query)
+	if err != nil {
+		t.Fatalf("ParseExpr(%q): %v", query, err)
+	}
+
+	plan, err := lower(expr, s, lowerCtx{})
+	if err != nil {
+		t.Fatalf("lower(%q): %v", query, err)
+	}
+
+	// Walk down to the inner range Project to find the augmented map.
+	// Plan shape: Project -> Aggregate -> RangeWindow -> Project (identity wrap).
+	outerProj, ok := plan.(*chplan.Project)
+	if !ok {
+		t.Fatalf("plan = %T, want *chplan.Project", plan)
+	}
+	agg, ok := outerProj.Input.(*chplan.Aggregate)
+	if !ok {
+		t.Fatalf("outer.Input = %T, want *chplan.Aggregate", outerProj.Input)
+	}
+	rw, ok := agg.Input.(*chplan.RangeWindow)
+	if !ok {
+		t.Fatalf("Aggregate.Input = %T, want *chplan.RangeWindow", agg.Input)
+	}
+	innerProj, ok := rw.Input.(*chplan.Project)
+	if !ok {
+		t.Fatalf("RangeWindow.Input = %T, want *chplan.Project", rw.Input)
+	}
+
+	// The first projection is the identity wrap (aliased to
+	// ResourceAttributes). It must be a mapConcat whose synthesised
+	// inner map literal carries a `SeverityText` key.
+	if len(innerProj.Projections) == 0 {
+		t.Fatalf("inner Project has no projections")
+	}
+	wrap, ok := innerProj.Projections[0].Expr.(*chplan.FuncCall)
+	if !ok || wrap.Name != "mapConcat" {
+		t.Fatalf("inner identity projection is %T (name %q), want *chplan.FuncCall(mapConcat)", innerProj.Projections[0].Expr, funcName(innerProj.Projections[0].Expr))
+	}
+	if len(wrap.Args) < 2 {
+		t.Fatalf("mapConcat has %d args, want >= 2", len(wrap.Args))
+	}
+	mapFilter, ok := wrap.Args[1].(*chplan.FuncCall)
+	if !ok || mapFilter.Name != "mapFilter" {
+		t.Fatalf("mapConcat.Args[1] = %T (%q), want *chplan.FuncCall(mapFilter)", wrap.Args[1], funcName(wrap.Args[1]))
+	}
+	if len(mapFilter.Args) < 2 {
+		t.Fatalf("mapFilter has %d args, want >= 2", len(mapFilter.Args))
+	}
+	synthMap, ok := mapFilter.Args[1].(*chplan.FuncCall)
+	if !ok || synthMap.Name != "map" {
+		t.Fatalf("mapFilter.Args[1] = %T (%q), want *chplan.FuncCall(map)", mapFilter.Args[1], funcName(mapFilter.Args[1]))
+	}
+
+	// Scan the synthesised map's args for a `SeverityText` key. The
+	// map literal alternates key/value, so we walk even indices.
+	var foundSeverityText bool
+	for i := 0; i+1 < len(synthMap.Args); i += 2 {
+		key, ok := synthMap.Args[i].(*chplan.LitString)
+		if !ok {
+			continue
+		}
+		if key.V == s.SeverityColumn {
+			foundSeverityText = true
+			break
+		}
+	}
+	if !foundSeverityText {
+		t.Fatalf("synthesised identity map missing %q key — outer by-clause cannot resolve to the column value (task #218 regression)", s.SeverityColumn)
+	}
+
+	// Outer Aggregate's GROUP BY reads from ResourceAttributes via
+	// the synthesised key.
+	if len(agg.GroupBy) != 1 {
+		t.Fatalf("outer Aggregate.GroupBy length = %d, want 1", len(agg.GroupBy))
+	}
+	gkey, ok := agg.GroupBy[0].(*chplan.MapAccess)
+	if !ok {
+		t.Fatalf("outer Aggregate.GroupBy[0] = %T, want *chplan.MapAccess", agg.GroupBy[0])
+	}
+	key, ok := gkey.Key.(*chplan.LitString)
+	if !ok || key.V != s.SeverityColumn {
+		t.Fatalf("outer Aggregate.GroupBy[0].Key = %v, want LitString(%q)", gkey.Key, s.SeverityColumn)
+	}
+}
+
+// funcName extracts the Name field from a FuncCall expression for
+// diagnostic messages. Returns the empty string when expr isn't a
+// FuncCall.
+func funcName(expr chplan.Expr) string {
+	if fc, ok := expr.(*chplan.FuncCall); ok {
+		return fc.Name
+	}
+	return ""
+}

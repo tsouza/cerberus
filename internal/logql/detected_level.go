@@ -194,13 +194,54 @@ func anyEqual(expr chplan.Expr, variants []string) chplan.Expr {
 // the augmented identity drives the RangeWindow GROUP BY to emit one
 // series per detected_level).
 func withDetectedLevel(s schema.Logs, baseLabels chplan.Expr) chplan.Expr {
-	levelMap := &chplan.FuncCall{
-		Name: "map",
-		Args: []chplan.Expr{
-			&chplan.LitString{V: detectedLevelLabel},
-			detectedLevelExpr(s),
-		},
+	return withDetectedLevelAndColumns(s, baseLabels, nil)
+}
+
+// withDetectedLevelAndColumns is the column-aware companion of
+// [withDetectedLevel]: it augments the identity map with the
+// synthesised `detected_level` key AND with one synthesised key per
+// top-level OTel-CH scalar column (SeverityText, ServiceName, ...)
+// named in `outerByLabels`. The outer-by-labels list comes from
+// [lowerCtx.OuterByLabels] — i.e. the by-clause of the enclosing
+// vector aggregation, threaded down so the inner identity exposes
+// exactly the top-level columns the outer aggregate needs.
+//
+// The map shape becomes
+//
+//	mapConcat(
+//	    <baseLabels>,
+//	    mapFilter((k, v) -> v != '',
+//	        map('detected_level', multiIf(...),
+//	            '<col1>',         toString(<col1>),
+//	            '<col2>',         toString(<col2>),
+//	            ...)))
+//
+// `toString` coerces non-String top-level columns (SeverityNumber,
+// TraceFlags) into the Map(String, String) value slot. String-typed
+// columns are already string-shaped so the coercion is a no-op the
+// emitter elides. `mapFilter` drops empty entries the same way it
+// does for `detected_level`, so a row with an empty severity column
+// doesn't gain a spurious `{SeverityText:""}` key.
+//
+// When `outerByLabels` is empty the function behaves identically to
+// the original [withDetectedLevel] — bare `rate({}[5m])` and other
+// no-outer-grouping queries keep their lean identity map.
+func withDetectedLevelAndColumns(s schema.Logs, baseLabels chplan.Expr, outerByLabels []string) chplan.Expr {
+	args := []chplan.Expr{
+		&chplan.LitString{V: detectedLevelLabel},
+		detectedLevelExpr(s),
 	}
+	for _, col := range topLevelColumnsReferencedBy(outerByLabels, s) {
+		args = append(
+			args,
+			&chplan.LitString{V: col},
+			&chplan.FuncCall{
+				Name: "toString",
+				Args: []chplan.Expr{topLevelColumnRef(col)},
+			},
+		)
+	}
+	synthMap := &chplan.FuncCall{Name: "map", Args: args}
 	filtered := &chplan.FuncCall{
 		Name: "mapFilter",
 		Args: []chplan.Expr{
@@ -212,7 +253,7 @@ func withDetectedLevel(s schema.Logs, baseLabels chplan.Expr) chplan.Expr {
 					Right: &chplan.LitString{V: ""},
 				},
 			},
-			levelMap,
+			synthMap,
 		},
 	}
 	return &chplan.FuncCall{
