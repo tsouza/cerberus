@@ -100,16 +100,31 @@ jobs:
           # detected_level.go + dotted_labels.go (partial), never
           # reaching literal.go / label_fns.go / top_level_columns.go.
           #
-          # Round 8 therefore splits `other` into two sibling
-          # entries `other-a` (binary + detected_level +
-          # dotted_labels) + `other-b` (literal + label_fns +
-          # top_level_columns) so each job's cumulative RSS curve
-          # stays below the runner ceiling. The four logql slices
-          # keep the same 95% efficacy bar individually —
-          # splitting by file is purely a runner-budget knob, not
-          # a quality concession. The
-          # `tsouza/gremlins@v0.6.0-cerberus-sigterm-consume` fork
-          # still records any cancelled-in-flight mutants as
+          # Round 8 split `other` into two sibling entries
+          # `other-a` (binary + detected_level + dotted_labels) +
+          # `other-b` (literal + label_fns + top_level_columns).
+          # `other-b` landed green but `other-a` still OOM-killed
+          # the runner at ~4 min (job 77205717481, shutdown signal
+          # at 15:19:38Z after starting 15:15:44Z). The kill log
+          # showed every emitted mutant KILLED (0 LIVED) right up
+          # to dotted_labels.go:203 — same wall-clock-budget
+          # signature as the earlier rounds. binary.go +
+          # detected_level.go finished cleanly inside ~2.5 min;
+          # dotted_labels.go alone was responsible for pushing the
+          # job past the ceiling because it carries the bulk of
+          # the package's mutable surface (the OTel dotted-label
+          # walker has the most branchy code in logql/).
+          #
+          # Round 9 therefore peels dotted_labels.go off into its
+          # own slice `other-c`. `other-a` now mutates just
+          # binary.go + detected_level.go (~21 KB, ran in ~2.5 min
+          # standalone in round 8) and `other-c` mutates just
+          # dotted_labels.go (~7 KB but mutant-dense). `other-b`
+          # is unchanged. The five logql slices keep the same 95%
+          # efficacy bar individually — splitting by file is
+          # purely a runner-budget knob, not a quality concession.
+          # The `tsouza/gremlins@v0.6.0-cerberus-sigterm-consume`
+          # fork still records any cancelled-in-flight mutants as
           # NOT_RUN via `--on-shutdown-status=not-run`.
           - phase: phase4-logql-lower
             scope: ./internal/logql
@@ -129,21 +144,30 @@ jobs:
             scope: ./internal/logql
             efficacy: 95
             workers: 1
-            # Mutate binary.go + detected_level.go +
-            # dotted_labels.go (~28 KB total). Round-7 `other`
-            # ran out of budget here at ~3 min after dotted_labels
-            # line ~206, so this slice is sized to finish under
-            # the ceiling on its own runner.
-            exclude_files: '(lower|range_aggregation|vector_aggregation|lang|literal|label_fns|top_level_columns)\.go$'
+            # Mutate binary.go + detected_level.go (~21 KB total).
+            # Round 8's `other-a` (which also included
+            # dotted_labels.go) ran cleanly through these two
+            # files in ~2.5 min before OOMing inside
+            # dotted_labels.go; this slice now stops there.
+            exclude_files: '(lower|range_aggregation|vector_aggregation|lang|literal|label_fns|top_level_columns|dotted_labels)\.go$'
           - phase: phase4-logql-other-b
             scope: ./internal/logql
             efficacy: 95
             workers: 1
             # Mutate literal.go + label_fns.go +
-            # top_level_columns.go (~21 KB total). The three
-            # files round-7 `other` never reached before being
-            # SIGTERMed.
+            # top_level_columns.go (~21 KB total). Unchanged from
+            # round 8.
             exclude_files: '(lower|range_aggregation|vector_aggregation|lang|binary|detected_level|dotted_labels)\.go$'
+          - phase: phase4-logql-other-c
+            scope: ./internal/logql
+            efficacy: 95
+            workers: 1
+            # Mutate dotted_labels.go alone (~7 KB but mutant-dense
+            # — the OTel dotted-label walker carries the bulk of
+            # the package's branch surface). Peeled off from round
+            # 8's `other-a` after that slice OOMed inside this file
+            # in job 77205717481.
+            exclude_files: '(lower|range_aggregation|vector_aggregation|lang|binary|detected_level|literal|label_fns|top_level_columns)\.go$'
           - phase: phase4-traceql
             scope: ./internal/traceql
             efficacy: 95
