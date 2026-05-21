@@ -91,12 +91,17 @@ The other two (`tsouza/prometheus:cerberus-parser`, `tsouza/loki:cerberus-parser
 
 ## Tooling fork — gremlins (mutation testing)
 
-`mutation.yml` consumes the **`tsouza/gremlins:cerberus-sigterm-fix`** fork (installed via `go install github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-sigterm`) instead of upstream `go-gremlins/gremlins@v0.6.0`. The fork carries a single fix on top of `v0.6.0`:
+`mutation.yml` consumes the **`tsouza/gremlins`** fork (installed via `go install github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-sigterm-consume`) instead of upstream `go-gremlins/gremlins@v0.6.0`. The fork carries a single fix on top of `v0.6.0`:
 
 - Upstream's signal handler closes the channel that `os/signal` still writes to, so a second signal (typical CI runner sequence: SIGTERM → SIGKILL) panics with `send on closed channel` from `signal.process`. Worse, mutants whose `go test` subprocess is still running at cancellation time fall through `runTests` to the default `return mutator.Lived` branch (the per-test ctx is rooted in `context.Background()`, so only `DeadlineExceeded` is checked). The result on cerberus PR #664 / push-to-main run 26213450154: four untested mutants recorded as LIVED, deflating `test_efficacy`.
 - The fork fixes both: the signal handler no longer self-closes, and the executor now threads the engine's run ctx into the per-test ctx so cancelled-in-flight mutants are reported with the status from the new `--on-shutdown-status` flag. Cerberus passes `--on-shutdown-status=not-run` so cancelled-in-flight mutants land in `NOT_COVERED`, outside the `KILLED / (KILLED + LIVED)` efficacy formula entirely. Upstream PR: <https://github.com/go-gremlins/gremlins/pull/283>.
 
-Unlike the four parser forks, this one is not on the Dependabot-watch flow — it's a build-time tool, not a Go module dep, and the `cerberus-sigterm-fix` branch will be retired once the upstream PR lands and a release tag is cut.
+The fork ships two parallel branches/tags by design:
+
+- **`cerberus-sigterm-fix` @ `v0.6.0-cerberus-sigterm`** — the branch the upstream PR is built from. Keeps the upstream module path `github.com/go-gremlins/gremlins` so the diff stays clean and reviewable.
+- **`cerberus-sigterm-fix-consume` @ `v0.6.0-cerberus-sigterm-consume`** — the branch cerberus's `mutation.yml` installs. Adds a single extra commit that renames the `go.mod` module path to `github.com/tsouza/gremlins` (and rewrites all internal imports), because `go install github.com/tsouza/gremlins/cmd/gremlins@...` rejects the module otherwise with `module declares its path as: github.com/go-gremlins/gremlins`. The fix itself is identical to the upstream-PR branch.
+
+Unlike the four parser forks, this one is not on the Dependabot-watch flow — it's a build-time tool, not a Go module dep, and both branches will be retired once the upstream PR lands and a release tag is cut.
 
 ## Transitive-dep gotcha (the one that bit us)
 
