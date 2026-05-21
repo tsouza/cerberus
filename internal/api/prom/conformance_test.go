@@ -1745,3 +1745,50 @@ func TestConformance_LabelValuesMatchedEmitsDottedFallback(t *testing.T) {
 			stub.lastArgs, stub.lastSQL)
 	}
 }
+
+// TestConformance_BuildInfoWire pins the wire shape of
+// `/api/v1/status/buildinfo`. Grafana's Prom datasource hits this on
+// every page load to gate PromQL editor feature flags; the body must
+// be `{status:"success", data:{version, revision, branch, buildUser,
+// buildDate, goVersion}}` — the upstream PrometheusVersion shape
+// wrapped in the standard envelope. Asserts:
+//
+//   - HTTP 200;
+//   - Content-Type carries "application/json";
+//   - top-level `status` == "success";
+//   - `data.version` echoes whatever Handler.Version is set to (the
+//     stub server leaves it empty, so we assert it's a string field —
+//     not missing — by decoding into the typed BuildInfo);
+//   - `data.goVersion` is non-empty (runtime.Version() always returns
+//     a populated `go1.x.y` string).
+func TestConformance_BuildInfoWire(t *testing.T) {
+	t.Parallel()
+
+	srv := newServer(&stubQuerier{})
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/v1/status/buildinfo")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "application/json") {
+		t.Errorf("Content-Type: got %q, want application/json", ct)
+	}
+	var env struct {
+		Status string         `json:"status"`
+		Data   prom.BuildInfo `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(body), &env); err != nil {
+		t.Fatalf("decode: %v body=%s", err, body)
+	}
+	if env.Status != "success" {
+		t.Errorf("status: got %q, want success", env.Status)
+	}
+	if env.Data.GoVersion == "" {
+		t.Errorf("data.goVersion should be populated by runtime.Version(); got empty; body=%s", body)
+	}
+}

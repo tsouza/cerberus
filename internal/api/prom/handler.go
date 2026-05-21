@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"runtime"
 	"strconv"
 	"time"
 
@@ -60,6 +61,14 @@ type Handler struct {
 	// this from CERBERUS_ADMIT_PROM; tests leave it nil for
 	// unconstrained behaviour.
 	Limiter *admit.Limiter
+
+	// Version is the cerberus build identifier surfaced via
+	// `/api/v1/status/buildinfo`. Wired from cmd/cerberus's build-time
+	// `Version` var so Grafana's Prom datasource per-page probe sees a
+	// real value; left empty in tests (the buildinfo handler still
+	// returns 200 with empty-string fields, matching upstream Prom's
+	// behaviour when build metadata is unset).
+	Version string
 
 	// parser is the single PromQL parser instance the handler uses for
 	// every parse path. The scalar-fold short-circuit (parseExpr,
@@ -134,6 +143,26 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	// upstream Prometheus would, so Grafana's per-page probe is quiet.
 	register("GET /api/v1/rules", h.handleRules)
 	register("GET /api/v1/alerts", h.handleAlerts)
+	// Build-info probe. Grafana's Prom datasource hits this on every
+	// page load to gate feature flags (PromQL editor capabilities,
+	// remote-write receiver presence). The body is the upstream
+	// PrometheusVersion shape wrapped in the {status, data} envelope.
+	register("GET /api/v1/status/buildinfo", h.handleBuildInfo)
+}
+
+// handleBuildInfo implements `/api/v1/status/buildinfo`. Returns the
+// upstream PrometheusVersion shape (version / revision / branch /
+// buildUser / buildDate / goVersion) wrapped in the standard
+// {status, data} envelope. Grafana parses this body to decide which
+// PromQL features to enable in the query editor.
+func (h *Handler) handleBuildInfo(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, Response{
+		Status: "success",
+		Data: BuildInfo{
+			Version:   h.Version,
+			GoVersion: runtime.Version(),
+		},
+	})
 }
 
 // handleFormatQuery implements `/api/v1/format_query`. Takes a `query`
