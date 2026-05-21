@@ -86,6 +86,17 @@ pre-push:
           echo "lefthook: \"not implemented\" in production code — implement the feature or rewrite to a factual verb (rejected / unsupported / falls back)"
           exit 1
         fi
+    # Backstop for the `commit-msg` hook: that hook validates each
+    # commit at creation time, but `git commit --no-verify` bypasses
+    # it. This range-check mirrors the CI `lint` job's
+    # `wagoid/commitlint-github-action@v6` step (which reads the same
+    # `.commitlintrc.json`) so a push with a non-Conventional subject
+    # — or any other rule violation — fails locally before CI runs.
+    commitlint-range:
+      tags: lint
+      run: |
+        base=$(git merge-base HEAD origin/main 2>/dev/null || echo origin/main)
+        npx --no -- commitlint --from "$base" --to HEAD
     forbid-soft-assert:
       tags: discipline
       run: |
