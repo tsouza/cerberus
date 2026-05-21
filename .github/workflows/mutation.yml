@@ -1,29 +1,18 @@
 name: mutation
 
-# Per-PR trigger is path-filtered to the 7 mutation-phased packages so
-# only QL / optimizer / chplan / chsql / qlcommon-touching PRs pay the
-# full matrix cost. Documentation / harness-only PRs skip the lane.
-# Informational on push-to-main + nightly + dispatch + PRs; promotion
-# to required PR gate happens after every phase stays green for a week
-# at 95%.
+# Mutation testing runs on push-to-main + nightly + manual dispatch
+# only. Per-PR runs were removed (#239): mutation jobs are
+# informational (test-quality regressions, not prod-blocking bugs),
+# the matrix cost is high, and noisy reds got debounced anyway.
+# Promotion to a required PR gate stays gated on every phase holding
+# its bar across an extended nightly window — at which point the
+# `pull_request:` trigger can be reintroduced.
 
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - 'internal/chplan/**'
-      - 'internal/chsql/**'
-      - 'internal/optimizer/**'
-      - 'internal/promql/**'
-      - 'internal/logql/**'
-      - 'internal/traceql/**'
-      - 'internal/qlcommon/**'
-      - '.gremlins.yaml'
-      - '.github/workflows/mutation.yml'
   push:
     branches: [main]
   schedule:
-    - cron: '0 4 * * *'
+    - cron: '17 3 * * *'   # nightly at 3:17 UTC; off-minute to avoid scheduler peaks
   workflow_dispatch:
 
 permissions:
