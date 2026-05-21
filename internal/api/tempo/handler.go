@@ -185,6 +185,19 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	register("GET /api/v2/search/tags", h.handleSearchTagsV2)
 	register("GET /api/v2/search/tag/{name}/values", h.handleSearchTagValuesV2)
 	register("GET /api/traces/{id}", h.handleTraceByID)
+	// /api/v2/traces/{id} is the modern Grafana Tempo datasource path —
+	// the default in Grafana 11.x whenever the datasource's
+	// `tempoApiVersion` setting is >= v2 (which is the out-of-the-box
+	// default for new datasources). Upstream Tempo's
+	// `compatibility/tempo/upstream/pkg/httpclient/client.go` exposes
+	// `QueryTraceEndpoint = "/api/traces"` (v1) and
+	// `QueryTraceV2Endpoint = "/api/v2/traces"` (v2) — the URL is the
+	// only thing the v2 bump changes, the response body is the same
+	// trace shape (Trace proto / TraceByIDResponse JSON). Aliasing the
+	// route to the same handler keeps cerberus drop-in for both
+	// datasource versions and stops Grafana 404-ing every trace
+	// drill-down.
+	register("GET /api/v2/traces/{id}", h.handleTraceByID)
 	register("GET /api/metrics/query_range", h.handleMetricsQueryRange)
 	register("GET /api/metrics/query", h.handleMetricsQueryInstant)
 }

@@ -402,11 +402,30 @@ async function driveTraceClick(page: Page, baseURL: string): Promise<string[]> {
   }
 
   // 3. Subscribe to responses BEFORE the click so we catch the
-  //    /api/ds/query the drill-through fires.
+  //    /api/ds/query the drill-through fires AND any direct
+  //    trace-by-id call Grafana proxies through.
+  //
+  //    Grafana 11.x's Tempo datasource defaults to `tempoApiVersion >=
+  //    v2`, which means trace drill-downs route through
+  //    `/api/v2/traces/<id>` (via the datasource proxy / resources
+  //    endpoint), not the legacy `/api/traces/<id>`. We capture every
+  //    trace-by-id URL the page fires so the assertion below can pin
+  //    "the request landed on v2" — without that gate, a regression
+  //    that drops the v2 alias from cerberus's Mount() would silently
+  //    404 the trace view (task #208).
   const captured: Response[] = [];
+  const traceByIDRequests: { url: string; status: number }[] = [];
   const onResponse = (resp: Response) => {
-    if (resp.url().includes('/api/ds/query')) {
+    const url = resp.url();
+    if (url.includes('/api/ds/query')) {
       captured.push(resp);
+    }
+    // Match every outbound trace-by-id Grafana issues against the
+    // cerberus-tempo datasource — whichever proxy path the plugin
+    // uses internally (proxy/uid/<uid>/api/... vs
+    // datasources/uid/<uid>/resources/api/...).
+    if (url.includes('/cerberus-tempo/') && /\/(v2\/)?traces\/[0-9a-f]+/i.test(url)) {
+      traceByIDRequests.push({ url, status: resp.status() });
     }
   };
   page.on('response', onResponse);
@@ -421,6 +440,39 @@ async function driveTraceClick(page: Page, baseURL: string): Promise<string[]> {
       .catch(() => {});
   } finally {
     page.off('response', onResponse);
+  }
+
+  // 3b. Trace-by-id URL gate. If Grafana fired any trace-by-id
+  //     request during the drill-through, at least one must hit the
+  //     v2 URL (the Grafana 11.x default for newly-provisioned Tempo
+  //     datasources, which is what compose's
+  //     test/e2e/grafana/compose/datasources/cerberus.yaml ships).
+  //     Every captured v2 hit must also resolve 2xx — that's the
+  //     load-bearing gate for task #208: cerberus aliased
+  //     `/api/v2/traces/{id}` to the same handler so the modern UI
+  //     stops 404-ing every drill-down.
+  //
+  //     When `traceByIDRequests` is empty the Tempo plugin didn't
+  //     hit cerberus directly during this click (Grafana sometimes
+  //     resolves the trace view client-side from the panel's existing
+  //     query result), and the tunneled-error / DOM-alert sweeps
+  //     below still cover the rendering side.
+  if (traceByIDRequests.length > 0) {
+    const v2Hits = traceByIDRequests.filter((r) => r.url.includes('/v2/traces/'));
+    if (v2Hits.length === 0) {
+      failures.push(
+        `[trace-click] no /api/v2/traces hit observed — Grafana 11.x defaults to tempoApiVersion>=v2, so every trace drill-down must route through v2; captured:\n${traceByIDRequests
+          .map((r) => `  ${r.status} ${r.url}`)
+          .join('\n')}`,
+      );
+    }
+    for (const hit of v2Hits) {
+      if (hit.status < 200 || hit.status > 299) {
+        failures.push(
+          `[trace-click] /api/v2/traces hit ${hit.url} → ${hit.status}, want 2xx (task #208: cerberus must alias the v2 URL to handleTraceByID)`,
+        );
+      }
+    }
   }
 
   // 4a. /api/ds/query status sweep over what the click fired.
