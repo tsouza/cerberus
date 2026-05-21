@@ -1175,9 +1175,11 @@ func matcherToExpr(m *labels.Matcher, s schema.Logs) chplan.Expr {
 	if isDetectedLevelLabel(m.Name) {
 		lhs = detectedLevelExpr(s)
 	} else {
-		lhs = attributeLookupColumn(s.ResourceAttributesColumn, m.Name)
+		mapLookup := attributeLookupColumn(s.ResourceAttributesColumn, m.Name)
 		if col := resourceFallbackColumn(s, m.Name); col != "" {
-			lhs = resourceAttributeFallbackLHS(col, lhs)
+			lhs = resourceAttributeFallbackLHS(col, mapLookup)
+		} else {
+			lhs = mapLookup
 		}
 	}
 	return &chplan.Binary{
@@ -1192,24 +1194,36 @@ func matcherToExpr(m *labels.Matcher, s schema.Logs) chplan.Expr {
 // has no such fallback. The OTel ClickHouse Exporter hoists a fixed set
 // of OTel semantic-convention resource attributes out of the
 // ResourceAttributes map into named columns (most prominently
-// `service.name` → `ServiceName`) — rows ingested through that path
-// carry the value ONLY in the top-level column, leaving
-// `ResourceAttributes['service.name']` empty. A matcher lowering that
-// reads from the map alone misses every such row, which is exactly the
-// failure cerberus's own logs exhibited in task #217: cerberus itself
-// emits via the OTel collector → CH exporter pipeline, so its rows
-// carry `ServiceName='cerberus'` with no map entry, and
-// `{service_name="cerberus"}` returned zero streams.
+// `service.name` → `ServiceName`, but also SeverityText, SeverityNumber,
+// ScopeName, ScopeVersion, EventName, TraceId, SpanId, TraceFlags — every
+// scalar top-level column the OTel-CH default schema dedicates). Rows
+// ingested through that path carry the value ONLY in the top-level
+// column, leaving `ResourceAttributes[<label>]` empty. A matcher
+// lowering that reads from the map alone misses every such row.
 //
-// The mapping table is intentionally narrow — only labels whose
-// fallback column is part of the OTel-CH default schema. New entries
-// require both a schema.Logs field and an upstream OTel-CH exporter
-// promotion to land. Custom-schema users who clear the corresponding
-// schema.Logs field (e.g. `ServiceNameColumn=""`) opt out: the helper
-// returns "" so the lowering stays map-only.
+// Task #240 widened the fallback from `service_name` only (initial #217
+// fix) to the full top-level scalar set: `{SeverityText="DEBUG"}` and
+// the matcher-path twins on the other 8 columns were silently returning
+// zero rows because their values lived in the top-level columns while
+// the matcher consulted the empty ResourceAttributes map. The
+// group-by path (`levelAwareGroupKey`) had already routed all 9 columns
+// via [topLevelLogColumnFor] when #218 was fixed; this helper now
+// delegates to the same table so the two parse paths can't drift again.
+//
+// Custom-schema users who clear the corresponding schema.Logs field
+// (e.g. `ServiceNameColumn=""`) opt out: the helper returns "" so the
+// lowering stays map-only.
 func resourceFallbackColumn(s schema.Logs, labelName string) string {
-	switch labelName {
-	case "service_name":
+	if col, ok := topLevelLogColumnFor(labelName, s); ok {
+		return col
+	}
+	// Prom/Loki convention spells `service.name` as the OTel-CH
+	// `ServiceName` column's stream attribute as `service_name`. The
+	// other 8 top-level columns surface under their literal column
+	// name (no Prom/Loki underscore alias is in idiomatic use), but
+	// `service_name` is the form Grafana panels + the
+	// `matcher_self_service` fixture both emit, so this alias stays.
+	if labelName == "service_name" {
 		return s.ServiceNameColumn
 	}
 	return ""
