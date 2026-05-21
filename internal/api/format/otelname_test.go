@@ -166,7 +166,7 @@ func TestNormalizeLabelNames(t *testing.T) {
 			[]string{"service_name"},
 		},
 		{
-			"empty-skipped",
+			"empty-dropped",
 			[]string{"", "service.name"},
 			[]string{"service_name"},
 		},

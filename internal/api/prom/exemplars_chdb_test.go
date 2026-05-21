@@ -227,14 +227,21 @@ INSERT INTO otel_metrics_sum (
 		}
 	}
 
-	// Per-series assertions: each series MUST carry __name__ + service.name
-	// + job, and exactly three exemplars (the seeded fan-out).
+	// Per-series assertions: each series MUST carry __name__ + service_name
+	// + job, and exactly three exemplars (the seeded fan-out). The
+	// dotted OTel `service.name` collapses to the Prom-grammar
+	// `service_name` form via format.NormalizeLabelMap at the emit site
+	// in groupExemplars — the wire shape Grafana's overlay expects.
 	for job, series := range byJob {
 		if got := series.SeriesLabels["__name__"]; got != "http_requests_total" {
 			t.Errorf("job=%s: __name__=%q want http_requests_total", job, got)
 		}
-		if got := series.SeriesLabels["service.name"]; got != "checkout" {
-			t.Errorf("job=%s: service.name=%q want checkout", job, got)
+		if got := series.SeriesLabels["service_name"]; got != "checkout" {
+			t.Errorf("job=%s: service_name=%q want checkout", job, got)
+		}
+		if _, leaked := series.SeriesLabels["service.name"]; leaked {
+			t.Errorf("job=%s: dotted service.name leaked through normalisation: %+v",
+				job, series.SeriesLabels)
 		}
 		if got := series.SeriesLabels["job"]; got != job {
 			t.Errorf("job=%s: SeriesLabels[job]=%q (inconsistent index)", job, got)
