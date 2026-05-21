@@ -7,15 +7,15 @@ land in subsequent PRs.
 
 ## Modules
 
-| Module           | Responsibility                                                                                                                                                                |
-| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `dashboard.ts`   | Enumerate provisioned dashboards via `/api/search` + `/api/dashboards/uid/<uid>`, flatten rows, expose `Dashboard` + `Panel` types.                                           |
-| `query-shape.ts` | Regex-based target classification: `extractByKeys`, `extractWithoutKeys`, `isHistogramQuantile`, `extractHistogramName`.                                                      |
-| `assertions.ts`  | Per-shape assertions over the Grafana `/api/ds/query` envelope (`assertLabelShape` / `assertLabelAbsent` / histogram pair) + the zero-404 gate (`assertNon200ResponseClass`). |
-| `sweep.ts`       | `generateSelfTraffic` — pre-step that fires self-traffic against cerberus so the cerberus-self dashboards have data to render.                                                |
-| `drilldown.ts`   | Drilldown-app catalogue + `drillTwoLevels` gesture driver for the three built-in apps.                                                                                        |
-| `dom.ts`         | Browser-side helpers: console-error capture, `role="alert"` banner read, kiosk repaint-flicker tolerance.                                                                     |
-| `probes.ts`      | `fetchAndAssert200` (the zero-404 gate on direct HTTP probes) + `extractDataSourceProxyURL` (panel → datasource proxy path).                                                  |
+| Module           | Responsibility                                                                                                                                                                                        |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `dashboard.ts`   | Enumerate provisioned dashboards via `/api/search` + `/api/dashboards/uid/<uid>`, flatten rows, expose `Dashboard` + `Panel` types.                                                                   |
+| `query-shape.ts` | Regex-based target classification + rewriting: `extractByKeys`, `extractWithoutKeys`, `expectedByKeys`, `isHistogramQuantile`, `extractHistogramName`, `addLabelFilter`, `expressionHasMatcherFor`.   |
+| `assertions.ts`  | Per-shape assertions over the Grafana `/api/ds/query` envelope (`assertLabelShape` / `assertLabelAbsent` / histogram pair / `assertSubsetByCount`) + the zero-404 gate (`assertNon200ResponseClass`). |
+| `sweep.ts`       | `generateSelfTraffic` — pre-step that fires self-traffic against cerberus so the cerberus-self dashboards have data to render.                                                                        |
+| `drilldown.ts`   | Drilldown-app catalogue + `drillTwoLevels` gesture driver for the three built-in apps.                                                                                                                |
+| `dom.ts`         | Browser-side helpers: console-error capture, `role="alert"` banner read, kiosk repaint-flicker tolerance.                                                                                             |
+| `probes.ts`      | `fetchAndAssert200` (the zero-404 gate on direct HTTP probes) + `extractDataSourceProxyURL` (panel → datasource proxy path).                                                                          |
 
 Re-exported in lockstep via `helpers/index.ts`.
 
@@ -25,14 +25,14 @@ Phase 0 (this PR) ships helpers only. Each later phase lands one new
 spec under `test/e2e/playwright/` that wires the helpers into a
 concrete iteration:
 
-| Phase | Spec file                            | Helpers it consumes                                                                  |
-| ----- | ------------------------------------ | ------------------------------------------------------------------------------------ |
-| 1     | `iterate-panel-shape.spec.ts`        | `dashboard`, `query-shape`, `assertions`, `sweep`, `probes`                          |
-| 2     | (extends `compose_panel_shape`)      | `assertions.assertHistogramComplete`, `assertions.assertNoFabricatedValue`, `probes` |
-| 3     | `compose_filter_drill.spec.ts`       | `dashboard`, `query-shape`, `assertions`, `probes`                                   |
-| 4     | `compose_panel_kiosk.spec.ts`        | `dashboard`, `dom`, `assertions`                                                     |
-| 5     | `compose_variable_matrix.spec.ts`    | `dashboard`, `sweep`, `assertions`                                                   |
-| 6     | `compose_drilldown_apps.spec.ts`     | `drilldown`, `dom`, `assertions`                                                     |
+| Phase | Spec file                            | Helpers it consumes                                                                                                                                 |
+| ----- | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1     | `iterate-panel-shape.spec.ts`        | `dashboard`, `query-shape`, `assertions`, `sweep`, `probes`                                                                                         |
+| 2     | (extends `compose_panel_shape`)      | `assertions.assertHistogramComplete`, `assertions.assertNoFabricatedValue`, `probes`                                                                |
+| 3     | `iterate-filter-drill.spec.ts`       | `dashboard`, `query-shape` (`addLabelFilter`, `expressionHasMatcherFor`, `expectedByKeys`), `assertions` (`assertSubsetByCount`), `sweep`, `probes` |
+| 4     | `compose_panel_kiosk.spec.ts`        | `dashboard`, `dom`, `assertions`                                                                                                                    |
+| 5     | `compose_variable_matrix.spec.ts`    | `dashboard`, `sweep`, `assertions`                                                                                                                  |
+| 6     | `compose_drilldown_apps.spec.ts`     | `drilldown`, `dom`, `assertions`                                                                                                                    |
 
 The existing `compose_grafana_smoke.spec.ts` is untouched in this PR;
 phase 1 will retire its bespoke `driveCerberusQLPartition` /

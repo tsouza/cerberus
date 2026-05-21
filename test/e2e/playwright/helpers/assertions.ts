@@ -187,6 +187,50 @@ export function assertNoFabricatedValue(
 }
 
 /**
+ * Assert that the filtered series count is a non-empty subset of the
+ * baseline by *count* (not element-wise).
+ *
+ * The filter-drill spec re-fires a panel's baseline expression after
+ * tacking a `{<key>="<value>"}` matcher onto every selector; this
+ * helper is the load-bearing comparator for that drill.
+ *
+ * Two failure modes are caught:
+ *
+ *   1. `filtered === 0`: the drill returned nothing even though the
+ *      `(key, value)` pair came from the baseline response. This is
+ *      the N3-class regression — a real, observed label value goes
+ *      empty under the matcher path.
+ *   2. `filtered > baseline`: the filter somehow *expanded* the
+ *      result set. PromQL's matcher semantics guarantee the filtered
+ *      series are a subset of the unfiltered ones, so any growth is
+ *      the matcher path emitting series the unfiltered query didn't.
+ *      That's a second N3-class shape (lower priority but equally
+ *      load-bearing for the regression pin).
+ *
+ * Q3 of the e2e-enhance plan (`/home/thiago/.claude/plans/e2e-enhance.md`
+ * §9) resolves the comparator semantics: `≤ baseline count`, NOT
+ * element-wise strict subset. Element-wise comparison is order-
+ * dependent and flakes under series re-orderings between the two
+ * queries.
+ */
+export function assertSubsetByCount(
+  filtered: number,
+  baseline: number,
+  context: string,
+): void {
+  if (filtered === 0) {
+    throw new Error(
+      `assertSubsetByCount: filtered query returned 0 series despite drilling on a real baseline value (${context}); ≥ 1 series expected (N3-class regression — matcher path broken)`,
+    );
+  }
+  if (filtered > baseline) {
+    throw new Error(
+      `assertSubsetByCount: filtered=${filtered} > baseline=${baseline} (${context}); filtering must shrink or keep the series set, never grow it (N3-class regression — matcher path emitting series the unfiltered query did not)`,
+    );
+  }
+}
+
+/**
  * Assert the response class of a captured Playwright request is 2xx.
  *
  * This is the zero-404-toleration gate (Q5 in the design doc). The
