@@ -194,6 +194,44 @@ func TestNormalizeLokiDottedLabels(t *testing.T) {
 			in:   `{a="\",b.c="d"}`,
 			want: `{a="\",b.c="d"}`,
 		},
+		// backtick string containing a backslash followed by the
+		// closing backtick. Loki's backtick-string grammar treats `\`
+		// as a LITERAL byte (no escape interpretation), so the closing
+		// backtick MUST end the string and a subsequent `b.c=...`
+		// matcher MUST still be rewritten.
+		//
+		// Pins the FIRST `&&` (col 29) in
+		// `state != lokiInBacktick && ch == '\\' && i+1 < len(q)` at
+		// lokiAdvanceInString. An INVERT_LOGICAL mutant `&&` → `||`
+		// makes the escape branch fire even inside backtick strings,
+		// which would consume the closing backtick as the "escaped
+		// char" and leave the walker permanently inside the string —
+		// the trailing `b.c` would then NOT be rewritten.
+		{
+			name: "backtick_with_backslash_then_dotted_key",
+			in:   "{a=`x\\`, b.c=\"y\"}",
+			want: "{a=`x\\`, b_c=\"y\"}",
+		},
+		// double-quoted string with a single-byte body that does NOT
+		// contain a backslash. The escape branch MUST stay dormant so
+		// the closing `"` at the next position ends the string and a
+		// subsequent `c.d=...` matcher MUST be rewritten.
+		//
+		// Pins the SECOND `&&` (col 43) in
+		// `state != lokiInBacktick && ch == '\\' && i+1 < len(q)`. An
+		// INVERT_LOGICAL mutant turning the second `&&` into `||`
+		// expands the predicate to
+		// `(state != lokiInBacktick && ch == '\\') || i+1 < len(q)` —
+		// which fires the escape path on EVERY non-final byte
+		// regardless of backslash presence. With a single-byte body
+		// the mutant swallows the closing `"` as the "escaped byte",
+		// leaving the walker permanently inside the string and
+		// skipping the trailing `c.d` rewrite.
+		{
+			name: "double_string_one_byte_body_then_dotted_key",
+			in:   `{a="b",c.d="y"}`,
+			want: `{a="b",c_d="y"}`,
+		},
 		// trailing top-level dotted token AFTER a closed selector.
 		// The `}` MUST decrement depth back to 0 (not increment); if
 		// the decrement were flipped to an increment, the subsequent
