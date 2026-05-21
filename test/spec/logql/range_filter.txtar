@@ -21,7 +21,7 @@ CREATE TABLE otel_logs (
     Timestamp DateTime64(9),
     Body String MATERIALIZED '',
     ResourceAttributes Map(String, String) MATERIALIZED map('service_name', 'api'),
-    ServiceName String DEFAULT ''
+    ServiceName String MATERIALIZED ''
 ) ENGINE = Memory;
 INSERT INTO otel_logs (Timestamp) VALUES
     (toDateTime64('2026-05-14 12:00:00.000000000', 9)),

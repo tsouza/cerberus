@@ -695,8 +695,15 @@ func applySeed(t *testing.T, db *sql.DB, seed string) {
 // session that already holds the table is idempotent. Other variants
 // (`CREATE OR REPLACE TABLE`, `CREATE TABLE IF NOT EXISTS`,
 // `CREATE TEMPORARY TABLE`) are left untouched.
+//
+// Leading whitespace and SQL line comments (`-- …`) are skipped when
+// locating the `CREATE TABLE` keyword: fixture authors routinely
+// document the seed shape with a comment block above the DDL, and
+// without comment-skipping those fixtures would bypass the
+// OR-REPLACE rewrite and trip TABLE_ALREADY_EXISTS on the second
+// run inside a shared chDB session.
 func promoteCreateTable(stmt string) string {
-	trimmed := strings.TrimLeft(stmt, " \t\n\r")
+	trimmed := stripLeadingNoise(stmt)
 	prefix := stmt[:len(stmt)-len(trimmed)]
 	upper := strings.ToUpper(trimmed)
 	const needle = "CREATE TABLE "
@@ -705,6 +712,24 @@ func promoteCreateTable(stmt string) string {
 	}
 	rest := trimmed[len(needle):]
 	return prefix + "CREATE OR REPLACE TABLE " + rest
+}
+
+// stripLeadingNoise consumes leading whitespace and `-- …\n` line
+// comments from s, returning the remaining suffix. Block comments
+// (`/* … */`) are not stripped — no current fixture uses them — but
+// the loop is structured so a future extension stays a one-case add.
+func stripLeadingNoise(s string) string {
+	for {
+		t := strings.TrimLeft(s, " \t\n\r")
+		if strings.HasPrefix(t, "--") {
+			if nl := strings.IndexByte(t, '\n'); nl >= 0 {
+				s = t[nl+1:]
+				continue
+			}
+			return ""
+		}
+		return t
+	}
 }
 
 func splitStatements(s string) []string {
