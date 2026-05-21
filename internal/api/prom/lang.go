@@ -32,6 +32,14 @@ import (
 // Instant queries leave Step at 0; the lowering then keeps the
 // existing OneRow shape (one row at the eval anchor).
 type lang struct {
+	// Parser is borrowed by reference from the owning Handler
+	// (handler.go executeInstant / executeRangeStreaming both pass
+	// `Parser: h.parser`). It MUST be the same instance the handler's
+	// scalar-fold short-circuit uses via parseExpr, otherwise the two
+	// parse paths could drift on promparser.Options (e.g. only one
+	// having EnableExperimentalFunctions=true would route experimental-
+	// function queries inconsistently). The invariant is pinned by
+	// TestHandlerLang_ParserOptionsAligned.
 	Parser promparser.Parser
 	Schema schema.Metrics
 	Start  time.Time
