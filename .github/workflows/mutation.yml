@@ -84,10 +84,17 @@ jobs:
       # Use `--output` for structured JSON (gremlins exits 0 even
       # when `--threshold-efficacy` is violated in v0.6.0, so we
       # do the gating ourselves against the parsed JSON below).
+      #
+      # We consume gremlins via the tsouza/gremlins fork pinned to
+      # v0.6.0-cerberus-sigterm so that in-flight mutants killed by
+      # the runner's SIGTERM at job timeout are recorded as NOT_RUN
+      # (via --on-shutdown-status=not-run) rather than LIVED, which
+      # used to falsely deflate test_efficacy. Upstream PR:
+      # https://github.com/go-gremlins/gremlins/pull/283
       - name: install gremlins
-        run: go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0
+        run: go install github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-sigterm
       - name: gremlins unleash
-        run: gremlins unleash --output gremlins.json ${{ matrix.scope }}
+        run: gremlins unleash --output gremlins.json --on-shutdown-status=not-run ${{ matrix.scope }}
       - name: enforce efficacy threshold
         run: |
           set -euo pipefail
