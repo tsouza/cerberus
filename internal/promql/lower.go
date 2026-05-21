@@ -215,6 +215,19 @@ func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCt
 		return nil, err
 	}
 
+	// When an enclosing vector aggregation's by-clause references a
+	// label that routes to a dedicated top-level OTel-CH column
+	// (currently only `service.name` / `service_name` → ServiceName),
+	// inflate Attributes with one synthesised key per such column so
+	// the downstream LWR / RangeWindow groups partition over the
+	// effective series identity. Without this, rows with distinct
+	// ServiceName collapse into a single Attributes bucket — the
+	// `sum by (service_name) (rate({__name__=~".+"}[5m]))` task-#232
+	// bug. The Project lands between the Scan/Filter and the per-mode
+	// wraps so PREWHERE-eligible matchers stay on the raw Scan
+	// (the optimizer's promotion path is untouched).
+	selectorInput = augmentSelectorAttributes(selectorInput, ctx, s)
+
 	if ctx.inRangeVector {
 		// Inside a range vector / subquery the surrounding node owns
 		// the per-window aggregation. We still apply the modifier's
@@ -287,6 +300,47 @@ func wrapHistogramCompanionProject(scan *chplan.Scan, sourceColumn string, s sch
 				},
 				Alias: s.ValueColumn,
 			},
+		},
+	}
+}
+
+// augmentSelectorAttributes wraps `input` with a Project that rebinds
+// the Attributes column to `mapConcat(Attributes, <synthesised top-
+// level columns>)` when the enclosing aggregation's by-clause
+// (threaded via [lowerCtx.outerByLabels]) references a label that
+// routes to a dedicated top-level OTel-CH column. When the by-clause
+// references no such label — the common case — the function returns
+// `input` unchanged so existing fixture SQL stays byte-identical.
+//
+// The Project's column shape preserves the canonical Sample-row
+// quadruple (MetricName, Attributes, TimeUnix, Value) the downstream
+// LWR / RangeWindow consumes. The dedicated top-level column
+// (ServiceName) is read by `augmentAttributesForOuterBy` from the
+// row's input scope — when `input` is a Scan / Filter the column is
+// directly addressable; when `input` is a `wrapHistogramCompanion-
+// Project` the column flows through unchanged because the histogram
+// companion Project preserves every original Scan column the next
+// SELECT references (CH resolves `ServiceName` against the inner
+// subquery's underlying table).
+//
+// Mirrors the LogQL augmenting wrap in
+// [internal/logql.withDetectedLevelAndColumns] (PR #666 / task #218)
+// at a different layer: LogQL inflates the post-RangeWindow identity
+// map; PromQL inflates the pre-RangeWindow per-row Attributes so the
+// RangeWindow's `GROUP BY Attributes` already partitions over the
+// distinct ServiceName values.
+func augmentSelectorAttributes(input chplan.Node, ctx lowerCtx, s schema.Metrics) chplan.Node {
+	augmented := augmentAttributesForOuterBy(s, ctx.outerByLabels)
+	if augmented == nil {
+		return input
+	}
+	return &chplan.Project{
+		Input: input,
+		Projections: []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
+			{Expr: augmented, Alias: s.AttributesColumn},
+			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
+			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
 		},
 	}
 }
@@ -742,12 +796,12 @@ func buildPredicate(matchers []*labels.Matcher, s schema.Metrics) chplan.Expr {
 //
 // The two paths must share the matcher → predicate translation so the
 // exemplars endpoint applies the same Attributes-map lookup, the same
-// regex semantics, and the same MetricName-column routing the rest of
-// PromQL uses. Sharing keeps "what does `label=~regex` mean" defined
-// in exactly one place; future schema-aware matcher rewrites (e.g.
-// pushing `service.name` to [schema.Metrics.ServiceNameColumn] instead
-// of the Attributes map) land in [matcherToExpr] and flow to every
-// caller automatically.
+// regex semantics, and the same MetricName-column / schema-aware
+// top-level-column routing the rest of PromQL uses. Sharing keeps
+// "what does `label=~regex` mean" defined in exactly one place;
+// schema-aware matcher rewrites (e.g. pushing `service.name` to
+// [schema.Metrics.ServiceNameColumn] instead of the Attributes map)
+// live in [matcherToExpr] and flow to every caller automatically.
 //
 // Returns nil for an empty matcher list — callers fold a nil
 // predicate into "no WHERE clause" rather than emitting a `WHERE true`
@@ -756,12 +810,48 @@ func BuildMatcherPredicate(matchers []*labels.Matcher, s schema.Metrics) chplan.
 	return buildPredicate(matchers, s)
 }
 
+// matcherToExpr resolves a single PromQL label matcher into the
+// chplan predicate that lands on the inner Scan's Filter. The three
+// routing branches are:
+//
+//  1. `__name__` — references the dedicated MetricName column.
+//
+//  2. A label that names a top-level OTel-CH column (currently only
+//     `service.name` / `service_name` → `ServiceName`). The lookup
+//     coalesces the dedicated column with the Attributes-map fallback
+//     so producers that wrote either side (OTel-collector → top-level
+//     column; raw inserts → Attributes-map key) both resolve.
+//     `nullIf(<col>, ”)` rewrites the String-default-empty sentinel
+//     back to NULL so `coalesce` selects the map fallback when the
+//     dedicated column is unpopulated. Mirrors the LogQL fix from
+//     PR #669 / task #217 in [internal/logql.matcherToExpr].
+//
+//  3. Anything else — falls through to the Attributes-map lookup
+//     (with the dot/underscore candidate expansion documented on
+//     [attributeLookup]).
 func matcherToExpr(m *labels.Matcher, s schema.Metrics) chplan.Expr {
 	var lhs chplan.Expr
 	if m.Name == model.MetricNameLabel {
 		lhs = &chplan.ColumnRef{Name: s.MetricNameColumn}
 	} else {
-		lhs = attributeLookup(s.AttributesColumn, m.Name)
+		mapLookup := attributeLookup(s.AttributesColumn, m.Name)
+		if col := schemaTopLevelColumn(s, m.Name); col != "" {
+			lhs = &chplan.FuncCall{
+				Name: "coalesce",
+				Args: []chplan.Expr{
+					&chplan.FuncCall{
+						Name: "nullIf",
+						Args: []chplan.Expr{
+							&chplan.ColumnRef{Name: col},
+							&chplan.LitString{V: ""},
+						},
+					},
+					mapLookup,
+				},
+			}
+		} else {
+			lhs = mapLookup
+		}
 	}
 	return &chplan.Binary{
 		Op:    matchOp(m.Type),
@@ -1088,7 +1178,20 @@ func lowerAggregate(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (ch
 		return lowerCountValues(a, s, ctx)
 	}
 
-	input, err := lower(a.Expr, s, ctx)
+	// Thread the outer by-clause's labels down so the inner selector
+	// path can inflate Attributes with the top-level OTel-CH columns
+	// (currently `service_name` → `ServiceName`) the outer aggregate
+	// needs to partition over. Only `by(...)` propagates — `without(...)`
+	// exclusion semantics don't reference specific columns, so the
+	// without branch keeps the lean Attributes shape. See
+	// [augmentAttributesForOuterBy] for the resulting Project wrap and
+	// [internal/logql.lowerCtx.OuterByLabels] for the LogQL precedent
+	// (PR #666 / task #218).
+	innerCtx := ctx
+	if !a.Without {
+		innerCtx = ctx.withOuterByLabels(a.Grouping)
+	}
+	input, err := lower(a.Expr, s, innerCtx)
 	if err != nil {
 		return nil, err
 	}

@@ -50,6 +50,30 @@ type lowerCtx struct {
 	// kept for byte-stable SQL on the existing fixtures.
 	step          time.Duration
 	inRangeVector bool
+	// outerByLabels carries the by-clause labels of an enclosing
+	// vector aggregation, threaded down so the inner selector path
+	// can inflate Attributes with the top-level OTel-CH columns
+	// (currently `service_name` → `ServiceName`) the outer aggregate
+	// needs. Empty (the default) means "no outer by-clause referencing
+	// a top-level column" — the augmenting Project is suppressed and
+	// the bare-selector / range-vector plan stays byte-identical with
+	// pre-#232 fixtures.
+	//
+	// Only `by(...)` propagates; `without(...)` exclusion semantics
+	// don't reference specific columns so the slot stays nil for the
+	// without branch (see [lowerAggregate]).
+	outerByLabels []string
+}
+
+// withOuterByLabels returns a copy of c with outerByLabels set to
+// the given list. nil/empty input clears the slot — the inner
+// augmenting Project is suppressed and the lowering produces today's
+// byte-stable plan tree. Mirrors the
+// [internal/logql.lowerCtx.withOuterByLabels] convention from PR #666.
+func (c lowerCtx) withOuterByLabels(labels []string) lowerCtx {
+	out := c
+	out.outerByLabels = labels
+	return out
 }
 
 // instantLookback is the default Prometheus staleness window applied
