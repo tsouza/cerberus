@@ -631,6 +631,12 @@ async function driveCerberusQLPartition(
   }
 
   let maxSeries = 0;
+  // Collect every `cerberus_ql=...` value Grafana decoded out of the
+  // frame schemas. Pre-task-#215 this set was empty (the panel
+  // collapsed to a single anonymous bucket) even when frames.length
+  // looked plausible — so checking the legend CONTENT, not just the
+  // frame count, is the load-bearing signal.
+  const seenLanguages = new Set<string>();
   for (const resp of panelResponses) {
     if (resp.status < 200 || resp.status > 299) {
       failures.push(
@@ -640,7 +646,19 @@ async function driveCerberusQLPartition(
     }
     try {
       const parsed = JSON.parse(resp.body) as {
-        results?: Record<string, { frames?: Array<{ schema?: { fields?: unknown[] } }> }>;
+        results?: Record<
+          string,
+          {
+            frames?: Array<{
+              schema?: {
+                fields?: Array<{
+                  name?: string;
+                  labels?: Record<string, string>;
+                }>;
+              };
+            }>;
+          }
+        >;
       };
       const results = parsed.results ?? {};
       for (const refID of Object.keys(results)) {
@@ -650,6 +668,15 @@ async function driveCerberusQLPartition(
         // `cerberus_ql=...` label. Frames count = series count.
         if (frames.length > maxSeries) {
           maxSeries = frames.length;
+        }
+        for (const frame of frames) {
+          const fields = frame.schema?.fields ?? [];
+          for (const f of fields) {
+            const ql = f.labels?.cerberus_ql;
+            if (typeof ql === 'string' && ql !== '') {
+              seenLanguages.add(ql);
+            }
+          }
         }
       }
     } catch (err) {
@@ -666,6 +693,22 @@ async function driveCerberusQLPartition(
     failures.push(
       `[partition:${panelTitle}] expected ≥ 2 grouped series (cerberus_ql=promql/logql/traceql) but saw ${maxSeries}\n  ` +
         `regression of task #214 — dotted-OTel-key lookup fell back to a single anonymous bucket`,
+    );
+  }
+
+  // Legend-content pin: every healthy stack should expose at least two
+  // of the three cerberus heads on the `cerberus_ql` label. Without
+  // this assertion a regression that emits two frames both labelled
+  // `cerberus_ql=""` would slip past the maxSeries gate (frames > 1
+  // can come from any group-by column the panel surfaces).
+  const expectedLanguages = ['promql', 'logql', 'traceql'];
+  const seenExpected = expectedLanguages.filter((l) => seenLanguages.has(l));
+  if (seenExpected.length < 2) {
+    failures.push(
+      `[partition:${panelTitle}] expected ≥ 2 of {promql,logql,traceql} on the cerberus_ql legend, saw ${JSON.stringify(
+        [...seenLanguages].sort(),
+      )}\n  ` +
+        `task #215 N2 regression — group-by chain didn't surface the OTel-dotted attribute values on the wire`,
     );
   }
 

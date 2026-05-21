@@ -1,0 +1,60 @@
+# Regression follow-up to PR #663 / task #215 N2: aggregator group-by
+# against the OTel-canonical dotted attribute key `cerberus.ql` must
+# partition correctly when the user types the underscored Prom-grammar
+# sibling. Sister fixture to `sum_by_underscored_otel_label.txtar`
+# (which proves the same lowering on `sum`); this one exercises
+# `count by (...)` so the group-by-on-dotted-source path stays covered
+# even if a future emitter change drops the `sum` arm.
+#
+# The seed stores `cerberus.ql=promql|logql|traceql` with NO
+# underscored sibling. The expected output is three rows, one per
+# language, each carrying the underscored `cerberus_ql` form on the
+# wire — the WIRE-EMIT side projects the rebuilt map under the user's
+# selector spelling, while the LOOKUP side hit the dotted storage
+# key.
+
+-- query.promql --
+count by (cerberus_ql) (cerberus_queries_total)
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum VALUES
+    ('cerberus_queries_total', map('cerberus.ql', 'promql', 'route', '/api/v1/query'),   toDateTime64('2026-01-01 00:00:00', 9), 1.0),
+    ('cerberus_queries_total', map('cerberus.ql', 'promql', 'route', '/api/v1/series'),  toDateTime64('2026-01-01 00:00:00', 9), 1.0),
+    ('cerberus_queries_total', map('cerberus.ql', 'logql',  'route', '/loki/api/query'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
+    ('cerberus_queries_total', map('cerberus.ql', 'traceql','route', '/api/traces'),     toDateTime64('2026-01-01 00:00:00', 9), 1.0);
+-- expected_rows --
+[
+  ["", {"cerberus_ql": "logql"}, "2026-01-01T00:00:01Z", 1.0],
+  ["", {"cerberus_ql": "promql"}, "2026-01-01T00:00:01Z", 2.0],
+  ["", {"cerberus_ql": "traceql"}, "2026-01-01T00:00:01Z", 1.0]
+]
+-- args --
+[0] string = ""
+[1] string = "cerberus_ql"
+[2] int64 = 9
+[3] string = "cerberus_ql"
+[4] string = "cerberus_ql"
+[5] string = "cerberus.ql"
+[6] string = "cerberus_queries_total"
+[7] string = "2026-01-01 00:00:01.000000000"
+[8] int64 = 9
+[9] string = "2026-01-01 00:00:01.000000000"
+[10] int64 = 9
+[11] int64 = 300000000000
+[12] string = "cerberus_ql"
+[13] string = "cerberus_ql"
+[14] string = "cerberus.ql"
+-- chplan --
+Project ["" AS MetricName, mapWithoutEmpty(map("cerberus_ql", gkey_0)) AS Attributes, now64(9) AS TimeUnix, Value AS Value]
+  Aggregate groupBy=[if(mapContains(Attributes, "cerberus_ql"), Attributes["cerberus_ql"], Attributes["cerberus.ql"]) AS gkey_0] funcs=[count(Value) AS Value]
+    Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
+      Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
+        Filter predicate=(((MetricName = "cerberus_queries_total") AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+          Scan(otel_metrics_sum)
+-- sql --
+SELECT ? AS `MetricName`, mapFilter((k, v) -> v != '', map(?, `gkey_0`)) AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT if(mapContains(`Attributes`, ?), `Attributes`[?], `Attributes`[?]) AS `gkey_0`, toFloat64(count(`Value`)) AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`)) GROUP BY if(mapContains(`Attributes`, ?), `Attributes`[?], `Attributes`[?]))
