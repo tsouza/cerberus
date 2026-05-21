@@ -85,14 +85,29 @@ jobs:
           # land below the ceiling because the wall-clock budget
           # before OOM admits ~80 of ~300+ mutants in the package.
           #
-          # Round 7 splits phase4-logql into three sibling matrix
-          # entries, each scoped to `./internal/logql` but with
-          # `--exclude-files` regexes that carve the source set
-          # into roughly equal slices so each runner job finishes
-          # its slice before the cumulative RSS curve crosses the
-          # ceiling. The three slices keep the same 95% efficacy
-          # bar individually — splitting by file is purely a
-          # runner-budget knob, not a quality concession. The
+          # Round 7 split phase4-logql into three sibling matrix
+          # entries (lower / aggregation / other), each scoped to
+          # `./internal/logql` but with `--exclude-files` regexes
+          # carving the source set into roughly equal slices.
+          # `phase4-logql-lower` landed green. `aggregation` ran
+          # cleanly to completion in ~1m32s (Killed: 106, Lived: 7
+          # — efficacy gap, not runner budget) so it does not need
+          # further splitting; the 7 LIVED mutants are tracked as
+          # test-quality follow-up and the mutation lane stays
+          # informational per CLAUDE.md until each sub-phase has
+          # held green for a week. `other` still OOM-killed the
+          # runner at ~3 min after processing binary.go +
+          # detected_level.go + dotted_labels.go (partial), never
+          # reaching literal.go / label_fns.go / top_level_columns.go.
+          #
+          # Round 8 therefore splits `other` into two sibling
+          # entries `other-a` (binary + detected_level +
+          # dotted_labels) + `other-b` (literal + label_fns +
+          # top_level_columns) so each job's cumulative RSS curve
+          # stays below the runner ceiling. The four logql slices
+          # keep the same 95% efficacy bar individually —
+          # splitting by file is purely a runner-budget knob, not
+          # a quality concession. The
           # `tsouza/gremlins@v0.6.0-cerberus-sigterm-consume` fork
           # still records any cancelled-in-flight mutants as
           # NOT_RUN via `--on-shutdown-status=not-run`.
@@ -110,15 +125,25 @@ jobs:
             # Mutate range_aggregation.go + vector_aggregation.go +
             # lang.go (~54 KB total). Excludes everything else.
             exclude_files: '(binary|detected_level|dotted_labels|literal|label_fns|top_level_columns|lower)\.go$'
-          - phase: phase4-logql-other
+          - phase: phase4-logql-other-a
             scope: ./internal/logql
             efficacy: 95
             workers: 1
             # Mutate binary.go + detected_level.go +
-            # dotted_labels.go + literal.go + label_fns.go +
-            # top_level_columns.go (~49 KB total). Excludes the
-            # two heaviest slices above.
-            exclude_files: '(lower|range_aggregation|vector_aggregation|lang)\.go$'
+            # dotted_labels.go (~28 KB total). Round-7 `other`
+            # ran out of budget here at ~3 min after dotted_labels
+            # line ~206, so this slice is sized to finish under
+            # the ceiling on its own runner.
+            exclude_files: '(lower|range_aggregation|vector_aggregation|lang|literal|label_fns|top_level_columns)\.go$'
+          - phase: phase4-logql-other-b
+            scope: ./internal/logql
+            efficacy: 95
+            workers: 1
+            # Mutate literal.go + label_fns.go +
+            # top_level_columns.go (~21 KB total). The three
+            # files round-7 `other` never reached before being
+            # SIGTERMed.
+            exclude_files: '(lower|range_aggregation|vector_aggregation|lang|binary|detected_level|dotted_labels)\.go$'
           - phase: phase4-traceql
             scope: ./internal/traceql
             efficacy: 95
