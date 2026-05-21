@@ -13,11 +13,86 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # `changes` computes whether the PR is docs-only. Docs-only PRs short-
+  # circuit the heavy `check` (test + build) job — `lint` and
+  # `forbid-skip` still run unconditionally because they are the gates
+  # that catch broken markdown / discipline regressions in the docs
+  # themselves. See `.github/workflows/compatibility.yml`,
+  # `compose-smoke.yml`, and `chdb.yml` for the matching short-circuit
+  # in the other PR-gate workflows.
+  #
+  # Only computed on `pull_request`. On `push` events (main + tags) the
+  # output is the empty string, so the boolean check `!= 'true'` in
+  # downstream `if:` clauses falls through and the heavy job runs — that
+  # is the safe-by-default behaviour for force-pushes, tag pushes, and
+  # any other event where the diff isn't a clean two-commit range.
+  #
+  # The filter convention: `code` matches "any changed file that is NOT
+  # documentation". If `code == 'false'` we know every changed file was
+  # a doc file → docs_only. If `code == 'true'` at least one non-doc
+  # file changed → full suite.
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    outputs:
+      docs_only: ${{ steps.compute.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@v6
+        if: github.event_name == 'pull_request'
+
+      - id: filter
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@v3
+        with:
+          # `every` makes the negation patterns subtractive: a file is
+          # in `code` iff it matches `**` AND does NOT match any of the
+          # `!`-prefixed doc patterns. Under the default `some`
+          # quantifier, `**` matches everything and the negations never
+          # fire — every PR would be flagged as code-touching.
+          predicate-quantifier: 'every'
+          # `code` matches "any changed file that is NOT documentation".
+          # The `!`-prefixed patterns subtract docs files from the `**`
+          # baseline. If `code == 'false'` after the filter runs, every
+          # changed file was a doc file → docs_only short-circuit. If
+          # `code == 'true'`, at least one non-doc file changed → full
+          # suite.
+          filters: |
+            code:
+              - '**'
+              - '!**/*.md'
+              - '!**/*.markdown'
+              - '!docs/**'
+              - '!LICENSE*'
+              - '!CHANGELOG.md'
+              - '!.markdownlint*'
+              - '!CLAUDE.md'
+              - '!AGENTS.md'
+              - '!README*'
+
+      - id: compute
+        # On non-PR events, leave docs_only as the empty string so the
+        # downstream `!= 'true'` guard falls through and heavy jobs run.
+        # This is the safe-by-default branch for tag pushes, force-
+        # pushes, and any event where the diff isn't a clean two-commit
+        # range.
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            if [ "${{ steps.filter.outputs.code }}" = "false" ]; then
+              echo "docs_only=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+          fi
+
   # `check` is the test + build job. Linting moved to the `lint` job
   # below so lint failures and test failures are surfaced independently
   # and can run in parallel.
   check:
     name: check
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6

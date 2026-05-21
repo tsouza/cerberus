@@ -80,8 +80,55 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # See `.github/workflows/ci.yml` for the rationale + filter convention.
+  # On `pull_request` we compute whether every changed file is a doc
+  # file; if so, the per-head compatibility jobs short-circuit. On every
+  # other event we fall through to the full suite.
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    outputs:
+      docs_only: ${{ steps.compute.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@v6
+        if: github.event_name == 'pull_request'
+
+      - id: filter
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@v3
+        with:
+          # See ci.yml for why `every` is required (the `**` baseline
+          # plus negation patterns would otherwise always be true).
+          predicate-quantifier: 'every'
+          filters: |
+            code:
+              - '**'
+              - '!**/*.md'
+              - '!**/*.markdown'
+              - '!docs/**'
+              - '!LICENSE*'
+              - '!CHANGELOG.md'
+              - '!.markdownlint*'
+              - '!CLAUDE.md'
+              - '!AGENTS.md'
+              - '!README*'
+
+      - id: compute
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            if [ "${{ steps.filter.outputs.code }}" = "false" ]; then
+              echo "docs_only=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+          fi
+
   prometheus:
     name: compatibility/prometheus
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # NOTE: job-level `continue-on-error: true` was REMOVED here on
@@ -281,6 +328,8 @@ jobs:
 
   tempo:
     name: compatibility/tempo
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -394,6 +443,8 @@ jobs:
 
   loki:
     name: compatibility/loki
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # NOTE: job-level `continue-on-error: true` was removed here.
