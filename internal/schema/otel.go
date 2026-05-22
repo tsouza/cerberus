@@ -414,21 +414,62 @@ func (m Metrics) TableFor(metricName string) string {
 // metric whose data lives in `otel_metrics_sum` but whose name doesn't
 // trip the suffix check.
 //
-// The return slice is the candidate set in stable order — Gauge first
-// for byte-stable SQL on the simple-gauge case, then Sum for the
-// hostmetrics-shaped fallback. The `_total` / `_count` / `_sum` /
-// `_bucket` suffixed names route to a single table (Sum or, with
-// HistogramCompanionColumn / isClassicBucketSelector, Histogram) and
-// keep the single-element return so existing fixtures stay stable.
+// The return slice is the candidate set in stable order:
+//
+//   - Unsuffixed names — `[Gauge, Sum]` (Gauge first for byte-stable
+//     SQL on the simple-gauge case, then Sum for the hostmetrics-shaped
+//     fallback).
+//   - `_count` / `_sum` suffixed names — `[Histogram, Sum]` (Histogram
+//     first to preserve the existing classic-histogram-companion
+//     emit shape; Sum second to catch the OTel-hostmetrics shape where
+//     `system_cpu_logical_count` / `system_processes_count` /
+//     `system_filesystem_inodes_count` / `system_processes_created_count`
+//     etc. ship as cumulative Sums under the suffixed name rather than
+//     as histogram companions). Sum is dropped from the slice when no
+//     Sum table is configured or when Sum equals Histogram.
+//   - `_total` / `_bucket` suffixed names — single-element
+//     `[SumTable]` (PromQL counters / classic-histogram bucket
+//     selectors don't have the Sum-as-emitter-fallback ambiguity).
 //
 // Sum-without-suffix is the case the v0.1 heuristic missed; TablesFor
 // fans the lookup across (Gauge, Sum) so the matcher finds rows
-// regardless of which side actually stored them. The empty arm
-// contributes zero rows under the MetricName PREWHERE — the union is a
-// no-op for any metric whose name is unambiguous after the suffix
-// check.
+// regardless of which side actually stored them. The same fan-out
+// applies to `_count` / `_sum` suffixes — the OTel-hostmetrics
+// emitter writes these as cumulative Sums under the suffixed name,
+// while the OTel-CH histogram exporter writes them as columns on the
+// bare-name histogram row. The PromQL lowering produces a UnionAll of
+// two per-arm Projects (one per physical layout) because the two
+// tables have disjoint value-column shapes (histogram has Count/Sum
+// but no Value; sum has Value but no Count) — the existing
+// `merge(currentDatabase(), '<regex>')` table-function path can't fan
+// disjoint-schema tables, so the per-arm UnionAll lowering shape is
+// the only way to address both physical layouts in a single query.
+//
+// The empty arm contributes zero rows under the MetricName PREWHERE —
+// the union is a no-op for any metric whose name is unambiguous after
+// the per-arm scan-side filter narrows the candidate rows.
 func (m Metrics) TablesFor(metricName string) []string {
-	for _, suf := range []string{"_count", "_total", "_sum", "_bucket"} {
+	// `_count` and `_sum` are ambiguous between histogram companion
+	// (Count/Sum on the histogram row keyed by the bare name) and
+	// hostmetrics-style Sum under the suffixed name. Fan across both
+	// physical layouts so the matcher finds rows regardless.
+	for _, suf := range []string{"_count", "_sum"} {
+		if hasSuffix(metricName, suf) {
+			if m.HistogramTable != "" && m.SumTable != "" && m.SumTable != m.HistogramTable {
+				return []string{m.HistogramTable, m.SumTable}
+			}
+			if m.HistogramTable != "" {
+				return []string{m.HistogramTable}
+			}
+			return []string{m.SumTable}
+		}
+	}
+	// `_total` and `_bucket` are unambiguous: `_total` is the OTel-CH
+	// counter convention (Sum table); `_bucket` is the classic-histogram
+	// bucket-companion suffix the bucket-fan-out path rewrites at the
+	// lowering layer (which overrides the table to HistogramTable
+	// before emit; see isClassicBucketSelector).
+	for _, suf := range []string{"_total", "_bucket"} {
 		if hasSuffix(metricName, suf) {
 			return []string{m.SumTable}
 		}

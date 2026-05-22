@@ -321,6 +321,26 @@ func rewriteChildren(n chplan.Node, fn func(chplan.Node) (chplan.Node, bool)) (c
 			cp.KExpr = newKExpr
 		}
 		return &cp, true
+	case *chplan.UnionAll:
+		// Recurse into each arm so existing optimizer rules
+		// (constant-fold, PREWHERE promotion, etc.) can rewrite the
+		// per-arm Project(Filter(Scan)) subtrees the PromQL
+		// classic-histogram companion-suffix lowering emits.
+		newInputs := make([]chplan.Node, len(v.Inputs))
+		changed := false
+		for i, in := range v.Inputs {
+			newIn, ch := fn(in)
+			if ch {
+				changed = true
+			}
+			newInputs[i] = newIn
+		}
+		if !changed {
+			return v, false
+		}
+		cp := *v
+		cp.Inputs = newInputs
+		return &cp, true
 	}
 	return n, false
 }

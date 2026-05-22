@@ -1,0 +1,68 @@
+-- query.promql --
+system_cpu_logical_count
+-- args --
+[0] string = "system_cpu_logical_count"
+[1] string = "system_cpu_logical"
+[2] string = "system_cpu_logical_count"
+[3] string = "2026-01-01 00:00:01.000000000"
+[4] int64 = 9
+[5] string = "2026-01-01 00:00:01.000000000"
+[6] int64 = 9
+[7] int64 = 300000000000
+-- seed --
+CREATE TABLE otel_metrics_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    BucketCounts Array(UInt64),
+    ExplicitBounds Array(Float64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum VALUES
+    ('system_cpu_logical_count', map('host', 'h1'), toDateTime64('2026-01-01 00:00:00', 9), 8.0);
+-- expected_rows --
+[
+  ["system_cpu_logical_count", {"host": "h1"}, "2026-01-01T00:00:00Z", 8.0]
+]
+-- description --
+Regression pin for PR #710's follow-up: the histogram-companion
+suffix `_count` / `_sum` routing forced the scan to the histogram
+table only, returning empty for OTel-hostmetrics counters that ship
+under suffixed names in the sum table (`system_cpu_logical_count`,
+`system_processes_count`, `system_filesystem_inodes_count`,
+`system_processes_created_count`, …).
+
+The fix: schema.Metrics.TablesFor returns `[Histogram, Sum]` for
+`_count` / `_sum` suffixed names, and the lowering builds a
+chplan.UnionAll of two per-arm Projects. Each arm bakes its own
+scan-side MetricName filter — the histogram arm filters on the BARE
+base name (`system_cpu_logical`, where the OTel-CH histogram
+exporter stores Count / Sum on a single row), the sum arm filters
+on the SUFFIXED name (`system_cpu_logical_count`, where the OTel
+hostmetrics emitter stores the cumulative count). The histogram arm
+projects `MetricName` as the suffixed literal so both arms produce
+identically-shaped rows; the union is positional-column-safe.
+
+The seed creates an empty histogram table alongside a populated sum
+table so the chDB roundtrip exercises the sum-table arm of the
+union — a regression that dropped this arm would return zero rows.
+-- chplan --
+Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
+  Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
+    Filter predicate=((TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9)) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+      UnionAll arms=2
+        Project ["system_cpu_logical_count" AS MetricName, Attributes AS Attributes, TimeUnix AS TimeUnix, toFloat64(Count) AS Value]
+          Filter predicate=(MetricName = "system_cpu_logical")
+            Scan(otel_metrics_histogram)
+        Project [MetricName AS MetricName, Attributes AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+          Filter predicate=(MetricName = "system_cpu_logical_count")
+            Scan(otel_metrics_sum)
+-- sql --
+SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM ((SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, `TimeUnix` AS `TimeUnix`, toFloat64(`Count`) AS `Value` FROM (SELECT * FROM `otel_metrics_histogram` WHERE (`MetricName` = ?))) UNION ALL (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` = ?)))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)
