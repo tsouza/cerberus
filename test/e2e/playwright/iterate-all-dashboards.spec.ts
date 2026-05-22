@@ -23,7 +23,7 @@
  *        - For Prom + Loki: the result envelope is well-formed (a
  *          `data.result` array exists, even if empty).
  *      Panels whose datasource type isn't one of {prometheus, loki,
- *      tempo} are skipped.
+ *      tempo} are excluded from the probe loop.
  *   3. Capture every Grafana → datasource fetch fired during the page
  *      navigation (the `/api/ds/query` proxy + `/api/datasources/proxy/uid/`
  *      + `/api/datasources/uid/<uid>/resources/` shapes). Assert HTTP
@@ -40,13 +40,14 @@
  * edit. The spec emits an info log listing the discovered set so the
  * CI run record makes the catalog visible.
  *
- * Tolerated empties: some panels target counters that legitimately
- * stay at 0 on a freshly-spun compose stack (rejections, errors). The
- * `expectedEmpty` allowlist below is intentionally short and every
- * entry carries a one-line rationale. The empty-data check uses a
- * SOFT assertion (`expect.soft`) so a single empty-by-design panel
- * doesn't fail the whole sweep; the request-level assertions (HTTP
- * status, error envelope) remain hard fails.
+ * Tolerated empties: some panels target counters / gauges / logs that
+ * legitimately stay at 0 on a freshly-spun compose stack (admission
+ * rejections, error counters, inflight-query gauge, ERROR-level logs).
+ * The `expectedEmpty` allowlist below is intentionally short and every
+ * entry carries a one-line rationale. The empty-data check is a hard
+ * fail for any expr NOT on the allowlist — soft assertions still fail
+ * the parent test once collected, so the appearance of leniency was
+ * misleading.
  *
  * Env:
  *   GRAFANA_URL       default http://localhost:3000
@@ -113,6 +114,21 @@ const EXPECTED_EMPTY_EXPR_SUBSTRINGS: ReadonlyArray<{
     // Error-rate panels divide by total rate; if no error queries have
     // been served the numerator (and the panel) stays empty.
     why: 'error-rate counter starts at 0 on a fresh stack',
+  },
+  {
+    match: 'cerberus_query_inflight',
+    // Inflight is a point-in-time gauge of currently-running queries.
+    // The compose smoke fires warmup traffic then waits — by the time
+    // the spec probes the gauge, every warmup query has drained, so
+    // the snapshot is legitimately 0 / empty.
+    why: 'inflight gauge is 0 after warmup drains',
+  },
+  {
+    match: 'SeverityText="ERROR"',
+    // The Loki ERROR-logs panel surfaces cerberus's own error logs. A
+    // healthy compose stack produces no ERROR-level logs, so the
+    // stream count is correctly 0.
+    why: 'cerberus produces no ERROR-level logs on a healthy compose stack',
   },
 ];
 
@@ -340,7 +356,7 @@ function envelopeError(body: unknown): string | null {
 /**
  * Number of series (Prom) / streams (Loki) / traces (Tempo) the body
  * carries. Returns -1 if the body is a shape we don't recognise (the
- * caller should treat that as "non-empty" / "skip the soft assertion").
+ * caller should treat that as "non-empty" / bypass the empty check).
  */
 function resultCount(body: unknown, dsType: string): number {
   if (body === null || typeof body !== 'object') return -1;
@@ -411,7 +427,7 @@ async function captureAndAssertDsQuery(
       try {
         body = await resp.json();
       } catch {
-        // Some /api/ds/query responses are streamed / chunked; skip
+        // Some /api/ds/query responses are streamed / chunked; bypass
         // the per-target check rather than fail on a parse error.
         continue;
       }
@@ -552,17 +568,16 @@ async function probeTarget(
   const count = resultCount(body, t.dsType);
   onCount(count);
 
-  // Soft-assert non-empty — empty-by-design panels go through the
+  // Hard-assert non-empty — empty-by-design panels go through the
   // tolerated allowlist. Stat panels with `noDataState=fixed` are
   // legitimately empty when their underlying counter hasn't fired,
-  // so we don't hard-fail on an empty Prom result.
+  // and those expressions belong in EXPECTED_EMPTY_EXPR_SUBSTRINGS
+  // with a one-line rationale.
   const expected = isExpectedEmpty(t.expr);
   if (count === 0 && !expected) {
-    expect
-      .soft(
-        count,
-        `dashboard=${d.uid} panel="${panel.title}" target=${t.refId} expr="${t.expr}": empty result (no allowlist entry covers this; if intentional, add one to EXPECTED_EMPTY_EXPR_SUBSTRINGS with a rationale)`,
-      )
-      .toBeGreaterThan(0);
+    expect(
+      count,
+      `dashboard=${d.uid} panel="${panel.title}" target=${t.refId} expr="${t.expr}": empty result (no allowlist entry covers this; if intentional, add one to EXPECTED_EMPTY_EXPR_SUBSTRINGS with a rationale)`,
+    ).toBeGreaterThan(0);
   }
 }

@@ -17,8 +17,9 @@
  *      chip — the call that was failing on `cerberus_clickhouse_bytes_read`.
  *      A failure here surfaces as "Unable to fetch labels" in the UI.
  *   2. The `/api/v1/query_range?query=<metric>` endpoint returns at
- *      least one series (soft assertion — counters that legitimately
- *      stay at 0 on a fresh stack go through the `EXPECTED_EMPTY` list).
+ *      least one series — counters that legitimately stay at 0 on a
+ *      fresh stack go through the `EXPECTED_EMPTY` list, which carries
+ *      a one-line rationale per entry.
  *   3. The labels returned by `/api/v1/series` carry the same metric
  *      name in their `__name__` field — sanity check that the gateway
  *      isn't echoing labels from a different metric.
@@ -56,6 +57,14 @@ import { generateSelfTraffic } from './helpers/index.js';
 const SEED_TRAFFIC_SECONDS = 30;
 const QUERY_WINDOW_SECONDS = 5 * 60;
 const QUERY_STEP_SECONDS = 15;
+// Pause after the warmup loop ends so cerberus's own OTLP exporter
+// (PR #696 wired a 10s push interval) and the downstream ClickHouse
+// insert pipeline have time to flush the self-telemetry rows. Without
+// this, `/api/v1/series` can still return 0 rows for metrics that
+// /api/v1/label/__name__/values already enumerates — the catalog is
+// populated as soon as the first push lands, but the per-series rows
+// may take an extra flush cycle to become visible to the query path.
+const POST_WARMUP_FLUSH_SECONDS = 15;
 
 /**
  * Metric-name prefixes whose label-fetch + series-non-empty are not
@@ -192,12 +201,35 @@ function isExpectedEmpty(metric: string): { why: string } | null {
   return null;
 }
 
+/**
+ * If `metric` ends in one of the synthetic histogram suffixes
+ * (`_count` / `_sum` / `_bucket`), return the base name. Otherwise
+ * return the input unchanged. Used by the __name__-mismatch check so
+ * a /api/v1/series query for `http_server_request_duration_count` is
+ * allowed to return rows under `__name__=http_server_request_duration`.
+ */
+function stripHistogramSuffix(metric: string): string {
+  for (const suffix of ['_bucket', '_count', '_sum']) {
+    if (metric.endsWith(suffix)) {
+      return metric.slice(0, metric.length - suffix.length);
+    }
+  }
+  return metric;
+}
+
 test.describe('iterate-metrics-explorer: Drilldown-Metrics + label chips', () => {
   test.describe.configure({ mode: 'serial' });
 
   test.beforeAll(async ({ request }) => {
     // Warmup so the cerberus-self metrics show populated values.
     await generateSelfTraffic(request, SEED_TRAFFIC_SECONDS);
+    // Allow OTLP push + CH insert flush to settle. See the comment on
+    // POST_WARMUP_FLUSH_SECONDS above — without this, /api/v1/series
+    // races the flush pipeline and returns 0 rows for metrics that the
+    // catalog endpoint already lists.
+    await new Promise((r) =>
+      setTimeout(r, POST_WARMUP_FLUSH_SECONDS * 1000),
+    );
   });
 
   test('Drilldown-Metrics UI: no "Unable to fetch labels" banner', async ({
@@ -262,16 +294,22 @@ test.describe('iterate-metrics-explorer: Drilldown-Metrics + label chips', () =>
       const labelCount =
         seriesCount > 0 ? Object.keys(seriesBody.data[0] ?? {}).length : 0;
 
-      // Sanity: the __name__ on every series matches the queried name.
-      // A mismatch indicates the gateway echoed a different metric's
-      // labels — the exact failure shape the user's #8 sweep finding
-      // could be hiding.
+      // Sanity: the __name__ on every series matches the queried name,
+      // OR the queried name is a histogram synthetic-suffix view
+      // (`_count` / `_sum` / `_bucket`) of the returned __name__. The
+      // Prom-on-OTel convention is to expose histograms under the base
+      // name with the suffix as a derived view, so a /api/v1/series
+      // call for `http_server_request_duration_count` is expected to
+      // return rows with `__name__=http_server_request_duration`. A
+      // mismatch on the BASE name (after stripping the suffix) would
+      // still indicate the gateway echoed a different metric's labels.
       for (const s of seriesBody.data) {
-        if (s.__name__ && s.__name__ !== metric) {
-          labelFailures.push(
-            `metric=${metric}: /api/v1/series returned __name__=${s.__name__} (mismatch)`,
-          );
-        }
+        if (!s.__name__ || s.__name__ === metric) continue;
+        const base = stripHistogramSuffix(metric);
+        if (base !== metric && s.__name__ === base) continue;
+        labelFailures.push(
+          `metric=${metric}: /api/v1/series returned __name__=${s.__name__} (mismatch)`,
+        );
       }
 
       const expected = isExpectedEmpty(metric);
