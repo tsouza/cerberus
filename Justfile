@@ -342,6 +342,76 @@ e2e-seed:
             go run ./test/e2e/seed/cmd/seed
     @echo "==> seed done"
 
+# Rolling seeder. Performs the same INSERTs as `e2e-seed` and then stays
+# alive, re-anchoring the metric/log windows on now64(9) every 30 s until
+# stopped via `just e2e-seed-stop` (or SIGTERM). Replaces the static-window
+# arms-race that widened the seed envelope to ±15 min in PRs #590 / #615 /
+# #617 / #693 just to survive the ~12 min Playwright suite drift — with
+# fresh data arriving continuously the static window only has to cover
+# the 30 s gap between two ticks plus the 5 m Prom/Loki staleness lookback.
+#
+# Background pattern: a single bash command builds + launches the seeder
+# under nohup, dissociated from this just-recipe shell (so the recipe
+# returns and the next CI step can run while the seeder keeps reseeding).
+# PID files at /tmp/cerberus-e2e-seed-*.pid let `e2e-seed-stop` find the
+# processes for clean teardown. Logs land at /tmp/cerberus-e2e-seed-rolling.log
+# so a failing tick is visible in CI artefacts.
+e2e-seed-rolling:
+    @echo "==> launching rolling seeder (30s tick) in background"
+    @# 1) start a long-lived port-forward and stash its PID.
+    @kubectl -n cerberus port-forward svc/clickhouse 19000:9000 > /tmp/cerberus-e2e-seed-pf.log 2>&1 & \
+        echo $! > /tmp/cerberus-e2e-seed-pf.pid
+    @# 2) wait for the forward to come up.
+    @for i in 1 2 3 4 5 6 7 8 9 10; do \
+        if nc -z 127.0.0.1 19000 2>/dev/null; then break; fi; \
+        sleep 1; \
+    done
+    @# 3) build the seeder once so `nohup` launches a real binary
+    @#    (a stray `go run` keeps the toolchain attached to the shell that
+    @#    spawned it; harder to detach cleanly across CI step boundaries).
+    @go build -o /tmp/cerberus-e2e-seeder ./test/e2e/seed/cmd/seed
+    @# 4) launch the seeder under nohup with the rolling flag.
+    @CH_ADDR=127.0.0.1:19000 \
+        CH_DATABASE=otel \
+        CH_USERNAME=cerberus \
+        CH_PASSWORD=cerberus \
+        nohup /tmp/cerberus-e2e-seeder --re-seed-interval=30s \
+            > /tmp/cerberus-e2e-seed-rolling.log 2>&1 & \
+        echo $! > /tmp/cerberus-e2e-seed-rolling.pid
+    @echo "==> rolling seeder pid=$(cat /tmp/cerberus-e2e-seed-rolling.pid) pf-pid=$(cat /tmp/cerberus-e2e-seed-pf.pid)"
+    @echo "    initial seed runs synchronously inside the seeder before the loop starts —"
+    @echo "    tail /tmp/cerberus-e2e-seed-rolling.log to confirm 'seed: done' lands."
+    @# 5) wait for the initial seed to land before returning, so the next
+    @#    CI step (e2e-wait-otel / e2e-run) sees a populated database.
+    @for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do \
+        if grep -q '^.*seed: done' /tmp/cerberus-e2e-seed-rolling.log 2>/dev/null; then \
+            echo "==> initial seed landed"; \
+            exit 0; \
+        fi; \
+        sleep 2; \
+    done; \
+        echo "==> ERROR: initial seed did not complete within 30s. log:"; \
+        cat /tmp/cerberus-e2e-seed-rolling.log; \
+        exit 1
+
+# Stop the rolling seeder + its port-forward (idempotent). Called from
+# CI teardown so the dashboard job tears down cleanly even when the
+# Playwright step failed before reaching `e2e-down`. SIGTERM gives the
+# seeder a chance to log the exit reason; the port-forward never has any
+# state to flush.
+e2e-seed-stop:
+    @echo "==> stopping rolling seeder"
+    @if [ -f /tmp/cerberus-e2e-seed-rolling.pid ]; then \
+        pid=$(cat /tmp/cerberus-e2e-seed-rolling.pid); \
+        kill -TERM "$pid" 2>/dev/null || true; \
+        rm -f /tmp/cerberus-e2e-seed-rolling.pid; \
+    fi
+    @if [ -f /tmp/cerberus-e2e-seed-pf.pid ]; then \
+        pid=$(cat /tmp/cerberus-e2e-seed-pf.pid); \
+        kill -TERM "$pid" 2>/dev/null || true; \
+        rm -f /tmp/cerberus-e2e-seed-pf.pid; \
+    fi
+
 # Wait until the OTel collector has populated real data in every signal
 # table (logs / traces / one of the metrics tables) AND the metric table
 # carries ≥60 s of history. Bootstraps the pipeline before tests rely on
@@ -425,8 +495,13 @@ e2e-playwright:
         echo "    (no playwright suite yet — landing in M0.2)"; \
     fi
 
-# Tear down the cluster.
+# Tear down the cluster. Also stops the rolling seeder + port-forward
+# if either was started by `e2e-seed-rolling` — idempotent and silent
+# when the PID files don't exist.
 e2e-down:
+    @if [ -f /tmp/cerberus-e2e-seed-rolling.pid ] || [ -f /tmp/cerberus-e2e-seed-pf.pid ]; then \
+        just e2e-seed-stop; \
+    fi
     @if k3d cluster list | grep -q "^{{K3D_CLUSTER}} "; then \
         echo "==> deleting k3d cluster {{K3D_CLUSTER}}"; \
         k3d cluster delete {{K3D_CLUSTER}}; \
@@ -434,9 +509,11 @@ e2e-down:
 
 
 
-# Full lifecycle. Seed first (deterministic rows), then wait for the
-# collector to populate real OTel data, then run the test matrix.
-e2e: e2e-up e2e-seed e2e-wait-otel e2e-run e2e-playwright e2e-down
+# Full lifecycle. Seed first (deterministic rows, rolling so the window
+# slides with wall-clock now), then wait for the collector to populate
+# real OTel data, then run the test matrix. `e2e-down` stops the rolling
+# seeder on teardown.
+e2e: e2e-up e2e-seed-rolling e2e-wait-otel e2e-run e2e-playwright e2e-down
 
 # Run the compose-stack Grafana catch-net spec locally. Assumes the
 # quickstart compose stack is already up (`docker compose up --wait`).
