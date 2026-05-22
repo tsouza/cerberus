@@ -814,15 +814,38 @@ func (e *emitter) emitRangeWindowMetrics(r *chplan.RangeWindow, m *chplan.Metric
 		outerSb.Select(func(b *Builder) { b.Ident(a) })
 	}
 	outerSb.Select(Col("anchor_ts"))
-	reducerFrag := metricsReducerFrag(m.Op, chName, params, args, rangeSeconds)
-	outerSb.Select(As(reducerFrag, m.ValueAlias))
 
-	// WHERE: ts ∈ (anchor_ts - range, anchor_ts] — left-open /
-	// right-closed, matching Tempo's IntervalMapperQueryRange.
-	outerSb.Where(
-		windowTsLowerBoundFrag(rangeNS),
-		verbatim("ts <= anchor_ts"),
-	)
+	// Zero-fill semantics live in the SQL for the two ops whose Tempo
+	// aggregators emit 0 for empty buckets — count_over_time and rate.
+	// The reducer becomes countIf(<window predicate>), so every
+	// (group, anchor) tuple that the inner fanout materialises (one per
+	// Inner row × N anchors) produces a row out of the outer GROUP BY
+	// regardless of whether any sample landed in that window — empty
+	// anchors emit countIf=0, observed anchors emit the real count. The
+	// handler's previous Go-side `zeroFillMatrixGrid` post-pass is
+	// retired; matrix-shape post-processing is the SQL emitter's
+	// concern, not the HTTP layer's.
+	//
+	// sum / avg / min / max / last / stddev / stdvar over_time keep the
+	// WHERE-based filter: Tempo initialises their aggregators to NaN and
+	// skips empty buckets at SeriesSet.ToProto, so the response shape
+	// includes only observed (group, anchor) rows. Pushing the predicate
+	// into a sumIf / avgIf would emit 0 for empty buckets and diverge
+	// from Tempo's NaN-skip semantics.
+	if metricsOpZeroFillsEmptyBuckets(m.Op) {
+		reducerFrag := metricsCountIfReducerFrag(m.Op, rangeNS, rangeSeconds)
+		outerSb.Select(As(reducerFrag, m.ValueAlias))
+	} else {
+		reducerFrag := metricsReducerFrag(m.Op, chName, params, args, rangeSeconds)
+		outerSb.Select(As(reducerFrag, m.ValueAlias))
+
+		// WHERE: ts ∈ (anchor_ts - range, anchor_ts] — left-open /
+		// right-closed, matching Tempo's IntervalMapperQueryRange.
+		outerSb.Where(
+			windowTsLowerBoundFrag(rangeNS),
+			verbatim("ts <= anchor_ts"),
+		)
+	}
 
 	// GROUP BY group aliases + anchor_ts.
 	groupFrags := make([]Frag, 0, len(groupAliases)+1)
@@ -835,6 +858,84 @@ func (e *emitter) emitRangeWindowMetrics(r *chplan.RangeWindow, m *chplan.Metric
 
 	e.emitSelect(outerSb)
 	return nil
+}
+
+// metricsOpZeroFillsEmptyBuckets reports whether the given
+// MetricsAggregate.Op surfaces 0-valued samples for empty buckets on
+// Tempo's wire (rather than NaN-skipping them). The two upstream code
+// paths that produce zeros are StepAggregator + CountOverTimeAggregator
+// (for count_over_time and rate — the underlying counter aggregator
+// starts at zero) and HistogramAggregator.Results (for
+// quantile_over_time — explicitly sets ts.Values[i] = 0.0 when the
+// bucket has no histogram entries). All other operators reach the wire
+// via OverTimeAggregator's NaN-init path, so the cerberus emitter's
+// WHERE-filtered "observed-only" emission already matches Tempo's
+// output and needs no fill.
+//
+// emitRangeWindowMetrics (count / rate) branches on this predicate to
+// pick countIf(<window-pred>) vs WHERE-filtered count(...);
+// emitRangeWindowMetricsQuantileBuckets uses the conditional bucket
+// shape unconditionally because the quantile_over_time op is always on
+// the zero-fill path.
+func metricsOpZeroFillsEmptyBuckets(op chplan.MetricsOp) bool {
+	switch op {
+	case chplan.MetricsOpCountOverTime,
+		chplan.MetricsOpRate,
+		chplan.MetricsOpQuantileOverTime:
+		return true
+	}
+	return false
+}
+
+// metricsCountIfReducerFrag returns the per-(group, anchor) reducer for
+// the zero-fill matrix path: toFloat64(countIf(<window-pred>)) for
+// count_over_time, divided through the range duration in seconds for
+// rate. The window predicate is the same left-open / right-closed
+// (anchor_ts - range, anchor_ts] shape the WHERE-based path uses;
+// pushing it into countIf means the GROUP BY emits a row for every
+// (group, anchor) tuple the inner fanout materialises (countIf = 0 for
+// empty anchors) — i.e. SQL-side zero-fill that matches Tempo's
+// StepAggregator + CountOverTimeAggregator output without a handler
+// post-pass. The toFloat64 wrap keeps the Value column at the uniform
+// Float64 wire type chclient.Sample.Value expects (see
+// TestRangeWindowMetricsReducerIsFloat64).
+func metricsCountIfReducerFrag(op chplan.MetricsOp, rangeNS int64, rangeSeconds float64) Frag {
+	pred := zeroFillWindowPredicateFrag(rangeNS)
+	countIf := func(b *Builder) {
+		b.sb.WriteString("countIf(")
+		pred(b)
+		b.sb.WriteByte(')')
+	}
+	switch op {
+	case chplan.MetricsOpRate:
+		return func(b *Builder) {
+			b.sb.WriteString("toFloat64(")
+			countIf(b)
+			b.sb.WriteString(") / ")
+			b.sb.WriteString(strconv.FormatFloat(rangeSeconds, 'f', -1, 64))
+		}
+	default:
+		return func(b *Builder) {
+			b.sb.WriteString("toFloat64(")
+			countIf(b)
+			b.sb.WriteByte(')')
+		}
+	}
+}
+
+// zeroFillWindowPredicateFrag renders the per-anchor window predicate
+// inline (no surrounding parens — the caller wraps as needed). Mirrors
+// the WHERE-clause shape windowTsLowerBoundFrag + the
+// `ts <= anchor_ts` literal produce, joined by AND so it composes
+// inside a countIf(...) / if(...) call. Strict lower / right-closed
+// upper bound matches Tempo's IntervalMapperQueryRange (see
+// windowTsLowerBoundFrag for the off-by-one rationale).
+func zeroFillWindowPredicateFrag(rangeNS int64) Frag {
+	return func(b *Builder) {
+		b.sb.WriteString("ts > anchor_ts - toIntervalNanosecond(")
+		b.sb.WriteString(strconv.FormatInt(rangeNS, 10))
+		b.sb.WriteString(") AND ts <= anchor_ts")
+	}
 }
 
 // emitRangeWindowMetricsQuantileBuckets renders quantile_over_time in
@@ -943,15 +1044,21 @@ func (e *emitter) emitRangeWindowMetricsQuantileBuckets(r *chplan.RangeWindow, m
 		outerSb.Select(func(b *Builder) { b.Ident(a) })
 	}
 	outerSb.Select(Col("anchor_ts"))
-	outerSb.SelectAs(quantileBucketFrag(m.IsDuration), metricsQuantileBucketAlias)
-	outerSb.Select(As(verbatim("toFloat64(count(1))"), m.ValueAlias))
-
-	// WHERE: ts ∈ (anchor_ts - range, anchor_ts] AND raw-value >= 2.
-	outerSb.Where(
-		windowTsLowerBoundFrag(rangeNS),
-		verbatim("ts <= anchor_ts"),
-		quantileMetricArgMinFrag(m.IsDuration),
-	)
+	// Bucket projection is conditional on the per-anchor window + the
+	// raw-value >= 2 guard: rows that don't satisfy both fall into a
+	// phantom 0-bucket group (matching no real bucket because the
+	// minimum power-of-two bucket is >= 2 after the `metric_arg >= 2`
+	// guard). The conditional projection — rather than a WHERE-clause
+	// filter — guarantees one (group, anchor, __bucket=0) row per
+	// observed (group, anchor) tuple even when zero samples land in
+	// the window, so the handler's post-processor sees the empty
+	// (group, anchor) and Log2QuantileWithBucket returns 0 there
+	// (matching Tempo HistogramAggregator.Results's
+	// `ts.Values[i] = 0.0` for empty buckets).
+	outerSb.SelectAs(quantileBucketIfFrag(m.IsDuration, rangeNS), metricsQuantileBucketAlias)
+	// Value is countIf over the same conjunction so phantom rows count
+	// 0 and real-bucket rows count their observed sample count.
+	outerSb.Select(As(quantileCountIfFrag(m.IsDuration, rangeNS), m.ValueAlias))
 
 	// GROUP BY group aliases + anchor_ts + bucket.
 	groupFrags := make([]Frag, 0, len(groupAliases)+2)
@@ -964,6 +1071,66 @@ func (e *emitter) emitRangeWindowMetricsQuantileBuckets(r *chplan.RangeWindow, m
 
 	e.emitSelect(outerSb)
 	return nil
+}
+
+// quantileBucketIfFrag renders the conditional `__bucket` projection
+// for the zero-fill quantile path: real-bucket value when the row's ts
+// falls in (anchor_ts - range, anchor_ts] AND the raw metric_arg meets
+// Tempo's bucketize* `>= 2` guard, else 0 (the phantom sentinel —
+// distinct from every real bucket because the minimum power-of-two
+// bucket-edge is 2 nanoseconds, which renders as 2 for the non-duration
+// branch and 2e-9 for the seconds-rebased duration branch).
+//
+// Pairs with quantileCountIfFrag so the per-(group, anchor) GROUP BY
+// emits at least one row (the phantom 0-bucket / 0-count row) per
+// observed (group, anchor) tuple — SQL-side zero-fill matching Tempo's
+// HistogramAggregator.Results emission of `ts.Values[i] = 0.0` for
+// anchors with no histogram entries.
+func quantileBucketIfFrag(isDuration bool, rangeNS int64) Frag {
+	bucket := quantileBucketFrag(isDuration)
+	return func(b *Builder) {
+		b.sb.WriteString("if(")
+		writeQuantileWindowPredicate(b, isDuration, rangeNS)
+		b.sb.WriteString(", ")
+		bucket(b)
+		b.sb.WriteString(", 0)")
+	}
+}
+
+// quantileCountIfFrag renders the conditional `Value` projection for
+// the zero-fill quantile path: `toFloat64(countIf(<window pred> AND
+// <metric_arg >= 2>))`. Phantom rows (which fall in the
+// __bucket=0 group via quantileBucketIfFrag) count 0; real-bucket rows
+// count their observed sample count. See quantileBucketIfFrag for the
+// per-(group, anchor) zero-fill rationale.
+func quantileCountIfFrag(isDuration bool, rangeNS int64) Frag {
+	return func(b *Builder) {
+		b.sb.WriteString("toFloat64(countIf(")
+		writeQuantileWindowPredicate(b, isDuration, rangeNS)
+		b.sb.WriteString("))")
+	}
+}
+
+// writeQuantileWindowPredicate writes the conjunction shared by the
+// quantile zero-fill `if(...)` / `countIf(...)` calls:
+//
+//	ts > anchor_ts - toIntervalNanosecond(<rangeNS>) AND
+//	  ts <= anchor_ts AND <metric_arg-min-pred>
+//
+// Same conjunction shape windowTsLowerBoundFrag + the `ts <=
+// anchor_ts` literal + the `metric_arg >= 2` Tempo bucketize* guard
+// (pkg/traceql/ast_metrics.go, bucketizeDuration / bucketizeAttribute)
+// produced for the WHERE-filtered legacy path, inlined here so the
+// conditional callers can splice it into a single expression node.
+func writeQuantileWindowPredicate(b *Builder, isDuration bool, rangeNS int64) {
+	b.sb.WriteString("ts > anchor_ts - toIntervalNanosecond(")
+	b.sb.WriteString(strconv.FormatInt(rangeNS, 10))
+	b.sb.WriteString(") AND ts <= anchor_ts AND ")
+	if isDuration {
+		b.sb.WriteString("metric_arg * 1000000000 >= 2")
+		return
+	}
+	b.sb.WriteString("metric_arg >= 2")
 }
 
 // metricsQuantileBucketAlias is the SELECT-list alias the matrix-path
@@ -998,20 +1165,6 @@ func quantileBucketFrag(isDuration bool) Frag {
 		return verbatim("pow(2, ceil(log2(toFloat64(metric_arg) * 1000000000))) / 1000000000")
 	}
 	return verbatim("pow(2, ceil(log2(toFloat64(metric_arg))))")
-}
-
-// quantileMetricArgMinFrag renders the `metric_arg >= 2` filter that
-// mirrors Tempo's bucketize* "if d < 2 return nil" guard
-// (pkg/traceql/ast_metrics.go, bucketizeDuration / bucketizeAttribute).
-// For duration operands the cerberus lowering pre-divides by 1e9, so
-// the filter expands to `metric_arg * 1e9 >= 2` (i.e. raw `Duration >=
-// 2` nanoseconds). For non-duration numeric operands the filter is the
-// bare `metric_arg >= 2`.
-func quantileMetricArgMinFrag(isDuration bool) Frag {
-	if isDuration {
-		return verbatim("metric_arg * 1000000000 >= 2")
-	}
-	return verbatim("metric_arg >= 2")
 }
 
 // anchorFanoutFrag returns a Frag rendering

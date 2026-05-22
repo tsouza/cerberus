@@ -21,9 +21,10 @@ import (
 // mode emits one QueryRangeResponse after eager drain; instant is the
 // single-bucket variant of the same shape). Frame batching does not
 // apply — the matrix / instant pivot pipelines need the full row set
-// in hand before zero-fill + quantile post-processing can produce a
-// well-formed series envelope, so the streaming-friendly behaviour is
-// to flush exactly one frame on completion.
+// in hand before quantile post-processing can produce a well-formed
+// series envelope (matrix-grid zero-fill happens SQL-side; see
+// internal/chsql/range_window.go), so the streaming-friendly behaviour
+// is to flush exactly one frame on completion.
 //
 // Both methods shadow the embedded
 // tempopb.UnimplementedStreamingQuerierServer in service.go via Go's
