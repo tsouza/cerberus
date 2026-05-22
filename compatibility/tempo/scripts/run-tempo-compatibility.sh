@@ -129,7 +129,6 @@ echo "==> building diff driver"
 # badge JSON) and the markdown diff report; the driver returns 0 even
 # when cases diverge. Only driver-wide hard errors (corpus load failure,
 # report write failure) escalate to a non-zero rc.
-DIFF_FLAGS="--expected-failures $ROOT_DIR/expected-failures.json"
 
 echo "==> running diff driver (writing report to $REPORT_DIR/diff.md, score to $REPORT_DIR/compat-score.json)"
 echo "    --tempo-http=http://localhost:23200  (reference Tempo)"
@@ -140,8 +139,7 @@ set +e
     --cerberus=http://localhost:29092 \
     --corpus="$ROOT_DIR/driver/corpus/smoke.txtar" \
     --report="$REPORT_DIR/diff.md" \
-    --score="$REPORT_DIR/compat-score.json" \
-    $DIFF_FLAGS
+    --score="$REPORT_DIR/compat-score.json"
 DIFF_RC=$?
 set -e
 

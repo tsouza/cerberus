@@ -1,25 +1,25 @@
 /**
  * Drilldown-app iteration helpers.
  *
- * Grafana ships four built-in drilldown apps (Grafana 11.4.0):
+ * The cerberus compose stack provisions three Grafana built-in drilldown
+ * apps (Grafana 11.4.0):
  *   - grafana-metricsdrilldown-app   (Explore Metrics)
  *   - grafana-lokiexplore-app        (Explore Logs)
  *   - grafana-exploretraces-app      (Explore Traces)
- *   - grafana-pyroscope-app          (Explore Profiles / Pyroscope)
  *
  * Each app boots its own React tree and fires its own wave of
  * `/api/datasources/uid/.../resources/...` calls. The compose-smoke
  * spec only touches Explore Logs (and only at boot). The nightly
  * `iterate-drilldown-apps.spec.ts` drives a two-level click through
- * each installed app to catch N15-class regressions (drilldown empty
- * after a facet click).
+ * each app to catch N15-class regressions (drilldown empty after a
+ * facet click).
  *
- * The pyroscope app is NOT preinstalled on the cerberus compose stack
- * (no `GF_INSTALL_PLUGINS` line in `docker-compose.yml`); on a vanilla
- * Grafana 11.4.0 the first three apps ship out-of-the-box. The spec
- * uses `isAppInstalled` below to detect per-app availability so a
- * missing pyroscope (or any other app on a stripped-down stack)
- * annotates cleanly instead of failing.
+ * Every catalog entry MUST be installed in the compose stack — the
+ * spec hard-asserts install status. If a future Grafana upgrade drops
+ * one of the three apps from the vanilla image, either provision it
+ * via `GF_INSTALL_PLUGINS` or remove the entry from the catalog.
+ * `grafana-pyroscope-app` is deliberately not in the catalog because
+ * cerberus does not ship profiling.
  *
  * The drilldown-app surface churns hard on every Grafana upgrade —
  * pin the Grafana version (currently `grafana/grafana:11.4.0`, see
@@ -54,11 +54,6 @@ export const DRILLDOWN_APPS: ReadonlyArray<DrilldownApp> = [
     root: '/a/grafana-exploretraces-app/explore',
     label: 'Explore Traces',
   },
-  {
-    id: 'grafana-pyroscope-app',
-    root: '/a/grafana-pyroscope-app/single',
-    label: 'Explore Profiles',
-  },
 ];
 
 /**
@@ -78,15 +73,10 @@ export function iterateDrilldownApps(): DrilldownApp[] {
  * for an app that's not installed, and 200 + `{ enabled: false }` for
  * an app that's installed but disabled.
  *
- * The compose stack does not preinstall `grafana-pyroscope-app`
- * (no `GF_INSTALL_PLUGINS` in `docker-compose.yml`); calls for that
- * app return 404 there. On a vanilla Grafana 11.4.0 the other three
- * drilldown apps ship preinstalled+enabled.
- *
- * Returns `true` only when the plugin endpoint returns 2xx AND the
- * `enabled` field is truthy. Network errors (e.g. Grafana down) are
- * surfaced as a thrown error — the caller is expected to have already
- * confirmed Grafana reachability before iterating apps.
+ * Throws a descriptive error if the plugin endpoint returns non-2xx,
+ * an unparseable body, or `enabled !== true`. The caller's
+ * `isAppInstalled` predicate must surface a `false` result as a hard
+ * failure — every catalog entry MUST be installed.
  */
 export async function isAppInstalled(
   request: APIRequestContext,
@@ -95,11 +85,6 @@ export async function isAppInstalled(
 ): Promise<boolean> {
   const resp = await request.get(`${baseURL}/api/plugins/${appId}/settings`);
   const status = resp.status();
-  // 404 → not installed. Other non-2xx (e.g. 401 on an authed Grafana
-  // misconfigured for anonymous) are reported as not-installed so the
-  // spec annotates and moves on; auth misconfig is out of scope for the
-  // drilldown sweep.
-  if (status === 404) return false;
   if (status < 200 || status > 299) return false;
   let parsed: { enabled?: boolean };
   try {

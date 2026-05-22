@@ -25,9 +25,11 @@ const DEFAULT_CERBERUS_URL = 'http://localhost:8080';
 /**
  * Generate self-traffic against cerberus for `durationSec` seconds.
  *
- * Returns when the duration elapses. Errors from individual requests
- * are tolerated — the helper's job is to nudge metrics, not to
- * assert correctness. The caller's spec sweep is the assertion layer.
+ * Returns when the duration elapses. The helper's job is to nudge
+ * metrics, not to assert correctness — individual request errors
+ * are discarded so the caller's spec sweep (the assertion layer)
+ * sees the resulting state of the counters rather than per-call
+ * flake.
  *
  * Reads `CERBERUS_URL` env var (default http://localhost:8080) to
  * find cerberus directly. The compose stack publishes that port
