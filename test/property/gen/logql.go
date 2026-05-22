@@ -144,9 +144,17 @@ func drawBody(t *rapid.T, id string) string {
 // side rationale: the optimizer's PREWHERE promotion fires
 // unconditionally and chDB's Memory engine refuses PREWHERE.
 //
-// Only the columns LogQL touches today are projected — the OTel-CH
-// schema is much wider, but generating empty placeholder columns
-// would just slow chDB down without exercising any production path.
+// The DDL must declare every top-level OTel-CH scalar column the
+// LogQL lowering routes through `topLevelLogColumnFor` — even though
+// the property generator only populates `ResourceAttributes`,
+// `SeverityText`, `Body`, and `Timestamp`. The matcher lowering
+// emits `coalesce(nullIf(ServiceName, ”),
+// ResourceAttributes['service_name'])` (and the matching shape for
+// each other top-level label), so chDB rejects the query with
+// `Unknown expression identifier ServiceName` if the column is
+// missing. The empty-string / zero-value defaults keep the `nullIf`
+// branch falsy, so the coalesce still falls through to the
+// ResourceAttributes map the generator populated.
 func renderLogsDDL(records []property.LogRecord) string {
 	var b strings.Builder
 	b.WriteString(`CREATE OR REPLACE TABLE `)
@@ -154,8 +162,16 @@ func renderLogsDDL(records []property.LogRecord) string {
 	b.WriteString(` (
     Timestamp DateTime64(9),
     SeverityText LowCardinality(String),
+    SeverityNumber UInt8 DEFAULT 0,
     Body String,
-    ResourceAttributes Map(LowCardinality(String), String)
+    ResourceAttributes Map(LowCardinality(String), String),
+    ServiceName LowCardinality(String) DEFAULT '',
+    ScopeName String DEFAULT '',
+    ScopeVersion String DEFAULT '',
+    EventName LowCardinality(String) DEFAULT '',
+    TraceId String DEFAULT '',
+    SpanId String DEFAULT '',
+    TraceFlags UInt8 DEFAULT 0
 ) ENGINE = MergeTree ORDER BY Timestamp;
 `)
 	if len(records) == 0 {
