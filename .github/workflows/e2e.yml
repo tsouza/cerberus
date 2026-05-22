@@ -1,16 +1,39 @@
 name: e2e
 
-# End-to-end test umbrella. Currently hosts the `dashboard` job (full-
-# stack smoke: k3d + cerberus + Grafana + Playwright); future e2e
-# scenarios would land as additional jobs in this workflow.
+# End-to-end test umbrella. Hosts both:
+#   - `compose-smoke` — repo-root quickstart compose stack smoke
+#     (`docker compose up --wait`) + Grafana Playwright catch-net.
+#     Runs on pull_request + push-to-main. Required status check on
+#     branch protection — DO NOT rename the job (the check name is
+#     pinned to `compose-smoke`).
+#   - `dashboard` — full-stack k3d + cerberus + Grafana + Playwright
+#     smoke. Runs on push-to-main + nightly + manual dispatch only.
+#     Informational on merges, not a PR gate; regressions are caught
+#     at merge-to-main time and reverted from main if they break.
+#   - `startup-bench` — startup-speed bench (cerberus to /healthz in
+#     <2s). Same trigger set as `dashboard`; informational only.
 #
-# As of 2026-05-13 the `dashboard` job no longer runs on pull_request —
-# it executes only on push to main + nightly + manual dispatch. It is
-# no longer in the required-status-checks list either; regressions are
-# caught at merge-to-main time and reverted from main if they break.
-# The PR fast-feedback loop stays on `check` + `lint`.
+# Why `compose-smoke` matters on top of `dashboard`: the dashboard
+# job uses k3d, not docker-compose. Without `compose-smoke` the
+# quickstart compose stack has zero PR coverage and silently breaks
+# when a contributor edits docker-compose.yml / Dockerfile.local /
+# Grafana provisioning / the cerberus binary.
+#
+# What `compose-smoke` does:
+#   1. `docker compose up --wait` — build cerberus, bring up CH +
+#      cerberus + grafana, wait for all healthchecks to go green.
+#   2. Curl cerberus's /healthz + /readyz and Grafana's /api/health
+#      from the host. Confirms the published port maps are right and
+#      the service contracts are honoured end-to-end.
+#   3. Drive Grafana through every provisioned dashboard via a
+#      Playwright catch-net spec — catches the class of bug where
+#      Grafana 200s a `/api/ds/query` but the body carries
+#      .results.<refId>.error (invisible to curl smokes).
+#   4. Teardown with `docker compose down -v`.
 
 on:
+  pull_request:
+    branches: [main]
   push:
     branches: [main]
   schedule:
@@ -21,15 +44,232 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: e2e-${{ github.ref }}
-  cancel-in-progress: false
+# No file-level concurrency — the two lanes have different policies.
+# `compose-smoke` cancels in-progress on PR events; `dashboard` /
+# `startup-bench` never cancel (a half-killed k3d teardown leaks
+# Docker volumes). Per-job `concurrency:` blocks encode each policy.
 
 jobs:
+  # See `.github/workflows/ci.yml` for the rationale + filter convention.
+  # Docs-only PRs short-circuit the compose-smoke job (Docker compose
+  # build + Grafana Playwright catch-net are pointless when no code
+  # changed). Runs on pull_request only — push/schedule/dispatch skip
+  # straight to the smoke job.
+  changes:
+    name: changes
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      docs_only: ${{ steps.compute.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          # See ci.yml for why `every` is required (the `**` baseline
+          # plus negation patterns would otherwise always be true).
+          predicate-quantifier: 'every'
+          filters: |
+            code:
+              - '**'
+              - '!**/*.md'
+              - '!**/*.markdown'
+              - '!docs/**'
+              - '!LICENSE*'
+              - '!CHANGELOG.md'
+              - '!.markdownlint*'
+              - '!CLAUDE.md'
+              - '!AGENTS.md'
+              - '!README*'
+
+      - id: compute
+        run: |
+          if [ "${{ steps.filter.outputs.code }}" = "false" ]; then
+            echo "docs_only=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  compose-smoke:
+    name: compose-smoke
+    needs: changes
+    # Runs on pull_request + push-to-main only. On schedule /
+    # workflow_dispatch the compose stack adds no signal over the
+    # dashboard job. `needs.changes` only runs on pull_request, so
+    # we have to tolerate it being skipped on push (always() unwraps
+    # the skip, and the docs-only short-circuit only applies on PR).
+    if: |
+      always() &&
+      (github.event_name == 'pull_request' || github.event_name == 'push') &&
+      (github.event_name != 'pull_request' || needs.changes.outputs.docs_only != 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: compose-smoke-${{ github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: docker compose up --wait
+        run: |
+          # --wait-timeout caps the wait at 5 min. Cold runners need
+          # ~30-60s for the Go build + ~10-20s for CH first-boot; 300s
+          # is generous slack.
+          docker compose up --wait --wait-timeout 300
+
+      - name: smoke cerberus /healthz + /readyz
+        run: |
+          curl -fsS --max-time 5 http://localhost:8080/healthz
+          curl -fsS --max-time 5 http://localhost:8080/readyz
+
+      - name: smoke Grafana /api/health
+        run: |
+          curl -fsS --max-time 5 http://localhost:3000/api/health \
+            | tee /tmp/grafana-health.json
+          # `database: ok` is the load-bearing field for "Grafana
+          # itself is up and its internal SQLite is responsive".
+          # Datasource health is a separate per-datasource probe.
+          grep -q '"database":[[:space:]]*"ok"' /tmp/grafana-health.json
+
+      # ---- Playwright dashboard catch-net ----
+      # Drives Grafana through every provisioned dashboard, captures
+      # /api/ds/query + /api/dashboards/* traffic, and asserts every
+      # response is 2xx with no tunneled per-target error. This is the
+      # gate that catches the class of bug where Grafana 200s a
+      # ds/query but the body carries .results.<refId>.error — invisible
+      # to curl smokes and to direct cerberus-API tests.
+      #
+      # Gate posture: hard fail. A non-2xx response or a tunneled
+      # per-target error in a /api/ds/query body fails the job — that
+      # was the gap that let dashboard-load regressions land on main
+      # for hours unnoticed.
+      # No npm cache here — the playwright suite doesn't currently
+      # ship a package-lock.json, and setup-node's cache lookup hard-
+      # fails before the install fallback below ever runs when the
+      # cache-dependency-path is unresolvable. Re-add cache: npm once a
+      # lockfile lands under test/e2e/playwright/.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: install Playwright deps
+        working-directory: test/e2e/playwright
+        run: |
+          # npm ci needs a lockfile; fall back to `npm install` if the
+          # repo doesn't ship one yet (the existing playwright suite
+          # uses the same pattern in the k3d e2e job).
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install --no-audit --no-fund
+          fi
+          npx playwright install --with-deps chromium
+
+      - name: playwright compose-grafana-smoke
+        id: playwright_smoke
+        working-directory: test/e2e/playwright
+        env:
+          GRAFANA_BASE_URL: http://localhost:3000
+          GRAFANA_URL: http://localhost:3000
+          CERBERUS_URL: http://localhost:8080
+        run: |
+          # Phase-1 panel-shape spec (iterate-panel-shape.spec.ts) runs
+          # alongside the catch-net smoke. It enumerates every
+          # provisioned dashboard, finds every aggregating panel
+          # target, and asserts the by(...) / without(...) label-shape
+          # rule against cerberus's /api/v1/query_range — pinning the
+          # N2/N11/N14 sweep findings so they can't silently regress.
+          #
+          # Phase-2 histogram-completeness spec
+          # (iterate-histogram-completeness.spec.ts) iterates the same
+          # dashboard surface but selects histogram_quantile(...)
+          # targets, asserts the underlying _bucket / _count / _sum
+          # companion series exist on the wire, and pins the
+          # no-fabricated-value rule for histogram_quantile over
+          # bucket-less metrics. Closes N5 / N6.
+          #
+          # Phase-3 filter-drill spec (iterate-filter-drill.spec.ts)
+          # rides the same dashboard enumeration: for every panel
+          # with a by(...) clause it re-fires the query with a
+          # `{<key>="<value>"}` matcher synthesised from a baseline-
+          # observed value and asserts the filtered series count is
+          # in (0, baseline] — the Q3-resolved subset rule. Pins
+          # N3/N15 (matcher-path drill regressions).
+          #
+          # Phase-4 single-panel-kiosk spec
+          # (iterate-panel-kiosk.spec.ts) iterates every provisioned
+          # dashboard + every panel, opens the panel in single-panel
+          # kiosk view (`?viewPanel=<id>&kiosk`), asserts the body
+          # renders, no role=alert error banner appears, and no
+          # browser console errors fire. ESCs back to the grid view
+          # and asserts the back-nav leaves no stuck-loading panel or
+          # orphaned modal behind. Closes N13 (latent).
+          #
+          # iterate-all-dashboards.spec.ts reads
+          # test/e2e/grafana/compose/dashboards/*.json at spec-build
+          # time, so it auto-adapts to whatever dashboards the
+          # provisioning directory carries. As the rich-observability
+          # rollout lands new dashboards (clickhouse-observability,
+          # otelcol-observability, host-observability), the spec picks
+          # them up without an edit here.
+          #
+          # iterate-metrics-explorer.spec.ts enumerates every metric
+          # cerberus publishes and probes /api/v1/series for each.
+          # Pins the user's #8 sweep finding: the labels chip must not
+          # surface "Unable to fetch labels" for any published metric.
+          npx playwright test \
+            compose_grafana_smoke.spec.ts \
+            iterate-panel-shape.spec.ts \
+            iterate-histogram-completeness.spec.ts \
+            iterate-filter-drill.spec.ts \
+            iterate-panel-kiosk.spec.ts \
+            iterate-all-dashboards.spec.ts \
+            iterate-metrics-explorer.spec.ts \
+            --reporter=list
+
+      - name: upload Playwright report on failure
+        if: steps.playwright_smoke.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: compose-grafana-smoke-report
+          path: |
+            test/e2e/playwright/playwright-report
+            test/e2e/playwright/test-results
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: dump compose state + logs on failure
+        if: failure() || steps.playwright_smoke.outcome == 'failure'
+        run: |
+          echo "=== compose ps ==="
+          docker compose ps
+          echo "=== clickhouse logs (last 200) ==="
+          docker compose logs --tail=200 clickhouse || true
+          echo "=== cerberus logs (last 200) ==="
+          docker compose logs --tail=200 cerberus || true
+          echo "=== grafana logs (last 200) ==="
+          docker compose logs --tail=200 grafana || true
+          echo "=== otel-collector logs (last 200) ==="
+          docker compose logs --tail=200 otel-collector || true
+
+      - name: teardown
+        if: always()
+        run: docker compose down -v --remove-orphans
+
   dashboard:
     name: dashboard
+    # Push-to-main + nightly + manual dispatch only — informational on
+    # merges, not a PR gate. The PR fast-feedback loop stays on
+    # `check` + `lint` + `compose-smoke`.
+    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    concurrency:
+      group: e2e-dashboard-${{ github.ref }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v6
 
@@ -78,12 +318,13 @@ jobs:
         # `npx playwright test` with no spec filter auto-discovers
         # every `*.spec.ts` under test/e2e/playwright/. That includes
         # the phase-5 `iterate-time-ranges.spec.ts` matrix sweep,
-        # which is deliberately NOT in `.github/workflows/compose-smoke.yml`
-        # (Q2 decision — too expensive for PR gate; nightly-only per
+        # which is deliberately NOT in the compose-smoke job's
+        # explicit invocation list (Q2 decision — too expensive for
+        # PR gate; nightly-only per
         # /home/thiago/.claude/plans/e2e-enhance.md §9). Any future
         # nightly-only spec should follow the same pattern: just add
-        # the file here and skip it from compose-smoke's explicit
-        # invocation list.
+        # the file here and skip it from the compose-smoke job's
+        # explicit invocation list.
         #
         # Auto-discovered specs of note (each is hard-fail in this
         # informational dashboard job; the job itself is not a PR gate):
@@ -141,11 +382,15 @@ jobs:
   startup-bench:
     # Startup-speed benchmark: spawn cerberus and assert <2 s to /healthz.
     # Informational only — not a required gate. The fast-feedback PR loop
-    # stays on `check` + `lint`. Runs on push-to-main + nightly + manual
-    # dispatch alongside the dashboard job.
+    # stays on `check` + `lint` + `compose-smoke`. Runs on push-to-main +
+    # nightly + manual dispatch alongside the dashboard job.
     name: startup-bench
+    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    concurrency:
+      group: e2e-startup-bench-${{ github.ref }}
+      cancel-in-progress: false
     # Why not `services:`? `clickhouse/clickhouse-server:24.8-alpine`'s
     # two-phase entrypoint (temp server → create user+DB → restart) takes
     # 120–200s under GH Actions runner load, and GH's `services:` retry
