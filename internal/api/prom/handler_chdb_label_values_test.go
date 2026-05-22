@@ -72,7 +72,13 @@ const metaShapedHistogramDDL = `CREATE TABLE otel_metrics_histogram (
 func TestLabelValues_MatchSelector_ChDB(t *testing.T) {
 	seedTime := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 	ts := seedTime.Format("2006-01-02 15:04:05.000")
-	seed := metaShapedGaugeDDL + fmt.Sprintf(`
+	// All three metric tables are created because fetchLabelValuesMatched
+	// fans a bare classic-histogram base name out across the histogram
+	// table via expandBareHistogramMatcher; the companion variants
+	// (`up_bucket` / `up_count` / `up_sum`) lower to the histogram table
+	// and chDB errors on missing-table reads. The histogram + sum tables
+	// stay empty — only gauge carries rows.
+	seed := metaShapedGaugeDDL + metaShapedSumDDL + metaShapedHistogramDDL + fmt.Sprintf(`
 INSERT INTO otel_metrics_gauge (MetricName, MetricDescription, MetricUnit, Attributes, TimeUnix, Value) VALUES
     ('up', 'scrape ok', '', map('job', 'api', 'instance', 'h1:8080'), toDateTime64('%s', 9), 1.0),
     ('up', 'scrape ok', '', map('job', 'db',  'instance', 'h1:8080'), toDateTime64('%s', 9), 0.0),
@@ -175,7 +181,11 @@ INSERT INTO otel_metrics_gauge (MetricName, MetricDescription, MetricUnit, Attri
 func TestLabelValues_MatchSelector_Multiple_ChDB(t *testing.T) {
 	seedTime := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 	ts := seedTime.Format("2006-01-02 15:04:05.000")
-	seed := metaShapedGaugeDDL + fmt.Sprintf(`
+	// Histogram + sum tables are created (empty) so the bare-name
+	// classic-histogram companion fan-out
+	// (expandBareHistogramMatcher) finds the histogram table when it
+	// probes `up_bucket` / `up_count` / `up_sum`.
+	seed := metaShapedGaugeDDL + metaShapedSumDDL + metaShapedHistogramDDL + fmt.Sprintf(`
 INSERT INTO otel_metrics_gauge (MetricName, MetricDescription, MetricUnit, Attributes, TimeUnix, Value) VALUES
     ('up',   '', '', map('job', 'api'), toDateTime64('%s', 9), 1.0),
     ('up',   '', '', map('job', 'db'),  toDateTime64('%s', 9), 1.0),
@@ -217,7 +227,10 @@ INSERT INTO otel_metrics_gauge (MetricName, MetricDescription, MetricUnit, Attri
 func TestLabelValues_MatchSelector_Empty_ChDB(t *testing.T) {
 	seedTime := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 	ts := seedTime.Format("2006-01-02 15:04:05.000")
-	seed := metaShapedGaugeDDL + fmt.Sprintf(`
+	// Histogram + sum tables are created (empty) so the bare-name
+	// fan-out for `does_not_exist` finds the histogram table when it
+	// probes `does_not_exist_bucket` / `_count` / `_sum`.
+	seed := metaShapedGaugeDDL + metaShapedSumDDL + metaShapedHistogramDDL + fmt.Sprintf(`
 INSERT INTO otel_metrics_gauge (MetricName, MetricDescription, MetricUnit, Attributes, TimeUnix, Value) VALUES
     ('up', '', '', map('job', 'api'), toDateTime64('%s', 9), 1.0);`, ts)
 
