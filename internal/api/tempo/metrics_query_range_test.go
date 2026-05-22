@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -610,18 +609,6 @@ func TestMetricsQueryRange_DurationAggInSeconds(t *testing.T) {
 			}
 		})
 	}
-}
-
-// mustParseUnix parses a unix-seconds string and returns a UTC time,
-// failing the test on parse error. Mirrors parseTempoTime's heuristics
-// but tightened to the int64-only path the fixture timestamps use.
-func mustParseUnix(t *testing.T, raw string) time.Time {
-	t.Helper()
-	n, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil {
-		t.Fatalf("parse fixture unix %q: %v", raw, err)
-	}
-	return time.Unix(n, 0).UTC()
 }
 
 // TestMetricsQueryRange_BadInputs covers the 4xx surface: missing or
