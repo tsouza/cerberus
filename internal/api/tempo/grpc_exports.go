@@ -23,8 +23,10 @@ import (
 //    DISTINCT-attribute-key lookup the HTTP handler performs.
 //  - **Metrics RPC helpers** — ExecMetricsRange / ExecMetricsInstant
 //    drive the full MetricsQueryRange / MetricsQueryInstant pipeline
-//    end-to-end and return the post-quantile-collapse, post-zero-fill,
-//    post-exemplar-attach series the HTTP handler returns.
+//    end-to-end and return the post-quantile-collapse,
+//    post-exemplar-attach series the HTTP handler returns. (Zero-fill
+//    of empty matrix anchors lives in the SQL emitter — see
+//    internal/chsql/range_window.go.)
 //
 // Keeping every export in a single file means PR 2 (gRPC Search),
 // PR 3 (gRPC tags), and PR 4 (gRPC metrics) each touch one new gRPC
@@ -135,10 +137,12 @@ func (h *Handler) FetchTagValues(ctx context.Context, r ResolvedTagName, start, 
 // ExecMetricsRangeResult is the post-execution intermediate shape the
 // gRPC MetricsQueryRange RPC translates into tempopb.TimeSeries. Each
 // MetricsSeries already carries the post-quantile-collapse,
-// post-zero-fill, post-exemplar-attach view of the data; the gRPC
-// handler only re-shapes labels + samples into the proto envelope.
+// post-exemplar-attach view of the data; the gRPC handler only
+// re-shapes labels + samples into the proto envelope. (Matrix-shape
+// zero-fill lives in the SQL emitter — see
+// internal/chsql/range_window.go.)
 type ExecMetricsRangeResult struct {
-	// Series is the post-processed (quantile-collapse, zero-fill,
+	// Series is the post-processed (quantile-collapse,
 	// exemplars-attached) series list — same value the HTTP handler
 	// passes to writeJSON.
 	Series []MetricsSeries
@@ -158,8 +162,8 @@ type ExecMetricsRangeResult struct {
 //     SQL emits the matrix-shape (group, anchor, value) tuples.
 //  5. Run engine.QueryPlan — emit + execute against ClickHouse.
 //  6. Post-process quantile buckets (no-op for non-quantile ops).
-//  7. Pivot row stream → MetricsSeries, zero-fill the matrix grid
-//     across [Start, End] for count/rate/quantile.
+//  7. Pivot row stream → MetricsSeries (matrix-grid zero-fill happens
+//     SQL-side via the chsql countIf / conditional-bucket emit).
 //  8. Best-effort exemplar enrichment — failure here keeps the
 //     series envelope but emits a Logger.Warn (same policy as HTTP).
 //
@@ -219,8 +223,10 @@ func (h *Handler) ExecMetricsRange(ctx context.Context, query string, start, end
 	if metrics.Op == chplan.MetricsOpQuantileOverTime {
 		samples = postProcessQuantileBuckets(samples, metrics)
 	}
+	// Matrix-shape zero-fill is owned by the SQL emitter (see
+	// internal/chsql/range_window.go's countIf / conditional-bucket
+	// emit). No Go-side post-pass.
 	series := toMetricsSeries(samples, metrics)
-	series = zeroFillMatrixGrid(series, metrics, start, end, step)
 
 	// Best-effort exemplar enrichment. A failed emit / query keeps
 	// the empty Exemplars slice already attached by toMetricsSeries
@@ -257,7 +263,7 @@ type ExecMetricsInstantResult struct {
 // one anchor per series — Tempo's translateQueryRangeToInstant
 // semantics (one (labels, scalar) tuple per series at end-of-window).
 //
-// The instant path does NOT zero-fill (one anchor only) and does NOT
+// The instant path produces one anchor only (no matrix grid) and does NOT
 // attach exemplars (Tempo's instant envelope carries no Exemplars
 // field — see tempopb.InstantSeries). Quantile post-processing still
 // runs so the per-phi label shape is honoured.
