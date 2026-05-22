@@ -55,6 +55,53 @@ processors:
       - key: deployment.environment
         value: compose
         action: upsert
+  # Strip exemplars from the service-graph metrics before they reach
+  # the clickhouseexporter. The servicegraph connector emits
+  # exemplars whose pcommon.Value pointers the v0.116.0 contrib
+  # clickhouseexporter dereferences without a nil check in its
+  # sum_metrics insert path
+  # (`exporter/clickhouseexporter/internal/sum_metrics.go:129`),
+  # crashing the whole collector on the first metrics_flush_interval
+  # tick. The fix is upstream-bound; until the bump lands here we
+  # drop exemplars on the servicegraph branch — exemplars are a
+  # nice-to-have for service-graph metrics (the connector emits
+  # representative TraceIDs), but the edge series themselves still
+  # flow through.
+  transform/servicegraph_drop_exemplars:
+    error_mode: ignore
+    metric_statements:
+      - context: datapoint
+        statements:
+          # Clear exemplars on every datapoint flowing through this
+          # branch. The connector populates them with representative
+          # trace IDs whose nested pcommon.Value pointers the
+          # v0.116.0 contrib clickhouseexporter dereferences blindly.
+          # Empty slice = no exemplar attribute loop runs at all.
+          - set(exemplars, []) where true
+
+connectors:
+  # The servicegraph connector reads spans off the `traces` pipeline,
+  # derives caller -> callee edges from SpanKind=Client + peer.service
+  # (stamped by internal/chclient/client.go on every CH round-trip),
+  # and emits Prometheus-shape metrics
+  # (traces_service_graph_request_total / _duration_seconds /
+  # _failed_total) into a `metrics/servicegraph` pipeline that ships
+  # them back through the clickhouseexporter. Grafana's Tempo
+  # datasource Service Graph tab then renders edges by querying
+  # cerberus's own Prom head for those metrics — closing the
+  # observability dogfood loop: cerberus's traces become the
+  # service-graph metrics cerberus's Prom API serves back.
+  #
+  # Buckets are the OTel-Collector default for HTTP/RPC traffic; ttl
+  # is intentionally short (the store is purely a cross-span join
+  # cache for matching client / server pairs, and CH-call spans don't
+  # have a server-side sibling — every edge resolves on the client
+  # span alone via peer.service).
+  servicegraph:
+    latency_histogram_buckets: [100ms, 250ms, 1s, 5s, 10s]
+    store:
+      ttl: 2s
+    metrics_flush_interval: 15s
 
 exporters:
   clickhouse:
@@ -95,4 +142,22 @@ service:
     traces:
       receivers: [otlp]
       processors: [memory_limiter, resource, batch]
+      # `servicegraph` is wired as an additional exporter on the
+      # traces pipeline because, in connector wiring, a connector
+      # plays the role of an exporter on the source pipeline-type
+      # and a receiver on the destination pipeline-type. Spans
+      # still flow to clickhouseexporter as before — the connector
+      # is a tap, not a swap.
+      exporters: [clickhouse, servicegraph]
+    # metrics/servicegraph receives the connector's derived
+    # `traces_service_graph_*` series and ships them through the
+    # same clickhouseexporter the normal metrics pipeline uses.
+    # Cerberus's Prom head then queries them back out of CH so
+    # Grafana's Tempo Service Graph tab can render edges.
+    metrics/servicegraph:
+      receivers: [servicegraph]
+      processors:
+        - memory_limiter
+        - transform/servicegraph_drop_exemplars
+        - batch
       exporters: [clickhouse]

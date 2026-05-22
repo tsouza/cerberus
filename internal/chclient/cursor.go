@@ -140,7 +140,7 @@ func (c *Client) QueryCursor(ctx context.Context, sql string, args ...any) (Curs
 	if !c.br.allow() {
 		return nil, fmt.Errorf("chclient: query: %w", ErrCircuitOpen)
 	}
-	ctx, span := startExecuteSpan(ctx, sql)
+	ctx, span := startExecuteSpan(ctx, sql, c.addr)
 	rows, err := c.conn.Query(ctx, sql, args...)
 	c.br.record(err)
 	if err != nil {

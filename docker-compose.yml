@@ -95,7 +95,7 @@ services:
     # cerberus's own startup. `condition: service_started` on the
     # cerberus dependency below is sufficient; the OTel demo's compose
     # stack uses the same pattern.
-    image: otel/opentelemetry-collector-contrib:0.116.1
+    image: otel/opentelemetry-collector-contrib:0.120.0
     networks: [cerberus-dev]
     command: ["--config=/etc/otel/config.yaml"]
     volumes:
