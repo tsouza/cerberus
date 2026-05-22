@@ -144,6 +144,25 @@ const EXPECTED_EMPTY: ReadonlyArray<{ prefix: string; why: string }> = [
     // rationale doesn't change per metric.
     why: 'otelcol_* collector self-telemetry; counters emit only on the underlying event, leaving the 5m window empty on a fresh stack',
   },
+  {
+    prefix: 'system_',
+    // hostmetrics receiver gauges (`system_cpu_*`, `system_disk_*`,
+    // `system_memory_*`, `system_network_*`, `system_filesystem_*`) emit
+    // on a 15s scrape cadence. The catalog endpoint sees them after the
+    // first push, but the per-name `/api/v1/series` 5m window can race
+    // ahead of the next emission on a fresh compose stack — same cadence
+    // story as the `otelcol_` / `k8s_` prefixes.
+    why: 'hostmetrics receiver gauges; emission cadence leaves the 5m window empty on a fresh stack',
+  },
+  {
+    prefix: 'clickhouse_event',
+    // sqlqueryreceiver emits one row per CH event (`SelectedBytes`,
+    // `InsertedRows`, `Query`, `MergedRows`, …). A quiet compose stack
+    // with no traffic doesn't trigger most CH events in the 5m window,
+    // so the bare-name catalog entry is present but the series probe
+    // returns 0. Real production stacks fire these continuously.
+    why: 'sqlqueryreceiver per-CH-event counters; quiet compose stack has no events in the 5m window',
+  },
 ];
 
 /**

@@ -146,6 +146,17 @@ const EXPECTED_EMPTY_EXPR_SUBSTRINGS: ReadonlyArray<{
     // the cluster is genuinely idle on these event classes.
     why: 'clickhouse_event Query/Insert counters tick only on matching events; the 5m window can be empty on a fresh stack',
   },
+  {
+    match: 'clickhouse_event{name=~"SelectedBytes',
+    // clickhouse-observability "MergeTree I/O bytes/s" reads
+    // `clickhouse_event{name=~"SelectedBytes|InsertedBytes|MergedRows|
+    // MergedUncompressedBytes|ReadBufferFromFileDescriptorReadBytes|
+    // WriteBufferFromFileDescriptorWriteBytes"}`. Same cadence story
+    // as the "Query rate by type" entry above — these MergeTree-IO
+    // event counters only tick on physical I/O against CH, which is
+    // rare on an idle stack inside the 5m rate window.
+    why: 'clickhouse_event MergeTree-IO counters tick only on physical CH I/O; idle stack leaves 5m window empty',
+  },
 ];
 
 /**
