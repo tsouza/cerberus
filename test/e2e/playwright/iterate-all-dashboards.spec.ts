@@ -131,31 +131,19 @@ const EXPECTED_EMPTY_EXPR_SUBSTRINGS: ReadonlyArray<{
     why: 'cerberus produces no ERROR-level logs on a healthy compose stack',
   },
   {
-    match: 'clickhouse_event{name=~"Query',
-    // clickhouse-observability "Query rate by type" reads
-    // `clickhouse_event{name=~"Query|SelectQuery|InsertQuery|...|FailedInsertQuery"}`
-    // — ClickHouse's per-event counters exposed by its built-in
-    // prometheus endpoint and scraped via the prometheus/clickhouse
-    // receiver. On a fresh compose stack the seed warmup against
-    // cerberus drives a few SELECTs through CH, but the
-    // ProfileEvents → event counter mapping CH publishes only ticks
-    // the matched-named events; the 5m rate window can land entirely
-    // before any matching event fires (warmup phase is ~30s, the
-    // CH-side ProfileEvents flush cadence is on the order of seconds
-    // but the scrape is 15s). The panel renders empty by design when
-    // the cluster is genuinely idle on these event classes.
-    why: 'clickhouse_event Query/Insert counters tick only on matching events; the 5m window can be empty on a fresh stack',
-  },
-  {
-    match: 'clickhouse_event{name=~"SelectedBytes',
-    // clickhouse-observability "MergeTree I/O bytes/s" reads
-    // `clickhouse_event{name=~"SelectedBytes|InsertedBytes|MergedRows|
-    // MergedUncompressedBytes|ReadBufferFromFileDescriptorReadBytes|
-    // WriteBufferFromFileDescriptorWriteBytes"}`. Same cadence story
-    // as the "Query rate by type" entry above — these MergeTree-IO
-    // event counters only tick on physical I/O against CH, which is
-    // rare on an idle stack inside the 5m rate window.
-    why: 'clickhouse_event MergeTree-IO counters tick only on physical CH I/O; idle stack leaves 5m window empty',
+    match: 'clickhouse_event{name=~"',
+    // The clickhouse-observability dashboard has 5 panels driven by
+    // `clickhouse_event{name=~"..."}` regexes — Query rate, MergeTree
+    // I/O, Merge / mutation throughput, Network bytes, Error events.
+    // All share the same cadence story: ClickHouse's per-event counters
+    // (exposed via its built-in prometheus endpoint, scraped 15s by the
+    // prometheus/clickhouse receiver) only tick when the underlying
+    // event fires. On a fresh compose stack the seed warmup drives a
+    // few SELECTs but most event classes (merges, mutations, network
+    // I/O, errors) genuinely don't fire inside a 5m rate window. Cover
+    // the whole namespace prefix rather than per-panel matches — the
+    // rationale is identical for every variant.
+    why: 'clickhouse_event{name=~"..."} counters tick only on matching CH events; idle stack leaves 5m window empty',
   },
 ];
 
