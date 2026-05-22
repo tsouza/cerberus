@@ -75,10 +75,14 @@ linters:
     #   error handling.
     - errorlint
     # forbidigo: bans `unsafe.Pointer` and `reflect.Value.FieldByName`
-    #   inside `internal/traceql/` + `internal/api/tempo/` so the
-    #   parser-internal shim retired in #148 cannot be reintroduced.
-    #   See docs/upstream-forks.md. Scoped to those
-    #   two dirs via `exclusions.rules[].path-except` below.
+    #   across every `internal/**` package so the parser-internal shim
+    #   retired in #148 cannot be reintroduced anywhere in the engine.
+    #   The original gate covered only `internal/traceql/` +
+    #   `internal/api/tempo/` (the packages that historically carried
+    #   the shims); the scope was widened to all of `internal/` as
+    #   project-wide hygiene — there are zero current violations, so
+    #   the gate is purely forward-looking. See docs/upstream-forks.md.
+    #   Scoped via `exclusions.rules[].path-except` below.
     - forbidigo
     # Quality-metric linters — see header comment.
     - gocognit
@@ -108,9 +112,9 @@ linters:
       analyze-types: true
       forbid:
         - pattern: '^unsafe\.Pointer$'
-          msg: 'unsafe.Pointer is forbidden in internal/traceql/ and internal/api/tempo/ — use the tsouza/tempo:cerberus-accessors fork accessors instead. See docs/upstream-forks.md.'
+          msg: 'unsafe.Pointer is forbidden across internal/** — use the tsouza/* upstream-fork accessors instead. See docs/upstream-forks.md.'
         - pattern: '^reflect\.Value\.FieldByName$'
-          msg: 'reflect.FieldByName on parser AST is forbidden — use the upstream-fork accessors instead.'
+          msg: 'reflect.FieldByName on parser AST is forbidden across internal/** — use the upstream-fork accessors instead.'
     gocognit:
       min-complexity: 60
     cyclop:
@@ -156,11 +160,14 @@ linters:
         linters:
           - revive
           - errcheck
-      # forbidigo fires ONLY inside internal/traceql/ + internal/api/tempo/
-      # — invert via `path-except` so every other path is excluded.
+      # forbidigo fires ONLY inside internal/** — invert via `path-except`
+      # so every other path (cmd/, test/, compatibility/, scripts/, …) is
+      # excluded. Previously the scope was just `internal/(traceql|api/tempo)/`;
+      # widened to all of `internal/` as project-wide hygiene against the
+      # parser-internal shim pattern retired in #148.
       - linters:
           - forbidigo
-        path-except: '^internal/(traceql|api/tempo)/'
+        path-except: '^internal/'
       # test/spec/ holds the deterministic IR pretty-printer + roundtrip
       # runner; test/property/ holds the rapid oracle evaluators. Both are
       # test infrastructure whose structure mirrors the IR / PromQL surface
