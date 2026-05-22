@@ -125,14 +125,12 @@ func keyValueValue(kv v1.KeyValue) string {
 // TestMetricsQueryRange_FrameShape feeds a single observed-bucket
 // fixture through MetricsQueryRange and asserts the wire envelope: one
 // frame, one TimeSeries, label set populated with the synthetic
-// `__name__=rate` for an ungrouped query, samples sorted ascending,
-// zero-fill of the trailing 4th anchor at value 0.
+// `__name__=rate` for an ungrouped query, samples sorted ascending.
 //
-// 3-minute fixture window @ 60s step → 4 anchors after zero-fill
-// (10:00 / 10:01 / 10:02 / 10:03); the stub returns observed values at
-// the first three; the fill injects a zero at the trailing anchor —
-// same contract the HTTP TestMetricsQueryRange_SingleSeriesNoGroupBy
-// pins on the JSON envelope, replayed across the gRPC wire shape.
+// Matrix-grid zero-fill is the SQL emitter's concern
+// (internal/chsql/range_window.go), so the stub-backed test sees the
+// row stream the stub returns — three samples here — passed through
+// unchanged.
 func TestMetricsQueryRange_FrameShape(t *testing.T) {
 	t.Parallel()
 	ts := func(min int) time.Time {
@@ -171,10 +169,10 @@ func TestMetricsQueryRange_FrameShape(t *testing.T) {
 	if len(got.Labels) != 1 || got.Labels[0].Key != "__name__" || keyValueValue(got.Labels[0]) != "rate" {
 		t.Errorf("labels: want single {__name__=rate}, got %+v", got.Labels)
 	}
-	if len(got.Samples) != 4 {
-		t.Fatalf("samples: want 4 (3 observed + 1 zero-fill), got %d: %+v", len(got.Samples), got.Samples)
+	if len(got.Samples) != 3 {
+		t.Fatalf("samples: want 3 (stub rows pass through unchanged), got %d: %+v", len(got.Samples), got.Samples)
 	}
-	for i, want := range []float64{0.5, 1.5, 2.0, 0.0} {
+	for i, want := range []float64{0.5, 1.5, 2.0} {
 		if got.Samples[i].Value != want {
 			t.Errorf("sample[%d].Value: got %v, want %v", i, got.Samples[i].Value, want)
 		}

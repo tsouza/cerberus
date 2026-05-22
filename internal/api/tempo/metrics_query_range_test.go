@@ -37,15 +37,11 @@ const (
 )
 
 // TestMetricsQueryRange_SingleSeriesNoGroupBy — a bare `| rate()` over
-// the full spans table returns a single series (no labels). The handler
-// zero-fills the matrix step grid for count/rate operators so the
-// response covers every anchor across [start, end] spaced by step —
-// matching Tempo's StepAggregator pre-allocating one CountOverTimeAggregator
-// per interval. With a 3-minute fixture window and 60s step that's
-// 4 anchors (10:00, 10:01, 10:02, 10:03); the stub returns observed
-// values at the first three, the fill injects a 0-valued sample at the
-// trailing anchor so the samples stream matches the wire-grid Tempo
-// emits.
+// the full spans table returns a single series (no labels). Matrix-shape
+// zero-fill is the SQL emitter's concern (countIf over the per-anchor
+// predicate, see internal/chsql/range_window.go), so the handler returns
+// whatever row stream the cursor surfaced — three stub samples here
+// pass through unchanged, sorted ascending by timestamp.
 func TestMetricsQueryRange_SingleSeriesNoGroupBy(t *testing.T) {
 	t.Parallel()
 
@@ -98,14 +94,17 @@ func TestMetricsQueryRange_SingleSeriesNoGroupBy(t *testing.T) {
 	if len(s.Labels) != 1 || s.Labels[0].Key != "__name__" || s.Labels[0].Value != "rate" {
 		t.Errorf("expected single {__name__=rate} label for ungrouped rate(), got %+v", s.Labels)
 	}
-	// 3-minute window @ 60s step → 4 anchors after zero-fill (10:00 /
-	// 10:01 / 10:02 / 10:03), with the trailing anchor synthesised at
-	// value 0 since the stub didn't observe a span there.
-	if len(s.Samples) != 4 {
-		t.Fatalf("expected 4 samples (3 observed + 1 zero-fill), got %d: %+v", len(s.Samples), s.Samples)
+	// The stub returns 3 samples; the handler passes them through to
+	// the wire envelope sorted ascending by timestamp. Zero-fill of
+	// the matrix step grid lives in the SQL emitter
+	// (internal/chsql/range_window.go), so the handler-level test
+	// pins the three observed values' ascending order rather than
+	// the full step grid (which only manifests against a real CH).
+	if len(s.Samples) != 3 {
+		t.Fatalf("expected 3 samples passed through from stub, got %d: %+v", len(s.Samples), s.Samples)
 	}
-	// Sorted ascending: 0.5, 1.5, 2.0, 0 (fill) in that order.
-	for i, want := range []float64{0.5, 1.5, 2.0, 0.0} {
+	// Sorted ascending: 0.5, 1.5, 2.0 in that order.
+	for i, want := range []float64{0.5, 1.5, 2.0} {
 		if s.Samples[i].Value != want {
 			t.Errorf("sample[%d].Value = %v, want %v", i, s.Samples[i].Value, want)
 		}
@@ -185,17 +184,16 @@ func TestMetricsQueryRange_MultiSeriesGroupBy(t *testing.T) {
 	if _, ok := byService["backend"]; !ok {
 		t.Errorf("missing 'backend' series: %+v", body.Series)
 	}
-	// Each series's samples cover the full matrix grid: 4 anchors over
-	// the 3-minute window @ 60s step, with two observed values (mins
-	// 0 / 1) and two zero-filled anchors (mins 2 / 3) so the response
-	// shape matches Tempo's StepAggregator emit (count_over_time over
-	// empty buckets surfaces as 0, not as a missing sample).
-	if len(byService["frontend"].Samples) != 4 {
-		t.Errorf("expected 4 samples for frontend (2 observed + 2 zero-fill), got %d: %+v",
+	// Each series surfaces the stub's per-(group, anchor) rows
+	// unchanged (two per service). Matrix-grid zero-fill is the SQL
+	// emitter's concern (internal/chsql/range_window.go); the handler
+	// only pivots the row stream into the Tempo series envelope.
+	if len(byService["frontend"].Samples) != 2 {
+		t.Errorf("expected 2 stub samples for frontend, got %d: %+v",
 			len(byService["frontend"].Samples), byService["frontend"].Samples)
 	}
-	if len(byService["backend"].Samples) != 4 {
-		t.Errorf("expected 4 samples for backend (2 observed + 2 zero-fill), got %d: %+v",
+	if len(byService["backend"].Samples) != 2 {
+		t.Errorf("expected 2 stub samples for backend, got %d: %+v",
 			len(byService["backend"].Samples), byService["backend"].Samples)
 	}
 }
@@ -236,101 +234,87 @@ func TestMetricsQueryRange_EmptyResult(t *testing.T) {
 	}
 }
 
-// TestMetricsQueryRange_ZeroFillCountOverTime pins the contract that
-// `count_over_time` (and `rate`) responses zero-fill the full matrix
-// step grid across [start, end] — even buckets where no spans landed —
-// to match Tempo's reference engine_metrics.go StepAggregator, which
-// pre-allocates one CountOverTimeAggregator per interval (default
-// Sample()=0). Without this, the tempo-compat differ trips on
-// `samples count tempo=N vs cerberus=M` for count/rate queries whose
-// seeded data only spans a few buckets of the request window.
+// TestMetricsQueryRange_ZeroFillSQLShapeCountOverTime pins the contract
+// that count_over_time / rate matrix queries push the per-anchor window
+// predicate into a `countIf(...)` reducer (rather than the outer WHERE
+// clause). The inner-fanout subquery materialises one (group, anchor)
+// row per Inner row × N anchors, so the outer GROUP BY emits a row at
+// every (observed-group, anchor) tuple regardless of whether any
+// sample landed in (anchor_ts - range, anchor_ts] — countIf returns 0
+// for empty anchors. This is the SQL-level zero-fill that replaced the
+// handler-side `zeroFillMatrixGrid` post-pass (see PR removing the
+// Go-side fill).
 //
-// Setup: 3-minute window @ 60s step → 4 anchors (10:00 / 10:01 / 10:02
-// / 10:03). The CH stub returns exactly one row (10:01); the handler
-// must surface a 4-sample stream with the missing three anchors at
-// value 0.
-func TestMetricsQueryRange_ZeroFillCountOverTime(t *testing.T) {
+// The handler-with-stub harness can't observe the fill end-to-end
+// because the stub returns pre-built `[]chclient.Sample` rather than
+// executing SQL; the assertion lives on the captured `q.lastSQL`
+// instead, with the SQL contract that the runtime executes proven by
+// chsql-layer unit tests + the compatibility suite against a real CH.
+func TestMetricsQueryRange_ZeroFillSQLShapeCountOverTime(t *testing.T) {
 	t.Parallel()
 
-	mid := time.Date(2026, 5, 12, 10, 1, 0, 0, time.UTC)
-	q := &stubQuerier{samples: []chclient.Sample{{
-		MetricName: "",
-		// Matrix-shape SQL projects `map('__name__', 'count_over_time')`
-		// for ungrouped queries (see wrapMetricsForSample); stub mimics
-		// the cursor's surfaced Labels map.
-		Labels:    map[string]string{"__name__": "count_over_time"},
-		Timestamp: mid,
-		Value:     7.0,
-	}}}
-	srv := newServer(q, "v1.0.0-test")
-	t.Cleanup(srv.Close)
+	for _, query := range []string{
+		"{} | count_over_time()",
+		"{} | rate()",
+	} {
+		query := query
+		t.Run(query, func(t *testing.T) {
+			t.Parallel()
 
-	u := metricsQueryRangeURL(srv.URL, "{} | count_over_time()", map[string]string{
-		"start": fixtureStartUnix,
-		"end":   fixtureEndUnix,
-		"step":  "60s",
-	})
-	resp, err := http.Get(u)
-	if err != nil {
-		t.Fatalf("GET: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status=%d body=%s", resp.StatusCode, readBody(t, resp))
-	}
+			q := &stubQuerier{samples: nil}
+			srv := newServer(q, "v1.0.0-test")
+			t.Cleanup(srv.Close)
 
-	var body tempo.MetricsQueryRangeResponse
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if len(body.Series) != 1 {
-		t.Fatalf("expected 1 series, got %d: %+v", len(body.Series), body)
-	}
-	s := body.Series[0]
-	if len(s.Samples) != 4 {
-		t.Fatalf("expected 4 samples (1 observed + 3 zero-fill), got %d: %+v", len(s.Samples), s.Samples)
-	}
-	// Samples MUST be sorted ascending by timestamp and the observed
-	// sample's value must survive the fill verbatim. Missing anchors
-	// land at 0.
-	wantValues := []float64{0.0, 7.0, 0.0, 0.0}
-	for i, want := range wantValues {
-		if s.Samples[i].Value != want {
-			t.Errorf("sample[%d].Value = %v, want %v (full stream: %+v)", i, s.Samples[i].Value, want, s.Samples)
-		}
-	}
-	for i := 1; i < len(s.Samples); i++ {
-		if s.Samples[i-1].TimestampMs >= s.Samples[i].TimestampMs {
-			t.Errorf("samples not sorted ascending: %+v", s.Samples)
-		}
-	}
-	// Sample timestamps must exactly cover the matrix anchor grid the
-	// chsql emitter produced — `end - i*step` for i in [0, N). Verify
-	// the first / last anchors line up with fixtureStartUnix /
-	// fixtureEndUnix so the wire grid aligns with what Tempo returns
-	// for the same request.
-	startMs := mustParseUnix(t, fixtureStartUnix).UnixMilli()
-	endMs := mustParseUnix(t, fixtureEndUnix).UnixMilli()
-	if s.Samples[0].TimestampMs != startMs {
-		t.Errorf("first sample ts = %d, want fixtureStart=%d", s.Samples[0].TimestampMs, startMs)
-	}
-	if s.Samples[len(s.Samples)-1].TimestampMs != endMs {
-		t.Errorf("last sample ts = %d, want fixtureEnd=%d", s.Samples[len(s.Samples)-1].TimestampMs, endMs)
+			u := metricsQueryRangeURL(srv.URL, query, map[string]string{
+				"start": fixtureStartUnix,
+				"end":   fixtureEndUnix,
+				"step":  "60s",
+			})
+			resp, err := http.Get(u)
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status=%d body=%s", resp.StatusCode, readBody(t, resp))
+			}
+
+			// The handler issues two SQL statements per request:
+			// the matrix-shape query (arrayJoin fanout) plus the
+			// exemplar lookup. Reach the matrix SQL via the
+			// arrayJoin needle so the assertion targets the right
+			// statement; q.lastSQL would point at the exemplar
+			// query (last one executed).
+			matrixSQL := findSQLContaining(t, q.queriedSQLs, "arrayJoin")
+			// Reducer shape: countIf(<window pred>) — the per-anchor
+			// window predicate lives inside the aggregate, not the
+			// outer WHERE clause.
+			assertSQLContains(t, matrixSQL,
+				"countIf(ts > anchor_ts - toIntervalNanosecond(")
+			// The outer WHERE that the legacy path produced is now
+			// suppressed for count/rate (the window predicate moved
+			// into countIf). Pin the absence so a regression toward
+			// the old shape surfaces here.
+			if strings.Contains(matrixSQL, "WHERE ts > anchor_ts -") {
+				t.Errorf("count/rate matrix SQL must not carry an outer WHERE on the window predicate (it moved into countIf); SQL=%s", matrixSQL)
+			}
+		})
 	}
 }
 
 // TestMetricsQueryRange_ZeroFillSkippedForOverTimeAggs pins the
-// contract that the zero-fill pass does NOT fire for sum / avg / min /
-// max _over_time. Tempo's OverTimeAggregator initialises its value to
-// NaN and the SeriesSet.ToProto loop skips NaN samples
-// (`pkg/traceql/engine_metrics.go`'s OverTimeAggregator + ToProto), so
-// the observed-only emission cerberus produces is the wire-correct
-// match — zero-filling would inject false zeros where Tempo emits
-// nothing.
+// contract that the SQL emitter does NOT push the window predicate
+// into a conditional aggregate for sum / avg / min / max _over_time —
+// it stays in the outer WHERE clause. Tempo's OverTimeAggregator
+// initialises its value to NaN and the SeriesSet.ToProto loop skips
+// NaN samples (`pkg/traceql/engine_metrics.go`'s OverTimeAggregator +
+// ToProto), so the observed-only emission is the wire-correct match —
+// pushing the predicate into a sumIf / avgIf would emit 0 for empty
+// buckets and inject false zeros where Tempo emits nothing.
 //
 // `quantile_over_time` is the inverse case (HistogramAggregator.Results
 // emits 0.0 at empty buckets, not NaN) and is asserted by
-// TestMetricsQueryRange_ZeroFillQuantileOverTime below.
+// TestMetricsQueryRange_ZeroFillSQLShapeQuantileOverTime below.
 func TestMetricsQueryRange_ZeroFillSkippedForOverTimeAggs(t *testing.T) {
 	t.Parallel()
 
@@ -387,57 +371,63 @@ func TestMetricsQueryRange_ZeroFillSkippedForOverTimeAggs(t *testing.T) {
 			}
 			s := body.Series[0]
 			if len(s.Samples) != 1 {
-				t.Errorf("expected 1 observed sample for %s (no zero-fill), got %d: %+v",
+				t.Errorf("expected 1 observed sample for %s (NaN-skip path: no SQL-side fill), got %d: %+v",
 					tc.op, len(s.Samples), s.Samples)
 			}
 			if len(s.Samples) > 0 && s.Samples[0].Value != 42.0 {
 				t.Errorf("expected observed sample value 42, got %v", s.Samples[0].Value)
 			}
+			// SQL contract: the window predicate stays in the outer
+			// WHERE for NaN-skip operators — pushing it into a sumIf /
+			// avgIf would surface 0 at empty buckets and diverge from
+			// Tempo's NaN-skip emit. Pin the WHERE shape so a future
+			// refactor doesn't silently extend the countIf path. The
+			// matrix-shape SQL is the arrayJoin-fanout statement (the
+			// handler also fires an exemplar lookup).
+			if len(q.queriedSQLs) > 0 {
+				matrixSQL := findSQLContaining(t, q.queriedSQLs, "arrayJoin")
+				assertSQLContains(t, matrixSQL,
+					"WHERE ts > anchor_ts - toIntervalNanosecond(")
+				if strings.Contains(matrixSQL, "countIf(") {
+					t.Errorf("%s SQL must not use countIf (NaN-skip op), got %s", tc.op, matrixSQL)
+				}
+			}
 		})
 	}
 }
 
-// TestMetricsQueryRange_ZeroFillQuantileOverTime pins the contract
-// that quantile_over_time responses zero-fill the full matrix step
-// grid across [start, end] — even buckets where no spans landed — to
-// match Tempo's reference HistogramAggregator. Its Results method
-// explicitly sets `ts.Values[i] = 0.0` for any interval whose bucket
-// list is empty (`pkg/traceql/engine_metrics.go`), so ToProto walks
-// every anchor and emits a 0-valued sample rather than NaN-skipping
-// it. Without this fill the tempo-compat differ trips on
-// `metrics_quantile_over_time_p95: samples count tempo=121 vs
-// cerberus=3` against the same seeded dataset (PR #562 unblocked the
-// per-phi label shape; this case is what surfaced the bucket-count
-// gap once the label shape stopped masking it).
+// TestMetricsQueryRange_ZeroFillSQLShapeQuantileOverTime pins the
+// SQL-emit contract that ensures `quantile_over_time` matrix queries
+// produce a row at every (observed-group, anchor) tuple — even anchors
+// where no spans landed — to match Tempo's reference
+// HistogramAggregator.Results emit of `ts.Values[i] = 0.0` for empty
+// buckets. The chsql emitter wraps the per-row bucket projection in
+// `if(<window pred>, <real bucket>, 0)` and the count in
+// `countIf(<window pred>)` — empty anchors fall into a phantom
+// `__bucket=0 / count=0` row that the handler's post-processor
+// (Log2QuantileWithBucket) resolves to a 0 sample.
 //
-// Setup: 3-minute window @ 60s step → 4 anchors (10:00 / 10:01 / 10:02
-// / 10:03). The CH stub returns exactly one bucket-shape row at the
-// middle anchor (10:01) — the post-processor synthesises the `p="0.95"`
-// label and runs `Log2QuantileWithBucket(0.95, [...])` to produce the
-// per-anchor value; the handler then surfaces a 4-sample stream with
-// the missing three anchors at value 0.
-func TestMetricsQueryRange_ZeroFillQuantileOverTime(t *testing.T) {
+// This replaced the Go-side `zeroFillMatrixGrid` post-pass that lived
+// in the handler before; the assertion lives on the captured SQL
+// because the handler-with-stub harness can't observe the SQL fill
+// (the stub returns pre-built rows rather than executing SQL). The
+// runtime fill is covered by chsql-layer unit tests
+// (TestRangeWindowMetricsQuantileBuckets*) plus the tempo
+// compatibility suite running against a real ClickHouse.
+func TestMetricsQueryRange_ZeroFillSQLShapeQuantileOverTime(t *testing.T) {
 	t.Parallel()
 
-	mid := time.Date(2026, 5, 12, 10, 1, 0, 0, time.UTC)
-	// Single bucket at 0.5s holding 5 samples — Log2QuantileWithBucket
-	// for p=0.95 over a single 0.5s bucket returns the bucket's Max
-	// (0.5) because the per-quantile sample-count walk consumes the
-	// whole bucket and reports `b.Max`.
-	q := &stubQuerier{samples: []chclient.Sample{{
-		MetricName: "",
-		Labels:     map[string]string{"__bucket": "0.5"},
-		Timestamp:  mid,
-		Value:      5,
-	}}}
+	q := &stubQuerier{samples: nil}
 	srv := newServer(q, "v1.0.0-test")
 	t.Cleanup(srv.Close)
 
-	u := metricsQueryRangeURL(srv.URL, "{} | quantile_over_time(duration, 0.95)", map[string]string{
-		"start": fixtureStartUnix,
-		"end":   fixtureEndUnix,
-		"step":  "60s",
-	})
+	u := metricsQueryRangeURL(srv.URL,
+		"{} | quantile_over_time(duration, 0.95)",
+		map[string]string{
+			"start": fixtureStartUnix,
+			"end":   fixtureEndUnix,
+			"step":  "60s",
+		})
 	resp, err := http.Get(u)
 	if err != nil {
 		t.Fatalf("GET: %v", err)
@@ -447,44 +437,42 @@ func TestMetricsQueryRange_ZeroFillQuantileOverTime(t *testing.T) {
 		t.Fatalf("status=%d body=%s", resp.StatusCode, readBody(t, resp))
 	}
 
-	var body tempo.MetricsQueryRangeResponse
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		t.Fatalf("decode: %v", err)
+	// The handler issues two SQL statements per request: matrix + the
+	// exemplar lookup. Reach the matrix SQL via the arrayJoin needle
+	// so the assertion targets the right statement.
+	matrixSQL := findSQLContaining(t, q.queriedSQLs, "arrayJoin")
+	// Bucket projection wraps the real bucket in `if(<pred>, ..., 0)`
+	// so non-matching rows fall into the phantom 0-bucket group. The
+	// count wraps in `countIf(<pred>)` so observed buckets count
+	// matched rows and the phantom buckets count zero.
+	assertSQLContains(t, matrixSQL,
+		"if(ts > anchor_ts - toIntervalNanosecond(")
+	assertSQLContains(t, matrixSQL, ", 0)")
+	assertSQLContains(t, matrixSQL,
+		"countIf(ts > anchor_ts - toIntervalNanosecond(")
+	// The outer WHERE that the legacy quantile path produced is now
+	// suppressed (the window predicate + bucketize-min guard moved
+	// into the conditional projections). Pin the absence so a
+	// regression toward the old shape surfaces here.
+	if strings.Contains(matrixSQL, "WHERE ts > anchor_ts -") {
+		t.Errorf("quantile matrix SQL must not carry an outer WHERE on the window predicate; SQL=%s", matrixSQL)
 	}
-	if len(body.Series) != 1 {
-		t.Fatalf("expected 1 series, got %d: %+v", len(body.Series), body)
-	}
-	s := body.Series[0]
-	if len(s.Samples) != 4 {
-		t.Fatalf("expected 4 samples (1 observed + 3 zero-fill), got %d: %+v", len(s.Samples), s.Samples)
-	}
-	// Samples MUST be sorted ascending by timestamp and the observed
-	// sample's value must survive the fill verbatim. Missing anchors
-	// land at 0 (Tempo HistogramAggregator parity).
-	wantValues := []float64{0.0, 0.5, 0.0, 0.0}
-	for i, want := range wantValues {
-		if s.Samples[i].Value != want {
-			t.Errorf("sample[%d].Value = %v, want %v (full stream: %+v)", i, s.Samples[i].Value, want, s.Samples)
+}
+
+// findSQLContaining returns the first SQL string in haystack that
+// contains needle; fails the test if no match is found. Used to pluck
+// the matrix-shape SQL out of stubQuerier.queriedSQLs (which also
+// records the follow-up exemplar lookup) so assertions don't
+// accidentally bind to the wrong statement.
+func findSQLContaining(t *testing.T, haystack []string, needle string) string {
+	t.Helper()
+	for _, sql := range haystack {
+		if strings.Contains(sql, needle) {
+			return sql
 		}
 	}
-	for i := 1; i < len(s.Samples); i++ {
-		if s.Samples[i-1].TimestampMs >= s.Samples[i].TimestampMs {
-			t.Errorf("samples not sorted ascending: %+v", s.Samples)
-		}
-	}
-	// Sample timestamps must exactly cover the matrix anchor grid the
-	// chsql emitter produced — `end - i*step` for i in [0, N). Verify
-	// the first / last anchors line up with fixtureStartUnix /
-	// fixtureEndUnix so the wire grid aligns with what Tempo returns
-	// for the same request.
-	startMs := mustParseUnix(t, fixtureStartUnix).UnixMilli()
-	endMs := mustParseUnix(t, fixtureEndUnix).UnixMilli()
-	if s.Samples[0].TimestampMs != startMs {
-		t.Errorf("first sample ts = %d, want fixtureStart=%d", s.Samples[0].TimestampMs, startMs)
-	}
-	if s.Samples[len(s.Samples)-1].TimestampMs != endMs {
-		t.Errorf("last sample ts = %d, want fixtureEnd=%d", s.Samples[len(s.Samples)-1].TimestampMs, endMs)
-	}
+	t.Fatalf("no SQL containing %q in %d recorded statements: %v", needle, len(haystack), haystack)
+	return ""
 }
 
 // TestMetricsQueryRange_DurationAggInSeconds pins the contract that
@@ -1080,12 +1068,12 @@ func TestMetricsQueryRange_ExemplarsPopulated(t *testing.T) {
 		t.Fatalf("expected 1 series, got %d: %+v", len(body.Series), body)
 	}
 	got := body.Series[0]
-	// Matrix grid is 4 anchors (3-min window @ 60s step); two are
-	// observed (mins 0 / 1), the trailing pair (mins 2 / 3) are
-	// zero-filled so the count_over_time response matches Tempo's
-	// StepAggregator emit.
-	if len(got.Samples) != 4 {
-		t.Errorf("expected 4 samples (2 observed + 2 zero-fill), got %d: %+v", len(got.Samples), got.Samples)
+	// Stub returns the two observed-anchor rows; the handler passes
+	// them through without modification. Matrix-grid zero-fill lives
+	// in the SQL emitter (internal/chsql/range_window.go), so the
+	// handler-with-stub harness only sees the rows the stub yields.
+	if len(got.Samples) != 2 {
+		t.Errorf("expected 2 stub samples to pass through unchanged, got %d: %+v", len(got.Samples), got.Samples)
 	}
 	if len(got.Exemplars) != 2 {
 		t.Fatalf("expected 2 exemplars, got %d: %+v", len(got.Exemplars), got.Exemplars)

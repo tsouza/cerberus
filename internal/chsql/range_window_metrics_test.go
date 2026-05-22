@@ -51,20 +51,25 @@ func TestRangeWindowMetricsExplicitTimeGrid(t *testing.T) {
 	if !strings.Contains(sql, "range(0, 6)") {
 		t.Errorf("expected range(0, 6), SQL=%s", sql)
 	}
-	// Rate reducer normalises by range_seconds (60s); the count(?)
-	// aggregate is wrapped in toFloat64 so the Value column has the
-	// uniform Float64 wire type chclient.Sample.Value expects (UInt64
-	// → *float64 ScanRow conversion is unsupported by the CH Go
-	// driver). The substring is "toFloat64(count(?)) / 60".
-	if !strings.Contains(sql, "toFloat64(count(?)) / 60") {
-		t.Errorf("expected `toFloat64(count(?)) / 60`, SQL=%s", sql)
+	// Rate reducer normalises by range_seconds (60s); the per-anchor
+	// window predicate now lives inside `countIf(...)` (SQL-side
+	// zero-fill — see PR retiring the handler's zeroFillMatrixGrid),
+	// so the substring is `toFloat64(countIf(ts > anchor_ts -
+	// toIntervalNanosecond(<rangeNS>) AND ts <= anchor_ts)) / 60`.
+	// The toFloat64 wrap keeps the Value column at the uniform
+	// Float64 wire type chclient.Sample.Value expects.
+	if !strings.Contains(sql, "toFloat64(countIf(ts > anchor_ts - toIntervalNanosecond(") {
+		t.Errorf("expected toFloat64(countIf(<window pred>)) reducer, SQL=%s", sql)
 	}
-	// args has the LitInt{1} bound by count(1).
-	if len(args) != 1 {
-		t.Fatalf("expected 1 arg (count operand), got %d: %v", len(args), args)
+	if !strings.Contains(sql, ")) / 60") {
+		t.Errorf("expected rate normalisation `/ 60`, SQL=%s", sql)
 	}
-	if v, ok := args[0].(int64); !ok || v != 1 {
-		t.Errorf("expected args[0] = int64(1), got %T(%v)", args[0], args[0])
+	// countIf inlines the window predicate; no bound `?` arguments
+	// on the count side anymore (the predicate's range nanos are
+	// emitted as a literal integer, same shape as the legacy
+	// windowTsLowerBoundFrag).
+	if len(args) != 0 {
+		t.Fatalf("expected 0 bound args (countIf predicate inlines literals), got %d: %v", len(args), args)
 	}
 }
 
@@ -287,9 +292,16 @@ func TestRangeWindowMetricsQuantileBuckets(t *testing.T) {
 		t.Fatalf("Emit: %v", err)
 	}
 	wantSubstrings := []string{
+		// Conditional bucket: phantom 0-bucket for non-matching rows
+		// so empty (group, anchor) tuples survive the GROUP BY with
+		// __bucket=0/count=0 (SQL-side zero-fill — see PR retiring
+		// zeroFillMatrixGrid in the handler).
+		"if(ts > anchor_ts - toIntervalNanosecond(",
 		"pow(2, ceil(log2(toFloat64(metric_arg))))",
-		"AS `__bucket`",
-		"toFloat64(count(1)) AS `Value`",
+		", 0) AS `__bucket`",
+		// Value is countIf over the same predicate so phantom rows
+		// count 0 and real-bucket rows count matched samples.
+		"toFloat64(countIf(ts > anchor_ts - toIntervalNanosecond(",
 		"metric_arg >= 2",
 		"GROUP BY `anchor_ts`, `__bucket`",
 	}
@@ -340,9 +352,10 @@ func TestRangeWindowMetricsQuantileBucketsDuration(t *testing.T) {
 		t.Fatalf("Emit: %v", err)
 	}
 	wantSubstrings := []string{
+		"if(ts > anchor_ts - toIntervalNanosecond(",
 		"pow(2, ceil(log2(toFloat64(metric_arg) * 1000000000))) / 1000000000",
-		"AS `__bucket`",
-		"toFloat64(count(1)) AS `Value`",
+		", 0) AS `__bucket`",
+		"toFloat64(countIf(ts > anchor_ts - toIntervalNanosecond(",
 		"metric_arg * 1000000000 >= 2",
 	}
 	for _, s := range wantSubstrings {
