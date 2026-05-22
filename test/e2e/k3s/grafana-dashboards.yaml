@@ -39,7 +39,10 @@ data:
         "list": [
           {
             "builtIn": 1,
-            "datasource": {"type": "grafana", "uid": "-- Grafana --"},
+            "datasource": {
+              "type": "grafana",
+              "uid": "-- Grafana --"
+            },
             "enable": true,
             "hide": true,
             "iconColor": "rgba(0, 211, 255, 1)",
@@ -48,101 +51,576 @@ data:
           }
         ]
       },
-      "description": "Cerberus self-observability — dogfood loop: cerberus -> OTLP -> Collector -> ClickHouse -> cerberus -> Grafana.",
+      "description": "Cerberus self-observability. All panels query cerberus's own dogfood loop: cerberus -> OTLP -> Collector -> ClickHouse -> cerberus -> Grafana. Until the OTel collector service lands in the quickstart compose, the metric / log / trace panels here will render 'no data' rather than error out.",
       "editable": false,
+      "fiscalYearStartMonth": 0,
       "graphTooltip": 1,
       "id": null,
       "links": [],
+      "liveNow": false,
       "panels": [
         {
-          "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
-          "description": "Query rate by upstream language (PromQL / LogQL / TraceQL).",
-          "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []},
-          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cerberus-prometheus"
+          },
+          "description": "Per-second query rate seen by cerberus, broken down by upstream query language (PromQL / LogQL / TraceQL). Backed by the cerberus_queries_total counter.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 20,
+                "gradientMode": "opacity",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "lineInterpolation": "linear",
+                "lineWidth": 2,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "unit": "reqps"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 0
+          },
           "id": 1,
-          "targets": [{
-            "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
-            "expr": "sum by (language) (rate(cerberus_queries_total{service_name=\"cerberus\"}[5m]))",
-            "legendFormat": "{{language}}",
-            "refId": "A"
-          }],
+          "options": {
+            "legend": {
+              "calcs": ["mean", "lastNotNull"],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "cerberus-prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum by (cerberus_ql) (rate(cerberus_queries_total[5m]))",
+              "legendFormat": "{{cerberus_ql}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
           "title": "Query rate by language",
           "type": "timeseries"
         },
         {
-          "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
-          "description": "P50 / P95 / P99 query latency.",
-          "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
-          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cerberus-prometheus"
+          },
+          "description": "P95 query latency per head (PromQL / LogQL / TraceQL), computed from cerberus_queries_duration_seconds_bucket with histogram_quantile.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "lineInterpolation": "linear",
+                "lineWidth": 2,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 0
+          },
           "id": 2,
+          "options": {
+            "legend": {
+              "calcs": ["mean", "max"],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
           "targets": [
-            {"datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
-             "expr": "histogram_quantile(0.50, sum by (le) (rate(cerberus_queries_duration_seconds_bucket{service_name=\"cerberus\"}[5m])))",
-             "legendFormat": "p50", "refId": "A"},
-            {"datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
-             "expr": "histogram_quantile(0.95, sum by (le) (rate(cerberus_queries_duration_seconds_bucket{service_name=\"cerberus\"}[5m])))",
-             "legendFormat": "p95", "refId": "B"},
-            {"datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
-             "expr": "histogram_quantile(0.99, sum by (le) (rate(cerberus_queries_duration_seconds_bucket{service_name=\"cerberus\"}[5m])))",
-             "legendFormat": "p99", "refId": "C"}
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "cerberus-prometheus"
+              },
+              "editorMode": "code",
+              "expr": "histogram_quantile(0.95, sum by (le, cerberus_ql) (rate(cerberus_queries_duration_seconds_bucket[5m])))",
+              "legendFormat": "p95 {{cerberus_ql}}",
+              "range": true,
+              "refId": "A"
+            }
           ],
-          "title": "Query latency (p50 / p95 / p99)",
+          "title": "P95 latency by language",
           "type": "timeseries"
         },
         {
-          "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
-          "description": "Per-stage latency (parse / lower / optimize / emit / execute), stacked.",
-          "fieldConfig": {"defaults": {"unit": "s", "custom": {"stacking": {"group": "A", "mode": "normal"}, "fillOpacity": 80}}, "overrides": []},
-          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cerberus-prometheus"
+          },
+          "description": "Fraction of queries that returned an error, per language. Computed from cerberus_queries_total filtered by result=error over the per-language total. Threshold at 1% yellow / 5% red.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 30,
+                "gradientMode": "scheme",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "lineInterpolation": "linear",
+                "lineWidth": 2,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "line"
+                }
+              },
+              "mappings": [],
+              "max": 1,
+              "min": 0,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "yellow",
+                    "value": 0.01
+                  },
+                  {
+                    "color": "red",
+                    "value": 0.05
+                  }
+                ]
+              },
+              "unit": "percentunit"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 8
+          },
           "id": 3,
-          "targets": [{
-            "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
-            "expr": "histogram_quantile(0.95, sum by (le, stage) (rate(cerberus_pipeline_stage_duration_seconds_bucket{service_name=\"cerberus\"}[5m])))",
-            "legendFormat": "{{stage}}",
-            "refId": "A"
-          }],
-          "title": "Per-stage latency (p95, stacked)",
-          "type": "timeseries"
-        },
-        {
-          "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
-          "description": "CH rows + bytes read per second.",
-          "fieldConfig": {"defaults": {"unit": "short"}, "overrides": [{"matcher": {"id": "byName", "options": "bytes/s"}, "properties": [{"id": "unit", "value": "Bps"}]}]},
-          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
-          "id": 4,
+          "options": {
+            "legend": {
+              "calcs": ["mean", "max", "lastNotNull"],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
           "targets": [
-            {"datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
-             "expr": "sum(rate(cerberus_ch_rows_read_total{service_name=\"cerberus\"}[5m]))",
-             "legendFormat": "rows/s", "refId": "A"},
-            {"datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
-             "expr": "sum(rate(cerberus_ch_bytes_read_total{service_name=\"cerberus\"}[5m]))",
-             "legendFormat": "bytes/s", "refId": "B"}
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "cerberus-prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum by (cerberus_ql) (rate(cerberus_queries_total{result=\"error\"}[5m])) / clamp_min(sum by (cerberus_ql) (rate(cerberus_queries_total[5m])), 1e-9)",
+              "legendFormat": "{{cerberus_ql}}",
+              "range": true,
+              "refId": "A"
+            }
           ],
-          "title": "ClickHouse rows / bytes read per second",
-          "type": "timeseries"
-        },
-        {
-          "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
-          "description": "Error rate (queries with result=\"error\" / total) per language.",
-          "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 0.01}, {"color": "red", "value": 0.05}]}}, "overrides": []},
-          "gridPos": {"h": 8, "w": 24, "x": 0, "y": 16},
-          "id": 5,
-          "targets": [{
-            "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
-            "expr": "sum by (language) (rate(cerberus_queries_total{service_name=\"cerberus\",result=\"error\"}[5m])) / clamp_min(sum by (language) (rate(cerberus_queries_total{service_name=\"cerberus\"}[5m])), 1e-9)",
-            "legendFormat": "{{language}}",
-            "refId": "A"
-          }],
           "title": "Error rate by language",
           "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cerberus-prometheus"
+          },
+          "description": "Concurrent in-flight queries per head. Backed by the cerberus_query_inflight gauge — declarative until the admission middleware exports it.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "yellow",
+                    "value": 10
+                  },
+                  {
+                    "color": "red",
+                    "value": 50
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 8
+          },
+          "id": 4,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": ["lastNotNull"],
+              "fields": "",
+              "values": false
+            },
+            "showPercentChange": false,
+            "textMode": "auto",
+            "wideLayout": true
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "cerberus-prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum by (cerberus_ql) (cerberus_query_inflight)",
+              "legendFormat": "{{cerberus_ql}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "In-flight queries",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cerberus-prometheus"
+          },
+          "description": "Admission-control rejections per second, per head. Backed by cerberus_admit_rejected_total — declarative until the admission middleware exports it.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 30,
+                "gradientMode": "opacity",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "lineInterpolation": "linear",
+                "lineWidth": 2,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "normal"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "unit": "reqps"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 24,
+            "x": 0,
+            "y": 16
+          },
+          "id": 5,
+          "options": {
+            "legend": {
+              "calcs": ["mean", "max", "lastNotNull"],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "cerberus-prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum by (cerberus_ql, reason) (rate(cerberus_admit_rejected_total[5m]))",
+              "legendFormat": "{{cerberus_ql}} / {{reason}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Admission rejections",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "cerberus-loki"
+          },
+          "description": "Recent ERROR-severity log records emitted by cerberus itself (service_name=cerberus, SeverityText=ERROR). Sourced via the Loki head against the otel_logs table.",
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 10,
+            "w": 24,
+            "x": 0,
+            "y": 24
+          },
+          "id": 6,
+          "options": {
+            "dedupStrategy": "none",
+            "enableLogDetails": true,
+            "prettifyLogMessage": true,
+            "showCommonLabels": false,
+            "showLabels": false,
+            "showTime": true,
+            "sortOrder": "Descending",
+            "wrapLogMessage": true
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "cerberus-loki"
+              },
+              "editorMode": "code",
+              "expr": "{service_name=\"cerberus\"} | SeverityText=\"ERROR\"",
+              "queryType": "range",
+              "refId": "A"
+            }
+          ],
+          "title": "Cerberus ERROR logs",
+          "type": "logs"
+        },
+        {
+          "datasource": {
+            "type": "tempo",
+            "uid": "cerberus-tempo"
+          },
+          "description": "Slow cerberus query traces — spans from service.name=cerberus with duration > 100ms. Sourced via the Tempo head against the otel_traces table.",
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "align": "auto",
+                "cellOptions": {
+                  "type": "auto"
+                },
+                "inspect": false
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 10,
+            "w": 24,
+            "x": 0,
+            "y": 34
+          },
+          "id": 7,
+          "options": {
+            "cellHeight": "sm",
+            "footer": {
+              "countRows": false,
+              "fields": "",
+              "reducer": ["sum"],
+              "show": false
+            },
+            "showHeader": true
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "tempo",
+                "uid": "cerberus-tempo"
+              },
+              "limit": 20,
+              "query": "{ resource.service.name = \"cerberus\" && duration > 100ms }",
+              "queryType": "traceql",
+              "refId": "A",
+              "tableType": "traces"
+            }
+          ],
+          "title": "Slow cerberus traces (>100ms)",
+          "type": "table"
         }
       ],
       "refresh": "30s",
       "schemaVersion": 39,
       "tags": ["cerberus", "self-observability", "dogfood"],
-      "templating": {"list": []},
-      "time": {"from": "now-1h", "to": "now"},
-      "title": "Cerberus self-observability",
+      "templating": {
+        "list": []
+      },
+      "time": {
+        "from": "now-1h",
+        "to": "now"
+      },
+      "timepicker": {},
+      "timezone": "",
+      "title": "Cerberus - self-observability",
       "uid": "cerberus-self",
-      "version": 1
+      "version": 1,
+      "weekStart": ""
     }

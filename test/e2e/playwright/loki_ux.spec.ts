@@ -9,10 +9,11 @@ import { test, expect } from '@playwright/test';
  * link, histogram, ...) by hitting the cerberus-loki datasource proxy.
  *
  * Seed shape (test/e2e/seed/cmd/seed/main.go):
- *   • otel_logs: 60 rows spaced 1 s apart over the last minute, three
- *     services (api / frontend / db). SeverityNumber cycles {17, 13, 9}
- *     and SeverityText cycles {ERROR, WARN, INFO}. Body has the form
- *     "<message> id=<n>" — useful as a line-filter substring target.
+ *   • otel_logs: 120 rows spaced 15 s apart spanning a 30-minute window
+ *     centred on the seed timestamp, three services (api / frontend /
+ *     db). SeverityNumber cycles {17, 13, 9} and SeverityText cycles
+ *     {ERROR, WARN, INFO}. Body has the form "<message> id=<n>" —
+ *     useful as a line-filter substring target.
  */
 
 const lokiProxy = '/api/datasources/proxy/uid/cerberus-loki/loki/api/v1';
@@ -162,10 +163,11 @@ test.describe('Loki UX — Logs panel flows', () => {
     // tolerance is gone: the strict assertion is the regression gate
     // for the wire-format contract.
     //
-    // Window sized at 5 minutes (matching last5MinWindow) so the seed's
-    // 60-row [seed_now - 60s, seed_now] burst is always inside the
-    // [test_now - 300s, test_now] window even when CI's seed-to-test
-    // gap stretches to the e2e-wait-otel ceiling.
+    // Window sized at 5 minutes (matching last5MinWindow). The seed's
+    // ±15-min window centred on seed_now keeps ≥ 1 row inside the
+    // [test_now - 300s, test_now] envelope for every test in the
+    // suite — even when CI scheduling jitter pushes test_now to
+    // seed_now + 11+ min.
     const end = Math.floor(Date.now() / 1000);
     const start = end - 5 * 60;
     const q = encodeURIComponent('{service_name="api"}');

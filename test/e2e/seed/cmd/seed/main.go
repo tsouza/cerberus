@@ -110,16 +110,15 @@ func run(ctx context.Context) error {
 // Static SQL — no string interpolation. Table names are unqualified; the
 // clickhouse-go Auth.Database resolves them server-side.
 const (
-	// `up` is seeded as a 10-minute sliding window of samples centred on
-	// the seed timestamp (one per 15 s = 40 samples per series, 2 series
-	// = 80 rows) spanning [seed_now - 300 s, seed_now + 285 s]. A
-	// past-only window was timing-sensitive: if Playwright's
-	// `up[1m:30s]` evaluation landed more than 60 s after the seed
-	// completed (common on slow CI), the lookback window had already
-	// slid past every seeded sample and the query returned 0 series.
-	// Spanning past + future gives every 1m/5m range or subquery in the
-	// suite enough overlap to find samples regardless of CI timing
-	// jitter within ±4 min of seed.
+	// `up` is seeded as a 30-minute sliding window of samples centred on
+	// the seed timestamp (one per 15 s = 120 samples per series, 2 series
+	// = 240 rows) spanning [seed_now - 900 s, seed_now + 885 s]. The
+	// earlier ±300 s span was timing-sensitive: the full Playwright suite
+	// runs ~12 min of tests serially, so a query landing at seed + 11 min
+	// found every gauge sample outside the 5 m instant-staleness lookback
+	// `(eval - 5m, eval]` (see internal/promql/modifiers.go::instantLookback
+	// + PR #655). With the wider window every test up to seed + 14 min
+	// keeps ≥ 1 future sample inside the 5 m staleness envelope.
 	// `ServiceName` is set explicitly alongside `ResourceAttributes`
 	// so the rows match the shape the upstream OTel-CH exporter would
 	// emit (the exporter copies `ResAttr['service.name']` into the
@@ -142,10 +141,10 @@ SELECT
     'Is the scrape target up',
     '1',
     map('job', 'api'),
-    now64(9) + INTERVAL ((number - 20) * 15) SECOND,
-    now64(9) + INTERVAL ((number - 20) * 15) SECOND,
+    now64(9) + INTERVAL ((number - 60) * 15) SECOND,
+    now64(9) + INTERVAL ((number - 60) * 15) SECOND,
     1.0
-FROM numbers(40)
+FROM numbers(120)
 UNION ALL
 SELECT
     map('service.name', 'db'),
@@ -154,25 +153,24 @@ SELECT
     'Is the scrape target up',
     '1',
     map('job', 'db'),
-    now64(9) + INTERVAL ((number - 20) * 15) SECOND,
-    now64(9) + INTERVAL ((number - 20) * 15) SECOND,
+    now64(9) + INTERVAL ((number - 60) * 15) SECOND,
+    now64(9) + INTERVAL ((number - 60) * 15) SECOND,
     0.0
-FROM numbers(40)`
+FROM numbers(120)`
 
-	// 600 samples at 1 s cadence cover a 10-minute window centred on
-	// the seed timestamp: [seed_now - 300 s, seed_now + 299 s]. A
-	// past-only span was timing-sensitive: if Playwright's
-	// `rate(http_server_request_duration_count[1m])` evaluation
-	// (`prom_ux.spec.ts:180`, target B) landed more than 60 s after
-	// the seed completed — common on slow CI — the 1 min lookback
-	// window at request_time had slid past every seeded sample and
-	// returned 0 series. Spanning past + future gives any 1m/5m
-	// rate() window enough overlap to find ≥2 samples regardless of
-	// CI timing jitter within ±4 min of seed.
+	// 1800 samples at 1 s cadence cover a 30-minute window centred on
+	// the seed timestamp: [seed_now - 900 s, seed_now + 899 s]. The
+	// earlier ±300 s span was timing-sensitive: the full Playwright
+	// suite runs ~12 min serially, so by the time `prom_ux.spec.ts:180`
+	// (target B's `rate(http_server_request_duration_count[1m])`)
+	// landed, the 1 min lookback at eval-time had slid past every
+	// seeded sample and the query returned 0 series. Spanning ±15 min
+	// keeps any 1m / 5m rate() window inside the seed envelope for
+	// every test in the suite plus future tests added below this line.
 	//
 	// The value formula `1000 + number * 5` is monotone-with-time
-	// (number = 0 is the earliest sample at seed_now - 300 s; number
-	// = 599 is the latest at seed_now + 299 s), which is the shape
+	// (number = 0 is the earliest sample at seed_now - 900 s; number
+	// = 1799 is the latest at seed_now + 899 s), which is the shape
 	// rate() expects for a counter.
 	// Same `ServiceName` discipline as `insertGaugeSQL` — the
 	// otel_metrics_sum row needs the dedicated LowCardinality column
@@ -187,13 +185,13 @@ SELECT
     'HTTP request count by status',
     '1',
     map('job', 'api', 'http_status', '200'),
-    now64(9) + INTERVAL (number - 300) SECOND,
-    now64(9) + INTERVAL (number - 300) SECOND,
+    now64(9) + INTERVAL (number - 900) SECOND,
+    now64(9) + INTERVAL (number - 900) SECOND,
     toFloat64(1000 + number * 5),
     toUInt32(0),
     toInt32(2),
     true
-FROM numbers(600)`
+FROM numbers(1800)`
 
 	// Classic-histogram companion rows for `http_server_request_duration`.
 	//
@@ -214,9 +212,9 @@ FROM numbers(600)`
 	// scans `otel_metrics_histogram` for MetricName='http_server_request_duration'
 	// and projects `toFloat64(Count)` as the counter value.
 	//
-	// Shape mirrors `insertSumSQL`: 600 samples at 1 s cadence covering
-	// [seed_now - 300 s, seed_now + 299 s] so any 1m / 5m `rate()` window
-	// retains ≥2 samples regardless of ±4 min CI timing jitter. Count
+	// Shape mirrors `insertSumSQL`: 1800 samples at 1 s cadence covering
+	// [seed_now - 900 s, seed_now + 899 s] so any 1m / 5m `rate()` window
+	// retains ≥2 samples for every Playwright test in the suite. Count
 	// grows monotonically with sample index (100 + number * 5) so
 	// `rate(Count)` is positive; Sum tracks Count (5x scale) so the
 	// `_sum` companion route is also exercised. BucketCounts = [10, 20,
@@ -233,20 +231,32 @@ SELECT
     'HTTP request duration histogram',
     's',
     map('job', 'api', 'http_status', '200'),
-    now64(9) + INTERVAL (number - 300) SECOND,
-    now64(9) + INTERVAL (number - 300) SECOND,
+    now64(9) + INTERVAL (number - 900) SECOND,
+    now64(9) + INTERVAL (number - 900) SECOND,
     toUInt64(100 + number * 5),
     toFloat64((100 + number * 5) * 5) / 1000,
     [toUInt64(10), toUInt64(20), toUInt64(30), toUInt64(40)],
     [toFloat64(0.1), toFloat64(0.5), toFloat64(1.0)],
     toUInt32(0),
     toInt32(2)
-FROM numbers(600)`
+FROM numbers(1800)`
 
+	// otel_logs seed spans a 30-minute window centred on seed_now,
+	// [seed_now - 900 s, seed_now + 885 s], with 120 rows at 15 s
+	// cadence across 3 services. The earlier 60-row past-only window
+	// (`number % 60` seconds back) was timing-sensitive: every Loki
+	// `/query` instant request lands with the same 5 m staleness
+	// lookback `(eval - 5m, eval]` PromQL uses (see
+	// internal/api/loki/handler.go:235), so once Playwright's serial
+	// suite drifted more than ~5 min past seed (it now runs ~12 min
+	// of tests), every seeded log row fell outside the lookback and
+	// the Loki streams query returned 0 results. Spanning past +
+	// future keeps ≥ 1 row inside the 5 m envelope for every test in
+	// the suite.
 	insertLogsSQL = `INSERT INTO otel_logs
   (Timestamp, TimestampTime, TraceId, SpanId, SeverityText, SeverityNumber, ServiceName, Body, ResourceAttributes, LogAttributes)
 SELECT
-    now64(9) - INTERVAL toUInt64((number % 60)) SECOND AS ts,
+    now64(9) + INTERVAL ((number - 60) * 15) SECOND AS ts,
     ts,
     lpad(toString(number % 4), 32, '0'),
     lpad(toString(number % 4), 16, '0'),
@@ -259,7 +269,7 @@ SELECT
     ),
     map('service_name', arrayElement(['api', 'frontend', 'db'], number % 3 + 1)),
     map('thread', concat('worker-', toString(number % 4)))
-FROM numbers(60)`
+FROM numbers(120)`
 
 	insertTracesSQL = `INSERT INTO otel_traces
   (Timestamp, TraceId, SpanId, ParentSpanId, SpanName, SpanKind, ServiceName, ResourceAttributes, SpanAttributes, Duration, StatusCode)
@@ -273,12 +283,13 @@ VALUES
   (now64(9) - INTERVAL 29 SECOND, 'a0000000000000000000000000000003', '0000000000000007', '0000000000000006', 'cache.refresh',    'Client', 'db',       map('service.name', 'db'),       map('db.system',   'redis'),                                40000000, 'Ok')`
 )
 
-// insertMetrics inserts the two `up` gauge series + 600 counter samples for
-// rate(). Both seeds span a 10-minute window centred on the seed timestamp —
-// the gauge with 40 samples × 15 s and the counter with 600 samples × 1 s —
+// insertMetrics inserts the two `up` gauge series + 1800 counter samples for
+// rate(). Both seeds span a 30-minute window centred on the seed timestamp —
+// the gauge with 120 samples × 15 s and the counter with 1800 samples × 1 s —
 // so a 1m/5m `rate()` or subquery in any Playwright spec retains ≥2 samples
 // in its lookback window regardless of how much CI scheduling jitter lands
-// between `e2e-seed` and the Playwright request (within ±4 min of seed).
+// between `e2e-seed` and the Playwright request (within ±14 min of seed,
+// covering the full ~12 min serial-suite runtime + headroom).
 func insertMetrics(ctx context.Context, conn driver.Conn) error {
 	if err := conn.Exec(ctx, insertGaugeSQL); err != nil {
 		return fmt.Errorf("gauge: %w", err)
@@ -292,10 +303,12 @@ func insertMetrics(ctx context.Context, conn driver.Conn) error {
 	return nil
 }
 
-// insertLogs inserts 60 log records across 3 services in the last minute —
-// preserved verbatim from the previous test/e2e/seed/otel_logs.sql. LogQL
+// insertLogs inserts 120 log records across 3 services spanning a 30-minute
+// window centred on the seed timestamp (15 s cadence). LogQL
 // `{service_name="api"}` returns rows and `rate({service_name="api"}[5m])`
-// returns a non-zero metric.
+// returns a non-zero metric for every Playwright test in the suite — the
+// earlier past-only 60-record window slid past the Loki instant-query 5 m
+// staleness lookback by the time the suite reached the Loki specs.
 //
 // Uses the underscored `service_name` map key because LogQL's matcher.Name is
 // kept verbatim in cerberus's labelMatcherToExpr; the Prom/OTel naming bridge
