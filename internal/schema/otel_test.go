@@ -115,6 +115,52 @@ func TestDefaultOTelMetricsTableFor(t *testing.T) {
 	}
 }
 
+// TestDefaultOTelMetricsTablesFor pins the candidate-set routing
+// schema.Metrics.TablesFor uses for the matcher-resolve path. Suffixed
+// names route to a single table (preserves byte-stable SQL on the
+// fixtures that exercise the existing TableFor heuristic); unsuffixed
+// names fan out across (Gauge, Sum) so the PromQL matcher resolves the
+// OTel-hostmetrics / sqlquery / prometheus-self case where cumulative
+// sums ship under bare names that the Prom convention reserves for
+// gauges. See the regression fixture at
+// test/spec/promql/scan_unions_gauge_sum_for_unsuffixed_metric.txtar
+// for the end-to-end pin against the compose-smoke / dashboard surface.
+func TestDefaultOTelMetricsTablesFor(t *testing.T) {
+	t.Parallel()
+	m := DefaultOTelMetrics()
+	cases := map[string][]string{
+		// Unsuffixed: matcher could resolve in either Gauge or Sum
+		// depending on which OTel-emitter populated the row, so the
+		// scan unions both tables. Stable order: Gauge first (the v0.1
+		// default), Sum second (the OTel-emitter fallback).
+		"up":                     {m.GaugeTable, m.SumTable},
+		"latency":                {m.GaugeTable, m.SumTable},
+		"system_cpu_time":        {m.GaugeTable, m.SumTable},
+		"clickhouse_event":       {m.GaugeTable, m.SumTable},
+		"otelcol_process_uptime": {m.GaugeTable, m.SumTable},
+		// Suffix-routed: TableFor returns a single table, so does
+		// TablesFor — keeps the matcher-resolve path single-table for
+		// the fixtures that exercise `_total` / `_count` / `_sum` /
+		// `_bucket` shapes.
+		"http_server_request_duration_count":  {m.SumTable},
+		"http_server_request_duration_sum":    {m.SumTable},
+		"http_server_request_duration_bucket": {m.SumTable},
+		"requests_total":                      {m.SumTable},
+	}
+	for name, want := range cases {
+		got := m.TablesFor(name)
+		if len(got) != len(want) {
+			t.Errorf("TablesFor(%q): len got %d (%v), want %d (%v)", name, len(got), got, len(want), want)
+			continue
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Errorf("TablesFor(%q)[%d]: got %q, want %q", name, i, got[i], want[i])
+			}
+		}
+	}
+}
+
 // TestHistogramCompanionColumn pins the routing of classic-histogram
 // `_count` / `_sum` companion suffixes to the OTel-CH histogram-row
 // Count / Sum columns under the BARE metric name. The Prometheus
