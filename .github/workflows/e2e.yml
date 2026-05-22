@@ -295,8 +295,18 @@ jobs:
       - name: Bring up k3d stack
         run: just e2e-up
 
-      - name: Seed OTel data (deterministic synthetic rows)
-        run: just e2e-seed
+      - name: Seed OTel data (deterministic synthetic rows; rolling)
+        # `e2e-seed-rolling` runs the same INSERTs as `e2e-seed` once
+        # synchronously (the next CI step sees a populated DB), then
+        # leaves the seeder running in the background re-anchoring the
+        # metric/log windows on the new now64(9) every 30 s. Replaces
+        # the static ±15 min seed window the previous arms-race expanded
+        # in PRs #590 / #615 / #617 / #693 to absorb suite drift; the
+        # rolling design only has to cover one tick + the 5 m Prom/Loki
+        # staleness lookback, so the static span shrinks back to ±5 min.
+        # `e2e-down` (called from the teardown step below) stops the
+        # seeder + its kubectl port-forward on cleanup.
+        run: just e2e-seed-rolling
 
       - name: Wait for real OTel data from the collector pipeline
         run: just e2e-wait-otel
@@ -374,6 +384,10 @@ jobs:
           echo "=== sample-app metrics describe ==="
           kubectl -n cerberus describe deployment/sample-app-metrics || true
           kubectl -n cerberus describe pod -l app=sample-app,signal=metrics || true
+          echo "=== rolling seeder log (tail 200) ==="
+          tail -200 /tmp/cerberus-e2e-seed-rolling.log 2>/dev/null || true
+          echo "=== rolling seeder port-forward log (tail 50) ==="
+          tail -50 /tmp/cerberus-e2e-seed-pf.log 2>/dev/null || true
 
       - name: Tear down
         if: always()

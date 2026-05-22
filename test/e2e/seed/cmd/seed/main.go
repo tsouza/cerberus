@@ -18,9 +18,30 @@
 //
 // Usage:
 //
-//	go run ./test/e2e/seed/cmd/seed
+//	go run ./test/e2e/seed/cmd/seed                            # one-shot
+//	go run ./test/e2e/seed/cmd/seed --re-seed-interval=30s     # rolling
 //
 // (typically invoked through `just e2e-seed`).
+//
+// # Rolling re-seeder
+//
+// When `--re-seed-interval` is non-zero the program performs the initial
+// seed and then stays alive, re-running every INSERT once per tick. Each
+// re-insert re-anchors the metric/log windows on the new `now64(9)`, so
+// the dataset slides with wall-clock time. This replaced the previous
+// "widen the static seed window every time Playwright gains runtime"
+// arms-race (PRs #590, #615, #617, #693): with fresh data arriving
+// continuously, the static window only has to cover the gap between two
+// ticks (30 s) plus the longest query lookback (5 m) plus headroom.
+//
+// The previous static window spanned ±15 min around the initial seed
+// timestamp to survive a ~12 min Playwright suite. The rolling re-seeder
+// drops that to ±5 min: any query at `t = seed + N min` sees a fresh
+// re-anchored window centered on `seed + N min - δ` where δ ≤ 30 s.
+//
+// SIGTERM / SIGINT triggers a clean shutdown — the Playwright fixture
+// (or `just e2e-down`) signals teardown and the goroutine exits before
+// the connection closes.
 //
 // Implementation note: every INSERT below uses unqualified table names. The
 // `Database` field set on the clickhouse-go Auth struct resolves them on the
@@ -31,9 +52,12 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
@@ -43,12 +67,21 @@ import (
 )
 
 func main() {
-	if err := run(context.Background()); err != nil {
+	reSeedInterval := flag.Duration("re-seed-interval", 0,
+		"if non-zero, after the initial seed re-insert all rows every interval "+
+			"(re-anchoring the metric/log windows on the new now64(9)) until "+
+			"SIGTERM/SIGINT. The Playwright fixture passes 30s.")
+	flag.Parse()
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+
+	if err := run(ctx, *reSeedInterval); err != nil {
 		log.Fatalf("seed: %v", err)
 	}
 }
 
-func run(ctx context.Context) error {
+func run(ctx context.Context, reSeedInterval time.Duration) error {
 	addr := os.Getenv("CH_ADDR")
 	if addr == "" {
 		return fmt.Errorf("CH_ADDR is required (host:port of the ClickHouse native port)")
@@ -87,6 +120,50 @@ func run(ctx context.Context) error {
 		return fmt.Errorf("apply ddl: %w", err)
 	}
 
+	if err := seedAll(ctx, conn); err != nil {
+		return err
+	}
+
+	if err := verifyRowcounts(ctx, conn); err != nil {
+		return fmt.Errorf("verify rowcounts: %w", err)
+	}
+	log.Printf("seed: done")
+
+	if reSeedInterval <= 0 {
+		return nil
+	}
+
+	log.Printf("seed: entering rolling re-seed loop (interval=%s; SIGTERM/SIGINT to stop)", reSeedInterval)
+	ticker := time.NewTicker(reSeedInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			log.Printf("seed: rolling loop exiting on %v", ctx.Err())
+			return nil
+		case t := <-ticker.C:
+			// Use a fresh background context for the re-seed body so a
+			// teardown signal mid-INSERT lets the in-flight statement
+			// finish rather than leaving the table half-written; the
+			// loop itself still observes ctx.Done() above on the next
+			// iteration.
+			tickCtx, tickCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			if err := seedAll(tickCtx, conn); err != nil {
+				tickCancel()
+				log.Printf("seed: re-seed tick at %s failed: %v (continuing)", t.Format(time.RFC3339), err)
+				continue
+			}
+			tickCancel()
+			log.Printf("seed: re-seed tick at %s ok", t.Format(time.RFC3339))
+		}
+	}
+}
+
+// seedAll runs every INSERT once against the live connection. The
+// metrics + logs constants below all use `now64(9)` for their time
+// columns, so re-running this function re-anchors the seed window on
+// the current wall-clock time without any further parameterisation.
+func seedAll(ctx context.Context, conn driver.Conn) error {
 	log.Printf("seed: inserting metrics fixtures")
 	if err := insertMetrics(ctx, conn); err != nil {
 		return fmt.Errorf("insert metrics: %w", err)
@@ -99,26 +176,26 @@ func run(ctx context.Context) error {
 	if err := insertTraces(ctx, conn); err != nil {
 		return fmt.Errorf("insert traces: %w", err)
 	}
-
-	if err := verifyRowcounts(ctx, conn); err != nil {
-		return fmt.Errorf("verify rowcounts: %w", err)
-	}
-	log.Printf("seed: done")
 	return nil
 }
 
 // Static SQL — no string interpolation. Table names are unqualified; the
 // clickhouse-go Auth.Database resolves them server-side.
+//
+// Window sizing rationale (post-rolling-reseeder, 2026-05-22):
+// The seed window only has to cover the gap between two re-seed ticks
+// (30 s) plus the longest query lookback (Prom/Loki 5 m staleness) plus
+// headroom. ±5 min is comfortably enough on both sides of `now`. Before
+// the rolling re-seeder landed, the window was widened to ±15 min in
+// four successive PRs (#590, #615, #617, #693) to absorb the entire
+// ~12 min Playwright suite drift — see the package doc comment for the
+// arms-race history that motivated the switch.
 const (
-	// `up` is seeded as a 30-minute sliding window of samples centred on
-	// the seed timestamp (one per 15 s = 120 samples per series, 2 series
-	// = 240 rows) spanning [seed_now - 900 s, seed_now + 885 s]. The
-	// earlier ±300 s span was timing-sensitive: the full Playwright suite
-	// runs ~12 min of tests serially, so a query landing at seed + 11 min
-	// found every gauge sample outside the 5 m instant-staleness lookback
-	// `(eval - 5m, eval]` (see internal/promql/modifiers.go::instantLookback
-	// + PR #655). With the wider window every test up to seed + 14 min
-	// keeps ≥ 1 future sample inside the 5 m staleness envelope.
+	// `up` is seeded as a 10-minute sliding window of samples centred on
+	// the (current) seed timestamp: 40 samples per series at 15 s cadence
+	// = 80 rows spanning [seed_now - 300 s, seed_now + 285 s]. The
+	// rolling re-seeder re-runs this INSERT every 30 s, so a query at
+	// any wall-clock time sees a window that is at most 30 s stale.
 	// `ServiceName` is set explicitly alongside `ResourceAttributes`
 	// so the rows match the shape the upstream OTel-CH exporter would
 	// emit (the exporter copies `ResAttr['service.name']` into the
@@ -141,10 +218,10 @@ SELECT
     'Is the scrape target up',
     '1',
     map('job', 'api'),
-    now64(9) + INTERVAL ((number - 60) * 15) SECOND,
-    now64(9) + INTERVAL ((number - 60) * 15) SECOND,
+    now64(9) + INTERVAL ((number - 20) * 15) SECOND,
+    now64(9) + INTERVAL ((number - 20) * 15) SECOND,
     1.0
-FROM numbers(120)
+FROM numbers(40)
 UNION ALL
 SELECT
     map('service.name', 'db'),
@@ -153,24 +230,20 @@ SELECT
     'Is the scrape target up',
     '1',
     map('job', 'db'),
-    now64(9) + INTERVAL ((number - 60) * 15) SECOND,
-    now64(9) + INTERVAL ((number - 60) * 15) SECOND,
+    now64(9) + INTERVAL ((number - 20) * 15) SECOND,
+    now64(9) + INTERVAL ((number - 20) * 15) SECOND,
     0.0
-FROM numbers(120)`
+FROM numbers(40)`
 
-	// 1800 samples at 1 s cadence cover a 30-minute window centred on
-	// the seed timestamp: [seed_now - 900 s, seed_now + 899 s]. The
-	// earlier ±300 s span was timing-sensitive: the full Playwright
-	// suite runs ~12 min serially, so by the time `prom_ux.spec.ts:180`
-	// (target B's `rate(http_server_request_duration_count[1m])`)
-	// landed, the 1 min lookback at eval-time had slid past every
-	// seeded sample and the query returned 0 series. Spanning ±15 min
-	// keeps any 1m / 5m rate() window inside the seed envelope for
-	// every test in the suite plus future tests added below this line.
+	// 600 samples at 1 s cadence cover a 10-minute window centred on
+	// the (current) seed timestamp: [seed_now - 300 s, seed_now + 299 s].
+	// The rolling re-seeder re-runs this INSERT every 30 s, so any 1m /
+	// 5m `rate()` window over `eval_time` keeps ≥1 sample inside the
+	// window regardless of how long Playwright has been running.
 	//
 	// The value formula `1000 + number * 5` is monotone-with-time
-	// (number = 0 is the earliest sample at seed_now - 900 s; number
-	// = 1799 is the latest at seed_now + 899 s), which is the shape
+	// (number = 0 is the earliest sample at seed_now - 300 s; number
+	// = 599 is the latest at seed_now + 299 s), which is the shape
 	// rate() expects for a counter.
 	// Same `ServiceName` discipline as `insertGaugeSQL` — the
 	// otel_metrics_sum row needs the dedicated LowCardinality column
@@ -185,13 +258,13 @@ SELECT
     'HTTP request count by status',
     '1',
     map('job', 'api', 'http_status', '200'),
-    now64(9) + INTERVAL (number - 900) SECOND,
-    now64(9) + INTERVAL (number - 900) SECOND,
+    now64(9) + INTERVAL (number - 300) SECOND,
+    now64(9) + INTERVAL (number - 300) SECOND,
     toFloat64(1000 + number * 5),
     toUInt32(0),
     toInt32(2),
     true
-FROM numbers(1800)`
+FROM numbers(600)`
 
 	// Classic-histogram companion rows for `http_server_request_duration`.
 	//
@@ -212,10 +285,10 @@ FROM numbers(1800)`
 	// scans `otel_metrics_histogram` for MetricName='http_server_request_duration'
 	// and projects `toFloat64(Count)` as the counter value.
 	//
-	// Shape mirrors `insertSumSQL`: 1800 samples at 1 s cadence covering
-	// [seed_now - 900 s, seed_now + 899 s] so any 1m / 5m `rate()` window
-	// retains ≥2 samples for every Playwright test in the suite. Count
-	// grows monotonically with sample index (100 + number * 5) so
+	// Shape mirrors `insertSumSQL`: 600 samples at 1 s cadence covering
+	// [seed_now - 300 s, seed_now + 299 s] so any 1m / 5m `rate()` window
+	// retains ≥2 samples relative to the current (rolling) seed anchor.
+	// Count grows monotonically with sample index (100 + number * 5) so
 	// `rate(Count)` is positive; Sum tracks Count (5x scale) so the
 	// `_sum` companion route is also exercised. BucketCounts = [10, 20,
 	// 30, 40] (sum 100, matches the +100 base of Count) and
@@ -231,32 +304,26 @@ SELECT
     'HTTP request duration histogram',
     's',
     map('job', 'api', 'http_status', '200'),
-    now64(9) + INTERVAL (number - 900) SECOND,
-    now64(9) + INTERVAL (number - 900) SECOND,
+    now64(9) + INTERVAL (number - 300) SECOND,
+    now64(9) + INTERVAL (number - 300) SECOND,
     toUInt64(100 + number * 5),
     toFloat64((100 + number * 5) * 5) / 1000,
     [toUInt64(10), toUInt64(20), toUInt64(30), toUInt64(40)],
     [toFloat64(0.1), toFloat64(0.5), toFloat64(1.0)],
     toUInt32(0),
     toInt32(2)
-FROM numbers(1800)`
+FROM numbers(600)`
 
-	// otel_logs seed spans a 30-minute window centred on seed_now,
-	// [seed_now - 900 s, seed_now + 885 s], with 120 rows at 15 s
-	// cadence across 3 services. The earlier 60-row past-only window
-	// (`number % 60` seconds back) was timing-sensitive: every Loki
-	// `/query` instant request lands with the same 5 m staleness
-	// lookback `(eval - 5m, eval]` PromQL uses (see
-	// internal/api/loki/handler.go:235), so once Playwright's serial
-	// suite drifted more than ~5 min past seed (it now runs ~12 min
-	// of tests), every seeded log row fell outside the lookback and
-	// the Loki streams query returned 0 results. Spanning past +
-	// future keeps ≥ 1 row inside the 5 m envelope for every test in
-	// the suite.
+	// otel_logs seed spans a 10-minute window centred on (current)
+	// seed_now: [seed_now - 300 s, seed_now + 285 s], with 40 rows at
+	// 15 s cadence across 3 services. The rolling re-seeder re-runs
+	// this INSERT every 30 s, so every Loki `/query` instant request
+	// (5 m staleness lookback, see internal/api/loki/handler.go:235)
+	// finds ≥1 row inside the lookback regardless of suite drift.
 	insertLogsSQL = `INSERT INTO otel_logs
   (Timestamp, TimestampTime, TraceId, SpanId, SeverityText, SeverityNumber, ServiceName, Body, ResourceAttributes, LogAttributes)
 SELECT
-    now64(9) + INTERVAL ((number - 60) * 15) SECOND AS ts,
+    now64(9) + INTERVAL ((number - 20) * 15) SECOND AS ts,
     ts,
     lpad(toString(number % 4), 32, '0'),
     lpad(toString(number % 4), 16, '0'),
@@ -269,7 +336,7 @@ SELECT
     ),
     map('service_name', arrayElement(['api', 'frontend', 'db'], number % 3 + 1)),
     map('thread', concat('worker-', toString(number % 4)))
-FROM numbers(120)`
+FROM numbers(40)`
 
 	insertTracesSQL = `INSERT INTO otel_traces
   (Timestamp, TraceId, SpanId, ParentSpanId, SpanName, SpanKind, ServiceName, ResourceAttributes, SpanAttributes, Duration, StatusCode)
@@ -283,13 +350,12 @@ VALUES
   (now64(9) - INTERVAL 29 SECOND, 'a0000000000000000000000000000003', '0000000000000007', '0000000000000006', 'cache.refresh',    'Client', 'db',       map('service.name', 'db'),       map('db.system',   'redis'),                                40000000, 'Ok')`
 )
 
-// insertMetrics inserts the two `up` gauge series + 1800 counter samples for
-// rate(). Both seeds span a 30-minute window centred on the seed timestamp —
-// the gauge with 120 samples × 15 s and the counter with 1800 samples × 1 s —
-// so a 1m/5m `rate()` or subquery in any Playwright spec retains ≥2 samples
-// in its lookback window regardless of how much CI scheduling jitter lands
-// between `e2e-seed` and the Playwright request (within ±14 min of seed,
-// covering the full ~12 min serial-suite runtime + headroom).
+// insertMetrics inserts the two `up` gauge series + 600 counter samples for
+// rate(). Both seeds span a 10-minute window centred on the (current) seed
+// timestamp — the gauge with 40 samples × 15 s and the counter / histogram
+// with 600 samples × 1 s. The rolling re-seeder re-runs this every 30 s so
+// any 1m / 5m `rate()` or subquery in any Playwright spec retains ≥2 samples
+// in its lookback window regardless of how much suite runtime has elapsed.
 func insertMetrics(ctx context.Context, conn driver.Conn) error {
 	if err := conn.Exec(ctx, insertGaugeSQL); err != nil {
 		return fmt.Errorf("gauge: %w", err)
@@ -303,12 +369,11 @@ func insertMetrics(ctx context.Context, conn driver.Conn) error {
 	return nil
 }
 
-// insertLogs inserts 120 log records across 3 services spanning a 30-minute
-// window centred on the seed timestamp (15 s cadence). LogQL
+// insertLogs inserts 40 log records across 3 services spanning a 10-minute
+// window centred on the (current) seed timestamp (15 s cadence). LogQL
 // `{service_name="api"}` returns rows and `rate({service_name="api"}[5m])`
 // returns a non-zero metric for every Playwright test in the suite — the
-// earlier past-only 60-record window slid past the Loki instant-query 5 m
-// staleness lookback by the time the suite reached the Loki specs.
+// rolling re-seeder keeps the window slid up to wall-clock now.
 //
 // Uses the underscored `service_name` map key because LogQL's matcher.Name is
 // kept verbatim in cerberus's labelMatcherToExpr; the Prom/OTel naming bridge
