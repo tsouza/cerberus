@@ -195,6 +195,54 @@ SELECT
     true
 FROM numbers(600)`
 
+	// Classic-histogram companion rows for `http_server_request_duration`.
+	//
+	// Since PR #645 (`HistogramCompanionColumn`,
+	// internal/schema/otel.go:373), the PromQL lowering routes any
+	// `<base>_count` / `<base>_sum` reference to `otel_metrics_histogram`
+	// under the bare `<base>` MetricName, projecting `Count` / `Sum` as
+	// the value. That's the correct production behaviour — the OTel-CH
+	// exporter writes classic-histogram series as one row per anchor
+	// with `Count`, `Sum`, `BucketCounts`, `ExplicitBounds` populated,
+	// not as separate `_count` / `_sum` MetricName rows.
+	//
+	// The `otel_metrics_sum` seed above pre-dates that routing change
+	// and is kept for any test that still reads the sum table directly.
+	// This block adds the histogram rows the e2e Prom tests
+	// (`TestPromQueryRangeRate`, `TestPromQuerySubqueryMaxOverTimeRate`)
+	// now depend on: `rate(http_server_request_duration_count[1m])`
+	// scans `otel_metrics_histogram` for MetricName='http_server_request_duration'
+	// and projects `toFloat64(Count)` as the counter value.
+	//
+	// Shape mirrors `insertSumSQL`: 600 samples at 1 s cadence covering
+	// [seed_now - 300 s, seed_now + 299 s] so any 1m / 5m `rate()` window
+	// retains ≥2 samples regardless of ±4 min CI timing jitter. Count
+	// grows monotonically with sample index (100 + number * 5) so
+	// `rate(Count)` is positive; Sum tracks Count (5x scale) so the
+	// `_sum` companion route is also exercised. BucketCounts = [10, 20,
+	// 30, 40] (sum 100, matches the +100 base of Count) and
+	// ExplicitBounds = [0.1, 0.5, 1.0] (three explicit edges + implicit
+	// +Inf trailing bucket) give `histogram_quantile()` a non-trivial
+	// distribution to interpolate over if a future spec exercises it.
+	insertHistogramSQL = `INSERT INTO otel_metrics_histogram
+  (ResourceAttributes, ServiceName, MetricName, MetricDescription, MetricUnit, Attributes, StartTimeUnix, TimeUnix, Count, Sum, BucketCounts, ExplicitBounds, Flags, AggregationTemporality)
+SELECT
+    map('service.name', 'api'),
+    'api',
+    'http_server_request_duration',
+    'HTTP request duration histogram',
+    's',
+    map('job', 'api', 'http_status', '200'),
+    now64(9) + INTERVAL (number - 300) SECOND,
+    now64(9) + INTERVAL (number - 300) SECOND,
+    toUInt64(100 + number * 5),
+    toFloat64((100 + number * 5) * 5) / 1000,
+    [toUInt64(10), toUInt64(20), toUInt64(30), toUInt64(40)],
+    [toFloat64(0.1), toFloat64(0.5), toFloat64(1.0)],
+    toUInt32(0),
+    toInt32(2)
+FROM numbers(600)`
+
 	insertLogsSQL = `INSERT INTO otel_logs
   (Timestamp, TimestampTime, TraceId, SpanId, SeverityText, SeverityNumber, ServiceName, Body, ResourceAttributes, LogAttributes)
 SELECT
@@ -238,6 +286,9 @@ func insertMetrics(ctx context.Context, conn driver.Conn) error {
 	if err := conn.Exec(ctx, insertSumSQL); err != nil {
 		return fmt.Errorf("sum: %w", err)
 	}
+	if err := conn.Exec(ctx, insertHistogramSQL); err != nil {
+		return fmt.Errorf("histogram: %w", err)
+	}
 	return nil
 }
 
@@ -273,6 +324,7 @@ func verifyRowcounts(ctx context.Context, conn driver.Conn) error {
 	}{
 		{"metrics_gauge", "SELECT count() FROM otel_metrics_gauge"},
 		{"metrics_sum", "SELECT count() FROM otel_metrics_sum"},
+		{"metrics_histogram", "SELECT count() FROM otel_metrics_histogram"},
 		{"logs", "SELECT count() FROM otel_logs"},
 		{"traces", "SELECT count() FROM otel_traces"},
 	}
