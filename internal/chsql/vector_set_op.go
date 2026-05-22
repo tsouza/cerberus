@@ -147,6 +147,38 @@ func (e *emitter) emitVectorSetOp(s *chplan.VectorSetOp) error {
 // which of the four canonical columns is available as a real column
 // from the rendered subquery and which must be synthesised.
 //
+// NOTE — still reachable post-#710 / #716 (audited 2026-05-22).
+// PR #710 fixed schema.Metrics.TableFor → TablesFor so unsuffixed
+// OTel-emitter metric names route to merge(gauge|sum) instead of
+// gauge-only; #716 extended that to _count / _sum suffixes. Both
+// changes touch which Scan tables the matcher resolves and are
+// orthogonal to this helper, which addresses two distinct SQL
+// emission issues:
+//
+//  1. UNION ALL positional column-type unification: nested
+//     `(A or B) or C` mixes a canonical-shape inner (String, Map,
+//     DateTime64, Float64) with a matrix-mode RangeWindow arm whose
+//     inner SELECT exposes (Attributes, anchor_ts, TimeUnix, Value)
+//     — column 0 is Map there, String on the inner. CH then refuses
+//     with NO_COMMON_TYPE (Map vs. String).
+//  2. Instant-mode derived inner SELECTs only project (group-keys…,
+//     Value); a parent SELECT that references TimeUnix unqualified
+//     fails at CH 24.x with "Unknown expression identifier
+//     'TimeUnix'".
+//
+// Reachability was empirically confirmed by lowering the PR #706
+// failing-shape query
+// `sum(rate(otelcol_exporter_send_failed_log_records[5m]) or
+//
+//	rate(otelcol_exporter_send_failed_metric_points[5m]))` on the
+//
+// post-#710/#716 tree: the per-arm canonical-shape projection is
+// invoked for both arms, with `derived` true and the synthesised
+// anchor branch taken (instant mode, no matrix RangeWindow). The
+// pinned regression fixtures
+// `test/spec/promql/binary_or_increase_{range,instant}_canonicalises_arms.txtar`
+// continue to gate the SQL shape this helper produces.
+//
 // Three resolution shapes need handling, mirroring the three branches
 // in `wrapWithSampleProjection` (internal/api/prom/handler.go):
 //
