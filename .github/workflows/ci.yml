@@ -276,25 +276,67 @@ jobs:
             echo "::error::soft-assertion or silent-recover pattern found — replace assert.Contains(x, \"\") with the actual substring, replace assert.ElementsMatch(x, []T{}) with len(x) == 0, replace defer recover() / defer func(){_ = recover()}() with assert.Panics(t, func(){...}, \"reason\")"
             exit 1
           fi
-      # Reject net-new `should_skip:` entries in compatibility overlays
-      # that lack a tracking ref — a discipline pin against the
-      # #429 / #537 anti-pattern (skips that masked real bugs and
-      # lingered for weeks before someone wired the fix).
-      #
-      # Self-test: scripts/check-skip-additions.sh --self-test.
-      - name: Guard new should_skip entries
-        if: github.event_name == 'pull_request'
-        env:
-          BASE_REF: origin/${{ github.base_ref }}
+      # Reject any non-empty `should_skip:` overlay entry. The harness
+      # consumer code was removed, so an entry would be silently
+      # ignored. `should_skip: []` is the only accepted form (kept
+      # for schema documentation); any element under the key
+      # re-introduces the anti-pattern. The rule is structural: every
+      # failure must surface as a real bug to fix at the source.
+      - name: Reject should_skip overlay entries
         run: |
-          scripts/check-skip-additions.sh --self-test
-          scripts/check-skip-additions.sh
-      # Regex self-test for the gate above. Every pattern documented in
-      # docs/forbid-skip.md has a canonical match-example and a
-      # counter-example; this step asserts the regexes still classify
-      # both correctly. When a future PR widens or normalises the
-      # gate, update docs/forbid-skip.md AND scripts/test-forbid-skip.sh
-      # in the same change.
+          # Multi-line scan: detect `should_skip:` followed by a
+          # block child (`- source:`) — i.e. a non-empty entry. The
+          # accepted empty form `should_skip: []` does not match.
+          matches=$(git ls-files -z -- \
+              'compatibility/**/*.yml' \
+              'compatibility/**/*.yaml' \
+              ':!:compatibility/*/upstream/**' \
+              | xargs -0 perl -0777 -ne '
+                  while (/^[ \t]*should_skip:[ \t]*\n(?:[ \t]*\#[^\n]*\n|[ \t]*\n)*[ \t]+-/mg) {
+                    my $pre = substr($_, 0, $-[0]);
+                    my $line = ($pre =~ tr/\n//) + 1;
+                    print "$ARGV:$line: non-empty should_skip block\n";
+                  }
+                ')
+          if [ -n "$matches" ]; then
+            printf '%s\n' "$matches"
+            echo "::error::non-empty should_skip overlay entry found. The consumer code was removed in the structural-cleanup PR; entries here are silently ignored. Fix the underlying bug instead of skipping the case."
+            exit 1
+          fi
+      # Regex self-test for the forbid-skip gate. Every pattern
+      # documented in docs/forbid-skip.md has a canonical match-example
+      # and a counter-example; this step asserts the regexes still
+      # classify both correctly. When a future PR widens or normalises
+      # the gate, update docs/forbid-skip.md AND
+      # scripts/test-forbid-skip.sh in the same change.
       - name: Self-test forbid-skip regex set
         run: |
           scripts/test-forbid-skip.sh
+      # Reject test-suite escape-hatch primitives. Each pattern below
+      # is a documented anti-pattern that masks real bugs:
+      #
+      #   - `EXPECTED_EMPTY` / `EXPECTED_TOLERATED` / `isKnownTolerated*` /
+      #     `tolerated404` — allow-list arrays consulted before failing.
+      #   - `expect.soft(...)` — assertion that records a failure but
+      #     lets the test "continue" (Playwright); easy to miss in CI
+      #     summaries.
+      #   - `should_skip` / `should_tolerate` in code — the YAML schema
+      #     was removed; any occurrence here is a re-introduction.
+      #   - `skipReason` / `SkipReason` — the loki driver's
+      #     overlay-driven skip field, removed.
+      #
+      # If a real test surfaces noise, fix the noise at the source
+      # (cerberus code, seed, dashboard, panel). Never silence it
+      # with one of these.
+      - name: Reject test escape-hatch patterns
+        run: |
+          if git ls-files -z -- \
+              '*.ts' '*.tsx' '*.go' \
+              ':!:compatibility/*/upstream/**' \
+              ':!:**/node_modules/**' \
+              ':!:vendor/**' \
+              ':!:.claude/**' \
+              | xargs -0 grep -nEH 'EXPECTED_EMPTY|EXPECTED_TOLERATED|isKnownTolerated|tolerated404|expect\.soft|should_tolerate|skipReason|SkipReason|APP_NOT_INSTALLED_BANNER_PATTERNS|DRILLDOWN_UPSTREAM_GRAFANA_CONSOLE_NOISE' --; then
+            echo "::error::test escape-hatch pattern found. Every assertion must fail loud; never mask a failure with an allow-list / tolerance / soft-assert. Fix the bug at the source (cerberus code, seed, dashboard, panel)."
+            exit 1
+          fi

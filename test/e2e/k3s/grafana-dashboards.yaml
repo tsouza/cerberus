@@ -505,48 +505,6 @@ data:
         },
         {
           "datasource": {
-            "type": "loki",
-            "uid": "cerberus-loki"
-          },
-          "description": "Recent ERROR-severity log records emitted by cerberus itself (service_name=cerberus, SeverityText=ERROR). Sourced via the Loki head against the otel_logs table.",
-          "fieldConfig": {
-            "defaults": {},
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 10,
-            "w": 24,
-            "x": 0,
-            "y": 24
-          },
-          "id": 6,
-          "options": {
-            "dedupStrategy": "none",
-            "enableLogDetails": true,
-            "prettifyLogMessage": true,
-            "showCommonLabels": false,
-            "showLabels": false,
-            "showTime": true,
-            "sortOrder": "Descending",
-            "wrapLogMessage": true
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "loki",
-                "uid": "cerberus-loki"
-              },
-              "editorMode": "code",
-              "expr": "{service_name=\"cerberus\"} | SeverityText=\"ERROR\"",
-              "queryType": "range",
-              "refId": "A"
-            }
-          ],
-          "title": "Cerberus ERROR logs",
-          "type": "logs"
-        },
-        {
-          "datasource": {
             "type": "tempo",
             "uid": "cerberus-tempo"
           },

@@ -12,11 +12,10 @@
  * a `void` waiter that absorbs repaint flicker without polluting the
  * spec's main timeline.
  *
- * Tolerated console-message families: NONE. We do not carry an
- * allow-list (Q5 in /home/thiago/.claude/plans/e2e-enhance.md §9 —
- * every error surfaced is a failure). If a third-party plugin emits
- * noise, the spec should filter that surface OUT of the iteration,
- * not extend an allow-list here.
+ * No console-message allow-list — every error surfaced is a failure
+ * to fix at the source. If a third-party plugin emits noise, drop
+ * that surface OUT of the iteration; never extend an allow-list
+ * here.
  */
 
 import type { ConsoleMessage, Page } from '@playwright/test';

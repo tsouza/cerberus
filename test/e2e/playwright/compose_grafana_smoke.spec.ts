@@ -198,17 +198,10 @@ test('compose: home, drilldown app, and every provisioned dashboard load without
       page.off('response', onResponse);
     }
 
-    // 3a. HTTP status sweep over every captured response.
-    //
-    // Zero 404 toleration (Q5, /home/thiago/.claude/plans/e2e-enhance.md
-    // §9.5): every non-2xx captured during the sweep is a failure. The
-    // prior `isKnownTolerated404` allow-list was retired in PR
-    // test/e2e-phase-7-retire-404-allow-list (task #230) — its last
-    // remaining entries (`/api/v1/rules` + `/api/v1/alerts`) became 200
-    // when PR #632 merged. The fix for any new 404 is to implement the
-    // endpoint or to remove that surface from the iteration, not to
-    // extend an allow-list. The new iterate-* specs already enforce the
-    // same policy via helpers/assertions.ts::assertNon200ResponseClass.
+    // 3a. HTTP status sweep over every captured response — zero
+    //     tolerance for non-2xx. Every failure is a real bug to fix
+    //     at the source (implement the endpoint, fix the proxy, or
+    //     drop the surface from the iteration).
     for (const resp of captured) {
       const status = resp.status();
       if (status < 200 || status > 299) {
@@ -372,10 +365,7 @@ test('compose: home, drilldown app, and every provisioned dashboard load without
       .map((s) => `  - [${s.kind}] ${s.label}`)
       .join('\n');
     const detail = failures.map((f) => `* ${f}`).join('\n');
-    expect
-      .soft(failures, `${header}\nprobed surfaces:\n${surfaceList}\nfailures:\n${detail}`)
-      .toEqual([]);
-    throw new Error(`${header}\n${detail}`);
+    throw new Error(`${header}\nprobed surfaces:\n${surfaceList}\nfailures:\n${detail}`);
   }
 });
 
@@ -907,11 +897,15 @@ async function seedCerberusSelfTraffic(
         const url = cerberusURL
           ? `${cerberusURL}${t.direct}`
           : `${grafanaBaseURL}${t.proxied}`;
+        // Warmup-traffic call — the helper's job is to nudge the
+        // counters; the downstream legend / panel assertion is the
+        // load-bearing check, so a per-iteration HTTP error here is
+        // discarded rather than cascaded into the assertion phase.
         try {
           await request.get(url, { timeout: 5_000 });
         } catch {
-          // Sporadic individual failures are tolerated — the downstream
-          // assertion only needs ≥ 2 of the three heads on the legend.
+          // Discarded: warmup-only call; the downstream assertion is
+          // load-bearing.
         }
       }
     }
@@ -937,27 +931,3 @@ function stripBase(url: string, base: string): string {
   return url.startsWith(base) ? url.slice(base.length) : url;
 }
 
-/*
- * `isKnownTolerated404` retired in task #230 (PR
- * test/e2e-phase-7-retire-404-allow-list).
- *
- * The function previously allow-listed two Grafana-polled Prom paths
- * (`/api/v1/rules`, `/api/v1/alerts`) while their backing stubs were
- * still in flight. Both endpoints now return 200 (empty envelopes)
- * after PR #632 merged on 2026-05-20:
- *
- *   $ curl -s http://localhost:8080/api/v1/rules
- *   {"status":"success","data":{"groups":[]}}
- *   $ curl -s http://localhost:8080/api/v1/alerts
- *   {"status":"success","data":{"alerts":[]}}
- *
- * Per resolved decision Q5 in /home/thiago/.claude/plans/e2e-enhance.md
- * §9.5 — "NO toleration. Every 404 surfaced during the sweep is a bug,
- * not a tolerated state" — the helper and its allow-list are removed
- * outright. New non-2xx responses fail the sweep at step 3a; the fix
- * is to implement the endpoint or to drop the surface from the
- * iteration, not to re-introduce an allow-list. The phase-1..4
- * iterate-* specs enforce the same policy via
- * helpers/assertions.ts::assertNon200ResponseClass, which by design
- * carries no allow-list parameter.
- */

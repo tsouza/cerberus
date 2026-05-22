@@ -53,11 +53,9 @@ type SearchResponse struct {
 	Metrics any            `json:"metrics,omitempty"` // ignored by differ
 }
 
-// TraceSummary mirrors Tempo's /api/search trace element. All fields
-// optional — Tempo sometimes omits StartTimeUnixNano + DurationMs in
-// older builds; cerberus sometimes omits RootServiceName / RootTraceName
-// when projections drop them. The differ tolerates either side missing
-// fields by skipping that field's compare and recording a reason.
+// TraceSummary mirrors Tempo's /api/search trace element. Every field
+// is compared; an asymmetric blank on either side is a real divergence
+// (the backend that omitted the field is the bug).
 type TraceSummary struct {
 	TraceID           string `json:"traceID"`
 	RootServiceName   string `json:"rootServiceName,omitempty"`
@@ -260,13 +258,12 @@ func compareSummary(key string, a, b TraceSummary, aLabel, bLabel string, opts D
 		}
 	}
 
-	// StartTimeUnixNano is a string in the JSON shape; treat blank on
-	// either side as a non-comparison rather than a mismatch so older
-	// Tempo builds (which omit this field) don't false-positive.
-	if a.StartTimeUnixNano != "" && b.StartTimeUnixNano != "" && a.StartTimeUnixNano != b.StartTimeUnixNano {
-		// Allow the configured epsilon on the parsed value to absorb
-		// quantization differences between block-flush vs in-memory
-		// reads.
+	// StartTimeUnixNano is a string in the JSON shape; an asymmetric
+	// blank on either side is a real divergence (the backend that
+	// omitted the field is the bug). Parsed values still go through
+	// the epsilon comparator to absorb block-flush vs in-memory
+	// quantisation noise.
+	if a.StartTimeUnixNano != b.StartTimeUnixNano {
 		an, errA := strconv.ParseFloat(a.StartTimeUnixNano, 64)
 		bn, errB := strconv.ParseFloat(b.StartTimeUnixNano, 64)
 		if errA != nil || errB != nil || !valuesClose(an, bn, opts) {
