@@ -225,8 +225,8 @@ jobs:
           docker compose logs --tail=200 cerberus || true
           echo "=== grafana logs (last 200) ==="
           docker compose logs --tail=200 grafana || true
-          echo "=== seed logs (last 200) ==="
-          docker compose logs --tail=200 seed || true
+          echo "=== otel-collector logs (last 200) ==="
+          docker compose logs --tail=200 otel-collector || true
 
       - name: teardown
         if: always()

@@ -2,15 +2,14 @@
 # stack. Tells Grafana to scan /etc/grafana/provisioning/dashboards/cerberus
 # for JSON dashboards and load them under the "Cerberus" folder.
 #
-# Two starter dashboards ship with the compose quickstart:
+# One starter dashboard ships with the compose quickstart:
 #   - cerberus-self.json: cerberus's own observability surface (per-head
 #     request rate, latency quantiles, error rate, in-flight, admission
 #     rejections, recent ERROR logs, slow-query traces). Wired as the
 #     home dashboard via GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH so
-#     opening localhost:3000 lands directly on it.
-#   - otel-fixture-explorer.json: tours the seed fixture (top services by
-#     request rate, log-severity histogram, trace error rate, recent spans).
-#     A useful "what's in this CH database?" first-look for demo users.
+#     opening localhost:3000 lands directly on it. Cerberus's own
+#     self-telemetry is the sole data source — the quickstart deliberately
+#     does not run a fixture seeder.
 #
 # The k3d e2e stack at test/e2e/k3s/ has its own ConfigMap-based provisioning
 # (grafana-dashboards.yaml) — keep the two in sync when adding new dashboards.

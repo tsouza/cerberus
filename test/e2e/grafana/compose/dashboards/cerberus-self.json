@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "Cerberus self-observability. All panels query cerberus's own dogfood loop: cerberus -> OTLP -> Collector -> ClickHouse -> cerberus -> Grafana. Until the OTel collector service lands in the quickstart compose, the metric / log / trace panels here will render 'no data' rather than error out.",
+  "description": "Cerberus self-observability. All panels query cerberus's own dogfood loop: cerberus -> OTLP -> Collector -> ClickHouse -> cerberus -> Grafana. This dashboard is the sole data surface in the quickstart compose stack — cerberus's self-telemetry populates the panels within ~60s of stack start, no separate seeder required.",
   "editable": false,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,

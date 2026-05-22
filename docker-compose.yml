@@ -6,8 +6,9 @@
 # Services:
 #   clickhouse      single-node CH server, OTel-aware (db=otel,
 #                   user/pass=cerberus). Named volume `clickhouse-data`
-#                   survives `docker compose down` so seed rows persist
-#                   across restarts. Use `down -v` to wipe.
+#                   survives `docker compose down` so cerberus's
+#                   accumulated self-telemetry survives restarts. Use
+#                   `down -v` to wipe.
 #   otel-collector  OpenTelemetry Collector configured for the compose
 #                   stack (OTLP gRPC :4317 in, clickhouseexporter out).
 #                   Closes the dogfood loop: cerberus emits self-telemetry
@@ -18,16 +19,16 @@
 #                   the k3d E2E uses). Auto-creates the OTel-CH schema on
 #                   startup via CERBERUS_AUTO_CREATE_SCHEMA=true, so no
 #                   separate init job. Exports OTLP to `otel-collector:4317`.
-#   seed            one-shot Go program that inserts the deterministic OTel
-#                   fixture rows from test/e2e/seed/cmd/seed. Exits after a
-#                   successful run; doesn't block the long-lived services
-#                   from being ready.
+#                   Cerberus's own self-telemetry (metrics + logs + traces)
+#                   is the sole data source for the quickstart: it flows
+#                   cerberus -> otel-collector -> ClickHouse -> back into
+#                   cerberus via its own Prom/Loki/Tempo heads, populating
+#                   the provisioned dashboard within a minute of stack start.
 #   grafana         pre-provisioned with cerberus as three datasources
-#                   (Prometheus / Loki / Tempo) and two starter dashboards
-#                   under the "Cerberus" folder — `cerberus-self` (self-obs;
-#                   set as home dashboard) and `otel-fixture-explorer`
-#                   (tour of the seed fixture). Provisioning files live
-#                   under `test/e2e/grafana/compose/`.
+#                   (Prometheus / Loki / Tempo) and the `cerberus-self`
+#                   dashboard (self-obs; set as home dashboard) under the
+#                   "Cerberus" folder. Provisioning files live under
+#                   `test/e2e/grafana/compose/`.
 #
 # Default host port map:
 #   3000  -> grafana
@@ -46,7 +47,6 @@ networks:
 
 volumes:
   clickhouse-data:
-  go-mod-cache:
 
 services:
   clickhouse:
@@ -154,28 +154,6 @@ services:
       timeout: 2s
       retries: 12
       start_period: 5s
-
-  seed:
-    # Runs the same Go seeder the k3d E2E uses, against the compose CH.
-    # One-shot: exits 0 after inserting the deterministic fixture rows.
-    # Re-run with `docker compose run --rm seed` to re-apply on a fresh volume.
-    image: golang:1.26
-    networks: [cerberus-dev]
-    working_dir: /src
-    volumes:
-      - .:/src
-      - go-mod-cache:/go/pkg/mod
-    environment:
-      CH_ADDR: "clickhouse:9000"
-      CH_DATABASE: "otel"
-      CH_USERNAME: "cerberus"
-      CH_PASSWORD: "cerberus"
-      GOTOOLCHAIN: "auto"
-    command: ["go", "run", "./test/e2e/seed/cmd/seed"]
-    depends_on:
-      clickhouse:
-        condition: service_healthy
-    restart: "no"
 
   grafana:
     image: grafana/grafana:11.4.0
