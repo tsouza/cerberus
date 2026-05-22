@@ -281,15 +281,24 @@ func (h *Handler) handleSeries(w http.ResponseWriter, r *http.Request) {
 
 	seen := make(map[string]map[string]string)
 	for _, m := range matchers {
-		sets, err := h.fetchSeries(r.Context(), m)
-		if err != nil {
-			h.respondError(w, err)
-			return
-		}
-		for _, lset := range sets {
-			key := format.CanonicalKey(lset)
-			if _, ok := seen[key]; !ok {
-				seen[key] = lset
+		// Fan a bare classic-histogram base name out into its three
+		// Prom-wire companion variants — `<base>_bucket` /
+		// `<base>_count` / `<base>_sum` — so /api/v1/series returns
+		// the three companion series Grafana's Metrics Explorer
+		// expects. See expandBareHistogramMatcher for the
+		// rationale; non-histogram matchers short-circuit through
+		// the helper's single-element return.
+		for _, variant := range expandBareHistogramMatcher(h.parser, m, h.Schema.HistogramTable) {
+			sets, err := h.fetchSeries(r.Context(), variant)
+			if err != nil {
+				h.respondError(w, err)
+				return
+			}
+			for _, lset := range sets {
+				key := format.CanonicalKey(lset)
+				if _, ok := seen[key]; !ok {
+					seen[key] = lset
+				}
 			}
 		}
 	}
@@ -362,14 +371,26 @@ func (h *Handler) fetchLabelValues(ctx context.Context, name string) ([]string, 
 // is always included if at least one selector matches anything. Names
 // pass through Prom-grammar normalisation before dedupe; see
 // `format.NormalizeLabelNames` for the collision policy.
+//
+// Each input matcher fans out through expandBareHistogramMatcher: a
+// bare classic-histogram base name (no `_bucket` / `_count` / `_sum`
+// / `_total` suffix) also visits its three Prom-companion variants
+// against the histogram table. Without the fan-out, Grafana's Metrics
+// Explorer — which surfaces the bare base name from cerberus's
+// `__name__` listing and queries `match[]=<base>` for the labels chip
+// — would see only `__name__` and render "Unable to fetch labels".
+// Non-histogram inputs short-circuit through the no-op (single-element)
+// return of the expander.
 func (h *Handler) fetchLabelNamesMatched(ctx context.Context, matchers []string) ([]string, error) {
 	collected := []string{model.MetricNameLabel}
 	for _, m := range matchers {
-		keys, err := h.labelKeysForMatcher(ctx, m)
-		if err != nil {
-			return nil, err
+		for _, variant := range expandBareHistogramMatcher(h.parser, m, h.Schema.HistogramTable) {
+			keys, err := h.labelKeysForMatcher(ctx, variant)
+			if err != nil {
+				return nil, err
+			}
+			collected = append(collected, keys...)
 		}
-		collected = append(collected, keys...)
 	}
 	out := format.NormalizeLabelNames(collected)
 	sort.Strings(out)
@@ -380,16 +401,24 @@ func (h *Handler) fetchLabelNamesMatched(ctx context.Context, matchers []string)
 // series matching any of the given match[] selectors. The start/end pair
 // is forwarded to matcherSQL via labelValuesForMatcher so the lowering's
 // LWR anchor reflects the request window when present.
+//
+// As with fetchLabelNamesMatched, each matcher fans out through
+// expandBareHistogramMatcher so the bare-base-name shape (which
+// otherwise lowers to a gauge-table scan and returns empty for any
+// histogram metric) also visits the three classic-histogram companion
+// variants. See expandBareHistogramMatcher for the rationale.
 func (h *Handler) fetchLabelValuesMatched(ctx context.Context, name string, matchers []string, start, end time.Time) ([]string, error) {
 	seen := map[string]bool{}
 	for _, m := range matchers {
-		vals, err := h.labelValuesForMatcher(ctx, name, m, start, end)
-		if err != nil {
-			return nil, err
-		}
-		for _, v := range vals {
-			if v != "" {
-				seen[v] = true
+		for _, variant := range expandBareHistogramMatcher(h.parser, m, h.Schema.HistogramTable) {
+			vals, err := h.labelValuesForMatcher(ctx, name, variant, start, end)
+			if err != nil {
+				return nil, err
+			}
+			for _, v := range vals {
+				if v != "" {
+					seen[v] = true
+				}
 			}
 		}
 	}

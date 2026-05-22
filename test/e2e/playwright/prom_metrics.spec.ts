@@ -78,3 +78,51 @@ test('subquery up[1m:30s] (bare vector) returns a vector', async ({ request }) =
   expect(body.status, 'prom response status').toBe('success');
   expect(body.data.result.length, 'at least one series').toBeGreaterThan(0);
 });
+
+/**
+ * Grafana's Metrics Explorer (Explore → Metrics) surfaces the BARE
+ * histogram base name from cerberus's `__name__` listing — e.g.
+ * `http_server_request_duration` — and queries `match[]=<base>` for
+ * the labels chip. Before the fan-out fix the bare-name matcher
+ * lowered to a gauge-table scan, matched zero rows, and the chip
+ * rendered "Unable to fetch labels".
+ *
+ * This test pins the contract end-to-end: a bare histogram name
+ * resolves to the labels of its `_bucket` companion, including the
+ * synthetic `le` key.
+ */
+test('prom /api/v1/labels?match[]=<histogram_base> includes le from bucket companion', async ({ request }) => {
+  const matcher = encodeURIComponent('http_server_request_duration');
+  const resp = await request.get(`${promProxy}/labels?match%5B%5D=${matcher}`);
+  expect(resp.status(), 'prom /labels status').toBe(200);
+
+  const body = await resp.json();
+  expect(body.status, 'prom labels status').toBe('success');
+  expect(Array.isArray(body.data), 'data is an array').toBe(true);
+  // The fan-out reaches the histogram-table `_bucket` companion, so
+  // the synthetic `le` label must surface — that's the chip Grafana
+  // Metrics Explorer renders.
+  expect(body.data, 'le label from bucket companion').toContain('le');
+});
+
+/**
+ * Companion to the labels test: /api/v1/series with a bare-name
+ * matcher returns the three companion series (`_bucket`, `_count`,
+ * `_sum`). Grafana uses this surface for the same labels chip when
+ * the explorer asks for one row per series.
+ */
+test('prom /api/v1/series?match[]=<histogram_base> returns companion series', async ({ request }) => {
+  const matcher = encodeURIComponent('http_server_request_duration');
+  const resp = await request.get(`${promProxy}/series?match%5B%5D=${matcher}`);
+  expect(resp.status(), 'prom /series status').toBe(200);
+
+  const body = await resp.json();
+  expect(body.status, 'prom series status').toBe('success');
+  expect(Array.isArray(body.data), 'data is an array').toBe(true);
+  expect(body.data.length, 'at least one series from companion fan-out').toBeGreaterThan(0);
+  const names = new Set(body.data.map((s: Record<string, string>) => s.__name__));
+  // At least one of the companion names must appear; the bucket
+  // companion is the load-bearing one for the labels chip.
+  const seenBucket = names.has('http_server_request_duration_bucket');
+  expect(seenBucket, `expected http_server_request_duration_bucket in series; got ${[...names].join(',')}`).toBe(true);
+});
