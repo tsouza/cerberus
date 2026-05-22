@@ -13,7 +13,7 @@ land in subsequent PRs.
 | `query-shape.ts` | Regex-based target classification + rewriting: `extractByKeys`, `extractWithoutKeys`, `expectedByKeys`, `isHistogramQuantile`, `extractHistogramName`, `addLabelFilter`, `expressionHasMatcherFor`.   |
 | `assertions.ts`  | Per-shape assertions over the Grafana `/api/ds/query` envelope (`assertLabelShape` / `assertLabelAbsent` / histogram pair / `assertSubsetByCount`) + the zero-404 gate (`assertNon200ResponseClass`). |
 | `sweep.ts`       | `generateSelfTraffic` — pre-step that fires self-traffic against cerberus so the cerberus-self dashboards have data to render.                                                                        |
-| `drilldown.ts`   | Drilldown-app catalogue + `drillTwoLevels` gesture driver for the three built-in apps.                                                                                                                |
+| `drilldown.ts`   | Drilldown-app catalogue (4 built-in apps) + `drillTwoLevels` gesture driver + `isAppInstalled` (`/api/plugins/<id>/settings` probe so the iteration handles apps that aren't provisioned).            |
 | `dom.ts`         | Browser-side helpers: console-error capture, `role="alert"` banner read, kiosk repaint-flicker tolerance.                                                                                             |
 | `probes.ts`      | `fetchAndAssert200` (the zero-404 gate on direct HTTP probes) + `extractDataSourceProxyURL` (panel → datasource proxy path).                                                                          |
 
@@ -32,7 +32,7 @@ concrete iteration:
 | 3     | `iterate-filter-drill.spec.ts`       | `dashboard`, `query-shape` (`addLabelFilter`, `expressionHasMatcherFor`, `expectedByKeys`), `assertions` (`assertSubsetByCount`), `sweep`, `probes` |
 | 4     | `compose_panel_kiosk.spec.ts`        | `dashboard`, `dom`, `assertions`                                                                                                                    |
 | 5     | `iterate-time-ranges.spec.ts`        | `dashboard`, `query-shape`, `assertions`, `sweep`, `probes` — nightly-only (e2e.yml `dashboard` job), NOT compose-smoke (Q2)                        |
-| 6     | `compose_drilldown_apps.spec.ts`     | `drilldown`, `dom`, `assertions`                                                                                                                    |
+| 6     | `iterate-drilldown-apps.spec.ts`     | `drilldown` (4-app catalogue + `isAppInstalled`), `dom`, `probes`                                                                                   |
 
 The existing `compose_grafana_smoke.spec.ts` is untouched in this PR;
 phase 1 will retire its bespoke `driveCerberusQLPartition` /
@@ -50,6 +50,12 @@ Grafana 11.x dashboard JSON shape:
 - Panel headers expose `data-testid="data-testid Panel header <title>"`.
 - Drilldown-app affordances expose stable `data-testid` prefixes
   (`data-testid metric-select`, `data-testid detected-label`, …).
+- Grafana 11.4.0 ships `grafana-metricsdrilldown-app`,
+  `grafana-lokiexplore-app`, and `grafana-exploretraces-app`
+  preinstalled+enabled out of the box. `grafana-pyroscope-app` is
+  NOT preinstalled on the cerberus compose stack — the phase-6 spec
+  uses `isAppInstalled` to detect availability and annotates a
+  cleanly missing app instead of failing.
 
 **Bumping Grafana requires updating the phase specs in the same PR**
 (resolved decision Q4, `~/.claude/plans/e2e-enhance.md` §9). The

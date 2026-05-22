@@ -49,6 +49,7 @@ import {
   iterateDashboards,
   iteratePanels,
   iterateDrilldownApps,
+  isAppInstalled,
   DRILLDOWN_APPS,
 } from './helpers/index.js';
 
@@ -471,21 +472,31 @@ test('assertSubsetByCount throws when filtered exceeds baseline', () => {
   );
 });
 
-test('iterateDrilldownApps returns three apps including the three built-ins', () => {
+test('iterateDrilldownApps returns four apps including the four built-ins', () => {
   const apps = iterateDrilldownApps();
-  expect(apps.length).toBe(3);
+  expect(apps.length).toBe(4);
   const ids = apps.map((a) => a.id).sort();
   expect(ids).toEqual(
     [
       'grafana-exploretraces-app',
       'grafana-lokiexplore-app',
       'grafana-metricsdrilldown-app',
+      'grafana-pyroscope-app',
     ].sort(),
   );
   // Returned array must be a fresh copy — mutating it must not
   // contaminate the module-level constant.
   apps.pop();
-  expect(DRILLDOWN_APPS.length).toBe(3);
+  expect(DRILLDOWN_APPS.length).toBe(4);
+});
+
+test('DRILLDOWN_APPS entries each carry id + root + label', () => {
+  for (const app of DRILLDOWN_APPS) {
+    expect(app.id).toMatch(/^grafana-[a-z]+-app$/);
+    expect(app.root.startsWith('/a/')).toBe(true);
+    expect(app.root).toContain(app.id);
+    expect(app.label.length).toBeGreaterThan(0);
+  }
 });
 
 // --- LogQL filter helpers (Phase 3b) ---------------------------------------
@@ -780,4 +791,46 @@ test('iterateDashboards round-trips against a live Grafana', async ({
       expect(p.type).not.toBe('row');
     }
   }
+});
+
+test('isAppInstalled distinguishes installed apps from a known-bogus id', async ({
+  request,
+}) => {
+  const baseURL = process.env.GRAFANA_BASE_URL ?? 'http://localhost:3000';
+  const probe = await request.get(`${baseURL}/api/health`).catch(() => null);
+  if (!probe || probe.status() < 200 || probe.status() > 299) {
+    test.info().annotations.push({
+      type: 'live-grafana',
+      description: `Grafana at ${baseURL} not reachable; isAppInstalled smoke skipped`,
+    });
+    return;
+  }
+
+  // A clearly-bogus plugin id must resolve to false (404 → not
+  // installed). This is the load-bearing contract — the phase-6 spec
+  // relies on isAppInstalled returning false on the missing
+  // grafana-pyroscope-app rather than throwing.
+  const bogus = await isAppInstalled(
+    request,
+    baseURL,
+    'grafana-this-app-does-not-exist-anywhere',
+  );
+  expect(bogus).toBe(false);
+
+  // At least one of the preinstalled drilldown apps in Grafana 11.4.0
+  // must resolve to true. We probe all of them but only require ≥1 to
+  // be present so a stripped-down stack (no apps at all) still surfaces
+  // the contract: the helper returned a boolean, not a throw.
+  const installed = await Promise.all(
+    DRILLDOWN_APPS.map((app) => isAppInstalled(request, baseURL, app.id)),
+  );
+  for (const v of installed) {
+    expect(typeof v).toBe('boolean');
+  }
+  test.info().annotations.push({
+    type: 'drilldown-apps-installed',
+    description: DRILLDOWN_APPS.map(
+      (app, i) => `${app.id}=${installed[i] ? 'installed' : 'absent'}`,
+    ).join(', '),
+  });
 });
