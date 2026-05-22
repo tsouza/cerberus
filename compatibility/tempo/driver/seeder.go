@@ -3,9 +3,11 @@
 // What this file does, end to end:
 //
 //  1. Build a deterministic in-memory fixture of traces (4 services ×
-//     25 traces × 3-5 spans).  All trace IDs / span IDs / timestamps /
-//     attributes are derived from a fixed anchor + indices so re-running
-//     the seeder against fresh backends produces byte-identical content.
+//     25 traces × 3-5 spans). Trace IDs / span IDs / attributes are
+//     index-derived and byte-stable across runs; timestamps roll with
+//     wall-clock (anchor = now() - anchorOffset, see currentAnchor) so
+//     the live store's ingestion-time-range slack doesn't need to grow
+//     unboundedly as the codebase ages.
 //  2. Push the fixture into the reference Tempo via OTLP gRPC :4317.
 //  3. Insert the fixture into ClickHouse `otel_traces` (the read path
 //     cerberus uses to answer Tempo HTTP queries). Cerberus is read-only
@@ -66,10 +68,30 @@ import (
 	"github.com/tsouza/cerberus/internal/schema/ddl"
 )
 
-// anchor pins the fixture's first span timestamp. Mirrors the anchor
-// used by the prom + loki harness seeders so all three datasets land
-// in the same wall-clock window when re-running compatibility locally.
-const anchor = "2026-05-11T00:00:00Z"
+// anchorOffset is how far in the past the seeder anchors the fixture's
+// first span timestamp. The anchor is recomputed on every invocation as
+// `time.Now().UTC().Truncate(time.Second) - anchorOffset` so the live
+// store's `wal.ingestion_time_range_slack` (default 2m, harness-set to
+// 1h for safety) doesn't have to grow unboundedly as the codebase ages.
+// 5m is comfortably inside the harness slack and large enough that the
+// fixture's last span (anchor + ~400s) still lands well before "now".
+//
+// Previously this was a fixed point ("2026-05-11T00:00:00Z") shared with
+// the prom + loki seeders. That meant the live store needed an ever-
+// growing slack (PR #501 set it to 1 year) to keep accepting spans that
+// drifted further from wall-clock with every passing day. The prom +
+// loki seeders insert directly into ClickHouse and aren't affected by
+// Tempo's ingestion clamping, so they can keep the fixed anchor.
+const anchorOffset = 5 * time.Minute
+
+// currentAnchor returns the rolling fixture anchor. Called once per
+// `seed` / `diff` invocation; both phases compute their own and use it
+// independently — the differ's ±1h search window absorbs the small drift
+// (typically <60s) between the seeder's anchor and the differ's anchor
+// when they run back-to-back from the harness script.
+func currentAnchor() time.Time {
+	return time.Now().UTC().Truncate(time.Second).Add(-anchorOffset)
+}
 
 // fixture-shape constants. 4 services × 25 traces × variable spans
 // (3..5 round-robin) ≈ 400 spans — well above the smoke assertion's
@@ -145,10 +167,7 @@ func runSeed(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), *overall)
 	defer cancel()
 
-	startAt, err := time.Parse(time.RFC3339, anchor)
-	if err != nil {
-		return fmt.Errorf("parse anchor: %w", err)
-	}
+	startAt := currentAnchor()
 
 	traces := buildFixture(startAt)
 	totalSpans := 0
@@ -160,7 +179,7 @@ func runSeed(args []string) error {
 		"services", len(services),
 		"traces", len(traces),
 		"total_spans", totalSpans,
-		"anchor", anchor,
+		"anchor", startAt.Format(time.RFC3339),
 	)
 
 	// --- ClickHouse side ----------------------------------------------
