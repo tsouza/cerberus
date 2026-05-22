@@ -23,21 +23,56 @@ var tracer = otel.Tracer("github.com/tsouza/cerberus/internal/chclient")
 // OpenTelemetry semantic-conventions attribute keys for the execute
 // span. cerberus uses the v1.0-vintage db.system / db.statement keys
 // for compatibility with dashboards already pivoting on them.
+//
+// peer.service / server.address are the canonical OTel signals the
+// `servicegraph` connector (and Tempo's built-in service-graph
+// metrics-generator) read off client-kind spans to derive the
+// caller -> callee edge. Stamping `peer.service="clickhouse"` on
+// every execute span gives Grafana's Tempo Service Graph tab the
+// cerberus -> clickhouse hop with no extra trace post-processing.
 var (
 	attrDBSystem    = attribute.Key("db.system")
 	attrDBStatement = attribute.Key("db.statement")
+	attrPeerService = attribute.Key("peer.service")
+	attrServerAddr  = attribute.Key("server.address")
+	attrNetPeerName = attribute.Key("net.peer.name")
 )
+
+// peerServiceClickHouse is the constant `peer.service` value stamped on
+// every execute span. It is the logical service name the servicegraph
+// connector uses as the "server" side of the edge. Constant because
+// every CH host cerberus talks to is the same logical service from the
+// caller's perspective — sharding / replication is below the trace's
+// abstraction layer.
+const peerServiceClickHouse = "clickhouse"
 
 // startExecuteSpan opens an `execute` span carrying the standard
 // db.system + db.statement semantic-conventions attributes plus the
-// cerberus.sql_length counter. Returns the derived context and span.
-func startExecuteSpan(ctx context.Context, sql string) (context.Context, trace.Span) {
+// cerberus.sql_length counter. The span is opened as SpanKindClient
+// with peer.service + server.address so the OTel-Collector
+// `servicegraph` connector picks up the cerberus -> clickhouse edge.
+// Returns the derived context and span.
+func startExecuteSpan(ctx context.Context, sql, addr string) (context.Context, trace.Span) {
 	stmt := cerbtrace.Truncate(sql, cerbtrace.MaxStatementLen)
-	return tracer.Start(ctx, cerbtrace.SpanExecute, trace.WithAttributes(
+	attrs := []attribute.KeyValue{
 		attrDBSystem.String("clickhouse"),
 		attrDBStatement.String(stmt),
+		attrPeerService.String(peerServiceClickHouse),
 		cerbtrace.AttrSQLLength.Int(len(sql)),
-	))
+	}
+	if addr != "" {
+		// server.address is the modern semconv key; net.peer.name is the
+		// pre-v1.21 alias still consumed by older dashboards. Stamp both
+		// so neither generation breaks.
+		attrs = append(attrs,
+			attrServerAddr.String(addr),
+			attrNetPeerName.String(addr),
+		)
+	}
+	return tracer.Start(ctx, cerbtrace.SpanExecute,
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(attrs...),
+	)
 }
 
 // Config describes a single ClickHouse connection.
@@ -62,6 +97,7 @@ type Config struct {
 // instead of stacking inner-stage retries against a dead upstream.
 type Client struct {
 	conn driver.Conn
+	addr string // CH addr (host:port) — stamped on execute spans as server.address
 	br   breaker
 }
 
@@ -89,7 +125,7 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 	if err := conn.Ping(pingCtx); err != nil {
 		return nil, fmt.Errorf("chclient: ping %s: %w", cfg.Addr, err)
 	}
-	return &Client{conn: conn}, nil
+	return &Client{conn: conn, addr: cfg.Addr}, nil
 }
 
 // Conn returns the underlying clickhouse-go/v2 driver connection. It is
@@ -168,7 +204,7 @@ func (c *Client) Exec(ctx context.Context, sql string, args ...any) error {
 	if !c.br.allow() {
 		return fmt.Errorf("chclient: exec: %w", ErrCircuitOpen)
 	}
-	ctx, span := startExecuteSpan(ctx, sql)
+	ctx, span := startExecuteSpan(ctx, sql, c.addr)
 	defer span.End()
 	err := c.conn.Exec(ctx, sql, args...)
 	c.br.record(err)
@@ -231,7 +267,7 @@ func (c *Client) QueryStrings(ctx context.Context, sql string, args ...any) ([]s
 	if !c.br.allow() {
 		return nil, fmt.Errorf("chclient: query: %w", ErrCircuitOpen)
 	}
-	ctx, span := startExecuteSpan(ctx, sql)
+	ctx, span := startExecuteSpan(ctx, sql, c.addr)
 	defer span.End()
 	defer flushProgress(ctx)
 	rows, err := c.conn.Query(ctx, sql, args...)
@@ -278,7 +314,7 @@ func (c *Client) QueryTimestampedLines(ctx context.Context, sql string, args ...
 	if !c.br.allow() {
 		return nil, fmt.Errorf("chclient: query: %w", ErrCircuitOpen)
 	}
-	ctx, span := startExecuteSpan(ctx, sql)
+	ctx, span := startExecuteSpan(ctx, sql, c.addr)
 	defer span.End()
 	defer flushProgress(ctx)
 	rows, err := c.conn.Query(ctx, sql, args...)
@@ -326,7 +362,7 @@ func (c *Client) QueryMetricMeta(ctx context.Context, sql, metricType string, ar
 	if !c.br.allow() {
 		return nil, fmt.Errorf("chclient: query: %w", ErrCircuitOpen)
 	}
-	ctx, span := startExecuteSpan(ctx, sql)
+	ctx, span := startExecuteSpan(ctx, sql, c.addr)
 	defer span.End()
 	defer flushProgress(ctx)
 	rows, err := c.conn.Query(ctx, sql, args...)
@@ -376,7 +412,7 @@ func (c *Client) QueryIndexStats(ctx context.Context, sql string, args ...any) (
 	if !c.br.allow() {
 		return IndexStatsRow{}, fmt.Errorf("chclient: query: %w", ErrCircuitOpen)
 	}
-	ctx, span := startExecuteSpan(ctx, sql)
+	ctx, span := startExecuteSpan(ctx, sql, c.addr)
 	defer span.End()
 	defer flushProgress(ctx)
 	rows, err := c.conn.Query(ctx, sql, args...)
@@ -418,7 +454,7 @@ func (c *Client) QueryIndexVolume(ctx context.Context, sql string, args ...any) 
 	if !c.br.allow() {
 		return nil, fmt.Errorf("chclient: query: %w", ErrCircuitOpen)
 	}
-	ctx, span := startExecuteSpan(ctx, sql)
+	ctx, span := startExecuteSpan(ctx, sql, c.addr)
 	defer span.End()
 	defer flushProgress(ctx)
 	rows, err := c.conn.Query(ctx, sql, args...)
@@ -481,7 +517,7 @@ func (c *Client) QueryExemplars(ctx context.Context, sql string, args ...any) ([
 	if !c.br.allow() {
 		return nil, fmt.Errorf("chclient: query: %w", ErrCircuitOpen)
 	}
-	ctx, span := startExecuteSpan(ctx, sql)
+	ctx, span := startExecuteSpan(ctx, sql, c.addr)
 	defer span.End()
 	defer flushProgress(ctx)
 	rows, err := c.conn.Query(ctx, sql, args...)
@@ -525,7 +561,7 @@ func (c *Client) QueryLabelSets(ctx context.Context, sql string, args ...any) ([
 	if !c.br.allow() {
 		return nil, fmt.Errorf("chclient: query: %w", ErrCircuitOpen)
 	}
-	ctx, span := startExecuteSpan(ctx, sql)
+	ctx, span := startExecuteSpan(ctx, sql, c.addr)
 	defer span.End()
 	defer flushProgress(ctx)
 	rows, err := c.conn.Query(ctx, sql, args...)
