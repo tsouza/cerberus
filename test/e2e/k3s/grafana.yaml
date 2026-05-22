@@ -29,6 +29,18 @@ data:
         access: proxy
         url: http://cerberus:8080
         editable: false
+        jsonData:
+          # serviceMap.datasourceUid tells Grafana's Tempo datasource
+          # which Prom backend to query for the
+          # `traces_service_graph_request_total{client, server}` series
+          # the OTel-Collector servicegraph connector emits. With this
+          # field set, the "Service Graph" tab in Explore renders edges
+          # by issuing PromQL `sum by (client, server)
+          # (rate(traces_service_graph_request_total[$__range]))`
+          # against cerberus's Prom head — same dogfood loop as the
+          # rest of the stack.
+          serviceMap:
+            datasourceUid: cerberus-prometheus
       # Aliases for Grafana 11.x built-in drilldown apps. Each app's
       # factory defaults reference Grafana Cloud's canonical
       # `grafanacloud-{metrics,logs,traces}` UIDs; without those
@@ -57,6 +69,9 @@ data:
         access: proxy
         url: http://cerberus:8080
         editable: false
+        jsonData:
+          serviceMap:
+            datasourceUid: cerberus-prometheus
 ---
 apiVersion: v1
 kind: Service
