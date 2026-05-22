@@ -54,12 +54,26 @@ const metaShapedSumDDL = `CREATE TABLE otel_metrics_sum (
 // metaShapedHistogramDDL completes the trio. The metadata-handler SQL
 // reads the same three columns regardless of table kind; the histogram
 // kind only matters when query / range-query SQL targets the table.
+//
+// Includes `Count UInt64` + `Sum Float64` because the bare-histogram
+// matcher fan-out (expandBareHistogramMatcher in metadata.go) routes
+// `match[]=<base>` through the `<base>_count` / `<base>_sum` companion
+// lowering paths, which project `toFloat64(Count)` / `toFloat64(Sum)`
+// against this table (see wrapHistogramCompanionProject in
+// internal/promql/lower.go). Without these columns the chDB run fails
+// with `Unknown expression identifier 'Count'` on the
+// `TestLabelValues_MatchSelector_ChDB` path even when no histogram rows
+// are seeded — the SELECT references the columns regardless. Mirrors
+// the production OTel-CH histogram table from
+// internal/schema/otel.go::DefaultOTelMetrics.
 const metaShapedHistogramDDL = `CREATE TABLE otel_metrics_histogram (
     MetricName String,
     MetricDescription String,
     MetricUnit String,
     Attributes Map(String, String),
     TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
     BucketCounts Array(UInt64),
     ExplicitBounds Array(Float64)
 ) ENGINE = MergeTree() ORDER BY (MetricName, TimeUnix);`
@@ -72,7 +86,13 @@ const metaShapedHistogramDDL = `CREATE TABLE otel_metrics_histogram (
 func TestLabelValues_MatchSelector_ChDB(t *testing.T) {
 	seedTime := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 	ts := seedTime.Format("2006-01-02 15:04:05.000")
-	seed := metaShapedGaugeDDL + fmt.Sprintf(`
+	// All three metric tables are created because fetchLabelValuesMatched
+	// fans a bare classic-histogram base name out across the histogram
+	// table via expandBareHistogramMatcher; the companion variants
+	// (`up_bucket` / `up_count` / `up_sum`) lower to the histogram table
+	// and chDB errors on missing-table reads. The histogram + sum tables
+	// stay empty — only gauge carries rows.
+	seed := metaShapedGaugeDDL + metaShapedSumDDL + metaShapedHistogramDDL + fmt.Sprintf(`
 INSERT INTO otel_metrics_gauge (MetricName, MetricDescription, MetricUnit, Attributes, TimeUnix, Value) VALUES
     ('up', 'scrape ok', '', map('job', 'api', 'instance', 'h1:8080'), toDateTime64('%s', 9), 1.0),
     ('up', 'scrape ok', '', map('job', 'db',  'instance', 'h1:8080'), toDateTime64('%s', 9), 0.0),
@@ -175,7 +195,11 @@ INSERT INTO otel_metrics_gauge (MetricName, MetricDescription, MetricUnit, Attri
 func TestLabelValues_MatchSelector_Multiple_ChDB(t *testing.T) {
 	seedTime := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 	ts := seedTime.Format("2006-01-02 15:04:05.000")
-	seed := metaShapedGaugeDDL + fmt.Sprintf(`
+	// Histogram + sum tables are created (empty) so the bare-name
+	// classic-histogram companion fan-out
+	// (expandBareHistogramMatcher) finds the histogram table when it
+	// probes `up_bucket` / `up_count` / `up_sum`.
+	seed := metaShapedGaugeDDL + metaShapedSumDDL + metaShapedHistogramDDL + fmt.Sprintf(`
 INSERT INTO otel_metrics_gauge (MetricName, MetricDescription, MetricUnit, Attributes, TimeUnix, Value) VALUES
     ('up',   '', '', map('job', 'api'), toDateTime64('%s', 9), 1.0),
     ('up',   '', '', map('job', 'db'),  toDateTime64('%s', 9), 1.0),
@@ -217,7 +241,10 @@ INSERT INTO otel_metrics_gauge (MetricName, MetricDescription, MetricUnit, Attri
 func TestLabelValues_MatchSelector_Empty_ChDB(t *testing.T) {
 	seedTime := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 	ts := seedTime.Format("2006-01-02 15:04:05.000")
-	seed := metaShapedGaugeDDL + fmt.Sprintf(`
+	// Histogram + sum tables are created (empty) so the bare-name
+	// fan-out for `does_not_exist` finds the histogram table when it
+	// probes `does_not_exist_bucket` / `_count` / `_sum`.
+	seed := metaShapedGaugeDDL + metaShapedSumDDL + metaShapedHistogramDDL + fmt.Sprintf(`
 INSERT INTO otel_metrics_gauge (MetricName, MetricDescription, MetricUnit, Attributes, TimeUnix, Value) VALUES
     ('up', '', '', map('job', 'api'), toDateTime64('%s', 9), 1.0);`, ts)
 
