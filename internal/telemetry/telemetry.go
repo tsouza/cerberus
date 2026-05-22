@@ -47,6 +47,15 @@ type Config struct {
 	Headers  map[string]string
 	Timeout  time.Duration
 
+	// ExportInterval controls how often the metric PeriodicReader
+	// flushes accumulated points to the OTLP endpoint. Zero falls back
+	// to the OTel SDK default (60s); cerberus's runtime config picks a
+	// shorter quickstart-friendly default (10s) via
+	// CERBERUS_OTLP_EXPORT_INTERVAL so panels populate within ~30s of
+	// stack startup. Production deployments can dial it back up to
+	// reduce collector load.
+	ExportInterval time.Duration
+
 	ServiceName    string
 	ServiceVersion string
 }
@@ -178,8 +187,12 @@ func newMeterProvider(ctx context.Context, cfg Config, res *resource.Resource) (
 	if err != nil {
 		return nil, nil, err
 	}
+	readerOpts := []sdkmetric.PeriodicReaderOption{}
+	if cfg.ExportInterval > 0 {
+		readerOpts = append(readerOpts, sdkmetric.WithInterval(cfg.ExportInterval))
+	}
 	mp := sdkmetric.NewMeterProvider(
-		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exp)),
+		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exp, readerOpts...)),
 		sdkmetric.WithResource(res),
 	)
 	return mp, mp.Shutdown, nil

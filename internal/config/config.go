@@ -118,6 +118,16 @@ type OTLPConfig struct {
 	// Timeout caps a single OTLP request roundtrip. Applies to both
 	// the trace and metric exporters.
 	Timeout time.Duration
+
+	// ExportInterval is how often the SDK PeriodicReader flushes
+	// accumulated metric points to the OTLP endpoint. The OTel SDK
+	// default is 60s, which is fine for steady-state production but
+	// adds ~minute of latency before fresh data appears in dashboards
+	// after a stack restart. Cerberus's default (10s) trades a small
+	// amount of collector load for a noticeably tighter
+	// time-to-visibility on the Docker Compose quickstart. Operators
+	// running at scale should raise it via CERBERUS_OTLP_EXPORT_INTERVAL.
+	ExportInterval time.Duration
 }
 
 // FromEnv reads configuration from environment variables, falling back to
@@ -136,6 +146,7 @@ type OTLPConfig struct {
 //	CERBERUS_OTLP_INSECURE         default "false"
 //	CERBERUS_OTLP_HEADERS          default ""   ("k=v,k2=v2" comma-separated)
 //	CERBERUS_OTLP_TIMEOUT          default "10s"
+//	CERBERUS_OTLP_EXPORT_INTERVAL  default "10s" (metric PeriodicReader flush interval)
 //	CERBERUS_ADMIT_DISABLED        default "false"
 //	CERBERUS_ADMIT_PROM            default 64
 //	CERBERUS_ADMIT_LOKI            default 64
@@ -313,11 +324,16 @@ func otlpFromEnv() (OTLPConfig, error) {
 	if err != nil {
 		return OTLPConfig{}, fmt.Errorf("CERBERUS_OTLP_HEADERS: %w", err)
 	}
+	exportInterval, err := time.ParseDuration(envDefault("CERBERUS_OTLP_EXPORT_INTERVAL", "10s"))
+	if err != nil {
+		return OTLPConfig{}, fmt.Errorf("CERBERUS_OTLP_EXPORT_INTERVAL: %w", err)
+	}
 	return OTLPConfig{
-		Endpoint: strings.TrimSpace(os.Getenv("CERBERUS_OTLP_ENDPOINT")),
-		Insecure: insecure,
-		Headers:  headers,
-		Timeout:  timeout,
+		Endpoint:       strings.TrimSpace(os.Getenv("CERBERUS_OTLP_ENDPOINT")),
+		Insecure:       insecure,
+		Headers:        headers,
+		Timeout:        timeout,
+		ExportInterval: exportInterval,
 	}, nil
 }
 

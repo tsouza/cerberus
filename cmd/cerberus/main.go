@@ -134,6 +134,7 @@ func run() error {
 		Insecure:       cfg.OTLP.Insecure,
 		Headers:        cfg.OTLP.Headers,
 		Timeout:        cfg.OTLP.Timeout,
+		ExportInterval: cfg.OTLP.ExportInterval,
 		ServiceName:    "cerberus",
 		ServiceVersion: Version,
 	})
