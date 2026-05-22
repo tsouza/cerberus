@@ -144,34 +144,104 @@ func (e *emitter) emitVectorSetOp(s *chplan.VectorSetOp) error {
 // vectorSetOpCanonicalArmFrag returns a Frag rendering the per-arm
 // canonical 4-column projection used inside the VectorSetOp UNION ALL /
 // IN-subquery shapes. The arm's chplan node is inspected to decide
-// whether `MetricName` is available as a real column from the rendered
-// subquery: canonical-shape inputs (Scan / Filter(Scan) / a Project that
-// names all four canonical columns) pass MetricName through by name;
-// derived-shape inputs (RangeWindow / Aggregate / MetricsAggregate /
-// MetricsHistogramOverTime / a Project on top of one of those) lack
-// MetricName in their output schema and synthesise it as the empty
-// string — mirroring `wrapWithSampleProjection`'s derived-shape branch.
+// which of the four canonical columns is available as a real column
+// from the rendered subquery and which must be synthesised.
 //
-// The Attributes / TimeUnix / Value columns are always referenced by
-// name. Matrix-mode RangeWindow projects `anchor_ts AS TimeUnix` at
-// emit time (see emitWindowedArrayMatrix), so TimeUnix resolves under
-// the canonical alias in both instant and matrix shapes.
+// Three resolution shapes need handling, mirroring the three branches
+// in `wrapWithSampleProjection` (internal/api/prom/handler.go):
+//
+//  1. Canonical-shape input (Scan / Filter(Scan) / a Project that names
+//     all four canonical columns) — every column passes through by name.
+//  2. Matrix-mode RangeWindow (OuterRange > 0) — the inner SELECT
+//     projects `anchor_ts AS <TimestampColumn>` at emit time (see
+//     emitWindowedArrayPairsMatrix + emitWindowedArrayMatrix), so
+//     TimeUnix resolves under the canonical alias. MetricName isn't in
+//     scope and is synthesised as the empty string.
+//  3. Instant-mode derived-shape input (instant RangeWindow / Aggregate /
+//     MetricsAggregate / MetricsHistogramOverTime / a Project on top of
+//     one of those) — the inner SELECT projects only
+//     `(group-keys…, <ValueColumn>)`. Both MetricName and TimeUnix are
+//     out of scope. MetricName is synthesised as the empty string and
+//     TimeUnix as `now64(9) - toIntervalNanosecond(5000000000)` — the
+//     same synthetic anchor `wrapWithSampleProjection`'s instant branch
+//     stamps on derived-shape rows for instant-mode query bucketing.
+//
+// Without the instant-mode TimeUnix synthesis CH 24.x rejects the inner
+// SELECT with "Unknown expression identifier 'TimeUnix'" / "Resolve
+// identifier 'TimeUnix' from parent scope only supported for constants
+// and CTE" (the parent's column-ref tries to bind to the outer SELECT's
+// canonical projection and fails because the derived inner doesn't
+// expose it).
+//
+// The Attributes / Value columns are always referenced by name (every
+// derived emitter still passes Attributes + the schema-named
+// ValueColumn through).
 func vectorSetOpCanonicalArmFrag(s *chplan.VectorSetOp, arm chplan.Node, armFrag Frag) Frag {
+	derived := vectorSetOpArmIsDerivedShape(arm, s)
+	matrix := vectorSetOpArmIsMatrixRangeWindow(arm)
+
 	var metricNameFrag Frag
-	if vectorSetOpArmIsDerivedShape(arm, s) {
+	if derived {
 		metricNameFrag = As(Lit(""), s.MetricNameColumn)
 	} else {
 		metricNameFrag = Col(s.MetricNameColumn)
 	}
+
+	var timeFrag Frag
+	if derived && !matrix {
+		timeFrag = As(vectorSetOpSynthesizedAnchorFrag(), s.TimestampColumn)
+	} else {
+		timeFrag = Col(s.TimestampColumn)
+	}
+
 	inner := NewQuery().
 		Select(
 			metricNameFrag,
 			Col(s.AttributesColumn),
-			Col(s.TimestampColumn),
+			timeFrag,
 			Col(s.ValueColumn),
 		).
 		From(armFrag)
 	return inner.Frag()
+}
+
+// vectorSetOpSynthesizedAnchorFrag renders the synthetic anchor
+// timestamp cerberus stamps on instant-mode derived-shape arms for the
+// VectorSetOp canonical-shape projection: `now64(9) -
+// toIntervalNanosecond(5000000000)`, i.e. 5 seconds before CH-now.
+// Mirrors `synthesizedAnchor()` in internal/api/prom/handler.go so the
+// in-line and per-arm canonical-shape projections produce identical
+// TimeUnix values on instant-mode rows.
+func vectorSetOpSynthesizedAnchorFrag() Frag {
+	return func(b *Builder) {
+		b.SubtractNanos(func(b *Builder) { b.Now64() }, 5_000_000_000)
+	}
+}
+
+// vectorSetOpArmIsMatrixRangeWindow reports whether arm is — after
+// walking past any value-rewrite Project / Filter — a matrix-mode
+// RangeWindow (OuterRange > 0). Matrix-mode RangeWindow's outer SELECT
+// aliases `anchor_ts AS <TimestampColumn>` (see
+// emitWindowedArrayPairsMatrix and emitWindowedArrayMatrix), so a
+// canonical-shape projection above it can reference TimeUnix as a real
+// column. Mirrors `isMatrixRangeWindow` in
+// internal/api/prom/handler.go.
+//
+// Nested VectorSetOp arms are NOT matrix shape per se — but they emit
+// their own canonical 4-column SELECT (this very function's caller),
+// so the outer references TimeUnix by name regardless. They're
+// classified as canonical (not derived) by
+// vectorSetOpArmIsDerivedShape, so this helper isn't reached for them.
+func vectorSetOpArmIsMatrixRangeWindow(n chplan.Node) bool {
+	switch v := n.(type) {
+	case *chplan.RangeWindow:
+		return v.OuterRange > 0
+	case *chplan.Project:
+		return vectorSetOpArmIsMatrixRangeWindow(v.Input)
+	case *chplan.Filter:
+		return vectorSetOpArmIsMatrixRangeWindow(v.Input)
+	}
+	return false
 }
 
 // vectorSetOpArmIsDerivedShape reports whether a VectorSetOp arm's
