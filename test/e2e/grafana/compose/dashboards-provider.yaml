@@ -5,7 +5,7 @@
 # One starter dashboard ships with the compose quickstart:
 #   - cerberus-self.json: cerberus's own observability surface (per-head
 #     request rate, latency quantiles, error rate, in-flight, admission
-#     rejections, recent ERROR logs, slow-query traces). Wired as the
+#     rejections, slow-query traces). Wired as the
 #     home dashboard via GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH so
 #     opening localhost:3000 lands directly on it. Cerberus's own
 #     self-telemetry is the sole data source — the quickstart deliberately
