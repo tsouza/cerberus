@@ -95,6 +95,32 @@ func TestFromEnv_OTLP_Default(t *testing.T) {
 	if cfg.OTLP.Headers != nil {
 		t.Errorf("OTLP.Headers = %v; want nil", cfg.OTLP.Headers)
 	}
+	if got, want := cfg.OTLP.ExportInterval, 10*time.Second; got != want {
+		t.Errorf("OTLP.ExportInterval = %v; want %v", got, want)
+	}
+}
+
+// TestFromEnv_OTLP_ExportIntervalOverride covers the operator-facing
+// knob that raises the metric flush cadence above the 10s quickstart
+// default when collector load matters more than time-to-visibility.
+func TestFromEnv_OTLP_ExportIntervalOverride(t *testing.T) {
+	t.Setenv("CERBERUS_OTLP_EXPORT_INTERVAL", "45s")
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+	if got, want := cfg.OTLP.ExportInterval, 45*time.Second; got != want {
+		t.Errorf("OTLP.ExportInterval = %v; want %v", got, want)
+	}
+}
+
+// TestFromEnv_OTLP_InvalidExportInterval rejects a malformed duration so
+// the operator sees a startup failure rather than a silent fallback.
+func TestFromEnv_OTLP_InvalidExportInterval(t *testing.T) {
+	t.Setenv("CERBERUS_OTLP_EXPORT_INTERVAL", "not-a-duration")
+	if _, err := FromEnv(); err == nil {
+		t.Fatal("FromEnv: want error for bad export interval, got nil")
+	}
 }
 
 // TestFromEnv_OTLP_Populated walks every OTLP env var through the

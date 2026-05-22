@@ -43,8 +43,15 @@ processors:
     limit_percentage: 80
     spike_limit_percentage: 25
   batch:
+    # 1s timeout keeps the compose quickstart's time-to-visibility
+    # tight: the cerberus SDK ships metric points every 10s
+    # (CERBERUS_OTLP_EXPORT_INTERVAL default), so the collector should
+    # forward them onward at roughly the same cadence instead of
+    # holding a 5s buffer of its own on top. send_batch_size stays at
+    # 1024 — sparse self-telemetry never hits that ceiling first, the
+    # 1s timeout is what fires.
     send_batch_size: 1024
-    timeout: 5s
+    timeout: 1s
   # Ensure every record carries a service.name even when the sender
   # forgot to set one. Mirrors the k3s gateway's defaults.
   resource:
@@ -67,7 +74,12 @@ exporters:
     logs_table_name: otel_logs
     traces_table_name: otel_traces
     metrics_table_name: otel_metrics
-    timeout: 10s
+    # 5s per-request timeout pairs with the 1s batch timeout above:
+    # the collector flushes ~once a second, so a 10s exporter timeout
+    # is more than the whole pipeline needs end-to-end. Dropping it
+    # surfaces a stuck ClickHouse insert faster than the previous 10s
+    # ceiling let it.
+    timeout: 5s
     retry_on_failure:
       enabled: true
       initial_interval: 1s

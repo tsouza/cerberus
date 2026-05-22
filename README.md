@@ -137,13 +137,13 @@ and `FixedPoint(n)` (rules that unlock each other; iterates until no
 rule reports a change or `n` iterations have elapsed). The default
 pipeline ships:
 
-| Stage                            | Rules                                                                                             | What it buys                                                                                       |
-| -------------------------------- | ------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| Analyzer — pure-literal fold     | `ConstantFoldSemantic`                                                                            | Downstream rules can assume pure-literal subtrees have collapsed to a single `Lit`                 |
-| Once — heuristic fold            | `ConstantFoldHeuristic`                                                                           | Boolean identity simplification (`true AND X → X`, `false OR X → X`)                               |
-| FixedPoint — predicate pushdown  | `FilterFusion`, `FilterProjectTranspose`, `FilterAggregateTranspose`, `FilterRangeWindowTranspose`| Filters move below projections / aggregates / range windows so CH skip-indexes can fire on a `Scan`|
-| FixedPoint — projection pushdown | `ProjectionPushdown`                                                                              | Late materialisation: wide columns are only resolved after `LIMIT` cuts the row set                |
-| FixedPoint — MV substitution     | `MVSubstitution`                                                                                  | Swaps `RangeWindow(Scan(otel_metrics_*))` to a pre-aggregated rollup view when the rewrite is safe |
+| Stage                            | Rules                                                                                              | What it buys                                                                                        |
+| -------------------------------- | -------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| Analyzer — pure-literal fold     | `ConstantFoldSemantic`                                                                             | Downstream rules can assume pure-literal subtrees have collapsed to a single `Lit`                  |
+| Once — heuristic fold            | `ConstantFoldHeuristic`                                                                            | Boolean identity simplification (`true AND X → X`, `false OR X → X`)                                |
+| FixedPoint — predicate pushdown  | `FilterFusion`, `FilterProjectTranspose`, `FilterAggregateTranspose`, `FilterRangeWindowTranspose` | Filters move below projections / aggregates / range windows so CH skip-indexes can fire on a `Scan` |
+| FixedPoint — projection pushdown | `ProjectionPushdown`                                                                               | Late materialisation: wide columns are only resolved after `LIMIT` cuts the row set                 |
+| FixedPoint — MV substitution     | `MVSubstitution`                                                                                   | Swaps `RangeWindow(Scan(otel_metrics_*))` to a pre-aggregated rollup view when the rewrite is safe  |
 
 The optimiser is gated by termination, decision-pin, rule-interaction,
 property, and gremlins (mutation) tests.
@@ -305,6 +305,15 @@ loads the deterministic OTel fixture (logs / traces / metrics), and brings
 up Grafana pre-provisioned with cerberus as three datasources (Prom +
 Loki + Tempo). ClickHouse data persists in a named volume; use
 `docker compose down -v` to wipe it.
+
+The quickstart is tuned for time-to-first-panel rather than steady-state
+throughput: the cerberus OTel SDK flushes metrics every `10s`
+(`CERBERUS_OTLP_EXPORT_INTERVAL`) and the bundled OTel Collector
+batches every `1s`, so a fresh dashboard populates within ~30s of
+`docker compose up`. Production deployments running cerberus at scale
+should raise the interval back up (e.g. `CERBERUS_OTLP_EXPORT_INTERVAL=60s`)
+to cut collector load — the SDK default if the env var is unset is 60s
+to match upstream OTel.
 
 ### From a published release
 
