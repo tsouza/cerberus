@@ -289,3 +289,12 @@ jobs:
         run: |
           scripts/check-skip-additions.sh --self-test
           scripts/check-skip-additions.sh
+      # Regex self-test for the gate above. Every pattern documented in
+      # docs/forbid-skip.md has a canonical match-example and a
+      # counter-example; this step asserts the regexes still classify
+      # both correctly. When a future PR widens or normalises the
+      # gate, update docs/forbid-skip.md AND scripts/test-forbid-skip.sh
+      # in the same change.
+      - name: Self-test forbid-skip regex set
+        run: |
+          scripts/test-forbid-skip.sh

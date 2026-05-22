@@ -97,6 +97,13 @@ pre-push:
       run: |
         base=$(git merge-base HEAD origin/main 2>/dev/null || echo origin/main)
         npx --no -- commitlint --from "$base" --to HEAD
+    # Mirrors the `Self-test forbid-skip regex set` CI step. Runs the
+    # canonical match / no-match assertions documented in
+    # docs/forbid-skip.md against the regex set shared with the CI gate.
+    forbid-skip-self-test:
+      tags: discipline
+      run: |
+        scripts/test-forbid-skip.sh
     forbid-soft-assert:
       tags: discipline
       run: |
