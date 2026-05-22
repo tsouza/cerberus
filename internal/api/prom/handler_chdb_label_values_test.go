@@ -54,12 +54,26 @@ const metaShapedSumDDL = `CREATE TABLE otel_metrics_sum (
 // metaShapedHistogramDDL completes the trio. The metadata-handler SQL
 // reads the same three columns regardless of table kind; the histogram
 // kind only matters when query / range-query SQL targets the table.
+//
+// Includes `Count UInt64` + `Sum Float64` because the bare-histogram
+// matcher fan-out (expandBareHistogramMatcher in metadata.go) routes
+// `match[]=<base>` through the `<base>_count` / `<base>_sum` companion
+// lowering paths, which project `toFloat64(Count)` / `toFloat64(Sum)`
+// against this table (see wrapHistogramCompanionProject in
+// internal/promql/lower.go). Without these columns the chDB run fails
+// with `Unknown expression identifier 'Count'` on the
+// `TestLabelValues_MatchSelector_ChDB` path even when no histogram rows
+// are seeded — the SELECT references the columns regardless. Mirrors
+// the production OTel-CH histogram table from
+// internal/schema/otel.go::DefaultOTelMetrics.
 const metaShapedHistogramDDL = `CREATE TABLE otel_metrics_histogram (
     MetricName String,
     MetricDescription String,
     MetricUnit String,
     Attributes Map(String, String),
     TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
     BucketCounts Array(UInt64),
     ExplicitBounds Array(Float64)
 ) ENGINE = MergeTree() ORDER BY (MetricName, TimeUnix);`
