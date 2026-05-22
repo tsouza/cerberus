@@ -97,6 +97,32 @@ const EXPECTED_EMPTY: ReadonlyArray<{ prefix: string; why: string }> = [
     // live dashboards, not historical sweeps.
     why: 'UpDownCounter drains to 0 after warmup; delta export drops idle datapoints',
   },
+  {
+    prefix: 'k8s_',
+    // K8s cluster + kubeletstats receivers emit cluster-state metrics
+    // (`k8s_node_*`, `k8s_pod_*`, `k8s_container_*`, `k8s_daemonset_*`,
+    // `k8s_hpa_*`, …) on a slow cadence — and on a fresh k3d stack, many
+    // of these (DaemonSet / HPA / Node-condition gauges) only emit when
+    // a state transition occurs OR when the resource exists at all (no
+    // HPA → no `k8s_hpa_*` rows). The catalog endpoint sees the row that
+    // landed at startup, but the /api/v1/series 5m window often races
+    // ahead of the next emission, so the per-name probe is empty. These
+    // metrics power Grafana's k8s dashboards in real clusters where the
+    // emission cadence and resource churn keep them populated; the
+    // fresh-stack e2e env is not where their health is asserted.
+    why: 'k8s receiver cluster-state metrics; emission cadence + state-change-only updates leave the 5m window empty on a fresh stack',
+  },
+  {
+    prefix: 'container_',
+    // Kubeletstats receiver emits per-container gauge series
+    // (`container_cpu_time`, `container_memory_working_set`,
+    // `container_memory_page_faults`, `container_memory_major_page_faults`)
+    // alongside the `k8s_container_*` variants. Same cadence story as
+    // the `k8s_` prefix above — on a fresh k3d stack the 5m series
+    // window often pre-dates the next emission, so the per-name probe
+    // returns 0 even though the catalog enumerates them.
+    why: 'kubeletstats per-container gauges; emission cadence leaves the 5m window empty on a fresh stack',
+  },
 ];
 
 /**
