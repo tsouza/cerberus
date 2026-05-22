@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/prometheus/model/labels"
+
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/schema"
 )
@@ -332,10 +334,13 @@ func TestIsMatrixRangeWindowWalksWrappers(t *testing.T) {
 // top-level-column entries that anchor the OTel-CH resource-attribute
 // fallback. The matcher lowering reads this helper to decide whether
 // to wrap the ResourceAttributes lookup in a coalesce(nullIf(...), ...)
-// against a dedicated column. Adding a new entry requires both a
-// schema.Logs field AND an upstream OTel-CH exporter that promotes the
-// label out of the map — the helper deliberately stays narrow so a
-// regression that silently expands the table is loud in this test.
+// against a dedicated column. Task #240 widened the table from
+// service_name only to the full top-level OTel-CH scalar set the
+// schema declares: the helper now delegates to [topLevelLogColumnFor]
+// so the matcher path and the group-by path consult the same table —
+// pre-#240 the matcher whitelisted `service_name` only while the
+// group-by path already routed all 9 columns, so `{SeverityText="X"}`
+// silently returned zero rows.
 func TestResourceFallbackColumn(t *testing.T) {
 	t.Parallel()
 
@@ -345,7 +350,22 @@ func TestResourceFallbackColumn(t *testing.T) {
 		label string
 		want  string
 	}{
+		// All 9 top-level scalar columns the default OTel-CH schema
+		// names must resolve so the matcher coalesce-wraps against the
+		// dedicated column. Pre-#240 only the first row passed.
 		{name: "service_name resolves to ServiceName", label: "service_name", want: "ServiceName"},
+		{name: "SeverityText resolves to SeverityText", label: "SeverityText", want: "SeverityText"},
+		{name: "SeverityNumber resolves to SeverityNumber", label: "SeverityNumber", want: "SeverityNumber"},
+		{name: "ServiceName resolves to ServiceName", label: "ServiceName", want: "ServiceName"},
+		{name: "ScopeName resolves to ScopeName", label: "ScopeName", want: "ScopeName"},
+		{name: "ScopeVersion resolves to ScopeVersion", label: "ScopeVersion", want: "ScopeVersion"},
+		{name: "EventName resolves to EventName", label: "EventName", want: "EventName"},
+		{name: "TraceId resolves to TraceId", label: "TraceId", want: "TraceId"},
+		{name: "SpanId resolves to SpanId", label: "SpanId", want: "SpanId"},
+		{name: "TraceFlags resolves to TraceFlags", label: "TraceFlags", want: "TraceFlags"},
+
+		// Negative cases: labels with no dedicated top-level column
+		// stay on the map-only lowering path.
 		{name: "job has no top-level column", label: "job", want: ""},
 		{name: "k8s_pod_name has no top-level column", label: "k8s_pod_name", want: ""},
 		{name: "detected_level has no top-level column", label: "detected_level", want: ""},
@@ -375,5 +395,101 @@ func TestResourceFallbackColumn_RespectsSchemaOverride(t *testing.T) {
 	s.ServiceNameColumn = ""
 	if got := resourceFallbackColumn(s, "service_name"); got != "" {
 		t.Errorf("resourceFallbackColumn with cleared ServiceNameColumn = %q, want \"\"", got)
+	}
+}
+
+// TestMatcherToExpr_TopLevelColumnCoalesce_Conformance pins that the
+// matcher path emits a `coalesce(nullIf(<col>, ”),
+// ResourceAttributes[<col>])` shape for EVERY top-level OTel-CH scalar
+// column the default schema names. Task #240 was the matcher-path twin
+// of the bug #218 fixed for the group-by path: `levelAwareGroupKey`
+// already routed all 9 columns through [topLevelLogColumnFor], but
+// `matcherToExpr` only consulted a narrow `service_name`-only switch.
+// `{SeverityText="DEBUG"}` therefore returned 0 rows on rows ingested
+// through the OTel collector → CH exporter pipeline (which carries
+// SeverityText in the dedicated column with an empty
+// ResourceAttributes map).
+//
+// This test is the conformance gate that pins the two parse paths
+// against future drift: a regression that whittles the helper back
+// down to a narrow whitelist (or, conversely, an addition that adds a
+// new top-level column to the schema without extending the matcher
+// path) fails here with the missing column name shown explicitly.
+func TestMatcherToExpr_TopLevelColumnCoalesce_Conformance(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelLogs()
+	// The 9 top-level OTel-CH scalar columns the default schema declares
+	// (mirrors the candidates list in topLevelLogColumnFor). Each label
+	// is the canonical column name itself — Grafana panels + the loki
+	// conformance corpus emit `{ColumnName="val"}` against rows whose
+	// value lives in that top-level column.
+	columns := []string{
+		"SeverityText",
+		"SeverityNumber",
+		"ServiceName",
+		"ScopeName",
+		"ScopeVersion",
+		"EventName",
+		"TraceId",
+		"SpanId",
+		"TraceFlags",
+	}
+	for _, col := range columns {
+		col := col
+		t.Run(col, func(t *testing.T) {
+			t.Parallel()
+			m := labels.MustNewMatcher(labels.MatchEqual, col, "val")
+			expr := matcherToExpr(m, s)
+
+			// Top-level Binary: `<lhs> = "val"`.
+			bin, ok := expr.(*chplan.Binary)
+			if !ok {
+				t.Fatalf("matcherToExpr(%s=val) returned %T; want *chplan.Binary", col, expr)
+			}
+			if bin.Op != chplan.OpEq {
+				t.Errorf("matcherToExpr(%s=val) Op = %v; want OpEq", col, bin.Op)
+			}
+			lit, ok := bin.Right.(*chplan.LitString)
+			if !ok || lit.V != "val" {
+				t.Errorf("matcherToExpr(%s=val) RHS = %v; want LitString{V:\"val\"}", col, bin.Right)
+			}
+
+			// LHS must be `coalesce(nullIf(<col>, ''),
+			// ResourceAttributes[<col>])`. Unwrap layer-by-layer so
+			// a regression that drops the wrap is loud.
+			coalesce, ok := bin.Left.(*chplan.FuncCall)
+			if !ok || coalesce.Name != "coalesce" || len(coalesce.Args) != 2 {
+				t.Fatalf("matcherToExpr(%s=val) LHS = %v; want coalesce(nullIf(...), ...) — top-level column missed the resourceAttributeFallbackLHS wrap (task #240)", col, bin.Left)
+			}
+			null, ok := coalesce.Args[0].(*chplan.FuncCall)
+			if !ok || null.Name != "nullIf" || len(null.Args) != 2 {
+				t.Fatalf("matcherToExpr(%s=val) coalesce arg0 = %v; want nullIf(<col>, '')", col, coalesce.Args[0])
+			}
+			topRef, ok := null.Args[0].(*chplan.ColumnRef)
+			if !ok || topRef.Name != col {
+				t.Errorf("matcherToExpr(%s=val) nullIf arg0 = %v; want ColumnRef{Name:%q}", col, null.Args[0], col)
+			}
+			sentinel, ok := null.Args[1].(*chplan.LitString)
+			if !ok || sentinel.V != "" {
+				t.Errorf("matcherToExpr(%s=val) nullIf arg1 = %v; want LitString{V:\"\"}", col, null.Args[1])
+			}
+			// Fallback arm: `ResourceAttributes[<col>]`. Labels like
+			// SeverityText / TraceId carry no underscore, so
+			// attributeLookupExpr emits a plain MapAccess (no
+			// dotted-fallback `if(mapContains(...), ..., ...)` chain).
+			ma, ok := coalesce.Args[1].(*chplan.MapAccess)
+			if !ok {
+				t.Fatalf("matcherToExpr(%s=val) coalesce arg1 = %v; want ResourceAttributes[%q]", col, coalesce.Args[1], col)
+			}
+			mapRef, ok := ma.Map.(*chplan.ColumnRef)
+			if !ok || mapRef.Name != s.ResourceAttributesColumn {
+				t.Errorf("matcherToExpr(%s=val) MapAccess.Map = %v; want ColumnRef{Name:%q}", col, ma.Map, s.ResourceAttributesColumn)
+			}
+			keyLit, ok := ma.Key.(*chplan.LitString)
+			if !ok || keyLit.V != col {
+				t.Errorf("matcherToExpr(%s=val) MapAccess.Key = %v; want LitString{V:%q}", col, ma.Key, col)
+			}
+		})
 	}
 }

@@ -1,0 +1,56 @@
+-- query.logql --
+{SeverityText="DEBUG"}
+-- seed --
+-- Task #240: the matcher path lowered `{SeverityText="DEBUG"}` to a
+-- bare `ResourceAttributes["SeverityText"] = "DEBUG"`. Rows ingested
+-- through the OTel collector → CH exporter pipeline carry SeverityText
+-- in the dedicated top-level column with an EMPTY ResourceAttributes
+-- map, so the matcher matched zero rows even though `sum by
+-- (SeverityText) (...)` produced a DEBUG group with data (asymmetric
+-- with the group-by path which #218 routed through topLevelLogColumnFor
+-- for all 9 top-level OTel-CH scalar columns). The fix delegates
+-- `resourceFallbackColumn` to the same helper so the matcher wraps
+-- the lookup in `coalesce(nullIf(SeverityText, ''),
+-- ResourceAttributes['SeverityText'])` and the row is found.
+--
+-- Seed encodes the four storage shapes (top-level only / map only /
+-- both / negative) by Body content so the runner's `SELECT *` returns
+-- only the inserted columns — the same pattern matcher_self_service
+-- uses for ServiceName.
+CREATE TABLE otel_logs (
+    Timestamp DateTime64(9),
+    Body String,
+    SeverityText LowCardinality(String) MATERIALIZED multiIf(
+        Body = 'top-level-only', 'DEBUG',
+        Body = 'both', 'DEBUG',
+        Body = 'negative-top', 'INFO',
+        ''
+    ),
+    ResourceAttributes Map(String, String) MATERIALIZED multiIf(
+        Body = 'map-only', map('SeverityText', 'DEBUG'),
+        Body = 'both', map('SeverityText', 'DEBUG'),
+        Body = 'negative-map', map('SeverityText', 'INFO'),
+        CAST(map() AS Map(String, String))
+    )
+) ENGINE = Memory;
+INSERT INTO otel_logs (Timestamp, Body) VALUES
+    (toDateTime64('2026-05-20 12:00:00.000000000', 9), 'top-level-only'),
+    (toDateTime64('2026-05-20 12:01:00.000000000', 9), 'map-only'),
+    (toDateTime64('2026-05-20 12:02:00.000000000', 9), 'both'),
+    (toDateTime64('2026-05-20 12:03:00.000000000', 9), 'negative-top'),
+    (toDateTime64('2026-05-20 12:04:00.000000000', 9), 'negative-map');
+-- expected_rows --
+[
+  ["2026-05-20T12:00:00Z", "top-level-only"],
+  ["2026-05-20T12:01:00Z", "map-only"],
+  ["2026-05-20T12:02:00Z", "both"]
+]
+-- args --
+[0] string = ""
+[1] string = "SeverityText"
+[2] string = "DEBUG"
+-- chplan --
+Filter predicate=(coalesce(nullIf(SeverityText, ""), ResourceAttributes["SeverityText"]) = "DEBUG")
+  Scan(otel_logs)
+-- sql --
+SELECT * FROM `otel_logs` WHERE (coalesce(nullIf(`SeverityText`, ?), `ResourceAttributes`[?]) = ?)

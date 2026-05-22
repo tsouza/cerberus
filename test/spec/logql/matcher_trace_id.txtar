@@ -1,0 +1,44 @@
+-- query.logql --
+{TraceId="0123456789abcdef0123456789abcdef"}
+-- seed --
+-- Task #240 twin of matcher_severity_text for TraceId, the OTel-CH
+-- top-level column carrying span trace correlation. The fix delegates
+-- resourceFallbackColumn → topLevelLogColumnFor, so the matcher wraps
+-- the lookup in coalesce(nullIf(TraceId, ''), ResourceAttributes['TraceId']).
+CREATE TABLE otel_logs (
+    Timestamp DateTime64(9),
+    Body String,
+    TraceId String MATERIALIZED multiIf(
+        Body = 'top-level-only', '0123456789abcdef0123456789abcdef',
+        Body = 'both', '0123456789abcdef0123456789abcdef',
+        Body = 'negative-top', 'fedcba9876543210fedcba9876543210',
+        ''
+    ),
+    ResourceAttributes Map(String, String) MATERIALIZED multiIf(
+        Body = 'map-only', map('TraceId', '0123456789abcdef0123456789abcdef'),
+        Body = 'both', map('TraceId', '0123456789abcdef0123456789abcdef'),
+        Body = 'negative-map', map('TraceId', 'fedcba9876543210fedcba9876543210'),
+        CAST(map() AS Map(String, String))
+    )
+) ENGINE = Memory;
+INSERT INTO otel_logs (Timestamp, Body) VALUES
+    (toDateTime64('2026-05-20 12:00:00.000000000', 9), 'top-level-only'),
+    (toDateTime64('2026-05-20 12:01:00.000000000', 9), 'map-only'),
+    (toDateTime64('2026-05-20 12:02:00.000000000', 9), 'both'),
+    (toDateTime64('2026-05-20 12:03:00.000000000', 9), 'negative-top'),
+    (toDateTime64('2026-05-20 12:04:00.000000000', 9), 'negative-map');
+-- expected_rows --
+[
+  ["2026-05-20T12:00:00Z", "top-level-only"],
+  ["2026-05-20T12:01:00Z", "map-only"],
+  ["2026-05-20T12:02:00Z", "both"]
+]
+-- args --
+[0] string = ""
+[1] string = "TraceId"
+[2] string = "0123456789abcdef0123456789abcdef"
+-- chplan --
+Filter predicate=(coalesce(nullIf(TraceId, ""), ResourceAttributes["TraceId"]) = "0123456789abcdef0123456789abcdef")
+  Scan(otel_logs)
+-- sql --
+SELECT * FROM `otel_logs` WHERE (coalesce(nullIf(`TraceId`, ?), `ResourceAttributes`[?]) = ?)
