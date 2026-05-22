@@ -195,12 +195,27 @@ jobs:
           # browser console errors fire. ESCs back to the grid view
           # and asserts the back-nav leaves no stuck-loading panel or
           # orphaned modal behind. Closes N13 (latent).
+          #
+          # iterate-all-dashboards.spec.ts reads
+          # test/e2e/grafana/compose/dashboards/*.json at spec-build
+          # time, so it auto-adapts to whatever dashboards the
+          # provisioning directory carries. As the rich-observability
+          # rollout lands new dashboards (clickhouse-observability,
+          # otelcol-observability, host-observability), the spec picks
+          # them up without an edit here.
+          #
+          # iterate-metrics-explorer.spec.ts enumerates every metric
+          # cerberus publishes and probes /api/v1/series for each.
+          # Pins the user's #8 sweep finding: the labels chip must not
+          # surface "Unable to fetch labels" for any published metric.
           npx playwright test \
             compose_grafana_smoke.spec.ts \
             iterate-panel-shape.spec.ts \
             iterate-histogram-completeness.spec.ts \
             iterate-filter-drill.spec.ts \
             iterate-panel-kiosk.spec.ts \
+            iterate-all-dashboards.spec.ts \
+            iterate-metrics-explorer.spec.ts \
             --reporter=list
 
       - name: upload Playwright report on failure

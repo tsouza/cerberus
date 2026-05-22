@@ -84,6 +84,19 @@ jobs:
         # nightly-only spec should follow the same pattern: just add
         # the file here and skip it from compose-smoke's explicit
         # invocation list.
+        #
+        # Auto-discovered specs of note (each is hard-fail in this
+        # informational dashboard job; the job itself is not a PR gate):
+        #   - iterate-all-dashboards.spec.ts: reads
+        #       test/e2e/grafana/compose/dashboards/*.json at spec-build
+        #       time and probes every panel against the real cerberus
+        #       stack. Auto-adapts as the rich-observability rollout
+        #       lands new dashboards (clickhouse-observability,
+        #       otelcol-observability, host-observability).
+        #   - iterate-metrics-explorer.spec.ts: enumerates every
+        #       metric cerberus publishes and probes /api/v1/series for
+        #       each. Pins the user's #8 sweep finding: the labels chip
+        #       must not surface "Unable to fetch labels".
         run: npx playwright test
 
       - name: Upload Playwright report on failure
