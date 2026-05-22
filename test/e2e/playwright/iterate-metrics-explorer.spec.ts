@@ -349,22 +349,38 @@ test.describe('iterate-metrics-explorer: Drilldown-Metrics + label chips', () =>
       // Sanity: the __name__ on every series matches the queried name,
       // OR the queried name is a histogram synthetic-suffix view
       // (`_count` / `_sum` / `_bucket`) of the returned __name__, OR
+      // the returned name is a histogram synthetic-suffix view of the
+      // queried name (the PR #699 bare-name fan-out shape — Grafana /
+      // Drilldown-Metrics queries `<base>` and cerberus returns rows
+      // for both `<base>` and `<base>_bucket` / `_count` / `_sum`), OR
       // the queried name is the underscored alias of an OTel-dotted
       // stored name. The Prom-on-OTel convention is to expose
       // histograms under the base name with the suffix as a derived
       // view, so a /api/v1/series call for
       // `http_server_request_duration_count` is expected to return
-      // rows with `__name__=http_server_request_duration`. A mismatch
-      // on the BASE name (after stripping the suffix and after the
-      // dot/underscore normalisation) would still indicate the gateway
-      // echoed a different metric's labels.
+      // rows with `__name__=http_server_request_duration`, and a call
+      // for `cerberus_clickhouse_bytes_read` (a histogram base name)
+      // is expected to return rows for `cerberus_clickhouse_bytes_read`
+      // AND its `_bucket` / `_count` / `_sum` companions. A mismatch
+      // on the BASE name (after stripping the suffix from either side
+      // and after the dot/underscore normalisation) would still
+      // indicate the gateway echoed a different metric's labels.
       const metricDotted = dottedAlias(metric);
+      const metricBase = stripHistogramSuffix(metric);
+      const metricBaseDotted = dottedAlias(metricBase);
       for (const s of seriesBody.data) {
         if (!s.__name__ || s.__name__ === metric) continue;
         if (s.__name__ === metricDotted) continue;
-        const base = stripHistogramSuffix(metric);
-        if (base !== metric && s.__name__ === base) continue;
-        if (base !== metric && s.__name__ === dottedAlias(base)) continue;
+        // Queried name is a suffix view of returned name (round-2 path,
+        // e.g. queried `foo_count`, returned `foo`).
+        if (metricBase !== metric && s.__name__ === metricBase) continue;
+        if (metricBase !== metric && s.__name__ === metricBaseDotted) continue;
+        // Returned name is a suffix view of the queried name (PR #699
+        // bare-name fan-out, e.g. queried `foo`, returned `foo_bucket`).
+        const returnedBase = stripHistogramSuffix(s.__name__);
+        if (returnedBase !== s.__name__ && returnedBase === metric) continue;
+        if (returnedBase !== s.__name__ && returnedBase === metricDotted)
+          continue;
         labelFailures.push(
           `metric=${metric}: /api/v1/series returned __name__=${s.__name__} (mismatch)`,
         );
