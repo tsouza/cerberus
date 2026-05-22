@@ -269,6 +269,30 @@ func TestPromLabelToOTelCandidatesCap(t *testing.T) {
 	}
 }
 
+// TestPromLabelToOTelCandidatesCached pins the memoisation contract:
+// repeated calls with the same input return the same slice (identity,
+// not just deep-equal) so callers can rely on the cache amortising the
+// powerset walk. Unknown-on-first-call labels still resolve correctly
+// through the cold path — the cache is a fast-path overlay, never a
+// gate. The "identity" check uses a tiny indirection trick: take the
+// slice header of each call and compare the underlying data pointer.
+func TestPromLabelToOTelCandidatesCached(t *testing.T) {
+	// A label the cache has likely never seen — uniqueness rules out
+	// test-order coupling with the powerset / fallback tests above.
+	const novel = "cerberus_cache_probe_label"
+	a := format.PromLabelToOTelCandidates(novel)
+	b := format.PromLabelToOTelCandidates(novel)
+	if !reflect.DeepEqual(a, b) {
+		t.Fatalf("repeated calls returned different content: %v vs %v", a, b)
+	}
+	// Identity check: cached slices must share the same backing array.
+	// `&a[0] == &b[0]` is the canonical "is this the same slice header
+	// payload" probe.
+	if len(a) > 0 && len(b) > 0 && &a[0] != &b[0] {
+		t.Fatalf("cache returned a freshly-allocated slice on repeat: pointers differ")
+	}
+}
+
 // TestPromLabelNeedsDottedFallback pins the gate function that
 // lowering paths use to short-circuit single-key emission when no
 // rewrite is possible. The "fast path" stays a plain MapAccess for

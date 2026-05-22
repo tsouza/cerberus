@@ -3,7 +3,37 @@ package format
 import (
 	"sort"
 	"strings"
+	"sync"
 )
+
+// promLabelCandidateCache memoises [PromLabelToOTelCandidates] keyed by
+// the verbatim input label. The same Prom-grammar names recur across
+// every PromQL / LogQL matcher in every query the gateway serves
+// (`service_name`, `cerberus_ql`, `http_request_method`, ...), and the
+// powerset walk is the same pure function of the input every time. A
+// per-input memo collapses the 64-candidate fan-out cost (allocate a
+// 64-entry slice, walk `2^k` masks, copy + sort) to one `sync.Map`
+// lookup on every call after the first.
+//
+// `sync.Map` is the right shape for this workload: writes happen once
+// per distinct label (effectively at startup as queries warm the
+// cache), reads happen every matcher in every query. The read path is
+// lock-free in the common case where the entry is already populated.
+// The cache holds `[]string` values directly — they are read-only by
+// contract (callers may not mutate the returned slice; the existing
+// callers iterate without modifying).
+//
+// Unknown labels (first encounter) still pay the powerset cost once,
+// then become O(1) afterwards. There is no eviction — the label
+// universe is bounded by what Grafana panels reference, which is in
+// the low hundreds even for large deployments.
+//
+// The gate function [PromLabelNeedsDottedFallback] runs first in every
+// caller (it short-circuits names that have no rewritable underscore),
+// so the cache only ever populates entries for labels that actually
+// need the powerset walk. Names like `job` / `__name__` never reach
+// the cache.
+var promLabelCandidateCache sync.Map // map[string][]string
 
 // PromLabelToOTelCandidates returns the list of OTel-attribute-key
 // candidates a Prom matcher name `s` could resolve to inside CH-stored
@@ -56,6 +86,27 @@ func PromLabelToOTelCandidates(s string) []string {
 	if strings.HasPrefix(s, "__") {
 		return []string{s}
 	}
+	// Fast path: lock-free cache hit. Same input label appears across
+	// every matcher in every query the gateway serves; computing the
+	// powerset once per distinct input is the only call we ever want
+	// to make to the slow path below.
+	if cached, ok := promLabelCandidateCache.Load(s); ok {
+		return cached.([]string)
+	}
+	out := computePromLabelCandidates(s)
+	// LoadOrStore lets concurrent first-encounters race without
+	// holding a lock; the loser's slice is discarded by GC. The
+	// candidates slice is read-only by contract — callers iterate.
+	actual, _ := promLabelCandidateCache.LoadOrStore(s, out)
+	return actual.([]string)
+}
+
+// computePromLabelCandidates is the cold path that produces the
+// powerset of dotted re-expansions for `s`. Factored out of
+// [PromLabelToOTelCandidates] so the fast path stays a single
+// `sync.Map.Load`. Callers must take the cache miss path; the cache
+// itself is managed by [PromLabelToOTelCandidates].
+func computePromLabelCandidates(s string) []string {
 	// Strip a single leading underscore from the "rewritable" set:
 	// Prom's leading-underscore is a grammar marker (`_1invalid` from
 	// `1invalid`) and never originated as a dotted segment.
