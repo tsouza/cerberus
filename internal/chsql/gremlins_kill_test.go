@@ -2567,3 +2567,236 @@ func TestEmitWindowedArrayMatrix_MinWindowZeroBoundary(t *testing.T) {
 		t.Errorf("matrix minWindowSize=0 must skip the length filter entirely.\nSQL=%s", sql)
 	}
 }
+
+// TestValidateScanShape_BothEmpty kills the CONDITIONALS_NEGATION at
+// emit_node.go:86 (`len(s.UnionTables) == 0`). With both Table and
+// UnionTables empty the emitter has nothing to read from and must
+// reject the Scan. The mutant flips the equality so the both-empty
+// case slips through, then L89's check also passes (Table is "") and
+// validateScanShape returns nil — the emitter then renders an empty
+// FROM clause that ClickHouse parses as `SELECT *` over the literal
+// “ (the bare Col(""))` which CH rejects at parse time with a
+// non-deterministic message. Asserting the synchronous validation
+// error pins the mutual-exclusion contract.
+func TestValidateScanShape_BothEmpty(t *testing.T) {
+	t.Parallel()
+	_, _, err := Emit(context.Background(), &chplan.Scan{})
+	if err == nil {
+		t.Fatalf("Emit(Scan{}) returned nil error; want validateScanShape rejection")
+	}
+	if !strings.Contains(err.Error(), "neither Table nor UnionTables") {
+		t.Errorf("error %q must name the missing-table contract", err.Error())
+	}
+}
+
+// TestValidateScanShape_BothSet kills the CONDITIONALS_NEGATION at
+// emit_node.go:89 (`s.Table != ""`). The mutant flips the inequality
+// so a Scan with BOTH Table and UnionTables set is no longer rejected
+// — the emitter would then route to the merge() table function and
+// silently drop the Table field, masking a planning bug. Asserting
+// the rejection pins the mutual-exclusion contract.
+func TestValidateScanShape_BothSet(t *testing.T) {
+	t.Parallel()
+	_, _, err := Emit(context.Background(), &chplan.Scan{
+		Table:       "otel_metrics_gauge",
+		UnionTables: []string{"otel_metrics_gauge", "otel_metrics_sum"},
+	})
+	if err == nil {
+		t.Fatalf("Emit(Scan{Table+UnionTables}) returned nil error; want validateScanShape rejection")
+	}
+	if !strings.Contains(err.Error(), "both Table=") || !strings.Contains(err.Error(), "UnionTables=") {
+		t.Errorf("error %q must name both fields", err.Error())
+	}
+}
+
+// TestValidateScanShape_BothSet_FilterScan kills the same
+// CONDITIONALS_NEGATION at emit_node.go:89 reached via the
+// emitFilterScan path (which re-validates so a Filter(Scan{...})
+// node can't smuggle a malformed Scan past). Filter-with-Scan input
+// is the codegen-specialised PREWHERE shape and a separate caller of
+// validateScanShape.
+func TestValidateScanShape_BothSet_FilterScan(t *testing.T) {
+	t.Parallel()
+	plan := &chplan.Filter{
+		Predicate: &chplan.Binary{
+			Op:    chplan.OpEq,
+			Left:  &chplan.ColumnRef{Name: "ServiceName"},
+			Right: &chplan.LitString{V: "api"},
+		},
+		Input: &chplan.Scan{
+			Table:       "otel_metrics_gauge",
+			UnionTables: []string{"otel_metrics_gauge", "otel_metrics_sum"},
+		},
+	}
+	_, _, err := Emit(context.Background(), plan)
+	if err == nil {
+		t.Fatalf("Emit(Filter(Scan{both set})) returned nil error; want validateScanShape rejection")
+	}
+	if !strings.Contains(err.Error(), "both Table=") {
+		t.Errorf("error %q must report the Filter-side rejection", err.Error())
+	}
+}
+
+// TestValidateScanShape_BothEmpty_FilterScan kills the
+// CONDITIONALS_NEGATION at emit_node.go:86 reached via emitFilterScan.
+// With both Table and UnionTables empty the Filter path must surface
+// the same error as the bare-Scan path.
+func TestValidateScanShape_BothEmpty_FilterScan(t *testing.T) {
+	t.Parallel()
+	plan := &chplan.Filter{
+		Predicate: &chplan.Binary{
+			Op:    chplan.OpEq,
+			Left:  &chplan.ColumnRef{Name: "ServiceName"},
+			Right: &chplan.LitString{V: "api"},
+		},
+		Input: &chplan.Scan{},
+	}
+	_, _, err := Emit(context.Background(), plan)
+	if err == nil {
+		t.Fatalf("Emit(Filter(Scan{})) returned nil error; want validateScanShape rejection")
+	}
+	if !strings.Contains(err.Error(), "neither Table nor UnionTables") {
+		t.Errorf("error %q must name the missing-table contract", err.Error())
+	}
+}
+
+// TestEmitFilterScan_UnionTablesShapeLookup kills the cluster of
+// mutants at emit_node.go:341 — the `shapeKey == "" && len(scan.
+// UnionTables) > 0` guard that resolves the table shape from the
+// first member of a UnionTables Scan. The mutants:
+//
+//   - CONDITIONALS_NEGATION col 14 (`==` → `!=`): with Table empty,
+//     mutant condition becomes false; shapeKey stays "" and
+//     tableShapeFor("") returns the zero TableShape. No wide columns
+//     means projectionTouchesWide returns false → all conjuncts route
+//     to WHERE and no PREWHERE is emitted.
+//   - CONDITIONALS_NEGATION col 45 (`>` → `<=`): same observable —
+//     the guard becomes false, shapeKey stays "", PREWHERE drops.
+//
+// The original behaviour shape-looks-up against UnionTables[0]
+// (otel_metrics_gauge — registered with the metrics shape) so a cheap
+// non-wide predicate is promoted to PREWHERE. Asserting the PREWHERE
+// keyword in the rendered SQL kills both mutants in one shot.
+//
+// The companion INVERT_LOGICAL col 20 (`&&` → `||`) and
+// CONDITIONALS_BOUNDARY col 45 (`>` → `>=`) at the same site cannot
+// observationally diverge from the original after validateScanShape:
+// the Table-empty path forces both conjuncts true, the Table-set path
+// is rejected outright when UnionTables is also set, and the
+// Table-set + UnionTables-empty path leaves the second conjunct false
+// either way. Killing the two reachable mutants is sufficient to drop
+// LIVED below the phase2 threshold.
+func TestEmitFilterScan_UnionTablesShapeLookup(t *testing.T) {
+	t.Parallel()
+	// A wide-column-touching projection (no explicit Columns →
+	// SELECT *) over a UnionTables Scan whose first member is
+	// otel_metrics_gauge (registered with the metrics shape).
+	// ServiceName + MetricName are both metrics sort-key columns so
+	// each conjunct classifies cheap + non-wide; partitionPrewhere
+	// promotes all-but-last to PREWHERE.
+	a := &chplan.Binary{
+		Op:    chplan.OpEq,
+		Left:  &chplan.ColumnRef{Name: "ServiceName"},
+		Right: &chplan.LitString{V: "api"},
+	}
+	b := &chplan.Binary{
+		Op:    chplan.OpEq,
+		Left:  &chplan.ColumnRef{Name: "MetricName"},
+		Right: &chplan.LitString{V: "system_cpu_time"},
+	}
+	plan := &chplan.Filter{
+		Predicate: &chplan.Binary{Op: chplan.OpAnd, Left: a, Right: b},
+		Input: &chplan.Scan{
+			UnionTables: []string{"otel_metrics_gauge", "otel_metrics_sum"},
+		},
+	}
+	sql, _, err := Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if !strings.Contains(sql, "merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$')") {
+		t.Errorf("expected merge() table function from UnionTables; SQL=%s", sql)
+	}
+	// Original: MetricName lands in PREWHERE because the metrics
+	// shape lookup against UnionTables[0] succeeds. Both reachable
+	// mutants force shapeKey="" → empty shape → no PREWHERE.
+	if !strings.Contains(sql, "PREWHERE ") {
+		t.Errorf("expected PREWHERE promotion via UnionTables[0] shape lookup; SQL=%s", sql)
+	}
+}
+
+// TestRegexQuoteMeta_EscapesEachMetacharacter pins the escape set of
+// the unexported regexQuoteMeta helper introduced by PR #710. The
+// merge() table-function regex argument is RE2 — accidental
+// metacharacters in a user-overridden table name (the OTel-CH default
+// names are plain `[a-z_0-9]+` but the schema override surface is
+// config-driven) would either widen the regex (matching unintended
+// tables) or fail to compile. Asserting every documented
+// metacharacter is escaped catches future drift in the meta string.
+func TestRegexQuoteMeta_EscapesEachMetacharacter(t *testing.T) {
+	t.Parallel()
+	// One char at a time so a missing escape fails its own subtest.
+	for _, r := range []rune{'\\', '.', '+', '*', '?', '(', ')', '|', '[', ']', '{', '}', '^', '$'} {
+		r := r
+		t.Run(string(r), func(t *testing.T) {
+			t.Parallel()
+			got := regexQuoteMeta(string(r))
+			want := `\` + string(r)
+			if got != want {
+				t.Errorf("regexQuoteMeta(%q) = %q, want %q", string(r), got, want)
+			}
+		})
+	}
+	// Plain identifier characters must pass through verbatim.
+	for _, s := range []string{"a", "z", "0", "_", "abc_123", "otel_metrics_gauge"} {
+		s := s
+		t.Run("plain/"+s, func(t *testing.T) {
+			t.Parallel()
+			if got := regexQuoteMeta(s); got != s {
+				t.Errorf("regexQuoteMeta(%q) = %q, want unchanged", s, got)
+			}
+		})
+	}
+}
+
+// TestMergeTableFrag_DefaultDatabase pins the merge() rendering when
+// Scan.Database is empty: the database argument is the CH built-in
+// `currentDatabase()` call and the regex enumerates UnionTables anchored
+// at both ends. The exact-string assertion catches any drift in the
+// surface — a missing anchor, a swapped separator, or a dropped database
+// fallback would all fail.
+func TestMergeTableFrag_DefaultDatabase(t *testing.T) {
+	t.Parallel()
+	plan := &chplan.Scan{
+		UnionTables: []string{"otel_metrics_gauge", "otel_metrics_sum"},
+	}
+	sql, _, err := Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	const want = "FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$')"
+	if !strings.Contains(sql, want) {
+		t.Errorf("SQL missing %q.\nfull SQL=%s", want, sql)
+	}
+}
+
+// TestMergeTableFrag_ExplicitDatabase pins the merge() rendering when
+// Scan.Database is non-empty: the database argument is a single-quoted
+// SQL literal (not currentDatabase()) and the regex anchors stay in
+// place. Single quotes in the database name are doubled per
+// escapeSingleQuotes.
+func TestMergeTableFrag_ExplicitDatabase(t *testing.T) {
+	t.Parallel()
+	plan := &chplan.Scan{
+		Database:    "obs",
+		UnionTables: []string{"otel_metrics_gauge", "otel_metrics_sum"},
+	}
+	sql, _, err := Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	const want = "FROM merge('obs', '^(otel_metrics_gauge|otel_metrics_sum)$')"
+	if !strings.Contains(sql, want) {
+		t.Errorf("SQL missing %q.\nfull SQL=%s", want, sql)
+	}
+}
