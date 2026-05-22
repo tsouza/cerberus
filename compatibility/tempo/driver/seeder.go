@@ -49,6 +49,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -133,7 +134,7 @@ func runSeed(args []string) error {
 		chUser      = fs.String("ch-user", envOr("CERBERUS_CH_USERNAME", "cerberus"), "ClickHouse username")
 		chPassword  = fs.String("ch-password", envOr("CERBERUS_CH_PASSWORD", "cerberus"), "ClickHouse password")
 		smokeWait   = fs.Duration("smoke-wait", 30*time.Second, "max wait for /api/traces/<id> to return spans on both backends")
-		searchWait  = fs.Duration("search-wait", 90*time.Second, "max wait for /api/search?q={} to return traces (Tempo needs time to flush blocks)")
+		searchWait  = fs.Duration("search-wait", 30*time.Second, "max wait for the live-store flush counters to confirm /api/search has data")
 		overall     = fs.Duration("timeout", 3*time.Minute, "overall dial + push + verify timeout")
 	)
 	if err := fs.Parse(args); err != nil {
@@ -736,15 +737,39 @@ func decodeCerberusSpanCount(r io.Reader) (int, error) {
 	return total, nil
 }
 
-// smokeSearchLiveStore polls Tempo's /api/search until the response
-// contains at least one trace. This catches the failure mode where the
-// live-store hasn't flushed traces to backend blocks yet AND the
-// blocklist_poll hasn't picked up freshly-flushed blocks.
+// smokeSearchLiveStore waits until Tempo's live-store has cut + completed
+// at least one block AND the querier's blocklist has picked it up, then
+// issues one /api/search against the fixture window to confirm the data
+// is visible on the search path.
 //
-// The query passes start/end covering the fixture's span timestamps so
-// the backend block search path is exercised (modules/frontend/
-// search_sharder.go:140 short-circuits when start or end is unset and
-// queries the ingester only — useless on a flushed live-store).
+// The wait is metric-driven rather than a poll of /api/search itself.
+// Two signals on Tempo's /metrics endpoint together gate "search will
+// return data":
+//
+//	tempo_live_store_blocks_completed_total >= 1
+//	    The WAL → block builder has finalised at least one block. With
+//	    tempo-config.yaml's max_block_duration: 2s + complete_block_timeout: 5s
+//	    this flips within seconds of the OTLP push.
+//
+//	tempodb_blocklist_length{tenant="single-tenant"} >= 1
+//	    The querier's blocklist poller (blocklist_poll: 2s in
+//	    tempo-config.yaml) has discovered the freshly-completed block.
+//	    /api/search only consults blocks it sees in the blocklist —
+//	    modules/frontend/search_sharder.go's blockMetasForSearch reads
+//	    this same gauge's underlying list.
+//
+// Polling these counters replaces the older heuristic "loop on
+// /api/search every 1s until result count > 0", which had to assume the
+// worst-case sum of (max_block_duration + complete_block_timeout +
+// blocklist_poll + observation jitter) for its 90s upper-bound (#428).
+// The metric flips deterministically when the underlying state changes
+// — no second-order observation needed.
+//
+// The /api/search confirmation request still passes start/end covering
+// the fixture's span timestamps so the backend block search path is
+// exercised (modules/frontend/search_sharder.go:140 short-circuits when
+// start or end is unset and queries the ingester only — useless on a
+// flushed live-store).
 //
 // The Recent-Data-Target: live-store header is intentionally unset:
 // Tempo v3 parses it via pkg/api/http.go::ParseRecentDataTargetHeader
@@ -755,30 +780,116 @@ func smokeSearchLiveStore(ctx context.Context, logger *slog.Logger, tempoHTTP st
 	ctx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
 
+	metricsURL := strings.TrimRight(tempoHTTP, "/") + "/metrics"
+	for {
+		blocksCompleted, blocklistLen, err := fetchLiveStoreReadyCounters(ctx, metricsURL)
+		if err == nil && blocksCompleted >= 1 && blocklistLen >= 1 {
+			logger.Info(
+				"tempo live-store ready for search",
+				"blocks_completed", blocksCompleted,
+				"blocklist_length", blocklistLen,
+			)
+			break
+		}
+		if ctx.Err() != nil {
+			if err != nil {
+				return fmt.Errorf("tempo live-store metrics: %w", errors.Join(ctx.Err(), err))
+			}
+			return fmt.Errorf(
+				"tempo live-store not ready after %s (blocks_completed=%d blocklist_length=%d)",
+				deadline, blocksCompleted, blocklistLen,
+			)
+		}
+		logger.Debug(
+			"waiting for tempo live-store flush",
+			"url", metricsURL,
+			"err", err,
+			"blocks_completed", blocksCompleted,
+			"blocklist_length", blocklistLen,
+		)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+
 	q := url.Values{}
 	q.Set("q", "{}")
 	q.Set("start", fmt.Sprintf("%d", start.Unix()))
 	q.Set("end", fmt.Sprintf("%d", end.Unix()))
 	target := strings.TrimRight(tempoHTTP, "/") + "/api/search?" + q.Encode()
-	for {
-		n, err := fetchSearchResultCount(ctx, target)
-		if err == nil && n > 0 {
-			logger.Info("tempo search returned traces", "count", n)
-			return nil
+	n, err := fetchSearchResultCount(ctx, target)
+	if err != nil {
+		return fmt.Errorf("tempo search: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("tempo search returned 0 traces after live-store reported ready")
+	}
+	logger.Info("tempo search returned traces", "count", n)
+	return nil
+}
+
+// fetchLiveStoreReadyCounters scrapes Tempo's /metrics endpoint and
+// returns the two counters that gate /api/search visibility:
+//
+//   - tempo_live_store_blocks_completed_total (unlabelled counter)
+//   - tempodb_blocklist_length{tenant=...}    (gauge, summed across tenants)
+//
+// Both are exposed by grafana/tempo:main-2f74ea8 (the pinned image in
+// docker-compose.yml) — verified against a live container while
+// authoring this code. The parser is a small line-walker rather than a
+// full Prometheus expfmt decoder so the driver doesn't grow a new
+// vendored dep just for one HTTP scrape.
+func fetchLiveStoreReadyCounters(ctx context.Context, metricsURL string) (blocksCompleted, blocklistLength int, err error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, metricsURL, nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer func() { _, _ = io.Copy(io.Discard, resp.Body); _ = resp.Body.Close() }()
+	if resp.StatusCode/100 != 2 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return 0, 0, fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, 0, fmt.Errorf("read /metrics body: %w", err)
+	}
+	for _, line := range strings.Split(string(body), "\n") {
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
 		}
-		if ctx.Err() != nil {
-			if err != nil {
-				return fmt.Errorf("tempo search: %w", errors.Join(ctx.Err(), err))
+		// `name<labels?> value` — split on the last whitespace so any
+		// label set in the middle is part of the metric identifier.
+		idx := strings.LastIndexByte(line, ' ')
+		if idx < 0 {
+			continue
+		}
+		name := line[:idx]
+		val := line[idx+1:]
+		switch {
+		case name == "tempo_live_store_blocks_completed_total":
+			n, parseErr := strconv.ParseFloat(val, 64)
+			if parseErr != nil {
+				continue
 			}
-			return fmt.Errorf("tempo search returned 0 traces after %s", deadline)
-		}
-		logger.Debug("retrying tempo search", "url", target, "err", err, "traces", n)
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(1 * time.Second):
+			blocksCompleted = int(n)
+		case strings.HasPrefix(name, "tempodb_blocklist_length"):
+			// Gauge is labelled by tenant; sum across tenants so a
+			// future multi-tenant fixture doesn't accidentally trip
+			// the threshold by inspecting only one tenant.
+			n, parseErr := strconv.ParseFloat(val, 64)
+			if parseErr != nil {
+				continue
+			}
+			blocklistLength += int(n)
 		}
 	}
+	return blocksCompleted, blocklistLength, nil
 }
 
 // fetchSearchResultCount issues one GET against /api/search and returns
