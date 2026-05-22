@@ -25,15 +25,15 @@ data:
           foldersFromFilesStructure: false
 ---
 # The dashboard JSON itself — sourced from
-# test/e2e/grafana/dashboards/cerberus-self.json. Keep the two in sync; the
+# test/e2e/grafana/dashboards/cerberus.json. Keep the two in sync; the
 # repo file is the editable copy, the ConfigMap is the deployed copy.
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: grafana-dashboard-cerberus-self
+  name: grafana-dashboard-cerberus
   namespace: cerberus
 data:
-  cerberus-self.json: |
+  cerberus.json: |
     {
       "annotations": {
         "list": [
@@ -577,7 +577,7 @@ data:
       },
       "timepicker": {},
       "timezone": "",
-      "title": "Cerberus - self-observability",
+      "title": "Cerberus",
       "uid": "cerberus-self",
       "version": 1,
       "weekStart": ""

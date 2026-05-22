@@ -1,7 +1,7 @@
 /**
  * Self-traffic generator.
  *
- * Several Grafana dashboards (notably cerberus-self) only render
+ * Several Grafana dashboards (notably cerberus) only render
  * meaningfully when cerberus has just served real queries — the
  * `cerberus_queries_total` counter, the `cerberus_query_duration_*`
  * histogram, and the by-language partition all stay flat at 0 on a

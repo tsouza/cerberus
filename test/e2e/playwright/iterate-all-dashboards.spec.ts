@@ -61,7 +61,7 @@ import {
 
 import { generateSelfTraffic } from './helpers/index.js';
 
-// Self-traffic warmup so cerberus-self panels have populated counters
+// Self-traffic warmup so cerberus panels have populated counters
 // before we sweep them. Same value the other phase specs use.
 const SEED_TRAFFIC_SECONDS = 30;
 

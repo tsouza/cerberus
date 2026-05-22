@@ -21,7 +21,7 @@ data:
   # Earlier `CERBERUS_OTEL_*` spellings here were dead config — the binary
   # read empty values and silently fell back to the noop providers, so
   # `cerberus_queries_total` / `cerberus_queries_duration_seconds_*` never
-  # reached CH and the cerberus-self dashboard panels collapsed to either
+  # reached CH and the cerberus dashboard panels collapsed to either
   # a single anonymous bucket or empty series (#214 / #215 N2 / N5 e2e
   # partition + histogram-completeness regression class).
   #

@@ -98,7 +98,7 @@ test('compose: home, drilldown app, and every provisioned dashboard load without
   //                                 — overflow before #630 made every
   //                                 Prom Explore page 502.
   //      - prom-cerberus-metric:    the self-telemetry stream the
-  //                                 cerberus-self dashboard targets;
+  //                                 cerberus dashboard targets;
   //                                 catches dotted-vs-underscored regressions.
   //      - loki-allstreams:         exercises `/loki/api/v1/query_range`
   //                                 with a permissive selector; also
@@ -328,7 +328,7 @@ test('compose: home, drilldown app, and every provisioned dashboard load without
   //    Accept branch on the cerberus handler; this drill-through
   //    asserts the round trip is clean.
   //
-  //    We locate the "Slow cerberus traces" panel on cerberus-self,
+  //    We locate the "Slow cerberus traces" panel on the cerberus dashboard,
   //    click the first row's trace-ID link, wait for Grafana's
   //    `/explore` navigation, and re-run the same `/api/ds/query` +
   //    DOM error sweeps over the new view. If no traces exist on the
@@ -340,7 +340,7 @@ test('compose: home, drilldown app, and every provisioned dashboard load without
 
   // 6. Underscored-OTel-label partition sweep.
   //
-  //    The cerberus-self dashboard's "Query rate by language" panel
+  //    The cerberus dashboard's "Query rate by language" panel
   //    fires `sum by (cerberus_ql) (rate(cerberus_queries_total[5m]))`.
   //    OTel writes the `cerberus.ql` attribute under the dotted form
   //    in storage; the matcher-side lookup must cross the
@@ -370,7 +370,7 @@ test('compose: home, drilldown app, and every provisioned dashboard load without
 });
 
 /**
- * Drive the cerberus-self → "Slow cerberus traces" panel → click a
+ * Drive the cerberus dashboard → "Slow cerberus traces" panel → click a
  * trace row → land on /explore drill-through and assert no
  * ds/query 500, no DOM error banner, no "illegal wireType" text.
  *
@@ -382,7 +382,7 @@ test('compose: home, drilldown app, and every provisioned dashboard load without
 async function driveTraceClick(page: Page, baseURL: string): Promise<string[]> {
   const failures: string[] = [];
 
-  // 1. Navigate to the cerberus-self dashboard and wait for panels to settle.
+  // 1. Navigate to the cerberus dashboard and wait for panels to settle.
   await page.goto(`${baseURL}/d/cerberus-self`, {
     waitUntil: 'domcontentloaded',
     timeout: 90_000,
@@ -561,7 +561,7 @@ async function driveTraceClick(page: Page, baseURL: string): Promise<string[]> {
 }
 
 /**
- * Drive the cerberus-self → "Query rate by language" panel and assert
+ * Drive the cerberus dashboard → "Query rate by language" panel and assert
  * the underscored-matcher → dotted-OTel-attribute fallback emits at
  * least 2 distinct grouped series.
  *
@@ -580,7 +580,7 @@ async function driveTraceClick(page: Page, baseURL: string): Promise<string[]> {
  * to tolerate a stack where a single head momentarily has no traffic.
  *
  * If the panel isn't provisioned in the current stack (compose
- * variant without the cerberus-self dashboard) the function returns
+ * variant without the cerberus dashboard) the function returns
  * cleanly — the dashboard sweep above already covers the "panel
  * exists" case.
  */

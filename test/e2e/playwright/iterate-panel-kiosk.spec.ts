@@ -65,11 +65,11 @@ import {
   tolerateRepaintFlicker,
 } from './helpers/index.js';
 
-// Self-traffic warmup. Mirrors the phase-1/2 specs so cerberus-self
+// Self-traffic warmup. Mirrors the phase-1/2 specs so cerberus
 // dashboards have populated panels by the time kiosk view opens —
 // otherwise a panel legitimately empty due to "no traffic yet" would
 // false-positive the visible-body assertion. 30s is the low end of
-// "long enough to populate the cerberus_self panels".
+// "long enough to populate the cerberus panels".
 const SEED_TRAFFIC_SECONDS = 30;
 
 // Substrings on a `role="alert"` banner that count as an error-state
@@ -150,7 +150,7 @@ test('panel-kiosk: every panel renders cleanly in single-panel kiosk view + back
     process.env.GRAFANA_BASE_URL ??
     'http://localhost:3000';
 
-  // Seed traffic so cerberus-self panels have something to render
+  // Seed traffic so cerberus panels have something to render
   // when kiosk mode re-mounts them. Without this, a panel that's
   // legitimately empty (no traffic yet) would trip the visible-body
   // assertion below.

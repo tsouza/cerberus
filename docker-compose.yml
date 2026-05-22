@@ -25,7 +25,7 @@
 #                   cerberus via its own Prom/Loki/Tempo heads, populating
 #                   the provisioned dashboard within a minute of stack start.
 #   grafana         pre-provisioned with cerberus as three datasources
-#                   (Prometheus / Loki / Tempo) and the `cerberus-self`
+#                   (Prometheus / Loki / Tempo) and the `cerberus`
 #                   dashboard (self-obs; set as home dashboard) under the
 #                   "Cerberus" folder. Provisioning files live under
 #                   `test/e2e/grafana/compose/`.
@@ -180,10 +180,10 @@ services:
       GF_AUTH_DISABLE_SIGNOUT_MENU: "true"
       GF_USERS_DEFAULT_THEME: dark
       GF_FEATURE_TOGGLES_ENABLE: traceqlSearch
-      # Land directly on the cerberus-self dashboard instead of an empty
+      # Land directly on the cerberus dashboard instead of an empty
       # home page. Path is the in-container mount location of the JSON,
       # not a Grafana URL or UID.
-      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/provisioning/dashboards/cerberus/cerberus-self.json
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/provisioning/dashboards/cerberus/cerberus.json
     volumes:
       - ./test/e2e/grafana/compose/datasources:/etc/grafana/provisioning/datasources:ro
       # Dashboard provider config tells Grafana to scan the `cerberus`
