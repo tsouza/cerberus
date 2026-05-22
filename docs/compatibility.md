@@ -53,33 +53,25 @@ jq '{
 }' compatibility/prometheus/reports/report.json
 ```
 
-A passing run has no `unexpectedFailure` entries; `diffs` reflects only
-allowlisted cases in `expected-failures.json`.
+A passing run has no `unexpectedFailure` entries and no `diff`
+entries. The LogQL and TraceQL reports follow the same shape.
 
-The LogQL and TraceQL reports follow the same shape with one extra
-field — `should_skip` overlay matches surface as a `skip` outcome
-rather than a diff.
+## No allow-lists
 
-## Expected-failures allowlist
+There is no `expected-failures.json` / `should_skip` allow-list for
+any of the three heads. Every diff against the reference backend is
+a real bug to fix at the source (cerberus code, seed, or upstream
+config). The `forbid-skip` CI gate rejects:
 
-`compatibility/prometheus/expected-failures.json` and the equivalent
-overlay for LogQL at `compatibility/loki/cerberus-test-queries.yml`
-record queries where cerberus is **knowingly** different from the
-reference. Every entry carries:
+- Any non-empty `should_skip:` block in `compatibility/**/*.{yml,yaml}`.
+- Any test-suite escape-hatch primitive (`EXPECTED_EMPTY`,
+  `EXPECTED_TOLERATED`, `isKnownTolerated*`, `tolerated404`,
+  `expect.soft`, `should_tolerate`, `SkipReason`/`skipReason`).
 
-- `query` — the exact source string.
-- `reason` — non-empty justification. Acceptable shapes:
-  - Upstream quirk that ClickHouse-side execution can't sensibly
-    reproduce (e.g. NaN ordering in `topk` ties, float-mod sign drift).
-  - Documented OTel-CH schema gap (e.g. a label that reference Prom
-    scrapes but the OTel exporter doesn't carry).
-  - Harness-side seed limitation (a label the seeder doesn't emit; the
-    reference returns empty).
-- `jira` — link to the tracking issue or PR.
-
-The `forbid-skip` CI gate enforces that every net-new `should_skip`
-addition cites an `jira:` URL or inline `#NNN` ref — see
-`scripts/check-skip-additions.sh`. An empty `reason` fails review.
+If a diff surfaces noise that isn't a cerberus bug (e.g. upstream
+behaviour change after a Prom/Loki/Tempo bump), the fix is to update
+the reference image pin or the seeder — never to add a per-case
+exception.
 
 ## CI integration
 

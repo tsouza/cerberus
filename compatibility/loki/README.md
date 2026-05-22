@@ -24,7 +24,7 @@ compatibility/loki/
   README.md                       this file
   docker-compose.yml              clickhouse + reference loki + cerberus
   loki-config.yaml                reference Loki single-binary config
-  cerberus-test-queries.yml       overlay: per-query drops + reasons
+  cerberus-test-queries.yml       overlay schema placeholder (no skip consumer)
   dataset_metadata.json           pinned dataset metadata for ${SELECTOR}/${LABEL_*}
   reports/                        diff driver output (gitignored)
   cmd/
@@ -108,15 +108,12 @@ still resolvable when imported by path.
 Two files at the harness root capture cerberus-specific configuration
 that lives OUTSIDE the AGPL `upstream/` boundary:
 
-- `cerberus-test-queries.yml` — overlay listing per-query divergences
-  cerberus tracks against the upstream corpus. Entries under
-  `should_skip:` are suppressed before the wire call (recorded in the
-  report as `skipReason` with no failure flag flipped);
-  `should_fail:` is reserved for the Prom-shape `unexpectedSuccess`
-  semantics (expected hard failures). Every entry requires a non-empty
-  `reason:` plus a `jira:` reference; the CI gate at
-  `scripts/check-skip-additions.sh` rejects new entries that omit
-  either.
+- `cerberus-test-queries.yml` — schema placeholder only. The driver
+  carries no `should_skip:` consumer code, so any entry would be
+  silently ignored. Every diff against reference Loki must surface
+  as a real bug to fix at the source (cerberus code, seeder, or
+  loki-config.yaml). The CI gate at `.github/workflows/ci.yml`
+  rejects any non-empty `should_skip:` block.
 - `dataset_metadata.json` — pinned dataset metadata that maps
   `${SELECTOR}` / `${LABEL_NAME}` / `${LABEL_VALUE}` template vars to
   concrete values produced by the seeder under `cmd/seed/`.
@@ -142,8 +139,7 @@ just compat-logql-down
 
 The run script's exit codes:
 
-- Exit 0 → no diffs on any query case (overlay-skipped cases count
-  as passing).
+- Exit 0 → no diffs on any query case.
 - Exit 1 → at least one diff or run-time failure.
 - Exit 2+ → harness itself failed (compose, seed, build).
 
@@ -167,15 +163,14 @@ whose envelope matches `compatibility/prometheus/report.json`:
       "diff": "",
       "unexpectedFailure": "",
       "unexpectedSuccess": false,
-      "unsupported": false,
-      "skipReason": ""
+      "unsupported": false
     }
   ]
 }
 ```
 
-Sharing the envelope with the Prom harness means one analyser (and
-one expected-failures reconciliation script) consumes both.
+The envelope matches the Prom harness so a single analyser consumes
+both reports.
 
 ## Licensing
 
@@ -198,9 +193,7 @@ Re-snapshot when:
    to cover, **or**
 2. The shape of `QueryRegistry` / `remote_test.go` / any support file
    changes meaningfully (new template var, new diff semantics, new
-   transitive dep), **or**
-3. The `should_skip:` overlay drifts because upstream renamed or
-   removed a query we previously skipped.
+   transitive dep).
 
 To re-snapshot:
 

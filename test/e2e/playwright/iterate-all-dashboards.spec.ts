@@ -20,8 +20,10 @@
  *        - HTTP status 200.
  *        - Response envelope has no top-level `error` / `errorType` /
  *          `message` field.
- *        - For Prom + Loki: the result envelope is well-formed (a
- *          `data.result` array exists, even if empty).
+ *        - The result envelope carries at least one series / stream /
+ *          trace. An empty result is a real bug to fix at the source
+ *          (cerberus code, seed, dashboard, or panel) — not a state
+ *          to mask.
  *      Panels whose datasource type isn't one of {prometheus, loki,
  *      tempo} are excluded from the probe loop.
  *   3. Capture every Grafana → datasource fetch fired during the page
@@ -39,15 +41,6 @@
  * independently and this spec absorbs the new dashboards without an
  * edit. The spec emits an info log listing the discovered set so the
  * CI run record makes the catalog visible.
- *
- * Tolerated empties: some panels target counters / gauges / logs that
- * legitimately stay at 0 on a freshly-spun compose stack (admission
- * rejections, error counters, inflight-query gauge, ERROR-level logs).
- * The `expectedEmpty` allowlist below is intentionally short and every
- * entry carries a one-line rationale. The empty-data check is a hard
- * fail for any expr NOT on the allowlist — soft assertions still fail
- * the parent test once collected, so the appearance of leniency was
- * misleading.
  *
  * Env:
  *   GRAFANA_URL       default http://localhost:3000
@@ -87,66 +80,6 @@ const DASHBOARDS_DIR = resolve(
   'compose',
   'dashboards',
 );
-
-/**
- * Per-panel-expression entries that are legitimately empty on a freshly
- * spun compose stack. Each MUST carry a comment explaining WHY the
- * panel is empty. Keep this list under 10 entries — if it grows past
- * that, either the dashboards are over-claiming or the warmup is
- * under-priming, and either way the spec is no longer load-bearing.
- *
- * The match is substring-against-the-PromQL expression: any expr that
- * contains one of these substrings is treated as a tolerated-empty
- * target by the soft series-non-empty assertion below.
- */
-const EXPECTED_EMPTY_EXPR_SUBSTRINGS: ReadonlyArray<{
-  match: string;
-  why: string;
-}> = [
-  {
-    match: 'cerberus_admit_rejected_total',
-    // Admission rejections only fire under explicit overload; a fresh
-    // compose stack has zero rejections, so the rate is empty.
-    why: 'admission rejections counter starts at 0 on a fresh stack',
-  },
-  {
-    match: 'result="error"',
-    // Error-rate panels divide by total rate; if no error queries have
-    // been served the numerator (and the panel) stays empty.
-    why: 'error-rate counter starts at 0 on a fresh stack',
-  },
-  {
-    match: 'cerberus_query_inflight',
-    // Inflight is a point-in-time gauge of currently-running queries.
-    // The compose smoke fires warmup traffic then waits — by the time
-    // the spec probes the gauge, every warmup query has drained, so
-    // the snapshot is legitimately 0 / empty.
-    why: 'inflight gauge is 0 after warmup drains',
-  },
-  {
-    match: 'SeverityText="ERROR"',
-    // The Loki ERROR-logs panel surfaces cerberus's own error logs. A
-    // healthy compose stack produces no ERROR-level logs, so the
-    // stream count is correctly 0.
-    why: 'cerberus produces no ERROR-level logs on a healthy compose stack',
-  },
-  {
-    match: 'clickhouse_event{name=~"Query',
-    // clickhouse-observability "Query rate by type" reads
-    // `clickhouse_event{name=~"Query|SelectQuery|InsertQuery|...|FailedInsertQuery"}`
-    // — ClickHouse's per-event counters exposed by its built-in
-    // prometheus endpoint and scraped via the prometheus/clickhouse
-    // receiver. On a fresh compose stack the seed warmup against
-    // cerberus drives a few SELECTs through CH, but the
-    // ProfileEvents → event counter mapping CH publishes only ticks
-    // the matched-named events; the 5m rate window can land entirely
-    // before any matching event fires (warmup phase is ~30s, the
-    // CH-side ProfileEvents flush cadence is on the order of seconds
-    // but the scrape is 15s). The panel renders empty by design when
-    // the cluster is genuinely idle on these event classes.
-    why: 'clickhouse_event Query/Insert counters tick only on matching events; the 5m window can be empty on a fresh stack',
-  },
-];
 
 /**
  * Local types — kept inline since this spec uses the on-disk JSON
@@ -288,20 +221,6 @@ function normaliseDs(
   if (ds === undefined) return { type: '', uid: '' };
   if (typeof ds === 'string') return { type: '', uid: ds };
   return { type: ds.type ?? '', uid: ds.uid ?? '' };
-}
-
-/**
- * True if the target's expression matches one of the tolerated-empty
- * substrings. Used by the soft-assert path for "panel renders no data
- * but that's OK on a fresh stack".
- */
-function isExpectedEmpty(expr: string): { ok: true; why: string } | null {
-  for (const entry of EXPECTED_EMPTY_EXPR_SUBSTRINGS) {
-    if (expr.includes(entry.match)) {
-      return { ok: true, why: entry.why };
-    }
-  }
-  return null;
 }
 
 /**
@@ -584,16 +503,11 @@ async function probeTarget(
   const count = resultCount(body, t.dsType);
   onCount(count);
 
-  // Hard-assert non-empty — empty-by-design panels go through the
-  // tolerated allowlist. Stat panels with `noDataState=fixed` are
-  // legitimately empty when their underlying counter hasn't fired,
-  // and those expressions belong in EXPECTED_EMPTY_EXPR_SUBSTRINGS
-  // with a one-line rationale.
-  const expected = isExpectedEmpty(t.expr);
-  if (count === 0 && !expected) {
-    expect(
-      count,
-      `dashboard=${d.uid} panel="${panel.title}" target=${t.refId} expr="${t.expr}": empty result (no allowlist entry covers this; if intentional, add one to EXPECTED_EMPTY_EXPR_SUBSTRINGS with a rationale)`,
-    ).toBeGreaterThan(0);
-  }
+  // Hard-assert non-empty. An empty result is a real bug in the
+  // cerberus code, the seed, the dashboard, or the panel expression;
+  // mask nothing.
+  expect(
+    count,
+    `dashboard=${d.uid} panel="${panel.title}" target=${t.refId} expr="${t.expr}": empty result`,
+  ).toBeGreaterThan(0);
 }

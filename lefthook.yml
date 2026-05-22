@@ -133,6 +133,39 @@ pre-push:
           echo "lefthook: soft-assertion or silent-recover pattern — assert specific content / use assert.Panics"
           exit 1
         fi
+    # Mirrors the CI `forbid-skip` gate's test-escape-hatch rejection
+    # so the inner loop catches the same patterns. Every assertion
+    # must fail loud; never mask a failure with an allow-list /
+    # tolerance / soft-assert.
+    forbid-escape-hatch:
+      tags: discipline
+      run: |
+        if git ls-files -z -- \
+            '*.ts' '*.tsx' '*.go' \
+            ':!:compatibility/*/upstream/**' \
+            ':!:**/node_modules/**' \
+            ':!:vendor/**' \
+            ':!:.claude/**' \
+            | xargs -0 grep -nEH 'EXPECTED_EMPTY|EXPECTED_TOLERATED|isKnownTolerated|tolerated404|expect\.soft|should_tolerate|skipReason|SkipReason|APP_NOT_INSTALLED_BANNER_PATTERNS|DRILLDOWN_UPSTREAM_GRAFANA_CONSOLE_NOISE' --; then
+          echo "lefthook: test escape-hatch pattern — fix the bug at the source, never mask the failure"
+          exit 1
+        fi
+        matches=$(git ls-files -z -- \
+            'compatibility/**/*.yml' \
+            'compatibility/**/*.yaml' \
+            ':!:compatibility/*/upstream/**' \
+          | xargs -0 perl -0777 -ne '
+              while (/^[ \t]*should_skip:[ \t]*\n(?:[ \t]*\#[^\n]*\n|[ \t]*\n)*[ \t]+-/mg) {
+                my $pre = substr($_, 0, $-[0]);
+                my $line = ($pre =~ tr/\n//) + 1;
+                print "$ARGV:$line: non-empty should_skip block\n";
+              }
+            ')
+        if [ -n "$matches" ]; then
+          printf '%s\n' "$matches"
+          echo "lefthook: non-empty should_skip overlay entry — consumer code was removed; fix the underlying bug"
+          exit 1
+        fi
 
 commit-msg:
   commands:

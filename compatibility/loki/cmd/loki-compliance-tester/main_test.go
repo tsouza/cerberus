@@ -37,20 +37,22 @@ func TestIsExpectedEmptyCase(t *testing.T) {
 	}
 }
 
-func TestScoreCounts_ExcludesOverlaySkips(t *testing.T) {
+// TestScoreCounts asserts the score denominator includes every case
+// the driver attempted, with the numerator being only the cases that
+// passed. There is no allow-list / overlay exclusion: the harness
+// carries no `should_skip` consumer code.
+func TestScoreCounts(t *testing.T) {
 	t.Parallel()
 	results := []Result{
-		{},                                   // pass
-		{},                                   // pass
-		{Diff: "x"},                          // diff
-		{UnexpectedFailure: "y"},             // unexpected failure
-		{UnexpectedSuccess: true},            // unexpected success
-		{SkipReason: "documented exclusion"}, // excluded — outside total
-		{SkipReason: "harness limit"},        // excluded — outside total
+		{},                        // pass
+		{},                        // pass
+		{Diff: "x"},               // diff
+		{UnexpectedFailure: "y"},  // unexpected failure
+		{UnexpectedSuccess: true}, // unexpected success
 	}
 	passed, total := scoreCounts(results)
 	if total != 5 {
-		t.Fatalf("total = %d, want 5 (excluded cases not counted)", total)
+		t.Fatalf("total = %d, want 5 (every attempted case counts)", total)
 	}
 	if passed != 2 {
 		t.Fatalf("passed = %d, want 2", passed)
@@ -63,18 +65,6 @@ func TestScoreCounts_AllPassing(t *testing.T) {
 	passed, total := scoreCounts(results)
 	if passed != 3 || total != 3 {
 		t.Fatalf("(passed, total) = (%d, %d), want (3, 3)", passed, total)
-	}
-}
-
-func TestScoreCounts_AllSkipped(t *testing.T) {
-	t.Parallel()
-	results := []Result{
-		{SkipReason: "a"},
-		{SkipReason: "b"},
-	}
-	passed, total := scoreCounts(results)
-	if passed != 0 || total != 0 {
-		t.Fatalf("(passed, total) = (%d, %d), want (0, 0) when every case is excluded", passed, total)
 	}
 }
 

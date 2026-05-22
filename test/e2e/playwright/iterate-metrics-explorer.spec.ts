@@ -17,9 +17,9 @@
  *      chip — the call that was failing on `cerberus_clickhouse_bytes_read`.
  *      A failure here surfaces as "Unable to fetch labels" in the UI.
  *   2. The `/api/v1/query_range?query=<metric>` endpoint returns at
- *      least one series — counters that legitimately stay at 0 on a
- *      fresh stack go through the `EXPECTED_EMPTY` list, which carries
- *      a one-line rationale per entry.
+ *      least one series. An empty result is a real bug at the source
+ *      (cerberus code, seed, or metric publisher) — not a state to
+ *      mask.
  *   3. The labels returned by `/api/v1/series` carry the same metric
  *      name in their `__name__` field — sanity check that the gateway
  *      isn't echoing labels from a different metric.
@@ -66,122 +66,6 @@ const QUERY_STEP_SECONDS = 15;
 // may take an extra flush cycle to become visible to the query path.
 const POST_WARMUP_FLUSH_SECONDS = 15;
 
-/**
- * Metric-name prefixes whose label-fetch + series-non-empty are not
- * load-bearing on a fresh stack. Each entry needs a one-line rationale.
- * Keep this short — every entry is a check the spec is opting out of.
- */
-const EXPECTED_EMPTY: ReadonlyArray<{ prefix: string; why: string }> = [
-  {
-    prefix: 'cerberus_admit_rejected_total',
-    // Admission rejections only fire under explicit overload; a fresh
-    // compose stack has zero rejections, so the counter is empty.
-    why: 'admission rejections counter starts at 0 on a fresh stack',
-  },
-  {
-    prefix: 'cerberus_queries_failed_total',
-    // Failure counter only ticks on a genuinely failed query; the
-    // self-traffic warmup uses well-formed queries so the failure
-    // counter stays at 0.
-    why: 'query-failure counter starts at 0 with well-formed warmup',
-  },
-  {
-    prefix: 'cerberus_query_inflight',
-    // UpDownCounter that ticks +1 on query start, -1 on query end. By
-    // the time `/api/v1/series` runs in this spec the warmup loop has
-    // already drained, so the gauge is back at 0. The OTel SDK's
-    // delta-temporality default for UpDownCounters then suppresses the
-    // datapoint (no change in the interval), and the bare-name probe
-    // returns 0 series. Cerberus exposes the in-flight count via the
-    // `cerberus_queries_total` counter's rate anyway; the gauge is for
-    // live dashboards, not historical sweeps.
-    why: 'UpDownCounter drains to 0 after warmup; delta export drops idle datapoints',
-  },
-  {
-    prefix: 'k8s_',
-    // K8s cluster + kubeletstats receivers emit cluster-state metrics
-    // (`k8s_node_*`, `k8s_pod_*`, `k8s_container_*`, `k8s_daemonset_*`,
-    // `k8s_hpa_*`, …) on a slow cadence — and on a fresh k3d stack, many
-    // of these (DaemonSet / HPA / Node-condition gauges) only emit when
-    // a state transition occurs OR when the resource exists at all (no
-    // HPA → no `k8s_hpa_*` rows). The catalog endpoint sees the row that
-    // landed at startup, but the /api/v1/series 5m window often races
-    // ahead of the next emission, so the per-name probe is empty. These
-    // metrics power Grafana's k8s dashboards in real clusters where the
-    // emission cadence and resource churn keep them populated; the
-    // fresh-stack e2e env is not where their health is asserted.
-    why: 'k8s receiver cluster-state metrics; emission cadence + state-change-only updates leave the 5m window empty on a fresh stack',
-  },
-  {
-    prefix: 'container_',
-    // Kubeletstats receiver emits per-container gauge series
-    // (`container_cpu_time`, `container_memory_working_set`,
-    // `container_memory_page_faults`, `container_memory_major_page_faults`)
-    // alongside the `k8s_container_*` variants. Same cadence story as
-    // the `k8s_` prefix above — on a fresh k3d stack the 5m series
-    // window often pre-dates the next emission, so the per-name probe
-    // returns 0 even though the catalog enumerates them.
-    why: 'kubeletstats per-container gauges; emission cadence leaves the 5m window empty on a fresh stack',
-  },
-  {
-    prefix: 'otelcol_',
-    // OpenTelemetry Collector self-observability metrics
-    // (`otelcol_exporter_*`, `otelcol_processor_*`, `otelcol_receiver_*`,
-    // `otelcol_scraper_*`, `otelcol_connector_*`, `otelcol_process_*`)
-    // are emitted by the collector's prometheus/self receiver every
-    // 15s and shipped through the OTLP -> clickhouseexporter pipeline.
-    // The catalog endpoint sees these as soon as the first push lands,
-    // but most of them are cumulative-temporality counters that only
-    // tick when their underlying event fires (a refused span, a
-    // failed export attempt, a queue capacity change). On a fresh
-    // compose stack with no overload + clean pipeline, the bulk of the
-    // counters legitimately have 0 samples in the 5m window even though
-    // the catalog enumerates them. Sister-spec panel-kiosk surfaces the
-    // same emission-cadence behaviour on the otelcol-observability
-    // dashboard. Cover the whole namespace rather than ~30 individual
-    // entries: every otelcol_* metric shares the same "collector
-    // self-telemetry, emit-only-on-event" cadence story, so the
-    // rationale doesn't change per metric.
-    why: 'otelcol_* collector self-telemetry; counters emit only on the underlying event, leaving the 5m window empty on a fresh stack',
-  },
-];
-
-/**
- * Histogram-suffix view names. OTel-native histograms store rows under
- * the bare metric name in the `metrics_histogram` table, but the
- * Prom-on-OTel convention exposes them as `_bucket` / `_count` / `_sum`
- * synthetic views. `/api/v1/series` for a bare histogram name therefore
- * returns no rows — Grafana / Drilldown-Metrics queries the companions
- * instead. The companion-probe fallback below uses these suffixes to
- * verify the metric is healthy even when the bare-name probe is empty.
- */
-const HISTOGRAM_COMPANION_SUFFIXES = ['_bucket', '_count', '_sum'] as const;
-
-/**
- * Re-expand an underscored metric name to its OTel-dotted alias by
- * replacing every `_` with `.`. Used by the dotted-alias fallback below.
- *
- * Background: OTel-instrumented metric names land in ClickHouse with the
- * original dotted form (`http.server.request.duration`,
- * `http.server.request.body.size`). Cerberus's
- * `/api/v1/label/__name__/values` endpoint normalises the catalog to
- * Prom-flavored underscored names so Grafana's metric picker can use
- * them in selector position — but `/api/v1/series?match[]={__name__=
- * "<underscored>"}` matches the stored column verbatim, which is still
- * dotted. The bare-name + suffix-companion probes therefore return 0
- * for OTel-native metrics; the dotted alias resolves. We probe the
- * dotted alias as the last fallback before declaring a regression.
- *
- * This is a deliberately loose heuristic — for purely-underscored
- * cerberus metrics (`cerberus_queries_total`) the dotted variant
- * (`cerberus.queries.total`) simply doesn't exist in storage, so the
- * fallback's empty result is harmless. The fallback only "resolves" a
- * metric that is genuinely stored under a dotted alias.
- */
-function dottedAlias(metric: string): string {
-  return metric.replace(/_/g, '.');
-}
-
 type LabelValuesResponse = {
   status: string;
   data: string[];
@@ -209,12 +93,6 @@ type MetricSummary = {
   series_count: number;
   first_value: string | null;
   query_range_series: number;
-  empty_expected: boolean;
-  why_empty: string | null;
-  companion_series_count: number | null;
-  companion_suffix: string | null;
-  dotted_alias_series_count: number | null;
-  dotted_alias_name: string | null;
 };
 
 const cerberusURL = (): string =>
@@ -291,13 +169,6 @@ async function fetchQueryRange(
     `metric=${metric}: /api/v1/query_range envelope.status`,
   ).toBe('success');
   return body;
-}
-
-function isExpectedEmpty(metric: string): { why: string } | null {
-  for (const entry of EXPECTED_EMPTY) {
-    if (metric.startsWith(entry.prefix)) return { why: entry.why };
-  }
-  return null;
 }
 
 /**
@@ -395,110 +266,31 @@ test.describe('iterate-metrics-explorer: Drilldown-Metrics + label chips', () =>
 
       // Sanity: the __name__ on every series matches the queried name,
       // OR the queried name is a histogram synthetic-suffix view
-      // (`_count` / `_sum` / `_bucket`) of the returned __name__, OR
-      // the returned name is a histogram synthetic-suffix view of the
-      // queried name (the PR #699 bare-name fan-out shape — Grafana /
-      // Drilldown-Metrics queries `<base>` and cerberus returns rows
-      // for both `<base>` and `<base>_bucket` / `_count` / `_sum`), OR
-      // the queried name is the underscored alias of an OTel-dotted
-      // stored name. The Prom-on-OTel convention is to expose
-      // histograms under the base name with the suffix as a derived
-      // view, so a /api/v1/series call for
-      // `http_server_request_duration_count` is expected to return
-      // rows with `__name__=http_server_request_duration`, and a call
-      // for `cerberus_clickhouse_bytes_read` (a histogram base name)
-      // is expected to return rows for `cerberus_clickhouse_bytes_read`
-      // AND its `_bucket` / `_count` / `_sum` companions. A mismatch
-      // on the BASE name (after stripping the suffix from either side
-      // and after the dot/underscore normalisation) would still
-      // indicate the gateway echoed a different metric's labels.
-      const metricDotted = dottedAlias(metric);
+      // (`_count` / `_sum` / `_bucket`) of the returned __name__. The
+      // Prom-on-OTel convention is to expose histograms under the base
+      // name with the suffix as a derived view, so a /api/v1/series
+      // call for `http_server_request_duration_count` is expected to
+      // return rows with `__name__=http_server_request_duration`. Any
+      // other mismatch indicates the gateway echoed a different
+      // metric's labels.
       const metricBase = stripHistogramSuffix(metric);
-      const metricBaseDotted = dottedAlias(metricBase);
       for (const s of seriesBody.data) {
         if (!s.__name__ || s.__name__ === metric) continue;
-        if (s.__name__ === metricDotted) continue;
         // Queried name is a suffix view of returned name (round-2 path,
         // e.g. queried `foo_count`, returned `foo`).
         if (metricBase !== metric && s.__name__ === metricBase) continue;
-        if (metricBase !== metric && s.__name__ === metricBaseDotted) continue;
         // Returned name is a suffix view of the queried name (PR #699
         // bare-name fan-out, e.g. queried `foo`, returned `foo_bucket`).
         const returnedBase = stripHistogramSuffix(s.__name__);
         if (returnedBase !== s.__name__ && returnedBase === metric) continue;
-        if (returnedBase !== s.__name__ && returnedBase === metricDotted)
-          continue;
         labelFailures.push(
           `metric=${metric}: /api/v1/series returned __name__=${s.__name__} (mismatch)`,
         );
       }
 
-      // If the bare-name probe returns 0 series, try the histogram
-      // companion-suffix views before declaring a regression. OTel-native
-      // histograms live in `metrics_histogram` under the bare name, but
-      // Prom-on-OTel exposes them as `_bucket` / `_count` / `_sum`
-      // synthetic series; the Grafana datasource (and Drilldown-Metrics'
-      // label chip) queries the companion, not the bare name. A healthy
-      // histogram therefore presents as: bare → 0 series, `<name>_count`
-      // → >= 1 series. Treat that shape as healthy.
-      let companionCount: number | null = null;
-      let companionSuffix: string | null = null;
       if (seriesCount === 0) {
-        for (const suffix of HISTOGRAM_COMPANION_SUFFIXES) {
-          const companionName = metric + suffix;
-          const companionBody = await fetchSeries(
-            request,
-            companionName,
-            nowSec,
-          );
-          if (companionBody.data.length > 0) {
-            companionCount = companionBody.data.length;
-            companionSuffix = suffix;
-            break;
-          }
-        }
-      }
-
-      // Last fallback: probe the OTel-dotted alias of the queried name.
-      // `/api/v1/label/__name__/values` normalises OTel-dotted stored
-      // names (`http.server.request.duration`) to Prom-underscored ones
-      // (`http_server_request_duration`) for catalog purposes, but
-      // `/api/v1/series?match[]={__name__="<underscored>"}` matches the
-      // stored column verbatim — which is still dotted — so it returns
-      // 0 rows. The dotted alias (`http.server.request.duration`)
-      // resolves. We probe it as the last fallback so OTel-native
-      // metrics like `http_server_request_body_size` aren't reported as
-      // regressions just because the catalog and series endpoints
-      // disagree on name canonicalisation. A purely-underscored metric
-      // (`cerberus_queries_total`) has no dotted variant in storage so
-      // this fallback resolves to 0 and is harmless.
-      let dottedAliasCount: number | null = null;
-      let dottedAliasName: string | null = null;
-      if (seriesCount === 0 && companionCount === null) {
-        const aliasName = dottedAlias(metric);
-        if (aliasName !== metric) {
-          const aliasBody = await fetchSeries(request, aliasName, nowSec);
-          if (aliasBody.data.length > 0) {
-            dottedAliasCount = aliasBody.data.length;
-            dottedAliasName = aliasName;
-          } else {
-            dottedAliasCount = 0;
-          }
-        }
-      }
-
-      const expected = isExpectedEmpty(metric);
-      const hasCompanion = companionCount !== null && companionCount > 0;
-      const hasDottedAlias =
-        dottedAliasCount !== null && dottedAliasCount > 0;
-      if (
-        seriesCount === 0 &&
-        !expected &&
-        !hasCompanion &&
-        !hasDottedAlias
-      ) {
         labelFailures.push(
-          `metric=${metric}: /api/v1/series returned 0 series — this is the "Unable to fetch labels" failure shape (#8). If empty-by-design, add a prefix to EXPECTED_EMPTY with a rationale.`,
+          `metric=${metric}: /api/v1/series returned 0 series — every catalog-published metric must resolve to >= 1 series. Fix the cerberus catalog endpoint or the publishing pipeline.`,
         );
       }
 
@@ -516,12 +308,6 @@ test.describe('iterate-metrics-explorer: Drilldown-Metrics + label chips', () =>
         series_count: seriesCount,
         first_value: firstValue,
         query_range_series: rangeSeries,
-        empty_expected: expected !== null,
-        why_empty: expected?.why ?? null,
-        companion_series_count: companionCount,
-        companion_suffix: companionSuffix,
-        dotted_alias_series_count: dottedAliasCount,
-        dotted_alias_name: dottedAliasName,
       });
     }
 
@@ -536,10 +322,7 @@ test.describe('iterate-metrics-explorer: Drilldown-Metrics + label chips', () =>
     console.log(
       `iterate-metrics-explorer: summary attached — ` +
         `${summary.length} metrics, ` +
-        `${summary.filter((s) => s.series_count > 0).length} non-empty series, ` +
-        `${summary.filter((s) => (s.companion_series_count ?? 0) > 0).length} histogram-via-companion, ` +
-        `${summary.filter((s) => (s.dotted_alias_series_count ?? 0) > 0).length} resolved-via-dotted-alias, ` +
-        `${summary.filter((s) => s.empty_expected).length} expected-empty`,
+        `${summary.filter((s) => s.series_count > 0).length} non-empty series`,
     );
 
     // Hard fail if we collected any label-failures. We collect across
