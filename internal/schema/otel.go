@@ -385,6 +385,14 @@ func (m Metrics) HistogramCompanionColumn(metricName string) (bareName, valueCol
 // `_bucket` suffixes are treated as cumulative (Sum table); everything else
 // goes to the Gauge table. This is the same convention the Prometheus
 // remote-write integration uses for OTel metrics.
+//
+// The single-table return is preserved for byte-stable SQL on the cases
+// where the suffix heuristic is reliable. For ambiguous unsuffixed names —
+// OTel hostmetrics receiver emits cumulative sums under bare names like
+// `system_cpu_time` / `system_disk_io`, and the sqlquery receiver emits
+// `clickhouse_event` — callers should consult [Metrics.TablesFor] which
+// returns the (Gauge, Sum) pair so the matcher resolves against either
+// physical layout. See TablesFor for the read-side rationale.
 func (m Metrics) TableFor(metricName string) string {
 	for _, suf := range []string{"_count", "_total", "_sum", "_bucket"} {
 		if hasSuffix(metricName, suf) {
@@ -392,6 +400,46 @@ func (m Metrics) TableFor(metricName string) string {
 		}
 	}
 	return m.GaugeTable
+}
+
+// TablesFor returns the metric tables a PromQL `__name__` matcher may
+// resolve against. Where [Metrics.TableFor] commits to a single table
+// based on a Prom-naming suffix, TablesFor admits the OTel reality:
+// upstream emitters (hostmetrics, sqlquery, prometheus/self) ship
+// cumulative sums under bare names that the Prom convention reserves
+// for gauges. The catalog endpoints (`/api/v1/series`,
+// `/api/v1/label/...`) already UNION across all metric tables; the
+// matcher-resolve side must do the same or the dashboard surface
+// returns "Unable to fetch labels" for every system_/clickhouse_*
+// metric whose data lives in `otel_metrics_sum` but whose name doesn't
+// trip the suffix check.
+//
+// The return slice is the candidate set in stable order — Gauge first
+// for byte-stable SQL on the simple-gauge case, then Sum for the
+// hostmetrics-shaped fallback. The `_total` / `_count` / `_sum` /
+// `_bucket` suffixed names route to a single table (Sum or, with
+// HistogramCompanionColumn / isClassicBucketSelector, Histogram) and
+// keep the single-element return so existing fixtures stay stable.
+//
+// Sum-without-suffix is the case the v0.1 heuristic missed; TablesFor
+// fans the lookup across (Gauge, Sum) so the matcher finds rows
+// regardless of which side actually stored them. The empty arm
+// contributes zero rows under the MetricName PREWHERE — the union is a
+// no-op for any metric whose name is unambiguous after the suffix
+// check.
+func (m Metrics) TablesFor(metricName string) []string {
+	for _, suf := range []string{"_count", "_total", "_sum", "_bucket"} {
+		if hasSuffix(metricName, suf) {
+			return []string{m.SumTable}
+		}
+	}
+	// Unsuffixed name: could be Gauge (the v0.1 default) OR Sum (the
+	// OTel-hostmetrics / sqlquery shape). Fan the scan across both so
+	// the matcher finds rows wherever the upstream emitter dropped them.
+	if m.SumTable != "" && m.SumTable != m.GaugeTable {
+		return []string{m.GaugeTable, m.SumTable}
+	}
+	return []string{m.GaugeTable}
 }
 
 func hasSuffix(s, suffix string) bool {

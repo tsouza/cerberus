@@ -42,6 +42,15 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		if v.Database != "" {
 			tbl = v.Database + "." + v.Table
 		}
+		if len(v.UnionTables) > 0 {
+			// Multi-table union scan (the OTel-hostmetrics / sqlquery
+			// fallback the PromQL matcher path uses for unsuffixed
+			// names — see schema.Metrics.TablesFor). Render the member
+			// tables joined with `|` so the chplan-IR snapshot stays
+			// terse but unambiguous about which physical layouts the
+			// scan covers.
+			tbl = "merge(" + strings.Join(v.UnionTables, "|") + ")"
+		}
 		if len(v.Columns) == 0 {
 			fmt.Fprintf(b, "%sScan(%s)\n", indent, tbl)
 		} else {

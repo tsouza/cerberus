@@ -1,0 +1,67 @@
+-- query.promql --
+system_cpu_time
+-- args --
+[0] string = "system_cpu_time"
+[1] string = "2026-01-01 00:00:01.000000000"
+[2] int64 = 9
+[3] string = "2026-01-01 00:00:01.000000000"
+[4] int64 = 9
+[5] int64 = 300000000000
+-- sql --
+SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`)
+-- chplan --
+Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
+  Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
+    Filter predicate=(((MetricName = "system_cpu_time") AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+      Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum VALUES
+    ('system_cpu_time', map('cpu', 'cpu0', 'state', 'idle'), toDateTime64('2026-01-01 00:00:00', 9), 1234.5);
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- expected_rows --
+[
+  ["system_cpu_time", {"cpu": "cpu0", "state": "idle"}, "2026-01-01T00:00:00Z", 1234.5]
+]
+-- description --
+Regression pin for the OTel-hostmetrics / sqlquery / prometheus-self
+case the v0.1 `TableFor` heuristic missed: cumulative Sum metrics
+emitted under bare (unsuffixed) names like `system_cpu_time`,
+`clickhouse_event`, `otelcol_process_uptime` were routed to the
+Gauge table by the suffix heuristic but actually live in the Sum
+table — the matcher returned 0 rows.
+
+PR #701 (rich quickstart observability) surfaced this when the
+otelcol-observability dashboard's bare `otelcol_process_uptime` panel
+and clickhouse-observability's `clickhouse_event{name=~…}` rate
+panel both painted empty against fresh compose data. The catalog
+endpoints (`/api/v1/series`, `/api/v1/label/__name__/values`)
+already UNIONed across all metric tables and listed these names,
+so dashboards saw them in the metric picker — only the matcher
+path failed, producing the "Unable to fetch labels" / "10 console
+errors" panel-kiosk failures on PR #701's compose-smoke run.
+
+The fix: schema.Metrics.TablesFor returns `[Gauge, Sum]` for any
+unsuffixed name and `lowerVectorSelector` emits a UnionTables Scan
+that the chsql emitter renders as `merge(currentDatabase(),
+'<regex>')` — CH's `merge()` table function fans the scan across
+the matching tables and translates the predicate into per-arm
+PREWHERE at planning time. The Sum-only columns
+(`AggregationTemporality`, `IsMonotonic`) drop out of the merged
+view but no metric-row consumer references them, so the narrow is
+lossless.
+
+The seed creates an empty Gauge table alongside the populated Sum
+table so the chDB roundtrip exercises the actual multi-table
+union: a regression that dropped the Sum-table arm of the merge()
+would return zero rows against this fixture.

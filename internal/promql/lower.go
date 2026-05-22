@@ -131,9 +131,24 @@ func lower(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error
 // itself.
 func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	metricName := metricNameFromMatchers(v.LabelMatchers)
-	table := s.GaugeTable
+	// Resolve the candidate physical tables for this matcher.
+	//
+	// `TablesFor` admits the OTel-emitter reality that cerberus's
+	// original suffix heuristic (`TableFor`) missed: hostmetrics /
+	// sqlquery / prometheus-self ship cumulative sums under bare names
+	// (`system_cpu_time`, `clickhouse_event`, `otelcol_process_uptime`)
+	// that the Prom convention reserves for gauges. Returning the
+	// (Gauge, Sum) pair for unsuffixed names lets the scan resolve
+	// against either physical layout — the MetricName PREWHERE makes
+	// the empty arm cost-free.
+	//
+	// Suffixed names (`_total` / `_count` / `_sum` / `_bucket`) still
+	// route to a single table via TableFor; histogram-companion +
+	// bucket selectors below override to the histogram table without
+	// touching the union path. Existing fixtures stay byte-stable.
+	tables := []string{s.GaugeTable}
 	if metricName != "" {
-		table = s.TableFor(metricName)
+		tables = s.TablesFor(metricName)
 	}
 
 	// Classic-histogram companion routing: `<base>_count` / `<base>_sum`
@@ -158,18 +173,18 @@ func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCt
 	var bucketSuffixed string
 	var bucketLeMatchers []*labels.Matcher
 	if bareBucket, ok := isClassicBucketSelector(metricName, s); ok {
-		table = s.HistogramTable
+		tables = []string{s.HistogramTable}
 		bucketSuffixed = metricName
 		var scanMatchers []*labels.Matcher
 		scanMatchers, bucketLeMatchers = splitBucketMatchers(matchers, bareBucket)
 		matchers = scanMatchers
 	} else if bare, col, ok := s.HistogramCompanionColumn(metricName); ok && s.HistogramTable != "" {
-		table = s.HistogramTable
+		tables = []string{s.HistogramTable}
 		matchers = rewriteMetricName(matchers, bare)
 		companionValueColumn = col
 	}
 
-	scan := &chplan.Scan{Table: table}
+	scan := scanFromTables(tables)
 
 	pred := buildPredicate(matchers, s)
 	// Build the input subtree the LWR / range-vector pipeline consumes.
@@ -403,6 +418,41 @@ func rewriteMetricName(matchers []*labels.Matcher, bareName string) []*labels.Ma
 		out[i] = m
 	}
 	return out
+}
+
+// scanFromTables returns the chplan.Scan node for a metric-matcher
+// lowering. A single-element `tables` slice routes to the legacy
+// `Scan{Table: …}` shape so existing fixtures and emit paths remain
+// byte-stable; a multi-element slice routes to `Scan{UnionTables: …}`
+// which the chsql emitter renders as a CH `merge(currentDatabase(),
+// '<regex>')` table function call (see `chsql.scanTableFrag`). The
+// multi-element path supports the OTel-emitter case where a bare
+// (unsuffixed) metric name could be either a Gauge or a cumulative
+// Sum — the suffix heuristic alone can't disambiguate. The empty
+// slice is treated as a Gauge-only fallback (the caller's default
+// when the matcher carries no `__name__`).
+func scanFromTables(tables []string) *chplan.Scan {
+	switch len(tables) {
+	case 0:
+		// Unreachable from the production caller (which always passes
+		// at least one candidate from schema.Metrics.TablesFor /
+		// GaugeTable) — but the defensive zero-element case keeps the
+		// helper total without panicking. Returning an empty Scan
+		// would surface a downstream emit-time validation error
+		// ("Scan has neither Table nor UnionTables set"), which is the
+		// correct failure mode if a future caller passes nil/empty.
+		return &chplan.Scan{}
+	case 1:
+		return &chplan.Scan{Table: tables[0]}
+	default:
+		// Defensive copy: the caller's slice may be a return from
+		// schema.Metrics.TablesFor whose backing array is shared with
+		// the schema. A downstream optimizer pass that wanted to
+		// in-place mutate UnionTables would corrupt the schema; the
+		// copy keeps the plan-tree slice independent.
+		owned := append([]string(nil), tables...)
+		return &chplan.Scan{UnionTables: owned}
+	}
 }
 
 // wrapInstantLatestPerSeries adds the LWR + staleness predicates on

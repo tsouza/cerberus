@@ -62,6 +62,9 @@ func (e *emitter) splice(b *Builder) {
 }
 
 func (e *emitter) emitScan(s *chplan.Scan) error {
+	if err := validateScanShape(s); err != nil {
+		return err
+	}
 	sb := NewQuery().From(scanTableFrag(s))
 	if len(s.Columns) > 0 {
 		cols := make([]Frag, 0, len(s.Columns))
@@ -73,6 +76,19 @@ func (e *emitter) emitScan(s *chplan.Scan) error {
 	// (Empty Select list renders as `SELECT *` — matches the
 	// pre-builder emitter's behaviour for a column-less Scan.)
 	e.emitSelect(sb)
+	return nil
+}
+
+// validateScanShape enforces the mutual exclusion between Scan.Table and
+// Scan.UnionTables. Both empty is also rejected — the emitter has no
+// table to read from.
+func validateScanShape(s *chplan.Scan) error {
+	if s.Table == "" && len(s.UnionTables) == 0 {
+		return fmt.Errorf("chsql: Scan has neither Table nor UnionTables set")
+	}
+	if s.Table != "" && len(s.UnionTables) > 0 {
+		return fmt.Errorf("chsql: Scan has both Table=%q and UnionTables=%v set; pick one", s.Table, s.UnionTables)
+	}
 	return nil
 }
 
@@ -130,7 +146,7 @@ func (e *emitter) emitStepGrid(g *chplan.StepGrid) error {
 	// up to and including End. Matches Prom's range-query step grid
 	// (the upstream evaluator emits (end-start)/step + 1 samples per
 	// series in the canonical case).
-	numAnchors := (g.End.Sub(g.Start).Nanoseconds())/stepNS + 1
+	numAnchors := g.End.Sub(g.Start).Nanoseconds()/stepNS + 1
 	if numAnchors < 1 {
 		numAnchors = 1
 	}
@@ -183,11 +199,93 @@ func (e *emitter) emitCrossJoin(j *chplan.CrossJoin) error {
 // quoted table name; when Database is non-empty (synthetic single-row
 // sources like `system.one`) it emits the qualified `<db>`.`<tbl>` shape
 // so CH resolves the system database directly.
+//
+// When UnionTables is non-empty (the OTel-hostmetrics / sqlquery fallback
+// the PromQL matcher path uses for unsuffixed names), the table reference
+// renders as a `merge(currentDatabase(), '<regex>')` table function call.
+// CH's `merge()` reads the union of all tables in the named database
+// whose name matches the regex, projecting only the columns common to
+// every member — the gauge / sum / histogram tables share the metric-row
+// quadruple (MetricName, Attributes, TimeUnix, Value) plus all the
+// envelope columns (Resource* / Scope* / ServiceName / StartTimeUnix /
+// Flags / Exemplars), so the union covers everything the downstream
+// LWR / RangeWindow / projection wrappers reference. The Sum-only
+// columns (AggregationTemporality, IsMonotonic) drop out of the merged
+// view; no metric-row consumer reads them, so the narrow is safe.
+//
+// The merge() call gets per-arm PREWHERE granule pruning automatically:
+// CH translates a top-level predicate into the underlying tables'
+// PREWHERE during the ReadFromMerge planning step (verified via
+// `EXPLAIN`). The emitter therefore doesn't have to manually fan
+// PREWHERE per arm — the legacy emitFilterScan path drives the single
+// PREWHERE on the outer SELECT and CH does the rest.
 func scanTableFrag(s *chplan.Scan) Frag {
+	if len(s.UnionTables) > 0 {
+		return mergeTableFrag(s.Database, s.UnionTables)
+	}
 	if s.Database != "" {
 		return Qual(s.Database, s.Table)
 	}
 	return Col(s.Table)
+}
+
+// mergeTableFrag renders the CH `merge(currentDatabase(), '<regex>')`
+// table-function call that backs Scan.UnionTables. The database argument
+// uses `currentDatabase()` when the Scan's Database is empty so the
+// fanout follows whichever database the connection-time setting selected
+// (cerberus's clickhouse-go client opens its session against the
+// configured CERBERUS_CH_DATABASE — `otel` by default). When the Scan
+// explicitly names a Database, that literal is used directly.
+//
+// The regex anchors at both ends (`^…$`) so the table-name pattern
+// matches only the exact members of UnionTables — a stray
+// `otel_metrics_gauge_v2` (or whatever) won't accidentally pull into
+// the scan. Pipe-separated alternation enumerates the member names,
+// each `regexp.QuoteMeta`-escaped against accidental metacharacters
+// (the OTel-CH defaults are all plain `[a-z_0-9]+` so escapeing is a
+// no-op in practice but the safety net is cheap).
+func mergeTableFrag(db string, tables []string) Frag {
+	dbArg := "currentDatabase()"
+	if db != "" {
+		dbArg = "'" + escapeSingleQuotes(db) + "'"
+	}
+	escaped := make([]string, len(tables))
+	for i, t := range tables {
+		escaped[i] = regexQuoteMeta(t)
+	}
+	regex := "^(" + strings.Join(escaped, "|") + ")$"
+	return func(b *Builder) {
+		b.sb.WriteString("merge(")
+		b.sb.WriteString(dbArg)
+		b.sb.WriteString(", '")
+		b.sb.WriteString(escapeSingleQuotes(regex))
+		b.sb.WriteString("')")
+	}
+}
+
+// escapeSingleQuotes doubles every single-quote in s so it can be
+// embedded inside a single-quoted SQL string literal.
+func escapeSingleQuotes(s string) string {
+	return strings.ReplaceAll(s, "'", "''")
+}
+
+// regexQuoteMeta returns s with every RE2 regex metacharacter escaped.
+// We don't import `regexp` solely for QuoteMeta — the OTel-CH default
+// table names are all plain `[a-z_0-9]+`, and the override surface in
+// `internal/schema/otel.go` is config-driven so a user could in principle
+// supply a name with a regex metacharacter. The escape list covers the
+// RE2 surface CH's `merge()` regex argument understands.
+func regexQuoteMeta(s string) string {
+	const meta = `\.+*?()|[]{}^$`
+	var out strings.Builder
+	out.Grow(len(s))
+	for _, r := range s {
+		if strings.ContainsRune(meta, r) {
+			out.WriteByte('\\')
+		}
+		out.WriteRune(r)
+	}
+	return out.String()
 }
 
 func (e *emitter) emitFilter(f *chplan.Filter) error {
@@ -230,7 +328,20 @@ func (e *emitter) emitFilter(f *chplan.Filter) error {
 // promotion always activates in that case when the table shape has
 // wide columns registered.
 func (e *emitter) emitFilterScan(f *chplan.Filter, scan *chplan.Scan) error {
-	shape := tableShapeFor(scan.Table)
+	if err := validateScanShape(scan); err != nil {
+		return err
+	}
+	// For a UnionTables scan every member table shares the metric-row
+	// shape (the OTel-CH metrics tables all order by (ServiceName,
+	// MetricName, Attributes, TimeUnix) and carry the same wide columns
+	// — see internal/chsql/tableshape.go). Resolving against the first
+	// member is correct for shape lookup; the PREWHERE/WHERE split CH
+	// then translates uniformly to every arm of the merge() fanout.
+	shapeKey := scan.Table
+	if shapeKey == "" && len(scan.UnionTables) > 0 {
+		shapeKey = scan.UnionTables[0]
+	}
+	shape := tableShapeFor(shapeKey)
 	conjuncts := flattenAnd(f.Predicate)
 	conjuncts = orderedConjuncts(conjuncts, shape)
 
