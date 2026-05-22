@@ -893,7 +893,7 @@ func TestBuilder_Expr(t *testing.T) {
 	}
 }
 
-// --- typed operator / punctuation Frag constructors (R6.11a) -----------
+// --- typed operator / punctuation Frag constructors -------------------
 
 // TestOperatorFrags_BinaryOps — each comparison + arithmetic operator
 // renders "<l> <op> <r>" with single spaces around the op token, and

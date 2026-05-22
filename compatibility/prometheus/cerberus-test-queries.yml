@@ -19,10 +19,10 @@
 # `demo_batch_last_success_timestamp_seconds`, `demo_intermittent_metric`).
 # When both ref Prom and cerberus return empty results for a missing-metric
 # query, the tester records that as PASS (zero diff) — acceptable noise
-# for the RC1 baseline.
+# for the compatibility baseline.
 #
 # Pointer-to-upstream: re-sync this file by re-copying the upstream and
-# re-applying the edit above. Track in a follow-up M1.x ticket so this
+# re-applying the edit above. Track in a follow-up issue so this
 # divergence stays auditable.
 
 test_cases:
@@ -38,7 +38,7 @@ test_cases:
   - query: 'NaN'
 
   # Vector selectors.
-  # TODO: Add tests for staleness support.
+  # TODO(upstream): Add tests for staleness support.
   - query: 'demo_memory_usage_bytes'
   - query: '{__name__="demo_memory_usage_bytes"}'
   - query: 'demo_memory_usage_bytes{type="free"}'
@@ -110,7 +110,7 @@ test_cases:
     # Check that vector-scalar binops set output timestamps correctly.
   - query: 'timestamp(demo_memory_usage_bytes * 1)'
     # Check that unary minus sets timestamps correctly.
-    # TODO: Check this more systematically for every node type?
+    # TODO(upstream): Check this more systematically for every node type?
   - query: 'timestamp(-demo_memory_usage_bytes)'
   - query: 'demo_memory_usage_bytes {{.binOp}} on(instance, job, type) demo_memory_usage_bytes'
     variant_args: ['binOp']
@@ -125,8 +125,8 @@ test_cases:
   - query: 'sum without(job) (demo_memory_usage_bytes) / on(instance, type) group_left(job) demo_memory_usage_bytes'
   - query: 'demo_memory_usage_bytes / on(instance, job) group_left demo_num_cpus'
   - query: 'demo_memory_usage_bytes / on(instance, type, job, non_existent) demo_memory_usage_bytes'
-  # TODO: Add non-explicit many-to-one / one-to-many that errors.
-  # TODO: Add many-to-many match that errors.
+  # TODO(upstream): Add non-explicit many-to-one / one-to-many that errors.
+  # TODO(upstream): Add many-to-many match that errors.
 
   # NaN/Inf/-Inf support.
   - query: 'demo_num_cpus * Inf'
