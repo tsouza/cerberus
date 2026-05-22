@@ -85,7 +85,30 @@ const EXPECTED_EMPTY: ReadonlyArray<{ prefix: string; why: string }> = [
     // counter stays at 0.
     why: 'query-failure counter starts at 0 with well-formed warmup',
   },
+  {
+    prefix: 'cerberus_query_inflight',
+    // UpDownCounter that ticks +1 on query start, -1 on query end. By
+    // the time `/api/v1/series` runs in this spec the warmup loop has
+    // already drained, so the gauge is back at 0. The OTel SDK's
+    // delta-temporality default for UpDownCounters then suppresses the
+    // datapoint (no change in the interval), and the bare-name probe
+    // returns 0 series. Cerberus exposes the in-flight count via the
+    // `cerberus_queries_total` counter's rate anyway; the gauge is for
+    // live dashboards, not historical sweeps.
+    why: 'UpDownCounter drains to 0 after warmup; delta export drops idle datapoints',
+  },
 ];
+
+/**
+ * Histogram-suffix view names. OTel-native histograms store rows under
+ * the bare metric name in the `metrics_histogram` table, but the
+ * Prom-on-OTel convention exposes them as `_bucket` / `_count` / `_sum`
+ * synthetic views. `/api/v1/series` for a bare histogram name therefore
+ * returns no rows — Grafana / Drilldown-Metrics queries the companions
+ * instead. The companion-probe fallback below uses these suffixes to
+ * verify the metric is healthy even when the bare-name probe is empty.
+ */
+const HISTOGRAM_COMPANION_SUFFIXES = ['_bucket', '_count', '_sum'] as const;
 
 type LabelValuesResponse = {
   status: string;
@@ -116,6 +139,8 @@ type MetricSummary = {
   query_range_series: number;
   empty_expected: boolean;
   why_empty: string | null;
+  companion_series_count: number | null;
+  companion_suffix: string | null;
 };
 
 const cerberusURL = (): string =>
@@ -312,8 +337,35 @@ test.describe('iterate-metrics-explorer: Drilldown-Metrics + label chips', () =>
         );
       }
 
+      // If the bare-name probe returns 0 series, try the histogram
+      // companion-suffix views before declaring a regression. OTel-native
+      // histograms live in `metrics_histogram` under the bare name, but
+      // Prom-on-OTel exposes them as `_bucket` / `_count` / `_sum`
+      // synthetic series; the Grafana datasource (and Drilldown-Metrics'
+      // label chip) queries the companion, not the bare name. A healthy
+      // histogram therefore presents as: bare → 0 series, `<name>_count`
+      // → >= 1 series. Treat that shape as healthy.
+      let companionCount: number | null = null;
+      let companionSuffix: string | null = null;
+      if (seriesCount === 0) {
+        for (const suffix of HISTOGRAM_COMPANION_SUFFIXES) {
+          const companionName = metric + suffix;
+          const companionBody = await fetchSeries(
+            request,
+            companionName,
+            nowSec,
+          );
+          if (companionBody.data.length > 0) {
+            companionCount = companionBody.data.length;
+            companionSuffix = suffix;
+            break;
+          }
+        }
+      }
+
       const expected = isExpectedEmpty(metric);
-      if (seriesCount === 0 && !expected) {
+      const hasCompanion = companionCount !== null && companionCount > 0;
+      if (seriesCount === 0 && !expected && !hasCompanion) {
         labelFailures.push(
           `metric=${metric}: /api/v1/series returned 0 series — this is the "Unable to fetch labels" failure shape (#8). If empty-by-design, add a prefix to EXPECTED_EMPTY with a rationale.`,
         );
@@ -335,6 +387,8 @@ test.describe('iterate-metrics-explorer: Drilldown-Metrics + label chips', () =>
         query_range_series: rangeSeries,
         empty_expected: expected !== null,
         why_empty: expected?.why ?? null,
+        companion_series_count: companionCount,
+        companion_suffix: companionSuffix,
       });
     }
 
@@ -350,6 +404,7 @@ test.describe('iterate-metrics-explorer: Drilldown-Metrics + label chips', () =>
       `iterate-metrics-explorer: summary attached — ` +
         `${summary.length} metrics, ` +
         `${summary.filter((s) => s.series_count > 0).length} non-empty series, ` +
+        `${summary.filter((s) => (s.companion_series_count ?? 0) > 0).length} histogram-via-companion, ` +
         `${summary.filter((s) => s.empty_expected).length} expected-empty`,
     );
 
