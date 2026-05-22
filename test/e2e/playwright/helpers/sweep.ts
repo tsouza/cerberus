@@ -21,6 +21,15 @@
  * with numerator=0 over the warmup window, producing an empty result
  * the iterate-all-dashboards sweep now hard-asserts against.
  *
+ * Before the steady-state loop the helper also fires an
+ * admission-burst phase — ADMIT_BURST_CONCURRENCY parallel requests
+ * per head — so the per-head admit semaphores in
+ * internal/api/admit saturate and cerberus ticks
+ * `cerberus_admit_rejected_total{reason="cap_exceeded"}` on every
+ * (cerberus_ql, reason) bucket. Without the burst the cerberus-self
+ * "Admission rejections" panel has nothing to graph and the sweep's
+ * empty-result guard fires.
+ *
  * We use Playwright's `APIRequestContext` (passed in by the spec)
  * rather than `fetch` so the helper inherits the Playwright proxy /
  * CI-network plumbing.
@@ -29,6 +38,22 @@
 import type { APIRequestContext } from '@playwright/test';
 
 const DEFAULT_CERBERUS_URL = 'http://localhost:8080';
+
+// ADMIT_BURST_CONCURRENCY is the number of parallel requests we fan
+// out per head in the upfront admission-burst phase. The cerberus
+// admit middleware (internal/api/admit) caps in-flight requests per
+// head — defaults are 64 (prom), 64 (loki), 32 (tempo). Firing this
+// many in one Promise.allSettled batch guarantees we exceed every
+// cap on every head, so cerberus emits cerberus_admit_rejected_total
+// with reason=cap_exceeded (the only reason value the limiter has
+// today; if a future rejection path appears in internal/api/admit
+// it should grow its own burst phase below).
+//
+// Without this phase the cerberus-self "Admission rejections" panel
+// (sum by (cerberus_ql, reason) (rate(cerberus_admit_rejected_total[5m])))
+// stays empty over the warmup window — healthy compose traffic never
+// approaches the cap.
+const ADMIT_BURST_CONCURRENCY = 128;
 
 /**
  * Generate self-traffic against cerberus for `durationSec` seconds.
@@ -49,6 +74,26 @@ export async function generateSelfTraffic(
 ): Promise<void> {
   const cerberusURL = process.env.CERBERUS_URL ?? DEFAULT_CERBERUS_URL;
   const deadline = Date.now() + durationSec * 1000;
+
+  // Admission-burst phase — fire ADMIT_BURST_CONCURRENCY parallel
+  // requests per head so the per-head admit semaphores saturate and
+  // cerberus rejects the overflow with HTTP 503 + ticks
+  // cerberus_admit_rejected_total{reason="cap_exceeded"}. We use the
+  // cheapest endpoint per head (a constant PromQL `up` query, the
+  // Loki label-values endpoint, the TraceQL "all-traces" search) so
+  // the burst dominantly stresses the limiter rather than the
+  // ClickHouse query path. Promise.allSettled swallows both the
+  // success and the 503 responses — the goal is to nudge the
+  // rejection counter, not to assert.
+  const burst: Promise<unknown>[] = [];
+  for (let k = 0; k < ADMIT_BURST_CONCURRENCY; k++) {
+    burst.push(
+      request.get(`${cerberusURL}/api/v1/query?query=${encodeURIComponent('up')}`),
+      request.get(`${cerberusURL}/loki/api/v1/labels`),
+      request.get(`${cerberusURL}/api/search?q=${encodeURIComponent('{}')}`),
+    );
+  }
+  await Promise.allSettled(burst);
 
   // Broad probes against each head — these need only succeed
   // *sometimes*, to nudge the counters. We don't await each
