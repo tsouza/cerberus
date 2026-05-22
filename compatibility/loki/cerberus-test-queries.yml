@@ -122,23 +122,18 @@ should_skip:
     jira: "docs/loki-compliance-plan.md PR 6 (upstream skip)"
 
   # regression/structured-metadata.yaml — surviving entries are
-  # upstream-pinned (`skip: true` on Loki's v2 engine) and seed-gap
-  # entries pending seeder expansion.
-  - source: "regression/structured-metadata.yaml#Combined line and metadata filter"
-    reason: |
-      Reference Loki produces no `detected_level` derived label without
-      structured-metadata input on the indexed path. Cerberus's seeder
-      emits OTel logs via the upstream ClickHouse exporter, which
-      carries SeverityText but not the structured-metadata block shape
-      reference Loki indexes for `detected_level` filtering — so the
-      reference returns empty on the line+metadata combination and the
-      diff records `baseline returned empty`. Cerberus's own
-      `detected_level` synthesis (`internal/logql/detected_level.go`)
-      is exercised by other corpus cases that don't depend on
-      reference-side structured-metadata indexing. Re-enable once the
-      harness's structured-metadata seed gap is closed.
-    since: "2026-05-15"
-    jira: "docs/loki-compliance-plan.md PR 6 (harness seed-gap cluster)"
+  # upstream-pinned (`skip: true` on Loki's v2 engine). The three
+  # `detected_level` cases that previously sat here (`Combined line and
+  # metadata filter`, `Drilldown with failed search and error level`,
+  # `Drilldown with error/warn level and refused search`) were lifted
+  # once the harness was verified to push `detected_level` as a
+  # `logproto.LabelAdapter` on every entry via the seeder's
+  # `/loki/api/v1/push` payload (`StructuredMetadata: sm` block in
+  # `pushLoki`, gated by `allow_structured_metadata: true` in
+  # loki-config.yaml). The structured-metadata seed-gap rationale was
+  # stale — PR #412 already wired the structured-metadata block, and
+  # the diff driver reports `diff: ""` on all three cases against the
+  # reference Loki.
   - source: "regression/structured-metadata.yaml#JSON parsing with duration filter and structured metadata"
     reason: "Upstream pins `skip: true` (numeric `> 0.1` label filter unsupported by Loki's v2 engine on this shape)."
     since: "2026-05-15"
@@ -147,38 +142,6 @@ should_skip:
     reason: "Upstream pins `skip: true` (numeric `>= 500` label filter unsupported by Loki's v2 engine on this shape)."
     since: "2026-05-15"
     jira: "docs/loki-compliance-plan.md PR 6 (upstream skip)"
-  - source: "regression/structured-metadata.yaml#Drilldown with failed search and error level"
-    reason: |
-      Same structured-metadata gap as the line+metadata combined-filter
-      entry above. Reference Loki computes `detected_level` from
-      structured-metadata input it has indexed; cerberus's seeder
-      flows OTel records through the upstream ClickHouse exporter
-      shape (SeverityText present, structured-metadata block shape
-      absent), so the reference baseline for the `detected_level="error"`
-      + `|~ "(?i)failed"` shape comes back empty and the diff records
-      `baseline returned empty`. Cerberus's `detected_level` synthesis
-      (`internal/logql/detected_level.go`) drives the canonical path on
-      cerberus's side from SeverityText. Re-enable once the harness's
-      structured-metadata seed gap is closed.
-    since: "2026-05-15"
-    jira: "docs/loki-compliance-plan.md PR 6 (harness seed-gap cluster)"
-  - source: "regression/structured-metadata.yaml#Drilldown with error/warn level and refused search"
-    reason: |
-      Same structured-metadata gap as the two filter rows above, this
-      time on the regex form `detected_level=~"error|warn"` combined
-      with a `|~ "(?i)refused"` line filter. Reference Loki returns
-      empty because its `detected_level` derived label has no
-      structured-metadata input from the harness's upstream ClickHouse
-      exporter seed shape — SeverityText is populated but the
-      structured-metadata block reference Loki indexes for
-      `detected_level` is not. The diff records `baseline returned
-      empty`. Cerberus's `detected_level` synthesis
-      (`internal/logql/detected_level.go`) maps both literal-equality
-      and regex matcher shapes off SeverityText already, so the
-      cerberus-side path is covered by other corpus cases. Re-enable
-      once the harness's structured-metadata seed gap is closed.
-    since: "2026-05-15"
-    jira: "docs/loki-compliance-plan.md PR 6 (harness seed-gap cluster)"
 
   # exhaustive/aggregations.yaml — most entries lifted now that `| unwrap`,
   # value range aggs, and range-agg grouping land. Remaining skips are
@@ -195,24 +158,12 @@ should_skip:
     reason: "Seeder writes `service` not `service_name`."
     since: "2026-05-15"
     jira: "docs/loki-compliance-plan.md PR 6 (seed gap)"
-  - source: "exhaustive/aggregations.yaml#Count aggregated by detected_level"
-    reason: |
-      Aggregation grouping flavour of the same structured-metadata
-      gap: `sum by (detected_level) (count_over_time(...))` partitions
-      its output streams by reference Loki's `detected_level` derived
-      label, which the reference computes from structured-metadata
-      input. The harness's seeder emits OTel records through the
-      upstream ClickHouse exporter shape (SeverityText present,
-      structured-metadata block absent), so reference Loki has no
-      input to split the count series by `detected_level` and the
-      diff records `baseline returned empty`. Cerberus's
-      `detected_level` synthesis
-      (`internal/logql/detected_level.go`) drives the equivalent
-      grouping on cerberus's side from SeverityText and is covered by
-      other corpus cases. Re-enable once the harness's
-      structured-metadata seed gap is closed.
-    since: "2026-05-15"
-    jira: "docs/loki-compliance-plan.md PR 6 (harness seed-gap cluster)"
+  # The `Count aggregated by detected_level` case that previously sat
+  # here was lifted alongside the regression/structured-metadata.yaml
+  # detected_level entries — same root cause, same closure: the seeder
+  # already pushes `detected_level` as a structured-metadata
+  # `logproto.LabelAdapter`, so reference Loki splits the count series
+  # by the derived label and the diff driver reports clean parity.
   - source: "exhaustive/aggregations.yaml#Count aggregated by cluster and namespace"
     reason: "`cluster` / `namespace` labels not in seed."
     since: "2026-05-15"
