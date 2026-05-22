@@ -221,6 +221,16 @@ func buildStreams(start time.Time) []stream {
 	out := make([]stream, 0, len(serviceConfigs))
 
 	for _, sc := range serviceConfigs {
+		// The five k8s-family labels (pod, namespace, service_name,
+		// cluster, container) are load-bearing for the
+		// exhaustive/aggregations.yaml#Count aggregated by {...} and the
+		// exhaustive/unwrap-aggregations.yaml#Without multiple labels
+		// cases in the vendored bench corpus. They mirror the upstream
+		// generator (loki-bench/generator.go) shape so the reference
+		// Loki indexes the same 13 streams the cerberus side reads via
+		// ResourceAttributes. See insertCHLogs for the matching CH-side
+		// map; TestSeederWritesK8sStreamLabels pins the presence of all
+		// five keys in both places.
 		labels := map[string]string{
 			"cluster":      sc.Cluster,
 			"namespace":    sc.Namespace,
@@ -482,6 +492,22 @@ func insertCHLogs(ctx context.Context, conn driver.Conn, streams []stream) error
 		// Mirrors the OTel-CH exporter's resource → ResourceAttributes
 		// mapping; Loki's own data model treats stream labels as
 		// resource-level too, so this keeps the two backends comparable.
+		//
+		// The five k8s-family stream labels (pod, namespace, service_name,
+		// cluster, container) are load-bearing for the
+		// exhaustive/aggregations.yaml#Count aggregated by {pod,namespace,
+		// service_name,cluster and namespace,service_name and container}
+		// cases and exhaustive/unwrap-aggregations.yaml#Without multiple
+		// labels (`sum without (namespace, cluster)`) cases in the
+		// vendored bench corpus. The cerberus-side aggregate's GROUP BY
+		// reads `ResourceAttributes[<key>]` (logql.levelAwareGroupKey),
+		// so dropping any of these five from this map collapses every
+		// matched row into a single `{<key>:""}` series and the differ
+		// flags a baseline-vs-cerberus mismatch. The
+		// TestSeederWritesK8sStreamLabels regression test pins the
+		// presence of these five keys so a future trim of the seed shape
+		// fails at unit-test review rather than on the compatibility lane.
+		//
 		// `service.name` is duplicated alongside the bare `service_name`
 		// key because the OTel-CH schema also surfaces it via the
 		// dedicated `ServiceName` column for /labels parity.

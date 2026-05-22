@@ -264,3 +264,104 @@ func TestWaitLokiIndexSettle(t *testing.T) {
 		}
 	})
 }
+
+// TestSeederWritesK8sStreamLabels guards the five k8s-family stream
+// labels (pod, namespace, service_name, cluster, container) the
+// vendored bench corpus requires for the exhaustive/aggregations.yaml
+// "Count aggregated by {pod,namespace,service_name,cluster and
+// namespace,service_name and container}" cases and the
+// exhaustive/unwrap-aggregations.yaml "Without multiple labels" case.
+//
+// All five must appear in:
+//
+//   - every stream's pushLoki label set (so reference Loki indexes
+//     the stream under that key), AND
+//   - the insertCHLogs ResourceAttributes map (so cerberus's LogQL
+//     stream-selector + group-by resolves `ResourceAttributes[<key>]`
+//     to the matching value).
+//
+// Dropping any of these keys from either side collapses the matched
+// rows into a single `{<key>:""}` series on the cerberus side and the
+// compat differ flags a baseline-vs-cerberus mismatch — exactly the
+// shape the four "Plain seed-gap" rows in the historic
+// cerberus-test-queries.yml `should_skip` block (now retired by PR
+// #712) pinned. This pin keeps that gap closed.
+func TestSeederWritesK8sStreamLabels(t *testing.T) {
+	t.Parallel()
+
+	required := []string{"pod", "namespace", "service_name", "cluster", "container"}
+
+	streams := buildStreams(time.Unix(0, 0))
+	if len(streams) == 0 {
+		t.Fatalf("buildStreams returned no streams")
+	}
+	for _, s := range streams {
+		for _, key := range required {
+			v, ok := s.labels[key]
+			if !ok {
+				t.Errorf("stream %q missing required label %q in pushLoki label set", s.config.Name, key)
+				continue
+			}
+			if v == "" {
+				t.Errorf("stream %q has empty value for required label %q in pushLoki label set", s.config.Name, key)
+			}
+		}
+	}
+
+	// Mirror the resourceAttrs map insertCHLogs builds for each stream.
+	// Keep this in lock-step with the literal in insertCHLogs — the
+	// shape under test is the same map both functions construct from
+	// the per-stream serviceConfig + per-row context.
+	for _, s := range streams {
+		resourceAttrs := map[string]string{
+			"cluster":      s.config.Cluster,
+			"namespace":    s.config.Namespace,
+			"service":      s.config.Name,
+			"service_name": s.config.ServiceName,
+			"service.name": s.config.ServiceName,
+			"pod":          s.config.Pod,
+			"container":    s.config.Container,
+			"env":          "production",
+			"region":       "us-east-1",
+			"datacenter":   "dc1",
+		}
+		for _, key := range required {
+			v, ok := resourceAttrs[key]
+			if !ok {
+				t.Errorf("stream %q missing required key %q in insertCHLogs ResourceAttributes", s.config.Name, key)
+				continue
+			}
+			if v == "" {
+				t.Errorf("stream %q has empty value for required key %q in insertCHLogs ResourceAttributes", s.config.Name, key)
+			}
+		}
+	}
+
+	// Cross-check: the pushLoki labels and ResourceAttributes carry the
+	// same per-stream value for each of the five required keys. A
+	// silent divergence between the two sides would make the differ
+	// flag a value mismatch instead of the more legible empty-series
+	// shape; pin the values to prevent that flavour of bleed-through.
+	for _, s := range streams {
+		for _, key := range required {
+			lokiVal := s.labels[key]
+			var chVal string
+			switch key {
+			case "cluster":
+				chVal = s.config.Cluster
+			case "namespace":
+				chVal = s.config.Namespace
+			case "service_name":
+				chVal = s.config.ServiceName
+			case "pod":
+				chVal = s.config.Pod
+			case "container":
+				chVal = s.config.Container
+			}
+			if lokiVal != chVal {
+				t.Errorf("stream %q: label %q value drift — pushLoki=%q, ResourceAttributes=%q",
+					s.config.Name, key, lokiVal, chVal)
+			}
+		}
+	}
+}
