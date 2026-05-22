@@ -2,43 +2,35 @@ package main
 
 import (
 	"context"
-	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 )
 
-// TestWaitLokiIndexSettle pins the contract of the settle gate so future
-// threshold + latch regressions surface at PR review time, not on the
-// real harness. The function has been bumped three times for cadence /
-// threshold without ever having a unit pin:
+// TestWaitLokiIndexSettle pins the contract of the metric-based settle
+// gate. The previous cardinality-polling implementation accumulated
+// four PRs of patches (#66 → #561 → #576 → #608) trying to model
+// "ingester is done" indirectly through `/labels` + `/series` counts;
+// this gate now reads Loki's own `/metrics` endpoint, which exposes the
+// authoritative signals (`loki_ingester_flush_queue_length`,
+// `loki_ingester_memory_chunks`, `loki_ingester_chunks_flushed_total`,
+// `loki_tsdb_shipper_tables_upload_operation_total`).
 //
-//   - PR #66 grew the budget from 30s → 60s after a one-stream lag.
-//   - PR #123 raised it again to 90s for the same tail.
-//   - PR #608 relaxed the series threshold from "all N" to ceil(0.9*N)
-//     to absorb the one-stream-still-lagging shape seen on cold runners.
-//
-// Each fix went through review on logic alone. This test pins:
-//   - the 90% series threshold (12/13 passes, 11/13 fails);
-//   - the AND of (labels_latched, series_latched) gating return-nil;
-//   - the high-water-mark latch surviving a regression on either side;
-//   - the timeout error shape carrying enough diagnostics to root-cause
-//     a stuck CI run from the log line alone.
+// The cases below pin:
+//   - the AND of all four conditions gating return-nil;
+//   - the delta accounting against the pre-push baseline;
+//   - a structured error when a required metric is missing (upstream
+//     rename detection);
+//   - the timeout error shape — every counter's value end-to-end so
+//     on-call can root-cause from a single log line.
 func TestWaitLokiIndexSettle(t *testing.T) {
 	// No t.Parallel(): this test mutates the package-level settle*
-	// cadence vars. Running in parallel with another test in this
-	// package that read the same vars would race.
-
-	// Shrink production cadence: 1s poll × ~few ticks would still take
-	// several seconds per timeout case. Tests need to fail fast, so we
-	// override the package-level vars to a 10ms / 5ms / 100ms shape for
-	// every case inside this top-level test. Restore on exit so other
-	// tests (and `go test -count=N`) see the production defaults.
+	// cadence vars.
 	origTimeout, origInterval, origProgressAt := settleTimeout, settleInterval, settleProgressAt
 	settleTimeout = 500 * time.Millisecond
 	settleInterval = 5 * time.Millisecond
@@ -49,218 +41,264 @@ func TestWaitLokiIndexSettle(t *testing.T) {
 		settleProgressAt = origProgressAt
 	})
 
-	// fixtureStreams mirrors the production seed shape: 13 streams, each
-	// carrying the same 9 resource label keys. That makes the series
-	// threshold ceil(0.9 * 13) = 12 — the exact value the gate uses in
-	// the prod call. Anyone touching expectedLabelKeys or the threshold
-	// formula will trip the case-2 / case-3 boundary first.
-	fixtureStreams := func() []stream {
-		out := make([]stream, 0, 13)
-		for i := 0; i < 13; i++ {
-			out = append(out, stream{
-				labels: map[string]string{
-					"cluster":      "c",
-					"namespace":    "n",
-					"service":      "s",
-					"service_name": "sn",
-					"pod":          "p",
-					"container":    "k",
-					"env":          "e",
-					"region":       "r",
-					"datacenter":   "d",
-				},
-			})
-		}
-		return out
+	const expectedStreams = 13
+
+	// buildMetricsBody returns a `/metrics` text-exposition payload with
+	// the four signals the gate keys on. Other metrics are intentionally
+	// omitted — the gate must not depend on anything outside its
+	// declared contract.
+	buildMetricsBody := func(flushQueue, memChunks, chunksFlushed, shipperUploads float64) string {
+		return fmt.Sprintf(`# HELP loki_ingester_flush_queue_length unused
+# TYPE loki_ingester_flush_queue_length gauge
+loki_ingester_flush_queue_length %g
+# HELP loki_ingester_memory_chunks unused
+# TYPE loki_ingester_memory_chunks gauge
+loki_ingester_memory_chunks %g
+# HELP loki_ingester_chunks_flushed_total unused
+# TYPE loki_ingester_chunks_flushed_total counter
+loki_ingester_chunks_flushed_total{reason="forced"} %g
+# HELP loki_tsdb_shipper_tables_upload_operation_total unused
+# TYPE loki_tsdb_shipper_tables_upload_operation_total counter
+loki_tsdb_shipper_tables_upload_operation_total{component="index-store-tsdb-2024-01-01",status="success"} %g
+`, flushQueue, memChunks, chunksFlushed, shipperUploads)
 	}
 
-	allLabels := []string{
-		"cluster", "namespace", "service", "service_name",
-		"pod", "container", "env", "region", "datacenter",
-	}
-
-	// seriesSet returns n distinct label sets — used to drive the
-	// /series response cardinality.
-	seriesSet := func(n int) []map[string]string {
-		out := make([]map[string]string, 0, n)
-		for i := 0; i < n; i++ {
-			out = append(out, map[string]string{
-				"service_name": "sn-" + string(rune('a'+i)),
-			})
-		}
-		return out
-	}
-
-	encodeLabels := func(w http.ResponseWriter, data []string) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"status": "success",
-			"data":   data,
-		})
-	}
-	encodeSeries := func(w http.ResponseWriter, data []map[string]string) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"status": "success",
-			"data":   data,
-		})
-	}
-
-	// runSettle wires up the fake server + a no-op logger + a context
-	// bounded slightly above settleTimeout so a hung gate is the test
-	// failure, not a hung process.
-	runSettle := func(t *testing.T, handler http.HandlerFunc, streams []stream) error {
+	runSettle := func(t *testing.T, handler http.HandlerFunc, baseline lokiMetricsSnapshot) error {
 		t.Helper()
 		srv := httptest.NewServer(handler)
 		t.Cleanup(srv.Close)
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		t.Cleanup(cancel)
 		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-		start := time.Unix(0, 0)
-		end := start.Add(time.Hour)
-		return waitLokiIndexSettle(ctx, srv.URL, streams, start, end, logger)
+		return waitLokiIndexSettle(ctx, srv.URL, expectedStreams, baseline, logger)
 	}
 
-	t.Run("all_N_ready_immediately", func(t *testing.T) {
-		// Happy path: the server returns the full label set + full
-		// series count from the first poll. The gate latches both on
-		// tick 1 and returns nil. This is the steady-state shape — if
-		// it ever fails, something is wrong with the threshold
-		// arithmetic or label-key expectation logic.
-		streams := fixtureStreams()
+	t.Run("all_signals_ready_immediately", func(t *testing.T) {
+		// Happy path: queue drained, memory empty, counters past
+		// baseline. Gate returns on tick 1.
+		baseline := lokiMetricsSnapshot{chunksFlushed: 0, shipperUploads: 0}
+		body := buildMetricsBody(0, 0, expectedStreams, 1)
 		handler := func(w http.ResponseWriter, r *http.Request) {
-			switch {
-			case strings.HasPrefix(r.URL.Path, "/loki/api/v1/labels"):
-				encodeLabels(w, allLabels)
-			case strings.HasPrefix(r.URL.Path, "/loki/api/v1/series"):
-				encodeSeries(w, seriesSet(13))
-			default:
+			if r.URL.Path != "/metrics" {
 				http.NotFound(w, r)
+				return
 			}
+			_, _ = w.Write([]byte(body))
 		}
-		if err := runSettle(t, handler, streams); err != nil {
+		if err := runSettle(t, handler, baseline); err != nil {
 			t.Fatalf("expected nil error for fully-ready server, got: %v", err)
 		}
 	})
 
-	t.Run("12_of_13_stable_passes", func(t *testing.T) {
-		// The PR #608 case: one stream consistently lags the
-		// ingester→TSDB-index flush. Labels are full (9/9) and series
-		// hold steady at 12/13. ceil(0.9 * 13) = 12, so the threshold
-		// is exactly satisfied and the gate must return nil. If any
-		// future tightening pushes the threshold back toward "all N",
-		// this case is the trip-wire.
-		streams := fixtureStreams()
+	t.Run("flush_queue_drains_partway_through", func(t *testing.T) {
+		// First poll: queue non-zero. Second poll: queue at zero with
+		// all other conditions met. The gate must wait for the queue
+		// to drain before returning.
+		baseline := lokiMetricsSnapshot{chunksFlushed: 0, shipperUploads: 0}
+		var polls atomic.Int32
 		handler := func(w http.ResponseWriter, r *http.Request) {
-			switch {
-			case strings.HasPrefix(r.URL.Path, "/loki/api/v1/labels"):
-				encodeLabels(w, allLabels)
-			case strings.HasPrefix(r.URL.Path, "/loki/api/v1/series"):
-				encodeSeries(w, seriesSet(12))
-			default:
+			if r.URL.Path != "/metrics" {
 				http.NotFound(w, r)
+				return
 			}
+			n := polls.Add(1)
+			if n == 1 {
+				_, _ = w.Write([]byte(buildMetricsBody(5, 2, 8, 0)))
+				return
+			}
+			_, _ = w.Write([]byte(buildMetricsBody(0, 0, expectedStreams, 1)))
 		}
-		if err := runSettle(t, handler, streams); err != nil {
-			t.Fatalf("expected nil error at the 90%% boundary (12/13), got: %v", err)
+		if err := runSettle(t, handler, baseline); err != nil {
+			t.Fatalf("expected nil error after queue drains, got: %v", err)
+		}
+		if got := polls.Load(); got < 2 {
+			t.Fatalf("expected at least 2 polls, got %d", got)
 		}
 	})
 
-	t.Run("11_of_13_stable_times_out", func(t *testing.T) {
-		// One below the 90% boundary. Labels are full, but only 11
-		// streams ever surface. The series latch never flips, the
-		// AND-gate never closes, and the deadline expires. If a
-		// future change drops the threshold below ceil(0.9*N), this
-		// case starts passing and the test fails — exactly what we
-		// want.
-		streams := fixtureStreams()
+	t.Run("delta_must_exceed_baseline", func(t *testing.T) {
+		// The counter values are above zero but match the baseline
+		// exactly — no work has happened since baseline was taken.
+		// The gate must not return.
+		baseline := lokiMetricsSnapshot{chunksFlushed: 50, shipperUploads: 3}
 		handler := func(w http.ResponseWriter, r *http.Request) {
-			switch {
-			case strings.HasPrefix(r.URL.Path, "/loki/api/v1/labels"):
-				encodeLabels(w, allLabels)
-			case strings.HasPrefix(r.URL.Path, "/loki/api/v1/series"):
-				encodeSeries(w, seriesSet(11))
-			default:
+			if r.URL.Path != "/metrics" {
 				http.NotFound(w, r)
+				return
 			}
+			_, _ = w.Write([]byte(buildMetricsBody(0, 0, 50, 3)))
 		}
-		err := runSettle(t, handler, streams)
+		err := runSettle(t, handler, baseline)
 		if err == nil {
-			t.Fatalf("expected timeout at 11/13 (below 90%% threshold), got nil")
-		}
-		// Sanity-check the error shape: "series_now=11/13" should
-		// appear so on-call can read the gap straight off the log.
-		if !strings.Contains(err.Error(), "series_now=11/13") {
-			t.Fatalf("expected timeout error to mention 'series_now=11/13', got: %v", err)
-		}
-	})
-
-	t.Run("latched_then_regressed_holds", func(t *testing.T) {
-		// The latch-rationale case (run 26132714829 shape): the
-		// server returns the full set on the first poll, then drops
-		// to a partial set on every poll after. The high-water-mark
-		// latch must hold — once both latches have flipped, the gate
-		// succeeds regardless of subsequent regressions.
-		streams := fixtureStreams()
-		var labelPolls, seriesPolls atomic.Int32
-		handler := func(w http.ResponseWriter, r *http.Request) {
-			switch {
-			case strings.HasPrefix(r.URL.Path, "/loki/api/v1/labels"):
-				n := labelPolls.Add(1)
-				if n == 1 {
-					encodeLabels(w, allLabels)
-					return
-				}
-				// Drop to a partial set (5 of 9 keys).
-				encodeLabels(w, allLabels[:5])
-			case strings.HasPrefix(r.URL.Path, "/loki/api/v1/series"):
-				n := seriesPolls.Add(1)
-				if n == 1 {
-					encodeSeries(w, seriesSet(13))
-					return
-				}
-				// Drop well below the 12-threshold.
-				encodeSeries(w, seriesSet(7))
-			default:
-				http.NotFound(w, r)
-			}
-		}
-		if err := runSettle(t, handler, streams); err != nil {
-			t.Fatalf("expected latch to hold across regression, got: %v", err)
-		}
-	})
-
-	t.Run("both_empty_entire_window_times_out", func(t *testing.T) {
-		// Worst-case shape: Loki never indexes anything. Both
-		// endpoints return empty forever. The gate must time out
-		// with a diagnostic error string that pinpoints the failure
-		// mode — operators rely on the labels_latched / series_latched
-		// + labels_now/series_now counters to root-cause a stuck
-		// harness from a single log line.
-		streams := fixtureStreams()
-		handler := func(w http.ResponseWriter, r *http.Request) {
-			switch {
-			case strings.HasPrefix(r.URL.Path, "/loki/api/v1/labels"):
-				encodeLabels(w, []string{})
-			case strings.HasPrefix(r.URL.Path, "/loki/api/v1/series"):
-				encodeSeries(w, []map[string]string{})
-			default:
-				http.NotFound(w, r)
-			}
-		}
-		err := runSettle(t, handler, streams)
-		if err == nil {
-			t.Fatalf("expected timeout when both sides stay empty, got nil")
+			t.Fatalf("expected timeout when counters match baseline, got nil")
 		}
 		for _, want := range []string{
-			"labels_latched=false",
-			"series_latched=false",
-			"labels_now=0/9",
-			"series_now=0/13",
+			"chunks_flushed=50→50",
+			"needed_delta=13",
+			"shipper_uploads=3→3",
 		} {
-			if !strings.Contains(err.Error(), want) {
+			if !contains(err.Error(), want) {
 				t.Fatalf("timeout error missing diagnostic %q in: %v", want, err)
 			}
 		}
 	})
+
+	t.Run("shipper_upload_required", func(t *testing.T) {
+		// Chunks flushed past baseline + queue drained, but the TSDB
+		// shipper has not yet uploaded. /query_range would race the
+		// index publication — the gate must wait.
+		baseline := lokiMetricsSnapshot{chunksFlushed: 0, shipperUploads: 5}
+		handler := func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/metrics" {
+				http.NotFound(w, r)
+				return
+			}
+			_, _ = w.Write([]byte(buildMetricsBody(0, 0, expectedStreams+10, 5)))
+		}
+		err := runSettle(t, handler, baseline)
+		if err == nil {
+			t.Fatalf("expected timeout when shipper upload counter hasn't moved, got nil")
+		}
+	})
+
+	t.Run("missing_required_metric_errors", func(t *testing.T) {
+		// Loki upstream rename / regression: the `flush_queue_length`
+		// gauge is missing entirely. The gate must surface this as a
+		// structured error rather than treat the missing value as
+		// zero (which would silently flip to "settled").
+		baseline := lokiMetricsSnapshot{}
+		handler := func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/metrics" {
+				http.NotFound(w, r)
+				return
+			}
+			body := `# HELP loki_ingester_memory_chunks unused
+# TYPE loki_ingester_memory_chunks gauge
+loki_ingester_memory_chunks 0
+# HELP loki_ingester_chunks_flushed_total unused
+# TYPE loki_ingester_chunks_flushed_total counter
+loki_ingester_chunks_flushed_total{reason="forced"} 13
+`
+			_, _ = w.Write([]byte(body))
+		}
+		err := runSettle(t, handler, baseline)
+		if err == nil {
+			t.Fatalf("expected error when required metric is missing, got nil")
+		}
+		if !contains(err.Error(), "loki_ingester_flush_queue_length") {
+			t.Fatalf("expected error to name the missing metric, got: %v", err)
+		}
+		if !contains(err.Error(), "upstream rename") {
+			t.Fatalf("expected error to mention upstream-rename rationale, got: %v", err)
+		}
+	})
+
+	t.Run("metrics_endpoint_unreachable_times_out_with_last_err", func(t *testing.T) {
+		// /metrics always 500s — gate times out and the error carries
+		// the last underlying HTTP failure for diagnostics.
+		baseline := lokiMetricsSnapshot{}
+		handler := func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "boom", http.StatusInternalServerError)
+		}
+		err := runSettle(t, handler, baseline)
+		if err == nil {
+			t.Fatalf("expected timeout when /metrics is unreachable, got nil")
+		}
+		if !contains(err.Error(), "status 500") {
+			t.Fatalf("expected timeout error to mention HTTP status, got: %v", err)
+		}
+	})
+}
+
+// TestParsePromMetrics pins the parser shape so a future Loki version
+// emitting exemplars / a histogram extension doesn't silently break the
+// settle gate.
+func TestParsePromMetrics(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`# HELP foo unused
+# TYPE foo counter
+foo 1
+foo{bar="baz"} 2
+
+# blank line above must not break the parse
+loki_ingester_flush_queue_length 0
+loki_ingester_chunks_flushed_total{reason="forced"} 23
+loki_ingester_chunks_flushed_total{reason="full"} 7
+loki_tsdb_shipper_tables_upload_operation_total{component="x",status="success"} 5
+malformed_no_value
+loki_ingester_checkpoint_duration_seconds{quantile="0.5"} NaN
+`)
+	got := parsePromMetrics(body)
+
+	wantPresent := []string{
+		"foo",
+		`foo{bar="baz"}`,
+		"loki_ingester_flush_queue_length",
+		`loki_ingester_chunks_flushed_total{reason="forced"}`,
+		`loki_ingester_chunks_flushed_total{reason="full"}`,
+		`loki_tsdb_shipper_tables_upload_operation_total{component="x",status="success"}`,
+	}
+	for _, k := range wantPresent {
+		if _, ok := got[k]; !ok {
+			t.Errorf("expected parser to surface %q, got keys: %v", k, mapKeys(got))
+		}
+	}
+	if _, ok := got["malformed_no_value"]; ok {
+		t.Errorf("expected malformed line to be dropped silently, but it parsed")
+	}
+
+	// sumMatching must collapse the family across `reason` labels.
+	gotFlushed := sumMatching(got, "loki_ingester_chunks_flushed_total")
+	if gotFlushed != 30 { // 23 + 7
+		t.Errorf("sumMatching(chunks_flushed_total) = %v, want 30", gotFlushed)
+	}
+
+	// The targeted-label-set form must match only the success row.
+	gotUpload := sumMatching(got, `loki_tsdb_shipper_tables_upload_operation_total{component="x",status="success"`)
+	if gotUpload != 5 {
+		t.Errorf("sumMatching(tables_upload_operation success-only) = %v, want 5", gotUpload)
+	}
+}
+
+// TestExtractSnapshot pins the baseline-decoder contract.
+func TestExtractSnapshot(t *testing.T) {
+	t.Parallel()
+
+	metrics := map[string]float64{
+		`loki_ingester_chunks_flushed_total{reason="forced"}`:                             11,
+		`loki_ingester_chunks_flushed_total{reason="full"}`:                               2,
+		`loki_tsdb_shipper_tables_upload_operation_total{component="x",status="success"}`: 4,
+		`loki_tsdb_shipper_tables_upload_operation_total{component="x",status="failure"}`: 1,
+		`loki_ingester_flush_queue_length`:                                                0,
+	}
+	snap := extractSnapshot(metrics)
+	if snap.chunksFlushed != 13 {
+		t.Errorf("chunksFlushed = %v, want 13", snap.chunksFlushed)
+	}
+	// Only the status="success" row should be in the upload total —
+	// the status="failure" row matters for an alerting metric but not
+	// for "did the index publish".
+	if snap.shipperUploads != 4 {
+		t.Errorf("shipperUploads = %v, want 4 (success-only)", snap.shipperUploads)
+	}
+}
+
+// contains is a tiny helper kept local so the test file has no
+// dependency on strings.Contains' import.
+func contains(haystack, needle string) bool {
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		if haystack[i:i+len(needle)] == needle {
+			return true
+		}
+	}
+	return false
+}
+
+func mapKeys(m map[string]float64) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }
