@@ -53,6 +53,12 @@
 #   DRIVER_PARALLELISM  -parallelism flag (default: 8).
 #   DRIVER_OVERLAY      Path to cerberus-test-queries.yml overlay; default
 #                       resolves the in-tree file beside this script.
+#   DRIVER_SKIP_BASELINE
+#                       Path to the upstream `skip: true` baseline file
+#                       (default: $ROOT_DIR/upstream-skip-baseline.txt).
+#                       When set, the driver asserts the upstream YAML's
+#                       skipped set matches this file; drift is a hard
+#                       error (sanity rail per task #269).
 
 set -eu -o pipefail
 
@@ -67,6 +73,7 @@ TOLERANCE=${DRIVER_TOLERANCE:-1e-5}
 RANGE_TYPE=${DRIVER_RANGE_TYPE:-range}
 PARALLELISM=${DRIVER_PARALLELISM:-8}
 OVERLAY=${DRIVER_OVERLAY:-"$ROOT_DIR/cerberus-test-queries.yml"}
+SKIP_BASELINE=${DRIVER_SKIP_BASELINE:-"$ROOT_DIR/upstream-skip-baseline.txt"}
 
 DRIVER_BIN=$(mktemp -t cerberus-loki-tester.XXXXXX)
 
@@ -134,6 +141,7 @@ set +e
     -corpus="$ROOT_DIR/upstream/loki-bench/queries" \
     -metadata-dir="$ROOT_DIR" \
     -overlay="$OVERLAY" \
+    -skip-baseline="$SKIP_BASELINE" \
     -report="$REPORT" \
     -score="$SCORE" \
     -tolerance="$TOLERANCE" \
