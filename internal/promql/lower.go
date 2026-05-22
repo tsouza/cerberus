@@ -172,6 +172,8 @@ func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCt
 	var companionValueColumn string
 	var bucketSuffixed string
 	var bucketLeMatchers []*labels.Matcher
+	var companionSuffixed string
+	var companionBare string
 	if bareBucket, ok := isClassicBucketSelector(metricName, s); ok {
 		tables = []string{s.HistogramTable}
 		bucketSuffixed = metricName
@@ -179,9 +181,53 @@ func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCt
 		scanMatchers, bucketLeMatchers = splitBucketMatchers(matchers, bareBucket)
 		matchers = scanMatchers
 	} else if bare, col, ok := s.HistogramCompanionColumn(metricName); ok && s.HistogramTable != "" {
+		// `<base>_count` / `<base>_sum` — a classic-histogram companion
+		// suffix. Two physical layouts may carry the matching rows:
+		//
+		//   1. The OTel-CH histogram exporter writes Count/Sum as
+		//      columns on a single row keyed by the BARE `<base>` name
+		//      in the histogram table.
+		//   2. The OTel-hostmetrics / sqlquery emitters write the
+		//      suffixed name (`system_cpu_logical_count`,
+		//      `system_processes_count`, `system_filesystem_inodes_count`,
+		//      `system_processes_created_count`, …) as a cumulative Sum
+		//      under the suffixed name in the sum table.
+		//
+		// When Sum is configured and distinct from Histogram, fan the
+		// scan across both layouts via a UnionAll of per-arm Projects.
+		// Each arm bakes its own MetricName filter so the union arms
+		// hold disjoint row sets by construction. The non-MetricName
+		// matchers (attribute / service equality / regex matchers) are
+		// applied inside each arm so the optimizer's PREWHERE promotion
+		// path still sees a Filter-over-Scan shape per arm.
+		//
+		// `companionValueColumn` / `companionSuffixed` / `companionBare`
+		// drive the per-arm Project-shape decision below. When the union
+		// path doesn't apply (no Sum table configured, or Sum equals
+		// Histogram by config), fall back to the single-arm histogram
+		// projection — same shape as before this multi-table fan-out.
 		tables = []string{s.HistogramTable}
-		matchers = rewriteMetricName(matchers, bare)
 		companionValueColumn = col
+		companionSuffixed = metricName
+		companionBare = bare
+		// The single-arm fallback rewrites matchers in-place to the bare
+		// name so the legacy histogram-companion-only emit shape stays
+		// byte-stable for deployments without a separate Sum table.
+		if s.SumTable == "" || s.SumTable == s.HistogramTable {
+			matchers = rewriteMetricName(matchers, bare)
+		}
+	}
+
+	// Multi-arm companion union: when both histogram + sum tables are
+	// in play for a `_count` / `_sum` selector, hand off to the
+	// dedicated builder which assembles the per-arm Projects, stitches
+	// them with chplan.UnionAll, and wraps the union with the right
+	// LWR / range-vector shape for ctx.
+	if needCompanionUnion(s, companionValueColumn, companionSuffixed, companionBare) {
+		return lowerCompanionUnion(
+			v, s, ctx, matchers,
+			companionBare, companionSuffixed, companionValueColumn,
+		)
 	}
 
 	scan := scanFromTables(tables)
@@ -343,6 +389,150 @@ func wrapHistogramCompanionProject(scan *chplan.Scan, sourceColumn string, s sch
 				},
 				Alias: s.ValueColumn,
 			},
+		},
+	}
+}
+
+// needCompanionUnion reports whether the classic-histogram-companion
+// multi-arm UnionAll lowering applies. All five guards must hold:
+// (1) the lowering identified a companion-suffix metric (non-empty
+// `companionValueColumn`); (2) the suffixed user-visible name is
+// non-empty (the histogram-arm Project synthesises it as a literal);
+// (3) the bare base name is non-empty (the histogram-arm filter
+// targets it); (4) a Sum table is configured; (5) the Sum table is
+// physically distinct from the Histogram table so the two arms read
+// from different physical layouts. Any miss falls through to the
+// single-arm histogram emit path that PR #710 already covers.
+func needCompanionUnion(s schema.Metrics, companionValueColumn, companionSuffixed, companionBare string) bool {
+	if companionValueColumn == "" || companionSuffixed == "" || companionBare == "" {
+		return false
+	}
+	if s.SumTable == "" || s.SumTable == s.HistogramTable {
+		return false
+	}
+	return true
+}
+
+// lowerCompanionUnion builds the chplan subtree for a
+// `<base>_count` / `<base>_sum` selector that resolves against both
+// the histogram + sum tables. The output mirrors the surrounding
+// lowering's wrap shape (LWR for instant queries, range-mode pivot
+// for query_range, identity passthrough for nested range-vector
+// callers) so the union plugs into the broader pipeline transparently.
+//
+// MetricName + non-MetricName matchers are baked into each per-arm
+// Filter — the outer pred passed to wrapRange* / wrapInstant* is nil
+// because the arm-level Filters already narrowed every relevant row.
+func lowerCompanionUnion(
+	v *parser.VectorSelector, s schema.Metrics, ctx lowerCtx,
+	matchers []*labels.Matcher,
+	bareName, suffixedName, sourceColumn string,
+) (chplan.Node, error) {
+	histArm := buildHistogramCompanionArm(s, matchers, bareName, suffixedName, sourceColumn)
+	sumArm := buildSumCompanionArm(s, matchers, suffixedName)
+	selectorInput := chplan.Node(&chplan.UnionAll{Inputs: []chplan.Node{histArm, sumArm}})
+	anchor, err := selectorAnchor(v, ctx)
+	if err != nil {
+		return nil, err
+	}
+	selectorInput = augmentSelectorAttributes(selectorInput, ctx, s)
+	if ctx.inRangeVector {
+		// Nested range-vector consumer (rate / *_over_time / subquery):
+		// the surrounding RangeWindow owns the per-window aggregation.
+		// The `@`/offset modifier still pins a per-step time bound — we
+		// add it as a thin Filter on top of the canonical Sample shape
+		// the union produces. Absent a modifier the union flows through
+		// unchanged.
+		if hasModifier(v) {
+			timeBound := timeBoundExpr(s.TimestampColumn, anchor)
+			return &chplan.Filter{Input: selectorInput, Predicate: timeBound}, nil
+		}
+		return selectorInput, nil
+	}
+	if ctx.step > 0 && !ctx.start.IsZero() && !ctx.end.IsZero() {
+		if hasAbsoluteAt(v) {
+			return wrapRangeAbsoluteAtBroadcast(selectorInput, nil, anchor, ctx, s), nil
+		}
+		return wrapRangeLatestPerSeries(selectorInput, nil, anchor, ctx, s), nil
+	}
+	return wrapInstantLatestPerSeries(selectorInput, nil, anchor, s), nil
+}
+
+// buildHistogramCompanionArm assembles the histogram-table arm of the
+// classic-histogram-companion UnionAll. The arm scans the histogram
+// table with the MetricName filter rewritten to the BARE base name
+// (the OTel-CH histogram row keyed by `<base>`), projects the
+// companion column (Count or Sum) as the canonical `Value`, and
+// synthesises `MetricName` as the SUFFIXED user-visible name so the
+// downstream pipeline (LWR / range-vector / matrix pivot) sees a
+// uniform `MetricName = '<base>_count'` / `'<base>_sum'` label across
+// both arms of the union.
+//
+// Non-MetricName matchers (attribute / service / regex matchers the
+// user wrote alongside `__name__`) flow through unchanged so the arm's
+// scan-side Filter still narrows on every other matcher. The bare
+// `__name__` rewrite is local to this arm — the sum arm
+// (`buildSumCompanionArm`) sees the suffixed name in matcher form.
+func buildHistogramCompanionArm(
+	s schema.Metrics, matchers []*labels.Matcher,
+	bareName, suffixedName, sourceColumn string,
+) chplan.Node {
+	armMatchers := rewriteMetricName(matchers, bareName)
+	scan := &chplan.Scan{Table: s.HistogramTable}
+	var armInput chplan.Node = scan
+	if pred := buildPredicate(armMatchers, s); pred != nil {
+		armInput = &chplan.Filter{Input: scan, Predicate: pred}
+	}
+	return &chplan.Project{
+		Input: armInput,
+		Projections: []chplan.Projection{
+			{Expr: &chplan.LitString{V: suffixedName}, Alias: s.MetricNameColumn},
+			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
+			{
+				Expr: &chplan.FuncCall{
+					Name: "toFloat64",
+					Args: []chplan.Expr{&chplan.ColumnRef{Name: sourceColumn}},
+				},
+				Alias: s.ValueColumn,
+			},
+		},
+	}
+}
+
+// buildSumCompanionArm assembles the sum-table arm of the
+// classic-histogram-companion UnionAll. The arm scans the sum table
+// with the MetricName filter kept on the SUFFIXED user-visible name
+// (`system_cpu_logical_count`, `system_processes_count`, etc. — the
+// shape OTel-hostmetrics emits for these counters) and projects the
+// canonical Sample-row quadruple directly. The Value column is
+// already `Float64` on the sum table, so no `toFloat64` cast is
+// required (the histogram arm needs the cast because its Count column
+// is UInt64).
+func buildSumCompanionArm(
+	s schema.Metrics, matchers []*labels.Matcher, suffixedName string,
+) chplan.Node {
+	// Defensive: thread the suffixed name back through rewriteMetricName
+	// so any non-Equal `__name__` matchers in the input list (regex
+	// alternations etc.) flow unchanged and only the canonical
+	// `__name__ = <suffixed>` literal is normalised. The lowering's
+	// metricNameFromMatchers contract already pinned the suffixed name
+	// as the canonical Equal matcher, so this is a no-op for the
+	// production input shape but the helper stays robust against
+	// alternate matcher shapes upstream callers might thread in.
+	armMatchers := rewriteMetricName(matchers, suffixedName)
+	scan := &chplan.Scan{Table: s.SumTable}
+	var armInput chplan.Node = scan
+	if pred := buildPredicate(armMatchers, s); pred != nil {
+		armInput = &chplan.Filter{Input: scan, Predicate: pred}
+	}
+	return &chplan.Project{
+		Input: armInput,
+		Projections: []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
+			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
+			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
 		},
 	}
 }

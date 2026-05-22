@@ -67,6 +67,11 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		fmt.Fprintf(b, "%sCrossJoin\n", indent)
 		printNode(b, v.Left, depth+1)
 		printNode(b, v.Right, depth+1)
+	case *chplan.UnionAll:
+		fmt.Fprintf(b, "%sUnionAll arms=%d\n", indent, len(v.Inputs))
+		for _, in := range v.Inputs {
+			printNode(b, in, depth+1)
+		}
 	case *chplan.Filter:
 		fmt.Fprintf(b, "%sFilter predicate=%s\n", indent, printExpr(v.Predicate))
 		printNode(b, v.Input, depth+1)

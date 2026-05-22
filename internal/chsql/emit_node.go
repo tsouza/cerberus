@@ -179,6 +179,38 @@ func (e *emitter) emitStepGrid(g *chplan.StepGrid) error {
 // `_cerb_n` on the right; the outer Filter reads both by bare name
 // (no collision), so the L/R aliases are inert beyond satisfying
 // the parser invariant.
+// emitUnionAll renders an N-way UNION ALL of the per-arm subtrees.
+// Every arm renders via subqueryFrag so the per-arm SELECT lands inside
+// parentheses (matching ClickHouse's `(SELECT …) UNION ALL (SELECT …)`
+// shape), with arg-binding positions preserved across the union by the
+// recursive subquery emit. The arms are emitted in stable left-to-right
+// order so the byte-stream matches the chplan IR snapshot's ordering.
+//
+// Zero arms is a programmer error (the lowering should never produce a
+// UnionAll with no inputs); a single arm renders as just that arm's
+// parenthesised subquery — the `UNION ALL` keyword is omitted because
+// CH parses a bare `(SELECT …)` as a valid SELECT statement (matches
+// chsql.UnionAll's Frag-level behaviour for the same shape).
+//
+// Used by the PromQL classic-histogram companion-suffix routing
+// (internal/promql/lower.go) to fan a `_count` / `_sum` selector
+// across the histogram + sum tables when both physical layouts may
+// hold matching rows. See chplan.UnionAll for the structural contract.
+func (e *emitter) emitUnionAll(u *chplan.UnionAll) error {
+	if len(u.Inputs) == 0 {
+		return fmt.Errorf("%w: UnionAll has no inputs", ErrUnsupported)
+	}
+	for i, in := range u.Inputs {
+		if i > 0 {
+			e.b.WriteString(" UNION ALL ")
+		}
+		if err := e.emitSubquery(in); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (e *emitter) emitCrossJoin(j *chplan.CrossJoin) error {
 	leftSub, err := e.subqueryFrag(j.Left)
 	if err != nil {

@@ -2004,3 +2004,103 @@ func TestMetricsHistogramOverTime_Equal_InnerNilBoth(t *testing.T) {
 		t.Errorf("both Inner nil with equal sibling fields should be Equal")
 	}
 }
+
+func TestUnionAll_Equal_Positive(t *testing.T) {
+	t.Parallel()
+	build := func() *chplan.UnionAll {
+		return &chplan.UnionAll{
+			Inputs: []chplan.Node{
+				&chplan.Scan{Table: "otel_metrics_histogram"},
+				&chplan.Scan{Table: "otel_metrics_sum"},
+			},
+		}
+	}
+	if !build().Equal(build()) {
+		t.Fatalf("identical UnionAll trees should be Equal")
+	}
+}
+
+func TestUnionAll_Equal_Negative_InputsLen(t *testing.T) {
+	t.Parallel()
+	a := &chplan.UnionAll{
+		Inputs: []chplan.Node{
+			&chplan.Scan{Table: "a"},
+			&chplan.Scan{Table: "b"},
+		},
+	}
+	b := &chplan.UnionAll{
+		Inputs: []chplan.Node{&chplan.Scan{Table: "a"}},
+	}
+	if a.Equal(b) {
+		t.Errorf("different Inputs length should not be Equal")
+	}
+}
+
+func TestUnionAll_Equal_Negative_InputContent(t *testing.T) {
+	t.Parallel()
+	a := &chplan.UnionAll{
+		Inputs: []chplan.Node{
+			&chplan.Scan{Table: "x"},
+			&chplan.Scan{Table: "y"},
+		},
+	}
+	b := &chplan.UnionAll{
+		Inputs: []chplan.Node{
+			&chplan.Scan{Table: "x"},
+			&chplan.Scan{Table: "z"},
+		},
+	}
+	if a.Equal(b) {
+		t.Errorf("differing per-arm subtree should not be Equal")
+	}
+}
+
+func TestUnionAll_Equal_Negative_InputOrder(t *testing.T) {
+	t.Parallel()
+	a := &chplan.UnionAll{
+		Inputs: []chplan.Node{
+			&chplan.Scan{Table: "a"},
+			&chplan.Scan{Table: "b"},
+		},
+	}
+	b := &chplan.UnionAll{
+		Inputs: []chplan.Node{
+			&chplan.Scan{Table: "b"},
+			&chplan.Scan{Table: "a"},
+		},
+	}
+	// Equal is positional — the emitted SQL byte-stream is
+	// order-sensitive even though UNION ALL is set-multiset
+	// commutative, so the Equal contract reflects the emit order.
+	if a.Equal(b) {
+		t.Errorf("differing per-arm order should not be Equal under positional semantics")
+	}
+}
+
+func TestUnionAll_Equal_Negative_OtherType(t *testing.T) {
+	t.Parallel()
+	u := &chplan.UnionAll{Inputs: []chplan.Node{&chplan.Scan{Table: "a"}}}
+	other := &chplan.Scan{Table: "a"}
+	if u.Equal(other) {
+		t.Errorf("UnionAll.Equal must reject non-UnionAll node types")
+	}
+}
+
+func TestUnionAll_Children_ReturnsCopy(t *testing.T) {
+	t.Parallel()
+	inner := &chplan.Scan{Table: "a"}
+	u := &chplan.UnionAll{Inputs: []chplan.Node{inner, &chplan.Scan{Table: "b"}}}
+	children := u.Children()
+	if len(children) != 2 {
+		t.Fatalf("Children() len = %d; want 2", len(children))
+	}
+	if children[0] != inner {
+		t.Errorf("Children()[0] should preserve the underlying node identity")
+	}
+	// Mutating the returned slice must not bleed back into the
+	// UnionAll's Inputs.
+	children[0] = &chplan.Scan{Table: "tampered"}
+	if u.Inputs[0] != inner {
+		t.Errorf("Children() must return a copy, not the underlying slice")
+	}
+}

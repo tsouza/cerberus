@@ -104,6 +104,8 @@ func (e *emitter) emitNode(n chplan.Node) error {
 		return e.emitCrossJoin(v)
 	case *chplan.SetOperation:
 		return e.emitSetOperation(v)
+	case *chplan.UnionAll:
+		return e.emitUnionAll(v)
 	default:
 		return fmt.Errorf("%w: node %T", ErrUnsupported, n)
 	}

@@ -11,62 +11,86 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
-// TestLower_HistogramCompanion_RoutesToHistogramTable pins the
+// TestLower_HistogramCompanion_RoutesToHistogramAndSumUnion pins the
 // classic-histogram `_count` / `_sum` companion-suffix rewrite at the
-// lowering layer.
+// lowering layer. The fix landed in two phases:
+//
+//  1. PR #710 — added the histogram-arm projection that aliases
+//     `toFloat64(Count)` / `toFloat64(Sum)` as `Value` so the
+//     downstream Sample-row contract holds.
+//  2. (this follow-up) — added the sum-arm so OTel-hostmetrics
+//     counters that ship under suffixed names
+//     (`system_cpu_logical_count`, `system_processes_count`,
+//     `system_filesystem_inodes_count`,
+//     `system_processes_created_count`, …) resolve too. The lowering
+//     now emits a chplan.UnionAll over both physical layouts.
 //
 // The OTel-CH histogram exporter writes a single row per observation
 // under the BARE metric name (`<X>`), carrying parallel Count + Sum +
 // BucketCounts + ExplicitBounds columns. Prometheus convention
 // surfaces the same histogram as three companion series — `<X>_bucket`
 // (handled by stripBucketSuffix → PR #637), `<X>_count`, `<X>_sum`.
-// Without this rewrite, a Grafana panel querying `rate(<X>_count[5m])`
-// emitted `MetricName='<X>_count'` against the sum table and silently
-// returned "No data".
+// The OTel-hostmetrics receiver, in parallel, emits cumulative
+// counters under suffixed names (`system_cpu_logical_count`) directly
+// in the sum table — no histogram row exists for those.
 //
-// The rewrite:
+// The rewrite assembles a two-arm UnionAll:
 //
-//  1. Routes the Scan to schema.Metrics.HistogramTable
-//     (`otel_metrics_histogram`), not SumTable.
-//  2. Strips the `_count` / `_sum` suffix off the `__name__` matcher so
-//     the WHERE clause resolves against the BARE name.
-//  3. Wraps the Scan in a Project that aliases `toFloat64(Count)` /
-//     `toFloat64(Sum)` as `Value`, so the downstream Sample-row
-//     contract (and the RangeWindow / LWR / arithmetic pipeline above
-//     it) reads through unchanged.
+//   - histogram arm: Scan(otel_metrics_histogram) → Filter MetricName
+//     = '<bare>' → Project [MetricName='<suffixed>' (literal),
+//     Attributes, TimeUnix, Value=toFloat64(Count|Sum)].
+//   - sum arm:       Scan(otel_metrics_sum) → Filter MetricName =
+//     '<suffixed>' → Project [MetricName, Attributes, TimeUnix, Value].
 //
 // The test exercises the canonical Grafana shape `rate(<X>_count[5m])`
-// — the user-visible bug surface — and asserts the emitted plan
-// targets the histogram table with the bare metric name.
-func TestLower_HistogramCompanion_RoutesToHistogramTable(t *testing.T) {
+// — the user-visible bug surface — and asserts the emitted plan has
+// the right per-arm shape.
+func TestLower_HistogramCompanion_RoutesToHistogramAndSumUnion(t *testing.T) {
 	t.Parallel()
 	s := schema.DefaultOTelMetrics()
 	p := parser.NewParser(parser.Options{})
 
 	cases := []struct {
-		name       string
-		query      string
-		wantColumn string // expected source column inside toFloat64(...)
+		name         string
+		query        string
+		bareName     string
+		suffixedName string
+		wantColumn   string // expected source column inside toFloat64(...) on histogram arm
 	}{
 		{
-			name:       "rate_count",
-			query:      `rate(http_server_request_duration_count[5m])`,
-			wantColumn: s.CountColumn,
+			name:         "rate_count",
+			query:        `rate(http_server_request_duration_count[5m])`,
+			bareName:     "http_server_request_duration",
+			suffixedName: "http_server_request_duration_count",
+			wantColumn:   s.CountColumn,
 		},
 		{
-			name:       "rate_sum",
-			query:      `rate(http_server_request_duration_sum[5m])`,
-			wantColumn: s.SumColumn,
+			name:         "rate_sum",
+			query:        `rate(http_server_request_duration_sum[5m])`,
+			bareName:     "http_server_request_duration",
+			suffixedName: "http_server_request_duration_sum",
+			wantColumn:   s.SumColumn,
 		},
 		{
-			name:       "bare_count_selector_with_lwr_wrap",
-			query:      `http_server_request_duration_count`,
-			wantColumn: s.CountColumn,
+			name:         "bare_count_selector_with_lwr_wrap",
+			query:        `http_server_request_duration_count`,
+			bareName:     "http_server_request_duration",
+			suffixedName: "http_server_request_duration_count",
+			wantColumn:   s.CountColumn,
 		},
 		{
-			name:       "bare_sum_selector_with_lwr_wrap",
-			query:      `http_server_request_duration_sum`,
-			wantColumn: s.SumColumn,
+			name:         "bare_sum_selector_with_lwr_wrap",
+			query:        `http_server_request_duration_sum`,
+			bareName:     "http_server_request_duration",
+			suffixedName: "http_server_request_duration_sum",
+			wantColumn:   s.SumColumn,
+		},
+		{
+			name:         "hostmetrics_logical_count",
+			query:        `system_cpu_logical_count`,
+			bareName:     "system_cpu_logical",
+			suffixedName: "system_cpu_logical_count",
+			wantColumn:   s.CountColumn,
 		},
 	}
 
@@ -84,41 +108,49 @@ func TestLower_HistogramCompanion_RoutesToHistogramTable(t *testing.T) {
 				t.Fatalf("Lower(%q): %v", tc.query, err)
 			}
 
-			// Walk the plan tree to find the Scan node. There must be
-			// exactly one and it must target the histogram table.
+			// Walk the plan tree to find Scan nodes. The companion
+			// union emits two: one against the histogram table, one
+			// against the sum table.
 			scans := collectScans(plan)
-			if len(scans) != 1 {
-				t.Fatalf("want 1 Scan node, got %d", len(scans))
+			if len(scans) != 2 {
+				t.Fatalf("want 2 Scan nodes (histogram + sum union), got %d", len(scans))
 			}
-			if scans[0].Table != s.HistogramTable {
-				t.Fatalf("Scan.Table = %q; want %q (histogram table)",
-					scans[0].Table, s.HistogramTable)
-			}
-
-			// The companion Project must wrap the Scan so the downstream
-			// pipeline sees a synthesised `Value` column. Find the
-			// Project whose Input is the Scan and assert its `Value`
-			// projection casts the right source column.
-			project := findCompanionProject(plan, scans[0])
-			if project == nil {
-				t.Fatalf("want a Project whose Input is the Scan and which projects toFloat64(%s) AS %s; got none",
-					tc.wantColumn, s.ValueColumn)
-			}
-			if !projectAliasesValue(project, tc.wantColumn, s.ValueColumn) {
-				t.Fatalf("companion Project does not alias toFloat64(%s) AS %s; projections=%+v",
-					tc.wantColumn, s.ValueColumn, project.Projections)
+			tables := []string{scans[0].Table, scans[1].Table}
+			if tables[0] != s.HistogramTable || tables[1] != s.SumTable {
+				t.Fatalf("Scan tables = %v; want [%q, %q]",
+					tables, s.HistogramTable, s.SumTable)
 			}
 
-			// The filter (or scan, when no matchers) must reference the
-			// BARE metric name — i.e. with the `_count` / `_sum` suffix
-			// stripped. Walk the tree for Binary nodes comparing
-			// MetricName and assert the literal is the bare name.
-			if !planReferencesMetricName(plan, "http_server_request_duration") {
-				t.Fatalf("plan does not filter on bare MetricName='http_server_request_duration'")
+			// The histogram-arm Project must alias the right source
+			// column (Count or Sum) as `Value`.
+			histProject := findCompanionProject(plan, scans[0])
+			if histProject == nil {
+				t.Fatalf("histogram arm: want Project over Scan(%s); got none",
+					s.HistogramTable)
 			}
-			if planReferencesMetricName(plan, "http_server_request_duration_count") ||
-				planReferencesMetricName(plan, "http_server_request_duration_sum") {
-				t.Fatalf("plan still references the suffixed MetricName — rewrite did not strip the suffix")
+			if !projectAliasesValue(histProject, tc.wantColumn, s.ValueColumn) {
+				t.Fatalf("histogram arm Project does not alias toFloat64(%s) AS %s; projections=%+v",
+					tc.wantColumn, s.ValueColumn, histProject.Projections)
+			}
+
+			// The sum-arm Project must pass `Value` through unchanged.
+			sumProject := findCompanionProject(plan, scans[1])
+			if sumProject == nil {
+				t.Fatalf("sum arm: want Project over Scan(%s); got none", s.SumTable)
+			}
+			if !projectPassesValue(sumProject, s.ValueColumn) {
+				t.Fatalf("sum arm Project does not pass %s through unchanged; projections=%+v",
+					s.ValueColumn, sumProject.Projections)
+			}
+
+			// Both arm-level filters must reference their own
+			// MetricName literal: the histogram arm reads the BARE
+			// name; the sum arm reads the SUFFIXED name.
+			if !planReferencesMetricName(plan, tc.bareName) {
+				t.Fatalf("plan does not filter on bare MetricName=%q (histogram arm)", tc.bareName)
+			}
+			if !planReferencesMetricName(plan, tc.suffixedName) {
+				t.Fatalf("plan does not filter on suffixed MetricName=%q (sum arm)", tc.suffixedName)
 			}
 		})
 	}
@@ -206,9 +238,11 @@ func collectScans(n chplan.Node) []*chplan.Scan {
 	return out
 }
 
-// findCompanionProject locates the Project node whose Input is the
-// supplied Scan. Returns nil when the Scan flows into the downstream
-// pipeline directly (the non-companion path).
+// findCompanionProject locates the Project node sitting above the
+// supplied Scan in the plan tree, walking past any intervening
+// Filter (the per-arm scan-side MetricName / matcher Filter the
+// companion-union arms emit). Returns nil when no Project sits above
+// the Scan along this Filter? → Project chain.
 func findCompanionProject(root chplan.Node, scan *chplan.Scan) *chplan.Project {
 	var found *chplan.Project
 	var walk func(chplan.Node)
@@ -217,7 +251,7 @@ func findCompanionProject(root chplan.Node, scan *chplan.Scan) *chplan.Project {
 			return
 		}
 		if p, ok := node.(*chplan.Project); ok {
-			if p.Input == scan {
+			if projectInputReachesScan(p.Input, scan) {
 				found = p
 				return
 			}
@@ -228,6 +262,49 @@ func findCompanionProject(root chplan.Node, scan *chplan.Scan) *chplan.Project {
 	}
 	walk(root)
 	return found
+}
+
+// projectInputReachesScan reports whether `input` is `scan` directly,
+// or a Filter whose Input chain bottoms out on `scan`. Used by
+// findCompanionProject to span the Project → Filter → Scan shape the
+// per-arm companion union emits when the matcher list carries
+// non-MetricName matchers (or even just the rewritten `MetricName=`
+// matcher — every arm always wraps the Scan in a Filter for the bare /
+// suffixed name predicate).
+func projectInputReachesScan(input chplan.Node, scan *chplan.Scan) bool {
+	for input != nil {
+		if input == scan {
+			return true
+		}
+		f, ok := input.(*chplan.Filter)
+		if !ok {
+			return false
+		}
+		input = f.Input
+	}
+	return false
+}
+
+// projectPassesValue reports whether the supplied Project has a
+// projection that reads `<valueAlias>` (a bare ColumnRef) under the
+// same alias — i.e. the sum-arm shape that passes the canonical
+// `Value` column through without casting. The histogram arm uses
+// `projectAliasesValue` instead because its source column is
+// `Count` / `Sum` and requires a `toFloat64` cast.
+func projectPassesValue(p *chplan.Project, valueAlias string) bool {
+	for _, proj := range p.Projections {
+		if proj.Alias != valueAlias {
+			continue
+		}
+		col, ok := proj.Expr.(*chplan.ColumnRef)
+		if !ok {
+			continue
+		}
+		if col.Name == valueAlias {
+			return true
+		}
+	}
+	return false
 }
 
 // projectAliasesValue reports whether the supplied Project has a
