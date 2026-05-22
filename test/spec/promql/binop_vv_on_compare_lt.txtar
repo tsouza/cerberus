@@ -1,3 +1,7 @@
+# empty: vector-vs-vector `<` joined on identical label sets compares
+# each series against itself, so the strict less-than yields no true
+# samples — every join pair has lhs == rhs.
+
 -- query.promql --
 demo_memory_usage_bytes < on(instance, job, type) demo_memory_usage_bytes
 -- seed --

@@ -1,3 +1,7 @@
+# empty: seeded spans all carry service.name in {backend, db, cache};
+# the resource.service.name = "frontend" matcher selects zero traces,
+# so the count() > 0 trace-level filter drops every candidate.
+
 -- query.traceql --
 { resource.service.name = "frontend" } | count() > 0
 -- seed --
