@@ -766,7 +766,7 @@
   "time": {"from": "now-1h", "to": "now"},
   "timepicker": {},
   "timezone": "",
-  "title": "Host - hardware observability",
+  "title": "Host",
   "uid": "host-observability",
   "version": 1,
   "weekStart": ""

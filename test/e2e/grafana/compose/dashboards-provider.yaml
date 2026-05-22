@@ -10,16 +10,16 @@
 #     opening localhost:3000 lands directly on it. Cerberus's own
 #     self-telemetry is the sole data source — the quickstart deliberately
 #     does not run a fixture seeder.
-#   - clickhouse-observability.json: ClickHouse server health — query
+#   - clickhouse.json: ClickHouse server health — query
 #     rate by type, MergeTree I/O, merges, cache, thread pools,
 #     replication, errors. Sourced from the sqlquery/clickhouse OTel
 #     receiver that polls system.metrics / system.events /
 #     system.asynchronous_metrics every 15 s.
-#   - otelcol-observability.json: OpenTelemetry Collector self-metrics
+#   - otelcol.json: OpenTelemetry Collector self-metrics
 #     scraped from its own :8888 endpoint by an in-process
 #     prometheus/self receiver. Receiver / processor / exporter rate,
 #     queue depth, drops, batch send sizes, Go runtime memory.
-#   - host-observability.json: hostmetricsreceiver scrapers (cpu,
+#   - host.json: hostmetricsreceiver scrapers (cpu,
 #     memory, disk, network, filesystem, load, paging, processes).
 #     Reads from the otel-collector container's /proc + /sys by
 #     default; host-machine-wide visibility requires the host paths
