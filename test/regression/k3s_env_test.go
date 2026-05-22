@@ -19,7 +19,7 @@ import (
 // CERBERUS_OTLP_ENDPOINT="", telemetry.New short-circuited to the noop
 // MeterProvider, and `cerberus_queries_total` / `cerberus_queries_
 // duration_seconds_*` never reached the otel-collector → ClickHouse
-// pipeline. The cerberus-self dashboard's "Query rate by language"
+// pipeline. The cerberus dashboard's "Query rate by language"
 // panel then collapsed to a single anonymous bucket because no rows
 // existed (the lower correctly emitted `sum by (cerberus_ql)
 // (rate(cerberus_queries_total[5m]))` but the query matched zero CH
@@ -76,7 +76,7 @@ func TestK3sCerberusManifestUsesOTLPEnvNames(t *testing.T) {
 	// renaming it) sees a loud failure too.
 	for _, want := range []string{"CERBERUS_OTLP_ENDPOINT:", "CERBERUS_OTLP_INSECURE:"} {
 		if !strings.Contains(string(buf), want) {
-			t.Errorf("test/e2e/k3s/cerberus.yaml missing required ConfigMap key %q — the k3d cerberus deployment needs the OTLP exporter wired or the cerberus-self dashboard panels return empty matrices", want)
+			t.Errorf("test/e2e/k3s/cerberus.yaml missing required ConfigMap key %q — the k3d cerberus deployment needs the OTLP exporter wired or the cerberus dashboard panels return empty matrices", want)
 		}
 	}
 }

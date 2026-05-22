@@ -21,7 +21,7 @@ data point, AND log record so a Grafana dashboard can pivot on them
 across all three signal types.
 
 The k3s manifest at `test/e2e/k3s/otel-collector.yaml` and the provisioned
-`test/e2e/grafana/dashboards/cerberus-self.json` wire the full export path
+`test/e2e/grafana/dashboards/cerberus.json` wire the full export path
 end-to-end against a running cluster.
 
 ## Logging

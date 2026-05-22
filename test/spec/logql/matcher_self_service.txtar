@@ -2,7 +2,7 @@
 {service_name="cerberus"}
 -- seed --
 -- ResourceAttributes + ServiceName are MATERIALIZED on Body so the
--- four storage shapes (cerberus-self, seed-underscored, seed-dotted,
+-- four storage shapes (self-row, seed-underscored, seed-dotted,
 -- negative) are encoded by one Body value each. MATERIALIZED columns
 -- are excluded from `SELECT *` but remain queryable in WHERE, so the
 -- runner's `SELECT * FROM otel_logs WHERE ...` returns just the two

@@ -40,7 +40,7 @@
  * until the flake rate is observed < 1% over a fix cycle.
  *
  * Flake handling: empty frames are an ANNOTATION, not a failure (the
- * same gating pattern phase-1 uses for cerberus-self placeholder
+ * same gating pattern phase-1 uses for cerberus placeholder
  * panels). Errors — non-2xx, malformed body, label-shape regression on
  * a populated frame, histogram fabricated-value on a populated frame —
  * are still hard failures.
@@ -173,7 +173,7 @@ test('time-ranges: every aggregating / histogram panel re-asserts under (range, 
   request,
 }, testInfo) => {
   // Matrix is up to 4 ranges × 3 steps × N panels per dashboard. On
-  // the compose stack with the cerberus-self dashboard (~15 panels),
+  // the compose stack with the cerberus dashboard (~15 panels),
   // expect ~50-100 query_range fires. 15 minutes covers the seed +
   // the full matrix even on a slow CI runner.
   testInfo.setTimeout(15 * 60_000);
