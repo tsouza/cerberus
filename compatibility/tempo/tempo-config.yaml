@@ -82,19 +82,22 @@ storage:
 # instance.go:445-454 clamps the span's recorded start/end up to "now",
 # and the block's StartTime/EndTime BlockMeta uses the clamped values.
 # That clamping causes /api/search?start=<X>&end=<Y> to find zero blocks
-# whenever X/Y is more than 2 minutes outside the ingest wall-clock, even
+# whenever X/Y is more than ~slack outside the ingest wall-clock, even
 # though /api/traces/<id> still returns the trace (traceID lookup is not
-# time-range filtered). The differ uses anchor=2026-05-11T00:00:00Z (a
-# fixed point shared by prom/loki/tempo seeders for cross-harness
-# reproducibility) which drifts further from "now" each day. Picking
-# 8760h (= 1 year) gives the harness ~12 months of stable behavior
-# against the same anchor before requiring another bump — long enough
-# that the day-to-day clock drift doesn't surface as a TraceQL parity
-# regression, short enough that genuinely-stale fixtures still warn via
+# time-range filtered).
+#
+# The seeder anchors its fixture at `now() - 5m` (see driver/seeder.go::
+# currentAnchor); the differ recomputes its own anchor and uses ±1h
+# window. 1h slack here is roomy enough to absorb the inter-process
+# `now()` drift plus any flush/poll latency, while staying tight enough
+# that a genuinely-stale fixture still surfaces via
 # WarnOutsideIngestionSlack (tempodb/encoding/common/slackTimeRange.go).
+# Previously this was 8760h (1y) as an escape hatch for the fixed
+# 2026-05-11 anchor — that hatch is no longer needed now the anchor
+# rolls with wall-clock.
 live_store:
   wal:
-    ingestion_time_range_slack: 8760h
+    ingestion_time_range_slack: 1h
   max_trace_live: 2s
   max_trace_idle: 1s
   flush_check_period: 1s

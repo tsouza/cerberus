@@ -59,7 +59,7 @@ func runDiff(args []string) error {
 		overall     = fs.Duration("timeout", 5*time.Minute, "overall driver timeout")
 		perReq      = fs.Duration("request-timeout", 30*time.Second, "per-HTTP-request timeout")
 		searchLimit = fs.Int("search-limit", 200, "Tempo /api/search ?limit= value")
-		anchorIn    = fs.String("anchor", anchor, "fixture anchor RFC3339; used to compute search start/end window")
+		anchorIn    = fs.String("anchor", "", "fixture anchor RFC3339 override; empty means roll the anchor to (now - anchorOffset), matching the seeder")
 		efPath      = fs.String("expected-failures", envOr("EXPECTED_FAILURES", ""), "path to expected-failures JSON; cases listed there are flagged in the markdown report but still count as parity diffs in the compat-score JSON")
 	)
 	if err := fs.Parse(args); err != nil {
@@ -95,13 +95,27 @@ func runDiff(args []string) error {
 	}
 	logger.Info("loaded corpus", "path", *corpusPath, "cases", len(cases))
 
-	anchorTS, err := time.Parse(time.RFC3339, *anchorIn)
-	if err != nil {
-		return fmt.Errorf("parse anchor %q: %w", *anchorIn, err)
+	// If --anchor is empty, recompute the rolling anchor here. The
+	// differ runs as a separate process from the seeder (see
+	// scripts/run-tempo-compatibility.sh) so each phase picks its own
+	// `now()` — the ±1h search window below absorbs the typically <60s
+	// drift between them. Pass --anchor explicitly only when re-running
+	// the differ standalone against a stack seeded earlier.
+	var anchorTS time.Time
+	if *anchorIn == "" {
+		anchorTS = currentAnchor()
+	} else {
+		parsed, err := time.Parse(time.RFC3339, *anchorIn)
+		if err != nil {
+			return fmt.Errorf("parse anchor %q: %w", *anchorIn, err)
+		}
+		anchorTS = parsed
 	}
 	// Search window: one hour either side of the anchor. The seeder
 	// pushes traces at anchor + (svcIdx*25 + traceIdx) seconds, so the
-	// last span lands at anchor + ~400s; ±1h is generous slack.
+	// last span lands at anchor + ~400s; ±1h is generous slack and also
+	// covers the inter-process drift between the seeder's and differ's
+	// independent currentAnchor() readings.
 	startTS := anchorTS.Add(-1 * time.Hour)
 	endTS := anchorTS.Add(1 * time.Hour)
 

@@ -23,8 +23,9 @@
 #     trace.index=<idx>
 #   * Span attrs (child): child.index, kind
 #   * Status: Ok (default), Error for every 5th child
-#   * Anchor: 2026-05-11T00:00:00Z; each trace shifted by (svcIdx*25 +
-#     traceIdx) seconds — last trace lands ~400s after anchor
+#   * Anchor: rolling — recomputed per run as `now() - 5m` (see
+#     driver/seeder.go::currentAnchor). Each trace shifted by (svcIdx*25 +
+#     traceIdx) seconds — last trace lands ~400s after anchor.
 #
 # Diff strategy reminder (see differ.go top-of-file):
 #   * Trace IDs are canonicalised via H(rootServiceName||rootTraceName)
