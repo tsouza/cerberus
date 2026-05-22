@@ -12,9 +12,10 @@ import { test, expect } from '@playwright/test';
  * Both go through Grafana's datasource proxy at
  *   /api/datasources/proxy/uid/cerberus-loki/loki/api/v1/{query,query_range}
  *
- * The seed in test/e2e/seed/otel_logs.sql inserts 60 records across
- * three services in the last minute, so both queries return data
- * regardless of when this test runs.
+ * The seed in test/e2e/seed/cmd/seed/main.go inserts 120 records across
+ * three services spanning a 30-minute window centred on seed time, so
+ * both queries return data regardless of when this test runs in the
+ * Playwright suite.
  */
 
 const lokiProxy = '/api/datasources/proxy/uid/cerberus-loki/loki/api/v1';
