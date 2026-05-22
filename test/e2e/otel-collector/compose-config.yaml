@@ -18,6 +18,24 @@
 # same set internal/schema/ddl uses — so the table shapes
 # (otel_logs / otel_metrics_* / otel_traces) cannot drift from what
 # cerberus expects to query.
+#
+# Three additional metric receivers fan in alongside cerberus's OTLP
+# self-telemetry to give the quickstart a full-stack observability
+# picture without any external scraper:
+#
+#   prometheus/self    -> collector's own /metrics endpoint (otelcol_*)
+#   hostmetrics        -> /proc + /sys based CPU / mem / disk / net /
+#                         fs / load / paging / processes scrapers
+#   sqlquery/clickhouse -> system.metrics / system.events /
+#                         system.asynchronous_metrics rows pulled from
+#                         the ClickHouse server every 15 s
+#
+# Every metric flows through the same OTLP -> clickhouseexporter path
+# so cerberus's PromQL head can query them back through Grafana —
+# nothing bypasses cerberus. The transform/metric_names processor
+# rewrites OTel-style dotted names (system.cpu.time) to underscored
+# PromQL-friendly ones (system_cpu_time) before write so dashboard
+# PromQL doesn't need UTF-8 escaping.
 extensions:
   # health_check exposes :13133/ on the cerberus-dev network. The
   # compose stack itself doesn't bind a `healthcheck:` against it
@@ -36,6 +54,131 @@ receivers:
         endpoint: 0.0.0.0:4317
       http:
         endpoint: 0.0.0.0:4318
+
+  # Scrape the collector's own /metrics endpoint exposed by
+  # service.telemetry.metrics below. Every `otelcol_*` metric — receiver
+  # accepted / refused, processor batch send sizes, exporter sent /
+  # failed, queue size / capacity, process uptime, runtime go memstats
+  # — lands in otel_metrics_sum / _gauge via the same OTLP path the
+  # rest of the stack uses. job=otelcol-self so PromQL can pivot.
+  prometheus/self:
+    config:
+      scrape_configs:
+        - job_name: otelcol-self
+          scrape_interval: 15s
+          static_configs:
+            - targets: ['0.0.0.0:8888']
+
+  # Linux host metrics — every supported scraper turned on. From inside
+  # the otel-collector container the scrapers read from /proc + /sys,
+  # which by default reflect the container's PID/cgroup namespace. To
+  # see the *host* machine instead the compose service needs:
+  #     volumes:
+  #       - /proc:/hostfs/proc:ro
+  #       - /sys:/hostfs/sys:ro
+  #       - /:/hostfs:ro
+  #     environment:
+  #       HOST_PROC: /hostfs/proc
+  #       HOST_SYS: /hostfs/sys
+  #     pid: host
+  # plus root_path: /hostfs below. The receiver still produces real
+  # data without those mounts (container-scoped); the host-mounted
+  # variant is a follow-up for the docker-compose owner.
+  hostmetrics:
+    collection_interval: 15s
+    # root_path is honoured when the host paths above are mounted; when
+    # they're not, the scrapers fall back to the container's own /proc.
+    # Either way the receiver emits real metrics — no synthetic data.
+    root_path: /
+    scrapers:
+      cpu:
+        metrics:
+          system.cpu.frequency:
+            enabled: true
+          system.cpu.logical.count:
+            enabled: true
+          system.cpu.physical.count:
+            enabled: true
+          system.cpu.utilization:
+            enabled: true
+      memory:
+        metrics:
+          system.linux.memory.available:
+            enabled: true
+          system.memory.utilization:
+            enabled: true
+      disk: {}
+      network:
+        metrics:
+          system.network.conntrack.count:
+            enabled: true
+          system.network.conntrack.max:
+            enabled: true
+      filesystem:
+        metrics:
+          system.filesystem.utilization:
+            enabled: true
+      load: {}
+      paging:
+        metrics:
+          system.paging.utilization:
+            enabled: true
+      processes: {}
+
+  # ClickHouse self-monitoring via SQL. Stock CH ships `system.metrics`
+  # (current gauges), `system.events` (cumulative counters), and
+  # `system.asynchronous_metrics` (server-side derived gauges); together
+  # they cover query rate, memory pool, parts / merges, replication,
+  # network, cache, thread pools, etc. We turn each row into a labelled
+  # OTel metric series so PromQL can pivot by metric/event/asyncmetric
+  # name without enumerating every one of the ~400 names up front.
+  sqlquery/clickhouse:
+    driver: clickhouse
+    datasource: clickhouse://cerberus:cerberus@clickhouse:9000/otel?dial_timeout=5s
+    collection_interval: 15s
+    queries:
+      - sql: "SELECT metric AS name, value FROM system.metrics"
+        metrics:
+          - metric_name: clickhouse_metric
+            value_column: value
+            attribute_columns: [name]
+            data_type: gauge
+            value_type: double
+      - sql: "SELECT event AS name, toFloat64(value) AS value FROM system.events"
+        metrics:
+          - metric_name: clickhouse_event
+            value_column: value
+            attribute_columns: [name]
+            data_type: sum
+            value_type: double
+            monotonic: true
+      - sql: "SELECT metric AS name, value FROM system.asynchronous_metrics"
+        metrics:
+          - metric_name: clickhouse_async_metric
+            value_column: value
+            attribute_columns: [name]
+            data_type: gauge
+            value_type: double
+      - sql: |-
+          SELECT
+            count() AS active_parts,
+            sum(bytes_on_disk) AS bytes_on_disk,
+            sum(rows) AS rows
+          FROM system.parts
+          WHERE active
+        metrics:
+          - metric_name: clickhouse_parts_active
+            value_column: active_parts
+            data_type: gauge
+            value_type: int
+          - metric_name: clickhouse_parts_bytes_on_disk
+            value_column: bytes_on_disk
+            data_type: gauge
+            value_type: int
+          - metric_name: clickhouse_parts_rows
+            value_column: rows
+            data_type: gauge
+            value_type: int
 
 processors:
   memory_limiter:
@@ -62,6 +205,35 @@ processors:
       - key: deployment.environment
         value: compose
         action: upsert
+  # Stamp a service.name per scraper output so PromQL filters can
+  # pivot by source (clickhouse / host / otelcol-self) without a
+  # MetricName prefix scan.
+  resource/clickhouse:
+    attributes:
+      - key: service.name
+        value: clickhouse
+        action: upsert
+  resource/host:
+    attributes:
+      - key: service.name
+        value: host
+        action: upsert
+  resource/otelcol_self:
+    attributes:
+      - key: service.name
+        value: otelcol
+        action: upsert
+  # Rewrite OTel-dotted metric names to underscored PromQL-friendly
+  # ones (system.cpu.time -> system_cpu_time). Without this, querying
+  # the metric by `__name__` requires UTF-8 escaping that not every
+  # Grafana version supports. Identical rewrite the
+  # prometheusremotewriteexporter applies by default, applied here so
+  # the cerberus PromQL head sees pre-sanitised names.
+  transform/metric_names:
+    metric_statements:
+      - context: metric
+        statements:
+          - replace_pattern(name, "\\.", "_")
   # Strip exemplars from the service-graph metrics before they reach
   # the clickhouseexporter. The servicegraph connector emits
   # exemplars whose pcommon.Value pointers the v0.116.0 contrib
@@ -142,10 +314,44 @@ service:
   telemetry:
     logs:
       level: info
+    # Expose collector self-metrics on :8888/metrics so prometheus/self
+    # above can scrape them back into the OTLP pipeline. The default
+    # bind is 127.0.0.1, which is unreachable from the receiver inside
+    # the same container's network namespace — explicit 0.0.0.0:8888
+    # makes the endpoint reachable by both the in-process receiver and
+    # any out-of-process debugger from the cerberus-dev network.
+    #
+    # The legacy `address` shorthand was removed in 0.123+; the
+    # readers/pull/prometheus form below is the supported syntax for
+    # 0.152.x. without_type_suffix + without_units keeps the metric
+    # names close to the upstream `otelcol_*` convention so the
+    # otelcol-observability dashboard's PromQL matchers stay stable.
+    metrics:
+      level: detailed
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888
+                without_type_suffix: true
+                without_units: true
   pipelines:
     metrics:
       receivers: [otlp]
-      processors: [memory_limiter, resource, batch]
+      processors: [memory_limiter, resource, transform/metric_names, batch]
+      exporters: [clickhouse]
+    metrics/clickhouse:
+      receivers: [sqlquery/clickhouse]
+      processors: [memory_limiter, resource/clickhouse, transform/metric_names, batch]
+      exporters: [clickhouse]
+    metrics/host:
+      receivers: [hostmetrics]
+      processors: [memory_limiter, resource/host, transform/metric_names, batch]
+      exporters: [clickhouse]
+    metrics/otelcol_self:
+      receivers: [prometheus/self]
+      processors: [memory_limiter, resource/otelcol_self, transform/metric_names, batch]
       exporters: [clickhouse]
     logs:
       receivers: [otlp]
