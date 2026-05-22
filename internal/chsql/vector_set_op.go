@@ -60,12 +60,32 @@ func (e *emitter) emitVectorSetOp(s *chplan.VectorSetOp) error {
 		return err
 	}
 
+	// Canonicalise each arm's projection to (MetricName, Attributes,
+	// TimeUnix, Value) regardless of whether the inner plan exposes
+	// MetricName directly. Without this normalisation, mixing arms with
+	// different column shapes — e.g. a canonical-shape Project
+	// (MetricName, Attributes, TimeUnix, Value) on one side and a matrix
+	// RangeWindow (Attributes, anchor_ts, TimeUnix, Value) on the other —
+	// produces a UNION ALL where positional column type unification fails
+	// with NO_COMMON_TYPE (String vs Map). Three-arm `A or B or C`
+	// recursion hits this: the inner `(A or B)` already projects the
+	// canonical shape (MetricName-first), while a sibling `increase(C)[
+	// 5m]` arm in range mode projects Attributes-first; the outer UNION
+	// then tries to coalesce String and Map at column position 0. See
+	// the docstring on emitVectorSetOp for the original 2-arm motivation;
+	// the per-arm canonical projection covers both that case and the
+	// matrix-shape mismatch surfaced by the dashboard sweep
+	// (otelcol-observability "refused / send-failed / dropped" panels).
+	leftArm := vectorSetOpCanonicalArmFrag(s, s.Left, leftFrag)
+	rightArm := vectorSetOpCanonicalArmFrag(s, s.Right, rightFrag)
+
 	switch s.Op {
 	case chplan.VectorSetAnd:
 		// SELECT MetricName, Attributes, TimeUnix, Value
-		//   FROM (SELECT * FROM (<A>) WHERE <sig> IN (SELECT DISTINCT <sig> FROM (<B>)))
+		//   FROM (SELECT MetricName, Attributes, TimeUnix, Value FROM (<A>) WHERE <sig> IN (SELECT DISTINCT <sig> FROM (<B>)))
 		inner := NewQuery().
-			From(leftFrag).
+			Select(vectorSetOpOutputCols(s)...).
+			From(leftArm).
 			Where(setOpInSubqueryFrag(s.Match, s.AttributesColumn, rightFrag, true /*in*/))
 		outer := NewQuery().
 			Select(vectorSetOpOutputCols(s)...).
@@ -74,9 +94,10 @@ func (e *emitter) emitVectorSetOp(s *chplan.VectorSetOp) error {
 		return nil
 	case chplan.VectorSetUnless:
 		// SELECT MetricName, Attributes, TimeUnix, Value
-		//   FROM (SELECT * FROM (<A>) WHERE <sig> NOT IN (SELECT DISTINCT <sig> FROM (<B>)))
+		//   FROM (SELECT MetricName, Attributes, TimeUnix, Value FROM (<A>) WHERE <sig> NOT IN (SELECT DISTINCT <sig> FROM (<B>)))
 		inner := NewQuery().
-			From(leftFrag).
+			Select(vectorSetOpOutputCols(s)...).
+			From(leftArm).
 			Where(setOpInSubqueryFrag(s.Match, s.AttributesColumn, rightFrag, false /*notIn*/))
 		outer := NewQuery().
 			Select(vectorSetOpOutputCols(s)...).
@@ -85,9 +106,9 @@ func (e *emitter) emitVectorSetOp(s *chplan.VectorSetOp) error {
 		return nil
 	case chplan.VectorSetOr:
 		// SELECT MetricName, Attributes, TimeUnix, Value FROM (
-		//   (SELECT * FROM (<A>))
+		//   (SELECT MetricName, Attributes, TimeUnix, Value FROM (<A>))
 		//   UNION ALL
-		//   (SELECT * FROM (<B>)
+		//   (SELECT MetricName, Attributes, TimeUnix, Value FROM (<B>)
 		//      WHERE <sig> NOT IN (SELECT DISTINCT <sig> FROM (<A>)))
 		// )
 		//
@@ -98,9 +119,18 @@ func (e *emitter) emitVectorSetOp(s *chplan.VectorSetOp) error {
 		// (and CH then asks for a supertype between the outer SELECT's
 		// projection and the right UNION arm — Map vs. String — and
 		// fails with NO_COMMON_TYPE).
-		leftSelect := NewQuery().From(leftFrag)
+		//
+		// Each arm projects the canonical 4-column shape via
+		// vectorSetOpCanonicalArmFrag so positional column unification
+		// across arms never hits the String-vs-Map supertype error even
+		// when one arm is a derived-shape RangeWindow / Aggregate that
+		// drops `__name__`.
+		leftSelect := NewQuery().
+			Select(vectorSetOpOutputCols(s)...).
+			From(leftArm)
 		rightSelect := NewQuery().
-			From(rightFrag).
+			Select(vectorSetOpOutputCols(s)...).
+			From(rightArm).
 			Where(setOpInSubqueryFrag(s.Match, s.AttributesColumn, leftFrag, false /*notIn*/))
 		outer := NewQuery().
 			Select(vectorSetOpOutputCols(s)...).
@@ -109,6 +139,112 @@ func (e *emitter) emitVectorSetOp(s *chplan.VectorSetOp) error {
 		return nil
 	}
 	return fmt.Errorf("%w: vector set op %q", ErrUnsupported, s.Op)
+}
+
+// vectorSetOpCanonicalArmFrag returns a Frag rendering the per-arm
+// canonical 4-column projection used inside the VectorSetOp UNION ALL /
+// IN-subquery shapes. The arm's chplan node is inspected to decide
+// whether `MetricName` is available as a real column from the rendered
+// subquery: canonical-shape inputs (Scan / Filter(Scan) / a Project that
+// names all four canonical columns) pass MetricName through by name;
+// derived-shape inputs (RangeWindow / Aggregate / MetricsAggregate /
+// MetricsHistogramOverTime / a Project on top of one of those) lack
+// MetricName in their output schema and synthesise it as the empty
+// string — mirroring `wrapWithSampleProjection`'s derived-shape branch.
+//
+// The Attributes / TimeUnix / Value columns are always referenced by
+// name. Matrix-mode RangeWindow projects `anchor_ts AS TimeUnix` at
+// emit time (see emitWindowedArrayMatrix), so TimeUnix resolves under
+// the canonical alias in both instant and matrix shapes.
+func vectorSetOpCanonicalArmFrag(s *chplan.VectorSetOp, arm chplan.Node, armFrag Frag) Frag {
+	var metricNameFrag Frag
+	if vectorSetOpArmIsDerivedShape(arm, s) {
+		metricNameFrag = As(Lit(""), s.MetricNameColumn)
+	} else {
+		metricNameFrag = Col(s.MetricNameColumn)
+	}
+	inner := NewQuery().
+		Select(
+			metricNameFrag,
+			Col(s.AttributesColumn),
+			Col(s.TimestampColumn),
+			Col(s.ValueColumn),
+		).
+		From(armFrag)
+	return inner.Frag()
+}
+
+// vectorSetOpArmIsDerivedShape reports whether a VectorSetOp arm's
+// chplan output schema lacks the canonical MetricName column. Mirrors
+// `internal/api/prom/handler.go::isDerivedShape` but lives in the
+// chsql package so the emitter can decide per-arm without taking a
+// dependency on the HTTP-layer helper. The two functions must stay in
+// sync; both treat RangeWindow / Aggregate / MetricsAggregate /
+// MetricsHistogramOverTime — and a Project that does NOT expose all
+// four canonical columns above one of those — as derived.
+//
+// Nested VectorSetOp arms are canonical: the recursive emit wraps each
+// inner VectorSetOp in its own canonical-column SELECT, so a parent
+// arm can reference MetricName by name.
+func vectorSetOpArmIsDerivedShape(n chplan.Node, s *chplan.VectorSetOp) bool {
+	switch v := n.(type) {
+	case *chplan.RangeWindow,
+		*chplan.Aggregate,
+		*chplan.MetricsAggregate,
+		*chplan.MetricsHistogramOverTime:
+		return true
+	case *chplan.Filter:
+		return vectorSetOpArmIsDerivedShape(v.Input, s)
+	case *chplan.Project:
+		if vectorSetOpProjectExposesCanonical(v, s) {
+			return false
+		}
+		return vectorSetOpArmIsDerivedShape(v.Input, s)
+	}
+	return false
+}
+
+// vectorSetOpProjectExposesCanonical reports whether p's projections
+// name all four canonical Sample column outputs (MetricName /
+// Attributes / TimeUnix / Value). Mirrors
+// `internal/api/prom/handler.go::projectionExposesCanonical`; see that
+// docstring for the full canonical-shape definition. An output is
+// "named" when either Projection.Alias matches, or the Projection.Expr
+// is a bare ColumnRef to the canonical column name with no Alias
+// rewrite.
+func vectorSetOpProjectExposesCanonical(p *chplan.Project, s *chplan.VectorSetOp) bool {
+	needed := map[string]bool{
+		s.MetricNameColumn: false,
+		s.AttributesColumn: false,
+		s.TimestampColumn:  false,
+		s.ValueColumn:      false,
+	}
+	for _, proj := range p.Projections {
+		name := vectorSetOpProjectionOutputName(proj)
+		if _, ok := needed[name]; ok {
+			needed[name] = true
+		}
+	}
+	for _, ok := range needed {
+		if !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// vectorSetOpProjectionOutputName returns the column name a Projection
+// exposes: the explicit Alias when set, otherwise the bare-ColumnRef
+// name when the Expr is a column reference. Mirrors
+// `internal/api/prom/handler.go::projectionOutputName`.
+func vectorSetOpProjectionOutputName(p chplan.Projection) string {
+	if p.Alias != "" {
+		return p.Alias
+	}
+	if cr, ok := p.Expr.(*chplan.ColumnRef); ok {
+		return cr.Name
+	}
+	return ""
 }
 
 // vectorSetOpOutputCols returns the explicit projection list a vector
