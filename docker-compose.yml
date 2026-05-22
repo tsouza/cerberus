@@ -95,15 +95,37 @@ services:
     # cerberus's own startup. `condition: service_started` on the
     # cerberus dependency below is sufficient; the OTel demo's compose
     # stack uses the same pattern.
-    image: otel/opentelemetry-collector-contrib:0.120.0
+    image: otel/opentelemetry-collector-contrib:0.152.1
     networks: [cerberus-dev]
     command: ["--config=/etc/otel/config.yaml"]
+    # The hostmetricsreceiver inside compose-config.yaml reads /proc + /sys
+    # to derive system_cpu_* / system_memory_* / system_disk_* / etc. From
+    # inside the container those paths reflect the container's PID/cgroup
+    # namespace — that's not the picture the quickstart promises. Bind the
+    # host's /proc, /sys, and root filesystem under /hostfs (ro,rslave so
+    # mount propagation changes on the host are picked up but the collector
+    # can never write back), and point the receiver at them via HOST_PROC /
+    # HOST_SYS / HOST_ETC + the `root_path: /hostfs` knob in
+    # test/e2e/otel-collector/compose-config.yaml. Same mount-shape the
+    # upstream contrib docs prescribe for hostmetrics in docker-compose.
     volumes:
       - ./test/e2e/otel-collector/compose-config.yaml:/etc/otel/config.yaml:ro
+      - /proc:/hostfs/proc:ro,rslave
+      - /sys:/hostfs/sys:ro,rslave
+      - /:/hostfs:ro,rslave
     environment:
       # Mirror the k3d gateway's memory cap so a misbehaving exporter
       # backlog can't push the collector OOMKill in the dev stack.
       GOMEMLIMIT: "400MiB"
+      # Redirect hostmetricsreceiver's /proc + /sys + root reads to the
+      # bind-mounted host filesystem above. Paired with `root_path:
+      # /hostfs` in compose-config.yaml — the receiver honours both the
+      # per-scraper HOST_PROC / HOST_SYS / HOST_ETC env vars (process,
+      # cpu, memory, paging scrapers) and the root_path knob (filesystem
+      # + disk scrapers that walk the full tree).
+      HOST_PROC: /hostfs/proc
+      HOST_SYS: /hostfs/sys
+      HOST_ETC: /hostfs/etc
     depends_on:
       clickhouse:
         condition: service_healthy
