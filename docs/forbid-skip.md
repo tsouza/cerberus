@@ -6,10 +6,10 @@ no "not implemented", no "skipped" or "deferred" wording, no soft
 assertions, no silent panic recovery, no untracked `should_skip` overlay
 entries.**
 
-The gate grew iteratively — six PRs widened it as new offenders escaped
-prior regex shapes. This document is the canonical, frozen reference for
-the full pattern set so future widenings start from a known baseline
-instead of re-deriving from CI failure tickers.
+The gate grew iteratively — several PRs widened it as new offenders
+escaped prior regex shapes. This document is the canonical, frozen
+reference for the full pattern set so future widenings start from a
+known baseline instead of re-deriving from CI failure tickers.
 
 ## Where the patterns live
 
@@ -28,10 +28,12 @@ lefthook `forbid-skip-self-test` command runs the same script on
 pre-push.
 
 The two locations carry **identical** patterns for rows 1–6 of the
-summary table below. Row 7 (`should_skip:` overlay tracking-ref guard)
-is CI-only because it needs a diff against `origin/main` to identify
-net-new entries — locally that base-ref isn't always meaningful, and
-the CI gate is the authoritative pre-merge backstop.
+summary table below. A former row 7 (a per-PR `should_skip:` overlay
+tracking-ref guard) is no longer separately enforced — the strict
+rule in `.github/workflows/ci.yml` `forbid-skip` job step "Reject
+should_skip overlay entries" rejects every non-empty `should_skip:`
+block in `compatibility/**/*.{yml,yaml}` outright, so there is no
+per-PR tracking-ref check to assert.
 
 ## Adding a new pattern
 
@@ -60,7 +62,14 @@ shape.
 | 4   | Reject `assert.Contains(x, "")` soft assertion (2-arg + testify 3-arg)                                      | `*_test.go`                                                     | #587 / #277   |
 | 5   | Reject `assert.ElementsMatch(x, []T{})` soft assertion (2-arg + testify 3-arg)                              | `*_test.go`                                                     | #587 / #277   |
 | 6   | Reject silent panic recovery (`defer recover()` and the multi-line `defer func(){ _ = recover() }()` block) | `*_test.go`                                                     | #587 / #648   |
-| 7   | Reject net-new `should_skip:` overlay entries lacking a tracking ref                                        | overlay YAML in `OVERLAY_FILES`                                 | #596          |
+
+A former row 7 (reject net-new `should_skip:` overlay entries lacking
+a tracking ref, PR #596) was superseded by the structural-cleanup PR
+that removed the overlay consumer code and replaced the tracking-ref
+guard with a strict "reject any non-empty `should_skip:` block" rule
+(see `.github/workflows/ci.yml` `forbid-skip` job step "Reject
+should_skip overlay entries"). The accepted form is `should_skip: []`;
+any element under the key fails CI.
 
 Vendored upstream snapshots under `compatibility/*/upstream/**` are
 excluded from every test-file / fixture grep — they sit outside
@@ -193,43 +202,23 @@ used in real tests.
   }()
   ```
 
-## Pattern 7 — `should_skip:` overlay tracking-ref guard (PR #596)
+## Former pattern 7 — `should_skip:` overlay tracking-ref guard (PR #596, superseded)
 
-Regex: not a single line of regex; delegated to
-`scripts/check-skip-additions.sh`, which diffs the overlay against
-`origin/main` and requires every net-new `should_skip:` entry to carry
-one of: a non-empty `jira:` value, a `link:` field, or a `#NNN` GitHub
-PR / issue reference inside `reason:`.
+Originally PR #596 added a per-PR guard that diffed the overlay
+against `origin/main` and required every net-new `should_skip:` entry
+to carry a non-empty `jira:` value, a `link:` field, or a `#NNN`
+reference inside `reason:`. The structural-cleanup PR removed the
+overlay consumer code entirely, so the per-PR tracking-ref guard is
+no longer load-bearing: the `forbid-skip` CI job step "Reject
+should_skip overlay entries" now rejects ANY non-empty
+`should_skip:` block in `compatibility/**/*.{yml,yaml}` outright. The
+delegating helper script and its assertion in
+`scripts/test-forbid-skip.sh` were removed at the same time.
 
-PR #596 added this after PRs #429 and #537 added `should_skip:` rows
-to silence failing Loki compat cases without fixing the underlying
-bug. Two of those skip-PRs stayed merged for weeks before someone
-wired the real fix.
+## Redundancy review
 
-The guard script has a `--self-test` mode that the CI step runs first.
-`scripts/test-forbid-skip.sh` delegates to that self-test as its
-case 7 assertion.
-
-- Matches (net-new entry, no tracking ref):
-
-  ```yaml
-  - source: "fast/example.yaml#bad-entry"
-    reason: "no tracking ref"
-    since: "2026-05-20"
-  ```
-
-- Does NOT match (net-new entry with inline ref):
-
-  ```yaml
-  - source: "fast/example.yaml#good-entry"
-    reason: "tracked via #450"
-    since: "2026-05-20"
-  ```
-
-## Redundancy review (2026-05-22)
-
-A read-through of the seven patterns shows no strict redundancies —
-each catches a shape the others would miss:
+A read-through of the remaining patterns shows no strict
+redundancies — each catches a shape the others would miss:
 
 - Patterns 2 and 3 both look at `not implemented`, but pattern 2 only
   inspects `*_test.go` + `*.txtar` while pattern 3 only inspects
@@ -244,6 +233,6 @@ each catches a shape the others would miss:
   patterns 4 / 5 because pattern 6 needs the `perl -0777` slurp to
   span lines.
 
-The gate's total pattern count after this documentation pass: **7**
-(unchanged — this PR documents the existing set rather than altering
-behaviour).
+The gate's total active pattern count: **6** (patterns 1–6 above).
+The former pattern 7 was superseded by the strict overlay-entry
+rejection rule in CI.
