@@ -71,25 +71,27 @@ receivers:
 
   # Linux host metrics — every supported scraper turned on. From inside
   # the otel-collector container the scrapers read from /proc + /sys,
-  # which by default reflect the container's PID/cgroup namespace. To
-  # see the *host* machine instead the compose service needs:
-  #     volumes:
-  #       - /proc:/hostfs/proc:ro
-  #       - /sys:/hostfs/sys:ro
-  #       - /:/hostfs:ro
-  #     environment:
-  #       HOST_PROC: /hostfs/proc
-  #       HOST_SYS: /hostfs/sys
-  #     pid: host
-  # plus root_path: /hostfs below. The receiver still produces real
-  # data without those mounts (container-scoped); the host-mounted
-  # variant is a follow-up for the docker-compose owner.
-  hostmetrics:
+  # which by default would reflect the container's PID/cgroup namespace.
+  # docker-compose.yml bind-mounts the host's /proc, /sys, and root
+  # filesystem under /hostfs (ro,rslave) and exports
+  #     HOST_PROC=/hostfs/proc
+  #     HOST_SYS=/hostfs/sys
+  #     HOST_ETC=/hostfs/etc
+  # so the cpu / memory / network / paging / processes scrapers read
+  # real host data. `root_path: /hostfs` below extends the same
+  # redirection to the filesystem + disk scrapers, which walk the full
+  # tree rather than consulting a single /proc-style file. Together
+  # those knobs are the upstream-documented contract for running
+  # hostmetricsreceiver in a container.
+  host_metrics:
     collection_interval: 15s
-    # root_path is honoured when the host paths above are mounted; when
-    # they're not, the scrapers fall back to the container's own /proc.
-    # Either way the receiver emits real metrics — no synthetic data.
-    root_path: /
+    # Re-root every filesystem-walking scraper at /hostfs (where
+    # docker-compose.yml mounts the host's /). cpu / memory / paging /
+    # network / processes additionally honour HOST_PROC + HOST_SYS +
+    # HOST_ETC from the env block in docker-compose.yml. The pair gives
+    # the receiver a complete view of the host without the container
+    # ever seeing a writable mount.
+    root_path: /hostfs
     scrapers:
       cpu:
         metrics:
@@ -234,29 +236,6 @@ processors:
       - context: metric
         statements:
           - replace_pattern(name, "\\.", "_")
-  # Strip exemplars from the service-graph metrics before they reach
-  # the clickhouseexporter. The servicegraph connector emits
-  # exemplars whose pcommon.Value pointers the v0.116.0 contrib
-  # clickhouseexporter dereferences without a nil check in its
-  # sum_metrics insert path
-  # (`exporter/clickhouseexporter/internal/sum_metrics.go:129`),
-  # crashing the whole collector on the first metrics_flush_interval
-  # tick. The fix is upstream-bound; until the bump lands here we
-  # drop exemplars on the servicegraph branch — exemplars are a
-  # nice-to-have for service-graph metrics (the connector emits
-  # representative TraceIDs), but the edge series themselves still
-  # flow through.
-  transform/servicegraph_drop_exemplars:
-    error_mode: ignore
-    metric_statements:
-      - context: datapoint
-        statements:
-          # Clear exemplars on every datapoint flowing through this
-          # branch. The connector populates them with representative
-          # trace IDs whose nested pcommon.Value pointers the
-          # v0.116.0 contrib clickhouseexporter dereferences blindly.
-          # Empty slice = no exemplar attribute loop runs at all.
-          - set(exemplars, []) where true
 
 connectors:
   # The servicegraph connector reads spans off the `traces` pipeline,
@@ -276,7 +255,7 @@ connectors:
   # cache for matching client / server pairs, and CH-call spans don't
   # have a server-side sibling — every edge resolves on the client
   # span alone via peer.service).
-  servicegraph:
+  service_graph:
     latency_histogram_buckets: [100ms, 250ms, 1s, 5s, 10s]
     store:
       ttl: 2s
@@ -346,7 +325,7 @@ service:
       processors: [memory_limiter, resource/clickhouse, transform/metric_names, batch]
       exporters: [clickhouse]
     metrics/host:
-      receivers: [hostmetrics]
+      receivers: [host_metrics]
       processors: [memory_limiter, resource/host, transform/metric_names, batch]
       exporters: [clickhouse]
     metrics/otelcol_self:
@@ -366,16 +345,13 @@ service:
       # and a receiver on the destination pipeline-type. Spans
       # still flow to clickhouseexporter as before — the connector
       # is a tap, not a swap.
-      exporters: [clickhouse, servicegraph]
+      exporters: [clickhouse, service_graph]
     # metrics/servicegraph receives the connector's derived
     # `traces_service_graph_*` series and ships them through the
     # same clickhouseexporter the normal metrics pipeline uses.
     # Cerberus's Prom head then queries them back out of CH so
     # Grafana's Tempo Service Graph tab can render edges.
     metrics/servicegraph:
-      receivers: [servicegraph]
-      processors:
-        - memory_limiter
-        - transform/servicegraph_drop_exemplars
-        - batch
+      receivers: [service_graph]
+      processors: [memory_limiter, batch]
       exporters: [clickhouse]
