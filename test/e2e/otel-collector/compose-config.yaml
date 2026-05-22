@@ -325,7 +325,7 @@ service:
     # readers/pull/prometheus form below is the supported syntax for
     # 0.152.x. without_type_suffix + without_units keeps the metric
     # names close to the upstream `otelcol_*` convention so the
-    # otelcol-observability dashboard's PromQL matchers stay stable.
+    # otelcol dashboard's PromQL matchers stay stable.
     metrics:
       level: detailed
       readers:

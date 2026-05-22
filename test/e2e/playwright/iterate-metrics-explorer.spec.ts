@@ -137,7 +137,7 @@ const EXPECTED_EMPTY: ReadonlyArray<{ prefix: string; why: string }> = [
     // compose stack with no overload + clean pipeline, the bulk of the
     // counters legitimately have 0 samples in the 5m window even though
     // the catalog enumerates them. Sister-spec panel-kiosk surfaces the
-    // same emission-cadence behaviour on the otelcol-observability
+    // same emission-cadence behaviour on the otelcol
     // dashboard. Cover the whole namespace rather than ~30 individual
     // entries: every otelcol_* metric shares the same "collector
     // self-telemetry, emit-only-on-event" cadence story, so the

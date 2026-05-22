@@ -12,7 +12,7 @@
       }
     ]
   },
-  "description": "ClickHouse server observability. Sourced from the sqlquery/clickhouse OTel receiver, which polls system.metrics, system.events, system.asynchronous_metrics, and system.parts every 15s and ships the rows through the same OTLP -> clickhouseexporter path as cerberus self-telemetry. Names follow the clickhouse_{metric,event,async_metric} prefix scheme with `name` carrying the original CH name.",
+  "description": "OpenTelemetry Collector self-observability. The collector exposes its own metrics on :8888/metrics; the prometheus/self receiver inside the same process scrapes them every 15s and ships them through the OTLP -> clickhouseexporter pipeline alongside everything else. Metric prefix is otelcol_*; service.name=otelcol.",
   "editable": false,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -22,13 +22,13 @@
   "panels": [
     {
       "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
-      "description": "Currently executing queries on the ClickHouse server (system.metrics 'Query'). A sustained non-zero value indicates concurrent load.",
+      "description": "Collector process uptime (otelcol_process_uptime). Resets indicate a restart.",
       "fieldConfig": {
         "defaults": {
           "color": {"mode": "thresholds"},
           "mappings": [],
-          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 5}, {"color": "red", "value": 20}]},
-          "unit": "short"
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+          "unit": "s"
         },
         "overrides": []
       },
@@ -48,24 +48,24 @@
         {
           "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
           "editorMode": "code",
-          "expr": "max(clickhouse_metric{name=\"Query\"})",
-          "legendFormat": "queries in flight",
+          "expr": "max(otelcol_process_uptime)",
+          "legendFormat": "uptime",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "In-flight queries",
+      "title": "Process uptime",
       "type": "stat"
     },
     {
       "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
-      "description": "Number of active parts across all MergeTree tables (system.parts WHERE active=1). Sudden growth without compaction = merge pressure.",
+      "description": "Resident memory of the collector process (otelcol_process_memory_rss).",
       "fieldConfig": {
         "defaults": {
           "color": {"mode": "thresholds"},
           "mappings": [],
-          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1000}, {"color": "red", "value": 5000}]},
-          "unit": "short"
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 314572800}, {"color": "red", "value": 419430400}]},
+          "unit": "bytes"
         },
         "overrides": []
       },
@@ -85,24 +85,24 @@
         {
           "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
           "editorMode": "code",
-          "expr": "max(clickhouse_parts_active)",
-          "legendFormat": "parts",
+          "expr": "max(otelcol_process_memory_rss)",
+          "legendFormat": "rss",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Active parts",
+      "title": "Memory RSS",
       "type": "stat"
     },
     {
       "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
-      "description": "Total memory tracked by the ClickHouse server allocator (system.metrics 'MemoryTracking').",
+      "description": "Total live items in any exporter sending queue (otelcol_exporter_queue_size summed across exporters/signals).",
       "fieldConfig": {
         "defaults": {
           "color": {"mode": "thresholds"},
           "mappings": [],
-          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1073741824}, {"color": "red", "value": 4294967296}]},
-          "unit": "bytes"
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 500}, {"color": "red", "value": 900}]},
+          "unit": "short"
         },
         "overrides": []
       },
@@ -122,24 +122,25 @@
         {
           "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
           "editorMode": "code",
-          "expr": "max(clickhouse_metric{name=\"MemoryTracking\"})",
-          "legendFormat": "memory",
+          "expr": "sum(otelcol_exporter_queue_size)",
+          "legendFormat": "queued",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Server memory",
+      "title": "Exporter queue depth",
       "type": "stat"
     },
     {
       "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
-      "description": "Total bytes held on disk by active parts across all tables (sum(bytes_on_disk) FROM system.parts WHERE active=1).",
+      "description": "Sum of all otelcol_exporter_send_failed_* counters in the last 5m. Non-zero means data drop.",
       "fieldConfig": {
         "defaults": {
           "color": {"mode": "thresholds"},
           "mappings": [],
-          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
-          "unit": "bytes"
+          "noValue": "no failures",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}, {"color": "red", "value": 100}]},
+          "unit": "short"
         },
         "overrides": []
       },
@@ -159,23 +160,24 @@
         {
           "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
           "editorMode": "code",
-          "expr": "max(clickhouse_parts_bytes_on_disk)",
-          "legendFormat": "on disk",
+          "expr": "sum(increase(otelcol_exporter_send_failed_log_records[5m]) or increase(otelcol_exporter_send_failed_metric_points[5m]) or increase(otelcol_exporter_send_failed_spans[5m]))",
+          "legendFormat": "failed (5m)",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Parts bytes on disk",
+      "title": "Send failures (5m)",
       "type": "stat"
     },
     {
       "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
-      "description": "Live TCP-native client connections (system.metrics 'TCPConnection') — cerberus's chclient pool against the server.",
+      "description": "Sum of all otelcol_processor_refused_* counters in the last 5m. Indicates back-pressure from a downstream processor / exporter.",
       "fieldConfig": {
         "defaults": {
           "color": {"mode": "thresholds"},
           "mappings": [],
-          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+          "noValue": "no refusals",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}, {"color": "red", "value": 100}]},
           "unit": "short"
         },
         "overrides": []
@@ -196,24 +198,24 @@
         {
           "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
           "editorMode": "code",
-          "expr": "sum(clickhouse_metric{name=~\"TCPConnection|HTTPConnection|MySQLConnection|PostgreSQLConnection|InterserverConnection\"}) by (name)",
-          "legendFormat": "{{name}}",
+          "expr": "sum(increase(otelcol_processor_refused_log_records[5m]) or increase(otelcol_processor_refused_metric_points[5m]) or increase(otelcol_processor_refused_spans[5m]))",
+          "legendFormat": "refused (5m)",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Open connections",
+      "title": "Processor refusals (5m)",
       "type": "stat"
     },
     {
       "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
-      "description": "Background merges currently running across all MergeTree tables (system.metrics 'Merge'). Steady non-zero = active compaction; pinned high = stuck merges.",
+      "description": "Go runtime live goroutines (otelcol_process_runtime_total_alloc_bytes derived).",
       "fieldConfig": {
         "defaults": {
           "color": {"mode": "thresholds"},
           "mappings": [],
-          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 5}, {"color": "red", "value": 20}]},
-          "unit": "short"
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+          "unit": "bytes"
         },
         "overrides": []
       },
@@ -233,32 +235,32 @@
         {
           "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
           "editorMode": "code",
-          "expr": "max(clickhouse_metric{name=\"Merge\"})",
-          "legendFormat": "active merges",
+          "expr": "max(otelcol_process_runtime_heap_alloc_bytes)",
+          "legendFormat": "heap alloc",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Background merges",
+      "title": "Go heap alloc",
       "type": "stat"
     },
     {
       "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
-      "description": "Per-second query rate as a derivative of the cumulative system.events Query / SelectQuery / InsertQuery counters. Shows you the actual server-side throughput the cerberus query path drives.",
+      "description": "Per-second rate of telemetry items accepted by every receiver, broken down by signal type. Cerberus's OTLP self-export, prometheus/self, hostmetrics, and sqlquery/clickhouse all show up here.",
       "fieldConfig": {
         "defaults": {
           "color": {"mode": "palette-classic"},
           "custom": {
             "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto",
-            "barAlignment": 0, "drawStyle": "line", "fillOpacity": 20, "gradientMode": "opacity",
+            "barAlignment": 0, "drawStyle": "line", "fillOpacity": 30, "gradientMode": "opacity",
             "hideFrom": {"legend": false, "tooltip": false, "viz": false},
             "lineInterpolation": "linear", "lineWidth": 2, "pointSize": 5,
             "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false,
-            "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}
+            "stacking": {"group": "A", "mode": "normal"}, "thresholdsStyle": {"mode": "off"}
           },
           "mappings": [],
           "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
-          "unit": "reqps"
+          "unit": "ops"
         },
         "overrides": []
       },
@@ -272,32 +274,48 @@
         {
           "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
           "editorMode": "code",
-          "expr": "sum by (name) (rate(clickhouse_event{name=~\"Query|SelectQuery|InsertQuery|AsyncInsertQuery|FailedQuery|FailedSelectQuery|FailedInsertQuery\"}[5m]))",
-          "legendFormat": "{{name}}",
+          "expr": "sum by (receiver) (rate(otelcol_receiver_accepted_log_records[5m]))",
+          "legendFormat": "{{receiver}} logs",
           "range": true,
           "refId": "A"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
+          "editorMode": "code",
+          "expr": "sum by (receiver) (rate(otelcol_receiver_accepted_metric_points[5m]))",
+          "legendFormat": "{{receiver}} metric pts",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
+          "editorMode": "code",
+          "expr": "sum by (receiver) (rate(otelcol_receiver_accepted_spans[5m]))",
+          "legendFormat": "{{receiver}} spans",
+          "range": true,
+          "refId": "C"
         }
       ],
-      "title": "Query rate by type",
+      "title": "Receiver accepted items/s",
       "type": "timeseries"
     },
     {
       "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
-      "description": "Bytes read from / written to MergeTree storage per second. Derived from system.events MergeTreeDataWriterRows / *Bytes / ReadBufferFromFileDescriptorReadBytes counters.",
+      "description": "Per-second rate of telemetry items sent successfully by every exporter (one series per exporter / signal type).",
       "fieldConfig": {
         "defaults": {
           "color": {"mode": "palette-classic"},
           "custom": {
             "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto",
-            "barAlignment": 0, "drawStyle": "line", "fillOpacity": 20, "gradientMode": "opacity",
+            "barAlignment": 0, "drawStyle": "line", "fillOpacity": 30, "gradientMode": "opacity",
             "hideFrom": {"legend": false, "tooltip": false, "viz": false},
             "lineInterpolation": "linear", "lineWidth": 2, "pointSize": 5,
             "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false,
-            "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}
+            "stacking": {"group": "A", "mode": "normal"}, "thresholdsStyle": {"mode": "off"}
           },
           "mappings": [],
           "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
-          "unit": "Bps"
+          "unit": "ops"
         },
         "overrides": []
       },
@@ -311,30 +329,47 @@
         {
           "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
           "editorMode": "code",
-          "expr": "sum by (name) (rate(clickhouse_event{name=~\"SelectedBytes|InsertedBytes|MergedRows|MergedUncompressedBytes|ReadBufferFromFileDescriptorReadBytes|WriteBufferFromFileDescriptorWriteBytes\"}[5m]))",
-          "legendFormat": "{{name}}",
+          "expr": "sum by (exporter) (rate(otelcol_exporter_sent_log_records[5m]))",
+          "legendFormat": "{{exporter}} logs",
           "range": true,
           "refId": "A"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
+          "editorMode": "code",
+          "expr": "sum by (exporter) (rate(otelcol_exporter_sent_metric_points[5m]))",
+          "legendFormat": "{{exporter}} metric pts",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
+          "editorMode": "code",
+          "expr": "sum by (exporter) (rate(otelcol_exporter_sent_spans[5m]))",
+          "legendFormat": "{{exporter}} spans",
+          "range": true,
+          "refId": "C"
         }
       ],
-      "title": "MergeTree I/O bytes/s",
+      "title": "Exporter sent items/s",
       "type": "timeseries"
     },
     {
       "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
-      "description": "Per-second rate of completed merges by category. system.events Merge* counters cover regular merges, mutations, vertical merges, replicated fetches.",
+      "description": "Per-second rate of items dropped by any processor (otelcol_processor_dropped_*) or refused by any exporter (otelcol_exporter_send_failed_*). Non-zero means the cerberus dogfood loop is shedding data.",
       "fieldConfig": {
         "defaults": {
           "color": {"mode": "palette-classic"},
           "custom": {
             "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto",
-            "barAlignment": 0, "drawStyle": "line", "fillOpacity": 20, "gradientMode": "opacity",
+            "barAlignment": 0, "drawStyle": "line", "fillOpacity": 30, "gradientMode": "scheme",
             "hideFrom": {"legend": false, "tooltip": false, "viz": false},
             "lineInterpolation": "linear", "lineWidth": 2, "pointSize": 5,
             "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false,
-            "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}
+            "stacking": {"group": "A", "mode": "normal"}, "thresholdsStyle": {"mode": "off"}
           },
           "mappings": [],
+          "noValue": "no drops",
           "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
           "unit": "ops"
         },
@@ -350,214 +385,26 @@
         {
           "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
           "editorMode": "code",
-          "expr": "sum by (name) (rate(clickhouse_event{name=~\"Merge|MergedRows|MergesTimeMilliseconds|MutationApplied|ReplicatedPartFetches|ReplicatedPartMerges\"}[5m]))",
-          "legendFormat": "{{name}}",
+          "expr": "sum by (processor) (rate(otelcol_processor_dropped_log_records[5m]) or rate(otelcol_processor_dropped_metric_points[5m]) or rate(otelcol_processor_dropped_spans[5m]))",
+          "legendFormat": "{{processor}} dropped",
           "range": true,
           "refId": "A"
-        }
-      ],
-      "title": "Merge / mutation throughput",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
-      "description": "Network rx/tx as seen by the ClickHouse server itself (system.events NetworkSendBytes / NetworkReceiveBytes / *Elapsed).",
-      "fieldConfig": {
-        "defaults": {
-          "color": {"mode": "palette-classic"},
-          "custom": {
-            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto",
-            "barAlignment": 0, "drawStyle": "line", "fillOpacity": 20, "gradientMode": "opacity",
-            "hideFrom": {"legend": false, "tooltip": false, "viz": false},
-            "lineInterpolation": "linear", "lineWidth": 2, "pointSize": 5,
-            "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false,
-            "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}
-          },
-          "mappings": [],
-          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
-          "unit": "Bps"
         },
-        "overrides": []
-      },
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
-      "id": 10,
-      "options": {
-        "legend": {"calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true},
-        "tooltip": {"mode": "multi", "sort": "desc"}
-      },
-      "targets": [
         {
           "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
           "editorMode": "code",
-          "expr": "sum by (name) (rate(clickhouse_event{name=~\"NetworkSendBytes|NetworkReceiveBytes|NetworkSendElapsedMicroseconds|NetworkReceiveElapsedMicroseconds\"}[5m]))",
-          "legendFormat": "{{name}}",
+          "expr": "sum by (exporter) (rate(otelcol_exporter_send_failed_log_records[5m]) or rate(otelcol_exporter_send_failed_metric_points[5m]) or rate(otelcol_exporter_send_failed_spans[5m]))",
+          "legendFormat": "{{exporter}} failed",
           "range": true,
-          "refId": "A"
+          "refId": "B"
         }
       ],
-      "title": "Network bytes/s",
+      "title": "Drops & send failures",
       "type": "timeseries"
     },
     {
       "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
-      "description": "Mark / uncompressed / query cache resident bytes. Tracks the working set the query engine keeps hot.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {"mode": "palette-classic"},
-          "custom": {
-            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto",
-            "barAlignment": 0, "drawStyle": "line", "fillOpacity": 30, "gradientMode": "opacity",
-            "hideFrom": {"legend": false, "tooltip": false, "viz": false},
-            "lineInterpolation": "linear", "lineWidth": 2, "pointSize": 5,
-            "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false,
-            "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}
-          },
-          "mappings": [],
-          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
-          "unit": "bytes"
-        },
-        "overrides": []
-      },
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 20},
-      "id": 11,
-      "options": {
-        "legend": {"calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true},
-        "tooltip": {"mode": "multi", "sort": "desc"}
-      },
-      "targets": [
-        {
-          "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
-          "editorMode": "code",
-          "expr": "max by (name) (clickhouse_metric{name=~\"MarkCacheBytes|UncompressedCacheBytes|QueryCacheBytes|MMappedFileBytes|CacheFileSegments\"})",
-          "legendFormat": "{{name}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Cache resident bytes",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
-      "description": "Active thread pool counts. Tracks how much work the server is parallelising at any moment.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {"mode": "palette-classic"},
-          "custom": {
-            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto",
-            "barAlignment": 0, "drawStyle": "line", "fillOpacity": 20, "gradientMode": "opacity",
-            "hideFrom": {"legend": false, "tooltip": false, "viz": false},
-            "lineInterpolation": "linear", "lineWidth": 2, "pointSize": 5,
-            "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false,
-            "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}
-          },
-          "mappings": [],
-          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 20},
-      "id": 12,
-      "options": {
-        "legend": {"calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true},
-        "tooltip": {"mode": "multi", "sort": "desc"}
-      },
-      "targets": [
-        {
-          "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
-          "editorMode": "code",
-          "expr": "max by (name) (clickhouse_metric{name=~\"GlobalThreadActive|IOThreadsActive|BackgroundMergesAndMutationsPoolTask|BackgroundFetchesPoolTask|BackgroundCommonPoolTask|BackgroundSchedulePoolTask\"})",
-          "legendFormat": "{{name}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Active thread-pool tasks",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
-      "description": "Replication queue depth / fetch backlog. Sourced from system.metrics ReplicatedFetch / ReplicatedSend / ReadonlyReplica + system.asynchronous_metrics replication lag if present.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {"mode": "palette-classic"},
-          "custom": {
-            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto",
-            "barAlignment": 0, "drawStyle": "line", "fillOpacity": 20, "gradientMode": "opacity",
-            "hideFrom": {"legend": false, "tooltip": false, "viz": false},
-            "lineInterpolation": "linear", "lineWidth": 2, "pointSize": 5,
-            "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false,
-            "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}
-          },
-          "mappings": [],
-          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 28},
-      "id": 13,
-      "options": {
-        "legend": {"calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true},
-        "tooltip": {"mode": "multi", "sort": "desc"}
-      },
-      "targets": [
-        {
-          "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
-          "editorMode": "code",
-          "expr": "max by (name) (clickhouse_metric{name=~\"ReplicatedFetch|ReplicatedSend|DistributedSend|DistributedFilesToInsert|ReadonlyReplica\"})",
-          "legendFormat": "{{name}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Replication state",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
-      "description": "Per-second rate of server-side errors (system.events FailedQuery / FailedSelectQuery / FailedInsertQuery / NetworkErrors / etc). A spike here usually correlates with a bad-query class on cerberus's side.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {"mode": "palette-classic"},
-          "custom": {
-            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto",
-            "barAlignment": 0, "drawStyle": "line", "fillOpacity": 30, "gradientMode": "scheme",
-            "hideFrom": {"legend": false, "tooltip": false, "viz": false},
-            "lineInterpolation": "linear", "lineWidth": 2, "pointSize": 5,
-            "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false,
-            "stacking": {"group": "A", "mode": "normal"}, "thresholdsStyle": {"mode": "off"}
-          },
-          "mappings": [],
-          "noValue": "no errors yet",
-          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
-          "unit": "ops"
-        },
-        "overrides": []
-      },
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 28},
-      "id": 14,
-      "options": {
-        "legend": {"calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true},
-        "tooltip": {"mode": "multi", "sort": "desc"}
-      },
-      "targets": [
-        {
-          "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
-          "editorMode": "code",
-          "expr": "sum by (name) (rate(clickhouse_event{name=~\"FailedQuery|FailedSelectQuery|FailedInsertQuery|NetworkErrors|ZooKeeperHardwareExceptions|ReplicationSlackedExceptions|CannotWriteToWriteBufferDiscard|RejectedInserts\"}[5m]))",
-          "legendFormat": "{{name}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Error event rate",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
-      "description": "OS-level resource gauges as ClickHouse sees them through system.asynchronous_metrics (load average, virtual memory, file descriptors, jemalloc resident).",
+      "description": "Batch-processor send sizes (otelcol_processor_batch_batch_send_size). Distribution of how many items each batch flushed; flat lines = back-pressured / nothing arriving.",
       "fieldConfig": {
         "defaults": {
           "color": {"mode": "palette-classic"},
@@ -575,8 +422,8 @@
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 36},
-      "id": 15,
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
+      "id": 10,
       "options": {
         "legend": {"calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true},
         "tooltip": {"mode": "multi", "sort": "desc"}
@@ -585,25 +432,171 @@
         {
           "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
           "editorMode": "code",
-          "expr": "max by (name) (clickhouse_async_metric{name=~\"LoadAverage1|LoadAverage5|LoadAverage15|jemalloc.resident|jemalloc.active|MemoryResident|OSMemoryAvailable|FilesystemMainPathFreeBytes|MaxPartCountForPartition|MaxAbsoluteDelayNs|ReplicasMaxRelativeDelay\"})",
-          "legendFormat": "{{name}}",
+          "expr": "histogram_quantile(0.5, sum by (le, processor) (rate(otelcol_processor_batch_batch_send_size_bucket[5m])))",
+          "legendFormat": "p50 {{processor}}",
           "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le, processor) (rate(otelcol_processor_batch_batch_send_size_bucket[5m])))",
+          "legendFormat": "p95 {{processor}}",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Batch send-size quantiles",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
+      "description": "Sending-queue depth per exporter (otelcol_exporter_queue_size) vs queue capacity (otelcol_exporter_queue_capacity). Sustained at capacity = back-pressured downstream.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto",
+            "barAlignment": 0, "drawStyle": "line", "fillOpacity": 20, "gradientMode": "opacity",
+            "hideFrom": {"legend": false, "tooltip": false, "viz": false},
+            "lineInterpolation": "linear", "lineWidth": 2, "pointSize": 5,
+            "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false,
+            "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}
+          },
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 20},
+      "id": 11,
+      "options": {
+        "legend": {"calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
+          "editorMode": "code",
+          "expr": "max by (exporter) (otelcol_exporter_queue_size)",
+          "legendFormat": "{{exporter}} size",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
+          "editorMode": "code",
+          "expr": "max by (exporter) (otelcol_exporter_queue_capacity)",
+          "legendFormat": "{{exporter}} capacity",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Exporter queue depth vs capacity",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
+      "description": "Go runtime stats from the collector process: live heap allocation and total bytes allocated since process start. Steady-state heap with a flat slope on total-alloc means GC is keeping up.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto",
+            "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none",
+            "hideFrom": {"legend": false, "tooltip": false, "viz": false},
+            "lineInterpolation": "linear", "lineWidth": 2, "pointSize": 5,
+            "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false,
+            "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}
+          },
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 20},
+      "id": 12,
+      "options": {
+        "legend": {"calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
+          "editorMode": "code",
+          "expr": "max(otelcol_process_runtime_heap_alloc_bytes)",
+          "legendFormat": "heap alloc",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
+          "editorMode": "code",
+          "expr": "max(otelcol_process_memory_rss)",
+          "legendFormat": "rss",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
+          "editorMode": "code",
+          "expr": "rate(otelcol_process_runtime_total_alloc_bytes[5m])",
+          "legendFormat": "alloc rate",
+          "range": true,
+          "refId": "C"
+        }
+      ],
+      "title": "Go runtime memory",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
+      "description": "Build-info gauge — one series per (service_version, service_instance_id) the collector reports. Useful to confirm the pinned 0.116.x is the active version.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "custom": {
+            "align": "auto",
+            "cellOptions": {"type": "auto"},
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 6, "w": 24, "x": 0, "y": 28},
+      "id": 13,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {"countRows": false, "fields": "", "reducer": ["sum"], "show": false},
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
+          "editorMode": "code",
+          "expr": "otelcol_process_uptime",
+          "format": "table",
+          "instant": true,
           "refId": "A"
         }
       ],
-      "title": "Host-side resource gauges (asynchronous_metrics)",
-      "type": "timeseries"
+      "title": "Collector instances",
+      "type": "table"
     }
   ],
   "refresh": "30s",
   "schemaVersion": 39,
-  "tags": ["cerberus", "clickhouse", "infra"],
+  "tags": ["cerberus", "otelcol", "infra"],
   "templating": {"list": []},
   "time": {"from": "now-1h", "to": "now"},
   "timepicker": {},
   "timezone": "",
-  "title": "ClickHouse - server observability",
-  "uid": "clickhouse-observability",
+  "title": "OpenTelemetry Collector",
+  "uid": "otelcol-observability",
   "version": 1,
   "weekStart": ""
 }

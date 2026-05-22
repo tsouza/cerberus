@@ -7,8 +7,8 @@
  * spec auto-discovers them by reading the provisioning directory at
  * spec-build time and asserting each panel renders against REAL data
  * (no synthetic seeds). When the rich-observability PR ships the
- * clickhouse-observability / otelcol-observability / host-observability
- * dashboards, this sweep starts covering them on the next CI run.
+ * clickhouse / otelcol / host dashboards, this sweep starts covering
+ * them on the next CI run.
  *
  * For each dashboard we:
  *   1. Navigate to `/d/<uid>` and let Grafana render the panels.
@@ -132,7 +132,7 @@ const EXPECTED_EMPTY_EXPR_SUBSTRINGS: ReadonlyArray<{
   },
   {
     match: 'clickhouse_event{name=~"',
-    // The clickhouse-observability dashboard has 5 panels driven by
+    // The clickhouse dashboard has 5 panels driven by
     // `clickhouse_event{name=~"..."}` regexes — Query rate, MergeTree
     // I/O, Merge / mutation throughput, Network bytes, Error events.
     // All share the same cadence story: ClickHouse's per-event counters
