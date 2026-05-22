@@ -3,8 +3,8 @@
 -- seed --
 -- Task #240 twin of matcher_severity_text: SeverityNumber is one of the
 -- 9 top-level OTel-CH scalar columns. The OTel collector → CH exporter
--- promotes severity_number into a dedicated UInt8 column; the matcher
--- pre-#240 looked only at ResourceAttributes['SeverityNumber'] (empty
+-- promotes severity_number into a dedicated UInt8 column, but the
+-- matcher pre-#240 looked only at ResourceAttributes['SeverityNumber'] (empty
 -- map for promoted rows) so `{SeverityNumber="9"}` returned 0 rows
 -- even though the row was present. The coalesce fallback fixes it.
 --
