@@ -1,3 +1,8 @@
+# empty: traces t1+t2 contain frontend spans (count >= 1) and t3 has
+# none, but the inner matcher drops t3 entirely before grouping; so
+# every surviving trace has count >= 1 and the = 0 filter excludes
+# them all.
+
 -- query.traceql --
 { resource.service.name = "frontend" } | count() = 0
 -- seed --

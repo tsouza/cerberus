@@ -198,6 +198,29 @@ needs strengthening, (b) a functionally-equivalent mutation (`<` vs
 `append` regrows past), or (c) a missing test. The gremlins JSON
 artifact on each run names the file + line + mutation kind.
 
+### Surviving-mutant policy
+
+When a mutant survives the phase threshold, pick the remedy in this
+order — the goal is to keep production code clear and let the test
+suite carry the discipline:
+
+1. **PREFERRED — prove equivalent.** Add a comment in the source
+   explaining why the mutated branch is semantically identical to the
+   original, then drop the phase efficacy threshold in `.gremlins.yaml`
+   by 1 percentage point to absorb the equivalent mutant. The mutation
+   count is now defensible and the source stays clear.
+2. **ACCEPTABLE — add a distinguishing test.** Write a unit / property
+   test whose output differs between the original and the mutated
+   branch. This is the right call when the mutation reveals real
+   under-tested behaviour.
+3. **REJECTED — refactor production code to make the mutant
+   distinguishable.** This is pattern #11 (DEFEAT-MUTANT) — the
+   codebase loses clarity to satisfy the mutation tool. Don't do it.
+
+Prior PRs #504 and #664 carry pattern-#3 refactors. They are not
+reverted (their diffs are now load-bearing for the published
+thresholds), but new violations should follow remedy #1 or #2.
+
 ## Regression meta-tests
 
 `test/regression/` pins past CI failures so they can't silently

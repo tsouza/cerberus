@@ -104,6 +104,19 @@ pre-push:
       tags: discipline
       run: |
         scripts/test-forbid-skip.sh
+    # Mirrors the CI `forbid-skip` job's `Guard new should_skip entries`
+    # step. Rejects net-new `should_skip:` entries in compatibility
+    # overlays that lack a tracking ref (jira / link / #NNN in reason).
+    # Background: PRs #429 + #537 added skip rows to silence failing
+    # cases instead of fixing them, and the skips lingered for weeks.
+    # Local guard catches the anti-pattern before CI does.
+    forbid-should-skip-additions:
+      tags: discipline
+      env:
+        BASE_REF: origin/main
+      run: |
+        scripts/check-skip-additions.sh --self-test
+        scripts/check-skip-additions.sh
     forbid-soft-assert:
       tags: discipline
       run: |

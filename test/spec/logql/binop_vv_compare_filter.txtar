@@ -1,3 +1,7 @@
+# empty: rate(...) > rate(...) on the same selector compares each
+# series against itself, so the strict greater-than yields zero
+# samples — every join pair has lhs == rhs.
+
 -- query.logql --
 rate({service_name="api"}[5m]) > rate({service_name="api"}[5m])
 -- seed --

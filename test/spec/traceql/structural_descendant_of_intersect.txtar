@@ -1,3 +1,8 @@
+# empty: the intersect (service.name == a AND service.name == b on the
+# same span) selects zero spans because resource.service.name is
+# single-valued per span, so no descendant chain can be rooted in the
+# intersect set.
+
 -- query.traceql --
 ({ resource.service.name = "a" } && { resource.service.name = "b" }) >> { resource.service.name = "c" }
 -- sql --

@@ -190,7 +190,7 @@ func TestPropertyOptimizerSemanticEquivalence(t *testing.T) {
 //
 // Depth budget: at depth 0 the generator picks any node type; once
 // depth ≥ 3 it bottoms out into a Scan to keep trees small. This
-// covers the three RC1-relevant shapes:
+// covers the three plan shapes the optimizer is expected to handle:
 //
 //	Scan(table)
 //	Filter(<expr>, Scan(table))
