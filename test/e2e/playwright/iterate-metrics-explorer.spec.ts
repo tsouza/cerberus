@@ -123,6 +123,27 @@ const EXPECTED_EMPTY: ReadonlyArray<{ prefix: string; why: string }> = [
     // returns 0 even though the catalog enumerates them.
     why: 'kubeletstats per-container gauges; emission cadence leaves the 5m window empty on a fresh stack',
   },
+  {
+    prefix: 'otelcol_',
+    // OpenTelemetry Collector self-observability metrics
+    // (`otelcol_exporter_*`, `otelcol_processor_*`, `otelcol_receiver_*`,
+    // `otelcol_scraper_*`, `otelcol_connector_*`, `otelcol_process_*`)
+    // are emitted by the collector's prometheus/self receiver every
+    // 15s and shipped through the OTLP -> clickhouseexporter pipeline.
+    // The catalog endpoint sees these as soon as the first push lands,
+    // but most of them are cumulative-temporality counters that only
+    // tick when their underlying event fires (a refused span, a
+    // failed export attempt, a queue capacity change). On a fresh
+    // compose stack with no overload + clean pipeline, the bulk of the
+    // counters legitimately have 0 samples in the 5m window even though
+    // the catalog enumerates them. Sister-spec panel-kiosk surfaces the
+    // same emission-cadence behaviour on the otelcol-observability
+    // dashboard. Cover the whole namespace rather than ~30 individual
+    // entries: every otelcol_* metric shares the same "collector
+    // self-telemetry, emit-only-on-event" cadence story, so the
+    // rationale doesn't change per metric.
+    why: 'otelcol_* collector self-telemetry; counters emit only on the underlying event, leaving the 5m window empty on a fresh stack',
+  },
 ];
 
 /**

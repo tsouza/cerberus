@@ -130,6 +130,22 @@ const EXPECTED_EMPTY_EXPR_SUBSTRINGS: ReadonlyArray<{
     // stream count is correctly 0.
     why: 'cerberus produces no ERROR-level logs on a healthy compose stack',
   },
+  {
+    match: 'clickhouse_event{name=~"Query',
+    // clickhouse-observability "Query rate by type" reads
+    // `clickhouse_event{name=~"Query|SelectQuery|InsertQuery|...|FailedInsertQuery"}`
+    // — ClickHouse's per-event counters exposed by its built-in
+    // prometheus endpoint and scraped via the prometheus/clickhouse
+    // receiver. On a fresh compose stack the seed warmup against
+    // cerberus drives a few SELECTs through CH, but the
+    // ProfileEvents → event counter mapping CH publishes only ticks
+    // the matched-named events; the 5m rate window can land entirely
+    // before any matching event fires (warmup phase is ~30s, the
+    // CH-side ProfileEvents flush cadence is on the order of seconds
+    // but the scrape is 15s). The panel renders empty by design when
+    // the cluster is genuinely idle on these event classes.
+    why: 'clickhouse_event Query/Insert counters tick only on matching events; the 5m window can be empty on a fresh stack',
+  },
 ];
 
 /**
