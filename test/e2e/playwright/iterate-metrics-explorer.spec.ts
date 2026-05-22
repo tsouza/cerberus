@@ -339,7 +339,7 @@ test.describe('iterate-metrics-explorer: Drilldown-Metrics + label chips', () =>
   test.describe.configure({ mode: 'serial' });
 
   test.beforeAll(async ({ request }) => {
-    // Warmup so the cerberus-self metrics show populated values.
+    // Warmup so the cerberus self metrics show populated values.
     await generateSelfTraffic(request, SEED_TRAFFIC_SECONDS);
     // Allow OTLP push + CH insert flush to settle. See the comment on
     // POST_WARMUP_FLUSH_SECONDS above — without this, /api/v1/series

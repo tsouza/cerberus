@@ -127,7 +127,7 @@ test('panel-shape: every aggregating panel surfaces its by(...) and respects its
     process.env.GRAFANA_BASE_URL ??
     'http://localhost:3000';
 
-  // Seed traffic so cerberus-self panels have something to render.
+  // Seed traffic so cerberus dashboard panels have something to render.
   // generateSelfTraffic swallows individual request errors — this is
   // a nudge, not an assertion.
   await generateSelfTraffic(request, SEED_TRAFFIC_SECONDS);
@@ -243,7 +243,7 @@ test('panel-shape: every aggregating panel surfaces its by(...) and respects its
         // "Value" frame). A truly empty response — zero frames —
         // is the N5-class shape and is out of scope here: the
         // compose stack ships placeholder panels backed by
-        // metrics that don't exist yet (the cerberus-self
+        // metrics that don't exist yet (the cerberus
         // dashboard's In-flight / Admission-rejections panels are
         // labelled "declarative until the admission middleware
         // exports it" in their description text) and has a
