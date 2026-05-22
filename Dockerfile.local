@@ -8,9 +8,37 @@
 FROM golang:1.26 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
-RUN go mod download
+# `go mod download` occasionally fails with a transient
+# `proxy.golang.org` HTTP/2 `stream error ... INTERNAL_ERROR; received
+# from peer` mid-stream (observed on compatibility/loki run
+# 26306912141 against `grpc-ecosystem/grpc-gateway/v2`). The Go module
+# resolver does not retry past that frame — it surfaces the error and
+# exits non-zero, taking the whole compat job with it. Wrap the fetch
+# in a bounded retry loop so a single bad TCP frame from the public
+# proxy can't take down a compat run, and mount BuildKit caches for
+# `/go/pkg/mod` + `/root/.cache/go-build` so warm runners skip the
+# fetch entirely on subsequent builds. The `,sharing=locked` is
+# required because the three compat harnesses (prom/loki/tempo) build
+# this same Dockerfile in parallel on the same runner via separate
+# `docker compose build` invocations.
+RUN --mount=type=cache,target=/go/pkg/mod,sharing=locked \
+    --mount=type=cache,target=/root/.cache/go-build,sharing=locked \
+    set -eu; \
+    for attempt in 1 2 3 4 5; do \
+        if go mod download; then \
+            break; \
+        fi; \
+        if [ "$attempt" = "5" ]; then \
+            echo "go mod download failed after 5 attempts" >&2; \
+            exit 1; \
+        fi; \
+        echo "go mod download attempt $attempt failed, retrying after backoff" >&2; \
+        sleep $(( attempt * 3 )); \
+    done
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.Version=e2e" -o /out/cerberus ./cmd/cerberus
+RUN --mount=type=cache,target=/go/pkg/mod,sharing=locked \
+    --mount=type=cache,target=/root/.cache/go-build,sharing=locked \
+    CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.Version=e2e" -o /out/cerberus ./cmd/cerberus
 
 FROM gcr.io/distroless/static-debian12:nonroot
 
