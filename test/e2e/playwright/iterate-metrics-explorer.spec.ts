@@ -110,6 +110,31 @@ const EXPECTED_EMPTY: ReadonlyArray<{ prefix: string; why: string }> = [
  */
 const HISTOGRAM_COMPANION_SUFFIXES = ['_bucket', '_count', '_sum'] as const;
 
+/**
+ * Re-expand an underscored metric name to its OTel-dotted alias by
+ * replacing every `_` with `.`. Used by the dotted-alias fallback below.
+ *
+ * Background: OTel-instrumented metric names land in ClickHouse with the
+ * original dotted form (`http.server.request.duration`,
+ * `http.server.request.body.size`). Cerberus's
+ * `/api/v1/label/__name__/values` endpoint normalises the catalog to
+ * Prom-flavored underscored names so Grafana's metric picker can use
+ * them in selector position — but `/api/v1/series?match[]={__name__=
+ * "<underscored>"}` matches the stored column verbatim, which is still
+ * dotted. The bare-name + suffix-companion probes therefore return 0
+ * for OTel-native metrics; the dotted alias resolves. We probe the
+ * dotted alias as the last fallback before declaring a regression.
+ *
+ * This is a deliberately loose heuristic — for purely-underscored
+ * cerberus metrics (`cerberus_queries_total`) the dotted variant
+ * (`cerberus.queries.total`) simply doesn't exist in storage, so the
+ * fallback's empty result is harmless. The fallback only "resolves" a
+ * metric that is genuinely stored under a dotted alias.
+ */
+function dottedAlias(metric: string): string {
+  return metric.replace(/_/g, '.');
+}
+
 type LabelValuesResponse = {
   status: string;
   data: string[];
@@ -141,6 +166,8 @@ type MetricSummary = {
   why_empty: string | null;
   companion_series_count: number | null;
   companion_suffix: string | null;
+  dotted_alias_series_count: number | null;
+  dotted_alias_name: string | null;
 };
 
 const cerberusURL = (): string =>
@@ -321,17 +348,23 @@ test.describe('iterate-metrics-explorer: Drilldown-Metrics + label chips', () =>
 
       // Sanity: the __name__ on every series matches the queried name,
       // OR the queried name is a histogram synthetic-suffix view
-      // (`_count` / `_sum` / `_bucket`) of the returned __name__. The
-      // Prom-on-OTel convention is to expose histograms under the base
-      // name with the suffix as a derived view, so a /api/v1/series
-      // call for `http_server_request_duration_count` is expected to
-      // return rows with `__name__=http_server_request_duration`. A
-      // mismatch on the BASE name (after stripping the suffix) would
-      // still indicate the gateway echoed a different metric's labels.
+      // (`_count` / `_sum` / `_bucket`) of the returned __name__, OR
+      // the queried name is the underscored alias of an OTel-dotted
+      // stored name. The Prom-on-OTel convention is to expose
+      // histograms under the base name with the suffix as a derived
+      // view, so a /api/v1/series call for
+      // `http_server_request_duration_count` is expected to return
+      // rows with `__name__=http_server_request_duration`. A mismatch
+      // on the BASE name (after stripping the suffix and after the
+      // dot/underscore normalisation) would still indicate the gateway
+      // echoed a different metric's labels.
+      const metricDotted = dottedAlias(metric);
       for (const s of seriesBody.data) {
         if (!s.__name__ || s.__name__ === metric) continue;
+        if (s.__name__ === metricDotted) continue;
         const base = stripHistogramSuffix(metric);
         if (base !== metric && s.__name__ === base) continue;
+        if (base !== metric && s.__name__ === dottedAlias(base)) continue;
         labelFailures.push(
           `metric=${metric}: /api/v1/series returned __name__=${s.__name__} (mismatch)`,
         );
@@ -363,9 +396,44 @@ test.describe('iterate-metrics-explorer: Drilldown-Metrics + label chips', () =>
         }
       }
 
+      // Last fallback: probe the OTel-dotted alias of the queried name.
+      // `/api/v1/label/__name__/values` normalises OTel-dotted stored
+      // names (`http.server.request.duration`) to Prom-underscored ones
+      // (`http_server_request_duration`) for catalog purposes, but
+      // `/api/v1/series?match[]={__name__="<underscored>"}` matches the
+      // stored column verbatim — which is still dotted — so it returns
+      // 0 rows. The dotted alias (`http.server.request.duration`)
+      // resolves. We probe it as the last fallback so OTel-native
+      // metrics like `http_server_request_body_size` aren't reported as
+      // regressions just because the catalog and series endpoints
+      // disagree on name canonicalisation. A purely-underscored metric
+      // (`cerberus_queries_total`) has no dotted variant in storage so
+      // this fallback resolves to 0 and is harmless.
+      let dottedAliasCount: number | null = null;
+      let dottedAliasName: string | null = null;
+      if (seriesCount === 0 && companionCount === null) {
+        const aliasName = dottedAlias(metric);
+        if (aliasName !== metric) {
+          const aliasBody = await fetchSeries(request, aliasName, nowSec);
+          if (aliasBody.data.length > 0) {
+            dottedAliasCount = aliasBody.data.length;
+            dottedAliasName = aliasName;
+          } else {
+            dottedAliasCount = 0;
+          }
+        }
+      }
+
       const expected = isExpectedEmpty(metric);
       const hasCompanion = companionCount !== null && companionCount > 0;
-      if (seriesCount === 0 && !expected && !hasCompanion) {
+      const hasDottedAlias =
+        dottedAliasCount !== null && dottedAliasCount > 0;
+      if (
+        seriesCount === 0 &&
+        !expected &&
+        !hasCompanion &&
+        !hasDottedAlias
+      ) {
         labelFailures.push(
           `metric=${metric}: /api/v1/series returned 0 series — this is the "Unable to fetch labels" failure shape (#8). If empty-by-design, add a prefix to EXPECTED_EMPTY with a rationale.`,
         );
@@ -389,6 +457,8 @@ test.describe('iterate-metrics-explorer: Drilldown-Metrics + label chips', () =>
         why_empty: expected?.why ?? null,
         companion_series_count: companionCount,
         companion_suffix: companionSuffix,
+        dotted_alias_series_count: dottedAliasCount,
+        dotted_alias_name: dottedAliasName,
       });
     }
 
@@ -405,6 +475,7 @@ test.describe('iterate-metrics-explorer: Drilldown-Metrics + label chips', () =>
         `${summary.length} metrics, ` +
         `${summary.filter((s) => s.series_count > 0).length} non-empty series, ` +
         `${summary.filter((s) => (s.companion_series_count ?? 0) > 0).length} histogram-via-companion, ` +
+        `${summary.filter((s) => (s.dotted_alias_series_count ?? 0) > 0).length} resolved-via-dotted-alias, ` +
         `${summary.filter((s) => s.empty_expected).length} expected-empty`,
     );
 
