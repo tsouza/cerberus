@@ -124,7 +124,7 @@ pre-push:
         if git ls-files -z -- \
             '*_test.go' \
             ':!:compatibility/*/upstream/**' \
-            | xargs -0 grep -nEH 'assert\.Contains\([^,]+,\s*""\s*\)|assert\.ElementsMatch\([^,]+,\s*\[\][^)]*\{\s*\}\s*\)' --; then
+            | xargs -0 grep -nEH 'assert\.Contains\(([^,]+,\s*){0,1}[^,]+,\s*""\s*\)|assert\.ElementsMatch\(([^,]+,\s*){0,1}[^,]+,\s*\[\][^)]*\{\s*\}\s*\)' --; then
           fail=1
         fi
         # Multi-line silent-recover scan — mirrors the CI `forbid-skip`

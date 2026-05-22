@@ -57,8 +57,8 @@ shape.
 | 1   | Reject `t.Skip[fN]?` calls                                                                                  | `*_test.go`                                                     | #309          |
 | 2   | Reject bare "not implemented" / "skipped" / "deferred" wording                                              | `*_test.go` + `*.txtar`                                         | #461          |
 | 3   | Reject "not implemented" wording in production code                                                         | `internal/**/*.go` (non-test)                                   | #197          |
-| 4   | Reject `assert.Contains(x, "")` soft assertion                                                              | `*_test.go`                                                     | #587          |
-| 5   | Reject `assert.ElementsMatch(x, []T{})` soft assertion                                                      | `*_test.go`                                                     | #587          |
+| 4   | Reject `assert.Contains(x, "")` soft assertion (2-arg + testify 3-arg)                                      | `*_test.go`                                                     | #587 / #277   |
+| 5   | Reject `assert.ElementsMatch(x, []T{})` soft assertion (2-arg + testify 3-arg)                              | `*_test.go`                                                     | #587 / #277   |
 | 6   | Reject silent panic recovery (`defer recover()` and the multi-line `defer func(){ _ = recover() }()` block) | `*_test.go`                                                     | #587 / #648   |
 | 7   | Reject net-new `should_skip:` overlay entries lacking a tracking ref                                        | overlay YAML in `OVERLAY_FILES`                                 | #596          |
 
@@ -119,9 +119,9 @@ correct rewrite of "skipped" rather than something to forbid.
 - Matches: `return errors.New("not implemented")`
 - Does NOT match: `return errUnsupported // rejects unsupported foo`
 
-## Pattern 4 — `assert.Contains(x, "")` soft assertion (PR #587)
+## Pattern 4 — `assert.Contains(x, "")` soft assertion (PR #587, widened #277)
 
-Regex: `assert\.Contains\([^,]+,\s*""\s*\)`
+Regex: `assert\.Contains\(([^,]+,\s*){0,1}[^,]+,\s*""\s*\)`
 
 PR #587 added this. The trigger was a sweep that uncovered
 `assert.Contains(body, "")` calls — they pass any input, look like
@@ -129,30 +129,35 @@ real assertions in reviews, but verify nothing.
 
 The regex uses `[^,]+` to clamp the haystack-argument match inside a
 single function call (so it doesn't reach into adjacent calls), and
-`\s*""\s*` to allow optional whitespace around the empty needle.
+`\s*""\s*` to allow optional whitespace around the empty needle. The
+leading `([^,]+,\s*){0,1}` is an optional prefix that consumes a
+testify-style first argument (`t *testing.T`) when present, so the
+single regex catches BOTH the 2-arg gocheck-style call
+(`assert.Contains(haystack, "")`) and the 3-arg testify call
+(`assert.Contains(t, haystack, "")`). The original PR #587 regex was
+2-arg-only; PR #277 widened it to both shapes after the limitation
+was flagged on PR #719.
 
-**Known scope limitation:** the `[^,]+,` clause requires exactly one
-comma between haystack and needle, so the regex catches the 2-arg
-gocheck-style call but not the testify 3-arg call
-(`assert.Contains(t, haystack, "")`). Widening to the testify form is
-a deliberate future change — listed as a follow-up rather than rolled
-into this normalisation pass so the behaviour of the gate stays
-byte-identical to its previous shape.
-
-- Matches: `assert.Contains(body, "")`
+- Matches (2-arg gocheck): `assert.Contains(body, "")`
+- Matches (3-arg testify): `assert.Contains(t, body, "")`
 - Does NOT match: `assert.Contains(body, "error: foo")`
+- Does NOT match: `assert.Contains(t, body, "error: foo")`
 
-## Pattern 5 — `assert.ElementsMatch(x, []T{})` soft assertion (PR #587)
+## Pattern 5 — `assert.ElementsMatch(x, []T{})` soft assertion (PR #587, widened #277)
 
-Regex: `assert\.ElementsMatch\([^,]+,\s*\[\][^)]*\{\s*\}\s*\)`
+Regex: `assert\.ElementsMatch\(([^,]+,\s*){0,1}[^,]+,\s*\[\][^)]*\{\s*\}\s*\)`
 
 Sibling of pattern 4. Same regex shape (`[^,]+,` clamp + empty-needle
-match) targeting `ElementsMatch` against an empty slice literal. Same
-known scope limitation as pattern 4 — catches 2-arg gocheck-style
-calls but not the testify 3-arg form.
+match) targeting `ElementsMatch` against an empty slice literal. The
+optional `([^,]+,\s*){0,1}` prefix matches the testify-style
+`t *testing.T` first arg when present, so the regex catches BOTH the
+2-arg gocheck-style and the 3-arg testify forms — widened by PR #277
+on top of PR #587's original 2-arg-only shape.
 
-- Matches: `assert.ElementsMatch(got, []string{})`
+- Matches (2-arg gocheck): `assert.ElementsMatch(got, []string{})`
+- Matches (3-arg testify): `assert.ElementsMatch(t, got, []string{})`
 - Does NOT match: `assert.ElementsMatch(got, []string{"a", "b"})`
+- Does NOT match: `assert.ElementsMatch(t, got, []string{"a", "b"})`
 
 ## Pattern 6 — silent panic recovery (PR #587 / #648)
 

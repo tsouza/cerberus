@@ -120,28 +120,36 @@ expect_match    "case3 not-implemented prod"  "$RE3" "$tmpdir/case3_match.txt"
 expect_no_match "case3 factual verb"          "$RE3" "$tmpdir/case3_nomatch.txt"
 
 # --------------------------------------------------------------------
-# case 4 — assert.Contains(x, "")  (PR #587)
+# case 4 — assert.Contains(x, "")  (PR #587, widened #277)
 # --------------------------------------------------------------------
-# NB: the regex's `[^,]+,` clause requires exactly one comma between
-# haystack and needle, so it matches the 2-arg gocheck-style call
-# (`assert.Contains(haystack, "")`) but not the testify 3-arg
-# `assert.Contains(t, haystack, "")` form. See docs/forbid-skip.md
-# § "Known scope limitation".
-RE4='assert\.Contains\([^,]+,\s*""\s*\)'
-printf 'assert.Contains(body, "")\n'           >"$tmpdir/case4_match.txt"
-printf 'assert.Contains(body, "error: foo")\n' >"$tmpdir/case4_nomatch.txt"
-expect_match    "case4 empty-needle Contains"   "$RE4" "$tmpdir/case4_match.txt"
-expect_no_match "case4 real-needle Contains"    "$RE4" "$tmpdir/case4_nomatch.txt"
+# The optional `([^,]+,\s*){0,1}` prefix matches the testify
+# `t *testing.T` first arg when present, so the regex catches BOTH
+# the 2-arg gocheck-style call (`assert.Contains(haystack, "")`) and
+# the 3-arg testify call (`assert.Contains(t, haystack, "")`).
+RE4='assert\.Contains\(([^,]+,\s*){0,1}[^,]+,\s*""\s*\)'
+printf 'assert.Contains(body, "")\n'              >"$tmpdir/case4_match.txt"
+printf 'assert.Contains(t, body, "")\n'           >"$tmpdir/case4_match_testify.txt"
+printf 'assert.Contains(body, "error: foo")\n'    >"$tmpdir/case4_nomatch.txt"
+printf 'assert.Contains(t, body, "error: foo")\n' >"$tmpdir/case4_nomatch_testify.txt"
+expect_match    "case4 empty-needle Contains (2-arg)"   "$RE4" "$tmpdir/case4_match.txt"
+expect_match    "case4 empty-needle Contains (3-arg)"   "$RE4" "$tmpdir/case4_match_testify.txt"
+expect_no_match "case4 real-needle Contains (2-arg)"    "$RE4" "$tmpdir/case4_nomatch.txt"
+expect_no_match "case4 real-needle Contains (3-arg)"    "$RE4" "$tmpdir/case4_nomatch_testify.txt"
 
 # --------------------------------------------------------------------
-# case 5 — assert.ElementsMatch(x, []T{})  (PR #587)
+# case 5 — assert.ElementsMatch(x, []T{})  (PR #587, widened #277)
 # --------------------------------------------------------------------
-# Same 2-arg gocheck-style scope limitation as case4.
-RE5='assert\.ElementsMatch\([^,]+,\s*\[\][^)]*\{\s*\}\s*\)'
-printf 'assert.ElementsMatch(got, []string{})\n'        >"$tmpdir/case5_match.txt"
-printf 'assert.ElementsMatch(got, []string{"a", "b"})\n' >"$tmpdir/case5_nomatch.txt"
-expect_match    "case5 empty-slice ElementsMatch" "$RE5" "$tmpdir/case5_match.txt"
-expect_no_match "case5 populated ElementsMatch"   "$RE5" "$tmpdir/case5_nomatch.txt"
+# Same optional-`t`-prefix widening as case4 — covers both 2-arg
+# gocheck-style and 3-arg testify shapes.
+RE5='assert\.ElementsMatch\(([^,]+,\s*){0,1}[^,]+,\s*\[\][^)]*\{\s*\}\s*\)'
+printf 'assert.ElementsMatch(got, []string{})\n'           >"$tmpdir/case5_match.txt"
+printf 'assert.ElementsMatch(t, got, []string{})\n'        >"$tmpdir/case5_match_testify.txt"
+printf 'assert.ElementsMatch(got, []string{"a", "b"})\n'   >"$tmpdir/case5_nomatch.txt"
+printf 'assert.ElementsMatch(t, got, []string{"a", "b"})\n' >"$tmpdir/case5_nomatch_testify.txt"
+expect_match    "case5 empty-slice ElementsMatch (2-arg)" "$RE5" "$tmpdir/case5_match.txt"
+expect_match    "case5 empty-slice ElementsMatch (3-arg)" "$RE5" "$tmpdir/case5_match_testify.txt"
+expect_no_match "case5 populated ElementsMatch (2-arg)"   "$RE5" "$tmpdir/case5_nomatch.txt"
+expect_no_match "case5 populated ElementsMatch (3-arg)"   "$RE5" "$tmpdir/case5_nomatch_testify.txt"
 
 # --------------------------------------------------------------------
 # case 6 — silent panic recovery, both shapes  (PR #587 / #648)
