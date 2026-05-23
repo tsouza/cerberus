@@ -281,23 +281,39 @@ func (h *Handler) handleSeries(w http.ResponseWriter, r *http.Request) {
 
 	seen := make(map[string]map[string]string)
 	for _, m := range matchers {
-		// Fan a bare classic-histogram base name out into its three
-		// Prom-wire companion variants — `<base>_bucket` /
-		// `<base>_count` / `<base>_sum` — so /api/v1/series returns
-		// the three companion series Grafana's Metrics Explorer
-		// expects. See expandBareHistogramMatcher for the
-		// rationale; non-histogram matchers short-circuit through
-		// the helper's single-element return.
-		for _, variant := range expandBareHistogramMatcher(h.parser, m, h.Schema.HistogramTable) {
-			sets, err := h.fetchSeries(r.Context(), variant)
-			if err != nil {
-				h.respondError(w, err)
-				return
-			}
-			for _, lset := range sets {
-				key := format.CanonicalKey(lset)
-				if _, ok := seen[key]; !ok {
-					seen[key] = lset
+		// Two-layer matcher fan-out:
+		//
+		//   1. `expandUnderscoredMetricNameMatcher` — when the matcher
+		//      pins `__name__` to a Prom-grammar form with at least one
+		//      rewritable underscore, also probe every OTel-dotted
+		//      candidate so a catalog entry like
+		//      `http_server_request_body_size` resolves against rows
+		//      stored under the dotted form
+		//      (`http.server.request.body.size`). The catalog endpoint
+		//      already normalises stored MetricNames through
+		//      `OTelToPromMetric`; without this fan-out the matcher
+		//      side disagrees and Drilldown-Metrics' label-chip fetch
+		//      surfaces "Unable to fetch labels".
+		//
+		//   2. `expandBareHistogramMatcher` — per-arm of (1), fan a
+		//      bare classic-histogram base name out into its three
+		//      Prom-wire companion variants (`<base>_bucket` /
+		//      `<base>_count` / `<base>_sum`) so /api/v1/series
+		//      returns the three companion series Grafana's Metrics
+		//      Explorer expects. Non-histogram matchers short-circuit
+		//      through the helper's single-element return.
+		for _, nameVariant := range expandUnderscoredMetricNameMatcher(h.parser, m) {
+			for _, variant := range expandBareHistogramMatcher(h.parser, nameVariant, h.Schema.HistogramTable) {
+				sets, err := h.fetchSeries(r.Context(), variant)
+				if err != nil {
+					h.respondError(w, err)
+					return
+				}
+				for _, lset := range sets {
+					key := format.CanonicalKey(lset)
+					if _, ok := seen[key]; !ok {
+						seen[key] = lset
+					}
 				}
 			}
 		}
@@ -384,12 +400,14 @@ func (h *Handler) fetchLabelValues(ctx context.Context, name string) ([]string, 
 func (h *Handler) fetchLabelNamesMatched(ctx context.Context, matchers []string) ([]string, error) {
 	collected := []string{model.MetricNameLabel}
 	for _, m := range matchers {
-		for _, variant := range expandBareHistogramMatcher(h.parser, m, h.Schema.HistogramTable) {
-			keys, err := h.labelKeysForMatcher(ctx, variant)
-			if err != nil {
-				return nil, err
+		for _, nameVariant := range expandUnderscoredMetricNameMatcher(h.parser, m) {
+			for _, variant := range expandBareHistogramMatcher(h.parser, nameVariant, h.Schema.HistogramTable) {
+				keys, err := h.labelKeysForMatcher(ctx, variant)
+				if err != nil {
+					return nil, err
+				}
+				collected = append(collected, keys...)
 			}
-			collected = append(collected, keys...)
 		}
 	}
 	out := format.NormalizeLabelNames(collected)
@@ -410,14 +428,16 @@ func (h *Handler) fetchLabelNamesMatched(ctx context.Context, matchers []string)
 func (h *Handler) fetchLabelValuesMatched(ctx context.Context, name string, matchers []string, start, end time.Time) ([]string, error) {
 	seen := map[string]bool{}
 	for _, m := range matchers {
-		for _, variant := range expandBareHistogramMatcher(h.parser, m, h.Schema.HistogramTable) {
-			vals, err := h.labelValuesForMatcher(ctx, name, variant, start, end)
-			if err != nil {
-				return nil, err
-			}
-			for _, v := range vals {
-				if v != "" {
-					seen[v] = true
+		for _, nameVariant := range expandUnderscoredMetricNameMatcher(h.parser, m) {
+			for _, variant := range expandBareHistogramMatcher(h.parser, nameVariant, h.Schema.HistogramTable) {
+				vals, err := h.labelValuesForMatcher(ctx, name, variant, start, end)
+				if err != nil {
+					return nil, err
+				}
+				for _, v := range vals {
+					if v != "" {
+						seen[v] = true
+					}
 				}
 			}
 		}
