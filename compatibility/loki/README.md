@@ -25,6 +25,7 @@ compatibility/loki/
   docker-compose.yml              clickhouse + reference loki + cerberus
   loki-config.yaml                reference Loki single-binary config
   cerberus-test-queries.yml       overlay: per-query drops + reasons
+  upstream-skip-baseline.txt      pinned set of upstream `skip: true` keys (sanity rail; see "Upstream-skip baseline")
   dataset_metadata.json           pinned dataset metadata for ${SELECTOR}/${LABEL_*}
   reports/                        diff driver output (gitignored)
   cmd/
@@ -117,9 +118,58 @@ that lives OUTSIDE the AGPL `upstream/` boundary:
   `reason:` plus a `jira:` reference; the CI gate at
   `scripts/check-skip-additions.sh` rejects new entries that omit
   either.
+- `upstream-skip-baseline.txt` — pinned set of corpus entries the
+  upstream YAML marks `skip: true`, one
+  `<suite>/<file>.yaml#<description>` key per line. The driver's sanity
+  rail (task #269) loads the full corpus on every run and asserts the
+  upstream-skipped set matches this file; drift in either direction
+  (a new upstream skip, or a previously-skipped query re-enabled
+  upstream) is a hard error, surfacing the regression before it can
+  silently feed back into the compliance score. Regenerate via
+  `loki-compliance-tester -regen-baseline -skip-baseline=...` after
+  auditing the corpus diff a re-snapshot introduces. See
+  [Upstream-skip baseline](#upstream-skip-baseline) for the procedure.
 - `dataset_metadata.json` — pinned dataset metadata that maps
   `${SELECTOR}` / `${LABEL_NAME}` / `${LABEL_VALUE}` template vars to
   concrete values produced by the seeder under `cmd/seed/`.
+
+## Upstream-skip baseline
+
+The vendored corpus contains ~15 queries upstream marks `skip: true`
+(quantile/stddev unwrap aggregations, structured-metadata numeric label
+filters, a JSON parser regression). The cerberus driver calls
+`registry.GetQueries(includeSkip=false, ...)` so these never reach the
+wire, but that filtering is invisible to the compat score — if upstream
+ever flips one of these to `skip: false` (e.g. the v2 engine grows
+quantile support), the query would silently slip into the corpus and
+either pass or fail without the operator noticing the boundary moved.
+
+`upstream-skip-baseline.txt` is the trip-wire. The driver loads the
+full corpus (`includeSkipped=true`), partitions it into runnable +
+upstream-skipped, and diffs the upstream-skipped set against the file.
+Drift either way fails the run:
+
+- Added keys (the corpus marks `skip: true` but the baseline does not)
+  mean the re-snapshot introduced new boundaries cerberus needs to
+  triage.
+- Removed keys (the baseline expects `skip: true` but the corpus no
+  longer carries it) mean upstream re-enabled a previously-skipped
+  query; the operator must decide whether cerberus is ready to diff
+  against it.
+
+Regenerate after a corpus bump (or any deliberate baseline update):
+
+```sh
+go run ./compatibility/loki/cmd/loki-compliance-tester \
+    -corpus=compatibility/loki/upstream/loki-bench/queries \
+    -skip-baseline=compatibility/loki/upstream-skip-baseline.txt \
+    -regen-baseline
+```
+
+The regen path is corpus-only — it does not contact any Loki
+endpoint. Review the resulting diff before committing: an unexpected
+addition usually means a real upstream regression cerberus should
+chase, not a baseline to silently rubber-stamp.
 
 ## Running the harness
 

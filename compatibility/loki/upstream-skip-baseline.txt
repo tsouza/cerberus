@@ -1,0 +1,37 @@
+# Upstream `skip: true` baseline for the vendored grafana/loki bench corpus.
+#
+# Each non-comment line is a `<suite>/<file>.yaml#<description>` key
+# identifying a corpus entry whose YAML carries `skip: true`. The
+# loki-compliance-tester's sanity rail loads the full corpus
+# (includeSkipped=true), splits it into runnable + upstream-skipped, and
+# diffs the upstream-skipped set against this file. Any drift (new
+# skipped entries that aren't here, or expected entries that disappeared)
+# fails the harness — so an upstream YAML flipping `skip: true` →
+# `skip: false` cannot silently reintroduce a query cerberus is not yet
+# compatible with.
+#
+# Regenerate after a corpus re-snapshot via:
+#
+#     loki-compliance-tester \
+#         -corpus=compatibility/loki/upstream/loki-bench/queries \
+#         -skip-baseline=compatibility/loki/upstream-skip-baseline.txt \
+#         -regen-baseline
+#
+# Sorted lexically; comment lines (`#` prefix) and blank lines are
+# ignored by the loader so the file can carry rationale alongside the
+# entries.
+exhaustive/unwrap-aggregations.yaml#P99 duration with conversion
+exhaustive/unwrap-aggregations.yaml#P99 latency grouped by level
+exhaustive/unwrap-aggregations.yaml#Quantile over time - p50 (median)
+exhaustive/unwrap-aggregations.yaml#Quantile over time - p90
+exhaustive/unwrap-aggregations.yaml#Quantile over time - p95
+exhaustive/unwrap-aggregations.yaml#Quantile over time - p99
+exhaustive/unwrap-aggregations.yaml#Standard deviation grouped by level
+exhaustive/unwrap-aggregations.yaml#Standard deviation over time
+exhaustive/unwrap-aggregations.yaml#Standard variance grouped by level
+exhaustive/unwrap-aggregations.yaml#Standard variance over time
+fast/structured-metadata.yaml#JSON parsing with structured metadata filter first
+regression/drilldown-patterns.yaml#Drilldown unwrap query with detected_level grouping
+regression/metric-queries.yaml#HTTP status code distribution
+regression/structured-metadata.yaml#Drilldown pattern with case-insensitive error search
+regression/structured-metadata.yaml#JSON parsing with duration filter and structured metadata

@@ -74,19 +74,21 @@ func main() {
 
 // flags collects all CLI / env knobs in one place.
 type flags struct {
-	addr1       string
-	addr2       string
-	corpusDir   string
-	metadataDir string
-	overlayPath string
-	reportPath  string
-	scorePath   string
-	tolerance   float64
-	rangeType   string
-	seed        int64
-	parallelism int
-	includeSkip bool
-	timeout     time.Duration
+	addr1            string
+	addr2            string
+	corpusDir        string
+	metadataDir      string
+	overlayPath      string
+	reportPath       string
+	scorePath        string
+	skipBaselinePath string
+	regenBaseline    bool
+	tolerance        float64
+	rangeType        string
+	seed             int64
+	parallelism      int
+	includeSkip      bool
+	timeout          time.Duration
 }
 
 func parseFlags() flags {
@@ -98,6 +100,8 @@ func parseFlags() flags {
 	flag.StringVar(&f.overlayPath, "overlay", "", "Optional cerberus-test-queries.yml overlay (skip/fail per source key)")
 	flag.StringVar(&f.reportPath, "report", "", "Report output path; empty writes to stdout")
 	flag.StringVar(&f.scorePath, "score", "", "shields.io endpoint-badge score JSON output path; empty means do not write")
+	flag.StringVar(&f.skipBaselinePath, "skip-baseline", "", "Path to the upstream-skip-baseline.txt file; when set, the harness asserts the upstream YAML `skip: true` set matches this file and fails on drift")
+	flag.BoolVar(&f.regenBaseline, "regen-baseline", false, "Regenerate -skip-baseline from the current corpus and exit (writes the file, then returns 0 without contacting any Loki endpoint)")
 	flag.Float64Var(&f.tolerance, "tolerance", 1e-5, "Float comparison tolerance (matches upstream remote_test.go default)")
 	flag.StringVar(&f.rangeType, "range-type", "range", "Query range type: 'range' or 'instant'")
 	flag.Int64Var(&f.seed, "seed", 42, "Random seed for query template resolution (matches upstream default)")
@@ -110,10 +114,49 @@ func parseFlags() flags {
 
 func run() error {
 	f := parseFlags()
+
+	// -regen-baseline is a corpus-only operation: load the registry,
+	// derive the skip set, write the baseline file, and exit. No Loki
+	// endpoints are contacted, so -addr-1 / -addr-2 are not required in
+	// this mode.
+	if f.regenBaseline {
+		if f.skipBaselinePath == "" {
+			return errors.New("-regen-baseline requires -skip-baseline to be set (the destination path)")
+		}
+		_, upstreamSkipped, err := loadAllQueriesAndSplit(f)
+		if err != nil {
+			return fmt.Errorf("loading corpus for baseline regen: %w", err)
+		}
+		if err := writeSkipBaseline(f.skipBaselinePath, upstreamSkipped); err != nil {
+			return fmt.Errorf("writing baseline: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "==> wrote upstream-skip baseline: path=%s entries=%d\n",
+			f.skipBaselinePath, len(upstreamSkipped))
+		return nil
+	}
+
 	if f.addr1 == "" || f.addr2 == "" {
 		return errors.New("both -addr-1 and -addr-2 must be set")
 	}
 	isInstant := f.rangeType == "instant"
+
+	// Sanity rail (task #269): when -skip-baseline is set, partition
+	// the full corpus into runnable + upstream-skipped, then diff the
+	// skipped set against the pinned baseline. Drift surfaces as a hard
+	// error so an upstream YAML flip can't silently regress the
+	// compliance score by reintroducing a query cerberus is not yet
+	// compatible with.
+	if f.skipBaselinePath != "" {
+		_, upstreamSkipped, err := loadAllQueriesAndSplit(f)
+		if err != nil {
+			return fmt.Errorf("loading corpus for skip-baseline check: %w", err)
+		}
+		if err := checkSkipBaseline(f.skipBaselinePath, upstreamSkipped); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "==> upstream-skip baseline ok: entries=%d path=%s\n",
+			len(upstreamSkipped), f.skipBaselinePath)
+	}
 
 	overlay, err := loadOverlay(f.overlayPath)
 	if err != nil {
@@ -297,6 +340,169 @@ func loadCases(f flags, isInstant bool) ([]loadedCase, error) {
 		cases = filtered
 	}
 	return cases, nil
+}
+
+// loadAllQueriesAndSplit reuses the bench registry to load every
+// suite, then partitions the result into runnable (`Skip == false`)
+// and upstream-skipped (`Skip == true`) slices. The runnable slice is
+// what the normal compareAll path operates on; the skipped slice
+// feeds the sanity rail (baseline diff, baseline regen). Loading once
+// and splitting locally keeps the bench-package call surface small —
+// `GetQueries(true, ...)` returns the full corpus.
+func loadAllQueriesAndSplit(f flags) (runnable, upstreamSkipped []bench.QueryDefinition, err error) {
+	registry := bench.NewQueryRegistry(f.corpusDir)
+	suites := []bench.Suite{bench.SuiteFast, bench.SuiteRegression, bench.SuiteExhaustive}
+	if loadErr := registry.Load(suites...); loadErr != nil {
+		return nil, nil, fmt.Errorf("registry.Load: %w", loadErr)
+	}
+	all := registry.GetQueries(true, suites...)
+	for _, def := range all {
+		if def.Skip {
+			upstreamSkipped = append(upstreamSkipped, def)
+		} else {
+			runnable = append(runnable, def)
+		}
+	}
+	return runnable, upstreamSkipped, nil
+}
+
+// baselineKey derives the stable lookup key for a QueryDefinition. The
+// shape matches the overlay key (`<suite>/<file>.yaml#<description>`)
+// so a reviewer can search either file by the same string.
+func baselineKey(def bench.QueryDefinition) string {
+	return stripSourceLine(def.Source) + "#" + def.Description
+}
+
+// readSkipBaseline parses the baseline file. Lines beginning with `#`
+// and blank lines are ignored so the file can carry rationale comments
+// alongside the entries. Returned slice is sorted ascending.
+func readSkipBaseline(path string) ([]string, error) {
+	b, err := os.ReadFile(path) //nolint:gosec // CLI-supplied baseline path; harness tool
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, line := range strings.Split(string(b), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		out = append(out, trimmed)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// writeSkipBaseline rewrites the baseline file from the given
+// QueryDefinition slice. The header preserves the rationale block + the
+// regen incantation so the file is self-documenting after a regen
+// flips its content. Entries are sorted lexically.
+func writeSkipBaseline(path string, defs []bench.QueryDefinition) error {
+	keys := make([]string, 0, len(defs))
+	for _, def := range defs {
+		keys = append(keys, baselineKey(def))
+	}
+	sort.Strings(keys)
+
+	var buf strings.Builder
+	buf.WriteString(skipBaselineHeader)
+	for _, k := range keys {
+		buf.WriteString(k)
+		buf.WriteByte('\n')
+	}
+	return os.WriteFile(path, []byte(buf.String()), 0o600)
+}
+
+// skipBaselineHeader is the leading commentary written by
+// writeSkipBaseline. It documents the file's purpose + the regen
+// procedure so a reviewer doesn't need to cross-reference the README to
+// understand what the entries represent.
+const skipBaselineHeader = `# Upstream ` + "`skip: true`" + ` baseline for the vendored grafana/loki bench corpus.
+#
+# Each non-comment line is a ` + "`<suite>/<file>.yaml#<description>`" + ` key
+# identifying a corpus entry whose YAML carries ` + "`skip: true`" + `. The
+# loki-compliance-tester's sanity rail loads the full corpus
+# (includeSkipped=true), splits it into runnable + upstream-skipped, and
+# diffs the upstream-skipped set against this file. Any drift (new
+# skipped entries that aren't here, or expected entries that disappeared)
+# fails the harness — so an upstream YAML flipping ` + "`skip: true`" + ` →
+# ` + "`skip: false`" + ` cannot silently reintroduce a query cerberus is not yet
+# compatible with.
+#
+# Regenerate after a corpus re-snapshot via:
+#
+#     loki-compliance-tester \
+#         -corpus=compatibility/loki/upstream/loki-bench/queries \
+#         -skip-baseline=compatibility/loki/upstream-skip-baseline.txt \
+#         -regen-baseline
+#
+# Sorted lexically; comment lines (` + "`#`" + ` prefix) and blank lines are
+# ignored by the loader so the file can carry rationale alongside the
+# entries.
+`
+
+// checkSkipBaseline compares the upstream-skipped corpus set against
+// the pinned baseline file. Drift is reported as a structured error
+// naming every added / removed key so the operator can land a
+// matching baseline update (via -regen-baseline) — or, more often,
+// confront the corpus drift the upstream re-snapshot introduced.
+func checkSkipBaseline(path string, upstreamSkipped []bench.QueryDefinition) error {
+	want, err := readSkipBaseline(path)
+	if err != nil {
+		return fmt.Errorf("reading skip baseline %q: %w", path, err)
+	}
+	got := make([]string, 0, len(upstreamSkipped))
+	for _, def := range upstreamSkipped {
+		got = append(got, baselineKey(def))
+	}
+	sort.Strings(got)
+
+	wantSet := make(map[string]struct{}, len(want))
+	for _, k := range want {
+		wantSet[k] = struct{}{}
+	}
+	gotSet := make(map[string]struct{}, len(got))
+	for _, k := range got {
+		gotSet[k] = struct{}{}
+	}
+
+	var added, removed []string
+	for _, k := range got {
+		if _, ok := wantSet[k]; !ok {
+			added = append(added, k)
+		}
+	}
+	for _, k := range want {
+		if _, ok := gotSet[k]; !ok {
+			removed = append(removed, k)
+		}
+	}
+	if len(added) == 0 && len(removed) == 0 {
+		return nil
+	}
+
+	var msg strings.Builder
+	msg.WriteString("upstream-skip baseline drift detected (vendored corpus no longer matches ")
+	msg.WriteString(path)
+	msg.WriteString(")\n")
+	if len(added) > 0 {
+		msg.WriteString("  added (corpus now marks `skip: true`, baseline does not):\n")
+		for _, k := range added {
+			msg.WriteString("    + ")
+			msg.WriteString(k)
+			msg.WriteByte('\n')
+		}
+	}
+	if len(removed) > 0 {
+		msg.WriteString("  removed (baseline expects `skip: true`, corpus no longer carries it — a previously-skipped query has been re-enabled upstream):\n")
+		for _, k := range removed {
+			msg.WriteString("    - ")
+			msg.WriteString(k)
+			msg.WriteByte('\n')
+		}
+	}
+	msg.WriteString("  resolve by either (a) regenerating the baseline via -regen-baseline after auditing the diff, or (b) restoring the upstream `skip: true` flag if the change was unintentional.")
+	return errors.New(msg.String())
 }
 
 // loadedCase carries either a fully-expanded TestCase or an expansion
