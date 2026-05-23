@@ -13,7 +13,7 @@
  * response":
  *
  *   - N5 (`<name>_bucket` series MUST exist when the panel is meant
- *     to render). The cerberus-self "P95 latency by language" panel
+ *     to render). The cerberus dashboard's "P95 latency by language" panel
  *     went flat at 0 because the underlying bucket series were
  *     emitted under a sibling metric root (cerberus_pipeline vs
  *     cerberus_queries_duration_seconds_bucket), and
@@ -189,7 +189,7 @@ test('histogram-completeness: every histogram_quantile panel has its _bucket / _
     process.env.GRAFANA_BASE_URL ??
     'http://localhost:3000';
 
-  // Seed traffic so cerberus-self's histogram panels have something
+  // Seed traffic so the cerberus dashboard's histogram panels have something
   // to render. generateSelfTraffic swallows individual request errors
   // — this is a nudge, not an assertion.
   await generateSelfTraffic(request, SEED_TRAFFIC_SECONDS);

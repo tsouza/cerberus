@@ -137,12 +137,31 @@ const EXPECTED_EMPTY: ReadonlyArray<{ prefix: string; why: string }> = [
     // compose stack with no overload + clean pipeline, the bulk of the
     // counters legitimately have 0 samples in the 5m window even though
     // the catalog enumerates them. Sister-spec panel-kiosk surfaces the
-    // same emission-cadence behaviour on the otelcol-observability
+    // same emission-cadence behaviour on the otelcol
     // dashboard. Cover the whole namespace rather than ~30 individual
     // entries: every otelcol_* metric shares the same "collector
     // self-telemetry, emit-only-on-event" cadence story, so the
     // rationale doesn't change per metric.
     why: 'otelcol_* collector self-telemetry; counters emit only on the underlying event, leaving the 5m window empty on a fresh stack',
+  },
+  {
+    prefix: 'system_',
+    // hostmetrics receiver gauges (`system_cpu_*`, `system_disk_*`,
+    // `system_memory_*`, `system_network_*`, `system_filesystem_*`) emit
+    // on a 15s scrape cadence. The catalog endpoint sees them after the
+    // first push, but the per-name `/api/v1/series` 5m window can race
+    // ahead of the next emission on a fresh compose stack — same cadence
+    // story as the `otelcol_` / `k8s_` prefixes.
+    why: 'hostmetrics receiver gauges; emission cadence leaves the 5m window empty on a fresh stack',
+  },
+  {
+    prefix: 'clickhouse_event',
+    // sqlqueryreceiver emits one row per CH event (`SelectedBytes`,
+    // `InsertedRows`, `Query`, `MergedRows`, …). A quiet compose stack
+    // with no traffic doesn't trigger most CH events in the 5m window,
+    // so the bare-name catalog entry is present but the series probe
+    // returns 0. Real production stacks fire these continuously.
+    why: 'sqlqueryreceiver per-CH-event counters; quiet compose stack has no events in the 5m window',
   },
 ];
 
@@ -320,7 +339,7 @@ test.describe('iterate-metrics-explorer: Drilldown-Metrics + label chips', () =>
   test.describe.configure({ mode: 'serial' });
 
   test.beforeAll(async ({ request }) => {
-    // Warmup so the cerberus-self metrics show populated values.
+    // Warmup so the cerberus self metrics show populated values.
     await generateSelfTraffic(request, SEED_TRAFFIC_SECONDS);
     // Allow OTLP push + CH insert flush to settle. See the comment on
     // POST_WARMUP_FLUSH_SECONDS above — without this, /api/v1/series

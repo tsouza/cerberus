@@ -113,32 +113,8 @@ data:
           - key: k8s.cluster.name
             value: cerberus-e2e
             action: upsert
-      # Strip exemplars from the service-graph metrics before they reach
-      # the clickhouseexporter. The servicegraph connector emits
-      # exemplars whose pcommon.Value pointers the v0.116.0 contrib
-      # clickhouseexporter dereferences without a nil check in its
-      # sum_metrics insert path
-      # (`exporter/clickhouseexporter/internal/sum_metrics.go:129`),
-      # crashing the whole collector on the first metrics_flush_interval
-      # tick. The fix is upstream-bound; until the bump lands here we
-      # drop exemplars on the servicegraph branch — exemplars are a
-      # nice-to-have for service-graph metrics (the connector emits
-      # representative TraceIDs), but the edge series themselves still
-      # flow through.
-      transform/servicegraph_drop_exemplars:
-        error_mode: ignore
-        metric_statements:
-          - context: datapoint
-            statements:
-              # Clear exemplars on every datapoint flowing through this
-              # branch. The connector populates them with representative
-              # trace IDs whose nested pcommon.Value pointers the
-              # v0.116.0 contrib clickhouseexporter dereferences blindly.
-              # Empty slice = no exemplar attribute loop runs at all.
-              - set(exemplars, []) where true
-
     connectors:
-      # The servicegraph connector reads spans off the `traces` pipeline,
+      # The service_graph connector reads spans off the `traces` pipeline,
       # derives caller -> callee edges from SpanKind=Client + peer.service
       # (stamped by internal/chclient/client.go on every CH round-trip),
       # and emits Prometheus-shape metrics
@@ -150,12 +126,17 @@ data:
       # observability dogfood loop on the k3d cluster the same way the
       # compose stack does (see test/e2e/otel-collector/compose-config.yaml).
       #
+      # 0.152.x renamed the connector key from `servicegraph` to
+      # `service_graph`; the deprecation alias is still accepted but
+      # cerberus pins the canonical form to mirror the compose stack
+      # and stay forward-compatible.
+      #
       # Buckets are the OTel-Collector default for HTTP/RPC traffic; ttl
       # is intentionally short (the store is purely a cross-span join
       # cache for matching client / server pairs, and CH-call spans don't
       # have a server-side sibling — every edge resolves on the client
       # span alone via peer.service).
-      servicegraph:
+      service_graph:
         latency_histogram_buckets: [100ms, 250ms, 1s, 5s, 10s]
         store:
           ttl: 2s
@@ -199,24 +180,21 @@ data:
         traces:
           receivers: [otlp]
           processors: [memory_limiter, resource, batch]
-          # `servicegraph` is wired as an additional exporter on the
+          # `service_graph` is wired as an additional exporter on the
           # traces pipeline because, in connector wiring, a connector
           # plays the role of an exporter on the source pipeline-type
           # and a receiver on the destination pipeline-type. Spans
           # still flow to clickhouseexporter as before — the connector
           # is a tap, not a swap.
-          exporters: [clickhouse, servicegraph]
+          exporters: [clickhouse, service_graph]
         # metrics/servicegraph receives the connector's derived
         # `traces_service_graph_*` series and ships them through the
         # same clickhouseexporter the normal metrics pipeline uses.
         # Cerberus's Prom head then queries them back out of CH so
         # Grafana's Tempo Service Graph tab can render edges.
         metrics/servicegraph:
-          receivers: [servicegraph]
-          processors:
-            - memory_limiter
-            - transform/servicegraph_drop_exemplars
-            - batch
+          receivers: [service_graph]
+          processors: [memory_limiter, batch]
           exporters: [clickhouse]
 ---
 # Agent collector config (per-node DaemonSet):
@@ -367,13 +345,14 @@ spec:
       serviceAccountName: otel-collector
       containers:
         - name: collector
-          # 0.120.0 mirrors the compose stack (docker-compose.yml). v0.116.1
-          # ships a clickhouseexporter that nil-derefs on the servicegraph
-          # connector's exemplar payload (sum_metrics.go:129); 0.120.0 is
-          # the smallest bump that boots clean against the same config and
-          # is the floor for the servicegraph + transform/servicegraph_drop_exemplars
-          # branch added above.
-          image: otel/opentelemetry-collector-contrib:0.120.0
+          # 0.152.1 mirrors the compose stack (docker-compose.yml). The
+          # earlier 0.120.0 pin was the smallest bump past the v0.116.1
+          # clickhouseexporter nil-deref on the servicegraph connector's
+          # exemplar payload (sum_metrics.go:129); the underlying issue
+          # is fixed in 0.152.1, which is why the previous
+          # transform/servicegraph_drop_exemplars workaround was dropped
+          # together with this bump.
+          image: otel/opentelemetry-collector-contrib:0.152.1
           args: ["--config=/etc/otel/config.yaml"]
           ports:
             - name: otlp-grpc
@@ -430,9 +409,9 @@ spec:
       hostNetwork: false
       containers:
         - name: collector
-          # Pinned to the same 0.120.0 tag as the gateway above to keep
+          # Pinned to the same 0.152.1 tag as the gateway above to keep
           # the agent / gateway pair on a matching contrib release.
-          image: otel/opentelemetry-collector-contrib:0.120.0
+          image: otel/opentelemetry-collector-contrib:0.152.1
           args: ["--config=/etc/otel/config.yaml"]
           env:
             - name: K8S_NODE_NAME

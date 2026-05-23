@@ -5,7 +5,7 @@
 # outer SELECT only surfaced `anchor_ts`. The fix projects an additional
 # `anchor_ts AS TimeUnix` alias so the wrapping Aggregate's per-step
 # GROUP BY (ColumnRef{TimestampColumn}, see internal/promql/lower.go
-# `bucket_ts` branch) resolves. The cerberus-self dashboard's
+# `bucket_ts` branch) resolves. The cerberus dashboard's
 # request-rate panel exercises exactly this shape.
 
 -- query.promql --

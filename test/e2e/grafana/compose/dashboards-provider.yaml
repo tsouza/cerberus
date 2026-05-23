@@ -2,7 +2,7 @@
 # stack. Tells Grafana to scan /etc/grafana/provisioning/dashboards/cerberus
 # for JSON dashboards and load them under the "Cerberus" folder.
 #
-# One starter dashboard ships with the compose quickstart:
+# Starter dashboards that ship with the compose quickstart:
 #   - cerberus-self.json: cerberus's own observability surface (per-head
 #     request rate, latency quantiles, error rate, in-flight, admission
 #     rejections, recent ERROR logs, slow-query traces). Wired as the
@@ -10,6 +10,21 @@
 #     opening localhost:3000 lands directly on it. Cerberus's own
 #     self-telemetry is the sole data source — the quickstart deliberately
 #     does not run a fixture seeder.
+#   - clickhouse.json: ClickHouse server health — query
+#     rate by type, MergeTree I/O, merges, cache, thread pools,
+#     replication, errors. Sourced from the sqlquery/clickhouse OTel
+#     receiver that polls system.metrics / system.events /
+#     system.asynchronous_metrics every 15 s.
+#   - otelcol.json: OpenTelemetry Collector self-metrics
+#     scraped from its own :8888 endpoint by an in-process
+#     prometheus/self receiver. Receiver / processor / exporter rate,
+#     queue depth, drops, batch send sizes, Go runtime memory.
+#   - host.json: hostmetricsreceiver scrapers (cpu,
+#     memory, disk, network, filesystem, load, paging, processes).
+#     Reads from the otel-collector container's /proc + /sys by
+#     default; host-machine-wide visibility requires the host paths
+#     mounted into the container (see the comment block at the top of
+#     test/e2e/otel-collector/compose-config.yaml).
 #
 # The k3d e2e stack at test/e2e/k3s/ has its own ConfigMap-based provisioning
 # (grafana-dashboards.yaml) — keep the two in sync when adding new dashboards.
