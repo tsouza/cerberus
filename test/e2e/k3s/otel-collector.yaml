@@ -114,7 +114,7 @@ data:
             value: cerberus-e2e
             action: upsert
     connectors:
-      # The servicegraph connector reads spans off the `traces` pipeline,
+      # The service_graph connector reads spans off the `traces` pipeline,
       # derives caller -> callee edges from SpanKind=Client + peer.service
       # (stamped by internal/chclient/client.go on every CH round-trip),
       # and emits Prometheus-shape metrics
@@ -126,12 +126,17 @@ data:
       # observability dogfood loop on the k3d cluster the same way the
       # compose stack does (see test/e2e/otel-collector/compose-config.yaml).
       #
+      # 0.152.x renamed the connector key from `servicegraph` to
+      # `service_graph`; the deprecation alias is still accepted but
+      # cerberus pins the canonical form to mirror the compose stack
+      # and stay forward-compatible.
+      #
       # Buckets are the OTel-Collector default for HTTP/RPC traffic; ttl
       # is intentionally short (the store is purely a cross-span join
       # cache for matching client / server pairs, and CH-call spans don't
       # have a server-side sibling — every edge resolves on the client
       # span alone via peer.service).
-      servicegraph:
+      service_graph:
         latency_histogram_buckets: [100ms, 250ms, 1s, 5s, 10s]
         store:
           ttl: 2s
@@ -175,20 +180,20 @@ data:
         traces:
           receivers: [otlp]
           processors: [memory_limiter, resource, batch]
-          # `servicegraph` is wired as an additional exporter on the
+          # `service_graph` is wired as an additional exporter on the
           # traces pipeline because, in connector wiring, a connector
           # plays the role of an exporter on the source pipeline-type
           # and a receiver on the destination pipeline-type. Spans
           # still flow to clickhouseexporter as before — the connector
           # is a tap, not a swap.
-          exporters: [clickhouse, servicegraph]
+          exporters: [clickhouse, service_graph]
         # metrics/servicegraph receives the connector's derived
         # `traces_service_graph_*` series and ships them through the
         # same clickhouseexporter the normal metrics pipeline uses.
         # Cerberus's Prom head then queries them back out of CH so
         # Grafana's Tempo Service Graph tab can render edges.
         metrics/servicegraph:
-          receivers: [servicegraph]
+          receivers: [service_graph]
           processors: [memory_limiter, batch]
           exporters: [clickhouse]
 ---
