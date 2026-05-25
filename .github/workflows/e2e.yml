@@ -65,7 +65,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - id: filter
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         with:
           # See ci.yml for why `every` is required (the `**` baseline
           # plus negation patterns would otherwise always be true).
@@ -111,7 +111,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       - name: docker compose up --wait
         run: |
@@ -151,7 +151,7 @@ jobs:
       # fails before the install fallback below ever runs when the
       # cache-dependency-path is unresolvable. Re-add cache: npm once a
       # lockfile lands under test/e2e/playwright/.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: '20'
 
@@ -232,7 +232,7 @@ jobs:
 
       - name: upload Playwright report on failure
         if: steps.playwright_smoke.outcome == 'failure'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: compose-grafana-smoke-report
           path: |
