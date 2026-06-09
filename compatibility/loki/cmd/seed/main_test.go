@@ -284,6 +284,37 @@ func TestExtractSnapshot(t *testing.T) {
 	}
 }
 
+// TestVerifyLabelsWindowIsAnchorRelative pins the wall-clock
+// independence of the post-seed /labels probe window. The 2026-06-08
+// nightly went red with zero commits on main because the window's end
+// was `time.Now() + 24h`: the span grew with every passing day until
+// it crossed Loki's default `max_query_length` (30d1h) and the
+// reference Loki started rejecting the probe with status 400. The
+// window must bracket the fixture span [anchor, anchor+24h] and must
+// stay a fixed width regardless of when the harness runs.
+func TestVerifyLabelsWindowIsAnchorRelative(t *testing.T) {
+	t.Parallel()
+
+	anchorTS, err := time.Parse(time.RFC3339, anchor)
+	if err != nil {
+		t.Fatalf("parse anchor: %v", err)
+	}
+	start, end := verifyLabelsWindow(anchorTS)
+
+	if !start.Before(anchorTS) {
+		t.Errorf("window start %v must precede the anchor %v", start, anchorTS)
+	}
+	if fixtureEnd := anchorTS.Add(24 * time.Hour); !end.After(fixtureEnd) {
+		t.Errorf("window end %v must cover the fixture end %v", end, fixtureEnd)
+	}
+	// Loki's default max_query_length is 30d1h (721h). The probe window
+	// must sit far inside it no matter how old the anchor gets.
+	const maxQueryLength = 721 * time.Hour
+	if span := end.Sub(start); span >= maxQueryLength {
+		t.Errorf("window span %v exceeds Loki's default max_query_length %v", span, maxQueryLength)
+	}
+}
+
 // contains is a tiny helper kept local so the test file has no
 // dependency on strings.Contains' import.
 func contains(haystack, needle string) bool {
