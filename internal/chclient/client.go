@@ -64,12 +64,14 @@ func startExecuteSpan(ctx context.Context, sql, addr string) (context.Context, t
 		// server.address is the modern semconv key; net.peer.name is the
 		// pre-v1.21 alias still consumed by older dashboards. Stamp both
 		// so neither generation breaks.
-		attrs = append(attrs,
+		attrs = append(
+			attrs,
 			attrServerAddr.String(addr),
 			attrNetPeerName.String(addr),
 		)
 	}
-	return tracer.Start(ctx, cerbtrace.SpanExecute,
+	return tracer.Start(
+		ctx, cerbtrace.SpanExecute,
 		trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(attrs...),
 	)
@@ -178,7 +180,7 @@ func (c *Client) Ping(ctx context.Context) error {
 		return fmt.Errorf("chclient: ping: %w", ErrCircuitOpen)
 	}
 	err := c.conn.Ping(ctx)
-	c.br.record(err)
+	c.br.record(ctx, err)
 	if err != nil {
 		return fmt.Errorf("chclient: ping: %w", err)
 	}
@@ -207,7 +209,7 @@ func (c *Client) Exec(ctx context.Context, sql string, args ...any) error {
 	ctx, span := startExecuteSpan(ctx, sql, c.addr)
 	defer span.End()
 	err := c.conn.Exec(ctx, sql, args...)
-	c.br.record(err)
+	c.br.record(ctx, err)
 	if err != nil {
 		span.RecordError(err)
 		return fmt.Errorf("chclient: exec: %w", err)
@@ -271,7 +273,7 @@ func (c *Client) QueryStrings(ctx context.Context, sql string, args ...any) ([]s
 	defer span.End()
 	defer flushProgress(ctx)
 	rows, err := c.conn.Query(ctx, sql, args...)
-	c.br.record(err)
+	c.br.record(ctx, err)
 	if err != nil {
 		span.RecordError(err)
 		return nil, fmt.Errorf("chclient: query: %w", err)
@@ -318,7 +320,7 @@ func (c *Client) QueryTimestampedLines(ctx context.Context, sql string, args ...
 	defer span.End()
 	defer flushProgress(ctx)
 	rows, err := c.conn.Query(ctx, sql, args...)
-	c.br.record(err)
+	c.br.record(ctx, err)
 	if err != nil {
 		span.RecordError(err)
 		return nil, fmt.Errorf("chclient: query: %w", err)
@@ -366,7 +368,7 @@ func (c *Client) QueryMetricMeta(ctx context.Context, sql, metricType string, ar
 	defer span.End()
 	defer flushProgress(ctx)
 	rows, err := c.conn.Query(ctx, sql, args...)
-	c.br.record(err)
+	c.br.record(ctx, err)
 	if err != nil {
 		span.RecordError(err)
 		return nil, fmt.Errorf("chclient: query: %w", err)
@@ -416,7 +418,7 @@ func (c *Client) QueryIndexStats(ctx context.Context, sql string, args ...any) (
 	defer span.End()
 	defer flushProgress(ctx)
 	rows, err := c.conn.Query(ctx, sql, args...)
-	c.br.record(err)
+	c.br.record(ctx, err)
 	if err != nil {
 		span.RecordError(err)
 		return IndexStatsRow{}, fmt.Errorf("chclient: query: %w", err)
@@ -458,7 +460,7 @@ func (c *Client) QueryIndexVolume(ctx context.Context, sql string, args ...any) 
 	defer span.End()
 	defer flushProgress(ctx)
 	rows, err := c.conn.Query(ctx, sql, args...)
-	c.br.record(err)
+	c.br.record(ctx, err)
 	if err != nil {
 		span.RecordError(err)
 		return nil, fmt.Errorf("chclient: query: %w", err)
@@ -521,7 +523,7 @@ func (c *Client) QueryExemplars(ctx context.Context, sql string, args ...any) ([
 	defer span.End()
 	defer flushProgress(ctx)
 	rows, err := c.conn.Query(ctx, sql, args...)
-	c.br.record(err)
+	c.br.record(ctx, err)
 	if err != nil {
 		span.RecordError(err)
 		return nil, fmt.Errorf("chclient: query: %w", err)
@@ -565,7 +567,7 @@ func (c *Client) QueryLabelSets(ctx context.Context, sql string, args ...any) ([
 	defer span.End()
 	defer flushProgress(ctx)
 	rows, err := c.conn.Query(ctx, sql, args...)
-	c.br.record(err)
+	c.br.record(ctx, err)
 	if err != nil {
 		span.RecordError(err)
 		return nil, fmt.Errorf("chclient: query: %w", err)

@@ -142,7 +142,7 @@ func (c *Client) QueryCursor(ctx context.Context, sql string, args ...any) (Curs
 	}
 	ctx, span := startExecuteSpan(ctx, sql, c.addr)
 	rows, err := c.conn.Query(ctx, sql, args...)
-	c.br.record(err)
+	c.br.record(ctx, err)
 	if err != nil {
 		span.RecordError(err)
 		span.End()

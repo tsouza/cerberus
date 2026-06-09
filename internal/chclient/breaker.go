@@ -1,6 +1,7 @@
 package chclient
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"time"
@@ -172,22 +173,51 @@ func (b *breaker) allow() bool {
 }
 
 // record observes the outcome of a CH-touching call and advances
-// the breaker state machine accordingly. err is the post-CH error
-// (nil on success, non-nil otherwise). The caller MUST invoke this
-// exactly once after allow() returns true; not calling it leaves the
-// breaker in a corrupted state (especially under HALF-OPEN where
-// probeInFlight stays true and the breaker stalls forever).
+// the breaker state machine accordingly. ctx is the request context
+// the call ran under; err is the post-CH error (nil on success,
+// non-nil otherwise). The caller MUST invoke this exactly once after
+// allow() returns true; not calling it leaves the breaker in a
+// corrupted state (especially under HALF-OPEN where probeInFlight
+// stays true and the breaker stalls forever).
 //
 // Special case: record skips bookkeeping when err == ErrCircuitOpen
 // because that error means the breaker's allow() already short-
 // circuited; the caller passed it through to record purely to make
 // the call-site shape uniform. Counting it would double-fault the
 // breaker.
-func (b *breaker) record(err error) {
+func (b *breaker) record(ctx context.Context, err error) {
 	// Don't double-count: ErrCircuitOpen means allow() returned
 	// false, so the call never touched CH. Counting it as a failure
 	// would keep the breaker permanently OPEN.
 	if errors.Is(err, ErrCircuitOpen) {
+		return
+	}
+
+	// Client-initiated cancellation is not a ClickHouse health
+	// signal: the caller walked away before the backend answered.
+	// Grafana aborts every in-flight panel query on dashboard
+	// navigation, so counting cancellations as failures lets a
+	// fast-navigating client trip the breaker against a perfectly
+	// healthy CH — the compose kiosk sweep produced exactly that
+	// storm (rapid ?viewPanel navigations cancelled dozens of
+	// in-flight queries within the 10s window, opened the breaker,
+	// and 503'd every panel for the next 5s; see PR #701's
+	// kiosk-console-error capture). The ctx.Err() check catches
+	// driver errors that stringify the cancellation instead of
+	// wrapping context.Canceled. Deadline expiry still counts as a
+	// failure: a backend that can't answer inside the caller's
+	// budget is operationally indistinguishable from a dead one.
+	if err != nil &&
+		(errors.Is(err, context.Canceled) ||
+			(ctx != nil && errors.Is(ctx.Err(), context.Canceled))) {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		// A cancelled HALF-OPEN probe is no verdict either way —
+		// release the probe slot so the next allow() admits a fresh
+		// probe instead of stalling the state machine forever.
+		if b.state == stateHalfOpen {
+			b.probeInFlight = false
+		}
 		return
 	}
 
