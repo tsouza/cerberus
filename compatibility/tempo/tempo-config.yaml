@@ -104,5 +104,21 @@ live_store:
   max_block_duration: 2s
   complete_block_timeout: 5s
 
+# Route TraceQL-metrics queries (/api/metrics/query_range +
+# /api/metrics/query) to the backend-blocks path instead of the live
+# stores. Tempo v3 splits a metrics query at query_backend_after: the
+# part more recent than the cutoff goes to Querier.queryRangeRecent
+# (live stores), the rest to backend blocks. The aggressive live_store
+# flush cadence above keeps only ~5s of data live
+# (complete_block_timeout), so with the default cutoff every harness
+# metrics query — the differ probes an anchor ± 1h window with
+# anchor = now()-5m — lands on the live store and 500s with
+# "time range must be within last 5s". 1s routes effectively
+# everything to the completed blocks the search endpoints already
+# read (blocklist_poll: 2s above keeps discovery fast).
+query_frontend:
+  metrics:
+    query_backend_after: 1s
+
 usage_report:
   reporting_enabled: false
