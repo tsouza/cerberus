@@ -149,11 +149,11 @@ func TestCompare_InvalidJSONFails(t *testing.T) {
 
 func TestTraceKey_UsesRawTraceID(t *testing.T) {
 	t.Parallel()
-	// Since PR #439, cerberus and Tempo both emit the real hex(TraceId),
-	// so the differ keys directly on TraceID. The root names are not
-	// part of the key — only the TraceID is — guaranteeing two traces
-	// with the same TraceID align even if their root names differ
-	// (which would then surface as a field_mismatch under the match).
+	// The differ keys on the canonical form of TraceID. The root names
+	// are not part of the key — only the TraceID is — guaranteeing two
+	// traces with the same TraceID align even if their root names
+	// differ (which would then surface as a field_mismatch under the
+	// match).
 	t1 := TraceSummary{TraceID: "00000000000000000000000000000001", RootServiceName: "checkout", RootTraceName: "GET /api/checkout/0"}
 	t2 := TraceSummary{TraceID: "00000000000000000000000000000001", RootServiceName: "payments", RootTraceName: "POST /api/payments/0"}
 	if traceKey(t1) != traceKey(t2) {
@@ -162,6 +162,56 @@ func TestTraceKey_UsesRawTraceID(t *testing.T) {
 	t3 := TraceSummary{TraceID: "00000000000000000000000000000002", RootServiceName: "checkout", RootTraceName: "GET /api/checkout/0"}
 	if traceKey(t1) == traceKey(t3) {
 		t.Fatal("expected different traceKey for different TraceID")
+	}
+}
+
+// TestTraceKey_CanonicalisesStrippedLeadingZeros pins the
+// zero-padding alignment that flattened 17 of 33 compat cases to DIFF:
+// cerberus emits the spec-canonical 32-hex-char TraceID (PR #656)
+// while reference Tempo strips leading zeros on the wire, so the same
+// 16-byte value arrived as `00af…` (32 chars) on one side and `af…`
+// (30 chars) on the other and the raw-string key filed it as
+// missing_in_a + missing_in_b. Equal values must align; genuinely
+// different IDs must still diff.
+func TestTraceKey_CanonicalisesStrippedLeadingZeros(t *testing.T) {
+	t.Parallel()
+	padded := TraceSummary{TraceID: "00af843259b0a78f5cbe59e11cbaf66b"}
+	stripped := TraceSummary{TraceID: "af843259b0a78f5cbe59e11cbaf66b"}
+	if traceKey(padded) != traceKey(stripped) {
+		t.Fatalf("expected stripped and padded forms of the same TraceID to key identically: %q vs %q",
+			traceKey(padded), traceKey(stripped))
+	}
+	other := TraceSummary{TraceID: "01af843259b0a78f5cbe59e11cbaf66b"}
+	if traceKey(padded) == traceKey(other) {
+		t.Fatal("expected different TraceIDs to key differently")
+	}
+	upper := TraceSummary{TraceID: "00AF843259B0A78F5CBE59E11CBAF66B"}
+	if traceKey(padded) != traceKey(upper) {
+		t.Fatal("expected case-insensitive TraceID keying")
+	}
+}
+
+// TestCompare_StrippedVsPaddedTraceIDsAlign pins the end-to-end
+// Compare behaviour for the zero-padding divergence: a search response
+// pair where tempo stripped the leading zero and cerberus emitted the
+// canonical form must compare Equal.
+func TestCompare_StrippedVsPaddedTraceIDsAlign(t *testing.T) {
+	t.Parallel()
+	tempoBody := []byte(`{"traces":[
+        {"traceID":"af843259b0a78f5cbe59e11cbaf66b","rootServiceName":"checkout","rootTraceName":"GET /api/checkout/22","durationMs":150,"startTimeUnixNano":"1000"}
+    ]}`)
+	cerbBody := []byte(`{"traces":[
+        {"traceID":"00af843259b0a78f5cbe59e11cbaf66b","rootServiceName":"checkout","rootTraceName":"GET /api/checkout/22","durationMs":150,"startTimeUnixNano":"1000"}
+    ]}`)
+	d, err := Compare(tempoBody, cerbBody, "tempo", "cerberus", DefaultDiffOptions())
+	if err != nil {
+		t.Fatalf("Compare: %v", err)
+	}
+	if !d.Equal {
+		t.Fatalf("expected stripped/padded TraceID forms to align, got %+v", d)
+	}
+	if d.MatchedCount != 1 {
+		t.Fatalf("MatchedCount = %d, want 1", d.MatchedCount)
 	}
 }
 

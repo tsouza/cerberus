@@ -40,12 +40,14 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"sort"
+	"strings"
 
 	"github.com/gogo/protobuf/proto"
 	"github.com/grafana/tempo/pkg/tempopb"
@@ -200,7 +202,7 @@ func projectJSONShape(body []byte) (traceShape, error) {
 		for _, sp := range spans {
 			total++
 			if sp.SpanID != "" {
-				ids[sp.SpanID] = struct{}{}
+				ids[canonicalJSONSpanID(sp.SpanID)] = struct{}{}
 			}
 		}
 	}
@@ -219,6 +221,27 @@ func projectJSONShape(body []byte) (traceShape, error) {
 		}
 	}
 	return traceShape{SpanCount: total, SpanIDs: sortedKeys(ids)}, nil
+}
+
+// canonicalJSONSpanID normalises a span ID lifted from a JSON trace
+// body to the 16-char lowercase-hex form projectProtoShape produces
+// (hex.EncodeToString over the 8 raw bytes). Reference Tempo's JSON
+// encoder follows the proto3 JSON mapping and emits bytes fields as
+// standard base64 ("C9WjFN3vISs="); cerberus emits the hex form
+// directly. Both designate the same 8 bytes, so the cross-encoding
+// parity check must compare the decoded value, not the textual shape.
+// Hex is tried first: a 16-char hex string is also valid base64 but
+// decodes to 12 bytes, so the 8-byte length check disambiguates.
+// Anything that decodes to neither form passes through untouched and
+// diffs loudly.
+func canonicalJSONSpanID(s string) string {
+	if b, err := hex.DecodeString(s); err == nil && len(b) == 8 {
+		return strings.ToLower(s)
+	}
+	if b, err := base64.StdEncoding.DecodeString(s); err == nil && len(b) == 8 {
+		return hex.EncodeToString(b)
+	}
+	return s
 }
 
 // spanIDRecord tolerates both `spanId` (Tempo / cerberus camelCase) and

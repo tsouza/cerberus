@@ -372,3 +372,57 @@ func TestDiffTracesEndpoint_CardinalityMismatchReported(t *testing.T) {
 		t.Errorf("missing cardinality reason; reasons=%+v", res.Diff.Reasons)
 	}
 }
+
+// TestCanonicalJSONSpanID pins the cross-encoding span-ID
+// normalisation that flattened the trace-by-id compat case to
+// encoding_mismatch: reference Tempo's JSON encoder follows the
+// proto3 JSON mapping and emits bytes fields as standard base64
+// ("C9WjFN3vISs=") while projectProtoShape produces 16-char
+// lowercase hex — both naming the same 8 bytes. The hex-first order
+// matters: a 16-char hex string is also syntactically valid base64
+// but decodes to 12 bytes, so the 8-byte length check disambiguates.
+func TestCanonicalJSONSpanID(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in, want, why string
+	}{
+		{"0bd5a314ddef212b", "0bd5a314ddef212b", "hex form passes through"},
+		{"0BD5A314DDEF212B", "0bd5a314ddef212b", "hex form is lowercased"},
+		{"C9WjFN3vISs=", "0bd5a314ddef212b", "base64 of the same 8 bytes decodes to hex"},
+		{"cm0aM7aB/T4=", "726d1a33b681fd3e", "base64 with non-hex alphabet chars decodes to hex"},
+		{"not-an-id", "not-an-id", "undecodable input passes through and diffs loudly"},
+	}
+	for _, c := range cases {
+		if got := canonicalJSONSpanID(c.in); got != c.want {
+			t.Errorf("canonicalJSONSpanID(%q) = %q, want %q (%s)", c.in, got, c.want, c.why)
+		}
+	}
+}
+
+// TestProjectJSONShape_DecodesBase64SpanIDs pins that a Tempo-style
+// protojson body (base64 span IDs) projects to the same shape as the
+// proto decoding of the same trace — the parity the per-side
+// encoding_mismatch check asserts.
+func TestProjectJSONShape_DecodesBase64SpanIDs(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"batches":[{"scopeSpans":[{"spans":[
+        {"spanId":"C9WjFN3vISs="},
+        {"spanId":"cm0aM7aB/T4="}
+    ]}]}]}`)
+	shape, err := projectJSONShape(body)
+	if err != nil {
+		t.Fatalf("projectJSONShape: %v", err)
+	}
+	if shape.SpanCount != 2 {
+		t.Fatalf("SpanCount = %d, want 2", shape.SpanCount)
+	}
+	want := []string{"0bd5a314ddef212b", "726d1a33b681fd3e"}
+	if len(shape.SpanIDs) != len(want) {
+		t.Fatalf("SpanIDs = %v, want %v", shape.SpanIDs, want)
+	}
+	for i := range want {
+		if shape.SpanIDs[i] != want[i] {
+			t.Fatalf("SpanIDs[%d] = %q, want %q", i, shape.SpanIDs[i], want[i])
+		}
+	}
+}

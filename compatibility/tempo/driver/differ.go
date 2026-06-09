@@ -7,13 +7,15 @@
 // `DiffReason`, never collapsed into a single boolean, so the markdown
 // report can surface actionable detail per case.
 //
-// Cerberus emits the real hex(TraceId) on `/api/search` (see
-// internal/api/tempo/handler.go::toTraceSummaries), so both backends
-// produce identical 32-hex-char TraceIDs for the same seeded span set.
-// The differ keys its trace-summary multisets directly on
-// `TraceSummary.TraceID` — no hashing, no canonicalisation.
-// "Different orderings of equal sets don't false-positive" still holds
-// because the index is a map keyed by TraceID, not a positional list.
+// Cerberus emits the spec-canonical 32-hex-char form of TraceId on
+// `/api/search` (PR #656; see internal/api/tempo/handler.go::
+// toTraceSummaries). Reference Tempo strips leading zeros on the wire
+// (`af84…` — 30 chars — for a trace whose first byte is 0x00), so the
+// differ keys its trace-summary multisets on the canonical left-padded
+// form of the TraceID: equal 16-byte values compare equal regardless
+// of which textual shape a backend chose. "Different orderings of
+// equal sets don't false-positive" still holds because the index is a
+// map keyed by the canonical TraceID, not a positional list.
 //
 // So the differ:
 //
@@ -65,11 +67,28 @@ type TraceSummary struct {
 }
 
 // traceKey is the per-trace identifier used to align the two backends'
-// trace lists. Since PR #439, cerberus and Tempo both emit the real
-// hex(TraceId) on `/api/search`, so the raw TraceID string is the
-// natural key — no canonicalisation needed.
+// trace lists. Cerberus emits the spec-canonical 32-hex-char form
+// (PR #656); reference Tempo strips leading zeros on the wire, so the
+// raw strings differ for any trace whose ID has leading zero bytes
+// even though both designate the same 16 bytes. Key on the canonical
+// left-padded form so equal values align. This is comparison
+// semantics — the textual-shape divergence cerberus chose is pinned
+// separately by the wire-shape tests from PR #656; a genuinely
+// different ID still diffs here.
 func traceKey(t TraceSummary) string {
-	return t.TraceID
+	return canonicalTraceID(t.TraceID)
+}
+
+// canonicalTraceID left-pads a hex TraceID to the canonical 32-char
+// lowercase form. IDs already at (or beyond) 32 chars pass through
+// untouched apart from lowercasing.
+func canonicalTraceID(id string) string {
+	const canonicalLen = 32
+	id = strings.ToLower(id)
+	if len(id) >= canonicalLen {
+		return id
+	}
+	return strings.Repeat("0", canonicalLen-len(id)) + id
 }
 
 // DiffOptions controls numeric-field tolerance. Mirrors the prom
