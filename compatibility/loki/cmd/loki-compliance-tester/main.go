@@ -157,7 +157,6 @@ func run() error {
 			len(upstreamSkipped), f.skipBaselinePath)
 	}
 
-
 	cases, err := loadCases(f, isInstant)
 	if err != nil {
 		return fmt.Errorf("loading cases: %w", err)
