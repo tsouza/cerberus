@@ -682,11 +682,7 @@ func verifyBothNonEmpty(ctx context.Context, conn driver.Conn, lokiURL, cerbURL 
 	if err != nil {
 		return fmt.Errorf("parse anchor: %w", err)
 	}
-	start := anchorTS.Add(-24 * time.Hour)
-	end := time.Now().Add(24 * time.Hour)
-	if end.Before(anchorTS.Add(time.Hour)) {
-		end = anchorTS.Add(time.Hour)
-	}
+	start, end := verifyLabelsWindow(anchorTS)
 
 	// Wait for the reference Loki ingester to drain its flush queue and
 	// for the TSDB shipper to publish at least one fresh index table.
@@ -1054,6 +1050,24 @@ func matchesPrefix(key, prefix string) bool {
 		return false
 	}
 	return strings.Contains(key[len(name)+1:end], selector)
+}
+
+// verifyLabelsWindow returns the /labels query window for the
+// post-seed verification probe. The fixture is deterministic — every
+// pushed line lives in [anchor, anchor+24h] — so the probe brackets
+// that span with a day of slack on each side and never references the
+// wall clock.
+//
+// The previous implementation used `end = time.Now() + 24h`, which
+// made the window's span grow as real time drifted away from the
+// fixed anchor. Once the span crossed Loki's default
+// `max_query_length` (30d1h — `limits_config` in loki-config.yaml
+// doesn't override it), the reference Loki rejected the probe with
+// status 400 and the nightly went red (2026-06-08, with zero commits
+// on main since 2026-05-23). Any probe window in this harness must be
+// anchor-relative, not wall-clock-relative.
+func verifyLabelsWindow(anchorTS time.Time) (start, end time.Time) {
+	return anchorTS.Add(-24 * time.Hour), anchorTS.Add(48 * time.Hour)
 }
 
 func waitLabelsNonEmpty(ctx context.Context, label, baseURL string, start, end time.Time, logger *slog.Logger) error {
