@@ -404,3 +404,39 @@ func TestMetricsQueryInstant_CHFailure(t *testing.T) {
 		t.Errorf("expected error envelope with upstream message; got %+v", er)
 	}
 }
+
+// TestMetricsQueryInstant_SingleAnchorFanout pins the instant bucket
+// shape at the SQL layer: the matrix emitter generates
+// (End-Start)/Step + 1 anchors, so the handler passes Start = End to
+// fan out exactly one anchor at `end` whose right-closed window
+// (end - step, end] IS the instant bucket. The previous Start = start
+// produced range(0, 2) — a second anchor at `start` covering
+// (start - step, start], entirely before the requested window, whose
+// zero-fill value 0 was the earliest sample and therefore won the
+// first-sample-by-timestamp pick: every instant compat case returned
+// 0 instead of the real value (tempo=0.0554 vs cerberus=0 on the
+// metrics_rate_instant corpus case).
+func TestMetricsQueryInstant_SingleAnchorFanout(t *testing.T) {
+	t.Parallel()
+
+	q := &stubQuerier{samples: []chclient.Sample{}}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	u := metricsQueryInstantURL(srv.URL, "{} | rate()", map[string]string{
+		"start": fixtureStartUnix,
+		"end":   fixtureEndUnix,
+	})
+	resp, err := http.Get(u)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+	assertSQLContains(t, q.lastSQL, "range(0, 1)")
+	if strings.Contains(q.lastSQL, "range(0, 2)") {
+		t.Errorf("instant fanout produced a second anchor: %s", q.lastSQL)
+	}
+}

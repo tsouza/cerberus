@@ -1400,3 +1400,62 @@ func TestMetricsQueryRange_MultiQuantileOverTimeWireShape(t *testing.T) {
 	// + Tempo's Log2QuantileWithBucket post-processor) is exercised
 	// through the wire shape rather than pinned to SQL substrings.
 }
+
+// TestAlignMetricsWindow pins the Tempo api.AlignRequest-mirroring
+// grid snap: start rounds down to a step multiple, end rounds up,
+// already-aligned bounds pass through. Without it the anchor grid sat
+// at start + k*step — offset from Tempo's epoch-aligned grid by
+// (start mod step) — and every range-shape compat case diff'd on
+// sample timestamps (e.g. tempo ts=…300000 vs cerberus ts=…346000).
+func TestAlignMetricsWindow(t *testing.T) {
+	t.Parallel()
+
+	step := time.Minute
+	start := time.Date(2026, 5, 12, 10, 0, 46, 0, time.UTC)
+	end := time.Date(2026, 5, 12, 12, 0, 46, 0, time.UTC)
+	s, e := tempo.AlignMetricsWindowForTest(start, end, step)
+	if want := time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC); !s.Equal(want) {
+		t.Errorf("aligned start = %v, want %v", s, want)
+	}
+	if want := time.Date(2026, 5, 12, 12, 1, 0, 0, time.UTC); !e.Equal(want) {
+		t.Errorf("aligned end = %v, want %v", e, want)
+	}
+
+	// Already-aligned bounds must pass through untouched.
+	s2, e2 := tempo.AlignMetricsWindowForTest(
+		time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+		time.Date(2026, 5, 12, 11, 0, 0, 0, time.UTC),
+		step,
+	)
+	if !s2.Equal(time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC)) || !e2.Equal(time.Date(2026, 5, 12, 11, 0, 0, 0, time.UTC)) {
+		t.Errorf("aligned bounds drifted on already-aligned input: %v / %v", s2, e2)
+	}
+}
+
+// TestMetricsQueryRange_AlignsAnchorGridToStep pins the handler-level
+// effect of the alignment: an unaligned start/end pair must produce
+// the anchor count of the ALIGNED window. start=…:00:46 / end=+3m /
+// step=60s aligns to […:00:00, …:04:00] — span 240s → 5 anchors. The
+// unaligned window would fan out only 4.
+func TestMetricsQueryRange_AlignsAnchorGridToStep(t *testing.T) {
+	t.Parallel()
+
+	q := &stubQuerier{samples: []chclient.Sample{}}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	u := metricsQueryRangeURL(srv.URL, "{} | rate()", map[string]string{
+		"start": "1778580046", // 2026-05-12T10:00:46Z — deliberately off-grid
+		"end":   "1778580226", // +3m
+		"step":  "60s",
+	})
+	resp, err := http.Get(u)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+	assertSQLContains(t, q.lastSQL, "range(0, 5)")
+}
