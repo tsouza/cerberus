@@ -105,11 +105,24 @@ func (h *Handler) handleMetricsQueryInstant(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Start = End on purpose: the matrix emitter generates
+	// (End-Start)/Step + 1 anchors at `End - i*Step`, so Start==End
+	// yields the single anchor at `end` whose right-closed window
+	// (end - Range, end] IS the instant bucket [start, end] Tempo's
+	// IntervalMapperInstant evaluates. Passing Start=start here would
+	// fan out a second anchor at `start` covering (start-step, start]
+	// — entirely before the requested window — which evaluates to 0
+	// and, being the earliest sample, used to win the
+	// first-sample-by-timestamp pick in toMetricsInstantSeries: every
+	// instant compat case returned 0 instead of the real value. The
+	// inner-scan time-bound pushdown still prunes on
+	// (Start - Range, End] = (start, end], so partition pruning is
+	// unaffected.
 	rw := &chplan.RangeWindow{
 		Input:           plan,
 		Range:           step,
 		Step:            step,
-		Start:           start,
+		Start:           end,
 		End:             end,
 		TimestampColumn: h.Schema.TimestampColumn,
 	}
