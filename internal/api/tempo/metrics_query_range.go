@@ -166,6 +166,20 @@ func (metricsLang) ProjectSamples(plan chplan.Node, _ engine.Meta) chplan.Node {
 	return plan
 }
 
+// alignMetricsWindow snaps a metrics-range window to the step grid the
+// way Tempo's api.AlignRequest does: start rounds down to the nearest
+// step multiple, end rounds up (unchanged when already a multiple).
+// Range queries only — Tempo's IsInstant path skips alignment, and so
+// does cerberus's handleMetricsQueryInstant.
+func alignMetricsWindow(start, end time.Time, step time.Duration) (time.Time, time.Time) {
+	alignedStart := start.Truncate(step)
+	alignedEnd := end.Truncate(step)
+	if alignedEnd.Before(end) {
+		alignedEnd = alignedEnd.Add(step)
+	}
+	return alignedStart, alignedEnd
+}
+
 // handleMetricsQueryRange implements `GET /api/metrics/query_range`.
 //
 // Pipeline: parse the TraceQL metrics-pipeline query, lower it to a
@@ -203,6 +217,18 @@ func (h *Handler) handleMetricsQueryRange(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "", "", err)
 		return
 	}
+	// Align the eval grid to the step the way Tempo's api.AlignRequest
+	// does: start rounds down to a step multiple, end rounds up (or
+	// stays put when already aligned). Tempo additionally subtracts one
+	// step from the aligned start to force an initial bucket, then
+	// stamps each right-closed interval with its right edge
+	// (start + (k+1)*step) — netting out to a sample grid of step
+	// multiples spanning [floor(start), ceil(end)], which is exactly
+	// the anchor set the [Start, End] range below fans out. Without
+	// this, the anchors sat at start + k*step — offset from Tempo's
+	// grid by (start mod step) — and every range-shape compat case
+	// diff'd on sample timestamps.
+	start, end = alignMetricsWindow(start, end, step)
 
 	ctx := r.Context()
 	// Parse + lower inline so we can wrap the lowered plan with the
