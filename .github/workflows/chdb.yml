@@ -71,7 +71,7 @@ jobs:
 
       - id: filter
         if: github.event_name == 'pull_request'
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         with:
           # See ci.yml for why `every` is required (the `**` baseline
           # plus negation patterns would otherwise always be true).
