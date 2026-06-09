@@ -175,21 +175,16 @@ expect_match_perl "case6b multi-line silent recover" "$RE6" "$tmpdir/case6b_matc
 expect_no_match_perl "case6c asserted-panic form" "$RE6" "$tmpdir/case6c_nomatch.txt"
 
 # --------------------------------------------------------------------
-# case 7 — should_skip overlay tracking-ref guard  (PR #596)
+# (former case 7 — should_skip overlay tracking-ref guard, PR #596)
 #
-# Delegated to check-skip-additions.sh --self-test, which runs the
-# same inspect_block routine the CI gate uses against four canned
-# YAML cases (missing ref → reject, jira populated → accept,
-# inline #NNN ref → accept, empty jira → reject).
+# Superseded by the strict rule landed in
+# `.github/workflows/ci.yml` `forbid-skip` job step "Reject should_skip
+# overlay entries", which rejects ANY non-empty `should_skip:` block
+# in `compatibility/**/*.{yml,yaml}` (the accepted form is
+# `should_skip: []`). The per-PR tracking-ref delegation to
+# `scripts/check-skip-additions.sh` is no longer needed and the
+# script itself was removed; there is nothing left to self-test here.
 # --------------------------------------------------------------------
-repo_root="$(git rev-parse --show-toplevel)"
-if "$repo_root/scripts/check-skip-additions.sh" --self-test >/dev/null; then
-  note "PASS  case7 should_skip tracking-ref guard"
-  passes=$((passes + 1))
-else
-  printf 'FAIL  case7 check-skip-additions.sh --self-test failed\n' >&2
-  failures=$((failures + 1))
-fi
 
 # --------------------------------------------------------------------
 # summary

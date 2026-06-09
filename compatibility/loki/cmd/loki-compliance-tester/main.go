@@ -19,18 +19,21 @@
 //     (`${SELECTOR}` / `${LABEL_NAME}` / `${RANGE}`) tracks Grafana's
 //     reference semantics exactly — cerberus-side divergence here would
 //     defeat the differential test.
-//  2. Loads the optional cerberus-side overlay (cerberus-test-queries.yml)
-//     and indexes its `should_skip` + `should_fail` entries by
-//     `<suite>/<file>.yaml#<description>` keys.
-//  3. For each expanded test case, fans out parallel `/loki/api/v1/query`
+//  2. For each expanded test case, fans out parallel `/loki/api/v1/query`
 //     or `/query_range` calls against both endpoints, decodes the
 //     responses into a typed value, normalises ordering, and diffs with
 //     a configurable epsilon.
-//  4. Writes the report to `-report` (default: stdout) in the Prom-shape
+//  3. Writes the report to `-report` (default: stdout) in the Prom-shape
 //     JSON envelope (`{totalResults, includePassing, results: [...]}`),
 //     with each result carrying `testCase`, `diff`, `unexpectedFailure`,
 //     `unexpectedSuccess`, `unsupported`. When `-score` is set, also
 //     writes a shields.io endpoint-badge JSON to that path.
+//
+// No allow-list / `should_skip` overlay: every diff against reference
+// Loki is a real bug. The corresponding YAML carrier
+// (cerberus-test-queries.yml) is kept as a schema placeholder; the
+// consumer code in this driver has been removed so any entry would
+// be silently ignored.
 //
 // The binary imports the vendored upstream/loki-bench/ package; the
 // root go.mod marks that path `ignore` so it's excluded from
@@ -60,8 +63,6 @@ import (
 	"sync"
 	"time"
 
-	"gopkg.in/yaml.v3"
-
 	"github.com/tsouza/cerberus/compatibility/internal/score"
 	bench "github.com/tsouza/cerberus/compatibility/loki/upstream/loki-bench"
 )
@@ -78,7 +79,6 @@ type flags struct {
 	addr2            string
 	corpusDir        string
 	metadataDir      string
-	overlayPath      string
 	reportPath       string
 	scorePath        string
 	skipBaselinePath string
@@ -97,7 +97,6 @@ func parseFlags() flags {
 	flag.StringVar(&f.addr2, "addr-2", "", "Address of test (cerberus) Loki-API instance, e.g. http://localhost:29092")
 	flag.StringVar(&f.corpusDir, "corpus", "./queries", "Path to the vendored bench/queries/ directory (suite subdirs: fast/, regression/, exhaustive/)")
 	flag.StringVar(&f.metadataDir, "metadata-dir", ".", "Directory containing dataset_metadata.json")
-	flag.StringVar(&f.overlayPath, "overlay", "", "Optional cerberus-test-queries.yml overlay (skip/fail per source key)")
 	flag.StringVar(&f.reportPath, "report", "", "Report output path; empty writes to stdout")
 	flag.StringVar(&f.scorePath, "score", "", "shields.io endpoint-badge score JSON output path; empty means do not write")
 	flag.StringVar(&f.skipBaselinePath, "skip-baseline", "", "Path to the upstream-skip-baseline.txt file; when set, the harness asserts the upstream YAML `skip: true` set matches this file and fails on drift")
@@ -158,17 +157,12 @@ func run() error {
 			len(upstreamSkipped), f.skipBaselinePath)
 	}
 
-	overlay, err := loadOverlay(f.overlayPath)
-	if err != nil {
-		return fmt.Errorf("loading overlay: %w", err)
-	}
-
 	cases, err := loadCases(f, isInstant)
 	if err != nil {
 		return fmt.Errorf("loading cases: %w", err)
 	}
 
-	results := compareAll(cases, f, overlay, isInstant)
+	results := compareAll(cases, f, isInstant)
 
 	report := Report{
 		TotalResults:   len(results),
@@ -199,13 +193,11 @@ func run() error {
 	// from compat-score.json by downstream tooling.
 	if f.scorePath != "" {
 		// The score's denominator includes every case the driver
-		// attempted that wasn't an overlay-driven skip. Diffs,
-		// unexpected failures (including baseline failures + unsupported
-		// markers), and unexpected successes all contribute to total
-		// but not to passed. Overlay-skipped cases are excluded entirely:
-		// they're documented as out-of-scope rather than as parity
-		// gaps, so counting them would penalise the score for
-		// intentional exclusions.
+		// attempted. Diffs, unexpected failures (including baseline
+		// failures + unsupported markers), and unexpected successes
+		// all contribute to total but not to passed. No overlay-skip
+		// exclusion exists: every case the driver reaches is a real
+		// data point.
 		passed, total := scoreCounts(results)
 		s := score.Compute("LogQL compat", passed, total)
 		if err := score.Write(f.scorePath, s); err != nil {
@@ -218,71 +210,16 @@ func run() error {
 }
 
 // scoreCounts derives (passed, total) for the compat-score JSON.
-// Overlay-driven skips (cases the cerberus-test-queries.yml flagged as
-// out-of-scope) are excluded from both counts so they don't penalise
-// the score; everything else (passes, diffs, unexpected failures /
-// successes) contributes to the denominator.
+// Every case the driver attempted contributes to the denominator;
+// passes contribute to the numerator. No allow-list exclusion exists.
 func scoreCounts(results []Result) (passed, total int) {
 	for _, r := range results {
-		if r.SkipReason != "" {
-			continue
-		}
 		total++
 		if r.success() {
 			passed++
 		}
 	}
 	return passed, total
-}
-
-// Overlay mirrors the cerberus-test-queries.yml schema documented in
-// compatibility/loki/cerberus-test-queries.yml. The runner
-// consults `ShouldSkip` to decide whether to include a case (when
-// `-include-skipped=false`); the `ShouldFail` slot is plumbed for
-// future use (analogue of prometheus/compliance's `should_fail` —
-// expected hard-failure entries flip `unexpectedSuccess` semantics).
-type Overlay struct {
-	ShouldSkip []OverlayEntry `yaml:"should_skip"`
-	ShouldFail []OverlayEntry `yaml:"should_fail"`
-}
-
-// OverlayEntry is a single overlay row. `Source` is the lookup key in
-// the form `<suite>/<file>.yaml#<description>`; `Reason` documents
-// rationale; the `Since` / `Jira` fields are for drift audits.
-type OverlayEntry struct {
-	Source string `yaml:"source"`
-	Reason string `yaml:"reason"`
-	Since  string `yaml:"since,omitempty"`
-	Jira   string `yaml:"jira,omitempty"`
-}
-
-func loadOverlay(path string) (*Overlay, error) {
-	if path == "" {
-		return &Overlay{}, nil
-	}
-	b, err := os.ReadFile(path) //nolint:gosec // CLI-supplied overlay path; harness tool
-	if err != nil {
-		return nil, err
-	}
-	var o Overlay
-	if err := yaml.Unmarshal(b, &o); err != nil {
-		return nil, err
-	}
-	return &o, nil
-}
-
-// skipKey indexes an overlay entry by its (suite, file, description)
-// triple. The bench package stores `Source` as `<suite>/<file>.yaml:<line>`
-// — we re-derive the description-shaped key (`<suite>/<file>.yaml#<desc>`)
-// at lookup time to match the overlay's documented schema.
-func (o *Overlay) skipKey(suiteFile, description string) (string, bool) {
-	key := suiteFile + "#" + description
-	for _, e := range o.ShouldSkip {
-		if e.Source == key {
-			return e.Reason, true
-		}
-	}
-	return "", false
 }
 
 // loadCases reuses the upstream bench loader so template expansion
@@ -558,7 +495,7 @@ func writeReport(path string, payload []byte) error {
 // the parity-drift path; the score JSON + the per-result fields carry
 // the signal. The pre-#68 `allSuccess atomic.Bool` was removed at the
 // same time the exit-on-diff branch was deleted.
-func compareAll(cases []loadedCase, f flags, overlay *Overlay, isInstant bool) []Result {
+func compareAll(cases []loadedCase, f flags, isInstant bool) []Result {
 	httpClient := &http.Client{Timeout: f.timeout}
 	results := make([]Result, len(cases))
 
@@ -568,18 +505,11 @@ func compareAll(cases []loadedCase, f flags, overlay *Overlay, isInstant bool) [
 	for i, lc := range cases {
 		i, lc := i, lc
 
-		// Resolve the overlay key using the upstream QueryDefinition.
-		// Both expanded and expansion-failed cases share the same
-		// (Source, Description) pair; resolving up-front means a
-		// skip entry can suppress either kind of failure without
-		// having to know the expansion outcome.
 		suiteFile := stripSourceLine(lc.def.Source)
-		reason, isSkipped := overlay.skipKey(suiteFile, lc.def.Description)
 
 		// Expansion failures: emit a synthetic TestCase from the
 		// upstream QueryDefinition (no time range available) and
-		// surface the error as UnexpectedFailure unless an overlay
-		// entry has explicitly skipped this case.
+		// surface the error as UnexpectedFailure.
 		if lc.expandErr != nil {
 			tc := TestCase{
 				Query:       lc.def.Query,
@@ -588,25 +518,7 @@ func compareAll(cases []loadedCase, f flags, overlay *Overlay, isInstant bool) [
 				Kind:        lc.def.Kind,
 				Direction:   string(lc.def.Directions),
 			}
-			if isSkipped {
-				results[i] = Result{TestCase: tc, SkipReason: reason}
-				continue
-			}
 			results[i] = Result{TestCase: tc, UnexpectedFailure: "expansion: " + lc.expandErr.Error()}
-			continue
-		}
-
-		// Apply overlay skip — skipped cases never hit the wire.
-		if isSkipped {
-			results[i] = Result{
-				TestCase: newTestCase(lc.tc, suiteFile, isInstant),
-				// `Diff` empty + `UnexpectedFailure` empty +
-				// `UnexpectedSuccess=false` means "passed"; we use
-				// `SkipReason` to surface the documented rationale.
-				// The shape stays compatible with the Prom envelope
-				// by not flipping any of the failure flags.
-				SkipReason: reason,
-			}
 			continue
 		}
 
@@ -691,7 +603,8 @@ func compareOne(c *http.Client, f flags, tc bench.TestCase, suiteFile string, is
 		// Same convention as upstream `assertResultNotEmpty`: we don't
 		// flip a comparison failure on an empty baseline because the
 		// upstream test framework treats it as a setup error. Report
-		// it explicitly so the overlay author can suppress.
+		// it explicitly so the harness operator can fix the seed or
+		// the upstream config that produced the empty baseline.
 		result.UnexpectedFailure = "baseline returned empty"
 		return result
 	}
@@ -709,10 +622,10 @@ func compareOne(c *http.Client, f flags, tc bench.TestCase, suiteFile string, is
 // case as intentionally empty. The fast/basic-selectors.yaml entry
 // `Log query with impossible filter ...` is the canonical example —
 // the corpus author plugs in a filter literal that cannot match any
-// seeded line. Without this signal the harness would flag every such
-// case as `baseline returned empty` and force a should_skip overlay,
-// turning an honest differential ("both endpoints agree on empty")
-// into a silenced row.
+// seeded line. Without this upstream-supplied signal the harness
+// would flag every such case as `baseline returned empty`, turning
+// an honest differential ("both endpoints agree on empty") into a
+// false-positive row.
 func isExpectedEmptyCase(tc bench.TestCase) bool {
 	return slices.Contains(tc.Tags, "empty-result")
 }
@@ -1219,9 +1132,8 @@ func floatEqual(a, b, tol float64) bool {
 // ----- report shape --------------------------------------------------
 
 // Report mirrors the prometheus/compliance JSON shape so cerberus-side
-// tooling (informational CI lane today, the future PR 6 expected-failures
-// reconciliation script) can consume both harness reports with a single
-// schema. See compatibility/prometheus/upstream/promql/output/json.go.
+// tooling can consume both harness reports with a single schema. See
+// compatibility/prometheus/upstream/promql/output/json.go.
 type Report struct {
 	TotalResults   int      `json:"totalResults"`
 	IncludePassing bool     `json:"includePassing"`
@@ -1232,16 +1144,13 @@ type Report struct {
 }
 
 // Result is the per-test-case outcome. The four flag fields keep parity
-// with the Prom harness; `SkipReason` is the cerberus-side extension
-// for overlay-driven skips (the Prom corpus stitches these into the
-// upstream YAML directly).
+// with the Prom harness.
 type Result struct {
 	TestCase          TestCase `json:"testCase"`
 	Diff              string   `json:"diff"`
 	UnexpectedFailure string   `json:"unexpectedFailure"`
 	UnexpectedSuccess bool     `json:"unexpectedSuccess"`
 	Unsupported       bool     `json:"unsupported"`
-	SkipReason        string   `json:"skipReason,omitempty"`
 }
 
 // success replicates `comparer.Result.Success` so the runtime can know

@@ -210,33 +210,49 @@ func TestQueryMiddleware_ResultOK(t *testing.T) {
 	}
 }
 
-// TestQueryMiddleware_ResultError verifies a 5xx is bucketed as error.
-// 4xx stays ok by design (handler returned a well-formed rejection;
-// the gateway behaved correctly).
+// TestQueryMiddleware_ResultError verifies any status >= 400 (4xx parse
+// rejection, 4xx lower rejection, 5xx execution failure) is bucketed as
+// error. The `cerberus_queries_total{result}` series is a query-outcome
+// metric (not an HTTP SLO), so a 400 parse rejection counts as a failed
+// query — the same way the "Error rate by language" dashboard reads it.
 func TestQueryMiddleware_ResultError(t *testing.T) {
-	reader := installManualReader(t)
-
-	mux := http.NewServeMux()
-	mux.Handle("GET /api/v1/query", telemetry.QueryMiddleware("promql", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	})))
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-
-	resp, err := http.Get(srv.URL + "/api/v1/query")
-	if err != nil {
-		t.Fatalf("GET: %v", err)
+	cases := []struct {
+		name   string
+		status int
+	}{
+		{"400_bad_request", http.StatusBadRequest},
+		{"422_unprocessable_entity", http.StatusUnprocessableEntity},
+		{"500_internal", http.StatusInternalServerError},
+		{"502_bad_gateway", http.StatusBadGateway},
 	}
-	_ = resp.Body.Close()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reader := installManualReader(t)
 
-	sm := collect(t, reader)
-	total := findMetric(t, sm, "cerberus_queries_total")
-	sum := total.Data.(metricdata.Sum[int64])
-	if len(sum.DataPoints) != 1 {
-		t.Fatalf("queries.total DPs: got %d want 1", len(sum.DataPoints))
-	}
-	if v, _ := sum.DataPoints[0].Attributes.Value("result"); v.AsString() != telemetry.ResultError {
-		t.Errorf("result: got %q want error", v.AsString())
+			mux := http.NewServeMux()
+			status := tc.status
+			mux.Handle("GET /api/v1/query", telemetry.QueryMiddleware("promql", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(status)
+			})))
+			srv := httptest.NewServer(mux)
+			t.Cleanup(srv.Close)
+
+			resp, err := http.Get(srv.URL + "/api/v1/query")
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			_ = resp.Body.Close()
+
+			sm := collect(t, reader)
+			total := findMetric(t, sm, "cerberus_queries_total")
+			sum := total.Data.(metricdata.Sum[int64])
+			if len(sum.DataPoints) != 1 {
+				t.Fatalf("queries.total DPs: got %d want 1", len(sum.DataPoints))
+			}
+			if v, _ := sum.DataPoints[0].Attributes.Value("result"); v.AsString() != telemetry.ResultError {
+				t.Errorf("result: got %q want error", v.AsString())
+			}
+		})
 	}
 }
 

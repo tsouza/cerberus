@@ -1,35 +1,23 @@
 /**
  * Phase-6 drilldown-apps sweep.
  *
- * Iterates every Grafana built-in drilldown app (the 4-app catalogue in
- * `helpers/drilldown.ts`), drives a two-level click-drill through each
- * installed app, and asserts the per-app sweep is clean:
+ * Iterates every Grafana drilldown app in the catalogue
+ * (`helpers/drilldown.ts`), drives a two-level click-drill through each
+ * app, and asserts the per-app sweep is clean:
  *
- *   1. Every captured Grafana / cerberus HTTP response is 2xx (no 4xx
+ *   1. The app is installed and enabled (hard-asserted on every
+ *      catalogue entry — no install-probe escape hatch).
+ *   2. Every captured Grafana / cerberus HTTP response is 2xx (no 4xx
  *      and no 5xx). Drilldown apps fire `/api/datasources/proxy/uid/…`,
  *      `/api/datasources/uid/…/resources/…`, and `/api/ds/query` —
- *      every one is in scope per Q5 of the e2e enhancement plan (no
- *      tolerated-status allow-list).
- *   2. No `role="alert"` banner with error-class text is on the page
- *      at any level (root, after first drill, after second drill).
- *      Drilldown apps surface query errors as red banners (e.g.
- *      Explore-Traces' "Query error: illegal wireType" — N4-shaped).
- *   3. No browser console `error`-level message was emitted across
+ *      every one is in scope.
+ *   3. No `role="alert"` banner is on the page at any level (root,
+ *      after first drill, after second drill). Drilldown apps surface
+ *      query errors and missing-plugin states through this affordance.
+ *   4. No browser console `error`-level message was emitted across
  *      the whole app sweep. Plugin failures (chunk-load errors,
  *      datasource-resource 502s, fetch aborts) all surface as
- *      console errors; the spec carries no allow-list per Q5.
- *
- * Per-app handling for "App not installed":
- *
- *   The cerberus compose stack does NOT preinstall
- *   `grafana-pyroscope-app` (no `GF_INSTALL_PLUGINS` line in
- *   `docker-compose.yml`). The vanilla Grafana 11.4.0 image ships the
- *   other three drilldown apps preinstalled+enabled. For each app the
- *   spec calls `isAppInstalled` (= `/api/plugins/<id>/settings`); if
- *   the app is absent the spec annotates `app-not-installed` and
- *   continues to the next one without failing. This matches the brief:
- *   the spec must surface "Pyroscope not installed" as data, not as a
- *   sweep failure.
+ *      console errors.
  *
  * Gate posture: NIGHTLY ONLY. Wired into the `dashboard` job in
  * `.github/workflows/e2e.yml`, which runs on push-to-main + nightly +
@@ -42,8 +30,7 @@
  * `grafana/grafana:11.4.0` (the tag pinned in `docker-compose.yml`).
  * When the compose stack bumps Grafana, this spec MUST be updated in
  * the same PR — see helpers/README.md "Pinned Grafana version" for
- * the upgrade checklist. Q4 of `~/.claude/plans/e2e-enhance.md` §9
- * pinned this maintenance contract.
+ * the upgrade checklist.
  *
  * What this catches (the latent class the plan file flagged):
  *
@@ -76,36 +63,10 @@ import {
   iterateDrilldownApps,
 } from './helpers/index.js';
 
-// `role="alert"` substrings that count as an error-state banner. The
-// same list as the kiosk spec — Grafana surfaces all panel / plugin
-// error states through one of these tokens.
-const ALERT_ERROR_PATTERNS: RegExp[] = [
-  /error/i,
-  /failed/i,
-  /illegal wiretype/i,
-  /plugin\.downstream/i,
-  /unable to/i,
-];
-
-// "App is not installed" placeholder banner that some Grafana
-// drilldown apps surface when their plugin isn't loaded. This is the
-// expected visible state for an absent app; we don't want to
-// `isAppInstalled` it through, but if it shows up after install probe
-// passed we still want to skip the error sweep on it. Conservative:
-// match only the exact phrasing Grafana 11.4.0 renders.
-const APP_NOT_INSTALLED_BANNER_PATTERNS: RegExp[] = [
-  /app plugin not installed/i,
-  /plugin not found/i,
-];
-
-// Upstream-Grafana console-error families that fire on drilldown-app
-// boot regardless of datasource health. Kept narrow on purpose — the
-// kiosk spec carries a single Grafana-internal telemetry pattern, and
-// the drilldown sweep inherits the same policy (Q5 zero-allow-list,
-// scoped to cerberus-emitted errors only).
-const DRILLDOWN_UPSTREAM_GRAFANA_CONSOLE_NOISE: RegExp[] = [
-  /\[Metrics\] Failed to stopMeasure loadDashboardScene.*The mark 'loadDashboardScene_started' does not exist/i,
-];
+// Every `role="alert"` banner counts as a failure. No allow-list of
+// "expected" alert text — if Grafana surfaces the banner, that is a
+// real state to fix at the source (drilldown plugin, datasource, or
+// cerberus).
 
 // Captured response shape: stripped down so the failure detail isn't
 // dragged down by a 1MB ds/query body.
@@ -137,26 +98,24 @@ test('drilldown-apps: each installed drilldown app drills two levels without 4xx
     'http://localhost:3000';
 
   const apps = iterateDrilldownApps();
-  expect(apps.length, 'all four built-in drilldown apps in catalogue').toBe(4);
+  expect(apps.length, 'drilldown app catalogue is non-empty').toBeGreaterThan(0);
 
   const failures: DrilldownFailure[] = [];
   const perAppOutcomes: Array<{ app: string; outcome: string }> = [];
 
   for (const app of apps) {
-    // 1. Install-probe. If the app isn't installed, annotate and skip.
-    //    This is the only "skip" allowed by the brief: pyroscope is
-    //    expected to be absent on the compose stack, and the spec must
-    //    survive that cleanly.
+    // 1. Install-probe — every catalogue entry MUST be installed and
+    //    enabled. A negative probe collects a failure (rather than
+    //    aborting the loop) so the report surfaces every misconfigured
+    //    app in one run.
     const installed = await isAppInstalled(request, baseURL, app.id);
     if (!installed) {
-      testInfo.annotations.push({
-        type: 'drilldown-app-not-installed',
-        description: `${app.id} (${app.label}): /api/plugins/${app.id}/settings absent or disabled — drill omitted`,
-      });
-      perAppOutcomes.push({
+      failures.push({
         app: app.id,
-        outcome: 'app-not-installed',
+        rule: 'app-not-installed-or-disabled',
+        detail: `/api/plugins/${app.id}/settings reports not-installed-or-disabled. Provision the plugin in docker-compose or remove it from the catalogue.`,
       });
+      perAppOutcomes.push({ app: app.id, outcome: 'not-installed-or-disabled' });
       continue;
     }
 
@@ -180,18 +139,6 @@ test('drilldown-apps: each installed drilldown app drills two levels without 4xx
       .join('; '),
   });
 
-  // Sanity: at least one of the four built-ins must have been
-  // installed. If every app reports "not installed" the compose stack
-  // is broken (or this spec is running against a non-Grafana endpoint)
-  // — surface that loudly rather than passing on an empty sweep.
-  const installedCount = perAppOutcomes.filter(
-    (o) => o.outcome !== 'app-not-installed',
-  ).length;
-  expect(
-    installedCount,
-    'at least one drilldown app installed on the Grafana stack',
-  ).toBeGreaterThan(0);
-
   if (failures.length > 0) {
     const detail = failures
       .map((f) => `[${f.app} :: ${f.rule}] ${f.detail}`)
@@ -209,8 +156,8 @@ test('drilldown-apps: each installed drilldown app drills two levels without 4xx
  *   - call `drillTwoLevels` to navigate + drill twice,
  *   - after each settled level, snapshot `role="alert"` banners,
  *   - tear down listeners,
- *   - apply: zero non-2xx, no error-class banner text, no console
- *     error (modulo upstream-Grafana noise).
+ *   - apply: zero non-2xx, zero role=alert banners, zero console
+ *     errors.
  *
  * Returns a list of failures — empty if the app sweep is clean.
  */
@@ -288,28 +235,11 @@ async function sweepDrilldownApp(
     // render it before we sample.
     const alertBanners = await captureRoleAlertBanners(page);
     for (const banner of alertBanners) {
-      if (
-        APP_NOT_INSTALLED_BANNER_PATTERNS.some((re) => re.test(banner))
-      ) {
-        // isAppInstalled probe said yes but Grafana rendered the
-        // "not installed" banner anyway — surface that as a soft
-        // annotation (it's an installation drift, not a drill regression).
-        testInfo.annotations.push({
-          type: 'drilldown-app-banner-not-installed',
-          description: `${app.id}: rendered "${truncate(
-            banner,
-            200,
-          )}" despite isAppInstalled=true`,
-        });
-        continue;
-      }
-      if (ALERT_ERROR_PATTERNS.some((re) => re.test(banner))) {
-        failures.push({
-          app: app.id,
-          rule: 'role-alert-error-banner',
-          detail: `role=alert banner with error text: ${truncate(banner, 400)}`,
-        });
-      }
+      failures.push({
+        app: app.id,
+        rule: 'role-alert-banner',
+        detail: `role=alert banner rendered: ${truncate(banner, 400)}`,
+      });
     }
   } catch (err) {
     failures.push({
@@ -326,8 +256,8 @@ async function sweepDrilldownApp(
   // failures (e.g. a 500 still streaming when the navigation settled).
   await Promise.all(captureBodies);
 
-  // 1. Wire-status sweep over every captured response. Q5: zero
-  //    toleration for 4xx/5xx.
+  // 1. Wire-status sweep over every captured response — zero
+  //    tolerance for 4xx/5xx.
   for (const resp of captured) {
     if (resp.status < 200 || resp.status > 299) {
       failures.push({
@@ -338,16 +268,15 @@ async function sweepDrilldownApp(
     }
   }
 
-  // 2. Console-error sweep. Filter the narrow upstream-Grafana
-  //    telemetry pattern; everything else is a real failure.
-  const cerberusConsoleErrors = consoleErrors.filter(
-    (m) => !DRILLDOWN_UPSTREAM_GRAFANA_CONSOLE_NOISE.some((re) => re.test(m)),
-  );
-  if (cerberusConsoleErrors.length > 0) {
+  // 2. Console-error sweep — every browser console error is a real
+  //    failure. No noise filter (any upstream-Grafana console error is
+  //    either a Grafana bug to file or a state cerberus's compose stack
+  //    can pre-empt; mask nothing here).
+  if (consoleErrors.length > 0) {
     failures.push({
       app: app.id,
       rule: 'console-error',
-      detail: `${cerberusConsoleErrors.length} console error(s):\n${cerberusConsoleErrors
+      detail: `${consoleErrors.length} console error(s):\n${consoleErrors
         .map((m) => `  - ${truncate(m, 400)}`)
         .join('\n')}`,
     });

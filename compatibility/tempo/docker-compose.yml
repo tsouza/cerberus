@@ -170,4 +170,3 @@ services:
       # so a defensive write in the driver can't accidentally rewrite
       # the source-of-truth corpus from inside the container.
       - ./driver/corpus:/corpus:ro
-      - ./expected-failures.json:/expected-failures.json:ro

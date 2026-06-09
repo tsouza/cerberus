@@ -51,8 +51,6 @@
 #   DRIVER_TOLERANCE    -tolerance flag (default: 1e-5; matches upstream).
 #   DRIVER_RANGE_TYPE   -range-type flag (default: range; 'instant' also valid).
 #   DRIVER_PARALLELISM  -parallelism flag (default: 8).
-#   DRIVER_OVERLAY      Path to cerberus-test-queries.yml overlay; default
-#                       resolves the in-tree file beside this script.
 #   DRIVER_SKIP_BASELINE
 #                       Path to the upstream `skip: true` baseline file
 #                       (default: $ROOT_DIR/upstream-skip-baseline.txt).
@@ -72,7 +70,6 @@ TIMEOUT=${DRIVER_TIMEOUT:-30s}
 TOLERANCE=${DRIVER_TOLERANCE:-1e-5}
 RANGE_TYPE=${DRIVER_RANGE_TYPE:-range}
 PARALLELISM=${DRIVER_PARALLELISM:-8}
-OVERLAY=${DRIVER_OVERLAY:-"$ROOT_DIR/cerberus-test-queries.yml"}
 SKIP_BASELINE=${DRIVER_SKIP_BASELINE:-"$ROOT_DIR/upstream-skip-baseline.txt"}
 
 DRIVER_BIN=$(mktemp -t cerberus-loki-tester.XXXXXX)
@@ -140,7 +137,6 @@ set +e
     -addr-2=http://localhost:29092 \
     -corpus="$ROOT_DIR/upstream/loki-bench/queries" \
     -metadata-dir="$ROOT_DIR" \
-    -overlay="$OVERLAY" \
     -skip-baseline="$SKIP_BASELINE" \
     -report="$REPORT" \
     -score="$SCORE" \
@@ -155,7 +151,7 @@ echo "==> report written to $REPORT"
 echo "==> score written to $SCORE"
 echo "==> summary:"
 if command -v jq >/dev/null 2>&1; then
-    jq '{total: .totalResults, passed: ([.results[]? | select((.unexpectedFailure // "") == "" and (.diff // "") == "" and (.unexpectedSuccess // false) == false)] | length), diffs: ([.results[]? | select((.diff // "") != "")] | length), unexpected_failures: ([.results[]? | select((.unexpectedFailure // "") != "")] | length), unsupported: ([.results[]? | select((.unsupported // false) == true)] | length), skipped: ([.results[]? | select((.skipReason // "") != "")] | length)}' "$REPORT" 2>/dev/null || echo "    (jq failed to parse $REPORT)"
+    jq '{total: .totalResults, passed: ([.results[]? | select((.unexpectedFailure // "") == "" and (.diff // "") == "" and (.unexpectedSuccess // false) == false)] | length), diffs: ([.results[]? | select((.diff // "") != "")] | length), unexpected_failures: ([.results[]? | select((.unexpectedFailure // "") != "")] | length), unsupported: ([.results[]? | select((.unsupported // false) == true)] | length)}' "$REPORT" 2>/dev/null || echo "    (jq failed to parse $REPORT)"
 else
     echo "    (install jq for per-bucket summary)"
 fi

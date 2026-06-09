@@ -15,9 +15,9 @@
 # failures (compose-up, build, missing report.json, scorer failure)
 # escalate to a non-zero rc.
 #
-# Tests are RUN_ONCE here; reconciliation against expected-failures.json
-# is done by a follow-up Go script (lands in M1.x — for the seed we just
-# capture the raw report and let the user inspect).
+# Tests are RUN_ONCE here. There is no expected-failures allow-list:
+# every diff against reference Prometheus is a real bug to surface and
+# fix at the source.
 #
 # Usage:
 #   ./compatibility/prometheus/scripts/run-compatibility.sh        full lifecycle

@@ -153,11 +153,12 @@ y
 	}
 }
 
-// TestParseCorpus_SkipReasonNoLongerRecognized pins the removal of the
-// per-case opt-out mechanism. The parser must reject `-- skip_reason --`
-// as an unknown section so a corpus author can't reintroduce the
-// "stub it for later" workflow that the harness intentionally lacks.
-func TestParseCorpus_SkipReasonNoLongerRecognized(t *testing.T) {
+// TestParseCorpus_PerCaseOptOutRejected pins the removal of the
+// per-case opt-out mechanism. The parser must reject the legacy
+// opt-out section as an unknown section so a corpus author can't
+// reintroduce the "stub it for later" workflow that the harness
+// intentionally lacks.
+func TestParseCorpus_PerCaseOptOutRejected(t *testing.T) {
 	t.Parallel()
 	in := `-- name --
 x
@@ -167,7 +168,7 @@ x
 nope
 `
 	if _, err := parseCorpus(strings.NewReader(in), "test"); err == nil {
-		t.Fatal("expected error: skip_reason is no longer a recognized section")
+		t.Fatal("expected error: legacy per-case opt-out is no longer a recognized section")
 	}
 }
 

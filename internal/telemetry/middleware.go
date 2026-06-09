@@ -62,9 +62,16 @@ func (r *statusRecorder) Flush() {
 // pattern); when it's empty (404 / unmatched) we fall back to the
 // request URL's path prefix so the cardinality stays bounded.
 //
-// Outcome bucketing: a status >= 500 maps to ResultError, anything
-// else is ResultOK. 4xx is treated as ok because the gateway behaved
-// correctly — the upstream client sent a bad query.
+// Outcome bucketing: any status >= 400 maps to ResultError, anything
+// else (including the implicit-200 path where the handler never calls
+// WriteHeader) is ResultOK. 4xx is counted as an error because the
+// `cerberus_queries_total{result}` series is a query-outcome metric,
+// not an HTTP-SLO metric: a 400 parse rejection / 422 lower rejection
+// IS a failed query from the caller's point of view, and the
+// "Error rate by language" dashboard panel reads this bucket to show
+// users how many of their queries failed. The HTTP-layer SLO (which
+// would legitimately treat 4xx as "gateway behaved correctly")
+// rides the separate `http.server.*` instrument set.
 func QueryMiddleware(ql string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		route := r.Pattern
@@ -75,7 +82,7 @@ func QueryMiddleware(ql string, next http.Handler) http.Handler {
 		sr := &statusRecorder{ResponseWriter: w}
 		next.ServeHTTP(sr, r)
 		result := ResultOK
-		if sr.status >= 500 {
+		if sr.status >= 400 {
 			result = ResultError
 		}
 		t.Done(r.Context(), result)
