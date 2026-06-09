@@ -2,26 +2,33 @@ name: auto-merge-deps
 
 # Enables auto-merge on Dependabot PRs that meet two conditions:
 #
-#  1. The PR head branch starts with `dependabot/` (Dependabot's
-#     fixed prefix).
+#  1. The PR was opened by dependabot[bot] (job-level actor guard).
 #  2. The update-type matches the allowed set for the affected dep
 #     (patch-only for upstream parsers; patch+minor for GitHub Actions).
 #
-# Trigger is `workflow_run` chained after `ci` completes, NOT
-# `pull_request_target`, so non-Dependabot PRs never see a "Skipped"
-# `enable-auto-merge` check in their status list — the workflow simply
-# isn't registered for them.
+# Trigger is `pull_request` — the pattern GitHub documents for
+# Dependabot auto-merge. An earlier revision chained off
+# `workflow_run: [ci]` so non-Dependabot PRs wouldn't grow a "Skipped"
+# `enable-auto-merge` entry in their checks list, but
+# `dependabot/fetch-metadata` only reads `pull_request` /
+# `pull_request_target` event payloads — on `workflow_run` it
+# hard-fails with "Event payload missing pull_request key", so the
+# workflow never enabled auto-merge even once (0 successes across its
+# entire run history; every real Dependabot CI completion produced a
+# red run). The skipped-check entry on human PRs is the accepted
+# cosmetic cost of using the action the way it's designed.
+#
+# Dependabot-triggered workflow runs get a read-only GITHUB_TOKEN by
+# default; the explicit `permissions` block elevates exactly the two
+# scopes `gh pr merge --auto` needs.
 #
 # Branch protection on `main` still gates the actual merge —
-# auto-merge stays pending until `check + lint + dashboard` go green
-# and only then squash-merges. enforce_admins: true means this
+# auto-merge stays pending until every required status check goes
+# green and only then squash-merges. enforce_admins: true means this
 # workflow can't bypass required checks. See docs/upstream-forks.md
 # for the full rationale.
 
-on:
-  workflow_run:
-    workflows: [ci]
-    types: [completed]
+on: pull_request
 
 permissions:
   contents: write
@@ -29,27 +36,9 @@ permissions:
 
 jobs:
   enable-auto-merge:
-    # Only act on Dependabot's own branches. `workflow_run.head_branch`
-    # is the PR's head branch on workflow_run events — Dependabot
-    # prefixes every branch with `dependabot/`.
-    if: |
-      github.event.workflow_run.event == 'pull_request' &&
-      github.event.workflow_run.conclusion == 'success' &&
-      startsWith(github.event.workflow_run.head_branch, 'dependabot/')
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
     runs-on: ubuntu-latest
     steps:
-      # Resolve the PR number from the head_sha (workflow_run doesn't
-      # carry the PR number directly).
-      - id: pr
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-          REPO: ${{ github.repository }}
-        run: |
-          pr=$(gh api "repos/$REPO/commits/$HEAD_SHA/pulls" --jq '.[0].number')
-          echo "number=$pr" >> "$GITHUB_OUTPUT"
-          echo "Resolved PR: $pr"
-
       - name: Fetch Dependabot metadata
         id: meta
         uses: dependabot/fetch-metadata@v3
@@ -60,8 +49,8 @@ jobs:
       # tsouza/* forks. The forks-monitor cron only mints tags when
       # commits touch the narrow cerberus subtree, so any tag-bump PR
       # opened by Dependabot here is by construction "an upstream change
-      # that affects us". CI ( `check` + `lint` ) is still the merge
-      # gate via branch protection.
+      # that affects us". CI is still the merge gate via branch
+      # protection.
       - name: Enable auto-merge for trusted patch-only bumps
         if: |
           (steps.meta.outputs.update-type == 'version-update:semver-patch' &&
@@ -81,5 +70,5 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: gh pr merge --auto --squash --delete-branch -R "$REPO" "$PR_NUMBER"
