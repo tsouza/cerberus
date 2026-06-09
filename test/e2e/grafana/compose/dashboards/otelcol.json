@@ -160,7 +160,7 @@
         {
           "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
           "editorMode": "code",
-          "expr": "sum(increase(otelcol_exporter_send_failed_log_records[5m]) or increase(otelcol_exporter_send_failed_metric_points[5m]) or increase(otelcol_exporter_send_failed_spans[5m]))",
+          "expr": "sum(increase(otelcol_exporter_send_failed_log_records[5m]) or increase(otelcol_exporter_send_failed_metric_points[5m]) or increase(otelcol_exporter_send_failed_spans[5m])) or vector(0)",
           "legendFormat": "failed (5m)",
           "range": true,
           "refId": "A"
@@ -198,7 +198,7 @@
         {
           "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
           "editorMode": "code",
-          "expr": "sum(increase(otelcol_processor_refused_log_records[5m]) or increase(otelcol_processor_refused_metric_points[5m]) or increase(otelcol_processor_refused_spans[5m]))",
+          "expr": "sum(increase(otelcol_processor_refused_log_records[5m]) or increase(otelcol_processor_refused_metric_points[5m]) or increase(otelcol_processor_refused_spans[5m])) or vector(0)",
           "legendFormat": "refused (5m)",
           "range": true,
           "refId": "A"
@@ -385,7 +385,7 @@
         {
           "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
           "editorMode": "code",
-          "expr": "sum by (processor) (rate(otelcol_processor_dropped_log_records[5m]) or rate(otelcol_processor_dropped_metric_points[5m]) or rate(otelcol_processor_dropped_spans[5m]))",
+          "expr": "sum by (processor) (rate(otelcol_processor_dropped_log_records[5m]) or rate(otelcol_processor_dropped_metric_points[5m]) or rate(otelcol_processor_dropped_spans[5m])) or label_replace(vector(0), \"processor\", \"(none)\", \"\", \"\")",
           "legendFormat": "{{processor}} dropped",
           "range": true,
           "refId": "A"
@@ -393,7 +393,7 @@
         {
           "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
           "editorMode": "code",
-          "expr": "sum by (exporter) (rate(otelcol_exporter_send_failed_log_records[5m]) or rate(otelcol_exporter_send_failed_metric_points[5m]) or rate(otelcol_exporter_send_failed_spans[5m]))",
+          "expr": "sum by (exporter) (rate(otelcol_exporter_send_failed_log_records[5m]) or rate(otelcol_exporter_send_failed_metric_points[5m]) or rate(otelcol_exporter_send_failed_spans[5m])) or label_replace(vector(0), \"exporter\", \"(none)\", \"\", \"\")",
           "legendFormat": "{{exporter}} failed",
           "range": true,
           "refId": "B"

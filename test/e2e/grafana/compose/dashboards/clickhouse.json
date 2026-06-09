@@ -546,7 +546,7 @@
         {
           "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
           "editorMode": "code",
-          "expr": "sum by (name) (rate(clickhouse_event{name=~\"FailedQuery|FailedSelectQuery|FailedInsertQuery|NetworkErrors|ZooKeeperHardwareExceptions|ReplicationSlackedExceptions|CannotWriteToWriteBufferDiscard|RejectedInserts\"}[5m]))",
+          "expr": "sum by (name) (rate(clickhouse_event{name=~\"FailedQuery|FailedSelectQuery|FailedInsertQuery|NetworkErrors|ZooKeeperHardwareExceptions|ReplicationSlackedExceptions|CannotWriteToWriteBufferDiscard|RejectedInserts\"}[5m])) or label_replace(vector(0), \"name\", \"(none)\", \"\", \"\")",
           "legendFormat": "{{name}}",
           "range": true,
           "refId": "A"
