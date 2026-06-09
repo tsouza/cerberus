@@ -21,6 +21,50 @@
 import type { ConsoleMessage, Page } from '@playwright/test';
 
 /**
+ * Wire a response listener that records every HTTP response with a
+ * status >= 400 — method, URL, status, and a body snippet — while
+ * attached.
+ *
+ * Companion to captureConsoleErrors: the browser logs a non-2xx
+ * resource load as the anonymous console line "Failed to load
+ * resource: the server responded with a status of 400 (Bad Request)",
+ * which names neither the request nor the responder. Sweeps that
+ * assert on console errors should attach this capture alongside so a
+ * failure names the offending request instead of just counting
+ * anonymous lines (the May-22 otelcol kiosk 400s sat undiagnosable
+ * for weeks for exactly this reason).
+ *
+ * Same start/stop handle shape as captureConsoleErrors.
+ */
+export async function captureFailedResponses(
+  page: Page,
+): Promise<{ failures: string[]; stop: () => void }> {
+  const failures: string[] = [];
+  const listener = async (resp: {
+    status: () => number;
+    url: () => string;
+    request: () => { method: () => string };
+    text: () => Promise<string>;
+  }) => {
+    if (resp.status() < 400) return;
+    let body = '';
+    try {
+      body = (await resp.text()).slice(0, 500).replace(/\s+/g, ' ');
+    } catch {
+      body = '<body unavailable>';
+    }
+    failures.push(
+      `${resp.status()} ${resp.request().method()} ${resp.url()} :: ${body}`,
+    );
+  };
+  page.on('response', listener);
+  return {
+    failures,
+    stop: () => page.off('response', listener),
+  };
+}
+
+/**
  * Wire a console listener that returns every `error`-level message
  * captured while the listener is attached.
  *
