@@ -130,6 +130,34 @@ services:
       clickhouse:
         condition: service_healthy
 
+  seed:
+    # Deterministic fixture seeder — the same test/e2e/seed program the
+    # k3d E2E runs via `just e2e-seed`, in rolling re-seed mode (30 s
+    # ticks). The dogfood self-telemetry loop populates the ops-family
+    # dashboards, but the showcase-* dashboards need data SHAPES the
+    # self-telemetry can't guarantee deterministically: counter resets
+    # (`resets()`), flapping gauges (`changes()`), multi-key label sets
+    # (`label_join` / `count_values`), and exponential histograms
+    # (native `histogram_quantile`). The seeder's ddl.Apply is the same
+    # CREATE IF NOT EXISTS set cerberus's CERBERUS_AUTO_CREATE_SCHEMA
+    # applies, so the startup race between the two is idempotent.
+    image: cerberus-seed:dev
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+      target: seed
+    networks: [cerberus-dev]
+    environment:
+      CH_ADDR: "clickhouse:9000"
+      CH_DATABASE: "otel"
+      CH_USERNAME: "cerberus"
+      CH_PASSWORD: "cerberus"
+    command: ["--re-seed-interval=30s"]
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+
   cerberus:
     image: cerberus:dev
     pull_policy: build

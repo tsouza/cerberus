@@ -360,6 +360,105 @@ VALUES
   (now64(9) - INTERVAL 19 SECOND, 'a0000000000000000000000000000002', '0000000000000005', '0000000000000004', 'orders.insert',    'Client', 'db',       map('service.name', 'db'),       map('db.system',   'postgres'),                            300000000, 'Error'),
   (now64(9) - INTERVAL 30 SECOND, 'a0000000000000000000000000000003', '0000000000000006', '',                 'cron.refresh',     'Server', 'api',      map('service.name', 'api'),      map('cron.name',   'refresh'),                              90000000, 'Ok'),
   (now64(9) - INTERVAL 29 SECOND, 'a0000000000000000000000000000003', '0000000000000007', '0000000000000006', 'cache.refresh',    'Client', 'db',       map('service.name', 'db'),       map('db.system',   'redis'),                                40000000, 'Ok')`
+
+	// Showcase-PromQL seed shapes (PR feat/showcase-promql). The
+	// showcase-promql dashboard's feature panels need data shapes the
+	// dogfood self-telemetry can't guarantee deterministically:
+	//
+	//   - showcase_restarting_total — a counter that RESETS: the value
+	//     follows a sawtooth (4·(number mod 150)) so every 5m window
+	//     contains ≥1 reset and `resets()` returns a non-zero series.
+	//   - showcase_flapping — a gauge alternating 0/1 every 15 s so
+	//     `changes()` / `delta()` / `idelta()` have real movement.
+	//   - showcase_multilabel — three series with a 3-key label set
+	//     (color / shape / env) for `label_replace` / `label_join` /
+	//     `count_values` and the vector-matching panels.
+	//   - showcase_latency_exp_hist — exponential (native) histogram
+	//     rows in otel_metrics_exp_histogram; the `_exp_hist` suffix
+	//     routes `histogram_quantile(φ, showcase_latency_exp_hist)`
+	//     onto the native-quantile lowering (schema.ExpHistogramSuffix).
+	//
+	// All four follow the rolling re-seed discipline: windows centred
+	// on now64(9) so each 30 s tick re-anchors them.
+	insertShowcaseResetsSQL = `INSERT INTO otel_metrics_sum
+  (ResourceAttributes, ServiceName, MetricName, MetricDescription, MetricUnit, Attributes, StartTimeUnix, TimeUnix, Value, Flags, AggregationTemporality, IsMonotonic)
+SELECT
+    map('service.name', 'api'),
+    'api',
+    'showcase_restarting_total',
+    'Sawtooth counter that resets every 150s',
+    '1',
+    map('job', 'api'),
+    now64(9) + INTERVAL (number - 300) SECOND,
+    now64(9) + INTERVAL (number - 300) SECOND,
+    toFloat64((number % 150) * 4),
+    toUInt32(0),
+    toInt32(2),
+    true
+FROM numbers(600)`
+
+	insertShowcaseFlappingSQL = `INSERT INTO otel_metrics_gauge
+  (ResourceAttributes, ServiceName, MetricName, MetricDescription, MetricUnit, Attributes, StartTimeUnix, TimeUnix, Value)
+SELECT
+    map('service.name', 'api'),
+    'api',
+    'showcase_flapping',
+    'Gauge that flaps between 0 and 1 every sample',
+    '1',
+    map('job', 'api'),
+    now64(9) + INTERVAL ((number - 20) * 15) SECOND,
+    now64(9) + INTERVAL ((number - 20) * 15) SECOND,
+    toFloat64(number % 2)
+FROM numbers(40)`
+
+	insertShowcaseMultilabelSQL = `INSERT INTO otel_metrics_gauge
+  (ResourceAttributes, ServiceName, MetricName, MetricDescription, MetricUnit, Attributes, StartTimeUnix, TimeUnix, Value)
+SELECT
+    map('service.name', 'api'),
+    'api',
+    'showcase_multilabel',
+    'Three series with a multi-key label set',
+    '1',
+    map(
+        'job', 'api',
+        'color', arrayElement(['red', 'green', 'blue'], (number % 3) + 1),
+        'shape', arrayElement(['circle', 'square', 'triangle'], (number % 3) + 1),
+        'env', arrayElement(['dev', 'staging', 'prod'], (number % 3) + 1)
+    ),
+    now64(9) + INTERVAL ((intDiv(number, 3) - 20) * 15) SECOND,
+    now64(9) + INTERVAL ((intDiv(number, 3) - 20) * 15) SECOND,
+    toFloat64((number % 3) + 1)
+FROM numbers(120)`
+
+	// Exponential-histogram rows. Scale=0 means base-2 buckets
+	// ((2^(i+PositiveOffset-1), 2^(i+PositiveOffset)]); the per-row
+	// bucket counts grow with the sample index so the cumulative
+	// distribution is monotone, Count = ZeroCount + sum(buckets), and
+	// the native-quantile midpoint estimation always has mass to walk.
+	insertShowcaseExpHistSQL = `INSERT INTO otel_metrics_exp_histogram
+  (ResourceAttributes, ServiceName, MetricName, MetricDescription, MetricUnit, Attributes, StartTimeUnix, TimeUnix, Count, Sum, Scale, ZeroCount, PositiveOffset, PositiveBucketCounts, NegativeOffset, NegativeBucketCounts, Flags, Min, Max, AggregationTemporality)
+SELECT
+    map('service.name', 'api'),
+    'api',
+    'showcase_latency_exp_hist',
+    'Exponential (native) histogram of synthetic latencies',
+    's',
+    map('job', 'api'),
+    now64(9) + INTERVAL ((number - 20) * 15) SECOND,
+    now64(9) + INTERVAL ((number - 20) * 15) SECOND,
+    toUInt64(46 * (number + 1)),
+    toFloat64(120 * (number + 1)) / 10,
+    toInt32(0),
+    toUInt64(1 * (number + 1)),
+    toInt32(0),
+    arrayMap(x -> toUInt64(x * (number + 1)), [5, 10, 15, 10, 5]),
+    toInt32(0),
+    [],
+    toUInt32(0),
+    toFloat64(0),
+    toFloat64(16),
+    toInt32(2)
+FROM numbers(40)`
 )
 
 // insertMetrics inserts the two `up` gauge series + 600 counter samples for
@@ -377,6 +476,18 @@ func insertMetrics(ctx context.Context, conn driver.Conn) error {
 	}
 	if err := conn.Exec(ctx, insertHistogramSQL); err != nil {
 		return fmt.Errorf("histogram: %w", err)
+	}
+	if err := conn.Exec(ctx, insertShowcaseResetsSQL); err != nil {
+		return fmt.Errorf("showcase resets counter: %w", err)
+	}
+	if err := conn.Exec(ctx, insertShowcaseFlappingSQL); err != nil {
+		return fmt.Errorf("showcase flapping gauge: %w", err)
+	}
+	if err := conn.Exec(ctx, insertShowcaseMultilabelSQL); err != nil {
+		return fmt.Errorf("showcase multilabel gauge: %w", err)
+	}
+	if err := conn.Exec(ctx, insertShowcaseExpHistSQL); err != nil {
+		return fmt.Errorf("showcase exp histogram: %w", err)
 	}
 	return nil
 }
@@ -415,6 +526,7 @@ func verifyRowcounts(ctx context.Context, conn driver.Conn) error {
 		{"metrics_gauge", "SELECT count() FROM otel_metrics_gauge"},
 		{"metrics_sum", "SELECT count() FROM otel_metrics_sum"},
 		{"metrics_histogram", "SELECT count() FROM otel_metrics_histogram"},
+		{"metrics_exp_hist", "SELECT count() FROM otel_metrics_exp_histogram"},
 		{"logs", "SELECT count() FROM otel_logs"},
 		{"traces", "SELECT count() FROM otel_traces"},
 	}

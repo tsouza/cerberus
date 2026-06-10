@@ -38,7 +38,24 @@ RUN --mount=type=cache,target=/go/pkg/mod,sharing=locked \
 COPY . .
 RUN --mount=type=cache,target=/go/pkg/mod,sharing=locked \
     --mount=type=cache,target=/root/.cache/go-build,sharing=locked \
-    CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.Version=e2e" -o /out/cerberus ./cmd/cerberus
+    CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.Version=e2e" -o /out/cerberus ./cmd/cerberus && \
+    CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/cerberus-seed ./test/e2e/seed/cmd/seed
+
+# Deterministic-fixture seeder image (compose `seed` service). Runs the
+# same test/e2e/seed program the k3d E2E invokes via `just e2e-seed`,
+# in rolling re-seed mode, so the showcase dashboards' feature panels
+# always have the data shapes the dogfood self-telemetry can't
+# guarantee (counter resets, flapping gauges, multi-label series,
+# exponential histograms). Placed BEFORE the cerberus runtime stage so
+# the unnamed-final-stage default build still produces the cerberus
+# image for `docker build` callers that don't pass --target.
+FROM gcr.io/distroless/static-debian12:nonroot AS seed
+
+COPY --from=build /out/cerberus-seed /usr/local/bin/cerberus-seed
+
+USER nonroot:nonroot
+
+ENTRYPOINT ["/usr/local/bin/cerberus-seed"]
 
 FROM gcr.io/distroless/static-debian12:nonroot
 
