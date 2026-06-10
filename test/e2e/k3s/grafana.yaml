@@ -128,16 +128,15 @@ spec:
               value: dark
             - name: GF_FEATURE_TOGGLES_ENABLE
               value: traceqlSearch
-            # The drilldown-apps sweep (iterate-drilldown-apps.spec.ts)
-            # hard-fails on any catalogue app whose
-            # /api/plugins/<id>/settings reports not-installed (the
-            # install-probe early-skip was removed with the rest of the
-            # test escape hatches). grafana-lokiexplore-app ships built
-            # in to grafana/grafana:11.4.0; the metrics and traces
-            # drilldown apps don't until later releases, so install
-            # them from the catalog at startup.
-            - name: GF_INSTALL_PLUGINS
-              value: grafana-metricsdrilldown-app,grafana-exploretraces-app
+            # Deliberately NO GF_INSTALL_PLUGINS for the drilldown
+            # apps: grafana-metricsdrilldown-app and
+            # grafana-exploretraces-app require Grafana >= 11.6 and
+            # installing them on this 11.4.0 image bricks the frontend
+            # (run 27246825822 hung the whole Playwright suite on its
+            # first navigation, both attempts). The drilldown catalogue
+            # (test/e2e/playwright/helpers/drilldown.ts) is scoped to
+            # the apps this image ships; both come back as first-party
+            # preinstalled apps when the Grafana pin bumps to 12.x.
           volumeMounts:
             - name: datasources
               mountPath: /etc/grafana/provisioning/datasources

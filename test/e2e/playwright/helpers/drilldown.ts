@@ -38,21 +38,23 @@ export type DrilldownApp = {
   label: string;
 };
 
+// The catalogue lists exactly the drilldown apps the pinned Grafana
+// image can run — the same rule that dropped grafana-pyroscope-app
+// (cerberus doesn't ship profiling). grafana/grafana:11.4.0 ships
+// grafana-lokiexplore-app built in; grafana-metricsdrilldown-app and
+// grafana-exploretraces-app require Grafana >= 11.6 (exploretraces
+// grafanaDependency: ">=11.6.11 <12 || >=12.0.10 …") and cannot run
+// on this image — installing them anyway via GF_INSTALL_PLUGINS
+// bricked the 11.4 frontend and hung the entire k3d Playwright suite
+// on its first navigation (run 27246825822, both attempts: 21 silent
+// minutes after "Running 165 tests"). Restore both entries when the
+// Grafana pin bumps to a release that preinstalls them (12.x) — they
+// are first-party there and need no GF_INSTALL_PLUGINS.
 export const DRILLDOWN_APPS: ReadonlyArray<DrilldownApp> = [
-  {
-    id: 'grafana-metricsdrilldown-app',
-    root: '/a/grafana-metricsdrilldown-app/trail',
-    label: 'Explore Metrics',
-  },
   {
     id: 'grafana-lokiexplore-app',
     root: '/a/grafana-lokiexplore-app/explore?var-ds=cerberus-loki',
     label: 'Explore Logs',
-  },
-  {
-    id: 'grafana-exploretraces-app',
-    root: '/a/grafana-exploretraces-app/explore',
-    label: 'Explore Traces',
   },
 ];
 
