@@ -1098,34 +1098,103 @@ func BuildMatcherPredicate(matchers []*labels.Matcher, s schema.Metrics) chplan.
 //     (with the dot/underscore candidate expansion documented on
 //     [attributeLookup]).
 func matcherToExpr(m *labels.Matcher, s schema.Metrics) chplan.Expr {
-	var lhs chplan.Expr
 	if m.Name == model.MetricNameLabel {
-		lhs = &chplan.ColumnRef{Name: s.MetricNameColumn}
-	} else {
-		mapLookup := attributeLookup(s.AttributesColumn, m.Name)
-		if col := schemaTopLevelColumn(s, m.Name); col != "" {
-			lhs = &chplan.FuncCall{
-				Name: "coalesce",
-				Args: []chplan.Expr{
-					&chplan.FuncCall{
-						Name: "nullIf",
-						Args: []chplan.Expr{
-							&chplan.ColumnRef{Name: col},
-							&chplan.LitString{V: ""},
-						},
+		return metricNamePredicate(m, s)
+	}
+	var lhs chplan.Expr
+	mapLookup := attributeLookup(s.AttributesColumn, m.Name)
+	if col := schemaTopLevelColumn(s, m.Name); col != "" {
+		lhs = &chplan.FuncCall{
+			Name: "coalesce",
+			Args: []chplan.Expr{
+				&chplan.FuncCall{
+					Name: "nullIf",
+					Args: []chplan.Expr{
+						&chplan.ColumnRef{Name: col},
+						&chplan.LitString{V: ""},
 					},
-					mapLookup,
 				},
-			}
-		} else {
-			lhs = mapLookup
+				mapLookup,
+			},
 		}
+	} else {
+		lhs = mapLookup
 	}
 	return &chplan.Binary{
 		Op:    matchOp(m.Type),
 		Left:  lhs,
 		Right: &chplan.LitString{V: m.Value},
 	}
+}
+
+// metricNamePredicate resolves a `__name__` matcher against the
+// dedicated MetricName column. Equality and negated-equality matchers
+// whose value carries at least one rewritable underscore fan out
+// across every OTel-dotted candidate from
+// [format.PromLabelToOTelCandidates], because the `__name__` catalog
+// surface (`/api/v1/label/__name__/values`) Prom-normalises stored
+// dotted MetricNames (`k8s.node.cpu.usage` → `k8s_node_cpu_usage`)
+// through `OTelToPromMetric` — so the matcher side must accept the
+// underscored alias for rows whose stored name is still dotted, or
+// every catalog-advertised kubeletstats / k8scluster / semconv-dotted
+// metric returns an empty result the moment Grafana (or
+// Drilldown-Metrics) queries the name it was just shown. This is the
+// `__name__` analogue of the Attributes-map candidate chain in
+// [attributeLookup] (PR #658) and the matcher-string fan-out the
+// catalog endpoints already apply via
+// [internal/api/prom.expandUnderscoredMetricNameMatcher].
+//
+// Shapes emitted:
+//
+//   - `__name__="<v>"`  → `MetricName = v OR MetricName = c1 OR …`
+//   - `__name__!="<v>"` → `MetricName != v AND MetricName != c1 AND …`
+//     (a user excluding the advertised alias expects the dotted
+//     storage rows excluded too — the candidates are one logical
+//     series set, so the negation must reject every spelling).
+//   - regex matchers (`=~` / `!~`) keep the single-comparison shape
+//     against the raw stored name: a regex is an explicit user-chosen
+//     pattern and re-expanding it across the candidate powerset would
+//     change its meaning.
+//
+// Values with no rewritable underscore (`up`, `gen`) — and values that
+// produce a single candidate — keep the legacy single-comparison
+// emit, byte-stable with the pre-fan-out fixtures. The OR chain is
+// `isCheapPredicate`-shaped (Binary over ColumnRef / LitString), so
+// the optimizer's PREWHERE promotion treats it exactly like the
+// single equality it replaces.
+func metricNamePredicate(m *labels.Matcher, s schema.Metrics) chplan.Expr {
+	single := &chplan.Binary{
+		Op:    matchOp(m.Type),
+		Left:  &chplan.ColumnRef{Name: s.MetricNameColumn},
+		Right: &chplan.LitString{V: m.Value},
+	}
+	if m.Type != labels.MatchEqual && m.Type != labels.MatchNotEqual {
+		return single
+	}
+	if !format.PromLabelNeedsDottedFallback(m.Value) {
+		return single
+	}
+	candidates := format.PromLabelToOTelCandidates(m.Value)
+	if len(candidates) <= 1 {
+		return single
+	}
+	fold := chplan.OpOr
+	if m.Type == labels.MatchNotEqual {
+		fold = chplan.OpAnd
+	}
+	out := chplan.Expr(single)
+	for _, cand := range candidates[1:] {
+		out = &chplan.Binary{
+			Op:   fold,
+			Left: out,
+			Right: &chplan.Binary{
+				Op:    matchOp(m.Type),
+				Left:  &chplan.ColumnRef{Name: s.MetricNameColumn},
+				Right: &chplan.LitString{V: cand},
+			},
+		}
+	}
+	return out
 }
 
 // attributeLookup returns the chplan.Expr that resolves a Prom matcher

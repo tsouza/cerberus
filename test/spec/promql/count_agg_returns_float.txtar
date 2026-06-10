@@ -33,17 +33,24 @@ INSERT INTO otel_metrics_gauge VALUES
 [1] string = "Map(String,String)"
 [2] int64 = 9
 [3] string = "demo_memory_usage_bytes"
-[4] string = "2026-01-01 00:00:01.000000000"
-[5] int64 = 9
-[6] string = "2026-01-01 00:00:01.000000000"
-[7] int64 = 9
-[8] int64 = 300000000000
+[4] string = "demo.memory.usage.bytes"
+[5] string = "demo.memory.usage_bytes"
+[6] string = "demo.memory_usage.bytes"
+[7] string = "demo.memory_usage_bytes"
+[8] string = "demo_memory.usage.bytes"
+[9] string = "demo_memory.usage_bytes"
+[10] string = "demo_memory_usage.bytes"
+[11] string = "2026-01-01 00:00:01.000000000"
+[12] int64 = 9
+[13] string = "2026-01-01 00:00:01.000000000"
+[14] int64 = 9
+[15] int64 = 300000000000
 -- chplan --
 Project ["" AS MetricName, CAST(map(), "Map(String,String)") AS Attributes, now64(9) AS TimeUnix, Value AS Value]
   Aggregate groupBy=[] funcs=[count(Value) AS Value]
     Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
       Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
-        Filter predicate=(((MetricName = "demo_memory_usage_bytes") AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+        Filter predicate=((((((((((MetricName = "demo_memory_usage_bytes") OR (MetricName = "demo.memory.usage.bytes")) OR (MetricName = "demo.memory.usage_bytes")) OR (MetricName = "demo.memory_usage.bytes")) OR (MetricName = "demo.memory_usage_bytes")) OR (MetricName = "demo_memory.usage.bytes")) OR (MetricName = "demo_memory.usage_bytes")) OR (MetricName = "demo_memory_usage.bytes")) AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
           Scan(merge(otel_metrics_gauge|otel_metrics_sum))
 -- sql --
-SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Value` FROM (SELECT toFloat64(count(`Value`)) AS `Value`, count() AS `_cerb_n` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`))) WHERE `_cerb_n` > 0)
+SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Value` FROM (SELECT toFloat64(count(`Value`)) AS `Value`, count() AS `_cerb_n` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE ((((((((`MetricName` = ?) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`))) WHERE `_cerb_n` > 0)

@@ -3,6 +3,9 @@ predict_linear(http_requests_total[5m], 3600)
 -- args --
 [0] float64 = 3600
 [1] string = "http_requests_total"
+[2] string = "http.requests.total"
+[3] string = "http.requests_total"
+[4] string = "http_requests.total"
 -- seed --
 CREATE TABLE otel_metrics_sum (
     MetricName String,
@@ -18,8 +21,8 @@ INSERT INTO otel_metrics_sum VALUES
   [{"job": "api"}, 396.0]
 ]
 -- sql --
-SELECT `Attributes`, if(length(window_pairs) > 1, tupleElement(arrayReduce('simpleLinearRegression', arrayMap(p -> dateDiff('second', now64(9), tupleElement(p, 1)), window_pairs), arrayMap(p -> tupleElement(p, 2), window_pairs)), 2) + tupleElement(arrayReduce('simpleLinearRegression', arrayMap(p -> dateDiff('second', now64(9), tupleElement(p, 1)), window_pairs), arrayMap(p -> tupleElement(p, 2), window_pairs)), 1) * ?, nan) AS Value FROM (SELECT `Attributes`, arrayFilter(p -> tupleElement(p, 1) > now64(9) - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= now64(9), series_array) AS window_pairs FROM (SELECT `Attributes`, arraySort(groupArray((`TimeUnix`, `Value`))) AS series_array FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` = ?)) GROUP BY `Attributes`)) WHERE length(`window_pairs`) >= 2
+SELECT `Attributes`, if(length(window_pairs) > 1, tupleElement(arrayReduce('simpleLinearRegression', arrayMap(p -> dateDiff('second', now64(9), tupleElement(p, 1)), window_pairs), arrayMap(p -> tupleElement(p, 2), window_pairs)), 2) + tupleElement(arrayReduce('simpleLinearRegression', arrayMap(p -> dateDiff('second', now64(9), tupleElement(p, 1)), window_pairs), arrayMap(p -> tupleElement(p, 2), window_pairs)), 1) * ?, nan) AS Value FROM (SELECT `Attributes`, arrayFilter(p -> tupleElement(p, 1) > now64(9) - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= now64(9), series_array) AS window_pairs FROM (SELECT `Attributes`, arraySort(groupArray((`TimeUnix`, `Value`))) AS series_array FROM (SELECT * FROM `otel_metrics_sum` WHERE ((((`MetricName` = ?) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?))) GROUP BY `Attributes`)) WHERE length(`window_pairs`) >= 2
 -- chplan --
 RangeWindow func=predict_linear range=5m0s step=0s ts=TimeUnix value=Value groupBy=[Attributes] scalars=[3600]
-  Filter predicate=(MetricName = "http_requests_total")
+  Filter predicate=((((MetricName = "http_requests_total") OR (MetricName = "http.requests.total")) OR (MetricName = "http.requests_total")) OR (MetricName = "http_requests.total"))
     Scan(otel_metrics_sum)

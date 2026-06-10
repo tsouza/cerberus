@@ -302,6 +302,26 @@ test.describe('iterate-metrics-explorer: Drilldown-Metrics + label chips', () =>
         firstValue = String(r0.values[0]?.[1] ?? '');
       }
 
+      // The QUERY surface must serve every catalog-advertised name —
+      // this is the exact call Drilldown-Metrics fires per preview
+      // panel, and an empty result renders the "wall of empty preview
+      // tiles" the round-3 sweep pinned. The /api/v1/series probe above
+      // is NOT sufficient: the series endpoint historically applied a
+      // matcher fan-out the query path lacked, so series returned rows
+      // while query_range returned nothing for dotted-stored (k8s_*,
+      // container_*) and bare classic-histogram names. No tolerance
+      // list: an empty result here is a cerberus catalog/lowering bug
+      // or a seed bug — fix it at the source.
+      if (rangeSeries === 0) {
+        labelFailures.push(
+          `metric=${metric}: /api/v1/query_range returned 0 series — ` +
+            `every catalog-advertised __name__ must be queryable ` +
+            `(empty preview panel in Drilldown-Metrics). Fix the ` +
+            `catalog advertisement or the selector lowering, never ` +
+            `this assertion.`,
+        );
+      }
+
       summary.push({
         metric,
         label_count: labelCount,

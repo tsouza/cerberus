@@ -47,14 +47,17 @@ INSERT INTO otel_metrics_sum VALUES
 [6] string = ""
 [7] string = "service_name"
 [8] string = "cerberus_queries_total"
-[9] string = "2026-01-01 00:00:01.000000000"
-[10] int64 = 9
-[11] string = "2026-01-01 00:00:01.000000000"
-[12] int64 = 9
-[13] int64 = 300000000000
-[14] string = "service_name"
-[15] string = "service_name"
-[16] string = "service.name"
+[9] string = "cerberus.queries.total"
+[10] string = "cerberus.queries_total"
+[11] string = "cerberus_queries.total"
+[12] string = "2026-01-01 00:00:01.000000000"
+[13] int64 = 9
+[14] string = "2026-01-01 00:00:01.000000000"
+[15] int64 = 9
+[16] int64 = 300000000000
+[17] string = "service_name"
+[18] string = "service_name"
+[19] string = "service.name"
 -- chplan --
 Project ["" AS MetricName, mapWithoutEmpty(map("service_name", gkey_0)) AS Attributes, now64(9) AS TimeUnix, Value AS Value]
   Aggregate groupBy=[if(mapContains(Attributes, "service_name"), Attributes["service_name"], Attributes["service.name"]) AS gkey_0] funcs=[sum(Value) AS Value]
@@ -62,7 +65,7 @@ Project ["" AS MetricName, mapWithoutEmpty(map("service_name", gkey_0)) AS Attri
       Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
         Filter predicate=((TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9)) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
           Project [MetricName AS MetricName, mapConcat(Attributes, mapFilter((k, v) -> (v != ""), map("service_name", toString(ServiceName)))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
-            Filter predicate=(MetricName = "cerberus_queries_total")
+            Filter predicate=((((MetricName = "cerberus_queries_total") OR (MetricName = "cerberus.queries.total")) OR (MetricName = "cerberus.queries_total")) OR (MetricName = "cerberus_queries.total"))
               Scan(otel_metrics_sum)
 -- sql --
-SELECT ? AS `MetricName`, mapFilter((k, v) -> v != '', map(?, `gkey_0`)) AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT if(mapContains(`Attributes`, ?), `Attributes`[?], `Attributes`[?]) AS `gkey_0`, sum(`Value`) AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapConcat(`Attributes`, mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`)))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` = ?))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)) GROUP BY if(mapContains(`Attributes`, ?), `Attributes`[?], `Attributes`[?]))
+SELECT ? AS `MetricName`, mapFilter((k, v) -> v != '', map(?, `gkey_0`)) AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT if(mapContains(`Attributes`, ?), `Attributes`[?], `Attributes`[?]) AS `gkey_0`, sum(`Value`) AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapConcat(`Attributes`, mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`)))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_sum` WHERE ((((`MetricName` = ?) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)) GROUP BY if(mapContains(`Attributes`, ?), `Attributes`[?], `Attributes`[?]))

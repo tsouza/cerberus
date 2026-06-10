@@ -356,20 +356,7 @@ func (h *Handler) fetchLabelNames(ctx context.Context) ([]string, error) {
 
 func (h *Handler) fetchLabelValues(ctx context.Context, name string) ([]string, error) {
 	if name == model.MetricNameLabel {
-		sql := h.unionMetricNamesSQL()
-		values, err := timeCH(ctx, func() ([]string, error) {
-			return h.Client.QueryStrings(ctx, sql)
-		})
-		if err != nil {
-			return nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
-		}
-		// Metric-name values pass through Prom's metric-name grammar
-		// (`[a-zA-Z_:][a-zA-Z0-9_:]*`); OTel may store dotted forms
-		// (`http.server.duration`) that the PromQL selector position
-		// can't reference directly.
-		values = normalizeMetricValues(values)
-		sort.Strings(values)
-		return values, nil
+		return h.fetchMetricNameValues(ctx)
 	}
 	sql, args := h.unionLabelValuesSQL(name)
 	values, err := timeCH(ctx, func() ([]string, error) {
@@ -380,6 +367,117 @@ func (h *Handler) fetchLabelValues(ctx context.Context, name string) ([]string, 
 	}
 	sort.Strings(values)
 	return values, nil
+}
+
+// fetchMetricNameValues assembles `/api/v1/label/__name__/values` so
+// that every advertised name is actually queryable — the catalog's
+// invariant against the query surface (`/api/v1/query` with
+// `{__name__="<advertised>"}` must return the metric's series).
+//
+// Two table groups feed the catalog with different name shapes:
+//
+//   - Gauge + sum tables store one wire-visible series per row; their
+//     MetricNames surface as-is (Prom-grammar-normalised through
+//     [normalizeMetricValues] so dotted OTel names like
+//     `k8s.node.cpu.usage` advertise as `k8s_node_cpu_usage` — the
+//     selector lowering's MetricName candidate fan-out in
+//     [internal/promql] resolves the underscored alias back to the
+//     dotted storage rows).
+//
+//   - The classic-histogram table stores ONE row per histogram sample
+//     under the BARE base name, but the PromQL surface exposes that
+//     row only as the three companion series `<base>_bucket` /
+//     `<base>_count` / `<base>_sum` — a bare `{__name__="<base>"}`
+//     selector routes to the gauge/sum tables (see
+//     [schema.Metrics.TablesFor]) and returns empty. Reference
+//     Prometheus behaves the same way: a classic histogram's
+//     `__name__` values contain ONLY the suffixed forms, never the
+//     bare family name. So each histogram-table base name expands to
+//     exactly the three companion names and the bare name is dropped.
+//
+// The exponential-histogram + summary tables stay out of the catalog
+// deliberately: the bare-selector query surface doesn't read either
+// table (exp-histograms are reachable only through the
+// `histogram_quantile` + [schema.Metrics.ExpHistogramSuffix] routing;
+// the summary table has no lowering at all), and advertising names the
+// query surface can't serve is exactly the bug this function's split
+// shape exists to prevent.
+func (h *Handler) fetchMetricNameValues(ctx context.Context) ([]string, error) {
+	bareTables, histogramTable := h.catalogNameTables()
+	var values []string
+	if len(bareTables) > 0 {
+		sql := h.metricNamesSQL(bareTables)
+		bare, err := timeCH(ctx, func() ([]string, error) {
+			return h.Client.QueryStrings(ctx, sql)
+		})
+		if err != nil {
+			return nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
+		}
+		// Metric-name values pass through Prom's metric-name grammar
+		// (`[a-zA-Z_:][a-zA-Z0-9_:]*`); OTel may store dotted forms
+		// (`http.server.duration`) that the PromQL selector position
+		// can't reference directly.
+		values = normalizeMetricValues(bare)
+	}
+	if histogramTable != "" {
+		sql := h.metricNamesSQL([]string{histogramTable})
+		hist, err := timeCH(ctx, func() ([]string, error) {
+			return h.Client.QueryStrings(ctx, sql)
+		})
+		if err != nil {
+			return nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
+		}
+		for _, base := range normalizeMetricValues(hist) {
+			for _, suf := range []string{"_bucket", "_count", "_sum"} {
+				values = append(values, base+suf)
+			}
+		}
+	}
+	// Cross-group dedupe: a sum-table counter that already carries a
+	// companion-shaped name (`http_server_request_duration_count` from
+	// the OTel-hostmetrics emitters) collides with the histogram
+	// expansion of its base name; both spellings denote the same wire
+	// series set, so one entry survives.
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		if _, dup := seen[v]; dup {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// catalogNameTables partitions the configured metric tables into the
+// bare-name group (gauge + sum — names advertise verbatim) and the
+// histogram table (names advertise as the three companion suffixes).
+// Empty table names are skipped; duplicate configurations collapse —
+// in particular, a deployment that points SumTable at the histogram
+// table keeps that table in the bare group (matching the lowering's
+// single-arm fallback for that degenerate config) and disables the
+// suffix expansion rather than advertising the same physical rows
+// twice.
+func (h *Handler) catalogNameTables() (bareTables []string, histogramTable string) {
+	inBare := map[string]struct{}{}
+	for _, t := range []string{h.Schema.GaugeTable, h.Schema.SumTable} {
+		if t == "" {
+			continue
+		}
+		if _, dup := inBare[t]; dup {
+			continue
+		}
+		inBare[t] = struct{}{}
+		bareTables = append(bareTables, t)
+	}
+	if t := h.Schema.HistogramTable; t != "" {
+		if _, dup := inBare[t]; !dup {
+			histogramTable = t
+		}
+	}
+	return bareTables, histogramTable
 }
 
 // fetchLabelNamesMatched returns the distinct label names of series
@@ -445,6 +543,16 @@ func (h *Handler) fetchLabelValuesMatched(ctx context.Context, name string, matc
 	out := make([]string, 0, len(seen))
 	for v := range seen {
 		out = append(out, v)
+	}
+	if name == model.MetricNameLabel {
+		// The matcher subquery projects the STORED MetricName, which may
+		// be OTel-dotted (`k8s.node.cpu.usage`) — the selector lowering's
+		// candidate fan-out matches those rows from an underscored-alias
+		// matcher. Normalise so the matched values surface in the same
+		// Prom grammar the unmatched catalog emits; without this the
+		// dotted storage spelling leaks to the wire and the client gets a
+		// name the selector position can't reference.
+		out = normalizeMetricValues(out)
 	}
 	sort.Strings(out)
 	return out, nil
@@ -606,9 +714,11 @@ func (h *Handler) unionLabelNamesSQL() string {
 	return sql
 }
 
-// unionMetricNamesSQL returns the distinct MetricName values across tables.
-func (h *Handler) unionMetricNamesSQL() string {
-	tables := h.metricTables()
+// metricNamesSQL returns the distinct MetricName values across the
+// given tables. Callers group tables by how their names surface in the
+// catalog (see fetchMetricNameValues) — the SQL shape itself is the
+// same UNION-of-DISTINCT-arms for any group size.
+func (h *Handler) metricNamesSQL(tables []string) string {
 	metricCol := h.Schema.MetricNameColumn
 	parts := make([]chsql.Frag, 0, len(tables))
 	for _, t := range tables {
