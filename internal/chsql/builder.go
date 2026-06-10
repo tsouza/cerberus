@@ -561,15 +561,22 @@ func (b *Builder) emitGoModulo(left, right chplan.Expr) error {
 		")), " +
 		"[if(__myabs = 0, CAST(0 AS Float64), floor(log2(__myabs)) + 1)])[1], " +
 		"[abs(__my)])[1], " +
-		"[CAST(")
+		"[CAST(ifNull(")
 	if err := b.Expr(left); err != nil {
 		return err
 	}
-	b.sb.WriteString(" AS Float64)], [CAST(")
+	// ifNull(<operand>, nan): the operands may be Nullable — the TraceQL
+	// numeric-attribute coercion emits toFloat64OrNull(...) so rows
+	// without the attribute produce NULL — and CAST(NULL AS Float64)
+	// aborts the query (CH error 349). Folding NULL to NaN keeps the
+	// modulo emulation's existing contract: NaN operands yield NaN, and
+	// IEEE comparisons against NaN are false, so the row simply doesn't
+	// match.
+	b.sb.WriteString(", nan) AS Float64)], [CAST(ifNull(")
 	if err := b.Expr(right); err != nil {
 		return err
 	}
-	b.sb.WriteString(" AS Float64)])[1]")
+	b.sb.WriteString(", nan) AS Float64)])[1]")
 	return nil
 }
 
