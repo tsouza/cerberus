@@ -9,6 +9,7 @@ import (
 
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/traceql"
+	"github.com/tsouza/cerberus/test/spec"
 )
 
 // The happy paths for the nested-set root idiom and nil comparisons are
@@ -37,6 +38,33 @@ func TestLower_NestedSetUnsupportedShapes(t *testing.T) {
 		{
 			name:    "position_range_needs_real_positions",
 			query:   `{ nestedSetParent > 2 }`,
+			wantSub: "nested-set positions",
+		},
+		// The four v=1 boundary rejections below pin the exact `v < 1`
+		// guards in nonRootCmpConstant: position 1 is the smallest
+		// real non-root position, so each of these predicates is true
+		// for some non-root spans and false for others — un-lowerable
+		// without materialised positions. A CONDITIONALS_BOUNDARY
+		// mutant (`v < 1` → `v <= 1`) silently lowers each of them to
+		// a wrong constant / root-ness predicate instead of erroring.
+		{
+			name:    "position_eq_one_needs_real_positions",
+			query:   `{ nestedSetParent = 1 }`,
+			wantSub: "nested-set positions",
+		},
+		{
+			name:    "position_ne_one_needs_real_positions",
+			query:   `{ nestedSetParent != 1 }`,
+			wantSub: "nested-set positions",
+		},
+		{
+			name:    "position_le_one_needs_real_positions",
+			query:   `{ nestedSetParent <= 1 }`,
+			wantSub: "nested-set positions",
+		},
+		{
+			name:    "position_gt_one_needs_real_positions",
+			query:   `{ nestedSetParent > 1 }`,
 			wantSub: "nested-set positions",
 		},
 		{
@@ -68,31 +96,73 @@ func TestLower_NestedSetUnsupportedShapes(t *testing.T) {
 	}
 }
 
-// TestLower_RootIdiomLiteralVariants pins that every literal spelling
-// of the root-span test lowers (Tempo evaluates root-ness as
-// nestedSetParent == -1; spans of an unbuilt tree carry 0, which never
-// matches a root test — cerberus's domain model is {-1} ∪ {>= 1}).
+// TestLower_RootIdiomLiteralVariants pins the exact predicate every
+// supported (op, literal) spelling of a nested-set parent comparison
+// lowers to. Tempo evaluates root-ness as nestedSetParent == -1; spans
+// of an unbuilt tree carry 0, which never matches a root test —
+// cerberus's domain model is {-1} ∪ {>= 1}. Asserting the lowered
+// chplan predicate (not just "lowers without error") is what
+// distinguishes each comparison operator from its neighbours:
+//   - evalIntCmp(-1, op, v) decides whether the predicate holds for
+//     root spans — a CONDITIONALS_BOUNDARY / _NEGATION mutant there
+//     flips `= -1` between (ParentSpanId = "") and constant false,
+//     `<= -1` between (ParentSpanId = "") and constant false,
+//     `> -1` between (ParentSpanId != "") and constant true, etc.
+//     Only the v = -1 literals sit exactly on the root position, so
+//     they are the cases where strict vs non-strict differ.
+//   - nonRootCmpConstant's `v <= 1` guards for OpLt/OpGe make the
+//     v = 1 literals (`< 1`, `>= 1`) lowerable root-ness tests; a
+//     boundary mutant (`v <= 1` → `v < 1`) turns them into errors.
 func TestLower_RootIdiomLiteralVariants(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelTraces()
-	for _, query := range []string{
-		`{ nestedSetParent < 0 }`,
-		`{ nestedSetParent <= -1 }`,
-		`{ nestedSetParent = -1 }`,
-		`{ nestedSetParent >= 0 }`,
-		`{ nestedSetParent != -1 }`,
+	cases := []struct {
+		query string
+		// wantPredicate is the printed chplan Filter predicate:
+		// (ParentSpanId = "") selects root spans, (ParentSpanId != "")
+		// selects non-root spans, true/false are whole-table constants.
+		wantPredicate string
+	}{
+		{`{ nestedSetParent < 0 }`, `(ParentSpanId = "")`},
+		{`{ nestedSetParent <= -1 }`, `(ParentSpanId = "")`},
+		{`{ nestedSetParent = -1 }`, `(ParentSpanId = "")`},
+		{`{ nestedSetParent < 1 }`, `(ParentSpanId = "")`},
+		{`{ nestedSetParent <= 0 }`, `(ParentSpanId = "")`},
+		{`{ nestedSetParent >= 0 }`, `(ParentSpanId != "")`},
+		{`{ nestedSetParent >= 1 }`, `(ParentSpanId != "")`},
+		{`{ nestedSetParent > -1 }`, `(ParentSpanId != "")`},
+		{`{ nestedSetParent > 0 }`, `(ParentSpanId != "")`},
+		{`{ nestedSetParent != -1 }`, `(ParentSpanId != "")`},
+		// Strictly below the root position: false for root (-1) and
+		// for every non-root position (>= 1) — constant false.
+		{`{ nestedSetParent < -1 }`, `false`},
+		// At or above the root position: true for root and for every
+		// non-root position — constant true.
+		{`{ nestedSetParent >= -1 }`, `true`},
+		// Position 0 never occurs in the domain {-1} ∪ {>= 1}.
+		{`{ nestedSetParent = 0 }`, `false`},
+		{`{ nestedSetParent != 0 }`, `true`},
 		// Literal-on-the-left spelling flips the comparison.
-		`{ 0 > nestedSetParent }`,
-	} {
-		t.Run(query, func(t *testing.T) {
+		{`{ 0 > nestedSetParent }`, `(ParentSpanId = "")`},
+		{`{ -1 >= nestedSetParent }`, `(ParentSpanId = "")`},
+		{`{ -1 < nestedSetParent }`, `(ParentSpanId != "")`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.query, func(t *testing.T) {
 			t.Parallel()
-			expr, err := tempo.Parse(query)
+			expr, err := tempo.Parse(tc.query)
 			if err != nil {
-				t.Fatalf("Parse(%q): %v", query, err)
+				t.Fatalf("Parse(%q): %v", tc.query, err)
 			}
-			if _, err := traceql.Lower(context.Background(), expr, s); err != nil {
-				t.Errorf("Lower(%q): %v — root-ness idiom must lower", query, err)
+			plan, err := traceql.Lower(context.Background(), expr, s)
+			if err != nil {
+				t.Fatalf("Lower(%q): %v — root-ness idiom must lower", tc.query, err)
+			}
+			printed := spec.PrintChplan(plan)
+			want := "Filter predicate=" + tc.wantPredicate + "\n"
+			if !strings.Contains(printed, want) {
+				t.Errorf("Lower(%q) plan:\n%s\nwant a filter with %s", tc.query, printed, want)
 			}
 		})
 	}
