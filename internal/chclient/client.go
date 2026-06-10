@@ -94,6 +94,27 @@ type Config struct {
 	// upstream Prometheus's --query.max-samples knob; cmd/cerberus
 	// wires it from CERBERUS_QUERY_MAX_SAMPLES.
 	MaxQuerySamples int64
+
+	// MaxQueryMemoryBytes caps ClickHouse's server-side memory use for
+	// a single data-plane query: it is stamped as the per-query
+	// `max_memory_usage` setting on every read-path query (QueryCursor
+	// / Query / QueryStrings / QueryTimestampedLines / QueryMetricMeta
+	// / QueryIndexStats / QueryIndexVolume / QueryExemplars /
+	// QueryLabelSets). DDL / DML through Exec is exempt — schema
+	// creation legitimately has different memory needs than the query
+	// path. 0 = don't set the setting (ClickHouse server defaults
+	// apply). cmd/cerberus wires it from CERBERUS_CH_QUERY_MAX_MEMORY.
+	//
+	// MaxQuerySamples bounds cerberus-process memory (rows drained
+	// into Go); this bounds ClickHouse-process memory (the working set
+	// the server materialises while evaluating the SQL). The k3d
+	// dashboard run 27277793810 showed why both are needed: a 24h/15s
+	// matrix query stayed under the sample budget client-side but blew
+	// ClickHouse's server-total cap mid-stream (code 241), 502-ing the
+	// panel. A query crossing this cap gets a *MemoryLimitError
+	// rejection (errors.Is ErrMemoryLimitExceeded), classified by the
+	// API heads as resource-exhausted, not internal.
+	MaxQueryMemoryBytes int64
 }
 
 // Client is a stateless wrapper over a clickhouse-go/v2 connection pool.
@@ -113,6 +134,10 @@ type Client struct {
 	// QueryCursor opens (and therefore into Query, which drains a
 	// cursor). 0 = unlimited.
 	maxSamples int64
+	// maxMemory is Config.MaxQueryMemoryBytes — the per-query
+	// `max_memory_usage` ClickHouse setting applied to every data-plane
+	// query via queryContext. 0 = setting not sent.
+	maxMemory int64
 }
 
 // New opens a connection pool to ClickHouse. Construction is lazy:
@@ -148,7 +173,44 @@ func New(cfg Config) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("chclient: open: %w", err)
 	}
-	return &Client{conn: conn, addr: cfg.Addr, maxSamples: cfg.MaxQuerySamples}, nil
+	return &Client{
+		conn:       conn,
+		addr:       cfg.Addr,
+		maxSamples: cfg.MaxQuerySamples,
+		maxMemory:  cfg.MaxQueryMemoryBytes,
+	}, nil
+}
+
+// querySettings returns the per-query ClickHouse settings map applied
+// to every data-plane query, or nil when no setting is configured.
+// Today it carries exactly one knob: `max_memory_usage`, ClickHouse's
+// per-query memory cap, from Config.MaxQueryMemoryBytes.
+//
+// Kept as its own method (rather than inlined into queryContext) so
+// tests can assert the settings content directly — the driver stores
+// QueryOptions under an unexported context key with no public getter.
+func (c *Client) querySettings() clickhouse.Settings {
+	if c.maxMemory <= 0 {
+		return nil
+	}
+	return clickhouse.Settings{"max_memory_usage": c.maxMemory}
+}
+
+// queryContext derives the context every data-plane query runs under:
+// the caller's ctx plus the per-query ClickHouse settings from
+// querySettings. clickhouse.Context merges with any QueryOptions
+// already on ctx (e.g. the progress callback installed by
+// WithProgressFor), so stacking is safe. When no settings are
+// configured the ctx is returned unchanged.
+//
+// Exec (DDL / DML) deliberately does NOT go through this — see
+// Config.MaxQueryMemoryBytes.
+func (c *Client) queryContext(ctx context.Context) context.Context {
+	s := c.querySettings()
+	if s == nil {
+		return ctx
+	}
+	return clickhouse.Context(ctx, clickhouse.WithSettings(s))
 }
 
 // Conn returns the underlying clickhouse-go/v2 driver connection. It is
@@ -298,6 +360,7 @@ func (c *Client) QueryStrings(ctx context.Context, sql string, args ...any) ([]s
 	if !c.br.allow() {
 		return nil, fmt.Errorf("chclient: query: %w", ErrCircuitOpen)
 	}
+	ctx = c.queryContext(ctx)
 	ctx, span := startExecuteSpan(ctx, sql, c.addr)
 	defer span.End()
 	defer flushProgress(ctx)
@@ -305,7 +368,7 @@ func (c *Client) QueryStrings(ctx context.Context, sql string, args ...any) ([]s
 	c.br.record(ctx, err)
 	if err != nil {
 		span.RecordError(err)
-		return nil, fmt.Errorf("chclient: query: %w", err)
+		return nil, fmt.Errorf("chclient: query: %w", wrapMemoryLimit(err, c.maxMemory))
 	}
 	defer func() {
 		_ = rows.Close()
@@ -320,7 +383,7 @@ func (c *Client) QueryStrings(ctx context.Context, sql string, args ...any) ([]s
 		out = append(out, s)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("chclient: rows.Err: %w", err)
+		return nil, fmt.Errorf("chclient: rows.Err: %w", wrapMemoryLimit(err, c.maxMemory))
 	}
 	return out, nil
 }
@@ -345,6 +408,7 @@ func (c *Client) QueryTimestampedLines(ctx context.Context, sql string, args ...
 	if !c.br.allow() {
 		return nil, fmt.Errorf("chclient: query: %w", ErrCircuitOpen)
 	}
+	ctx = c.queryContext(ctx)
 	ctx, span := startExecuteSpan(ctx, sql, c.addr)
 	defer span.End()
 	defer flushProgress(ctx)
@@ -352,7 +416,7 @@ func (c *Client) QueryTimestampedLines(ctx context.Context, sql string, args ...
 	c.br.record(ctx, err)
 	if err != nil {
 		span.RecordError(err)
-		return nil, fmt.Errorf("chclient: query: %w", err)
+		return nil, fmt.Errorf("chclient: query: %w", wrapMemoryLimit(err, c.maxMemory))
 	}
 	defer func() {
 		_ = rows.Close()
@@ -368,7 +432,7 @@ func (c *Client) QueryTimestampedLines(ctx context.Context, sql string, args ...
 		out = append(out, TimestampedLine{Timestamp: ts, Body: body})
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("chclient: rows.Err: %w", err)
+		return nil, fmt.Errorf("chclient: rows.Err: %w", wrapMemoryLimit(err, c.maxMemory))
 	}
 	return out, nil
 }
@@ -393,6 +457,7 @@ func (c *Client) QueryMetricMeta(ctx context.Context, sql, metricType string, ar
 	if !c.br.allow() {
 		return nil, fmt.Errorf("chclient: query: %w", ErrCircuitOpen)
 	}
+	ctx = c.queryContext(ctx)
 	ctx, span := startExecuteSpan(ctx, sql, c.addr)
 	defer span.End()
 	defer flushProgress(ctx)
@@ -400,7 +465,7 @@ func (c *Client) QueryMetricMeta(ctx context.Context, sql, metricType string, ar
 	c.br.record(ctx, err)
 	if err != nil {
 		span.RecordError(err)
-		return nil, fmt.Errorf("chclient: query: %w", err)
+		return nil, fmt.Errorf("chclient: query: %w", wrapMemoryLimit(err, c.maxMemory))
 	}
 	defer func() {
 		_ = rows.Close()
@@ -416,7 +481,7 @@ func (c *Client) QueryMetricMeta(ctx context.Context, sql, metricType string, ar
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("chclient: rows.Err: %w", err)
+		return nil, fmt.Errorf("chclient: rows.Err: %w", wrapMemoryLimit(err, c.maxMemory))
 	}
 	return out, nil
 }
@@ -443,6 +508,7 @@ func (c *Client) QueryIndexStats(ctx context.Context, sql string, args ...any) (
 	if !c.br.allow() {
 		return IndexStatsRow{}, fmt.Errorf("chclient: query: %w", ErrCircuitOpen)
 	}
+	ctx = c.queryContext(ctx)
 	ctx, span := startExecuteSpan(ctx, sql, c.addr)
 	defer span.End()
 	defer flushProgress(ctx)
@@ -450,7 +516,7 @@ func (c *Client) QueryIndexStats(ctx context.Context, sql string, args ...any) (
 	c.br.record(ctx, err)
 	if err != nil {
 		span.RecordError(err)
-		return IndexStatsRow{}, fmt.Errorf("chclient: query: %w", err)
+		return IndexStatsRow{}, fmt.Errorf("chclient: query: %w", wrapMemoryLimit(err, c.maxMemory))
 	}
 	defer func() {
 		_ = rows.Close()
@@ -463,7 +529,7 @@ func (c *Client) QueryIndexStats(ctx context.Context, sql string, args ...any) (
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return IndexStatsRow{}, fmt.Errorf("chclient: rows.Err: %w", err)
+		return IndexStatsRow{}, fmt.Errorf("chclient: rows.Err: %w", wrapMemoryLimit(err, c.maxMemory))
 	}
 	return out, nil
 }
@@ -485,6 +551,7 @@ func (c *Client) QueryIndexVolume(ctx context.Context, sql string, args ...any) 
 	if !c.br.allow() {
 		return nil, fmt.Errorf("chclient: query: %w", ErrCircuitOpen)
 	}
+	ctx = c.queryContext(ctx)
 	ctx, span := startExecuteSpan(ctx, sql, c.addr)
 	defer span.End()
 	defer flushProgress(ctx)
@@ -492,7 +559,7 @@ func (c *Client) QueryIndexVolume(ctx context.Context, sql string, args ...any) 
 	c.br.record(ctx, err)
 	if err != nil {
 		span.RecordError(err)
-		return nil, fmt.Errorf("chclient: query: %w", err)
+		return nil, fmt.Errorf("chclient: query: %w", wrapMemoryLimit(err, c.maxMemory))
 	}
 	defer func() {
 		_ = rows.Close()
@@ -509,7 +576,7 @@ func (c *Client) QueryIndexVolume(ctx context.Context, sql string, args ...any) 
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("chclient: rows.Err: %w", err)
+		return nil, fmt.Errorf("chclient: rows.Err: %w", wrapMemoryLimit(err, c.maxMemory))
 	}
 	return out, nil
 }
@@ -548,6 +615,7 @@ func (c *Client) QueryExemplars(ctx context.Context, sql string, args ...any) ([
 	if !c.br.allow() {
 		return nil, fmt.Errorf("chclient: query: %w", ErrCircuitOpen)
 	}
+	ctx = c.queryContext(ctx)
 	ctx, span := startExecuteSpan(ctx, sql, c.addr)
 	defer span.End()
 	defer flushProgress(ctx)
@@ -555,7 +623,7 @@ func (c *Client) QueryExemplars(ctx context.Context, sql string, args ...any) ([
 	c.br.record(ctx, err)
 	if err != nil {
 		span.RecordError(err)
-		return nil, fmt.Errorf("chclient: query: %w", err)
+		return nil, fmt.Errorf("chclient: query: %w", wrapMemoryLimit(err, c.maxMemory))
 	}
 	defer func() {
 		_ = rows.Close()
@@ -579,7 +647,7 @@ func (c *Client) QueryExemplars(ctx context.Context, sql string, args ...any) ([
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("chclient: rows.Err: %w", err)
+		return nil, fmt.Errorf("chclient: rows.Err: %w", wrapMemoryLimit(err, c.maxMemory))
 	}
 	return out, nil
 }
@@ -592,6 +660,7 @@ func (c *Client) QueryLabelSets(ctx context.Context, sql string, args ...any) ([
 	if !c.br.allow() {
 		return nil, fmt.Errorf("chclient: query: %w", ErrCircuitOpen)
 	}
+	ctx = c.queryContext(ctx)
 	ctx, span := startExecuteSpan(ctx, sql, c.addr)
 	defer span.End()
 	defer flushProgress(ctx)
@@ -599,7 +668,7 @@ func (c *Client) QueryLabelSets(ctx context.Context, sql string, args ...any) ([
 	c.br.record(ctx, err)
 	if err != nil {
 		span.RecordError(err)
-		return nil, fmt.Errorf("chclient: query: %w", err)
+		return nil, fmt.Errorf("chclient: query: %w", wrapMemoryLimit(err, c.maxMemory))
 	}
 	defer func() {
 		_ = rows.Close()
@@ -614,7 +683,7 @@ func (c *Client) QueryLabelSets(ctx context.Context, sql string, args ...any) ([
 		out = append(out, m)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("chclient: rows.Err: %w", err)
+		return nil, fmt.Errorf("chclient: rows.Err: %w", wrapMemoryLimit(err, c.maxMemory))
 	}
 	return out, nil
 }

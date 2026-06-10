@@ -76,6 +76,13 @@ type rowsCursor struct {
 	// seen counts rows successfully decoded so far, compared against
 	// maxSamples after each scan.
 	seen int64
+	// maxMemoryBytes is the Client's configured per-query ClickHouse
+	// memory cap (Config.MaxQueryMemoryBytes), carried so a mid-stream
+	// MEMORY_LIMIT_EXCEEDED (code 241) surfacing via rows.Err() — the
+	// exact shape of k3d run 27277793810 — is wrapped into a
+	// *MemoryLimitError naming the cap. Informational only; the cap
+	// itself is enforced server-side via the max_memory_usage setting.
+	maxMemoryBytes int64
 	// interned caches decoded label maps keyed by their canonical
 	// serialised form so all rows of one series share a single map
 	// instance. A long-window matrix query returns thousands of rows
@@ -112,7 +119,11 @@ func (c *rowsCursor) Next() bool {
 	}
 	if !c.rows.Next() {
 		if err := c.rows.Err(); err != nil {
-			c.err = fmt.Errorf("chclient: rows.Err: %w", err)
+			// A mid-stream CH memory-limit abort (code 241) is a
+			// per-query resource rejection, not a transport failure —
+			// wrap it so handlers map it onto the resource-exhausted
+			// wire shape instead of a 502 (k3d run 27277793810).
+			c.err = fmt.Errorf("chclient: rows.Err: %w", wrapMemoryLimit(err, c.maxMemoryBytes))
 		}
 		return false
 	}
@@ -249,18 +260,20 @@ func (c *Client) QueryCursor(ctx context.Context, sql string, args ...any) (Curs
 	if !c.br.allow() {
 		return nil, fmt.Errorf("chclient: query: %w", ErrCircuitOpen)
 	}
+	ctx = c.queryContext(ctx)
 	ctx, span := startExecuteSpan(ctx, sql, c.addr)
 	rows, err := c.conn.Query(ctx, sql, args...)
 	c.br.record(ctx, err)
 	if err != nil {
 		span.RecordError(err)
 		span.End()
-		return nil, fmt.Errorf("chclient: query: %w", err)
+		return nil, fmt.Errorf("chclient: query: %w", wrapMemoryLimit(err, c.maxMemory))
 	}
 	return &rowsCursor{
-		rows:       rows,
-		span:       span,
-		rec:        recorderFromContext(ctx),
-		maxSamples: c.maxSamples,
+		rows:           rows,
+		span:           span,
+		rec:            recorderFromContext(ctx),
+		maxSamples:     c.maxSamples,
+		maxMemoryBytes: c.maxMemory,
 	}, nil
 }
