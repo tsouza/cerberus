@@ -243,11 +243,13 @@ func metricsMultiQuantileFanoutFrag(qs []float64, qsCol string) Frag {
 // deterministic and runtime queries still resolve to the current eval
 // time.
 //
-// When r.OuterRange > 0 emission switches to the matrix shape: an
-// arrayJoin fans out one row per anchor across [End-OuterRange, End]
-// spaced by Step (end-inclusive), and the outer SELECT projects the
-// anchor timestamp alongside the per-anchor value. Used by PromQL
-// subqueries.
+// When r.OuterRange > 0 emission switches to the matrix shape: each
+// input row arrayJoins across only the anchors (on the
+// [End-OuterRange, End] grid spaced by Step, end-inclusive) whose
+// window contains its timestamp, a GROUP BY (series, anchor) rebuilds
+// the per-window array, and the outer SELECT projects the anchor
+// timestamp alongside the per-anchor value (see
+// sampleAnchorFanoutFrag). Used by PromQL query_range + subqueries.
 //
 // When r.Identity is true, Func is ignored and the per-window value is
 // the last sample in the window — used by bare-vector subqueries like
@@ -427,12 +429,14 @@ func holtWintersValueExpr(sf, tf float64) string {
 // (used by LogQL log_rate, which emits 0 for empty windows).
 //
 // When r.OuterRange > 0, emission switches to the matrix path: each
-// series emits one row per anchor across [End-OuterRange, End] spaced
-// by Step (end-inclusive). The outer SELECT additionally projects the
-// anchor timestamp as `anchor_ts`. The value-writer is invoked with
-// the matrix anchor (`anchor_ts`) so anchor-relative expressions
-// (deriv / predict_linear) compute per-anchor results rather than
-// re-anchoring every row at r.End.
+// series emits one row per anchor (across [End-OuterRange, End] spaced
+// by Step, end-inclusive) whose window holds enough samples, built via
+// the sample-side fanout + regroup (see emitWindowedArrayPairsMatrix).
+// The outer SELECT additionally projects the anchor timestamp as
+// `anchor_ts`. The value-writer is invoked with the matrix anchor
+// (`anchor_ts`) so anchor-relative expressions (deriv /
+// predict_linear) compute per-anchor results rather than re-anchoring
+// every row at r.End.
 func (e *emitter) emitWindowedArrayPairs(r *chplan.RangeWindow, valueWriter Frag, minWindowSize int) error {
 	// Anchor-free callers pass a verbatim Frag — the factory ignores
 	// its anchor argument and returns it unchanged. The factory form
@@ -510,26 +514,31 @@ func (e *emitter) emitWindowedArrayPairsAnchored(r *chplan.RangeWindow, valueWri
 }
 
 // emitWindowedArrayPairsMatrix is the OuterRange > 0 variant of
-// emitWindowedArrayPairs: each series emits N rows, one per anchor
-// across [End-OuterRange, End] spaced by Step (end-inclusive). Mirrors
-// emitWindowedArrayMatrix but exposes `window_pairs` directly without
-// the `window_vals` / `counter_delta` middle layer the values-only
-// shape needs.
+// emitWindowedArrayPairs: each series emits one row per anchor (across
+// [End-OuterRange, End] spaced by Step, end-inclusive) whose window
+// holds at least minWindowSize samples. Mirrors emitWindowedArrayMatrix
+// — sample-side fanout + per-(series, anchor) regroup — but exposes
+// `window_pairs` directly without the `window_vals` / `counter_delta`
+// middle layer the values-only shape needs.
 //
 // SQL skeleton (with N = OuterRange/Step + 1):
 //
 //	SELECT series_key, anchor_ts, <valueFrag> AS value FROM (
-//	  SELECT series_key, anchor_ts,
-//	         arrayFilter(p -> p.1 in [anchor_ts - range, anchor_ts], series_array) AS window_pairs
+//	  SELECT series_key, anchor_ts, arraySort(groupArray((TimeUnix, Value))) AS window_pairs
 //	  FROM (
-//	    SELECT series_key, series_array,
-//	      arrayJoin(arrayMap(i -> <end> - toIntervalNanosecond(i * <step_ns>), range(0, N))) AS anchor_ts
-//	    FROM (
-//	      SELECT series_key, arraySort(groupArray((TimeUnix, Value))) AS series_array
-//	      FROM (<input>) GROUP BY series_key
-//	    )
-//	  )
+//	    SELECT series_key, TimeUnix, Value,
+//	      arrayJoin(arrayMap(i -> <end> - toIntervalNanosecond(i * <step_ns>),
+//	                range(<covered-anchor index bounds>))) AS anchor_ts
+//	    FROM (<input>)
+//	  ) GROUP BY series_key, anchor_ts
 //	)
+//
+// See emitWindowedArrayMatrix for the memory-shape rationale (the
+// previous full-grid fanout re-filtered the whole series array per
+// anchor — O(anchors × window_samples) peak) and the empty-window
+// contract (no group materialises for sample-less anchors; all matrix
+// callers pass minWindowSize >= 2 here, so the emitted rows match the
+// old shape exactly).
 //
 // The value-writer is built from the per-row anchor `anchor_ts` (not
 // r.End) so anchor-relative shapes (deriv, predict_linear) render the
@@ -545,39 +554,37 @@ func (e *emitter) emitWindowedArrayPairsMatrix(r *chplan.RangeWindow, valueWrite
 		return err
 	}
 
-	// Innermost SELECT — groupArray of (ts, value), sorted.
-	innermost := NewQuery()
-	for _, g := range groupFrags {
-		innermost.Select(g)
-	}
-	innermost.Select(rawAs(groupArrayPairFrag(r.TimestampColumn, r.ValueColumn), "series_array"))
 	innerSub, err := e.subqueryFrag(r.Input)
 	if err != nil {
 		return err
 	}
-	innermost.From(innerSub)
-	if len(groupFrags) > 0 {
-		innermost.GroupBy(groupFrags...)
-	}
 
-	// Anchor-fanout SELECT — arrayJoin produces one row per anchor.
-	fanout := NewQuery().From(innermost.Frag())
+	// Sample-fanout SELECT — one row per (sample, covered anchor).
+	fanout := NewQuery().From(innerSub)
 	for _, g := range groupFrags {
 		fanout.Select(g)
 	}
-	fanout.Select(Col("series_array"))
-	fanout.Select(rawAs(anchorFanoutFrag(end, stepNS, numAnchors), "anchor_ts"))
+	fanout.Select(Col(r.TimestampColumn))
+	fanout.Select(Col(r.ValueColumn))
+	fanout.Select(rawAs(
+		sampleAnchorFanoutFrag(end, Col(r.TimestampColumn), stepNS, rangeNS, numAnchors),
+		"anchor_ts",
+	))
 
-	// Window-clamp SELECT — arrayFilter to [anchor_ts - range, anchor_ts].
-	innerMid := NewQuery().From(fanout.Frag())
+	// Regroup SELECT — rebuild the per-(series, anchor) window array.
+	regroup := NewQuery().From(fanout.Frag())
 	for _, g := range groupFrags {
-		innerMid.Select(g)
+		regroup.Select(g)
 	}
-	innerMid.Select(Col("anchor_ts"))
-	innerMid.Select(rawAs(windowFilterPairsFrag(verbatim("anchor_ts"), rangeNS), "window_pairs"))
+	regroup.Select(Col("anchor_ts"))
+	regroup.Select(rawAs(groupArrayPairFrag(r.TimestampColumn, r.ValueColumn), "window_pairs"))
+	regroupKeys := make([]Frag, 0, len(groupFrags)+1)
+	regroupKeys = append(regroupKeys, groupFrags...)
+	regroupKeys = append(regroupKeys, Col("anchor_ts"))
+	regroup.GroupBy(regroupKeys...)
 
 	// Outer SELECT — per-(series, anchor) row.
-	outer := NewQuery().From(innerMid.Frag())
+	outer := NewQuery().From(regroup.Frag())
 	for _, g := range groupFrags {
 		outer.Select(g)
 	}
@@ -659,21 +666,31 @@ func formatFloat(v float64) string {
 
 // emitRangeWindowMetrics renders a RangeWindow wrapping a
 // MetricsAggregate — the TraceQL `/api/metrics/query_range` shape.
-// Each per-span row out of m.Inner is fanned across the N evaluation
-// anchors via arrayJoin(range(0, N)); the outer SELECT applies the
+// Each per-span row out of m.Inner is fanned across only the anchors
+// whose window contains its timestamp (sample-side fanout, ≤
+// range/step + 1 anchors per row — see sampleAnchorFanoutFrag; the
+// previous shape fanned every row across the full N-anchor grid and
+// re-filtered per (row, anchor)); the outer SELECT applies the
 // Op-specific CH aggregate per (group-by, anchor) bucket.
 //
-// SQL skeleton (N = (End-Start)/Step + 1 or OuterRange/Step + 1):
+// SQL skeleton, observed-only ops (N = (End-Start)/Step + 1 or
+// OuterRange/Step + 1):
 //
 //	SELECT [<group cols>,] anchor_ts, <reducer> AS value
 //	FROM (
-//	  SELECT [<group cols>,] <TimestampColumn> AS ts, [<Attr> AS metric_arg,]
-//	         arrayJoin(arrayMap(i -> <anchor_base> - toIntervalNanosecond(i * <step_ns>), range(0, <N>))) AS anchor_ts
+//	  SELECT [<group cols>,] [<Attr> AS metric_arg,]
+//	         arrayJoin(arrayMap(i -> <anchor_base> - toIntervalNanosecond(i * <step_ns>),
+//	                   range(<covered-anchor index bounds>))) AS anchor_ts
 //	  FROM (<Inner>)
 //	)
-//	WHERE ts >  anchor_ts - toIntervalNanosecond(<range_ns>)
-//	  AND ts <= anchor_ts
 //	GROUP BY [<group cols>,] anchor_ts
+//
+// Zero-fill ops (count_over_time / rate) add a lightweight generator
+// arm via UNION ALL — one (group, anchor, in_window=0) row per
+// (distinct group, grid anchor) — and reduce with
+// `toFloat64(sum(in_window))` so anchors with no samples still emit 0
+// (Tempo StepAggregator / CountOverTimeAggregator semantics). See
+// metricsZeroFillGridArm / metricsSumWeightReducerFrag.
 //
 // The bucket is left-open / right-closed — `(anchor_ts - range, anchor_ts]`
 // — matching Tempo upstream's `IntervalMapperQueryRange` semantics
@@ -681,20 +698,17 @@ func formatFloat(v float64) string {
 // `pkg/traceql/engine_metrics.go`'s `IntervalMapperQueryRange.interval`).
 // A sample at exactly `anchor_ts` belongs to *this* anchor (right edge
 // included); a sample at exactly `anchor_ts - range` belongs to the
-// *previous* anchor (left edge excluded). The earlier `ts >=` form
-// double-counted samples landing on step boundaries — flipping `>=` to
-// `>` closes the off-by-one against Tempo's per-anchor counts.
+// *previous* anchor (left edge excluded) — the sample-side index bounds
+// encode exactly this open/closed pairing (strict floor+1 lower bound,
+// inclusive floor upper bound; see sampleAnchorFanoutFrag).
 //
 // `<reducer>` depends on m.Op:
 //
-//   - Rate: `count(1) / <range_seconds>`
-//   - CountOverTime: `count(1)`
+//   - Rate: `toFloat64(sum(in_window)) / <range_seconds>`
+//   - CountOverTime: `toFloat64(sum(in_window))`
 //   - Sum/Min/Max/AvgOverTime: `sum/min/max/avg(metric_arg)`
-//   - QuantileOverTime (single phi): `quantile(q)(metric_arg)`
-//   - QuantileOverTime (multi phi): `quantiles(p1, p2, ...)(metric_arg)`
-//     returning Array(Float64), then a wrapping outer SELECT
-//     arrayJoins the per-(group, anchor) array into one row per phi
-//     tagged with the synthetic `__phi__` label.
+//   - QuantileOverTime: routed to the bucket shape (see
+//     emitRangeWindowMetricsQuantileBuckets).
 //
 // `<anchor_base>` is r.End (or now64(9) for the zero-time fixture).
 // Range defaults to Step when r.Range is zero (matches Tempo's TraceQL
@@ -774,38 +788,80 @@ func (e *emitter) emitRangeWindowMetrics(r *chplan.RangeWindow, m *chplan.Metric
 		return err
 	}
 
-	// Inner SELECT: fan each Inner row across N anchors, projecting
-	// group-by cols, the timestamp as `ts`, [the metric operand as
-	// metric_arg,] and the anchor_ts. Group-by columns are aliased
-	// so the outer SELECT / WHERE / GROUP BY can reference them by
-	// a stable name regardless of whether the source expression was
-	// a bare ColumnRef or a Map lookup.
+	// Sample-fanout SELECT: fan each Inner row across only the anchors
+	// whose `(anchor_ts - range, anchor_ts]` window contains its
+	// timestamp (sample-side fanout — ≤ range/step + 1 anchors per row,
+	// not the full N-anchor grid; see sampleAnchorFanoutFrag), projecting
+	// group-by cols, [the metric operand as metric_arg,] and anchor_ts.
+	// Group-by columns are aliased so the outer SELECT / GROUP BY can
+	// reference them by a stable name regardless of whether the source
+	// expression was a bare ColumnRef or a Map lookup. The fanout
+	// predicate IS the window predicate, so no per-row `(anchor_ts -
+	// range, anchor_ts]` re-check survives downstream.
 	groupAliases := outerGroupAliases(m.GroupBy, m.GroupByAliases)
-	innerSb := NewQuery().From(inner)
+	tsCol := r.TimestampColumn
+	tsIdent := func(b *Builder) { b.Ident(tsCol) }
+	fanout := NewQuery().From(inner)
 	for i, g := range m.GroupBy {
 		expr := g
 		alias := groupAliases[i]
-		innerSb.SelectAs(func(b *Builder) { _ = b.Expr(expr) }, alias)
+		fanout.SelectAs(func(b *Builder) { _ = b.Expr(expr) }, alias)
 	}
-	tsCol := r.TimestampColumn
-	innerSb.SelectAs(func(b *Builder) { b.Ident(tsCol) }, "ts")
-	if m.Op != chplan.MetricsOpRate && m.Op != chplan.MetricsOpCountOverTime && m.Attr != nil {
+	zeroFill := metricsOpZeroFillsEmptyBuckets(m.Op)
+	if !zeroFill && m.Attr != nil {
 		attr := m.Attr
-		innerSb.SelectAs(func(b *Builder) { _ = b.Expr(attr) }, "metric_arg")
+		fanout.SelectAs(func(b *Builder) { _ = b.Expr(attr) }, "metric_arg")
 	}
-	innerSb.SelectAs(
-		anchorFanoutFrag(end, stepNS, numAnchors),
+	fanout.SelectAs(
+		sampleAnchorFanoutFrag(end, tsIdent, stepNS, rangeNS, numAnchors),
 		"anchor_ts",
 	)
+	if zeroFill {
+		// Sample rows carry weight 1; the zero-fill generator rows
+		// (below) carry 0 so `sum(in_window)` counts only real samples.
+		fanout.SelectAs(InlineLit(int64(1)), "in_window")
+	}
 	// Push (Start - range, End] onto the wrapping SELECT over m.Inner
 	// for CH partition / granule pruning. Gated so subquery-internal
 	// shapes (no Start/End grid) stay byte-stable. See
 	// maybePushInnerScanTimeBounds.
-	maybePushInnerScanTimeBounds(innerSb, r, tsCol, rangeNS)
+	maybePushInnerScanTimeBounds(fanout, r, tsCol, rangeNS)
+
+	// Zero-fill semantics live in the SQL for the two ops whose Tempo
+	// aggregators emit 0 for empty buckets — count_over_time and rate.
+	// With the sample-side fanout an anchor with no samples produces NO
+	// row out of the GROUP BY, so the zero rows come from a lightweight
+	// generator arm UNION ALL'd alongside the samples: one row per
+	// (distinct group, grid anchor) with in_window = 0 — the full-grid
+	// anchorFanoutFrag applied to a per-GROUP discovery subquery (O(groups
+	// × N) tiny rows, no payload arrays). The reducer is
+	// `toFloat64(sum(in_window))` [/ range_seconds for rate], so empty
+	// anchors emit 0 and observed anchors emit the real sample count —
+	// exactly the rows the previous full-grid countIf(<window pred>)
+	// shape produced, at a fraction of the row blowup. The group set is
+	// identical by construction: the discovery arm GROUPs the same
+	// bounded Inner scan the sample arm reads, so a group appears in the
+	// generator iff it had at least one Inner row — the same condition
+	// that materialised its (group, anchor) grid in the old fanout.
+	//
+	// sum / avg / min / max over_time stay observed-only: Tempo
+	// initialises their aggregators to NaN and skips empty buckets at
+	// SeriesSet.ToProto, so the response shape includes only observed
+	// (group, anchor) rows — which is exactly what the sample-side
+	// GROUP BY emits with no generator arm.
+	var source Frag
+	if zeroFill {
+		grid := e.metricsZeroFillGridArm(
+			inner, r, m, groupAliases, end, stepNS, rangeNS, numAnchors, nil,
+		)
+		source = Paren(UnionAll(fanout.Frag(), grid))
+	} else {
+		source = fanout.Frag()
+	}
 
 	// Outer SELECT: GROUP BY group cols + anchor_ts; apply the
 	// per-bucket reducer.
-	outerSb := NewQuery().From(innerSb.Frag())
+	outerSb := NewQuery().From(source)
 
 	// Group-by columns in the outer SELECT-list are referenced by the
 	// stable inner-SELECT aliases (set above).
@@ -815,36 +871,10 @@ func (e *emitter) emitRangeWindowMetrics(r *chplan.RangeWindow, m *chplan.Metric
 	}
 	outerSb.Select(Col("anchor_ts"))
 
-	// Zero-fill semantics live in the SQL for the two ops whose Tempo
-	// aggregators emit 0 for empty buckets — count_over_time and rate.
-	// The reducer becomes countIf(<window predicate>), so every
-	// (group, anchor) tuple that the inner fanout materialises (one per
-	// Inner row × N anchors) produces a row out of the outer GROUP BY
-	// regardless of whether any sample landed in that window — empty
-	// anchors emit countIf=0, observed anchors emit the real count. The
-	// handler's previous Go-side `zeroFillMatrixGrid` post-pass is
-	// retired; matrix-shape post-processing is the SQL emitter's
-	// concern, not the HTTP layer's.
-	//
-	// sum / avg / min / max / last / stddev / stdvar over_time keep the
-	// WHERE-based filter: Tempo initialises their aggregators to NaN and
-	// skips empty buckets at SeriesSet.ToProto, so the response shape
-	// includes only observed (group, anchor) rows. Pushing the predicate
-	// into a sumIf / avgIf would emit 0 for empty buckets and diverge
-	// from Tempo's NaN-skip semantics.
-	if metricsOpZeroFillsEmptyBuckets(m.Op) {
-		reducerFrag := metricsCountIfReducerFrag(m.Op, rangeNS, rangeSeconds)
-		outerSb.Select(As(reducerFrag, m.ValueAlias))
+	if zeroFill {
+		outerSb.Select(As(metricsSumWeightReducerFrag(m.Op, rangeSeconds), m.ValueAlias))
 	} else {
-		reducerFrag := metricsReducerFrag(m.Op, chName, params, args, rangeSeconds)
-		outerSb.Select(As(reducerFrag, m.ValueAlias))
-
-		// WHERE: ts ∈ (anchor_ts - range, anchor_ts] — left-open /
-		// right-closed, matching Tempo's IntervalMapperQueryRange.
-		outerSb.Where(
-			windowTsLowerBoundFrag(rangeNS),
-			verbatim("ts <= anchor_ts"),
-		)
+		outerSb.Select(As(metricsReducerFrag(m.Op, chName, params, args, rangeSeconds), m.ValueAlias))
 	}
 
 	// GROUP BY group aliases + anchor_ts.
@@ -860,6 +890,98 @@ func (e *emitter) emitRangeWindowMetrics(r *chplan.RangeWindow, m *chplan.Metric
 	return nil
 }
 
+// zeroFillExtraCol is an extra (frag, alias) SELECT item the zero-fill
+// generator arm projects ahead of anchor_ts so its SELECT-list aligns
+// positionally with the sample arm's — CH UNION ALL unifies columns by
+// position. Used by the quantile bucket path to pin a `0 AS metric_arg`
+// placeholder against the sample arm's real operand column.
+type zeroFillExtraCol struct {
+	frag  Frag
+	alias string
+}
+
+// metricsZeroFillGridArm builds the generator arm of the zero-fill
+// UNION ALL: one row per (distinct group, grid anchor) carrying
+// `0 AS in_window` (and, when extraCols is non-empty, the listed
+// (frag, alias) pairs ahead of anchor_ts so the arm's SELECT-list
+// aligns positionally with the sample arm's).
+//
+// Group discovery replays the same Inner subquery (and the same
+// Start/End scan-bound pushdown) the sample arm reads, GROUPed by the
+// group aliases so the arm emits exactly one row per group that has at
+// least one Inner row in the bounded scan. With no group-by columns the
+// discovery degenerates to `SELECT 1 FROM (<Inner>) LIMIT 1` — one row
+// iff the scan is non-empty, zero rows otherwise — so a fully-empty
+// input still produces an empty result (matching the old full-grid
+// fanout, which had no rows to fan).
+func (e *emitter) metricsZeroFillGridArm(
+	inner Frag,
+	r *chplan.RangeWindow,
+	m *chplan.MetricsAggregate,
+	groupAliases []string,
+	end Frag,
+	stepNS, rangeNS, numAnchors int64,
+	extraCols []zeroFillExtraCol,
+) Frag {
+	tsCol := r.TimestampColumn
+	disc := NewQuery().From(inner)
+	if len(groupAliases) > 0 {
+		for i, g := range m.GroupBy {
+			expr := g
+			alias := groupAliases[i]
+			disc.SelectAs(func(b *Builder) { _ = b.Expr(expr) }, alias)
+		}
+		discKeys := make([]Frag, 0, len(groupAliases))
+		for _, alias := range groupAliases {
+			a := alias
+			discKeys = append(discKeys, func(b *Builder) { b.Ident(a) })
+		}
+		disc.GroupBy(discKeys...)
+	} else {
+		disc.Select(InlineLit(int64(1)))
+		disc.Limit(1)
+	}
+	maybePushInnerScanTimeBounds(disc, r, tsCol, rangeNS)
+
+	grid := NewQuery().From(disc.Frag())
+	for _, alias := range groupAliases {
+		a := alias
+		grid.Select(func(b *Builder) { b.Ident(a) })
+	}
+	for _, c := range extraCols {
+		grid.SelectAs(c.frag, c.alias)
+	}
+	grid.SelectAs(anchorFanoutFrag(end, stepNS, numAnchors), "anchor_ts")
+	grid.SelectAs(InlineLit(int64(0)), "in_window")
+	return grid.Frag()
+}
+
+// metricsSumWeightReducerFrag returns the per-(group, anchor) reducer
+// for the zero-fill matrix path: `toFloat64(sum(in_window))` for
+// count_over_time, divided through the range duration in seconds for
+// rate. Sample-arm rows carry in_window = 1 (and each already belongs
+// to its anchor's window by fanout construction), generator-arm rows
+// carry 0 — so the sum equals the old countIf(<window pred>) sample
+// count per (group, anchor), with empty anchors pinned at 0 by the
+// generator arm. The toFloat64 wrap keeps the Value column at the
+// uniform Float64 wire type chclient.Sample.Value expects (see
+// TestRangeWindowMetricsReducerIsFloat64).
+func metricsSumWeightReducerFrag(op chplan.MetricsOp, rangeSeconds float64) Frag {
+	sum := func(b *Builder) {
+		b.sb.WriteString("toFloat64(sum(in_window))")
+	}
+	switch op {
+	case chplan.MetricsOpRate:
+		return func(b *Builder) {
+			sum(b)
+			b.sb.WriteString(" / ")
+			b.sb.WriteString(strconv.FormatFloat(rangeSeconds, 'f', -1, 64))
+		}
+	default:
+		return sum
+	}
+}
+
 // metricsOpZeroFillsEmptyBuckets reports whether the given
 // MetricsAggregate.Op surfaces 0-valued samples for empty buckets on
 // Tempo's wire (rather than NaN-skipping them). The two upstream code
@@ -869,14 +991,14 @@ func (e *emitter) emitRangeWindowMetrics(r *chplan.RangeWindow, m *chplan.Metric
 // quantile_over_time — explicitly sets ts.Values[i] = 0.0 when the
 // bucket has no histogram entries). All other operators reach the wire
 // via OverTimeAggregator's NaN-init path, so the cerberus emitter's
-// WHERE-filtered "observed-only" emission already matches Tempo's
-// output and needs no fill.
+// observed-only emission (sample-side fanout, no generator arm)
+// already matches Tempo's output and needs no fill.
 //
 // emitRangeWindowMetrics (count / rate) branches on this predicate to
-// pick countIf(<window-pred>) vs WHERE-filtered count(...);
-// emitRangeWindowMetricsQuantileBuckets uses the conditional bucket
-// shape unconditionally because the quantile_over_time op is always on
-// the zero-fill path.
+// pick the UNION ALL zero-fill-generator + sum(in_window) shape vs the
+// plain observed-only aggregate; emitRangeWindowMetricsQuantileBuckets
+// uses the generator arm unconditionally because the
+// quantile_over_time op is always on the zero-fill path.
 func metricsOpZeroFillsEmptyBuckets(op chplan.MetricsOp) bool {
 	switch op {
 	case chplan.MetricsOpCountOverTime,
@@ -885,57 +1007,6 @@ func metricsOpZeroFillsEmptyBuckets(op chplan.MetricsOp) bool {
 		return true
 	}
 	return false
-}
-
-// metricsCountIfReducerFrag returns the per-(group, anchor) reducer for
-// the zero-fill matrix path: toFloat64(countIf(<window-pred>)) for
-// count_over_time, divided through the range duration in seconds for
-// rate. The window predicate is the same left-open / right-closed
-// (anchor_ts - range, anchor_ts] shape the WHERE-based path uses;
-// pushing it into countIf means the GROUP BY emits a row for every
-// (group, anchor) tuple the inner fanout materialises (countIf = 0 for
-// empty anchors) — i.e. SQL-side zero-fill that matches Tempo's
-// StepAggregator + CountOverTimeAggregator output without a handler
-// post-pass. The toFloat64 wrap keeps the Value column at the uniform
-// Float64 wire type chclient.Sample.Value expects (see
-// TestRangeWindowMetricsReducerIsFloat64).
-func metricsCountIfReducerFrag(op chplan.MetricsOp, rangeNS int64, rangeSeconds float64) Frag {
-	pred := zeroFillWindowPredicateFrag(rangeNS)
-	countIf := func(b *Builder) {
-		b.sb.WriteString("countIf(")
-		pred(b)
-		b.sb.WriteByte(')')
-	}
-	switch op {
-	case chplan.MetricsOpRate:
-		return func(b *Builder) {
-			b.sb.WriteString("toFloat64(")
-			countIf(b)
-			b.sb.WriteString(") / ")
-			b.sb.WriteString(strconv.FormatFloat(rangeSeconds, 'f', -1, 64))
-		}
-	default:
-		return func(b *Builder) {
-			b.sb.WriteString("toFloat64(")
-			countIf(b)
-			b.sb.WriteByte(')')
-		}
-	}
-}
-
-// zeroFillWindowPredicateFrag renders the per-anchor window predicate
-// inline (no surrounding parens — the caller wraps as needed). Mirrors
-// the WHERE-clause shape windowTsLowerBoundFrag + the
-// `ts <= anchor_ts` literal produce, joined by AND so it composes
-// inside a countIf(...) / if(...) call. Strict lower / right-closed
-// upper bound matches Tempo's IntervalMapperQueryRange (see
-// windowTsLowerBoundFrag for the off-by-one rationale).
-func zeroFillWindowPredicateFrag(rangeNS int64) Frag {
-	return func(b *Builder) {
-		b.sb.WriteString("ts > anchor_ts - toIntervalNanosecond(")
-		b.sb.WriteString(strconv.FormatInt(rangeNS, 10))
-		b.sb.WriteString(") AND ts <= anchor_ts")
-	}
 }
 
 // emitRangeWindowMetricsQuantileBuckets renders quantile_over_time in
@@ -1023,42 +1094,63 @@ func (e *emitter) emitRangeWindowMetricsQuantileBuckets(r *chplan.RangeWindow, m
 	}
 
 	groupAliases := outerGroupAliases(m.GroupBy, m.GroupByAliases)
-	innerSb := NewQuery().From(inner)
+	tsCol := r.TimestampColumn
+	tsIdent := func(b *Builder) { b.Ident(tsCol) }
+
+	// Sample arm — sample-side fanout (≤ range/step + 1 anchors per
+	// row; see sampleAnchorFanoutFrag), so every fanned row already
+	// belongs to its anchor's `(anchor_ts - range, anchor_ts]` window.
+	fanout := NewQuery().From(inner)
 	for i, g := range m.GroupBy {
 		expr := g
 		alias := groupAliases[i]
-		innerSb.SelectAs(func(b *Builder) { _ = b.Expr(expr) }, alias)
+		fanout.SelectAs(func(b *Builder) { _ = b.Expr(expr) }, alias)
 	}
-	tsCol := r.TimestampColumn
-	innerSb.SelectAs(func(b *Builder) { b.Ident(tsCol) }, "ts")
 	attr := m.Attr
-	innerSb.SelectAs(func(b *Builder) { _ = b.Expr(attr) }, "metric_arg")
-	innerSb.SelectAs(anchorFanoutFrag(end, stepNS, numAnchors), "anchor_ts")
+	fanout.SelectAs(func(b *Builder) { _ = b.Expr(attr) }, "metric_arg")
+	fanout.SelectAs(
+		sampleAnchorFanoutFrag(end, tsIdent, stepNS, rangeNS, numAnchors),
+		"anchor_ts",
+	)
+	fanout.SelectAs(InlineLit(int64(1)), "in_window")
 	// Same Start/End pushdown as emitRangeWindowMetrics — see
 	// maybePushInnerScanTimeBounds.
-	maybePushInnerScanTimeBounds(innerSb, r, tsCol, rangeNS)
+	maybePushInnerScanTimeBounds(fanout, r, tsCol, rangeNS)
 
-	outerSb := NewQuery().From(innerSb.Frag())
+	// Generator arm — quantile_over_time is always on Tempo's zero-fill
+	// path (HistogramAggregator.Results sets ts.Values[i] = 0.0 for
+	// anchors with no histogram entries), so every observed group needs
+	// one (group, anchor, __bucket=0) row per grid anchor even when no
+	// sample lands in the window. The lightweight per-GROUP grid arm
+	// pins those rows with in_window = 0 and a 0 metric_arg placeholder
+	// (which can never satisfy the `>= 2` bucketize guard); see
+	// metricsZeroFillGridArm.
+	grid := e.metricsZeroFillGridArm(
+		inner, r, m, groupAliases, end, stepNS, rangeNS, numAnchors,
+		[]zeroFillExtraCol{{frag: InlineLit(int64(0)), alias: "metric_arg"}},
+	)
+
+	outerSb := NewQuery().From(Paren(UnionAll(fanout.Frag(), grid)))
 	for _, alias := range groupAliases {
 		a := alias
 		outerSb.Select(func(b *Builder) { b.Ident(a) })
 	}
 	outerSb.Select(Col("anchor_ts"))
-	// Bucket projection is conditional on the per-anchor window + the
+	// Bucket projection is conditional on the sample-arm marker + the
 	// raw-value >= 2 guard: rows that don't satisfy both fall into a
 	// phantom 0-bucket group (matching no real bucket because the
 	// minimum power-of-two bucket is >= 2 after the `metric_arg >= 2`
 	// guard). The conditional projection — rather than a WHERE-clause
 	// filter — guarantees one (group, anchor, __bucket=0) row per
-	// observed (group, anchor) tuple even when zero samples land in
+	// (group, grid anchor) tuple even when zero samples land in
 	// the window, so the handler's post-processor sees the empty
 	// (group, anchor) and Log2QuantileWithBucket returns 0 there
 	// (matching Tempo HistogramAggregator.Results's
 	// `ts.Values[i] = 0.0` for empty buckets).
-	outerSb.SelectAs(quantileBucketIfFrag(m.IsDuration, rangeNS), metricsQuantileBucketAlias)
+	outerSb.SelectAs(quantileBucketIfFrag(m.IsDuration), metricsQuantileBucketAlias)
 	// Value is countIf over the same conjunction so phantom rows count
 	// 0 and real-bucket rows count their observed sample count.
-	outerSb.Select(As(quantileCountIfFrag(m.IsDuration, rangeNS), m.ValueAlias))
+	outerSb.Select(As(quantileCountIfFrag(m.IsDuration), m.ValueAlias))
 
 	// GROUP BY group aliases + anchor_ts + bucket.
 	groupFrags := make([]Frag, 0, len(groupAliases)+2)
@@ -1074,23 +1166,28 @@ func (e *emitter) emitRangeWindowMetricsQuantileBuckets(r *chplan.RangeWindow, m
 }
 
 // quantileBucketIfFrag renders the conditional `__bucket` projection
-// for the zero-fill quantile path: real-bucket value when the row's ts
-// falls in (anchor_ts - range, anchor_ts] AND the raw metric_arg meets
-// Tempo's bucketize* `>= 2` guard, else 0 (the phantom sentinel —
-// distinct from every real bucket because the minimum power-of-two
-// bucket-edge is 2 nanoseconds, which renders as 2 for the non-duration
-// branch and 2e-9 for the seconds-rebased duration branch).
+// for the zero-fill quantile path: real-bucket value when the row came
+// from the sample arm (in_window = 1; every sample-arm row already
+// sits in its anchor's window by sample-side fanout construction) AND
+// the raw metric_arg meets Tempo's bucketize* `>= 2` guard, else 0
+// (the phantom sentinel — distinct from every real bucket because the
+// minimum power-of-two bucket-edge is 2 nanoseconds, which renders as
+// 2 for the non-duration branch and 2e-9 for the seconds-rebased
+// duration branch).
 //
 // Pairs with quantileCountIfFrag so the per-(group, anchor) GROUP BY
 // emits at least one row (the phantom 0-bucket / 0-count row) per
-// observed (group, anchor) tuple — SQL-side zero-fill matching Tempo's
+// (group, grid anchor) tuple — SQL-side zero-fill matching Tempo's
 // HistogramAggregator.Results emission of `ts.Values[i] = 0.0` for
-// anchors with no histogram entries.
-func quantileBucketIfFrag(isDuration bool, rangeNS int64) Frag {
+// anchors with no histogram entries. The generator arm
+// (metricsZeroFillGridArm) guarantees the phantom row exists for every
+// grid anchor; in the pre-sample-side shape that came from fanning
+// every row across the full anchor grid instead.
+func quantileBucketIfFrag(isDuration bool) Frag {
 	bucket := quantileBucketFrag(isDuration)
 	return func(b *Builder) {
 		b.sb.WriteString("if(")
-		writeQuantileWindowPredicate(b, isDuration, rangeNS)
+		writeQuantileSamplePredicate(b, isDuration)
 		b.sb.WriteString(", ")
 		bucket(b)
 		b.sb.WriteString(", 0)")
@@ -1098,34 +1195,34 @@ func quantileBucketIfFrag(isDuration bool, rangeNS int64) Frag {
 }
 
 // quantileCountIfFrag renders the conditional `Value` projection for
-// the zero-fill quantile path: `toFloat64(countIf(<window pred> AND
+// the zero-fill quantile path: `toFloat64(countIf(in_window = 1 AND
 // <metric_arg >= 2>))`. Phantom rows (which fall in the
 // __bucket=0 group via quantileBucketIfFrag) count 0; real-bucket rows
 // count their observed sample count. See quantileBucketIfFrag for the
 // per-(group, anchor) zero-fill rationale.
-func quantileCountIfFrag(isDuration bool, rangeNS int64) Frag {
+func quantileCountIfFrag(isDuration bool) Frag {
 	return func(b *Builder) {
 		b.sb.WriteString("toFloat64(countIf(")
-		writeQuantileWindowPredicate(b, isDuration, rangeNS)
+		writeQuantileSamplePredicate(b, isDuration)
 		b.sb.WriteString("))")
 	}
 }
 
-// writeQuantileWindowPredicate writes the conjunction shared by the
+// writeQuantileSamplePredicate writes the conjunction shared by the
 // quantile zero-fill `if(...)` / `countIf(...)` calls:
 //
-//	ts > anchor_ts - toIntervalNanosecond(<rangeNS>) AND
-//	  ts <= anchor_ts AND <metric_arg-min-pred>
+//	in_window = 1 AND <metric_arg-min-pred>
 //
-// Same conjunction shape windowTsLowerBoundFrag + the `ts <=
-// anchor_ts` literal + the `metric_arg >= 2` Tempo bucketize* guard
-// (pkg/traceql/ast_metrics.go, bucketizeDuration / bucketizeAttribute)
-// produced for the WHERE-filtered legacy path, inlined here so the
-// conditional callers can splice it into a single expression node.
-func writeQuantileWindowPredicate(b *Builder, isDuration bool, rangeNS int64) {
-	b.sb.WriteString("ts > anchor_ts - toIntervalNanosecond(")
-	b.sb.WriteString(strconv.FormatInt(rangeNS, 10))
-	b.sb.WriteString(") AND ts <= anchor_ts AND ")
+// `in_window = 1` marks sample-arm rows — each already inside its
+// anchor's `(anchor_ts - range, anchor_ts]` window by sample-side
+// fanout construction, so the explicit window re-check the legacy
+// full-grid shape needed here collapses to the arm marker. The
+// `metric_arg >= 2` clause is Tempo's bucketize* guard
+// (pkg/traceql/ast_metrics.go, bucketizeDuration / bucketizeAttribute);
+// for duration operands metric_arg carries seconds (the cerberus-side
+// `Duration / 1e9` rebase), so the guard re-scales to raw nanoseconds.
+func writeQuantileSamplePredicate(b *Builder, isDuration bool) {
+	b.sb.WriteString("in_window = 1 AND ")
 	if isDuration {
 		b.sb.WriteString("metric_arg * 1000000000 >= 2")
 		return
@@ -1169,8 +1266,17 @@ func quantileBucketFrag(isDuration bool) Frag {
 
 // anchorFanoutFrag returns a Frag rendering
 // `arrayJoin(arrayMap(i -> <end> - toIntervalNanosecond(i * <stepNS>), range(0, <N>)))`.
-// Used by the matrix-shape RangeWindow emitter to fan each Inner row
-// across N anchors in a single CH pass.
+// The FULL-GRID fanout: every input row fans across all N anchors.
+//
+// Since the sample-side fanout landed (see sampleAnchorFanoutFrag) this
+// shape survives only as the lightweight zero-fill generator: the
+// zero-fill matrix emitters (count_over_time / rate /
+// quantile_over_time on the Tempo metrics path) UNION a per-GROUP grid
+// of (group, anchor, in_window=0) rows produced by this Frag so
+// anchors with no contributing samples still emit a zero row. The
+// generator's input is one row per distinct group (not one row per
+// sample), so the fanout is O(groups × N) tiny rows — never the
+// O(rows × N) blowup the sample-side fanout replaced.
 //
 // end is rendered via the Frag callback (the CH expression for the
 // eval-grid anchor base — typically a DateTime64 literal or
@@ -1187,26 +1293,113 @@ func anchorFanoutFrag(end Frag, stepNS, numAnchors int64) Frag {
 	}
 }
 
-// windowTsLowerBoundFrag returns a Frag rendering
-// `ts >  anchor_ts - toIntervalNanosecond(<rangeNS>)`. The companion
-// upper bound is the literal `ts <= anchor_ts` (no parameters); both
-// are spliced into the outer SELECT's WHERE clause.
+// sampleAnchorFanoutFrag returns a Frag rendering the SAMPLE-SIDE
+// anchor fanout — the bounded replacement for pairing the full-grid
+// anchorFanoutFrag with a per-(row, anchor) window re-check:
 //
-// The lower bound is *strict* (`>`, not `>=`) so the bucket is
-// left-open / right-closed — `(anchor_ts - range, anchor_ts]` —
-// matching Tempo upstream's `IntervalMapperQueryRange.interval`
-// semantics (`(start, start+step], (start+step, start+2*step], …`).
-// A sample sitting exactly on a step boundary belongs to *one* anchor
-// (the one whose right edge is that timestamp), not two; using `>=`
-// here would double-count boundary samples between adjacent anchors
-// when `range == step` and surface as a per-anchor off-by-one against
-// Tempo's reference counts.
-func windowTsLowerBoundFrag(rangeNS int64) Frag {
-	return func(b *Builder) {
-		b.sb.WriteString("ts > anchor_ts - toIntervalNanosecond(")
-		b.sb.WriteString(strconv.FormatInt(rangeNS, 10))
+//	arrayJoin(arrayMap(i -> <end> - toIntervalNanosecond(i * <stepNS>),
+//	          range(greatest(0, <floorDiv(dist - rangeNS, stepNS) + 1>),
+//	                least(<N>, <floorDiv(dist, stepNS) + 1>))))
+//
+// where `dist = dateDiff('nanosecond', <ts>, <end>)` is the row's
+// distance behind the newest anchor. A sample at timestamp ts belongs
+// to exactly the anchors a_i = end - i*step whose left-open /
+// right-closed window `(a_i - range, a_i]` contains ts:
+//
+//	ts <= a_i          ⇔  i*step <= dist          ⇔  i <= floor(dist / step)
+//	ts >  a_i - range  ⇔  i*step >  dist - range  ⇔  i >= floor((dist - range) / step) + 1
+//
+// — at most range/step + 1 indices per row (e.g. rate[5m] at step=15s
+// fans each sample to ≤ 21 anchors), versus the previous full-grid
+// shape where every row was re-checked against ALL N anchors (5,760
+// for a 24h window at 15s). The window predicate is exact by
+// construction, so downstream layers need no `(anchor_ts - range,
+// anchor_ts]` re-filter: every fanned row already belongs to its
+// anchor's window.
+//
+// Rows that cover no anchor on the [0, N) grid produce an empty index
+// array; `arrayJoin([])` drops the row (verified against CH 24.8:
+// `range(lo, hi)` returns `[]` whenever `hi <= lo`, including negative
+// Int64 bounds). The greatest/least clamps map both raw bounds through
+// the same monotone clamp into [0, N], so `lo <= hi` is preserved and
+// out-of-grid rows degenerate to the empty range.
+//
+// CH's intDiv truncates toward zero (intDiv(-1, 3) = 0), not toward
+// negative infinity, so the floor division is spelled
+// `intDiv(x, step) - (modulo(x, step) < 0)` — CH's modulo carries the
+// dividend's sign, making the correction term exactly the "truncation
+// rounded the wrong way" indicator. See writeAnchorGridFloorIdx.
+func sampleAnchorFanoutFrag(end, ts Frag, stepNS, rangeNS, numAnchors int64) Frag {
+	dist := func(b *Builder) {
+		b.sb.WriteString("dateDiff('nanosecond', ")
+		ts(b)
+		b.sb.WriteString(", ")
+		end(b)
 		b.sb.WriteByte(')')
 	}
+	return func(b *Builder) {
+		b.sb.WriteString("arrayJoin(arrayMap(i -> ")
+		end(b)
+		b.sb.WriteString(" - toIntervalNanosecond(i * ")
+		b.sb.WriteString(strconv.FormatInt(stepNS, 10))
+		b.sb.WriteString("), range(greatest(0, ")
+		writeAnchorGridFloorIdx(b, dist, -rangeNS, stepNS)
+		b.sb.WriteString("), least(")
+		b.sb.WriteString(strconv.FormatInt(numAnchors, 10))
+		b.sb.WriteString(", ")
+		writeAnchorGridFloorIdx(b, dist, 0, stepNS)
+		b.sb.WriteString("))))")
+	}
+}
+
+// writeAnchorGridFloorIdx writes the floor-division grid index
+// `floorDiv(<dist> + <addNS>, <stepNS>) + 1` with CH's
+// truncate-toward-zero intDiv corrected into a true floor for negative
+// numerators:
+//
+//	intDiv(<dist>[ ± addNS], toInt64(<stepNS>)) - (modulo(<dist>[ ± addNS], toInt64(<stepNS>)) < 0) + 1
+//
+// CH's modulo carries the dividend's sign (modulo(-1, 3) = -1), so
+// `modulo(x, step) < 0` is 1 exactly when x is negative AND not an
+// exact multiple of step — the only case where truncation lands one
+// above the floor. addNS = 0 omits the additive term; a negative addNS
+// renders as `- |addNS|` (the windowed lower bound's `dist - range`).
+//
+// The toInt64 wrap on the divisor is load-bearing: a bare step literal
+// above the Int32 range parses as UInt64, and CH's modulo(Int64,
+// UInt64) reinterprets the negative dividend as unsigned
+// (modulo(-59000000000, 60000000000) = 34709551616 on CH 24.8) —
+// silently breaking the negative-floor correction and dropping the
+// newest anchors. With the signed divisor the dividend's sign survives
+// (modulo(-59000000000, toInt64(60000000000)) = -59000000000).
+//
+// Shared by sampleAnchorFanoutFrag (backward grid, anchors walk back
+// from End) and absentOverTimeCoveredAnchorFrag (forward grid, anchors
+// walk forward from Start) — the two differ only in how `dist` is
+// oriented and which addNS shifts encode their open/closed window
+// edges.
+func writeAnchorGridFloorIdx(b *Builder, dist Frag, addNS, stepNS int64) {
+	step := strconv.FormatInt(stepNS, 10)
+	writeNum := func() {
+		dist(b)
+		switch {
+		case addNS > 0:
+			b.sb.WriteString(" + ")
+			b.sb.WriteString(strconv.FormatInt(addNS, 10))
+		case addNS < 0:
+			b.sb.WriteString(" - ")
+			b.sb.WriteString(strconv.FormatInt(-addNS, 10))
+		}
+	}
+	b.sb.WriteString("intDiv(")
+	writeNum()
+	b.sb.WriteString(", toInt64(")
+	b.sb.WriteString(step)
+	b.sb.WriteString(")) - (modulo(")
+	writeNum()
+	b.sb.WriteString(", toInt64(")
+	b.sb.WriteString(step)
+	b.sb.WriteString(")) < 0) + 1")
 }
 
 // maybePushInnerScanTimeBounds pushes the (Start - range, End] time
@@ -1893,10 +2086,20 @@ func (e *emitter) emitWindowedArrayExtrapolated(r *chplan.RangeWindow, kind extr
 }
 
 // emitWindowedArrayExtrapolatedMatrix is the OuterRange > 0 variant of
-// emitWindowedArrayExtrapolated. Each series emits N rows, one per
-// anchor across [End-OuterRange, End] spaced by Step (end-inclusive);
-// the per-row window is `(anchor_ts - range, anchor_ts]` and the
-// per-row range bounds drive the extrapolation arithmetic.
+// emitWindowedArrayExtrapolated. Each series emits one row per anchor
+// (across [End-OuterRange, End] spaced by Step, end-inclusive) whose
+// `(anchor_ts - range, anchor_ts]` window holds 2+ samples; the
+// per-row window bounds drive the extrapolation arithmetic.
+//
+// The window arrays are built via the same sample-side fanout +
+// per-(series, anchor) regroup as emitWindowedArrayMatrix (see there
+// for the memory-shape rationale — this emitter is the one behind the
+// run-27277793810 `rate(...)` 2.12 GiB OOM). The regrouped
+// `window_pairs` is element-for-element identical to the old
+// arrayFilter output — same membership, same arraySort order — so the
+// extrapolation quantities (first_ts / last_ts / first_val /
+// sampled_interval / duration_to_start / duration_to_end) see exactly
+// the per-anchor sample sets Prom's extrapolatedRate contract pins.
 func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kind extrapolationKind) error {
 	end := endExprFrag(r)
 	rangeNS := r.Range.Nanoseconds()
@@ -1911,39 +2114,37 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 		return err
 	}
 
-	// Innermost SELECT — groupArray of (ts, value), sorted.
-	innermost := NewQuery()
-	for _, g := range groupFrags {
-		innermost.Select(g)
-	}
-	innermost.Select(As(groupArrayPairFrag(r.TimestampColumn, r.ValueColumn), "series_array"))
 	innerSub, err := e.subqueryFrag(r.Input)
 	if err != nil {
 		return err
 	}
-	innermost.From(innerSub)
-	if len(groupFrags) > 0 {
-		innermost.GroupBy(groupFrags...)
-	}
 
-	// Anchor-fanout SELECT — arrayJoin produces one row per anchor.
-	fanout := NewQuery().From(innermost.Frag())
+	// Sample-fanout SELECT — one row per (sample, covered anchor).
+	fanout := NewQuery().From(innerSub)
 	for _, g := range groupFrags {
 		fanout.Select(g)
 	}
-	fanout.Select(Col("series_array"))
-	fanout.Select(As(anchorFanoutFrag(end, stepNS, numAnchors), "anchor_ts"))
+	fanout.Select(Col(r.TimestampColumn))
+	fanout.Select(Col(r.ValueColumn))
+	fanout.Select(As(
+		sampleAnchorFanoutFrag(end, Col(r.TimestampColumn), stepNS, rangeNS, numAnchors),
+		"anchor_ts",
+	))
 
-	// Inner-middle SELECT — arrayFilter to [anchor_ts - range, anchor_ts].
-	innerMid := NewQuery().From(fanout.Frag())
+	// Regroup SELECT — rebuild the per-(series, anchor) window array.
+	regroup := NewQuery().From(fanout.Frag())
 	for _, g := range groupFrags {
-		innerMid.Select(g)
+		regroup.Select(g)
 	}
-	innerMid.Select(Col("anchor_ts"))
-	innerMid.Select(As(windowFilterPairsFrag(anchor, rangeNS), "window_pairs"))
+	regroup.Select(Col("anchor_ts"))
+	regroup.Select(As(groupArrayPairFrag(r.TimestampColumn, r.ValueColumn), "window_pairs"))
+	regroupKeys := make([]Frag, 0, len(groupFrags)+1)
+	regroupKeys = append(regroupKeys, groupFrags...)
+	regroupKeys = append(regroupKeys, Col("anchor_ts"))
+	regroup.GroupBy(regroupKeys...)
 
 	// Mid SELECT — window_vals + counter_delta + first/last_ts + first_val.
-	mid := NewQuery().From(innerMid.Frag())
+	mid := NewQuery().From(regroup.Frag())
 	for _, g := range groupFrags {
 		mid.Select(g)
 	}
@@ -2180,17 +2381,20 @@ func extrapolatedValueFrag(kind extrapolationKind, rangeSeconds float64) Frag {
 // positional `?` ordering follows the SQL stream.
 //
 // When r.OuterRange > 0 emission switches to the matrix path: each
-// series emits N rows, one per anchor across [End-OuterRange, End]
-// spaced by Step (end-inclusive). The outer SELECT additionally
-// projects the anchor timestamp as `anchor_ts`.
+// series emits one row per anchor (across [End-OuterRange, End] spaced
+// by Step, end-inclusive) whose window holds at least minWindowSize
+// samples, built via the sample-side fanout + regroup (see
+// emitWindowedArrayMatrix). The outer SELECT additionally projects the
+// anchor timestamp as `anchor_ts`.
 //
 // minWindowSize controls the PromQL "drop empty windows" semantics:
 // when > 0, the outer SELECT adds `WHERE length(window_vals) >= N`
 // so series (or (series, anchor) rows in the matrix shape) whose
 // window holds fewer than N samples are dropped from the result —
 // matching Prom's behaviour for rate / increase / delta / *_over_time,
-// which all return no sample for those windows. 0 disables the filter
-// (LogQL log_rate emits 0 for empty windows).
+// which all return no sample for those windows. Every matrix caller
+// passes >= 1: the sample-side matrix shape produces no row at all for
+// empty windows by construction (and PromQL/LogQL want exactly that).
 func (e *emitter) emitWindowedArray(r *chplan.RangeWindow, value Frag, minWindowSize int) error {
 	if r.TimestampColumn == "" {
 		return fmt.Errorf("%w: RangeWindow.TimestampColumn unset", ErrUnsupported)
@@ -2257,26 +2461,43 @@ func (e *emitter) emitWindowedArray(r *chplan.RangeWindow, value Frag, minWindow
 }
 
 // emitWindowedArrayMatrix is the OuterRange > 0 variant: each series
-// emits N rows, one per anchor across [End-OuterRange, End] spaced by
-// Step (end-inclusive). The innermost SELECT computes the per-series
-// (TimeUnix, Value) array once via groupArray + arraySort, then an
-// arrayJoin in the next layer fans out one row per anchor. Subsequent
-// layers operate on the per-(series, anchor) tuple.
+// emits one row per anchor (across [End-OuterRange, End] spaced by
+// Step, end-inclusive) whose window holds at least minWindowSize
+// samples. The fanout is SAMPLE-SIDE: each input row arrayJoins across
+// only the ≤ range/step + 1 anchors whose `(anchor - range, anchor]`
+// window contains its timestamp (see sampleAnchorFanoutFrag), and a
+// GROUP BY (series, anchor) rebuilds the per-window (ts, value) array.
+// Subsequent layers operate on the per-(series, anchor) tuple exactly
+// as before.
 //
 // SQL skeleton (with N = OuterRange/Step + 1):
 //
 //	SELECT series_key, anchor_ts, <valueFrag> AS value FROM (
 //	  SELECT series_key, anchor_ts, <window_vals + counter_delta> FROM (
-//	    SELECT series_key, anchor_ts, arrayFilter(p -> p.1 in [anchor_ts - range, anchor_ts], series_array) AS window_pairs FROM (
-//	      SELECT series_key, series_array,
-//	        arrayJoin(arrayMap(i -> <end> - toIntervalNanosecond(i * <step_ns>), range(0, N))) AS anchor_ts
-//	      FROM (
-//	        SELECT series_key, arraySort(groupArray((TimeUnix, Value))) AS series_array
-//	        FROM (<input>) GROUP BY series_key
-//	      )
-//	    )
+//	    SELECT series_key, anchor_ts, arraySort(groupArray((TimeUnix, Value))) AS window_pairs FROM (
+//	      SELECT series_key, TimeUnix, Value,
+//	        arrayJoin(arrayMap(i -> <end> - toIntervalNanosecond(i * <step_ns>),
+//	                  range(<covered-anchor index bounds>))) AS anchor_ts
+//	      FROM (<input>)
+//	    ) GROUP BY series_key, anchor_ts
 //	  )
 //	)
+//
+// Memory shape: the previous emission grouped every series into one
+// `series_array`, fanned THAT row across all N anchors, and re-filtered
+// the full array per (series, anchor) — O(anchors × window_samples)
+// peak (run 27277793810: CH hit its 2.12 GiB cap on a 24h/15s grid).
+// The sample-side fanout materialises each sample only in the windows
+// it belongs to — O(samples × range/step) total — while producing
+// byte-identical window arrays per (series, anchor): same membership
+// (the fanout predicate IS the window predicate), same arraySort
+// ordering, same duplicate handling.
+//
+// Anchors whose window is empty produce no group here, whereas the old
+// full-grid fanout materialised them and dropped them via the
+// minWindowSize WHERE. Every matrix-mode caller passes
+// minWindowSize >= 1 (PromQL/LogQL drop empty windows), so the two
+// shapes agree row-for-row.
 func (e *emitter) emitWindowedArrayMatrix(r *chplan.RangeWindow, value Frag, minWindowSize int) error {
 	end := endExprFrag(r)
 	rangeNS := r.Range.Nanoseconds()
@@ -2289,39 +2510,37 @@ func (e *emitter) emitWindowedArrayMatrix(r *chplan.RangeWindow, value Frag, min
 		return err
 	}
 
-	// Innermost SELECT — groupArray of (ts, value), sorted.
-	innermost := NewQuery()
-	for _, g := range groupFrags {
-		innermost.Select(g)
-	}
-	innermost.Select(As(groupArrayPairFrag(r.TimestampColumn, r.ValueColumn), "series_array"))
 	innerSub, err := e.subqueryFrag(r.Input)
 	if err != nil {
 		return err
 	}
-	innermost.From(innerSub)
-	if len(groupFrags) > 0 {
-		innermost.GroupBy(groupFrags...)
-	}
 
-	// Anchor-fanout SELECT — arrayJoin produces one row per anchor.
-	fanout := NewQuery().From(innermost.Frag())
+	// Sample-fanout SELECT — one row per (sample, covered anchor).
+	fanout := NewQuery().From(innerSub)
 	for _, g := range groupFrags {
 		fanout.Select(g)
 	}
-	fanout.Select(Col("series_array"))
-	fanout.Select(As(anchorFanoutFrag(end, stepNS, numAnchors), "anchor_ts"))
+	fanout.Select(Col(r.TimestampColumn))
+	fanout.Select(Col(r.ValueColumn))
+	fanout.Select(As(
+		sampleAnchorFanoutFrag(end, Col(r.TimestampColumn), stepNS, rangeNS, numAnchors),
+		"anchor_ts",
+	))
 
-	// Inner-middle SELECT — arrayFilter to [anchor_ts - range, anchor_ts].
-	innerMid := NewQuery().From(fanout.Frag())
+	// Regroup SELECT — rebuild the per-(series, anchor) window array.
+	regroup := NewQuery().From(fanout.Frag())
 	for _, g := range groupFrags {
-		innerMid.Select(g)
+		regroup.Select(g)
 	}
-	innerMid.Select(Col("anchor_ts"))
-	innerMid.Select(As(windowFilterPairsFrag(verbatim("anchor_ts"), rangeNS), "window_pairs"))
+	regroup.Select(Col("anchor_ts"))
+	regroup.Select(As(groupArrayPairFrag(r.TimestampColumn, r.ValueColumn), "window_pairs"))
+	regroupKeys := make([]Frag, 0, len(groupFrags)+1)
+	regroupKeys = append(regroupKeys, groupFrags...)
+	regroupKeys = append(regroupKeys, Col("anchor_ts"))
+	regroup.GroupBy(regroupKeys...)
 
 	// Middle SELECT — window_vals + counter_delta per (series, anchor).
-	mid := NewQuery().From(innerMid.Frag())
+	mid := NewQuery().From(regroup.Frag())
 	for _, g := range groupFrags {
 		mid.Select(g)
 	}

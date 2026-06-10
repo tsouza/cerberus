@@ -24,29 +24,36 @@ import (
 //	    SELECT `anchor_ts`
 //	    FROM (
 //	        SELECT arrayJoin(arrayMap(i -> '<start>' + i * <step_ns>,
-//	                                  range(0, <N>))) AS `anchor_ts`,
-//	               `sample_ts_arr`
-//	        FROM (
-//	            SELECT groupArray(`TimeUnix`) AS `sample_ts_arr`
-//	            FROM (<matcher-filtered scan>)
-//	            WHERE `TimeUnix` > '<global-start - range>'
-//	              AND `TimeUnix` <= '<global-end>'
-//	        )
+//	                                  range(0, <N>))) AS `anchor_ts`
+//	        FROM (SELECT 1)
 //	    )
-//	    WHERE arrayCount(t -> t > `anchor_ts` - toIntervalNanosecond(<range_ns>)
-//	                            AND t <= `anchor_ts`,
-//	                     `sample_ts_arr`) = 0
+//	    WHERE `anchor_ts` NOT IN (
+//	        SELECT arrayJoin(arrayMap(i -> '<start>' + i * <step_ns>,
+//	                                  range(<covered-anchor index bounds>))) AS `anchor_ts`
+//	        FROM (<matcher-filtered scan>)
+//	        WHERE `TimeUnix` > '<global-start - range>'
+//	          AND `TimeUnix` <= '<global-end>'
+//	    )
 //	)
 //
-// The inner `groupArray + GROUP BY ()` always emits exactly one row —
-// even when the matcher scan returns zero rows, in which case
-// `sample_ts_arr = []` and every anchor in the outer arrayJoin
-// survives the WHERE clause (the desired "absent at every anchor"
-// signal).
+// The anchor grid fans out of a synthetic 1-row `SELECT 1` (no scan
+// payload), and each scanned sample contributes its ≤ range/step + 1
+// COVERED anchors to the NOT IN set via the sample-side forward fanout
+// (see absentOverTimeCoveredAnchorFrag) — an anchor is absent exactly
+// when no sample's `(anchor - range, anchor]` window contains it, i.e.
+// when it is not in the covered set. CH materialises the NOT IN
+// subquery once as a hash set, so peak memory is O(anchors + samples).
+// The previous shape carried a `groupArray(TimeUnix)` of EVERY sample
+// in the global window on each of the N fanned anchor rows and
+// arrayCount-scanned it per anchor — the same O(anchors ×
+// window_samples) blowup the matrix emitters dropped (run
+// 27277793810). An empty scan yields an empty covered set and every
+// anchor survives — the desired "absent at every anchor" signal.
 //
-// SQL shape (instant mode — Step == 0): same structure but the
-// `anchor_ts` projection is the single `<end>` literal (no arrayJoin
-// fanout) and the WHERE filters one row at most.
+// SQL shape (instant mode — Step == 0): the previous single-anchor
+// structure is kept (one `groupArray` row, one anchor at `<end>`, a
+// single arrayCount check) — it is already bounded, with no grid to
+// fan across.
 //
 // The output is the canonical 4-column Sample shape (MetricName,
 // Attributes, TimeUnix, Value) so it streams through the cursor and
@@ -79,11 +86,19 @@ func (e *emitter) emitAbsentOverTime(a *chplan.AbsentOverTime) error {
 		prefilterStartFrag = absentOverTimeBookendFrag(a.Start, offsetNS)
 	}
 
-	// Step grid: in range mode (Step > 0) emit one row per anchor via
-	// arrayJoin(arrayMap(i -> start + i*step, range(0, N))); in
-	// instant mode (Step == 0) emit a single anchor at End.
-	var anchorFrag Frag
+	// Global prefilter `(<prefilterStart> - Range, <end>]` — bounds the
+	// matcher scan to timestamps relevant to any anchor's lookback.
+	prefilterWhere := And(
+		Gt(Col(a.TimestampColumn),
+			Sub(prefilterStartFrag, Call("toIntervalNanosecond", InlineLit(rangeNS)))),
+		Lte(Col(a.TimestampColumn), endFrag),
+	)
+
+	var emptyWindow *QueryBuilder
 	if a.Step > 0 {
+		// Range mode: anchor grid fanned from a synthetic 1-row source,
+		// anti-filtered against the sample-side covered-anchor set. See
+		// the function comment for the O(anchors + samples) rationale.
 		stepNS := a.Step.Nanoseconds()
 		numAnchors := a.End.Sub(a.Start).Nanoseconds()/stepNS + 1
 		if numAnchors < 1 {
@@ -92,50 +107,64 @@ func (e *emitter) emitAbsentOverTime(a *chplan.AbsentOverTime) error {
 		// The arrayJoin fanout walks the step grid starting from
 		// `a.Start` (offset-adjusted by prefilterStartFrag); see
 		// absentOverTimeAnchorRangeFrag.
-		anchorFrag = absentOverTimeAnchorRangeFrag(prefilterStartFrag, stepNS, numAnchors)
+		gridSrc := NewQuery().Select(InlineLit(int64(1)))
+		fanout := NewQuery().
+			From(gridSrc.Frag()).
+			Select(As(absentOverTimeAnchorRangeFrag(prefilterStartFrag, stepNS, numAnchors), "anchor_ts"))
+
+		// Covered set: each scanned sample fans to the anchors whose
+		// `(anchor - range, anchor]` window contains it.
+		covered := NewQuery().
+			From(inner).
+			Select(As(
+				absentOverTimeCoveredAnchorFrag(
+					prefilterStartFrag, Col(a.TimestampColumn), stepNS, rangeNS, numAnchors,
+				),
+				"anchor_ts",
+			)).
+			Where(prefilterWhere)
+
+		emptyWindow = NewQuery().
+			From(fanout.Frag()).
+			Select(BareIdent("anchor_ts")).
+			Where(notInSubqueryFrag(BareIdent("anchor_ts"), covered.Frag()))
 	} else {
-		anchorFrag = endFrag
+		// Instant mode: single anchor at End — already bounded, keep the
+		// 1-row groupArray + arrayCount shape.
+		//
+		// Innermost: groupArray of the per-sample timestamps, prefiltered
+		// to the global window. The 1-row Aggregate (no GROUP BY) is
+		// emitted directly here rather than going through chplan.Aggregate
+		// because we want CH's default 1-row-of-empty-array shape on an
+		// empty input (groupArray over no rows = `[]`).
+		innermost := NewQuery().
+			From(inner).
+			Select(As(Call("groupArray", Col(a.TimestampColumn)), "sample_ts_arr")).
+			Where(prefilterWhere)
+
+		// Single-anchor projection alongside the 1-row `sample_ts_arr`.
+		fanout := NewQuery().
+			From(innermost.Frag()).
+			Select(As(endFrag, "anchor_ts")).
+			Select(BareIdent("sample_ts_arr"))
+
+		// Outer filter: keep the anchor iff its lookback window has zero
+		// matching samples. The lambda body is `t > anchor_ts -
+		// toIntervalNanosecond(<rangeNS>) AND t <= anchor_ts`.
+		windowLambda := Lambda1("t", And(
+			Gt(BareIdent("t"),
+				Sub(BareIdent("anchor_ts"),
+					Call("toIntervalNanosecond", InlineLit(rangeNS)))),
+			Lte(BareIdent("t"), BareIdent("anchor_ts")),
+		))
+		emptyWindow = NewQuery().
+			From(fanout.Frag()).
+			Select(BareIdent("anchor_ts")).
+			Where(Eq(
+				Call("arrayCount", windowLambda, BareIdent("sample_ts_arr")),
+				InlineLit(int64(0)),
+			))
 	}
-
-	// Innermost: groupArray of the per-sample timestamps, prefiltered
-	// to the global window `(<prefilterStart> - Range, <end>]`. The
-	// 1-row Aggregate (no GROUP BY) is emitted directly here rather
-	// than going through chplan.Aggregate because we want CH's default
-	// 1-row-of-empty-array shape on an empty input (groupArray over no
-	// rows = `[]`).
-	innermost := NewQuery().
-		From(inner).
-		Select(As(Call("groupArray", Col(a.TimestampColumn)), "sample_ts_arr")).
-		Where(And(
-			Gt(Col(a.TimestampColumn),
-				Sub(prefilterStartFrag, Call("toIntervalNanosecond", InlineLit(rangeNS)))),
-			Lte(Col(a.TimestampColumn), endFrag),
-		))
-
-	// Anchor fanout: project anchor_ts (literal in instant mode,
-	// arrayJoin'd step grid in range mode) alongside the single-row
-	// `sample_ts_arr`.
-	fanout := NewQuery().
-		From(innermost.Frag()).
-		Select(As(anchorFrag, "anchor_ts")).
-		Select(BareIdent("sample_ts_arr"))
-
-	// Outer filter: keep only anchors whose lookback window has zero
-	// matching samples. The lambda body is `t > anchor_ts -
-	// toIntervalNanosecond(<rangeNS>) AND t <= anchor_ts`.
-	windowLambda := Lambda1("t", And(
-		Gt(BareIdent("t"),
-			Sub(BareIdent("anchor_ts"),
-				Call("toIntervalNanosecond", InlineLit(rangeNS)))),
-		Lte(BareIdent("t"), BareIdent("anchor_ts")),
-	))
-	emptyWindow := NewQuery().
-		From(fanout.Frag()).
-		Select(BareIdent("anchor_ts")).
-		Where(Eq(
-			Call("arrayCount", windowLambda, BareIdent("sample_ts_arr")),
-			InlineLit(int64(0)),
-		))
 
 	// Synth Project: re-shape to the canonical Sample 4-column output.
 	// MetricName is bound as a `?` placeholder so the driver sees a
@@ -187,6 +216,63 @@ func absentOverTimeAnchorRangeFrag(start Frag, stepNS, numAnchors int64) Frag {
 		b.sb.WriteString("), range(0, ")
 		b.sb.WriteString(strconv.FormatInt(numAnchors, 10))
 		b.sb.WriteString(")))")
+	}
+}
+
+// absentOverTimeCoveredAnchorFrag returns a Frag rendering the
+// sample-side COVERED-anchor fanout for the range-mode absent shape —
+// the forward-grid sibling of sampleAnchorFanoutFrag (range_window.go):
+//
+//	arrayJoin(arrayMap(i -> <start> + toIntervalNanosecond(i * <stepNS>),
+//	          range(greatest(0, <floorDiv(dist - 1, stepNS) + 1>),
+//	                least(<N>, <floorDiv(dist + rangeNS - 1, stepNS) + 1>))))
+//
+// with `dist = dateDiff('nanosecond', <start>, <ts>)`. A sample at ts
+// covers exactly the grid anchors a_i = start + i*step whose lookback
+// window `(a_i - range, a_i]` contains it:
+//
+//	ts <= a_i          ⇔  i*step >= dist          ⇔  i >= ceil(dist / step)        = floor((dist - 1) / step) + 1
+//	ts >  a_i - range  ⇔  i*step <  dist + range  ⇔  i <= floor((dist + range - 1) / step)
+//
+// (integer dist, strict edges folded into the ±1 shifts) — at most
+// range/step + 1 anchors per sample. The greatest/least clamps and the
+// truncate-toward-zero intDiv correction follow the same contract as
+// sampleAnchorFanoutFrag; see writeAnchorGridFloorIdx.
+func absentOverTimeCoveredAnchorFrag(start, ts Frag, stepNS, rangeNS, numAnchors int64) Frag {
+	dist := func(b *Builder) {
+		b.sb.WriteString("dateDiff('nanosecond', ")
+		start(b)
+		b.sb.WriteString(", ")
+		ts(b)
+		b.sb.WriteByte(')')
+	}
+	return func(b *Builder) {
+		b.sb.WriteString("arrayJoin(arrayMap(i -> ")
+		start(b)
+		b.sb.WriteString(" + toIntervalNanosecond(i * ")
+		b.sb.WriteString(strconv.FormatInt(stepNS, 10))
+		b.sb.WriteString("), range(greatest(0, ")
+		writeAnchorGridFloorIdx(b, dist, -1, stepNS)
+		b.sb.WriteString("), least(")
+		b.sb.WriteString(strconv.FormatInt(numAnchors, 10))
+		b.sb.WriteString(", ")
+		writeAnchorGridFloorIdx(b, dist, rangeNS-1, stepNS)
+		b.sb.WriteString("))))")
+	}
+}
+
+// notInSubqueryFrag renders `<left> NOT IN (<sub>)` — the anti-set
+// predicate the range-mode absent shape uses to keep only anchors no
+// sample covers. Mirrors the `NOT IN (SELECT …)` idiom in
+// vector_set_op.go's setOpInSubqueryFrag, kept local because the
+// left-hand side here is a bare alias rather than a match-key
+// expression.
+func notInSubqueryFrag(left, sub Frag) Frag {
+	return func(b *Builder) {
+		left(b)
+		b.sb.WriteString(" NOT IN (")
+		sub(b)
+		b.sb.WriteByte(')')
 	}
 }
 
