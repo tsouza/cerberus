@@ -160,15 +160,26 @@ func (l *Lang) ProjectSamples(plan chplan.Node, meta engine.Meta) chplan.Node {
 		//     `wrapVectorAggregateForSample` already projected TimeUnix
 		//     from the per-anchor bucket alias. Forward the existing
 		//     `TimeUnix` column rather than overwrite it.
-		//   - Instant shape: synthesise `now64(9) - 5s` as before so the
-		//     matrix pivot doesn't drop the only row when CH-now beats
-		//     the client-end timestamp.
+		//   - Instant shape with a known request window: anchor the
+		//     synthesised timestamp at the request End. The previous
+		//     `now64(9) - 5s` synthesis was load-sensitive — CH
+		//     evaluates now64 at query-execution time, so any >5s gap
+		//     between the client building its [start, end] window and
+		//     CH executing the query (admission-control queueing under
+		//     a saturated sweep) pushed the only row past `end`, and
+		//     toMatrixStepGrid's boundary clip dropped it (`vector(1)`
+		//     flaking between 1 series and empty). End is inside the
+		//     window by definition, so the row always survives.
+		//   - Instant shape without a window (Lang constructed bare):
+		//     keep the `now64(9) - 5s` synthesis.
 		var tsExpr chplan.Expr
 		switch {
 		case isVectorAggregateSampleShape(plan):
 			tsExpr = &chplan.ColumnRef{Name: "TimeUnix"}
 		case isMatrixRangeWindow(plan):
 			tsExpr = &chplan.ColumnRef{Name: "anchor_ts"}
+		case !l.End.IsZero():
+			tsExpr = timeLiteralExpr(l.End)
 		default:
 			tsExpr = &chplan.Binary{
 				Op:    chplan.OpSub,
