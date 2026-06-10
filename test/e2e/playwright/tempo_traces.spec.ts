@@ -111,9 +111,10 @@ test('tempo /api/v2/traces/<id> returns the TraceByIDResponse envelope (v1 stays
 /**
  * Trace DETAIL through the Grafana datasource BACKEND — the path the
  * Explore trace view actually uses in Grafana 12 (POST /api/ds/query
- * with a traceql query whose expression is a bare trace ID; the Tempo
- * plugin backend fetches /api/v2/traces/<id> as proto and converts the
- * TraceByIDResponse to OTLP server-side).
+ * with queryType traceId — the frontend reclassifies a bare-hex
+ * traceql expression before POSTing; the Tempo plugin backend fetches
+ * /api/v2/traces/<id> as proto and converts the TraceByIDResponse to
+ * OTLP server-side).
  *
  * This is the coverage gap that let the v2-envelope regression ship:
  * every earlier sweep talked to cerberus through the datasource PROXY
@@ -143,7 +144,13 @@ test('tempo trace detail via /api/ds/query (Grafana plugin backend) succeeds', a
         {
           refId: 'A',
           datasource: { type: 'tempo', uid: 'cerberus-tempo' },
-          queryType: 'traceql',
+          // 'traceId', not 'traceql': the Explore pane URL carries
+          // queryType=traceql, but Grafana's tempo datasource frontend
+          // reclassifies a bare-hex query before POSTing — the backend
+          // serves trace-by-id only under queryType traceId and rejects
+          // traceql with "backend TraceQL search queries are not
+          // supported" (verified against grafana 12.2.9).
+          queryType: 'traceId',
           query: traceID,
           limit: 20,
           tableType: 'traces',

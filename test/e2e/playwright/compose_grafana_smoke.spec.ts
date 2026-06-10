@@ -1008,7 +1008,13 @@ test('compose: tempo trace detail via /api/ds/query (Grafana plugin backend) suc
         {
           refId: 'A',
           datasource: { type: 'tempo', uid: 'cerberus-tempo' },
-          queryType: 'traceql',
+          // 'traceId', not 'traceql': the Explore pane URL carries
+          // queryType=traceql, but Grafana's tempo datasource frontend
+          // reclassifies a bare-hex query before POSTing — the backend
+          // serves trace-by-id only under queryType traceId and rejects
+          // traceql with "backend TraceQL search queries are not
+          // supported" (verified against grafana 12.2.9).
+          queryType: 'traceId',
           query: traceID,
           limit: 20,
           tableType: 'traces',
