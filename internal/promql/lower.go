@@ -1629,6 +1629,23 @@ func lowerCountValues(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (
 		}
 	}
 
+	// Range mode (ctx.step > 0): PromQL's count_values partitions
+	// **per evaluation step**, not across the whole range. The inner
+	// plan's range shape re-aliases the per-step anchor onto TimeUnix
+	// (see wrapRangeLatestPerSeries), so grouping by TimeUnix gives
+	// the per-anchor partitioning, and the wrapping Project surfaces
+	// the anchor as the sample timestamp. Without this thread the
+	// aggregate collapsed every anchor into one row stamped
+	// `now64(9)`, which the matrix pivot then dropped — every
+	// range-mode count_values returned an empty matrix (surfaced by
+	// the showcase-promql count_values panel).
+	const anchorAlias = "cv_anchor"
+	rangeMode := ctx.step > 0
+	if rangeMode {
+		groupBy = append(groupBy, &chplan.ColumnRef{Name: s.TimestampColumn})
+		aliases = append(aliases, anchorAlias)
+	}
+
 	// Append the value-as-label group key; the wrapping Project
 	// references it by alias to bind the synthetic `<label>` column.
 	groupBy = append(groupBy, &chplan.FuncCall{
@@ -1700,12 +1717,19 @@ func lowerCountValues(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (
 		}
 	}
 
+	// Instant mode stamps the single evaluation timestamp; range mode
+	// forwards the per-step anchor captured in the group key above.
+	var tsExpr chplan.Expr = &chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}}
+	if rangeMode {
+		tsExpr = &chplan.ColumnRef{Name: anchorAlias}
+	}
+
 	return &chplan.Project{
 		Input: agg,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
 			{Expr: attrs, Alias: s.AttributesColumn},
-			{Expr: &chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}}, Alias: s.TimestampColumn},
+			{Expr: tsExpr, Alias: s.TimestampColumn},
 			{Expr: &chplan.ColumnRef{Name: countAlias}, Alias: s.ValueColumn},
 		},
 	}, nil

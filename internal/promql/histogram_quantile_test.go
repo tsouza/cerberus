@@ -277,7 +277,11 @@ func TestLower_HistogramQuantile_OverAggregation_LeDropped(t *testing.T) {
 //   - Drop `le` from any by-clause (same rule as the classic native
 //     path — exp-histogram bucket data lives in PositiveBucketCounts,
 //     not as a per-bucket label).
-//   - Aggregate via min(Scale) + sum(ZeroCount) + max(ZeroThreshold)
+//   - Aggregate via min(Scale) + sum(ZeroCount). max(ZeroThreshold)
+//     is absent on the default schema — the upstream OTel-CH
+//     exp-histogram DDL persists no zero_threshold column; only a
+//     custom schema configuring ZeroThresholdColumn gets the extra
+//     aggregate.
 //   - groupArray of every per-row exp-histogram column.
 //   - Filter the Scan to the rate's time window.
 func TestLower_HistogramQuantile_OverAggregation_Native(t *testing.T) {
@@ -366,13 +370,14 @@ func TestLower_HistogramQuantile_OverAggregation_Native(t *testing.T) {
 			}
 
 			// Validate the aggregate function set: min(Scale) +
-			// sum(ZeroCount) + max(ZeroThreshold) + groupArray of every
-			// per-row exp-histogram column.
-			if len(foundAgg.AggFuncs) != 8 {
-				t.Errorf("Aggregate.AggFuncs = %d funcs, want 8", len(foundAgg.AggFuncs))
+			// sum(ZeroCount) + groupArray of every per-row
+			// exp-histogram column (no max(ZeroThreshold) on the
+			// default schema — see the function doc above).
+			if len(foundAgg.AggFuncs) != 7 {
+				t.Errorf("Aggregate.AggFuncs = %d funcs, want 7", len(foundAgg.AggFuncs))
 			}
 			want := map[string]bool{
-				"min": false, "sum": false, "max": false, "groupArray": false,
+				"min": false, "sum": false, "groupArray": false,
 			}
 			for _, af := range foundAgg.AggFuncs {
 				if _, ok := want[af.Name]; ok {

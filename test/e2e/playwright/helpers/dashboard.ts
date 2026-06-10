@@ -41,6 +41,12 @@ export type Panel = {
   datasource?: { type: string; uid: string };
   targets: PanelTarget[];
   gridPos: { x: number; y: number; w: number; h: number };
+  /**
+   * Raw cerberus.expect contract block, forwarded verbatim from the
+   * dashboard JSON (Grafana persists unknown panel fields). Parsed on
+   * demand via readPanelExpectation — see helpers/expectations.ts.
+   */
+  cerberus?: unknown;
 };
 
 export type TemplateVariable = {
@@ -140,6 +146,7 @@ type RawPanel = {
   }>;
   gridPos?: { x?: number; y?: number; w?: number; h?: number };
   panels?: RawPanel[]; // for rows
+  cerberus?: unknown;
 };
 
 function flattenRawPanels(raw: RawPanel[]): Panel[] {
@@ -175,6 +182,7 @@ function normalisePanel(p: RawPanel): Panel {
       w: p.gridPos?.w ?? 0,
       h: p.gridPos?.h ?? 0,
     },
+    cerberus: p.cerberus,
   };
 }
 

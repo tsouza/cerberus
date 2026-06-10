@@ -33,6 +33,37 @@ func TestEmit_HistogramQuantileNative_NilInput(t *testing.T) {
 	}
 }
 
+// TestEmit_HistogramQuantileNative_NoZeroThresholdColumn pins the
+// constant-zero zero-bucket configuration: an empty
+// ZeroThresholdColumn means the physical schema does not persist the
+// OTLP zero_threshold field (the upstream OTel-CH exp-histogram DDL
+// doesn't), so the emitted SQL must reference no ZeroThreshold
+// identifier and use a literal 0. for the zero-bucket width instead.
+func TestEmit_HistogramQuantileNative_NoZeroThresholdColumn(t *testing.T) {
+	t.Parallel()
+
+	plan := &chplan.HistogramQuantileNative{
+		Input:                      &chplan.Scan{Table: "otel_metrics_exp_histogram"},
+		Phi:                        0.95,
+		ScaleColumn:                "Scale",
+		ZeroCountColumn:            "ZeroCount",
+		PositiveOffsetColumn:       "PositiveOffset",
+		PositiveBucketCountsColumn: "PositiveBucketCounts",
+		NegativeOffsetColumn:       "NegativeOffset",
+		NegativeBucketCountsColumn: "NegativeBucketCounts",
+	}
+	sql, _, err := chsql.Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Emit(HistogramQuantileNative without ZeroThresholdColumn): %v", err)
+	}
+	if strings.Contains(sql, "ZeroThreshold") {
+		t.Errorf("emitted SQL references ZeroThreshold despite the schema persisting none:\n%s", sql)
+	}
+	if !strings.Contains(sql, "-0. + 2 * 0. *") {
+		t.Errorf("emitted SQL does not render the constant-0 zero-bucket interpolation:\n%s", sql)
+	}
+}
+
 // TestEmit_HistogramQuantileNative_MissingColumns covers the column-name
 // validation: an IR node missing any of the required exp-histogram
 // column names must error rather than producing a query referencing
@@ -62,7 +93,11 @@ func TestEmit_HistogramQuantileNative_MissingColumns(t *testing.T) {
 		{"missing NegativeOffset", func(h *chplan.HistogramQuantileNative) { h.NegativeOffsetColumn = "" }},
 		{"missing Scale", func(h *chplan.HistogramQuantileNative) { h.ScaleColumn = "" }},
 		{"missing ZeroCount", func(h *chplan.HistogramQuantileNative) { h.ZeroCountColumn = "" }},
-		{"missing ZeroThreshold", func(h *chplan.HistogramQuantileNative) { h.ZeroThresholdColumn = "" }},
+		// ZeroThresholdColumn is intentionally NOT in this list: an
+		// empty value is the valid "schema persists no zero_threshold"
+		// configuration (the upstream OTel-CH DDL has no such column)
+		// and renders a constant-0 zero-bucket width — see
+		// TestEmit_HistogramQuantileNative_NoZeroThresholdColumn.
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

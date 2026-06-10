@@ -103,6 +103,13 @@ type Metrics struct {
 	// ZeroThresholdColumn names the upper edge of the zero bucket
 	// (Float64). Observations whose absolute value is at or below this
 	// threshold are counted in ZeroCount.
+	//
+	// Empty means the physical schema does not persist the OTLP
+	// zero_threshold field — the upstream OTel-CH exporter's
+	// exp-histogram DDL (sqltemplates/metrics_exp_histogram_table.sql)
+	// has no such column — and the native-quantile emitter uses a
+	// constant 0 zero-bucket width instead (every zero-bucket
+	// observation interpolates to exactly 0).
 	ZeroThresholdColumn string
 	// PositiveOffsetColumn names the bucket-index offset for the
 	// positive-range buckets (Int32).
@@ -309,15 +316,23 @@ func DefaultOTelMetrics() Metrics {
 		IsMonotonicColumn:            "IsMonotonic",
 		ScaleColumn:                  "Scale",
 		ZeroCountColumn:              "ZeroCount",
-		ZeroThresholdColumn:          "ZeroThreshold",
-		PositiveOffsetColumn:         "PositiveOffset",
-		PositiveBucketCountsColumn:   "PositiveBucketCounts",
-		NegativeOffsetColumn:         "NegativeOffset",
-		NegativeBucketCountsColumn:   "NegativeBucketCounts",
-		ValueAtQuantilesColumn:       "ValueAtQuantiles",
-		ExemplarsColumn:              "Exemplars",
-		ExpHistogramSuffix:           "_exp_hist",
-		MetricsRollups:               defaultOTelRollups(),
+		// The upstream OTel-CH exp-histogram DDL does NOT persist the
+		// OTLP zero_threshold field (no ZeroThreshold column exists in
+		// sqltemplates/metrics_exp_histogram_table.sql, any released
+		// version). Referencing one made every native histogram_quantile
+		// fail at execution with "Unknown expression identifier
+		// 'ZeroThreshold'" against a real OTel-CH stack — surfaced by
+		// the showcase-promql native-quantile panel. Empty opts into
+		// the constant-0 zero-bucket width in the chsql emitter.
+		ZeroThresholdColumn:        "",
+		PositiveOffsetColumn:       "PositiveOffset",
+		PositiveBucketCountsColumn: "PositiveBucketCounts",
+		NegativeOffsetColumn:       "NegativeOffset",
+		NegativeBucketCountsColumn: "NegativeBucketCounts",
+		ValueAtQuantilesColumn:     "ValueAtQuantiles",
+		ExemplarsColumn:            "Exemplars",
+		ExpHistogramSuffix:         "_exp_hist",
+		MetricsRollups:             defaultOTelRollups(),
 	}
 }
 

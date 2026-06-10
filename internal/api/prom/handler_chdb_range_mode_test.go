@@ -458,7 +458,7 @@ func TestQueryRange_RangeMode_LabelReplace_NonMatchingRegex_ChDB(t *testing.T) {
 // query_range. Prom semantics treat the missing source label as the
 // empty string; the regex `(.*)` matches `""` → $1 = `""` →
 // replacement renders as `value-`. The dst label is set to `value-`
-// (non-empty, so the `mapFilter((k, v) -> v != '', ...)` outer-most
+// (non-empty, so the `mapFilter((k, v) -> v != ”, ...)` outer-most
 // drop pass keeps it).
 //
 // Pins the post-fix behaviour for `label_replace` over a missing src
@@ -1093,7 +1093,6 @@ const expHistogramDDL = `CREATE TABLE otel_metrics_exp_histogram (
     TimeUnix DateTime64(9),
     Scale Int32,
     ZeroCount UInt64,
-    ZeroThreshold Float64,
     PositiveOffset Int32,
     PositiveBucketCounts Array(UInt64),
     NegativeOffset Int32,
@@ -1123,8 +1122,8 @@ func TestQuery_HistogramQuantileNativeAgg_ChDB(t *testing.T) {
 	seedTS := evalTS.Add(-time.Second).Format("2006-01-02 15:04:05.000000000")
 	seed := expHistogramDDL + fmt.Sprintf(`
 INSERT INTO otel_metrics_exp_histogram VALUES
-    ('http_server_duration_exp_hist', map('service', 'api'), toDateTime64('%s', 9), 0, 0, 0.0, 0, [1, 2, 3], 0, []),
-    ('http_server_duration_exp_hist', map('service', 'web'), toDateTime64('%s', 9), 0, 0, 0.0, 0, [3, 4, 3], 0, []);`,
+    ('http_server_duration_exp_hist', map('service', 'api'), toDateTime64('%s', 9), 0, 0, 0, [1, 2, 3], 0, []),
+    ('http_server_duration_exp_hist', map('service', 'web'), toDateTime64('%s', 9), 0, 0, 0, [3, 4, 3], 0, []);`,
 		seedTS, seedTS)
 	srv, _ := newChDBServer(t, seed)
 
@@ -1179,9 +1178,13 @@ INSERT INTO otel_metrics_exp_histogram VALUES
 // reduceResolution + addBuckets).
 //
 // Seed: "fine" Scale=1, off=0, buckets=[1,2,3,4] (4 buckets at S=1).
-//       "coarse" Scale=0, off=0, buckets=[5,10] (2 buckets at S=0).
+//
+//	"coarse" Scale=0, off=0, buckets=[5,10] (2 buckets at S=0).
+//
 // Downscale "fine" to S=0 via `targetIdx`: abs idx 0,1,2,3 at S=1 →
-//   abs idx 0,0,1,1 at S=0 → consolidated buckets [1+2, 3+4] = [3,7].
+//
+//	abs idx 0,0,1,1 at S=0 → consolidated buckets [1+2, 3+4] = [3,7].
+//
 // Merged at S=0: [3+5, 7+10] = [8, 17] at off=0; total = 25.
 // For phi=0.95: target = 23.75; cum = [0, 8, 25]; idx where cum >=
 // 23.75 is 3 → second positive bucket. value = 2^(0 + 1 + (23.75-8)/(25-8))
@@ -1191,8 +1194,8 @@ func TestQuery_HistogramQuantileNativeAgg_MixedScale_ChDB(t *testing.T) {
 	seedTS := evalTS.Add(-time.Second).Format("2006-01-02 15:04:05.000000000")
 	seed := expHistogramDDL + fmt.Sprintf(`
 INSERT INTO otel_metrics_exp_histogram VALUES
-    ('http_server_duration_exp_hist', map('series', 'fine'),   toDateTime64('%s', 9), 1, 0, 0.0, 0, [1, 2, 3, 4], 0, []),
-    ('http_server_duration_exp_hist', map('series', 'coarse'), toDateTime64('%s', 9), 0, 0, 0.0, 0, [5, 10],       0, []);`,
+    ('http_server_duration_exp_hist', map('series', 'fine'),   toDateTime64('%s', 9), 1, 0, 0, [1, 2, 3, 4], 0, []),
+    ('http_server_duration_exp_hist', map('series', 'coarse'), toDateTime64('%s', 9), 0, 0, 0, [5, 10],       0, []);`,
 		seedTS, seedTS)
 	srv, _ := newChDBServer(t, seed)
 
