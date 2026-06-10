@@ -325,6 +325,15 @@ jobs:
         env:
           GRAFANA_URL: http://localhost:3000
           CERBERUS_URL: http://localhost:8080
+          # iterate-all-dashboards reads dashboard JSON from disk;
+          # point it at the k3d stack's provisioning dir (the spec
+          # default is the compose stack's). The compose-only
+          # dashboards (clickhouse / host / otelcol) are fed by
+          # receivers the k3d collector intentionally doesn't run, so
+          # probing them here reports empty panels for data this stack
+          # never ships; the compose set is covered per-PR by the
+          # required compose-smoke job.
+          DASHBOARDS_DIR: ${{ github.workspace }}/test/e2e/grafana/dashboards
         # `npx playwright test` with no spec filter auto-discovers
         # every `*.spec.ts` under test/e2e/playwright/. That includes
         # the phase-5 `iterate-time-ranges.spec.ts` matrix sweep,
@@ -338,11 +347,9 @@ jobs:
         #
         # Auto-discovered specs of note (each is hard-fail in this
         # informational dashboard job; the job itself is not a PR gate):
-        #   - iterate-all-dashboards.spec.ts: reads
-        #       test/e2e/grafana/compose/dashboards/*.json at spec-build
-        #       time and probes every panel against the real cerberus
-        #       stack. Auto-adapts as the rich-observability rollout
-        #       lands new dashboards (clickhouse, otelcol, host).
+        #   - iterate-all-dashboards.spec.ts: reads the DASHBOARDS_DIR
+        #       JSON at spec-build time and probes every panel against
+        #       the real cerberus stack.
         #   - iterate-metrics-explorer.spec.ts: enumerates every
         #       metric cerberus publishes and probes /api/v1/series for
         #       each. Pins the user's #8 sweep finding: the labels chip
