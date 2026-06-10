@@ -144,6 +144,11 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	register("GET /loki/api/v1/format_query", h.handleFormatQuery)
 	register("POST /loki/api/v1/format_query", h.handleFormatQuery)
 	register("GET /loki/api/v1/status/buildinfo", h.handleBuildInfo)
+	// Drilldown-limits config probe — Grafana's first-party Logs
+	// Drilldown app (preinstalled in 12.x) fetches this on boot to
+	// gate the Patterns tab / volume panels / level filtering.
+	// Upstream registers GET only (pkg/loki/loki.go).
+	register("GET /loki/api/v1/drilldown-limits", h.handleDrilldownLimits)
 
 	// JSON-shaped 404 fallback for unmatched /loki/api/v1/* routes. Without
 	// this, http.ServeMux serves Go's plain-text "404 page not found"
