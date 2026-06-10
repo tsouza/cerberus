@@ -145,9 +145,17 @@ coverage:
       }' cover-merged.out | sort -rn
 
 # Regenerate TXTAR golden sections in test/spec/**/*.txtar from current output.
+# Two lanes: the default-tag pass rewrites `-- sql --` / `-- chplan --`
+# text goldens, then a chdb-tagged pass (mirroring `just spec-chdb`)
+# rewrites the `-- expected_rows --` round-trip cells, which only execute
+# under that build tag. Requires libchdb.so (`just chdb-install`) — the
+# recipe fails fast without it rather than leaving stale expected_rows
+# behind (the PR #758 failure mode).
 # Review `git diff test/spec/` before committing.
 update-golden:
+    @test -f "{{CHDB_INSTALL_PATH}}" || { echo "error: {{CHDB_INSTALL_PATH}} not found — run 'just chdb-install' first; without it the chdb-tagged -- expected_rows -- sections cannot regenerate and go stale" >&2; exit 1; }
     GOLDEN_UPDATE=1 go test ./...
+    GOLDEN_UPDATE=1 go test -tags chdb -count=1 ./test/spec/...
     @echo
     @echo "Diff of regenerated fixtures:"
     @git --no-pager diff --stat test/spec/ || true
