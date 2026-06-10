@@ -105,6 +105,20 @@ const STEP_SIZES: Array<{ label: string; stepSeconds: number }> = [
   { label: '5m', stepSeconds: 5 * 60 },
 ];
 
+// Prometheus wire-parity resolution cap. Upstream Prometheus rejects
+// /api/v1/query_range when (end - start) / step > 11,000 points per
+// timeseries (web/api/v1/api.go queryRange), and cerberus mirrors the
+// exact check. Any (range, step) tuple over the cap MUST come back as
+// a 400 bad_data with the upstream message — that is the
+// upstream-compatible behaviour this spec pins, not an error we
+// tolerate. The current matrix tops out at 24h / 15s = 5,760 points
+// (under the cap), so today every tuple takes the 2xx branch; the
+// 400-parity branch below guards the matrix against widening past the
+// cap without pinning the rejection shape.
+const MAX_RESOLUTION_POINTS = 11_000;
+const RESOLUTION_CAP_MESSAGE =
+  'exceeded maximum resolution of 11,000 points per timeseries';
+
 /**
  * Prometheus `/api/v1/query_range` response shape (the subset we
  * read). Labels live under `data.result[].metric`.
@@ -293,6 +307,36 @@ test('time-ranges: every aggregating / histogram panel re-asserts under (range, 
       const queryURL = `${baseURL}${e.proxyURL}/api/v1/query_range?query=${encodeURIComponent(
         e.expr,
       )}&start=${start}&end=${end}&step=${e.step.stepSeconds}`;
+
+      // Tuples whose grid exceeds the Prometheus resolution cap MUST
+      // be rejected with the upstream-parity 400 — assert that shape
+      // and stop; the 2xx shape rules below don't apply to a tuple
+      // upstream Prometheus itself would refuse to evaluate.
+      const gridPoints = Math.floor(
+        e.range.windowSeconds / e.step.stepSeconds,
+      );
+      if (gridPoints > MAX_RESOLUTION_POINTS) {
+        try {
+          const resp = await request.get(queryURL);
+          const body = await resp.text().catch(() => '<unreadable>');
+          if (resp.status() !== 400) {
+            failures.push(
+              `[${surface}] grid of ${gridPoints} points exceeds the ${MAX_RESOLUTION_POINTS}-point Prometheus resolution cap but query_range returned ${resp.status()} (want 400)\n  url: ${queryURL}\n  body: ${body.slice(0, 600)}`,
+            );
+            return;
+          }
+          if (!body.includes(RESOLUTION_CAP_MESSAGE)) {
+            failures.push(
+              `[${surface}] over-cap query_range returned 400 but without the upstream resolution-cap message ${JSON.stringify(RESOLUTION_CAP_MESSAGE)}\n  url: ${queryURL}\n  body: ${body.slice(0, 600)}`,
+            );
+          }
+        } catch (err) {
+          failures.push(
+            `[${surface}] resolution-cap probe threw: ${(err as Error).message}\n  url: ${queryURL}`,
+          );
+        }
+        return;
+      }
 
       try {
         const resp = await request.get(queryURL);

@@ -290,6 +290,19 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("'end' must be after 'start'"))
 		return
 	}
+	// For safety, limit the number of returned points per timeseries.
+	// This is sufficient for 60s resolution for a week or 1h resolution
+	// for a year. Mirrors upstream Prometheus web/api/v1.queryRange —
+	// same condition, same errorType, same message — so clients that
+	// already handle Prom's resolution cap see identical behaviour.
+	// Placed before the scalar fold so `1+1`-style queries are capped
+	// too (upstream rejects them as well; the check runs before the
+	// engine is consulted).
+	if end.Sub(start)/step > 11000 {
+		writeError(w, http.StatusBadRequest, ErrBadData,
+			errors.New("exceeded maximum resolution of 11,000 points per timeseries. Try decreasing the query resolution (?step=XX)"))
+		return
+	}
 
 	// Scalar-only PromQL → matrix of one series at every step holding
 	// the folded constant. Matches Prom's `1+1` over query_range
