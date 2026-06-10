@@ -51,9 +51,17 @@ func lowerInstantFn(c *parser.Call, s schema.Metrics, chFn string, ctx lowerCtx)
 		return nil, err
 	}
 
-	newValue := &chplan.FuncCall{
+	var newValue chplan.Expr = &chplan.FuncCall{
 		Name: chFn,
 		Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}},
+	}
+	if chFn == "sign" {
+		// CH's sign() returns Int8; every other function in
+		// instantFnCH is Float64-in/Float64-out. The wire scanner
+		// reads Value as *float64, so an unwrapped sign() 502s with
+		// "converting Int8 to *float64 is unsupported" — surfaced by
+		// the showcase-promql sgn() panel.
+		newValue = &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{newValue}}
 	}
 	return projectValueOverInner(inner, s, newValue), nil
 }
