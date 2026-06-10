@@ -59,7 +59,11 @@ import {
   type Response,
 } from '@playwright/test';
 
-import { generateSelfTraffic } from './helpers/index.js';
+import {
+  enforceExpectation,
+  generateSelfTraffic,
+  readPanelExpectation,
+} from './helpers/index.js';
 
 // Self-traffic warmup so cerberus panels have populated counters
 // before we sweep them. Same value the other phase specs use.
@@ -106,6 +110,8 @@ type PanelJSON = {
   datasource?: { type?: string; uid?: string } | string;
   targets?: TargetJSON[];
   panels?: PanelJSON[]; // nested under rows
+  /** cerberus.expect contract block — see helpers/expectations.ts. */
+  cerberus?: unknown;
 };
 
 type TargetJSON = {
@@ -122,6 +128,8 @@ type FlatPanel = {
   dsType: string;
   dsUid: string;
   targets: FlatTarget[];
+  /** Raw cerberus.expect contract block, parsed at probe time. */
+  cerberus?: unknown;
 };
 
 type FlatTarget = {
@@ -216,6 +224,7 @@ function normalisePanel(p: PanelJSON): FlatPanel {
     dsType: panelDs.type,
     dsUid: panelDs.uid,
     targets,
+    cerberus: p.cerberus,
   };
 }
 
@@ -478,40 +487,60 @@ async function probeTarget(
   t: FlatTarget,
   onCount: (count: number) => void,
 ): Promise<void> {
+  // The panel's declared contract — absent declaration is the default
+  // {expect: 'nonempty'} (every current dashboard panel; non-default
+  // declarations are a showcase-family privilege enforced by
+  // expectation-contracts.spec.ts). enforceExpectation is the
+  // BIDIRECTIONAL gate: a declared-empty panel that returns series
+  // fails just as loudly as a default panel that returns none.
+  const expectation = readPanelExpectation(panel);
+  const isErrorContract = expectation.expect.startsWith('error:');
+
   const resp = await request.get(url);
   const status = resp.status();
-  // HTTP status is a hard fail — a 5xx anywhere means the gateway
-  // dropped the query.
-  expect(
-    status,
-    `dashboard=${d.uid} panel="${panel.title}" target=${t.refId}: ${url} → ${status}`,
-  ).toBe(200);
+  const bodyText = await resp.text();
 
-  let body: unknown;
-  try {
-    body = await resp.json();
-  } catch (err) {
-    throw new Error(
-      `dashboard=${d.uid} panel="${panel.title}" target=${t.refId}: body not JSON: ${
-        (err as Error).message
-      }`,
-    );
+  let count = 0;
+  if (status >= 200 && status <= 299) {
+    let body: unknown;
+    try {
+      body = JSON.parse(bodyText);
+    } catch (err) {
+      throw new Error(
+        `dashboard=${d.uid} panel="${panel.title}" target=${t.refId}: body not JSON: ${
+          (err as Error).message
+        }`,
+      );
+    }
+
+    if (!isErrorContract) {
+      // A 2xx body tunnelling an envelope error is a failure for the
+      // nonempty/empty contracts; an error-declared panel is judged
+      // on the error substring by enforceExpectation instead.
+      const errMsg = envelopeError(body);
+      expect(
+        errMsg,
+        `dashboard=${d.uid} panel="${panel.title}" target=${t.refId}: envelope error: ${errMsg ?? ''}`,
+      ).toBeNull();
+    }
+
+    count = resultCount(body, t.dsType);
   }
-
-  const errMsg = envelopeError(body);
-  expect(
-    errMsg,
-    `dashboard=${d.uid} panel="${panel.title}" target=${t.refId}: envelope error: ${errMsg ?? ''}`,
-  ).toBeNull();
-
-  const count = resultCount(body, t.dsType);
   onCount(count);
 
-  // Hard-assert non-empty. An empty result is a real bug in the
-  // cerberus code, the seed, the dashboard, or the panel expression;
-  // mask nothing.
+  // An empty result on a default panel is a real bug in the cerberus
+  // code, the seed, the dashboard, or the panel expression; mask
+  // nothing. Equally, a declared expectation that no longer holds is
+  // a broken showcase.
+  const violations = enforceExpectation(expectation, {
+    seriesCount: count,
+    status,
+    errorBody: bodyText,
+  });
   expect(
-    count,
-    `dashboard=${d.uid} panel="${panel.title}" target=${t.refId} expr="${t.expr}": empty result`,
-  ).toBeGreaterThan(0);
+    violations,
+    `dashboard=${d.uid} panel="${panel.title}" target=${t.refId} expr="${t.expr}" ` +
+      `(declared=${expectation.declared ? expectation.expect : 'default:nonempty'}): ` +
+      violations.join('; '),
+  ).toEqual([]);
 }
