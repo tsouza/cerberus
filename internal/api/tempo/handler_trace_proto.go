@@ -9,7 +9,6 @@ import (
 	resourcev1 "github.com/grafana/tempo/pkg/tempopb/resource/v1"
 	tracev1 "github.com/grafana/tempo/pkg/tempopb/trace/v1"
 
-	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/chclient"
 )
 
@@ -60,62 +59,56 @@ func negotiateTraceByIDProto(accept string) bool {
 //     byte-array trace/span IDs and enum-int kind/status fields.
 //   - The two structures diverge on type (string-keyed map vs
 //     []*KeyValue) and on identifier encoding (hex string vs raw bytes),
-//     so a single helper would either over-abstract or carry a tag
-//     parameter that costs more than it saves. Keeping them as siblings
-//     fed by the same Sample slice + the same splitTraceByIDLabels
-//     partition means the two paths can never drift on field
-//     semantics — both call splitTraceByIDLabels, both group by the
-//     same format.CanonicalKey, both pull SpanKind / StatusCode out
-//     of the meta map.
+//     so a single wire-emitting helper would either over-abstract or
+//     carry a tag parameter that costs more than it saves. Instead both
+//     consume the same groupTraceBatches intermediate (see handler.go),
+//     which owns the splitTraceByIDLabels partition, the
+//     format.CanonicalKey bucketing, and — critically — the
+//     deterministic batch order (service.name, then canonical
+//     resource-attr string) and span order (StartTimeUnixNano, then
+//     SpanID). The two paths can therefore never drift on field
+//     semantics or on ordering.
 //
 // The parity test in handler_trace_proto_test.go pins this equivalence
 // (same span count, same trace ID, same attribute keys) so a future
 // edit to one helper that forgets the other surfaces in CI.
 func groupBatchesProto(samples []chclient.Sample) *tempopb.Trace {
-	bucket := map[string]*tracev1.ResourceSpans{}
-	keys := []string{} // stable order so the marshaled body is deterministic
-	for _, s := range samples {
-		resourceAttrs, spanAttrs, meta := splitTraceByIDLabels(s.Labels)
-		key := format.CanonicalKey(resourceAttrs)
-		rs, ok := bucket[key]
-		if !ok {
-			rs = &tracev1.ResourceSpans{
-				Resource: &resourcev1.Resource{
-					Attributes: attrMapToKVList(resourceAttrs),
-				},
-				ScopeSpans: []*tracev1.ScopeSpans{{
-					// One ScopeSpans per ResourceSpans is enough — cerberus
-					// flattens the scope dimension on the JSON path
-					// (groupBatches' ResourceSpans has no scope_spans
-					// field), so mirroring "one ScopeSpans bucket" keeps
-					// the two outputs structurally aligned.
-					Scope: nil,
-				}},
-			}
-			bucket[key] = rs
-			keys = append(keys, key)
+	groups := groupTraceBatches(samples)
+	out := &tempopb.Trace{ResourceSpans: make([]*tracev1.ResourceSpans, 0, len(groups))}
+	for _, g := range groups {
+		rs := &tracev1.ResourceSpans{
+			Resource: &resourcev1.Resource{
+				Attributes: attrMapToKVList(g.resourceAttrs),
+			},
+			ScopeSpans: []*tracev1.ScopeSpans{{
+				// One ScopeSpans per ResourceSpans is enough — cerberus
+				// flattens the scope dimension on the JSON path
+				// (groupBatches' ResourceSpans has no scope_spans
+				// field), so mirroring "one ScopeSpans bucket" keeps
+				// the two outputs structurally aligned.
+				Scope: nil,
+			}},
 		}
-		rs.ScopeSpans[0].Spans = append(rs.ScopeSpans[0].Spans, &tracev1.Span{
-			TraceId:           hexToBytesPadded(meta[traceByIDKeyTraceID], 16),
-			SpanId:            hexToBytesPadded(meta[traceByIDKeySpanID], 8),
-			ParentSpanId:      hexToBytesPadded(meta[traceByIDKeyParentSpanID], 8),
-			Name:              s.MetricName,
-			Kind:              spanKindFromCH(meta[traceByIDKeySpanKind]),
-			StartTimeUnixNano: uint64(s.Timestamp.UnixNano()),
-			// DurationNanos is carried as Value on the Sample; the proto
-			// shape has no Duration field, so we encode start + end so
-			// EndTimeUnixNano - StartTimeUnixNano = the duration the JSON
-			// path exposes verbatim. durationNanosFromValue clamps the
-			// float64 duration to a non-negative uint64 so the gosec G115
-			// signed-to-unsigned conversion check stays happy on the cast.
-			EndTimeUnixNano: uint64(s.Timestamp.UnixNano()) + durationNanosFromValue(s.Value),
-			Status:          &tracev1.Status{Code: statusCodeFromCH(meta[traceByIDKeyStatusCode])},
-			Attributes:      attrMapToKVList(spanAttrs),
-		})
-	}
-	out := &tempopb.Trace{ResourceSpans: make([]*tracev1.ResourceSpans, 0, len(bucket))}
-	for _, k := range keys {
-		out.ResourceSpans = append(out.ResourceSpans, bucket[k])
+		for _, row := range g.spans {
+			rs.ScopeSpans[0].Spans = append(rs.ScopeSpans[0].Spans, &tracev1.Span{
+				TraceId:           hexToBytesPadded(row.meta[traceByIDKeyTraceID], 16),
+				SpanId:            hexToBytesPadded(row.meta[traceByIDKeySpanID], 8),
+				ParentSpanId:      hexToBytesPadded(row.meta[traceByIDKeyParentSpanID], 8),
+				Name:              row.sample.MetricName,
+				Kind:              spanKindFromCH(row.meta[traceByIDKeySpanKind]),
+				StartTimeUnixNano: uint64(row.sample.Timestamp.UnixNano()),
+				// DurationNanos is carried as Value on the Sample; the proto
+				// shape has no Duration field, so we encode start + end so
+				// EndTimeUnixNano - StartTimeUnixNano = the duration the JSON
+				// path exposes verbatim. durationNanosFromValue clamps the
+				// float64 duration to a non-negative uint64 so the gosec G115
+				// signed-to-unsigned conversion check stays happy on the cast.
+				EndTimeUnixNano: uint64(row.sample.Timestamp.UnixNano()) + durationNanosFromValue(row.sample.Value),
+				Status:          &tracev1.Status{Code: statusCodeFromCH(row.meta[traceByIDKeyStatusCode])},
+				Attributes:      attrMapToKVList(row.spanAttrs),
+			})
+		}
+		out.ResourceSpans = append(out.ResourceSpans, rs)
 	}
 	return out
 }
