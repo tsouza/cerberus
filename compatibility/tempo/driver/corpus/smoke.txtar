@@ -392,6 +392,25 @@ traces
 -- traceid_template --
 checkout/0
 
+# Same trace through the v2 endpoint. The body shape differs from v1
+# by design: reference Tempo wraps the trace in a
+# tempopb.TraceByIDResponse envelope ({trace, metrics, status,
+# message}; upstream modules/frontend/combiner/trace_by_id_v2.go), and
+# Grafana 12.x unmarshals exactly that envelope before its OTLP
+# conversion. diffTracesV2Endpoint (proto_fetch.go) gates the envelope
+# on both encodings + diffs the inner trace cross-backend, so a
+# regression back to the bare v1 bytes on the v2 URL can never pass
+# this suite again.
+
+-- name --
+trace_by_id_v2_first_checkout
+-- query --
+{ }
+-- endpoint --
+traces_v2
+-- traceid_template --
+checkout/0
+
 # --- Tags + tag-values endpoints (PR 6) ---
 # Conformance for the four tag endpoints. Cardinality bounds are wide
 # because the precise per-backend tag-key inventory drifts with both

@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/gogo/protobuf/jsonpb"
 	"github.com/gogo/protobuf/proto"
 	"github.com/grafana/tempo/pkg/tempopb"
 	"github.com/grafana/tempo/pkg/traceql"
@@ -186,18 +187,20 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	register("GET /api/v2/search/tag/{name}/values", h.handleSearchTagValuesV2)
 	register("GET /api/traces/{id}", h.handleTraceByID)
 	// /api/v2/traces/{id} is the modern Grafana Tempo datasource path —
-	// the default in Grafana 11.x whenever the datasource's
+	// the default in Grafana 11.x+ whenever the datasource's
 	// `tempoApiVersion` setting is >= v2 (which is the out-of-the-box
-	// default for new datasources). Upstream Tempo's
-	// `compatibility/tempo/upstream/pkg/httpclient/client.go` exposes
-	// `QueryTraceEndpoint = "/api/traces"` (v1) and
-	// `QueryTraceV2Endpoint = "/api/v2/traces"` (v2) — the URL is the
-	// only thing the v2 bump changes, the response body is the same
-	// trace shape (Trace proto / TraceByIDResponse JSON). Aliasing the
-	// route to the same handler keeps cerberus drop-in for both
-	// datasource versions and stops Grafana 404-ing every trace
-	// drill-down.
-	register("GET /api/v2/traces/{id}", h.handleTraceByID)
+	// default for new datasources). Unlike the v1 endpoint, reference
+	// Tempo's v2 returns the response ENVELOPED in a
+	// tempopb.TraceByIDResponse (`{trace, metrics, status, message}`),
+	// not a bare tempopb.Trace — see upstream
+	// `modules/frontend/combiner/trace_by_id_v2.go` (proto + jsonpb
+	// marshal of the envelope) vs `trace_by_id.go` (bare Trace).
+	// Grafana 12.x's Tempo plugin proto.Unmarshal-s the v2 body as
+	// TraceByIDResponse before converting to OTLP; serving the bare v1
+	// bytes on this URL misaligns the decode one message level deep and
+	// dies with `proto: KeyValue: wiretype end group for non-group`
+	// inside Grafana ("An error occurred within the plugin").
+	register("GET /api/v2/traces/{id}", h.handleTraceByIDV2)
 	register("GET /api/metrics/query_range", h.handleMetricsQueryRange)
 	register("GET /api/metrics/query", h.handleMetricsQueryInstant)
 }
@@ -370,7 +373,34 @@ func (h *Handler) handleSearchRecent(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleTraceByID serves `GET /api/traces/{id}` — the v1 wire shape:
+// a bare *tempopb.Trace under Accept: protobuf, the flattened batches
+// JSON otherwise. Mirrors upstream Tempo's
+// `modules/frontend/combiner/trace_by_id.go` (proto.Marshal(trace) /
+// tempopb.MarshalToJSONV1).
 func (h *Handler) handleTraceByID(w http.ResponseWriter, r *http.Request) {
+	h.serveTraceByID(w, r, false)
+}
+
+// handleTraceByIDV2 serves `GET /api/v2/traces/{id}` — the v2 wire
+// shape: a tempopb.TraceByIDResponse ENVELOPE in both encodings.
+// Mirrors upstream Tempo's
+// `modules/frontend/combiner/trace_by_id_v2.go` finalize +
+// `combiner/common.go` internalMarshalAs (proto.Marshal(envelope) /
+// jsonpb.Marshaler{}.MarshalToString(envelope)).
+func (h *Handler) handleTraceByIDV2(w http.ResponseWriter, r *http.Request) {
+	h.serveTraceByID(w, r, true)
+}
+
+// serveTraceByID is the shared trace-by-id core. The lookup, trace-id
+// validation, engine plan, and batch assembly are identical between
+// the v1 and v2 endpoints; only the response envelope differs (v2
+// wraps the trace in tempopb.TraceByIDResponse — see
+// handleTraceByIDV2). The inner trace bytes stay deterministic and
+// identical across both endpoints (groupTraceBatches owns the
+// ordering contract), so the v1 body and the v2 envelope's `trace`
+// field can never drift on content.
+func (h *Handler) serveTraceByID(w http.ResponseWriter, r *http.Request, v2 bool) {
 	traceID := r.PathValue("id")
 	if traceID == "" {
 		writeError(w, http.StatusBadRequest, "", "", fmt.Errorf("missing trace id"))
@@ -429,10 +459,17 @@ func (h *Handler) handleTraceByID(w http.ResponseWriter, r *http.Request) {
 	proto := negotiateTraceByIDProto(r.Header.Get("Accept"))
 
 	if len(res.Samples) == 0 {
-		// Tempo's "trace not found" shape. Reference Tempo returns an
-		// empty proto-encoded *tempopb.Trace under Accept: protobuf
-		// (Grafana renders the same "trace not found" UI from an empty
-		// trace) and the JSON error envelope under Accept: json.
+		// Tempo's "trace not found" shape. Reference Tempo returns 404
+		// on both endpoints (v1: the TraceByIDCombiner starts at 404
+		// and stays there when every shard 404s; v2: the
+		// genericCombiner relays the downstream 404 via
+		// erroredResponse — see upstream
+		// modules/frontend/combiner/{trace_by_id.go,common.go}).
+		// Under Accept: protobuf we emit an empty message (an empty
+		// *tempopb.Trace and an empty *tempopb.TraceByIDResponse both
+		// marshal to zero bytes, so the two endpoints coincide here);
+		// under Accept: json we keep Tempo's error envelope so Grafana
+		// renders the "trace not found" UI.
 		if proto {
 			writeTraceProto(w, http.StatusNotFound, &tempopb.Trace{})
 			return
@@ -441,6 +478,24 @@ func (h *Handler) handleTraceByID(w http.ResponseWriter, r *http.Request) {
 			TraceID: traceID, SpanID: "", Error: true,
 			Message: fmt.Sprintf("trace not found: %s", traceID),
 		})
+		return
+	}
+
+	if v2 {
+		// v2 envelope — tempopb.TraceByIDResponse{trace, metrics}.
+		// Metrics is always non-nil with honest zero counters: the
+		// reference frontend initialises the metrics combiner with
+		// &TraceByIDMetrics{} and unconditionally assigns it in
+		// finalize (modules/frontend/combiner/trace_by_id_v2.go +
+		// response_metrics.go), so the field is present on the wire
+		// even when no bytes-inspected accounting exists. Status stays
+		// COMPLETE (zero) and Message empty: cerberus never truncates
+		// a trace, so the PARTIAL path (upstream's maxBytes overflow)
+		// is unreachable.
+		writeTraceByIDV2(w, http.StatusOK, &tempopb.TraceByIDResponse{
+			Trace:   groupBatchesProto(res.Samples),
+			Metrics: &tempopb.TraceByIDMetrics{},
+		}, proto)
 		return
 	}
 
@@ -1212,8 +1267,9 @@ func toTraceSummaries(samples []chclient.Sample) ([]TraceSummary, []string) {
 // groupBatches (JSON) and groupBatchesProto (proto) map this shape onto
 // their wire types, so batch / span ordering can never diverge between
 // the two Accept-negotiated paths — or between two sequential calls
-// (the e2e "v2 is a byte-for-byte alias of v1" pin fetches the same
-// trace twice and compares bodies byte-for-byte).
+// (the unit + e2e determinism pins fetch the same trace via v1 and v2
+// and require the v2 envelope's inner trace to be byte-identical to
+// the bare v1 trace).
 type traceBatch struct {
 	resourceAttrs map[string]string
 	spans         []traceSpanRow
@@ -1385,6 +1441,46 @@ func writeTraceProto(w http.ResponseWriter, status int, t *tempopb.Trace) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/protobuf")
+	w.WriteHeader(status)
+	_, _ = w.Write(b)
+}
+
+// writeTraceByIDV2 emits the `/api/v2/traces/{id}` envelope in the
+// negotiated encoding, mirroring upstream Tempo's
+// `modules/frontend/combiner/common.go` internalMarshalAs:
+//
+//   - Accept: protobuf → proto.Marshal(*tempopb.TraceByIDResponse),
+//     Content-Type: application/protobuf. This is what Grafana 12.x's
+//     Tempo plugin unmarshals before its OTLP conversion.
+//   - otherwise → gogo jsonpb (the proto3 JSON mapping: camelCase
+//     field names, base64 bytes, zero-valued fields omitted), i.e.
+//     `{"trace":{"resourceSpans":[…]},"metrics":{}}` — NOT the bare
+//     v1 `{"batches":[…]}` shape, and NOT MarshalToJSONV1's
+//     `batches` rename (that helper is v1-only upstream).
+//
+// On marshal failure both branches fall back to the JSON error
+// envelope, same rationale as writeTraceProto.
+func writeTraceByIDV2(w http.ResponseWriter, status int, resp *tempopb.TraceByIDResponse, asProto bool) {
+	var (
+		b   []byte
+		err error
+	)
+	contentType := "application/json"
+	if asProto {
+		contentType = "application/protobuf"
+		b, err = proto.Marshal(resp)
+	} else {
+		var s string
+		s, err = new(jsonpb.Marshaler).MarshalToString(resp)
+		b = []byte(s)
+	}
+	if err != nil {
+		httperr.WriteJSON(w, http.StatusInternalServerError, ErrorResponse{
+			Error: true, Message: fmt.Sprintf("trace-by-id v2 marshal: %v", err),
+		})
+		return
+	}
+	w.Header().Set("Content-Type", contentType)
 	w.WriteHeader(status)
 	_, _ = w.Write(b)
 }

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gogo/protobuf/jsonpb"
 	"github.com/gogo/protobuf/proto"
 	"github.com/grafana/tempo/pkg/tempopb"
 	v11 "github.com/grafana/tempo/pkg/tempopb/trace/v1"
@@ -420,6 +421,153 @@ func TestProjectJSONShape_DecodesBase64SpanIDs(t *testing.T) {
 	if len(shape.SpanIDs) != len(want) {
 		t.Fatalf("SpanIDs = %v, want %v", shape.SpanIDs, want)
 	}
+	for i := range want {
+		if shape.SpanIDs[i] != want[i] {
+			t.Fatalf("SpanIDs[%d] = %q, want %q", i, shape.SpanIDs[i], want[i])
+		}
+	}
+}
+
+// ---- /api/v2/traces — TraceByIDResponse envelope tests ----------------
+
+// v2EnvelopeHandler serves the reference-Tempo v2 wire shape for the
+// given trace: the proto-marshaled TraceByIDResponse under Accept:
+// protobuf and the jsonpb envelope (`{"trace":…,"metrics":{}}`)
+// otherwise. Mirrors upstream modules/frontend/combiner/common.go
+// internalMarshalAs.
+func v2EnvelopeHandler(t *testing.T, trace *tempopb.Trace) http.HandlerFunc {
+	t.Helper()
+	envelope := &tempopb.TraceByIDResponse{Trace: trace, Metrics: &tempopb.TraceByIDMetrics{}}
+	protoBytes, err := proto.Marshal(envelope)
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+	jsonStr, err := new(jsonpb.Marshaler).MarshalToString(envelope)
+	if err != nil {
+		t.Fatalf("jsonpb marshal envelope: %v", err)
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Accept") == "application/protobuf" {
+			w.Header().Set("Content-Type", "application/protobuf")
+			_, _ = w.Write(protoBytes)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(jsonStr))
+	}
+}
+
+// TestDiffTracesV2Endpoint_BothBackendsHealthy — both sides serve the
+// reference v2 envelope in both encodings; the diff must be Equal with
+// the full span set matched.
+func TestDiffTracesV2Endpoint_BothBackendsHealthy(t *testing.T) {
+	t.Parallel()
+
+	handler := v2EnvelopeHandler(t, twoSpanTrace())
+	tempoSrv := httptest.NewServer(handler)
+	defer tempoSrv.Close()
+	cerbSrv := httptest.NewServer(handler)
+	defer cerbSrv.Close()
+
+	res := CaseResult{Case: CorpusCase{Endpoint: "traces_v2"}}
+	client := &http.Client{Timeout: 2 * time.Second}
+	diffTracesV2Endpoint(context.Background(), client, tempoSrv.URL, cerbSrv.URL, &res)
+
+	if !res.Diff.Equal {
+		t.Fatalf("Diff.Equal = false, want true; reasons=%+v", res.Diff.Reasons)
+	}
+	if res.Diff.MatchedCount != 2 {
+		t.Errorf("MatchedCount = %d, want 2", res.Diff.MatchedCount)
+	}
+}
+
+// TestDiffTracesV2Endpoint_BareV1BodyIsFlagged is the regression pin
+// for the Grafana 12 trace-view outage: cerberus's v2 URL used to
+// serve the SAME bytes as v1 — a bare proto tempopb.Trace and the
+// flattened `{"batches":…}` JSON — instead of the TraceByIDResponse
+// envelope. The previous harness only diffed the v1 endpoint, so 33/33
+// cases passed while every Grafana 12 trace drill-down died with
+// `proto: KeyValue: wiretype end group for non-group`. The v2 differ
+// must flag the un-enveloped body on at least one encoding.
+func TestDiffTracesV2Endpoint_BareV1BodyIsFlagged(t *testing.T) {
+	t.Parallel()
+
+	trace := twoSpanTrace()
+	tempoSrv := httptest.NewServer(v2EnvelopeHandler(t, trace))
+	defer tempoSrv.Close()
+
+	// "cerberus" serving the v1 shapes on the v2 URL — the bug.
+	bareProto, err := proto.Marshal(trace)
+	if err != nil {
+		t.Fatalf("marshal bare trace: %v", err)
+	}
+	wantShape := projectProtoShape(trace)
+	bareJSON := []byte(`{"batches":[{"scopeSpans":[{"spans":[` +
+		`{"spanId":"` + wantShape.SpanIDs[0] + `"},` +
+		`{"spanId":"` + wantShape.SpanIDs[1] + `"}` +
+		`]}]}]}`)
+	cerbSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Accept") == "application/protobuf" {
+			w.Header().Set("Content-Type", "application/protobuf")
+			_, _ = w.Write(bareProto)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(bareJSON)
+	}))
+	defer cerbSrv.Close()
+
+	res := CaseResult{Case: CorpusCase{Endpoint: "traces_v2"}}
+	client := &http.Client{Timeout: 2 * time.Second}
+	diffTracesV2Endpoint(context.Background(), client, tempoSrv.URL, cerbSrv.URL, &res)
+
+	if res.Diff.Equal {
+		t.Fatalf("Diff.Equal = true for a bare v1 body on the v2 URL — the envelope drift that broke Grafana 12 passed the differ; reasons=%+v", res.Diff.Reasons)
+	}
+	// The JSON side must specifically surface the envelope reason — the
+	// v1 batches shape has no top-level `trace` key.
+	var sawEnvelopeReason bool
+	for _, r := range res.Diff.Reasons {
+		if r.Kind == "envelope" && strings.Contains(r.Detail, "cerberus") {
+			sawEnvelopeReason = true
+		}
+	}
+	if !sawEnvelopeReason {
+		t.Errorf("expected an \"envelope\" reason naming cerberus; reasons=%+v", res.Diff.Reasons)
+	}
+}
+
+// TestProjectJSONShapeV2_RejectsBareV1Shape pins the strict envelope
+// gate on the JSON projector: the flattened v1 body must error, never
+// fall back to a tolerant parse.
+func TestProjectJSONShapeV2_RejectsBareV1Shape(t *testing.T) {
+	t.Parallel()
+	_, err := projectJSONShapeV2([]byte(`{"batches":[{"spans":[{"spanId":"0bd5a314ddef212b"}]}]}`))
+	if err == nil {
+		t.Fatalf("projectJSONShapeV2 accepted a bare v1 batches body; want missing-envelope error")
+	}
+	if !strings.Contains(err.Error(), "trace") {
+		t.Errorf("error %q should name the missing \"trace\" envelope key", err)
+	}
+}
+
+// TestProjectJSONShapeV2_DecodesEnvelope pins the happy-path inner
+// projection, including base64 span IDs (the proto3 JSON mapping
+// reference Tempo's jsonpb emits).
+func TestProjectJSONShapeV2_DecodesEnvelope(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"trace":{"resourceSpans":[{"scopeSpans":[{"spans":[
+        {"spanId":"C9WjFN3vISs="},
+        {"spanId":"cm0aM7aB/T4="}
+    ]}]}]},"metrics":{}}`)
+	shape, err := projectJSONShapeV2(body)
+	if err != nil {
+		t.Fatalf("projectJSONShapeV2: %v", err)
+	}
+	if shape.SpanCount != 2 {
+		t.Fatalf("SpanCount = %d, want 2", shape.SpanCount)
+	}
+	want := []string{"0bd5a314ddef212b", "726d1a33b681fd3e"}
 	for i := range want {
 		if shape.SpanIDs[i] != want[i] {
 			t.Fatalf("SpanIDs[%d] = %q, want %q", i, shape.SpanIDs[i], want[i])

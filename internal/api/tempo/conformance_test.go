@@ -451,35 +451,38 @@ func TestConformance_TempoSearchTagValuesWire(t *testing.T) {
 	})
 }
 
-// TestConformance_TempoTraceByIDWire — 200 with batches when found, 404
-// with error envelope when not. The error envelope is Tempo's distinct
-// shape: {traceID, spanID, error, message}.
+// TestConformance_TempoTraceByIDWire — 200 when found, 404 with error
+// envelope when not. The error envelope is Tempo's distinct shape:
+// {traceID, spanID, error, message}.
 //
 // Drives BOTH the v1 (`/api/traces/<id>`) and the v2
-// (`/api/v2/traces/<id>`) URLs and asserts byte-identical bodies for the
-// same input. Grafana 11.x's Tempo datasource defaults to
-// `tempoApiVersion >= v2` for newly-provisioned datasources, so the v2
-// URL is what the modern UI actually hits when drilling into a trace.
-// Upstream Tempo's QueryTrace + QueryTraceV2 (see
-// compatibility/tempo/upstream/pkg/httpclient/client.go) differ only in
-// path — the response body is the same trace shape — so cerberus must
-// alias the route to keep both datasource versions working. Before the
-// alias landed, the v2 URL 404'd unconditionally and every modern
-// Grafana trace drill-down broke (cerberus task #208).
+// (`/api/v2/traces/<id>`) URLs and pins their DISTINCT body shapes.
+// Reference Tempo's two endpoints differ in envelope, not just path:
+//
+//   - v1 returns the bare trace — flattened `{"batches":[…]}` JSON /
+//     proto-encoded *tempopb.Trace (upstream
+//     modules/frontend/combiner/trace_by_id.go).
+//   - v2 wraps it in a tempopb.TraceByIDResponse —
+//     `{"trace":{…},"metrics":{}}` JSON via jsonpb / proto-encoded
+//     envelope (upstream modules/frontend/combiner/trace_by_id_v2.go).
+//
+// Grafana 12.x unmarshals the v2 body as TraceByIDResponse before its
+// OTLP conversion; an earlier cerberus revision aliased v2 to the v1
+// handler and pinned byte parity, which broke every Grafana 12 trace
+// drill-down with `proto: KeyValue: wiretype end group for non-group`.
+// The inner trace must still be deterministic and identical across the
+// two endpoints — that cross-check lives in
+// TestTraceByIDV2_ProtoEnvelope (handler_trace_v2_test.go).
 //
 // Also pins the Content-Type negotiation under Accept: the bare /
 // `application/json` paths keep the documented JSON envelope; the
 // `application/protobuf` / `application/x-protobuf` / `application/grpc`
-// paths flip to Content-Type: application/protobuf (Grafana 11.x's
-// Tempo plugin requires this; a JSON body surfaces as
+// paths flip to Content-Type: application/protobuf (Grafana's Tempo
+// plugin requires this; a JSON body surfaces as
 // `proto: illegal wireType …` on the Grafana side).
 func TestConformance_TempoTraceByIDWire(t *testing.T) {
 	t.Parallel()
 
-	// Both URLs must resolve to the same handler and produce
-	// byte-identical bodies. The v2 entries are the new gate added by
-	// PR fix/tempo-v2-traces-alias; the v1 entries remain the
-	// historical contract.
 	pathVariants := []struct {
 		name string
 		path string
@@ -490,10 +493,7 @@ func TestConformance_TempoTraceByIDWire(t *testing.T) {
 
 	t.Run("found", func(t *testing.T) {
 		t.Parallel()
-		// Capture each variant's body to a shared map (test runs are
-		// sequential within this sub-test so the map write is safe).
-		// A fixed Timestamp keeps the response deterministic for the
-		// byte-level cross-check below.
+		// A fixed Timestamp keeps both bodies deterministic.
 		fixedTime := time.Unix(1700000000, 0).UTC()
 		sample := chclient.Sample{
 			MetricName: "x",
@@ -501,37 +501,61 @@ func TestConformance_TempoTraceByIDWire(t *testing.T) {
 			Timestamp:  fixedTime,
 			Value:      1,
 		}
-		bodies := map[string][]byte{}
-		for _, pv := range pathVariants {
+		fetch := func(t *testing.T, path string) []byte {
+			t.Helper()
 			q := &stubQuerier{samples: []chclient.Sample{sample}}
 			srv := newServer(q, "v1.0.0-test")
 			t.Cleanup(srv.Close)
-			resp, err := http.Get(srv.URL + pv.path)
+			resp, err := http.Get(srv.URL + path)
 			if err != nil {
-				t.Fatalf("%s: GET: %v", pv.name, err)
+				t.Fatalf("GET %s: %v", path, err)
 			}
 			raw, readErr := io.ReadAll(resp.Body)
 			resp.Body.Close()
 			if readErr != nil {
-				t.Fatalf("%s: read body: %v", pv.name, readErr)
+				t.Fatalf("read body: %v", readErr)
 			}
 			if resp.StatusCode != http.StatusOK {
-				t.Fatalf("%s: status=%d body=%q", pv.name, resp.StatusCode, raw)
+				t.Fatalf("status=%d body=%q", resp.StatusCode, raw)
 			}
-			var r tempo.TraceByIDResponse
-			if err := json.Unmarshal(raw, &r); err != nil {
-				t.Fatalf("%s: decode: %v", pv.name, err)
-			}
-			if r.Batches == nil {
-				t.Errorf("%s: Batches nil; expected non-nil", pv.name)
-			}
-			bodies[pv.name] = raw
+			return raw
 		}
-		// v1 vs v2 must be byte-identical — same handler, same input.
-		// If v2 ever diverges (different status, different shape, an
-		// added/removed field), this fails loudly.
-		if v1, v2 := bodies["v1"], bodies["v2"]; string(v1) != string(v2) {
-			t.Errorf("v1 vs v2 body diverged:\n v1=%s\n v2=%s", v1, v2)
+
+		// v1: flattened batches shape, no envelope.
+		v1Raw := fetch(t, pathVariants[0].path)
+		var v1 tempo.TraceByIDResponse
+		if err := json.Unmarshal(v1Raw, &v1); err != nil {
+			t.Fatalf("v1 decode: %v", err)
+		}
+		if v1.Batches == nil {
+			t.Errorf("v1: Batches nil; expected non-nil")
+		}
+
+		// v2: jsonpb-marshaled TraceByIDResponse envelope. Pin the
+		// top-level keys structurally so an aliased-to-v1 regression
+		// (top-level "batches", no "trace") fails loudly.
+		v2Raw := fetch(t, pathVariants[1].path)
+		var v2 map[string]json.RawMessage
+		if err := json.Unmarshal(v2Raw, &v2); err != nil {
+			t.Fatalf("v2 decode: %v", err)
+		}
+		if _, ok := v2["trace"]; !ok {
+			t.Fatalf("v2: missing top-level \"trace\" envelope key; body=%s", v2Raw)
+		}
+		if _, ok := v2["metrics"]; !ok {
+			t.Errorf("v2: missing top-level \"metrics\" key (reference Tempo always emits a non-nil metrics block); body=%s", v2Raw)
+		}
+		if _, ok := v2["batches"]; ok {
+			t.Errorf("v2: stray top-level \"batches\" key — v2 must be the TraceByIDResponse envelope, not the bare v1 shape; body=%s", v2Raw)
+		}
+		var inner struct {
+			ResourceSpans []json.RawMessage `json:"resourceSpans"`
+		}
+		if err := json.Unmarshal(v2["trace"], &inner); err != nil {
+			t.Fatalf("v2: decode trace field: %v", err)
+		}
+		if len(inner.ResourceSpans) == 0 {
+			t.Errorf("v2: trace.resourceSpans empty; body=%s", v2Raw)
 		}
 	})
 	t.Run("not_found", func(t *testing.T) {
