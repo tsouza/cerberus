@@ -19,11 +19,7 @@
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/detected_level",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/service_name",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}",
       "lean": false
     },
     {
@@ -83,15 +79,15 @@
       "lean": true
     },
     {
-      "url": "/dashboards/f/{folder}/cerberus",
+      "url": "/dashboards/f/{folder}",
       "lean": false
     },
     {
-      "url": "/dashboards/f/{folder}/cerberus/alerting",
+      "url": "/dashboards/f/{folder}/alerting",
       "lean": false
     },
     {
-      "url": "/dashboards/f/{folder}/cerberus/library-panels",
+      "url": "/dashboards/f/{folder}/library-panels",
       "lean": false
     },
     {
