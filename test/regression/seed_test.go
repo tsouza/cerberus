@@ -190,15 +190,15 @@ func TestTracesSeedHasFrontendAndApiServices(t *testing.T) {
 // TestLogsSeedOmitsTimestampTime pins the schema-skew fix from the
 // 2026-06-10 dashboard-job failures: upstream's clickhouseexporter
 // removed the TimestampTime column from the logs DDL in v0.150.0, so
-// which schema `otel_logs` carries depends on who creates it first —
-// the seeder's ddl.Apply (legacy fork templates, column present and
+// (before the fork bump to the v0.152 templates) which schema
+// `otel_logs` carried depended on who created it first — the seeder's
+// ddl.Apply (then on legacy fork templates, column present and
 // materialized from Timestamp) or the k3d otel-collector's own
 // exporter (0.152.x, column gone). Cerberus's startup warmup (#712)
 // made the collector reliably win that race, and the seeder's INSERT
 // naming the column hard-failed with "No such column TimestampTime".
-// The compatible INSERT shape — upstream's own posture across its
-// schema migration — never names the column; the legacy schema
-// materializes it from Timestamp.
+// ddl.Apply now renders the same column-free v0.152 schema, so the
+// column never exists; the INSERT must keep omitting it.
 func TestLogsSeedOmitsTimestampTime(t *testing.T) {
 	t.Parallel()
 
@@ -213,6 +213,6 @@ func TestLogsSeedOmitsTimestampTime(t *testing.T) {
 	}
 	logsBlock := content[logsStart : logsStart+logsEnd]
 	if strings.Contains(logsBlock, "TimestampTime") {
-		t.Errorf("%s: logs INSERT names TimestampTime — the column does not exist in the post-v0.150.0 exporter schema, so the INSERT hard-fails whenever the collector created otel_logs first; omit it (the legacy schema materializes it from Timestamp)", seedSource)
+		t.Errorf("%s: logs INSERT names TimestampTime — the column does not exist in the post-v0.150.0 exporter schema (which ddl.Apply now renders too), so the INSERT hard-fails; omit it", seedSource)
 	}
 }

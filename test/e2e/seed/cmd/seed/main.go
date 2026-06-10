@@ -323,16 +323,16 @@ FROM numbers(600)`
 	//
 	// The column list deliberately omits `TimestampTime`: upstream's
 	// clickhouseexporter removed the column from the logs DDL in
-	// v0.150.0, so which schema `otel_logs` carries depends on who
-	// created it first — this seeder's ddl.Apply (legacy fork
-	// templates, column present + materialized from Timestamp) or the
-	// k3d otel-collector's own exporter (0.152.x, column gone).
-	// Cerberus's startup warmup (#712) made the collector reliably win
-	// that race, and an INSERT naming the column hard-fails against
-	// the new schema ("No such column TimestampTime"). Upstream's own
-	// insert path stays compatible with both schemas by never naming
-	// it — the legacy schema materializes it from Timestamp — so this
-	// INSERT does the same.
+	// v0.150.0. Before the fork bump to the v0.152 templates, which
+	// schema `otel_logs` carried depended on who created it first —
+	// this seeder's ddl.Apply (then on legacy fork templates with the
+	// column present + materialized from Timestamp) or the k3d
+	// otel-collector's own exporter (0.152.x, column gone). Cerberus's
+	// startup warmup (#712) made the collector reliably win that race,
+	// and an INSERT naming the column hard-failed against the new
+	// schema ("No such column TimestampTime"). ddl.Apply now renders
+	// the same column-free v0.152 schema as the collector, so the
+	// column never exists; the INSERT keeps omitting it.
 	insertLogsSQL = `INSERT INTO otel_logs
   (Timestamp, TraceId, SpanId, SeverityText, SeverityNumber, ServiceName, Body, ResourceAttributes, LogAttributes)
 SELECT

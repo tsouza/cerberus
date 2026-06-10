@@ -230,7 +230,7 @@ func TestRenderSignal_TTLZeroSkipsTTLClause(t *testing.T) {
 			// The traces MV doesn't carry a TTL clause but contains
 			// other "TTL" substrings; check we don't see "TTL toDate..."
 			// which is what the rendered TTL expression looks like.
-			if strings.Contains(stmt, "TTL toDateTime") || strings.Contains(stmt, "TTL TimestampTime") {
+			if strings.Contains(stmt, "TTL toDateTime") {
 				t.Errorf("%s[%d]: zero TTL rendered an expression:\n%s", sig, i, stmt)
 			}
 		}
@@ -239,14 +239,18 @@ func TestRenderSignal_TTLZeroSkipsTTLClause(t *testing.T) {
 
 // TestRenderSignal_TTLAppliesCorrectTimeFieldPerSignal: the time field
 // the TTL expression uses must match what the upstream exporter expects
-// — Logs uses TimestampTime, Traces use toDateTime(Timestamp), Metrics
-// use toDateTime(TimeUnix). A swap would silently render valid SQL
-// against the wrong column.
+// — Logs and Traces use toDateTime(Timestamp) (logs moved off the
+// removed TimestampTime column in upstream v0.150.0), Metrics use
+// toDateTime(TimeUnix). A swap would silently render valid SQL against
+// the wrong column.
 func TestRenderSignal_TTLAppliesCorrectTimeFieldPerSignal(t *testing.T) {
 	cfg := Config{TTL: 24 * time.Hour}.withDefaults()
 	logs, _ := renderSignal(cfg, Logs)
-	if !strings.Contains(logs[0], "TTL TimestampTime") {
-		t.Errorf("logs TTL: missing TimestampTime field:\n%s", logs[0])
+	if !strings.Contains(logs[0], "TTL toDateTime(Timestamp) + toIntervalDay(1)") {
+		t.Errorf("logs TTL: missing toDateTime(Timestamp) field:\n%s", logs[0])
+	}
+	if strings.Contains(logs[0], "TimestampTime") {
+		t.Errorf("logs TTL: TimestampTime column no longer exists upstream:\n%s", logs[0])
 	}
 	metrics, _ := renderSignal(cfg, Metrics)
 	for i, stmt := range metrics {
@@ -264,15 +268,16 @@ func TestRenderSignal_TTLAppliesCorrectTimeFieldPerSignal(t *testing.T) {
 }
 
 // TestRenderSignal_ClusterClauseRenderedAndQuoted documents the
-// quoting contract: cluster names land in `ON CLUSTER "<name>"` with
-// the name wrapped in CH-safe double quotes so special characters
-// (rare in practice, but possible) don't escape the template.
+// quoting contract: cluster names land in an ON CLUSTER clause with the
+// name backtick-quoted (embedded backticks doubled), matching upstream's
+// Config.clusterString, so special characters (rare in practice, but
+// possible) don't escape the template.
 func TestRenderSignal_ClusterClauseRenderedAndQuoted(t *testing.T) {
 	cfg := Config{Cluster: "ch-prod"}.withDefaults()
 	for _, sig := range All {
 		stmts, _ := renderSignal(cfg, sig)
 		for i, stmt := range stmts {
-			if !strings.Contains(stmt, `ON CLUSTER "ch-prod"`) {
+			if !strings.Contains(stmt, "ON CLUSTER `ch-prod`") {
 				t.Errorf("%s[%d]: cluster clause missing or unquoted:\n%s", sig, i, stmt)
 			}
 		}

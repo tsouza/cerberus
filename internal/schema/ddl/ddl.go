@@ -6,9 +6,12 @@
 // package just executes upstream's `CREATE TABLE IF NOT EXISTS` against the
 // configured CH connection.
 //
-// The upstream templates are `fmt.Sprintf`-style with `%s` placeholders for
-// (database, table, on-cluster clause, engine, TTL expression). Cerberus
-// renders them via a small [Config] struct that defaults to MergeTree, no
+// The upstream traces + metrics templates are `fmt.Sprintf`-style with `%s`
+// placeholders for (database, table, on-cluster clause, engine, TTL
+// expression). The logs template moved to `text/template` upstream in
+// v0.152.0 ([sqltemplates.LogsCreateTableTmpl] executed against
+// [sqltemplates.CreateTableData]) — see [renderLogsTable]. Cerberus renders
+// everything via a small [Config] struct that defaults to MergeTree, no
 // cluster, no TTL — matching the cerberus single-node ClickHouse deployment.
 // The materialized-view template for traces has a wider placeholder shape
 // (7 fields) which is handled specially in [renderTracesCreateTsView].
@@ -17,6 +20,7 @@ package ddl
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
@@ -31,7 +35,8 @@ type Config struct {
 	// Defaults to "default" when empty.
 	Database string
 
-	// Cluster, when non-empty, renders an `ON CLUSTER "<name>"` clause
+	// Cluster, when non-empty, renders an ON CLUSTER clause (with the
+	// name backtick-quoted, matching upstream's Config.clusterString)
 	// into the templates. Cerberus's single-node deployment leaves it
 	// empty.
 	Cluster string
@@ -113,21 +118,24 @@ func (c Config) withDefaults() Config {
 	return c
 }
 
-// clusterClause renders the optional `ON CLUSTER "<name>"` fragment that
-// upstream templates expect as a single `%s` slot. Matches upstream's
-// `Config.clusterString` semantics.
+// clusterClause renders the optional ON CLUSTER fragment that upstream
+// templates expect as a single slot (`%s` in the Sprintf templates,
+// `{{.ClusterString}}` in the logs template). Matches upstream's
+// `Config.clusterString` semantics: the cluster name is backtick-quoted
+// with embedded backticks doubled.
 func (c Config) clusterClause() string {
 	if c.Cluster == "" {
 		return ""
 	}
-	return fmt.Sprintf(`ON CLUSTER %q`, c.Cluster)
+	escaped := strings.ReplaceAll(c.Cluster, "`", "``")
+	return fmt.Sprintf("ON CLUSTER `%s`", escaped)
 }
 
 // ttlExpr renders the optional `TTL <field> + toIntervalXxx(N)` fragment
-// that upstream templates expect as a `%s` slot per signal. The time field
-// differs per signal — Logs uses `TimestampTime`, Traces use
-// `toDateTime(Timestamp)`, metrics use `toDateTime(TimeUnix)`. Matches
-// upstream's `internal.GenerateTTLExpr` semantics.
+// that upstream templates expect as one slot per signal. The time field
+// differs per signal — Logs and Traces use `toDateTime(Timestamp)`,
+// metrics use `toDateTime(TimeUnix)`. Matches upstream's
+// `internal.GenerateTTLExpr` semantics.
 func (c Config) ttlExpr(timeField string) string {
 	ttl := c.TTL
 	if ttl <= 0 {
@@ -208,7 +216,11 @@ func renderSignal(cfg Config, s Signal) ([]string, error) {
 			renderMetricsTable(sqltemplates.MetricsSummaryCreateTable, cfg, cfg.Tables.MetricsSummary, ttl),
 		}, nil
 	case Logs:
-		return []string{renderLogsTable(cfg)}, nil
+		logs, err := renderLogsTable(cfg)
+		if err != nil {
+			return nil, err
+		}
+		return []string{logs}, nil
 	case Traces:
 		return []string{
 			renderTracesTable(cfg),
@@ -228,22 +240,36 @@ func renderMetricsTable(tmpl string, cfg Config, table, ttl string) string {
 	return fmt.Sprintf(tmpl, cfg.Database, table, cfg.clusterClause(), cfg.Engine, ttl)
 }
 
-// renderLogsTable formats the logs DDL. Upstream shape:
-// `(database, table, cluster, engine, ttl)` — see exporter_logs.go's
-// renderCreateLogsTableSQL. The TTL field is `TimestampTime`.
-func renderLogsTable(cfg Config) string {
-	return fmt.Sprintf(sqltemplates.LogsCreateTable,
-		cfg.Database, cfg.Tables.Logs, cfg.clusterClause(),
-		cfg.Engine,
-		cfg.ttlExpr("TimestampTime"),
-	)
+// renderLogsTable renders the logs DDL. The logs template became a
+// text/template upstream in v0.152.0 — execute
+// [sqltemplates.LogsCreateTableTmpl] against [sqltemplates.CreateTableData],
+// mirroring exporter_logs.go's renderCreateLogsTableSQL. The TTL field is
+// `toDateTime(Timestamp)` (the dedicated TimestampTime column was removed
+// from the schema). HasFullTextSearch stays false: the text-index branch
+// needs ClickHouse >= 26.2; false renders the bloom-filter index branch
+// that works everywhere cerberus deploys.
+func renderLogsTable(cfg Config) (string, error) {
+	data := sqltemplates.CreateTableData{
+		Database:          cfg.Database,
+		TableName:         cfg.Tables.Logs,
+		ClusterString:     cfg.clusterClause(),
+		Engine:            cfg.Engine,
+		TTL:               cfg.ttlExpr("toDateTime(Timestamp)"),
+		HasFullTextSearch: false,
+	}
+	var buf strings.Builder
+	if err := sqltemplates.LogsCreateTableTmpl.Execute(&buf, data); err != nil {
+		return "", fmt.Errorf("ddl: execute logs create-table template: %w", err)
+	}
+	return buf.String(), nil
 }
 
 // renderTracesTable formats the traces spans-table DDL. Upstream shape:
 // `(database, table, cluster, engine, ttl)`. TTL field is
 // `toDateTime(Timestamp)`.
 func renderTracesTable(cfg Config) string {
-	return fmt.Sprintf(sqltemplates.TracesCreateTable,
+	return fmt.Sprintf(
+		sqltemplates.TracesCreateTable,
 		cfg.Database, cfg.Tables.Traces, cfg.clusterClause(),
 		cfg.Engine,
 		cfg.ttlExpr("toDateTime(Timestamp)"),
@@ -256,7 +282,8 @@ func renderTracesTable(cfg Config) string {
 // caller passes the base traces table name. TTL field is
 // `toDateTime(Start)`.
 func renderTracesCreateTsTable(cfg Config) string {
-	return fmt.Sprintf(sqltemplates.TracesCreateTsTable,
+	return fmt.Sprintf(
+		sqltemplates.TracesCreateTsTable,
 		cfg.Database, cfg.Tables.Traces, cfg.clusterClause(),
 		cfg.Engine,
 		cfg.ttlExpr("toDateTime(Start)"),
@@ -270,7 +297,8 @@ func renderTracesCreateTsTable(cfg Config) string {
 // spans table (FROM clause). See exporter_traces.go's
 // renderTraceIDTsMaterializedViewSQL.
 func renderTracesCreateTsView(cfg Config) string {
-	return fmt.Sprintf(sqltemplates.TracesCreateTsView,
+	return fmt.Sprintf(
+		sqltemplates.TracesCreateTsView,
 		cfg.Database, cfg.Tables.Traces, cfg.clusterClause(),
 		cfg.Database, cfg.Tables.Traces,
 		cfg.Database, cfg.Tables.Traces,

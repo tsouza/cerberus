@@ -77,7 +77,7 @@ All four upstream parser / schema deps in `go.mod` are routed through `github.co
 replace github.com/prometheus/prometheus                                                                => github.com/tsouza/prometheus                                                                v0.0.1-cerberus-parser
 replace github.com/grafana/loki/v3                                                                      => github.com/tsouza/loki/v3                                                                    v3.0.0-cerberus-parser
 replace github.com/grafana/tempo                                                                        => github.com/tsouza/tempo                                                                      v0.0.1-cerberus-accessors
-replace github.com/open-telemetry/opentelemetry-collector-contrib/exporter/clickhouseexporter            => github.com/tsouza/opentelemetry-collector-contrib/exporter/clickhouseexporter                v0.0.1-cerberus-ddl
+replace github.com/open-telemetry/opentelemetry-collector-contrib/exporter/clickhouseexporter            => github.com/tsouza/opentelemetry-collector-contrib/exporter/clickhouseexporter                v0.0.2-cerberus-ddl
 # (plus three sibling submodule replaces under the same fork)
 ```
 
