@@ -649,7 +649,42 @@ func lowerBinaryOperation(b *traceql.BinaryOperation, s schema.Traces) (chplan.E
 	// without precision loss for the magnitudes typical of attribute
 	// values (HTTP status codes, percentages, sizes).
 	lhs, rhs = coerceNumericFieldAccess(op, lhs, rhs)
+	// Boolean coercion: the OTel-CH exporter stringifies bool-typed
+	// attribute values into the Map(String, String) carriers as
+	// "true" / "false", so `{ .cache.hit = true }` must compare against
+	// the STRING form — `SpanAttributes['cache.hit'] = 'true'`. Without
+	// the rewrite ClickHouse rejects the String-vs-Bool comparison with
+	// NO_COMMON_TYPE (the showcase's static:bool panel 502'd).
+	lhs, rhs = coerceBoolFieldAccess(op, lhs, rhs)
 	return &chplan.Binary{Op: op, Left: lhs, Right: rhs}, nil
+}
+
+// coerceBoolFieldAccess rewrites a LitBool compared against a
+// FieldAccess into the OTel-CH string encoding ("true" / "false").
+// Only equality ops apply — TraceQL's type checker
+// (binaryTypeValid) rejects ordered comparisons on booleans before
+// lowering ever runs.
+func coerceBoolFieldAccess(op chplan.BinaryOp, lhs, rhs chplan.Expr) (chplan.Expr, chplan.Expr) {
+	if op != chplan.OpEq && op != chplan.OpNe {
+		return lhs, rhs
+	}
+	boolToString := func(e chplan.Expr) chplan.Expr {
+		b, ok := e.(*chplan.LitBool)
+		if !ok {
+			return e
+		}
+		if b.V {
+			return &chplan.LitString{V: "true"}
+		}
+		return &chplan.LitString{V: "false"}
+	}
+	if _, ok := lhs.(*chplan.FieldAccess); ok {
+		return lhs, boolToString(rhs)
+	}
+	if _, ok := rhs.(*chplan.FieldAccess); ok {
+		return boolToString(lhs), rhs
+	}
+	return lhs, rhs
 }
 
 // coerceNumericFieldAccess wraps FieldAccess children in toFloat64(...)
