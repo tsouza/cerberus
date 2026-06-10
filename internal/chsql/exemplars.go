@@ -158,8 +158,14 @@ func (e *emitter) emitMetricsExemplars(
 	}
 	innerSb.SelectAs(func(b *Builder) { b.Ident(traceIDCol) }, "exemplar_trace_id")
 	innerSb.SelectAs(func(b *Builder) { b.Ident(spanIDCol) }, "exemplar_span_id")
+	// Sample-side fanout: each row lands only on the anchors whose
+	// `(anchor_ts - range, anchor_ts]` window contains its timestamp
+	// (≤ range/step + 1 anchors per row — see sampleAnchorFanoutFrag),
+	// so the outer SELECT needs no per-(row, anchor) window re-check.
+	// Anchors with no spans produce no row — same observed-only contract
+	// as the previous full-grid + WHERE shape.
 	innerSb.SelectAs(
-		anchorFanoutFrag(end, stepNS, numAnchors),
+		sampleAnchorFanoutFrag(end, func(b *Builder) { b.Ident(tsCol) }, stepNS, rangeNS, numAnchors),
 		"anchor_ts",
 	)
 	// Same Start/End pushdown as emitRangeWindowMetrics — see
@@ -241,11 +247,6 @@ func (e *emitter) emitMetricsExemplars(
 		valueFrag = Call("toFloat64", Call("argMax", InlineLit(int64(1)), Col("ts")))
 	}
 	outerSb.Select(As(valueFrag, "Value"))
-
-	outerSb.Where(
-		windowTsLowerBoundFrag(rangeNS),
-		verbatim("ts <= anchor_ts"),
-	)
 
 	groupFrags := make([]Frag, 0, len(groupAliases)+1)
 	for _, alias := range groupAliases {

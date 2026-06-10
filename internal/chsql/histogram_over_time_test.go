@@ -113,8 +113,8 @@ func TestEmitMetricsHistogramOverTimeByLabel(t *testing.T) {
 
 // TestEmitRangeWindowHistogramMatrix exercises the matrix-shape path
 // (RangeWindow wrapping MetricsHistogramOverTime). Confirms the
-// arrayJoin anchor fanout, the bucket column threading into the outer
-// GROUP BY, and the per-anchor count(1) reducer.
+// sample-side arrayJoin anchor fanout, the bucket column threading
+// into the outer GROUP BY, and the per-anchor count(1) reducer.
 func TestEmitRangeWindowHistogramMatrix(t *testing.T) {
 	t.Parallel()
 
@@ -140,9 +140,11 @@ func TestEmitRangeWindowHistogramMatrix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
-	// 5-minute span / 1-minute step = 6 anchors.
-	if !strings.Contains(sql, "range(0, 6)") {
-		t.Errorf("expected range(0, 6), SQL=%s", sql)
+	// 5-minute span / 1-minute step = 6 anchors, clamped sample-side:
+	// each row fans only across the (≤ range/step + 1) anchors whose
+	// window contains it.
+	if !strings.Contains(sql, "least(6, intDiv(dateDiff('nanosecond', `Timestamp`, ") {
+		t.Errorf("expected sample-side anchor bound least(6, ...), SQL=%s", sql)
 	}
 	if !strings.Contains(sql, "log2(`Duration`) / 1000000000 AS `__bucket`") {
 		t.Errorf("expected bucket key in inner SELECT, SQL=%s", sql)
@@ -158,13 +160,15 @@ func TestEmitRangeWindowHistogramMatrix(t *testing.T) {
 }
 
 // TestEmitRangeWindowHistogramLeftOpenWindow pins the per-anchor
-// bucket boundary for the histogram matrix path: the WHERE clause uses
-// `ts > anchor_ts - toIntervalNanosecond(...)` (not `ts >=`) so the
-// per-anchor window is left-open / right-closed, matching Tempo's
-// `IntervalMapperQueryRange.interval` semantics. Mirrors
-// TestRangeWindowMetricsLeftOpenWindow for the non-histogram metrics
-// emitter; same off-by-one bug class would otherwise surface as
-// histogram-bucket counts drifting from Tempo by 1 at step boundaries.
+// bucket boundary for the histogram matrix path: the sample-side
+// fanout's lower index bound carries the `- <rangeNS>` shift + `+ 1`
+// strict-edge bump while the upper bound floors the unshifted
+// distance, so the per-anchor window is left-open / right-closed,
+// matching Tempo's `IntervalMapperQueryRange.interval` semantics.
+// Mirrors TestRangeWindowMetricsLeftOpenWindow for the non-histogram
+// metrics emitter; same off-by-one bug class would otherwise surface
+// as histogram-bucket counts drifting from Tempo by 1 at step
+// boundaries.
 func TestEmitRangeWindowHistogramLeftOpenWindow(t *testing.T) {
 	t.Parallel()
 
@@ -188,14 +192,18 @@ func TestEmitRangeWindowHistogramLeftOpenWindow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
-	if !strings.Contains(sql, "ts > anchor_ts - toIntervalNanosecond(") {
-		t.Errorf("expected strict lower bound `ts > anchor_ts - toIntervalNanosecond(...)`; SQL=%s", sql)
+	// Strict left-open edge: `- 60000000000` (the 1m range) shift +
+	// `+ 1` bump on the lower index bound.
+	if !strings.Contains(sql, " - 60000000000, toInt64(60000000000)) - (modulo(") {
+		t.Errorf("expected range-shifted strict lower index bound; SQL=%s", sql)
 	}
-	if strings.Contains(sql, "ts >= anchor_ts - toIntervalNanosecond(") {
-		t.Errorf("lower bound must be strict (`>`), not inclusive (`>=`); SQL=%s", sql)
+	// Right-closed edge: the upper bound floors the unshifted distance.
+	if !strings.Contains(sql, "least(6, intDiv(dateDiff('nanosecond', `Timestamp`, ") {
+		t.Errorf("expected unshifted inclusive upper index bound; SQL=%s", sql)
 	}
-	if !strings.Contains(sql, "ts <= anchor_ts") {
-		t.Errorf("expected right-closed upper bound `ts <= anchor_ts`; SQL=%s", sql)
+	// The legacy per-(row, anchor) WHERE re-check must be gone.
+	if strings.Contains(sql, "ts > anchor_ts") || strings.Contains(sql, "ts <= anchor_ts") {
+		t.Errorf("window predicate must live in the fanout bounds, not a WHERE re-check; SQL=%s", sql)
 	}
 }
 

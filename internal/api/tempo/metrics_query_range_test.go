@@ -285,17 +285,21 @@ func TestMetricsQueryRange_ZeroFillSQLShapeCountOverTime(t *testing.T) {
 			// statement; q.lastSQL would point at the exemplar
 			// query (last one executed).
 			matrixSQL := findSQLContaining(t, q.queriedSQLs, "arrayJoin")
-			// Reducer shape: countIf(<window pred>) — the per-anchor
-			// window predicate lives inside the aggregate, not the
-			// outer WHERE clause.
-			assertSQLContains(t, matrixSQL,
-				"countIf(ts > anchor_ts - toIntervalNanosecond(")
-			// The outer WHERE that the legacy path produced is now
-			// suppressed for count/rate (the window predicate moved
-			// into countIf). Pin the absence so a regression toward
-			// the old shape surfaces here.
+			// Reducer shape: toFloat64(sum(in_window)) — sample-arm
+			// rows weigh 1 (each already inside its anchor's window
+			// by sample-side fanout construction), generator-arm
+			// rows weigh 0 so empty anchors emit zeros.
+			assertSQLContains(t, matrixSQL, "toFloat64(sum(in_window))")
+			// The UNION ALL zero-fill generator arm pins one
+			// (group, anchor, in_window=0) row per grid anchor.
+			assertSQLContains(t, matrixSQL, "UNION ALL")
+			assertSQLContains(t, matrixSQL, "0 AS `in_window`")
+			// The outer WHERE that the legacy path produced stays
+			// suppressed for count/rate (window membership lives in
+			// the fanout bounds). Pin the absence so a regression
+			// toward the old shape surfaces here.
 			if strings.Contains(matrixSQL, "WHERE ts > anchor_ts -") {
-				t.Errorf("count/rate matrix SQL must not carry an outer WHERE on the window predicate (it moved into countIf); SQL=%s", matrixSQL)
+				t.Errorf("count/rate matrix SQL must not carry an outer WHERE on the window predicate (membership lives in the sample-side fanout); SQL=%s", matrixSQL)
 			}
 		})
 	}
@@ -376,19 +380,21 @@ func TestMetricsQueryRange_ZeroFillSkippedForOverTimeAggs(t *testing.T) {
 			if len(s.Samples) > 0 && s.Samples[0].Value != 42.0 {
 				t.Errorf("expected observed sample value 42, got %v", s.Samples[0].Value)
 			}
-			// SQL contract: the window predicate stays in the outer
-			// WHERE for NaN-skip operators — pushing it into a sumIf /
-			// avgIf would surface 0 at empty buckets and diverge from
-			// Tempo's NaN-skip emit. Pin the WHERE shape so a future
-			// refactor doesn't silently extend the countIf path. The
-			// matrix-shape SQL is the arrayJoin-fanout statement (the
-			// handler also fires an exemplar lookup).
+			// SQL contract: NaN-skip operators stay observed-only —
+			// no UNION ALL zero-fill generator arm and no in_window
+			// weight column. A generator arm here would surface 0 at
+			// empty buckets and diverge from Tempo's NaN-skip emit.
+			// Pin the absence so a future refactor doesn't silently
+			// extend the zero-fill path. The matrix-shape SQL is the
+			// arrayJoin-fanout statement (the handler also fires an
+			// exemplar lookup).
 			if len(q.queriedSQLs) > 0 {
 				matrixSQL := findSQLContaining(t, q.queriedSQLs, "arrayJoin")
-				assertSQLContains(t, matrixSQL,
-					"WHERE ts > anchor_ts - toIntervalNanosecond(")
-				if strings.Contains(matrixSQL, "countIf(") {
-					t.Errorf("%s SQL must not use countIf (NaN-skip op), got %s", tc.op, matrixSQL)
+				if strings.Contains(matrixSQL, "UNION ALL") {
+					t.Errorf("%s SQL must not carry a zero-fill generator arm (NaN-skip op), got %s", tc.op, matrixSQL)
+				}
+				if strings.Contains(matrixSQL, "in_window") {
+					t.Errorf("%s SQL must not project in_window (NaN-skip op), got %s", tc.op, matrixSQL)
 				}
 			}
 		})
@@ -400,10 +406,12 @@ func TestMetricsQueryRange_ZeroFillSkippedForOverTimeAggs(t *testing.T) {
 // produce a row at every (observed-group, anchor) tuple — even anchors
 // where no spans landed — to match Tempo's reference
 // HistogramAggregator.Results emit of `ts.Values[i] = 0.0` for empty
-// buckets. The chsql emitter wraps the per-row bucket projection in
-// `if(<window pred>, <real bucket>, 0)` and the count in
-// `countIf(<window pred>)` — empty anchors fall into a phantom
-// `__bucket=0 / count=0` row that the handler's post-processor
+// buckets. The chsql emitter UNION ALLs a per-(group, grid-anchor)
+// zero-fill generator arm (in_window = 0) alongside the sample-side
+// fanout arm, wraps the per-row bucket projection in
+// `if(in_window = 1 AND <guard>, <real bucket>, 0)` and the count in
+// `countIf(in_window = 1 AND <guard>)` — empty anchors fall into a
+// phantom `__bucket=0 / count=0` row that the handler's post-processor
 // (Log2QuantileWithBucket) resolves to a 0 sample.
 //
 // This replaced the Go-side `zeroFillMatrixGrid` post-pass that lived
@@ -440,19 +448,22 @@ func TestMetricsQueryRange_ZeroFillSQLShapeQuantileOverTime(t *testing.T) {
 	// exemplar lookup. Reach the matrix SQL via the arrayJoin needle
 	// so the assertion targets the right statement.
 	matrixSQL := findSQLContaining(t, q.queriedSQLs, "arrayJoin")
-	// Bucket projection wraps the real bucket in `if(<pred>, ..., 0)`
-	// so non-matching rows fall into the phantom 0-bucket group. The
-	// count wraps in `countIf(<pred>)` so observed buckets count
-	// matched rows and the phantom buckets count zero.
-	assertSQLContains(t, matrixSQL,
-		"if(ts > anchor_ts - toIntervalNanosecond(")
+	// Bucket projection wraps the real bucket in
+	// `if(in_window = 1 AND <guard>, ..., 0)` so generator-arm rows and
+	// guard-failing samples fall into the phantom 0-bucket group. The
+	// count wraps in `countIf(in_window = 1 AND <guard>)` so observed
+	// buckets count matched rows and the phantom buckets count zero.
+	assertSQLContains(t, matrixSQL, "if(in_window = 1 AND ")
 	assertSQLContains(t, matrixSQL, ", 0)")
-	assertSQLContains(t, matrixSQL,
-		"countIf(ts > anchor_ts - toIntervalNanosecond(")
+	assertSQLContains(t, matrixSQL, "countIf(in_window = 1 AND ")
+	// The zero rows come from the UNION ALL generator arm.
+	assertSQLContains(t, matrixSQL, "UNION ALL")
+	assertSQLContains(t, matrixSQL, "0 AS `in_window`")
 	// The outer WHERE that the legacy quantile path produced is now
-	// suppressed (the window predicate + bucketize-min guard moved
-	// into the conditional projections). Pin the absence so a
-	// regression toward the old shape surfaces here.
+	// suppressed (window membership lives in the sample-side fanout
+	// bounds; the bucketize-min guard lives in the conditional
+	// projections). Pin the absence so a regression toward the old
+	// shape surfaces here.
 	if strings.Contains(matrixSQL, "WHERE ts > anchor_ts -") {
 		t.Errorf("quantile matrix SQL must not carry an outer WHERE on the window predicate; SQL=%s", matrixSQL)
 	}
@@ -1502,5 +1513,13 @@ func TestMetricsQueryRange_AlignsAnchorGridToStep(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status=%d body=%s", resp.StatusCode, readBody(t, resp))
 	}
-	assertSQLContains(t, q.lastSQL, "range(0, 5)")
+	// The aligned anchor count surfaces twice in the matrix SQL: as the
+	// zero-fill generator arm's full grid (`range(0, 5)`) and as the
+	// sample arm's fanout cap (`least(5, ...)`). The exemplar statement
+	// (q.lastSQL) carries only the sample-side cap, so pluck the matrix
+	// statement explicitly.
+	matrixSQL := findSQLContaining(t, q.queriedSQLs, "UNION ALL")
+	assertSQLContains(t, matrixSQL, "range(0, 5)")
+	assertSQLContains(t, matrixSQL, "least(5, intDiv(dateDiff('nanosecond'")
+	assertSQLContains(t, q.lastSQL, "least(5, intDiv(dateDiff('nanosecond'")
 }

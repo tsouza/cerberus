@@ -2,7 +2,6 @@ package chsql
 
 import (
 	"fmt"
-	"strconv"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 )
@@ -128,31 +127,38 @@ func histogramBucketFrag(attr chplan.Expr, isDuration bool) Frag {
 // MetricsHistogramOverTime — the TraceQL `/api/metrics/query_range`
 // matrix shape for histogram series.
 //
-// Each per-span row is fanned across N evaluation anchors via
-// arrayJoin(range(0, N)); the outer SELECT groups by
+// Each per-span row is fanned across only the anchors whose window
+// contains its timestamp (sample-side fanout, ≤ range/step + 1 anchors
+// per row — see sampleAnchorFanoutFrag; the previous shape fanned
+// every row across the full N-anchor grid and re-filtered per
+// (row, anchor) in an outer WHERE); the outer SELECT groups by
 // (<user group-by>, bucket, anchor_ts) and applies `count(1)` per
 // bucket. SQL skeleton (N = (End-Start)/Step + 1 or OuterRange/Step + 1):
 //
 //	SELECT [<group cols>,] `__bucket`, anchor_ts, count(1) AS `Value`
 //	FROM (
-//	  SELECT [<group cols>,] <TimestampColumn> AS ts,
+//	  SELECT [<group cols>,]
 //	         log2(<Attr>) [/ 1e9] AS `__bucket`,
-//	         arrayJoin(arrayMap(i -> <anchor_base> - toIntervalNanosecond(i * <step_ns>), range(0, <N>))) AS anchor_ts
+//	         arrayJoin(arrayMap(i -> <anchor_base> - toIntervalNanosecond(i * <step_ns>),
+//	                   range(<covered-anchor index bounds>))) AS anchor_ts
 //	  FROM (<Inner>)
 //	  WHERE <Attr> >= 2
 //	)
-//	WHERE ts >  anchor_ts - toIntervalNanosecond(<range_ns>)
-//	  AND ts <= anchor_ts
 //	GROUP BY [<group cols>,] `__bucket`, anchor_ts
 //
 // The bucket column is computed in the inner SELECT (alongside the
-// arrayJoined anchors) so the outer WHERE / GROUP BY can reference it
+// arrayJoined anchors) so the outer GROUP BY can reference it
 // by alias without recomputing the log2.
 //
 // The per-anchor window is left-open / right-closed
-// (`(anchor_ts - range, anchor_ts]`) — same bucket semantics as the
+// (`(anchor_ts - range, anchor_ts]`) — encoded by the sample-side
+// index bounds (strict floor+1 lower / inclusive floor upper; see
+// sampleAnchorFanoutFrag) — same bucket semantics as the
 // non-histogram metrics emitter (emitRangeWindowMetrics) and Tempo
-// upstream's `IntervalMapperQueryRange`.
+// upstream's `IntervalMapperQueryRange`. Anchors with no in-window
+// rows emit no (group, bucket, anchor) row, exactly as the previous
+// WHERE-filtered shape (histogram zero-fill, when needed, lives in
+// the handler's HistogramAggregator post-pass, not the SQL).
 func (e *emitter) emitRangeWindowHistogram(r *chplan.RangeWindow, m *chplan.MetricsHistogramOverTime) error {
 	if r.TimestampColumn == "" {
 		return fmt.Errorf("%w: RangeWindow.TimestampColumn unset (required for MetricsHistogramOverTime input)", ErrUnsupported)
@@ -213,7 +219,8 @@ func (e *emitter) emitRangeWindowHistogram(r *chplan.RangeWindow, m *chplan.Metr
 		valueAlias = "Value"
 	}
 
-	// Inner SELECT: group-by cols, ts, bucket, attr filter, anchor fanout.
+	// Inner SELECT: group-by cols, bucket, attr filter, sample-side
+	// anchor fanout.
 	groupAliases := outerGroupAliases(m.GroupBy, m.GroupByAliases)
 	innerSb := NewQuery().From(inner)
 	for i, g := range m.GroupBy {
@@ -222,10 +229,9 @@ func (e *emitter) emitRangeWindowHistogram(r *chplan.RangeWindow, m *chplan.Metr
 		innerSb.SelectAs(func(b *Builder) { _ = b.Expr(expr) }, alias)
 	}
 	tsCol := r.TimestampColumn
-	innerSb.SelectAs(func(b *Builder) { b.Ident(tsCol) }, "ts")
 	innerSb.SelectAs(histogramBucketFrag(m.Attr, m.IsDuration), bucketAlias)
 	innerSb.SelectAs(
-		anchorFanoutFrag(end, stepNS, numAnchors),
+		sampleAnchorFanoutFrag(end, func(b *Builder) { b.Ident(tsCol) }, stepNS, rangeNS, numAnchors),
 		"anchor_ts",
 	)
 	// Push the <attr> >= 2 filter into the inner SELECT so the anchor
@@ -250,19 +256,6 @@ func (e *emitter) emitRangeWindowHistogram(r *chplan.RangeWindow, m *chplan.Metr
 		Alias: valueAlias,
 	}
 	outerSb.Select(aggFuncFrag(countFunc))
-
-	// WHERE: ts ∈ (anchor_ts - range, anchor_ts] — left-open /
-	// right-closed, matching Tempo's IntervalMapperQueryRange.
-	outerSb.Where(
-		func(b *Builder) {
-			b.sb.WriteString("ts > anchor_ts - toIntervalNanosecond(")
-			b.sb.WriteString(strconv.FormatInt(rangeNS, 10))
-			b.sb.WriteByte(')')
-		},
-		func(b *Builder) {
-			b.sb.WriteString("ts <= anchor_ts")
-		},
-	)
 
 	// GROUP BY group aliases + bucket + anchor_ts.
 	groupFrags := make([]Frag, 0, len(groupAliases)+2)

@@ -47,44 +47,48 @@ func TestRangeWindowMetricsExplicitTimeGrid(t *testing.T) {
 	if !strings.Contains(sql, "toDateTime64('2026-05-13 12:05:00.000000000', 9)") {
 		t.Errorf("expected DateTime64 anchor base, SQL=%s", sql)
 	}
-	// 5-minute span / 1-minute step = 6 anchors (end-inclusive).
+	// 5-minute span / 1-minute step = 6 anchors (end-inclusive). The
+	// full range(0, 6) grid survives only in the zero-fill generator
+	// arm (one row per distinct group); the sample arm uses the bounded
+	// per-sample index range instead.
 	if !strings.Contains(sql, "range(0, 6)") {
-		t.Errorf("expected range(0, 6), SQL=%s", sql)
+		t.Errorf("expected range(0, 6) generator-arm grid, SQL=%s", sql)
 	}
-	// Rate reducer normalises by range_seconds (60s); the per-anchor
-	// window predicate now lives inside `countIf(...)` (SQL-side
-	// zero-fill — see PR retiring the handler's zeroFillMatrixGrid),
-	// so the substring is `toFloat64(countIf(ts > anchor_ts -
-	// toIntervalNanosecond(<rangeNS>) AND ts <= anchor_ts)) / 60`.
-	// The toFloat64 wrap keeps the Value column at the uniform
-	// Float64 wire type chclient.Sample.Value expects.
-	if !strings.Contains(sql, "toFloat64(countIf(ts > anchor_ts - toIntervalNanosecond(") {
-		t.Errorf("expected toFloat64(countIf(<window pred>)) reducer, SQL=%s", sql)
+	if !strings.Contains(sql, "range(greatest(0, intDiv(dateDiff('nanosecond', `Timestamp`, ") {
+		t.Errorf("expected sample-side bounded anchor range, SQL=%s", sql)
 	}
-	if !strings.Contains(sql, ")) / 60") {
-		t.Errorf("expected rate normalisation `/ 60`, SQL=%s", sql)
+	// Rate reducer normalises by range_seconds (60s); the zero-fill
+	// shape sums the sample-arm weight column so generator rows pin
+	// empty anchors at 0: `toFloat64(sum(in_window)) / 60`. The
+	// toFloat64 wrap keeps the Value column at the uniform Float64
+	// wire type chclient.Sample.Value expects.
+	if !strings.Contains(sql, "toFloat64(sum(in_window)) / 60") {
+		t.Errorf("expected toFloat64(sum(in_window)) / 60 reducer, SQL=%s", sql)
 	}
-	// countIf inlines the window predicate; no bound `?` arguments
-	// on the count side anymore (the predicate's range nanos are
-	// emitted as a literal integer, same shape as the legacy
-	// windowTsLowerBoundFrag).
+	// Both UNION arms inline their literals; no bound `?` arguments
+	// (the range/step nanos and the in_window weights are emitted as
+	// literal integers — query shape, not user data).
 	if len(args) != 0 {
-		t.Fatalf("expected 0 bound args (countIf predicate inlines literals), got %d: %v", len(args), args)
+		t.Fatalf("expected 0 bound args (fanout bounds inline literals), got %d: %v", len(args), args)
 	}
 }
 
 // TestRangeWindowMetricsLeftOpenWindow pins the per-anchor bucket
-// boundary: cerberus emits `ts > anchor_ts - toIntervalNanosecond(...)`
-// (not `ts >=`) for the matrix-path WHERE clause, so the per-anchor
-// window is left-open / right-closed — matching Tempo upstream's
+// boundary in the SAMPLE-SIDE fanout's index bounds: the lower bound
+// carries the `- <rangeNS>` shift plus the `+ 1` strict-edge bump
+// (`floor((dist - range) / step) + 1`), the upper bound floors the
+// unshifted distance (`floor(dist / step) + 1`, exclusive) — together
+// encoding the left-open / right-closed `(anchor_ts - range,
+// anchor_ts]` window of Tempo upstream's
 // `IntervalMapperQueryRange.interval` semantics
 // (`(start, start+step], (start+step, start+2*step], …`).
 //
-// Without the strict `>` a sample landing exactly on a step boundary
-// gets counted in TWO adjacent anchors, surfacing as a per-anchor
-// off-by-one against Tempo's reference counts (`metrics_count_over_time_*`
-// + `metrics_rate_*` cases in the Tempo compat suite — fixed by the
-// commit this test guards).
+// Without the strict lower edge a sample landing exactly on a step
+// boundary gets counted in TWO adjacent anchors, surfacing as a
+// per-anchor off-by-one against Tempo's reference counts
+// (`metrics_count_over_time_*` + `metrics_rate_*` cases in the Tempo
+// compat suite — fixed by the commit the WHERE-shape ancestor of this
+// test guarded; the sample-side fanout preserves the same edges).
 func TestRangeWindowMetricsLeftOpenWindow(t *testing.T) {
 	t.Parallel()
 
@@ -120,18 +124,21 @@ func TestRangeWindowMetricsLeftOpenWindow(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Emit %s: %v", c.name, err)
 			}
-			// Lower bound must be strict (`>`, not `>=`) so a sample at
-			// exactly anchor_ts - range belongs only to the previous
-			// anchor, not also to this one.
-			if !strings.Contains(sql, "ts > anchor_ts - toIntervalNanosecond(") {
-				t.Errorf("%s: expected strict lower bound `ts > anchor_ts - toIntervalNanosecond(...)`; SQL=%s", c.name, sql)
+			// Lower index bound: `- 60000000000` (Range is zero here so
+			// it defaults to Step = 60s) floored against the 1m step,
+			// then `+ 1` — the strict left-open edge.
+			if !strings.Contains(sql, "range(greatest(0, intDiv(dateDiff('nanosecond', `Timestamp`, now64(9)) - 60000000000, toInt64(60000000000))") {
+				t.Errorf("%s: expected range-shifted strict lower index bound; SQL=%s", c.name, sql)
 			}
-			if strings.Contains(sql, "ts >= anchor_ts - toIntervalNanosecond(") {
-				t.Errorf("%s: lower bound must be strict (`>`), not inclusive (`>=`); SQL=%s", c.name, sql)
+			// Upper index bound: unshifted distance floor (inclusive
+			// right edge — a sample exactly at anchor_ts maps to it).
+			if !strings.Contains(sql, "least(6, intDiv(dateDiff('nanosecond', `Timestamp`, now64(9)), toInt64(60000000000))") {
+				t.Errorf("%s: expected unshifted inclusive upper index bound; SQL=%s", c.name, sql)
 			}
-			// Upper bound stays right-closed (anchor_ts is included).
-			if !strings.Contains(sql, "ts <= anchor_ts") {
-				t.Errorf("%s: expected right-closed upper bound `ts <= anchor_ts`; SQL=%s", c.name, sql)
+			// The legacy per-(row, anchor) WHERE re-check must be gone —
+			// membership is enforced by the fanout itself.
+			if strings.Contains(sql, "ts > anchor_ts") || strings.Contains(sql, "ts <= anchor_ts") {
+				t.Errorf("%s: window predicate must live in the fanout bounds, not a WHERE re-check; SQL=%s", c.name, sql)
 			}
 		})
 	}
@@ -292,17 +299,22 @@ func TestRangeWindowMetricsQuantileBuckets(t *testing.T) {
 		t.Fatalf("Emit: %v", err)
 	}
 	wantSubstrings := []string{
-		// Conditional bucket: phantom 0-bucket for non-matching rows
-		// so empty (group, anchor) tuples survive the GROUP BY with
-		// __bucket=0/count=0 (SQL-side zero-fill — see PR retiring
-		// zeroFillMatrixGrid in the handler).
-		"if(ts > anchor_ts - toIntervalNanosecond(",
+		// Conditional bucket: phantom 0-bucket for generator-arm rows
+		// (in_window = 0) and guard-failing samples so empty (group,
+		// anchor) tuples survive the GROUP BY with __bucket=0/count=0
+		// (SQL-side zero-fill via the UNION ALL generator arm — see
+		// metricsZeroFillGridArm).
+		"if(in_window = 1 AND metric_arg >= 2, ",
 		"pow(2, ceil(log2(toFloat64(metric_arg))))",
 		", 0) AS `__bucket`",
 		// Value is countIf over the same predicate so phantom rows
 		// count 0 and real-bucket rows count matched samples.
-		"toFloat64(countIf(ts > anchor_ts - toIntervalNanosecond(",
-		"metric_arg >= 2",
+		"toFloat64(countIf(in_window = 1 AND metric_arg >= 2))",
+		// Generator arm: full-grid anchors + 0 placeholders, UNION ALL'd
+		// against the sample-side fanout arm.
+		"UNION ALL",
+		"0 AS `metric_arg`",
+		"0 AS `in_window`",
 		"GROUP BY `anchor_ts`, `__bucket`",
 	}
 	for _, s := range wantSubstrings {
@@ -352,11 +364,10 @@ func TestRangeWindowMetricsQuantileBucketsDuration(t *testing.T) {
 		t.Fatalf("Emit: %v", err)
 	}
 	wantSubstrings := []string{
-		"if(ts > anchor_ts - toIntervalNanosecond(",
+		"if(in_window = 1 AND metric_arg * 1000000000 >= 2, ",
 		"pow(2, ceil(log2(toFloat64(metric_arg) * 1000000000))) / 1000000000",
 		", 0) AS `__bucket`",
-		"toFloat64(countIf(ts > anchor_ts - toIntervalNanosecond(",
-		"metric_arg * 1000000000 >= 2",
+		"toFloat64(countIf(in_window = 1 AND metric_arg * 1000000000 >= 2))",
 	}
 	for _, s := range wantSubstrings {
 		if !strings.Contains(sql, s) {

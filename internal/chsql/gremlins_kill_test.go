@@ -446,22 +446,24 @@ func TestEmitMetricsExemplars_NumAnchorsBoundary(t *testing.T) {
 		wantAnchors string
 	}{
 		{
-			name:        "End==Start (span=0)",
-			start:       time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC),
-			end:         time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC),
-			wantAnchors: "range(0, 1)",
+			name:  "End==Start (span=0)",
+			start: time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC),
+			end:   time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC),
+			// The anchor count caps the sample-side fanout's upper
+			// index bound (see sampleAnchorFanoutFrag).
+			wantAnchors: "least(1, intDiv(dateDiff('nanosecond'",
 		},
 		{
 			name:        "End-Start = 1 step",
 			start:       time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC),
 			end:         time.Date(2026, 5, 13, 12, 1, 0, 0, time.UTC),
-			wantAnchors: "range(0, 2)",
+			wantAnchors: "least(2, intDiv(dateDiff('nanosecond'",
 		},
 		{
 			name:        "End-Start = 5 steps",
 			start:       time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC),
 			end:         time.Date(2026, 5, 13, 12, 5, 0, 0, time.UTC),
-			wantAnchors: "range(0, 6)",
+			wantAnchors: "least(6, intDiv(dateDiff('nanosecond'",
 		},
 	}
 	for _, c := range cases {
@@ -1094,8 +1096,11 @@ func TestEmitMetricsHistogramOverTime_RangeFallback(t *testing.T) {
 		step        time.Duration
 		wantRangeNS string
 	}{
-		{"Range zero → fallback to Step", 0, 2 * time.Minute, "toIntervalNanosecond(120000000000)"},
-		{"Range non-zero → used directly", 3 * time.Minute, 1 * time.Minute, "toIntervalNanosecond(180000000000)"},
+		// The effective range surfaces as the lower index bound's
+		// `- <rangeNS>, <stepNS>)` shift in the sample-side fanout
+		// (see sampleAnchorFanoutFrag).
+		{"Range zero → fallback to Step", 0, 2 * time.Minute, " - 120000000000, toInt64(120000000000))"},
+		{"Range non-zero → used directly", 3 * time.Minute, 1 * time.Minute, " - 180000000000, toInt64(60000000000))"},
 	}
 	for _, c := range cases {
 		c := c
@@ -1137,8 +1142,10 @@ func TestEmitMetricsHistogramOverTime_NumAnchorsBoundary(t *testing.T) {
 		s, e time.Time
 		want string
 	}{
-		{"End==Start → 1 anchor", time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC), time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC), "range(0, 1)"},
-		{"5 steps", time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC), time.Date(2026, 5, 13, 12, 5, 0, 0, time.UTC), "range(0, 6)"},
+		// The anchor count caps the sample-side fanout's upper index
+		// bound (see sampleAnchorFanoutFrag).
+		{"End==Start → 1 anchor", time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC), time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC), "least(1, intDiv(dateDiff('nanosecond'"},
+		{"5 steps", time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC), time.Date(2026, 5, 13, 12, 5, 0, 0, time.UTC), "least(6, intDiv(dateDiff('nanosecond'"},
 	}
 	for _, c := range cases {
 		c := c
@@ -1597,20 +1604,33 @@ func TestEmitWindowedExtrapolated_GroupByBoundary(t *testing.T) {
 	}
 }
 
-// TestEmitWindowedArrayMatrix_GroupByBoundary kills the
-// `len(groupFrags) > 0` boundary at range_window.go:1546, 1834, 1911,
-// 1947 (matrix-shape variants). Each guard either emits a GROUP BY
-// in the inner SELECT layer or skips it; the mutant `>=` would emit
-// `GROUP BY ` with no columns and crash CH.
+// TestEmitWindowedArrayMatrix_GroupByBoundary pins the matrix-shape
+// regroup GROUP BY key list: the per-(series, anchor) regroup layer
+// always GROUPs BY anchor_ts (the sample-side fanout requires it to
+// rebuild the window array), with the series-identity columns
+// prepended when GroupBy is set. A mutant that dropped the group
+// columns from the key list would collapse all series into one window
+// per anchor; one that dropped anchor_ts would collapse the grid.
 func TestEmitWindowedArrayMatrix_GroupByBoundary(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name        string
-		groupBy     []chplan.Expr
-		wantGroupBy bool
+		name    string
+		groupBy []chplan.Expr
+		want    string
+		dont    string
 	}{
-		{"no GroupBy in matrix mode → no GROUP BY clause", nil, false},
-		{"with GroupBy in matrix mode → GROUP BY present", []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}}, true},
+		{
+			name:    "no GroupBy in matrix mode → regroup keys on anchor_ts only",
+			groupBy: nil,
+			want:    "GROUP BY `anchor_ts`",
+			dont:    "GROUP BY `Attributes`, `anchor_ts`",
+		},
+		{
+			name:    "with GroupBy in matrix mode → series key prepended",
+			groupBy: []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+			want:    "GROUP BY `Attributes`, `anchor_ts`",
+			dont:    "",
+		},
 	}
 	for _, c := range cases {
 		c := c
@@ -1630,9 +1650,11 @@ func TestEmitWindowedArrayMatrix_GroupByBoundary(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Emit: %v", err)
 			}
-			has := strings.Contains(sql, "GROUP BY")
-			if has != c.wantGroupBy {
-				t.Errorf("GROUP BY present=%v, want %v.\nSQL: %s", has, c.wantGroupBy, sql)
+			if !strings.Contains(sql, c.want) {
+				t.Errorf("expected %q in SQL.\nSQL: %s", c.want, sql)
+			}
+			if c.dont != "" && strings.Contains(sql, c.dont) {
+				t.Errorf("did not expect %q in SQL.\nSQL: %s", c.dont, sql)
 			}
 		})
 	}
@@ -1865,13 +1887,14 @@ func TestEmitMetricsExemplars_ArithmeticBoundary118(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
-	// Exactly 6 anchors; the literal must be `range(0, 6)`.
-	if !strings.Contains(sql, "range(0, 6)") {
-		t.Errorf("expected range(0, 6), SQL=%s", sql)
+	// Exactly 6 anchors; the count caps the sample-side fanout's upper
+	// index bound (see sampleAnchorFanoutFrag).
+	if !strings.Contains(sql, "least(6, intDiv(dateDiff('nanosecond'") {
+		t.Errorf("expected least(6, ...) anchor cap, SQL=%s", sql)
 	}
-	// Defensive: neither `range(0, 5)` nor an absurdly large literal.
-	if strings.Contains(sql, "range(0, 5)") {
-		t.Errorf("got range(0, 5) — `+ 1` may have flipped to `- 1`. SQL=%s", sql)
+	// Defensive: neither `least(5, ...)` nor an absurdly large literal.
+	if strings.Contains(sql, "least(5, intDiv(dateDiff('nanosecond'") {
+		t.Errorf("got least(5, ...) — `+ 1` may have flipped to `- 1`. SQL=%s", sql)
 	}
 }
 
@@ -2329,14 +2352,16 @@ func TestEmitWindowedArrayPairsMatrix_AnchorArithmetic(t *testing.T) {
 		t.Fatalf("emitWindowedArrayPairsMatrix: %v", err)
 	}
 	sql := e.b.String()
-	if !strings.Contains(sql, "range(0, 5)") {
-		t.Errorf("expected anchor fanout `range(0, 5)` for OuterRange=4m, Step=1m.\nSQL=%s", sql)
+	// The anchor count caps the sample-side fanout's upper index bound
+	// (see sampleAnchorFanoutFrag).
+	if !strings.Contains(sql, "least(5, intDiv(dateDiff('nanosecond'") {
+		t.Errorf("expected anchor cap `least(5, ...)` for OuterRange=4m, Step=1m.\nSQL=%s", sql)
 	}
 	// Defensive: the off-by-one / different-operator mutants land on
 	// neighbouring literals. `%` and `-` produce small wrong counts;
 	// `*` and `+` blow up to enormous nanosecond magnitudes that no
-	// reasonable `range(0, N)` literal matches.
-	for _, bad := range []string{"range(0, 4)", "range(0, 3)", "range(0, 1)", "range(0, 0)"} {
+	// reasonable `least(N, ...)` literal matches.
+	for _, bad := range []string{"least(4, intDiv(", "least(3, intDiv(", "least(1, intDiv(", "least(0, intDiv("} {
 		if strings.Contains(sql, bad) {
 			t.Errorf("unexpected anchor literal %q (arithmetic mutant).\nSQL=%s", bad, sql)
 		}

@@ -1,7 +1,7 @@
 -- args --
 (none)
 -- sql --
-SELECT `service`, `anchor_ts`, toFloat64(countIf(ts > anchor_ts - toIntervalNanosecond(60000000000) AND ts <= anchor_ts)) AS `Value` FROM (SELECT `ServiceName` AS `service`, `Timestamp` AS `ts`, arrayJoin(arrayMap(i -> now64(9) - toIntervalNanosecond(i * 60000000000), range(0, 11))) AS `anchor_ts` FROM (SELECT * FROM `otel_traces`)) GROUP BY `service`, `anchor_ts`
+SELECT `service`, `anchor_ts`, toFloat64(sum(in_window)) AS `Value` FROM ((SELECT `ServiceName` AS `service`, arrayJoin(arrayMap(i -> now64(9) - toIntervalNanosecond(i * 60000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `Timestamp`, now64(9)) - 60000000000, toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `Timestamp`, now64(9)) - 60000000000, toInt64(60000000000)) < 0) + 1), least(11, intDiv(dateDiff('nanosecond', `Timestamp`, now64(9)), toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `Timestamp`, now64(9)), toInt64(60000000000)) < 0) + 1)))) AS `anchor_ts`, 1 AS `in_window` FROM (SELECT * FROM `otel_traces`)) UNION ALL (SELECT `service`, arrayJoin(arrayMap(i -> now64(9) - toIntervalNanosecond(i * 60000000000), range(0, 11))) AS `anchor_ts`, 0 AS `in_window` FROM (SELECT `ServiceName` AS `service` FROM (SELECT * FROM `otel_traces`) GROUP BY `service`))) GROUP BY `service`, `anchor_ts`
 -- chplan --
 RangeWindow func= range=0s step=1m0s outerRange=10m0s ts=Timestamp
   MetricsAggregate op=count_over_time groupBy=[ServiceName AS service] valueAlias=Value
