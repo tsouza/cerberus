@@ -124,6 +124,8 @@ type TargetJSON = {
   expr?: string;
   query?: string;
   datasource?: { type?: string; uid?: string } | string;
+  /** Grafana per-query min interval (e.g. "1ms", "30s"). */
+  interval?: string;
 };
 
 type FlatPanel = {
@@ -142,6 +144,16 @@ type FlatTarget = {
   expr: string;
   dsType: string;
   dsUid: string;
+  /**
+   * Probe step in seconds, derived from the target's Grafana
+   * `interval` field when present (a panel that pins a min interval
+   * is asking every consumer — Grafana AND this sweep — to honour
+   * it). Falls back to QUERY_STEP_SECONDS. The showcase-promql
+   * resolution-cap panel relies on this: its 1ms interval makes the
+   * probe grid exceed cerberus's 11k-points cap so the declared
+   * error contract actually fires.
+   */
+  stepSeconds: number;
 };
 
 type DiscoveredDashboard = {
@@ -222,6 +234,7 @@ function normalisePanel(p: PanelJSON): FlatPanel {
       expr: (t.expr ?? t.query ?? '').trim(),
       dsType: tDs.type || panelDs.type,
       dsUid: tDs.uid || panelDs.uid,
+      stepSeconds: parseIntervalSeconds(t.interval) ?? QUERY_STEP_SECONDS,
     };
   });
   return {
@@ -233,6 +246,32 @@ function normalisePanel(p: PanelJSON): FlatPanel {
     targets,
     cerberus: p.cerberus,
   };
+}
+
+/**
+ * Parse a Grafana interval string ("1ms", "500ms", "15s", "2m", "1h")
+ * into seconds. Returns null for absent/unrecognised input so the
+ * caller falls back to the sweep default. Sub-second values are
+ * preserved as decimals — the Prometheus step parameter accepts float
+ * seconds.
+ */
+function parseIntervalSeconds(raw: string | undefined): number | null {
+  if (!raw) return null;
+  const m = /^(\d+(?:\.\d+)?)(ms|s|m|h)$/.exec(raw.trim());
+  if (!m) return null;
+  const n = Number(m[1]);
+  switch (m[2]) {
+    case 'ms':
+      return n / 1000;
+    case 's':
+      return n;
+    case 'm':
+      return n * 60;
+    case 'h':
+      return n * 3600;
+    default:
+      return null;
+  }
 }
 
 function normaliseDs(
@@ -262,7 +301,7 @@ function buildProbeURL(
     return (
       `${baseURL}/api/datasources/proxy/uid/${t.dsUid}` +
       `/api/v1/query_range?query=${q}` +
-      `&start=${start}&end=${end}&step=${QUERY_STEP_SECONDS}`
+      `&start=${start}&end=${end}&step=${t.stepSeconds}`
     );
   }
   if (dsType === 'loki') {

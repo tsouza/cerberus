@@ -60,9 +60,12 @@ import {
   captureConsoleErrors,
   captureFailedResponses,
   captureRoleAlertBanners,
+  describeSweepDepth,
   generateSelfTraffic,
   iterateDashboards,
   iteratePanels,
+  readPanelExpectation,
+  sweepDepth,
   tolerateRepaintFlicker,
 } from './helpers/index.js';
 
@@ -157,9 +160,22 @@ test('panel-kiosk: every panel renders cleanly in single-panel kiosk view + back
   // assertion below.
   await generateSelfTraffic(request, SEED_TRAFFIC_SECONDS);
 
-  const dashboards = await iterateDashboards(request, baseURL);
-  expect(dashboards.length, 'at least one provisioned dashboard').toBeGreaterThan(
+  const allDashboards = await iterateDashboards(request, baseURL);
+  expect(allDashboards.length, 'at least one provisioned dashboard').toBeGreaterThan(
     0,
+  );
+
+  // Depth-gated STATE count (rules unchanged): at 'lean' (the per-PR
+  // gate) the kiosk render sweeps ops-family dashboards only —
+  // showcase-prefixed boards are covered per-PR by the API-layer
+  // probes in iterate-all-dashboards and get their per-panel kiosk
+  // render on the nightly 'full' lane. Mirrors the browser-render
+  // gating in iterate-all-dashboards.spec.ts.
+  const depth = sweepDepth();
+  // eslint-disable-next-line no-console
+  console.log(describeSweepDepth(depth));
+  const dashboards = allDashboards.filter(
+    (d) => depth === 'full' || !d.uid.startsWith('showcase-'),
   );
 
   const failures: KioskFailure[] = [];
@@ -225,6 +241,29 @@ async function sweepPanelKiosk(
 ): Promise<KioskFailure[]> {
   const failures: KioskFailure[] = [];
 
+  // The panel's declared cerberus.expect contract (showcase-family
+  // privilege; the default is the undeclared nonempty contract).
+  // The API-layer sweep (iterate-all-dashboards) owns the
+  // bidirectional data/error enforcement; here the declaration only
+  // adjusts which RENDER outcomes are legitimate:
+  //
+  //   - error:<s> panels showcase a rejected query. In kiosk view the
+  //     legitimate render is EITHER Grafana's error banner (the query
+  //     4xxes verbatim) OR a normal body (Grafana clamps request
+  //     params — e.g. the resolution-cap panel's 1ms min interval is
+  //     clamped by maxDataPoints, so the browser-side query
+  //     succeeds). The alert-banner / console-error / failed-response
+  //     rules therefore don't apply; navigation integrity (back-nav,
+  //     something rendered) still does.
+  //   - empty panels render Grafana's "No data" placeholder, which
+  //     carries no canvas; the visible-body rule accepts the
+  //     placeholder instead.
+  const expectation = readPanelExpectation(panel);
+  const isErrorContract =
+    expectation.declared && expectation.expect.startsWith('error:');
+  const isEmptyContract =
+    expectation.declared && expectation.expect === 'empty';
+
   const { messages: consoleErrors, stop: stopConsole } =
     await captureConsoleErrors(page);
   // Companion network capture: the browser logs a non-2xx resource
@@ -255,7 +294,19 @@ async function sweepPanelKiosk(
     const bodyCount = await page
       .locator(PANEL_BODY_SELECTORS.join(', '))
       .count();
-    if (bodyCount === 0) {
+    const alertBanners = await captureRoleAlertBanners(page);
+    const errorBanners = alertBanners.filter((text) =>
+      ALERT_ERROR_PATTERNS.some((re) => re.test(text)),
+    );
+    const noDataCount = await page
+      .locator('[data-testid="data-testid Panel data error message"]')
+      .or(page.getByText('No data', { exact: true }))
+      .count();
+    const rendered =
+      bodyCount > 0 ||
+      (isEmptyContract && noDataCount > 0) ||
+      (isErrorContract && (noDataCount > 0 || errorBanners.length > 0));
+    if (!rendered) {
       failures.push({
         dashboardTitle: dashboard.title,
         panelTitle: panel.title,
@@ -267,18 +318,19 @@ async function sweepPanelKiosk(
 
     // 2. role=alert error-banner sweep. Read every banner currently
     //    rendered; flag any whose text contains an error-class token.
-    const alertBanners = await captureRoleAlertBanners(page);
-    const errorBanners = alertBanners.filter((text) =>
-      ALERT_ERROR_PATTERNS.some((re) => re.test(text)),
-    );
-    for (const banner of errorBanners) {
-      failures.push({
-        dashboardTitle: dashboard.title,
-        panelTitle: panel.title,
-        panelId: panel.id,
-        rule: 'kiosk-alert-banner',
-        detail: `role=alert banner with error text: ${truncate(banner, 400)}`,
-      });
+    //    Declared error-contract panels are exempt — the banner is
+    //    the showcased outcome (the API-layer sweep enforces the
+    //    declared error substring bidirectionally).
+    if (!isErrorContract) {
+      for (const banner of errorBanners) {
+        failures.push({
+          dashboardTitle: dashboard.title,
+          panelTitle: panel.title,
+          panelId: panel.id,
+          rule: 'kiosk-alert-banner',
+          detail: `role=alert banner with error text: ${truncate(banner, 400)}`,
+        });
+      }
     }
 
     // 3. ESC back to the grid view + back-nav cleanliness.
@@ -343,9 +395,14 @@ async function sweepPanelKiosk(
   //    of this file). Every other console error remains a failure.
   //    Done after the listener is torn down so a late-fire doesn't
   //    race the read.
-  const cerberusConsoleErrors = consoleErrors.filter(
-    (m) => !KIOSK_UPSTREAM_GRAFANA_CONSOLE_NOISE.some((re) => re.test(m)),
-  );
+  //    Declared error-contract panels are exempt: their 4xx ds/query
+  //    response fires the browser's "Failed to load resource" console
+  //    error by design — that error IS the showcased behaviour.
+  const cerberusConsoleErrors = isErrorContract
+    ? []
+    : consoleErrors.filter(
+        (m) => !KIOSK_UPSTREAM_GRAFANA_CONSOLE_NOISE.some((re) => re.test(m)),
+      );
   if (cerberusConsoleErrors.length > 0) {
     const responseDetail =
       failedResponses.length > 0

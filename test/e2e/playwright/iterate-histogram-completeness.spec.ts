@@ -92,6 +92,15 @@ const QUERY_STEP_SECONDS = 15;
  * Prometheus `/api/v1/query_range` response shape (the subset we
  * read). Sample columns live under `data.result[].values`.
  */
+/**
+ * Selector suffix that routes a metric onto cerberus's native
+ * (exponential) histogram path. Mirrors the default
+ * `schema.Metrics.ExpHistogramSuffix` ("_exp_hist") — see
+ * internal/schema/otel.go. A histogram_quantile whose inner selector
+ * carries this suffix has no classic `_bucket` companions by design.
+ */
+const NATIVE_HISTOGRAM_SELECTOR_REGEX = /[A-Za-z0-9_:]_exp_hist\b/;
+
 type PromQueryRangeResponse = {
   status?: string;
   data?: {
@@ -334,6 +343,24 @@ test('histogram-completeness: every histogram_quantile panel has its _bucket / _
       // for the N6 shape (`histogram_quantile(0.95, foo_total)` —
       // no `_bucket` suffix in the inner expression).
       if (t.histogramName === null) {
+        if (NATIVE_HISTOGRAM_SELECTOR_REGEX.test(t.expr)) {
+          // Native (exponential) histogram quantile. The `_exp_hist`
+          // suffix routes the selector onto cerberus's exp-histogram
+          // table (schema.ExpHistogramSuffix) — classic `_bucket` /
+          // `_count` / `_sum` companions don't exist for it BY
+          // DESIGN, so the N6 fabricated-value rule does not apply.
+          // The contract is the inverse: a native quantile over the
+          // seeded exponential histogram MUST resolve to real
+          // series. An empty response here means the native lowering
+          // (or the exp-histogram seed) broke.
+          const nativeSeries = prom.data?.result?.length ?? 0;
+          if (nativeSeries === 0) {
+            failures.push(
+              `[${t.dashboardTitle} :: ${t.panelTitle} :: ${t.refId}] native histogram_quantile over an _exp_hist selector returned no series — the exp-histogram lowering or seed broke\n  expr: ${t.expr}`,
+            );
+          }
+          return;
+        }
         // N6 branch: the inner expression doesn't even *reference* a
         // `_bucket` series. The response MUST be empty —
         // assertNoFabricatedValue fires if it isn't.
