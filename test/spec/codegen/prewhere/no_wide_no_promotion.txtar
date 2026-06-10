@@ -1,8 +1,8 @@
 -- sql --
-SELECT `Timestamp`, `SeverityText` FROM `otel_logs` WHERE (`ServiceName` = ?) AND (`Timestamp` > ?)
+SELECT `Timestamp`, `SeverityText` FROM `otel_logs` WHERE (`Timestamp` > ?) AND (`ServiceName` = ?)
 -- args --
-[0] string = "api"
-[1] int64 = 0
+[0] int64 = 0
+[1] string = "api"
 -- chplan --
 Filter predicate=((Timestamp > 0) AND (ServiceName = "api"))
   Scan(otel_logs, columns=[Timestamp, SeverityText])
