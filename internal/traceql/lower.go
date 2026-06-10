@@ -598,7 +598,7 @@ func lowerAttributeExpr(a traceql.Attribute, s schema.Traces) (chplan.Expr, erro
 	case traceql.IntrinsicNestedSetParent, traceql.IntrinsicNestedSetLeft, traceql.IntrinsicNestedSetRight:
 		return nil, fmt.Errorf("traceql: intrinsic %s is only supported in root-ness comparisons (e.g. nestedSetParent < 0)", a.Intrinsic)
 	}
-	return lowerAttribute(a, s), nil
+	return lowerAttribute(a, s)
 }
 
 func lowerBinaryOperation(b *traceql.BinaryOperation, s schema.Traces) (chplan.Expr, error) {
@@ -612,6 +612,14 @@ func lowerBinaryOperation(b *traceql.BinaryOperation, s schema.Traces) (chplan.E
 	// SpanAttributes map lookup. The root-span idiom
 	// (`nestedSetParent < 0`) lowers exactly; anything else errors.
 	if expr, handled, err := lowerNestedSetBinary(b, op, s); handled {
+		return expr, err
+	}
+	// Nested intrinsics (event:name / link:traceID / link:spanID) live on
+	// the OTel-CH `Events` / `Links` Nested columns as direct subfields
+	// (Events.Name, Links.TraceId, Links.SpanId) rather than inside the
+	// per-row Attributes map; intercept them before generic lowering
+	// would mis-resolve the spelling to a SpanAttributes lookup.
+	if expr, handled, err := lowerNestedIntrinsicBinary(b, op, s); handled {
 		return expr, err
 	}
 	// TraceQL link / event spanset filters live on the OTel-CH `Links` /
@@ -897,6 +905,70 @@ func nonRootCmpConstant(op chplan.BinaryOp, v int64) (value, constant bool) {
 	return false, false
 }
 
+// lowerNestedIntrinsicBinary intercepts comparisons against the nested
+// intrinsics (`event:name` / `link:traceID` / `link:spanID`), which map
+// to direct subfields of the OTel-CH Nested columns — Events.Name,
+// Links.TraceId, Links.SpanId — rather than to a flat span column or
+// the per-row Attributes map. The lowering is a chplan.NestedArrayExists
+// with an empty Key: the emitter compares each Nested-array element
+// directly (`arrayExists(x -> x <op> <literal>, Events.Name)`).
+//
+// Returns handled=false when neither side references a nested intrinsic
+// (the caller continues with the next interception / generic lowering).
+func lowerNestedIntrinsicBinary(b *traceql.BinaryOperation, op chplan.BinaryOp, s schema.Traces) (chplan.Expr, bool, error) {
+	build := func(a traceql.Attribute, valueSide traceql.FieldExpression, valueOp chplan.BinaryOp) (chplan.Expr, bool, error) {
+		col, sub, ok := nestedIntrinsicTarget(a, s)
+		if !ok {
+			return nil, false, nil
+		}
+		val, err := lowerFieldExpr(valueSide, s)
+		if err != nil {
+			return nil, true, err
+		}
+		return &chplan.NestedArrayExists{
+			Column:   col,
+			SubField: sub,
+			Op:       valueOp,
+			Value:    val,
+		}, true, nil
+	}
+	if a, ok := fieldExprAttribute(b.LHS); ok {
+		if expr, handled, err := build(a, b.RHS, op); handled {
+			return expr, true, err
+		}
+	}
+	if a, ok := fieldExprAttribute(b.RHS); ok {
+		if expr, handled, err := build(a, b.LHS, flipComparisonOp(op)); handled {
+			return expr, true, err
+		}
+	}
+	return nil, false, nil
+}
+
+// nestedIntrinsicTarget maps a nested intrinsic to (Nested column,
+// subfield). Returns ok=false for every other attribute, or when the
+// configured schema has no column for the scope.
+func nestedIntrinsicTarget(a traceql.Attribute, s schema.Traces) (col, sub string, ok bool) {
+	switch a.Intrinsic {
+	case traceql.IntrinsicEventName:
+		if s.EventsColumn == "" {
+			return "", "", false
+		}
+		return s.EventsColumn, "Name", true
+	case traceql.IntrinsicLinkTraceID:
+		if s.LinksColumn == "" {
+			return "", "", false
+		}
+		return s.LinksColumn, "TraceId", true
+	case traceql.IntrinsicLinkSpanID:
+		if s.LinksColumn == "" {
+			return "", "", false
+		}
+		return s.LinksColumn, "SpanId", true
+	}
+	return "", "", false
+}
+
 // lowerNestedAttrBinary recognises the
 //
 //	<link|event>.<name> <op> <literal>
@@ -1018,11 +1090,29 @@ func flipComparisonOp(op chplan.BinaryOp) chplan.BinaryOp {
 //   - intrinsic traceID    → TraceId
 //   - intrinsic spanID     → SpanId
 //   - intrinsic parent     → ParentSpanId
-func lowerAttribute(a traceql.Attribute, s schema.Traces) chplan.Expr {
+//   - intrinsic instrumentation:name    → ScopeName
+//   - intrinsic instrumentation:version → ScopeVersion
+//
+// Intrinsics with no OTel-CH backing column are REJECTED rather than
+// silently lowered to a SpanAttributes map lookup: the OTel-CH exporter
+// never writes keys like 'rootName' or 'traceDuration' into the span
+// attributes map, so the fallthrough produced syntactically-valid SQL
+// that matched zero rows — wrong-and-silent. Surfacing the gap as a
+// 422 beats returning a confidently-empty result (same discipline as
+// the LogQL ip() rejection).
+func lowerAttribute(a traceql.Attribute, s schema.Traces) (chplan.Expr, error) {
 	if a.Intrinsic != traceql.IntrinsicNone {
 		if col := intrinsicColumn(a.Intrinsic, s); col != "" {
-			return &chplan.ColumnRef{Name: col}
+			return &chplan.ColumnRef{Name: col}, nil
 		}
+		// Nested intrinsics (event:name / link:traceID / link:spanID)
+		// are comparison-only: lowerNestedIntrinsicBinary intercepts
+		// them inside comparisons; a bare reference (select / by / agg
+		// operand) has no flat column to project.
+		if _, _, ok := nestedIntrinsicTarget(a, s); ok {
+			return nil, fmt.Errorf("traceql: intrinsic %s is only supported in comparisons (equality / inequality / regex)", a.Intrinsic)
+		}
+		return nil, unsupportedIntrinsicErr(a.Intrinsic)
 	}
 	carrier := s.AttributesColumn
 	switch a.Scope {
@@ -1030,11 +1120,47 @@ func lowerAttribute(a traceql.Attribute, s schema.Traces) chplan.Expr {
 		carrier = s.ResourceAttributesColumn
 	case traceql.AttributeScopeSpan:
 		carrier = s.AttributesColumn
+	case traceql.AttributeScopeInstrumentation:
+		// The upstream OTel-CH traces schema materialises ScopeName /
+		// ScopeVersion but no scope-attributes map; without a configured
+		// column the lookup would silently read SpanAttributes instead.
+		if s.ScopeAttributesColumn == "" {
+			return nil, fmt.Errorf(
+				"traceql: instrumentation-scoped attribute %q is unsupported — the OTel ClickHouse traces schema has no scope-attributes column (instrumentation:name / instrumentation:version map to ScopeName / ScopeVersion)",
+				a.Name,
+			)
+		}
+		carrier = s.ScopeAttributesColumn
 	}
 	return &chplan.FieldAccess{
 		Source: &chplan.ColumnRef{Name: carrier},
 		Path:   a.Name,
+	}, nil
+}
+
+// unsupportedIntrinsicErr builds the per-intrinsic rejection message for
+// intrinsics the OTel-CH span-row schema cannot answer. Each message
+// names the structural reason so the 422 documents the boundary instead
+// of a generic "unsupported".
+func unsupportedIntrinsicErr(i traceql.Intrinsic) error {
+	switch i {
+	case traceql.IntrinsicTraceRootService, traceql.IntrinsicTraceRootSpan,
+		traceql.IntrinsicTraceDuration, traceql.ScopedIntrinsicTraceRootName,
+		traceql.ScopedIntrinsicTraceRootService, traceql.ScopedIntrinsicTraceDuration,
+		traceql.IntrinsicTraceStartTime:
+		return fmt.Errorf(
+			"traceql: intrinsic %s is trace-scoped — the OTel ClickHouse schema stores one row per span and does not materialise whole-trace values", i,
+		)
+	case traceql.IntrinsicChildCount:
+		return fmt.Errorf(
+			"traceql: intrinsic %s requires per-span child counts the OTel ClickHouse schema does not materialise", i,
+		)
+	case traceql.IntrinsicEventTimeSinceStart:
+		return fmt.Errorf(
+			"traceql: intrinsic %s requires per-event timestamp arithmetic against the Events Nested column and is unsupported", i,
+		)
 	}
+	return fmt.Errorf("traceql: intrinsic %s has no OTel ClickHouse backing column and is unsupported", i)
 }
 
 func intrinsicColumn(i traceql.Intrinsic, s schema.Traces) string {
@@ -1055,6 +1181,10 @@ func intrinsicColumn(i traceql.Intrinsic, s schema.Traces) string {
 		return s.SpanIDColumn
 	case traceql.IntrinsicParent:
 		return s.ParentSpanIDColumn
+	case traceql.IntrinsicInstrumentationName:
+		return s.ScopeNameColumn
+	case traceql.IntrinsicInstrumentationVersion:
+		return s.ScopeVersionColumn
 	}
 	return ""
 }

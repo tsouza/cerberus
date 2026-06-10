@@ -37,8 +37,12 @@ func lowerSelect(prev chplan.Node, sel traceql.SelectOperation, s schema.Traces)
 		{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}},
 	}
 	for _, a := range attrs {
+		expr, err := lowerAttribute(a, s)
+		if err != nil {
+			return nil, err
+		}
 		projections = append(projections, chplan.Projection{
-			Expr:  lowerAttribute(a, s),
+			Expr:  expr,
 			Alias: a.Name,
 		})
 	}

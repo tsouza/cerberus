@@ -193,6 +193,14 @@ func metricsAggregateCH(m *chplan.MetricsAggregate) (
 // production in pkg/traceql/engine_metrics.go.
 const metricsMultiQuantilePhiLabel = "__phi__"
 
+// RangeWindowAnchorAlias is the SELECT-list alias the matrix-shape
+// RangeWindow emitters give the per-step anchor timestamp column
+// ("anchor_ts" in every emitted matrix subquery above). Exported so the
+// Tempo API layer can stamp chplan.MetricsSecondStage.PartitionBy with
+// the exact column the inner SQL exposes — `LIMIT K BY anchor_ts` is
+// what turns a global topk into Tempo's per-anchor topk semantics.
+const RangeWindowAnchorAlias = "anchor_ts"
+
 // metricsMultiQuantileFanoutFrag returns a Frag rendering the per-(group,
 // anchor) fanout from a `quantiles(p1, p2, ...)(...) AS qs_array` column
 // into N (phi, value) tuples via arrayJoin + arrayMap over a parallel

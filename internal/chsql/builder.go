@@ -402,16 +402,48 @@ func (b *Builder) exprSubscript(s *chplan.Subscript) error {
 //
 //	arrayExists(x -> x[?] <op> ?, `<Column>`.`<SubField>`)
 //
-// against the public Builder helpers. Mirrors the legacy
-// emitter.emitNestedArrayExists so both paths produce byte-identical SQL.
+// against the public Builder helpers. Two refinements over the naive
+// form:
+//
+//   - Key == "" means the Nested subfield itself is the comparison
+//     subject (e.g. `event:name` → Events.Name, an Array(String)):
+//     the lambda compares the bare element — `x <op> ?` — instead of
+//     a map lookup.
+//   - OpMatch / OpNotMatch render as `match(<elem>, ?)` / `NOT
+//     match(<elem>, ?)`: ClickHouse has no `=~` operator, so the raw
+//     infix spelling the generic branch writes is a server-side
+//     syntax error (the bug TraceQL `{ event.foo =~ "..." }` hit
+//     before the showcase pinned it).
 func (b *Builder) exprNestedArrayExists(n *chplan.NestedArrayExists) error {
-	b.sb.WriteString("arrayExists(x -> x[")
-	b.Arg(n.Key)
-	b.sb.WriteString("] ")
-	b.sb.WriteString(string(n.Op))
-	b.sb.WriteByte(' ')
-	if err := b.Expr(n.Value); err != nil {
-		return err
+	b.sb.WriteString("arrayExists(x -> ")
+	elem := func() {
+		b.sb.WriteByte('x')
+		if n.Key != "" {
+			b.sb.WriteByte('[')
+			b.Arg(n.Key)
+			b.sb.WriteByte(']')
+		}
+	}
+	switch n.Op {
+	case chplan.OpMatch, chplan.OpNotMatch:
+		if n.Op == chplan.OpNotMatch {
+			b.sb.WriteString("NOT ")
+		}
+		b.sb.WriteString("match(")
+		elem()
+		b.sb.WriteString(", ")
+		if err := b.Expr(n.Value); err != nil {
+			return err
+		}
+		b.sb.WriteByte(')')
+	default:
+		elem()
+		b.sb.WriteByte(' ')
+		b.sb.WriteString(string(n.Op))
+		b.sb.WriteByte(' ')
+		if err := b.Expr(n.Value); err != nil {
+			return err
+		}
 	}
 	b.sb.WriteString(", ")
 	b.QualIdent(n.Column, n.SubField)

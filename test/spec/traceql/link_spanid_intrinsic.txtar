@@ -1,0 +1,19 @@
+-- query.traceql --
+{ link:spanID = "0000000000000007" }
+-- sql --
+SELECT * FROM `otel_traces` WHERE arrayExists(x -> x = ?, `Links`.`SpanId`)
+-- args --
+[0] string = "0000000000000007"
+-- seed --
+CREATE TABLE otel_traces (
+    _idx UInt64,
+    `Links.SpanId` Array(String) MATERIALIZED if(_idx = 0, ['0000000000000007'], ['0000000000000008'])
+) ENGINE = MergeTree ORDER BY _idx;
+INSERT INTO otel_traces (_idx) VALUES (0), (1);
+-- expected_rows --
+[
+  [0]
+]
+-- chplan --
+Filter predicate=nestedArrayExists(Links.SpanId = "0000000000000007")
+  Scan(otel_traces)

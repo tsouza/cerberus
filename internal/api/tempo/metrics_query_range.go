@@ -266,13 +266,26 @@ func (h *Handler) handleMetricsQueryRange(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	metrics, ok := unwrapMetricsAggregate(plan)
+	// `| topk(N)` / `| bottomk(N)` / threshold filters lower to a chain
+	// of chplan.MetricsSecondStage wraps around the metrics aggregate.
+	// Peel the chain off first: the RangeWindow must wrap the AGGREGATE
+	// (the fanout grid applies to the per-step reducer), then the
+	// second-stage wraps re-apply around the windowed result with the
+	// matrix anchor column as the LIMIT-BY partition key, matching
+	// Tempo's per-timestamp topk semantics.
+	stages, inner := peelMetricsSecondStages(plan)
+	metrics, ok := unwrapMetricsAggregate(inner)
 	if !ok {
 		// `| histogram_over_time(<attr>)` lowers to its own plan node
 		// (chplan.MetricsHistogramOverTime) because the per-bucket value
 		// is a distribution, not a scalar — route it through the
 		// histogram response shape (one series per (group, __bucket)).
-		if hist, hok := unwrapMetricsHistogram(plan); hok {
+		if hist, hok := unwrapMetricsHistogram(inner); hok {
+			if len(stages) > 0 {
+				writeError(w, http.StatusUnprocessableEntity, "", "",
+					fmt.Errorf("traceql: second-stage %s over histogram_over_time is unsupported — the per-bucket distribution rows have no scalar Value to rank or threshold", stages[0].Op))
+				return
+			}
 			h.serveMetricsQueryRangeHistogram(ctx, w, q, plan, hist, start, end, step)
 			return
 		}
@@ -280,19 +293,31 @@ func (h *Handler) handleMetricsQueryRange(w http.ResponseWriter, r *http.Request
 			fmt.Errorf("query %q is not a TraceQL metrics-pipeline expression — /api/metrics/query_range requires `| rate()`, `| count_over_time()`, `| *_over_time(...)`, `| quantile_over_time(...)` or `| histogram_over_time(...)`", q))
 		return
 	}
+	if len(stages) > 0 && metrics.Op == chplan.MetricsOpQuantileOverTime {
+		// The quantile matrix rows are (group, anchor, bucket, count)
+		// tuples that only become per-series scalars after the Go-side
+		// Log2QuantileWithBucket fold — an SQL-side LIMIT BY / WHERE on
+		// Value would rank bucket counts, not quantiles.
+		writeError(w, http.StatusUnprocessableEntity, "", "",
+			fmt.Errorf("traceql: second-stage %s over quantile_over_time is unsupported — quantiles are computed from bucket rows after SQL execution", stages[0].Op))
+		return
+	}
 
 	// Range = Step → each bucket spans exactly one step width, matching
 	// Tempo's reference metrics semantics where `count_over_time` over
 	// a step-sized bucket is the per-step count.
 	rw := &chplan.RangeWindow{
-		Input:           plan,
+		Input:           inner,
 		Range:           step,
 		Step:            step,
 		Start:           start,
 		End:             end,
 		TimestampColumn: h.Schema.TimestampColumn,
 	}
-	wrapped := wrapMetricsForSample(rw, metrics)
+	wrapped := wrapMetricsForSample(
+		applyMetricsSecondStages(rw, stages, []string{chsql.RangeWindowAnchorAlias}),
+		metrics,
+	)
 
 	// metricsLang.ProjectSamples is a passthrough (we already wrapped
 	// with the Sample projection above) so engine.QueryPlan runs
@@ -409,6 +434,41 @@ func parseMetricsStep(raw string) (time.Duration, error) {
 // (or directly under a single Filter wrapper, kept for forward-compat
 // with a future scalar-filter stage). Returns ok=false for any other
 // shape — the trigger for the handler's "not a metrics query" 400.
+// peelMetricsSecondStages splits a lowered metrics plan into its
+// MetricsSecondStage chain (outermost first — the order the lowering
+// wrapped them, i.e. reverse source order) and the inner aggregate
+// plan. Returns (nil, plan) when the plan carries no second stage.
+func peelMetricsSecondStages(plan chplan.Node) ([]*chplan.MetricsSecondStage, chplan.Node) {
+	var stages []*chplan.MetricsSecondStage
+	for {
+		ss, ok := plan.(*chplan.MetricsSecondStage)
+		if !ok {
+			return stages, plan
+		}
+		stages = append(stages, ss)
+		plan = ss.Input
+	}
+}
+
+// applyMetricsSecondStages re-wraps `node` (the RangeWindow'd metrics
+// aggregate) with the peeled second-stage chain. The chain arrives
+// outermost-first from peelMetricsSecondStages, so the re-wrap walks it
+// backwards: the innermost stage (last element) wraps `node` first and
+// the original wrap order — source order, left to right — is restored.
+// Each re-applied stage is a copy with PartitionBy stamped: the matrix
+// path passes the anchor column so topk/bottomk select per anchor
+// (`LIMIT K BY anchor_ts`); the instant path passes nil for a single
+// global selection.
+func applyMetricsSecondStages(node chplan.Node, stages []*chplan.MetricsSecondStage, partitionBy []string) chplan.Node {
+	for i := len(stages) - 1; i >= 0; i-- {
+		ss := *stages[i]
+		ss.Input = node
+		ss.PartitionBy = partitionBy
+		node = &ss
+	}
+	return node
+}
+
 func unwrapMetricsAggregate(plan chplan.Node) (*chplan.MetricsAggregate, bool) {
 	switch v := plan.(type) {
 	case *chplan.MetricsAggregate:
@@ -499,7 +559,12 @@ const tempoQuantileLabel = "p"
 // collapses those rows via `traceql.Log2QuantileWithBucket(phi,
 // buckets)` per phi (independent of len(m.Quantiles)) and synthesises
 // the wire `p="<phi>"` label on each emitted series.
-func wrapMetricsForSample(rw *chplan.RangeWindow, m *chplan.MetricsAggregate) chplan.Node {
+// `inner` is the matrix-shape RangeWindow, optionally wrapped in a
+// chain of chplan.MetricsSecondStage transforms (`| topk(N)` /
+// `| bottomk(N)` / `| > N`); the second-stage wrap is a `SELECT * FROM
+// (...)` shell, so the outer SELECT-list shape this Project reads is
+// identical either way.
+func wrapMetricsForSample(inner chplan.Node, m *chplan.MetricsAggregate) chplan.Node {
 	attrAliases := metricsOuterGroupAliases(m.GroupBy, m.GroupByAliases)
 	labelNames := metricsLabelNames(m)
 	isQuantile := m.Op == chplan.MetricsOpQuantileOverTime
@@ -567,7 +632,7 @@ func wrapMetricsForSample(rw *chplan.RangeWindow, m *chplan.MetricsAggregate) ch
 	}
 
 	return &chplan.Project{
-		Input: rw,
+		Input: inner,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: "MetricName"},
 			{Expr: attrs, Alias: "Attributes"},
