@@ -83,7 +83,11 @@ spec:
                 name: cerberus-config
           resources:
             requests:
-              cpu: 100m
+              # 250m so the scheduler weights cerberus fairly against
+              # CH + the collector + the Playwright suite on a 4-vCPU
+              # CI node. No CPU limit — bursting is fine; it's the
+              # probe kills under starvation that hurt (see below).
+              cpu: 250m
               memory: 64Mi
             limits:
               memory: 256Mi
@@ -91,18 +95,40 @@ spec:
           # probe doesn't hammer CH) and reports the auto-create-schema
           # invariant. A failure removes the pod from the Service
           # endpoints without restarting it — backpressure, not crash.
+          #
+          # Probe budgets are sized for a saturated CI node, not a
+          # quiet cluster: /readyz pings a SHARED dependency, so when
+          # the e2e suite drives CH hard every replica's probe slows
+          # at once and a tight budget evicts ALL endpoints together —
+          # Grafana then surfaces "dial tcp …:8080: connect:
+          # connection refused" mid-sweep (nightly 27253909069 went
+          # green only because Playwright retried past that window).
+          # timeout 5s + 5 failures ≈ 15-21s of sustained CH
+          # saturation before eviction; recovery stays fast via the
+          # 3s period.
           readinessProbe:
             httpGet:
               path: /readyz
               port: http
             initialDelaySeconds: 2
             periodSeconds: 3
-            timeoutSeconds: 2
+            timeoutSeconds: 5
+            failureThreshold: 5
           # /healthz is intentionally dependency-free: a failure here
           # means the process is wedged and k8s should restart the pod.
+          #
+          # timeoutSeconds was previously unset — the k8s default is
+          # 1s, a hair-trigger on a contended CI node: a CPU-starved
+          # but healthy process missing three 1s probes got KILLED,
+          # racking up restart counts / CrashLoopBackOff exactly while
+          # the suite was load-bursting (the compose stack never saw
+          # this — Docker doesn't kill on unhealthy). 5s × 6 failures
+          # still restarts a genuinely wedged process within ~60s.
           livenessProbe:
             httpGet:
               path: /healthz
               port: http
             initialDelaySeconds: 10
             periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6

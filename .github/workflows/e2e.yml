@@ -356,6 +356,38 @@ jobs:
         #       must not surface "Unable to fetch labels".
         run: npx playwright test
 
+      # Hard gate: zero cerberus container restarts across the whole
+      # job, asserted even when every spec passed. The nightly at run
+      # 27253909069 went GREEN while attempt 1 of the kiosk sweep hit
+      # "dial tcp …:8080: connect: connection refused" — Playwright's
+      # retries rode out a window where every cerberus pod was being
+      # probe-killed/unready at once, so the lane silently shipped a
+      # restart-looping gateway. A restart is a failure to fix at the
+      # source (probe budgets, resources, or a real crash); never a
+      # thing retries may absorb. On violation the step prints the
+      # previous-container logs + describes + events — the crash
+      # evidence — then fails the job.
+      - name: Assert zero cerberus restarts
+        if: always()
+        run: |
+          total=0
+          for c in $(kubectl -n cerberus get pods -l app=cerberus \
+              -o jsonpath='{range .items[*]}{.status.containerStatuses[0].restartCount}{"\n"}{end}'); do
+            total=$((total + c))
+          done
+          echo "cerberus container restarts (sum across pods): $total"
+          if [ "$total" -gt 0 ]; then
+            echo "::error::cerberus pods restarted $total time(s) during the e2e run — dumping evidence"
+            kubectl -n cerberus get pods -o wide || true
+            kubectl -n cerberus get events --sort-by=.lastTimestamp | tail -60 || true
+            for p in $(kubectl -n cerberus get pods -l app=cerberus -o name); do
+              echo "=== $p (previous container) ==="
+              kubectl -n cerberus logs "$p" --previous --tail 120 || true
+            done
+            kubectl -n cerberus describe pods -l app=cerberus || true
+            exit 1
+          fi
+
       - name: Upload Playwright report on failure
         if: failure()
         uses: actions/upload-artifact@v7
