@@ -34,20 +34,23 @@ INSERT INTO otel_metrics_sum VALUES
 ]
 -- args --
 [0] string = "cerberus_queries_total"
-[1] string = ""
-[2] string = "service_name"
-[3] string = "service_name"
-[4] string = "service.name"
-[5] string = "cerberus"
-[6] string = "2026-01-01 00:00:01.000000000"
-[7] int64 = 9
-[8] string = "2026-01-01 00:00:01.000000000"
-[9] int64 = 9
-[10] int64 = 300000000000
+[1] string = "cerberus.queries.total"
+[2] string = "cerberus.queries_total"
+[3] string = "cerberus_queries.total"
+[4] string = ""
+[5] string = "service_name"
+[6] string = "service_name"
+[7] string = "service.name"
+[8] string = "cerberus"
+[9] string = "2026-01-01 00:00:01.000000000"
+[10] int64 = 9
+[11] string = "2026-01-01 00:00:01.000000000"
+[12] int64 = 9
+[13] int64 = 300000000000
 -- chplan --
 Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
   Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
-    Filter predicate=((((coalesce(nullIf(ServiceName, ""), if(mapContains(Attributes, "service_name"), Attributes["service_name"], Attributes["service.name"])) = "cerberus") AND (MetricName = "cerberus_queries_total")) AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+    Filter predicate=((((coalesce(nullIf(ServiceName, ""), if(mapContains(Attributes, "service_name"), Attributes["service_name"], Attributes["service.name"])) = "cerberus") AND ((((MetricName = "cerberus_queries_total") OR (MetricName = "cerberus.queries.total")) OR (MetricName = "cerberus.queries_total")) OR (MetricName = "cerberus_queries.total"))) AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
       Scan(otel_metrics_sum)
 -- sql --
-SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE (`MetricName` = ?) WHERE (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`Attributes`, ?), `Attributes`[?], `Attributes`[?])) = ?) AND (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`)
+SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE ((((`MetricName` = ?) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) WHERE (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`Attributes`, ?), `Attributes`[?], `Attributes`[?])) = ?) AND (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`)

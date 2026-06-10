@@ -38,13 +38,14 @@ INSERT INTO otel_metrics_gauge VALUES
 [4] string = "host-1"
 [5] float64 = 1
 [6] string = "nonexistent_metric"
-[7] string = "job"
-[8] string = "x"
-[9] string = "instance"
-[10] string = "host-1"
+[7] string = "nonexistent.metric"
+[8] string = "job"
+[9] string = "x"
+[10] string = "instance"
+[11] string = "host-1"
 -- chplan --
 AbsentOverTime range=5m0s step=0s ts=TimeUnix value=Value name=MetricName attrs=Attributes synth=[job="x", instance="host-1"] start=0001-01-01T00:00:00Z end=2026-01-01T00:00:01Z
-  Filter predicate=(((Attributes["job"] = "x") AND (Attributes["instance"] = "host-1")) AND (MetricName = "nonexistent_metric"))
+  Filter predicate=(((Attributes["job"] = "x") AND (Attributes["instance"] = "host-1")) AND ((MetricName = "nonexistent_metric") OR (MetricName = "nonexistent.metric")))
     Scan(merge(otel_metrics_gauge|otel_metrics_sum))
 -- sql --
-SELECT ? AS `MetricName`, map(?, ?, ?, ?) AS `Attributes`, anchor_ts AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT anchor_ts FROM (SELECT toDateTime64('2026-01-01 00:00:01.000000000', 9) AS `anchor_ts`, sample_ts_arr FROM (SELECT groupArray(`TimeUnix`) AS `sample_ts_arr` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE (`MetricName` = ?) AND (`Attributes`[?] = ?) WHERE (`Attributes`[?] = ?)) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:00:01.000000000', 9))) WHERE arrayCount(t -> t > anchor_ts - toIntervalNanosecond(300000000000) AND t <= anchor_ts, sample_ts_arr) = 0)
+SELECT ? AS `MetricName`, map(?, ?, ?, ?) AS `Attributes`, anchor_ts AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT anchor_ts FROM (SELECT toDateTime64('2026-01-01 00:00:01.000000000', 9) AS `anchor_ts`, sample_ts_arr FROM (SELECT groupArray(`TimeUnix`) AS `sample_ts_arr` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE ((`MetricName` = ?) OR (`MetricName` = ?)) AND (`Attributes`[?] = ?) WHERE (`Attributes`[?] = ?)) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:00:01.000000000', 9))) WHERE arrayCount(t -> t > anchor_ts - toIntervalNanosecond(300000000000) AND t <= anchor_ts, sample_ts_arr) = 0)

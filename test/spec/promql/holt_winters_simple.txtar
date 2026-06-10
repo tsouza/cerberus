@@ -2,6 +2,9 @@
 double_exponential_smoothing(http_requests_total[10m], 0.5, 0.1)
 -- args --
 [0] string = "http_requests_total"
+[1] string = "http.requests.total"
+[2] string = "http.requests_total"
+[3] string = "http_requests.total"
 -- seed --
 CREATE TABLE otel_metrics_sum (
     MetricName String,
@@ -18,8 +21,8 @@ INSERT INTO otel_metrics_sum VALUES
   [{"job": "api"}, 30.0]
 ]
 -- sql --
-SELECT `Attributes`, if(length(window_vals) > 1, tupleElement(arrayFold((acc, x) -> (0.5 * x + 0.5 * (tupleElement(acc, 1) + tupleElement(acc, 2)), 0.1 * (0.5 * x + 0.5 * (tupleElement(acc, 1) + tupleElement(acc, 2)) - tupleElement(acc, 1)) + 0.9 * tupleElement(acc, 2)), arraySlice(window_vals, 3), (window_vals[2], window_vals[2] - window_vals[1])), 1), nan) AS `Value` FROM (SELECT `Attributes`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `Attributes`, arrayFilter(p -> tupleElement(p, 1) > now64(9) - toIntervalNanosecond(600000000000) AND tupleElement(p, 1) <= now64(9), series_array) AS `window_pairs` FROM (SELECT `Attributes`, arraySort(groupArray((`TimeUnix`, `Value`))) AS `series_array` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` = ?)) GROUP BY `Attributes`))) WHERE length(`window_vals`) >= 2
+SELECT `Attributes`, if(length(window_vals) > 1, tupleElement(arrayFold((acc, x) -> (0.5 * x + 0.5 * (tupleElement(acc, 1) + tupleElement(acc, 2)), 0.1 * (0.5 * x + 0.5 * (tupleElement(acc, 1) + tupleElement(acc, 2)) - tupleElement(acc, 1)) + 0.9 * tupleElement(acc, 2)), arraySlice(window_vals, 3), (window_vals[2], window_vals[2] - window_vals[1])), 1), nan) AS `Value` FROM (SELECT `Attributes`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `Attributes`, arrayFilter(p -> tupleElement(p, 1) > now64(9) - toIntervalNanosecond(600000000000) AND tupleElement(p, 1) <= now64(9), series_array) AS `window_pairs` FROM (SELECT `Attributes`, arraySort(groupArray((`TimeUnix`, `Value`))) AS `series_array` FROM (SELECT * FROM `otel_metrics_sum` WHERE ((((`MetricName` = ?) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?))) GROUP BY `Attributes`))) WHERE length(`window_vals`) >= 2
 -- chplan --
 RangeWindow func=holt_winters range=10m0s step=0s ts=TimeUnix value=Value groupBy=[Attributes] scalars=[0.5, 0.1]
-  Filter predicate=(MetricName = "http_requests_total")
+  Filter predicate=((((MetricName = "http_requests_total") OR (MetricName = "http.requests.total")) OR (MetricName = "http.requests_total")) OR (MetricName = "http_requests.total"))
     Scan(otel_metrics_sum)

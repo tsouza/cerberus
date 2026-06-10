@@ -38,7 +38,10 @@ INSERT INTO otel_metrics_sum VALUES
 [0] string = ""
 [1] int64 = 1000000000
 [2] string = "http_requests_total"
-[3] int64 = 300000000000
+[3] string = "http.requests.total"
+[4] string = "http.requests_total"
+[5] string = "http_requests.total"
+[6] int64 = 300000000000
 -- chplan --
 Project ["" AS MetricName, Attributes, TimeUnix, (toFloat64((toUnixTimestamp64Nano(TimeUnix) / 1000000000)) + Value) AS Value]
   Project [MetricName AS MetricName, Attributes AS Attributes, anchor_ts AS TimeUnix, lwr_value AS Value]
@@ -46,7 +49,7 @@ Project ["" AS MetricName, Attributes, TimeUnix, (toFloat64((toUnixTimestamp64Na
       Filter predicate=((TimeUnix <= anchor_ts) AND (TimeUnix > (anchor_ts - toIntervalNanosecond(300000000000))))
         CrossJoin
           StepGrid start=2026-01-01T00:00:00.000000000Z end=2026-01-01T00:05:00.000000000Z step=30s
-          Filter predicate=(MetricName = "http_requests_total")
+          Filter predicate=((((MetricName = "http_requests_total") OR (MetricName = "http.requests.total")) OR (MetricName = "http.requests_total")) OR (MetricName = "http_requests.total"))
             Scan(otel_metrics_sum)
 -- sql --
-SELECT ? AS `MetricName`, `Attributes`, `TimeUnix`, (toFloat64((toUnixTimestamp64Nano(`TimeUnix`) / ?)) + `Value`) AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `anchor_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `anchor_ts` AS `anchor_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT * FROM (SELECT arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:00:00.000000000', 9) + toIntervalNanosecond(i * 30000000000), range(0, 11))) AS `anchor_ts`) AS L CROSS JOIN (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` = ?)) AS R) WHERE ((`TimeUnix` <= `anchor_ts`) AND (`TimeUnix` > (`anchor_ts` - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`, `anchor_ts`))
+SELECT ? AS `MetricName`, `Attributes`, `TimeUnix`, (toFloat64((toUnixTimestamp64Nano(`TimeUnix`) / ?)) + `Value`) AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `anchor_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `anchor_ts` AS `anchor_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT * FROM (SELECT arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:00:00.000000000', 9) + toIntervalNanosecond(i * 30000000000), range(0, 11))) AS `anchor_ts`) AS L CROSS JOIN (SELECT * FROM `otel_metrics_sum` WHERE ((((`MetricName` = ?) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?))) AS R) WHERE ((`TimeUnix` <= `anchor_ts`) AND (`TimeUnix` > (`anchor_ts` - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`, `anchor_ts`))

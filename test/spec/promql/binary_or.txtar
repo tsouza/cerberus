@@ -20,32 +20,77 @@ INSERT INTO otel_metrics_sum VALUES
 ]
 -- args --
 [0] string = "http_server_request_a_total"
-[1] string = "2026-01-01 00:00:01.000000000"
-[2] int64 = 9
-[3] string = "2026-01-01 00:00:01.000000000"
-[4] int64 = 9
-[5] int64 = 300000000000
-[6] string = "http_server_request_b_total"
-[7] string = "2026-01-01 00:00:01.000000000"
-[8] int64 = 9
-[9] string = "2026-01-01 00:00:01.000000000"
-[10] int64 = 9
-[11] int64 = 300000000000
-[12] string = "http_server_request_a_total"
-[13] string = "2026-01-01 00:00:01.000000000"
-[14] int64 = 9
-[15] string = "2026-01-01 00:00:01.000000000"
-[16] int64 = 9
-[17] int64 = 300000000000
+[1] string = "http.server.request.a.total"
+[2] string = "http.server.request.a_total"
+[3] string = "http.server.request_a.total"
+[4] string = "http.server.request_a_total"
+[5] string = "http.server_request.a.total"
+[6] string = "http.server_request.a_total"
+[7] string = "http.server_request_a.total"
+[8] string = "http.server_request_a_total"
+[9] string = "http_server.request.a.total"
+[10] string = "http_server.request.a_total"
+[11] string = "http_server.request_a.total"
+[12] string = "http_server.request_a_total"
+[13] string = "http_server_request.a.total"
+[14] string = "http_server_request.a_total"
+[15] string = "http_server_request_a.total"
+[16] string = "2026-01-01 00:00:01.000000000"
+[17] int64 = 9
+[18] string = "2026-01-01 00:00:01.000000000"
+[19] int64 = 9
+[20] int64 = 300000000000
+[21] string = "http_server_request_b_total"
+[22] string = "http.server.request.b.total"
+[23] string = "http.server.request.b_total"
+[24] string = "http.server.request_b.total"
+[25] string = "http.server.request_b_total"
+[26] string = "http.server_request.b.total"
+[27] string = "http.server_request.b_total"
+[28] string = "http.server_request_b.total"
+[29] string = "http.server_request_b_total"
+[30] string = "http_server.request.b.total"
+[31] string = "http_server.request.b_total"
+[32] string = "http_server.request_b.total"
+[33] string = "http_server.request_b_total"
+[34] string = "http_server_request.b.total"
+[35] string = "http_server_request.b_total"
+[36] string = "http_server_request_b.total"
+[37] string = "2026-01-01 00:00:01.000000000"
+[38] int64 = 9
+[39] string = "2026-01-01 00:00:01.000000000"
+[40] int64 = 9
+[41] int64 = 300000000000
+[42] string = "http_server_request_a_total"
+[43] string = "http.server.request.a.total"
+[44] string = "http.server.request.a_total"
+[45] string = "http.server.request_a.total"
+[46] string = "http.server.request_a_total"
+[47] string = "http.server_request.a.total"
+[48] string = "http.server_request.a_total"
+[49] string = "http.server_request_a.total"
+[50] string = "http.server_request_a_total"
+[51] string = "http_server.request.a.total"
+[52] string = "http_server.request.a_total"
+[53] string = "http_server.request_a.total"
+[54] string = "http_server.request_a_total"
+[55] string = "http_server_request.a.total"
+[56] string = "http_server_request.a_total"
+[57] string = "http_server_request_a.total"
+[58] string = "2026-01-01 00:00:01.000000000"
+[59] int64 = 9
+[60] string = "2026-01-01 00:00:01.000000000"
+[61] int64 = 9
+[62] int64 = 300000000000
 -- chplan --
 VectorSetOp op=or match=default
   Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
     Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
-      Filter predicate=(((MetricName = "http_server_request_a_total") AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+      Filter predicate=((((((((((((((((((MetricName = "http_server_request_a_total") OR (MetricName = "http.server.request.a.total")) OR (MetricName = "http.server.request.a_total")) OR (MetricName = "http.server.request_a.total")) OR (MetricName = "http.server.request_a_total")) OR (MetricName = "http.server_request.a.total")) OR (MetricName = "http.server_request.a_total")) OR (MetricName = "http.server_request_a.total")) OR (MetricName = "http.server_request_a_total")) OR (MetricName = "http_server.request.a.total")) OR (MetricName = "http_server.request.a_total")) OR (MetricName = "http_server.request_a.total")) OR (MetricName = "http_server.request_a_total")) OR (MetricName = "http_server_request.a.total")) OR (MetricName = "http_server_request.a_total")) OR (MetricName = "http_server_request_a.total")) AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
         Scan(otel_metrics_sum)
   Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
     Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
-      Filter predicate=(((MetricName = "http_server_request_b_total") AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+      Filter predicate=((((((((((((((((((MetricName = "http_server_request_b_total") OR (MetricName = "http.server.request.b.total")) OR (MetricName = "http.server.request.b_total")) OR (MetricName = "http.server.request_b.total")) OR (MetricName = "http.server.request_b_total")) OR (MetricName = "http.server_request.b.total")) OR (MetricName = "http.server_request.b_total")) OR (MetricName = "http.server_request_b.total")) OR (MetricName = "http.server_request_b_total")) OR (MetricName = "http_server.request.b.total")) OR (MetricName = "http_server.request.b_total")) OR (MetricName = "http_server.request_b.total")) OR (MetricName = "http_server.request_b_total")) OR (MetricName = "http_server_request.b.total")) OR (MetricName = "http_server_request.b_total")) OR (MetricName = "http_server_request_b.total")) AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
         Scan(otel_metrics_sum)
 -- sql --
-SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value` FROM ((SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`)))) UNION ALL (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`))) WHERE `Attributes` NOT IN ((SELECT DISTINCT `Attributes` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`))))))
+SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value` FROM ((SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE ((((((((((((((((`MetricName` = ?) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`)))) UNION ALL (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE ((((((((((((((((`MetricName` = ?) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`))) WHERE `Attributes` NOT IN ((SELECT DISTINCT `Attributes` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE ((((((((((((((((`MetricName` = ?) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`))))))

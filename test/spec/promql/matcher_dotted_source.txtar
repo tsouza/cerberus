@@ -32,19 +32,22 @@ INSERT INTO otel_metrics_sum VALUES
 ]
 -- args --
 [0] string = "cerberus_queries_total"
-[1] string = "cerberus_ql"
-[2] string = "cerberus_ql"
-[3] string = "cerberus.ql"
-[4] string = "promql"
-[5] string = "2026-01-01 00:00:01.000000000"
-[6] int64 = 9
-[7] string = "2026-01-01 00:00:01.000000000"
-[8] int64 = 9
-[9] int64 = 300000000000
+[1] string = "cerberus.queries.total"
+[2] string = "cerberus.queries_total"
+[3] string = "cerberus_queries.total"
+[4] string = "cerberus_ql"
+[5] string = "cerberus_ql"
+[6] string = "cerberus.ql"
+[7] string = "promql"
+[8] string = "2026-01-01 00:00:01.000000000"
+[9] int64 = 9
+[10] string = "2026-01-01 00:00:01.000000000"
+[11] int64 = 9
+[12] int64 = 300000000000
 -- chplan --
 Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
   Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
-    Filter predicate=((((if(mapContains(Attributes, "cerberus_ql"), Attributes["cerberus_ql"], Attributes["cerberus.ql"]) = "promql") AND (MetricName = "cerberus_queries_total")) AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+    Filter predicate=((((if(mapContains(Attributes, "cerberus_ql"), Attributes["cerberus_ql"], Attributes["cerberus.ql"]) = "promql") AND ((((MetricName = "cerberus_queries_total") OR (MetricName = "cerberus.queries.total")) OR (MetricName = "cerberus.queries_total")) OR (MetricName = "cerberus_queries.total"))) AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
       Scan(otel_metrics_sum)
 -- sql --
-SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE (`MetricName` = ?) WHERE (if(mapContains(`Attributes`, ?), `Attributes`[?], `Attributes`[?]) = ?) AND (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`)
+SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE ((((`MetricName` = ?) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) WHERE (if(mapContains(`Attributes`, ?), `Attributes`[?], `Attributes`[?]) = ?) AND (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`)
