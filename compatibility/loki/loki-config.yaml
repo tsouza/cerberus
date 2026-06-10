@@ -69,6 +69,20 @@ limits_config:
   max_streams_per_user: 0
   max_query_parallelism: 32
 
+# Disable the ingester WAL's host-disk-usage throttle. The default
+# (`-ingester.wal-disk-full-threshold=0.90`) rejects every /push with
+# `500: Ingester is shutting down` once the HOST disk crosses 90% —
+# the check reads the container filesystem's usage, which mirrors the
+# host. A hermetic differential stack ingesting a ~19k-line ephemeral
+# fixture must not change behaviour based on how full the developer's
+# (or runner's) disk happens to be; the throttle exists to protect
+# long-lived production WALs, not a compose stack that is torn down
+# minutes after it starts. Setting 0 disables the check (upstream-
+# documented semantics).
+ingester:
+  wal:
+    disk_full_threshold: 0
+
 ruler:
   alertmanager_url: http://localhost:9093
 
