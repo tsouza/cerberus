@@ -15,12 +15,12 @@ upstream_commit:   3361de24b692875d77bd7433cd6baa7c68dc0ef9
 
 vendored_paths:
   - pkg/logql/bench/queries/fast/*.yaml
-  # PR 6 (docs/loki-compliance-plan.md) widened the corpus to include
-  # regression/ and exhaustive/ subdirs. Every entry currently lands in
-  # cerberus-test-queries.yml's should_skip with a per-feature rationale
-  # — the YAMLs are vendored verbatim so the runner sees them when
-  # cerberus ships the deferred RC2/RC3 LogQL features and the
-  # corresponding overlay entry is dropped.
+  # The corpus includes the regression/ and exhaustive/ subdirs in
+  # addition to fast/. All vendored YAMLs run in full — there is no
+  # cerberus-side skip overlay. The only excluded entries are the ones
+  # upstream itself marks `skip: true` in the YAML (no reference
+  # baseline exists for those); that set is pinned by
+  # ../../upstream-skip-baseline.txt and any drift fails the harness.
   - pkg/logql/bench/queries/regression/*.yaml
   - pkg/logql/bench/queries/exhaustive/*.yaml
   - pkg/logql/bench/queries/schema.json

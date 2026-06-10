@@ -91,7 +91,7 @@ User says:
    - [ ] Compatibility suite pass rate unchanged or improved
    ```
 
-8. **Monitor CI**. If `compatibility.yml` shows new failures, the parser may have started accepting new queries that cerberus doesn't yet lower — those move to `expected-failures.json` with a comment, NOT silently allowed.
+8. **Monitor CI**. If `compatibility.yml` shows new failures, the parser may have started accepting new queries that cerberus doesn't yet lower. There is no allow-list — implement the lowering (or split it into its own PR that lands first) so the suite goes green for real.
 
 ## Tools
 
@@ -103,4 +103,4 @@ User says:
 ## Don't
 
 - Don't bump just one of the three; bump them together so transitive resolutions stabilise in one go.
-- Don't silently add an `expected-failures.json` entry to make compatibility pass. Investigate; if the failure is a genuine new feature we don't yet support, file the deferral as a separate item.
+- Don't add any allow-list / skip mechanism to make compatibility pass — none exists, by design. Investigate; if the failure is a genuine new feature cerberus doesn't yet lower, implement it in a separate PR and land that first.
