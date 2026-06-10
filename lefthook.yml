@@ -88,8 +88,8 @@ pre-push:
         fi
     # Backstop for the `commit-msg` hook: that hook validates each
     # commit at creation time, but `git commit --no-verify` bypasses
-    # it. This range-check mirrors the CI `lint` job's
-    # `wagoid/commitlint-github-action@v6` step (which reads the same
+    # it. This range-check mirrors the CI `lint` job's npx commitlint
+    # step (which reads the same
     # `.commitlintrc.json`) so a push with a non-Conventional subject
     # — or any other rule violation — fails locally before CI runs.
     commitlint-range:

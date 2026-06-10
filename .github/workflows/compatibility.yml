@@ -14,6 +14,7 @@ name: compatibility
 #   * actions/checkout@v6           — stdlib.
 #   * actions/setup-go@v6           — `go run ./cmd/seed` + driver builds.
 #   * docker/setup-buildx-action@v4 — buildkit-backed compose build.
+#   * docker/login-action@v4        — authed Docker Hub pulls (rate limits).
 #   * taiki-e/install-action@v2     — installs `just`.
 #   * actions/upload-artifact@v7    — per-head report upload.
 #
@@ -159,6 +160,18 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: just
+
+      # Authenticated Docker Hub pulls get a far higher rate limit than
+      # anonymous pulls from shared runner IPs — two image-pull flakes
+      # in one night hit this workflow (run 27241748868). Skips
+      # silently when the secrets are absent (forks). Mirroring the
+      # upstream images to GHCR is the stronger long-term fix.
+      - name: Log in to Docker Hub
+        if: ${{ secrets.DOCKERHUB_TOKEN != '' }}
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Run compatibility harness
         id: compat
@@ -340,6 +353,16 @@ jobs:
       # (cerberus + driver), so no remote registry login is needed.
       - uses: docker/setup-buildx-action@v4
 
+      # See the prometheus job: authed Docker Hub pulls dodge the
+      # anonymous rate limit shared across runner IPs; skips silently
+      # on forks without the secrets.
+      - name: Log in to Docker Hub
+        if: ${{ secrets.DOCKERHUB_TOKEN != '' }}
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - name: Run tempo-compatibility harness
         id: harness
         env:
@@ -469,6 +492,16 @@ jobs:
       # Buildx gives the Compose build cache + a consistent backend
       # for the local cerberus image context.
       - uses: docker/setup-buildx-action@v4
+
+      # See the prometheus job: authed Docker Hub pulls dodge the
+      # anonymous rate limit shared across runner IPs; skips silently
+      # on forks without the secrets.
+      - name: Log in to Docker Hub
+        if: ${{ secrets.DOCKERHUB_TOKEN != '' }}
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Run loki-compatibility harness
         id: harness
