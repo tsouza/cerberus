@@ -39,6 +39,48 @@ export type DsQueryResponse = {
 };
 
 /**
+ * Collect every label key observed across every frame of a
+ * /api/ds/query response. Shared by the label-shape assertions below
+ * and exported for any sweep that needs the raw observed set.
+ *
+ * Empty-string label values still count as the key being *present* —
+ * the collection is about schema, not value. The value-side check
+ * (anonymous bucket fallback) lives in the phase-1 spec, not here.
+ */
+export function collectFrameLabelKeys(response: DsQueryResponse): Set<string> {
+  const observed = new Set<string>();
+  for (const target of Object.values(response.results ?? {})) {
+    for (const frame of target.frames ?? []) {
+      for (const field of frame.schema?.fields ?? []) {
+        for (const labelKey of Object.keys(field.labels ?? {})) {
+          observed.add(labelKey);
+        }
+      }
+    }
+  }
+  return observed;
+}
+
+/**
+ * Pure set-diff between an observed label keyset and the expected
+ * by-keys. `missing` = expected keys not observed; `extra` = observed
+ * keys not expected. Shared with helpers/validity.ts, whose exact-
+ * keyset rule consumes both sides; the presence-only assertions below
+ * consume `missing` only.
+ */
+export function diffLabelKeys(
+  observed: Iterable<string>,
+  expected: string[],
+): { missing: string[]; extra: string[] } {
+  const observedSet = new Set(observed);
+  const expectedSet = new Set(expected);
+  return {
+    missing: expected.filter((k) => !observedSet.has(k)),
+    extra: [...observedSet].filter((k) => !expectedSet.has(k)).sort(),
+  };
+}
+
+/**
  * For each key in `byKeys`, assert that at least one frame in the
  * response carries that key in `schema.fields[].labels`.
  *
@@ -53,21 +95,8 @@ export function assertLabelShape(
   byKeys: string[],
 ): void {
   if (byKeys.length === 0) return;
-  const observed = new Set<string>();
-  for (const target of Object.values(response.results ?? {})) {
-    for (const frame of target.frames ?? []) {
-      for (const field of frame.schema?.fields ?? []) {
-        for (const labelKey of Object.keys(field.labels ?? {})) {
-          // Empty-string label values still count as the key being
-          // *present* — the assertion is about schema, not value.
-          // The value-side check (anonymous bucket fallback) lives in
-          // the phase-1 spec, not here.
-          observed.add(labelKey);
-        }
-      }
-    }
-  }
-  const missing = byKeys.filter((k) => !observed.has(k));
+  const observed = collectFrameLabelKeys(response);
+  const { missing } = diffLabelKeys(observed, byKeys);
   if (missing.length > 0) {
     throw new Error(
       `assertLabelShape: expected labels [${byKeys.join(', ')}] but only saw [${[
@@ -94,16 +123,7 @@ export function assertLabelAbsent(
   withoutKeys: string[],
 ): void {
   if (withoutKeys.length === 0) return;
-  const observed = new Set<string>();
-  for (const target of Object.values(response.results ?? {})) {
-    for (const frame of target.frames ?? []) {
-      for (const field of frame.schema?.fields ?? []) {
-        for (const labelKey of Object.keys(field.labels ?? {})) {
-          observed.add(labelKey);
-        }
-      }
-    }
-  }
+  const observed = collectFrameLabelKeys(response);
   const leaked = withoutKeys.filter((k) => observed.has(k));
   if (leaked.length > 0) {
     throw new Error(

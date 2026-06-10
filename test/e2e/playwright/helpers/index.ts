@@ -14,3 +14,4 @@ export * from './sweep.js';
 export * from './drilldown.js';
 export * from './dom.js';
 export * from './probes.js';
+export * from './validity.js';
