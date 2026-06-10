@@ -270,6 +270,95 @@ func TestQueryRange_BadInput(t *testing.T) {
 	}
 }
 
+// TestQueryRange_ResolutionCap pins the upstream-Prometheus resolution
+// cap on /api/v1/query_range: a (start, end, step) grid that exceeds
+// 11,000 points per timeseries is rejected with 400 bad_data and the
+// exact upstream message (web/api/v1.queryRange in
+// prometheus/prometheus), while a grid at exactly 11,000 points is
+// accepted. The scalar fast-path (`1+1`) must be capped too — upstream
+// runs the check before the engine is consulted.
+func TestQueryRange_ResolutionCap(t *testing.T) {
+	t.Parallel()
+
+	const capMsg = "exceeded maximum resolution of 11,000 points per timeseries. Try decreasing the query resolution (?step=XX)"
+
+	// step=60s: 11,000 points span 660,000s; one extra step exceeds.
+	const (
+		start    = 1717995600
+		step     = 60
+		endAtCap = start + 11000*step // (end-start)/step == 11000 → allowed
+		endOver  = endAtCap + step    // (end-start)/step == 11001 → rejected
+	)
+
+	rejected := []struct {
+		name  string
+		query string
+	}{
+		{"selector over cap", "up"},
+		{"scalar fast-path over cap", "1%2B1"},
+	}
+	for _, tc := range rejected {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			q := &stubQuerier{}
+			srv := newServer(q)
+			t.Cleanup(srv.Close)
+
+			url := fmt.Sprintf("%s/api/v1/query_range?query=%s&start=%d&end=%d&step=%d",
+				srv.URL, tc.query, start, endOver, step)
+			resp, err := http.Get(url)
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			body := readBody(t, resp)
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("status: got %d, want 400; body=%s", resp.StatusCode, body)
+			}
+			var parsed prom.Response
+			if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+				t.Fatalf("unmarshal: %v\nbody=%s", err, body)
+			}
+			if parsed.Status != "error" || parsed.ErrorType != prom.ErrBadData {
+				t.Fatalf("got status=%q errorType=%q, want error/%s", parsed.Status, parsed.ErrorType, prom.ErrBadData)
+			}
+			if parsed.Error != capMsg {
+				t.Fatalf("error message: got %q, want %q", parsed.Error, capMsg)
+			}
+			// The cap must fire before any ClickHouse round-trip.
+			if q.lastSQL != "" {
+				t.Errorf("over-cap query_range reached CH: lastSQL=%q", q.lastSQL)
+			}
+		})
+	}
+
+	t.Run("exactly 11000 points passes", func(t *testing.T) {
+		t.Parallel()
+		srv := newServer(&stubQuerier{})
+		t.Cleanup(srv.Close)
+
+		url := fmt.Sprintf("%s/api/v1/query_range?query=up&start=%d&end=%d&step=%d",
+			srv.URL, start, endAtCap, step)
+		resp, err := http.Get(url)
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		body := readBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status: got %d, want 200; body=%s", resp.StatusCode, body)
+		}
+		var parsed queryResponse
+		if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+			t.Fatalf("unmarshal: %v\nbody=%s", err, body)
+		}
+		if parsed.Status != "success" {
+			t.Fatalf("status: got %q, want success; err=%s", parsed.Status, parsed.Error)
+		}
+		if parsed.Data.ResultType != "matrix" {
+			t.Fatalf("resultType: got %q, want matrix", parsed.Data.ResultType)
+		}
+	})
+}
+
 func TestQuery_BadInput(t *testing.T) {
 	t.Parallel()
 
