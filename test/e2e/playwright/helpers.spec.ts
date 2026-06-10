@@ -50,6 +50,8 @@ import {
   iteratePanels,
   iterateDrilldownApps,
   isAppInstalled,
+  describeSweepDepth,
+  sweepDepth,
   DRILLDOWN_APPS,
 } from './helpers/index.js';
 
@@ -760,6 +762,42 @@ test('expectedByKeysForDsType dispatches per dsType', () => {
   ).toEqual(['resource.service.name']);
   // Unknown dsType → empty (the iterator skips these targets).
   expect(expectedByKeysForDsType('rate(foo[5m])', 'opentsdb')).toEqual([]);
+});
+
+// --- SWEEP_DEPTH plumbing ----------------------------------------------------
+
+test('sweepDepth defaults to lean and honours SWEEP_DEPTH', () => {
+  const saved = process.env.SWEEP_DEPTH;
+  try {
+    delete process.env.SWEEP_DEPTH;
+    expect(sweepDepth()).toBe('lean');
+    process.env.SWEEP_DEPTH = 'lean';
+    expect(sweepDepth()).toBe('lean');
+    process.env.SWEEP_DEPTH = 'full';
+    expect(sweepDepth()).toBe('full');
+  } finally {
+    if (saved === undefined) delete process.env.SWEEP_DEPTH;
+    else process.env.SWEEP_DEPTH = saved;
+  }
+});
+
+test('sweepDepth throws on a typo rather than silently falling back', () => {
+  const saved = process.env.SWEEP_DEPTH;
+  try {
+    process.env.SWEEP_DEPTH = 'FULL';
+    expect(() => sweepDepth()).toThrow(/must be 'lean' or 'full'/);
+    process.env.SWEEP_DEPTH = 'deep';
+    expect(() => sweepDepth()).toThrow(/must be 'lean' or 'full'/);
+  } finally {
+    if (saved === undefined) delete process.env.SWEEP_DEPTH;
+    else process.env.SWEEP_DEPTH = saved;
+  }
+});
+
+test('describeSweepDepth documents each depth distinctly', () => {
+  expect(describeSweepDepth('lean')).toContain('lean');
+  expect(describeSweepDepth('full')).toContain('full');
+  expect(describeSweepDepth('lean')).not.toBe(describeSweepDepth('full'));
 });
 
 // --- Live-Grafana tests -----------------------------------------------------

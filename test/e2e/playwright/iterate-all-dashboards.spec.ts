@@ -62,9 +62,11 @@ import {
 import {
   type VariableJSON,
   checkDashboardVariable,
+  describeSweepDepth,
   enforceExpectation,
   generateSelfTraffic,
   readPanelExpectation,
+  sweepDepth,
 } from './helpers/index.js';
 
 // Self-traffic warmup so cerberus panels have populated counters
@@ -419,6 +421,14 @@ async function captureAndAssertDsQuery(
 
 const dashboards = discoverDashboards();
 
+// SWEEP_DEPTH gates how many STATES the sweep visits, never which
+// rules run: at 'lean' (the per-PR default) the browser render is
+// restricted to ops-family dashboards — showcase-prefixed boards get
+// API-layer probes only; at 'full' (nightly) every dashboard also
+// renders in the browser. Today no showcase- dashboard exists, so
+// both depths execute the exact same set of checks.
+const depth = sweepDepth();
+
 test.describe('iterate-all-dashboards: full provisioned-dashboard sweep', () => {
   test.describe.configure({ mode: 'serial' });
 
@@ -426,6 +436,8 @@ test.describe('iterate-all-dashboards: full provisioned-dashboard sweep', () => 
     // Log the catalog so the CI run record shows which dashboards
     // were swept. Use `console.log` rather than `test.info().annotations`
     // because the latter doesn't render in the GitHub Actions summary.
+    // eslint-disable-next-line no-console
+    console.log(describeSweepDepth(depth));
     // eslint-disable-next-line no-console
     console.log(
       `iterate-all-dashboards: discovered ${dashboards.length} dashboards in ${DASHBOARDS_DIR}:`,
@@ -452,14 +464,20 @@ test.describe('iterate-all-dashboards: full provisioned-dashboard sweep', () => 
         process.env.GRAFANA_BASE_URL ?? process.env.GRAFANA_URL ?? 'http://localhost:3000';
 
       // 1. Navigate to /d/<uid> and capture all datasource traffic.
-      const navFailures = await captureAndAssertDsQuery(
-        page,
-        `${baseURL}/d/${d.uid}`,
-      );
-      expect(
-        navFailures,
-        `dashboard ${d.uid}: navigation surfaced datasource errors:\n  - ${navFailures.join('\n  - ')}`,
-      ).toEqual([]);
+      //    Depth-gated state count (rules unchanged): 'lean' renders
+      //    ops-family dashboards only — showcase-prefixed boards are
+      //    covered by the API-layer probes below per PR and get their
+      //    browser render on the nightly 'full' lane.
+      if (depth === 'full' || !d.filename.startsWith('showcase-')) {
+        const navFailures = await captureAndAssertDsQuery(
+          page,
+          `${baseURL}/d/${d.uid}`,
+        );
+        expect(
+          navFailures,
+          `dashboard ${d.uid}: navigation surfaced datasource errors:\n  - ${navFailures.join('\n  - ')}`,
+        ).toEqual([]);
+      }
 
       // 2. Per-target probe — fires the panel's PromQL/LogQL/TraceQL
       //    expression through the datasource proxy.

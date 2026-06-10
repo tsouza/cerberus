@@ -17,3 +17,4 @@ export * from './probes.js';
 export * from './validity.js';
 export * from './expectations.js';
 export * from './variables.js';
+export * from './depth.js';
