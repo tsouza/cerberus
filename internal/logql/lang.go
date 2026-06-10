@@ -259,7 +259,13 @@ func (l *Lang) ProjectSamples(plan chplan.Node, meta engine.Meta) chplan.Node {
 func IsMetricQuery(expr syntax.Expr) bool {
 	switch expr.(type) {
 	case *syntax.RangeAggregationExpr, *syntax.VectorAggregationExpr,
-		*syntax.LiteralExpr, *syntax.BinOpExpr, *syntax.LabelReplaceExpr:
+		*syntax.LiteralExpr, *syntax.BinOpExpr, *syntax.LabelReplaceExpr,
+		*syntax.VectorExpr:
+		// VectorExpr (`vector(1)`) produces a numeric sample, same as
+		// LiteralExpr. Omitting it routed the query down the
+		// log-stream wrap, which references Body / Timestamp — columns
+		// the synthetic one-row plan doesn't carry — and surfaced as
+		// 502 `Unknown expression identifier 'Body'`.
 		return true
 	}
 	return false
