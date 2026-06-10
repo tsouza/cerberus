@@ -444,10 +444,17 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 		return err
 	}
 
-	// Anchor: SELECT TraceId, SpanId, ParentSpanId, 0 AS _depth FROM (<L>) AS _seed.
+	// Anchor: SELECT DISTINCT TraceId, SpanId, ParentSpanId, 0 AS _depth
+	// FROM (<L>) AS _seed. DISTINCT on both CTE arms keeps the closure
+	// linear in the number of UNIQUE spans: duplicate span rows (OTLP
+	// retries, rolling re-seeds) otherwise multiply at every recursion
+	// level — dup^depth rows — and a 4-deep walk over a table with a
+	// few hundred copies per span blows straight through the per-query
+	// memory cap. Within one iteration every row carries the same
+	// _depth, so the DISTINCT collapses exact duplicates only.
 	anchor := NewQuery().
 		Select(
-			Col(j.TraceIDColumn),
+			Distinct(Col(j.TraceIDColumn)),
 			Col(j.SpanIDColumn),
 			Col(j.ParentSpanIDColumn),
 			verbatim("0 AS _depth"),
@@ -462,7 +469,7 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 	}
 	step := NewQuery().
 		Select(
-			qualColFrag("t", j.TraceIDColumn),
+			Distinct(qualColFrag("t", j.TraceIDColumn)),
 			qualColFrag("t", j.SpanIDColumn),
 			qualColFrag("t", j.ParentSpanIDColumn),
 			verbatim("c._depth + 1"),
@@ -574,9 +581,11 @@ func buildStructuralInverseClosure(j *chplan.StructuralJoin, rightSub Frag, tabl
 		return nil, fmt.Errorf("%w: union recursive structural op %q", ErrUnsupported, j.Op)
 	}
 
+	// DISTINCT on both arms — same duplicate-row containment as the
+	// canonical closure (see emitStructuralRecursive).
 	anchor := NewQuery().
 		Select(
-			Col(j.TraceIDColumn),
+			Distinct(Col(j.TraceIDColumn)),
 			Col(j.SpanIDColumn),
 			Col(j.ParentSpanIDColumn),
 			verbatim("0 AS _depth"),
@@ -590,7 +599,7 @@ func buildStructuralInverseClosure(j *chplan.StructuralJoin, rightSub Frag, tabl
 	}
 	step := NewQuery().
 		Select(
-			qualColFrag("t", j.TraceIDColumn),
+			Distinct(qualColFrag("t", j.TraceIDColumn)),
 			qualColFrag("t", j.SpanIDColumn),
 			qualColFrag("t", j.ParentSpanIDColumn),
 			verbatim("c._depth + 1"),

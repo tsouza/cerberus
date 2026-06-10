@@ -65,10 +65,23 @@ VALUES
   (now64(9) - INTERVAL 23 SECOND, 'b0000000000000000000000000000002', 'b000000000000203', 'b000000000000201', 'orders.process',    'Consumer', 'shop',     map('service.name', 'shop'),     'showcase-instrumentation', '1.2.3', map('messaging.system', 'kafka', 'payload_bytes', '256'),                                                            80000000, 'Ok',    '',              [], [], [], ['b0000000000000000000000000000001'], ['b000000000000103'], [''], [map('opentracing.ref_type', 'child_of')]),
   (now64(9) - INTERVAL 22 SECOND, 'b0000000000000000000000000000002', 'b000000000000204', 'b000000000000203', 'orders.update',     'Client',   'db',       map('service.name', 'db'),       'showcase-instrumentation', '1.2.3', map('db.system', 'postgres', 'payload_bytes', '96'),                                                                 40000000, 'Ok',    '',              [], [], [], [], [], [], [])`
 
-// insertShowcaseTraces inserts the two showcase trace topologies. Runs
+// deleteShowcaseTracesSQL drops the previous tick's showcase spans
+// (the b0... TraceId range is exclusively this seeder's) before the
+// re-anchored INSERT. Without the delete every 30 s tick stacked
+// another full copy of each span; structural-join closures then
+// multiplied the duplicates per recursion level, and trace-detail
+// views showed N copies of every span. Lightweight DELETE keeps the
+// tick cheap (mask-based, no part rewrite).
+const deleteShowcaseTracesSQL = `DELETE FROM otel_traces WHERE TraceId LIKE 'b00000000000000000000000000000%'`
+
+// insertShowcaseTraces re-seeds the two showcase trace topologies. Runs
 // inside seedAll so each rolling re-seed tick re-anchors the spans on
-// the current wall clock.
+// the current wall clock; the preceding DELETE keeps the corpus at
+// exactly one copy of each span.
 func insertShowcaseTraces(ctx context.Context, conn driver.Conn) error {
+	if err := conn.Exec(ctx, deleteShowcaseTracesSQL); err != nil {
+		return fmt.Errorf("showcase traces delete: %w", err)
+	}
 	if err := conn.Exec(ctx, insertShowcaseTracesSQL); err != nil {
 		return fmt.Errorf("showcase traces: %w", err)
 	}
