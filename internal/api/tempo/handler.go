@@ -635,6 +635,20 @@ const (
 	traceByIDKeySpanKind      = "__cerberus_spanKind"
 	traceByIDKeyStatusCode    = "__cerberus_statusCode"
 	traceByIDKeySpanAttrsJSON = "__cerberus_spanAttrsJSON"
+	// traceByIDKeyScopeName / traceByIDKeyScopeVersion carry the
+	// instrumentation-scope identity columns (ScopeName /
+	// ScopeVersion in the OTel-CH schema). groupBatchesProto buckets
+	// spans into one ScopeSpans per distinct (name, version) pair and
+	// emits a non-nil *commonv1.InstrumentationScope — Grafana 12's
+	// server-side trace transform dereferences ils.Scope.Name with no
+	// nil check (pkg/tsdb/tempo/trace_transform.go:137), so a nil
+	// Scope panics the whole /api/ds/query trace-detail request.
+	// Reference Tempo always rehydrates a non-nil scope
+	// (tempodb/encoding/vparquet4/schema.go
+	// parquetToProtoInstrumentationScope), so cerberus matching that
+	// is also the OTLP-correct shape.
+	traceByIDKeyScopeName    = "__cerberus_scopeName"
+	traceByIDKeyScopeVersion = "__cerberus_scopeVersion"
 
 	// searchKeyTraceID is the reserved Labels key that carries the
 	// hex-encoded TraceId on /api/search responses. Same constant value
@@ -877,6 +891,15 @@ func traceByIDProjections(s schema.Traces) []chplan.Projection {
 		&chplan.FuncCall{Name: "toString", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.SpanKindColumn}}},
 		&chplan.LitString{V: traceByIDKeyStatusCode},
 		&chplan.FuncCall{Name: "toString", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.StatusCodeColumn}}},
+		&chplan.LitString{V: traceByIDKeyScopeName},
+		// ScopeName / ScopeVersion are String in the upstream OTel-CH
+		// traces DDL, but custom schemas may declare them
+		// LowCardinality(String); toString keeps the map() literal's
+		// value type homogeneous either way (same rationale as
+		// SpanKind / StatusCode above).
+		&chplan.FuncCall{Name: "toString", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ScopeNameColumn}}},
+		&chplan.LitString{V: traceByIDKeyScopeVersion},
+		&chplan.FuncCall{Name: "toString", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ScopeVersionColumn}}},
 		&chplan.LitString{V: traceByIDKeySpanAttrsJSON},
 		// CH `toJSONString(<Map>)` renders a JSON object like
 		// {"http.method":"GET","http.status_code":"200"}. The Go
@@ -1401,7 +1424,8 @@ func splitTraceByIDLabels(labels map[string]string) (resourceAttrs, spanAttrs, m
 			}
 			spanAttrs = parsed
 		case traceByIDKeyTraceID, traceByIDKeySpanID, traceByIDKeyParentSpanID,
-			traceByIDKeySpanKind, traceByIDKeyStatusCode:
+			traceByIDKeySpanKind, traceByIDKeyStatusCode,
+			traceByIDKeyScopeName, traceByIDKeyScopeVersion:
 			if meta == nil {
 				meta = map[string]string{}
 			}
