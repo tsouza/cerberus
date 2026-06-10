@@ -13,7 +13,7 @@ land in subsequent PRs.
 | `query-shape.ts` | Regex-based target classification + rewriting: `extractByKeys`, `extractWithoutKeys`, `expectedByKeys`, `isHistogramQuantile`, `extractHistogramName`, `addLabelFilter`, `expressionHasMatcherFor`.   |
 | `assertions.ts`  | Per-shape assertions over the Grafana `/api/ds/query` envelope (`assertLabelShape` / `assertLabelAbsent` / histogram pair / `assertSubsetByCount`) + the zero-404 gate (`assertNon200ResponseClass`). |
 | `sweep.ts`       | `generateSelfTraffic` — pre-step that fires self-traffic against cerberus so the cerberus dashboards have data to render.                                                                             |
-| `drilldown.ts`   | Drilldown-app catalogue (4 built-in apps) + `drillTwoLevels` gesture driver + `isAppInstalled` (`/api/plugins/<id>/settings` probe so the iteration handles apps that aren't provisioned).            |
+| `drilldown.ts`   | Drilldown-app catalogue (3 first-party apps) + `drillTwoLevels` gesture driver + `isAppInstalled` / `waitForAppInstalled` (`/api/plugins/<id>/settings` probe + bounded async-preinstall wait).       |
 | `dom.ts`         | Browser-side helpers: console-error capture, `role="alert"` banner read, kiosk repaint-flicker tolerance.                                                                                             |
 | `probes.ts`      | `fetchAndAssert200` (the zero-404 gate on direct HTTP probes) + `extractDataSourceProxyURL` (panel → datasource proxy path).                                                                          |
 
@@ -32,7 +32,7 @@ concrete iteration:
 | 3     | `iterate-filter-drill.spec.ts`       | `dashboard`, `query-shape` (`addLabelFilter`, `expressionHasMatcherFor`, `expectedByKeys`), `assertions` (`assertSubsetByCount`), `sweep`, `probes` |
 | 4     | `compose_panel_kiosk.spec.ts`        | `dashboard`, `dom`, `assertions`                                                                                                                    |
 | 5     | `iterate-time-ranges.spec.ts`        | `dashboard`, `query-shape`, `assertions`, `sweep`, `probes` — nightly-only (e2e.yml `dashboard` job), NOT compose-smoke (Q2)                        |
-| 6     | `iterate-drilldown-apps.spec.ts`     | `drilldown` (4-app catalogue + `isAppInstalled`), `dom`, `probes`                                                                                   |
+| 6     | `iterate-drilldown-apps.spec.ts`     | `drilldown` (3-app catalogue + `waitForAppInstalled`), `dom`, `probes`                                                                              |
 
 The existing `compose_grafana_smoke.spec.ts` is untouched in this PR;
 phase 1 will retire its bespoke `driveCerberusQLPartition` /
@@ -41,21 +41,23 @@ phase 1 will retire its bespoke `driveCerberusQLPartition` /
 
 ## Pinned Grafana version
 
-The compose stack pins `grafana/grafana:11.4.0` (see
+The compose stack pins `grafana/grafana:12.2.9` (see
 `docker-compose.yml`). The drilldown-app catalogue in `drilldown.ts`
 and the panel-schema flattening in `dashboard.ts` both assume the
-Grafana 11.x dashboard JSON shape:
+Grafana 12.x dashboard JSON shape:
 
 - Rows nest their contents under `panel.panels[]`.
 - Panel headers expose `data-testid="data-testid Panel header <title>"`.
 - Drilldown-app affordances expose stable `data-testid` prefixes
   (`data-testid metric-select`, `data-testid detected-label`, …).
-- Grafana 11.4.0 ships `grafana-metricsdrilldown-app`,
+- Grafana 12.x preinstalls `grafana-metricsdrilldown-app`,
   `grafana-lokiexplore-app`, and `grafana-exploretraces-app`
-  preinstalled+enabled out of the box. `grafana-pyroscope-app` is
-  NOT preinstalled on the cerberus compose stack — the phase-6 spec
-  uses `isAppInstalled` to detect availability and annotates a
-  cleanly missing app instead of failing.
+  first-party (hardcoded in `pkg/setting/setting_plugins.go`). The
+  preinstall is an async boot-time download from grafana.com that
+  completes AFTER `/api/health` goes green (grafana/grafana#106871) —
+  specs synchronize on it via `waitForAppInstalled` (bounded 120s
+  poll) before hard-asserting install status. `grafana-pyroscope-app`
+  is NOT in the catalogue — cerberus ships no profiling backend.
 
 **Bumping Grafana requires updating the phase specs in the same PR**
 (resolved decision Q4, `~/.claude/plans/e2e-enhance.md` §9). The

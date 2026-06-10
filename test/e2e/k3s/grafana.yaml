@@ -41,7 +41,7 @@ data:
           # rest of the stack.
           serviceMap:
             datasourceUid: cerberus-prometheus
-      # Aliases for Grafana 11.x built-in drilldown apps. Each app's
+      # Aliases for Grafana's built-in drilldown apps. Each app's
       # factory defaults reference Grafana Cloud's canonical
       # `grafanacloud-{metrics,logs,traces}` UIDs; without those
       # entries the apps log "Datasource grafanacloud-* was not
@@ -111,7 +111,7 @@ spec:
     spec:
       containers:
         - name: grafana
-          image: grafana/grafana:11.4.0
+          image: grafana/grafana:12.2.9
           ports:
             - name: http
               containerPort: 3000
@@ -126,17 +126,20 @@ spec:
               value: Viewer
             - name: GF_USERS_DEFAULT_THEME
               value: dark
-            - name: GF_FEATURE_TOGGLES_ENABLE
-              value: traceqlSearch
             # Deliberately NO GF_INSTALL_PLUGINS for the drilldown
-            # apps: grafana-metricsdrilldown-app and
-            # grafana-exploretraces-app require Grafana >= 11.6 and
-            # installing them on this 11.4.0 image bricks the frontend
-            # (run 27246825822 hung the whole Playwright suite on its
-            # first navigation, both attempts). The drilldown catalogue
-            # (test/e2e/playwright/helpers/drilldown.ts) is scoped to
-            # the apps this image ships; both come back as first-party
-            # preinstalled apps when the Grafana pin bumps to 12.x.
+            # apps: on Grafana 12.x grafana-lokiexplore-app,
+            # grafana-exploretraces-app, and
+            # grafana-metricsdrilldown-app are first-party preinstalled
+            # (hardcoded in Grafana's pkg/setting/setting_plugins.go
+            # preinstall list), so installing them again via
+            # GF_INSTALL_PLUGINS would only race the built-in flow.
+            # Note: the preinstall is an ASYNC boot-time download from
+            # grafana.com that starts after /api/health goes green —
+            # the pod needs egress to grafana.com, and
+            # /api/plugins/<id>/settings can briefly 404 right after
+            # boot (see grafana/grafana#106871). The drilldown
+            # catalogue (test/e2e/playwright/helpers/drilldown.ts)
+            # bounds that race with waitForAppInstalled.
           volumeMounts:
             - name: datasources
               mountPath: /etc/grafana/provisioning/datasources

@@ -473,20 +473,22 @@ test('assertSubsetByCount throws when filtered exceeds baseline', () => {
 });
 
 test('iterateDrilldownApps returns the apps the pinned Grafana ships', () => {
-  // The catalogue is scoped to what grafana/grafana:11.4.0 can run:
-  // grafana-pyroscope-app left with the escape-hatch cleanup (cerberus
-  // doesn't ship profiling) and grafana-metricsdrilldown-app /
-  // grafana-exploretraces-app require Grafana >= 11.6 (see
-  // helpers/drilldown.ts). This pin moves in lock-step with the
-  // catalogue — when the Grafana pin bumps to 12.x the two newer apps
-  // return as first-party preinstalled entries.
+  // The catalogue is scoped to what grafana/grafana:12.2.9 preinstalls
+  // first-party (hardcoded in Grafana's pkg/setting/setting_plugins.go
+  // preinstall list): the metrics, logs, and traces drilldown apps.
+  // grafana-pyroscope-app stays out — cerberus ships no profiling
+  // backend. This pin moves in lock-step with the catalogue.
   const apps = iterateDrilldownApps();
-  expect(apps.length).toBe(1);
-  expect(apps.map((a) => a.id)).toEqual(['grafana-lokiexplore-app']);
+  expect(apps.length).toBe(3);
+  expect(apps.map((a) => a.id)).toEqual([
+    'grafana-metricsdrilldown-app',
+    'grafana-lokiexplore-app',
+    'grafana-exploretraces-app',
+  ]);
   // Returned array must be a fresh copy — mutating it must not
   // contaminate the module-level constant.
   apps.pop();
-  expect(DRILLDOWN_APPS.length).toBe(1);
+  expect(DRILLDOWN_APPS.length).toBe(3);
 });
 
 test('DRILLDOWN_APPS entries each carry id + root + label', () => {
@@ -816,7 +818,7 @@ test('isAppInstalled distinguishes installed apps from a known-bogus id', async 
   );
   expect(bogus).toBe(false);
 
-  // At least one of the preinstalled drilldown apps in Grafana 11.4.0
+  // At least one of the preinstalled drilldown apps in Grafana 12.2.9
   // must resolve to true. We probe all of them but only require ≥1 to
   // be present so a stripped-down stack (no apps at all) still surfaces
   // the contract: the helper returned a boolean, not a throw.

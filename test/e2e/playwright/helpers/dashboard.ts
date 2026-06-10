@@ -10,10 +10,11 @@
  * /api/search response only carries the title + uid.
  *
  * Grafana version pinned in `docker-compose.yml` at the time of writing
- * is `grafana/grafana:11.4.0`. The panel schema shape (rows containing
- * nested panels[]) is the 11.x shape; if/when the compose stack bumps
- * Grafana, audit this file for schema drift and update the spec phases
- * in the same PR. See helpers/README.md for the version-bump checklist.
+ * is `grafana/grafana:12.2.9`. The panel schema shape (rows containing
+ * nested panels[]) is unchanged from 11.x through 12.x; if/when the
+ * compose stack bumps Grafana, audit this file for schema drift and
+ * update the spec phases in the same PR. See helpers/README.md for the
+ * version-bump checklist.
  */
 
 import type { APIRequestContext } from '@playwright/test';
