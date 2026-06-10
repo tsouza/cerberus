@@ -1,9 +1,12 @@
 package logql
 
 import (
+	"context"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/grafana/loki/v3/pkg/logql/syntax"
 	"github.com/prometheus/prometheus/model/labels"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -491,5 +494,34 @@ func TestMatcherToExpr_TopLevelColumnCoalesce_Conformance(t *testing.T) {
 				t.Errorf("matcherToExpr(%s=val) MapAccess.Key = %v; want LitString{V:%q}", col, ma.Key, col)
 			}
 		})
+	}
+}
+
+// TestLineFilterIPRejected pins the explicit rejection of `ip(...)`
+// line filters. The parser carries the function-filter marker in
+// LineFilter.Op; before the guard in [lineFilterPart] the lowering
+// silently treated the CIDR/range argument as a literal substring
+// match — wrong results, not an error. Until an
+// `isIPAddressInRange`-based lowering lands, the only honest outcome
+// is a loud rejection.
+func TestLineFilterIPRejected(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelLogs()
+	for _, q := range []string{
+		`{service_name="api"} |= ip("192.168.0.0/16")`,
+		`{service_name="api"} != ip("10.0.0.1")`,
+	} {
+		expr, err := syntax.ParseExpr(q)
+		if err != nil {
+			t.Fatalf("ParseExpr(%q): %v", q, err)
+		}
+		_, err = Lower(context.Background(), expr, s)
+		if err == nil {
+			t.Fatalf("Lower(%q) succeeded; want the ip() line-filter rejection", q)
+		}
+		if !strings.Contains(err.Error(), "ip(...)") {
+			t.Errorf("Lower(%q) error = %q; want it to name the ip(...) line filter", q, err)
+		}
 	}
 }
