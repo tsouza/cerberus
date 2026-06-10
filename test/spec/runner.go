@@ -90,7 +90,7 @@ func Walk(t *testing.T, dir string, fn func(t *testing.T, c *Case)) {
 // disk in c. When GOLDEN_UPDATE=1 is set, mismatches rewrite the section
 // in-place instead of failing — so the dev flow is:
 //
-//	GOLDEN_UPDATE=1 just test-spec       # regenerate fixtures
+//	just update-golden                   # regenerate fixtures (both lanes)
 //	git diff                             # review the new expected output
 //	git add test/spec && git commit ...
 //

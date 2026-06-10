@@ -109,8 +109,11 @@ idempotency.
 Fixtures with both `-- seed --` and `-- expected_rows --` sections run
 under the `chdb` build tag. The runner DDL-applies the OTel-CH schema,
 loads the seed rows, executes the emitted SQL, and compares the result
-set to `expected_rows`. Use `just update-golden` and `just spec-chdb`
-locally.
+set to `expected_rows`. `just update-golden` regenerates this layer too
+— it runs a second, chdb-tagged pass over `./test/spec/...` so
+`expected_rows` cells can never go stale behind a `-- sql --` change
+(it requires libchdb.so; see `just chdb-install`). Use `just spec-chdb`
+to verify locally without rewriting.
 
 ### Layer 7 — HTTP handler conformance
 

@@ -55,7 +55,7 @@ Top-level reading order for any new contributor (human or agent):
 
 ## Common workflows
 
-- **Add a TXTAR fixture** — use the `/cerberus:add-fixture` skill (under `.claude/skills/`). It creates `test/spec/<ql>/<name>.txtar` with the right section headers (`-- input --`, `-- sql --`, `-- chplan --`, optional `-- seed --` / `-- expected_rows --`); run `just update-golden` after the implementation lands to fill in expected sections.
+- **Add a TXTAR fixture** — use the `/cerberus:add-fixture` skill (under `.claude/skills/`). It creates `test/spec/<ql>/<name>.txtar` with the right section headers (`-- input --`, `-- sql --`, `-- chplan --`, optional `-- seed --` / `-- expected_rows --`); run `just update-golden` after the implementation lands to fill in expected sections — it covers both the default-tag text goldens and the chdb-tagged `-- expected_rows --` cells (requires libchdb.so via `just chdb-install`).
 - **Add an optimizer rule** — use the `/cerberus:add-optimizer-rule` skill. Scaffolds `internal/optimizer/<name>.go` + test + TXTAR fixtures.
 - **Add a property test** — add a row to the generator + oracle under `test/property/{gen,oracle}/` and a case to `test/property/promql_test.go`. The framework wires `rapid.Check` → dataset gen → chDB exec → oracle → comparator; you only swap the data shape + oracle. Build-tagged `chdb`; runs in the `chdb` workflow only.
 - **Bump parser deps** — use the `/cerberus:bump-parser-deps` skill. Runs `go get -u` on the three upstream parsers, runs `go mod tidy`, captures the diff for the PR description.
