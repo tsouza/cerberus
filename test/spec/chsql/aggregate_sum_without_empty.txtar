@@ -1,0 +1,7 @@
+-- sql --
+SELECT `Attributes`, sum(`Value`) AS `total` FROM (SELECT * FROM `otel_metrics_gauge`) GROUP BY `Attributes`
+-- args --
+(none)
+-- chplan --
+Aggregate groupBy=[mapWithout(Attributes, [])] funcs=[sum(Value) AS total]
+  Scan(otel_metrics_gauge)

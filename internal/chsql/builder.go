@@ -569,6 +569,16 @@ func (b *Builder) exprMapAccess(m *chplan.MapAccess) error {
 }
 
 func (b *Builder) exprMapWithoutKeys(m *chplan.MapWithoutKeys) error {
+	// Zero keys is the identity: emit the map directly. The degenerate
+	// `mapFilter((k, v) -> NOT (k IN ()), m)` is invalid ClickHouse —
+	// CH rejects an empty IN list with "Function 'in' is supported only
+	// if second argument is constant or table expression". LogQL
+	// `max without () (...)` / PromQL `sum without() (...)` reach this
+	// shape with an empty exclusion set, which by upstream semantics
+	// groups by the full label set.
+	if len(m.Keys) == 0 {
+		return b.Expr(m.Map)
+	}
 	b.sb.WriteString("mapFilter((k, v) -> NOT (k IN (")
 	for i, k := range m.Keys {
 		if i > 0 {

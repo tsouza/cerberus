@@ -71,11 +71,6 @@ func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs, lc low
 		return nil, err
 	}
 
-	groupBy, err := rangeAggregationGroupBy(e, s)
-	if err != nil {
-		return nil, err
-	}
-
 	// Default identity: the raw ResourceAttributes column, augmented with
 	// the synthesized `detected_level` label so each distinct severity
 	// becomes its own series. Loki's stream-identity contract includes
@@ -138,6 +133,22 @@ func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs, lc low
 		// since RA is a plain column reference.
 		identityBase = &chplan.MapWithoutKeys{Map: labelsExpr, Keys: []string{e.Left.Unwrap.Identifier}}
 	}
+	// The grouping key is computed AGAINST identityBase — the full
+	// series identity (parser-merged labels minus the unwrap target
+	// when applicable) — not against the raw ResourceAttributes column.
+	// `without (service_name)` on `avg_over_time({...} | logfmt |
+	// unwrap duration_seconds(duration) [5m])` must keep every
+	// logfmt-extracted label (level, status, ...) in the series
+	// identity; grouping on RA-minus-keys silently dropped the
+	// extracted labels and the enclosing `max by (level)` collapsed the
+	// matrix to a single empty-level series (loki-compat
+	// exhaustive/aggregations.yaml#Max avg duration by level without
+	// service_name).
+	groupBy, err := rangeAggregationGroupBy(e, s, identityBase)
+	if err != nil {
+		return nil, err
+	}
+
 	identityProj := chplan.Projection{
 		Expr:  withDetectedLevelAndColumns(s, identityBase, lc.OuterByLabels),
 		Alias: s.ResourceAttributesColumn,
@@ -492,23 +503,35 @@ func rangeValueExprFromMerged(e *syntax.RangeAggregationExpr, mergedCol chplan.E
 // single Map-shaped expression so the downstream Project synthesises a
 // per-stream identity that the RangeWindow GROUP BY can collapse to.
 //
-//	no Grouping        → nil (caller defaults to grouping on RA).
+//	no Grouping        → nil (caller defaults to grouping on identityBase).
 //	`by (k1, k2)`      → map('k1', RA['k1'], 'k2', RA['k2'])
 //	`by ()`            → map()       (single all-collapsed group)
-//	`without (k1, k2)` → mapFilter((k,v) -> NOT (k IN ('k1','k2')), RA)
+//	`without (k1, k2)` → mapFilter((k,v) -> NOT (k IN ('k1','k2')),
+//	                               withDetectedLevel(identityBase))
+//
+// `without` is exclusion semantics: it strips keys from the FULL series
+// identity the pipeline produced — `identityBase` (the parser-merged
+// labelset minus the unwrap target when the aggregation carries
+// `| unwrap`), augmented with the synthesized `detected_level` key the
+// no-grouping path also injects (so an enclosing `by (level)` /
+// `by (detected_level)` vector aggregation still resolves the severity
+// dimension; the injection happens BEFORE the strip so
+// `without (detected_level)` / `without (level)` removes it again).
+// Grouping on the raw ResourceAttributes column instead would silently
+// drop every parser-extracted label from the series identity.
 //
 // The `detected_level` family (`detected_level` + its `level` alias) is
 // resolved to the SeverityText-derived `multiIf(...)` normalisation
 // rather than a literal map lookup the seeder doesn't write — mirrors
 // the vector-aggregation alias surface so the two grouping layers
 // behave consistently.
-func rangeAggregationGroupBy(e *syntax.RangeAggregationExpr, s schema.Logs) (chplan.Expr, error) {
+func rangeAggregationGroupBy(e *syntax.RangeAggregationExpr, s schema.Logs, identityBase chplan.Expr) (chplan.Expr, error) {
 	if e.Grouping == nil {
 		return nil, nil
 	}
 	if e.Grouping.Without {
 		return &chplan.MapWithoutKeys{
-			Map:  &chplan.ColumnRef{Name: s.ResourceAttributesColumn},
+			Map:  withDetectedLevel(s, identityBase),
 			Keys: canonicalLevelKeys(e.Grouping.Groups),
 		}, nil
 	}
