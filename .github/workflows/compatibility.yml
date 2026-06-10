@@ -14,7 +14,7 @@ name: compatibility
 #   * actions/checkout@v6           — stdlib.
 #   * actions/setup-go@v6           — `go run ./cmd/seed` + driver builds.
 #   * docker/setup-buildx-action@v4 — buildkit-backed compose build.
-#   * docker/login-action@v4        — authed Docker Hub pulls (rate limits).
+#   * docker/login-action@v3        — authed Docker Hub pulls (rate limits).
 #   * taiki-e/install-action@v2     — installs `just`.
 #   * actions/upload-artifact@v7    — per-head report upload.
 #
@@ -167,8 +167,10 @@ jobs:
       # silently when the secrets are absent (forks). Mirroring the
       # upstream images to GHCR is the stronger long-term fix.
       - name: Log in to Docker Hub
-        if: ${{ secrets.DOCKERHUB_TOKEN != '' }}
-        uses: docker/login-action@v4
+        if: ${{ env.DOCKERHUB_TOKEN_SET == 'true' }}
+        env:
+          DOCKERHUB_TOKEN_SET: ${{ secrets.DOCKERHUB_TOKEN != '' }}
+        uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -357,8 +359,10 @@ jobs:
       # anonymous rate limit shared across runner IPs; skips silently
       # on forks without the secrets.
       - name: Log in to Docker Hub
-        if: ${{ secrets.DOCKERHUB_TOKEN != '' }}
-        uses: docker/login-action@v4
+        if: ${{ env.DOCKERHUB_TOKEN_SET == 'true' }}
+        env:
+          DOCKERHUB_TOKEN_SET: ${{ secrets.DOCKERHUB_TOKEN != '' }}
+        uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -497,8 +501,10 @@ jobs:
       # anonymous rate limit shared across runner IPs; skips silently
       # on forks without the secrets.
       - name: Log in to Docker Hub
-        if: ${{ secrets.DOCKERHUB_TOKEN != '' }}
-        uses: docker/login-action@v4
+        if: ${{ env.DOCKERHUB_TOKEN_SET == 'true' }}
+        env:
+          DOCKERHUB_TOKEN_SET: ${{ secrets.DOCKERHUB_TOKEN != '' }}
+        uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
