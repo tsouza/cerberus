@@ -140,7 +140,7 @@ type KioskFailure = {
 };
 
 test('panel-kiosk: every panel renders cleanly in single-panel kiosk view + back-nav is clean', async ({
-  page,
+  browser,
   request,
 }, testInfo) => {
   // Per-panel navigation is the runtime tax here. Budget mirrors the
@@ -189,18 +189,32 @@ test('panel-kiosk: every panel renders cleanly in single-panel kiosk view + back
     const panels = iteratePanels(dashboard);
     perDashboardCounts.push({ title: dashboard.title, panels: panels.length });
 
-    for (const panel of panels) {
-      // Some Grafana row-style placeholders survive the row-flatten
-      // pass with id=0; exclude them — they have no kiosk URL.
-      if (panel.id === 0) continue;
+    // Fresh browser context per dashboard. A single page reused across
+    // every dashboard accumulates renderer state over the ~190 kiosk
+    // navigations of a full-depth sweep (both showcase boards plus the
+    // ops family) until Chromium starts refusing new requests with
+    // net::ERR_INSUFFICIENT_RESOURCES — every subsequent panel then
+    // fails the console-error rule regardless of its own behaviour.
+    // Scoping the renderer to one dashboard (≤50 navigations) keeps the
+    // sweep's failure attribution per-panel, not per-process.
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    try {
+      for (const panel of panels) {
+        // Some Grafana row-style placeholders survive the row-flatten
+        // pass with id=0; exclude them — they have no kiosk URL.
+        if (panel.id === 0) continue;
 
-      const sweepFailures = await sweepPanelKiosk(
-        page,
-        baseURL,
-        dashboard,
-        panel,
-      );
-      failures.push(...sweepFailures);
+        const sweepFailures = await sweepPanelKiosk(
+          page,
+          baseURL,
+          dashboard,
+          panel,
+        );
+        failures.push(...sweepFailures);
+      }
+    } finally {
+      await context.close();
     }
   }
 
