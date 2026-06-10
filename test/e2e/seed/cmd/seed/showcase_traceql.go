@@ -108,25 +108,58 @@ VALUES
    map('db.system', 'postgres', 'payload_bytes', '96'),
    40000000, 'Ok', '', [], [], [], [], [], [], [])`
 
-// deleteShowcaseTracesSQL drops the previous tick's showcase spans
-// (the b0... TraceId range is exclusively this seeder's) before the
-// re-anchored INSERT. Without the delete every 30 s tick stacked
-// another full copy of each span; structural-join closures then
-// multiplied the duplicates per recursion level, and trace-detail
-// views showed N copies of every span. Lightweight DELETE keeps the
-// tick cheap (mask-based, no part rewrite).
-const deleteShowcaseTracesSQL = `DELETE FROM otel_traces WHERE TraceId LIKE 'b00000000000000000000000000000%'`
+// deleteStaleShowcaseTracesSQL drops the *previous* ticks' showcase
+// spans (the b0... TraceId range is exclusively this seeder's) AFTER
+// the re-anchored INSERT has landed. Without any delete every 30 s
+// tick stacked another full copy of each span; structural-join
+// closures then multiplied the duplicates per recursion level, and
+// trace-detail views showed N copies of every span. Lightweight
+// DELETE keeps the tick cheap (mask-based, no part rewrite).
+//
+// Ordering + predicate are both load-bearing (compose-smoke flake on
+// PR #769): lightweight DELETEs are asynchronous mutations, so the
+// original DELETE-then-INSERT left a visible window where the whole
+// showcase range was empty — any TraceQL query landing inside it saw
+// zero spans, and failOnFlakyTests turned the retry-pass into a CI
+// failure. The fix inverts the order (INSERT first, so the range is
+// never empty) and anchors the cutoff on the DATA rather than the
+// clock: rows strictly older than `max(showcase Timestamp) - 20 s`
+// are stale by construction.
+//
+// Why 20 s: each tick's INSERT spans offsets `now-40s .. now-22s`
+// (an 18 s spread), so the freshest tick's own rows sit within 18 s
+// of its max and are always spared, while the previous tick (30 s
+// older; its newest row is 52 s behind the new max) always falls
+// past the cutoff. Any margin in (18 s, 30 s) exclusive works; 20 s
+// leaves slack on the sparing side. Because the cutoff follows the
+// data, the scheme is immune to statement-gap timing, client/server
+// clock skew, and late mutation application: whenever the predicate
+// is evaluated, the newest tick's rows are inside the margin, and
+// rows inserted after the mutation was created are untouched by it
+// by ClickHouse's mutation-versioning guarantee. Worst case readers
+// briefly see two copies of a span — the recursive-closure per-level
+// DISTINCT (#762) collapses dupes, and showcase contracts assert
+// nonempty/error classes, never exact values (#757).
+const deleteStaleShowcaseTracesSQL = `DELETE FROM otel_traces
+WHERE TraceId LIKE 'b00000000000000000000000000000%'
+  AND Timestamp < (
+    SELECT max(Timestamp) - INTERVAL 20 SECOND
+    FROM otel_traces
+    WHERE TraceId LIKE 'b00000000000000000000000000000%'
+  )`
 
 // insertShowcaseTraces re-seeds the two showcase trace topologies. Runs
 // inside seedAll so each rolling re-seed tick re-anchors the spans on
-// the current wall clock; the preceding DELETE keeps the corpus at
-// exactly one copy of each span.
+// the current wall clock. INSERT strictly precedes the stale-row
+// DELETE so readers never observe an empty (or partially-deleted)
+// showcase range — see deleteStaleShowcaseTracesSQL for the full
+// race analysis.
 func insertShowcaseTraces(ctx context.Context, conn driver.Conn) error {
-	if err := conn.Exec(ctx, deleteShowcaseTracesSQL); err != nil {
-		return fmt.Errorf("showcase traces delete: %w", err)
-	}
 	if err := conn.Exec(ctx, insertShowcaseTracesSQL); err != nil {
 		return fmt.Errorf("showcase traces: %w", err)
+	}
+	if err := conn.Exec(ctx, deleteStaleShowcaseTracesSQL); err != nil {
+		return fmt.Errorf("showcase traces stale delete: %w", err)
 	}
 	return nil
 }

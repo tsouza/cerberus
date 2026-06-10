@@ -3,6 +3,7 @@ package regression
 import (
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -185,6 +186,146 @@ func TestTracesSeedHasFrontendAndApiServices(t *testing.T) {
 			t.Errorf("%s: expected %q somewhere in the seed; Tempo E2E tests depend on it", seedSource, needle)
 		}
 	}
+}
+
+// showcaseTraceSeedSource is the Go file holding the showcase-traceql
+// rolling re-seed (INSERT + stale-row DELETE) for the b0... trace range.
+const showcaseTraceSeedSource = "../e2e/seed/cmd/seed/showcase_traceql.go"
+
+// TestShowcaseTraceReseedInsertsBeforeDelete pins the fix for the
+// compose-smoke flake on PR #769: the showcase-trace rolling re-seed
+// used to DELETE the whole b0... range and only then re-INSERT it.
+// ClickHouse lightweight DELETEs are asynchronous mutations, so every
+// 30 s tick opened a visible window in which the showcase range was
+// empty — `{ name="GET /api/checkout" } | rate() by (name) > 0.0001`
+// returned 0 series right after its own baseline listed the name, and
+// failOnFlakyTests turned the retry-pass into a CI failure.
+//
+// The invariant: inside insertShowcaseTraces the INSERT must execute
+// strictly before the stale-row DELETE, so readers never observe an
+// empty (or partially-deleted) showcase range.
+func TestShowcaseTraceReseedInsertsBeforeDelete(t *testing.T) {
+	t.Parallel()
+
+	buf, err := os.ReadFile(showcaseTraceSeedSource)
+	if err != nil {
+		t.Fatalf("read %s: %v", showcaseTraceSeedSource, err)
+	}
+	content := string(buf)
+
+	fnStart := strings.Index(content, "func insertShowcaseTraces(")
+	if fnStart < 0 {
+		t.Fatalf("%s: func insertShowcaseTraces not found", showcaseTraceSeedSource)
+	}
+	body := content[fnStart:]
+
+	insertIdx := strings.Index(body, "insertShowcaseTracesSQL")
+	deleteIdx := strings.Index(body, "deleteStaleShowcaseTracesSQL")
+	switch {
+	case insertIdx < 0:
+		t.Fatalf("%s: insertShowcaseTraces does not exec insertShowcaseTracesSQL", showcaseTraceSeedSource)
+	case deleteIdx < 0:
+		t.Fatalf("%s: insertShowcaseTraces does not exec deleteStaleShowcaseTracesSQL — without the stale-row delete every tick stacks another copy of each span (#762)", showcaseTraceSeedSource)
+	case deleteIdx < insertIdx:
+		t.Errorf("%s: insertShowcaseTraces runs the DELETE before the INSERT — lightweight DELETEs are async mutations, so delete-first opens an empty-range window every re-seed tick (compose-smoke flake on PR #769); INSERT must come first", showcaseTraceSeedSource)
+	}
+}
+
+// TestShowcaseTraceStaleDeleteIsDataAnchored pins the shape of the
+// stale-row DELETE that makes insert-first ordering race-free:
+//
+//  1. the cutoff must be anchored on the showcase data itself
+//     (max(Timestamp) over the b0... range), not on the server clock —
+//     a clock-anchored cutoff can swallow the freshest tick when the
+//     mutation's predicate is evaluated late under load;
+//  2. the margin must exceed the INSERT's own timestamp spread (so the
+//     freshest tick's oldest row is always spared) and stay below the
+//     30 s re-seed interval (so the previous tick is always collected
+//     and duplication stays bounded at ≤2 copies).
+//
+// The offsets are parsed from the SQL constants rather than hardcoded,
+// so editing the seed topology without rebalancing the margin fails
+// here instead of as a compose-smoke flake.
+func TestShowcaseTraceStaleDeleteIsDataAnchored(t *testing.T) {
+	t.Parallel()
+
+	buf, err := os.ReadFile(showcaseTraceSeedSource)
+	if err != nil {
+		t.Fatalf("read %s: %v", showcaseTraceSeedSource, err)
+	}
+	content := string(buf)
+
+	deleteSQL := extractBacktickConst(t, content, "deleteStaleShowcaseTracesSQL")
+	if !strings.Contains(deleteSQL, "max(Timestamp)") {
+		t.Errorf("%s: deleteStaleShowcaseTracesSQL must anchor its cutoff on max(Timestamp) over the showcase range (data-anchored), not the server clock", showcaseTraceSeedSource)
+	}
+	if got := strings.Count(deleteSQL, "TraceId LIKE 'b00000000000000000000000000000%'"); got != 2 {
+		t.Errorf("%s: deleteStaleShowcaseTracesSQL must scope BOTH the outer DELETE and the max(Timestamp) subquery to the b0... showcase range (got %d scoped predicates, want 2) — an unscoped subquery anchors the cutoff on foreign rows, an unscoped delete eats the base fixture", showcaseTraceSeedSource, got)
+	}
+
+	intervalRE := regexp.MustCompile(`INTERVAL (\d+) SECOND`)
+
+	// Margin: the single INTERVAL in the DELETE's cutoff expression.
+	deleteIntervals := intervalRE.FindAllStringSubmatch(deleteSQL, -1)
+	if len(deleteIntervals) != 1 {
+		t.Fatalf("%s: expected exactly one `INTERVAL <n> SECOND` margin in deleteStaleShowcaseTracesSQL, got %d", showcaseTraceSeedSource, len(deleteIntervals))
+	}
+	margin, err := strconv.Atoi(deleteIntervals[0][1])
+	if err != nil {
+		t.Fatalf("parse margin: %v", err)
+	}
+
+	// Spread: every row/event timestamp in the INSERT is
+	// `now64(9) - INTERVAL <n> SECOND`; the spread is max-min.
+	insertSQL := extractBacktickConst(t, content, "insertShowcaseTracesSQL")
+	insertIntervals := intervalRE.FindAllStringSubmatch(insertSQL, -1)
+	if len(insertIntervals) == 0 {
+		t.Fatalf("%s: no `INTERVAL <n> SECOND` offsets found in insertShowcaseTracesSQL", showcaseTraceSeedSource)
+	}
+	minOff, maxOff := 1<<31, 0
+	for _, m := range insertIntervals {
+		off, err := strconv.Atoi(m[1])
+		if err != nil {
+			t.Fatalf("parse insert offset %q: %v", m[1], err)
+		}
+		if off < minOff {
+			minOff = off
+		}
+		if off > maxOff {
+			maxOff = off
+		}
+	}
+	spread := maxOff - minOff
+
+	// 30 s is the rolling re-seed cadence: docker-compose.yml passes
+	// `--re-seed-interval=30s` to the seed container.
+	const tickSeconds = 30
+	if margin <= spread {
+		t.Errorf("%s: stale-delete margin (%ds) must exceed the INSERT timestamp spread (%ds = %d-%d) or the freshest tick's oldest rows fall past the cutoff and get deleted", showcaseTraceSeedSource, margin, spread, maxOff, minOff)
+	}
+	if margin >= tickSeconds {
+		t.Errorf("%s: stale-delete margin (%ds) must stay below the %ds re-seed interval or previous ticks survive every delete and duplicates accumulate unbounded (#762)", showcaseTraceSeedSource, margin, tickSeconds)
+	}
+}
+
+// extractBacktickConst returns the backtick-delimited string literal of
+// the named top-level `const <name> = `...“ declaration in content.
+func extractBacktickConst(t *testing.T, content, name string) string {
+	t.Helper()
+	declStart := strings.Index(content, "const "+name)
+	if declStart < 0 {
+		t.Fatalf("const %s not found", name)
+	}
+	open := strings.Index(content[declStart:], "`")
+	if open < 0 {
+		t.Fatalf("const %s: no opening backtick", name)
+	}
+	rest := content[declStart+open+1:]
+	closeIdx := strings.Index(rest, "`")
+	if closeIdx < 0 {
+		t.Fatalf("const %s: no closing backtick", name)
+	}
+	return rest[:closeIdx]
 }
 
 // TestLogsSeedOmitsTimestampTime pins the schema-skew fix from the
