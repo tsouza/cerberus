@@ -1,0 +1,42 @@
+# The `__name__` catalog advertises Prom-normalised spellings
+# (`container.cpu.usage` → `container_cpu_usage` via OTelToPromMetric),
+# and Grafana's Metrics Drilldown echoes them back as underscored
+# regexes. The regex arm of metricNamePredicate must therefore also
+# match against the SQL-normalised MetricName
+# (replaceRegexpAll(MetricName, '[^a-zA-Z0-9_:]', '_')) — the raw-name
+# arm alone can never match the dotted storage. The decoy row proves
+# the normalised arm still filters by name.
+
+-- query.promql --
+{__name__=~".*container_cpu_usage.*"}
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('container.cpu.usage', map('core', '0'), toDateTime64('2026-01-01 00:00:00', 9), 0.42),
+    ('container.memory.usage', map('core', '0'), toDateTime64('2026-01-01 00:00:00', 9), 1024.0);
+-- expected_rows --
+[
+  ["container.cpu.usage", {"core": "0"}, "2026-01-01T00:00:00Z", 0.42]
+]
+-- sql --
+SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (match(`MetricName`, ?) OR match(replaceRegexpAll(`MetricName`, ?, ?), ?)) AND (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`)
+-- args --
+[0] string = ".*container_cpu_usage.*"
+[1] string = "[^a-zA-Z0-9_:]"
+[2] string = "_"
+[3] string = ".*container_cpu_usage.*"
+[4] string = "2026-01-01 00:00:01.000000000"
+[5] int64 = 9
+[6] string = "2026-01-01 00:00:01.000000000"
+[7] int64 = 9
+[8] int64 = 300000000000
+-- chplan --
+Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
+  Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
+    Filter predicate=((((MetricName =~ ".*container_cpu_usage.*") OR (replaceRegexpAll(MetricName, "[^a-zA-Z0-9_:]", "_") =~ ".*container_cpu_usage.*")) AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+      Scan(merge(otel_metrics_gauge|otel_metrics_sum))
