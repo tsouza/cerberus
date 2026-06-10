@@ -50,6 +50,16 @@ test_cases:
   - query: '{type="free", instance!="demo.promlabs.com:10000"}'
   - query: '{__name__=~".*"}'
     should_fail: true
+    # Regex-only `__name__` matchers carry no literal name for cerberus's
+    # table heuristic, so the scan must fan across the gauge AND sum
+    # tables. `demo_cpu_usage_seconds_total` is seeded into
+    # `otel_metrics_sum`: before the fan-out cerberus scanned only the
+    # gauge table and returned empty while reference Prometheus returned
+    # the 9 cpu series. The negated form must likewise exclude matching
+    # series from BOTH tables, not just the gauge arm.
+  - query: '{__name__=~"demo_cpu_usage_seconds.*"}'
+  - query: '{__name__=~"demo_memory_usage_byte.+"}'
+  - query: '{job="demo", __name__!~"demo_cpu_usage_seconds.*"}'
   - query: "nonexistent_metric_name"
   - query: 'demo_memory_usage_bytes offset {{.offset}}'
     variant_args: ['offset']

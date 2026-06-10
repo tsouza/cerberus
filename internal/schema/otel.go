@@ -492,6 +492,30 @@ func (m Metrics) TablesFor(metricName string) []string {
 	// Unsuffixed name: could be Gauge (the v0.1 default) OR Sum (the
 	// OTel-hostmetrics / sqlquery shape). Fan the scan across both so
 	// the matcher finds rows wherever the upstream emitter dropped them.
+	return m.TablesForUnknownName()
+}
+
+// TablesForUnknownName returns the candidate tables for a selector whose
+// `__name__` cannot be pinned to a literal at plan time — a regex
+// matcher (`{__name__=~".*inflight.*"}`), a negated matcher, or no
+// `__name__` matcher at all. The suffix heuristics in [Metrics.TablesFor]
+// need a concrete name to dispatch on; without one, the only safe
+// plain-Sample candidate set is the same (Gauge, Sum) pair the
+// unsuffixed arm returns: Gauge first for byte-stable SQL on
+// gauge-only deployments, Sum second so metrics the OTel emitters
+// store as cumulative sums under bare names (`cerberus_query_inflight`,
+// `system_*`, `otelcol_*`) resolve too. Grafana's Metrics Drilldown
+// breakdown tab sends `match[]={__name__=~".*<metric>.*"}` for every
+// metric, so a gauge-only fallback here silently blanks the breakdown
+// surface for every sum-stored metric.
+//
+// The histogram / exp-histogram tables cannot join this candidate set:
+// their row shape (Count / Sum / BucketCounts, no Value column) is
+// disjoint from the Sample contract the `merge()` fan-out requires, so
+// surfacing classic-histogram series under regex name matchers needs
+// the per-arm UnionAll lowering (see the `_count` / `_sum` companion
+// path) — out of scope for the unknown-name fan-out.
+func (m Metrics) TablesForUnknownName() []string {
 	if m.SumTable != "" && m.SumTable != m.GaugeTable {
 		return []string{m.GaugeTable, m.SumTable}
 	}

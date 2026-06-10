@@ -146,7 +146,15 @@ func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCt
 	// route to a single table via TableFor; histogram-companion +
 	// bucket selectors below override to the histogram table without
 	// touching the union path. Existing fixtures stay byte-stable.
-	tables := []string{s.GaugeTable}
+	//
+	// When the selector carries no MatchEqual `__name__` (a regex name
+	// matcher, a negated matcher, or no name matcher at all) the scan
+	// fans across the same (Gauge, Sum) pair the unsuffixed arm uses —
+	// see schema.Metrics.TablesForUnknownName. A gauge-only fallback
+	// here made `{__name__=~".*cerberus_query_inflight.*"}` (the exact
+	// shape Grafana's Metrics Drilldown breakdown tab sends) return
+	// empty for every sum-stored metric.
+	tables := s.TablesForUnknownName()
 	if metricName != "" {
 		tables = s.TablesFor(metricName)
 	}
@@ -1151,10 +1159,20 @@ func matcherToExpr(m *labels.Matcher, s schema.Metrics) chplan.Expr {
 //     (a user excluding the advertised alias expects the dotted
 //     storage rows excluded too — the candidates are one logical
 //     series set, so the negation must reject every spelling).
-//   - regex matchers (`=~` / `!~`) keep the single-comparison shape
-//     against the raw stored name: a regex is an explicit user-chosen
-//     pattern and re-expanding it across the candidate powerset would
-//     change its meaning.
+//   - `__name__=~"<re>"`  → `match(MetricName, re) OR
+//     match(replaceRegexpAll(MetricName, '[^a-zA-Z0-9_:]', '_'), re)`.
+//     The regex cannot be re-expanded across the candidate powerset
+//     (that would change its meaning), so instead the COLUMN side is
+//     normalised: the second arm mirrors `format.OTelToPromMetric` in
+//     SQL so an underscored pattern (`.*container_cpu_usage.*`, the
+//     exact shape Grafana's Metrics Drilldown breakdown tab sends for
+//     every catalog-advertised name) matches rows whose stored name is
+//     still dotted (`container.cpu.usage`). The leading-digit `_`
+//     prefix `OTelToPromMetric` applies is not mirrored — OTel metric
+//     names never start with a digit.
+//   - `__name__!~"<re>"` → `NOT match(MetricName, re) AND NOT
+//     match(<normalised>, re)`: the raw and normalised spellings are
+//     one logical series set, so the negation must reject both.
 //
 // Values with no rewritable underscore (`up`, `gen`) — and values that
 // produce a single candidate — keep the legacy single-comparison
@@ -1162,11 +1180,39 @@ func matcherToExpr(m *labels.Matcher, s schema.Metrics) chplan.Expr {
 // `isCheapPredicate`-shaped (Binary over ColumnRef / LitString), so
 // the optimizer's PREWHERE promotion treats it exactly like the
 // single equality it replaces.
+// promMetricNormalizePattern is the SQL-side mirror of
+// [format.OTelToPromMetric]: every byte outside the Prom metric-name
+// grammar `[a-zA-Z0-9_:]` is rewritten to `_`. Used by the regex
+// `__name__` arm of [metricNamePredicate] to compare the
+// Prom-normalised spelling of a stored (possibly dotted) MetricName
+// against the user's regex. Keep in lock-step with the Go-side
+// normaliser in internal/api/format/otelname.go.
+const promMetricNormalizePattern = "[^a-zA-Z0-9_:]"
+
 func metricNamePredicate(m *labels.Matcher, s schema.Metrics) chplan.Expr {
 	single := &chplan.Binary{
 		Op:    matchOp(m.Type),
 		Left:  &chplan.ColumnRef{Name: s.MetricNameColumn},
 		Right: &chplan.LitString{V: m.Value},
+	}
+	if m.Type == labels.MatchRegexp || m.Type == labels.MatchNotRegexp {
+		normalized := &chplan.Binary{
+			Op: matchOp(m.Type),
+			Left: &chplan.FuncCall{
+				Name: "replaceRegexpAll",
+				Args: []chplan.Expr{
+					&chplan.ColumnRef{Name: s.MetricNameColumn},
+					&chplan.LitString{V: promMetricNormalizePattern},
+					&chplan.LitString{V: "_"},
+				},
+			},
+			Right: &chplan.LitString{V: m.Value},
+		}
+		fold := chplan.OpOr
+		if m.Type == labels.MatchNotRegexp {
+			fold = chplan.OpAnd
+		}
+		return &chplan.Binary{Op: fold, Left: single, Right: normalized}
 	}
 	if m.Type != labels.MatchEqual && m.Type != labels.MatchNotEqual {
 		return single
