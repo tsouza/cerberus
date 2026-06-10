@@ -193,6 +193,21 @@ func (b *breaker) record(ctx context.Context, err error) {
 		return
 	}
 
+	// A ClickHouse MEMORY_LIMIT_EXCEEDED rejection (code 241) is a
+	// per-query resource cap doing its job, not CH being down: the
+	// server answered with a typed exception, which is positive proof
+	// it is alive and healthy. Count it as a SUCCESS so a burst of
+	// over-broad queries (e.g. several wide-window matrix panels fired
+	// concurrently by a dashboard refresh) can never trip the breaker
+	// and 503 unrelated traffic. This mirrors the sample-budget
+	// contract (ErrTooManySamples), which stays out of the failure
+	// count by construction because it surfaces post-open via
+	// cursor.Err(); the memory cap can additionally reject at query
+	// open, so it needs the explicit filter here.
+	if err != nil && isMemoryLimitExceeded(err) {
+		err = nil
+	}
+
 	// Client-initiated cancellation is not a ClickHouse health
 	// signal: the caller walked away before the backend answered.
 	// Grafana aborts every in-flight panel query on dashboard

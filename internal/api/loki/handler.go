@@ -392,6 +392,29 @@ func classifyEngineErr(err error) error {
 			Status: http.StatusBadRequest,
 		}
 	}
+	// ClickHouse memory-limit abort (code 241, MEMORY_LIMIT_EXCEEDED):
+	// the server-side sibling of the sample budget above — the
+	// per-query `max_memory_usage` cap (CERBERUS_CH_QUERY_MAX_MEMORY)
+	// or a CH server-side limit rejected the query. Same Loki-style
+	// limit rejection: HTTP 400 bad_data with a "maximum ... reached
+	// for a single query" message — NOT a 5xx, ClickHouse is healthy
+	// when it enforces a cap (the chclient breaker treats code 241 as
+	// a success for the same reason).
+	var memLimit *chclient.MemoryLimitError
+	if errors.As(err, &memLimit) {
+		msg := "maximum memory usage reached for a single query; consider reducing the query range or resolution"
+		if memLimit.Limit > 0 {
+			msg = fmt.Sprintf(
+				"maximum memory usage (%d bytes) reached for a single query; consider reducing the query range or resolution",
+				memLimit.Limit,
+			)
+		}
+		return &apiError{
+			Kind:   ErrBadData,
+			Err:    errors.New(msg),
+			Status: http.StatusBadRequest,
+		}
+	}
 	var apiErr *apiError
 	if errors.As(err, &apiErr) {
 		return apiErr

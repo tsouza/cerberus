@@ -156,6 +156,15 @@ services:
       # safe inside the cerberus-dev docker network.
       CERBERUS_OTLP_ENDPOINT: "otel-collector:4317"
       CERBERUS_OTLP_INSECURE: "true"
+      # CERBERUS_CH_QUERY_MAX_MEMORY   per-query ClickHouse memory cap
+      # (`max_memory_usage` on every data-plane query). 1 GiB, matching
+      # the binary default and the k3d stack
+      # (test/e2e/k3s/cerberus.yaml) — set explicitly for stack parity.
+      # A query over the cap gets a deterministic resource-exhausted
+      # rejection (prom 422 / loki 400 / tempo 422) instead of racing
+      # ClickHouse's server-total cap into a mid-stream 502 (k3d run
+      # 27277793810).
+      CERBERUS_CH_QUERY_MAX_MEMORY: "1073741824"
     depends_on:
       clickhouse:
         condition: service_healthy

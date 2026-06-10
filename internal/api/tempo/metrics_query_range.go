@@ -370,6 +370,11 @@ func classifyMetricsQueryRangeErr(err error) int {
 	if errors.Is(err, chclient.ErrTooManySamples) {
 		return http.StatusUnprocessableEntity
 	}
+	// CH memory-limit abort (code 241) → 422, mirroring
+	// classifySearchErr in handler.go; see the rationale there.
+	if errors.Is(err, chclient.ErrMemoryLimitExceeded) {
+		return http.StatusUnprocessableEntity
+	}
 	if strings.Contains(err.Error(), "engine: execute:") {
 		return http.StatusBadGateway
 	}

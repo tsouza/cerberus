@@ -294,6 +294,12 @@ func classifySearchErr(err error) int {
 	// chclient budget message including the configured limit.
 	case errors.Is(err, chclient.ErrTooManySamples):
 		return http.StatusUnprocessableEntity
+	// ClickHouse memory-limit abort (code 241) — the server-side
+	// sibling of the sample budget: a per-query resource rejection,
+	// not a transport failure. 422 like the budget; the error body
+	// carries the chclient message naming the configured cap.
+	case errors.Is(err, chclient.ErrMemoryLimitExceeded):
+		return http.StatusUnprocessableEntity
 	case errors.Is(err, errParseStage):
 		return http.StatusBadRequest
 	case errors.Is(err, errLowerStage):
@@ -462,6 +468,11 @@ func classifyTraceByIDErr(err error) int {
 	// Sample-budget exceedance → 422, mirroring classifySearchErr; see
 	// the rationale there.
 	if errors.Is(err, chclient.ErrTooManySamples) {
+		return http.StatusUnprocessableEntity
+	}
+	// CH memory-limit abort (code 241) → 422, mirroring
+	// classifySearchErr; see the rationale there.
+	if errors.Is(err, chclient.ErrMemoryLimitExceeded) {
 		return http.StatusUnprocessableEntity
 	}
 	if strings.Contains(err.Error(), "engine: execute:") {

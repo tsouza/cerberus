@@ -499,6 +499,40 @@ func tooManySamplesAPIError() *apiError {
 	}
 }
 
+// promMemoryLimitMessage is the CH-side sibling of
+// promMaxSamplesMessage: the wire message for a query ClickHouse
+// aborted with MEMORY_LIMIT_EXCEEDED (code 241). There is no upstream
+// Prometheus message to mirror verbatim here (Prometheus has no
+// server-side SQL engine), so the message keeps Prometheus's
+// resource-exhausted phrasing style and honestly names the ClickHouse
+// per-query memory cap that fired. When no per-query cap is configured
+// (CERBERUS_CH_QUERY_MAX_MEMORY=0) the rejection came from a ClickHouse
+// server-side limit and the message says so without inventing a cap.
+func promMemoryLimitMessage(limit int64) string {
+	if limit > 0 {
+		return fmt.Sprintf(
+			"query processing would use too much memory in query execution (ClickHouse memory limit exceeded; per-query cap %d bytes)",
+			limit,
+		)
+	}
+	return "query processing would use too much memory in query execution (ClickHouse memory limit exceeded)"
+}
+
+// memoryLimitAPIError is the resource-exhausted rejection for a
+// ClickHouse memory-limit abort: HTTP 422, errorType "execution" —
+// the exact wire shape of the sample-budget rejection (#746), because
+// the two are the same class of error (per-query resource cap, CH
+// healthy, breaker-neutral). Shared by classifyEngineError (open-time
+// 241 surfacing through engine.Query) and classifyDrainError
+// (mid-stream 241 surfacing via cursor.Err() — k3d run 27277793810).
+func memoryLimitAPIError(e *chclient.MemoryLimitError) *apiError {
+	return &apiError{
+		Kind:   ErrExecution,
+		Err:    errors.New(promMemoryLimitMessage(e.Limit)),
+		Status: http.StatusUnprocessableEntity,
+	}
+}
+
 // classifyDrainError maps errors surfaced while draining a query_range
 // cursor (matrixFromCursor → cursor.Err()). The sample-budget sentinel
 // becomes the Prometheus-parity 422; everything else keeps the
@@ -508,6 +542,10 @@ func tooManySamplesAPIError() *apiError {
 func classifyDrainError(err error) error {
 	if errors.Is(err, chclient.ErrTooManySamples) {
 		return tooManySamplesAPIError()
+	}
+	var memLimit *chclient.MemoryLimitError
+	if errors.As(err, &memLimit) {
+		return memoryLimitAPIError(memLimit)
 	}
 	return &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
 }
@@ -542,6 +580,15 @@ func classifyEngineError(err error) error {
 	// errorType=execution with the upstream wire message.
 	if errors.Is(err, chclient.ErrTooManySamples) {
 		return tooManySamplesAPIError()
+	}
+	// ClickHouse memory-limit abort (code 241): the same
+	// resource-exhausted class as the sample budget, surfaced from the
+	// server side instead of the client-side drain. 422
+	// errorType=execution; never a 5xx — CH is healthy when it
+	// enforces a cap.
+	var memLimit *chclient.MemoryLimitError
+	if errors.As(err, &memLimit) {
+		return memoryLimitAPIError(memLimit)
 	}
 	var ps *parseStageError
 	if errors.As(err, &ps) {

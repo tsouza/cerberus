@@ -38,6 +38,19 @@ data:
   # errorType=execution rejection instead of OOMKilling the pod —
   # the query-of-death loop from run 27269987620.
   CERBERUS_QUERY_MAX_SAMPLES: "5000000"
+  # Per-query ClickHouse memory cap (the `max_memory_usage` setting
+  # chclient stamps on every data-plane query). The sample budget
+  # above bounds cerberus-process memory; this bounds CLICKHOUSE-
+  # process memory for a single query. Run 27277793810: the
+  # iterate-time-ranges 24h/15s matrix tuple demanded 2.12 GiB inside
+  # ClickHouse and tripped the server-total cap (1.80 GiB) mid-stream,
+  # surfacing as a 502 errorType=internal. With the explicit 1 GiB
+  # per-query cap the same tuple gets the deterministic 422
+  # errorType=execution resource-exhausted rejection instead (the
+  # pinned contract in iterate-time-ranges.spec.ts). Matches the
+  # binary default — set explicitly for parity with docker-compose.yml
+  # and so the cap survives a default change.
+  CERBERUS_CH_QUERY_MAX_MEMORY: "1073741824"
 ---
 apiVersion: v1
 kind: Service

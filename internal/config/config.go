@@ -140,6 +140,7 @@ type OTLPConfig struct {
 //	CERBERUS_CH_PASSWORD           default ""
 //	CERBERUS_CH_DIAL_TIMEOUT       default "5s"
 //	CERBERUS_QUERY_MAX_SAMPLES     default 50000000 (0 disables the budget)
+//	CERBERUS_CH_QUERY_MAX_MEMORY   default 1073741824 bytes = 1GiB (0 = don't set)
 //	CERBERUS_AUTO_CREATE_SCHEMA    default "false"
 //	CERBERUS_LOG_FORMAT            default "text"  ("text" | "json")
 //	CERBERUS_LOG_LEVEL             default "info"  ("debug" | "info" | "warn" | "error")
@@ -181,6 +182,13 @@ func FromEnv() (Config, error) {
 	if maxSamples < 0 {
 		return Config{}, fmt.Errorf("CERBERUS_QUERY_MAX_SAMPLES: must be >= 0, got %d", maxSamples)
 	}
+	maxMemory, err := envInt64("CERBERUS_CH_QUERY_MAX_MEMORY", defaultCHQueryMaxMemory)
+	if err != nil {
+		return Config{}, fmt.Errorf("CERBERUS_CH_QUERY_MAX_MEMORY: %w", err)
+	}
+	if maxMemory < 0 {
+		return Config{}, fmt.Errorf("CERBERUS_CH_QUERY_MAX_MEMORY: must be >= 0, got %d", maxMemory)
+	}
 	logCfg, err := envLog()
 	if err != nil {
 		return Config{}, err
@@ -196,12 +204,13 @@ func FromEnv() (Config, error) {
 	return Config{
 		HTTPAddr: envDefault("CERBERUS_HTTP_ADDR", ":8080"),
 		ClickHouse: chclient.Config{
-			Addr:            envDefault("CERBERUS_CH_ADDR", "localhost:9000"),
-			Database:        envDefault("CERBERUS_CH_DATABASE", "otel"),
-			Username:        envDefault("CERBERUS_CH_USERNAME", "default"),
-			Password:        envDefault("CERBERUS_CH_PASSWORD", ""),
-			DialTimeout:     dial,
-			MaxQuerySamples: maxSamples,
+			Addr:                envDefault("CERBERUS_CH_ADDR", "localhost:9000"),
+			Database:            envDefault("CERBERUS_CH_DATABASE", "otel"),
+			Username:            envDefault("CERBERUS_CH_USERNAME", "default"),
+			Password:            envDefault("CERBERUS_CH_PASSWORD", ""),
+			DialTimeout:         dial,
+			MaxQuerySamples:     maxSamples,
+			MaxQueryMemoryBytes: maxMemory,
 		},
 		Schema:           schema.DefaultOTelMetricsFromEnv(),
 		Logs:             schema.DefaultOTelLogsFromEnv(),
@@ -224,6 +233,15 @@ func FromEnv() (Config, error) {
 // should set CERBERUS_QUERY_MAX_SAMPLES well below the default — the
 // k3d e2e stack runs at 5,000,000.
 const defaultQueryMaxSamples int64 = 50_000_000
+
+// defaultCHQueryMaxMemory is the default ClickHouse per-query memory
+// cap (the `max_memory_usage` setting chclient stamps on every
+// data-plane query): 1 GiB. Chosen so a single over-broad query (the
+// 24h/15s matrix tuple from k3d run 27277793810 demanded 2.12 GiB)
+// gets a deterministic resource-exhausted rejection instead of racing
+// ClickHouse's server-total cap mid-stream and 502-ing. 0 disables the
+// setting entirely (ClickHouse server defaults apply).
+const defaultCHQueryMaxMemory int64 = 1 << 30 // 1073741824 bytes
 
 // Default per-handler concurrency caps. Tempo gets a smaller cap
 // because trace queries (search + tag-value scans + per-trace span
