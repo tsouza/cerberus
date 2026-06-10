@@ -13,6 +13,21 @@ upstream_repo:     github.com/grafana/loki
 upstream_tag:      v3.7.0
 upstream_commit:   3361de24b692875d77bd7433cd6baa7c68dc0ef9
 
+local_patches:
+  # query_registry.go: loadFile() defaults Kind BEFORE Directions and
+  # infers a missing `kind` from the query shape (inferQueryKind, via
+  # syntax.ParseExpr on a placeholder-substituted query). Upstream
+  # (verified identical on grafana/loki main as of 2026-06-10) defaults
+  # Directions first, gated on `Kind == "log"`, so a definition with
+  # neither `kind` nor `directions` gets Directions="" and ExpandQuery
+  # emits ZERO test cases — eight metric-shaped definitions in
+  # queries/exhaustive/aggregations.yaml silently vanished from the
+  # corpus. Candidate for an upstream contribution; re-apply (or drop,
+  # if upstream fixed it) on the next snapshot bump. The driver's
+  # zero-expansion rail (cmd/loki-compliance-tester checkExpansion)
+  # hard-fails if a bump reintroduces the bug.
+  - query_registry.go
+
 vendored_paths:
   - pkg/logql/bench/queries/fast/*.yaml
   # PR 6 (docs/loki-compliance-plan.md) widened the corpus to include

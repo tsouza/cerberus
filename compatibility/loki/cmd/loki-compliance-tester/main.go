@@ -258,6 +258,9 @@ func loadCases(f flags, isInstant bool) ([]loadedCase, error) {
 			})
 			continue
 		}
+		if err := checkExpansion(def, len(expanded)); err != nil {
+			return nil, err
+		}
 		for _, tc := range expanded {
 			cases = append(cases, loadedCase{def: def, tc: tc})
 		}
@@ -277,6 +280,26 @@ func loadCases(f flags, isInstant bool) ([]loadedCase, error) {
 		cases = filtered
 	}
 	return cases, nil
+}
+
+// checkExpansion is the zero-expansion rail: a corpus query definition
+// that expands to zero test cases would silently vanish from the score
+// denominator — exactly what happened when the vendored registry
+// defaulted Directions before Kind and eight metric-shaped definitions
+// in exhaustive/aggregations.yaml expanded to nothing, invisible to
+// both the score and the upstream-skip baseline. Every definition the
+// driver loads (runnable by default; upstream-skipped too under
+// -include-skipped) must contribute at least one case, so a regression
+// here is a hard error naming the definition, not a quietly smaller
+// total.
+func checkExpansion(def bench.QueryDefinition, n int) error {
+	if n > 0 {
+		return nil
+	}
+	return fmt.Errorf(
+		"query definition %q (%s) expanded to zero test cases (kind=%q directions=%q); refusing to run with a silently shrunken corpus",
+		def.Description, def.Source, def.Kind, def.Directions,
+	)
 }
 
 // loadAllQueriesAndSplit reuses the bench registry to load every
