@@ -302,6 +302,121 @@ func TestRejectedCounter(t *testing.T) {
 	}
 }
 
+// rejectedStreams collects every cerberus_admit_rejected_total data
+// point from a manual-reader snapshot, keyed by its
+// "<cerberus.ql>/<reason>" attribute pair. Returning a map (rather
+// than a flat sum) lets callers assert both the per-stream value and
+// the *number* of distinct streams — the dashboard's
+// `sum by (cerberus_ql, reason)` panel renders one series per key,
+// so a stray second stream with mismatched attributes is itself a
+// bug worth failing on.
+func rejectedStreams(t *testing.T, reader *metric.ManualReader) map[string]int64 {
+	t.Helper()
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(t.Context(), &rm); err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	streams := map[string]int64{}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != "cerberus_admit_rejected_total" {
+				continue
+			}
+			sumData, ok := m.Data.(metricdata.Sum[int64])
+			if !ok {
+				t.Fatalf("rejected_total data: want Sum[int64], got %T", m.Data)
+			}
+			if !sumData.IsMonotonic {
+				t.Fatalf("rejected_total: want monotonic sum (counter), got non-monotonic")
+			}
+			for _, dp := range sumData.DataPoints {
+				ql, ok := dp.Attributes.Value("cerberus.ql")
+				if !ok {
+					t.Fatalf("rejected_total data point missing cerberus.ql attribute: %v", dp.Attributes.ToSlice())
+				}
+				reason, ok := dp.Attributes.Value("reason")
+				if !ok {
+					t.Fatalf("rejected_total data point missing reason attribute: %v", dp.Attributes.ToSlice())
+				}
+				key := ql.AsString() + "/" + reason.AsString()
+				if _, dup := streams[key]; dup {
+					t.Fatalf("rejected_total: duplicate stream for %q in one collection", key)
+				}
+				streams[key] = dp.Value
+			}
+		}
+	}
+	return streams
+}
+
+// TestRejectedCounterZeroInitializedAtConstruction pins the fix for
+// the cerberus-self dashboard's "Admission rejections" panel showing
+// "No data" on healthy deployments: OTel sync counters export
+// nothing until their first Add, so the limiter must pre-register
+// its (cerberus.ql, reason) stream at 0 when constructed — before
+// any Acquire runs, let alone any rejection. This asserts what the
+// consumer actually renders: one 0-valued cumulative stream per
+// head, with exactly the label set the panel groups by.
+func TestRejectedCounterZeroInitializedAtConstruction(t *testing.T) {
+	t.Parallel()
+	reader := metric.NewManualReader()
+	mp := metric.NewMeterProvider(metric.WithReader(reader))
+
+	// Construct all three heads; never call Acquire.
+	for _, head := range []string{"prom", "loki", "tempo"} {
+		if l := admit.NewWithProvider(head, 4, mp); l == nil {
+			t.Fatalf("NewWithProvider(%q): want limiter, got nil", head)
+		}
+	}
+
+	streams := rejectedStreams(t, reader)
+	if len(streams) != 3 {
+		t.Fatalf("want exactly 3 zero-init streams, got %d: %v", len(streams), streams)
+	}
+	for _, ql := range []string{"promql", "logql", "traceql"} {
+		key := ql + "/" + admit.ReasonCapExceeded
+		got, ok := streams[key]
+		if !ok {
+			t.Errorf("missing zero-init stream %q (panel would show No data for this head)", key)
+			continue
+		}
+		if got != 0 {
+			t.Errorf("stream %q: want 0 before any rejection, got %d", key, got)
+		}
+	}
+}
+
+// TestRejectedCounterZeroInitSharesStreamWithHotPath pins that the
+// zero-init at construction and the Add on the Acquire rejection
+// path use the *same* attribute set: after a forced rejection the
+// pre-registered stream must read 1 — not stay at 0 next to a
+// second, differently-labelled stream the dashboard would render as
+// a separate series.
+func TestRejectedCounterZeroInitSharesStreamWithHotPath(t *testing.T) {
+	t.Parallel()
+	reader := metric.NewManualReader()
+	mp := metric.NewMeterProvider(metric.WithReader(reader))
+
+	l := admit.NewWithProvider("prom", 1, mp)
+	rel, ok := l.Acquire(t.Context())
+	if !ok {
+		t.Fatalf("acquire 1: want ok")
+	}
+	defer rel()
+	if _, ok := l.Acquire(t.Context()); ok {
+		t.Fatalf("acquire 2: want reject")
+	}
+
+	streams := rejectedStreams(t, reader)
+	if len(streams) != 1 {
+		t.Fatalf("want exactly 1 stream (zero-init and hot path must share attributes), got %d: %v", len(streams), streams)
+	}
+	key := "promql/" + admit.ReasonCapExceeded
+	if got := streams[key]; got != 1 {
+		t.Fatalf("stream %q: want 1 after one rejection, got %d", key, got)
+	}
+}
+
 // fakeServerStream is the minimal grpc.ServerStream stub the
 // StreamInterceptor tests need to drive the interceptor through its
 // Acquire/Release/Reject paths without standing up a real gRPC

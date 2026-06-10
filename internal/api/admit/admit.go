@@ -57,7 +57,11 @@ const attrReason = attribute.Key("reason")
 
 // ReasonCapExceeded is emitted on the reason attribute when Acquire
 // is called while the limiter's semaphore is saturated. It's the only
-// rejection path the limiter has today.
+// rejection path the limiter has today, and newWithProvider
+// pre-registers its (cerberus.ql, reason) stream at 0 when the
+// Limiter is constructed — see the zero-init note there. Future
+// reason values must be pre-registered the same way so dashboards
+// see a 0-valued series instead of "No data" on healthy replicas.
 const ReasonCapExceeded = "cap_exceeded"
 
 // headToQL maps the API-head identifier ("prom" / "loki" / "tempo")
@@ -136,9 +140,24 @@ func newWithProvider(head string, cap int, mp metric.MeterProvider) *Limiter {
 		// the counter.
 		panic("admit: build rejected counter: " + err.Error())
 	}
+	ql := headToQL(head)
+	// Zero-initialize the rejection stream for the one label set
+	// Acquire records to. OTel synchronous counters export no data
+	// until their first Add, so without this a healthy replica that
+	// never saturates its cap exports no
+	// cerberus_admit_rejected_total stream at all and the dashboard's
+	// `sum by (cerberus_ql, reason) (rate(...))` panel renders
+	// "No data" instead of a flat 0. Pre-registering at construction
+	// follows the standard Prometheus practice for counters whose
+	// label sets are known in advance: the cumulative stream exists
+	// from process start, so rate() resolves to 0 per head.
+	rejected.Add(context.Background(), 0, metric.WithAttributes(
+		attrQL.String(ql),
+		attrReason.String(ReasonCapExceeded),
+	))
 	return &Limiter{
 		head:     head,
-		ql:       headToQL(head),
+		ql:       ql,
 		sem:      semaphore.NewWeighted(int64(cap)),
 		rejected: rejected,
 	}
