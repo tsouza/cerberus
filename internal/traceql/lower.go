@@ -503,6 +503,10 @@ func lowerFieldExpr(e traceql.FieldExpression, s schema.Traces) (chplan.Expr, er
 	switch v := e.(type) {
 	case *traceql.BinaryOperation:
 		return lowerBinaryOperation(v, s)
+	case *traceql.UnaryOperation:
+		return lowerUnaryOperation(*v, s)
+	case traceql.UnaryOperation:
+		return lowerUnaryOperation(v, s)
 	case *traceql.Attribute:
 		return lowerAttributeExpr(*v, s)
 	case traceql.Attribute:
@@ -513,6 +517,66 @@ func lowerFieldExpr(e traceql.FieldExpression, s schema.Traces) (chplan.Expr, er
 		return lowerStatic(v)
 	}
 	return nil, fmt.Errorf("traceql: field expression %T is unsupported", e)
+}
+
+// lowerUnaryOperation handles the unary FieldExpression forms.
+//
+// `<attr> != nil` and `nil != <attr>` parse to UnaryOperation{OpExists}
+// and `<attr> = nil` / `nil = <attr>` to UnaryOperation{OpNotExists}
+// (the grammar rewrites the nil comparison — see upstream expr.y).
+// Grafana's first-party Traces Drilldown app (preinstalled since
+// Grafana 12.x) issues `resource.service.name != nil` on every
+// breakdown view, so the existence test is a load-bearing shape.
+//
+// Existence lowers to ClickHouse `mapContains(<carrier>, '<key>')`
+// against the Map(String, String) attribute carrier for the
+// attribute's scope (SpanAttributes / ResourceAttributes — the same
+// scope mapping lowerAttribute uses). Intrinsics are rejected: OTel-CH
+// materialises every intrinsic as a non-nullable column, so an
+// existence probe on one is almost certainly a query bug — surfacing
+// the gap beats inventing always-true SQL.
+func lowerUnaryOperation(u traceql.UnaryOperation, s schema.Traces) (chplan.Expr, error) {
+	switch u.Op {
+	case traceql.OpExists, traceql.OpNotExists:
+		attr, ok := fieldExprAttribute(u.Expression)
+		if !ok {
+			return nil, fmt.Errorf("traceql: %s operand %T is unsupported — nil comparisons require an attribute reference", u.Op, u.Expression)
+		}
+		if attr.Intrinsic != traceql.IntrinsicNone {
+			return nil, fmt.Errorf("traceql: nil comparison on intrinsic %s is unsupported — OTel-CH intrinsic columns are always present", attr.Intrinsic)
+		}
+		if attr.Scope == traceql.AttributeScopeLink || attr.Scope == traceql.AttributeScopeEvent {
+			return nil, fmt.Errorf("traceql: nil comparison on %s.%s is unsupported", attr.Scope, attr.Name)
+		}
+		carrier := s.AttributesColumn
+		if attr.Scope == traceql.AttributeScopeResource {
+			carrier = s.ResourceAttributesColumn
+		}
+		contains := &chplan.FuncCall{Name: "mapContains", Args: []chplan.Expr{
+			&chplan.ColumnRef{Name: carrier},
+			&chplan.LitString{V: attr.Name},
+		}}
+		if u.Op == traceql.OpNotExists {
+			return &chplan.FuncCall{Name: "not", Args: []chplan.Expr{contains}}, nil
+		}
+		return contains, nil
+	}
+	return nil, fmt.Errorf("traceql: unary operator %s is unsupported", u.Op)
+}
+
+// fieldExprAttribute unwraps a FieldExpression into its Attribute when
+// it is a bare attribute reference (pointer or value form).
+func fieldExprAttribute(e traceql.FieldExpression) (traceql.Attribute, bool) {
+	switch v := e.(type) {
+	case *traceql.Attribute:
+		if v == nil {
+			return traceql.Attribute{}, false
+		}
+		return *v, true
+	case traceql.Attribute:
+		return v, true
+	}
+	return traceql.Attribute{}, false
 }
 
 // lowerAttributeExpr wraps lowerAttribute with a guard: link- /
@@ -526,6 +590,14 @@ func lowerAttributeExpr(a traceql.Attribute, s schema.Traces) (chplan.Expr, erro
 	if a.Scope == traceql.AttributeScopeLink || a.Scope == traceql.AttributeScopeEvent {
 		return nil, fmt.Errorf("traceql: %s.%s used outside a comparison; only equality / inequality / regex filters on link.* and event.* are supported", a.Scope, a.Name)
 	}
+	// Nested-set intrinsics never resolve to a column: comparisons are
+	// intercepted by lowerNestedSetBinary; any other use would silently
+	// dereference SpanAttributes['nestedSet…'] (which the OTel-CH
+	// exporter never writes) — error instead.
+	switch a.Intrinsic {
+	case traceql.IntrinsicNestedSetParent, traceql.IntrinsicNestedSetLeft, traceql.IntrinsicNestedSetRight:
+		return nil, fmt.Errorf("traceql: intrinsic %s is only supported in root-ness comparisons (e.g. nestedSetParent < 0)", a.Intrinsic)
+	}
 	return lowerAttribute(a, s), nil
 }
 
@@ -533,6 +605,14 @@ func lowerBinaryOperation(b *traceql.BinaryOperation, s schema.Traces) (chplan.E
 	op, err := mapBinaryOp(b.Op)
 	if err != nil {
 		return nil, err
+	}
+	// Nested-set intrinsics (nestedSetParent / nestedSetLeft /
+	// nestedSetRight) have no OTel-CH backing column; intercept them
+	// before generic lowering would mis-resolve the name to a
+	// SpanAttributes map lookup. The root-span idiom
+	// (`nestedSetParent < 0`) lowers exactly; anything else errors.
+	if expr, handled, err := lowerNestedSetBinary(b, op, s); handled {
+		return expr, err
 	}
 	// TraceQL link / event spanset filters live on the OTel-CH `Links` /
 	// `Events` Nested columns. Their predicate shape is
@@ -658,6 +738,163 @@ func isNumericExpr(expr chplan.Expr) bool {
 		return true
 	}
 	return false
+}
+
+// lowerNestedSetBinary intercepts comparisons against the nested-set
+// intrinsics (`nestedSetParent` / `nestedSetLeft` / `nestedSetRight`).
+//
+// Tempo materialises a nested-set tree model per trace at ingest time:
+// every span gets left/right interval bounds plus the parent's left
+// bound, with root spans carrying nestedSetParent == -1 and every
+// non-root span a positive position (>= 1). The OTel-CH schema has no
+// equivalent columns, so cerberus cannot reproduce position values —
+// but it CAN answer every comparison whose truth depends only on
+// root-ness, because root-ness maps exactly to `ParentSpanId = ”`.
+//
+// That covers the documented root-span idiom `nestedSetParent < 0`
+// (what Grafana's Traces Drilldown app stamps on every query as its
+// primary-signal filter) and any other (op, literal) pair whose result
+// is constant across the positive non-root domain. Comparisons that
+// would need real positions (e.g. `nestedSetParent = 5`) error out —
+// surfacing the gap beats returning rows from wrong SQL.
+//
+// Returns handled=false when neither side references a nested-set
+// intrinsic (the caller continues with generic lowering).
+func lowerNestedSetBinary(b *traceql.BinaryOperation, op chplan.BinaryOp, s schema.Traces) (chplan.Expr, bool, error) {
+	attr, lit, flipped := traceql.Attribute{}, traceql.Static{}, false
+	if a, ok := nestedSetIntrinsicAttr(b.LHS); ok {
+		st, ok := fieldExprStatic(b.RHS)
+		if !ok {
+			return nil, true, fmt.Errorf("traceql: %s comparisons support only integer literals", a.Intrinsic)
+		}
+		attr, lit = a, st
+	} else if a, ok := nestedSetIntrinsicAttr(b.RHS); ok {
+		st, ok := fieldExprStatic(b.LHS)
+		if !ok {
+			return nil, true, fmt.Errorf("traceql: %s comparisons support only integer literals", a.Intrinsic)
+		}
+		attr, lit, flipped = a, st, true
+	} else {
+		return nil, false, nil
+	}
+
+	if attr.Intrinsic != traceql.IntrinsicNestedSetParent {
+		return nil, true, fmt.Errorf("traceql: intrinsic %s is unsupported — the OTel ClickHouse schema does not materialise nested-set positions", attr.Intrinsic)
+	}
+	if lit.Type != traceql.TypeInt {
+		return nil, true, fmt.Errorf("traceql: nestedSetParent comparisons support only integer literals, got %s", lit.Type)
+	}
+	v64, _ := lit.Int()
+	v := int64(v64)
+	if flipped {
+		op = flipComparisonOp(op)
+	}
+
+	root, err := evalIntCmp(-1, op, v)
+	if err != nil {
+		return nil, true, err
+	}
+	nonRoot, constant := nonRootCmpConstant(op, v)
+	if !constant {
+		return nil, true, fmt.Errorf("traceql: nestedSetParent %s %d depends on nested-set positions the OTel ClickHouse schema does not materialise — only root-ness tests (e.g. nestedSetParent < 0) are supported", op, v)
+	}
+
+	parentCol := &chplan.ColumnRef{Name: s.ParentSpanIDColumn}
+	empty := &chplan.LitString{V: ""}
+	switch {
+	case root && !nonRoot:
+		return &chplan.Binary{Op: chplan.OpEq, Left: parentCol, Right: empty}, true, nil
+	case !root && nonRoot:
+		return &chplan.Binary{Op: chplan.OpNe, Left: parentCol, Right: empty}, true, nil
+	default:
+		// Same truth value for root and non-root spans — the predicate
+		// is constant over the whole table.
+		return &chplan.LitBool{V: root}, true, nil
+	}
+}
+
+// nestedSetIntrinsicAttr returns the attribute when e references one of
+// the nested-set intrinsics.
+func nestedSetIntrinsicAttr(e traceql.FieldExpression) (traceql.Attribute, bool) {
+	a, ok := fieldExprAttribute(e)
+	if !ok {
+		return traceql.Attribute{}, false
+	}
+	switch a.Intrinsic {
+	case traceql.IntrinsicNestedSetParent, traceql.IntrinsicNestedSetLeft, traceql.IntrinsicNestedSetRight:
+		return a, true
+	}
+	return traceql.Attribute{}, false
+}
+
+// fieldExprStatic unwraps a FieldExpression into its Static literal
+// (pointer or value form).
+func fieldExprStatic(e traceql.FieldExpression) (traceql.Static, bool) {
+	switch v := e.(type) {
+	case *traceql.Static:
+		if v == nil {
+			return traceql.Static{}, false
+		}
+		return *v, true
+	case traceql.Static:
+		return v, true
+	}
+	return traceql.Static{}, false
+}
+
+// evalIntCmp evaluates `a op v` for two int64s. Errors on non-comparison
+// ops (arithmetic / regex / logical never reach the nested-set path
+// with a valid TraceQL parse, but fail loudly rather than guess).
+func evalIntCmp(a int64, op chplan.BinaryOp, v int64) (bool, error) {
+	switch op {
+	case chplan.OpEq:
+		return a == v, nil
+	case chplan.OpNe:
+		return a != v, nil
+	case chplan.OpLt:
+		return a < v, nil
+	case chplan.OpLe:
+		return a <= v, nil
+	case chplan.OpGt:
+		return a > v, nil
+	case chplan.OpGe:
+		return a >= v, nil
+	}
+	return false, fmt.Errorf("traceql: operator %s is unsupported on nestedSetParent", op)
+}
+
+// nonRootCmpConstant reports whether `p op v` has the same truth value
+// for every possible non-root nested-set parent position p (p >= 1),
+// and what that value is. When the result varies with p the comparison
+// needs real nested-set positions and cannot be lowered.
+func nonRootCmpConstant(op chplan.BinaryOp, v int64) (value, constant bool) {
+	switch op {
+	case chplan.OpEq:
+		if v < 1 {
+			return false, true
+		}
+	case chplan.OpNe:
+		if v < 1 {
+			return true, true
+		}
+	case chplan.OpLt:
+		if v <= 1 {
+			return false, true
+		}
+	case chplan.OpLe:
+		if v < 1 {
+			return false, true
+		}
+	case chplan.OpGt:
+		if v < 1 {
+			return true, true
+		}
+	case chplan.OpGe:
+		if v <= 1 {
+			return true, true
+		}
+	}
+	return false, false
 }
 
 // lowerNestedAttrBinary recognises the

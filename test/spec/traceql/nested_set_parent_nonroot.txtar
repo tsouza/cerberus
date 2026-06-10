@@ -1,0 +1,23 @@
+-- query.traceql --
+{ nestedSetParent >= 0 }
+-- sql --
+SELECT * FROM `otel_traces` WHERE (`ParentSpanId` != ?)
+-- args --
+[0] string = ""
+-- seed --
+CREATE TABLE otel_traces (
+    SpanId String,
+    ParentSpanId String
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    ('aaaa', ''),
+    ('bbbb', 'aaaa'),
+    ('cccc', 'bbbb');
+-- expected_rows --
+[
+  ["bbbb", "aaaa"],
+  ["cccc", "bbbb"]
+]
+-- chplan --
+Filter predicate=(ParentSpanId != "")
+  Scan(otel_traces)

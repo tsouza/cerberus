@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
@@ -207,15 +208,32 @@ func (h *Handler) handleMetricsQueryRange(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "", "", errors.New("'start' and 'end' parameters are required"))
 		return
 	}
-	stepStr := r.URL.Query().Get("step")
-	if stepStr == "" {
-		writeError(w, http.StatusBadRequest, "", "", errors.New("missing 'step' parameter"))
-		return
-	}
-	step, err := parseMetricsStep(stepStr)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "", "", err)
-		return
+	// `step` is optional, matching reference Tempo: the query-frontend
+	// defaults a zero step via traceql.DefaultQueryRangeStep (~240
+	// points across the window, see modules/frontend/
+	// metrics_query_range_handler.go). Grafana's Traces Drilldown app
+	// (preinstalled since Grafana 12.x) relies on this — its
+	// issue-detector query omits step entirely.
+	var step time.Duration
+	if stepStr := r.URL.Query().Get("step"); stepStr == "" {
+		ns := upstreamTraceql.DefaultQueryRangeStep(
+			uint64(start.UnixNano()), uint64(end.UnixNano()),
+		)
+		// DefaultQueryRangeStep targets ~240 points across the window,
+		// so ns is far below MaxInt64 for any representable time range;
+		// clamp anyway so the uint64 → Duration conversion is provably
+		// overflow-free (gosec G115).
+		if ns > math.MaxInt64 {
+			ns = math.MaxInt64
+		}
+		step = time.Duration(ns)
+	} else {
+		var err error
+		step, err = parseMetricsStep(stepStr)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "", "", err)
+			return
+		}
 	}
 	// Align the eval grid to the step the way Tempo's api.AlignRequest
 	// does: start rounds down to a step multiple, end rounds up (or
@@ -250,8 +268,16 @@ func (h *Handler) handleMetricsQueryRange(w http.ResponseWriter, r *http.Request
 
 	metrics, ok := unwrapMetricsAggregate(plan)
 	if !ok {
+		// `| histogram_over_time(<attr>)` lowers to its own plan node
+		// (chplan.MetricsHistogramOverTime) because the per-bucket value
+		// is a distribution, not a scalar — route it through the
+		// histogram response shape (one series per (group, __bucket)).
+		if hist, hok := unwrapMetricsHistogram(plan); hok {
+			h.serveMetricsQueryRangeHistogram(ctx, w, q, plan, hist, start, end, step)
+			return
+		}
 		writeError(w, http.StatusBadRequest, "", "",
-			fmt.Errorf("query %q is not a TraceQL metrics-pipeline expression — /api/metrics/query_range requires `| rate()`, `| count_over_time()`, `| *_over_time(...)` or `| quantile_over_time(...)`", q))
+			fmt.Errorf("query %q is not a TraceQL metrics-pipeline expression — /api/metrics/query_range requires `| rate()`, `| count_over_time()`, `| *_over_time(...)`, `| quantile_over_time(...)` or `| histogram_over_time(...)`", q))
 		return
 	}
 
@@ -757,8 +783,14 @@ func metricsLabelNames(m *chplan.MetricsAggregate) []string {
 // into one series, samples sorted ascending by timestamp. Series order
 // is deterministic (sorted by canonical label-set key).
 func toMetricsSeries(samples []chclient.Sample, m *chplan.MetricsAggregate) []MetricsSeries {
-	labelNames := metricsLabelNames(m)
+	return toMetricsSeriesWithNames(samples, metricsLabelNames(m))
+}
 
+// toMetricsSeriesWithNames is the label-name-parameterised core of
+// toMetricsSeries, shared with the histogram_over_time path (whose
+// label-name derivation lives on chplan.MetricsHistogramOverTime
+// rather than MetricsAggregate — see histogramLabelNames).
+func toMetricsSeriesWithNames(samples []chclient.Sample, labelNames []string) []MetricsSeries {
 	type bucket struct {
 		labels  []MetricsLabel
 		samples []MetricsSample
