@@ -44,7 +44,11 @@ func TestRenderSignal_Metrics(t *testing.T) {
 	}
 }
 
-// TestRenderSignal_Logs checks the single logs template renders.
+// TestRenderSignal_Logs checks the single logs template renders with the
+// v0.152.0 schema shape: no TimestampTime column, the new partition/order
+// keys, the materialized resource-attribute columns, and the bloom-filter
+// index branch (HasFullTextSearch=false — the text-index branch needs
+// ClickHouse >= 26.2).
 func TestRenderSignal_Logs(t *testing.T) {
 	cfg := Config{}.withDefaults()
 	stmts, err := renderSignal(cfg, Logs)
@@ -54,11 +58,50 @@ func TestRenderSignal_Logs(t *testing.T) {
 	if got, want := len(stmts), 1; got != want {
 		t.Fatalf("logs: got %d statements, want %d", got, want)
 	}
-	if !strings.Contains(stmts[0], "otel_logs") {
-		t.Errorf("logs: missing table name in:\n%s", stmts[0])
+	logs := stmts[0]
+	if !strings.Contains(logs, "otel_logs") {
+		t.Errorf("logs: missing table name in:\n%s", logs)
 	}
-	if !strings.Contains(stmts[0], "CREATE TABLE IF NOT EXISTS") {
+	if !strings.Contains(logs, "CREATE TABLE IF NOT EXISTS") {
 		t.Errorf("logs: missing IF NOT EXISTS")
+	}
+	if strings.Contains(logs, "TimestampTime") {
+		t.Errorf("logs: TimestampTime column was removed upstream in v0.150.0 and must not render:\n%s", logs)
+	}
+	if !strings.Contains(logs, "PARTITION BY toDate(Timestamp)") {
+		t.Errorf("logs: missing PARTITION BY toDate(Timestamp):\n%s", logs)
+	}
+	if !strings.Contains(logs, "ORDER BY (toStartOfFiveMinutes(Timestamp), ServiceName, Timestamp)") {
+		t.Errorf("logs: missing v0.152.0 ORDER BY key:\n%s", logs)
+	}
+	if strings.Contains(logs, "PRIMARY KEY") {
+		t.Errorf("logs: v0.152.0 schema carries no explicit PRIMARY KEY:\n%s", logs)
+	}
+	// The 8 materialized resource-attribute columns introduced upstream.
+	for _, col := range []string{
+		"`__otel_materialized_k8s.cluster.name`",
+		"`__otel_materialized_k8s.container.name`",
+		"`__otel_materialized_k8s.deployment.name`",
+		"`__otel_materialized_k8s.namespace.name`",
+		"`__otel_materialized_k8s.node.name`",
+		"`__otel_materialized_k8s.pod.name`",
+		"`__otel_materialized_k8s.pod.uid`",
+		"`__otel_materialized_deployment.environment.name`",
+	} {
+		if !strings.Contains(logs, col) {
+			t.Errorf("logs: missing materialized column %s:\n%s", col, logs)
+		}
+	}
+	// HasFullTextSearch=false renders the bloom-filter index branch, not
+	// the TYPE text() branch (which needs ClickHouse >= 26.2).
+	if !strings.Contains(logs, "INDEX idx_trace_id TraceId TYPE bloom_filter(0.001) GRANULARITY 1") {
+		t.Errorf("logs: missing bloom_filter trace-id index:\n%s", logs)
+	}
+	if !strings.Contains(logs, "INDEX idx_lower_body lower(Body) TYPE tokenbf_v1(32768, 3, 0) GRANULARITY 8") {
+		t.Errorf("logs: missing tokenbf_v1 body index:\n%s", logs)
+	}
+	if strings.Contains(logs, "TYPE text(") {
+		t.Errorf("logs: full-text-search index branch must not render with HasFullTextSearch=false:\n%s", logs)
 	}
 }
 
@@ -118,7 +161,7 @@ func TestRenderSignal_CustomConfig(t *testing.T) {
 			if !strings.Contains(stmt, "cerberus_test") {
 				t.Errorf("%s[%d]: custom database not rendered:\n%s", sig, i, stmt)
 			}
-			if !strings.Contains(stmt, `ON CLUSTER "my_cluster"`) {
+			if !strings.Contains(stmt, "ON CLUSTER `my_cluster`") {
 				t.Errorf("%s[%d]: cluster clause not rendered:\n%s", sig, i, stmt)
 			}
 		}
@@ -136,7 +179,7 @@ func TestRenderSignal_CustomConfig(t *testing.T) {
 		}
 	}
 	logs, _ := renderSignal(cfg, Logs)
-	if !strings.Contains(logs[0], "TTL TimestampTime + toIntervalDay(2)") {
+	if !strings.Contains(logs[0], "TTL toDateTime(Timestamp) + toIntervalDay(2)") {
 		t.Errorf("logs: TTL not rendered:\n%s", logs[0])
 	}
 	traces, _ := renderSignal(cfg, Traces)
