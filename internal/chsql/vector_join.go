@@ -58,7 +58,12 @@ func (e *emitter) emitVectorJoin(j *chplan.VectorJoin) error {
 		Select(
 			outputMetricNameFrag(j, outerSide),
 			outputAttributesFrag(j),
-			qualColFrag(outerSide, j.TimestampColumn),
+			// Aliased for the same reason as the Attributes slot in
+			// writeOutputAttributes: an unaliased `R.TimeUnix`
+			// projection keeps the `R.` qualifier in its output
+			// column name, breaking every wrapping SELECT for
+			// group_right (outerSide == "R").
+			As(qualColFrag(outerSide, j.TimestampColumn), j.TimestampColumn),
 			vectorJoinValueExprFrag(j),
 		).
 		From(aliasedFrag(leftFrag, "L")).
@@ -362,12 +367,20 @@ func writeOutputAttributes(b *Builder, j *chplan.VectorJoin) {
 	if manySide == "" || len(j.Include) == 0 {
 		// Either CardOneToOne or bare group_left/right — output is
 		// the "many" side's Attributes (L for OneToOne and ManyToOne,
-		// R for OneToMany).
+		// R for OneToMany). The explicit `AS Attributes` alias is
+		// load-bearing for the R side: ClickHouse keeps the `R.`
+		// qualifier in the output column name of an unaliased
+		// right-table projection (the left side collapses to the bare
+		// column name), so without the alias every wrapping SELECT
+		// fails with "Unknown expression identifier 'Attributes'" —
+		// the group_right bug the showcase-promql sweep surfaced.
 		side := "L"
 		if manySide == "R" {
 			side = "R"
 		}
 		writeSideCol(b, side, j.AttributesColumn)
+		b.writeSQL(" AS ")
+		b.Ident(j.AttributesColumn)
 		return
 	}
 
