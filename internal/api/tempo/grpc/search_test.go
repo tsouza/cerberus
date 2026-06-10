@@ -198,7 +198,10 @@ func TestSearch_FrameBatching(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	t.Cleanup(cancel)
-	stream, err := client.Search(ctx, &tempopb.SearchRequest{Query: "{}"})
+	// Limit must cover all 45 traces — Search honours
+	// SearchRequest.Limit (default 20, mirroring HTTP `limit`), which
+	// would otherwise truncate the stream to a single frame.
+	stream, err := client.Search(ctx, &tempopb.SearchRequest{Query: "{}", Limit: total})
 	if err != nil {
 		t.Fatalf("open stream: %v", err)
 	}
@@ -510,5 +513,99 @@ func TestSearch_ParseErrorMapsToInvalidArgument(t *testing.T) {
 	}
 	if st.Code() != codes.InvalidArgument {
 		t.Errorf("code: got %s, want InvalidArgument (err=%v)", st.Code(), recvErr)
+	}
+}
+
+// TestSearch_SpanSetsLimitAndSpss pins the gRPC mirror of the HTTP
+// /api/search spanSets contract: SearchRequest.SpansPerSpanSet caps
+// the spans per spanset (Matched keeps the uncapped total),
+// SearchRequest.Limit truncates the newest-first trace list, and the
+// proto envelope carries both SpanSets and the legacy SpanSet pair —
+// the same matched-span lists Grafana's tableType='spans' transform
+// reads on the JSON path.
+func TestSearch_SpanSetsLimitAndSpss(t *testing.T) {
+	t.Parallel()
+
+	ts := time.Date(2026, 5, 19, 0, 0, 0, 0, time.UTC)
+	spanRow := func(traceID, spanID, name string, at time.Time, durNs int64) chclient.Sample {
+		return chclient.Sample{
+			MetricName: name,
+			Labels: map[string]string{
+				"service.name":            "svc",
+				"__cerberus_traceID":      traceID,
+				"__cerberus_parentSpanID": "0000000000000000",
+				"__cerberus_spanID":       spanID,
+			},
+			Timestamp: at,
+			Value:     float64(durNs),
+		}
+	}
+	traceOld := padHexTraceID(1)
+	traceNew := padHexTraceID(2)
+	rows := []chclient.Sample{
+		// Older trace — must fall off under Limit=1.
+		spanRow(traceOld, "0000000000000001", "old.root", ts, 5_000_000),
+		// Newer trace with two matched spans — SpansPerSpanSet=1 keeps
+		// the earlier one, Matched stays 2.
+		spanRow(traceNew, "000000000000000a", "new.root", ts.Add(time.Second), 7_000_000),
+		spanRow(traceNew, "000000000000000b", "new.child", ts.Add(time.Second+time.Millisecond), 3_000_000),
+	}
+	q := &stubCursorQuerier{rows: rows}
+	client, cleanup := dialServer(t, q)
+	t.Cleanup(cleanup)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+	stream, err := client.Search(ctx, &tempopb.SearchRequest{
+		Query:           "{}",
+		Limit:           1,
+		SpansPerSpanSet: 1,
+	})
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+	frames, err := drainSearch(t, stream)
+	if err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	var traces []*tempopb.TraceSearchMetadata
+	for _, f := range frames {
+		traces = append(traces, f.Traces...)
+	}
+	if len(traces) != 1 {
+		t.Fatalf("Limit=1: got %d traces, want 1", len(traces))
+	}
+	tr := traces[0]
+	if tr.TraceID != traceNew {
+		t.Errorf("TraceID: got %q, want %q (newest-first ordering before Limit truncation)", tr.TraceID, traceNew)
+	}
+	if len(tr.SpanSets) != 1 {
+		t.Fatalf("SpanSets: got %d sets, want 1", len(tr.SpanSets))
+	}
+	set := tr.SpanSets[0]
+	if got, want := int(set.Matched), 2; got != want {
+		t.Errorf("Matched: got %d, want %d (uncapped total)", got, want)
+	}
+	if len(set.Spans) != 1 {
+		t.Fatalf("SpansPerSpanSet=1: got %d spans, want 1", len(set.Spans))
+	}
+	sp := set.Spans[0]
+	if sp.SpanID != "000000000000000a" {
+		t.Errorf("span identity: got %q, want 000000000000000a", sp.SpanID)
+	}
+	// Reference Tempo emits no span name inside search spanSets; the
+	// proto mirror must stay empty too (compat-differ-pinned).
+	if sp.Name != "" {
+		t.Errorf("span name: got %q, want empty", sp.Name)
+	}
+	if got, want := sp.StartTimeUnixNano, uint64(ts.Add(time.Second).UnixNano()); got != want {
+		t.Errorf("StartTimeUnixNano: got %d, want %d", got, want)
+	}
+	if got, want := sp.DurationNanos, uint64(7_000_000); got != want {
+		t.Errorf("DurationNanos: got %d, want %d", got, want)
+	}
+	// Legacy single-set field mirrors SpanSets[0].
+	if tr.SpanSet == nil || len(tr.SpanSet.Spans) != 1 || tr.SpanSet.Spans[0].SpanID != sp.SpanID {
+		t.Errorf("legacy SpanSet must mirror SpanSets[0]; got %+v", tr.SpanSet)
 	}
 }

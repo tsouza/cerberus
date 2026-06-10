@@ -605,3 +605,151 @@ func TestRenderReport_Roundtrip(t *testing.T) {
 		}
 	}
 }
+
+// spanSetsOpts returns DiffOptions with the spanSets comparison
+// switched on, as compareForEndpoint does for corpus cases that set
+// -- spss --.
+func spanSetsOpts() DiffOptions {
+	opts := DefaultDiffOptions()
+	opts.CompareSpanSets = true
+	return opts
+}
+
+func TestCompare_SpanSets_Identical(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"traces":[
+        {"traceID":"abc","rootServiceName":"checkout","rootTraceName":"GET /","durationMs":150,"startTimeUnixNano":"1000",
+         "spanSets":[{"spans":[
+            {"spanID":"0000000000000001","name":"GET /","startTimeUnixNano":"1000","durationNanos":"150000000"},
+            {"spanID":"0000000000000002","name":"db.query","startTimeUnixNano":"2000","durationNanos":"50000000"}
+         ],"matched":2}]}
+    ]}`)
+	d, err := Compare(body, body, "tempo", "cerberus", spanSetsOpts())
+	if err != nil {
+		t.Fatalf("Compare: %v", err)
+	}
+	if !d.Equal {
+		t.Fatalf("expected Equal, got %+v", d)
+	}
+}
+
+// TestCompare_SpanSets_AsymmetricPresenceFails pins the exact
+// regression the spss corpus cases exist for: a backend that returns
+// trace summaries WITHOUT spanSets (the pre-fix cerberus shape) must
+// diff against reference Tempo, because Grafana's tableType='spans'
+// transform renders zero rows for such summaries.
+func TestCompare_SpanSets_AsymmetricPresenceFails(t *testing.T) {
+	t.Parallel()
+	withSets := []byte(`{"traces":[
+        {"traceID":"abc","rootServiceName":"checkout","rootTraceName":"GET /","durationMs":150,"startTimeUnixNano":"1000",
+         "spanSets":[{"spans":[{"spanID":"0000000000000001","name":"GET /","startTimeUnixNano":"1000","durationNanos":"150000000"}],"matched":1}]}
+    ]}`)
+	withoutSets := []byte(`{"traces":[
+        {"traceID":"abc","rootServiceName":"checkout","rootTraceName":"GET /","durationMs":150,"startTimeUnixNano":"1000"}
+    ]}`)
+	d, err := Compare(withSets, withoutSets, "tempo", "cerberus", spanSetsOpts())
+	if err != nil {
+		t.Fatalf("Compare: %v", err)
+	}
+	if d.Equal {
+		t.Fatalf("expected diff (cerberus side omitted spanSets), got Equal")
+	}
+	found := false
+	for _, r := range d.Reasons {
+		if r.Kind == "field_mismatch" && strings.Contains(r.Detail, "asymmetric presence") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected asymmetric-presence reason, got %+v", d.Reasons)
+	}
+	// Without the opt-in, the same pair must still compare Equal (the
+	// non-spss corpus cases keep their historical comparison surface).
+	d, err = Compare(withSets, withoutSets, "tempo", "cerberus", DefaultDiffOptions())
+	if err != nil {
+		t.Fatalf("Compare: %v", err)
+	}
+	if !d.Equal {
+		t.Fatalf("CompareSpanSets off: expected Equal, got %+v", d.Reasons)
+	}
+}
+
+func TestCompare_SpanSets_MatchedMismatchFails(t *testing.T) {
+	t.Parallel()
+	a := []byte(`{"traces":[
+        {"traceID":"abc","startTimeUnixNano":"1000","durationMs":150,
+         "spanSets":[{"spans":[{"spanID":"01","startTimeUnixNano":"1000"}],"matched":5}]}
+    ]}`)
+	b := []byte(`{"traces":[
+        {"traceID":"abc","startTimeUnixNano":"1000","durationMs":150,
+         "spanSets":[{"spans":[{"spanID":"01","startTimeUnixNano":"1000"}],"matched":3}]}
+    ]}`)
+	d, err := Compare(a, b, "tempo", "cerberus", spanSetsOpts())
+	if err != nil {
+		t.Fatalf("Compare: %v", err)
+	}
+	if d.Equal {
+		t.Fatalf("expected matched-total diff, got Equal")
+	}
+}
+
+// TestCompare_SpanSets_CappedComparesCountsOnly: when the spss cap
+// truncated both sides (len(spans) < matched), the per-ID subset each
+// backend kept is unspecified upstream — equal counts + equal matched
+// totals must compare Equal even when the kept spanIDs differ.
+func TestCompare_SpanSets_CappedComparesCountsOnly(t *testing.T) {
+	t.Parallel()
+	a := []byte(`{"traces":[
+        {"traceID":"abc","startTimeUnixNano":"1000","durationMs":150,
+         "spanSets":[{"spans":[{"spanID":"0000000000000001","startTimeUnixNano":"1000"}],"matched":4}]}
+    ]}`)
+	b := []byte(`{"traces":[
+        {"traceID":"abc","startTimeUnixNano":"1000","durationMs":150,
+         "spanSets":[{"spans":[{"spanID":"0000000000000002","startTimeUnixNano":"2000"}],"matched":4}]}
+    ]}`)
+	d, err := Compare(a, b, "tempo", "cerberus", spanSetsOpts())
+	if err != nil {
+		t.Fatalf("Compare: %v", err)
+	}
+	if !d.Equal {
+		t.Fatalf("capped sets with equal counts must compare Equal; got %+v", d.Reasons)
+	}
+}
+
+// TestCompare_SpanSets_CompleteSetsDiffPerSpan: complete sets (matched
+// == len(spans)) compare spanID-by-spanID, with leading-zero
+// canonicalisation aligning Tempo's stripped form against cerberus's
+// fixed-width form, and per-span fields compared numerically.
+func TestCompare_SpanSets_CompleteSetsDiffPerSpan(t *testing.T) {
+	t.Parallel()
+	// Tempo side: stripped spanID + legacy single spanSet field only.
+	a := []byte(`{"traces":[
+        {"traceID":"abc","startTimeUnixNano":"1000","durationMs":150,
+         "spanSet":{"spans":[{"spanID":"1f","name":"GET /","startTimeUnixNano":"1000","durationNanos":"150000000"}],"matched":1}}
+    ]}`)
+	// Cerberus side: padded spanID, same span — must align.
+	b := []byte(`{"traces":[
+        {"traceID":"abc","startTimeUnixNano":"1000","durationMs":150,
+         "spanSets":[{"spans":[{"spanID":"000000000000001f","name":"GET /","startTimeUnixNano":"1000","durationNanos":"150000000"}],"matched":1}]}
+    ]}`)
+	d, err := Compare(a, b, "tempo", "cerberus", spanSetsOpts())
+	if err != nil {
+		t.Fatalf("Compare: %v", err)
+	}
+	if !d.Equal {
+		t.Fatalf("padded vs stripped spanIDs must align; got %+v", d.Reasons)
+	}
+
+	// Now flip one durationNanos — must surface as a per-span diff.
+	c := []byte(`{"traces":[
+        {"traceID":"abc","startTimeUnixNano":"1000","durationMs":150,
+         "spanSets":[{"spans":[{"spanID":"000000000000001f","name":"GET /","startTimeUnixNano":"1000","durationNanos":"999"}],"matched":1}]}
+    ]}`)
+	d, err = Compare(a, c, "tempo", "cerberus", spanSetsOpts())
+	if err != nil {
+		t.Fatalf("Compare: %v", err)
+	}
+	if d.Equal {
+		t.Fatalf("durationNanos divergence must diff, got Equal")
+	}
+}

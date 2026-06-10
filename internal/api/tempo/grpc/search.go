@@ -100,7 +100,12 @@ func (s *Service) Search(req *tempopb.SearchRequest, stream tempopb.StreamingQue
 		return mapEngineError(err)
 	}
 
-	summaries, missingRoots := tempo.ToTraceSummaries(samples)
+	// Honour the request's SpansPerSpanSet + Limit the same way the
+	// HTTP handler honours `spss` + `limit` (zero values fall back to
+	// Tempo's documented defaults inside the shared helpers), so the
+	// streaming path stays wire-equivalent with /api/search.
+	summaries, missingRoots := tempo.ToTraceSummaries(samples, int(req.SpansPerSpanSet))
+	summaries, missingRoots = tempo.TruncateSummaries(summaries, missingRoots, int(req.Limit))
 	if len(missingRoots) > 0 {
 		// Same best-effort policy the HTTP handler uses: log + ignore
 		// a follow-up lookup failure (the earliest-span fallback in
@@ -194,7 +199,7 @@ func toTempopbTraceMetadata(t tempo.TraceSummary) *tempopb.TraceSearchMetadata {
 	if v, err := strconv.ParseUint(t.StartTimeUnixNano, 10, 64); err == nil {
 		startNs = v
 	}
-	return &tempopb.TraceSearchMetadata{
+	out := &tempopb.TraceSearchMetadata{
 		TraceID:           t.TraceID,
 		RootServiceName:   t.RootServiceName,
 		RootTraceName:     t.RootTraceName,
@@ -202,6 +207,44 @@ func toTempopbTraceMetadata(t tempo.TraceSummary) *tempopb.TraceSearchMetadata {
 		//nolint:gosec // DurationMs is sourced from a TraceSummary populated by dateDiff(ms, …) over CH spans; field tops out at int32 in practice — uint32 cannot overflow.
 		DurationMs: uint32(t.DurationMs),
 	}
+	// Mirror the HTTP envelope's spanSets + legacy spanSet pair onto
+	// the proto fields so Grafana's streaming search consumers see the
+	// same matched-span lists the JSON path carries.
+	for i := range t.SpanSets {
+		out.SpanSets = append(out.SpanSets, toTempopbSpanSet(t.SpanSets[i]))
+	}
+	if t.SpanSet != nil {
+		out.SpanSet = toTempopbSpanSet(*t.SpanSet)
+	}
+	return out
+}
+
+// toTempopbSpanSet pivots the HTTP-envelope SpanSet onto tempopb's
+// proto shape. StartTimeUnixNano / DurationNanos arrive as the proto3
+// JSON decimal-string encoding of the uint64 fields; parse failures
+// land as 0 (defensive — TraceSummary populates them via FormatInt of
+// values that always round-trip).
+func toTempopbSpanSet(s tempo.SpanSet) *tempopb.SpanSet {
+	out := &tempopb.SpanSet{
+		//nolint:gosec // Matched counts CH result rows per trace; bounded far below uint32.
+		Matched: uint32(s.Matched),
+	}
+	for _, sp := range s.Spans {
+		var start, dur uint64
+		if v, err := strconv.ParseUint(sp.StartTimeUnixNano, 10, 64); err == nil {
+			start = v
+		}
+		if v, err := strconv.ParseUint(sp.DurationNanos, 10, 64); err == nil {
+			dur = v
+		}
+		out.Spans = append(out.Spans, &tempopb.Span{
+			SpanID:            sp.SpanID,
+			Name:              sp.Name,
+			StartTimeUnixNano: start,
+			DurationNanos:     dur,
+		})
+	}
+	return out
 }
 
 // searchFlusher batches TraceSearchMetadata entries into shards of a

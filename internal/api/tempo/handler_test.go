@@ -3,9 +3,11 @@ package tempo_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -257,17 +259,19 @@ func TestSearch_GroupsByTraceID(t *testing.T) {
 	if len(sr.Traces) != 2 {
 		t.Fatalf("expected 2 distinct traces (grouped by real TraceID), got %d", len(sr.Traces))
 	}
-	// Results sort ascending by TraceID.
-	if sr.Traces[0].TraceID != traceA {
-		t.Errorf("[0] TraceID: got %q, want %q", sr.Traces[0].TraceID, traceA)
+	// Results sort by startTimeUnixNano descending (Tempo's /api/search
+	// ordering): trace B starts at 10:00:05 (newest) and leads; trace A
+	// (10:00:00) follows.
+	if sr.Traces[0].TraceID != traceB {
+		t.Errorf("[0] TraceID: got %q, want %q", sr.Traces[0].TraceID, traceB)
 	}
-	if sr.Traces[1].TraceID != traceB {
-		t.Errorf("[1] TraceID: got %q, want %q", sr.Traces[1].TraceID, traceB)
+	if sr.Traces[1].TraceID != traceA {
+		t.Errorf("[1] TraceID: got %q, want %q", sr.Traces[1].TraceID, traceA)
 	}
 	// DurationMs is the max of {200, 50}ms = 200ms across trace A's two spans.
-	if sr.Traces[0].DurationMs != 200 {
-		t.Errorf("[0] DurationMs: got %d, want 200 (max across grouped spans)",
-			sr.Traces[0].DurationMs)
+	if sr.Traces[1].DurationMs != 200 {
+		t.Errorf("[1] DurationMs: got %d, want 200 (max across grouped spans)",
+			sr.Traces[1].DurationMs)
 	}
 }
 
@@ -929,6 +933,277 @@ func TestSearch_SQLProjectsParentSpanId(t *testing.T) {
 	if !sawParentSpanIDKey {
 		t.Errorf("emitted SQL args must include reserved __cerberus_parentSpanID slot; got args=%v", q.lastArgs)
 	}
+	// The reserved __cerberus_spanID slot must ride the same map —
+	// toTraceSummaries builds the per-trace SpanSets from it, and
+	// Grafana's tableType='spans' transform (the Traces Drilldown
+	// trace list) renders zero rows for summaries without spanSets.
+	if !strings.Contains(q.lastSQL, "SpanId") {
+		t.Errorf("emitted SQL must project SpanId; got %s", q.lastSQL)
+	}
+	var sawSpanIDKey bool
+	for _, a := range q.lastArgs {
+		if s, ok := a.(string); ok && s == "__cerberus_spanID" {
+			sawSpanIDKey = true
+			break
+		}
+	}
+	if !sawSpanIDKey {
+		t.Errorf("emitted SQL args must include reserved __cerberus_spanID slot; got args=%v", q.lastArgs)
+	}
+}
+
+// searchSpanRow builds one canonical-projection /api/search row: a
+// root-anchored span with the reserved trace/span/parent ID slots the
+// wrap-projection emits. Value carries the per-row Duration in ns.
+func searchSpanRow(traceID, spanID, name string, ts time.Time, durNs int64) chclient.Sample {
+	return chclient.Sample{
+		MetricName: name,
+		Labels: map[string]string{
+			"service.name":            "checkout",
+			"__cerberus_traceID":      traceID,
+			"__cerberus_parentSpanID": "0000000000000000",
+			"__cerberus_spanID":       spanID,
+		},
+		Timestamp: ts,
+		Value:     float64(durNs),
+	}
+}
+
+// TestSearch_SpanSets pins the Tempo wire contract Grafana's Traces
+// Drilldown depends on: every /api/search trace summary carries the
+// matched spans under `spanSets` (and the legacy single-set `spanSet`),
+// with spanID, name, startTimeUnixNano + durationNanos in the proto3
+// JSON string-nanos encoding. Grafana's tempo resultTransformer
+// (tableType='spans') builds the trace-list table exclusively from
+// trace.spanSets[].spans — a summary without them renders "No data".
+func TestSearch_SpanSets(t *testing.T) {
+	t.Parallel()
+	const traceID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	start := time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC)
+	q := &stubQuerier{
+		samples: []chclient.Sample{
+			searchSpanRow(traceID, "0000000000000001", "GET /api/users", start, 150_000_000),
+			searchSpanRow(traceID, "0000000000000002", "db.query", start.Add(10*time.Millisecond), 50_000_000),
+		},
+	}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/search?q=%7B%7D")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+	var sr tempo.SearchResponse
+	if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(sr.Traces) != 1 {
+		t.Fatalf("expected 1 trace, got %d", len(sr.Traces))
+	}
+	tr := sr.Traces[0]
+	if len(tr.SpanSets) != 1 {
+		t.Fatalf("spanSets: got %d sets, want 1 (%+v)", len(tr.SpanSets), tr)
+	}
+	set := tr.SpanSets[0]
+	if tr.SpanSet == nil {
+		t.Fatalf("legacy spanSet field must mirror spanSets[0]; got nil")
+	}
+	if got, want := len(tr.SpanSet.Spans), len(set.Spans); got != want {
+		t.Errorf("spanSet/spanSets[0] span count mismatch: %d vs %d", got, want)
+	}
+	if set.Matched != 2 {
+		t.Errorf("matched: got %d, want 2", set.Matched)
+	}
+	if len(set.Spans) != 2 {
+		t.Fatalf("spans: got %d, want 2", len(set.Spans))
+	}
+	// Spans sort by start time ascending; the 10:00:00.000 span leads.
+	s0 := set.Spans[0]
+	if s0.SpanID != "0000000000000001" {
+		t.Errorf("spans[0].spanID: got %q, want %q", s0.SpanID, "0000000000000001")
+	}
+	// Reference Tempo emits name="" for spans inside search spanSets
+	// (pinned by the compat differ's spansets corpus cases); cerberus
+	// mirrors that — a populated name here is a wire divergence.
+	if s0.Name != "" {
+		t.Errorf("spans[0].name: got %q, want empty (reference Tempo emits no span name in spanSets)", s0.Name)
+	}
+	if want := strconv.FormatInt(start.UnixNano(), 10); s0.StartTimeUnixNano != want {
+		t.Errorf("spans[0].startTimeUnixNano: got %q, want %q (decimal string nanos)", s0.StartTimeUnixNano, want)
+	}
+	if s0.DurationNanos != "150000000" {
+		t.Errorf("spans[0].durationNanos: got %q, want %q (decimal string nanos)", s0.DurationNanos, "150000000")
+	}
+}
+
+// TestSearch_SpanSets_SpssCap asserts the `spss` query param caps the
+// spans per spanset while `matched` keeps reporting the uncapped total
+// — the shape Grafana uses to render "showing N of M spans". Also pins
+// the default cap of 3 (Tempo's spans-per-spanset default) when the
+// param is absent.
+func TestSearch_SpanSets_SpssCap(t *testing.T) {
+	t.Parallel()
+	const traceID = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	start := time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC)
+	samples := make([]chclient.Sample, 0, 5)
+	for i := 0; i < 5; i++ {
+		samples = append(samples, searchSpanRow(
+			traceID,
+			"000000000000000"+strconv.Itoa(i+1),
+			"span."+strconv.Itoa(i),
+			start.Add(time.Duration(i)*time.Millisecond),
+			1_000_000,
+		))
+	}
+
+	fetch := func(t *testing.T, query string) tempo.TraceSummary {
+		t.Helper()
+		q := &stubQuerier{samples: samples}
+		srv := newServer(q, "v1.0.0-test")
+		t.Cleanup(srv.Close)
+		resp, err := http.Get(srv.URL + query)
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		defer resp.Body.Close()
+		var sr tempo.SearchResponse
+		if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(sr.Traces) != 1 {
+			t.Fatalf("expected 1 trace, got %d", len(sr.Traces))
+		}
+		return sr.Traces[0]
+	}
+
+	// Explicit spss=2: two earliest spans kept, matched stays 5.
+	tr := fetch(t, "/api/search?q=%7B%7D&spss=2")
+	if len(tr.SpanSets) != 1 || len(tr.SpanSets[0].Spans) != 2 {
+		t.Fatalf("spss=2: got %+v, want exactly 2 spans in 1 set", tr.SpanSets)
+	}
+	if tr.SpanSets[0].Matched != 5 {
+		t.Errorf("spss=2 matched: got %d, want 5 (uncapped total)", tr.SpanSets[0].Matched)
+	}
+	if tr.SpanSets[0].Spans[0].SpanID != "0000000000000001" || tr.SpanSets[0].Spans[1].SpanID != "0000000000000002" {
+		t.Errorf("spss=2 must keep the earliest spans deterministically; got %+v", tr.SpanSets[0].Spans)
+	}
+
+	// Default (no spss param): Tempo's default of 3.
+	tr = fetch(t, "/api/search?q=%7B%7D")
+	if len(tr.SpanSets) != 1 || len(tr.SpanSets[0].Spans) != 3 {
+		t.Fatalf("default spss: got %+v, want exactly 3 spans in 1 set", tr.SpanSets)
+	}
+	if tr.SpanSets[0].Matched != 5 {
+		t.Errorf("default spss matched: got %d, want 5", tr.SpanSets[0].Matched)
+	}
+}
+
+// TestSearch_LimitEnforced asserts `limit` truncates the trace list to
+// the newest-first prefix (startTimeUnixNano descending — Tempo's
+// /api/search ordering) and that the default limit is 20. The live bug
+// this pins: the handler ignored limit entirely and returned 4937
+// summaries (~755KB) for the Traces Drilldown's limit=200 request.
+func TestSearch_LimitEnforced(t *testing.T) {
+	t.Parallel()
+	start := time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC)
+	samples := make([]chclient.Sample, 0, 25)
+	for i := 0; i < 25; i++ {
+		samples = append(samples, searchSpanRow(
+			// %032x keeps trace IDs unique + hex-valid.
+			fmt.Sprintf("%032x", i+1),
+			"0000000000000001",
+			"GET /",
+			start.Add(time.Duration(i)*time.Second),
+			1_000_000,
+		))
+	}
+
+	fetch := func(t *testing.T, query string) []tempo.TraceSummary {
+		t.Helper()
+		q := &stubQuerier{samples: samples}
+		srv := newServer(q, "v1.0.0-test")
+		t.Cleanup(srv.Close)
+		resp, err := http.Get(srv.URL + query)
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		defer resp.Body.Close()
+		var sr tempo.SearchResponse
+		if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return sr.Traces
+	}
+
+	// Default limit: 20 of the 25 matches.
+	traces := fetch(t, "/api/search?q=%7B%7D")
+	if len(traces) != 20 {
+		t.Fatalf("default limit: got %d traces, want 20", len(traces))
+	}
+	// Newest trace (i=24, started latest) must lead.
+	if want := fmt.Sprintf("%032x", 25); traces[0].TraceID != want {
+		t.Errorf("[0] TraceID: got %q, want %q (startTimeUnixNano-desc ordering)", traces[0].TraceID, want)
+	}
+	// The 5 oldest traces (i=0..4) fall off the end.
+	if want := fmt.Sprintf("%032x", 6); traces[19].TraceID != want {
+		t.Errorf("[19] TraceID: got %q, want %q", traces[19].TraceID, want)
+	}
+
+	// Explicit limit=5.
+	traces = fetch(t, "/api/search?q=%7B%7D&limit=5")
+	if len(traces) != 5 {
+		t.Fatalf("limit=5: got %d traces, want 5", len(traces))
+	}
+	for i := 1; i < len(traces); i++ {
+		if traces[i-1].StartTimeUnixNano < traces[i].StartTimeUnixNano {
+			t.Errorf("traces not sorted startTimeUnixNano-desc at index %d: %q < %q",
+				i, traces[i-1].StartTimeUnixNano, traces[i].StartTimeUnixNano)
+		}
+	}
+
+	// Malformed / non-positive limits fall back to the default of 20
+	// (mirroring Tempo's lenient param parsing) rather than erroring.
+	if got := len(fetch(t, "/api/search?q=%7B%7D&limit=bogus")); got != 20 {
+		t.Errorf("limit=bogus: got %d traces, want 20 (default fallback)", got)
+	}
+}
+
+// TestSearch_NoSpanIDSlot_OmitsSpanSets pins the legacy-shape contract:
+// rows without the reserved __cerberus_spanID slot (stub queriers,
+// spanset-aggregate projections that collapse spans into one row per
+// trace) produce summaries with no spanSet / spanSets fields at all —
+// the JSON must omit the keys, not emit empty arrays.
+func TestSearch_NoSpanIDSlot_OmitsSpanSets(t *testing.T) {
+	t.Parallel()
+	q := &stubQuerier{
+		samples: []chclient.Sample{
+			{
+				MetricName: "GET /api/users",
+				Labels: map[string]string{
+					"service.name":       "frontend",
+					"__cerberus_traceID": "abababababababababababababababab",
+				},
+				Timestamp: time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+				Value:     150_000_000,
+			},
+		},
+	}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/search?q=%7B%7D")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	body := readBody(t, resp)
+	if strings.Contains(body, "spanSet") {
+		t.Errorf("legacy rows without __cerberus_spanID must omit spanSet/spanSets keys; body=%s", body)
+	}
 }
 
 // TestSearch_SpansetAggregate_PerTrace asserts that
@@ -983,14 +1258,16 @@ func TestSearch_SpansetAggregate_PerTrace(t *testing.T) {
 	if len(sr.Traces) != 3 {
 		t.Fatalf("expected 3 traces (one per matching TraceID), got %d", len(sr.Traces))
 	}
-	if sr.Traces[0].TraceID != traceA || sr.Traces[0].RootServiceName != "checkout" || sr.Traces[0].RootTraceName != "POST /api/orders" {
-		t.Errorf("trace A summary mismatch: %+v", sr.Traces[0])
+	// Results sort by startTimeUnixNano descending: C (10:00:10) leads,
+	// then B (10:00:05), then A (10:00:00).
+	if sr.Traces[0].TraceID != traceC || sr.Traces[0].RootServiceName != "db" || sr.Traces[0].RootTraceName != "db.query" {
+		t.Errorf("trace C summary mismatch: %+v", sr.Traces[0])
 	}
 	if sr.Traces[1].TraceID != traceB || sr.Traces[1].RootServiceName != "frontend" || sr.Traces[1].RootTraceName != "GET /healthz" {
 		t.Errorf("trace B summary mismatch: %+v", sr.Traces[1])
 	}
-	if sr.Traces[2].TraceID != traceC || sr.Traces[2].RootServiceName != "db" || sr.Traces[2].RootTraceName != "db.query" {
-		t.Errorf("trace C summary mismatch: %+v", sr.Traces[2])
+	if sr.Traces[2].TraceID != traceA || sr.Traces[2].RootServiceName != "checkout" || sr.Traces[2].RootTraceName != "POST /api/orders" {
+		t.Errorf("trace A summary mismatch: %+v", sr.Traces[2])
 	}
 }
 

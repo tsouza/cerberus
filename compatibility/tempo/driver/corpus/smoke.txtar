@@ -261,6 +261,51 @@ search
 -- expected_max_traces --
 500
 
+# --- SpanSets (2) ---
+# Cases with an explicit -- spss -- switch on the differ's per-trace
+# spanSets comparison (spanID sets, matched totals, per-span
+# name/start/duration). Grafana's Traces Drilldown trace list
+# (tableType='spans') renders rows exclusively from
+# trace.spanSets[].spans, so a backend that omits them ships an empty
+# drilldown — exactly the regression these cases pin.
+
+-- name --
+spansets_resource_checkout_complete
+# Every span of a checkout trace matches the resource-scoped predicate
+# (1 root + 2-4 children = 3-5 spans per trace); spss=20 exceeds that,
+# so both backends return COMPLETE spansets and the differ compares the
+# exact spanID sets + per-span name/start/duration.
+-- query --
+{ resource.service.name = "checkout" }
+-- endpoint --
+search
+-- spss --
+20
+-- expected_min_traces --
+1
+-- expected_max_traces --
+200
+-- expected_services --
+checkout
+
+-- name --
+spansets_payments_spss_capped
+# 3-5 matched spans per trace against spss=1 — the cap truncates on
+# both sides, so the differ checks matched totals + kept-span counts
+# (the subset choice under the cap is unspecified upstream).
+-- query --
+{ resource.service.name = "payments" }
+-- endpoint --
+search
+-- spss --
+1
+-- expected_min_traces --
+1
+-- expected_max_traces --
+200
+-- expected_services --
+payments
+
 # --- Metrics pipeline: /api/metrics/query_range (3) ---
 # These hit cerberus's /api/metrics/query_range (implemented today —
 # see internal/api/tempo/metrics_query_range.go) and Tempo's native
