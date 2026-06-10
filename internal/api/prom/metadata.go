@@ -134,9 +134,10 @@ func (h *Handler) handleLabelValues(w http.ResponseWriter, r *http.Request) {
 }
 
 // MetricMetaEntry is one entry in the per-metric metadata array Prometheus
-// emits from /api/v1/metadata. Cerberus emits exactly one entry per
-// metric (multiple entries would be required only if the same metric
-// appears in multiple types — uncommon).
+// emits from /api/v1/metadata. Cerberus typically emits one entry per
+// metric; a name that appears under multiple types (e.g. a sum-table
+// metric written with both IsMonotonic values) yields one entry per
+// type, matching the Prometheus wire format's per-metric entry slice.
 type MetricMetaEntry struct {
 	Type string `json:"type"`
 	Help string `json:"help"`
@@ -145,7 +146,10 @@ type MetricMetaEntry struct {
 
 // handleMetadata implements GET /api/v1/metadata — per-metric type / help /
 // unit, sourced from the OTel `MetricDescription` and `MetricUnit` columns.
-// Type is derived from the source table: gauge / counter / histogram.
+// Type is derived from the source table — gauge / counter / histogram —
+// with the sum table further split on `IsMonotonic`: per the
+// OTel→Prometheus compatibility spec a non-monotonic Sum (UpDownCounter)
+// maps to Prom type "gauge", not "counter".
 //
 // The `metric` query parameter restricts the result to a single metric;
 // `limit` caps the number of metrics returned (per Prom convention).
@@ -188,19 +192,46 @@ func (h *Handler) handleMetadata(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// metricMetaSpec is one (table, reported type) arm of the metadata
+// fan-out. A non-nil monotonic narrows the arm to rows whose
+// IsMonotonic column matches — the sum table holds both OTel
+// monotonic Sums (Prom counters) and non-monotonic Sums /
+// UpDownCounters, which the OTel→Prometheus compatibility spec maps
+// to Prom type "gauge".
+type metricMetaSpec struct {
+	table     string
+	kind      string
+	monotonic *bool
+}
+
 func (h *Handler) fetchMetricMeta(ctx context.Context, metricName string) ([]chclient.MetricMetaRow, error) {
-	specs := []struct {
-		table string
-		kind  string
-	}{
-		{h.Schema.GaugeTable, "gauge"},
-		{h.Schema.SumTable, "counter"},
-		{h.Schema.HistogramTable, "histogram"},
+	monotonic, nonMonotonic := true, false
+	specs := []metricMetaSpec{
+		{table: h.Schema.GaugeTable, kind: "gauge"},
 	}
+	if h.Schema.IsMonotonicColumn != "" {
+		// Split the sum table by monotonicity: monotonic Sums are Prom
+		// counters; non-monotonic Sums (OTel UpDownCounters — queue
+		// depths, in-flight gauges, pool sizes) are Prom gauges.
+		// Reporting them as counters makes consumers like Grafana's
+		// Metrics Drilldown wrap them in rate(), which renders a
+		// meaningless flat-0 preview.
+		specs = append(
+			specs,
+			metricMetaSpec{table: h.Schema.SumTable, kind: "counter", monotonic: &monotonic},
+			metricMetaSpec{table: h.Schema.SumTable, kind: "gauge", monotonic: &nonMonotonic},
+		)
+	} else {
+		// Fallback for schema overrides whose sum table has no
+		// IsMonotonic column: without the discriminator every sum-table
+		// metric reports as counter (the pre-split behaviour).
+		specs = append(specs, metricMetaSpec{table: h.Schema.SumTable, kind: "counter"})
+	}
+	specs = append(specs, metricMetaSpec{table: h.Schema.HistogramTable, kind: "histogram"})
 
 	var out []chclient.MetricMetaRow
 	for _, spec := range specs {
-		sql, args := h.metricMetaSQL(spec.table, metricName)
+		sql, args := h.metricMetaSQL(spec.table, metricName, spec.monotonic)
 		rows, err := h.Client.QueryMetricMeta(ctx, sql, spec.kind, args...)
 		if err != nil {
 			return nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
@@ -213,7 +244,9 @@ func (h *Handler) fetchMetricMeta(ctx context.Context, metricName string) ([]chc
 // metricMetaSQL builds the per-table metadata SQL. The result columns are
 // (MetricName, MetricDescription, MetricUnit). When metricName is empty
 // we list all distinct metrics; otherwise we filter to the named one.
-func (h *Handler) metricMetaSQL(table, metricName string) (string, []any) {
+// A non-nil monotonic adds a `IsMonotonic` / `NOT IsMonotonic` predicate
+// (combined via AND with the metric-name filter when both are present).
+func (h *Handler) metricMetaSQL(table, metricName string, monotonic *bool) (string, []any) {
 	nameCol := h.Schema.MetricNameColumn
 	descCol := h.Schema.MetricDescriptionColumn
 	unitCol := h.Schema.MetricUnitColumn
@@ -226,6 +259,17 @@ func (h *Handler) metricMetaSQL(table, metricName string) (string, []any) {
 		Select(chsql.Col(nameCol), anyCall(descCol), anyCall(unitCol)).
 		From(chsql.Col(table)).
 		GroupBy(chsql.Col(nameCol))
+
+	if monotonic != nil {
+		// Bare boolean-column predicate (`IsMonotonic` / `NOT
+		// IsMonotonic`) — no bound args, so the metric-name filter
+		// below keeps its positional slot.
+		pred := chsql.Col(h.Schema.IsMonotonicColumn)
+		if !*monotonic {
+			pred = chsql.Not(pred)
+		}
+		sb.Where(pred)
+	}
 
 	if metricName == "" {
 		sb.OrderBy(chsql.Col(nameCol), false)

@@ -40,15 +40,20 @@ const metaShapedGaugeDDL = `CREATE TABLE otel_metrics_gauge (
 
 // metaShapedSumDDL mirrors metaShapedGaugeDDL for the sum (counter)
 // table — needed so the metadata handler's per-table fetch doesn't 502
-// on missing-table errors. Same columns as gauge — the metadata SQL
-// only reads (MetricName, MetricDescription, MetricUnit).
+// on missing-table errors. Adds `IsMonotonic` on top of the shared
+// (MetricName, MetricDescription, MetricUnit) triple because the
+// metadata handler splits the sum table by monotonicity: monotonic
+// Sums report as Prom "counter", non-monotonic Sums (OTel
+// UpDownCounters) as "gauge". DEFAULT false keeps the column optional
+// for seeds that don't care about the type split.
 const metaShapedSumDDL = `CREATE TABLE otel_metrics_sum (
     MetricName String,
     MetricDescription String,
     MetricUnit String,
     Attributes Map(String, String),
     TimeUnix DateTime64(9),
-    Value Float64
+    Value Float64,
+    IsMonotonic Bool DEFAULT false
 ) ENGINE = MergeTree() ORDER BY (MetricName, TimeUnix);`
 
 // metaShapedHistogramDDL completes the trio. The metadata-handler SQL
@@ -305,6 +310,75 @@ INSERT INTO otel_metrics_gauge (MetricName, MetricDescription, MetricUnit, Attri
 	if !equalStringSlice(values, want) {
 		t.Errorf("expected %v, got %v", want, values)
 	}
+}
+
+// TestMetadata_NonMonotonicSumIsGauge_ChDB pins the OTel→Prometheus
+// type mapping end-to-end against the real sum-table SQL: a monotonic
+// Sum reports as Prom "counter", a non-monotonic Sum (OTel
+// UpDownCounter — cerberus's own cerberus_query_inflight is one)
+// reports as "gauge". Before the IsMonotonic split every sum-table
+// metric typed "counter", which made Grafana's Metrics Drilldown wrap
+// UpDownCounters in rate() and render a flat-0 preview.
+func TestMetadata_NonMonotonicSumIsGauge_ChDB(t *testing.T) {
+	seedTime := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+	ts := seedTime.Format("2006-01-02 15:04:05.000")
+	seed := metaShapedGaugeDDL + metaShapedSumDDL + metaShapedHistogramDDL + fmt.Sprintf(`
+INSERT INTO otel_metrics_sum (MetricName, MetricDescription, MetricUnit, Attributes, TimeUnix, Value, IsMonotonic) VALUES
+    ('cerberus_queries_total',  'Total engine queries.',            '{query}', map('cerberus.ql', 'promql'), toDateTime64('%s', 9), 42.0, true),
+    ('cerberus_query_inflight', 'Currently-executing engine queries.', '{query}', map('cerberus.ql', 'promql'), toDateTime64('%s', 9), 3.0,  false);`,
+		ts, ts)
+
+	srv, _ := newChDBServer(t, seed)
+
+	assertTypes := func(t *testing.T, path string, want map[string]string) {
+		t.Helper()
+		resp, err := http.Get(srv.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		body := readBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+		}
+		var parsed metadataResponse
+		if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+			t.Fatalf("unmarshal: %v\nbody=%s", err, body)
+		}
+		var grouped map[string][]prom.MetricMetaEntry
+		if err := json.Unmarshal(parsed.Data, &grouped); err != nil {
+			t.Fatalf("decode data: %v\nbody=%s", err, body)
+		}
+		if len(grouped) != len(want) {
+			t.Fatalf("%s: expected %d metrics, got %d: keys=%v",
+				path, len(want), len(grouped), keysOf(grouped))
+		}
+		for name, wantType := range want {
+			entries, ok := grouped[name]
+			if !ok || len(entries) != 1 {
+				t.Errorf("%s: expected exactly one entry for %q, got %+v",
+					path, name, grouped[name])
+				continue
+			}
+			if entries[0].Type != wantType {
+				t.Errorf("%s: %s type=%q, want %q",
+					path, name, entries[0].Type, wantType)
+			}
+		}
+	}
+
+	// Unfiltered listing: both metrics surface with their split types.
+	assertTypes(t, "/api/v1/metadata", map[string]string{
+		"cerberus_queries_total":  "counter",
+		"cerberus_query_inflight": "gauge",
+	})
+	// Filtered: the metric-name predicate ANDs with each monotonicity
+	// arm, so the UpDownCounter surfaces alone — and as gauge.
+	assertTypes(t, "/api/v1/metadata?metric=cerberus_query_inflight", map[string]string{
+		"cerberus_query_inflight": "gauge",
+	})
+	assertTypes(t, "/api/v1/metadata?metric=cerberus_queries_total", map[string]string{
+		"cerberus_queries_total": "counter",
+	})
 }
 
 // TestMetadata_TruncateAtLimit_ChDB pins truncateMetadata's
