@@ -3,9 +3,14 @@ name: e2e
 # End-to-end test umbrella. Hosts both:
 #   - `compose-smoke` — repo-root quickstart compose stack smoke
 #     (`docker compose up --wait`) + Grafana Playwright catch-net.
-#     Runs on pull_request + push-to-main. Required status check on
-#     branch protection — DO NOT rename the job (the check name is
-#     pinned to `compose-smoke`).
+#     Runs on pull_request + push-to-main at SWEEP_DEPTH=lean (the
+#     required PR gate) and on the nightly schedule at
+#     SWEEP_DEPTH=full. The clickhouse / host / otelcol dashboards
+#     are compose-only surfaces (their receivers don't run in the
+#     k3d stack), so the nightly full-depth sweep of them has to
+#     happen HERE — the dashboard job can't cover them. Required
+#     status check on branch protection — DO NOT rename the job
+#     (the check name is pinned to `compose-smoke`).
 #   - `dashboard` — full-stack k3d + cerberus + Grafana + Playwright
 #     smoke. Runs on push-to-main + nightly + manual dispatch only.
 #     Informational on merges, not a PR gate; regressions are caught
@@ -53,8 +58,9 @@ jobs:
   # See `.github/workflows/ci.yml` for the rationale + filter convention.
   # Docs-only PRs short-circuit the compose-smoke job (Docker compose
   # build + Grafana Playwright catch-net are pointless when no code
-  # changed). Runs on pull_request only — push/schedule/dispatch skip
-  # straight to the smoke job.
+  # changed). Runs on pull_request only — push and schedule bypass the
+  # docs-only gate and go straight to the smoke job (a nightly run has
+  # no diff to filter on).
   changes:
     name: changes
     if: github.event_name == 'pull_request'
@@ -94,14 +100,19 @@ jobs:
   compose-smoke:
     name: compose-smoke
     needs: changes
-    # Runs on pull_request + push-to-main only. On schedule /
-    # workflow_dispatch the compose stack adds no signal over the
-    # dashboard job. `needs.changes` only runs on pull_request, so
-    # we have to tolerate it being skipped on push (always() unwraps
-    # the skip, and the docs-only short-circuit only applies on PR).
+    # Lane doctrine: PR + push run at SWEEP_DEPTH=lean (the required
+    # fast-feedback gate); the nightly schedule runs at
+    # SWEEP_DEPTH=full. The schedule lane exists because the
+    # clickhouse / host / otelcol dashboards are compose-only
+    # surfaces — the k3d dashboard job's collector intentionally
+    # doesn't run their receivers — so full-depth coverage of them
+    # has to live in this job. `needs.changes` only runs on
+    # pull_request, so we have to tolerate it being absent on
+    # push/schedule (always() unwraps the skip, and the docs-only
+    # short-circuit only applies on PR).
     if: |
       always() &&
-      (github.event_name == 'pull_request' || github.event_name == 'push') &&
+      (github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'schedule') &&
       (github.event_name != 'pull_request' || needs.changes.outputs.docs_only != 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -189,6 +200,13 @@ jobs:
           GRAFANA_BASE_URL: http://localhost:3000
           GRAFANA_URL: http://localhost:3000
           CERBERUS_URL: http://localhost:8080
+          # Depth doctrine: PR/push = lean (required gate, fewest
+          # states), nightly schedule = full (every dashboard's
+          # browser render, showcase family included). The depth
+          # flag only changes how many STATES the sweeps visit,
+          # never which rules run — see
+          # test/e2e/playwright/helpers/depth.ts.
+          SWEEP_DEPTH: ${{ github.event_name == 'schedule' && 'full' || 'lean' }}
         run: |
           # Phase-1 panel-shape spec (iterate-panel-shape.spec.ts) runs
           # alongside the catch-net smoke. It enumerates every

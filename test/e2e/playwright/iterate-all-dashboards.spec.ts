@@ -59,7 +59,15 @@ import {
   type Response,
 } from '@playwright/test';
 
-import { generateSelfTraffic } from './helpers/index.js';
+import {
+  type VariableJSON,
+  checkDashboardVariable,
+  describeSweepDepth,
+  enforceExpectation,
+  generateSelfTraffic,
+  readPanelExpectation,
+  sweepDepth,
+} from './helpers/index.js';
 
 // Self-traffic warmup so cerberus panels have populated counters
 // before we sweep them. Same value the other phase specs use.
@@ -97,6 +105,7 @@ type DashboardJSON = {
   uid: string;
   title: string;
   panels?: PanelJSON[];
+  templating?: { list?: VariableJSON[] };
 };
 
 type PanelJSON = {
@@ -106,6 +115,8 @@ type PanelJSON = {
   datasource?: { type?: string; uid?: string } | string;
   targets?: TargetJSON[];
   panels?: PanelJSON[]; // nested under rows
+  /** cerberus.expect contract block — see helpers/expectations.ts. */
+  cerberus?: unknown;
 };
 
 type TargetJSON = {
@@ -122,6 +133,8 @@ type FlatPanel = {
   dsType: string;
   dsUid: string;
   targets: FlatTarget[];
+  /** Raw cerberus.expect contract block, parsed at probe time. */
+  cerberus?: unknown;
 };
 
 type FlatTarget = {
@@ -136,6 +149,7 @@ type DiscoveredDashboard = {
   title: string;
   filename: string;
   panels: FlatPanel[];
+  variables: VariableJSON[];
 };
 
 /**
@@ -179,6 +193,7 @@ function discoverDashboards(): DiscoveredDashboard[] {
       title: json.title,
       filename: entry,
       panels: flattenPanels(json.panels ?? []),
+      variables: json.templating?.list ?? [],
     });
   }
   // Sort for deterministic test order regardless of readdir() ordering.
@@ -216,6 +231,7 @@ function normalisePanel(p: PanelJSON): FlatPanel {
     dsType: panelDs.type,
     dsUid: panelDs.uid,
     targets,
+    cerberus: p.cerberus,
   };
 }
 
@@ -405,6 +421,14 @@ async function captureAndAssertDsQuery(
 
 const dashboards = discoverDashboards();
 
+// SWEEP_DEPTH gates how many STATES the sweep visits, never which
+// rules run: at 'lean' (the per-PR default) the browser render is
+// restricted to ops-family dashboards — showcase-prefixed boards get
+// API-layer probes only; at 'full' (nightly) every dashboard also
+// renders in the browser. Today no showcase- dashboard exists, so
+// both depths execute the exact same set of checks.
+const depth = sweepDepth();
+
 test.describe('iterate-all-dashboards: full provisioned-dashboard sweep', () => {
   test.describe.configure({ mode: 'serial' });
 
@@ -412,6 +436,8 @@ test.describe('iterate-all-dashboards: full provisioned-dashboard sweep', () => 
     // Log the catalog so the CI run record shows which dashboards
     // were swept. Use `console.log` rather than `test.info().annotations`
     // because the latter doesn't render in the GitHub Actions summary.
+    // eslint-disable-next-line no-console
+    console.log(describeSweepDepth(depth));
     // eslint-disable-next-line no-console
     console.log(
       `iterate-all-dashboards: discovered ${dashboards.length} dashboards in ${DASHBOARDS_DIR}:`,
@@ -438,14 +464,20 @@ test.describe('iterate-all-dashboards: full provisioned-dashboard sweep', () => 
         process.env.GRAFANA_BASE_URL ?? process.env.GRAFANA_URL ?? 'http://localhost:3000';
 
       // 1. Navigate to /d/<uid> and capture all datasource traffic.
-      const navFailures = await captureAndAssertDsQuery(
-        page,
-        `${baseURL}/d/${d.uid}`,
-      );
-      expect(
-        navFailures,
-        `dashboard ${d.uid}: navigation surfaced datasource errors:\n  - ${navFailures.join('\n  - ')}`,
-      ).toEqual([]);
+      //    Depth-gated state count (rules unchanged): 'lean' renders
+      //    ops-family dashboards only — showcase-prefixed boards are
+      //    covered by the API-layer probes below per PR and get their
+      //    browser render on the nightly 'full' lane.
+      if (depth === 'full' || !d.filename.startsWith('showcase-')) {
+        const navFailures = await captureAndAssertDsQuery(
+          page,
+          `${baseURL}/d/${d.uid}`,
+        );
+        expect(
+          navFailures,
+          `dashboard ${d.uid}: navigation surfaced datasource errors:\n  - ${navFailures.join('\n  - ')}`,
+        ).toEqual([]);
+      }
 
       // 2. Per-target probe — fires the panel's PromQL/LogQL/TraceQL
       //    expression through the datasource proxy.
@@ -462,9 +494,26 @@ test.describe('iterate-all-dashboards: full provisioned-dashboard sweep', () => 
           });
         }
       }
+      // 3. Template-variable contracts — every variable's options
+      //    resolve live (the same lookups Grafana fires for the
+      //    dropdown); pinned variables (cerberus.expectOptions) get
+      //    set equality, unpinned ones non-emptiness. Today no
+      //    provisioned dashboard carries variables, so the loop is a
+      //    no-op — the path goes live the moment one lands (P3).
+      const variableViolations: string[] = [];
+      for (const variable of d.variables) {
+        variableViolations.push(
+          ...(await checkDashboardVariable(request, baseURL, variable)),
+        );
+      }
+      expect(
+        variableViolations,
+        `dashboard ${d.uid}: variable contracts violated:\n  - ${variableViolations.join('\n  - ')}`,
+      ).toEqual([]);
+
       // eslint-disable-next-line no-console
       console.log(
-        `iterate-all-dashboards: dashboard=${d.uid} probed=${probedTargets} non_empty=${nonEmptyTargets}`,
+        `iterate-all-dashboards: dashboard=${d.uid} probed=${probedTargets} non_empty=${nonEmptyTargets} variables=${d.variables.length}`,
       );
     });
   }
@@ -478,40 +527,60 @@ async function probeTarget(
   t: FlatTarget,
   onCount: (count: number) => void,
 ): Promise<void> {
+  // The panel's declared contract — absent declaration is the default
+  // {expect: 'nonempty'} (every current dashboard panel; non-default
+  // declarations are a showcase-family privilege enforced by
+  // expectation-contracts.spec.ts). enforceExpectation is the
+  // BIDIRECTIONAL gate: a declared-empty panel that returns series
+  // fails just as loudly as a default panel that returns none.
+  const expectation = readPanelExpectation(panel);
+  const isErrorContract = expectation.expect.startsWith('error:');
+
   const resp = await request.get(url);
   const status = resp.status();
-  // HTTP status is a hard fail — a 5xx anywhere means the gateway
-  // dropped the query.
-  expect(
-    status,
-    `dashboard=${d.uid} panel="${panel.title}" target=${t.refId}: ${url} → ${status}`,
-  ).toBe(200);
+  const bodyText = await resp.text();
 
-  let body: unknown;
-  try {
-    body = await resp.json();
-  } catch (err) {
-    throw new Error(
-      `dashboard=${d.uid} panel="${panel.title}" target=${t.refId}: body not JSON: ${
-        (err as Error).message
-      }`,
-    );
+  let count = 0;
+  if (status >= 200 && status <= 299) {
+    let body: unknown;
+    try {
+      body = JSON.parse(bodyText);
+    } catch (err) {
+      throw new Error(
+        `dashboard=${d.uid} panel="${panel.title}" target=${t.refId}: body not JSON: ${
+          (err as Error).message
+        }`,
+      );
+    }
+
+    if (!isErrorContract) {
+      // A 2xx body tunnelling an envelope error is a failure for the
+      // nonempty/empty contracts; an error-declared panel is judged
+      // on the error substring by enforceExpectation instead.
+      const errMsg = envelopeError(body);
+      expect(
+        errMsg,
+        `dashboard=${d.uid} panel="${panel.title}" target=${t.refId}: envelope error: ${errMsg ?? ''}`,
+      ).toBeNull();
+    }
+
+    count = resultCount(body, t.dsType);
   }
-
-  const errMsg = envelopeError(body);
-  expect(
-    errMsg,
-    `dashboard=${d.uid} panel="${panel.title}" target=${t.refId}: envelope error: ${errMsg ?? ''}`,
-  ).toBeNull();
-
-  const count = resultCount(body, t.dsType);
   onCount(count);
 
-  // Hard-assert non-empty. An empty result is a real bug in the
-  // cerberus code, the seed, the dashboard, or the panel expression;
-  // mask nothing.
+  // An empty result on a default panel is a real bug in the cerberus
+  // code, the seed, the dashboard, or the panel expression; mask
+  // nothing. Equally, a declared expectation that no longer holds is
+  // a broken showcase.
+  const violations = enforceExpectation(expectation, {
+    seriesCount: count,
+    status,
+    errorBody: bodyText,
+  });
   expect(
-    count,
-    `dashboard=${d.uid} panel="${panel.title}" target=${t.refId} expr="${t.expr}": empty result`,
-  ).toBeGreaterThan(0);
+    violations,
+    `dashboard=${d.uid} panel="${panel.title}" target=${t.refId} expr="${t.expr}" ` +
+      `(declared=${expectation.declared ? expectation.expect : 'default:nonempty'}): ` +
+      violations.join('; '),
+  ).toEqual([]);
 }
