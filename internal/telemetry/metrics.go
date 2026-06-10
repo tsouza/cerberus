@@ -108,6 +108,44 @@ type Instruments struct {
 	QueryInflight metric.Int64UpDownCounter
 }
 
+// Histogram bucket boundaries, one ladder per instrument, matched to the
+// unit + magnitude each instrument actually records.
+//
+// These exist because the OTel Go SDK's default explicit-bucket layout —
+// [0, 5, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 2500, 5000, 7500,
+// 10000] — is millisecond-shaped, while cerberus's duration instruments
+// record seconds (see QueryTimer.Done / StageTimer.Done). Without
+// explicit boundaries every real observation (2ms–1s) collapsed into the
+// (0,5] bucket, so histogram_quantile(0.95) linearly interpolated a flat
+// 0.95×5 = 4.75s for every query language. The row/byte instruments had
+// the same defect: a millisecond ladder is meaningless for row and byte
+// counts.
+//
+// Exported so tests assert against the single source of truth.
+var (
+	// QueryDurationBoundaries covers end-to-end query wall-clock in
+	// seconds: Prometheus DefBuckets plus a 30s tail for pathological
+	// slow queries.
+	QueryDurationBoundaries = []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30}
+
+	// StageDurationBoundaries covers per-pipeline-stage wall-clock in
+	// seconds. Stages (parse / lower / optimize / emit) are much faster
+	// than whole queries, so the ladder starts at 1ms.
+	StageDurationBoundaries = []float64{0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5}
+
+	// RulesAppliedBoundaries covers the optimizer's per-query change
+	// count — small integers, so a near-unit ladder.
+	RulesAppliedBoundaries = []float64{0, 1, 2, 3, 5, 8, 13, 21}
+
+	// RowsReadBoundaries covers ClickHouse rows read per query —
+	// decade-exponential from 100 rows to 100M rows.
+	RowsReadBoundaries = []float64{100, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8}
+
+	// BytesReadBoundaries covers ClickHouse bytes read per query —
+	// decade-exponential from 10KB to 10GB.
+	BytesReadBoundaries = []float64{1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10}
+)
+
 var (
 	cacheMu sync.Mutex
 	cache   *Instruments
@@ -156,6 +194,7 @@ func mustBuild(meter metric.Meter) *Instruments {
 		"cerberus_queries_duration_seconds",
 		metric.WithDescription("End-to-end query wall-clock, seconds."),
 		metric.WithUnit("s"),
+		metric.WithExplicitBucketBoundaries(QueryDurationBoundaries...),
 	)
 	if err != nil {
 		panic("telemetry: build queries_duration: " + err.Error())
@@ -164,6 +203,7 @@ func mustBuild(meter metric.Meter) *Instruments {
 		"cerberus_pipeline_stage_duration_seconds",
 		metric.WithDescription("Per-stage pipeline wall-clock, seconds."),
 		metric.WithUnit("s"),
+		metric.WithExplicitBucketBoundaries(StageDurationBoundaries...),
 	)
 	if err != nil {
 		panic("telemetry: build stage_duration: " + err.Error())
@@ -172,6 +212,7 @@ func mustBuild(meter metric.Meter) *Instruments {
 		"cerberus_optimizer_rules_applied",
 		metric.WithDescription("Optimizer rule invocations that changed the plan."),
 		metric.WithUnit("{rule}"),
+		metric.WithExplicitBucketBoundaries(RulesAppliedBoundaries...),
 	)
 	if err != nil {
 		panic("telemetry: build rules_applied: " + err.Error())
@@ -180,6 +221,7 @@ func mustBuild(meter metric.Meter) *Instruments {
 		"cerberus_clickhouse_rows_read",
 		metric.WithDescription("ClickHouse rows read per query (sum of Progress events)."),
 		metric.WithUnit("{row}"),
+		metric.WithExplicitBucketBoundaries(RowsReadBoundaries...),
 	)
 	if err != nil {
 		panic("telemetry: build rows_read: " + err.Error())
@@ -188,6 +230,7 @@ func mustBuild(meter metric.Meter) *Instruments {
 		"cerberus_clickhouse_bytes_read",
 		metric.WithDescription("ClickHouse bytes read per query (sum of Progress events)."),
 		metric.WithUnit("By"),
+		metric.WithExplicitBucketBoundaries(BytesReadBoundaries...),
 	)
 	if err != nil {
 		panic("telemetry: build bytes_read: " + err.Error())

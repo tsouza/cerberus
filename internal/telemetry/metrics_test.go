@@ -65,6 +65,137 @@ func metricNames(sm metricdata.ScopeMetrics) []string {
 	return names
 }
 
+// bucketFor returns the index of the histogram bucket an observation of
+// value lands in, given the explicit bounds: the first i with
+// value <= bounds[i], or len(bounds) for the +Inf overflow bucket.
+// Mirrors the OTel SDK's bucket assignment (upper-bound inclusive).
+func bucketFor(bounds []float64, value float64) int {
+	for i, b := range bounds {
+		if value <= b {
+			return i
+		}
+	}
+	return len(bounds)
+}
+
+// histogramBounds extracts (Bounds, BucketCounts, Count) from a histogram
+// metric regardless of its point type (float64 vs int64). Fails the test
+// when the metric carries more or fewer than one datapoint — every case
+// in TestHistogramBucketBoundaries records exactly one observation
+// without attributes.
+func histogramBounds(t *testing.T, m metricdata.Metrics) ([]float64, []uint64, uint64) {
+	t.Helper()
+	switch h := m.Data.(type) {
+	case metricdata.Histogram[float64]:
+		if len(h.DataPoints) != 1 {
+			t.Fatalf("%s: got %d DPs want 1", m.Name, len(h.DataPoints))
+		}
+		dp := h.DataPoints[0]
+		return dp.Bounds, dp.BucketCounts, dp.Count
+	case metricdata.Histogram[int64]:
+		if len(h.DataPoints) != 1 {
+			t.Fatalf("%s: got %d DPs want 1", m.Name, len(h.DataPoints))
+		}
+		dp := h.DataPoints[0]
+		return dp.Bounds, dp.BucketCounts, dp.Count
+	default:
+		t.Fatalf("%s: unexpected data type %T", m.Name, m.Data)
+		return nil, nil, 0
+	}
+}
+
+// TestHistogramBucketBoundaries pins every histogram instrument to its
+// exported explicit-bucket ladder. Regression test for the flat-4.75s
+// p95 bug: the instruments used to be built without
+// WithExplicitBucketBoundaries, inheriting the OTel SDK's
+// millisecond-shaped defaults [0, 5, 10, ..., 10000] while recording
+// seconds — every real query duration (2ms–1s) collapsed into the (0,5]
+// bucket and histogram_quantile(0.95) interpolated 0.95×5 = 4.75s for
+// every cerberus_ql. The test asserts what the dashboard consumer
+// actually depends on: the exported datapoint Bounds match the
+// seconds-scale (resp. count-scale) ladders, and a representative
+// observation lands in its mid-ladder bucket rather than the first one.
+func TestHistogramBucketBoundaries(t *testing.T) {
+	cases := []struct {
+		metricName string
+		record     func(ctx context.Context)
+		wantBounds []float64
+		value      float64 // representative observation recorded by record
+	}{
+		{
+			metricName: "cerberus_queries_duration_seconds",
+			record: func(ctx context.Context) {
+				telemetry.Get().QueryDuration.Record(ctx, 0.3)
+			},
+			wantBounds: telemetry.QueryDurationBoundaries,
+			value:      0.3, // a realistic query duration → (0.25, 0.5]
+		},
+		{
+			metricName: "cerberus_pipeline_stage_duration_seconds",
+			record: func(ctx context.Context) {
+				telemetry.Get().StageDuration.Record(ctx, 0.003)
+			},
+			wantBounds: telemetry.StageDurationBoundaries,
+			value:      0.003, // a realistic stage duration → (0.0025, 0.005]
+		},
+		{
+			metricName: "cerberus_optimizer_rules_applied",
+			record: func(ctx context.Context) {
+				telemetry.Get().RulesApplied.Record(ctx, 2)
+			},
+			wantBounds: telemetry.RulesAppliedBoundaries,
+			value:      2, // → (1, 2]
+		},
+		{
+			metricName: "cerberus_clickhouse_rows_read",
+			record: func(ctx context.Context) {
+				telemetry.Get().ClickHouseRowsRead.Record(ctx, 50_000)
+			},
+			wantBounds: telemetry.RowsReadBoundaries,
+			value:      50_000, // → (1e4, 1e5]
+		},
+		{
+			metricName: "cerberus_clickhouse_bytes_read",
+			record: func(ctx context.Context) {
+				telemetry.Get().ClickHouseBytesRead.Record(ctx, 5_000_000)
+			},
+			wantBounds: telemetry.BytesReadBoundaries,
+			value:      5_000_000, // → (1e6, 1e7]
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.metricName, func(t *testing.T) {
+			reader := installManualReader(t)
+			tc.record(t.Context())
+
+			sm := collect(t, reader)
+			m := findMetric(t, sm, tc.metricName)
+			bounds, counts, count := histogramBounds(t, m)
+
+			// (a) The exported bounds ARE the instrument's bounds — i.e.
+			// not the SDK's millisecond-shaped defaults.
+			assert.Equal(t, tc.wantBounds, bounds,
+				"%s: datapoint Bounds must match the exported boundary ladder", tc.metricName)
+
+			// (b) The representative observation lands in its mid-ladder
+			// bucket, not the first one (where the ms-default layout
+			// dumped every seconds-scale value).
+			if count != 1 {
+				t.Fatalf("%s: count = %d, want 1", tc.metricName, count)
+			}
+			wantBucket := bucketFor(tc.wantBounds, tc.value)
+			if wantBucket == 0 {
+				t.Fatalf("%s: representative value %v falls in the first bucket — pick a mid-ladder value", tc.metricName, tc.value)
+			}
+			if got := counts[wantBucket]; got != 1 {
+				t.Errorf("%s: observation %v landed in counts=%v, want 1 in bucket %d (%v, %v]",
+					tc.metricName, tc.value, counts, wantBucket,
+					tc.wantBounds[wantBucket-1], tc.wantBounds[wantBucket])
+			}
+		})
+	}
+}
+
 // TestObserveQuery_RecordsCounterAndDuration covers the QueryTimer
 // happy path: a single Done(ResultOK) call must bump
 // cerberus_queries_total by one and record a point on
