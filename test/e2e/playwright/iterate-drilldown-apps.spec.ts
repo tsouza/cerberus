@@ -27,7 +27,7 @@
  * posture buys a 24h buffer before a regression blocks a PR.
  *
  * Grafana version pinning: selectors and per-app root URLs are tied to
- * `grafana/grafana:11.4.0` (the tag pinned in `docker-compose.yml`).
+ * `grafana/grafana:12.2.9` (the tag pinned in `docker-compose.yml`).
  * When the compose stack bumps Grafana, this spec MUST be updated in
  * the same PR — see helpers/README.md "Pinned Grafana version" for
  * the upgrade checklist.
@@ -59,8 +59,8 @@ import {
   captureConsoleErrors,
   captureRoleAlertBanners,
   drillTwoLevels,
-  isAppInstalled,
   iterateDrilldownApps,
+  waitForAppInstalled,
 } from './helpers/index.js';
 
 // Every `role="alert"` banner counts as a failure. No allow-list of
@@ -88,9 +88,13 @@ test('drilldown-apps: each installed drilldown app drills two levels without 4xx
   request,
 }, testInfo) => {
   // Per-app: 1 navigation + 2 click-drills + 3× networkidle settles.
-  // Budget 4 apps × ~90s + a generous headroom for the heaviest app
-  // (Explore-Traces tends to be slowest on a cold ClickHouse) = 8 min.
-  testInfo.setTimeout(8 * 60_000);
+  // Budget 3 apps × ~90s + a generous headroom for the heaviest app
+  // (Explore-Traces tends to be slowest on a cold ClickHouse) plus up
+  // to 120s of async-preinstall readiness wait (the wait is shared in
+  // practice — Grafana downloads all preinstalled apps in one boot
+  // pass, so once the first app reports installed the rest resolve on
+  // their first poll) = 10 min.
+  testInfo.setTimeout(10 * 60_000);
 
   const baseURL =
     process.env.GRAFANA_URL ??
@@ -105,15 +109,19 @@ test('drilldown-apps: each installed drilldown app drills two levels without 4xx
 
   for (const app of apps) {
     // 1. Install-probe — every catalogue entry MUST be installed and
-    //    enabled. A negative probe collects a failure (rather than
-    //    aborting the loop) so the report surfaces every misconfigured
-    //    app in one run.
-    const installed = await isAppInstalled(request, baseURL, app.id);
+    //    enabled. Grafana 12.x preinstalls the drilldown apps via an
+    //    async boot-time download that finishes AFTER /api/health goes
+    //    green, so the probe first synchronizes on the install (bounded
+    //    120s wait — see waitForAppInstalled). After the wait the
+    //    assertion is exactly as hard as before: a negative probe
+    //    collects a failure (rather than aborting the loop) so the
+    //    report surfaces every misconfigured app in one run.
+    const installed = await waitForAppInstalled(request, baseURL, app.id);
     if (!installed) {
       failures.push({
         app: app.id,
         rule: 'app-not-installed-or-disabled',
-        detail: `/api/plugins/${app.id}/settings reports not-installed-or-disabled. Provision the plugin in docker-compose or remove it from the catalogue.`,
+        detail: `/api/plugins/${app.id}/settings reports not-installed-or-disabled (still, after the 120s async-preinstall readiness wait). Provision the plugin in docker-compose or remove it from the catalogue.`,
       });
       perAppOutcomes.push({ app: app.id, outcome: 'not-installed-or-disabled' });
       continue;

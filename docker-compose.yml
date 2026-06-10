@@ -178,7 +178,7 @@ services:
       start_period: 5s
 
   grafana:
-    image: grafana/grafana:11.4.0
+    image: grafana/grafana:12.2.9
     networks: [cerberus-dev]
     environment:
       GF_SECURITY_ADMIN_USER: admin
@@ -201,7 +201,6 @@ services:
       GF_AUTH_DISABLE_LOGIN_FORM: "true"
       GF_AUTH_DISABLE_SIGNOUT_MENU: "true"
       GF_USERS_DEFAULT_THEME: dark
-      GF_FEATURE_TOGGLES_ENABLE: traceqlSearch
       # Land directly on the cerberus dashboard instead of an empty
       # home page. Path is the in-container mount location of the JSON,
       # not a Grafana URL or UID.

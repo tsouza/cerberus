@@ -1,8 +1,8 @@
 /**
  * Drilldown-app iteration helpers.
  *
- * The cerberus compose stack provisions three Grafana built-in drilldown
- * apps (Grafana 11.4.0):
+ * The cerberus stacks run three Grafana first-party drilldown apps
+ * (preinstalled by Grafana 12.x out of the box):
  *   - grafana-metricsdrilldown-app   (Explore Metrics)
  *   - grafana-lokiexplore-app        (Explore Logs)
  *   - grafana-exploretraces-app      (Explore Traces)
@@ -15,14 +15,15 @@
  * facet click).
  *
  * Every catalog entry MUST be installed in the compose stack — the
- * spec hard-asserts install status. If a future Grafana upgrade drops
- * one of the three apps from the vanilla image, either provision it
- * via `GF_INSTALL_PLUGINS` or remove the entry from the catalog.
+ * spec hard-asserts install status (after a bounded readiness wait,
+ * see `waitForAppInstalled`). If a future Grafana upgrade drops one
+ * of the three apps from the vanilla image, either provision it via
+ * `GF_INSTALL_PLUGINS` or remove the entry from the catalog.
  * `grafana-pyroscope-app` is deliberately not in the catalog because
  * cerberus does not ship profiling.
  *
  * The drilldown-app surface churns hard on every Grafana upgrade —
- * pin the Grafana version (currently `grafana/grafana:11.4.0`, see
+ * pin the Grafana version (currently `grafana/grafana:12.2.9`, see
  * helpers/README.md) and re-audit the click paths in the same PR
  * when bumping.
  */
@@ -39,22 +40,28 @@ export type DrilldownApp = {
 };
 
 // The catalogue lists exactly the drilldown apps the pinned Grafana
-// image can run — the same rule that dropped grafana-pyroscope-app
-// (cerberus doesn't ship profiling). grafana/grafana:11.4.0 ships
-// grafana-lokiexplore-app built in; grafana-metricsdrilldown-app and
-// grafana-exploretraces-app require Grafana >= 11.6 (exploretraces
-// grafanaDependency: ">=11.6.11 <12 || >=12.0.10 …") and cannot run
-// on this image — installing them anyway via GF_INSTALL_PLUGINS
-// bricked the 11.4 frontend and hung the entire k3d Playwright suite
-// on its first navigation (run 27246825822, both attempts: 21 silent
-// minutes after "Running 165 tests"). Restore both entries when the
-// Grafana pin bumps to a release that preinstalls them (12.x) — they
-// are first-party there and need no GF_INSTALL_PLUGINS.
+// image (grafana/grafana:12.2.9) preinstalls first-party — Grafana
+// 12.x hardcodes grafana-lokiexplore-app, grafana-metricsdrilldown-app,
+// and grafana-exploretraces-app in its preinstall list
+// (pkg/setting/setting_plugins.go), so none of them needs
+// GF_INSTALL_PLUGINS. grafana-pyroscope-app stays OUT of the
+// catalogue: cerberus ships no profiling backend, so the app has
+// nothing to drill into.
 export const DRILLDOWN_APPS: ReadonlyArray<DrilldownApp> = [
+  {
+    id: 'grafana-metricsdrilldown-app',
+    root: '/a/grafana-metricsdrilldown-app/trail',
+    label: 'Explore Metrics',
+  },
   {
     id: 'grafana-lokiexplore-app',
     root: '/a/grafana-lokiexplore-app/explore?var-ds=cerberus-loki',
     label: 'Explore Logs',
+  },
+  {
+    id: 'grafana-exploretraces-app',
+    root: '/a/grafana-exploretraces-app/explore',
+    label: 'Explore Traces',
   },
 ];
 
@@ -95,6 +102,38 @@ export async function isAppInstalled(
     return false;
   }
   return parsed.enabled === true;
+}
+
+/**
+ * Bounded readiness wait for the async first-party preinstall flow.
+ *
+ * Grafana 12.x downloads its preinstalled drilldown apps from
+ * grafana.com asynchronously at boot, AFTER `/api/health` already
+ * reports green (grafana/grafana#106871). A spec that probes
+ * `/api/plugins/<id>/settings` right after the stack comes up can
+ * therefore see a transient 404 / `enabled: false` for an app that
+ * will be installed seconds later.
+ *
+ * This helper polls `isAppInstalled` until it reports true or the
+ * deadline expires. It is startup *synchronization* — the same role
+ * `docker compose up --wait` plays for containers — NOT failure
+ * tolerance: callers must still hard-assert the final result, and an
+ * app that never installs within the budget fails exactly as a
+ * never-installed app does.
+ */
+export async function waitForAppInstalled(
+  request: APIRequestContext,
+  baseURL: string,
+  appId: string,
+  timeoutMs = 120_000,
+  pollIntervalMs = 3_000,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (await isAppInstalled(request, baseURL, appId)) return true;
+    if (Date.now() + pollIntervalMs > deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+  }
 }
 
 /**
@@ -151,9 +190,17 @@ export async function drillTwoLevels(
   const firstAffordance = page
     .locator(
       [
-        // Explore Metrics — metric tile / trail card.
+        // Metrics Drilldown (12.x) — per-metric "Select" action on the
+        // tile grid (testid select-action-<metric_name>, verified live
+        // against grafana/grafana:12.2.9).
+        '[data-testid^="select-action-"]',
+        // Explore Metrics — metric tile / trail card (11.x families,
+        // kept so a selector rename fails loudly here, not silently).
         '[data-testid^="data-testid metric-select"]',
         '[data-testid^="data-testid trail-"]',
+        // Logs Drilldown (12.x) — per-service "Show logs" select button
+        // (verified live against grafana/grafana:12.2.9).
+        '[data-testid="data-testid button-select-service"]',
         // Explore Logs — label chip / detected-label entry.
         '[data-testid^="data-testid detected-label"]',
         '[data-testid^="data-testid label-name"]',
@@ -188,6 +235,11 @@ export async function drillTwoLevels(
   const secondAffordance = page
     .locator(
       [
+        // 12.x families first (see the first-drill union above): a
+        // second select-action drills into a breakdown label; the
+        // include-filter button drills a logs facet.
+        '[data-testid^="select-action-"]',
+        '[data-testid="data-testid button-filter-include"]',
         '[data-testid^="data-testid metric-select"]',
         '[data-testid^="data-testid trail-"]',
         '[data-testid^="data-testid detected-label-value"]',

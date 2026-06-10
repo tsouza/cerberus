@@ -39,7 +39,7 @@ datasources:
       serviceMap:
         datasourceUid: cerberus-prometheus
   # ---------------------------------------------------------------------
-  # Grafana 11.x ships three built-in drilldown apps preinstalled:
+  # Grafana 12.x ships three built-in drilldown apps preinstalled:
   #   - grafana-metricsdrilldown-app  (Explore Metrics)
   #   - grafana-lokiexplore-app       (Explore Logs)
   #   - grafana-exploretraces-app     (Explore Traces)

@@ -611,10 +611,60 @@ func TestMetricsQueryRange_DurationAggInSeconds(t *testing.T) {
 	}
 }
 
+// TestMetricsQueryRange_DefaultStep pins the reference-Tempo contract
+// that `step` is optional: the query-frontend defaults a zero step via
+// traceql.DefaultQueryRangeStep (modules/frontend/
+// metrics_query_range_handler.go). Grafana's Traces Drilldown app
+// (first-party preinstalled since Grafana 12.x) omits step on its
+// issue-detector query — before this contract landed, cerberus 400'd
+// with "missing 'step' parameter" and the app surfaced a query-error
+// banner on every boot.
+func TestMetricsQueryRange_DefaultStep(t *testing.T) {
+	t.Parallel()
+
+	q := &stubQuerier{samples: []chclient.Sample{
+		{
+			MetricName: "",
+			Labels:     map[string]string{"__name__": "rate"},
+			Timestamp:  time.Date(2026, 5, 12, 10, 1, 0, 0, time.UTC),
+			Value:      1.0,
+		},
+	}}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	// No `step` parameter at all — the handler must default it, not 400.
+	u := metricsQueryRangeURL(srv.URL, "{} | rate()", map[string]string{
+		"start": fixtureStartUnix,
+		"end":   fixtureEndUnix,
+	})
+	resp, err := http.Get(u)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s — a missing step must default per reference Tempo, not error", resp.StatusCode, readBody(t, resp))
+	}
+
+	var body tempo.MetricsQueryRangeResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Series) != 1 {
+		t.Fatalf("expected 1 series, got %d: %+v", len(body.Series), body)
+	}
+	// The defaulted step must have reached the matrix-shape SQL emitter
+	// — same hallmark probes as the explicit-step happy path.
+	assertSQLContains(t, q.lastSQL, "arrayJoin")
+	assertSQLContains(t, q.lastSQL, "anchor_ts")
+}
+
 // TestMetricsQueryRange_BadInputs covers the 4xx surface: missing or
-// malformed `q` / `start` / `end` / `step`, and a non-metric TraceQL
-// query (one that lowers to a Scan/Filter rather than a
-// MetricsAggregate).
+// malformed `q` / `start` / `end`, an explicitly non-positive `step`
+// (absence defaults instead — see TestMetricsQueryRange_DefaultStep),
+// and a non-metric TraceQL query (one that lowers to a Scan/Filter
+// rather than a MetricsAggregate).
 func TestMetricsQueryRange_BadInputs(t *testing.T) {
 	t.Parallel()
 
@@ -627,11 +677,6 @@ func TestMetricsQueryRange_BadInputs(t *testing.T) {
 			name:    "missing_q",
 			params:  map[string]string{"start": fixtureStartUnix, "end": fixtureEndUnix, "step": "30s"},
 			wantSub: "missing 'q'",
-		},
-		{
-			name:    "missing_step",
-			params:  map[string]string{"q": "{} | rate()", "start": fixtureStartUnix, "end": fixtureEndUnix},
-			wantSub: "missing 'step'",
 		},
 		{
 			name:    "missing_start",
