@@ -1,7 +1,7 @@
 -- args --
 (none)
 -- sql --
-SELECT `anchor_ts`, if(ts > anchor_ts - toIntervalNanosecond(60000000000) AND ts <= anchor_ts AND metric_arg >= 2, pow(2, ceil(log2(toFloat64(metric_arg)))), 0) AS `__bucket`, toFloat64(countIf(ts > anchor_ts - toIntervalNanosecond(60000000000) AND ts <= anchor_ts AND metric_arg >= 2)) AS `Value` FROM (SELECT `Timestamp` AS `ts`, `Duration` AS `metric_arg`, arrayJoin(arrayMap(i -> now64(9) - toIntervalNanosecond(i * 60000000000), range(0, 6))) AS `anchor_ts` FROM (SELECT * FROM `otel_traces`)) GROUP BY `anchor_ts`, `__bucket`
+SELECT `anchor_ts`, if(in_window = 1 AND metric_arg >= 2, pow(2, ceil(log2(toFloat64(metric_arg)))), 0) AS `__bucket`, toFloat64(countIf(in_window = 1 AND metric_arg >= 2)) AS `Value` FROM ((SELECT `Duration` AS `metric_arg`, arrayJoin(arrayMap(i -> now64(9) - toIntervalNanosecond(i * 60000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `Timestamp`, now64(9)) - 60000000000, toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `Timestamp`, now64(9)) - 60000000000, toInt64(60000000000)) < 0) + 1), least(6, intDiv(dateDiff('nanosecond', `Timestamp`, now64(9)), toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `Timestamp`, now64(9)), toInt64(60000000000)) < 0) + 1)))) AS `anchor_ts`, 1 AS `in_window` FROM (SELECT * FROM `otel_traces`)) UNION ALL (SELECT 0 AS `metric_arg`, arrayJoin(arrayMap(i -> now64(9) - toIntervalNanosecond(i * 60000000000), range(0, 6))) AS `anchor_ts`, 0 AS `in_window` FROM (SELECT 1 FROM (SELECT * FROM `otel_traces`) LIMIT 1))) GROUP BY `anchor_ts`, `__bucket`
 -- chplan --
 RangeWindow func= range=0s step=1m0s outerRange=5m0s ts=Timestamp
   MetricsAggregate op=quantile_over_time attr=Duration quantiles=[0.95] valueAlias=Value
