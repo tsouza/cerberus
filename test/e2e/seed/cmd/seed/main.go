@@ -502,7 +502,13 @@ func insertMetrics(ctx context.Context, conn driver.Conn) error {
 // kept verbatim in cerberus's labelMatcherToExpr; the Prom/OTel naming bridge
 // (`service_name` ↔ `service.name`) is not implemented.
 func insertLogs(ctx context.Context, conn driver.Conn) error {
-	return conn.Exec(ctx, insertLogsSQL)
+	if err := conn.Exec(ctx, insertLogsSQL); err != nil {
+		return err
+	}
+	// Showcase-LogQL streams (gateway / shop / proxy / painter /
+	// packer) — see showcase_logql.go for the per-stream shapes the
+	// showcase-logql dashboard's parser / filter / unwrap panels need.
+	return insertShowcaseLogQLLogs(ctx, conn)
 }
 
 // insertTraces inserts 3 traces with mixed services + durations — preserved
