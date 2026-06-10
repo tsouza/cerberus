@@ -5,17 +5,17 @@
 -- end --
 2026-05-14T12:05:00Z
 -- sql --
-SELECT * FROM `otel_logs` WHERE (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?])) = ?) AND (`Timestamp` >= toDateTime64(?, ?)) AND (`Timestamp` <= toDateTime64(?, ?))
+SELECT * FROM `otel_logs` WHERE (`Timestamp` >= toDateTime64(?, ?)) AND (`Timestamp` <= toDateTime64(?, ?)) AND (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?])) = ?)
 -- args --
-[0] string = ""
-[1] string = "service_name"
-[2] string = "service_name"
-[3] string = "service.name"
-[4] string = "api"
-[5] string = "2026-05-14 12:03:20.000000000"
-[6] int64 = 9
-[7] string = "2026-05-14 12:05:00.000000000"
-[8] int64 = 9
+[0] string = "2026-05-14 12:03:20.000000000"
+[1] int64 = 9
+[2] string = "2026-05-14 12:05:00.000000000"
+[3] int64 = 9
+[4] string = ""
+[5] string = "service_name"
+[6] string = "service_name"
+[7] string = "service.name"
+[8] string = "api"
 -- seed --
 CREATE TABLE otel_logs (
     Timestamp DateTime64(9),

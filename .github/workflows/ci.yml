@@ -146,11 +146,30 @@ jobs:
       - name: go-arch-lint
         run: go-arch-lint check
 
+      # commitlint runs over the PR's commit range. This used to be
+      # wagoid/commitlint-github-action, but that action is Docker-based
+      # and pulls its image from Docker Hub on every run — an anonymous
+      # image-pull rate-limit flake failed the lint job (run
+      # 27249869293). The npm path below installs @commitlint/cli from
+      # the npm registry instead, removing the Docker Hub dependency,
+      # and lints the same range the wagoid action used for
+      # pull_request events: base.sha..head.sha, i.e. the commits
+      # unique to the PR head. `fetch-depth: 0` on the checkout above
+      # guarantees both SHAs exist locally.
+      - uses: actions/setup-node@v6
+        if: github.event_name == 'pull_request'
+        with:
+          node-version: '20'
+
       - name: commitlint
         if: github.event_name == 'pull_request'
-        uses: wagoid/commitlint-github-action@v6
-        with:
-          configFile: .commitlintrc.json
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          npm install --no-save @commitlint/cli@19 @commitlint/config-conventional@19
+          npx --no -- commitlint --config .commitlintrc.json \
+            --from "$BASE_SHA" --to "$HEAD_SHA" --verbose
 
       - name: markdownlint
         uses: DavidAnson/markdownlint-cli2-action@v23

@@ -201,7 +201,7 @@ under `compatibility/<head>/`.
 - **Corpus**: vendored
   [`prometheus/compliance/promql/promql-test-queries.yml`](https://github.com/prometheus/compliance).
 - **Driver**: upstream `promql-compliance-tester`.
-- **Today**: **536/536** cases pass, `expected-failures.json` allow-list empty.
+- **Today**: **536/536** cases pass; no allow-list exists.
 
 ### LogQL — `grafana/loki:pkg/logql/bench`
 
@@ -245,17 +245,18 @@ workflow commits a fresh `compat-score.json` to the orphan
 `compat-scores` branch under `badges/<head>.json` — the source the
 shields.io endpoint badges at the top of this README read from.
 
-All three harnesses run informationally today; they are wired through
-the same CI workflow and per-head shields.io badges read off the
-`compat-scores` orphan branch.
+All three harness jobs — `compatibility/{prometheus,loki,tempo}` —
+are required PR status checks on `main`; per-head shields.io badges
+read off the `compat-scores` orphan branch.
 
-**Allow-list discipline.** Each harness directory carries an
-`expected-failures.json` (PromQL) or `cerberus-test-queries.yml`
-overlay (LogQL / TraceQL) listing queries where cerberus knowingly
-diverges. Every entry requires a written reason — an upstream parser
-quirk that ClickHouse-side execution can't sensibly reproduce, a
-documented OTel-CH schema difference, or a harness-side seed
-limitation. Reviewers gate every addition.
+**No allow-lists.** No harness carries an expected-failures or skip
+overlay: every diff against the reference backend is a real bug to
+fix at the source (cerberus code, seeder, or reference config). The
+only pinned exclusion set is
+[`compatibility/loki/upstream-skip-baseline.txt`](compatibility/loki/upstream-skip-baseline.txt),
+which records the corpus entries *upstream itself* marks `skip: true`
+(no reference baseline exists for those); the harness fails on any
+drift in that set.
 
 See [`docs/compatibility.md`](docs/compatibility.md) for the full
 playbook (local reproduction, report shape, adding test cases,

@@ -73,6 +73,46 @@ behaviour change after a Prom/Loki/Tempo bump), the fix is to update
 the reference image pin or the seeder — never to add a per-case
 exception.
 
+## Upstream-skip baseline (LogQL)
+
+The vendored `loki-bench` corpus contains a handful of queries that
+*upstream itself* marks `skip: true` in the YAML — cases Loki's own
+v2-engine test suite declines to run (quantile / stddev / stdvar unwrap
+aggregations, some structured-metadata filters). For those entries the
+reference Loki provides no baseline to diff against, so they cannot be
+scored: a differential harness needs both sides to answer.
+
+This is **not** an allow-list. The boundary is drawn by the upstream
+corpus, not by cerberus, and it never suppresses a diff: the badge
+denominator counts the *runnable* corpus — every entry upstream marks
+runnable is seeded, executed against both backends, and scored, with
+zero cerberus-side exclusions on top.
+
+`compatibility/loki/upstream-skip-baseline.txt` is the trip-wire that
+keeps that boundary honest. The driver loads the full corpus
+(including skipped entries), partitions it into runnable +
+upstream-skipped, and asserts the upstream-skipped set exactly matches
+the file — one `<suite>/<file>.yaml#<description>` key per line. Drift
+in either direction fails the harness:
+
+- a new upstream `skip: true` would otherwise silently shrink the
+  scored denominator;
+- an upstream `skip: true` → `skip: false` flip (e.g. the v2 engine
+  gaining quantile support) would otherwise silently add a query to
+  the scored set without anyone triaging cerberus's parity for it.
+
+After a corpus re-snapshot, audit the skip-set diff, then regenerate
+the baseline with:
+
+```sh
+loki-compliance-tester \
+    -corpus=compatibility/loki/upstream/loki-bench/queries \
+    -skip-baseline=compatibility/loki/upstream-skip-baseline.txt \
+    -regen-baseline
+```
+
+See `compatibility/loki/README.md` for the full mechanism.
+
 ## CI integration
 
 `.github/workflows/compatibility.yml` runs all three harnesses:

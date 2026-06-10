@@ -81,17 +81,23 @@ func buildDefaultTableShapes() map[string]TableShape {
 
 	out := make(map[string]TableShape)
 
-	// OTel-CH `otel_logs` ORDER BY: (ServiceName, SeverityText,
-	// toUnixTimestamp(Timestamp), TraceId). Wide columns are the large
-	// per-row payloads (Body / ResourceAttributes / LogAttributes /
-	// ScopeAttributes); PREWHERE wants to defer reading them until
-	// granule pruning has narrowed the candidate set.
+	// OTel-CH `otel_logs` ORDER BY (exporter v0.152.0):
+	// (toStartOfFiveMinutes(Timestamp), ServiceName, Timestamp) — pinned
+	// by internal/schema/ddl/ddl_test.go. The leading key is a monotonic
+	// bucketing of Timestamp, so ClickHouse prunes granules on it from a
+	// plain Timestamp predicate; the ranking here only ever consumes bare
+	// column names (collectColumnRefs strips expressions), so the shape
+	// models the *effective column prefix*: Timestamp at rank 0 (it
+	// constrains the bucket expression), ServiceName at rank 1. The
+	// trailing raw Timestamp key introduces no new column, and
+	// SeverityText / TraceId left the sort key in v0.152.0. Wide columns
+	// are the large per-row payloads (Body / ResourceAttributes /
+	// LogAttributes / ScopeAttributes); PREWHERE wants to defer reading
+	// them until granule pruning has narrowed the candidate set.
 	out[logs.LogsTable] = TableShape{
 		SortColumns: []string{
-			logs.ServiceNameColumn,
-			logs.SeverityColumn,
 			logs.TimestampColumn,
-			logs.TraceIDColumn,
+			logs.ServiceNameColumn,
 		},
 		WideColumns: []string{
 			logs.BodyColumn,
