@@ -320,11 +320,23 @@ FROM numbers(600)`
 	// this INSERT every 30 s, so every Loki `/query` instant request
 	// (5 m staleness lookback, see internal/api/loki/handler.go:235)
 	// finds ≥1 row inside the lookback regardless of suite drift.
+	//
+	// The column list deliberately omits `TimestampTime`: upstream's
+	// clickhouseexporter removed the column from the logs DDL in
+	// v0.150.0, so which schema `otel_logs` carries depends on who
+	// created it first — this seeder's ddl.Apply (legacy fork
+	// templates, column present + materialized from Timestamp) or the
+	// k3d otel-collector's own exporter (0.152.x, column gone).
+	// Cerberus's startup warmup (#712) made the collector reliably win
+	// that race, and an INSERT naming the column hard-fails against
+	// the new schema ("No such column TimestampTime"). Upstream's own
+	// insert path stays compatible with both schemas by never naming
+	// it — the legacy schema materializes it from Timestamp — so this
+	// INSERT does the same.
 	insertLogsSQL = `INSERT INTO otel_logs
-  (Timestamp, TimestampTime, TraceId, SpanId, SeverityText, SeverityNumber, ServiceName, Body, ResourceAttributes, LogAttributes)
+  (Timestamp, TraceId, SpanId, SeverityText, SeverityNumber, ServiceName, Body, ResourceAttributes, LogAttributes)
 SELECT
     now64(9) + INTERVAL ((number - 20) * 15) SECOND AS ts,
-    ts,
     lpad(toString(number % 4), 32, '0'),
     lpad(toString(number % 4), 16, '0'),
     multiIf(number % 5 = 0, 'ERROR', number % 3 = 0, 'WARN', 'INFO'),
