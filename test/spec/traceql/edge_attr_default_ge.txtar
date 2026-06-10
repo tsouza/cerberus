@@ -4,7 +4,7 @@
 [0] string = "timeout"
 [1] int64 = 100
 -- sql --
-SELECT * FROM `otel_traces` WHERE (toFloat64(`SpanAttributes`[?]) >= ?)
+SELECT * FROM `otel_traces` WHERE (toFloat64OrNull(`SpanAttributes`[?]) >= ?)
 -- seed --
 CREATE TABLE otel_traces (
     Duration UInt64,
@@ -20,5 +20,5 @@ INSERT INTO otel_traces (Duration) VALUES
   [250000000]
 ]
 -- chplan --
-Filter predicate=(toFloat64(SpanAttributes["timeout"]) >= 100)
+Filter predicate=(toFloat64OrNull(SpanAttributes["timeout"]) >= 100)
   Scan(otel_traces)

@@ -313,14 +313,37 @@ function buildProbeURL(
     );
   }
   if (dsType === 'tempo') {
-    // Tempo search uses /api/search with a TraceQL expression.
     const q = encodeURIComponent(t.expr || '{}');
+    // TraceQL metrics-pipeline queries (`{...} | rate()` etc.) are
+    // served by /api/metrics/query_range, not /api/search — the same
+    // routing decision Grafana's Tempo datasource makes client-side.
+    if (isTraceQLMetricsQuery(t.expr)) {
+      return (
+        `${baseURL}/api/datasources/proxy/uid/${t.dsUid}` +
+        `/api/metrics/query_range?q=${q}` +
+        `&start=${start}&end=${end}&step=${t.stepSeconds}s`
+      );
+    }
+    // Span-set queries use /api/search.
     return (
       `${baseURL}/api/datasources/proxy/uid/${t.dsUid}` +
       `/api/search?q=${q}&start=${start}&end=${end}&limit=10`
     );
   }
   return null;
+}
+
+/**
+ * Detect a TraceQL metrics-pipeline query — mirrors the first-stage
+ * function list Grafana's Tempo datasource uses for its own
+ * search-vs-metrics endpoint routing. The pipe prefix keeps span-set
+ * pipeline stages (`| select(...)`, `| count() > 0`) on the search
+ * path.
+ */
+function isTraceQLMetricsQuery(expr: string): boolean {
+  return /\|\s*(rate|count_over_time|min_over_time|max_over_time|avg_over_time|sum_over_time|quantile_over_time|histogram_over_time|compare)\s*\(/.test(
+    expr,
+  );
 }
 
 /**
@@ -367,8 +390,12 @@ function resultCount(body: unknown, dsType: string): number {
     return Array.isArray(result) ? result.length : -1;
   }
   if (t === 'tempo') {
+    // /api/search returns { traces: [...] }; /api/metrics/query_range
+    // returns { series: [...] } — count whichever envelope arrived.
     const traces = b.traces;
-    return Array.isArray(traces) ? traces.length : -1;
+    if (Array.isArray(traces)) return traces.length;
+    const series = b.series;
+    return Array.isArray(series) ? series.length : -1;
   }
   return -1;
 }

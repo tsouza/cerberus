@@ -4,7 +4,7 @@
 [0] string = "replicas"
 [1] int64 = 5
 -- sql --
-SELECT * FROM `otel_traces` WHERE (toFloat64(`ResourceAttributes`[?]) <= ?)
+SELECT * FROM `otel_traces` WHERE (toFloat64OrNull(`ResourceAttributes`[?]) <= ?)
 -- seed --
 CREATE TABLE otel_traces (
     Duration UInt64,
@@ -20,5 +20,5 @@ INSERT INTO otel_traces (Duration) VALUES
   [20000000]
 ]
 -- chplan --
-Filter predicate=(toFloat64(ResourceAttributes["replicas"]) <= 5)
+Filter predicate=(toFloat64OrNull(ResourceAttributes["replicas"]) <= 5)
   Scan(otel_traces)

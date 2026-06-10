@@ -1,7 +1,7 @@
 -- query.traceql --
 { .ratio = 0.95 }
 -- sql --
-SELECT * FROM `otel_traces` WHERE (toFloat64(`SpanAttributes`[?]) = toFloat64(?))
+SELECT * FROM `otel_traces` WHERE (toFloat64OrNull(`SpanAttributes`[?]) = toFloat64(?))
 -- args --
 [0] string = "ratio"
 [1] float64 = 0.95
@@ -16,5 +16,5 @@ INSERT INTO otel_traces (_idx) VALUES (0), (1);
   [0]
 ]
 -- chplan --
-Filter predicate=(toFloat64(SpanAttributes["ratio"]) = 0.95)
+Filter predicate=(toFloat64OrNull(SpanAttributes["ratio"]) = 0.95)
   Scan(otel_traces)

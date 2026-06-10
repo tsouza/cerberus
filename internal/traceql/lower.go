@@ -718,14 +718,25 @@ func coerceNumericFieldAccess(op chplan.BinaryOp, lhs, rhs chplan.Expr) (chplan.
 }
 
 // coerceFieldAccess wraps every FieldAccess inside expr in
-// toFloat64(...), recursing into arithmetic Binary nodes so a nested
-// `.a + .b` becomes `toFloat64(.a) + toFloat64(.b)`. Non-arithmetic
-// sub-expressions (literals, ColumnRefs, FuncCalls already produced by
-// a deeper coercion) pass through unchanged.
+// toFloat64OrNull(...), recursing into arithmetic Binary nodes so a
+// nested `.a + .b` becomes `toFloat64OrNull(.a) + toFloat64OrNull(.b)`.
+// Non-arithmetic sub-expressions (literals, ColumnRefs, FuncCalls
+// already produced by a deeper coercion) pass through unchanged.
+//
+// Why OrNull rather than the bare cast: the Map(String, String)
+// subscript returns ” for absent keys and arbitrary text for
+// non-numeric values; bare toFloat64(”) makes ClickHouse abort the
+// whole query ("Cannot parse string") — so any numeric comparison over
+// a table where even ONE row lacks the attribute 502'd. OrNull turns
+// unparseable values into NULL, the comparison evaluates NULL, and
+// WHERE drops the row — exactly Tempo's reference semantics (a span
+// without the attribute, or with a non-numeric value, simply doesn't
+// match). OrZero would instead make `{ .x < 5 }` match spans that
+// never carried x at all.
 func coerceFieldAccess(expr chplan.Expr) chplan.Expr {
 	switch v := expr.(type) {
 	case *chplan.FieldAccess:
-		return &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{v}}
+		return &chplan.FuncCall{Name: "toFloat64OrNull", Args: []chplan.Expr{v}}
 	case *chplan.Binary:
 		if isArithmeticOp(v.Op) {
 			return &chplan.Binary{
