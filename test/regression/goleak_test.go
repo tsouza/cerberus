@@ -324,12 +324,18 @@ func TestNoGoroutineLeak_TempoTraceByID(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	for range 30 {
-		resp, err := http.Get(srv.URL + "/api/traces/abc123")
-		if err != nil {
-			t.Fatalf("GET: %v", err)
+	// Drive both the v1 (bare-trace) and v2 (TraceByIDResponse
+	// envelope) endpoints — since the v2 envelope fix they are
+	// distinct handler funcs sharing serveTraceByID, and the goleak
+	// net must cover every mounted entrypoint.
+	for _, path := range []string{"/api/traces/abc123", "/api/v2/traces/abc123"} {
+		for range 30 {
+			resp, err := http.Get(srv.URL + path)
+			if err != nil {
+				t.Fatalf("GET %s: %v", path, err)
+			}
+			_ = resp.Body.Close()
 		}
-		_ = resp.Body.Close()
 	}
 }
 

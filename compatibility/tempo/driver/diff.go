@@ -225,13 +225,20 @@ func diffCase(ctx context.Context, client *http.Client, tc CorpusCase, opts case
 		return res
 	}
 
-	// The trace-by-id endpoint uses a proto-aware sibling differ (see
-	// diffTracesEndpoint + proto_fetch.go) — that path fetches BOTH
-	// JSON and proto on each side so the differ catches the wire-format
-	// divergence #199/#650 fixed (cerberus silently returning JSON when
-	// a client asked for proto). Every other endpoint stays on JSON.
+	// The trace-by-id endpoints use proto-aware sibling differs (see
+	// diffTracesEndpoint / diffTracesV2Endpoint + proto_fetch.go) —
+	// those paths fetch BOTH JSON and proto on each side so the differ
+	// catches the wire-format divergence #199/#650 fixed (cerberus
+	// silently returning JSON when a client asked for proto) and, on
+	// v2, the TraceByIDResponse envelope drift that broke Grafana 12's
+	// trace view (cerberus returning the bare v1 trace bytes on the v2
+	// URL). Every other endpoint stays on JSON.
 	if tc.Endpoint == "traces" {
 		diffTracesEndpoint(ctx, client, tempoURL, cerbURL, &res)
+		return res
+	}
+	if tc.Endpoint == "traces_v2" {
+		diffTracesV2Endpoint(ctx, client, tempoURL, cerbURL, &res)
 		return res
 	}
 
@@ -386,6 +393,12 @@ func buildURL(base string, tc CorpusCase, backend string, startTS, endTS time.Ti
 			return "", err
 		}
 		u.Path += "/api/traces/" + id
+	case "traces_v2":
+		id, err := deriveTraceIDFromTemplate(tc.TraceIDTemplate)
+		if err != nil {
+			return "", err
+		}
+		u.Path += "/api/v2/traces/" + id
 	case "tags_v1":
 		u.Path += "/api/search/tags"
 		q.Set("start", fmt.Sprintf("%d", startTS.Unix()))

@@ -62,38 +62,52 @@ import (
 // fetchJSON: a non-2xx is surfaced as an error, the body snippet is
 // included for diagnosability.
 func fetchProto(ctx context.Context, client *http.Client, urlStr string) ([]byte, *tempopb.Trace, int, error) {
+	trace := &tempopb.Trace{}
+	body, status, err := fetchProtoMessage(ctx, client, urlStr, trace, "tempopb.Trace")
+	if err != nil {
+		return body, nil, status, err
+	}
+	return body, trace, status, nil
+}
+
+// fetchProtoMessage is the shared transport for the proto-aware
+// fetchers: GET with Accept: application/protobuf, 16 MB body cap,
+// non-2xx surfaced as an error with a body snippet, and the 2xx body
+// proto.Unmarshal-ed into dst. typeName labels the decode error so a
+// reviewer can tell which wire shape (bare Trace vs TraceByIDResponse
+// envelope) failed to parse.
+func fetchProtoMessage(ctx context.Context, client *http.Client, urlStr string, dst proto.Message, typeName string) ([]byte, int, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
 	if err != nil {
-		return nil, nil, 0, err
+		return nil, 0, err
 	}
 	req.Header.Set("Accept", "application/protobuf")
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, nil, 0, err
+		return nil, 0, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if err != nil {
-		return nil, nil, resp.StatusCode, fmt.Errorf("read body: %w", err)
+		return nil, resp.StatusCode, fmt.Errorf("read body: %w", err)
 	}
 	if resp.StatusCode/100 != 2 {
 		snippet := body
 		if len(snippet) > 2048 {
 			snippet = snippet[:2048]
 		}
-		return body, nil, resp.StatusCode, fmt.Errorf("status %d: %s", resp.StatusCode, string(snippet))
+		return body, resp.StatusCode, fmt.Errorf("status %d: %s", resp.StatusCode, string(snippet))
 	}
-	trace := &tempopb.Trace{}
-	if err := proto.Unmarshal(body, trace); err != nil {
+	if err := proto.Unmarshal(body, dst); err != nil {
 		// Surface the body snippet so a reviewer can see whether the
 		// server returned JSON, an error envelope, or just garbage.
 		snippet := body
 		if len(snippet) > 256 {
 			snippet = snippet[:256]
 		}
-		return body, nil, resp.StatusCode, fmt.Errorf("proto.Unmarshal tempopb.Trace: %w (body prefix: %q)", err, string(snippet))
+		return body, resp.StatusCode, fmt.Errorf("proto.Unmarshal %s: %w (body prefix: %q)", typeName, err, string(snippet))
 	}
-	return body, trace, resp.StatusCode, nil
+	return body, resp.StatusCode, nil
 }
 
 // traceShape is the deterministic projection of a trace used for the
@@ -367,35 +381,43 @@ func diffTracesEndpoint(ctx context.Context, client *http.Client, tempoURL, cerb
 	tempoShape, tempoOK := preferredShape(tempoProto, tempoJSON, tpErr == nil)
 	cerbShape, cerbOK := preferredShape(cerbProto, cerbJSON, cpErr == nil)
 	if tempoOK && cerbOK {
-		if tempoShape.SpanCount != cerbShape.SpanCount {
-			appendReason(&res.Diff, "cardinality", fmt.Sprintf("tempo=%d spans, cerberus=%d spans", tempoShape.SpanCount, cerbShape.SpanCount))
-		}
-		tempoSet := stringSet(tempoShape.SpanIDs)
-		cerbSet := stringSet(cerbShape.SpanIDs)
-		matched := 0
-		var missingInTempo, missingInCerb []string
-		for _, id := range cerbShape.SpanIDs {
-			if tempoSet[id] {
-				matched++
-			} else {
-				missingInTempo = append(missingInTempo, id)
-			}
-		}
-		for _, id := range tempoShape.SpanIDs {
-			if !cerbSet[id] {
-				missingInCerb = append(missingInCerb, id)
-			}
-		}
-		sort.Strings(missingInTempo)
-		sort.Strings(missingInCerb)
-		for _, id := range missingInTempo {
-			appendReason(&res.Diff, "missing_in_a", fmt.Sprintf("span %s present in cerberus but missing in tempo", id))
-		}
-		for _, id := range missingInCerb {
-			appendReason(&res.Diff, "missing_in_b", fmt.Sprintf("span %s present in tempo but missing in cerberus", id))
-		}
-		res.Diff.MatchedCount = matched
+		diffCrossBackendShapes(res, tempoShape, cerbShape)
 	}
+}
+
+// diffCrossBackendShapes runs the cross-backend span-shape diff shared
+// by the v1 and v2 trace-by-id differs: span-count cardinality plus
+// per-span-ID set membership in both directions. Mutates res.Diff in
+// place (reasons + MatchedCount).
+func diffCrossBackendShapes(res *CaseResult, tempoShape, cerbShape traceShape) {
+	if tempoShape.SpanCount != cerbShape.SpanCount {
+		appendReason(&res.Diff, "cardinality", fmt.Sprintf("tempo=%d spans, cerberus=%d spans", tempoShape.SpanCount, cerbShape.SpanCount))
+	}
+	tempoSet := stringSet(tempoShape.SpanIDs)
+	cerbSet := stringSet(cerbShape.SpanIDs)
+	matched := 0
+	var missingInTempo, missingInCerb []string
+	for _, id := range cerbShape.SpanIDs {
+		if tempoSet[id] {
+			matched++
+		} else {
+			missingInTempo = append(missingInTempo, id)
+		}
+	}
+	for _, id := range tempoShape.SpanIDs {
+		if !cerbSet[id] {
+			missingInCerb = append(missingInCerb, id)
+		}
+	}
+	sort.Strings(missingInTempo)
+	sort.Strings(missingInCerb)
+	for _, id := range missingInTempo {
+		appendReason(&res.Diff, "missing_in_a", fmt.Sprintf("span %s present in cerberus but missing in tempo", id))
+	}
+	for _, id := range missingInCerb {
+		appendReason(&res.Diff, "missing_in_b", fmt.Sprintf("span %s present in tempo but missing in cerberus", id))
+	}
+	res.Diff.MatchedCount = matched
 }
 
 // preferredShape returns the proto-decoded shape when the proto fetch
@@ -421,4 +443,168 @@ func preferredShape(protoMsg *tempopb.Trace, jsonBody []byte, protoOK bool) (tra
 func appendReason(d *Diff, kind, detail string) {
 	d.Equal = false
 	d.Reasons = append(d.Reasons, DiffReason{Kind: kind, Detail: detail})
+}
+
+// ---- /api/v2/traces/<id> — the TraceByIDResponse envelope ------------
+//
+// Reference Tempo's v2 trace-by-id endpoint does NOT return the bare
+// trace the v1 endpoint serves. The frontend's v2 combiner
+// (grafana/tempo modules/frontend/combiner/trace_by_id_v2.go) finalizes
+// a tempopb.TraceByIDResponse{trace, metrics, status, message} and the
+// generic HTTP combiner (combiner/common.go internalMarshalAs) marshals
+// THAT envelope — proto.Marshal under Accept: protobuf, gogo jsonpb
+// (`{"trace":{…},"metrics":{}}`) otherwise. Grafana 12.x unmarshals the
+// v2 body as TraceByIDResponse before its OTLP conversion, so a backend
+// that serves the un-enveloped v1 bytes on the v2 URL breaks every
+// trace drill-down with `proto: KeyValue: wiretype end group for
+// non-group`. That exact drift shipped in cerberus and passed this
+// harness because only the v1 endpoint was diffed — the v2 differ below
+// closes the gap.
+
+// fetchProtoV2 GETs a URL with Accept: application/protobuf and decodes
+// the body as the v2 *tempopb.TraceByIDResponse envelope. Mirrors
+// fetchProto's error envelope and limits.
+func fetchProtoV2(ctx context.Context, client *http.Client, urlStr string) ([]byte, *tempopb.TraceByIDResponse, int, error) {
+	envelope := &tempopb.TraceByIDResponse{}
+	body, status, err := fetchProtoMessage(ctx, client, urlStr, envelope, "tempopb.TraceByIDResponse")
+	if err != nil {
+		return body, nil, status, err
+	}
+	return body, envelope, status, nil
+}
+
+// projectJSONShapeV2 decodes a v2 trace-by-id JSON body — the jsonpb
+// TraceByIDResponse envelope — and projects the inner trace to the
+// shared traceShape. Strict on the envelope: a body without a
+// top-level `trace` object (e.g. a backend serving the bare v1
+// `{"batches":…}` shape on the v2 URL) is an error, which the caller
+// records as an envelope DiffReason. No fallback to the v1 dialect —
+// tolerating it here would be exactly the allow-list this differ
+// exists to forbid.
+func projectJSONShapeV2(body []byte) (traceShape, error) {
+	var raw struct {
+		Trace *struct {
+			ResourceSpans []struct {
+				ScopeSpans []struct {
+					Spans []spanIDRecord `json:"spans"`
+				} `json:"scopeSpans"`
+			} `json:"resourceSpans"`
+		} `json:"trace"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return traceShape{}, fmt.Errorf("decode v2 trace json: %w", err)
+	}
+	if raw.Trace == nil {
+		snippet := body
+		if len(snippet) > 256 {
+			snippet = snippet[:256]
+		}
+		return traceShape{}, fmt.Errorf("missing top-level \"trace\" envelope key (body prefix: %q)", string(snippet))
+	}
+	ids := make(map[string]struct{})
+	total := 0
+	for _, rs := range raw.Trace.ResourceSpans {
+		for _, ss := range rs.ScopeSpans {
+			for _, sp := range ss.Spans {
+				total++
+				if sp.SpanID != "" {
+					ids[canonicalJSONSpanID(sp.SpanID)] = struct{}{}
+				}
+			}
+		}
+	}
+	return traceShape{SpanCount: total, SpanIDs: sortedKeys(ids)}, nil
+}
+
+// diffTracesV2Endpoint runs the proto-aware differ for the v2
+// trace-by-id case. Same posture as diffTracesEndpoint (every failure
+// is a DiffReason, never a HardError) plus the envelope gates:
+//
+//   - "proto_decode": the proto body failed to unmarshal as
+//     tempopb.TraceByIDResponse on a side.
+//   - "envelope": the proto envelope decoded but carries no trace
+//     (field 1 unset — the shape a bare v1 Trace body typically
+//     misparses into), or the JSON body has no top-level `trace` key.
+//   - "encoding_mismatch": JSON and proto on the same side describe
+//     different traces.
+//   - "cardinality" / "missing_in_a" / "missing_in_b": the cross-
+//     backend span-shape diff, on the proto-decoded inner traces.
+func diffTracesV2Endpoint(ctx context.Context, client *http.Client, tempoURL, cerbURL string, res *CaseResult) {
+	res.Diff = Diff{Equal: true}
+
+	tempoJSON, tempoStatus, tjErr := fetchJSON(ctx, client, tempoURL)
+	cerbJSON, cerbStatus, cjErr := fetchJSON(ctx, client, cerbURL)
+	res.TempoStatus = tempoStatus
+	res.CerberusStatus = cerbStatus
+	_, tempoEnvelope, _, tpErr := fetchProtoV2(ctx, client, tempoURL)
+	_, cerbEnvelope, _, cpErr := fetchProtoV2(ctx, client, cerbURL)
+
+	if tjErr != nil {
+		appendReason(&res.Diff, "json_decode", fmt.Sprintf("tempo JSON fetch failed: %v", tjErr))
+	}
+	if cjErr != nil {
+		appendReason(&res.Diff, "json_decode", fmt.Sprintf("cerberus JSON fetch failed: %v", cjErr))
+	}
+	if tpErr != nil {
+		appendReason(&res.Diff, "proto_decode", fmt.Sprintf("tempo v2 proto fetch/decode failed: %v", tpErr))
+	}
+	if cpErr != nil {
+		appendReason(&res.Diff, "proto_decode", fmt.Sprintf("cerberus v2 proto fetch/decode failed: %v", cpErr))
+	}
+
+	// Envelope gate on the proto side: TraceByIDResponse.trace must be
+	// populated. A bare v1 Trace body that happens to survive
+	// proto.Unmarshal lands here with Trace == nil (its field-1
+	// payloads don't parse as a single Trace message), so this is the
+	// drift detector even when Unmarshal itself doesn't error.
+	envelopeShape := func(side string, envelope *tempopb.TraceByIDResponse, fetchErr error) (traceShape, bool) {
+		if fetchErr != nil || envelope == nil {
+			return traceShape{}, false
+		}
+		if envelope.Trace == nil {
+			appendReason(&res.Diff, "envelope", fmt.Sprintf("%s: v2 proto body decoded as TraceByIDResponse but trace field is unset — body is not the v2 envelope", side))
+			return traceShape{}, false
+		}
+		return projectProtoShape(envelope.Trace), true
+	}
+	tempoProtoShape, tempoProtoOK := envelopeShape("tempo", tempoEnvelope, tpErr)
+	cerbProtoShape, cerbProtoOK := envelopeShape("cerberus", cerbEnvelope, cpErr)
+
+	// Envelope + cross-encoding parity gate on the JSON side.
+	jsonShape := func(side string, body []byte, fetchErr error) (traceShape, bool) {
+		if fetchErr != nil {
+			return traceShape{}, false
+		}
+		shape, err := projectJSONShapeV2(body)
+		if err != nil {
+			appendReason(&res.Diff, "envelope", fmt.Sprintf("%s: v2 JSON body is not the TraceByIDResponse envelope: %v", side, err))
+			return traceShape{}, false
+		}
+		return shape, true
+	}
+	tempoJSONShape, tempoJSONOK := jsonShape("tempo", tempoJSON, tjErr)
+	cerbJSONShape, cerbJSONOK := jsonShape("cerberus", cerbJSON, cjErr)
+
+	if tempoProtoOK && tempoJSONOK && !tempoJSONShape.equal(tempoProtoShape) {
+		appendReason(&res.Diff, "encoding_mismatch", fmt.Sprintf("tempo: json=(%s) vs proto=(%s)", tempoJSONShape.summarise(), tempoProtoShape.summarise()))
+	}
+	if cerbProtoOK && cerbJSONOK && !cerbJSONShape.equal(cerbProtoShape) {
+		appendReason(&res.Diff, "encoding_mismatch", fmt.Sprintf("cerberus: json=(%s) vs proto=(%s)", cerbJSONShape.summarise(), cerbProtoShape.summarise()))
+	}
+
+	// Cross-backend inner-trace parity, preferring the proto envelope
+	// (the wire format Grafana 12 consumes) and falling back to the
+	// JSON envelope so a broken proto path still gets SOME comparison
+	// alongside its proto_decode / envelope reason.
+	tempoShape, tempoOK := tempoProtoShape, tempoProtoOK
+	if !tempoOK {
+		tempoShape, tempoOK = tempoJSONShape, tempoJSONOK
+	}
+	cerbShape, cerbOK := cerbProtoShape, cerbProtoOK
+	if !cerbOK {
+		cerbShape, cerbOK = cerbJSONShape, cerbJSONOK
+	}
+	if tempoOK && cerbOK {
+		diffCrossBackendShapes(res, tempoShape, cerbShape)
+	}
 }

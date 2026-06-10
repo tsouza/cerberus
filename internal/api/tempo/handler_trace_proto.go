@@ -77,20 +77,49 @@ func groupBatchesProto(samples []chclient.Sample) *tempopb.Trace {
 	out := &tempopb.Trace{ResourceSpans: make([]*tracev1.ResourceSpans, 0, len(groups))}
 	for _, g := range groups {
 		rs := &tracev1.ResourceSpans{
+			// Resource is ALWAYS non-nil, even when the row carried no
+			// resource attributes: OTLP treats ResourceSpans.resource
+			// as effectively always present (empty message at minimum)
+			// and reference Tempo rehydrates a non-nil Resource from
+			// parquet unconditionally. Grafana 12's server-side trace
+			// transform (pkg/tsdb/tempo/trace_transform.go
+			// resourceSpansToRows) reads resource.Attributes with no
+			// nil check, so a missing submessage is a panic — and a
+			// 500 on the whole /api/ds/query trace-detail request.
 			Resource: &resourcev1.Resource{
 				Attributes: attrMapToKVList(g.resourceAttrs),
 			},
-			ScopeSpans: []*tracev1.ScopeSpans{{
-				// One ScopeSpans per ResourceSpans is enough — cerberus
-				// flattens the scope dimension on the JSON path
-				// (groupBatches' ResourceSpans has no scope_spans
-				// field), so mirroring "one ScopeSpans bucket" keeps
-				// the two outputs structurally aligned.
-				Scope: nil,
-			}},
 		}
+		// One ScopeSpans per distinct (ScopeName, ScopeVersion) pair,
+		// in lexicographic (name, version) order — mirroring reference
+		// Tempo's per-scope batching. Scope is ALWAYS non-nil (empty
+		// InstrumentationScope at minimum): Grafana 12's
+		// spanToSpanRow dereferences ils.Scope.Name / .Version with no
+		// nil check (trace_transform.go:137 — the exact panic that
+		// broke trace detail via /api/ds/query on the compose smoke),
+		// and reference Tempo's parquetToProtoInstrumentationScope
+		// always returns a non-nil scope. Spans inside each bucket
+		// keep the global (StartTimeUnixNano, SpanID) order
+		// groupTraceBatches established, so the output remains fully
+		// deterministic (the v1/v2 byte-parity pins rely on it).
+		scopeBuckets := map[string]*tracev1.ScopeSpans{}
+		scopeKeys := make([]string, 0, 1)
 		for _, row := range g.spans {
-			rs.ScopeSpans[0].Spans = append(rs.ScopeSpans[0].Spans, &tracev1.Span{
+			name := row.meta[traceByIDKeyScopeName]
+			version := row.meta[traceByIDKeyScopeVersion]
+			// "\x00" cannot occur in CH String scope columns written
+			// by the OTel-CH exporter, so the composite key is
+			// collision-free.
+			key := name + "\x00" + version
+			ss, ok := scopeBuckets[key]
+			if !ok {
+				ss = &tracev1.ScopeSpans{
+					Scope: &commonv1.InstrumentationScope{Name: name, Version: version},
+				}
+				scopeBuckets[key] = ss
+				scopeKeys = append(scopeKeys, key)
+			}
+			ss.Spans = append(ss.Spans, &tracev1.Span{
 				TraceId:           hexToBytesPadded(row.meta[traceByIDKeyTraceID], 16),
 				SpanId:            hexToBytesPadded(row.meta[traceByIDKeySpanID], 8),
 				ParentSpanId:      hexToBytesPadded(row.meta[traceByIDKeyParentSpanID], 8),
@@ -107,6 +136,11 @@ func groupBatchesProto(samples []chclient.Sample) *tempopb.Trace {
 				Status:          &tracev1.Status{Code: statusCodeFromCH(row.meta[traceByIDKeyStatusCode])},
 				Attributes:      attrMapToKVList(row.spanAttrs),
 			})
+		}
+		sortStrings(scopeKeys)
+		rs.ScopeSpans = make([]*tracev1.ScopeSpans, 0, len(scopeKeys))
+		for _, k := range scopeKeys {
+			rs.ScopeSpans = append(rs.ScopeSpans, scopeBuckets[k])
 		}
 		out.ResourceSpans = append(out.ResourceSpans, rs)
 	}

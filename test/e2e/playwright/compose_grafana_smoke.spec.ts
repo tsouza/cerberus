@@ -931,3 +931,108 @@ function stripBase(url: string, base: string): string {
   return url.startsWith(base) ? url.slice(base.length) : url;
 }
 
+
+/**
+ * Trace DETAIL through the Grafana datasource BACKEND — POST
+ * /api/ds/query with a traceql query whose expression is a bare trace
+ * ID. In Grafana 12 the Tempo plugin backend resolves that by fetching
+ * `/api/v2/traces/<id>` as protobuf and converting the
+ * tempopb.TraceByIDResponse envelope to OTLP server-side.
+ *
+ * This is the exact path the v2-envelope regression broke (`Failed to
+ * convert tempo response to Otlp: proto: KeyValue: wiretype end group
+ * for non-group` → "An error occurred within the plugin" in Explore)
+ * while every existing sweep stayed green: the UI trace-click sweep
+ * above only gates the proxy-level /api/v2/traces status, and the
+ * dashboard sweeps never open a trace detail through the backend.
+ *
+ * The trace ID is surfaced via TraceQL search over cerberus's own
+ * self-telemetry spans (the compose stack exports them through the
+ * OTel collector on a 60s tick), polled with a generous deadline so a
+ * fresh stack has time to land its first export — no hardcoded IDs,
+ * no expected-empty escape hatch: if search never surfaces a trace,
+ * that's a real failure of the traces pipeline and the test reports
+ * it loudly.
+ */
+test('compose: tempo trace detail via /api/ds/query (Grafana plugin backend) succeeds', async ({
+  request,
+}, testInfo) => {
+  // Search polling below tolerates a fresh stack's first OTel export
+  // tick (60s) plus collector flush + CH insert; budget accordingly.
+  testInfo.setTimeout(300_000);
+
+  const baseURL = process.env.GRAFANA_BASE_URL ?? 'http://localhost:3000';
+  const tempoProxy = `${baseURL}/api/datasources/proxy/uid/cerberus-tempo/api`;
+
+  // 1. Surface a trace ID via search. Each poll iteration also fires a
+  //    couple of cerberus queries so a fresh stack generates spans to
+  //    find (cerberus traces itself; the queries below land in
+  //    otel_traces once the 60s export tick fires).
+  let traceID = '';
+  const deadline = Date.now() + 240_000;
+  while (Date.now() < deadline) {
+    // Span-generating nudge — errors are discarded; the search poll is
+    // the load-bearing check.
+    try {
+      await request.get(
+        `${baseURL}/api/datasources/proxy/uid/cerberus-prometheus/api/v1/query?query=up`,
+        { timeout: 5_000 },
+      );
+    } catch {
+      // Warmup-only call; failure here is not the signal under test.
+    }
+    const searchResp = await request.get(
+      `${tempoProxy}/search?q=${encodeURIComponent('{}')}`,
+      { timeout: 10_000 },
+    );
+    if (searchResp.ok()) {
+      const body = await searchResp.json().catch(() => ({}));
+      const id = body?.traces?.[0]?.traceID;
+      if (id) {
+        traceID = id;
+        break;
+      }
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 5_000));
+  }
+  expect(
+    traceID,
+    'TraceQL search must surface at least one self-telemetry trace within the polling budget',
+  ).toBeTruthy();
+
+  // 2. Trace detail through the plugin backend.
+  const now = Date.now();
+  const dsResp = await request.post(`${baseURL}/api/ds/query`, {
+    data: {
+      queries: [
+        {
+          refId: 'A',
+          datasource: { type: 'tempo', uid: 'cerberus-tempo' },
+          // 'traceId', not 'traceql': the Explore pane URL carries
+          // queryType=traceql, but Grafana's tempo datasource frontend
+          // reclassifies a bare-hex query before POSTing — the backend
+          // serves trace-by-id only under queryType traceId and rejects
+          // traceql with "backend TraceQL search queries are not
+          // supported" (verified against grafana 12.2.9).
+          queryType: 'traceId',
+          query: traceID,
+          limit: 20,
+          tableType: 'traces',
+        },
+      ],
+      from: String(now - 24 * 60 * 60 * 1000),
+      to: String(now),
+    },
+  });
+
+  const dsBody = await dsResp.json().catch(() => ({}));
+  const result = dsBody?.results?.A;
+  const tunneledError: string = result?.error ?? '';
+  expect(
+    tunneledError,
+    'trace-by-id /api/ds/query must not tunnel a plugin error (Grafana 12 unmarshals the v2 TraceByIDResponse envelope and converts it to OTLP here)',
+  ).toBe('');
+  expect(dsResp.ok(), `/api/ds/query status ${dsResp.status()}`).toBe(true);
+  expect(Array.isArray(result?.frames), 'results.A.frames is an array').toBe(true);
+  expect(result.frames.length, '≥1 trace frame rendered').toBeGreaterThan(0);
+});

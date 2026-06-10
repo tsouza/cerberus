@@ -8,10 +8,11 @@
 //	-- query --                 the TraceQL expression (search / metrics
 //	                            endpoints)
 //	-- endpoint --              one of: search | search_recent | traces |
-//	                            tags_v1 | tags_v2 | tag_values_v1 |
-//	                            tag_values_v2 | metrics_range |
-//	                            metrics_instant
-//	-- traceid_template --      a template like "{svc}/{idx}" (only for `traces`)
+//	                            traces_v2 | tags_v1 | tags_v2 |
+//	                            tag_values_v1 | tag_values_v2 |
+//	                            metrics_range | metrics_instant
+//	-- traceid_template --      a template like "{svc}/{idx}" (only for
+//	                            `traces` / `traces_v2`)
 //	-- tag_name --              attribute key whose values to enumerate
 //	                            (tag_values_v1 / tag_values_v2 only)
 //	-- scope --                 optional `?scope=` filter for tags_v2 (one of
@@ -95,7 +96,10 @@ type CorpusCase struct {
 	//
 	//   * search           GET /api/search?q=<TraceQL>
 	//   * search_recent    GET /api/search/recent (TraceQL ignored)
-	//   * traces           GET /api/traces/<id>   (TraceIDTemplate populated)
+	//   * traces           GET /api/traces/<id>    (TraceIDTemplate populated)
+	//   * traces_v2        GET /api/v2/traces/<id> (TraceIDTemplate populated;
+	//                      body is the tempopb.TraceByIDResponse envelope,
+	//                      not the bare v1 trace — see proto_fetch.go)
 	//   * tags_v1          GET /api/search/tags
 	//   * tags_v2          GET /api/v2/search/tags[?scope=<Scope>]
 	//   * tag_values_v1    GET /api/search/tag/{TagName}/values
@@ -107,7 +111,8 @@ type CorpusCase struct {
 	// (service, traceIdx); see TraceIDTemplate below for the format.
 	Endpoint string
 
-	// TraceIDTemplate is only consulted when Endpoint == "traces".
+	// TraceIDTemplate is only consulted when Endpoint == "traces" or
+	// "traces_v2".
 	// Format: "<svc>/<idx>" — the differ derives the byte-identical
 	// 16-byte trace ID via the same hash the seeder uses, hex-encodes
 	// it, and substitutes it into the URL. Decoupling the template
@@ -334,14 +339,14 @@ func validateCase(cur CorpusCase, ord int) (CorpusCase, error) {
 		return cur, fmt.Errorf("case %q missing -- query -- (search_recent and the four tag endpoints are the only kinds that may omit it)", cur.Name)
 	}
 	switch cur.Endpoint {
-	case "search", "search_recent", "traces",
+	case "search", "search_recent", "traces", "traces_v2",
 		"tags_v1", "tags_v2", "tag_values_v1", "tag_values_v2",
 		"metrics_range", "metrics_instant":
 	default:
-		return cur, fmt.Errorf("case %q: unknown endpoint %q (want search | search_recent | traces | tags_v1 | tags_v2 | tag_values_v1 | tag_values_v2 | metrics_range | metrics_instant)", cur.Name, cur.Endpoint)
+		return cur, fmt.Errorf("case %q: unknown endpoint %q (want search | search_recent | traces | traces_v2 | tags_v1 | tags_v2 | tag_values_v1 | tag_values_v2 | metrics_range | metrics_instant)", cur.Name, cur.Endpoint)
 	}
-	if cur.Endpoint == "traces" && cur.TraceIDTemplate == "" {
-		return cur, fmt.Errorf("case %q: endpoint=traces requires -- traceid_template --", cur.Name)
+	if (cur.Endpoint == "traces" || cur.Endpoint == "traces_v2") && cur.TraceIDTemplate == "" {
+		return cur, fmt.Errorf("case %q: endpoint=%s requires -- traceid_template --", cur.Name, cur.Endpoint)
 	}
 	if (cur.Endpoint == "tag_values_v1" || cur.Endpoint == "tag_values_v2") && cur.TagName == "" {
 		return cur, fmt.Errorf("case %q: endpoint=%s requires -- tag_name --", cur.Name, cur.Endpoint)
