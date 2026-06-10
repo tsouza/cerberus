@@ -47,13 +47,27 @@ func GenerateLogQL() (*Inventory, error) {
 	return &Inventory{QL: "logql", Source: logQLSource, Rows: rows}, nil
 }
 
+// mkRow is the Row literal shorthand shared by the curated-row
+// builders below.
+func mkRow(id, class, token, pin string) Row {
+	return Row{ID: id, Class: class, Token: token, Pin: pin}
+}
+
 // curatedLogQLRows returns the hand-curated LogQL feature rows. Each
 // row's Pin is the parser-pinned existence check: GenerateLogQL fails
 // if the pinned parser stops accepting it.
 func curatedLogQLRows() []Row {
-	mk := func(id, class, token, pin string) Row {
-		return Row{ID: id, Class: class, Token: token, Pin: pin}
-	}
+	rows := []Row{}
+	rows = append(rows, logQLFilterRows()...)
+	rows = append(rows, logQLPipelineStageRows()...)
+	rows = append(rows, logQLAggregationRows()...)
+	rows = append(rows, logQLBinaryAndFeatureRows()...)
+	return rows
+}
+
+// logQLFilterRows covers the line-filter and label-filter families.
+func logQLFilterRows() []Row {
+	mk := mkRow
 	rows := []Row{}
 
 	// Line filters — `|=` / `!=` / `|~` / `!~`, the Loki 3.x pattern
@@ -85,6 +99,15 @@ func curatedLogQLRows() []Row {
 	} {
 		rows = append(rows, mk("labelfilter:"+f.tok, "label-filter", f.tok, f.pin))
 	}
+
+	return rows
+}
+
+// logQLPipelineStageRows covers parser stages, format / label-set
+// manipulation stages, and unwrap conversions.
+func logQLPipelineStageRows() []Row {
+	mk := mkRow
+	rows := []Row{}
 
 	// Parser stages — bare and parameterised forms.
 	for _, p := range []struct{ tok, pin string }{
@@ -124,6 +147,15 @@ func curatedLogQLRows() []Row {
 	} {
 		rows = append(rows, mk("unwrap:"+u.tok, "unwrap", u.tok, u.pin))
 	}
+
+	return rows
+}
+
+// logQLAggregationRows covers range aggregations, vector aggregations,
+// and the by / without grouping modifiers.
+func logQLAggregationRows() []Row {
+	mk := mkRow
+	rows := []Row{}
 
 	// Range aggregations.
 	for _, r := range []struct{ tok, pin string }{
@@ -171,6 +203,15 @@ func curatedLogQLRows() []Row {
 		mk("agg-mod:without", "aggregation-modifier", "without",
 			`sum without (service_name) (rate({service_name=~".+"}[5m]))`),
 	)
+
+	return rows
+}
+
+// logQLBinaryAndFeatureRows covers the binary-operator families, the
+// vector-matching modifiers, and the standalone expression features.
+func logQLBinaryAndFeatureRows() []Row {
+	mk := mkRow
+	rows := []Row{}
 
 	// Binary operators.
 	for _, o := range []struct{ op, pin string }{
