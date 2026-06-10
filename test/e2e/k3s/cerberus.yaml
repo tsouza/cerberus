@@ -83,7 +83,14 @@ spec:
           # Image is built locally and imported into k3d via `just e2e-up`.
           # See Justfile's e2e-up recipe.
           image: cerberus:e2e
-          imagePullPolicy: IfNotPresent
+          # Never, not IfNotPresent: this image exists ONLY via the k3d
+          # import — there is no registry to fall back to. IfNotPresent
+          # masked a silent import failure as a nonsense remote pull
+          # ("pull access denied for docker.io/library/cerberus:e2e",
+          # run 27274975563) and the pod sat in ImagePullBackOff. With
+          # Never the failure is immediate and names the real problem:
+          # the image is missing from the node.
+          imagePullPolicy: Never
           ports:
             - name: http
               containerPort: 8080
