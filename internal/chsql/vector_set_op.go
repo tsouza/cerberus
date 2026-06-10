@@ -75,7 +75,7 @@ func (e *emitter) emitVectorSetOp(s *chplan.VectorSetOp) error {
 	// the docstring on emitVectorSetOp for the original 2-arm motivation;
 	// the per-arm canonical projection covers both that case and the
 	// matrix-shape mismatch surfaced by the dashboard sweep
-	// (otelcol-observability "refused / send-failed / dropped" panels).
+	// (otelcol dashboard's "refused / send-failed / dropped" panels).
 	leftArm := vectorSetOpCanonicalArmFrag(s, s.Left, leftFrag)
 	rightArm := vectorSetOpCanonicalArmFrag(s, s.Right, rightFrag)
 

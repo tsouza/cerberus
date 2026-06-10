@@ -1,4 +1,4 @@
-# Regression pin for the cerberus-self "Query rate by language" panel
+# Regression pin for the cerberus dashboard's "Query rate by language" panel
 # (compose_grafana_smoke.spec.ts ≥ 2 partition assertion). The panel
 # fires `sum by (cerberus_ql) (rate(cerberus_queries_total[5m]))` and
 # the underlying OTel-CH rows store the data-point attribute under its

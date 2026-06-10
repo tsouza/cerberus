@@ -5,7 +5,7 @@
 #     Map(LowCardinality(String), String) because some of them are Maps
 #     and some of them are not
 #
-# — surfaced by PR #701's new `otelcol-observability` dashboard
+# — surfaced by PR #701's new `otelcol` dashboard
 # (`sum(increase(refused_log_records[5m]) or increase(refused_metric_points[5m]) or increase(refused_spans[5m]))`).
 #
 # Root cause: `A or B or C` parses as `(A or B) or C`. The inner `(A or B)`

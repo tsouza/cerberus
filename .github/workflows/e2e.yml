@@ -212,8 +212,8 @@ jobs:
           # test/e2e/grafana/compose/dashboards/*.json at spec-build
           # time, so it auto-adapts to whatever dashboards the
           # provisioning directory carries. As the rich-observability
-          # rollout lands new dashboards (clickhouse-observability,
-          # otelcol-observability, host-observability), the spec picks
+          # rollout lands new dashboards (clickhouse, otelcol, host),
+          # the spec picks
           # them up without an edit here.
           #
           # iterate-metrics-explorer.spec.ts enumerates every metric
@@ -342,8 +342,7 @@ jobs:
         #       test/e2e/grafana/compose/dashboards/*.json at spec-build
         #       time and probes every panel against the real cerberus
         #       stack. Auto-adapts as the rich-observability rollout
-        #       lands new dashboards (clickhouse-observability,
-        #       otelcol-observability, host-observability).
+        #       lands new dashboards (clickhouse, otelcol, host).
         #   - iterate-metrics-explorer.spec.ts: enumerates every
         #       metric cerberus publishes and probes /api/v1/series for
         #       each. Pins the user's #8 sweep finding: the labels chip

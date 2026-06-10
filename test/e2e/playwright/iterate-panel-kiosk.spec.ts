@@ -58,6 +58,7 @@ import {
   type Dashboard,
   type Panel,
   captureConsoleErrors,
+  captureFailedResponses,
   captureRoleAlertBanners,
   generateSelfTraffic,
   iterateDashboards,
@@ -65,11 +66,11 @@ import {
   tolerateRepaintFlicker,
 } from './helpers/index.js';
 
-// Self-traffic warmup. Mirrors the phase-1/2 specs so cerberus-self
+// Self-traffic warmup. Mirrors the phase-1/2 specs so cerberus
 // dashboards have populated panels by the time kiosk view opens —
 // otherwise a panel legitimately empty due to "no traffic yet" would
 // false-positive the visible-body assertion. 30s is the low end of
-// "long enough to populate the cerberus_self panels".
+// "long enough to populate the cerberus panels".
 const SEED_TRAFFIC_SECONDS = 30;
 
 // Substrings on a `role="alert"` banner that count as an error-state
@@ -150,7 +151,7 @@ test('panel-kiosk: every panel renders cleanly in single-panel kiosk view + back
     process.env.GRAFANA_BASE_URL ??
     'http://localhost:3000';
 
-  // Seed traffic so cerberus-self panels have something to render
+  // Seed traffic so cerberus panels have something to render
   // when kiosk mode re-mounts them. Without this, a panel that's
   // legitimately empty (no traffic yet) would trip the visible-body
   // assertion below.
@@ -226,6 +227,13 @@ async function sweepPanelKiosk(
 
   const { messages: consoleErrors, stop: stopConsole } =
     await captureConsoleErrors(page);
+  // Companion network capture: the browser logs a non-2xx resource
+  // load as the anonymous "Failed to load resource: … status of 400"
+  // console line, which names neither the request nor the responder.
+  // Recording status/method/URL/body alongside makes a kiosk failure
+  // actionable from the CI log alone.
+  const { failures: failedResponses, stop: stopResponses } =
+    await captureFailedResponses(page);
 
   const kioskURL = `${baseURL}/d/${dashboard.uid}?viewPanel=${panel.id}&kiosk`;
 
@@ -324,6 +332,7 @@ async function sweepPanelKiosk(
     });
   } finally {
     stopConsole();
+    stopResponses();
   }
 
   // 4. Console-error sweep. Read what got captured during the kiosk
@@ -338,6 +347,12 @@ async function sweepPanelKiosk(
     (m) => !KIOSK_UPSTREAM_GRAFANA_CONSOLE_NOISE.some((re) => re.test(m)),
   );
   if (cerberusConsoleErrors.length > 0) {
+    const responseDetail =
+      failedResponses.length > 0
+        ? `\nnon-2xx responses captured during the same window:\n${failedResponses
+            .map((r) => `  - ${truncate(r, 700)}`)
+            .join('\n')}`
+        : '\n(no non-2xx HTTP response captured — the console errors came from elsewhere)';
     failures.push({
       dashboardTitle: dashboard.title,
       panelTitle: panel.title,
@@ -345,7 +360,7 @@ async function sweepPanelKiosk(
       rule: 'kiosk-console-error',
       detail: `${cerberusConsoleErrors.length} console error(s):\n${cerberusConsoleErrors
         .map((m) => `  - ${truncate(m, 400)}`)
-        .join('\n')}`,
+        .join('\n')}${responseDetail}`,
     });
   }
 

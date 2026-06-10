@@ -102,7 +102,7 @@ type Instruments struct {
 	// QueryInflight is the count of currently-executing engine
 	// queries — incremented at engine entry, decremented (via defer)
 	// at engine return so panics + early-returns + cancellations
-	// still balance. Attribute: cerberus.ql. The cerberus-self
+	// still balance. Attribute: cerberus.ql. The cerberus
 	// dashboard panel queries `sum by (cerberus_ql)
 	// (cerberus_query_inflight)`.
 	QueryInflight metric.Int64UpDownCounter

@@ -117,7 +117,7 @@ func TestK3sTempoDatasourcesCarryServiceMapDatasourceUID(t *testing.T) {
 // TestK3sOtelCollectorGatewayCarriesServiceGraphConnector guards against the
 // post-#702 regression behind workflow run 26289535170 (e2e dashboard job
 // 77385760886, on push-to-main commit e98e3103). PR #700 added the
-// `servicegraph` connector + `metrics/servicegraph` pipeline to the COMPOSE
+// service-graph connector + `metrics/servicegraph` pipeline to the COMPOSE
 // collector config (test/e2e/otel-collector/compose-config.yaml) and PR #702
 // wired Grafana's Tempo datasource to query the resulting metrics — but the
 // k3d gateway ConfigMap at test/e2e/k3s/otel-collector.yaml was not updated.
@@ -128,15 +128,23 @@ func TestK3sTempoDatasourcesCarryServiceMapDatasourceUID(t *testing.T) {
 // 60s.
 //
 // This test pins the k3d gateway's collector config to carry:
-//   - a `connectors.servicegraph` block,
-//   - the `servicegraph` exporter on the `traces` pipeline (alongside
+//   - a `connectors.service_graph` block,
+//   - the `service_graph` exporter on the `traces` pipeline (alongside
 //     `clickhouse`),
-//   - a `metrics/servicegraph` pipeline receiving from `servicegraph` and
-//     routing through `transform/servicegraph_drop_exemplars` into the
-//     `clickhouse` exporter (the transform processor is required because
-//     the v0.116.0 clickhouseexporter nil-derefs on the connector's
-//     exemplar payload; the same trap re-appears any time the contrib
-//     image is downgraded).
+//   - a `metrics/servicegraph` pipeline receiving from `service_graph` and
+//     routing into the `clickhouse` exporter.
+//
+// PR #701 bumped the contrib image from 0.120.0 to 0.152.1, which both
+// renamed the connector key from `servicegraph` to `service_graph` (the
+// deprecation alias is still accepted but the canonical form is pinned
+// here to mirror the compose stack) and fixed the underlying
+// clickhouseexporter nil-deref on the connector's exemplar payload that
+// the earlier `transform/servicegraph_drop_exemplars` processor existed
+// to work around. The transform processor is therefore no longer asserted
+// — it was intentionally removed from the manifest in the same commit
+// that bumped the image. If 0.152.x or later is ever rolled back, the
+// workaround must come back with it; this test will then fail loudly on
+// the missing connector wiring, which is the signal to restore it.
 //
 // Parses the ConfigMap's `config.yaml` payload rather than grepping the
 // raw YAML so reorderings / comment edits don't false-positive.
@@ -174,16 +182,14 @@ func TestK3sOtelCollectorGatewayCarriesServiceGraphConnector(t *testing.T) {
 	}
 
 	type pipeline struct {
-		Receivers  []string `yaml:"receivers"`
-		Processors []string `yaml:"processors"`
-		Exporters  []string `yaml:"exporters"`
+		Receivers []string `yaml:"receivers"`
+		Exporters []string `yaml:"exporters"`
 	}
 	type service struct {
 		Pipelines map[string]pipeline `yaml:"pipelines"`
 	}
 	type collector struct {
 		Connectors map[string]map[string]any `yaml:"connectors"`
-		Processors map[string]map[string]any `yaml:"processors"`
 		Service    service                   `yaml:"service"`
 	}
 
@@ -192,14 +198,9 @@ func TestK3sOtelCollectorGatewayCarriesServiceGraphConnector(t *testing.T) {
 		t.Fatalf("parse otel-collector gateway config payload: %v", err)
 	}
 
-	if _, ok := cfg.Connectors["servicegraph"]; !ok {
+	if _, ok := cfg.Connectors["service_graph"]; !ok {
 		t.Errorf(
-			"test/e2e/k3s/otel-collector.yaml: gateway ConfigMap is missing `connectors.servicegraph` — Playwright service_graph.spec.ts:44 polls cerberus's Prom head for `traces_service_graph_request_total` and times out at 60s without the connector emitting the metric",
-		)
-	}
-	if _, ok := cfg.Processors["transform/servicegraph_drop_exemplars"]; !ok {
-		t.Errorf(
-			"test/e2e/k3s/otel-collector.yaml: gateway ConfigMap is missing `processors.transform/servicegraph_drop_exemplars` — required to strip the servicegraph connector's exemplar payload before it hits the clickhouseexporter (otherwise the collector crashes on the first metrics_flush_interval tick)",
+			"test/e2e/k3s/otel-collector.yaml: gateway ConfigMap is missing `connectors.service_graph` — Playwright service_graph.spec.ts:44 polls cerberus's Prom head for `traces_service_graph_request_total` and times out at 60s without the connector emitting the metric (note: 0.152.x renamed the key from `servicegraph` to `service_graph`; the canonical form is pinned to mirror the compose stack)",
 		)
 	}
 
@@ -207,15 +208,15 @@ func TestK3sOtelCollectorGatewayCarriesServiceGraphConnector(t *testing.T) {
 	if !ok {
 		t.Fatalf("test/e2e/k3s/otel-collector.yaml: gateway ConfigMap has no `service.pipelines.traces` — the traces pipeline was renamed or removed; the dashboard smoke expects it")
 	}
-	if !contains(traces.Exporters, "servicegraph") {
+	if !contains(traces.Exporters, "service_graph") {
 		t.Errorf(
-			"test/e2e/k3s/otel-collector.yaml: `service.pipelines.traces.exporters` = %v, missing `servicegraph` — the connector must tap the traces pipeline to derive caller/callee edges from CH-call spans",
+			"test/e2e/k3s/otel-collector.yaml: `service.pipelines.traces.exporters` = %v, missing `service_graph` — the connector must tap the traces pipeline to derive caller/callee edges from CH-call spans",
 			traces.Exporters,
 		)
 	}
 	if !contains(traces.Exporters, "clickhouse") {
 		t.Errorf(
-			"test/e2e/k3s/otel-collector.yaml: `service.pipelines.traces.exporters` = %v, missing `clickhouse` — the connector must coexist with the regular CH writer; the servicegraph wiring is a tap, not a swap",
+			"test/e2e/k3s/otel-collector.yaml: `service.pipelines.traces.exporters` = %v, missing `clickhouse` — the connector must coexist with the regular CH writer; the service_graph wiring is a tap, not a swap",
 			traces.Exporters,
 		)
 	}
@@ -226,16 +227,10 @@ func TestK3sOtelCollectorGatewayCarriesServiceGraphConnector(t *testing.T) {
 			"test/e2e/k3s/otel-collector.yaml: gateway ConfigMap is missing the `service.pipelines.metrics/servicegraph` pipeline — without it the connector's `traces_service_graph_*` series never reach ClickHouse and cerberus's Prom head returns an empty result, timing out service_graph.spec.ts:44",
 		)
 	}
-	if !contains(sg.Receivers, "servicegraph") {
+	if !contains(sg.Receivers, "service_graph") {
 		t.Errorf(
-			"test/e2e/k3s/otel-collector.yaml: `metrics/servicegraph.receivers` = %v, must include `servicegraph` — that's the connector wired as the receiver side of the destination pipeline",
+			"test/e2e/k3s/otel-collector.yaml: `metrics/servicegraph.receivers` = %v, must include `service_graph` — that's the connector wired as the receiver side of the destination pipeline",
 			sg.Receivers,
-		)
-	}
-	if !contains(sg.Processors, "transform/servicegraph_drop_exemplars") {
-		t.Errorf(
-			"test/e2e/k3s/otel-collector.yaml: `metrics/servicegraph.processors` = %v, must include `transform/servicegraph_drop_exemplars` — exemplar stripping must run on this branch before the payload reaches clickhouseexporter",
-			sg.Processors,
 		)
 	}
 	if !contains(sg.Exporters, "clickhouse") {

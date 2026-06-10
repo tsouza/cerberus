@@ -156,4 +156,4 @@ spec:
             name: grafana-dashboard-provider
         - name: dashboards
           configMap:
-            name: grafana-dashboard-cerberus-self
+            name: grafana-dashboard-cerberus

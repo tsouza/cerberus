@@ -43,7 +43,7 @@ const meterName = "github.com/tsouza/cerberus/internal/api/admit"
 // attrQL labels the rejection counter with the query language the
 // limiter is fronting — "promql" / "logql" / "traceql". Mirrors the
 // cerberus.ql attribute set by internal/telemetry on the
-// per-query counters, so the cerberus-self dashboard's
+// per-query counters, so the cerberus dashboard's
 // `sum by (cerberus_ql, reason) (rate(cerberus_admit_rejected_total[5m]))`
 // panel resolves consistently across both metric sources.
 const attrQL = attribute.Key("cerberus.ql")

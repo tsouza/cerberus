@@ -11,7 +11,7 @@
 #     code: 1, message: Resolve identifier 'TimeUnix' from parent scope
 #     only supported for constants and CTE. Actual TimeUnix node type COLUMN.
 #
-# — surfaced by PR #701's new `otelcol-observability` dashboard's
+# — surfaced by PR #701's new `otelcol` dashboard's
 # "Send failures (5m)" + "Processor refusals (5m)" stat panels, which
 # Grafana renders as an instant-mode `query` request (no step), not a
 # `query_range`.
