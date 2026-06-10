@@ -1,0 +1,19 @@
+-- query.traceql --
+{ instrumentation:version = "1.2.3" }
+-- sql --
+SELECT * FROM `otel_traces` WHERE (`ScopeVersion` = ?)
+-- args --
+[0] string = "1.2.3"
+-- seed --
+CREATE TABLE otel_traces (
+    _idx UInt64,
+    ScopeVersion String MATERIALIZED if(_idx = 0, '1.2.3', '0.0.1')
+) ENGINE = MergeTree ORDER BY _idx;
+INSERT INTO otel_traces (_idx) VALUES (0), (1);
+-- expected_rows --
+[
+  [0]
+]
+-- chplan --
+Filter predicate=(ScopeVersion = "1.2.3")
+  Scan(otel_traces)

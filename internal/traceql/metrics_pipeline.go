@@ -233,7 +233,11 @@ func metricsAggregateAttr(op traceql.MetricsAggregateOp, attr traceql.Attribute,
 	// aggregate.go. `*_over_time(span.foo)` resolves to a FieldAccess
 	// against SpanAttributes (typed String); wrap so the downstream CH
 	// aggregate (`max`/`min`/`sum`/`avg`/`quantiles`) sees a Float64.
-	expr := coerceMapNumericAggInput(lowerAttribute(attr, s))
+	attrExpr, err := lowerAttribute(attr, s)
+	if err != nil {
+		return nil, err
+	}
+	expr := coerceMapNumericAggInput(attrExpr)
 	if attr.Intrinsic == traceql.IntrinsicDuration {
 		expr = durationNsToSeconds(expr)
 	}
@@ -290,7 +294,10 @@ func lowerMetricsHistogramOverTime(prev chplan.Node, agg *traceql.MetricsAggrega
 	if attr == (traceql.Attribute{}) {
 		return nil, fmt.Errorf("traceql: histogram_over_time requires an attribute operand")
 	}
-	attrExpr := lowerAttribute(attr, s)
+	attrExpr, err := lowerAttribute(attr, s)
+	if err != nil {
+		return nil, err
+	}
 
 	groupBy, groupAliases, groupDisplay, err := lowerMetricsGroupBy(agg.GroupBy(), s)
 	if err != nil {
@@ -348,7 +355,11 @@ func lowerMetricsGroupBy(attrs []traceql.Attribute, s schema.Traces) ([]chplan.E
 		if a == (traceql.Attribute{}) {
 			return nil, nil, nil, fmt.Errorf("traceql: empty by(...) group key")
 		}
-		exprs = append(exprs, lowerAttribute(a, s))
+		expr, err := lowerAttribute(a, s)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		exprs = append(exprs, expr)
 		// SQL alias is the bare attribute path (`a.Name` is set by
 		// traceql.NewAttribute / NewScopedAttribute / NewIntrinsic to
 		// either the carrier-map key, e.g. `service.name`, or the

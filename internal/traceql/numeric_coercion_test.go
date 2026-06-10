@@ -41,32 +41,32 @@ func TestNumericAttrCoercion(t *testing.T) {
 		{
 			name:       "int_eq_wraps_field_access",
 			query:      `{ .attempt = 1 }`,
-			wantSubstr: "toFloat64(`SpanAttributes`[?]) = ?",
+			wantSubstr: "toFloat64OrNull(`SpanAttributes`[?]) = ?",
 		},
 		{
 			name:       "int_ge_wraps_field_access",
 			query:      `{ span.http.status_code >= 500 }`,
-			wantSubstr: "toFloat64(`SpanAttributes`[?]) >= ?",
+			wantSubstr: "toFloat64OrNull(`SpanAttributes`[?]) >= ?",
 		},
 		{
 			name:       "float_gt_wraps_field_access",
 			query:      `{ span.cpu.usage > 0.5 }`,
-			wantSubstr: "toFloat64(`SpanAttributes`[?]) > toFloat64(?)",
+			wantSubstr: "toFloat64OrNull(`SpanAttributes`[?]) > toFloat64(?)",
 		},
 		{
 			name:       "resource_attr_coerces",
 			query:      `{ resource.replicas <= 5 }`,
-			wantSubstr: "toFloat64(`ResourceAttributes`[?]) <= ?",
+			wantSubstr: "toFloat64OrNull(`ResourceAttributes`[?]) <= ?",
 		},
 		{
 			name:       "arithmetic_add_coerces_both_sides",
 			query:      `{ .a + .b > 10 }`,
-			wantSubstr: "(toFloat64(`SpanAttributes`[?]) + toFloat64(`SpanAttributes`[?])) > ?",
+			wantSubstr: "(toFloat64OrNull(`SpanAttributes`[?]) + toFloat64OrNull(`SpanAttributes`[?])) > ?",
 		},
 		{
 			name:       "arithmetic_mul_with_literal_coerces_field",
 			query:      `{ .a * 2 > 10 }`,
-			wantSubstr: "(toFloat64(`SpanAttributes`[?]) * ?) > ?",
+			wantSubstr: "(toFloat64OrNull(`SpanAttributes`[?]) * ?) > ?",
 		},
 		{
 			name:      "string_eq_leaves_field_access_bare",

@@ -1,7 +1,7 @@
 -- query.traceql --
 { resource.service.name = "frontend" && span.http.status_code = 500 && duration > 100ms }
 -- sql --
-SELECT * FROM `otel_traces` PREWHERE (`Duration` > ?) WHERE (`ResourceAttributes`[?] = ?) AND (toFloat64(`SpanAttributes`[?]) = ?)
+SELECT * FROM `otel_traces` PREWHERE (`Duration` > ?) WHERE (`ResourceAttributes`[?] = ?) AND (toFloat64OrNull(`SpanAttributes`[?]) = ?)
 -- args --
 [0] int64 = 100000000
 [1] string = "service.name"
@@ -24,5 +24,5 @@ INSERT INTO otel_traces (Duration) VALUES
   [250000000]
 ]
 -- chplan --
-Filter predicate=(((ResourceAttributes["service.name"] = "frontend") AND (toFloat64(SpanAttributes["http.status_code"]) = 500)) AND (Duration > 100000000))
+Filter predicate=(((ResourceAttributes["service.name"] = "frontend") AND (toFloat64OrNull(SpanAttributes["http.status_code"]) = 500)) AND (Duration > 100000000))
   Scan(otel_traces)

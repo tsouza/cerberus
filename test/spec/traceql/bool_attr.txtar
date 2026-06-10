@@ -4,13 +4,13 @@
 SELECT * FROM `otel_traces` WHERE (`SpanAttributes`[?] = ?)
 -- args --
 [0] string = "cache.hit"
-[1] bool = true
+[1] string = "true"
 -- seed --
 CREATE TABLE otel_traces (
     TraceId String,
     SpanId String,
     _hit Bool,
-    SpanAttributes Map(String, Bool) MATERIALIZED map('cache.hit', _hit)
+    SpanAttributes Map(String, String) MATERIALIZED map('cache.hit', if(_hit, 'true', 'false'))
 ) ENGINE = Memory;
 INSERT INTO otel_traces (TraceId, SpanId, _hit) VALUES
     ('a0000000000000000000000000000001', '0000000000000001', true),
@@ -22,5 +22,5 @@ INSERT INTO otel_traces (TraceId, SpanId, _hit) VALUES
   ["a0000000000000000000000000000002", "0000000000000010", true]
 ]
 -- chplan --
-Filter predicate=(SpanAttributes["cache.hit"] = true)
+Filter predicate=(SpanAttributes["cache.hit"] = "true")
   Scan(otel_traces)

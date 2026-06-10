@@ -1,0 +1,19 @@
+-- query.traceql --
+{ event:name = "exception" }
+-- sql --
+SELECT * FROM `otel_traces` WHERE arrayExists(x -> x = ?, `Events`.`Name`)
+-- args --
+[0] string = "exception"
+-- seed --
+CREATE TABLE otel_traces (
+    _idx UInt64,
+    `Events.Name` Array(LowCardinality(String)) MATERIALIZED if(_idx = 0, ['exception'], ['heartbeat'])
+) ENGINE = MergeTree ORDER BY _idx;
+INSERT INTO otel_traces (_idx) VALUES (0), (1);
+-- expected_rows --
+[
+  [0]
+]
+-- chplan --
+Filter predicate=nestedArrayExists(Events.Name = "exception")
+  Scan(otel_traces)

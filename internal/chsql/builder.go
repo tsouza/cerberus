@@ -402,16 +402,48 @@ func (b *Builder) exprSubscript(s *chplan.Subscript) error {
 //
 //	arrayExists(x -> x[?] <op> ?, `<Column>`.`<SubField>`)
 //
-// against the public Builder helpers. Mirrors the legacy
-// emitter.emitNestedArrayExists so both paths produce byte-identical SQL.
+// against the public Builder helpers. Two refinements over the naive
+// form:
+//
+//   - Key == "" means the Nested subfield itself is the comparison
+//     subject (e.g. `event:name` → Events.Name, an Array(String)):
+//     the lambda compares the bare element — `x <op> ?` — instead of
+//     a map lookup.
+//   - OpMatch / OpNotMatch render as `match(<elem>, ?)` / `NOT
+//     match(<elem>, ?)`: ClickHouse has no `=~` operator, so the raw
+//     infix spelling the generic branch writes is a server-side
+//     syntax error (the bug TraceQL `{ event.foo =~ "..." }` hit
+//     before the showcase pinned it).
 func (b *Builder) exprNestedArrayExists(n *chplan.NestedArrayExists) error {
-	b.sb.WriteString("arrayExists(x -> x[")
-	b.Arg(n.Key)
-	b.sb.WriteString("] ")
-	b.sb.WriteString(string(n.Op))
-	b.sb.WriteByte(' ')
-	if err := b.Expr(n.Value); err != nil {
-		return err
+	b.sb.WriteString("arrayExists(x -> ")
+	elem := func() {
+		b.sb.WriteByte('x')
+		if n.Key != "" {
+			b.sb.WriteByte('[')
+			b.Arg(n.Key)
+			b.sb.WriteByte(']')
+		}
+	}
+	switch n.Op {
+	case chplan.OpMatch, chplan.OpNotMatch:
+		if n.Op == chplan.OpNotMatch {
+			b.sb.WriteString("NOT ")
+		}
+		b.sb.WriteString("match(")
+		elem()
+		b.sb.WriteString(", ")
+		if err := b.Expr(n.Value); err != nil {
+			return err
+		}
+		b.sb.WriteByte(')')
+	default:
+		elem()
+		b.sb.WriteByte(' ')
+		b.sb.WriteString(string(n.Op))
+		b.sb.WriteByte(' ')
+		if err := b.Expr(n.Value); err != nil {
+			return err
+		}
 	}
 	b.sb.WriteString(", ")
 	b.QualIdent(n.Column, n.SubField)
@@ -529,15 +561,22 @@ func (b *Builder) emitGoModulo(left, right chplan.Expr) error {
 		")), " +
 		"[if(__myabs = 0, CAST(0 AS Float64), floor(log2(__myabs)) + 1)])[1], " +
 		"[abs(__my)])[1], " +
-		"[CAST(")
+		"[CAST(ifNull(")
 	if err := b.Expr(left); err != nil {
 		return err
 	}
-	b.sb.WriteString(" AS Float64)], [CAST(")
+	// ifNull(<operand>, nan): the operands may be Nullable — the TraceQL
+	// numeric-attribute coercion emits toFloat64OrNull(...) so rows
+	// without the attribute produce NULL — and CAST(NULL AS Float64)
+	// aborts the query (CH error 349). Folding NULL to NaN keeps the
+	// modulo emulation's existing contract: NaN operands yield NaN, and
+	// IEEE comparisons against NaN are false, so the row simply doesn't
+	// match.
+	b.sb.WriteString(", nan) AS Float64)], [CAST(ifNull(")
 	if err := b.Expr(right); err != nil {
 		return err
 	}
-	b.sb.WriteString(" AS Float64)])[1]")
+	b.sb.WriteString(", nan) AS Float64)])[1]")
 	return nil
 }
 

@@ -1,0 +1,576 @@
+{
+  "ql": "traceql",
+  "source": "github.com/grafana/tempo/pkg/traceql (hand-curated, parser-pinned existence checks; tsouza fork pin in go.mod)",
+  "rows": [
+    {
+      "id": "attr:event",
+      "class": "attribute",
+      "token": "event.attr",
+      "pin": "{ event.exception.message =~ \".*timeout.*\" }"
+    },
+    {
+      "id": "attr:instrumentation",
+      "class": "attribute",
+      "token": "instrumentation.attr",
+      "pin": "{ instrumentation.deployment = \"blue\" }"
+    },
+    {
+      "id": "attr:link",
+      "class": "attribute",
+      "token": "link.attr",
+      "pin": "{ link.opentracing.ref_type = \"child_of\" }"
+    },
+    {
+      "id": "attr:resource",
+      "class": "attribute",
+      "token": "resource.attr",
+      "pin": "{ resource.service.name = \"shop\" }"
+    },
+    {
+      "id": "attr:span",
+      "class": "attribute",
+      "token": "span.attr",
+      "pin": "{ span.http.method = \"GET\" }"
+    },
+    {
+      "id": "attr:unscoped",
+      "class": "attribute",
+      "token": ".attr",
+      "pin": "{ .service.name = \"shop\" }"
+    },
+    {
+      "id": "feature:hints",
+      "class": "feature",
+      "token": "with()",
+      "pin": "{ } | rate() with (exemplars = true)"
+    },
+    {
+      "id": "intrinsic:childCount",
+      "class": "intrinsic-unbacked",
+      "token": "span:childCount",
+      "pin": "{ span:childCount \u003e 0 }"
+    },
+    {
+      "id": "intrinsic:duration",
+      "class": "intrinsic",
+      "token": "duration",
+      "pin": "{ duration \u003e 100ms }"
+    },
+    {
+      "id": "intrinsic:event-name",
+      "class": "intrinsic",
+      "token": "event:name",
+      "pin": "{ event:name = \"exception\" }"
+    },
+    {
+      "id": "intrinsic:event-timeSinceStart",
+      "class": "intrinsic-unbacked",
+      "token": "event:timeSinceStart",
+      "pin": "{ event:timeSinceStart \u003e 1ms }"
+    },
+    {
+      "id": "intrinsic:instrumentation-name",
+      "class": "intrinsic",
+      "token": "instrumentation:name",
+      "pin": "{ instrumentation:name = \"showcase-instrumentation\" }"
+    },
+    {
+      "id": "intrinsic:instrumentation-version",
+      "class": "intrinsic",
+      "token": "instrumentation:version",
+      "pin": "{ instrumentation:version = \"1.2.3\" }"
+    },
+    {
+      "id": "intrinsic:kind",
+      "class": "intrinsic",
+      "token": "kind",
+      "pin": "{ kind = server }"
+    },
+    {
+      "id": "intrinsic:link-spanID",
+      "class": "intrinsic",
+      "token": "link:spanID",
+      "pin": "{ link:spanID = \"0000000000000001\" }"
+    },
+    {
+      "id": "intrinsic:link-traceID",
+      "class": "intrinsic",
+      "token": "link:traceID",
+      "pin": "{ link:traceID = \"a0000000000000000000000000000001\" }"
+    },
+    {
+      "id": "intrinsic:name",
+      "class": "intrinsic",
+      "token": "name",
+      "pin": "{ name = \"GET /home\" }"
+    },
+    {
+      "id": "intrinsic:parent",
+      "class": "intrinsic",
+      "token": "parent",
+      "pin": "{ parent = \"0000000000000001\" }"
+    },
+    {
+      "id": "intrinsic:rootName",
+      "class": "intrinsic-unbacked",
+      "token": "rootName",
+      "pin": "{ rootName = \"GET /home\" }"
+    },
+    {
+      "id": "intrinsic:rootServiceName",
+      "class": "intrinsic-unbacked",
+      "token": "rootServiceName",
+      "pin": "{ rootServiceName = \"frontend\" }"
+    },
+    {
+      "id": "intrinsic:span-id",
+      "class": "intrinsic",
+      "token": "span:id",
+      "pin": "{ span:id = \"0000000000000001\" }"
+    },
+    {
+      "id": "intrinsic:status",
+      "class": "intrinsic",
+      "token": "status",
+      "pin": "{ status = error }"
+    },
+    {
+      "id": "intrinsic:statusMessage",
+      "class": "intrinsic",
+      "token": "statusMessage",
+      "pin": "{ statusMessage =~ \".*deadline.*\" }"
+    },
+    {
+      "id": "intrinsic:trace-id",
+      "class": "intrinsic",
+      "token": "trace:id",
+      "pin": "{ trace:id = \"a0000000000000000000000000000001\" }"
+    },
+    {
+      "id": "intrinsic:traceDuration",
+      "class": "intrinsic-unbacked",
+      "token": "traceDuration",
+      "pin": "{ traceDuration \u003e 100ms }"
+    },
+    {
+      "id": "metric-mod:by",
+      "class": "metrics-modifier",
+      "token": "by",
+      "pin": "{ } | rate() by (resource.service.name)"
+    },
+    {
+      "id": "metric:avg_over_time",
+      "class": "metrics",
+      "token": "avg_over_time",
+      "pin": "{ } | avg_over_time(duration)"
+    },
+    {
+      "id": "metric:compare",
+      "class": "metrics",
+      "token": "compare",
+      "pin": "{ } | compare({ status = error })"
+    },
+    {
+      "id": "metric:count_over_time",
+      "class": "metrics",
+      "token": "count_over_time",
+      "pin": "{ } | count_over_time()"
+    },
+    {
+      "id": "metric:histogram_over_time",
+      "class": "metrics",
+      "token": "histogram_over_time",
+      "pin": "{ } | histogram_over_time(duration)"
+    },
+    {
+      "id": "metric:max_over_time",
+      "class": "metrics",
+      "token": "max_over_time",
+      "pin": "{ } | max_over_time(duration)"
+    },
+    {
+      "id": "metric:min_over_time",
+      "class": "metrics",
+      "token": "min_over_time",
+      "pin": "{ } | min_over_time(duration)"
+    },
+    {
+      "id": "metric:quantile_over_time",
+      "class": "metrics",
+      "token": "quantile_over_time",
+      "pin": "{ } | quantile_over_time(duration, .5, .9, .99)"
+    },
+    {
+      "id": "metric:rate",
+      "class": "metrics",
+      "token": "rate",
+      "pin": "{ } | rate()"
+    },
+    {
+      "id": "metric:sum_over_time",
+      "class": "metrics",
+      "token": "sum_over_time",
+      "pin": "{ } | sum_over_time(.payload_bytes)"
+    },
+    {
+      "id": "nestedset:left",
+      "class": "nested-set",
+      "token": "nestedSetLeft",
+      "pin": "{ nestedSetLeft \u003e 0 }"
+    },
+    {
+      "id": "nestedset:non-root",
+      "class": "nested-set",
+      "token": "nestedSetParent \u003e= 0",
+      "pin": "{ nestedSetParent \u003e= 0 }"
+    },
+    {
+      "id": "nestedset:position",
+      "class": "nested-set",
+      "token": "nestedSetParent = N",
+      "pin": "{ nestedSetParent = 5 }"
+    },
+    {
+      "id": "nestedset:right",
+      "class": "nested-set",
+      "token": "nestedSetRight",
+      "pin": "{ nestedSetRight \u003e 0 }"
+    },
+    {
+      "id": "nestedset:root",
+      "class": "nested-set",
+      "token": "nestedSetParent \u003c 0",
+      "pin": "{ nestedSetParent \u003c 0 }"
+    },
+    {
+      "id": "op:add",
+      "class": "arithmetic",
+      "token": "+",
+      "pin": "{ .payload_bytes + 1 \u003e 100 }"
+    },
+    {
+      "id": "op:and",
+      "class": "field-logic",
+      "token": "\u0026\u0026",
+      "pin": "{ name = \"GET /home\" \u0026\u0026 duration \u003e 1ms }"
+    },
+    {
+      "id": "op:div",
+      "class": "arithmetic",
+      "token": "/",
+      "pin": "{ .payload_bytes / 2 \u003e 100 }"
+    },
+    {
+      "id": "op:eq",
+      "class": "comparison",
+      "token": "=",
+      "pin": "{ name = \"GET /home\" }"
+    },
+    {
+      "id": "op:exists",
+      "class": "comparison",
+      "token": "!= nil",
+      "pin": "{ resource.service.name != nil }"
+    },
+    {
+      "id": "op:gt",
+      "class": "comparison",
+      "token": "\u003e",
+      "pin": "{ duration \u003e 100ms }"
+    },
+    {
+      "id": "op:gte",
+      "class": "comparison",
+      "token": "\u003e=",
+      "pin": "{ duration \u003e= 100ms }"
+    },
+    {
+      "id": "op:in",
+      "class": "field-logic",
+      "token": "in (|| same-attr rewrite)",
+      "pin": "{ name = \"GET /home\" || name = \"POST /checkout\" }"
+    },
+    {
+      "id": "op:lt",
+      "class": "comparison",
+      "token": "\u003c",
+      "pin": "{ duration \u003c 10s }"
+    },
+    {
+      "id": "op:lte",
+      "class": "comparison",
+      "token": "\u003c=",
+      "pin": "{ duration \u003c= 10s }"
+    },
+    {
+      "id": "op:mod",
+      "class": "arithmetic",
+      "token": "%",
+      "pin": "{ .payload_bytes % 10 \u003e= 0 }"
+    },
+    {
+      "id": "op:mult",
+      "class": "arithmetic",
+      "token": "*",
+      "pin": "{ .payload_bytes * 2 \u003e 100 }"
+    },
+    {
+      "id": "op:neq",
+      "class": "comparison",
+      "token": "!=",
+      "pin": "{ name != \"cron.refresh\" }"
+    },
+    {
+      "id": "op:not",
+      "class": "field-logic",
+      "token": "!",
+      "pin": "{ !(name = \"GET /home\") }"
+    },
+    {
+      "id": "op:not-exists",
+      "class": "comparison",
+      "token": "= nil",
+      "pin": "{ .never.set.attr = nil }"
+    },
+    {
+      "id": "op:not-regex",
+      "class": "comparison",
+      "token": "!~",
+      "pin": "{ name !~ \"^cron\\\\.\" }"
+    },
+    {
+      "id": "op:or",
+      "class": "field-logic",
+      "token": "||",
+      "pin": "{ kind = server || status = error }"
+    },
+    {
+      "id": "op:pow",
+      "class": "arithmetic",
+      "token": "^",
+      "pin": "{ .payload_bytes ^ 2 \u003e 100 }"
+    },
+    {
+      "id": "op:regex",
+      "class": "comparison",
+      "token": "=~",
+      "pin": "{ name =~ \"GET.*\" }"
+    },
+    {
+      "id": "op:sub",
+      "class": "arithmetic",
+      "token": "-",
+      "pin": "{ .payload_bytes - 1 \u003e 100 }"
+    },
+    {
+      "id": "pipe:avg",
+      "class": "spanset-aggregate",
+      "token": "avg()",
+      "pin": "{ } | avg(duration) \u003e 1ms"
+    },
+    {
+      "id": "pipe:by",
+      "class": "spanset-pipeline",
+      "token": "by()",
+      "pin": "{ } | by(resource.service.name)"
+    },
+    {
+      "id": "pipe:coalesce",
+      "class": "spanset-pipeline",
+      "token": "coalesce()",
+      "pin": "({ kind = server } || { kind = client }) | coalesce()"
+    },
+    {
+      "id": "pipe:count",
+      "class": "spanset-aggregate",
+      "token": "count()",
+      "pin": "{ } | count() \u003e 1"
+    },
+    {
+      "id": "pipe:max",
+      "class": "spanset-aggregate",
+      "token": "max()",
+      "pin": "{ } | max(duration) \u003e 1ms"
+    },
+    {
+      "id": "pipe:min",
+      "class": "spanset-aggregate",
+      "token": "min()",
+      "pin": "{ } | min(duration) \u003e 1ms"
+    },
+    {
+      "id": "pipe:select",
+      "class": "spanset-pipeline",
+      "token": "select()",
+      "pin": "{ } | select(span.http.method, resource.service.name)"
+    },
+    {
+      "id": "pipe:sum",
+      "class": "spanset-aggregate",
+      "token": "sum()",
+      "pin": "{ } | sum(.payload_bytes) \u003e 1"
+    },
+    {
+      "id": "second:bottomk",
+      "class": "metrics-second-stage",
+      "token": "bottomk",
+      "pin": "{ } | rate() by (name) | bottomk(3)"
+    },
+    {
+      "id": "second:threshold",
+      "class": "metrics-second-stage",
+      "token": "\u003e N",
+      "pin": "{ } | rate() by (name) \u003e 0.0001"
+    },
+    {
+      "id": "second:topk",
+      "class": "metrics-second-stage",
+      "token": "topk",
+      "pin": "{ } | rate() by (name) | topk(3)"
+    },
+    {
+      "id": "setop:and",
+      "class": "set-operation",
+      "token": "\u0026\u0026",
+      "pin": "{ kind = server } \u0026\u0026 { status = error }"
+    },
+    {
+      "id": "setop:union",
+      "class": "set-operation",
+      "token": "||",
+      "pin": "{ kind = server } || { kind = client }"
+    },
+    {
+      "id": "static:bool",
+      "class": "literal",
+      "token": "bool",
+      "pin": "{ .cache.hit = true }"
+    },
+    {
+      "id": "static:duration",
+      "class": "literal",
+      "token": "duration",
+      "pin": "{ duration \u003e 100ms }"
+    },
+    {
+      "id": "static:float",
+      "class": "literal",
+      "token": "float",
+      "pin": "{ .checkout.amount \u003e 1.5 }"
+    },
+    {
+      "id": "static:int",
+      "class": "literal",
+      "token": "int",
+      "pin": "{ span.http.status_code \u003e= 500 }"
+    },
+    {
+      "id": "static:kind",
+      "class": "literal",
+      "token": "kind enum",
+      "pin": "{ kind = client }"
+    },
+    {
+      "id": "static:status",
+      "class": "literal",
+      "token": "status enum",
+      "pin": "{ status = error }"
+    },
+    {
+      "id": "static:string",
+      "class": "literal",
+      "token": "string",
+      "pin": "{ name = \"GET /home\" }"
+    },
+    {
+      "id": "struct:ancestor",
+      "class": "structural",
+      "token": "\u003c\u003c",
+      "pin": "{ resource.service.name = \"gateway\" } \u003c\u003c { resource.service.name = \"shop\" }"
+    },
+    {
+      "id": "struct:child",
+      "class": "structural",
+      "token": "\u003e",
+      "pin": "{ resource.service.name = \"gateway\" } \u003e { resource.service.name = \"shop\" }"
+    },
+    {
+      "id": "struct:descendant",
+      "class": "structural",
+      "token": "\u003e\u003e",
+      "pin": "{ resource.service.name = \"gateway\" } \u003e\u003e { resource.service.name = \"shop\" }"
+    },
+    {
+      "id": "struct:not-ancestor",
+      "class": "structural",
+      "token": "!\u003c\u003c",
+      "pin": "{ resource.service.name = \"gateway\" } !\u003c\u003c { resource.service.name = \"shop\" }"
+    },
+    {
+      "id": "struct:not-child",
+      "class": "structural",
+      "token": "!\u003e",
+      "pin": "{ resource.service.name = \"gateway\" } !\u003e { resource.service.name = \"shop\" }"
+    },
+    {
+      "id": "struct:not-descendant",
+      "class": "structural",
+      "token": "!\u003e\u003e",
+      "pin": "{ resource.service.name = \"gateway\" } !\u003e\u003e { resource.service.name = \"shop\" }"
+    },
+    {
+      "id": "struct:not-parent",
+      "class": "structural",
+      "token": "!\u003c",
+      "pin": "{ resource.service.name = \"gateway\" } !\u003c { resource.service.name = \"shop\" }"
+    },
+    {
+      "id": "struct:not-sibling",
+      "class": "structural",
+      "token": "!~",
+      "pin": "{ resource.service.name = \"gateway\" } !~ { resource.service.name = \"shop\" }"
+    },
+    {
+      "id": "struct:parent",
+      "class": "structural",
+      "token": "\u003c",
+      "pin": "{ resource.service.name = \"gateway\" } \u003c { resource.service.name = \"shop\" }"
+    },
+    {
+      "id": "struct:sibling",
+      "class": "structural",
+      "token": "~",
+      "pin": "{ resource.service.name = \"gateway\" } ~ { resource.service.name = \"shop\" }"
+    },
+    {
+      "id": "struct:union-ancestor",
+      "class": "structural",
+      "token": "\u0026\u003c\u003c",
+      "pin": "{ resource.service.name = \"gateway\" } \u0026\u003c\u003c { resource.service.name = \"shop\" }"
+    },
+    {
+      "id": "struct:union-child",
+      "class": "structural",
+      "token": "\u0026\u003e",
+      "pin": "{ resource.service.name = \"gateway\" } \u0026\u003e { resource.service.name = \"shop\" }"
+    },
+    {
+      "id": "struct:union-descendant",
+      "class": "structural",
+      "token": "\u0026\u003e\u003e",
+      "pin": "{ resource.service.name = \"gateway\" } \u0026\u003e\u003e { resource.service.name = \"shop\" }"
+    },
+    {
+      "id": "struct:union-parent",
+      "class": "structural",
+      "token": "\u0026\u003c",
+      "pin": "{ resource.service.name = \"gateway\" } \u0026\u003c { resource.service.name = \"shop\" }"
+    },
+    {
+      "id": "struct:union-sibling",
+      "class": "structural",
+      "token": "\u0026~",
+      "pin": "{ resource.service.name = \"gateway\" } \u0026~ { resource.service.name = \"shop\" }"
+    }
+  ]
+}

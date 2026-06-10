@@ -1,0 +1,19 @@
+-- query.traceql --
+{ link:traceID = "a0000000000000000000000000000001" }
+-- sql --
+SELECT * FROM `otel_traces` WHERE arrayExists(x -> x = ?, `Links`.`TraceId`)
+-- args --
+[0] string = "a0000000000000000000000000000001"
+-- seed --
+CREATE TABLE otel_traces (
+    _idx UInt64,
+    `Links.TraceId` Array(String) MATERIALIZED if(_idx = 0, ['a0000000000000000000000000000001'], ['b0000000000000000000000000000002'])
+) ENGINE = MergeTree ORDER BY _idx;
+INSERT INTO otel_traces (_idx) VALUES (0), (1);
+-- expected_rows --
+[
+  [0]
+]
+-- chplan --
+Filter predicate=nestedArrayExists(Links.TraceId = "a0000000000000000000000000000001")
+  Scan(otel_traces)

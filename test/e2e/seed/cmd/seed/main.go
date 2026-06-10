@@ -176,6 +176,10 @@ func seedAll(ctx context.Context, conn driver.Conn) error {
 	if err := insertTraces(ctx, conn); err != nil {
 		return fmt.Errorf("insert traces: %w", err)
 	}
+	log.Printf("seed: inserting showcase-traceql trace fixtures")
+	if err := insertShowcaseTraces(ctx, conn); err != nil {
+		return fmt.Errorf("insert showcase traces: %w", err)
+	}
 	return nil
 }
 

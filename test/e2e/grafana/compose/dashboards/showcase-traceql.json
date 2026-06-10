@@ -1,0 +1,3646 @@
+{
+ "annotations": {
+  "list": []
+ },
+ "description": "TraceQL feature showcase: one panel target per traceql-feature-inventory.json row, enforced by test/inventory. Panels carry cerberus.expect contracts where the defined outcome is empty or an error.",
+ "editable": false,
+ "fiscalYearStartMonth": 0,
+ "graphTooltip": 1,
+ "id": null,
+ "links": [],
+ "panels": [
+  {
+   "collapsed": false,
+   "gridPos": {
+    "h": 1,
+    "w": 24,
+    "x": 0,
+    "y": 0
+   },
+   "id": 1,
+   "panels": [],
+   "title": "Attribute selection & scopes",
+   "type": "row"
+  },
+  {
+   "datasource": {
+    "type": "tempo",
+    "uid": "cerberus-tempo"
+   },
+   "description": "Every attribute-carrier scope the OTel-CH schema backs: span.* (SpanAttributes), resource.* (ResourceAttributes), bare .attr (span scope by TraceQL default).",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "custom": {
+      "align": "auto",
+      "cellOptions": {
+       "type": "auto"
+      },
+      "inspect": false
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 0,
+    "y": 1
+   },
+   "id": 2,
+   "options": {
+    "cellHeight": "sm",
+    "footer": {
+     "countRows": false,
+     "fields": "",
+     "reducer": [
+      "sum"
+     ],
+     "show": false
+    },
+    "showHeader": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ span.http.method = \"GET\" }",
+     "queryType": "traceql",
+     "refId": "A",
+     "tableType": "traces"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ resource.service.name = \"shop\" }",
+     "queryType": "traceql",
+     "refId": "B",
+     "tableType": "traces"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ .payload_bytes > 100 }",
+     "queryType": "traceql",
+     "refId": "C",
+     "tableType": "traces"
+    }
+   ],
+   "title": "Span / resource / unscoped attribute scopes",
+   "type": "table"
+  },
+  {
+   "datasource": {
+    "type": "tempo",
+    "uid": "cerberus-tempo"
+   },
+   "description": "event.* / link.* predicates lower to arrayExists over the Events/Links Nested Attributes maps; the regex form pins the match() emit fix (raw '=~' was a ClickHouse syntax error).",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "custom": {
+      "align": "auto",
+      "cellOptions": {
+       "type": "auto"
+      },
+      "inspect": false
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 8,
+    "y": 1
+   },
+   "id": 3,
+   "options": {
+    "cellHeight": "sm",
+    "footer": {
+     "countRows": false,
+     "fields": "",
+     "reducer": [
+      "sum"
+     ],
+     "show": false
+    },
+    "showHeader": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ event.exception.message =~ \".*timeout.*\" }",
+     "queryType": "traceql",
+     "refId": "A",
+     "tableType": "traces"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ link.opentracing.ref_type = \"child_of\" }",
+     "queryType": "traceql",
+     "refId": "B",
+     "tableType": "traces"
+    }
+   ],
+   "title": "Event & link scoped attributes",
+   "type": "table"
+  },
+  {
+   "collapsed": false,
+   "gridPos": {
+    "h": 1,
+    "w": 24,
+    "x": 0,
+    "y": 8
+   },
+   "id": 4,
+   "panels": [],
+   "title": "Intrinsics",
+   "type": "row"
+  },
+  {
+   "datasource": {
+    "type": "tempo",
+    "uid": "cerberus-tempo"
+   },
+   "description": "The five core span intrinsics, each resolving to its dedicated OTel-CH column (SpanName / Duration / StatusCode / SpanKind / StatusMessage).",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "custom": {
+      "align": "auto",
+      "cellOptions": {
+       "type": "auto"
+      },
+      "inspect": false
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 0,
+    "y": 9
+   },
+   "id": 5,
+   "options": {
+    "cellHeight": "sm",
+    "footer": {
+     "countRows": false,
+     "fields": "",
+     "reducer": [
+      "sum"
+     ],
+     "show": false
+    },
+    "showHeader": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ name = \"GET /api/checkout\" }",
+     "queryType": "traceql",
+     "refId": "A",
+     "tableType": "traces"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ duration > 100ms }",
+     "queryType": "traceql",
+     "refId": "B",
+     "tableType": "traces"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ status = error }",
+     "queryType": "traceql",
+     "refId": "C",
+     "tableType": "traces"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ kind = consumer }",
+     "queryType": "traceql",
+     "refId": "D",
+     "tableType": "traces"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ statusMessage =~ \".*deadline.*\" }",
+     "queryType": "traceql",
+     "refId": "E",
+     "tableType": "traces"
+    }
+   ],
+   "title": "name / duration / status / kind / statusMessage",
+   "type": "table"
+  },
+  {
+   "datasource": {
+    "type": "tempo",
+    "uid": "cerberus-tempo"
+   },
+   "description": "Identity intrinsics over TraceId / SpanId / ParentSpanId. The parent intrinsic is the direct parent-span-id equality form.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "custom": {
+      "align": "auto",
+      "cellOptions": {
+       "type": "auto"
+      },
+      "inspect": false
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 8,
+    "y": 9
+   },
+   "id": 6,
+   "options": {
+    "cellHeight": "sm",
+    "footer": {
+     "countRows": false,
+     "fields": "",
+     "reducer": [
+      "sum"
+     ],
+     "show": false
+    },
+    "showHeader": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ trace:id = \"b0000000000000000000000000000001\" }",
+     "queryType": "traceql",
+     "refId": "A",
+     "tableType": "traces"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ span:id = \"b000000000000103\" }",
+     "queryType": "traceql",
+     "refId": "B",
+     "tableType": "traces"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ parent = \"b000000000000102\" }",
+     "queryType": "traceql",
+     "refId": "C",
+     "tableType": "traces"
+    }
+   ],
+   "title": "trace:id / span:id / parent",
+   "type": "table"
+  },
+  {
+   "datasource": {
+    "type": "tempo",
+    "uid": "cerberus-tempo"
+   },
+   "description": "Nested intrinsics target the Events/Links Nested subfields (Events.Name, Links.TraceId, Links.SpanId); instrumentation:name/version map to ScopeName/ScopeVersion.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "custom": {
+      "align": "auto",
+      "cellOptions": {
+       "type": "auto"
+      },
+      "inspect": false
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 16,
+    "y": 9
+   },
+   "id": 7,
+   "options": {
+    "cellHeight": "sm",
+    "footer": {
+     "countRows": false,
+     "fields": "",
+     "reducer": [
+      "sum"
+     ],
+     "show": false
+    },
+    "showHeader": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ event:name = \"exception\" }",
+     "queryType": "traceql",
+     "refId": "A",
+     "tableType": "traces"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ link:traceID = \"b0000000000000000000000000000001\" }",
+     "queryType": "traceql",
+     "refId": "B",
+     "tableType": "traces"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ link:spanID = \"b000000000000103\" }",
+     "queryType": "traceql",
+     "refId": "C",
+     "tableType": "traces"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ instrumentation:name = \"showcase-instrumentation\" }",
+     "queryType": "traceql",
+     "refId": "D",
+     "tableType": "traces"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ instrumentation:version = \"1.2.3\" }",
+     "queryType": "traceql",
+     "refId": "E",
+     "tableType": "traces"
+    }
+   ],
+   "title": "event:name / link IDs / instrumentation scope",
+   "type": "table"
+  },
+  {
+   "collapsed": false,
+   "gridPos": {
+    "h": 1,
+    "w": 24,
+    "x": 0,
+    "y": 16
+   },
+   "id": 8,
+   "panels": [],
+   "title": "Comparisons, logic & arithmetic",
+   "type": "row"
+  },
+  {
+   "datasource": {
+    "type": "tempo",
+    "uid": "cerberus-tempo"
+   },
+   "description": "The ordered + inequality + regex comparison family over intrinsics.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "custom": {
+      "align": "auto",
+      "cellOptions": {
+       "type": "auto"
+      },
+      "inspect": false
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 0,
+    "y": 17
+   },
+   "id": 9,
+   "options": {
+    "cellHeight": "sm",
+    "footer": {
+     "countRows": false,
+     "fields": "",
+     "reducer": [
+      "sum"
+     ],
+     "show": false
+    },
+    "showHeader": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ duration >= 150ms }",
+     "queryType": "traceql",
+     "refId": "A",
+     "tableType": "traces"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ duration < 10s }",
+     "queryType": "traceql",
+     "refId": "B",
+     "tableType": "traces"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ duration <= 600ms }",
+     "queryType": "traceql",
+     "refId": "C",
+     "tableType": "traces"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ name != \"orders.update\" }",
+     "queryType": "traceql",
+     "refId": "D",
+     "tableType": "traces"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ name !~ \"orders.*\" }",
+     "queryType": "traceql",
+     "refId": "E",
+     "tableType": "traces"
+    }
+   ],
+   "title": "Comparison operators",
+   "type": "table"
+  },
+  {
+   "datasource": {
+    "type": "tempo",
+    "uid": "cerberus-tempo"
+   },
+   "description": "`!= nil` lowers to mapContains on the scope carrier (the Traces Drilldown app stamps this on every breakdown view); `= nil` is the negation \u2014 every span matches an attribute nobody ever writes.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "custom": {
+      "align": "auto",
+      "cellOptions": {
+       "type": "auto"
+      },
+      "inspect": false
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 8,
+    "y": 17
+   },
+   "id": 10,
+   "options": {
+    "cellHeight": "sm",
+    "footer": {
+     "countRows": false,
+     "fields": "",
+     "reducer": [
+      "sum"
+     ],
+     "show": false
+    },
+    "showHeader": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ resource.service.name != nil }",
+     "queryType": "traceql",
+     "refId": "A",
+     "tableType": "traces"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ .never.set.attr = nil }",
+     "queryType": "traceql",
+     "refId": "B",
+     "tableType": "traces"
+    }
+   ],
+   "title": "nil checks (existence probes)",
+   "type": "table"
+  },
+  {
+   "datasource": {
+    "type": "tempo",
+    "uid": "cerberus-tempo"
+   },
+   "description": "Field-expression conjunction and disjunction over DIFFERENT attributes (same-attribute || is the parser's IN rewrite \u2014 see the parity-rejections row).",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "custom": {
+      "align": "auto",
+      "cellOptions": {
+       "type": "auto"
+      },
+      "inspect": false
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 16,
+    "y": 17
+   },
+   "id": 11,
+   "options": {
+    "cellHeight": "sm",
+    "footer": {
+     "countRows": false,
+     "fields": "",
+     "reducer": [
+      "sum"
+     ],
+     "show": false
+    },
+    "showHeader": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ kind = server && status = error }",
+     "queryType": "traceql",
+     "refId": "A",
+     "tableType": "traces"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ kind = producer || kind = consumer }",
+     "queryType": "traceql",
+     "refId": "B",
+     "tableType": "traces"
+    }
+   ],
+   "title": "Boolean logic && / ||",
+   "type": "table"
+  },
+  {
+   "datasource": {
+    "type": "tempo",
+    "uid": "cerberus-tempo"
+   },
+   "description": "All six arithmetic operators against the seeded payload_bytes span attribute; toFloat64OrNull coercion keeps spans without the attribute out of the result instead of aborting the query.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "custom": {
+      "align": "auto",
+      "cellOptions": {
+       "type": "auto"
+      },
+      "inspect": false
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 0,
+    "y": 24
+   },
+   "id": 12,
+   "options": {
+    "cellHeight": "sm",
+    "footer": {
+     "countRows": false,
+     "fields": "",
+     "reducer": [
+      "sum"
+     ],
+     "show": false
+    },
+    "showHeader": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ .payload_bytes + 1 > 100 }",
+     "queryType": "traceql",
+     "refId": "A",
+     "tableType": "traces"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ .payload_bytes - 1 > 100 }",
+     "queryType": "traceql",
+     "refId": "B",
+     "tableType": "traces"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ .payload_bytes * 2 > 100 }",
+     "queryType": "traceql",
+     "refId": "C",
+     "tableType": "traces"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ .payload_bytes / 2 > 100 }",
+     "queryType": "traceql",
+     "refId": "D",
+     "tableType": "traces"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ .payload_bytes % 10 >= 0 }",
+     "queryType": "traceql",
+     "refId": "E",
+     "tableType": "traces"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ .payload_bytes ^ 2 > 100 }",
+     "queryType": "traceql",
+     "refId": "F",
+     "tableType": "traces"
+    }
+   ],
+   "title": "Arithmetic on numeric attributes",
+   "type": "table"
+  },
+  {
+   "datasource": {
+    "type": "tempo",
+    "uid": "cerberus-tempo"
+   },
+   "description": "Numeric coercion (toFloat64OrNull) for int/float literals; bool literals coerce to the OTel-CH 'true'/'false' string encoding. String/duration/status/kind literals are exercised by the intrinsic panels above.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "custom": {
+      "align": "auto",
+      "cellOptions": {
+       "type": "auto"
+      },
+      "inspect": false
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 8,
+    "y": 24
+   },
+   "id": 13,
+   "options": {
+    "cellHeight": "sm",
+    "footer": {
+     "countRows": false,
+     "fields": "",
+     "reducer": [
+      "sum"
+     ],
+     "show": false
+    },
+    "showHeader": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ span.http.status_code >= 500 }",
+     "queryType": "traceql",
+     "refId": "A",
+     "tableType": "traces"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ .checkout.amount > 1.5 }",
+     "queryType": "traceql",
+     "refId": "B",
+     "tableType": "traces"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ .cache.hit = true }",
+     "queryType": "traceql",
+     "refId": "C",
+     "tableType": "traces"
+    }
+   ],
+   "title": "Typed literals: int / float / bool",
+   "type": "table"
+  },
+  {
+   "collapsed": false,
+   "gridPos": {
+    "h": 1,
+    "w": 24,
+    "x": 0,
+    "y": 31
+   },
+   "id": 14,
+   "panels": [],
+   "title": "Structural operators",
+   "type": "row"
+  },
+  {
+   "datasource": {
+    "type": "tempo",
+    "uid": "cerberus-tempo"
+   },
+   "description": "gateway > shop selects shop spans directly under a gateway span; payments < shop selects the parent side of the payments\u2192shop edge.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "custom": {
+      "align": "auto",
+      "cellOptions": {
+       "type": "auto"
+      },
+      "inspect": false
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 0,
+    "y": 32
+   },
+   "id": 15,
+   "options": {
+    "cellHeight": "sm",
+    "footer": {
+     "countRows": false,
+     "fields": "",
+     "reducer": [
+      "sum"
+     ],
+     "show": false
+    },
+    "showHeader": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ resource.service.name = \"gateway\" } > { resource.service.name = \"shop\" }",
+     "queryType": "traceql",
+     "refId": "A",
+     "tableType": "traces"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ resource.service.name = \"payments\" } < { resource.service.name = \"shop\" }",
+     "queryType": "traceql",
+     "refId": "B",
+     "tableType": "traces"
+    }
+   ],
+   "title": "Direct child / parent ( > , < )",
+   "type": "table"
+  },
+  {
+   "datasource": {
+    "type": "tempo",
+    "uid": "cerberus-tempo"
+   },
+   "description": "WITH RECURSIVE closure over ParentSpanId: db spans live two hops below the gateway root in the seeded checkout trace.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "custom": {
+      "align": "auto",
+      "cellOptions": {
+       "type": "auto"
+      },
+      "inspect": false
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 8,
+    "y": 32
+   },
+   "id": 16,
+   "options": {
+    "cellHeight": "sm",
+    "footer": {
+     "countRows": false,
+     "fields": "",
+     "reducer": [
+      "sum"
+     ],
+     "show": false
+    },
+    "showHeader": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ resource.service.name = \"gateway\" } >> { resource.service.name = \"db\" }",
+     "queryType": "traceql",
+     "refId": "A",
+     "tableType": "traces"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ resource.service.name = \"db\" } << { resource.service.name = \"gateway\" }",
+     "queryType": "traceql",
+     "refId": "B",
+     "tableType": "traces"
+    }
+   ],
+   "title": "Recursive descendant / ancestor ( >> , << )",
+   "type": "table"
+  },
+  {
+   "datasource": {
+    "type": "tempo",
+    "uid": "cerberus-tempo"
+   },
+   "description": "charge (payments) and orders.insert (db) share the shop checkout span as parent.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "custom": {
+      "align": "auto",
+      "cellOptions": {
+       "type": "auto"
+      },
+      "inspect": false
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 16,
+    "y": 32
+   },
+   "id": 17,
+   "options": {
+    "cellHeight": "sm",
+    "footer": {
+     "countRows": false,
+     "fields": "",
+     "reducer": [
+      "sum"
+     ],
+     "show": false
+    },
+    "showHeader": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ name = \"charge\" } ~ { name = \"orders.insert\" }",
+     "queryType": "traceql",
+     "refId": "A",
+     "tableType": "traces"
+    }
+   ],
+   "title": "Sibling ( ~ )",
+   "type": "table"
+  },
+  {
+   "datasource": {
+    "type": "tempo",
+    "uid": "cerberus-tempo"
+   },
+   "description": "LEFT ANTI JOIN forms: queue spans never relate to payments spans in any seeded trace, so every negated relation returns the full RHS spanset.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "custom": {
+      "align": "auto",
+      "cellOptions": {
+       "type": "auto"
+      },
+      "inspect": false
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 0,
+    "y": 39
+   },
+   "id": 18,
+   "options": {
+    "cellHeight": "sm",
+    "footer": {
+     "countRows": false,
+     "fields": "",
+     "reducer": [
+      "sum"
+     ],
+     "show": false
+    },
+    "showHeader": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ resource.service.name = \"queue\" } !> { resource.service.name = \"payments\" }",
+     "queryType": "traceql",
+     "refId": "A",
+     "tableType": "traces"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ resource.service.name = \"queue\" } !< { resource.service.name = \"payments\" }",
+     "queryType": "traceql",
+     "refId": "B",
+     "tableType": "traces"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ resource.service.name = \"queue\" } !>> { resource.service.name = \"payments\" }",
+     "queryType": "traceql",
+     "refId": "C",
+     "tableType": "traces"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ resource.service.name = \"queue\" } !<< { resource.service.name = \"payments\" }",
+     "queryType": "traceql",
+     "refId": "D",
+     "tableType": "traces"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ resource.service.name = \"queue\" } !~ { resource.service.name = \"payments\" }",
+     "queryType": "traceql",
+     "refId": "E",
+     "tableType": "traces"
+    }
+   ],
+   "title": "Negated structural ( !> !< !>> !<< !~ )",
+   "type": "table"
+  },
+  {
+   "datasource": {
+    "type": "tempo",
+    "uid": "cerberus-tempo"
+   },
+   "description": "UNION DISTINCT forms returning both sides of each matched relation.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "custom": {
+      "align": "auto",
+      "cellOptions": {
+       "type": "auto"
+      },
+      "inspect": false
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 8,
+    "y": 39
+   },
+   "id": 19,
+   "options": {
+    "cellHeight": "sm",
+    "footer": {
+     "countRows": false,
+     "fields": "",
+     "reducer": [
+      "sum"
+     ],
+     "show": false
+    },
+    "showHeader": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ resource.service.name = \"gateway\" } &> { resource.service.name = \"shop\" }",
+     "queryType": "traceql",
+     "refId": "A",
+     "tableType": "traces"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ resource.service.name = \"payments\" } &< { resource.service.name = \"shop\" }",
+     "queryType": "traceql",
+     "refId": "B",
+     "tableType": "traces"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ resource.service.name = \"gateway\" } &>> { resource.service.name = \"db\" }",
+     "queryType": "traceql",
+     "refId": "C",
+     "tableType": "traces"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ resource.service.name = \"db\" } &<< { resource.service.name = \"gateway\" }",
+     "queryType": "traceql",
+     "refId": "D",
+     "tableType": "traces"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ name = \"charge\" } &~ { name = \"orders.insert\" }",
+     "queryType": "traceql",
+     "refId": "E",
+     "tableType": "traces"
+    }
+   ],
+   "title": "Union structural ( &> &< &>> &<< &~ )",
+   "type": "table"
+  },
+  {
+   "collapsed": false,
+   "gridPos": {
+    "h": 1,
+    "w": 24,
+    "x": 0,
+    "y": 46
+   },
+   "id": 20,
+   "panels": [],
+   "title": "Set operations & spanset pipeline",
+   "type": "row"
+  },
+  {
+   "datasource": {
+    "type": "tempo",
+    "uid": "cerberus-tempo"
+   },
+   "description": "Set intersection (INNER JOIN on TraceId+SpanId) and union (UNION DISTINCT).",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "custom": {
+      "align": "auto",
+      "cellOptions": {
+       "type": "auto"
+      },
+      "inspect": false
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 0,
+    "y": 47
+   },
+   "id": 21,
+   "options": {
+    "cellHeight": "sm",
+    "footer": {
+     "countRows": false,
+     "fields": "",
+     "reducer": [
+      "sum"
+     ],
+     "show": false
+    },
+    "showHeader": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ kind = server } && { status = error }",
+     "queryType": "traceql",
+     "refId": "A",
+     "tableType": "traces"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ kind = producer } || { kind = consumer }",
+     "queryType": "traceql",
+     "refId": "B",
+     "tableType": "traces"
+    }
+   ],
+   "title": "Spanset && / ||",
+   "type": "table"
+  },
+  {
+   "datasource": {
+    "type": "tempo",
+    "uid": "cerberus-tempo"
+   },
+   "description": "count/sum/avg/min/max per trace with the HAVING-style scalar filter \u2014 the only grammatical form spanset aggregates appear in.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "custom": {
+      "align": "auto",
+      "cellOptions": {
+       "type": "auto"
+      },
+      "inspect": false
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 8,
+    "y": 47
+   },
+   "id": 22,
+   "options": {
+    "cellHeight": "sm",
+    "footer": {
+     "countRows": false,
+     "fields": "",
+     "reducer": [
+      "sum"
+     ],
+     "show": false
+    },
+    "showHeader": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ resource.service.name = \"payments\" } | count() > 1",
+     "queryType": "traceql",
+     "refId": "A",
+     "tableType": "traces"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ } | sum(.payload_bytes) > 100",
+     "queryType": "traceql",
+     "refId": "B",
+     "tableType": "traces"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ } | avg(duration) > 1ms",
+     "queryType": "traceql",
+     "refId": "C",
+     "tableType": "traces"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ } | min(duration) > 1ms",
+     "queryType": "traceql",
+     "refId": "D",
+     "tableType": "traces"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ } | max(duration) > 100ms",
+     "queryType": "traceql",
+     "refId": "E",
+     "tableType": "traces"
+    }
+   ],
+   "title": "Scalar-filter aggregates",
+   "type": "table"
+  },
+  {
+   "datasource": {
+    "type": "tempo",
+    "uid": "cerberus-tempo"
+   },
+   "description": "Projection, grouping (one representative span per group) and spanset dedup over a set-op result.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "custom": {
+      "align": "auto",
+      "cellOptions": {
+       "type": "auto"
+      },
+      "inspect": false
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 16,
+    "y": 47
+   },
+   "id": 23,
+   "options": {
+    "cellHeight": "sm",
+    "footer": {
+     "countRows": false,
+     "fields": "",
+     "reducer": [
+      "sum"
+     ],
+     "show": false
+    },
+    "showHeader": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ status = error } | select(span.http.method, resource.service.name)",
+     "queryType": "traceql",
+     "refId": "A",
+     "tableType": "traces"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ } | by(resource.service.name)",
+     "queryType": "traceql",
+     "refId": "B",
+     "tableType": "traces"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "({ kind = server } || { kind = client }) | coalesce()",
+     "queryType": "traceql",
+     "refId": "C",
+     "tableType": "traces"
+    }
+   ],
+   "title": "select / by / coalesce",
+   "type": "table"
+  },
+  {
+   "datasource": {
+    "type": "tempo",
+    "uid": "cerberus-tempo"
+   },
+   "description": "Root-ness is the one nested-set question the OTel-CH schema can answer exactly: nestedSetParent < 0 lowers to ParentSpanId = '' (what Grafana's Traces Drilldown stamps on every query); >= 0 is the non-root complement.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "custom": {
+      "align": "auto",
+      "cellOptions": {
+       "type": "auto"
+      },
+      "inspect": false
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 0,
+    "y": 54
+   },
+   "id": 24,
+   "options": {
+    "cellHeight": "sm",
+    "footer": {
+     "countRows": false,
+     "fields": "",
+     "reducer": [
+      "sum"
+     ],
+     "show": false
+    },
+    "showHeader": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ nestedSetParent < 0 }",
+     "queryType": "traceql",
+     "refId": "A",
+     "tableType": "traces"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ nestedSetParent >= 0 }",
+     "queryType": "traceql",
+     "refId": "B",
+     "tableType": "traces"
+    }
+   ],
+   "title": "nestedSetParent root idiom (Traces Drilldown)",
+   "type": "table"
+  },
+  {
+   "cerberus": {
+    "expect": "empty",
+    "why": "The needle name is never seeded and never emitted by self-telemetry; the CORRECT result of this search is zero traces. Bidirectional: rows appearing here would mean the filter stopped filtering."
+   },
+   "datasource": {
+    "type": "tempo",
+    "uid": "cerberus-tempo"
+   },
+   "description": "No span ever carries this name; the panel proves the empty-result path renders cleanly and the bidirectional pin fails the sweep if it ever returns rows.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "custom": {
+      "align": "auto",
+      "cellOptions": {
+       "type": "auto"
+      },
+      "inspect": false
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 8,
+    "y": 54
+   },
+   "id": 25,
+   "options": {
+    "cellHeight": "sm",
+    "footer": {
+     "countRows": false,
+     "fields": "",
+     "reducer": [
+      "sum"
+     ],
+     "show": false
+    },
+    "showHeader": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "{ name = \"showcase-impossible-needle-7d1f\" }",
+     "queryType": "traceql",
+     "refId": "A",
+     "tableType": "traces"
+    }
+   ],
+   "title": "Defined-empty: impossible needle",
+   "type": "table"
+  },
+  {
+   "collapsed": false,
+   "gridPos": {
+    "h": 1,
+    "w": 24,
+    "x": 0,
+    "y": 61
+   },
+   "id": 26,
+   "panels": [],
+   "title": "Metrics pipeline",
+   "type": "row"
+  },
+  {
+   "datasource": {
+    "type": "tempo",
+    "uid": "cerberus-tempo"
+   },
+   "description": "Span-rate over the matrix anchor grid; the by() form partitions per resource service.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "lineInterpolation": "linear",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "auto",
+      "spanNulls": false,
+      "stacking": {
+       "group": "A",
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 0,
+    "y": 62
+   },
+   "id": 27,
+   "options": {
+    "legend": {
+     "calcs": [],
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "none"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "query": "{ } | rate()",
+     "queryType": "traceql",
+     "refId": "A",
+     "step": "15s"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "query": "{ } | rate() by (resource.service.name)",
+     "queryType": "traceql",
+     "refId": "B",
+     "step": "15s"
+    }
+   ],
+   "title": "rate() \u2014 bare and by()",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "tempo",
+    "uid": "cerberus-tempo"
+   },
+   "description": "Per-step span counts, bare and grouped by span name.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "lineInterpolation": "linear",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "auto",
+      "spanNulls": false,
+      "stacking": {
+       "group": "A",
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 8,
+    "y": 62
+   },
+   "id": 28,
+   "options": {
+    "legend": {
+     "calcs": [],
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "none"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "query": "{ } | count_over_time()",
+     "queryType": "traceql",
+     "refId": "A",
+     "step": "15s"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "query": "{ } | count_over_time() by (name)",
+     "queryType": "traceql",
+     "refId": "B",
+     "step": "15s"
+    }
+   ],
+   "title": "count_over_time()",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "tempo",
+    "uid": "cerberus-tempo"
+   },
+   "description": "Duration-operand reducers; values rebase from Int64 ns to seconds to match Tempo's wire shape.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "lineInterpolation": "linear",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "auto",
+      "spanNulls": false,
+      "stacking": {
+       "group": "A",
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 16,
+    "y": 62
+   },
+   "id": 29,
+   "options": {
+    "legend": {
+     "calcs": [],
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "none"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "query": "{ } | min_over_time(duration)",
+     "queryType": "traceql",
+     "refId": "A",
+     "step": "15s"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "query": "{ } | max_over_time(duration)",
+     "queryType": "traceql",
+     "refId": "B",
+     "step": "15s"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "query": "{ } | avg_over_time(duration)",
+     "queryType": "traceql",
+     "refId": "C",
+     "step": "15s"
+    }
+   ],
+   "title": "min / max / avg over time (duration)",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "tempo",
+    "uid": "cerberus-tempo"
+   },
+   "description": "Numeric span-attribute operand (payload_bytes) with toFloat64OrZero aggregate coercion.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "lineInterpolation": "linear",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "auto",
+      "spanNulls": false,
+      "stacking": {
+       "group": "A",
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 0,
+    "y": 69
+   },
+   "id": 30,
+   "options": {
+    "legend": {
+     "calcs": [],
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "none"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "query": "{ } | sum_over_time(.payload_bytes)",
+     "queryType": "traceql",
+     "refId": "A",
+     "step": "15s"
+    }
+   ],
+   "title": "sum_over_time over a numeric attribute",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "tempo",
+    "uid": "cerberus-tempo"
+   },
+   "description": "Three phi values fan out one series each (p label), folded from power-of-two bucket rows via Tempo's Log2QuantileWithBucket.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "lineInterpolation": "linear",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "auto",
+      "spanNulls": false,
+      "stacking": {
+       "group": "A",
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 8,
+    "y": 69
+   },
+   "id": 31,
+   "options": {
+    "legend": {
+     "calcs": [],
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "none"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "query": "{ } | quantile_over_time(duration, .5, .9, .99)",
+     "queryType": "traceql",
+     "refId": "A",
+     "step": "15s"
+    }
+   ],
+   "title": "quantile_over_time multi-phi",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "tempo",
+    "uid": "cerberus-tempo"
+   },
+   "description": "Per-bucket distribution series \u2014 one series per power-of-two bucket edge.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "lineInterpolation": "linear",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "auto",
+      "spanNulls": false,
+      "stacking": {
+       "group": "A",
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 16,
+    "y": 69
+   },
+   "id": 32,
+   "options": {
+    "legend": {
+     "calcs": [],
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "none"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "query": "{ } | histogram_over_time(duration)",
+     "queryType": "traceql",
+     "refId": "A",
+     "step": "15s"
+    }
+   ],
+   "title": "histogram_over_time",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "tempo",
+    "uid": "cerberus-tempo"
+   },
+   "description": "The with() hint block parses and rides along; exemplars are attached to the matrix response.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "lineInterpolation": "linear",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "auto",
+      "spanNulls": false,
+      "stacking": {
+       "group": "A",
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 0,
+    "y": 76
+   },
+   "id": 33,
+   "options": {
+    "legend": {
+     "calcs": [],
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "none"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "query": "{ } | rate() with (exemplars = true)",
+     "queryType": "traceql",
+     "refId": "A",
+     "step": "15s"
+    }
+   ],
+   "title": "Hints: with(exemplars = true)",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "tempo",
+    "uid": "cerberus-tempo"
+   },
+   "description": "Per-anchor series selection (LIMIT K BY anchor_ts) over the rate-by-name matrix.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "lineInterpolation": "linear",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "auto",
+      "spanNulls": false,
+      "stacking": {
+       "group": "A",
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 8,
+    "y": 76
+   },
+   "id": 34,
+   "options": {
+    "legend": {
+     "calcs": [],
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "none"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "query": "{ } | rate() by (name) | topk(3)",
+     "queryType": "traceql",
+     "refId": "A",
+     "step": "15s"
+    },
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "query": "{ } | rate() by (name) | bottomk(3)",
+     "queryType": "traceql",
+     "refId": "B",
+     "step": "15s"
+    }
+   ],
+   "title": "Second stage: topk / bottomk",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "tempo",
+    "uid": "cerberus-tempo"
+   },
+   "description": "The metrics filter form (no pipe before the comparison): keeps only data points whose Value clears the threshold.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "lineInterpolation": "linear",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "auto",
+      "spanNulls": false,
+      "stacking": {
+       "group": "A",
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 16,
+    "y": 76
+   },
+   "id": 35,
+   "options": {
+    "legend": {
+     "calcs": [],
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "none"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "query": "{ } | rate() by (name) > 0.0001",
+     "queryType": "traceql",
+     "refId": "A",
+     "step": "15s"
+    }
+   ],
+   "title": "Second stage: threshold filter",
+   "type": "timeseries"
+  },
+  {
+   "collapsed": true,
+   "gridPos": {
+    "h": 1,
+    "w": 24,
+    "x": 0,
+    "y": 83
+   },
+   "id": 36,
+   "panels": [
+    {
+     "cerberus": {
+      "expect": "error:depends on nested-set positions the OTel ClickHouse schema does not materialise",
+      "why": "Position-dependent nested-set comparisons need the materialised nested-set tree Tempo builds at ingest; OTel-CH has no equivalent columns. Only root-ness shapes lower (see the root-idiom panel)."
+     },
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "description": "Cerberus rejects `{ nestedSetParent = 5 }` today; this panel pins the rejection bidirectionally.",
+     "fieldConfig": {
+      "defaults": {
+       "color": {
+        "mode": "thresholds"
+       },
+       "custom": {
+        "align": "auto",
+        "cellOptions": {
+         "type": "auto"
+        },
+        "inspect": false
+       },
+       "mappings": [],
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "green",
+          "value": null
+         }
+        ]
+       }
+      },
+      "overrides": []
+     },
+     "gridPos": {
+      "h": 7,
+      "w": 8,
+      "x": 0,
+      "y": 84
+     },
+     "id": 37,
+     "options": {
+      "cellHeight": "sm",
+      "footer": {
+       "countRows": false,
+       "fields": "",
+       "reducer": [
+        "sum"
+       ],
+       "show": false
+      },
+      "showHeader": true
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "tempo",
+        "uid": "cerberus-tempo"
+       },
+       "limit": 20,
+       "query": "{ nestedSetParent = 5 }",
+       "queryType": "traceql",
+       "refId": "A",
+       "tableType": "traces"
+      }
+     ],
+     "title": "nestedSetParent position \u2014 parity rejection",
+     "type": "table"
+    },
+    {
+     "cerberus": {
+      "expect": "error:does not materialise nested-set positions",
+      "why": "Left/right nested-set bounds have no OTel-CH backing column; cerberus rejects rather than fabricating positions."
+     },
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "description": "Cerberus rejects `{ nestedSetLeft > 0 }` today; this panel pins the rejection bidirectionally.",
+     "fieldConfig": {
+      "defaults": {
+       "color": {
+        "mode": "thresholds"
+       },
+       "custom": {
+        "align": "auto",
+        "cellOptions": {
+         "type": "auto"
+        },
+        "inspect": false
+       },
+       "mappings": [],
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "green",
+          "value": null
+         }
+        ]
+       }
+      },
+      "overrides": []
+     },
+     "gridPos": {
+      "h": 7,
+      "w": 8,
+      "x": 8,
+      "y": 84
+     },
+     "id": 38,
+     "options": {
+      "cellHeight": "sm",
+      "footer": {
+       "countRows": false,
+       "fields": "",
+       "reducer": [
+        "sum"
+       ],
+       "show": false
+      },
+      "showHeader": true
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "tempo",
+        "uid": "cerberus-tempo"
+       },
+       "limit": 20,
+       "query": "{ nestedSetLeft > 0 }",
+       "queryType": "traceql",
+       "refId": "A",
+       "tableType": "traces"
+      }
+     ],
+     "title": "nestedSetLeft \u2014 parity rejection",
+     "type": "table"
+    },
+    {
+     "cerberus": {
+      "expect": "error:does not materialise nested-set positions",
+      "why": "Left/right nested-set bounds have no OTel-CH backing column; cerberus rejects rather than fabricating positions."
+     },
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "description": "Cerberus rejects `{ nestedSetRight > 0 }` today; this panel pins the rejection bidirectionally.",
+     "fieldConfig": {
+      "defaults": {
+       "color": {
+        "mode": "thresholds"
+       },
+       "custom": {
+        "align": "auto",
+        "cellOptions": {
+         "type": "auto"
+        },
+        "inspect": false
+       },
+       "mappings": [],
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "green",
+          "value": null
+         }
+        ]
+       }
+      },
+      "overrides": []
+     },
+     "gridPos": {
+      "h": 7,
+      "w": 8,
+      "x": 16,
+      "y": 84
+     },
+     "id": 39,
+     "options": {
+      "cellHeight": "sm",
+      "footer": {
+       "countRows": false,
+       "fields": "",
+       "reducer": [
+        "sum"
+       ],
+       "show": false
+      },
+      "showHeader": true
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "tempo",
+        "uid": "cerberus-tempo"
+       },
+       "limit": 20,
+       "query": "{ nestedSetRight > 0 }",
+       "queryType": "traceql",
+       "refId": "A",
+       "tableType": "traces"
+      }
+     ],
+     "title": "nestedSetRight \u2014 parity rejection",
+     "type": "table"
+    },
+    {
+     "cerberus": {
+      "expect": "error:trace-scoped",
+      "why": "rootName needs whole-trace evaluation (find the root span per trace); the OTel-CH span-row schema stores one row per span. Previously this lowered to a SpanAttributes['rootName'] lookup that silently matched nothing \u2014 the rejection pins the honest boundary."
+     },
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "description": "Cerberus rejects `{ rootName = \"GET /api/checkout\" }` today; this panel pins the rejection bidirectionally.",
+     "fieldConfig": {
+      "defaults": {
+       "color": {
+        "mode": "thresholds"
+       },
+       "custom": {
+        "align": "auto",
+        "cellOptions": {
+         "type": "auto"
+        },
+        "inspect": false
+       },
+       "mappings": [],
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "green",
+          "value": null
+         }
+        ]
+       }
+      },
+      "overrides": []
+     },
+     "gridPos": {
+      "h": 7,
+      "w": 8,
+      "x": 0,
+      "y": 91
+     },
+     "id": 40,
+     "options": {
+      "cellHeight": "sm",
+      "footer": {
+       "countRows": false,
+       "fields": "",
+       "reducer": [
+        "sum"
+       ],
+       "show": false
+      },
+      "showHeader": true
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "tempo",
+        "uid": "cerberus-tempo"
+       },
+       "limit": 20,
+       "query": "{ rootName = \"GET /api/checkout\" }",
+       "queryType": "traceql",
+       "refId": "A",
+       "tableType": "traces"
+      }
+     ],
+     "title": "rootName \u2014 parity rejection",
+     "type": "table"
+    },
+    {
+     "cerberus": {
+      "expect": "error:trace-scoped",
+      "why": "Same trace-scoped boundary as rootName."
+     },
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "description": "Cerberus rejects `{ rootServiceName = \"gateway\" }` today; this panel pins the rejection bidirectionally.",
+     "fieldConfig": {
+      "defaults": {
+       "color": {
+        "mode": "thresholds"
+       },
+       "custom": {
+        "align": "auto",
+        "cellOptions": {
+         "type": "auto"
+        },
+        "inspect": false
+       },
+       "mappings": [],
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "green",
+          "value": null
+         }
+        ]
+       }
+      },
+      "overrides": []
+     },
+     "gridPos": {
+      "h": 7,
+      "w": 8,
+      "x": 8,
+      "y": 91
+     },
+     "id": 41,
+     "options": {
+      "cellHeight": "sm",
+      "footer": {
+       "countRows": false,
+       "fields": "",
+       "reducer": [
+        "sum"
+       ],
+       "show": false
+      },
+      "showHeader": true
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "tempo",
+        "uid": "cerberus-tempo"
+       },
+       "limit": 20,
+       "query": "{ rootServiceName = \"gateway\" }",
+       "queryType": "traceql",
+       "refId": "A",
+       "tableType": "traces"
+      }
+     ],
+     "title": "rootServiceName \u2014 parity rejection",
+     "type": "table"
+    },
+    {
+     "cerberus": {
+      "expect": "error:trace-scoped",
+      "why": "Whole-trace duration requires aggregating every span of the trace; the span-row schema cannot answer it per row."
+     },
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "description": "Cerberus rejects `{ traceDuration > 100ms }` today; this panel pins the rejection bidirectionally.",
+     "fieldConfig": {
+      "defaults": {
+       "color": {
+        "mode": "thresholds"
+       },
+       "custom": {
+        "align": "auto",
+        "cellOptions": {
+         "type": "auto"
+        },
+        "inspect": false
+       },
+       "mappings": [],
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "green",
+          "value": null
+         }
+        ]
+       }
+      },
+      "overrides": []
+     },
+     "gridPos": {
+      "h": 7,
+      "w": 8,
+      "x": 16,
+      "y": 91
+     },
+     "id": 42,
+     "options": {
+      "cellHeight": "sm",
+      "footer": {
+       "countRows": false,
+       "fields": "",
+       "reducer": [
+        "sum"
+       ],
+       "show": false
+      },
+      "showHeader": true
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "tempo",
+        "uid": "cerberus-tempo"
+       },
+       "limit": 20,
+       "query": "{ traceDuration > 100ms }",
+       "queryType": "traceql",
+       "refId": "A",
+       "tableType": "traces"
+      }
+     ],
+     "title": "traceDuration \u2014 parity rejection",
+     "type": "table"
+    },
+    {
+     "cerberus": {
+      "expect": "error:per-span child counts",
+      "why": "Child counts are a Tempo ingest-time materialisation; OTel-CH has no equivalent column."
+     },
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "description": "Cerberus rejects `{ span:childCount > 0 }` today; this panel pins the rejection bidirectionally.",
+     "fieldConfig": {
+      "defaults": {
+       "color": {
+        "mode": "thresholds"
+       },
+       "custom": {
+        "align": "auto",
+        "cellOptions": {
+         "type": "auto"
+        },
+        "inspect": false
+       },
+       "mappings": [],
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "green",
+          "value": null
+         }
+        ]
+       }
+      },
+      "overrides": []
+     },
+     "gridPos": {
+      "h": 7,
+      "w": 8,
+      "x": 0,
+      "y": 98
+     },
+     "id": 43,
+     "options": {
+      "cellHeight": "sm",
+      "footer": {
+       "countRows": false,
+       "fields": "",
+       "reducer": [
+        "sum"
+       ],
+       "show": false
+      },
+      "showHeader": true
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "tempo",
+        "uid": "cerberus-tempo"
+       },
+       "limit": 20,
+       "query": "{ span:childCount > 0 }",
+       "queryType": "traceql",
+       "refId": "A",
+       "tableType": "traces"
+      }
+     ],
+     "title": "span:childCount \u2014 parity rejection",
+     "type": "table"
+    },
+    {
+     "cerberus": {
+      "expect": "error:per-event timestamp arithmetic",
+      "why": "Needs per-event Timestamp minus span start across the Events Nested column \u2014 unsupported; rejected loudly instead of misreading SpanAttributes."
+     },
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "description": "Cerberus rejects `{ event:timeSinceStart > 1ms }` today; this panel pins the rejection bidirectionally.",
+     "fieldConfig": {
+      "defaults": {
+       "color": {
+        "mode": "thresholds"
+       },
+       "custom": {
+        "align": "auto",
+        "cellOptions": {
+         "type": "auto"
+        },
+        "inspect": false
+       },
+       "mappings": [],
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "green",
+          "value": null
+         }
+        ]
+       }
+      },
+      "overrides": []
+     },
+     "gridPos": {
+      "h": 7,
+      "w": 8,
+      "x": 8,
+      "y": 98
+     },
+     "id": 44,
+     "options": {
+      "cellHeight": "sm",
+      "footer": {
+       "countRows": false,
+       "fields": "",
+       "reducer": [
+        "sum"
+       ],
+       "show": false
+      },
+      "showHeader": true
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "tempo",
+        "uid": "cerberus-tempo"
+       },
+       "limit": 20,
+       "query": "{ event:timeSinceStart > 1ms }",
+       "queryType": "traceql",
+       "refId": "A",
+       "tableType": "traces"
+      }
+     ],
+     "title": "event:timeSinceStart \u2014 parity rejection",
+     "type": "table"
+    },
+    {
+     "cerberus": {
+      "expect": "error:no scope-attributes column",
+      "why": "The upstream OTel-CH traces schema materialises ScopeName/ScopeVersion but no scope-attributes map; without a configured column the lookup would silently read SpanAttributes."
+     },
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "description": "Cerberus rejects `{ instrumentation.deployment = \"blue\" }` today; this panel pins the rejection bidirectionally.",
+     "fieldConfig": {
+      "defaults": {
+       "color": {
+        "mode": "thresholds"
+       },
+       "custom": {
+        "align": "auto",
+        "cellOptions": {
+         "type": "auto"
+        },
+        "inspect": false
+       },
+       "mappings": [],
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "green",
+          "value": null
+         }
+        ]
+       }
+      },
+      "overrides": []
+     },
+     "gridPos": {
+      "h": 7,
+      "w": 8,
+      "x": 16,
+      "y": 98
+     },
+     "id": 45,
+     "options": {
+      "cellHeight": "sm",
+      "footer": {
+       "countRows": false,
+       "fields": "",
+       "reducer": [
+        "sum"
+       ],
+       "show": false
+      },
+      "showHeader": true
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "tempo",
+        "uid": "cerberus-tempo"
+       },
+       "limit": 20,
+       "query": "{ instrumentation.deployment = \"blue\" }",
+       "queryType": "traceql",
+       "refId": "A",
+       "tableType": "traces"
+      }
+     ],
+     "title": "instrumentation.* scope attributes \u2014 parity rejection",
+     "type": "table"
+    },
+    {
+     "cerberus": {
+      "expect": "error:operator IN is unsupported",
+      "why": "Tempo's parser optimiser rewrites same-attribute disjunctions into the internal IN operator, which cerberus does not lower yet; the rejection documents the boundary until an In-frag lowering lands."
+     },
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "description": "Cerberus rejects `{ name = \"GET /api/checkout\" || name = \"POST /api/orders\" }` today; this panel pins the rejection bidirectionally.",
+     "fieldConfig": {
+      "defaults": {
+       "color": {
+        "mode": "thresholds"
+       },
+       "custom": {
+        "align": "auto",
+        "cellOptions": {
+         "type": "auto"
+        },
+        "inspect": false
+       },
+       "mappings": [],
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "green",
+          "value": null
+         }
+        ]
+       }
+      },
+      "overrides": []
+     },
+     "gridPos": {
+      "h": 7,
+      "w": 8,
+      "x": 0,
+      "y": 105
+     },
+     "id": 46,
+     "options": {
+      "cellHeight": "sm",
+      "footer": {
+       "countRows": false,
+       "fields": "",
+       "reducer": [
+        "sum"
+       ],
+       "show": false
+      },
+      "showHeader": true
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "tempo",
+        "uid": "cerberus-tempo"
+       },
+       "limit": 20,
+       "query": "{ name = \"GET /api/checkout\" || name = \"POST /api/orders\" }",
+       "queryType": "traceql",
+       "refId": "A",
+       "tableType": "traces"
+      }
+     ],
+     "title": "same-attribute || (IN rewrite) \u2014 parity rejection",
+     "type": "table"
+    },
+    {
+     "cerberus": {
+      "expect": "error:unary operator ! is unsupported",
+      "why": "Field-expression negation is not lowered yet; the rejection documents the boundary."
+     },
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "description": "Cerberus rejects `{ !(kind = server) }` today; this panel pins the rejection bidirectionally.",
+     "fieldConfig": {
+      "defaults": {
+       "color": {
+        "mode": "thresholds"
+       },
+       "custom": {
+        "align": "auto",
+        "cellOptions": {
+         "type": "auto"
+        },
+        "inspect": false
+       },
+       "mappings": [],
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "green",
+          "value": null
+         }
+        ]
+       }
+      },
+      "overrides": []
+     },
+     "gridPos": {
+      "h": 7,
+      "w": 8,
+      "x": 8,
+      "y": 105
+     },
+     "id": 47,
+     "options": {
+      "cellHeight": "sm",
+      "footer": {
+       "countRows": false,
+       "fields": "",
+       "reducer": [
+        "sum"
+       ],
+       "show": false
+      },
+      "showHeader": true
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "tempo",
+        "uid": "cerberus-tempo"
+       },
+       "limit": 20,
+       "query": "{ !(kind = server) }",
+       "queryType": "traceql",
+       "refId": "A",
+       "tableType": "traces"
+      }
+     ],
+     "title": "unary ! negation \u2014 parity rejection",
+     "type": "table"
+    },
+    {
+     "cerberus": {
+      "expect": "error:MetricsCompare is unsupported",
+      "why": "compare() is a baseline-vs-selection split evaluated by Tempo's metrics engine; cerberus's metrics pipeline does not lower it yet. The pin fires the moment support lands and forces the upgrade to a nonempty contract."
+     },
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "description": "Cerberus rejects `{ } | compare({ status = error })` today; this panel pins the rejection bidirectionally.",
+     "fieldConfig": {
+      "defaults": {
+       "color": {
+        "mode": "palette-classic"
+       },
+       "custom": {
+        "axisBorderShow": false,
+        "axisCenteredZero": false,
+        "axisColorMode": "text",
+        "axisLabel": "",
+        "axisPlacement": "auto",
+        "barAlignment": 0,
+        "drawStyle": "line",
+        "fillOpacity": 10,
+        "gradientMode": "none",
+        "hideFrom": {
+         "legend": false,
+         "tooltip": false,
+         "viz": false
+        },
+        "lineInterpolation": "linear",
+        "lineWidth": 1,
+        "pointSize": 5,
+        "scaleDistribution": {
+         "type": "linear"
+        },
+        "showPoints": "auto",
+        "spanNulls": false,
+        "stacking": {
+         "group": "A",
+         "mode": "none"
+        },
+        "thresholdsStyle": {
+         "mode": "off"
+        }
+       },
+       "mappings": [],
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "green",
+          "value": null
+         }
+        ]
+       }
+      },
+      "overrides": []
+     },
+     "gridPos": {
+      "h": 7,
+      "w": 8,
+      "x": 16,
+      "y": 105
+     },
+     "id": 48,
+     "options": {
+      "legend": {
+       "calcs": [],
+       "displayMode": "list",
+       "placement": "bottom",
+       "showLegend": true
+      },
+      "tooltip": {
+       "mode": "multi",
+       "sort": "none"
+      }
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "tempo",
+        "uid": "cerberus-tempo"
+       },
+       "query": "{ } | compare({ status = error })",
+       "queryType": "traceql",
+       "refId": "A",
+       "step": "15s"
+      }
+     ],
+     "title": "compare() \u2014 parity rejection",
+     "type": "timeseries"
+    }
+   ],
+   "title": "Parity rejections \u2014 declared error contracts",
+   "type": "row"
+  }
+ ],
+ "schemaVersion": 39,
+ "tags": [
+  "cerberus",
+  "showcase",
+  "traceql"
+ ],
+ "templating": {
+  "list": []
+ },
+ "time": {
+  "from": "now-15m",
+  "to": "now"
+ },
+ "timepicker": {},
+ "timezone": "",
+ "title": "TraceQL Showcase",
+ "uid": "showcase-traceql",
+ "version": 1,
+ "weekStart": ""
+}

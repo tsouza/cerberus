@@ -28,15 +28,22 @@ const (
 //
 // SQL shape: Aggregate { Input: prev, GroupBy: [<key-expr>],
 //
-//	AggFuncs: [ any(TraceId) AS TraceId,
-//	            any(SpanId) AS SpanId,
-//	            min(Timestamp) AS Timestamp ] }
+//	AggFuncs: [ any(TraceId) AS TraceId, any(SpanId) AS SpanId,
+//	            count(1) AS Value, + the spanset-envelope columns ] }
 //
-// The earliest span per group (min(Timestamp)) is the natural
-// representative for trace UIs; `any()` for the identity columns picks
-// a deterministic-per-group row (CH's `any` is implementation-defined
-// but stable within a query). Future work: argMin(SpanId, Timestamp)
-// once the optimizer can prove the group-key resolves to a single row.
+// The aggregate piggybacks the same per-group envelope columns
+// lowerAggregate carries (`any(SpanName) AS MetricName`,
+// `any(ResourceAttributes) AS ResourceAttrs`, `min(Timestamp) AS
+// TimeUnix`, TraceStartNs / TraceEndNs) so the Tempo handler's
+// spanset-aggregate wrap projection (isSpansetAggregateShape →
+// spansetAggregateSampleProjections) shapes the rows into real search
+// summaries. Before this, the by() output fell into the generic
+// metrics-fallback wrap which referenced a `Value` column the
+// aggregate never projected — every `{} | by(...)` search 502'd with
+// "Unknown identifier Value".
+//
+// Value is the per-group span count — the natural scalar for a
+// grouped spanset (mirrors Tempo's UI which reports group sizes).
 func lowerGroup(prev chplan.Node, g traceql.GroupOperation, s schema.Traces) (chplan.Node, error) {
 	if g.Expression == nil {
 		return nil, fmt.Errorf("traceql: `| group(...)` requires a field expression")
@@ -50,11 +57,10 @@ func lowerGroup(prev chplan.Node, g traceql.GroupOperation, s schema.Traces) (ch
 		Input:          prev,
 		GroupBy:        []chplan.Expr{key},
 		GroupByAliases: []string{groupKeyAlias},
-		AggFuncs: []chplan.AggFunc{
-			{Name: "any", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.TraceIDColumn}}, Alias: s.TraceIDColumn},
+		AggFuncs: append([]chplan.AggFunc{
+			{Name: "any", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.TraceIDColumn}}, Alias: aggTraceIDAlias},
 			{Name: "any", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.SpanIDColumn}}, Alias: s.SpanIDColumn},
-			{Name: "min", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.TimestampColumn}}, Alias: s.TimestampColumn},
-		},
+		}, spansetEnvelopeAggFuncs(s)...),
 	}, nil
 }
 
@@ -69,6 +75,12 @@ func lowerGroup(prev chplan.Node, g traceql.GroupOperation, s schema.Traces) (ch
 // that groups by the span-identity columns and keeps one row per group.
 // For inputs that don't have duplicates (the common single-spanset
 // case) the optimizer can fold the no-op grouping in a later pass.
+//
+// Like lowerGroup, the aggregate piggybacks the spanset-envelope
+// columns so the search wrap projection produces real summaries
+// instead of referencing a non-existent `Value` column. Value here is
+// the per-(TraceId, SpanId) row count — i.e. how many duplicate rows
+// the dedup collapsed.
 func lowerCoalesce(prev chplan.Node, s schema.Traces) (chplan.Node, error) {
 	return &chplan.Aggregate{
 		Input: prev,
@@ -77,8 +89,21 @@ func lowerCoalesce(prev chplan.Node, s schema.Traces) (chplan.Node, error) {
 			&chplan.ColumnRef{Name: s.SpanIDColumn},
 		},
 		GroupByAliases: []string{s.TraceIDColumn, s.SpanIDColumn},
-		AggFuncs: []chplan.AggFunc{
-			{Name: "min", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.TimestampColumn}}, Alias: s.TimestampColumn},
-		},
+		AggFuncs:       spansetEnvelopeAggFuncs(s),
 	}, nil
+}
+
+// spansetEnvelopeAggFuncs returns the per-group envelope AggFunc list
+// shared by group() / coalesce(): the count-shaped Value plus the four
+// envelope columns lowerAggregate (aggregate.go) established — the
+// alias set isSpansetAggregateShape keys on.
+func spansetEnvelopeAggFuncs(s schema.Traces) []chplan.AggFunc {
+	return []chplan.AggFunc{
+		{Name: "count", Args: []chplan.Expr{&chplan.LitInt{V: 1}}, Alias: aggValueAlias},
+		anyAggFunc(s.SpanNameColumn, aggMetricNameAlias),
+		anyAggFunc(s.ResourceAttributesColumn, aggResourceAttrsAlias),
+		minAggFunc(s.TimestampColumn, aggTimeUnixAlias),
+		traceStartNsAggFunc(s.TimestampColumn),
+		traceEndNsAggFunc(s.TimestampColumn, s.DurationColumn),
+	}
 }

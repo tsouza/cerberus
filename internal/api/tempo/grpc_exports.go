@@ -193,20 +193,31 @@ func (h *Handler) ExecMetricsRange(ctx context.Context, query string, start, end
 		return ExecMetricsRangeResult{}, fmt.Errorf("%w: %w", errLowerStage, lerr)
 	}
 
-	metrics, ok := unwrapMetricsAggregate(plan)
+	// Second-stage peel + re-apply — same shape as
+	// handleMetricsQueryRange: the RangeWindow wraps the aggregate, the
+	// topk/bottomk/threshold wraps re-apply around the windowed result
+	// partitioned by the matrix anchor column.
+	stages, inner := peelMetricsSecondStages(plan)
+	metrics, ok := unwrapMetricsAggregate(inner)
 	if !ok {
 		return ExecMetricsRangeResult{}, fmt.Errorf("%w: query %q is not a TraceQL metrics-pipeline expression — MetricsQueryRange requires `| rate()`, `| count_over_time()`, `| *_over_time(...)` or `| quantile_over_time(...)`", errLowerStage, query)
 	}
+	if len(stages) > 0 && metrics.Op == chplan.MetricsOpQuantileOverTime {
+		return ExecMetricsRangeResult{}, fmt.Errorf("%w: traceql: second-stage %s over quantile_over_time is unsupported — quantiles are computed from bucket rows after SQL execution", errLowerStage, stages[0].Op)
+	}
 
 	rw := &chplan.RangeWindow{
-		Input:           plan,
+		Input:           inner,
 		Range:           step,
 		Step:            step,
 		Start:           start,
 		End:             end,
 		TimestampColumn: h.Schema.TimestampColumn,
 	}
-	wrapped := wrapMetricsForSample(rw, metrics)
+	wrapped := wrapMetricsForSample(
+		applyMetricsSecondStages(rw, stages, []string{chsql.RangeWindowAnchorAlias}),
+		metrics,
+	)
 
 	res, qerr := h.Engine.QueryPlan(ctx, metricsLang{}, wrapped, engine.Meta{
 		IsMetric:      true,
@@ -292,20 +303,27 @@ func (h *Handler) ExecMetricsInstant(ctx context.Context, query string, start, e
 		return ExecMetricsInstantResult{}, fmt.Errorf("%w: %w", errLowerStage, lerr)
 	}
 
-	metrics, ok := unwrapMetricsAggregate(plan)
+	// Second-stage peel + re-apply — instant path: no PartitionBy, a
+	// single anchor means one global selection (mirrors
+	// handleMetricsQueryInstant).
+	stages, inner := peelMetricsSecondStages(plan)
+	metrics, ok := unwrapMetricsAggregate(inner)
 	if !ok {
 		return ExecMetricsInstantResult{}, fmt.Errorf("%w: query %q is not a TraceQL metrics-pipeline expression — MetricsQueryInstant requires `| rate()`, `| count_over_time()`, `| *_over_time(...)` or `| quantile_over_time(...)`", errLowerStage, query)
 	}
+	if len(stages) > 0 && metrics.Op == chplan.MetricsOpQuantileOverTime {
+		return ExecMetricsInstantResult{}, fmt.Errorf("%w: traceql: second-stage %s over quantile_over_time is unsupported — quantiles are computed from bucket rows after SQL execution", errLowerStage, stages[0].Op)
+	}
 
 	rw := &chplan.RangeWindow{
-		Input:           plan,
+		Input:           inner,
 		Range:           step,
 		Step:            step,
 		Start:           start,
 		End:             end,
 		TimestampColumn: h.Schema.TimestampColumn,
 	}
-	wrapped := wrapMetricsForSample(rw, metrics)
+	wrapped := wrapMetricsForSample(applyMetricsSecondStages(rw, stages, nil), metrics)
 
 	res, qerr := h.Engine.QueryPlan(ctx, metricsLang{}, wrapped, engine.Meta{
 		IsMetric:      true,

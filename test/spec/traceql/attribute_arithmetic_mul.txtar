@@ -1,7 +1,7 @@
 -- query.traceql --
 { .a * 2 > 10 }
 -- sql --
-SELECT * FROM `otel_traces` WHERE ((toFloat64(`SpanAttributes`[?]) * ?) > ?)
+SELECT * FROM `otel_traces` WHERE ((toFloat64OrNull(`SpanAttributes`[?]) * ?) > ?)
 -- args --
 [0] string = "a"
 [1] int64 = 2
@@ -17,5 +17,5 @@ INSERT INTO otel_traces (_idx) VALUES (0), (1);
   [0]
 ]
 -- chplan --
-Filter predicate=((toFloat64(SpanAttributes["a"]) * 2) > 10)
+Filter predicate=((toFloat64OrNull(SpanAttributes["a"]) * 2) > 10)
   Scan(otel_traces)

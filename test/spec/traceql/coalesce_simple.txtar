@@ -1,23 +1,27 @@
 -- query.traceql --
 {} | coalesce()
 -- sql --
-SELECT `TraceId` AS `TraceId`, `SpanId` AS `SpanId`, min(`Timestamp`) AS `Timestamp` FROM (SELECT * FROM `otel_traces` WHERE ?) GROUP BY `TraceId`, `SpanId`
+SELECT `TraceId` AS `TraceId`, `SpanId` AS `SpanId`, toFloat64(count(?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT * FROM `otel_traces` WHERE ?) GROUP BY `TraceId`, `SpanId`
 -- args --
-[0] bool = true
+[0] int64 = 1
+[1] bool = true
 -- seed --
 CREATE TABLE otel_traces (
     TraceId String,
     SpanId String,
-    Timestamp DateTime64(9)
+    SpanName String,
+    Timestamp DateTime64(9),
+    ResourceAttributes Map(String, String),
+    Duration UInt64
 ) ENGINE = Memory;
 INSERT INTO otel_traces VALUES
-    ('a0000000000000000000000000000001', '0000000000000001', toDateTime64('2026-01-01 00:00:00', 9)),
-    ('a0000000000000000000000000000001', '0000000000000001', toDateTime64('2026-01-01 00:00:05', 9));
+    ('a0000000000000000000000000000001', '0000000000000001', 'span', toDateTime64('2026-01-01 00:00:00', 9), map('service.name', 'x'), 1000000),
+    ('a0000000000000000000000000000001', '0000000000000001', 'span', toDateTime64('2026-01-01 00:00:05', 9), map('service.name', 'x'), 2000000);
 -- expected_rows --
 [
-  ["a0000000000000000000000000000001", "0000000000000001", "2026-01-01T00:00:00Z"]
+  ["a0000000000000000000000000000001", "0000000000000001", 2, "span", {"service.name": "x"}, "2026-01-01T00:00:00Z", 1767225600000000000, 1767225605002000000]
 ]
 -- chplan --
-Aggregate groupBy=[TraceId AS TraceId, SpanId AS SpanId] funcs=[min(Timestamp) AS Timestamp]
+Aggregate groupBy=[TraceId AS TraceId, SpanId AS SpanId] funcs=[count(1) AS Value, any(SpanName) AS MetricName, any(ResourceAttributes) AS ResourceAttrs, min(Timestamp) AS TimeUnix, min(toUnixTimestamp64Nano(Timestamp)) AS TraceStartNs, max((toUnixTimestamp64Nano(Timestamp) + toInt64(Duration))) AS TraceEndNs]
   Filter predicate=true
     Scan(otel_traces)

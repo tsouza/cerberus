@@ -38,16 +38,21 @@ func TestLowerGroupCoalesce(t *testing.T) {
 		if len(agg.GroupBy) != 1 {
 			t.Errorf("len(GroupBy) = %d, want 1", len(agg.GroupBy))
 		}
-		// Three rep AggFuncs: any(TraceId), any(SpanId), min(Timestamp).
-		if len(agg.AggFuncs) != 3 {
-			t.Errorf("len(AggFuncs) = %d, want 3", len(agg.AggFuncs))
+		// Representative identity columns (any(TraceId), any(SpanId))
+		// plus the six spanset-envelope funcs (count Value, MetricName,
+		// ResourceAttrs, TimeUnix, TraceStartNs, TraceEndNs) the search
+		// wrap projection keys on.
+		if len(agg.AggFuncs) != 8 {
+			t.Errorf("len(AggFuncs) = %d, want 8", len(agg.AggFuncs))
 		}
-		seen := map[string]int{}
+		aliases := map[string]bool{}
 		for _, af := range agg.AggFuncs {
-			seen[af.Name]++
+			aliases[af.Alias] = true
 		}
-		if seen["any"] != 2 || seen["min"] != 1 {
-			t.Errorf("AggFunc kind counts = %v, want any=2 min=1", seen)
+		for _, want := range []string{"TraceId", "Value", "MetricName", "ResourceAttrs", "TimeUnix", "TraceStartNs", "TraceEndNs"} {
+			if !aliases[want] {
+				t.Errorf("AggFuncs missing %q alias (got %v)", want, aliases)
+			}
 		}
 	})
 

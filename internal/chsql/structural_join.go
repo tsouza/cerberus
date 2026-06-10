@@ -75,6 +75,16 @@ func (e *emitter) emitStructuralJoin(j *chplan.StructuralJoin) error {
 // https://github.com/tsouza/cerberus/issues/57 for the failing nested-
 // structural-join repro and the chDB error trace.
 func (e *emitter) emitStructuralDirectJoin(j *chplan.StructuralJoin) error {
+	// Sibling relations need a dedicated shape: their distinct-span
+	// clause (`L.SpanId != R.SpanId`) is an inequality between the two
+	// join sides, which ClickHouse (24.x, and 25.x without
+	// allow_experimental_join_condition) rejects inside JOIN ON with
+	// "join expression contains column from left and right table". The
+	// sibling emitter keeps the ON equality-only and expresses the
+	// distinct-span rule WHERE-side.
+	if j.Op.Positive() == chplan.StructuralSibling {
+		return e.emitStructuralSiblingJoin(j)
+	}
 	relFrag, err := structuralDirectRelFrag(j)
 	if err != nil {
 		return err
@@ -141,6 +151,107 @@ func (e *emitter) emitStructuralDirectJoin(j *chplan.StructuralJoin) error {
 				aliasedFrag(rightSub, "R"),
 				structuralDirectOnFrag(j, relFrag),
 			)
+		e.emitSelect(sb)
+		return nil
+	}
+}
+
+// emitStructuralSiblingJoin renders the sibling family (`~` / `!~` /
+// `&~`) with an equality-only JOIN ON — ClickHouse rejects the naive
+// `... AND L.SpanId != R.SpanId` ON clause with error 403
+// INVALID_JOIN_ON_EXPRESSION ("join expression contains column from
+// left and right table") on every released CH the compose / k3d / chDB
+// stacks run.
+//
+// Shapes:
+//
+//   - `~` (inner): INNER JOIN on (TraceId, ParentSpanId) equality with
+//     the distinct-span rule (`L.SpanId != R.SpanId`) moved to WHERE —
+//     row-for-row equivalent to the old ON form.
+//   - `&~` (union): the inner shape emitted twice (projecting R.* and
+//     L.*) glued with UNION DISTINCT, mirroring the other union ops.
+//   - `!~` (negated): an anti join cannot move the inequality to WHERE
+//     (the non-match decision happens inside the join), so the L side
+//     collapses to one row per (TraceId, ParentSpanId) carrying the
+//     group's span count + span-id set, LEFT JOIN'd on the equality
+//     keys. R has a sibling iff the group contains an L span other
+//     than R itself: `_l_cnt - has(_l_span_ids, R.SpanId) > 0`. The
+//     negated form keeps rows where that quantity is 0 — including
+//     rows with no L group at all (LEFT JOIN defaults: _l_cnt = 0,
+//     _l_span_ids = []).
+func (e *emitter) emitStructuralSiblingJoin(j *chplan.StructuralJoin) error {
+	leftSub, err := e.subqueryFrag(j.Left)
+	if err != nil {
+		return err
+	}
+	rightSub, err := e.subqueryFrag(j.Right)
+	if err != nil {
+		return err
+	}
+
+	rightProj := structuralProjectionFrags(j, "R")
+	leftProj := structuralProjectionFrags(j, "L")
+
+	onEq := func(b *Builder) {
+		spanIDPairFrag("L", j.TraceIDColumn, "R", j.TraceIDColumn)(b)
+		b.writeSQL(" AND ")
+		spanIDPairFrag("L", j.ParentSpanIDColumn, "R", j.ParentSpanIDColumn)(b)
+	}
+	distinctSpan := func(b *Builder) {
+		writeSideCol(b, "L", j.SpanIDColumn)
+		b.writeSQL(" != ")
+		writeSideCol(b, "R", j.SpanIDColumn)
+	}
+
+	switch {
+	case j.Op.IsNegated():
+		// Aggregate L per (TraceId, ParentSpanId): how many L spans the
+		// group holds and which span ids they are.
+		aggL := NewQuery().
+			Select(
+				Col(j.TraceIDColumn),
+				Col(j.ParentSpanIDColumn),
+				func(b *Builder) { b.writeSQL("count() AS _l_cnt") },
+				func(b *Builder) {
+					b.writeSQL("groupUniqArray(")
+					b.Ident(j.SpanIDColumn)
+					b.writeSQL(") AS _l_span_ids")
+				},
+			).
+			From(aliasedFrag(leftSub, "_l")).
+			GroupBy(Col(j.TraceIDColumn), Col(j.ParentSpanIDColumn))
+		sb := NewQuery().
+			Select(rightProj...).
+			From(aliasedFrag(rightSub, "R")).
+			Join(LeftJoin, aliasedFrag(aggL.Frag(), "L"), onEq).
+			Where(func(b *Builder) {
+				b.writeSQL("(L._l_cnt - has(L._l_span_ids, ")
+				writeSideCol(b, "R", j.SpanIDColumn)
+				b.writeSQL(")) = 0")
+			})
+		e.emitSelect(sb)
+		return nil
+	case j.Op.IsUnion():
+		rightArm := NewQuery().
+			Select(rightProj...).
+			From(aliasedFrag(leftSub, "L")).
+			Join(InnerJoin, aliasedFrag(rightSub, "R"), onEq).
+			Where(distinctSpan)
+		leftArm := NewQuery().
+			Select(leftProj...).
+			From(aliasedFrag(leftSub, "L")).
+			Join(InnerJoin, aliasedFrag(rightSub, "R"), onEq).
+			Where(distinctSpan)
+		b := NewBuilder()
+		UnionDistinct(rightArm.Frag(), leftArm.Frag())(b)
+		e.splice(b)
+		return nil
+	default:
+		sb := NewQuery().
+			Select(rightProj...).
+			From(aliasedFrag(leftSub, "L")).
+			Join(InnerJoin, aliasedFrag(rightSub, "R"), onEq).
+			Where(distinctSpan)
 		e.emitSelect(sb)
 		return nil
 	}
@@ -231,18 +342,10 @@ func structuralDirectRelFrag(j *chplan.StructuralJoin) (Frag, error) {
 	case chplan.StructuralParent:
 		// `A < B`: L.ParentSpanID = R.SpanID.
 		return spanIDPairFrag("L", j.ParentSpanIDColumn, "R", j.SpanIDColumn), nil
-	case chplan.StructuralSibling:
-		// `A ~ B`: same trace, same parent, distinct spans. The
-		// distinct-span clause keeps a row from matching itself
-		// when both sides of the spanset select the same span.
-		return func(b *Builder) {
-			spanIDPairFrag("L", j.ParentSpanIDColumn, "R", j.ParentSpanIDColumn)(b)
-			b.writeSQL(" AND ")
-			writeSideCol(b, "L", j.SpanIDColumn)
-			b.writeSQL(" != ")
-			writeSideCol(b, "R", j.SpanIDColumn)
-		}, nil
 	default:
+		// StructuralSibling never reaches here — the sibling family
+		// routes through emitStructuralSiblingJoin (its distinct-span
+		// inequality cannot live inside JOIN ON).
 		return nil, fmt.Errorf("%w: direct structural op %q", ErrUnsupported, j.Op)
 	}
 }
@@ -341,10 +444,17 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 		return err
 	}
 
-	// Anchor: SELECT TraceId, SpanId, ParentSpanId, 0 AS _depth FROM (<L>) AS _seed.
+	// Anchor: SELECT DISTINCT TraceId, SpanId, ParentSpanId, 0 AS _depth
+	// FROM (<L>) AS _seed. DISTINCT on both CTE arms keeps the closure
+	// linear in the number of UNIQUE spans: duplicate span rows (OTLP
+	// retries, rolling re-seeds) otherwise multiply at every recursion
+	// level — dup^depth rows — and a 4-deep walk over a table with a
+	// few hundred copies per span blows straight through the per-query
+	// memory cap. Within one iteration every row carries the same
+	// _depth, so the DISTINCT collapses exact duplicates only.
 	anchor := NewQuery().
 		Select(
-			Col(j.TraceIDColumn),
+			Distinct(Col(j.TraceIDColumn)),
 			Col(j.SpanIDColumn),
 			Col(j.ParentSpanIDColumn),
 			verbatim("0 AS _depth"),
@@ -359,7 +469,7 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 	}
 	step := NewQuery().
 		Select(
-			qualColFrag("t", j.TraceIDColumn),
+			Distinct(qualColFrag("t", j.TraceIDColumn)),
 			qualColFrag("t", j.SpanIDColumn),
 			qualColFrag("t", j.ParentSpanIDColumn),
 			verbatim("c._depth + 1"),
@@ -471,9 +581,11 @@ func buildStructuralInverseClosure(j *chplan.StructuralJoin, rightSub Frag, tabl
 		return nil, fmt.Errorf("%w: union recursive structural op %q", ErrUnsupported, j.Op)
 	}
 
+	// DISTINCT on both arms — same duplicate-row containment as the
+	// canonical closure (see emitStructuralRecursive).
 	anchor := NewQuery().
 		Select(
-			Col(j.TraceIDColumn),
+			Distinct(Col(j.TraceIDColumn)),
 			Col(j.SpanIDColumn),
 			Col(j.ParentSpanIDColumn),
 			verbatim("0 AS _depth"),
@@ -487,7 +599,7 @@ func buildStructuralInverseClosure(j *chplan.StructuralJoin, rightSub Frag, tabl
 	}
 	step := NewQuery().
 		Select(
-			qualColFrag("t", j.TraceIDColumn),
+			Distinct(qualColFrag("t", j.TraceIDColumn)),
 			qualColFrag("t", j.SpanIDColumn),
 			qualColFrag("t", j.ParentSpanIDColumn),
 			verbatim("c._depth + 1"),

@@ -417,6 +417,12 @@ func printExpr(e chplan.Expr) string {
 		}
 		return fmt.Sprintf("lineContent(%s, %q, %s)", printExpr(v.Source), v.Pattern, flags)
 	case *chplan.NestedArrayExists:
+		if v.Key == "" {
+			// Direct-subfield comparison (nested intrinsics like
+			// event:name → Events.Name) — no map-key lookup.
+			return fmt.Sprintf("nestedArrayExists(%s.%s %s %s)",
+				v.Column, v.SubField, v.Op, printExpr(v.Value))
+		}
 		return fmt.Sprintf("nestedArrayExists(%s.%s[%q] %s %s)",
 			v.Column, v.SubField, v.Key, v.Op, printExpr(v.Value))
 	case *chplan.Lambda:

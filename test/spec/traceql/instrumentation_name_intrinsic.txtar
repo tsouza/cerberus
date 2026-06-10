@@ -1,0 +1,19 @@
+-- query.traceql --
+{ instrumentation:name = "showcase-instrumentation" }
+-- sql --
+SELECT * FROM `otel_traces` WHERE (`ScopeName` = ?)
+-- args --
+[0] string = "showcase-instrumentation"
+-- seed --
+CREATE TABLE otel_traces (
+    _idx UInt64,
+    ScopeName String MATERIALIZED if(_idx = 0, 'showcase-instrumentation', 'other-scope')
+) ENGINE = MergeTree ORDER BY _idx;
+INSERT INTO otel_traces (_idx) VALUES (0), (1);
+-- expected_rows --
+[
+  [0]
+]
+-- chplan --
+Filter predicate=(ScopeName = "showcase-instrumentation")
+  Scan(otel_traces)

@@ -98,10 +98,25 @@ func (h *Handler) handleMetricsQueryInstant(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	metrics, ok := unwrapMetricsAggregate(plan)
+	// Second-stage transforms (`| topk(N)` / `| bottomk(N)` / `| > N`)
+	// wrap the aggregate — peel them off so the RangeWindow wraps the
+	// aggregate itself, then re-apply around the windowed result. The
+	// instant path passes no PartitionBy: a single anchor means a
+	// single global selection (`ORDER BY Value LIMIT K`), matching
+	// Tempo's translateQueryRangeToInstant collapse.
+	stages, inner := peelMetricsSecondStages(plan)
+	metrics, ok := unwrapMetricsAggregate(inner)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "", "",
 			fmt.Errorf("query %q is not a TraceQL metrics-pipeline expression — /api/metrics/query requires `| rate()`, `| count_over_time()`, `| *_over_time(...)` or `| quantile_over_time(...)`", q))
+		return
+	}
+	if len(stages) > 0 && metrics.Op == chplan.MetricsOpQuantileOverTime {
+		// Same boundary as handleMetricsQueryRange: quantiles fold from
+		// bucket rows Go-side, after SQL — a SQL-side rank/threshold
+		// would operate on bucket counts, not quantile values.
+		writeError(w, http.StatusUnprocessableEntity, "", "",
+			fmt.Errorf("traceql: second-stage %s over quantile_over_time is unsupported — quantiles are computed from bucket rows after SQL execution", stages[0].Op))
 		return
 	}
 
@@ -119,14 +134,14 @@ func (h *Handler) handleMetricsQueryInstant(w http.ResponseWriter, r *http.Reque
 	// (Start - Range, End] = (start, end], so partition pruning is
 	// unaffected.
 	rw := &chplan.RangeWindow{
-		Input:           plan,
+		Input:           inner,
 		Range:           step,
 		Step:            step,
 		Start:           end,
 		End:             end,
 		TimestampColumn: h.Schema.TimestampColumn,
 	}
-	wrapped := wrapMetricsForSample(rw, metrics)
+	wrapped := wrapMetricsForSample(applyMetricsSecondStages(rw, stages, nil), metrics)
 
 	res, qerr := h.Engine.QueryPlan(ctx, metricsLang{}, wrapped, engine.Meta{
 		IsMetric:      true,

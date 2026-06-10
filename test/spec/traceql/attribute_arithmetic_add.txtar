@@ -1,7 +1,7 @@
 -- query.traceql --
 { .a + .b > 10 }
 -- sql --
-SELECT * FROM `otel_traces` WHERE ((toFloat64(`SpanAttributes`[?]) + toFloat64(`SpanAttributes`[?])) > ?)
+SELECT * FROM `otel_traces` WHERE ((toFloat64OrNull(`SpanAttributes`[?]) + toFloat64OrNull(`SpanAttributes`[?])) > ?)
 -- args --
 [0] string = "a"
 [1] string = "b"
@@ -17,5 +17,5 @@ INSERT INTO otel_traces (_idx) VALUES (0), (1);
   [0]
 ]
 -- chplan --
-Filter predicate=((toFloat64(SpanAttributes["a"]) + toFloat64(SpanAttributes["b"])) > 10)
+Filter predicate=((toFloat64OrNull(SpanAttributes["a"]) + toFloat64OrNull(SpanAttributes["b"])) > 10)
   Scan(otel_traces)
