@@ -820,10 +820,18 @@ func TestRangeAggregationGroupByEmitsLabelKeyAndValuePairs(t *testing.T) {
 		t.Fatalf("fixture invalid: Grouping=%v Groups=%v", ra.Grouping, ra.Grouping)
 	}
 
-	got, err := rangeAggregationGroupBy(ra, s)
+	got, err := rangeAggregationGroupBy(ra, s, &chplan.ColumnRef{Name: s.ResourceAttributesColumn})
 	if err != nil {
 		t.Fatalf("rangeAggregationGroupBy: %v", err)
 	}
+	assertRangeGroupByMapShape(t, got, ra)
+}
+
+// assertRangeGroupByMapShape pins the 2-args-per-label `map(...)` shape
+// for the explicit `by (...)` grouping path. Split out so the `by` and
+// `without` tests share the structural assertion.
+func assertRangeGroupByMapShape(t *testing.T, got chplan.Expr, ra *syntax.RangeAggregationExpr) {
+	t.Helper()
 	fc, ok := got.(*chplan.FuncCall)
 	if !ok {
 		t.Fatalf("rangeAggregationGroupBy -> %T, want *chplan.FuncCall", got)
@@ -865,5 +873,66 @@ func TestRangeAggregationGroupByEmitsLabelKeyAndValuePairs(t *testing.T) {
 		if _, isLit := fc.Args[valIdx].(*chplan.LitString); isLit {
 			t.Errorf("arg[%d] is a *chplan.LitString — expected a value expression for label %q", valIdx, label)
 		}
+	}
+}
+
+// TestRangeAggregationGroupByWithoutStripsFromIdentityBase pins the
+// `without (...)` grouping contract: the exclusion strips keys from the
+// FULL series identity the caller passes in (identityBase — the
+// parser-merged labelset minus the unwrap target), wrapped with the
+// synthesized detected_level key, NOT from the raw ResourceAttributes
+// column. Grouping `without (pod)` against raw ResourceAttributes
+// silently drops every parser-extracted label from the series identity
+// — the loki-compat `exhaustive/aggregations.yaml#Max avg duration by
+// level without service_name` failure, where the enclosing
+// `max by (level)` collapsed a 4-level matrix into one empty-level
+// series.
+func TestRangeAggregationGroupByWithoutStripsFromIdentityBase(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelLogs()
+
+	query := `avg_over_time({app="api"} | logfmt | unwrap latency [5m]) without (pod)`
+	expr, err := syntax.ParseExpr(query)
+	if err != nil {
+		t.Fatalf("ParseExpr(%q): %v", query, err)
+	}
+	ra, ok := expr.(*syntax.RangeAggregationExpr)
+	if !ok {
+		t.Fatalf("ParseExpr(%q) -> %T, want *syntax.RangeAggregationExpr", query, expr)
+	}
+	if ra.Grouping == nil || !ra.Grouping.Without {
+		t.Fatalf("fixture invalid: Grouping=%v", ra.Grouping)
+	}
+
+	// The identityBase stand-in mirrors the unwrap+parser path: the
+	// materialised merged-labels column minus the unwrap target.
+	identityBase := &chplan.MapWithoutKeys{
+		Map:  &chplan.ColumnRef{Name: "_logql_merged_labels"},
+		Keys: []string{"latency"},
+	}
+	got, err := rangeAggregationGroupBy(ra, s, identityBase)
+	if err != nil {
+		t.Fatalf("rangeAggregationGroupBy: %v", err)
+	}
+
+	mwk, ok := got.(*chplan.MapWithoutKeys)
+	if !ok {
+		t.Fatalf("rangeAggregationGroupBy -> %T, want *chplan.MapWithoutKeys", got)
+	}
+	if len(mwk.Keys) != 1 || mwk.Keys[0] != "pod" {
+		t.Errorf("MapWithoutKeys.Keys = %v, want [pod]", mwk.Keys)
+	}
+
+	// The stripped map MUST be the detected_level-wrapped identityBase
+	// (a mapConcat FuncCall whose first arg is identityBase), so the
+	// parser-extracted labels survive into the series identity and an
+	// enclosing `by (level)` still resolves the severity dimension.
+	wrap, ok := mwk.Map.(*chplan.FuncCall)
+	if !ok || wrap.Name != "mapConcat" {
+		t.Fatalf("MapWithoutKeys.Map = %T (%v), want mapConcat FuncCall wrapping identityBase", mwk.Map, mwk.Map)
+	}
+	if len(wrap.Args) == 0 || !wrap.Args[0].Equal(identityBase) {
+		t.Errorf("mapConcat first arg != identityBase — `without` is not stripping from the full series identity")
 	}
 }

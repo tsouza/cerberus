@@ -11,6 +11,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/grafana/loki/v3/pkg/logproto"
+	"github.com/grafana/loki/v3/pkg/logql/syntax"
 )
 
 // QueryDirection specifies which direction(s) to run a log query
@@ -203,13 +204,26 @@ func (r *QueryRegistry) loadFile(filePath string, suite Suite, fileName string) 
 		}
 		q.Source = fmt.Sprintf("%s/%s:%d", suite, fileName, lineNum)
 
+		// Default kind BEFORE directions. [cerberus patch, diverges from
+		// the upstream v3.7.0 snapshot — see upstream/loki-bench/VERSION]
+		// Upstream defaults Directions first (gated on `q.Kind == "log"`)
+		// and only then defaults an empty Kind to "log". A definition
+		// that declares neither `kind` nor `directions` therefore ends
+		// up with Kind="log" but Directions="" — and ExpandQuery's
+		// direction switch matches no case, expanding the definition to
+		// ZERO test cases. Eight metric-shaped definitions in
+		// exhaustive/aggregations.yaml hit exactly that and silently
+		// vanished from the corpus. Instead of blindly defaulting to
+		// "log" (the schema.json default), infer the kind from the query
+		// shape, mirroring TestCase.Kind(): metric queries must expand to
+		// a single forward case carrying the step.
+		if q.Kind != "metric" && q.Kind != "log" {
+			q.Kind = inferQueryKind(q.Query)
+		}
+
 		// Default directions to "both" for log queries
 		if q.Directions == "" && q.Kind == "log" {
 			q.Directions = DirectionBoth
-		}
-
-		if q.Kind == "" || (q.Kind != "metric" && q.Kind != "log") {
-			q.Kind = "log"
 		}
 
 		// Validate time range
@@ -234,6 +248,34 @@ func (r *QueryRegistry) loadFile(filePath string, suite Suite, fileName string) 
 	}
 
 	return queryFile.Queries, nil
+}
+
+// queryKindPlaceholders substitutes the corpus's template placeholders
+// with syntactically valid LogQL fragments so a still-templated query
+// can be parsed for kind inference before variable resolution happens.
+// The dummy values never reach the wire — they exist only to make
+// syntax.ParseExpr accept the query shape.
+var queryKindPlaceholders = strings.NewReplacer(
+	"${SELECTOR}", `{placeholder="x"}`,
+	"${RANGE}", "5m",
+	"${LABEL_NAME}", "placeholder",
+	"${LABEL_VALUE}", "x",
+)
+
+// inferQueryKind classifies a query definition as "metric" or "log" by
+// parsing the placeholder-substituted query, mirroring TestCase.Kind()
+// (which runs the same SampleExpr check on the resolved query). Falls
+// back to "log" — the schema.json default — when the query does not
+// parse even after substitution.
+func inferQueryKind(query string) string {
+	expr, err := syntax.ParseExpr(queryKindPlaceholders.Replace(query))
+	if err != nil {
+		return "log"
+	}
+	if _, ok := expr.(syntax.SampleExpr); ok {
+		return "metric"
+	}
+	return "log"
 }
 
 // extractQueryLineNumbers extracts line numbers for each query in the YAML
@@ -362,7 +404,8 @@ func (r *QueryRegistry) ExpandQuery(def QueryDefinition, resolver VariableResolv
 				Tags:      def.Tags,
 			})
 		case DirectionBoth:
-			cases = append(cases,
+			cases = append(
+				cases,
 				TestCase{
 					Query:     resolvedQuery,
 					Start:     start,

@@ -252,6 +252,26 @@ var plans = map[string]chplan.Node{
 		},
 	},
 
+	// MapWithoutKeys with ZERO keys: LogQL `max without () (...)` /
+	// PromQL `sum without() (...)`. Stripping nothing is the identity —
+	// the emitter must render the bare map, never a degenerate
+	// `mapFilter((k, v) -> NOT (k IN ()), ...)` (ClickHouse rejects the
+	// empty IN list with "Function 'in' is supported only if second
+	// argument is constant or table expression" — loki-compat
+	// exhaustive/aggregations.yaml#Max sum without grouping modifier).
+	"aggregate_sum_without_empty": &chplan.Aggregate{
+		Input: &chplan.Scan{Table: "otel_metrics_gauge"},
+		GroupBy: []chplan.Expr{
+			&chplan.MapWithoutKeys{
+				Map:  &chplan.ColumnRef{Name: "Attributes"},
+				Keys: nil,
+			},
+		},
+		AggFuncs: []chplan.AggFunc{
+			{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "total"},
+		},
+	},
+
 	// Aggregate with parameterised CH aggregate: quantile(0.95)(value).
 	"aggregate_quantile_param": &chplan.Aggregate{
 		Input: &chplan.Scan{Table: "otel_metrics_gauge"},
