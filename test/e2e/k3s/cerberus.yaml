@@ -29,6 +29,15 @@ data:
   # (zero-collector binary).
   CERBERUS_OTLP_ENDPOINT: "otel-collector-gateway.cerberus.svc:4317"
   CERBERUS_OTLP_INSECURE: "true"
+  # Per-query sample budget (Prometheus --query.max-samples parity).
+  # 5M samples × the cursor's interned per-row overhead sits
+  # comfortably inside the 1Gi pod limit below; the binary default
+  # (50M) mirrors Prometheus but assumes Prom's ~16-byte in-memory
+  # samples, which cerberus rows (label-map-carrying) are not. A
+  # query that crosses the budget gets the upstream-parity 422
+  # errorType=execution rejection instead of OOMKilling the pod —
+  # the query-of-death loop from run 27269987620.
+  CERBERUS_QUERY_MAX_SAMPLES: "5000000"
 ---
 apiVersion: v1
 kind: Service
@@ -83,12 +92,19 @@ spec:
                 name: cerberus-config
           env:
             # Go's GC doesn't see cgroup limits — GOMEMLIMIT keeps heap
-            # pressure below the 512Mi ceiling so allocation bursts from
+            # pressure below the 1Gi ceiling so allocation bursts from
             # the heavy auto-discovered Playwright specs trigger GC
-            # instead of the OOM killer; evidence run 27263112345
-            # (cerberus pods OOMKilled exit 137 at the old 256Mi limit).
+            # instead of the OOM killer. Evidence: run 27263112345
+            # (OOMKilled exit 137 at 256Mi), then run 27269987620
+            # superseding it — STILL OOMKilled at 512Mi/400MiB within
+            # ~30s of start during the iterate-time-ranges (range,
+            # step) matrix sweep, and again immediately on retry (a
+            # query-of-death loop). The real demand is bounded by the
+            # cursor's label-map interning + the CERBERUS_QUERY_MAX_
+            # SAMPLES budget in the ConfigMap above; 800MiB/1Gi gives
+            # the bounded workload honest headroom.
             - name: GOMEMLIMIT
-              value: 400MiB
+              value: 800MiB
           resources:
             requests:
               # 250m so the scheduler weights cerberus fairly against
@@ -98,13 +114,18 @@ spec:
               cpu: 250m
               memory: 128Mi
             limits:
-              # 512Mi (was 256Mi): the Playwright dashboard sweep's
-              # matrix specs buffer full query_range matrices per
-              # request; run 27263112345 OOMKilled cerberus (exit 137)
-              # at 256Mi while compose-side peak for light specs is
-              # only ~73MiB. Paired with GOMEMLIMIT=400MiB above so the
-              # Go heap backs off well before this ceiling.
-              memory: 512Mi
+              # 1Gi (was 512Mi, was 256Mi): the Playwright dashboard
+              # sweep's matrix specs buffer full query_range matrices
+              # per request. Run 27263112345 OOMKilled cerberus (exit
+              # 137) at 256Mi; run 27269987620 (superseding) OOMKilled
+              # again at 512Mi + GOMEMLIMIT=400MiB during the
+              # iterate-time-ranges sweep. The fix is two-sided: the
+              # chclient cursor now interns per-series label maps and
+              # enforces CERBERUS_QUERY_MAX_SAMPLES (ConfigMap above),
+              # and this limit right-sizes the pod for the bounded
+              # demand. Paired with GOMEMLIMIT=800MiB above so the Go
+              # heap backs off well before this ceiling.
+              memory: 1Gi
           # /readyz pings ClickHouse (with a small TTL cache so this
           # probe doesn't hammer CH) and reports the auto-create-schema
           # invariant. A failure removes the pod from the Service

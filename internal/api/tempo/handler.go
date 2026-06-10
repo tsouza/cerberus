@@ -287,6 +287,13 @@ func classifySearchErr(err error) int {
 	switch {
 	case errors.Is(err, chclient.ErrCircuitOpen):
 		return http.StatusServiceUnavailable
+	// Sample-budget exceedance (CERBERUS_QUERY_MAX_SAMPLES) is an
+	// over-broad query, not a transport failure — surface 422 like the
+	// other "query is valid TraceQL but cannot be evaluated" rejections
+	// instead of a breaker-adjacent 5xx. The error body carries the
+	// chclient budget message including the configured limit.
+	case errors.Is(err, chclient.ErrTooManySamples):
+		return http.StatusUnprocessableEntity
 	case errors.Is(err, errParseStage):
 		return http.StatusBadRequest
 	case errors.Is(err, errLowerStage):
@@ -451,6 +458,11 @@ func classifyTraceByIDErr(err error) int {
 	}
 	if errors.Is(err, chclient.ErrCircuitOpen) {
 		return http.StatusServiceUnavailable
+	}
+	// Sample-budget exceedance → 422, mirroring classifySearchErr; see
+	// the rationale there.
+	if errors.Is(err, chclient.ErrTooManySamples) {
+		return http.StatusUnprocessableEntity
 	}
 	if strings.Contains(err.Error(), "engine: execute:") {
 		return http.StatusBadGateway

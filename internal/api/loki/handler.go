@@ -3,6 +3,7 @@ package loki
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"runtime"
@@ -367,6 +368,23 @@ func classifyEngineErr(err error) error {
 			Err:               err,
 			Status:            http.StatusServiceUnavailable,
 			RetryAfterSeconds: 5,
+		}
+	}
+	// Sample-budget exceedance: the per-query CERBERUS_QUERY_MAX_SAMPLES
+	// cap aborted the result-set drain inside chclient. Surface it the
+	// way upstream Loki reports query-limit violations — HTTP 400 with a
+	// "maximum ... reached for a single query" message — NOT a 5xx: the
+	// query is over-broad, ClickHouse is healthy (the breaker never sees
+	// drain errors, see chclient.QueryCursor).
+	var tooMany *chclient.TooManySamplesError
+	if errors.As(err, &tooMany) {
+		return &apiError{
+			Kind: ErrBadData,
+			Err: fmt.Errorf(
+				"maximum number of samples (%d) reached for a single query; consider reducing the query range or resolution",
+				tooMany.Limit,
+			),
+			Status: http.StatusBadRequest,
 		}
 	}
 	var apiErr *apiError

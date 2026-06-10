@@ -331,7 +331,7 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 
 	result, err := matrixFromCursor(cursor, start, end, step)
 	if err != nil {
-		h.respondError(w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway})
+		h.respondError(w, classifyDrainError(err))
 		return
 	}
 	writeEngineHeaders(w, hdr)
@@ -477,6 +477,41 @@ func writeEngineHeaders(w http.ResponseWriter, hdr map[string]string) {
 	}
 }
 
+// promMaxSamplesMessage is upstream Prometheus's exact wire message for
+// a query that crosses --query.max-samples: the promql engine raises
+// ErrTooManySamples(env) with env = "query execution" (see
+// promql/engine.go in the pinned tsouza/prometheus fork), and the v1
+// API maps it to HTTP 422 errorType=execution. Cerberus mirrors the
+// message verbatim so clients that already parse Prom's budget
+// rejection see identical behaviour.
+const promMaxSamplesMessage = "query processing would load too many samples into memory in query execution"
+
+// tooManySamplesAPIError is the Prometheus-parity rejection for a
+// sample-budget exceedance: HTTP 422, errorType "execution",
+// upstream's exact wire message. Shared by classifyEngineError (eager
+// drain inside engine.Query) and classifyDrainError (handler-side
+// cursor drain).
+func tooManySamplesAPIError() *apiError {
+	return &apiError{
+		Kind:   ErrExecution,
+		Err:    errors.New(promMaxSamplesMessage),
+		Status: http.StatusUnprocessableEntity,
+	}
+}
+
+// classifyDrainError maps errors surfaced while draining a query_range
+// cursor (matrixFromCursor → cursor.Err()). The sample-budget sentinel
+// becomes the Prometheus-parity 422; everything else keeps the
+// transport-failure 502 shape. Budget errors occur AFTER the cursor
+// open succeeded, so they are never recorded against the chclient
+// circuit breaker — this mapping is purely a wire-shape concern.
+func classifyDrainError(err error) error {
+	if errors.Is(err, chclient.ErrTooManySamples) {
+		return tooManySamplesAPIError()
+	}
+	return &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
+}
+
 // classifyEngineError maps engine.Query / engine.QueryCursor errors to
 // the per-stage apiError shape the Prom handler exposes via
 // respondError. The engine wraps each stage's error with an
@@ -500,6 +535,13 @@ func classifyEngineError(err error) error {
 			Status:            http.StatusServiceUnavailable,
 			RetryAfterSeconds: 5,
 		}
+	}
+	// Sample-budget exceedance (instant path: engine.Query drains the
+	// cursor inside chclient.Client.Query, so the sentinel arrives
+	// wrapped as `engine: execute: ...`). Prometheus parity: 422
+	// errorType=execution with the upstream wire message.
+	if errors.Is(err, chclient.ErrTooManySamples) {
+		return tooManySamplesAPIError()
 	}
 	var ps *parseStageError
 	if errors.As(err, &ps) {

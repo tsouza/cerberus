@@ -86,6 +86,14 @@ type Config struct {
 
 	// DialTimeout caps the initial connection dial. Zero falls back to 5s.
 	DialTimeout time.Duration
+
+	// MaxQuerySamples caps the number of Sample rows a single query may
+	// load into memory. When a cursor drain crosses the budget,
+	// iteration aborts and Cursor.Err() returns a *TooManySamplesError
+	// (errors.Is ErrTooManySamples). 0 disables the budget. Mirrors
+	// upstream Prometheus's --query.max-samples knob; cmd/cerberus
+	// wires it from CERBERUS_QUERY_MAX_SAMPLES.
+	MaxQuerySamples int64
 }
 
 // Client is a stateless wrapper over a clickhouse-go/v2 connection pool.
@@ -101,6 +109,10 @@ type Client struct {
 	conn driver.Conn
 	addr string // CH addr (host:port) — stamped on execute spans as server.address
 	br   breaker
+	// maxSamples is Config.MaxQuerySamples, threaded into every cursor
+	// QueryCursor opens (and therefore into Query, which drains a
+	// cursor). 0 = unlimited.
+	maxSamples int64
 }
 
 // New opens a connection pool to ClickHouse and pings it once to confirm
@@ -127,7 +139,7 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 	if err := conn.Ping(pingCtx); err != nil {
 		return nil, fmt.Errorf("chclient: ping %s: %w", cfg.Addr, err)
 	}
-	return &Client{conn: conn, addr: cfg.Addr}, nil
+	return &Client{conn: conn, addr: cfg.Addr, maxSamples: cfg.MaxQuerySamples}, nil
 }
 
 // Conn returns the underlying clickhouse-go/v2 driver connection. It is
@@ -189,6 +201,14 @@ func (c *Client) Ping(ctx context.Context) error {
 
 // Sample is one row of metrics data returned by Query. It's the shape the
 // /api/v1/query and /api/v1/query_range handlers expect — see api/prom.
+//
+// Labels sharing contract: the cursor interns decoded label maps by
+// canonical key, so every Sample belonging to the same series carries
+// the SAME map instance — that is what keeps a multi-thousand-row
+// matrix drain at one retained map per series instead of one per row.
+// Consumers MUST treat Labels as read-only; copy before mutating
+// (internal/api/format.WithMetricName / NormalizeLabelMap and the
+// loki/tempo label pivots already allocate fresh output maps).
 type Sample struct {
 	MetricName string
 	Labels     map[string]string

@@ -2,12 +2,45 @@ package chclient
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sort"
 	"sync"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"go.opentelemetry.io/otel/trace"
 )
+
+// ErrTooManySamples is the sentinel matched (via errors.Is) when a
+// cursor's iteration crosses the per-query sample budget configured by
+// Config.MaxQuerySamples. It mirrors upstream Prometheus's
+// promql.ErrTooManySamples contract: the query is aborted instead of
+// materialising an unbounded result set in process memory.
+//
+// The concrete error a Cursor's Err() returns is *TooManySamplesError,
+// which wraps this sentinel and carries the configured limit.
+//
+// Budget exceedance is an iteration error, not a transport failure: it
+// surfaces via cursor.Err() AFTER QueryCursor's open call already
+// recorded success against the circuit breaker, so it never counts as
+// a CH failure (see the breaker note on QueryCursor).
+var ErrTooManySamples = errors.New("query sample budget exceeded")
+
+// TooManySamplesError is the concrete error returned by Cursor.Err()
+// when iteration crosses the configured per-query sample budget. It
+// wraps [ErrTooManySamples] (errors.Is matches) and carries the limit
+// so API handlers can render head-idiomatic over-limit messages.
+type TooManySamplesError struct {
+	// Limit is the configured per-query sample budget that iteration
+	// crossed.
+	Limit int64
+}
+
+func (e *TooManySamplesError) Error() string {
+	return fmt.Sprintf("chclient: query sample budget exceeded: result set exceeds %d samples", e.Limit)
+}
+
+func (e *TooManySamplesError) Unwrap() error { return ErrTooManySamples }
 
 // Cursor is a forward-only iterator over a Sample result set. Use it to
 // stream rows out of ClickHouse without materialising the full slice in
@@ -36,6 +69,22 @@ type rowsCursor struct {
 	rows driver.Rows
 	cur  Sample
 	err  error
+	// maxSamples is the per-query sample budget (0 = unlimited). When
+	// iteration crosses it, Next returns false and Err yields a
+	// *TooManySamplesError wrapping ErrTooManySamples.
+	maxSamples int64
+	// seen counts rows successfully decoded so far, compared against
+	// maxSamples after each scan.
+	seen int64
+	// interned caches decoded label maps keyed by their canonical
+	// serialised form so all rows of one series share a single map
+	// instance. A long-window matrix query returns thousands of rows
+	// per series, each carrying an identical label set; without
+	// interning every row retains its own map (header + N string
+	// pairs), which is exactly the per-row overhead that OOMKilled the
+	// k3d e2e pods (run 27269987620). Consumers MUST treat
+	// Sample.Labels as read-only — see the contract on [Sample].
+	interned map[string]map[string]string
 	// span is the `execute` pipeline-stage span opened by QueryCursor.
 	// Held by the cursor (rather than closed when QueryCursor returns)
 	// so that row decode + CH wire transit are billed to the execute
@@ -73,9 +122,61 @@ func (c *rowsCursor) Next() bool {
 		c.err = fmt.Errorf("chclient: scan: %w", err)
 		return false
 	}
-	s.Labels = labels
+	c.seen++
+	if c.maxSamples > 0 && c.seen > c.maxSamples {
+		c.err = &TooManySamplesError{Limit: c.maxSamples}
+		return false
+	}
+	s.Labels = c.internLabels(labels)
 	c.cur = s
 	return true
+}
+
+// internLabels returns the canonical shared map instance for the
+// decoded label set: the first occurrence of a label set is cached
+// under its canonical key, and every later row with the same set
+// returns that exact map. The freshly decoded duplicate becomes
+// short-lived garbage; what matters is that the RETAINED set (the
+// samples a handler buffers while pivoting a matrix response) holds
+// one map per series instead of one map per row.
+func (c *rowsCursor) internLabels(labels map[string]string) map[string]string {
+	if labels == nil {
+		return nil
+	}
+	key := canonicalLabelKey(labels)
+	if cached, ok := c.interned[key]; ok {
+		return cached
+	}
+	if c.interned == nil {
+		c.interned = make(map[string]map[string]string)
+	}
+	c.interned[key] = labels
+	return labels
+}
+
+// canonicalLabelKey is a deterministic string form of a label set:
+// keys sorted ASCII-ascending, pairs joined as "k=v\x00" so two
+// distinct label sets cannot alias. Mirrors the canonical-key shape
+// the API layer uses for series grouping (internal/api/format
+// .CanonicalKey) — duplicated locally because chclient must not
+// import api packages.
+func canonicalLabelKey(labels map[string]string) string {
+	if len(labels) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(labels))
+	for k := range labels {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b []byte
+	for _, k := range keys {
+		b = append(b, k...)
+		b = append(b, '=')
+		b = append(b, labels[k]...)
+		b = append(b, 0)
+	}
+	return string(b)
 }
 
 // Sample returns the row that the most recent Next() call landed on.
@@ -130,12 +231,20 @@ func (c *rowsCursor) Close() error {
 // for long-window `query_range` requests. Callers MUST Close the cursor
 // to return its connection to the pool.
 //
+// When the Client was configured with a positive MaxQuerySamples, the
+// cursor enforces it as a per-query sample budget: crossing it stops
+// iteration and Err() returns a *TooManySamplesError (errors.Is
+// ErrTooManySamples). Mirrors upstream Prometheus's
+// --query.max-samples abort-the-query contract.
+//
 // Guarded by the circuit breaker (see [Client] doc). The breaker
 // observes the open-call outcome only — once the cursor is returned,
 // iteration errors propagate via cursor.Err() but are NOT re-recorded
 // against the breaker. A single failed query is one failure, not N
 // where N is the number of rows the caller drained before hitting the
-// transport drop.
+// transport drop. The same property keeps sample-budget rejections
+// (ErrTooManySamples) out of the breaker's failure count entirely: a
+// client asking for too much data is not a ClickHouse outage.
 func (c *Client) QueryCursor(ctx context.Context, sql string, args ...any) (Cursor, error) {
 	if !c.br.allow() {
 		return nil, fmt.Errorf("chclient: query: %w", ErrCircuitOpen)
@@ -148,5 +257,10 @@ func (c *Client) QueryCursor(ctx context.Context, sql string, args ...any) (Curs
 		span.End()
 		return nil, fmt.Errorf("chclient: query: %w", err)
 	}
-	return &rowsCursor{rows: rows, span: span, rec: recorderFromContext(ctx)}, nil
+	return &rowsCursor{
+		rows:       rows,
+		span:       span,
+		rec:        recorderFromContext(ctx),
+		maxSamples: c.maxSamples,
+	}, nil
 }
