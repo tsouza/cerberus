@@ -81,6 +81,14 @@ spec:
           envFrom:
             - configMapRef:
                 name: cerberus-config
+          env:
+            # Go's GC doesn't see cgroup limits — GOMEMLIMIT keeps heap
+            # pressure below the 512Mi ceiling so allocation bursts from
+            # the heavy auto-discovered Playwright specs trigger GC
+            # instead of the OOM killer; evidence run 27263112345
+            # (cerberus pods OOMKilled exit 137 at the old 256Mi limit).
+            - name: GOMEMLIMIT
+              value: 400MiB
           resources:
             requests:
               # 250m so the scheduler weights cerberus fairly against
@@ -88,9 +96,15 @@ spec:
               # CI node. No CPU limit — bursting is fine; it's the
               # probe kills under starvation that hurt (see below).
               cpu: 250m
-              memory: 64Mi
+              memory: 128Mi
             limits:
-              memory: 256Mi
+              # 512Mi (was 256Mi): the Playwright dashboard sweep's
+              # matrix specs buffer full query_range matrices per
+              # request; run 27263112345 OOMKilled cerberus (exit 137)
+              # at 256Mi while compose-side peak for light specs is
+              # only ~73MiB. Paired with GOMEMLIMIT=400MiB above so the
+              # Go heap backs off well before this ceiling.
+              memory: 512Mi
           # /readyz pings ClickHouse (with a small TTL cache so this
           # probe doesn't hammer CH) and reports the auto-create-schema
           # invariant. A failure removes the pod from the Service
