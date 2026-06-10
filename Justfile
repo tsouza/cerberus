@@ -297,10 +297,25 @@ CERBERUS_IMAGE := "cerberus:e2e"
 # start-up (no pre-pull, no import, full Docker-Hub-flake exposure).
 E2E_EXTERNAL_IMAGES := "clickhouse/clickhouse-server:24.8-alpine ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.116.0 grafana/grafana:12.2.9 otel/opentelemetry-collector-contrib:0.152.1"
 
+# Extra args appended verbatim to `k3d cluster create` in `e2e-up`. Empty by
+# default (CI uses none). Interpolated unquoted, so the value is shell-parsed:
+# wrap any single arg containing shell metacharacters (`<`, `%`, `,`) in
+# single quotes INSIDE the value.
+#
+# The motivating use case is dev hosts low on disk: k3s kubelet's default
+# eviction thresholds (nodefs.available<10%, imagefs.available<15%) taint the
+# node with disk-pressure and nothing schedules. For a throwaway local
+# cluster, disable eviction:
+#
+#   K3D_EXTRA_ARGS="--k3s-arg '--kubelet-arg=eviction-hard=imagefs.available<1%,nodefs.available<1%@server:0'" just e2e-up
+K3D_EXTRA_ARGS := env_var_or_default("K3D_EXTRA_ARGS", "")
+
 # Boot the k3d cluster, build cerberus image, import it, apply manifests, wait for pods.
 # Host ports map via the k3d loadbalancer to NodePorts on the k3s nodes:
 #   host:8080 -> LB -> NodePort 30080 (cerberus svc)
 #   host:3000 -> LB -> NodePort 30030 (grafana svc)
+# The k3d loadbalancer publishes on 0.0.0.0, so both ports are reachable on
+# every host interface (LAN IP included), not just localhost.
 e2e-up: e2e-down
     @echo "==> creating k3d cluster {{K3D_CLUSTER}}"
     k3d cluster create {{K3D_CLUSTER}} \
@@ -308,6 +323,7 @@ e2e-up: e2e-down
         --port "8080:30080@loadbalancer" \
         --no-lb=false \
         --k3s-arg "--disable=traefik@server:0" \
+        {{K3D_EXTRA_ARGS}} \
         --wait
     @echo "==> building cerberus image"
     docker build -t {{CERBERUS_IMAGE}} -f Dockerfile.local .
