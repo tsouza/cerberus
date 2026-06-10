@@ -1,43 +1,45 @@
 -- query.logql --
 label_replace(count_over_time({service_name="api"}[5m]), "newlabel", "$1", "service_name", "(.+)")
 -- args --
-[0] string = "service_name"
-[1] string = "^(.+)$"
-[2] string = "newlabel"
-[3] string = "service_name"
-[4] string = ""
-[5] string = "service_name"
-[6] string = "^(.+)$"
-[7] string = "\\1"
-[8] string = ""
-[9] string = "detected_level"
-[10] string = "trace"
-[11] string = "trc"
+[0] string = ""
+[1] string = "service_name"
+[2] string = "^(.+)$"
+[3] string = "newlabel"
+[4] string = "service_name"
+[5] string = ""
+[6] string = "service_name"
+[7] string = "^(.+)$"
+[8] string = "\\1"
+[9] int64 = 9
+[10] string = ""
+[11] string = "detected_level"
 [12] string = "trace"
-[13] string = "debug"
-[14] string = "dbg"
+[13] string = "trc"
+[14] string = "trace"
 [15] string = "debug"
-[16] string = "info"
-[17] string = "inf"
-[18] string = "information"
-[19] string = "info"
-[20] string = "warn"
-[21] string = "wrn"
-[22] string = "warning"
-[23] string = "warn"
-[24] string = "error"
-[25] string = "err"
+[16] string = "dbg"
+[17] string = "debug"
+[18] string = "info"
+[19] string = "inf"
+[20] string = "information"
+[21] string = "info"
+[22] string = "warn"
+[23] string = "wrn"
+[24] string = "warning"
+[25] string = "warn"
 [26] string = "error"
-[27] string = "critical"
-[28] string = "critical"
-[29] string = "fatal"
-[30] string = "fatal"
-[31] int64 = 1
-[32] string = ""
-[33] string = "service_name"
-[34] string = "service_name"
-[35] string = "service.name"
-[36] string = "api"
+[27] string = "err"
+[28] string = "error"
+[29] string = "critical"
+[30] string = "critical"
+[31] string = "fatal"
+[32] string = "fatal"
+[33] int64 = 1
+[34] string = ""
+[35] string = "service_name"
+[36] string = "service_name"
+[37] string = "service.name"
+[38] string = "api"
 -- seed --
 CREATE TABLE otel_logs (
     Timestamp DateTime64(9),
@@ -52,13 +54,13 @@ INSERT INTO otel_logs (Timestamp, Body, ResourceAttributes) VALUES
     (toDateTime64('2026-01-01 00:00:00', 9), 'c', map('service_name', 'api'));
 -- expected_rows --
 [
-  [{"service_name": "api", "newlabel": "api"}, 3.0]
+  ["", {"newlabel": "api", "service_name": "api"}, "2026-01-01T00:00:01Z", 3]
 ]
 -- chplan --
-Project [labelReplace(ResourceAttributes, dst="newlabel", replacement="\\1", src="service_name", regex="(.+)", emptyReplacement="") AS ResourceAttributes, Value]
+Project ["" AS MetricName, labelReplace(ResourceAttributes, dst="newlabel", replacement="\\1", src="service_name", regex="(.+)", emptyReplacement="") AS Attributes, now64(9) AS TimeUnix, Value AS Value]
   RangeWindow func=count_over_time range=5m0s step=0s ts=Timestamp value=Value groupBy=[ResourceAttributes]
     Project [mapConcat(ResourceAttributes, mapFilter((k, v) -> (v != ""), map("detected_level", multiIf(((lower(SeverityText) = "trace") OR (lower(SeverityText) = "trc")), "trace", ((lower(SeverityText) = "debug") OR (lower(SeverityText) = "dbg")), "debug", (((lower(SeverityText) = "info") OR (lower(SeverityText) = "inf")) OR (lower(SeverityText) = "information")), "info", (((lower(SeverityText) = "warn") OR (lower(SeverityText) = "wrn")) OR (lower(SeverityText) = "warning")), "warn", ((lower(SeverityText) = "error") OR (lower(SeverityText) = "err")), "error", (lower(SeverityText) = "critical"), "critical", (lower(SeverityText) = "fatal"), "fatal", lower(SeverityText))))) AS ResourceAttributes, Timestamp, 1 AS Value]
       Filter predicate=(coalesce(nullIf(ServiceName, ""), if(mapContains(ResourceAttributes, "service_name"), ResourceAttributes["service_name"], ResourceAttributes["service.name"])) = "api")
         Scan(otel_logs)
 -- sql --
-SELECT mapFilter((k, v) -> v != '', if(match(`ResourceAttributes`[?], ?), mapUpdate(`ResourceAttributes`, map(?, if(empty(`ResourceAttributes`[?]), ?, replaceRegexpOne(`ResourceAttributes`[?], ?, ?)))), `ResourceAttributes`)) AS `ResourceAttributes`, `Value` FROM (SELECT `ResourceAttributes`, toFloat64(length(window_vals)) AS `Value` FROM (SELECT `ResourceAttributes`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `ResourceAttributes`, arrayFilter(p -> tupleElement(p, 1) > now64(9) - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= now64(9), series_array) AS `window_pairs` FROM (SELECT `ResourceAttributes`, arraySort(groupArray((`Timestamp`, `Value`))) AS `series_array` FROM (SELECT mapConcat(`ResourceAttributes`, mapFilter((k, v) -> (v != ?), map(?, multiIf(((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (lower(`SeverityText`) = ?), ?, (lower(`SeverityText`) = ?), ?, lower(`SeverityText`))))) AS `ResourceAttributes`, `Timestamp`, ? AS `Value` FROM (SELECT * FROM `otel_logs` WHERE (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?])) = ?))) GROUP BY `ResourceAttributes`))) WHERE length(`window_vals`) >= 1)
+SELECT ? AS `MetricName`, mapFilter((k, v) -> v != '', if(match(`ResourceAttributes`[?], ?), mapUpdate(`ResourceAttributes`, map(?, if(empty(`ResourceAttributes`[?]), ?, replaceRegexpOne(`ResourceAttributes`[?], ?, ?)))), `ResourceAttributes`)) AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `ResourceAttributes`, toFloat64(length(window_vals)) AS `Value` FROM (SELECT `ResourceAttributes`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `ResourceAttributes`, arrayFilter(p -> tupleElement(p, 1) > now64(9) - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= now64(9), series_array) AS `window_pairs` FROM (SELECT `ResourceAttributes`, arraySort(groupArray((`Timestamp`, `Value`))) AS `series_array` FROM (SELECT mapConcat(`ResourceAttributes`, mapFilter((k, v) -> (v != ?), map(?, multiIf(((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (lower(`SeverityText`) = ?), ?, (lower(`SeverityText`) = ?), ?, lower(`SeverityText`))))) AS `ResourceAttributes`, `Timestamp`, ? AS `Value` FROM (SELECT * FROM `otel_logs` WHERE (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?])) = ?))) GROUP BY `ResourceAttributes`))) WHERE length(`window_vals`) >= 1)

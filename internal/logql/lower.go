@@ -1119,6 +1119,14 @@ func lowerLineFilterChain(f *syntax.LineFilterExpr, body chplan.Expr) (chplan.Ex
 }
 
 func lineFilterPart(lf *syntax.LineFilter, body chplan.Expr) (chplan.Expr, error) {
+	if lf.Op == syntax.OpFilterIP {
+		// `|= ip("192.168.0.0/16")` matches lines containing an IP
+		// inside the CIDR / range — NOT lines containing the literal
+		// argument text. Lowering it as a plain LineContent match would
+		// silently return wrong results, so reject loudly until a real
+		// `isIPAddressInRange`-based lowering lands.
+		return nil, fmt.Errorf("logql: line-filter `ip(...)` is not yet supported")
+	}
 	isRegex, negated, err := lineFilterOp(lf.Ty)
 	if err != nil {
 		return nil, err

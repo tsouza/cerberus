@@ -168,13 +168,19 @@ func lowerVectorVector(b *syntax.BinOpExpr, s schema.Logs, op chplan.BinaryOp, r
 	rightShaped := sampleShapeOverLogInner(right, s)
 
 	return &chplan.VectorJoin{
-		Left:             leftShaped,
-		Right:            rightShaped,
-		Op:               op,
-		Match:            match,
-		Card:             card,
-		Include:          include,
-		ReturnBool:       returnBool,
+		Left:       leftShaped,
+		Right:      rightShaped,
+		Op:         op,
+		Match:      match,
+		Card:       card,
+		Include:    include,
+		ReturnBool: returnBool,
+		// Range mode (lc.Step > 0): both legs carry per-anchor rows
+		// (forwarded by sampleShapeOverLogInner), so the join must
+		// step-align — TimestampColumn joins the per-side GROUP BY
+		// and the ON clause, mirroring promql/binary.go. Instant mode
+		// keeps the byte-stable single-timestamp shape.
+		StepAligned:      lc.Step > 0,
 		MetricNameColumn: "MetricName",
 		AttributesColumn: "Attributes",
 		TimestampColumn:  "TimeUnix",
@@ -292,48 +298,74 @@ func isComparison(op chplan.BinaryOp) bool {
 	return false
 }
 
-// projectValueOverLogInner wraps inner with a Project that keeps every
-// other column and replaces only Value with newValue. Mirrors
-// promql/instant_fns.go::projectValueOverInner but for the LogQL shape:
+// logSampleColumns resolves where the canonical Sample columns live in
+// an inner LogQL metric plan's output scope. Shared by every wrap
+// layer that re-projects an inner plan (vector-scalar binops, the
+// vector-join leg shaping, label_replace) and mirrored by
+// [Lang.ProjectSamples] — keeping the resolution in one place is what
+// stops the layers drifting (the pre-#757 drift surfaced as 502
+// `Unknown expression identifier 'anchor_ts' / 'ResourceAttributes'`
+// for every range-mode LogQL binop).
 //
-//   - RangeWindow: only `(ResourceAttributes, Value)` survives —
-//     forward both, replacing Value.
-//   - vector aggregation / synthetic scalar (literal) / Project /
-//     Filter / Scan: forward the LogQL Sample-row equivalent
-//     (MetricName, Attributes, TimeUnix, Value) when those columns are
-//     in scope. We can't statically tell which inner shape we have
-//     past RangeWindow, but the `count_over_time + binop` and
-//     `sum(rate(...)) + binop` cases — the only two well-formed
-//     LogQL shapes in flight — both produce columns the projection
-//     can reach by name.
-func projectValueOverLogInner(inner chplan.Node, s schema.Logs, newValue chplan.Expr) chplan.Node {
-	if _, ok := inner.(*chplan.RangeWindow); ok {
-		return &chplan.Project{
-			Input: inner,
-			Projections: []chplan.Projection{
-				{Expr: &chplan.ColumnRef{Name: s.ResourceAttributesColumn}},
-				{Expr: newValue, Alias: rangeAggSynthValueColumn},
-			},
+//   - Sample-shaped inner ([wrapVectorAggregateForSample] /
+//     [lowerVectorVector] / the wraps below): the canonical columns
+//     exist verbatim — forward MetricName / Attributes / TimeUnix.
+//   - Matrix-shape RangeWindow (range mode): stream identity is the
+//     raw ResourceAttributes column and the per-anchor timestamp is
+//     exposed under [matrixBucketColumn] (`anchor_ts`). Forwarding it
+//     is what keeps one row per step alive through the wrap; the old
+//     `now64(9)` synthesis collapsed the step grid.
+//   - Everything else (instant RangeWindow, the synthetic
+//     literal / vector(n) scalar): only (ResourceAttributes, Value)
+//     are in scope; synthesise `now64(9)` like the instant pipeline
+//     always has.
+type logSampleShape struct {
+	metricName chplan.Expr
+	attrsCol   string
+	timeExpr   chplan.Expr
+}
+
+func logSampleColumns(inner chplan.Node, s schema.Logs) logSampleShape {
+	if isVectorAggregateSampleShape(inner) {
+		return logSampleShape{
+			metricName: &chplan.ColumnRef{Name: "MetricName"},
+			attrsCol:   "Attributes",
+			timeExpr:   &chplan.ColumnRef{Name: "TimeUnix"},
 		}
 	}
-	// Vector-aggregation output (post-wrapVectorAggregateForSample) and
-	// the synthetic literal/vector(...) output expose different
-	// stream-identity columns: a vector aggregation has already been
-	// projected to the canonical (MetricName, Attributes, TimeUnix,
-	// Value) shape — at that point `ResourceAttributes` is gone (the
-	// Aggregate's GROUP BY consumed it) and identity rides under
-	// `Attributes`. lowerLiteral / lowerVector / label_replace keep
-	// only (ResourceAttributes, Value). Pick the right column based on
-	// inner shape — mirrors the same switch sampleShapeOverLogInner
-	// uses (see also Lang.ProjectSamples).
-	attrsCol := s.ResourceAttributesColumn
-	if isVectorAggregateSampleShape(inner) {
-		attrsCol = "Attributes"
+	if isMatrixRangeWindow(inner) {
+		return logSampleShape{
+			metricName: &chplan.LitString{V: ""},
+			attrsCol:   s.ResourceAttributesColumn,
+			timeExpr:   &chplan.ColumnRef{Name: matrixBucketColumn(inner)},
+		}
 	}
+	return logSampleShape{
+		metricName: &chplan.LitString{V: ""},
+		attrsCol:   s.ResourceAttributesColumn,
+		timeExpr:   &chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}},
+	}
+}
+
+// projectValueOverLogInner wraps inner with a Project that re-shapes
+// the row into the canonical Sample contract (MetricName, Attributes,
+// TimeUnix, Value), replacing only Value with newValue. Mirrors
+// promql/instant_fns.go::projectValueOverInner but for the LogQL
+// shapes — the source columns come from [logSampleColumns], so a
+// matrix-shape inner keeps its per-anchor timestamp and a vector-
+// aggregation inner keeps its Attributes / TimeUnix aliases. Emitting
+// the full canonical shape (instead of the historical two-column
+// `(ResourceAttributes, Value)` form) means [Lang.ProjectSamples] and
+// any enclosing binop see a Sample-shaped scope regardless of how
+// deeply wraps nest.
+func projectValueOverLogInner(inner chplan.Node, s schema.Logs, newValue chplan.Expr) chplan.Node {
+	cols := logSampleColumns(inner, s)
 	return &chplan.Project{
 		Input: inner,
 		Projections: []chplan.Projection{
-			{Expr: &chplan.ColumnRef{Name: attrsCol}},
+			{Expr: cols.metricName, Alias: "MetricName"},
+			{Expr: &chplan.ColumnRef{Name: cols.attrsCol}, Alias: "Attributes"},
+			{Expr: cols.timeExpr, Alias: "TimeUnix"},
 			{Expr: newValue, Alias: rangeAggSynthValueColumn},
 		},
 	}
@@ -342,38 +374,30 @@ func projectValueOverLogInner(inner chplan.Node, s schema.Logs, newValue chplan.
 // sampleShapeOverLogInner re-shapes a LogQL inner plan into the canonical
 // chclient.Sample contract — (MetricName, Attributes, TimeUnix, Value)
 // — that chplan.VectorJoin's emitter expects. The synthesised
-// MetricName is the empty string (LogQL has no metric name); TimeUnix
-// comes from a synthetic `now64(9)` since the LogQL range-aggregation
-// pipeline strips the per-row timestamp by the time control reaches
-// this point.
+// MetricName is the empty string (LogQL has no metric name).
 //
 // The function is only called from [lowerVectorVector] — every other
 // LogQL binop path operates on the inner LogQL shape directly without
 // the VectorJoin canonical-shape requirement.
 //
-// Inner shape selector:
-//
-//   - vector-aggregation leg (e.g. `sum by (svc) (count_over_time(...))`):
-//     `wrapVectorAggregateForSample` has already projected the row into
-//     the (MetricName, Attributes, TimeUnix, Value) Sample contract, so
-//     the `ResourceAttributes` column no longer exists. Reading it would
-//     surface as `UNKNOWN_IDENTIFIER: ResourceAttributes` at chDB.
-//     Forward the existing `Attributes` column verbatim instead.
-//   - every other leg shape (RangeWindow, lowerLiteral / lowerVector
-//     synthetic, label_replace wrap): the column carrying stream
-//     identity is `ResourceAttributes` — rename it to `Attributes`
-//     under the projection.
+// Source-column resolution is [logSampleColumns]: a vector-aggregation
+// leg forwards its existing Attributes / TimeUnix aliases, a
+// matrix-shape RangeWindow leg forwards `ResourceAttributes` plus its
+// per-anchor `anchor_ts` (so a step-aligned join sees one row per
+// (series, anchor) on each side), and the synthetic literal /
+// vector(n) / instant shapes synthesise `now64(9)`. The historical
+// unconditional `now64(9)` here squashed every range-mode leg onto a
+// single timestamp — the per-side argMax dedup then collapsed the
+// matrix to one row per series and every range-mode LogQL join
+// returned an empty matrix.
 func sampleShapeOverLogInner(inner chplan.Node, s schema.Logs) chplan.Node {
-	attrsCol := s.ResourceAttributesColumn
-	if isVectorAggregateSampleShape(inner) {
-		attrsCol = "Attributes"
-	}
+	cols := logSampleColumns(inner, s)
 	return &chplan.Project{
 		Input: inner,
 		Projections: []chplan.Projection{
-			{Expr: &chplan.LitString{V: ""}, Alias: "MetricName"},
-			{Expr: &chplan.ColumnRef{Name: attrsCol}, Alias: "Attributes"},
-			{Expr: &chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}}, Alias: "TimeUnix"},
+			{Expr: cols.metricName, Alias: "MetricName"},
+			{Expr: &chplan.ColumnRef{Name: cols.attrsCol}, Alias: "Attributes"},
+			{Expr: cols.timeExpr, Alias: "TimeUnix"},
 			{Expr: &chplan.ColumnRef{Name: rangeAggSynthValueColumn}, Alias: rangeAggSynthValueColumn},
 		},
 	}
@@ -398,16 +422,19 @@ func sampleShapeOverLogInner(inner chplan.Node, s schema.Logs) chplan.Node {
 //     'ResourceAttributes'` when [Lang.ProjectSamples] wraps the join
 //     output.
 func isVectorAggregateSampleShape(n chplan.Node) bool {
-	if _, ok := n.(*chplan.VectorJoin); ok {
+	switch v := n.(type) {
+	case *chplan.VectorJoin:
 		return true
-	}
-	p, ok := n.(*chplan.Project)
-	if !ok {
-		return false
-	}
-	for _, proj := range p.Projections {
-		if proj.Alias == "Attributes" {
-			return true
+	case *chplan.Filter:
+		// A bare comparison (`sum by (svc) (...) > 0`) wraps the inner
+		// plan in a Filter without re-projecting — the Sample columns
+		// (or their absence) pass through untouched, so recurse.
+		return isVectorAggregateSampleShape(v.Input)
+	case *chplan.Project:
+		for _, proj := range v.Projections {
+			if proj.Alias == "Attributes" {
+				return true
+			}
 		}
 	}
 	return false

@@ -46,35 +46,33 @@ func lowerLabelReplace(e *syntax.LabelReplaceExpr, s schema.Logs, lc lowerCtx) (
 		return nil, err
 	}
 
+	// Resolve which column carries the inner plan's stream identity —
+	// a raw RangeWindow exposes `ResourceAttributes`, a vector
+	// aggregation (post-wrapVectorAggregateForSample) exposes
+	// `Attributes` — and rewrite THAT map. Reading ResourceAttributes
+	// unconditionally surfaced as 502 `Unknown expression identifier
+	// 'ResourceAttributes'` for `label_replace(sum by (...) (...), …)`.
+	cols := logSampleColumns(inner, s)
 	attrs := &chplan.LabelReplace{
-		Map:              &chplan.ColumnRef{Name: s.ResourceAttributesColumn},
+		Map:              &chplan.ColumnRef{Name: cols.attrsCol},
 		Dst:              e.Dst,
 		Replacement:      qlcommon.ReplacementToCH(e.Replacement, e.Regex),
 		Src:              e.Src,
 		Regex:            e.Regex,
 		EmptyReplacement: qlcommon.EmptyCapturesReplacement(e.Replacement),
 	}
-	return projectResourceAttributesOverInner(inner, s, attrs), nil
-}
-
-// projectResourceAttributesOverInner wraps inner with a Project that
-// keeps every other column and replaces only ResourceAttributes with
-// the new attrs expression. Mirrors promql/label_fns.go::
-// projectAttributesOverInner but targets the LogQL ResourceAttributes
-// column.
-//
-// When inner is a RangeWindow, MetricName / TimeUnix don't survive
-// the windowed groupArray and the projection lists only
-// ResourceAttributes + Value. Every other inner shape (Scan / Filter
-// / Project / Aggregate) keeps the full Sample-row schema, but LogQL's
-// pre-aggregation layers also lack MetricName, so we still only
-// forward the two columns the LogQL surface uses.
-func projectResourceAttributesOverInner(inner chplan.Node, s schema.Logs, attrs chplan.Expr) chplan.Node {
+	// Emit the full canonical Sample shape (mirrors
+	// projectValueOverLogInner): forwarding the inner's per-anchor
+	// timestamp keeps range-mode step grids alive through the wrap,
+	// and the Attributes alias makes the output recognisably
+	// Sample-shaped for Lang.ProjectSamples / enclosing binops.
 	return &chplan.Project{
 		Input: inner,
 		Projections: []chplan.Projection{
-			{Expr: attrs, Alias: s.ResourceAttributesColumn},
-			{Expr: &chplan.ColumnRef{Name: rangeAggSynthValueColumn}},
+			{Expr: cols.metricName, Alias: "MetricName"},
+			{Expr: attrs, Alias: "Attributes"},
+			{Expr: cols.timeExpr, Alias: "TimeUnix"},
+			{Expr: &chplan.ColumnRef{Name: rangeAggSynthValueColumn}, Alias: rangeAggSynthValueColumn},
 		},
-	}
+	}, nil
 }

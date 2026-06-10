@@ -1,0 +1,4253 @@
+{
+ "annotations": {
+  "list": []
+ },
+ "description": "LogQL feature showcase: one panel target per logql-feature-inventory.json row, enforced by test/inventory. Panels carry cerberus.expect contracts where the defined outcome is empty or an error.",
+ "editable": true,
+ "fiscalYearStartMonth": 0,
+ "graphTooltip": 0,
+ "id": null,
+ "links": [],
+ "panels": [
+  {
+   "collapsed": false,
+   "gridPos": {
+    "h": 1,
+    "w": 24,
+    "x": 0,
+    "y": 0
+   },
+   "id": 1,
+   "panels": [],
+   "title": "Stream selection & line filters",
+   "type": "row"
+  },
+  {
+   "datasource": {
+    "type": "loki",
+    "uid": "cerberus-loki"
+   },
+   "description": "Contains / not-contains line filters over the seeded gateway logfmt stream.",
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 0,
+    "y": 1
+   },
+   "id": 2,
+   "options": {
+    "dedupStrategy": "none",
+    "enableLogDetails": true,
+    "prettifyLogMessage": false,
+    "showCommonLabels": false,
+    "showLabels": false,
+    "showTime": true,
+    "sortOrder": "Descending",
+    "wrapLogMessage": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "{service_name=\"gateway\"} |= \"method=GET\"",
+     "queryType": "range",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "{service_name=\"gateway\"} != \"level=error\"",
+     "queryType": "range",
+     "refId": "B"
+    }
+   ],
+   "title": "Line filters: |= and != chains",
+   "type": "logs"
+  },
+  {
+   "datasource": {
+    "type": "loki",
+    "uid": "cerberus-loki"
+   },
+   "description": "Regex / negated-regex line filters; the seeded status field flips between 200/404/500.",
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 8,
+    "y": 1
+   },
+   "id": 3,
+   "options": {
+    "dedupStrategy": "none",
+    "enableLogDetails": true,
+    "prettifyLogMessage": false,
+    "showCommonLabels": false,
+    "showLabels": false,
+    "showTime": true,
+    "sortOrder": "Descending",
+    "wrapLogMessage": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "{service_name=\"gateway\"} |~ \"status=(404|500)\"",
+     "queryType": "range",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "{service_name=\"gateway\"} !~ \"level=(debug|trace)\"",
+     "queryType": "range",
+     "refId": "B"
+    }
+   ],
+   "title": "Regex line filters: |~ and !~",
+   "type": "logs"
+  },
+  {
+   "datasource": {
+    "type": "loki",
+    "uid": "cerberus-loki"
+   },
+   "description": "`|= \"a\" or \"b\"` matches lines containing either alternative.",
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 16,
+    "y": 1
+   },
+   "id": 4,
+   "options": {
+    "dedupStrategy": "none",
+    "enableLogDetails": true,
+    "prettifyLogMessage": false,
+    "showCommonLabels": false,
+    "showLabels": false,
+    "showTime": true,
+    "sortOrder": "Descending",
+    "wrapLogMessage": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "{service_name=\"gateway\"} |= \"method=GET\" or \"method=POST\"",
+     "queryType": "range",
+     "refId": "A"
+    }
+   ],
+   "title": "or-chained line filter",
+   "type": "logs"
+  },
+  {
+   "cerberus": {
+    "expect": "empty",
+    "why": "The line filter names a needle deliberately absent from every seeded stream, so the DEFINED result is an empty streams set \u2014 a bidirectional pin on |= correctness (a non-empty result means the filter stopped filtering)."
+   },
+   "datasource": {
+    "type": "loki",
+    "uid": "cerberus-loki"
+   },
+   "description": "A needle no seeded line carries. The CORRECT output of this query is zero streams; returning any stream means the seed or the filter lowering broke.",
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 0,
+    "y": 8
+   },
+   "id": 5,
+   "options": {
+    "dedupStrategy": "none",
+    "enableLogDetails": true,
+    "prettifyLogMessage": false,
+    "showCommonLabels": false,
+    "showLabels": false,
+    "showTime": true,
+    "sortOrder": "Descending",
+    "wrapLogMessage": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "{service_name=\"gateway\"} |= \"showcase-needle-that-no-seeded-line-contains\"",
+     "queryType": "range",
+     "refId": "A"
+    }
+   ],
+   "title": "Impossible line filter \u2014 defined empty",
+   "type": "logs"
+  },
+  {
+   "collapsed": false,
+   "gridPos": {
+    "h": 1,
+    "w": 24,
+    "x": 0,
+    "y": 15
+   },
+   "id": 6,
+   "panels": [],
+   "title": "Label filters",
+   "type": "row"
+  },
+  {
+   "datasource": {
+    "type": "loki",
+    "uid": "cerberus-loki"
+   },
+   "description": "String equality against the synthesized detected_level label (SeverityText-derived).",
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 0,
+    "y": 16
+   },
+   "id": 7,
+   "options": {
+    "dedupStrategy": "none",
+    "enableLogDetails": true,
+    "prettifyLogMessage": false,
+    "showCommonLabels": false,
+    "showLabels": false,
+    "showTime": true,
+    "sortOrder": "Descending",
+    "wrapLogMessage": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "{service_name=\"gateway\"} | detected_level=\"error\"",
+     "queryType": "range",
+     "refId": "A"
+    }
+   ],
+   "title": "String label filter on detected_level",
+   "type": "logs"
+  },
+  {
+   "datasource": {
+    "type": "loki",
+    "uid": "cerberus-loki"
+   },
+   "description": "Numeric comparison on the logfmt-extracted status field.",
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 8,
+    "y": 16
+   },
+   "id": 8,
+   "options": {
+    "dedupStrategy": "none",
+    "enableLogDetails": true,
+    "prettifyLogMessage": false,
+    "showCommonLabels": false,
+    "showLabels": false,
+    "showTime": true,
+    "sortOrder": "Descending",
+    "wrapLogMessage": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "{service_name=\"gateway\"} | logfmt | status >= 400",
+     "queryType": "range",
+     "refId": "A"
+    }
+   ],
+   "title": "Numeric label filter",
+   "type": "logs"
+  },
+  {
+   "datasource": {
+    "type": "loki",
+    "uid": "cerberus-loki"
+   },
+   "description": "Duration-typed comparison on the logfmt-extracted took field (Go-duration shape, e.g. 240ms).",
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 16,
+    "y": 16
+   },
+   "id": 9,
+   "options": {
+    "dedupStrategy": "none",
+    "enableLogDetails": true,
+    "prettifyLogMessage": false,
+    "showCommonLabels": false,
+    "showLabels": false,
+    "showTime": true,
+    "sortOrder": "Descending",
+    "wrapLogMessage": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "{service_name=\"gateway\"} | logfmt | took > 100ms",
+     "queryType": "range",
+     "refId": "A"
+    }
+   ],
+   "title": "Duration label filter",
+   "type": "logs"
+  },
+  {
+   "datasource": {
+    "type": "loki",
+    "uid": "cerberus-loki"
+   },
+   "description": "Byte-size-typed comparison on the logfmt-extracted size field (e.g. 1536B).",
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 0,
+    "y": 23
+   },
+   "id": 10,
+   "options": {
+    "dedupStrategy": "none",
+    "enableLogDetails": true,
+    "prettifyLogMessage": false,
+    "showCommonLabels": false,
+    "showLabels": false,
+    "showTime": true,
+    "sortOrder": "Descending",
+    "wrapLogMessage": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "{service_name=\"gateway\"} | logfmt | size > 1KB",
+     "queryType": "range",
+     "refId": "A"
+    }
+   ],
+   "title": "Bytes label filter",
+   "type": "logs"
+  },
+  {
+   "datasource": {
+    "type": "loki",
+    "uid": "cerberus-loki"
+   },
+   "description": "Two numeric label filters joined with `and`.",
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 8,
+    "y": 23
+   },
+   "id": 11,
+   "options": {
+    "dedupStrategy": "none",
+    "enableLogDetails": true,
+    "prettifyLogMessage": false,
+    "showCommonLabels": false,
+    "showLabels": false,
+    "showTime": true,
+    "sortOrder": "Descending",
+    "wrapLogMessage": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "{service_name=\"gateway\"} | logfmt | status >= 200 and status < 500",
+     "queryType": "range",
+     "refId": "A"
+    }
+   ],
+   "title": "Conjunction: and",
+   "type": "logs"
+  },
+  {
+   "datasource": {
+    "type": "loki",
+    "uid": "cerberus-loki"
+   },
+   "description": "Two string label filters joined with `or`.",
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 16,
+    "y": 23
+   },
+   "id": 12,
+   "options": {
+    "dedupStrategy": "none",
+    "enableLogDetails": true,
+    "prettifyLogMessage": false,
+    "showCommonLabels": false,
+    "showLabels": false,
+    "showTime": true,
+    "sortOrder": "Descending",
+    "wrapLogMessage": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "{service_name=\"gateway\"} | detected_level=\"error\" or detected_level=\"warn\"",
+     "queryType": "range",
+     "refId": "A"
+    }
+   ],
+   "title": "Disjunction: or",
+   "type": "logs"
+  },
+  {
+   "collapsed": false,
+   "gridPos": {
+    "h": 1,
+    "w": 24,
+    "x": 0,
+    "y": 30
+   },
+   "id": 13,
+   "panels": [],
+   "title": "Parsers",
+   "type": "row"
+  },
+  {
+   "datasource": {
+    "type": "loki",
+    "uid": "cerberus-loki"
+   },
+   "description": "Bare JSON parser over the shop stream's structured bodies.",
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 0,
+    "y": 31
+   },
+   "id": 14,
+   "options": {
+    "dedupStrategy": "none",
+    "enableLogDetails": true,
+    "prettifyLogMessage": false,
+    "showCommonLabels": false,
+    "showLabels": false,
+    "showTime": true,
+    "sortOrder": "Descending",
+    "wrapLogMessage": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "{service_name=\"shop\"} | json",
+     "queryType": "range",
+     "refId": "A"
+    }
+   ],
+   "title": "| json (bare)",
+   "type": "logs"
+  },
+  {
+   "datasource": {
+    "type": "loki",
+    "uid": "cerberus-loki"
+   },
+   "description": "Parameterised JSON parser extracting a nested field, then filtering on it.",
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 8,
+    "y": 31
+   },
+   "id": 15,
+   "options": {
+    "dedupStrategy": "none",
+    "enableLogDetails": true,
+    "prettifyLogMessage": false,
+    "showCommonLabels": false,
+    "showLabels": false,
+    "showTime": true,
+    "sortOrder": "Descending",
+    "wrapLogMessage": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "{service_name=\"shop\"} | json status=\"response.status\"",
+     "queryType": "range",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "{service_name=\"shop\"} | json status=\"response.status\" | status = \"500\"",
+     "queryType": "range",
+     "refId": "B"
+    }
+   ],
+   "title": "| json with path expressions",
+   "type": "logs"
+  },
+  {
+   "datasource": {
+    "type": "loki",
+    "uid": "cerberus-loki"
+   },
+   "description": "Bare logfmt parser over the gateway stream's key=value bodies.",
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 16,
+    "y": 31
+   },
+   "id": 16,
+   "options": {
+    "dedupStrategy": "none",
+    "enableLogDetails": true,
+    "prettifyLogMessage": false,
+    "showCommonLabels": false,
+    "showLabels": false,
+    "showTime": true,
+    "sortOrder": "Descending",
+    "wrapLogMessage": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "{service_name=\"gateway\"} | logfmt",
+     "queryType": "range",
+     "refId": "A"
+    }
+   ],
+   "title": "| logfmt (bare)",
+   "type": "logs"
+  },
+  {
+   "datasource": {
+    "type": "loki",
+    "uid": "cerberus-loki"
+   },
+   "description": "Parameterised logfmt parser mapping a chosen key to a local name.",
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 0,
+    "y": 38
+   },
+   "id": 17,
+   "options": {
+    "dedupStrategy": "none",
+    "enableLogDetails": true,
+    "prettifyLogMessage": false,
+    "showCommonLabels": false,
+    "showLabels": false,
+    "showTime": true,
+    "sortOrder": "Descending",
+    "wrapLogMessage": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "{service_name=\"gateway\"} | logfmt lvl=\"level\"",
+     "queryType": "range",
+     "refId": "A"
+    }
+   ],
+   "title": "| logfmt with expressions",
+   "type": "logs"
+  },
+  {
+   "datasource": {
+    "type": "loki",
+    "uid": "cerberus-loki"
+   },
+   "description": "Pattern parser over the proxy stream's fixed-structure access-log lines.",
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 8,
+    "y": 38
+   },
+   "id": 18,
+   "options": {
+    "dedupStrategy": "none",
+    "enableLogDetails": true,
+    "prettifyLogMessage": false,
+    "showCommonLabels": false,
+    "showLabels": false,
+    "showTime": true,
+    "sortOrder": "Descending",
+    "wrapLogMessage": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "{service_name=\"proxy\"} | pattern \"<verb> <path> <status> <took> <ip>\"",
+     "queryType": "range",
+     "refId": "A"
+    }
+   ],
+   "title": "| pattern",
+   "type": "logs"
+  },
+  {
+   "datasource": {
+    "type": "loki",
+    "uid": "cerberus-loki"
+   },
+   "description": "Regexp parser with a named capture group.",
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 16,
+    "y": 38
+   },
+   "id": 19,
+   "options": {
+    "dedupStrategy": "none",
+    "enableLogDetails": true,
+    "prettifyLogMessage": false,
+    "showCommonLabels": false,
+    "showLabels": false,
+    "showTime": true,
+    "sortOrder": "Descending",
+    "wrapLogMessage": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "{service_name=\"gateway\"} | regexp \"id=(?P<rid>\\\\d+)\"",
+     "queryType": "range",
+     "refId": "A"
+    }
+   ],
+   "title": "| regexp",
+   "type": "logs"
+  },
+  {
+   "datasource": {
+    "type": "loki",
+    "uid": "cerberus-loki"
+   },
+   "description": "Unpack parser over the packer stream's Loki pack-format bodies ({\"_entry\": ...}).",
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 0,
+    "y": 45
+   },
+   "id": 20,
+   "options": {
+    "dedupStrategy": "none",
+    "enableLogDetails": true,
+    "prettifyLogMessage": false,
+    "showCommonLabels": false,
+    "showLabels": false,
+    "showTime": true,
+    "sortOrder": "Descending",
+    "wrapLogMessage": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "{service_name=\"packer\"} | unpack",
+     "queryType": "range",
+     "refId": "A"
+    }
+   ],
+   "title": "| unpack",
+   "type": "logs"
+  },
+  {
+   "collapsed": false,
+   "gridPos": {
+    "h": 1,
+    "w": 24,
+    "x": 0,
+    "y": 52
+   },
+   "id": 21,
+   "panels": [],
+   "title": "Formatting & label manipulation",
+   "type": "row"
+  },
+  {
+   "datasource": {
+    "type": "loki",
+    "uid": "cerberus-loki"
+   },
+   "description": "Template-rewrites each line from logfmt-extracted fields.",
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 0,
+    "y": 53
+   },
+   "id": 22,
+   "options": {
+    "dedupStrategy": "none",
+    "enableLogDetails": true,
+    "prettifyLogMessage": false,
+    "showCommonLabels": false,
+    "showLabels": false,
+    "showTime": true,
+    "sortOrder": "Descending",
+    "wrapLogMessage": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "{service_name=\"gateway\"} | logfmt | line_format \"{{.method}} -> {{.status}}\"",
+     "queryType": "range",
+     "refId": "A"
+    }
+   ],
+   "title": "| line_format",
+   "type": "logs"
+  },
+  {
+   "datasource": {
+    "type": "loki",
+    "uid": "cerberus-loki"
+   },
+   "description": "Renames an extracted label (lvl=level).",
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 8,
+    "y": 53
+   },
+   "id": 23,
+   "options": {
+    "dedupStrategy": "none",
+    "enableLogDetails": true,
+    "prettifyLogMessage": false,
+    "showCommonLabels": false,
+    "showLabels": false,
+    "showTime": true,
+    "sortOrder": "Descending",
+    "wrapLogMessage": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "{service_name=\"gateway\"} | logfmt | label_format lvl=level",
+     "queryType": "range",
+     "refId": "A"
+    }
+   ],
+   "title": "| label_format",
+   "type": "logs"
+  },
+  {
+   "datasource": {
+    "type": "loki",
+    "uid": "cerberus-loki"
+   },
+   "description": "Strips the painter stream's ANSI colour codes from each line.",
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 16,
+    "y": 53
+   },
+   "id": 24,
+   "options": {
+    "dedupStrategy": "none",
+    "enableLogDetails": true,
+    "prettifyLogMessage": false,
+    "showCommonLabels": false,
+    "showLabels": false,
+    "showTime": true,
+    "sortOrder": "Descending",
+    "wrapLogMessage": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "{service_name=\"painter\"} | decolorize",
+     "queryType": "range",
+     "refId": "A"
+    }
+   ],
+   "title": "| decolorize",
+   "type": "logs"
+  },
+  {
+   "datasource": {
+    "type": "loki",
+    "uid": "cerberus-loki"
+   },
+   "description": "Projects the output label set down (keep) / removes named keys (drop).",
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 0,
+    "y": 60
+   },
+   "id": 25,
+   "options": {
+    "dedupStrategy": "none",
+    "enableLogDetails": true,
+    "prettifyLogMessage": false,
+    "showCommonLabels": false,
+    "showLabels": false,
+    "showTime": true,
+    "sortOrder": "Descending",
+    "wrapLogMessage": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "{service_name=\"gateway\"} | logfmt | keep level, status",
+     "queryType": "range",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "{service_name=\"gateway\"} | logfmt | drop thread",
+     "queryType": "range",
+     "refId": "B"
+    }
+   ],
+   "title": "| keep / | drop",
+   "type": "logs"
+  },
+  {
+   "collapsed": false,
+   "gridPos": {
+    "h": 1,
+    "w": 24,
+    "x": 0,
+    "y": 67
+   },
+   "id": 26,
+   "panels": [],
+   "title": "Range aggregations",
+   "type": "row"
+  },
+  {
+   "datasource": {
+    "type": "loki",
+    "uid": "cerberus-loki"
+   },
+   "description": "Per-stream line rate and line count over a 5m window.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "lineInterpolation": "linear",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "auto",
+      "spanNulls": false,
+      "stacking": {
+       "group": "A",
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 0,
+    "y": 68
+   },
+   "id": 27,
+   "options": {
+    "legend": {
+     "calcs": [],
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "none"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "rate({service_name=\"gateway\"}[5m])",
+     "queryType": "range",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "count_over_time({service_name=\"gateway\"}[5m])",
+     "queryType": "range",
+     "refId": "B"
+    }
+   ],
+   "title": "rate / count_over_time",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "loki",
+    "uid": "cerberus-loki"
+   },
+   "description": "Byte-volume rate and total over a 5m window.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "lineInterpolation": "linear",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "auto",
+      "spanNulls": false,
+      "stacking": {
+       "group": "A",
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 8,
+    "y": 68
+   },
+   "id": 28,
+   "options": {
+    "legend": {
+     "calcs": [],
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "none"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "bytes_rate({service_name=\"gateway\"}[5m])",
+     "queryType": "range",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "bytes_over_time({service_name=\"gateway\"}[5m])",
+     "queryType": "range",
+     "refId": "B"
+    }
+   ],
+   "title": "bytes_rate / bytes_over_time",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "loki",
+    "uid": "cerberus-loki"
+   },
+   "description": "Unwrapped-value aggregations over the logfmt-extracted numeric status field.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "lineInterpolation": "linear",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "auto",
+      "spanNulls": false,
+      "stacking": {
+       "group": "A",
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 16,
+    "y": 68
+   },
+   "id": 29,
+   "options": {
+    "legend": {
+     "calcs": [],
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "none"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "avg_over_time({service_name=\"gateway\"} | logfmt | unwrap status [5m])",
+     "queryType": "range",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "sum_over_time({service_name=\"gateway\"} | logfmt | unwrap status [5m])",
+     "queryType": "range",
+     "refId": "B"
+    },
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "min_over_time({service_name=\"gateway\"} | logfmt | unwrap status [5m])",
+     "queryType": "range",
+     "refId": "C"
+    },
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "max_over_time({service_name=\"gateway\"} | logfmt | unwrap status [5m])",
+     "queryType": "range",
+     "refId": "D"
+    }
+   ],
+   "title": "avg / sum / min / max over_time (unwrap)",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "loki",
+    "uid": "cerberus-loki"
+   },
+   "description": "Statistical unwrapped-value aggregations.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "lineInterpolation": "linear",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "auto",
+      "spanNulls": false,
+      "stacking": {
+       "group": "A",
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 0,
+    "y": 75
+   },
+   "id": 30,
+   "options": {
+    "legend": {
+     "calcs": [],
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "none"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "stddev_over_time({service_name=\"gateway\"} | logfmt | unwrap status [5m])",
+     "queryType": "range",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "stdvar_over_time({service_name=\"gateway\"} | logfmt | unwrap status [5m])",
+     "queryType": "range",
+     "refId": "B"
+    },
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "quantile_over_time(0.9, {service_name=\"gateway\"} | logfmt | unwrap status [5m])",
+     "queryType": "range",
+     "refId": "C"
+    }
+   ],
+   "title": "stddev / stdvar / quantile over_time (unwrap)",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "loki",
+    "uid": "cerberus-loki"
+   },
+   "description": "Unwrap with conversion functions over the took (duration) and size (bytes) fields.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "lineInterpolation": "linear",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "auto",
+      "spanNulls": false,
+      "stacking": {
+       "group": "A",
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 8,
+    "y": 75
+   },
+   "id": 31,
+   "options": {
+    "legend": {
+     "calcs": [],
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "none"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "avg_over_time({service_name=\"gateway\"} | logfmt | unwrap duration(took) [5m])",
+     "queryType": "range",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "avg_over_time({service_name=\"gateway\"} | logfmt | unwrap duration_seconds(took) [5m])",
+     "queryType": "range",
+     "refId": "B"
+    },
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "max_over_time({service_name=\"gateway\"} | logfmt | unwrap bytes(size) [5m])",
+     "queryType": "range",
+     "refId": "C"
+    }
+   ],
+   "title": "unwrap conversions: duration / duration_seconds / bytes",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "loki",
+    "uid": "cerberus-loki"
+   },
+   "description": "Sum-of-values rate (rate + unwrap) and a 1m-offset line count \u2014 the rolling re-seeder keeps a \u00b15m window around now, so the offset window still has data.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "lineInterpolation": "linear",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "auto",
+      "spanNulls": false,
+      "stacking": {
+       "group": "A",
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 16,
+    "y": 75
+   },
+   "id": 32,
+   "options": {
+    "legend": {
+     "calcs": [],
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "none"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "rate({service_name=\"gateway\"} | logfmt | unwrap status [5m])",
+     "queryType": "range",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "count_over_time({service_name=\"gateway\"}[5m] offset 1m)",
+     "queryType": "range",
+     "refId": "B"
+    }
+   ],
+   "title": "rate over unwrapped values + offset",
+   "type": "timeseries"
+  },
+  {
+   "collapsed": false,
+   "gridPos": {
+    "h": 1,
+    "w": 24,
+    "x": 0,
+    "y": 82
+   },
+   "id": 33,
+   "panels": [],
+   "title": "Vector aggregations",
+   "type": "row"
+  },
+  {
+   "datasource": {
+    "type": "loki",
+    "uid": "cerberus-loki"
+   },
+   "description": "Grouped vector aggregations over per-stream rates.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "lineInterpolation": "linear",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "auto",
+      "spanNulls": false,
+      "stacking": {
+       "group": "A",
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 0,
+    "y": 83
+   },
+   "id": 34,
+   "options": {
+    "legend": {
+     "calcs": [],
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "none"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "sum by (service_name) (rate({service_name=~\".+\"}[5m]))",
+     "queryType": "range",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "avg by (service_name) (rate({service_name=~\".+\"}[5m]))",
+     "queryType": "range",
+     "refId": "B"
+    },
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "min by (service_name) (rate({service_name=~\".+\"}[5m]))",
+     "queryType": "range",
+     "refId": "C"
+    },
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "max by (service_name) (rate({service_name=~\".+\"}[5m]))",
+     "queryType": "range",
+     "refId": "D"
+    }
+   ],
+   "title": "sum / avg / min / max by (service_name)",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "loki",
+    "uid": "cerberus-loki"
+   },
+   "description": "count without(...) plus statistical aggregations by service.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "lineInterpolation": "linear",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "auto",
+      "spanNulls": false,
+      "stacking": {
+       "group": "A",
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 8,
+    "y": 83
+   },
+   "id": 35,
+   "options": {
+    "legend": {
+     "calcs": [],
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "none"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "count without (thread) (rate({service_name=\"gateway\"}[5m]))",
+     "queryType": "range",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "stddev by (service_name) (rate({service_name=~\".+\"}[5m]))",
+     "queryType": "range",
+     "refId": "B"
+    },
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "stdvar by (service_name) (rate({service_name=~\".+\"}[5m]))",
+     "queryType": "range",
+     "refId": "C"
+    }
+   ],
+   "title": "count / stddev / stdvar",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "loki",
+    "uid": "cerberus-loki"
+   },
+   "description": "Ungrouped aggregation collapsing every stream into one series.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "lineInterpolation": "linear",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "auto",
+      "spanNulls": false,
+      "stacking": {
+       "group": "A",
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 16,
+    "y": 83
+   },
+   "id": 36,
+   "options": {
+    "legend": {
+     "calcs": [],
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "none"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "sum(rate({service_name=\"gateway\"}[5m]))",
+     "queryType": "range",
+     "refId": "A"
+    }
+   ],
+   "title": "bare sum (no grouping)",
+   "type": "timeseries"
+  },
+  {
+   "collapsed": false,
+   "gridPos": {
+    "h": 1,
+    "w": 24,
+    "x": 0,
+    "y": 90
+   },
+   "id": 37,
+   "panels": [],
+   "title": "Binary operations",
+   "type": "row"
+  },
+  {
+   "datasource": {
+    "type": "loki",
+    "uid": "cerberus-loki"
+   },
+   "description": "Vector-scalar arithmetic over per-stream rates.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "lineInterpolation": "linear",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "auto",
+      "spanNulls": false,
+      "stacking": {
+       "group": "A",
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 0,
+    "y": 91
+   },
+   "id": 38,
+   "options": {
+    "legend": {
+     "calcs": [],
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "none"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "rate({service_name=\"gateway\"}[5m]) + 1",
+     "queryType": "range",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "rate({service_name=\"gateway\"}[5m]) - 1",
+     "queryType": "range",
+     "refId": "B"
+    },
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "rate({service_name=\"gateway\"}[5m]) * 2",
+     "queryType": "range",
+     "refId": "C"
+    },
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "rate({service_name=\"gateway\"}[5m]) / 2",
+     "queryType": "range",
+     "refId": "D"
+    }
+   ],
+   "title": "Arithmetic: + - * /",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "loki",
+    "uid": "cerberus-loki"
+   },
+   "description": "Modulo and power vector-scalar arithmetic.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "lineInterpolation": "linear",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "auto",
+      "spanNulls": false,
+      "stacking": {
+       "group": "A",
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 8,
+    "y": 91
+   },
+   "id": 39,
+   "options": {
+    "legend": {
+     "calcs": [],
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "none"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "count_over_time({service_name=\"gateway\"}[5m]) % 2",
+     "queryType": "range",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "rate({service_name=\"gateway\"}[5m]) ^ 2",
+     "queryType": "range",
+     "refId": "B"
+    }
+   ],
+   "title": "Arithmetic: % and ^",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "loki",
+    "uid": "cerberus-loki"
+   },
+   "description": "Bare comparisons drop samples failing the predicate. The == / != legs run against vector(1), whose constant value makes the predicate deterministically true \u2014 the panel's nonempty contract is enforced per target.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "lineInterpolation": "linear",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "auto",
+      "spanNulls": false,
+      "stacking": {
+       "group": "A",
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 16,
+    "y": 91
+   },
+   "id": 40,
+   "options": {
+    "legend": {
+     "calcs": [],
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "none"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "count_over_time({service_name=\"gateway\"}[5m]) > 0",
+     "queryType": "range",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "count_over_time({service_name=\"gateway\"}[5m]) < 1000000",
+     "queryType": "range",
+     "refId": "B"
+    },
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "count_over_time({service_name=\"gateway\"}[5m]) >= 0",
+     "queryType": "range",
+     "refId": "C"
+    },
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "count_over_time({service_name=\"gateway\"}[5m]) <= 1000000",
+     "queryType": "range",
+     "refId": "D"
+    },
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "vector(1) != 0",
+     "queryType": "range",
+     "refId": "E"
+    },
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "vector(1) == 1",
+     "queryType": "range",
+     "refId": "F"
+    }
+   ],
+   "title": "Comparisons (filter form)",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "loki",
+    "uid": "cerberus-loki"
+   },
+   "description": "bool-modified comparison projects 1/0 instead of filtering.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "lineInterpolation": "linear",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "auto",
+      "spanNulls": false,
+      "stacking": {
+       "group": "A",
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 0,
+    "y": 98
+   },
+   "id": 41,
+   "options": {
+    "legend": {
+     "calcs": [],
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "none"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "count_over_time({service_name=\"gateway\"}[5m]) > bool 10",
+     "queryType": "range",
+     "refId": "A"
+    }
+   ],
+   "title": "Comparison with bool modifier",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "loki",
+    "uid": "cerberus-loki"
+   },
+   "description": "Vector-vector multiplication joined on / ignoring chosen labels.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "lineInterpolation": "linear",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "auto",
+      "spanNulls": false,
+      "stacking": {
+       "group": "A",
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 8,
+    "y": 98
+   },
+   "id": 42,
+   "options": {
+    "legend": {
+     "calcs": [],
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "none"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "sum by (service_name) (rate({service_name=~\".+\"}[5m])) * on (service_name) sum by (service_name) (count_over_time({service_name=~\".+\"}[5m]))",
+     "queryType": "range",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "rate({service_name=\"gateway\"}[5m]) * ignoring (thread) count_over_time({service_name=\"gateway\"}[5m])",
+     "queryType": "range",
+     "refId": "B"
+    }
+   ],
+   "title": "Vector matching: on / ignoring",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "loki",
+    "uid": "cerberus-loki"
+   },
+   "description": "Many-to-one / one-to-many joins across aggregations with different by-sets.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "lineInterpolation": "linear",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "auto",
+      "spanNulls": false,
+      "stacking": {
+       "group": "A",
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 16,
+    "y": 98
+   },
+   "id": 43,
+   "options": {
+    "legend": {
+     "calcs": [],
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "none"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "sum by (service_name, detected_level) (rate({service_name=~\".+\"}[5m])) * on (service_name) group_left sum by (service_name) (count_over_time({service_name=~\".+\"}[5m]))",
+     "queryType": "range",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "sum by (service_name) (count_over_time({service_name=~\".+\"}[5m])) * on (service_name) group_right sum by (service_name, detected_level) (rate({service_name=~\".+\"}[5m]))",
+     "queryType": "range",
+     "refId": "B"
+    }
+   ],
+   "title": "Vector matching: group_left / group_right",
+   "type": "timeseries"
+  },
+  {
+   "collapsed": false,
+   "gridPos": {
+    "h": 1,
+    "w": 24,
+    "x": 0,
+    "y": 105
+   },
+   "id": 44,
+   "panels": [],
+   "title": "Expression features",
+   "type": "row"
+  },
+  {
+   "datasource": {
+    "type": "loki",
+    "uid": "cerberus-loki"
+   },
+   "description": "Synthetic constant vector.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "lineInterpolation": "linear",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "auto",
+      "spanNulls": false,
+      "stacking": {
+       "group": "A",
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 0,
+    "y": 106
+   },
+   "id": 45,
+   "options": {
+    "legend": {
+     "calcs": [],
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "none"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "vector(1)",
+     "queryType": "range",
+     "refId": "A"
+    }
+   ],
+   "title": "vector()",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "loki",
+    "uid": "cerberus-loki"
+   },
+   "description": "Regex-derives a new label from service_name on an aggregated series set.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "lineInterpolation": "linear",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "auto",
+      "spanNulls": false,
+      "stacking": {
+       "group": "A",
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 8,
+    "y": 106
+   },
+   "id": 46,
+   "options": {
+    "legend": {
+     "calcs": [],
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "none"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "editorMode": "code",
+     "expr": "label_replace(sum by (service_name) (rate({service_name=~\".+\"}[5m])), \"svc\", \"$1\", \"service_name\", \"(.*)\")",
+     "queryType": "range",
+     "refId": "A"
+    }
+   ],
+   "title": "label_replace",
+   "type": "timeseries"
+  },
+  {
+   "collapsed": true,
+   "gridPos": {
+    "h": 1,
+    "w": 24,
+    "x": 0,
+    "y": 113
+   },
+   "id": 47,
+   "panels": [
+    {
+     "cerberus": {
+      "expect": "error:line-filter `ip(...)` is not yet supported",
+      "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the panel FAILS the sweep the moment support lands, forcing the contract (and this dashboard) to be updated alongside the feature."
+     },
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "description": "Line-filter ip(CIDR) matching is rejected (a literal-text lowering would be silently wrong).",
+     "fieldConfig": {
+      "defaults": {
+       "color": {
+        "mode": "palette-classic"
+       },
+       "custom": {
+        "axisBorderShow": false,
+        "axisCenteredZero": false,
+        "axisColorMode": "text",
+        "axisLabel": "",
+        "axisPlacement": "auto",
+        "barAlignment": 0,
+        "drawStyle": "line",
+        "fillOpacity": 10,
+        "gradientMode": "none",
+        "hideFrom": {
+         "legend": false,
+         "tooltip": false,
+         "viz": false
+        },
+        "lineInterpolation": "linear",
+        "lineWidth": 1,
+        "pointSize": 5,
+        "scaleDistribution": {
+         "type": "linear"
+        },
+        "showPoints": "auto",
+        "spanNulls": false,
+        "stacking": {
+         "group": "A",
+         "mode": "none"
+        },
+        "thresholdsStyle": {
+         "mode": "off"
+        }
+       },
+       "mappings": [],
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "green",
+          "value": null
+         }
+        ]
+       }
+      },
+      "overrides": []
+     },
+     "gridPos": {
+      "h": 7,
+      "w": 8,
+      "x": 0,
+      "y": 114
+     },
+     "id": 48,
+     "options": {
+      "legend": {
+       "calcs": [],
+       "displayMode": "list",
+       "placement": "bottom",
+       "showLegend": true
+      },
+      "tooltip": {
+       "mode": "multi",
+       "sort": "none"
+      }
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "loki",
+        "uid": "cerberus-loki"
+       },
+       "editorMode": "code",
+       "expr": "{service_name=\"gateway\"} |= ip(\"192.168.0.0/16\")",
+       "queryType": "range",
+       "refId": "A"
+      }
+     ],
+     "title": "ip() line filter \u2014 parity rejection",
+     "type": "timeseries"
+    },
+    {
+     "cerberus": {
+      "expect": "error:is not yet supported",
+      "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the panel FAILS the sweep the moment support lands, forcing the contract (and this dashboard) to be updated alongside the feature."
+     },
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "description": "Pattern match line filters are rejected at lowering.",
+     "fieldConfig": {
+      "defaults": {
+       "color": {
+        "mode": "palette-classic"
+       },
+       "custom": {
+        "axisBorderShow": false,
+        "axisCenteredZero": false,
+        "axisColorMode": "text",
+        "axisLabel": "",
+        "axisPlacement": "auto",
+        "barAlignment": 0,
+        "drawStyle": "line",
+        "fillOpacity": 10,
+        "gradientMode": "none",
+        "hideFrom": {
+         "legend": false,
+         "tooltip": false,
+         "viz": false
+        },
+        "lineInterpolation": "linear",
+        "lineWidth": 1,
+        "pointSize": 5,
+        "scaleDistribution": {
+         "type": "linear"
+        },
+        "showPoints": "auto",
+        "spanNulls": false,
+        "stacking": {
+         "group": "A",
+         "mode": "none"
+        },
+        "thresholdsStyle": {
+         "mode": "off"
+        }
+       },
+       "mappings": [],
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "green",
+          "value": null
+         }
+        ]
+       }
+      },
+      "overrides": []
+     },
+     "gridPos": {
+      "h": 7,
+      "w": 8,
+      "x": 8,
+      "y": 114
+     },
+     "id": 49,
+     "options": {
+      "legend": {
+       "calcs": [],
+       "displayMode": "list",
+       "placement": "bottom",
+       "showLegend": true
+      },
+      "tooltip": {
+       "mode": "multi",
+       "sort": "none"
+      }
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "loki",
+        "uid": "cerberus-loki"
+       },
+       "editorMode": "code",
+       "expr": "{service_name=\"proxy\"} |> \"<_> /shop/items/<_> <_>\"",
+       "queryType": "range",
+       "refId": "A"
+      }
+     ],
+     "title": "|> pattern line filter \u2014 parity rejection",
+     "type": "timeseries"
+    },
+    {
+     "cerberus": {
+      "expect": "error:is not yet supported",
+      "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the panel FAILS the sweep the moment support lands, forcing the contract (and this dashboard) to be updated alongside the feature."
+     },
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "description": "Negated pattern match line filters are rejected at lowering.",
+     "fieldConfig": {
+      "defaults": {
+       "color": {
+        "mode": "palette-classic"
+       },
+       "custom": {
+        "axisBorderShow": false,
+        "axisCenteredZero": false,
+        "axisColorMode": "text",
+        "axisLabel": "",
+        "axisPlacement": "auto",
+        "barAlignment": 0,
+        "drawStyle": "line",
+        "fillOpacity": 10,
+        "gradientMode": "none",
+        "hideFrom": {
+         "legend": false,
+         "tooltip": false,
+         "viz": false
+        },
+        "lineInterpolation": "linear",
+        "lineWidth": 1,
+        "pointSize": 5,
+        "scaleDistribution": {
+         "type": "linear"
+        },
+        "showPoints": "auto",
+        "spanNulls": false,
+        "stacking": {
+         "group": "A",
+         "mode": "none"
+        },
+        "thresholdsStyle": {
+         "mode": "off"
+        }
+       },
+       "mappings": [],
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "green",
+          "value": null
+         }
+        ]
+       }
+      },
+      "overrides": []
+     },
+     "gridPos": {
+      "h": 7,
+      "w": 8,
+      "x": 16,
+      "y": 114
+     },
+     "id": 50,
+     "options": {
+      "legend": {
+       "calcs": [],
+       "displayMode": "list",
+       "placement": "bottom",
+       "showLegend": true
+      },
+      "tooltip": {
+       "mode": "multi",
+       "sort": "none"
+      }
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "loki",
+        "uid": "cerberus-loki"
+       },
+       "editorMode": "code",
+       "expr": "{service_name=\"proxy\"} !> \"<_> /shop/items/<_> <_>\"",
+       "queryType": "range",
+       "refId": "A"
+      }
+     ],
+     "title": "!> pattern line filter \u2014 parity rejection",
+     "type": "timeseries"
+    },
+    {
+     "cerberus": {
+      "expect": "error:unsupported label filterer",
+      "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the panel FAILS the sweep the moment support lands, forcing the contract (and this dashboard) to be updated alongside the feature."
+     },
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "description": "Label-filter ip(CIDR) matching is rejected at lowering.",
+     "fieldConfig": {
+      "defaults": {
+       "color": {
+        "mode": "palette-classic"
+       },
+       "custom": {
+        "axisBorderShow": false,
+        "axisCenteredZero": false,
+        "axisColorMode": "text",
+        "axisLabel": "",
+        "axisPlacement": "auto",
+        "barAlignment": 0,
+        "drawStyle": "line",
+        "fillOpacity": 10,
+        "gradientMode": "none",
+        "hideFrom": {
+         "legend": false,
+         "tooltip": false,
+         "viz": false
+        },
+        "lineInterpolation": "linear",
+        "lineWidth": 1,
+        "pointSize": 5,
+        "scaleDistribution": {
+         "type": "linear"
+        },
+        "showPoints": "auto",
+        "spanNulls": false,
+        "stacking": {
+         "group": "A",
+         "mode": "none"
+        },
+        "thresholdsStyle": {
+         "mode": "off"
+        }
+       },
+       "mappings": [],
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "green",
+          "value": null
+         }
+        ]
+       }
+      },
+      "overrides": []
+     },
+     "gridPos": {
+      "h": 7,
+      "w": 8,
+      "x": 0,
+      "y": 121
+     },
+     "id": 51,
+     "options": {
+      "legend": {
+       "calcs": [],
+       "displayMode": "list",
+       "placement": "bottom",
+       "showLegend": true
+      },
+      "tooltip": {
+       "mode": "multi",
+       "sort": "none"
+      }
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "loki",
+        "uid": "cerberus-loki"
+       },
+       "editorMode": "code",
+       "expr": "{service_name=\"gateway\"} | logfmt | remote_addr = ip(\"10.0.0.0/8\")",
+       "queryType": "range",
+       "refId": "A"
+      }
+     ],
+     "title": "ip() label filter \u2014 parity rejection",
+     "type": "timeseries"
+    },
+    {
+     "cerberus": {
+      "expect": "error:range op first_over_time is not yet supported",
+      "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the panel FAILS the sweep the moment support lands, forcing the contract (and this dashboard) to be updated alongside the feature."
+     },
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "description": "first_over_time is rejected at lowering.",
+     "fieldConfig": {
+      "defaults": {
+       "color": {
+        "mode": "palette-classic"
+       },
+       "custom": {
+        "axisBorderShow": false,
+        "axisCenteredZero": false,
+        "axisColorMode": "text",
+        "axisLabel": "",
+        "axisPlacement": "auto",
+        "barAlignment": 0,
+        "drawStyle": "line",
+        "fillOpacity": 10,
+        "gradientMode": "none",
+        "hideFrom": {
+         "legend": false,
+         "tooltip": false,
+         "viz": false
+        },
+        "lineInterpolation": "linear",
+        "lineWidth": 1,
+        "pointSize": 5,
+        "scaleDistribution": {
+         "type": "linear"
+        },
+        "showPoints": "auto",
+        "spanNulls": false,
+        "stacking": {
+         "group": "A",
+         "mode": "none"
+        },
+        "thresholdsStyle": {
+         "mode": "off"
+        }
+       },
+       "mappings": [],
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "green",
+          "value": null
+         }
+        ]
+       }
+      },
+      "overrides": []
+     },
+     "gridPos": {
+      "h": 7,
+      "w": 8,
+      "x": 8,
+      "y": 121
+     },
+     "id": 52,
+     "options": {
+      "legend": {
+       "calcs": [],
+       "displayMode": "list",
+       "placement": "bottom",
+       "showLegend": true
+      },
+      "tooltip": {
+       "mode": "multi",
+       "sort": "none"
+      }
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "loki",
+        "uid": "cerberus-loki"
+       },
+       "editorMode": "code",
+       "expr": "first_over_time({service_name=\"gateway\"} | logfmt | unwrap status [5m])",
+       "queryType": "range",
+       "refId": "A"
+      }
+     ],
+     "title": "first_over_time \u2014 parity rejection",
+     "type": "timeseries"
+    },
+    {
+     "cerberus": {
+      "expect": "error:range op last_over_time is not yet supported",
+      "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the panel FAILS the sweep the moment support lands, forcing the contract (and this dashboard) to be updated alongside the feature."
+     },
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "description": "last_over_time is rejected at lowering.",
+     "fieldConfig": {
+      "defaults": {
+       "color": {
+        "mode": "palette-classic"
+       },
+       "custom": {
+        "axisBorderShow": false,
+        "axisCenteredZero": false,
+        "axisColorMode": "text",
+        "axisLabel": "",
+        "axisPlacement": "auto",
+        "barAlignment": 0,
+        "drawStyle": "line",
+        "fillOpacity": 10,
+        "gradientMode": "none",
+        "hideFrom": {
+         "legend": false,
+         "tooltip": false,
+         "viz": false
+        },
+        "lineInterpolation": "linear",
+        "lineWidth": 1,
+        "pointSize": 5,
+        "scaleDistribution": {
+         "type": "linear"
+        },
+        "showPoints": "auto",
+        "spanNulls": false,
+        "stacking": {
+         "group": "A",
+         "mode": "none"
+        },
+        "thresholdsStyle": {
+         "mode": "off"
+        }
+       },
+       "mappings": [],
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "green",
+          "value": null
+         }
+        ]
+       }
+      },
+      "overrides": []
+     },
+     "gridPos": {
+      "h": 7,
+      "w": 8,
+      "x": 16,
+      "y": 121
+     },
+     "id": 53,
+     "options": {
+      "legend": {
+       "calcs": [],
+       "displayMode": "list",
+       "placement": "bottom",
+       "showLegend": true
+      },
+      "tooltip": {
+       "mode": "multi",
+       "sort": "none"
+      }
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "loki",
+        "uid": "cerberus-loki"
+       },
+       "editorMode": "code",
+       "expr": "last_over_time({service_name=\"gateway\"} | logfmt | unwrap status [5m])",
+       "queryType": "range",
+       "refId": "A"
+      }
+     ],
+     "title": "last_over_time \u2014 parity rejection",
+     "type": "timeseries"
+    },
+    {
+     "cerberus": {
+      "expect": "error:range op rate_counter is not yet supported",
+      "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the panel FAILS the sweep the moment support lands, forcing the contract (and this dashboard) to be updated alongside the feature."
+     },
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "description": "rate_counter is rejected at lowering.",
+     "fieldConfig": {
+      "defaults": {
+       "color": {
+        "mode": "palette-classic"
+       },
+       "custom": {
+        "axisBorderShow": false,
+        "axisCenteredZero": false,
+        "axisColorMode": "text",
+        "axisLabel": "",
+        "axisPlacement": "auto",
+        "barAlignment": 0,
+        "drawStyle": "line",
+        "fillOpacity": 10,
+        "gradientMode": "none",
+        "hideFrom": {
+         "legend": false,
+         "tooltip": false,
+         "viz": false
+        },
+        "lineInterpolation": "linear",
+        "lineWidth": 1,
+        "pointSize": 5,
+        "scaleDistribution": {
+         "type": "linear"
+        },
+        "showPoints": "auto",
+        "spanNulls": false,
+        "stacking": {
+         "group": "A",
+         "mode": "none"
+        },
+        "thresholdsStyle": {
+         "mode": "off"
+        }
+       },
+       "mappings": [],
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "green",
+          "value": null
+         }
+        ]
+       }
+      },
+      "overrides": []
+     },
+     "gridPos": {
+      "h": 7,
+      "w": 8,
+      "x": 0,
+      "y": 128
+     },
+     "id": 54,
+     "options": {
+      "legend": {
+       "calcs": [],
+       "displayMode": "list",
+       "placement": "bottom",
+       "showLegend": true
+      },
+      "tooltip": {
+       "mode": "multi",
+       "sort": "none"
+      }
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "loki",
+        "uid": "cerberus-loki"
+       },
+       "editorMode": "code",
+       "expr": "rate_counter({service_name=\"gateway\"} | logfmt | unwrap status [5m])",
+       "queryType": "range",
+       "refId": "A"
+      }
+     ],
+     "title": "rate_counter \u2014 parity rejection",
+     "type": "timeseries"
+    },
+    {
+     "cerberus": {
+      "expect": "error:range op absent_over_time is not yet supported",
+      "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the panel FAILS the sweep the moment support lands, forcing the contract (and this dashboard) to be updated alongside the feature."
+     },
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "description": "absent_over_time is rejected at lowering (when support lands, this becomes the empty/nonempty bidirectional pair the promql showcase models with absent()).",
+     "fieldConfig": {
+      "defaults": {
+       "color": {
+        "mode": "palette-classic"
+       },
+       "custom": {
+        "axisBorderShow": false,
+        "axisCenteredZero": false,
+        "axisColorMode": "text",
+        "axisLabel": "",
+        "axisPlacement": "auto",
+        "barAlignment": 0,
+        "drawStyle": "line",
+        "fillOpacity": 10,
+        "gradientMode": "none",
+        "hideFrom": {
+         "legend": false,
+         "tooltip": false,
+         "viz": false
+        },
+        "lineInterpolation": "linear",
+        "lineWidth": 1,
+        "pointSize": 5,
+        "scaleDistribution": {
+         "type": "linear"
+        },
+        "showPoints": "auto",
+        "spanNulls": false,
+        "stacking": {
+         "group": "A",
+         "mode": "none"
+        },
+        "thresholdsStyle": {
+         "mode": "off"
+        }
+       },
+       "mappings": [],
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "green",
+          "value": null
+         }
+        ]
+       }
+      },
+      "overrides": []
+     },
+     "gridPos": {
+      "h": 7,
+      "w": 8,
+      "x": 8,
+      "y": 128
+     },
+     "id": 55,
+     "options": {
+      "legend": {
+       "calcs": [],
+       "displayMode": "list",
+       "placement": "bottom",
+       "showLegend": true
+      },
+      "tooltip": {
+       "mode": "multi",
+       "sort": "none"
+      }
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "loki",
+        "uid": "cerberus-loki"
+       },
+       "editorMode": "code",
+       "expr": "absent_over_time({service_name=\"cerberus-showcase-never-logged\"}[5m])",
+       "queryType": "range",
+       "refId": "A"
+      }
+     ],
+     "title": "absent_over_time \u2014 parity rejection",
+     "type": "timeseries"
+    },
+    {
+     "cerberus": {
+      "expect": "error:topk changes output shape and is unsupported",
+      "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the panel FAILS the sweep the moment support lands, forcing the contract (and this dashboard) to be updated alongside the feature."
+     },
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "description": "topk changes output shape and is rejected.",
+     "fieldConfig": {
+      "defaults": {
+       "color": {
+        "mode": "palette-classic"
+       },
+       "custom": {
+        "axisBorderShow": false,
+        "axisCenteredZero": false,
+        "axisColorMode": "text",
+        "axisLabel": "",
+        "axisPlacement": "auto",
+        "barAlignment": 0,
+        "drawStyle": "line",
+        "fillOpacity": 10,
+        "gradientMode": "none",
+        "hideFrom": {
+         "legend": false,
+         "tooltip": false,
+         "viz": false
+        },
+        "lineInterpolation": "linear",
+        "lineWidth": 1,
+        "pointSize": 5,
+        "scaleDistribution": {
+         "type": "linear"
+        },
+        "showPoints": "auto",
+        "spanNulls": false,
+        "stacking": {
+         "group": "A",
+         "mode": "none"
+        },
+        "thresholdsStyle": {
+         "mode": "off"
+        }
+       },
+       "mappings": [],
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "green",
+          "value": null
+         }
+        ]
+       }
+      },
+      "overrides": []
+     },
+     "gridPos": {
+      "h": 7,
+      "w": 8,
+      "x": 16,
+      "y": 128
+     },
+     "id": 56,
+     "options": {
+      "legend": {
+       "calcs": [],
+       "displayMode": "list",
+       "placement": "bottom",
+       "showLegend": true
+      },
+      "tooltip": {
+       "mode": "multi",
+       "sort": "none"
+      }
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "loki",
+        "uid": "cerberus-loki"
+       },
+       "editorMode": "code",
+       "expr": "topk(3, rate({service_name=~\".+\"}[5m]))",
+       "queryType": "range",
+       "refId": "A"
+      }
+     ],
+     "title": "topk \u2014 parity rejection",
+     "type": "timeseries"
+    },
+    {
+     "cerberus": {
+      "expect": "error:bottomk changes output shape and is unsupported",
+      "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the panel FAILS the sweep the moment support lands, forcing the contract (and this dashboard) to be updated alongside the feature."
+     },
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "description": "bottomk changes output shape and is rejected.",
+     "fieldConfig": {
+      "defaults": {
+       "color": {
+        "mode": "palette-classic"
+       },
+       "custom": {
+        "axisBorderShow": false,
+        "axisCenteredZero": false,
+        "axisColorMode": "text",
+        "axisLabel": "",
+        "axisPlacement": "auto",
+        "barAlignment": 0,
+        "drawStyle": "line",
+        "fillOpacity": 10,
+        "gradientMode": "none",
+        "hideFrom": {
+         "legend": false,
+         "tooltip": false,
+         "viz": false
+        },
+        "lineInterpolation": "linear",
+        "lineWidth": 1,
+        "pointSize": 5,
+        "scaleDistribution": {
+         "type": "linear"
+        },
+        "showPoints": "auto",
+        "spanNulls": false,
+        "stacking": {
+         "group": "A",
+         "mode": "none"
+        },
+        "thresholdsStyle": {
+         "mode": "off"
+        }
+       },
+       "mappings": [],
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "green",
+          "value": null
+         }
+        ]
+       }
+      },
+      "overrides": []
+     },
+     "gridPos": {
+      "h": 7,
+      "w": 8,
+      "x": 0,
+      "y": 135
+     },
+     "id": 57,
+     "options": {
+      "legend": {
+       "calcs": [],
+       "displayMode": "list",
+       "placement": "bottom",
+       "showLegend": true
+      },
+      "tooltip": {
+       "mode": "multi",
+       "sort": "none"
+      }
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "loki",
+        "uid": "cerberus-loki"
+       },
+       "editorMode": "code",
+       "expr": "bottomk(3, rate({service_name=~\".+\"}[5m]))",
+       "queryType": "range",
+       "refId": "A"
+      }
+     ],
+     "title": "bottomk \u2014 parity rejection",
+     "type": "timeseries"
+    },
+    {
+     "cerberus": {
+      "expect": "error:sort requires output ordering",
+      "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the panel FAILS the sweep the moment support lands, forcing the contract (and this dashboard) to be updated alongside the feature."
+     },
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "description": "sort requires output ordering and is rejected.",
+     "fieldConfig": {
+      "defaults": {
+       "color": {
+        "mode": "palette-classic"
+       },
+       "custom": {
+        "axisBorderShow": false,
+        "axisCenteredZero": false,
+        "axisColorMode": "text",
+        "axisLabel": "",
+        "axisPlacement": "auto",
+        "barAlignment": 0,
+        "drawStyle": "line",
+        "fillOpacity": 10,
+        "gradientMode": "none",
+        "hideFrom": {
+         "legend": false,
+         "tooltip": false,
+         "viz": false
+        },
+        "lineInterpolation": "linear",
+        "lineWidth": 1,
+        "pointSize": 5,
+        "scaleDistribution": {
+         "type": "linear"
+        },
+        "showPoints": "auto",
+        "spanNulls": false,
+        "stacking": {
+         "group": "A",
+         "mode": "none"
+        },
+        "thresholdsStyle": {
+         "mode": "off"
+        }
+       },
+       "mappings": [],
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "green",
+          "value": null
+         }
+        ]
+       }
+      },
+      "overrides": []
+     },
+     "gridPos": {
+      "h": 7,
+      "w": 8,
+      "x": 8,
+      "y": 135
+     },
+     "id": 58,
+     "options": {
+      "legend": {
+       "calcs": [],
+       "displayMode": "list",
+       "placement": "bottom",
+       "showLegend": true
+      },
+      "tooltip": {
+       "mode": "multi",
+       "sort": "none"
+      }
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "loki",
+        "uid": "cerberus-loki"
+       },
+       "editorMode": "code",
+       "expr": "sort(sum by (service_name) (rate({service_name=~\".+\"}[5m])))",
+       "queryType": "range",
+       "refId": "A"
+      }
+     ],
+     "title": "sort \u2014 parity rejection",
+     "type": "timeseries"
+    },
+    {
+     "cerberus": {
+      "expect": "error:sort_desc requires output ordering",
+      "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the panel FAILS the sweep the moment support lands, forcing the contract (and this dashboard) to be updated alongside the feature."
+     },
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "description": "sort_desc requires output ordering and is rejected.",
+     "fieldConfig": {
+      "defaults": {
+       "color": {
+        "mode": "palette-classic"
+       },
+       "custom": {
+        "axisBorderShow": false,
+        "axisCenteredZero": false,
+        "axisColorMode": "text",
+        "axisLabel": "",
+        "axisPlacement": "auto",
+        "barAlignment": 0,
+        "drawStyle": "line",
+        "fillOpacity": 10,
+        "gradientMode": "none",
+        "hideFrom": {
+         "legend": false,
+         "tooltip": false,
+         "viz": false
+        },
+        "lineInterpolation": "linear",
+        "lineWidth": 1,
+        "pointSize": 5,
+        "scaleDistribution": {
+         "type": "linear"
+        },
+        "showPoints": "auto",
+        "spanNulls": false,
+        "stacking": {
+         "group": "A",
+         "mode": "none"
+        },
+        "thresholdsStyle": {
+         "mode": "off"
+        }
+       },
+       "mappings": [],
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "green",
+          "value": null
+         }
+        ]
+       }
+      },
+      "overrides": []
+     },
+     "gridPos": {
+      "h": 7,
+      "w": 8,
+      "x": 16,
+      "y": 135
+     },
+     "id": 59,
+     "options": {
+      "legend": {
+       "calcs": [],
+       "displayMode": "list",
+       "placement": "bottom",
+       "showLegend": true
+      },
+      "tooltip": {
+       "mode": "multi",
+       "sort": "none"
+      }
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "loki",
+        "uid": "cerberus-loki"
+       },
+       "editorMode": "code",
+       "expr": "sort_desc(sum by (service_name) (rate({service_name=~\".+\"}[5m])))",
+       "queryType": "range",
+       "refId": "A"
+      }
+     ],
+     "title": "sort_desc \u2014 parity rejection",
+     "type": "timeseries"
+    },
+    {
+     "cerberus": {
+      "expect": "error:aggregation operation",
+      "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the panel FAILS the sweep the moment support lands, forcing the contract (and this dashboard) to be updated alongside the feature."
+     },
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "description": "The probabilistic approx_topk aggregation is rejected.",
+     "fieldConfig": {
+      "defaults": {
+       "color": {
+        "mode": "palette-classic"
+       },
+       "custom": {
+        "axisBorderShow": false,
+        "axisCenteredZero": false,
+        "axisColorMode": "text",
+        "axisLabel": "",
+        "axisPlacement": "auto",
+        "barAlignment": 0,
+        "drawStyle": "line",
+        "fillOpacity": 10,
+        "gradientMode": "none",
+        "hideFrom": {
+         "legend": false,
+         "tooltip": false,
+         "viz": false
+        },
+        "lineInterpolation": "linear",
+        "lineWidth": 1,
+        "pointSize": 5,
+        "scaleDistribution": {
+         "type": "linear"
+        },
+        "showPoints": "auto",
+        "spanNulls": false,
+        "stacking": {
+         "group": "A",
+         "mode": "none"
+        },
+        "thresholdsStyle": {
+         "mode": "off"
+        }
+       },
+       "mappings": [],
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "green",
+          "value": null
+         }
+        ]
+       }
+      },
+      "overrides": []
+     },
+     "gridPos": {
+      "h": 7,
+      "w": 8,
+      "x": 0,
+      "y": 142
+     },
+     "id": 60,
+     "options": {
+      "legend": {
+       "calcs": [],
+       "displayMode": "list",
+       "placement": "bottom",
+       "showLegend": true
+      },
+      "tooltip": {
+       "mode": "multi",
+       "sort": "none"
+      }
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "loki",
+        "uid": "cerberus-loki"
+       },
+       "editorMode": "code",
+       "expr": "approx_topk(3, rate({service_name=~\".+\"}[5m]))",
+       "queryType": "range",
+       "refId": "A"
+      }
+     ],
+     "title": "approx_topk \u2014 parity rejection",
+     "type": "timeseries"
+    },
+    {
+     "cerberus": {
+      "expect": "error:binary op and unsupported",
+      "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the panel FAILS the sweep the moment support lands, forcing the contract (and this dashboard) to be updated alongside the feature."
+     },
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "description": "Logical set op `and` between sample expressions is rejected.",
+     "fieldConfig": {
+      "defaults": {
+       "color": {
+        "mode": "palette-classic"
+       },
+       "custom": {
+        "axisBorderShow": false,
+        "axisCenteredZero": false,
+        "axisColorMode": "text",
+        "axisLabel": "",
+        "axisPlacement": "auto",
+        "barAlignment": 0,
+        "drawStyle": "line",
+        "fillOpacity": 10,
+        "gradientMode": "none",
+        "hideFrom": {
+         "legend": false,
+         "tooltip": false,
+         "viz": false
+        },
+        "lineInterpolation": "linear",
+        "lineWidth": 1,
+        "pointSize": 5,
+        "scaleDistribution": {
+         "type": "linear"
+        },
+        "showPoints": "auto",
+        "spanNulls": false,
+        "stacking": {
+         "group": "A",
+         "mode": "none"
+        },
+        "thresholdsStyle": {
+         "mode": "off"
+        }
+       },
+       "mappings": [],
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "green",
+          "value": null
+         }
+        ]
+       }
+      },
+      "overrides": []
+     },
+     "gridPos": {
+      "h": 7,
+      "w": 8,
+      "x": 8,
+      "y": 142
+     },
+     "id": 61,
+     "options": {
+      "legend": {
+       "calcs": [],
+       "displayMode": "list",
+       "placement": "bottom",
+       "showLegend": true
+      },
+      "tooltip": {
+       "mode": "multi",
+       "sort": "none"
+      }
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "loki",
+        "uid": "cerberus-loki"
+       },
+       "editorMode": "code",
+       "expr": "rate({service_name=\"gateway\"}[5m]) and rate({service_name=\"gateway\"}[5m])",
+       "queryType": "range",
+       "refId": "A"
+      }
+     ],
+     "title": "and \u2014 parity rejection",
+     "type": "timeseries"
+    },
+    {
+     "cerberus": {
+      "expect": "error:binary op or unsupported",
+      "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the panel FAILS the sweep the moment support lands, forcing the contract (and this dashboard) to be updated alongside the feature."
+     },
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "description": "Logical set op `or` between sample expressions is rejected.",
+     "fieldConfig": {
+      "defaults": {
+       "color": {
+        "mode": "palette-classic"
+       },
+       "custom": {
+        "axisBorderShow": false,
+        "axisCenteredZero": false,
+        "axisColorMode": "text",
+        "axisLabel": "",
+        "axisPlacement": "auto",
+        "barAlignment": 0,
+        "drawStyle": "line",
+        "fillOpacity": 10,
+        "gradientMode": "none",
+        "hideFrom": {
+         "legend": false,
+         "tooltip": false,
+         "viz": false
+        },
+        "lineInterpolation": "linear",
+        "lineWidth": 1,
+        "pointSize": 5,
+        "scaleDistribution": {
+         "type": "linear"
+        },
+        "showPoints": "auto",
+        "spanNulls": false,
+        "stacking": {
+         "group": "A",
+         "mode": "none"
+        },
+        "thresholdsStyle": {
+         "mode": "off"
+        }
+       },
+       "mappings": [],
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "green",
+          "value": null
+         }
+        ]
+       }
+      },
+      "overrides": []
+     },
+     "gridPos": {
+      "h": 7,
+      "w": 8,
+      "x": 16,
+      "y": 142
+     },
+     "id": 62,
+     "options": {
+      "legend": {
+       "calcs": [],
+       "displayMode": "list",
+       "placement": "bottom",
+       "showLegend": true
+      },
+      "tooltip": {
+       "mode": "multi",
+       "sort": "none"
+      }
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "loki",
+        "uid": "cerberus-loki"
+       },
+       "editorMode": "code",
+       "expr": "rate({service_name=\"gateway\"}[5m]) or rate({service_name=\"gateway\"}[5m])",
+       "queryType": "range",
+       "refId": "A"
+      }
+     ],
+     "title": "or \u2014 parity rejection",
+     "type": "timeseries"
+    },
+    {
+     "cerberus": {
+      "expect": "error:binary op unless unsupported",
+      "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the panel FAILS the sweep the moment support lands, forcing the contract (and this dashboard) to be updated alongside the feature."
+     },
+     "datasource": {
+      "type": "loki",
+      "uid": "cerberus-loki"
+     },
+     "description": "Logical set op `unless` between sample expressions is rejected.",
+     "fieldConfig": {
+      "defaults": {
+       "color": {
+        "mode": "palette-classic"
+       },
+       "custom": {
+        "axisBorderShow": false,
+        "axisCenteredZero": false,
+        "axisColorMode": "text",
+        "axisLabel": "",
+        "axisPlacement": "auto",
+        "barAlignment": 0,
+        "drawStyle": "line",
+        "fillOpacity": 10,
+        "gradientMode": "none",
+        "hideFrom": {
+         "legend": false,
+         "tooltip": false,
+         "viz": false
+        },
+        "lineInterpolation": "linear",
+        "lineWidth": 1,
+        "pointSize": 5,
+        "scaleDistribution": {
+         "type": "linear"
+        },
+        "showPoints": "auto",
+        "spanNulls": false,
+        "stacking": {
+         "group": "A",
+         "mode": "none"
+        },
+        "thresholdsStyle": {
+         "mode": "off"
+        }
+       },
+       "mappings": [],
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "green",
+          "value": null
+         }
+        ]
+       }
+      },
+      "overrides": []
+     },
+     "gridPos": {
+      "h": 7,
+      "w": 8,
+      "x": 0,
+      "y": 149
+     },
+     "id": 63,
+     "options": {
+      "legend": {
+       "calcs": [],
+       "displayMode": "list",
+       "placement": "bottom",
+       "showLegend": true
+      },
+      "tooltip": {
+       "mode": "multi",
+       "sort": "none"
+      }
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "loki",
+        "uid": "cerberus-loki"
+       },
+       "editorMode": "code",
+       "expr": "rate({service_name=\"gateway\"}[5m]) unless rate({service_name=\"db\"}[5m])",
+       "queryType": "range",
+       "refId": "A"
+      }
+     ],
+     "title": "unless \u2014 parity rejection",
+     "type": "timeseries"
+    }
+   ],
+   "title": "Parity rejections \u2014 declared error contracts",
+   "type": "row"
+  }
+ ],
+ "schemaVersion": 39,
+ "tags": [
+  "cerberus",
+  "showcase",
+  "logql"
+ ],
+ "templating": {
+  "list": []
+ },
+ "time": {
+  "from": "now-15m",
+  "to": "now"
+ },
+ "timepicker": {},
+ "timezone": "browser",
+ "title": "LogQL Showcase",
+ "uid": "showcase-logql",
+ "version": 1,
+ "weekStart": ""
+}

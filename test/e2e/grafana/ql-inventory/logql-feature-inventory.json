@@ -1,0 +1,504 @@
+{
+  "ql": "logql",
+  "source": "github.com/grafana/loki/v3/pkg/logql/syntax (hand-curated, parser-pinned existence checks; tsouza fork pin in go.mod)",
+  "rows": [
+    {
+      "id": "agg-mod:by",
+      "class": "aggregation-modifier",
+      "token": "by",
+      "pin": "sum by (service_name) (rate({service_name=~\".+\"}[5m]))"
+    },
+    {
+      "id": "agg-mod:without",
+      "class": "aggregation-modifier",
+      "token": "without",
+      "pin": "sum without (service_name) (rate({service_name=~\".+\"}[5m]))"
+    },
+    {
+      "id": "agg:approx_topk",
+      "class": "aggregation",
+      "token": "approx_topk",
+      "pin": "approx_topk(3, rate({service_name=\"api\"}[5m]))"
+    },
+    {
+      "id": "agg:avg",
+      "class": "aggregation",
+      "token": "avg",
+      "pin": "avg(rate({service_name=\"api\"}[5m]))"
+    },
+    {
+      "id": "agg:bottomk",
+      "class": "aggregation",
+      "token": "bottomk",
+      "pin": "bottomk(3, rate({service_name=\"api\"}[5m]))"
+    },
+    {
+      "id": "agg:count",
+      "class": "aggregation",
+      "token": "count",
+      "pin": "count(rate({service_name=\"api\"}[5m]))"
+    },
+    {
+      "id": "agg:max",
+      "class": "aggregation",
+      "token": "max",
+      "pin": "max(rate({service_name=\"api\"}[5m]))"
+    },
+    {
+      "id": "agg:min",
+      "class": "aggregation",
+      "token": "min",
+      "pin": "min(rate({service_name=\"api\"}[5m]))"
+    },
+    {
+      "id": "agg:sort",
+      "class": "aggregation",
+      "token": "sort",
+      "pin": "sort(sum by (service_name) (rate({service_name=\"api\"}[5m])))"
+    },
+    {
+      "id": "agg:sort_desc",
+      "class": "aggregation",
+      "token": "sort_desc",
+      "pin": "sort_desc(sum by (service_name) (rate({service_name=\"api\"}[5m])))"
+    },
+    {
+      "id": "agg:stddev",
+      "class": "aggregation",
+      "token": "stddev",
+      "pin": "stddev(rate({service_name=\"api\"}[5m]))"
+    },
+    {
+      "id": "agg:stdvar",
+      "class": "aggregation",
+      "token": "stdvar",
+      "pin": "stdvar(rate({service_name=\"api\"}[5m]))"
+    },
+    {
+      "id": "agg:sum",
+      "class": "aggregation",
+      "token": "sum",
+      "pin": "sum(rate({service_name=\"api\"}[5m]))"
+    },
+    {
+      "id": "agg:topk",
+      "class": "aggregation",
+      "token": "topk",
+      "pin": "topk(3, rate({service_name=\"api\"}[5m]))"
+    },
+    {
+      "id": "feature:label_replace",
+      "class": "feature",
+      "token": "label_replace",
+      "pin": "label_replace(rate({service_name=\"api\"}[5m]), \"svc\", \"$1\", \"service_name\", \"(.*)\")"
+    },
+    {
+      "id": "feature:offset",
+      "class": "feature",
+      "token": "offset",
+      "pin": "count_over_time({service_name=\"api\"}[5m] offset 5m)"
+    },
+    {
+      "id": "feature:vector",
+      "class": "feature",
+      "token": "vector",
+      "pin": "vector(1)"
+    },
+    {
+      "id": "fmt:label_format",
+      "class": "format",
+      "token": "label_format",
+      "pin": "{service_name=\"api\"} | logfmt | label_format lvl=level"
+    },
+    {
+      "id": "fmt:line_format",
+      "class": "format",
+      "token": "line_format",
+      "pin": "{service_name=\"api\"} | line_format \"{{.service_name}}: {{__line__}}\""
+    },
+    {
+      "id": "labelfilter:and",
+      "class": "label-filter",
+      "token": "and",
+      "pin": "{service_name=\"api\"} | logfmt | status \u003e= 200 and status \u003c 300"
+    },
+    {
+      "id": "labelfilter:bytes",
+      "class": "label-filter",
+      "token": "bytes",
+      "pin": "{service_name=\"api\"} | logfmt | size \u003e 1KB"
+    },
+    {
+      "id": "labelfilter:duration",
+      "class": "label-filter",
+      "token": "duration",
+      "pin": "{service_name=\"api\"} | logfmt | took \u003e 100ms"
+    },
+    {
+      "id": "labelfilter:ip",
+      "class": "label-filter",
+      "token": "ip",
+      "pin": "{service_name=\"api\"} | logfmt | remote_addr = ip(\"10.0.0.0/8\")"
+    },
+    {
+      "id": "labelfilter:number",
+      "class": "label-filter",
+      "token": "number",
+      "pin": "{service_name=\"api\"} | logfmt | status \u003e= 500"
+    },
+    {
+      "id": "labelfilter:or",
+      "class": "label-filter",
+      "token": "or",
+      "pin": "{service_name=\"api\"} | detected_level=\"error\" or detected_level=\"warn\""
+    },
+    {
+      "id": "labelfilter:string",
+      "class": "label-filter",
+      "token": "string",
+      "pin": "{service_name=\"api\"} | detected_level=\"error\""
+    },
+    {
+      "id": "linefilter:!=",
+      "class": "line-filter",
+      "token": "!=",
+      "pin": "{service_name=\"api\"} != \"refused\""
+    },
+    {
+      "id": "linefilter:!\u003e",
+      "class": "line-filter",
+      "token": "!\u003e",
+      "pin": "{service_name=\"api\"} !\u003e \"\u003c_\u003e id=\u003c_\u003e\""
+    },
+    {
+      "id": "linefilter:!~",
+      "class": "line-filter",
+      "token": "!~",
+      "pin": "{service_name=\"api\"} !~ \"refused|slow\""
+    },
+    {
+      "id": "linefilter:ip",
+      "class": "line-filter",
+      "token": "ip",
+      "pin": "{service_name=\"api\"} |= ip(\"192.168.0.0/16\")"
+    },
+    {
+      "id": "linefilter:or",
+      "class": "line-filter",
+      "token": "or",
+      "pin": "{service_name=\"api\"} |= \"handled\" or \"cache\""
+    },
+    {
+      "id": "linefilter:|=",
+      "class": "line-filter",
+      "token": "|=",
+      "pin": "{service_name=\"api\"} |= \"handled\""
+    },
+    {
+      "id": "linefilter:|\u003e",
+      "class": "line-filter",
+      "token": "|\u003e",
+      "pin": "{service_name=\"api\"} |\u003e \"\u003c_\u003e id=\u003c_\u003e\""
+    },
+    {
+      "id": "linefilter:|~",
+      "class": "line-filter",
+      "token": "|~",
+      "pin": "{service_name=\"api\"} |~ \"handled|cache\""
+    },
+    {
+      "id": "match:group_left",
+      "class": "vector-matching",
+      "token": "group_left",
+      "pin": "sum by (service_name, detected_level) (rate({service_name=~\".+\"}[5m])) * on (service_name) group_left sum by (service_name) (count_over_time({service_name=~\".+\"}[5m]))"
+    },
+    {
+      "id": "match:group_right",
+      "class": "vector-matching",
+      "token": "group_right",
+      "pin": "sum by (service_name) (count_over_time({service_name=~\".+\"}[5m])) * on (service_name) group_right sum by (service_name, detected_level) (rate({service_name=~\".+\"}[5m]))"
+    },
+    {
+      "id": "match:ignoring",
+      "class": "vector-matching",
+      "token": "ignoring",
+      "pin": "rate({service_name=\"api\"}[5m]) * ignoring (thread) rate({service_name=\"api\"}[5m])"
+    },
+    {
+      "id": "match:on",
+      "class": "vector-matching",
+      "token": "on",
+      "pin": "sum by (service_name) (rate({service_name=~\".+\"}[5m])) * on (service_name) sum by (service_name) (count_over_time({service_name=~\".+\"}[5m]))"
+    },
+    {
+      "id": "op-mod:bool",
+      "class": "binary-modifier",
+      "token": "bool",
+      "pin": "count_over_time({service_name=\"api\"}[5m]) \u003e bool 10"
+    },
+    {
+      "id": "op:!=",
+      "class": "binary-comparison",
+      "token": "!=",
+      "pin": "count_over_time({service_name=\"api\"}[5m]) != 8"
+    },
+    {
+      "id": "op:%",
+      "class": "binary-arithmetic",
+      "token": "%",
+      "pin": "count_over_time({service_name=\"api\"}[5m]) % 2"
+    },
+    {
+      "id": "op:*",
+      "class": "binary-arithmetic",
+      "token": "*",
+      "pin": "rate({service_name=\"api\"}[5m]) * 2"
+    },
+    {
+      "id": "op:+",
+      "class": "binary-arithmetic",
+      "token": "+",
+      "pin": "rate({service_name=\"api\"}[5m]) + 1"
+    },
+    {
+      "id": "op:-",
+      "class": "binary-arithmetic",
+      "token": "-",
+      "pin": "rate({service_name=\"api\"}[5m]) - 1"
+    },
+    {
+      "id": "op:/",
+      "class": "binary-arithmetic",
+      "token": "/",
+      "pin": "rate({service_name=\"api\"}[5m]) / 2"
+    },
+    {
+      "id": "op:\u003c",
+      "class": "binary-comparison",
+      "token": "\u003c",
+      "pin": "count_over_time({service_name=\"api\"}[5m]) \u003c 1000000"
+    },
+    {
+      "id": "op:\u003c=",
+      "class": "binary-comparison",
+      "token": "\u003c=",
+      "pin": "count_over_time({service_name=\"api\"}[5m]) \u003c= 1000000"
+    },
+    {
+      "id": "op:==",
+      "class": "binary-comparison",
+      "token": "==",
+      "pin": "count_over_time({service_name=\"api\"}[5m]) == 8"
+    },
+    {
+      "id": "op:\u003e",
+      "class": "binary-comparison",
+      "token": "\u003e",
+      "pin": "count_over_time({service_name=\"api\"}[5m]) \u003e 0"
+    },
+    {
+      "id": "op:\u003e=",
+      "class": "binary-comparison",
+      "token": "\u003e=",
+      "pin": "count_over_time({service_name=\"api\"}[5m]) \u003e= 0"
+    },
+    {
+      "id": "op:^",
+      "class": "binary-arithmetic",
+      "token": "^",
+      "pin": "rate({service_name=\"api\"}[5m]) ^ 2"
+    },
+    {
+      "id": "op:and",
+      "class": "binary-set",
+      "token": "and",
+      "pin": "rate({service_name=\"api\"}[5m]) and rate({service_name=\"api\"}[5m])"
+    },
+    {
+      "id": "op:or",
+      "class": "binary-set",
+      "token": "or",
+      "pin": "rate({service_name=\"api\"}[5m]) or rate({service_name=\"api\"}[5m])"
+    },
+    {
+      "id": "op:unless",
+      "class": "binary-set",
+      "token": "unless",
+      "pin": "rate({service_name=\"api\"}[5m]) unless rate({service_name=\"db\"}[5m])"
+    },
+    {
+      "id": "parser:json",
+      "class": "parser",
+      "token": "json",
+      "pin": "{service_name=\"api\"} | json"
+    },
+    {
+      "id": "parser:json-expressions",
+      "class": "parser",
+      "token": "json-expressions",
+      "pin": "{service_name=\"api\"} | json status=\"response.status\""
+    },
+    {
+      "id": "parser:logfmt",
+      "class": "parser",
+      "token": "logfmt",
+      "pin": "{service_name=\"api\"} | logfmt"
+    },
+    {
+      "id": "parser:logfmt-expressions",
+      "class": "parser",
+      "token": "logfmt-expressions",
+      "pin": "{service_name=\"api\"} | logfmt lvl=\"level\""
+    },
+    {
+      "id": "parser:pattern",
+      "class": "parser",
+      "token": "pattern",
+      "pin": "{service_name=\"api\"} | pattern \"\u003cverb\u003e \u003cpath\u003e id=\u003cid\u003e\""
+    },
+    {
+      "id": "parser:regexp",
+      "class": "parser",
+      "token": "regexp",
+      "pin": "{service_name=\"api\"} | regexp \"id=(?P\u003cid\u003e\\\\d+)\""
+    },
+    {
+      "id": "parser:unpack",
+      "class": "parser",
+      "token": "unpack",
+      "pin": "{service_name=\"api\"} | unpack"
+    },
+    {
+      "id": "range:absent_over_time",
+      "class": "range-aggregation",
+      "token": "absent_over_time",
+      "pin": "absent_over_time({service_name=\"cerberus-showcase-never-logged\"}[5m])"
+    },
+    {
+      "id": "range:avg_over_time",
+      "class": "range-aggregation",
+      "token": "avg_over_time",
+      "pin": "avg_over_time({service_name=\"api\"} | logfmt | unwrap status [5m])"
+    },
+    {
+      "id": "range:bytes_over_time",
+      "class": "range-aggregation",
+      "token": "bytes_over_time",
+      "pin": "bytes_over_time({service_name=\"api\"}[5m])"
+    },
+    {
+      "id": "range:bytes_rate",
+      "class": "range-aggregation",
+      "token": "bytes_rate",
+      "pin": "bytes_rate({service_name=\"api\"}[5m])"
+    },
+    {
+      "id": "range:count_over_time",
+      "class": "range-aggregation",
+      "token": "count_over_time",
+      "pin": "count_over_time({service_name=\"api\"}[5m])"
+    },
+    {
+      "id": "range:first_over_time",
+      "class": "range-aggregation",
+      "token": "first_over_time",
+      "pin": "first_over_time({service_name=\"api\"} | logfmt | unwrap status [5m])"
+    },
+    {
+      "id": "range:last_over_time",
+      "class": "range-aggregation",
+      "token": "last_over_time",
+      "pin": "last_over_time({service_name=\"api\"} | logfmt | unwrap status [5m])"
+    },
+    {
+      "id": "range:max_over_time",
+      "class": "range-aggregation",
+      "token": "max_over_time",
+      "pin": "max_over_time({service_name=\"api\"} | logfmt | unwrap status [5m])"
+    },
+    {
+      "id": "range:min_over_time",
+      "class": "range-aggregation",
+      "token": "min_over_time",
+      "pin": "min_over_time({service_name=\"api\"} | logfmt | unwrap status [5m])"
+    },
+    {
+      "id": "range:quantile_over_time",
+      "class": "range-aggregation",
+      "token": "quantile_over_time",
+      "pin": "quantile_over_time(0.95, {service_name=\"api\"} | logfmt | unwrap status [5m])"
+    },
+    {
+      "id": "range:rate",
+      "class": "range-aggregation",
+      "token": "rate",
+      "pin": "rate({service_name=\"api\"}[5m])"
+    },
+    {
+      "id": "range:rate_counter",
+      "class": "range-aggregation",
+      "token": "rate_counter",
+      "pin": "rate_counter({service_name=\"api\"} | logfmt | unwrap status [5m])"
+    },
+    {
+      "id": "range:stddev_over_time",
+      "class": "range-aggregation",
+      "token": "stddev_over_time",
+      "pin": "stddev_over_time({service_name=\"api\"} | logfmt | unwrap status [5m])"
+    },
+    {
+      "id": "range:stdvar_over_time",
+      "class": "range-aggregation",
+      "token": "stdvar_over_time",
+      "pin": "stdvar_over_time({service_name=\"api\"} | logfmt | unwrap status [5m])"
+    },
+    {
+      "id": "range:sum_over_time",
+      "class": "range-aggregation",
+      "token": "sum_over_time",
+      "pin": "sum_over_time({service_name=\"api\"} | logfmt | unwrap status [5m])"
+    },
+    {
+      "id": "stage:decolorize",
+      "class": "stage",
+      "token": "decolorize",
+      "pin": "{service_name=\"api\"} | decolorize"
+    },
+    {
+      "id": "stage:drop",
+      "class": "stage",
+      "token": "drop",
+      "pin": "{service_name=\"api\"} | logfmt | drop took"
+    },
+    {
+      "id": "stage:keep",
+      "class": "stage",
+      "token": "keep",
+      "pin": "{service_name=\"api\"} | logfmt | keep level, status"
+    },
+    {
+      "id": "unwrap:bare",
+      "class": "unwrap",
+      "token": "bare",
+      "pin": "sum_over_time({service_name=\"api\"} | logfmt | unwrap status [5m])"
+    },
+    {
+      "id": "unwrap:bytes",
+      "class": "unwrap",
+      "token": "bytes",
+      "pin": "max_over_time({service_name=\"api\"} | logfmt | unwrap bytes(size) [5m])"
+    },
+    {
+      "id": "unwrap:duration",
+      "class": "unwrap",
+      "token": "duration",
+      "pin": "avg_over_time({service_name=\"api\"} | logfmt | unwrap duration(took) [5m])"
+    },
+    {
+      "id": "unwrap:duration_seconds",
+      "class": "unwrap",
+      "token": "duration_seconds",
+      "pin": "avg_over_time({service_name=\"api\"} | logfmt | unwrap duration_seconds(took) [5m])"
+    }
+  ]
+}
