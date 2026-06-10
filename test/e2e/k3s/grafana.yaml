@@ -122,8 +122,16 @@ spec:
               value: admin
             - name: GF_AUTH_ANONYMOUS_ENABLED
               value: "true"
+            # Admin, matching the compose stack: Grafana 12's Metrics
+            # Drilldown app denies the Viewer role outright ("Access
+            # denied — You do not have permission to see this page",
+            # run 27276109296), which hard-failed the drilldown sweep
+            # in k3d while compose (anonymous Admin) passed the same
+            # spec. This is an ephemeral throwaway test cluster — the
+            # same justification compose documents for its Admin
+            # anonymous session.
             - name: GF_AUTH_ANONYMOUS_ORG_ROLE
-              value: Viewer
+              value: Admin
             - name: GF_USERS_DEFAULT_THEME
               value: dark
             # Deliberately NO GF_INSTALL_PLUGINS for the drilldown
