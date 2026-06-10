@@ -369,8 +369,24 @@ jobs:
         run: |
           echo "=== pods ==="
           kubectl -n cerberus get pods -o wide || true
+          echo "=== events (last 50) ==="
+          kubectl -n cerberus get events --sort-by=.lastTimestamp | tail -50 || true
           echo "=== cerberus logs ==="
           kubectl -n cerberus logs deploy/cerberus --tail 200 || true
+          # Per-pod current + previous-container logs for EVERY
+          # cerberus pod: `logs deploy/...` picks one pod, which on a
+          # crash-looping deployment is usually a healthy survivor —
+          # run 27249217602 had two cerberus pods in CrashLoopBackOff
+          # (exit 1) and the dump captured nothing about why. The
+          # --previous tail is the crash evidence.
+          for p in $(kubectl -n cerberus get pods -l app=cerberus -o name); do
+            echo "=== $p (current) ==="
+            kubectl -n cerberus logs "$p" --tail 50 || true
+            echo "=== $p (previous container, if restarted) ==="
+            kubectl -n cerberus logs "$p" --previous --tail 100 || true
+          done
+          echo "=== cerberus pod describes ==="
+          kubectl -n cerberus describe pods -l app=cerberus || true
           echo "=== clickhouse logs ==="
           kubectl -n cerberus logs deploy/clickhouse --tail 200 || true
           echo "=== grafana logs ==="
