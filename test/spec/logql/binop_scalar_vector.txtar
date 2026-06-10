@@ -47,7 +47,7 @@ INSERT INTO otel_logs (Timestamp, Body, ResourceAttributes) VALUES
     (toDateTime64('2026-01-01 00:00:00', 9), 'c', map('service_name', 'api'));
 -- expected_rows --
 [
-  [{"service_name": "api"}, 6.0]
+  ["", {"service_name": "api"}, "2026-01-01T00:00:01Z", 6]
 ]
 -- chplan --
 Project ["" AS MetricName, ResourceAttributes AS Attributes, now64(9) AS TimeUnix, (2 * Value) AS Value]
