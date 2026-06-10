@@ -295,6 +295,7 @@ jobs:
           # `_\s*=\s*recover` discriminates a silent swallow from the
           # legitimate `r := recover(); if r == nil { t.Fatal(...) }`
           # assert-the-panic pattern used elsewhere in the repo.
+          # shellcheck disable=SC2016 # single-quoted perl one-liner: $vars are perl, not shell
           matches=$(git ls-files -z -- '*_test.go' ':!:compatibility/*/upstream/**' \
             | xargs -0 perl -0777 -ne '
                 while (/defer\s+recover\s*\(\s*\)|defer\s+func\s*\(\s*\)\s*\{[^{}]*_\s*=\s*recover\s*\(\s*\)/g) {
@@ -322,6 +323,7 @@ jobs:
           # Multi-line scan: detect `should_skip:` followed by a
           # block child (`- source:`) — i.e. a non-empty entry. The
           # accepted empty form `should_skip: []` does not match.
+          # shellcheck disable=SC2016 # single-quoted perl one-liner: $vars are perl, not shell
           matches=$(git ls-files -z -- \
               'compatibility/**/*.yml' \
               'compatibility/**/*.yaml' \
