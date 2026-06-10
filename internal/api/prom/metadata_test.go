@@ -3,11 +3,13 @@ package prom_test
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/tsouza/cerberus/internal/api/prom"
 	"github.com/tsouza/cerberus/internal/chclient"
+	"github.com/tsouza/cerberus/internal/schema"
 )
 
 // metadataResponse decodes the Prom metadata-endpoint shape — `data` is a
@@ -323,6 +325,191 @@ func TestMetadata_FilterByName(t *testing.T) {
 
 	if len(q.lastArgs) == 0 || q.lastArgs[0] != "up" {
 		t.Errorf("expected last query arg = 'up', got %v", q.lastArgs)
+	}
+}
+
+// TestMetadata_NonMonotonicSumIsGauge pins the OTel→Prometheus type
+// mapping for the sum table: monotonic Sums report as "counter",
+// non-monotonic Sums (OTel UpDownCounters — e.g. the in-flight-query
+// gauge cerberus itself emits) report as "gauge". Before the split the
+// handler typed every sum-table metric "counter", and Grafana's
+// Metrics Drilldown wrapped UpDownCounters in rate() — a flat-0 chart.
+func TestMetadata_NonMonotonicSumIsGauge(t *testing.T) {
+	t.Parallel()
+
+	q := &stubQuerier{}
+	q.metaRowsFn = func(call metaCall) []chclient.MetricMetaRow {
+		if !strings.Contains(call.sql, "otel_metrics_sum") {
+			return nil
+		}
+		switch {
+		case strings.Contains(call.sql, "NOT `IsMonotonic`"):
+			return []chclient.MetricMetaRow{{
+				Name:        "cerberus_query_inflight",
+				Description: "Currently-executing engine queries.",
+				Unit:        "{query}",
+				Type:        call.kind,
+			}}
+		case strings.Contains(call.sql, "`IsMonotonic`"):
+			return []chclient.MetricMetaRow{{
+				Name:        "cerberus_queries_total",
+				Description: "Total engine queries.",
+				Unit:        "{query}",
+				Type:        call.kind,
+			}}
+		default:
+			t.Errorf("sum-table metadata SQL missing IsMonotonic predicate: %q", call.sql)
+			return nil
+		}
+	}
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/v1/metadata")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+	var parsed metadataResponse
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// (a) Fan-out shape: the sum table is queried exactly twice — once
+	// per monotonicity arm with the matching reported type — and the
+	// gauge / histogram arms carry no IsMonotonic predicate.
+	var sumCalls []metaCall
+	for _, call := range q.metaCalls {
+		if strings.Contains(call.sql, "otel_metrics_sum") {
+			sumCalls = append(sumCalls, call)
+			continue
+		}
+		if strings.Contains(call.sql, "IsMonotonic") {
+			t.Errorf("non-sum metadata SQL (kind=%s) must not filter IsMonotonic: %q",
+				call.kind, call.sql)
+		}
+	}
+	if len(sumCalls) != 2 {
+		t.Fatalf("expected 2 sum-table metadata queries, got %d: %+v",
+			len(sumCalls), sumCalls)
+	}
+	for _, call := range sumCalls {
+		nonMonotonic := strings.Contains(call.sql, "NOT `IsMonotonic`")
+		switch {
+		case nonMonotonic && call.kind != "gauge":
+			t.Errorf("NOT IsMonotonic arm reported type %q, want gauge; sql=%q",
+				call.kind, call.sql)
+		case !nonMonotonic && call.kind != "counter":
+			t.Errorf("IsMonotonic arm reported type %q, want counter; sql=%q",
+				call.kind, call.sql)
+		}
+	}
+
+	// (b) Wire result: the non-monotonic metric surfaces as gauge, the
+	// monotonic one as counter.
+	var grouped map[string][]prom.MetricMetaEntry
+	if err := json.Unmarshal(parsed.Data, &grouped); err != nil {
+		t.Fatalf("decode data: %v", err)
+	}
+	wantTypes := map[string]string{
+		"cerberus_query_inflight": "gauge",
+		"cerberus_queries_total":  "counter",
+	}
+	for name, wantType := range wantTypes {
+		entries, ok := grouped[name]
+		if !ok || len(entries) != 1 {
+			t.Errorf("expected exactly one entry for %q, got %+v", name, grouped[name])
+			continue
+		}
+		if entries[0].Type != wantType {
+			t.Errorf("%s: type=%q, want %q", name, entries[0].Type, wantType)
+		}
+	}
+}
+
+// TestMetadata_MonotonicFilterCombinesWithMetricName asserts the
+// `?metric=` filter ANDs with the per-arm IsMonotonic predicate rather
+// than replacing it — both clauses must land in the sum-table SQL and
+// the metric name stays the (only) bound arg.
+func TestMetadata_MonotonicFilterCombinesWithMetricName(t *testing.T) {
+	t.Parallel()
+
+	q := &stubQuerier{}
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/v1/metadata?metric=cerberus_query_inflight")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+
+	checked := 0
+	for _, call := range q.metaCalls {
+		if !strings.Contains(call.sql, "otel_metrics_sum") {
+			continue
+		}
+		checked++
+		if !strings.Contains(call.sql, "IsMonotonic") {
+			t.Errorf("sum arm missing IsMonotonic predicate: %q", call.sql)
+		}
+		if !strings.Contains(call.sql, "`MetricName` = ?") {
+			t.Errorf("sum arm missing metric-name filter: %q", call.sql)
+		}
+		if len(call.args) != 1 || call.args[0] != "cerberus_query_inflight" {
+			t.Errorf("sum arm args = %v, want [cerberus_query_inflight]", call.args)
+		}
+	}
+	if checked != 2 {
+		t.Fatalf("expected 2 sum-table metadata queries, got %d", checked)
+	}
+}
+
+// TestMetadata_NoMonotonicColumnFallsBackToCounter pins the documented
+// fallback for schema overrides whose sum table carries no IsMonotonic
+// column: a single counter-typed sum-table query (the pre-split
+// behaviour) with no IsMonotonic predicate.
+func TestMetadata_NoMonotonicColumnFallsBackToCounter(t *testing.T) {
+	t.Parallel()
+
+	q := &stubQuerier{}
+	s := schema.DefaultOTelMetrics()
+	s.IsMonotonicColumn = ""
+	h := prom.New(q, s, nil)
+	mux := http.NewServeMux()
+	h.Mount(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/v1/metadata")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+
+	var sumCalls []metaCall
+	for _, call := range q.metaCalls {
+		if strings.Contains(call.sql, "IsMonotonic") {
+			t.Errorf("no-IsMonotonic schema must not emit the predicate: %q", call.sql)
+		}
+		if strings.Contains(call.sql, "otel_metrics_sum") {
+			sumCalls = append(sumCalls, call)
+		}
+	}
+	if len(sumCalls) != 1 {
+		t.Fatalf("expected 1 sum-table metadata query in fallback mode, got %d", len(sumCalls))
+	}
+	if sumCalls[0].kind != "counter" {
+		t.Errorf("fallback sum arm reported type %q, want counter", sumCalls[0].kind)
 	}
 }
 

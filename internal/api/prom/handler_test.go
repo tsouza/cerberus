@@ -27,6 +27,22 @@ type stubQuerier struct {
 	exemplarsErr error
 	lastSQL      string
 	lastArgs     []any
+
+	// metaCalls records every QueryMetricMeta invocation in order so
+	// metadata tests can assert the per-table fan-out (which SQL was
+	// issued under which reported metric type).
+	metaCalls []metaCall
+	// metaRowsFn, when set, answers each QueryMetricMeta call from the
+	// recorded call instead of the static metaRows slice — lets a test
+	// return different rows per fan-out arm.
+	metaRowsFn func(call metaCall) []chclient.MetricMetaRow
+}
+
+// metaCall is one recorded QueryMetricMeta invocation.
+type metaCall struct {
+	sql  string
+	kind string
+	args []any
 }
 
 func (s *stubQuerier) Query(_ context.Context, sql string, args ...any) ([]chclient.Sample, error) {
@@ -65,11 +81,16 @@ func (s *stubQuerier) QueryLabelSets(_ context.Context, sql string, args ...any)
 	return s.labelSets, nil
 }
 
-func (s *stubQuerier) QueryMetricMeta(_ context.Context, sql, _ string, args ...any) ([]chclient.MetricMetaRow, error) {
+func (s *stubQuerier) QueryMetricMeta(_ context.Context, sql, metricType string, args ...any) ([]chclient.MetricMetaRow, error) {
 	s.lastSQL = sql
 	s.lastArgs = args
+	call := metaCall{sql: sql, kind: metricType, args: args}
+	s.metaCalls = append(s.metaCalls, call)
 	if s.err != nil {
 		return nil, s.err
+	}
+	if s.metaRowsFn != nil {
+		return s.metaRowsFn(call), nil
 	}
 	return s.metaRows, nil
 }
