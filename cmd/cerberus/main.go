@@ -95,33 +95,23 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	client, err := chclient.New(ctx, cfg.ClickHouse)
+	// Construction is lazy — chclient.New never dials, it only
+	// validates options. An error here is misconfiguration that can
+	// never succeed (fail-fast is correct); connectivity problems
+	// surface on the best-effort Ping below and on /readyz.
+	client, err := chclient.New(cfg.ClickHouse)
 	if err != nil {
-		return fmt.Errorf("connect to clickhouse: %w", err)
+		return fmt.Errorf("configure clickhouse client: %w", err)
 	}
 	defer func() {
 		_ = client.Close()
 	}()
 
-	// schemaReady tracks whether the auto-create-schema startup hook
-	// has finished at least once. When auto-create is off the readiness
-	// probe should not gate on it, so we seed it true.
-	var schemaReady atomic.Bool
-	if cfg.AutoCreateSchema {
-		logger.Info(
-			"auto-creating OTel ClickHouse schema",
-			"database", cfg.ClickHouse.Database,
-			"signals", "metrics,logs,traces",
-		)
-		applyCfg := ddl.Config{Database: cfg.ClickHouse.Database}
-		if err := ddl.ApplyWithConfig(ctx, client.Conn(), applyCfg, ddl.All); err != nil {
-			return fmt.Errorf("auto-create schema: %w", err)
-		}
-		logger.Info("OTel ClickHouse schema ready")
-		schemaReady.Store(true)
-	} else {
-		schemaReady.Store(true)
-	}
+	warnIfClickHouseUnreachable(ctx, logger, client, cfg.ClickHouse)
+
+	// schemaReady reports whether the auto-create-schema startup hook
+	// has finished at least once; /readyz consults it on every probe.
+	schemaReady := setupSchema(ctx, logger, client, cfg.ClickHouse.Database, cfg.AutoCreateSchema)
 
 	// Install the W3C+Baggage propagator and build OTel providers from
 	// the OTLP env config. When CERBERUS_OTLP_ENDPOINT is empty the
@@ -218,7 +208,7 @@ func run() error {
 	// into a single ClickHouse ping per window.
 	healthHandler := health.New(health.Options{
 		Pinger:      client,
-		SchemaReady: schemaReady.Load,
+		SchemaReady: schemaReady,
 	})
 
 	rootMux := http.NewServeMux()
@@ -271,6 +261,113 @@ func run() error {
 	}
 	logger.Info("cerberus stopped")
 	return nil
+}
+
+// warnIfClickHouseUnreachable performs the best-effort startup
+// connectivity validation, demoted to a WARN. A replica that boots
+// while ClickHouse is saturated or still starting (HPA scale-up during
+// a load burst — CI run 27272406583 crash-looped on exactly this) must
+// come up "started but unready": the HTTP listener binds regardless and
+// /readyz keeps the pod out of the Service endpoints until the CH ping
+// succeeds. That is what Kubernetes readiness gating is for — exiting
+// here would just convert a transient dependency outage into a
+// CrashLoopBackOff.
+func warnIfClickHouseUnreachable(ctx context.Context, logger *slog.Logger, client *chclient.Client, cfg chclient.Config) {
+	timeout := cfg.DialTimeout
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	pingCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	if err := client.Ping(pingCtx); err != nil {
+		logger.Warn(
+			"clickhouse not reachable at startup; serving unready until it appears (/readyz gates traffic)",
+			"addr", cfg.Addr,
+			"err", err,
+		)
+	}
+}
+
+// setupSchema runs the auto-create-schema startup hook (when enabled)
+// and returns the SchemaReadyFunc the /readyz handler consults. When
+// auto-create is off, readiness must not gate on it, so the returned
+// func reports true immediately. When the first apply fails — the same
+// incident class as the startup ping above: the DDL templates are
+// static and covered by integration tests, so a failure here is
+// overwhelmingly "ClickHouse isn't up yet" — the apply retries in the
+// background and /readyz reports schema "pending" instead of the
+// process exiting.
+func setupSchema(
+	ctx context.Context,
+	logger *slog.Logger,
+	client *chclient.Client,
+	database string,
+	autoCreate bool,
+) health.SchemaReadyFunc {
+	ready := new(atomic.Bool)
+	if !autoCreate {
+		ready.Store(true)
+		return ready.Load
+	}
+	logger.Info(
+		"auto-creating OTel ClickHouse schema",
+		"database", database,
+		"signals", "metrics,logs,traces",
+	)
+	applyCfg := ddl.Config{Database: database}
+	apply := func(ctx context.Context) error {
+		return ddl.ApplyWithConfig(ctx, client.Conn(), applyCfg, ddl.All)
+	}
+	if err := apply(ctx); err != nil {
+		logger.Warn(
+			"auto-create schema failed at startup; retrying in background (/readyz reports schema pending)",
+			"err", err,
+		)
+		go retrySchemaApply(ctx, logger, ready, schemaRetryInterval, apply)
+		return ready.Load
+	}
+	logger.Info("OTel ClickHouse schema ready")
+	ready.Store(true)
+	return ready.Load
+}
+
+// schemaRetryInterval is the cadence of background auto-create-schema
+// retries after a failed startup attempt. 5s sits between the /readyz
+// probe period (3s) and the readiness TTL cache (2s): a recovering
+// ClickHouse is picked up within roughly two probe periods without
+// hammering a server that is still coming up.
+const schemaRetryInterval = 5 * time.Second
+
+// retrySchemaApply re-runs the auto-create-schema hook until it
+// succeeds once or ctx is cancelled (SIGTERM / process shutdown). On
+// success it flips ready, which the /readyz handler consults — until
+// then the pod reports schema "pending" and stays out of the Service
+// endpoints. Failures stay WARNs: a booting replica must not exit(1)
+// because ClickHouse isn't accepting connections yet (CI run
+// 27272406583 crash-looped a scale-up replica on exactly that).
+func retrySchemaApply(
+	ctx context.Context,
+	logger *slog.Logger,
+	ready *atomic.Bool,
+	interval time.Duration,
+	apply func(context.Context) error,
+) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		if err := apply(ctx); err != nil {
+			logger.Warn("auto-create schema retry failed", "err", err)
+			continue
+		}
+		logger.Info("OTel ClickHouse schema ready")
+		ready.Store(true)
+		return
+	}
 }
 
 // buildDualStackServer wires an http.Server that serves HTTP/1.1 (for

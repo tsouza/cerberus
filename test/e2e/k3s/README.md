@@ -98,7 +98,11 @@ autoscaler up alongside everything else.
 
 Defaults:
 
-- `minReplicas: 2`, `maxReplicas: 10`.
+- `minReplicas: 2`, `maxReplicas: 4`. The ceiling is a **CI** bound:
+  the 16GB/4vCPU GitHub runner cannot back 10 × 1Gi of cerberus burst
+  next to ClickHouse + collector + Grafana + Playwright (run
+  27272406583 saturated CH that way). Production ceilings belong in
+  production overlays.
 - Scales on **CPU utilisation** at 70% of the pod's CPU request. The
   standard `metrics-server` is the only dependency (already present
   in k3d/k3s). No prometheus-adapter, no prometheus-operator.
@@ -117,14 +121,15 @@ kubectl -n cerberus describe hpa cerberus
 ```
 
 The output should show `TARGETS  70%/<current>%` and
-`MINPODS  2`, `MAXPODS  10`. If `TARGETS` is `<unknown>/70%`,
+`MINPODS  2`, `MAXPODS  4`. If `TARGETS` is `<unknown>/70%`,
 metrics-server has not reported yet — give it 60 seconds after the
 pods become Ready.
 
 ### Tuning
 
-- **Bigger ceiling** — raise `maxReplicas` once the upstream
-  ClickHouse cluster can absorb the parallel query load.
+- **Bigger ceiling** — raise `maxReplicas` in a production overlay
+  once the upstream ClickHouse cluster can absorb the parallel query
+  load; this manifest's value is sized for the CI runner.
 - **Quieter scale-down** — increase `scaleDown.stabilizationWindowSeconds`
   for workloads with predictable diurnal dips.
 - **Load-aware scaling** — see the commented block at the bottom of
