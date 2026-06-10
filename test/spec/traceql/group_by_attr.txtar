@@ -1,25 +1,28 @@
 -- query.traceql --
 {} | by(resource.service.name)
 -- sql --
-SELECT `ResourceAttributes`[?] AS `GroupKey`, any(`TraceId`) AS `TraceId`, any(`SpanId`) AS `SpanId`, min(`Timestamp`) AS `Timestamp` FROM (SELECT * FROM `otel_traces` WHERE ?) GROUP BY `ResourceAttributes`[?]
+SELECT `ResourceAttributes`[?] AS `GroupKey`, any(`TraceId`) AS `TraceId`, any(`SpanId`) AS `SpanId`, toFloat64(count(?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT * FROM `otel_traces` WHERE ?) GROUP BY `ResourceAttributes`[?]
 -- args --
 [0] string = "service.name"
-[1] bool = true
-[2] string = "service.name"
+[1] int64 = 1
+[2] bool = true
+[3] string = "service.name"
 -- seed --
 CREATE TABLE otel_traces (
     TraceId String,
     SpanId String,
+    SpanName String,
     Timestamp DateTime64(9),
-    ResourceAttributes Map(String, String)
+    ResourceAttributes Map(String, String),
+    Duration UInt64
 ) ENGINE = Memory;
 INSERT INTO otel_traces VALUES
-    ('a0000000000000000000000000000001', '0000000000000001', toDateTime64('2026-01-01 00:00:00', 9), map('service.name', 'frontend'));
+    ('a0000000000000000000000000000001', '0000000000000001', 'span', toDateTime64('2026-01-01 00:00:00', 9), map('service.name', 'frontend'), 1000000);
 -- expected_rows --
 [
-  ["frontend", "a0000000000000000000000000000001", "0000000000000001", "2026-01-01T00:00:00Z"]
+  ["frontend", "a0000000000000000000000000000001", "0000000000000001", 1, "span", {"service.name": "frontend"}, "2026-01-01T00:00:00Z", 1767225600000000000, 1767225600001000000]
 ]
 -- chplan --
-Aggregate groupBy=[ResourceAttributes["service.name"] AS GroupKey] funcs=[any(TraceId) AS TraceId, any(SpanId) AS SpanId, min(Timestamp) AS Timestamp]
+Aggregate groupBy=[ResourceAttributes["service.name"] AS GroupKey] funcs=[any(TraceId) AS TraceId, any(SpanId) AS SpanId, count(1) AS Value, any(SpanName) AS MetricName, any(ResourceAttributes) AS ResourceAttrs, min(Timestamp) AS TimeUnix, min(toUnixTimestamp64Nano(Timestamp)) AS TraceStartNs, max((toUnixTimestamp64Nano(Timestamp) + toInt64(Duration))) AS TraceEndNs]
   Filter predicate=true
     Scan(otel_traces)

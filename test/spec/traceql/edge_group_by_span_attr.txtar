@@ -1,27 +1,31 @@
 -- query.traceql --
 {} | by(span.http.method)
+-- sql --
+SELECT `SpanAttributes`[?] AS `GroupKey`, any(`TraceId`) AS `TraceId`, any(`SpanId`) AS `SpanId`, toFloat64(count(?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT * FROM `otel_traces` WHERE ?) GROUP BY `SpanAttributes`[?]
 -- args --
 [0] string = "http.method"
-[1] bool = true
-[2] string = "http.method"
--- sql --
-SELECT `SpanAttributes`[?] AS `GroupKey`, any(`TraceId`) AS `TraceId`, any(`SpanId`) AS `SpanId`, min(`Timestamp`) AS `Timestamp` FROM (SELECT * FROM `otel_traces` WHERE ?) GROUP BY `SpanAttributes`[?]
+[1] int64 = 1
+[2] bool = true
+[3] string = "http.method"
 -- seed --
 CREATE TABLE otel_traces (
     TraceId String,
     SpanId String,
+    SpanName String,
     Timestamp DateTime64(9),
-    SpanAttributes Map(String, String)
+    ResourceAttributes Map(String, String),
+    SpanAttributes Map(String, String),
+    Duration UInt64
 ) ENGINE = Memory;
 INSERT INTO otel_traces VALUES
-    ('a0000000000000000000000000000001', '0000000000000001', toDateTime64('2026-01-01 00:00:00', 9), map('http.method', 'GET')),
-    ('a0000000000000000000000000000002', '0000000000000002', toDateTime64('2026-01-01 00:00:00', 9), map('http.method', 'POST'));
+    ('a0000000000000000000000000000001', '0000000000000001', 'span', toDateTime64('2026-01-01 00:00:00', 9), map(), map('http.method', 'GET'), 1000000),
+    ('a0000000000000000000000000000002', '0000000000000002', 'span', toDateTime64('2026-01-01 00:00:00', 9), map(), map('http.method', 'POST'), 1000000);
 -- expected_rows --
 [
-  ["GET", "a0000000000000000000000000000001", "0000000000000001", "2026-01-01T00:00:00Z"],
-  ["POST", "a0000000000000000000000000000002", "0000000000000002", "2026-01-01T00:00:00Z"]
+  ["GET", "a0000000000000000000000000000001", "0000000000000001", 1, "span", {}, "2026-01-01T00:00:00Z", 1767225600000000000, 1767225600001000000],
+  ["POST", "a0000000000000000000000000000002", "0000000000000002", 1, "span", {}, "2026-01-01T00:00:00Z", 1767225600000000000, 1767225600001000000]
 ]
 -- chplan --
-Aggregate groupBy=[SpanAttributes["http.method"] AS GroupKey] funcs=[any(TraceId) AS TraceId, any(SpanId) AS SpanId, min(Timestamp) AS Timestamp]
+Aggregate groupBy=[SpanAttributes["http.method"] AS GroupKey] funcs=[any(TraceId) AS TraceId, any(SpanId) AS SpanId, count(1) AS Value, any(SpanName) AS MetricName, any(ResourceAttributes) AS ResourceAttrs, min(Timestamp) AS TimeUnix, min(toUnixTimestamp64Nano(Timestamp)) AS TraceStartNs, max((toUnixTimestamp64Nano(Timestamp) + toInt64(Duration))) AS TraceEndNs]
   Filter predicate=true
     Scan(otel_traces)
