@@ -128,6 +128,16 @@ spec:
               value: dark
             - name: GF_FEATURE_TOGGLES_ENABLE
               value: traceqlSearch
+            # The drilldown-apps sweep (iterate-drilldown-apps.spec.ts)
+            # hard-fails on any catalogue app whose
+            # /api/plugins/<id>/settings reports not-installed (the
+            # install-probe early-skip was removed with the rest of the
+            # test escape hatches). grafana-lokiexplore-app ships built
+            # in to grafana/grafana:11.4.0; the metrics and traces
+            # drilldown apps don't until later releases, so install
+            # them from the catalog at startup.
+            - name: GF_INSTALL_PLUGINS
+              value: grafana-metricsdrilldown-app,grafana-exploretraces-app
           volumeMounts:
             - name: datasources
               mountPath: /etc/grafana/provisioning/datasources

@@ -70,16 +70,20 @@ const SEED_TRAFFIC_SECONDS = 30;
 const QUERY_WINDOW_SECONDS = 5 * 60;
 const QUERY_STEP_SECONDS = 15;
 
-// Path to the provisioning directory the compose stack mounts into
-// Grafana. The spec lives at test/e2e/playwright/iterate-all-dashboards.spec.ts
-// so the dashboards dir is one level up + /grafana/compose/dashboards.
-const DASHBOARDS_DIR = resolve(
-  __dirname,
-  '..',
-  'grafana',
-  'compose',
-  'dashboards',
-);
+// Path to the provisioning directory the stack under test mounts into
+// Grafana. Defaults to the compose stack's directory (the spec lives
+// at test/e2e/playwright/iterate-all-dashboards.spec.ts, so that's one
+// level up + /grafana/compose/dashboards); the k3d dashboard job
+// overrides via DASHBOARDS_DIR because the k3d stack provisions a
+// different (smaller) dashboard set — its collector intentionally
+// doesn't run the compose-only sqlquery/hostmetrics/self-scrape
+// receivers, so probing the compose-only dashboards against it
+// reports empty panels for data the stack never ships. Each stack's
+// sweep must cover exactly the dashboards that stack provisions; the
+// compose set stays covered per-PR by the required compose-smoke job.
+const DASHBOARDS_DIR =
+  process.env.DASHBOARDS_DIR ??
+  resolve(__dirname, '..', 'grafana', 'compose', 'dashboards');
 
 /**
  * Local types — kept inline since this spec uses the on-disk JSON
