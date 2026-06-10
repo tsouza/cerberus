@@ -1,0 +1,789 @@
+{
+  "ql": "promql",
+  "source": "github.com/prometheus/prometheus/promql/parser (parser.Functions + parser-pinned existence checks; tsouza fork pin in go.mod)",
+  "rows": [
+    {
+      "id": "agg-mod:by",
+      "class": "aggregation-modifier",
+      "token": "by",
+      "pin": "sum by (job) (up)"
+    },
+    {
+      "id": "agg-mod:without",
+      "class": "aggregation-modifier",
+      "token": "without",
+      "pin": "sum without (job) (up)"
+    },
+    {
+      "id": "agg:avg",
+      "class": "aggregation",
+      "token": "avg",
+      "pin": "avg(up)"
+    },
+    {
+      "id": "agg:bottomk",
+      "class": "aggregation",
+      "token": "bottomk",
+      "pin": "bottomk(2, up)"
+    },
+    {
+      "id": "agg:count",
+      "class": "aggregation",
+      "token": "count",
+      "pin": "count(up)"
+    },
+    {
+      "id": "agg:count_values",
+      "class": "aggregation",
+      "token": "count_values",
+      "pin": "count_values(\"v\", up)"
+    },
+    {
+      "id": "agg:group",
+      "class": "aggregation",
+      "token": "group",
+      "pin": "group(up)"
+    },
+    {
+      "id": "agg:limit_ratio",
+      "class": "aggregation",
+      "token": "limit_ratio",
+      "pin": "limit_ratio(0.5, up)"
+    },
+    {
+      "id": "agg:limitk",
+      "class": "aggregation",
+      "token": "limitk",
+      "pin": "limitk(2, up)"
+    },
+    {
+      "id": "agg:max",
+      "class": "aggregation",
+      "token": "max",
+      "pin": "max(up)"
+    },
+    {
+      "id": "agg:min",
+      "class": "aggregation",
+      "token": "min",
+      "pin": "min(up)"
+    },
+    {
+      "id": "agg:quantile",
+      "class": "aggregation",
+      "token": "quantile",
+      "pin": "quantile(0.9, up)"
+    },
+    {
+      "id": "agg:stddev",
+      "class": "aggregation",
+      "token": "stddev",
+      "pin": "stddev(up)"
+    },
+    {
+      "id": "agg:stdvar",
+      "class": "aggregation",
+      "token": "stdvar",
+      "pin": "stdvar(up)"
+    },
+    {
+      "id": "agg:sum",
+      "class": "aggregation",
+      "token": "sum",
+      "pin": "sum(up)"
+    },
+    {
+      "id": "agg:topk",
+      "class": "aggregation",
+      "token": "topk",
+      "pin": "topk(2, up)"
+    },
+    {
+      "id": "feature:native-histogram-selector",
+      "class": "feature",
+      "token": "_exp_hist",
+      "pin": "histogram_quantile(0.9, foo_exp_hist)"
+    },
+    {
+      "id": "feature:negative-offset",
+      "class": "feature",
+      "token": "offset -",
+      "pin": "up offset -5m"
+    },
+    {
+      "id": "feature:offset",
+      "class": "feature",
+      "token": "offset",
+      "pin": "up offset 5m"
+    },
+    {
+      "id": "feature:subquery",
+      "class": "feature",
+      "token": "subquery",
+      "pin": "max_over_time(rate(foo_total[1m])[10m:1m])"
+    },
+    {
+      "id": "fn:abs",
+      "class": "function",
+      "token": "abs",
+      "pin": "abs(up)"
+    },
+    {
+      "id": "fn:absent",
+      "class": "function",
+      "token": "absent",
+      "pin": "absent(up)"
+    },
+    {
+      "id": "fn:absent_over_time",
+      "class": "function",
+      "token": "absent_over_time",
+      "pin": "absent_over_time(up[5m])"
+    },
+    {
+      "id": "fn:acos",
+      "class": "function",
+      "token": "acos",
+      "pin": "acos(up)"
+    },
+    {
+      "id": "fn:acosh",
+      "class": "function",
+      "token": "acosh",
+      "pin": "acosh(up)"
+    },
+    {
+      "id": "fn:asin",
+      "class": "function",
+      "token": "asin",
+      "pin": "asin(up)"
+    },
+    {
+      "id": "fn:asinh",
+      "class": "function",
+      "token": "asinh",
+      "pin": "asinh(up)"
+    },
+    {
+      "id": "fn:atan",
+      "class": "function",
+      "token": "atan",
+      "pin": "atan(up)"
+    },
+    {
+      "id": "fn:atanh",
+      "class": "function",
+      "token": "atanh",
+      "pin": "atanh(up)"
+    },
+    {
+      "id": "fn:avg_over_time",
+      "class": "function",
+      "token": "avg_over_time",
+      "pin": "avg_over_time(up[5m])"
+    },
+    {
+      "id": "fn:ceil",
+      "class": "function",
+      "token": "ceil",
+      "pin": "ceil(up)"
+    },
+    {
+      "id": "fn:changes",
+      "class": "function",
+      "token": "changes",
+      "pin": "changes(up[5m])"
+    },
+    {
+      "id": "fn:clamp",
+      "class": "function",
+      "token": "clamp",
+      "pin": "clamp(up, 0.5, 0.5)"
+    },
+    {
+      "id": "fn:clamp_max",
+      "class": "function",
+      "token": "clamp_max",
+      "pin": "clamp_max(up, 0.5)"
+    },
+    {
+      "id": "fn:clamp_min",
+      "class": "function",
+      "token": "clamp_min",
+      "pin": "clamp_min(up, 0.5)"
+    },
+    {
+      "id": "fn:cos",
+      "class": "function",
+      "token": "cos",
+      "pin": "cos(up)"
+    },
+    {
+      "id": "fn:cosh",
+      "class": "function",
+      "token": "cosh",
+      "pin": "cosh(up)"
+    },
+    {
+      "id": "fn:count_over_time",
+      "class": "function",
+      "token": "count_over_time",
+      "pin": "count_over_time(up[5m])"
+    },
+    {
+      "id": "fn:day_of_month",
+      "class": "function",
+      "token": "day_of_month",
+      "pin": "day_of_month(up)"
+    },
+    {
+      "id": "fn:day_of_week",
+      "class": "function",
+      "token": "day_of_week",
+      "pin": "day_of_week(up)"
+    },
+    {
+      "id": "fn:day_of_year",
+      "class": "function",
+      "token": "day_of_year",
+      "pin": "day_of_year(up)"
+    },
+    {
+      "id": "fn:days_in_month",
+      "class": "function",
+      "token": "days_in_month",
+      "pin": "days_in_month(up)"
+    },
+    {
+      "id": "fn:deg",
+      "class": "function",
+      "token": "deg",
+      "pin": "deg(up)"
+    },
+    {
+      "id": "fn:delta",
+      "class": "function",
+      "token": "delta",
+      "pin": "delta(up[5m])"
+    },
+    {
+      "id": "fn:deriv",
+      "class": "function",
+      "token": "deriv",
+      "pin": "deriv(up[5m])"
+    },
+    {
+      "id": "fn:double_exponential_smoothing",
+      "class": "function",
+      "token": "double_exponential_smoothing",
+      "pin": "double_exponential_smoothing(up[5m], 0.5, 0.5)",
+      "experimental": true
+    },
+    {
+      "id": "fn:end",
+      "class": "function",
+      "token": "end",
+      "pin": "up @ end()",
+      "experimental": true
+    },
+    {
+      "id": "fn:exp",
+      "class": "function",
+      "token": "exp",
+      "pin": "exp(up)"
+    },
+    {
+      "id": "fn:first_over_time",
+      "class": "function",
+      "token": "first_over_time",
+      "pin": "first_over_time(up[5m])",
+      "experimental": true
+    },
+    {
+      "id": "fn:floor",
+      "class": "function",
+      "token": "floor",
+      "pin": "floor(up)"
+    },
+    {
+      "id": "fn:histogram_avg",
+      "class": "function-histogram",
+      "token": "histogram_avg",
+      "pin": "histogram_avg(up)"
+    },
+    {
+      "id": "fn:histogram_count",
+      "class": "function-histogram",
+      "token": "histogram_count",
+      "pin": "histogram_count(up)"
+    },
+    {
+      "id": "fn:histogram_fraction",
+      "class": "function-histogram",
+      "token": "histogram_fraction",
+      "pin": "histogram_fraction(0.5, 0.5, up)"
+    },
+    {
+      "id": "fn:histogram_quantile",
+      "class": "function-histogram",
+      "token": "histogram_quantile",
+      "pin": "histogram_quantile(0.5, up)"
+    },
+    {
+      "id": "fn:histogram_quantiles",
+      "class": "function-histogram",
+      "token": "histogram_quantiles",
+      "pin": "histogram_quantiles(up, \"x\", 0.5, 0.5)",
+      "experimental": true
+    },
+    {
+      "id": "fn:histogram_stddev",
+      "class": "function-histogram",
+      "token": "histogram_stddev",
+      "pin": "histogram_stddev(up)"
+    },
+    {
+      "id": "fn:histogram_stdvar",
+      "class": "function-histogram",
+      "token": "histogram_stdvar",
+      "pin": "histogram_stdvar(up)"
+    },
+    {
+      "id": "fn:histogram_sum",
+      "class": "function-histogram",
+      "token": "histogram_sum",
+      "pin": "histogram_sum(up)"
+    },
+    {
+      "id": "fn:hour",
+      "class": "function",
+      "token": "hour",
+      "pin": "hour(up)"
+    },
+    {
+      "id": "fn:idelta",
+      "class": "function",
+      "token": "idelta",
+      "pin": "idelta(up[5m])"
+    },
+    {
+      "id": "fn:increase",
+      "class": "function",
+      "token": "increase",
+      "pin": "increase(up[5m])"
+    },
+    {
+      "id": "fn:info",
+      "class": "function",
+      "token": "info",
+      "pin": "info(up)",
+      "experimental": true
+    },
+    {
+      "id": "fn:irate",
+      "class": "function",
+      "token": "irate",
+      "pin": "irate(up[5m])"
+    },
+    {
+      "id": "fn:label_join",
+      "class": "function",
+      "token": "label_join",
+      "pin": "label_join(up, \"x\", \"x\", \"x\")"
+    },
+    {
+      "id": "fn:label_replace",
+      "class": "function",
+      "token": "label_replace",
+      "pin": "label_replace(up, \"x\", \"x\", \"x\", \"x\")"
+    },
+    {
+      "id": "fn:last_over_time",
+      "class": "function",
+      "token": "last_over_time",
+      "pin": "last_over_time(up[5m])"
+    },
+    {
+      "id": "fn:ln",
+      "class": "function",
+      "token": "ln",
+      "pin": "ln(up)"
+    },
+    {
+      "id": "fn:log10",
+      "class": "function",
+      "token": "log10",
+      "pin": "log10(up)"
+    },
+    {
+      "id": "fn:log2",
+      "class": "function",
+      "token": "log2",
+      "pin": "log2(up)"
+    },
+    {
+      "id": "fn:mad_over_time",
+      "class": "function",
+      "token": "mad_over_time",
+      "pin": "mad_over_time(up[5m])",
+      "experimental": true
+    },
+    {
+      "id": "fn:max_over_time",
+      "class": "function",
+      "token": "max_over_time",
+      "pin": "max_over_time(up[5m])"
+    },
+    {
+      "id": "fn:min_over_time",
+      "class": "function",
+      "token": "min_over_time",
+      "pin": "min_over_time(up[5m])"
+    },
+    {
+      "id": "fn:minute",
+      "class": "function",
+      "token": "minute",
+      "pin": "minute(up)"
+    },
+    {
+      "id": "fn:month",
+      "class": "function",
+      "token": "month",
+      "pin": "month(up)"
+    },
+    {
+      "id": "fn:pi",
+      "class": "function",
+      "token": "pi",
+      "pin": "pi()"
+    },
+    {
+      "id": "fn:predict_linear",
+      "class": "function",
+      "token": "predict_linear",
+      "pin": "predict_linear(up[5m], 0.5)"
+    },
+    {
+      "id": "fn:present_over_time",
+      "class": "function",
+      "token": "present_over_time",
+      "pin": "present_over_time(up[5m])"
+    },
+    {
+      "id": "fn:quantile_over_time",
+      "class": "function",
+      "token": "quantile_over_time",
+      "pin": "quantile_over_time(0.5, up[5m])"
+    },
+    {
+      "id": "fn:rad",
+      "class": "function",
+      "token": "rad",
+      "pin": "rad(up)"
+    },
+    {
+      "id": "fn:range",
+      "class": "function",
+      "token": "range",
+      "pin": "range()",
+      "experimental": true
+    },
+    {
+      "id": "fn:rate",
+      "class": "function",
+      "token": "rate",
+      "pin": "rate(up[5m])"
+    },
+    {
+      "id": "fn:resets",
+      "class": "function",
+      "token": "resets",
+      "pin": "resets(up[5m])"
+    },
+    {
+      "id": "fn:round",
+      "class": "function",
+      "token": "round",
+      "pin": "round(up, 0.5)"
+    },
+    {
+      "id": "fn:scalar",
+      "class": "function",
+      "token": "scalar",
+      "pin": "scalar(up)"
+    },
+    {
+      "id": "fn:sgn",
+      "class": "function",
+      "token": "sgn",
+      "pin": "sgn(up)"
+    },
+    {
+      "id": "fn:sin",
+      "class": "function",
+      "token": "sin",
+      "pin": "sin(up)"
+    },
+    {
+      "id": "fn:sinh",
+      "class": "function",
+      "token": "sinh",
+      "pin": "sinh(up)"
+    },
+    {
+      "id": "fn:sort",
+      "class": "function",
+      "token": "sort",
+      "pin": "sort(up)"
+    },
+    {
+      "id": "fn:sort_by_label",
+      "class": "function",
+      "token": "sort_by_label",
+      "pin": "sort_by_label(up, \"x\")",
+      "experimental": true
+    },
+    {
+      "id": "fn:sort_by_label_desc",
+      "class": "function",
+      "token": "sort_by_label_desc",
+      "pin": "sort_by_label_desc(up, \"x\")",
+      "experimental": true
+    },
+    {
+      "id": "fn:sort_desc",
+      "class": "function",
+      "token": "sort_desc",
+      "pin": "sort_desc(up)"
+    },
+    {
+      "id": "fn:sqrt",
+      "class": "function",
+      "token": "sqrt",
+      "pin": "sqrt(up)"
+    },
+    {
+      "id": "fn:start",
+      "class": "function",
+      "token": "start",
+      "pin": "up @ start()",
+      "experimental": true
+    },
+    {
+      "id": "fn:stddev_over_time",
+      "class": "function",
+      "token": "stddev_over_time",
+      "pin": "stddev_over_time(up[5m])"
+    },
+    {
+      "id": "fn:stdvar_over_time",
+      "class": "function",
+      "token": "stdvar_over_time",
+      "pin": "stdvar_over_time(up[5m])"
+    },
+    {
+      "id": "fn:step",
+      "class": "function",
+      "token": "step",
+      "pin": "step()",
+      "experimental": true
+    },
+    {
+      "id": "fn:sum_over_time",
+      "class": "function",
+      "token": "sum_over_time",
+      "pin": "sum_over_time(up[5m])"
+    },
+    {
+      "id": "fn:tan",
+      "class": "function",
+      "token": "tan",
+      "pin": "tan(up)"
+    },
+    {
+      "id": "fn:tanh",
+      "class": "function",
+      "token": "tanh",
+      "pin": "tanh(up)"
+    },
+    {
+      "id": "fn:time",
+      "class": "function",
+      "token": "time",
+      "pin": "time()"
+    },
+    {
+      "id": "fn:timestamp",
+      "class": "function",
+      "token": "timestamp",
+      "pin": "timestamp(up)"
+    },
+    {
+      "id": "fn:ts_of_first_over_time",
+      "class": "function",
+      "token": "ts_of_first_over_time",
+      "pin": "ts_of_first_over_time(up[5m])",
+      "experimental": true
+    },
+    {
+      "id": "fn:ts_of_last_over_time",
+      "class": "function",
+      "token": "ts_of_last_over_time",
+      "pin": "ts_of_last_over_time(up[5m])",
+      "experimental": true
+    },
+    {
+      "id": "fn:ts_of_max_over_time",
+      "class": "function",
+      "token": "ts_of_max_over_time",
+      "pin": "ts_of_max_over_time(up[5m])",
+      "experimental": true
+    },
+    {
+      "id": "fn:ts_of_min_over_time",
+      "class": "function",
+      "token": "ts_of_min_over_time",
+      "pin": "ts_of_min_over_time(up[5m])",
+      "experimental": true
+    },
+    {
+      "id": "fn:vector",
+      "class": "function",
+      "token": "vector",
+      "pin": "vector(0.5)"
+    },
+    {
+      "id": "fn:year",
+      "class": "function",
+      "token": "year",
+      "pin": "year(up)"
+    },
+    {
+      "id": "match:group_left",
+      "class": "vector-matching",
+      "token": "group_left",
+      "pin": "foo_total * on (job) group_left up"
+    },
+    {
+      "id": "match:group_right",
+      "class": "vector-matching",
+      "token": "group_right",
+      "pin": "up * on (job) group_right foo_total"
+    },
+    {
+      "id": "match:ignoring",
+      "class": "vector-matching",
+      "token": "ignoring",
+      "pin": "up * ignoring (instance) up"
+    },
+    {
+      "id": "match:on",
+      "class": "vector-matching",
+      "token": "on",
+      "pin": "up * on (job) up"
+    },
+    {
+      "id": "op-mod:bool",
+      "class": "binary-modifier",
+      "token": "bool",
+      "pin": "up == bool 1"
+    },
+    {
+      "id": "op:!=",
+      "class": "binary-comparison",
+      "token": "!=",
+      "pin": "up != 1"
+    },
+    {
+      "id": "op:%",
+      "class": "binary-arithmetic",
+      "token": "%",
+      "pin": "up % 2"
+    },
+    {
+      "id": "op:*",
+      "class": "binary-arithmetic",
+      "token": "*",
+      "pin": "up * 2"
+    },
+    {
+      "id": "op:+",
+      "class": "binary-arithmetic",
+      "token": "+",
+      "pin": "up + up"
+    },
+    {
+      "id": "op:-",
+      "class": "binary-arithmetic",
+      "token": "-",
+      "pin": "up - up"
+    },
+    {
+      "id": "op:/",
+      "class": "binary-arithmetic",
+      "token": "/",
+      "pin": "up / 2"
+    },
+    {
+      "id": "op:\u003c",
+      "class": "binary-comparison",
+      "token": "\u003c",
+      "pin": "up \u003c 2"
+    },
+    {
+      "id": "op:\u003c=",
+      "class": "binary-comparison",
+      "token": "\u003c=",
+      "pin": "up \u003c= 1"
+    },
+    {
+      "id": "op:==",
+      "class": "binary-comparison",
+      "token": "==",
+      "pin": "up == 1"
+    },
+    {
+      "id": "op:\u003e",
+      "class": "binary-comparison",
+      "token": "\u003e",
+      "pin": "up \u003e 0"
+    },
+    {
+      "id": "op:\u003e=",
+      "class": "binary-comparison",
+      "token": "\u003e=",
+      "pin": "up \u003e= 0"
+    },
+    {
+      "id": "op:^",
+      "class": "binary-arithmetic",
+      "token": "^",
+      "pin": "up ^ 2"
+    },
+    {
+      "id": "op:and",
+      "class": "binary-set",
+      "token": "and",
+      "pin": "up and up"
+    },
+    {
+      "id": "op:atan2",
+      "class": "binary-arithmetic",
+      "token": "atan2",
+      "pin": "up atan2 up"
+    },
+    {
+      "id": "op:or",
+      "class": "binary-set",
+      "token": "or",
+      "pin": "up or up"
+    },
+    {
+      "id": "op:unless",
+      "class": "binary-set",
+      "token": "unless",
+      "pin": "up unless up"
+    }
+  ]
+}
