@@ -1206,41 +1206,110 @@ func toTraceSummaries(samples []chclient.Sample) ([]TraceSummary, []string) {
 	return out, missing
 }
 
-// groupBatches converts a flat span list into Tempo's `batches` shape
-// (one batch per distinct ResourceAttributes set). The wrap-projection
-// for /api/traces/{id} (see traceByIDProjections) smuggles span-detail
-// fields (TraceId / SpanId / ParentSpanId / SpanKind / StatusCode plus
-// the SpanAttributes map) inside chclient.Sample.Labels under reserved
-// keys; we split them back out into the SpanEntry fields Grafana's
-// trace-view consumes and keep ResourceAttributes (un-prefixed entries)
-// on the Resource.Attributes map.
-func groupBatches(samples []chclient.Sample) []ResourceSpans {
-	bucket := map[string]*ResourceSpans{}
+// traceBatch is the wire-format-agnostic intermediate the trace-by-ID
+// assemblers consume: one entry per distinct ResourceAttributes set, in
+// deterministic order, with the per-span rows already sorted. Both
+// groupBatches (JSON) and groupBatchesProto (proto) map this shape onto
+// their wire types, so batch / span ordering can never diverge between
+// the two Accept-negotiated paths — or between two sequential calls
+// (the e2e "v2 is a byte-for-byte alias of v1" pin fetches the same
+// trace twice and compares bodies byte-for-byte).
+type traceBatch struct {
+	resourceAttrs map[string]string
+	spans         []traceSpanRow
+}
+
+// traceSpanRow carries one sample plus its splitTraceByIDLabels
+// partition (span attributes + reserved-key metadata).
+type traceSpanRow struct {
+	sample    chclient.Sample
+	spanAttrs map[string]string
+	meta      map[string]string
+}
+
+// groupTraceBatches buckets a flat span list by resource-attribute set
+// and returns the batches in a fully deterministic order, independent
+// of both Go map iteration and the row order ClickHouse happened to
+// return:
+//
+//   - Batches sort by resource service.name first (the field Grafana's
+//     "Processes" tab leads with), then by the canonical resource-attr
+//     string (format.CanonicalKey) as the total-order tie-break.
+//   - Spans within a batch sort by StartTimeUnixNano, then by SpanID.
+//
+// Without this, the bucket map's iteration order (JSON path) and the
+// CH result-row order (span order, both paths) made two sequential
+// fetches of the same trace intermittently differ — see the retry-
+// masked flake in k3d e2e run 27284868985.
+func groupTraceBatches(samples []chclient.Sample) []traceBatch {
+	bucket := map[string]*traceBatch{}
+	keys := make([]string, 0)
 	for _, s := range samples {
 		resourceAttrs, spanAttrs, meta := splitTraceByIDLabels(s.Labels)
 		// Group by resource-attribute set so Grafana's "Processes" tab
 		// gets one batch per service.
 		key := format.CanonicalKey(resourceAttrs)
-		rs, ok := bucket[key]
+		b, ok := bucket[key]
 		if !ok {
-			rs = &ResourceSpans{Resource: Resource{Attributes: resourceAttrs}}
-			bucket[key] = rs
+			b = &traceBatch{resourceAttrs: resourceAttrs}
+			bucket[key] = b
+			keys = append(keys, key)
 		}
-		rs.Spans = append(rs.Spans, SpanEntry{
-			TraceID:           meta[traceByIDKeyTraceID],
-			SpanID:            meta[traceByIDKeySpanID],
-			ParentSpanID:      meta[traceByIDKeyParentSpanID],
-			Name:              s.MetricName,
-			Kind:              meta[traceByIDKeySpanKind],
-			StartTimeUnixNano: strconv.FormatInt(s.Timestamp.UnixNano(), 10),
-			DurationNanos:     int64(s.Value),
-			Status:            SpanStatus{Code: meta[traceByIDKeyStatusCode]},
-			Attributes:        spanAttrs,
-		})
+		b.spans = append(b.spans, traceSpanRow{sample: s, spanAttrs: spanAttrs, meta: meta})
 	}
-	out := make([]ResourceSpans, 0, len(bucket))
-	for _, rs := range bucket {
-		out = append(out, *rs)
+	sort.Slice(keys, func(i, j int) bool {
+		si := bucket[keys[i]].resourceAttrs["service.name"]
+		sj := bucket[keys[j]].resourceAttrs["service.name"]
+		if si != sj {
+			return si < sj
+		}
+		return keys[i] < keys[j]
+	})
+	out := make([]traceBatch, 0, len(keys))
+	for _, k := range keys {
+		b := bucket[k]
+		sort.Slice(b.spans, func(i, j int) bool {
+			ti := b.spans[i].sample.Timestamp.UnixNano()
+			tj := b.spans[j].sample.Timestamp.UnixNano()
+			if ti != tj {
+				return ti < tj
+			}
+			return b.spans[i].meta[traceByIDKeySpanID] < b.spans[j].meta[traceByIDKeySpanID]
+		})
+		out = append(out, *b)
+	}
+	return out
+}
+
+// groupBatches converts a flat span list into Tempo's `batches` shape
+// (one batch per distinct ResourceAttributes set). The wrap-projection
+// for /api/traces/{id} (see traceByIDProjections) smuggles span-detail
+// fields (TraceId / SpanId / ParentSpanId / SpanKind / StatusCode plus
+// the SpanAttributes map) inside chclient.Sample.Labels under reserved
+// keys; groupTraceBatches splits them back out (via
+// splitTraceByIDLabels) and owns the deterministic batch / span order;
+// this helper only maps the intermediate onto the SpanEntry fields
+// Grafana's trace-view consumes, keeping ResourceAttributes
+// (un-prefixed entries) on the Resource.Attributes map.
+func groupBatches(samples []chclient.Sample) []ResourceSpans {
+	groups := groupTraceBatches(samples)
+	out := make([]ResourceSpans, 0, len(groups))
+	for _, g := range groups {
+		rs := ResourceSpans{Resource: Resource{Attributes: g.resourceAttrs}}
+		for _, row := range g.spans {
+			rs.Spans = append(rs.Spans, SpanEntry{
+				TraceID:           row.meta[traceByIDKeyTraceID],
+				SpanID:            row.meta[traceByIDKeySpanID],
+				ParentSpanID:      row.meta[traceByIDKeyParentSpanID],
+				Name:              row.sample.MetricName,
+				Kind:              row.meta[traceByIDKeySpanKind],
+				StartTimeUnixNano: strconv.FormatInt(row.sample.Timestamp.UnixNano(), 10),
+				DurationNanos:     int64(row.sample.Value),
+				Status:            SpanStatus{Code: row.meta[traceByIDKeyStatusCode]},
+				Attributes:        row.spanAttrs,
+			})
+		}
+		out = append(out, rs)
 	}
 	return out
 }

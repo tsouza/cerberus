@@ -8,3 +8,13 @@ import "time"
 var AlignMetricsWindowForTest = func(start, end time.Time, step time.Duration) (time.Time, time.Time) {
 	return alignMetricsWindow(start, end, step)
 }
+
+// GroupBatchesForTest / GroupBatchesProtoForTest re-export the two
+// trace-by-ID assemblers so the determinism tests can drive the pure
+// assembly repeatedly (50 iterations, shuffled inputs) and compare
+// serialized outputs byte-for-byte without a handler round-trip per
+// iteration.
+var (
+	GroupBatchesForTest      = groupBatches
+	GroupBatchesProtoForTest = groupBatchesProto
+)

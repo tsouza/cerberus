@@ -20,6 +20,11 @@ export default defineConfig({
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
+  // A pass-on-retry is a masked intermittent bug; the suite must
+  // surface it red in CI (run 27284868985 went green over a real
+  // non-determinism bug — the trace-by-id batch-order flake — exactly
+  // this way). Locally (no CI env) retries still help iteration.
+  failOnFlakyTests: !!process.env.CI,
   workers: process.env.CI ? 1 : undefined,
   reporter: process.env.CI ? [['github'], ['html', { open: 'never' }]] : 'list',
 
