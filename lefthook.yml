@@ -50,6 +50,18 @@ pre-push:
       tags: lint
       run: |
         golangci-lint run ./...
+    # Workflow-file validation. GitHub rejects invalid workflow files
+    # SERVER-side as zero-job "invalid workflow file" failure runs,
+    # which silently prevents required pull_request checks from ever
+    # being scheduled (the #749 secrets-in-step-if incident left a PR
+    # BLOCKED on four required contexts that could never report).
+    # actionlint catches expression-context violations, bad action
+    # inputs, and shellchecks run blocks before the push leaves the
+    # machine. Install via `just install-tools`.
+    actionlint:
+      tags: lint
+      run: |
+        just lint-actions
     markdownlint:
       tags: lint
       glob: "*.md"

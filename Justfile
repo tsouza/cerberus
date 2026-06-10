@@ -8,6 +8,7 @@ GOFUMPT_VERSION := "v0.7.0"
 GOIMPORTS_VERSION := "latest"
 GREMLINS_VERSION := "v0.6.0"
 MARKDOWNLINT_VERSION := "v0.18.1"
+ACTIONLINT_VERSION := "v1.7.12"
 MODULE := "github.com/tsouza/cerberus"
 
 # Default: list recipes.
@@ -22,6 +23,7 @@ install-tools:
     go install mvdan.cc/gofumpt@{{GOFUMPT_VERSION}}
     go install golang.org/x/tools/cmd/goimports@{{GOIMPORTS_VERSION}}
     go install github.com/go-gremlins/gremlins/cmd/gremlins@{{GREMLINS_VERSION}}
+    go install github.com/rhysd/actionlint/cmd/actionlint@{{ACTIONLINT_VERSION}}
 
 # Install lefthook + activate git hooks. Idempotent; run once after clone.
 # Hooks defined in lefthook.yml run gofumpt / goimports / markdownlint-cli2 --fix
@@ -182,6 +184,16 @@ mutate-chdb:
 # Run Go linters.
 lint:
     golangci-lint run ./...
+
+# Validate GitHub Actions workflow files (expression contexts, action
+# inputs, shellcheck of run blocks). Deliberately separate from `lint`
+# (Go): workflow-file defects otherwise surface only as server-side
+# zero-job "invalid workflow file" failure runs, which silently
+# prevent required pull_request checks from ever being scheduled —
+# the #749 secrets-in-step-if incident left the PR BLOCKED on four
+# required contexts that could never report.
+lint-actions:
+    actionlint
 
 # Lint all Markdown files (run via npm exec; no global Node deps).
 lint-md:
