@@ -80,10 +80,15 @@ func (e *emitter) emitHistogramQuantileNative(h *chplan.HistogramQuantileNative)
 	if h.Input == nil {
 		return fmt.Errorf("%w: HistogramQuantileNative.Input is nil", ErrUnsupported)
 	}
+	// ZeroThresholdColumn is intentionally NOT required: the upstream
+	// OTel-CH exp-histogram DDL does not persist the OTLP
+	// zero_threshold field, so the default schema leaves it empty and
+	// the value fragment renders a constant 0 zero-bucket width
+	// instead (see writeZt in histogramQuantileNativeValueFrag).
 	if h.PositiveBucketCountsColumn == "" || h.PositiveOffsetColumn == "" ||
-		h.ScaleColumn == "" || h.ZeroCountColumn == "" || h.ZeroThresholdColumn == "" ||
+		h.ScaleColumn == "" || h.ZeroCountColumn == "" ||
 		h.NegativeOffsetColumn == "" || h.NegativeBucketCountsColumn == "" {
-		return fmt.Errorf("%w: HistogramQuantileNative requires Scale / ZeroCount / ZeroThreshold / PositiveOffset / PositiveBucketCounts / NegativeOffset / NegativeBucketCounts column names", ErrUnsupported)
+		return fmt.Errorf("%w: HistogramQuantileNative requires Scale / ZeroCount / PositiveOffset / PositiveBucketCounts / NegativeOffset / NegativeBucketCounts column names", ErrUnsupported)
 	}
 	// Pre-flight every GroupBy expression so chplan errors surface
 	// synchronously rather than from inside a Frag callback.
@@ -200,6 +205,18 @@ func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative) Frag {
 		writePLen := func() {
 			Call("length", Col(pbc))(b)
 		}
+		// Zero-bucket upper edge. With a configured ZeroThreshold
+		// column the edge is the stored per-row value; an empty
+		// column name means the physical schema doesn't persist the
+		// OTLP zero_threshold (the upstream OTel-CH DDL doesn't) and
+		// the zero bucket collapses to a point at 0.
+		writeZt := func() {
+			if zt == "" {
+				b.writeSQL("0.")
+				return
+			}
+			b.Ident(zt)
+		}
 		// fraction = (target - cum[idx-1]) / (cum[idx] - cum[idx-1]).
 		// target = phi * total.
 		writeFraction := func() {
@@ -257,7 +274,7 @@ func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative) Frag {
 		b.writeSQL("), if(")
 		b.Ident(zc)
 		b.writeSQL(" > 0, ")
-		b.Ident(zt)
+		writeZt()
 		b.writeSQL(", -pow(")
 		writeBase()
 		b.writeSQL(", ")
@@ -291,9 +308,9 @@ func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative) Frag {
 		b.writeSQL(" = ")
 		writeNLen()
 		b.writeSQL(" + 1, -")
-		b.Ident(zt)
+		writeZt()
 		b.writeSQL(" + 2 * ")
-		b.Ident(zt)
+		writeZt()
 		b.writeSQL(" * ")
 		writeFraction()
 		b.writeSQL(", pow(")
