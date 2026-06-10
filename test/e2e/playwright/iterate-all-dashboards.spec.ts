@@ -60,6 +60,8 @@ import {
 } from '@playwright/test';
 
 import {
+  type VariableJSON,
+  checkDashboardVariable,
   enforceExpectation,
   generateSelfTraffic,
   readPanelExpectation,
@@ -101,6 +103,7 @@ type DashboardJSON = {
   uid: string;
   title: string;
   panels?: PanelJSON[];
+  templating?: { list?: VariableJSON[] };
 };
 
 type PanelJSON = {
@@ -144,6 +147,7 @@ type DiscoveredDashboard = {
   title: string;
   filename: string;
   panels: FlatPanel[];
+  variables: VariableJSON[];
 };
 
 /**
@@ -187,6 +191,7 @@ function discoverDashboards(): DiscoveredDashboard[] {
       title: json.title,
       filename: entry,
       panels: flattenPanels(json.panels ?? []),
+      variables: json.templating?.list ?? [],
     });
   }
   // Sort for deterministic test order regardless of readdir() ordering.
@@ -471,9 +476,26 @@ test.describe('iterate-all-dashboards: full provisioned-dashboard sweep', () => 
           });
         }
       }
+      // 3. Template-variable contracts — every variable's options
+      //    resolve live (the same lookups Grafana fires for the
+      //    dropdown); pinned variables (cerberus.expectOptions) get
+      //    set equality, unpinned ones non-emptiness. Today no
+      //    provisioned dashboard carries variables, so the loop is a
+      //    no-op — the path goes live the moment one lands (P3).
+      const variableViolations: string[] = [];
+      for (const variable of d.variables) {
+        variableViolations.push(
+          ...(await checkDashboardVariable(request, baseURL, variable)),
+        );
+      }
+      expect(
+        variableViolations,
+        `dashboard ${d.uid}: variable contracts violated:\n  - ${variableViolations.join('\n  - ')}`,
+      ).toEqual([]);
+
       // eslint-disable-next-line no-console
       console.log(
-        `iterate-all-dashboards: dashboard=${d.uid} probed=${probedTargets} non_empty=${nonEmptyTargets}`,
+        `iterate-all-dashboards: dashboard=${d.uid} probed=${probedTargets} non_empty=${nonEmptyTargets} variables=${d.variables.length}`,
       );
     });
   }
