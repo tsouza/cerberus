@@ -146,6 +146,22 @@ jobs:
       - name: go-arch-lint
         run: go-arch-lint check
 
+      # actionlint validates the workflow files themselves (expression
+      # contexts, action inputs, shellcheck of run blocks). GitHub
+      # rejects invalid workflow files SERVER-side as zero-job
+      # "invalid workflow file" failure runs, which silently prevents
+      # required pull_request checks from ever being scheduled — the
+      # #749 secrets-in-step-if incident left a PR BLOCKED on four
+      # required contexts that could never report. Version pinned in
+      # lock-step with Justfile's ACTIONLINT_VERSION; no first-party
+      # Action exists, `go install` reuses setup-go's module cache
+      # (same pattern as go-arch-lint above).
+      - name: install actionlint
+        run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+
+      - name: actionlint
+        run: actionlint
+
       # commitlint runs over the PR's commit range. This used to be
       # wagoid/commitlint-github-action, but that action is Docker-based
       # and pulls its image from Docker Hub on every run — an anonymous
