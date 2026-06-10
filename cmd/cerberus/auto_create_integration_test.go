@@ -28,7 +28,8 @@ func TestAutoCreateSchema_StartupWiring(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	container, err := tcclickhouse.Run(ctx,
+	container, err := tcclickhouse.Run(
+		ctx,
 		"clickhouse/clickhouse-server:24.8-alpine",
 		tcclickhouse.WithUsername("cerberus"),
 		tcclickhouse.WithPassword("cerberus"),
@@ -50,7 +51,7 @@ func TestAutoCreateSchema_StartupWiring(t *testing.T) {
 		t.Fatalf("port: %v", err)
 	}
 
-	client, err := chclient.New(ctx, chclient.Config{
+	client, err := chclient.New(chclient.Config{
 		Addr:        fmt.Sprintf("%s:%s", host, port.Port()),
 		Database:    "otel",
 		Username:    "cerberus",

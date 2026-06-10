@@ -132,7 +132,28 @@ on the very next merge.
 When `CERBERUS_AUTO_CREATE_SCHEMA=true`, the startup hook that applies
 the OTel ClickHouse DDL runs synchronously **before** the listener
 binds, so both probes wait for the schema to be ready; in that mode the
-< 2 s budget no longer applies (DDL apply time dominates).
+< 2 s budget no longer applies (DDL apply time dominates). If that
+first apply fails (typically: ClickHouse not up yet), cerberus does
+**not** exit — the listener binds anyway and the apply is retried in
+the background every 5 s; `/readyz` reports `"schema":"pending"` until
+the first success.
+
+## ClickHouse down at boot
+
+An unreachable ClickHouse never prevents startup. The connection pool
+is constructed lazily (no dial), the startup connectivity ping is
+demoted to a WARN log, and the process serves immediately:
+
+- `/healthz` → `200` (the process is alive),
+- `/readyz` → `503` (the CH ping fails),
+
+flipping `/readyz` to `200` as soon as ClickHouse answers — no restart
+needed. This is the readiness-gating contract Kubernetes expects: a
+replica scaled up while ClickHouse is saturated (CI run 27272406583
+crash-looped on exactly this) waits out the outage out of the Service
+endpoints instead of converting it into a CrashLoopBackOff. Fail-fast
+remains for misconfiguration that can never succeed (bad env values,
+invalid connection options).
 
 ## Implementation pointers
 

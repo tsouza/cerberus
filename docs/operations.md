@@ -165,6 +165,17 @@ every request becomes a server span. Optionally, when
 `CERBERUS_AUTO_CREATE_SCHEMA=true`, the OTel-CH DDL is applied before
 serving begins so the readiness probe doesn't gate on missing tables.
 
+An **unreachable ClickHouse at boot is not fatal**: construction of the
+connection pool is lazy (no dial), the startup connectivity ping is a
+best-effort WARN, and a failed first DDL apply falls back to a
+background retry loop. The replica comes up "started but unready" —
+`/healthz` 200, `/readyz` 503 — and flips ready as soon as ClickHouse
+answers, which is exactly the contract Kubernetes readiness gating
+expects (a scale-up replica booting into a saturated CH must not
+crash-loop; see [`health.md`](health.md)). Fail-fast is reserved for
+misconfiguration that can never succeed — a bad env value or invalid
+connection options abort startup with a clear error.
+
 ### Shutdown
 
 On `SIGINT` or `SIGTERM`, cerberus:

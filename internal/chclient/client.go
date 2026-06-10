@@ -115,9 +115,23 @@ type Client struct {
 	maxSamples int64
 }
 
-// New opens a connection pool to ClickHouse and pings it once to confirm
-// reachability. The returned Client is safe for concurrent use.
-func New(ctx context.Context, cfg Config) (*Client, error) {
+// New opens a connection pool to ClickHouse. Construction is lazy:
+// clickhouse.Open only validates options and never dials, so New
+// succeeds even when ClickHouse is unreachable — the first Ping/Query
+// performs the actual dial. That is deliberate: a cerberus replica that
+// boots while ClickHouse is saturated or still starting (e.g. an HPA
+// scale-up during a load burst — CI run 27272406583) must come up
+// "started but unready" and let /readyz gate traffic, not exit(1) and
+// crash-loop on `dial tcp …:9000: connect: connection refused`.
+//
+// Fail-fast is preserved for misconfiguration that can never succeed:
+// clickhouse.Open's option validation errors are returned as-is.
+// Connectivity validation belongs to the caller (cmd/cerberus does a
+// best-effort startup Ping demoted to a WARN log) and to the readiness
+// probe (internal/api/health pings via this Client).
+//
+// The returned Client is safe for concurrent use.
+func New(cfg Config) (*Client, error) {
 	dial := cfg.DialTimeout
 	if dial == 0 {
 		dial = 5 * time.Second
@@ -133,11 +147,6 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 	})
 	if err != nil {
 		return nil, fmt.Errorf("chclient: open: %w", err)
-	}
-	pingCtx, cancel := context.WithTimeout(ctx, dial)
-	defer cancel()
-	if err := conn.Ping(pingCtx); err != nil {
-		return nil, fmt.Errorf("chclient: ping %s: %w", cfg.Addr, err)
 	}
 	return &Client{conn: conn, addr: cfg.Addr, maxSamples: cfg.MaxQuerySamples}, nil
 }
@@ -157,9 +166,9 @@ func (c *Client) Conn() driver.Conn {
 // to drive the cursor / Exec / Query paths against a fault-injecting fake
 // driver.Conn without standing up a real ClickHouse server.
 //
-// Production callers MUST use New, which goes through clickhouse.Open and
-// performs the connectivity Ping. This constructor bypasses both — it is
-// unexported and intentionally narrow.
+// Production callers MUST use New, which goes through clickhouse.Open's
+// option validation. This constructor bypasses it — it is unexported and
+// intentionally narrow.
 //
 //nolint:revive // test-only seam; production code must use New.
 func newWithConn(conn driver.Conn) *Client {

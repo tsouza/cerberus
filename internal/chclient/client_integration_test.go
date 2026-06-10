@@ -22,7 +22,8 @@ func TestQuery_E2E(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	container, err := tcclickhouse.Run(ctx,
+	container, err := tcclickhouse.Run(
+		ctx,
 		"clickhouse/clickhouse-server:24.8-alpine",
 		tcclickhouse.WithUsername("cerberus"),
 		tcclickhouse.WithPassword("cerberus"),
@@ -44,7 +45,7 @@ func TestQuery_E2E(t *testing.T) {
 		t.Fatalf("port: %v", err)
 	}
 
-	client, err := chclient.New(ctx, chclient.Config{
+	client, err := chclient.New(chclient.Config{
 		Addr:     host + ":" + port.Port(),
 		Database: "otel",
 		Username: "cerberus",
@@ -75,7 +76,8 @@ func TestQuery_E2E(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	samples, err := client.Query(ctx,
+	samples, err := client.Query(
+		ctx,
 		"SELECT MetricName, Attributes, TimeUnix, Value FROM otel_metrics_gauge WHERE MetricName = ? ORDER BY Value DESC",
 		"up",
 	)
