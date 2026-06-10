@@ -472,22 +472,21 @@ test('assertSubsetByCount throws when filtered exceeds baseline', () => {
   );
 });
 
-test('iterateDrilldownApps returns four apps including the four built-ins', () => {
+test('iterateDrilldownApps returns the apps the pinned Grafana ships', () => {
+  // The catalogue is scoped to what grafana/grafana:11.4.0 can run:
+  // grafana-pyroscope-app left with the escape-hatch cleanup (cerberus
+  // doesn't ship profiling) and grafana-metricsdrilldown-app /
+  // grafana-exploretraces-app require Grafana >= 11.6 (see
+  // helpers/drilldown.ts). This pin moves in lock-step with the
+  // catalogue — when the Grafana pin bumps to 12.x the two newer apps
+  // return as first-party preinstalled entries.
   const apps = iterateDrilldownApps();
-  expect(apps.length).toBe(4);
-  const ids = apps.map((a) => a.id).sort();
-  expect(ids).toEqual(
-    [
-      'grafana-exploretraces-app',
-      'grafana-lokiexplore-app',
-      'grafana-metricsdrilldown-app',
-      'grafana-pyroscope-app',
-    ].sort(),
-  );
+  expect(apps.length).toBe(1);
+  expect(apps.map((a) => a.id)).toEqual(['grafana-lokiexplore-app']);
   // Returned array must be a fresh copy — mutating it must not
   // contaminate the module-level constant.
   apps.pop();
-  expect(DRILLDOWN_APPS.length).toBe(4);
+  expect(DRILLDOWN_APPS.length).toBe(1);
 });
 
 test('DRILLDOWN_APPS entries each carry id + root + label', () => {
