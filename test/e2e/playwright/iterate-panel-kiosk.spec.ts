@@ -146,8 +146,12 @@ test('panel-kiosk: every panel renders cleanly in single-panel kiosk view + back
   // Per-panel navigation is the runtime tax here. Budget mirrors the
   // plan file's +90-120s estimate (§8.1) on top of the compose-smoke
   // ~3 min baseline; an 8 min ceiling covers the seed + the full
-  // dashboard × panel iteration on a slow CI runner.
-  testInfo.setTimeout(8 * 60_000);
+  // ops-family dashboard × panel iteration on a slow CI runner. The
+  // nightly 'full' depth additionally kiosks every showcase-family
+  // panel (~70 more navigations for showcase-promql alone), so the
+  // ceiling scales with the state count — depth changes states, never
+  // rules.
+  testInfo.setTimeout(sweepDepth() === 'full' ? 25 * 60_000 : 8 * 60_000);
 
   const baseURL =
     process.env.GRAFANA_URL ??

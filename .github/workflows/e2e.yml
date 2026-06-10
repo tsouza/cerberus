@@ -115,7 +115,12 @@ jobs:
       (github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'schedule') &&
       (github.event_name != 'pull_request' || needs.changes.outputs.docs_only != 'true')
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 45 (was 30): the nightly SWEEP_DEPTH=full lane now also kiosks +
+    # browser-renders the showcase-family dashboards (showcase-promql
+    # adds ~100 panel states to iterate-panel-kiosk alone). PR/push
+    # lean runs stay well under the old 30-minute ceiling; the bump
+    # only buys headroom for the scheduled full-depth sweep.
+    timeout-minutes: 45
     concurrency:
       group: compose-smoke-${{ github.ref }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
