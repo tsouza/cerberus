@@ -64,6 +64,37 @@ type TraceSummary struct {
 	RootTraceName     string `json:"rootTraceName,omitempty"`
 	StartTimeUnixNano string `json:"startTimeUnixNano,omitempty"`
 	DurationMs        int    `json:"durationMs,omitempty"`
+	// SpanSet / SpanSets mirror tempopb.TraceSearchMetadata's matched-
+	// span lists. Compared only when DiffOptions.CompareSpanSets is on
+	// (corpus cases that set -- spss --), because the per-span subset a
+	// backend keeps under the spss cap is unspecified upstream and only
+	// an explicit spss makes the comparison well-defined.
+	SpanSet  *SpanSetJSON  `json:"spanSet,omitempty"`
+	SpanSets []SpanSetJSON `json:"spanSets,omitempty"`
+}
+
+// SpanSetJSON is the differ's view of one tempopb.SpanSet: the matched
+// spans (capped at the request's spss) plus the uncapped matched total.
+// proto3 JSON omits matched when 0; both backends emit it for any
+// non-trivial match, and the comparator falls back to len(spans) when
+// the field is absent.
+type SpanSetJSON struct {
+	Spans   []SpanJSON `json:"spans"`
+	Matched int        `json:"matched,omitempty"`
+}
+
+// SpanJSON is the differ's view of one tempopb.Span inside a SpanSet.
+// StartTimeUnixNano / DurationNanos are uint64 proto fields → decimal
+// strings on the wire. Attributes deliberately have no field here: the
+// attribute list Tempo attaches to each matched span is derived from
+// the query's condition columns (a presentation projection, not span
+// identity), and the comparator pins identity + timing — spanID, name,
+// start, duration — which is what Grafana's spans table renders.
+type SpanJSON struct {
+	SpanID            string `json:"spanID"`
+	Name              string `json:"name,omitempty"`
+	StartTimeUnixNano string `json:"startTimeUnixNano,omitempty"`
+	DurationNanos     string `json:"durationNanos,omitempty"`
 }
 
 // traceKey is the per-trace identifier used to align the two backends'
@@ -99,6 +130,12 @@ type DiffOptions struct {
 	AbsEpsilon float64
 	// RelEpsilon: relative tolerance for non-zero fields.
 	RelEpsilon float64
+	// CompareSpanSets enables the per-trace spanSets diff (spanID set,
+	// matched totals, per-span name/start/duration). Switched on for
+	// corpus cases that set -- spss -- : with an explicit spss both
+	// backends receive the same cap and the comparison is well-defined
+	// (see compareSpanSets for the capped-set semantics).
+	CompareSpanSets bool
 }
 
 // DefaultDiffOptions returns 1e-9 abs + rel — same defaults as the
@@ -293,7 +330,184 @@ func compareSummary(key string, a, b TraceSummary, aLabel, bLabel string, opts D
 		}
 	}
 
+	if opts.CompareSpanSets {
+		reasons = append(reasons, compareSpanSets(key, a, b, aLabel, bLabel)...)
+	}
+
 	return reasons
+}
+
+// flattenSpanSets folds a summary's spanSets into one (spans, matched)
+// pair: spans concatenated across sets, matched summed (a set whose
+// `matched` field is absent — proto3 JSON omits zero — counts its own
+// span list instead). Both backends emit a single set for spanset-
+// filter queries today; the fold keeps the comparator correct if either
+// ever emits the multi-set shape (`select()`-style projections).
+// Falls back to the legacy single `spanSet` field when `spanSets` is
+// absent so an older reference image still compares.
+func flattenSpanSets(t TraceSummary) (spans []SpanJSON, matched int) {
+	sets := t.SpanSets
+	if len(sets) == 0 && t.SpanSet != nil {
+		sets = []SpanSetJSON{*t.SpanSet}
+	}
+	for _, s := range sets {
+		spans = append(spans, s.Spans...)
+		if s.Matched > 0 {
+			matched += s.Matched
+		} else {
+			matched += len(s.Spans)
+		}
+	}
+	return spans, matched
+}
+
+// canonicalSpanID left-pads a hex SpanID to the canonical 16-char
+// lowercase form, mirroring canonicalTraceID — reference Tempo has
+// historically stripped leading zeros on the wire while cerberus emits
+// the fixed-width form, and equal 8-byte values must align.
+func canonicalSpanID(id string) string {
+	const canonicalLen = 16
+	id = strings.ToLower(id)
+	if len(id) >= canonicalLen {
+		return id
+	}
+	return strings.Repeat("0", canonicalLen-len(id)) + id
+}
+
+// compareSpanSets diffs the matched-span lists of two same-TraceID
+// summaries. Semantics:
+//
+//   - Asymmetric presence (one side has spans, the other none) is a
+//     real divergence — the side without spanSets breaks Grafana's
+//     tableType='spans' transform (the Traces Drilldown trace list).
+//   - The uncapped `matched` totals must agree exactly: both backends
+//     evaluated the same TraceQL over the same seed.
+//   - When the spss cap truncated either side (len(spans) < matched),
+//     only the kept-span COUNT is compared — upstream leaves the
+//     choice of which matched spans survive the cap unspecified, so a
+//     per-ID diff would flag spurious subset divergence.
+//   - When both sides are complete (len(spans) == matched), the spanID
+//     sets must match exactly, and per-span name / startTimeUnixNano /
+//     durationNanos are compared on the intersection.
+func compareSpanSets(key string, a, b TraceSummary, aLabel, bLabel string) []DiffReason {
+	var reasons []DiffReason
+	aSpans, aMatched := flattenSpanSets(a)
+	bSpans, bMatched := flattenSpanSets(b)
+
+	if (len(aSpans) == 0) != (len(bSpans) == 0) {
+		return append(reasons, DiffReason{
+			Kind: "field_mismatch",
+			Detail: fmt.Sprintf("key %s: spanSets %s=%d spans vs %s=%d spans (asymmetric presence)",
+				key, aLabel, len(aSpans), bLabel, len(bSpans)),
+		})
+	}
+	if len(aSpans) == 0 {
+		return reasons
+	}
+
+	if aMatched != bMatched {
+		reasons = append(reasons, DiffReason{
+			Kind: "field_mismatch",
+			Detail: fmt.Sprintf("key %s: spanSets matched %s=%d vs %s=%d",
+				key, aLabel, aMatched, bLabel, bMatched),
+		})
+	}
+	if len(aSpans) != len(bSpans) {
+		reasons = append(reasons, DiffReason{
+			Kind: "field_mismatch",
+			Detail: fmt.Sprintf("key %s: spanSets span count %s=%d vs %s=%d",
+				key, aLabel, len(aSpans), bLabel, len(bSpans)),
+		})
+	}
+	if len(aSpans) < aMatched || len(bSpans) < bMatched {
+		// Capped on at least one side — the count + matched checks above
+		// are the strongest order-insensitive assertions available.
+		return reasons
+	}
+
+	aByID := make(map[string]SpanJSON, len(aSpans))
+	for _, s := range aSpans {
+		aByID[canonicalSpanID(s.SpanID)] = s
+	}
+	bByID := make(map[string]SpanJSON, len(bSpans))
+	for _, s := range bSpans {
+		bByID[canonicalSpanID(s.SpanID)] = s
+	}
+	var ids []string
+	for id := range aByID {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		as := aByID[id]
+		bs, ok := bByID[id]
+		if !ok {
+			reasons = append(reasons, DiffReason{
+				Kind: "field_mismatch",
+				Detail: fmt.Sprintf("key %s: span %s present in %s but missing in %s",
+					key, id, aLabel, bLabel),
+			})
+			continue
+		}
+		if as.Name != bs.Name {
+			reasons = append(reasons, DiffReason{
+				Kind: "field_mismatch",
+				Detail: fmt.Sprintf("key %s span %s: name %s=%q vs %s=%q",
+					key, id, aLabel, as.Name, bLabel, bs.Name),
+			})
+		}
+		if !uintStringsEqual(as.StartTimeUnixNano, bs.StartTimeUnixNano) {
+			reasons = append(reasons, DiffReason{
+				Kind: "field_mismatch",
+				Detail: fmt.Sprintf("key %s span %s: startTimeUnixNano %s=%q vs %s=%q",
+					key, id, aLabel, as.StartTimeUnixNano, bLabel, bs.StartTimeUnixNano),
+			})
+		}
+		if !uintStringsEqual(as.DurationNanos, bs.DurationNanos) {
+			reasons = append(reasons, DiffReason{
+				Kind: "field_mismatch",
+				Detail: fmt.Sprintf("key %s span %s: durationNanos %s=%q vs %s=%q",
+					key, id, aLabel, as.DurationNanos, bLabel, bs.DurationNanos),
+			})
+		}
+	}
+	var extra []string
+	for id := range bByID {
+		if _, ok := aByID[id]; !ok {
+			extra = append(extra, id)
+		}
+	}
+	sort.Strings(extra)
+	for _, id := range extra {
+		reasons = append(reasons, DiffReason{
+			Kind: "field_mismatch",
+			Detail: fmt.Sprintf("key %s: span %s present in %s but missing in %s",
+				key, id, bLabel, aLabel),
+		})
+	}
+	return reasons
+}
+
+// uintStringsEqual compares two proto3-JSON uint64 decimal strings
+// numerically, treating the empty string as 0 (proto3 JSON omits zero
+// values). A parse failure on either side falls back to raw string
+// equality so malformed payloads still surface as a diff.
+func uintStringsEqual(a, b string) bool {
+	if a == b {
+		return true
+	}
+	an, errA := strconv.ParseUint(a, 10, 64)
+	if a == "" {
+		an, errA = 0, nil
+	}
+	bn, errB := strconv.ParseUint(b, 10, 64)
+	if b == "" {
+		bn, errB = 0, nil
+	}
+	if errA != nil || errB != nil {
+		return false
+	}
+	return an == bn
 }
 
 // valuesClose compares two floats with absolute + relative tolerance,

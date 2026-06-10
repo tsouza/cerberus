@@ -122,8 +122,12 @@ func (h *Handler) Lang() engine.Lang { return h.lang }
 // calling toTraceSummaries directly inside the tempo package; the
 // re-export exists purely so external callers don't depend on an
 // unexported helper.
-func ToTraceSummaries(samples []chclient.Sample) ([]TraceSummary, []string) {
-	return toTraceSummaries(samples)
+//
+// spss caps the spans collected into each summary's SpanSet (Tempo's
+// `spss` / SpansPerSpanSet request param); <= 0 applies
+// DefaultSpansPerSpanSet.
+func ToTraceSummaries(samples []chclient.Sample, spss int) ([]TraceSummary, []string) {
+	return toTraceSummaries(samples, spss)
 }
 
 // ResolveMissingRoots issues the follow-up CH lookup that recovers root-
@@ -217,6 +221,65 @@ func (h *Handler) handleVersion(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
+// DefaultSearchLimit / DefaultSpansPerSpanSet mirror reference Tempo's
+// /api/search request defaults (pkg/api ParseSearchRequest): at most 20
+// trace summaries per response, at most 3 spans per spanset. Exported so
+// the gRPC StreamingQuerier Search RPC (internal/api/tempo/grpc) applies
+// the same defaults when tempopb.SearchRequest leaves Limit /
+// SpansPerSpanSet unset.
+const (
+	DefaultSearchLimit     = 20
+	DefaultSpansPerSpanSet = 3
+)
+
+// positiveIntParam parses an integer query param, returning def when the
+// param is absent, malformed, or non-positive — mirroring reference
+// Tempo's lenient ParseSearchRequest handling (a bad `limit` falls back
+// to the default rather than erroring the search).
+func positiveIntParam(r *http.Request, name string, def int) int {
+	v := r.URL.Query().Get(name)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return def
+	}
+	return n
+}
+
+// TruncateSummaries enforces Tempo's `limit` request param on a
+// toTraceSummaries result: keeps the first `limit` summaries (the slice
+// arrives sorted startTimeUnixNano-desc, so these are the newest traces
+// — Tempo's ordering) and filters the missing-root TraceID list down to
+// the kept traces so the follow-up root lookup never queries traces the
+// response won't include. limit <= 0 applies DefaultSearchLimit.
+// Exported for the gRPC Search RPC, which shares the HTTP path's
+// summary pipeline.
+func TruncateSummaries(summaries []TraceSummary, missing []string, limit int) ([]TraceSummary, []string) {
+	if limit <= 0 {
+		limit = DefaultSearchLimit
+	}
+	if len(summaries) <= limit {
+		return summaries, missing
+	}
+	summaries = summaries[:limit]
+	if len(missing) == 0 {
+		return summaries, missing
+	}
+	kept := make(map[string]struct{}, len(summaries))
+	for _, t := range summaries {
+		kept[t.TraceID] = struct{}{}
+	}
+	filtered := missing[:0]
+	for _, id := range missing {
+		if _, ok := kept[id]; ok {
+			filtered = append(filtered, id)
+		}
+	}
+	return summaries, filtered
+}
+
 func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query().Get("q")
 	if q == "" {
@@ -225,6 +288,13 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, SearchResponse{Traces: []TraceSummary{}})
 		return
 	}
+	// Tempo's /api/search honours `limit` (max trace summaries, default
+	// 20) and `spss` (max spans per spanset, default 3). Grafana's
+	// Traces Drilldown sends both (limit=200&spss=10 for the trace
+	// list); ignoring them used to return every matching trace
+	// (observed live: 4937 summaries / ~755KB body for limit=200).
+	limit := positiveIntParam(r, "limit", DefaultSearchLimit)
+	spss := positiveIntParam(r, "spss", DefaultSpansPerSpanSet)
 
 	ctx := r.Context()
 	// Engine.Query runs parse → lower → wrap-projection → optimize →
@@ -238,7 +308,8 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	h.Logger.Debug("cerberus tempo search", "traceql", q, "sql", res.SQL, "args", res.Args)
 
-	summaries, missingRoots := toTraceSummaries(res.Samples)
+	summaries, missingRoots := toTraceSummaries(res.Samples, spss)
+	summaries, missingRoots = TruncateSummaries(summaries, missingRoots, limit)
 	if len(missingRoots) > 0 {
 		// The result set lacked a root row for some traces — typical
 		// for structural-join queries (the join projects only matched
@@ -356,7 +427,7 @@ func (h *Handler) handleSearchRecent(w http.ResponseWriter, r *http.Request) {
 	}
 	h.Logger.Debug("cerberus tempo search/recent", "limit", limit, "sql", res.SQL, "args", res.Args)
 
-	summaries, missingRoots := toTraceSummaries(res.Samples)
+	summaries, missingRoots := toTraceSummaries(res.Samples, DefaultSpansPerSpanSet)
 	if len(missingRoots) > 0 {
 		roots, lookupErr := h.resolveTraceRoots(ctx, missingRoots)
 		if lookupErr != nil {
@@ -660,6 +731,14 @@ const (
 	// traceByIDKeyParentSpanID slot — same constant value, same
 	// namespace; the two paths never overlap.
 	searchKeyParentSpanID = traceByIDKeyParentSpanID
+	// searchKeySpanID is the reserved Labels key carrying the
+	// hex-encoded SpanId on /api/search responses. Reuses the
+	// traceByIDKeySpanID slot. toTraceSummaries groups the matched
+	// rows into per-trace SpanSets from it — Tempo's wire spec
+	// (tempopb.TraceSearchMetadata.spanSets) lists each matched span's
+	// spanID, and Grafana's tableType='spans' transform renders zero
+	// rows for a summary without them.
+	searchKeySpanID = traceByIDKeySpanID
 	// searchKeyTraceDurationNs is the reserved Labels key carrying
 	// the **whole-trace** wall-clock duration in nanoseconds. The
 	// spanset-aggregate wrap-projection populates it as
@@ -810,6 +889,8 @@ func canonicalSampleProjections(s schema.Traces) []chplan.Projection {
 		stripLeadingHexZeros(s.TraceIDColumn),
 		&chplan.LitString{V: searchKeyParentSpanID},
 		stripLeadingHexZeros(s.ParentSpanIDColumn),
+		&chplan.LitString{V: searchKeySpanID},
+		stripLeadingHexZeros(s.SpanIDColumn),
 	}}
 	mergedAttrs := &chplan.FuncCall{Name: "mapConcat", Args: []chplan.Expr{
 		&chplan.ColumnRef{Name: s.ResourceAttributesColumn},
@@ -848,6 +929,8 @@ func rQualifiedSampleProjections(s schema.Traces) []chplan.Projection {
 		stripLeadingHexZeros(s.TraceIDColumn),
 		&chplan.LitString{V: searchKeyParentSpanID},
 		stripLeadingHexZeros(s.ParentSpanIDColumn),
+		&chplan.LitString{V: searchKeySpanID},
+		stripLeadingHexZeros(s.SpanIDColumn),
 	}}
 	mergedAttrs := &chplan.FuncCall{Name: "mapConcat", Args: []chplan.Expr{
 		&chplan.ColumnRef{Name: s.ResourceAttributesColumn},
@@ -1138,6 +1221,25 @@ func spansetAggregateSampleProjections() []chplan.Projection {
 // reserved slot); the trace's RootService/RootTraceName then anchor
 // on the earliest-span fallback path.
 //
+// SpanSets: rows that carry the reserved `__cerberus_spanID` slot
+// (populated by canonicalSampleProjections / rQualifiedSampleProjections)
+// are additionally collected into one SpanSet per trace — Tempo's wire
+// spec lists each matched span (spanID, name, startTimeUnixNano,
+// durationNanos) and Grafana's tableType='spans' transform (the Traces
+// Drilldown trace list) renders rows exclusively from
+// trace.spanSets[].spans. The set is capped at `spss` spans (Tempo's
+// spans-per-spanset request param, default 3) with Matched carrying the
+// uncapped total; the kept spans are the earliest by start time
+// (spanID tie-break) so the cap is deterministic. Rows without the
+// spanID slot (legacy stub queriers, spanset-aggregate projections that
+// collapse spans into one row per trace) contribute no SpanSet and the
+// summary omits the fields — same wire shape as before.
+//
+// Output ordering matches Tempo's /api/search: traces sort by
+// startTimeUnixNano descending (newest first), TraceID ascending as
+// the deterministic tie-break. Callers enforce the request's `limit`
+// by truncating the returned slice.
+//
 // Returns (summaries, missingRootTraceIDs). `missingRootTraceIDs`
 // contains the stripped-zero-form TraceID of every trace whose result
 // set lacked a true root span — the structural-join SQL only returns
@@ -1145,39 +1247,11 @@ func spansetAggregateSampleProjections() []chplan.Projection {
 // filter queries (`{ status = error }`, `{ kind = consumer }`) only
 // match child spans. resolveTraceRoots fetches the real root from
 // otel_traces and patches the affected summaries.
-func toTraceSummaries(samples []chclient.Sample) ([]TraceSummary, []string) {
-	type acc struct {
-		traceID     string
-		serviceName string
-		traceName   string
-		startNS     int64
-		durationNS  int64
-		// rootStartNS pins the timestamp of the best root-span candidate
-		// seen so far (smallest start time wins ties). 0 means "no
-		// root span seen yet"; we anchor on the earliest-span fallback
-		// in that case.
-		rootStartNS int64
-		// earliestStartNS pins the earliest-by-timestamp span seen,
-		// regardless of root status. Used as the fallback anchor for
-		// truncated traces where no root is in the matched set.
-		earliestStartNS int64
-		// hasRoot is true once we've seen a span with ParentSpanId == "".
-		hasRoot bool
-		// sawParentSlot is true once any of the trace's rows supplied
-		// the reserved `__cerberus_parentSpanID` slot. When false the
-		// shaper can't distinguish root from child (e.g. legacy fixtures
-		// + stub queriers that never populate the slot), so the
-		// missing-root follow-up lookup is suppressed and the
-		// earliest-span fallback handles the trace alone.
-		sawParentSlot bool
-		// hasTraceDurationNs is set the first time a row supplies the
-		// `__cerberus_traceDurationNs` reserved-key entry. Once true,
-		// `durationNS` carries the trace-wide span and per-row Sample.
-		// Value contributions are ignored — they would otherwise pull
-		// the value back to the max single-span duration.
-		hasTraceDurationNs bool
+func toTraceSummaries(samples []chclient.Sample, spss int) ([]TraceSummary, []string) {
+	if spss <= 0 {
+		spss = DefaultSpansPerSpanSet
 	}
-	byTrace := map[string]*acc{}
+	byTrace := map[string]*summaryAcc{}
 	for _, s := range samples {
 		traceID, hasID := s.Labels[searchKeyTraceID]
 		// Group key prefers the real TraceID so multi-span traces
@@ -1189,67 +1263,16 @@ func toTraceSummaries(samples []chclient.Sample) ([]TraceSummary, []string) {
 		}
 		a, ok := byTrace[key]
 		if !ok {
-			a = &acc{traceID: traceID}
+			a = &summaryAcc{traceID: traceID}
 			byTrace[key] = a
 		}
 		ns := s.Timestamp.UnixNano()
 		if a.startNS == 0 || ns < a.startNS {
 			a.startNS = ns
 		}
-		// Whole-trace duration takes precedence when the wrap-projection
-		// surfaced one. The spanset-aggregate path emits a single row
-		// per trace so we just overwrite; the guard against per-row-
-		// Duration fallback ensures a mixed-shape stream (older fixture
-		// rows + aggregate rows on the same trace) doesn't pull the
-		// value down to a single span's max.
-		if v, ok := s.Labels[searchKeyTraceDurationNs]; ok && v != "" {
-			if ns, err := strconv.ParseInt(v, 10, 64); err == nil && ns >= 0 {
-				a.durationNS = ns
-				a.hasTraceDurationNs = true
-			}
-		} else if !a.hasTraceDurationNs && int64(s.Value) > a.durationNS {
-			a.durationNS = int64(s.Value)
-		}
-
-		// Resolve root-span metadata. The reserved __cerberus_parentSpanID
-		// slot carries the parent ID; an empty value (`""`), a single
-		// `"0"`, or the full 16-zero hex string (`"0000000000000000"`)
-		// all mean this row is the root span. The OTel-CH exporter
-		// writes ParentSpanId as a 16-char lowercase-hex string; the
-		// canonical/r-qualified projections now surface that column
-		// verbatim (post-#209 fix: no more leading-zero stripping on
-		// the OUTPUT side), so a true root span arrives as the full
-		// 16-char zero hex. The `""` / `"0"` forms are accepted for
-		// back-compat with legacy fixtures, stub queriers, and the
-		// pre-fix stripped projection variant respectively.
-		//
-		// When the slot is missing (older fixtures / stub queriers),
-		// treat every row as a non-root candidate so the fallback path
-		// runs — `parentID, hasParentSlot := ...` captures the
-		// "did we get the projection" signal independently of the
-		// emptiness check.
-		parentID, hasParentSlot := s.Labels[searchKeyParentSpanID]
-		if hasParentSlot {
-			a.sawParentSlot = true
-		}
-		isRoot := hasParentSlot && (parentID == "" || parentID == "0" || parentID == "0000000000000000")
-		svc := s.Labels["service.name"]
-		switch {
-		case isRoot && (!a.hasRoot || ns < a.rootStartNS):
-			// First root, or an earlier root (broken trace with
-			// multiple ParentSpanId="" spans — Tempo picks the
-			// earliest by start time, we mirror that).
-			a.hasRoot = true
-			a.rootStartNS = ns
-			a.serviceName = svc
-			a.traceName = s.MetricName
-		case !a.hasRoot && (a.earliestStartNS == 0 || ns < a.earliestStartNS):
-			// No root seen yet (truncated trace) — anchor on the
-			// earliest-by-timestamp child as a graceful fallback.
-			a.earliestStartNS = ns
-			a.serviceName = svc
-			a.traceName = s.MetricName
-		}
+		a.observeDuration(s)
+		a.observeSpan(s, ns)
+		a.observeRoot(s, ns)
 	}
 	out := make([]TraceSummary, 0, len(byTrace))
 	var missing []string
@@ -1261,13 +1284,21 @@ func toTraceSummaries(samples []chclient.Sample) ([]TraceSummary, []string) {
 		if tid == "" {
 			tid = k
 		}
-		out = append(out, TraceSummary{
+		summary := TraceSummary{
 			TraceID:           tid,
 			RootServiceName:   a.serviceName,
 			RootTraceName:     a.traceName,
 			StartTimeUnixNano: strconv.FormatInt(a.startNS, 10),
 			DurationMs:        int(a.durationNS / 1_000_000),
-		})
+		}
+		if set := a.buildSpanSet(spss); set != nil {
+			// Both fields carry the same set: spanSets is what Grafana's
+			// tableType='spans' transform consumes, spanSet is the legacy
+			// single-set field Tempo still emits for older readers.
+			summary.SpanSets = []SpanSet{*set}
+			summary.SpanSet = set
+		}
+		out = append(out, summary)
 		// Only flag traces where we actually have a real TraceID, the
 		// projection populated the __cerberus_parentSpanID slot for at
 		// least one row (so we can trust "no root present"), and no
@@ -1279,9 +1310,187 @@ func toTraceSummaries(samples []chclient.Sample) ([]TraceSummary, []string) {
 			missing = append(missing, a.traceID)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].TraceID < out[j].TraceID })
+	sortSummariesStartDesc(out)
 	sort.Strings(missing)
 	return out, missing
+}
+
+// summaryAcc accumulates one trace's worth of /api/search rows while
+// toTraceSummaries groups the flat sample stream by TraceID.
+type summaryAcc struct {
+	traceID     string
+	serviceName string
+	traceName   string
+	startNS     int64
+	durationNS  int64
+	// rootStartNS pins the timestamp of the best root-span candidate
+	// seen so far (smallest start time wins ties). 0 means "no
+	// root span seen yet"; we anchor on the earliest-span fallback
+	// in that case.
+	rootStartNS int64
+	// earliestStartNS pins the earliest-by-timestamp span seen,
+	// regardless of root status. Used as the fallback anchor for
+	// truncated traces where no root is in the matched set.
+	earliestStartNS int64
+	// hasRoot is true once we've seen a span with ParentSpanId == "".
+	hasRoot bool
+	// sawParentSlot is true once any of the trace's rows supplied
+	// the reserved `__cerberus_parentSpanID` slot. When false the
+	// shaper can't distinguish root from child (e.g. legacy fixtures
+	// + stub queriers that never populate the slot), so the
+	// missing-root follow-up lookup is suppressed and the
+	// earliest-span fallback handles the trace alone.
+	sawParentSlot bool
+	// hasTraceDurationNs is set the first time a row supplies the
+	// `__cerberus_traceDurationNs` reserved-key entry. Once true,
+	// `durationNS` carries the trace-wide span and per-row Sample.
+	// Value contributions are ignored — they would otherwise pull
+	// the value back to the max single-span duration.
+	hasTraceDurationNs bool
+	// spans collects the matched-span rows (those carrying the
+	// reserved __cerberus_spanID slot) for the trace's SpanSet.
+	// Uncapped during accumulation; buildSpanSet sorts by
+	// (startTimeUnixNano, spanID) and truncates to spss.
+	spans []SpanSetSpan
+	// matched counts every matched-span row, including the ones
+	// the spss cap drops — surfaces as SpanSet.Matched.
+	matched int
+}
+
+// observeDuration folds one row into the trace-wide duration. The
+// whole-trace duration takes precedence when the wrap-projection
+// surfaced one (`__cerberus_traceDurationNs`). The spanset-aggregate
+// path emits a single row per trace so we just overwrite; the guard
+// against per-row-Duration fallback ensures a mixed-shape stream
+// (older fixture rows + aggregate rows on the same trace) doesn't pull
+// the value down to a single span's max.
+func (a *summaryAcc) observeDuration(s chclient.Sample) {
+	if v, ok := s.Labels[searchKeyTraceDurationNs]; ok && v != "" {
+		if ns, err := strconv.ParseInt(v, 10, 64); err == nil && ns >= 0 {
+			a.durationNS = ns
+			a.hasTraceDurationNs = true
+		}
+		return
+	}
+	if !a.hasTraceDurationNs && int64(s.Value) > a.durationNS {
+		a.durationNS = int64(s.Value)
+	}
+}
+
+// observeSpan collects the matched span for the trace's SpanSet. Only
+// rows that carry the reserved __cerberus_spanID slot qualify —
+// spanset-aggregate rows (one collapsed row per trace) and legacy
+// stub-querier rows don't, and their summaries omit spanSets entirely
+// rather than fabricating a span list.
+//
+// Name stays unset: reference Tempo emits `name: ""` for spans inside
+// /api/search spanSets on plain spanset-filter queries (verified live
+// against grafana/tempo by the compatibility differ — populating it
+// from SpanName produced a per-span field_mismatch on every matched
+// span), and Grafana's tableType='spans' transform derives its columns
+// from the trace-level fields + span timing, not span.name.
+func (a *summaryAcc) observeSpan(s chclient.Sample, ns int64) {
+	spanID, ok := s.Labels[searchKeySpanID]
+	if !ok || spanID == "" {
+		return
+	}
+	a.matched++
+	// DurationNanos: proto3 JSON encodes the uint64 as a decimal
+	// string and omits zero values; Sample.Value carries the per-row
+	// Duration column in nanoseconds on this path.
+	var durationNanos string
+	if d := int64(s.Value); d > 0 {
+		durationNanos = strconv.FormatInt(d, 10)
+	}
+	a.spans = append(a.spans, SpanSetSpan{
+		SpanID:            spanID,
+		StartTimeUnixNano: strconv.FormatInt(ns, 10),
+		DurationNanos:     durationNanos,
+	})
+}
+
+// observeRoot resolves root-span metadata for one row. The reserved
+// __cerberus_parentSpanID slot carries the parent ID; an empty value
+// (`""`), a single `"0"`, or the full 16-zero hex string
+// (`"0000000000000000"`) all mean this row is the root span. The
+// OTel-CH exporter writes ParentSpanId as a 16-char lowercase-hex
+// string; the canonical/r-qualified projections now surface that
+// column verbatim (post-#209 fix: no more leading-zero stripping on
+// the OUTPUT side), so a true root span arrives as the full 16-char
+// zero hex. The `""` / `"0"` forms are accepted for back-compat with
+// legacy fixtures, stub queriers, and the pre-fix stripped projection
+// variant respectively.
+//
+// When the slot is missing (older fixtures / stub queriers), treat
+// every row as a non-root candidate so the fallback path runs —
+// `parentID, hasParentSlot := ...` captures the "did we get the
+// projection" signal independently of the emptiness check.
+func (a *summaryAcc) observeRoot(s chclient.Sample, ns int64) {
+	parentID, hasParentSlot := s.Labels[searchKeyParentSpanID]
+	if hasParentSlot {
+		a.sawParentSlot = true
+	}
+	isRoot := hasParentSlot && (parentID == "" || parentID == "0" || parentID == "0000000000000000")
+	svc := s.Labels["service.name"]
+	switch {
+	case isRoot && (!a.hasRoot || ns < a.rootStartNS):
+		// First root, or an earlier root (broken trace with
+		// multiple ParentSpanId="" spans — Tempo picks the
+		// earliest by start time, we mirror that).
+		a.hasRoot = true
+		a.rootStartNS = ns
+		a.serviceName = svc
+		a.traceName = s.MetricName
+	case !a.hasRoot && (a.earliestStartNS == 0 || ns < a.earliestStartNS):
+		// No root seen yet (truncated trace) — anchor on the
+		// earliest-by-timestamp child as a graceful fallback.
+		a.earliestStartNS = ns
+		a.serviceName = svc
+		a.traceName = s.MetricName
+	}
+}
+
+// buildSpanSet materialises the trace's SpanSet: a deterministic spss
+// cap keeps the earliest spans by start time, spanID as the
+// total-order tie-break, so two runs over the same data (or two CH row
+// orders) emit the same set. Returns nil when no row carried the
+// reserved spanID slot (legacy / aggregate shapes) so the summary
+// omits the spanSet fields entirely.
+func (a *summaryAcc) buildSpanSet(spss int) *SpanSet {
+	if len(a.spans) == 0 {
+		return nil
+	}
+	sort.Slice(a.spans, func(i, j int) bool {
+		// StartTimeUnixNano is FormatInt of UnixNano — compare
+		// numerically, not lexically (string compare breaks across
+		// digit-count boundaries).
+		ti, _ := strconv.ParseInt(a.spans[i].StartTimeUnixNano, 10, 64)
+		tj, _ := strconv.ParseInt(a.spans[j].StartTimeUnixNano, 10, 64)
+		if ti != tj {
+			return ti < tj
+		}
+		return a.spans[i].SpanID < a.spans[j].SpanID
+	})
+	spans := a.spans
+	if len(spans) > spss {
+		spans = spans[:spss]
+	}
+	return &SpanSet{Spans: spans, Matched: a.matched}
+}
+
+// sortSummariesStartDesc applies Tempo's /api/search ordering:
+// startTimeUnixNano descending (newest trace first); upstream leaves
+// ties unspecified, so TraceID ascending is the deterministic
+// tie-break.
+func sortSummariesStartDesc(out []TraceSummary) {
+	sort.Slice(out, func(i, j int) bool {
+		si, _ := strconv.ParseInt(out[i].StartTimeUnixNano, 10, 64)
+		sj, _ := strconv.ParseInt(out[j].StartTimeUnixNano, 10, 64)
+		if si != sj {
+			return si > sj
+		}
+		return out[i].TraceID < out[j].TraceID
+	})
 }
 
 // traceBatch is the wire-format-agnostic intermediate the trace-by-ID

@@ -357,7 +357,12 @@ func compareForEndpoint(tc CorpusCase, tempoBody, cerbBody []byte) (Diff, error)
 	case "metrics_range", "metrics_instant":
 		return CompareMetrics(tempoBody, cerbBody, "tempo", "cerberus", DefaultDiffOptions())
 	default:
-		return Compare(tempoBody, cerbBody, "tempo", "cerberus", DefaultDiffOptions())
+		opts := DefaultDiffOptions()
+		// Corpus cases with an explicit -- spss -- opt into the per-trace
+		// spanSets diff: with the same cap on both sides the comparison
+		// is well-defined (see differ.go::compareSpanSets).
+		opts.CompareSpanSets = tc.Spss > 0
+		return Compare(tempoBody, cerbBody, "tempo", "cerberus", opts)
 	}
 }
 
@@ -382,6 +387,11 @@ func buildURL(base string, tc CorpusCase, backend string, startTS, endTS time.Ti
 		u.Path += "/api/search"
 		q.Set("q", tc.Query)
 		q.Set("limit", fmt.Sprintf("%d", searchLimit))
+		if tc.Spss > 0 {
+			// Explicit spans-per-spanset: both backends receive the same
+			// cap so the differ's spanSets comparison is well-defined.
+			q.Set("spss", fmt.Sprintf("%d", tc.Spss))
+		}
 		q.Set("start", fmt.Sprintf("%d", startTS.Unix()))
 		q.Set("end", fmt.Sprintf("%d", endTS.Unix()))
 	case "search_recent":

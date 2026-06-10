@@ -20,6 +20,11 @@
 //	                            omits the parameter so both backends return
 //	                            the unfiltered scope set
 //	-- step --                  step duration (e.g. "60s") — only for metrics_range
+//	-- spss --                  integer; sent as the `spss` (spans-per-spanset)
+//	                            URL param on search cases AND switches on the
+//	                            differ's spanSets comparison for the case (an
+//	                            explicit spss makes the capped-set semantics
+//	                            well-defined on both backends)
 //	-- expected_min_traces --   integer; minimum traces both sides must return
 //	-- expected_max_traces --   integer; maximum traces either side may return
 //	-- expected_min_values --   integer; minimum list cardinality for tag /
@@ -135,6 +140,13 @@ type CorpusCase struct {
 	// case is a validation error.
 	Step string
 
+	// Spss, when > 0, is sent as the `spss` (spans-per-spanset) URL
+	// param on search cases and switches on the differ's per-trace
+	// spanSets comparison (see differ.go::compareSpanSets). Zero leaves
+	// the param off and the spanSets fields uncompared. Only valid for
+	// endpoint=search.
+	Spss int
+
 	// ExpectedMinTraces / ExpectedMaxTraces bound the cardinality both
 	// backends must agree with. Zero (the default) disables the bound.
 	ExpectedMinTraces int
@@ -211,6 +223,7 @@ const (
 	secTagName          = "tag_name"
 	secScope            = "scope"
 	secStep             = "step"
+	secSpss             = "spss"
 	secMinTraces        = "expected_min_traces"
 	secMaxTraces        = "expected_max_traces"
 	secMinValues        = "expected_min_values"
@@ -263,6 +276,8 @@ func applySection(cur *CorpusCase, section, body string) error {
 		cur.Scope = body
 	case secStep:
 		cur.Step = body
+	case secSpss:
+		return applyIntSection(body, "spss", &cur.Spss)
 	case secMinTraces:
 		return applyIntSection(body, "expected_min_traces", &cur.ExpectedMinTraces)
 	case secMaxTraces:
@@ -354,6 +369,12 @@ func validateCase(cur CorpusCase, ord int) (CorpusCase, error) {
 	if cur.Scope != "" && cur.Endpoint != "tags_v2" {
 		return cur, fmt.Errorf("case %q: -- scope -- is only valid for endpoint=tags_v2 (got %s)", cur.Name, cur.Endpoint)
 	}
+	if cur.Spss != 0 && cur.Endpoint != "search" {
+		return cur, fmt.Errorf("case %q: -- spss -- is only valid for endpoint=search (got %s)", cur.Name, cur.Endpoint)
+	}
+	if cur.Spss < 0 {
+		return cur, fmt.Errorf("case %q: -- spss -- must be positive (got %d)", cur.Name, cur.Spss)
+	}
 	if cur.Endpoint == "metrics_range" && cur.Step == "" {
 		return cur, fmt.Errorf("case %q: endpoint=metrics_range requires -- step -- (e.g. \"60s\")", cur.Name)
 	}
@@ -376,7 +397,7 @@ func isTagEndpoint(ep string) bool {
 func isKnownSection(name string) bool {
 	switch name {
 	case secQuery, secEndpoint, secTraceIDTemplate, secTagName, secScope,
-		secStep,
+		secStep, secSpss,
 		secMinTraces, secMaxTraces, secMinValues, secMaxValues,
 		secValues, secScopes, secServices, secRootNameRE,
 		secMinSeries, secMaxSeries, secSamplesPerSeries, secSemanticChecks:

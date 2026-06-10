@@ -22,6 +22,64 @@ type TraceSummary struct {
 	RootTraceName     string `json:"rootTraceName,omitempty"`
 	StartTimeUnixNano string `json:"startTimeUnixNano,omitempty"`
 	DurationMs        int    `json:"durationMs,omitempty"`
+	// SpanSet is the legacy single-set field Tempo still emits next to
+	// SpanSets (tempopb.TraceSearchMetadata field 6). Grafana's older
+	// transform paths read it; the modern tableType='spans' transform
+	// reads SpanSets. Cerberus populates both with the same set.
+	SpanSet *SpanSet `json:"spanSet,omitempty"`
+	// SpanSets carries the per-trace matched-span lists. Grafana's
+	// Tempo datasource (tableType='spans', used by the Traces Drilldown
+	// trace list) builds its spans table exclusively from
+	// trace.spanSets[].spans — a summary without it renders zero rows.
+	SpanSets []SpanSet `json:"spanSets,omitempty"`
+}
+
+// SpanSet mirrors tempopb.SpanSet's JSON shape: the spans the TraceQL
+// expression matched within one trace (capped at the request's `spss`
+// spans-per-spanset) plus the total matched count.
+type SpanSet struct {
+	Spans []SpanSetSpan `json:"spans"`
+	// Matched is the total number of spans the query matched in this
+	// trace — it exceeds len(Spans) when the spss cap truncated the
+	// list. proto3 JSON omits zero values, hence omitempty.
+	Matched int `json:"matched,omitempty"`
+}
+
+// SpanSetSpan mirrors tempopb.Span's JSON shape (one matched span
+// inside a SpanSet). StartTimeUnixNano and DurationNanos are uint64
+// proto fields, which proto3 JSON encodes as decimal strings — Grafana
+// parses them with parseInt, so the string form is load-bearing.
+//
+// Name mirrors the proto field but cerberus leaves it unset: reference
+// Tempo emits `name: ""` for spans inside /api/search spanSets on
+// plain spanset-filter queries (pinned by the compatibility differ's
+// spansets corpus cases), and the drop-in contract tracks reference
+// behaviour byte-for-byte.
+type SpanSetSpan struct {
+	SpanID            string     `json:"spanID"`
+	Name              string     `json:"name,omitempty"`
+	StartTimeUnixNano string     `json:"startTimeUnixNano"`
+	DurationNanos     string     `json:"durationNanos,omitempty"`
+	Attributes        []KeyValue `json:"attributes,omitempty"`
+}
+
+// KeyValue is the OTLP common.v1.KeyValue JSON shape used inside
+// SpanSetSpan.Attributes. Grafana's tempo resultTransformer reads
+// attr.value.<type>Value when deriving extra table columns from the
+// query's matched attributes.
+type KeyValue struct {
+	Key   string   `json:"key"`
+	Value AnyValue `json:"value"`
+}
+
+// AnyValue is the OTLP common.v1.AnyValue JSON shape — exactly one of
+// the typed fields is set. IntValue is a string because proto3 JSON
+// encodes int64 as a decimal string.
+type AnyValue struct {
+	StringValue *string  `json:"stringValue,omitempty"`
+	IntValue    *string  `json:"intValue,omitempty"`
+	BoolValue   *bool    `json:"boolValue,omitempty"`
+	DoubleValue *float64 `json:"doubleValue,omitempty"`
 }
 
 // SearchMetrics is Tempo's per-search aggregate block. Cerberus
