@@ -1,0 +1,106 @@
+{
+  "doc": "Pinned canonical Grafana surface set for the compose stack, emitted by test/e2e/playwright/crawl/crawl.spec.ts. lean=true rows are the per-PR crawl (root + nav + one representative per drilldown app); every row is crawled nightly. Regenerate deliberately against a healthy compose stack with: CERBERUS_UPDATE_INVENTORY=1 SWEEP_DEPTH=full CRAWL_STACK=compose npx playwright test crawl/crawl.spec.ts",
+  "stack": "compose",
+  "surfaces": [
+    {
+      "url": "/",
+      "lean": true
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore",
+      "lean": true
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore",
+      "lean": true
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/fields",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/detected_level",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/service_name",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/labels",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/patterns",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-metricsdrilldown-app/drilldown",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-metricsdrilldown-app/trail",
+      "lean": true
+    },
+    {
+      "url": "/a/grafana-pyroscope-app/explore",
+      "lean": false
+    },
+    {
+      "url": "/d/cerberus-self",
+      "lean": false
+    },
+    {
+      "url": "/d/clickhouse-observability",
+      "lean": false
+    },
+    {
+      "url": "/d/host-observability",
+      "lean": false
+    },
+    {
+      "url": "/d/otelcol-observability",
+      "lean": false
+    },
+    {
+      "url": "/d/showcase-logql",
+      "lean": false
+    },
+    {
+      "url": "/d/showcase-promql",
+      "lean": false
+    },
+    {
+      "url": "/d/showcase-traceql",
+      "lean": false
+    },
+    {
+      "url": "/dashboards",
+      "lean": true
+    },
+    {
+      "url": "/dashboards/f/{folder}/cerberus",
+      "lean": false
+    },
+    {
+      "url": "/dashboards/f/{folder}/cerberus/alerting",
+      "lean": false
+    },
+    {
+      "url": "/dashboards/f/{folder}/cerberus/library-panels",
+      "lean": false
+    },
+    {
+      "url": "/drilldown",
+      "lean": true
+    },
+    {
+      "url": "/explore",
+      "lean": true
+    }
+  ]
+}

@@ -15,6 +15,16 @@ const grafanaURL = process.env.GRAFANA_URL ?? 'http://localhost:3000';
 
 export default defineConfig({
   testDir: '.',
+  // The crawl suite (crawl/**) pins the COMPOSE stack's surface
+  // inventory (crawl/grafana-surface-inventory.json) — running it
+  // against the k3d stack would diff a different provisioned surface
+  // set against the compose pin and fail on coverage, not on bugs.
+  // The compose-smoke job opts in with CRAWL_STACK=compose; the k3d
+  // dashboard job (plain `npx playwright test` auto-discovery) leaves
+  // the env unset and keeps its existing iterate-* coverage. This is
+  // lane targeting (which stack a suite asserts against), not failure
+  // masking — the crawl rules run unchanged wherever the suite runs.
+  testIgnore: process.env.CRAWL_STACK === 'compose' ? [] : ['crawl/**'],
   timeout: 60_000,
   expect: { timeout: 10_000 },
   fullyParallel: true,
