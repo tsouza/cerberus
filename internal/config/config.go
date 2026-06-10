@@ -139,6 +139,7 @@ type OTLPConfig struct {
 //	CERBERUS_CH_USERNAME           default "default"
 //	CERBERUS_CH_PASSWORD           default ""
 //	CERBERUS_CH_DIAL_TIMEOUT       default "5s"
+//	CERBERUS_QUERY_MAX_SAMPLES     default 50000000 (0 disables the budget)
 //	CERBERUS_AUTO_CREATE_SCHEMA    default "false"
 //	CERBERUS_LOG_FORMAT            default "text"  ("text" | "json")
 //	CERBERUS_LOG_LEVEL             default "info"  ("debug" | "info" | "warn" | "error")
@@ -173,6 +174,13 @@ func FromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("CERBERUS_AUTO_CREATE_SCHEMA: %w", err)
 	}
+	maxSamples, err := envInt64("CERBERUS_QUERY_MAX_SAMPLES", defaultQueryMaxSamples)
+	if err != nil {
+		return Config{}, fmt.Errorf("CERBERUS_QUERY_MAX_SAMPLES: %w", err)
+	}
+	if maxSamples < 0 {
+		return Config{}, fmt.Errorf("CERBERUS_QUERY_MAX_SAMPLES: must be >= 0, got %d", maxSamples)
+	}
 	logCfg, err := envLog()
 	if err != nil {
 		return Config{}, err
@@ -188,11 +196,12 @@ func FromEnv() (Config, error) {
 	return Config{
 		HTTPAddr: envDefault("CERBERUS_HTTP_ADDR", ":8080"),
 		ClickHouse: chclient.Config{
-			Addr:        envDefault("CERBERUS_CH_ADDR", "localhost:9000"),
-			Database:    envDefault("CERBERUS_CH_DATABASE", "otel"),
-			Username:    envDefault("CERBERUS_CH_USERNAME", "default"),
-			Password:    envDefault("CERBERUS_CH_PASSWORD", ""),
-			DialTimeout: dial,
+			Addr:            envDefault("CERBERUS_CH_ADDR", "localhost:9000"),
+			Database:        envDefault("CERBERUS_CH_DATABASE", "otel"),
+			Username:        envDefault("CERBERUS_CH_USERNAME", "default"),
+			Password:        envDefault("CERBERUS_CH_PASSWORD", ""),
+			DialTimeout:     dial,
+			MaxQuerySamples: maxSamples,
 		},
 		Schema:           schema.DefaultOTelMetricsFromEnv(),
 		Logs:             schema.DefaultOTelLogsFromEnv(),
@@ -203,6 +212,18 @@ func FromEnv() (Config, error) {
 		Admit:            admit,
 	}, nil
 }
+
+// defaultQueryMaxSamples is the default per-query sample budget,
+// mirroring upstream Prometheus's --query.max-samples default
+// (50,000,000). A query whose result-set drain crosses the budget is
+// aborted (Prom head: 422 errorType=execution with Prometheus's exact
+// wire message) instead of materialising an unbounded matrix in
+// process memory. Note Prometheus sizes its default around ~16-byte
+// in-memory samples; cerberus rows carry label maps (interned
+// per-series, but still heavier), so memory-constrained deploys
+// should set CERBERUS_QUERY_MAX_SAMPLES well below the default — the
+// k3d e2e stack runs at 5,000,000.
+const defaultQueryMaxSamples int64 = 50_000_000
 
 // Default per-handler concurrency caps. Tempo gets a smaller cap
 // because trace queries (search + tag-value scans + per-trace span
@@ -382,6 +403,21 @@ func envInt(key string, def int) (int, error) {
 		return def, nil
 	}
 	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, fmt.Errorf("invalid integer %q: %w", v, err)
+	}
+	return n, nil
+}
+
+// envInt64 parses a 64-bit integer env var. An unset or empty value
+// returns def. Anything that fails strconv.ParseInt is rejected with
+// an error so misconfiguration fails fast at startup.
+func envInt64(key string, def int64) (int64, error) {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def, nil
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
 	if err != nil {
 		return 0, fmt.Errorf("invalid integer %q: %w", v, err)
 	}
