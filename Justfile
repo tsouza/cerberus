@@ -272,7 +272,10 @@ CERBERUS_IMAGE := "cerberus:e2e"
 # pulling on the host docker daemon (which has its own auth + cache) and
 # importing into k3d via the API, we never go through containerd's pull
 # path. See run 26136032208 for the symptom.
-E2E_EXTERNAL_IMAGES := "clickhouse/clickhouse-server:24.8-alpine ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.116.0 grafana/grafana:11.4.0 otel/opentelemetry-collector-contrib:0.116.1"
+# MUST stay in lock-step with the image pins in test/e2e/k3s/*.yaml —
+# a stale entry here means the pod pulls straight from the registry at
+# start-up (no pre-pull, no import, full Docker-Hub-flake exposure).
+E2E_EXTERNAL_IMAGES := "clickhouse/clickhouse-server:24.8-alpine ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.116.0 grafana/grafana:12.2.9 otel/opentelemetry-collector-contrib:0.152.1"
 
 # Boot the k3d cluster, build cerberus image, import it, apply manifests, wait for pods.
 # Host ports map via the k3d loadbalancer to NodePorts on the k3s nodes:
@@ -295,6 +298,26 @@ e2e-up: e2e-down
     done
     @echo "==> importing images into k3d ({{K3D_CLUSTER}})"
     k3d image import {{CERBERUS_IMAGE}} {{E2E_EXTERNAL_IMAGES}} -c {{K3D_CLUSTER}}
+    @echo "==> verifying images landed in the k3d node's containerd"
+    @# `k3d image import` exits 0 on partial/silent failures (observed:
+    @# run 27274975563 — cerberus pods in ImagePullBackOff trying
+    @# docker.io/library/cerberus:e2e because the local-only image never
+    @# reached the node). Verify every image is actually present;
+    @# normalise short names the way containerd stores them
+    @# (docker.io/ + library/ prefixes).
+    @for img in {{CERBERUS_IMAGE}} {{E2E_EXTERNAL_IMAGES}}; do \
+        ref="$img"; \
+        case "$ref" in \
+            *.*/*|*:*/*) ;; \
+            */*) ref="docker.io/$ref" ;; \
+            *)   ref="docker.io/library/$ref" ;; \
+        esac; \
+        if ! docker exec k3d-{{K3D_CLUSTER}}-server-0 ctr -n k8s.io images ls -q | grep -qF "$ref"; then \
+            echo "ERROR: $ref missing from k3d node containerd after import" >&2; \
+            exit 1; \
+        fi; \
+        echo "    ok $ref"; \
+    done
     @echo "==> applying manifests"
     kubectl apply -k test/e2e/k3s/
     @echo "==> waiting for pods (up to 3 min)"
