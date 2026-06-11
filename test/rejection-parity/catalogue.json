@@ -73,7 +73,7 @@
     },
     {
       "head": "logql",
-      "site": "internal/logql/lower.go:labelFiltererToExpr#6274bc0d",
+      "site": "internal/logql/lower.go:labelFiltererLower#6274bc0d",
       "message": "logql: unsupported label filterer %T",
       "class": "rejection",
       "trigger_query": "{app=\"x\"} | addr = ip(\"127.0.0.1\")"
@@ -955,6 +955,34 @@
     },
     {
       "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerIntrinsicNilComparison#07654c50",
+      "message": "traceql: nil comparison on intrinsic %s is unsupported — the configured schema has no events column",
+      "class": "internal",
+      "rationale": "the default OTel-CH traces schema configures an events column; reachable only under a schema override that drops it"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerIntrinsicNilComparison#284df75f",
+      "message": "traceql: intrinsic %s requires per-span child counts the OTel ClickHouse schema does not materialise",
+      "class": "internal",
+      "rationale": "the pinned tempo parser rejects the childCount spelling (\"unexpected childCount\"), so the arm is unreachable from a parseable query"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerIntrinsicNilComparison#5c445f2a",
+      "message": "traceql: %s = nil is not valid because intrinsics cannot be nil",
+      "class": "rejection",
+      "trigger_query": "{ kind = nil }"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerIntrinsicNilComparison#e2d1d3a8",
+      "message": "traceql: nil comparison on intrinsic %s is unsupported — the configured schema has no links column",
+      "class": "internal",
+      "rationale": "the default OTel-CH traces schema configures a links column; reachable only under a schema override that drops it"
+    },
+    {
+      "head": "traceql",
       "site": "internal/traceql/lower.go:lowerMetricsFilter#20c8f8b5",
       "message": "traceql: metrics filter operator %s is not a supported threshold comparison",
       "class": "internal",
@@ -1008,6 +1036,27 @@
       "message": "traceql: intrinsic %s is unsupported — the OTel ClickHouse schema does not materialise nested-set positions",
       "class": "rejection",
       "trigger_query": "{ nestedSetLeft = 1 }"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerNilComparison#aa8b5044",
+      "message": "traceql: instrumentation-scoped attribute %q is unsupported — the OTel ClickHouse traces schema has no scope-attributes column (instrumentation:name / instrumentation:version map to ScopeName / ScopeVersion)",
+      "class": "rejection",
+      "trigger_query": "{ instrumentation.foo != nil }"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerNilComparison#dbf30854",
+      "message": "traceql: nil comparison on %s.%s is unsupported — the configured schema has no %s column",
+      "class": "internal",
+      "rationale": "the default OTel-CH traces schema configures attribute columns for every scope this branch checks; reachable only under a schema override that drops one"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerNilComparison#fca86ae4",
+      "message": "traceql: %s = nil is not valid because resource.service.name cannot be nil",
+      "class": "rejection",
+      "trigger_query": "{ resource.service.name = nil }"
     },
     {
       "head": "traceql",
@@ -1089,13 +1138,6 @@
     },
     {
       "head": "traceql",
-      "site": "internal/traceql/lower.go:lowerUnaryOperation#415441d4",
-      "message": "traceql: nil comparison on intrinsic %s is unsupported — OTel-CH intrinsic columns are always present",
-      "class": "rejection",
-      "trigger_query": "{ kind != nil }"
-    },
-    {
-      "head": "traceql",
       "site": "internal/traceql/lower.go:lowerUnaryOperation#5f9f3466",
       "message": "traceql: unary operator %s is unsupported",
       "class": "rejection",
@@ -1107,13 +1149,6 @@
       "message": "traceql: %s operand %T is unsupported — nil comparisons require an attribute reference",
       "class": "rejection",
       "trigger_query": "{ (span.a + 1) != nil }"
-    },
-    {
-      "head": "traceql",
-      "site": "internal/traceql/lower.go:lowerUnaryOperation#ae3df2c6",
-      "message": "traceql: nil comparison on %s.%s is unsupported",
-      "class": "rejection",
-      "trigger_query": "{ link.foo != nil }"
     },
     {
       "head": "traceql",
