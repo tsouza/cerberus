@@ -1,0 +1,1280 @@
+{
+  "source": "go/ast scan of fmt.Errorf/errors.New sites in internal/{promql,logql,traceql} (non-test files); classification + trigger queries are curated and pinned by test/rejection-parity",
+  "entries": [
+    {
+      "head": "logql",
+      "site": "internal/logql/binary.go:logqlBinaryOp#e845ca95",
+      "message": "logql: binary op %s unsupported (logical ops `and`/`or`/`unless` are not supported)",
+      "class": "rejection",
+      "trigger_query": "rate({app=\"x\"}[5m]) and rate({app=\"x\"}[5m])"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/binary.go:lowerBinary#4879747f",
+      "message": "logql: binary expression has nil leg(s)",
+      "class": "internal",
+      "rationale": "internal invariant: the pinned parser never yields a binary expression with nil legs"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/binary.go:lowerBinary#e16a89f2",
+      "message": "logql: scalar-only binary expression not folded (op %s) — internal invariant violation",
+      "class": "internal",
+      "rationale": "internal invariant (the message says so): scalar-only binaries are constant-folded before this branch"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/binary.go:lowerVectorVector#e04c7f18",
+      "message": "logql: 'bool' modifier is only allowed on comparison binary ops",
+      "class": "rejection",
+      "trigger_query": "rate({app=\"x\"}[5m]) + bool rate({app=\"x\"}[5m])"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/binary.go:vectorMatchingFromOpts#64179012",
+      "message": "logql: unsupported vector-matching cardinality %d",
+      "class": "internal",
+      "rationale": "LogQL's VectorMatchCardinality enum stops at CardOneToMany; no parser-producible value reaches the default arm"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/binary.go:vectorMatchingFromOpts#89d11456",
+      "message": "logql: many-to-many matching not allowed: matching labels must be unique on one side; use group_left/group_right when projecting include labels",
+      "class": "internal",
+      "rationale": "include labels require group_left/group_right in the grammar, which set many-to-one / one-to-many cardinality; include with one-to-one is not parser-producible"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/label_fns.go:lowerLabelReplace#997ce6c3",
+      "message": "logql: label_replace has nil inner",
+      "class": "internal",
+      "rationale": "internal invariant: the parser never yields label_replace with a nil inner expression"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/lower.go:jsonExpressionMergeLabels#9cb94bcf",
+      "message": "logql: `| json` expression has empty identifier",
+      "class": "internal",
+      "rationale": "the grammar requires a non-empty identifier on `| json foo=...` expression stages; an empty identifier is a parse error"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/lower.go:jsonExtractStringExpr#427e92de",
+      "message": "logql: unsupported JSON path segment type %T in %q",
+      "class": "internal",
+      "rationale": "the upstream jsonpath parser produces only string and array-index segments, both handled"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/lower.go:jsonExtractStringExpr#e6040681",
+      "message": "logql: invalid `| json` path %q: %w",
+      "class": "rejection",
+      "trigger_query": "{app=\"x\"} | json foo=\"bar[\""
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/lower.go:labelFiltererLower#6274bc0d",
+      "message": "logql: unsupported label filterer %T",
+      "class": "rejection",
+      "trigger_query": "{app=\"x\"} | addr = ip(\"127.0.0.1\")"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/lower.go:lineFilterOp#155249b0",
+      "message": "logql: line-filter op %s is not yet supported (`|\u003e` pattern filters land in M3.2)",
+      "class": "rejection",
+      "trigger_query": "{app=\"x\"} |\u003e \"\u003c_\u003e level=error\""
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/lower.go:lineFilterPart#c0244416",
+      "message": "logql: line-filter `ip(...)` is not yet supported",
+      "class": "rejection",
+      "trigger_query": "{app=\"x\"} |= ip(\"127.0.0.1\")"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/lower.go:logfmtExpressionMergeLabels#dcff5a88",
+      "message": "logql: `| logfmt` expression has empty identifier",
+      "class": "internal",
+      "rationale": "the grammar requires a non-empty identifier on `| logfmt foo=...` expression stages; an empty identifier is a parse error"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/lower.go:lower#5da77ba7",
+      "message": "logql: unsupported expression %T",
+      "class": "rejection",
+      "trigger_query": "variants(count_over_time({app=\"x\"}[5m])) of ({app=\"x\"}[5m])"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/lower.go:lowerStage#0809f4e6",
+      "message": "logql: pipeline stage %T is not yet supported",
+      "class": "internal",
+      "rationale": "type-switch default: every pipeline-stage type the pinned parser produces is handled"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/lower.go:lowerStage#a7242d58",
+      "message": "logql: parser stage `| %s` is not yet supported",
+      "class": "internal",
+      "rationale": "every LineParserExpr op the pinned grammar produces (json / regexp / unpack / pattern) is handled; bare `| logfmt` parses as LogfmtParserExpr"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/lower.go:regexpMergeLabels#6038cf5d",
+      "message": "logql: `| regexp` pattern %q has no named captures",
+      "class": "internal",
+      "rationale": "the parser pre-validates capture-less regexp patterns as a parse error"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/lower.go:regexpMergeLabels#83255883",
+      "message": "logql: invalid `| regexp` pattern %q: %w",
+      "class": "internal",
+      "rationale": "the parser pre-validates the regexp; a compile failure is a parse error"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/lower.go:regexpMergeLabels#e2424d2e",
+      "message": "logql: `| regexp` pattern has duplicate named capture %q",
+      "class": "internal",
+      "rationale": "the parser pre-validates duplicate named captures as a parse error"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/lower.go:regexpMergeLabels#fabd1568",
+      "message": "logql: `| regexp` requires a non-empty pattern",
+      "class": "internal",
+      "rationale": "the parser pre-validates `| regexp \"\"` (\"at least one named capture must be supplied\") as a parse error"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/range_aggregation.go:lowerLogRange#b8257b72",
+      "message": "logql: range-aggregation inner is %T (not MatchersExpr or PipelineExpr)",
+      "class": "internal",
+      "rationale": "the pinned parser yields only MatchersExpr / PipelineExpr as log-range inners"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/range_aggregation.go:lowerRangeAggregation#1a3d0c76",
+      "message": "logql: quantile_over_time requires a phi parameter",
+      "class": "internal",
+      "rationale": "the parser rejects quantile_over_time without a parameter before lowering"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/range_aggregation.go:lowerRangeAggregation#de7d6b8c",
+      "message": "logql: range-aggregation has nil inner",
+      "class": "internal",
+      "rationale": "internal invariant: the parser never yields a range aggregation with a nil inner"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/range_aggregation.go:rangeFuncName#b1ec3bca",
+      "message": "logql: range op %s is not yet supported",
+      "class": "rejection",
+      "trigger_query": "first_over_time({app=\"x\"} | unwrap foo [5m])"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/range_aggregation.go:rangeValueExpr#23b3f454",
+      "message": "logql: %s does not accept `| unwrap`",
+      "class": "internal",
+      "rationale": "the parser rejects bytes_rate / bytes_over_time with `| unwrap` (\"invalid aggregation ... with unwrap\"); guard kept against a future parser loosening"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/range_aggregation.go:rangeValueExpr#34122fa8",
+      "message": "logql: %s requires an `| unwrap` clause",
+      "class": "internal",
+      "rationale": "the parser rejects sum_over_time-family operations without `| unwrap` (\"invalid aggregation ... without unwrap\")"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/range_aggregation.go:rangeValueExpr#b1ec3bca",
+      "message": "logql: range op %s is not yet supported",
+      "class": "rejection",
+      "trigger_query": "absent_over_time({app=\"x\"}[5m])"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/range_aggregation.go:rangeValueExprFromMerged#3d7b48c7",
+      "message": "logql: rangeValueExprFromMerged called without `| unwrap`",
+      "class": "internal",
+      "rationale": "internal invariant: the caller routes only unwrap-carrying range aggregations here"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/range_aggregation.go:unwrapValueExpr#ad5af60c",
+      "message": "logql: `| unwrap` has empty identifier",
+      "class": "internal",
+      "rationale": "the grammar requires a non-empty unwrap identifier; an empty one is a parse error"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/range_aggregation.go:unwrapValueExpr#bbe4735f",
+      "message": "logql: unsupported unwrap conversion %q",
+      "class": "internal",
+      "rationale": "every conversion the grammar accepts (bytes / duration / duration_seconds) is handled"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/vector_aggregation.go:buildVectorAggFunc#3cb2166f",
+      "message": "logql: aggregation operation %q is unsupported",
+      "class": "rejection",
+      "trigger_query": "approx_topk(2, rate({app=\"x\"}[5m]))"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/vector_aggregation.go:buildVectorAggFunc#7f5d7559",
+      "message": "logql: %s changes output shape and is unsupported",
+      "class": "rejection",
+      "trigger_query": "topk(2, rate({app=\"x\"}[5m]))"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/vector_aggregation.go:buildVectorAggFunc#f01faed5",
+      "message": "logql: %s requires output ordering rather than aggregation",
+      "class": "rejection",
+      "trigger_query": "sort(rate({app=\"x\"}[5m]))"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/vector_aggregation.go:lowerVectorAggregation#4f64fcaa",
+      "message": "logql: vector-aggregation inner is not an Expr (%T)",
+      "class": "internal",
+      "rationale": "internal invariant: the parser's vector-aggregation inner always implements syntax.Expr"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/vector_aggregation.go:lowerVectorAggregation#9210acc4",
+      "message": "logql: vector-aggregation has nil inner",
+      "class": "internal",
+      "rationale": "internal invariant: the parser never yields a vector aggregation with a nil inner"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/absent.go:lowerAbsent#079d2385",
+      "message": "promql: absent() expects 1 argument, got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity: parser.Functions pins absent at exactly one argument"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/absent.go:lowerAbsent#9647959d",
+      "message": "promql: absent() argument must be an instant-vector selector, got %T",
+      "class": "rejection",
+      "trigger_query": "absent(sum(up))"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/absent.go:lowerAbsentOverTime#5fccc59e",
+      "message": "promql: matrix selector's inner must be a VectorSelector, got %T",
+      "class": "internal",
+      "rationale": "the parser only builds MatrixSelector around a VectorSelector"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/absent.go:lowerAbsentOverTime#e8585e71",
+      "message": "promql: absent_over_time() expects 1 argument, got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity: parser.Functions pins absent_over_time at exactly one argument"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/absent.go:lowerAbsentOverTime#fef55d6c",
+      "message": "promql: absent_over_time() argument must be a range-vector selector, got %T",
+      "class": "internal",
+      "rationale": "subquery arguments are intercepted by lowerOuterRangeFnOverSubquery; the parser's typechecker admits only matrix-typed arguments otherwise"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/binary.go:lowerBinary#47ece6fd",
+      "message": "promql: scalar-only binary expression not folded (op %s) — internal invariant violation",
+      "class": "internal",
+      "rationale": "internal invariant (the message says so): scalar-only binaries are constant-folded before this branch"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/binary.go:lowerVectorSetOp#6cdf660e",
+      "message": "promql: 'bool' modifier is only allowed on comparison binary ops",
+      "class": "internal",
+      "rationale": "the parser rejects `bool` on non-comparison operators (\"bool modifier can only be used on comparison operators\")"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/binary.go:lowerVectorVector#27f7a326",
+      "message": "promql: many-to-many matching not allowed: matching labels must be unique on one side; use group_left/group_right when projecting include labels",
+      "class": "internal",
+      "rationale": "include labels require group_left/group_right in the grammar, which set many-to-one / one-to-many cardinality; include with one-to-one is not parser-producible"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/binary.go:lowerVectorVector#6cdf660e",
+      "message": "promql: 'bool' modifier is only allowed on comparison binary ops",
+      "class": "internal",
+      "rationale": "the parser rejects `bool` on non-comparison operators (\"bool modifier can only be used on comparison operators\")"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/binary.go:lowerVectorVector#81f45a15",
+      "message": "promql: many-to-many matching not allowed: matching labels must be unique on one side",
+      "class": "internal",
+      "rationale": "CardManyToMany arises only from set operators, which route to lowerVectorSetOp before this check"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/binary.go:lowerVectorVector#bfcc1402",
+      "message": "promql: unsupported vector-matching cardinality %d",
+      "class": "internal",
+      "rationale": "the parser's VectorMatchCardinality enum values are all handled; no parser-producible value reaches the default arm"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/binary.go:promBinaryOp#2d85dac3",
+      "message": "promql: vector set op %s should route through lowerVectorSetOp",
+      "class": "internal",
+      "rationale": "internal routing invariant: set operators are dispatched to lowerVectorSetOp before op mapping"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/binary.go:promBinaryOp#63a5ec6e",
+      "message": "promql: binary op %s unsupported",
+      "class": "rejection",
+      "trigger_query": "up atan2 up"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/binary.go:promVectorSetOpKind#46b4e78e",
+      "message": "promql: not a vector set operator: %s",
+      "class": "internal",
+      "rationale": "internal routing invariant: only parser set-operator tokens reach this mapper"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/date_fns.go:lowerDateFn#2f3ea020",
+      "message": "promql: unknown date function %s",
+      "class": "internal",
+      "rationale": "internal dispatch: lowerCall routes only the known date-function names here"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/date_fns.go:lowerDateFn#ab4896c1",
+      "message": "promql: %s expects 0 or 1 argument, got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity: the date functions are declared variadic 0..1 in parser.Functions (\"expected at most 1 argument(s)\")"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/date_fns.go:lowerDateFnNoArg#2f3ea020",
+      "message": "promql: unknown date function %s",
+      "class": "internal",
+      "rationale": "internal dispatch: lowerCall routes only the known date-function names here"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_quantile.go:lowerHistogramQuantile#4f2f135d",
+      "message": "promql: histogram_quantile second argument must be a histogram VectorSelector",
+      "class": "rejection",
+      "trigger_query": "histogram_quantile(0.9, sum(up))"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_quantile.go:lowerHistogramQuantile#afa8cb1f",
+      "message": "promql: histogram_quantile expects 2 arguments, got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity: parser.Functions pins histogram_quantile at exactly two arguments"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_quantile.go:lowerHistogramQuantile#c2bd1263",
+      "message": "promql: histogram_quantile requires a scalar-literal phi (computed phi is unsupported)",
+      "class": "rejection",
+      "trigger_query": "histogram_quantile(scalar(up), foo_bucket)"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/instant_fns.go:lowerClamp#1384ae1f",
+      "message": "promql: %s requires a scalar-literal bound",
+      "class": "rejection",
+      "trigger_query": "clamp_min(up, scalar(up))"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/instant_fns.go:lowerClamp#3cee2409",
+      "message": "promql: clamp requires scalar-literal bounds for min and max",
+      "class": "rejection",
+      "trigger_query": "clamp(up, scalar(up), 1)"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/instant_fns.go:lowerClamp#dd15dfed",
+      "message": "promql: clamp expects 3 arguments, got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity for clamp (three arguments)"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/instant_fns.go:lowerClamp#e15d3cf4",
+      "message": "promql: unknown clamp function %s",
+      "class": "internal",
+      "rationale": "internal dispatch: lowerCall routes only clamp / clamp_min / clamp_max here"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/instant_fns.go:lowerClamp#f69a3fbc",
+      "message": "promql: %s expects 2 arguments, got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity for clamp_min / clamp_max (two arguments)"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/instant_fns.go:lowerInstantFn#ce14c98d",
+      "message": "promql: %s with %d arguments is unsupported (instant math fns are unary)",
+      "class": "internal",
+      "rationale": "parser-enforced arity: the unary instant math functions are pinned at one argument in parser.Functions"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/instant_fns.go:lowerRoundToNearest#d04df84f",
+      "message": "promql: round(v, to_nearest) requires a scalar literal to_nearest",
+      "class": "rejection",
+      "trigger_query": "round(up, scalar(up))"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/label_fns.go:lowerLabelJoin#c71ab88a",
+      "message": "promql: label_join expects at least 3 arguments (v, dst, separator[, src…]), got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity: label_join requires at least three arguments"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/label_fns.go:lowerLabelReplace#8c37a823",
+      "message": "promql: label_replace expects 5 arguments, got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity: label_replace requires exactly five arguments"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/label_fns.go:stringArg#4c3f7595",
+      "message": "promql: %s(%s) requires a string literal, got %T",
+      "class": "internal",
+      "rationale": "the parser's typechecker admits only string literals in string-typed argument slots (PromQL has no other string-producing expression)"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/lower.go:buildAggFunc#10cb81b8",
+      "message": "promql: quantile(phi, ...) requires a scalar literal phi (computed phi is unsupported)",
+      "class": "rejection",
+      "trigger_query": "quantile(scalar(up), up)"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/lower.go:buildAggFunc#54d1c35e",
+      "message": "promql: aggregation %s does not take a parameter",
+      "class": "internal",
+      "rationale": "the parser rejects a parameter on non-parameterised aggregations (\"wrong number of arguments for aggregate expression\")"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/lower.go:buildAggFunc#80287dba",
+      "message": "promql: group() does not take a parameter",
+      "class": "internal",
+      "rationale": "the parser rejects a parameter on group() (\"wrong number of arguments for aggregate expression\")"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/lower.go:buildAggFunc#a6e9df79",
+      "message": "promql: aggregation op %s is not yet supported",
+      "class": "rejection",
+      "trigger_query": "limitk(2, up)"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/lower.go:buildAggFunc#e759e84f",
+      "message": "promql: %s changes output shape and lands with M1.7 result shaping",
+      "class": "internal",
+      "rationale": "count_values is intercepted by lowerCountValues / lowerSubqueryOverCountValues on every parser-producible path before buildAggFunc is consulted"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/lower.go:lower#d33d0084",
+      "message": "promql: unsupported expression %T",
+      "class": "rejection",
+      "trigger_query": "\"a string literal\""
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/lower.go:lowerCall#ab321c46",
+      "message": "promql: function %s is not yet supported",
+      "class": "rejection",
+      "trigger_query": "histogram_count(up)"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/lower.go:lowerCountValues#49c20b7b",
+      "message": "promql: count_values requires a string-literal label name as the first arg",
+      "class": "internal",
+      "rationale": "the parser's typechecker admits only a string literal as count_values' first argument"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/lower.go:lowerCountValues#fc5b1a1a",
+      "message": "promql: count_values requires a non-empty label name",
+      "class": "rejection",
+      "trigger_query": "count_values(\"\", up)"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/lower.go:lowerRangeVectorCall#064574ba",
+      "message": "promql: %s expects exactly 1 argument, got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity: the range-vector functions are pinned at one argument in parser.Functions"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/lower.go:lowerRangeVectorCall#5fccc59e",
+      "message": "promql: matrix selector's inner must be a VectorSelector, got %T",
+      "class": "internal",
+      "rationale": "the parser only builds MatrixSelector around a VectorSelector"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/lower.go:lowerRangeVectorCall#ccda8b22",
+      "message": "promql: %s argument must be a range-vector selector, got %T",
+      "class": "internal",
+      "rationale": "subquery arguments are intercepted by lowerOuterRangeFnOverSubquery; the parser's typechecker admits only matrix-typed arguments otherwise"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/lower.go:lowerTopK#447d7d0e",
+      "message": "promql: %s K must be \u003e 0",
+      "class": "rejection",
+      "trigger_query": "topk(0, up)"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/lower.go:lowerTopK#624096c7",
+      "message": "promql: %s K must be a non-negative integer literal, got %v",
+      "class": "rejection",
+      "trigger_query": "topk(1.5, up)"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/lower.go:lowerTopKComputed#8af012e4",
+      "message": "promql: %s K must be a scalar literal or scalar(\u003cvector\u003e); computed-K with other shapes is not yet supported",
+      "class": "rejection",
+      "trigger_query": "topk(scalar(up) * 2, up)"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/lower.go:lowerTopKComputed#9dcfc5e7",
+      "message": "promql: %s K: %w",
+      "class": "internal",
+      "rationale": "error-propagation wrapper (%w): the wrapped scalar-lowering rejection is catalogued at its origin"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/lower.go:lowerTopKComputed#e4c25bc2",
+      "message": "promql: %s K: scalar() expects 1 argument, got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity: scalar() is pinned at one argument in parser.Functions"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/lower.go:plainAggCH#a6e9df79",
+      "message": "promql: aggregation op %s is not yet supported",
+      "class": "internal",
+      "rationale": "the only caller (buildAggFunc) pre-filters to the seven operators this mapper handles"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/modifiers.go:anchorFromSelector#394bcda7",
+      "message": "promql: `@ end()` modifier requires query range context (use LowerAt)",
+      "class": "internal",
+      "rationale": "the query endpoints always lower via LowerAtRange with the request window, so range context is always present; plain Lower is reached only from the matcher-metadata path, which carries no @ modifiers"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/modifiers.go:anchorFromSelector#91490634",
+      "message": "promql: `@ start()` modifier requires query range context (use LowerAt)",
+      "class": "internal",
+      "rationale": "the query endpoints always lower via LowerAtRange with the request window, so range context is always present; plain Lower is reached only from the matcher-metadata path, which carries no @ modifiers"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/modifiers.go:anchorFromSelector#df7f6e9a",
+      "message": "promql: unexpected StartOrEnd token %v",
+      "class": "internal",
+      "rationale": "the parser yields only START / END / 0 in StartOrEnd"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/range_fns.go:lowerHoltWinters#0ff3d8b3",
+      "message": "promql: holt_winters smoothing factor must be in (0, 1), got %v",
+      "class": "rejection",
+      "trigger_query": "double_exponential_smoothing(foo[5m], 2, 0.5)"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/range_fns.go:lowerHoltWinters#15e82804",
+      "message": "promql: holt_winters requires scalar-literal smoothing and trend factors",
+      "class": "rejection",
+      "trigger_query": "double_exponential_smoothing(foo[5m], scalar(up), 0.5)"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/range_fns.go:lowerHoltWinters#2db9f2aa",
+      "message": "promql: holt_winters trend factor must be in (0, 1), got %v",
+      "class": "rejection",
+      "trigger_query": "double_exponential_smoothing(foo[5m], 0.5, 2)"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/range_fns.go:lowerHoltWinters#ceef5c3b",
+      "message": "promql: holt_winters expects 3 arguments, got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity: double_exponential_smoothing is pinned at three arguments"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/range_fns.go:lowerPredictLinear#2b0de462",
+      "message": "promql: predict_linear expects 2 arguments, got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity: predict_linear is pinned at two arguments"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/range_fns.go:lowerPredictLinear#efcc690d",
+      "message": "promql: predict_linear requires a scalar-literal predict horizon (computed t is unsupported)",
+      "class": "rejection",
+      "trigger_query": "predict_linear(foo[5m], scalar(up))"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/range_fns.go:lowerQuantileOverTime#2990bde1",
+      "message": "promql: quantile_over_time requires a scalar-literal phi (computed phi is unsupported)",
+      "class": "rejection",
+      "trigger_query": "quantile_over_time(scalar(up), foo[5m])"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/range_fns.go:lowerQuantileOverTime#682124f4",
+      "message": "promql: quantile_over_time expects 2 arguments, got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity: quantile_over_time is pinned at two arguments"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/range_fns.go:matrixAndSelector#5fccc59e",
+      "message": "promql: matrix selector's inner must be a VectorSelector, got %T",
+      "class": "internal",
+      "rationale": "the parser only builds MatrixSelector around a VectorSelector"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/range_fns.go:matrixAndSelector#ce0c72b5",
+      "message": "promql: %s first argument must be a range-vector selector, got %T",
+      "class": "internal",
+      "rationale": "subquery arguments are intercepted by lowerOuterRangeFnOverSubquery; the parser's typechecker admits only matrix-typed arguments otherwise"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:buildSubqueryAggFunc#534fdfbe",
+      "message": "promql: subquery over %s aggregation is not supported",
+      "class": "internal",
+      "rationale": "the caller (lowerSubqueryOverAggregate) pre-filters to the supported aggregation op set before consulting this builder"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:buildSubqueryAggFunc#99558bfa",
+      "message": "promql: subquery over quantile(phi, ...) requires a scalar literal phi",
+      "class": "rejection",
+      "trigger_query": "max_over_time(quantile(scalar(up), up)[5m:1m])"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:lowerOuterRangeFnOverSubquery#b8fba661",
+      "message": "promql: %s does not accept a subquery argument",
+      "class": "rejection",
+      "trigger_query": "irate(up[5m:1m])"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:lowerSubquery#2174bfb8",
+      "message": "promql: subquery range must be positive, got %s",
+      "class": "internal",
+      "rationale": "the parser rejects non-positive subquery ranges (\"duration must be greater than 0\")"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:lowerSubquery#91084197",
+      "message": "promql: subquery step must be positive, got %s",
+      "class": "internal",
+      "rationale": "the parser rejects non-positive subquery steps (\"duration must be greater than 0\")"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:lowerSubquery#a374d4b2",
+      "message": "promql: subquery over %T is unsupported",
+      "class": "rejection",
+      "trigger_query": "max_over_time((-up)[5m:1m])"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:lowerSubqueryInnerMatrix#3a78d724",
+      "message": "promql: subquery over aggregation of %T is unsupported",
+      "class": "rejection",
+      "trigger_query": "max_over_time(sum(up + up)[5m:1m])"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:lowerSubqueryOverAggregate#534fdfbe",
+      "message": "promql: subquery over %s aggregation is not supported",
+      "class": "rejection",
+      "trigger_query": "max_over_time(stddev(up)[5m:1m])"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:lowerSubqueryOverCall#1796796f",
+      "message": "promql: subquery inner %s expects exactly 1 argument, got %d",
+      "class": "rejection",
+      "trigger_query": "max_over_time(label_replace(up, \"a\", \"b\", \"c\", \"d.*\")[5m:1m])"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:lowerSubqueryOverCall#a2b5a42c",
+      "message": "promql: subquery inner %s must wrap a MatrixSelector, got %T",
+      "class": "rejection",
+      "trigger_query": "max_over_time(absent(up)[5m:1m])"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:lowerSubqueryOverCall#df8fa0f7",
+      "message": "promql: subquery inner matrix selector must wrap a VectorSelector, got %T",
+      "class": "internal",
+      "rationale": "the parser only builds MatrixSelector around a VectorSelector"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:lowerSubqueryOverCallSubquery#4050ccb7",
+      "message": "promql: inner subquery range must be positive, got %s",
+      "class": "internal",
+      "rationale": "the parser rejects non-positive subquery ranges (\"duration must be greater than 0\")"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:lowerSubqueryOverCallSubquery#b8fba661",
+      "message": "promql: %s does not accept a subquery argument",
+      "class": "rejection",
+      "trigger_query": "max_over_time(irate(foo[5m:1m])[10m:1m])"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:lowerSubqueryOverCountValues#49c20b7b",
+      "message": "promql: count_values requires a string-literal label name as the first arg",
+      "class": "internal",
+      "rationale": "the parser's typechecker admits only a string literal as count_values' first argument"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:lowerSubqueryOverCountValues#fc5b1a1a",
+      "message": "promql: count_values requires a non-empty label name",
+      "class": "rejection",
+      "trigger_query": "max_over_time(count_values(\"\", up)[5m:1m])"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:lowerSubqueryOverSubquery#4050ccb7",
+      "message": "promql: inner subquery range must be positive, got %s",
+      "class": "internal",
+      "rationale": "the parser rejects non-positive subquery ranges (\"duration must be greater than 0\")"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:lowerSubqueryOverTopK#1455acf5",
+      "message": "promql: subquery over %s requires a scalar literal K",
+      "class": "rejection",
+      "trigger_query": "max_over_time(topk(scalar(up), up)[5m:1m])"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:lowerSubqueryOverTopK#aeaed3a9",
+      "message": "promql: subquery over %s K must be \u003e 0",
+      "class": "rejection",
+      "trigger_query": "max_over_time(topk(0, up)[5m:1m])"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:lowerSubqueryOverTopK#dbc88c34",
+      "message": "promql: subquery over %s K must be a non-negative integer literal, got %v",
+      "class": "rejection",
+      "trigger_query": "max_over_time(topk(1.5, up)[5m:1m])"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:subqueryAnchor#1306ccfc",
+      "message": "promql: subquery `@ start()` modifier requires query range context (use LowerAt)",
+      "class": "internal",
+      "rationale": "the query endpoints always lower via LowerAtRange with the request window, so range context is always present"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:subqueryAnchor#92800419",
+      "message": "promql: subquery `@ end()` modifier requires query range context (use LowerAt)",
+      "class": "internal",
+      "rationale": "the query endpoints always lower via LowerAtRange with the request window, so range context is always present"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:subqueryAnchor#a34bee25",
+      "message": "promql: unexpected subquery StartOrEnd token %v",
+      "class": "internal",
+      "rationale": "the parser yields only START / END / 0 in StartOrEnd"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/synthetic.go:lowerTime#99c84578",
+      "message": "promql: time() takes no arguments, got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity: time() takes no arguments"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/synthetic.go:lowerVector#7cb6213b",
+      "message": "promql: vector() expects 1 argument, got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity: vector() is pinned at one argument"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/synthetic.go:lowerVector#a33e7d9b",
+      "message": "promql: vector() requires a scalar-foldable argument or time()",
+      "class": "rejection",
+      "trigger_query": "vector(scalar(up))"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/unary.go:lowerUnary#518e89c7",
+      "message": "promql: unary operand: %w",
+      "class": "internal",
+      "rationale": "error-propagation wrapper (%w): the wrapped rejection is catalogued at its origin"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/unary.go:lowerUnary#fe35064b",
+      "message": "promql: unsupported unary op %v",
+      "class": "internal",
+      "rationale": "the parser yields only +/- unary operators"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/aggregate.go:lowerAggregate#813b68dc",
+      "message": "traceql: aggregate `%s` has nil inner expression",
+      "class": "internal",
+      "rationale": "internal invariant: the parser never yields an aggregate with a nil inner expression"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/aggregate.go:mapAggregateOp#06d8a73f",
+      "message": "traceql: aggregate op %q is unsupported",
+      "class": "internal",
+      "rationale": "the grammar's aggregate ops (count / max / min / sum / avg) are all mapped; no parser-producible op reaches the default arm"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/group_coalesce.go:lowerGroup#7f6c3db0",
+      "message": "traceql: `| group(...)` requires a field expression",
+      "class": "internal",
+      "rationale": "the grammar requires an expression inside by(...); a missing field expression is a parse error"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:evalIntCmp#e6d8e3f6",
+      "message": "traceql: operator %s is unsupported on nestedSetParent",
+      "class": "internal",
+      "rationale": "non-comparison operators never reach the nested-set evaluation: regex / arithmetic shapes fail the integer-literal check first"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerAttribute#65f505d3",
+      "message": "traceql: intrinsic %s is only supported in comparisons (equality / inequality / regex)",
+      "class": "rejection",
+      "trigger_query": "{} | by(event:name)"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerAttribute#aa8b5044",
+      "message": "traceql: instrumentation-scoped attribute %q is unsupported — the OTel ClickHouse traces schema has no scope-attributes column (instrumentation:name / instrumentation:version map to ScopeName / ScopeVersion)",
+      "class": "rejection",
+      "trigger_query": "{ instrumentation.foo = \"x\" }"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerAttributeExpr#5268500a",
+      "message": "traceql: %s.%s used outside a comparison; only equality / inequality / regex filters on link.* and event.* are supported",
+      "class": "rejection",
+      "trigger_query": "{ event.name }"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerAttributeExpr#782c14d3",
+      "message": "traceql: intrinsic %s is only supported in root-ness comparisons (e.g. nestedSetParent \u003c 0) and select() projections",
+      "class": "rejection",
+      "trigger_query": "{} | by(nestedSetParent)"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerChainedSecondStage#9a3a2523",
+      "message": "traceql: chained second-stage element/separator length mismatch (%d vs %d)",
+      "class": "internal",
+      "rationale": "internal invariant: upstream's ChainedSecondStage keeps Elements and Separators in lock-step"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerChainedSecondStage#add566ca",
+      "message": "traceql: chained second-stage has no elements",
+      "class": "internal",
+      "rationale": "internal invariant: the parser never yields a chained second stage with zero elements"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerFieldExpr#3f3859bf",
+      "message": "traceql: field expression %T is unsupported",
+      "class": "internal",
+      "rationale": "type-switch default: every field-expression type the pinned grammar produces is handled"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerFollowingElement#2dc247dc",
+      "message": "traceql: pipeline tail element %T is unsupported",
+      "class": "internal",
+      "rationale": "type-switch default: every pipeline-tail element type the pinned grammar produces is handled"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerIntrinsicNilComparison#07654c50",
+      "message": "traceql: nil comparison on intrinsic %s is unsupported — the configured schema has no events column",
+      "class": "internal",
+      "rationale": "the default OTel-CH traces schema configures an events column; reachable only under a schema override that drops it"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerIntrinsicNilComparison#284df75f",
+      "message": "traceql: intrinsic %s requires per-span child counts the OTel ClickHouse schema does not materialise",
+      "class": "internal",
+      "rationale": "the pinned tempo parser rejects the childCount spelling (\"unexpected childCount\"), so the arm is unreachable from a parseable query"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerIntrinsicNilComparison#5c445f2a",
+      "message": "traceql: %s = nil is not valid because intrinsics cannot be nil",
+      "class": "rejection",
+      "trigger_query": "{ kind = nil }"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerIntrinsicNilComparison#e2d1d3a8",
+      "message": "traceql: nil comparison on intrinsic %s is unsupported — the configured schema has no links column",
+      "class": "internal",
+      "rationale": "the default OTel-CH traces schema configures a links column; reachable only under a schema override that drops it"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerMetricsFilter#20c8f8b5",
+      "message": "traceql: metrics filter operator %s is not a supported threshold comparison",
+      "class": "internal",
+      "rationale": "the grammar restricts metrics-filter operators to the six threshold comparisons, all of which pass isThresholdBinaryOp"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerMetricsFilter#b2411d4d",
+      "message": "traceql: metrics filter operator %s: %w",
+      "class": "internal",
+      "rationale": "error-propagation wrapper (%w): the grammar restricts metrics-filter operators to the six threshold comparisons, all mapped"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerMetricsSecondStage#86ae75c3",
+      "message": "traceql: metrics second-stage element %T is unsupported",
+      "class": "internal",
+      "rationale": "type-switch default: every metrics second-stage element type the pinned grammar produces is handled"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerNestedSetBinary#384e88f3",
+      "message": "traceql: %s comparisons support only integer literals",
+      "class": "rejection",
+      "trigger_query": "{ nestedSetParent = span.a }"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerNestedSetBinary#384e88f3-2",
+      "message": "traceql: %s comparisons support only integer literals",
+      "class": "rejection",
+      "trigger_query": "{ span.a = nestedSetParent }"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerNestedSetBinary#8e3d5d8d",
+      "message": "traceql: nestedSetParent %s %d depends on nested-set positions the OTel ClickHouse schema does not materialise — only root-ness tests (e.g. nestedSetParent \u003c 0) are supported",
+      "class": "rejection",
+      "trigger_query": "{ nestedSetParent = 5 }"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerNestedSetBinary#96d89a10",
+      "message": "traceql: nestedSetParent comparisons support only integer literals, got %s",
+      "class": "rejection",
+      "trigger_query": "{ nestedSetParent = 1.5 }"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerNestedSetBinary#ae545728",
+      "message": "traceql: intrinsic %s is unsupported — the OTel ClickHouse schema does not materialise nested-set positions",
+      "class": "rejection",
+      "trigger_query": "{ nestedSetLeft = 1 }"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerNilComparison#aa8b5044",
+      "message": "traceql: instrumentation-scoped attribute %q is unsupported — the OTel ClickHouse traces schema has no scope-attributes column (instrumentation:name / instrumentation:version map to ScopeName / ScopeVersion)",
+      "class": "rejection",
+      "trigger_query": "{ instrumentation.foo != nil }"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerNilComparison#dbf30854",
+      "message": "traceql: nil comparison on %s.%s is unsupported — the configured schema has no %s column",
+      "class": "internal",
+      "rationale": "the default OTel-CH traces schema configures attribute columns for every scope this branch checks; reachable only under a schema override that drops one"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerNilComparison#fca86ae4",
+      "message": "traceql: %s = nil is not valid because resource.service.name cannot be nil",
+      "class": "rejection",
+      "trigger_query": "{ resource.service.name = nil }"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerPipelineElement#3ea8ac7a",
+      "message": "traceql: pipeline element %T is unsupported",
+      "class": "internal",
+      "rationale": "type-switch default: every pipeline element type the pinned grammar produces is handled"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerRoot#3bb91b26",
+      "message": "traceql: empty pipeline",
+      "class": "internal",
+      "rationale": "internal invariant: tempo's Parse never returns an empty pipeline without an error"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerRoot#e52d8be5",
+      "message": "traceql: nil RootExpr",
+      "class": "internal",
+      "rationale": "internal invariant: tempo's Parse never returns a nil RootExpr without an error"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerScalarExpr#187e881e",
+      "message": "traceql: scalar expression %T is unsupported",
+      "class": "rejection",
+      "trigger_query": "{} | count() \u003e 1 + 1"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerScalarFilter#37e7c55d",
+      "message": "traceql: scalar-filter RHS must be a literal, got %T",
+      "class": "rejection",
+      "trigger_query": "{} | count() \u003e count()"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerScalarFilter#ead2eeaf",
+      "message": "traceql: scalar-filter LHS must aggregate to a series (count() / sum(...) / avg(...) / min(...) / max(...)), got %T",
+      "class": "rejection",
+      "trigger_query": "{} | 1 \u003e 2"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerSpansetExpr#e8ccb6b4",
+      "message": "traceql: spanset expression %T is unsupported",
+      "class": "rejection",
+      "trigger_query": "({} | count() \u003e 1) \u0026\u0026 ({} | count() \u003e 1)"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerStatic#218e2332",
+      "message": "traceql: static status literal has no Status() value",
+      "class": "internal",
+      "rationale": "internal invariant: a TypeStatus static always carries a Status value"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerStatic#25110d71",
+      "message": "traceql: static literal type %s is unsupported",
+      "class": "internal",
+      "rationale": "every static type the pinned grammar produces in lowerable positions (int / float / string / bool / duration / status / kind) is handled; array statics do not parse"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerStatic#567e5794",
+      "message": "traceql: static kind literal has no Kind() value",
+      "class": "internal",
+      "rationale": "internal invariant: a TypeKind static always carries a Kind value"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerTopKBottomK#78efd9fa",
+      "message": "traceql: %s(%d): limit must be \u003e 0",
+      "class": "rejection",
+      "trigger_query": "{} | rate() by (span.name) | topk(0)",
+      "endpoint": "traceql_metrics"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerUnaryOperation#5f9f3466",
+      "message": "traceql: unary operator %s is unsupported",
+      "class": "rejection",
+      "trigger_query": "{ !(span.foo = 1) }"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerUnaryOperation#76707682",
+      "message": "traceql: %s operand %T is unsupported — nil comparisons require an attribute reference",
+      "class": "rejection",
+      "trigger_query": "{ (span.a + 1) != nil }"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:mapBinaryOp#786cde25",
+      "message": "traceql: operator %s is unsupported",
+      "class": "internal",
+      "rationale": "every operator the pinned grammar yields in binary positions is mapped; unary operators route through lowerUnaryOperation"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:mapSecondStageOp#76dac09c",
+      "message": "traceql: second-stage op %s is not supported",
+      "class": "internal",
+      "rationale": "the grammar's metrics second stages are exactly topk / bottomk, both mapped"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:mapStructuralOp#753a4362",
+      "message": "traceql: spanset op %s is not a structural relation",
+      "class": "internal",
+      "rationale": "callers pre-filter to the structural operator set before consulting this mapper"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:unsupportedIntrinsicErr#284df75f",
+      "message": "traceql: intrinsic %s requires per-span child counts the OTel ClickHouse schema does not materialise",
+      "class": "internal",
+      "rationale": "the pinned tempo parser rejects the childCount spelling (\"unexpected childCount\"), so the arm is unreachable from a parseable query"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:unsupportedIntrinsicErr#3c6b93ea",
+      "message": "traceql: intrinsic %s requires per-event timestamp arithmetic against the Events Nested column and is unsupported",
+      "class": "rejection",
+      "trigger_query": "{ event:timeSinceStart \u003e 1s }"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:unsupportedIntrinsicErr#471b92bc",
+      "message": "traceql: intrinsic %s is trace-scoped — the OTel ClickHouse schema stores one row per span and does not materialise whole-trace values",
+      "class": "rejection",
+      "trigger_query": "{ traceDuration \u003e 1s }"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:unsupportedIntrinsicErr#782c14d3",
+      "message": "traceql: intrinsic %s is only supported in root-ness comparisons (e.g. nestedSetParent \u003c 0) and select() projections",
+      "class": "rejection",
+      "trigger_query": "{} | min(nestedSetLeft) \u003e 0"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:unsupportedIntrinsicErr#86d3eeb3",
+      "message": "traceql: intrinsic %s has no OTel ClickHouse backing column and is unsupported",
+      "class": "internal",
+      "rationale": "every intrinsic the pinned grammar parses either has a backing column, a dedicated arm above, or is intercepted earlier; no parseable intrinsic reaches the default arm"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/metrics_compare.go:lowerMetricsCompare#14f543c1",
+      "message": "traceql: compare() selection filter lowered to no predicate",
+      "class": "internal",
+      "rationale": "every parseable compare() selection filter (including `{}` and constant-true filters) lowers to a predicate"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/metrics_compare.go:lowerMetricsCompare#23f37ac7",
+      "message": "traceql: compare() requires a selection spanset filter",
+      "class": "internal",
+      "rationale": "the grammar requires a spanset-filter argument on compare(); Filter() is never nil for a parseable query"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/metrics_pipeline.go:lowerMetricsAggregate#c5a17af0",
+      "message": "traceql: quantile_over_time requires at least one quantile",
+      "class": "internal",
+      "rationale": "the grammar requires at least one quantile argument on quantile_over_time"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/metrics_pipeline.go:lowerMetricsGroupBy#26b9b81a",
+      "message": "traceql: empty by(...) group key",
+      "class": "internal",
+      "rationale": "the grammar rejects an empty by() group key as a parse error"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/metrics_pipeline.go:lowerMetricsHistogramOverTime#3fe5309b",
+      "message": "traceql: histogram_over_time requires an attribute operand",
+      "class": "internal",
+      "rationale": "the grammar admits only attribute operands inside histogram_over_time(...)"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/metrics_pipeline.go:lowerMetricsPipeline#d4c9f593",
+      "message": "traceql: metrics pipeline element %T is unsupported",
+      "class": "internal",
+      "rationale": "type-switch default: every metrics pipeline element type the pinned grammar produces is handled"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/metrics_pipeline.go:mapMetricsAggregateOp#a456c01c",
+      "message": "traceql: histogram_over_time must lower via lowerMetricsHistogramOverTime",
+      "class": "internal",
+      "rationale": "internal routing invariant: histogram_over_time is dispatched to lowerMetricsHistogramOverTime before this mapper"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/metrics_pipeline.go:mapMetricsAggregateOp#e363ec48",
+      "message": "traceql: metrics aggregate op %s is unsupported",
+      "class": "internal",
+      "rationale": "every metrics aggregate op the pinned grammar produces is mapped"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/metrics_pipeline.go:metricsAggregateAttr#937cdd96",
+      "message": "traceql: %s requires an attribute operand",
+      "class": "internal",
+      "rationale": "the grammar admits only attribute operands inside the *_over_time(...) metrics aggregates"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/select.go:lowerSelect#bba2e3bc",
+      "message": "traceql: `| select(...)` requires at least one attribute",
+      "class": "internal",
+      "rationale": "the grammar rejects an empty select() as a parse error"
+    }
+  ]
+}
