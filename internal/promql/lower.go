@@ -1407,6 +1407,26 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 		return lowerHoltWinters(c, s, ctx)
 	case "absent_over_time":
 		return lowerAbsentOverTime(c, s, ctx)
+	case "first_over_time":
+		// `first_over_time` is an experimental PromQL function: the
+		// reference backend (prom/prometheus:v3.11.3, started without
+		// `--enable-feature=promql-experimental-functions` in the
+		// compatibility harness) rejects it. Cerberus's parser enables
+		// experimental functions for the deliberately-supported subset
+		// (`@start()`/`@end()`, `double_exponential_smoothing`,
+		// `predict_linear`), so the parser accepts `first_over_time`
+		// and lowering would otherwise build a RangeWindow that the
+		// *shared* chsql over-time emitter now executes — the LogQL
+		// burndown added `first_over_time` to that emitter's reducer
+		// set (range_window.go) for `first_over_time(... | unwrap v)`.
+		// To keep the PromQL head at reference parity we reject here,
+		// before the RangeWindow reaches the LogQL-shared emitter. The
+		// LogQL head keeps its `first_over_time` support; only the
+		// PromQL lowering path is gated. The message mirrors the
+		// emitter's `ErrUnsupported: range function %q` wording so the
+		// showcase-promql parity-rejection contract substring
+		// ("unsupported: range function") still matches.
+		return nil, fmt.Errorf("unsupported: range function %q is experimental and not supported by the PromQL head", c.Func.Name)
 	}
 	if len(c.Args) != 1 {
 		return nil, fmt.Errorf("promql: %s expects exactly 1 argument, got %d", c.Func.Name, len(c.Args))
