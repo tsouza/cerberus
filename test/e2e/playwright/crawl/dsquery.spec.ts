@@ -43,7 +43,10 @@ import {
   type APIRequestContext,
 } from '@playwright/test';
 
-import { generateSelfTraffic } from '../helpers/index.js';
+import {
+  awaitSelfTelemetryRangeSignal,
+  generateSelfTraffic,
+} from '../helpers/index.js';
 import { truncate } from './lib.js';
 
 const SEED_TRAFFIC_SECONDS = 20;
@@ -206,6 +209,12 @@ test('ds-query replays: every provisioned datasource answers through the plugin 
   testInfo.setTimeout(5 * 60_000);
 
   await generateSelfTraffic(request, SEED_TRAFFIC_SECONDS);
+  // rate()-over-range replays need ≥2 exported telemetry samples in
+  // the lookback window — on a freshly-booted stack the seed traffic
+  // alone doesn't guarantee that yet (see the helper doc; verified
+  // red on a healthy stack at ~2min uptime, 2026-06-10). Bounded
+  // wait, loud deadline failure — never a skip.
+  await awaitSelfTelemetryRangeSignal(request);
 
   const datasources = await listDatasources(request);
   expect(
