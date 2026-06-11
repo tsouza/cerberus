@@ -1,0 +1,45 @@
+{
+  "name": "detected-fields",
+  "datasource": "loki",
+  "consumer": "Grafana 12.2.9 Logs Drilldown (grafana-lokiexplore-app) fields badge + breakdown — reads body.fields at the TOP level",
+  "provenance": [
+    "Captured from the live compose stack during the 'Fields: 0' incident (#774): Logs Drilldown",
+    "(and the Loki datasource's detected-fields side panel) calls /loki/api/v1/detected_fields with",
+    "query + limit + line_limit and reads `fields` at the TOP level — upstream Loki serializes",
+    "logproto.DetectedFieldsResponse BARE (pkg/util/marshal WriteDetectedFieldsResponseJSON), with",
+    "NO {status, data} envelope. Cerberus once wrapped the payload in the query-API envelope; every",
+    "drilldown service page then showed zero fields while the request returned 200 — invisible to",
+    "status-code oracles.",
+    "Shape reconstructed from test/e2e/playwright/loki_ux.spec.ts (detected fields test) and",
+    "internal/api/loki/detected_fields_chdb_test.go."
+  ],
+  "grafana_request": {
+    "path": "GET /api/datasources/proxy/uid/cerberus-loki/loki/api/v1/detected_fields",
+    "query": {
+      "query": "{service_name=\"api\"}",
+      "limit": "1000",
+      "line_limit": "1000",
+      "start": "${START_NS}",
+      "end": "${END_NS}"
+    }
+  },
+  "request": {
+    "method": "GET",
+    "path": "/loki/api/v1/detected_fields",
+    "query": {
+      "query": "{service_name=\"api\"}",
+      "limit": "1000",
+      "line_limit": "1000",
+      "start": "${START_NS}",
+      "end": "${END_NS}"
+    },
+    "headers": {}
+  },
+  "stub": "loki-detected-fields",
+  "expect": {
+    "status": 200,
+    "decode": "loki-detected-fields",
+    "wire": ["fields-min:1", "fields-shape", "field-typed:duration=duration"],
+    "data": ["fields-min:3", "field-typed:detected_level=string"]
+  }
+}

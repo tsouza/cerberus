@@ -1,0 +1,44 @@
+{
+  "name": "trace-by-id-v2-proto",
+  "datasource": "tempo",
+  "consumer": "Grafana 12.2.9 Tempo datasource backend — strict gogo/proto decode of tempopb.TraceByIDResponse (queryType=traceId)",
+  "provenance": [
+    "Captured from the live compose stack during the 2026-06 Grafana-12 trace-by-id outage (#764).",
+    "Grafana's Tempo frontend reclassifies a bare-hex Explore query to queryType=traceId; the plugin",
+    "backend then issues GET /api/v2/traces/{id} with Accept: application/protobuf and unmarshals the",
+    "body as tempopb.TraceByIDResponse BEFORE converting to OTLP. Cerberus used to serve the same bare",
+    "*tempopb.Trace bytes as the v1 endpoint; the decode misaligned one message level deep and died",
+    "inside a KeyValue ('proto: KeyValue: wiretype end group for non-group' → 'An error occurred",
+    "within the plugin' in Explore).",
+    "Request shape reconstructed from internal/api/tempo/handler_trace_v2_test.go and",
+    "test/e2e/playwright/tempo_traces.spec.ts (the queryType reclassification pin)."
+  ],
+  "grafana_request": {
+    "path": "POST /api/ds/query",
+    "body": {
+      "queries": [
+        {
+          "refId": "A",
+          "datasource": { "type": "tempo", "uid": "cerberus-tempo" },
+          "queryType": "traceId",
+          "query": "${TRACE_ID}",
+          "limit": 20,
+          "tableType": "traces"
+        }
+      ]
+    }
+  },
+  "request": {
+    "method": "GET",
+    "path": "/api/v2/traces/${TRACE_ID}",
+    "query": { "start": "${START_UNIX}", "end": "${END_UNIX}" },
+    "headers": { "Accept": "application/protobuf" }
+  },
+  "stub": "tempo-trace-by-id",
+  "expect": {
+    "status": 200,
+    "decode": "tempo-trace-v2-proto",
+    "wire": ["trace-present", "metrics-block-present", "trace-resource-spans-min:1"],
+    "data": ["trace-resource-spans-min:1"]
+  }
+}

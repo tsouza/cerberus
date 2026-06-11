@@ -25,6 +25,7 @@ inside each layer.
 | 6b    | LogQL chDB roundtrip                | `test/spec/logql/*.txtar`                                                                         | Same as 6a for LogQL                                                                                                 | Same as 6a                                                                  |
 | 6c    | TraceQL chDB roundtrip              | `test/spec/traceql/*.txtar`                                                                       | Same as 6a for TraceQL                                                                                               | Same as 6a                                                                  |
 | 7     | HTTP handler conformance            | `internal/api/{prom,loki,tempo}/conformance_test.go`                                              | Wire-format drift, error envelope shape, header pins, range-param parsing, admission control                         | Real-network failure modes (Layer 10) and UX flows (Layer 9)                |
+| 7b    | Consumer-corpus replay              | `test/consumer-corpus/`                                                                           | Consumer-decode drift on captured Grafana request shapes (proto envelopes, bare JSON, drilldown queries)             | Shapes Grafana hasn't been observed sending — crawler mines captures        |
 | 8     | System / process lifecycle          | `internal/config/`, `internal/api/health/`, `cmd/cerberus/`, `internal/telemetry/`, `schema/ddl/` | Env-var contract, `/readyz` TTL coalescing, OTel telemetry attributes, signal-driven shutdown                        | Cross-process behaviour — Compose / k3d (Layer 9)                           |
 | 9     | Playwright UX flows                 | `test/e2e/playwright/*.spec.ts`                                                                   | Grafana Explore / Logs / Trace panel request sequences against cerberus's three datasource APIs                      | Pure backend logic — Layers 1–8                                             |
 | 10    | Chaos / failure-mode                | `internal/{chclient,api/{prom,loki,tempo,admit}}/chaos_test.go`, `test/regression/goleak_test.go` | CH-failure, mid-stream cursor faults, goroutine leaks, panic-mid-handler slot release, CH-disconnect circuit breaker | Long-tail platform-specific failures                                        |
@@ -34,10 +35,10 @@ inside each layer.
 
 | Gate                          | Workflow                                       | Trigger                            | Required PR check? | Scope                                                                                                             |
 | ----------------------------- | ---------------------------------------------- | ---------------------------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------- |
-| `check`                       | `.github/workflows/ci.yml` (job `check`)       | PRs + push                         | Required           | `go test -race -cover ./...` (Layers 1, 2a, 2b, 3, 4, 5, 7, 8, 10 default)                                        |
+| `check`                       | `.github/workflows/ci.yml` (job `check`)       | PRs + push                         | Required           | `go test -race -cover ./...` (Layers 1, 2a, 2b, 3, 4, 5, 7, 7b stub lane, 8, 10 default)                          |
 | `lint`                        | `.github/workflows/ci.yml` (job `lint`)        | PRs + push                         | Required           | `golangci-lint` v2 + markdownlint + commitlint                                                                    |
 | `forbid-skip`                 | `.github/workflows/ci.yml` (job `forbid-skip`) | PRs + push                         | Required           | `t.Skip*` + discipline-erosion wording + soft-assertion + skip-additions                                          |
-| `probe`                       | `.github/workflows/chdb.yml` (job `probe`)     | PRs + push                         | Required           | chDB driver sanity (`TestChDBProbe`)                                                                              |
+| `probe`                       | `.github/workflows/chdb.yml` (job `probe`)     | PRs + push                         | Required           | chDB driver sanity (`TestChDBProbe`) + `just test-chdb` (api handler chdb tests, Layer 7b chdb lane)              |
 | `roundtrip (<ql>)`            | `.github/workflows/chdb.yml` matrix            | PRs + push                         | Required           | TXTAR chDB roundtrip for promql / logql / traceql (Layer 6a-c)                                                    |
 | `compatibility/<head>`        | `.github/workflows/compatibility.yml` matrix   | PRs + push + nightly               | Required           | Differential vs reference Prom / Loki / Tempo                                                                     |
 | `dashboard` (E2E)             | `.github/workflows/e2e.yml` (job `dashboard`)  | push-to-main + nightly + manual    | Informational      | k3d + cerberus + Grafana + Playwright (Layer 9)                                                                   |
@@ -121,6 +122,40 @@ to verify locally without rewriting.
 documented HTTP endpoint with representative payloads and asserts the
 wire envelope shape (`status`, `data.resultType`, content keys),
 response headers, error envelope, and admission-control 503 + `Retry-After`.
+
+### Layer 7b — Consumer-corpus replay
+
+`test/consumer-corpus/` is the shift-left lane for consumer-contract
+bugs: a corpus of REAL request shapes Grafana sends
+(`grafana-<version>/*.json`, one entry per file with provenance,
+the Grafana-side request, and per-entry expectations), replayed
+against the in-process handlers and decoded EXACTLY as the consumer
+decodes — strict gogo/proto unmarshal into `tempopb` types for the
+Tempo proto endpoints, bare logproto-shaped JSON for Loki, Prom API
+envelopes for Prometheus. The 2026-06 incident week (bare `Trace` vs
+`TraceByIDResponse` #764, enveloped `detected_fields` #774, missing
+`spanSets` #770, drilldown `<groupBy> != nil` 422s, blank regex
+`__name__` breakdowns #769) was only caught by the e2e browser stack;
+every one of those is reproducible here at unit cost.
+
+Two lanes share the corpus: the default-tag lane (runs in `check`)
+backs handlers with canned-row stubs and pins routing, status, and
+consumer decodability; the `chdb`-tagged lane (runs in the chdb
+workflow's `probe` job via `just test-chdb`) executes the full
+parse → lower → optimize → emit → chDB pipeline over small seeds and
+additionally evaluates each entry's data predicates. A ratchet
+meta-test forbids corpus shrink (total + per-datasource entry floors
+are raise-only) and rejects entries naming decoders / predicates /
+stub fixtures the harness doesn't implement.
+
+Division of labour with Layers 7 and 9: Layer 7 pins cerberus's OWN
+wire contract endpoint by endpoint; Layer 7b pins what GRAFANA
+actually sends and reads, request by captured request. The e2e
+crawler and drilldown specs (Layer 9) are the corpus MINERS — when a
+Grafana bump introduces a new request shape, capture it into a new
+version-keyed corpus directory rather than widening assertions in
+place. Known-unfixed bugs stay as failing entries (never tolerated,
+never allow-listed): a red corpus entry is the layer doing its job.
 
 ### Layer 8 — System / process lifecycle
 

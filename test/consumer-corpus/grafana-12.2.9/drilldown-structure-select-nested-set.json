@@ -1,0 +1,52 @@
+{
+  "name": "drilldown-structure-select-nested-set",
+  "datasource": "tempo",
+  "consumer": "Grafana 12.2.9 Traces Drilldown (grafana-exploretraces-app 2.0.4) Structure tab — mergeTraces reads nestedSet* intValues, service.name, name, status",
+  "provenance": [
+    "Captured from the live compose stack (Structure tab blank, fixed by #775): the tab's buildQuery",
+    "(StructureScene.tsx) issues the structural union with",
+    "| select(status, resource.service.name, name, nestedSetParent, nestedSetLeft, nestedSetRight)",
+    "and its utils.ts nestedSetLeft() THROWS when any span lacks the nestedSet* intValue attributes;",
+    "tree-node.ts nodeName composes `${svcName}:${spanName}` from the string attributes.",
+    "Query verbatim from internal/api/tempo/search_select_nested_set_chdb_test.go and",
+    "test/spec/traceql/select_nested_set_drilldown_structure.txtar."
+  ],
+  "grafana_request": {
+    "path": "POST /api/ds/query",
+    "body": {
+      "queries": [
+        {
+          "refId": "A",
+          "datasource": { "type": "tempo", "uid": "cerberus-tempo" },
+          "queryType": "traceql",
+          "query": "({nestedSetParent<0} &>> { kind = server }) || ({nestedSetParent<0}) | select(status, resource.service.name, name, nestedSetParent, nestedSetLeft, nestedSetRight)"
+        }
+      ]
+    }
+  },
+  "request": {
+    "method": "GET",
+    "path": "/api/search",
+    "query": {
+      "q": "({nestedSetParent<0} &>> { kind = server }) || ({nestedSetParent<0}) | select(status, resource.service.name, name, nestedSetParent, nestedSetLeft, nestedSetRight)",
+      "limit": "20",
+      "spss": "20",
+      "start": "${START_UNIX}",
+      "end": "${END_UNIX}"
+    },
+    "headers": {}
+  },
+  "stub": "tempo-search-select",
+  "expect": {
+    "status": 200,
+    "decode": "tempo-search",
+    "wire": [
+      "traces-min:1",
+      "every-trace-has-spansets",
+      "every-span-int-attr:nestedSetParent,nestedSetLeft,nestedSetRight",
+      "some-span-int-attr:nestedSetParent=-1",
+      "some-span-str-attr:status=error"
+    ],
+    "data": ["traces-min:2"]
+  }
+}

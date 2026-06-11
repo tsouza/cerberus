@@ -1,0 +1,29 @@
+{
+  "name": "metadata",
+  "datasource": "prom",
+  "consumer": "Grafana 12.2.9 Metrics Drilldown (grafana-metricsdrilldown-app) metric catalogue — /api/v1/metadata type/help/unit map",
+  "provenance": [
+    "Metrics Drilldown boots by listing every metric with its type from /api/v1/metadata; the type",
+    "drives which query shapes it stamps (counter → rate(), gauge → avg, histogram → quantile",
+    "panels). The non-monotonic-Sum-as-gauge contract was pinned by #768 after UpDownCounters were",
+    "misreported as counters and the app stamped rate() over them.",
+    "Shape reconstructed from internal/api/prom/metadata_test.go and the #768 commit message."
+  ],
+  "grafana_request": {
+    "path": "GET /api/datasources/uid/cerberus-prom/resources/api/v1/metadata",
+    "query": {}
+  },
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/metadata",
+    "query": {},
+    "headers": {}
+  },
+  "stub": "prom-metadata",
+  "expect": {
+    "status": 200,
+    "decode": "prom-metadata",
+    "wire": ["metadata-contains:cerberus_query_inflight"],
+    "data": ["metadata-contains:up"]
+  }
+}

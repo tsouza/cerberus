@@ -1,0 +1,46 @@
+{
+  "name": "drilldown-breakdown-rate-by-kind",
+  "datasource": "tempo",
+  "consumer": "Grafana 12.2.9 Traces Drilldown (grafana-exploretraces-app 2.0.4) Breakdown tab — rate() by(kind) bar charts",
+  "provenance": [
+    "Maintainer-captured from the live compose stack (2026-06-10): the Breakdown tab stamps",
+    "{nestedSetParent<0 && true && <groupBy> != nil} | rate() by(<groupBy>) for every group-by",
+    "candidate, including the intrinsics kind / status / name. Cerberus 422'd the intrinsic",
+    "`!= nil` guard ('nil comparison on intrinsic ... is unsupported' — see",
+    "internal/traceql/lower.go lowerUnaryOperation), blanking the breakdown panel for those",
+    "group-bys while resource.* attribute group-bys worked.",
+    "Query shape mirrors the attribute form pinned in internal/traceql/lower.go's doc comment",
+    "and the breakdown scenes of the upstream traces-drilldown app."
+  ],
+  "grafana_request": {
+    "path": "POST /api/ds/query",
+    "body": {
+      "queries": [
+        {
+          "refId": "A",
+          "datasource": { "type": "tempo", "uid": "cerberus-tempo" },
+          "queryType": "traceql",
+          "query": "{nestedSetParent<0 && true && kind != nil} | rate() by(kind)"
+        }
+      ]
+    }
+  },
+  "request": {
+    "method": "GET",
+    "path": "/api/metrics/query_range",
+    "query": {
+      "q": "{nestedSetParent<0 && true && kind != nil} | rate() by(kind)",
+      "start": "${START_UNIX}",
+      "end": "${END_UNIX}",
+      "step": "60s"
+    },
+    "headers": {}
+  },
+  "stub": "empty",
+  "expect": {
+    "status": 200,
+    "decode": "tempo-metrics-range",
+    "wire": ["exemplars-not-null"],
+    "data": ["series-min:1", "every-series-label-key:kind"]
+  }
+}

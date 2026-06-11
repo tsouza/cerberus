@@ -71,10 +71,12 @@ spec-chdb:
     go test -tags chdb -count=1 ./test/spec/...
 
 # Run the chDB-tagged handler tests under internal/api/... plus the
-# chclienttest package itself. Same prerequisite as spec-chdb (libchdb
-# at the default install path). Mirrors the `chdb` CI job.
+# chclienttest package itself and the consumer-corpus replay lane
+# (test/consumer-corpus — captured Grafana request shapes executed
+# through chDB seeds). Same prerequisite as spec-chdb (libchdb at the
+# default install path). Mirrors the `chdb` CI job.
 test-chdb:
-    go test -tags chdb -count=1 ./internal/chclienttest/... ./internal/api/...
+    go test -tags chdb -count=1 ./internal/chclienttest/... ./internal/api/... ./test/consumer-corpus/...
 
 # Run the chDB-tagged property tests (rapid + from-scratch oracle).
 # Requires libchdb.so (see `just chdb-install`). Local default is rapid's

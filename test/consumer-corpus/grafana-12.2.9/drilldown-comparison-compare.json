@@ -1,0 +1,47 @@
+{
+  "name": "drilldown-comparison-compare",
+  "datasource": "tempo",
+  "consumer": "Grafana 12.2.9 Traces Drilldown (grafana-exploretraces-app 2.0.4) Comparison tab — compare() cohort split keyed on __meta_type",
+  "provenance": [
+    "Captured from the live compose stack (crawl signature traceql-metrics-compare-unsupported-422,",
+    "fixed by #776): the Comparison tab issues",
+    "{nestedSetParent<0 && true} | compare({status = error}, 10) through /api/metrics/query_range and",
+    "splits the returned series into baseline/selection cohorts on the LEADING __meta_type label.",
+    "Shape verbatim from internal/api/tempo/metrics_query_range_compare_test.go",
+    "(TestMetricsQueryRange_CompareDrilldownVerbatim)."
+  ],
+  "grafana_request": {
+    "path": "POST /api/ds/query",
+    "body": {
+      "queries": [
+        {
+          "refId": "A",
+          "datasource": { "type": "tempo", "uid": "cerberus-tempo" },
+          "queryType": "traceql",
+          "query": "{nestedSetParent<0 && true} | compare({status = error}, 10)"
+        }
+      ]
+    }
+  },
+  "request": {
+    "method": "GET",
+    "path": "/api/metrics/query_range",
+    "query": {
+      "q": "{nestedSetParent<0 && true} | compare({status = error}, 10)",
+      "start": "${START_UNIX}",
+      "end": "${END_UNIX}",
+      "step": "60s"
+    },
+    "headers": {}
+  },
+  "stub": "tempo-compare",
+  "expect": {
+    "status": 200,
+    "decode": "tempo-metrics-range",
+    "wire": [
+      "compare-meta-types:baseline,selection,baseline_total,selection_total",
+      "exemplars-not-null"
+    ],
+    "data": ["series-min:4"]
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "name": "drilldown-regex-name-instant-query",
+  "datasource": "prom",
+  "consumer": "Grafana 12.2.9 Metrics Drilldown (grafana-metricsdrilldown-app) — instant query with a regex __name__ selector",
+  "provenance": [
+    "Captured from the live compose stack during the blank-breakdown-tab incident (#769): Metrics",
+    "Drilldown stamps {__name__=~\".*<metric>.*\"} selectors for every metric it lists. Two gaps made",
+    "the shape return empty: gauge-only table routing for regex/name-less selectors (sum-stored",
+    "metrics like cerberus_query_inflight returned nothing) and no Prom-normalisation bridge for",
+    "regex values against OTel-dotted stored names.",
+    "Shape reconstructed from internal/api/prom/handler_chdb_regex_name_matcher_test.go and the",
+    "#769 commit message."
+  ],
+  "grafana_request": {
+    "path": "POST /api/ds/query",
+    "body": {
+      "queries": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "cerberus-prom" },
+          "expr": "{__name__=~\".*cerberus_query_inflight.*\"}",
+          "instant": true,
+          "range": false
+        }
+      ]
+    }
+  },
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/query",
+    "query": {
+      "query": "{__name__=~\".*cerberus_query_inflight.*\"}",
+      "time": "${END_UNIX}"
+    },
+    "headers": {}
+  },
+  "stub": "prom-vector",
+  "expect": {
+    "status": 200,
+    "decode": "prom-envelope",
+    "wire": ["resulttype:vector", "result-min:1", "every-series-metric-label:cerberus_ql"],
+    "data": ["result-min:3"]
+  }
+}

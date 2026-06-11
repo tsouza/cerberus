@@ -1,0 +1,50 @@
+{
+  "name": "drilldown-duration-avg-by",
+  "datasource": "loki",
+  "consumer": "Grafana 12.2.9 Logs Drilldown (grafana-lokiexplore-app) duration-field breakdown — avg by over unwrap duration()",
+  "provenance": [
+    "The avg-by sibling of drilldown-duration-sum-by (see that entry for the incident shape, the",
+    "µs-row rationale, and the per-row degradation contract reference Loki enforces on",
+    "unparseable duration values).",
+    "Query shape verbatim from internal/logql/range_aggregation_test.go",
+    "(`avg by (level) (avg_over_time(... | logfmt | duration != \"\" | unwrap duration(duration) ...))`)",
+    "and test/spec/logql/edge_nested_max_avg_by_unwrap.txtar."
+  ],
+  "grafana_request": {
+    "path": "POST /api/ds/query",
+    "body": {
+      "queries": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "cerberus-loki" },
+          "queryType": "range",
+          "expr": "avg by (level) (avg_over_time({service_name=\"api\"} | logfmt | duration != \"\" | unwrap duration(duration) [$__auto]))"
+        }
+      ]
+    }
+  },
+  "request": {
+    "method": "GET",
+    "path": "/loki/api/v1/query_range",
+    "query": {
+      "query": "avg by (level) (avg_over_time({service_name=\"api\"} | logfmt | duration != \"\" | unwrap duration(duration) [5m]))",
+      "start": "${START_NS}",
+      "end": "${END_NS}",
+      "step": "60"
+    },
+    "headers": {}
+  },
+  "stub": "empty",
+  "expect": {
+    "status": 200,
+    "decode": "loki-envelope",
+    "wire": ["resulttype:matrix"],
+    "data": [
+      "result-min:1",
+      "every-series-metric-label:level",
+      "matrix-values-finite-positive",
+      "matrix-max-value:10",
+      "series-max-value:level=error,0.41"
+    ]
+  }
+}

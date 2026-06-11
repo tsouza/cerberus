@@ -1,0 +1,48 @@
+{
+  "name": "logs-panel-streams",
+  "datasource": "loki",
+  "consumer": "Grafana 12.2.9 Logs Drilldown / Explore logs panel — streams envelope decode (queryType=range)",
+  "provenance": [
+    "The baseline log-lines request every Logs Drilldown service page and Explore logs panel",
+    "issues: a stream selector over query_range with limit + direction. Pinned so the envelope",
+    "(status/data/resultType=streams) and the per-stream values shape stay decodable by the Loki",
+    "datasource backend.",
+    "Shape reconstructed from test/e2e/playwright/loki_ux.spec.ts and",
+    "internal/api/loki/handler_test.go (TestQueryRange_Streams_DefaultLimitClampsResponse)."
+  ],
+  "grafana_request": {
+    "path": "POST /api/ds/query",
+    "body": {
+      "queries": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "cerberus-loki" },
+          "queryType": "range",
+          "expr": "{service_name=\"api\"}",
+          "maxLines": 100,
+          "direction": "backward"
+        }
+      ]
+    }
+  },
+  "request": {
+    "method": "GET",
+    "path": "/loki/api/v1/query_range",
+    "query": {
+      "query": "{service_name=\"api\"}",
+      "start": "${START_NS}",
+      "end": "${END_NS}",
+      "step": "60",
+      "limit": "100",
+      "direction": "backward"
+    },
+    "headers": {}
+  },
+  "stub": "loki-streams",
+  "expect": {
+    "status": 200,
+    "decode": "loki-envelope",
+    "wire": ["resulttype:streams", "result-min:1"],
+    "data": ["streams-values-min:6"]
+  }
+}

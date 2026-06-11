@@ -1,0 +1,33 @@
+{
+  "name": "drilldown-labels-regex-match",
+  "datasource": "prom",
+  "consumer": "Grafana 12.2.9 Metrics Drilldown (grafana-metricsdrilldown-app) — /api/v1/labels with a regex __name__ match[] selector",
+  "provenance": [
+    "The labels-discovery arm of the #769 incident: Metrics Drilldown's breakdown tab lists the",
+    "label keys of each metric via /api/v1/labels?match[]={__name__=~\".*<metric>.*\"}. Before the",
+    "fix the regex selector resolved against the gauge table only and never matched sum-stored",
+    "metrics, so the tab offered no group-by candidates.",
+    "Shape reconstructed from internal/api/prom/handler_chdb_regex_name_matcher_test.go."
+  ],
+  "grafana_request": {
+    "path": "GET /api/datasources/uid/cerberus-prom/resources/api/v1/labels",
+    "query": { "match[]": "{__name__=~\".*cerberus_query_inflight.*\"}" }
+  },
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/labels",
+    "query": {
+      "match[]": "{__name__=~\".*cerberus_query_inflight.*\"}",
+      "start": "${START_UNIX}",
+      "end": "${END_UNIX}"
+    },
+    "headers": {}
+  },
+  "stub": "prom-labels",
+  "expect": {
+    "status": 200,
+    "decode": "prom-strings",
+    "wire": ["strings-contains:cerberus_ql"],
+    "data": ["strings-contains:__name__"]
+  }
+}

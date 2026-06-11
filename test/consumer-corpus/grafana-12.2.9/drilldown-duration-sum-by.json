@@ -1,0 +1,60 @@
+{
+  "name": "drilldown-duration-sum-by",
+  "datasource": "loki",
+  "consumer": "Grafana 12.2.9 Logs Drilldown (grafana-lokiexplore-app) duration-field breakdown — sum by over unwrap duration()",
+  "provenance": [
+    "Logs Drilldown classifies detected fields by type; for duration-typed fields its breakdown",
+    "scenes stamp sum by / avg by aggregations over `| logfmt | <field> != \"\" | unwrap",
+    "duration(<field>) [$__auto]` (Grafana interpolates $__auto to a concrete range before the",
+    "request reaches the Loki API).",
+    "Query shape verbatim from the repo's pinned drilldown forms:",
+    "test/spec/logql/edge_nested_max_avg_by_unwrap.txtar and",
+    "internal/logql/range_aggregation_test.go (sum_over_time-unwrap-duration-postfilter).",
+    "The chdb seed carries a sub-millisecond `duration=812µs` row plus an unparseable",
+    "`duration=oops` row. Incident (k3d crawl lane, run 27327766381, Logs Drilldown service pages):",
+    "cerberus fed label values straight into CH parseTimeDelta, which throws on the first value it",
+    "can't parse — including Go's Duration.String() micro-sign form on ClickHouse 24.8 — aborting",
+    "the whole panel query. Reference Loki NEVER aborts: unparseable unwrap sources degrade",
+    "per-row to 0-valued samples in an __error__-stamped bypass series",
+    "(pkg/logql/log/metrics_extraction.go). The data predicates pin that contract: 200 + grouped",
+    "series present + non-error values inside the unit-sanity bounds (all parseable durations are",
+    "<= 1.8 s summed; a µs row misparsed as ms or s breaches series-max-value)."
+  ],
+  "grafana_request": {
+    "path": "POST /api/ds/query",
+    "body": {
+      "queries": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "cerberus-loki" },
+          "queryType": "range",
+          "expr": "sum by (level) (sum_over_time({service_name=\"api\"} | logfmt | duration != \"\" | unwrap duration(duration) [$__auto]))"
+        }
+      ]
+    }
+  },
+  "request": {
+    "method": "GET",
+    "path": "/loki/api/v1/query_range",
+    "query": {
+      "query": "sum by (level) (sum_over_time({service_name=\"api\"} | logfmt | duration != \"\" | unwrap duration(duration) [5m]))",
+      "start": "${START_NS}",
+      "end": "${END_NS}",
+      "step": "60"
+    },
+    "headers": {}
+  },
+  "stub": "empty",
+  "expect": {
+    "status": 200,
+    "decode": "loki-envelope",
+    "wire": ["resulttype:matrix"],
+    "data": [
+      "result-min:1",
+      "every-series-metric-label:level",
+      "matrix-values-finite-positive",
+      "matrix-max-value:10",
+      "series-max-value:level=error,0.41"
+    ]
+  }
+}
