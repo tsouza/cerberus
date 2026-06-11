@@ -350,10 +350,10 @@ replace github.com/grafana/tempo => github.com/tsouza/tempo v0.0.4-cerberus-acce
 // contrib uses a per-subdirectory module layout, so each imported submodule
 // needs its own replace directive pointing at the matching submodule tag.
 replace (
-	github.com/open-telemetry/opentelemetry-collector-contrib/exporter/clickhouseexporter => github.com/tsouza/opentelemetry-collector-contrib/exporter/clickhouseexporter v0.0.2-cerberus-ddl
-	github.com/open-telemetry/opentelemetry-collector-contrib/internal/coreinternal => github.com/tsouza/opentelemetry-collector-contrib/internal/coreinternal v0.0.2-cerberus-ddl
-	github.com/open-telemetry/opentelemetry-collector-contrib/pkg/core/xidutils => github.com/tsouza/opentelemetry-collector-contrib/pkg/core/xidutils v0.0.2-cerberus-ddl
-	github.com/open-telemetry/opentelemetry-collector-contrib/pkg/translator/jaeger => github.com/tsouza/opentelemetry-collector-contrib/pkg/translator/jaeger v0.0.2-cerberus-ddl
+	github.com/open-telemetry/opentelemetry-collector-contrib/exporter/clickhouseexporter => github.com/tsouza/opentelemetry-collector-contrib/exporter/clickhouseexporter v0.0.3-cerberus-ddl
+	github.com/open-telemetry/opentelemetry-collector-contrib/internal/coreinternal => github.com/tsouza/opentelemetry-collector-contrib/internal/coreinternal v0.0.3-cerberus-ddl
+	github.com/open-telemetry/opentelemetry-collector-contrib/pkg/core/xidutils => github.com/tsouza/opentelemetry-collector-contrib/pkg/core/xidutils v0.0.3-cerberus-ddl
+	github.com/open-telemetry/opentelemetry-collector-contrib/pkg/translator/jaeger => github.com/tsouza/opentelemetry-collector-contrib/pkg/translator/jaeger v0.0.3-cerberus-ddl
 )
 
 ignore ./compatibility/tempo/upstream
