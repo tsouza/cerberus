@@ -1883,6 +1883,73 @@
    "type": "table"
   },
   {
+   "datasource": {
+    "type": "tempo",
+    "uid": "cerberus-tempo"
+   },
+   "description": "The exact query Grafana Traces Drilldown's Structure tab sends (StructureScene.tsx buildQuery, rate metric): a union-structural arm OR'd with the root-span primary signal, piped into select() with the three nested-set intrinsics. Cerberus recomputes Tempo's ingest-time nested-set numbering at query time (NestedSetAnnotate) and surfaces the values in spanSets[].spans[].attributes.",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "custom": {
+      "align": "auto",
+      "cellOptions": {
+       "type": "auto"
+      },
+      "inspect": false
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 16,
+    "y": 54
+   },
+   "id": 49,
+   "options": {
+    "cellHeight": "sm",
+    "footer": {
+     "countRows": false,
+     "fields": "",
+     "reducer": [
+      "sum"
+     ],
+     "show": false
+    },
+    "showHeader": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "tempo",
+      "uid": "cerberus-tempo"
+     },
+     "limit": 20,
+     "query": "({ nestedSetParent \u003c 0 } \u0026\u003e\u003e { kind = server }) || ({ nestedSetParent \u003c 0 }) | select(status, resource.service.name, name, nestedSetParent, nestedSetLeft, nestedSetRight)",
+     "queryType": "traceql",
+     "refId": "A",
+     "spss": 20,
+     "tableType": "traces"
+    }
+   ],
+   "title": "select(nestedSet*) \u2014 Drilldown structure tab",
+   "type": "table"
+  },
+  {
    "collapsed": false,
    "gridPos": {
     "h": 1,

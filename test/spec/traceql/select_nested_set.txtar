@@ -1,0 +1,53 @@
+Nested-set intrinsics in `| select(...)` — the projection clause
+Grafana's Traces Drilldown "Structure" tab sends. The OTel-CH schema
+materialises no nested-set columns, so the lowering wraps the input in
+a NestedSetAnnotate node that recomputes Tempo's ingest-time DFS
+numbering from the (TraceId, SpanId, ParentSpanId) adjacency.
+
+The seed pins every semantic corner of reference Tempo's
+assignNestedSetModelBoundsAndServiceStats:
+
+  - trace a0..01 — root r (left=1,right=8,parent=-1) with children c1
+    (2,3,parent=1) and c2 (4,7,parent=1), grandchild g1 (5,6,parent=4)
+    under c2, plus a DISCONNECTED span x1 whose parent id matches no
+    row — unnumbered, 0/0/0, and excluded here because its
+    nestedSetParent (0) fails the `< 0` filter.
+  - trace a0..02 — TWO roots: the DFS counter continues across roots
+    (r1: 1,2,-1; r2: 3,6,-1; r2's child k1: 4,5,parent=3).
+
+`{ nestedSetParent < 0 }` keeps exactly the three root spans.
+
+-- query.traceql --
+{ nestedSetParent < 0 } | select(nestedSetParent, nestedSetLeft, nestedSetRight)
+-- sql --
+SELECT `TraceId`, `SpanId`, `Timestamp`, `__cerberus_ns_parent` AS `nestedSetParent`, `__cerberus_ns_left` AS `nestedSetLeft`, `__cerberus_ns_right` AS `nestedSetRight` FROM (SELECT m.*, ifNull(`ns`.`_ns_left`, 0) AS `__cerberus_ns_left`, ifNull(`ns`.`_ns_right`, 0) AS `__cerberus_ns_right`, ifNull(`ns`.`_ns_parent`, 0) AS `__cerberus_ns_parent` FROM (SELECT * FROM `otel_traces` WHERE (`ParentSpanId` = ?)) AS m LEFT JOIN (WITH RECURSIVE _cerberus_ns_paths AS (SELECT `TraceId`, `SpanId`, `ParentSpanId`, concat(leftPad(toString(toUnixTimestamp64Nano(`Timestamp`)), 20, '0'), leftPad(toString(sipHash64(`SpanId`)), 20, '0')) AS `_path` FROM `otel_traces` WHERE `ParentSpanId` = '' AND `TraceId` IN (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE (`ParentSpanId` = ?))) UNION ALL SELECT t.`TraceId`, t.`SpanId`, t.`ParentSpanId`, concat(c.`_path`, concat(leftPad(toString(toUnixTimestamp64Nano(`t`.`Timestamp`)), 20, '0'), leftPad(toString(sipHash64(`t`.`SpanId`)), 20, '0'))) FROM `otel_traces` AS t INNER JOIN `_cerberus_ns_paths` AS c ON t.`TraceId` = c.`TraceId` AND t.`ParentSpanId` = c.`SpanId`) SELECT `TraceId`, `_node`.2 AS `SpanId`, toInt64(2 * `_pre` - intDiv(length(`_node`.1), 40)) AS `_ns_left`, toInt64(2 * `_pre` - intDiv(length(`_node`.1), 40) + 2 * arrayCount(p -> startsWith(p, `_node`.1), `_paths`) - 1) AS `_ns_right`, if(`_node`.3 = '', toInt64(-1), toInt64(2 * indexOf(`_paths`, substring(`_node`.1, 1, length(`_node`.1) - 40)) - intDiv(length(`_node`.1), 40) + 1)) AS `_ns_parent` FROM (SELECT `TraceId`, arraySort(groupArray((`_path`, `SpanId`, `ParentSpanId`))) AS `_nodes`, arrayMap(x -> x.1, `_nodes`) AS `_paths` FROM `_cerberus_ns_paths` GROUP BY `TraceId`) ARRAY JOIN `_nodes` AS `_node`, arrayEnumerate(`_nodes`) AS `_pre`) AS ns ON m.`TraceId` = ns.`TraceId` AND m.`SpanId` = ns.`SpanId`)
+-- args --
+[0] string = ""
+[1] string = ""
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    ParentSpanId String,
+    Timestamp DateTime64(9)
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    ('a0000000000000000000000000000001', '1000000000000001', '', toDateTime64('2026-01-01 00:00:00.000000001', 9)),
+    ('a0000000000000000000000000000001', '1000000000000002', '1000000000000001', toDateTime64('2026-01-01 00:00:00.000000002', 9)),
+    ('a0000000000000000000000000000001', '1000000000000003', '1000000000000001', toDateTime64('2026-01-01 00:00:00.000000003', 9)),
+    ('a0000000000000000000000000000001', '1000000000000004', '1000000000000003', toDateTime64('2026-01-01 00:00:00.000000004', 9)),
+    ('a0000000000000000000000000000001', '100000000000000f', 'ffffffffffffffff', toDateTime64('2026-01-01 00:00:00.000000005', 9)),
+    ('a0000000000000000000000000000002', '2000000000000001', '', toDateTime64('2026-01-01 00:00:01.000000001', 9)),
+    ('a0000000000000000000000000000002', '2000000000000002', '', toDateTime64('2026-01-01 00:00:01.000000002', 9)),
+    ('a0000000000000000000000000000002', '2000000000000003', '2000000000000002', toDateTime64('2026-01-01 00:00:01.000000003', 9));
+-- expected_rows --
+[
+  ["a0000000000000000000000000000001", "1000000000000001", "2026-01-01T00:00:00.000000001Z", -1, 1, 8],
+  ["a0000000000000000000000000000002", "2000000000000001", "2026-01-01T00:00:01.000000001Z", -1, 1, 2],
+  ["a0000000000000000000000000000002", "2000000000000002", "2026-01-01T00:00:01.000000002Z", -1, 3, 6]
+]
+-- chplan --
+Project [TraceId, SpanId, Timestamp, __cerberus_ns_parent AS nestedSetParent, __cerberus_ns_left AS nestedSetLeft, __cerberus_ns_right AS nestedSetRight]
+  NestedSetAnnotate table=otel_traces
+    Filter predicate=(ParentSpanId = "")
+      Scan(otel_traces)

@@ -212,6 +212,9 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		fmt.Fprintf(b, "%sSetOperation op=%s\n", indent, v.Op)
 		printNode(b, v.Left, depth+1)
 		printNode(b, v.Right, depth+1)
+	case *chplan.NestedSetAnnotate:
+		fmt.Fprintf(b, "%sNestedSetAnnotate table=%s\n", indent, v.SpansTable)
+		printNode(b, v.Input, depth+1)
 	case *chplan.MetricsAggregate:
 		gb := make([]string, len(v.GroupBy))
 		for i, e := range v.GroupBy {

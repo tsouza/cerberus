@@ -750,6 +750,28 @@ const (
 	// the slot empty and fall back to chclient.Sample.Value (the
 	// per-row Duration), preserving the historical shape.
 	searchKeyTraceDurationNs = "__cerberus_traceDurationNs"
+
+	// searchKeySelIntPrefix / searchKeySelStrPrefix carry user-selected
+	// `| select(...)` attribute values through the canonical Labels map
+	// on the /api/search path. The wrap projection
+	// (selectedAttrKVPairs) emits one `<prefix><attrKey>` entry per
+	// selected attribute; toTraceSummaries / observeSpan strip the
+	// prefix and surface the value inside SpanSetSpan.Attributes as the
+	// OTLP AnyValue type the prefix names — intValue for the nested-set
+	// intrinsics (proto3 JSON renders int64 as a decimal string),
+	// stringValue for everything else (the OTel-CH Map(String,String)
+	// carriers erase the original attribute type; reference Tempo's
+	// typed parquet columns don't — a pre-existing schema-level
+	// divergence for non-string span attributes).
+	searchKeySelIntPrefix = "__cerberus_sel_int_"
+	searchKeySelStrPrefix = "__cerberus_sel_str_"
+	// searchKeySelName carries the span name when `| select(name)`
+	// requested it. Reference Tempo populates tempopb.Span.Name (NOT an
+	// attribute) for selected names — pkg/traceql/engine.go
+	// asTraceSearchMetadata reads the IntrinsicName attr into span.name
+	// and skips it from the attribute list — so the shaper mirrors that
+	// placement.
+	searchKeySelName = "__cerberus_sel_name"
 )
 
 // wrapWithSampleProjection adds a Project on top of plan that emits
@@ -848,12 +870,22 @@ func wrapWithSampleProjection(plan chplan.Node, s schema.Traces, meta engine.Met
 			{Expr: &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}}, Alias: "Value"},
 		}}
 	case isProjectShape(plan):
-		// `| select(...)` lowering produces Project(Filter?(Scan)) with
-		// a user-defined column list. The HTTP search envelope only
-		// needs canonical Sample columns, so replace the user Project
-		// with one rooted in the same input.
-		inner := plan.(*chplan.Project).Input
-		return &chplan.Project{Input: inner, Projections: canonicalSampleProjections(s)}
+		// `| select(...)` lowering produces Project(Filter?(Scan)) —
+		// or Project(NestedSetAnnotate(...)) when nested-set intrinsics
+		// were selected — with a user-defined column list. The HTTP
+		// search envelope needs the canonical Sample columns PLUS the
+		// user-selected attribute values (reference Tempo surfaces them
+		// inside spanSets[].spans[].attributes; Grafana's Traces
+		// Drilldown structure tab hard-fails without nestedSetLeft /
+		// nestedSetRight there). Replace the user Project with the
+		// canonical one rooted in the same input, smuggling each
+		// selected value through a reserved `__cerberus_sel_*` Labels
+		// key that toTraceSummaries pivots into SpanSetSpan.Attributes.
+		p := plan.(*chplan.Project)
+		return &chplan.Project{
+			Input:       p.Input,
+			Projections: sampleProjectionsWithSelected(s, selectedAttrKVPairs(p, s)),
+		}
 	}
 
 	// Default shape — Scan / Filter(Scan) — canonical columns available.
@@ -884,14 +916,24 @@ func wrapWithSampleProjection(plan chplan.Node, s schema.Traces, meta engine.Met
 // (`service.*`, `k8s.*`, …) never collide with the `__cerberus_*`
 // namespace so no precedence surprises.
 func canonicalSampleProjections(s schema.Traces) []chplan.Projection {
-	reservedMap := &chplan.FuncCall{Name: "map", Args: []chplan.Expr{
+	return sampleProjectionsWithSelected(s, nil)
+}
+
+// sampleProjectionsWithSelected is canonicalSampleProjections with
+// extra (LitString key, String-typed value expr) pairs appended to the
+// reserved map — the `__cerberus_sel_*` entries that carry user-
+// selected `| select(...)` attribute values to the response shaper.
+func sampleProjectionsWithSelected(s schema.Traces, selectedKVs []chplan.Expr) []chplan.Projection {
+	mapArgs := []chplan.Expr{
 		&chplan.LitString{V: searchKeyTraceID},
 		stripLeadingHexZeros(s.TraceIDColumn),
 		&chplan.LitString{V: searchKeyParentSpanID},
 		stripLeadingHexZeros(s.ParentSpanIDColumn),
 		&chplan.LitString{V: searchKeySpanID},
 		stripLeadingHexZeros(s.SpanIDColumn),
-	}}
+	}
+	mapArgs = append(mapArgs, selectedKVs...)
+	reservedMap := &chplan.FuncCall{Name: "map", Args: mapArgs}
 	mergedAttrs := &chplan.FuncCall{Name: "mapConcat", Args: []chplan.Expr{
 		&chplan.ColumnRef{Name: s.ResourceAttributesColumn},
 		reservedMap,
@@ -906,6 +948,73 @@ func canonicalSampleProjections(s schema.Traces) []chplan.Projection {
 		// 53-bit mantissa range (a 100-day duration in ns still fits).
 		{Expr: &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.DurationColumn}}}, Alias: "Value"},
 	}
+}
+
+// selectedAttrKVPairs converts a user `| select(...)` Project's
+// aliased projections into reserved-key (LitString, value-expr) pairs
+// for the canonical Attributes map. The identity projections lowerSelect
+// prepends (TraceId / SpanId / Timestamp) carry no alias and are
+// skipped; each aliased projection is classified by its lowered
+// expression shape:
+//
+//   - nested-set synthetic columns → `__cerberus_sel_int_<name>` with
+//     the Int64 value stringified (the shaper re-types it as an OTLP
+//     intValue, matching reference Tempo's TypeInt statics).
+//   - SpanName → `__cerberus_sel_name` (populates SpanSetSpan.Name,
+//     reference Tempo's placement for selected names).
+//   - StatusCode / SpanKind → `__cerberus_sel_str_<name>` lowercased:
+//     OTel-CH stores the TitleCase enum words ("Error", "Server")
+//     while reference Tempo's wire encoding is lowercase ("error",
+//     "server" — traceql.Static.EncodeToString).
+//   - StatusMessage / ScopeName / ScopeVersion → plain string entries.
+//   - Map lookups (span./resource./instrumentation-scoped attributes)
+//     → plain string entries under the attribute key (reference uses
+//     the scope-less Attribute.Name as the wire key too).
+//   - TraceId / SpanId / Duration / Timestamp / ParentSpanId
+//     projections are dropped: reference Tempo skips those intrinsics
+//     in the per-span attribute list (engine.go asTraceSearchMetadata)
+//     because they already ride dedicated SpanSetSpan fields.
+func selectedAttrKVPairs(p *chplan.Project, s schema.Traces) []chplan.Expr {
+	var kvs []chplan.Expr
+	for _, pr := range p.Projections {
+		if pr.Alias == "" {
+			continue
+		}
+		key, val, ok := classifySelectedProjection(pr, s)
+		if !ok {
+			continue
+		}
+		kvs = append(kvs, &chplan.LitString{V: key}, val)
+	}
+	return kvs
+}
+
+// classifySelectedProjection maps one aliased select() projection onto
+// its reserved Labels key + String-typed value expression. ok=false
+// means the projection has no per-span attribute representation (see
+// selectedAttrKVPairs for the rationale per shape).
+func classifySelectedProjection(pr chplan.Projection, s schema.Traces) (string, chplan.Expr, bool) {
+	toStr := func(e chplan.Expr) chplan.Expr {
+		return &chplan.FuncCall{Name: "toString", Args: []chplan.Expr{e}}
+	}
+	switch e := pr.Expr.(type) {
+	case *chplan.ColumnRef:
+		switch e.Name {
+		case chplan.NestedSetLeftColumn, chplan.NestedSetRightColumn, chplan.NestedSetParentColumn:
+			return searchKeySelIntPrefix + pr.Alias, toStr(e), true
+		case s.SpanNameColumn:
+			return searchKeySelName, toStr(e), true
+		case s.StatusCodeColumn, s.SpanKindColumn:
+			return searchKeySelStrPrefix + pr.Alias,
+				toStr(&chplan.FuncCall{Name: "lower", Args: []chplan.Expr{e}}), true
+		case s.StatusMessageColumn, s.ScopeNameColumn, s.ScopeVersionColumn:
+			return searchKeySelStrPrefix + pr.Alias, toStr(e), true
+		}
+		return "", nil, false
+	case *chplan.FieldAccess:
+		return searchKeySelStrPrefix + pr.Alias, e, true
+	}
+	return "", nil, false
 }
 
 // rQualifiedSampleProjections is preserved for direct structural ops
@@ -1383,12 +1492,20 @@ func (a *summaryAcc) observeDuration(s chclient.Sample) {
 // stub-querier rows don't, and their summaries omit spanSets entirely
 // rather than fabricating a span list.
 //
-// Name stays unset: reference Tempo emits `name: ""` for spans inside
-// /api/search spanSets on plain spanset-filter queries (verified live
-// against grafana/tempo by the compatibility differ — populating it
-// from SpanName produced a per-span field_mismatch on every matched
-// span), and Grafana's tableType='spans' transform derives its columns
-// from the trace-level fields + span timing, not span.name.
+// Name stays unset on plain spanset-filter queries: reference Tempo
+// emits `name: ""` there (verified live against grafana/tempo by the
+// compatibility differ — populating it from SpanName produced a
+// per-span field_mismatch on every matched span). The one exception
+// mirrors reference too: `| select(name)` carries the span name in the
+// reserved searchKeySelName slot and reference Tempo populates
+// tempopb.Span.Name from the selected IntrinsicName attribute
+// (pkg/traceql/engine.go asTraceSearchMetadata).
+//
+// Attributes carries the user-selected `| select(...)` values smuggled
+// through the `__cerberus_sel_*` reserved Labels keys — Tempo's wire
+// spec puts them in spanSets[].spans[].attributes and Grafana's Traces
+// Drilldown structure tab hard-fails (`nestedSetLeft not found!`)
+// when its selected nested-set bounds are missing.
 func (a *summaryAcc) observeSpan(s chclient.Sample, ns int64) {
 	spanID, ok := s.Labels[searchKeySpanID]
 	if !ok || spanID == "" {
@@ -1404,9 +1521,49 @@ func (a *summaryAcc) observeSpan(s chclient.Sample, ns int64) {
 	}
 	a.spans = append(a.spans, SpanSetSpan{
 		SpanID:            spanID,
+		Name:              s.Labels[searchKeySelName],
 		StartTimeUnixNano: strconv.FormatInt(ns, 10),
 		DurationNanos:     durationNanos,
+		Attributes:        selectedSpanAttributes(s.Labels),
 	})
+}
+
+// selectedSpanAttributes pivots the reserved `__cerberus_sel_int_*` /
+// `__cerberus_sel_str_*` Labels entries into the OTLP KeyValue list
+// for one SpanSetSpan. Int entries always surface (the nested-set
+// synthetic columns default to 0 for unnumbered spans, and reference
+// Tempo returns those zeros verbatim when the intrinsics are
+// explicitly selected); string entries with an empty value are dropped
+// — the OTel-CH Map(String,String) subscript returns ” for absent
+// keys, and reference Tempo simply omits attributes the span doesn't
+// carry. Keys sort alphabetically for deterministic output (reference
+// Tempo's order is Go-map iteration order, i.e. unspecified).
+func selectedSpanAttributes(labels map[string]string) []KeyValue {
+	var out []KeyValue
+	for k, v := range labels {
+		switch {
+		case strings.HasPrefix(k, searchKeySelIntPrefix):
+			val := v
+			out = append(out, KeyValue{
+				Key:   strings.TrimPrefix(k, searchKeySelIntPrefix),
+				Value: AnyValue{IntValue: &val},
+			})
+		case strings.HasPrefix(k, searchKeySelStrPrefix):
+			if v == "" {
+				continue
+			}
+			val := v
+			out = append(out, KeyValue{
+				Key:   strings.TrimPrefix(k, searchKeySelStrPrefix),
+				Value: AnyValue{StringValue: &val},
+			})
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+	return out
 }
 
 // observeRoot resolves root-span metadata for one row. The reserved

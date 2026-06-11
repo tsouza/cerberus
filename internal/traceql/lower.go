@@ -353,6 +353,17 @@ func lowerSpansetOperation(op *traceql.SpansetOperation, s schema.Traces) (chpla
 	// emitter renders an INNER JOIN (intersect) or UNION DISTINCT (union)
 	// keyed on (TraceID, SpanID).
 	if setOp, ok := mapSetOp(op.Op); ok {
+		if setOp == chplan.SetUnion {
+			// UNION DISTINCT matches arm columns positionally and
+			// errors (CH code 258) when the counts differ. Structural
+			// arms expose the narrow span envelope (3 keys + the
+			// structuralExtraProjectionColumns list) while plain
+			// filter arms expose `SELECT *`; mixing them — the exact
+			// shape of Grafana Traces Drilldown's structure-tab query
+			// `({...} &>> {...}) || ({...})` — needs the wide arm
+			// projected down to the same ordered column list.
+			left, right = alignUnionArms(left, right, s)
+		}
 		return &chplan.SetOperation{
 			Left:          left,
 			Right:         right,
@@ -385,23 +396,90 @@ func lowerSpansetOperation(op *traceql.SpansetOperation, s schema.Traces) (chpla
 // exposed by tempo compat run 26098988786.
 //
 // The list mirrors the schema columns the canonical/sample wrap
-// projections read: SpanName, Duration, Timestamp, ResourceAttributes.
+// projections AND a downstream `| select(...)` projection can read:
+// the original envelope four (SpanName, Duration, Timestamp,
+// ResourceAttributes) plus the columns select() lowers intrinsics and
+// span attributes to (SpanAttributes, StatusCode, StatusMessage,
+// SpanKind, ScopeName, ScopeVersion) — `{A} >> {B} | select(status)`
+// otherwise dies at execution with `Unknown identifier 'StatusCode'`.
 // Adding a column the wrap projection reads goes through this helper
 // so the Tempo handler stays the source of truth for "what the search
-// envelope needs".
+// envelope needs". alignUnionArms reuses the same list so mixed
+// structural/plain `||` arms line up positionally.
 func structuralExtraProjectionColumns(s schema.Traces) []string {
-	cols := make([]string, 0, 4)
+	cols := make([]string, 0, 10)
 	for _, col := range []string{
 		s.SpanNameColumn,
 		s.DurationColumn,
 		s.TimestampColumn,
 		s.ResourceAttributesColumn,
+		s.AttributesColumn,
+		s.StatusCodeColumn,
+		s.StatusMessageColumn,
+		s.SpanKindColumn,
+		s.ScopeNameColumn,
+		s.ScopeVersionColumn,
 	} {
 		if col != "" {
 			cols = append(cols, col)
 		}
 	}
 	return cols
+}
+
+// alignUnionArms gives both `||` arms the same positional column
+// shape. A StructuralJoin arm exposes the narrow span envelope —
+// (TraceID, SpanID, ParentSpanID) + structuralExtraProjectionColumns,
+// in that order (see chsql.structuralProjectionFrags) — while plain
+// Filter/Scan arms expose every table column via `SELECT *`. When the
+// two shapes mix, the wide arm is wrapped in a Project emitting
+// exactly the narrow list so ClickHouse's positional UNION DISTINCT
+// matches column-for-column. Same-shape pairs pass through untouched
+// (two wide arms keep the legacy full-row dedup semantics).
+func alignUnionArms(left, right chplan.Node, s schema.Traces) (chplan.Node, chplan.Node) {
+	ln, rn := isNarrowSpanArm(left), isNarrowSpanArm(right)
+	switch {
+	case ln && !rn:
+		return left, narrowSpanProjection(right, s)
+	case !ln && rn:
+		return narrowSpanProjection(left, s), right
+	default:
+		return left, right
+	}
+}
+
+// isNarrowSpanArm reports whether n's output is the narrow span
+// envelope rather than the full `SELECT *` table shape. SetOperation
+// output mirrors its arms (alignUnionArms keeps them consistent, and
+// the intersect emitter projects L.*), so recurse left. Project arms
+// only arise from narrowSpanProjection itself within spanset
+// expressions — `| select(...)` is a pipeline stage, never a set-op
+// operand.
+func isNarrowSpanArm(n chplan.Node) bool {
+	switch v := n.(type) {
+	case *chplan.StructuralJoin:
+		return true
+	case *chplan.Project:
+		return true
+	case *chplan.SetOperation:
+		return isNarrowSpanArm(v.Left)
+	}
+	return false
+}
+
+// narrowSpanProjection wraps n in a Project that emits the narrow
+// span envelope in the structural-join order: the three join keys
+// followed by structuralExtraProjectionColumns.
+func narrowSpanProjection(n chplan.Node, s schema.Traces) chplan.Node {
+	cols := append(
+		[]string{s.TraceIDColumn, s.SpanIDColumn, s.ParentSpanIDColumn},
+		structuralExtraProjectionColumns(s)...,
+	)
+	projections := make([]chplan.Projection, 0, len(cols))
+	for _, col := range cols {
+		projections = append(projections, chplan.Projection{Expr: &chplan.ColumnRef{Name: col}})
+	}
+	return &chplan.Project{Input: n, Projections: projections}
 }
 
 // mapSetOp identifies the TraceQL operators that lower to a
@@ -590,13 +668,14 @@ func lowerAttributeExpr(a traceql.Attribute, s schema.Traces) (chplan.Expr, erro
 	if a.Scope == traceql.AttributeScopeLink || a.Scope == traceql.AttributeScopeEvent {
 		return nil, fmt.Errorf("traceql: %s.%s used outside a comparison; only equality / inequality / regex filters on link.* and event.* are supported", a.Scope, a.Name)
 	}
-	// Nested-set intrinsics never resolve to a column: comparisons are
-	// intercepted by lowerNestedSetBinary; any other use would silently
-	// dereference SpanAttributes['nestedSet…'] (which the OTel-CH
-	// exporter never writes) — error instead.
+	// Nested-set intrinsics never resolve to a column here: comparisons
+	// are intercepted by lowerNestedSetBinary and select() projections
+	// by lowerSelect's NestedSetAnnotate wrap; any other use would
+	// silently dereference SpanAttributes['nestedSet…'] (which the
+	// OTel-CH exporter never writes) — error instead.
 	switch a.Intrinsic {
 	case traceql.IntrinsicNestedSetParent, traceql.IntrinsicNestedSetLeft, traceql.IntrinsicNestedSetRight:
-		return nil, fmt.Errorf("traceql: intrinsic %s is only supported in root-ness comparisons (e.g. nestedSetParent < 0)", a.Intrinsic)
+		return nil, fmt.Errorf("traceql: intrinsic %s is only supported in root-ness comparisons (e.g. nestedSetParent < 0) and select() projections", a.Intrinsic)
 	}
 	return lowerAttribute(a, s)
 }
@@ -1204,6 +1283,14 @@ func unsupportedIntrinsicErr(i traceql.Intrinsic) error {
 	case traceql.IntrinsicEventTimeSinceStart:
 		return fmt.Errorf(
 			"traceql: intrinsic %s requires per-event timestamp arithmetic against the Events Nested column and is unsupported", i,
+		)
+	case traceql.IntrinsicNestedSetParent, traceql.IntrinsicNestedSetLeft, traceql.IntrinsicNestedSetRight:
+		// select() projections recompute the numbering via
+		// NestedSetAnnotate (handled in lowerSelect before this path);
+		// any other bare reference (by() / aggregate operands) stays
+		// rejected.
+		return fmt.Errorf(
+			"traceql: intrinsic %s is only supported in root-ness comparisons (e.g. nestedSetParent < 0) and select() projections", i,
 		)
 	}
 	return fmt.Errorf("traceql: intrinsic %s has no OTel ClickHouse backing column and is unsupported", i)

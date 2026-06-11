@@ -100,6 +100,8 @@ func (e *emitter) emitNode(n chplan.Node) error {
 		return e.emitVectorSetOp(v)
 	case *chplan.StructuralJoin:
 		return e.emitStructuralJoin(v)
+	case *chplan.NestedSetAnnotate:
+		return e.emitNestedSetAnnotate(v)
 	case *chplan.CrossJoin:
 		return e.emitCrossJoin(v)
 	case *chplan.SetOperation:

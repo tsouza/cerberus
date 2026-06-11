@@ -1,0 +1,82 @@
+package chplan
+
+// Synthetic column names the NestedSetAnnotate node appends to its
+// input's row shape. The `__cerberus_` prefix keeps them out of the
+// OTel-CH column namespace; consumers (the TraceQL `| select(...)`
+// lowering and the Tempo /api/search wrap projection) reference them
+// via ColumnRef like any other column.
+const (
+	// NestedSetLeftColumn carries the span's nested-set left bound
+	// (Int64; 0 when the span is not part of a numbered tree).
+	NestedSetLeftColumn = "__cerberus_ns_left"
+	// NestedSetRightColumn carries the span's nested-set right bound
+	// (Int64; 0 when unnumbered).
+	NestedSetRightColumn = "__cerberus_ns_right"
+	// NestedSetParentColumn carries the parent span's nested-set left
+	// bound (Int64; -1 for root spans, 0 when unnumbered) — Tempo's
+	// `nestedSetParent` ("the left bound of the parent serves as
+	// numeric span ID", tempodb/encoding/vparquet4/nested_set_model.go).
+	NestedSetParentColumn = "__cerberus_ns_parent"
+)
+
+// NestedSetAnnotate decorates each input span row with the three
+// nested-set model values reference Tempo materialises at ingest
+// (Span.NestedSetLeft / Span.NestedSetRight / Span.ParentID): a
+// depth-first interval numbering of the trace's span tree, counter
+// starting at 1 per trace, entry and exit each consuming one position.
+//
+// The OTel ClickHouse schema stores no nested-set columns, so the
+// emitter recomputes the numbering at query time from the
+// (TraceId, SpanId, ParentSpanId) adjacency in SpansTable: a recursive
+// CTE walks every tree rooted at a root span (ParentSpanId = ”) of
+// the traces present in Input, derives each span's DFS path, and
+// converts pre-order rank + depth + subtree size into the exact
+// entry/exit bounds Tempo's assignNestedSetModelBoundsAndServiceStats
+// produces. See internal/chsql/nested_set_annotate.go for the SQL
+// shape and the semantics contract (root parent = -1, disconnected
+// spans = 0/0/0, counter continues across multiple roots).
+//
+// Output schema: every Input column, plus NestedSetLeftColumn /
+// NestedSetRightColumn / NestedSetParentColumn (Int64). Input must
+// expose TraceIDColumn and SpanIDColumn (the join keys back to the
+// numbering); all four schema column names refer to SpansTable's
+// canonical columns used by the numbering walk.
+type NestedSetAnnotate struct {
+	Input Node
+
+	// SpansTable is the span table the numbering walk reads — the same
+	// table Input ultimately scans. The walk deliberately ignores the
+	// query's time window: reference Tempo numbers the WHOLE trace at
+	// ingest, so spans outside the search window still occupy
+	// positions.
+	SpansTable string
+
+	TraceIDColumn      string
+	SpanIDColumn       string
+	ParentSpanIDColumn string
+	// TimestampColumn orders siblings (ties broken by a deterministic
+	// SpanId hash). Reference Tempo's sibling order is ingest order,
+	// which the OTel-CH schema does not record; start-time order is
+	// the closest observable equivalent and yields a valid nested-set
+	// numbering of the same tree either way.
+	TimestampColumn string
+}
+
+func (*NestedSetAnnotate) planNode() {}
+
+func (n *NestedSetAnnotate) Children() []Node { return []Node{n.Input} }
+
+func (n *NestedSetAnnotate) Equal(other Node) bool {
+	o, ok := other.(*NestedSetAnnotate)
+	if !ok {
+		return false
+	}
+	if n.SpansTable != o.SpansTable ||
+		n.TraceIDColumn != o.TraceIDColumn ||
+		n.SpanIDColumn != o.SpanIDColumn ||
+		n.ParentSpanIDColumn != o.ParentSpanIDColumn ||
+		n.TimestampColumn != o.TimestampColumn {
+		return false
+	}
+	return n.Input.Equal(o.Input)
+}
