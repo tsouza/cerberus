@@ -6,6 +6,7 @@ import (
 	loglib "github.com/grafana/loki/v3/pkg/logql/log"
 	"github.com/grafana/loki/v3/pkg/logql/syntax"
 	"github.com/grafana/loki/v3/pkg/logqlmodel"
+	"github.com/prometheus/prometheus/model/labels"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -42,6 +43,15 @@ import (
 func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs, lc lowerCtx) (chplan.Node, error) {
 	if e.Left == nil {
 		return nil, fmt.Errorf("logql: range-aggregation has nil inner")
+	}
+
+	// `absent_over_time` is not a per-series window aggregation — it
+	// synthesises ONE matcher-derived series whose samples sit at the
+	// anchors where the inner selector produced no samples at all.
+	// Route it to the dedicated AbsentOverTime plan node before the
+	// per-series RangeWindow machinery below.
+	if e.Operation == syntax.OpRangeTypeAbsent {
+		return lowerAbsentOverTime(e, s, lc)
 	}
 
 	// Extend the pre-scan timestamp clamp's left bound by the range
@@ -235,6 +245,108 @@ func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs, lc low
 		rw.Scalars = []float64{*e.Params}
 	}
 	return rw, nil
+}
+
+// lowerAbsentOverTime implements LogQL `absent_over_time(<log-range>)`.
+//
+// Reference semantics (pkg/logql/evaluator.go::AbsentRangeVectorEvaluator
+// + absentLabels): per step anchor, when the inner log range — selector
+// plus pipeline stages plus the optional `| unwrap` extraction —
+// contributes ZERO samples in the `(anchor - range, anchor]` lookback
+// window, emit one sample with value 1 whose label set is derived from
+// the stream-selector matchers (equality matchers kept first-seen;
+// any label with a non-equality matcher or a duplicate occurrence is
+// dropped entirely). Anchors with at least one sample contribute no
+// output.
+//
+// The lowering reuses chplan.AbsentOverTime — the head-agnostic plan
+// node PromQL's absent_over_time introduced (see
+// internal/chsql/absent_over_time.go for the SQL skeleton). The inner
+// pipeline-lowered node is wrapped in a 1-column Project aliasing the
+// logs timestamp column to the canonical `TimeUnix`, so the node's
+// TimestampColumn slot serves both its input-read and output-alias
+// roles with the same name and the output lands in the canonical
+// Sample 4-column shape [Lang.ProjectSamples] forwards verbatim.
+//
+// `| unwrap` participation: reference Loki extracts the sample BEFORE
+// the absence check, and an empty (or absent) unwrap source drops the
+// row (streamLabelSampleExtractor.Process) — so a window whose every
+// row has an empty unwrap value IS absent. [applyUnwrapRowSemantics]
+// folds exactly that contract (plus unwrap post-filters) onto the
+// inner node; the conversion-error keep-with-mark half doesn't affect
+// row presence, so the labels/marks outputs are deliberately unused.
+func lowerAbsentOverTime(e *syntax.RangeAggregationExpr, s schema.Logs, lc lowerCtx) (chplan.Node, error) {
+	innerLc := lc.withMatcherWindowExtension(e.Left.Interval + e.Left.Offset)
+	inner, labelsExpr, err := lowerLogRange(e.Left, s, innerLc)
+	if err != nil {
+		return nil, err
+	}
+	inner, _, _, err = applyUnwrapRowSemantics(e, s, inner, labelsExpr)
+	if err != nil {
+		return nil, err
+	}
+
+	const tsAlias = "TimeUnix"
+	a := &chplan.AbsentOverTime{
+		Input: &chplan.Project{
+			Input: inner,
+			Projections: []chplan.Projection{
+				{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: tsAlias},
+			},
+		},
+		SynthLabels:      absentSynthLabels(e.Left.Left),
+		Range:            e.Left.Interval,
+		Offset:           e.Left.Offset,
+		TimestampColumn:  tsAlias,
+		ValueColumn:      rangeAggSynthValueColumn,
+		MetricNameColumn: "MetricName",
+		AttributesColumn: "Attributes",
+	}
+	if lc.rangeMode() {
+		a.Start = lc.Start.UTC()
+		a.End = lc.End.UTC()
+		a.Step = lc.Step
+	} else if !lc.End.IsZero() {
+		a.End = lc.End.UTC()
+	}
+	return a, nil
+}
+
+// absentSynthLabels derives the synthesised label set reference Loki
+// lifts onto absent_over_time's output series — pkg/logql/evaluator.go
+// ::absentLabels: walk the stream-selector matchers; an equality
+// matcher pins its (name, value) on first sight; ANY other occurrence
+// of the name — non-equality matcher, or a second matcher on the same
+// name — deletes the label from the output entirely. `__name__` is
+// skipped (LogQL selectors can't carry it, but the reference guard
+// exists; mirror it).
+func absentSynthLabels(sel syntax.LogSelectorExpr) []chplan.SynthLabel {
+	if sel == nil {
+		return nil
+	}
+	matchers := sel.Matchers()
+	values := make(map[string]string, len(matchers))
+	dropped := make(map[string]bool, len(matchers))
+	order := make([]string, 0, len(matchers))
+	for _, m := range matchers {
+		if m.Name == labels.MetricName {
+			continue
+		}
+		if _, seen := values[m.Name]; m.Type == labels.MatchEqual && !seen && !dropped[m.Name] {
+			values[m.Name] = m.Value
+			order = append(order, m.Name)
+			continue
+		}
+		dropped[m.Name] = true
+	}
+	out := make([]chplan.SynthLabel, 0, len(order))
+	for _, name := range order {
+		if dropped[name] {
+			continue
+		}
+		out = append(out, chplan.SynthLabel{Key: name, Value: values[name]})
+	}
+	return out
 }
 
 // lowerLogRange unwraps the LogRangeExpr's inner selector (either bare
@@ -516,7 +628,8 @@ func rangeValueExpr(e *syntax.RangeAggregationExpr, s schema.Logs, labelsExpr ch
 	switch op {
 	case syntax.OpRangeTypeSum, syntax.OpRangeTypeAvg, syntax.OpRangeTypeMin,
 		syntax.OpRangeTypeMax, syntax.OpRangeTypeStddev, syntax.OpRangeTypeStdvar,
-		syntax.OpRangeTypeQuantile, syntax.OpRangeTypeFirst, syntax.OpRangeTypeLast:
+		syntax.OpRangeTypeQuantile, syntax.OpRangeTypeFirst, syntax.OpRangeTypeLast,
+		syntax.OpRangeTypeRateCounter:
 		return nil, fmt.Errorf("logql: %s requires an `| unwrap` clause", op)
 	}
 	return nil, fmt.Errorf("logql: range op %s is not yet supported", op)
@@ -690,13 +803,28 @@ func rangeAggregationGroupBy(e *syntax.RangeAggregationExpr, s schema.Logs, iden
 //     has already been projected to `length(Body)`.
 //   - `sum_over_time` / `avg_over_time` / `min_over_time` /
 //     `max_over_time` / `stddev_over_time` / `stdvar_over_time` /
-//     `quantile_over_time` reuse PromQL's identical-shape function names
-//     — chsql/range_window.go already handles each variant via
-//     emitRangeWindowOverTime / emitRangeWindowQuantileOverTime.
+//     `quantile_over_time` / `first_over_time` / `last_over_time`
+//     reuse PromQL's identical-shape function names — chsql/
+//     range_window.go handles each variant via emitRangeWindowOverTime
+//     / emitRangeWindowQuantileOverTime. `first_over_time` /
+//     `last_over_time` pick the time-earliest / time-latest unwrapped
+//     value in the window (reference Loki's FirstOverTime /
+//     LastOverTime streaming aggregators, pkg/logql/range_vector.go),
+//     which the emitter renders as `window_vals[1]` /
+//     `window_vals[length(window_vals)]` over the time-sorted window
+//     array; empty windows drop the series on both sides.
 func rangeFuncName(op string) (string, error) {
 	switch op {
 	case syntax.OpRangeTypeRate, syntax.OpRangeTypeBytesRate:
 		return "log_rate", nil
+	case syntax.OpRangeTypeRateCounter:
+		// `rate_counter(... | unwrap v [r])` treats the unwrapped values
+		// as a Prometheus counter: reference Loki's rateCounter
+		// (pkg/logql/range_vector.go) is a verbatim copy of Prometheus's
+		// promql/functions.go extrapolatedRate(isCounter=true,
+		// isRate=true), so it shares cerberus's PromQL "rate" emitter
+		// (counter-reset repair + boundary extrapolation, ≥ 2 samples).
+		return "rate", nil
 	case syntax.OpRangeTypeCount:
 		return "count_over_time", nil
 	case syntax.OpRangeTypeBytes:
@@ -707,7 +835,9 @@ func rangeFuncName(op string) (string, error) {
 		syntax.OpRangeTypeMax,
 		syntax.OpRangeTypeStddev,
 		syntax.OpRangeTypeStdvar,
-		syntax.OpRangeTypeQuantile:
+		syntax.OpRangeTypeQuantile,
+		syntax.OpRangeTypeFirst,
+		syntax.OpRangeTypeLast:
 		return op, nil
 	}
 	return "", fmt.Errorf("logql: range op %s is not yet supported", op)

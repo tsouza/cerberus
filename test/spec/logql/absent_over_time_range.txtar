@@ -1,0 +1,43 @@
+-- query.logql --
+absent_over_time({job="api"}[1m])
+-- start --
+2026-01-01T00:00:00Z
+-- end --
+2026-01-01T00:04:00Z
+-- step --
+1m
+-- seed --
+CREATE TABLE otel_logs (
+    Timestamp DateTime64(9),
+    Body String,
+    SeverityText LowCardinality(String) DEFAULT '',
+    ResourceAttributes Map(String, String),
+    ServiceName String DEFAULT ''
+) ENGINE = Memory;
+INSERT INTO otel_logs (Timestamp, Body, ResourceAttributes) VALUES
+    (toDateTime64('2026-01-01 00:00:30', 9), 'present', map('job', 'api'));
+-- expected_rows --
+[
+  ["", {"job": "api"}, "2026-01-01T00:00:00Z", 1],
+  ["", {"job": "api"}, "2026-01-01T00:02:00Z", 1],
+  ["", {"job": "api"}, "2026-01-01T00:03:00Z", 1],
+  ["", {"job": "api"}, "2026-01-01T00:04:00Z", 1]
+]
+-- args --
+[0] string = ""
+[1] string = "job"
+[2] string = "api"
+[3] float64 = 1
+[4] string = "2025-12-31 23:59:00.000000000"
+[5] int64 = 9
+[6] string = "2026-01-01 00:04:00.000000000"
+[7] int64 = 9
+[8] string = "job"
+[9] string = "api"
+-- chplan --
+AbsentOverTime range=1m0s step=1m0s ts=TimeUnix value=Value name=MetricName attrs=Attributes synth=[job="api"] start=2026-01-01T00:00:00Z end=2026-01-01T00:04:00Z
+  Project [Timestamp AS TimeUnix]
+    Filter predicate=((ResourceAttributes["job"] = "api") AND ((Timestamp >= toDateTime64("2025-12-31 23:59:00.000000000", 9)) AND (Timestamp <= toDateTime64("2026-01-01 00:04:00.000000000", 9))))
+      Scan(otel_logs)
+-- sql --
+SELECT ? AS `MetricName`, map(?, ?) AS `Attributes`, anchor_ts AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT anchor_ts FROM (SELECT arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:00:00.000000000', 9) + toIntervalNanosecond(i * 60000000000), range(0, 5))) AS `anchor_ts` FROM (SELECT 1)) WHERE anchor_ts NOT IN ((SELECT arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:00:00.000000000', 9) + toIntervalNanosecond(i * 60000000000), range(greatest(0, intDiv(dateDiff('nanosecond', toDateTime64('2026-01-01 00:00:00.000000000', 9), `TimeUnix`) - 1, toInt64(60000000000)) - (modulo(dateDiff('nanosecond', toDateTime64('2026-01-01 00:00:00.000000000', 9), `TimeUnix`) - 1, toInt64(60000000000)) < 0) + 1), least(5, intDiv(dateDiff('nanosecond', toDateTime64('2026-01-01 00:00:00.000000000', 9), `TimeUnix`) + 59999999999, toInt64(60000000000)) - (modulo(dateDiff('nanosecond', toDateTime64('2026-01-01 00:00:00.000000000', 9), `TimeUnix`) + 59999999999, toInt64(60000000000)) < 0) + 1)))) AS `anchor_ts` FROM (SELECT `Timestamp` AS `TimeUnix` FROM (SELECT * FROM `otel_logs` WHERE (`Timestamp` >= toDateTime64(?, ?)) AND (`Timestamp` <= toDateTime64(?, ?)) AND (`ResourceAttributes`[?] = ?))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(60000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:04:00.000000000', 9))))
