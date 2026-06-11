@@ -11,15 +11,15 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
-// lowerAbsent implements PromQL `absent(v instant-vector)`. The function
-// returns:
+// lowerAbsent implements PromQL `absent(v instant-vector)` for ANY
+// instant-vector argument. The function returns:
 //
-//   - an empty vector when `v` has any sample matching its label matchers,
-//     and
-//   - a single 1-row vector whose Value is 1.0 and whose label set is the
-//     set of equality matchers explicitly named on `v` (mirroring Prom's
-//     `createLabelsForAbsentFunction` in promql/functions.go), when `v`
-//     has no matching samples.
+//   - an empty vector when `v` has any sample, and
+//   - a single 1-row vector whose Value is 1.0 when `v` is empty. The
+//     label set mirrors Prom's `createLabelsForAbsentFunction`
+//     (promql/functions.go): the equality matchers explicitly named on
+//     `v` when the argument is a bare selector, and the EMPTY label
+//     set for every other shape (`absent(sum(up))` → `{} 1`).
 //
 // The chplan tree:
 //
@@ -49,34 +49,60 @@ func lowerAbsent(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	}
 	// Unwrap `absent((v))` — the parser surfaces redundant parens as
 	// ParenExpr nodes that the bare-selector check below would
-	// otherwise reject.
+	// otherwise treat as the general-expression shape.
 	arg := unwrapParens(c.Args[0])
-	vs, ok := arg.(*parser.VectorSelector)
-	if !ok {
-		return nil, fmt.Errorf("promql: absent() argument must be an instant-vector selector, got %T", c.Args[0])
-	}
 
-	// Build the inner filtered Scan via the standard selector
-	// lowering with the range-vector flag set: that path skips the
-	// LWR wrap and only applies the matchers (plus the @/offset time
-	// bound when present). The wrapping Aggregate doesn't need a
-	// per-series collapse — it just counts rows.
-	//
-	// Strip the modifier so the inner Filter doesn't carry a
-	// duplicate time-bound predicate; absent() doesn't currently
-	// honour the @/offset modifiers (parity with the surrounding
-	// instant-vector callsites that the count-only check makes
-	// semantically equivalent until LWR is plumbed in).
-	vsNoMod := *vs
-	vsNoMod.Timestamp = nil
-	vsNoMod.OriginalOffset = 0
-	vsNoMod.Offset = 0
-	vsNoMod.StartOrEnd = 0
-	rangeCtx := ctx
-	rangeCtx.inRangeVector = true
-	inner, err := lowerVectorSelector(&vsNoMod, s, rangeCtx)
-	if err != nil {
-		return nil, err
+	var (
+		inner chplan.Node
+		attrs chplan.Expr
+		err   error
+	)
+	if vs, ok := arg.(*parser.VectorSelector); ok {
+		// Build the inner filtered Scan via the standard selector
+		// lowering with the range-vector flag set: that path skips the
+		// LWR wrap and only applies the matchers (plus the @/offset time
+		// bound when present). The wrapping Aggregate doesn't need a
+		// per-series collapse — it just counts rows.
+		//
+		// Strip the modifier so the inner Filter doesn't carry a
+		// duplicate time-bound predicate; absent() doesn't currently
+		// honour the @/offset modifiers (parity with the surrounding
+		// instant-vector callsites that the count-only check makes
+		// semantically equivalent until LWR is plumbed in).
+		vsNoMod := *vs
+		vsNoMod.Timestamp = nil
+		vsNoMod.OriginalOffset = 0
+		vsNoMod.Offset = 0
+		vsNoMod.StartOrEnd = 0
+		rangeCtx := ctx
+		rangeCtx.inRangeVector = true
+		inner, err = lowerVectorSelector(&vsNoMod, s, rangeCtx)
+		if err != nil {
+			return nil, err
+		}
+		attrs = absentAttrsMap(vs.LabelMatchers)
+	} else {
+		// General instant-vector expression — `absent(sum(up))`,
+		// `absent(up + up)`, `absent(rate(m[5m]))`, … . Reference
+		// Prometheus accepts any instant-vector argument; the output
+		// label rule (createLabelsForAbsentFunction,
+		// promql/functions.go) derives labels ONLY when the argument is
+		// a Vector/MatrixSelector — every other shape synthesises the
+		// empty label set, so `absent(sum(up))` is `{} 1` when sum(up)
+		// is empty.
+		//
+		// The emptiness check lowers the argument in instant context
+		// (step = 0) and counts its rows — the same "does the lowered
+		// expression produce anything" posture the selector path uses;
+		// the range-mode StepGrid CrossJoin below fans the single
+		// verdict across the request's steps.
+		innerCtx := ctx
+		innerCtx.step = 0
+		inner, err = lower(arg, s, innerCtx)
+		if err != nil {
+			return nil, err
+		}
+		attrs = emptyAttrsMap()
 	}
 
 	const cntAlias = "_cerb_n"
@@ -145,7 +171,7 @@ func lowerAbsent(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 		Input: onlyEmpty,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
-			{Expr: absentAttrsMap(vs.LabelMatchers), Alias: s.AttributesColumn},
+			{Expr: attrs, Alias: s.AttributesColumn},
 			{Expr: timeExpr, Alias: s.TimestampColumn},
 			{Expr: &chplan.LitFloat{V: 1.0}, Alias: s.ValueColumn},
 		},

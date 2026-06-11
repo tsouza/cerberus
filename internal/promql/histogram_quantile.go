@@ -162,7 +162,30 @@ func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chp
 
 	vs, ok := unwrapVectorSelector(c.Args[1])
 	if !ok {
-		return nil, fmt.Errorf("promql: histogram_quantile second argument must be a histogram VectorSelector")
+		// Unrecognised inner shape — `histogram_quantile(0.9, sum(up))`,
+		// `histogram_quantile(0.9, vector(1))`, … . Reference Prometheus
+		// accepts any instant-vector second argument: classic-histogram
+		// interpolation reads each float sample's `le` label, and
+		// samples WITHOUT an `le` label are skipped (with an info
+		// annotation) — so a non-bucket input evaluates to an EMPTY
+		// vector, not an error (see promql/engine.go's
+		// histogram_quantile float-bucket path).
+		//
+		// In cerberus's OTel-CH model, classic-histogram buckets live as
+		// parallel BucketCounts × ExplicitBounds array rows — float
+		// pipelines (aggregations, arithmetic, vector()) can never carry
+		// `le`-keyed bucket series. Every shape outside the recognised
+		// idioms therefore provably holds no bucket data: lower the
+		// argument (preserving its own rejection/typing errors) and fold
+		// to zero rows, matching the reference's empty result.
+		inner, err := lower(c.Args[1], s, ctx)
+		if err != nil {
+			return nil, err
+		}
+		return &chplan.Filter{
+			Input:     inner,
+			Predicate: &chplan.LitBool{V: false},
+		}, nil
 	}
 
 	if s.IsExpHistogramMetric(vs.Name) {

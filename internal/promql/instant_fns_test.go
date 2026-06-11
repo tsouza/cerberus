@@ -2,49 +2,49 @@ package promql_test
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/prometheus/prometheus/promql/parser"
 
+	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
-// TestLower_InstantFn_Errors covers the unsupported instant-fn shapes so
-// the error messages stay observable as the surface grows.
-func TestLower_InstantFn_Errors(t *testing.T) {
+// TestLower_HistogramQuantile_NonBucketInputFoldsEmpty pins the
+// non-selector histogram_quantile fallback: reference Prometheus
+// accepts ANY instant-vector second argument and skips float samples
+// without an `le` label (info annotation, empty result) — cerberus's
+// OTel-CH model stores classic buckets as array rows, so float
+// pipelines provably carry no bucket data and the lowering folds to a
+// constant-false Filter (empty vector) instead of a 422.
+func TestLower_HistogramQuantile_NonBucketInputFoldsEmpty(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
 	p := parser.NewParser(parser.Options{})
 
-	cases := []struct {
-		name    string
-		query   string
-		wantErr string
-	}{
-		{
-			name:    "histogram_quantile non-selector arg",
-			query:   `histogram_quantile(0.9, vector(1))`,
-			wantErr: "second argument must be a histogram VectorSelector",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			expr, err := p.ParseExpr(tc.query)
-			if err != nil {
-				t.Fatalf("ParseExpr: %v", err)
-			}
-			_, err = promql.Lower(context.Background(), expr, s)
-			if err == nil {
-				t.Fatalf("expected error containing %q, got nil", tc.wantErr)
-			}
-			if !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("error %q does not contain %q", err.Error(), tc.wantErr)
-			}
-		})
+	for _, q := range []string{
+		`histogram_quantile(0.9, sum(up))`,
+		`histogram_quantile(0.9, vector(1))`,
+		`histogram_quantile(0.9, up + up)`,
+	} {
+		expr, err := p.ParseExpr(q)
+		if err != nil {
+			t.Fatalf("ParseExpr(%q): %v", q, err)
+		}
+		plan, err := promql.Lower(context.Background(), expr, s)
+		if err != nil {
+			t.Fatalf("Lower(%q): %v", q, err)
+		}
+		f, ok := plan.(*chplan.Filter)
+		if !ok {
+			t.Fatalf("Lower(%q) = %T, want *chplan.Filter", q, plan)
+		}
+		lit, ok := f.Predicate.(*chplan.LitBool)
+		if !ok || lit.V {
+			t.Fatalf("Lower(%q) predicate = %#v, want LitBool{false}", q, f.Predicate)
+		}
 	}
 }
 
