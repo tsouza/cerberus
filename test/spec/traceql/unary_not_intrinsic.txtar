@@ -1,0 +1,23 @@
+-- query.traceql --
+{ !(kind = server) }
+-- seed --
+CREATE TABLE otel_traces (
+    SpanId String,
+    SpanKind String
+) ENGINE = MergeTree ORDER BY SpanId;
+INSERT INTO otel_traces (SpanId, SpanKind) VALUES
+    ('aaaa', 'Server'),
+    ('bbbb', 'Client'),
+    ('cccc', 'Internal');
+-- expected_rows --
+[
+  ["bbbb", "Client"],
+  ["cccc", "Internal"]
+]
+-- args --
+[0] string = "Server"
+-- chplan --
+Filter predicate=not((SpanKind = "Server"))
+  Scan(otel_traces)
+-- sql --
+SELECT * FROM `otel_traces` WHERE not((`SpanKind` = ?))

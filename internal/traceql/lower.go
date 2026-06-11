@@ -650,11 +650,40 @@ func lowerUnaryOperation(u traceql.UnaryOperation, s schema.Traces) (chplan.Expr
 	case traceql.OpExists, traceql.OpNotExists:
 		attr, ok := fieldExprAttribute(u.Expression)
 		if !ok {
-			return nil, fmt.Errorf("traceql: %s operand %T is unsupported — nil comparisons require an attribute reference", u.Op, u.Expression)
+			// A nil comparison whose operand is a compound expression
+			// (arithmetic like `(span.a + 1) != nil`, a bare literal,
+			// etc.) rather than a bare attribute. Reference Tempo accepts
+			// it: the inner expression always executes to a non-nil Static
+			// (a number when the attributes resolve, or StaticFalse via
+			// the isMatchingOperand guard when one is absent — both
+			// non-nil), so `!= nil` (OpExists) is constant-true and
+			// `= nil` (OpNotExists) constant-false for every span. Fold to
+			// a constant rather than rejecting.
+			return &chplan.LitBool{V: u.Op == traceql.OpExists}, nil
 		}
 		return lowerNilComparison(u.Op, attr, s)
+	case traceql.OpNot:
+		return lowerUnaryNot(u, s)
 	}
 	return nil, fmt.Errorf("traceql: unary operator %s is unsupported", u.Op)
+}
+
+// lowerUnaryNot lowers the boolean negation `!( <bool-expr> )`. Tempo's
+// validator (ast_validate.go UnaryOperation.validate -> unaryTypesValid)
+// requires the operand to type to a boolean — a parenthesised
+// comparison such as `!(span.foo = 1)` or `!(kind = server)` — so the
+// inner FieldExpression always lowers to a boolean chplan predicate. We
+// wrap it in `not(...)`, matching reference execution
+// (UnaryOperation.execute OpNot: `!b`). An absent attribute inside the
+// inner comparison already folds to constant-false (lowerAbsentFieldBinary
+// / coerce paths), and `not(false)` is true — the same value reference
+// computes when the comparison evaluates StaticFalse on a missing span.
+func lowerUnaryNot(u traceql.UnaryOperation, s schema.Traces) (chplan.Expr, error) {
+	inner, err := lowerFieldExpr(u.Expression, s)
+	if err != nil {
+		return nil, err
+	}
+	return &chplan.FuncCall{Name: "not", Args: []chplan.Expr{inner}}, nil
 }
 
 // lowerNilComparison lowers `<attr> != nil` (OpExists) / `<attr> = nil`
@@ -691,15 +720,15 @@ func lowerNilComparison(op traceql.Operator, attr traceql.Attribute, s schema.Tr
 	case traceql.AttributeScopeResource:
 		carrier = s.ResourceAttributesColumn
 	case traceql.AttributeScopeInstrumentation:
-		// Same boundary as lowerAttribute: the OTel-CH traces schema
-		// materialises no scope-attributes map, so an existence probe
-		// against it cannot be answered — reject instead of silently
-		// reading SpanAttributes.
+		// The OTel-CH traces schema materialises no scope-attributes map,
+		// so a custom instrumentation.<key> is absent from every span.
+		// Reference Tempo accepts the existence probe and resolves the
+		// absent key to StaticNil: `!= nil` (OpExists) is false for every
+		// span, `= nil` (OpNotExists) is true. Mirror that as a constant
+		// predicate rather than rejecting (or silently reading
+		// SpanAttributes).
 		if s.ScopeAttributesColumn == "" {
-			return nil, fmt.Errorf(
-				"traceql: instrumentation-scoped attribute %q is unsupported — the OTel ClickHouse traces schema has no scope-attributes column (instrumentation:name / instrumentation:version map to ScopeName / ScopeVersion)",
-				attr.Name,
-			)
+			return &chplan.LitBool{V: op == traceql.OpNotExists}, nil
 		}
 		carrier = s.ScopeAttributesColumn
 	}
