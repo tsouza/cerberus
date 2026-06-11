@@ -74,8 +74,8 @@ func TestExprInList_ConstantParenDepth(t *testing.T) {
 
 // TestExprInList_Errors covers the two misuse shapes the emitter
 // rejects synchronously: a nil left operand and an empty list (CH
-// rejects `x IN ()` at parse time, so shipping it would be a deferred
-// failure).
+// rejects `x IN ()` at parse time, so shipping it would only surface
+// the failure later, at query execution).
 func TestExprInList_Errors(t *testing.T) {
 	t.Parallel()
 
