@@ -174,6 +174,11 @@ func walkExpr(e chplan.Expr, visit func(chplan.Expr)) {
 	case *chplan.Binary:
 		walkExpr(v.Left, visit)
 		walkExpr(v.Right, visit)
+	case *chplan.InList:
+		walkExpr(v.Left, visit)
+		for _, e := range v.List {
+			walkExpr(e, visit)
+		}
 	case *chplan.FuncCall:
 		for _, a := range v.Args {
 			walkExpr(a, visit)

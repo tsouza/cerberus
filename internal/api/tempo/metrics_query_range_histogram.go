@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/engine"
 )
@@ -140,10 +141,42 @@ func (h *Handler) serveMetricsQueryRangeHistogram(
 		"traceql", q, "start", start, "end", end, "step", step,
 		"sql", res.SQL, "args", res.Args)
 
+	normalizeHistogramBucketLabels(res.Samples)
 	series := toMetricsSeriesWithNames(res.Samples, histogramLabelNames(hist))
 
 	writeEngineHeaders(w, res.Headers)
 	writeJSON(w, http.StatusOK, MetricsQueryRangeResponse{
 		Series: series,
 	})
+}
+
+// normalizeHistogramBucketLabels rewrites each sample's `__bucket`
+// label value from ClickHouse's Float64 `toString` rendering to Go's
+// shortest round-trip form (strconv 'g'/-1 — what `fmt.Sprint(float64)`
+// produces). The bucket edge is a float that rides the wire as a
+// string label on histogram series, and it is part of the series
+// identity, so its textual form must be deterministic and match what
+// consumers derive from reference Tempo's `doubleValue` projection.
+// CH and Go disagree on small magnitudes — CH `toString(1.024e-6)`
+// renders "0.000001024" while Go renders "1.024e-06" — so sub-100µs
+// duration buckets would otherwise never align with a
+// reference-Tempo-derived form (the tempo compatibility differ
+// stringifies Tempo's doubleValue with fmt.Sprint before keying
+// series). Values that don't parse as floats pass through untouched —
+// defensive only; the SQL projection always emits a Float64 string.
+//
+// Mutates the samples' Labels maps in place (map values are shared by
+// reference; the slice itself is unchanged).
+func normalizeHistogramBucketLabels(samples []chclient.Sample) {
+	for _, s := range samples {
+		raw, ok := s.Labels[tempoQuantileBucketLabel]
+		if !ok {
+			continue
+		}
+		f, err := strconv.ParseFloat(raw, 64)
+		if err != nil {
+			continue
+		}
+		s.Labels[tempoQuantileBucketLabel] = strconv.FormatFloat(f, 'g', -1, 64)
+	}
 }

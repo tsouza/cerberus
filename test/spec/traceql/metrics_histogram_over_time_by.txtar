@@ -1,7 +1,7 @@
 -- query.traceql --
 {} | histogram_over_time(duration) by (resource.service.name)
 -- sql --
-SELECT `ResourceAttributes`[?] AS `service.name`, log2(`Duration`) / 1000000000 AS `__bucket`, toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?) WHERE `Duration` >= 2 GROUP BY `ResourceAttributes`[?], `__bucket`
+SELECT `ResourceAttributes`[?] AS `service.name`, pow(2, ceil(log2(toFloat64(`Duration`)))) / 1000000000 AS `__bucket`, toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?) WHERE `Duration` >= 2 GROUP BY `ResourceAttributes`[?], `__bucket`
 -- args --
 [0] string = "service.name"
 [1] int64 = 1
@@ -18,7 +18,7 @@ INSERT INTO otel_traces VALUES
     (map('service.name', 'frontend'), 1024);
 -- expected_rows --
 [
-  ["frontend", 1.0e-08, 3]
+  ["frontend", 0.000001024, 3]
 ]
 -- chplan --
 MetricsHistogramOverTime attr=Duration duration=true groupBy=[ResourceAttributes["service.name"] AS service.name|resource.service.name] bucketAlias=__bucket valueAlias=Value

@@ -388,6 +388,12 @@ func printExpr(e chplan.Expr) string {
 		return strconv.FormatBool(v.V)
 	case *chplan.Binary:
 		return fmt.Sprintf("(%s %s %s)", printExpr(v.Left), v.Op, printExpr(v.Right))
+	case *chplan.InList:
+		items := make([]string, len(v.List))
+		for i, e := range v.List {
+			items[i] = printExpr(e)
+		}
+		return fmt.Sprintf("(%s IN (%s))", printExpr(v.Left), strings.Join(items, ", "))
 	case *chplan.FuncCall:
 		args := make([]string, len(v.Args))
 		for i, a := range v.Args {

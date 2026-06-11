@@ -12,10 +12,11 @@ package chplan
 //
 // Bucketing follows Tempo's runtime semantics (pkg/traceql/ast_metrics.go,
 // `bucketizeFnFor`): each span's <attr> is rounded up to the nearest
-// power of two and that log2-bucket key becomes an extra group-by
-// column alongside the user-supplied GroupBy. Durations are emitted in
+// power of two (`Log2Bucketize(v)` = `2^ceil(log2(v))` for v >= 2) and
+// that power-of-two bucket key becomes an extra group-by column
+// alongside the user-supplied GroupBy. Durations are emitted in
 // seconds (matches Tempo's `Log2Bucketize(d) / float64(time.Second)`);
-// other numeric attributes carry the raw `log2(ceil(v))` value.
+// other numeric attributes carry the raw `Log2Bucketize(v)` value.
 // Spans with <attr> < 2 are dropped (Tempo's bucketizeDuration /
 // bucketizeAttribute return `NewStaticNil()` for that range).
 //
@@ -31,10 +32,11 @@ package chplan
 //   - Attr: the operand expression (the lowered `duration` /
 //     `span.<attr>` / `resource.<attr>` reference). Required.
 //   - IsDuration: when true, the emitter renders the bucket key as
-//     log2(<attr>) / 1e9 so the bucket label reads in seconds (matches
-//     Tempo's bucketizeDuration); when false, the bucket key is the
-//     bare log2(<attr>) (matches Tempo's bucketizeAttribute on int /
-//     duration cases — duration attrs encode as nanos already).
+//     pow(2, ceil(log2(toFloat64(<attr>)))) / 1e9 so the bucket label
+//     reads in seconds (matches Tempo's bucketizeDuration); when false,
+//     the bucket key is the raw pow(2, ceil(log2(toFloat64(<attr>))))
+//     (matches Tempo's bucketizeAttribute on int / duration cases —
+//     duration attrs encode as nanos already).
 //   - GroupBy: the user-supplied `by(...)` label expressions; parallel
 //     to GroupByAliases for SELECT-list aliasing.
 //   - GroupByAliases: SQL SELECT-list alias for each GroupBy entry.

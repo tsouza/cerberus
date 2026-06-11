@@ -31,9 +31,10 @@ func TestEmitMetricsHistogramOverTimeBare(t *testing.T) {
 		t.Fatalf("Emit: %v", err)
 	}
 
-	// Bucket key: log2(Duration) / 1e9 for the duration intrinsic.
-	if !strings.Contains(sql, "log2(`Duration`) / 1000000000 AS `__bucket`") {
-		t.Errorf("expected `log2(Duration) / 1e9 AS __bucket`, SQL=%s", sql)
+	// Bucket key: the next power of two (Tempo's Log2Bucketize), divided
+	// by 1e9 for the duration intrinsic so the label reads in seconds.
+	if !strings.Contains(sql, "pow(2, ceil(log2(toFloat64(`Duration`)))) / 1000000000 AS `__bucket`") {
+		t.Errorf("expected `pow(2, ceil(log2(toFloat64(Duration)))) / 1e9 AS __bucket`, SQL=%s", sql)
 	}
 	// count(1) AS Value reducer (wrapped in toFloat64 so the column
 	// scans into chclient.Sample.Value's *float64 — clickhouse-go/v2
@@ -60,7 +61,10 @@ func TestEmitMetricsHistogramOverTimeBare(t *testing.T) {
 }
 
 // TestEmitMetricsHistogramOverTimeNonDuration confirms the bucket key
-// for non-duration attributes is the bare log2(<attr>) (no / 1e9).
+// for non-duration attributes is the raw next-power-of-two
+// `pow(2, ceil(log2(toFloat64(<attr>))))` (no / 1e9) — Tempo's
+// bucketizeAttribute TypeInt arm applies Log2Bucketize without the
+// seconds rebase.
 func TestEmitMetricsHistogramOverTimeNonDuration(t *testing.T) {
 	t.Parallel()
 
@@ -76,8 +80,8 @@ func TestEmitMetricsHistogramOverTimeNonDuration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
-	if !strings.Contains(sql, "log2(`BodySize`) AS `__bucket`") {
-		t.Errorf("expected `log2(BodySize) AS __bucket` (no /1e9), SQL=%s", sql)
+	if !strings.Contains(sql, "pow(2, ceil(log2(toFloat64(`BodySize`)))) AS `__bucket`") {
+		t.Errorf("expected `pow(2, ceil(log2(toFloat64(BodySize)))) AS __bucket` (no /1e9), SQL=%s", sql)
 	}
 	if strings.Contains(sql, "/ 1000000000") {
 		t.Errorf("expected no /1e9 divisor for non-duration attr, SQL=%s", sql)
@@ -114,7 +118,11 @@ func TestEmitMetricsHistogramOverTimeByLabel(t *testing.T) {
 // TestEmitRangeWindowHistogramMatrix exercises the matrix-shape path
 // (RangeWindow wrapping MetricsHistogramOverTime). Confirms the
 // sample-side arrayJoin anchor fanout, the bucket column threading
-// into the outer GROUP BY, and the per-anchor count(1) reducer.
+// into the outer GROUP BY, and the zero-fill UNION ALL +
+// sum(in_window) reducer that pins a 0 sample at every grid anchor of
+// every observed (group, __bucket) series — upstream histogram series
+// ride NewCountOverTimeAggregator, whose counts reach the wire dense
+// (SeriesSet.ToProto skips only NaN, never 0).
 func TestEmitRangeWindowHistogramMatrix(t *testing.T) {
 	t.Parallel()
 
@@ -146,12 +154,26 @@ func TestEmitRangeWindowHistogramMatrix(t *testing.T) {
 	if !strings.Contains(sql, "least(6, intDiv(dateDiff('nanosecond', `Timestamp`, ") {
 		t.Errorf("expected sample-side anchor bound least(6, ...), SQL=%s", sql)
 	}
-	if !strings.Contains(sql, "log2(`Duration`) / 1000000000 AS `__bucket`") {
+	if !strings.Contains(sql, "pow(2, ceil(log2(toFloat64(`Duration`)))) / 1000000000 AS `__bucket`") {
 		t.Errorf("expected bucket key in inner SELECT, SQL=%s", sql)
 	}
-	// count(1) reducer wrapped in toFloat64 — see the bare-emission test.
-	if !strings.Contains(sql, "toFloat64(count(?)) AS `Value`") {
-		t.Errorf("expected toFloat64(count(1)) reducer in outer SELECT, SQL=%s", sql)
+	// Zero-fill: sum(in_window) reducer over a UNION ALL of the sample
+	// arm (in_window = 1) and the per-(series, anchor) generator arm
+	// (in_window = 0), so empty grid anchors surface as 0 samples
+	// instead of dropping — matching Tempo's dense count-based
+	// histogram series.
+	if !strings.Contains(sql, "toFloat64(sum(in_window)) AS `Value`") {
+		t.Errorf("expected toFloat64(sum(in_window)) reducer in outer SELECT, SQL=%s", sql)
+	}
+	if !strings.Contains(sql, "UNION ALL") {
+		t.Errorf("expected zero-fill UNION ALL generator arm, SQL=%s", sql)
+	}
+	if !strings.Contains(sql, "1 AS `in_window`") || !strings.Contains(sql, "0 AS `in_window`") {
+		t.Errorf("expected in_window markers on both arms, SQL=%s", sql)
+	}
+	// The generator arm discovers observed series GROUPed by bucket.
+	if !strings.Contains(sql, "GROUP BY `__bucket`)") {
+		t.Errorf("expected per-bucket series discovery in the generator arm, SQL=%s", sql)
 	}
 	// Outer GROUP BY includes both bucket and anchor.
 	if !strings.Contains(sql, "GROUP BY `__bucket`, `anchor_ts`") {

@@ -320,6 +320,8 @@ func (b *Builder) Expr(x chplan.Expr) error {
 		return nil
 	case *chplan.Binary:
 		return b.exprBinary(v)
+	case *chplan.InList:
+		return b.exprInList(v)
 	case *chplan.FuncCall:
 		return b.exprFunc(v)
 	case *chplan.MapAccess:
@@ -492,6 +494,46 @@ func (b *Builder) exprBinary(bx *chplan.Binary) error {
 		return err
 	}
 	b.sb.WriteByte(')')
+	return nil
+}
+
+// exprInList renders chplan.InList as `(<left> IN (<e0>, <e1>, ...))`
+// — a single flat tuple membership test. The flatness is the point:
+// the equivalent nested OR-chain of equality Binary nodes deepens
+// ClickHouse's parser AST by one level per element and trips
+// `max_parser_depth` (default 1000, error code 306) around 1000
+// elements — the /api/search root-span lookup hit exactly that on
+// >1000-trace result sets. The IN tuple's elements are siblings in
+// the AST, so parse depth stays constant no matter how long List is.
+//
+// Literal elements ride the usual positional `?` bound-arg path via
+// b.Expr. The outer parens keep the rendered fragment self-delimiting
+// when composed into a larger predicate (same posture as exprBinary's
+// default arm).
+func (b *Builder) exprInList(v *chplan.InList) error {
+	if v.Left == nil {
+		return fmt.Errorf("%w: chplan.InList requires a left operand", ErrUnsupported)
+	}
+	if len(v.List) == 0 {
+		// CH rejects `x IN ()` with "Function 'in' is supported only if
+		// the second argument is non-empty"; surface the misuse here
+		// rather than shipping unparseable SQL.
+		return fmt.Errorf("%w: chplan.InList requires a non-empty list", ErrUnsupported)
+	}
+	b.sb.WriteByte('(')
+	if err := b.Expr(v.Left); err != nil {
+		return err
+	}
+	b.sb.WriteString(" IN (")
+	for i, e := range v.List {
+		if i > 0 {
+			b.sb.WriteString(", ")
+		}
+		if err := b.Expr(e); err != nil {
+			return err
+		}
+	}
+	b.sb.WriteString("))")
 	return nil
 }
 

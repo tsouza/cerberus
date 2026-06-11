@@ -35,6 +35,11 @@ func collectColumnRefs(e chplan.Expr) []string {
 		case *chplan.Binary:
 			walk(v.Left)
 			walk(v.Right)
+		case *chplan.InList:
+			walk(v.Left)
+			for _, item := range v.List {
+				walk(item)
+			}
 		case *chplan.FuncCall:
 			for _, a := range v.Args {
 				walk(a)
@@ -88,6 +93,19 @@ func isCheapPredicate(e chplan.Expr) bool {
 		return true
 	case *chplan.Binary:
 		return isCheapPredicate(v.Left) && isCheapPredicate(v.Right)
+	case *chplan.InList:
+		// A flat IN over cheap elements is a constant-set membership
+		// check — CH builds the set once and probes per row; same cost
+		// class as the equivalent OR-chain of equality comparisons.
+		if !isCheapPredicate(v.Left) {
+			return false
+		}
+		for _, item := range v.List {
+			if !isCheapPredicate(item) {
+				return false
+			}
+		}
+		return true
 	case *chplan.MapAccess:
 		return isCheapPredicate(v.Map) && isCheapPredicate(v.Key)
 	case *chplan.LineContent:

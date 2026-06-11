@@ -355,7 +355,7 @@ search
 -- expected_max_traces --
 500
 
-# --- Metrics pipeline: /api/metrics/query_range (3) ---
+# --- Metrics pipeline: /api/metrics/query_range (4) ---
 # These hit cerberus's /api/metrics/query_range (implemented today —
 # see internal/api/tempo/metrics_query_range.go) and Tempo's native
 # /api/metrics/query_range. The wire shape is `{series:[{labels,
@@ -405,6 +405,31 @@ groupby_labels_present:resource.service.name
 metrics_quantile_over_time_p95
 -- query --
 { } | quantile_over_time(duration, 0.95)
+-- endpoint --
+metrics_range
+-- step --
+60s
+-- expected_min_series --
+1
+-- expected_max_series --
+50
+-- semantic_checks --
+samples_non_negative
+
+# Duration histogram — pins the `__bucket` series-label unit + value
+# differentially against reference Tempo. The bucket edge must be
+# Log2Bucketize(Duration_ns) / 1e9 — the next power of two in
+# nanoseconds, rebased to SECONDS (pkg/traceql/ast_metrics.go
+# bucketizeDuration) — and its textual form must align with the
+# stringified doubleValue Tempo emits, because the differ keys series
+# by the label set. Cerberus's pre-fix shape emitted the raw log2
+# exponent divided by 1e9 (~1e-8 "buckets" for µs-scale spans), so
+# every histogram series mismatched reference; this case keeps that
+# from regressing. One series per observed (power-of-two) bucket edge.
+-- name --
+metrics_histogram_over_time_duration
+-- query --
+{ } | histogram_over_time(duration)
 -- endpoint --
 metrics_range
 -- step --

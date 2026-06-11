@@ -146,20 +146,27 @@ func (h *Handler) resolveTraceRoots(ctx context.Context, traceIDs []string) (map
 // span within the same GROUP BY group — keeping the lookup a single
 // round trip while distinguishing root vs. non-root rows.
 func buildRootLookupPlan(s schema.Traces, traceIDs []string) chplan.Node {
-	// Filter predicate: TraceId IN (<padded-id-1>, <padded-id-2>, ...).
-	// Without an `IN` chplan expression this renders as a flat OR-chain
-	// of Eq predicates — CH planner collapses to a constant-set lookup
-	// at execute time. Restricting to TraceId only lets the trace
-	// start / end aggregates see every span of the trace; argMinIf
-	// (below) carries the ParentSpanId restriction on the root-span
-	// identifying aggregates so the same group computes both.
-	traceMatch := orEqLiterals(s.TraceIDColumn, padTraceIDs(traceIDs))
+	// Filter predicate: TraceId IN (<padded-id-1>, <padded-id-2>, ...)
+	// as a single flat chplan.InList. The flatness is load-bearing: the
+	// previous shape rendered a nested OR-chain of Eq predicates, whose
+	// ClickHouse parser AST deepens by one level per trace ID — at
+	// ~1000 IDs the query trips `max_parser_depth` (default 1000) with
+	// code 306 ("Maximum parse depth exceeded"; observed in
+	// compose-smoke run 27307036248 with missing=1006) and the search
+	// response silently loses its root decoration. The IN tuple's
+	// elements are AST siblings, so parse depth stays constant no
+	// matter how many traces need root enrichment. Restricting to
+	// TraceId only lets the trace start / end aggregates see every span
+	// of the trace; argMinIf (below) carries the ParentSpanId
+	// restriction on the root-span identifying aggregates so the same
+	// group computes both.
+	traceMatch := inStringList(s.TraceIDColumn, padTraceIDs(traceIDs))
 
 	// rootCond expresses ParentSpanId IN ('', '0000000000000000') — the
 	// on-disk root marker (pre-strip empty form + canonical 16-char
 	// zero form). Reused inside both argMinIf aggregates so they pick
 	// the root span among each TraceId group.
-	rootCond := orEqLiterals(s.ParentSpanIDColumn, []string{"", "0000000000000000"})
+	rootCond := inStringList(s.ParentSpanIDColumn, []string{"", "0000000000000000"})
 
 	// argMinIf(SpanName, Timestamp, rootCond) AS RootSpanName.
 	aggSpanName := chplan.AggFunc{
@@ -256,12 +263,19 @@ func buildRootLookupPlan(s schema.Traces, traceIDs []string) chplan.Node {
 	}
 }
 
-// orEqLiterals returns `<col> = <v1> OR <col> = <v2> OR ...` as a
-// nested chplan.Binary OR-chain. Returns a single Eq when len(vals) ==
-// 1, and a guaranteed-false (`<col> = <col> AND 1=0`-equivalent) when
-// vals is empty — but the caller (resolveTraceRoots) guards against
-// the empty case so the branch is unreachable in production.
-func orEqLiterals(col string, vals []string) chplan.Expr {
+// inStringList returns `<col> IN (<v1>, <v2>, ...)` as a single flat
+// chplan.InList over string literals. Returns a guaranteed-false
+// (`1 = 0`) predicate when vals is empty — CH rejects an empty IN
+// list, and the caller (resolveTraceRoots) guards against the empty
+// case anyway, so the branch only keeps the helper total over its
+// input.
+//
+// Replaces the previous orEqLiterals OR-chain: that shape nested one
+// Binary per value and blew ClickHouse's max_parser_depth (default
+// 1000, error code 306) once a search returned >1000 traces needing
+// root enrichment. InList parses at constant depth regardless of
+// len(vals); see chplan.InList for the contract.
+func inStringList(col string, vals []string) chplan.Expr {
 	if len(vals) == 0 {
 		// Guaranteed-false: 1 = 0. CH evaluates this at planning time
 		// and short-circuits the filter; we should never hit this
@@ -272,18 +286,14 @@ func orEqLiterals(col string, vals []string) chplan.Expr {
 			Right: &chplan.LitInt{V: 0},
 		}
 	}
-	eq := func(v string) chplan.Expr {
-		return &chplan.Binary{
-			Op:    chplan.OpEq,
-			Left:  &chplan.ColumnRef{Name: col},
-			Right: &chplan.LitString{V: v},
-		}
+	list := make([]chplan.Expr, 0, len(vals))
+	for _, v := range vals {
+		list = append(list, &chplan.LitString{V: v})
 	}
-	out := eq(vals[0])
-	for i := 1; i < len(vals); i++ {
-		out = &chplan.Binary{Op: chplan.OpOr, Left: out, Right: eq(vals[i])}
+	return &chplan.InList{
+		Left: &chplan.ColumnRef{Name: col},
+		List: list,
 	}
-	return out
 }
 
 // padTraceIDs left-pads each stripped-zero TraceID back to the
