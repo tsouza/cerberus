@@ -29,7 +29,10 @@ const (
 // emitter recomputes the numbering at query time from the
 // (TraceId, SpanId, ParentSpanId) adjacency in SpansTable: a recursive
 // CTE walks every tree rooted at a root span (ParentSpanId = ”) of
-// the traces present in Input, derives each span's DFS path, and
+// the traces present in Input (the emitter scopes the walk by a cheap
+// plan-derived superset of Input's trace ids so Input's own subquery
+// is evaluated only once; extra traces never join back, see
+// internal/chsql traceScopeFrag), derives each span's DFS path, and
 // converts pre-order rank + depth + subtree size into the exact
 // entry/exit bounds Tempo's assignNestedSetModelBoundsAndServiceStats
 // produces. See internal/chsql/nested_set_annotate.go for the SQL

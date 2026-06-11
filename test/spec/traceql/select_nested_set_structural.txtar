@@ -1,0 +1,59 @@
+Bare structural-join input (no `||` union) piped into a nested-set
+select(): pins the NestedSetAnnotate trace-scope derivation for a
+StructuralJoin on its own. The recursive anchor's trace-id scope must
+be the UNION ALL of the two arm scans (a cheap superset of the join
+result's traces) — NOT a re-render of the structural join itself,
+whose closure walk evaluated twice is what pushed the Drilldown
+structure-tab query past the #756 per-query memory cap (see
+internal/chsql traceScopeFrag). The join subquery itself must appear
+exactly once (the FROM arm).
+
+Seed: one trace, root r1 (Server/frontend) → c1 (Internal/auth),
+c2 (Server/checkout, Error) → g1 (Client/db). `{nestedSetParent<0}` =
+r1; `>> {kind=server}` selects descendants of r1 that are Server —
+just c2. Numbering: r1 (1,8,-1), c1 (2,3,1), c2 (4,7,1), g1 (5,6,4).
+The scope (roots ∪ servers) covers the trace; extra scope entries
+never join back.
+
+-- query.traceql --
+{ nestedSetParent < 0 } >> { kind = server } | select(nestedSetParent, nestedSetLeft, nestedSetRight)
+-- sql --
+SELECT `TraceId`, `SpanId`, `Timestamp`, `__cerberus_ns_parent` AS `nestedSetParent`, `__cerberus_ns_left` AS `nestedSetLeft`, `__cerberus_ns_right` AS `nestedSetRight` FROM (SELECT m.*, ifNull(`ns`.`_ns_left`, 0) AS `__cerberus_ns_left`, ifNull(`ns`.`_ns_right`, 0) AS `__cerberus_ns_right`, ifNull(`ns`.`_ns_parent`, 0) AS `__cerberus_ns_parent` FROM (SELECT R.`TraceId` AS `TraceId`, R.`SpanId` AS `SpanId`, R.`ParentSpanId` AS `ParentSpanId`, R.`SpanName` AS `SpanName`, R.`Duration` AS `Duration`, R.`Timestamp` AS `Timestamp`, R.`ResourceAttributes` AS `ResourceAttributes`, R.`SpanAttributes` AS `SpanAttributes`, R.`StatusCode` AS `StatusCode`, R.`StatusMessage` AS `StatusMessage`, R.`SpanKind` AS `SpanKind`, R.`ScopeName` AS `ScopeName`, R.`ScopeVersion` AS `ScopeVersion` FROM (WITH RECURSIVE _struct_closure AS (SELECT DISTINCT `TraceId`, `SpanId`, `ParentSpanId`, 0 AS _depth FROM (SELECT * FROM `otel_traces` WHERE (`ParentSpanId` = ?)) AS _seed UNION ALL SELECT DISTINCT t.`TraceId`, t.`SpanId`, t.`ParentSpanId`, c._depth + 1 FROM `otel_traces` AS t INNER JOIN _struct_closure AS c ON t.`TraceId` = c.`TraceId` AND t.`ParentSpanId` = c.`SpanId`) SELECT DISTINCT `TraceId`, `SpanId` FROM _struct_closure WHERE _depth > 0) AS L INNER JOIN (SELECT * FROM `otel_traces` WHERE (`SpanKind` = ?)) AS R ON L.`TraceId` = R.`TraceId` AND L.`SpanId` = R.`SpanId`) AS m LEFT JOIN (WITH RECURSIVE _cerberus_ns_paths AS (SELECT `TraceId`, `SpanId`, `ParentSpanId`, concat(leftPad(toString(toUnixTimestamp64Nano(`Timestamp`)), 20, '0'), leftPad(toString(sipHash64(`SpanId`)), 20, '0')) AS `_path` FROM `otel_traces` WHERE `ParentSpanId` = '' AND `TraceId` IN ((SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE (`ParentSpanId` = ?))) UNION ALL (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE (`SpanKind` = ?)))) UNION ALL SELECT t.`TraceId`, t.`SpanId`, t.`ParentSpanId`, concat(c.`_path`, concat(leftPad(toString(toUnixTimestamp64Nano(`t`.`Timestamp`)), 20, '0'), leftPad(toString(sipHash64(`t`.`SpanId`)), 20, '0'))) FROM `otel_traces` AS t INNER JOIN `_cerberus_ns_paths` AS c ON t.`TraceId` = c.`TraceId` AND t.`ParentSpanId` = c.`SpanId`) SELECT `TraceId`, `_node`.2 AS `SpanId`, toInt64(2 * `_pre` - intDiv(length(`_node`.1), 40)) AS `_ns_left`, toInt64(2 * `_pre` - intDiv(length(`_node`.1), 40) + 2 * arrayCount(p -> startsWith(p, `_node`.1), `_paths`) - 1) AS `_ns_right`, if(`_node`.3 = '', toInt64(-1), toInt64(2 * indexOf(`_paths`, substring(`_node`.1, 1, length(`_node`.1) - 40)) - intDiv(length(`_node`.1), 40) + 1)) AS `_ns_parent` FROM (SELECT `TraceId`, arraySort(groupArray((`_path`, `SpanId`, `ParentSpanId`))) AS `_nodes`, arrayMap(x -> x.1, `_nodes`) AS `_paths` FROM `_cerberus_ns_paths` GROUP BY `TraceId`) ARRAY JOIN `_nodes` AS `_node`, arrayEnumerate(`_nodes`) AS `_pre`) AS ns ON m.`TraceId` = ns.`TraceId` AND m.`SpanId` = ns.`SpanId`)
+-- args --
+[0] string = ""
+[1] string = "Server"
+[2] string = ""
+[3] string = "Server"
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    ParentSpanId String,
+    SpanName String,
+    SpanKind String,
+    Duration Int64,
+    Timestamp DateTime64(9),
+    StatusCode String,
+    StatusMessage String,
+    ScopeName String,
+    ScopeVersion String,
+    SpanAttributes Map(String, String),
+    ResourceAttributes Map(String, String)
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    ('a0000000000000000000000000000001', '1000000000000001', '', 'GET /home', 'Server', 1000, toDateTime64('2026-01-01 00:00:00.000000001', 9), 'Unset', '', '', '', map(), map('service.name', 'frontend')),
+    ('a0000000000000000000000000000001', '1000000000000002', '1000000000000001', 'auth', 'Internal', 500, toDateTime64('2026-01-01 00:00:00.000000002', 9), 'Unset', '', '', '', map(), map('service.name', 'auth')),
+    ('a0000000000000000000000000000001', '1000000000000003', '1000000000000001', 'checkout', 'Server', 700, toDateTime64('2026-01-01 00:00:00.000000003', 9), 'Error', '', '', '', map(), map('service.name', 'checkout')),
+    ('a0000000000000000000000000000001', '1000000000000004', '1000000000000003', 'db', 'Client', 300, toDateTime64('2026-01-01 00:00:00.000000004', 9), 'Unset', '', '', '', map(), map('service.name', 'db'));
+-- expected_rows --
+[
+  ["a0000000000000000000000000000001", "1000000000000003", "2026-01-01T00:00:00.000000003Z", 1, 4, 7]
+]
+-- chplan --
+Project [TraceId, SpanId, Timestamp, __cerberus_ns_parent AS nestedSetParent, __cerberus_ns_left AS nestedSetLeft, __cerberus_ns_right AS nestedSetRight]
+  NestedSetAnnotate table=otel_traces
+    StructuralJoin op=>>
+      Filter predicate=(ParentSpanId = "")
+        Scan(otel_traces)
+      Filter predicate=(SpanKind = "Server")
+        Scan(otel_traces)
