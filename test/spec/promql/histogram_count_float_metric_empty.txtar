@@ -1,0 +1,38 @@
+-- query.promql --
+histogram_count(up)
+-- seed --
+CREATE TABLE otel_metrics_exp_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_exp_histogram VALUES
+    ('latency_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 13, 30, 0, 1, 0, [3, 5, 2], 1, [2]);
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('up', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 1.0);
+-- expected_rows --
+[]
+-- args --
+[0] string = ""
+[1] int64 = 9
+[2] string = "up"
+-- chplan --
+Project ["" AS MetricName, Attributes AS Attributes, now64(9) AS TimeUnix, toFloat64(Count) AS Value]
+  Filter predicate=(MetricName = "up")
+    Scan(otel_metrics_exp_histogram)
+-- sql --
+SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, now64(?) AS `TimeUnix`, toFloat64(`Count`) AS `Value` FROM (SELECT * FROM `otel_metrics_exp_histogram` WHERE (`MetricName` = ?))

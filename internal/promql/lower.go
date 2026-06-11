@@ -1377,6 +1377,9 @@ func lowerCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 		return lowerClamp(c, s, ctx)
 	case "histogram_quantile":
 		return lowerHistogramQuantile(c, s, ctx)
+	case "histogram_count", "histogram_sum", "histogram_avg",
+		"histogram_stddev", "histogram_stdvar", "histogram_fraction":
+		return lowerHistogramValueFn(c, s, ctx)
 	case "label_replace":
 		return lowerLabelReplace(c, s, ctx)
 	case "label_join":

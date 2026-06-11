@@ -1,0 +1,107 @@
+-- query.promql --
+histogram_fraction(0.5, 3, latency_exp_hist)
+-- seed --
+CREATE TABLE otel_metrics_exp_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_exp_histogram VALUES
+    ('latency_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 13, 30, 0, 1, 0, [3, 5, 2], 1, [2]);
+-- expected_rows --
+[
+  ["", {"service": "api"}, "2026-01-01T00:00:01Z", 0.45575480796967544]
+]
+-- args --
+[0] string = ""
+[1] int64 = 9
+[2] float64 = 0
+[3] float64 = 0.5
+[4] float64 = 3
+[5] float64 = 0.5
+[6] float64 = 3
+[7] float64 = 0
+[8] float64 = 3
+[9] float64 = 0
+[10] float64 = 3
+[11] float64 = 2
+[12] float64 = 0
+[13] float64 = 0
+[14] float64 = 3
+[15] float64 = 2
+[16] float64 = 3
+[17] float64 = 2
+[18] float64 = 3
+[19] float64 = 2
+[20] int64 = 1
+[21] float64 = 3
+[22] float64 = 2
+[23] float64 = 3
+[24] float64 = 2
+[25] float64 = 3
+[26] float64 = 0
+[27] float64 = 3
+[28] float64 = 2
+[29] float64 = 0
+[30] float64 = 3
+[31] float64 = 2
+[32] float64 = 0
+[33] float64 = 3
+[34] float64 = 2
+[35] float64 = 3
+[36] float64 = 2
+[37] float64 = 3
+[38] float64 = 2
+[39] float64 = 3
+[40] float64 = 2
+[41] float64 = 0.5
+[42] float64 = 0
+[43] float64 = 0.5
+[44] float64 = 2
+[45] float64 = 0
+[46] float64 = 0
+[47] float64 = 0.5
+[48] float64 = 2
+[49] float64 = 0.5
+[50] float64 = 2
+[51] float64 = 0.5
+[52] float64 = 2
+[53] int64 = 1
+[54] float64 = 0.5
+[55] float64 = 2
+[56] float64 = 0.5
+[57] float64 = 2
+[58] float64 = 0.5
+[59] float64 = 0
+[60] float64 = 0.5
+[61] float64 = 2
+[62] float64 = 0
+[63] float64 = 0.5
+[64] float64 = 2
+[65] float64 = 0
+[66] float64 = 0.5
+[67] float64 = 2
+[68] float64 = 0.5
+[69] float64 = 2
+[70] float64 = 0.5
+[71] float64 = 2
+[72] float64 = 0.5
+[73] float64 = 2
+[74] string = "latency_exp_hist"
+[75] string = "latency.exp.hist"
+[76] string = "latency.exp_hist"
+[77] string = "latency_exp.hist"
+-- chplan --
+Project ["" AS MetricName, Attributes AS Attributes, now64(9) AS TimeUnix, multiIf(((toFloat64(Count) = 0) OR (isNaN(0.5) OR isNaN(3))), NaN, (0.5 >= 3), 0, ((least(toFloat64(Count), multiIf((3 > 0), ((toFloat64(arraySum(NegativeBucketCounts)) + toFloat64(ZeroCount)) + multiIf((((log2(abs(3)) * pow(2, toFloat64(Scale))) - toFloat64(PositiveOffset)) <= 0), 0, (((log2(abs(3)) * pow(2, toFloat64(Scale))) - toFloat64(PositiveOffset)) >= toFloat64(length(PositiveBucketCounts))), toFloat64(arraySum(PositiveBucketCounts)), (toFloat64(arrayCumSum(PositiveBucketCounts)[toUInt32(floor(((log2(abs(3)) * pow(2, toFloat64(Scale))) - toFloat64(PositiveOffset))))]) + (toFloat64(PositiveBucketCounts[(toUInt32(floor(((log2(abs(3)) * pow(2, toFloat64(Scale))) - toFloat64(PositiveOffset)))) + 1)]) * (((log2(abs(3)) * pow(2, toFloat64(Scale))) - toFloat64(PositiveOffset)) - floor(((log2(abs(3)) * pow(2, toFloat64(Scale))) - toFloat64(PositiveOffset)))))))), (3 < 0), multiIf((((log2(abs(3)) * pow(2, toFloat64(Scale))) - toFloat64(NegativeOffset)) >= toFloat64(length(NegativeBucketCounts))), 0, (((log2(abs(3)) * pow(2, toFloat64(Scale))) - toFloat64(NegativeOffset)) <= 0), toFloat64(arraySum(NegativeBucketCounts)), ((toFloat64(arraySum(NegativeBucketCounts)) - toFloat64(arrayCumSum(NegativeBucketCounts)[toUInt32(ceil(((log2(abs(3)) * pow(2, toFloat64(Scale))) - toFloat64(NegativeOffset))))])) + (toFloat64(NegativeBucketCounts[toUInt32(ceil(((log2(abs(3)) * pow(2, toFloat64(Scale))) - toFloat64(NegativeOffset))))]) * (ceil(((log2(abs(3)) * pow(2, toFloat64(Scale))) - toFloat64(NegativeOffset))) - ((log2(abs(3)) * pow(2, toFloat64(Scale))) - toFloat64(NegativeOffset)))))), toFloat64(arraySum(NegativeBucketCounts)))) - least(toFloat64(Count), multiIf((0.5 > 0), ((toFloat64(arraySum(NegativeBucketCounts)) + toFloat64(ZeroCount)) + multiIf((((log2(abs(0.5)) * pow(2, toFloat64(Scale))) - toFloat64(PositiveOffset)) <= 0), 0, (((log2(abs(0.5)) * pow(2, toFloat64(Scale))) - toFloat64(PositiveOffset)) >= toFloat64(length(PositiveBucketCounts))), toFloat64(arraySum(PositiveBucketCounts)), (toFloat64(arrayCumSum(PositiveBucketCounts)[toUInt32(floor(((log2(abs(0.5)) * pow(2, toFloat64(Scale))) - toFloat64(PositiveOffset))))]) + (toFloat64(PositiveBucketCounts[(toUInt32(floor(((log2(abs(0.5)) * pow(2, toFloat64(Scale))) - toFloat64(PositiveOffset)))) + 1)]) * (((log2(abs(0.5)) * pow(2, toFloat64(Scale))) - toFloat64(PositiveOffset)) - floor(((log2(abs(0.5)) * pow(2, toFloat64(Scale))) - toFloat64(PositiveOffset)))))))), (0.5 < 0), multiIf((((log2(abs(0.5)) * pow(2, toFloat64(Scale))) - toFloat64(NegativeOffset)) >= toFloat64(length(NegativeBucketCounts))), 0, (((log2(abs(0.5)) * pow(2, toFloat64(Scale))) - toFloat64(NegativeOffset)) <= 0), toFloat64(arraySum(NegativeBucketCounts)), ((toFloat64(arraySum(NegativeBucketCounts)) - toFloat64(arrayCumSum(NegativeBucketCounts)[toUInt32(ceil(((log2(abs(0.5)) * pow(2, toFloat64(Scale))) - toFloat64(NegativeOffset))))])) + (toFloat64(NegativeBucketCounts[toUInt32(ceil(((log2(abs(0.5)) * pow(2, toFloat64(Scale))) - toFloat64(NegativeOffset))))]) * (ceil(((log2(abs(0.5)) * pow(2, toFloat64(Scale))) - toFloat64(NegativeOffset))) - ((log2(abs(0.5)) * pow(2, toFloat64(Scale))) - toFloat64(NegativeOffset)))))), toFloat64(arraySum(NegativeBucketCounts))))) / toFloat64(Count))) AS Value]
+  Filter predicate=((((MetricName = "latency_exp_hist") OR (MetricName = "latency.exp.hist")) OR (MetricName = "latency.exp_hist")) OR (MetricName = "latency_exp.hist"))
+    Scan(otel_metrics_exp_histogram)
+-- sql --
+SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, now64(?) AS `TimeUnix`, multiIf(((toFloat64(`Count`) = toFloat64(?)) OR (isNaN(toFloat64(?)) OR isNaN(toFloat64(?)))), (0.0/0), (toFloat64(?) >= toFloat64(?)), toFloat64(?), ((least(toFloat64(`Count`), multiIf((toFloat64(?) > toFloat64(?)), ((toFloat64(arraySum(`NegativeBucketCounts`)) + toFloat64(`ZeroCount`)) + multiIf((((log2(abs(toFloat64(?))) * pow(toFloat64(?), toFloat64(`Scale`))) - toFloat64(`PositiveOffset`)) <= toFloat64(?)), toFloat64(?), (((log2(abs(toFloat64(?))) * pow(toFloat64(?), toFloat64(`Scale`))) - toFloat64(`PositiveOffset`)) >= toFloat64(length(`PositiveBucketCounts`))), toFloat64(arraySum(`PositiveBucketCounts`)), (toFloat64(arrayCumSum(`PositiveBucketCounts`)[toUInt32(floor(((log2(abs(toFloat64(?))) * pow(toFloat64(?), toFloat64(`Scale`))) - toFloat64(`PositiveOffset`))))]) + (toFloat64(`PositiveBucketCounts`[(toUInt32(floor(((log2(abs(toFloat64(?))) * pow(toFloat64(?), toFloat64(`Scale`))) - toFloat64(`PositiveOffset`)))) + ?)]) * (((log2(abs(toFloat64(?))) * pow(toFloat64(?), toFloat64(`Scale`))) - toFloat64(`PositiveOffset`)) - floor(((log2(abs(toFloat64(?))) * pow(toFloat64(?), toFloat64(`Scale`))) - toFloat64(`PositiveOffset`)))))))), (toFloat64(?) < toFloat64(?)), multiIf((((log2(abs(toFloat64(?))) * pow(toFloat64(?), toFloat64(`Scale`))) - toFloat64(`NegativeOffset`)) >= toFloat64(length(`NegativeBucketCounts`))), toFloat64(?), (((log2(abs(toFloat64(?))) * pow(toFloat64(?), toFloat64(`Scale`))) - toFloat64(`NegativeOffset`)) <= toFloat64(?)), toFloat64(arraySum(`NegativeBucketCounts`)), ((toFloat64(arraySum(`NegativeBucketCounts`)) - toFloat64(arrayCumSum(`NegativeBucketCounts`)[toUInt32(ceil(((log2(abs(toFloat64(?))) * pow(toFloat64(?), toFloat64(`Scale`))) - toFloat64(`NegativeOffset`))))])) + (toFloat64(`NegativeBucketCounts`[toUInt32(ceil(((log2(abs(toFloat64(?))) * pow(toFloat64(?), toFloat64(`Scale`))) - toFloat64(`NegativeOffset`))))]) * (ceil(((log2(abs(toFloat64(?))) * pow(toFloat64(?), toFloat64(`Scale`))) - toFloat64(`NegativeOffset`))) - ((log2(abs(toFloat64(?))) * pow(toFloat64(?), toFloat64(`Scale`))) - toFloat64(`NegativeOffset`)))))), toFloat64(arraySum(`NegativeBucketCounts`)))) - least(toFloat64(`Count`), multiIf((toFloat64(?) > toFloat64(?)), ((toFloat64(arraySum(`NegativeBucketCounts`)) + toFloat64(`ZeroCount`)) + multiIf((((log2(abs(toFloat64(?))) * pow(toFloat64(?), toFloat64(`Scale`))) - toFloat64(`PositiveOffset`)) <= toFloat64(?)), toFloat64(?), (((log2(abs(toFloat64(?))) * pow(toFloat64(?), toFloat64(`Scale`))) - toFloat64(`PositiveOffset`)) >= toFloat64(length(`PositiveBucketCounts`))), toFloat64(arraySum(`PositiveBucketCounts`)), (toFloat64(arrayCumSum(`PositiveBucketCounts`)[toUInt32(floor(((log2(abs(toFloat64(?))) * pow(toFloat64(?), toFloat64(`Scale`))) - toFloat64(`PositiveOffset`))))]) + (toFloat64(`PositiveBucketCounts`[(toUInt32(floor(((log2(abs(toFloat64(?))) * pow(toFloat64(?), toFloat64(`Scale`))) - toFloat64(`PositiveOffset`)))) + ?)]) * (((log2(abs(toFloat64(?))) * pow(toFloat64(?), toFloat64(`Scale`))) - toFloat64(`PositiveOffset`)) - floor(((log2(abs(toFloat64(?))) * pow(toFloat64(?), toFloat64(`Scale`))) - toFloat64(`PositiveOffset`)))))))), (toFloat64(?) < toFloat64(?)), multiIf((((log2(abs(toFloat64(?))) * pow(toFloat64(?), toFloat64(`Scale`))) - toFloat64(`NegativeOffset`)) >= toFloat64(length(`NegativeBucketCounts`))), toFloat64(?), (((log2(abs(toFloat64(?))) * pow(toFloat64(?), toFloat64(`Scale`))) - toFloat64(`NegativeOffset`)) <= toFloat64(?)), toFloat64(arraySum(`NegativeBucketCounts`)), ((toFloat64(arraySum(`NegativeBucketCounts`)) - toFloat64(arrayCumSum(`NegativeBucketCounts`)[toUInt32(ceil(((log2(abs(toFloat64(?))) * pow(toFloat64(?), toFloat64(`Scale`))) - toFloat64(`NegativeOffset`))))])) + (toFloat64(`NegativeBucketCounts`[toUInt32(ceil(((log2(abs(toFloat64(?))) * pow(toFloat64(?), toFloat64(`Scale`))) - toFloat64(`NegativeOffset`))))]) * (ceil(((log2(abs(toFloat64(?))) * pow(toFloat64(?), toFloat64(`Scale`))) - toFloat64(`NegativeOffset`))) - ((log2(abs(toFloat64(?))) * pow(toFloat64(?), toFloat64(`Scale`))) - toFloat64(`NegativeOffset`)))))), toFloat64(arraySum(`NegativeBucketCounts`))))) / toFloat64(`Count`))) AS `Value` FROM (SELECT * FROM `otel_metrics_exp_histogram` WHERE ((((`MetricName` = ?) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)))
