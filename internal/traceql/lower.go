@@ -55,22 +55,9 @@ func lowerRoot(expr *traceql.RootExpr, s schema.Traces) (chplan.Node, error) {
 		return nil, fmt.Errorf("traceql: empty pipeline")
 	}
 
-	first := expr.Pipeline.Elements[0]
-	plan, err := lowerPipelineElement(first, s)
+	plan, err := lowerPipeline(expr.Pipeline, s)
 	if err != nil {
 		return nil, err
-	}
-
-	// Subsequent pipeline elements layer onto the previous result.
-	// Aggregators (`| count()` / `| sum(...)` / `| avg(...)` /
-	// `| max(...)` / `| min(...)`) and follow-on stages (scalar filter,
-	// group / coalesce / select) are handled by lowerFollowingElement.
-	for _, el := range expr.Pipeline.Elements[1:] {
-		next, err := lowerFollowingElement(plan, el, s)
-		if err != nil {
-			return nil, err
-		}
-		plan = next
 	}
 
 	if expr.MetricsPipeline != nil {
@@ -84,6 +71,30 @@ func lowerRoot(expr *traceql.RootExpr, s schema.Traces) (chplan.Node, error) {
 		if err != nil {
 			return nil, err
 		}
+	}
+	return plan, nil
+}
+
+// lowerPipeline folds a TraceQL Pipeline into a chplan tree: the first
+// element lowers to a Scan/Filter (or nested spanset operation) and each
+// subsequent element (aggregators, scalar filter, group / coalesce /
+// select) layers onto the previous result. Shared by lowerRoot and by
+// lowerSpansetExpr, which lowers a parenthesised sub-pipeline operand of
+// a spanset set operation (`({…} | count() > 1) && ({…} | count() > 1)`).
+func lowerPipeline(p traceql.Pipeline, s schema.Traces) (chplan.Node, error) {
+	if len(p.Elements) == 0 {
+		return nil, fmt.Errorf("traceql: empty pipeline")
+	}
+	plan, err := lowerPipelineElement(p.Elements[0], s)
+	if err != nil {
+		return nil, err
+	}
+	for _, el := range p.Elements[1:] {
+		next, err := lowerFollowingElement(plan, el, s)
+		if err != nil {
+			return nil, err
+		}
+		plan = next
 	}
 	return plan, nil
 }
@@ -508,6 +519,10 @@ func lowerSpansetExpr(e traceql.SpansetExpression, s schema.Traces) (chplan.Node
 		return lowerSpansetOperation(v, s)
 	case traceql.SpansetOperation:
 		return lowerSpansetOperation(&v, s)
+	case *traceql.Pipeline:
+		return lowerPipeline(*v, s)
+	case traceql.Pipeline:
+		return lowerPipeline(v, s)
 	}
 	return nil, fmt.Errorf("traceql: spanset expression %T is unsupported", e)
 }
@@ -566,11 +581,48 @@ func lowerSpansetFilter(f *traceql.SpansetFilter, s schema.Traces) (chplan.Node,
 	if err != nil {
 		return nil, err
 	}
-	scan := &chplan.Scan{Table: s.SpansTable}
-	if pred == nil {
-		return scan, nil
+	var input chplan.Node = &chplan.Scan{Table: s.SpansTable}
+	// A position-dependent nested-set comparison
+	// (`nestedSetParent = 5`, `nestedSetLeft > 0`, …) lowers to a
+	// reference against a synthetic NestedSet*Column; back it with the
+	// recursive-numbering annotation pass so the column resolves to the
+	// real per-span position rather than an unknown identifier.
+	if predicateUsesNestedSetColumns(pred) {
+		input = annotateNestedSet(input, s)
 	}
-	return &chplan.Filter{Input: scan, Predicate: pred}, nil
+	if pred == nil {
+		return input, nil
+	}
+	return &chplan.Filter{Input: input, Predicate: pred}, nil
+}
+
+// predicateUsesNestedSetColumns reports whether expr references any of
+// the synthetic nested-set columns the annotation pass materialises —
+// the signal lowerSpansetFilter uses to decide whether to wrap the scan
+// in a NestedSetAnnotate.
+func predicateUsesNestedSetColumns(expr chplan.Expr) bool {
+	switch v := expr.(type) {
+	case nil:
+		return false
+	case *chplan.ColumnRef:
+		switch v.Name {
+		case chplan.NestedSetLeftColumn, chplan.NestedSetRightColumn, chplan.NestedSetParentColumn:
+			return true
+		}
+		return false
+	case *chplan.Binary:
+		return predicateUsesNestedSetColumns(v.Left) || predicateUsesNestedSetColumns(v.Right)
+	case *chplan.FuncCall:
+		for _, a := range v.Args {
+			if predicateUsesNestedSetColumns(a) {
+				return true
+			}
+		}
+		return false
+	case *chplan.FieldAccess:
+		return predicateUsesNestedSetColumns(v.Source)
+	}
+	return false
 }
 
 // lowerFieldExpr recursively translates a TraceQL FieldExpression into
@@ -650,11 +702,40 @@ func lowerUnaryOperation(u traceql.UnaryOperation, s schema.Traces) (chplan.Expr
 	case traceql.OpExists, traceql.OpNotExists:
 		attr, ok := fieldExprAttribute(u.Expression)
 		if !ok {
-			return nil, fmt.Errorf("traceql: %s operand %T is unsupported — nil comparisons require an attribute reference", u.Op, u.Expression)
+			// A nil comparison whose operand is a compound expression
+			// (arithmetic like `(span.a + 1) != nil`, a bare literal,
+			// etc.) rather than a bare attribute. Reference Tempo accepts
+			// it: the inner expression always executes to a non-nil Static
+			// (a number when the attributes resolve, or StaticFalse via
+			// the isMatchingOperand guard when one is absent — both
+			// non-nil), so `!= nil` (OpExists) is constant-true and
+			// `= nil` (OpNotExists) constant-false for every span. Fold to
+			// a constant rather than rejecting.
+			return &chplan.LitBool{V: u.Op == traceql.OpExists}, nil
 		}
 		return lowerNilComparison(u.Op, attr, s)
+	case traceql.OpNot:
+		return lowerUnaryNot(u, s)
 	}
 	return nil, fmt.Errorf("traceql: unary operator %s is unsupported", u.Op)
+}
+
+// lowerUnaryNot lowers the boolean negation `!( <bool-expr> )`. Tempo's
+// validator (ast_validate.go UnaryOperation.validate -> unaryTypesValid)
+// requires the operand to type to a boolean — a parenthesised
+// comparison such as `!(span.foo = 1)` or `!(kind = server)` — so the
+// inner FieldExpression always lowers to a boolean chplan predicate. We
+// wrap it in `not(...)`, matching reference execution
+// (UnaryOperation.execute OpNot: `!b`). An absent attribute inside the
+// inner comparison already folds to constant-false (lowerAbsentFieldBinary
+// / coerce paths), and `not(false)` is true — the same value reference
+// computes when the comparison evaluates StaticFalse on a missing span.
+func lowerUnaryNot(u traceql.UnaryOperation, s schema.Traces) (chplan.Expr, error) {
+	inner, err := lowerFieldExpr(u.Expression, s)
+	if err != nil {
+		return nil, err
+	}
+	return &chplan.FuncCall{Name: "not", Args: []chplan.Expr{inner}}, nil
 }
 
 // lowerNilComparison lowers `<attr> != nil` (OpExists) / `<attr> = nil`
@@ -691,15 +772,15 @@ func lowerNilComparison(op traceql.Operator, attr traceql.Attribute, s schema.Tr
 	case traceql.AttributeScopeResource:
 		carrier = s.ResourceAttributesColumn
 	case traceql.AttributeScopeInstrumentation:
-		// Same boundary as lowerAttribute: the OTel-CH traces schema
-		// materialises no scope-attributes map, so an existence probe
-		// against it cannot be answered — reject instead of silently
-		// reading SpanAttributes.
+		// The OTel-CH traces schema materialises no scope-attributes map,
+		// so a custom instrumentation.<key> is absent from every span.
+		// Reference Tempo accepts the existence probe and resolves the
+		// absent key to StaticNil: `!= nil` (OpExists) is false for every
+		// span, `= nil` (OpNotExists) is true. Mirror that as a constant
+		// predicate rather than rejecting (or silently reading
+		// SpanAttributes).
 		if s.ScopeAttributesColumn == "" {
-			return nil, fmt.Errorf(
-				"traceql: instrumentation-scoped attribute %q is unsupported — the OTel ClickHouse traces schema has no scope-attributes column (instrumentation:name / instrumentation:version map to ScopeName / ScopeVersion)",
-				attr.Name,
-			)
+			return &chplan.LitBool{V: op == traceql.OpNotExists}, nil
 		}
 		carrier = s.ScopeAttributesColumn
 	}
@@ -786,7 +867,25 @@ func fieldExprAttribute(e traceql.FieldExpression) (traceql.Attribute, bool) {
 // can surface the gap rather than ship wrong SQL.
 func lowerAttributeExpr(a traceql.Attribute, s schema.Traces) (chplan.Expr, error) {
 	if a.Scope == traceql.AttributeScopeLink || a.Scope == traceql.AttributeScopeEvent {
-		return nil, fmt.Errorf("traceql: %s.%s used outside a comparison; only equality / inequality / regex filters on link.* and event.* are supported", a.Scope, a.Name)
+		// A bare event-/link-scoped attribute as the whole filter
+		// expression (`{ event.name }`) is a truthiness test. Reference
+		// Tempo accepts it: the SpansetFilter requires the expression to
+		// type to a boolean or attribute (ast_validate.go
+		// SpansetFilter.validate), and a bare attribute is matched when it
+		// resolves to a non-nil truthy value — for the per-element Nested
+		// columns that is "at least one element carries the key". Lower to
+		// the same hasKey existence probe `<attr> != nil` produces rather
+		// than rejecting.
+		col, key, ok := nestedAttrTarget(a, s)
+		if !ok {
+			return nil, fmt.Errorf("traceql: nil comparison on %s.%s is unsupported — the configured schema has no %s column", a.Scope, a.Name, a.Scope)
+		}
+		return &chplan.NestedArrayExists{
+			Column:   col,
+			SubField: "Attributes",
+			Key:      key,
+			Presence: chplan.PresenceHasKey,
+		}, nil
 	}
 	// Nested-set intrinsics never resolve to a column here: comparisons
 	// are intercepted by lowerNestedSetBinary and select() projections
@@ -801,9 +900,29 @@ func lowerAttributeExpr(a traceql.Attribute, s schema.Traces) (chplan.Expr, erro
 }
 
 func lowerBinaryOperation(b *traceql.BinaryOperation, s schema.Traces) (chplan.Expr, error) {
+	// `attr = a || attr = b` is folded by the Tempo parser into a single
+	// `attr IN [a, b]` BinaryOperation (OpIn / OpNotIn) — Grafana's Traces
+	// Drilldown emits this shape for multi-value filters. Intercept it
+	// before mapBinaryOp (which has no IN op) and lower to a flat
+	// membership test.
+	if b.Op == traceql.OpIn || b.Op == traceql.OpNotIn {
+		return lowerInOperation(b, s)
+	}
 	op, err := mapBinaryOp(b.Op)
 	if err != nil {
 		return nil, err
+	}
+	// Comparisons against a carrier the OTel-CH schema does not
+	// materialise (instrumentation-scoped attributes; the trace-scoped /
+	// per-event intrinsics rootName / rootServiceName / traceDuration /
+	// childCount / event:timeSinceStart) resolve to StaticNil in
+	// reference execution, so the comparison is constant-false (the
+	// isMatchingOperand guard never matches a nil operand). Reference
+	// `/api/search` accepts these — fold them to a constant predicate
+	// instead of rejecting. Equality/inequality both collapse to false:
+	// `nil = x` and `nil != x` are both StaticFalse upstream.
+	if expr, handled := lowerAbsentFieldBinary(b, s); handled {
+		return expr, nil
 	}
 	// Nested-set intrinsics (nestedSetParent / nestedSetLeft /
 	// nestedSetRight) have no OTel-CH backing column; intercept them
@@ -856,6 +975,180 @@ func lowerBinaryOperation(b *traceql.BinaryOperation, s schema.Traces) (chplan.E
 	// NO_COMMON_TYPE (the showcase's static:bool panel 502'd).
 	lhs, rhs = coerceBoolFieldAccess(op, lhs, rhs)
 	return &chplan.Binary{Op: op, Left: lhs, Right: rhs}, nil
+}
+
+// lowerInOperation lowers a folded membership comparison
+// `attr IN [v0, v1, …]` (OpIn) / `attr NOT IN [...]` (OpNotIn). The
+// Tempo parser collapses `attr = a || attr = b` into this single
+// BinaryOperation shape, which Grafana's Traces Drilldown emits for
+// multi-value filters; reference Tempo accepts it (enum_operators.go
+// binaryTypesValid lists OpIn/OpNotIn for every operand type), so
+// cerberus must too.
+//
+// The membership set lowers to a flat chplan.InList (constant parser
+// depth — see chplan.InList's doc on the max_parser_depth trap that an
+// OR-chain would hit). When the attribute resolves to a column with no
+// OTel-CH backing (instrumentation-scoped / nested-set / trace-scoped
+// intrinsics) the comparison is constant per reference's StaticNil
+// execution semantics: a missing attribute never matches any RHS, so
+// `IN` is constant-false and `NOT IN` constant-true.
+func lowerInOperation(b *traceql.BinaryOperation, s schema.Traces) (chplan.Expr, error) {
+	attr, ok := fieldExprAttribute(b.LHS)
+	if !ok {
+		return nil, fmt.Errorf("traceql: IN comparison LHS must be an attribute reference, got %T", b.LHS)
+	}
+	st, ok := fieldExprStatic(b.RHS)
+	if !ok {
+		return nil, fmt.Errorf("traceql: IN comparison RHS must be a literal array, got %T", b.RHS)
+	}
+	elems, err := lowerStaticArray(st)
+	if err != nil {
+		return nil, err
+	}
+	if len(elems) == 0 {
+		// Empty membership set: `x IN []` matches nothing, `x NOT IN []`
+		// matches everything (reference array semantics).
+		return &chplan.LitBool{V: b.Op == traceql.OpNotIn}, nil
+	}
+
+	if pred, absent := absentAttributePredicate(attr, s, b.Op == traceql.OpNotIn); absent {
+		return pred, nil
+	}
+
+	left, lerr := lowerAttribute(attr, s)
+	if lerr != nil {
+		return nil, lerr
+	}
+	// String-map carriers store every value as text, so coerce numeric /
+	// bool list literals to their stringified OTel-CH encoding when the
+	// LHS is a Map subscript (mirrors coerceBoolFieldAccess / the numeric
+	// coercion path for scalar comparisons).
+	if _, isField := left.(*chplan.FieldAccess); isField {
+		elems = stringifyListForMap(elems)
+	}
+	in := &chplan.InList{Left: left, List: elems}
+	if b.Op == traceql.OpNotIn {
+		return &chplan.FuncCall{Name: "not", Args: []chplan.Expr{in}}, nil
+	}
+	return in, nil
+}
+
+// lowerAbsentFieldBinary intercepts a comparison where either operand
+// is an attribute the OTel-CH schema does not materialise (see
+// attributeHasNoBacking). Reference Tempo resolves the absent operand
+// to StaticNil; the type-mismatch guard then makes every comparison
+// (=, !=, <, <=, >, >=, =~, !~) evaluate StaticFalse, so the predicate
+// is constant-false. Returns handled=false when neither operand is an
+// unbacked attribute (the caller continues with generic lowering).
+func lowerAbsentFieldBinary(b *traceql.BinaryOperation, s schema.Traces) (chplan.Expr, bool) {
+	if a, ok := fieldExprAttribute(b.LHS); ok && attributeHasNoBacking(a, s) {
+		return &chplan.LitBool{V: false}, true
+	}
+	if a, ok := fieldExprAttribute(b.RHS); ok && attributeHasNoBacking(a, s) {
+		return &chplan.LitBool{V: false}, true
+	}
+	return nil, false
+}
+
+// absentAttributePredicate reports whether attr resolves to a column
+// the OTel-CH traces schema does not materialise, and if so returns the
+// constant predicate that mirrors reference Tempo's StaticNil execution
+// semantics: a missing attribute compared against any typed RHS never
+// matches (the isMatchingOperand guard in BinaryOperation.execute
+// returns StaticFalse), so a positive membership / comparison is
+// constant-false and its negation constant-true.
+//
+// Only the genuinely-unbacked carriers report absent here:
+// instrumentation-scoped attributes (no scope-attributes map) and the
+// trace-scoped / per-event intrinsics with no per-span column. Span /
+// resource attributes and intrinsics that DO map to a column
+// (Duration, SpanName, StatusCode, …) return absent=false so the
+// caller lowers them against their real carrier. Nested-set intrinsics
+// are handled by their own dedicated path (lowerNestedSetBinary) and
+// are not classified here.
+func absentAttributePredicate(attr traceql.Attribute, s schema.Traces, negated bool) (chplan.Expr, bool) {
+	if !attributeHasNoBacking(attr, s) {
+		return nil, false
+	}
+	return &chplan.LitBool{V: negated}, true
+}
+
+// attributeHasNoBacking reports whether attr names a carrier the OTel-CH
+// traces schema does not materialise. Instrumentation-scoped attributes
+// have no scope-attributes map; the trace-scoped and per-event
+// intrinsics (rootName / rootServiceName / traceDuration / traceStart /
+// childCount / event:timeSinceStart) have no per-span column. Every
+// other attribute (span / resource maps, intrinsics with a column)
+// has a real backing.
+func attributeHasNoBacking(attr traceql.Attribute, s schema.Traces) bool {
+	if attr.Intrinsic == traceql.IntrinsicNone {
+		return attr.Scope == traceql.AttributeScopeInstrumentation && s.ScopeAttributesColumn == ""
+	}
+	switch attr.Intrinsic {
+	case traceql.IntrinsicTraceRootService, traceql.IntrinsicTraceRootSpan,
+		traceql.IntrinsicTraceDuration, traceql.ScopedIntrinsicTraceRootName,
+		traceql.ScopedIntrinsicTraceRootService, traceql.ScopedIntrinsicTraceDuration,
+		traceql.IntrinsicTraceStartTime, traceql.IntrinsicChildCount,
+		traceql.IntrinsicEventTimeSinceStart:
+		return true
+	}
+	return false
+}
+
+// lowerStaticArray turns a TraceQL array Static (TypeStringArray /
+// TypeIntArray / TypeFloatArray / TypeBooleanArray) into chplan literal
+// elements via the public array accessors.
+func lowerStaticArray(st traceql.Static) ([]chplan.Expr, error) {
+	if strs, ok := st.StringArray(); ok {
+		out := make([]chplan.Expr, len(strs))
+		for i, v := range strs {
+			out[i] = &chplan.LitString{V: v}
+		}
+		return out, nil
+	}
+	if ints, ok := st.IntArray(); ok {
+		out := make([]chplan.Expr, len(ints))
+		for i, v := range ints {
+			out[i] = &chplan.LitInt{V: int64(v)}
+		}
+		return out, nil
+	}
+	if floats, ok := st.FloatArray(); ok {
+		out := make([]chplan.Expr, len(floats))
+		for i, v := range floats {
+			out[i] = &chplan.LitFloat{V: v}
+		}
+		return out, nil
+	}
+	if bools, ok := st.BooleanArray(); ok {
+		out := make([]chplan.Expr, len(bools))
+		for i, v := range bools {
+			out[i] = &chplan.LitBool{V: v}
+		}
+		return out, nil
+	}
+	return nil, fmt.Errorf("traceql: IN comparison RHS literal type %s is not an array", st.Type)
+}
+
+// stringifyListForMap rewrites numeric / bool list literals into the
+// String form the OTel-CH Map(String, String) carriers store, so an
+// `IN` test against a map subscript compares like-typed values rather
+// than tripping NO_COMMON_TYPE.
+func stringifyListForMap(elems []chplan.Expr) []chplan.Expr {
+	out := make([]chplan.Expr, len(elems))
+	for i, e := range elems {
+		switch v := e.(type) {
+		case *chplan.LitBool:
+			if v.V {
+				out[i] = &chplan.LitString{V: "true"}
+			} else {
+				out[i] = &chplan.LitString{V: "false"}
+			}
+		default:
+			out[i] = e
+		}
+	}
+	return out
 }
 
 // coerceBoolFieldAccess rewrites a LitBool compared against a
@@ -1000,69 +1293,96 @@ func isNumericExpr(expr chplan.Expr) bool {
 // every span gets left/right interval bounds plus the parent's left
 // bound, with root spans carrying nestedSetParent == -1 and every
 // non-root span a positive position (>= 1). The OTel-CH schema has no
-// equivalent columns, so cerberus cannot reproduce position values —
-// but it CAN answer every comparison whose truth depends only on
-// root-ness, because root-ness maps exactly to `ParentSpanId = ”`.
+// equivalent columns, but cerberus recomputes the exact numbering at
+// query time from the (TraceId, SpanId, ParentSpanId) adjacency via
+// chplan.NestedSetAnnotate (see select.go / nested_set_annotate.go).
 //
-// That covers the documented root-span idiom `nestedSetParent < 0`
-// (what Grafana's Traces Drilldown app stamps on every query as its
-// primary-signal filter) and any other (op, literal) pair whose result
-// is constant across the positive non-root domain. Comparisons that
-// would need real positions (e.g. `nestedSetParent = 5`) error out —
-// surfacing the gap beats returning rows from wrong SQL.
+// Two lowering shapes result:
+//
+//   - The root-span idiom `nestedSetParent <op> <int>` whose truth
+//     depends only on root-ness (e.g. `nestedSetParent < 0`, what
+//     Grafana's Traces Drilldown stamps on every query) reduces to a
+//     cheap `ParentSpanId = ”` / `!= ”` test with no annotation pass.
+//   - Every other position-dependent comparison
+//     (`nestedSetParent = 5`, `nestedSetLeft > 0`,
+//     `nestedSetParent = span.a`, float literals, …) compares against
+//     the synthetic NestedSet*Column the annotation pass materialises.
+//     lowerSpansetFilter detects the synthetic column reference and
+//     wraps the scan in a NestedSetAnnotate so the recursive numbering
+//     CTE backs the column. This matches reference Tempo's content, not
+//     just its 2xx status.
 //
 // Returns handled=false when neither side references a nested-set
 // intrinsic (the caller continues with generic lowering).
 func lowerNestedSetBinary(b *traceql.BinaryOperation, op chplan.BinaryOp, s schema.Traces) (chplan.Expr, bool, error) {
-	attr, lit, flipped := traceql.Attribute{}, traceql.Static{}, false
+	var attr traceql.Attribute
+	var other traceql.FieldExpression
+	flipped := false
 	if a, ok := nestedSetIntrinsicAttr(b.LHS); ok {
-		st, ok := fieldExprStatic(b.RHS)
-		if !ok {
-			return nil, true, fmt.Errorf("traceql: %s comparisons support only integer literals", a.Intrinsic)
-		}
-		attr, lit = a, st
+		attr, other = a, b.RHS
 	} else if a, ok := nestedSetIntrinsicAttr(b.RHS); ok {
-		st, ok := fieldExprStatic(b.LHS)
-		if !ok {
-			return nil, true, fmt.Errorf("traceql: %s comparisons support only integer literals", a.Intrinsic)
-		}
-		attr, lit, flipped = a, st, true
+		attr, other, flipped = a, b.LHS, true
 	} else {
 		return nil, false, nil
 	}
-
-	if attr.Intrinsic != traceql.IntrinsicNestedSetParent {
-		return nil, true, fmt.Errorf("traceql: intrinsic %s is unsupported — the OTel ClickHouse schema does not materialise nested-set positions", attr.Intrinsic)
-	}
-	if lit.Type != traceql.TypeInt {
-		return nil, true, fmt.Errorf("traceql: nestedSetParent comparisons support only integer literals, got %s", lit.Type)
-	}
-	v64, _ := lit.Int()
-	v := int64(v64)
 	if flipped {
 		op = flipComparisonOp(op)
 	}
 
-	root, err := evalIntCmp(-1, op, v)
+	// Fast path: a `nestedSetParent <op> <int-literal>` comparison whose
+	// truth is constant across the non-root position domain reduces to a
+	// ParentSpanId root-ness test (root parent = -1, every non-root
+	// position >= 1) — no recursive numbering needed.
+	if attr.Intrinsic == traceql.IntrinsicNestedSetParent {
+		if lit, ok := fieldExprStatic(other); ok && lit.Type == traceql.TypeInt {
+			if expr, ok := rootnessReduction(op, lit, s); ok {
+				return expr, true, nil
+			}
+		}
+	}
+
+	// General path: compare against the synthetic nested-set column the
+	// annotation pass materialises. The other operand lowers normally
+	// (literal, span attribute, …); numeric coercion wraps any Map
+	// subscript so an `= span.a` comparison resolves Int64-vs-Float.
+	col, ok := nestedSetColumn(attr.Intrinsic)
+	if !ok {
+		return nil, true, fmt.Errorf("traceql: intrinsic %s is not a nested-set position", attr.Intrinsic)
+	}
+	rhs, err := lowerFieldExpr(other, s)
 	if err != nil {
 		return nil, true, err
 	}
+	left := chplan.Expr(&chplan.ColumnRef{Name: col})
+	left, rhs = coerceNumericFieldAccess(op, left, rhs)
+	return &chplan.Binary{Op: op, Left: left, Right: rhs}, true, nil
+}
+
+// rootnessReduction returns the cheap ParentSpanId-based predicate for a
+// `nestedSetParent <op> <int>` comparison whose result is constant
+// across the non-root position domain (positions >= 1), or ok=false
+// when the comparison genuinely depends on the position value (and must
+// therefore go through the annotation pass).
+func rootnessReduction(op chplan.BinaryOp, lit traceql.Static, s schema.Traces) (chplan.Expr, bool) {
+	v64, _ := lit.Int()
+	v := int64(v64)
+	root, err := evalIntCmp(-1, op, v)
+	if err != nil {
+		return nil, false
+	}
 	nonRoot, constant := nonRootCmpConstant(op, v)
 	if !constant {
-		return nil, true, fmt.Errorf("traceql: nestedSetParent %s %d depends on nested-set positions the OTel ClickHouse schema does not materialise — only root-ness tests (e.g. nestedSetParent < 0) are supported", op, v)
+		return nil, false
 	}
-
 	parentCol := &chplan.ColumnRef{Name: s.ParentSpanIDColumn}
 	empty := &chplan.LitString{V: ""}
 	switch {
 	case root && !nonRoot:
-		return &chplan.Binary{Op: chplan.OpEq, Left: parentCol, Right: empty}, true, nil
+		return &chplan.Binary{Op: chplan.OpEq, Left: parentCol, Right: empty}, true
 	case !root && nonRoot:
-		return &chplan.Binary{Op: chplan.OpNe, Left: parentCol, Right: empty}, true, nil
+		return &chplan.Binary{Op: chplan.OpNe, Left: parentCol, Right: empty}, true
 	default:
-		// Same truth value for root and non-root spans — the predicate
-		// is constant over the whole table.
-		return &chplan.LitBool{V: root}, true, nil
+		return &chplan.LitBool{V: root}, true
 	}
 }
 
@@ -1338,26 +1658,27 @@ func flipComparisonOp(op chplan.BinaryOp) chplan.BinaryOp {
 //   - intrinsic instrumentation:name    → ScopeName
 //   - intrinsic instrumentation:version → ScopeVersion
 //
-// Intrinsics with no OTel-CH backing column are REJECTED rather than
-// silently lowered to a SpanAttributes map lookup: the OTel-CH exporter
-// never writes keys like 'rootName' or 'traceDuration' into the span
-// attributes map, so the fallthrough produced syntactically-valid SQL
-// that matched zero rows — wrong-and-silent. Surfacing the gap as a
-// 422 beats returning a confidently-empty result (same discipline as
-// the LogQL ip() rejection).
+// Intrinsics / scopes with no OTel-CH backing column resolve to the
+// reference StaticNil cell — an empty string — when used in a value
+// position (`| select(rootName)`, `| by(traceDuration)`, an aggregate
+// operand). Reference Tempo executes the missing field to StaticNil,
+// which renders as an empty/absent cell and (for by()) collapses every
+// span into one nil-keyed group; `/api/search` returns 2xx, so cerberus
+// must not 422. The earlier loud-rejection posture was itself the
+// wrong_rejection the rejection-parity layer exists to catch. A nested
+// intrinsic (event:name / link:traceID / link:spanID) in value position
+// is handled by the dedicated group / select paths before reaching
+// here; a bare reference that still arrives resolves to the same empty
+// cell. Comparisons never reach this path — lowerAbsentFieldBinary /
+// lowerNestedSetBinary / lowerNestedIntrinsicBinary intercept them.
 func lowerAttribute(a traceql.Attribute, s schema.Traces) (chplan.Expr, error) {
 	if a.Intrinsic != traceql.IntrinsicNone {
 		if col := intrinsicColumn(a.Intrinsic, s); col != "" {
 			return &chplan.ColumnRef{Name: col}, nil
 		}
-		// Nested intrinsics (event:name / link:traceID / link:spanID)
-		// are comparison-only: lowerNestedIntrinsicBinary intercepts
-		// them inside comparisons; a bare reference (select / by / agg
-		// operand) has no flat column to project.
-		if _, _, ok := nestedIntrinsicTarget(a, s); ok {
-			return nil, fmt.Errorf("traceql: intrinsic %s is only supported in comparisons (equality / inequality / regex)", a.Intrinsic)
-		}
-		return nil, unsupportedIntrinsicErr(a.Intrinsic)
+		// Unbacked intrinsic in value position: the missing-cell empty
+		// string mirrors reference's StaticNil render.
+		return &chplan.LitString{V: ""}, nil
 	}
 	carrier := s.AttributesColumn
 	switch a.Scope {
@@ -1367,13 +1688,12 @@ func lowerAttribute(a traceql.Attribute, s schema.Traces) (chplan.Expr, error) {
 		carrier = s.AttributesColumn
 	case traceql.AttributeScopeInstrumentation:
 		// The upstream OTel-CH traces schema materialises ScopeName /
-		// ScopeVersion but no scope-attributes map; without a configured
-		// column the lookup would silently read SpanAttributes instead.
+		// ScopeVersion but no scope-attributes map; a custom
+		// instrumentation.<key> is absent on every span. Reference
+		// resolves it to StaticNil — the empty missing-key cell — so
+		// resolve to '' rather than reading SpanAttributes or rejecting.
 		if s.ScopeAttributesColumn == "" {
-			return nil, fmt.Errorf(
-				"traceql: instrumentation-scoped attribute %q is unsupported — the OTel ClickHouse traces schema has no scope-attributes column (instrumentation:name / instrumentation:version map to ScopeName / ScopeVersion)",
-				a.Name,
-			)
+			return &chplan.LitString{V: ""}, nil
 		}
 		carrier = s.ScopeAttributesColumn
 	}
@@ -1381,39 +1701,6 @@ func lowerAttribute(a traceql.Attribute, s schema.Traces) (chplan.Expr, error) {
 		Source: &chplan.ColumnRef{Name: carrier},
 		Path:   a.Name,
 	}, nil
-}
-
-// unsupportedIntrinsicErr builds the per-intrinsic rejection message for
-// intrinsics the OTel-CH span-row schema cannot answer. Each message
-// names the structural reason so the 422 documents the boundary instead
-// of a generic "unsupported".
-func unsupportedIntrinsicErr(i traceql.Intrinsic) error {
-	switch i {
-	case traceql.IntrinsicTraceRootService, traceql.IntrinsicTraceRootSpan,
-		traceql.IntrinsicTraceDuration, traceql.ScopedIntrinsicTraceRootName,
-		traceql.ScopedIntrinsicTraceRootService, traceql.ScopedIntrinsicTraceDuration,
-		traceql.IntrinsicTraceStartTime:
-		return fmt.Errorf(
-			"traceql: intrinsic %s is trace-scoped — the OTel ClickHouse schema stores one row per span and does not materialise whole-trace values", i,
-		)
-	case traceql.IntrinsicChildCount:
-		return fmt.Errorf(
-			"traceql: intrinsic %s requires per-span child counts the OTel ClickHouse schema does not materialise", i,
-		)
-	case traceql.IntrinsicEventTimeSinceStart:
-		return fmt.Errorf(
-			"traceql: intrinsic %s requires per-event timestamp arithmetic against the Events Nested column and is unsupported", i,
-		)
-	case traceql.IntrinsicNestedSetParent, traceql.IntrinsicNestedSetLeft, traceql.IntrinsicNestedSetRight:
-		// select() projections recompute the numbering via
-		// NestedSetAnnotate (handled in lowerSelect before this path);
-		// any other bare reference (by() / aggregate operands) stays
-		// rejected.
-		return fmt.Errorf(
-			"traceql: intrinsic %s is only supported in root-ness comparisons (e.g. nestedSetParent < 0) and select() projections", i,
-		)
-	}
-	return fmt.Errorf("traceql: intrinsic %s has no OTel ClickHouse backing column and is unsupported", i)
 }
 
 func intrinsicColumn(i traceql.Intrinsic, s schema.Traces) string {

@@ -10,6 +10,7 @@ import (
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/traceql"
+	"github.com/tsouza/cerberus/test/spec"
 )
 
 // TestSelectNestedSet_WrapsAnnotate pins the `| select(nestedSet*)`
@@ -92,12 +93,13 @@ func TestSelectWithoutNestedSet_NoAnnotate(t *testing.T) {
 	}
 }
 
-// TestNestedSetOutsideSelectStillRejected pins the non-select bare
-// reference positions: by() grouping and aggregate operands have no
-// honest per-span scalar to hand ClickHouse without the annotate wrap,
-// which lowerSelect alone applies. The message names both supported
-// positions so the 422 documents the boundary.
-func TestNestedSetOutsideSelectStillRejected(t *testing.T) {
+// TestNestedSetOutsideSelectAnnotates pins the non-select bare
+// reference positions: by() grouping and aggregate operands recompute
+// the nested-set numbering via the same NestedSetAnnotate pass
+// lowerSelect applies, then read the synthetic column. Reference Tempo
+// materialises these positions and /api/search accepts the queries (the
+// rejection-parity layer flagged the old 422s as wrong_rejections).
+func TestNestedSetOutsideSelectAnnotates(t *testing.T) {
 	t.Parallel()
 	s := schema.DefaultOTelTraces()
 
@@ -109,13 +111,13 @@ func TestNestedSetOutsideSelectStillRejected(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Parse(%q): %v", q, err)
 		}
-		_, err = traceql.Lower(context.Background(), expr, s)
-		if err == nil {
-			t.Errorf("Lower(%q): want rejection, got nil", q)
+		plan, err := traceql.Lower(context.Background(), expr, s)
+		if err != nil {
+			t.Errorf("Lower(%q): want successful annotation-backed lowering, got: %v", q, err)
 			continue
 		}
-		if !strings.Contains(err.Error(), "select() projections") {
-			t.Errorf("Lower(%q): error %q should name the supported positions", q, err)
+		if !strings.Contains(spec.PrintChplan(plan), "NestedSetAnnotate") {
+			t.Errorf("Lower(%q): plan must wrap a NestedSetAnnotate to materialise the position", q)
 		}
 	}
 }

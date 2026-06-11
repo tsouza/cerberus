@@ -1,0 +1,39 @@
+Spanset set operation (&&) whose operands are full sub-pipelines, not
+bare selectors: `({} | count() > 1) && ({} | count() > 1)`. Reference
+Tempo accepts a parenthesised pipeline as a spanset-operation operand;
+cerberus lowers each via the shared pipeline folder and intersects on
+(TraceId, SpanId).
+
+-- query.traceql --
+({ span.region = "us" } | count() > 0) && ({ span.tier = "gold" } | count() > 0)
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    SpanAttributes Map(String, String)
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    ('a1', 's1', map('region', 'us', 'tier', 'gold')),
+    ('a2', 's2', map('region', 'eu', 'tier', 'gold')),
+    ('a3', 's3', map('region', 'us', 'tier', 'silver'));
+-- args --
+[0] int64 = 1
+[1] string = "region"
+[2] string = "us"
+[3] int64 = 0
+[4] int64 = 1
+[5] string = "tier"
+[6] string = "gold"
+[7] int64 = 0
+-- chplan --
+SetOperation op=&&
+  Filter predicate=(Value > 0)
+    Aggregate groupBy=[TraceId AS TraceId] funcs=[count(1) AS Value, any(SpanName) AS MetricName, any(ResourceAttributes) AS ResourceAttrs, min(Timestamp) AS TimeUnix, min(toUnixTimestamp64Nano(Timestamp)) AS TraceStartNs, max((toUnixTimestamp64Nano(Timestamp) + toInt64(Duration))) AS TraceEndNs]
+      Filter predicate=(SpanAttributes["region"] = "us")
+        Scan(otel_traces)
+  Filter predicate=(Value > 0)
+    Aggregate groupBy=[TraceId AS TraceId] funcs=[count(1) AS Value, any(SpanName) AS MetricName, any(ResourceAttributes) AS ResourceAttrs, min(Timestamp) AS TimeUnix, min(toUnixTimestamp64Nano(Timestamp)) AS TraceStartNs, max((toUnixTimestamp64Nano(Timestamp) + toInt64(Duration))) AS TraceEndNs]
+      Filter predicate=(SpanAttributes["tier"] = "gold")
+        Scan(otel_traces)
+-- sql --
+SELECT L.* FROM (SELECT * FROM (SELECT `TraceId` AS `TraceId`, toFloat64(count(?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT * FROM `otel_traces` WHERE (`SpanAttributes`[?] = ?)) GROUP BY `TraceId`) WHERE (`Value` > ?)) AS `L` INNER JOIN (SELECT * FROM (SELECT `TraceId` AS `TraceId`, toFloat64(count(?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT * FROM `otel_traces` WHERE (`SpanAttributes`[?] = ?)) GROUP BY `TraceId`) WHERE (`Value` > ?)) AS `R` ON `L`.`TraceId` = `R`.`TraceId` AND `L`.`SpanId` = `R`.`SpanId`

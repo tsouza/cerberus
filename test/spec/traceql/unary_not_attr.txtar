@@ -1,0 +1,22 @@
+-- query.traceql --
+{ !(span.flavor = "v1") }
+-- seed --
+CREATE TABLE otel_traces (
+    SpanId String,
+    SpanAttributes Map(String, String) MATERIALIZED if(SpanId = 'aaaa', map('flavor', 'v1'), map('flavor', 'v2'))
+) ENGINE = MergeTree ORDER BY SpanId;
+INSERT INTO otel_traces (SpanId) VALUES
+    ('aaaa'),
+    ('bbbb');
+-- expected_rows --
+[
+  ["bbbb"]
+]
+-- args --
+[0] string = "flavor"
+[1] string = "v1"
+-- chplan --
+Filter predicate=not((SpanAttributes["flavor"] = "v1"))
+  Scan(otel_traces)
+-- sql --
+SELECT * FROM `otel_traces` WHERE not((`SpanAttributes`[?] = ?))

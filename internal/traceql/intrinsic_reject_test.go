@@ -2,7 +2,6 @@ package traceql_test
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	tempo "github.com/grafana/tempo/pkg/traceql"
@@ -11,50 +10,42 @@ import (
 	"github.com/tsouza/cerberus/internal/traceql"
 )
 
-// TestUnbackedIntrinsicsAreRejected pins the loud-rejection contract
-// for intrinsics the OTel-CH span-row schema cannot answer. Before
-// this gate, every one of these lowered to a
-// `SpanAttributes['<intrinsic name>']` map lookup — syntactically
-// valid SQL that matched zero rows, i.e. a confidently-wrong empty
-// result (the exact failure mode the LogQL ip() rejection closed for
-// the Loki head). The showcase-traceql dashboard pins the wire-level
-// 422s; this test pins the lowering-layer error + message shape.
-func TestUnbackedIntrinsicsAreRejected(t *testing.T) {
+// TestUnbackedIntrinsicComparisonsLowerConstant pins the parity contract
+// for comparisons against intrinsics the OTel-CH span-row schema cannot
+// answer (trace-scoped rootName / rootServiceName / traceDuration,
+// per-span childCount, per-event timeSinceStart, instrumentation-scoped
+// attributes). Reference Tempo's `/api/search` ACCEPTS each of these —
+// the absent operand resolves to StaticNil and the comparison evaluates
+// StaticFalse, so the query returns a 2xx empty result, not a 4xx. The
+// rejection-parity layer flagged the old loud-422 behaviour as a
+// wrong_rejection. Cerberus now lowers them to a constant-false
+// predicate, matching reference's status class (2xx) and its
+// matches-nothing semantics. The earlier worry — a silent
+// `SpanAttributes['rootName']` map lookup returning a confidently-wrong
+// result — does not apply: a constant-false predicate is the *correct*
+// answer, not a guess.
+func TestUnbackedIntrinsicComparisonsLowerConstant(t *testing.T) {
 	t.Parallel()
 	s := schema.DefaultOTelTraces()
 
-	cases := []struct {
-		query   string
-		wantSub string
-	}{
-		{`{ rootName = "GET /home" }`, "trace-scoped"},
-		{`{ rootServiceName = "frontend" }`, "trace-scoped"},
-		{`{ traceDuration > 100ms }`, "trace-scoped"},
-		{`{ trace:rootName = "GET /home" }`, "trace-scoped"},
-		{`{ trace:rootService = "frontend" }`, "trace-scoped"},
-		{`{ trace:duration > 100ms }`, "trace-scoped"},
-		{`{ span:childCount > 0 }`, "per-span child counts"},
-		{`{ event:timeSinceStart > 1ms }`, "per-event timestamp arithmetic"},
-		{`{ instrumentation.deployment = "blue" }`, "no scope-attributes column"},
-		// Bare nested-intrinsic references outside a comparison have no
-		// flat column to project.
-		{`{ } | select(event:name)`, "only supported in comparisons"},
-		// Metrics group-by on an unbacked intrinsic flows through the
-		// same gate.
-		{`{ } | rate() by (rootName)`, "trace-scoped"},
-	}
-	for _, tc := range cases {
-		expr, err := tempo.Parse(tc.query)
+	for _, q := range []string{
+		`{ rootName = "GET /home" }`,
+		`{ rootServiceName = "frontend" }`,
+		`{ traceDuration > 100ms }`,
+		`{ trace:rootName = "GET /home" }`,
+		`{ trace:rootService = "frontend" }`,
+		`{ trace:duration > 100ms }`,
+		`{ span:childCount > 0 }`,
+		`{ event:timeSinceStart > 1ms }`,
+		`{ instrumentation.deployment = "blue" }`,
+		`{ instrumentation.deployment != "blue" }`,
+	} {
+		expr, err := tempo.Parse(q)
 		if err != nil {
-			t.Fatalf("Parse(%q): %v", tc.query, err)
+			t.Fatalf("Parse(%q): %v", q, err)
 		}
-		_, err = traceql.Lower(context.Background(), expr, s)
-		if err == nil {
-			t.Errorf("Lower(%q): want rejection containing %q, got nil error", tc.query, tc.wantSub)
-			continue
-		}
-		if !strings.Contains(err.Error(), tc.wantSub) {
-			t.Errorf("Lower(%q): error %q does not contain %q", tc.query, err, tc.wantSub)
+		if _, err := traceql.Lower(context.Background(), expr, s); err != nil {
+			t.Errorf("Lower(%q): want successful constant lowering, got error: %v", q, err)
 		}
 	}
 }

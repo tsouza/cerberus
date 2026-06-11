@@ -1,0 +1,25 @@
+-- query.traceql --
+{ name = "checkout" || name = "orders" }
+-- seed --
+CREATE TABLE otel_traces (
+    SpanId String,
+    SpanName String
+) ENGINE = MergeTree ORDER BY SpanId;
+INSERT INTO otel_traces (SpanId, SpanName) VALUES
+    ('aaaa', 'checkout'),
+    ('bbbb', 'orders'),
+    ('cccc', 'payment');
+-- args --
+[0] string = "checkout"
+[1] string = "orders"
+-- chplan --
+Filter predicate=(SpanName IN ("checkout", "orders"))
+  Scan(otel_traces)
+-- sql --
+SELECT * FROM `otel_traces` WHERE (`SpanName` IN (?, ?))
+
+-- expected_rows --
+[
+  ["aaaa", "checkout"],
+  ["bbbb", "orders"]
+]
