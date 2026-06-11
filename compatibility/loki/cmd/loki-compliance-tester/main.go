@@ -164,6 +164,20 @@ func run() error {
 
 	results := compareAll(cases, f, isInstant)
 
+	// Detected-fields differential (range lane only — the endpoint has
+	// no instant flavour): one case per seeded service, diffing
+	// /loki/api/v1/detected_fields between the two backends. The
+	// results join the same report + score pipeline as the corpus
+	// cases — no separate bucket, no allow-list.
+	if !isInstant {
+		metadata, err := bench.LoadMetadata(f.metadataDir)
+		if err != nil {
+			return fmt.Errorf("LoadMetadata(%s) for detected-fields pass: %w", f.metadataDir, err)
+		}
+		httpClient := &http.Client{Timeout: f.timeout}
+		results = append(results, compareDetectedFieldsAll(httpClient, f, metadata)...)
+	}
+
 	report := Report{
 		TotalResults:   len(results),
 		IncludePassing: true,

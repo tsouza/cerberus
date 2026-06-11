@@ -98,21 +98,55 @@ test.describe('Loki UX — Logs panel flows', () => {
     expect(body.data.result.length, '≥1 stream after chain').toBeGreaterThan(0);
   });
 
-  test('detected fields: side-panel API returns extractable keys', async ({ request }) => {
-    // The Logs panel "Detected fields" side panel calls
-    // /loki/api/v1/detected_fields. The seed bodies are plain text
-    // (not JSON), so the heuristic should still return a deterministic
-    // (possibly empty) fields array — what matters is the envelope.
+  test('detected fields: bare top-level shape + non-empty fields (Logs Drilldown decode)', async ({
+    request,
+  }) => {
+    // Grafana's Logs Drilldown (and the Loki datasource's detected-
+    // fields side panel) call /loki/api/v1/detected_fields and read
+    // `body.fields` at the TOP LEVEL — upstream Loki serializes
+    // logproto.DetectedFieldsResponse bare, with NO {status, data}
+    // envelope (pkg/util/marshal WriteDetectedFieldsResponseJSON).
+    //
+    // Regression pin for the "Fields: 0" bug class: cerberus once
+    // wrapped this payload in the query-API envelope; every drilldown
+    // service page then showed zero fields while the request returned
+    // 200, invisible to status-code oracles. This test decodes the
+    // response exactly as the consumer does and requires real fields.
+    //
+    // The seed guarantees a non-empty result for {service_name="api"}:
+    // LogAttributes carries `thread` (structured metadata source) and
+    // every body ends in `id=<n>` (logfmt-extractable).
     const { start, end } = last5MinWindow();
     const q = encodeURIComponent('{service_name="api"}');
     const url = `${lokiProxy}/detected_fields?query=${q}&start=${start * 1e9}&end=${end * 1e9}`;
     const resp = await request.get(url);
     expect(resp.status()).toBe(200);
     const body = await resp.json();
-    expect(body.status).toBe('success');
-    expect(Array.isArray(body.data.fields), 'data.fields is an array').toBe(true);
-    expect(typeof body.data.limit, 'data.limit is numeric').toBe('number');
-    expect(typeof body.data.line_limit, 'data.line_limit is numeric').toBe('number');
+
+    // Envelope is GONE — body.fields, not body.data.fields.
+    expect(body.status, 'no {status,...} envelope').toBeUndefined();
+    expect(body.data, 'no {data:...} envelope').toBeUndefined();
+    expect(Array.isArray(body.fields), 'top-level fields is an array').toBe(true);
+    expect(body.fields.length, 'drilldown fields badge > 0').toBeGreaterThan(0);
+    expect(typeof body.limit, 'limit echoed for non-empty fields').toBe('number');
+
+    for (const field of body.fields) {
+      expect(typeof field.label, 'field.label is a string').toBe('string');
+      expect(field.label.length, 'field.label is non-empty').toBeGreaterThan(0);
+      expect(typeof field.type, 'field.type is a string').toBe('string');
+      expect(typeof field.cardinality, 'field.cardinality is numeric').toBe('number');
+      expect(field.cardinality, 'field.cardinality > 0').toBeGreaterThan(0);
+      // parsers is ALWAYS on the wire: null for structured-metadata
+      // fields, ["json"] / ["logfmt"] for body-parsed ones.
+      expect('parsers' in field, 'field.parsers key present').toBe(true);
+    }
+
+    // The structured-metadata source (LogAttributes.thread) reports
+    // with parsers=null, mirroring upstream Loki's structured-metadata
+    // fields.
+    const thread = body.fields.find((f: { label: string }) => f.label === 'thread');
+    expect(thread, 'LogAttributes-backed `thread` field detected').toBeTruthy();
+    expect(thread.parsers, 'structured-metadata field has null parsers').toBeNull();
   });
 
   test('patterns: the /patterns endpoint extracts drain clusters from log bodies', async ({

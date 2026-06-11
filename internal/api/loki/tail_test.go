@@ -87,6 +87,10 @@ func (s *tailStubQuerier) QueryStrings(_ context.Context, _ string, _ ...any) ([
 	return s.stringRows, s.stringsErr
 }
 
+func (s *tailStubQuerier) QueryDetectedFieldRows(_ context.Context, _ string, _ ...any) ([]chclient.DetectedFieldRow, error) {
+	return nil, nil
+}
+
 func (s *tailStubQuerier) QueryTimestampedLines(_ context.Context, _ string, _ ...any) ([]chclient.TimestampedLine, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -86,7 +86,7 @@ func (h *Handler) handlePatterns(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return
 	}
-	lineLimit, err := parsePositiveInt(r.URL.Query().Get("line_limit"), defaultPatternsLineLimit)
+	lineLimit, err := parsePositiveInt31(r.URL.Query().Get("line_limit"), defaultPatternsLineLimit)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return

@@ -1,17 +1,22 @@
 package loki
 
 import (
-	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
-	"strings"
 	"time"
 
+	"github.com/axiomhq/hyperloglog"
+	"github.com/dustin/go-humanize"
 	loglib "github.com/grafana/loki/v3/pkg/logql/log"
+	"github.com/grafana/loki/v3/pkg/logqlmodel"
 	"github.com/prometheus/prometheus/model/labels"
 
+	"github.com/tsouza/cerberus/internal/api/format"
+	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/logql"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -28,42 +33,63 @@ const defaultDetectedFieldsLineLimit = 1000
 // payload exposing thousands of unique keys.
 const defaultDetectedFieldsLimit = 1000
 
-// detectedFieldsCardinalityCap caps the per-field value SET size used
-// to compute the response cardinality count. Only the cardinality
-// number is reported on the wire (not the values themselves), so the
-// cap defends against memory blow-up on high-cardinality fields like
-// `request_id` / `trace_id` / `user_id`. Cardinality numbers above the
-// cap saturate; for realistic Loki streams 1024 distinct values is
-// well above the threshold where the field stops being useful as a
-// faceting dimension anyway.
-const detectedFieldsCardinalityCap = 1024
-
-// DetectedField is one entry in the /detected_fields response. Mirrors
-// the upstream Loki shape Grafana expects.
+// DetectedField is one entry in the /detected_fields response. The
+// JSON tags mirror upstream Loki's logproto.DetectedField exactly
+// (pkg/logproto/logproto.pb.go): label / type / cardinality are
+// omitempty, `parsers` is ALWAYS emitted (null when the field came
+// from structured metadata only — upstream nils the slice out before
+// marshalling), and `jsonPath` carries the original JSON path
+// components when the json parser extracted the field.
 type DetectedField struct {
-	Label       string `json:"label"`
-	Type        string `json:"type"`
-	Cardinality uint64 `json:"cardinality"`
+	Label       string   `json:"label,omitempty"`
+	Type        string   `json:"type,omitempty"`
+	Cardinality uint64   `json:"cardinality,omitempty"`
+	Parsers     []string `json:"parsers"`
+	JSONPath    []string `json:"jsonPath,omitempty"`
 }
 
-// DetectedFieldsData is the body of a /loki/api/v1/detected_fields
-// response. `fields` holds the heuristic results; `limit` and
-// `line_limit` echo what the handler actually applied.
-type DetectedFieldsData struct {
-	Fields    []DetectedField `json:"fields"`
-	Limit     int             `json:"limit"`
-	LineLimit int             `json:"line_limit"`
+// DetectedFieldsResponse is the body of a /loki/api/v1/detected_fields
+// response. Upstream Loki serializes logproto.DetectedFieldsResponse
+// BARE at the top level (pkg/util/marshal/marshal.go,
+// WriteDetectedFieldsResponseJSON writes the struct verbatim via
+// jsoniter) — there is NO {status, data} envelope on this endpoint.
+// Grafana's Logs Drilldown reads `body.fields` directly; wrapping the
+// payload renders every service page with "Fields: 0".
+//
+// `limit` echoes the applied field cap, and — mirroring upstream —
+// is only set when at least one field was detected ("otherwise all
+// they get is the field limit, which is a bit confusing", per the
+// upstream handler).
+type DetectedFieldsResponse struct {
+	Fields []DetectedField `json:"fields,omitempty"`
+	Limit  uint32          `json:"limit,omitempty"`
 }
 
 // handleDetectedFields implements GET /loki/api/v1/detected_fields. The
-// upstream Loki feature peeks at the first N matching rows and returns
-// the JSON / logfmt keys it can extract from each Body. Cerberus's
-// implementation matches the contract:
+// upstream Loki feature peeks at the first N matching rows (newest
+// first) and reports every field it can derive from each record.
+// Cerberus mirrors the upstream frontend implementation
+// (pkg/querier/queryrange/detected_fields.go) on top of the OTel-CH
+// schema:
 //
-//   - SQL fetches Body (most-recent-first, capped at line_limit).
-//   - Per-row JSON and logfmt parsing happens in Go (post-process).
-//   - Each unique field name is reported with the dominant scalar type
-//     (string / int / float / bool / duration / bytes) and cardinality.
+//   - SQL fetches (Body, LogAttributes, ResourceAttributes), newest
+//     first, capped at line_limit.
+//   - LogAttributes is the structured-metadata source: every key
+//     becomes a field with a nil parser list (Loki's OTLP ingestion
+//     maps log-record attributes to structured metadata, so the
+//     OTel-CH LogAttributes map is the same data on the CH side).
+//   - Body is parsed with Loki's own json parser first, falling back
+//     to logfmt — the per-field `parsers` list records which one hit,
+//     and json-extracted fields carry their original `jsonPath`.
+//   - Types follow upstream determineType (int → float → boolean →
+//     duration → bytes → string), re-detected per record so the last
+//     record processed wins — exactly the upstream loop.
+//   - Cardinality is a hyperloglog estimate over the observed values
+//     (same sketch library upstream uses, so estimates match a
+//     reference Loki fed the same records).
+//
+// Cerberus serves only the fields variant; the sibling
+// /detected_field/{name}/values endpoint is not mounted.
 //
 // https://grafana.com/docs/loki/latest/reference/loki-http-api/#detected-fields
 func (h *Handler) handleDetectedFields(w http.ResponseWriter, r *http.Request) {
@@ -78,12 +104,12 @@ func (h *Handler) handleDetectedFields(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	lineLimit, err := parsePositiveInt(r.URL.Query().Get("line_limit"), defaultDetectedFieldsLineLimit)
+	lineLimit, err := parsePositiveInt31(r.URL.Query().Get("line_limit"), defaultDetectedFieldsLineLimit)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return
 	}
-	limit, err := parsePositiveInt(r.URL.Query().Get("limit"), defaultDetectedFieldsLimit)
+	limit, err := parsePositiveInt31(r.URL.Query().Get("limit"), defaultDetectedFieldsLimit)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return
@@ -102,38 +128,52 @@ func (h *Handler) handleDetectedFields(w http.ResponseWriter, r *http.Request) {
 	}
 	h.Logger.Debug("cerberus loki detected_fields", "logql", q, "sql", sqlStr, "args", args)
 
-	lines, err := h.Client.QueryStrings(r.Context(), sqlStr, args...)
+	rows, err := h.Client.QueryDetectedFieldRows(r.Context(), sqlStr, args...)
 	if err != nil {
 		h.Logger.Error("cerberus loki detected_fields CH query failed", "err", err, "sql", sqlStr)
 		h.respondError(w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway})
 		return
 	}
 
-	fields := detectFields(lines, limit)
+	fields := detectFields(rows, limit)
 
-	writeJSON(w, http.StatusOK, Response{
-		Status: "success",
-		Data: DetectedFieldsData{
-			Fields:    fields,
-			Limit:     limit,
-			LineLimit: lineLimit,
-		},
-	})
+	resp := DetectedFieldsResponse{Fields: fields}
+	// Mirror upstream: the limit is echoed only when fields exist.
+	// parsePositiveInt31 already bounds limit, but the guard is
+	// restated on the SAME variable so both gosec G115 and CodeQL
+	// go/incorrect-integer-conversion can prove the uint32 conversion
+	// locally (neither follows the bound across the helper call).
+	if len(fields) > 0 && limit > 0 && limit <= math.MaxInt32 {
+		resp.Limit = uint32(limit)
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // buildDetectedFieldsSQL renders:
 //
-//	SELECT `Body` AS line
+//	SELECT `Body` AS `line`, `LogAttributes` AS `log_attributes`,
+//	       `ResourceAttributes` AS `stream_labels`
 //	FROM `otel_logs`
 //	WHERE <matchers> AND <time bounds>
 //	ORDER BY `Timestamp` DESC
 //	LIMIT <lineLimit>
 //
+// The projection aliases are deliberately DISTINCT from the source
+// column names: the selector predicate references the raw
+// `ResourceAttributes` map in WHERE, and a same-name alias would
+// shadow the column once a test harness (chclienttest) rewrites the
+// projection to toJSONString(...) — CH resolves WHERE identifiers
+// against SELECT aliases first.
+//
 // The peek window is small (1000 rows by default) — CH executes this as
 // a top-N scan on the primary key, comparable to /index/stats.
 func buildDetectedFieldsSQL(s schema.Logs, matchers []*labels.Matcher, start, end time.Time, lineLimit int) (string, []any, error) {
 	sb := chsql.NewQuery().
-		Select(chsql.As(chsql.Col(s.BodyColumn), "line")).
+		Select(
+			chsql.As(chsql.Col(s.BodyColumn), "line"),
+			chsql.As(chsql.Col(s.AttributesColumn), "log_attributes"),
+			chsql.As(chsql.Col(s.ResourceAttributesColumn), "stream_labels"),
+		).
 		From(chsql.Col(s.LogsTable))
 
 	pred := logql.SelectorPredicate(matchers, s)
@@ -157,195 +197,202 @@ func buildDetectedFieldsSQL(s schema.Logs, matchers []*labels.Matcher, start, en
 	return sqlStr, args, nil
 }
 
-// detectFields runs the heuristic over the peek window. For each line:
-//
-//  1. attempt JSON object parse — every top-level scalar value becomes
-//     a field whose type is inferred from the JSON kind.
-//  2. attempt logfmt parse (key=value pairs) — each value is sniffed
-//     for int / float / bool / duration / bytes / string.
-//
-// Field types collapse via `mergeType`: identical → preserved;
-// otherwise downgraded to "string". Returns the field list sorted by
-// label name, truncated at limit.
-func detectFields(lines []string, limit int) []DetectedField {
-	type acc struct {
-		typ    string
-		values map[string]struct{}
-	}
-	fields := map[string]*acc{}
+// parsedField accumulates the per-field state across the peek window.
+// Mirrors upstream's parsedFields struct: a hyperloglog sketch for
+// cardinality, the most recent type detection, the set of parsers
+// that produced the field, and the JSON path when applicable.
+type parsedField struct {
+	sketch   *hyperloglog.Sketch
+	typ      string
+	parsers  []string
+	jsonPath []string
+}
 
-	addValue := func(name, typ, raw string) {
-		a, ok := fields[name]
-		if !ok {
-			a = &acc{typ: typ, values: map[string]struct{}{}}
-			fields[name] = a
-		} else {
-			a.typ = mergeType(a.typ, typ)
+func newParsedField(parsers []string) *parsedField {
+	return &parsedField{
+		sketch:  hyperloglog.New(),
+		typ:     "string",
+		parsers: parsers,
+	}
+}
+
+// detectFields runs the upstream detected-fields loop over the peek
+// window (mirrors pkg/querier/queryrange/detected_fields.go,
+// parseDetectedFields). For each row:
+//
+//  1. every LogAttributes entry (the structured-metadata analogue)
+//     becomes a field with an empty parser list,
+//  2. the Body is parsed — Loki's json parser first, logfmt fallback —
+//     and each extracted key becomes a field tagged with the parser
+//     that produced it (collisions with stream labels surface as
+//     `<key>_extracted`, exactly as the upstream labels builder does).
+//
+// The field type is re-detected once per row from the first observed
+// value, so the last row processed wins — upstream semantics, NOT a
+// merge-to-string collapse. `limit` caps the number of DISTINCT fields
+// tracked (rows keep contributing values to already-tracked fields).
+//
+// Keys iterate in sorted order so the (map-ordered upstream) loop is
+// deterministic in cerberus; the output is sorted by label.
+func detectFields(rows []chclient.DetectedFieldRow, limit int) []DetectedField {
+	fields := map[string]*parsedField{}
+	fieldCount := 0
+	emptyParsers := []string{}
+
+	track := func(name string, parsers []string) *parsedField {
+		df, ok := fields[name]
+		if !ok && fieldCount < limit {
+			df = newParsedField(parsers)
+			fields[name] = df
+			fieldCount++
 		}
-		// Cap the per-field value set to defend against blow-up on
-		// high-cardinality fields (request_id, etc.) — we only need the
-		// cardinality COUNT, not the actual values.
-		if len(a.values) < detectedFieldsCardinalityCap {
-			a.values[raw] = struct{}{}
-		}
+		return df
 	}
 
-	for _, line := range lines {
-		// JSON object detection.
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "{") {
-			obj := map[string]json.RawMessage{}
-			if err := json.Unmarshal([]byte(trimmed), &obj); err == nil {
-				for k, raw := range obj {
-					typ, val := classifyJSON(raw)
-					addValue(k, typ, val)
-				}
-				// JSON wins — don't double-parse as logfmt.
+	for _, row := range rows {
+		// Structured metadata: the normalised LogAttributes map. Keys
+		// are normalised through the same OTel→Prom grammar the rest
+		// of the Loki surface applies, so a field reported here is
+		// queryable as written.
+		structuredMetadata := format.NormalizeLabelMap(row.Attributes)
+		for _, k := range sortedKeys(structuredMetadata) {
+			df := track(k, emptyParsers)
+			if df == nil {
 				continue
 			}
+			v := structuredMetadata[k]
+			df.typ = determineFieldType(v)
+			df.sketch.Insert([]byte(v))
 		}
-		// Logfmt: reuse Loki's own parser so the result matches what
-		// `| logfmt` would yield in a pipeline.
-		extracted, ok := parseLogfmt(line)
-		if !ok {
-			continue
-		}
-		for k, v := range extracted {
-			addValue(k, classifyScalar(v), v)
+
+		// Body parsing: seed the labels builder with the stream labels
+		// so parsed keys that shadow a stream label rename to
+		// `<key>_extracted`, matching upstream.
+		streamLbls := labels.FromMap(format.NormalizeLabelMap(row.Resource))
+		entryLbls := loglib.NewBaseLabelsBuilder().ForLabels(streamLbls, labels.StableHash(streamLbls))
+		parsedLabels, parsers := parseLine(row.Line, entryLbls)
+		for _, k := range sortedKeys(parsedLabels) {
+			df := track(k, parsers)
+			if df == nil {
+				continue
+			}
+			for _, parser := range parsers {
+				if !slices.Contains(df.parsers, parser) {
+					df.parsers = append(df.parsers, parser)
+				}
+			}
+			// If we parsed with JSON, record the original JSON path.
+			if slices.Contains(parsers, "json") {
+				df.jsonPath = entryLbls.GetJSONPath(k)
+			}
+			v := parsedLabels[k]
+			df.typ = determineFieldType(v)
+			df.sketch.Insert([]byte(v))
 		}
 	}
 
 	out := make([]DetectedField, 0, len(fields))
-	for k, a := range fields {
+	for k, df := range fields {
+		p := df.parsers
+		if len(p) == 0 {
+			p = nil
+		}
 		out = append(out, DetectedField{
 			Label:       k,
-			Type:        a.typ,
-			Cardinality: uint64(len(a.values)),
+			Type:        df.typ,
+			Cardinality: df.sketch.Estimate(),
+			Parsers:     p,
+			JSONPath:    df.jsonPath,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Label < out[j].Label })
-	if limit > 0 && len(out) > limit {
-		out = out[:limit]
-	}
 	return out
 }
 
-// classifyJSON returns (type-tag, stringified-value) for a JSON token.
-// Object / array values are stringified as their raw JSON; scalar
-// strings unwrap the quoted form so cardinality dedup works on the
-// payload, not the quoted form.
-func classifyJSON(raw json.RawMessage) (string, string) {
-	trimmed := strings.TrimSpace(string(raw))
-	if trimmed == "" {
-		return "string", ""
-	}
-	switch trimmed[0] {
-	case '"':
-		var s string
-		if err := json.Unmarshal(raw, &s); err == nil {
-			return classifyScalar(s), s
+// parseLine runs Loki's own line parsers over a log body: json first
+// (capturing JSON paths), logfmt as the fallback — the exact cascade
+// upstream's parseEntry uses. Returns the extracted (key → value) map
+// (logqlmodel error labels dropped) plus the single-parser list that
+// produced it; (nil, nil) when neither parser accepts the line.
+func parseLine(line string, lbls *loglib.LabelsBuilder) (map[string]string, []string) {
+	parser := "json"
+	jsonParser := loglib.NewJSONParser(true)
+	_, jsonSuccess := jsonParser.Process(0, []byte(line), lbls)
+	if !jsonSuccess || lbls.HasErr() {
+		lbls.Reset()
+
+		logfmtParser := loglib.NewLogfmtParser(false, false)
+		parser = "logfmt"
+		_, logfmtSuccess := logfmtParser.Process(0, []byte(line), lbls)
+		if !logfmtSuccess || lbls.HasErr() {
+			return nil, nil
 		}
-		return "string", trimmed
-	case 't', 'f':
-		return "boolean", trimmed
-	case 'n':
-		return "string", trimmed
-	case '{', '[':
-		return "string", trimmed
 	}
-	// numeric: int vs float.
-	if _, err := strconv.ParseInt(trimmed, 10, 64); err == nil {
-		return "int", trimmed
+
+	out := map[string]string{}
+	lbls.LabelsResult().Parsed().Range(func(l labels.Label) {
+		if l.Name == logqlmodel.ErrorLabel || l.Name == logqlmodel.ErrorDetailsLabel ||
+			l.Name == logqlmodel.PreserveErrorLabel {
+			return
+		}
+		out[l.Name] = l.Value
+	})
+	if len(out) == 0 {
+		return nil, nil
 	}
-	if _, err := strconv.ParseFloat(trimmed, 64); err == nil {
-		return "float", trimmed
-	}
-	return "string", trimmed
+	return out, []string{parser}
 }
 
-// classifyScalar sniffs a string value and picks the best-fit type tag.
-// The vocabulary matches Loki's documented set: string / int / float /
-// boolean / duration / bytes.
-func classifyScalar(v string) string {
-	if v == "" {
-		return "string"
-	}
-	if v == "true" || v == "false" {
-		return "boolean"
-	}
-	if _, err := strconv.ParseInt(v, 10, 64); err == nil {
+// determineFieldType sniffs a value and picks the upstream type tag.
+// The cascade order is upstream's determineType verbatim: int → float
+// → boolean → duration → bytes → string. Note boolean uses
+// strconv.ParseBool but sits AFTER the numeric probes, so "1" is an
+// int, not a boolean; bytes uses humanize.ParseBytes ("10MB",
+// "1.5GiB", ...), the same parser upstream calls.
+func determineFieldType(value string) string {
+	if _, err := strconv.ParseInt(value, 10, 64); err == nil {
 		return "int"
 	}
-	if _, err := strconv.ParseFloat(v, 64); err == nil {
+	if _, err := strconv.ParseFloat(value, 64); err == nil {
 		return "float"
 	}
-	if _, err := time.ParseDuration(v); err == nil {
+	if _, err := strconv.ParseBool(value); err == nil {
+		return "boolean"
+	}
+	if _, err := time.ParseDuration(value); err == nil {
 		return "duration"
 	}
-	if isBytesLiteral(v) {
+	if _, err := humanize.ParseBytes(value); err == nil {
 		return "bytes"
 	}
 	return "string"
 }
 
-// isBytesLiteral detects payload-size suffixes like "10KB", "1.5MiB".
-// Conservatively gated on a small whitelist — anything fancier and the
-// caller falls back to "string".
-func isBytesLiteral(v string) bool {
-	suffixes := []string{"B", "KB", "MB", "GB", "TB", "KiB", "MiB", "GiB", "TiB"}
-	for _, suf := range suffixes {
-		if !strings.HasSuffix(v, suf) {
-			continue
-		}
-		num := strings.TrimSuffix(v, suf)
-		if num == "" {
-			continue
-		}
-		if _, err := strconv.ParseFloat(num, 64); err == nil {
-			return true
-		}
+// sortedKeys returns the map's keys in sorted order — the determinism
+// shim for the upstream loops that iterate Go maps directly.
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
 	}
-	return false
+	sort.Strings(keys)
+	return keys
 }
 
-// mergeType collapses two type tags observed for the same field across
-// rows. Identical → preserved; mismatched → "string" (the universal
-// downgrade). Anything else: pick the loser deterministically.
-func mergeType(a, b string) string {
-	if a == b {
-		return a
-	}
-	return "string"
-}
-
-// parseLogfmt runs Loki's logfmt parser over a line. Returns the
-// extracted (key, value) map plus true if the parser accepted the line.
-// The parser's hint argument lets it skip records it can't classify;
-// we want every key, so the hint is unset.
-func parseLogfmt(line string) (map[string]string, bool) {
-	parser := loglib.NewLogfmtParser(false, false)
-	lbs := loglib.NewBaseLabelsBuilder().ForLabels(labels.EmptyLabels(), 0)
-	_, ok := parser.Process(0, []byte(line), lbs)
-	if !ok {
-		return nil, false
-	}
-	out := map[string]string{}
-	lbs.LabelsResult().Labels().Range(func(l labels.Label) {
-		out[l.Name] = l.Value
-	})
-	return out, len(out) > 0
-}
-
-// parsePositiveInt parses an optional integer query parameter. Empty
-// input returns the default; non-numeric or non-positive input is
-// rejected with a 400.
-func parsePositiveInt(raw string, def int) (int, error) {
+// parsePositiveInt31 parses an optional integer query parameter.
+// Empty input returns the default; non-numeric, non-positive, or
+// out-of-range input is rejected with a 400. ParseUint with bitSize
+// 31 bounds the value to MaxInt32, which fits int on every
+// architecture AND uint32 on the wire (the echoed `limit` is
+// logproto.DetectedFieldsResponse.limit), so every downstream
+// conversion is provably in range.
+func parsePositiveInt31(raw string, def int) (int, error) {
 	if raw == "" {
 		return def, nil
 	}
-	n, err := strconv.Atoi(raw)
-	if err != nil || n <= 0 {
-		return 0, errors.New("parameter must be a positive integer")
+	n, err := strconv.ParseUint(raw, 10, 31)
+	if err != nil || n == 0 {
+		return 0, errors.New("parameter must be a positive integer no larger than 2147483647")
 	}
-	return n, nil
+	return int(n), nil
 }
