@@ -40,9 +40,9 @@
 # Cases below cover the 7 shadow categories (attribute matchers per
 # scope (5), intrinsics (4), structural ops (4), set ops (3), inner
 # aggregates (2)) plus 6 metrics-pipeline cases (3 range + 3 instant)
-# and a per-id smoke. Total: 25 cases — the three metrics_instant
-# cases activated alongside the cerberus /api/metrics/query handler
-# (see internal/api/tempo/metrics_query_instant.go).
+# and a per-id smoke; later additions grew the spanSets and metrics
+# families (the count below tracks `grep -c '^-- name --'`).
+# Total: 38 cases.
 
 # --- Attribute matchers per scope (5) ---
 
@@ -261,7 +261,7 @@ search
 -- expected_max_traces --
 500
 
-# --- SpanSets (2) ---
+# --- SpanSets (4) ---
 # Cases with an explicit -- spss -- switch on the differ's per-trace
 # spanSets comparison (spanID sets, matched totals, per-span
 # name/start/duration). Grafana's Traces Drilldown trace list
@@ -305,6 +305,55 @@ search
 200
 -- expected_services --
 payments
+
+-- name --
+spansets_select_nested_set
+# Nested-set intrinsics in `| select(...)`: a projection clause must
+# not change WHICH spans match, so the differ pins the exact spanID
+# sets + per-span name/start/duration against reference (PR #747 only
+# covered nested-set FILTER root-ness; the select() position used to
+# 422). The selected attribute VALUES ride
+# spanSets[].spans[].attributes, which the comparator deliberately
+# does not diff (presentation projection; sibling ORDER inside Tempo's
+# numbering is ingest-order and unobservable in OTel-CH) — value
+# semantics are pinned by the test/spec/traceql/select_nested_set*
+# fixtures and the chdb handler test against Tempo's
+# assignNestedSetModelBoundsAndServiceStats algorithm.
+-- query --
+{ resource.service.name = "checkout" } | select(nestedSetParent, nestedSetLeft, nestedSetRight)
+-- endpoint --
+search
+-- spss --
+20
+-- expected_min_traces --
+1
+-- expected_max_traces --
+200
+-- expected_services --
+checkout
+
+-- name --
+spansets_drilldown_structure_tab
+# The EXACT query Grafana Traces Drilldown's "Structure" tab sends
+# (traces-drilldown StructureScene.tsx buildQuery, rate metric, with
+# the root-span primary signal as the filter): union-structural arm
+# OR'd with the plain root filter, piped into select() with status /
+# service.name / name / the three nested-set intrinsics. Pins the
+# whole consumer path differentially: `||` arm column alignment,
+# select-over-structural column exposure, per-span `name` population
+# for select(name) (reference puts the selected name on
+# tempopb.Span.Name — the differ compares it), and the matched-span
+# sets (roots ∪ server-kind descendants, deduped across arms).
+-- query --
+({ nestedSetParent < 0 } &>> { kind = server }) || ({ nestedSetParent < 0 }) | select(status, resource.service.name, name, nestedSetParent, nestedSetLeft, nestedSetRight)
+-- endpoint --
+search
+-- spss --
+20
+-- expected_min_traces --
+1
+-- expected_max_traces --
+500
 
 # --- Metrics pipeline: /api/metrics/query_range (3) ---
 # These hit cerberus's /api/metrics/query_range (implemented today —

@@ -159,12 +159,19 @@ func curatedTraceQLRows() []Row {
 		mk("second:threshold", "metrics-second-stage", "> N", `{ } | rate() by (name) > 0.0001`),
 
 		// --- Nested-set intrinsics (Grafana Traces Drilldown's
-		// root-span idiom; only root-ness shapes are lowerable) ---
+		// root-span idiom; root-ness comparisons and select()
+		// projections are lowerable — position-dependent FILTER
+		// comparisons are not) ---
 		mk("nestedset:root", "nested-set", "nestedSetParent < 0", `{ nestedSetParent < 0 }`),
 		mk("nestedset:non-root", "nested-set", "nestedSetParent >= 0", `{ nestedSetParent >= 0 }`),
 		mk("nestedset:position", "nested-set", "nestedSetParent = N", `{ nestedSetParent = 5 }`),
 		mk("nestedset:left", "nested-set", "nestedSetLeft", `{ nestedSetLeft > 0 }`),
 		mk("nestedset:right", "nested-set", "nestedSetRight", `{ nestedSetRight > 0 }`),
+		// The Traces Drilldown "Structure" tab projection: nested-set
+		// intrinsics inside select() are recomputed at query time by
+		// the NestedSetAnnotate lowering (internal/traceql/select.go).
+		mk("nestedset:select", "nested-set", "select(nestedSet*)",
+			`{ nestedSetParent < 0 } | select(nestedSetParent, nestedSetLeft, nestedSetRight)`),
 	}
 
 	// Structural + set operators between spansets.
@@ -478,10 +485,14 @@ func collectTraceQLAttribute(ids map[string]bool, a traceql.Attribute) {
 // intrinsicRowID maps the intrinsic enum onto row IDs. Scoped spellings
 // the parser does NOT normalise (trace:rootName vs rootName) collapse
 // onto the same row — the feature is the intrinsic, not the spelling.
-// Nested-set intrinsics return no row here: their comparisons classify
-// through nestedSetRowID and a bare reference matches no row.
+// Nested-set COMPARISONS never reach here (collectTraceQLBinary routes
+// them through nestedSetRowID without descending into operands), so a
+// nested-set intrinsic at this level is a bare reference — the
+// select() projection position, nestedset:select.
 func intrinsicRowID(i traceql.Intrinsic) (string, bool) {
 	switch i {
+	case traceql.IntrinsicNestedSetParent, traceql.IntrinsicNestedSetLeft, traceql.IntrinsicNestedSetRight:
+		return "nestedset:select", true
 	case traceql.IntrinsicName, traceql.ScopedIntrinsicSpanName:
 		return "intrinsic:name", true
 	case traceql.IntrinsicDuration, traceql.ScopedIntrinsicSpanDuration:

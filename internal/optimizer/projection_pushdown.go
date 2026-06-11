@@ -94,17 +94,29 @@ func applyProjectFilterScan(p *chplan.Project, f *chplan.Filter) (chplan.Node, b
 // over a Scan.
 func predicateColumns(e chplan.Expr) []string {
 	seen := map[string]struct{}{}
-	walkExpr(e, func(sub chplan.Expr) {
-		if cr, ok := sub.(*chplan.ColumnRef); ok {
-			seen[cr.Name] = struct{}{}
-		}
-	})
+	walkExpr(e, collectColumn(seen))
 	out := make([]string, 0, len(seen))
 	for name := range seen {
 		out = append(out, name)
 	}
 	sort.Strings(out)
 	return out
+}
+
+// collectColumn returns a walkExpr visitor that records every column
+// name an expression node reads into seen. Two node kinds carry one:
+// ColumnRef (by definition) and NestedArrayExists, whose Column field
+// names the Nested carrier (e.g. `Events`) as a plain string rather
+// than a child ColumnRef.
+func collectColumn(seen map[string]struct{}) func(chplan.Expr) {
+	return func(sub chplan.Expr) {
+		switch v := sub.(type) {
+		case *chplan.ColumnRef:
+			seen[v.Name] = struct{}{}
+		case *chplan.NestedArrayExists:
+			seen[v.Column] = struct{}{}
+		}
+	}
 }
 
 // unionSortedColumns merges two already-sorted, deduped column-name
@@ -131,11 +143,7 @@ func unionSortedColumns(a, b []string) []string {
 func referencedColumns(projs []chplan.Projection) []string {
 	seen := map[string]struct{}{}
 	for _, p := range projs {
-		walkExpr(p.Expr, func(e chplan.Expr) {
-			if cr, ok := e.(*chplan.ColumnRef); ok {
-				seen[cr.Name] = struct{}{}
-			}
-		})
+		walkExpr(p.Expr, collectColumn(seen))
 	}
 	out := make([]string, 0, len(seen))
 	for name := range seen {
@@ -145,9 +153,18 @@ func referencedColumns(projs []chplan.Projection) []string {
 	return out
 }
 
-// walkExpr visits e and every Expr reachable from it. There's no
-// chplan-side helper for this yet because the optimizer is so far the only
-// caller; if we add a second consumer it should graduate into chplan.
+// walkExpr visits e and every Expr reachable from it. Every chplan
+// Expr kind that holds child Exprs must appear here: a missing case
+// silently hides the columns the subtree reads, ProjectionPushdown
+// then prunes them from the Scan, and ClickHouse fails outer-scope
+// resolution with error 47 (UNKNOWN_IDENTIFIER). That exact escape —
+// FieldAccess.Source unwalked, so `| select(span.http.method)`'s
+// SpanAttributes carrier was pruned on the plain-filter /api/search
+// arm — 502'd Grafana's showcase select panel; see
+// internal/api/tempo/search_select_plain_filter_chdb_test.go for the
+// end-to-end pin. There's no chplan-side helper for this yet because
+// the optimizer is so far the only caller; if we add a second consumer
+// it should graduate into chplan.
 func walkExpr(e chplan.Expr, visit func(chplan.Expr)) {
 	if e == nil {
 		return
@@ -164,5 +181,24 @@ func walkExpr(e chplan.Expr, visit func(chplan.Expr)) {
 	case *chplan.MapAccess:
 		walkExpr(v.Map, visit)
 		walkExpr(v.Key, visit)
+	case *chplan.FieldAccess:
+		walkExpr(v.Source, visit)
+	case *chplan.Subscript:
+		walkExpr(v.Container, visit)
+		walkExpr(v.Key, visit)
+	case *chplan.Lambda:
+		walkExpr(v.Body, visit)
+	case *chplan.LabelJoin:
+		walkExpr(v.Map, visit)
+	case *chplan.LabelReplace:
+		walkExpr(v.Map, visit)
+	case *chplan.LineContent:
+		walkExpr(v.Source, visit)
+	case *chplan.MapWithoutEmptyValues:
+		walkExpr(v.Map, visit)
+	case *chplan.MapWithoutKeys:
+		walkExpr(v.Map, visit)
+	case *chplan.NestedArrayExists:
+		walkExpr(v.Value, visit)
 	}
 }

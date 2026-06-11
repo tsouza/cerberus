@@ -22,10 +22,31 @@ import (
 // columns (TraceId, SpanId, Timestamp) plus the selected attribute
 // expressions, so downstream search results can render exactly the
 // columns the caller asked for.
+//
+// Nested-set intrinsics (nestedSetParent / nestedSetLeft /
+// nestedSetRight — what Grafana's Traces Drilldown "Structure" tab
+// selects to rebuild the service tree) have no OTel-CH backing column;
+// when any of them appears the input is wrapped in a
+// chplan.NestedSetAnnotate, which recomputes Tempo's ingest-time
+// nested-set numbering from the (TraceId, SpanId, ParentSpanId)
+// adjacency at query time, and the projection reads the node's
+// synthetic Int64 columns.
 func lowerSelect(prev chplan.Node, sel traceql.SelectOperation, s schema.Traces) (chplan.Node, error) {
 	attrs := sel.Attrs()
 	if len(attrs) == 0 {
 		return nil, fmt.Errorf("traceql: `| select(...)` requires at least one attribute")
+	}
+
+	input := prev
+	if selectsNestedSet(attrs) {
+		input = &chplan.NestedSetAnnotate{
+			Input:              prev,
+			SpansTable:         s.SpansTable,
+			TraceIDColumn:      s.TraceIDColumn,
+			SpanIDColumn:       s.SpanIDColumn,
+			ParentSpanIDColumn: s.ParentSpanIDColumn,
+			TimestampColumn:    s.TimestampColumn,
+		}
 	}
 
 	// Identity columns first; selected attributes after. Each attribute
@@ -37,14 +58,45 @@ func lowerSelect(prev chplan.Node, sel traceql.SelectOperation, s schema.Traces)
 		{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}},
 	}
 	for _, a := range attrs {
-		expr, err := lowerAttribute(a, s)
-		if err != nil {
-			return nil, err
+		var expr chplan.Expr
+		if col, ok := nestedSetColumn(a.Intrinsic); ok {
+			expr = &chplan.ColumnRef{Name: col}
+		} else {
+			var err error
+			expr, err = lowerAttribute(a, s)
+			if err != nil {
+				return nil, err
+			}
 		}
 		projections = append(projections, chplan.Projection{
 			Expr:  expr,
 			Alias: a.Name,
 		})
 	}
-	return &chplan.Project{Input: prev, Projections: projections}, nil
+	return &chplan.Project{Input: input, Projections: projections}, nil
+}
+
+// selectsNestedSet reports whether any selected attribute is one of
+// the nested-set intrinsics.
+func selectsNestedSet(attrs []traceql.Attribute) bool {
+	for _, a := range attrs {
+		if _, ok := nestedSetColumn(a.Intrinsic); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// nestedSetColumn maps a nested-set intrinsic onto the synthetic
+// column NestedSetAnnotate exposes for it.
+func nestedSetColumn(i traceql.Intrinsic) (string, bool) {
+	switch i {
+	case traceql.IntrinsicNestedSetLeft:
+		return chplan.NestedSetLeftColumn, true
+	case traceql.IntrinsicNestedSetRight:
+		return chplan.NestedSetRightColumn, true
+	case traceql.IntrinsicNestedSetParent:
+		return chplan.NestedSetParentColumn, true
+	}
+	return "", false
 }

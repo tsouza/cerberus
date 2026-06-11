@@ -243,6 +243,12 @@
       "pin": "{ nestedSetParent \u003c 0 }"
     },
     {
+      "id": "nestedset:select",
+      "class": "nested-set",
+      "token": "select(nestedSet*)",
+      "pin": "{ nestedSetParent \u003c 0 } | select(nestedSetParent, nestedSetLeft, nestedSetRight)"
+    },
+    {
       "id": "op:add",
       "class": "arithmetic",
       "token": "+",

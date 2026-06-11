@@ -1,0 +1,36 @@
+The showcase "select / by / coalesce" panel query verbatim: a PLAIN
+status-intrinsic filter feeding `| select(...)` over both attribute
+scopes. Pins the lowering (identity columns + carrier-map lookups over
+the Filter(Scan) arm) for the shape whose /api/search wrap regressed
+with ClickHouse error 47 when ProjectionPushdown pruned the
+SpanAttributes carrier (see
+test/spec/optimizer/pushdown_select_wrap_carriers.txtar and
+internal/api/tempo/search_select_plain_filter_chdb_test.go).
+-- query.traceql --
+{ status = error } | select(span.http.method, resource.service.name)
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    Timestamp DateTime64(9),
+    StatusCode LowCardinality(String),
+    SpanAttributes Map(String, String),
+    ResourceAttributes Map(String, String)
+) ENGINE = MergeTree() ORDER BY (Timestamp);
+INSERT INTO otel_traces VALUES
+    ('b0000000000000000000000000000001', '2000000000000001', toDateTime64('2026-05-01 11:00:00', 9), 'Error', map('http.method', 'POST'), map('service.name', 'checkout')),
+    ('b0000000000000000000000000000002', '2000000000000002', toDateTime64('2026-05-01 11:00:01', 9), 'Unset', map('http.method', 'GET'), map('service.name', 'frontend'));
+-- expected_rows --
+[
+  ["b0000000000000000000000000000001", "2000000000000001", "2026-05-01T11:00:00Z", "POST", "checkout"]
+]
+-- args --
+[0] string = "http.method"
+[1] string = "service.name"
+[2] string = "Error"
+-- chplan --
+Project [TraceId, SpanId, Timestamp, SpanAttributes["http.method"] AS http.method, ResourceAttributes["service.name"] AS service.name]
+  Filter predicate=(StatusCode = "Error")
+    Scan(otel_traces)
+-- sql --
+SELECT `TraceId`, `SpanId`, `Timestamp`, `SpanAttributes`[?] AS `http.method`, `ResourceAttributes`[?] AS `service.name` FROM (SELECT * FROM `otel_traces` WHERE (`StatusCode` = ?))

@@ -241,6 +241,22 @@ func applyToTree(n chplan.Node, rule Rule) (chplan.Node, bool) {
 	return result, childrenChanged || here
 }
 
+// rewriteSingleInput is the shared clone-on-change shape for nodes
+// with exactly one Input child: apply fn to input; when unchanged,
+// hand back the original node, otherwise clone via `clone(newInput)`.
+func rewriteSingleInput(
+	orig chplan.Node,
+	input chplan.Node,
+	fn func(chplan.Node) (chplan.Node, bool),
+	clone func(chplan.Node) chplan.Node,
+) (chplan.Node, bool) {
+	newInput, ch := fn(input)
+	if !ch {
+		return orig, false
+	}
+	return clone(newInput), true
+}
+
 // rewriteChildren clones n with each child replaced by `fn(child)`. Returns
 // the new (or same) node and whether any child changed.
 func rewriteChildren(n chplan.Node, fn func(chplan.Node) (chplan.Node, bool)) (chplan.Node, bool) {
@@ -248,61 +264,53 @@ func rewriteChildren(n chplan.Node, fn func(chplan.Node) (chplan.Node, bool)) (c
 	case *chplan.Scan:
 		return v, false
 	case *chplan.Filter:
-		newInput, ch := fn(v.Input)
-		if !ch {
-			return v, false
-		}
-		cp := *v
-		cp.Input = newInput
-		return &cp, true
+		return rewriteSingleInput(v, v.Input, fn, func(in chplan.Node) chplan.Node {
+			cp := *v
+			cp.Input = in
+			return &cp
+		})
 	case *chplan.Project:
-		newInput, ch := fn(v.Input)
-		if !ch {
-			return v, false
-		}
-		cp := *v
-		cp.Input = newInput
-		return &cp, true
+		return rewriteSingleInput(v, v.Input, fn, func(in chplan.Node) chplan.Node {
+			cp := *v
+			cp.Input = in
+			return &cp
+		})
+	case *chplan.NestedSetAnnotate:
+		return rewriteSingleInput(v, v.Input, fn, func(in chplan.Node) chplan.Node {
+			cp := *v
+			cp.Input = in
+			return &cp
+		})
 	case *chplan.Aggregate:
-		newInput, ch := fn(v.Input)
-		if !ch {
-			return v, false
-		}
-		cp := *v
-		cp.Input = newInput
-		return &cp, true
+		return rewriteSingleInput(v, v.Input, fn, func(in chplan.Node) chplan.Node {
+			cp := *v
+			cp.Input = in
+			return &cp
+		})
 	case *chplan.RangeWindow:
-		newInput, ch := fn(v.Input)
-		if !ch {
-			return v, false
-		}
-		cp := *v
-		cp.Input = newInput
-		return &cp, true
+		return rewriteSingleInput(v, v.Input, fn, func(in chplan.Node) chplan.Node {
+			cp := *v
+			cp.Input = in
+			return &cp
+		})
 	case *chplan.AbsentOverTime:
-		newInput, ch := fn(v.Input)
-		if !ch {
-			return v, false
-		}
-		cp := *v
-		cp.Input = newInput
-		return &cp, true
+		return rewriteSingleInput(v, v.Input, fn, func(in chplan.Node) chplan.Node {
+			cp := *v
+			cp.Input = in
+			return &cp
+		})
 	case *chplan.Limit:
-		newInput, ch := fn(v.Input)
-		if !ch {
-			return v, false
-		}
-		cp := *v
-		cp.Input = newInput
-		return &cp, true
+		return rewriteSingleInput(v, v.Input, fn, func(in chplan.Node) chplan.Node {
+			cp := *v
+			cp.Input = in
+			return &cp
+		})
 	case *chplan.OrderBy:
-		newInput, ch := fn(v.Input)
-		if !ch {
-			return v, false
-		}
-		cp := *v
-		cp.Input = newInput
-		return &cp, true
+		return rewriteSingleInput(v, v.Input, fn, func(in chplan.Node) chplan.Node {
+			cp := *v
+			cp.Input = in
+			return &cp
+		})
 	case *chplan.TopK:
 		newInput, ch := fn(v.Input)
 		var newKExpr chplan.Node
