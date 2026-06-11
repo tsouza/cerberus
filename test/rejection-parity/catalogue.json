@@ -3,10 +3,17 @@
   "entries": [
     {
       "head": "logql",
-      "site": "internal/logql/binary.go:logqlBinaryOp#e845ca95",
-      "message": "logql: binary op %s unsupported (logical ops `and`/`or`/`unless` are not supported)",
-      "class": "rejection",
-      "trigger_query": "rate({app=\"x\"}[5m]) and rate({app=\"x\"}[5m])"
+      "site": "internal/logql/binary.go:logqlBinaryOp#5dca11c4",
+      "message": "logql: unknown binary op %s",
+      "class": "internal",
+      "rationale": "unreachable: the parser produces only the 12 arithmetic/comparison ops (all mapped) plus and/or/unless, which lowerBinary routes to lowerVectorSetOp before this map is consulted"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/binary.go:logqlVectorSetOpKind#a8c6abd9",
+      "message": "logql: not a vector set operator: %s",
+      "class": "internal",
+      "rationale": "unreachable: only called when syntax.IsLogicalBinOp(op) is true, and the three logical ops are all mapped"
     },
     {
       "head": "logql",
@@ -24,13 +31,6 @@
     },
     {
       "head": "logql",
-      "site": "internal/logql/binary.go:lowerVectorVector#e04c7f18",
-      "message": "logql: 'bool' modifier is only allowed on comparison binary ops",
-      "class": "rejection",
-      "trigger_query": "rate({app=\"x\"}[5m]) + bool rate({app=\"x\"}[5m])"
-    },
-    {
-      "head": "logql",
       "site": "internal/logql/binary.go:vectorMatchingFromOpts#64179012",
       "message": "logql: unsupported vector-matching cardinality %d",
       "class": "internal",
@@ -42,6 +42,27 @@
       "message": "logql: many-to-many matching not allowed: matching labels must be unique on one side; use group_left/group_right when projecting include labels",
       "class": "internal",
       "rationale": "include labels require group_left/group_right in the grammar, which set many-to-one / one-to-many cardinality; include with one-to-one is not parser-producible"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/ip.go:ipLabelFilterExpr#dd5ced4f",
+      "message": "logql: ip: invalid operation for label filter (only = and != support ip())",
+      "class": "internal",
+      "rationale": "unreachable: the LogQL grammar only builds IPLabelFilter for = and != (syntax.y: IDENTIFIER EQ/NEQ IP OPEN_PARENTHESIS ...)"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/ip.go:ipLineFilterExpr#298688ca",
+      "message": "logql: ip: invalid operation for line filter (only |= and != support ip())",
+      "class": "rejection",
+      "trigger_query": "{app=\"x\"} |~ ip(\"127.0.0.1\")"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/ip.go:parseIPPattern#a3ece11b",
+      "message": "logql: ip: invalid pattern %q",
+      "class": "rejection",
+      "trigger_query": "{app=\"x\"} |= ip(\"not-an-ip\")"
     },
     {
       "head": "logql",
@@ -75,22 +96,15 @@
       "head": "logql",
       "site": "internal/logql/lower.go:labelFiltererLower#6274bc0d",
       "message": "logql: unsupported label filterer %T",
-      "class": "rejection",
-      "trigger_query": "{app=\"x\"} | addr = ip(\"127.0.0.1\")"
+      "class": "internal",
+      "rationale": "unreachable: all seven parser-producible LabelFilterer types are handled (String, LineFilter, Binary, Numeric, Duration, Bytes, IP); NoopLabelFilter only arises from stage-building (ReduceAndLabelFilter on an empty list), never from the AST"
     },
     {
       "head": "logql",
-      "site": "internal/logql/lower.go:lineFilterOp#155249b0",
-      "message": "logql: line-filter op %s is not yet supported (`|\u003e` pattern filters land in M3.2)",
-      "class": "rejection",
-      "trigger_query": "{app=\"x\"} |\u003e \"\u003c_\u003e level=error\""
-    },
-    {
-      "head": "logql",
-      "site": "internal/logql/lower.go:lineFilterPart#c0244416",
-      "message": "logql: line-filter `ip(...)` is not yet supported",
-      "class": "rejection",
-      "trigger_query": "{app=\"x\"} |= ip(\"127.0.0.1\")"
+      "site": "internal/logql/lower.go:lineFilterOp#e051286a",
+      "message": "logql: unknown line-filter match type %s",
+      "class": "internal",
+      "rationale": "unreachable: all six parser-producible LineMatchTypes are handled (the four substring/regex arms here; pattern and ip route out of lineFilterPart earlier)"
     },
     {
       "head": "logql",
@@ -150,6 +164,20 @@
     },
     {
       "head": "logql",
+      "site": "internal/logql/pattern_filter.go:parsePatternLineFilter#ae95d17a",
+      "message": "logql: invalid pattern line filter %q: %w",
+      "class": "rejection",
+      "trigger_query": "{app=\"x\"} |\u003e \"\u003clevel\u003e error\""
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/pattern_filter.go:parsePatternLineFilter#ae95d17a-2",
+      "message": "logql: invalid pattern line filter %q: %w",
+      "class": "internal",
+      "rationale": "unreachable: pattern.ParseLiterals re-parses with the same grammar that pattern.ParseLineFilter already accepted one line above; error propagation (%w) kept for defence"
+    },
+    {
+      "head": "logql",
       "site": "internal/logql/range_aggregation.go:lowerLogRange#b8257b72",
       "message": "logql: range-aggregation inner is %T (not MatchersExpr or PipelineExpr)",
       "class": "internal",
@@ -173,8 +201,8 @@
       "head": "logql",
       "site": "internal/logql/range_aggregation.go:rangeFuncName#b1ec3bca",
       "message": "logql: range op %s is not yet supported",
-      "class": "rejection",
-      "trigger_query": "first_over_time({app=\"x\"} | unwrap foo [5m])"
+      "class": "internal",
+      "rationale": "unreachable: every lexer-producible range op is mapped (rate/bytes_rate/rate_counter/count/bytes plus the *_over_time family incl. first/last; absent_over_time routes to lowerAbsentOverTime first); the dunder sharding ops (__quantile_sketch_over_time__, __first/last_over_time_ts__) have no lexer tokens"
     },
     {
       "head": "logql",
@@ -194,8 +222,8 @@
       "head": "logql",
       "site": "internal/logql/range_aggregation.go:rangeValueExpr#b1ec3bca",
       "message": "logql: range op %s is not yet supported",
-      "class": "rejection",
-      "trigger_query": "absent_over_time({app=\"x\"}[5m])"
+      "class": "internal",
+      "rationale": "unreachable: without unwrap the parser only admits rate/count_over_time/bytes_rate/bytes_over_time/absent_over_time (all handled or routed earlier); every other lexable op requires unwrap and takes the unwrap branch"
     },
     {
       "head": "logql",
@@ -227,20 +255,6 @@
     },
     {
       "head": "logql",
-      "site": "internal/logql/vector_aggregation.go:buildVectorAggFunc#7f5d7559",
-      "message": "logql: %s changes output shape and is unsupported",
-      "class": "rejection",
-      "trigger_query": "topk(2, rate({app=\"x\"}[5m]))"
-    },
-    {
-      "head": "logql",
-      "site": "internal/logql/vector_aggregation.go:buildVectorAggFunc#f01faed5",
-      "message": "logql: %s requires output ordering rather than aggregation",
-      "class": "rejection",
-      "trigger_query": "sort(rate({app=\"x\"}[5m]))"
-    },
-    {
-      "head": "logql",
       "site": "internal/logql/vector_aggregation.go:lowerVectorAggregation#4f64fcaa",
       "message": "logql: vector-aggregation inner is not an Expr (%T)",
       "class": "internal",
@@ -252,6 +266,13 @@
       "message": "logql: vector-aggregation has nil inner",
       "class": "internal",
       "rationale": "internal invariant: the parser never yields a vector aggregation with a nil inner"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/vector_aggregation.go:sortableShapedInner#4f64fcaa",
+      "message": "logql: vector-aggregation inner is not an Expr (%T)",
+      "class": "internal",
+      "rationale": "internal invariant: the parser's vector-aggregation inner always implements syntax.Expr (mirror of lowerVectorAggregation#4f64fcaa)"
     },
     {
       "head": "promql",
