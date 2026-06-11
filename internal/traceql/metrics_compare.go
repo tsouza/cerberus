@@ -44,7 +44,6 @@ const (
 	compareSelAlias   = "is_selection"
 	compareAttrAlias  = "attr"
 	compareValAlias   = "val"
-	compareKVAlias    = "kv"
 	rootNameAlias     = "__root_name"
 	rootServiceAlias  = "__root_service_name"
 	compareNilLiteral = "nil"
@@ -70,13 +69,25 @@ var wellKnownResourceAttrs = []string{
 	"k8s.container.name",
 }
 
-// wellKnownSpanAttrs is the span-scoped slice of vparquet4's
+// wellKnownSpanAttrs is the span-scoped slice of vparquet's
 // WellKnownColumnLookups; same "nil"-fallback contract as
 // wellKnownResourceAttrs (spanCollector.KeepGroup's IsNull branch).
+//
+// The first three are the long-standing vparquet4 columns; the last
+// five are the OTel-semconv additions current Tempo main ships
+// (verified live against grafana/tempo:main-2f74ea8 by the
+// compatibility/tempo `metrics_compare_status_error` corpus case —
+// reference compare() output surfaces a "nil" bucket for each of
+// them on every span that lacks the attribute).
 var wellKnownSpanAttrs = []string{
 	"http.status_code",
 	"http.method",
 	"http.url",
+	"http.request.method",
+	"http.route",
+	"server.address",
+	"url.path",
+	"url.route",
 }
 
 // lowerMetricsCompare lowers `| compare({...}, topN[, start, end])`.

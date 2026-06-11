@@ -103,6 +103,17 @@ const (
 	rootSpanDurationNs = int64(150 * time.Millisecond)
 )
 
+// seederScopeName / seederScopeVersion identify the OTLP
+// InstrumentationScope every pushed span rides under. The CH-side seed
+// mirrors them into the ScopeName / ScopeVersion columns so both
+// backends agree on TraceQL's `instrumentation:name` /
+// `instrumentation:version` intrinsics (exercised by compare()'s
+// attribute explosion).
+const (
+	seederScopeName    = "cerberus-tempo-compat-seeder"
+	seederScopeVersion = "1"
+)
+
 // services enumerates the synthetic service names baked into the
 // fixture. The names are intentionally non-collision with the e2e
 // seeder's set ("frontend" / "api" / "db") so a developer can run both
@@ -427,8 +438,8 @@ func pushOTLP(ctx context.Context, addr string, traces []*fixtureTrace, logger *
 				},
 				ScopeSpans: []*otlptrace.ScopeSpans{{
 					Scope: &commonv1.InstrumentationScope{
-						Name:    "cerberus-tempo-compat-seeder",
-						Version: "1",
+						Name:    seederScopeName,
+						Version: seederScopeVersion,
 					},
 					Spans: t.spans,
 				}},
@@ -456,6 +467,7 @@ func insertCHTraces(ctx context.Context, conn driver.Conn, traces []*fixtureTrac
 	batch, err := conn.PrepareBatch(ctx, `INSERT INTO otel_traces (
         Timestamp, TraceId, SpanId, ParentSpanId,
         SpanName, SpanKind, ServiceName,
+        ScopeName, ScopeVersion,
         ResourceAttributes, SpanAttributes,
         Duration, StatusCode, StatusMessage
     )`)
@@ -478,6 +490,15 @@ func insertCHTraces(ctx context.Context, conn driver.Conn, traces []*fixtureTrac
 				s.Name,
 				spanKindCH[s.Kind],
 				t.service,
+				// The OTLP push wraps every span in the same
+				// InstrumentationScope (see pushOTLP); the OTel-CH exporter
+				// writes that scope into ScopeName / ScopeVersion, so the
+				// direct CH seed must mirror it — TraceQL's
+				// `instrumentation:name` / `instrumentation:version`
+				// intrinsics (surfaced by compare()'s select-all explosion)
+				// read these columns.
+				seederScopeName,
+				seederScopeVersion,
 				t.resAttrs,
 				keyValuesToMap(s.Attributes),
 				uint64(dur), //nolint:gosec // dur is positive (end > start)

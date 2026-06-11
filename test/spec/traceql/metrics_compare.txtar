@@ -1,7 +1,7 @@
 -- query.traceql --
 { } | compare({ status = error })
 -- sql --
-SELECT `is_selection`, tupleElement(kv, ?) AS `attr`, tupleElement(kv, ?) AS `val`, toFloat64(count(?)) AS `Value` FROM (SELECT (`StatusCode` = ?) AS `is_selection`, arrayJoin(arrayConcat(array(tuple(?, toString(`SpanName`)), tuple(?, toString(lower(`StatusCode`))), tuple(?, toString(`StatusMessage`)), tuple(?, toString(lower(`SpanKind`))), tuple(?, toString(__root_name)), tuple(?, toString(__root_service_name)), tuple(?, toString(`ScopeName`)), tuple(?, toString(`ScopeVersion`)), tuple(?, toString(if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], ?))), tuple(?, toString(if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], ?))), tuple(?, toString(if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], ?))), tuple(?, toString(if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], ?))), tuple(?, toString(if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], ?))), tuple(?, toString(if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], ?))), tuple(?, toString(if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], ?))), tuple(?, toString(if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], ?))), tuple(?, toString(if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], ?))), tuple(?, toString(if(mapContains(`SpanAttributes`, ?), `SpanAttributes`[?], ?))), tuple(?, toString(if(mapContains(`SpanAttributes`, ?), `SpanAttributes`[?], ?))), tuple(?, toString(if(mapContains(`SpanAttributes`, ?), `SpanAttributes`[?], ?)))), arrayMap(t -> tuple(concat(?, tupleElement(t, ?)), toString(tupleElement(t, ?))), arrayFilter(t -> not(has(array(?, ?, ?, ?, ?, ?, ?, ?, ?), tupleElement(t, ?))), arrayZip(mapKeys(`ResourceAttributes`), mapValues(`ResourceAttributes`)))), arrayMap(t -> tuple(concat(?, tupleElement(t, ?)), toString(tupleElement(t, ?))), arrayFilter(t -> not(has(array(?, ?, ?), tupleElement(t, ?))), arrayZip(mapKeys(`SpanAttributes`), mapValues(`SpanAttributes`)))))) AS `kv` FROM (SELECT * FROM `otel_traces` WHERE ?) AS s LEFT JOIN (SELECT `TraceId`, any(`SpanName`) AS `__root_name`, any(`ServiceName`) AS `__root_service_name` FROM (SELECT * FROM `otel_traces` WHERE (`ParentSpanId` = ?)) GROUP BY `TraceId`) AS r ON s.`TraceId` = r.`TraceId`) GROUP BY `is_selection`, `attr`, `val` ORDER BY `is_selection`, `attr`, `val`
+SELECT `is_selection`, tupleElement(kv, ?) AS `attr`, tupleElement(kv, ?) AS `val`, toFloat64(count(?)) AS `Value` FROM (SELECT (`StatusCode` = ?) AS `is_selection`, arrayJoin(arrayConcat(array(tuple(?, toString(`SpanName`)), tuple(?, toString(lower(`StatusCode`))), tuple(?, toString(`StatusMessage`)), tuple(?, toString(lower(`SpanKind`))), tuple(?, toString(__root_name)), tuple(?, toString(__root_service_name)), tuple(?, toString(`ScopeName`)), tuple(?, toString(`ScopeVersion`)), tuple(?, toString(if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], ?))), tuple(?, toString(if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], ?))), tuple(?, toString(if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], ?))), tuple(?, toString(if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], ?))), tuple(?, toString(if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], ?))), tuple(?, toString(if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], ?))), tuple(?, toString(if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], ?))), tuple(?, toString(if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], ?))), tuple(?, toString(if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], ?))), tuple(?, toString(if(mapContains(`SpanAttributes`, ?), `SpanAttributes`[?], ?))), tuple(?, toString(if(mapContains(`SpanAttributes`, ?), `SpanAttributes`[?], ?))), tuple(?, toString(if(mapContains(`SpanAttributes`, ?), `SpanAttributes`[?], ?))), tuple(?, toString(if(mapContains(`SpanAttributes`, ?), `SpanAttributes`[?], ?))), tuple(?, toString(if(mapContains(`SpanAttributes`, ?), `SpanAttributes`[?], ?))), tuple(?, toString(if(mapContains(`SpanAttributes`, ?), `SpanAttributes`[?], ?))), tuple(?, toString(if(mapContains(`SpanAttributes`, ?), `SpanAttributes`[?], ?))), tuple(?, toString(if(mapContains(`SpanAttributes`, ?), `SpanAttributes`[?], ?)))), arrayMap(t -> tuple(concat(?, tupleElement(t, ?)), toString(tupleElement(t, ?))), arrayFilter(t -> not(has(array(?, ?, ?, ?, ?, ?, ?, ?, ?), tupleElement(t, ?))), arrayZip(mapKeys(`ResourceAttributes`), mapValues(`ResourceAttributes`)))), arrayMap(t -> tuple(concat(?, tupleElement(t, ?)), toString(tupleElement(t, ?))), arrayFilter(t -> not(has(array(?, ?, ?, ?, ?, ?, ?, ?), tupleElement(t, ?))), arrayZip(mapKeys(`SpanAttributes`), mapValues(`SpanAttributes`)))))) AS `kv` FROM (SELECT * FROM `otel_traces` WHERE ?) AS s LEFT JOIN (SELECT `TraceId`, any(`SpanName`) AS `__root_name`, any(`ServiceName`) AS `__root_service_name` FROM (SELECT * FROM `otel_traces` WHERE (`ParentSpanId` = ?)) GROUP BY `TraceId`) AS r ON s.`TraceId` = r.`TraceId`) GROUP BY `is_selection`, `attr`, `val` ORDER BY `is_selection`, `attr`, `val`
 -- args --
 [0] int64 = 1
 [1] int64 = 2
@@ -63,28 +63,53 @@ SELECT `is_selection`, tupleElement(kv, ?) AS `attr`, tupleElement(kv, ?) AS `va
 [57] string = "http.url"
 [58] string = "http.url"
 [59] string = "nil"
-[60] string = "resource."
-[61] int64 = 1
-[62] int64 = 2
-[63] string = "service.name"
-[64] string = "cluster"
-[65] string = "namespace"
-[66] string = "pod"
-[67] string = "container"
-[68] string = "k8s.cluster.name"
-[69] string = "k8s.namespace.name"
-[70] string = "k8s.pod.name"
-[71] string = "k8s.container.name"
-[72] int64 = 1
-[73] string = "span."
-[74] int64 = 1
-[75] int64 = 2
-[76] string = "http.status_code"
-[77] string = "http.method"
-[78] string = "http.url"
-[79] int64 = 1
-[80] bool = true
-[81] string = ""
+[60] string = "span.http.request.method"
+[61] string = "http.request.method"
+[62] string = "http.request.method"
+[63] string = "nil"
+[64] string = "span.http.route"
+[65] string = "http.route"
+[66] string = "http.route"
+[67] string = "nil"
+[68] string = "span.server.address"
+[69] string = "server.address"
+[70] string = "server.address"
+[71] string = "nil"
+[72] string = "span.url.path"
+[73] string = "url.path"
+[74] string = "url.path"
+[75] string = "nil"
+[76] string = "span.url.route"
+[77] string = "url.route"
+[78] string = "url.route"
+[79] string = "nil"
+[80] string = "resource."
+[81] int64 = 1
+[82] int64 = 2
+[83] string = "service.name"
+[84] string = "cluster"
+[85] string = "namespace"
+[86] string = "pod"
+[87] string = "container"
+[88] string = "k8s.cluster.name"
+[89] string = "k8s.namespace.name"
+[90] string = "k8s.pod.name"
+[91] string = "k8s.container.name"
+[92] int64 = 1
+[93] string = "span."
+[94] int64 = 1
+[95] int64 = 2
+[96] string = "http.status_code"
+[97] string = "http.method"
+[98] string = "http.url"
+[99] string = "http.request.method"
+[100] string = "http.route"
+[101] string = "server.address"
+[102] string = "url.path"
+[103] string = "url.route"
+[104] int64 = 1
+[105] bool = true
+[106] string = ""
 -- seed --
 CREATE TABLE otel_traces (
     Timestamp DateTime64(9),
@@ -122,8 +147,13 @@ INSERT INTO otel_traces VALUES
   [0, "rootName", "GET /home", 1],
   [0, "rootServiceName", "shop", 1],
   [0, "span.http.method", "GET", 1],
+  [0, "span.http.request.method", "nil", 1],
+  [0, "span.http.route", "nil", 1],
   [0, "span.http.status_code", "nil", 1],
   [0, "span.http.url", "nil", 1],
+  [0, "span.server.address", "nil", 1],
+  [0, "span.url.path", "nil", 1],
+  [0, "span.url.route", "nil", 1],
   [0, "status", "ok", 1],
   [0, "statusMessage", "", 1],
   [1, "instrumentation:name", "", 1],
@@ -142,8 +172,13 @@ INSERT INTO otel_traces VALUES
   [1, "rootName", "GET /home", 1],
   [1, "rootServiceName", "shop", 1],
   [1, "span.http.method", "nil", 1],
+  [1, "span.http.request.method", "nil", 1],
+  [1, "span.http.route", "nil", 1],
   [1, "span.http.status_code", "nil", 1],
   [1, "span.http.url", "nil", 1],
+  [1, "span.server.address", "nil", 1],
+  [1, "span.url.path", "nil", 1],
+  [1, "span.url.route", "nil", 1],
   [1, "status", "error", 1],
   [1, "statusMessage", "boom", 1]
 ]

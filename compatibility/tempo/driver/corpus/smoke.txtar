@@ -39,10 +39,11 @@
 #
 # Cases below cover the 7 shadow categories (attribute matchers per
 # scope (5), intrinsics (4), structural ops (4), set ops (3), inner
-# aggregates (2)) plus 6 metrics-pipeline cases (3 range + 3 instant)
+# aggregates (2)) plus 7 metrics-pipeline cases (4 range + 3 instant)
 # and a per-id smoke; later additions grew the spanSets and metrics
 # families (the count below tracks `grep -c '^-- name --'`).
-# Total: 38 cases.
+# Total: 39 cases — the compare() range case activated alongside
+# chplan.MetricsCompare.
 
 # --- Attribute matchers per scope (5) ---
 
