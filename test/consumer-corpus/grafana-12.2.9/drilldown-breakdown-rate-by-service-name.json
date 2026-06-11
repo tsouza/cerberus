@@ -1,0 +1,42 @@
+{
+  "name": "drilldown-breakdown-rate-by-service-name",
+  "datasource": "tempo",
+  "consumer": "Grafana 12.2.9 Traces Drilldown (grafana-exploretraces-app 2.0.4) Breakdown tab — rate() by(resource.service.name) bar charts",
+  "provenance": [
+    "The resource-attribute form of the Breakdown tab's group-by family (see the",
+    "drilldown-breakdown-rate-by-kind sibling for the intrinsic forms): the `!= nil` guard on an",
+    "attribute lowers to mapContains(ResourceAttributes, 'service.name') — the load-bearing shape",
+    "documented in internal/traceql/lower.go lowerUnaryOperation, stamped on every breakdown view."
+  ],
+  "grafana_request": {
+    "path": "POST /api/ds/query",
+    "body": {
+      "queries": [
+        {
+          "refId": "A",
+          "datasource": { "type": "tempo", "uid": "cerberus-tempo" },
+          "queryType": "traceql",
+          "query": "{nestedSetParent<0 && true && resource.service.name != nil} | rate() by(resource.service.name)"
+        }
+      ]
+    }
+  },
+  "request": {
+    "method": "GET",
+    "path": "/api/metrics/query_range",
+    "query": {
+      "q": "{nestedSetParent<0 && true && resource.service.name != nil} | rate() by(resource.service.name)",
+      "start": "${START_UNIX}",
+      "end": "${END_UNIX}",
+      "step": "60s"
+    },
+    "headers": {}
+  },
+  "stub": "empty",
+  "expect": {
+    "status": 200,
+    "decode": "tempo-metrics-range",
+    "wire": ["exemplars-not-null"],
+    "data": ["series-min:1", "every-series-label-key:resource.service.name"]
+  }
+}

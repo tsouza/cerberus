@@ -1,0 +1,31 @@
+{
+  "name": "drilldown-series-regex-match",
+  "datasource": "prom",
+  "consumer": "Grafana 12.2.9 Metrics Drilldown (grafana-metricsdrilldown-app) — /api/v1/series with a regex __name__ match[] selector",
+  "provenance": [
+    "The series-discovery arm of the #769 incident: /api/v1/series?match[]={__name__=~\".*<metric>.*\"}",
+    "returned empty for sum-stored metrics before the gauge+sum fan-out fix.",
+    "Shape reconstructed from internal/api/prom/handler_chdb_regex_name_matcher_test.go."
+  ],
+  "grafana_request": {
+    "path": "GET /api/datasources/uid/cerberus-prom/resources/api/v1/series",
+    "query": { "match[]": "{__name__=~\".*cerberus_query_inflight.*\"}" }
+  },
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/series",
+    "query": {
+      "match[]": "{__name__=~\".*cerberus_query_inflight.*\"}",
+      "start": "${START_UNIX}",
+      "end": "${END_UNIX}"
+    },
+    "headers": {}
+  },
+  "stub": "prom-series",
+  "expect": {
+    "status": 200,
+    "decode": "prom-series",
+    "wire": ["series-count-min:1", "every-series-has-label:cerberus_ql"],
+    "data": ["series-count-min:3"]
+  }
+}

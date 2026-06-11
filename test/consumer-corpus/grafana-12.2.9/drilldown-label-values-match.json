@@ -1,0 +1,33 @@
+{
+  "name": "drilldown-label-values-match",
+  "datasource": "prom",
+  "consumer": "Grafana 12.2.9 Metrics Drilldown (grafana-metricsdrilldown-app) — /api/v1/label/<name>/values with a match[] selector",
+  "provenance": [
+    "The group-by value discovery the breakdown tab runs once a label key is picked:",
+    "/api/v1/label/cerberus_ql/values?match[]={__name__=~\".*cerberus_query_inflight.*\"}. Rides the",
+    "same regex-__name__ lowering as the labels/series arms (#769).",
+    "Shape reconstructed from internal/api/prom/handler_chdb_label_values_test.go",
+    "(TestLabelValues_MatchSelector_ChDB) and the #769 commit message."
+  ],
+  "grafana_request": {
+    "path": "GET /api/datasources/uid/cerberus-prom/resources/api/v1/label/cerberus_ql/values",
+    "query": { "match[]": "{__name__=~\".*cerberus_query_inflight.*\"}" }
+  },
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/label/cerberus_ql/values",
+    "query": {
+      "match[]": "{__name__=~\".*cerberus_query_inflight.*\"}",
+      "start": "${START_UNIX}",
+      "end": "${END_UNIX}"
+    },
+    "headers": {}
+  },
+  "stub": "prom-label-values",
+  "expect": {
+    "status": 200,
+    "decode": "prom-strings",
+    "wire": ["strings-contains:promql"],
+    "data": ["strings-contains:logql", "strings-contains:traceql"]
+  }
+}

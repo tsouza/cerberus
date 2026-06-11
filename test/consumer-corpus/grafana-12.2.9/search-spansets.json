@@ -1,0 +1,50 @@
+{
+  "name": "search-spansets",
+  "datasource": "tempo",
+  "consumer": "Grafana 12.2.9 Traces Drilldown (grafana-exploretraces-app 2.0.4) trace list — tableType='spans' transform reads traces[].spanSets[].spans",
+  "provenance": [
+    "Captured from the live compose stack during the Traces-tab 'badge 0 + No data' incident (#770):",
+    "the drilldown's trace list queries the Tempo datasource with queryType='traceql' /",
+    "tableType='spans'; the plugin backend proxies GET /api/search?q={}&limit=<n>&spss=<n>&start&end.",
+    "Grafana's tempo resultTransformer builds the spans table EXCLUSIVELY from",
+    "trace.spanSets[].spans — cerberus used to return summaries without spanSets (and ignored",
+    "limit + spss), so every request got HTTP 200 and the tab rendered nothing.",
+    "Shape reconstructed from test/e2e/playwright/tempo_traces_drilldown.spec.ts and",
+    "internal/api/tempo/handler_test.go (TestSearch_SpanSets)."
+  ],
+  "grafana_request": {
+    "path": "POST /api/ds/query",
+    "body": {
+      "queries": [
+        {
+          "refId": "A",
+          "datasource": { "type": "tempo", "uid": "cerberus-tempo" },
+          "queryType": "traceql",
+          "query": "{}",
+          "limit": 20,
+          "spss": 3,
+          "tableType": "spans"
+        }
+      ]
+    }
+  },
+  "request": {
+    "method": "GET",
+    "path": "/api/search",
+    "query": {
+      "q": "{}",
+      "limit": "20",
+      "spss": "3",
+      "start": "${START_UNIX}",
+      "end": "${END_UNIX}"
+    },
+    "headers": {}
+  },
+  "stub": "tempo-search",
+  "expect": {
+    "status": 200,
+    "decode": "tempo-search",
+    "wire": ["traces-min:1", "traces-max:20", "every-trace-has-spansets", "spanset-spans-max:3"],
+    "data": ["traces-min:2"]
+  }
+}

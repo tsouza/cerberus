@@ -1,0 +1,39 @@
+{
+  "name": "trace-by-id-v1-proto",
+  "datasource": "tempo",
+  "consumer": "Grafana Tempo datasource backend (pre-v2 path) — strict gogo/proto decode of bare tempopb.Trace",
+  "provenance": [
+    "The v1 sibling of trace-by-id-v2-proto: GET /api/traces/{id} serves the BARE proto trace (no",
+    "TraceByIDResponse envelope). The v1↔v2 divergence is exactly one envelope level — pinning both",
+    "shapes keeps a future refactor from flipping either direction (#764 regression class).",
+    "Shape reconstructed from internal/api/tempo/handler_trace_v2_test.go (v1/v2 byte-identity pin)."
+  ],
+  "grafana_request": {
+    "path": "POST /api/ds/query",
+    "body": {
+      "queries": [
+        {
+          "refId": "A",
+          "datasource": { "type": "tempo", "uid": "cerberus-tempo" },
+          "queryType": "traceId",
+          "query": "${TRACE_ID}",
+          "limit": 20,
+          "tableType": "traces"
+        }
+      ]
+    }
+  },
+  "request": {
+    "method": "GET",
+    "path": "/api/traces/${TRACE_ID}",
+    "query": {},
+    "headers": { "Accept": "application/protobuf" }
+  },
+  "stub": "tempo-trace-by-id",
+  "expect": {
+    "status": 200,
+    "decode": "tempo-trace-v1-proto",
+    "wire": ["trace-resource-spans-min:1"],
+    "data": ["trace-resource-spans-min:1"]
+  }
+}
