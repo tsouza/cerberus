@@ -2925,7 +2925,7 @@ func TestEmitRangeWindowCompare_RangeFallback(t *testing.T) {
 		t.Errorf("rangeDur must fall back to Step (60s window); missing the 60e9ns subtraction.\nSQL: %s", sql)
 	}
 	if strings.Contains(sql, "- toIntervalNanosecond(0)") {
-		t.Errorf("rangeDur==0 fallback skipped: emitted a zero-width window.\nSQL: %s", sql)
+		t.Errorf("rangeDur==0 fallback passed over: emitted a zero-width window.\nSQL: %s", sql)
 	}
 }
 
@@ -3270,7 +3270,7 @@ func TestEmitNestedSetAnnotate_ColumnGuardDisjunction(t *testing.T) {
 // TestProjectsBareColumn_ContinueScansAllProjections kills the
 // INVERT_LOOPCTRL mutant at nested_set_annotate.go:379 (`continue` →
 // `break` inside projectsBareColumn). A non-matching projection AHEAD of
-// the matching one must be skipped (continue), not abort the scan
+// the matching one must be passed over (continue), not abort the scan
 // (break). The break mutant returns false because it bails at the first
 // non-match before ever reaching the bare column.
 func TestProjectsBareColumn_ContinueScansAllProjections(t *testing.T) {
@@ -3280,7 +3280,7 @@ func TestProjectsBareColumn_ContinueScansAllProjections(t *testing.T) {
 			// First projection: NOT a bare TraceId ref (aliased rename) —
 			// the loop must `continue` past it.
 			{Expr: &chplan.ColumnRef{Name: "SpanId"}, Alias: "sid"},
-			// A non-ColumnRef expr — also skipped.
+			// A non-ColumnRef expr — also passed over.
 			{Expr: &chplan.FuncCall{Name: "toString", Args: []chplan.Expr{&chplan.ColumnRef{Name: "X"}}}},
 			// The bare TraceId we want to find sits LAST.
 			{Expr: &chplan.ColumnRef{Name: "TraceId"}},
