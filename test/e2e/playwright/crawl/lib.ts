@@ -1,5 +1,5 @@
 /**
- * Grafana surface-crawler library.
+ * Grafana surface-crawler library — the stack-agnostic ENGINE.
  *
  * The crawler (crawl.spec.ts) BFS-walks the live Grafana UI from the
  * root page, harvesting same-origin links per page, and applies the
@@ -8,15 +8,24 @@
  * exclusions, the surface-inventory file format — so the spec stays a
  * thin driver and the rules are unit-pinnable.
  *
+ * One engine, N stacks: nothing in this module (or the specs) may
+ * branch on a stack name. Per-stack variation — base URL, scope
+ * rules, inventory file, datasource UIDs, lint floors, lean seeds,
+ * page caps — is declared as data in stacks.ts and threaded through
+ * as parameters. The constants below (EXCLUDED_PATH_PATTERNS,
+ * APP_BARE_PATH_ALIASES) are the shared Grafana-12.x defaults the
+ * registered stack configs reference; the engine consumes them only
+ * via the ScopeRules a config hands it.
+ *
  * Why a crawler on top of the enumerated iterate-* specs: an off-CI
  * AI screenshot sweep (2026-06-09) found 34 unique error signatures
  * across 55 BFS-visited pages — several on surfaces NO enumerated
  * spec visits (drilldown-app tabs, logs-drilldown service pages,
  * traces-drilldown comparison view). Every find decomposed into a
  * deterministic signal once named; the crawler carries those signals
- * in CI forever, and the committed surface inventory
- * (grafana-surface-inventory.json) makes coverage growth explicit
- * and shrink impossible.
+ * in CI forever, and the committed per-stack surface inventory
+ * (grafana-surface-inventory.<stack>.json) makes coverage growth
+ * explicit and shrink impossible.
  *
  * Determinism: the visited-set converges because canonicalization
  * strips volatile params (time ranges, session-state blobs) and
@@ -28,6 +37,19 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Page } from '@playwright/test';
+// Type-only (erased at runtime) — stacks.ts value-imports the scope
+// constants below, so a value import here would be a cycle.
+import type { CrawlStackConfig } from './stacks.js';
+
+/**
+ * The scope slice of a stack config the canonicalizer consumes:
+ * which route families are out of crawl scope, and which bare
+ * app paths alias to an entry route.
+ */
+export type ScopeRules = {
+  excludedPathPatterns: ReadonlyArray<RegExp>;
+  appBarePathAliases: ReadonlyMap<string, string>;
+};
 
 // ---------------------------------------------------------------------------
 // Scope exclusions
@@ -162,6 +184,7 @@ const UUID_SEGMENT =
 export function canonicalTarget(
   href: string,
   baseURL: string,
+  scope: ScopeRules,
 ): { canonical: string; concrete: string } | null {
   let url: URL;
   let base: URL;
@@ -178,7 +201,7 @@ export function canonicalTarget(
   if (path === '') path = '/';
 
   // Exclusions on the raw path, before any rewriting.
-  for (const re of EXCLUDED_PATH_PATTERNS) {
+  for (const re of scope.excludedPathPatterns) {
     if (re.test(path)) return null;
   }
 
@@ -188,7 +211,7 @@ export function canonicalTarget(
   }
 
   // Bare app redirector → entry route (canonical AND concrete).
-  const alias = APP_BARE_PATH_ALIASES.get(path);
+  const alias = scope.appBarePathAliases.get(path);
   if (alias !== undefined) {
     return { canonical: alias, concrete: alias };
   }
@@ -236,7 +259,7 @@ export function canonicalTarget(
 
   // Re-check after rewriting — no rewrite may land in-scope a URL
   // whose canonical form is excluded.
-  for (const re of EXCLUDED_PATH_PATTERNS) {
+  for (const re of scope.excludedPathPatterns) {
     if (re.test(path)) return null;
   }
 
@@ -283,8 +306,9 @@ export function expandSiblingTabs(
 export function canonicalizeURL(
   href: string,
   baseURL: string,
+  scope: ScopeRules,
 ): string | null {
-  return canonicalTarget(href, baseURL)?.canonical ?? null;
+  return canonicalTarget(href, baseURL, scope)?.canonical ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -402,7 +426,7 @@ export type InventorySurface = {
 export type SurfaceInventory = {
   /** Free-text header documenting the regen convention. */
   doc: string;
-  /** Stack the inventory pins (only the compose stack is crawled). */
+  /** Stack the inventory pins — must equal the stack config's name. */
   stack: string;
   surfaces: InventorySurface[];
 };
@@ -417,37 +441,70 @@ export type SurfaceExclusions = {
   exclusions: SurfaceExclusion[];
 };
 
-export const INVENTORY_FILENAME = 'grafana-surface-inventory.json';
-export const EXCLUSIONS_FILENAME = 'grafana-surface-exclusions.json';
+/** The slice of a stack config the inventory plumbing consumes. */
+type StackFiles = Pick<
+  CrawlStackConfig,
+  'name' | 'inventoryFilename' | 'exclusionsFilename'
+>;
 
-export function inventoryPath(): string {
-  return join(__dirname, INVENTORY_FILENAME);
+export function inventoryPath(stack: StackFiles): string {
+  return join(__dirname, stack.inventoryFilename);
 }
 
-export function exclusionsPath(): string {
-  return join(__dirname, EXCLUSIONS_FILENAME);
+export function exclusionsPath(stack: StackFiles): string {
+  return join(__dirname, stack.exclusionsFilename);
 }
 
-export function loadInventory(): SurfaceInventory {
-  const raw = readFileSync(inventoryPath(), 'utf8');
+export function loadInventory(stack: StackFiles): SurfaceInventory {
+  const raw = readFileSync(inventoryPath(stack), 'utf8');
   const parsed = JSON.parse(raw) as SurfaceInventory;
   if (!Array.isArray(parsed.surfaces)) {
     throw new Error(
-      `loadInventory: ${INVENTORY_FILENAME} has no surfaces[] array`,
+      `loadInventory: ${stack.inventoryFilename} has no surfaces[] array`,
+    );
+  }
+  if (parsed.stack !== stack.name) {
+    throw new Error(
+      `loadInventory: ${stack.inventoryFilename} pins stack ${JSON.stringify(parsed.stack)} ` +
+        `but the active config is ${JSON.stringify(stack.name)} — the config points at the wrong file`,
     );
   }
   return parsed;
 }
 
-export function loadExclusions(): SurfaceExclusions {
-  const raw = readFileSync(exclusionsPath(), 'utf8');
+export function loadExclusions(stack: StackFiles): SurfaceExclusions {
+  const raw = readFileSync(exclusionsPath(stack), 'utf8');
   const parsed = JSON.parse(raw) as SurfaceExclusions;
   if (!Array.isArray(parsed.exclusions)) {
     throw new Error(
-      `loadExclusions: ${EXCLUSIONS_FILENAME} has no exclusions[] array`,
+      `loadExclusions: ${stack.exclusionsFilename} has no exclusions[] array`,
     );
   }
   return parsed;
+}
+
+/**
+ * Bootstrap guard. A stack registers with an EMPTY committed
+ * inventory (the bootstrap convention: no inventory can exist before
+ * the stack's first exhaustive crawl). Empty is ONLY legal on the
+ * bootstrap run itself (CERBERUS_UPDATE_INVENTORY=1) — every other
+ * run fails loudly here, so the bootstrap state can't silently
+ * become permanent: the stack's CI lane stays red until the
+ * regenerated inventory is committed.
+ */
+export function assertInventoryBootstrapped(
+  inventory: SurfaceInventory,
+  stack: StackFiles,
+): void {
+  if (inventory.surfaces.length > 0) return;
+  if (process.env.CERBERUS_UPDATE_INVENTORY) return;
+  throw new Error(
+    `stack ${JSON.stringify(stack.name)} has an EMPTY surface inventory (${stack.inventoryFilename}) — ` +
+      `it is registered but not yet bootstrapped. Bootstrap against a healthy ${stack.name} stack with:\n` +
+      `  CERBERUS_UPDATE_INVENTORY=1 SWEEP_DEPTH=full CRAWL_STACK=${stack.name} npx playwright test crawl/crawl.spec.ts\n` +
+      `then commit the regenerated ${stack.inventoryFilename}. This error fires on EVERY run until ` +
+      `the inventory lands — the empty state is a bootstrap convention, never a steady state.`,
+  );
 }
 
 /**
@@ -481,6 +538,7 @@ export function diffInventory(
   inventory: SurfaceInventory,
   exclusions: SurfaceExclusions,
   depth: 'lean' | 'full',
+  stack: StackFiles,
 ): string[] {
   const out: string[] = [];
 
@@ -510,7 +568,7 @@ export function diffInventory(
   for (const url of [...visited].sort()) {
     if (!expected.has(url)) {
       out.push(
-        `NEW surface ${JSON.stringify(url)} visited but not pinned in ${INVENTORY_FILENAME} — coverage grew; regenerate deliberately with CERBERUS_UPDATE_INVENTORY=1 SWEEP_DEPTH=full`,
+        `NEW surface ${JSON.stringify(url)} visited but not pinned in ${stack.inventoryFilename} — coverage grew; regenerate deliberately with CERBERUS_UPDATE_INVENTORY=1 SWEEP_DEPTH=full CRAWL_STACK=${stack.name}`,
       );
     }
   }

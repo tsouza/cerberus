@@ -15,6 +15,10 @@ name: e2e
 #     smoke. Runs on push-to-main + nightly + manual dispatch only.
 #     Informational on merges, not a PR gate; regressions are caught
 #     at merge-to-main time and reverted from main if they break.
+#     On schedule + dispatch it additionally runs the Grafana surface
+#     crawler with CRAWL_STACK=k3d (same engine as compose-smoke's
+#     crawl lane, this stack's config + inventory — see
+#     test/e2e/playwright/crawl/stacks.ts).
 #   - `startup-bench` — startup-speed bench (cerberus to /healthz in
 #     <2s). Same trigger set as `dashboard`; informational only.
 #
@@ -45,6 +49,18 @@ on:
     # nightly at 03:17 UTC
     - cron: '17 3 * * *'
   workflow_dispatch:
+    inputs:
+      update_crawl_inventory:
+        description: >-
+          Regenerate the k3d crawl surface inventory
+          (CERBERUS_UPDATE_INVENTORY=1) and upload it as an artifact to
+          commit. This is the bootstrap/regen path for
+          test/e2e/playwright/crawl/grafana-surface-inventory.k3d.json —
+          the k3d crawl lane fails loudly until a non-empty inventory is
+          committed.
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -212,13 +228,13 @@ jobs:
           # never which rules run — see
           # test/e2e/playwright/helpers/depth.ts.
           SWEEP_DEPTH: ${{ github.event_name == 'schedule' && 'full' || 'lean' }}
-          # Opt the crawl suite (crawl/**) in. The crawler pins the
-          # COMPOSE stack's surface inventory
-          # (test/e2e/playwright/crawl/grafana-surface-inventory.json);
-          # the k3d dashboard job leaves this unset so its
-          # auto-discovery run doesn't diff a different stack's
-          # surface set against the compose pin. See the testIgnore
-          # comment in test/e2e/playwright/playwright.config.ts.
+          # Select the crawl suite's stack config (crawl/stacks.ts).
+          # CRAWL_STACK=compose pins this stack's surface inventory
+          # (test/e2e/playwright/crawl/grafana-surface-inventory.compose.json);
+          # the k3d dashboard job runs the same engine with
+          # CRAWL_STACK=k3d against its own inventory file. See the
+          # CRAWL_STACK comment in
+          # test/e2e/playwright/playwright.config.ts.
           CRAWL_STACK: compose
         run: |
           # Phase-1 panel-shape spec (iterate-panel-shape.spec.ts) runs
@@ -272,7 +288,7 @@ jobs:
           #     oracles (console errors, datasource-API non-2xx +
           #     tunneled errors, panel tri-state, crash banners) and
           #     pins the visited set against
-          #     crawl/grafana-surface-inventory.json. SWEEP_DEPTH
+          #     crawl/grafana-surface-inventory.compose.json. SWEEP_DEPTH
           #     drives the lane: lean (PR gate) = root + nav + one
           #     representative per drilldown app; full (this job's
           #     nightly schedule run) = exhaustive BFS under a hard
@@ -331,7 +347,12 @@ jobs:
     # `check` + `lint` + `compose-smoke`.
     if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # 40 (was 25): the schedule/dispatch lanes now also run the k3d
+    # crawl suite (CRAWL_STACK=k3d at SWEEP_DEPTH=full — exhaustive
+    # BFS + ds/query replays + data-quality lints) after the
+    # auto-discovery smoke. Push-to-main runs skip the crawl step and
+    # stay well under the old 25-minute ceiling.
+    timeout-minutes: 40
     concurrency:
       group: e2e-dashboard-${{ github.ref }}
       cancel-in-progress: false
@@ -420,6 +441,48 @@ jobs:
         #       each. Pins the user's #8 sweep finding: the labels chip
         #       must not surface "Unable to fetch labels".
         run: npx playwright test
+
+      # ---- k3d crawl lane (one engine, N stack configs) ----
+      # The same crawl framework the compose-smoke job runs per-PR
+      # (test/e2e/playwright/crawl/ — BFS + universal oracles +
+      # inventory ratchet, ds/query replays, data-quality lints),
+      # pointed at THIS stack via CRAWL_STACK=k3d. Schedule + manual
+      # dispatch only: the per-PR / per-merge fast lane is the compose
+      # stack's job, and the k3d lane always crawls at SWEEP_DEPTH=full
+      # (its inventory has no separate CI lean lane).
+      #
+      # Bootstrap convention: the committed k3d inventory
+      # (test/e2e/playwright/crawl/grafana-surface-inventory.k3d.json)
+      # starts EMPTY, and the crawl FAILS LOUDLY on it (see
+      # assertInventoryBootstrapped in crawl/lib.ts) until a real
+      # inventory is committed — the red lane is the pressure that
+      # keeps bootstrap from silently becoming permanent. To
+      # bootstrap (or deliberately regenerate after surface growth):
+      # dispatch this workflow with update_crawl_inventory=true, then
+      # commit the uploaded artifact.
+      - name: Run Playwright crawl (CRAWL_STACK=k3d)
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        working-directory: test/e2e/playwright
+        env:
+          GRAFANA_URL: http://localhost:3000
+          CERBERUS_URL: http://localhost:8080
+          CRAWL_STACK: k3d
+          SWEEP_DEPTH: full
+          CERBERUS_UPDATE_INVENTORY: ${{ github.event_name == 'workflow_dispatch' && inputs.update_crawl_inventory && '1' || '' }}
+        run: |
+          npx playwright test \
+            crawl/crawl.spec.ts \
+            crawl/dsquery.spec.ts \
+            crawl/lints.spec.ts \
+            --reporter=list
+
+      - name: Upload regenerated k3d crawl inventory
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.update_crawl_inventory
+        uses: actions/upload-artifact@v7
+        with:
+          name: grafana-surface-inventory-k3d
+          path: test/e2e/playwright/crawl/grafana-surface-inventory.k3d.json
+          retention-days: 14
 
       # Hard gate: zero cerberus container restarts across the whole
       # job, asserted even when every spec passed. The nightly at run

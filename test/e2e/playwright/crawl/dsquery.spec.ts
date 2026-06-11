@@ -32,8 +32,16 @@
  * regression (cerberus wire shape, plugin decode, or seed), never a
  * state to mask.
  *
+ * STACK FRAMEWORK: the replay set is keyed off the EXACT datasource
+ * UID set the active stack's config declares
+ * (stack.expectedDatasources, see crawl/stacks.ts) — the live
+ * /api/datasources answer must match it exactly, so a provisioning
+ * drift (datasource added / removed / re-uid'd) fails loudly instead
+ * of silently shrinking the replay coverage.
+ *
  * Env:
- *   GRAFANA_URL / GRAFANA_BASE_URL   default http://localhost:3000
+ *   CRAWL_STACK                      stack config name (see stacks.ts)
+ *   GRAFANA_URL / GRAFANA_BASE_URL   default: the stack config's URL
  *   CERBERUS_URL                     default http://localhost:8080
  */
 
@@ -48,6 +56,7 @@ import {
   generateSelfTraffic,
 } from '../helpers/index.js';
 import { truncate } from './lib.js';
+import { activeStack } from './stacks.js';
 
 const SEED_TRAFFIC_SECONDS = 20;
 
@@ -84,7 +93,7 @@ function baseURL(): string {
   return (
     process.env.GRAFANA_URL ??
     process.env.GRAFANA_BASE_URL ??
-    'http://localhost:3000'
+    activeStack().defaultGrafanaURL
   );
 }
 
@@ -208,6 +217,7 @@ test('ds-query replays: every provisioned datasource answers through the plugin 
 }, testInfo) => {
   testInfo.setTimeout(5 * 60_000);
 
+  const stack = activeStack();
   await generateSelfTraffic(request, SEED_TRAFFIC_SECONDS);
   // rate()-over-range replays need ≥2 exported telemetry samples in
   // the lookback window — on a freshly-booted stack the seed traffic
@@ -217,10 +227,17 @@ test('ds-query replays: every provisioned datasource answers through the plugin 
   await awaitSelfTelemetryRangeSignal(request);
 
   const datasources = await listDatasources(request);
+  // The live provisioned set must EQUAL the stack config's declared
+  // set — both directions: a missing datasource is a provisioning
+  // regression, an undeclared one is replay coverage the config
+  // doesn't know about (declare it in stacks.ts).
   expect(
-    datasources.length,
-    'at least one prometheus/loki/tempo datasource provisioned',
-  ).toBeGreaterThan(0);
+    datasources.map((d) => `${d.type}:${d.uid}`).sort(),
+    `provisioned prometheus/loki/tempo datasources must match the ${stack.name} ` +
+      `stack config's expectedDatasources exactly`,
+  ).toEqual(
+    [...stack.expectedDatasources].map((d) => `${d.type}:${d.uid}`).sort(),
+  );
 
   const tempoUid = datasources.find((d) => d.type === 'tempo')?.uid;
   const traceID = tempoUid ? await harvestTraceID(request, tempoUid) : '';

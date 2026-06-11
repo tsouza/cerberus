@@ -1,0 +1,5 @@
+{
+  "doc": "Pinned canonical Grafana surface set for the k3d stack, emitted by test/e2e/playwright/crawl/crawl.spec.ts. The k3d crawl lane (dashboard job, .github/workflows/e2e.yml) runs nightly + on manual dispatch at SWEEP_DEPTH=full, so every row is crawled each run; lean=true rows mark the local fast-lane subset only. Regenerate deliberately against a healthy k3d stack (just e2e-up && just e2e-seed-rolling) with: CERBERUS_UPDATE_INVENTORY=1 SWEEP_DEPTH=full CRAWL_STACK=k3d npx playwright test crawl/crawl.spec.ts — or dispatch the e2e workflow with update_crawl_inventory=true and commit the uploaded artifact.",
+  "stack": "k3d",
+  "surfaces": []
+}

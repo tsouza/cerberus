@@ -1,0 +1,4 @@
+{
+  "doc": "Surfaces deliberately not crawled despite being discovered in-scope. Every entry MUST carry a non-empty rationale explaining why the surface is genuinely uncrawlable (no workaround exists) — an exclusion is documentation of impossibility, never a tolerance for a failing page. A URL may not appear in both this file and grafana-surface-inventory.compose.json (that would be a stale exclusion; the crawl fails on it). This set is intentionally EMPTY today and should stay shrink-biased: before adding a row, fix the bug at the source (cerberus code, seed, dashboard, panel, or crawl scope rule).",
+  "exclusions": []
+}

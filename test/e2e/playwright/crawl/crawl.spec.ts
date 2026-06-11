@@ -39,16 +39,24 @@
  * HARD page cap that fails the run when exceeded — surface growth
  * must force a deliberate cap bump, never a silent partial crawl.
  *
- * The visited-set is pinned by crawl/grafana-surface-inventory.json
+ * STACK FRAMEWORK: this spec is the stack-agnostic engine driver.
+ * CRAWL_STACK=<name> selects a config from crawl/stacks.ts (base
+ * URL default, scope rules, inventory file, lean seeds, page caps);
+ * nothing here branches on a stack name. The visited-set is pinned
+ * by the active stack's crawl/grafana-surface-inventory.<stack>.json
  * (the ratchet): a new surface (e.g. a Grafana bump adds an app page)
  * fails the run until the inventory is regenerated deliberately via
  *
- *   CERBERUS_UPDATE_INVENTORY=1 SWEEP_DEPTH=full CRAWL_STACK=compose \
+ *   CERBERUS_UPDATE_INVENTORY=1 SWEEP_DEPTH=full CRAWL_STACK=<stack> \
  *     npx playwright test crawl/crawl.spec.ts
  *
- * against the compose stack — mirroring the test/inventory/
- * convention. Coverage shrink (a pinned surface no longer visited)
- * fails symmetrically and has no regen escape: fix the regression.
+ * against a healthy instance of that stack — mirroring the
+ * test/inventory/ convention. Coverage shrink (a pinned surface no
+ * longer visited) fails symmetrically and has no regen escape: fix
+ * the regression. A newly registered stack starts from an EMPTY
+ * committed inventory and FAILS LOUDLY on every run until the
+ * bootstrap regen lands (see assertInventoryBootstrapped) — the
+ * bootstrap state cannot silently become permanent.
  *
  * Motivation: an off-CI AI screenshot sweep (2026-06-09) found 34
  * unique error signatures across 55 BFS-visited pages, several on
@@ -59,7 +67,11 @@
  * versions in CI forever.
  *
  * Env:
- *   GRAFANA_URL / GRAFANA_BASE_URL   default http://localhost:3000
+ *   CRAWL_STACK                      stack config name (see stacks.ts);
+ *                                    unset → playwright.config.ts
+ *                                    ignores crawl/** (0 tests);
+ *                                    unknown → loud config error
+ *   GRAFANA_URL / GRAFANA_BASE_URL   default: the stack config's URL
  *   CERBERUS_URL                     default http://localhost:8080
  *   SWEEP_DEPTH                      'lean' (default) | 'full'
  *   CERBERUS_UPDATE_INVENTORY        regen the surface inventory
@@ -75,7 +87,6 @@ import {
 } from '@playwright/test';
 
 import {
-  DRILLDOWN_APPS,
   captureConsoleErrors,
   describeSweepDepth,
   generateSelfTraffic,
@@ -87,6 +98,7 @@ import {
 import {
   ALERT_ERROR_PATTERNS,
   PAGE_CRASH_PATTERNS,
+  assertInventoryBootstrapped,
   canonicalTarget,
   canonicalizeURL,
   collectVisibleAlertBanners,
@@ -98,21 +110,26 @@ import {
   loadInventory,
   marshalInventory,
   truncate,
+  type ScopeRules,
   type SurfaceInventory,
 } from './lib.js';
+import {
+  activeStack,
+  knownStackNames,
+  stackByName,
+} from './stacks.js';
 
 // Self-traffic warmup — same rationale + value as the iterate-* specs:
 // without populated counters/streams/traces, a "No data" panel on a
 // fresh stack is indistinguishable from a real regression.
 const SEED_TRAFFIC_SECONDS = 30;
 
-// Hard page caps. The FULL cap fails the run when the frontier is
+// Hard page caps live in the stack config (stack.pageCapLean /
+// stack.pageCapFull). The FULL cap fails the run when the frontier is
 // still non-empty at the cap — surface growth (a Grafana bump adding
-// pages) must force a deliberate, reviewed cap bump in this file,
+// pages) must force a deliberate, reviewed cap bump in stacks.ts,
 // never a silently-partial crawl. The lean cap exists for the same
-// reason at PR scale.
-const PAGE_CAP_FULL = 80;
-const PAGE_CAP_LEAN = 30;
+// reason at fast-lane scale.
 
 // Recycle the browser context every N visited pages. A single
 // renderer reused across the whole full-depth crawl accumulates state
@@ -144,12 +161,76 @@ type QueueEntry = {
 
 test.describe('crawl: canonicalization pins', () => {
   const base = 'http://localhost:3000';
+  // Scope rules come from the ACTIVE stack — the rules are per-stack
+  // data, and the pins assert them under whichever stack the lane
+  // selected. Today every registered stack shares the Grafana-12
+  // scope (see stacks.ts), so the expectations below hold under any
+  // CRAWL_STACK; a stack that diverges gets its own pin rows.
+  const scope: ScopeRules = activeStack().scope;
+
+  test('CRAWL_STACK selection: unknown stack names fail loudly, registered configs are sound', () => {
+    // A typo'd stack name must never silently skip the suite — the
+    // same check runs at config-load time in playwright.config.ts;
+    // this pin keeps the error shape itself from regressing.
+    expect(() => stackByName('no-such-stack')).toThrow(
+      /names no registered stack config/,
+    );
+    expect(knownStackNames().length).toBeGreaterThan(0);
+    for (const name of knownStackNames()) {
+      const cfg = stackByName(name);
+      expect(cfg.name, `stack ${name}: registry key matches config name`).toBe(
+        name,
+      );
+      expect(
+        cfg.pageCapLean,
+        `stack ${name}: lean page cap is positive`,
+      ).toBeGreaterThan(0);
+      expect(
+        cfg.pageCapFull,
+        `stack ${name}: full cap is at least the lean cap (lean ⊆ full)`,
+      ).toBeGreaterThanOrEqual(cfg.pageCapLean);
+      expect(
+        cfg.expectedDatasources.length,
+        `stack ${name}: at least one expected datasource`,
+      ).toBeGreaterThan(0);
+      expect(
+        new Set(cfg.expectedDatasources.map((d) => d.uid)).size,
+        `stack ${name}: expected datasource uids are unique`,
+      ).toBe(cfg.expectedDatasources.length);
+      for (const root of cfg.leanSeedRoots) {
+        expect(
+          canonicalTarget(root, cfg.defaultGrafanaURL, cfg.scope),
+          `stack ${name}: lean seed root ${root} canonicalizes in-scope`,
+        ).not.toBeNull();
+      }
+      // EVERY stack's committed files must load (existence + shape +
+      // the inventory's stack field matching the config name) and the
+      // inventory must round-trip byte-for-byte through the canonical
+      // marshaller — asserted here for all stacks so each lane guards
+      // the files of stacks it never activates (a hand-edited k3d
+      // file can't drift while only the compose lane runs per-PR).
+      const inv = loadInventory(cfg);
+      loadExclusions(cfg);
+      expect(
+        readFileSync(inventoryPath(cfg), 'utf8'),
+        `stack ${name}: committed inventory is in canonical marshalled form`,
+      ).toBe(marshalInventory(inv));
+      // Regenerating must produce a surfaces-only diff: the committed
+      // doc header has to match what crawl.spec.ts would write from
+      // the config on the next CERBERUS_UPDATE_INVENTORY=1 run.
+      expect(
+        inv.doc,
+        `stack ${name}: committed inventory doc matches the config's inventoryDoc`,
+      ).toBe(cfg.inventoryDoc);
+    }
+  });
 
   test('canonical keys are path-only — volatile and session-state params are stripped', () => {
     expect(
       canonicalizeURL(
         '/d/abc/some-slug?orgId=1&from=now-1h&to=now&refresh=10s&viewPanel=4&kiosk',
         base,
+        scope,
       ),
     ).toBe('/d/abc');
     // Drilldown-app session state (patterns/displayedFields/layout/…)
@@ -159,33 +240,34 @@ test.describe('crawl: canonicalization pins', () => {
       canonicalizeURL(
         '/a/grafana-lokiexplore-app/explore/service/cerberus/logs?patterns=%5B%5D&displayedFields=%5B%5D&visualizationType=%22logs%22',
         base,
+        scope,
       ),
     ).toBe('/a/grafana-lokiexplore-app/explore/service/{service}/logs');
-    expect(canonicalizeURL('/dashboards?tag=b&tag=a&orgId=1', base)).toBe(
+    expect(canonicalizeURL('/dashboards?tag=b&tag=a&orgId=1', base, scope)).toBe(
       '/dashboards',
     );
-    expect(canonicalizeURL('/?orgId=1', base)).toBe('/');
+    expect(canonicalizeURL('/?orgId=1', base, scope)).toBe('/');
   });
 
   test('bare app redirectors alias to their entry route', () => {
-    expect(canonicalTarget('/a/grafana-exploretraces-app', base)).toEqual({
+    expect(canonicalTarget('/a/grafana-exploretraces-app', base, scope)).toEqual({
       canonical: '/a/grafana-exploretraces-app/explore',
       concrete: '/a/grafana-exploretraces-app/explore',
     });
-    expect(canonicalizeURL('/a/grafana-metricsdrilldown-app', base)).toBe(
+    expect(canonicalizeURL('/a/grafana-metricsdrilldown-app', base, scope)).toBe(
       '/a/grafana-metricsdrilldown-app/drilldown',
     );
   });
 
   test('provisioning-minted folder uids parameterize and slugs drop', () => {
-    expect(canonicalizeURL('/dashboards/f/efor9e5025vcwb', base)).toBe(
+    expect(canonicalizeURL('/dashboards/f/efor9e5025vcwb', base, scope)).toBe(
       '/dashboards/f/{folder}',
     );
     expect(
-      canonicalizeURL('/dashboards/f/efor9e5025vcwb/cerberus', base),
+      canonicalizeURL('/dashboards/f/efor9e5025vcwb/cerberus', base, scope),
     ).toBe('/dashboards/f/{folder}');
     expect(
-      canonicalizeURL('/dashboards/f/efor9e5025vcwb/cerberus/alerting', base),
+      canonicalizeURL('/dashboards/f/efor9e5025vcwb/cerberus/alerting', base, scope),
     ).toBe('/dashboards/f/{folder}/alerting');
   });
 
@@ -194,15 +276,16 @@ test.describe('crawl: canonicalization pins', () => {
       canonicalizeURL(
         '/a/grafana-lokiexplore-app/explore/service/shop/label/detected_level',
         base,
+        scope,
       ),
     ).toBe('/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}');
   });
 
   test('explore collapses to a single surface', () => {
     expect(
-      canonicalizeURL('/explore?panes=%7B%22x%22%3A1%7D&schemaVersion=1', base),
+      canonicalizeURL('/explore?panes=%7B%22x%22%3A1%7D&schemaVersion=1', base, scope),
     ).toBe('/explore');
-    expect(canonicalizeURL('/explore/metrics', base)).toBe('/explore');
+    expect(canonicalizeURL('/explore/metrics', base, scope)).toBe('/explore');
   });
 
   test('dynamic path segments parameterize', () => {
@@ -210,31 +293,44 @@ test.describe('crawl: canonicalization pins', () => {
       canonicalizeURL(
         '/a/grafana-lokiexplore-app/explore/service/cerberus/logs?var-ds=x',
         base,
+        scope,
       ),
     ).toBe('/a/grafana-lokiexplore-app/explore/service/{service}/logs');
     expect(
       canonicalizeURL(
         '/a/grafana-exploretraces-app/trace/0123456789abcdef0123456789abcdef',
         base,
+        scope,
       ),
     ).toBe('/a/grafana-exploretraces-app/trace/{hex}');
   });
 
   test('committed inventory + exclusions files are internally consistent', () => {
-    // Stack-free meta-checks (the live diff runs at the end of the
-    // crawl): the inventory round-trips byte-for-byte through the
-    // canonical marshaller (so regeneration is reproducible — the
-    // test/inventory/ convention), is non-empty, carries a non-empty
+    // Live-stack-free meta-checks (the live diff runs at the end of
+    // the crawl): the active stack's inventory round-trips
+    // byte-for-byte through the canonical marshaller (so regeneration
+    // is reproducible — the test/inventory/ convention), is
+    // bootstrapped (non-empty — an empty inventory fails LOUDLY with
+    // the bootstrap instructions unless this run IS the bootstrap,
+    // i.e. CERBERUS_UPDATE_INVENTORY is set), carries a non-empty
     // lean subset, and the exclusions file is sound (rationales
     // present, no URL in both files).
-    const inv = loadInventory();
-    const exc = loadExclusions();
-    expect(inv.surfaces.length, 'inventory is non-empty').toBeGreaterThan(0);
-    expect(
-      inv.surfaces.filter((s) => s.lean).length,
-      'lean subset is non-empty',
-    ).toBeGreaterThan(0);
-    expect(readFileSync(inventoryPath(), 'utf8')).toBe(marshalInventory(inv));
+    const stack = activeStack();
+    const inv = loadInventory(stack);
+    const exc = loadExclusions(stack);
+    assertInventoryBootstrapped(inv, stack);
+    if (inv.surfaces.length > 0) {
+      // Bypassed only on the sanctioned bootstrap run itself (empty
+      // inventory + CERBERUS_UPDATE_INVENTORY set, enforced above) —
+      // there is no lean subset to assert before the first regen.
+      expect(
+        inv.surfaces.filter((s) => s.lean).length,
+        'lean subset is non-empty',
+      ).toBeGreaterThan(0);
+    }
+    expect(readFileSync(inventoryPath(stack), 'utf8')).toBe(
+      marshalInventory(inv),
+    );
     const inventoryUrls = new Set(inv.surfaces.map((s) => s.url));
     for (const e of exc.exclusions) {
       expect(e.rationale.trim(), `exclusion ${e.url} rationale`).not.toBe('');
@@ -246,16 +342,16 @@ test.describe('crawl: canonicalization pins', () => {
   });
 
   test('out-of-scope routes return null', () => {
-    expect(canonicalizeURL('/alerting/list', base)).toBeNull();
-    expect(canonicalizeURL('/admin/settings', base)).toBeNull();
-    expect(canonicalizeURL('/connections/datasources', base)).toBeNull();
-    expect(canonicalizeURL('/dashboard/new', base)).toBeNull();
-    expect(canonicalizeURL('/d/abc/edit', base)).toBeNull();
-    expect(canonicalizeURL('/d-solo/abc?panelId=2', base)).toBeNull();
-    expect(canonicalizeURL('/login', base)).toBeNull();
-    expect(canonicalizeURL('/api/search', base)).toBeNull();
-    expect(canonicalizeURL('https://grafana.com/docs', base)).toBeNull();
-    expect(canonicalizeURL('mailto:x@example.com', base)).toBeNull();
+    expect(canonicalizeURL('/alerting/list', base, scope)).toBeNull();
+    expect(canonicalizeURL('/admin/settings', base, scope)).toBeNull();
+    expect(canonicalizeURL('/connections/datasources', base, scope)).toBeNull();
+    expect(canonicalizeURL('/dashboard/new', base, scope)).toBeNull();
+    expect(canonicalizeURL('/d/abc/edit', base, scope)).toBeNull();
+    expect(canonicalizeURL('/d-solo/abc?panelId=2', base, scope)).toBeNull();
+    expect(canonicalizeURL('/login', base, scope)).toBeNull();
+    expect(canonicalizeURL('/api/search', base, scope)).toBeNull();
+    expect(canonicalizeURL('https://grafana.com/docs', base, scope)).toBeNull();
+    expect(canonicalizeURL('mailto:x@example.com', base, scope)).toBeNull();
   });
 });
 
@@ -267,18 +363,30 @@ test('crawl: BFS over every reachable Grafana surface with universal oracles + i
   browser,
   request,
 }, testInfo) => {
+  const stack = activeStack();
   const depth = sweepDepth();
-  // Budget: lean ≈ 10 pages × ~6s + 30s seed; full ≈ cap (80) pages.
+  // Budget: lean ≈ 10 pages × ~6s + 30s seed; full ≈ cap pages.
   testInfo.setTimeout(depth === 'full' ? 30 * 60_000 : 8 * 60_000);
   // eslint-disable-next-line no-console
-  console.log(describeSweepDepth(depth));
+  console.log(`crawl stack: ${stack.name} — ${describeSweepDepth(depth)}`);
 
   const baseURL =
     process.env.GRAFANA_URL ??
     process.env.GRAFANA_BASE_URL ??
-    'http://localhost:3000';
+    stack.defaultGrafanaURL;
 
   await generateSelfTraffic(request, SEED_TRAFFIC_SECONDS);
+
+  // The engine drives no login flow — every stack config declares
+  // anonymousAuth and the crawl proves the assumption live before
+  // walking (the `request` fixture carries no credentials).
+  const authProbe = await request.get(`${baseURL}/api/search?type=dash-db`);
+  expect(
+    authProbe.status(),
+    `stack ${stack.name} declares anonymous Grafana auth but an unauthenticated ` +
+      `/api/search returned ${authProbe.status()} — fix the stack's Grafana provisioning ` +
+      `(the crawler has no login step by design)`,
+  ).toBe(200);
 
   // Declared cerberus.expect contracts, keyed by dashboard uid. The
   // crawler consumes them two ways:
@@ -309,31 +417,31 @@ test('crawl: BFS over every reachable Grafana surface with universal oracles + i
   }
 
   // Seed frontier. Order is load-bearing for determinism: root first
-  // (its harvest defines the lean nav set), then the drilldown app
-  // representatives, then — at full depth — every provisioned
-  // dashboard (also reachable via /dashboards, but seeding them makes
-  // the crawl independent of the browse-page's pagination/virtualised
-  // list rendering).
+  // (its harvest defines the lean nav set), then the stack's lean
+  // representative seeds (the drilldown app entry routes), then — at
+  // full depth — every provisioned dashboard (also reachable via
+  // /dashboards, but seeding them makes the crawl independent of the
+  // browse-page's pagination/virtualised list rendering).
   const queue: QueueEntry[] = [{ canonical: '/', concrete: '/', via: '<seed>' }];
-  for (const app of DRILLDOWN_APPS) {
-    const target = canonicalTarget(app.root, baseURL);
+  for (const root of stack.leanSeedRoots) {
+    const target = canonicalTarget(root, baseURL, stack.scope);
     if (target === null) {
       throw new Error(
-        `crawl: drilldown app root ${app.root} canonicalizes out of scope — fix the catalogue or the exclusion rules`,
+        `crawl: lean seed root ${root} canonicalizes out of scope — fix the stack config or the exclusion rules`,
       );
     }
-    // Navigate the catalogue's concrete root (it may pin a var-ds the
+    // Navigate the config's concrete root (it may pin a var-ds the
     // entry route needs on a cold context), keyed by the canonical.
     queue.push({
       canonical: target.canonical,
-      concrete: new URL(app.root, baseURL).pathname + new URL(app.root, baseURL).search,
-      via: '<seed:app>',
+      concrete: new URL(root, baseURL).pathname + new URL(root, baseURL).search,
+      via: '<seed:lean>',
     });
   }
-  // The lean surface set: root + the drilldown-app representatives
-  // (the nav links harvested from the root page join it during the
+  // The lean surface set: root + the configured representatives (the
+  // nav links harvested from the root page join it during the
   // root visit below). Snapshot BEFORE the full-depth dashboard
-  // seeds — dashboards are full-lane states (their per-PR coverage
+  // seeds — dashboards are full-lane states (their fast-lane coverage
   // is the API-layer iterate-all-dashboards probes).
   const leanSet = new Set<string>(queue.map((q) => q.canonical));
   if (depth === 'full') {
@@ -346,7 +454,7 @@ test('crawl: BFS over every reachable Grafana surface with universal oracles + i
     }
   }
 
-  const pageCap = depth === 'full' ? PAGE_CAP_FULL : PAGE_CAP_LEAN;
+  const pageCap = depth === 'full' ? stack.pageCapFull : stack.pageCapLean;
   const visited = new Map<string, string>(); // canonical → concrete navigated
   const failures: CrawlFailure[] = [];
 
@@ -367,8 +475,8 @@ test('crawl: BFS over every reachable Grafana surface with universal oracles + i
           .map((q) => `${q.canonical} (via ${q.via})`)
           .filter((v, i, a) => a.indexOf(v) === i);
         throw new Error(
-          `crawl: page cap ${pageCap} (${depth}) exceeded with ${remaining.length} surface(s) still queued — ` +
-            `surface growth must be absorbed by a deliberate cap bump in crawl.spec.ts, not a partial crawl:\n  - ${remaining.join('\n  - ')}`,
+          `crawl: page cap ${pageCap} (${depth}, stack=${stack.name}) exceeded with ${remaining.length} surface(s) still queued — ` +
+            `surface growth must be absorbed by a deliberate cap bump in stacks.ts, not a partial crawl:\n  - ${remaining.join('\n  - ')}`,
         );
       }
 
@@ -396,7 +504,7 @@ test('crawl: BFS over every reachable Grafana surface with universal oracles + i
       if (depth === 'full' || entry.canonical === '/') {
         const canonicals = new Map<string, string>();
         for (const href of harvested) {
-          const target = canonicalTarget(href, baseURL);
+          const target = canonicalTarget(href, baseURL, stack.scope);
           if (target === null || visited.has(target.canonical)) continue;
           if (!canonicals.has(target.canonical)) {
             canonicals.set(target.canonical, target.concrete);
@@ -423,7 +531,7 @@ test('crawl: BFS over every reachable Grafana surface with universal oracles + i
 
   // eslint-disable-next-line no-console
   console.log(
-    `crawl: visited ${visited.size} surface(s) at depth=${depth}:\n${[...visited.keys()]
+    `crawl: visited ${visited.size} surface(s) at depth=${depth} stack=${stack.name}:\n${[...visited.keys()]
       .sort()
       .map((u) => `  - ${u}`)
       .join('\n')}`,
@@ -447,31 +555,33 @@ test('crawl: BFS over every reachable Grafana surface with universal oracles + i
       'inventory regeneration requires the exhaustive crawl: rerun with SWEEP_DEPTH=full',
     ).toBe('full');
     const inv: SurfaceInventory = {
-      doc:
-        'Pinned canonical Grafana surface set for the compose stack, emitted by ' +
-        'test/e2e/playwright/crawl/crawl.spec.ts. lean=true rows are the per-PR crawl ' +
-        '(root + nav + one representative per drilldown app); every row is crawled nightly. ' +
-        'Regenerate deliberately against a healthy compose stack with: ' +
-        'CERBERUS_UPDATE_INVENTORY=1 SWEEP_DEPTH=full CRAWL_STACK=compose npx playwright test crawl/crawl.spec.ts',
-      stack: 'compose',
+      doc: stack.inventoryDoc,
+      stack: stack.name,
       surfaces: [...visited.keys()].map((url) => ({
         url,
         lean: leanSet.has(url),
       })),
     };
-    writeFileSync(inventoryPath(), marshalInventory(inv));
+    writeFileSync(inventoryPath(stack), marshalInventory(inv));
     // eslint-disable-next-line no-console
     console.log(
-      `crawl: regenerated ${inventoryPath()} with ${inv.surfaces.length} surface(s)`,
+      `crawl: regenerated ${inventoryPath(stack)} with ${inv.surfaces.length} surface(s)`,
     );
     return;
   }
 
+  // Bootstrap guard before the diff: an EMPTY committed inventory
+  // means the stack was registered but never crawled exhaustively —
+  // fail with the bootstrap instructions instead of one NEW-surface
+  // row per visited page.
+  const committed = loadInventory(stack);
+  assertInventoryBootstrapped(committed, stack);
   const violations = diffInventory(
     new Set(visited.keys()),
-    loadInventory(),
-    loadExclusions(),
+    committed,
+    loadExclusions(stack),
     depth,
+    stack,
   );
   expect(
     violations,

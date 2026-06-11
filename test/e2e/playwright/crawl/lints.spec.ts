@@ -44,8 +44,17 @@
  * deterministic without one, its scope is wrong (see lint 1's
  * dashboard-scoping for the pattern).
  *
+ * STACK FRAMEWORK: the lints' vacuous-pass guards are floored by the
+ * active stack's config (stack.lints, see crawl/stacks.ts) — a
+ * declaration of how much quantile surface the stack's PROVISIONED
+ * dashboards carry. The floors gate the lints' INPUT (shrinking
+ * below a floor is a dashboard regression and fails); the verdicts
+ * are never scoped — every family / panel that exists is judged on
+ * every stack.
+ *
  * Env:
- *   GRAFANA_URL / GRAFANA_BASE_URL   default http://localhost:3000
+ *   CRAWL_STACK                      stack config name (see stacks.ts)
+ *   GRAFANA_URL / GRAFANA_BASE_URL   default: the stack config's URL
  *   CERBERUS_URL                     default http://localhost:8080
  */
 
@@ -62,6 +71,7 @@ import {
   type Dashboard,
 } from '../helpers/index.js';
 import { truncate } from './lib.js';
+import { activeStack } from './stacks.js';
 
 const SEED_TRAFFIC_SECONDS = 30;
 
@@ -78,7 +88,7 @@ function baseURL(): string {
   return (
     process.env.GRAFANA_URL ??
     process.env.GRAFANA_BASE_URL ??
-    'http://localhost:3000'
+    activeStack().defaultGrafanaURL
   );
 }
 
@@ -171,6 +181,7 @@ test('lints: histogram families behind quantile panels are non-degenerate + mult
 }, testInfo) => {
   testInfo.setTimeout(5 * 60_000);
 
+  const stack = activeStack();
   await generateSelfTraffic(request, SEED_TRAFFIC_SECONDS);
   // Both lints judge rate()-over-range shapes; on a freshly-booted
   // stack the telemetry export cadence can lag the seed traffic (see
@@ -188,8 +199,10 @@ test('lints: histogram families behind quantile panels are non-degenerate + mult
   const families = quantileConsumedFamilies(dashboards);
   expect(
     families.size,
-    'at least one provisioned quantile panel consumes a classic histogram family',
-  ).toBeGreaterThan(0);
+    `at least ${stack.lints.minQuantileConsumedFamilies} provisioned quantile panel(s) consume a ` +
+      `classic histogram family on the ${stack.name} stack (declared floor in stacks.ts — ` +
+      `shrinking below it is a dashboard regression)`,
+  ).toBeGreaterThanOrEqual(stack.lints.minQuantileConsumedFamilies);
 
   let judgedFamilies = 0;
   for (const { dsUid, family, where } of [...families.values()].sort((a, b) =>
@@ -312,18 +325,25 @@ test('lints: histogram families behind quantile panels are non-degenerate + mult
   }
   expect(
     multiQuantilePanels,
-    'at least one provisioned panel carries ≥2 distinct histogram_quantile targets (lint 2 has real input)',
-  ).toBeGreaterThan(0);
+    `at least ${stack.lints.minMultiQuantilePanels} provisioned panel(s) carry ≥2 distinct ` +
+      `histogram_quantile targets on the ${stack.name} stack (declared floor in stacks.ts — ` +
+      `shrinking below it is a dashboard regression; a floor of 0 declares the stack's ` +
+      `provisioned dashboards carry no multi-quantile panel, and lint 2 still judges any that appear)`,
+  ).toBeGreaterThanOrEqual(stack.lints.minMultiQuantilePanels);
   // Vacuous-pass guard, same shape as lint 1's: empty matrices make
   // lint 2 `continue` (iterate-all-dashboards owns the nonempty
   // contract — no double-report), so a regression emptying every
   // multi-quantile panel would otherwise let the lint pass having
-  // compared nothing.
-  expect(
-    comparedPanels,
-    `lint 2 compared no panel: all ${multiQuantilePanels} multi-quantile panel(s) returned ≥1 empty ` +
-      `matrix over the probe window — the underlying series are gone (seed/export/query regression)`,
-  ).toBeGreaterThan(0);
+  // compared nothing. Conditional on input existing — when the stack
+  // provisions zero multi-quantile panels (floor 0, asserted above)
+  // there is nothing to compare and nothing to guard.
+  if (multiQuantilePanels > 0) {
+    expect(
+      comparedPanels,
+      `lint 2 compared no panel: all ${multiQuantilePanels} multi-quantile panel(s) returned ≥1 empty ` +
+        `matrix over the probe window — the underlying series are gone (seed/export/query regression)`,
+    ).toBeGreaterThan(0);
+  }
 
   if (failures.length > 0) {
     throw new Error(
