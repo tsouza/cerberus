@@ -286,41 +286,23 @@ func (e *emitter) emitRangeWindowHistogram(r *chplan.RangeWindow, m *chplan.Metr
 	// emitter — see maybePushInnerScanTimeBounds.
 	maybePushInnerScanTimeBounds(innerSb, r, tsCol, rangeNS)
 
-	// Generator arm: one `0 AS in_window` row per (observed (group,
-	// __bucket) series, grid anchor). Series discovery replays the
-	// same bounded scan + bucketize the sample arm reads, GROUPed by
-	// (group aliases…, __bucket) so each observed series fans across
-	// the full grid exactly once.
-	disc := NewQuery().From(inner)
-	for i, g := range m.GroupBy {
-		expr := g
-		alias := groupAliases[i]
-		disc.SelectAs(func(b *Builder) { _ = b.Expr(expr) }, alias)
-	}
-	disc.SelectAs(histogramBucketFrag(m.Attr, m.IsDuration), bucketAlias)
-	disc.Where(attrGuard)
-	maybePushInnerScanTimeBounds(disc, r, tsCol, rangeNS)
-	discKeys := make([]Frag, 0, len(groupAliases)+1)
-	for _, alias := range groupAliases {
-		a := alias
-		discKeys = append(discKeys, func(b *Builder) { b.Ident(a) })
-	}
-	discKeys = append(discKeys, Col(bucketAlias))
-	disc.GroupBy(discKeys...)
-
-	grid := NewQuery().From(disc.Frag())
-	for _, alias := range groupAliases {
-		a := alias
-		grid.Select(func(b *Builder) { b.Ident(a) })
-	}
-	grid.Select(Col(bucketAlias))
-	grid.SelectAs(anchorFanoutFrag(end, stepNS, numAnchors), "anchor_ts")
-	grid.SelectAs(InlineLit(int64(0)), "in_window")
+	grid := histogramZeroFillGridArm(histogramZeroFillArgs{
+		inner:        inner,
+		r:            r,
+		m:            m,
+		groupAliases: groupAliases,
+		bucketAlias:  bucketAlias,
+		attrGuard:    attrGuard,
+		end:          end,
+		stepNS:       stepNS,
+		rangeNS:      rangeNS,
+		numAnchors:   numAnchors,
+	})
 
 	// Outer SELECT: group-by + bucket + anchor_ts; sum(in_window) per
 	// (series, anchor) — sample-arm rows contribute 1 each, generator
 	// rows pin empty anchors at 0.
-	outerSb := NewQuery().From(Paren(UnionAll(innerSb.Frag(), grid.Frag())))
+	outerSb := NewQuery().From(Paren(UnionAll(innerSb.Frag(), grid)))
 	for _, alias := range groupAliases {
 		a := alias
 		outerSb.Select(func(b *Builder) { b.Ident(a) })
@@ -342,4 +324,59 @@ func (e *emitter) emitRangeWindowHistogram(r *chplan.RangeWindow, m *chplan.Metr
 
 	e.emitSelect(outerSb)
 	return nil
+}
+
+// histogramZeroFillArgs bundles the inputs histogramZeroFillGridArm
+// shares with emitRangeWindowHistogram's sample arm — the bounded
+// inner scan, the grid geometry, and the per-row bucket/guard frags.
+type histogramZeroFillArgs struct {
+	inner        Frag
+	r            *chplan.RangeWindow
+	m            *chplan.MetricsHistogramOverTime
+	groupAliases []string
+	bucketAlias  string
+	attrGuard    Frag
+	end          Frag
+	stepNS       int64
+	rangeNS      int64
+	numAnchors   int64
+}
+
+// histogramZeroFillGridArm builds the generator arm of the histogram
+// matrix path's zero-fill UNION ALL: one `0 AS in_window` row per
+// (observed (group, __bucket) series, grid anchor). Series discovery
+// replays the same bounded scan + bucketize expression the sample arm
+// reads, GROUPed by (group aliases…, __bucket) so each observed series
+// fans across the full grid exactly once. The histogram counterpart of
+// metricsZeroFillGridArm (range_window.go) — separate because the
+// series identity here includes the synthesised bucket column, which
+// the discovery query must compute rather than carry as a constant
+// extra column.
+func histogramZeroFillGridArm(a histogramZeroFillArgs) Frag {
+	disc := NewQuery().From(a.inner)
+	for i, g := range a.m.GroupBy {
+		expr := g
+		alias := a.groupAliases[i]
+		disc.SelectAs(func(b *Builder) { _ = b.Expr(expr) }, alias)
+	}
+	disc.SelectAs(histogramBucketFrag(a.m.Attr, a.m.IsDuration), a.bucketAlias)
+	disc.Where(a.attrGuard)
+	maybePushInnerScanTimeBounds(disc, a.r, a.r.TimestampColumn, a.rangeNS)
+	discKeys := make([]Frag, 0, len(a.groupAliases)+1)
+	for _, alias := range a.groupAliases {
+		al := alias
+		discKeys = append(discKeys, func(b *Builder) { b.Ident(al) })
+	}
+	discKeys = append(discKeys, Col(a.bucketAlias))
+	disc.GroupBy(discKeys...)
+
+	grid := NewQuery().From(disc.Frag())
+	for _, alias := range a.groupAliases {
+		al := alias
+		grid.Select(func(b *Builder) { b.Ident(al) })
+	}
+	grid.Select(Col(a.bucketAlias))
+	grid.SelectAs(anchorFanoutFrag(a.end, a.stepNS, a.numAnchors), "anchor_ts")
+	grid.SelectAs(InlineLit(int64(0)), "in_window")
+	return grid.Frag()
 }
