@@ -6,6 +6,7 @@ import (
 	loglib "github.com/grafana/loki/v3/pkg/logql/log"
 	"github.com/grafana/loki/v3/pkg/logql/syntax"
 	"github.com/grafana/loki/v3/pkg/logqlmodel"
+	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/model/labels"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -329,7 +330,7 @@ func absentSynthLabels(sel syntax.LogSelectorExpr) []chplan.SynthLabel {
 	dropped := make(map[string]bool, len(matchers))
 	order := make([]string, 0, len(matchers))
 	for _, m := range matchers {
-		if m.Name == labels.MetricName {
+		if m.Name == model.MetricNameLabel {
 			continue
 		}
 		if _, seen := values[m.Name]; m.Type == labels.MatchEqual && !seen && !dropped[m.Name] {

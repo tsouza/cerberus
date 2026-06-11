@@ -162,7 +162,7 @@ func patternTestFunc(pattern string) (func(string) bool, error) {
 			if j < 0 {
 				return false
 			}
-			if j == 0 && !(i == 0 && firstIsLiteral) {
+			if j == 0 && (i != 0 || !firstIsLiteral) {
 				// Empty wildcard between the cursor and this literal.
 				return false
 			}
