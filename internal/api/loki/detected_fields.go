@@ -2,6 +2,7 @@ package loki
 
 import (
 	"errors"
+	"math"
 	"net/http"
 	"slices"
 	"sort"
@@ -137,9 +138,12 @@ func (h *Handler) handleDetectedFields(w http.ResponseWriter, r *http.Request) {
 	fields := detectFields(rows, limit)
 
 	resp := DetectedFieldsResponse{Fields: fields}
-	// Mirror upstream: the limit is echoed only when fields exist.
-	if len(fields) > 0 {
-		resp.Limit = uint32(limit) //nolint:gosec // parsePositiveInt rejects negatives; bounded by the query-param domain.
+	// Mirror upstream: the limit is echoed only when fields exist. The
+	// range guard is re-stated locally — parsePositiveInt already
+	// enforces it, but neither gosec G115 nor CodeQL sees across the
+	// call, and a provably-safe conversion beats a suppression.
+	if len(fields) > 0 && limit > 0 && int64(limit) <= math.MaxUint32 {
+		resp.Limit = uint32(limit)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -375,15 +379,18 @@ func sortedKeys(m map[string]string) []string {
 }
 
 // parsePositiveInt parses an optional integer query parameter. Empty
-// input returns the default; non-numeric or non-positive input is
-// rejected with a 400.
+// input returns the default; non-numeric, non-positive, or
+// out-of-range input is rejected with a 400. The upper bound keeps
+// the value inside uint32 (the wire type of the echoed `limit` —
+// logproto.DetectedFieldsResponse.limit) so the int->uint32
+// conversion at the response site cannot wrap.
 func parsePositiveInt(raw string, def int) (int, error) {
 	if raw == "" {
 		return def, nil
 	}
 	n, err := strconv.Atoi(raw)
-	if err != nil || n <= 0 {
-		return 0, errors.New("parameter must be a positive integer")
+	if err != nil || n <= 0 || int64(n) > math.MaxUint32 {
+		return 0, errors.New("parameter must be a positive integer no larger than 4294967295")
 	}
 	return n, nil
 }

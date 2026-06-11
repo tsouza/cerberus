@@ -299,6 +299,12 @@ func TestDetectedFields_BadInput(t *testing.T) {
 		{"missing query", `/loki/api/v1/detected_fields?start=1&end=2`},
 		{"bad query", `/loki/api/v1/detected_fields?query=%7Bnot+a+selector`},
 		{"bad line_limit", `/loki/api/v1/detected_fields?query=%7Bjob%3D%22api%22%7D&line_limit=-1`},
+		// limit is echoed on the wire as logproto's uint32; a value
+		// past math.MaxUint32 must be rejected at parse time, not
+		// wrapped by the int->uint32 conversion (CodeQL
+		// go/incorrect-integer-conversion on PR #774).
+		{"limit above uint32", `/loki/api/v1/detected_fields?query=%7Bjob%3D%22api%22%7D&limit=4294967296`},
+		{"line_limit above uint32", `/loki/api/v1/detected_fields?query=%7Bjob%3D%22api%22%7D&line_limit=4294967296`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
