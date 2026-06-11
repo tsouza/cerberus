@@ -289,6 +289,21 @@ func (h *Handler) handleMetricsQueryRange(w http.ResponseWriter, r *http.Request
 			h.serveMetricsQueryRangeHistogram(ctx, w, q, plan, hist, start, end, step)
 			return
 		}
+		// `| compare({...}, topN)` lowers to its own plan node
+		// (chplan.MetricsCompare) — the output is the baseline-vs-
+		// selection attribute split Grafana Traces Drilldown's
+		// Comparison tab renders, not a scalar per series.
+		if cmp, cok := unwrapMetricsCompare(inner); cok {
+			if len(stages) > 0 {
+				// Upstream's parser already rejects this combination
+				// (ast_validate.go); defensive belt for pre-lowered plans.
+				writeError(w, http.StatusUnprocessableEntity, "", "",
+					fmt.Errorf("traceql: second-stage %s over compare() is unsupported — compare() series carry the __meta_type split, not a scalar Value to rank or threshold", stages[0].Op))
+				return
+			}
+			h.serveMetricsQueryRangeCompare(ctx, w, q, plan, cmp, start, end, step)
+			return
+		}
 		writeError(w, http.StatusBadRequest, "", "",
 			fmt.Errorf("query %q is not a TraceQL metrics-pipeline expression — /api/metrics/query_range requires `| rate()`, `| count_over_time()`, `| *_over_time(...)`, `| quantile_over_time(...)` or `| histogram_over_time(...)`", q))
 		return

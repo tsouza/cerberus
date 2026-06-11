@@ -200,6 +200,18 @@ func (h *Handler) ExecMetricsRange(ctx context.Context, query string, start, end
 	stages, inner := peelMetricsSecondStages(plan)
 	metrics, ok := unwrapMetricsAggregate(inner)
 	if !ok {
+		// `| compare({...}, topN)` routes through the BaselineAggregator
+		// mirror — same post-processed series the HTTP handler returns.
+		if cmp, cok := unwrapMetricsCompare(inner); cok {
+			if len(stages) > 0 {
+				return ExecMetricsRangeResult{}, fmt.Errorf("%w: traceql: second-stage %s over compare() is unsupported — compare() series carry the __meta_type split, not a scalar Value to rank or threshold", errLowerStage, stages[0].Op)
+			}
+			series, _, cerr := h.execCompareRange(ctx, query, plan, cmp, start, end, step)
+			if cerr != nil {
+				return ExecMetricsRangeResult{}, cerr
+			}
+			return ExecMetricsRangeResult{Series: series}, nil
+		}
 		return ExecMetricsRangeResult{}, fmt.Errorf("%w: query %q is not a TraceQL metrics-pipeline expression — MetricsQueryRange requires `| rate()`, `| count_over_time()`, `| *_over_time(...)` or `| quantile_over_time(...)`", errLowerStage, query)
 	}
 	if len(stages) > 0 && metrics.Op == chplan.MetricsOpQuantileOverTime {
@@ -309,6 +321,19 @@ func (h *Handler) ExecMetricsInstant(ctx context.Context, query string, start, e
 	stages, inner := peelMetricsSecondStages(plan)
 	metrics, ok := unwrapMetricsAggregate(inner)
 	if !ok {
+		// compare() instant — single anchor at `end` (Start = End, same
+		// rationale as handleMetricsQueryInstant's RangeWindow comment),
+		// then the per-series sample collapses to InstantSeries.Value.
+		if cmp, cok := unwrapMetricsCompare(inner); cok {
+			if len(stages) > 0 {
+				return ExecMetricsInstantResult{}, fmt.Errorf("%w: traceql: second-stage %s over compare() is unsupported — compare() series carry the __meta_type split, not a scalar Value to rank or threshold", errLowerStage, stages[0].Op)
+			}
+			series, _, cerr := h.execCompareRange(ctx, query, plan, cmp, end, end, step)
+			if cerr != nil {
+				return ExecMetricsInstantResult{}, cerr
+			}
+			return ExecMetricsInstantResult{Series: compareSeriesToInstant(series)}, nil
+		}
 		return ExecMetricsInstantResult{}, fmt.Errorf("%w: query %q is not a TraceQL metrics-pipeline expression — MetricsQueryInstant requires `| rate()`, `| count_over_time()`, `| *_over_time(...)` or `| quantile_over_time(...)`", errLowerStage, query)
 	}
 	if len(stages) > 0 && metrics.Op == chplan.MetricsOpQuantileOverTime {

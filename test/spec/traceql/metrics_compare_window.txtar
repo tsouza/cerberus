@@ -1,0 +1,155 @@
+-- query.traceql --
+{ } | compare({ status = error }, 10, 1778580000000000000, 1778580060000000000)
+-- sql --
+SELECT `is_selection`, tupleElement(kv, ?) AS `attr`, tupleElement(kv, ?) AS `val`, toFloat64(count(?)) AS `Value` FROM (SELECT (((toUnixTimestamp64Nano(`Timestamp`) > ?) AND (toUnixTimestamp64Nano(`Timestamp`) <= ?)) AND (`StatusCode` = ?)) AS `is_selection`, arrayJoin(arrayConcat(array(tuple(?, toString(`SpanName`)), tuple(?, toString(lower(`StatusCode`))), tuple(?, toString(`StatusMessage`)), tuple(?, toString(lower(`SpanKind`))), tuple(?, toString(__root_name)), tuple(?, toString(__root_service_name)), tuple(?, toString(`ScopeName`)), tuple(?, toString(`ScopeVersion`)), tuple(?, toString(if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], ?))), tuple(?, toString(if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], ?))), tuple(?, toString(if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], ?))), tuple(?, toString(if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], ?))), tuple(?, toString(if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], ?))), tuple(?, toString(if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], ?))), tuple(?, toString(if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], ?))), tuple(?, toString(if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], ?))), tuple(?, toString(if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], ?))), tuple(?, toString(if(mapContains(`SpanAttributes`, ?), `SpanAttributes`[?], ?))), tuple(?, toString(if(mapContains(`SpanAttributes`, ?), `SpanAttributes`[?], ?))), tuple(?, toString(if(mapContains(`SpanAttributes`, ?), `SpanAttributes`[?], ?)))), arrayMap(t -> tuple(concat(?, tupleElement(t, ?)), toString(tupleElement(t, ?))), arrayFilter(t -> not(has(array(?, ?, ?, ?, ?, ?, ?, ?, ?), tupleElement(t, ?))), arrayZip(mapKeys(`ResourceAttributes`), mapValues(`ResourceAttributes`)))), arrayMap(t -> tuple(concat(?, tupleElement(t, ?)), toString(tupleElement(t, ?))), arrayFilter(t -> not(has(array(?, ?, ?), tupleElement(t, ?))), arrayZip(mapKeys(`SpanAttributes`), mapValues(`SpanAttributes`)))))) AS `kv` FROM (SELECT * FROM `otel_traces` WHERE ?) AS s LEFT JOIN (SELECT `TraceId`, any(`SpanName`) AS `__root_name`, any(`ServiceName`) AS `__root_service_name` FROM (SELECT * FROM `otel_traces` WHERE (`ParentSpanId` = ?)) GROUP BY `TraceId`) AS r ON s.`TraceId` = r.`TraceId`) GROUP BY `is_selection`, `attr`, `val` ORDER BY `is_selection`, `attr`, `val`
+-- args --
+[0] int64 = 1
+[1] int64 = 2
+[2] int64 = 1
+[3] int64 = 1778580000000000000
+[4] int64 = 1778580060000000000
+[5] string = "Error"
+[6] string = "name"
+[7] string = "status"
+[8] string = "statusMessage"
+[9] string = "kind"
+[10] string = "rootName"
+[11] string = "rootServiceName"
+[12] string = "instrumentation:name"
+[13] string = "instrumentation:version"
+[14] string = "resource.service.name"
+[15] string = "service.name"
+[16] string = "service.name"
+[17] string = "nil"
+[18] string = "resource.cluster"
+[19] string = "cluster"
+[20] string = "cluster"
+[21] string = "nil"
+[22] string = "resource.namespace"
+[23] string = "namespace"
+[24] string = "namespace"
+[25] string = "nil"
+[26] string = "resource.pod"
+[27] string = "pod"
+[28] string = "pod"
+[29] string = "nil"
+[30] string = "resource.container"
+[31] string = "container"
+[32] string = "container"
+[33] string = "nil"
+[34] string = "resource.k8s.cluster.name"
+[35] string = "k8s.cluster.name"
+[36] string = "k8s.cluster.name"
+[37] string = "nil"
+[38] string = "resource.k8s.namespace.name"
+[39] string = "k8s.namespace.name"
+[40] string = "k8s.namespace.name"
+[41] string = "nil"
+[42] string = "resource.k8s.pod.name"
+[43] string = "k8s.pod.name"
+[44] string = "k8s.pod.name"
+[45] string = "nil"
+[46] string = "resource.k8s.container.name"
+[47] string = "k8s.container.name"
+[48] string = "k8s.container.name"
+[49] string = "nil"
+[50] string = "span.http.status_code"
+[51] string = "http.status_code"
+[52] string = "http.status_code"
+[53] string = "nil"
+[54] string = "span.http.method"
+[55] string = "http.method"
+[56] string = "http.method"
+[57] string = "nil"
+[58] string = "span.http.url"
+[59] string = "http.url"
+[60] string = "http.url"
+[61] string = "nil"
+[62] string = "resource."
+[63] int64 = 1
+[64] int64 = 2
+[65] string = "service.name"
+[66] string = "cluster"
+[67] string = "namespace"
+[68] string = "pod"
+[69] string = "container"
+[70] string = "k8s.cluster.name"
+[71] string = "k8s.namespace.name"
+[72] string = "k8s.pod.name"
+[73] string = "k8s.container.name"
+[74] int64 = 1
+[75] string = "span."
+[76] int64 = 1
+[77] int64 = 2
+[78] string = "http.status_code"
+[79] string = "http.method"
+[80] string = "http.url"
+[81] int64 = 1
+[82] bool = true
+[83] string = ""
+-- seed --
+CREATE TABLE otel_traces (
+    Timestamp DateTime64(9),
+    TraceId String,
+    SpanId String,
+    ParentSpanId String,
+    SpanName LowCardinality(String),
+    SpanKind LowCardinality(String),
+    ServiceName LowCardinality(String),
+    StatusCode LowCardinality(String),
+    StatusMessage String,
+    ScopeName String,
+    ScopeVersion String,
+    ResourceAttributes Map(LowCardinality(String), String),
+    SpanAttributes Map(LowCardinality(String), String)
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    (toDateTime64(1778580030, 9), 't1', 's1', '', 'a', 'Server', 'shop', 'Error', '', '', '', map('service.name', 'shop'), map()),
+    (toDateTime64(1778580090, 9), 't2', 's2', '', 'a', 'Server', 'shop', 'Error', '', '', '', map('service.name', 'shop'), map());
+-- expected_rows --
+[
+  [0, "instrumentation:name", "", 1],
+  [0, "instrumentation:version", "", 1],
+  [0, "kind", "server", 1],
+  [0, "name", "a", 1],
+  [0, "resource.cluster", "nil", 1],
+  [0, "resource.container", "nil", 1],
+  [0, "resource.k8s.cluster.name", "nil", 1],
+  [0, "resource.k8s.container.name", "nil", 1],
+  [0, "resource.k8s.namespace.name", "nil", 1],
+  [0, "resource.k8s.pod.name", "nil", 1],
+  [0, "resource.namespace", "nil", 1],
+  [0, "resource.pod", "nil", 1],
+  [0, "resource.service.name", "shop", 1],
+  [0, "rootName", "a", 1],
+  [0, "rootServiceName", "shop", 1],
+  [0, "span.http.method", "nil", 1],
+  [0, "span.http.status_code", "nil", 1],
+  [0, "span.http.url", "nil", 1],
+  [0, "status", "error", 1],
+  [0, "statusMessage", "", 1],
+  [1, "instrumentation:name", "", 1],
+  [1, "instrumentation:version", "", 1],
+  [1, "kind", "server", 1],
+  [1, "name", "a", 1],
+  [1, "resource.cluster", "nil", 1],
+  [1, "resource.container", "nil", 1],
+  [1, "resource.k8s.cluster.name", "nil", 1],
+  [1, "resource.k8s.container.name", "nil", 1],
+  [1, "resource.k8s.namespace.name", "nil", 1],
+  [1, "resource.k8s.pod.name", "nil", 1],
+  [1, "resource.namespace", "nil", 1],
+  [1, "resource.pod", "nil", 1],
+  [1, "resource.service.name", "shop", 1],
+  [1, "rootName", "a", 1],
+  [1, "rootServiceName", "shop", 1],
+  [1, "span.http.method", "nil", 1],
+  [1, "span.http.status_code", "nil", 1],
+  [1, "span.http.url", "nil", 1],
+  [1, "status", "error", 1],
+  [1, "statusMessage", "", 1]
+]
+-- chplan --
+MetricsCompare topN=10 selection=(((toUnixTimestamp64Nano(Timestamp) > 1778580000000000000) AND (toUnixTimestamp64Nano(Timestamp) <= 1778580060000000000)) AND (StatusCode = "Error")) window=(1778580000000000000, 1778580060000000000] rootLookup=true valueAlias=Value
+  Filter predicate=true
+    Scan(otel_traces)

@@ -107,6 +107,29 @@ func (h *Handler) handleMetricsQueryInstant(w http.ResponseWriter, r *http.Reque
 	stages, inner := peelMetricsSecondStages(plan)
 	metrics, ok := unwrapMetricsAggregate(inner)
 	if !ok {
+		// `| compare({...}, topN)` follows its own post-processing path
+		// (the BaselineAggregator mirror); with a single anchor the
+		// per-series sample collapses to the InstantSeries.Value —
+		// translateQueryRangeToInstant semantics, same as the scalar ops.
+		if cmp, cok := unwrapMetricsCompare(inner); cok {
+			if len(stages) > 0 {
+				writeError(w, http.StatusUnprocessableEntity, "", "",
+					fmt.Errorf("traceql: second-stage %s over compare() is unsupported — compare() series carry the __meta_type split, not a scalar Value to rank or threshold", stages[0].Op))
+				return
+			}
+			// Start = End on purpose — see the RangeWindow comment below
+			// for why the instant anchor sits at `end` only.
+			series, headers, cerr := h.execCompareRange(ctx, q, plan, cmp, end, end, step)
+			if cerr != nil {
+				writeError(w, classifyMetricsQueryRangeErr(cerr), "", "", cerr)
+				return
+			}
+			writeEngineHeaders(w, headers)
+			writeJSON(w, http.StatusOK, MetricsQueryInstantResponse{
+				Series: compareSeriesToInstant(series),
+			})
+			return
+		}
 		writeError(w, http.StatusBadRequest, "", "",
 			fmt.Errorf("query %q is not a TraceQL metrics-pipeline expression — /api/metrics/query requires `| rate()`, `| count_over_time()`, `| *_over_time(...)` or `| quantile_over_time(...)`", q))
 		return

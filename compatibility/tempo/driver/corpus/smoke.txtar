@@ -402,6 +402,33 @@ samples_non_negative
 groupby_labels_present:resource.service.name
 
 -- name --
+metrics_compare_status_error
+# `| compare({...}, topN)` — the baseline-vs-selection attribute split
+# Grafana Traces Drilldown's Comparison tab consumes. The differ
+# compares the full __meta_type series scheme (baseline / selection
+# value series + *_total series) against reference Tempo: label sets
+# by hash, sample grids point-for-point.
+#
+# topN=500 deliberately exceeds every per-attribute cardinality in the
+# seed (span names ~116, http.target 100, rootName 100, trace.index 25)
+# so neither backend truncates — upstream's top-N tie-break is an
+# unstable sort, and a truncated tie would make the case flaky rather
+# than prove anything. Full-inventory comparison is the stronger pin.
+-- query --
+{ } | compare({ status = error }, 500)
+-- endpoint --
+metrics_range
+-- step --
+60s
+-- expected_min_series --
+4
+-- expected_max_series --
+5000
+-- semantic_checks --
+samples_non_negative
+labels_match_query
+
+-- name --
 metrics_quantile_over_time_p95
 -- query --
 { } | quantile_over_time(duration, 0.95)

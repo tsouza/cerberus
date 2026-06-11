@@ -43,6 +43,9 @@ func lowerMetricsPipeline(prev chplan.Node, mp traceql.FirstStageElement, s sche
 	if v, ok := mp.(*traceql.AverageOverTimeAggregator); ok {
 		return lowerAverageOverTime(prev, v, s)
 	}
+	if v, ok := mp.(*traceql.MetricsCompare); ok {
+		return lowerMetricsCompare(prev, v, s)
+	}
 	return nil, fmt.Errorf("traceql: metrics pipeline element %T is unsupported", mp)
 }
 
