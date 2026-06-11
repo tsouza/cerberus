@@ -47,6 +47,28 @@ var LogSeverityPool = []string{"INFO", "WARN", "ERROR", "DEBUG"}
 // generator would burn iterations on filters that match zero records.
 var LogBodyTokenPool = []string{"error", "ok", "timeout", "retry", "cache", "miss", "hit", "auth"}
 
+// LogIPTokenPool is the pool of literal IP tokens [drawBody] can
+// splice into a line. Delimited (space-separated) IPv4 shapes only:
+// the `ip()` line-filter property compares cerberus's
+// maximal-charset-run candidate extraction against the oracle's, and
+// both agree with reference Loki exactly on delimited tokens (the
+// documented narrow divergence is suffix-embedded IPs, which the pool
+// deliberately avoids).
+var LogIPTokenPool = []string{"10.1.2.3", "10.200.0.9", "192.168.1.5", "172.16.0.1", "8.8.8.8"}
+
+// LogIPPatternPool is the `ip("...")` argument pool — at least one of
+// each reference pattern kind (single IP, CIDR, IP range), sized so
+// both the match and the no-match branch fire against
+// LogIPTokenPool's values.
+var LogIPPatternPool = []string{
+	"10.0.0.0/8",
+	"192.168.0.0/16",
+	"10.1.2.3",
+	"10.0.0.1-10.255.255.255",
+	"8.8.8.8",
+	"172.16.0.0-172.16.0.10",
+}
+
 // logAnchorTime is the timestamp the generator anchors all log records
 // to. Fixed (2026-05-13T12:00:00Z) so each rapid iteration produces
 // the same wall-clock baseline; the failure log's `evalTs` value is
@@ -119,14 +141,19 @@ func drawStreamLabels(t *rapid.T, id string) map[string]string {
 }
 
 // drawBody picks 2-4 tokens from LogBodyTokenPool and joins them with
-// single spaces. The shape mirrors a structured log message
-// reasonably well — short, alphabetic, no special characters that
-// would force the chDB string literal escaper to run.
+// single spaces, optionally appending one delimited IP token from
+// LogIPTokenPool (~half the draws) so the `ip()` line-filter shapes
+// have a non-trivial accept-set. The shape mirrors a structured log
+// message reasonably well — short, alphanumeric-and-dots, no special
+// characters that would force the chDB string literal escaper to run.
 func drawBody(t *rapid.T, id string) string {
 	count := rapid.IntRange(2, 4).Draw(t, id+"_count")
-	tokens := make([]string, 0, count)
+	tokens := make([]string, 0, count+1)
 	for i := 0; i < count; i++ {
 		tokens = append(tokens, rapid.SampledFrom(LogBodyTokenPool).Draw(t, fmt.Sprintf("%s_tok_%d", id, i)))
+	}
+	if rapid.Bool().Draw(t, id+"_with_ip") {
+		tokens = append(tokens, rapid.SampledFrom(LogIPTokenPool).Draw(t, id+"_ip"))
 	}
 	return strings.Join(tokens, " ")
 }
@@ -263,6 +290,8 @@ func escapeSQLString(s string) string {
 //   - Line filter (contains): `{job="api"} |= "error"`
 //   - Line filter (not):      `{job="api"} != "debug"`
 //   - Label format (rename):  `{job="api"} | label_format renamed=job`
+//   - IP line filter:         `{job="api"} |= ip("10.0.0.0/8")` / `!= ip(...)`
+//   - Pattern line filter:    `{job="api"} |> "<_>error<_>"` / `!> "..."`
 //
 // All shapes are log-stream queries (resultType=streams). Metric-form
 // (rate / count_over_time / aggregations) is not generated; the oracle's
@@ -315,20 +344,25 @@ func drawLogQLSelector(t *rapid.T, present map[string][]string) string {
 }
 
 // drawLogQLShape picks the random expression shape per the LogQL
-// generator accept-set. Uniform draw over the four shapes:
+// generator accept-set. Uniform draw over the eight shapes:
 //
 //	0: bare selector                — exercises the matcher path
 //	1: selector |= "<tok>"          — line-filter contains
 //	2: selector != "<tok>"          — line-filter not-contains
 //	3: selector | label_format renamed=<src>
 //	                                — rename label, post-process path
+//	4: selector |= ip("<pat>")      — ip line-filter (CIDR/range/single)
+//	5: selector != ip("<pat>")      — negated ip line-filter
+//	6: selector |> "<pattern>"      — pattern line-filter (`<_>` wildcards)
+//	7: selector !> "<pattern>"      — negated pattern line-filter
 //
-// The token for shapes 1 / 2 is drawn from the dataset's body
+// The token for shapes 1 / 2 / 6 / 7 is drawn from the dataset's body
 // tokens so the filter has at least one record it could match. For
 // shape 3 the source label is drawn from the stream-label pool so
-// the rename actually fires.
+// the rename actually fires; shapes 4 / 5 draw from LogIPPatternPool
+// (paired with the IP tokens drawBody splices into lines).
 func drawLogQLShape(t *rapid.T, sel string, logs *property.LogsModel) string {
-	shape := rapid.IntRange(0, 3).Draw(t, "shape")
+	shape := rapid.IntRange(0, 7).Draw(t, "shape")
 	switch shape {
 	case 0:
 		return sel
@@ -346,6 +380,29 @@ func drawLogQLShape(t *rapid.T, sel string, logs *property.LogsModel) string {
 	case 3:
 		srcLabel := rapid.SampledFrom(LogStreamLabelPool).Draw(t, "renameSrc")
 		return fmt.Sprintf(`%s | label_format renamed=%s`, sel, srcLabel)
+	case 4, 5:
+		pat := rapid.SampledFrom(LogIPPatternPool).Draw(t, "ipPattern")
+		op := "|="
+		if shape == 5 {
+			op = "!="
+		}
+		return fmt.Sprintf(`%s %s ip(%q)`, sel, op, pat)
+	case 6, 7:
+		tokens := logs.BodyTokensPresent()
+		if len(tokens) == 0 {
+			return sel
+		}
+		tok := rapid.SampledFrom(tokens).Draw(t, "patternToken")
+		// The three structural positions exercise the reference
+		// Test() walk's distinct branches: floating leading literal,
+		// anchored trailing literal, and the gaps-on-both-sides form
+		// (every wildcard must consume ≥ 1 byte).
+		form := rapid.SampledFrom([]string{"<_>%s<_>", "%s<_>", "<_>%s"}).Draw(t, "patternForm")
+		op := "|>"
+		if shape == 7 {
+			op = "!>"
+		}
+		return fmt.Sprintf(`%s %s %q`, sel, op, fmt.Sprintf(form, tok))
 	}
 	return sel
 }
