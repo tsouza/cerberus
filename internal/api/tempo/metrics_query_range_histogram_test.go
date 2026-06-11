@@ -141,3 +141,61 @@ func TestMetricsQueryRangeHistogram_GroupBy(t *testing.T) {
 		}
 	}
 }
+
+// TestMetricsQueryRangeHistogram_BucketLabelNormalisation pins the
+// wire form of the `__bucket` label value to Go's shortest round-trip
+// float rendering (strconv 'g'/-1, what fmt.Sprint(float64) produces —
+// the same form a consumer derives from reference Tempo's doubleValue
+// projection). ClickHouse's `toString(Float64)` disagrees with Go on
+// small magnitudes — CH renders 1.024e-6 as "0.000001024" — so without
+// the handler-side rewrite, sub-100µs duration buckets would carry a
+// CH-version-dependent label that never aligns with reference Tempo's
+// (the tempo compatibility differ keys series by the stringified
+// label set).
+func TestMetricsQueryRangeHistogram_BucketLabelNormalisation(t *testing.T) {
+	t.Parallel()
+
+	ts := time.Date(2026, 5, 12, 10, 1, 0, 0, time.UTC)
+	q := &stubQuerier{samples: []chclient.Sample{
+		// CH toString rendering of the 1.024µs bucket (2^10 ns / 1e9).
+		{Labels: map[string]string{"__bucket": "0.000001024"}, Timestamp: ts, Value: 3},
+		// Values Go renders identically must pass through unchanged.
+		{Labels: map[string]string{"__bucket": "0.25"}, Timestamp: ts, Value: 5},
+	}}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	u := metricsQueryRangeURL(srv.URL, "{} | histogram_over_time(duration)", map[string]string{
+		"start": fixtureStartUnix,
+		"end":   fixtureEndUnix,
+		"step":  "60s",
+	})
+	resp, err := http.Get(u)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+
+	var body tempo.MetricsQueryRangeResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Series) != 2 {
+		t.Fatalf("expected 2 series, got %d: %+v", len(body.Series), body)
+	}
+	got := map[string]bool{}
+	for _, s := range body.Series {
+		if len(s.Labels) != 1 || s.Labels[0].Key != "__bucket" {
+			t.Fatalf("expected single __bucket label, got %+v", s.Labels)
+		}
+		got[s.Labels[0].Value] = true
+	}
+	for _, want := range []string{"1.024e-06", "0.25"} {
+		if !got[want] {
+			t.Errorf("missing __bucket=%q on the wire (got %v) — bucket labels must use Go's shortest float form", want, got)
+		}
+	}
+}

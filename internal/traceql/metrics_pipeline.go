@@ -71,8 +71,9 @@ func lowerMetricsPipeline(prev chplan.Node, mp traceql.FirstStageElement, s sche
 // scalar, so it warrants a distinct IR shape from the scalar
 // MetricsAggregate. Bucketing mirrors Tempo's bucketizeFnFor: each
 // span's <attr> is rounded up to the nearest power of two
-// (log2(ceil(v))); durations additionally divide by 1e9 so the bucket
-// label reads in seconds.
+// (Log2Bucketize, `2^ceil(log2(v))`); durations additionally divide
+// the resulting power of two by 1e9 so the bucket label reads in
+// seconds.
 func lowerMetricsAggregate(prev chplan.Node, agg *traceql.MetricsAggregate, s schema.Traces) (chplan.Node, error) {
 	op := agg.Op()
 	if op == traceql.MetricsAggregateHistogramOverTime {
@@ -284,8 +285,9 @@ const histogramBucketAlias = "__bucket"
 //
 // Bucketing follows Tempo's `bucketizeFnFor`: duration attrs (the
 // `duration` intrinsic, or attributes typed as TypeDuration) emit
-// `log2(<attr>) / 1e9` so the bucket reads in seconds; other numeric
-// attrs emit the raw `log2(<attr>)`. The runtime drops spans with
+// `pow(2, ceil(log2(toFloat64(<attr>)))) / 1e9` so the bucket reads in
+// seconds; other numeric attrs emit the raw next power of two
+// `pow(2, ceil(log2(toFloat64(<attr>))))`. The runtime drops spans with
 // <attr> < 2 (bucketizeDuration / bucketizeAttribute return
 // NewStaticNil()); the SQL emitter mirrors that with a WHERE filter on
 // the operand.
