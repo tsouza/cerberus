@@ -66,15 +66,15 @@ func (e *emitter) emitScan(s *chplan.Scan) error {
 		return err
 	}
 	sb := NewQuery().From(scanTableFrag(s))
-	if len(s.Columns) > 0 {
-		cols := make([]Frag, 0, len(s.Columns))
-		for _, c := range s.Columns {
-			cols = append(cols, Col(c))
-		}
-		sb.Select(cols...)
+	// An empty Columns slice appends nothing to the SELECT list, which
+	// the QueryBuilder renders as the bare `SELECT *` — matching the
+	// pre-builder emitter's behaviour for a column-less Scan. No
+	// length guard is needed: Select(...) is a no-op on an empty slice.
+	cols := make([]Frag, 0, len(s.Columns))
+	for _, c := range s.Columns {
+		cols = append(cols, Col(c))
 	}
-	// (Empty Select list renders as `SELECT *` — matches the
-	// pre-builder emitter's behaviour for a column-less Scan.)
+	sb.Select(cols...)
 	e.emitSelect(sb)
 	return nil
 }
@@ -385,13 +385,13 @@ func (e *emitter) emitFilterScan(f *chplan.Filter, scan *chplan.Scan) error {
 	}
 
 	sb := NewQuery().From(scanTableFrag(scan))
-	if len(scan.Columns) > 0 {
-		cols := make([]Frag, 0, len(scan.Columns))
-		for _, c := range scan.Columns {
-			cols = append(cols, Col(c))
-		}
-		sb.Select(cols...)
+	// Empty Columns → bare `SELECT *` (Select is a no-op on an empty
+	// slice); no length guard needed.
+	cols := make([]Frag, 0, len(scan.Columns))
+	for _, c := range scan.Columns {
+		cols = append(cols, Col(c))
 	}
+	sb.Select(cols...)
 
 	// Re-assemble each bucket as a single AND-chain Frag so the rendered
 	// SQL preserves the existing parenthesisation that emitter.Expr
@@ -440,19 +440,18 @@ func (e *emitter) emitProject(p *chplan.Project) error {
 		return err
 	}
 	sb := NewQuery().From(sub)
-	if len(p.Projections) > 0 {
-		// Pre-flight every projection expression so a chplan error
-		// surfaces synchronously rather than from inside the Frag
-		// render.
-		for _, pr := range p.Projections {
-			if err := (&Builder{}).Expr(pr.Expr); err != nil {
-				return err
-			}
+	// Pre-flight every projection expression so a chplan error surfaces
+	// synchronously rather than from inside the Frag render. An empty
+	// Projections slice leaves the SELECT list empty, which renders as
+	// the bare `SELECT *` — no length guard needed.
+	for _, pr := range p.Projections {
+		if err := (&Builder{}).Expr(pr.Expr); err != nil {
+			return err
 		}
-		for _, pr := range p.Projections {
-			expr := pr.Expr
-			sb.SelectAs(func(b *Builder) { _ = b.Expr(expr) }, pr.Alias)
-		}
+	}
+	for _, pr := range p.Projections {
+		expr := pr.Expr
+		sb.SelectAs(func(b *Builder) { _ = b.Expr(expr) }, pr.Alias)
 	}
 	e.emitSelect(sb)
 	return nil
@@ -627,9 +626,10 @@ func (e *emitter) emitLimit(l *chplan.Limit) error {
 		return err
 	}
 	sb := NewQuery().From(sub)
-	if l.Count > 0 {
-		sb.Limit(l.Count)
-	}
+	// Limit is a no-op for a non-positive count (QueryBuilder.Limit sets
+	// hasLimit = n > 0), so a zero / negative Count renders no LIMIT
+	// clause without an explicit guard.
+	sb.Limit(l.Count)
 	e.emitSelect(sb)
 	return nil
 }

@@ -2825,3 +2825,835 @@ func TestMergeTableFrag_ExplicitDatabase(t *testing.T) {
 		t.Errorf("SQL missing %q.\nfull SQL=%s", want, sql)
 	}
 }
+
+// --- metrics_compare.go survivors -----------------------------------------
+
+// compareNodeInternal builds a minimal valid *chplan.MetricsCompare for
+// the internal-package tests below. Aliases are left EMPTY so the
+// alias-fallback helpers (compareSelOut / compareAttrOut / compareValOut
+// / compareValueOut) take their default branch — the branch every
+// external-package test skips because it always pins explicit aliases.
+func compareNodeInternal() *chplan.MetricsCompare {
+	return &chplan.MetricsCompare{
+		Selection: &chplan.Binary{
+			Op:    chplan.OpEq,
+			Left:  &chplan.ColumnRef{Name: "StatusCode"},
+			Right: &chplan.LitString{V: "Error"},
+		},
+		TopN: 10,
+		Pairs: &chplan.FuncCall{Name: "array", Args: []chplan.Expr{
+			&chplan.FuncCall{Name: "tuple", Args: []chplan.Expr{
+				&chplan.LitString{V: "name"},
+				&chplan.ColumnRef{Name: "SpanName"},
+			}},
+		}},
+		Inner: &chplan.Scan{Table: "otel_traces"},
+	}
+}
+
+// TestCompareOutAliasFallbacks kills the four CONDITIONALS_NEGATION
+// mutants at metrics_compare.go:126,133,140,147 — the `m.SelAlias != ""`
+// / `AttrAlias` / `ValAlias` / `ValueAlias` guards that fall back to the
+// canonical default name when the alias is empty. The mutant `== ""`
+// would return the (empty) alias instead of the default; we assert both
+// the empty→default mapping AND the explicit→passthrough mapping so the
+// flip is observable on each helper independently.
+func TestCompareOutAliasFallbacks(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name     string
+		set      func(*chplan.MetricsCompare)
+		out      func(*chplan.MetricsCompare) string
+		wantDflt string
+		explicit string
+	}{
+		{"sel", func(m *chplan.MetricsCompare) { m.SelAlias = "" }, compareSelOut, "is_selection", "cohort"},
+		{"attr", func(m *chplan.MetricsCompare) { m.AttrAlias = "" }, compareAttrOut, "attr", "akey"},
+		{"val", func(m *chplan.MetricsCompare) { m.ValAlias = "" }, compareValOut, "val", "vval"},
+		{"value", func(m *chplan.MetricsCompare) { m.ValueAlias = "" }, compareValueOut, "Value", "Count"},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			mDflt := compareNodeInternal()
+			c.set(mDflt)
+			if got := c.out(mDflt); got != c.wantDflt {
+				t.Errorf("empty alias must fall back to %q, got %q", c.wantDflt, got)
+			}
+			mExp := compareNodeInternal()
+			switch c.name {
+			case "sel":
+				mExp.SelAlias = c.explicit
+			case "attr":
+				mExp.AttrAlias = c.explicit
+			case "val":
+				mExp.ValAlias = c.explicit
+			case "value":
+				mExp.ValueAlias = c.explicit
+			}
+			if got := c.out(mExp); got != c.explicit {
+				t.Errorf("explicit alias must pass through as %q, got %q", c.explicit, got)
+			}
+		})
+	}
+}
+
+// TestEmitRangeWindowCompare_RangeFallback kills the
+// CONDITIONALS_NEGATION at metrics_compare.go:212 (`if rangeDur == 0`).
+// When the RangeWindow carries no explicit Range, rangeDur falls back to
+// Step, so the inner scan-bound pushdown subtracts one Step (60s) from
+// End. The mutant `!= 0` would skip the fallback, leaving rangeDur=0 and
+// emitting a `- toIntervalNanosecond(0)` lower bound. We assert the
+// fallback's observable artefact: the `- toIntervalNanosecond(60000000000)`
+// window subtraction in the scan-bound PREWHERE/WHERE.
+func TestEmitRangeWindowCompare_RangeFallback(t *testing.T) {
+	t.Parallel()
+	rw := &chplan.RangeWindow{
+		Input: compareNodeInternal(),
+		Step:  time.Minute,
+		// Range deliberately omitted (0) → must fall back to Step.
+		Start:           time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+		End:             time.Date(2026, 5, 12, 10, 3, 0, 0, time.UTC),
+		TimestampColumn: "Timestamp",
+	}
+	sql, _, err := Emit(context.Background(), rw)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if !strings.Contains(sql, "- toIntervalNanosecond(60000000000)") {
+		t.Errorf("rangeDur must fall back to Step (60s window); missing the 60e9ns subtraction.\nSQL: %s", sql)
+	}
+	if strings.Contains(sql, "- toIntervalNanosecond(0)") {
+		t.Errorf("rangeDur==0 fallback skipped: emitted a zero-width window.\nSQL: %s", sql)
+	}
+}
+
+// TestEmitRangeWindowCompare_SpanBoundaryAndArithmetic kills three
+// mutants on the Start/End anchor-count path:
+//   - CONDITIONALS_BOUNDARY at 223:11 (`if span < 0`) — Start==End is a
+//     valid single-anchor window, not an error.
+//   - ARITHMETIC_BASE at 226:20 (`span/stepNS`) and 226:28 (`+ 1`) — the
+//     `least(<numAnchors>, …)` literal in the sample-side fanout pins the
+//     exact anchor count, so `/`→`*`/`%`/`±` and `+`→`-`/`*` all diverge.
+//
+// Setup: Start=10:00, End=10:03, Step=1m → span=3m, numAnchors=3/1+1=4.
+func TestEmitRangeWindowCompare_SpanBoundaryAndArithmetic(t *testing.T) {
+	t.Parallel()
+
+	t.Run("span boundary Start==End → numAnchors=1, no error", func(t *testing.T) {
+		t.Parallel()
+		ts := time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC)
+		rw := &chplan.RangeWindow{
+			Input: compareNodeInternal(), Step: time.Minute, Range: time.Minute,
+			Start: ts, End: ts, TimestampColumn: "Timestamp",
+		}
+		sql, _, err := Emit(context.Background(), rw)
+		if err != nil {
+			t.Fatalf("Start==End must be accepted (span=0, not <0): %v", err)
+		}
+		if !strings.Contains(sql, "least(1,") {
+			t.Errorf("span=0 → numAnchors=0/step+1=1; expected least(1,.\nSQL: %s", sql)
+		}
+	})
+
+	t.Run("numAnchors arithmetic span=3m step=1m → 4", func(t *testing.T) {
+		t.Parallel()
+		rw := &chplan.RangeWindow{
+			Input: compareNodeInternal(), Step: time.Minute, Range: time.Minute,
+			Start:           time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+			End:             time.Date(2026, 5, 12, 10, 3, 0, 0, time.UTC),
+			TimestampColumn: "Timestamp",
+		}
+		sql, _, err := Emit(context.Background(), rw)
+		if err != nil {
+			t.Fatalf("Emit: %v", err)
+		}
+		if !strings.Contains(sql, "least(4,") {
+			t.Errorf("span=3m, step=1m → 3/1+1=4 anchors; expected least(4,.\nSQL: %s", sql)
+		}
+	})
+
+	t.Run("Start>End → error", func(t *testing.T) {
+		t.Parallel()
+		rw := &chplan.RangeWindow{
+			Input: compareNodeInternal(), Step: time.Minute, Range: time.Minute,
+			Start:           time.Date(2026, 5, 12, 10, 3, 0, 0, time.UTC),
+			End:             time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+			TimestampColumn: "Timestamp",
+		}
+		_, _, err := Emit(context.Background(), rw)
+		if err == nil {
+			t.Fatalf("Start>End (span<0) must error")
+		}
+		if !errors.Is(err, ErrUnsupported) {
+			t.Errorf("want ErrUnsupported, got %v", err)
+		}
+	})
+}
+
+// TestEmitRangeWindowCompare_OuterRangePath covers + kills the
+// NOT_COVERED mutants on the OuterRange anchor branch:
+//   - CONDITIONALS_BOUNDARY / CONDITIONALS_NEGATION at 219:20
+//     (`case r.OuterRange > 0`).
+//   - ARITHMETIC_BASE at 220:42/50 (`OuterRange.Nanoseconds()/stepNS + 1`).
+//   - INVERT_LOGICAL at 221:25 (the `&&` joining the Start/End fallback
+//     case — covered by exercising both branches: OuterRange>0 takes the
+//     first case, so the second-case guard never fires here, but the
+//     anchor-count assertion distinguishes the OuterRange formula from the
+//     Start/End one).
+//
+// Setup: OuterRange=4m, Step=1m → numAnchors = 4/1 + 1 = 5.
+func TestEmitRangeWindowCompare_OuterRangePath(t *testing.T) {
+	t.Parallel()
+	rw := &chplan.RangeWindow{
+		Input:           compareNodeInternal(),
+		Step:            time.Minute,
+		Range:           time.Minute,
+		OuterRange:      4 * time.Minute,
+		TimestampColumn: "Timestamp",
+	}
+	sql, _, err := Emit(context.Background(), rw)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if !strings.Contains(sql, "least(5,") {
+		t.Errorf("OuterRange=4m, step=1m → 4/1+1=5 anchors; expected least(5,.\nSQL: %s", sql)
+	}
+}
+
+// TestEmitRangeWindowCompare_RootLookupTraceIDGuard covers + kills the
+// NOT_COVERED CONDITIONALS_NEGATION at metrics_compare.go:95
+// (`if m.TraceIDColumn == ""` inside the RootLookup branch). With a
+// RootLookup set but no TraceIDColumn the emitter must error; a non-empty
+// TraceIDColumn must render the LEFT JOIN on the qualified id columns.
+func TestEmitRangeWindowCompare_RootLookupTraceIDGuard(t *testing.T) {
+	t.Parallel()
+
+	t.Run("RootLookup set, TraceIDColumn empty → error", func(t *testing.T) {
+		t.Parallel()
+		m := compareNodeInternal()
+		m.RootLookup = &chplan.Scan{Table: "otel_traces"}
+		m.TraceIDColumn = ""
+		_, _, err := Emit(context.Background(), m)
+		if err == nil {
+			t.Fatalf("RootLookup with empty TraceIDColumn must error")
+		}
+		if !errors.Is(err, ErrUnsupported) {
+			t.Errorf("want ErrUnsupported, got %v", err)
+		}
+	})
+
+	t.Run("RootLookup set, TraceIDColumn present → LEFT JOIN on it", func(t *testing.T) {
+		t.Parallel()
+		m := compareNodeInternal()
+		m.RootLookup = &chplan.Scan{Table: "otel_traces"}
+		m.TraceIDColumn = "TraceId"
+		sql, _, err := Emit(context.Background(), m)
+		if err != nil {
+			t.Fatalf("Emit: %v", err)
+		}
+		if !strings.Contains(sql, "LEFT JOIN") {
+			t.Errorf("RootLookup must render a LEFT JOIN.\nSQL: %s", sql)
+		}
+		if !strings.Contains(sql, "s.`TraceId` = r.`TraceId`") {
+			t.Errorf("LEFT JOIN must key on the qualified TraceId columns.\nSQL: %s", sql)
+		}
+	})
+}
+
+// --- exemplars.go attribute-map keying branches ---------------------------
+
+// exemplarArgsContain reports whether the bound-arg slice carries the
+// given string literal (the Attributes-map keys/values bind positionally
+// as args).
+func exemplarArgsContain(args []any, want string) bool {
+	for _, a := range args {
+		if s, ok := a.(string); ok && s == want {
+			return true
+		}
+	}
+	return false
+}
+
+// TestEmitMetricsExemplars_OuterRangeNumAnchors covers + kills the
+// CONDITIONALS_BOUNDARY/NEGATION at exemplars.go:112 (`case rw.OuterRange
+// > 0`) and the ARITHMETIC_BASE at 113 (`OuterRange.Nanoseconds()/stepNS
+// + 1`). The existing NumAnchorsBoundary test only exercises the
+// Start/End span branch; this one drives the OuterRange branch.
+//
+// OuterRange=4m, Step=1m → numAnchors = 4/1 + 1 = 5 → `least(5,`.
+func TestEmitMetricsExemplars_OuterRangeNumAnchors(t *testing.T) {
+	t.Parallel()
+	m := &chplan.MetricsAggregate{
+		Op:         chplan.MetricsOpRate,
+		ValueAlias: "Value",
+		Inner:      &chplan.Scan{Table: "otel_traces"},
+	}
+	rw := &chplan.RangeWindow{
+		Input:           m,
+		Step:            time.Minute,
+		Range:           time.Minute,
+		OuterRange:      4 * time.Minute,
+		TimestampColumn: "Timestamp",
+	}
+	sql, _, err := EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if !strings.Contains(sql, "least(5, intDiv(dateDiff('nanosecond'") {
+		t.Errorf("OuterRange=4m, step=1m → 4/1+1=5 anchors; expected least(5,.\nSQL: %s", sql)
+	}
+}
+
+// TestEmitMetricsExemplars_QuantileKeyBranch covers + kills the
+// CONDITIONALS_NEGATION / INVERT_LOGICAL mutants at exemplars.go:215
+// (`m.Op == QuantileOverTime && len(m.Quantiles) == 1`) and the
+// ARITHMETIC/format at 219. A single-quantile quantile_over_time exemplar
+// must carry a `p="<phi>"` Attributes entry; a non-quantile op must NOT.
+func TestEmitMetricsExemplars_QuantileKeyBranch(t *testing.T) {
+	t.Parallel()
+	start := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 5, 13, 12, 1, 0, 0, time.UTC)
+
+	t.Run("quantile_over_time, 1 quantile → p key + phi value", func(t *testing.T) {
+		t.Parallel()
+		m := &chplan.MetricsAggregate{
+			Op:         chplan.MetricsOpQuantileOverTime,
+			Attr:       &chplan.ColumnRef{Name: "Duration"},
+			Quantiles:  []float64{0.95},
+			ValueAlias: "Value",
+			Inner:      &chplan.Scan{Table: "otel_traces"},
+		}
+		rw := &chplan.RangeWindow{Input: m, Step: time.Minute, Range: time.Minute, Start: start, End: end, TimestampColumn: "Timestamp"}
+		_, args, err := EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1)
+		if err != nil {
+			t.Fatalf("Emit: %v", err)
+		}
+		if !exemplarArgsContain(args, "p") {
+			t.Errorf("single-quantile exemplar must carry the `p` map key; args=%v", args)
+		}
+		if !exemplarArgsContain(args, "0.95") {
+			t.Errorf("single-quantile exemplar must carry the phi value 0.95; args=%v", args)
+		}
+		if exemplarArgsContain(args, "__name__") {
+			t.Errorf("quantile branch must NOT emit the __name__ key; args=%v", args)
+		}
+	})
+
+	t.Run("two quantiles → no p key (len != 1)", func(t *testing.T) {
+		t.Parallel()
+		m := &chplan.MetricsAggregate{
+			Op:         chplan.MetricsOpQuantileOverTime,
+			Attr:       &chplan.ColumnRef{Name: "Duration"},
+			Quantiles:  []float64{0.5, 0.9},
+			ValueAlias: "Value",
+			Inner:      &chplan.Scan{Table: "otel_traces"},
+		}
+		rw := &chplan.RangeWindow{Input: m, Step: time.Minute, Range: time.Minute, Start: start, End: end, TimestampColumn: "Timestamp"}
+		_, args, err := EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1)
+		if err != nil {
+			t.Fatalf("Emit: %v", err)
+		}
+		if exemplarArgsContain(args, "p") {
+			t.Errorf("multi-quantile exemplar must NOT carry the `p` key (len != 1); args=%v", args)
+		}
+	})
+}
+
+// TestEmitMetricsExemplars_UngroupedNameKeyBranch covers + kills the
+// CONDITIONALS_NEGATION / INVERT_LOGICAL mutants at exemplars.go:221
+// (`len(groupAliases) == 0 && m.Op != QuantileOverTime`). An ungrouped
+// non-quantile op must carry a `__name__="<op>"` Attributes entry; a
+// grouped op must NOT (the group labels key the series instead).
+func TestEmitMetricsExemplars_UngroupedNameKeyBranch(t *testing.T) {
+	t.Parallel()
+	start := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 5, 13, 12, 1, 0, 0, time.UTC)
+
+	t.Run("ungrouped rate → __name__ key + op value", func(t *testing.T) {
+		t.Parallel()
+		m := &chplan.MetricsAggregate{
+			Op:         chplan.MetricsOpRate,
+			ValueAlias: "Value",
+			Inner:      &chplan.Scan{Table: "otel_traces"},
+		}
+		rw := &chplan.RangeWindow{Input: m, Step: time.Minute, Range: time.Minute, Start: start, End: end, TimestampColumn: "Timestamp"}
+		_, args, err := EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1)
+		if err != nil {
+			t.Fatalf("Emit: %v", err)
+		}
+		if !exemplarArgsContain(args, "__name__") {
+			t.Errorf("ungrouped exemplar must carry the __name__ key; args=%v", args)
+		}
+		if !exemplarArgsContain(args, chplan.MetricsOpRate.String()) {
+			t.Errorf("ungrouped exemplar must carry the op name %q; args=%v", chplan.MetricsOpRate.String(), args)
+		}
+	})
+
+	t.Run("grouped rate → no __name__ key", func(t *testing.T) {
+		t.Parallel()
+		m := &chplan.MetricsAggregate{
+			Op:             chplan.MetricsOpRate,
+			GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: "ServiceName"}},
+			GroupByAliases: []string{"service"},
+			ValueAlias:     "Value",
+			Inner:          &chplan.Scan{Table: "otel_traces"},
+		}
+		rw := &chplan.RangeWindow{Input: m, Step: time.Minute, Range: time.Minute, Start: start, End: end, TimestampColumn: "Timestamp"}
+		_, args, err := EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1)
+		if err != nil {
+			t.Fatalf("Emit: %v", err)
+		}
+		if exemplarArgsContain(args, "__name__") {
+			t.Errorf("grouped exemplar must NOT carry the __name__ key (len(groupAliases) != 0); args=%v", args)
+		}
+	})
+}
+
+// --- nested_set_annotate.go survivors -------------------------------------
+
+func nsAnnotateInternal() *chplan.NestedSetAnnotate {
+	return &chplan.NestedSetAnnotate{
+		Input:              &chplan.Scan{Table: "otel_traces"},
+		SpansTable:         "otel_traces",
+		TraceIDColumn:      "TraceId",
+		SpanIDColumn:       "SpanId",
+		ParentSpanIDColumn: "ParentSpanId",
+		TimestampColumn:    "Timestamp",
+	}
+}
+
+// TestEmitNestedSetAnnotate_ColumnGuardDisjunction kills the four
+// INVERT_LOGICAL mutants at nested_set_annotate.go:108-109 — the
+// `SpansTable == "" || TraceIDColumn == "" || SpanIDColumn == "" ||
+// ParentSpanIDColumn == "" || TimestampColumn == ""` guard. Each `||`
+// flip to `&&` is killed by an input that blanks exactly ONE column:
+// with the disjunction the emitter must still error (one empty column is
+// enough); the `&&` mutant would require ALL columns empty to error, so
+// the single-blank case slips through and emits SQL instead.
+func TestEmitNestedSetAnnotate_ColumnGuardDisjunction(t *testing.T) {
+	t.Parallel()
+	blanks := []struct {
+		name string
+		set  func(*chplan.NestedSetAnnotate)
+	}{
+		{"SpansTable", func(n *chplan.NestedSetAnnotate) { n.SpansTable = "" }},
+		{"TraceIDColumn", func(n *chplan.NestedSetAnnotate) { n.TraceIDColumn = "" }},
+		{"SpanIDColumn", func(n *chplan.NestedSetAnnotate) { n.SpanIDColumn = "" }},
+		{"ParentSpanIDColumn", func(n *chplan.NestedSetAnnotate) { n.ParentSpanIDColumn = "" }},
+		{"TimestampColumn", func(n *chplan.NestedSetAnnotate) { n.TimestampColumn = "" }},
+	}
+	for _, b := range blanks {
+		b := b
+		t.Run(b.name+" empty → error", func(t *testing.T) {
+			t.Parallel()
+			n := nsAnnotateInternal()
+			b.set(n)
+			_, _, err := Emit(context.Background(), n)
+			if err == nil {
+				t.Fatalf("a single empty %s must surface ErrUnsupported (|| guard)", b.name)
+			}
+			if !errors.Is(err, ErrUnsupported) {
+				t.Errorf("want ErrUnsupported, got %v", err)
+			}
+		})
+	}
+	t.Run("all columns set → no guard error", func(t *testing.T) {
+		t.Parallel()
+		if _, _, err := Emit(context.Background(), nsAnnotateInternal()); err != nil {
+			t.Fatalf("fully-populated NestedSetAnnotate must not error: %v", err)
+		}
+	})
+}
+
+// TestProjectsBareColumn_ContinueScansAllProjections kills the
+// INVERT_LOOPCTRL mutant at nested_set_annotate.go:379 (`continue` →
+// `break` inside projectsBareColumn). A non-matching projection AHEAD of
+// the matching one must be skipped (continue), not abort the scan
+// (break). The break mutant returns false because it bails at the first
+// non-match before ever reaching the bare column.
+func TestProjectsBareColumn_ContinueScansAllProjections(t *testing.T) {
+	t.Parallel()
+	p := &chplan.Project{
+		Projections: []chplan.Projection{
+			// First projection: NOT a bare TraceId ref (aliased rename) —
+			// the loop must `continue` past it.
+			{Expr: &chplan.ColumnRef{Name: "SpanId"}, Alias: "sid"},
+			// A non-ColumnRef expr — also skipped.
+			{Expr: &chplan.FuncCall{Name: "toString", Args: []chplan.Expr{&chplan.ColumnRef{Name: "X"}}}},
+			// The bare TraceId we want to find sits LAST.
+			{Expr: &chplan.ColumnRef{Name: "TraceId"}},
+		},
+	}
+	if !projectsBareColumn(p, "TraceId") {
+		t.Errorf("projectsBareColumn must find a bare TraceId behind earlier non-matches (continue, not break)")
+	}
+	// Negative: a Project that renames TraceId away exposes no bare ref.
+	pRenamed := &chplan.Project{
+		Projections: []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: "TraceId"}, Alias: "tid"},
+		},
+	}
+	if projectsBareColumn(pRenamed, "TraceId") {
+		t.Errorf("an aliased-away TraceId is not a bare projection")
+	}
+}
+
+// TestWriteOptQualCol_QualifierBranch kills the CONDITIONALS_NEGATION
+// mutant at nested_set_annotate.go:391 (`if qual == ""`). The empty-qual
+// branch must emit a BARE backtick-quoted identifier; the non-empty
+// branch a `qual`.`col` pair. The `!=` mutant swaps the two, so the
+// empty-qual call would render the broken “ “.`col` “ form.
+func TestWriteOptQualCol_QualifierBranch(t *testing.T) {
+	t.Parallel()
+	t.Run("empty qual → bare ident", func(t *testing.T) {
+		t.Parallel()
+		b := &Builder{}
+		writeOptQualCol(b, "", "Timestamp")
+		got, _ := b.Build()
+		if got != "`Timestamp`" {
+			t.Errorf("empty qual must render bare `Timestamp`, got %q", got)
+		}
+	})
+	t.Run("non-empty qual → qualified ident", func(t *testing.T) {
+		t.Parallel()
+		b := &Builder{}
+		writeOptQualCol(b, "t", "Timestamp")
+		got, _ := b.Build()
+		if got != "`t`.`Timestamp`" {
+			t.Errorf("qual=t must render `t`.`Timestamp`, got %q", got)
+		}
+	})
+}
+
+// --- prewhere.go survivors ------------------------------------------------
+
+// TestOrderedConjuncts_SkipBucketContinue kills the INVERT_LOOPCTRL
+// mutant at prewhere.go:193 (`continue` → `break` after appending a
+// skip-index conjunct). A skip-bucket conjunct ahead of a plain "rest"
+// conjunct must NOT abort the loop — the `break` mutant would drop every
+// conjunct after the first skip hit, losing them from the output.
+//
+// The shape registers a SkipIndexColumn but no SortColumns, so the first
+// conjunct lands in the skip bucket and the second in the rest bucket.
+// orderedConjuncts concatenates prefix ++ skip ++ rest, so the output
+// must contain BOTH conjuncts (skip first, rest second).
+func TestOrderedConjuncts_SkipBucketContinue(t *testing.T) {
+	t.Parallel()
+	shape := TableShape{SkipIndexColumns: []string{"TraceId"}}
+	skipC := &chplan.Binary{Op: chplan.OpEq, Left: &chplan.ColumnRef{Name: "TraceId"}, Right: &chplan.LitString{V: "abc"}}
+	restC := &chplan.Binary{Op: chplan.OpEq, Left: &chplan.ColumnRef{Name: "Plain"}, Right: &chplan.LitInt{V: 1}}
+	got := orderedConjuncts([]chplan.Expr{skipC, restC}, shape)
+	if len(got) != 2 {
+		t.Fatalf("orderedConjuncts dropped a conjunct (break instead of continue): got %d, want 2", len(got))
+	}
+	if got[0] != skipC || got[1] != restC {
+		t.Errorf("ordered output = %v, want [skip, rest] (skip bucket precedes rest)", got)
+	}
+}
+
+// TestOrderedConjuncts_StableSameRankTiebreak kills the insertion-sort
+// tiebreaker mutants at prewhere.go:201 (CONDITIONALS_NEGATION on the
+// `rank ==` equality + CONDITIONALS_BOUNDARY on the `idx >` tiebreaker)
+// and the INVERT_LOOPCTRL at 203 (`continue` → `break` after a swap).
+//
+// Three conjuncts all reference the SAME sort column (ServiceName, rank
+// 0), so the rank comparison is always a tie and the stable sort must
+// fall back to the idx (input-order) tiebreaker. The original keeps them
+// in input order; a broken tiebreaker or an early `break` permutes them.
+func TestOrderedConjuncts_StableSameRankTiebreak(t *testing.T) {
+	t.Parallel()
+	shape := TableShape{SortColumns: []string{"ServiceName"}}
+	a := &chplan.Binary{Op: chplan.OpEq, Left: &chplan.ColumnRef{Name: "ServiceName"}, Right: &chplan.LitString{V: "a"}}
+	b := &chplan.Binary{Op: chplan.OpNe, Left: &chplan.ColumnRef{Name: "ServiceName"}, Right: &chplan.LitString{V: "b"}}
+	c := &chplan.Binary{Op: chplan.OpEq, Left: &chplan.ColumnRef{Name: "ServiceName"}, Right: &chplan.LitString{V: "c"}}
+	// All rank 0 → stable sort must preserve input order [a, b, c].
+	got := orderedConjuncts([]chplan.Expr{a, b, c}, shape)
+	if len(got) != 3 || got[0] != a || got[1] != b || got[2] != c {
+		t.Errorf("same-rank conjuncts must keep input order [a,b,c]; got %v", got)
+	}
+}
+
+// TestIsSkipIndexColumn_Match kills the CONDITIONALS_NEGATION at
+// tableshape.go:60 (`c == name` → `!=`). With a matching name the lookup
+// must report true; a non-member must report false. Also covers the same
+// equality flip at tableshape.go:26 (IsSortColumn) below.
+func TestIsSkipIndexColumn_Match(t *testing.T) {
+	t.Parallel()
+	shape := TableShape{SkipIndexColumns: []string{"TraceId", "SpanId"}}
+	if !shape.IsSkipIndexColumn("SpanId") {
+		t.Errorf("IsSkipIndexColumn(SpanId) must be true for a registered skip column")
+	}
+	if shape.IsSkipIndexColumn("Body") {
+		t.Errorf("IsSkipIndexColumn(Body) must be false for an unregistered column")
+	}
+}
+
+// TestIsSortColumn_Match kills the CONDITIONALS_NEGATION at
+// tableshape.go:26 (`c == name` → `!=`) in IsSortColumn.
+func TestIsSortColumn_Match(t *testing.T) {
+	t.Parallel()
+	shape := TableShape{SortColumns: []string{"ServiceName", "Timestamp"}}
+	if !shape.IsSortColumn("Timestamp") {
+		t.Errorf("IsSortColumn(Timestamp) must be true")
+	}
+	if shape.IsSortColumn("Nope") {
+		t.Errorf("IsSortColumn(Nope) must be false")
+	}
+}
+
+// --- vector_join.go / vector_set_op.go column-validation switches ---------
+
+// TestValidateVectorJoinCols_EachEmptyErrors covers + kills the four
+// CONDITIONALS_NEGATION mutants at vector_join.go:97-103 — the
+// `AttributesColumn`/`MetricNameColumn`/`TimestampColumn`/`ValueColumn ==
+// ""` switch cases. Each blank-one-column variant must surface
+// ErrUnsupported; the fully-populated control must not.
+func TestValidateVectorJoinCols_EachEmptyErrors(t *testing.T) {
+	t.Parallel()
+	base := func() *chplan.VectorJoin {
+		return &chplan.VectorJoin{
+			Left:             &chplan.Scan{Table: "otel_metrics_sum"},
+			Right:            &chplan.Scan{Table: "otel_metrics_sum"},
+			Op:               chplan.OpAdd,
+			Match:            chplan.VectorMatch{Labels: []string{"job"}, On: true},
+			MetricNameColumn: "MetricName",
+			AttributesColumn: "Attributes",
+			TimestampColumn:  "TimeUnix",
+			ValueColumn:      "Value",
+		}
+	}
+	blanks := []struct {
+		name string
+		set  func(*chplan.VectorJoin)
+	}{
+		{"AttributesColumn", func(j *chplan.VectorJoin) { j.AttributesColumn = "" }},
+		{"MetricNameColumn", func(j *chplan.VectorJoin) { j.MetricNameColumn = "" }},
+		{"TimestampColumn", func(j *chplan.VectorJoin) { j.TimestampColumn = "" }},
+		{"ValueColumn", func(j *chplan.VectorJoin) { j.ValueColumn = "" }},
+	}
+	for _, b := range blanks {
+		b := b
+		t.Run(b.name+" empty → error", func(t *testing.T) {
+			t.Parallel()
+			j := base()
+			b.set(j)
+			_, _, err := Emit(context.Background(), j)
+			if err == nil {
+				t.Fatalf("empty %s must error", b.name)
+			}
+			if !errors.Is(err, ErrUnsupported) {
+				t.Errorf("want ErrUnsupported for empty %s, got %v", b.name, err)
+			}
+		})
+	}
+	t.Run("all set → no validation error", func(t *testing.T) {
+		t.Parallel()
+		if _, _, err := Emit(context.Background(), base()); err != nil {
+			t.Fatalf("fully-populated VectorJoin must not error: %v", err)
+		}
+	})
+}
+
+// TestValidateVectorSetOpCols_EachEmptyErrors covers + kills the four
+// CONDITIONALS_NEGATION mutants at vector_set_op.go:371-377 plus the
+// `if err != nil` guard at 50 — the column-validation switch on a
+// VectorSetOp. Same blank-one-column shape as the VectorJoin test.
+func TestValidateVectorSetOpCols_EachEmptyErrors(t *testing.T) {
+	t.Parallel()
+	base := func() *chplan.VectorSetOp {
+		return &chplan.VectorSetOp{
+			Left:             &chplan.Scan{Table: "otel_metrics_sum"},
+			Right:            &chplan.Scan{Table: "otel_metrics_sum"},
+			Op:               chplan.VectorSetAnd,
+			Match:            chplan.VectorMatch{On: true},
+			MetricNameColumn: "MetricName",
+			AttributesColumn: "Attributes",
+			TimestampColumn:  "TimeUnix",
+			ValueColumn:      "Value",
+		}
+	}
+	blanks := []struct {
+		name string
+		set  func(*chplan.VectorSetOp)
+	}{
+		{"AttributesColumn", func(s *chplan.VectorSetOp) { s.AttributesColumn = "" }},
+		{"MetricNameColumn", func(s *chplan.VectorSetOp) { s.MetricNameColumn = "" }},
+		{"TimestampColumn", func(s *chplan.VectorSetOp) { s.TimestampColumn = "" }},
+		{"ValueColumn", func(s *chplan.VectorSetOp) { s.ValueColumn = "" }},
+	}
+	for _, b := range blanks {
+		b := b
+		t.Run(b.name+" empty → error", func(t *testing.T) {
+			t.Parallel()
+			s := base()
+			b.set(s)
+			_, _, err := Emit(context.Background(), s)
+			if err == nil {
+				t.Fatalf("empty %s must error", b.name)
+			}
+			if !errors.Is(err, ErrUnsupported) {
+				t.Errorf("want ErrUnsupported for empty %s, got %v", b.name, err)
+			}
+		})
+	}
+	t.Run("all set → no validation error", func(t *testing.T) {
+		t.Parallel()
+		if _, _, err := Emit(context.Background(), base()); err != nil {
+			t.Fatalf("fully-populated VectorSetOp must not error: %v", err)
+		}
+	})
+}
+
+// TestVectorSetOpProjectionOutputName_AliasBranch kills the
+// CONDITIONALS_NEGATION at vector_set_op.go:343 (`if p.Alias != ""`).
+// An explicit Alias must win; a bare ColumnRef with no Alias yields the
+// column name; a non-ColumnRef with no Alias yields "".
+func TestVectorSetOpProjectionOutputName_AliasBranch(t *testing.T) {
+	t.Parallel()
+	if got := vectorSetOpProjectionOutputName(chplan.Projection{
+		Expr: &chplan.ColumnRef{Name: "Value"}, Alias: "renamed",
+	}); got != "renamed" {
+		t.Errorf("aliased projection output name = %q, want renamed", got)
+	}
+	if got := vectorSetOpProjectionOutputName(chplan.Projection{
+		Expr: &chplan.ColumnRef{Name: "Value"},
+	}); got != "Value" {
+		t.Errorf("bare ColumnRef output name = %q, want Value", got)
+	}
+	if got := vectorSetOpProjectionOutputName(chplan.Projection{
+		Expr: &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{&chplan.LitInt{V: 1}}},
+	}); got != "" {
+		t.Errorf("non-ColumnRef unaliased projection output name = %q, want empty", got)
+	}
+}
+
+// TestVectorSetOpArmIsMatrixRangeWindow_OuterRangeBoundary kills the
+// CONDITIONALS_BOUNDARY/NEGATION at vector_set_op.go:270
+// (`v.OuterRange > 0`). A matrix RangeWindow (OuterRange>0) is matrix
+// shape; an instant RangeWindow (OuterRange==0) is not. The boundary
+// mutant `>= 0` would mis-classify the instant case as matrix.
+func TestVectorSetOpArmIsMatrixRangeWindow_OuterRangeBoundary(t *testing.T) {
+	t.Parallel()
+	matrix := &chplan.RangeWindow{OuterRange: 5 * time.Minute}
+	if !vectorSetOpArmIsMatrixRangeWindow(matrix) {
+		t.Errorf("OuterRange>0 RangeWindow must be matrix shape")
+	}
+	instant := &chplan.RangeWindow{OuterRange: 0}
+	if vectorSetOpArmIsMatrixRangeWindow(instant) {
+		t.Errorf("OuterRange==0 RangeWindow must NOT be matrix shape (boundary)")
+	}
+	// Recurses past a wrapping Project / Filter.
+	if !vectorSetOpArmIsMatrixRangeWindow(&chplan.Project{Input: matrix}) {
+		t.Errorf("matrix detection must recurse through a Project wrapper")
+	}
+	if !vectorSetOpArmIsMatrixRangeWindow(&chplan.Filter{Input: matrix, Predicate: &chplan.LitBool{V: true}}) {
+		t.Errorf("matrix detection must recurse through a Filter wrapper")
+	}
+}
+
+// --- structural_join.go recursive MaxDepth + sibling path -----------------
+
+func structuralRecursiveNode(op chplan.StructuralOp, maxDepth int) *chplan.StructuralJoin {
+	return &chplan.StructuralJoin{
+		Left:               &chplan.Scan{Table: "otel_traces"},
+		Right:              &chplan.Scan{Table: "otel_traces"},
+		Op:                 op,
+		MaxDepth:           maxDepth,
+		TraceIDColumn:      "TraceId",
+		SpanIDColumn:       "SpanId",
+		ParentSpanIDColumn: "ParentSpanId",
+	}
+}
+
+// TestEmitStructuralRecursive_MaxDepthBoundary kills the
+// CONDITIONALS_BOUNDARY + CONDITIONALS_NEGATION at structural_join.go:483
+// (`if j.MaxDepth > 0`). MaxDepth==0 must emit NO depth cap; MaxDepth>0
+// must emit `c._depth < N`. The boundary mutant `>= 0` would emit
+// `c._depth < 0` for the unbounded case; the negation `<= 0` similarly
+// flips which inputs get the cap.
+func TestEmitStructuralRecursive_MaxDepthBoundary(t *testing.T) {
+	t.Parallel()
+	t.Run("MaxDepth=0 → no depth cap", func(t *testing.T) {
+		t.Parallel()
+		sql, _, err := Emit(context.Background(), structuralRecursiveNode(chplan.StructuralDescendant, 0))
+		if err != nil {
+			t.Fatalf("Emit: %v", err)
+		}
+		if strings.Contains(sql, "c._depth < ") {
+			t.Errorf("MaxDepth=0 must emit no depth cap.\nSQL: %s", sql)
+		}
+	})
+	t.Run("MaxDepth=3 → c._depth < 3", func(t *testing.T) {
+		t.Parallel()
+		sql, _, err := Emit(context.Background(), structuralRecursiveNode(chplan.StructuralDescendant, 3))
+		if err != nil {
+			t.Fatalf("Emit: %v", err)
+		}
+		if !strings.Contains(sql, "c._depth < 3") {
+			t.Errorf("MaxDepth=3 must cap at c._depth < 3.\nSQL: %s", sql)
+		}
+	})
+}
+
+// TestEmitStructuralRecursiveUnion_InverseClosureMaxDepth covers + kills
+// the MaxDepth boundary at structural_join.go:613 (the INVERSE closure
+// built for the union recursive arm) and the ARITHMETIC_BASE at 614.
+// The union op (`&>>`) builds both the forward and inverse closures, so
+// a MaxDepth>0 must produce TWO `c._depth < N` caps; MaxDepth=0 none.
+func TestEmitStructuralRecursiveUnion_InverseClosureMaxDepth(t *testing.T) {
+	t.Parallel()
+	t.Run("union MaxDepth=2 → both closures capped at 2", func(t *testing.T) {
+		t.Parallel()
+		sql, _, err := Emit(context.Background(), structuralRecursiveNode(chplan.StructuralUnionDescendant, 2))
+		if err != nil {
+			t.Fatalf("Emit: %v", err)
+		}
+		if got := strings.Count(sql, "c._depth < 2"); got != 2 {
+			t.Errorf("union recursive MaxDepth=2 must cap BOTH the forward and inverse closures (2 occurrences), got %d.\nSQL: %s", got, sql)
+		}
+	})
+	t.Run("union MaxDepth=0 → no caps", func(t *testing.T) {
+		t.Parallel()
+		sql, _, err := Emit(context.Background(), structuralRecursiveNode(chplan.StructuralUnionDescendant, 0))
+		if err != nil {
+			t.Fatalf("Emit: %v", err)
+		}
+		if strings.Contains(sql, "c._depth < ") {
+			t.Errorf("union recursive MaxDepth=0 must emit no depth caps.\nSQL: %s", sql)
+		}
+	})
+}
+
+// TestEmitStructuralSiblingJoin_Succeeds covers + kills the
+// CONDITIONALS_NEGATION mutants at structural_join.go:184 and 188 (the
+// `if err != nil` guards around the left/right subqueryFrag calls in
+// emitStructuralSiblingJoin). A valid sibling (`~`) join must emit
+// non-empty SQL that joins L and R on shared parent; the `err == nil`
+// mutant would return early (empty SQL) on the success path.
+func TestEmitStructuralSiblingJoin_Succeeds(t *testing.T) {
+	t.Parallel()
+	j := &chplan.StructuralJoin{
+		Left:               &chplan.Scan{Table: "otel_traces"},
+		Right:              &chplan.Scan{Table: "otel_traces"},
+		Op:                 chplan.StructuralSibling,
+		TraceIDColumn:      "TraceId",
+		SpanIDColumn:       "SpanId",
+		ParentSpanIDColumn: "ParentSpanId",
+	}
+	sql, _, err := Emit(context.Background(), j)
+	if err != nil {
+		t.Fatalf("sibling join must emit cleanly: %v", err)
+	}
+	// The success path must produce a real SELECT that references both
+	// sides — a mutant that bailed on err==nil would yield empty SQL.
+	if !strings.Contains(sql, "SELECT") {
+		t.Fatalf("sibling join produced no SELECT (early-return mutant?).\nSQL: %q", sql)
+	}
+	for _, want := range []string{"L.`ParentSpanId`", "R.`ParentSpanId`"} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("sibling join must key on shared parent; missing %q.\nSQL: %s", want, sql)
+		}
+	}
+}

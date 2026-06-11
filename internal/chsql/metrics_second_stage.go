@@ -66,14 +66,14 @@ func (e *emitter) emitMetricsSecondStageTopK(m *chplan.MetricsSecondStage) error
 	sb := NewQuery().From(sub).
 		OrderBy(func(b *Builder) { b.Ident(alias) }, desc).
 		Limit(m.K)
-	if len(m.PartitionBy) > 0 {
-		parts := make([]Frag, 0, len(m.PartitionBy))
-		for _, p := range m.PartitionBy {
-			col := p
-			parts = append(parts, func(b *Builder) { b.Ident(col) })
-		}
-		sb.LimitBy(parts...)
+	// An empty PartitionBy appends no `LIMIT … BY` keys (LimitBy is a
+	// no-op on an empty slice), so no length guard is needed.
+	parts := make([]Frag, 0, len(m.PartitionBy))
+	for _, p := range m.PartitionBy {
+		col := p
+		parts = append(parts, func(b *Builder) { b.Ident(col) })
 	}
+	sb.LimitBy(parts...)
 	e.emitSelect(sb)
 	return nil
 }
