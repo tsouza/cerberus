@@ -5,6 +5,7 @@ import (
 
 	loglib "github.com/grafana/loki/v3/pkg/logql/log"
 	"github.com/grafana/loki/v3/pkg/logql/syntax"
+	"github.com/grafana/loki/v3/pkg/logqlmodel"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -31,7 +32,7 @@ import (
 //   - line-counting ops (`rate`, `count_over_time`)                 → 1
 //   - byte-counting ops (`bytes_rate`, `bytes_over_time`)           → toFloat64(length(Body))
 //   - unwrap with no conversion                                     → toFloat64OrZero(labelsExpr[field])
-//   - unwrap duration / duration_seconds(field)                     → parseTimeDelta(labelsExpr[field])
+//   - unwrap duration / duration_seconds(field)                     → regex-gated Go-duration parse (0 on error)
 //   - unwrap bytes(field)                                           → parseReadableSize(labelsExpr[field])
 //
 // Grouping:
@@ -55,15 +56,9 @@ func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs, lc low
 		return nil, err
 	}
 
-	// Apply unwrap PostFilters (label filters that ride on the unwrap
-	// clause — e.g. `unwrap duration | duration > 10s`). These use the
-	// same labelsExpr as the rest of the pipeline.
-	if e.Left.Unwrap != nil && len(e.Left.Unwrap.PostFilters) > 0 {
-		filtered, err := applyUnwrapPostFilters(inner, e.Left.Unwrap.PostFilters, s, labelsExpr)
-		if err != nil {
-			return nil, err
-		}
-		inner = filtered
+	inner, labelsExpr, unwrapHasErrorMarks, err := applyUnwrapRowSemantics(e, s, inner, labelsExpr)
+	if err != nil {
+		return nil, err
 	}
 
 	value, err := rangeValueExpr(e, s, labelsExpr)
@@ -108,6 +103,7 @@ func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs, lc low
 	innerNode := inner
 	identityBase := chplan.Expr(&chplan.ColumnRef{Name: s.ResourceAttributesColumn})
 	valueExpr := value
+	var errorBypassLabels chplan.Expr
 	if e.Left.Unwrap != nil && hasParserMergedLabels(labelsExpr, s) {
 		const mergedAlias = "_logql_merged_labels"
 		innerNode = &chplan.Project{
@@ -125,6 +121,9 @@ func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs, lc low
 		valueExpr, err = rangeValueExprFromMerged(e, mergedCol)
 		if err != nil {
 			return nil, err
+		}
+		if unwrapHasErrorMarks {
+			errorBypassLabels = mergedCol
 		}
 	} else if e.Left.Unwrap != nil {
 		// No parser stage (or empty merge): the unwrap target is a
@@ -164,6 +163,12 @@ func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs, lc low
 		// caller's intent. The alias matches the column name the outer
 		// RangeWindow expects.
 		identityProj = chplan.Projection{Expr: groupBy, Alias: s.ResourceAttributesColumn}
+	}
+	if errorBypassLabels != nil {
+		identityProj = chplan.Projection{
+			Expr:  errorBypassIdentityExpr(s, errorBypassLabels, identityProj.Expr),
+			Alias: s.ResourceAttributesColumn,
+		}
 	}
 	projections := []chplan.Projection{
 		identityProj,
@@ -248,32 +253,145 @@ func lowerLogRange(lr *syntax.LogRangeExpr, s schema.Logs, lc lowerCtx) (chplan.
 	return nil, nil, fmt.Errorf("logql: range-aggregation inner is %T (not MatchersExpr or PipelineExpr)", lr.Left)
 }
 
+// applyUnwrapRowSemantics folds reference Loki's per-row unwrap
+// contract (streamLabelSampleExtractor.Process,
+// pkg/logql/log/metrics_extraction.go) onto the lowered inner node and
+// labels expression:
+//
+//  1. an EMPTY (or absent — Get on a CH Map yields ”) unwrap source
+//     drops the sample before any conversion runs;
+//  2. a non-empty value the conversion rejects keeps the sample with
+//     value 0 and stamps `__error__="SampleExtractionErr"` +
+//     `__error_details__` onto its labels — BEFORE the unwrap
+//     post-filters run, so `| unwrap duration(d) | __error__ = ""`
+//     drops exactly the error samples;
+//  3. the unwrap post-filters then AND-fold against the
+//     conversion-stamped labels (see [applyUnwrapPostFilters]).
+//
+// Only the duration conversions can reject a value under cerberus's
+// lowering today (bare unwrap reads through toFloat64OrZero, bytes
+// through parseReadableSize), so only they contribute a mark.
+// hasErrorMarks reports whether the returned labels expression carries
+// any conditional `__error__` stamp — the identity construction uses
+// it to gate the reference engine's error-series grouping bypass.
+//
+// No-op (and mark-free) for range aggregations without an unwrap
+// clause.
+func applyUnwrapRowSemantics(e *syntax.RangeAggregationExpr, s schema.Logs, inner chplan.Node, labelsExpr chplan.Expr) (chplan.Node, chplan.Expr, bool, error) {
+	if e.Left.Unwrap == nil {
+		return inner, labelsExpr, false, nil
+	}
+	hasErrorMarks := false
+	unwrapAccess := attributeLookupExpr(labelsExpr, e.Left.Unwrap.Identifier)
+	switch e.Left.Unwrap.Operation {
+	case syntax.OpConvDuration, syntax.OpConvDurationSeconds:
+		parse := newDurationParse(unwrapAccess)
+		labelsExpr = wrapLabelsWithMarks(labelsExpr, []labelFilterMark{{
+			cond: &chplan.Binary{
+				Op: chplan.OpAnd,
+				Left: &chplan.Binary{
+					Op:    chplan.OpNe,
+					Left:  unwrapAccess,
+					Right: &chplan.LitString{V: ""},
+				},
+				Right: notExpr(parse.valid),
+			},
+			kind:    errSampleExtractionKind,
+			details: parse.details,
+		}})
+		hasErrorMarks = true
+	}
+	inner = andFilter(inner, &chplan.Binary{
+		Op:    chplan.OpNe,
+		Left:  unwrapAccess,
+		Right: &chplan.LitString{V: ""},
+	})
+
+	if len(e.Left.Unwrap.PostFilters) > 0 {
+		filtered, postLabels, postMarks, err := applyUnwrapPostFilters(inner, e.Left.Unwrap.PostFilters, s, labelsExpr)
+		if err != nil {
+			return nil, nil, false, err
+		}
+		inner = filtered
+		labelsExpr = postLabels
+		hasErrorMarks = hasErrorMarks || postMarks
+	}
+	return inner, labelsExpr, hasErrorMarks, nil
+}
+
+// errorBypassIdentityExpr wraps a series-identity expression with the
+// error-sample bypass, mirroring reference Loki's
+// LabelsBuilder.GroupedLabels (pkg/logql/log/labels.go): "When there
+// are errors, GroupedLabels returns the full labels with error" — the
+// by/without grouping AND the implicit without-unwrap-target strip are
+// BOTH bypassed, so every error sample lands in a series keyed by its
+// complete label set plus `__error__` / `__error_details__`. The
+// synthesized detected_level rides along like it does on the normal
+// branch (reference stamps detected_level as structured metadata on
+// every row, so its error series carry it too).
+func errorBypassIdentityExpr(s schema.Logs, fullLabels, identity chplan.Expr) chplan.Expr {
+	return &chplan.FuncCall{
+		Name: "if",
+		Args: []chplan.Expr{
+			&chplan.FuncCall{
+				Name: "mapContains",
+				Args: []chplan.Expr{fullLabels, &chplan.LitString{V: logqlmodel.ErrorLabel}},
+			},
+			withDetectedLevel(s, fullLabels),
+			identity,
+		},
+	}
+}
+
 // applyUnwrapPostFilters AND-folds the unwrap clause's post-filters
 // onto `inner`'s predicate. Post-filters are label filters parsed
 // between the `unwrap` clause and the `[range]` close-bracket — e.g.
 // `unwrap duration | duration > 10s`. They share the LabelFilterer
 // type with regular `| label="v"` filters.
-func applyUnwrapPostFilters(inner chplan.Node, filters []loglib.LabelFilterer, s schema.Logs, labelsExpr chplan.Expr) (chplan.Node, error) {
+//
+// The returned labels expression carries any `__error__` marks the
+// post-filters themselves stamp (duration filters keep-and-mark rows
+// whose value Go's time.ParseDuration rejects — reference Loki's
+// postFilter stage runs against the extractor's LabelsBuilder, so its
+// error stamps surface on the sample's labels exactly like pipeline-
+// stage filters). hasMarks reports whether any mark was folded in.
+func applyUnwrapPostFilters(inner chplan.Node, filters []loglib.LabelFilterer, s schema.Logs, labelsExpr chplan.Expr) (chplan.Node, chplan.Expr, bool, error) {
 	pred := chplan.Expr(nil)
 	if f, ok := inner.(*chplan.Filter); ok {
 		pred = f.Predicate
 		inner = f.Input
 	}
+	var marks []labelFilterMark
 	for _, lf := range filters {
-		extra, err := labelFiltererToExpr(lf, s, labelsExpr)
+		extra, lfMarks, err := labelFiltererLower(lf, s, labelsExpr)
 		if err != nil {
-			return nil, err
+			return nil, nil, false, err
 		}
+		marks = append(marks, lfMarks...)
 		if pred == nil {
 			pred = extra
 		} else {
 			pred = &chplan.Binary{Op: chplan.OpAnd, Left: pred, Right: extra}
 		}
 	}
+	labelsExpr = wrapLabelsWithMarks(labelsExpr, marks)
 	if pred == nil {
-		return inner, nil
+		return inner, labelsExpr, len(marks) > 0, nil
 	}
-	return &chplan.Filter{Input: inner, Predicate: pred}, nil
+	return &chplan.Filter{Input: inner, Predicate: pred}, labelsExpr, len(marks) > 0, nil
+}
+
+// andFilter AND-folds one predicate onto `inner`, reusing an existing
+// top-level Filter node when present so the plan keeps a single Filter
+// layer.
+func andFilter(inner chplan.Node, extra chplan.Expr) chplan.Node {
+	if f, ok := inner.(*chplan.Filter); ok {
+		return &chplan.Filter{
+			Input:     f.Input,
+			Predicate: &chplan.Binary{Op: chplan.OpAnd, Left: f.Predicate, Right: extra},
+		}
+	}
+	return &chplan.Filter{Input: inner, Predicate: extra}
 }
 
 // rangeAggSynthValueColumn is the column name LogQL's range-aggregation
@@ -348,9 +466,10 @@ func matrixBucketColumn(plan chplan.Node) string {
 // Unwrap-based ops use the unwrap clause's identifier resolved against
 // the live labelsExpr — bare unwrap reads the string and casts to
 // Float64, `duration` / `duration_seconds` parses Loki's Go-duration
-// shape via CH's `parseTimeDelta` (Float64 seconds), and `bytes` parses
-// the human-readable byte-size shape via CH's `parseReadableSize`
-// (Float64 bytes).
+// shape via the regex-gated [newDurationParse] expression (Float64
+// seconds; 0 on parse error, matching reference convertDuration), and
+// `bytes` parses the human-readable byte-size shape via CH's
+// `parseReadableSize` (Float64 bytes).
 //
 // `length(Body)` is wrapped in `toFloat64` so the per-row Value tuple
 // — `(Timestamp, Value)` shaped by the windowed-array RangeWindow
@@ -409,15 +528,18 @@ func rangeValueExpr(e *syntax.RangeAggregationExpr, s schema.Logs, labelsExpr ch
 // LogQL syntax:
 //
 //	unwrap foo                       → toFloat64OrZero(labelsExpr['foo'])
-//	unwrap duration(foo)             → parseTimeDelta(labelsExpr['foo'])       (Float64 seconds)
-//	unwrap duration_seconds(foo)     → parseTimeDelta(labelsExpr['foo'])       (Float64 seconds)
+//	unwrap duration(foo)             → regex-gated Go-duration parse (Float64 seconds, 0 on parse error)
+//	unwrap duration_seconds(foo)     → same as duration(foo)
 //	unwrap bytes(foo)                → parseReadableSize(labelsExpr['foo'])    (Float64 bytes)
 //
-// CH's `parseTimeDelta` accepts Loki's Go-duration spec (`1.5s`,
-// `200ms`, `1m30s`, `1h`). `parseReadableSize` accepts the
-// human-readable byte-size shapes Loki's `humanize.ParseBytes` covers
-// (`1KB`, `1.5MiB`, `2 G`). Both return Float64 so the downstream
-// windowed-array math stays in Float64 throughout.
+// The duration conversions go through [newDurationParse] — Go's exact
+// time.ParseDuration unit set incl. `µs`/`μs`, with unparseable values
+// yielding 0 instead of a query-aborting CH exception (reference
+// semantics: convertDuration returns (0, err) and the sample is kept
+// with `__error__="SampleExtractionErr"`). `parseReadableSize` accepts
+// the human-readable byte-size shapes Loki's `humanize.ParseBytes`
+// covers (`1KB`, `1.5MiB`, `2 G`). All return Float64 so the
+// downstream windowed-array math stays in Float64 throughout.
 func unwrapValueExpr(u *syntax.UnwrapExpr, labelsExpr chplan.Expr) (chplan.Expr, error) {
 	if u.Identifier == "" {
 		return nil, fmt.Errorf("logql: `| unwrap` has empty identifier")
@@ -435,10 +557,18 @@ func unwrapValueExpr(u *syntax.UnwrapExpr, labelsExpr chplan.Expr) (chplan.Expr,
 			Args: []chplan.Expr{access},
 		}, nil
 	case syntax.OpConvDuration, syntax.OpConvDurationSeconds:
-		return &chplan.FuncCall{
-			Name: "parseTimeDelta",
-			Args: []chplan.Expr{access},
-		}, nil
+		// Regex-gated Go-duration parse (see internal/logql/duration.go)
+		// rather than a bare `parseTimeDelta(...)`: CH's parseTimeDelta
+		// throws (code 36) on the first unparseable value — including
+		// Go-valid `291.792µs` on CH 24.8 — aborting the whole query.
+		// Reference Loki's convertDuration
+		// (pkg/logql/log/metrics_extraction.go) returns 0 for the
+		// sample value and stamps `__error__="SampleExtractionErr"` on
+		// the sample's labels instead; the seconds expression carries
+		// the value half of that contract (0 on parse failure), and
+		// [lowerRangeAggregation] folds the error stamp into the
+		// labels map.
+		return newDurationParse(access).seconds, nil
 	case syntax.OpConvBytes:
 		// `parseReadableSize` returns UInt64 (CH 24.x+); wrap in
 		// `toFloat64` so the downstream windowed-array math (especially

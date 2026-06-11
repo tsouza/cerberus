@@ -343,6 +343,20 @@ func pipelineStageLabels(stage syntax.StageExpr, s schema.Logs, labelsExpr chpla
 		return jsonExpressionMergeLabels(labelsExpr, s, st.Expressions)
 	case *syntax.LogfmtExpressionParserExpr:
 		return logfmtExpressionMergeLabels(labelsExpr, s, st.Expressions)
+	case *syntax.LabelFilterExpr:
+		// Duration label filters conditionally stamp `__error__` /
+		// `__error_details__` onto kept rows (see [lowerStage]); the
+		// projection-side walk must mirror that so the per-row
+		// Attributes column carries the same label set the lowering's
+		// labelsExpr does.
+		_, marks, err := labelFiltererLower(st.LabelFilterer, s, labelsExpr)
+		if err != nil {
+			return nil, err
+		}
+		if len(marks) == 0 {
+			return nil, nil
+		}
+		return wrapLabelsWithMarks(labelsExpr, marks), nil
 	}
 	return nil, nil
 }
@@ -379,6 +393,44 @@ func HasParserStage(expr syntax.Expr) bool {
 	return false
 }
 
+// HasLabelMutatingStage reports whether the parsed LogQL expression
+// contains any pipeline stage that alters the SQL-side labels map —
+// either a parser stage (see [HasParserStage]) or a duration label
+// filter, which conditionally stamps `__error__` / `__error_details__`
+// onto rows whose value Go's time.ParseDuration rejects (reference
+// Loki keeps such rows and marks them; see [durationLabelFilterExpr]).
+// [Lang.ProjectSamples] gates the Attributes-projection swap on this
+// so `{app="x"} | duration > 5s` surfaces the error labels even
+// without a parser stage in the pipeline.
+func HasLabelMutatingStage(expr syntax.Expr) bool {
+	if HasParserStage(expr) {
+		return true
+	}
+	pipe, ok := expr.(*syntax.PipelineExpr)
+	if !ok {
+		return false
+	}
+	for _, stage := range pipe.MultiStages {
+		if st, ok := stage.(*syntax.LabelFilterExpr); ok && labelFiltererHasDuration(st.LabelFilterer) {
+			return true
+		}
+	}
+	return false
+}
+
+// labelFiltererHasDuration walks a label-filterer tree for duration
+// filters — the only filter kind whose lowering currently produces
+// `__error__` marks.
+func labelFiltererHasDuration(lf loglib.LabelFilterer) bool {
+	switch v := lf.(type) {
+	case *loglib.DurationLabelFilter:
+		return true
+	case *loglib.BinaryLabelFilter:
+		return labelFiltererHasDuration(v.Left) || labelFiltererHasDuration(v.Right)
+	}
+	return false
+}
+
 // lowerStage handles one pipeline stage. Returns up to two values:
 //
 //   - pred: a predicate expression to AND into the pipeline filter
@@ -397,8 +449,22 @@ func lowerStage(stage syntax.StageExpr, s schema.Logs, labelsExpr chplan.Expr) (
 		p, err := lowerLineFilter(st, s)
 		return p, nil, err
 	case *syntax.LabelFilterExpr:
-		p, err := lowerLabelFilter(st, s, labelsExpr)
-		return p, nil, err
+		pred, marks, err := labelFiltererLower(st.LabelFilterer, s, labelsExpr)
+		if err != nil {
+			return nil, nil, err
+		}
+		// Duration filters stamp `__error__` / `__error_details__` on
+		// rows whose label value Go's time.ParseDuration rejects (the
+		// row is KEPT — see durationLabelFilterExpr). Thread the
+		// conditionally-stamped labels map forward so later stages
+		// (`| __error__ = ""`, groupings, the stream projection) see
+		// the same labels the reference engine's LabelsBuilder carries.
+		// No marks → nil keeps the existing labels expression (and the
+		// existing fixture surface) untouched.
+		if len(marks) == 0 {
+			return pred, nil, nil
+		}
+		return pred, wrapLabelsWithMarks(labelsExpr, marks), nil
 	case *syntax.LineFmtExpr:
 		// `| line_format "{{.x}}"` is a post-fetch transform —
 		// applied in the API handler over the streams response, not
@@ -852,49 +918,75 @@ func regexpMergeLabels(prev chplan.Expr, s schema.Logs, pattern string) (chplan.
 	}, nil
 }
 
-// lowerLabelFilter handles `| label="val"` / `| label=~"regex"` and the
-// boolean conjunctions Loki packs into BinaryLabelFilter. The named
+// labelFiltererLower handles `| label="val"` / `| label=~"regex"` and
+// the boolean conjunctions Loki packs into BinaryLabelFilter, lowering
+// one label-filterer tree to (predicate, `__error__` marks). The named
 // label is resolved against labelsExpr — initially the schema's
 // ResourceAttributes column, but after a `| logfmt` parser stage a
 // `mapConcat(ResourceAttributes, extractKeyValuePairs(Body, ...))`
 // wrapper so parsed keys are also visible. The schema is threaded so
 // the synthesized `detected_level` label can short-circuit the
 // MapAccess resolution and emit a SeverityText normalisation instead.
-func lowerLabelFilter(f *syntax.LabelFilterExpr, s schema.Logs, labelsExpr chplan.Expr) (chplan.Expr, error) {
-	return labelFiltererToExpr(f.LabelFilterer, s, labelsExpr)
-}
-
-func labelFiltererToExpr(lf loglib.LabelFilterer, s schema.Logs, labelsExpr chplan.Expr) (chplan.Expr, error) {
+//
+// The marks mirror reference Loki's per-row error
+// stamping (pkg/logql/log/label_filter.go) including the engine's
+// short-circuit reachability:
+//
+//   - `a or b` — BinaryLabelFilter.Process returns as soon as the left
+//     side passes (which includes "left errored": an unparseable value
+//     KEEPS the row), so the right side's marks only fire on rows where
+//     the left predicate is false.
+//   - `a , b` (and) — both sides always Process, so both sides' marks
+//     are reachable; "don't overwrite" ordering (left first) is
+//     preserved by mark order, which [wrapLabelsWithMarks] folds into a
+//     first-match-wins multiIf.
+//
+// Only duration filters currently produce marks: string filters never
+// error in reference Loki, numeric filters lower through
+// `toFloat64OrZero` (no abort, no mark — a known narrow divergence from
+// reference, which stamps LabelFilterErr on a non-numeric value), and
+// bytes filters still lower through bare `parseReadableSize`.
+func labelFiltererLower(lf loglib.LabelFilterer, s schema.Logs, labelsExpr chplan.Expr) (chplan.Expr, []labelFilterMark, error) {
 	switch v := lf.(type) {
 	case *loglib.StringLabelFilter:
-		return labelMatcherToExpr(v.Matcher, s, labelsExpr), nil
+		return labelMatcherToExpr(v.Matcher, s, labelsExpr), nil, nil
 	case *loglib.LineFilterLabelFilter:
 		// Loki may wrap a string label filter in this when a line-filter
 		// short-circuit is also possible. Both embed *labels.Matcher and
 		// behave identically for our query-rewrite purposes.
-		return labelMatcherToExpr(v.Matcher, s, labelsExpr), nil
+		return labelMatcherToExpr(v.Matcher, s, labelsExpr), nil, nil
 	case *loglib.BinaryLabelFilter:
-		left, err := labelFiltererToExpr(v.Left, s, labelsExpr)
+		left, leftMarks, err := labelFiltererLower(v.Left, s, labelsExpr)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		right, err := labelFiltererToExpr(v.Right, s, labelsExpr)
+		right, rightMarks, err := labelFiltererLower(v.Right, s, labelsExpr)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		op := chplan.OpAnd
 		if !v.And {
 			op = chplan.OpOr
+			// OR short-circuits in the reference engine: the right
+			// side only runs (and only marks) when the left predicate
+			// is false.
+			gated := make([]labelFilterMark, 0, len(rightMarks))
+			for _, m := range rightMarks {
+				gated = append(gated, gateMark(m, notExpr(left)))
+			}
+			rightMarks = gated
 		}
-		return &chplan.Binary{Op: op, Left: left, Right: right}, nil
+		return &chplan.Binary{Op: op, Left: left, Right: right},
+			append(leftMarks, rightMarks...), nil
 	case *loglib.NumericLabelFilter:
-		return numericLabelFilterExpr(v, labelsExpr), nil
+		return numericLabelFilterExpr(v, labelsExpr), nil, nil
 	case *loglib.DurationLabelFilter:
-		return durationLabelFilterExpr(v, labelsExpr), nil
+		pred, mark := durationLabelFilterExpr(v, labelsExpr)
+		return pred, []labelFilterMark{mark}, nil
 	case *loglib.BytesLabelFilter:
-		return bytesLabelFilterExpr(v, labelsExpr), nil
+		return bytesLabelFilterExpr(v, labelsExpr), nil, nil
 	}
-	return nil, fmt.Errorf("logql: unsupported label filterer %T", lf)
+	return nil, nil, fmt.Errorf("logql: unsupported label filterer %T", lf)
 }
 
 // numericLabelFilterExpr lowers `| field > 5` / `>= 5` / `< 5` / `<= 5`
@@ -921,23 +1013,55 @@ func numericLabelFilterExpr(f *loglib.NumericLabelFilter, labelsExpr chplan.Expr
 // durationLabelFilterExpr lowers `| field > 5s` and friends. Loki's
 // parser has already converted the right-hand-side spec to a
 // time.Duration; we compare the parsed-from-string seconds against the
-// duration converted to seconds. The label string is parsed with CH's
-// `parseTimeDelta` which understands Loki's Go-duration shape ("1.5s",
-// "200ms", "1m30s", "1h"). `parseTimeDelta` returns Float64 seconds —
-// matching the units of the duration literal we emit.
-func durationLabelFilterExpr(f *loglib.DurationLabelFilter, labelsExpr chplan.Expr) chplan.Expr {
-	lhs := &chplan.FuncCall{
-		Name: "parseTimeDelta",
-		Args: []chplan.Expr{&chplan.MapAccess{
-			Map: labelsExpr,
-			Key: &chplan.LitString{V: f.Name},
-		}},
+// duration converted to seconds.
+//
+// Reference per-row semantics
+// (pkg/logql/log/label_filter.go::(*DurationLabelFilter).Process):
+//
+//   - label absent → the row is DROPPED (predicate false), no error.
+//   - label present but time.ParseDuration rejects the value → the row
+//     is KEPT (predicate true) and `__error__="LabelFilterErr"` +
+//     `__error_details__` are stamped — the returned mark carries that
+//     stamping event for [wrapLabelsWithMarks].
+//   - otherwise → compare parsed seconds against the literal.
+//
+// The parse itself is the regex-gated [newDurationParse] shape, NOT a
+// bare `parseTimeDelta(...)`: CH's parseTimeDelta throws (code 36) on
+// the first row it can't parse — including Go-valid shapes like
+// `291.792µs` on CH 24.8 — aborting the whole query where reference
+// Loki degrades per-row.
+func durationLabelFilterExpr(f *loglib.DurationLabelFilter, labelsExpr chplan.Expr) (chplan.Expr, labelFilterMark) {
+	access := &chplan.MapAccess{
+		Map: labelsExpr,
+		Key: &chplan.LitString{V: f.Name},
 	}
-	return &chplan.Binary{
-		Op:    labelFilterOp(f.Type),
-		Left:  lhs,
-		Right: &chplan.LitFloat{V: f.Value.Seconds()},
+	parse := newDurationParse(access)
+	exists := &chplan.FuncCall{
+		Name: "mapContains",
+		Args: []chplan.Expr{labelsExpr, &chplan.LitString{V: f.Name}},
 	}
+	pred := &chplan.FuncCall{
+		Name: "multiIf",
+		Args: []chplan.Expr{
+			notExpr(exists), &chplan.LitBool{V: false},
+			notExpr(parse.valid), &chplan.LitBool{V: true},
+			&chplan.Binary{
+				Op:    labelFilterOp(f.Type),
+				Left:  parse.seconds,
+				Right: &chplan.LitFloat{V: f.Value.Seconds()},
+			},
+		},
+	}
+	mark := labelFilterMark{
+		cond: &chplan.Binary{
+			Op:    chplan.OpAnd,
+			Left:  exists,
+			Right: notExpr(parse.valid),
+		},
+		kind:    errLabelFilterKind,
+		details: parse.details,
+	}
+	return pred, mark
 }
 
 // bytesLabelFilterExpr lowers `| field > 1KB` and friends. Loki's

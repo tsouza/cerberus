@@ -17,7 +17,7 @@ INSERT INTO otel_logs (Timestamp, Body, ResourceAttributes) VALUES
   ["", {"tier": "silver"}, "2026-01-01T00:00:01Z", 30.0]
 ]
 -- sql --
-SELECT ? AS `MetricName`, map(?, `gkey_0`) AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `ResourceAttributes`[?] AS `gkey_0`, max(`Value`) AS `Value` FROM (SELECT `ResourceAttributes`, if(length(window_vals) > 0, arrayAvg(window_vals), nan) AS `Value` FROM (SELECT `ResourceAttributes`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `ResourceAttributes`, arrayFilter(p -> tupleElement(p, 1) > now64(9) - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= now64(9), series_array) AS `window_pairs` FROM (SELECT `ResourceAttributes`, arraySort(groupArray((`Timestamp`, `Value`))) AS `series_array` FROM (SELECT mapFilter((k, v) -> NOT (k IN (?)), mapConcat(mapFilter((k, v) -> NOT (k IN (?)), `_logql_merged_labels`), mapFilter((k, v) -> (v != ?), map(?, multiIf(((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (lower(`SeverityText`) = ?), ?, (lower(`SeverityText`) = ?), ?, lower(`SeverityText`)))))) AS `ResourceAttributes`, `Timestamp`, toFloat64OrZero(`_logql_merged_labels`[?]) AS `Value` FROM (SELECT `ResourceAttributes`, `Timestamp`, `Body`, `SeverityText`, mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), extractKeyValuePairs(`Body`, ?, ?, ?))) AS `_logql_merged_labels` FROM (SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?)))) GROUP BY `ResourceAttributes`))) WHERE length(`window_vals`) >= 1) GROUP BY `ResourceAttributes`[?])
+SELECT ? AS `MetricName`, map(?, `gkey_0`) AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `ResourceAttributes`[?] AS `gkey_0`, max(`Value`) AS `Value` FROM (SELECT `ResourceAttributes`, if(length(window_vals) > 0, arrayAvg(window_vals), nan) AS `Value` FROM (SELECT `ResourceAttributes`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `ResourceAttributes`, arrayFilter(p -> tupleElement(p, 1) > now64(9) - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= now64(9), series_array) AS `window_pairs` FROM (SELECT `ResourceAttributes`, arraySort(groupArray((`Timestamp`, `Value`))) AS `series_array` FROM (SELECT mapFilter((k, v) -> NOT (k IN (?)), mapConcat(mapFilter((k, v) -> NOT (k IN (?)), `_logql_merged_labels`), mapFilter((k, v) -> (v != ?), map(?, multiIf((lower(`SeverityText`) = ?), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (lower(`SeverityText`) = ?), ?, (lower(`SeverityText`) = ?), ?, lower(`SeverityText`)))))) AS `ResourceAttributes`, `Timestamp`, toFloat64OrZero(`_logql_merged_labels`[?]) AS `Value` FROM (SELECT `ResourceAttributes`, `Timestamp`, `Body`, `SeverityText`, mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), extractKeyValuePairs(`Body`, ?, ?, ?))) AS `_logql_merged_labels` FROM (SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), extractKeyValuePairs(`Body`, ?, ?, ?)))[?] != ?)))) GROUP BY `ResourceAttributes`))) WHERE length(`window_vals`) >= 1) GROUP BY `ResourceAttributes`[?])
 -- args --
 [0] string = ""
 [1] string = "tier"
@@ -27,40 +27,48 @@ SELECT ? AS `MetricName`, map(?, `gkey_0`) AS `Attributes`, now64(?) AS `TimeUni
 [5] string = "latency"
 [6] string = ""
 [7] string = "detected_level"
-[8] string = "trace"
-[9] string = "trc"
+[8] string = ""
+[9] string = "unknown"
 [10] string = "trace"
-[11] string = "debug"
-[12] string = "dbg"
+[11] string = "trc"
+[12] string = "trace"
 [13] string = "debug"
-[14] string = "info"
-[15] string = "inf"
-[16] string = "information"
-[17] string = "info"
-[18] string = "warn"
-[19] string = "wrn"
-[20] string = "warning"
-[21] string = "warn"
-[22] string = "error"
-[23] string = "err"
+[14] string = "dbg"
+[15] string = "debug"
+[16] string = "info"
+[17] string = "inf"
+[18] string = "information"
+[19] string = "info"
+[20] string = "warn"
+[21] string = "wrn"
+[22] string = "warning"
+[23] string = "warn"
 [24] string = "error"
-[25] string = "critical"
-[26] string = "critical"
-[27] string = "fatal"
-[28] string = "fatal"
-[29] string = "latency"
-[30] string = "_extracted"
-[31] string = "="
-[32] string = " "
-[33] string = "\""
-[34] string = "job"
-[35] string = "api"
-[36] string = "tier"
+[25] string = "err"
+[26] string = "error"
+[27] string = "critical"
+[28] string = "critical"
+[29] string = "fatal"
+[30] string = "fatal"
+[31] string = "latency"
+[32] string = "_extracted"
+[33] string = "="
+[34] string = " "
+[35] string = "\""
+[36] string = "job"
+[37] string = "api"
+[38] string = "_extracted"
+[39] string = "="
+[40] string = " "
+[41] string = "\""
+[42] string = "latency"
+[43] string = ""
+[44] string = "tier"
 -- chplan --
 Project ["" AS MetricName, map("tier", gkey_0) AS Attributes, now64(9) AS TimeUnix, Value AS Value]
   Aggregate groupBy=[ResourceAttributes["tier"] AS gkey_0] funcs=[max(Value) AS Value]
     RangeWindow func=avg_over_time range=5m0s step=0s ts=Timestamp value=Value groupBy=[ResourceAttributes]
-      Project [mapWithout(mapConcat(mapWithout(_logql_merged_labels, [latency]), mapFilter((k, v) -> (v != ""), map("detected_level", multiIf(((lower(SeverityText) = "trace") OR (lower(SeverityText) = "trc")), "trace", ((lower(SeverityText) = "debug") OR (lower(SeverityText) = "dbg")), "debug", (((lower(SeverityText) = "info") OR (lower(SeverityText) = "inf")) OR (lower(SeverityText) = "information")), "info", (((lower(SeverityText) = "warn") OR (lower(SeverityText) = "wrn")) OR (lower(SeverityText) = "warning")), "warn", ((lower(SeverityText) = "error") OR (lower(SeverityText) = "err")), "error", (lower(SeverityText) = "critical"), "critical", (lower(SeverityText) = "fatal"), "fatal", lower(SeverityText))))), [pod]) AS ResourceAttributes, Timestamp, toFloat64OrZero(_logql_merged_labels["latency"]) AS Value]
+      Project [mapWithout(mapConcat(mapWithout(_logql_merged_labels, [latency]), mapFilter((k, v) -> (v != ""), map("detected_level", multiIf((lower(SeverityText) = ""), "unknown", ((lower(SeverityText) = "trace") OR (lower(SeverityText) = "trc")), "trace", ((lower(SeverityText) = "debug") OR (lower(SeverityText) = "dbg")), "debug", (((lower(SeverityText) = "info") OR (lower(SeverityText) = "inf")) OR (lower(SeverityText) = "information")), "info", (((lower(SeverityText) = "warn") OR (lower(SeverityText) = "wrn")) OR (lower(SeverityText) = "warning")), "warn", ((lower(SeverityText) = "error") OR (lower(SeverityText) = "err")), "error", (lower(SeverityText) = "critical"), "critical", (lower(SeverityText) = "fatal"), "fatal", lower(SeverityText))))), [pod]) AS ResourceAttributes, Timestamp, toFloat64OrZero(_logql_merged_labels["latency"]) AS Value]
         Project [ResourceAttributes, Timestamp, Body, SeverityText, mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\""))) AS _logql_merged_labels]
-          Filter predicate=(ResourceAttributes["job"] = "api")
+          Filter predicate=((ResourceAttributes["job"] = "api") AND (mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\"")))["latency"] != ""))
             Scan(otel_logs)

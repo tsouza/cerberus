@@ -458,17 +458,20 @@ func TestNormaliseLevelExpr_MultiIfArgsCapacityAndShape(t *testing.T) {
 		t.Fatalf("FuncCall.Name = %q; want %q", fn.Name, "multiIf")
 	}
 
-	wantLen := 2*len(canonicalLevelGroups) + 1
+	// The leading (empty → "unknown") pair — reference Loki stamps
+	// `detected_level="unknown"` when no level is detectable
+	// (pkg/distributor/field_detection.go, constants.LogLevelUnknown)
+	// — precedes the 7 canonical groups, then the lowercased default.
+	wantLen := 2*(len(canonicalLevelGroups)+1) + 1
 	if got := len(fn.Args); got != wantLen {
-		t.Fatalf("len(multiIf.Args) = %d; want %d (7 (cond, literal) pairs + 1 default)", got, wantLen)
+		t.Fatalf("len(multiIf.Args) = %d; want %d (1 (empty, unknown) pair + 7 (cond, literal) pairs + 1 default)", got, wantLen)
 	}
 
-	// Kill: a `*2+1` → `*3+1` mutation pre-allocates cap=22, then 15
-	// appends fit without re-growing, so final cap=22. A `*2+1` →
-	// `*2-1` mutation pre-allocates cap=13, the 14th append triggers
-	// runtime growth (typical schedule: doubles to 26), so final
-	// cap=26. Either way, the cap is NOT 15. Asserting cap == 15
-	// pins the exact arithmetic.
+	// Kill: any arithmetic mutation on the capacity hint either
+	// over-allocates (appends fit, final cap = the mutated hint) or
+	// under-allocates (append re-grows via the runtime's schedule) —
+	// both produce a final cap different from the exact arg count.
+	// Asserting cap == wantLen pins the arithmetic.
 	if got, want := cap(fn.Args), wantLen; got != want {
 		t.Fatalf("cap(multiIf.Args) = %d; want %d (mutant `*` → `/`/`%%` or `+` → `-`/`*` at detected_level.go:143:44 / :143:46 would shift the capacity hint and re-allocate via append's growth schedule)", got, want)
 	}
@@ -490,11 +493,25 @@ func TestNormaliseLevelExpr_CanonicalLevelOrder(t *testing.T) {
 	s := schema.DefaultOTelLogs()
 	fn := detectedLevelExpr(s).(*chplan.FuncCall)
 
+	// Leading pair: empty severity → "unknown" (reference Loki's
+	// constants.LogLevelUnknown stamping for undetectable levels).
+	emptyCond, ok := fn.Args[0].(*chplan.Binary)
+	if !ok || emptyCond.Op != chplan.OpEq {
+		t.Fatalf("args[0] = %#v; want Binary{Op: Eq} comparing lower(SeverityText) to \"\"", fn.Args[0])
+	}
+	if rhs, ok := emptyCond.Right.(*chplan.LitString); !ok || rhs.V != "" {
+		t.Fatalf("args[0] RHS = %#v; want empty-string literal", emptyCond.Right)
+	}
+	if lit, ok := fn.Args[1].(*chplan.LitString); !ok || lit.V != "unknown" {
+		t.Fatalf("args[1] = %#v; want LitString \"unknown\"", fn.Args[1])
+	}
+
 	for i, g := range canonicalLevelGroups {
-		// Each group emits two args: the OR-chain comparison at index
-		// 2*i, the canonical literal at index 2*i+1.
-		condIdx := 2 * i
-		litIdx := 2*i + 1
+		// Each group emits two args after the leading (empty,
+		// "unknown") pair: the OR-chain comparison at index 2*i+2,
+		// the canonical literal at index 2*i+3.
+		condIdx := 2*i + 2
+		litIdx := 2*i + 3
 
 		// The condition is either a plain `Binary{Op: Eq}` (for
 		// single-variant groups like "critical" / "fatal") or a left-
@@ -528,7 +545,7 @@ func TestNormaliseLevelExpr_CanonicalLevelOrder(t *testing.T) {
 	// above; this assertion pins the SHAPE of the default branch so
 	// a refactor that swaps it for something else (e.g. an empty
 	// string fall-through) still trips a test.
-	defaultIdx := 2 * len(canonicalLevelGroups)
+	defaultIdx := 2 * (len(canonicalLevelGroups) + 1)
 	defaultCall, ok := fn.Args[defaultIdx].(*chplan.FuncCall)
 	if !ok {
 		t.Fatalf("default branch at args[%d] = %T; want *chplan.FuncCall (lower(...))", defaultIdx, fn.Args[defaultIdx])

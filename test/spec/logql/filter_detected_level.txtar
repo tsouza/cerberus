@@ -1,32 +1,34 @@
 -- query.logql --
 {job="api"} | detected_level="error"
 -- sql --
-SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (multiIf(((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (lower(`SeverityText`) = ?), ?, (lower(`SeverityText`) = ?), ?, lower(`SeverityText`)) = ?)
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (multiIf((lower(`SeverityText`) = ?), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (lower(`SeverityText`) = ?), ?, (lower(`SeverityText`) = ?), ?, lower(`SeverityText`)) = ?)
 -- args --
 [0] string = "job"
 [1] string = "api"
-[2] string = "trace"
-[3] string = "trc"
+[2] string = ""
+[3] string = "unknown"
 [4] string = "trace"
-[5] string = "debug"
-[6] string = "dbg"
+[5] string = "trc"
+[6] string = "trace"
 [7] string = "debug"
-[8] string = "info"
-[9] string = "inf"
-[10] string = "information"
-[11] string = "info"
-[12] string = "warn"
-[13] string = "wrn"
-[14] string = "warning"
-[15] string = "warn"
-[16] string = "error"
-[17] string = "err"
+[8] string = "dbg"
+[9] string = "debug"
+[10] string = "info"
+[11] string = "inf"
+[12] string = "information"
+[13] string = "info"
+[14] string = "warn"
+[15] string = "wrn"
+[16] string = "warning"
+[17] string = "warn"
 [18] string = "error"
-[19] string = "critical"
-[20] string = "critical"
-[21] string = "fatal"
-[22] string = "fatal"
-[23] string = "error"
+[19] string = "err"
+[20] string = "error"
+[21] string = "critical"
+[22] string = "critical"
+[23] string = "fatal"
+[24] string = "fatal"
+[25] string = "error"
 -- seed --
 CREATE TABLE otel_logs (
     Body String,
@@ -49,5 +51,5 @@ INSERT INTO otel_logs (Body) VALUES
   ["line-err"]
 ]
 -- chplan --
-Filter predicate=((ResourceAttributes["job"] = "api") AND (multiIf(((lower(SeverityText) = "trace") OR (lower(SeverityText) = "trc")), "trace", ((lower(SeverityText) = "debug") OR (lower(SeverityText) = "dbg")), "debug", (((lower(SeverityText) = "info") OR (lower(SeverityText) = "inf")) OR (lower(SeverityText) = "information")), "info", (((lower(SeverityText) = "warn") OR (lower(SeverityText) = "wrn")) OR (lower(SeverityText) = "warning")), "warn", ((lower(SeverityText) = "error") OR (lower(SeverityText) = "err")), "error", (lower(SeverityText) = "critical"), "critical", (lower(SeverityText) = "fatal"), "fatal", lower(SeverityText)) = "error"))
+Filter predicate=((ResourceAttributes["job"] = "api") AND (multiIf((lower(SeverityText) = ""), "unknown", ((lower(SeverityText) = "trace") OR (lower(SeverityText) = "trc")), "trace", ((lower(SeverityText) = "debug") OR (lower(SeverityText) = "dbg")), "debug", (((lower(SeverityText) = "info") OR (lower(SeverityText) = "inf")) OR (lower(SeverityText) = "information")), "info", (((lower(SeverityText) = "warn") OR (lower(SeverityText) = "wrn")) OR (lower(SeverityText) = "warning")), "warn", ((lower(SeverityText) = "error") OR (lower(SeverityText) = "err")), "error", (lower(SeverityText) = "critical"), "critical", (lower(SeverityText) = "fatal"), "fatal", lower(SeverityText)) = "error"))
   Scan(otel_logs)

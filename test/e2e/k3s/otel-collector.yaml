@@ -250,6 +250,31 @@ data:
           - type: move
             from: attributes.uid
             to: resource["k8s.pod.uid"]
+          # Promote the CRI `log` capture group to the record Body and
+          # drop the CRI transport artifacts. Without the move, Body
+          # keeps the RAW kubelet line ("<ts> stdout F <line>") and the
+          # actual log line rides as the `log` record attribute — which
+          # the OTel-CH exporter lands in LogAttributes, where Loki-side
+          # tooling (Logs Drilldown's fields tab via /detected_fields)
+          # surfaces it as a bogus structured-metadata field named
+          # `log`. That field's breakdown queries can never match
+          # (crawl run 27327766381: fields/log + field/log panels
+          # rendered "No data" on the cerberus-otel-agent service).
+          # The standard k8s collector shape (the contrib `container`
+          # parser / helm chart preset) puts the line in Body and
+          # carries no `log` attribute — mirror that. `stream` and
+          # `logtag` are likewise CRI framing, not log content; drop
+          # them (and the already-consumed file-path attribute) so the
+          # tailed records carry no incidental structured metadata.
+          - type: move
+            from: attributes.log
+            to: body
+          - type: remove
+            field: attributes.stream
+          - type: remove
+            field: attributes.logtag
+          - type: remove
+            field: attributes["log.file.path"]
 
     processors:
       memory_limiter:
