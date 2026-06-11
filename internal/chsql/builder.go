@@ -416,7 +416,42 @@ func (b *Builder) exprSubscript(s *chplan.Subscript) error {
 //     infix spelling the generic branch writes is a server-side
 //     syntax error (the bug TraceQL `{ event.foo =~ "..." }` hit
 //     before the showcase pinned it).
+//   - Presence != PresenceCompare renders the existence probes for
+//     TraceQL nil comparisons: `arrayExists(x -> mapContains(x, ?),
+//     …)` (HasKey), `arrayExists(x -> not(mapContains(x, ?)), …)`
+//     (LacksKey), and `notEmpty(…)` for the empty-Key HasKey form
+//     (nested intrinsics — any element at all).
 func (b *Builder) exprNestedArrayExists(n *chplan.NestedArrayExists) error {
+	switch n.Presence {
+	case chplan.PresenceHasKey, chplan.PresenceLacksKey:
+		if n.Key == "" {
+			// Any-element probe (event:name != nil and friends): the
+			// sub-field is a required column of every Nested element,
+			// so presence of any element answers the probe.
+			if n.Presence == chplan.PresenceLacksKey {
+				b.sb.WriteString("empty(")
+			} else {
+				b.sb.WriteString("notEmpty(")
+			}
+			b.QualIdent(n.Column, n.SubField)
+			b.sb.WriteByte(')')
+			return nil
+		}
+		b.sb.WriteString("arrayExists(x -> ")
+		if n.Presence == chplan.PresenceLacksKey {
+			b.sb.WriteString("not(mapContains(x, ")
+			b.Arg(n.Key)
+			b.sb.WriteString("))")
+		} else {
+			b.sb.WriteString("mapContains(x, ")
+			b.Arg(n.Key)
+			b.sb.WriteByte(')')
+		}
+		b.sb.WriteString(", ")
+		b.QualIdent(n.Column, n.SubField)
+		b.sb.WriteByte(')')
+		return nil
+	}
 	b.sb.WriteString("arrayExists(x -> ")
 	elem := func() {
 		b.sb.WriteByte('x')

@@ -120,9 +120,11 @@ const (
 // harnesses against the same CH without trace-id confusion.
 var services = []string{"checkout", "payments", "search", "shipping"}
 
-// spanKinds rotates per child span. Mirrors the OTLP enum values 1..5
-// (UNSPECIFIED is skipped — every span in the fixture is an explicit
-// kind).
+// spanKinds rotates per child span. Mirrors the OTLP enum values 1..5;
+// on top of the rotation, newTrace pins one deterministic child per
+// every-5th trace to SPAN_KIND_UNSPECIFIED (enum 0) so the corpus can
+// differentiate nil-comparison semantics on the kind intrinsic at the
+// reference boundary (see the unspecified-kind note in newTrace).
 var spanKinds = []otlptrace.Span_SpanKind{
 	otlptrace.Span_SPAN_KIND_INTERNAL,
 	otlptrace.Span_SPAN_KIND_SERVER,
@@ -132,14 +134,16 @@ var spanKinds = []otlptrace.Span_SpanKind{
 }
 
 // span kind → cerberus CH SpanKind column literal. Mirrors the
-// `SpanKind` enum the OTel-CH exporter writes; matches the strings
-// used in test/e2e/seed/cmd/seed/main.go.
+// `SpanKind` enum the OTel-CH exporter writes (`span.Kind().String()`
+// over pdata's ptrace.SpanKind — "Unspecified" for the zero enum);
+// matches the strings used in test/e2e/seed/cmd/seed/main.go.
 var spanKindCH = map[otlptrace.Span_SpanKind]string{
-	otlptrace.Span_SPAN_KIND_INTERNAL: "Internal",
-	otlptrace.Span_SPAN_KIND_SERVER:   "Server",
-	otlptrace.Span_SPAN_KIND_CLIENT:   "Client",
-	otlptrace.Span_SPAN_KIND_PRODUCER: "Producer",
-	otlptrace.Span_SPAN_KIND_CONSUMER: "Consumer",
+	otlptrace.Span_SPAN_KIND_UNSPECIFIED: "Unspecified",
+	otlptrace.Span_SPAN_KIND_INTERNAL:    "Internal",
+	otlptrace.Span_SPAN_KIND_SERVER:      "Server",
+	otlptrace.Span_SPAN_KIND_CLIENT:      "Client",
+	otlptrace.Span_SPAN_KIND_PRODUCER:    "Producer",
+	otlptrace.Span_SPAN_KIND_CONSUMER:    "Consumer",
 }
 
 // fixtureTrace is the in-memory representation of one trace, shared
@@ -317,6 +321,18 @@ func newTrace(start time.Time, svc string, svcIdx, traceIdx int) *fixtureTrace {
 	for c := 0; c < childCount; c++ {
 		childID := deriveSpanID(svc, traceIdx, c+1)
 		childKind := spanKinds[(c+traceIdx)%len(spanKinds)]
+		// One deterministic child per every-5th trace carries
+		// SPAN_KIND_UNSPECIFIED (OTLP enum 0; OTel-CH writes
+		// SpanKind='Unspecified'). This pins the nil-comparison
+		// boundary differentially: reference Tempo's `kind != nil`
+		// matches EVERY span — vparquet4 stores Kind as a required
+		// parquet column and the engine's OpExists only tests for the
+		// nil static — so unspecified-kind spans must match too. A
+		// backend that lowered `kind != nil` to an enum-zero check
+		// (SpanKind != 'Unspecified') would drop these spans and diff.
+		if c == 0 && traceIdx%5 == 2 {
+			childKind = otlptrace.Span_SPAN_KIND_UNSPECIFIED
+		}
 		childStart := ts.Add(time.Duration(10*(c+1)) * time.Millisecond)
 		childDur := time.Duration(20*(c+1)) * time.Millisecond
 		// Status alternates: every 5th child reports Error so the

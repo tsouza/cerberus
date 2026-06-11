@@ -1,0 +1,20 @@
+-- query.traceql --
+{ event:name != nil }
+-- sql --
+SELECT * FROM `otel_traces` WHERE notEmpty(`Events`.`Name`)
+-- args --
+(none)
+-- seed --
+CREATE TABLE otel_traces (
+    _idx UInt64,
+    `Events.Name` Array(LowCardinality(String)) MATERIALIZED if(_idx = 0, ['exception'], if(_idx = 1, ['log', 'retry'], []))
+) ENGINE = MergeTree ORDER BY _idx;
+INSERT INTO otel_traces (_idx) VALUES (0), (1), (2);
+-- expected_rows --
+[
+  [0],
+  [1]
+]
+-- chplan --
+Filter predicate=nestedArrayNotEmpty(Events.Name)
+  Scan(otel_traces)

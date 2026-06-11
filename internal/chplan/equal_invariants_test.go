@@ -1466,6 +1466,21 @@ func TestNestedArrayExists_Equal_Negative_SubField(t *testing.T) {
 	}
 }
 
+func TestNestedArrayExists_Equal_Negative_Presence(t *testing.T) {
+	t.Parallel()
+	a := &chplan.NestedArrayExists{
+		Column: "Events", SubField: "Attributes", Key: "k",
+		Presence: chplan.PresenceHasKey,
+	}
+	b := &chplan.NestedArrayExists{
+		Column: "Events", SubField: "Attributes", Key: "k",
+		Presence: chplan.PresenceLacksKey,
+	}
+	if a.Equal(b) {
+		t.Errorf("different Presence should not be Equal")
+	}
+}
+
 func TestNestedArrayExists_Equal_Negative_Value(t *testing.T) {
 	t.Parallel()
 	a := &chplan.NestedArrayExists{

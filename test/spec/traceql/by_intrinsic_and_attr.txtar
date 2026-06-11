@@ -1,7 +1,7 @@
 -- query.traceql --
 {} | count_over_time() by (kind, resource.service.name)
 -- sql --
-SELECT `SpanKind` AS `kind`, `ResourceAttributes`[?] AS `service.name`, toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?) GROUP BY `SpanKind`, `ResourceAttributes`[?]
+SELECT lower(`SpanKind`) AS `kind`, `ResourceAttributes`[?] AS `service.name`, toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?) GROUP BY lower(`SpanKind`), `ResourceAttributes`[?]
 -- args --
 [0] string = "service.name"
 [1] int64 = 1
@@ -19,9 +19,9 @@ INSERT INTO otel_traces VALUES
     (map('service.name', 'frontend'), 'Client');
 -- expected_rows --
 [
-  ["Client", "frontend", 4]
+  ["client", "frontend", 4]
 ]
 -- chplan --
-MetricsAggregate op=count_over_time groupBy=[SpanKind AS kind, ResourceAttributes["service.name"] AS service.name|resource.service.name] valueAlias=Value
+MetricsAggregate op=count_over_time groupBy=[lower(SpanKind) AS kind, ResourceAttributes["service.name"] AS service.name|resource.service.name] valueAlias=Value
   Filter predicate=true
     Scan(otel_traces)

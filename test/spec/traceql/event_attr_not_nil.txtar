@@ -1,0 +1,19 @@
+-- query.traceql --
+{ event.exception.type != nil }
+-- sql --
+SELECT * FROM `otel_traces` WHERE arrayExists(x -> mapContains(x, ?), `Events`.`Attributes`)
+-- args --
+[0] string = "exception.type"
+-- seed --
+CREATE TABLE otel_traces (
+    _idx UInt64,
+    `Events.Attributes` Array(Map(String, String)) MATERIALIZED if(_idx = 0, [map('exception.type', 'IOError')], if(_idx = 1, [map('name', 'log')], []))
+) ENGINE = MergeTree ORDER BY _idx;
+INSERT INTO otel_traces (_idx) VALUES (0), (1), (2);
+-- expected_rows --
+[
+  [0]
+]
+-- chplan --
+Filter predicate=nestedArrayExists(Events.Attributes hasKey "exception.type")
+  Scan(otel_traces)

@@ -40,10 +40,11 @@
 # Cases below cover the 7 shadow categories (attribute matchers per
 # scope (5), intrinsics (4), structural ops (4), set ops (3), inner
 # aggregates (2)) plus 7 metrics-pipeline cases (4 range + 3 instant)
-# and a per-id smoke; later additions grew the spanSets and metrics
-# families (the count below tracks `grep -c '^-- name --'`).
-# Total: 39 cases — the compare() range case activated alongside
-# chplan.MetricsCompare.
+# and a per-id smoke; later additions grew the spanSets, metrics, and
+# nil-comparison families (the count below tracks
+# `grep -c '^-- name --'`).
+# Total: 48 cases — the nil-comparison family activated alongside the
+# Traces Drilldown breakdown fix (intrinsic `!= nil` lowering).
 
 # --- Attribute matchers per scope (5) ---
 
@@ -711,3 +712,135 @@ tag_values_v2
 0
 -- expected_max_values --
 0
+
+# --- Nil comparisons (Traces Drilldown breakdown shapes) ---
+# Grafana Traces Drilldown appends `&& <groupBy> != nil` to EVERY
+# breakdown query, so nil comparisons on intrinsics are a load-bearing
+# consumer shape. Reference semantics (pkg/traceql): `<x> != nil`
+# evaluates OpExists — true iff x resolves to a non-nil static. For
+# intrinsics that is true on EVERY span (vparquet4 stores them as
+# required parquet columns and the span collector adds the static
+# unconditionally) — including the seeder's SPAN_KIND_UNSPECIFIED
+# children, which pin that `kind != nil` is constant-true, NOT an
+# enum-zero check. For attributes it is key existence. The rejected
+# forms (`<intrinsic> = nil`, `resource.service.name = nil` — both
+# 400 on reference, ast_validate.go) cannot ride the corpus (200-shaped
+# cases only); internal/traceql/nested_set_nil_test.go pins them.
+
+-- name --
+kind_not_nil
+-- query --
+{ kind != nil }
+-- endpoint --
+search
+# Matches every span — every trace, including the unspecified-kind
+# carriers — on both backends.
+-- expected_min_traces --
+1
+-- expected_max_traces --
+500
+
+-- name --
+kind_not_nil_unspecified_carrier
+# Conjunction pins the boundary span directly: the child.index=0 spans
+# of every-5th trace carry SPAN_KIND_UNSPECIFIED, so a backend that
+# lowered `kind != nil` to SpanKind != 'Unspecified' returns zero
+# traces here while reference returns the carriers.
+-- query --
+{ kind != nil && span.child.index = "0" && span.kind = "SPAN_KIND_UNSPECIFIED" }
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+500
+
+-- name --
+status_not_nil
+-- query --
+{ status != nil }
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+500
+
+-- name --
+name_not_nil
+-- query --
+{ name != nil }
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+500
+
+-- name --
+span_http_method_eq_nil
+# Root spans carry http.method; children do not — every trace matches
+# through its children on both backends.
+-- query --
+{ span.http.method = nil }
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+500
+
+-- name --
+resource_deployment_env_not_nil
+-- query --
+{ resource.deployment.env != nil }
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+500
+
+-- name --
+drilldown_breakdown_kind_not_nil
+# The VERBATIM query the Drilldown breakdown tab sends for the "kind"
+# groupBy (maintainer repro). Differential on the full series scheme:
+# acceptance (pre-fix cerberus 422'd the `kind != nil` clause) plus
+# by(kind) label-value parity — values must be reference's lowercase
+# Static.EncodeToString form ("server"), not the TitleCase OTel-CH
+# column payload ("Server"). The root-only filter keeps the Server
+# roots; the unspecified-kind boundary lives in the all-spans case
+# below.
+-- query --
+{nestedSetParent<0 && true && kind != nil} | rate() by(kind)
+-- endpoint --
+metrics_range
+-- step --
+60s
+-- expected_min_series --
+1
+-- expected_max_series --
+50
+-- semantic_checks --
+samples_non_negative
+groupby_labels_present:kind
+
+-- name --
+metrics_rate_by_kind_all_spans
+# by(kind) over ALL spans — every kind group in the fixture surfaces,
+# including the "unspecified" group from the boundary carriers; the
+# differ's label-set hashing pins cerberus's group values against
+# reference's lowercase wire form for every kind enum word at once.
+-- query --
+{ kind != nil } | rate() by(kind)
+-- endpoint --
+metrics_range
+-- step --
+60s
+-- expected_min_series --
+1
+-- expected_max_series --
+50
+-- semantic_checks --
+samples_non_negative
+groupby_labels_present:kind
