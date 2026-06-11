@@ -1469,9 +1469,23 @@ func lowerCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 		return lowerTime(c, s, ctx)
 	case "vector":
 		return lowerVector(c, s, ctx)
-	case "year", "month", "day_of_month", "day_of_week",
+	case "year", "month", "day_of_month", "day_of_week", "day_of_year",
 		"days_in_month", "hour", "minute", "timestamp":
 		return lowerDateFn(c, s, ctx)
+	case "sort", "sort_desc":
+		return lowerSort(c, s, ctx)
+	case "scalar":
+		return lowerScalarTopLevel(c, s, ctx)
+	case "pi":
+		// Bare top-level `pi()` (or any scalar-foldable call the parser
+		// admits as a top-level expression). The /api/v1/query handler
+		// answers these in Go via TryFoldScalar without touching CH, but
+		// the lowering path must still materialise a one-row synthetic
+		// vector so query_range + the surface-parity prober (which drive
+		// lower→emit directly) accept the symbol. lowerScalarArg folds
+		// pi() to a LitFloat; syntheticScalarVector wraps it as the
+		// canonical single-sample shape.
+		return lowerScalarTopLevel(c, s, ctx)
 	}
 	if chFn, ok := instantFnCH[c.Func.Name]; ok {
 		return lowerInstantFn(c, s, chFn, ctx)

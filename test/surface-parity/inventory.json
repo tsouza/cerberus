@@ -161,60 +161,54 @@
       "symbol": "fn:acos",
       "kind": "function",
       "probe": "acos(up)",
-      "cerberus": "reject",
+      "cerberus": "accept",
       "reference": "accept",
-      "class": "wrong-reject",
-      "cerberus_error": "promql: function acos is not yet supported"
+      "class": "parity-accept"
     },
     {
       "head": "promql",
       "symbol": "fn:acosh",
       "kind": "function",
       "probe": "acosh(up)",
-      "cerberus": "reject",
+      "cerberus": "accept",
       "reference": "accept",
-      "class": "wrong-reject",
-      "cerberus_error": "promql: function acosh is not yet supported"
+      "class": "parity-accept"
     },
     {
       "head": "promql",
       "symbol": "fn:asin",
       "kind": "function",
       "probe": "asin(up)",
-      "cerberus": "reject",
+      "cerberus": "accept",
       "reference": "accept",
-      "class": "wrong-reject",
-      "cerberus_error": "promql: function asin is not yet supported"
+      "class": "parity-accept"
     },
     {
       "head": "promql",
       "symbol": "fn:asinh",
       "kind": "function",
       "probe": "asinh(up)",
-      "cerberus": "reject",
+      "cerberus": "accept",
       "reference": "accept",
-      "class": "wrong-reject",
-      "cerberus_error": "promql: function asinh is not yet supported"
+      "class": "parity-accept"
     },
     {
       "head": "promql",
       "symbol": "fn:atan",
       "kind": "function",
       "probe": "atan(up)",
-      "cerberus": "reject",
+      "cerberus": "accept",
       "reference": "accept",
-      "class": "wrong-reject",
-      "cerberus_error": "promql: function atan is not yet supported"
+      "class": "parity-accept"
     },
     {
       "head": "promql",
       "symbol": "fn:atanh",
       "kind": "function",
       "probe": "atanh(up)",
-      "cerberus": "reject",
+      "cerberus": "accept",
       "reference": "accept",
-      "class": "wrong-reject",
-      "cerberus_error": "promql: function atanh is not yet supported"
+      "class": "parity-accept"
     },
     {
       "head": "promql",
@@ -275,20 +269,18 @@
       "symbol": "fn:cos",
       "kind": "function",
       "probe": "cos(up)",
-      "cerberus": "reject",
+      "cerberus": "accept",
       "reference": "accept",
-      "class": "wrong-reject",
-      "cerberus_error": "promql: function cos is not yet supported"
+      "class": "parity-accept"
     },
     {
       "head": "promql",
       "symbol": "fn:cosh",
       "kind": "function",
       "probe": "cosh(up)",
-      "cerberus": "reject",
+      "cerberus": "accept",
       "reference": "accept",
-      "class": "wrong-reject",
-      "cerberus_error": "promql: function cosh is not yet supported"
+      "class": "parity-accept"
     },
     {
       "head": "promql",
@@ -322,10 +314,9 @@
       "symbol": "fn:day_of_year",
       "kind": "function",
       "probe": "day_of_year(up)",
-      "cerberus": "reject",
+      "cerberus": "accept",
       "reference": "accept",
-      "class": "wrong-reject",
-      "cerberus_error": "promql: function day_of_year is not yet supported"
+      "class": "parity-accept"
     },
     {
       "head": "promql",
@@ -341,10 +332,9 @@
       "symbol": "fn:deg",
       "kind": "function",
       "probe": "deg(up)",
-      "cerberus": "reject",
+      "cerberus": "accept",
       "reference": "accept",
-      "class": "wrong-reject",
-      "cerberus_error": "promql: function deg is not yet supported"
+      "class": "parity-accept"
     },
     {
       "head": "promql",
@@ -635,10 +625,9 @@
       "symbol": "fn:pi",
       "kind": "function",
       "probe": "pi()",
-      "cerberus": "reject",
+      "cerberus": "accept",
       "reference": "accept",
-      "class": "wrong-reject",
-      "cerberus_error": "promql: function pi is not yet supported"
+      "class": "parity-accept"
     },
     {
       "head": "promql",
@@ -654,10 +643,9 @@
       "symbol": "fn:present_over_time",
       "kind": "function",
       "probe": "present_over_time(up[5m])",
-      "cerberus": "reject",
+      "cerberus": "accept",
       "reference": "accept",
-      "class": "wrong-reject",
-      "cerberus_error": "emit: chsql: unsupported: range function \"present_over_time\""
+      "class": "parity-accept"
     },
     {
       "head": "promql",
@@ -673,10 +661,9 @@
       "symbol": "fn:rad",
       "kind": "function",
       "probe": "rad(up)",
-      "cerberus": "reject",
+      "cerberus": "accept",
       "reference": "accept",
-      "class": "wrong-reject",
-      "cerberus_error": "promql: function rad is not yet supported"
+      "class": "parity-accept"
     },
     {
       "head": "promql",
@@ -720,10 +707,9 @@
       "symbol": "fn:scalar",
       "kind": "function",
       "probe": "scalar(up)",
-      "cerberus": "reject",
+      "cerberus": "accept",
       "reference": "accept",
-      "class": "wrong-reject",
-      "cerberus_error": "promql: function scalar is not yet supported"
+      "class": "parity-accept"
     },
     {
       "head": "promql",
@@ -739,30 +725,27 @@
       "symbol": "fn:sin",
       "kind": "function",
       "probe": "sin(up)",
-      "cerberus": "reject",
+      "cerberus": "accept",
       "reference": "accept",
-      "class": "wrong-reject",
-      "cerberus_error": "promql: function sin is not yet supported"
+      "class": "parity-accept"
     },
     {
       "head": "promql",
       "symbol": "fn:sinh",
       "kind": "function",
       "probe": "sinh(up)",
-      "cerberus": "reject",
+      "cerberus": "accept",
       "reference": "accept",
-      "class": "wrong-reject",
-      "cerberus_error": "promql: function sinh is not yet supported"
+      "class": "parity-accept"
     },
     {
       "head": "promql",
       "symbol": "fn:sort",
       "kind": "function",
       "probe": "sort(up)",
-      "cerberus": "reject",
+      "cerberus": "accept",
       "reference": "accept",
-      "class": "wrong-reject",
-      "cerberus_error": "promql: function sort is not yet supported"
+      "class": "parity-accept"
     },
     {
       "head": "promql",
@@ -789,10 +772,9 @@
       "symbol": "fn:sort_desc",
       "kind": "function",
       "probe": "sort_desc(up)",
-      "cerberus": "reject",
+      "cerberus": "accept",
       "reference": "accept",
-      "class": "wrong-reject",
-      "cerberus_error": "promql: function sort_desc is not yet supported"
+      "class": "parity-accept"
     },
     {
       "head": "promql",
@@ -855,20 +837,18 @@
       "symbol": "fn:tan",
       "kind": "function",
       "probe": "tan(up)",
-      "cerberus": "reject",
+      "cerberus": "accept",
       "reference": "accept",
-      "class": "wrong-reject",
-      "cerberus_error": "promql: function tan is not yet supported"
+      "class": "parity-accept"
     },
     {
       "head": "promql",
       "symbol": "fn:tanh",
       "kind": "function",
       "probe": "tanh(up)",
-      "cerberus": "reject",
+      "cerberus": "accept",
       "reference": "accept",
-      "class": "wrong-reject",
-      "cerberus_error": "promql: function tanh is not yet supported"
+      "class": "parity-accept"
     },
     {
       "head": "promql",

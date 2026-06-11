@@ -26,6 +26,28 @@ var instantFnCH = map[string]string{
 	"log2":  "log2",
 	"log10": "log10",
 	"sgn":   "sign",
+
+	// Trigonometric family. PromQL's trig functions operate per-row on
+	// `Value` and interpret/return angles in RADIANS — exactly CH's
+	// convention — so each maps 1:1 to the same-named CH builtin. All are
+	// Float64-in/Float64-out (unlike `sgn`, which needs a toFloat64 wrap).
+	"acos":  "acos",
+	"acosh": "acosh",
+	"asin":  "asin",
+	"asinh": "asinh",
+	"atan":  "atan",
+	"atanh": "atanh",
+	"cos":   "cos",
+	"cosh":  "cosh",
+	"sin":   "sin",
+	"sinh":  "sinh",
+	"tan":   "tan",
+	"tanh":  "tanh",
+
+	// Degrees ↔ radians conversion. PromQL `deg(x)` = `x * 180/π` and
+	// `rad(x)` = `x * π/180`; CH spells these `degrees(x)` / `radians(x)`.
+	"deg": "degrees",
+	"rad": "radians",
 }
 
 // lowerInstantFn handles single-arg math functions like abs / sqrt / ln. The

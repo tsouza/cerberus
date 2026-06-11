@@ -135,6 +135,11 @@ func dateFnExpr(name string, valueDT, tsRef chplan.Expr) chplan.Expr {
 		return &chplan.FuncCall{Name: "toMonth", Args: []chplan.Expr{valueDT}}
 	case "day_of_month":
 		return &chplan.FuncCall{Name: "toDayOfMonth", Args: []chplan.Expr{valueDT}}
+	case "day_of_year":
+		// PromQL `day_of_year` returns 1-366 (Jan 1 = 1); CH's
+		// `toDayOfYear(d)` uses the identical 1-based convention, so it
+		// maps directly with no offset.
+		return &chplan.FuncCall{Name: "toDayOfYear", Args: []chplan.Expr{valueDT}}
 	case "day_of_week":
 		// CH toDayOfWeek default returns Mon=1..Sun=7 (ISO).
 		// PromQL day_of_week returns Sun=0..Sat=6 (US).

@@ -134,6 +134,32 @@ func lowerScalarArg(e parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Expr,
 	return nil, fmt.Errorf("promql: unsupported scalar argument %T", e)
 }
 
+// lowerScalarTopLevel lowers a bare top-level scalar-returning call —
+// `scalar(<vector>)` or `pi()` — into the canonical single-sample
+// synthetic-vector shape.
+//
+// PromQL `scalar(v)` returns the value of v's single sample, or NaN when
+// v has zero or != 1 elements; the result type is scalar. `pi()` is the
+// constant π. The /api/v1/query handler renders a top-level scalar as
+// resultType "scalar" (a single [ts, value] pair) and query_range
+// renders it as a one-series matrix; in both cases cerberus materialises
+// the value as a one-row vector with empty labels — the same shape the
+// already-supported `vector(scalar(v))` / `time()` lowerings produce.
+//
+// We reuse lowerScalarArg, which folds `pi()` to a LitFloat and lowers
+// `scalar(v)` to a ScalarSubquery over scalarValuePlan (the
+// count()==1 ? any(Value) : NaN reduction). Wrapping that scalar
+// expression in syntheticScalarVector gives the canonical
+// MetricName/Attributes/TimeUnix/Value row, fanned across the step grid
+// in range mode.
+func lowerScalarTopLevel(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	v, err := lowerScalarArg(c, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+	return syntheticScalarVector(v, nil, s, ctx), nil
+}
+
 // scalarValuePlan wraps an instant-lowered vector plan with PromQL's
 // `scalar()` reduction: exactly one sample → its value; zero or many
 // samples → NaN. The shape is
