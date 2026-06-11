@@ -163,3 +163,72 @@ export async function generateSelfTraffic(
     await new Promise((r) => setTimeout(r, 250));
   }
 }
+
+/**
+ * Block until cerberus's own self-telemetry supports rate()-over-range
+ * queries, or throw after `deadlineSec`.
+ *
+ * Why generateSelfTraffic alone is not enough: it guarantees REQUESTS
+ * happened, but the metrics they tick reach ClickHouse on the OTel
+ * export cadence — and `rate(x[5m])` needs at least TWO exported
+ * samples inside the lookback window before it yields a single point.
+ * On a freshly-booted compose stack (the exact state the compose-smoke
+ * CI job creates: `docker compose up --wait` then straight into
+ * Playwright) the first range probe can land when only one sample
+ * exists, and a range query over guaranteed-seeded traffic comes back
+ * EMPTY — adversarial verification on 2026-06-10 reproduced exactly
+ * that red on a healthy stack at ~2min uptime.
+ *
+ * The wait polls cerberus DIRECTLY (not through Grafana) on purpose:
+ * it isolates "the data exists on the wire" from "the consumer decodes
+ * it", so the caller's plugin-backend / lint assertions stay
+ * unconditional — once this returns, an empty frame set or a vacuous
+ * lint pass is a real bug, never a boot race. The deadline failure is
+ * loud and actionable (a seed/export regression), never a skip.
+ */
+export async function awaitSelfTelemetryRangeSignal(
+  request: APIRequestContext,
+  deadlineSec = 120,
+): Promise<void> {
+  const cerberusURL = process.env.CERBERUS_URL ?? DEFAULT_CERBERUS_URL;
+  const expr = 'sum(rate(cerberus_queries_total[5m]))';
+  const deadline = Date.now() + deadlineSec * 1000;
+  let lastBody = '';
+  for (;;) {
+    // The probe window deliberately ends 30s in the PAST and demands
+    // >=3 points: Grafana's Prometheus plugin backend step-aligns the
+    // replay window, which can exclude the single newest evaluation
+    // step — a probe satisfied by one fresh point green-lit a replay
+    // that still saw zero rows (reproduced on the 2026-06-10
+    // cold-boot verification). Requiring margin makes "probe passed"
+    // imply "any consumer window over the same range has data".
+    const nowSec = Math.floor(Date.now() / 1000) - 30;
+    const url =
+      `${cerberusURL}/api/v1/query_range?query=${encodeURIComponent(expr)}` +
+      `&start=${nowSec - 300}&end=${nowSec}&step=15`;
+    try {
+      const resp = await request.get(url);
+      lastBody = await resp.text();
+      if (resp.status() === 200) {
+        const parsed = JSON.parse(lastBody) as {
+          data?: { result?: Array<{ values?: unknown[] }> };
+        };
+        const points = (parsed.data?.result ?? []).reduce(
+          (acc, s) => acc + (s.values?.length ?? 0),
+          0,
+        );
+        if (points >= 3) return;
+      }
+    } catch {
+      // transient — the deadline below is the failure path
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `awaitSelfTelemetryRangeSignal: ${expr} returned <3 points within ${deadlineSec}s of seed traffic — ` +
+          `cerberus self-telemetry is not reaching ClickHouse (seed, OTel export, or ingest regression). ` +
+          `Last response: ${lastBody.slice(0, 400)}`,
+      );
+    }
+    await new Promise((r) => setTimeout(r, 5_000));
+  }
+}

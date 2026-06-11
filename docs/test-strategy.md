@@ -224,6 +224,88 @@ Prior PRs #504 and #664 carry pattern-#3 refactors. They are not
 reverted (their diffs are now load-bearing for the published
 thresholds), but new violations should follow remedy #1 or #2.
 
+## Grafana surface crawler (Layer 9 extension)
+
+`test/e2e/playwright/crawl/` extends Layer 9 from *enumerated* UX
+flows to *discovered* ones. Where the iterate-\* specs visit known
+surfaces (dashboards, panels, the drilldown-app catalogue), the
+crawler (`crawl/crawl.spec.ts`) BFS-walks every same-origin link
+reachable from the Grafana root, canonicalizes URLs so the
+visited-set converges (path-only keys; dynamic segments like service
+names, trace ids, and folder uids parameterize; `/explore` collapses
+to one surface), and applies the same universal oracles on every
+page — no per-page code:
+
+1. **Zero browser console errors** (no cerberus-origin noise filter,
+   ever).
+2. **Zero non-2xx responses** on the datasource API families
+   (`/api/ds/query`, `/api/dashboards/`,
+   `/api/datasources/proxy/uid/`, `…/resources/`) and zero tunneled
+   `.results.<refId>.error` bodies — the only sanctioned failures are
+   those attributable to a panel's declared
+   `cerberus.expect: "error:<substring>"` contract.
+3. **Panel tri-state**: every rendered panel ends in
+   has-data | declared-empty | declared-error; an undeclared
+   "No data" fails with the panel title + URL.
+4. **No page-level crash banner** and no visible `role="alert"`
+   error banner.
+
+Two sibling specs ride the same lane:
+
+- `crawl/dsquery.spec.ts` — consumer-grade replays through
+  `POST /api/ds/query`, the datasource plugin **backend**. The plugin
+  decode layer (frames, RFC3339 shapes, enums) fails on wire drift
+  the datasource-proxy probes pass through, so this is a distinct
+  oracle, not duplication. (Tempo replays only `queryType: traceId`
+  — the Tempo plugin backend rejects TraceQL search by design.)
+- `crawl/lints.spec.ts` — deterministic data-quality lints. Each lint
+  pins a named incident class: histogram degeneracy (all observations
+  in one bucket fabricating constant quantiles) on every histogram
+  family a quantile panel consumes, and identical-quantile-series
+  (p50 ≡ p95 bitwise — the same single-bucket signature).
+
+**Lane shape.** The crawl suite runs in the `compose-smoke` job only
+(`CRAWL_STACK=compose` opts it in; the k3d `dashboard` job's
+auto-discovery ignores `crawl/**` because the inventory pins the
+compose stack's surface set). `SWEEP_DEPTH` follows the standard
+doctrine — depth changes states, never rules: `lean` (PR gate) visits
+root + nav + one representative per drilldown app; `full` (nightly)
+crawls exhaustively under a **hard page cap that fails the run when
+exceeded**, so surface growth forces a deliberate cap bump.
+
+**The surface-inventory ratchet.**
+`crawl/grafana-surface-inventory.json` pins the canonical visited
+set (mirroring `test/inventory/`'s regenerability convention). A
+newly discovered surface — e.g. a Grafana bump adding an app page —
+fails the crawl until the inventory is regenerated deliberately:
+
+```sh
+# against a healthy compose stack
+CERBERUS_UPDATE_INVENTORY=1 SWEEP_DEPTH=full CRAWL_STACK=compose \
+  npx playwright test crawl/crawl.spec.ts
+```
+
+Coverage shrink (a pinned surface no longer visited) fails
+symmetrically and has no regen escape. The exclusions file
+(`crawl/grafana-surface-exclusions.json`) is empty by design and
+shrink-biased; an entry must document genuine impossibility, and a
+URL in both files fails as a stale exclusion.
+
+**Doctrine: the AI sweep generates oracle classes; CI runs them.**
+The crawler exists because an off-CI AI screenshot sweep (2026-06-09)
+found 34 unique error signatures across 55 BFS-visited pages —
+several on surfaces no enumerated spec visits. Every find decomposed
+into a deterministic signal once named; the AI's irreplaceable role
+is *discovering which invariants to check*. When a future sweep (or a
+human) finds a new bug class: name the deterministic signal, cite the
+incident in a comment, implement it — as a universal per-page oracle
+in `crawl/crawl.spec.ts` if it applies everywhere, or as a lint in
+`crawl/lints.spec.ts` if it's an API-level data-quality rule — and
+aggregate violations into the existing `failures[]` reporting. Never
+per-surface tolerance lists: if a lint can't be deterministic without
+one, narrow its scope by *consumption* (see the
+histogram-degeneracy lint's quantile-panel scoping for the pattern).
+
 ## Regression meta-tests
 
 `test/regression/` pins past CI failures so they can't silently

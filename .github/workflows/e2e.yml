@@ -212,6 +212,14 @@ jobs:
           # never which rules run — see
           # test/e2e/playwright/helpers/depth.ts.
           SWEEP_DEPTH: ${{ github.event_name == 'schedule' && 'full' || 'lean' }}
+          # Opt the crawl suite (crawl/**) in. The crawler pins the
+          # COMPOSE stack's surface inventory
+          # (test/e2e/playwright/crawl/grafana-surface-inventory.json);
+          # the k3d dashboard job leaves this unset so its
+          # auto-discovery run doesn't diff a different stack's
+          # surface set against the compose pin. See the testIgnore
+          # comment in test/e2e/playwright/playwright.config.ts.
+          CRAWL_STACK: compose
         run: |
           # Phase-1 panel-shape spec (iterate-panel-shape.spec.ts) runs
           # alongside the catch-net smoke. It enumerates every
@@ -257,6 +265,23 @@ jobs:
           # cerberus publishes and probes /api/v1/series for each.
           # Pins the user's #8 sweep finding: the labels chip must not
           # surface "Unable to fetch labels" for any published metric.
+          #
+          # crawl/ suite (P4/P5 — the deterministic Grafana crawler):
+          #   - crawl/crawl.spec.ts BFS-walks every same-origin surface
+          #     reachable from the Grafana root with universal per-page
+          #     oracles (console errors, datasource-API non-2xx +
+          #     tunneled errors, panel tri-state, crash banners) and
+          #     pins the visited set against
+          #     crawl/grafana-surface-inventory.json. SWEEP_DEPTH
+          #     drives the lane: lean (PR gate) = root + nav + one
+          #     representative per drilldown app; full (this job's
+          #     nightly schedule run) = exhaustive BFS under a hard
+          #     page cap.
+          #   - crawl/dsquery.spec.ts replays consumer-grade queries
+          #     through POST /api/ds/query (the plugin BACKEND — a
+          #     decode layer the datasource-proxy probes never touch).
+          #   - crawl/lints.spec.ts carries the data-quality lints
+          #     (histogram degeneracy, identical-quantile-series).
           npx playwright test \
             compose_grafana_smoke.spec.ts \
             iterate-panel-shape.spec.ts \
@@ -265,6 +290,9 @@ jobs:
             iterate-panel-kiosk.spec.ts \
             iterate-all-dashboards.spec.ts \
             iterate-metrics-explorer.spec.ts \
+            crawl/crawl.spec.ts \
+            crawl/dsquery.spec.ts \
+            crawl/lints.spec.ts \
             --reporter=list
 
       - name: upload Playwright report on failure
