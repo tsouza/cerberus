@@ -1,0 +1,27 @@
+-- query.logql --
+{job="api"} |= ip("2001:db8::/32")
+-- seed --
+CREATE TABLE otel_logs (
+    Body String,
+    ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api')
+) ENGINE = Memory;
+INSERT INTO otel_logs (Body) VALUES
+    ('addr=2001:db8::1 in range'),
+    ('addr=2001:db9::1 outside'),
+    ('addr=1.2.3.4 v4 only');
+-- expected_rows --
+[
+  ["addr=2001:db8::1 in range"]
+]
+-- args --
+[0] string = "job"
+[1] string = "api"
+[2] string = "2001:db8::"
+[3] string = "2001:db8:ffff:ffff:ffff:ffff:ffff:ffff"
+[4] int64 = 0
+[5] string = "[0-9a-fA-F:.]+"
+-- chplan --
+Filter predicate=((ResourceAttributes["job"] = "api") AND arrayExists(_cerb_ip -> (isIPv6String(_cerb_ip) AND ifNull(((toIPv6OrNull(_cerb_ip) >= toIPv6("2001:db8::")) AND (toIPv6OrNull(_cerb_ip) <= toIPv6("2001:db8:ffff:ffff:ffff:ffff:ffff:ffff"))), 0)), extractAll(Body, "[0-9a-fA-F:.]+")))
+  Scan(otel_logs)
+-- sql --
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND arrayExists(_cerb_ip -> (isIPv6String(_cerb_ip) AND ifNull(((toIPv6OrNull(_cerb_ip) >= toIPv6(?)) AND (toIPv6OrNull(_cerb_ip) <= toIPv6(?))), ?)), extractAll(`Body`, ?))
