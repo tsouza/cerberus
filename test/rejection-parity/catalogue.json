@@ -262,13 +262,6 @@
     },
     {
       "head": "promql",
-      "site": "internal/promql/absent.go:lowerAbsent#9647959d",
-      "message": "promql: absent() argument must be an instant-vector selector, got %T",
-      "class": "rejection",
-      "trigger_query": "absent(sum(up))"
-    },
-    {
-      "head": "promql",
       "site": "internal/promql/absent.go:lowerAbsentOverTime#5fccc59e",
       "message": "promql: matrix selector's inner must be a VectorSelector, got %T",
       "class": "internal",
@@ -341,8 +334,8 @@
       "head": "promql",
       "site": "internal/promql/binary.go:promBinaryOp#63a5ec6e",
       "message": "promql: binary op %s unsupported",
-      "class": "rejection",
-      "trigger_query": "up atan2 up"
+      "class": "internal",
+      "rationale": "Every binary operator the PromQL parser produces now maps to a chplan op (arithmetic including pow and atan2, all six comparisons); set operators route through lowerVectorSetOp before this function is called — no parseable operator reaches the default arm."
     },
     {
       "head": "promql",
@@ -374,13 +367,6 @@
     },
     {
       "head": "promql",
-      "site": "internal/promql/histogram_quantile.go:lowerHistogramQuantile#4f2f135d",
-      "message": "promql: histogram_quantile second argument must be a histogram VectorSelector",
-      "class": "rejection",
-      "trigger_query": "histogram_quantile(0.9, sum(up))"
-    },
-    {
-      "head": "promql",
       "site": "internal/promql/histogram_quantile.go:lowerHistogramQuantile#afa8cb1f",
       "message": "promql: histogram_quantile expects 2 arguments, got %d",
       "class": "internal",
@@ -388,24 +374,24 @@
     },
     {
       "head": "promql",
-      "site": "internal/promql/histogram_quantile.go:lowerHistogramQuantile#c2bd1263",
-      "message": "promql: histogram_quantile requires a scalar-literal phi (computed phi is unsupported)",
-      "class": "rejection",
-      "trigger_query": "histogram_quantile(scalar(up), foo_bucket)"
+      "site": "internal/promql/histogram_value_fns.go:histogramValueExpr#1a671757",
+      "message": "promql: %s is not a native-histogram value function",
+      "class": "internal",
+      "rationale": "Dispatch invariant: lowerCall routes exactly the six native-histogram value-function names here, so the default arm cannot fire from a parseable query."
     },
     {
       "head": "promql",
-      "site": "internal/promql/instant_fns.go:lowerClamp#1384ae1f",
-      "message": "promql: %s requires a scalar-literal bound",
-      "class": "rejection",
-      "trigger_query": "clamp_min(up, scalar(up))"
+      "site": "internal/promql/histogram_value_fns.go:lowerHistogramValueFn#5337b47e",
+      "message": "promql: histogram_fraction expects 3 arguments, got %d",
+      "class": "internal",
+      "rationale": "The PromQL parser enforces builtin arity for histogram_fraction at parse time; a wrong-arity call never reaches lowering."
     },
     {
       "head": "promql",
-      "site": "internal/promql/instant_fns.go:lowerClamp#3cee2409",
-      "message": "promql: clamp requires scalar-literal bounds for min and max",
-      "class": "rejection",
-      "trigger_query": "clamp(up, scalar(up), 1)"
+      "site": "internal/promql/histogram_value_fns.go:lowerHistogramValueFn#749adc13",
+      "message": "promql: %s expects 1 argument, got %d",
+      "class": "internal",
+      "rationale": "The PromQL parser enforces builtin arity for the one-argument histogram value functions at parse time; a wrong-arity call never reaches lowering."
     },
     {
       "head": "promql",
@@ -437,13 +423,6 @@
     },
     {
       "head": "promql",
-      "site": "internal/promql/instant_fns.go:lowerRoundToNearest#d04df84f",
-      "message": "promql: round(v, to_nearest) requires a scalar literal to_nearest",
-      "class": "rejection",
-      "trigger_query": "round(up, scalar(up))"
-    },
-    {
-      "head": "promql",
       "site": "internal/promql/label_fns.go:lowerLabelJoin#c71ab88a",
       "message": "promql: label_join expects at least 3 arguments (v, dst, separator[, src…]), got %d",
       "class": "internal",
@@ -462,13 +441,6 @@
       "message": "promql: %s(%s) requires a string literal, got %T",
       "class": "internal",
       "rationale": "the parser's typechecker admits only string literals in string-typed argument slots (PromQL has no other string-producing expression)"
-    },
-    {
-      "head": "promql",
-      "site": "internal/promql/lower.go:buildAggFunc#10cb81b8",
-      "message": "promql: quantile(phi, ...) requires a scalar literal phi (computed phi is unsupported)",
-      "class": "rejection",
-      "trigger_query": "quantile(scalar(up), up)"
     },
     {
       "head": "promql",
@@ -502,15 +474,15 @@
       "head": "promql",
       "site": "internal/promql/lower.go:lower#d33d0084",
       "message": "promql: unsupported expression %T",
-      "class": "rejection",
-      "trigger_query": "\"a string literal\""
+      "class": "internal",
+      "rationale": "Every expression shape reaching lower() through the HTTP handlers is dispatched (top-level matrix selectors included). The remaining inhabitants — NumberLiteral and StringLiteral, answered by the handler's constant fold / string shortcut before the engine runs, and StepInvariantExpr, which only parser.PreprocessExpr mints and cerberus never calls — cannot arrive here from the wire."
     },
     {
       "head": "promql",
       "site": "internal/promql/lower.go:lowerCall#ab321c46",
       "message": "promql: function %s is not yet supported",
       "class": "rejection",
-      "trigger_query": "histogram_count(up)"
+      "trigger_query": "info(up)"
     },
     {
       "head": "promql",
@@ -525,6 +497,13 @@
       "message": "promql: count_values requires a non-empty label name",
       "class": "rejection",
       "trigger_query": "count_values(\"\", up)"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/lower.go:lowerMatrixSelector#5fccc59e",
+      "message": "promql: matrix selector's inner must be a VectorSelector, got %T",
+      "class": "internal",
+      "rationale": "The PromQL parser only constructs MatrixSelector nodes whose VectorSelector field is a *parser.VectorSelector; the guard exists for programmatically-built ASTs."
     },
     {
       "head": "promql",
@@ -546,20 +525,6 @@
       "message": "promql: %s argument must be a range-vector selector, got %T",
       "class": "internal",
       "rationale": "subquery arguments are intercepted by lowerOuterRangeFnOverSubquery; the parser's typechecker admits only matrix-typed arguments otherwise"
-    },
-    {
-      "head": "promql",
-      "site": "internal/promql/lower.go:lowerTopK#447d7d0e",
-      "message": "promql: %s K must be \u003e 0",
-      "class": "rejection",
-      "trigger_query": "topk(0, up)"
-    },
-    {
-      "head": "promql",
-      "site": "internal/promql/lower.go:lowerTopK#624096c7",
-      "message": "promql: %s K must be a non-negative integer literal, got %v",
-      "class": "rejection",
-      "trigger_query": "topk(1.5, up)"
     },
     {
       "head": "promql",
@@ -588,6 +553,20 @@
       "message": "promql: aggregation op %s is not yet supported",
       "class": "internal",
       "rationale": "the only caller (buildAggFunc) pre-filters to the seven operators this mapper handles"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/lower.go:topKDomain#7f1f205b",
+      "message": "promql: %s K must not be NaN",
+      "class": "rejection",
+      "trigger_query": "topk(NaN, up)"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/lower.go:topKDomain#ae02c31a",
+      "message": "promql: %s K %v overflows int64",
+      "class": "rejection",
+      "trigger_query": "topk(1e300, up)"
     },
     {
       "head": "promql",
@@ -647,20 +626,6 @@
     },
     {
       "head": "promql",
-      "site": "internal/promql/range_fns.go:lowerPredictLinear#efcc690d",
-      "message": "promql: predict_linear requires a scalar-literal predict horizon (computed t is unsupported)",
-      "class": "rejection",
-      "trigger_query": "predict_linear(foo[5m], scalar(up))"
-    },
-    {
-      "head": "promql",
-      "site": "internal/promql/range_fns.go:lowerQuantileOverTime#2990bde1",
-      "message": "promql: quantile_over_time requires a scalar-literal phi (computed phi is unsupported)",
-      "class": "rejection",
-      "trigger_query": "quantile_over_time(scalar(up), foo[5m])"
-    },
-    {
-      "head": "promql",
       "site": "internal/promql/range_fns.go:lowerQuantileOverTime#682124f4",
       "message": "promql: quantile_over_time expects 2 arguments, got %d",
       "class": "internal",
@@ -682,6 +647,27 @@
     },
     {
       "head": "promql",
+      "site": "internal/promql/scalar_args.go:lowerScalarArg#29d3d126",
+      "message": "promql: %s() is not a supported scalar argument",
+      "class": "internal",
+      "rationale": "The parser's type checker admits only scalar() / time() / pi() as scalar-returning calls; pi() folds via TryFoldScalar before this dispatch, and the other two are handled — the arm guards future upstream scalar functions."
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/scalar_args.go:lowerScalarArg#7acf48a0",
+      "message": "promql: unsupported scalar argument %T",
+      "class": "internal",
+      "rationale": "The scalar-typed expression space is closed by the parser's type checker: literal trees fold, Paren/Unary/Binary recurse, and the three scalar-returning calls are handled — no parseable scalar argument reaches the default arm."
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/scalar_args.go:lowerScalarArg#a14c0271",
+      "message": "promql: scalar() expects 1 argument, got %d",
+      "class": "internal",
+      "rationale": "The PromQL parser enforces scalar()'s single-argument arity at parse time."
+    },
+    {
+      "head": "promql",
       "site": "internal/promql/subquery.go:buildSubqueryAggFunc#534fdfbe",
       "message": "promql: subquery over %s aggregation is not supported",
       "class": "internal",
@@ -689,17 +675,10 @@
     },
     {
       "head": "promql",
-      "site": "internal/promql/subquery.go:buildSubqueryAggFunc#99558bfa",
-      "message": "promql: subquery over quantile(phi, ...) requires a scalar literal phi",
-      "class": "rejection",
-      "trigger_query": "max_over_time(quantile(scalar(up), up)[5m:1m])"
-    },
-    {
-      "head": "promql",
       "site": "internal/promql/subquery.go:lowerOuterRangeFnOverSubquery#b8fba661",
       "message": "promql: %s does not accept a subquery argument",
       "class": "rejection",
-      "trigger_query": "irate(up[5m:1m])"
+      "trigger_query": "mad_over_time(up[5m:1m])"
     },
     {
       "head": "promql",
@@ -719,36 +698,43 @@
       "head": "promql",
       "site": "internal/promql/subquery.go:lowerSubquery#a374d4b2",
       "message": "promql: subquery over %T is unsupported",
-      "class": "rejection",
-      "trigger_query": "max_over_time((-up)[5m:1m])"
+      "class": "internal",
+      "rationale": "SubqueryExpr.Expr must type-check as an instant vector, and every instant-vector AST shape is dispatched (selector, call, paren, aggregate, binary, unary, plus the parser-impossible nested SubqueryExpr handled defensively); scalar- and string-typed inners are parse-time type errors."
     },
     {
       "head": "promql",
       "site": "internal/promql/subquery.go:lowerSubqueryInnerMatrix#3a78d724",
       "message": "promql: subquery over aggregation of %T is unsupported",
-      "class": "rejection",
-      "trigger_query": "max_over_time(sum(up + up)[5m:1m])"
+      "class": "internal",
+      "rationale": "An aggregation's argument must type-check as an instant vector, and every instant-vector AST shape is dispatched (paren, call, selector, binary, unary, nested aggregate); scalar- and string-typed inners are parse-time type errors."
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:lowerSubqueryOverAbsent#c311e6be",
+      "message": "promql: subquery over absent() requires query eval-time context (use LowerAt)",
+      "class": "internal",
+      "rationale": "The HTTP handlers always thread eval times via LowerAt / LowerAtRange; only the raw Lower() entrypoint (tests / tooling) can present a zero eval anchor to this guard."
     },
     {
       "head": "promql",
       "site": "internal/promql/subquery.go:lowerSubqueryOverAggregate#534fdfbe",
       "message": "promql: subquery over %s aggregation is not supported",
       "class": "rejection",
-      "trigger_query": "max_over_time(stddev(up)[5m:1m])"
+      "trigger_query": "max_over_time(limitk(2, up)[5m:1m])"
     },
     {
       "head": "promql",
       "site": "internal/promql/subquery.go:lowerSubqueryOverCall#1796796f",
       "message": "promql: subquery inner %s expects exactly 1 argument, got %d",
       "class": "rejection",
-      "trigger_query": "max_over_time(label_replace(up, \"a\", \"b\", \"c\", \"d.*\")[5m:1m])"
+      "trigger_query": "max_over_time(double_exponential_smoothing(up[5m], 0.5, 0.5)[10m:1m])"
     },
     {
       "head": "promql",
       "site": "internal/promql/subquery.go:lowerSubqueryOverCall#a2b5a42c",
       "message": "promql: subquery inner %s must wrap a MatrixSelector, got %T",
       "class": "rejection",
-      "trigger_query": "max_over_time(absent(up)[5m:1m])"
+      "trigger_query": "max_over_time(info(up)[5m:1m])"
     },
     {
       "head": "promql",
@@ -769,7 +755,7 @@
       "site": "internal/promql/subquery.go:lowerSubqueryOverCallSubquery#b8fba661",
       "message": "promql: %s does not accept a subquery argument",
       "class": "rejection",
-      "trigger_query": "max_over_time(irate(foo[5m:1m])[10m:1m])"
+      "trigger_query": "max_over_time(mad_over_time(up[5m:1m])[10m:1m])"
     },
     {
       "head": "promql",
@@ -798,20 +784,6 @@
       "message": "promql: subquery over %s requires a scalar literal K",
       "class": "rejection",
       "trigger_query": "max_over_time(topk(scalar(up), up)[5m:1m])"
-    },
-    {
-      "head": "promql",
-      "site": "internal/promql/subquery.go:lowerSubqueryOverTopK#aeaed3a9",
-      "message": "promql: subquery over %s K must be \u003e 0",
-      "class": "rejection",
-      "trigger_query": "max_over_time(topk(0, up)[5m:1m])"
-    },
-    {
-      "head": "promql",
-      "site": "internal/promql/subquery.go:lowerSubqueryOverTopK#dbc88c34",
-      "message": "promql: subquery over %s K must be a non-negative integer literal, got %v",
-      "class": "rejection",
-      "trigger_query": "max_over_time(topk(1.5, up)[5m:1m])"
     },
     {
       "head": "promql",
@@ -847,13 +819,6 @@
       "message": "promql: vector() expects 1 argument, got %d",
       "class": "internal",
       "rationale": "parser-enforced arity: vector() is pinned at one argument"
-    },
-    {
-      "head": "promql",
-      "site": "internal/promql/synthetic.go:lowerVector#a33e7d9b",
-      "message": "promql: vector() requires a scalar-foldable argument or time()",
-      "class": "rejection",
-      "trigger_query": "vector(scalar(up))"
     },
     {
       "head": "promql",

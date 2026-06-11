@@ -250,3 +250,63 @@ test_cases:
   # Subqueries.
   - query: 'max_over_time((time() - max(demo_batch_last_success_timestamp_seconds) < 1000)[5m:10s] offset 5m)'
   - query: 'avg_over_time(rate(demo_cpu_usage_seconds_total[1m])[2m:10s])'
+
+  # Wrong-rejection burndown (rejection-parity catalogue, 2026-06):
+  # value-level coverage for every shape cerberus newly accepts. Each
+  # entry below 422'd on cerberus before the burndown while reference
+  # Prometheus answered it.
+  # atan2 binary operator.
+  - query: 'demo_memory_usage_bytes atan2 demo_memory_usage_bytes'
+  - query: 'demo_memory_usage_bytes atan2 2'
+  - query: '2 atan2 demo_memory_usage_bytes'
+  # topk/bottomk K domain (K < 1 → empty result; fractional truncates).
+  - query: 'topk(0, demo_memory_usage_bytes)'
+  - query: 'topk(1.5, demo_memory_usage_bytes)'
+  - query: 'bottomk(0.5, demo_memory_usage_bytes)'
+  # absent() over arbitrary expressions.
+  - query: 'absent(sum(demo_memory_usage_bytes))'
+  - query: 'absent(sum(nonexistent_metric_name))'
+  - query: 'absent(demo_memory_usage_bytes + demo_memory_usage_bytes)'
+  # histogram_quantile over a non-bucket input (reference skips float
+  # samples without `le` → empty).
+  - query: 'histogram_quantile(0.9, sum(demo_memory_usage_bytes))'
+  # Computed scalar() arguments. demo_num_cpus is constant per the
+  # seed, so the per-statement scalar binding agrees with reference's
+  # per-step evaluation at every step.
+  - query: 'clamp_min(demo_memory_usage_bytes, scalar(demo_num_cpus{instance="demo.promlabs.com:10000"}))'
+  - query: 'clamp_max(demo_memory_usage_bytes, scalar(demo_num_cpus{instance="demo.promlabs.com:10000"}))'
+  - query: 'clamp(demo_memory_usage_bytes, scalar(demo_num_cpus{instance="demo.promlabs.com:10000"}), 1000000000000)'
+  - query: 'round(demo_memory_usage_bytes, scalar(demo_num_cpus{instance="demo.promlabs.com:10000"}))'
+  - query: 'quantile(scalar(vector(0.5)), demo_memory_usage_bytes)'
+  - query: 'histogram_quantile(scalar(vector(0.9)), rate(demo_api_request_duration_seconds_bucket[1m]))'
+  - query: 'predict_linear(demo_disk_usage_bytes[5m], scalar(vector(3600)))'
+  - query: 'quantile_over_time(scalar(vector(0.5)), demo_memory_usage_bytes[5m])'
+  - query: 'vector(scalar(demo_num_cpus{instance="demo.promlabs.com:10000"}))'
+  # Subqueries over arbitrary expressions.
+  - query: 'max_over_time((-demo_memory_usage_bytes)[5m:1m])'
+  - query: 'max_over_time(sum(demo_memory_usage_bytes + demo_memory_usage_bytes)[5m:1m])'
+  - query: 'max_over_time(stddev(demo_memory_usage_bytes)[5m:1m])'
+  - query: 'max_over_time(label_replace(demo_memory_usage_bytes, "replaced", "$1", "instance", "(.*)")[5m:1m])'
+  - query: 'max_over_time(absent(nonexistent_metric_name)[5m:1m])'
+  - query: 'max_over_time(absent(demo_memory_usage_bytes)[5m:1m])'
+  - query: 'max_over_time(quantile(scalar(vector(0.5)), demo_memory_usage_bytes)[5m:1m])'
+  # irate / idelta family over subqueries.
+  - query: 'irate(demo_cpu_usage_seconds_total[5m:1m])'
+  - query: 'max_over_time(irate(demo_cpu_usage_seconds_total[5m:1m])[10m:1m])'
+  # Native-histogram value functions: the corpus carries no native
+  # histograms, so reference skips every float sample — both sides
+  # answer the empty vector (acceptance + emptiness pinned at the
+  # value level).
+  - query: 'histogram_count(demo_memory_usage_bytes)'
+  - query: 'histogram_sum(demo_memory_usage_bytes)'
+  - query: 'histogram_avg(nonexistent_metric_name)'
+  - query: 'histogram_stddev(demo_memory_usage_bytes)'
+  - query: 'histogram_fraction(0.2, 0.8, demo_memory_usage_bytes)'
+  # String- and matrix-typed top-level expressions: the compliance
+  # tester drives /api/v1/query_range, where BOTH backends reject
+  # non-Scalar/Vector expression types — pinning cerberus's new
+  # upstream-shaped type gate.
+  - query: '"a string literal"'
+    should_fail: true
+  - query: 'demo_memory_usage_bytes[5m]'
+    should_fail: true
