@@ -49,7 +49,7 @@ INSERT INTO otel_metrics_gauge VALUES
 Project ["" AS MetricName, map("job", "x") AS Attributes, toDateTime64("2026-01-01 00:00:01.000000000", 9) AS TimeUnix, 1 AS Value]
   Filter predicate=(_cerb_n = 0)
     Aggregate groupBy=[] funcs=[count() AS _cerb_n]
-      Filter predicate=((Attributes["job"] = "x") AND ((((MetricName = "nonexistent_metric_name") OR (MetricName = "nonexistent.metric.name")) OR (MetricName = "nonexistent.metric_name")) OR (MetricName = "nonexistent_metric.name")))
+      Filter predicate=((Attributes["job"] = "x") AND (MetricName IN ("nonexistent_metric_name", "nonexistent.metric.name", "nonexistent.metric_name", "nonexistent_metric.name")))
         Scan(merge(otel_metrics_gauge|otel_metrics_sum))
 -- sql --
-SELECT ? AS `MetricName`, map(?, ?) AS `Attributes`, toDateTime64(?, ?) AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT * FROM (SELECT toFloat64(count()) AS `_cerb_n` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE ((((`MetricName` = ?) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) WHERE (`Attributes`[?] = ?))) WHERE (`_cerb_n` = ?))
+SELECT ? AS `MetricName`, map(?, ?) AS `Attributes`, toDateTime64(?, ?) AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT * FROM (SELECT toFloat64(count()) AS `_cerb_n` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE (`MetricName` IN (?, ?, ?, ?)) WHERE (`Attributes`[?] = ?))) WHERE (`_cerb_n` = ?))

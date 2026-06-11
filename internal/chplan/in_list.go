@@ -21,13 +21,20 @@ package chplan
 type InList struct {
 	Left Expr
 	List []Expr
+	// Negated flips the membership test to `<Left> NOT IN (…)`. It is the
+	// flat, constant-depth equivalent of an AND-chain of `<Left> != Li`
+	// inequalities — the negated counterpart to the OR-chain InList
+	// replaces. Used by the `__name__!=` matcher lowering, where the
+	// dotted-candidate fan-out would otherwise build an unbounded AND-chain
+	// (the same parser-depth / query-size blowup as the equality case).
+	Negated bool
 }
 
 func (*InList) exprNode() {}
 
 func (i *InList) Equal(other Expr) bool {
 	o, ok := other.(*InList)
-	if !ok || len(i.List) != len(o.List) {
+	if !ok || len(i.List) != len(o.List) || i.Negated != o.Negated {
 		return false
 	}
 	if (i.Left == nil) != (o.Left == nil) {
