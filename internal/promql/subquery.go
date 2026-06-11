@@ -545,17 +545,24 @@ func lowerSubqueryOverTopK(
 	if !ok {
 		return nil, fmt.Errorf("promql: subquery over %s requires a scalar literal K", agg.Op.String())
 	}
-	if kF < 0 || kF != float64(int64(kF)) {
-		return nil, fmt.Errorf("promql: subquery over %s K must be a non-negative integer literal, got %v",
-			agg.Op.String(), kF)
-	}
-	if kF == 0 {
-		return nil, fmt.Errorf("promql: subquery over %s K must be > 0", agg.Op.String())
+	k, empty, err := topKDomain(agg.Op, kF)
+	if err != nil {
+		return nil, err
 	}
 
 	matrix, err := lowerSubqueryInnerMatrix(sub, agg.Expr, step, s, ctx)
 	if err != nil {
 		return nil, err
+	}
+	if empty {
+		// K < 1 → empty result per reference semantics (topKDomain).
+		// Filter the matrix to zero rows so the plan keeps the
+		// (Attributes, anchor_ts, Value) shape the wrapping reducer
+		// expects — same posture as lowerTopK's instant-mode fold.
+		return &chplan.Filter{
+			Input:     matrix,
+			Predicate: &chplan.LitBool{V: false},
+		}, nil
 	}
 
 	// Partition list: by/without keys (in TopK form — see lower.go's
@@ -581,7 +588,7 @@ func lowerSubqueryOverTopK(
 
 	return &chplan.TopK{
 		Input:    matrix,
-		K:        int64(kF),
+		K:        k,
 		By:       by,
 		SortExpr: &chplan.ColumnRef{Name: s.ValueColumn},
 		Desc:     agg.Op == parser.TOPK,

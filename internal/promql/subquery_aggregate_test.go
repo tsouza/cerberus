@@ -33,14 +33,18 @@ func TestLowerSubquery_Aggregate_Errors(t *testing.T) {
 			wantErr: "requires a scalar literal K",
 		},
 		{
-			name:    "topk K must be non-negative integer",
-			query:   `max_over_time(topk(-1, rate(http_requests_total[1m]))[1h:30s])`,
-			wantErr: "non-negative integer literal",
+			// Reference Prometheus errors on a NaN K; K < 1 shapes are
+			// NOT errors — they return an empty result (covered by
+			// TestLowerSubqueryTopK_KDomain). Same domain as instant
+			// mode via the shared topKDomain helper.
+			name:    "topk K must not be NaN",
+			query:   `max_over_time(topk(NaN, rate(http_requests_total[1m]))[1h:30s])`,
+			wantErr: "K must not be NaN",
 		},
 		{
-			name:    "topk K must be > 0",
-			query:   `max_over_time(topk(0, rate(http_requests_total[1m]))[1h:30s])`,
-			wantErr: "K must be > 0",
+			name:    "topk K must not overflow int64",
+			query:   `max_over_time(topk(1e300, rate(http_requests_total[1m]))[1h:30s])`,
+			wantErr: "overflows int64",
 		},
 		{
 			name:    "bottomk K must be scalar literal",
@@ -73,5 +77,31 @@ func TestLowerSubquery_Aggregate_Errors(t *testing.T) {
 				t.Fatalf("error %q does not contain %q", err.Error(), tc.wantErr)
 			}
 		})
+	}
+}
+
+// TestLowerSubqueryTopK_KDomain pins the subquery-over-topk variant of
+// the reference K domain: K < 1 folds to a constant-false Filter over
+// the inner matrix (empty result, canonical 3-column shape preserved
+// for the wrapping reducer), and fractional K >= 1 truncates toward
+// zero — the same topKDomain contract the instant path pins in
+// TestLowerTopK_KDomain.
+func TestLowerSubqueryTopK_KDomain(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	p := parser.NewParser(parser.Options{})
+
+	for _, q := range []string{
+		`max_over_time(topk(0, rate(http_requests_total[1m]))[1h:30s])`,
+		`max_over_time(topk(1.5, rate(http_requests_total[1m]))[1h:30s])`,
+	} {
+		expr, err := p.ParseExpr(q)
+		if err != nil {
+			t.Fatalf("ParseExpr(%q): %v", q, err)
+		}
+		if _, err := promql.Lower(context.Background(), expr, s); err != nil {
+			t.Fatalf("Lower(%q): %v", q, err)
+		}
 	}
 }

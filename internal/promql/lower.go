@@ -3,6 +3,7 @@ package promql
 import (
 	"context"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/prometheus/common/model"
@@ -1863,6 +1864,39 @@ func tryStringLiteral(e parser.Expr) (string, bool) {
 	return "", false
 }
 
+// topKDomain validates a topk/bottomk K parameter against reference
+// Prometheus semantics. The pinned engine
+// (tsouza/prometheus@cerberus-parser promql/engine.go, rangeEvalAgg +
+// aggregationK) handles the parameter in this order:
+//
+//  1. `params.Max() < 1` → return early with an EMPTY result (2xx).
+//     This covers K = 0, every negative K (including -Inf), and
+//     fractional K below 1 — none of them are errors upstream.
+//  2. NaN K → eval error ("Parameter value is NaN").
+//  3. K >= maxInt64 → eval error ("Scalar value %v overflows int64").
+//     (The symmetric underflow check is unreachable for a literal K:
+//     any K <= minInt64 already took the empty-result branch.)
+//  4. Otherwise K truncates toward zero (`int64(fParam)`), so
+//     `topk(1.5, v)` selects the top 1 series.
+//
+// Returns (k, false, nil) for the regular path, (0, true, nil) for the
+// empty-result short-circuit, and a non-nil error for the two shapes
+// reference Prometheus itself rejects.
+func topKDomain(op parser.ItemType, kF float64) (k int64, empty bool, err error) {
+	switch {
+	case kF < 1:
+		// Mirrors upstream's `params.Max() < 1` early return — NaN
+		// compares false here (as upstream) and falls through to the
+		// NaN error below.
+		return 0, true, nil
+	case math.IsNaN(kF):
+		return 0, false, fmt.Errorf("promql: %s K must not be NaN", op.String())
+	case kF >= float64(math.MaxInt64):
+		return 0, false, fmt.Errorf("promql: %s K %v overflows int64", op.String(), kF)
+	}
+	return int64(kF), false, nil
+}
+
 // lowerTopK lowers `topk(K, expr) [by(g) | without(g)] (...)` and
 // `bottomk(K, expr) ...` into a chplan.TopK over the lowered inner
 // expression. Unlike a regular aggregation, topk/bottomk preserve
@@ -1874,10 +1908,12 @@ func tryStringLiteral(e parser.Expr) (string, bool) {
 //	SELECT MetricName, Attributes, TimeUnix, Value FROM (<inner>)
 //	  ORDER BY Value [DESC|ASC] LIMIT K [BY <partition_exprs>]
 //
-// K must be a non-negative integer scalar literal at lowering time.
-// PromQL also accepts a `0` K (returns no series); we treat K=0 as
-// an error since the SQL `LIMIT 0` shape is degenerate and the
-// fixture-driven flow keeps a positive K invariant on the plan tree.
+// K follows reference Prometheus's parameter domain (see topKDomain):
+// K < 1 — including 0, negatives and sub-1 fractions — short-circuits
+// to an empty result (a constant-false Filter over the lowered input,
+// keeping the canonical column shape); fractional K >= 1 truncates
+// toward zero; NaN / int64-overflow K are rejected exactly where the
+// reference engine rejects them.
 //
 // `without (l1, l2, ...)` partitions by "every label except <these>".
 // We emit a single `MapWithoutKeys` Expr into the `By` slot — it lowers
@@ -1904,27 +1940,31 @@ func lowerTopK(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chplan.
 	if !ok {
 		return lowerTopKComputed(a, s, ctx)
 	}
-	if kF < 0 || kF != float64(int64(kF)) {
-		return nil, fmt.Errorf("promql: %s K must be a non-negative integer literal, got %v", a.Op.String(), kF)
-	}
-	if kF == 0 {
-		// PromQL semantics: topk(0, v) returns an empty result. CH's
-		// LIMIT 0 is degenerate and downstream invariants assume
-		// positive K; reject so callers see a clear error rather
-		// than a silent empty.
-		return nil, fmt.Errorf("promql: %s K must be > 0", a.Op.String())
+	k, empty, err := topKDomain(a.Op, kF)
+	if err != nil {
+		return nil, err
 	}
 
 	input, err := lower(a.Expr, s, ctx)
 	if err != nil {
 		return nil, err
 	}
+	if empty {
+		// K < 1 → empty result per reference semantics (see
+		// topKDomain). Filter the lowered input to zero rows so the
+		// plan keeps the canonical column shape — same posture as
+		// clamp's degenerate-bounds fold in instant_fns.go.
+		return &chplan.Filter{
+			Input:     input,
+			Predicate: &chplan.LitBool{V: false},
+		}, nil
+	}
 
 	by := topKPartition(a, s, ctx)
 
 	return &chplan.TopK{
 		Input:    input,
-		K:        int64(kF),
+		K:        k,
 		By:       by,
 		SortExpr: &chplan.ColumnRef{Name: s.ValueColumn},
 		Desc:     a.Op == parser.TOPK,

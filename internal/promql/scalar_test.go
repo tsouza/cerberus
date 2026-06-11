@@ -47,6 +47,17 @@ func TestTryFoldScalar(t *testing.T) {
 		{"1+2*3", 7, true}, // precedence
 		{"(1+2)*(3+4)", 21, true},
 
+		// atan2 — arithmetic binary op since Prom 2.31; folds via
+		// math.Atan2(lhs, rhs).
+		{"1 atan2 2", math.Atan2(1, 2), true},
+		{"-1 atan2 -2", math.Atan2(-1, -2), true},
+		{"0 atan2 0", 0, true},
+
+		// pi() — PromQL's only argument-less scalar constant function.
+		{"pi()", math.Pi, true},
+		{"2 * pi()", 2 * math.Pi, true},
+		{"pi() atan2 1", math.Atan2(math.Pi, 1), true},
+
 		// Division / modulo by zero — Prom semantics.
 		{"1/0", math.Inf(1), true},
 		{"-1/0", math.Inf(-1), true},

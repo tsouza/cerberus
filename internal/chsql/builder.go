@@ -515,6 +515,21 @@ func (b *Builder) exprBinary(bx *chplan.Binary) error {
 		}
 		b.sb.WriteByte(')')
 		return nil
+	case chplan.OpAtan2:
+		// PromQL `l atan2 r` is Go's math.Atan2(l, r); ClickHouse's
+		// atan2(y, x) takes the same argument order, so left/right map
+		// positionally. Function-call rendering mirrors OpPow — CH has
+		// no infix atan2.
+		b.sb.WriteString("atan2(")
+		if err := b.Expr(bx.Left); err != nil {
+			return err
+		}
+		b.sb.WriteString(", ")
+		if err := b.Expr(bx.Right); err != nil {
+			return err
+		}
+		b.sb.WriteByte(')')
+		return nil
 	case chplan.OpMod:
 		return b.emitGoModulo(bx.Left, bx.Right)
 	}
