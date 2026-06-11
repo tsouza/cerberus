@@ -32,7 +32,8 @@ INSERT INTO otel_metrics_gauge VALUES
 [2] string = "up"
 -- chplan --
 Project ["" AS MetricName, Attributes AS Attributes, now64(9) AS TimeUnix, toFloat64(Count) AS Value]
-  Filter predicate=(MetricName = "up")
-    Scan(otel_metrics_exp_histogram)
+  Aggregate groupBy=[Attributes AS Attributes] funcs=[argMax(Count, TimeUnix) AS Count, argMax(Sum, TimeUnix) AS Sum, argMax(Scale, TimeUnix) AS Scale, argMax(ZeroCount, TimeUnix) AS ZeroCount, argMax(PositiveOffset, TimeUnix) AS PositiveOffset, argMax(PositiveBucketCounts, TimeUnix) AS PositiveBucketCounts, argMax(NegativeOffset, TimeUnix) AS NegativeOffset, argMax(NegativeBucketCounts, TimeUnix) AS NegativeBucketCounts]
+    Filter predicate=(MetricName = "up")
+      Scan(otel_metrics_exp_histogram)
 -- sql --
-SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, now64(?) AS `TimeUnix`, toFloat64(`Count`) AS `Value` FROM (SELECT * FROM `otel_metrics_exp_histogram` WHERE (`MetricName` = ?))
+SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, now64(?) AS `TimeUnix`, toFloat64(`Count`) AS `Value` FROM (SELECT `Attributes` AS `Attributes`, argMax(`Count`, `TimeUnix`) AS `Count`, argMax(`Sum`, `TimeUnix`) AS `Sum`, argMax(`Scale`, `TimeUnix`) AS `Scale`, argMax(`ZeroCount`, `TimeUnix`) AS `ZeroCount`, argMax(`PositiveOffset`, `TimeUnix`) AS `PositiveOffset`, argMax(`PositiveBucketCounts`, `TimeUnix`) AS `PositiveBucketCounts`, argMax(`NegativeOffset`, `TimeUnix`) AS `NegativeOffset`, argMax(`NegativeBucketCounts`, `TimeUnix`) AS `NegativeBucketCounts` FROM (SELECT * FROM `otel_metrics_exp_histogram` WHERE (`MetricName` = ?)) GROUP BY `Attributes`)

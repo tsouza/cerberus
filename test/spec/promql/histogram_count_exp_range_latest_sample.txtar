@@ -1,0 +1,54 @@
+-- query.promql --
+histogram_count(latency_exp_hist{service="api"})
+-- range_step --
+30s
+-- seed --
+CREATE TABLE otel_metrics_exp_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_exp_histogram VALUES
+    ('latency_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 11, 20, 0, 0, 0, [11], 0, []),
+    ('latency_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:01:00', 9), 22, 50, 0, 0, 0, [22], 0, []);
+-- expected_rows --
+[
+  ["", {"service": "api"}, "2026-01-01T00:00:00Z", 11],
+  ["", {"service": "api"}, "2026-01-01T00:00:30Z", 11],
+  ["", {"service": "api"}, "2026-01-01T00:01:00Z", 22],
+  ["", {"service": "api"}, "2026-01-01T00:01:30Z", 22],
+  ["", {"service": "api"}, "2026-01-01T00:02:00Z", 22],
+  ["", {"service": "api"}, "2026-01-01T00:02:30Z", 22],
+  ["", {"service": "api"}, "2026-01-01T00:03:00Z", 22],
+  ["", {"service": "api"}, "2026-01-01T00:03:30Z", 22],
+  ["", {"service": "api"}, "2026-01-01T00:04:00Z", 22],
+  ["", {"service": "api"}, "2026-01-01T00:04:30Z", 22],
+  ["", {"service": "api"}, "2026-01-01T00:05:00Z", 22]
+]
+-- args --
+[0] string = ""
+[1] string = "latency_exp_hist"
+[2] string = "latency.exp.hist"
+[3] string = "latency.exp_hist"
+[4] string = "latency_exp.hist"
+[5] string = "service"
+[6] string = "api"
+[7] int64 = 300000000000
+-- chplan --
+Project ["" AS MetricName, Attributes AS Attributes, anchor_ts AS TimeUnix, toFloat64(Count) AS Value]
+  Aggregate groupBy=[anchor_ts AS anchor_ts, Attributes AS Attributes] funcs=[argMax(Count, TimeUnix) AS Count, argMax(Sum, TimeUnix) AS Sum, argMax(Scale, TimeUnix) AS Scale, argMax(ZeroCount, TimeUnix) AS ZeroCount, argMax(PositiveOffset, TimeUnix) AS PositiveOffset, argMax(PositiveBucketCounts, TimeUnix) AS PositiveBucketCounts, argMax(NegativeOffset, TimeUnix) AS NegativeOffset, argMax(NegativeBucketCounts, TimeUnix) AS NegativeBucketCounts]
+    Filter predicate=((TimeUnix <= anchor_ts) AND (TimeUnix > (anchor_ts - toIntervalNanosecond(300000000000))))
+      CrossJoin
+        StepGrid start=2026-01-01T00:00:00.000000000Z end=2026-01-01T00:05:00.000000000Z step=30s
+        Filter predicate=((Attributes["service"] = "api") AND ((((MetricName = "latency_exp_hist") OR (MetricName = "latency.exp.hist")) OR (MetricName = "latency.exp_hist")) OR (MetricName = "latency_exp.hist")))
+          Scan(otel_metrics_exp_histogram)
+-- sql --
+SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, `anchor_ts` AS `TimeUnix`, toFloat64(`Count`) AS `Value` FROM (SELECT `anchor_ts` AS `anchor_ts`, `Attributes` AS `Attributes`, argMax(`Count`, `TimeUnix`) AS `Count`, argMax(`Sum`, `TimeUnix`) AS `Sum`, argMax(`Scale`, `TimeUnix`) AS `Scale`, argMax(`ZeroCount`, `TimeUnix`) AS `ZeroCount`, argMax(`PositiveOffset`, `TimeUnix`) AS `PositiveOffset`, argMax(`PositiveBucketCounts`, `TimeUnix`) AS `PositiveBucketCounts`, argMax(`NegativeOffset`, `TimeUnix`) AS `NegativeOffset`, argMax(`NegativeBucketCounts`, `TimeUnix`) AS `NegativeBucketCounts` FROM (SELECT * FROM (SELECT * FROM (SELECT arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:00:00.000000000', 9) + toIntervalNanosecond(i * 30000000000), range(0, 11))) AS `anchor_ts`) AS L CROSS JOIN (SELECT * FROM `otel_metrics_exp_histogram` PREWHERE ((((`MetricName` = ?) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?)) WHERE (`Attributes`[?] = ?)) AS R) WHERE ((`TimeUnix` <= `anchor_ts`) AND (`TimeUnix` > (`anchor_ts` - toIntervalNanosecond(?))))) GROUP BY `anchor_ts`, `Attributes`)

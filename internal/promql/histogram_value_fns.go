@@ -53,10 +53,22 @@ import (
 //
 // Output rows follow the native histogram_quantile path's Sample
 // contract: MetricName=” (derived samples drop __name__), Attributes
-// passthrough, TimeUnix=now64(9) (instant eval anchor), Value as
-// above. Like that path, evaluation is anchored at the instant eval
-// time; query_range traffic over native-histogram metrics receives
-// the same single-anchor rows.
+// passthrough, Value as above. Sample selection mirrors the native
+// histogram_quantile scaffold exactly:
+//
+//   - Instant (`!histogramRangeApplies(ctx)`): the filtered exp-hist
+//     scan is aggregated with `argMax(<col>, TimeUnix)` GROUP BY
+//     Attributes, picking the newest sample per series before the
+//     value math runs. TimeUnix surfaces as now64(9) (instant eval
+//     anchor). Without this the bare scan emits every historical
+//     sample per series instead of the latest.
+//   - Range (`histogramRangeApplies(ctx)`): the scan cross-joins a
+//     StepGrid, each (sample, anchor) pair is filtered to the
+//     per-anchor lookback window (instantLookback = 5m), and
+//     `argMax(<col>, TimeUnix)` GROUP BY [anchor_ts, Attributes]
+//     selects the newest sample per (series, anchor). TimeUnix
+//     surfaces as anchor_ts so the matrix pivot sees one row per
+//     (series, step) rather than N rows all stamped now64(9).
 func lowerHistogramValueFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	vecIdx := 0
 	if c.Func.Name == "histogram_fraction" {
@@ -85,9 +97,25 @@ func lowerHistogramValueFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpl
 		}, nil
 	}
 
-	// Scan + Filter over the exp-histogram table — the same scaffold
-	// as lowerHistogramQuantileNative (matchers verbatim; @/offset
-	// modifiers add the time bound).
+	value, err := histogramValueExpr(c, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Range mode (ctx.step > 0): fan the per-series newest-sample
+	// selection across the request's step grid so the matrix pivot
+	// sees one row per (series, step) instead of N now64(9) rows.
+	// Modifier-bearing selectors fall back to the instant path until
+	// matrix-anchor handling lands (mirrors the native quantile path).
+	if histogramRangeApplies(ctx) && !hasModifier(vs) {
+		return lowerHistogramValueFnRange(vs, value, s, ctx), nil
+	}
+
+	// Instant mode: aggregate the filtered exp-hist scan with
+	// argMax(<col>, TimeUnix) GROUP BY Attributes so the value math
+	// reads the newest sample per series, then surface now64(9) as the
+	// instant eval anchor. Without the aggregation the bare scan emits
+	// every historical sample per series.
 	scan := &chplan.Scan{Table: s.ExpHistogramTable}
 	pred := buildPredicate(vs.LabelMatchers, s)
 	if hasModifier(vs) {
@@ -103,13 +131,16 @@ func lowerHistogramValueFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpl
 		input = &chplan.Filter{Input: scan, Predicate: pred}
 	}
 
-	value, err := histogramValueExpr(c, s, ctx)
-	if err != nil {
-		return nil, err
+	agg := &chplan.Aggregate{
+		Input:              input,
+		GroupBy:            []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
+		GroupByAliases:     []string{s.AttributesColumn},
+		AggFuncs:           histogramValueLatestAggs(s),
+		DropEmptyOnNoGroup: true,
 	}
 
 	return &chplan.Project{
-		Input: input,
+		Input: agg,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
 			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
@@ -117,6 +148,89 @@ func lowerHistogramValueFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpl
 			{Expr: value, Alias: s.ValueColumn},
 		},
 	}, nil
+}
+
+// histogramValueLatestAggs renders the per-series newest-sample
+// selection shared by the instant and range value-fn paths: one
+// argMax(<col>, TimeUnix) per exp-histogram column the value math
+// reads, each aliased back to its schema-canonical name so
+// histogramValueExpr's column references resolve unchanged.
+//
+// The column set is the union read across all six value functions
+// (Count/Sum for count/sum/avg, plus Scale/ZeroCount/Positive &
+// Negative Offset+BucketCounts for the stddev/stdvar variance and the
+// histogram_fraction rank walk). histogram_fraction's scalar bounds
+// (args 0/1) are not exp-hist columns and stay inside
+// histogramValueExpr.
+func histogramValueLatestAggs(s schema.Metrics) []chplan.AggFunc {
+	cols := []string{
+		s.CountColumn,
+		s.SumColumn,
+		s.ScaleColumn,
+		s.ZeroCountColumn,
+		s.PositiveOffsetColumn,
+		s.PositiveBucketCountsColumn,
+		s.NegativeOffsetColumn,
+		s.NegativeBucketCountsColumn,
+	}
+	aggs := make([]chplan.AggFunc, 0, len(cols))
+	for _, col := range cols {
+		aggs = append(aggs, chplan.AggFunc{
+			Name: "argMax",
+			Args: []chplan.Expr{
+				&chplan.ColumnRef{Name: col},
+				&chplan.ColumnRef{Name: s.TimestampColumn},
+			},
+			Alias: col,
+		})
+	}
+	return aggs
+}
+
+// lowerHistogramValueFnRange builds the range-mode plan tree for a
+// native-histogram value function over a bare exp-hist VectorSelector.
+//
+// It reuses the StepGrid cross-join + per-anchor lookback scaffold
+// (buildHistogramRangeAnchorJoin) shared with the native quantile
+// range path, aggregates the newest exp-hist sample per (series,
+// anchor) via argMax(<col>, TimeUnix) GROUP BY [anchor_ts, Attributes],
+// then projects the value math with anchor_ts surfaced as TimeUnix.
+//
+// Plan shape (in chsql output order):
+//
+//	Project [MetricName='', Attributes, anchor_ts AS TimeUnix, Value]
+//	  Aggregate groupBy=[anchor_ts, Attributes] funcs=[argMax(<col>, TimeUnix)…]
+//	    Filter (TimeUnix > anchor_ts - 5m AND TimeUnix <= anchor_ts)
+//	      CrossJoin(StepGrid(start, end, step), Filter(Scan, <matchers>))
+func lowerHistogramValueFnRange(
+	vs *parser.VectorSelector,
+	value chplan.Expr,
+	s schema.Metrics,
+	ctx lowerCtx,
+) chplan.Node {
+	scan := &chplan.Scan{Table: s.ExpHistogramTable}
+	pred := buildPredicate(vs.LabelMatchers, s)
+	anchorRef := &chplan.ColumnRef{Name: histogramAnchorCol}
+
+	filtered, _ := buildHistogramRangeAnchorJoin(scan, pred, instantLookback, anchorRef, s, ctx)
+
+	agg := &chplan.Aggregate{
+		Input:              filtered,
+		GroupBy:            []chplan.Expr{anchorRef, &chplan.ColumnRef{Name: s.AttributesColumn}},
+		GroupByAliases:     []string{histogramAnchorCol, s.AttributesColumn},
+		AggFuncs:           histogramValueLatestAggs(s),
+		DropEmptyOnNoGroup: true,
+	}
+
+	return &chplan.Project{
+		Input: agg,
+		Projections: []chplan.Projection{
+			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
+			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+			{Expr: anchorRef, Alias: s.TimestampColumn},
+			{Expr: value, Alias: s.ValueColumn},
+		},
+	}
 }
 
 // histogramValueExpr builds the per-row Value expression for one of
