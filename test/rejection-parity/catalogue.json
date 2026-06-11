@@ -691,7 +691,8 @@
       "head": "promql",
       "site": "internal/promql/sort.go:lowerSort#749adc13",
       "message": "promql: %s expects 1 argument, got %d",
-      "class": ""
+      "class": "internal",
+      "rationale": "The PromQL parser enforces sort()/sort_desc()'s single-argument arity at parse time."
     },
     {
       "head": "promql",
