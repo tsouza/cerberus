@@ -211,6 +211,10 @@ func (s *lokiStub) QueryStrings(_ context.Context, _ string, _ ...any) ([]string
 	return nil, nil
 }
 
+func (s *lokiStub) QueryDetectedFieldRows(_ context.Context, _ string, _ ...any) ([]chclient.DetectedFieldRow, error) {
+	return nil, nil
+}
+
 func (s *lokiStub) QueryTimestampedLines(_ context.Context, _ string, _ ...any) ([]chclient.TimestampedLine, error) {
 	return nil, nil
 }

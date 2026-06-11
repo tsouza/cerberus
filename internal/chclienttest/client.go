@@ -185,6 +185,49 @@ func (c *Client) QueryStrings(ctx context.Context, query string, args ...any) ([
 	return out, nil
 }
 
+// QueryDetectedFieldRows runs sql and decodes a (String,
+// Map(String,String), Map(String,String)) three-column result set into
+// chclient.DetectedFieldRow tuples. Used by /loki/api/v1/detected_fields.
+// The two Map columns are wrapped server-side in toJSONString(...) by
+// rewriteMapProjections and decoded back on the Go side per the chDB
+// driver Map-panic probe.
+func (c *Client) QueryDetectedFieldRows(ctx context.Context, query string, args ...any) ([]chclient.DetectedFieldRow, error) {
+	if c.err != nil {
+		return nil, c.err
+	}
+	rewritten := rewriteMapProjections(query)
+	rows, err := c.db.QueryContext(ctx, rewritten, args...)
+	if err != nil {
+		return nil, fmt.Errorf("chclienttest: query: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []chclient.DetectedFieldRow
+	for rows.Next() {
+		var (
+			line         string
+			attrsJSON    string
+			resourceJSON string
+		)
+		if err := rows.Scan(&line, &attrsJSON, &resourceJSON); err != nil {
+			return nil, fmt.Errorf("chclienttest: scan: %w", err)
+		}
+		attrs, err := decodeMapJSON(attrsJSON)
+		if err != nil {
+			return nil, err
+		}
+		resource, err := decodeMapJSON(resourceJSON)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, chclient.DetectedFieldRow{Line: line, Attributes: attrs, Resource: resource})
+	}
+	if err := tolerantRowsErr(rows.Err()); err != nil {
+		return nil, fmt.Errorf("chclienttest: rows.Err: %w", err)
+	}
+	return out, nil
+}
+
 // QueryTimestampedLines runs sql and decodes a (DateTime64, String)
 // two-column result set into chclient.TimestampedLine tuples. Used by
 // /loki/api/v1/patterns to feed the drain template miner.

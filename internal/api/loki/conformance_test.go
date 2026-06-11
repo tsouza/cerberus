@@ -424,23 +424,46 @@ func TestConformance_LokiIndexVolumeWire(t *testing.T) {
 	}
 }
 
-// TestConformance_LokiDetectedFieldsWire — `data: {fields, limit,
-// line_limit}` matches upstream Loki's documented shape.
+// TestConformance_LokiDetectedFieldsWire pins the BARE top-level wire
+// shape upstream Loki serializes for /loki/api/v1/detected_fields —
+// `{"fields":[{label,type,cardinality,parsers,jsonPath}],"limit":N}`
+// with NO {status, data} envelope (upstream's
+// WriteDetectedFieldsResponseJSON writes logproto.DetectedFieldsResponse
+// verbatim; see pkg/util/marshal/marshal.go). The decode below reads
+// `body.fields` exactly as Grafana's Logs Drilldown does — the
+// post-incident doctrine for the "Fields: 0" bug class: a 200 with an
+// enveloped body is invisible to status-code oracles, so the test IS
+// the consumer.
 func TestConformance_LokiDetectedFieldsWire(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		name string
-		rows []string
+		name        string
+		rows        []chclient.DetectedFieldRow
+		wantParsers []string
 	}{
-		{"json_lines", []string{`{"user_id":42,"action":"login"}`, `{"user_id":7,"action":"logout"}`}},
-		{"logfmt_lines", []string{`user_id=42 action=login`, `user_id=7 action=logout`}},
+		{
+			"json_lines",
+			[]chclient.DetectedFieldRow{
+				{Line: `{"user_id":42,"action":"login"}`},
+				{Line: `{"user_id":7,"action":"logout"}`},
+			},
+			[]string{"json"},
+		},
+		{
+			"logfmt_lines",
+			[]chclient.DetectedFieldRow{
+				{Line: `user_id=42 action=login`},
+				{Line: `user_id=7 action=logout`},
+			},
+			[]string{"logfmt"},
+		},
 	}
 	for _, c := range cases {
 		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			srv := newServer(&stubQuerier{stringRows: c.rows})
+			srv := newServer(&stubQuerier{detectedRows: c.rows})
 			t.Cleanup(srv.Close)
 			resp, err := http.Get(srv.URL +
 				`/loki/api/v1/detected_fields?query=%7Bjob%3D%22api%22%7D&start=1717995600&end=1717999200`)
@@ -452,20 +475,98 @@ func TestConformance_LokiDetectedFieldsWire(t *testing.T) {
 				body, _ := io.ReadAll(resp.Body)
 				t.Fatalf("status=%d body=%s", resp.StatusCode, body)
 			}
-			var env struct {
-				Status string                  `json:"status"`
-				Data   loki.DetectedFieldsData `json:"data"`
+			raw, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("read body: %v", err)
 			}
-			if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
-				t.Fatalf("decode: %v", err)
+
+			// Regression pin: the {status, data} query-API envelope is
+			// GONE. Grafana reads body.fields directly — an enveloped
+			// 200 renders every Logs Drilldown service page with
+			// "Fields: 0".
+			var top map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &top); err != nil {
+				t.Fatalf("decode top-level object: %v", err)
 			}
-			if env.Status != "success" {
-				t.Errorf("status: got %q, want success", env.Status)
+			if _, ok := top["status"]; ok {
+				t.Fatalf("response carries the query-API envelope (top-level \"status\"); upstream serializes DetectedFieldsResponse bare: %s", raw)
 			}
-			if env.Data.Limit == 0 || env.Data.LineLimit == 0 {
-				t.Errorf("limits not echoed: %+v", env.Data)
+			if _, ok := top["data"]; ok {
+				t.Fatalf("response carries the query-API envelope (top-level \"data\"); upstream serializes DetectedFieldsResponse bare: %s", raw)
+			}
+			if _, ok := top["fields"]; !ok {
+				t.Fatalf("top-level \"fields\" missing — the consumer decodes body.fields: %s", raw)
+			}
+
+			// Consumer decode: exactly what the Logs Drilldown app /
+			// Loki datasource frontend reads.
+			var body struct {
+				Fields []loki.DetectedField `json:"fields"`
+				Limit  uint32               `json:"limit"`
+			}
+			if err := json.Unmarshal(raw, &body); err != nil {
+				t.Fatalf("decode as consumer: %v", err)
+			}
+			if len(body.Fields) == 0 {
+				t.Fatalf("fields empty — Logs Drilldown would render \"Fields: 0\": %s", raw)
+			}
+			if body.Limit == 0 {
+				t.Errorf("limit not echoed alongside non-empty fields: %s", raw)
+			}
+			for _, f := range body.Fields {
+				if f.Label == "" {
+					t.Errorf("field with empty label: %s", raw)
+				}
+				if f.Type == "" {
+					t.Errorf("field %q with empty type: %s", f.Label, raw)
+				}
+				if f.Cardinality == 0 {
+					t.Errorf("field %q with zero cardinality: %s", f.Label, raw)
+				}
+				if len(f.Parsers) != len(c.wantParsers) || f.Parsers[0] != c.wantParsers[0] {
+					t.Errorf("field %q parsers=%v want %v", f.Label, f.Parsers, c.wantParsers)
+				}
 			}
 		})
+	}
+}
+
+// TestConformance_LokiDetectedFieldsWire_StructuredMetadataParsersNull
+// — fields derived from structured metadata only (LogAttributes, no
+// line parse) serialize `"parsers":null`: upstream's logproto JSON tag
+// has NO omitempty on parsers, and the upstream handler nils the slice
+// out when no parser produced the field.
+func TestConformance_LokiDetectedFieldsWire_StructuredMetadataParsersNull(t *testing.T) {
+	t.Parallel()
+
+	srv := newServer(&stubQuerier{detectedRows: []chclient.DetectedFieldRow{
+		{Line: "plain unparseable text", Attributes: map[string]string{"detected_level": "warn"}},
+	}})
+	t.Cleanup(srv.Close)
+	resp, err := http.Get(srv.URL +
+		`/loki/api/v1/detected_fields?query=%7Bjob%3D%22api%22%7D&start=1717995600&end=1717999200`)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	var body struct {
+		Fields []struct {
+			Label   string          `json:"label"`
+			Parsers json.RawMessage `json:"parsers"`
+		} `json:"fields"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Fields) != 1 || body.Fields[0].Label != "detected_level" {
+		t.Fatalf("want exactly the detected_level field, got: %s", raw)
+	}
+	if got := strings.TrimSpace(string(body.Fields[0].Parsers)); got != "null" {
+		t.Errorf("structured-metadata field parsers=%s want null on the wire", got)
 	}
 }
 

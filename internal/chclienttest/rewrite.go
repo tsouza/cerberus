@@ -31,12 +31,21 @@ func tolerantRowsErr(err error) error {
 // (String),String)). Without the toJSONString wrap chDB's parquet driver
 // panics decoding the column as a Go string in the chclienttest scan
 // path — same Map-panic probe Attributes / ResourceAttributes hit.
+// log_attributes / stream_labels are the aliases
+// loki.buildDetectedFieldsSQL projects for `LogAttributes` /
+// `ResourceAttributes` — distinct from the source column names so the
+// toJSONString wrap can't shadow the raw map the WHERE predicate
+// references (CH resolves WHERE identifiers against SELECT aliases
+// first).
 var mapColumnNames = []string{
 	"Attributes",
 	"ExemplarAttributes",
+	"LogAttributes",
 	"ResourceAttributes",
 	"ScopeAttributes",
 	"SpanAttributes",
+	"log_attributes",
+	"stream_labels",
 }
 
 func isMapColumn(name string) bool {

@@ -133,6 +133,29 @@ that lives OUTSIDE the AGPL `upstream/` boundary:
   `${SELECTOR}` / `${LABEL_NAME}` / `${LABEL_VALUE}` template vars to
   concrete values produced by the seeder under `cmd/seed/`.
 
+## Detected-fields differential pass
+
+Beyond the query corpus, the driver runs a per-service differential
+over `GET /loki/api/v1/detected_fields` (range lane only — the
+endpoint has no instant flavour). Grafana's Logs Drilldown drives
+every service page off this endpoint and reads `body.fields` at the
+top level — upstream serializes `logproto.DetectedFieldsResponse`
+BARE (no `{status, data}` envelope), so a 200 with the wrong shape
+renders "Fields: 0" while every status-code probe stays green. The
+pass decodes both backends' responses exactly as the consumer does
+and diffs the field sets — label, type, cardinality, parsers, and
+jsonPath all participate. Results join the same report + score
+pipeline as the corpus cases; there is no separate bucket and no
+allow-list.
+
+Comparability is held by the seeder: the CH `LogAttributes` map
+carries the same key set `pushLoki` sends as structured metadata
+(`detected_level`), and both backends compile the same
+`axiomhq/hyperloglog` version, so cardinality estimates are
+bit-identical when both sides observed the same values. The pass
+queries with a `line_limit` above the per-service row count so
+neither backend truncates the peek window.
+
 ## Upstream-skip baseline
 
 The vendored corpus contains ~15 queries upstream marks `skip: true`

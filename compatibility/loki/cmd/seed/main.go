@@ -516,11 +516,15 @@ func insertCHLogs(ctx context.Context, conn driver.Conn, streams []stream) error
 		}
 		for _, e := range s.entries {
 			level := e.level
-			// LogAttributes carries per-record attributes — the severity
-			// markers Loki materialises as structured metadata. Stream
-			// labels live in resourceAttrs above, not here.
+			// LogAttributes carries per-record attributes — the OTel-CH
+			// analogue of Loki's structured metadata. The key set MUST
+			// mirror what pushLoki sends as structured metadata
+			// (detected_level only): the /detected_fields differential
+			// compares the two backends' structured-metadata-derived
+			// fields, so any CH-only key here would surface as a
+			// permanent parity diff. Stream labels live in
+			// resourceAttrs above, not here.
 			logAttrs := map[string]string{
-				"level":          strings.ToLower(level),
 				"detected_level": strings.ToLower(level),
 			}
 			if err := batch.Append(

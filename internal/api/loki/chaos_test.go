@@ -25,6 +25,7 @@ import (
 type chaosQuerier struct {
 	samples      []chclient.Sample
 	stringRows   []string
+	detectedRows []chclient.DetectedFieldRow
 	tsLines      []chclient.TimestampedLine
 	labelSets    []map[string]string
 	statsRow     chclient.IndexStatsRow
@@ -55,6 +56,14 @@ func (c *chaosQuerier) QueryStrings(_ context.Context, _ string, _ ...any) ([]st
 		return nil, c.err
 	}
 	return c.stringRows, nil
+}
+
+func (c *chaosQuerier) QueryDetectedFieldRows(_ context.Context, _ string, _ ...any) ([]chclient.DetectedFieldRow, error) {
+	c.calls.Add(1)
+	if c.err != nil {
+		return nil, c.err
+	}
+	return c.detectedRows, nil
 }
 
 func (c *chaosQuerier) QueryTimestampedLines(_ context.Context, _ string, _ ...any) ([]chclient.TimestampedLine, error) {

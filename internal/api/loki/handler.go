@@ -34,6 +34,7 @@ import (
 type Querier interface {
 	Query(ctx context.Context, sql string, args ...any) ([]chclient.Sample, error)
 	QueryStrings(ctx context.Context, sql string, args ...any) ([]string, error)
+	QueryDetectedFieldRows(ctx context.Context, sql string, args ...any) ([]chclient.DetectedFieldRow, error)
 	QueryTimestampedLines(ctx context.Context, sql string, args ...any) ([]chclient.TimestampedLine, error)
 	QueryIndexStats(ctx context.Context, sql string, args ...any) (chclient.IndexStatsRow, error)
 	QueryIndexVolume(ctx context.Context, sql string, args ...any) ([]chclient.IndexVolumeRow, error)

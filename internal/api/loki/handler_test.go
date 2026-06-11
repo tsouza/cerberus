@@ -39,10 +39,15 @@ type stubQuerier struct {
 	volumeRows []chclient.IndexVolumeRow
 	volumeErr  error
 
-	// /labels, /label/{name}/values, /detected_fields share a
-	// single-column string-row result shape; reuse the same channel.
+	// /labels and /label/{name}/values share a single-column
+	// string-row result shape; reuse the same channel.
 	stringRows []string
 	stringsErr error
+
+	// /detected_fields canned (Body, LogAttributes, ResourceAttributes)
+	// rows.
+	detectedRows []chclient.DetectedFieldRow
+	detectedErr  error
 
 	// /series canned label-set rows.
 	labelSets    []map[string]string
@@ -95,6 +100,18 @@ func (s *stubQuerier) QueryStrings(_ context.Context, sql string, args ...any) (
 	s.lastSQL = sql
 	s.lastArgs = args
 	rows, err := s.stringRows, s.stringsErr
+	s.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func (s *stubQuerier) QueryDetectedFieldRows(_ context.Context, sql string, args ...any) ([]chclient.DetectedFieldRow, error) {
+	s.mu.Lock()
+	s.lastSQL = sql
+	s.lastArgs = args
+	rows, err := s.detectedRows, s.detectedErr
 	s.mu.Unlock()
 	if err != nil {
 		return nil, err
