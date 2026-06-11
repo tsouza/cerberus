@@ -2740,14 +2740,13 @@
    "panels": [
     {
      "cerberus": {
-      "expect": "error:line-filter `ip(...)` is not yet supported",
-      "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the panel FAILS the sweep the moment support lands, forcing the contract (and this dashboard) to be updated alongside the feature."
+      "expect": "nonempty"
      },
      "datasource": {
       "type": "loki",
       "uid": "cerberus-loki"
      },
-     "description": "Line-filter ip(CIDR) matching is rejected (a literal-text lowering would be silently wrong).",
+     "description": "Line-filter ip(CIDR) matching is lowered to a ClickHouse CIDR test; gateway logs carry 192.168.1.x remote_addr values so the probe returns matching streams.",
      "fieldConfig": {
       "defaults": {
        "color": {
@@ -2828,19 +2827,18 @@
        "refId": "A"
       }
      ],
-     "title": "ip() line filter \u2014 parity rejection",
+     "title": "ip() line filter \u2014 implemented",
      "type": "timeseries"
     },
     {
      "cerberus": {
-      "expect": "error:is not yet supported",
-      "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the panel FAILS the sweep the moment support lands, forcing the contract (and this dashboard) to be updated alongside the feature."
+      "expect": "nonempty"
      },
      "datasource": {
       "type": "loki",
       "uid": "cerberus-loki"
      },
-     "description": "Pattern match line filters are rejected at lowering.",
+     "description": "Pattern-match line filters (`|>`) are lowered; proxy access-log lines match `<_> /shop/items/<_> <_>` so the probe returns matching streams.",
      "fieldConfig": {
       "defaults": {
        "color": {
@@ -2921,19 +2919,19 @@
        "refId": "A"
       }
      ],
-     "title": "|> pattern line filter \u2014 parity rejection",
+     "title": "|> pattern line filter \u2014 implemented",
      "type": "timeseries"
     },
     {
      "cerberus": {
-      "expect": "error:is not yet supported",
-      "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the panel FAILS the sweep the moment support lands, forcing the contract (and this dashboard) to be updated alongside the feature."
+      "expect": "empty",
+      "why": "Negated pattern filter over a stream where every line matches the pattern has a defined-empty result; declared empty so the sweep fails the moment the negation lowering regresses and starts leaking matching lines."
      },
      "datasource": {
       "type": "loki",
       "uid": "cerberus-loki"
      },
-     "description": "Negated pattern match line filters are rejected at lowering.",
+     "description": "Negated pattern-match line filters (`!>`) are lowered; every proxy access-log line matches `<_> /shop/items/<_> <_>`, so negating it excludes all of them \u2014 the defined result on this seed is empty.",
      "fieldConfig": {
       "defaults": {
        "color": {
@@ -3014,19 +3012,18 @@
        "refId": "A"
       }
      ],
-     "title": "!> pattern line filter \u2014 parity rejection",
+     "title": "!> pattern line filter \u2014 implemented (defined-empty)",
      "type": "timeseries"
     },
     {
      "cerberus": {
-      "expect": "error:unsupported label filterer",
-      "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the panel FAILS the sweep the moment support lands, forcing the contract (and this dashboard) to be updated alongside the feature."
+      "expect": "nonempty"
      },
      "datasource": {
       "type": "loki",
       "uid": "cerberus-loki"
      },
-     "description": "Label-filter ip(CIDR) matching is rejected at lowering.",
+     "description": "Label-filter ip(CIDR) matching is lowered to a ClickHouse CIDR test; gateway logfmt remote_addr values include 10.0.0.x so the probe returns matching streams.",
      "fieldConfig": {
       "defaults": {
        "color": {
@@ -3107,19 +3104,18 @@
        "refId": "A"
       }
      ],
-     "title": "ip() label filter \u2014 parity rejection",
+     "title": "ip() label filter \u2014 implemented",
      "type": "timeseries"
     },
     {
      "cerberus": {
-      "expect": "error:range op first_over_time is not yet supported",
-      "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the panel FAILS the sweep the moment support lands, forcing the contract (and this dashboard) to be updated alongside the feature."
+      "expect": "nonempty"
      },
      "datasource": {
       "type": "loki",
       "uid": "cerberus-loki"
      },
-     "description": "first_over_time is rejected at lowering.",
+     "description": "first_over_time over unwrapped values is lowered to an over-time range window; the probe returns one sample series per gateway stream.",
      "fieldConfig": {
       "defaults": {
        "color": {
@@ -3200,19 +3196,18 @@
        "refId": "A"
       }
      ],
-     "title": "first_over_time \u2014 parity rejection",
+     "title": "first_over_time \u2014 implemented",
      "type": "timeseries"
     },
     {
      "cerberus": {
-      "expect": "error:range op last_over_time is not yet supported",
-      "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the panel FAILS the sweep the moment support lands, forcing the contract (and this dashboard) to be updated alongside the feature."
+      "expect": "nonempty"
      },
      "datasource": {
       "type": "loki",
       "uid": "cerberus-loki"
      },
-     "description": "last_over_time is rejected at lowering.",
+     "description": "last_over_time over unwrapped values is lowered to an over-time range window; the probe returns one sample series per gateway stream.",
      "fieldConfig": {
       "defaults": {
        "color": {
@@ -3293,19 +3288,18 @@
        "refId": "A"
       }
      ],
-     "title": "last_over_time \u2014 parity rejection",
+     "title": "last_over_time \u2014 implemented",
      "type": "timeseries"
     },
     {
      "cerberus": {
-      "expect": "error:range op rate_counter is not yet supported",
-      "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the panel FAILS the sweep the moment support lands, forcing the contract (and this dashboard) to be updated alongside the feature."
+      "expect": "nonempty"
      },
      "datasource": {
       "type": "loki",
       "uid": "cerberus-loki"
      },
-     "description": "rate_counter is rejected at lowering.",
+     "description": "rate_counter over unwrapped values is lowered to an over-time range window; the probe returns one sample series per gateway stream.",
      "fieldConfig": {
       "defaults": {
        "color": {
@@ -3386,19 +3380,18 @@
        "refId": "A"
       }
      ],
-     "title": "rate_counter \u2014 parity rejection",
+     "title": "rate_counter \u2014 implemented",
      "type": "timeseries"
     },
     {
      "cerberus": {
-      "expect": "error:range op absent_over_time is not yet supported",
-      "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the panel FAILS the sweep the moment support lands, forcing the contract (and this dashboard) to be updated alongside the feature."
+      "expect": "nonempty"
      },
      "datasource": {
       "type": "loki",
       "uid": "cerberus-loki"
      },
-     "description": "absent_over_time is rejected at lowering (when support lands, this becomes the empty/nonempty bidirectional pair the promql showcase models with absent()).",
+     "description": "absent_over_time is lowered and returns a value-1 series for the missing service `cerberus-showcase-never-logged` (nothing was ever logged under that name), matching reference Loki.",
      "fieldConfig": {
       "defaults": {
        "color": {
@@ -3479,19 +3472,18 @@
        "refId": "A"
       }
      ],
-     "title": "absent_over_time \u2014 parity rejection",
+     "title": "absent_over_time \u2014 implemented",
      "type": "timeseries"
     },
     {
      "cerberus": {
-      "expect": "error:topk changes output shape and is unsupported",
-      "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the panel FAILS the sweep the moment support lands, forcing the contract (and this dashboard) to be updated alongside the feature."
+      "expect": "nonempty"
      },
      "datasource": {
       "type": "loki",
       "uid": "cerberus-loki"
      },
-     "description": "topk changes output shape and is rejected.",
+     "description": "topk(k, \u2026) is lowered via chplan.TopK (per-timestamp top-k that keeps output shape); the probe returns the top series over the rate vector.",
      "fieldConfig": {
       "defaults": {
        "color": {
@@ -3572,19 +3564,18 @@
        "refId": "A"
       }
      ],
-     "title": "topk \u2014 parity rejection",
+     "title": "topk \u2014 implemented",
      "type": "timeseries"
     },
     {
      "cerberus": {
-      "expect": "error:bottomk changes output shape and is unsupported",
-      "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the panel FAILS the sweep the moment support lands, forcing the contract (and this dashboard) to be updated alongside the feature."
+      "expect": "nonempty"
      },
      "datasource": {
       "type": "loki",
       "uid": "cerberus-loki"
      },
-     "description": "bottomk changes output shape and is rejected.",
+     "description": "bottomk(k, \u2026) is lowered via chplan.TopK (per-timestamp bottom-k that keeps output shape); the probe returns the bottom series over the rate vector.",
      "fieldConfig": {
       "defaults": {
        "color": {
@@ -3665,19 +3656,18 @@
        "refId": "A"
       }
      ],
-     "title": "bottomk \u2014 parity rejection",
+     "title": "bottomk \u2014 implemented",
      "type": "timeseries"
     },
     {
      "cerberus": {
-      "expect": "error:sort requires output ordering",
-      "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the panel FAILS the sweep the moment support lands, forcing the contract (and this dashboard) to be updated alongside the feature."
+      "expect": "nonempty"
      },
      "datasource": {
       "type": "loki",
       "uid": "cerberus-loki"
      },
-     "description": "sort requires output ordering and is rejected.",
+     "description": "sort(\u2026) is lowered via chplan.OrderBy (ascending value ordering); the probe returns the per-service rate vector ordered by value.",
      "fieldConfig": {
       "defaults": {
        "color": {
@@ -3758,19 +3748,18 @@
        "refId": "A"
       }
      ],
-     "title": "sort \u2014 parity rejection",
+     "title": "sort \u2014 implemented",
      "type": "timeseries"
     },
     {
      "cerberus": {
-      "expect": "error:sort_desc requires output ordering",
-      "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the panel FAILS the sweep the moment support lands, forcing the contract (and this dashboard) to be updated alongside the feature."
+      "expect": "nonempty"
      },
      "datasource": {
       "type": "loki",
       "uid": "cerberus-loki"
      },
-     "description": "sort_desc requires output ordering and is rejected.",
+     "description": "sort_desc(\u2026) is lowered via chplan.OrderBy (descending value ordering); the probe returns the per-service rate vector ordered by value.",
      "fieldConfig": {
       "defaults": {
        "color": {
@@ -3851,7 +3840,7 @@
        "refId": "A"
       }
      ],
-     "title": "sort_desc \u2014 parity rejection",
+     "title": "sort_desc \u2014 implemented",
      "type": "timeseries"
     },
     {
@@ -3949,14 +3938,13 @@
     },
     {
      "cerberus": {
-      "expect": "error:binary op and unsupported",
-      "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the panel FAILS the sweep the moment support lands, forcing the contract (and this dashboard) to be updated alongside the feature."
+      "expect": "nonempty"
      },
      "datasource": {
       "type": "loki",
       "uid": "cerberus-loki"
      },
-     "description": "Logical set op `and` between sample expressions is rejected.",
+     "description": "Logical set op `and` between sample expressions is lowered as a vector set op; `rate(gateway) and rate(gateway)` keeps the gateway series the probe returns.",
      "fieldConfig": {
       "defaults": {
        "color": {
@@ -4037,19 +4025,18 @@
        "refId": "A"
       }
      ],
-     "title": "and \u2014 parity rejection",
+     "title": "and \u2014 implemented",
      "type": "timeseries"
     },
     {
      "cerberus": {
-      "expect": "error:binary op or unsupported",
-      "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the panel FAILS the sweep the moment support lands, forcing the contract (and this dashboard) to be updated alongside the feature."
+      "expect": "nonempty"
      },
      "datasource": {
       "type": "loki",
       "uid": "cerberus-loki"
      },
-     "description": "Logical set op `or` between sample expressions is rejected.",
+     "description": "Logical set op `or` between sample expressions is lowered as a vector set op; `rate(gateway) or rate(gateway)` returns the gateway series the probe returns.",
      "fieldConfig": {
       "defaults": {
        "color": {
@@ -4130,19 +4117,18 @@
        "refId": "A"
       }
      ],
-     "title": "or \u2014 parity rejection",
+     "title": "or \u2014 implemented",
      "type": "timeseries"
     },
     {
      "cerberus": {
-      "expect": "error:binary op unless unsupported",
-      "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the panel FAILS the sweep the moment support lands, forcing the contract (and this dashboard) to be updated alongside the feature."
+      "expect": "nonempty"
      },
      "datasource": {
       "type": "loki",
       "uid": "cerberus-loki"
      },
-     "description": "Logical set op `unless` between sample expressions is rejected.",
+     "description": "Logical set op `unless` between sample expressions is lowered as a vector set op; `rate(gateway) unless rate(db)` keeps the gateway series since no `db` service is seeded.",
      "fieldConfig": {
       "defaults": {
        "color": {
@@ -4223,7 +4209,7 @@
        "refId": "A"
       }
      ],
-     "title": "unless \u2014 parity rejection",
+     "title": "unless \u2014 implemented",
      "type": "timeseries"
     }
    ],
