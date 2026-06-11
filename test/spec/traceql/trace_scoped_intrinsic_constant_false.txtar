@@ -1,0 +1,18 @@
+-- query.traceql --
+{ traceDuration > 100ms }
+-- seed --
+CREATE TABLE otel_traces (
+    SpanId String
+) ENGINE = MergeTree ORDER BY SpanId;
+INSERT INTO otel_traces (SpanId) VALUES
+    ('aaaa'),
+    ('bbbb');
+-- expected_rows --
+[]
+-- args --
+[0] bool = false
+-- chplan --
+Filter predicate=false
+  Scan(otel_traces)
+-- sql --
+SELECT * FROM `otel_traces` WHERE ?

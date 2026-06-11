@@ -1,0 +1,26 @@
+-- query.traceql --
+{ span.http.method = "GET" || span.http.method = "POST" }
+-- seed --
+CREATE TABLE otel_traces (
+    SpanId String,
+    SpanAttributes Map(String, String) MATERIALIZED if(SpanId = 'aaaa', map('http.method', 'GET'), if(SpanId = 'bbbb', map('http.method', 'POST'), map('http.method', 'DELETE')))
+) ENGINE = MergeTree ORDER BY SpanId;
+INSERT INTO otel_traces (SpanId) VALUES
+    ('aaaa'),
+    ('bbbb'),
+    ('cccc');
+-- args --
+[0] string = "http.method"
+[1] string = "GET"
+[2] string = "POST"
+-- chplan --
+Filter predicate=(SpanAttributes["http.method"] IN ("GET", "POST"))
+  Scan(otel_traces)
+-- sql --
+SELECT * FROM `otel_traces` WHERE (`SpanAttributes`[?] IN (?, ?))
+
+-- expected_rows --
+[
+  ["aaaa"],
+  ["bbbb"]
+]

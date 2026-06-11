@@ -801,9 +801,29 @@ func lowerAttributeExpr(a traceql.Attribute, s schema.Traces) (chplan.Expr, erro
 }
 
 func lowerBinaryOperation(b *traceql.BinaryOperation, s schema.Traces) (chplan.Expr, error) {
+	// `attr = a || attr = b` is folded by the Tempo parser into a single
+	// `attr IN [a, b]` BinaryOperation (OpIn / OpNotIn) — Grafana's Traces
+	// Drilldown emits this shape for multi-value filters. Intercept it
+	// before mapBinaryOp (which has no IN op) and lower to a flat
+	// membership test.
+	if b.Op == traceql.OpIn || b.Op == traceql.OpNotIn {
+		return lowerInOperation(b, s)
+	}
 	op, err := mapBinaryOp(b.Op)
 	if err != nil {
 		return nil, err
+	}
+	// Comparisons against a carrier the OTel-CH schema does not
+	// materialise (instrumentation-scoped attributes; the trace-scoped /
+	// per-event intrinsics rootName / rootServiceName / traceDuration /
+	// childCount / event:timeSinceStart) resolve to StaticNil in
+	// reference execution, so the comparison is constant-false (the
+	// isMatchingOperand guard never matches a nil operand). Reference
+	// `/api/search` accepts these — fold them to a constant predicate
+	// instead of rejecting. Equality/inequality both collapse to false:
+	// `nil = x` and `nil != x` are both StaticFalse upstream.
+	if expr, handled := lowerAbsentFieldBinary(b, s); handled {
+		return expr, nil
 	}
 	// Nested-set intrinsics (nestedSetParent / nestedSetLeft /
 	// nestedSetRight) have no OTel-CH backing column; intercept them
@@ -856,6 +876,180 @@ func lowerBinaryOperation(b *traceql.BinaryOperation, s schema.Traces) (chplan.E
 	// NO_COMMON_TYPE (the showcase's static:bool panel 502'd).
 	lhs, rhs = coerceBoolFieldAccess(op, lhs, rhs)
 	return &chplan.Binary{Op: op, Left: lhs, Right: rhs}, nil
+}
+
+// lowerInOperation lowers a folded membership comparison
+// `attr IN [v0, v1, …]` (OpIn) / `attr NOT IN [...]` (OpNotIn). The
+// Tempo parser collapses `attr = a || attr = b` into this single
+// BinaryOperation shape, which Grafana's Traces Drilldown emits for
+// multi-value filters; reference Tempo accepts it (enum_operators.go
+// binaryTypesValid lists OpIn/OpNotIn for every operand type), so
+// cerberus must too.
+//
+// The membership set lowers to a flat chplan.InList (constant parser
+// depth — see chplan.InList's doc on the max_parser_depth trap that an
+// OR-chain would hit). When the attribute resolves to a column with no
+// OTel-CH backing (instrumentation-scoped / nested-set / trace-scoped
+// intrinsics) the comparison is constant per reference's StaticNil
+// execution semantics: a missing attribute never matches any RHS, so
+// `IN` is constant-false and `NOT IN` constant-true.
+func lowerInOperation(b *traceql.BinaryOperation, s schema.Traces) (chplan.Expr, error) {
+	attr, ok := fieldExprAttribute(b.LHS)
+	if !ok {
+		return nil, fmt.Errorf("traceql: IN comparison LHS must be an attribute reference, got %T", b.LHS)
+	}
+	st, ok := fieldExprStatic(b.RHS)
+	if !ok {
+		return nil, fmt.Errorf("traceql: IN comparison RHS must be a literal array, got %T", b.RHS)
+	}
+	elems, err := lowerStaticArray(st)
+	if err != nil {
+		return nil, err
+	}
+	if len(elems) == 0 {
+		// Empty membership set: `x IN []` matches nothing, `x NOT IN []`
+		// matches everything (reference array semantics).
+		return &chplan.LitBool{V: b.Op == traceql.OpNotIn}, nil
+	}
+
+	if pred, absent := absentAttributePredicate(attr, s, b.Op == traceql.OpNotIn); absent {
+		return pred, nil
+	}
+
+	left, lerr := lowerAttribute(attr, s)
+	if lerr != nil {
+		return nil, lerr
+	}
+	// String-map carriers store every value as text, so coerce numeric /
+	// bool list literals to their stringified OTel-CH encoding when the
+	// LHS is a Map subscript (mirrors coerceBoolFieldAccess / the numeric
+	// coercion path for scalar comparisons).
+	if _, isField := left.(*chplan.FieldAccess); isField {
+		elems = stringifyListForMap(elems)
+	}
+	in := &chplan.InList{Left: left, List: elems}
+	if b.Op == traceql.OpNotIn {
+		return &chplan.FuncCall{Name: "not", Args: []chplan.Expr{in}}, nil
+	}
+	return in, nil
+}
+
+// lowerAbsentFieldBinary intercepts a comparison where either operand
+// is an attribute the OTel-CH schema does not materialise (see
+// attributeHasNoBacking). Reference Tempo resolves the absent operand
+// to StaticNil; the type-mismatch guard then makes every comparison
+// (=, !=, <, <=, >, >=, =~, !~) evaluate StaticFalse, so the predicate
+// is constant-false. Returns handled=false when neither operand is an
+// unbacked attribute (the caller continues with generic lowering).
+func lowerAbsentFieldBinary(b *traceql.BinaryOperation, s schema.Traces) (chplan.Expr, bool) {
+	if a, ok := fieldExprAttribute(b.LHS); ok && attributeHasNoBacking(a, s) {
+		return &chplan.LitBool{V: false}, true
+	}
+	if a, ok := fieldExprAttribute(b.RHS); ok && attributeHasNoBacking(a, s) {
+		return &chplan.LitBool{V: false}, true
+	}
+	return nil, false
+}
+
+// absentAttributePredicate reports whether attr resolves to a column
+// the OTel-CH traces schema does not materialise, and if so returns the
+// constant predicate that mirrors reference Tempo's StaticNil execution
+// semantics: a missing attribute compared against any typed RHS never
+// matches (the isMatchingOperand guard in BinaryOperation.execute
+// returns StaticFalse), so a positive membership / comparison is
+// constant-false and its negation constant-true.
+//
+// Only the genuinely-unbacked carriers report absent here:
+// instrumentation-scoped attributes (no scope-attributes map) and the
+// trace-scoped / per-event intrinsics with no per-span column. Span /
+// resource attributes and intrinsics that DO map to a column
+// (Duration, SpanName, StatusCode, …) return absent=false so the
+// caller lowers them against their real carrier. Nested-set intrinsics
+// are handled by their own dedicated path (lowerNestedSetBinary) and
+// are not classified here.
+func absentAttributePredicate(attr traceql.Attribute, s schema.Traces, negated bool) (chplan.Expr, bool) {
+	if !attributeHasNoBacking(attr, s) {
+		return nil, false
+	}
+	return &chplan.LitBool{V: negated}, true
+}
+
+// attributeHasNoBacking reports whether attr names a carrier the OTel-CH
+// traces schema does not materialise. Instrumentation-scoped attributes
+// have no scope-attributes map; the trace-scoped and per-event
+// intrinsics (rootName / rootServiceName / traceDuration / traceStart /
+// childCount / event:timeSinceStart) have no per-span column. Every
+// other attribute (span / resource maps, intrinsics with a column)
+// has a real backing.
+func attributeHasNoBacking(attr traceql.Attribute, s schema.Traces) bool {
+	if attr.Intrinsic == traceql.IntrinsicNone {
+		return attr.Scope == traceql.AttributeScopeInstrumentation && s.ScopeAttributesColumn == ""
+	}
+	switch attr.Intrinsic {
+	case traceql.IntrinsicTraceRootService, traceql.IntrinsicTraceRootSpan,
+		traceql.IntrinsicTraceDuration, traceql.ScopedIntrinsicTraceRootName,
+		traceql.ScopedIntrinsicTraceRootService, traceql.ScopedIntrinsicTraceDuration,
+		traceql.IntrinsicTraceStartTime, traceql.IntrinsicChildCount,
+		traceql.IntrinsicEventTimeSinceStart:
+		return true
+	}
+	return false
+}
+
+// lowerStaticArray turns a TraceQL array Static (TypeStringArray /
+// TypeIntArray / TypeFloatArray / TypeBooleanArray) into chplan literal
+// elements via the public array accessors.
+func lowerStaticArray(st traceql.Static) ([]chplan.Expr, error) {
+	if strs, ok := st.StringArray(); ok {
+		out := make([]chplan.Expr, len(strs))
+		for i, v := range strs {
+			out[i] = &chplan.LitString{V: v}
+		}
+		return out, nil
+	}
+	if ints, ok := st.IntArray(); ok {
+		out := make([]chplan.Expr, len(ints))
+		for i, v := range ints {
+			out[i] = &chplan.LitInt{V: int64(v)}
+		}
+		return out, nil
+	}
+	if floats, ok := st.FloatArray(); ok {
+		out := make([]chplan.Expr, len(floats))
+		for i, v := range floats {
+			out[i] = &chplan.LitFloat{V: v}
+		}
+		return out, nil
+	}
+	if bools, ok := st.BooleanArray(); ok {
+		out := make([]chplan.Expr, len(bools))
+		for i, v := range bools {
+			out[i] = &chplan.LitBool{V: v}
+		}
+		return out, nil
+	}
+	return nil, fmt.Errorf("traceql: IN comparison RHS literal type %s is not an array", st.Type)
+}
+
+// stringifyListForMap rewrites numeric / bool list literals into the
+// String form the OTel-CH Map(String, String) carriers store, so an
+// `IN` test against a map subscript compares like-typed values rather
+// than tripping NO_COMMON_TYPE.
+func stringifyListForMap(elems []chplan.Expr) []chplan.Expr {
+	out := make([]chplan.Expr, len(elems))
+	for i, e := range elems {
+		switch v := e.(type) {
+		case *chplan.LitBool:
+			if v.V {
+				out[i] = &chplan.LitString{V: "true"}
+			} else {
+				out[i] = &chplan.LitString{V: "false"}
+			}
+		default:
+			out[i] = e
+		}
+	}
+	return out
 }
 
 // coerceBoolFieldAccess rewrites a LitBool compared against a
