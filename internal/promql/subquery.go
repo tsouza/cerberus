@@ -54,10 +54,68 @@ func lowerSubquery(e *parser.SubqueryExpr, s schema.Metrics, ctx lowerCtx) (chpl
 		return lowerSubqueryOverAggregate(e, inner, step, s, ctx)
 	case *parser.BinaryExpr:
 		return lowerSubqueryOverBinary(e, inner, step, s, ctx)
+	case *parser.UnaryExpr:
+		return lowerSubqueryOverUnary(e, inner, step, s, ctx)
 	case *parser.SubqueryExpr:
 		return lowerSubqueryOverSubquery(e, inner, step, s, ctx)
 	}
 	return nil, fmt.Errorf("promql: subquery over %T is unsupported", e.Expr)
+}
+
+// lowerSubqueryOverUnary — `(-<expr>)[range:step]` / `(+<expr>)[range:step]`.
+// Same Identity-wrap pattern as lowerSubqueryOverBinary: the UnaryExpr
+// lowers in range-vector context (LWR suppressed so every in-window
+// sample reaches the matrix wrapper; unary minus is a per-sample value
+// rewrite via projectValueOverInner) and the wrapping RangeWindow
+// picks the most recent rewritten sample per anchor — reference
+// Prometheus re-evaluates `-expr` at each subquery step, and negation
+// commutes with "latest sample in window".
+func lowerSubqueryOverUnary(
+	sub *parser.SubqueryExpr,
+	u *parser.UnaryExpr,
+	step time.Duration,
+	s schema.Metrics,
+	ctx lowerCtx,
+) (chplan.Node, error) {
+	rangeCtx := ctx
+	rangeCtx.inRangeVector = true
+	inner, err := lowerUnary(u, s, rangeCtx)
+	if err != nil {
+		return nil, err
+	}
+	return wrapSubqueryIdentity(sub, inner, step, s, ctx)
+}
+
+// wrapSubqueryIdentity wraps an already-lowered per-sample relation in
+// the Identity matrix RangeWindow every "re-evaluate per anchor"
+// subquery shape shares: one row per (series, anchor) across
+// [End - sub.Range, End] spaced by step, each carrying the most recent
+// in-window sample. Factored out of the VectorSelector / Binary /
+// Unary / instant-call paths — the wrapper is identical, only the
+// inner lowering differs.
+func wrapSubqueryIdentity(
+	sub *parser.SubqueryExpr,
+	inner chplan.Node,
+	step time.Duration,
+	s schema.Metrics,
+	ctx lowerCtx,
+) (chplan.Node, error) {
+	anchor, err := subqueryAnchor(sub, ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &chplan.RangeWindow{
+		Input:           inner,
+		Identity:        true,
+		Range:           step, // per-anchor lookback = subquery step
+		OuterRange:      sub.Range,
+		Step:            step,
+		End:             anchor.End,
+		Offset:          anchor.Offset,
+		TimestampColumn: s.TimestampColumn,
+		ValueColumn:     s.ValueColumn,
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
+	}, nil
 }
 
 // lowerSubqueryOverCall — `<range-vector-fn>(<inner>[<inner_range>])[<outer_range>:<step>]`.
@@ -77,6 +135,30 @@ func lowerSubqueryOverCall(
 	s schema.Metrics,
 	ctx lowerCtx,
 ) (chplan.Node, error) {
+	// Instant-vector transforms (`label_replace(up, ...)[5m:1m]`,
+	// `abs(up)[5m:1m]`, the clamp family, …) are sample-preserving:
+	// re-evaluating them per anchor commutes with "latest sample in
+	// window", so the Identity wrap over the rewritten samples matches
+	// reference semantics exactly. Gated on subqueryInstantSafe — the
+	// transform's argument subtree must itself be sample-preserving
+	// (no range windows, aggregations, or synthetic time-anchored
+	// sources, whose instant lowerings collapse the per-sample
+	// timestamps the Identity wrapper needs).
+	if isInstantTransformFn(call.Func.Name) && subqueryInstantSafe(call) {
+		rangeCtx := ctx
+		rangeCtx.inRangeVector = true
+		inner, err := lowerCall(call, s, rangeCtx)
+		if err != nil {
+			return nil, err
+		}
+		return wrapSubqueryIdentity(sub, inner, step, s, ctx)
+	}
+	// `absent(<v>)[range:step]` — per-anchor absence indicator; needs
+	// the StepGrid-fanned absent lowering, not the Identity wrap (the
+	// synthesised row only exists when data is missing).
+	if call.Func.Name == "absent" {
+		return lowerSubqueryOverAbsent(sub, call, step, s, ctx)
+	}
 	if len(call.Args) != 1 {
 		return nil, fmt.Errorf("promql: subquery inner %s expects exactly 1 argument, got %d",
 			call.Func.Name, len(call.Args))
@@ -319,18 +401,139 @@ func lowerOuterRangeFnOverSubquery(
 }
 
 // rangeVectorFn is the set of PromQL functions cerberus's emitter
-// handles as range-vector reducers. Subquery-argument lowering only
-// fires for these.
+// handles as range-vector reducers — i.e. every RangeWindow.Func the
+// windowed-array emitters support in both instant and matrix
+// (OuterRange > 0) modes. Subquery-argument lowering only fires for
+// these. predict_linear / holt_winters / quantile_over_time are
+// excluded: they carry extra scalar arguments the subquery RangeWindow
+// construction doesn't thread.
 var rangeVectorFn = map[string]struct{}{
-	"rate":            {},
-	"increase":        {},
-	"delta":           {},
-	"sum_over_time":   {},
-	"avg_over_time":   {},
-	"min_over_time":   {},
-	"max_over_time":   {},
-	"count_over_time": {},
-	"last_over_time":  {},
+	"rate":             {},
+	"irate":            {},
+	"increase":         {},
+	"delta":            {},
+	"idelta":           {},
+	"deriv":            {},
+	"resets":           {},
+	"changes":          {},
+	"sum_over_time":    {},
+	"avg_over_time":    {},
+	"min_over_time":    {},
+	"max_over_time":    {},
+	"count_over_time":  {},
+	"last_over_time":   {},
+	"stddev_over_time": {},
+	"stdvar_over_time": {},
+}
+
+// instantTransformFns is the set of sample-preserving instant-vector
+// transforms whose subquery lowering rides the Identity wrap: each
+// rewrites per-sample Value / Attributes without touching the sample
+// timestamps, so "transform then take latest-in-window per anchor" is
+// exactly reference Prometheus's "re-evaluate at each anchor".
+var instantTransformFns = map[string]struct{}{
+	"abs":           {},
+	"ceil":          {},
+	"floor":         {},
+	"round":         {},
+	"sqrt":          {},
+	"exp":           {},
+	"ln":            {},
+	"log2":          {},
+	"log10":         {},
+	"sgn":           {},
+	"clamp":         {},
+	"clamp_min":     {},
+	"clamp_max":     {},
+	"label_replace": {},
+	"label_join":    {},
+}
+
+func isInstantTransformFn(name string) bool {
+	_, ok := instantTransformFns[name]
+	return ok
+}
+
+// subqueryInstantSafe reports whether every node in the call's subtree
+// is sample-preserving under the Identity-wrap subquery lowering:
+//
+//   - no MatrixSelector / SubqueryExpr (range windows collapse the
+//     per-sample timestamps);
+//   - no AggregateExpr (instant aggregation collapses to one
+//     eval-anchored row — the aggregate path owns those shapes);
+//   - no Calls outside the instant-transform set except `pi()`
+//     (a parse-time constant). `time()` / `vector()` / date fns
+//     synthesise eval-anchored rows; `scalar()` binds an
+//     instant-anchored constant — all of which would diverge from the
+//     per-anchor re-evaluation reference performs.
+func subqueryInstantSafe(call *parser.Call) bool {
+	safe := true
+	parser.Inspect(call, func(n parser.Node, _ []parser.Node) error {
+		switch v := n.(type) {
+		case *parser.MatrixSelector, *parser.SubqueryExpr, *parser.AggregateExpr:
+			safe = false
+		case *parser.Call:
+			if !isInstantTransformFn(v.Func.Name) && v.Func.Name != "pi" {
+				safe = false
+			}
+		}
+		return nil
+	})
+	return safe
+}
+
+// lowerSubqueryOverAbsent — `absent(<v>)[<range>:<step>]`, typically
+// under an outer reducer (`max_over_time(absent(up)[5m:1m])`).
+//
+// absent() is not sample-preserving — the synthesised `{} 1` row only
+// exists where data is MISSING — so the Identity wrap can't model it.
+// Instead the absent lowering's own range mode (StepGrid CROSS JOIN
+// over the per-step grid, see lowerAbsent) is invoked with the
+// SUBQUERY's anchor grid: one absence verdict per anchor across
+// [end - sub.Range, end] spaced by step (widened to
+// [start - sub.Range, end] in range mode so every outer anchor's
+// lookback finds inner anchors). A wrapping Project renames the
+// per-anchor TimeUnix to `anchor_ts`, matching the matrix-shape
+// (Attributes, anchor_ts, Value) contract the outer reducer reads.
+//
+// The emptiness verdict itself follows lowerAbsent's documented
+// posture (a global "does anything match" check, not a per-anchor
+// staleness window): the per-anchor fan-out exists so the outer
+// window arithmetic sees rows on the right grid.
+//
+// A zero eval anchor (plain Lower() without LowerAt* threading) cannot
+// materialise the StepGrid's literal timestamps; the wire handlers
+// always thread eval times, so the guard is unreachable via HTTP.
+func lowerSubqueryOverAbsent(
+	sub *parser.SubqueryExpr,
+	call *parser.Call,
+	step time.Duration,
+	s schema.Metrics,
+	ctx lowerCtx,
+) (chplan.Node, error) {
+	if ctx.end.IsZero() {
+		return nil, fmt.Errorf("promql: subquery over absent() requires query eval-time context (use LowerAt)")
+	}
+	gridStart := ctx.end.Add(-sub.Range)
+	if ctx.step > 0 && !ctx.start.IsZero() {
+		gridStart = ctx.start.Add(-sub.Range)
+	}
+	gridCtx := ctx
+	gridCtx.start = gridStart.UTC()
+	gridCtx.end = ctx.end.UTC()
+	gridCtx.step = step
+	inner, err := lowerAbsent(call, s, gridCtx)
+	if err != nil {
+		return nil, err
+	}
+	return &chplan.Project{
+		Input: inner,
+		Projections: []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: "anchor_ts"},
+			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
+		},
+	}, nil
 }
 
 // subqueryAnchor reads the subquery's `@` + `offset` modifiers into an
@@ -397,10 +600,13 @@ func lowerSubqueryOverAggregate(
 		return lowerSubqueryOverTopK(sub, agg, step, s, ctx)
 	case parser.COUNT_VALUES:
 		return lowerSubqueryOverCountValues(sub, agg, step, s, ctx)
-	case parser.SUM, parser.COUNT, parser.AVG, parser.MIN, parser.MAX, parser.QUANTILE:
-		// Per-bucket reducers — sum/count/avg/min/max/quantile over the
-		// matrix value column produce one value per (anchor, group-tuple)
-		// row.
+	case parser.SUM, parser.COUNT, parser.AVG, parser.MIN, parser.MAX,
+		parser.STDDEV, parser.STDVAR, parser.GROUP, parser.QUANTILE:
+		// Per-bucket reducers — one value per (anchor, group-tuple) row.
+		// stddev/stdvar map to CH's population estimators (stddevPop /
+		// varPop — Prometheus divides by N, not N-1) and group emits the
+		// constant 1 per group, all mirroring lower.go's instant
+		// buildAggFunc.
 	default:
 		return nil, fmt.Errorf("promql: subquery over %s aggregation is not supported",
 			agg.Op.String())
@@ -763,16 +969,20 @@ func lowerSubqueryOverCountValues(
 	}, nil
 }
 
-// lowerSubqueryInnerMatrix produces a matrix-shape RangeWindow for the
-// expression that lives inside an `<agg>[range:step]` clause's
-// aggregate. Recurses through ParenExpr; dispatches Call /
-// VectorSelector to the same matrix-emitting helpers
-// lowerSubqueryOverCall / lowerSubqueryOverVectorSelector use.
+// lowerSubqueryInnerMatrix produces a matrix-shape relation —
+// (Attributes, anchor_ts, Value), one row per (series, anchor) — for
+// the expression that lives inside an `<agg>(...)[range:step]`
+// clause's aggregate. Recurses through ParenExpr; dispatches every
+// expression shape to the same matrix-emitting helpers the top-level
+// subquery dispatch uses:
 //
-// Only shapes that already produce per-anchor matrix output are
-// supported — extending coverage to BinaryExpr / nested aggregations
-// would need additional plan-tree shaping the matrix emitter can't
-// currently consume.
+//   - Call → lowerSubqueryOverCall (range reducers, instant
+//     transforms, absent);
+//   - VectorSelector / BinaryExpr / UnaryExpr → the Identity wrap;
+//   - AggregateExpr → lowerSubqueryOverAggregate (recursion — nested
+//     aggregations like `sum(sum(up))[5m:1m]` produce a matrix whose
+//     Attributes carry the inner grouping, which the outer aggregate
+//     then re-groups per anchor).
 func lowerSubqueryInnerMatrix(
 	sub *parser.SubqueryExpr,
 	expr parser.Expr,
@@ -787,6 +997,12 @@ func lowerSubqueryInnerMatrix(
 		return lowerSubqueryOverCall(sub, inner, step, s, ctx)
 	case *parser.VectorSelector:
 		return lowerSubqueryOverVectorSelector(sub, inner, step, s, ctx)
+	case *parser.BinaryExpr:
+		return lowerSubqueryOverBinary(sub, inner, step, s, ctx)
+	case *parser.UnaryExpr:
+		return lowerSubqueryOverUnary(sub, inner, step, s, ctx)
+	case *parser.AggregateExpr:
+		return lowerSubqueryOverAggregate(sub, inner, step, s, ctx)
 	}
 	return nil, fmt.Errorf("promql: subquery over aggregation of %T is unsupported", expr)
 }
@@ -813,6 +1029,26 @@ func buildSubqueryAggFunc(a *parser.AggregateExpr, valCol string, s schema.Metri
 		return chplan.AggFunc{Name: "min", Args: []chplan.Expr{valueArg}, Alias: valCol}, nil
 	case parser.MAX:
 		return chplan.AggFunc{Name: "max", Args: []chplan.Expr{valueArg}, Alias: valCol}, nil
+	case parser.STDDEV:
+		// Population stddev (divides by N) — matches Prometheus's
+		// stddev aggregator; mirrors lower.go's plainAggCH.
+		return chplan.AggFunc{Name: "stddevPop", Args: []chplan.Expr{valueArg}, Alias: valCol}, nil
+	case parser.STDVAR:
+		return chplan.AggFunc{Name: "varPop", Args: []chplan.Expr{valueArg}, Alias: valCol}, nil
+	case parser.GROUP:
+		// `group(...)` is the constant 1 per group; the toFloat64 wrap
+		// keeps the wire shape Float64 (see lower.go's GROUP arm for
+		// the UInt8-narrowing rationale).
+		return chplan.AggFunc{
+			Name: "any",
+			Args: []chplan.Expr{
+				&chplan.FuncCall{
+					Name: "toFloat64",
+					Args: []chplan.Expr{&chplan.LitInt{V: 1}},
+				},
+			},
+			Alias: valCol,
+		}, nil
 	case parser.QUANTILE:
 		if phi, ok := tryScalarLiteral(a.Param); ok {
 			// CH's `quantile(phi)` aggregate errors on phi outside [0, 1].

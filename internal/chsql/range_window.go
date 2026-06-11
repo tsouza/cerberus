@@ -584,16 +584,17 @@ func (e *emitter) emitWindowedArrayPairsMatrix(r *chplan.RangeWindow, valueWrite
 	if err != nil {
 		return err
 	}
+	innerSub, srcTs := fanoutTsSource(innerSub, r.TimestampColumn)
 
 	// Sample-fanout SELECT — one row per (sample, covered anchor).
 	fanout := NewQuery().From(innerSub)
 	for _, g := range groupFrags {
 		fanout.Select(g)
 	}
-	fanout.Select(Col(r.TimestampColumn))
+	fanout.Select(Col(srcTs))
 	fanout.Select(Col(r.ValueColumn))
 	fanout.Select(rawAs(
-		sampleAnchorFanoutFrag(end, Col(r.TimestampColumn), stepNS, rangeNS, numAnchors),
+		sampleAnchorFanoutFrag(end, Col(srcTs), stepNS, rangeNS, numAnchors),
 		"anchor_ts",
 	))
 
@@ -603,7 +604,7 @@ func (e *emitter) emitWindowedArrayPairsMatrix(r *chplan.RangeWindow, valueWrite
 		regroup.Select(g)
 	}
 	regroup.Select(Col("anchor_ts"))
-	regroup.Select(rawAs(groupArrayPairFrag(r.TimestampColumn, r.ValueColumn), "window_pairs"))
+	regroup.Select(rawAs(groupArrayPairFrag(srcTs, r.ValueColumn), "window_pairs"))
 	regroupKeys := make([]Frag, 0, len(groupFrags)+1)
 	regroupKeys = append(regroupKeys, groupFrags...)
 	regroupKeys = append(regroupKeys, Col("anchor_ts"))
@@ -649,6 +650,40 @@ func endExprFrag(r *chplan.RangeWindow) Frag {
 		}
 		base(b)
 	}
+}
+
+// fanoutTsSource resolves the per-sample timestamp column the matrix
+// fanout layers (the arrayJoin'd anchor expression + the regroup's
+// groupArray pairs) must reference, returning the possibly-wrapped
+// input Frag and the column name to use.
+//
+// The subtle case is a NESTED matrix shape — `irate(up[5m:1m])`,
+// `max_over_time(irate(m[5m:1m])[10m:1m])` — where the input relation
+// already exposes its per-sample timestamps under the fanout's own
+// `anchor_ts` output alias (the inner matrix emits anchor_ts and the
+// wrapping lowering sets TimestampColumn to it). Selecting the source
+// column bare alongside `arrayJoin(...) AS anchor_ts` makes the name
+// ambiguous one subquery up: CH resolves the regroup layer's
+// `groupArray((anchor_ts, Value))` against the FANNED alias, so every
+// pair in a window carries its group's anchor instead of the sample's
+// own timestamp. Order-insensitive reducers (max/avg/…) survive that
+// shadowing — pairwise ones don't (irate's `dateDiff(prev, last)`
+// becomes 0 → NaN).
+//
+// The rename happens on an interposed `SELECT *, anchor_ts AS _src_ts`
+// projection layer (NOT a lateral alias in the fanout SELECT itself —
+// CH's analyzer rejects referencing a same-SELECT alias from inside
+// the arrayJoin argument). The non-nested path returns the input
+// untouched (byte-stable fixtures).
+func fanoutTsSource(innerSub Frag, tsCol string) (Frag, string) {
+	if tsCol != "anchor_ts" {
+		return innerSub, tsCol
+	}
+	wrap := NewQuery().From(innerSub).Select(
+		Star(),
+		rawAs(Col("anchor_ts"), "_src_ts"),
+	)
+	return wrap.Frag(), "_src_ts"
 }
 
 // rawAs wraps a Frag in "<expr> AS <alias>" with the alias emitted
@@ -2200,16 +2235,17 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 	if err != nil {
 		return err
 	}
+	innerSub, srcTs := fanoutTsSource(innerSub, r.TimestampColumn)
 
 	// Sample-fanout SELECT — one row per (sample, covered anchor).
 	fanout := NewQuery().From(innerSub)
 	for _, g := range groupFrags {
 		fanout.Select(g)
 	}
-	fanout.Select(Col(r.TimestampColumn))
+	fanout.Select(Col(srcTs))
 	fanout.Select(Col(r.ValueColumn))
 	fanout.Select(As(
-		sampleAnchorFanoutFrag(end, Col(r.TimestampColumn), stepNS, rangeNS, numAnchors),
+		sampleAnchorFanoutFrag(end, Col(srcTs), stepNS, rangeNS, numAnchors),
 		"anchor_ts",
 	))
 
@@ -2219,7 +2255,7 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 		regroup.Select(g)
 	}
 	regroup.Select(Col("anchor_ts"))
-	regroup.Select(As(groupArrayPairFrag(r.TimestampColumn, r.ValueColumn), "window_pairs"))
+	regroup.Select(As(groupArrayPairFrag(srcTs, r.ValueColumn), "window_pairs"))
 	regroupKeys := make([]Frag, 0, len(groupFrags)+1)
 	regroupKeys = append(regroupKeys, groupFrags...)
 	regroupKeys = append(regroupKeys, Col("anchor_ts"))
@@ -2596,16 +2632,17 @@ func (e *emitter) emitWindowedArrayMatrix(r *chplan.RangeWindow, value Frag, min
 	if err != nil {
 		return err
 	}
+	innerSub, srcTs := fanoutTsSource(innerSub, r.TimestampColumn)
 
 	// Sample-fanout SELECT — one row per (sample, covered anchor).
 	fanout := NewQuery().From(innerSub)
 	for _, g := range groupFrags {
 		fanout.Select(g)
 	}
-	fanout.Select(Col(r.TimestampColumn))
+	fanout.Select(Col(srcTs))
 	fanout.Select(Col(r.ValueColumn))
 	fanout.Select(As(
-		sampleAnchorFanoutFrag(end, Col(r.TimestampColumn), stepNS, rangeNS, numAnchors),
+		sampleAnchorFanoutFrag(end, Col(srcTs), stepNS, rangeNS, numAnchors),
 		"anchor_ts",
 	))
 
@@ -2615,7 +2652,7 @@ func (e *emitter) emitWindowedArrayMatrix(r *chplan.RangeWindow, value Frag, min
 		regroup.Select(g)
 	}
 	regroup.Select(Col("anchor_ts"))
-	regroup.Select(As(groupArrayPairFrag(r.TimestampColumn, r.ValueColumn), "window_pairs"))
+	regroup.Select(As(groupArrayPairFrag(srcTs, r.ValueColumn), "window_pairs"))
 	regroupKeys := make([]Frag, 0, len(groupFrags)+1)
 	regroupKeys = append(regroupKeys, groupFrags...)
 	regroupKeys = append(regroupKeys, Col("anchor_ts"))
