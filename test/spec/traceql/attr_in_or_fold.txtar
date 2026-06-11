@@ -17,7 +17,6 @@ Filter predicate=(SpanName IN ("checkout", "orders"))
   Scan(otel_traces)
 -- sql --
 SELECT * FROM `otel_traces` WHERE (`SpanName` IN (?, ?))
-
 -- expected_rows --
 [
   ["aaaa", "checkout"],

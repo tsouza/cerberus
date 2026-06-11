@@ -427,7 +427,11 @@ func printExpr(e chplan.Expr) string {
 		for i, e := range v.List {
 			items[i] = printExpr(e)
 		}
-		return fmt.Sprintf("(%s IN (%s))", printExpr(v.Left), strings.Join(items, ", "))
+		op := "IN"
+		if v.Negated {
+			op = "NOT IN"
+		}
+		return fmt.Sprintf("(%s %s (%s))", printExpr(v.Left), op, strings.Join(items, ", "))
 	case *chplan.FuncCall:
 		args := make([]string, len(v.Args))
 		for i, a := range v.Args {

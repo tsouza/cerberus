@@ -367,6 +367,22 @@ func exprReferencesMetricName(e chplan.Expr, want string) bool {
 			return true
 		}
 	}
+	// The `__name__` candidate fan-out now renders as a flat
+	// `MetricName IN (?, …)` (InList) rather than an OR-chain of equality
+	// Binary nodes, so a name "appears in the predicate" when it is one of
+	// the IN tuple's literal elements over the MetricName column.
+	if in, ok := e.(*chplan.InList); ok {
+		col, ok := in.Left.(*chplan.ColumnRef)
+		if ok && col.Name == "MetricName" {
+			for _, item := range in.List {
+				if lit, ok := item.(*chplan.LitString); ok {
+					if lit.V == want || strings.EqualFold(lit.V, want) {
+						return true
+					}
+				}
+			}
+		}
+	}
 	return false
 }
 

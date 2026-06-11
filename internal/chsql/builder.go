@@ -597,7 +597,11 @@ func (b *Builder) exprInList(v *chplan.InList) error {
 	if err := b.Expr(v.Left); err != nil {
 		return err
 	}
-	b.sb.WriteString(" IN (")
+	if v.Negated {
+		b.sb.WriteString(" NOT IN (")
+	} else {
+		b.sb.WriteString(" IN (")
+	}
 	for i, e := range v.List {
 		if i > 0 {
 			b.sb.WriteString(", ")
