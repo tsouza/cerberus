@@ -86,11 +86,12 @@ func (h *Handler) handlePatterns(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return
 	}
-	lineLimit, err := parsePositiveInt(r.URL.Query().Get("line_limit"), defaultPatternsLineLimit)
+	lineLimit32, err := parsePositiveUint32(r.URL.Query().Get("line_limit"), defaultPatternsLineLimit)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return
 	}
+	lineLimit := int(lineLimit32)
 
 	sqlStr, args, err := buildPatternsSQL(h.Schema, matchers, start, end, lineLimit)
 	if err != nil {

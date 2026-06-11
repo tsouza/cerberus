@@ -2,7 +2,6 @@ package loki
 
 import (
 	"errors"
-	"math"
 	"net/http"
 	"slices"
 	"sort"
@@ -104,16 +103,18 @@ func (h *Handler) handleDetectedFields(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	lineLimit, err := parsePositiveInt(r.URL.Query().Get("line_limit"), defaultDetectedFieldsLineLimit)
+	lineLimit32, err := parsePositiveUint32(r.URL.Query().Get("line_limit"), defaultDetectedFieldsLineLimit)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return
 	}
-	limit, err := parsePositiveInt(r.URL.Query().Get("limit"), defaultDetectedFieldsLimit)
+	lineLimit := int(lineLimit32)
+	limit32, err := parsePositiveUint32(r.URL.Query().Get("limit"), defaultDetectedFieldsLimit)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return
 	}
+	limit := int(limit32)
 
 	matchers, err := selectorMatchers(q)
 	if err != nil {
@@ -138,12 +139,11 @@ func (h *Handler) handleDetectedFields(w http.ResponseWriter, r *http.Request) {
 	fields := detectFields(rows, limit)
 
 	resp := DetectedFieldsResponse{Fields: fields}
-	// Mirror upstream: the limit is echoed only when fields exist. The
-	// range guard is re-stated locally — parsePositiveInt already
-	// enforces it, but neither gosec G115 nor CodeQL sees across the
-	// call, and a provably-safe conversion beats a suppression.
-	if len(fields) > 0 && limit > 0 && int64(limit) <= math.MaxUint32 {
-		resp.Limit = uint32(limit)
+	// Mirror upstream: the limit is echoed only when fields exist.
+	// limit32 is uint32 from parse time (ParseUint bitSize 32), so the
+	// wire value needs no conversion at all.
+	if len(fields) > 0 {
+		resp.Limit = limit32
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -378,19 +378,19 @@ func sortedKeys(m map[string]string) []string {
 	return keys
 }
 
-// parsePositiveInt parses an optional integer query parameter. Empty
-// input returns the default; non-numeric, non-positive, or
-// out-of-range input is rejected with a 400. The upper bound keeps
-// the value inside uint32 (the wire type of the echoed `limit` —
-// logproto.DetectedFieldsResponse.limit) so the int->uint32
-// conversion at the response site cannot wrap.
-func parsePositiveInt(raw string, def int) (int, error) {
+// parsePositiveUint32 parses an optional integer query parameter.
+// Empty input returns the default; non-numeric, non-positive, or
+// out-of-range input is rejected with a 400. ParseUint with bitSize
+// 32 bounds the value to uint32 — the wire type of the echoed
+// `limit` (logproto.DetectedFieldsResponse.limit) — so no unbounded
+// integer conversion exists anywhere downstream.
+func parsePositiveUint32(raw string, def uint32) (uint32, error) {
 	if raw == "" {
 		return def, nil
 	}
-	n, err := strconv.Atoi(raw)
-	if err != nil || n <= 0 || int64(n) > math.MaxUint32 {
+	n, err := strconv.ParseUint(raw, 10, 32)
+	if err != nil || n == 0 {
 		return 0, errors.New("parameter must be a positive integer no larger than 4294967295")
 	}
-	return n, nil
+	return uint32(n), nil
 }
