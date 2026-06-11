@@ -285,7 +285,14 @@ func generateJSONLine(svc, level string, ts time.Time, rng *rand.Rand, idx int) 
 	case "web-server":
 		method := httpMethods[rng.Intn(len(httpMethods))]
 		path := apiPaths[rng.Intn(len(apiPaths))]
-		line := fmt.Sprintf(`{"level":"%s","ts":"%s","msg":"HTTP request","method":"%s","path":"%s","status":%d,"duration_ms":%d}`, lvl, tsStr, method, path, status, durationMs)
+		// Every web-server line carries a `client_ip` IPv4, mirroring the
+		// loki-bench faker's web-server generator (the dataset metadata
+		// the diff driver loads promises this field). A delimited,
+		// well-formed dotted-quad makes the ip() line filter (IP-in-line
+		// scan) and the `| json | client_ip = ip(...)` label filter both
+		// exercise real data on reference Loki and cerberus alike.
+		clientIP := webServerClientIP(rng)
+		line := fmt.Sprintf(`{"level":"%s","ts":"%s","msg":"HTTP request","method":"%s","path":"%s","status":%d,"duration_ms":%d,"client_ip":"%s"}`, lvl, tsStr, method, path, status, durationMs, clientIP)
 		if level == "ERROR" {
 			line = line[:len(line)-1] + fmt.Sprintf(`,"error":"%s"}`, errorMessages[rng.Intn(len(errorMessages))])
 		}
@@ -349,6 +356,21 @@ func generateJSONLine(svc, level string, ts time.Time, rng *rand.Rand, idx int) 
 		return fmt.Sprintf(`{"level":"%s","ts":"%s","msg":"generic log entry","duration_ms":%d}`, lvl, tsStr, durationMs)
 	}
 }
+
+// webServerClientIP returns a deterministic dotted-quad IPv4 drawn from
+// a fixed two-octet pool. The pool deliberately straddles the
+// 10.0.0.0/8 boundary (10.x and 172.x) so the burndown ip() label-
+// filter cases over `client_ip = ip("10.0.0.0/8")` carve a real,
+// non-trivial subset that BOTH backends must agree on, while the
+// match-all `0.0.0.0/0` CIDR keeps every line.
+func webServerClientIP(rng *rand.Rand) string {
+	first := webServerClientIPFirstOctets[rng.Intn(len(webServerClientIPFirstOctets))]
+	return fmt.Sprintf("%s.%d.%d", first, rng.Intn(256), rng.Intn(256))
+}
+
+// webServerClientIPFirstOctets is the fixed leading-two-octet pool for
+// web-server client_ip values; half fall inside 10.0.0.0/8.
+var webServerClientIPFirstOctets = []string{"10.0", "10.128", "172.16", "172.31"}
 
 func generateLogfmtLine(svc, level string, ts time.Time, rng *rand.Rand, idx int) string {
 	lvl := strings.ToLower(level)

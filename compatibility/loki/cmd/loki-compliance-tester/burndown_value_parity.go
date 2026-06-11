@@ -86,9 +86,10 @@ func compareBurndownValueParity(c *http.Client, f flags, metadata *bench.Dataset
 // metadata. Two selectors anchor the templates:
 //
 //   - selJSON — the web-server stream: JSON format, EVERY line carries
-//     a `client_ip` IPv4 (see upstream faker.go's web-server
-//     generator), lines start with `{` and end with `}`. Drives the
-//     ip() and pattern-filter cases.
+//     a delimited `client_ip` IPv4 (the harness seeder
+//     compatibility/loki/cmd/seed stamps one on every web-server line,
+//     matching the dataset metadata's promise), lines start with `{`
+//     and end with `}`. Drives the ip() and pattern-filter cases.
 //   - selDur — the lexicographically-first selector carrying both
 //     logfmt format and the `duration` unwrappable field. Drives the
 //     first/last_over_time unwrap cases (the corpus' proven
@@ -155,6 +156,18 @@ func burndownCases(metadata *bench.DatasetMetadata) ([]bench.TestCase, error) {
 		{"pattern line filter negated: embedded literal", fmt.Sprintf(`%s !> "<_>error<_>"`, selJSON), "log"},
 	}
 
+	// Log (entry-returning) queries use a window whose edges sit OFF the
+	// per-minute seed grid (+30s on both ends). Reference Loki's
+	// query_range treats `end` as exclusive (`[start, end)`) for entry
+	// queries; with a whole-minute window aligned to the seed an entry
+	// lands exactly on `end` and the inclusive/exclusive edge becomes a
+	// spurious one-entry diff that has nothing to do with the operator
+	// under test. The metric (range) cases keep the anchor-aligned
+	// window — the step grid IS their subject and they agree on every
+	// anchor.
+	logStart := start.Add(30 * time.Second)
+	logEnd := end.Add(30 * time.Second)
+
 	cases := make([]bench.TestCase, 0, len(queries))
 	for _, def := range queries {
 		tc := bench.TestCase{
@@ -169,6 +182,8 @@ func burndownCases(metadata *bench.DatasetMetadata) ([]bench.TestCase, error) {
 		if def.kind == "metric" {
 			tc.Step = burndownStep
 		} else {
+			tc.Start = logStart
+			tc.End = logEnd
 			tc.Direction = logproto.BACKWARD
 		}
 		cases = append(cases, tc)
