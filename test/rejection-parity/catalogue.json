@@ -920,31 +920,17 @@
     },
     {
       "head": "traceql",
-      "site": "internal/traceql/lower.go:lowerAttribute#65f505d3",
-      "message": "traceql: intrinsic %s is only supported in comparisons (equality / inequality / regex)",
-      "class": "rejection",
-      "trigger_query": "{} | by(event:name)"
-    },
-    {
-      "head": "traceql",
-      "site": "internal/traceql/lower.go:lowerAttribute#aa8b5044",
-      "message": "traceql: instrumentation-scoped attribute %q is unsupported — the OTel ClickHouse traces schema has no scope-attributes column (instrumentation:name / instrumentation:version map to ScopeName / ScopeVersion)",
-      "class": "rejection",
-      "trigger_query": "{ instrumentation.foo = \"x\" }"
-    },
-    {
-      "head": "traceql",
-      "site": "internal/traceql/lower.go:lowerAttributeExpr#5268500a",
-      "message": "traceql: %s.%s used outside a comparison; only equality / inequality / regex filters on link.* and event.* are supported",
-      "class": "rejection",
-      "trigger_query": "{ event.name }"
-    },
-    {
-      "head": "traceql",
       "site": "internal/traceql/lower.go:lowerAttributeExpr#782c14d3",
       "message": "traceql: intrinsic %s is only supported in root-ness comparisons (e.g. nestedSetParent \u003c 0) and select() projections",
       "class": "rejection",
-      "trigger_query": "{} | by(nestedSetParent)"
+      "trigger_query": "{ nestedSetParent }"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerAttributeExpr#dbf30854",
+      "message": "traceql: nil comparison on %s.%s is unsupported — the configured schema has no %s column",
+      "class": "internal",
+      "rationale": "Defensive: reached only when the configured Traces schema has no Events/Links column for the bare event-/link-scoped reference; the default OTel-CH schema materialises both, so no parseable query against the default schema hits it."
     },
     {
       "head": "traceql",
@@ -973,6 +959,20 @@
       "message": "traceql: pipeline tail element %T is unsupported",
       "class": "internal",
       "rationale": "type-switch default: every pipeline-tail element type the pinned grammar produces is handled"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerInOperation#b76969a7",
+      "message": "traceql: IN comparison RHS must be a literal array, got %T",
+      "class": "internal",
+      "rationale": "Defensive: the Tempo parser only folds `attr = a || attr = b` into an OpIn/OpNotIn BinaryOperation whose RHS is an array Static, so a non-literal RHS is unreachable from a parseable query."
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerInOperation#e5851186",
+      "message": "traceql: IN comparison LHS must be an attribute reference, got %T",
+      "class": "internal",
+      "rationale": "Defensive: the Tempo parser only emits an OpIn/OpNotIn BinaryOperation with an attribute LHS, so a non-attribute LHS is unreachable from a parseable query."
     },
     {
       "head": "traceql",
@@ -1025,45 +1025,10 @@
     },
     {
       "head": "traceql",
-      "site": "internal/traceql/lower.go:lowerNestedSetBinary#384e88f3",
-      "message": "traceql: %s comparisons support only integer literals",
-      "class": "rejection",
-      "trigger_query": "{ nestedSetParent = span.a }"
-    },
-    {
-      "head": "traceql",
-      "site": "internal/traceql/lower.go:lowerNestedSetBinary#384e88f3-2",
-      "message": "traceql: %s comparisons support only integer literals",
-      "class": "rejection",
-      "trigger_query": "{ span.a = nestedSetParent }"
-    },
-    {
-      "head": "traceql",
-      "site": "internal/traceql/lower.go:lowerNestedSetBinary#8e3d5d8d",
-      "message": "traceql: nestedSetParent %s %d depends on nested-set positions the OTel ClickHouse schema does not materialise — only root-ness tests (e.g. nestedSetParent \u003c 0) are supported",
-      "class": "rejection",
-      "trigger_query": "{ nestedSetParent = 5 }"
-    },
-    {
-      "head": "traceql",
-      "site": "internal/traceql/lower.go:lowerNestedSetBinary#96d89a10",
-      "message": "traceql: nestedSetParent comparisons support only integer literals, got %s",
-      "class": "rejection",
-      "trigger_query": "{ nestedSetParent = 1.5 }"
-    },
-    {
-      "head": "traceql",
-      "site": "internal/traceql/lower.go:lowerNestedSetBinary#ae545728",
-      "message": "traceql: intrinsic %s is unsupported — the OTel ClickHouse schema does not materialise nested-set positions",
-      "class": "rejection",
-      "trigger_query": "{ nestedSetLeft = 1 }"
-    },
-    {
-      "head": "traceql",
-      "site": "internal/traceql/lower.go:lowerNilComparison#aa8b5044",
-      "message": "traceql: instrumentation-scoped attribute %q is unsupported — the OTel ClickHouse traces schema has no scope-attributes column (instrumentation:name / instrumentation:version map to ScopeName / ScopeVersion)",
-      "class": "rejection",
-      "trigger_query": "{ instrumentation.foo != nil }"
+      "site": "internal/traceql/lower.go:lowerNestedSetBinary#dc45d078",
+      "message": "traceql: intrinsic %s is not a nested-set position",
+      "class": "internal",
+      "rationale": "Defensive: reached only via a nested-set intrinsic attribute, for which nestedSetColumn always resolves, so the not-a-position branch is unreachable."
     },
     {
       "head": "traceql",
@@ -1078,6 +1043,13 @@
       "message": "traceql: %s = nil is not valid because resource.service.name cannot be nil",
       "class": "rejection",
       "trigger_query": "{ resource.service.name = nil }"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerPipeline#3bb91b26",
+      "message": "traceql: empty pipeline",
+      "class": "internal",
+      "rationale": "Defensive: lowerRoot rejects an empty top-level pipeline before this helper runs, and a parsed sub-pipeline operand always carries at least one element, so the empty-pipeline branch is unreachable."
     },
     {
       "head": "traceql",
@@ -1125,8 +1097,8 @@
       "head": "traceql",
       "site": "internal/traceql/lower.go:lowerSpansetExpr#e8ccb6b4",
       "message": "traceql: spanset expression %T is unsupported",
-      "class": "rejection",
-      "trigger_query": "({} | count() \u003e 1) \u0026\u0026 ({} | count() \u003e 1)"
+      "class": "internal",
+      "rationale": "Defensive: every SpansetExpression the parser can place as a set-operation operand (SpansetFilter, SpansetOperation, Pipeline) is handled above, so the default branch is unreachable from a parseable query."
     },
     {
       "head": "traceql",
@@ -1151,6 +1123,13 @@
     },
     {
       "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerStaticArray#d179f2fa",
+      "message": "traceql: IN comparison RHS literal type %s is not an array",
+      "class": "internal",
+      "rationale": "Defensive: only invoked for an OpIn/OpNotIn RHS, which the parser guarantees is an array-typed Static, so the non-array branch is unreachable."
+    },
+    {
+      "head": "traceql",
       "site": "internal/traceql/lower.go:lowerTopKBottomK#78efd9fa",
       "message": "traceql: %s(%d): limit must be \u003e 0",
       "class": "rejection",
@@ -1161,15 +1140,8 @@
       "head": "traceql",
       "site": "internal/traceql/lower.go:lowerUnaryOperation#5f9f3466",
       "message": "traceql: unary operator %s is unsupported",
-      "class": "rejection",
-      "trigger_query": "{ !(span.foo = 1) }"
-    },
-    {
-      "head": "traceql",
-      "site": "internal/traceql/lower.go:lowerUnaryOperation#76707682",
-      "message": "traceql: %s operand %T is unsupported — nil comparisons require an attribute reference",
-      "class": "rejection",
-      "trigger_query": "{ (span.a + 1) != nil }"
+      "class": "internal",
+      "rationale": "Defensive: TraceQL admits only OpExists / OpNotExists / OpNot unary operators, all handled above, so the unsupported-operator branch is unreachable from a parseable query."
     },
     {
       "head": "traceql",
@@ -1191,41 +1163,6 @@
       "message": "traceql: spanset op %s is not a structural relation",
       "class": "internal",
       "rationale": "callers pre-filter to the structural operator set before consulting this mapper"
-    },
-    {
-      "head": "traceql",
-      "site": "internal/traceql/lower.go:unsupportedIntrinsicErr#284df75f",
-      "message": "traceql: intrinsic %s requires per-span child counts the OTel ClickHouse schema does not materialise",
-      "class": "internal",
-      "rationale": "the pinned tempo parser rejects the childCount spelling (\"unexpected childCount\"), so the arm is unreachable from a parseable query"
-    },
-    {
-      "head": "traceql",
-      "site": "internal/traceql/lower.go:unsupportedIntrinsicErr#3c6b93ea",
-      "message": "traceql: intrinsic %s requires per-event timestamp arithmetic against the Events Nested column and is unsupported",
-      "class": "rejection",
-      "trigger_query": "{ event:timeSinceStart \u003e 1s }"
-    },
-    {
-      "head": "traceql",
-      "site": "internal/traceql/lower.go:unsupportedIntrinsicErr#471b92bc",
-      "message": "traceql: intrinsic %s is trace-scoped — the OTel ClickHouse schema stores one row per span and does not materialise whole-trace values",
-      "class": "rejection",
-      "trigger_query": "{ traceDuration \u003e 1s }"
-    },
-    {
-      "head": "traceql",
-      "site": "internal/traceql/lower.go:unsupportedIntrinsicErr#782c14d3",
-      "message": "traceql: intrinsic %s is only supported in root-ness comparisons (e.g. nestedSetParent \u003c 0) and select() projections",
-      "class": "rejection",
-      "trigger_query": "{} | min(nestedSetLeft) \u003e 0"
-    },
-    {
-      "head": "traceql",
-      "site": "internal/traceql/lower.go:unsupportedIntrinsicErr#86d3eeb3",
-      "message": "traceql: intrinsic %s has no OTel ClickHouse backing column and is unsupported",
-      "class": "internal",
-      "rationale": "every intrinsic the pinned grammar parses either has a backing column, a dedicated arm above, or is intercepted earlier; no parseable intrinsic reaches the default arm"
     },
     {
       "head": "traceql",
