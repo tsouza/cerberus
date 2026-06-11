@@ -36,6 +36,7 @@
 import {
   APP_BARE_PATH_ALIASES,
   EXCLUDED_PATH_PATTERNS,
+  STRUCTURAL_PARAM_RULES,
   type ScopeRules,
 } from './lib.js';
 // Imported from the concrete module (not the helpers barrel):
@@ -121,6 +122,15 @@ export type CrawlStackConfig = {
    * these define the lean (fast-lane) surface set.
    */
   leanSeedRoots: ReadonlyArray<string>;
+  /**
+   * Lean-lane interaction roots: CANONICAL surface keys whose
+   * interactive controls the lean crawl sweeps with the
+   * representative plan (one state per control — see
+   * interactions.ts). At full depth EVERY eligible visited surface
+   * sweeps; this list only shapes the fast lane (depth changes
+   * states, never rules).
+   */
+  leanInteractionRoots: ReadonlyArray<string>;
   /** Hard page caps — exceeding one FAILS the crawl (never partial). */
   pageCapLean: number;
   pageCapFull: number;
@@ -140,6 +150,7 @@ export type CrawlStackConfig = {
 const GRAFANA_12_SCOPE: ScopeRules = {
   excludedPathPatterns: EXCLUDED_PATH_PATTERNS,
   appBarePathAliases: APP_BARE_PATH_ALIASES,
+  structuralParamRules: STRUCTURAL_PARAM_RULES,
 };
 
 /**
@@ -167,6 +178,21 @@ const DRILLDOWN_APP_SEEDS: ReadonlyArray<string> = DRILLDOWN_APPS.map(
   (app) => app.root,
 );
 
+/**
+ * Lean interaction roots shared by both stacks: the three drilldown
+ * app entry surfaces (canonical keys — the metrics app's /trail seed
+ * redirects to /drilldown but stays KEYED by the harvested /trail
+ * path). The drilldown apps are where the interaction gap class
+ * lives — the 2026-06-10 maintainer find (Traces Drilldown
+ * groupBy=kind → nil-comparison 422) was a state only an interaction
+ * reaches.
+ */
+const DRILLDOWN_LEAN_INTERACTION_ROOTS: ReadonlyArray<string> = [
+  '/a/grafana-exploretraces-app/explore',
+  '/a/grafana-lokiexplore-app/explore',
+  '/a/grafana-metricsdrilldown-app/trail',
+];
+
 // ---------------------------------------------------------------------------
 // Stack configs
 // ---------------------------------------------------------------------------
@@ -193,8 +219,9 @@ export const COMPOSE_STACK: CrawlStackConfig = {
     minMultiQuantilePanels: 1,
   },
   leanSeedRoots: DRILLDOWN_APP_SEEDS,
-  pageCapLean: 30,
-  pageCapFull: 80,
+  leanInteractionRoots: DRILLDOWN_LEAN_INTERACTION_ROOTS,
+  pageCapLean: 45,
+  pageCapFull: 250,
 };
 
 /**
@@ -242,8 +269,9 @@ export const K3D_STACK: CrawlStackConfig = {
     minMultiQuantilePanels: 0,
   },
   leanSeedRoots: DRILLDOWN_APP_SEEDS,
-  pageCapLean: 30,
-  pageCapFull: 80,
+  leanInteractionRoots: DRILLDOWN_LEAN_INTERACTION_ROOTS,
+  pageCapLean: 45,
+  pageCapFull: 250,
 };
 
 // ---------------------------------------------------------------------------

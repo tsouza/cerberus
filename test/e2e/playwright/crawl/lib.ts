@@ -43,13 +43,130 @@ import type { CrawlStackConfig } from './stacks.js';
 
 /**
  * The scope slice of a stack config the canonicalizer consumes:
- * which route families are out of crawl scope, and which bare
- * app paths alias to an entry route.
+ * which route families are out of crawl scope, which bare app paths
+ * alias to an entry route, and which query params are STRUCTURAL —
+ * i.e. encode a consumption mode rather than session state.
  */
 export type ScopeRules = {
   excludedPathPatterns: ReadonlyArray<RegExp>;
   appBarePathAliases: ReadonlyMap<string, string>;
+  structuralParamRules: ReadonlyArray<StructuralParamRule>;
 };
+
+/**
+ * A query param that is part of a surface's IDENTITY rather than its
+ * session state. The default canonicalization doctrine strips every
+ * query param ("a state of a surface is not a new surface") — but the
+ * 2026-06-10 maintainer find proved the doctrine over-broad for a
+ * narrow param class: the Traces Drilldown breakdown `var-groupBy`
+ * param selects WHICH query family the page fires (`| rate()
+ * by(kind)` vs `by(resource.service.name)`), and the groupBy=kind
+ * state 422'd while the crawler — which only ever saw the default —
+ * stayed green. Params that change the queries a page issues are
+ * distinct consumption modes, hence distinct surfaces.
+ *
+ * Two retention modes mirror the path rules:
+ *   - 'enumerate' — low-cardinality structural params (actionView
+ *     tabs, groupBy attribute, metric type): every value keys its own
+ *     surface. `defaultValue` names the value the app writes on a
+ *     cold boot; it is DROPPED from the canonical so the default
+ *     state stays keyed by the bare surface (the app rewriting its
+ *     defaults into the URL must not re-key the surface).
+ *   - 'parameterize' — high-cardinality structural params (the
+ *     metrics-drilldown `metric` name): the value collapses to
+ *     `{param}`, one representative surface family — the same
+ *     doctrine as the `{service}` path segment.
+ */
+export type StructuralParamRule = {
+  /** Canonical-path family the rule applies to (post path-rewrite). */
+  pathPattern: RegExp;
+  /** Exact query param name. */
+  param: string;
+  mode: 'enumerate' | 'parameterize';
+  /** 'enumerate' only: the app's cold-boot value, dropped from keys. */
+  defaultValue?: string;
+};
+
+/**
+ * Grafana-12.x structural params, verified live against
+ * grafana/grafana:12.2.9 (2026-06-11) by driving each control and
+ * reading the URL the app wrote:
+ *
+ *   - Traces Drilldown (`grafana-exploretraces-app`): `actionView`
+ *     (Breakdown | Service structure | Comparison | Traces tabs,
+ *     boot value `breakdown`), `var-metric` (rate | errors |
+ *     duration, boot `rate`), `var-groupBy` (the breakdown attribute,
+ *     boot `resource.service.name` — `kind` is the maintainer-found
+ *     422), `var-primarySignal` (Root spans | All spans, boot
+ *     `nestedSetParent<0`).
+ *   - Metrics Drilldown (`grafana-metricsdrilldown-app`): `metric`
+ *     (the selected metric NAME — one per series family in the
+ *     stack, high-cardinality → parameterize), `actionView`
+ *     (breakdown | related, written as `breakdown` on metric select),
+ *     `var-groupby` (boot `$__all`).
+ *   - Logs Drilldown service pages (`grafana-lokiexplore-app`):
+ *     `visualizationType` (logs | table | json — JSON-string-quoted
+ *     in the URL, boot `"logs"`), `sortOrder` (boot `"Descending"`).
+ *
+ * Time params (`from`/`to`), filters (`var-filters`), display state
+ * (`displayedFields`, `urlColumns`, `patterns`, …) stay stripped —
+ * they are session state, owned by the iterate-* sweeps.
+ */
+export const STRUCTURAL_PARAM_RULES: ReadonlyArray<StructuralParamRule> = [
+  {
+    pathPattern: /^\/a\/grafana-exploretraces-app\/explore$/,
+    param: 'actionView',
+    mode: 'enumerate',
+    defaultValue: 'breakdown',
+  },
+  {
+    pathPattern: /^\/a\/grafana-exploretraces-app\/explore$/,
+    param: 'var-metric',
+    mode: 'enumerate',
+    defaultValue: 'rate',
+  },
+  {
+    pathPattern: /^\/a\/grafana-exploretraces-app\/explore$/,
+    param: 'var-groupBy',
+    mode: 'enumerate',
+    defaultValue: 'resource.service.name',
+  },
+  {
+    pathPattern: /^\/a\/grafana-exploretraces-app\/explore$/,
+    param: 'var-primarySignal',
+    mode: 'enumerate',
+    defaultValue: 'nestedSetParent<0',
+  },
+  {
+    pathPattern: /^\/a\/grafana-metricsdrilldown-app\/(drilldown|trail)$/,
+    param: 'metric',
+    mode: 'parameterize',
+  },
+  {
+    pathPattern: /^\/a\/grafana-metricsdrilldown-app\/(drilldown|trail)$/,
+    param: 'actionView',
+    mode: 'enumerate',
+    defaultValue: 'breakdown',
+  },
+  {
+    pathPattern: /^\/a\/grafana-metricsdrilldown-app\/(drilldown|trail)$/,
+    param: 'var-groupby',
+    mode: 'enumerate',
+    defaultValue: '$__all',
+  },
+  {
+    pathPattern: /^\/a\/grafana-lokiexplore-app\/explore\/service\/\{service\}\//,
+    param: 'visualizationType',
+    mode: 'enumerate',
+    defaultValue: '"logs"',
+  },
+  {
+    pathPattern: /^\/a\/grafana-lokiexplore-app\/explore\/service\/\{service\}\//,
+    param: 'sortOrder',
+    mode: 'enumerate',
+    defaultValue: '"Descending"',
+  },
+];
 
 // ---------------------------------------------------------------------------
 // Scope exclusions
@@ -148,16 +265,22 @@ const UUID_SEGMENT =
  * of crawl scope (different origin, excluded route family, non-HTTP
  * scheme).
  *
- * The canonical key is PATH-ONLY: every query param is stripped.
- * Grafana routes surfaces by path; query strings carry volatile or
- * session state — time windows (`from`/`to`/`refresh`), org context,
+ * The canonical key is the rewritten path plus the surface's
+ * STRUCTURAL params only (see StructuralParamRule). Grafana routes
+ * surfaces by path; query strings mostly carry volatile or session
+ * state — time windows (`from`/`to`/`refresh`), org context,
  * kiosk / view-panel modes, Explore state blobs (`panes`/`left`/
- * `right`), variable selections (`var-*`), and the drilldown apps'
- * serialized UI state (`patterns`, `displayedFields`, `urlColumns`,
- * `layout`, …). The first full crawl demonstrated why an
- * param-retention list can't work: the logs-drilldown service page
- * alone produced four param-permutations of one surface. A state of
- * a surface is not a new surface.
+ * `right`), filter selections, and the drilldown apps' serialized UI
+ * state (`patterns`, `displayedFields`, `urlColumns`, `layout`, …).
+ * The first full crawl demonstrated why a broad param-retention list
+ * can't work: the logs-drilldown service page alone produced four
+ * param-permutations of one surface. A state of a surface is not a
+ * new surface — UNLESS the param changes which queries the page
+ * fires: those params (the structural rules) join the canonical key,
+ * either verbatim (`actionView=comparison`, low-cardinality) or
+ * parameterized (`metric={metric}`, high-cardinality), with the
+ * app's cold-boot default dropped so the default state keys the bare
+ * surface.
  *
  * Path rules, in order:
  *   1. Same-origin only; hash dropped.
@@ -263,12 +386,45 @@ export function canonicalTarget(
     if (re.test(path)) return null;
   }
 
+  // Structural params join the canonical key (sorted by param name
+  // so the key is order-independent of the app's URL writing). Every
+  // other param is stripped from the canonical only.
+  const retained: string[] = [];
+  for (const rule of scope.structuralParamRules) {
+    if (!rule.pathPattern.test(path)) continue;
+    const value = url.searchParams.get(rule.param);
+    if (value === null || value === '') continue;
+    if (rule.mode === 'enumerate') {
+      if (value === rule.defaultValue) continue;
+      retained.push(`${rule.param}=${value}`);
+    } else {
+      retained.push(`${rule.param}={${rule.param}}`);
+    }
+  }
+  retained.sort();
+  const canonical =
+    retained.length > 0 ? `${path}?${retained.join('&')}` : path;
+
   // Concrete: the raw path + raw query (parameterized canonicals
   // aren't navigable, and drilldown-app hrefs carry var-* state the
   // page needs to boot into the linked view — navigating the
   // logs-drilldown service page without its var-filters leaves the
-  // tab bar unmounted). Only the CANONICAL key strips the query.
-  return { canonical: path, concrete: `${url.pathname}${url.search}` };
+  // tab bar unmounted). Only the CANONICAL key reduces the query.
+  return { canonical, concrete: `${url.pathname}${url.search}` };
+}
+
+/**
+ * Number of structural params pinned in a canonical surface key —
+ * the interaction sweep's pairwise depth bound (see
+ * interactions.ts): 0 pinned → full single-control enumeration;
+ * 1 pinned → representative combos only (each interaction there
+ * forms a structural-param PAIR); ≥2 pinned → terminal, visited
+ * with the universal oracles but not expanded further.
+ */
+export function pinnedStructuralParamCount(canonical: string): number {
+  const q = canonical.split('?', 2)[1];
+  if (q === undefined || q === '') return 0;
+  return q.split('&').length;
 }
 
 /**

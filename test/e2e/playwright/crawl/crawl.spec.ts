@@ -32,12 +32,33 @@
  *      "application error", …) and no `role="alert"` banner with
  *      error-class text anywhere on the page.
  *
+ * INTERACTION SWEEP (interactions.ts): visiting a surface at its
+ * default state is not enough — the 2026-06-10 maintainer find
+ * (Traces Drilldown breakdown groupBy=kind → nil-comparison 422) was
+ * a state no harvested link encodes, reached only by clicking a
+ * control. After each surface's base audit the crawler discovers its
+ * view-affecting controls (tab strips, radio groups, comboboxes,
+ * attribute pickers, metric tiles, adhoc-filter builders; mutating
+ * affordances and time pickers excluded) and drives each planned
+ * deviation against a FRESH navigation. A deviation that encodes to
+ * the URL becomes a first-class surface (the canonicalizer retains
+ * structural params — see StructuralParamRule in lib.ts); one that
+ * doesn't is audited in place with the same oracle set and pins into
+ * the inventory as `<canonical>#<control>=<value>`. Bounding is the
+ * locked pairwise design (see interactions.ts): structural controls
+ * enumerate fully, high-cardinality controls take one
+ * representative, cross-control combos form pairwise via surface
+ * chaining, and every plan is hard-capped — overflow fails loudly.
+ *
  * Depth doctrine (see helpers/depth.ts — depth changes STATES, never
  * RULES): at 'lean' (the per-PR gate) the crawl visits the root page,
  * the nav links harvested from it, and one representative per
- * drilldown app. At 'full' (nightly) the BFS is exhaustive up to a
- * HARD page cap that fails the run when exceeded — surface growth
- * must force a deliberate cap bump, never a silent partial crawl.
+ * drilldown app, and sweeps interactions on the configured
+ * representative roots with one state per control. At 'full'
+ * (nightly) the BFS is exhaustive up to a HARD page cap that fails
+ * the run when exceeded — surface growth must force a deliberate cap
+ * bump, never a silent partial crawl — and the interaction sweep
+ * covers every eligible surface exhaustively.
  *
  * STACK FRAMEWORK: this spec is the stack-agnostic engine driver.
  * CRAWL_STACK=<name> selects a config from crawl/stacks.ts (base
@@ -81,6 +102,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import {
   expect,
   test,
+  type Browser,
   type BrowserContext,
   type Page,
   type Response,
@@ -109,10 +131,18 @@ import {
   loadExclusions,
   loadInventory,
   marshalInventory,
+  pinnedStructuralParamCount,
   truncate,
   type ScopeRules,
   type SurfaceInventory,
 } from './lib.js';
+import {
+  discoverControls,
+  driveInteraction,
+  interactionStateKey,
+  planInteractions,
+  type PlannedInteraction,
+} from './interactions.js';
 import {
   activeStack,
   knownStackNames,
@@ -131,13 +161,68 @@ const SEED_TRAFFIC_SECONDS = 30;
 // never a silently-partial crawl. The lean cap exists for the same
 // reason at fast-lane scale.
 
-// Recycle the browser context every N visited pages. A single
-// renderer reused across the whole full-depth crawl accumulates state
-// until Chromium refuses requests with net::ERR_INSUFFICIENT_RESOURCES
-// (same failure mode iterate-panel-kiosk documents at ~190
-// navigations); 40 keeps a wide margin while preserving cheap
-// navigation within a batch.
-const CONTEXT_RECYCLE_PAGES = 40;
+// Recycle the browser context every N NAVIGATIONS. A single renderer
+// reused across the whole full-depth crawl accumulates state until
+// Chromium refuses requests with net::ERR_INSUFFICIENT_RESOURCES or
+// crashes the renderer outright (iterate-panel-kiosk documents the
+// cliff at ~190 navigations; the first full interaction-sweep run
+// crashed far earlier because every planned gesture adds a fresh
+// navigation of a heavy scenes app). Counting NAVIGATIONS — base
+// visits AND per-interaction fresh navigations — keeps the margin
+// wide; 25 trades a little context-boot overhead for renderer
+// stability.
+const CONTEXT_RECYCLE_NAVIGATIONS = 25;
+
+/**
+ * Page provider with navigation-budgeted context recycling and crash
+ * recovery. Every navigation in the crawl — BFS base visits and the
+ * interaction sweep's per-gesture fresh navigations — goes through
+ * `acquire()` + `noteNavigation()`, so the recycle budget counts
+ * what actually wears the renderer out. A renderer crash flags the
+ * lease and the next acquire() starts a clean context instead of
+ * cascading "Page crashed" through every remaining state (the
+ * failure shape of the first full-depth run).
+ */
+type PageLease = {
+  acquire: () => Promise<Page>;
+  noteNavigation: () => void;
+  close: () => Promise<void>;
+};
+
+function makePageLease(browser: Browser): PageLease {
+  let context: BrowserContext | null = null;
+  let page: Page | null = null;
+  let navsInContext = 0;
+  let crashed = false;
+  return {
+    acquire: async () => {
+      if (
+        page === null ||
+        page.isClosed() ||
+        crashed ||
+        navsInContext >= CONTEXT_RECYCLE_NAVIGATIONS
+      ) {
+        if (context !== null) await context.close().catch(() => {});
+        context = await browser.newContext();
+        page = await context.newPage();
+        page.on('crash', () => {
+          crashed = true;
+        });
+        navsInContext = 0;
+        crashed = false;
+      }
+      return page;
+    },
+    noteNavigation: () => {
+      navsInContext++;
+    },
+    close: async () => {
+      if (context !== null) await context.close().catch(() => {});
+      context = null;
+      page = null;
+    },
+  };
+}
 
 type CrawlFailure = {
   url: string; // canonical surface
@@ -202,6 +287,19 @@ test.describe('crawl: canonicalization pins', () => {
           canonicalTarget(root, cfg.defaultGrafanaURL, cfg.scope),
           `stack ${name}: lean seed root ${root} canonicalizes in-scope`,
         ).not.toBeNull();
+      }
+      expect(
+        cfg.leanInteractionRoots.length,
+        `stack ${name}: at least one lean interaction root (the gap class the sweep exists for)`,
+      ).toBeGreaterThan(0);
+      for (const root of cfg.leanInteractionRoots) {
+        // Interaction roots are CANONICAL surface keys: they must be
+        // their own canonical form (already path-rewritten, no
+        // session params, no in-place state suffix).
+        expect(
+          canonicalizeURL(root, cfg.defaultGrafanaURL, cfg.scope),
+          `stack ${name}: lean interaction root ${root} is a canonical surface key`,
+        ).toBe(root);
       }
       // EVERY stack's committed files must load (existence + shape +
       // the inventory's stack field matching the config name) and the
@@ -279,6 +377,134 @@ test.describe('crawl: canonicalization pins', () => {
         scope,
       ),
     ).toBe('/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}');
+  });
+
+  test('structural params join the canonical key; defaults and session params drop', () => {
+    // The maintainer-found gap: var-groupBy selects WHICH query the
+    // breakdown fires — a consumption mode, hence a surface. Boot
+    // defaults (actionView=breakdown, var-metric=rate,
+    // var-groupBy=resource.service.name) drop so the app rewriting
+    // its defaults into the URL can't re-key the bare surface.
+    expect(
+      canonicalizeURL(
+        '/a/grafana-exploretraces-app/explore?from=now-30m&to=now&var-ds=cerberus-tempo&var-filters=&var-metric=rate&var-groupBy=kind&actionView=breakdown',
+        base,
+        scope,
+      ),
+    ).toBe('/a/grafana-exploretraces-app/explore?var-groupBy=kind');
+    // Two pinned params sort by name — pairwise-terminal state.
+    expect(
+      canonicalizeURL(
+        '/a/grafana-exploretraces-app/explore?var-groupBy=kind&actionView=comparison',
+        base,
+        scope,
+      ),
+    ).toBe(
+      '/a/grafana-exploretraces-app/explore?actionView=comparison&var-groupBy=kind',
+    );
+    // All-defaults URL keys the bare surface.
+    expect(
+      canonicalizeURL(
+        '/a/grafana-exploretraces-app/explore?actionView=breakdown&var-metric=rate&var-groupBy=resource.service.name&var-primarySignal=nestedSetParent%3C0',
+        base,
+        scope,
+      ),
+    ).toBe('/a/grafana-exploretraces-app/explore');
+    // High-cardinality structural params parameterize ({metric}), and
+    // boot defaults written alongside still drop.
+    expect(
+      canonicalizeURL(
+        '/a/grafana-metricsdrilldown-app/drilldown?metric=cerberus_admit_rejected_total&actionView=breakdown&var-groupby=%24__all&layout=grid',
+        base,
+        scope,
+      ),
+    ).toBe('/a/grafana-metricsdrilldown-app/drilldown?metric={metric}');
+    // Logs service pages: visualizationType deviations key surfaces
+    // (values are JSON-string-quoted by the app); the boot default drops.
+    expect(
+      canonicalizeURL(
+        '/a/grafana-lokiexplore-app/explore/service/shop/logs?visualizationType=%22table%22&sortOrder=%22Descending%22',
+        base,
+        scope,
+      ),
+    ).toBe(
+      '/a/grafana-lokiexplore-app/explore/service/{service}/logs?visualizationType="table"',
+    );
+    expect(
+      canonicalizeURL(
+        '/a/grafana-lokiexplore-app/explore/service/shop/logs?visualizationType=%22logs%22',
+        base,
+        scope,
+      ),
+    ).toBe('/a/grafana-lokiexplore-app/explore/service/{service}/logs');
+  });
+
+  test('pinned structural-param counting (the pairwise depth bound)', () => {
+    expect(
+      pinnedStructuralParamCount('/a/grafana-exploretraces-app/explore'),
+    ).toBe(0);
+    expect(
+      pinnedStructuralParamCount(
+        '/a/grafana-exploretraces-app/explore?var-groupBy=kind',
+      ),
+    ).toBe(1);
+    expect(
+      pinnedStructuralParamCount(
+        '/a/grafana-exploretraces-app/explore?actionView=comparison&var-groupBy=kind',
+      ),
+    ).toBe(2);
+    expect(
+      pinnedStructuralParamCount(
+        '/a/grafana-metricsdrilldown-app/drilldown?metric={metric}',
+      ),
+    ).toBe(1);
+  });
+
+  test('interaction planning honours the locked pairwise bounds', () => {
+    const control = (key: string, n: number, forced = false) => ({
+      kind: 'radio' as const,
+      key,
+      options: Array.from({ length: n }, (_, i) => `opt${i}`),
+      selectedIndex: 0,
+      forcedHighCardinality: forced,
+      optionHints: Array.from({ length: n }, (_, i) => `opt${i}`),
+      controlHint: '',
+    });
+    // Structural controls enumerate fully (minus the selected option).
+    const single = planInteractions([control('a', 4)], 0);
+    expect(single.map((p) => p.option)).toEqual(['opt1', 'opt2', 'opt3']);
+    expect(single.map((p) => p.leanRepresentative)).toEqual([
+      true,
+      false,
+      false,
+    ]);
+    // High-cardinality (by size or by construction) → one
+    // representative with a parameterized state value.
+    const high = planInteractions(
+      [control('big', 20), control('tiles', 3, true)],
+      0,
+    );
+    expect(high.map((p) => `${p.control.key}=${p.stateValue}`)).toEqual([
+      'big={rep}',
+      'tiles={rep}',
+    ]);
+    // One pinned param → representative plan (pairwise combos).
+    expect(
+      planInteractions([control('a', 4), control('b', 4)], 1).map(
+        (p) => `${p.control.key}=${p.option}`,
+      ),
+    ).toEqual(['a=opt1', 'b=opt1']);
+    // ≥2 pinned params → terminal.
+    expect(planInteractions([control('a', 4)], 2)).toEqual([]);
+    // Cap overflow fails loudly, listing the plan.
+    const many = Array.from({ length: 30 }, (_, i) => control(`c${i}`, 2));
+    expect(() => planInteractions(many, 0)).toThrow(/exceeding the single-sweep cap/);
+    expect(() =>
+      planInteractions(
+        Array.from({ length: 20 }, (_, i) => control(`c${i}`, 2)),
+        1,
+      ),
+    ).toThrow(/exceeding the pairwise cap/);
   });
 
   test('explore collapses to a single surface', () => {
@@ -365,8 +591,11 @@ test('crawl: BFS over every reachable Grafana surface with universal oracles + i
 }, testInfo) => {
   const stack = activeStack();
   const depth = sweepDepth();
-  // Budget: lean ≈ 10 pages × ~6s + 30s seed; full ≈ cap pages.
-  testInfo.setTimeout(depth === 'full' ? 30 * 60_000 : 8 * 60_000);
+  // Budget: lean ≈ 10 pages × ~6s + 30s seed + the representative
+  // interaction sweep over the 3 drilldown roots (~3 min); full ≈
+  // cap pages + the exhaustive interaction sweep (a fresh navigation
+  // per planned gesture).
+  testInfo.setTimeout(depth === 'full' ? 75 * 60_000 : 14 * 60_000);
   // eslint-disable-next-line no-console
   console.log(`crawl stack: ${stack.name} — ${describeSweepDepth(depth)}`);
 
@@ -456,11 +685,14 @@ test('crawl: BFS over every reachable Grafana surface with universal oracles + i
 
   const pageCap = depth === 'full' ? stack.pageCapFull : stack.pageCapLean;
   const visited = new Map<string, string>(); // canonical → concrete navigated
+  // In-place interaction states (`<canonical>#<control>=<value>`) →
+  // concrete URL the gesture ran against. Kept separate from
+  // `visited` because they are gestures on an already-counted page,
+  // not navigations — the page cap governs navigations.
+  const inPlaceVisited = new Map<string, string>();
   const failures: CrawlFailure[] = [];
 
-  let context: BrowserContext | null = null;
-  let page: Page | null = null;
-  let pagesInContext = 0;
+  const lease = makePageLease(browser);
 
   try {
     while (queue.length > 0) {
@@ -480,17 +712,10 @@ test('crawl: BFS over every reachable Grafana surface with universal oracles + i
         );
       }
 
-      if (page === null || pagesInContext >= CONTEXT_RECYCLE_PAGES) {
-        if (context !== null) await context.close();
-        context = await browser.newContext();
-        page = await context.newPage();
-        pagesInContext = 0;
-      }
-      pagesInContext++;
       visited.set(entry.canonical, entry.concrete);
 
       const { harvested, pageFailures } = await visitAndAudit(
-        page,
+        lease,
         baseURL,
         entry,
         declaredNoData,
@@ -524,18 +749,90 @@ test('crawl: BFS over every reachable Grafana surface with universal oracles + i
           }
         }
       }
+
+      // Interaction sweep — every clickable control that changes the
+      // surface's consumption mode (see interactions.ts). Depth
+      // doctrine: full sweeps every eligible surface exhaustively;
+      // lean sweeps the configured representative roots with the
+      // representative plan (one state per control). Eligibility is
+      // the pairwise bound: surfaces pinning ≥2 structural params are
+      // terminal (planInteractions returns an empty plan for them).
+      const isLeanRoot = stack.leanInteractionRoots.includes(entry.canonical);
+      if (depth === 'full' || isLeanRoot) {
+        const sweep = await sweepInteractions(
+          lease,
+          baseURL,
+          entry,
+          stack.scope,
+          depth !== 'full',
+          declaredNoData,
+          declaredErrorExprs,
+        );
+        failures.push(...sweep.failures);
+        for (const [stateKey, state] of sweep.inPlaceStates) {
+          inPlaceVisited.set(stateKey, state.concrete);
+          if (isLeanRoot && state.leanRepresentative) leanSet.add(stateKey);
+        }
+        for (const d of sweep.discovered) {
+          if (isLeanRoot && d.leanRepresentative) leanSet.add(d.canonical);
+          if (!visited.has(d.canonical)) {
+            queue.push({
+              canonical: d.canonical,
+              concrete: d.concrete,
+              via: d.via,
+            });
+          }
+        }
+      }
     }
   } finally {
-    if (context !== null) await context.close();
+    await lease.close();
   }
+
+  // The full audited state set: navigated surfaces plus the in-place
+  // interaction states (`<canonical>#<control>=<value>` notation) —
+  // both pin into the same inventory ratchet.
+  const auditedStates = new Map<string, string>([
+    ...visited,
+    ...inPlaceVisited,
+  ]);
 
   // eslint-disable-next-line no-console
   console.log(
-    `crawl: visited ${visited.size} surface(s) at depth=${depth} stack=${stack.name}:\n${[...visited.keys()]
+    `crawl: audited ${auditedStates.size} state(s) (${visited.size} navigated surface(s), ` +
+      `${inPlaceVisited.size} in-place interaction state(s)) at depth=${depth} stack=${stack.name}:\n${[...auditedStates.keys()]
       .sort()
       .map((u) => `  - ${u}`)
       .join('\n')}`,
   );
+
+  // -------------------------------------------------------------------------
+  // Surface-inventory ratchet. The regen WRITE happens before the
+  // oracle-failure throw: the inventory pins COVERAGE (which states
+  // the crawl audits) while the failures report HEALTH — a deliberate
+  // regen against a stack carrying known-red states (e.g. a found bug
+  // whose fix is in flight) must still capture the coverage, and the
+  // run still fails loudly on the failures right below.
+  // -------------------------------------------------------------------------
+  if (process.env.CERBERUS_UPDATE_INVENTORY) {
+    expect(
+      depth,
+      'inventory regeneration requires the exhaustive crawl: rerun with SWEEP_DEPTH=full',
+    ).toBe('full');
+    const inv: SurfaceInventory = {
+      doc: stack.inventoryDoc,
+      stack: stack.name,
+      surfaces: [...auditedStates.keys()].map((url) => ({
+        url,
+        lean: leanSet.has(url),
+      })),
+    };
+    writeFileSync(inventoryPath(stack), marshalInventory(inv));
+    // eslint-disable-next-line no-console
+    console.log(
+      `crawl: regenerated ${inventoryPath(stack)} with ${inv.surfaces.length} surface(s)`,
+    );
+  }
 
   if (failures.length > 0) {
     const detail = failures
@@ -546,29 +843,7 @@ test('crawl: BFS over every reachable Grafana surface with universal oracles + i
     );
   }
 
-  // -------------------------------------------------------------------------
-  // Surface-inventory ratchet.
-  // -------------------------------------------------------------------------
-  if (process.env.CERBERUS_UPDATE_INVENTORY) {
-    expect(
-      depth,
-      'inventory regeneration requires the exhaustive crawl: rerun with SWEEP_DEPTH=full',
-    ).toBe('full');
-    const inv: SurfaceInventory = {
-      doc: stack.inventoryDoc,
-      stack: stack.name,
-      surfaces: [...visited.keys()].map((url) => ({
-        url,
-        lean: leanSet.has(url),
-      })),
-    };
-    writeFileSync(inventoryPath(stack), marshalInventory(inv));
-    // eslint-disable-next-line no-console
-    console.log(
-      `crawl: regenerated ${inventoryPath(stack)} with ${inv.surfaces.length} surface(s)`,
-    );
-    return;
-  }
+  if (process.env.CERBERUS_UPDATE_INVENTORY) return;
 
   // Bootstrap guard before the diff: an EMPTY committed inventory
   // means the stack was registered but never crawled exhaustively —
@@ -577,7 +852,7 @@ test('crawl: BFS over every reachable Grafana surface with universal oracles + i
   const committed = loadInventory(stack);
   assertInventoryBootstrapped(committed, stack);
   const violations = diffInventory(
-    new Set(visited.keys()),
+    new Set(auditedStates.keys()),
     committed,
     loadExclusions(stack),
     depth,
@@ -593,40 +868,55 @@ test('crawl: BFS over every reachable Grafana surface with universal oracles + i
 // Per-page visit + oracles
 // ---------------------------------------------------------------------------
 
-async function visitAndAudit(
-  page: Page,
-  baseURL: string,
-  entry: QueueEntry,
+/**
+ * The declared-contract slice the oracles consume for one surface:
+ * which dashboard (if any) it renders, and that dashboard's declared
+ * no-data titles / error expressions.
+ */
+type OracleContracts = {
+  dashUid: string | undefined;
+  noDataDeclared: ReadonlySet<string>;
+  errExprsDeclared: ReadonlySet<string>;
+};
+
+function contractsFor(
+  canonical: string,
   declaredNoData: ReadonlyMap<string, Set<string>>,
   declaredErrorExprs: ReadonlyMap<string, Set<string>>,
-): Promise<{ harvested: string[]; pageFailures: CrawlFailure[] }> {
-  const pageFailures: CrawlFailure[] = [];
-  const fail = (rule: string, detail: string) =>
-    pageFailures.push({ url: entry.canonical, rule, detail });
-
-  // Which dashboard (if any) this surface renders — keys the declared
-  // cerberus.expect contracts.
-  const dashUid = /^\/d\/([^/?]+)/.exec(entry.canonical)?.[1];
-  const noDataDeclared = (dashUid && declaredNoData.get(dashUid)) || new Set();
-  const errExprsDeclared =
-    (dashUid && declaredErrorExprs.get(dashUid)) || new Set<string>();
-
-  const { messages: consoleErrors, stop: stopConsole } =
-    await captureConsoleErrors(page);
-
-  // Datasource API capture — same surface families every existing
-  // sweep watches. Deliberately NOT all of /api/: e.g. Grafana fires
-  // /api/datasources/uid/cerberus-tempo/health on page loads and its
-  // Tempo plugin has no backend CheckHealth, so that endpoint 404s
-  // with plugin.notImplemented by Grafana's own design (see the
-  // datasource-health probe comment in compose_grafana_smoke.spec.ts).
-  type CapturedDsResponse = {
-    url: string;
-    method: string;
-    status: number;
-    body: string;
-    requestBody: string;
+): OracleContracts {
+  const dashUid = /^\/d\/([^/?#]+)/.exec(canonical)?.[1];
+  return {
+    dashUid,
+    noDataDeclared: (dashUid && declaredNoData.get(dashUid)) || new Set(),
+    errExprsDeclared:
+      (dashUid && declaredErrorExprs.get(dashUid)) || new Set<string>(),
   };
+}
+
+type CapturedDsResponse = {
+  url: string;
+  method: string;
+  status: number;
+  body: string;
+  requestBody: string;
+};
+
+/**
+ * Wire the datasource-API response capture — the same surface
+ * families every existing sweep watches. Deliberately NOT all of
+ * /api/: e.g. Grafana fires /api/datasources/uid/cerberus-tempo/health
+ * on page loads and its Tempo plugin has no backend CheckHealth, so
+ * that endpoint 404s with plugin.notImplemented by Grafana's own
+ * design (see the datasource-health probe comment in
+ * compose_grafana_smoke.spec.ts).
+ *
+ * Returns the live capture array and an async stop that detaches the
+ * listener and settles every in-flight body read.
+ */
+function startWireCapture(
+  page: Page,
+  baseURL: string,
+): { captured: CapturedDsResponse[]; stop: () => Promise<void> } {
   const captured: CapturedDsResponse[] = [];
   const captureReads: Promise<void>[] = [];
   const onResponse = (resp: Response) => {
@@ -666,71 +956,27 @@ async function visitAndAudit(
     );
   };
   page.on('response', onResponse);
+  return {
+    captured,
+    stop: async () => {
+      page.off('response', onResponse);
+      await Promise.all(captureReads);
+    },
+  };
+}
 
-  let harvested: string[] = [];
-  try {
-    await page.goto(`${baseURL}${entry.concrete}`, {
-      waitUntil: 'domcontentloaded',
-      timeout: 90_000,
-    });
-    await tolerateRepaintFlicker(page, { settleMs: 600, timeoutMs: 45_000 });
+type FailFn = (rule: string, detail: string) => void;
 
-    harvested = await harvestLinks(page);
-
-    // Oracle 4a — VISIBLE role=alert banners with error-class text
-    // (Grafana pre-mounts hidden alert skeletons on some pages; see
-    // collectVisibleAlertBanners).
-    const banners = await collectVisibleAlertBanners(page);
-    for (const banner of banners) {
-      if (ALERT_ERROR_PATTERNS.some((re) => re.test(banner))) {
-        fail(
-          'role-alert-banner',
-          `role=alert banner with error text: ${truncate(banner, 400)}`,
-        );
-      }
-    }
-
-    // Oracle 4b — page-level crash signatures.
-    const bodyText = await page
-      .locator('body')
-      .innerText({ timeout: 10_000 })
-      .catch(() => '');
-    for (const re of PAGE_CRASH_PATTERNS) {
-      const m = re.exec(bodyText);
-      if (m) {
-        fail(
-          'page-crash-banner',
-          `page body carries crash signature ${re}: …${truncate(
-            bodyText.slice(Math.max(0, m.index - 80), m.index + 160),
-            300,
-          )}…`,
-        );
-      }
-    }
-
-    // Oracle 3 — panel tri-state. Every "No data" render must be
-    // covered by a declared 'empty' / 'error:*' contract.
-    const noDataPanels = await collectNoDataPanels(page);
-    for (const title of noDataPanels) {
-      if (noDataDeclared.has(title)) continue;
-      fail(
-        'panel-no-data-undeclared',
-        `panel ${JSON.stringify(title)} rendered "No data" with no cerberus.expect declaration ` +
-          `(dashboard=${dashUid ?? '<not a dashboard>'}, url=${entry.concrete}) — `
-          + `fix the bug at the source (cerberus code, seed, dashboard, or panel), or declare the contract on a showcase panel`,
-      );
-    }
-  } catch (err) {
-    fail(
-      'navigation-threw',
-      `goto(${entry.concrete}) threw: ${(err as Error).message}`,
-    );
-  } finally {
-    page.off('response', onResponse);
-    stopConsole();
-  }
-  await Promise.all(captureReads);
-
+/**
+ * Oracles 2a + 2b over a settled wire capture: non-2xx on the
+ * datasource API families, and tunneled per-target errors in 2xx
+ * ds/query bodies. Sanctioned only via declared-error contracts.
+ */
+function evaluateWireOracles(
+  captured: ReadonlyArray<CapturedDsResponse>,
+  contracts: OracleContracts,
+  fail: FailFn,
+): void {
   // Oracle 2a — non-2xx on the datasource API families. Sanctioned
   // only when every query in the failing ds/query request is a
   // declared-error panel target on this dashboard.
@@ -738,7 +984,7 @@ async function visitAndAudit(
     if (resp.status >= 200 && resp.status <= 299) continue;
     if (
       resp.url.includes('/api/ds/query') &&
-      requestFullyDeclaredError(resp.requestBody, errExprsDeclared)
+      requestFullyDeclaredError(resp.requestBody, contracts.errExprsDeclared)
     ) {
       continue;
     }
@@ -764,13 +1010,115 @@ async function visitAndAudit(
         continue;
       }
       const expr = refToExpr.get(refId) ?? '';
-      if (expr !== '' && errExprsDeclared.has(expr)) continue;
+      if (expr !== '' && contracts.errExprsDeclared.has(expr)) continue;
       fail(
         'ds-query-tunneled-error',
         `refId=${refId} url=${resp.url}\n  error: ${truncate(target.error, 600)}`,
       );
     }
   }
+}
+
+/**
+ * Oracles 3 + 4 over the page's current DOM: visible role=alert
+ * banners, page-level crash signatures, and the panel tri-state.
+ */
+async function evaluateDomOracles(
+  page: Page,
+  contracts: OracleContracts,
+  concrete: string,
+  fail: FailFn,
+): Promise<void> {
+  // Oracle 4a — VISIBLE role=alert banners with error-class text
+  // (Grafana pre-mounts hidden alert skeletons on some pages; see
+  // collectVisibleAlertBanners).
+  const banners = await collectVisibleAlertBanners(page);
+  for (const banner of banners) {
+    if (ALERT_ERROR_PATTERNS.some((re) => re.test(banner))) {
+      fail(
+        'role-alert-banner',
+        `role=alert banner with error text: ${truncate(banner, 400)}`,
+      );
+    }
+  }
+
+  // Oracle 4b — page-level crash signatures.
+  const bodyText = await page
+    .locator('body')
+    .innerText({ timeout: 10_000 })
+    .catch(() => '');
+  for (const re of PAGE_CRASH_PATTERNS) {
+    const m = re.exec(bodyText);
+    if (m) {
+      fail(
+        'page-crash-banner',
+        `page body carries crash signature ${re}: …${truncate(
+          bodyText.slice(Math.max(0, m.index - 80), m.index + 160),
+          300,
+        )}…`,
+      );
+    }
+  }
+
+  // Oracle 3 — panel tri-state. Every "No data" render must be
+  // covered by a declared 'empty' / 'error:*' contract.
+  const noDataPanels = await collectNoDataPanels(page);
+  for (const title of noDataPanels) {
+    if (contracts.noDataDeclared.has(title)) continue;
+    fail(
+      'panel-no-data-undeclared',
+      `panel ${JSON.stringify(title)} rendered "No data" with no cerberus.expect declaration ` +
+        `(dashboard=${contracts.dashUid ?? '<not a dashboard>'}, url=${concrete}) — `
+        + `fix the bug at the source (cerberus code, seed, dashboard, or panel), or declare the contract on a showcase panel`,
+    );
+  }
+}
+
+async function visitAndAudit(
+  lease: PageLease,
+  baseURL: string,
+  entry: QueueEntry,
+  declaredNoData: ReadonlyMap<string, Set<string>>,
+  declaredErrorExprs: ReadonlyMap<string, Set<string>>,
+): Promise<{ harvested: string[]; pageFailures: CrawlFailure[] }> {
+  const pageFailures: CrawlFailure[] = [];
+  const fail: FailFn = (rule, detail) =>
+    pageFailures.push({ url: entry.canonical, rule, detail });
+
+  // Declared cerberus.expect contracts this surface renders under.
+  const contracts = contractsFor(
+    entry.canonical,
+    declaredNoData,
+    declaredErrorExprs,
+  );
+
+  const page = await lease.acquire();
+  const { messages: consoleErrors, stop: stopConsole } =
+    await captureConsoleErrors(page);
+  const wire = startWireCapture(page, baseURL);
+
+  let harvested: string[] = [];
+  try {
+    lease.noteNavigation();
+    await page.goto(`${baseURL}${entry.concrete}`, {
+      waitUntil: 'domcontentloaded',
+      timeout: 90_000,
+    });
+    await tolerateRepaintFlicker(page, { settleMs: 600, timeoutMs: 45_000 });
+
+    harvested = await harvestLinks(page);
+
+    await evaluateDomOracles(page, contracts, entry.concrete, fail);
+  } catch (err) {
+    fail(
+      'navigation-threw',
+      `goto(${entry.concrete}) threw: ${(err as Error).message}`,
+    );
+  } finally {
+    stopConsole();
+  }
+  await wire.stop();
+  evaluateWireOracles(wire.captured, contracts, fail);
 
   // Oracle 1 — console errors. Zero, with no noise filter (see the
   // file header for the escalation path if a Grafana bump ever makes
@@ -785,6 +1133,171 @@ async function visitAndAudit(
   }
 
   return { harvested, pageFailures };
+}
+
+// ---------------------------------------------------------------------------
+// Interaction sweep — see interactions.ts for the discovery/planning
+// engine and docs/test-strategy.md for the bounding rules.
+// ---------------------------------------------------------------------------
+
+type InteractionSweepResult = {
+  /** URL-encoding deviations → first-class surfaces to enqueue. */
+  discovered: Array<QueueEntry & { leanRepresentative: boolean }>;
+  /**
+   * Non-URL deviations audited in place, keyed by the
+   * `<canonical>#<control>=<value>` state notation → concrete URL
+   * the gesture ran against, plus the lean-representative flag for
+   * the inventory's lean marking.
+   */
+  inPlaceStates: Map<string, { concrete: string; leanRepresentative: boolean }>;
+  failures: CrawlFailure[];
+};
+
+/**
+ * Sweep one visited surface's interactive controls.
+ *
+ * Every planned interaction runs against a FRESH navigation of the
+ * surface's concrete URL (deterministic provenance: state = surface
+ * default + exactly one control deviation; no gesture-order
+ * coupling). The capture window opens AFTER the page settles, so a
+ * boot-time failure stays attributed to the base surface (the base
+ * visit already audited it) and the interaction state only owns what
+ * the gesture caused.
+ *
+ * Post-gesture, the page URL decides the state's identity:
+ *   - canonicalizes to a DIFFERENT in-scope surface → the deviation
+ *     is URL-encoded; it is returned as a first-class surface and the
+ *     BFS visits it fresh with the full oracle set (captures from the
+ *     gesture itself are discarded — the fresh visit owns them).
+ *   - same canonical (or out of scope) → the deviation is in-page
+ *     state; the full oracle set evaluates right here and the state
+ *     pins into the inventory as `<canonical>#<control>=<value>`.
+ */
+async function sweepInteractions(
+  lease: PageLease,
+  baseURL: string,
+  entry: QueueEntry,
+  scope: ScopeRules,
+  representativeOnly: boolean,
+  declaredNoData: ReadonlyMap<string, Set<string>>,
+  declaredErrorExprs: ReadonlyMap<string, Set<string>>,
+): Promise<InteractionSweepResult> {
+  const failures: CrawlFailure[] = [];
+  const discovered: InteractionSweepResult['discovered'] = [];
+  const inPlaceStates: InteractionSweepResult['inPlaceStates'] = new Map();
+  const contracts = contractsFor(
+    entry.canonical,
+    declaredNoData,
+    declaredErrorExprs,
+  );
+
+  // Discovery pass on a fresh navigation (the base visit's link
+  // harvest left the mega menu open, which would occlude controls).
+  let plan: PlannedInteraction[];
+  try {
+    const page = await lease.acquire();
+    lease.noteNavigation();
+    await page.goto(`${baseURL}${entry.concrete}`, {
+      waitUntil: 'domcontentloaded',
+      timeout: 90_000,
+    });
+    await tolerateRepaintFlicker(page, { settleMs: 500, timeoutMs: 30_000 });
+    const controls = await discoverControls(page);
+    const fullPlan = planInteractions(
+      controls,
+      pinnedStructuralParamCount(entry.canonical),
+    );
+    plan = representativeOnly
+      ? fullPlan.filter((p) => p.leanRepresentative)
+      : fullPlan;
+  } catch (err) {
+    failures.push({
+      url: entry.canonical,
+      rule: 'interaction-discovery-failed',
+      detail: (err as Error).message,
+    });
+    return { discovered, inPlaceStates, failures };
+  }
+
+  for (const planned of plan) {
+    const stateName = `${planned.control.key}=${planned.stateValue}`;
+    const stateKey = interactionStateKey(
+      entry.canonical,
+      planned.control,
+      planned.stateValue,
+    );
+    const fail: FailFn = (rule, detail) =>
+      failures.push({ url: stateKey, rule, detail });
+
+    const page = await lease.acquire();
+    try {
+      lease.noteNavigation();
+      await page.goto(`${baseURL}${entry.concrete}`, {
+        waitUntil: 'domcontentloaded',
+        timeout: 90_000,
+      });
+      await tolerateRepaintFlicker(page, { settleMs: 500, timeoutMs: 30_000 });
+    } catch (err) {
+      fail('navigation-threw', `goto(${entry.concrete}) threw: ${(err as Error).message}`);
+      continue;
+    }
+
+    const { messages: consoleErrors, stop: stopConsole } =
+      await captureConsoleErrors(page);
+    const wire = startWireCapture(page, baseURL);
+    let drove = true;
+    try {
+      await driveInteraction(page, planned);
+    } catch (err) {
+      drove = false;
+      fail(
+        'interaction-drive-failed',
+        `driving ${planned.control.kind}:${stateName} threw: ${(err as Error).message}`,
+      );
+    }
+    if (drove) {
+      await tolerateRepaintFlicker(page, { settleMs: 500, timeoutMs: 20_000 });
+      // Close any select menu the gesture left open so the DOM
+      // oracles see the page, not the dropdown overlay.
+      await page.keyboard.press('Escape').catch(() => {});
+    }
+    stopConsole();
+    await wire.stop();
+    if (!drove) continue;
+
+    const post = canonicalTarget(page.url(), baseURL, scope);
+    if (post !== null && post.canonical !== entry.canonical) {
+      // URL-encoded deviation → first-class surface; the fresh BFS
+      // visit owns its oracles.
+      const postURL = new URL(page.url());
+      discovered.push({
+        canonical: post.canonical,
+        concrete: `${postURL.pathname}${postURL.search}`,
+        via: `${entry.canonical} (interaction ${stateName})`,
+        leanRepresentative: planned.leanRepresentative,
+      });
+      continue;
+    }
+
+    // In-place deviation → full oracle set, keyed by the state
+    // notation, pinned into the inventory.
+    evaluateWireOracles(wire.captured, contracts, fail);
+    await evaluateDomOracles(page, contracts, entry.concrete, fail);
+    if (consoleErrors.length > 0) {
+      fail(
+        'console-error',
+        `${consoleErrors.length} console error(s):\n${consoleErrors
+          .map((m) => `  - ${truncate(m, 400)}`)
+          .join('\n')}`,
+      );
+    }
+    inPlaceStates.set(stateKey, {
+      concrete: entry.concrete,
+      leanRepresentative: planned.leanRepresentative,
+    });
+  }
+
+  return { discovered, inPlaceStates, failures };
 }
 
 /**
