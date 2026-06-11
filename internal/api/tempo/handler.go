@@ -318,6 +318,14 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 		// follow-up lookup against otel_traces filtered to root spans
 		// of the affected TraceIDs and patch RootServiceName /
 		// RootTraceName before responding.
+		//
+		// A lookup failure WARN-degrades (the earliest-span fallback
+		// stays in place) instead of failing the search — mirroring
+		// reference Tempo, where root metadata is best-effort by
+		// design: a search whose root span is unavailable still
+		// returns 200 with placeholder root fields
+		// (modules/frontend/combiner/search.go sets
+		// search.RootSpanNotYetReceivedText), never an error.
 		roots, lookupErr := h.resolveTraceRoots(ctx, missingRoots)
 		if lookupErr != nil {
 			h.Logger.Warn("cerberus tempo root-span lookup failed",

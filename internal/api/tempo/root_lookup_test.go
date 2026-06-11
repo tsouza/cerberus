@@ -2,6 +2,7 @@ package tempo
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -138,7 +139,7 @@ func TestBuildRootLookupPlan_SQLShape(t *testing.T) {
 		}
 	}
 
-	// Empty parent-span-id literal must appear so the OR-chain matches
+	// Empty parent-span-id literal must appear so the IN list matches
 	// the OTel-CH on-disk empty form (hex.EncodeToString(nil) → "").
 	var sawEmptyParent bool
 	for _, a := range args {
@@ -150,7 +151,7 @@ func TestBuildRootLookupPlan_SQLShape(t *testing.T) {
 	if !sawEmptyParent {
 		t.Errorf("expected empty-string ParentSpanId literal in args; got %v", args)
 	}
-	// 16-char zero form must appear so the OR-chain also matches
+	// 16-char zero form must appear so the IN list also matches
 	// producers that store the canonical hex-encoded all-zero shape.
 	var sawZeroParent bool
 	for _, a := range args {
@@ -161,6 +162,74 @@ func TestBuildRootLookupPlan_SQLShape(t *testing.T) {
 	}
 	if !sawZeroParent {
 		t.Errorf("expected 16-char-zero ParentSpanId literal in args; got %v", args)
+	}
+}
+
+// TestBuildRootLookupPlan_FlatParseDepth pins the O(1)-parse-depth
+// IN-list shape of the trace-ID filter. The pre-fix shape rendered a
+// nested OR-chain of equality predicates — one ClickHouse AST level
+// per trace ID — and blew `max_parser_depth` (default 1000, error
+// code 306) once a search returned >1000 traces needing root
+// enrichment (compose-smoke run 27307036248: "Maximum parse depth
+// (1000) exceeded", missing=1006), silently dropping the root
+// decoration from the response.
+//
+// Parenthesis nesting in the emitted SQL is a faithful proxy for CH
+// parse depth here (every OR-chain level emitted a paren pair), so the
+// regression contract is: the maximum paren depth at N=2000 IDs must
+// equal the depth at N=2 — i.e. depth must not scale with ID count.
+func TestBuildRootLookupPlan_FlatParseDepth(t *testing.T) {
+	t.Parallel()
+
+	depthFor := func(n int) int {
+		t.Helper()
+		ids := make([]string, 0, n)
+		for i := range n {
+			// Distinct, full-width hex IDs (no leading-zero stripping
+			// ambiguity) so each contributes one IN element.
+			ids = append(ids, fmt.Sprintf("%032x", i+1))
+		}
+		plan := buildRootLookupPlan(schema.DefaultOTelTraces(), ids)
+		sql, args, err := chsql.Emit(context.Background(), plan)
+		if err != nil {
+			t.Fatalf("Emit with %d IDs: %v", n, err)
+		}
+		if len(args) < n {
+			t.Fatalf("expected >= %d bound args (one per trace ID), got %d", n, len(args))
+		}
+		depth, maxDepth := 0, 0
+		for _, c := range sql {
+			switch c {
+			case '(':
+				depth++
+				if depth > maxDepth {
+					maxDepth = depth
+				}
+			case ')':
+				depth--
+			}
+		}
+		return maxDepth
+	}
+
+	d2 := depthFor(2)
+	d2000 := depthFor(2000)
+	if d2000 != d2 {
+		t.Errorf("paren depth scales with trace-ID count: depth(N=2000)=%d, depth(N=2)=%d — the trace filter must stay a flat IN list", d2000, d2)
+	}
+
+	// The trace filter must render as a single flat IN over the
+	// TraceId column, not an OR-chain.
+	plan := buildRootLookupPlan(schema.DefaultOTelTraces(), []string{"17", "abc"})
+	sql, _, err := chsql.Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if !strings.Contains(sql, "`TraceId` IN (") {
+		t.Errorf("expected flat `TraceId IN (...)` filter; got %s", sql)
+	}
+	if strings.Contains(sql, " OR ") {
+		t.Errorf("expected no OR-chain anywhere in the lookup SQL; got %s", sql)
 	}
 }
 
