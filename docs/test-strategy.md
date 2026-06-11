@@ -264,32 +264,67 @@ Two sibling specs ride the same lane:
   family a quantile panel consumes, and identical-quantile-series
   (p50 ≡ p95 bitwise — the same single-bucket signature).
 
-**Lane shape.** The crawl suite runs in the `compose-smoke` job only
-(`CRAWL_STACK=compose` opts it in; the k3d `dashboard` job's
-auto-discovery ignores `crawl/**` because the inventory pins the
-compose stack's surface set). `SWEEP_DEPTH` follows the standard
-doctrine — depth changes states, never rules: `lean` (PR gate) visits
-root + nav + one representative per drilldown app; `full` (nightly)
-crawls exhaustively under a **hard page cap that fails the run when
-exceeded**, so surface growth forces a deliberate cap bump.
+**One engine, N stack configs.** The crawler is a stack-agnostic
+framework: the engine — BFS walk, URL canonicalization, the universal
+oracles, the ds/query replays, the lints, and the inventory-ratchet
+mechanics — lives in `crawl/lib.ts` + the three specs and never
+branches on a stack name. Everything that legitimately differs
+between Grafana deployments is declared as data in `crawl/stacks.ts`,
+one `CrawlStackConfig` per stack: the default Grafana base URL, the
+anonymous-auth assumption (typed `true` — the engine drives no login
+flow, and the crawl proves the assumption live before walking), the
+crawl scope rules, the per-stack inventory + exclusions file names,
+the exact datasource UID set the ds/query replays pin (the live
+`/api/datasources` answer must EQUAL it — provisioning drift fails
+loudly), the lint input floors (floors on lint *input*, never
+tolerances on verdicts), the lean representative seeds, and the hard
+page caps. `CRAWL_STACK=<name>` selects the config: unset →
+`playwright.config.ts` ignores `crawl/**` entirely (0 crawl tests);
+an unknown name → loud error at config-load time, never a silent
+skip.
+
+Two stacks are registered: `compose` (the repo-root quickstart stack;
+the `compose-smoke` job opts in with `CRAWL_STACK=compose` —
+`SWEEP_DEPTH` follows the standard doctrine: `lean` per-PR, `full`
+nightly) and `k3d` (the `dashboard` job in `e2e.yml`; its crawl step
+runs on schedule + manual dispatch only, always at
+`SWEEP_DEPTH=full` — the per-PR fast lane is the compose stack's
+job). Depth changes states, never rules; `full` crawls exhaustively
+under a **hard page cap that fails the run when exceeded**, so
+surface growth forces a deliberate cap bump in `stacks.ts`.
 
 **The surface-inventory ratchet.**
-`crawl/grafana-surface-inventory.json` pins the canonical visited
-set (mirroring `test/inventory/`'s regenerability convention). A
-newly discovered surface — e.g. a Grafana bump adding an app page —
-fails the crawl until the inventory is regenerated deliberately:
+`crawl/grafana-surface-inventory.<stack>.json` pins each stack's
+canonical visited set (mirroring `test/inventory/`'s regenerability
+convention). A newly discovered surface — e.g. a Grafana bump adding
+an app page — fails the crawl until the inventory is regenerated
+deliberately:
 
 ```sh
-# against a healthy compose stack
-CERBERUS_UPDATE_INVENTORY=1 SWEEP_DEPTH=full CRAWL_STACK=compose \
+# against a healthy instance of the named stack
+CERBERUS_UPDATE_INVENTORY=1 SWEEP_DEPTH=full CRAWL_STACK=<stack> \
   npx playwright test crawl/crawl.spec.ts
 ```
 
 Coverage shrink (a pinned surface no longer visited) fails
-symmetrically and has no regen escape. The exclusions file
-(`crawl/grafana-surface-exclusions.json`) is empty by design and
-shrink-biased; an entry must document genuine impossibility, and a
-URL in both files fails as a stale exclusion.
+symmetrically and has no regen escape. The per-stack exclusions file
+(`crawl/grafana-surface-exclusions.<stack>.json`) is empty by design
+and shrink-biased; an entry must document genuine impossibility, and
+a URL in both files fails as a stale exclusion.
+
+**Adding a stack.** Register a `CrawlStackConfig` in
+`crawl/stacks.ts`, commit an *empty* inventory (`"surfaces": []`,
+`stack` field matching the config name, in canonical marshalled form)
+plus an empty exclusions file, and wire `CRAWL_STACK=<name>` into the
+stack's CI lane. The empty inventory is a **bootstrap convention,
+never a steady state**: `assertInventoryBootstrapped` fails every run
+loudly — with the regen instructions — until the first exhaustive
+crawl's inventory is committed; only the regen run itself
+(`CERBERUS_UPDATE_INVENTORY=1`) is exempt. The k3d stack bootstraps
+this way because booting k3d locally is heavy: dispatch the `e2e`
+workflow with `update_crawl_inventory=true`, then commit the uploaded
+inventory artifact. The red crawl lane in the interim is deliberate
+pressure — bootstrap cannot silently become permanent.
 
 **Doctrine: the AI sweep generates oracle classes; CI runs them.**
 The crawler exists because an off-CI AI screenshot sweep (2026-06-09)
