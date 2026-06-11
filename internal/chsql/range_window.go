@@ -82,14 +82,14 @@ func (e *emitter) emitMetricsAggregate(m *chplan.MetricsAggregate) error {
 		af := chplan.AggFunc{Name: name, Params: params, Args: args, Alias: m.ValueAlias}
 		sb.Select(aggFuncFrag(af))
 	}
-	if len(m.GroupBy) > 0 {
-		groupFrags := make([]Frag, 0, len(m.GroupBy))
-		for _, g := range m.GroupBy {
-			expr := g
-			groupFrags = append(groupFrags, func(b *Builder) { _ = b.Expr(expr) })
-		}
-		sb.GroupBy(groupFrags...)
+	// An empty GroupBy appends no keys (GroupBy is a no-op on an empty
+	// slice), so no length guard is needed.
+	groupFrags := make([]Frag, 0, len(m.GroupBy))
+	for _, g := range m.GroupBy {
+		expr := g
+		groupFrags = append(groupFrags, func(b *Builder) { _ = b.Expr(expr) })
 	}
+	sb.GroupBy(groupFrags...)
 
 	if !multi {
 		e.emitSelect(sb)
@@ -514,9 +514,8 @@ func (e *emitter) emitWindowedArrayPairsAnchored(r *chplan.RangeWindow, valueWri
 		return err
 	}
 	innermost.From(innerSub)
-	if len(groupFrags) > 0 {
-		innermost.GroupBy(groupFrags...)
-	}
+	// GroupBy is a no-op on an empty slice, so no length guard is needed.
+	innermost.GroupBy(groupFrags...)
 
 	// Inner SELECT — arrayFilter to the [end-range, end] window.
 	innerSb := NewQuery().From(innermost.Frag())
@@ -2157,9 +2156,8 @@ func (e *emitter) emitWindowedArrayExtrapolated(r *chplan.RangeWindow, kind extr
 		return err
 	}
 	innermost.From(innerSub)
-	if len(groupFrags) > 0 {
-		innermost.GroupBy(groupFrags...)
-	}
+	// GroupBy is a no-op on an empty slice, so no length guard is needed.
+	innermost.GroupBy(groupFrags...)
 
 	// Inner-middle SELECT — arrayFilter to the (end-range, end] window.
 	innerMid := NewQuery().From(innermost.Frag())
@@ -2553,9 +2551,8 @@ func (e *emitter) emitWindowedArray(r *chplan.RangeWindow, value Frag, minWindow
 		return err
 	}
 	innermost.From(innerSub)
-	if len(groupFrags) > 0 {
-		innermost.GroupBy(groupFrags...)
-	}
+	// GroupBy is a no-op on an empty slice, so no length guard is needed.
+	innermost.GroupBy(groupFrags...)
 
 	// Inner-middle SELECT — arrayFilter to the [end-range, end] window.
 	innerMid := NewQuery().From(innermost.Frag())
