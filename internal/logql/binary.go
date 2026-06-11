@@ -31,8 +31,8 @@ import (
 //     plan's `Value` column through `(scalar OP Value)`.
 //   - vector OP vector — VectorJoin over both sides projected to the
 //     Sample-shape, threading `Opts.ReturnBool` into VectorJoin.
-//
-// Logical ops (`and` / `or` / `unless`) are rejected at lowering.
+//   - vector set ops (`and` / `or` / `unless`) — VectorSetOp over both
+//     sides projected to the Sample-shape; see [lowerVectorSetOp].
 func lowerBinary(b *syntax.BinOpExpr, s schema.Logs, lc lowerCtx) (chplan.Node, error) {
 	// BinOpExpr stores parse errors in an unexported `err` field; the
 	// parser surfaces them at ParseExpr time before lowering reaches us.
@@ -40,6 +40,16 @@ func lowerBinary(b *syntax.BinOpExpr, s schema.Logs, lc lowerCtx) (chplan.Node, 
 	// shape lets one through.
 	if b.SampleExpr == nil || b.RHS == nil {
 		return nil, fmt.Errorf("logql: binary expression has nil leg(s)")
+	}
+
+	// Vector set operators (`and` / `or` / `unless`) take a separate
+	// path: their result rows come from one side verbatim (and /
+	// unless) or are a union of both sides (or) — there's no per-pair
+	// value expression. Loki's parser rejects literal legs on set ops
+	// (mustNewBinOpExpr: "unexpected literal for ... logical/set binary
+	// operation"), so both legs here are vector-shaped.
+	if syntax.IsLogicalBinOp(b.Op) {
+		return lowerVectorSetOp(b, s, lc)
 	}
 
 	op, err := logqlBinaryOp(b.Op)
@@ -144,11 +154,19 @@ func lowerVectorScalar(vec syntax.Expr, s schema.Logs, op chplan.BinaryOp, scala
 // The `bool` modifier threads into VectorJoin.ReturnBool — mirroring
 // PromQL's exact behaviour: comparison ops yield 1.0 / 0.0 per matched
 // pair rather than dropping non-matching rows. Logical ops
-// (`and`/`or`/`unless`) are rejected upstream of this call.
+// (`and`/`or`/`unless`) are routed to [lowerVectorSetOp] upstream of
+// this call.
+//
+// Unlike PromQL (whose parser rejects `bool` on non-comparison ops),
+// Loki's parser ACCEPTS shapes like `a + bool b` and its evaluator
+// silently ignores the modifier: syntax.MergeBinOp's arithmetic
+// mergers never consult the `filter` flag the modifier maps to
+// (pkg/logql/syntax/ast.go::MergeBinOp — only the six comparison
+// mergers branch on it). Mirror that by dropping the modifier here
+// instead of rejecting — rejecting was a wrong rejection vs reference
+// Loki (rejection-parity catalogue site lowerVectorVector#e04c7f18).
 func lowerVectorVector(b *syntax.BinOpExpr, s schema.Logs, op chplan.BinaryOp, returnBool bool, vm *syntax.VectorMatching, lc lowerCtx) (chplan.Node, error) {
-	if returnBool && !isComparison(op) {
-		return nil, fmt.Errorf("logql: 'bool' modifier is only allowed on comparison binary ops")
-	}
+	returnBool = returnBool && isComparison(op)
 
 	card, match, include, err := vectorMatchingFromOpts(vm)
 	if err != nil {
@@ -186,6 +204,78 @@ func lowerVectorVector(b *syntax.BinOpExpr, s schema.Logs, op chplan.BinaryOp, r
 		TimestampColumn:  "TimeUnix",
 		ValueColumn:      rangeAggSynthValueColumn,
 	}, nil
+}
+
+// lowerVectorSetOp lowers a LogQL vector set operator (`and`, `or`,
+// `unless`) into a chplan.VectorSetOp node. Mirrors
+// internal/promql/binary.go::lowerVectorSetOp — both legs lower
+// independently and are re-shaped to the canonical Sample contract via
+// [sampleShapeOverLogInner]; the chsql emitter then filters / unions
+// them by their match-key signature.
+//
+// Reference semantics (pkg/logql/evaluator.go::vectorAnd / vectorOr /
+// vectorUnless): per evaluation step, each side's samples are keyed by
+// `matchingSignature` — the full label set by default, the named keys
+// for `on(...)`, the complement for `ignoring(...)` — and
+//
+//   - `and` keeps LHS samples whose signature appears on the RHS,
+//   - `unless` keeps LHS samples whose signature does NOT appear on
+//     the RHS,
+//   - `or` keeps all LHS samples plus RHS samples whose signature does
+//     not appear on the LHS.
+//
+// The three reference evaluators ignore `Opts.ReturnBool` and
+// `VectorMatching.Include` entirely (only vectorBinop — the
+// arithmetic / comparison path — consults them), so the lowering
+// drops both instead of rejecting: Loki's parser accepts
+// `a and bool b` / `a and on(x) group_left b` and evaluates them
+// identically to the unmodified form.
+func lowerVectorSetOp(b *syntax.BinOpExpr, s schema.Logs, lc lowerCtx) (chplan.Node, error) {
+	kind, err := logqlVectorSetOpKind(b.Op)
+	if err != nil {
+		return nil, err
+	}
+
+	left, err := lower(b.SampleExpr, s, lc)
+	if err != nil {
+		return nil, err
+	}
+	right, err := lower(b.RHS, s, lc)
+	if err != nil {
+		return nil, err
+	}
+
+	_, vm := binOpModifiers(b.Opts)
+	match := chplan.VectorMatch{}
+	if vm != nil {
+		match.Labels = append([]string(nil), vm.MatchingLabels...)
+		match.On = vm.On
+	}
+
+	return &chplan.VectorSetOp{
+		Left:             sampleShapeOverLogInner(left, s),
+		Right:            sampleShapeOverLogInner(right, s),
+		Op:               kind,
+		Match:            match,
+		MetricNameColumn: "MetricName",
+		AttributesColumn: "Attributes",
+		TimestampColumn:  "TimeUnix",
+		ValueColumn:      rangeAggSynthValueColumn,
+	}, nil
+}
+
+// logqlVectorSetOpKind maps a LogQL parser set-op string to the chplan
+// VectorSetOpKind constant.
+func logqlVectorSetOpKind(op string) (chplan.VectorSetOpKind, error) {
+	switch op {
+	case syntax.OpTypeAnd:
+		return chplan.VectorSetAnd, nil
+	case syntax.OpTypeOr:
+		return chplan.VectorSetOr, nil
+	case syntax.OpTypeUnless:
+		return chplan.VectorSetUnless, nil
+	}
+	return "", fmt.Errorf("logql: not a vector set operator: %s", op)
 }
 
 // vectorMatchingFromOpts translates the parser's optional VectorMatching
@@ -257,7 +347,8 @@ func includeLabelsFromBinop(b *syntax.BinOpExpr) []string {
 
 // logqlBinaryOp maps a LogQL parser op string to the chplan op enum.
 // Arithmetic and comparison ops are handled here; logical ops
-// (`and` / `or` / `unless`) are rejected as unsupported.
+// (`and` / `or` / `unless`) are routed to [lowerVectorSetOp] before
+// this is called, so an unmatched op is a genuinely unknown operator.
 func logqlBinaryOp(op string) (chplan.BinaryOp, error) {
 	switch op {
 	case syntax.OpTypeAdd:
@@ -285,7 +376,7 @@ func logqlBinaryOp(op string) (chplan.BinaryOp, error) {
 	case syntax.OpTypeGTE:
 		return chplan.OpGe, nil
 	}
-	return "", fmt.Errorf("logql: binary op %s unsupported (logical ops `and`/`or`/`unless` are not supported)", op)
+	return "", fmt.Errorf("logql: unknown binary op %s", op)
 }
 
 // isComparison reports whether op is one of the six comparison ops.
@@ -421,10 +512,28 @@ func sampleShapeOverLogInner(inner chplan.Node, s schema.Logs) chplan.Node {
 //     surfaces as ClickHouse `code: 47 Unknown expression identifier
 //     'ResourceAttributes'` when [Lang.ProjectSamples] wraps the join
 //     output.
+//   - a top-level `*chplan.VectorSetOp` — its emitter's outer SELECT
+//     projects the canonical (MetricName, Attributes, TimeUnix, Value)
+//     column list verbatim (see internal/chsql/vector_set_op.go).
+//   - a top-level `*chplan.AbsentOverTime` — its emitter synthesises
+//     the canonical 4-column Sample shape directly (see
+//     internal/chsql/absent_over_time.go).
+//   - a top-level `*chplan.TopK` / `*chplan.OrderBy` — both are
+//     row-preserving wraps (`LIMIT K BY` / `ORDER BY`); the LogQL
+//     lowering only ever builds them over a [sampleShapeOverLogInner]
+//     canonical projection, so recurse into the input.
 func isVectorAggregateSampleShape(n chplan.Node) bool {
 	switch v := n.(type) {
 	case *chplan.VectorJoin:
 		return true
+	case *chplan.VectorSetOp:
+		return true
+	case *chplan.AbsentOverTime:
+		return true
+	case *chplan.TopK:
+		return isVectorAggregateSampleShape(v.Input)
+	case *chplan.OrderBy:
+		return isVectorAggregateSampleShape(v.Input)
 	case *chplan.Filter:
 		// A bare comparison (`sum by (svc) (...) > 0`) wraps the inner
 		// plan in a Filter without re-projecting — the Sample columns
