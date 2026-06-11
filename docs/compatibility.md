@@ -113,6 +113,51 @@ loki-compliance-tester \
 
 See `compatibility/loki/README.md` for the full mechanism.
 
+## Rejection parity
+
+Cerberus's deliberate rejections — the HTTP 422 "valid query, but the
+lowering refuses it" paths in `internal/{promql,logql,traceql}` — are
+claims about reference behaviour: "the reference backend cannot answer
+this either". Historically nothing verified those claims
+differentially, which is how `kind != nil` ended up rejected by
+cerberus while reference Tempo accepts it. The rejection-parity layer
+closes that gap:
+
+1. **Catalogue** — `test/rejection-parity/catalogue.json` is the
+   machine-readable inventory of every prefixed error-construction
+   site in the three lowerings, derived by a go/ast scan
+   (`test/rejection-parity`). Every site is classified either
+   `rejection` (reachable from a parseable query; carries a minimal
+   trigger query) or `internal` (parser-enforced shape, invariant, or
+   `%w` wrapper; carries a rationale).
+2. **Meta-tests** — `go test ./test/rejection-parity/` pins the
+   ratchet: the scanned-site set must equal the catalogue
+   (regenerable via `CERBERUS_UPDATE_INVENTORY=1`, mirroring
+   `test/inventory`), every entry must be classified, every
+   `rejection` trigger must parse with the head's reference parser
+   AND fail the head's lowering with the catalogued message, and the
+   parity corpus is derived 1:1 from the rejection entries. Adding a
+   new rejection to a lowering therefore *requires* a catalogue entry,
+   a trigger query, and — by construction — a parity case.
+3. **Parity driver** — `compatibility/cmd/rejection-parity` runs
+   inside each harness (wired into the three run scripts, after the
+   main tester) and sends every trigger query to both backends. It
+   compares the rejection **status class** only (both 4xx = parity);
+   message text is never compared. Verdicts:
+   - `parity` — both backends reject; the claim holds.
+   - `wrong_rejection` — the reference backend accepts a query
+     cerberus rejects: a real bug to fix at the source (the
+     `kind != nil` class). There is no allow-list for these.
+   - `stale_catalogue` — cerberus accepted a query the catalogue says
+     it rejects; regenerate + re-curate the catalogue.
+   - `hard_error` — 5xx / transport failure (infrastructure).
+
+   Reports land at `compatibility/prometheus/rejection-parity.json`,
+   `compatibility/loki/reports/rejection-parity.json`, and
+   `compatibility/tempo/reports/rejection-parity.json`. Like the main
+   testers (task #68), the driver is report-only: verdicts never
+   change the exit code; only infrastructure failures do.
+
 ## CI integration
 
 `.github/workflows/compatibility.yml` runs all three harnesses:

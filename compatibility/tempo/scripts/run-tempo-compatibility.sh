@@ -143,6 +143,21 @@ set +e
 DIFF_RC=$?
 set -e
 
+# Rejection-parity pass: every deliberate 422 in internal/traceql must
+# also be rejected by reference Tempo (status-class comparison, never
+# message text). The corpus is the rejection catalogue itself — see
+# test/rejection-parity/ and docs/compatibility.md. Report-only:
+# wrong_rejection verdicts land in the JSON report; only driver-level
+# infrastructure failures propagate (set -e).
+echo "==> running rejection-parity driver (traceql)"
+(cd "$REPO_ROOT" && go run ./compatibility/cmd/rejection-parity \
+    -head traceql \
+    -catalogue test/rejection-parity/catalogue.json \
+    -ref http://localhost:23200 \
+    -cerberus http://localhost:29092 \
+    -report "$REPORT_DIR/rejection-parity.json")
+echo "==> rejection-parity report written to $REPORT_DIR/rejection-parity.json"
+
 echo "==> differ exited with rc=$DIFF_RC"
 echo "==> report at $REPORT_DIR/diff.md"
 echo "==> score at $REPORT_DIR/compat-score.json"

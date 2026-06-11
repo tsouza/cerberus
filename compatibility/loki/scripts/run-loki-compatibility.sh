@@ -147,6 +147,21 @@ set +e
 DRIVER_RC=$?
 set -e
 
+# Rejection-parity pass: every deliberate 422 in internal/logql must
+# also be rejected by reference Loki (status-class comparison, never
+# message text). The corpus is the rejection catalogue itself — see
+# test/rejection-parity/ and docs/compatibility.md. Report-only:
+# wrong_rejection verdicts land in the JSON report; only driver-level
+# infrastructure failures propagate (set -e).
+echo "==> running rejection-parity driver (logql)"
+(cd "$REPO_ROOT" && go run ./compatibility/cmd/rejection-parity \
+    -head logql \
+    -catalogue test/rejection-parity/catalogue.json \
+    -ref http://localhost:23100 \
+    -cerberus http://localhost:29092 \
+    -report "$ROOT_DIR/reports/rejection-parity.json")
+echo "==> rejection-parity report written to $ROOT_DIR/reports/rejection-parity.json"
+
 echo "==> report written to $REPORT"
 echo "==> score written to $SCORE"
 echo "==> summary:"

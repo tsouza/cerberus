@@ -143,6 +143,21 @@ if ! jq -e '.results | type == "array"' "$OUTPUT" >/dev/null 2>&1; then
     exit "$TESTER_RC"
 fi
 
+# Rejection-parity pass: every deliberate 422 in internal/promql must
+# also be rejected by reference Prometheus (status-class comparison,
+# never message text). The corpus is the rejection catalogue itself —
+# see test/rejection-parity/ and docs/compatibility.md. Report-only:
+# wrong_rejection verdicts land in the JSON report; only driver-level
+# infrastructure failures propagate (set -e).
+echo "==> running rejection-parity driver (promql)"
+(cd "$ROOT_DIR/../.." && go run ./compatibility/cmd/rejection-parity \
+    -head promql \
+    -catalogue test/rejection-parity/catalogue.json \
+    -ref http://localhost:29090 \
+    -cerberus http://localhost:29091 \
+    -report "$ROOT_DIR/rejection-parity.json")
+echo "==> rejection-parity report written to $ROOT_DIR/rejection-parity.json"
+
 # Build + run the in-tree scorer. The scorer reads report.json and
 # writes the shields.io endpoint-badge compat-score JSON to $SCORE.
 # Its own exit is propagated — a scorer failure means the harness
