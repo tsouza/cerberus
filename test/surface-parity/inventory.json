@@ -1,0 +1,2094 @@
+{
+  "source": "in-process probe of the three upstream parser symbol tables (prometheus parser.Functions/aggregators/ops, loki syntax.Op* consts, tempo intrinsic + metrics-op enums); cerberus verdict = parse→fold→lower→optimize→emit, reference verdict = parser experimental flags (promql) / ParseExpr+validate (logql) / Parse+Validate (traceql); generated + pinned by test/surface-parity",
+  "entries": [
+    {
+      "head": "promql",
+      "symbol": "agg:avg",
+      "kind": "aggregator",
+      "probe": "avg(up)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "agg:bottomk",
+      "kind": "aggregator",
+      "probe": "bottomk(3, up)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "agg:count",
+      "kind": "aggregator",
+      "probe": "count(up)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "agg:count_values",
+      "kind": "aggregator",
+      "probe": "count_values(\"v\", up)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "agg:group",
+      "kind": "aggregator",
+      "probe": "group(up)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "agg:limit_ratio",
+      "kind": "aggregator",
+      "probe": "limit_ratio(0.5, up)",
+      "cerberus": "reject",
+      "reference": "reject",
+      "class": "parity-reject",
+      "cerberus_error": "promql: aggregation op limit_ratio is not yet supported"
+    },
+    {
+      "head": "promql",
+      "symbol": "agg:limitk",
+      "kind": "aggregator",
+      "probe": "limitk(3, up)",
+      "cerberus": "reject",
+      "reference": "reject",
+      "class": "parity-reject",
+      "cerberus_error": "promql: aggregation op limitk is not yet supported"
+    },
+    {
+      "head": "promql",
+      "symbol": "agg:max",
+      "kind": "aggregator",
+      "probe": "max(up)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "agg:min",
+      "kind": "aggregator",
+      "probe": "min(up)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "agg:quantile",
+      "kind": "aggregator",
+      "probe": "quantile(0.9, up)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "agg:stddev",
+      "kind": "aggregator",
+      "probe": "stddev(up)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "agg:stdvar",
+      "kind": "aggregator",
+      "probe": "stdvar(up)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "agg:sum",
+      "kind": "aggregator",
+      "probe": "sum(up)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "agg:topk",
+      "kind": "aggregator",
+      "probe": "topk(3, up)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:abs",
+      "kind": "function",
+      "probe": "abs(up)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:absent",
+      "kind": "function",
+      "probe": "absent(up)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:absent_over_time",
+      "kind": "function",
+      "probe": "absent_over_time(up[5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:acos",
+      "kind": "function",
+      "probe": "acos(up)",
+      "cerberus": "reject",
+      "reference": "accept",
+      "class": "wrong-reject",
+      "cerberus_error": "promql: function acos is not yet supported"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:acosh",
+      "kind": "function",
+      "probe": "acosh(up)",
+      "cerberus": "reject",
+      "reference": "accept",
+      "class": "wrong-reject",
+      "cerberus_error": "promql: function acosh is not yet supported"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:asin",
+      "kind": "function",
+      "probe": "asin(up)",
+      "cerberus": "reject",
+      "reference": "accept",
+      "class": "wrong-reject",
+      "cerberus_error": "promql: function asin is not yet supported"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:asinh",
+      "kind": "function",
+      "probe": "asinh(up)",
+      "cerberus": "reject",
+      "reference": "accept",
+      "class": "wrong-reject",
+      "cerberus_error": "promql: function asinh is not yet supported"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:atan",
+      "kind": "function",
+      "probe": "atan(up)",
+      "cerberus": "reject",
+      "reference": "accept",
+      "class": "wrong-reject",
+      "cerberus_error": "promql: function atan is not yet supported"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:atanh",
+      "kind": "function",
+      "probe": "atanh(up)",
+      "cerberus": "reject",
+      "reference": "accept",
+      "class": "wrong-reject",
+      "cerberus_error": "promql: function atanh is not yet supported"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:avg_over_time",
+      "kind": "function",
+      "probe": "avg_over_time(up[5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:ceil",
+      "kind": "function",
+      "probe": "ceil(up)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:changes",
+      "kind": "function",
+      "probe": "changes(http_server_request_duration_count[5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:clamp",
+      "kind": "function",
+      "probe": "clamp(up, 0.5, 0.5)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:clamp_max",
+      "kind": "function",
+      "probe": "clamp_max(up, 0.5)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:clamp_min",
+      "kind": "function",
+      "probe": "clamp_min(up, 0.5)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:cos",
+      "kind": "function",
+      "probe": "cos(up)",
+      "cerberus": "reject",
+      "reference": "accept",
+      "class": "wrong-reject",
+      "cerberus_error": "promql: function cos is not yet supported"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:cosh",
+      "kind": "function",
+      "probe": "cosh(up)",
+      "cerberus": "reject",
+      "reference": "accept",
+      "class": "wrong-reject",
+      "cerberus_error": "promql: function cosh is not yet supported"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:count_over_time",
+      "kind": "function",
+      "probe": "count_over_time(up[5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:day_of_month",
+      "kind": "function",
+      "probe": "day_of_month(up)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:day_of_week",
+      "kind": "function",
+      "probe": "day_of_week(up)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:day_of_year",
+      "kind": "function",
+      "probe": "day_of_year(up)",
+      "cerberus": "reject",
+      "reference": "accept",
+      "class": "wrong-reject",
+      "cerberus_error": "promql: function day_of_year is not yet supported"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:days_in_month",
+      "kind": "function",
+      "probe": "days_in_month(up)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:deg",
+      "kind": "function",
+      "probe": "deg(up)",
+      "cerberus": "reject",
+      "reference": "accept",
+      "class": "wrong-reject",
+      "cerberus_error": "promql: function deg is not yet supported"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:delta",
+      "kind": "function",
+      "probe": "delta(http_server_request_duration_count[5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:deriv",
+      "kind": "function",
+      "probe": "deriv(http_server_request_duration_count[5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:double_exponential_smoothing",
+      "kind": "function",
+      "probe": "double_exponential_smoothing(http_server_request_duration_count[5m], 0.5, 0.5)",
+      "cerberus": "accept",
+      "reference": "reject",
+      "class": "wrong-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:end",
+      "kind": "function",
+      "probe": "end()",
+      "cerberus": "reject",
+      "reference": "reject",
+      "class": "parity-reject",
+      "cerberus_error": "promql: function end is not yet supported"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:exp",
+      "kind": "function",
+      "probe": "exp(up)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:first_over_time",
+      "kind": "function",
+      "probe": "first_over_time(up[5m])",
+      "cerberus": "reject",
+      "reference": "reject",
+      "class": "parity-reject",
+      "cerberus_error": "unsupported: range function \"first_over_time\" is experimental and not supported by the PromQL head"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:floor",
+      "kind": "function",
+      "probe": "floor(up)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:histogram_avg",
+      "kind": "function",
+      "probe": "histogram_avg(showcase_latency_exp_hist)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:histogram_count",
+      "kind": "function",
+      "probe": "histogram_count(showcase_latency_exp_hist)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:histogram_fraction",
+      "kind": "function",
+      "probe": "histogram_fraction(0, 1, showcase_latency_exp_hist)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:histogram_quantile",
+      "kind": "function",
+      "probe": "histogram_quantile(0.9, showcase_latency_exp_hist)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:histogram_quantiles",
+      "kind": "function",
+      "probe": "histogram_quantiles(showcase_latency_exp_hist, \"q\", 0.5, 0.9)",
+      "cerberus": "reject",
+      "reference": "reject",
+      "class": "parity-reject",
+      "cerberus_error": "promql: function histogram_quantiles is not yet supported"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:histogram_stddev",
+      "kind": "function",
+      "probe": "histogram_stddev(showcase_latency_exp_hist)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:histogram_stdvar",
+      "kind": "function",
+      "probe": "histogram_stdvar(showcase_latency_exp_hist)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:histogram_sum",
+      "kind": "function",
+      "probe": "histogram_sum(showcase_latency_exp_hist)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:hour",
+      "kind": "function",
+      "probe": "hour(up)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:idelta",
+      "kind": "function",
+      "probe": "idelta(http_server_request_duration_count[5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:increase",
+      "kind": "function",
+      "probe": "increase(http_server_request_duration_count[5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:info",
+      "kind": "function",
+      "probe": "info(http_server_request_duration_count)",
+      "cerberus": "reject",
+      "reference": "reject",
+      "class": "parity-reject",
+      "cerberus_error": "promql: function info is not yet supported"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:irate",
+      "kind": "function",
+      "probe": "irate(http_server_request_duration_count[5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:label_join",
+      "kind": "function",
+      "probe": "label_join(up, \"dst\", \",\", \"job\")",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:label_replace",
+      "kind": "function",
+      "probe": "label_replace(up, \"dst\", \"$1\", \"job\", \"(.*)\")",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:last_over_time",
+      "kind": "function",
+      "probe": "last_over_time(up[5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:ln",
+      "kind": "function",
+      "probe": "ln(up)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:log10",
+      "kind": "function",
+      "probe": "log10(up)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:log2",
+      "kind": "function",
+      "probe": "log2(up)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:mad_over_time",
+      "kind": "function",
+      "probe": "mad_over_time(up[5m])",
+      "cerberus": "reject",
+      "reference": "reject",
+      "class": "parity-reject",
+      "cerberus_error": "emit: chsql: unsupported: range function \"mad_over_time\""
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:max_over_time",
+      "kind": "function",
+      "probe": "max_over_time(up[5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:min_over_time",
+      "kind": "function",
+      "probe": "min_over_time(up[5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:minute",
+      "kind": "function",
+      "probe": "minute(up)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:month",
+      "kind": "function",
+      "probe": "month(up)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:pi",
+      "kind": "function",
+      "probe": "pi()",
+      "cerberus": "reject",
+      "reference": "accept",
+      "class": "wrong-reject",
+      "cerberus_error": "promql: function pi is not yet supported"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:predict_linear",
+      "kind": "function",
+      "probe": "predict_linear(http_server_request_duration_count[5m], 0.5)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:present_over_time",
+      "kind": "function",
+      "probe": "present_over_time(up[5m])",
+      "cerberus": "reject",
+      "reference": "accept",
+      "class": "wrong-reject",
+      "cerberus_error": "emit: chsql: unsupported: range function \"present_over_time\""
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:quantile_over_time",
+      "kind": "function",
+      "probe": "quantile_over_time(0.5, up[5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:rad",
+      "kind": "function",
+      "probe": "rad(up)",
+      "cerberus": "reject",
+      "reference": "accept",
+      "class": "wrong-reject",
+      "cerberus_error": "promql: function rad is not yet supported"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:range",
+      "kind": "function",
+      "probe": "range()",
+      "cerberus": "reject",
+      "reference": "reject",
+      "class": "parity-reject",
+      "cerberus_error": "promql: function range is not yet supported"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:rate",
+      "kind": "function",
+      "probe": "rate(http_server_request_duration_count[5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:resets",
+      "kind": "function",
+      "probe": "resets(http_server_request_duration_count[5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:round",
+      "kind": "function",
+      "probe": "round(up, 0.5)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:scalar",
+      "kind": "function",
+      "probe": "scalar(up)",
+      "cerberus": "reject",
+      "reference": "accept",
+      "class": "wrong-reject",
+      "cerberus_error": "promql: function scalar is not yet supported"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:sgn",
+      "kind": "function",
+      "probe": "sgn(up)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:sin",
+      "kind": "function",
+      "probe": "sin(up)",
+      "cerberus": "reject",
+      "reference": "accept",
+      "class": "wrong-reject",
+      "cerberus_error": "promql: function sin is not yet supported"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:sinh",
+      "kind": "function",
+      "probe": "sinh(up)",
+      "cerberus": "reject",
+      "reference": "accept",
+      "class": "wrong-reject",
+      "cerberus_error": "promql: function sinh is not yet supported"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:sort",
+      "kind": "function",
+      "probe": "sort(up)",
+      "cerberus": "reject",
+      "reference": "accept",
+      "class": "wrong-reject",
+      "cerberus_error": "promql: function sort is not yet supported"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:sort_by_label",
+      "kind": "function",
+      "probe": "sort_by_label(up, \"s\")",
+      "cerberus": "reject",
+      "reference": "reject",
+      "class": "parity-reject",
+      "cerberus_error": "promql: function sort_by_label is not yet supported"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:sort_by_label_desc",
+      "kind": "function",
+      "probe": "sort_by_label_desc(up, \"s\")",
+      "cerberus": "reject",
+      "reference": "reject",
+      "class": "parity-reject",
+      "cerberus_error": "promql: function sort_by_label_desc is not yet supported"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:sort_desc",
+      "kind": "function",
+      "probe": "sort_desc(up)",
+      "cerberus": "reject",
+      "reference": "accept",
+      "class": "wrong-reject",
+      "cerberus_error": "promql: function sort_desc is not yet supported"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:sqrt",
+      "kind": "function",
+      "probe": "sqrt(up)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:start",
+      "kind": "function",
+      "probe": "start()",
+      "cerberus": "reject",
+      "reference": "reject",
+      "class": "parity-reject",
+      "cerberus_error": "promql: function start is not yet supported"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:stddev_over_time",
+      "kind": "function",
+      "probe": "stddev_over_time(up[5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:stdvar_over_time",
+      "kind": "function",
+      "probe": "stdvar_over_time(up[5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:step",
+      "kind": "function",
+      "probe": "step()",
+      "cerberus": "reject",
+      "reference": "reject",
+      "class": "parity-reject",
+      "cerberus_error": "promql: function step is not yet supported"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:sum_over_time",
+      "kind": "function",
+      "probe": "sum_over_time(up[5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:tan",
+      "kind": "function",
+      "probe": "tan(up)",
+      "cerberus": "reject",
+      "reference": "accept",
+      "class": "wrong-reject",
+      "cerberus_error": "promql: function tan is not yet supported"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:tanh",
+      "kind": "function",
+      "probe": "tanh(up)",
+      "cerberus": "reject",
+      "reference": "accept",
+      "class": "wrong-reject",
+      "cerberus_error": "promql: function tanh is not yet supported"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:time",
+      "kind": "function",
+      "probe": "time()",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:timestamp",
+      "kind": "function",
+      "probe": "timestamp(up)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:ts_of_first_over_time",
+      "kind": "function",
+      "probe": "ts_of_first_over_time(up[5m])",
+      "cerberus": "reject",
+      "reference": "reject",
+      "class": "parity-reject",
+      "cerberus_error": "emit: chsql: unsupported: range function \"ts_of_first_over_time\""
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:ts_of_last_over_time",
+      "kind": "function",
+      "probe": "ts_of_last_over_time(up[5m])",
+      "cerberus": "reject",
+      "reference": "reject",
+      "class": "parity-reject",
+      "cerberus_error": "emit: chsql: unsupported: range function \"ts_of_last_over_time\""
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:ts_of_max_over_time",
+      "kind": "function",
+      "probe": "ts_of_max_over_time(up[5m])",
+      "cerberus": "reject",
+      "reference": "reject",
+      "class": "parity-reject",
+      "cerberus_error": "emit: chsql: unsupported: range function \"ts_of_max_over_time\""
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:ts_of_min_over_time",
+      "kind": "function",
+      "probe": "ts_of_min_over_time(up[5m])",
+      "cerberus": "reject",
+      "reference": "reject",
+      "class": "parity-reject",
+      "cerberus_error": "emit: chsql: unsupported: range function \"ts_of_min_over_time\""
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:vector",
+      "kind": "function",
+      "probe": "vector(0.5)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "fn:year",
+      "kind": "function",
+      "probe": "year(up)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "mod:at",
+      "kind": "modifier",
+      "probe": "up @ 0",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "mod:at_end",
+      "kind": "modifier",
+      "probe": "up @ end()",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "mod:at_start",
+      "kind": "modifier",
+      "probe": "up @ start()",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "mod:offset",
+      "kind": "modifier",
+      "probe": "up offset 5m",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "op:add",
+      "kind": "binary-op",
+      "probe": "up + up",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "op:and",
+      "kind": "binary-op",
+      "probe": "up and up",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "op:atan2",
+      "kind": "binary-op",
+      "probe": "up atan2 up",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "op:div",
+      "kind": "binary-op",
+      "probe": "up / up",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "op:eql",
+      "kind": "binary-op",
+      "probe": "up == up",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "op:gte",
+      "kind": "binary-op",
+      "probe": "up \u003e= up",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "op:gtr",
+      "kind": "binary-op",
+      "probe": "up \u003e up",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "op:lss",
+      "kind": "binary-op",
+      "probe": "up \u003c up",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "op:lte",
+      "kind": "binary-op",
+      "probe": "up \u003c= up",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "op:mod",
+      "kind": "binary-op",
+      "probe": "up % up",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "op:mul",
+      "kind": "binary-op",
+      "probe": "up * up",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "op:neq",
+      "kind": "binary-op",
+      "probe": "up != up",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "op:or",
+      "kind": "binary-op",
+      "probe": "up or up",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "op:pow",
+      "kind": "binary-op",
+      "probe": "up ^ up",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "op:sub",
+      "kind": "binary-op",
+      "probe": "up - up",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "promql",
+      "symbol": "op:unless",
+      "kind": "binary-op",
+      "probe": "up unless up",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "conv:bytes",
+      "kind": "conv-fn",
+      "probe": "sum_over_time({service_name=\"gateway\"} | logfmt | unwrap bytes(size) [5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "conv:duration",
+      "kind": "conv-fn",
+      "probe": "sum_over_time({service_name=\"gateway\"} | logfmt | unwrap duration(took) [5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "conv:duration_seconds",
+      "kind": "conv-fn",
+      "probe": "sum_over_time({service_name=\"gateway\"} | logfmt | unwrap duration_seconds(took) [5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "label:decolorize",
+      "kind": "label-fn",
+      "probe": "{service_name=\"painter\"} | decolorize",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "label:drop",
+      "kind": "label-fn",
+      "probe": "{service_name=\"gateway\"} | logfmt | drop level",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "label:keep",
+      "kind": "label-fn",
+      "probe": "{service_name=\"gateway\"} | logfmt | keep level",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "label:label_format",
+      "kind": "label-fn",
+      "probe": "{service_name=\"gateway\"} | logfmt | label_format lvl=\"{{.level}}\"",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "label:label_replace",
+      "kind": "label-fn",
+      "probe": "label_replace(count_over_time({service_name=\"gateway\"}[5m]), \"dst\", \"$1\", \"service_name\", \"(.*)\")",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "label:line_format",
+      "kind": "label-fn",
+      "probe": "{service_name=\"gateway\"} | line_format \"{{.status}}\"",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "labelfilter:ip",
+      "kind": "label-filter",
+      "probe": "{service_name=\"gateway\"} | logfmt | remote_addr = ip(\"192.168.0.0/16\")",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "labelfilter:match",
+      "kind": "label-filter",
+      "probe": "{service_name=\"gateway\"} | logfmt | level = \"error\"",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "linefilter:eq",
+      "kind": "line-filter",
+      "probe": "{service_name=\"gateway\"} |= \"error\"",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "linefilter:neq",
+      "kind": "line-filter",
+      "probe": "{service_name=\"gateway\"} != \"error\"",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "linefilter:nre",
+      "kind": "line-filter",
+      "probe": "{service_name=\"gateway\"} !~ \"err.*\"",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "linefilter:re",
+      "kind": "line-filter",
+      "probe": "{service_name=\"gateway\"} |~ \"err.*\"",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "op:!=",
+      "kind": "binary-op",
+      "probe": "count_over_time({service_name=\"gateway\"}[5m]) != count_over_time({service_name=\"gateway\"}[5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "op:%",
+      "kind": "binary-op",
+      "probe": "count_over_time({service_name=\"gateway\"}[5m]) % count_over_time({service_name=\"gateway\"}[5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "op:*",
+      "kind": "binary-op",
+      "probe": "count_over_time({service_name=\"gateway\"}[5m]) * count_over_time({service_name=\"gateway\"}[5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "op:+",
+      "kind": "binary-op",
+      "probe": "count_over_time({service_name=\"gateway\"}[5m]) + count_over_time({service_name=\"gateway\"}[5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "op:-",
+      "kind": "binary-op",
+      "probe": "count_over_time({service_name=\"gateway\"}[5m]) - count_over_time({service_name=\"gateway\"}[5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "op:/",
+      "kind": "binary-op",
+      "probe": "count_over_time({service_name=\"gateway\"}[5m]) / count_over_time({service_name=\"gateway\"}[5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "op:\u003c",
+      "kind": "binary-op",
+      "probe": "count_over_time({service_name=\"gateway\"}[5m]) \u003c count_over_time({service_name=\"gateway\"}[5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "op:\u003c=",
+      "kind": "binary-op",
+      "probe": "count_over_time({service_name=\"gateway\"}[5m]) \u003c= count_over_time({service_name=\"gateway\"}[5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "op:==",
+      "kind": "binary-op",
+      "probe": "count_over_time({service_name=\"gateway\"}[5m]) == count_over_time({service_name=\"gateway\"}[5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "op:\u003e",
+      "kind": "binary-op",
+      "probe": "count_over_time({service_name=\"gateway\"}[5m]) \u003e count_over_time({service_name=\"gateway\"}[5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "op:\u003e=",
+      "kind": "binary-op",
+      "probe": "count_over_time({service_name=\"gateway\"}[5m]) \u003e= count_over_time({service_name=\"gateway\"}[5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "op:^",
+      "kind": "binary-op",
+      "probe": "count_over_time({service_name=\"gateway\"}[5m]) ^ count_over_time({service_name=\"gateway\"}[5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "op:and",
+      "kind": "binary-op",
+      "probe": "count_over_time({service_name=\"gateway\"}[5m]) and count_over_time({service_name=\"gateway\"}[5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "op:or",
+      "kind": "binary-op",
+      "probe": "count_over_time({service_name=\"gateway\"}[5m]) or count_over_time({service_name=\"gateway\"}[5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "op:unless",
+      "kind": "binary-op",
+      "probe": "count_over_time({service_name=\"gateway\"}[5m]) unless count_over_time({service_name=\"gateway\"}[5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "parser:json",
+      "kind": "parser-stage",
+      "probe": "{service_name=\"shop\"} | json",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "parser:logfmt",
+      "kind": "parser-stage",
+      "probe": "{service_name=\"gateway\"} | logfmt",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "parser:pattern",
+      "kind": "parser-stage",
+      "probe": "{service_name=\"proxy\"} | pattern \"\u003cmethod\u003e \u003cpath\u003e\"",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "parser:regexp",
+      "kind": "parser-stage",
+      "probe": "{service_name=\"gateway\"} | regexp \"(?P\u003clvl\u003e\\\\w+)\"",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "parser:unpack",
+      "kind": "parser-stage",
+      "probe": "{service_name=\"packer\"} | unpack",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "range:absent_over_time",
+      "kind": "range-agg",
+      "probe": "absent_over_time({service_name=\"gateway\"}[5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "range:avg_over_time",
+      "kind": "range-agg",
+      "probe": "avg_over_time({service_name=\"gateway\"} | logfmt | unwrap status [5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "range:bytes_over_time",
+      "kind": "range-agg",
+      "probe": "bytes_over_time({service_name=\"gateway\"}[5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "range:bytes_rate",
+      "kind": "range-agg",
+      "probe": "bytes_rate({service_name=\"gateway\"}[5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "range:count_over_time",
+      "kind": "range-agg",
+      "probe": "count_over_time({service_name=\"gateway\"}[5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "range:first_over_time",
+      "kind": "range-agg",
+      "probe": "first_over_time({service_name=\"gateway\"} | logfmt | unwrap status [5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "range:last_over_time",
+      "kind": "range-agg",
+      "probe": "last_over_time({service_name=\"gateway\"} | logfmt | unwrap status [5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "range:max_over_time",
+      "kind": "range-agg",
+      "probe": "max_over_time({service_name=\"gateway\"} | logfmt | unwrap status [5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "range:min_over_time",
+      "kind": "range-agg",
+      "probe": "min_over_time({service_name=\"gateway\"} | logfmt | unwrap status [5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "range:quantile_over_time",
+      "kind": "range-agg",
+      "probe": "quantile_over_time(0.9, {service_name=\"gateway\"} | logfmt | unwrap status [5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "range:rate",
+      "kind": "range-agg",
+      "probe": "rate({service_name=\"gateway\"}[5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "range:rate_counter",
+      "kind": "range-agg",
+      "probe": "rate_counter({service_name=\"gateway\"} | logfmt | unwrap status [5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "range:stddev_over_time",
+      "kind": "range-agg",
+      "probe": "stddev_over_time({service_name=\"gateway\"} | logfmt | unwrap status [5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "range:stdvar_over_time",
+      "kind": "range-agg",
+      "probe": "stdvar_over_time({service_name=\"gateway\"} | logfmt | unwrap status [5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "range:sum_over_time",
+      "kind": "range-agg",
+      "probe": "sum_over_time({service_name=\"gateway\"} | logfmt | unwrap status [5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "vector:approx_topk",
+      "kind": "vector-agg",
+      "probe": "approx_topk(3, count_over_time({service_name=\"gateway\"}[5m]))",
+      "cerberus": "reject",
+      "reference": "accept",
+      "class": "wrong-reject",
+      "cerberus_error": "logql: aggregation operation \"approx_topk\" is unsupported"
+    },
+    {
+      "head": "logql",
+      "symbol": "vector:avg",
+      "kind": "vector-agg",
+      "probe": "avg(count_over_time({service_name=\"gateway\"}[5m]))",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "vector:bottomk",
+      "kind": "vector-agg",
+      "probe": "bottomk(3, count_over_time({service_name=\"gateway\"}[5m]))",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "vector:count",
+      "kind": "vector-agg",
+      "probe": "count(count_over_time({service_name=\"gateway\"}[5m]))",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "vector:max",
+      "kind": "vector-agg",
+      "probe": "max(count_over_time({service_name=\"gateway\"}[5m]))",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "vector:min",
+      "kind": "vector-agg",
+      "probe": "min(count_over_time({service_name=\"gateway\"}[5m]))",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "vector:sort",
+      "kind": "vector-agg",
+      "probe": "sort(count_over_time({service_name=\"gateway\"}[5m]))",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "vector:sort_desc",
+      "kind": "vector-agg",
+      "probe": "sort_desc(count_over_time({service_name=\"gateway\"}[5m]))",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "vector:stddev",
+      "kind": "vector-agg",
+      "probe": "stddev(count_over_time({service_name=\"gateway\"}[5m]))",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "vector:stdvar",
+      "kind": "vector-agg",
+      "probe": "stdvar(count_over_time({service_name=\"gateway\"}[5m]))",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "vector:sum",
+      "kind": "vector-agg",
+      "probe": "sum(count_over_time({service_name=\"gateway\"}[5m]))",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "logql",
+      "symbol": "vector:topk",
+      "kind": "vector-agg",
+      "probe": "topk(3, count_over_time({service_name=\"gateway\"}[5m]))",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "traceql",
+      "symbol": "aggregate:avg",
+      "kind": "aggregate",
+      "probe": "{ resource.service.name = \"gateway\" } | avg(duration) \u003e 1ms",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "traceql",
+      "symbol": "aggregate:count",
+      "kind": "aggregate",
+      "probe": "{ resource.service.name = \"gateway\" } | count() \u003e 0",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "traceql",
+      "symbol": "aggregate:max",
+      "kind": "aggregate",
+      "probe": "{ resource.service.name = \"gateway\" } | max(duration) \u003e 1ms",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "traceql",
+      "symbol": "aggregate:min",
+      "kind": "aggregate",
+      "probe": "{ resource.service.name = \"gateway\" } | min(duration) \u003e 1ms",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "traceql",
+      "symbol": "aggregate:sum",
+      "kind": "aggregate",
+      "probe": "{ resource.service.name = \"gateway\" } | sum(duration) \u003e 1ms",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "traceql",
+      "symbol": "intrinsic:duration",
+      "kind": "intrinsic",
+      "probe": "{ duration \u003e 1ms }",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "traceql",
+      "symbol": "intrinsic:event:name",
+      "kind": "intrinsic",
+      "probe": "{ event:name = \"exception\" }",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "traceql",
+      "symbol": "intrinsic:event:timeSinceStart",
+      "kind": "intrinsic",
+      "probe": "{ event:timeSinceStart \u003e 1ms }",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "traceql",
+      "symbol": "intrinsic:instrumentation:name",
+      "kind": "intrinsic",
+      "probe": "{ instrumentation:name = \"showcase-instrumentation\" }",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "traceql",
+      "symbol": "intrinsic:instrumentation:version",
+      "kind": "intrinsic",
+      "probe": "{ instrumentation:version = \"1.2.3\" }",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "traceql",
+      "symbol": "intrinsic:kind",
+      "kind": "intrinsic",
+      "probe": "{ kind = server }",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "traceql",
+      "symbol": "intrinsic:link:spanID",
+      "kind": "intrinsic",
+      "probe": "{ link:spanID != \"\" }",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "traceql",
+      "symbol": "intrinsic:link:traceID",
+      "kind": "intrinsic",
+      "probe": "{ link:traceID != \"\" }",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "traceql",
+      "symbol": "intrinsic:name",
+      "kind": "intrinsic",
+      "probe": "{ name = \"charge\" }",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "traceql",
+      "symbol": "intrinsic:nestedSetLeft",
+      "kind": "intrinsic",
+      "probe": "{ nestedSetLeft \u003e 0 }",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "traceql",
+      "symbol": "intrinsic:nestedSetParent",
+      "kind": "intrinsic",
+      "probe": "{ nestedSetParent \u003e 0 }",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "traceql",
+      "symbol": "intrinsic:nestedSetRight",
+      "kind": "intrinsic",
+      "probe": "{ nestedSetRight \u003e 0 }",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "traceql",
+      "symbol": "intrinsic:rootName",
+      "kind": "intrinsic",
+      "probe": "{ rootName = \"request\" }",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "traceql",
+      "symbol": "intrinsic:rootServiceName",
+      "kind": "intrinsic",
+      "probe": "{ rootServiceName = \"gateway\" }",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "traceql",
+      "symbol": "intrinsic:span:childCount",
+      "kind": "intrinsic",
+      "probe": "{ span:childCount \u003e 0 }",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "traceql",
+      "symbol": "intrinsic:span:duration",
+      "kind": "intrinsic",
+      "probe": "{ span:duration \u003e 1ms }",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "traceql",
+      "symbol": "intrinsic:span:id",
+      "kind": "intrinsic",
+      "probe": "{ span:id != \"\" }",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "traceql",
+      "symbol": "intrinsic:span:kind",
+      "kind": "intrinsic",
+      "probe": "{ span:kind = server }",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "traceql",
+      "symbol": "intrinsic:span:name",
+      "kind": "intrinsic",
+      "probe": "{ span:name = \"charge\" }",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "traceql",
+      "symbol": "intrinsic:span:parentID",
+      "kind": "intrinsic",
+      "probe": "{ span:parentID != \"\" }",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "traceql",
+      "symbol": "intrinsic:span:status",
+      "kind": "intrinsic",
+      "probe": "{ span:status = error }",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "traceql",
+      "symbol": "intrinsic:span:statusMessage",
+      "kind": "intrinsic",
+      "probe": "{ span:statusMessage = \"card declined\" }",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "traceql",
+      "symbol": "intrinsic:status",
+      "kind": "intrinsic",
+      "probe": "{ status = error }",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "traceql",
+      "symbol": "intrinsic:statusMessage",
+      "kind": "intrinsic",
+      "probe": "{ statusMessage = \"card declined\" }",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "traceql",
+      "symbol": "intrinsic:trace:duration",
+      "kind": "intrinsic",
+      "probe": "{ trace:duration \u003e 1ms }",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "traceql",
+      "symbol": "intrinsic:trace:id",
+      "kind": "intrinsic",
+      "probe": "{ trace:id != \"\" }",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "traceql",
+      "symbol": "intrinsic:trace:rootName",
+      "kind": "intrinsic",
+      "probe": "{ trace:rootName = \"request\" }",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "traceql",
+      "symbol": "intrinsic:trace:rootService",
+      "kind": "intrinsic",
+      "probe": "{ trace:rootService = \"gateway\" }",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "traceql",
+      "symbol": "intrinsic:traceDuration",
+      "kind": "intrinsic",
+      "probe": "{ traceDuration \u003e 1ms }",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "traceql",
+      "symbol": "metric:avg_over_time",
+      "kind": "metrics-op",
+      "probe": "{ resource.service.name = \"gateway\" } | avg_over_time(duration)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "traceql",
+      "symbol": "metric:bottomk",
+      "kind": "metrics-op",
+      "probe": "{ resource.service.name = \"gateway\" } | rate() by (name) | bottomk(3)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "traceql",
+      "symbol": "metric:compare",
+      "kind": "metrics-op",
+      "probe": "{ resource.service.name = \"gateway\" } | compare({ status = error })",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "traceql",
+      "symbol": "metric:count_over_time",
+      "kind": "metrics-op",
+      "probe": "{ resource.service.name = \"gateway\" } | count_over_time()",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "traceql",
+      "symbol": "metric:histogram_over_time",
+      "kind": "metrics-op",
+      "probe": "{ resource.service.name = \"gateway\" } | histogram_over_time(duration)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "traceql",
+      "symbol": "metric:max_over_time",
+      "kind": "metrics-op",
+      "probe": "{ resource.service.name = \"gateway\" } | max_over_time(duration)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "traceql",
+      "symbol": "metric:min_over_time",
+      "kind": "metrics-op",
+      "probe": "{ resource.service.name = \"gateway\" } | min_over_time(duration)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "traceql",
+      "symbol": "metric:quantile_over_time",
+      "kind": "metrics-op",
+      "probe": "{ resource.service.name = \"gateway\" } | quantile_over_time(duration, 0.9)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "traceql",
+      "symbol": "metric:rate",
+      "kind": "metrics-op",
+      "probe": "{ resource.service.name = \"gateway\" } | rate()",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "traceql",
+      "symbol": "metric:sum_over_time",
+      "kind": "metrics-op",
+      "probe": "{ resource.service.name = \"gateway\" } | sum_over_time(duration)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    },
+    {
+      "head": "traceql",
+      "symbol": "metric:topk",
+      "kind": "metrics-op",
+      "probe": "{ resource.service.name = \"gateway\" } | rate() by (name) | topk(3)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    }
+  ]
+}
