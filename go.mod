@@ -343,7 +343,7 @@ replace github.com/grafana/loki/v3 => github.com/tsouza/loki/v3 v3.0.0-cerberus-
 // tempo: narrow accessors on top of pkg/traceql to retire the unsafe.Pointer
 // + reflect.FieldByName shims in internal/traceql/. See docs/fork-tempo-
 // plan.md for the migration plan and accessor inventory.
-replace github.com/grafana/tempo => github.com/tsouza/tempo v0.0.3-cerberus-accessors.0.20260611033556-0888855681c5
+replace github.com/grafana/tempo => github.com/tsouza/tempo v0.0.4-cerberus-accessors
 
 // otelc: hoists the ClickHouse exporter's sqltemplates out of `internal/`
 // so cerberus can import them as the schema source-of-truth. collector-
