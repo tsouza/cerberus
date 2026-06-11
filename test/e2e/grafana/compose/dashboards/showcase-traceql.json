@@ -1939,7 +1939,7 @@
       "uid": "cerberus-tempo"
      },
      "limit": 20,
-     "query": "({ nestedSetParent \u003c 0 } \u0026\u003e\u003e { kind = server }) || ({ nestedSetParent \u003c 0 }) | select(status, resource.service.name, name, nestedSetParent, nestedSetLeft, nestedSetRight)",
+     "query": "({ nestedSetParent < 0 } &>> { kind = server }) || ({ nestedSetParent < 0 }) | select(status, resource.service.name, name, nestedSetParent, nestedSetLeft, nestedSetRight)",
      "queryType": "traceql",
      "refId": "A",
      "spss": 20,
@@ -2825,14 +2825,14 @@
    "panels": [
     {
      "cerberus": {
-      "expect": "error:depends on nested-set positions the OTel ClickHouse schema does not materialise",
-      "why": "Position-dependent nested-set comparisons need the materialised nested-set tree Tempo builds at ingest; OTel-CH has no equivalent columns. Only root-ness shapes lower (see the root-idiom panel)."
+      "expect": "empty",
+      "why": "Cerberus recomputes the nested-set numbering at query time (NestedSetAnnotate) from the (TraceId, SpanId, ParentSpanId) adjacency, matching reference Tempo. No span in the showcase tree has a parent at left-bound 5, so the result is defined-empty."
      },
      "datasource": {
       "type": "tempo",
       "uid": "cerberus-tempo"
      },
-     "description": "Cerberus rejects `{ nestedSetParent = 5 }` today; this panel pins the rejection bidirectionally.",
+     "description": "Cerberus implements `{ nestedSetParent = 5 }`; reference Tempo accepts it too. This panel pins the empty result bidirectionally.",
      "fieldConfig": {
       "defaults": {
        "color": {
@@ -2890,19 +2890,19 @@
        "tableType": "traces"
       }
      ],
-     "title": "nestedSetParent position \u2014 parity rejection",
+     "title": "nestedSetParent position",
      "type": "table"
     },
     {
      "cerberus": {
-      "expect": "error:does not materialise nested-set positions",
-      "why": "Left/right nested-set bounds have no OTel-CH backing column; cerberus rejects rather than fabricating positions."
+      "expect": "nonempty",
+      "why": "Cerberus recomputes the DFS left-bound at query time; every connected span has left >= 1, so the filter returns the showcase spans."
      },
      "datasource": {
       "type": "tempo",
       "uid": "cerberus-tempo"
      },
-     "description": "Cerberus rejects `{ nestedSetLeft > 0 }` today; this panel pins the rejection bidirectionally.",
+     "description": "Cerberus implements `{ nestedSetLeft > 0 }`; reference Tempo accepts it too. This panel pins the nonempty result bidirectionally.",
      "fieldConfig": {
       "defaults": {
        "color": {
@@ -2960,19 +2960,19 @@
        "tableType": "traces"
       }
      ],
-     "title": "nestedSetLeft \u2014 parity rejection",
+     "title": "nestedSetLeft position",
      "type": "table"
     },
     {
      "cerberus": {
-      "expect": "error:does not materialise nested-set positions",
-      "why": "Left/right nested-set bounds have no OTel-CH backing column; cerberus rejects rather than fabricating positions."
+      "expect": "nonempty",
+      "why": "Cerberus recomputes the DFS right-bound at query time; every connected span has right >= 1, so the filter returns the showcase spans."
      },
      "datasource": {
       "type": "tempo",
       "uid": "cerberus-tempo"
      },
-     "description": "Cerberus rejects `{ nestedSetRight > 0 }` today; this panel pins the rejection bidirectionally.",
+     "description": "Cerberus implements `{ nestedSetRight > 0 }`; reference Tempo accepts it too. This panel pins the nonempty result bidirectionally.",
      "fieldConfig": {
       "defaults": {
        "color": {
@@ -3030,19 +3030,19 @@
        "tableType": "traces"
       }
      ],
-     "title": "nestedSetRight \u2014 parity rejection",
+     "title": "nestedSetRight position",
      "type": "table"
     },
     {
      "cerberus": {
-      "expect": "error:trace-scoped",
-      "why": "rootName needs whole-trace evaluation (find the root span per trace); the OTel-CH span-row schema stores one row per span. Previously this lowered to a SpanAttributes['rootName'] lookup that silently matched nothing \u2014 the rejection pins the honest boundary."
+      "expect": "empty",
+      "why": "The OTel-CH schema stores one row per span and materialises no whole-trace rootName; reference resolves the absent field to StaticNil so the comparison is constant-false. Cerberus mirrors that \u2014 a defined-empty 2xx result, not a 422."
      },
      "datasource": {
       "type": "tempo",
       "uid": "cerberus-tempo"
      },
-     "description": "Cerberus rejects `{ rootName = \"GET /api/checkout\" }` today; this panel pins the rejection bidirectionally.",
+     "description": "Cerberus implements `{ rootName = \"GET /api/checkout\" }`; reference Tempo accepts it too. This panel pins the empty result bidirectionally.",
      "fieldConfig": {
       "defaults": {
        "color": {
@@ -3100,19 +3100,19 @@
        "tableType": "traces"
       }
      ],
-     "title": "rootName \u2014 parity rejection",
+     "title": "rootName (trace-scoped)",
      "type": "table"
     },
     {
      "cerberus": {
-      "expect": "error:trace-scoped",
-      "why": "Same trace-scoped boundary as rootName."
+      "expect": "empty",
+      "why": "No per-span rootServiceName column exists; reference resolves the absent field to StaticNil (constant-false). Cerberus returns a defined-empty 2xx result."
      },
      "datasource": {
       "type": "tempo",
       "uid": "cerberus-tempo"
      },
-     "description": "Cerberus rejects `{ rootServiceName = \"gateway\" }` today; this panel pins the rejection bidirectionally.",
+     "description": "Cerberus implements `{ rootServiceName = \"gateway\" }`; reference Tempo accepts it too. This panel pins the empty result bidirectionally.",
      "fieldConfig": {
       "defaults": {
        "color": {
@@ -3170,19 +3170,19 @@
        "tableType": "traces"
       }
      ],
-     "title": "rootServiceName \u2014 parity rejection",
+     "title": "rootServiceName (trace-scoped)",
      "type": "table"
     },
     {
      "cerberus": {
-      "expect": "error:trace-scoped",
-      "why": "Whole-trace duration requires aggregating every span of the trace; the span-row schema cannot answer it per row."
+      "expect": "empty",
+      "why": "No per-span whole-trace duration column exists; reference resolves the absent field to StaticNil (constant-false). Cerberus returns a defined-empty 2xx result."
      },
      "datasource": {
       "type": "tempo",
       "uid": "cerberus-tempo"
      },
-     "description": "Cerberus rejects `{ traceDuration > 100ms }` today; this panel pins the rejection bidirectionally.",
+     "description": "Cerberus implements `{ traceDuration > 100ms }`; reference Tempo accepts it too. This panel pins the empty result bidirectionally.",
      "fieldConfig": {
       "defaults": {
        "color": {
@@ -3240,19 +3240,19 @@
        "tableType": "traces"
       }
      ],
-     "title": "traceDuration \u2014 parity rejection",
+     "title": "traceDuration (trace-scoped)",
      "type": "table"
     },
     {
      "cerberus": {
-      "expect": "error:per-span child counts",
-      "why": "Child counts are a Tempo ingest-time materialisation; OTel-CH has no equivalent column."
+      "expect": "empty",
+      "why": "The OTel-CH schema materialises no per-span child count; reference resolves the absent field to StaticNil (constant-false). Cerberus returns a defined-empty 2xx result."
      },
      "datasource": {
       "type": "tempo",
       "uid": "cerberus-tempo"
      },
-     "description": "Cerberus rejects `{ span:childCount > 0 }` today; this panel pins the rejection bidirectionally.",
+     "description": "Cerberus implements `{ span:childCount > 0 }`; reference Tempo accepts it too. This panel pins the empty result bidirectionally.",
      "fieldConfig": {
       "defaults": {
        "color": {
@@ -3310,19 +3310,19 @@
        "tableType": "traces"
       }
      ],
-     "title": "span:childCount \u2014 parity rejection",
+     "title": "span:childCount",
      "type": "table"
     },
     {
      "cerberus": {
-      "expect": "error:per-event timestamp arithmetic",
-      "why": "Needs per-event Timestamp minus span start across the Events Nested column \u2014 unsupported; rejected loudly instead of misreading SpanAttributes."
+      "expect": "empty",
+      "why": "Per-event timestamp arithmetic against the Events Nested column is not materialised; reference resolves the absent field to StaticNil (constant-false). Cerberus returns a defined-empty 2xx result."
      },
      "datasource": {
       "type": "tempo",
       "uid": "cerberus-tempo"
      },
-     "description": "Cerberus rejects `{ event:timeSinceStart > 1ms }` today; this panel pins the rejection bidirectionally.",
+     "description": "Cerberus implements `{ event:timeSinceStart > 1ms }`; reference Tempo accepts it too. This panel pins the empty result bidirectionally.",
      "fieldConfig": {
       "defaults": {
        "color": {
@@ -3380,19 +3380,19 @@
        "tableType": "traces"
       }
      ],
-     "title": "event:timeSinceStart \u2014 parity rejection",
+     "title": "event:timeSinceStart",
      "type": "table"
     },
     {
      "cerberus": {
-      "expect": "error:no scope-attributes column",
-      "why": "The upstream OTel-CH traces schema materialises ScopeName/ScopeVersion but no scope-attributes map; without a configured column the lookup would silently read SpanAttributes."
+      "expect": "empty",
+      "why": "The OTel-CH traces schema has no scope-attributes map, so a custom instrumentation.<key> is absent on every span; reference resolves it to StaticNil (constant-false). Cerberus returns a defined-empty 2xx result."
      },
      "datasource": {
       "type": "tempo",
       "uid": "cerberus-tempo"
      },
-     "description": "Cerberus rejects `{ instrumentation.deployment = \"blue\" }` today; this panel pins the rejection bidirectionally.",
+     "description": "Cerberus implements `{ instrumentation.deployment = \"blue\" }`; reference Tempo accepts it too. This panel pins the empty result bidirectionally.",
      "fieldConfig": {
       "defaults": {
        "color": {
@@ -3450,19 +3450,19 @@
        "tableType": "traces"
       }
      ],
-     "title": "instrumentation.* scope attributes \u2014 parity rejection",
+     "title": "instrumentation.* scope attributes",
      "type": "table"
     },
     {
      "cerberus": {
-      "expect": "error:operator IN is unsupported",
-      "why": "Tempo's parser optimiser rewrites same-attribute disjunctions into the internal IN operator, which cerberus does not lower yet; the rejection documents the boundary until an In-frag lowering lands."
+      "expect": "nonempty",
+      "why": "The Tempo parser folds `name = a || name = b` into `name IN [a, b]`; cerberus lowers it to a flat IN membership test. Both names are present in the showcase, so the panel returns spans."
      },
      "datasource": {
       "type": "tempo",
       "uid": "cerberus-tempo"
      },
-     "description": "Cerberus rejects `{ name = \"GET /api/checkout\" || name = \"POST /api/orders\" }` today; this panel pins the rejection bidirectionally.",
+     "description": "Cerberus implements `{ name = \"GET /api/checkout\" || name = \"POST /api/orders\" }`; reference Tempo accepts it too. This panel pins the nonempty result bidirectionally.",
      "fieldConfig": {
       "defaults": {
        "color": {
@@ -3520,19 +3520,19 @@
        "tableType": "traces"
       }
      ],
-     "title": "same-attribute || (IN rewrite) \u2014 parity rejection",
+     "title": "same-attribute || (IN rewrite)",
      "type": "table"
     },
     {
      "cerberus": {
-      "expect": "error:unary operator ! is unsupported",
-      "why": "Field-expression negation is not lowered yet; the rejection documents the boundary."
+      "expect": "nonempty",
+      "why": "Cerberus lowers `!( <comparison> )` to a NOT predicate. The showcase has Internal / Client / Producer / Consumer spans, so the negation returns the non-server spans."
      },
      "datasource": {
       "type": "tempo",
       "uid": "cerberus-tempo"
      },
-     "description": "Cerberus rejects `{ !(kind = server) }` today; this panel pins the rejection bidirectionally.",
+     "description": "Cerberus implements `{ !(kind = server) }`; reference Tempo accepts it too. This panel pins the nonempty result bidirectionally.",
      "fieldConfig": {
       "defaults": {
        "color": {
@@ -3590,19 +3590,19 @@
        "tableType": "traces"
       }
      ],
-     "title": "unary ! negation \u2014 parity rejection",
+     "title": "unary ! negation",
      "type": "table"
     },
     {
      "cerberus": {
       "expect": "nonempty",
-      "why": "compare() lowers through chplan.MetricsCompare since feat/traceql-compare: the SQL explodes every span attribute into (cohort, attr, value) counts and the handler mirrors Tempo's BaselineAggregator (__meta_type series scheme). The seed always carries status=error spans, so the panel must render series — an empty result or a 422 regression re-fires this pin."
+      "why": "compare() lowers through chplan.MetricsCompare since feat/traceql-compare: the SQL explodes every span attribute into (cohort, attr, value) counts and the handler mirrors Tempo's BaselineAggregator (__meta_type series scheme). The seed always carries status=error spans, so the panel must render series \u2014 an empty result or a 422 regression re-fires this pin."
      },
      "datasource": {
       "type": "tempo",
       "uid": "cerberus-tempo"
      },
-     "description": "`{ } | compare({ status = error })` — baseline-vs-selection attribute split (Grafana Traces Drilldown's Comparison tab shape). Formerly a pinned 422 rejection; the contract flipped to nonempty when compare() support landed.",
+     "description": "`{ } | compare({ status = error })` \u2014 baseline-vs-selection attribute split (Grafana Traces Drilldown's Comparison tab shape). Formerly a pinned 422 rejection; the contract flipped to nonempty when compare() support landed.",
      "fieldConfig": {
       "defaults": {
        "color": {
@@ -3687,7 +3687,7 @@
      "type": "timeseries"
     }
    ],
-   "title": "Parity rejections \u2014 declared error contracts",
+   "title": "Schema-boundary constructs \u2014 defined empty / nonempty contracts",
    "type": "row"
   }
  ],
