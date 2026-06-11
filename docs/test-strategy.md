@@ -266,10 +266,10 @@ flows to *discovered* ones. Where the iterate-\* specs visit known
 surfaces (dashboards, panels, the drilldown-app catalogue), the
 crawler (`crawl/crawl.spec.ts`) BFS-walks every same-origin link
 reachable from the Grafana root, canonicalizes URLs so the
-visited-set converges (path-only keys; dynamic segments like service
-names, trace ids, and folder uids parameterize; `/explore` collapses
-to one surface), and applies the same universal oracles on every
-page — no per-page code:
+visited-set converges (path + structural-param keys; dynamic
+segments like service names, trace ids, and folder uids
+parameterize; `/explore` collapses to one surface), and applies the
+same universal oracles on every page — no per-page code:
 
 1. **Zero browser console errors** (no cerberus-origin noise filter,
    ever).
@@ -284,6 +284,54 @@ page — no per-page code:
    "No data" fails with the panel title + URL.
 4. **No page-level crash banner** and no visible `role="alert"`
    error banner.
+
+**Interaction sweep** (`crawl/interactions.ts`). Visiting a surface
+at its default control state is not enough: the 2026-06-10 maintainer
+find — clicking the Traces Drilldown breakdown groupBy "kind"
+attribute fired `{… && kind != nil} | rate() by(kind)` and cerberus
+422'd on the nil-comparison — was a state no harvested link encodes.
+After each surface's base audit the crawler therefore discovers its
+view-affecting interactive controls and drives every planned
+deviation, each against a **fresh navigation** of the surface
+(deterministic provenance: one state = surface default + exactly one
+control deviation). Control kinds discovered: tab strips
+(`role=tablist`), radio groups (`role=radiogroup`, re-found at drive
+time by option-name signature — the generated input ids are
+mount-order dependent), select/combobox dropdowns (probed open to
+learn their option sets; datasource pickers, sort-bys, level
+filters), titled option lists (the Traces Drilldown attribute
+picker), metric select tiles, and adhoc-filter builders (driven as
+one representative key → value pair). Mutating affordances
+(save/delete/create/add-tab), free-text search inputs, and the
+time/refresh pickers (owned by iterate-time-ranges) are excluded —
+the crawl stays read-only.
+
+State identity follows the URL. A deviation the app encodes into the
+URL becomes a **first-class surface**: the canonicalizer retains
+*structural* params (`StructuralParamRule` in `crawl/lib.ts`) —
+low-cardinality ones verbatim (`?actionView=comparison`,
+`?var-groupBy=kind`) with the app's cold-boot default dropped, and
+high-cardinality ones parameterized (`?metric={metric}`, the
+`{service}` doctrine) — and the BFS visits the discovered state
+fresh with the full oracle set. A deviation that does **not** encode
+to the URL is audited in place with the same oracles and pins into
+the inventory under the state notation
+`<canonical>#<control>=<value>` (high-cardinality representatives
+record `{rep}` so data-derived values can't flicker the inventory).
+
+Bounding (the locked pairwise design, enforced in
+`planInteractions`): structural controls (≤ 12 options) enumerate
+**fully**; high-cardinality controls take **one representative**;
+cross-control combos form **pairwise via surface chaining** — a
+surface pinning one structural param sweeps with the representative
+plan (one option per control, each interaction forming a param
+pair), and surfaces pinning ≥ 2 params are terminal (visited, never
+expanded). Every plan is hard-capped (24 single-sweep / 16 pairwise
+per surface); overflow **fails the crawl listing the full plan** —
+never a silent truncation. Depth doctrine unchanged: lean sweeps the
+configured representative roots (the three drilldown app entries)
+with one state per control; full sweeps every eligible surface
+exhaustively.
 
 Two sibling specs ride the same lane:
 

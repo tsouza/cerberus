@@ -131,12 +131,24 @@ jobs:
       (github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'schedule') &&
       (github.event_name != 'pull_request' || needs.changes.outputs.docs_only != 'true')
     runs-on: ubuntu-latest
-    # 45 (was 30): the nightly SWEEP_DEPTH=full lane now also kiosks +
-    # browser-renders the showcase-family dashboards (showcase-promql
-    # adds ~100 panel states to iterate-panel-kiosk alone). PR/push
-    # lean runs stay well under the old 30-minute ceiling; the bump
-    # only buys headroom for the scheduled full-depth sweep.
-    timeout-minutes: 45
+    # Timeout is per-lane. PR/push run SWEEP_DEPTH=lean: the catch-net
+    # smoke + the iterate-* specs + the lean crawl (root + nav + one
+    # representative state per interaction control on the three
+    # drilldown roots) finish well under 45 min — that ceiling (was 30)
+    # absorbed the showcase-family kiosk renders (showcase-promql adds
+    # ~100 panel states to iterate-panel-kiosk alone).
+    #
+    # The nightly schedule runs SWEEP_DEPTH=full: the crawl spec alone
+    # BFS-walks every eligible surface AND drives every interactive
+    # control on each (the interaction sweep), which was observed at
+    # 50+ minutes wall-clock on its own — on top of the full-depth
+    # kiosk/browser-render passes of the other specs in this same job.
+    # 45 min cannot hold that; the full lane gets 120. The expression
+    # keeps the PR gate tight (fast feedback) while the nightly lane
+    # has the headroom the full-depth interaction sweep genuinely
+    # needs. Full-depth is NIGHTLY-ONLY by design — never a PR gate;
+    # see SWEEP_DEPTH below + docs/test-strategy.md (interaction sweep).
+    timeout-minutes: ${{ github.event_name == 'schedule' && 120 || 45 }}
     concurrency:
       group: compose-smoke-${{ github.ref }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
