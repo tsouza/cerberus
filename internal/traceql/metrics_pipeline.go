@@ -364,7 +364,7 @@ func lowerMetricsGroupBy(attrs []traceql.Attribute, s schema.Traces) ([]chplan.E
 		if err != nil {
 			return nil, nil, nil, err
 		}
-		exprs = append(exprs, expr)
+		exprs = append(exprs, wireNormalizeGroupValue(a, expr))
 		// SQL alias is the bare attribute path (`a.Name` is set by
 		// traceql.NewAttribute / NewScopedAttribute / NewIntrinsic to
 		// either the carrier-map key, e.g. `service.name`, or the
@@ -378,4 +378,23 @@ func lowerMetricsGroupBy(attrs []traceql.Attribute, s schema.Traces) ([]chplan.E
 		display = append(display, a.String())
 	}
 	return exprs, aliases, display, nil
+}
+
+// wireNormalizeGroupValue maps a group-by expression's ClickHouse
+// payload to reference Tempo's wire form for the enum-typed
+// intrinsics. OTel-CH stores TitleCase enum words for SpanKind /
+// StatusCode ("Server", "Unspecified", "Error") while reference
+// Tempo renders group-by label values through
+// `Static.EncodeToString` — lowercase "server" / "unspecified" /
+// "error" (pkg/traceql engine.go AsAnyValue → EncodeToString; Kind /
+// Status stringers in enum_statics.go). Wrapping the group expression
+// in `lower(...)` makes both the GROUP BY key and the projected label
+// value match reference. Mirrors classifySelectedProjection's
+// treatment of the same columns on the `| select(...)` path.
+func wireNormalizeGroupValue(a traceql.Attribute, e chplan.Expr) chplan.Expr {
+	switch a.Intrinsic {
+	case traceql.IntrinsicKind, traceql.IntrinsicStatus:
+		return &chplan.FuncCall{Name: "lower", Args: []chplan.Expr{e}}
+	}
+	return e
 }

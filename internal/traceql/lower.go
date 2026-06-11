@@ -603,16 +603,48 @@ func lowerFieldExpr(e traceql.FieldExpression, s schema.Traces) (chplan.Expr, er
 // and `<attr> = nil` / `nil = <attr>` to UnaryOperation{OpNotExists}
 // (the grammar rewrites the nil comparison — see upstream expr.y).
 // Grafana's first-party Traces Drilldown app (preinstalled since
-// Grafana 12.x) issues `resource.service.name != nil` on every
-// breakdown view, so the existence test is a load-bearing shape.
+// Grafana 12.x) appends `&& <groupBy> != nil` to EVERY breakdown
+// query — including intrinsic group-bys like
+// `{nestedSetParent<0 && true && kind != nil} | rate() by(kind)` —
+// so both the attribute and the intrinsic existence forms are
+// load-bearing shapes.
 //
-// Existence lowers to ClickHouse `mapContains(<carrier>, '<key>')`
-// against the Map(String, String) attribute carrier for the
-// attribute's scope (SpanAttributes / ResourceAttributes — the same
-// scope mapping lowerAttribute uses). Intrinsics are rejected: OTel-CH
-// materialises every intrinsic as a non-nullable column, so an
-// existence probe on one is almost certainly a query bug — surfacing
-// the gap beats inventing always-true SQL.
+// Reference semantics (tsouza/tempo fork, pkg/traceql):
+//
+//   - `x != nil` (OpExists) evaluates to `static.Type != TypeNil`
+//     after executing x against the span (ast_execute.go). Intrinsic
+//     columns are required parquet fields (vparquet4 schema.go: Kind,
+//     StatusCode, Name, DurationNano, …) and the vparquet4 span
+//     collector adds the intrinsic static unconditionally — even
+//     kind=SPAN_KIND_UNSPECIFIED becomes a non-nil TypeKind static
+//     (block_traceql.go spanCollector). So `<intrinsic> != nil`
+//     matches EVERY span — it is a constant TRUE, not an
+//     enum-zero/empty-string check. OTel-CH mirrors this exactly:
+//     every intrinsic column is always present.
+//   - `<intrinsic> = nil` (OpNotExists) is rejected by reference
+//     validation: "X = nil is not valid because intrinsics cannot be
+//     nil" (ast_validate.go UnaryOperation.validate), double-enforced
+//     by vparquet4 checkConditions. Same for `resource.service.name
+//     = nil`.
+//   - `<span|resource attr> != nil` ≡ the attribute key exists on the
+//     span — `mapContains(<carrier>, '<key>')`; `= nil` is the
+//     negation (missing attributes surface as the nil sentinel the
+//     OpNotExists branch matches — ast_execute.go + vparquet4
+//     collectors).
+//   - `<event.|link. attr> != nil` ≡ at least one event/link carries
+//     the key (event attrs resolve per fetched Nested element);
+//     `= nil` ≡ at least one event/link element LACKS the key (the
+//     collectors surface fetched-but-null per-element attribute cells
+//     as the matchable nil sentinel; spans with no elements at all
+//     execute to StaticNil, which OpNotExists does NOT match —
+//     Static.Equals is false when either side is TypeNil).
+//   - Nested intrinsics (event:name / event:timeSinceStart /
+//     link:traceID / link:spanID) `!= nil` ≡ the span has at least
+//     one event/link: the sub-fields are required within each
+//     element, so any element answers the probe.
+//   - `childCount` conditions (any op, including != nil) error in
+//     reference vparquet4 (checkConditions: "intrinsic 'childCount'
+//     not supported in vParquet4") — keep rejecting.
 func lowerUnaryOperation(u traceql.UnaryOperation, s schema.Traces) (chplan.Expr, error) {
 	switch u.Op {
 	case traceql.OpExists, traceql.OpNotExists:
@@ -620,26 +652,114 @@ func lowerUnaryOperation(u traceql.UnaryOperation, s schema.Traces) (chplan.Expr
 		if !ok {
 			return nil, fmt.Errorf("traceql: %s operand %T is unsupported — nil comparisons require an attribute reference", u.Op, u.Expression)
 		}
-		if attr.Intrinsic != traceql.IntrinsicNone {
-			return nil, fmt.Errorf("traceql: nil comparison on intrinsic %s is unsupported — OTel-CH intrinsic columns are always present", attr.Intrinsic)
-		}
-		if attr.Scope == traceql.AttributeScopeLink || attr.Scope == traceql.AttributeScopeEvent {
-			return nil, fmt.Errorf("traceql: nil comparison on %s.%s is unsupported", attr.Scope, attr.Name)
-		}
-		carrier := s.AttributesColumn
-		if attr.Scope == traceql.AttributeScopeResource {
-			carrier = s.ResourceAttributesColumn
-		}
-		contains := &chplan.FuncCall{Name: "mapContains", Args: []chplan.Expr{
-			&chplan.ColumnRef{Name: carrier},
-			&chplan.LitString{V: attr.Name},
-		}}
-		if u.Op == traceql.OpNotExists {
-			return &chplan.FuncCall{Name: "not", Args: []chplan.Expr{contains}}, nil
-		}
-		return contains, nil
+		return lowerNilComparison(u.Op, attr, s)
 	}
 	return nil, fmt.Errorf("traceql: unary operator %s is unsupported", u.Op)
+}
+
+// lowerNilComparison lowers `<attr> != nil` (OpExists) / `<attr> = nil`
+// (OpNotExists) per the reference semantics documented on
+// lowerUnaryOperation.
+func lowerNilComparison(op traceql.Operator, attr traceql.Attribute, s schema.Traces) (chplan.Expr, error) {
+	if attr.Intrinsic != traceql.IntrinsicNone {
+		return lowerIntrinsicNilComparison(op, attr, s)
+	}
+	if op == traceql.OpNotExists &&
+		attr.Scope == traceql.AttributeScopeResource && attr.Name == "service.name" {
+		// Reference rejection (pkg/traceql/ast_validate.go):
+		// resource.service.name is mandatory on every OTLP resource.
+		return nil, fmt.Errorf("traceql: %s = nil is not valid because resource.service.name cannot be nil", attr)
+	}
+	if attr.Scope == traceql.AttributeScopeLink || attr.Scope == traceql.AttributeScopeEvent {
+		col, key, ok := nestedAttrTarget(attr, s)
+		if !ok {
+			return nil, fmt.Errorf("traceql: nil comparison on %s.%s is unsupported — the configured schema has no %s column", attr.Scope, attr.Name, attr.Scope)
+		}
+		presence := chplan.PresenceHasKey
+		if op == traceql.OpNotExists {
+			presence = chplan.PresenceLacksKey
+		}
+		return &chplan.NestedArrayExists{
+			Column:   col,
+			SubField: "Attributes",
+			Key:      key,
+			Presence: presence,
+		}, nil
+	}
+	carrier := s.AttributesColumn
+	switch attr.Scope {
+	case traceql.AttributeScopeResource:
+		carrier = s.ResourceAttributesColumn
+	case traceql.AttributeScopeInstrumentation:
+		// Same boundary as lowerAttribute: the OTel-CH traces schema
+		// materialises no scope-attributes map, so an existence probe
+		// against it cannot be answered — reject instead of silently
+		// reading SpanAttributes.
+		if s.ScopeAttributesColumn == "" {
+			return nil, fmt.Errorf(
+				"traceql: instrumentation-scoped attribute %q is unsupported — the OTel ClickHouse traces schema has no scope-attributes column (instrumentation:name / instrumentation:version map to ScopeName / ScopeVersion)",
+				attr.Name,
+			)
+		}
+		carrier = s.ScopeAttributesColumn
+	}
+	contains := &chplan.FuncCall{Name: "mapContains", Args: []chplan.Expr{
+		&chplan.ColumnRef{Name: carrier},
+		&chplan.LitString{V: attr.Name},
+	}}
+	if op == traceql.OpNotExists {
+		return &chplan.FuncCall{Name: "not", Args: []chplan.Expr{contains}}, nil
+	}
+	return contains, nil
+}
+
+// lowerIntrinsicNilComparison lowers nil comparisons whose subject is
+// an intrinsic. See lowerUnaryOperation for the reference-semantics
+// derivation of each branch.
+func lowerIntrinsicNilComparison(op traceql.Operator, attr traceql.Attribute, s schema.Traces) (chplan.Expr, error) {
+	if op == traceql.OpNotExists {
+		// Reference rejection (pkg/traceql/ast_validate.go
+		// UnaryOperation.validate; vparquet4 checkConditions repeats
+		// it at fetch time).
+		return nil, fmt.Errorf("traceql: %s = nil is not valid because intrinsics cannot be nil", attr.Intrinsic)
+	}
+	switch attr.Intrinsic {
+	case traceql.IntrinsicChildCount:
+		// Reference errors on every childCount condition (vparquet4
+		// checkConditions: "not supported in vParquet4").
+		return nil, fmt.Errorf(
+			"traceql: intrinsic %s requires per-span child counts the OTel ClickHouse schema does not materialise", attr.Intrinsic,
+		)
+	case traceql.IntrinsicEventName, traceql.IntrinsicEventTimeSinceStart:
+		if s.EventsColumn == "" {
+			return nil, fmt.Errorf("traceql: nil comparison on intrinsic %s is unsupported — the configured schema has no events column", attr.Intrinsic)
+		}
+		// ≥1 event: Events.Name is a required sub-field of every
+		// Nested element, so element presence answers the probe.
+		return &chplan.NestedArrayExists{
+			Column:   s.EventsColumn,
+			SubField: "Name",
+			Presence: chplan.PresenceHasKey,
+		}, nil
+	case traceql.IntrinsicLinkTraceID, traceql.IntrinsicLinkSpanID:
+		if s.LinksColumn == "" {
+			return nil, fmt.Errorf("traceql: nil comparison on intrinsic %s is unsupported — the configured schema has no links column", attr.Intrinsic)
+		}
+		// ≥1 link, same shape as the event probe.
+		return &chplan.NestedArrayExists{
+			Column:   s.LinksColumn,
+			SubField: "TraceId",
+			Presence: chplan.PresenceHasKey,
+		}, nil
+	}
+	// Every other intrinsic — kind, status, name, duration,
+	// statusMessage, trace/span IDs, parent, nested-set positions,
+	// trace-scoped values (rootName / rootServiceName /
+	// traceDuration), instrumentation:name/version — is an
+	// always-present value in reference Tempo (required parquet
+	// columns + unconditional collector statics), so the existence
+	// probe is TRUE for every span.
+	return &chplan.LitBool{V: true}, nil
 }
 
 // fieldExprAttribute unwraps a FieldExpression into its Attribute when

@@ -168,9 +168,14 @@ func TestLower_RootIdiomLiteralVariants(t *testing.T) {
 	}
 }
 
-// TestLower_NilComparisonRejections pins the unsupported nil-comparison
-// operands: intrinsics (always materialised in OTel-CH) and link/event
-// scopes (Nested columns need the arrayExists shape, not mapContains).
+// TestLower_NilComparisonRejections pins the nil-comparison forms
+// reference Tempo itself rejects — and ONLY those. Reference
+// validation (pkg/traceql/ast_validate.go UnaryOperation.validate)
+// rejects `= nil` on every intrinsic and on resource.service.name;
+// vparquet4's checkConditions errors on any childCount condition.
+// Everything else — including `!= nil` on intrinsics, which the
+// Traces Drilldown app stamps on every intrinsic breakdown groupBy —
+// must lower (see TestLower_NilComparisonSemantics).
 func TestLower_NilComparisonRejections(t *testing.T) {
 	t.Parallel()
 
@@ -181,14 +186,29 @@ func TestLower_NilComparisonRejections(t *testing.T) {
 		wantSub string
 	}{
 		{
-			name:    "intrinsic_always_present",
-			query:   `{ name != nil }`,
-			wantSub: "intrinsic",
+			name:    "intrinsic_eq_nil_kind",
+			query:   `{ kind = nil }`,
+			wantSub: "intrinsics cannot be nil",
 		},
 		{
-			name:    "event_scope_unsupported",
-			query:   `{ event.message != nil }`,
-			wantSub: "unsupported",
+			name:    "intrinsic_eq_nil_name",
+			query:   `{ name = nil }`,
+			wantSub: "intrinsics cannot be nil",
+		},
+		{
+			name:    "intrinsic_eq_nil_literal_first",
+			query:   `{ nil = status }`,
+			wantSub: "intrinsics cannot be nil",
+		},
+		{
+			name:    "resource_service_name_eq_nil",
+			query:   `{ resource.service.name = nil }`,
+			wantSub: "resource.service.name cannot be nil",
+		},
+		{
+			name:    "child_count_not_nil",
+			query:   `{ span:childCount != nil }`,
+			wantSub: "child counts",
 		},
 	}
 	for _, tc := range cases {
@@ -204,6 +224,67 @@ func TestLower_NilComparisonRejections(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tc.wantSub) {
 				t.Errorf("Lower(%q) error %q does not contain %q", tc.query, err, tc.wantSub)
+			}
+		})
+	}
+}
+
+// TestLower_NilComparisonSemantics pins the lowered predicate for every
+// accepted nil-comparison shape, derived from reference Tempo:
+//
+//   - `<intrinsic> != nil` is TRUE for every span (vparquet4 stores
+//     intrinsics as required parquet columns and the span collector
+//     adds the static unconditionally — kind=SPAN_KIND_UNSPECIFIED,
+//     empty name, and unset status all still satisfy `!= nil`).
+//   - attribute `!= nil` / `= nil` probe the scope's attribute map.
+//   - event./link. attribute probes quantify over the Nested elements
+//     (≥1 element carrying / lacking the key).
+//   - nested intrinsics (event:name / link:traceID) probe element
+//     presence (≥1 event / ≥1 link).
+func TestLower_NilComparisonSemantics(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelTraces()
+	cases := []struct {
+		query         string
+		wantPredicate string
+	}{
+		// Intrinsics: constant TRUE — pinned for each intrinsic the
+		// Traces Drilldown breakdown tab group-bys on.
+		{`{ kind != nil }`, `true`},
+		{`{ status != nil }`, `true`},
+		{`{ name != nil }`, `true`},
+		{`{ duration != nil }`, `true`},
+		{`{ statusMessage != nil }`, `true`},
+		{`{ nil != kind }`, `true`},
+		{`{ nestedSetParent != nil }`, `true`},
+		// Attribute scopes: map-key existence on the scope carrier.
+		{`{ span.http.method != nil }`, `mapContains(SpanAttributes, "http.method")`},
+		{`{ resource.service.name != nil }`, `mapContains(ResourceAttributes, "service.name")`},
+		{`{ span.http.method = nil }`, `not(mapContains(SpanAttributes, "http.method"))`},
+		// Event / link attributes: per-element key probes.
+		{`{ event.message != nil }`, `nestedArrayExists(Events.Attributes hasKey "message")`},
+		{`{ event.message = nil }`, `nestedArrayExists(Events.Attributes lacksKey "message")`},
+		{`{ link.opentracing.ref_type != nil }`, `nestedArrayExists(Links.Attributes hasKey "opentracing.ref_type")`},
+		// Nested intrinsics: element presence.
+		{`{ event:name != nil }`, `nestedArrayNotEmpty(Events.Name)`},
+		{`{ link:traceID != nil }`, `nestedArrayNotEmpty(Links.TraceId)`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.query, func(t *testing.T) {
+			t.Parallel()
+			expr, err := tempo.Parse(tc.query)
+			if err != nil {
+				t.Fatalf("Parse(%q): %v", tc.query, err)
+			}
+			plan, err := traceql.Lower(context.Background(), expr, s)
+			if err != nil {
+				t.Fatalf("Lower(%q): %v — reference Tempo accepts this nil comparison", tc.query, err)
+			}
+			printed := spec.PrintChplan(plan)
+			want := "Filter predicate=" + tc.wantPredicate + "\n"
+			if !strings.Contains(printed, want) {
+				t.Errorf("Lower(%q) plan:\n%s\nwant a filter with %s", tc.query, printed, want)
 			}
 		})
 	}

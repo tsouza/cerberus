@@ -1,0 +1,19 @@
+-- query.traceql --
+{ link:traceID != nil }
+-- sql --
+SELECT * FROM `otel_traces` WHERE notEmpty(`Links`.`TraceId`)
+-- args --
+(none)
+-- seed --
+CREATE TABLE otel_traces (
+    _idx UInt64,
+    `Links.TraceId` Array(String) MATERIALIZED if(_idx = 0, ['aaaabbbbccccddddaaaabbbbccccdddd'], [])
+) ENGINE = MergeTree ORDER BY _idx;
+INSERT INTO otel_traces (_idx) VALUES (0), (1);
+-- expected_rows --
+[
+  [0]
+]
+-- chplan --
+Filter predicate=nestedArrayNotEmpty(Links.TraceId)
+  Scan(otel_traces)

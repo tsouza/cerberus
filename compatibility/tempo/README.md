@@ -82,19 +82,20 @@ relative epsilon.
 The TXTAR corpus is the single source of truth for which Tempo HTTP
 shapes the differ exercises.
 
-| Category                | Endpoint kind     | Wire shape                                      | Diff strategy                                          |
-| ----------------------- | ----------------- | ----------------------------------------------- | ------------------------------------------------------ |
-| Attribute matchers      | `search`          | `{traces:[TraceSummary]}`                       | TraceID set diff (real hex IDs match byte-for-byte)    |
-| Intrinsics              | `search`          | same                                            | same                                                   |
-| Structural ops          | `search`          | same                                            | same                                                   |
-| Set ops                 | `search`          | same                                            | same                                                   |
-| Inner aggregates        | `search`          | same                                            | same                                                   |
-| Metrics pipeline        | `metrics_*`       | Prom series envelope                            | Semantic invariants + structural diff                  |
-| Per-id round trip       | `traces`          | `{trace:{...}}`                                 | Trace-ID derivation from seeder template + status-2xx  |
-| Tag names V1            | `tags_v1`         | `{tagNames:[string]}`                           | Set diff over the flat list                            |
-| Tag names V2            | `tags_v2`         | `{scopes:[{name, tags}]}`                       | Set diff over flattened tags + per-scope-name diff     |
-| Tag values V1           | `tag_values_v1`   | `{tagValues:[string]}`                          | Set diff over the flat list                            |
-| Tag values V2           | `tag_values_v2`   | `{tagValues:[{type, value}]}`                   | Set diff over `Value` + `Type`-field diff on overlap   |
+| Category                | Endpoint kind        | Wire shape                                      | Diff strategy                                          |
+| ----------------------- | -------------------- | ----------------------------------------------- | ------------------------------------------------------ |
+| Attribute matchers      | `search`             | `{traces:[TraceSummary]}`                       | TraceID set diff (real hex IDs match byte-for-byte)    |
+| Intrinsics              | `search`             | same                                            | same                                                   |
+| Structural ops          | `search`             | same                                            | same                                                   |
+| Set ops                 | `search`             | same                                            | same                                                   |
+| Inner aggregates        | `search`             | same                                            | same                                                   |
+| Nil comparisons         | `search`/`metrics_*` | same per endpoint                               | same per endpoint (incl. unspecified-kind boundary)    |
+| Metrics pipeline        | `metrics_*`          | Prom series envelope                            | Semantic invariants + structural diff                  |
+| Per-id round trip       | `traces`             | `{trace:{...}}`                                 | Trace-ID derivation from seeder template + status-2xx  |
+| Tag names V1            | `tags_v1`            | `{tagNames:[string]}`                           | Set diff over the flat list                            |
+| Tag names V2            | `tags_v2`            | `{scopes:[{name, tags}]}`                       | Set diff over flattened tags + per-scope-name diff     |
+| Tag values V1           | `tag_values_v1`      | `{tagValues:[string]}`                          | Set diff over the flat list                            |
+| Tag values V2           | `tag_values_v2`      | `{tagValues:[{type, value}]}`                   | Set diff over `Value` + `Type`-field diff on overlap   |
 
 The tag endpoints pin three classes of subset assertion:
 
