@@ -107,11 +107,77 @@ func lower(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error
 		return lowerBinary(e, s, ctx)
 	case *parser.SubqueryExpr:
 		return lowerSubquery(e, s, ctx)
+	case *parser.MatrixSelector:
+		return lowerMatrixSelector(e, s, ctx)
 	case *parser.UnaryExpr:
 		return lowerUnary(e, s, ctx)
 	default:
 		return nil, fmt.Errorf("promql: unsupported expression %T", expr)
 	}
+}
+
+// lowerMatrixSelector handles a TOP-LEVEL range-vector selector —
+// `up[5m]` sent to /api/v1/query. Reference Prometheus answers these
+// with resultType "matrix": every RAW sample in `(eval − range, eval]`
+// per series, original timestamps preserved (no per-step alignment, no
+// staleness lookback). The lowering is therefore the bare selector
+// path with the LWR collapse suppressed plus the window bound — the
+// canonical 4-column row shape carries the per-sample timestamps the
+// handler's instant-matrix pivot groups on.
+//
+// MatrixSelector in ARGUMENT position (`rate(up[5m])`) never reaches
+// here — lowerCall routes it into the range-vector machinery first.
+// On /api/v1/query_range the handler rejects matrix-typed expressions
+// before lowering (mirroring upstream's "invalid expression type"
+// guard), so this path is instant-only by construction.
+func lowerMatrixSelector(ms *parser.MatrixSelector, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	vs, ok := ms.VectorSelector.(*parser.VectorSelector)
+	if !ok {
+		return nil, fmt.Errorf("promql: matrix selector's inner must be a VectorSelector, got %T", ms.VectorSelector)
+	}
+	anchor, err := anchorFromSelector(vs, ctx)
+	if err != nil {
+		return nil, err
+	}
+	if anchor.End.IsZero() && !ctx.end.IsZero() {
+		anchor.End = ctx.end.UTC()
+	}
+
+	// Strip the modifier — the window bound below carries the anchor;
+	// inRangeVector suppresses the LWR wrap so every in-window sample
+	// survives.
+	vsNoMod := *vs
+	vsNoMod.Timestamp = nil
+	vsNoMod.OriginalOffset = 0
+	vsNoMod.Offset = 0
+	vsNoMod.StartOrEnd = 0
+	rangeCtx := ctx
+	rangeCtx.inRangeVector = true
+	inner, err := lowerVectorSelector(&vsNoMod, s, rangeCtx)
+	if err != nil {
+		return nil, err
+	}
+
+	// (anchor − range, anchor] window — left-open / right-closed, the
+	// PromQL range-selector contract.
+	pred := &chplan.Binary{
+		Op:    chplan.OpAnd,
+		Left:  timeBoundExpr(s.TimestampColumn, anchor),
+		Right: stalenessLowerBoundExpr(s.TimestampColumn, anchor, ms.Range),
+	}
+	// Project the canonical 4-column Sample shape explicitly (the bare
+	// Filter-over-Scan would emit `SELECT *`, dragging every physical
+	// table column onto the wire). Matrix selectors PRESERVE
+	// `__name__` — the samples are raw, not derived.
+	return &chplan.Project{
+		Input: &chplan.Filter{Input: inner, Predicate: pred},
+		Projections: []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
+			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
+			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
+		},
+	}, nil
 }
 
 // lowerVectorSelector turns `metric{label="val"}` into Scan + Filter.

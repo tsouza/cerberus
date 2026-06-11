@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -683,4 +684,113 @@ func readBody(t *testing.T, resp *http.Response) string {
 		t.Fatalf("read body: %v", err)
 	}
 	return string(b)
+}
+
+// TestQuery_StringLiteral pins the resultType "string" wire shape for
+// a top-level string literal on /api/v1/query — reference Prometheus
+// answers `"a string literal"` with [<ts>, <value>] (the
+// rejection-parity layer proved the old 422 was a wrong rejection).
+// No ClickHouse round-trip happens (the stub records no SQL).
+func TestQuery_StringLiteral(t *testing.T) {
+	t.Parallel()
+
+	q := &stubQuerier{}
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/v1/query?query=" + url.QueryEscape(`"a string literal"`) + "&time=1717999200")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+	}
+	var parsed queryResponse
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v\nbody=%s", err, body)
+	}
+	if parsed.Data.ResultType != "string" {
+		t.Fatalf("resultType: got %q, want string", parsed.Data.ResultType)
+	}
+	raw, _ := json.Marshal(parsed.Data.Result)
+	var pair []any
+	if err := json.Unmarshal(raw, &pair); err != nil {
+		t.Fatalf("decode string result: %v", err)
+	}
+	if len(pair) != 2 || pair[1] != "a string literal" {
+		t.Fatalf("string result = %v, want [<ts>, \"a string literal\"]", pair)
+	}
+	if q.lastSQL != "" {
+		t.Fatalf("string literal must not reach ClickHouse; got SQL %q", q.lastSQL)
+	}
+}
+
+// TestQuery_TopLevelMatrixSelector pins the resultType "matrix" pivot
+// for `up[5m]` on /api/v1/query: every returned sample lands at its own
+// timestamp, grouped per series — the upstream wire shape for a
+// top-level range-vector selector.
+func TestQuery_TopLevelMatrixSelector(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 5, 11, 11, 58, 0, 0, time.UTC)
+	q := &stubQuerier{
+		samples: []chclient.Sample{
+			{MetricName: "up", Labels: map[string]string{"job": "api"}, Timestamp: base, Value: 1},
+			{MetricName: "up", Labels: map[string]string{"job": "api"}, Timestamp: base.Add(time.Minute), Value: 2},
+		},
+	}
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/v1/query?query=" + url.QueryEscape(`up[5m]`) + "&time=1717999200")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+	}
+	var parsed queryResponse
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v\nbody=%s", err, body)
+	}
+	if parsed.Data.ResultType != "matrix" {
+		t.Fatalf("resultType: got %q, want matrix; body=%s", parsed.Data.ResultType, body)
+	}
+	raw, _ := json.Marshal(parsed.Data.Result)
+	var mat []prom.MatrixSample
+	if err := json.Unmarshal(raw, &mat); err != nil {
+		t.Fatalf("decode matrix: %v", err)
+	}
+	if len(mat) != 1 || len(mat[0].Values) != 2 {
+		t.Fatalf("matrix shape: got %d series / %v values, want 1 series with 2 values", len(mat), mat)
+	}
+}
+
+// TestQueryRange_RejectsNonVectorTypes pins the upstream expression
+// type gate on /api/v1/query_range: matrix- and string-typed
+// expressions are 400 bad_data ("must be Scalar or instant Vector"),
+// matching web/api/v1's invalidExprError — NOT a 2xx with rows and NOT
+// a lowering 422.
+func TestQueryRange_RejectsNonVectorTypes(t *testing.T) {
+	t.Parallel()
+
+	srv := newServer(&stubQuerier{})
+	t.Cleanup(srv.Close)
+
+	for _, query := range []string{`up[5m]`, `up[5m:1m]`, `"a string"`} {
+		resp, err := http.Get(srv.URL + "/api/v1/query_range?query=" + url.QueryEscape(query) +
+			"&start=1717999200&end=1717999800&step=60")
+		if err != nil {
+			t.Fatalf("GET(%q): %v", query, err)
+		}
+		body := readBody(t, resp)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("query %q: status=%d, want 400; body=%s", query, resp.StatusCode, body)
+		}
+		if !strings.Contains(body, "must be Scalar or instant Vector") {
+			t.Fatalf("query %q: body %q missing the upstream type-gate message", query, body)
+		}
+	}
 }

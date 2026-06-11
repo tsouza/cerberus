@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime"
+	"sort"
 	"strconv"
 	"time"
 
@@ -71,8 +72,9 @@ type Handler struct {
 	Version string
 
 	// parser is the single PromQL parser instance the handler uses for
-	// every parse path. The scalar-fold short-circuit (parseExpr,
-	// invoked from tryScalarFold) AND the engine path (executeInstant /
+	// every parse path. The handler-side classification parse
+	// (parseExpr — scalar fold / string literal / expression type
+	// gate) AND the engine path (executeInstant /
 	// executeRangeStreaming, which construct lang values with
 	// `Parser: h.parser`) share this same interface value, so the two
 	// paths cannot drift on promparser.Options. New(...) is the only
@@ -232,16 +234,35 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Classify the expression once up front: scalar folds and string
+	// literals are answered in Go (no ClickHouse round-trip), and a
+	// matrix-typed expression (`up[5m]`, `up[5m:1m]`) selects the
+	// instant-matrix pivot below — reference Prometheus answers all
+	// four result types on /api/v1/query.
+	expr, err := h.parseExpr(r.Context(), q)
+	if err != nil {
+		h.respondError(w, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest})
+		return
+	}
+
 	// Scalar-only PromQL (`1+1`, `42`) — Grafana's datasource health
 	// probe path. Evaluate in Go and return the canonical scalar
-	// envelope; no ClickHouse round-trip.
-	if value, ok, err := h.tryScalarFold(r.Context(), q); err != nil {
-		h.respondError(w, err)
-		return
-	} else if ok {
+	// envelope.
+	if value, ok := promql.TryFoldScalar(expr); ok {
 		writeJSON(w, http.StatusOK, Response{
 			Status: "success",
 			Data:   &QueryData{ResultType: "scalar", Result: scalarPoint(ts, value)},
+		})
+		return
+	}
+
+	// String literal (`"a string literal"`, parens included) — the
+	// reference wire shape is resultType "string" with the same
+	// [<ts>, <value>] pair layout the scalar envelope uses.
+	if lit, ok := tryStringLiteralExpr(expr); ok {
+		writeJSON(w, http.StatusOK, Response{
+			Status: "success",
+			Data:   &QueryData{ResultType: "string", Result: Sample{float64(ts.UnixMilli()) / 1e3, lit}},
 		})
 		return
 	}
@@ -252,12 +273,80 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result := toVector(samples, ts)
 	writeEngineHeaders(w, hdr)
+	if expr.Type() == promparser.ValueTypeMatrix {
+		// Top-level range-vector / subquery expression: resultType
+		// "matrix" with every returned sample at its own timestamp,
+		// grouped per series — the SQL window bound owns sample
+		// membership.
+		writeJSON(w, http.StatusOK, Response{
+			Status: "success",
+			Data:   &QueryData{ResultType: "matrix", Result: matrixFromSamples(samples)},
+		})
+		return
+	}
+	result := toVector(samples, ts)
 	writeJSON(w, http.StatusOK, Response{
 		Status: "success",
 		Data:   &QueryData{ResultType: "vector", Result: result},
 	})
+}
+
+// tryStringLiteralExpr unwraps a (possibly parenthesised) top-level
+// PromQL string literal. Only /api/v1/query accepts string-typed
+// expressions; /api/v1/query_range rejects them via the expression
+// type gate (mirroring upstream).
+func tryStringLiteralExpr(expr promparser.Expr) (string, bool) {
+	for {
+		p, ok := expr.(*promparser.ParenExpr)
+		if !ok {
+			break
+		}
+		expr = p.Expr
+	}
+	if lit, ok := expr.(*promparser.StringLiteral); ok {
+		return lit.Val, true
+	}
+	return "", false
+}
+
+// matrixFromSamples is the instant-query sibling of matrixFromCursor:
+// group rows per canonical series key and emit each sample at its own
+// timestamp, ascending. Used for matrix-typed expressions on
+// /api/v1/query (`up[5m]`), where the lowered SQL's window predicate
+// already owns sample membership — no clipping or step grid applies.
+func matrixFromSamples(samples []chclient.Sample) []MatrixSample {
+	type seriesState struct {
+		labels map[string]string
+		rows   []chclient.Sample
+	}
+	bySeries := map[string]*seriesState{}
+	order := make([]string, 0)
+	for _, s := range samples {
+		labels := format.NormalizeLabelMap(format.WithMetricName(s.Labels, s.MetricName))
+		key := format.CanonicalKey(labels)
+		st, ok := bySeries[key]
+		if !ok {
+			st = &seriesState{labels: labels}
+			bySeries[key] = st
+			order = append(order, key)
+		}
+		st.rows = append(st.rows, s)
+	}
+	sort.Strings(order)
+
+	out := make([]MatrixSample, 0, len(bySeries))
+	for _, key := range order {
+		st := bySeries[key]
+		sort.Slice(st.rows, func(i, j int) bool { return st.rows[i].Timestamp.Before(st.rows[j].Timestamp) })
+		ms := MatrixSample{Metric: st.labels}
+		for _, r := range st.rows {
+			stamp := float64(r.Timestamp.UnixMilli()) / 1e3
+			ms.Values = append(ms.Values, Sample{stamp, strconv.FormatFloat(r.Value, 'f', -1, 64)})
+		}
+		out = append(out, ms)
+	}
+	return out
 }
 
 func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
@@ -304,13 +393,30 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Parse up front: the expression type gate below and the scalar
+	// fold both need the AST. Mirrors upstream Prometheus's
+	// web/api/v1.queryRange ordering (parse → type check → engine).
+	expr, err := h.parseExpr(r.Context(), q)
+	if err != nil {
+		h.respondError(w, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest})
+		return
+	}
+
+	// Range queries accept only Scalar / instant Vector expressions —
+	// matrix- and string-typed expressions are rejected with the
+	// upstream error shape (web/api/v1's invalidExprError). Without
+	// this gate a top-level `up[5m]` would lower fine (the instant
+	// matrix path) and silently return rows upstream refuses.
+	if t := expr.Type(); t != promparser.ValueTypeVector && t != promparser.ValueTypeScalar {
+		writeError(w, http.StatusBadRequest, ErrBadData,
+			fmt.Errorf("invalid expression type %q for range query, must be Scalar or instant Vector", promparser.DocumentedType(t)))
+		return
+	}
+
 	// Scalar-only PromQL → matrix of one series at every step holding
 	// the folded constant. Matches Prom's `1+1` over query_range
 	// (single series, no labels, every step bucket populated).
-	if value, ok, err := h.tryScalarFold(r.Context(), q); err != nil {
-		h.respondError(w, err)
-		return
-	} else if ok {
+	if value, ok := promql.TryFoldScalar(expr); ok {
 		writeJSON(w, http.StatusOK, Response{
 			Status: "success",
 			Data:   &QueryData{ResultType: "matrix", Result: scalarMatrix(value, start, end, step)},
@@ -339,20 +445,6 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 		Status: "success",
 		Data:   &QueryData{ResultType: "matrix", Result: result},
 	})
-}
-
-// tryScalarFold parses the query and, if it's a scalar-only expression
-// (NumberLiteral, ParenExpr around scalars, scalar arithmetic), returns
-// the folded constant. The bool reports whether folding succeeded; the
-// error covers parse failures (the same `bad_data` 400 envelope the
-// normal path would return).
-func (h *Handler) tryScalarFold(ctx context.Context, query string) (float64, bool, error) {
-	expr, err := h.parseExpr(ctx, query)
-	if err != nil {
-		return 0, false, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
-	}
-	val, ok := promql.TryFoldScalar(expr)
-	return val, ok, nil
 }
 
 // parseExpr wraps the prom parser in a `parse` pipeline-stage span. The
