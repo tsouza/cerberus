@@ -4981,7 +4981,7 @@
             "type": "prometheus",
             "uid": "cerberus-prometheus"
           },
-          "description": "Cerberus rejects `pi()` today; this panel pins the rejection.",
+          "description": "Cerberus folds `pi()` to its scalar constant on the handler scalar-fold path.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -5063,11 +5063,11 @@
               "refId": "A"
             }
           ],
-          "title": "pi \u2014 parity rejection",
+          "title": "pi",
           "type": "timeseries",
           "cerberus": {
-            "expect": "error:not yet supported",
-            "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the moment lowering support lands, this panel fails the sweep and the contract must be upgraded to nonempty."
+            "expect": "nonempty",
+            "why": "Cerberus implements this construct; the panel asserts a live nonempty result. Previously a bidirectional parity pin in the rejection row \u2014 lowering/emitter support has landed, so the contract is upgraded to nonempty per its own ratchet."
           }
         },
         {
@@ -5921,7 +5921,7 @@
             "type": "prometheus",
             "uid": "cerberus-prometheus"
           },
-          "description": "Cerberus rejects `histogram_avg(showcase_latency_exp_hist)` today; this panel pins the rejection.",
+          "description": "Cerberus computes `histogram_avg` over the OTel exponential-histogram metric.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -6003,11 +6003,11 @@
               "refId": "A"
             }
           ],
-          "title": "histogram_avg \u2014 parity rejection",
+          "title": "histogram_avg",
           "type": "timeseries",
           "cerberus": {
-            "expect": "error:not yet supported",
-            "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the moment lowering support lands, this panel fails the sweep and the contract must be upgraded to nonempty."
+            "expect": "nonempty",
+            "why": "Cerberus implements this construct; the panel asserts a live nonempty result. Previously a bidirectional parity pin in the rejection row \u2014 lowering/emitter support has landed, so the contract is upgraded to nonempty per its own ratchet."
           }
         },
         {
@@ -6015,7 +6015,7 @@
             "type": "prometheus",
             "uid": "cerberus-prometheus"
           },
-          "description": "Cerberus rejects `histogram_count(showcase_latency_exp_hist)` today; this panel pins the rejection.",
+          "description": "Cerberus computes `histogram_count` over the OTel exponential-histogram metric.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -6097,11 +6097,11 @@
               "refId": "A"
             }
           ],
-          "title": "histogram_count \u2014 parity rejection",
+          "title": "histogram_count",
           "type": "timeseries",
           "cerberus": {
-            "expect": "error:not yet supported",
-            "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the moment lowering support lands, this panel fails the sweep and the contract must be upgraded to nonempty."
+            "expect": "nonempty",
+            "why": "Cerberus implements this construct; the panel asserts a live nonempty result. Previously a bidirectional parity pin in the rejection row \u2014 lowering/emitter support has landed, so the contract is upgraded to nonempty per its own ratchet."
           }
         },
         {
@@ -6109,7 +6109,7 @@
             "type": "prometheus",
             "uid": "cerberus-prometheus"
           },
-          "description": "Cerberus rejects `histogram_sum(showcase_latency_exp_hist)` today; this panel pins the rejection.",
+          "description": "Cerberus computes `histogram_sum` over the OTel exponential-histogram metric.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -6191,11 +6191,11 @@
               "refId": "A"
             }
           ],
-          "title": "histogram_sum \u2014 parity rejection",
+          "title": "histogram_sum",
           "type": "timeseries",
           "cerberus": {
-            "expect": "error:not yet supported",
-            "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the moment lowering support lands, this panel fails the sweep and the contract must be upgraded to nonempty."
+            "expect": "nonempty",
+            "why": "Cerberus implements this construct; the panel asserts a live nonempty result. Previously a bidirectional parity pin in the rejection row \u2014 lowering/emitter support has landed, so the contract is upgraded to nonempty per its own ratchet."
           }
         },
         {
@@ -6203,7 +6203,7 @@
             "type": "prometheus",
             "uid": "cerberus-prometheus"
           },
-          "description": "Cerberus rejects `histogram_stddev(showcase_latency_exp_hist)` today; this panel pins the rejection.",
+          "description": "Cerberus computes `histogram_stddev` over the OTel exponential-histogram metric.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -6285,11 +6285,11 @@
               "refId": "A"
             }
           ],
-          "title": "histogram_stddev \u2014 parity rejection",
+          "title": "histogram_stddev",
           "type": "timeseries",
           "cerberus": {
-            "expect": "error:not yet supported",
-            "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the moment lowering support lands, this panel fails the sweep and the contract must be upgraded to nonempty."
+            "expect": "nonempty",
+            "why": "Cerberus implements this construct; the panel asserts a live nonempty result. Previously a bidirectional parity pin in the rejection row \u2014 lowering/emitter support has landed, so the contract is upgraded to nonempty per its own ratchet."
           }
         },
         {
@@ -6297,7 +6297,7 @@
             "type": "prometheus",
             "uid": "cerberus-prometheus"
           },
-          "description": "Cerberus rejects `histogram_stdvar(showcase_latency_exp_hist)` today; this panel pins the rejection.",
+          "description": "Cerberus computes `histogram_stdvar` over the OTel exponential-histogram metric.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -6379,11 +6379,11 @@
               "refId": "A"
             }
           ],
-          "title": "histogram_stdvar \u2014 parity rejection",
+          "title": "histogram_stdvar",
           "type": "timeseries",
           "cerberus": {
-            "expect": "error:not yet supported",
-            "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the moment lowering support lands, this panel fails the sweep and the contract must be upgraded to nonempty."
+            "expect": "nonempty",
+            "why": "Cerberus implements this construct; the panel asserts a live nonempty result. Previously a bidirectional parity pin in the rejection row \u2014 lowering/emitter support has landed, so the contract is upgraded to nonempty per its own ratchet."
           }
         },
         {
@@ -6391,7 +6391,7 @@
             "type": "prometheus",
             "uid": "cerberus-prometheus"
           },
-          "description": "Cerberus rejects `histogram_fraction(0, 0.5, showcase_latency_exp_hist)` today; this panel pins the rejection.",
+          "description": "Cerberus computes `histogram_fraction` over the OTel exponential-histogram metric.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -6473,11 +6473,11 @@
               "refId": "A"
             }
           ],
-          "title": "histogram_fraction \u2014 parity rejection",
+          "title": "histogram_fraction",
           "type": "timeseries",
           "cerberus": {
-            "expect": "error:not yet supported",
-            "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the moment lowering support lands, this panel fails the sweep and the contract must be upgraded to nonempty."
+            "expect": "nonempty",
+            "why": "Cerberus implements this construct; the panel asserts a live nonempty result. Previously a bidirectional parity pin in the rejection row \u2014 lowering/emitter support has landed, so the contract is upgraded to nonempty per its own ratchet."
           }
         },
         {
@@ -6767,7 +6767,7 @@
             "type": "prometheus",
             "uid": "cerberus-prometheus"
           },
-          "description": "Cerberus rejects `up atan2 up` today; this panel pins the rejection.",
+          "description": "Cerberus lowers the `atan2` binary operator to ClickHouse's `atan2(l, r)`.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -6849,11 +6849,11 @@
               "refId": "A"
             }
           ],
-          "title": "atan2 \u2014 parity rejection",
+          "title": "atan2",
           "type": "timeseries",
           "cerberus": {
-            "expect": "error:atan2 unsupported",
-            "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the moment lowering support lands, this panel fails the sweep and the contract must be upgraded to nonempty."
+            "expect": "nonempty",
+            "why": "Cerberus implements this construct; the panel asserts a live nonempty result. Previously a bidirectional parity pin in the rejection row \u2014 lowering/emitter support has landed, so the contract is upgraded to nonempty per its own ratchet."
           }
         },
         {
