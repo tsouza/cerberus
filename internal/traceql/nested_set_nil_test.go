@@ -7,6 +7,7 @@ import (
 
 	tempo "github.com/grafana/tempo/pkg/traceql"
 
+	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/traceql"
 	"github.com/tsouza/cerberus/test/spec"
@@ -14,69 +15,34 @@ import (
 
 // The happy paths for the nested-set root idiom and nil comparisons are
 // pinned by TXTAR fixtures (nested_set_parent_root / _nonroot,
-// attr_not_nil / attr_eq_nil). This file pins the REJECTION surface:
-// every comparison that would need real nested-set positions (which the
-// OTel-CH schema does not materialise) must fail at lower time with a
-// descriptive error rather than mis-lower to a SpanAttributes map
-// lookup (the pre-fix behaviour, which produced a ClickHouse
-// `Cannot parse Float64 from String` execution error on every Traces
-// Drilldown query — Grafana 12.x stamps `nestedSetParent<0` on each).
-func TestLower_NestedSetUnsupportedShapes(t *testing.T) {
+// attr_not_nil / attr_eq_nil). This file pins the POSITION-DEPENDENT
+// surface: comparisons whose truth needs the real nested-set position
+// (not just root-ness) are answered by recomputing the numbering at
+// query time via a NestedSetAnnotate pass over the
+// (TraceId, SpanId, ParentSpanId) adjacency — reference Tempo
+// materialises the same positions at ingest and `/api/search` accepts
+// every one of these (the rejection-parity layer flagged the old 422s
+// as wrong_rejections). Each must lower to a Filter over a
+// NestedSetAnnotate referencing the synthetic position column.
+func TestLower_NestedSetPositionShapes(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelTraces()
 	cases := []struct {
 		name    string
 		query   string
-		wantSub string
+		wantCol string
 	}{
-		{
-			name:    "position_equality_needs_real_positions",
-			query:   `{ nestedSetParent = 5 }`,
-			wantSub: "nested-set positions",
-		},
-		{
-			name:    "position_range_needs_real_positions",
-			query:   `{ nestedSetParent > 2 }`,
-			wantSub: "nested-set positions",
-		},
-		// The four v=1 boundary rejections below pin the exact `v < 1`
-		// guards in nonRootCmpConstant: position 1 is the smallest
-		// real non-root position, so each of these predicates is true
-		// for some non-root spans and false for others — un-lowerable
-		// without materialised positions. A CONDITIONALS_BOUNDARY
-		// mutant (`v < 1` → `v <= 1`) silently lowers each of them to
-		// a wrong constant / root-ness predicate instead of erroring.
-		{
-			name:    "position_eq_one_needs_real_positions",
-			query:   `{ nestedSetParent = 1 }`,
-			wantSub: "nested-set positions",
-		},
-		{
-			name:    "position_ne_one_needs_real_positions",
-			query:   `{ nestedSetParent != 1 }`,
-			wantSub: "nested-set positions",
-		},
-		{
-			name:    "position_le_one_needs_real_positions",
-			query:   `{ nestedSetParent <= 1 }`,
-			wantSub: "nested-set positions",
-		},
-		{
-			name:    "position_gt_one_needs_real_positions",
-			query:   `{ nestedSetParent > 1 }`,
-			wantSub: "nested-set positions",
-		},
-		{
-			name:    "nested_set_left_unsupported",
-			query:   `{ nestedSetLeft > 0 }`,
-			wantSub: "unsupported",
-		},
-		{
-			name:    "nested_set_right_unsupported",
-			query:   `{ nestedSetRight > 0 }`,
-			wantSub: "unsupported",
-		},
+		{"position_equality", `{ nestedSetParent = 5 }`, chplan.NestedSetParentColumn},
+		{"position_range", `{ nestedSetParent > 2 }`, chplan.NestedSetParentColumn},
+		{"position_eq_one", `{ nestedSetParent = 1 }`, chplan.NestedSetParentColumn},
+		{"position_ne_one", `{ nestedSetParent != 1 }`, chplan.NestedSetParentColumn},
+		{"position_le_one", `{ nestedSetParent <= 1 }`, chplan.NestedSetParentColumn},
+		{"position_gt_one", `{ nestedSetParent > 1 }`, chplan.NestedSetParentColumn},
+		{"nested_set_left", `{ nestedSetLeft > 0 }`, chplan.NestedSetLeftColumn},
+		{"nested_set_right", `{ nestedSetRight > 0 }`, chplan.NestedSetRightColumn},
+		{"position_float", `{ nestedSetParent = 1.5 }`, chplan.NestedSetParentColumn},
+		{"position_vs_attr", `{ nestedSetParent = span.a }`, chplan.NestedSetParentColumn},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -85,12 +51,16 @@ func TestLower_NestedSetUnsupportedShapes(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Parse(%q): %v", tc.query, err)
 			}
-			_, err = traceql.Lower(context.Background(), expr, s)
-			if err == nil {
-				t.Fatalf("Lower(%q) succeeded; want error containing %q", tc.query, tc.wantSub)
+			plan, err := traceql.Lower(context.Background(), expr, s)
+			if err != nil {
+				t.Fatalf("Lower(%q): %v — position comparisons must lower via the annotation pass", tc.query, err)
 			}
-			if !strings.Contains(err.Error(), tc.wantSub) {
-				t.Errorf("Lower(%q) error %q does not contain %q", tc.query, err, tc.wantSub)
+			printed := spec.PrintChplan(plan)
+			if !strings.Contains(printed, "NestedSetAnnotate") {
+				t.Errorf("Lower(%q) plan:\n%s\nwant a NestedSetAnnotate node backing the position comparison", tc.query, printed)
+			}
+			if !strings.Contains(printed, tc.wantCol) {
+				t.Errorf("Lower(%q) plan:\n%s\nwant a reference to synthetic column %s", tc.query, printed, tc.wantCol)
 			}
 		})
 	}

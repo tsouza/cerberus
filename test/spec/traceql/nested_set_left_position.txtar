@@ -1,0 +1,36 @@
+Position-dependent nested-set comparison in a SpansetFilter. Reference
+Tempo materialises the left/right/parent bounds at ingest; the OTel-CH
+schema has no equivalent columns, so cerberus recomputes the DFS
+numbering at query time via a NestedSetAnnotate pass and filters on the
+synthetic column. `{ nestedSetLeft > 0 }` keeps every numbered span — a
+disconnected span (parent id matches no row) numbers 0/0/0 and is
+excluded.
+
+-- query.traceql --
+{ nestedSetLeft > 0 }
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    ParentSpanId String,
+    Timestamp DateTime64(9)
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    ('a0000000000000000000000000000001', '1000000000000001', '', toDateTime64('2026-01-01 00:00:00.000000001', 9)),
+    ('a0000000000000000000000000000001', '1000000000000002', '1000000000000001', toDateTime64('2026-01-01 00:00:00.000000002', 9)),
+    ('a0000000000000000000000000000001', '1000000000000003', '1000000000000001', toDateTime64('2026-01-01 00:00:00.000000003', 9)),
+    ('a0000000000000000000000000000001', '100000000000000f', 'ffffffffffffffff', toDateTime64('2026-01-01 00:00:00.000000005', 9));
+-- expected_rows --
+[
+  ["a0000000000000000000000000000001", "1000000000000001", "", "2026-01-01T00:00:00.000000001Z", 1, 6, -1],
+  ["a0000000000000000000000000000001", "1000000000000002", "1000000000000001", "2026-01-01T00:00:00.000000002Z", 2, 3, 1],
+  ["a0000000000000000000000000000001", "1000000000000003", "1000000000000001", "2026-01-01T00:00:00.000000003Z", 4, 5, 1]
+]
+-- args --
+[0] int64 = 0
+-- chplan --
+Filter predicate=(__cerberus_ns_left > 0)
+  NestedSetAnnotate table=otel_traces
+    Scan(otel_traces)
+-- sql --
+SELECT * FROM (SELECT m.*, ifNull(`ns`.`_ns_left`, 0) AS `__cerberus_ns_left`, ifNull(`ns`.`_ns_right`, 0) AS `__cerberus_ns_right`, ifNull(`ns`.`_ns_parent`, 0) AS `__cerberus_ns_parent` FROM (SELECT * FROM `otel_traces`) AS m LEFT JOIN (WITH RECURSIVE _cerberus_ns_paths AS (SELECT `TraceId`, `SpanId`, `ParentSpanId`, concat(leftPad(toString(toUnixTimestamp64Nano(`Timestamp`)), 20, '0'), leftPad(toString(sipHash64(`SpanId`)), 20, '0')) AS `_path` FROM `otel_traces` WHERE `ParentSpanId` = '' AND `TraceId` IN (SELECT `TraceId` FROM (SELECT * FROM `otel_traces`)) UNION ALL SELECT t.`TraceId`, t.`SpanId`, t.`ParentSpanId`, concat(c.`_path`, concat(leftPad(toString(toUnixTimestamp64Nano(`t`.`Timestamp`)), 20, '0'), leftPad(toString(sipHash64(`t`.`SpanId`)), 20, '0'))) FROM `otel_traces` AS t INNER JOIN `_cerberus_ns_paths` AS c ON t.`TraceId` = c.`TraceId` AND t.`ParentSpanId` = c.`SpanId`) SELECT `TraceId`, `SpanId`, toInt64(maxIf(`_erank`, `_etype` = 0)) AS `_ns_left`, toInt64(maxIf(`_erank`, `_etype` = 2)) AS `_ns_right`, if(countIf(`_etype` = 1) = 0, toInt64(-1), toInt64(maxIf(`_keyrank`, `_etype` = 1))) AS `_ns_parent` FROM (SELECT `TraceId`, `SpanId`, `_etype`, `_erank`, first_value(`_erank`) OVER (PARTITION BY `TraceId`, `_ekey` ORDER BY `_etype` ASC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS `_keyrank` FROM (SELECT `TraceId`, `SpanId`, `_ekey`, `_etype`, sum(`_etype` != 1) OVER (PARTITION BY `TraceId` ORDER BY `_ekey` ASC, `_etype` ASC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS `_erank` FROM (SELECT `TraceId`, `SpanId`, `_ev`.1 AS `_ekey`, `_ev`.2 AS `_etype` FROM `_cerberus_ns_paths` ARRAY JOIN arrayFilter(e -> NOT (e.2 = 1 AND e.1 = ''), [(`_path`, 0), (concat(`_path`, '~'), 2), (substring(`_path`, 1, length(`_path`) - 40), 1)]) AS `_ev`))) GROUP BY `TraceId`, `SpanId`) AS ns ON m.`TraceId` = ns.`TraceId` AND m.`SpanId` = ns.`SpanId`) WHERE (`__cerberus_ns_left` > ?)

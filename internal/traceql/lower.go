@@ -566,11 +566,55 @@ func lowerSpansetFilter(f *traceql.SpansetFilter, s schema.Traces) (chplan.Node,
 	if err != nil {
 		return nil, err
 	}
-	scan := &chplan.Scan{Table: s.SpansTable}
-	if pred == nil {
-		return scan, nil
+	var input chplan.Node = &chplan.Scan{Table: s.SpansTable}
+	// A position-dependent nested-set comparison
+	// (`nestedSetParent = 5`, `nestedSetLeft > 0`, …) lowers to a
+	// reference against a synthetic NestedSet*Column; back it with the
+	// recursive-numbering annotation pass so the column resolves to the
+	// real per-span position rather than an unknown identifier.
+	if predicateUsesNestedSetColumns(pred) {
+		input = &chplan.NestedSetAnnotate{
+			Input:              input,
+			SpansTable:         s.SpansTable,
+			TraceIDColumn:      s.TraceIDColumn,
+			SpanIDColumn:       s.SpanIDColumn,
+			ParentSpanIDColumn: s.ParentSpanIDColumn,
+			TimestampColumn:    s.TimestampColumn,
+		}
 	}
-	return &chplan.Filter{Input: scan, Predicate: pred}, nil
+	if pred == nil {
+		return input, nil
+	}
+	return &chplan.Filter{Input: input, Predicate: pred}, nil
+}
+
+// predicateUsesNestedSetColumns reports whether expr references any of
+// the synthetic nested-set columns the annotation pass materialises —
+// the signal lowerSpansetFilter uses to decide whether to wrap the scan
+// in a NestedSetAnnotate.
+func predicateUsesNestedSetColumns(expr chplan.Expr) bool {
+	switch v := expr.(type) {
+	case nil:
+		return false
+	case *chplan.ColumnRef:
+		switch v.Name {
+		case chplan.NestedSetLeftColumn, chplan.NestedSetRightColumn, chplan.NestedSetParentColumn:
+			return true
+		}
+		return false
+	case *chplan.Binary:
+		return predicateUsesNestedSetColumns(v.Left) || predicateUsesNestedSetColumns(v.Right)
+	case *chplan.FuncCall:
+		for _, a := range v.Args {
+			if predicateUsesNestedSetColumns(a) {
+				return true
+			}
+		}
+		return false
+	case *chplan.FieldAccess:
+		return predicateUsesNestedSetColumns(v.Source)
+	}
+	return false
 }
 
 // lowerFieldExpr recursively translates a TraceQL FieldExpression into
@@ -1223,69 +1267,96 @@ func isNumericExpr(expr chplan.Expr) bool {
 // every span gets left/right interval bounds plus the parent's left
 // bound, with root spans carrying nestedSetParent == -1 and every
 // non-root span a positive position (>= 1). The OTel-CH schema has no
-// equivalent columns, so cerberus cannot reproduce position values —
-// but it CAN answer every comparison whose truth depends only on
-// root-ness, because root-ness maps exactly to `ParentSpanId = ”`.
+// equivalent columns, but cerberus recomputes the exact numbering at
+// query time from the (TraceId, SpanId, ParentSpanId) adjacency via
+// chplan.NestedSetAnnotate (see select.go / nested_set_annotate.go).
 //
-// That covers the documented root-span idiom `nestedSetParent < 0`
-// (what Grafana's Traces Drilldown app stamps on every query as its
-// primary-signal filter) and any other (op, literal) pair whose result
-// is constant across the positive non-root domain. Comparisons that
-// would need real positions (e.g. `nestedSetParent = 5`) error out —
-// surfacing the gap beats returning rows from wrong SQL.
+// Two lowering shapes result:
+//
+//   - The root-span idiom `nestedSetParent <op> <int>` whose truth
+//     depends only on root-ness (e.g. `nestedSetParent < 0`, what
+//     Grafana's Traces Drilldown stamps on every query) reduces to a
+//     cheap `ParentSpanId = ”` / `!= ”` test with no annotation pass.
+//   - Every other position-dependent comparison
+//     (`nestedSetParent = 5`, `nestedSetLeft > 0`,
+//     `nestedSetParent = span.a`, float literals, …) compares against
+//     the synthetic NestedSet*Column the annotation pass materialises.
+//     lowerSpansetFilter detects the synthetic column reference and
+//     wraps the scan in a NestedSetAnnotate so the recursive numbering
+//     CTE backs the column. This matches reference Tempo's content, not
+//     just its 2xx status.
 //
 // Returns handled=false when neither side references a nested-set
 // intrinsic (the caller continues with generic lowering).
 func lowerNestedSetBinary(b *traceql.BinaryOperation, op chplan.BinaryOp, s schema.Traces) (chplan.Expr, bool, error) {
-	attr, lit, flipped := traceql.Attribute{}, traceql.Static{}, false
+	var attr traceql.Attribute
+	var other traceql.FieldExpression
+	flipped := false
 	if a, ok := nestedSetIntrinsicAttr(b.LHS); ok {
-		st, ok := fieldExprStatic(b.RHS)
-		if !ok {
-			return nil, true, fmt.Errorf("traceql: %s comparisons support only integer literals", a.Intrinsic)
-		}
-		attr, lit = a, st
+		attr, other = a, b.RHS
 	} else if a, ok := nestedSetIntrinsicAttr(b.RHS); ok {
-		st, ok := fieldExprStatic(b.LHS)
-		if !ok {
-			return nil, true, fmt.Errorf("traceql: %s comparisons support only integer literals", a.Intrinsic)
-		}
-		attr, lit, flipped = a, st, true
+		attr, other, flipped = a, b.LHS, true
 	} else {
 		return nil, false, nil
 	}
-
-	if attr.Intrinsic != traceql.IntrinsicNestedSetParent {
-		return nil, true, fmt.Errorf("traceql: intrinsic %s is unsupported — the OTel ClickHouse schema does not materialise nested-set positions", attr.Intrinsic)
-	}
-	if lit.Type != traceql.TypeInt {
-		return nil, true, fmt.Errorf("traceql: nestedSetParent comparisons support only integer literals, got %s", lit.Type)
-	}
-	v64, _ := lit.Int()
-	v := int64(v64)
 	if flipped {
 		op = flipComparisonOp(op)
 	}
 
-	root, err := evalIntCmp(-1, op, v)
+	// Fast path: a `nestedSetParent <op> <int-literal>` comparison whose
+	// truth is constant across the non-root position domain reduces to a
+	// ParentSpanId root-ness test (root parent = -1, every non-root
+	// position >= 1) — no recursive numbering needed.
+	if attr.Intrinsic == traceql.IntrinsicNestedSetParent {
+		if lit, ok := fieldExprStatic(other); ok && lit.Type == traceql.TypeInt {
+			if expr, ok := rootnessReduction(op, lit, s); ok {
+				return expr, true, nil
+			}
+		}
+	}
+
+	// General path: compare against the synthetic nested-set column the
+	// annotation pass materialises. The other operand lowers normally
+	// (literal, span attribute, …); numeric coercion wraps any Map
+	// subscript so an `= span.a` comparison resolves Int64-vs-Float.
+	col, ok := nestedSetColumn(attr.Intrinsic)
+	if !ok {
+		return nil, true, fmt.Errorf("traceql: intrinsic %s is not a nested-set position", attr.Intrinsic)
+	}
+	rhs, err := lowerFieldExpr(other, s)
 	if err != nil {
 		return nil, true, err
 	}
+	left := chplan.Expr(&chplan.ColumnRef{Name: col})
+	left, rhs = coerceNumericFieldAccess(op, left, rhs)
+	return &chplan.Binary{Op: op, Left: left, Right: rhs}, true, nil
+}
+
+// rootnessReduction returns the cheap ParentSpanId-based predicate for a
+// `nestedSetParent <op> <int>` comparison whose result is constant
+// across the non-root position domain (positions >= 1), or ok=false
+// when the comparison genuinely depends on the position value (and must
+// therefore go through the annotation pass).
+func rootnessReduction(op chplan.BinaryOp, lit traceql.Static, s schema.Traces) (chplan.Expr, bool) {
+	v64, _ := lit.Int()
+	v := int64(v64)
+	root, err := evalIntCmp(-1, op, v)
+	if err != nil {
+		return nil, false
+	}
 	nonRoot, constant := nonRootCmpConstant(op, v)
 	if !constant {
-		return nil, true, fmt.Errorf("traceql: nestedSetParent %s %d depends on nested-set positions the OTel ClickHouse schema does not materialise — only root-ness tests (e.g. nestedSetParent < 0) are supported", op, v)
+		return nil, false
 	}
-
 	parentCol := &chplan.ColumnRef{Name: s.ParentSpanIDColumn}
 	empty := &chplan.LitString{V: ""}
 	switch {
 	case root && !nonRoot:
-		return &chplan.Binary{Op: chplan.OpEq, Left: parentCol, Right: empty}, true, nil
+		return &chplan.Binary{Op: chplan.OpEq, Left: parentCol, Right: empty}, true
 	case !root && nonRoot:
-		return &chplan.Binary{Op: chplan.OpNe, Left: parentCol, Right: empty}, true, nil
+		return &chplan.Binary{Op: chplan.OpNe, Left: parentCol, Right: empty}, true
 	default:
-		// Same truth value for root and non-root spans — the predicate
-		// is constant over the whole table.
-		return &chplan.LitBool{V: root}, true, nil
+		return &chplan.LitBool{V: root}, true
 	}
 }
 
