@@ -56,6 +56,7 @@ import {
 } from '@playwright/test';
 
 import {
+  awaitSelfTelemetryRangeSignal,
   generateSelfTraffic,
   iterateDashboards,
   type Dashboard,
@@ -171,6 +172,11 @@ test('lints: histogram families behind quantile panels are non-degenerate + mult
   testInfo.setTimeout(5 * 60_000);
 
   await generateSelfTraffic(request, SEED_TRAFFIC_SECONDS);
+  // Both lints judge rate()-over-range shapes; on a freshly-booted
+  // stack the telemetry export cadence can lag the seed traffic (see
+  // awaitSelfTelemetryRangeSignal). The bounded wait keeps the
+  // judged-input assertions below honest without a boot race.
+  await awaitSelfTelemetryRangeSignal(request);
 
   const dashboards = await iterateDashboards(request, baseURL());
   const failures: string[] = [];
@@ -185,6 +191,7 @@ test('lints: histogram families behind quantile panels are non-degenerate + mult
     'at least one provisioned quantile panel consumes a classic histogram family',
   ).toBeGreaterThan(0);
 
+  let judgedFamilies = 0;
   for (const { dsUid, family, where } of [...families.values()].sort((a, b) =>
     `${a.dsUid}|${a.family}`.localeCompare(`${b.dsUid}|${b.family}`),
   )) {
@@ -211,11 +218,12 @@ test('lints: histogram families behind quantile panels are non-degenerate + mult
       .sort((a, b) => a.le - b.le);
     const total = buckets[buckets.length - 1]?.cumulative ?? 0;
     if (total < HISTOGRAM_COUNT_FLOOR) {
-      // Below the floor the spread carries no signal; the run-level
-      // sanity assertion below catches a seed regression that would
-      // leave EVERY family under-observed.
+      // Below the floor the spread carries no signal; the
+      // judgedFamilies assertion after this loop catches a seed
+      // regression that would leave EVERY family under-observed.
       continue;
     }
+    judgedFamilies++;
     let populated = 0;
     let prev = 0;
     for (const b of buckets) {
@@ -232,10 +240,22 @@ test('lints: histogram families behind quantile panels are non-degenerate + mult
     }
   }
 
+  // Vacuous-pass guard: lint 1 silently `continue`s on under-floor
+  // families, so without this assertion a seed/export regression that
+  // starves EVERY family would let the lint pass having judged
+  // nothing. (This assertion was claimed by the loop comment from day
+  // one but only landed with the adversarial-verification fix.)
+  expect(
+    judgedFamilies,
+    `lint 1 judged no histogram family: all ${families.size} quantile-consumed families are below ` +
+      `the ${HISTOGRAM_COUNT_FLOOR}-observation floor after seed traffic — seed/export regression`,
+  ).toBeGreaterThan(0);
+
   // -------------------------------------------------------------------------
   // Lint 2 — identical-series suspicion across multi-quantile panels.
   // -------------------------------------------------------------------------
   let multiQuantilePanels = 0;
+  let comparedPanels = 0;
   for (const d of dashboards) {
     for (const p of d.panels) {
       const quantileTargets = p.targets
@@ -277,6 +297,7 @@ test('lints: histogram families behind quantile panels are non-degenerate + mult
         );
       }
       if (!allNonEmpty || canonicalSets.length < 2) continue;
+      comparedPanels++;
       const first = canonicalSets[0];
       if (canonicalSets.every((c) => c === first)) {
         failures.push(
@@ -292,6 +313,16 @@ test('lints: histogram families behind quantile panels are non-degenerate + mult
   expect(
     multiQuantilePanels,
     'at least one provisioned panel carries ≥2 distinct histogram_quantile targets (lint 2 has real input)',
+  ).toBeGreaterThan(0);
+  // Vacuous-pass guard, same shape as lint 1's: empty matrices make
+  // lint 2 `continue` (iterate-all-dashboards owns the nonempty
+  // contract — no double-report), so a regression emptying every
+  // multi-quantile panel would otherwise let the lint pass having
+  // compared nothing.
+  expect(
+    comparedPanels,
+    `lint 2 compared no panel: all ${multiQuantilePanels} multi-quantile panel(s) returned ≥1 empty ` +
+      `matrix over the probe window — the underlying series are gone (seed/export/query regression)`,
   ).toBeGreaterThan(0);
 
   if (failures.length > 0) {
