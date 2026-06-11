@@ -131,9 +131,12 @@ func Load(dir string) ([]Entry, error) {
 	return entries, nil
 }
 
-// loadEntry strictly decodes and validates one corpus file.
+// loadEntry strictly decodes and validates one corpus file. The path
+// is always a ReadDir-enumerated name joined under the embedded corpus
+// root (never caller input) — restated via Clean so gosec G304 can see
+// the containment.
 func loadEntry(path string) (Entry, error) {
-	buf, err := os.ReadFile(path)
+	buf, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return Entry{}, fmt.Errorf("consumercorpus: read %s: %w", path, err)
 	}
