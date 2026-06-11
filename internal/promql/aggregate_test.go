@@ -7,6 +7,7 @@ import (
 
 	"github.com/prometheus/prometheus/promql/parser"
 
+	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -105,24 +106,25 @@ func TestLower_Aggregate_Errors(t *testing.T) {
 			wantErr: "must be a scalar literal or scalar(<vector>)",
 		},
 		{
-			name:    "topk K must be non-negative integer",
-			query:   `topk(-1, up)`,
-			wantErr: "non-negative integer literal",
+			// Reference Prometheus errors on a NaN K ("Parameter value
+			// is NaN", promql/engine.go::rangeEvalAgg); K < 1 shapes are
+			// NOT errors — they return an empty result (covered by
+			// TestLowerTopK_KDomain).
+			name:    "topk K must not be NaN",
+			query:   `topk(NaN, up)`,
+			wantErr: "K must not be NaN",
 		},
 		{
-			name:    "topk K must be > 0",
-			query:   `topk(0, up)`,
-			wantErr: "K must be > 0",
+			// Reference Prometheus errors when K >= maxInt64 ("Scalar
+			// value %v overflows int64").
+			name:    "topk K must not overflow int64",
+			query:   `topk(1e300, up)`,
+			wantErr: "overflows int64",
 		},
 		{
 			name:    "count_values rejects empty label",
 			query:   `count_values("", up)`,
 			wantErr: "non-empty label name",
-		},
-		{
-			name:    "quantile needs scalar literal phi",
-			query:   `quantile(scalar(up), latency_seconds)`,
-			wantErr: "scalar literal phi",
 		},
 	}
 	for _, tc := range cases {
@@ -141,4 +143,66 @@ func TestLower_Aggregate_Errors(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestLowerTopK_KDomain pins the reference-faithful K parameter domain
+// for topk/bottomk (promql/engine.go::rangeEvalAgg + aggregationK in
+// the pinned tsouza/prometheus fork):
+//
+//   - K < 1 (0, negatives, sub-1 fractions, -Inf) → an EMPTY result,
+//     not an error: the lowering folds to a constant-false Filter over
+//     the lowered input so the canonical column shape survives.
+//   - Fractional K >= 1 truncates toward zero (`int64(fParam)`):
+//     topk(1.5, v) selects the top 1 series.
+func TestLowerTopK_KDomain(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	p := parser.NewParser(parser.Options{})
+
+	t.Run("K below one folds to constant-false filter", func(t *testing.T) {
+		t.Parallel()
+		for _, q := range []string{
+			`topk(0, up)`,
+			`topk(-1, up)`,
+			`topk(0.5, up)`,
+			`bottomk(0, up)`,
+		} {
+			expr, err := p.ParseExpr(q)
+			if err != nil {
+				t.Fatalf("ParseExpr(%q): %v", q, err)
+			}
+			plan, err := promql.Lower(context.Background(), expr, s)
+			if err != nil {
+				t.Fatalf("Lower(%q): %v", q, err)
+			}
+			f, ok := plan.(*chplan.Filter)
+			if !ok {
+				t.Fatalf("Lower(%q) = %T, want *chplan.Filter", q, plan)
+			}
+			lit, ok := f.Predicate.(*chplan.LitBool)
+			if !ok || lit.V {
+				t.Fatalf("Lower(%q) predicate = %#v, want LitBool{false}", q, f.Predicate)
+			}
+		}
+	})
+
+	t.Run("fractional K truncates toward zero", func(t *testing.T) {
+		t.Parallel()
+		expr, err := p.ParseExpr(`topk(1.5, up)`)
+		if err != nil {
+			t.Fatalf("ParseExpr: %v", err)
+		}
+		plan, err := promql.Lower(context.Background(), expr, s)
+		if err != nil {
+			t.Fatalf("Lower: %v", err)
+		}
+		tk, ok := plan.(*chplan.TopK)
+		if !ok {
+			t.Fatalf("Lower = %T, want *chplan.TopK", plan)
+		}
+		if tk.K != 1 {
+			t.Fatalf("K = %d, want 1 (int64 truncation of 1.5)", tk.K)
+		}
+	})
 }

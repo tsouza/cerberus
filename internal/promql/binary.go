@@ -497,6 +497,11 @@ func promBinaryOp(op parser.ItemType) (chplan.BinaryOp, error) {
 		return chplan.OpMod, nil
 	case parser.POW:
 		return chplan.OpPow, nil
+	case parser.ATAN2:
+		// `v1 atan2 v2` is an arithmetic binary operator in PromQL
+		// (introduced in Prom 2.31): per-pair `math.Atan2(l, r)` with
+		// the same matching / `__name__`-dropping rules as `+` / `*`.
+		return chplan.OpAtan2, nil
 	case parser.EQLC:
 		return chplan.OpEq, nil
 	case parser.NEQ:

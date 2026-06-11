@@ -71,11 +71,6 @@ func TestLower_PredictLinear_Errors(t *testing.T) {
 			wantErr: "expects 2 arguments",
 		},
 		{
-			name:    "non-scalar horizon",
-			query:   `predict_linear(http_requests_total[5m], scalar(other))`,
-			wantErr: "requires a scalar-literal predict horizon",
-		},
-		{
 			name:    "first arg must be range-vector",
 			query:   `predict_linear(up, 60)`,
 			wantErr: "must be a range-vector selector",
@@ -103,5 +98,44 @@ func TestLower_PredictLinear_Errors(t *testing.T) {
 				t.Fatalf("error %q does not contain %q", err.Error(), tc.wantErr)
 			}
 		})
+	}
+}
+
+// TestLower_PredictLinear_ComputedHorizon pins the computed-horizon
+// acceptance: `predict_linear(m[5m], scalar(x))` lowers into a
+// RangeWindow whose ScalarExprs slot carries the computed t (a
+// chplan.ScalarSubquery) instead of the literal Scalars slot —
+// reference Prometheus evaluates the horizon per query, so the old
+// scalar-literal-only rejection was a wrong rejection.
+func TestLower_PredictLinear_ComputedHorizon(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	p := parser.NewParser(parser.Options{})
+
+	expr, err := p.ParseExpr(`predict_linear(http_requests_total[5m], scalar(other))`)
+	if err != nil {
+		t.Fatalf("ParseExpr: %v", err)
+	}
+	plan, err := promql.Lower(context.Background(), expr, s)
+	if err != nil {
+		t.Fatalf("Lower: %v", err)
+	}
+	rw, ok := plan.(*chplan.RangeWindow)
+	if !ok {
+		t.Fatalf("plan = %T, want *chplan.RangeWindow", plan)
+	}
+	if len(rw.ScalarExprs) != 1 || len(rw.Scalars) != 0 {
+		t.Fatalf("ScalarExprs=%d Scalars=%d, want 1 / 0", len(rw.ScalarExprs), len(rw.Scalars))
+	}
+	if _, ok := rw.ScalarExprs[0].(*chplan.ScalarSubquery); !ok {
+		t.Fatalf("ScalarExprs[0] = %T, want *chplan.ScalarSubquery", rw.ScalarExprs[0])
+	}
+	sql, _, err := chsql.Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if !strings.Contains(sql, "simpleLinearRegression") {
+		t.Fatalf("emitted SQL missing simpleLinearRegression:\n%s", sql)
 	}
 }

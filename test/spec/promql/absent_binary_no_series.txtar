@@ -1,0 +1,48 @@
+-- query.promql --
+absent(up + up)
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- expected_rows --
+[
+  ["", {}, "2026-01-01T00:00:01Z", 1]
+]
+-- args --
+[0] string = ""
+[1] string = "Map(String,String)"
+[2] string = "2026-01-01 00:00:01.000000000"
+[3] int64 = 9
+[4] float64 = 1
+[5] string = ""
+[6] string = "up"
+[7] string = "2026-01-01 00:00:01.000000000"
+[8] int64 = 9
+[9] string = "2026-01-01 00:00:01.000000000"
+[10] int64 = 9
+[11] int64 = 300000000000
+[12] string = "up"
+[13] string = "2026-01-01 00:00:01.000000000"
+[14] int64 = 9
+[15] string = "2026-01-01 00:00:01.000000000"
+[16] int64 = 9
+[17] int64 = 300000000000
+[18] int64 = 0
+-- chplan --
+Project ["" AS MetricName, CAST(map(), "Map(String,String)") AS Attributes, toDateTime64("2026-01-01 00:00:01.000000000", 9) AS TimeUnix, 1 AS Value]
+  Filter predicate=(_cerb_n = 0)
+    Aggregate groupBy=[] funcs=[count() AS _cerb_n]
+      VectorJoin op=+ match=default card=one-to-one
+        Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
+          Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
+            Filter predicate=(((MetricName = "up") AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+              Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+        Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
+          Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
+            Filter predicate=(((MetricName = "up") AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+              Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+-- sql --
+SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, toDateTime64(?, ?) AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT * FROM (SELECT toFloat64(count()) AS `_cerb_n` FROM (SELECT ? AS `MetricName`, L.`Attributes` AS `Attributes`, L.`TimeUnix` AS `TimeUnix`, (L.`Value` + R.`Value`) AS `Value` FROM (SELECT `_join_MetricName` AS `MetricName`, `_join_Attributes` AS `Attributes`, `_join_TimeUnix` AS `TimeUnix`, `_join_Value` AS `Value` FROM (SELECT `MetricName` AS `_join_MetricName`, `Attributes` AS `_join_Attributes`, max(`TimeUnix`) AS `_join_TimeUnix`, argMax(`Value`, `TimeUnix`) AS `_join_Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`)) GROUP BY `MetricName`, `Attributes`)) AS L INNER JOIN (SELECT `_join_MetricName` AS `MetricName`, `_join_Attributes` AS `Attributes`, `_join_TimeUnix` AS `TimeUnix`, `_join_Value` AS `Value` FROM (SELECT `MetricName` AS `_join_MetricName`, `Attributes` AS `_join_Attributes`, max(`TimeUnix`) AS `_join_TimeUnix`, argMax(`Value`, `TimeUnix`) AS `_join_Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`)) GROUP BY `MetricName`, `Attributes`)) AS R ON L.`Attributes` = R.`Attributes`)) WHERE (`_cerb_n` = ?))

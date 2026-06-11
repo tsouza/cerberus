@@ -8,6 +8,7 @@ import (
 	"github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/tsouza/cerberus/internal/chplan"
+	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
 )
@@ -207,10 +208,13 @@ func TestLower_HistogramQuantile_NativeRoutingDisabled(t *testing.T) {
 	}
 }
 
-// TestLower_HistogramQuantile_NativeErrors mirrors the classic-path
-// rejection tests for completeness — the same parser-level guards
-// apply on both branches.
-func TestLower_HistogramQuantile_NativeErrors(t *testing.T) {
+// TestLower_HistogramQuantile_NativeComputedPhi pins the computed-phi
+// acceptance on the exp-histogram branch: `histogram_quantile(
+// scalar(x), my_exp_hist)` lowers into a HistogramQuantileNative whose
+// PhiExpr slot carries the scalar subquery — reference Prometheus
+// evaluates phi per query, so the old scalar-literal-only rejection
+// was a wrong rejection.
+func TestLower_HistogramQuantile_NativeComputedPhi(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
@@ -220,7 +224,66 @@ func TestLower_HistogramQuantile_NativeErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseExpr: %v", err)
 	}
-	if _, err := promql.Lower(context.Background(), expr, s); err == nil || !strings.Contains(err.Error(), "scalar-literal phi") {
-		t.Fatalf("expected scalar-literal phi error, got %v", err)
+	plan, err := promql.Lower(context.Background(), expr, s)
+	if err != nil {
+		t.Fatalf("Lower: %v", err)
+	}
+	pj, ok := plan.(*chplan.Project)
+	if !ok {
+		t.Fatalf("plan = %T, want *chplan.Project", plan)
+	}
+	hq, ok := pj.Input.(*chplan.HistogramQuantileNative)
+	if !ok {
+		t.Fatalf("Project input = %T, want *chplan.HistogramQuantileNative", pj.Input)
+	}
+	if hq.PhiExpr == nil {
+		t.Fatalf("PhiExpr is nil — computed phi must ride the PhiExpr slot")
+	}
+	sql, _, err := chsql.Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if !strings.Contains(sql, "isNaN(") {
+		t.Fatalf("computed-phi SQL missing the isNaN(phi) guard:\n%s", sql)
+	}
+}
+
+// TestLower_HistogramValueFns pins the native-histogram value-function
+// acceptance — histogram_count(up) and family were wrong rejections
+// (reference accepts any instant-vector argument and SKIPS float
+// samples). Selector args scan the exp-histogram table (non-native
+// names match no rows — the reference's empty result); non-selector
+// args fold to a constant-false Filter. The exact bucket arithmetic is
+// pinned by the chdb fixtures (histogram_{count,sum,avg,stddev,stdvar,
+// fraction}_exp.txtar) whose expected values were derived from the
+// pinned reference engine's simpleHistogramFunc / histogramVariance /
+// HistogramFraction.
+func TestLower_HistogramValueFns(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+
+	for _, q := range []string{
+		`histogram_count(up)`,
+		`histogram_sum(my_exp_hist)`,
+		`histogram_avg(my_exp_hist)`,
+		`histogram_stddev(my_exp_hist)`,
+		`histogram_stdvar(my_exp_hist)`,
+		`histogram_fraction(0.2, 0.8, my_exp_hist)`,
+		`histogram_fraction(scalar(low), scalar(high), my_exp_hist)`,
+		`histogram_count(sum(up))`,
+	} {
+		expr, err := p.ParseExpr(q)
+		if err != nil {
+			t.Fatalf("ParseExpr(%q): %v", q, err)
+		}
+		plan, err := promql.Lower(context.Background(), expr, s)
+		if err != nil {
+			t.Fatalf("Lower(%q): %v", q, err)
+		}
+		if _, _, err := chsql.Emit(context.Background(), plan); err != nil {
+			t.Fatalf("Emit(%q): %v", q, err)
+		}
 	}
 }

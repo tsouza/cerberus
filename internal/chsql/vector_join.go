@@ -475,9 +475,15 @@ func vectorJoinValueExprFrag(j *chplan.VectorJoin) Frag {
 		return As(left, j.ValueColumn)
 	}
 	var inner Frag
-	if j.Op == chplan.OpPow {
+	switch j.Op {
+	case chplan.OpPow:
 		inner = Call("pow", left, right)
-	} else {
+	case chplan.OpAtan2:
+		// PromQL `l atan2 r` is Go's math.Atan2(l, r); ClickHouse has
+		// no infix atan2 spelling, so render the function-call form —
+		// same posture as OpPow above and exprBinary's scalar path.
+		inner = Call("atan2", left, right)
+	default:
 		inner = Paren(binOp(string(j.Op), left, right))
 	}
 	if j.ReturnBool {

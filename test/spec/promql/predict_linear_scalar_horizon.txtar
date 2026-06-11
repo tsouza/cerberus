@@ -1,0 +1,44 @@
+-- query.promql --
+predict_linear(http_requests_total[5m], scalar(threshold) * 120)
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum VALUES
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:56:00', 9), 100),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:58:00', 9), 220),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 340);
+INSERT INTO otel_metrics_gauge VALUES
+    ('threshold', map('env', 'prod'), toDateTime64('2026-01-01 00:00:00', 9), 0.5);
+-- expected_rows --
+[
+  [{"job": "api"}, 401]
+]
+-- args --
+[0] int64 = 1
+[1] string = "threshold"
+[2] string = "2026-01-01 00:00:01.000000000"
+[3] int64 = 9
+[4] string = "2026-01-01 00:00:01.000000000"
+[5] int64 = 9
+[6] int64 = 300000000000
+[7] float64 = 120
+[8] string = "http_requests_total"
+[9] string = "http.requests.total"
+[10] string = "http.requests_total"
+[11] string = "http_requests.total"
+-- chplan --
+RangeWindow func=predict_linear range=5m0s step=0s ts=TimeUnix value=Value groupBy=[Attributes] scalarExprs=[(scalarSubquery{Project [if((_cerb_scnt = 1), _cerb_sval, NaN) AS Value] ; Aggregate groupBy=[] funcs=[count() AS _cerb_scnt, any(Value) AS _cerb_sval] ; Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value] ; Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value] ; Filter predicate=(((MetricName = "threshold") AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000)))) ; Scan(merge(otel_metrics_gauge|otel_metrics_sum))} * 120)]
+  Filter predicate=((((MetricName = "http_requests_total") OR (MetricName = "http.requests.total")) OR (MetricName = "http.requests_total")) OR (MetricName = "http_requests.total"))
+    Scan(otel_metrics_sum)
+-- sql --
+SELECT `Attributes`, if(length(window_pairs) > 1, tupleElement(arrayReduce('simpleLinearRegression', arrayMap(p -> dateDiff('second', now64(9), tupleElement(p, 1)), window_pairs), arrayMap(p -> tupleElement(p, 2), window_pairs)), 2) + tupleElement(arrayReduce('simpleLinearRegression', arrayMap(p -> dateDiff('second', now64(9), tupleElement(p, 1)), window_pairs), arrayMap(p -> tupleElement(p, 2), window_pairs)), 1) * ((SELECT if((`_cerb_scnt` = ?), `_cerb_sval`, (0.0/0)) AS `Value` FROM (SELECT toFloat64(count()) AS `_cerb_scnt`, any(`Value`) AS `_cerb_sval` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE (`MetricName` = ?) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`)))) * toFloat64(?)), nan) AS Value FROM (SELECT `Attributes`, arrayFilter(p -> tupleElement(p, 1) > now64(9) - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= now64(9), series_array) AS window_pairs FROM (SELECT `Attributes`, arraySort(groupArray((`TimeUnix`, `Value`))) AS series_array FROM (SELECT * FROM `otel_metrics_sum` WHERE ((((`MetricName` = ?) OR (`MetricName` = ?)) OR (`MetricName` = ?)) OR (`MetricName` = ?))) GROUP BY `Attributes`)) WHERE length(`window_pairs`) >= 2

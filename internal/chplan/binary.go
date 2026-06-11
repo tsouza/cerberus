@@ -21,6 +21,11 @@ const (
 	OpDiv      BinaryOp = "/"
 	OpMod      BinaryOp = "%"
 	OpPow      BinaryOp = "^"
+	// OpAtan2 is PromQL's `atan2` arithmetic binary operator
+	// (two-argument arctangent). ClickHouse has no infix spelling, so
+	// the emitter renders it as the `atan2(l, r)` function call —
+	// same posture as OpPow → pow(l, r).
+	OpAtan2 BinaryOp = "atan2"
 )
 
 // Binary is a binary-operator expression.

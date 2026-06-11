@@ -323,10 +323,25 @@ func (e *emitter) emitRangeWindow(r *chplan.RangeWindow) error {
 // The `t` scalar binds as a placeholder argument; range_seconds is
 // only used for the x-axis scale.
 func (e *emitter) emitRangeWindowPredictLinear(r *chplan.RangeWindow) error {
-	if len(r.Scalars) != 1 {
-		return fmt.Errorf("%w: predict_linear requires 1 scalar (t), got %d", ErrUnsupported, len(r.Scalars))
+	// The horizon t arrives either as a literal (Scalars) or as a
+	// computed expression (ScalarExprs — `predict_linear(v[r],
+	// scalar(x))`; a scalar subquery CH folds to a constant). NaN t
+	// propagates NaN through `intercept + slope * t`, matching Prom.
+	var writeT Frag
+	switch {
+	case len(r.ScalarExprs) == 1:
+		tExpr := r.ScalarExprs[0]
+		if err := (&Builder{}).Expr(tExpr); err != nil {
+			return err
+		}
+		writeT = func(b *Builder) { _ = b.Expr(tExpr) }
+	case len(r.Scalars) == 1:
+		t := r.Scalars[0]
+		writeT = func(b *Builder) { b.Arg(t) }
+	default:
+		return fmt.Errorf("%w: predict_linear requires 1 scalar (t), got %d literals + %d exprs",
+			ErrUnsupported, len(r.Scalars), len(r.ScalarExprs))
 	}
-	t := r.Scalars[0]
 	// In matrix mode each row carries its own anchor_ts; the anchor
 	// Frag the factory receives below renders the per-row anchor so the
 	// per-sample x-offset (dateDiff('second', anchor, sample_ts)) is
@@ -355,7 +370,7 @@ func (e *emitter) emitRangeWindowPredictLinear(r *chplan.RangeWindow) error {
 			b.sb.WriteString(", tupleElement(p, 1)), window_pairs), ")
 			b.sb.WriteString("arrayMap(p -> tupleElement(p, 2), window_pairs)")
 			b.sb.WriteString("), 1) * ")
-			b.Arg(t)
+			writeT(b)
 			b.sb.WriteString(", nan)")
 		}
 	}
@@ -569,16 +584,17 @@ func (e *emitter) emitWindowedArrayPairsMatrix(r *chplan.RangeWindow, valueWrite
 	if err != nil {
 		return err
 	}
+	innerSub, srcTs := fanoutTsSource(innerSub, r.TimestampColumn)
 
 	// Sample-fanout SELECT — one row per (sample, covered anchor).
 	fanout := NewQuery().From(innerSub)
 	for _, g := range groupFrags {
 		fanout.Select(g)
 	}
-	fanout.Select(Col(r.TimestampColumn))
+	fanout.Select(Col(srcTs))
 	fanout.Select(Col(r.ValueColumn))
 	fanout.Select(rawAs(
-		sampleAnchorFanoutFrag(end, Col(r.TimestampColumn), stepNS, rangeNS, numAnchors),
+		sampleAnchorFanoutFrag(end, Col(srcTs), stepNS, rangeNS, numAnchors),
 		"anchor_ts",
 	))
 
@@ -588,7 +604,7 @@ func (e *emitter) emitWindowedArrayPairsMatrix(r *chplan.RangeWindow, valueWrite
 		regroup.Select(g)
 	}
 	regroup.Select(Col("anchor_ts"))
-	regroup.Select(rawAs(groupArrayPairFrag(r.TimestampColumn, r.ValueColumn), "window_pairs"))
+	regroup.Select(rawAs(groupArrayPairFrag(srcTs, r.ValueColumn), "window_pairs"))
 	regroupKeys := make([]Frag, 0, len(groupFrags)+1)
 	regroupKeys = append(regroupKeys, groupFrags...)
 	regroupKeys = append(regroupKeys, Col("anchor_ts"))
@@ -634,6 +650,40 @@ func endExprFrag(r *chplan.RangeWindow) Frag {
 		}
 		base(b)
 	}
+}
+
+// fanoutTsSource resolves the per-sample timestamp column the matrix
+// fanout layers (the arrayJoin'd anchor expression + the regroup's
+// groupArray pairs) must reference, returning the possibly-wrapped
+// input Frag and the column name to use.
+//
+// The subtle case is a NESTED matrix shape — `irate(up[5m:1m])`,
+// `max_over_time(irate(m[5m:1m])[10m:1m])` — where the input relation
+// already exposes its per-sample timestamps under the fanout's own
+// `anchor_ts` output alias (the inner matrix emits anchor_ts and the
+// wrapping lowering sets TimestampColumn to it). Selecting the source
+// column bare alongside `arrayJoin(...) AS anchor_ts` makes the name
+// ambiguous one subquery up: CH resolves the regroup layer's
+// `groupArray((anchor_ts, Value))` against the FANNED alias, so every
+// pair in a window carries its group's anchor instead of the sample's
+// own timestamp. Order-insensitive reducers (max/avg/…) survive that
+// shadowing — pairwise ones don't (irate's `dateDiff(prev, last)`
+// becomes 0 → NaN).
+//
+// The rename happens on an interposed `SELECT *, anchor_ts AS _src_ts`
+// projection layer (NOT a lateral alias in the fanout SELECT itself —
+// CH's analyzer rejects referencing a same-SELECT alias from inside
+// the arrayJoin argument). The non-nested path returns the input
+// untouched (byte-stable fixtures).
+func fanoutTsSource(innerSub Frag, tsCol string) (Frag, string) {
+	if tsCol != "anchor_ts" {
+		return innerSub, tsCol
+	}
+	wrap := NewQuery().From(innerSub).Select(
+		Star(),
+		rawAs(Col("anchor_ts"), "_src_ts"),
+	)
+	return wrap.Frag(), "_src_ts"
 }
 
 // rawAs wraps a Frag in "<expr> AS <alias>" with the alias emitted
@@ -1929,16 +1979,72 @@ func irateValueExpr() string {
 }
 
 // emitRangeWindowQuantileOverTime emits SQL for
-// `quantile_over_time(phi, v[range])`. Phi rides on
-// RangeWindow.Scalars[0] and feeds CH's parameterised
+// `quantile_over_time(phi, v[range])`.
+//
+// Literal phi (RangeWindow.Scalars[0]) feeds CH's parameterised
 // `quantile(<phi>)(<arg>)` aggregate via `arrayReduce` — the only
 // way to apply a parameterised aggregate to an array literal inside
-// a SELECT expression without re-introducing an outer GROUP BY.
+// a SELECT expression without re-introducing an outer GROUP BY. Phi
+// is rendered inline as a CH literal (query shape, not user data).
+//
+// Computed phi (RangeWindow.ScalarExprs[0] — `quantile_over_time(
+// scalar(x), v[r])`) cannot ride arrayReduce's string-typed aggregate
+// name, so the emitter renders Prometheus's quantile() interpolation
+// (prometheus/promql/quantile.go) directly over the sorted window:
+//
+//	rank  = phi * (N - 1)
+//	lower = sorted[floor(rank)]        (0-based)
+//	upper = sorted[min(N-1, floor(rank)+1)]
+//	value = lower*(1-weight) + upper*weight, weight = rank-floor(rank)
+//
+// with the runtime domain rules Prom applies before interpolating:
+// NaN phi → NaN, phi < 0 → -Inf, phi > 1 → +Inf. (The literal path
+// resolves the same rules at lowering time via outOfRangePhiInf.)
 //
 // PromQL drops series when the window is empty (matches Prom's
-// funcQuantileOverTime). Phi is rendered inline as a CH literal
-// (query shape, not user data).
+// funcQuantileOverTime).
 func (e *emitter) emitRangeWindowQuantileOverTime(r *chplan.RangeWindow) error {
+	if len(r.ScalarExprs) == 1 {
+		phiE := r.ScalarExprs[0]
+		// Pre-flight so chplan errors surface synchronously.
+		if err := (&Builder{}).Expr(phiE); err != nil {
+			return err
+		}
+		writePhi := func(b *Builder) { _ = b.Expr(phiE) }
+		const (
+			sorted = "arraySort(window_vals)"
+			nMinus = "toFloat64(length(window_vals) - 1)"
+		)
+		writeRank := func(b *Builder) {
+			b.writeSQL("(")
+			writePhi(b)
+			b.writeSQL(" * " + nMinus + ")")
+		}
+		frag := func(b *Builder) {
+			b.writeSQL("multiIf(isNaN(")
+			writePhi(b)
+			b.writeSQL("), nan, ")
+			writePhi(b)
+			b.writeSQL(" < 0, (-1.0/0), ")
+			writePhi(b)
+			b.writeSQL(" > 1, (1.0/0), ")
+			// lower * (1 - weight) + upper * weight.
+			b.writeSQL(sorted + "[toUInt32(floor(")
+			writeRank(b)
+			b.writeSQL(")) + 1] * (1 - (")
+			writeRank(b)
+			b.writeSQL(" - floor(")
+			writeRank(b)
+			b.writeSQL("))) + " + sorted + "[toUInt32(least(" + nMinus + ", floor(")
+			writeRank(b)
+			b.writeSQL(") + 1)) + 1] * (")
+			writeRank(b)
+			b.writeSQL(" - floor(")
+			writeRank(b)
+			b.writeSQL(")))")
+		}
+		return e.emitWindowedArray(r, frag, 1)
+	}
 	if len(r.Scalars) != 1 {
 		return fmt.Errorf("%w: quantile_over_time requires 1 scalar (phi), got %d", ErrUnsupported, len(r.Scalars))
 	}
@@ -2137,16 +2243,17 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 	if err != nil {
 		return err
 	}
+	innerSub, srcTs := fanoutTsSource(innerSub, r.TimestampColumn)
 
 	// Sample-fanout SELECT — one row per (sample, covered anchor).
 	fanout := NewQuery().From(innerSub)
 	for _, g := range groupFrags {
 		fanout.Select(g)
 	}
-	fanout.Select(Col(r.TimestampColumn))
+	fanout.Select(Col(srcTs))
 	fanout.Select(Col(r.ValueColumn))
 	fanout.Select(As(
-		sampleAnchorFanoutFrag(end, Col(r.TimestampColumn), stepNS, rangeNS, numAnchors),
+		sampleAnchorFanoutFrag(end, Col(srcTs), stepNS, rangeNS, numAnchors),
 		"anchor_ts",
 	))
 
@@ -2156,7 +2263,7 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 		regroup.Select(g)
 	}
 	regroup.Select(Col("anchor_ts"))
-	regroup.Select(As(groupArrayPairFrag(r.TimestampColumn, r.ValueColumn), "window_pairs"))
+	regroup.Select(As(groupArrayPairFrag(srcTs, r.ValueColumn), "window_pairs"))
 	regroupKeys := make([]Frag, 0, len(groupFrags)+1)
 	regroupKeys = append(regroupKeys, groupFrags...)
 	regroupKeys = append(regroupKeys, Col("anchor_ts"))
@@ -2533,16 +2640,17 @@ func (e *emitter) emitWindowedArrayMatrix(r *chplan.RangeWindow, value Frag, min
 	if err != nil {
 		return err
 	}
+	innerSub, srcTs := fanoutTsSource(innerSub, r.TimestampColumn)
 
 	// Sample-fanout SELECT — one row per (sample, covered anchor).
 	fanout := NewQuery().From(innerSub)
 	for _, g := range groupFrags {
 		fanout.Select(g)
 	}
-	fanout.Select(Col(r.TimestampColumn))
+	fanout.Select(Col(srcTs))
 	fanout.Select(Col(r.ValueColumn))
 	fanout.Select(As(
-		sampleAnchorFanoutFrag(end, Col(r.TimestampColumn), stepNS, rangeNS, numAnchors),
+		sampleAnchorFanoutFrag(end, Col(srcTs), stepNS, rangeNS, numAnchors),
 		"anchor_ts",
 	))
 
@@ -2552,7 +2660,7 @@ func (e *emitter) emitWindowedArrayMatrix(r *chplan.RangeWindow, value Frag, min
 		regroup.Select(g)
 	}
 	regroup.Select(Col("anchor_ts"))
-	regroup.Select(As(groupArrayPairFrag(r.TimestampColumn, r.ValueColumn), "window_pairs"))
+	regroup.Select(As(groupArrayPairFrag(srcTs, r.ValueColumn), "window_pairs"))
 	regroupKeys := make([]Frag, 0, len(groupFrags)+1)
 	regroupKeys = append(regroupKeys, groupFrags...)
 	regroupKeys = append(regroupKeys, Col("anchor_ts"))

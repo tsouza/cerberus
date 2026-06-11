@@ -35,6 +35,15 @@ func TryFoldScalar(e parser.Expr) (float64, bool) {
 	switch v := e.(type) {
 	case *parser.NumberLiteral:
 		return v.Val, true
+	case *parser.Call:
+		// `pi()` is PromQL's only argument-less scalar constant
+		// function; fold it like a literal so `vector(pi())`,
+		// `up * pi()` and scalar-argument slots (`clamp_min(v, pi())`)
+		// all reduce without a ClickHouse round-trip.
+		if v.Func != nil && v.Func.Name == "pi" && len(v.Args) == 0 {
+			return math.Pi, true
+		}
+		return 0, false
 	case *parser.ParenExpr:
 		return TryFoldScalar(v.Expr)
 	case *parser.UnaryExpr:
@@ -99,6 +108,10 @@ func foldBinaryScalar(op parser.ItemType, lhs, rhs float64) (float64, bool) {
 		return math.Mod(lhs, rhs), true
 	case parser.POW:
 		return math.Pow(lhs, rhs), true
+	case parser.ATAN2:
+		// `1 atan2 2` — scalar atan2 folds like the other arithmetic
+		// ops; Prom evaluates it via math.Atan2(lhs, rhs).
+		return math.Atan2(lhs, rhs), true
 	}
 	return 0, false
 }

@@ -109,7 +109,8 @@ func TestQueryRange_RangeMode_SumAggregation_ChDB(t *testing.T) {
 	seedRows := make([]string, 0, wantSamples*2)
 	for i := 0; i < wantSamples; i++ {
 		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
-		seedRows = append(seedRows,
+		seedRows = append(
+			seedRows,
 			fmt.Sprintf(`('demo_memory_usage_bytes', map('instance', 'a'), toDateTime64('%s', 9), %d.0)`,
 				ts, 100+i),
 			fmt.Sprintf(`('demo_memory_usage_bytes', map('instance', 'b'), toDateTime64('%s', 9), %d.0)`,
@@ -156,7 +157,8 @@ func TestQueryRange_RangeMode_SumByLabel_ChDB(t *testing.T) {
 	for i := 0; i < wantSamples; i++ {
 		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
 		// api job — 3 instances, each Value=1.0 → sum=3.0
-		seedRows = append(seedRows,
+		seedRows = append(
+			seedRows,
 			fmt.Sprintf(`('up', map('job', 'api', 'instance', 'a'), toDateTime64('%s', 9), 1.0)`, ts),
 			fmt.Sprintf(`('up', map('job', 'api', 'instance', 'b'), toDateTime64('%s', 9), 1.0)`, ts),
 			fmt.Sprintf(`('up', map('job', 'api', 'instance', 'c'), toDateTime64('%s', 9), 1.0)`, ts),
@@ -1278,7 +1280,8 @@ func TestQueryRange_RangeMode_VVOnCompare_ChDB(t *testing.T) {
 	seedRows := make([]string, 0, wantSamples*2)
 	for i := 0; i < wantSamples; i++ {
 		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
-		seedRows = append(seedRows,
+		seedRows = append(
+			seedRows,
 			fmt.Sprintf(`('demo_memory_usage_bytes', map('instance', 'a', 'job', 'demo', 'type', 'used'), toDateTime64('%s', 9), 100.0)`, ts),
 			fmt.Sprintf(`('demo_memory_usage_bytes', map('instance', 'b', 'job', 'demo', 'type', 'used'), toDateTime64('%s', 9), 200.0)`, ts),
 		)
@@ -1421,7 +1424,8 @@ func TestQueryRange_RangeMode_VVOnCompareGroupLeft_ChDB(t *testing.T) {
 	seedRows := make([]string, 0, wantSamples*2)
 	for i := 0; i < wantSamples; i++ {
 		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
-		seedRows = append(seedRows,
+		seedRows = append(
+			seedRows,
 			fmt.Sprintf(`('demo_memory_usage_bytes', map('instance', 'a', 'job', 'demo', 'type', 'used'), toDateTime64('%s', 9), 100.0)`, ts),
 			fmt.Sprintf(`('demo_memory_usage_bytes', map('instance', 'b', 'job', 'demo', 'type', 'used'), toDateTime64('%s', 9), 200.0)`, ts),
 		)
@@ -1507,7 +1511,8 @@ func TestQueryRange_RangeMode_TopK_ChDB(t *testing.T) {
 	seedRows := make([]string, 0, wantSamples*6)
 	for i := 0; i < wantSamples; i++ {
 		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
-		seedRows = append(seedRows,
+		seedRows = append(
+			seedRows,
 			fmt.Sprintf(`('demo_memory_usage_bytes', map('instance', 's1', 'group', 'a'), toDateTime64('%s', 9), 10.0)`, ts),
 			fmt.Sprintf(`('demo_memory_usage_bytes', map('instance', 's2', 'group', 'a'), toDateTime64('%s', 9), 20.0)`, ts),
 			fmt.Sprintf(`('demo_memory_usage_bytes', map('instance', 's3', 'group', 'a'), toDateTime64('%s', 9), 30.0)`, ts),
@@ -1950,5 +1955,122 @@ func TestQueryRange_RangeMode_SubScrape_ChDB(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestQueryRange_RangeMode_SubqueryOverArbitraryExprs_ChDB pins the
+// range-mode (query_range) behaviour of the burndown's generalized
+// subquery shapes end-to-end: subqueries over aggregations of binary
+// expressions, stddev aggregations, computed-phi quantile, absent(),
+// and the nested-irate chain must emit per-step rows across the
+// REQUEST's window — the compat lane caught every one of these
+// returning [] because the inner matrix grids stayed anchored at
+// now64() instead of widening down the lowered plan's spine
+// (widenSubquerySpine), and absent() used the global table-emptiness
+// posture instead of reference Prometheus's per-anchor 5m-lookback
+// instant evaluation.
+func TestQueryRange_RangeMode_SubqueryOverArbitraryExprs_ChDB(t *testing.T) {
+	start := time.Date(2026, 1, 1, 1, 0, 0, 0, time.UTC)
+	end := start.Add(10 * time.Minute)
+	step := time.Minute
+
+	seedRows := make([]string, 0, 60)
+	for i := 0; i < 30; i++ {
+		ts := start.Add(time.Duration(i-10) * time.Minute).Format("2006-01-02 15:04:05.000000000")
+		seedRows = append(seedRows, fmt.Sprintf(
+			`('demo_memory_usage_bytes', map('instance', 'a'), toDateTime64('%s', 9), %d.0)`, ts, 100+i,
+		))
+		seedRows = append(seedRows, fmt.Sprintf(
+			`('demo_memory_usage_bytes', map('instance', 'b'), toDateTime64('%s', 9), %d.0)`, ts, 200+2*i,
+		))
+	}
+	seed := gaugeDDL + "\nINSERT INTO otel_metrics_gauge VALUES\n  " +
+		strings.Join(seedRows, ",\n  ") + ";"
+
+	srv, _ := newChDBServer(t, seed)
+
+	cases := []struct {
+		query string
+		// minSeries / minSamples assert "rows exist across the
+		// window" — the exact arithmetic is pinned by the instant-mode
+		// TXTAR fixtures; this test pins the range-mode grid plumbing.
+		minSeries  int
+		minSamples int
+	}{
+		{`max_over_time(sum(demo_memory_usage_bytes + demo_memory_usage_bytes)[5m:1m])`, 1, 8},
+		{`max_over_time(stddev(demo_memory_usage_bytes)[5m:1m])`, 1, 8},
+		{`max_over_time(quantile(scalar(vector(0.5)), demo_memory_usage_bytes)[5m:1m])`, 1, 8},
+		{`max_over_time((-demo_memory_usage_bytes)[5m:1m])`, 2, 8},
+		{`max_over_time(irate(demo_memory_usage_bytes[5m:1m])[10m:1m])`, 2, 8},
+		{`max_over_time(absent(absent_metric_name)[5m:1m])`, 1, 8},
+	}
+	for _, tc := range cases {
+		matrix := runRangeModeQueryRange(t, srv.URL, tc.query, start, end, step)
+		if len(matrix) < tc.minSeries {
+			t.Errorf("%q: %d series, want >= %d", tc.query, len(matrix), tc.minSeries)
+			continue
+		}
+		for _, series := range matrix {
+			if len(series.Values) < tc.minSamples {
+				t.Errorf("%q: series %v has %d samples, want >= %d",
+					tc.query, series.Metric, len(series.Values), tc.minSamples)
+			}
+		}
+	}
+
+	// absent() over a PRESENT series must report the leading anchors
+	// whose 5m staleness window precedes the first sample — the
+	// reference Prometheus behaviour the global-emptiness posture
+	// missed. The seed starts 10m before the request window, so within
+	// [start, end] every anchor has data and the result is empty.
+	matrix := runRangeModeQueryRange(t, srv.URL,
+		`max_over_time(absent(demo_memory_usage_bytes)[5m:1m])`, start, end, step)
+	if len(matrix) != 0 {
+		t.Errorf("absent over present series: got %d series, want 0: %+v", len(matrix), matrix)
+	}
+}
+
+// TestQueryRange_RangeMode_HistogramQuantileComputedPhi_ChDB pins the
+// computed-phi classic-histogram path on query_range end-to-end
+// (lower → optimize → emit → chDB): `histogram_quantile(
+// scalar(vector(0.9)), rate(m_bucket[1m]))` must produce per-step
+// quantile rows — the compat lane surfaced a 502 on this shape.
+func TestQueryRange_RangeMode_HistogramQuantileComputedPhi_ChDB(t *testing.T) {
+	start := time.Date(2026, 1, 1, 1, 0, 0, 0, time.UTC)
+	end := start.Add(10 * time.Minute)
+	step := time.Minute
+
+	rows := make([]string, 0, 30)
+	for i := 0; i < 30; i++ {
+		ts := start.Add(time.Duration(i-10) * time.Minute).Format("2006-01-02 15:04:05.000000000")
+		rows = append(rows, fmt.Sprintf(
+			`('demo_api_request_duration_seconds', map('service', 'api'), toDateTime64('%s', 9), %d, %d.0, [%d, %d, %d], [0.1, 0.5, 1.0])`,
+			ts, 10*(i+1), 5*(i+1), 3*(i+1), 4*(i+1), 3*(i+1),
+		))
+	}
+	seed := `CREATE TABLE otel_metrics_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    BucketCounts Array(UInt64),
+    ExplicitBounds Array(Float64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+` + gaugeDDL + `
+INSERT INTO otel_metrics_histogram VALUES
+  ` + strings.Join(rows, ",\n  ") + ";"
+
+	srv, _ := newChDBServer(t, seed)
+
+	matrix := runRangeModeQueryRange(t, srv.URL,
+		`histogram_quantile(scalar(vector(0.9)), rate(demo_api_request_duration_seconds_bucket[2m]))`,
+		start, end, step)
+	if len(matrix) != 1 {
+		t.Fatalf("expected 1 series, got %d: %+v", len(matrix), matrix)
+	}
+	if len(matrix[0].Values) < 8 {
+		t.Fatalf("expected per-step quantile rows across the window, got %d: %+v",
+			len(matrix[0].Values), matrix[0].Values)
 	}
 }

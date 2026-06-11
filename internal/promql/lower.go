@@ -3,6 +3,7 @@ package promql
 import (
 	"context"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/prometheus/common/model"
@@ -106,11 +107,77 @@ func lower(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error
 		return lowerBinary(e, s, ctx)
 	case *parser.SubqueryExpr:
 		return lowerSubquery(e, s, ctx)
+	case *parser.MatrixSelector:
+		return lowerMatrixSelector(e, s, ctx)
 	case *parser.UnaryExpr:
 		return lowerUnary(e, s, ctx)
 	default:
 		return nil, fmt.Errorf("promql: unsupported expression %T", expr)
 	}
+}
+
+// lowerMatrixSelector handles a TOP-LEVEL range-vector selector —
+// `up[5m]` sent to /api/v1/query. Reference Prometheus answers these
+// with resultType "matrix": every RAW sample in `(eval − range, eval]`
+// per series, original timestamps preserved (no per-step alignment, no
+// staleness lookback). The lowering is therefore the bare selector
+// path with the LWR collapse suppressed plus the window bound — the
+// canonical 4-column row shape carries the per-sample timestamps the
+// handler's instant-matrix pivot groups on.
+//
+// MatrixSelector in ARGUMENT position (`rate(up[5m])`) never reaches
+// here — lowerCall routes it into the range-vector machinery first.
+// On /api/v1/query_range the handler rejects matrix-typed expressions
+// before lowering (mirroring upstream's "invalid expression type"
+// guard), so this path is instant-only by construction.
+func lowerMatrixSelector(ms *parser.MatrixSelector, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	vs, ok := ms.VectorSelector.(*parser.VectorSelector)
+	if !ok {
+		return nil, fmt.Errorf("promql: matrix selector's inner must be a VectorSelector, got %T", ms.VectorSelector)
+	}
+	anchor, err := anchorFromSelector(vs, ctx)
+	if err != nil {
+		return nil, err
+	}
+	if anchor.End.IsZero() && !ctx.end.IsZero() {
+		anchor.End = ctx.end.UTC()
+	}
+
+	// Strip the modifier — the window bound below carries the anchor;
+	// inRangeVector suppresses the LWR wrap so every in-window sample
+	// survives.
+	vsNoMod := *vs
+	vsNoMod.Timestamp = nil
+	vsNoMod.OriginalOffset = 0
+	vsNoMod.Offset = 0
+	vsNoMod.StartOrEnd = 0
+	rangeCtx := ctx
+	rangeCtx.inRangeVector = true
+	inner, err := lowerVectorSelector(&vsNoMod, s, rangeCtx)
+	if err != nil {
+		return nil, err
+	}
+
+	// (anchor − range, anchor] window — left-open / right-closed, the
+	// PromQL range-selector contract.
+	pred := &chplan.Binary{
+		Op:    chplan.OpAnd,
+		Left:  timeBoundExpr(s.TimestampColumn, anchor),
+		Right: stalenessLowerBoundExpr(s.TimestampColumn, anchor, ms.Range),
+	}
+	// Project the canonical 4-column Sample shape explicitly (the bare
+	// Filter-over-Scan would emit `SELECT *`, dragging every physical
+	// table column onto the wire). Matrix selectors PRESERVE
+	// `__name__` — the samples are raw, not derived.
+	return &chplan.Project{
+		Input: &chplan.Filter{Input: inner, Predicate: pred},
+		Projections: []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
+			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
+			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
+		},
+	}, nil
 }
 
 // lowerVectorSelector turns `metric{label="val"}` into Scan + Filter.
@@ -1376,6 +1443,9 @@ func lowerCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 		return lowerClamp(c, s, ctx)
 	case "histogram_quantile":
 		return lowerHistogramQuantile(c, s, ctx)
+	case "histogram_count", "histogram_sum", "histogram_avg",
+		"histogram_stddev", "histogram_stdvar", "histogram_fraction":
+		return lowerHistogramValueFn(c, s, ctx)
 	case "label_replace":
 		return lowerLabelReplace(c, s, ctx)
 	case "label_join":
@@ -1604,7 +1674,7 @@ func lowerAggregate(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (ch
 		return nil, err
 	}
 
-	aggFunc, err := buildAggFunc(a, s)
+	aggFunc, err := buildAggFunc(a, s, ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -1645,13 +1715,33 @@ func lowerAggregate(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (ch
 	// constant. The per-group identity (MetricName / Attributes /
 	// TimeUnix) carries through unchanged from the inner Project.
 	if a.Op == parser.QUANTILE {
-		if phi, ok := tryScalarLiteral(a.Param); ok {
-			if infValue, outOfRange := outOfRangePhiInf(phi); outOfRange {
-				wrapped = projectValueOverInner(wrapped, s, &chplan.LitFloat{V: infValue})
-			}
-		}
+		return wrapQuantilePhiGuard(wrapped, a, s, ctx)
 	}
 	return wrapped, nil
+}
+
+// wrapQuantilePhiGuard applies PromQL's quantile phi-domain rules to
+// the aggregate's output Value. A literal out-of-range phi folds to
+// the ±Inf / NaN constant at lowering time (outOfRangePhiInf); a
+// computed phi resolves the same rules at runtime — buildAggFunc bound
+// a sanitised phi parameter (sentinel 0.5 when out of domain), and the
+// guard projects NaN / -Inf / +Inf over the sentinel quantile per
+// Prom's quantile() helper. The phi expression is re-lowered here —
+// CH caches scalar subqueries, so the repeated reference costs one
+// evaluation per statement.
+func wrapQuantilePhiGuard(wrapped chplan.Node, a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	if phi, ok := tryScalarLiteral(a.Param); ok {
+		if infValue, outOfRange := outOfRangePhiInf(phi); outOfRange {
+			return projectValueOverInner(wrapped, s, &chplan.LitFloat{V: infValue}), nil
+		}
+		return wrapped, nil
+	}
+	phiE, err := lowerScalarArg(a.Param, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+	return projectValueOverInner(wrapped, s,
+		outOfRangePhiGuardExpr(phiE, &chplan.ColumnRef{Name: s.ValueColumn})), nil
 }
 
 // lowerCountValues lowers `count_values("label", expr) [by(g) | without(g)]`.
@@ -1883,6 +1973,39 @@ func tryStringLiteral(e parser.Expr) (string, bool) {
 	return "", false
 }
 
+// topKDomain validates a topk/bottomk K parameter against reference
+// Prometheus semantics. The pinned engine
+// (tsouza/prometheus@cerberus-parser promql/engine.go, rangeEvalAgg +
+// aggregationK) handles the parameter in this order:
+//
+//  1. `params.Max() < 1` → return early with an EMPTY result (2xx).
+//     This covers K = 0, every negative K (including -Inf), and
+//     fractional K below 1 — none of them are errors upstream.
+//  2. NaN K → eval error ("Parameter value is NaN").
+//  3. K >= maxInt64 → eval error ("Scalar value %v overflows int64").
+//     (The symmetric underflow check is unreachable for a literal K:
+//     any K <= minInt64 already took the empty-result branch.)
+//  4. Otherwise K truncates toward zero (`int64(fParam)`), so
+//     `topk(1.5, v)` selects the top 1 series.
+//
+// Returns (k, false, nil) for the regular path, (0, true, nil) for the
+// empty-result short-circuit, and a non-nil error for the two shapes
+// reference Prometheus itself rejects.
+func topKDomain(op parser.ItemType, kF float64) (k int64, empty bool, err error) {
+	switch {
+	case kF < 1:
+		// Mirrors upstream's `params.Max() < 1` early return — NaN
+		// compares false here (as upstream) and falls through to the
+		// NaN error below.
+		return 0, true, nil
+	case math.IsNaN(kF):
+		return 0, false, fmt.Errorf("promql: %s K must not be NaN", op.String())
+	case kF >= float64(math.MaxInt64):
+		return 0, false, fmt.Errorf("promql: %s K %v overflows int64", op.String(), kF)
+	}
+	return int64(kF), false, nil
+}
+
 // lowerTopK lowers `topk(K, expr) [by(g) | without(g)] (...)` and
 // `bottomk(K, expr) ...` into a chplan.TopK over the lowered inner
 // expression. Unlike a regular aggregation, topk/bottomk preserve
@@ -1894,10 +2017,12 @@ func tryStringLiteral(e parser.Expr) (string, bool) {
 //	SELECT MetricName, Attributes, TimeUnix, Value FROM (<inner>)
 //	  ORDER BY Value [DESC|ASC] LIMIT K [BY <partition_exprs>]
 //
-// K must be a non-negative integer scalar literal at lowering time.
-// PromQL also accepts a `0` K (returns no series); we treat K=0 as
-// an error since the SQL `LIMIT 0` shape is degenerate and the
-// fixture-driven flow keeps a positive K invariant on the plan tree.
+// K follows reference Prometheus's parameter domain (see topKDomain):
+// K < 1 — including 0, negatives and sub-1 fractions — short-circuits
+// to an empty result (a constant-false Filter over the lowered input,
+// keeping the canonical column shape); fractional K >= 1 truncates
+// toward zero; NaN / int64-overflow K are rejected exactly where the
+// reference engine rejects them.
 //
 // `without (l1, l2, ...)` partitions by "every label except <these>".
 // We emit a single `MapWithoutKeys` Expr into the `By` slot — it lowers
@@ -1924,27 +2049,31 @@ func lowerTopK(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chplan.
 	if !ok {
 		return lowerTopKComputed(a, s, ctx)
 	}
-	if kF < 0 || kF != float64(int64(kF)) {
-		return nil, fmt.Errorf("promql: %s K must be a non-negative integer literal, got %v", a.Op.String(), kF)
-	}
-	if kF == 0 {
-		// PromQL semantics: topk(0, v) returns an empty result. CH's
-		// LIMIT 0 is degenerate and downstream invariants assume
-		// positive K; reject so callers see a clear error rather
-		// than a silent empty.
-		return nil, fmt.Errorf("promql: %s K must be > 0", a.Op.String())
+	k, empty, err := topKDomain(a.Op, kF)
+	if err != nil {
+		return nil, err
 	}
 
 	input, err := lower(a.Expr, s, ctx)
 	if err != nil {
 		return nil, err
 	}
+	if empty {
+		// K < 1 → empty result per reference semantics (see
+		// topKDomain). Filter the lowered input to zero rows so the
+		// plan keeps the canonical column shape — same posture as
+		// clamp's degenerate-bounds fold in instant_fns.go.
+		return &chplan.Filter{
+			Input:     input,
+			Predicate: &chplan.LitBool{V: false},
+		}, nil
+	}
 
 	by := topKPartition(a, s, ctx)
 
 	return &chplan.TopK{
 		Input:    input,
-		K:        int64(kF),
+		K:        k,
 		By:       by,
 		SortExpr: &chplan.ColumnRef{Name: s.ValueColumn},
 		Desc:     a.Op == parser.TOPK,
@@ -2204,7 +2333,10 @@ func aggregateGroupBy(a *parser.AggregateExpr, s schema.Metrics) ([]chplan.Expr,
 // shape-changing aggregates `topk`/`bottomk` and `count_values` are handled
 // out-of-band via lowerTopK / lowerCountValues before this function is
 // called. Anything else that reaches the default arm here is rejected.
-func buildAggFunc(a *parser.AggregateExpr, s schema.Metrics) (chplan.AggFunc, error) {
+//
+// ctx is consumed only by the computed-phi quantile path (lowerScalarArg
+// needs the eval anchor for `scalar()` / `time()` shapes).
+func buildAggFunc(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chplan.AggFunc, error) {
 	valueArg := &chplan.ColumnRef{Name: s.ValueColumn}
 
 	switch a.Op {
@@ -2257,22 +2389,40 @@ func buildAggFunc(a *parser.AggregateExpr, s schema.Metrics) (chplan.AggFunc, er
 		}, nil
 
 	case parser.QUANTILE:
-		phi, ok := tryScalarLiteral(a.Param)
-		if !ok {
-			return chplan.AggFunc{}, fmt.Errorf("promql: quantile(phi, ...) requires a scalar literal phi (computed phi is unsupported)")
+		if phi, ok := tryScalarLiteral(a.Param); ok {
+			// CH's `quantile(phi)` aggregate errors on phi outside
+			// [0, 1]; clamp the emitted phi to a safe sentinel (0.5)
+			// for those cases. lowerAggregate post-Projects the Value
+			// column to ±Inf (matching Prom's funcQuantile semantics)
+			// so the clamped value is never observed.
+			emitPhi := phi
+			if _, outOfRange := outOfRangePhiInf(phi); outOfRange {
+				emitPhi = 0.5
+			}
+			return chplan.AggFunc{
+				Name:   "quantile",
+				Params: []chplan.Expr{&chplan.LitFloat{V: emitPhi}},
+				Args:   []chplan.Expr{valueArg},
+				Alias:  s.ValueColumn,
+			}, nil
 		}
-		// CH's `quantile(phi)` aggregate errors on phi outside
-		// [0, 1]; clamp the emitted phi to a safe sentinel (0.5)
-		// for those cases. lowerAggregate post-Projects the Value
-		// column to ±Inf (matching Prom's funcQuantile semantics)
-		// so the clamped value is never observed.
-		emitPhi := phi
-		if _, outOfRange := outOfRangePhiInf(phi); outOfRange {
-			emitPhi = 0.5
+		// Computed phi (`quantile(scalar(x), v)`): bind phi as a
+		// scalar-subquery parameter. CH accepts a scalar subquery in
+		// the aggregate-parameter position (it folds to a constant
+		// during query analysis), but errors at runtime on a phi
+		// outside [0, 1] — sanitizedPhiParamExpr clamps the parameter
+		// to a 0.5 sentinel for the out-of-domain cases and
+		// lowerAggregate post-wraps the output Value through
+		// outOfRangePhiGuardExpr (NaN phi → NaN, phi<0 → -Inf,
+		// phi>1 → +Inf) so the sentinel quantile is never observed —
+		// the same split as the literal path, resolved at runtime.
+		phiE, err := lowerScalarArg(a.Param, s, ctx)
+		if err != nil {
+			return chplan.AggFunc{}, err
 		}
 		return chplan.AggFunc{
 			Name:   "quantile",
-			Params: []chplan.Expr{&chplan.LitFloat{V: emitPhi}},
+			Params: []chplan.Expr{sanitizedPhiParamExpr(phiE)},
 			Args:   []chplan.Expr{valueArg},
 			Alias:  s.ValueColumn,
 		}, nil

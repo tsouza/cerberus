@@ -261,32 +261,38 @@ func TestIsDefaultMatching_AllFourConjunctsRequired(t *testing.T) {
 	}
 }
 
-// TestLowerClamp_NonLiteralBoundRejected kills the `||` → `&&` flip at
-// instant_fns.go:128 in the clamp argument guard. The guard
+// TestLowerClamp_MixedBoundsTakeComputedPath kills the `&&` → `||`
+// flip in lowerClamp's literal fast-path gate (`if okMin && okMax`).
+// With the flip, `clamp(up, 0, time())` — literal min, computed max —
+// would enter the literal branch carrying tryScalarLiteral's zero
+// default for the max bound: `maxB(0) < minB(0)` is false, so the
+// degenerate fold never fires and the lowering silently clamps every
+// sample into `[0, 0]` instead of using the computed bound.
 //
-//	if !okMin || !okMax { return ..., err }
-//
-// rejects clamp when EITHER bound fails to fold to a scalar literal.
-// Flipping `||` to `&&` (gremlins INVERT_LOGICAL) would only reject
-// when BOTH fail, letting one-side-non-literal calls through into the
-// lowering with a misleading bound (the default zero from
-// tryScalarLiteral) — silently producing an emitter that clamps to
-// `[minLit, 0]` regardless of the actual upper bound.
-//
-// Input: `clamp(up, 0, time())` — the upper bound is `time()`, a
-// scalar function call, not a literal; `tryScalarLiteral` returns
-// `(0, false)`. Original returns the "clamp requires scalar-literal
-// bounds" error. Mutant passes with maxB=0 — `0 < 0 = false` skips
-// the degenerate-bounds filter, and the lowering emits a misleading
-// clamp expression instead of erroring.
-func TestLowerClamp_NonLiteralBoundRejected(t *testing.T) {
+// The pin asserts the mixed shape routes to the COMPUTED path: a
+// Project whose input is the runtime degenerate-bounds Filter
+// (`not(max < min)` FuncCall predicate), not the literal branch's
+// bare lowered selector.
+func TestLowerClamp_MixedBoundsTakeComputedPath(t *testing.T) {
 	t.Parallel()
 
 	expr := mustParse(t, `clamp(up, 0, time())`)
 	s := schema.DefaultOTelMetrics()
-	_, err := lower(expr, s, lowerCtx{})
-	if err == nil {
-		t.Fatalf("expected clamp with non-literal upper bound to error; got nil (mutant `||` → `&&` at instant_fns.go:128 would only fail when BOTH bounds are non-literal)")
+	plan, err := lower(expr, s, lowerCtx{})
+	if err != nil {
+		t.Fatalf("lower(clamp(up, 0, time())): %v", err)
+	}
+	pj, ok := plan.(*chplan.Project)
+	if !ok {
+		t.Fatalf("plan = %T, want *chplan.Project", plan)
+	}
+	f, ok := pj.Input.(*chplan.Filter)
+	if !ok {
+		t.Fatalf("Project input = %T, want the runtime degenerate-bounds *chplan.Filter", pj.Input)
+	}
+	fc, ok := f.Predicate.(*chplan.FuncCall)
+	if !ok || fc.Name != "not" {
+		t.Fatalf("Filter predicate = %#v, want not(max < min) FuncCall", f.Predicate)
 	}
 }
 

@@ -347,9 +347,32 @@ func (b *Builder) Expr(x chplan.Expr) error {
 		return nil
 	case *chplan.Subscript:
 		return b.exprSubscript(v)
+	case *chplan.ScalarSubquery:
+		return b.exprScalarSubquery(v)
 	default:
 		return fmt.Errorf("%w: expr %T", ErrUnsupported, x)
 	}
+}
+
+// exprScalarSubquery renders chplan.ScalarSubquery as `(<SELECT ...>)`
+// — ClickHouse's scalar-subquery position. The embedded plan is emitted
+// through a fresh in-package emitter and its SQL + args spliced into
+// this Builder's stream, so positional `?` ordering follows the SQL
+// text exactly like every other Expr.
+//
+// The one-row / one-column contract lives on the chplan.ScalarSubquery
+// doc; the Builder only enforces the non-nil invariant.
+func (b *Builder) exprScalarSubquery(s *chplan.ScalarSubquery) error {
+	if s.Input == nil {
+		return fmt.Errorf("%w: chplan.ScalarSubquery has nil Input", ErrUnsupported)
+	}
+	e := &emitter{}
+	if err := e.emitSubquery(s.Input); err != nil {
+		return err
+	}
+	b.sb.WriteString(e.b.String())
+	b.args = append(b.args, e.args...)
+	return nil
 }
 
 // exprLambda renders chplan.Lambda. Single-parameter shapes render as
@@ -506,6 +529,21 @@ func (b *Builder) exprBinary(bx *chplan.Binary) error {
 		return nil
 	case chplan.OpPow:
 		b.sb.WriteString("pow(")
+		if err := b.Expr(bx.Left); err != nil {
+			return err
+		}
+		b.sb.WriteString(", ")
+		if err := b.Expr(bx.Right); err != nil {
+			return err
+		}
+		b.sb.WriteByte(')')
+		return nil
+	case chplan.OpAtan2:
+		// PromQL `l atan2 r` is Go's math.Atan2(l, r); ClickHouse's
+		// atan2(y, x) takes the same argument order, so left/right map
+		// positionally. Function-call rendering mirrors OpPow — CH has
+		// no infix atan2.
+		b.sb.WriteString("atan2(")
 		if err := b.Expr(bx.Left); err != nil {
 			return err
 		}

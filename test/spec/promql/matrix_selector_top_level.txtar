@@ -1,0 +1,32 @@
+-- query.promql --
+up[5m]
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('up', map('job', 'api'), toDateTime64('2025-12-31 23:54:00', 9), 5),
+    ('up', map('job', 'api'), toDateTime64('2025-12-31 23:58:00', 9), 10),
+    ('up', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 20);
+-- expected_rows --
+[
+  ["up", {"job": "api"}, "2025-12-31T23:58:00Z", 10],
+  ["up", {"job": "api"}, "2026-01-01T00:00:00Z", 20]
+]
+-- args --
+[0] string = "up"
+[1] string = "2026-01-01 00:00:01.000000000"
+[2] int64 = 9
+[3] string = "2026-01-01 00:00:01.000000000"
+[4] int64 = 9
+[5] int64 = 300000000000
+-- chplan --
+Project [MetricName AS MetricName, Attributes AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+  Filter predicate=((TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9)) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+    Filter predicate=(MetricName = "up")
+      Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+-- sql --
+SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` = ?)) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))))

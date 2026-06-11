@@ -1061,22 +1061,35 @@ func normalizeValue(v any) any {
 		return float64(x)
 	case float32:
 		return float64(x)
+	case float64:
+		// Non-finite floats normalize to the same string sentinels the
+		// expected side uses (below). Comparing through strings — not
+		// through math.NaN() — is load-bearing for NaN cells:
+		// reflect.DeepEqual(math.NaN(), math.NaN()) is FALSE (IEEE NaN
+		// inequality), so a NaN-valued fixture cell could never match
+		// if both sides normalized to the float.
+		switch {
+		case math.IsNaN(x):
+			return "NaN"
+		case math.IsInf(x, +1):
+			return "+Inf"
+		case math.IsInf(x, -1):
+			return "-Inf"
+		}
+		return x
 	case string:
 		// JSON cannot represent ±Inf / NaN natively (json.Unmarshal
 		// would reject the bare tokens). Fixture authors encode them
-		// as string sentinels in `expected_rows:` so the assertion
-		// path can match a chDB row whose Value column is non-finite
-		// (e.g. PromQL quantile(phi<0, ...) lowers to -Inf). The
-		// CH float64 → Go float64 path returns math.Inf(±1) /
-		// math.NaN() directly, so the expected side must do the
-		// same here.
+		// as string sentinels in `expected_rows:`; canonicalise the
+		// spelling so "Inf" and "+Inf" compare equal and the actual
+		// side's float64 specials (normalized above) line up.
 		switch x {
 		case "Inf", "+Inf":
-			return math.Inf(+1)
+			return "+Inf"
 		case "-Inf":
-			return math.Inf(-1)
+			return "-Inf"
 		case "NaN":
-			return math.NaN()
+			return "NaN"
 		}
 		return v
 	case map[string]any:
