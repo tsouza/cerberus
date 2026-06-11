@@ -72,29 +72,24 @@ const nestedSetPathElemWidth = 40
 //	      INNER JOIN `_cerberus_ns_paths` AS c
 //	        ON t.`TraceId` = c.`TraceId` AND t.`ParentSpanId` = c.`SpanId`
 //	  )
-//	  SELECT `TraceId`, `_node`.2 AS `SpanId`,
-//	         <2·pre − depth>                          AS `_ns_left`,
-//	         <left + 2·subtreeSize − 1>               AS `_ns_right`,
-//	         <−1 for roots, else parent's left bound> AS `_ns_parent`
-//	  FROM (SELECT `TraceId`,
-//	               arraySort(groupArray((`_path`, `SpanId`, `ParentSpanId`))) AS `_nodes`,
-//	               arrayMap(x -> x.1, `_nodes`) AS `_paths`
-//	          FROM `_cerberus_ns_paths` GROUP BY `TraceId`)
-//	  ARRAY JOIN `_nodes` AS `_node`, arrayEnumerate(`_nodes`) AS `_pre`
+//	  SELECT `TraceId`, `SpanId`,
+//	         <rank of entry event>                       AS `_ns_left`,
+//	         <rank of exit event>                        AS `_ns_right`,
+//	         <−1 for roots, else parent's entry rank>    AS `_ns_parent`
+//	  FROM (<per-span entry/exit/parent-lookup events, ranked by two
+//	         window passes — see buildNestedSetNumbering>)
+//	  GROUP BY `TraceId`, `SpanId`
 //	) AS ns ON m.`TraceId` = ns.`TraceId` AND m.`SpanId` = ns.`SpanId`
 //
-// The arithmetic: with `pre` the 1-based DFS pre-order rank inside the
-// trace (paths sort lexicographically; fixed-width elements make the
-// sort a true tree pre-order), `depth` the path element count, and
-// `size` the subtree span count (path-prefix count),
-//
-//	left  = 2·pre − depth          (entries before it: pre−1; exits
-//	                                before it: pre−1 − (depth−1))
-//	right = left + 2·size − 1      (the subtree consumes 2·size slots)
-//	parent.left = 2·parentPre − (depth−1), parentPre by path prefix
-//
-// which reproduces Tempo's two-pointer walk without materialising the
-// event sequence.
+// The numbering: each span contributes an entry event (key `_path`)
+// and an exit event (key `_path` + '~'); lexicographic key order over
+// the digit-only fixed-width paths is exactly the DFS entry/exit
+// event order, so the per-trace running count of those events IS the
+// nested-set position — left = rank(entry), right = rank(exit),
+// parent = rank(parent's entry), materialising Tempo's two-pointer
+// walk as an event sequence (linear in span count; see
+// buildNestedSetNumbering for the full derivation and why join-free /
+// single-CTE-reference / non-quadratic are each load-bearing).
 //
 // The <input> subquery is rendered exactly ONCE (the FROM arm). The
 // trace-id scope of the CTE anchor deliberately does NOT re-render it:
@@ -217,39 +212,87 @@ func buildNestedSetNumbering(n *chplan.NestedSetAnnotate, scope Frag) *QueryBuil
 		)
 
 	w := strconv.Itoa(nestedSetPathElemWidth)
-	// depth = path length in elements; recomputed inline at each use
-	// site (CH disallows alias references inside sibling SELECT
-	// expressions on some analyzer paths).
-	depth := "intDiv(length(`_node`.1), " + w + ")"
 
-	perTrace := NewQuery().
+	// The numbering is computed as the rank of each span's ENTRY and
+	// EXIT event in the per-trace DFS event sequence — literally
+	// Tempo's two-pointer walk, recovered from the sorted paths:
+	//
+	//   - entry event key  = `_path`
+	//   - exit  event key  = concat(`_path`, '~')
+	//
+	// Paths are digit-only (zero-padded decimal), and '~' (0x7E) sorts
+	// after every digit, so lexicographic order of the event keys IS
+	// the DFS event order: a node's exit key sorts after every entry /
+	// exit key of its subtree (longer digit prefix < '~') and before
+	// its parent's exit and its later siblings' entries. The running
+	// count of entry/exit events (window sum per trace) is therefore
+	// exactly the nested-set position: rank(entry) = left, rank(exit)
+	// = right.
+	//
+	// The parent's left bound rides the same pass: each non-root span
+	// adds a PARENT-LOOKUP event keyed by its parent's path, ordered
+	// just after that parent's entry event (`_etype` 1 between entry 0
+	// and exit 2; lookup events do not advance the running count). A
+	// second window (first_value over the (trace, key) partition)
+	// hands every lookup event the entry rank of the node that owns
+	// the key — i.e. the parent's left bound. Roots emit no lookup
+	// event (the empty-key filter) and resolve to -1 in the final
+	// aggregation.
+	//
+	// Shape rationale (all three constraints are load-bearing):
+	//   - `_cerberus_ns_paths` is referenced exactly ONCE. CH 24.8
+	//     re-evaluates a recursive CTE at every reference (verified:
+	//     3 references = 3× read_rows), so any join-back / multi-read
+	//     formulation re-runs the whole recursion.
+	//   - No per-node scan of the trace's path list. Both the previous
+	//     ARRAY JOIN shape (per-trace `_paths` array replicated onto
+	//     every span row) and an arrayMap/arrayCount reformulation
+	//     (captured `_paths` replicated per lambda element) are
+	//     quadratic per trace; at compose-smoke scale (~150k
+	//     self-telemetry spans) ArrayJoinTransform / FUNCTION arrayMap
+	//     attempted single 1 GiB chunks and tripped the #756 cap.
+	//   - Event rows are narrow (ids + key + type) and everything is
+	//     a window sort + hash aggregation: linear in span count.
+	events := NewQuery().
 		Select(
 			Col(n.TraceIDColumn),
-			verbatim("arraySort(groupArray((`_path`, "+quoteIdent(n.SpanIDColumn)+", "+quoteIdent(n.ParentSpanIDColumn)+"))) AS `_nodes`"),
-			verbatim("arrayMap(x -> x.1, `_nodes`) AS `_paths`"),
+			Col(n.SpanIDColumn),
+			verbatim("`_ev`.1 AS `_ekey`"),
+			verbatim("`_ev`.2 AS `_etype`"),
 		).
-		From(verbatim("`_cerberus_ns_paths`")).
-		GroupBy(Col(n.TraceIDColumn))
+		From(verbatim("`_cerberus_ns_paths` ARRAY JOIN arrayFilter(e -> NOT (e.2 = 1 AND e.1 = ''), [(`_path`, 0), (concat(`_path`, '~'), 2), (substring(`_path`, 1, length(`_path`) - " + w + "), 1)]) AS `_ev`"))
+
+	ranked := NewQuery().
+		Select(
+			Col(n.TraceIDColumn),
+			Col(n.SpanIDColumn),
+			Col("_ekey"),
+			Col("_etype"),
+			verbatim("sum(`_etype` != 1) OVER (PARTITION BY "+quoteIdent(n.TraceIDColumn)+" ORDER BY `_ekey` ASC, `_etype` ASC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS `_erank`"),
+		).
+		From(events.Frag())
+
+	keyed := NewQuery().
+		Select(
+			Col(n.TraceIDColumn),
+			Col(n.SpanIDColumn),
+			Col("_etype"),
+			Col("_erank"),
+			verbatim("first_value(`_erank`) OVER (PARTITION BY "+quoteIdent(n.TraceIDColumn)+", `_ekey` ORDER BY `_etype` ASC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS `_keyrank`"),
+		).
+		From(ranked.Frag())
 
 	return NewQuery().
 		WithRecursive("_cerberus_ns_paths", anchor, step).
 		Select(
 			Col(n.TraceIDColumn),
-			func(b *Builder) {
-				b.writeSQL("`_node`.2 AS ")
-				b.Ident(n.SpanIDColumn)
-			},
-			verbatim("toInt64(2 * `_pre` - "+depth+") AS `_ns_left`"),
-			verbatim("toInt64(2 * `_pre` - "+depth+" + 2 * arrayCount(p -> startsWith(p, `_node`.1), `_paths`) - 1) AS `_ns_right`"),
-			verbatim("if(`_node`.3 = '', toInt64(-1), toInt64(2 * indexOf(`_paths`, substring(`_node`.1, 1, length(`_node`.1) - "+w+")) - "+depth+" + 1)) AS `_ns_parent`"),
+			Col(n.SpanIDColumn),
+			verbatim("toInt64(maxIf(`_erank`, `_etype` = 0)) AS `_ns_left`"),
+			verbatim("toInt64(maxIf(`_erank`, `_etype` = 2)) AS `_ns_right`"),
+			verbatim("if(countIf(`_etype` = 1) = 0, toInt64(-1), toInt64(maxIf(`_keyrank`, `_etype` = 1))) AS `_ns_parent`"),
 		).
-		From(func(b *Builder) {
-			b.writeSQL("(")
-			sql, args := perTrace.Build()
-			b.writeSQL(sql)
-			b.args = append(b.args, args...)
-			b.writeSQL(") ARRAY JOIN `_nodes` AS `_node`, arrayEnumerate(`_nodes`) AS `_pre`")
-		})
+		From(keyed.Frag()).
+		GroupBy(Col(n.TraceIDColumn), Col(n.SpanIDColumn))
 }
 
 // traceScopeFrag derives the numbering walk's trace-id scope from the
