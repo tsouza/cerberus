@@ -411,6 +411,123 @@ func BenchmarkStreamingCursor_Stop_Mid(b *testing.B) {
 	}
 }
 
+// countingQuerier decorates a prom.Querier and counts the CH round-trips
+// each request issues, split by the entry point the handlers use. The
+// /api/v1/series path runs through Query; the matched /api/v1/labels and
+// /api/v1/label/<n>/values paths run through QueryStrings. Used by the
+// fan-in batching test (task #71) to assert the V×H matcher fan-out
+// collapses to a single round-trip per request.
+type countingQuerier struct {
+	inner        prom.Querier
+	queryCalls   int
+	stringsCalls int
+	cursorCalls  int
+}
+
+func (c *countingQuerier) Query(ctx context.Context, sql string, args ...any) ([]chclient.Sample, error) {
+	c.queryCalls++
+	return c.inner.Query(ctx, sql, args...)
+}
+
+func (c *countingQuerier) QueryCursor(ctx context.Context, sql string, args ...any) (chclient.Cursor, error) {
+	c.cursorCalls++
+	return c.inner.QueryCursor(ctx, sql, args...)
+}
+
+func (c *countingQuerier) QueryStrings(ctx context.Context, sql string, args ...any) ([]string, error) {
+	c.stringsCalls++
+	return c.inner.QueryStrings(ctx, sql, args...)
+}
+
+func (c *countingQuerier) QueryLabelSets(ctx context.Context, sql string, args ...any) ([]map[string]string, error) {
+	return c.inner.QueryLabelSets(ctx, sql, args...)
+}
+
+func (c *countingQuerier) QueryMetricMeta(ctx context.Context, sql, metricType string, args ...any) ([]chclient.MetricMetaRow, error) {
+	return c.inner.QueryMetricMeta(ctx, sql, metricType, args...)
+}
+
+func (c *countingQuerier) QueryExemplars(ctx context.Context, sql string, args ...any) ([]chclient.ExemplarRow, error) {
+	return c.inner.QueryExemplars(ctx, sql, args...)
+}
+
+// TestHandleSeries_FanInBatching_SingleRoundTrip proves the task-#71
+// win: a histogram-base /api/v1/series request fans out across the
+// underscored-name × bare-histogram companion variants (V×H), which the
+// pre-#71 handler issued as one sequential CH round-trip per variant. The
+// batched handler collapses every variant into ONE combined UNION-ALL
+// query, so exactly one Query round-trip fires regardless of variant
+// count.
+func TestHandleSeries_FanInBatching_SingleRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	labelSets := []chclient.Sample{
+		{MetricName: "http_server_request_duration", Labels: map[string]string{"job": "api"}},
+	}
+	inner := &stubQuerier{samples: labelSets}
+	c := &countingQuerier{inner: inner}
+	srv := newServer(c)
+	t.Cleanup(srv.Close)
+
+	// A bare histogram-base name with rewritable underscores triggers
+	// BOTH fan-out layers: the dotted-candidate expansion and the
+	// _bucket/_count/_sum companion expansion. The pre-batch handler
+	// would issue ~8 sequential Query round-trips here.
+	u := srv.URL + "/api/v1/series?match%5B%5D=" +
+		"http_server_request_duration"
+	resp, err := http.Get(u)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+
+	// The whole V×H fan-out collapses to exactly one CH round-trip.
+	if c.queryCalls != 1 {
+		t.Errorf("series Query round-trips: got %d, want 1 (fan-in batching)", c.queryCalls)
+	}
+	if c.cursorCalls != 0 {
+		t.Errorf("series should not use QueryCursor: got %d cursor calls", c.cursorCalls)
+	}
+}
+
+// TestHandleSeries_FanInBatching_MultiMatcher confirms several match[]
+// selectors also collapse to a single combined round-trip — the Grafana
+// variable-picker shape that BenchmarkHandleSeries drives. Pre-#71 this
+// issued one round-trip per matcher.
+func TestHandleSeries_FanInBatching_MultiMatcher(t *testing.T) {
+	t.Parallel()
+
+	inner := &stubQuerier{samples: []chclient.Sample{
+		{MetricName: "up", Labels: map[string]string{"job": "api"}},
+	}}
+	c := &countingQuerier{inner: inner}
+	srv := newServer(c)
+	t.Cleanup(srv.Close)
+
+	u := srv.URL + "/api/v1/series?" +
+		"match%5B%5D=up%7Bjob%3D%22api%22%7D&" +
+		"match%5B%5D=up%7Bjob%3D%22web%22%7D&" +
+		"match%5B%5D=up%7Bjob%3D%22db%22%7D&" +
+		"match%5B%5D=up%7Bjob%3D%22cache%22%7D&" +
+		"match%5B%5D=up%7Bjob%3D%22queue%22%7D"
+	resp, err := http.Get(u)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	if c.queryCalls != 1 {
+		t.Errorf("series Query round-trips for 5 matchers: got %d, want 1", c.queryCalls)
+	}
+}
+
 // TestAllocs_HandleQuery_Small pins the per-request alloc count for
 // the smallest /api/v1/query path. Compared to the other allocs tests,
 // this one is loose — the net/http stack contributes a lot of allocs

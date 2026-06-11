@@ -1027,6 +1027,19 @@ func InlineLit(v any) Frag {
 	}
 }
 
+// Render materialises a standalone Frag into (sql, args) by rendering it
+// against a fresh Builder. Use it when a Frag is itself a complete
+// top-level statement — e.g. a UnionAll of SELECT arms run directly as a
+// query rather than wrapped in an outer SELECT … FROM (…). Wrapping a
+// Map-typed projection in a redundant `SELECT * FROM (…)` boundary makes
+// some ClickHouse drivers (chdb) refuse to cast the column back to MAP, so
+// the bare-Frag render keeps the union as the top-level SELECT.
+func Render(f Frag) (string, []any) {
+	b := NewBuilder()
+	f(b)
+	return b.Build()
+}
+
 // UnionAll joins one or more Frags with " UNION ALL " between them. It
 // is the typed alternative to `strings.Join(parts, " UNION ALL ")` —
 // keeping the keyword inside the typed surface so the audit grep for

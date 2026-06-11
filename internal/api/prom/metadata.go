@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/prometheus/common/model"
+	promparser "github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/chclient"
@@ -323,43 +324,29 @@ func (h *Handler) handleSeries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Two-layer matcher fan-out — `expandUnderscoredMetricNameMatcher`
+	// (dotted-storage candidates) nested inside `expandBareHistogramMatcher`
+	// (classic-histogram companion variants). See the per-helper docstrings
+	// for the resolution semantics each layer covers.
+	//
+	// Fan-in batching (task #71): the V×H (and matcher) variant set is
+	// collapsed into ONE combined CH round-trip instead of one round-trip
+	// per variant. Each variant lowers to a Sample-projecting SELECT; the
+	// arms are UNION-ALL'd into a single query whose row stream the Go
+	// dedup below folds into distinct label sets — same series returned,
+	// N round-trips → 1.
+	variants := expandSeriesMatchers(h.parser, matchers, h.Schema.HistogramTable)
+	sets, err := h.fetchSeries(r.Context(), variants)
+	if err != nil {
+		h.respondError(w, err)
+		return
+	}
+
 	seen := make(map[string]map[string]string)
-	for _, m := range matchers {
-		// Two-layer matcher fan-out:
-		//
-		//   1. `expandUnderscoredMetricNameMatcher` — when the matcher
-		//      pins `__name__` to a Prom-grammar form with at least one
-		//      rewritable underscore, also probe every OTel-dotted
-		//      candidate so a catalog entry like
-		//      `http_server_request_body_size` resolves against rows
-		//      stored under the dotted form
-		//      (`http.server.request.body.size`). The catalog endpoint
-		//      already normalises stored MetricNames through
-		//      `OTelToPromMetric`; without this fan-out the matcher
-		//      side disagrees and Drilldown-Metrics' label-chip fetch
-		//      surfaces "Unable to fetch labels".
-		//
-		//   2. `expandBareHistogramMatcher` — per-arm of (1), fan a
-		//      bare classic-histogram base name out into its three
-		//      Prom-wire companion variants (`<base>_bucket` /
-		//      `<base>_count` / `<base>_sum`) so /api/v1/series
-		//      returns the three companion series Grafana's Metrics
-		//      Explorer expects. Non-histogram matchers short-circuit
-		//      through the helper's single-element return.
-		for _, nameVariant := range expandUnderscoredMetricNameMatcher(h.parser, m) {
-			for _, variant := range expandBareHistogramMatcher(h.parser, nameVariant, h.Schema.HistogramTable) {
-				sets, err := h.fetchSeries(r.Context(), variant)
-				if err != nil {
-					h.respondError(w, err)
-					return
-				}
-				for _, lset := range sets {
-					key := format.CanonicalKey(lset)
-					if _, ok := seen[key]; !ok {
-						seen[key] = lset
-					}
-				}
-			}
+	for _, lset := range sets {
+		key := format.CanonicalKey(lset)
+		if _, ok := seen[key]; !ok {
+			seen[key] = lset
 		}
 	}
 
@@ -540,18 +527,17 @@ func (h *Handler) catalogNameTables() (bareTables []string, histogramTable strin
 // Non-histogram inputs short-circuit through the no-op (single-element)
 // return of the expander.
 func (h *Handler) fetchLabelNamesMatched(ctx context.Context, matchers []string) ([]string, error) {
-	collected := []string{model.MetricNameLabel}
-	for _, m := range matchers {
-		for _, nameVariant := range expandUnderscoredMetricNameMatcher(h.parser, m) {
-			for _, variant := range expandBareHistogramMatcher(h.parser, nameVariant, h.Schema.HistogramTable) {
-				keys, err := h.labelKeysForMatcher(ctx, variant)
-				if err != nil {
-					return nil, err
-				}
-				collected = append(collected, keys...)
-			}
-		}
+	// Fan-in batching (task #71): the variant fan-out across all matchers
+	// collapses into ONE combined query. Each variant lowers to its inner
+	// matcher SELECT; the arms UNION-ALL into the FROM source of a single
+	// `SELECT DISTINCT arrayJoin(mapKeys(Attributes))` — N round-trips → 1,
+	// same distinct key set the per-arm loop collected.
+	variants := expandSeriesMatchers(h.parser, matchers, h.Schema.HistogramTable)
+	keys, err := h.labelKeysForMatchers(ctx, variants)
+	if err != nil {
+		return nil, err
 	}
+	collected := append([]string{model.MetricNameLabel}, keys...)
 	out := format.NormalizeLabelNames(collected)
 	sort.Strings(out)
 	return out, nil
@@ -568,20 +554,20 @@ func (h *Handler) fetchLabelNamesMatched(ctx context.Context, matchers []string)
 // histogram metric) also visits the three classic-histogram companion
 // variants. See expandBareHistogramMatcher for the rationale.
 func (h *Handler) fetchLabelValuesMatched(ctx context.Context, name string, matchers []string, start, end time.Time) ([]string, error) {
+	// Fan-in batching (task #71): the variant fan-out across all matchers
+	// collapses into ONE combined query. Each variant's matched-row
+	// subquery is a UNION-ALL arm of the shared scan; the per-name value
+	// projection (the `__name__` / single-candidate / multi-candidate
+	// shapes) runs once over that union — N round-trips → 1.
+	variants := expandSeriesMatchers(h.parser, matchers, h.Schema.HistogramTable)
+	vals, err := h.labelValuesForMatchers(ctx, name, variants, start, end)
+	if err != nil {
+		return nil, err
+	}
 	seen := map[string]bool{}
-	for _, m := range matchers {
-		for _, nameVariant := range expandUnderscoredMetricNameMatcher(h.parser, m) {
-			for _, variant := range expandBareHistogramMatcher(h.parser, nameVariant, h.Schema.HistogramTable) {
-				vals, err := h.labelValuesForMatcher(ctx, name, variant, start, end)
-				if err != nil {
-					return nil, err
-				}
-				for _, v := range vals {
-					if v != "" {
-						seen[v] = true
-					}
-				}
-			}
+	for _, v := range vals {
+		if v != "" {
+			seen[v] = true
 		}
 	}
 	out := make([]string, 0, len(seen))
@@ -602,19 +588,28 @@ func (h *Handler) fetchLabelValuesMatched(ctx context.Context, name string, matc
 	return out, nil
 }
 
-// labelKeysForMatcher lowers a single match[] selector, then wraps the
-// matched rows in a `SELECT DISTINCT arrayJoin(mapKeys(Attributes))`
-// to extract its attribute keys.
-func (h *Handler) labelKeysForMatcher(ctx context.Context, matcher string) ([]string, error) {
-	innerSQL, args, err := h.matcherSQL(ctx, matcher, time.Time{}, time.Time{})
-	if err != nil {
-		return nil, err
+// labelKeysForMatchers lowers each match[] selector variant, UNION-ALLs
+// their matched-row subqueries into one scan, and wraps the union in a
+// `SELECT DISTINCT arrayJoin(mapKeys(Attributes))` to extract the attribute
+// keys across all variants in a single CH round-trip (task #71). An empty
+// variant list yields no keys (and no query).
+func (h *Handler) labelKeysForMatchers(ctx context.Context, matchers []string) ([]string, error) {
+	if len(matchers) == 0 {
+		return nil, nil
+	}
+	arms := make([]chsql.Frag, 0, len(matchers))
+	for _, m := range matchers {
+		innerSQL, args, err := h.matcherSQL(ctx, m, time.Time{}, time.Time{})
+		if err != nil {
+			return nil, err
+		}
+		arms = append(arms, matcherSubqueryFrag(innerSQL, args))
 	}
 	attrsCol := h.Schema.AttributesColumn
 
 	sb := chsql.NewQuery().
 		Select(chsql.As(arrayJoinMapKeysFrag(attrsCol), "name")).
-		From(matcherSubqueryFrag(innerSQL, args)).
+		From(chsql.Paren(chsql.UnionAll(arms...))).
 		OrderBy(chsql.Col("name"), false)
 	sql, combined := sb.Build()
 	return timeCH(ctx, func() ([]string, error) {
@@ -622,19 +617,32 @@ func (h *Handler) labelKeysForMatcher(ctx context.Context, matcher string) ([]st
 	})
 }
 
-// labelValuesForMatcher lowers a single match[] selector, then projects
-// the named label's distinct values. `__name__` resolves to MetricName;
-// other labels to `Attributes[<name>]`. start/end anchor the matcher
-// lowering's LWR window (zero-time falls back to the lowering default).
-func (h *Handler) labelValuesForMatcher(ctx context.Context, name, matcher string, start, end time.Time) ([]string, error) {
-	innerSQL, args, err := h.matcherSQL(ctx, matcher, start, end)
-	if err != nil {
-		return nil, err
+// labelValuesForMatchers lowers each match[] selector variant, UNION-ALLs
+// their matched-row subqueries into one shared scan, and projects the
+// named label's distinct values over that union in a single CH round-trip
+// (task #71). `__name__` resolves to MetricName; other labels to
+// `Attributes[<name>]`. start/end anchor the matcher lowering's LWR window
+// (zero-time falls back to the lowering default). An empty variant list
+// yields no values (and no query).
+func (h *Handler) labelValuesForMatchers(ctx context.Context, name string, matchers []string, start, end time.Time) ([]string, error) {
+	if len(matchers) == 0 {
+		return nil, nil
 	}
+	arms := make([]chsql.Frag, 0, len(matchers))
+	for _, m := range matchers {
+		innerSQL, args, err := h.matcherSQL(ctx, m, start, end)
+		if err != nil {
+			return nil, err
+		}
+		arms = append(arms, matcherSubqueryFrag(innerSQL, args))
+	}
+	// One combined matched-row scan shared by the value projection below.
+	matchedFrom := chsql.Paren(chsql.UnionAll(arms...))
+
 	if name == model.MetricNameLabel {
 		sb := chsql.NewQuery().
 			Select(chsql.As(distinctIdent(h.Schema.MetricNameColumn), "value")).
-			From(matcherSubqueryFrag(innerSQL, args)).
+			From(matchedFrom).
 			OrderBy(chsql.Col("value"), false)
 		sql, combined := sb.Build()
 		return timeCH(ctx, func() ([]string, error) {
@@ -644,12 +652,12 @@ func (h *Handler) labelValuesForMatcher(ctx context.Context, name, matcher strin
 	attrsCol := h.Schema.AttributesColumn
 	candidates := labelValueCandidates(name)
 	// Fast-path: a single candidate (the typical `job` / `instance`
-	// shape) emits the legacy single-arm SQL — keeps byte-stable with
-	// the pre-#664 fixtures.
+	// shape) projects the value directly over the combined matched-row
+	// scan.
 	if len(candidates) == 1 {
 		sb := chsql.NewQuery().
 			Select(chsql.As(distinctMapAtFrag(attrsCol, candidates[0]), "value")).
-			From(matcherSubqueryFrag(innerSQL, args)).
+			From(matchedFrom).
 			Where(mapAtNotEmptyFrag(attrsCol, candidates[0])).
 			OrderBy(chsql.Col("value"), false)
 		sql, combined := sb.Build()
@@ -657,19 +665,16 @@ func (h *Handler) labelValuesForMatcher(ctx context.Context, name, matcher strin
 			return h.Client.QueryStrings(ctx, sql, combined...)
 		})
 	}
-	// Multi-candidate fan-out: emit one UNION arm per candidate over the
-	// SAME matcher subquery so a user-supplied `cerberus_ql` reaches both
-	// the underscored and dotted storage forms. The matcher subquery is
-	// expressed as a PreRenderedSQL Frag so its args land inline at each
-	// arm's FROM position; the matcher SQL itself runs once per arm at
-	// CH-time but the optimizer hoists the shared scan into a CTE for
-	// the multi-candidate case (and the typical 2-candidate fan-out is
-	// bounded by the same 64-candidate cap the matcher chain honours).
+	// Multi-candidate fan-out: emit one inner UNION arm per candidate over
+	// the SAME combined matched-row scan so a user-supplied `cerberus_ql`
+	// reaches both the underscored and dotted storage forms. The matched
+	// scan is itself a UNION-ALL of the matcher variants; both fan-outs
+	// stay inside the single combined query.
 	parts := make([]chsql.Frag, 0, len(candidates))
 	for _, k := range candidates {
 		arm := chsql.NewQuery().
 			Select(chsql.As(distinctMapAtFrag(attrsCol, k), "value")).
-			From(matcherSubqueryFrag(innerSQL, args)).
+			From(matchedFrom).
 			Where(mapAtNotEmptyFrag(attrsCol, k))
 		parts = append(parts, arm.Frag())
 	}
@@ -710,18 +715,85 @@ func (h *Handler) matcherSQL(ctx context.Context, matcher string, start, end tim
 	return sql, args, nil
 }
 
-// fetchSeries lowers the matcher to a Scan+Filter, runs as a sample query,
-// and dedupes the resulting label sets.
-func (h *Handler) fetchSeries(ctx context.Context, matcher string) ([]map[string]string, error) {
-	// Reuse the existing instant-query pipeline; rows come back as Samples
-	// and we dedupe to label sets in canonicalKey order. Series matchers
-	// don't carry @ start()/end(); pass `now` for both anchors so any
-	// literal @<ts> still resolves but the start()/end() variants surface
-	// as errors at lowering time.
+// expandSeriesMatchers fans every input match[] selector out through the
+// two-layer variant expansion (`expandUnderscoredMetricNameMatcher` ⊃
+// `expandBareHistogramMatcher`) and flattens the result into one
+// deduplicated list of matcher strings. The flattened list is the
+// candidate set the combined /api/v1/series query OR-joins into a single
+// scan — collapsing the former V×H×matcher round-trip fan-out (task #71).
+func expandSeriesMatchers(parser promparser.Parser, matchers []string, histogramTable string) []string {
+	seen := make(map[string]struct{})
+	out := make([]string, 0, len(matchers))
+	for _, m := range matchers {
+		for _, nameVariant := range expandUnderscoredMetricNameMatcher(parser, m) {
+			for _, variant := range expandBareHistogramMatcher(parser, nameVariant, histogramTable) {
+				if _, dup := seen[variant]; dup {
+					continue
+				}
+				seen[variant] = struct{}{}
+				out = append(out, variant)
+			}
+		}
+	}
+	return out
+}
+
+// fetchSeries lowers every matcher variant to a Sample-projecting
+// Scan+Filter, UNION-ALLs the arms into ONE combined query, runs it as a
+// single CH round-trip, and dedupes the resulting label sets.
+//
+// Fan-in batching (task #71): the pre-#71 shape issued one `Client.Query`
+// per variant (V×H fan-out — up to 32 sequential round-trips for a
+// histogram-base request, ~330ms on the demo dataset). Each variant's
+// lowered Sample-shape SELECT is now a UNION-ALL arm of a single query;
+// the Go dedup below folds the combined row stream into distinct label
+// sets exactly as the per-arm loop did, so the returned series are
+// identical — only the round-trip count drops to 1.
+func (h *Handler) fetchSeries(ctx context.Context, matchers []string) ([]map[string]string, error) {
+	if len(matchers) == 0 {
+		return nil, nil
+	}
+	// Series matchers don't carry @ start()/end(); pass `now` for both
+	// anchors so any literal @<ts> still resolves but the start()/end()
+	// variants surface as errors at lowering time.
 	now := time.Now()
-	samples, _, err := h.executeInstant(ctx, matcher, now, now)
+
+	// Single-matcher fast path: run the lowered Sample-shape SELECT
+	// directly as the top-level statement — byte-identical to the
+	// pre-#71 per-arm query (the engine ran this same SQL). Avoids
+	// wrapping the Map-typed Attributes column in an extra `SELECT * FROM
+	// (…)` boundary, which some CH drivers (chdb) refuse to cast back to
+	// MAP.
+	var sql string
+	var args []any
+	if len(matchers) == 1 {
+		s, a, err := h.seriesMatcherSQL(ctx, matchers[0], now, now)
+		if err != nil {
+			return nil, err
+		}
+		sql, args = s, a
+	} else {
+		// Multi-matcher: UNION-ALL the per-variant Sample-shape SELECTs
+		// into ONE statement. `chsql.UnionAll` emits
+		// `(arm1) UNION ALL (arm2) …` — itself a valid top-level SELECT,
+		// so no outer `SELECT *` wrapper is needed (and the Map column
+		// stays castable).
+		arms := make([]chsql.Frag, 0, len(matchers))
+		for _, m := range matchers {
+			s, a, err := h.seriesMatcherSQL(ctx, m, now, now)
+			if err != nil {
+				return nil, err
+			}
+			arms = append(arms, matcherSubqueryFrag(s, a))
+		}
+		sql, args = chsql.Render(chsql.UnionAll(arms...))
+	}
+
+	samples, err := timeCH(ctx, func() ([]chclient.Sample, error) {
+		return h.Client.Query(ctx, sql, args...)
+	})
 	if err != nil {
-		return nil, err
+		return nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
 	}
 
 	seen := make(map[string]map[string]string)
@@ -737,6 +809,39 @@ func (h *Handler) fetchSeries(ctx context.Context, matcher string) ([]map[string
 		out = append(out, l)
 	}
 	return out, nil
+}
+
+// seriesMatcherSQL lowers a single /api/v1/series matcher to a SELECT that
+// projects the Sample-shape columns (MetricName, Attributes, TimeUnix,
+// Value) — the projection `chclient.Client.Query` binds positionally. It
+// mirrors the engine instant-query path (`executeInstant` →
+// `lang.ProjectSamples`): lower, apply `wrapWithSampleProjection`,
+// optimize, emit. The Sample shape is what lets every variant become a
+// UNION-ALL arm of the one combined query fetchSeries runs.
+//
+// start/end anchor the matcher lowering's eval timestamp (`now` for both
+// on the series path); zero-time falls back to the lowering default.
+func (h *Handler) seriesMatcherSQL(ctx context.Context, matcher string, start, end time.Time) (string, []any, error) {
+	expr, err := h.parseExpr(ctx, matcher)
+	if err != nil {
+		return "", nil, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
+	}
+	var plan chplan.Node
+	if !end.IsZero() {
+		plan, err = promql.LowerAt(ctx, expr, h.Schema, start, end)
+	} else {
+		plan, err = promql.Lower(ctx, expr, h.Schema)
+	}
+	if err != nil {
+		return "", nil, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
+	}
+	plan = wrapWithSampleProjection(plan, h.Schema)
+	plan = h.Optimizer.Run(ctx, plan)
+	sql, args, err := chsql.Emit(ctx, plan)
+	if err != nil {
+		return "", nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError}
+	}
+	return sql, args, nil
 }
 
 // unionLabelNamesSQL builds a UNION of all metric tables' label keys.
