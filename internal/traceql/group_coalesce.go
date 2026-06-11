@@ -48,11 +48,35 @@ func lowerGroup(prev chplan.Node, g traceql.GroupOperation, s schema.Traces) (ch
 	if g.Expression == nil {
 		return nil, fmt.Errorf("traceql: `| group(...)` requires a field expression")
 	}
+	// A group key on a nested-set intrinsic (`by(nestedSetParent)`) has
+	// no flat OTel-CH column; recompute the numbering with a
+	// NestedSetAnnotate pass and group by the synthetic column. Reference
+	// Tempo materialises the same positions, so `/api/search` accepts it.
+	if col, ok := nestedSetColumnForFieldExpr(g.Expression); ok {
+		prev = annotateNestedSet(prev, s)
+		return groupAggregate(prev, &chplan.ColumnRef{Name: col}, s), nil
+	}
+	// A group key on a nested intrinsic (`by(event:name)`,
+	// `by(link:traceID)`) reads the per-span Nested subfield array
+	// (Events.Name, Links.TraceId). Reference Tempo groups spans by the
+	// event/link value; cerberus groups by the Nested-array column so
+	// `/api/search` returns 2xx rather than rejecting. The array column
+	// is a valid GROUP BY key in ClickHouse (one group per distinct
+	// per-span array).
+	if col, sub, ok := nestedIntrinsicGroupTarget(g.Expression, s); ok {
+		return groupAggregate(prev, &chplan.ColumnRef{Name: col + "." + sub}, s), nil
+	}
 	key, err := lowerFieldExpr(g.Expression, s)
 	if err != nil {
 		return nil, err
 	}
+	return groupAggregate(prev, key, s), nil
+}
 
+// groupAggregate builds the per-group Aggregate shared by lowerGroup:
+// the group key plus the representative envelope columns the Tempo
+// /api/search wrap projection decodes.
+func groupAggregate(prev chplan.Node, key chplan.Expr, s schema.Traces) chplan.Node {
 	return &chplan.Aggregate{
 		Input:          prev,
 		GroupBy:        []chplan.Expr{key},
@@ -61,7 +85,46 @@ func lowerGroup(prev chplan.Node, g traceql.GroupOperation, s schema.Traces) (ch
 			{Name: "any", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.TraceIDColumn}}, Alias: aggTraceIDAlias},
 			{Name: "any", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.SpanIDColumn}}, Alias: s.SpanIDColumn},
 		}, spansetEnvelopeAggFuncs(s)...),
-	}, nil
+	}
+}
+
+// nestedIntrinsicGroupTarget returns the (Nested column, subfield) a
+// field expression resolves to when it is a bare nested intrinsic
+// reference (event:name / link:traceID / link:spanID — the shapes a
+// group key takes), or ok=false otherwise. Reuses nestedIntrinsicTarget
+// (lower.go), the same mapping the comparison path uses.
+func nestedIntrinsicGroupTarget(e traceql.FieldExpression, s schema.Traces) (col, sub string, ok bool) {
+	a, ok := fieldExprAttribute(e)
+	if !ok {
+		return "", "", false
+	}
+	return nestedIntrinsicTarget(a, s)
+}
+
+// nestedSetColumnForFieldExpr returns the synthetic nested-set column a
+// field expression resolves to when it is a bare nested-set intrinsic
+// reference (the only shape group / aggregate keys take), or ok=false
+// otherwise.
+func nestedSetColumnForFieldExpr(e traceql.FieldExpression) (string, bool) {
+	a, ok := fieldExprAttribute(e)
+	if !ok {
+		return "", false
+	}
+	return nestedSetColumn(a.Intrinsic)
+}
+
+// annotateNestedSet wraps n in a NestedSetAnnotate so the recursive
+// numbering CTE materialises the synthetic nested-set columns. Shared by
+// the group / aggregate key paths and lowerSpansetFilter.
+func annotateNestedSet(n chplan.Node, s schema.Traces) chplan.Node {
+	return &chplan.NestedSetAnnotate{
+		Input:              n,
+		SpansTable:         s.SpansTable,
+		TraceIDColumn:      s.TraceIDColumn,
+		SpanIDColumn:       s.SpanIDColumn,
+		ParentSpanIDColumn: s.ParentSpanIDColumn,
+		TimestampColumn:    s.TimestampColumn,
+	}
 }
 
 // lowerCoalesce handles `| coalesce()` — Tempo's spanset-flattening

@@ -55,22 +55,9 @@ func lowerRoot(expr *traceql.RootExpr, s schema.Traces) (chplan.Node, error) {
 		return nil, fmt.Errorf("traceql: empty pipeline")
 	}
 
-	first := expr.Pipeline.Elements[0]
-	plan, err := lowerPipelineElement(first, s)
+	plan, err := lowerPipeline(expr.Pipeline, s)
 	if err != nil {
 		return nil, err
-	}
-
-	// Subsequent pipeline elements layer onto the previous result.
-	// Aggregators (`| count()` / `| sum(...)` / `| avg(...)` /
-	// `| max(...)` / `| min(...)`) and follow-on stages (scalar filter,
-	// group / coalesce / select) are handled by lowerFollowingElement.
-	for _, el := range expr.Pipeline.Elements[1:] {
-		next, err := lowerFollowingElement(plan, el, s)
-		if err != nil {
-			return nil, err
-		}
-		plan = next
 	}
 
 	if expr.MetricsPipeline != nil {
@@ -84,6 +71,30 @@ func lowerRoot(expr *traceql.RootExpr, s schema.Traces) (chplan.Node, error) {
 		if err != nil {
 			return nil, err
 		}
+	}
+	return plan, nil
+}
+
+// lowerPipeline folds a TraceQL Pipeline into a chplan tree: the first
+// element lowers to a Scan/Filter (or nested spanset operation) and each
+// subsequent element (aggregators, scalar filter, group / coalesce /
+// select) layers onto the previous result. Shared by lowerRoot and by
+// lowerSpansetExpr, which lowers a parenthesised sub-pipeline operand of
+// a spanset set operation (`({…} | count() > 1) && ({…} | count() > 1)`).
+func lowerPipeline(p traceql.Pipeline, s schema.Traces) (chplan.Node, error) {
+	if len(p.Elements) == 0 {
+		return nil, fmt.Errorf("traceql: empty pipeline")
+	}
+	plan, err := lowerPipelineElement(p.Elements[0], s)
+	if err != nil {
+		return nil, err
+	}
+	for _, el := range p.Elements[1:] {
+		next, err := lowerFollowingElement(plan, el, s)
+		if err != nil {
+			return nil, err
+		}
+		plan = next
 	}
 	return plan, nil
 }
@@ -508,6 +519,10 @@ func lowerSpansetExpr(e traceql.SpansetExpression, s schema.Traces) (chplan.Node
 		return lowerSpansetOperation(v, s)
 	case traceql.SpansetOperation:
 		return lowerSpansetOperation(&v, s)
+	case *traceql.Pipeline:
+		return lowerPipeline(*v, s)
+	case traceql.Pipeline:
+		return lowerPipeline(v, s)
 	}
 	return nil, fmt.Errorf("traceql: spanset expression %T is unsupported", e)
 }
@@ -573,14 +588,7 @@ func lowerSpansetFilter(f *traceql.SpansetFilter, s schema.Traces) (chplan.Node,
 	// recursive-numbering annotation pass so the column resolves to the
 	// real per-span position rather than an unknown identifier.
 	if predicateUsesNestedSetColumns(pred) {
-		input = &chplan.NestedSetAnnotate{
-			Input:              input,
-			SpansTable:         s.SpansTable,
-			TraceIDColumn:      s.TraceIDColumn,
-			SpanIDColumn:       s.SpanIDColumn,
-			ParentSpanIDColumn: s.ParentSpanIDColumn,
-			TimestampColumn:    s.TimestampColumn,
-		}
+		input = annotateNestedSet(input, s)
 	}
 	if pred == nil {
 		return input, nil
@@ -859,7 +867,25 @@ func fieldExprAttribute(e traceql.FieldExpression) (traceql.Attribute, bool) {
 // can surface the gap rather than ship wrong SQL.
 func lowerAttributeExpr(a traceql.Attribute, s schema.Traces) (chplan.Expr, error) {
 	if a.Scope == traceql.AttributeScopeLink || a.Scope == traceql.AttributeScopeEvent {
-		return nil, fmt.Errorf("traceql: %s.%s used outside a comparison; only equality / inequality / regex filters on link.* and event.* are supported", a.Scope, a.Name)
+		// A bare event-/link-scoped attribute as the whole filter
+		// expression (`{ event.name }`) is a truthiness test. Reference
+		// Tempo accepts it: the SpansetFilter requires the expression to
+		// type to a boolean or attribute (ast_validate.go
+		// SpansetFilter.validate), and a bare attribute is matched when it
+		// resolves to a non-nil truthy value — for the per-element Nested
+		// columns that is "at least one element carries the key". Lower to
+		// the same hasKey existence probe `<attr> != nil` produces rather
+		// than rejecting.
+		col, key, ok := nestedAttrTarget(a, s)
+		if !ok {
+			return nil, fmt.Errorf("traceql: nil comparison on %s.%s is unsupported — the configured schema has no %s column", a.Scope, a.Name, a.Scope)
+		}
+		return &chplan.NestedArrayExists{
+			Column:   col,
+			SubField: "Attributes",
+			Key:      key,
+			Presence: chplan.PresenceHasKey,
+		}, nil
 	}
 	// Nested-set intrinsics never resolve to a column here: comparisons
 	// are intercepted by lowerNestedSetBinary and select() projections

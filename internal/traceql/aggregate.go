@@ -85,6 +85,27 @@ func lowerAggregate(prev chplan.Node, agg traceql.Aggregate, s schema.Traces) (c
 		if inner == nil {
 			return nil, fmt.Errorf("traceql: aggregate `%s` has nil inner expression", agg.Op())
 		}
+		// An aggregate over a nested-set intrinsic (`min(nestedSetLeft)`)
+		// has no flat OTel-CH column; recompute the numbering with a
+		// NestedSetAnnotate pass over the input and aggregate the
+		// synthetic column. Reference Tempo materialises the same
+		// positions, so `/api/search` accepts it.
+		if col, ok := nestedSetColumnForFieldExpr(inner); ok {
+			prev = annotateNestedSet(prev, s)
+			return &chplan.Aggregate{
+				Input:          prev,
+				GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: s.TraceIDColumn}},
+				GroupByAliases: []string{aggTraceIDAlias},
+				AggFuncs: []chplan.AggFunc{
+					{Name: chFunc, Args: []chplan.Expr{&chplan.ColumnRef{Name: col}}, Alias: aggValueAlias},
+					anyAggFunc(s.SpanNameColumn, aggMetricNameAlias),
+					anyAggFunc(s.ResourceAttributesColumn, aggResourceAttrsAlias),
+					minAggFunc(s.TimestampColumn, aggTimeUnixAlias),
+					traceStartNsAggFunc(s.TimestampColumn),
+					traceEndNsAggFunc(s.TimestampColumn, s.DurationColumn),
+				},
+			}, nil
+		}
 		arg, err := lowerFieldExpr(inner, s)
 		if err != nil {
 			return nil, err

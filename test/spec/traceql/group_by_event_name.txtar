@@ -1,0 +1,15 @@
+Group by a nested intrinsic (`by(event:name)`). Reference Tempo groups
+spans by event name; cerberus groups on the per-span Events.Name Nested
+array column so /api/search returns 2xx. SQL/chplan-only golden.
+
+-- query.traceql --
+{ } | by(event:name)
+-- args --
+[0] int64 = 1
+[1] bool = true
+-- chplan --
+Aggregate groupBy=[Events.Name AS GroupKey] funcs=[any(TraceId) AS TraceId, any(SpanId) AS SpanId, count(1) AS Value, any(SpanName) AS MetricName, any(ResourceAttributes) AS ResourceAttrs, min(Timestamp) AS TimeUnix, min(toUnixTimestamp64Nano(Timestamp)) AS TraceStartNs, max((toUnixTimestamp64Nano(Timestamp) + toInt64(Duration))) AS TraceEndNs]
+  Filter predicate=true
+    Scan(otel_traces)
+-- sql --
+SELECT `Events.Name` AS `GroupKey`, any(`TraceId`) AS `TraceId`, any(`SpanId`) AS `SpanId`, toFloat64(count(?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT * FROM `otel_traces` WHERE ?) GROUP BY `Events.Name`

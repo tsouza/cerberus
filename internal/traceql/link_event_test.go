@@ -11,6 +11,7 @@ import (
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/traceql"
+	"github.com/tsouza/cerberus/test/spec"
 )
 
 // TestLowerLinkAndEvent pins the lowering of TraceQL link-traversal and
@@ -147,21 +148,23 @@ func TestLowerLinkAndEvent(t *testing.T) {
 	}
 }
 
-// TestLowerLinkEventScalarUseRejected pins the guard against using a
-// link- / event-scoped attribute outside a comparison. Today the only
-// supported shapes are equality / inequality / regex filters; reaching
-// the scalar path silently would dereference SpanAttributes (wrong
-// column) so the lowering errors instead.
-func TestLowerLinkEventScalarUseRejected(t *testing.T) {
+// TestLowerLinkEventBareReferenceProbesExistence pins the lowering of a
+// bare link- / event-scoped attribute used as the whole filter
+// expression (`{ link.span_id }`, `{ event.name }`). Reference Tempo's
+// SpansetFilter.validate accepts a bare attribute (it types to
+// TypeAttribute) and matches the span when the attribute resolves to a
+// non-nil value — for the per-element Nested columns that is "at least
+// one element carries the key". Cerberus lowers it to the same hasKey
+// NestedArrayExists probe `<attr> != nil` produces, rather than
+// rejecting (the rejection-parity layer flagged the old 422 as a
+// wrong_rejection).
+func TestLowerLinkEventBareReferenceProbesExistence(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelTraces()
 
-	// Compose the scalar-use shape directly via the AST: a SpansetFilter
-	// whose expression is a bare link-scoped Attribute. Going through
-	// the parser is unreliable here — TraceQL's grammar may or may not
-	// accept `{ link.foo }` depending on its bool-coercion rules, and
-	// the guard we want to pin is about the lowering, not the parser.
+	// Compose the bare-reference shape directly via the AST: a
+	// SpansetFilter whose expression is a bare link-scoped Attribute.
 	root := &tempo.RootExpr{
 		Pipeline: tempo.Pipeline{
 			Elements: []tempo.PipelineElement{
@@ -169,12 +172,13 @@ func TestLowerLinkEventScalarUseRejected(t *testing.T) {
 			},
 		},
 	}
-	_, err := traceql.Lower(context.Background(), root, s)
-	if err == nil {
-		t.Fatal("Lower returned nil error for scalar link.span_id use; want error")
+	plan, err := traceql.Lower(context.Background(), root, s)
+	if err != nil {
+		t.Fatalf("Lower(bare link.span_id): %v — reference accepts the bare reference", err)
 	}
-	if !strings.Contains(err.Error(), "outside a comparison") {
-		t.Errorf("error message = %q, want it to mention 'outside a comparison'", err.Error())
+	printed := spec.PrintChplan(plan)
+	if !strings.Contains(printed, "nestedArrayExists(Links.Attributes hasKey \"span_id\")") {
+		t.Errorf("Lower(bare link.span_id) plan:\n%s\nwant a hasKey existence probe on Links.Attributes", printed)
 	}
 }
 
