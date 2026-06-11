@@ -126,18 +126,21 @@ func buildDefaultTableShapes() map[string]TableShape {
 		},
 	}
 
-	// OTel-CH metrics tables: all share ORDER BY (ServiceName, MetricName,
-	// Attributes, toUnixTimestamp64Nano(TimeUnix)). The schema package
-	// doesn't carry a Metrics.WideColumns field yet, so the wide set is
-	// supplied inline — ResourceAttributes and ScopeAttributes are the
-	// large maps; Exemplars is a Nested column. A future refactor can
-	// extend schema.Metrics with WideColumns + RowKey and move this list
-	// there.
+	// OTel-CH metrics tables: all share ORDER BY (MetricName, Attributes,
+	// ServiceName, toUnixTimestamp64Nano(TimeUnix)) — the cerberus-ddl fork
+	// leads with MetricName so the common metric-name-first query (no
+	// service.name matcher) binary-searches the PK instead of falling to a
+	// generic-exclusion granule scan (measured 8-17x fewer granules). The
+	// schema package doesn't carry a Metrics.WideColumns field yet, so the
+	// wide set is supplied inline — ResourceAttributes and ScopeAttributes
+	// are the large maps; Exemplars is a Nested column. A future refactor
+	// can extend schema.Metrics with WideColumns + RowKey and move this
+	// list there.
 	metricsShape := TableShape{
 		SortColumns: []string{
-			metrics.ServiceNameColumn,
 			metrics.MetricNameColumn,
 			metrics.AttributesColumn,
+			metrics.ServiceNameColumn,
 			metrics.TimestampColumn,
 		},
 		WideColumns: []string{
