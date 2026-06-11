@@ -1,0 +1,18 @@
+Pin: ProjectionPushdown retains carrier columns referenced only from
+inside nested expressions — FieldAccess sources (select() wrap smuggles
+SpanAttributes['http.method'] inside the canonical Attributes map()) and
+NestedArrayExists.Column (the Events Nested carrier in the predicate).
+Regression: compose-smoke 502 / ClickHouse error 47 on the showcase
+query `{ status = error } | select(span.http.method, resource.service.name)`.
+-- chplan_optimized --
+Project [SpanName AS MetricName, mapConcat(ResourceAttributes, map("__cerberus_sel_str_http.method", SpanAttributes["http.method"])) AS Attributes, Timestamp AS TimeUnix, toFloat64(Duration) AS Value]
+  Filter predicate=((StatusCode = "Error") AND nestedArrayExists(Events.Attributes["exception.type"] = "IOError"))
+    Scan(otel_traces, columns=[Duration, Events, ResourceAttributes, SpanAttributes, SpanName, StatusCode, Timestamp])
+-- chplan_unoptimized --
+Project [SpanName AS MetricName, mapConcat(ResourceAttributes, map("__cerberus_sel_str_http.method", SpanAttributes["http.method"])) AS Attributes, Timestamp AS TimeUnix, toFloat64(Duration) AS Value]
+  Filter predicate=((StatusCode = "Error") AND nestedArrayExists(Events.Attributes["exception.type"] = "IOError"))
+    Scan(otel_traces)
+-- optimized --
+SELECT `SpanName` AS `MetricName`, mapConcat(`ResourceAttributes`, map(?, `SpanAttributes`[?])) AS `Attributes`, `Timestamp` AS `TimeUnix`, toFloat64(`Duration`) AS `Value` FROM (SELECT `Duration`, `Events`, `ResourceAttributes`, `SpanAttributes`, `SpanName`, `StatusCode`, `Timestamp` FROM `otel_traces` PREWHERE (`StatusCode` = ?) WHERE arrayExists(x -> x[?] = ?, `Events`.`Attributes`))
+-- unoptimized --
+SELECT `SpanName` AS `MetricName`, mapConcat(`ResourceAttributes`, map(?, `SpanAttributes`[?])) AS `Attributes`, `Timestamp` AS `TimeUnix`, toFloat64(`Duration`) AS `Value` FROM (SELECT * FROM `otel_traces` PREWHERE (`StatusCode` = ?) WHERE arrayExists(x -> x[?] = ?, `Events`.`Attributes`))

@@ -473,6 +473,57 @@ var inputs = map[string]chplan.Node{
 		ValueColumn:     "Value",
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 	},
+
+	// pushdown_select_wrap_carriers: the Tempo /api/search
+	// `| select(...)` wrap shape — Project(Filter(Scan)) where the
+	// selected attribute values ride INSIDE the canonical Attributes
+	// map() expression as FieldAccess lookups on their carrier maps
+	// (SpanAttributes here), and the predicate carries a
+	// NestedArrayExists whose carrier (`Events`) is a plain string
+	// field, not a child ColumnRef. ProjectionPushdown's narrowed
+	// Scan.Columns must retain BOTH carriers: before the walker
+	// learned FieldAccess / NestedArrayExists, SpanAttributes and
+	// Events were pruned and ClickHouse failed outer-scope resolution
+	// with error 47 (UNKNOWN_IDENTIFIER) — the compose-smoke 502 on
+	// `{ status = error } | select(span.http.method, ...)`.
+	"pushdown_select_wrap_carriers": &chplan.Project{
+		Input: &chplan.Filter{
+			Input: &chplan.Scan{Table: "otel_traces"},
+			Predicate: &chplan.Binary{
+				Op: chplan.OpAnd,
+				Left: &chplan.Binary{
+					Op:    chplan.OpEq,
+					Left:  &chplan.ColumnRef{Name: "StatusCode"},
+					Right: &chplan.LitString{V: "Error"},
+				},
+				Right: &chplan.NestedArrayExists{
+					Column:   "Events",
+					SubField: "Attributes",
+					Key:      "exception.type",
+					Op:       chplan.OpEq,
+					Value:    &chplan.LitString{V: "IOError"},
+				},
+			},
+		},
+		Projections: []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: "SpanName"}, Alias: "MetricName"},
+			{Expr: &chplan.FuncCall{Name: "mapConcat", Args: []chplan.Expr{
+				&chplan.ColumnRef{Name: "ResourceAttributes"},
+				&chplan.FuncCall{Name: "map", Args: []chplan.Expr{
+					&chplan.LitString{V: "__cerberus_sel_str_http.method"},
+					&chplan.FieldAccess{
+						Source: &chplan.ColumnRef{Name: "SpanAttributes"},
+						Path:   "http.method",
+					},
+				}},
+			}}, Alias: "Attributes"},
+			{Expr: &chplan.ColumnRef{Name: "Timestamp"}, Alias: "TimeUnix"},
+			{Expr: &chplan.FuncCall{
+				Name: "toFloat64",
+				Args: []chplan.Expr{&chplan.ColumnRef{Name: "Duration"}},
+			}, Alias: "Value"},
+		},
+	},
 }
 
 func TestOptimizer(t *testing.T) {
