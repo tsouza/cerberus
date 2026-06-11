@@ -286,7 +286,7 @@ func (e *emitter) emitRangeWindow(r *chplan.RangeWindow) error {
 		return e.emitRangeWindowDelta(r)
 	case "idelta":
 		return e.emitRangeWindowIDelta(r)
-	case "sum_over_time", "avg_over_time", "min_over_time", "max_over_time", "count_over_time", "last_over_time", "stddev_over_time", "stdvar_over_time":
+	case "sum_over_time", "avg_over_time", "min_over_time", "max_over_time", "count_over_time", "first_over_time", "last_over_time", "stddev_over_time", "stdvar_over_time":
 		return e.emitRangeWindowOverTime(r)
 	case "quantile_over_time":
 		return e.emitRangeWindowQuantileOverTime(r)
@@ -1676,7 +1676,8 @@ func (e *emitter) emitRangeWindowIncrease(r *chplan.RangeWindow) error {
 
 // emitRangeWindowOverTime emits SQL for the `*_over_time` family:
 // sum_over_time, avg_over_time, min_over_time, max_over_time,
-// count_over_time, last_over_time, stddev_over_time, stdvar_over_time.
+// count_over_time, first_over_time, last_over_time, stddev_over_time,
+// stdvar_over_time.
 // These don't need counter-reset handling — they're straight array
 // aggregations over the window's values.
 //
@@ -1709,6 +1710,13 @@ func (e *emitter) emitRangeWindowOverTime(r *chplan.RangeWindow) error {
 		inner = "if(length(window_vals) > 0, arrayMax(window_vals), nan)"
 	case "count_over_time":
 		inner = "toFloat64(length(window_vals))"
+	case "first_over_time":
+		// LogQL `first_over_time(... | unwrap v [r])` — the value of the
+		// time-EARLIEST sample in the window (Loki's FirstOverTime
+		// streaming aggregator / `first` batch fn, pkg/logql/
+		// range_vector.go). window_vals is time-sorted (arraySort over
+		// (ts, value) tuples upstream), so element 1 is the earliest.
+		inner = "if(length(window_vals) > 0, window_vals[1], nan)"
 	case "last_over_time":
 		inner = "if(length(window_vals) > 0, window_vals[length(window_vals)], nan)"
 	case "stddev_over_time":

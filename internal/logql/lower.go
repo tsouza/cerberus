@@ -985,6 +985,13 @@ func labelFiltererLower(lf loglib.LabelFilterer, s schema.Logs, labelsExpr chpla
 		return pred, []labelFilterMark{mark}, nil
 	case *loglib.BytesLabelFilter:
 		return bytesLabelFilterExpr(v, labelsExpr), nil, nil
+	case *loglib.IPLabelFilter:
+		// `| addr = ip("...")` / `!= ip("...")` — no marks: reference
+		// Loki's IPLabelFilter never stamps `__error__` itself (its
+		// only failure mode is an invalid pattern, rejected at
+		// lowering). See internal/logql/ip.go.
+		pred, err := ipLabelFilterExpr(v, labelsExpr)
+		return pred, nil, err
 	}
 	return nil, nil, fmt.Errorf("logql: unsupported label filterer %T", lf)
 }
@@ -1245,11 +1252,18 @@ func lowerLineFilterChain(f *syntax.LineFilterExpr, body chplan.Expr) (chplan.Ex
 func lineFilterPart(lf *syntax.LineFilter, body chplan.Expr) (chplan.Expr, error) {
 	if lf.Op == syntax.OpFilterIP {
 		// `|= ip("192.168.0.0/16")` matches lines containing an IP
-		// inside the CIDR / range — NOT lines containing the literal
-		// argument text. Lowering it as a plain LineContent match would
-		// silently return wrong results, so reject loudly until a real
-		// `isIPAddressInRange`-based lowering lands.
-		return nil, fmt.Errorf("logql: line-filter `ip(...)` is not yet supported")
+		// inside the CIDR / range / single-IP match set — see
+		// internal/logql/ip.go for the reference-semantics walk-through.
+		return ipLineFilterExpr(lf, body)
+	}
+	// `|>` / `!>` pattern filters carry Loki's pattern syntax
+	// (literals + `<_>` wildcards) — see internal/logql/
+	// pattern_filter.go for the reference-semantics walk-through.
+	switch lf.Ty {
+	case loglib.LineMatchPattern:
+		return patternLineFilterExpr(lf.Match, false, body)
+	case loglib.LineMatchNotPattern:
+		return patternLineFilterExpr(lf.Match, true, body)
 	}
 	isRegex, negated, err := lineFilterOp(lf.Ty)
 	if err != nil {
@@ -1274,7 +1288,7 @@ func lineFilterOp(t loglib.LineMatchType) (isRegex, negated bool, err error) {
 	case loglib.LineMatchNotRegexp:
 		return true, true, nil
 	}
-	return false, false, fmt.Errorf("logql: line-filter op %s is not yet supported (`|>` pattern filters land in M3.2)", t)
+	return false, false, fmt.Errorf("logql: unknown line-filter match type %s", t)
 }
 
 // SelectorPredicate is the exported entry point for callers that need

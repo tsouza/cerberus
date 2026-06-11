@@ -176,6 +176,14 @@ func run() error {
 		}
 		httpClient := &http.Client{Timeout: f.timeout}
 		results = append(results, compareDetectedFieldsAll(httpClient, f, metadata)...)
+
+		// Wrong-rejection-burndown value pass (range lane only, like
+		// detected-fields): a fixed query set covering the operator
+		// shapes the corpus doesn't carry — vector set ops,
+		// bool-on-arithmetic, ip() / pattern line+label filters,
+		// first/last_over_time, absent_over_time, topk/bottomk,
+		// sort/sort_desc. See burndown_value_parity.go.
+		results = append(results, compareBurndownValueParity(httpClient, f, metadata)...)
 	}
 
 	report := Report{

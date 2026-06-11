@@ -211,14 +211,14 @@ func applyLineFilter(f *syntax.LineFilterExpr, records []property.LogRecord) ([]
 // lineFilterPredicate compiles a LineFilterExpr (with optional Left /
 // Or chain) into a single line-acceptance predicate.
 func lineFilterPredicate(f *syntax.LineFilterExpr) (func(string) bool, error) {
-	headPred, err := singleLineFilter(f.Ty, f.Match)
+	headPred, err := singleLineFilter(f.LineFilter)
 	if err != nil {
 		return nil, err
 	}
 	current := headPred
 	// Or alternates: OR with the head clause.
 	for or := f.Or; or != nil; or = or.Or {
-		next, err := singleLineFilter(or.Ty, or.Match)
+		next, err := singleLineFilter(or.LineFilter)
 		if err != nil {
 			return nil, err
 		}
@@ -244,27 +244,37 @@ func lineFilterPredicate(f *syntax.LineFilterExpr) (func(string) bool, error) {
 	return current, nil
 }
 
-// singleLineFilter compiles one (Ty, Match) pair into a predicate.
-func singleLineFilter(ty loglib.LineMatchType, match string) (func(string) bool, error) {
-	switch ty {
+// singleLineFilter compiles one LineFilter into a predicate. The
+// `ip(...)` function form is flagged by lf.Op (the parser stores the
+// function name there); plain filters dispatch on the match type,
+// including the `|>` / `!>` pattern forms.
+func singleLineFilter(lf syntax.LineFilter) (func(string) bool, error) {
+	if lf.Op == syntax.OpFilterIP {
+		return ipLineFilterPredicate(lf.Match, lf.Ty)
+	}
+	switch lf.Ty {
 	case loglib.LineMatchEqual:
-		return func(line string) bool { return strings.Contains(line, match) }, nil
+		return func(line string) bool { return strings.Contains(line, lf.Match) }, nil
 	case loglib.LineMatchNotEqual:
-		return func(line string) bool { return !strings.Contains(line, match) }, nil
+		return func(line string) bool { return !strings.Contains(line, lf.Match) }, nil
 	case loglib.LineMatchRegexp:
-		re, err := regexp.Compile(match)
+		re, err := regexp.Compile(lf.Match)
 		if err != nil {
-			return nil, fmt.Errorf("oracle/logql: compile regex %q: %w", match, err)
+			return nil, fmt.Errorf("oracle/logql: compile regex %q: %w", lf.Match, err)
 		}
 		return func(line string) bool { return re.MatchString(line) }, nil
 	case loglib.LineMatchNotRegexp:
-		re, err := regexp.Compile(match)
+		re, err := regexp.Compile(lf.Match)
 		if err != nil {
-			return nil, fmt.Errorf("oracle/logql: compile regex %q: %w", match, err)
+			return nil, fmt.Errorf("oracle/logql: compile regex %q: %w", lf.Match, err)
 		}
 		return func(line string) bool { return !re.MatchString(line) }, nil
+	case loglib.LineMatchPattern:
+		return patternLinePredicate(lf.Match, false)
+	case loglib.LineMatchNotPattern:
+		return patternLinePredicate(lf.Match, true)
 	}
-	return nil, fmt.Errorf("oracle/logql: unsupported line-match type %s", ty)
+	return nil, fmt.Errorf("oracle/logql: unsupported line-match type %s", lf.Ty)
 }
 
 // applyLabelFmt applies a `| label_format` stage. Each LabelFmt is

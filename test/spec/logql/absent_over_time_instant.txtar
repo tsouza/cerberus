@@ -1,0 +1,34 @@
+-- query.logql --
+absent_over_time({job="api", env="prod"}[5m])
+-- seed --
+CREATE TABLE otel_logs (
+    Timestamp DateTime64(9),
+    Body String,
+    SeverityText LowCardinality(String) DEFAULT '',
+    ResourceAttributes Map(String, String),
+    ServiceName String DEFAULT ''
+) ENGINE = Memory;
+INSERT INTO otel_logs (Timestamp, Body, ResourceAttributes) VALUES
+    (toDateTime64('2025-06-01 00:00:00', 9), 'stale', map('job', 'api'));
+-- expected_rows --
+[
+  ["", {"env": "prod", "job": "api"}, "2026-01-01T00:00:01Z", 1]
+]
+-- args --
+[0] string = ""
+[1] string = "job"
+[2] string = "api"
+[3] string = "env"
+[4] string = "prod"
+[5] float64 = 1
+[6] string = "job"
+[7] string = "api"
+[8] string = "env"
+[9] string = "prod"
+-- chplan --
+AbsentOverTime range=5m0s step=0s ts=TimeUnix value=Value name=MetricName attrs=Attributes synth=[job="api", env="prod"]
+  Project [Timestamp AS TimeUnix]
+    Filter predicate=((ResourceAttributes["job"] = "api") AND (ResourceAttributes["env"] = "prod"))
+      Scan(otel_logs)
+-- sql --
+SELECT ? AS `MetricName`, map(?, ?, ?, ?) AS `Attributes`, anchor_ts AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT anchor_ts FROM (SELECT now64(9) AS `anchor_ts`, sample_ts_arr FROM (SELECT groupArray(`TimeUnix`) AS `sample_ts_arr` FROM (SELECT `Timestamp` AS `TimeUnix` FROM (SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (`ResourceAttributes`[?] = ?))) WHERE `TimeUnix` > now64(9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= now64(9))) WHERE arrayCount(t -> t > anchor_ts - toIntervalNanosecond(300000000000) AND t <= anchor_ts, sample_ts_arr) = 0)

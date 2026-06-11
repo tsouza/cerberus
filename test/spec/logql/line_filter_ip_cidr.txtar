@@ -1,0 +1,31 @@
+-- query.logql --
+{job="api"} |= ip("10.0.0.0/8")
+-- seed --
+CREATE TABLE otel_logs (
+    Body String,
+    ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api')
+) ENGINE = Memory;
+INSERT INTO otel_logs (Body) VALUES
+    ('10.1.2.3 GET /healthz ok'),
+    ('src=10.255.0.1 connected'),
+    ('11.0.0.1 other subnet'),
+    ('999.10.0.0.1 junk token'),
+    ('fe80::1 link local'),
+    ('no address here');
+-- expected_rows --
+[
+  ["10.1.2.3 GET /healthz ok"],
+  ["src=10.255.0.1 connected"]
+]
+-- args --
+[0] string = "job"
+[1] string = "api"
+[2] string = "10.0.0.0"
+[3] string = "10.255.255.255"
+[4] int64 = 0
+[5] string = "[0-9.]+"
+-- chplan --
+Filter predicate=((ResourceAttributes["job"] = "api") AND arrayExists(_cerb_ip -> ifNull(((toIPv4OrNull(_cerb_ip) >= toIPv4("10.0.0.0")) AND (toIPv4OrNull(_cerb_ip) <= toIPv4("10.255.255.255"))), 0), extractAll(Body, "[0-9.]+")))
+  Scan(otel_logs)
+-- sql --
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND arrayExists(_cerb_ip -> ifNull(((toIPv4OrNull(_cerb_ip) >= toIPv4(?)) AND (toIPv4OrNull(_cerb_ip) <= toIPv4(?))), ?), extractAll(`Body`, ?))

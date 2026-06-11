@@ -1,0 +1,45 @@
+-- query.logql --
+{job="api"} | logfmt | addr = ip("192.168.0.0/16")
+-- seed --
+CREATE TABLE otel_logs (
+    Body String,
+    ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api')
+) ENGINE = Memory;
+INSERT INTO otel_logs (Body) VALUES
+    ('addr=192.168.1.5 msg=a'),
+    ('addr=10.0.0.1 msg=b'),
+    ('addr=not-an-ip msg=c'),
+    ('msg=d');
+-- expected_rows --
+[
+  ["addr=192.168.1.5 msg=a"]
+]
+-- args --
+[0] string = "job"
+[1] string = "api"
+[2] string = "_extracted"
+[3] string = "="
+[4] string = " "
+[5] string = "\""
+[6] string = "__error__"
+[7] bool = true
+[8] string = "_extracted"
+[9] string = "="
+[10] string = " "
+[11] string = "\""
+[12] string = "addr"
+[13] bool = false
+[14] string = "192.168.0.0"
+[15] string = "192.168.255.255"
+[16] int64 = 0
+[17] string = "_extracted"
+[18] string = "="
+[19] string = " "
+[20] string = "\""
+[21] string = "addr"
+[22] string = "[0-9.]+"
+-- chplan --
+Filter predicate=((ResourceAttributes["job"] = "api") AND multiIf(mapContains(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\""))), "__error__"), true, not(mapContains(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\""))), "addr")), false, arrayExists(_cerb_ip -> ifNull(((toIPv4OrNull(_cerb_ip) >= toIPv4("192.168.0.0")) AND (toIPv4OrNull(_cerb_ip) <= toIPv4("192.168.255.255"))), 0), extractAll(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\"")))["addr"], "[0-9.]+"))))
+  Scan(otel_logs)
+-- sql --
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND multiIf(mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), extractKeyValuePairs(`Body`, ?, ?, ?))), ?), ?, not(mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), extractKeyValuePairs(`Body`, ?, ?, ?))), ?)), ?, arrayExists(_cerb_ip -> ifNull(((toIPv4OrNull(_cerb_ip) >= toIPv4(?)) AND (toIPv4OrNull(_cerb_ip) <= toIPv4(?))), ?), extractAll(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), extractKeyValuePairs(`Body`, ?, ?, ?)))[?], ?)))

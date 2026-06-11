@@ -1,0 +1,60 @@
+-- query.logql --
+{job="api"} |> "error: <_>"
+-- seed --
+CREATE TABLE otel_logs (
+    Body String,
+    ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api')
+) ENGINE = Memory;
+INSERT INTO otel_logs (Body) VALUES
+    ('error: disk full'),
+    ('error: '),
+    ('warn error: retried'),
+    ('all good');
+-- expected_rows --
+[
+  ["error: disk full"],
+  ["warn error: retried"]
+]
+-- args --
+[0] string = "job"
+[1] string = "api"
+[2] int64 = 0
+[3] int64 = 0
+[4] int64 = 1
+[5] int64 = 0
+[6] int64 = -1
+[7] int64 = 1
+[8] int64 = 0
+[9] int64 = 1
+[10] int64 = 0
+[11] int64 = 1
+[12] int64 = -1
+[13] int64 = 0
+[14] int64 = 1
+[15] int64 = 1
+[16] string = "error: "
+[17] int64 = 0
+[18] int64 = 0
+[19] int64 = 0
+[20] int64 = 0
+[21] int64 = 0
+[22] int64 = 1
+[23] int64 = 0
+[24] int64 = -1
+[25] int64 = 1
+[26] int64 = 0
+[27] int64 = 1
+[28] int64 = 0
+[29] int64 = 1
+[30] int64 = -1
+[31] int64 = 0
+[32] int64 = 1
+[33] int64 = 1
+[34] string = "error: "
+[35] int64 = 0
+[36] int64 = 0
+-- chplan --
+Filter predicate=((ResourceAttributes["job"] = "api") AND ((arrayFold((_cerb_acc, _cerb_lit, _cerb_mg) -> multiIf((_cerb_acc < 0), _cerb_acc, (position(Body, _cerb_lit, (toUInt64(greatest(_cerb_acc, 0)) + 1)) = 0), toInt64(-1), ((_cerb_mg = 1) AND (position(Body, _cerb_lit, (toUInt64(greatest(_cerb_acc, 0)) + 1)) = (toUInt64(greatest(_cerb_acc, 0)) + 1))), toInt64(-1), (toInt64((position(Body, _cerb_lit, (toUInt64(greatest(_cerb_acc, 0)) + 1)) + length(_cerb_lit))) - 1)), array("error: "), array(0), toInt64(0)) >= 0) AND (arrayFold((_cerb_acc, _cerb_lit, _cerb_mg) -> multiIf((_cerb_acc < 0), _cerb_acc, (position(Body, _cerb_lit, (toUInt64(greatest(_cerb_acc, 0)) + 1)) = 0), toInt64(-1), ((_cerb_mg = 1) AND (position(Body, _cerb_lit, (toUInt64(greatest(_cerb_acc, 0)) + 1)) = (toUInt64(greatest(_cerb_acc, 0)) + 1))), toInt64(-1), (toInt64((position(Body, _cerb_lit, (toUInt64(greatest(_cerb_acc, 0)) + 1)) + length(_cerb_lit))) - 1)), array("error: "), array(0), toInt64(0)) != length(Body))))
+  Scan(otel_logs)
+-- sql --
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (arrayFold((_cerb_acc, _cerb_lit, _cerb_mg) -> multiIf((_cerb_acc < ?), _cerb_acc, (position(`Body`, _cerb_lit, (toUInt64(greatest(_cerb_acc, ?)) + ?)) = ?), toInt64(?), ((_cerb_mg = ?) AND (position(`Body`, _cerb_lit, (toUInt64(greatest(_cerb_acc, ?)) + ?)) = (toUInt64(greatest(_cerb_acc, ?)) + ?))), toInt64(?), (toInt64((position(`Body`, _cerb_lit, (toUInt64(greatest(_cerb_acc, ?)) + ?)) + length(_cerb_lit))) - ?)), array(?), array(?), toInt64(?)) >= ?) AND (arrayFold((_cerb_acc, _cerb_lit, _cerb_mg) -> multiIf((_cerb_acc < ?), _cerb_acc, (position(`Body`, _cerb_lit, (toUInt64(greatest(_cerb_acc, ?)) + ?)) = ?), toInt64(?), ((_cerb_mg = ?) AND (position(`Body`, _cerb_lit, (toUInt64(greatest(_cerb_acc, ?)) + ?)) = (toUInt64(greatest(_cerb_acc, ?)) + ?))), toInt64(?), (toInt64((position(`Body`, _cerb_lit, (toUInt64(greatest(_cerb_acc, ?)) + ?)) + length(_cerb_lit))) - ?)), array(?), array(?), toInt64(?)) != length(`Body`))

@@ -15,12 +15,19 @@ import (
 // excluded ones for `without`), apply the aggregator on the inner
 // stream's `value` column.
 //
-// `topk` / `bottomk` change output shape (K rows per group) and are
-// unsupported; `quantile` requires a parameterised CH aggregate that
-// we already support for PromQL.
+// `topk` / `bottomk` change output shape (K rows per group) and route
+// to [lowerTopK]; `sort` / `sort_desc` reorder rather than aggregate
+// and route to [lowerSort].
 func lowerVectorAggregation(e *syntax.VectorAggregationExpr, s schema.Logs, lc lowerCtx) (chplan.Node, error) {
 	if e.Left == nil {
 		return nil, fmt.Errorf("logql: vector-aggregation has nil inner")
+	}
+
+	switch e.Operation {
+	case syntax.OpTypeTopK, syntax.OpTypeBottomK:
+		return lowerTopK(e, s, lc)
+	case syntax.OpTypeSort, syntax.OpTypeSortDesc:
+		return lowerSort(e, s, lc)
 	}
 
 	innerExpr, ok := e.Left.(syntax.Expr)
@@ -229,10 +236,130 @@ func canonicalLevelKeys(groups []string) []string {
 	return out
 }
 
+// lowerTopK lowers LogQL `topk(K, expr)` / `bottomk(K, expr)` —
+// optionally with `by (...)` / `without (...)` partitioning — into a
+// chplan.TopK over the Sample-shaped inner plan. Mirrors PromQL's
+// lowerTopK (internal/promql/lower.go).
+//
+// Reference semantics (pkg/logql/evaluator.go::VectorAggEvaluator,
+// OpTypeTopK / OpTypeBottomK arms): per evaluation step and per
+// grouping key, keep the K samples with the largest (topk) / smallest
+// (bottomk) values — every kept sample retains its FULL original
+// label set; the grouping only partitions, it never projects labels.
+// The parser guarantees K > 0 (mustNewVectorAggregationExpr rejects
+// `topk(0, ...)` with "must be greater than 0").
+//
+// The inner plan is re-shaped to the canonical Sample contract first
+// ([sampleShapeOverLogInner]) so the partition keys resolve against
+// the `Attributes` map and — in range mode — the per-anchor timestamp
+// rides under `TimeUnix`, which joins the partition list so the
+// K-window fires per step rather than across the whole matrix
+// (reference applies the heap per step by construction).
+func lowerTopK(e *syntax.VectorAggregationExpr, s schema.Logs, lc lowerCtx) (chplan.Node, error) {
+	shaped, err := sortableShapedInner(e, s, lc)
+	if err != nil {
+		return nil, err
+	}
+
+	by := topKPartition(e)
+	if lc.rangeMode() {
+		by = append(by, &chplan.ColumnRef{Name: "TimeUnix"})
+	}
+
+	return &chplan.TopK{
+		Input:    shaped,
+		K:        int64(e.Params),
+		By:       by,
+		SortExpr: &chplan.ColumnRef{Name: rangeAggSynthValueColumn},
+		Desc:     e.Operation == syntax.OpTypeTopK,
+		Columns:  []string{"MetricName", "Attributes", "TimeUnix", rangeAggSynthValueColumn},
+	}, nil
+}
+
+// topKPartition derives the partition expressions for topk/bottomk
+// from the aggregation's Grouping, resolved against the canonical
+// `Attributes` map the Sample-shaped inner exposes:
+//
+//   - no grouping (or `by ()`) → nil — one global K-window, matching
+//     reference Loki's single empty grouping key.
+//   - `by (l1, l2)` → one map-lookup per label. The `detected_level`
+//     family (`detected_level` + its `level` alias) normalises to the
+//     canonical key the range-aggregation identity wrap writes.
+//   - `without (l1, l2)` → the Attributes map minus the (canonical-
+//     ised) keys.
+//
+// Note the parser materialises a non-nil empty Grouping for bare
+// `topk(K, v)` (mustNewVectorAggregationExpr defaults `gr =
+// &Grouping{}`), so the nil-check alone doesn't gate.
+func topKPartition(e *syntax.VectorAggregationExpr) []chplan.Expr {
+	g := e.Grouping
+	if g == nil || (!g.Without && len(g.Groups) == 0) {
+		return nil
+	}
+	attrs := &chplan.ColumnRef{Name: "Attributes"}
+	if g.Without {
+		return []chplan.Expr{&chplan.MapWithoutKeys{
+			Map:  attrs,
+			Keys: canonicalLevelKeys(g.Groups),
+		}}
+	}
+	out := make([]chplan.Expr, 0, len(g.Groups))
+	for _, label := range canonicalLevelKeys(g.Groups) {
+		out = append(out, attributeLookupExpr(attrs, label))
+	}
+	return out
+}
+
+// lowerSort lowers LogQL `sort(expr)` / `sort_desc(expr)` into a
+// chplan.OrderBy over the Sample-shaped inner plan.
+//
+// Reference semantics (pkg/logql/evaluator.go::VectorAggEvaluator,
+// OpTypeSort / OpTypeSortDesc arms): every input sample is kept with
+// its labels and value untouched; only the output order changes —
+// ascending by value for `sort`, descending for `sort_desc`. The
+// parser rejects `by (...)` grouping on both ops
+// (validateSortGrouping), so there is no partition dimension to
+// honour; an empty `by ()` parses and is a no-op like it is upstream.
+func lowerSort(e *syntax.VectorAggregationExpr, s schema.Logs, lc lowerCtx) (chplan.Node, error) {
+	shaped, err := sortableShapedInner(e, s, lc)
+	if err != nil {
+		return nil, err
+	}
+	return &chplan.OrderBy{
+		Input: shaped,
+		Keys: []chplan.OrderKey{{
+			Expr: &chplan.ColumnRef{Name: rangeAggSynthValueColumn},
+			Desc: e.Operation == syntax.OpTypeSortDesc,
+		}},
+	}, nil
+}
+
+// sortableShapedInner lowers the aggregation's inner expression and
+// re-shapes it to the canonical Sample contract — the shared front
+// half of [lowerTopK] and [lowerSort]. The outer by-clause labels
+// thread down exactly like [lowerVectorAggregation]'s generic path so
+// `topk(2, rate(...)) by (ServiceName)` surfaces top-level OTel-CH
+// scalar columns into the identity map the partition keys read.
+func sortableShapedInner(e *syntax.VectorAggregationExpr, s schema.Logs, lc lowerCtx) (chplan.Node, error) {
+	innerExpr, ok := e.Left.(syntax.Expr)
+	if !ok {
+		return nil, fmt.Errorf("logql: vector-aggregation inner is not an Expr (%T)", e.Left)
+	}
+	innerLc := lc
+	if e.Grouping != nil && !e.Grouping.Without && len(e.Grouping.Groups) > 0 {
+		innerLc = lc.withOuterByLabels(e.Grouping.Groups)
+	}
+	inner, err := lower(innerExpr, s, innerLc)
+	if err != nil {
+		return nil, err
+	}
+	return sampleShapeOverLogInner(inner, s), nil
+}
+
 // buildVectorAggFunc produces the AggFunc for the LogQL operator.
-// Output-shape-changing ops (topk, bottomk, sort, sort_desc, quantile)
-// are unsupported — CH support exists for quantile but the LogQL
-// semantic for K-row-per-group ops needs result shaping.
+// Output-shape-changing ops (topk, bottomk, sort, sort_desc) are
+// routed to [lowerTopK] / [lowerSort] before this function is
+// reached.
 func buildVectorAggFunc(e *syntax.VectorAggregationExpr, _ schema.Logs) (chplan.AggFunc, error) {
 	const valueAlias = "Value"
 	valueArg := &chplan.ColumnRef{Name: valueAlias}
@@ -253,10 +380,6 @@ func buildVectorAggFunc(e *syntax.VectorAggregationExpr, _ schema.Logs) (chplan.
 	case syntax.OpTypeStdvar:
 		return chplan.AggFunc{Name: "varPop", Args: []chplan.Expr{valueArg}, Alias: valueAlias}, nil
 
-	case syntax.OpTypeTopK, syntax.OpTypeBottomK:
-		return chplan.AggFunc{}, fmt.Errorf("logql: %s changes output shape and is unsupported", e.Operation)
-	case syntax.OpTypeSort, syntax.OpTypeSortDesc:
-		return chplan.AggFunc{}, fmt.Errorf("logql: %s requires output ordering rather than aggregation", e.Operation)
 	}
 	return chplan.AggFunc{}, fmt.Errorf("logql: aggregation operation %q is unsupported", e.Operation)
 }

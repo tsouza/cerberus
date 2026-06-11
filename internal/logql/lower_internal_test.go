@@ -497,20 +497,40 @@ func TestMatcherToExpr_TopLevelColumnCoalesce_Conformance(t *testing.T) {
 	}
 }
 
-// TestLineFilterIPRejected pins the explicit rejection of `ip(...)`
-// line filters. The parser carries the function-filter marker in
-// LineFilter.Op; before the guard in [lineFilterPart] the lowering
-// silently treated the CIDR/range argument as a literal substring
-// match — wrong results, not an error. Until an
-// `isIPAddressInRange`-based lowering lands, the only honest outcome
-// is a loud rejection.
-func TestLineFilterIPRejected(t *testing.T) {
+// TestLineFilterIPLowering pins the `ip(...)` filter contract:
+// well-formed patterns (single IP / CIDR / range, both families and
+// both filter positions) lower cleanly — reference Loki accepts them,
+// so a rejection here is a wrong rejection (the pre-burndown state) —
+// while the shapes reference Loki itself rejects at stage-build time
+// (invalid pattern, regex-op line filter) keep failing lowering.
+func TestLineFilterIPLowering(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelLogs()
 	for _, q := range []string{
 		`{service_name="api"} |= ip("192.168.0.0/16")`,
 		`{service_name="api"} != ip("10.0.0.1")`,
+		`{service_name="api"} |= ip("192.168.0.1-192.168.0.23")`,
+		`{service_name="api"} |= ip("::1")`,
+		`{service_name="api"} |= ip("2001:db8::/32")`,
+		`{service_name="api"} | json | client_ip = ip("10.0.0.0/8")`,
+		`{service_name="api"} | json | client_ip != ip("10.1.2.3")`,
+	} {
+		expr, err := syntax.ParseExpr(q)
+		if err != nil {
+			t.Fatalf("ParseExpr(%q): %v", q, err)
+		}
+		if _, err := Lower(context.Background(), expr, s); err != nil {
+			t.Errorf("Lower(%q): %v; want acceptance (reference Loki answers this shape)", q, err)
+		}
+	}
+
+	for _, q := range []string{
+		// Reference: getMatcher → ErrIPFilterInvalidPattern (400).
+		`{service_name="api"} |= ip("not-an-ip")`,
+		`{service_name="api"} | client_ip = ip("999.0.0.1/8")`,
+		// Reference: NewIPLineFilter → ErrIPFilterInvalidOperation (400).
+		`{service_name="api"} |~ ip("10.0.0.1")`,
 	} {
 		expr, err := syntax.ParseExpr(q)
 		if err != nil {
@@ -518,10 +538,10 @@ func TestLineFilterIPRejected(t *testing.T) {
 		}
 		_, err = Lower(context.Background(), expr, s)
 		if err == nil {
-			t.Fatalf("Lower(%q) succeeded; want the ip() line-filter rejection", q)
+			t.Fatalf("Lower(%q) succeeded; want the ip() rejection reference Loki mirrors", q)
 		}
-		if !strings.Contains(err.Error(), "ip(...)") {
-			t.Errorf("Lower(%q) error = %q; want it to name the ip(...) line filter", q, err)
+		if !strings.Contains(err.Error(), "logql: ip:") {
+			t.Errorf("Lower(%q) error = %q; want the logql: ip: prefix", q, err)
 		}
 	}
 }

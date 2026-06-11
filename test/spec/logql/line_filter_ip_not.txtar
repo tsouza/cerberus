@@ -1,0 +1,28 @@
+-- query.logql --
+{job="api"} != ip("10.0.0.1-10.0.0.3")
+-- seed --
+CREATE TABLE otel_logs (
+    Body String,
+    ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api')
+) ENGINE = Memory;
+INSERT INTO otel_logs (Body) VALUES
+    ('conn from 10.0.0.2 accepted'),
+    ('conn from 10.0.0.4 accepted'),
+    ('plain line');
+-- expected_rows --
+[
+  ["conn from 10.0.0.4 accepted"],
+  ["plain line"]
+]
+-- args --
+[0] string = "job"
+[1] string = "api"
+[2] string = "10.0.0.1"
+[3] string = "10.0.0.3"
+[4] int64 = 0
+[5] string = "[0-9.]+"
+-- chplan --
+Filter predicate=((ResourceAttributes["job"] = "api") AND not(arrayExists(_cerb_ip -> ifNull(((toIPv4OrNull(_cerb_ip) >= toIPv4("10.0.0.1")) AND (toIPv4OrNull(_cerb_ip) <= toIPv4("10.0.0.3"))), 0), extractAll(Body, "[0-9.]+"))))
+  Scan(otel_logs)
+-- sql --
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND not(arrayExists(_cerb_ip -> ifNull(((toIPv4OrNull(_cerb_ip) >= toIPv4(?)) AND (toIPv4OrNull(_cerb_ip) <= toIPv4(?))), ?), extractAll(`Body`, ?)))
