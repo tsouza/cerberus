@@ -569,11 +569,6 @@ func TestLower_HistogramQuantile_Errors(t *testing.T) {
 			wantErr: "histogram_quantile",
 		},
 		{
-			name:    "non-scalar phi",
-			query:   `histogram_quantile(scalar(other), foo)`,
-			wantErr: "requires a scalar-literal phi",
-		},
-		{
 			name:    "non-VectorSelector arg",
 			query:   `histogram_quantile(0.5, vector(1))`,
 			wantErr: "histogram VectorSelector",

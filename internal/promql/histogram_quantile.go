@@ -54,6 +54,18 @@ func stripBucketSuffix(matchers []*labels.Matcher) []*labels.Matcher {
 	return out
 }
 
+// phiArg carries histogram_quantile's phi argument in either literal
+// or computed form. Exactly one side is meaningful: expr == nil means
+// the literal `lit` (folded at lowering time — the common case);
+// expr != nil means a runtime-computed scalar (a ScalarSubquery built
+// by lowerScalarArg from `scalar(<vector>)` and friends) that the
+// emitters render in place of the literal. Maps 1:1 onto the
+// Phi / PhiExpr field pair on chplan.HistogramQuantile{,Native}.
+type phiArg struct {
+	lit  float64
+	expr chplan.Expr
+}
+
 // lowerHistogramQuantile handles `histogram_quantile(phi, X)`. X is
 // either:
 //
@@ -102,9 +114,20 @@ func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chp
 	if len(c.Args) != 2 {
 		return nil, fmt.Errorf("promql: histogram_quantile expects 2 arguments, got %d", len(c.Args))
 	}
-	phi, ok := tryScalarLiteral(c.Args[0])
-	if !ok {
-		return nil, fmt.Errorf("promql: histogram_quantile requires a scalar-literal phi (computed phi is unsupported)")
+	var phi phiArg
+	if lit, ok := tryScalarLiteral(c.Args[0]); ok {
+		phi.lit = lit
+	} else {
+		// Computed phi (`histogram_quantile(scalar(x), b)`): bind phi
+		// as a scalar-subquery expression; the emitters render it in
+		// place of the literal, with the phi-domain branches
+		// (phi <= 0 / phi >= 1 plus a leading isNaN guard) resolved at
+		// runtime instead of compile time.
+		expr, err := lowerScalarArg(c.Args[0], s, ctx)
+		if err != nil {
+			return nil, err
+		}
+		phi.expr = expr
 	}
 
 	// Recognise the canonical Prom idiom — `sum [by/without](rate(...))`
@@ -197,7 +220,8 @@ func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chp
 
 	hq := &chplan.HistogramQuantile{
 		Input:                input,
-		Phi:                  phi,
+		Phi:                  phi.lit,
+		PhiExpr:              phi.expr,
 		BucketCountsColumn:   s.BucketCountsColumn,
 		ExplicitBoundsColumn: s.ExplicitBoundsColumn,
 		GroupBy: []chplan.Expr{
@@ -342,7 +366,7 @@ func peelWrappers(e parser.Expr) parser.Expr {
 // For `sum without (k1, k2, ...)`, the standard MapWithoutKeys group
 // expression is used (le is not special; if the user lists it, the
 // downstream `mapFilter` simply removes a non-existent key).
-func lowerHistogramQuantileAgg(shape histogramAggShape, phi float64, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+func lowerHistogramQuantileAgg(shape histogramAggShape, phi phiArg, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	vs := shape.selector
 
 	// Build the Scan + Filter. The metric-name matcher and any
@@ -415,7 +439,8 @@ func lowerHistogramQuantileAgg(shape histogramAggShape, phi float64, s schema.Me
 
 	hq := &chplan.HistogramQuantile{
 		Input:                rebuilt,
-		Phi:                  phi,
+		Phi:                  phi.lit,
+		PhiExpr:              phi.expr,
 		BucketCountsColumn:   s.BucketCountsColumn,
 		ExplicitBoundsColumn: s.ExplicitBoundsColumn,
 		GroupBy: []chplan.Expr{
@@ -542,7 +567,7 @@ func andExpr(a, b chplan.Expr) chplan.Expr {
 // the same quantile interpolation across a StepGrid + per-anchor
 // lookback window. The instant lowering keeps `TimeUnix = now64(9)`
 // because instant queries have a single evaluation anchor.
-func lowerHistogramQuantileNative(vs *parser.VectorSelector, phi float64, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+func lowerHistogramQuantileNative(vs *parser.VectorSelector, phi phiArg, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	scan := &chplan.Scan{Table: s.ExpHistogramTable}
 	pred := buildPredicate(vs.LabelMatchers, s)
 	if hasModifier(vs) {
@@ -564,7 +589,8 @@ func lowerHistogramQuantileNative(vs *parser.VectorSelector, phi float64, s sche
 
 	hq := &chplan.HistogramQuantileNative{
 		Input:                      input,
-		Phi:                        phi,
+		Phi:                        phi.lit,
+		PhiExpr:                    phi.expr,
 		ScaleColumn:                s.ScaleColumn,
 		ZeroCountColumn:            s.ZeroCountColumn,
 		ZeroThresholdColumn:        s.ZeroThresholdColumn,
@@ -657,7 +683,7 @@ const (
 // carry an `le` label — the bucket distribution lives in the
 // PositiveBucketCounts array with PositiveOffset shifting the
 // starting absolute index per series). Mirrors classic-agg's behaviour.
-func lowerHistogramQuantileNativeAgg(shape histogramAggShape, phi float64, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+func lowerHistogramQuantileNativeAgg(shape histogramAggShape, phi phiArg, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	vs := shape.selector
 
 	// Build the Scan + Filter. Same shape as the classic-agg path: the
@@ -740,7 +766,8 @@ func lowerHistogramQuantileNativeAgg(shape histogramAggShape, phi float64, s sch
 
 	hq := &chplan.HistogramQuantileNative{
 		Input:                      rebuilt,
-		Phi:                        phi,
+		Phi:                        phi.lit,
+		PhiExpr:                    phi.expr,
 		ScaleColumn:                s.ScaleColumn,
 		ZeroCountColumn:            s.ZeroCountColumn,
 		ZeroThresholdColumn:        s.ZeroThresholdColumn,

@@ -70,10 +70,24 @@ func lowerInstantFn(c *parser.Call, s schema.Metrics, chFn string, ctx lowerCtx)
 // `round(Value / to_nearest) * to_nearest`. CH's native `round(v, N)`
 // rounds to N decimal places, not to a multiple, so we synthesise the
 // multiple-rounding semantics explicitly.
+//
+// to_nearest may be a scalar literal (the common case — folded at
+// lowering time) or any computed scalar expression
+// (`round(v, scalar(x))`): lowerScalarArg binds the computed shape as
+// a scalar subquery and the same division/multiplication arithmetic
+// applies. A NaN to_nearest (scalar() over 0 or many series)
+// propagates NaN through the arithmetic, matching Prom's
+// `math.Floor(v/toNearest+0.5)*toNearest` with a NaN operand.
 func lowerRoundToNearest(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	toNearest, ok := tryScalarLiteral(c.Args[1])
-	if !ok {
-		return nil, fmt.Errorf("promql: round(v, to_nearest) requires a scalar literal to_nearest")
+	var tn chplan.Expr
+	if toNearest, ok := tryScalarLiteral(c.Args[1]); ok {
+		tn = &chplan.LitFloat{V: toNearest}
+	} else {
+		computed, err := lowerScalarArg(c.Args[1], s, ctx)
+		if err != nil {
+			return nil, err
+		}
+		tn = computed
 	}
 
 	inner, err := lower(c.Args[0], s, ctx)
@@ -82,7 +96,6 @@ func lowerRoundToNearest(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan
 	}
 
 	valueRef := &chplan.ColumnRef{Name: s.ValueColumn}
-	tn := &chplan.LitFloat{V: toNearest}
 
 	rounded := &chplan.FuncCall{
 		Name: "round",
@@ -98,33 +111,60 @@ func lowerRoundToNearest(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan
 //	clamp_min(v, min) → greatest(Value, min)
 //	clamp(v, min, max) → greatest(min, least(max, Value))
 //
-// Bounds must be scalar literals at lowering time; computed bounds are
-// not supported (scalars are not first-class chplan nodes).
+// Bounds may be scalar literals (the common case — folded at lowering
+// time, byte-stable SQL) or computed scalar expressions
+// (`clamp_min(v, scalar(x))`): lowerScalarArg binds the computed shape
+// as a scalar subquery. Two semantic gaps between CH's least/greatest
+// and Prom's math.Min/math.Max are bridged on the computed path:
+//
+//   - NaN bounds: Go's math.Min/Max NaN-propagate (clamp_min(v, NaN)
+//     is a NaN series), while CH's least/greatest order NaN; the
+//     computed path wraps the value in `if(isNaN(bound), nan, ...)`.
+//   - Degenerate 3-arg bounds: Prom's funcClamp returns an EMPTY
+//     vector when maxVal < minVal. The literal path folds that at
+//     lowering time; the computed path emits a runtime
+//     `NOT (max < min)` Filter (NaN bounds compare false, so they
+//     keep the rows and resolve to NaN values — exactly Prom's
+//     behaviour).
 func lowerClamp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	switch c.Func.Name {
 	case "clamp_max", "clamp_min":
 		if len(c.Args) != 2 {
 			return nil, fmt.Errorf("promql: %s expects 2 arguments, got %d", c.Func.Name, len(c.Args))
 		}
-		bound, ok := tryScalarLiteral(c.Args[1])
-		if !ok {
-			return nil, fmt.Errorf("promql: %s requires a scalar-literal bound", c.Func.Name)
+		fnName := "least"
+		if c.Func.Name == "clamp_min" {
+			fnName = "greatest"
+		}
+		if bound, ok := tryScalarLiteral(c.Args[1]); ok {
+			inner, err := lower(c.Args[0], s, ctx)
+			if err != nil {
+				return nil, err
+			}
+			newValue := &chplan.FuncCall{
+				Name: fnName,
+				Args: []chplan.Expr{
+					&chplan.ColumnRef{Name: s.ValueColumn},
+					&chplan.LitFloat{V: bound},
+				},
+			}
+			return projectValueOverInner(inner, s, newValue), nil
+		}
+		boundE, err := lowerScalarArg(c.Args[1], s, ctx)
+		if err != nil {
+			return nil, err
 		}
 		inner, err := lower(c.Args[0], s, ctx)
 		if err != nil {
 			return nil, err
 		}
-		fnName := "least"
-		if c.Func.Name == "clamp_min" {
-			fnName = "greatest"
-		}
-		newValue := &chplan.FuncCall{
+		newValue := nanIfExpr(isNaNExpr(boundE), &chplan.FuncCall{
 			Name: fnName,
 			Args: []chplan.Expr{
 				&chplan.ColumnRef{Name: s.ValueColumn},
-				&chplan.LitFloat{V: bound},
+				boundE,
 			},
-		}
+		})
 		return projectValueOverInner(inner, s, newValue), nil
 
 	case "clamp":
@@ -133,40 +173,83 @@ func lowerClamp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, er
 		}
 		minB, okMin := tryScalarLiteral(c.Args[1])
 		maxB, okMax := tryScalarLiteral(c.Args[2])
-		if !okMin || !okMax {
-			return nil, fmt.Errorf("promql: clamp requires scalar-literal bounds for min and max")
+		if okMin && okMax {
+			inner, err := lower(c.Args[0], s, ctx)
+			if err != nil {
+				return nil, err
+			}
+			// Prom's funcClamp short-circuits to an empty Vector when
+			// `maxVal < minVal` (see prometheus/promql/functions.go::clamp).
+			// The CH-side `greatest(min, least(max, V))` doesn't replicate
+			// that — it would force every sample to `min` — so detect the
+			// degenerate-bounds case at lowering and Filter the inner tree
+			// to zero rows. Surfaced as the compat-lane diff on
+			// `clamp(demo_memory_usage_bytes, 1e12, 0)`: cerberus emitted a
+			// constant 1e12 series across every step while Prom emitted no
+			// series at all.
+			if maxB < minB {
+				return &chplan.Filter{
+					Input:     inner,
+					Predicate: &chplan.LitBool{V: false},
+				}, nil
+			}
+			valueRef := &chplan.ColumnRef{Name: s.ValueColumn}
+			newValue := &chplan.FuncCall{
+				Name: "greatest",
+				Args: []chplan.Expr{
+					&chplan.LitFloat{V: minB},
+					&chplan.FuncCall{
+						Name: "least",
+						Args: []chplan.Expr{&chplan.LitFloat{V: maxB}, valueRef},
+					},
+				},
+			}
+			return projectValueOverInner(inner, s, newValue), nil
+		}
+
+		// At least one computed bound: bind both sides through
+		// lowerScalarArg (the literal side folds to a LitFloat) and
+		// resolve Prom's degenerate-bounds + NaN rules at runtime.
+		minE, err := lowerScalarArg(c.Args[1], s, ctx)
+		if err != nil {
+			return nil, err
+		}
+		maxE, err := lowerScalarArg(c.Args[2], s, ctx)
+		if err != nil {
+			return nil, err
 		}
 		inner, err := lower(c.Args[0], s, ctx)
 		if err != nil {
 			return nil, err
 		}
-		// Prom's funcClamp short-circuits to an empty Vector when
-		// `maxVal < minVal` (see prometheus/promql/functions.go::clamp).
-		// The CH-side `greatest(min, least(max, V))` doesn't replicate
-		// that — it would force every sample to `min` — so detect the
-		// degenerate-bounds case at lowering and Filter the inner tree
-		// to zero rows. Surfaced as the compat-lane diff on
-		// `clamp(demo_memory_usage_bytes, 1e12, 0)`: cerberus emitted a
-		// constant 1e12 series across every step while Prom emitted no
-		// series at all.
-		if maxB < minB {
-			return &chplan.Filter{
-				Input:     inner,
-				Predicate: &chplan.LitBool{V: false},
-			}, nil
-		}
-		valueRef := &chplan.ColumnRef{Name: s.ValueColumn}
-		newValue := &chplan.FuncCall{
-			Name: "greatest",
-			Args: []chplan.Expr{
-				&chplan.LitFloat{V: minB},
-				&chplan.FuncCall{
-					Name: "least",
-					Args: []chplan.Expr{&chplan.LitFloat{V: maxB}, valueRef},
+		// Runtime mirror of the literal path's maxB < minB fold: keep
+		// rows only while NOT (max < min). NaN bounds compare false —
+		// rows survive and the NaN guard below turns the values NaN,
+		// matching Prom's math.Max(min, math.Min(max, v)).
+		filtered := &chplan.Filter{
+			Input: inner,
+			Predicate: &chplan.FuncCall{
+				Name: "not",
+				Args: []chplan.Expr{
+					&chplan.Binary{Op: chplan.OpLt, Left: maxE, Right: minE},
 				},
 			},
 		}
-		return projectValueOverInner(inner, s, newValue), nil
+		valueRef := &chplan.ColumnRef{Name: s.ValueColumn}
+		newValue := nanIfExpr(
+			&chplan.Binary{Op: chplan.OpOr, Left: isNaNExpr(minE), Right: isNaNExpr(maxE)},
+			&chplan.FuncCall{
+				Name: "greatest",
+				Args: []chplan.Expr{
+					minE,
+					&chplan.FuncCall{
+						Name: "least",
+						Args: []chplan.Expr{maxE, valueRef},
+					},
+				},
+			},
+		)
+		return projectValueOverInner(filtered, s, newValue), nil
 	}
 	return nil, fmt.Errorf("promql: unknown clamp function %s", c.Func.Name)
 }

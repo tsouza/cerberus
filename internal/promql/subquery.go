@@ -433,7 +433,7 @@ func lowerSubqueryOverAggregate(
 	// `Value`); the Aggregate's output column reuses the same alias so
 	// the outer RangeWindow can reference it transparently via its
 	// `ValueColumn = s.ValueColumn`.
-	aggFunc, err := buildSubqueryAggFunc(agg, s.ValueColumn)
+	aggFunc, err := buildSubqueryAggFunc(agg, s.ValueColumn, s, ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -490,6 +490,26 @@ func lowerSubqueryOverAggregate(
 						{Expr: &chplan.LitFloat{V: infValue}, Alias: s.ValueColumn},
 					},
 				}
+			}
+		} else {
+			// Computed phi: the literal branch's compile-time ±Inf fold
+			// resolved at runtime instead — buildSubqueryAggFunc bound a
+			// sanitised parameter, this guard projects NaN / ±Inf over
+			// the sentinel quantile (Prom's quantile() domain rules).
+			phiE, err := lowerScalarArg(agg.Param, s, ctx)
+			if err != nil {
+				return nil, err
+			}
+			wrapped = &chplan.Project{
+				Input: wrapped,
+				Projections: []chplan.Projection{
+					{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+					{Expr: &chplan.ColumnRef{Name: anchorAlias}, Alias: anchorAlias},
+					{
+						Expr:  outOfRangePhiGuardExpr(phiE, &chplan.ColumnRef{Name: s.ValueColumn}),
+						Alias: s.ValueColumn,
+					},
+				},
 			}
 		}
 	}
@@ -778,8 +798,9 @@ func lowerSubqueryInnerMatrix(
 // column) and the output alias (so a wrapping RangeWindow can
 // reference the aggregate output via its ValueColumn). Callers pass
 // `s.ValueColumn` (the schema-canonical `Value`) so the inner / outer
-// references stay consistent end-to-end.
-func buildSubqueryAggFunc(a *parser.AggregateExpr, valCol string) (chplan.AggFunc, error) {
+// references stay consistent end-to-end. s + ctx feed the computed-phi
+// quantile arm (lowerScalarArg needs the schema and eval anchor).
+func buildSubqueryAggFunc(a *parser.AggregateExpr, valCol string, s schema.Metrics, ctx lowerCtx) (chplan.AggFunc, error) {
 	valueArg := &chplan.ColumnRef{Name: valCol}
 	switch a.Op {
 	case parser.SUM:
@@ -793,22 +814,35 @@ func buildSubqueryAggFunc(a *parser.AggregateExpr, valCol string) (chplan.AggFun
 	case parser.MAX:
 		return chplan.AggFunc{Name: "max", Args: []chplan.Expr{valueArg}, Alias: valCol}, nil
 	case parser.QUANTILE:
-		phi, ok := tryScalarLiteral(a.Param)
-		if !ok {
-			return chplan.AggFunc{}, fmt.Errorf("promql: subquery over quantile(phi, ...) requires a scalar literal phi")
+		if phi, ok := tryScalarLiteral(a.Param); ok {
+			// CH's `quantile(phi)` aggregate errors on phi outside [0, 1].
+			// The lowerSubqueryOverAggregate caller post-Projects the Value
+			// column to ±Inf for out-of-range phi (matching Prom's
+			// funcQuantile semantics) so the clamped value here is never
+			// observed in the final output. Mirrors lower.go's buildAggFunc.
+			emitPhi := phi
+			if _, outOfRange := outOfRangePhiInf(phi); outOfRange {
+				emitPhi = 0.5
+			}
+			return chplan.AggFunc{
+				Name:   "quantile",
+				Params: []chplan.Expr{&chplan.LitFloat{V: emitPhi}},
+				Args:   []chplan.Expr{valueArg},
+				Alias:  valCol,
+			}, nil
 		}
-		// CH's `quantile(phi)` aggregate errors on phi outside [0, 1].
-		// The lowerSubqueryOverAggregate caller post-Projects the Value
-		// column to ±Inf for out-of-range phi (matching Prom's
-		// funcQuantile semantics) so the clamped value here is never
-		// observed in the final output. Mirrors lower.go's buildAggFunc.
-		emitPhi := phi
-		if _, outOfRange := outOfRangePhiInf(phi); outOfRange {
-			emitPhi = 0.5
+		// Computed phi (`quantile(scalar(x), v)[r:s]`): bind a sanitised
+		// scalar-subquery parameter; the caller post-wraps the output
+		// Value through outOfRangePhiGuardExpr so out-of-domain /
+		// NaN phi resolves to ±Inf / NaN per Prom's quantile() helper.
+		// Mirrors lower.go's buildAggFunc computed-phi arm.
+		phiE, err := lowerScalarArg(a.Param, s, ctx)
+		if err != nil {
+			return chplan.AggFunc{}, err
 		}
 		return chplan.AggFunc{
 			Name:   "quantile",
-			Params: []chplan.Expr{&chplan.LitFloat{V: emitPhi}},
+			Params: []chplan.Expr{sanitizedPhiParamExpr(phiE)},
 			Args:   []chplan.Expr{valueArg},
 			Alias:  valCol,
 		}, nil

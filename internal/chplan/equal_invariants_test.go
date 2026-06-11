@@ -2119,3 +2119,122 @@ func TestUnionAll_Children_ReturnsCopy(t *testing.T) {
 		t.Errorf("Children() must return a copy, not the underlying slice")
 	}
 }
+
+// -----------------------------------------------------------------------
+// ScalarSubquery Equal tests (Expr embedding a plan subtree).
+// -----------------------------------------------------------------------
+
+func TestScalarSubquery_Equal_Positive(t *testing.T) {
+	t.Parallel()
+	a := &chplan.ScalarSubquery{Input: &chplan.Scan{Table: "otel_metrics_gauge"}}
+	b := &chplan.ScalarSubquery{Input: &chplan.Scan{Table: "otel_metrics_gauge"}}
+	if !a.Equal(b) || !b.Equal(a) {
+		t.Fatalf("identical ScalarSubquery values should be Equal (symmetric)")
+	}
+}
+
+func TestScalarSubquery_Equal_Negative_Input(t *testing.T) {
+	t.Parallel()
+	a := &chplan.ScalarSubquery{Input: &chplan.Scan{Table: "otel_metrics_gauge"}}
+	b := &chplan.ScalarSubquery{Input: &chplan.Scan{Table: "otel_metrics_sum"}}
+	if a.Equal(b) {
+		t.Errorf("different Input should not be Equal")
+	}
+}
+
+func TestScalarSubquery_Equal_Negative_NilInput(t *testing.T) {
+	t.Parallel()
+	a := &chplan.ScalarSubquery{Input: &chplan.Scan{Table: "otel_metrics_gauge"}}
+	b := &chplan.ScalarSubquery{}
+	if a.Equal(b) || b.Equal(a) {
+		t.Errorf("nil vs non-nil Input should not be Equal")
+	}
+}
+
+func TestScalarSubquery_Equal_Negative_OtherType(t *testing.T) {
+	t.Parallel()
+	a := &chplan.ScalarSubquery{Input: &chplan.Scan{Table: "otel_metrics_gauge"}}
+	if a.Equal(&chplan.LitFloat{V: 1}) {
+		t.Errorf("ScalarSubquery should not equal a different Expr type")
+	}
+}
+
+// -----------------------------------------------------------------------
+// RangeWindow.ScalarExprs Equal coverage.
+// -----------------------------------------------------------------------
+
+func TestRangeWindow_Equal_Negative_ScalarExprs(t *testing.T) {
+	t.Parallel()
+	mk := func(v float64) *chplan.RangeWindow {
+		return &chplan.RangeWindow{
+			Input:       &chplan.Scan{Table: "otel_metrics_gauge"},
+			Func:        "quantile_over_time",
+			Range:       5 * time.Minute,
+			ScalarExprs: []chplan.Expr{&chplan.LitFloat{V: v}},
+		}
+	}
+	if !mk(0.5).Equal(mk(0.5)) {
+		t.Fatalf("identical ScalarExprs should be Equal")
+	}
+	if mk(0.5).Equal(mk(0.9)) {
+		t.Errorf("different ScalarExprs values should not be Equal")
+	}
+	withNone := &chplan.RangeWindow{
+		Input: &chplan.Scan{Table: "otel_metrics_gauge"},
+		Func:  "quantile_over_time",
+		Range: 5 * time.Minute,
+	}
+	if mk(0.5).Equal(withNone) {
+		t.Errorf("ScalarExprs vs none should not be Equal")
+	}
+}
+
+// -----------------------------------------------------------------------
+// HistogramQuantile{,Native}.PhiExpr Equal coverage.
+// -----------------------------------------------------------------------
+
+func TestHistogramQuantile_Equal_Negative_PhiExpr(t *testing.T) {
+	t.Parallel()
+	mk := func(e chplan.Expr) *chplan.HistogramQuantile {
+		return &chplan.HistogramQuantile{
+			Input:                &chplan.Scan{Table: "otel_metrics_histogram"},
+			PhiExpr:              e,
+			BucketCountsColumn:   "BucketCounts",
+			ExplicitBoundsColumn: "ExplicitBounds",
+		}
+	}
+	if !mk(&chplan.LitFloat{V: 0.5}).Equal(mk(&chplan.LitFloat{V: 0.5})) {
+		t.Fatalf("identical PhiExpr should be Equal")
+	}
+	if mk(&chplan.LitFloat{V: 0.5}).Equal(mk(&chplan.LitFloat{V: 0.9})) {
+		t.Errorf("different PhiExpr should not be Equal")
+	}
+	if mk(&chplan.LitFloat{V: 0.5}).Equal(mk(nil)) || mk(nil).Equal(mk(&chplan.LitFloat{V: 0.5})) {
+		t.Errorf("PhiExpr nil vs non-nil should not be Equal")
+	}
+}
+
+func TestHistogramQuantileNative_Equal_Negative_PhiExpr(t *testing.T) {
+	t.Parallel()
+	mk := func(e chplan.Expr) *chplan.HistogramQuantileNative {
+		return &chplan.HistogramQuantileNative{
+			Input:                      &chplan.Scan{Table: "otel_metrics_exp_histogram"},
+			PhiExpr:                    e,
+			ScaleColumn:                "Scale",
+			ZeroCountColumn:            "ZeroCount",
+			PositiveOffsetColumn:       "PositiveOffset",
+			PositiveBucketCountsColumn: "PositiveBucketCounts",
+			NegativeOffsetColumn:       "NegativeOffset",
+			NegativeBucketCountsColumn: "NegativeBucketCounts",
+		}
+	}
+	if !mk(&chplan.LitFloat{V: 0.5}).Equal(mk(&chplan.LitFloat{V: 0.5})) {
+		t.Fatalf("identical PhiExpr should be Equal")
+	}
+	if mk(&chplan.LitFloat{V: 0.5}).Equal(mk(&chplan.LitFloat{V: 0.9})) {
+		t.Errorf("different PhiExpr should not be Equal")
+	}
+	if mk(&chplan.LitFloat{V: 0.5}).Equal(mk(nil)) || mk(nil).Equal(mk(&chplan.LitFloat{V: 0.5})) {
+		t.Errorf("PhiExpr nil vs non-nil should not be Equal")
+	}
+}

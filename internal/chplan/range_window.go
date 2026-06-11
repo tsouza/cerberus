@@ -94,6 +94,17 @@ type RangeWindow struct {
 	// Empty for the simpler range functions (rate / increase /
 	// *_over_time / log_rate) that take no extra parameters.
 	Scalars []float64
+
+	// ScalarExprs is the computed-scalar sibling of Scalars: when
+	// non-empty it carries one Expr per scalar argument (typically a
+	// ScalarSubquery built from a `scalar(<vector>)` argument, possibly
+	// composed with literals through Binary nodes) and takes precedence
+	// over Scalars at emit time. Set by the PromQL lowering for
+	// `predict_linear(v[r], scalar(x))` and
+	// `quantile_over_time(scalar(x), v[r])` — the shapes whose scalar
+	// parameter the reference engine computes per evaluation. Mutually
+	// exclusive with Scalars: a lowering populates one or the other.
+	ScalarExprs []Expr
 }
 
 func (*RangeWindow) planNode() {}
@@ -130,6 +141,14 @@ func (r *RangeWindow) Equal(other Node) bool {
 	}
 	for i := range r.Scalars {
 		if r.Scalars[i] != o.Scalars[i] {
+			return false
+		}
+	}
+	if len(r.ScalarExprs) != len(o.ScalarExprs) {
+		return false
+	}
+	for i := range r.ScalarExprs {
+		if !r.ScalarExprs[i].Equal(o.ScalarExprs[i]) {
 			return false
 		}
 	}

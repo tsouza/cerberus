@@ -74,10 +74,16 @@ func (e *emitter) emitHistogramQuantile(h *chplan.HistogramQuantile) error {
 }
 
 // histogramQuantileValueFrag returns the Frag that renders the per-row
-// quantile-interpolation expression. phi is rendered as an inline float
-// literal (query-shape parameter, mirrors holtWintersValueExpr's sf / tf
-// treatment); bound user data lives on the wrapping Filter / Project,
-// not on the per-row arithmetic.
+// quantile-interpolation expression. A literal phi is rendered as an
+// inline float literal (query-shape parameter, mirrors
+// holtWintersValueExpr's sf / tf treatment); a computed phi
+// (h.PhiExpr != nil) renders the expression — typically a scalar
+// subquery, which CH evaluates once and folds as a constant — at every
+// phi position, wrapped in a leading `isNaN(phi) → nan` branch
+// because a runtime phi can be NaN (PromQL `scalar()` over zero / many
+// series) and Prom's bucketQuantile returns NaN there. Bound user data
+// lives on the wrapping Filter / Project, not on the per-row
+// arithmetic.
 //
 // The expression is structured as nested if(...) clauses so the
 // edge-case branches stay inlined (no CASE WHEN, no CTEs) — keeps the
@@ -109,6 +115,25 @@ func histogramQuantileValueFrag(h *chplan.HistogramQuantile) Frag {
 	arraySumBC := Call("arraySum", bcFloat)
 	arrayCumSumBC := Call("arrayCumSum", bcFloat)
 	return func(b *Builder) {
+		// writePhi renders the phi parameter: computed expression when
+		// PhiExpr is set, inline literal otherwise.
+		writePhi := func() {
+			if h.PhiExpr != nil {
+				_ = b.Expr(h.PhiExpr)
+				return
+			}
+			b.writeSQL(formatFloat(h.Phi))
+		}
+		// Computed phi can be NaN at runtime; every comparison branch
+		// below evaluates false on NaN and the interpolation arithmetic
+		// would index cum[0] — guard with a leading isNaN → nan branch
+		// (Prom's bucketQuantile NaN-phi contract). The literal path
+		// skips the wrapper so existing fixtures stay byte-stable.
+		if h.PhiExpr != nil {
+			b.writeSQL("if(isNaN(")
+			writePhi()
+			b.writeSQL("), nan, ")
+		}
 		// Empty histogram → NaN. arrayCumSum on an empty array is empty;
 		// `length(cum) = 0` and `total = 0`. Guard the divide-by-zero +
 		// the empty path with a single outer if() on total.
@@ -137,10 +162,10 @@ func histogramQuantileValueFrag(h *chplan.HistogramQuantile) Frag {
 		arraySumBC(b)
 		b.writeSQL(" = 0, nan, ")
 		b.writeSQL("if(")
-		b.writeSQL(formatFloat(h.Phi))
+		writePhi()
 		b.writeSQL(" <= 0, 0.0, ")
 		b.writeSQL("if(")
-		b.writeSQL(formatFloat(h.Phi))
+		writePhi()
 		b.writeSQL(" >= 1, ")
 		b.Ident(eb)
 		b.writeSQL("[")
@@ -174,7 +199,7 @@ func histogramQuantileValueFrag(h *chplan.HistogramQuantile) Frag {
 		// lambda is emitted.
 		writeIdx := func() {
 			b.writeSQL("arrayFirstIndex(c -> c >= (")
-			b.writeSQL(formatFloat(h.Phi))
+			writePhi()
 			b.writeSQL(" * ")
 			arraySumBC(b)
 			b.writeSQL("), ")
@@ -220,7 +245,7 @@ func histogramQuantileValueFrag(h *chplan.HistogramQuantile) Frag {
 		b.writeSQL(" = 1, 0.0, ")
 		writeBoundAt(" - 1")
 		b.writeSQL(")) * ((")
-		b.writeSQL(formatFloat(h.Phi))
+		writePhi()
 		b.writeSQL(" * ")
 		arraySumBC(b)
 		b.writeSQL(") - if(")
@@ -247,5 +272,9 @@ func histogramQuantileValueFrag(h *chplan.HistogramQuantile) Frag {
 		b.writeSQL(")")
 		// Close the if(length(bc) = 0, nan, …)
 		b.writeSQL(")")
+		// Close the computed-phi `if(isNaN(phi), nan, …)` wrapper.
+		if h.PhiExpr != nil {
+			b.writeSQL(")")
+		}
 	}
 }

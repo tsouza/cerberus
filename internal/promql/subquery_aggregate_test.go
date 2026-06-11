@@ -56,11 +56,6 @@ func TestLowerSubquery_Aggregate_Errors(t *testing.T) {
 			query:   `max_over_time(count_values("", up)[5m:1m])`,
 			wantErr: "non-empty label name",
 		},
-		{
-			name:    "quantile needs scalar literal phi",
-			query:   `max_over_time(quantile(scalar(up), rate(http_requests_total[1m]))[1h:30s])`,
-			wantErr: "scalar literal phi",
-		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -103,5 +98,25 @@ func TestLowerSubqueryTopK_KDomain(t *testing.T) {
 		if _, err := promql.Lower(context.Background(), expr, s); err != nil {
 			t.Fatalf("Lower(%q): %v", q, err)
 		}
+	}
+}
+
+// TestLowerSubquery_Aggregate_ComputedPhi pins the computed-phi
+// acceptance on the subquery-over-quantile path — the parity-corpus
+// shape `max_over_time(quantile(scalar(up), up)[5m:1m])` lowers (and
+// emits) instead of 422ing; reference Prometheus evaluates phi per
+// step and a NaN phi is a NaN result, not an error.
+func TestLowerSubquery_Aggregate_ComputedPhi(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	p := parser.NewParser(parser.Options{})
+
+	expr, err := p.ParseExpr(`max_over_time(quantile(scalar(up), up)[5m:1m])`)
+	if err != nil {
+		t.Fatalf("ParseExpr: %v", err)
+	}
+	if _, err := promql.Lower(context.Background(), expr, s); err != nil {
+		t.Fatalf("Lower: %v", err)
 	}
 }

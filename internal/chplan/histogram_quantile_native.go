@@ -35,7 +35,10 @@ package chplan
 //     (Scale, ZeroCount, PositiveOffset, PositiveBucketCounts,
 //     NegativeOffset, NegativeBucketCounts). Typically Scan or
 //     Filter over otel_metrics_exp_histogram.
-//   - Phi is a scalar literal in [0, 1]; computed phi is not modelled.
+//   - Phi is a scalar literal; PhiExpr is the computed-phi sibling
+//     (typically a ScalarSubquery from `scalar(<vector>)`) and takes
+//     precedence over Phi at emit time, with a leading
+//     `isNaN(phi) → nan` branch (mirrors HistogramQuantile).
 //   - GroupBy + GroupByAliases name the per-series projection from
 //     the inner subquery. The emitter projects each `<expr> AS <alias>`
 //     in the outer SELECT so the wrapping Sample projection can pick
@@ -55,6 +58,9 @@ package chplan
 type HistogramQuantileNative struct {
 	Input Node
 	Phi   float64
+	// PhiExpr is the computed-phi alternative to Phi (mutually
+	// exclusive; PhiExpr wins when non-nil). See the IR contract above.
+	PhiExpr Expr
 
 	ScaleColumn                string
 	ZeroCountColumn            string
@@ -82,6 +88,12 @@ func (h *HistogramQuantileNative) Children() []Node { return []Node{h.Input} }
 func (h *HistogramQuantileNative) Equal(other Node) bool {
 	o, ok := other.(*HistogramQuantileNative)
 	if !ok {
+		return false
+	}
+	if (h.PhiExpr == nil) != (o.PhiExpr == nil) {
+		return false
+	}
+	if h.PhiExpr != nil && !h.PhiExpr.Equal(o.PhiExpr) {
 		return false
 	}
 	if h.Phi != o.Phi ||

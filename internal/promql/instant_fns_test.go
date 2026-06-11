@@ -25,24 +25,9 @@ func TestLower_InstantFn_Errors(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name:    "round 2-arg requires scalar bound",
-			query:   `round(temperature, scalar(other))`,
-			wantErr: "requires a scalar literal to_nearest",
-		},
-		{
-			name:    "histogram_quantile non-scalar phi",
-			query:   `histogram_quantile(scalar(other), foo)`,
-			wantErr: "requires a scalar-literal phi",
-		},
-		{
 			name:    "histogram_quantile non-selector arg",
 			query:   `histogram_quantile(0.9, vector(1))`,
 			wantErr: "second argument must be a histogram VectorSelector",
-		},
-		{
-			name:    "clamp_max needs scalar bound",
-			query:   `clamp_max(up, scalar(other))`,
-			wantErr: "requires a scalar-literal bound",
 		},
 	}
 	for _, tc := range cases {
@@ -60,5 +45,39 @@ func TestLower_InstantFn_Errors(t *testing.T) {
 				t.Fatalf("error %q does not contain %q", err.Error(), tc.wantErr)
 			}
 		})
+	}
+}
+
+// TestLower_InstantFn_ComputedScalarArgs pins the computed-scalar
+// acceptance for the instant-fn family: `scalar(<vector>)` (and any
+// scalar-typed composition) is a valid bound / to_nearest / phi
+// argument — reference Prometheus evaluates these per query, so a
+// lowering-time rejection was a wrong rejection (rejection-parity
+// catalogue: clamp / clamp_min / round / histogram_quantile entries).
+// The bound rides a chplan.ScalarSubquery; the chdb round-trip
+// fixtures (clamp_min_scalar_bound.txtar & friends) pin the values.
+func TestLower_InstantFn_ComputedScalarArgs(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	p := parser.NewParser(parser.Options{})
+
+	for _, q := range []string{
+		`clamp_max(up, scalar(other))`,
+		`clamp_min(up, scalar(other))`,
+		`clamp(up, scalar(other), 1)`,
+		`clamp(up, 0, scalar(other) * 2)`,
+		`round(temperature, scalar(other))`,
+		`histogram_quantile(scalar(other), foo_bucket)`,
+		`vector(scalar(up))`,
+		`quantile(scalar(up), up)`,
+	} {
+		expr, err := p.ParseExpr(q)
+		if err != nil {
+			t.Fatalf("ParseExpr(%q): %v", q, err)
+		}
+		if _, err := promql.Lower(context.Background(), expr, s); err != nil {
+			t.Fatalf("Lower(%q): %v", q, err)
+		}
 	}
 }

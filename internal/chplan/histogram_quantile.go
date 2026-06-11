@@ -20,7 +20,13 @@ package chplan
 //     over the classic-histogram table; for `sum by(...)` aggregation,
 //     a chplan.Aggregate that element-wise-sums the arrays via
 //     `sumForEach` and groups by GroupBy).
-//   - Phi is a scalar literal in [0, 1]; computed phi is unsupported.
+//   - Phi is a scalar literal; PhiExpr is the computed-phi sibling
+//     (typically a ScalarSubquery built from `scalar(<vector>)`) and
+//     takes precedence over Phi at emit time. The emitter adds a
+//     leading `isNaN(phi) → nan` branch on the PhiExpr path — a
+//     runtime-computed phi can be NaN (PromQL `scalar()` over a 0- or
+//     multi-series vector) and Prom's bucketQuantile returns NaN for
+//     a NaN phi.
 //   - GroupBy + GroupByAliases match the wrapping Aggregate / Project
 //     contract used elsewhere in the metrics pipeline (PromQL aggregations
 //     drop __name__; the Sample wrapping is the caller's responsibility).
@@ -32,8 +38,11 @@ package chplan
 // over arrayCumSum / arrayFirstIndex with the standard edge cases
 // (phi >= 1, phi <= 0, empty, overflow into the +Inf bucket).
 type HistogramQuantile struct {
-	Input                Node
-	Phi                  float64
+	Input Node
+	Phi   float64
+	// PhiExpr is the computed-phi alternative to Phi (mutually
+	// exclusive; PhiExpr wins when non-nil). See the IR contract above.
+	PhiExpr              Expr
 	BucketCountsColumn   string
 	ExplicitBoundsColumn string
 
@@ -63,6 +72,12 @@ func (h *HistogramQuantile) Children() []Node { return []Node{h.Input} }
 func (h *HistogramQuantile) Equal(other Node) bool {
 	o, ok := other.(*HistogramQuantile)
 	if !ok {
+		return false
+	}
+	if (h.PhiExpr == nil) != (o.PhiExpr == nil) {
+		return false
+	}
+	if h.PhiExpr != nil && !h.PhiExpr.Equal(o.PhiExpr) {
 		return false
 	}
 	if h.Phi != o.Phi ||

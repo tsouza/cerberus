@@ -126,11 +126,6 @@ func TestLower_Aggregate_Errors(t *testing.T) {
 			query:   `count_values("", up)`,
 			wantErr: "non-empty label name",
 		},
-		{
-			name:    "quantile needs scalar literal phi",
-			query:   `quantile(scalar(up), latency_seconds)`,
-			wantErr: "scalar literal phi",
-		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

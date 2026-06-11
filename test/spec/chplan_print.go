@@ -178,6 +178,13 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 			}
 			fmt.Fprintf(b, " scalars=[%s]", strings.Join(ss, ", "))
 		}
+		if len(v.ScalarExprs) > 0 {
+			ss := make([]string, len(v.ScalarExprs))
+			for i, e := range v.ScalarExprs {
+				ss[i] = printExpr(e)
+			}
+			fmt.Fprintf(b, " scalarExprs=[%s]", strings.Join(ss, ", "))
+		}
 		if !v.Start.IsZero() || !v.End.IsZero() {
 			fmt.Fprintf(b, " start=%s end=%s", v.Start.UTC().Format("2006-01-02T15:04:05Z"), v.End.UTC().Format("2006-01-02T15:04:05Z"))
 		}
@@ -361,7 +368,11 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 				gb[i] = printExpr(e)
 			}
 		}
-		fmt.Fprintf(b, "%sHistogramQuantile phi=%s", indent, strconv.FormatFloat(v.Phi, 'g', -1, 64))
+		if v.PhiExpr != nil {
+			fmt.Fprintf(b, "%sHistogramQuantile phi=%s", indent, printExpr(v.PhiExpr))
+		} else {
+			fmt.Fprintf(b, "%sHistogramQuantile phi=%s", indent, strconv.FormatFloat(v.Phi, 'g', -1, 64))
+		}
 		if len(gb) > 0 {
 			fmt.Fprintf(b, " groupBy=[%s]", strings.Join(gb, ", "))
 		}
@@ -376,7 +387,11 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 				gb[i] = printExpr(e)
 			}
 		}
-		fmt.Fprintf(b, "%sHistogramQuantileNative phi=%s", indent, strconv.FormatFloat(v.Phi, 'g', -1, 64))
+		if v.PhiExpr != nil {
+			fmt.Fprintf(b, "%sHistogramQuantileNative phi=%s", indent, printExpr(v.PhiExpr))
+		} else {
+			fmt.Fprintf(b, "%sHistogramQuantileNative phi=%s", indent, strconv.FormatFloat(v.Phi, 'g', -1, 64))
+		}
 		if len(gb) > 0 {
 			fmt.Fprintf(b, " groupBy=[%s]", strings.Join(gb, ", "))
 		}
@@ -476,6 +491,15 @@ func printExpr(e chplan.Expr) string {
 		return v.Name
 	case *chplan.Subscript:
 		return fmt.Sprintf("%s[%s]", printExpr(v.Container), printExpr(v.Key))
+	case *chplan.ScalarSubquery:
+		// Embedded plan flattened onto one line ("; "-joined) — Expr
+		// rendering is single-line by contract, and the subplan detail
+		// stays greppable in the fixture's chplan section.
+		var sb strings.Builder
+		printNode(&sb, v.Input, 0)
+		flat := strings.TrimRight(sb.String(), "\n")
+		flat = strings.Join(strings.Fields(strings.ReplaceAll(flat, "\n", " ; ")), " ")
+		return fmt.Sprintf("scalarSubquery{%s}", flat)
 	default:
 		return fmt.Sprintf("<unknown:%T>", e)
 	}

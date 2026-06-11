@@ -22,9 +22,22 @@ func lowerPredictLinear(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.
 	if len(c.Args) != 2 {
 		return nil, fmt.Errorf("promql: predict_linear expects 2 arguments, got %d", len(c.Args))
 	}
-	tSeconds, ok := tryScalarLiteral(c.Args[1])
-	if !ok {
-		return nil, fmt.Errorf("promql: predict_linear requires a scalar-literal predict horizon (computed t is unsupported)")
+	var (
+		tSeconds float64
+		tExpr    chplan.Expr
+	)
+	if t, ok := tryScalarLiteral(c.Args[1]); ok {
+		tSeconds = t
+	} else {
+		// Computed horizon (`predict_linear(v[r], scalar(x))`): bind t
+		// as a scalar-subquery expression on RangeWindow.ScalarExprs.
+		// A NaN t (scalar() over 0 / many series) propagates NaN
+		// through `intercept + slope * t`, matching Prom's arithmetic.
+		computed, err := lowerScalarArg(c.Args[1], s, ctx)
+		if err != nil {
+			return nil, err
+		}
+		tExpr = computed
 	}
 	ms, vs, err := matrixAndSelector(c, c.Args[0])
 	if err != nil {
@@ -52,10 +65,14 @@ func lowerPredictLinear(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.
 		Range:           ms.Range,
 		End:             anchor.End,
 		Offset:          anchor.Offset,
-		Scalars:         []float64{tSeconds},
 		TimestampColumn: s.TimestampColumn,
 		ValueColumn:     s.ValueColumn,
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
+	}
+	if tExpr != nil {
+		rw.ScalarExprs = []chplan.Expr{tExpr}
+	} else {
+		rw.Scalars = []float64{tSeconds}
 	}
 	// Range mode (ctx.step > 0): fan across the request's step grid so
 	// each anchor in [start, end] emits its own per-window prediction.
@@ -165,9 +182,26 @@ func lowerQuantileOverTime(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpl
 	if len(c.Args) != 2 {
 		return nil, fmt.Errorf("promql: quantile_over_time expects 2 arguments, got %d", len(c.Args))
 	}
-	phi, ok := tryScalarLiteral(c.Args[0])
-	if !ok {
-		return nil, fmt.Errorf("promql: quantile_over_time requires a scalar-literal phi (computed phi is unsupported)")
+	var (
+		phi     float64
+		phiOK   bool
+		phiExpr chplan.Expr
+	)
+	if v, ok := tryScalarLiteral(c.Args[0]); ok {
+		phi, phiOK = v, true
+	} else {
+		// Computed phi (`quantile_over_time(scalar(x), v[r])`): bind
+		// phi as a scalar-subquery expression on
+		// RangeWindow.ScalarExprs. The emitter switches to a manual
+		// arraySort interpolation (Prom's quantile() formula) with the
+		// NaN / out-of-range domain rules resolved at runtime — CH's
+		// parameterised `quantile(<literal>)` arrayReduce spelling
+		// can't bind a computed parameter.
+		computed, err := lowerScalarArg(c.Args[0], s, ctx)
+		if err != nil {
+			return nil, err
+		}
+		phiExpr = computed
 	}
 	ms, vs, err := matrixAndSelector(c, c.Args[1])
 	if err != nil {
@@ -190,30 +224,41 @@ func lowerQuantileOverTime(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpl
 		return nil, err
 	}
 
-	// Detect compile-time out-of-range phi. CH's quantile aggregate
-	// errors on phi outside [0, 1]; substitute a safe phi for the
-	// inner aggregate and post-Project the Value column to the
-	// PromQL-spec Inf-valued constant. NaN phi rides the same path
-	// (CH would also error on `quantile(NaN)`) and is materialised
-	// as a NaN literal in the post-Project — empty windows still
-	// produce `nan` via the emitter's length-guarded `if`.
-	infValue, replaceValue := outOfRangePhiInf(phi)
-
-	emitPhi := phi
-	if replaceValue {
-		emitPhi = 0.5
-	}
-
 	window := &chplan.RangeWindow{
 		Input:           inner,
 		Func:            "quantile_over_time",
 		Range:           ms.Range,
 		End:             anchor.End,
 		Offset:          anchor.Offset,
-		Scalars:         []float64{emitPhi},
 		TimestampColumn: s.TimestampColumn,
 		ValueColumn:     s.ValueColumn,
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
+	}
+
+	// Literal phi: detect compile-time out-of-range phi. CH's quantile
+	// aggregate errors on phi outside [0, 1]; substitute a safe phi for
+	// the inner aggregate and post-Project the Value column to the
+	// PromQL-spec Inf-valued constant. NaN phi rides the same path
+	// (CH would also error on `quantile(NaN)`) and is materialised
+	// as a NaN literal in the post-Project — empty windows still
+	// produce `nan` via the emitter's length-guarded `if`.
+	//
+	// Computed phi: the emitter's ScalarExprs path embeds the runtime
+	// domain rules (multiIf over isNaN / <0 / >1) directly in the
+	// per-window value expression, so no post-Project is needed.
+	var (
+		infValue     float64
+		replaceValue bool
+	)
+	if phiOK {
+		infValue, replaceValue = outOfRangePhiInf(phi)
+		emitPhi := phi
+		if replaceValue {
+			emitPhi = 0.5
+		}
+		window.Scalars = []float64{emitPhi}
+	} else {
+		window.ScalarExprs = []chplan.Expr{phiExpr}
 	}
 	// Range mode (ctx.step > 0): fan across the request's step grid so
 	// each anchor in [start, end] emits its own per-window quantile

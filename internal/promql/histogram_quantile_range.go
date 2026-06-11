@@ -72,7 +72,7 @@ func histogramRangeApplies(ctx lowerCtx) bool {
 // GroupBy is the full Attributes column.
 func lowerHistogramQuantileClassicBareRange(
 	vs *parser.VectorSelector,
-	phi float64,
+	phi phiArg,
 	s schema.Metrics,
 	ctx lowerCtx,
 ) chplan.Node {
@@ -120,7 +120,7 @@ func lowerHistogramQuantileClassicBareRange(
 // sum across all rows in the rate window).
 func lowerHistogramQuantileClassicAggRange(
 	shape histogramAggShape,
-	phi float64,
+	phi phiArg,
 	s schema.Metrics,
 	ctx lowerCtx,
 ) chplan.Node {
@@ -171,7 +171,7 @@ func buildHistogramRangeTree(
 	userAliases []string,
 	attrsRebuild chplan.Expr,
 	bucketAggs []chplan.AggFunc,
-	phi float64,
+	phi phiArg,
 	s schema.Metrics,
 	ctx lowerCtx,
 ) chplan.Node {
@@ -260,7 +260,8 @@ func buildHistogramRangeTree(
 	// canonical Sample contract holds for the matrix pivot.
 	hq := &chplan.HistogramQuantile{
 		Input:                rebuilt,
-		Phi:                  phi,
+		Phi:                  phi.lit,
+		PhiExpr:              phi.expr,
 		BucketCountsColumn:   s.BucketCountsColumn,
 		ExplicitBoundsColumn: s.ExplicitBoundsColumn,
 		GroupBy: []chplan.Expr{
@@ -313,7 +314,7 @@ func buildHistogramRangeTree(
 //	          CrossJoin(StepGrid(start, end, step), Filter(Scan, <matchers>))
 func lowerHistogramQuantileNativeBareRange(
 	vs *parser.VectorSelector,
-	phi float64,
+	phi phiArg,
 	s schema.Metrics,
 	ctx lowerCtx,
 ) chplan.Node {
@@ -419,7 +420,7 @@ func lowerHistogramQuantileNativeBareRange(
 //	          CrossJoin(StepGrid, Filter(Scan, <matchers>))
 func lowerHistogramQuantileNativeAggRange(
 	shape histogramAggShape,
-	phi float64,
+	phi phiArg,
 	s schema.Metrics,
 	ctx lowerCtx,
 ) chplan.Node {
@@ -468,7 +469,7 @@ func buildHistogramNativeRangeTree(
 	userAliases []string,
 	attrsRebuild chplan.Expr,
 	expHistAggs []chplan.AggFunc,
-	phi float64,
+	phi phiArg,
 	s schema.Metrics,
 	ctx lowerCtx,
 ) chplan.Node {
@@ -511,7 +512,8 @@ func buildHistogramNativeRangeTree(
 
 	hq := &chplan.HistogramQuantileNative{
 		Input:                      rebuilt,
-		Phi:                        phi,
+		Phi:                        phi.lit,
+		PhiExpr:                    phi.expr,
 		ScaleColumn:                s.ScaleColumn,
 		ZeroCountColumn:            s.ZeroCountColumn,
 		ZeroThresholdColumn:        s.ZeroThresholdColumn,
@@ -554,7 +556,7 @@ func buildHistogramNativeRangeTreeMerge(
 	userAliases []string,
 	attrsRebuild chplan.Expr,
 	mergeAggs []chplan.AggFunc,
-	phi float64,
+	phi phiArg,
 	s schema.Metrics,
 	ctx lowerCtx,
 ) chplan.Node {
@@ -596,7 +598,8 @@ func buildHistogramNativeRangeTreeMerge(
 
 	hq := &chplan.HistogramQuantileNative{
 		Input:                      rebuilt,
-		Phi:                        phi,
+		Phi:                        phi.lit,
+		PhiExpr:                    phi.expr,
 		ScaleColumn:                s.ScaleColumn,
 		ZeroCountColumn:            s.ZeroCountColumn,
 		ZeroThresholdColumn:        s.ZeroThresholdColumn,

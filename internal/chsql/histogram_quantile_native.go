@@ -120,9 +120,11 @@ func (e *emitter) emitHistogramQuantileNative(h *chplan.HistogramQuantileNative)
 // histogramQuantileNativeValueFrag returns the Frag rendering the
 // per-row quantile-interpolation expression for the exp-histogram path.
 // Structure parallels classic-histogram emission (nested if() chain so
-// each edge case stays a flat branch with no CTE / CASE WHEN); phi is
-// rendered as an inline float literal — query-shape parameter, not
-// user data. Mirrors classic emission style.
+// each edge case stays a flat branch with no CTE / CASE WHEN); a
+// literal phi is rendered as an inline float literal — query-shape
+// parameter, not user data — while a computed phi (h.PhiExpr != nil)
+// renders the expression at every phi position with a leading
+// `isNaN(phi) → nan` guard. Mirrors classic emission style.
 func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative) Frag {
 	pbc := h.PositiveBucketCountsColumn
 	po := h.PositiveOffsetColumn
@@ -133,7 +135,16 @@ func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative) Frag {
 	zt := h.ZeroThresholdColumn
 
 	return func(b *Builder) {
-		phi := formatFloat(h.Phi)
+		// writePhiLit renders the phi parameter: computed expression
+		// when PhiExpr is set (typically a scalar subquery — CH folds
+		// it as a constant), inline literal otherwise.
+		writePhiLit := func(b *Builder) {
+			if h.PhiExpr != nil {
+				_ = b.Expr(h.PhiExpr)
+				return
+			}
+			b.writeSQL(formatFloat(h.Phi))
+		}
 		// base = pow(2, pow(2, -Scale)). Re-rendered inline at each
 		// use; CH's planner CSEs. Inline literal `2` and array-literal
 		// `[col]` have no typed Frag (no inline-int / array-literal
@@ -178,7 +189,7 @@ func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative) Frag {
 		// path is kept here.
 		writeIdx := func() {
 			b.writeSQL("arrayFirstIndex(c -> c >= (")
-			b.writeSQL(phi)
+			writePhiLit(b)
 			b.writeSQL(" * ")
 			writeTotal()
 			b.writeSQL("), ")
@@ -221,7 +232,7 @@ func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative) Frag {
 		// target = phi * total.
 		writeFraction := func() {
 			b.writeSQL("((")
-			b.writeSQL(phi)
+			writePhiLit(b)
 			b.writeSQL(" * ")
 			writeTotal()
 			b.writeSQL(") - ")
@@ -241,13 +252,24 @@ func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative) Frag {
 		//           if(idx = nlen + 1, <zero interp>,
 		//             <positive interp>)))))
 
+		// Computed phi can be NaN at runtime (PromQL `scalar()` over
+		// zero / many series); every comparison branch below evaluates
+		// false on NaN and the interpolation would walk cum[0] — guard
+		// with a leading isNaN → nan branch (Prom's bucketQuantile
+		// NaN-phi contract). The literal path skips the wrapper so
+		// existing fixtures stay byte-stable.
+		if h.PhiExpr != nil {
+			b.writeSQL("if(isNaN(")
+			writePhiLit(b)
+			b.writeSQL("), nan, ")
+		}
 		// if(total = 0, nan, ...
 		b.writeSQL("if(")
 		writeTotal()
 		b.writeSQL(" = 0, nan, ")
 		// if(phi <= 0, if(nlen > 0, -pow(base, no + nlen), 0.0), ...
 		b.writeSQL("if(")
-		b.writeSQL(phi)
+		writePhiLit(b)
 		b.writeSQL(" <= 0, if(")
 		writeNLen()
 		b.writeSQL(" > 0, -pow(")
@@ -262,7 +284,7 @@ func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative) Frag {
 		//   if(plen > 0, pow(base, po + plen),
 		//      if(zc > 0, zt, -pow(base, no)))
 		b.writeSQL("if(")
-		b.writeSQL(phi)
+		writePhiLit(b)
 		b.writeSQL(" >= 1, if(")
 		writePLen()
 		b.writeSQL(" > 0, pow(")
@@ -326,5 +348,9 @@ func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative) Frag {
 		b.writeSQL("))")
 		// Close: if(idx=nlen+1), if(idx<=nlen), if(phi>=1), if(phi<=0), if(total=0)
 		b.writeSQL("))))")
+		// Close the computed-phi `if(isNaN(phi), nan, …)` wrapper.
+		if h.PhiExpr != nil {
+			b.writeSQL(")")
+		}
 	}
 }

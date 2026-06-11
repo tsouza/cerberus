@@ -285,9 +285,20 @@ func lowerVector(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	if inner, ok := c.Args[0].(*parser.Call); ok && inner.Func.Name == "time" {
 		return lowerTime(inner, s, ctx)
 	}
-	v, ok := TryFoldScalar(c.Args[0])
-	if !ok {
-		return nil, fmt.Errorf("promql: vector() requires a scalar-foldable argument or time()")
+	if v, ok := TryFoldScalar(c.Args[0]); ok {
+		return syntheticScalarVector(&chplan.LitFloat{V: v}, nil, s, ctx), nil
 	}
-	return syntheticScalarVector(&chplan.LitFloat{V: v}, nil, s, ctx), nil
+	// Computed scalar (`vector(scalar(x))`, `vector(scalar(x) + 1)`):
+	// bind the argument as a scalar-subquery expression in the same
+	// synthetic one-row shape. `scalar()` over zero / many series is
+	// NaN, and `vector(NaN)` is a one-sample vector whose value is NaN
+	// — the scalarValuePlan reduction inside lowerScalarArg produces
+	// exactly that. Range mode evaluates the scalar once at the eval
+	// anchor (documented lowerScalarArg posture) and fans the constant
+	// across the step grid.
+	v, err := lowerScalarArg(c.Args[0], s, ctx)
+	if err != nil {
+		return nil, err
+	}
+	return syntheticScalarVector(v, nil, s, ctx), nil
 }

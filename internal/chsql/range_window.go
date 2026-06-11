@@ -323,10 +323,25 @@ func (e *emitter) emitRangeWindow(r *chplan.RangeWindow) error {
 // The `t` scalar binds as a placeholder argument; range_seconds is
 // only used for the x-axis scale.
 func (e *emitter) emitRangeWindowPredictLinear(r *chplan.RangeWindow) error {
-	if len(r.Scalars) != 1 {
-		return fmt.Errorf("%w: predict_linear requires 1 scalar (t), got %d", ErrUnsupported, len(r.Scalars))
+	// The horizon t arrives either as a literal (Scalars) or as a
+	// computed expression (ScalarExprs — `predict_linear(v[r],
+	// scalar(x))`; a scalar subquery CH folds to a constant). NaN t
+	// propagates NaN through `intercept + slope * t`, matching Prom.
+	var writeT Frag
+	switch {
+	case len(r.ScalarExprs) == 1:
+		tExpr := r.ScalarExprs[0]
+		if err := (&Builder{}).Expr(tExpr); err != nil {
+			return err
+		}
+		writeT = func(b *Builder) { _ = b.Expr(tExpr) }
+	case len(r.Scalars) == 1:
+		t := r.Scalars[0]
+		writeT = func(b *Builder) { b.Arg(t) }
+	default:
+		return fmt.Errorf("%w: predict_linear requires 1 scalar (t), got %d literals + %d exprs",
+			ErrUnsupported, len(r.Scalars), len(r.ScalarExprs))
 	}
-	t := r.Scalars[0]
 	// In matrix mode each row carries its own anchor_ts; the anchor
 	// Frag the factory receives below renders the per-row anchor so the
 	// per-sample x-offset (dateDiff('second', anchor, sample_ts)) is
@@ -355,7 +370,7 @@ func (e *emitter) emitRangeWindowPredictLinear(r *chplan.RangeWindow) error {
 			b.sb.WriteString(", tupleElement(p, 1)), window_pairs), ")
 			b.sb.WriteString("arrayMap(p -> tupleElement(p, 2), window_pairs)")
 			b.sb.WriteString("), 1) * ")
-			b.Arg(t)
+			writeT(b)
 			b.sb.WriteString(", nan)")
 		}
 	}
@@ -1921,16 +1936,72 @@ func irateValueExpr() string {
 }
 
 // emitRangeWindowQuantileOverTime emits SQL for
-// `quantile_over_time(phi, v[range])`. Phi rides on
-// RangeWindow.Scalars[0] and feeds CH's parameterised
+// `quantile_over_time(phi, v[range])`.
+//
+// Literal phi (RangeWindow.Scalars[0]) feeds CH's parameterised
 // `quantile(<phi>)(<arg>)` aggregate via `arrayReduce` — the only
 // way to apply a parameterised aggregate to an array literal inside
-// a SELECT expression without re-introducing an outer GROUP BY.
+// a SELECT expression without re-introducing an outer GROUP BY. Phi
+// is rendered inline as a CH literal (query shape, not user data).
+//
+// Computed phi (RangeWindow.ScalarExprs[0] — `quantile_over_time(
+// scalar(x), v[r])`) cannot ride arrayReduce's string-typed aggregate
+// name, so the emitter renders Prometheus's quantile() interpolation
+// (prometheus/promql/quantile.go) directly over the sorted window:
+//
+//	rank  = phi * (N - 1)
+//	lower = sorted[floor(rank)]        (0-based)
+//	upper = sorted[min(N-1, floor(rank)+1)]
+//	value = lower*(1-weight) + upper*weight, weight = rank-floor(rank)
+//
+// with the runtime domain rules Prom applies before interpolating:
+// NaN phi → NaN, phi < 0 → -Inf, phi > 1 → +Inf. (The literal path
+// resolves the same rules at lowering time via outOfRangePhiInf.)
 //
 // PromQL drops series when the window is empty (matches Prom's
-// funcQuantileOverTime). Phi is rendered inline as a CH literal
-// (query shape, not user data).
+// funcQuantileOverTime).
 func (e *emitter) emitRangeWindowQuantileOverTime(r *chplan.RangeWindow) error {
+	if len(r.ScalarExprs) == 1 {
+		phiE := r.ScalarExprs[0]
+		// Pre-flight so chplan errors surface synchronously.
+		if err := (&Builder{}).Expr(phiE); err != nil {
+			return err
+		}
+		writePhi := func(b *Builder) { _ = b.Expr(phiE) }
+		const (
+			sorted = "arraySort(window_vals)"
+			nMinus = "toFloat64(length(window_vals) - 1)"
+		)
+		writeRank := func(b *Builder) {
+			b.writeSQL("(")
+			writePhi(b)
+			b.writeSQL(" * " + nMinus + ")")
+		}
+		frag := func(b *Builder) {
+			b.writeSQL("multiIf(isNaN(")
+			writePhi(b)
+			b.writeSQL("), nan, ")
+			writePhi(b)
+			b.writeSQL(" < 0, (-1.0/0), ")
+			writePhi(b)
+			b.writeSQL(" > 1, (1.0/0), ")
+			// lower * (1 - weight) + upper * weight.
+			b.writeSQL(sorted + "[toUInt32(floor(")
+			writeRank(b)
+			b.writeSQL(")) + 1] * (1 - (")
+			writeRank(b)
+			b.writeSQL(" - floor(")
+			writeRank(b)
+			b.writeSQL("))) + " + sorted + "[toUInt32(least(" + nMinus + ", floor(")
+			writeRank(b)
+			b.writeSQL(") + 1)) + 1] * (")
+			writeRank(b)
+			b.writeSQL(" - floor(")
+			writeRank(b)
+			b.writeSQL(")))")
+		}
+		return e.emitWindowedArray(r, frag, 1)
+	}
 	if len(r.Scalars) != 1 {
 		return fmt.Errorf("%w: quantile_over_time requires 1 scalar (phi), got %d", ErrUnsupported, len(r.Scalars))
 	}
