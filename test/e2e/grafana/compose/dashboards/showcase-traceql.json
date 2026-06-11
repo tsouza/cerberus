@@ -3595,14 +3595,14 @@
     },
     {
      "cerberus": {
-      "expect": "error:MetricsCompare is unsupported",
-      "why": "compare() is a baseline-vs-selection split evaluated by Tempo's metrics engine; cerberus's metrics pipeline does not lower it yet. The pin fires the moment support lands and forces the upgrade to a nonempty contract."
+      "expect": "nonempty",
+      "why": "compare() lowers through chplan.MetricsCompare since feat/traceql-compare: the SQL explodes every span attribute into (cohort, attr, value) counts and the handler mirrors Tempo's BaselineAggregator (__meta_type series scheme). The seed always carries status=error spans, so the panel must render series — an empty result or a 422 regression re-fires this pin."
      },
      "datasource": {
       "type": "tempo",
       "uid": "cerberus-tempo"
      },
-     "description": "Cerberus rejects `{ } | compare({ status = error })` today; this panel pins the rejection bidirectionally.",
+     "description": "`{ } | compare({ status = error })` — baseline-vs-selection attribute split (Grafana Traces Drilldown's Comparison tab shape). Formerly a pinned 422 rejection; the contract flipped to nonempty when compare() support landed.",
      "fieldConfig": {
       "defaults": {
        "color": {
@@ -3683,7 +3683,7 @@
        "step": "15s"
       }
      ],
-     "title": "compare() \u2014 parity rejection",
+     "title": "compare() \u2014 baseline vs selection",
      "type": "timeseries"
     }
    ],

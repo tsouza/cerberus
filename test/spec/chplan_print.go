@@ -304,6 +304,25 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		if v.Inner != nil {
 			printNode(b, v.Inner, depth+1)
 		}
+	case *chplan.MetricsCompare:
+		// Pairs (the full span-attribute explosion) is deliberately
+		// summarised as present/absent — printing the whole arrayConcat
+		// tree would dwarf the rest of the golden without adding
+		// review signal; the SQL golden pins its exact shape.
+		fmt.Fprintf(b, "%sMetricsCompare topN=%d selection=%s", indent, v.TopN, printExpr(v.Selection))
+		if v.StartNs != 0 || v.EndNs != 0 {
+			fmt.Fprintf(b, " window=(%d, %d]", v.StartNs, v.EndNs)
+		}
+		if v.RootLookup != nil {
+			b.WriteString(" rootLookup=true")
+		}
+		if v.ValueAlias != "" {
+			fmt.Fprintf(b, " valueAlias=%s", v.ValueAlias)
+		}
+		b.WriteString("\n")
+		if v.Inner != nil {
+			printNode(b, v.Inner, depth+1)
+		}
 	case *chplan.AbsentOverTime:
 		fmt.Fprintf(b, "%sAbsentOverTime range=%s step=%s", indent, v.Range, v.Step)
 		if v.Offset != 0 {

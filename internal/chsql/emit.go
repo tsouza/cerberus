@@ -80,6 +80,8 @@ func (e *emitter) emitNode(n chplan.Node) error {
 		return e.emitMetricsSecondStage(v)
 	case *chplan.MetricsHistogramOverTime:
 		return e.emitMetricsHistogramOverTime(v)
+	case *chplan.MetricsCompare:
+		return e.emitMetricsCompare(v)
 	case *chplan.RangeWindow:
 		return e.emitRangeWindow(v)
 	case *chplan.AbsentOverTime:

@@ -1,0 +1,188 @@
+-- query.traceql --
+{ } | compare({ status = error })
+-- sql --
+SELECT `is_selection`, tupleElement(kv, ?) AS `attr`, tupleElement(kv, ?) AS `val`, toFloat64(count(?)) AS `Value` FROM (SELECT (`StatusCode` = ?) AS `is_selection`, arrayJoin(arrayConcat(array(tuple(?, toString(`SpanName`)), tuple(?, toString(lower(`StatusCode`))), tuple(?, toString(`StatusMessage`)), tuple(?, toString(lower(`SpanKind`))), tuple(?, toString(__root_name)), tuple(?, toString(__root_service_name)), tuple(?, toString(`ScopeName`)), tuple(?, toString(`ScopeVersion`)), tuple(?, toString(if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], ?))), tuple(?, toString(if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], ?))), tuple(?, toString(if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], ?))), tuple(?, toString(if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], ?))), tuple(?, toString(if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], ?))), tuple(?, toString(if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], ?))), tuple(?, toString(if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], ?))), tuple(?, toString(if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], ?))), tuple(?, toString(if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], ?))), tuple(?, toString(if(mapContains(`SpanAttributes`, ?), `SpanAttributes`[?], ?))), tuple(?, toString(if(mapContains(`SpanAttributes`, ?), `SpanAttributes`[?], ?))), tuple(?, toString(if(mapContains(`SpanAttributes`, ?), `SpanAttributes`[?], ?))), tuple(?, toString(if(mapContains(`SpanAttributes`, ?), `SpanAttributes`[?], ?))), tuple(?, toString(if(mapContains(`SpanAttributes`, ?), `SpanAttributes`[?], ?))), tuple(?, toString(if(mapContains(`SpanAttributes`, ?), `SpanAttributes`[?], ?))), tuple(?, toString(if(mapContains(`SpanAttributes`, ?), `SpanAttributes`[?], ?))), tuple(?, toString(if(mapContains(`SpanAttributes`, ?), `SpanAttributes`[?], ?)))), arrayMap(t -> tuple(concat(?, tupleElement(t, ?)), toString(tupleElement(t, ?))), arrayFilter(t -> not(has(array(?, ?, ?, ?, ?, ?, ?, ?, ?), tupleElement(t, ?))), arrayZip(mapKeys(`ResourceAttributes`), mapValues(`ResourceAttributes`)))), arrayMap(t -> tuple(concat(?, tupleElement(t, ?)), toString(tupleElement(t, ?))), arrayFilter(t -> not(has(array(?, ?, ?, ?, ?, ?, ?, ?), tupleElement(t, ?))), arrayZip(mapKeys(`SpanAttributes`), mapValues(`SpanAttributes`)))))) AS `kv` FROM (SELECT * FROM `otel_traces` WHERE ?) AS s LEFT JOIN (SELECT `TraceId`, any(`SpanName`) AS `__root_name`, any(`ServiceName`) AS `__root_service_name` FROM (SELECT * FROM `otel_traces` WHERE (`ParentSpanId` = ?)) GROUP BY `TraceId`) AS r ON s.`TraceId` = r.`TraceId`) GROUP BY `is_selection`, `attr`, `val` ORDER BY `is_selection`, `attr`, `val`
+-- args --
+[0] int64 = 1
+[1] int64 = 2
+[2] int64 = 1
+[3] string = "Error"
+[4] string = "name"
+[5] string = "status"
+[6] string = "statusMessage"
+[7] string = "kind"
+[8] string = "rootName"
+[9] string = "rootServiceName"
+[10] string = "instrumentation:name"
+[11] string = "instrumentation:version"
+[12] string = "resource.service.name"
+[13] string = "service.name"
+[14] string = "service.name"
+[15] string = "nil"
+[16] string = "resource.cluster"
+[17] string = "cluster"
+[18] string = "cluster"
+[19] string = "nil"
+[20] string = "resource.namespace"
+[21] string = "namespace"
+[22] string = "namespace"
+[23] string = "nil"
+[24] string = "resource.pod"
+[25] string = "pod"
+[26] string = "pod"
+[27] string = "nil"
+[28] string = "resource.container"
+[29] string = "container"
+[30] string = "container"
+[31] string = "nil"
+[32] string = "resource.k8s.cluster.name"
+[33] string = "k8s.cluster.name"
+[34] string = "k8s.cluster.name"
+[35] string = "nil"
+[36] string = "resource.k8s.namespace.name"
+[37] string = "k8s.namespace.name"
+[38] string = "k8s.namespace.name"
+[39] string = "nil"
+[40] string = "resource.k8s.pod.name"
+[41] string = "k8s.pod.name"
+[42] string = "k8s.pod.name"
+[43] string = "nil"
+[44] string = "resource.k8s.container.name"
+[45] string = "k8s.container.name"
+[46] string = "k8s.container.name"
+[47] string = "nil"
+[48] string = "span.http.status_code"
+[49] string = "http.status_code"
+[50] string = "http.status_code"
+[51] string = "nil"
+[52] string = "span.http.method"
+[53] string = "http.method"
+[54] string = "http.method"
+[55] string = "nil"
+[56] string = "span.http.url"
+[57] string = "http.url"
+[58] string = "http.url"
+[59] string = "nil"
+[60] string = "span.http.request.method"
+[61] string = "http.request.method"
+[62] string = "http.request.method"
+[63] string = "nil"
+[64] string = "span.http.route"
+[65] string = "http.route"
+[66] string = "http.route"
+[67] string = "nil"
+[68] string = "span.server.address"
+[69] string = "server.address"
+[70] string = "server.address"
+[71] string = "nil"
+[72] string = "span.url.path"
+[73] string = "url.path"
+[74] string = "url.path"
+[75] string = "nil"
+[76] string = "span.url.route"
+[77] string = "url.route"
+[78] string = "url.route"
+[79] string = "nil"
+[80] string = "resource."
+[81] int64 = 1
+[82] int64 = 2
+[83] string = "service.name"
+[84] string = "cluster"
+[85] string = "namespace"
+[86] string = "pod"
+[87] string = "container"
+[88] string = "k8s.cluster.name"
+[89] string = "k8s.namespace.name"
+[90] string = "k8s.pod.name"
+[91] string = "k8s.container.name"
+[92] int64 = 1
+[93] string = "span."
+[94] int64 = 1
+[95] int64 = 2
+[96] string = "http.status_code"
+[97] string = "http.method"
+[98] string = "http.url"
+[99] string = "http.request.method"
+[100] string = "http.route"
+[101] string = "server.address"
+[102] string = "url.path"
+[103] string = "url.route"
+[104] int64 = 1
+[105] bool = true
+[106] string = ""
+-- seed --
+CREATE TABLE otel_traces (
+    Timestamp DateTime64(9),
+    TraceId String,
+    SpanId String,
+    ParentSpanId String,
+    SpanName LowCardinality(String),
+    SpanKind LowCardinality(String),
+    ServiceName LowCardinality(String),
+    StatusCode LowCardinality(String),
+    StatusMessage String,
+    ScopeName String,
+    ScopeVersion String,
+    ResourceAttributes Map(LowCardinality(String), String),
+    SpanAttributes Map(LowCardinality(String), String)
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    (toDateTime64(1778580030, 9), 't1', 's1', '', 'GET /home', 'Server', 'shop', 'Ok', '', '', '', map('service.name', 'shop'), map('http.method', 'GET')),
+    (toDateTime64(1778580040, 9), 't1', 's2', 's1', 'charge', 'Client', 'shop', 'Error', 'boom', '', '', map('service.name', 'shop'), map());
+-- expected_rows --
+[
+  [0, "instrumentation:name", "", 1],
+  [0, "instrumentation:version", "", 1],
+  [0, "kind", "server", 1],
+  [0, "name", "GET /home", 1],
+  [0, "resource.cluster", "nil", 1],
+  [0, "resource.container", "nil", 1],
+  [0, "resource.k8s.cluster.name", "nil", 1],
+  [0, "resource.k8s.container.name", "nil", 1],
+  [0, "resource.k8s.namespace.name", "nil", 1],
+  [0, "resource.k8s.pod.name", "nil", 1],
+  [0, "resource.namespace", "nil", 1],
+  [0, "resource.pod", "nil", 1],
+  [0, "resource.service.name", "shop", 1],
+  [0, "rootName", "GET /home", 1],
+  [0, "rootServiceName", "shop", 1],
+  [0, "span.http.method", "GET", 1],
+  [0, "span.http.request.method", "nil", 1],
+  [0, "span.http.route", "nil", 1],
+  [0, "span.http.status_code", "nil", 1],
+  [0, "span.http.url", "nil", 1],
+  [0, "span.server.address", "nil", 1],
+  [0, "span.url.path", "nil", 1],
+  [0, "span.url.route", "nil", 1],
+  [0, "status", "ok", 1],
+  [0, "statusMessage", "", 1],
+  [1, "instrumentation:name", "", 1],
+  [1, "instrumentation:version", "", 1],
+  [1, "kind", "client", 1],
+  [1, "name", "charge", 1],
+  [1, "resource.cluster", "nil", 1],
+  [1, "resource.container", "nil", 1],
+  [1, "resource.k8s.cluster.name", "nil", 1],
+  [1, "resource.k8s.container.name", "nil", 1],
+  [1, "resource.k8s.namespace.name", "nil", 1],
+  [1, "resource.k8s.pod.name", "nil", 1],
+  [1, "resource.namespace", "nil", 1],
+  [1, "resource.pod", "nil", 1],
+  [1, "resource.service.name", "shop", 1],
+  [1, "rootName", "GET /home", 1],
+  [1, "rootServiceName", "shop", 1],
+  [1, "span.http.method", "nil", 1],
+  [1, "span.http.request.method", "nil", 1],
+  [1, "span.http.route", "nil", 1],
+  [1, "span.http.status_code", "nil", 1],
+  [1, "span.http.url", "nil", 1],
+  [1, "span.server.address", "nil", 1],
+  [1, "span.url.path", "nil", 1],
+  [1, "span.url.route", "nil", 1],
+  [1, "status", "error", 1],
+  [1, "statusMessage", "boom", 1]
+]
+-- chplan --
+MetricsCompare topN=10 selection=(StatusCode = "Error") rootLookup=true valueAlias=Value
+  Filter predicate=true
+    Scan(otel_traces)

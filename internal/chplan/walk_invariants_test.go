@@ -174,6 +174,18 @@ func TestMetricsHistogramOverTime_Walk_VisitsInner(t *testing.T) {
 	assertSentinels(t, visitScans(root), []string{"mhot_inner"})
 }
 
+func TestMetricsCompare_Walk_VisitsInnerAndRootLookup(t *testing.T) {
+	t.Parallel()
+	root := &chplan.MetricsCompare{
+		Selection:  &chplan.LitBool{V: true},
+		Pairs:      &chplan.FuncCall{Name: "array"},
+		Inner:      &chplan.Scan{Table: "mc_inner"},
+		RootLookup: &chplan.Scan{Table: "mc_roots"},
+	}
+	// Pre-order: Inner first, RootLookup second.
+	assertSentinels(t, visitScans(root), []string{"mc_inner", "mc_roots"})
+}
+
 func TestMetricsSecondStage_Walk_VisitsInput(t *testing.T) {
 	t.Parallel()
 	root := &chplan.MetricsSecondStage{

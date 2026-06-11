@@ -9,6 +9,15 @@ var AlignMetricsWindowForTest = func(start, end time.Time, step time.Duration) (
 	return alignMetricsWindow(start, end, step)
 }
 
+// PostProcessCompareForTest / CompareAnchorGridForTest re-export the
+// compare() BaselineAggregator mirror so its top-N / totals / zero-fill
+// semantics can be pinned directly on synthetic row streams without a
+// handler round-trip.
+var (
+	PostProcessCompareForTest = postProcessCompare
+	CompareAnchorGridForTest  = compareAnchorGrid
+)
+
 // GroupBatchesForTest / GroupBatchesProtoForTest re-export the two
 // trace-by-ID assemblers so the determinism tests can drive the pure
 // assembly repeatedly (50 iterations, shuffled inputs) and compare

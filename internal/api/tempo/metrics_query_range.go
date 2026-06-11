@@ -276,21 +276,7 @@ func (h *Handler) handleMetricsQueryRange(w http.ResponseWriter, r *http.Request
 	stages, inner := peelMetricsSecondStages(plan)
 	metrics, ok := unwrapMetricsAggregate(inner)
 	if !ok {
-		// `| histogram_over_time(<attr>)` lowers to its own plan node
-		// (chplan.MetricsHistogramOverTime) because the per-bucket value
-		// is a distribution, not a scalar — route it through the
-		// histogram response shape (one series per (group, __bucket)).
-		if hist, hok := unwrapMetricsHistogram(inner); hok {
-			if len(stages) > 0 {
-				writeError(w, http.StatusUnprocessableEntity, "", "",
-					fmt.Errorf("traceql: second-stage %s over histogram_over_time is unsupported — the per-bucket distribution rows have no scalar Value to rank or threshold", stages[0].Op))
-				return
-			}
-			h.serveMetricsQueryRangeHistogram(ctx, w, q, plan, hist, start, end, step)
-			return
-		}
-		writeError(w, http.StatusBadRequest, "", "",
-			fmt.Errorf("query %q is not a TraceQL metrics-pipeline expression — /api/metrics/query_range requires `| rate()`, `| count_over_time()`, `| *_over_time(...)`, `| quantile_over_time(...)` or `| histogram_over_time(...)`", q))
+		h.serveMetricsQueryRangeNonScalar(ctx, w, q, plan, inner, stages, start, end, step)
 		return
 	}
 	if len(stages) > 0 && metrics.Op == chplan.MetricsOpQuantileOverTime {
@@ -381,6 +367,52 @@ func (h *Handler) handleMetricsQueryRange(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, MetricsQueryRangeResponse{
 		Series: series,
 	})
+}
+
+// serveMetricsQueryRangeNonScalar routes the metrics-pipeline shapes
+// that lower to their own plan node rather than a scalar-valued
+// chplan.MetricsAggregate:
+//
+//   - `| histogram_over_time(<attr>)` → chplan.MetricsHistogramOverTime:
+//     the per-bucket value is a distribution, so the response carries
+//     one series per (group, __bucket).
+//   - `| compare({...}, topN)` → chplan.MetricsCompare: the output is
+//     the baseline-vs-selection attribute split Grafana Traces
+//     Drilldown's Comparison tab renders (__meta_type label scheme).
+//
+// Second-stage wraps over either shape 422 — there is no scalar Value
+// to rank or threshold (compare() additionally rejects at the upstream
+// parser, ast_validate.go; the handler check is the defensive belt for
+// pre-lowered plans). Anything else 400s as a non-metrics query.
+func (h *Handler) serveMetricsQueryRangeNonScalar(
+	ctx context.Context,
+	w http.ResponseWriter,
+	q string,
+	plan, inner chplan.Node,
+	stages []*chplan.MetricsSecondStage,
+	start, end time.Time,
+	step time.Duration,
+) {
+	if hist, ok := unwrapMetricsHistogram(inner); ok {
+		if len(stages) > 0 {
+			writeError(w, http.StatusUnprocessableEntity, "", "",
+				fmt.Errorf("traceql: second-stage %s over histogram_over_time is unsupported — the per-bucket distribution rows have no scalar Value to rank or threshold", stages[0].Op))
+			return
+		}
+		h.serveMetricsQueryRangeHistogram(ctx, w, q, plan, hist, start, end, step)
+		return
+	}
+	if cmp, ok := unwrapMetricsCompare(inner); ok {
+		if len(stages) > 0 {
+			writeError(w, http.StatusUnprocessableEntity, "", "",
+				fmt.Errorf("traceql: second-stage %s over compare() is unsupported — compare() series carry the __meta_type split, not a scalar Value to rank or threshold", stages[0].Op))
+			return
+		}
+		h.serveMetricsQueryRangeCompare(ctx, w, q, plan, cmp, start, end, step)
+		return
+	}
+	writeError(w, http.StatusBadRequest, "", "",
+		fmt.Errorf("query %q is not a TraceQL metrics-pipeline expression — /api/metrics/query_range requires `| rate()`, `| count_over_time()`, `| *_over_time(...)`, `| quantile_over_time(...)` or `| histogram_over_time(...)`", q))
 }
 
 // classifyMetricsQueryRangeErr maps engine.QueryPlan failures to HTTP
