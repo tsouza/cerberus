@@ -28,33 +28,35 @@ INSERT INTO otel_logs (Timestamp, Body, ResourceAttributes) VALUES
 [8] int64 = 9
 [9] string = ""
 [10] string = "detected_level"
-[11] string = "trace"
-[12] string = "trc"
+[11] string = ""
+[12] string = "unknown"
 [13] string = "trace"
-[14] string = "debug"
-[15] string = "dbg"
+[14] string = "trc"
+[15] string = "trace"
 [16] string = "debug"
-[17] string = "info"
-[18] string = "inf"
-[19] string = "information"
-[20] string = "info"
-[21] string = "warn"
-[22] string = "wrn"
-[23] string = "warning"
-[24] string = "warn"
-[25] string = "error"
-[26] string = "err"
+[17] string = "dbg"
+[18] string = "debug"
+[19] string = "info"
+[20] string = "inf"
+[21] string = "information"
+[22] string = "info"
+[23] string = "warn"
+[24] string = "wrn"
+[25] string = "warning"
+[26] string = "warn"
 [27] string = "error"
-[28] string = "critical"
-[29] string = "critical"
-[30] string = "fatal"
-[31] string = "fatal"
-[32] int64 = 1
-[33] string = ""
-[34] string = "service_name"
-[35] string = "service_name"
-[36] string = "service.name"
-[37] string = "api"
+[28] string = "err"
+[29] string = "error"
+[30] string = "critical"
+[31] string = "critical"
+[32] string = "fatal"
+[33] string = "fatal"
+[34] int64 = 1
+[35] string = ""
+[36] string = "service_name"
+[37] string = "service_name"
+[38] string = "service.name"
+[39] string = "api"
 -- chplan --
 VectorJoin op=* match=on() card=one-to-one
   Project ["" AS MetricName, ResourceAttributes AS Attributes, now64(9) AS TimeUnix, Value AS Value]
@@ -62,8 +64,8 @@ VectorJoin op=* match=on() card=one-to-one
       OneRow
   Project ["" AS MetricName, ResourceAttributes AS Attributes, now64(9) AS TimeUnix, Value AS Value]
     RangeWindow func=count_over_time range=5m0s step=0s ts=Timestamp value=Value groupBy=[ResourceAttributes]
-      Project [mapConcat(ResourceAttributes, mapFilter((k, v) -> (v != ""), map("detected_level", multiIf(((lower(SeverityText) = "trace") OR (lower(SeverityText) = "trc")), "trace", ((lower(SeverityText) = "debug") OR (lower(SeverityText) = "dbg")), "debug", (((lower(SeverityText) = "info") OR (lower(SeverityText) = "inf")) OR (lower(SeverityText) = "information")), "info", (((lower(SeverityText) = "warn") OR (lower(SeverityText) = "wrn")) OR (lower(SeverityText) = "warning")), "warn", ((lower(SeverityText) = "error") OR (lower(SeverityText) = "err")), "error", (lower(SeverityText) = "critical"), "critical", (lower(SeverityText) = "fatal"), "fatal", lower(SeverityText))))) AS ResourceAttributes, Timestamp, 1 AS Value]
+      Project [mapConcat(ResourceAttributes, mapFilter((k, v) -> (v != ""), map("detected_level", multiIf((lower(SeverityText) = ""), "unknown", ((lower(SeverityText) = "trace") OR (lower(SeverityText) = "trc")), "trace", ((lower(SeverityText) = "debug") OR (lower(SeverityText) = "dbg")), "debug", (((lower(SeverityText) = "info") OR (lower(SeverityText) = "inf")) OR (lower(SeverityText) = "information")), "info", (((lower(SeverityText) = "warn") OR (lower(SeverityText) = "wrn")) OR (lower(SeverityText) = "warning")), "warn", ((lower(SeverityText) = "error") OR (lower(SeverityText) = "err")), "error", (lower(SeverityText) = "critical"), "critical", (lower(SeverityText) = "fatal"), "fatal", lower(SeverityText))))) AS ResourceAttributes, Timestamp, 1 AS Value]
         Filter predicate=(coalesce(nullIf(ServiceName, ""), if(mapContains(ResourceAttributes, "service_name"), ResourceAttributes["service_name"], ResourceAttributes["service.name"])) = "api")
           Scan(otel_logs)
 -- sql --
-SELECT ? AS `MetricName`, L.`Attributes` AS `Attributes`, L.`TimeUnix` AS `TimeUnix`, (L.`Value` * R.`Value`) AS `Value` FROM (SELECT `_join_MetricName` AS `MetricName`, `_join_Attributes` AS `Attributes`, `_join_TimeUnix` AS `TimeUnix`, `_join_Value` AS `Value` FROM (SELECT argMax(`MetricName`, `TimeUnix`) AS `_join_MetricName`, argMax(`Attributes`, `TimeUnix`) AS `_join_Attributes`, max(`TimeUnix`) AS `_join_TimeUnix`, argMax(`Value`, `TimeUnix`) AS `_join_Value`, throwIf(uniqExact(`Attributes`) > 1, ?) AS _cerberus_match_check FROM (SELECT ? AS `MetricName`, `ResourceAttributes` AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT CAST(map(), ?) AS `ResourceAttributes`, toFloat64(?) AS `Value` FROM (SELECT 1))) GROUP BY tuple())) AS L INNER JOIN (SELECT `_join_MetricName` AS `MetricName`, `_join_Attributes` AS `Attributes`, `_join_TimeUnix` AS `TimeUnix`, `_join_Value` AS `Value` FROM (SELECT argMax(`MetricName`, `TimeUnix`) AS `_join_MetricName`, argMax(`Attributes`, `TimeUnix`) AS `_join_Attributes`, max(`TimeUnix`) AS `_join_TimeUnix`, argMax(`Value`, `TimeUnix`) AS `_join_Value`, throwIf(uniqExact(`Attributes`) > 1, ?) AS _cerberus_match_check FROM (SELECT ? AS `MetricName`, `ResourceAttributes` AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `ResourceAttributes`, toFloat64(length(window_vals)) AS `Value` FROM (SELECT `ResourceAttributes`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `ResourceAttributes`, arrayFilter(p -> tupleElement(p, 1) > now64(9) - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= now64(9), series_array) AS `window_pairs` FROM (SELECT `ResourceAttributes`, arraySort(groupArray((`Timestamp`, `Value`))) AS `series_array` FROM (SELECT mapConcat(`ResourceAttributes`, mapFilter((k, v) -> (v != ?), map(?, multiIf(((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (lower(`SeverityText`) = ?), ?, (lower(`SeverityText`) = ?), ?, lower(`SeverityText`))))) AS `ResourceAttributes`, `Timestamp`, ? AS `Value` FROM (SELECT * FROM `otel_logs` WHERE (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?])) = ?))) GROUP BY `ResourceAttributes`))) WHERE length(`window_vals`) >= 1)) GROUP BY tuple())) AS R ON 1 = 1
+SELECT ? AS `MetricName`, L.`Attributes` AS `Attributes`, L.`TimeUnix` AS `TimeUnix`, (L.`Value` * R.`Value`) AS `Value` FROM (SELECT `_join_MetricName` AS `MetricName`, `_join_Attributes` AS `Attributes`, `_join_TimeUnix` AS `TimeUnix`, `_join_Value` AS `Value` FROM (SELECT argMax(`MetricName`, `TimeUnix`) AS `_join_MetricName`, argMax(`Attributes`, `TimeUnix`) AS `_join_Attributes`, max(`TimeUnix`) AS `_join_TimeUnix`, argMax(`Value`, `TimeUnix`) AS `_join_Value`, throwIf(uniqExact(`Attributes`) > 1, ?) AS _cerberus_match_check FROM (SELECT ? AS `MetricName`, `ResourceAttributes` AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT CAST(map(), ?) AS `ResourceAttributes`, toFloat64(?) AS `Value` FROM (SELECT 1))) GROUP BY tuple())) AS L INNER JOIN (SELECT `_join_MetricName` AS `MetricName`, `_join_Attributes` AS `Attributes`, `_join_TimeUnix` AS `TimeUnix`, `_join_Value` AS `Value` FROM (SELECT argMax(`MetricName`, `TimeUnix`) AS `_join_MetricName`, argMax(`Attributes`, `TimeUnix`) AS `_join_Attributes`, max(`TimeUnix`) AS `_join_TimeUnix`, argMax(`Value`, `TimeUnix`) AS `_join_Value`, throwIf(uniqExact(`Attributes`) > 1, ?) AS _cerberus_match_check FROM (SELECT ? AS `MetricName`, `ResourceAttributes` AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `ResourceAttributes`, toFloat64(length(window_vals)) AS `Value` FROM (SELECT `ResourceAttributes`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `ResourceAttributes`, arrayFilter(p -> tupleElement(p, 1) > now64(9) - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= now64(9), series_array) AS `window_pairs` FROM (SELECT `ResourceAttributes`, arraySort(groupArray((`Timestamp`, `Value`))) AS `series_array` FROM (SELECT mapConcat(`ResourceAttributes`, mapFilter((k, v) -> (v != ?), map(?, multiIf((lower(`SeverityText`) = ?), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (lower(`SeverityText`) = ?), ?, (lower(`SeverityText`) = ?), ?, lower(`SeverityText`))))) AS `ResourceAttributes`, `Timestamp`, ? AS `Value` FROM (SELECT * FROM `otel_logs` WHERE (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?])) = ?))) GROUP BY `ResourceAttributes`))) WHERE length(`window_vals`) >= 1)) GROUP BY tuple())) AS R ON 1 = 1

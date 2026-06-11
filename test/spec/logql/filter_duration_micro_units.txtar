@@ -1,5 +1,5 @@
 -- query.logql --
-{job="api"} | logfmt | latency > 500ms
+{job="api"} | logfmt | latency > 250us
 -- args --
 [0] string = "job"
 [1] string = "api"
@@ -74,23 +74,28 @@
 [70] string = "\\.([a-z])"
 [71] string = "\\1"
 [72] float64 = 0
-[73] float64 = 0.5
+[73] float64 = 0.00025
 -- seed --
 CREATE TABLE otel_logs (
     Body String,
     ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api')
 ) ENGINE = Memory;
 INSERT INTO otel_logs (Body) VALUES
-    ('ts=2026-01-01 latency=200ms msg="fast"'),
-    ('ts=2026-01-01 latency=1s msg="slow"'),
-    ('ts=2026-01-01 latency=2s msg="very_slow"');
+    ('latency=291.792µs msg=keep_micro_sign'),
+    ('latency=300μs msg=keep_greek_mu'),
+    ('latency=100µs msg=drop_small'),
+    ('latency=2ms msg=keep_ms'),
+    ('latency=oops msg=keep_error'),
+    ('msg=no_latency');
 -- expected_rows --
 [
-  ["ts=2026-01-01 latency=1s msg=\"slow\""],
-  ["ts=2026-01-01 latency=2s msg=\"very_slow\""]
+  ["latency=291.792µs msg=keep_micro_sign"],
+  ["latency=300μs msg=keep_greek_mu"],
+  ["latency=2ms msg=keep_ms"],
+  ["latency=oops msg=keep_error"]
 ]
 -- chplan --
-Filter predicate=((ResourceAttributes["job"] = "api") AND multiIf(not(mapContains(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\""))), "latency")), false, not(((replaceRegexpAll(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\"")))["latency"], "^[+-]", "") = "0") OR match(replaceRegexpAll(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\"")))["latency"], "^[+-]", ""), "^(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)(ns|us|µs|μs|ms|s|m|h))+$"))), true, (if((((replaceRegexpAll(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\"")))["latency"], "^[+-]", "") = "0") OR match(replaceRegexpAll(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\"")))["latency"], "^[+-]", ""), "^(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)(ns|us|µs|μs|ms|s|m|h))+$")) AND not((replaceRegexpAll(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\"")))["latency"], "^[+-]", "") = "0"))), (if(startsWith(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\"")))["latency"], "-"), -1, 1) * parseTimeDelta(replaceRegexpAll(replaceRegexpAll(replaceAll(replaceAll(replaceRegexpAll(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\"")))["latency"], "^[+-]", ""), "µ", "u"), "μ", "u"), "(^|[a-z])\\.([0-9])", "\\10.\\2"), "\\.([a-z])", "\\1"))), 0) > 0.5)))
+Filter predicate=((ResourceAttributes["job"] = "api") AND multiIf(not(mapContains(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\""))), "latency")), false, not(((replaceRegexpAll(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\"")))["latency"], "^[+-]", "") = "0") OR match(replaceRegexpAll(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\"")))["latency"], "^[+-]", ""), "^(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)(ns|us|µs|μs|ms|s|m|h))+$"))), true, (if((((replaceRegexpAll(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\"")))["latency"], "^[+-]", "") = "0") OR match(replaceRegexpAll(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\"")))["latency"], "^[+-]", ""), "^(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)(ns|us|µs|μs|ms|s|m|h))+$")) AND not((replaceRegexpAll(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\"")))["latency"], "^[+-]", "") = "0"))), (if(startsWith(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\"")))["latency"], "-"), -1, 1) * parseTimeDelta(replaceRegexpAll(replaceRegexpAll(replaceAll(replaceAll(replaceRegexpAll(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\"")))["latency"], "^[+-]", ""), "µ", "u"), "μ", "u"), "(^|[a-z])\\.([0-9])", "\\10.\\2"), "\\.([a-z])", "\\1"))), 0) > 0.00025)))
   Scan(otel_logs)
 -- sql --
 SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND multiIf(not(mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), extractKeyValuePairs(`Body`, ?, ?, ?))), ?)), ?, not(((replaceRegexpAll(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), extractKeyValuePairs(`Body`, ?, ?, ?)))[?], ?, ?) = ?) OR match(replaceRegexpAll(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), extractKeyValuePairs(`Body`, ?, ?, ?)))[?], ?, ?), ?))), ?, (if((((replaceRegexpAll(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), extractKeyValuePairs(`Body`, ?, ?, ?)))[?], ?, ?) = ?) OR match(replaceRegexpAll(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), extractKeyValuePairs(`Body`, ?, ?, ?)))[?], ?, ?), ?)) AND not((replaceRegexpAll(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), extractKeyValuePairs(`Body`, ?, ?, ?)))[?], ?, ?) = ?))), (if(startsWith(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), extractKeyValuePairs(`Body`, ?, ?, ?)))[?], ?), toFloat64(?), toFloat64(?)) * parseTimeDelta(replaceRegexpAll(replaceRegexpAll(replaceAll(replaceAll(replaceRegexpAll(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), extractKeyValuePairs(`Body`, ?, ?, ?)))[?], ?, ?), ?, ?), ?, ?), ?, ?), ?, ?))), toFloat64(?)) > toFloat64(?)))

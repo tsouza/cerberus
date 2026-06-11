@@ -239,7 +239,7 @@ func (l *Lang) ProjectSamples(plan chplan.Node, meta engine.Meta) chplan.Node {
 	// streams into a single one, regressing the loki-compat diff.
 	expr, _ := meta.Extra["expr"].(syntax.Expr)
 	attrsExpr := chplan.Expr(&chplan.ColumnRef{Name: s.ResourceAttributesColumn})
-	if HasParserStage(expr) {
+	if HasLabelMutatingStage(expr) {
 		if parsed, err := PipelineLabelsExpr(expr, s); err == nil && parsed != nil {
 			attrsExpr = parsed
 		}

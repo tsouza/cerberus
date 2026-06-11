@@ -8,34 +8,36 @@ sum by (SeverityText) (rate({job="api"}[5m]))
 [4] float64 = 300
 [5] string = ""
 [6] string = "detected_level"
-[7] string = "trace"
-[8] string = "trc"
+[7] string = ""
+[8] string = "unknown"
 [9] string = "trace"
-[10] string = "debug"
-[11] string = "dbg"
+[10] string = "trc"
+[11] string = "trace"
 [12] string = "debug"
-[13] string = "info"
-[14] string = "inf"
-[15] string = "information"
-[16] string = "info"
-[17] string = "warn"
-[18] string = "wrn"
-[19] string = "warning"
-[20] string = "warn"
-[21] string = "error"
-[22] string = "err"
+[13] string = "dbg"
+[14] string = "debug"
+[15] string = "info"
+[16] string = "inf"
+[17] string = "information"
+[18] string = "info"
+[19] string = "warn"
+[20] string = "wrn"
+[21] string = "warning"
+[22] string = "warn"
 [23] string = "error"
-[24] string = "critical"
-[25] string = "critical"
-[26] string = "fatal"
-[27] string = "fatal"
-[28] string = "SeverityText"
-[29] int64 = 1
-[30] string = "job"
-[31] string = "api"
-[32] string = "SeverityText"
+[24] string = "err"
+[25] string = "error"
+[26] string = "critical"
+[27] string = "critical"
+[28] string = "fatal"
+[29] string = "fatal"
+[30] string = "SeverityText"
+[31] int64 = 1
+[32] string = "job"
+[33] string = "api"
+[34] string = "SeverityText"
 -- sql --
-SELECT ? AS `MetricName`, map(?, `gkey_0`) AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `ResourceAttributes`[?] AS `gkey_0`, sum(`Value`) AS `Value` FROM (SELECT `ResourceAttributes`, if(length(window_vals) > 0, arraySum(window_vals) / ?, 0.0) AS `Value` FROM (SELECT `ResourceAttributes`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `ResourceAttributes`, arrayFilter(p -> tupleElement(p, 1) > now64(9) - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= now64(9), series_array) AS `window_pairs` FROM (SELECT `ResourceAttributes`, arraySort(groupArray((`Timestamp`, `Value`))) AS `series_array` FROM (SELECT mapConcat(`ResourceAttributes`, mapFilter((k, v) -> (v != ?), map(?, multiIf(((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (lower(`SeverityText`) = ?), ?, (lower(`SeverityText`) = ?), ?, lower(`SeverityText`)), ?, toString(`SeverityText`)))) AS `ResourceAttributes`, `Timestamp`, ? AS `Value` FROM (SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?))) GROUP BY `ResourceAttributes`))) WHERE length(`window_vals`) >= 1) GROUP BY `ResourceAttributes`[?])
+SELECT ? AS `MetricName`, map(?, `gkey_0`) AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `ResourceAttributes`[?] AS `gkey_0`, sum(`Value`) AS `Value` FROM (SELECT `ResourceAttributes`, if(length(window_vals) > 0, arraySum(window_vals) / ?, 0.0) AS `Value` FROM (SELECT `ResourceAttributes`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `ResourceAttributes`, arrayFilter(p -> tupleElement(p, 1) > now64(9) - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= now64(9), series_array) AS `window_pairs` FROM (SELECT `ResourceAttributes`, arraySort(groupArray((`Timestamp`, `Value`))) AS `series_array` FROM (SELECT mapConcat(`ResourceAttributes`, mapFilter((k, v) -> (v != ?), map(?, multiIf((lower(`SeverityText`) = ?), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (lower(`SeverityText`) = ?), ?, (lower(`SeverityText`) = ?), ?, lower(`SeverityText`)), ?, toString(`SeverityText`)))) AS `ResourceAttributes`, `Timestamp`, ? AS `Value` FROM (SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?))) GROUP BY `ResourceAttributes`))) WHERE length(`window_vals`) >= 1) GROUP BY `ResourceAttributes`[?])
 -- seed --
 CREATE TABLE otel_logs (
     Timestamp DateTime64(9),
@@ -67,6 +69,6 @@ INSERT INTO otel_logs (Timestamp, Body, SeverityText, ResourceAttributes) VALUES
 Project ["" AS MetricName, map("SeverityText", gkey_0) AS Attributes, now64(9) AS TimeUnix, Value AS Value]
   Aggregate groupBy=[ResourceAttributes["SeverityText"] AS gkey_0] funcs=[sum(Value) AS Value]
     RangeWindow func=log_rate range=5m0s step=0s ts=Timestamp value=Value groupBy=[ResourceAttributes]
-      Project [mapConcat(ResourceAttributes, mapFilter((k, v) -> (v != ""), map("detected_level", multiIf(((lower(SeverityText) = "trace") OR (lower(SeverityText) = "trc")), "trace", ((lower(SeverityText) = "debug") OR (lower(SeverityText) = "dbg")), "debug", (((lower(SeverityText) = "info") OR (lower(SeverityText) = "inf")) OR (lower(SeverityText) = "information")), "info", (((lower(SeverityText) = "warn") OR (lower(SeverityText) = "wrn")) OR (lower(SeverityText) = "warning")), "warn", ((lower(SeverityText) = "error") OR (lower(SeverityText) = "err")), "error", (lower(SeverityText) = "critical"), "critical", (lower(SeverityText) = "fatal"), "fatal", lower(SeverityText)), "SeverityText", toString(SeverityText)))) AS ResourceAttributes, Timestamp, 1 AS Value]
+      Project [mapConcat(ResourceAttributes, mapFilter((k, v) -> (v != ""), map("detected_level", multiIf((lower(SeverityText) = ""), "unknown", ((lower(SeverityText) = "trace") OR (lower(SeverityText) = "trc")), "trace", ((lower(SeverityText) = "debug") OR (lower(SeverityText) = "dbg")), "debug", (((lower(SeverityText) = "info") OR (lower(SeverityText) = "inf")) OR (lower(SeverityText) = "information")), "info", (((lower(SeverityText) = "warn") OR (lower(SeverityText) = "wrn")) OR (lower(SeverityText) = "warning")), "warn", ((lower(SeverityText) = "error") OR (lower(SeverityText) = "err")), "error", (lower(SeverityText) = "critical"), "critical", (lower(SeverityText) = "fatal"), "fatal", lower(SeverityText)), "SeverityText", toString(SeverityText)))) AS ResourceAttributes, Timestamp, 1 AS Value]
         Filter predicate=(ResourceAttributes["job"] = "api")
           Scan(otel_logs)

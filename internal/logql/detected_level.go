@@ -114,9 +114,26 @@ func detectedLevelExpr(s schema.Logs) chplan.Expr {
 // case-insensitive forms upstream Loki accepts (`err`/`error`,
 // `warn`/`wrn`/`warning`, `inf`/`info`/`information`, `dbg`/`debug`,
 // `trc`/`trace`, `critical`, `fatal`) onto Loki's canonical lowercase
-// level strings. Inputs that don't match any group fall through to
-// the lowercased original value — matching upstream `normalizeLogLevel`'s
-// default branch.
+// level strings. Non-empty inputs that don't match any group fall
+// through to the lowercased original value — matching upstream
+// `normalizeLogLevel`'s default branch.
+//
+// An EMPTY input maps to `unknown`: reference Loki's level detection
+// (pkg/distributor/field_detection.go — default-on via the
+// `discover_log_levels` limit) stamps `detected_level` as structured
+// metadata on EVERY ingested record, falling back to
+// `constants.LogLevelUnknown` ("unknown") when nothing detectable
+// exists. A record whose OTel SeverityText is empty therefore shows
+// `detected_level="unknown"` on any reference Loki deployment — the
+// k3d crawl pinned this on the Logs Drilldown labels tab, where the
+// `detected_level` breakdown rendered "No data" for filelog-collected
+// rows (no SeverityText) because cerberus dropped the key instead of
+// emitting `unknown` (run 27327766381). Reference Loki's
+// content-scan fallback (JSON / logfmt / keyword scan of the line
+// itself) remains out of scope — see the package comment at the top
+// of this file — so a severity-free row whose BODY carries a level
+// keyword maps to `unknown` here where a reference Loki with content
+// discovery would refine it.
 func normaliseLevelExpr(value chplan.Expr) chplan.Expr {
 	lowerValue := &chplan.FuncCall{
 		Name: "lower",
@@ -140,7 +157,15 @@ func normaliseLevelExpr(value chplan.Expr) chplan.Expr {
 		{[]string{"fatal"}, "fatal"},
 	}
 
-	args := make([]chplan.Expr, 0, len(groups)*2+1)
+	args := make([]chplan.Expr, 0, (len(groups)+1)*2+1)
+	// Empty severity first — reference Loki stamps "unknown" when no
+	// level is detectable (constants.LogLevelUnknown), it never leaves
+	// the label absent or empty.
+	args = append(
+		args,
+		&chplan.Binary{Op: chplan.OpEq, Left: lowerValue, Right: &chplan.LitString{V: ""}},
+		&chplan.LitString{V: "unknown"},
+	)
 	for _, g := range groups {
 		args = append(args, anyEqual(lowerValue, g.variants), &chplan.LitString{V: g.canonical})
 	}
@@ -179,13 +204,13 @@ func anyEqual(expr chplan.Expr, variants []string) chplan.Expr {
 //	    <baseLabels>,
 //	    mapFilter((k, v) -> v != '', map('detected_level', multiIf(...))))
 //
-// `mapFilter` drops the `detected_level` entry when the row's
-// SeverityText is empty (the multiIf default branch returns
-// `lower(”) = ”`), so rows without a severity-bearing column don't
-// gain a spurious empty-string label. The shape mirrors Loki's stream-
-// identity contract: `detected_level` is part of the output stream
-// label set whenever the upstream row carries severity metadata, and
-// absent otherwise.
+// The synthesized value is never empty — rows without severity
+// metadata map to `unknown`, mirroring reference Loki's distributor-
+// side stamping (see [normaliseLevelExpr]) — so the `mapFilter` never
+// drops the `detected_level` entry itself; it remains for the
+// outer-by top-level columns [withDetectedLevelAndColumns] folds into
+// the same synthesized map, whose `toString(...)` values CAN be empty
+// on rows that don't populate the column.
 //
 // Used by both the log-stream projection (Lang.ProjectSamples for log
 // queries, where the surfaced label splits the streams response into

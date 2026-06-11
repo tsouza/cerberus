@@ -22,57 +22,63 @@ INSERT INTO otel_logs (Timestamp, Body, ResourceAttributes) VALUES
     (toDateTime64('2026-01-01 00:01:00', 9), '{"path":"/b","status":"500","duration_ms":"50"}', map('service_name', 'api'));
 -- expected_rows --
 [
-  [{"path": "/a", "service_name": "api", "status": "200"}, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", 0.03333333333333333],
-  [{"path": "/a", "service_name": "api", "status": "200"}, "2026-01-01T00:00:30Z", "2026-01-01T00:00:30Z", 0.1],
-  [{"path": "/a", "service_name": "api", "status": "200"}, "2026-01-01T00:01:00Z", "2026-01-01T00:01:00Z", 0.1],
-  [{"path": "/b", "service_name": "api", "status": "500"}, "2026-01-01T00:00:30Z", "2026-01-01T00:00:30Z", 0.1],
-  [{"path": "/b", "service_name": "api", "status": "500"}, "2026-01-01T00:01:00Z", "2026-01-01T00:01:00Z", 0.4]
+  [{"detected_level": "unknown", "path": "/a", "service_name": "api", "status": "200"}, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", 0.03333333333333333],
+  [{"detected_level": "unknown", "path": "/a", "service_name": "api", "status": "200"}, "2026-01-01T00:00:30Z", "2026-01-01T00:00:30Z", 0.1],
+  [{"detected_level": "unknown", "path": "/a", "service_name": "api", "status": "200"}, "2026-01-01T00:01:00Z", "2026-01-01T00:01:00Z", 0.1],
+  [{"detected_level": "unknown", "path": "/b", "service_name": "api", "status": "500"}, "2026-01-01T00:00:30Z", "2026-01-01T00:00:30Z", 0.1],
+  [{"detected_level": "unknown", "path": "/b", "service_name": "api", "status": "500"}, "2026-01-01T00:01:00Z", "2026-01-01T00:01:00Z", 0.4]
 ]
 -- args --
 [0] float64 = 300
 [1] string = "duration_ms"
 [2] string = ""
 [3] string = "detected_level"
-[4] string = "trace"
-[5] string = "trc"
+[4] string = ""
+[5] string = "unknown"
 [6] string = "trace"
-[7] string = "debug"
-[8] string = "dbg"
+[7] string = "trc"
+[8] string = "trace"
 [9] string = "debug"
-[10] string = "info"
-[11] string = "inf"
-[12] string = "information"
-[13] string = "info"
-[14] string = "warn"
-[15] string = "wrn"
-[16] string = "warning"
-[17] string = "warn"
-[18] string = "error"
-[19] string = "err"
+[10] string = "dbg"
+[11] string = "debug"
+[12] string = "info"
+[13] string = "inf"
+[14] string = "information"
+[15] string = "info"
+[16] string = "warn"
+[17] string = "wrn"
+[18] string = "warning"
+[19] string = "warn"
 [20] string = "error"
-[21] string = "critical"
-[22] string = "critical"
-[23] string = "fatal"
-[24] string = "fatal"
-[25] string = "duration_ms"
-[26] string = "duration_ms"
-[27] string = "duration.ms"
-[28] string = "String"
-[29] string = "Map(String,String)"
-[30] string = "2025-12-31 23:55:00.000000000"
-[31] int64 = 9
-[32] string = "2026-01-01 00:01:00.000000000"
+[21] string = "err"
+[22] string = "error"
+[23] string = "critical"
+[24] string = "critical"
+[25] string = "fatal"
+[26] string = "fatal"
+[27] string = "duration_ms"
+[28] string = "duration_ms"
+[29] string = "duration.ms"
+[30] string = "String"
+[31] string = "Map(String,String)"
+[32] string = "2025-12-31 23:55:00.000000000"
 [33] int64 = 9
-[34] string = ""
-[35] string = "service_name"
-[36] string = "service_name"
-[37] string = "service.name"
-[38] string = "api"
+[34] string = "2026-01-01 00:01:00.000000000"
+[35] int64 = 9
+[36] string = ""
+[37] string = "service_name"
+[38] string = "service_name"
+[39] string = "service.name"
+[40] string = "api"
+[41] string = "String"
+[42] string = "Map(String,String)"
+[43] string = "duration_ms"
+[44] string = ""
 -- chplan --
 RangeWindow func=log_rate range=5m0s step=30s outerRange=1m0s ts=Timestamp value=Value groupBy=[ResourceAttributes] start=2026-01-01T00:00:00Z end=2026-01-01T00:01:00Z
-  Project [mapConcat(mapWithout(_logql_merged_labels, [duration_ms]), mapFilter((k, v) -> (v != ""), map("detected_level", multiIf(((lower(SeverityText) = "trace") OR (lower(SeverityText) = "trc")), "trace", ((lower(SeverityText) = "debug") OR (lower(SeverityText) = "dbg")), "debug", (((lower(SeverityText) = "info") OR (lower(SeverityText) = "inf")) OR (lower(SeverityText) = "information")), "info", (((lower(SeverityText) = "warn") OR (lower(SeverityText) = "wrn")) OR (lower(SeverityText) = "warning")), "warn", ((lower(SeverityText) = "error") OR (lower(SeverityText) = "err")), "error", (lower(SeverityText) = "critical"), "critical", (lower(SeverityText) = "fatal"), "fatal", lower(SeverityText))))) AS ResourceAttributes, Timestamp, toFloat64OrZero(if(mapContains(_logql_merged_labels, "duration_ms"), _logql_merged_labels["duration_ms"], _logql_merged_labels["duration.ms"])) AS Value]
+  Project [mapConcat(mapWithout(_logql_merged_labels, [duration_ms]), mapFilter((k, v) -> (v != ""), map("detected_level", multiIf((lower(SeverityText) = ""), "unknown", ((lower(SeverityText) = "trace") OR (lower(SeverityText) = "trc")), "trace", ((lower(SeverityText) = "debug") OR (lower(SeverityText) = "dbg")), "debug", (((lower(SeverityText) = "info") OR (lower(SeverityText) = "inf")) OR (lower(SeverityText) = "information")), "info", (((lower(SeverityText) = "warn") OR (lower(SeverityText) = "wrn")) OR (lower(SeverityText) = "warning")), "warn", ((lower(SeverityText) = "error") OR (lower(SeverityText) = "err")), "error", (lower(SeverityText) = "critical"), "critical", (lower(SeverityText) = "fatal"), "fatal", lower(SeverityText))))) AS ResourceAttributes, Timestamp, toFloat64OrZero(if(mapContains(_logql_merged_labels, "duration_ms"), _logql_merged_labels["duration_ms"], _logql_merged_labels["duration.ms"])) AS Value]
     Project [ResourceAttributes, Timestamp, Body, SeverityText, mapConcat(ResourceAttributes, CAST(JSONExtractKeysAndValues(Body, "String"), "Map(String,String)")) AS _logql_merged_labels]
-      Filter predicate=((coalesce(nullIf(ServiceName, ""), if(mapContains(ResourceAttributes, "service_name"), ResourceAttributes["service_name"], ResourceAttributes["service.name"])) = "api") AND ((Timestamp >= toDateTime64("2025-12-31 23:55:00.000000000", 9)) AND (Timestamp <= toDateTime64("2026-01-01 00:01:00.000000000", 9))))
+      Filter predicate=(((coalesce(nullIf(ServiceName, ""), if(mapContains(ResourceAttributes, "service_name"), ResourceAttributes["service_name"], ResourceAttributes["service.name"])) = "api") AND ((Timestamp >= toDateTime64("2025-12-31 23:55:00.000000000", 9)) AND (Timestamp <= toDateTime64("2026-01-01 00:01:00.000000000", 9)))) AND (mapConcat(ResourceAttributes, CAST(JSONExtractKeysAndValues(Body, "String"), "Map(String,String)"))["duration_ms"] != ""))
         Scan(otel_logs)
 -- sql --
-SELECT `ResourceAttributes`, `anchor_ts`, anchor_ts AS `Timestamp`, if(length(window_vals) > 0, arraySum(window_vals) / ?, 0.0) AS `Value` FROM (SELECT `ResourceAttributes`, `anchor_ts`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `ResourceAttributes`, `anchor_ts`, arraySort(groupArray((`Timestamp`, `Value`))) AS `window_pairs` FROM (SELECT `ResourceAttributes`, `Timestamp`, `Value`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:01:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `Timestamp`, toDateTime64('2026-01-01 00:01:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `Timestamp`, toDateTime64('2026-01-01 00:01:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1), least(3, intDiv(dateDiff('nanosecond', `Timestamp`, toDateTime64('2026-01-01 00:01:00.000000000', 9)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `Timestamp`, toDateTime64('2026-01-01 00:01:00.000000000', 9)), toInt64(30000000000)) < 0) + 1)))) AS `anchor_ts` FROM (SELECT mapConcat(mapFilter((k, v) -> NOT (k IN (?)), `_logql_merged_labels`), mapFilter((k, v) -> (v != ?), map(?, multiIf(((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (lower(`SeverityText`) = ?), ?, (lower(`SeverityText`) = ?), ?, lower(`SeverityText`))))) AS `ResourceAttributes`, `Timestamp`, toFloat64OrZero(if(mapContains(`_logql_merged_labels`, ?), `_logql_merged_labels`[?], `_logql_merged_labels`[?])) AS `Value` FROM (SELECT `ResourceAttributes`, `Timestamp`, `Body`, `SeverityText`, mapConcat(`ResourceAttributes`, CAST(JSONExtractKeysAndValues(`Body`, ?), ?)) AS `_logql_merged_labels` FROM (SELECT * FROM `otel_logs` WHERE (`Timestamp` >= toDateTime64(?, ?)) AND (`Timestamp` <= toDateTime64(?, ?)) AND (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?])) = ?))))) GROUP BY `ResourceAttributes`, `anchor_ts`)) WHERE length(`window_vals`) >= 1
+SELECT `ResourceAttributes`, `anchor_ts`, anchor_ts AS `Timestamp`, if(length(window_vals) > 0, arraySum(window_vals) / ?, 0.0) AS `Value` FROM (SELECT `ResourceAttributes`, `anchor_ts`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `ResourceAttributes`, `anchor_ts`, arraySort(groupArray((`Timestamp`, `Value`))) AS `window_pairs` FROM (SELECT `ResourceAttributes`, `Timestamp`, `Value`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:01:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `Timestamp`, toDateTime64('2026-01-01 00:01:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `Timestamp`, toDateTime64('2026-01-01 00:01:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1), least(3, intDiv(dateDiff('nanosecond', `Timestamp`, toDateTime64('2026-01-01 00:01:00.000000000', 9)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `Timestamp`, toDateTime64('2026-01-01 00:01:00.000000000', 9)), toInt64(30000000000)) < 0) + 1)))) AS `anchor_ts` FROM (SELECT mapConcat(mapFilter((k, v) -> NOT (k IN (?)), `_logql_merged_labels`), mapFilter((k, v) -> (v != ?), map(?, multiIf((lower(`SeverityText`) = ?), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (lower(`SeverityText`) = ?), ?, (lower(`SeverityText`) = ?), ?, lower(`SeverityText`))))) AS `ResourceAttributes`, `Timestamp`, toFloat64OrZero(if(mapContains(`_logql_merged_labels`, ?), `_logql_merged_labels`[?], `_logql_merged_labels`[?])) AS `Value` FROM (SELECT `ResourceAttributes`, `Timestamp`, `Body`, `SeverityText`, mapConcat(`ResourceAttributes`, CAST(JSONExtractKeysAndValues(`Body`, ?), ?)) AS `_logql_merged_labels` FROM (SELECT * FROM `otel_logs` WHERE (`Timestamp` >= toDateTime64(?, ?)) AND (`Timestamp` <= toDateTime64(?, ?)) AND (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?])) = ?) AND (mapConcat(`ResourceAttributes`, CAST(JSONExtractKeysAndValues(`Body`, ?), ?))[?] != ?))))) GROUP BY `ResourceAttributes`, `anchor_ts`)) WHERE length(`window_vals`) >= 1
