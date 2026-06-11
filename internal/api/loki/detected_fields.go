@@ -2,6 +2,7 @@ package loki
 
 import (
 	"errors"
+	"math"
 	"net/http"
 	"slices"
 	"sort"
@@ -103,18 +104,16 @@ func (h *Handler) handleDetectedFields(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	lineLimit32, err := parsePositiveUint32(r.URL.Query().Get("line_limit"), defaultDetectedFieldsLineLimit)
+	lineLimit, err := parsePositiveInt31(r.URL.Query().Get("line_limit"), defaultDetectedFieldsLineLimit)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return
 	}
-	lineLimit := int(lineLimit32)
-	limit32, err := parsePositiveUint32(r.URL.Query().Get("limit"), defaultDetectedFieldsLimit)
+	limit, err := parsePositiveInt31(r.URL.Query().Get("limit"), defaultDetectedFieldsLimit)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return
 	}
-	limit := int(limit32)
 
 	matchers, err := selectorMatchers(q)
 	if err != nil {
@@ -140,10 +139,12 @@ func (h *Handler) handleDetectedFields(w http.ResponseWriter, r *http.Request) {
 
 	resp := DetectedFieldsResponse{Fields: fields}
 	// Mirror upstream: the limit is echoed only when fields exist.
-	// limit32 is uint32 from parse time (ParseUint bitSize 32), so the
-	// wire value needs no conversion at all.
-	if len(fields) > 0 {
-		resp.Limit = limit32
+	// parsePositiveInt31 already bounds limit, but the guard is
+	// restated on the SAME variable so both gosec G115 and CodeQL
+	// go/incorrect-integer-conversion can prove the uint32 conversion
+	// locally (neither follows the bound across the helper call).
+	if len(fields) > 0 && limit > 0 && limit <= math.MaxInt32 {
+		resp.Limit = uint32(limit)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -378,19 +379,20 @@ func sortedKeys(m map[string]string) []string {
 	return keys
 }
 
-// parsePositiveUint32 parses an optional integer query parameter.
+// parsePositiveInt31 parses an optional integer query parameter.
 // Empty input returns the default; non-numeric, non-positive, or
 // out-of-range input is rejected with a 400. ParseUint with bitSize
-// 32 bounds the value to uint32 — the wire type of the echoed
-// `limit` (logproto.DetectedFieldsResponse.limit) — so no unbounded
-// integer conversion exists anywhere downstream.
-func parsePositiveUint32(raw string, def uint32) (uint32, error) {
+// 31 bounds the value to MaxInt32, which fits int on every
+// architecture AND uint32 on the wire (the echoed `limit` is
+// logproto.DetectedFieldsResponse.limit), so every downstream
+// conversion is provably in range.
+func parsePositiveInt31(raw string, def int) (int, error) {
 	if raw == "" {
 		return def, nil
 	}
-	n, err := strconv.ParseUint(raw, 10, 32)
+	n, err := strconv.ParseUint(raw, 10, 31)
 	if err != nil || n == 0 {
-		return 0, errors.New("parameter must be a positive integer no larger than 4294967295")
+		return 0, errors.New("parameter must be a positive integer no larger than 2147483647")
 	}
-	return uint32(n), nil
+	return int(n), nil
 }
