@@ -197,12 +197,28 @@ func histogramQuantileValueFrag(h *chplan.HistogramQuantile) Frag {
 		// b.writeSQL path is kept for the lambda. The outer
 		// arrayFirstIndex call wraps the cum frag via Call once the
 		// lambda is emitted.
+		// Computed phi: ClickHouse 24.8 rejects a scalar subquery
+		// anywhere in arrayFirstIndex's argument tree with ILLEGAL_COLUMN
+		// ("Unexpected type of filter column") — the lambda's comparison
+		// result stops being the plain UInt8 filter column the
+		// higher-order filter machinery expects (newer CH accepts it).
+		// Wrapping the predicate as `if(<cmp>, 1, 0) = 1` restores the
+		// constant-folded UInt8 the 24.8 filter path requires. The
+		// literal path keeps the bare comparison (byte-stable fixtures).
 		writeIdx := func() {
-			b.writeSQL("arrayFirstIndex(c -> c >= (")
+			b.writeSQL("arrayFirstIndex(c -> ")
+			if h.PhiExpr != nil {
+				b.writeSQL("(if(")
+			}
+			b.writeSQL("c >= (")
 			writePhi()
 			b.writeSQL(" * ")
 			arraySumBC(b)
-			b.writeSQL("), ")
+			b.writeSQL(")")
+			if h.PhiExpr != nil {
+				b.writeSQL(", 1, 0) = 1)")
+			}
+			b.writeSQL(", ")
 			arrayCumSumBC(b)
 			b.writeSQL(")")
 		}

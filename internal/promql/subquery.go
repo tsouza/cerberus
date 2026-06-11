@@ -386,18 +386,55 @@ func lowerOuterRangeFnOverSubquery(
 		// an empty matrix. Compat-lane manifestation:
 		// `avg_over_time(rate(demo_cpu_usage_seconds_total[1m])[2m:10s])`
 		// returned [] vs Prom's populated matrix (`#400` Bucket 3).
-		// The Identity-true sibling (`max_over_time((<binary>)[5m:10s])`)
-		// also benefits from the same widening — the inner's anchor
-		// grid is the same shape, the bug just manifests less obviously
-		// because the binary inner doesn't carry the `>= 2 samples`
-		// guard that the counter-extrapolation path adds.
-		if innerRW, ok := inner.(*chplan.RangeWindow); ok {
-			innerRW.Start = ctx.start.Add(-sub.Range).UTC()
-			innerRW.End = ctx.end.UTC()
-			innerRW.OuterRange = ctx.end.Sub(ctx.start) + sub.Range
-		}
+		//
+		// The widening walks the SPINE of the lowered inner plan rather
+		// than type-asserting a bare RangeWindow: subquery inners over
+		// aggregations (Project[Aggregate[matrix]]), topk (TopK[matrix]),
+		// count_values (Project[Aggregate[matrix]]) and the empty-K fold
+		// (Filter[matrix]) all wrap their matrix RangeWindow, and nested
+		// subqueries stack matrix RangeWindows whose grids must widen
+		// cumulatively (each level's child needs a further `Range`
+		// of lookback). Compat-lane manifestation of the missing walk:
+		// `max_over_time(sum(demo_memory_usage_bytes + ...)[5m:1m])`
+		// (and the stddev / quantile / nested-irate siblings) returned
+		// [] on query_range while instant answers were correct.
+		widenSubquerySpine(inner, ctx.start.Add(-sub.Range), ctx.end)
 	}
 	return rw, nil
+}
+
+// widenSubquerySpine threads the range-mode evaluation window down a
+// lowered subquery plan's spine: every matrix RangeWindow on the spine
+// is re-anchored to emit one row per anchor across [start, end], and
+// its OWN input spine widens by a further window.Range of lookback so
+// each of its anchors finds the samples it needs. Wrapper nodes the
+// subquery lowerings interpose (Project / Aggregate / TopK / Filter)
+// pass the requirement through unchanged — they reshape rows per
+// anchor but don't move time.
+//
+// Instant-shape RangeWindows (Step == 0) terminate the walk: they
+// resolve a single anchor themselves and appear only below shapes
+// (e.g. the scalar-argument subplans) whose evaluation is
+// per-statement by contract.
+func widenSubquerySpine(n chplan.Node, start, end time.Time) {
+	switch v := n.(type) {
+	case *chplan.RangeWindow:
+		if v.Step <= 0 {
+			return
+		}
+		v.Start = start.UTC()
+		v.End = end.UTC()
+		v.OuterRange = end.Sub(start)
+		widenSubquerySpine(v.Input, start.Add(-v.Range), end)
+	case *chplan.Project:
+		widenSubquerySpine(v.Input, start, end)
+	case *chplan.Aggregate:
+		widenSubquerySpine(v.Input, start, end)
+	case *chplan.TopK:
+		widenSubquerySpine(v.Input, start, end)
+	case *chplan.Filter:
+		widenSubquerySpine(v.Input, start, end)
+	}
 }
 
 // rangeVectorFn is the set of PromQL functions cerberus's emitter
@@ -482,28 +519,42 @@ func subqueryInstantSafe(call *parser.Call) bool {
 	return safe
 }
 
+// subqueryStalenessLookback is the per-anchor lookback the
+// subquery-over-absent lowering applies: reference Prometheus
+// evaluates the subquery's inner expression as an instant query at
+// each anchor, and instant selector evaluation uses the engine's
+// lookback delta — 5 minutes by default (promql.defaultLookbackDelta).
+const subqueryStalenessLookback = 5 * time.Minute
+
 // lowerSubqueryOverAbsent — `absent(<v>)[<range>:<step>]`, typically
 // under an outer reducer (`max_over_time(absent(up)[5m:1m])`).
 //
 // absent() is not sample-preserving — the synthesised `{} 1` row only
 // exists where data is MISSING — so the Identity wrap can't model it.
-// Instead the absent lowering's own range mode (StepGrid CROSS JOIN
-// over the per-step grid, see lowerAbsent) is invoked with the
-// SUBQUERY's anchor grid: one absence verdict per anchor across
-// [end - sub.Range, end] spaced by step (widened to
-// [start - sub.Range, end] in range mode so every outer anchor's
-// lookback finds inner anchors). A wrapping Project renames the
-// per-anchor TimeUnix to `anchor_ts`, matching the matrix-shape
-// (Attributes, anchor_ts, Value) contract the outer reducer reads.
 //
-// The emptiness verdict itself follows lowerAbsent's documented
-// posture (a global "does anything match" check, not a per-anchor
-// staleness window): the per-anchor fan-out exists so the outer
-// window arithmetic sees rows on the right grid.
+// Bare-selector arguments ride the AbsentOverTime machinery on the
+// SUBQUERY's anchor grid: one row per anchor across
+// [end − sub.Range, end] spaced by step (widened to
+// [start − sub.Range, end] in range mode so every outer anchor's
+// lookback finds inner anchors) whose `(anchor − 5m, anchor]`
+// staleness window holds zero matching samples. That is exactly
+// reference Prometheus's evaluation — `absent(v)` at each subquery
+// step is an instant eval with the default 5m lookback — including
+// the window-edge behaviour where anchors preceding the series' first
+// sample report 1 (compat-lane manifestation: cerberus's previous
+// global table-emptiness check returned [] for
+// `max_over_time(absent(demo_memory_usage_bytes)[5m:1m])` while the
+// reference emitted 1 for the leading anchors of the window). The
+// synthesised labels come from the matcher-equality rule the instant
+// absent shares (synthLabelsFromMatchers).
+//
+// Non-selector arguments (`absent(sum(up))[5m:1m]`) keep the instant
+// lowering's documented global-emptiness posture, fanned across the
+// grid via lowerAbsent's StepGrid range mode.
 //
 // A zero eval anchor (plain Lower() without LowerAt* threading) cannot
-// materialise the StepGrid's literal timestamps; the wire handlers
-// always thread eval times, so the guard is unreachable via HTTP.
+// materialise the grid's literal timestamps; the wire handlers always
+// thread eval times, so the guard is unreachable via HTTP.
 func lowerSubqueryOverAbsent(
 	sub *parser.SubqueryExpr,
 	call *parser.Call,
@@ -518,6 +569,46 @@ func lowerSubqueryOverAbsent(
 	if ctx.step > 0 && !ctx.start.IsZero() {
 		gridStart = ctx.start.Add(-sub.Range)
 	}
+
+	matrixShape := func(inner chplan.Node) chplan.Node {
+		return &chplan.Project{
+			Input: inner,
+			Projections: []chplan.Projection{
+				{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+				{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: "anchor_ts"},
+				{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
+			},
+		}
+	}
+
+	if len(call.Args) == 1 {
+		if vs, ok := unwrapParens(call.Args[0]).(*parser.VectorSelector); ok {
+			vsNoMod := *vs
+			vsNoMod.Timestamp = nil
+			vsNoMod.OriginalOffset = 0
+			vsNoMod.Offset = 0
+			vsNoMod.StartOrEnd = 0
+			rangeCtx := ctx
+			rangeCtx.inRangeVector = true
+			inner, err := lowerVectorSelector(&vsNoMod, s, rangeCtx)
+			if err != nil {
+				return nil, err
+			}
+			return matrixShape(&chplan.AbsentOverTime{
+				Input:            inner,
+				SynthLabels:      synthLabelsFromMatchers(vs.LabelMatchers),
+				Range:            subqueryStalenessLookback,
+				Start:            gridStart.UTC(),
+				End:              ctx.end.UTC(),
+				Step:             step,
+				TimestampColumn:  s.TimestampColumn,
+				ValueColumn:      s.ValueColumn,
+				MetricNameColumn: s.MetricNameColumn,
+				AttributesColumn: s.AttributesColumn,
+			}), nil
+		}
+	}
+
 	gridCtx := ctx
 	gridCtx.start = gridStart.UTC()
 	gridCtx.end = ctx.end.UTC()
@@ -526,14 +617,7 @@ func lowerSubqueryOverAbsent(
 	if err != nil {
 		return nil, err
 	}
-	return &chplan.Project{
-		Input: inner,
-		Projections: []chplan.Projection{
-			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
-			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: "anchor_ts"},
-			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
-		},
-	}, nil
+	return matrixShape(inner), nil
 }
 
 // subqueryAnchor reads the subquery's `@` + `offset` modifiers into an
@@ -686,40 +770,46 @@ func lowerSubqueryOverAggregate(
 	// matching 3-column wrap rather than the instant-mode 4-column
 	// (MetricName, Attributes, TimeUnix, Value) shape.
 	if agg.Op == parser.QUANTILE {
-		if phi, ok := tryScalarLiteral(agg.Param); ok {
-			if infValue, outOfRange := outOfRangePhiInf(phi); outOfRange {
-				wrapped = &chplan.Project{
-					Input: wrapped,
-					Projections: []chplan.Projection{
-						{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
-						{Expr: &chplan.ColumnRef{Name: anchorAlias}, Alias: anchorAlias},
-						{Expr: &chplan.LitFloat{V: infValue}, Alias: s.ValueColumn},
-					},
-				}
-			}
-		} else {
-			// Computed phi: the literal branch's compile-time ±Inf fold
-			// resolved at runtime instead — buildSubqueryAggFunc bound a
-			// sanitised parameter, this guard projects NaN / ±Inf over
-			// the sentinel quantile (Prom's quantile() domain rules).
-			phiE, err := lowerScalarArg(agg.Param, s, ctx)
-			if err != nil {
-				return nil, err
-			}
-			wrapped = &chplan.Project{
-				Input: wrapped,
-				Projections: []chplan.Projection{
-					{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
-					{Expr: &chplan.ColumnRef{Name: anchorAlias}, Alias: anchorAlias},
-					{
-						Expr:  outOfRangePhiGuardExpr(phiE, &chplan.ColumnRef{Name: s.ValueColumn}),
-						Alias: s.ValueColumn,
-					},
-				},
-			}
-		}
+		return wrapSubqueryQuantilePhiGuard(wrapped, agg, anchorAlias, s, ctx)
 	}
 	return wrapped, nil
+}
+
+// wrapSubqueryQuantilePhiGuard applies PromQL's quantile phi-domain
+// rules to the subquery aggregate's matrix output — the 3-column
+// (Attributes, anchor_ts, Value) sibling of lower.go's
+// wrapQuantilePhiGuard. A literal out-of-range phi folds to the ±Inf
+// / NaN constant at lowering time; a computed phi resolves the same
+// rules at runtime over the sanitised-parameter sentinel quantile
+// buildSubqueryAggFunc emitted.
+func wrapSubqueryQuantilePhiGuard(
+	wrapped chplan.Node,
+	agg *parser.AggregateExpr,
+	anchorAlias string,
+	s schema.Metrics,
+	ctx lowerCtx,
+) (chplan.Node, error) {
+	matrixValueWrap := func(value chplan.Expr) chplan.Node {
+		return &chplan.Project{
+			Input: wrapped,
+			Projections: []chplan.Projection{
+				{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+				{Expr: &chplan.ColumnRef{Name: anchorAlias}, Alias: anchorAlias},
+				{Expr: value, Alias: s.ValueColumn},
+			},
+		}
+	}
+	if phi, ok := tryScalarLiteral(agg.Param); ok {
+		if infValue, outOfRange := outOfRangePhiInf(phi); outOfRange {
+			return matrixValueWrap(&chplan.LitFloat{V: infValue}), nil
+		}
+		return wrapped, nil
+	}
+	phiE, err := lowerScalarArg(agg.Param, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+	return matrixValueWrap(outOfRangePhiGuardExpr(phiE, &chplan.ColumnRef{Name: s.ValueColumn})), nil
 }
 
 // subqueryAggregateGroupBy returns the (GroupBy, aliases) pair for the

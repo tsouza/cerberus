@@ -266,7 +266,7 @@ func TestIsDefaultMatching_AllFourConjunctsRequired(t *testing.T) {
 // With the flip, `clamp(up, 0, time())` — literal min, computed max —
 // would enter the literal branch carrying tryScalarLiteral's zero
 // default for the max bound: `maxB(0) < minB(0)` is false, so the
-// degenerate fold is skipped and the lowering silently clamps every
+// degenerate fold never fires and the lowering silently clamps every
 // sample into `[0, 0]` instead of using the computed bound.
 //
 // The pin asserts the mixed shape routes to the COMPUTED path: a

@@ -1695,27 +1695,33 @@ func lowerAggregate(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (ch
 	// constant. The per-group identity (MetricName / Attributes /
 	// TimeUnix) carries through unchanged from the inner Project.
 	if a.Op == parser.QUANTILE {
-		if phi, ok := tryScalarLiteral(a.Param); ok {
-			if infValue, outOfRange := outOfRangePhiInf(phi); outOfRange {
-				wrapped = projectValueOverInner(wrapped, s, &chplan.LitFloat{V: infValue})
-			}
-		} else {
-			// Computed phi: the same out-of-range rules resolved at
-			// runtime. buildAggFunc bound a sanitised phi parameter
-			// (sentinel 0.5 when out of domain); the guard below
-			// projects NaN / -Inf / +Inf over the sentinel quantile per
-			// Prom's quantile() helper. The phi expression is re-lowered
-			// here — CH caches scalar subqueries, so the repeated
-			// reference costs one evaluation per statement.
-			phiE, err := lowerScalarArg(a.Param, s, ctx)
-			if err != nil {
-				return nil, err
-			}
-			wrapped = projectValueOverInner(wrapped, s,
-				outOfRangePhiGuardExpr(phiE, &chplan.ColumnRef{Name: s.ValueColumn}))
-		}
+		return wrapQuantilePhiGuard(wrapped, a, s, ctx)
 	}
 	return wrapped, nil
+}
+
+// wrapQuantilePhiGuard applies PromQL's quantile phi-domain rules to
+// the aggregate's output Value. A literal out-of-range phi folds to
+// the ±Inf / NaN constant at lowering time (outOfRangePhiInf); a
+// computed phi resolves the same rules at runtime — buildAggFunc bound
+// a sanitised phi parameter (sentinel 0.5 when out of domain), and the
+// guard projects NaN / -Inf / +Inf over the sentinel quantile per
+// Prom's quantile() helper. The phi expression is re-lowered here —
+// CH caches scalar subqueries, so the repeated reference costs one
+// evaluation per statement.
+func wrapQuantilePhiGuard(wrapped chplan.Node, a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	if phi, ok := tryScalarLiteral(a.Param); ok {
+		if infValue, outOfRange := outOfRangePhiInf(phi); outOfRange {
+			return projectValueOverInner(wrapped, s, &chplan.LitFloat{V: infValue}), nil
+		}
+		return wrapped, nil
+	}
+	phiE, err := lowerScalarArg(a.Param, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+	return projectValueOverInner(wrapped, s,
+		outOfRangePhiGuardExpr(phiE, &chplan.ColumnRef{Name: s.ValueColumn})), nil
 }
 
 // lowerCountValues lowers `count_values("label", expr) [by(g) | without(g)]`.

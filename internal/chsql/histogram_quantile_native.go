@@ -126,123 +126,12 @@ func (e *emitter) emitHistogramQuantileNative(h *chplan.HistogramQuantileNative)
 // renders the expression at every phi position with a leading
 // `isNaN(phi) → nan` guard. Mirrors classic emission style.
 func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative) Frag {
-	pbc := h.PositiveBucketCountsColumn
 	po := h.PositiveOffsetColumn
-	nbc := h.NegativeBucketCountsColumn
 	no := h.NegativeOffsetColumn
-	scale := h.ScaleColumn
 	zc := h.ZeroCountColumn
-	zt := h.ZeroThresholdColumn
 
 	return func(b *Builder) {
-		// writePhiLit renders the phi parameter: computed expression
-		// when PhiExpr is set (typically a scalar subquery — CH folds
-		// it as a constant), inline literal otherwise.
-		writePhiLit := func(b *Builder) {
-			if h.PhiExpr != nil {
-				_ = b.Expr(h.PhiExpr)
-				return
-			}
-			b.writeSQL(formatFloat(h.Phi))
-		}
-		// base = pow(2, pow(2, -Scale)). Re-rendered inline at each
-		// use; CH's planner CSEs. Inline literal `2` and array-literal
-		// `[col]` have no typed Frag (no inline-int / array-literal
-		// helpers), so the in-package b.writeSQL path is kept for the
-		// shape's outer layout; the inner pow/arrayCumSum/arrayReverse
-		// function shells use typed Call where they would otherwise
-		// duplicate "fn(" + ... + ")" string fragments.
-		writeBase := func() {
-			b.writeSQL("pow(2, pow(2, -")
-			b.Ident(scale)
-			b.writeSQL("))")
-		}
-		// cum = arrayCumSum(arrayConcat(
-		//         arrayReverse(NegativeBucketCounts),
-		//         [ZeroCount],
-		//         PositiveBucketCounts)).
-		// arrayReverse on an empty array yields [], so the walk
-		// collapses to the Phase 1 shape when NegativeBucketCounts
-		// is empty.
-		cumBody := func(b *Builder) {
-			b.writeSQL("arrayConcat(")
-			Call("arrayReverse", Col(nbc))(b)
-			b.writeSQL(", [")
-			b.Ident(zc)
-			b.writeSQL("], ")
-			b.Ident(pbc)
-			b.writeSQL(")")
-		}
-		writeCum := func() {
-			Call("arrayCumSum", cumBody)(b)
-		}
-		// total = cum[length(cum)] — last element of cum.
-		writeTotal := func() {
-			writeCum()
-			b.writeSQL("[")
-			Call("length", func(b *Builder) { writeCum() })(b)
-			b.writeSQL("]")
-		}
-		// idx = arrayFirstIndex(c -> c >= phi*total, cum).
-		// Lambda body uses bound var `c`; Builder.Lambda emits "(c) ->"
-		// which drifts vs. "c ->" output, so the in-package writeSQL
-		// path is kept here.
-		writeIdx := func() {
-			b.writeSQL("arrayFirstIndex(c -> c >= (")
-			writePhiLit(b)
-			b.writeSQL(" * ")
-			writeTotal()
-			b.writeSQL("), ")
-			writeCum()
-			b.writeSQL(")")
-		}
-		// cum[idx + offset]. offset is a string fragment like " - 1"
-		// or "" — caller-supplied so the same helper covers cum[idx]
-		// (offset="") and cum[idx-1] (offset=" - 1"). idx=1 with
-		// offset=" - 1" indexes cum[0], which CH evaluates to the
-		// array element's default (0) — matches the
-		// "no bucket consumed yet" semantics the fraction formula
-		// needs.
-		writeCumAt := func(offset string) {
-			writeCum()
-			b.writeSQL("[")
-			writeIdx()
-			b.writeSQL(offset)
-			b.writeSQL("]")
-		}
-		writeNLen := func() {
-			Call("length", Col(nbc))(b)
-		}
-		writePLen := func() {
-			Call("length", Col(pbc))(b)
-		}
-		// Zero-bucket upper edge. With a configured ZeroThreshold
-		// column the edge is the stored per-row value; an empty
-		// column name means the physical schema doesn't persist the
-		// OTLP zero_threshold (the upstream OTel-CH DDL doesn't) and
-		// the zero bucket collapses to a point at 0.
-		writeZt := func() {
-			if zt == "" {
-				b.writeSQL("0.")
-				return
-			}
-			b.Ident(zt)
-		}
-		// fraction = (target - cum[idx-1]) / (cum[idx] - cum[idx-1]).
-		// target = phi * total.
-		writeFraction := func() {
-			b.writeSQL("((")
-			writePhiLit(b)
-			b.writeSQL(" * ")
-			writeTotal()
-			b.writeSQL(") - ")
-			writeCumAt(" - 1")
-			b.writeSQL(") / (")
-			writeCumAt("")
-			b.writeSQL(" - ")
-			writeCumAt(" - 1")
-			b.writeSQL(")")
-		}
+		w := newHQNativeWriters(h, b)
 
 		// Outer chain:
 		//   if(total = 0, nan,
@@ -260,45 +149,45 @@ func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative) Frag {
 		// existing fixtures stay byte-stable.
 		if h.PhiExpr != nil {
 			b.writeSQL("if(isNaN(")
-			writePhiLit(b)
+			w.phi()
 			b.writeSQL("), nan, ")
 		}
 		// if(total = 0, nan, ...
 		b.writeSQL("if(")
-		writeTotal()
+		w.total()
 		b.writeSQL(" = 0, nan, ")
 		// if(phi <= 0, if(nlen > 0, -pow(base, no + nlen), 0.0), ...
 		b.writeSQL("if(")
-		writePhiLit(b)
+		w.phi()
 		b.writeSQL(" <= 0, if(")
-		writeNLen()
+		w.nLen()
 		b.writeSQL(" > 0, -pow(")
-		writeBase()
+		w.base()
 		b.writeSQL(", ")
 		b.Ident(no)
 		b.writeSQL(" + ")
-		writeNLen()
+		w.nLen()
 		b.writeSQL("), 0.0), ")
 		// if(phi >= 1, <upper edge>, ...
 		// upper edge:
 		//   if(plen > 0, pow(base, po + plen),
 		//      if(zc > 0, zt, -pow(base, no)))
 		b.writeSQL("if(")
-		writePhiLit(b)
+		w.phi()
 		b.writeSQL(" >= 1, if(")
-		writePLen()
+		w.pLen()
 		b.writeSQL(" > 0, pow(")
-		writeBase()
+		w.base()
 		b.writeSQL(", ")
 		b.Ident(po)
 		b.writeSQL(" + ")
-		writePLen()
+		w.pLen()
 		b.writeSQL("), if(")
 		b.Ident(zc)
 		b.writeSQL(" > 0, ")
-		writeZt()
+		w.zt()
 		b.writeSQL(", -pow(")
-		writeBase()
+		w.base()
 		b.writeSQL(", ")
 		b.Ident(no)
 		b.writeSQL("))), ")
@@ -306,19 +195,19 @@ func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative) Frag {
 		// negative interp:
 		//   -pow(base, no + (nlen - idx) + 1 - fraction)
 		b.writeSQL("if(")
-		writeIdx()
+		w.idx()
 		b.writeSQL(" <= ")
-		writeNLen()
+		w.nLen()
 		b.writeSQL(", -pow(")
-		writeBase()
+		w.base()
 		b.writeSQL(", ")
 		b.Ident(no)
 		b.writeSQL(" + (")
-		writeNLen()
+		w.nLen()
 		b.writeSQL(" - ")
-		writeIdx()
+		w.idx()
 		b.writeSQL(") + 1 - ")
-		writeFraction()
+		w.fraction()
 		b.writeSQL("), ")
 		// if(idx = nlen + 1, <zero interp>, <positive interp>)
 		// zero interp:
@@ -326,25 +215,25 @@ func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative) Frag {
 		// positive interp:
 		//   pow(base, po + (idx - nlen - 2) + fraction)
 		b.writeSQL("if(")
-		writeIdx()
+		w.idx()
 		b.writeSQL(" = ")
-		writeNLen()
+		w.nLen()
 		b.writeSQL(" + 1, -")
-		writeZt()
+		w.zt()
 		b.writeSQL(" + 2 * ")
-		writeZt()
+		w.zt()
 		b.writeSQL(" * ")
-		writeFraction()
+		w.fraction()
 		b.writeSQL(", pow(")
-		writeBase()
+		w.base()
 		b.writeSQL(", ")
 		b.Ident(po)
 		b.writeSQL(" + (")
-		writeIdx()
+		w.idx()
 		b.writeSQL(" - ")
-		writeNLen()
+		w.nLen()
 		b.writeSQL(" - 2) + ")
-		writeFraction()
+		w.fraction()
 		b.writeSQL("))")
 		// Close: if(idx=nlen+1), if(idx<=nlen), if(phi>=1), if(phi<=0), if(total=0)
 		b.writeSQL("))))")
@@ -353,4 +242,154 @@ func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative) Frag {
 			b.writeSQL(")")
 		}
 	}
+}
+
+// hqNativeWriters bundles the per-row SQL sub-expression writers the
+// native quantile value fragment composes, bound to one Builder
+// invocation. Extracted from histogramQuantileNativeValueFrag so the
+// fragment body stays focused on the if() chain layout.
+type hqNativeWriters struct {
+	phi      func()
+	base     func()
+	cum      func()
+	total    func()
+	idx      func()
+	cumAt    func(offset string)
+	nLen     func()
+	pLen     func()
+	zt       func()
+	fraction func()
+}
+
+func newHQNativeWriters(h *chplan.HistogramQuantileNative, b *Builder) hqNativeWriters {
+	pbc := h.PositiveBucketCountsColumn
+	nbc := h.NegativeBucketCountsColumn
+	scale := h.ScaleColumn
+	zc := h.ZeroCountColumn
+	zt := h.ZeroThresholdColumn
+	var w hqNativeWriters
+
+	// phi renders the parameter: the computed expression when PhiExpr
+	// is set (typically a scalar subquery — CH folds it as a
+	// constant), the inline literal otherwise.
+	w.phi = func() {
+		if h.PhiExpr != nil {
+			_ = b.Expr(h.PhiExpr)
+			return
+		}
+		b.writeSQL(formatFloat(h.Phi))
+	}
+	// base = pow(2, pow(2, -Scale)). Re-rendered inline at each
+	// use; CH's planner CSEs. Inline literal `2` and array-literal
+	// `[col]` have no typed Frag (no inline-int / array-literal
+	// helpers), so the in-package b.writeSQL path is kept for the
+	// shape's outer layout; the inner pow/arrayCumSum/arrayReverse
+	// function shells use typed Call where they would otherwise
+	// duplicate "fn(" + ... + ")" string fragments.
+	w.base = func() {
+		b.writeSQL("pow(2, pow(2, -")
+		b.Ident(scale)
+		b.writeSQL("))")
+	}
+	// cum = arrayCumSum(arrayConcat(
+	//         arrayReverse(NegativeBucketCounts),
+	//         [ZeroCount],
+	//         PositiveBucketCounts)).
+	// arrayReverse on an empty array yields [], so the walk
+	// collapses to the Phase 1 shape when NegativeBucketCounts
+	// is empty.
+	cumBody := func(b *Builder) {
+		b.writeSQL("arrayConcat(")
+		Call("arrayReverse", Col(nbc))(b)
+		b.writeSQL(", [")
+		b.Ident(zc)
+		b.writeSQL("], ")
+		b.Ident(pbc)
+		b.writeSQL(")")
+	}
+	w.cum = func() {
+		Call("arrayCumSum", cumBody)(b)
+	}
+	// total = cum[length(cum)] — last element of cum.
+	w.total = func() {
+		w.cum()
+		b.writeSQL("[")
+		Call("length", func(b *Builder) { w.cum() })(b)
+		b.writeSQL("]")
+	}
+	// idx = arrayFirstIndex(c -> c >= phi*total, cum).
+	// Lambda body uses bound var `c`; Builder.Lambda emits "(c) ->"
+	// which drifts vs. "c ->" output, so the in-package writeSQL
+	// path is kept here.
+	// Computed phi: wrap the lambda predicate as `if(<cmp>, 1, 0) = 1`
+	// — CH 24.8 rejects a scalar subquery anywhere in
+	// arrayFirstIndex's argument tree with ILLEGAL_COLUMN (see the
+	// classic emitter's writeIdx for the full rationale). The
+	// literal path keeps the bare comparison (byte-stable fixtures).
+	w.idx = func() {
+		b.writeSQL("arrayFirstIndex(c -> ")
+		if h.PhiExpr != nil {
+			b.writeSQL("(if(")
+		}
+		b.writeSQL("c >= (")
+		w.phi()
+		b.writeSQL(" * ")
+		w.total()
+		b.writeSQL(")")
+		if h.PhiExpr != nil {
+			b.writeSQL(", 1, 0) = 1)")
+		}
+		b.writeSQL(", ")
+		w.cum()
+		b.writeSQL(")")
+	}
+	// cum[idx + offset]. offset is a string fragment like " - 1"
+	// or "" — caller-supplied so the same helper covers cum[idx]
+	// (offset="") and cum[idx-1] (offset=" - 1"). idx=1 with
+	// offset=" - 1" indexes cum[0], which CH evaluates to the
+	// array element's default (0) — matches the
+	// "no bucket consumed yet" semantics the fraction formula
+	// needs.
+	w.cumAt = func(offset string) {
+		w.cum()
+		b.writeSQL("[")
+		w.idx()
+		b.writeSQL(offset)
+		b.writeSQL("]")
+	}
+	w.nLen = func() {
+		Call("length", Col(nbc))(b)
+	}
+	w.pLen = func() {
+		Call("length", Col(pbc))(b)
+	}
+	// Zero-bucket upper edge. With a configured ZeroThreshold
+	// column the edge is the stored per-row value; an empty
+	// column name means the physical schema doesn't persist the
+	// OTLP zero_threshold (the upstream OTel-CH DDL doesn't) and
+	// the zero bucket collapses to a point at 0.
+	w.zt = func() {
+		if zt == "" {
+			b.writeSQL("0.")
+			return
+		}
+		b.Ident(zt)
+	}
+	// fraction = (target - cum[idx-1]) / (cum[idx] - cum[idx-1]).
+	// target = phi * total.
+	w.fraction = func() {
+		b.writeSQL("((")
+		w.phi()
+		b.writeSQL(" * ")
+		w.total()
+		b.writeSQL(") - ")
+		w.cumAt(" - 1")
+		b.writeSQL(") / (")
+		w.cumAt("")
+		b.writeSQL(" - ")
+		w.cumAt(" - 1")
+		b.writeSQL(")")
+	}
+
+	return w
 }
