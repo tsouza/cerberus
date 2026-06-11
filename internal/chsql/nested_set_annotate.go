@@ -62,42 +62,48 @@ const nestedSetPathElemWidth = 40
 //	  WITH RECURSIVE `_cerberus_ns_paths` AS (
 //	    SELECT `TraceId`, `SpanId`, `ParentSpanId`, <elem> AS `_path`
 //	      FROM `otel_traces`
-//	     WHERE `ParentSpanId` = '' AND `TraceId` IN (SELECT `TraceId` FROM (<input>))
+//	     WHERE `ParentSpanId` = '' AND `TraceId` IN <trace-scope>
+//	           -- <trace-scope> = traceScopeFrag(input): a cheap
+//	           -- superset of the input's trace ids, NOT a re-render
+//	           -- of <input> (see traceScopeFrag)
 //	    UNION ALL
 //	    SELECT t.`TraceId`, t.`SpanId`, t.`ParentSpanId`, concat(c.`_path`, <elem(t)>)
 //	      FROM `otel_traces` AS t
 //	      INNER JOIN `_cerberus_ns_paths` AS c
 //	        ON t.`TraceId` = c.`TraceId` AND t.`ParentSpanId` = c.`SpanId`
 //	  )
-//	  SELECT `TraceId`, `_node`.2 AS `SpanId`,
-//	         <2·pre − depth>                          AS `_ns_left`,
-//	         <left + 2·subtreeSize − 1>               AS `_ns_right`,
-//	         <−1 for roots, else parent's left bound> AS `_ns_parent`
-//	  FROM (SELECT `TraceId`,
-//	               arraySort(groupArray((`_path`, `SpanId`, `ParentSpanId`))) AS `_nodes`,
-//	               arrayMap(x -> x.1, `_nodes`) AS `_paths`
-//	          FROM `_cerberus_ns_paths` GROUP BY `TraceId`)
-//	  ARRAY JOIN `_nodes` AS `_node`, arrayEnumerate(`_nodes`) AS `_pre`
+//	  SELECT `TraceId`, `SpanId`,
+//	         <rank of entry event>                       AS `_ns_left`,
+//	         <rank of exit event>                        AS `_ns_right`,
+//	         <−1 for roots, else parent's entry rank>    AS `_ns_parent`
+//	  FROM (<per-span entry/exit/parent-lookup events, ranked by two
+//	         window passes — see buildNestedSetNumbering>)
+//	  GROUP BY `TraceId`, `SpanId`
 //	) AS ns ON m.`TraceId` = ns.`TraceId` AND m.`SpanId` = ns.`SpanId`
 //
-// The arithmetic: with `pre` the 1-based DFS pre-order rank inside the
-// trace (paths sort lexicographically; fixed-width elements make the
-// sort a true tree pre-order), `depth` the path element count, and
-// `size` the subtree span count (path-prefix count),
+// The numbering: each span contributes an entry event (key `_path`)
+// and an exit event (key `_path` + '~'); lexicographic key order over
+// the digit-only fixed-width paths is exactly the DFS entry/exit
+// event order, so the per-trace running count of those events IS the
+// nested-set position — left = rank(entry), right = rank(exit),
+// parent = rank(parent's entry), materialising Tempo's two-pointer
+// walk as an event sequence (linear in span count; see
+// buildNestedSetNumbering for the full derivation and why join-free /
+// single-CTE-reference / non-quadratic are each load-bearing).
 //
-//	left  = 2·pre − depth          (entries before it: pre−1; exits
-//	                                before it: pre−1 − (depth−1))
-//	right = left + 2·size − 1      (the subtree consumes 2·size slots)
-//	parent.left = 2·parentPre − (depth−1), parentPre by path prefix
-//
-// which reproduces Tempo's two-pointer walk without materialising the
-// event sequence.
-//
-// The <input> subquery is rendered twice (FROM arm + the trace-id
-// scope of the CTE anchor). ClickHouse does not share subquery results
-// across those two sites, so inputs that are themselves expensive
-// (structural joins) are evaluated twice — correctness-first; the
-// numbering walk itself is bounded by the spans of the matched traces.
+// The <input> subquery is rendered exactly ONCE (the FROM arm). The
+// trace-id scope of the CTE anchor deliberately does NOT re-render it:
+// ClickHouse evaluates every reference to a subquery — including a
+// WITH CTE, which 24.8 inlines per use site — independently, so a
+// second rendering of an expensive input (structural joins carry
+// their own recursive closures; mixed `||` unions dedup wide rows)
+// doubles its evaluation and blew past the #756 per-query memory cap
+// on the Traces Drilldown structure-tab query. Instead the anchor is
+// scoped by traceScopeFrag: a cheap plan-derived SUPERSET of the
+// input's trace ids (joins / unions decompose into their leaf scans).
+// Extra traces in the scope only add rows to the numbering side that
+// the LEFT JOIN never matches — output rows are identical, and the
+// walk stays bounded by the leaf scans' matched traces.
 func (e *emitter) emitNestedSetAnnotate(n *chplan.NestedSetAnnotate) error {
 	if n.SpansTable == "" || n.TraceIDColumn == "" || n.SpanIDColumn == "" ||
 		n.ParentSpanIDColumn == "" || n.TimestampColumn == "" {
@@ -108,8 +114,12 @@ func (e *emitter) emitNestedSetAnnotate(n *chplan.NestedSetAnnotate) error {
 	if err != nil {
 		return err
 	}
+	scope, err := e.traceScopeFrag(n.Input, n.TraceIDColumn)
+	if err != nil {
+		return err
+	}
 
-	numbering := buildNestedSetNumbering(n, inputSub)
+	numbering := buildNestedSetNumbering(n, scope)
 
 	aliasedNS := func(nsCol, outCol string) Frag {
 		return func(b *Builder) {
@@ -140,8 +150,10 @@ func (e *emitter) emitNestedSetAnnotate(n *chplan.NestedSetAnnotate) error {
 
 // buildNestedSetNumbering assembles the numbering subquery: the
 // recursive path CTE plus the per-trace ARRAY JOIN that converts
-// sorted DFS paths into (SpanId, left, right, parent) rows.
-func buildNestedSetNumbering(n *chplan.NestedSetAnnotate, inputSub Frag) *QueryBuilder {
+// sorted DFS paths into (SpanId, left, right, parent) rows. scope is
+// a parenthesised single-column SELECT (from traceScopeFrag) bounding
+// which traces the walk numbers.
+func buildNestedSetNumbering(n *chplan.NestedSetAnnotate, scope Frag) *QueryBuilder {
 	// One fixed-width path element for the span row `qual` qualifies
 	// (empty qual = bare column references in the anchor SELECT).
 	pathElem := func(qual string) Frag {
@@ -170,11 +182,8 @@ func buildNestedSetNumbering(n *chplan.NestedSetAnnotate, inputSub Frag) *QueryB
 			b.Ident(n.ParentSpanIDColumn)
 			b.writeSQL(" = '' AND ")
 			b.Ident(n.TraceIDColumn)
-			b.writeSQL(" IN (SELECT ")
-			b.Ident(n.TraceIDColumn)
-			b.writeSQL(" FROM ")
-			inputSub(b)
-			b.writeSQL(")")
+			b.writeSQL(" IN ")
+			scope(b)
 		})
 
 	// Recursive step: append one path element per child level.
@@ -203,39 +212,177 @@ func buildNestedSetNumbering(n *chplan.NestedSetAnnotate, inputSub Frag) *QueryB
 		)
 
 	w := strconv.Itoa(nestedSetPathElemWidth)
-	// depth = path length in elements; recomputed inline at each use
-	// site (CH disallows alias references inside sibling SELECT
-	// expressions on some analyzer paths).
-	depth := "intDiv(length(`_node`.1), " + w + ")"
 
-	perTrace := NewQuery().
+	// The numbering is computed as the rank of each span's ENTRY and
+	// EXIT event in the per-trace DFS event sequence — literally
+	// Tempo's two-pointer walk, recovered from the sorted paths:
+	//
+	//   - entry event key  = `_path`
+	//   - exit  event key  = concat(`_path`, '~')
+	//
+	// Paths are digit-only (zero-padded decimal), and '~' (0x7E) sorts
+	// after every digit, so lexicographic order of the event keys IS
+	// the DFS event order: a node's exit key sorts after every entry /
+	// exit key of its subtree (longer digit prefix < '~') and before
+	// its parent's exit and its later siblings' entries. The running
+	// count of entry/exit events (window sum per trace) is therefore
+	// exactly the nested-set position: rank(entry) = left, rank(exit)
+	// = right.
+	//
+	// The parent's left bound rides the same pass: each non-root span
+	// adds a PARENT-LOOKUP event keyed by its parent's path, ordered
+	// just after that parent's entry event (`_etype` 1 between entry 0
+	// and exit 2; lookup events do not advance the running count). A
+	// second window (first_value over the (trace, key) partition)
+	// hands every lookup event the entry rank of the node that owns
+	// the key — i.e. the parent's left bound. Roots emit no lookup
+	// event (the empty-key filter) and resolve to -1 in the final
+	// aggregation.
+	//
+	// Shape rationale (all three constraints are load-bearing):
+	//   - `_cerberus_ns_paths` is referenced exactly ONCE. CH 24.8
+	//     re-evaluates a recursive CTE at every reference (verified:
+	//     3 references = 3× read_rows), so any join-back / multi-read
+	//     formulation re-runs the whole recursion.
+	//   - No per-node scan of the trace's path list. Both the previous
+	//     ARRAY JOIN shape (per-trace `_paths` array replicated onto
+	//     every span row) and an arrayMap/arrayCount reformulation
+	//     (captured `_paths` replicated per lambda element) are
+	//     quadratic per trace; at compose-smoke scale (~150k
+	//     self-telemetry spans) ArrayJoinTransform / FUNCTION arrayMap
+	//     attempted single 1 GiB chunks and tripped the #756 cap.
+	//   - Event rows are narrow (ids + key + type) and everything is
+	//     a window sort + hash aggregation: linear in span count.
+	events := NewQuery().
 		Select(
 			Col(n.TraceIDColumn),
-			verbatim("arraySort(groupArray((`_path`, "+quoteIdent(n.SpanIDColumn)+", "+quoteIdent(n.ParentSpanIDColumn)+"))) AS `_nodes`"),
-			verbatim("arrayMap(x -> x.1, `_nodes`) AS `_paths`"),
+			Col(n.SpanIDColumn),
+			verbatim("`_ev`.1 AS `_ekey`"),
+			verbatim("`_ev`.2 AS `_etype`"),
 		).
-		From(verbatim("`_cerberus_ns_paths`")).
-		GroupBy(Col(n.TraceIDColumn))
+		From(verbatim("`_cerberus_ns_paths` ARRAY JOIN arrayFilter(e -> NOT (e.2 = 1 AND e.1 = ''), [(`_path`, 0), (concat(`_path`, '~'), 2), (substring(`_path`, 1, length(`_path`) - " + w + "), 1)]) AS `_ev`"))
+
+	ranked := NewQuery().
+		Select(
+			Col(n.TraceIDColumn),
+			Col(n.SpanIDColumn),
+			Col("_ekey"),
+			Col("_etype"),
+			verbatim("sum(`_etype` != 1) OVER (PARTITION BY "+quoteIdent(n.TraceIDColumn)+" ORDER BY `_ekey` ASC, `_etype` ASC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS `_erank`"),
+		).
+		From(events.Frag())
+
+	keyed := NewQuery().
+		Select(
+			Col(n.TraceIDColumn),
+			Col(n.SpanIDColumn),
+			Col("_etype"),
+			Col("_erank"),
+			verbatim("first_value(`_erank`) OVER (PARTITION BY "+quoteIdent(n.TraceIDColumn)+", `_ekey` ORDER BY `_etype` ASC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS `_keyrank`"),
+		).
+		From(ranked.Frag())
 
 	return NewQuery().
 		WithRecursive("_cerberus_ns_paths", anchor, step).
 		Select(
 			Col(n.TraceIDColumn),
-			func(b *Builder) {
-				b.writeSQL("`_node`.2 AS ")
-				b.Ident(n.SpanIDColumn)
-			},
-			verbatim("toInt64(2 * `_pre` - "+depth+") AS `_ns_left`"),
-			verbatim("toInt64(2 * `_pre` - "+depth+" + 2 * arrayCount(p -> startsWith(p, `_node`.1), `_paths`) - 1) AS `_ns_right`"),
-			verbatim("if(`_node`.3 = '', toInt64(-1), toInt64(2 * indexOf(`_paths`, substring(`_node`.1, 1, length(`_node`.1) - "+w+")) - "+depth+" + 1)) AS `_ns_parent`"),
+			Col(n.SpanIDColumn),
+			verbatim("toInt64(maxIf(`_erank`, `_etype` = 0)) AS `_ns_left`"),
+			verbatim("toInt64(maxIf(`_erank`, `_etype` = 2)) AS `_ns_right`"),
+			verbatim("if(countIf(`_etype` = 1) = 0, toInt64(-1), toInt64(maxIf(`_keyrank`, `_etype` = 1))) AS `_ns_parent`"),
 		).
-		From(func(b *Builder) {
-			b.writeSQL("(")
-			sql, args := perTrace.Build()
-			b.writeSQL(sql)
-			b.args = append(b.args, args...)
-			b.writeSQL(") ARRAY JOIN `_nodes` AS `_node`, arrayEnumerate(`_nodes`) AS `_pre`")
-		})
+		From(keyed.Frag()).
+		GroupBy(Col(n.TraceIDColumn), Col(n.SpanIDColumn))
+}
+
+// traceScopeFrag derives the numbering walk's trace-id scope from the
+// annotate input plan: a Frag rendering a parenthesised SELECT whose
+// single column covers a SUPERSET of the trace ids in n's output —
+// without re-evaluating the expensive interior of the plan.
+//
+// Superset is sufficient: the scope only bounds which traces the
+// recursive walk numbers, and the outer LEFT JOIN discards numbering
+// rows for traces the input never produced — the annotated output is
+// row-for-row identical for any scope ⊇ traces(input). That freedom
+// is what lets the derivation skip the input's expensive interior:
+//
+//   - SetOperation — every output row comes from one of the two arms,
+//     so traces(out) ⊆ traces(L) ∪ traces(R): UNION ALL the arm scopes
+//     (set-semantics IN makes duplicates free), skipping the
+//     wide-row UNION DISTINCT / INTERSECT dedup.
+//   - StructuralJoin — every emitted span row originates in one of the
+//     two arms (which arm depends on the op: `>>` keeps R matches,
+//     negated forms keep the non-matching side, union-prefixed forms
+//     keep both), so traces(out) ⊆ traces(L) ∪ traces(R) for every op:
+//     UNION ALL the arm scopes, skipping the recursive closure walk
+//     entirely — the second closure evaluation is what tipped the
+//     Drilldown structure-tab query past the per-query memory cap.
+//   - Project that passes TraceIDColumn through bare — projection
+//     never changes the trace set: recurse into the input.
+//   - Limit — dropping the limit only widens the set: recurse.
+//   - anything else (Filter over Scan is the leaf shape) — exact:
+//     `(SELECT <tid> FROM <node>)`, same as the input re-render the
+//     scope replaces, but on plans where it is just a pruned scan.
+func (e *emitter) traceScopeFrag(n chplan.Node, traceIDCol string) (Frag, error) {
+	switch t := n.(type) {
+	case *chplan.SetOperation:
+		return e.unionTraceScopeFrag(t.Left, t.Right, traceIDCol)
+	case *chplan.StructuralJoin:
+		return e.unionTraceScopeFrag(t.Left, t.Right, traceIDCol)
+	case *chplan.Limit:
+		return e.traceScopeFrag(t.Input, traceIDCol)
+	case *chplan.Project:
+		if projectsBareColumn(t, traceIDCol) {
+			return e.traceScopeFrag(t.Input, traceIDCol)
+		}
+	}
+	sub, err := e.subqueryFrag(n)
+	if err != nil {
+		return nil, err
+	}
+	return func(b *Builder) {
+		b.writeSQL("(SELECT ")
+		b.Ident(traceIDCol)
+		b.writeSQL(" FROM ")
+		sub(b)
+		b.writeSQL(")")
+	}, nil
+}
+
+// unionTraceScopeFrag renders `(<scope(left)> UNION ALL <scope(right)>)`
+// — the union of the two arms' trace-id scopes.
+func (e *emitter) unionTraceScopeFrag(left, right chplan.Node, traceIDCol string) (Frag, error) {
+	l, err := e.traceScopeFrag(left, traceIDCol)
+	if err != nil {
+		return nil, err
+	}
+	r, err := e.traceScopeFrag(right, traceIDCol)
+	if err != nil {
+		return nil, err
+	}
+	return func(b *Builder) {
+		b.writeSQL("(")
+		l(b)
+		b.writeSQL(" UNION ALL ")
+		r(b)
+		b.writeSQL(")")
+	}, nil
+}
+
+// projectsBareColumn reports whether p projects col through unchanged:
+// a bare unqualified ColumnRef of that name, unaliased or aliased to
+// itself.
+func projectsBareColumn(p *chplan.Project, col string) bool {
+	for _, proj := range p.Projections {
+		ref, ok := proj.Expr.(*chplan.ColumnRef)
+		if !ok || ref.Name != col || ref.Qualifier != "" {
+			continue
+		}
+		if proj.Alias == "" || proj.Alias == col {
+			return true
+		}
+	}
+	return false
 }
 
 // writeOptQualCol writes `<qual>.<col>` when qual is non-empty, bare
