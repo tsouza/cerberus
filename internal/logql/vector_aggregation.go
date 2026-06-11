@@ -15,16 +15,16 @@ import (
 // excluded ones for `without`), apply the aggregator on the inner
 // stream's `value` column.
 //
-// `topk` / `bottomk` change output shape (K rows per group) and route
-// to [lowerTopK]; `sort` / `sort_desc` reorder rather than aggregate
-// and route to [lowerSort].
+// `topk` / `bottomk` / `approx_topk` change output shape (K rows per
+// group) and route to [lowerTopK]; `sort` / `sort_desc` reorder rather
+// than aggregate and route to [lowerSort].
 func lowerVectorAggregation(e *syntax.VectorAggregationExpr, s schema.Logs, lc lowerCtx) (chplan.Node, error) {
 	if e.Left == nil {
 		return nil, fmt.Errorf("logql: vector-aggregation has nil inner")
 	}
 
 	switch e.Operation {
-	case syntax.OpTypeTopK, syntax.OpTypeBottomK:
+	case syntax.OpTypeTopK, syntax.OpTypeBottomK, syntax.OpTypeApproxTopK:
 		return lowerTopK(e, s, lc)
 	case syntax.OpTypeSort, syntax.OpTypeSortDesc:
 		return lowerSort(e, s, lc)
@@ -236,10 +236,11 @@ func canonicalLevelKeys(groups []string) []string {
 	return out
 }
 
-// lowerTopK lowers LogQL `topk(K, expr)` / `bottomk(K, expr)` —
-// optionally with `by (...)` / `without (...)` partitioning — into a
-// chplan.TopK over the Sample-shaped inner plan. Mirrors PromQL's
-// lowerTopK (internal/promql/lower.go).
+// lowerTopK lowers LogQL `topk(K, expr)` / `bottomk(K, expr)` /
+// `approx_topk(K, expr)` — optionally with `by (...)` / `without (...)`
+// partitioning (topk/bottomk only; approx_topk forbids grouping at the
+// parser) — into a chplan.TopK over the Sample-shaped inner plan.
+// Mirrors PromQL's lowerTopK (internal/promql/lower.go).
 //
 // Reference semantics (pkg/logql/evaluator.go::VectorAggEvaluator,
 // OpTypeTopK / OpTypeBottomK arms): per evaluation step and per
@@ -248,6 +249,17 @@ func canonicalLevelKeys(groups []string) []string {
 // label set; the grouping only partitions, it never projects labels.
 // The parser guarantees K > 0 (mustNewVectorAggregationExpr rejects
 // `topk(0, ...)` with "must be greater than 0").
+//
+// `approx_topk(K, expr)` is Loki's probabilistic top-k: upstream
+// approximates the K largest series via a count-min sketch + heap
+// because the candidate set can be too large to sort exactly at query
+// time. Over ClickHouse cerberus has no such constraint, so it computes
+// the EXACT top-K — a correctness superset of the approximation (the
+// caller gets the true K largest series, never a sketch artefact).
+// approx_topk therefore routes through the identical descending-top-K
+// lowering as `topk`; the parser forbids its grouping clause and
+// defaults a non-nil empty Grouping, so [topKPartition] yields the
+// single global K-window upstream's ungrouped approx_topk produces.
 //
 // The inner plan is re-shaped to the canonical Sample contract first
 // ([sampleShapeOverLogInner]) so the partition keys resolve against
@@ -271,8 +283,11 @@ func lowerTopK(e *syntax.VectorAggregationExpr, s schema.Logs, lc lowerCtx) (chp
 		K:        int64(e.Params),
 		By:       by,
 		SortExpr: &chplan.ColumnRef{Name: rangeAggSynthValueColumn},
-		Desc:     e.Operation == syntax.OpTypeTopK,
-		Columns:  []string{"MetricName", "Attributes", "TimeUnix", rangeAggSynthValueColumn},
+		// topk + approx_topk keep the LARGEST K (descending); bottomk
+		// keeps the smallest. approx_topk is exact-top-k here (see
+		// lowerTopK doc), so it shares topk's descending sort.
+		Desc:    e.Operation == syntax.OpTypeTopK || e.Operation == syntax.OpTypeApproxTopK,
+		Columns: []string{"MetricName", "Attributes", "TimeUnix", rangeAggSynthValueColumn},
 	}, nil
 }
 
