@@ -689,6 +689,12 @@
     },
     {
       "head": "promql",
+      "site": "internal/promql/sort.go:lowerSort#749adc13",
+      "message": "promql: %s expects 1 argument, got %d",
+      "class": ""
+    },
+    {
+      "head": "promql",
       "site": "internal/promql/subquery.go:buildSubqueryAggFunc#534fdfbe",
       "message": "promql: subquery over %s aggregation is not supported",
       "class": "internal",
