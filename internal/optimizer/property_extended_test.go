@@ -15,15 +15,14 @@
 //   - FilterFusion: collapses Filter(Filter) → Filter
 //   - ConstantFoldSemantic: collapses literal arithmetic
 //   - ConstantFoldHeuristic: collapses boolean identities
-//   - FilterProjectTranspose: moves Filter under Project
+//   - ProjectionPushdown: narrows Scan.Columns
 //
-// The other three rules (FilterAggregateTranspose, FilterRangeWindowTranspose,
-// MVSubstitution) need richer seed data (multi-series Aggregate inputs,
-// pre-aggregated rollup tables) to round-trip meaningfully — those
-// rules are covered by the existing TXTAR fixture suite and the
-// optimizer_test.go integration test (which checks SQL output but not
-// row-set equivalence). The decision_pins_test.go file adds plan-shape
-// pins for those rules.
+// The transpose rules (FilterAggregateTranspose, FilterRangeWindowTranspose)
+// need richer seed data (multi-series Aggregate inputs, windowed shapes)
+// to round-trip meaningfully — those rules are covered by the existing
+// TXTAR fixture suite and the optimizer_test.go integration test (which
+// checks SQL output but not row-set equivalence). The decision_pins_test.go
+// file adds plan-shape pins for those rules.
 //
 // Why drive per-rule rather than reuse property_test's "full pipeline"
 // generator? Per-rule tests can pin equivalence even if a future Default()
@@ -195,56 +194,6 @@ func TestPropertyConstantFoldHeuristic_RowSetEquivalent(t *testing.T) {
 				Op:    id.op,
 				Left:  &chplan.LitBool{V: id.lit},
 				Right: leaf,
-			},
-		})
-
-		pre, errPre := runPlan(ctx, db, plan)
-		if errPre != nil {
-			t.Logf("iter=%d skip pre err=%v", i, errPre)
-			continue
-		}
-		post, errPost := runPlan(ctx, db, d.Run(ctx, plan))
-		if errPost != nil {
-			t.Fatalf("iter=%d post-opt broke:\n%s\nerr=%v", i, dumpPlan(plan), errPost)
-		}
-		if !rowsetEqual(pre, post) {
-			t.Fatalf("iter=%d row-set diverged\nplan: %s\npre: %s\npost: %s", i, dumpPlan(plan), dumpRows(pre), dumpRows(post))
-		}
-	}
-}
-
-// TestPropertyFilterProjectTranspose_RowSetEquivalent: build a
-// Filter(Project([X], Scan)) where the predicate references the
-// passthrough column X. The rule moves the Filter under the Project.
-// Pre/post row sets must match.
-func TestPropertyFilterProjectTranspose_RowSetEquivalent(t *testing.T) {
-	const N = 10
-	rng := rand.New(rand.NewSource(20260517))
-
-	db := seedPropertyDB(t)
-
-	ctx := context.Background()
-	d := optimizer.New(optimizer.FilterProjectTranspose())
-
-	for i := 0; i < N; i++ {
-		// Always include "MetricName" so the predicate has a
-		// guaranteed passthrough target.
-		projs := []chplan.Projection{
-			{Expr: &chplan.ColumnRef{Name: "MetricName"}},
-		}
-		// Optionally include Value too.
-		if rng.Intn(2) == 0 {
-			projs = append(projs, chplan.Projection{Expr: &chplan.ColumnRef{Name: "Value"}})
-		}
-		plan := chplan.Node(&chplan.Filter{
-			Input: &chplan.Project{
-				Input:       &chplan.Scan{Table: propertyTable},
-				Projections: projs,
-			},
-			Predicate: &chplan.Binary{
-				Op:    chplan.OpEq,
-				Left:  &chplan.ColumnRef{Name: "MetricName"},
-				Right: &chplan.LitString{V: propertyMetricNames[rng.Intn(len(propertyMetricNames))]},
 			},
 		})
 

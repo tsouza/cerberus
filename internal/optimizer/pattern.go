@@ -17,8 +17,9 @@ package optimizer
 // function) via a `Bindings` map keyed on the names supplied to `Capture`.
 //
 // The baseline rules (filter-fusion, constant-fold, projection-pushdown)
-// keep their bespoke type-switch shape; the transpose family and
-// MVSubstitution are built on top of `PatternRule`.
+// keep their bespoke type-switch shape; the transpose family
+// (FilterAggregateTranspose, FilterRangeWindowTranspose) is built on top
+// of `PatternRule`.
 
 import (
 	"reflect"

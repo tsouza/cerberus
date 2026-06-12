@@ -7,6 +7,13 @@ import "github.com/tsouza/cerberus/internal/chplan"
 // only the series-identifying columns the RangeWindow exposes
 // unchanged from X.
 //
+// ACTIVE: fires on the current test/spec corpus (measured with the
+// total optimizer walk from #812) — e.g. `max_over_time(topk(0, up)[5m:1m])`,
+// whose `topk(0, …)` lowers to a `Filter(false)` sitting directly above
+// a RangeWindow; this rule pushes that filter under the window. (The
+// Phase-1 perf audit recorded it as non-firing, but that was before
+// #812 made the optimizer walk reach the subquery RangeWindow shape.)
+//
 // Lineage: VictoriaMetrics' `metricsql/optimizer.go` pushdown shape —
 // see https://github.com/VictoriaMetrics/metricsql/blob/master/optimizer.go.
 // The motivating case is `rate(m[5m])` with a downstream label-filter

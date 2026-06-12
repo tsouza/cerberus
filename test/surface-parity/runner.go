@@ -46,7 +46,7 @@ func cerberusVerdictPromQL(query string) (Verdict, string) {
 	if err != nil {
 		return VerdictReject, err.Error()
 	}
-	return emitVerdict(optimizer.DefaultWithSchema(schema.DefaultOTelMetrics()), plan)
+	return emitVerdict(optimizer.Default(), plan)
 }
 
 // cerberusVerdictLogQL runs one LogQL probe through the path the Loki

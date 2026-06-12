@@ -285,9 +285,10 @@ func TestHistogramCompanionColumn(t *testing.T) {
 }
 
 // TestDefaultOTelMetricsRollups pins the canonical OTel sum rollups
-// the upstream exporter writes when rollup tables are enabled. The
-// MV-substitution optimizer rule reads this list to find candidates; if the upstream exporter ships a new rollup window we
-// add it here so the rule picks it up.
+// the upstream exporter writes when rollup tables are enabled. No
+// optimizer rule consumes this registry today (the MV-substitution rule
+// that did was retired in 2026-06); the pin keeps the schema-side
+// contract stable for a future rollup-substitution rule.
 func TestDefaultOTelMetricsRollups(t *testing.T) {
 	t.Parallel()
 	m := DefaultOTelMetrics()

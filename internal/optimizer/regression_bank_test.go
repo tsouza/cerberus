@@ -72,43 +72,6 @@ func TestRegression_MatrixRangeWindow_NotRewrittenByFilterFusion(t *testing.T) {
 	}
 }
 
-// TestRegression_InstantRate_NotMVSubstituted reaffirms the v1
-// conservative carve-out: rate() does NOT commute with a sum-rollup.
-// A future optimizer cut might tempt a contributor to allow it
-// (assuming the rollup's per-bucket reset semantics match Prom's
-// counter-reset detection); the regression bank says NO, and points
-// at the rationale in mv_substitution.go's `commutesWith`.
-func TestRegression_InstantRate_NotMVSubstituted(t *testing.T) {
-	t.Parallel()
-	plan := rangeWindow("rate", time.Hour, 5*time.Minute)
-	out := optimizer.Default().Run(context.Background(), plan)
-	rw, ok := out.(*chplan.RangeWindow)
-	if !ok {
-		t.Fatalf("expected RangeWindow at root, got %T", out)
-	}
-	scan, ok := rw.Input.(*chplan.Scan)
-	if !ok {
-		t.Fatalf("expected Scan child, got %T", rw.Input)
-	}
-	if scan.Table != "otel_metrics_sum" {
-		t.Errorf("rate() must not MV-substitute over sum-rollup; Scan.Table got %q", scan.Table)
-	}
-}
-
-// TestRegression_AvgOverTime_NotMVSubstituted is the same kind of
-// no-mis-rewrite: avg_over_time doesn't compose with a sum-rollup
-// (or an unweighted avg-rollup). v1's commutesWith returns false
-// for it.
-func TestRegression_AvgOverTime_NotMVSubstituted(t *testing.T) {
-	t.Parallel()
-	plan := rangeWindow("avg_over_time", time.Hour, 5*time.Minute)
-	out := optimizer.Default().Run(context.Background(), plan)
-	scan := out.(*chplan.RangeWindow).Input.(*chplan.Scan)
-	if scan.Table != "otel_metrics_sum" {
-		t.Errorf("avg_over_time must not MV-substitute over sum-rollup; Scan.Table got %q", scan.Table)
-	}
-}
-
 // TestRegression_FilterOverAggregate_OutputColumn_NotPushed pins the
 // FilterAggregateTranspose safety carve-out: a predicate on the
 // aggregate output (`sum_value`) refers to a column that doesn't
@@ -200,43 +163,6 @@ func TestRegression_MixedSafeUnsafePredicate_NotPushed(t *testing.T) {
 	}
 }
 
-// TestRegression_FilterOverProject_AliasRename_NotPushed pins that
-// FilterProjectTranspose doesn't push a filter past a rename.
-// `Filter(Project([MetricName AS metric], scan), metric = "up")` ≠
-// `Project([MetricName AS metric], Filter(scan, metric = "up"))` —
-// the alias doesn't exist below the Project.
-func TestRegression_FilterOverProject_AliasRename_NotPushed(t *testing.T) {
-	t.Parallel()
-	plan := &chplan.Filter{
-		Input: &chplan.Project{
-			Input: &chplan.Scan{Table: "otel_metrics_gauge"},
-			Projections: []chplan.Projection{
-				{Expr: &chplan.ColumnRef{Name: "MetricName"}, Alias: "metric"},
-			},
-		},
-		Predicate: labelFilter("metric", "up"),
-	}
-	out := optimizer.Default().Run(context.Background(), plan)
-	if _, ok := out.(*chplan.Filter); !ok {
-		t.Fatalf("expected Filter at root (alias rename has no source-side column); got %T", out)
-	}
-}
-
-// TestRegression_StarProject_FilterNotPushed pins that an empty
-// Projections slice ("SELECT *") declines the FilterProjectTranspose
-// rewrite — the column set is indeterminate at IR level.
-func TestRegression_StarProject_FilterNotPushed(t *testing.T) {
-	t.Parallel()
-	plan := &chplan.Filter{
-		Input:     &chplan.Project{Input: &chplan.Scan{Table: "otel_metrics_gauge"}},
-		Predicate: labelFilter("MetricName", "up"),
-	}
-	out := optimizer.Default().Run(context.Background(), plan)
-	if _, ok := out.(*chplan.Filter); !ok {
-		t.Fatalf("expected Filter at root (SELECT * Project declines the rewrite); got %T", out)
-	}
-}
-
 // TestRegression_AnalyzerSemanticFold_LeavesBoolIdentityAlone pins
 // the analyzer/optimizer split: ConstantFoldSemantic must NOT apply
 // boolean identities. The rule's idempotence verification pass would
@@ -274,27 +200,6 @@ func TestRegression_HeuristicFold_LeavesArithmeticAlone(t *testing.T) {
 	_, changed := optimizer.ConstantFoldHeuristic{}.Apply(plan)
 	if changed {
 		t.Fatalf("ConstantFoldHeuristic must not fold pure-literal arithmetic (that's the semantic flavour's job)")
-	}
-}
-
-// TestRegression_MVSub_GaugeTableNotSubstituted pins safety condition
-// (4): the default rollup registry has no gauge rollups, so the
-// rule must skip a gauge plan even if everything else lines up.
-func TestRegression_MVSub_GaugeTableNotSubstituted(t *testing.T) {
-	t.Parallel()
-	plan := &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
-		Func:            "sum_over_time",
-		Range:           time.Hour,
-		Step:            5 * time.Minute,
-		TimestampColumn: "TimeUnix",
-		ValueColumn:     "Value",
-		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
-	}
-	out := optimizer.Default().Run(context.Background(), plan)
-	scan := out.(*chplan.RangeWindow).Input.(*chplan.Scan)
-	if scan.Table != "otel_metrics_gauge" {
-		t.Errorf("default rollup registry has no gauge rollups; Scan.Table got %q", scan.Table)
 	}
 }
 

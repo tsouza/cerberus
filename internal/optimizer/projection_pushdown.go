@@ -24,11 +24,10 @@ import (
 //     refs(Filter.Predicate); the Filter stays in place between the
 //     Project and the (now-narrowed) Scan.
 //
-// Shape (2) is what `FilterProjectTranspose` produces when it pushes a
-// Filter under a Project — without this widening the
-// `Project(Filter(Scan))` chain is order-dependent against the
-// transpose rule. See `rule_interaction_test.go` Pair 21 for the
-// commutativity check that this widening unlocks.
+// Shape (2) handles the `Project(Filter(Scan))` chain that lowerings
+// emit directly (a projection wrapping a label-filtered scan): without
+// this widening the pushdown would stop at the intervening Filter and
+// leave the Scan reading every column.
 type ProjectionPushdown struct{}
 
 func (ProjectionPushdown) Name() string { return "projection-pushdown" }

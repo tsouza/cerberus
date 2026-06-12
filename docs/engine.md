@@ -225,13 +225,21 @@ and `FixedPoint(n)` (rules that unlock each other; iterates until no
 rule reports a change or `n` iterations have elapsed). The default
 pipeline ships:
 
-| Stage                            | Rules                                                                                              | What it buys                                                                                        |
-| -------------------------------- | -------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| Analyzer — pure-literal fold     | `ConstantFoldSemantic`                                                                             | Downstream rules can assume pure-literal subtrees have collapsed to a single `Lit`                  |
-| Once — heuristic fold            | `ConstantFoldHeuristic`                                                                            | Boolean identity simplification (`true AND X → X`, `false OR X → X`)                                |
-| FixedPoint — predicate pushdown  | `FilterFusion`, `FilterProjectTranspose`, `FilterAggregateTranspose`, `FilterRangeWindowTranspose` | Filters move below projections / aggregates / range windows so CH skip-indexes can fire on a `Scan` |
-| FixedPoint — projection pushdown | `ProjectionPushdown`                                                                               | Late materialisation: wide columns are only resolved after `LIMIT` cuts the row set                 |
-| FixedPoint — MV substitution     | `MVSubstitution`                                                                                   | Swaps `RangeWindow(Scan(otel_metrics_*))` to a pre-aggregated rollup view when the rewrite is safe  |
+| Stage                            | Rules                                                                    | What it buys                                                                          |
+| -------------------------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------- |
+| Analyzer — pure-literal fold     | `ConstantFoldSemantic`                                                   | Downstream rules can assume pure-literal subtrees have collapsed to a single `Lit`    |
+| Once — heuristic fold            | `ConstantFoldHeuristic`                                                  | Boolean identity simplification (`true AND X → X`, `false OR X → X`)                  |
+| FixedPoint — predicate pushdown  | `FilterFusion`, `FilterAggregateTranspose`, `FilterRangeWindowTranspose` | Filters move below aggregates / range windows so CH skip-indexes can fire on a `Scan` |
+| FixedPoint — projection pushdown | `ProjectionPushdown`                                                     | Late materialisation: wide columns are only resolved after `LIMIT` cuts the row set   |
+
+`FilterAggregateTranspose` is retained as speculative correctness
+insurance (0 fires on the current corpus); `FilterRangeWindowTranspose`,
+`FilterFusion`, `ConstantFoldHeuristic`, and `ProjectionPushdown` all
+fire on real queries. Two rules were retired in 2026-06 after the
+optimizer walk was made total (`internal/optimizer/rule.go`):
+`FilterProjectTranspose` (0 fires — no lowering emits `Filter(Project)`)
+and `MVSubstitution` (no rollup roadmap; the default schema shipped no
+live rollups, so the rule was a guaranteed no-op).
 
 The optimiser is gated by termination, decision-pin, rule-interaction,
 property, and gremlins (mutation) tests.

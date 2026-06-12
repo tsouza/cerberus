@@ -47,36 +47,60 @@
 //  1. analyzer.constant-fold-semantic (Analyzer)
 //  2. optimizer.constant-fold-heuristic (Once)
 //  3. optimizer.predicate-pushdown (FixedPoint) — FilterFusion +
-//     FilterProjectTranspose + FilterAggregateTranspose +
-//     FilterRangeWindowTranspose
+//     FilterAggregateTranspose + FilterRangeWindowTranspose
 //  4. optimizer.projection (FixedPoint) — ProjectionPushdown
-//  5. optimizer.mv-substitution (FixedPoint) — MVSubstitution.
-//     Runs last so predicate pushdown has already
-//     surfaced the `RangeWindow(Scan(base))` patterns the rule
-//     matches against. The rule needs a Metrics schema to read its
-//     rollup registry from; Default() binds the default OTel schema,
-//     DefaultWithSchema lets handler wiring override.
 //
 // Each batch's name is prefixed `analyzer.` or `optimizer.` to make
 // the contract obvious in trace logs.
 //
-// # Cost model (mv-substitution)
+// # Which rules fire on the current corpus
 //
-// The MV-substitution batch is the first place cerberus picks among
-// equivalent plans (a rollup-scanned query and a base-scanned query
-// produce the same answer when the substitution is safe). The current
-// cost model is deliberately simple — `firstApplicable`, which
-// picks the first registry-listed rollup that passes the safety
-// conditions — and an unexported `costModel` interface stub so v2
-// can swap in a real estimator (per Jindal VLDB 2018 §4–§6) without
-// touching the rule. See mv_substitution.go for the safety-condition
-// breakdown.
+// Every technique has to earn its place. Measured against the full
+// test/spec corpus (PromQL + LogQL + TraceQL), with the optimizer walk
+// made total across all 26 chplan node types by #812, the active rules
+// are:
+//
+//   - ConstantFoldSemantic (Analyzer) — canonical-form invariant;
+//     fires whenever a lowering emits literal-only arithmetic.
+//   - ConstantFoldHeuristic (Once) — fires (e.g. the TraceQL
+//     `rate() by(kind)` drilldown whose predicate carries
+//     `(... AND true) AND true` above a MetricsAggregate, reachable
+//     only since #812's total walk).
+//   - FilterFusion — fires on adjacent-filter shapes the lowerings
+//     emit (histogram-bucket label filters, matrix-selector chains).
+//   - FilterRangeWindowTranspose — fires (e.g. `topk(0, up)[5m:1m]`,
+//     whose `topk(0,…)` lowers to a `Filter(false)` directly above a
+//     RangeWindow, which the rule pushes under the window).
+//   - ProjectionPushdown — fires broadly (the dominant rewrite, ~100
+//     fixtures: every aggregate / binop / range lowering narrows its
+//     scan column set through this pass).
+//
+// SPECULATIVE (0 fires on the current corpus — kept as cheap
+// correctness insurance, not counted as an active optimization):
+//
+//   - FilterAggregateTranspose — would push a group-key label filter
+//     stacked *above* an Aggregate down beneath it. No current lowering
+//     emits `Filter(Aggregate(…))` with a bare group-key predicate —
+//     PromQL `sum by (job) (m{job="x"})` lowers the `job="x"` matcher
+//     into the scan PREWHERE, not above the aggregate. The rule is
+//     retained so a future lowering that *does* surface a group-key
+//     filter above an aggregate is handled correctly without a
+//     re-derivation. Its unit + rule-interaction tests pin the
+//     behaviour; the cost of keeping it is a no-op pattern probe per
+//     fixpoint iteration.
+//
+// Retired (2026-06): FilterProjectTranspose (0 fires — no lowering
+// emits `Filter(Project(…))`; its only durable contribution was the
+// shared `onlyReferencesPassthrough` helper, hoisted to
+// transpose_shared.go) and MVSubstitution (no rollup roadmap; the
+// default schema shipped no live rollups, so the rule was a guaranteed
+// no-op and is removed rather than carried as dead weight).
 //
 // # File layout
 //
 // Rules ship in their own files (filter_fusion.go, constant_fold.go,
-// projection_pushdown.go, filter_project_transpose.go,
-// filter_aggregate_transpose.go, filter_range_window_transpose.go,
-// mv_substitution.go); the driver + batch + analyzer types live in
+// projection_pushdown.go, filter_aggregate_transpose.go,
+// filter_range_window_transpose.go); the shared transpose helper lives
+// in transpose_shared.go; the driver + batch + analyzer types live in
 // rule.go, batch.go, and analyzer.go.
 package optimizer

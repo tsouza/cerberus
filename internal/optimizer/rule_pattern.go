@@ -19,9 +19,8 @@ import "github.com/tsouza/cerberus/internal/chplan"
 // candidate node is a match.
 //
 // The PatternRule type plus the driver wiring is the canonical shape
-// for new rules. The transpose family (FilterProjectTranspose,
-// FilterAggregateTranspose, FilterRangeWindowTranspose, and MVSubstitution)
-// is built on top.
+// for new rules. The transpose family (FilterAggregateTranspose,
+// FilterRangeWindowTranspose) is built on top.
 type PatternRule struct {
 	// RuleName is the rule's identifier, surfaced via `Rule.Name()` for
 	// debug logging and test fixtures.
