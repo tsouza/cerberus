@@ -796,142 +796,57 @@ func wrapInstantLatestPerSeries(scan chplan.Node, pred chplan.Expr, anchor evalA
 }
 
 // wrapRangeLatestPerSeries builds the per-step LWR for a vector
-// selector evaluated over a query_range window. The shape is:
+// selector evaluated over a query_range window. It emits a single
+// chplan.RangeLWR node:
 //
-//	Project [MetricName, Attributes, anchor_ts AS TimeUnix, lwr_value AS Value]
-//	  Aggregate by (MetricName, Attributes, anchor_ts) funcs=[argMax(Value, TimeUnix) AS lwr_value]
-//	    Filter (anchor_ts - <offset> >= TimeUnix AND TimeUnix > anchor_ts - <offset> - 5m)
-//	      CrossJoin(StepGrid(start, end, step), Scan + matchers_filter)
+//	RangeLWR step=<step> lookback=5m [offset=<o>] ts=TimeUnix value=Value start=<s> end=<e>
+//	  Scan + matchers_filter
 //
-// At each step `t = start, start+step, ..., end` the StepGrid emits one
-// `anchor_ts = t` row; the CrossJoin pairs that with every raw sample row,
-// the Filter trims to the per-step LWR window `(t-offset-5m, t-offset]`,
-// the Aggregate collapses to one row per (series, anchor) carrying the
-// latest-in-window Value, and the outer Project exposes the canonical
-// (MetricName, Attributes, TimeUnix, Value) shape with TimeUnix = anchor_ts.
+// The RangeLWR emitter (internal/chsql.emitRangeLWR) renders the
+// single-pass, bounded sample-side fan-out: each sample fans out to ONLY
+// the ≤ lookback/step + 1 anchors whose staleness window
+// `(anchor - offset - 5m, anchor - offset]` contains it, then a
+// `GROUP BY (MetricName, Attributes, anchor_ts)` with
+// `argMax(Value, TimeUnix)` collapses each (series, anchor) bucket to its
+// newest in-window sample. The output is the canonical 4-column Sample
+// contract `(MetricName, Attributes, TimeUnix = anchor_ts, Value)`, one
+// row per (series, anchor) that had data — identical to the shape the
+// prior StepGrid CROSS JOIN + per-anchor argMax produced, but at
+// O(rows × lookback/step) intermediate cardinality (constant in the grid
+// width N) instead of O(rows × N).
+//
+// The half-open window edges, the offset-shifts-the-window-not-the-anchor
+// semantics, and the staleness-gap "no sample → no row" rule are all
+// preserved by the RangeLWR emitter (see range_lwr.go). The
+// `@<absolute>` pinned-anchor shape is routed away upstream
+// (wrapRangeAbsoluteAtBroadcast), so anchor.End is zero here and only
+// anchor.Offset shifts the window.
 //
 // Output schema preservation lets the surrounding plan tree (aggregations,
 // arithmetic, instant fns) keep consuming the same column shape it did
-// before — the difference vs the instant LWR wrap is that each (series)
-// produces N rows (one per step inside `[start, end]` that had data) rather
-// than a single row at `end_ts`.
+// before — each (series) produces N rows (one per step inside
+// `[start, end]` that had data) rather than a single row at `end_ts`.
 func wrapRangeLatestPerSeries(scan chplan.Node, pred chplan.Expr, anchor evalAnchor, ctx lowerCtx, s schema.Metrics) chplan.Node {
-	const (
-		anchorCol     = "anchor_ts"
-		lwrValueAlias = "lwr_value"
-	)
-	anchorRef := &chplan.ColumnRef{Name: anchorCol}
-	// `@`/offset modifiers shift the LWR window against the per-step
-	// anchor: `up offset 5m` over a step at `t` evaluates the latest
-	// sample in `(t-5m-5m, t-5m]`. The shift is `(anchor_ts - offset)`
-	// for the upper bound and `(anchor_ts - offset - lookback)` for the
-	// strict lower bound.
-	//
-	// When the modifier is `@<absolute>` (no offset, ctx.end ignored)
-	// the per-step semantics still apply — Prom queries with `@ start()`
-	// over a range query keep a single anchor across all steps. That
-	// shape is rare enough that the wrap below falls back to a per-step
-	// anchor (i.e., the user's intent is preserved when they don't pin
-	// the absolute @ modifier).
-	var upperBound chplan.Expr = anchorRef
-	// Negative offsets shift the lookback window FORWARD in time relative
-	// to each step's anchor (Prom evaluates `metric offset -5m` at
-	// `t - (-5m) = t + 5m`). The subtraction below handles the sign
-	// correctly — `anchor_ts - toIntervalNanosecond(-300_000_000_000)`
-	// renders as `anchor_ts + 5m` per CH interval arithmetic. The
-	// guard checks `!= 0` rather than `> 0` so the negative case isn't
-	// silently zeroed.
-	if anchor.Offset != 0 {
-		upperBound = &chplan.Binary{
-			Op:   chplan.OpSub,
-			Left: anchorRef,
-			Right: &chplan.FuncCall{
-				Name: "toIntervalNanosecond",
-				Args: []chplan.Expr{&chplan.LitInt{V: anchor.Offset.Nanoseconds()}},
-			},
-		}
-	}
-	// `TimeUnix <= anchor_ts - offset` (non-strict upper)
-	lwrUpper := &chplan.Binary{
-		Op:    chplan.OpLe,
-		Left:  &chplan.ColumnRef{Name: s.TimestampColumn},
-		Right: upperBound,
-	}
-	// `TimeUnix > anchor_ts - offset - lookback` (strict lower)
-	lookbackNs := instantLookback.Nanoseconds() + anchor.Offset.Nanoseconds()
-	lowerBound := &chplan.Binary{
-		Op:   chplan.OpSub,
-		Left: anchorRef,
-		Right: &chplan.FuncCall{
-			Name: "toIntervalNanosecond",
-			Args: []chplan.Expr{&chplan.LitInt{V: lookbackNs}},
-		},
-	}
-	lwrLower := &chplan.Binary{
-		Op:    chplan.OpGt,
-		Left:  &chplan.ColumnRef{Name: s.TimestampColumn},
-		Right: lowerBound,
-	}
-
 	// Inner Scan/Filter — apply matchers via PREWHERE-eligible filter
 	// the optimizer already promotes. The `(scan, pred)` split keeps the
 	// downstream PREWHERE path unchanged; when pred is nil (no matchers)
-	// the scan flows directly into the CrossJoin.
+	// the scan flows directly into the RangeLWR.
 	rawSide := scan
 	if pred != nil {
 		rawSide = &chplan.Filter{Input: scan, Predicate: pred}
 	}
 
-	stepGrid := &chplan.StepGrid{
-		Start: ctx.start.UTC(),
-		End:   ctx.end.UTC(),
-		Step:  ctx.step,
-	}
-	joined := &chplan.CrossJoin{
-		Left:  stepGrid,
-		Right: rawSide,
-	}
-
-	// Filter to the per-step LWR window.
-	filterPred := chplan.Expr(&chplan.Binary{
-		Op: chplan.OpAnd, Left: lwrUpper, Right: lwrLower,
-	})
-	filtered := &chplan.Filter{Input: joined, Predicate: filterPred}
-
-	// Aggregate per (MetricName, Attributes, anchor_ts) collapsing to
-	// the latest sample in the per-step window. The argMax over
-	// TimeUnix gives the LWR-canonical "newest sample in window".
-	agg := &chplan.Aggregate{
-		Input: filtered,
-		GroupBy: []chplan.Expr{
-			&chplan.ColumnRef{Name: s.MetricNameColumn},
-			&chplan.ColumnRef{Name: s.AttributesColumn},
-			anchorRef,
-		},
-		GroupByAliases: []string{s.MetricNameColumn, s.AttributesColumn, anchorCol},
-		AggFuncs: []chplan.AggFunc{
-			{
-				Name: "argMax",
-				Args: []chplan.Expr{
-					&chplan.ColumnRef{Name: s.ValueColumn},
-					&chplan.ColumnRef{Name: s.TimestampColumn},
-				},
-				Alias: lwrValueAlias,
-			},
-		},
-	}
-
-	// Outer Project re-aliases anchor_ts → TimeUnix so the canonical
-	// 4-column Sample contract holds for downstream consumers
-	// (aggregations, arithmetic, instant fns, the handler-side pivot).
-	return &chplan.Project{
-		Input: agg,
-		Projections: []chplan.Projection{
-			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
-			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
-			{Expr: anchorRef, Alias: s.TimestampColumn},
-			{Expr: &chplan.ColumnRef{Name: lwrValueAlias}, Alias: s.ValueColumn},
-		},
+	return &chplan.RangeLWR{
+		Input:         rawSide,
+		Start:         ctx.start.UTC(),
+		End:           ctx.end.UTC(),
+		Step:          ctx.step,
+		Lookback:      instantLookback,
+		Offset:        anchor.Offset,
+		MetricNameCol: s.MetricNameColumn,
+		AttributesCol: s.AttributesColumn,
+		TimestampCol:  s.TimestampColumn,
+		ValueCol:      s.ValueColumn,
 	}
 }
 
