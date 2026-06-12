@@ -64,11 +64,12 @@ func TestLower_HistogramValueFns_InstantLatestSample(t *testing.T) {
 }
 
 // TestLower_HistogramValueFns_RangeLatestSample pins the range-mode plan
-// shape: a StepGrid cross-join + per-anchor lookback Filter feed an
-// Aggregate keyed by [anchor_ts, Attributes] with argMax(<col>, TimeUnix)
-// so each step emits one row carrying the newest in-window sample.
-// Before the fix range queries emitted N rows all stamped now64(9), so
-// the matrix pivot collapsed to empty.
+// shape: a single-pass RangeBucketFanout keyed by [anchor_ts (implicit),
+// Attributes] with argMax(<col>, TimeUnix) so each step emits one row
+// carrying the newest in-window sample. Before the fix range queries
+// emitted N rows all stamped now64(9), so the matrix pivot collapsed to
+// empty; before this rework the fan-out was the O(rows × N) StepGrid
+// CROSS JOIN, which RangeBucketFanout supersedes.
 func TestLower_HistogramValueFns_RangeLatestSample(t *testing.T) {
 	t.Parallel()
 
@@ -106,25 +107,26 @@ func TestLower_HistogramValueFns_RangeLatestSample(t *testing.T) {
 			if got := timeUnixAlias(t, s, pj); got != "anchor_ts" {
 				t.Errorf("range TimeUnix projection = %q, want column ref anchor_ts", got)
 			}
-			agg, ok := pj.Input.(*chplan.Aggregate)
+			fanout, ok := pj.Input.(*chplan.RangeBucketFanout)
 			if !ok {
-				t.Fatalf("Project.Input = %T, want *chplan.Aggregate", pj.Input)
+				t.Fatalf("Project.Input = %T, want *chplan.RangeBucketFanout", pj.Input)
 			}
-			// GROUP BY [anchor_ts, Attributes].
-			if len(agg.GroupBy) != 2 {
-				t.Fatalf("range GroupBy len = %d, want 2 ([anchor_ts, Attributes])", len(agg.GroupBy))
+			// The anchor key is implicit (AnchorAlias); the user group key
+			// is the full Attributes column.
+			if fanout.AnchorAlias != "anchor_ts" {
+				t.Errorf("AnchorAlias = %q, want anchor_ts", fanout.AnchorAlias)
 			}
-			if got := colName(t, agg.GroupBy[0]); got != "anchor_ts" {
-				t.Errorf("range GroupBy[0] = %q, want anchor_ts", got)
+			if len(fanout.GroupBy) != 1 {
+				t.Fatalf("range GroupBy len = %d, want 1 ([Attributes])", len(fanout.GroupBy))
 			}
-			if got := colName(t, agg.GroupBy[1]); got != s.AttributesColumn {
-				t.Errorf("range GroupBy[1] = %q, want %q", got, s.AttributesColumn)
+			if got := colName(t, fanout.GroupBy[0]); got != s.AttributesColumn {
+				t.Errorf("range GroupBy[0] = %q, want %q", got, s.AttributesColumn)
 			}
-			assertArgMaxLatestAggs(t, s, agg.AggFuncs)
-			// A StepGrid cross-join must sit under the Aggregate (the
-			// matrix anchor fan-out).
+			assertArgMaxLatestAggs(t, s, fanout.AggFuncs)
+			// The single-pass fan-out must NOT contain the old O(rows × N)
+			// StepGrid CROSS JOIN scaffold.
 			var sawStepGrid, sawCrossJoin bool
-			chplan.Walk(agg.Input, func(n chplan.Node) bool {
+			chplan.Walk(fanout.Input, func(n chplan.Node) bool {
 				switch n.(type) {
 				case *chplan.StepGrid:
 					sawStepGrid = true
@@ -133,11 +135,11 @@ func TestLower_HistogramValueFns_RangeLatestSample(t *testing.T) {
 				}
 				return true
 			})
-			if !sawStepGrid {
-				t.Errorf("no StepGrid under range Aggregate (matrix anchor fan-out missing)")
+			if sawStepGrid {
+				t.Errorf("range fan-out must not contain a StepGrid (single-pass invariant)")
 			}
-			if !sawCrossJoin {
-				t.Errorf("no CrossJoin under range Aggregate")
+			if sawCrossJoin {
+				t.Errorf("range fan-out must not contain a CrossJoin (single-pass invariant)")
 			}
 		})
 	}

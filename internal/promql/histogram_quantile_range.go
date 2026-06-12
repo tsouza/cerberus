@@ -23,10 +23,12 @@ import (
 // The fix mirrors the structural template established by Pool-AK's
 // per-step LWR rework (PR #347) and the matrix fan-out for
 // quantile_over_time / predict_linear / holt_winters (PRs #348 / #349):
-// in range mode the rewrite cross-joins the histogram-table scan with a
-// `chplan.StepGrid`, filters each (sample, anchor) pair to the per-anchor
-// lookback window, aggregates BucketCounts / ExplicitBounds per (series,
-// anchor), and surfaces `anchor_ts` as the per-row TimeUnix.
+// in range mode the rewrite fans each histogram sample over only the
+// anchors whose per-anchor lookback window covers it (the single-pass
+// `chplan.RangeBucketFanout` introduced for histograms by the
+// RangeLWR-style rework, #804), aggregates BucketCounts /
+// ExplicitBounds per (series, anchor), and surfaces `anchor_ts` as the
+// per-row TimeUnix.
 //
 // The bare-selector and aggregated (`sum by(le)(rate(<bucket>[r]))`)
 // shapes share the rewrite scaffold; they differ only in:
@@ -160,9 +162,14 @@ func lowerHistogramQuantileClassicAggRange(
 //	Project [MetricName='', Attributes, anchor_ts AS TimeUnix, Value]
 //	  HistogramQuantile phi groupBy=[anchor_ts, Attributes]
 //	    Project [anchor_ts, <attrs-rebuilt>, BucketCounts, ExplicitBounds]
-//	      Aggregate groupBy=[anchor_ts, <user-labels>] funcs=<bucketAggs>
-//	        Filter (TimeUnix > anchor_ts - <lookback> AND TimeUnix <= anchor_ts)
-//	          CrossJoin(StepGrid(start, end, step), Filter(Scan, <matchers>))
+//	      RangeBucketFanout groupBy=[<user-labels>] funcs=<bucketAggs>
+//	        Filter(Scan, <matchers>)
+//
+// The RangeBucketFanout node replaces the O(rows × N) StepGrid CROSS
+// JOIN + per-anchor lookback Filter + per-(series, anchor) Aggregate
+// that earlier revisions emitted with the single-pass bounded
+// sample-side fan-out RangeLWR (#804) introduced — see
+// chplan.RangeBucketFanout for the semantics.
 func buildHistogramRangeTree(
 	scan *chplan.Scan,
 	pred chplan.Expr,
@@ -177,67 +184,7 @@ func buildHistogramRangeTree(
 ) chplan.Node {
 	anchorRef := &chplan.ColumnRef{Name: histogramAnchorCol}
 
-	// Pre-StepGrid scan-side filter: apply label matchers so the
-	// CrossJoin's right side is already metric-bounded; this is the
-	// PREWHERE-eligible shape the optimizer keeps fast.
-	var rawSide chplan.Node = scan
-	if pred != nil {
-		rawSide = &chplan.Filter{Input: scan, Predicate: pred}
-	}
-
-	stepGrid := &chplan.StepGrid{
-		Start: ctx.start.UTC(),
-		End:   ctx.end.UTC(),
-		Step:  ctx.step,
-	}
-	joined := &chplan.CrossJoin{
-		Left:  stepGrid,
-		Right: rawSide,
-	}
-
-	// Per-anchor lookback window:
-	//   TimeUnix > anchor_ts - <lookback>  AND  TimeUnix <= anchor_ts
-	//
-	// Left-open / right-closed mirrors the Prom staleness convention
-	// applied by stalenessLowerBoundExpr / timeBoundExpr for the
-	// non-histogram LWR path.
-	lwrUpper := &chplan.Binary{
-		Op:    chplan.OpLe,
-		Left:  &chplan.ColumnRef{Name: s.TimestampColumn},
-		Right: anchorRef,
-	}
-	lwrLower := &chplan.Binary{
-		Op:   chplan.OpGt,
-		Left: &chplan.ColumnRef{Name: s.TimestampColumn},
-		Right: &chplan.Binary{
-			Op:   chplan.OpSub,
-			Left: anchorRef,
-			Right: &chplan.FuncCall{
-				Name: "toIntervalNanosecond",
-				Args: []chplan.Expr{&chplan.LitInt{V: lookback.Nanoseconds()}},
-			},
-		},
-	}
-	filtered := &chplan.Filter{
-		Input: joined,
-		Predicate: &chplan.Binary{
-			Op: chplan.OpAnd, Left: lwrUpper, Right: lwrLower,
-		},
-	}
-
-	// Aggregate per (anchor_ts, <user-group-keys>). For the bare path
-	// `userGroupBy` is `[Attributes]`; for the agg path it's the
-	// user-supplied `by/without` projection (already prepared by
-	// histogramAggGroupBy).
-	aggGroupBy := append([]chplan.Expr{anchorRef}, userGroupBy...)
-	aggAliases := append([]string{histogramAnchorCol}, userAliases...)
-	agg := &chplan.Aggregate{
-		Input:              filtered,
-		GroupBy:            aggGroupBy,
-		GroupByAliases:     aggAliases,
-		AggFuncs:           bucketAggs,
-		DropEmptyOnNoGroup: true,
-	}
+	agg := buildHistogramBucketFanout(scan, pred, lookback, userGroupBy, userAliases, bucketAggs, s, ctx)
 
 	// Reshape the aggregate output into the histogram-row contract
 	// HistogramQuantile consumes (Attributes + BucketCounts + ExplicitBounds)
@@ -303,15 +250,14 @@ func buildHistogramRangeTree(
 //	    Project [anchor_ts, Attributes, Scale, ZeroCount, ZeroThreshold,
 //	             PositiveOffset, PositiveBucketCounts,
 //	             NegativeOffset, NegativeBucketCounts]
-//	      Aggregate groupBy=[anchor_ts, Attributes] funcs=[
+//	      RangeBucketFanout groupBy=[Attributes] funcs=[
 //	          argMax(Scale, TimeUnix), argMax(ZeroCount, TimeUnix),
 //	          argMax(ZeroThreshold, TimeUnix),
 //	          argMax(PositiveOffset, TimeUnix),
 //	          argMax(PositiveBucketCounts, TimeUnix),
 //	          argMax(NegativeOffset, TimeUnix),
 //	          argMax(NegativeBucketCounts, TimeUnix)]
-//	        Filter (TimeUnix > anchor_ts - 5m AND TimeUnix <= anchor_ts)
-//	          CrossJoin(StepGrid(start, end, step), Filter(Scan, <matchers>))
+//	        Filter(Scan, <matchers>)
 func lowerHistogramQuantileNativeBareRange(
 	vs *parser.VectorSelector,
 	phi phiArg,
@@ -415,9 +361,8 @@ func lowerHistogramQuantileNativeBareRange(
 //	  HistogramQuantileNative phi groupBy=[anchor_ts, Attributes]
 //	    Project [anchor_ts, <attrs-rebuilt>, merged Scale / ZeroCount /
 //	             ZeroThreshold / {Pos,Neg}{Offset,BucketCounts}]
-//	      Aggregate groupBy=[anchor_ts, <user-labels>] funcs=<merge aggs>
-//	        Filter (TimeUnix > anchor_ts - <windowRange> AND TimeUnix <= anchor_ts)
-//	          CrossJoin(StepGrid, Filter(Scan, <matchers>))
+//	      RangeBucketFanout groupBy=[<user-labels>] funcs=<merge aggs>
+//	        Filter(Scan, <matchers>)
 func lowerHistogramQuantileNativeAggRange(
 	shape histogramAggShape,
 	phi phiArg,
@@ -475,21 +420,11 @@ func buildHistogramNativeRangeTree(
 ) chplan.Node {
 	anchorRef := &chplan.ColumnRef{Name: histogramAnchorCol}
 
-	filtered, _ := buildHistogramRangeAnchorJoin(scan, pred, lookback, anchorRef, s, ctx)
-
-	aggGroupBy := append([]chplan.Expr{anchorRef}, userGroupBy...)
-	aggAliases := append([]string{histogramAnchorCol}, userAliases...)
-	agg := &chplan.Aggregate{
-		Input:              filtered,
-		GroupBy:            aggGroupBy,
-		GroupByAliases:     aggAliases,
-		AggFuncs:           expHistAggs,
-		DropEmptyOnNoGroup: true,
-	}
+	agg := buildHistogramBucketFanout(scan, pred, lookback, userGroupBy, userAliases, expHistAggs, s, ctx)
 
 	// Pass-through reshape: anchor_ts + attrs + per-row exp-histogram
 	// fields (already aliased to their schema-canonical names by the
-	// Aggregate).
+	// fanout).
 	rebuiltProjs := []chplan.Projection{
 		{Expr: anchorRef, Alias: histogramAnchorCol},
 		{Expr: attrsRebuild, Alias: s.AttributesColumn},
@@ -562,17 +497,7 @@ func buildHistogramNativeRangeTreeMerge(
 ) chplan.Node {
 	anchorRef := &chplan.ColumnRef{Name: histogramAnchorCol}
 
-	filtered, _ := buildHistogramRangeAnchorJoin(scan, pred, lookback, anchorRef, s, ctx)
-
-	aggGroupBy := append([]chplan.Expr{anchorRef}, userGroupBy...)
-	aggAliases := append([]string{histogramAnchorCol}, userAliases...)
-	agg := &chplan.Aggregate{
-		Input:              filtered,
-		GroupBy:            aggGroupBy,
-		GroupByAliases:     aggAliases,
-		AggFuncs:           mergeAggs,
-		DropEmptyOnNoGroup: true,
-	}
+	agg := buildHistogramBucketFanout(scan, pred, lookback, userGroupBy, userAliases, mergeAggs, s, ctx)
 
 	// Reshape: fold per-row arrays into a single merged distribution.
 	// Mirrors the inner Project in lowerHistogramQuantileNativeAgg.
@@ -628,58 +553,54 @@ func buildHistogramNativeRangeTreeMerge(
 	}
 }
 
-// buildHistogramRangeAnchorJoin renders the pre-Aggregate shape shared
-// by every histogram-range lowering (classic + native, bare + agg):
-// scan-side metric-bounded Filter → CrossJoin against a StepGrid →
-// per-anchor lookback Filter. Returns the filtered subtree plus the
-// joined CrossJoin (the latter exposed so callers that want to wrap
-// the join itself stay flexible). The classic path duplicates this
-// shape inline; the duplication is scoped to one file so unrelated
-// callers stay untouched.
-func buildHistogramRangeAnchorJoin(
+// buildHistogramBucketFanout renders the single-pass bounded
+// sample-side fan-out shared by every histogram-range lowering (classic
+// + native, bare + agg, plus the native value-function path): a
+// scan-side metric-bounded Filter feeding a chplan.RangeBucketFanout
+// that fans each sample over only the ≤ lookback/step + 1 anchors whose
+// half-open staleness window covers it, then collapses each (series,
+// anchor) bucket with the variant-specific aggregate funcs.
+//
+// This supersedes the StepGrid CROSS JOIN + per-anchor lookback Filter +
+// per-(series, anchor) Aggregate that earlier revisions emitted — the
+// same O(rows × N) compute fan-out RangeLWR (#804) killed for bare
+// selectors. The output schema is byte-identical to the Aggregate node
+// it replaces: `(anchor_ts, <userAliases...>, <aggFuncs[i].Alias...>)`,
+// so the wrapping reshape Project + HistogramQuantile{,Native} consume
+// it unchanged.
+//
+// The anchor key is implicit — it is prepended by the fanout node under
+// histogramAnchorCol — so callers pass ONLY the user group keys in
+// userGroupBy / userAliases (the full Attributes column for the bare
+// paths, the `by/without` projection for the aggregated paths).
+func buildHistogramBucketFanout(
 	scan *chplan.Scan,
 	pred chplan.Expr,
 	lookback time.Duration,
-	anchorRef *chplan.ColumnRef,
+	userGroupBy []chplan.Expr,
+	userAliases []string,
+	aggFuncs []chplan.AggFunc,
 	s schema.Metrics,
 	ctx lowerCtx,
-) (filtered, joined chplan.Node) {
+) chplan.Node {
+	// Scan-side metric-bounded Filter: apply label matchers so the
+	// fan-out reads a metric-bounded row set; this is the
+	// PREWHERE-eligible shape the optimizer keeps fast.
 	var rawSide chplan.Node = scan
 	if pred != nil {
 		rawSide = &chplan.Filter{Input: scan, Predicate: pred}
 	}
 
-	stepGrid := &chplan.StepGrid{
-		Start: ctx.start.UTC(),
-		End:   ctx.end.UTC(),
-		Step:  ctx.step,
+	return &chplan.RangeBucketFanout{
+		Input:          rawSide,
+		Start:          ctx.start.UTC(),
+		End:            ctx.end.UTC(),
+		Step:           ctx.step,
+		Lookback:       lookback,
+		GroupBy:        userGroupBy,
+		GroupByAliases: userAliases,
+		AggFuncs:       aggFuncs,
+		AnchorAlias:    histogramAnchorCol,
+		TimestampCol:   s.TimestampColumn,
 	}
-	cj := &chplan.CrossJoin{
-		Left:  stepGrid,
-		Right: rawSide,
-	}
-
-	lwrUpper := &chplan.Binary{
-		Op:    chplan.OpLe,
-		Left:  &chplan.ColumnRef{Name: s.TimestampColumn},
-		Right: anchorRef,
-	}
-	lwrLower := &chplan.Binary{
-		Op:   chplan.OpGt,
-		Left: &chplan.ColumnRef{Name: s.TimestampColumn},
-		Right: &chplan.Binary{
-			Op:   chplan.OpSub,
-			Left: anchorRef,
-			Right: &chplan.FuncCall{
-				Name: "toIntervalNanosecond",
-				Args: []chplan.Expr{&chplan.LitInt{V: lookback.Nanoseconds()}},
-			},
-		},
-	}
-	return &chplan.Filter{
-		Input: cj,
-		Predicate: &chplan.Binary{
-			Op: chplan.OpAnd, Left: lwrUpper, Right: lwrLower,
-		},
-	}, cj
 }

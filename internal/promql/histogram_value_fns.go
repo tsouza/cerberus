@@ -190,18 +190,17 @@ func histogramValueLatestAggs(s schema.Metrics) []chplan.AggFunc {
 // lowerHistogramValueFnRange builds the range-mode plan tree for a
 // native-histogram value function over a bare exp-hist VectorSelector.
 //
-// It reuses the StepGrid cross-join + per-anchor lookback scaffold
-// (buildHistogramRangeAnchorJoin) shared with the native quantile
-// range path, aggregates the newest exp-hist sample per (series,
-// anchor) via argMax(<col>, TimeUnix) GROUP BY [anchor_ts, Attributes],
-// then projects the value math with anchor_ts surfaced as TimeUnix.
+// It reuses the single-pass bounded sample-side fan-out
+// (buildHistogramBucketFanout) shared with the histogram-quantile range
+// paths, collapsing the newest exp-hist sample per (series, anchor) via
+// argMax(<col>, TimeUnix) GROUP BY [anchor_ts, Attributes], then
+// projects the value math with anchor_ts surfaced as TimeUnix.
 //
 // Plan shape (in chsql output order):
 //
 //	Project [MetricName='', Attributes, anchor_ts AS TimeUnix, Value]
-//	  Aggregate groupBy=[anchor_ts, Attributes] funcs=[argMax(<col>, TimeUnix)…]
-//	    Filter (TimeUnix > anchor_ts - 5m AND TimeUnix <= anchor_ts)
-//	      CrossJoin(StepGrid(start, end, step), Filter(Scan, <matchers>))
+//	  RangeBucketFanout groupBy=[Attributes] funcs=[argMax(<col>, TimeUnix)…]
+//	    Filter(Scan, <matchers>)
 func lowerHistogramValueFnRange(
 	vs *parser.VectorSelector,
 	value chplan.Expr,
@@ -212,15 +211,12 @@ func lowerHistogramValueFnRange(
 	pred := buildPredicate(vs.LabelMatchers, s)
 	anchorRef := &chplan.ColumnRef{Name: histogramAnchorCol}
 
-	filtered, _ := buildHistogramRangeAnchorJoin(scan, pred, instantLookback, anchorRef, s, ctx)
-
-	agg := &chplan.Aggregate{
-		Input:              filtered,
-		GroupBy:            []chplan.Expr{anchorRef, &chplan.ColumnRef{Name: s.AttributesColumn}},
-		GroupByAliases:     []string{histogramAnchorCol, s.AttributesColumn},
-		AggFuncs:           histogramValueLatestAggs(s),
-		DropEmptyOnNoGroup: true,
-	}
+	agg := buildHistogramBucketFanout(
+		scan, pred, instantLookback,
+		[]chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
+		[]string{s.AttributesColumn},
+		histogramValueLatestAggs(s), s, ctx,
+	)
 
 	return &chplan.Project{
 		Input: agg,
