@@ -45,7 +45,7 @@ inside each layer.
 | `mutation` (per phase)        | `.github/workflows/mutation.yml` matrix        | PRs (path-match) + push + nightly  | Informational      | gremlins on each of `chplan` / `chsql` / `optimizer` / `promql` / `logql` / `traceql` / `qlcommon` @ 95% efficacy |
 | `property`                    | `.github/workflows/property.yml`               | push-to-main + nightly + manual    | Informational      | rapid-driven property tests (Layer 4 + 6 cross-check)                                                             |
 | `perf-benchmark`              | `.github/workflows/perf-benchmark.yml`         | PRs (path-match) + weekly + manual | Informational      | benchstat-based perf regression                                                                                   |
-| `compose-smoke`               | `.github/workflows/compose-smoke.yml`          | PRs + push                         | Required           | `docker compose up --wait` + `/healthz` + `/readyz` + Grafana `/api/health`                                       |
+| `compose-smoke`               | `.github/workflows/e2e.yml` (compose-smoke)    | PRs + push                         | Required           | `docker compose up --wait` + `/healthz` + `/readyz` + Grafana `/api/health`                                       |
 
 ## Per-layer guidance
 
@@ -220,15 +220,25 @@ runs as its own matrix entry in `.github/workflows/mutation.yml`. The
 gate is informational on push-to-main; flipped to required when a
 phase has held the 95% efficacy floor for a stable streak.
 
-| Phase              | Package              | Efficacy floor |
-| ------------------ | -------------------- | -------------- |
-| `phase1`           | `internal/chplan`    | 95%            |
-| `phase2`           | `internal/chsql`     | 95%            |
-| `phase3-optimizer` | `internal/optimizer` | 95%            |
-| `phase4-promql`    | `internal/promql`    | 95%            |
-| `phase4-logql`     | `internal/logql`     | 95%            |
-| `phase4-traceql`   | `internal/traceql`   | 95%            |
-| `phase5-qlcommon`  | `internal/qlcommon`  | 95%            |
+| Phase                       | Package              | Efficacy floor |
+| --------------------------- | -------------------- | -------------- |
+| `phase1`                    | `internal/chplan`    | 95%            |
+| `phase2`                    | `internal/chsql`     | 95%            |
+| `phase3-optimizer`          | `internal/optimizer` | 95%            |
+| `phase4-promql`             | `internal/promql`    | 95%            |
+| `phase4-logql-lower`        | `internal/logql`     | 95%            |
+| `phase4-logql-aggregation`  | `internal/logql`     | 93%            |
+| `phase4-logql-other-a`      | `internal/logql`     | 95%            |
+| `phase4-logql-other-b`      | `internal/logql`     | 95%            |
+| `phase4-traceql`            | `internal/traceql`   | 95%            |
+| `phase5-qlcommon`           | `internal/qlcommon`  | 95%            |
+
+`internal/logql` is split into four sibling matrix entries (each scoped
+to `./internal/logql` but with disjoint `--exclude-files` regexes) to
+keep the `go test ./internal/logql` cycle under the ubuntu-latest memory
+ceiling; `phase4-logql-aggregation` sits one point lower at 93% to absorb
+a documented equivalent mutant. See `.github/workflows/mutation.yml` for
+the per-phase exclude sets.
 
 A surviving mutant is either (a) a legitimately weak assertion that
 needs strengthening, (b) a functionally-equivalent mutation (`<` vs

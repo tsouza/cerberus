@@ -4,11 +4,13 @@
 Keep Grafana, alerting, and your CLI tooling. Swap the backend.
 
 > [!WARNING]
-> **ALPHA QUALITY — NOT PRODUCTION-READY.** Cerberus is pre-1.0;
-> correctness, performance, and operational hardening are still
-> being shaken out. Treat this as a preview for evaluation and
-> experiments, **not** a drop-in replacement for a running Prom /
-> Loki / Tempo deployment. Expect breaking changes between releases.
+> **RELEASE CANDIDATE — NOT YET GA.** Cerberus is at `v1.0.0-RC1`;
+> the surface is feature-complete for 1.0 and the three differential
+> harnesses gate every merge, but correctness, performance, and
+> operational hardening are still being burned down toward GA. Evaluate
+> it against your own corpus before standing it in for a running
+> Prom / Loki / Tempo deployment, and expect breaking changes to be
+> possible between release candidates.
 
 [![CI](https://github.com/tsouza/cerberus/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tsouza/cerberus/actions/workflows/ci.yml)
 [![Mutation](https://github.com/tsouza/cerberus/actions/workflows/mutation.yml/badge.svg?branch=main)](https://github.com/tsouza/cerberus/actions/workflows/mutation.yml)
@@ -55,10 +57,10 @@ optimised ClickHouse SQL underneath.
 
 ## Status
 
-**Alpha — pre-1.0.** PromQL, LogQL, and TraceQL parse + lowering are
-in place; the pattern-based optimiser, the typed `chsql` SQL emitter,
-and the shared `internal/engine` pipeline drive every query end to
-end. Self-observability is wired across all three OTel pillars (logs +
+**Release candidate — `v1.0.0-RC1`.** PromQL, LogQL, and TraceQL parse +
+lowering are in place; the pattern-based optimiser, the typed `chsql`
+SQL emitter, and the shared `internal/engine` pipeline drive every
+query end to end. Self-observability is wired across all three OTel pillars (logs +
 metrics + traces, all OTLP-exported); operational scaffolding
 (`/readyz`, admission control, `docker compose up` for one-command
 local dev) is in place. Upstream parser shims are routed through the
@@ -211,10 +213,10 @@ under `compatibility/<head>/`.
 - **Driver**: cerberus-owned `loki-compliance-tester`, shape-compatible
   JSON report with the Prom driver so both feed a single downstream
   analyser.
-- **Today**: stack + seeder + driver landed (PR 5 of rollout); corpus
-  expansion pending (PR 6 widens the seeder + regenerates
-  `dataset_metadata.json` so the `${SELECTOR}` / `${LABEL_*}` templates
-  resolve).
+- **Today**: shipped and gating. The full stack — seeder, driver, and
+  the widened corpus whose `${SELECTOR}` / `${LABEL_*}` templates resolve
+  off `dataset_metadata.json` — runs as the required `compatibility/loki`
+  PR check; no allow-list exists.
 
 ### TraceQL — cerberus-owned driver
 
@@ -223,9 +225,10 @@ under `compatibility/<head>/`.
 - **Driver**: cerberus-owned binary with `seed` + `diff` subcommands
   (OTLP push to Tempo + direct CH `INSERT` to cerberus, both from one
   in-memory fixture so per-span fields stay 1:1 across both read paths).
-- **Today**: `/api/search`, `/api/traces/<id>`, and the four tag /
-  tag-values endpoints (V1 + V2) land in PR 6; metrics endpoints
-  (`/api/metrics/query_range` + `/api/metrics/query`) ship in PR 5.
+- **Today**: shipped and gating. `/api/search`, `/api/traces/<id>`, the
+  four tag / tag-values endpoints (V1 + V2), and the metrics endpoints
+  (`/api/metrics/query_range` + `/api/metrics/query`) all run under the
+  required `compatibility/tempo` PR check; no allow-list exists.
 
 Each harness ships as a Docker Compose stack — reference engine,
 cerberus, ClickHouse, and a one-shot seeder. Local execution:
@@ -259,12 +262,12 @@ which records the corpus entries *upstream itself* marks `skip: true`
 drift in that set.
 
 See [`docs/compatibility.md`](docs/compatibility.md) for the full
-playbook (local reproduction, report shape, adding test cases,
-allowlist conventions).
+playbook (local reproduction, report shape, adding test cases, and the
+`upstream-skip-baseline.txt` drift contract).
 
 ## Testing
 
-Cerberus is tested in 12 layers — AST shape pinning, plan-IR
+Cerberus is tested in 11 layers — AST shape pinning, plan-IR
 invariants, optimizer properties, emitted-SQL goldens, chDB-backed
 roundtrips, HTTP wire conformance, system lifecycle, differential
 harnesses, Playwright UX flows, chaos / goleak, perf benchmarks with
@@ -318,8 +321,8 @@ to match upstream OTel.
 
 ### From a published release
 
-Pull the container image. Cerberus is alpha, so pin an explicit tag —
-`:latest` only moves with stable releases:
+Pull the container image. Cerberus is still pre-GA, so pin an explicit
+tag — `:latest` only moves with stable releases:
 
 ```sh
 docker pull ghcr.io/tsouza/cerberus:<tag>

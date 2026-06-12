@@ -19,7 +19,7 @@ Two CI checks gate `main`: **`ci / check`** (golangci-lint + race tests + build)
 
 1. **PR-per-change.** No direct pushes to `main` — branch protection rejects them. Even tiny fixes go through a PR.
 2. **Issues are open for bug reports + design discussion.** File one if you want to flag a bug, propose a feature, or ask a design question before implementing. The internal maintainer workflow (and AI assistants helping with the project) tracks active work in [the Cerberus v1.0.0 Roadmap Project](https://github.com/users/tsouza/projects/1) plus PR descriptions; as an external contributor you don't need to use the Project — a clear issue + a follow-up PR is fine.
-3. **Conventional Commits.** Subjects look like `feat(promql): support offset modifier` or `chore(deps): bump grafana/loki/v3 to v3.8.0`. `subject-case` is relaxed (Dependabot's `Bump X from Y to Z` passes); type + scope are still enforced. `commitlint.config.json` is the source of truth.
+3. **Conventional Commits.** Subjects look like `feat(promql): support offset modifier` or `chore(deps): bump grafana/loki/v3 to v3.8.0`. `subject-case` is relaxed (Dependabot's `Bump X from Y to Z` passes); type + scope are still enforced. `.commitlintrc.json` is the source of truth.
 4. **Justfile is the canonical task runner.** `just` lists every recipe. Don't run `go test ./...` directly — `just test` sets the race flag, cover profile, and correct toolchain. If you want a new workflow, add a recipe.
 5. **Fixture-first PRs.** A new PromQL/LogQL/TraceQL feature lands with its TXTAR spec first (failing, with the right `query.<ql>` section), then implementation that turns it green. Reviewers can sanity-check intent by reading fixtures before code.
 6. **Compatibility suite is the source of truth.** If a PromQL feature lands but doesn't move the `prometheus/compliance` pass rate, the PR is incomplete. There is no allow-list for any head — every diff against the reference backend is a real bug to fix at the source. The only pinned exclusion set is `compatibility/loki/upstream-skip-baseline.txt`, which records corpus entries *upstream itself* marks `skip: true`; see `docs/compatibility.md`.
@@ -79,10 +79,14 @@ map. Headline:
 
 - **Unit + spec (TXTAR)** — run on every PR; merge gate.
 - **Compatibility** — PromQL / LogQL / TraceQL differential harnesses
-  against reference Prom / Loki / Tempo; informational scores
-  published to the `compat-scores` branch.
-- **E2E (k3d + Grafana Playwright)** — path-gated on `internal/api/**`,
-  `test/e2e/k3s/**`, `test/e2e/grafana/**`; merge gate when touched.
+  against reference Prom / Loki / Tempo; all three
+  (`compatibility/{prometheus,loki,tempo}`) are required PR checks, and
+  per-head scores are published to the `compat-scores` branch.
+- **Compose smoke** — `compose-smoke` (the repo-root `docker compose up`
+  quickstart stack) is a required PR check.
+- **E2E (k3d + Grafana Playwright)** — the `dashboard` job is
+  informational: it runs on push-to-main + nightly + manual dispatch,
+  not as a PR gate.
 - **Mutation** — Gremlins nightly; per-phase 95% efficacy threshold.
 
 ## Project memory and AI assistants
