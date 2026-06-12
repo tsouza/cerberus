@@ -57,6 +57,22 @@ func Emit(ctx context.Context, n chplan.Node) (string, []any, error) {
 type emitter struct {
 	b    strings.Builder
 	args []any
+
+	// structSeq is a monotonic counter handed out to the recursive
+	// structural-join emitter so each WITH RECURSIVE closure gets a
+	// unique CTE name (`_struct_closure_<n>`). Nested structural joins
+	// (`A << B << C`) embed an inner closure inside the outer closure's
+	// recursive arm (via the #77 seed-trace-id pushdown subquery);
+	// without unique names CH binds the inner same-named CTE in the
+	// outer scope and rejects the outer as "not recursive" (error 49).
+	structSeq int
+}
+
+// nextStructSeq returns the next unique structural-closure sequence
+// number, advancing the counter.
+func (e *emitter) nextStructSeq() int {
+	e.structSeq++
+	return e.structSeq
 }
 
 // emitNode writes a `SELECT ...` statement for n into e.b.

@@ -7,6 +7,45 @@ import (
 	"github.com/tsouza/cerberus/internal/chplan"
 )
 
+// defaultStructuralRecursionDepth caps the WITH RECURSIVE closure walk
+// for `>>` / `<<` (and their negated / union variants) when the plan
+// leaves StructuralJoin.MaxDepth unset (== 0, "unbounded"). It exists
+// to defend against trace data with a span-id cycle — a span whose
+// ParentSpanId chain loops back on itself (clock skew, instrumentation
+// bug, OTLP span-id reuse). Without a bound such a trace drives CH's
+// recursive-CTE evaluator past `max_recursive_cte_evaluation_depth`
+// (default 1000) and FAILS the whole query with error 306
+// (TOO_DEEP_RECURSION). A single malformed trace must never 500 a
+// structural TraceQL query; the cap degrades a cyclic trace to a
+// bounded/partial closure with no error.
+//
+// 128 is deep enough that no real, acyclic trace reaches it — span
+// trees that deep are vanishingly rare and themselves a sign of a
+// pathological producer — so acyclic closures stay byte-identical to
+// the pre-cap output (the cap-depth row is never produced). It is also
+// chosen to sit comfortably below ClickHouse's
+// max_recursive_cte_evaluation_depth (default 1000): the recursive arm
+// re-evaluates the seed-trace-id IN subquery each iteration, so CH's
+// internal per-iteration evaluation-step count is a small multiple of
+// the logical depth (empirically a cap of ~200 is the point at which a
+// pathological self-loop trace crosses the 1000-step limit and errors
+// 306). 128 leaves a wide margin so a cyclic trace degrades to a
+// bounded, error-free partial closure on every supported CH. A caller
+// that needs a different ceiling sets StructuralJoin.MaxDepth
+// explicitly; any positive value overrides this default.
+const defaultStructuralRecursionDepth = 128
+
+// effectiveRecursionDepth resolves the depth cap actually emitted into
+// the recursive CTE: the plan's explicit MaxDepth when positive, else
+// the package default. The result is always > 0 — the recursive arm is
+// now always bounded, so a cyclic trace can never run the CTE away.
+func effectiveRecursionDepth(maxDepth int) int {
+	if maxDepth > 0 {
+		return maxDepth
+	}
+	return defaultStructuralRecursionDepth
+}
+
 // emitStructuralJoin renders a TraceQL structural relation against
 // the otel_traces span table. The result projects the right-hand
 // span's columns (TraceQL convention: `A > B` returns the matched B
@@ -380,12 +419,24 @@ func structuralDirectOnFrag(j *chplan.StructuralJoin, rel Frag) Frag {
 //	`<<`: ancestor of L   — recursive step joins parent spans
 //	      (otel_traces.SpanId = closure.ParentSpanId).
 //
-// The closure tracks a depth column so MaxDepth can cap the walk;
-// unbounded walks (MaxDepth == 0) omit the cap and rely on the
-// natural fixpoint (no further rows produced when ParentSpanId hits
-// the trace root).
+// The closure tracks a depth column. The recursive arm is always
+// bounded: MaxDepth caps the walk when positive, otherwise the package
+// default (defaultStructuralRecursionDepth) applies — so a span-id
+// cycle degrades to a partial closure instead of erroring with CH code
+// 306. For the common case (acyclic traces shallower than the cap) the
+// walk still terminates at the natural fixpoint (no further rows once
+// ParentSpanId hits the trace root), byte-identical to the unbounded
+// output, well before the cap.
 //
-// Rendered shape (>> case, MaxDepth = 0):
+// The recursive arm also scopes its scan of the span table to the
+// seed's trace-id set (`t.TraceId IN (SELECT TraceId FROM (<L>))`),
+// so each iteration reads only the candidate traces' rows rather than
+// re-scanning the whole table — the #77 predicate pushdown. This is
+// semantics-preserving (the step ON already pins t.TraceId =
+// c.TraceId) and pulls the seed's `[start,end]` time window into the
+// recursive scan for free.
+//
+// Rendered shape (>> case, default cap):
 //
 //	SELECT R.* FROM (
 //	  WITH RECURSIVE _struct_closure AS (
@@ -397,6 +448,8 @@ func structuralDirectOnFrag(j *chplan.StructuralJoin, rel Frag) Frag {
 //	      INNER JOIN _struct_closure AS c
 //	        ON t.`TraceId` = c.`TraceId`
 //	       AND t.`ParentSpanId` = c.`SpanId`
+//	      WHERE c._depth < <cap>
+//	        AND t.`TraceId` IN (SELECT `TraceId` FROM (<L>) AS _seed_ids)
 //	  )
 //	  SELECT DISTINCT `TraceId`, `SpanId` FROM _struct_closure
 //	) AS L INNER JOIN (<R>) AS R
@@ -444,6 +497,16 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 		return err
 	}
 
+	// Unique CTE name for this closure. Nested structural joins
+	// (`A << B << C`) embed an inner closure inside the outer closure's
+	// recursive arm via the seed-trace-id pushdown subquery; a shared
+	// `_struct_closure` name makes CH bind the inner CTE in the outer
+	// scope and reject the outer as "not recursive" (error 49). The
+	// per-emit counter keeps every closure name distinct. The inner
+	// (L / R) subqueries are rendered above, so they already consumed
+	// their sequence numbers — this outer closure takes the next one.
+	cteName := "_struct_closure_" + strconv.Itoa(e.nextStructSeq())
+
 	// Anchor: SELECT DISTINCT TraceId, SpanId, ParentSpanId, 0 AS _depth
 	// FROM (<L>) AS _seed. DISTINCT on both CTE arms keeps the closure
 	// linear in the number of UNIQUE spans: duplicate span rows (OTLP
@@ -461,7 +524,9 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 		).
 		From(aliasedFrag(leftSub, "_seed"))
 
-	// Recursive step: SELECT t.<...>, c._depth + 1 FROM `<table>` AS t INNER JOIN _struct_closure AS c ON <stepOn> [WHERE c._depth < N].
+	// Recursive step: SELECT t.<...>, c._depth + 1 FROM `<table>` AS t
+	// INNER JOIN _struct_closure AS c ON <stepOn>
+	// WHERE c._depth < <cap> [AND t.TraceId IN (SELECT TraceId FROM (<L>) AS _seed_ids)].
 	stepOn := func(b *Builder) {
 		spanIDPairFrag("t", j.TraceIDColumn, "c", j.TraceIDColumn)(b)
 		b.writeSQL(" AND ")
@@ -477,25 +542,19 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 		From(aliasedFrag(Col(table), "t")).
 		Join(
 			InnerJoin,
-			aliasedFrag(verbatim("_struct_closure"), "c"),
+			aliasedFrag(verbatim(cteName), "c"),
 			stepOn,
-		)
-	if j.MaxDepth > 0 {
-		// MaxDepth caps the iteration count. Rendered as a literal
-		// integer — depth bounds are part of the query shape, not
-		// user data, and CH's recursive-CTE planner needs them
-		// visible (not parameterised).
-		step.Where(verbatim("c._depth < " + strconv.Itoa(j.MaxDepth)))
-	}
+		).
+		Where(structuralStepWhere(j, j.Left, leftSub)...)
 
-	// Closure subquery: WITH RECURSIVE _struct_closure AS (<anchor> UNION ALL <step>) SELECT DISTINCT TraceId, SpanId FROM _struct_closure WHERE _depth > 0.
+	// Closure subquery: WITH RECURSIVE <cteName> AS (<anchor> UNION ALL <step>) SELECT DISTINCT TraceId, SpanId FROM <cteName> WHERE _depth > 0.
 	closure := NewQuery().
-		WithRecursive("_struct_closure", anchor, step).
+		WithRecursive(cteName, anchor, step).
 		Select(
 			Distinct(Col(j.TraceIDColumn)),
 			Col(j.SpanIDColumn),
 		).
-		From(verbatim("_struct_closure")).
+		From(verbatim(cteName)).
 		Where(verbatim("_depth > 0"))
 
 	onClause := func(b *Builder) {
@@ -532,7 +591,8 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 		// each R span and walks towards ancestors — matching the L
 		// subquery on the upward-walked SpanIds. We rebuild the
 		// closure with R as the seed and step direction inverted.
-		inverseClosure, err := buildStructuralInverseClosure(j, rightSub, table)
+		invCTEName := "_struct_closure_inv_" + strconv.Itoa(e.nextStructSeq())
+		inverseClosure, err := buildStructuralInverseClosure(j, j.Right, rightSub, table, invCTEName)
 		if err != nil {
 			return err
 		}
@@ -566,7 +626,7 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 // (`t.SpanId = c.ParentSpanId`). The two arms of the UNION DISTINCT
 // thus cover both projection directions, mirroring upstream's
 // `union=true` Span.DescendantOf semantics.
-func buildStructuralInverseClosure(j *chplan.StructuralJoin, rightSub Frag, table string) (*QueryBuilder, error) {
+func buildStructuralInverseClosure(j *chplan.StructuralJoin, seedNode chplan.Node, rightSub Frag, table, cteName string) (*QueryBuilder, error) {
 	var stepRel Frag
 	switch j.Op.Positive() {
 	case chplan.StructuralDescendant:
@@ -607,22 +667,114 @@ func buildStructuralInverseClosure(j *chplan.StructuralJoin, rightSub Frag, tabl
 		From(aliasedFrag(Col(table), "t")).
 		Join(
 			InnerJoin,
-			aliasedFrag(verbatim("_struct_closure_inv"), "c"),
+			aliasedFrag(verbatim(cteName), "c"),
 			stepOn,
-		)
-	if j.MaxDepth > 0 {
-		step.Where(verbatim("c._depth < " + strconv.Itoa(j.MaxDepth)))
-	}
+		).
+		Where(structuralStepWhere(j, seedNode, rightSub)...)
 
 	closure := NewQuery().
-		WithRecursive("_struct_closure_inv", anchor, step).
+		WithRecursive(cteName, anchor, step).
 		Select(
 			Distinct(Col(j.TraceIDColumn)),
 			Col(j.SpanIDColumn),
 		).
-		From(verbatim("_struct_closure_inv")).
+		From(verbatim(cteName)).
 		Where(verbatim("_depth > 0"))
 	return closure, nil
+}
+
+// structuralStepWhere builds the WHERE conjuncts for a recursive
+// closure's step arm: always the #78 depth bound, plus the #77
+// seed-trace-id pushdown when it is safe to emit.
+//
+// The pushdown re-embeds the seed subquery (<seedNode> rendered as
+// seedSub) inside the recursive arm's IN subquery. ClickHouse rejects
+// a recursive CTE nested inside another recursive CTE's recursive arm
+// (error 49 "is not recursive"), so when the seed subtree itself
+// lowers to a recursive structural closure (a nested `>>` / `<<`
+// chain) the pushdown is skipped — that level keeps the depth bound
+// only. The skip is correctness-preserving: the recursive arm still
+// joins `t.TraceId = c.TraceId` (scoping to the working set), it just
+// doesn't additionally pre-filter `t` by the seed's trace-id set. The
+// common single-level case (and the innermost level of a nested chain)
+// always gets the pushdown.
+func structuralStepWhere(j *chplan.StructuralJoin, seedNode chplan.Node, seedSub Frag) []Frag {
+	conds := []Frag{structuralDepthBoundFrag(j.MaxDepth)}
+	if !subtreeHasRecursiveStructural(seedNode) {
+		conds = append(conds, structuralSeedTraceFilter(j.TraceIDColumn, seedSub))
+	}
+	return conds
+}
+
+// subtreeHasRecursiveStructural reports whether n (or any descendant)
+// is a StructuralJoin whose positive op is recursive (`>>` / `<<`),
+// i.e. it would itself emit a WITH RECURSIVE closure. Used to decide
+// whether the seed-trace-id pushdown is safe to nest inside a parent
+// recursive arm (see structuralStepWhere).
+func subtreeHasRecursiveStructural(n chplan.Node) bool {
+	if n == nil {
+		return false
+	}
+	if sj, ok := n.(*chplan.StructuralJoin); ok {
+		switch sj.Op.Positive() {
+		case chplan.StructuralDescendant, chplan.StructuralAncestor:
+			return true
+		}
+	}
+	for _, c := range n.Children() {
+		if subtreeHasRecursiveStructural(c) {
+			return true
+		}
+	}
+	return false
+}
+
+// structuralDepthBoundFrag renders the recursive-CTE iteration cap
+// `c._depth < <cap>`, where <cap> is effectiveRecursionDepth(maxDepth)
+// — the plan's explicit MaxDepth when positive, else the package
+// default. The bound is rendered as a literal integer: depth caps are
+// part of the query shape (CH's recursive-CTE planner needs them
+// visible, not parameterised), not user data. Because the cap is
+// always positive, every recursive structural query is now bounded —
+// a span-id cycle degrades to a partial closure of depth <cap> instead
+// of erroring with CH code 306 (TOO_DEEP_RECURSION).
+func structuralDepthBoundFrag(maxDepth int) Frag {
+	bound := effectiveRecursionDepth(maxDepth)
+	return verbatim("c._depth < " + strconv.Itoa(bound))
+}
+
+// structuralSeedTraceFilter renders `t.<TraceID> IN (SELECT <TraceID>
+// FROM <seed> AS _seed_ids)` — the predicate that restricts the
+// recursive arm's scan of the span table to only the trace ids the
+// seed (L for the canonical closure, R for the inverse) matched.
+//
+// This is the #77 predicate pushdown. Without it the recursive arm
+// scans the bare full span table on every iteration (O(depth ×
+// full-scan)); with it each level reads only the rows of the seed's
+// candidate traces (O(matching-trace-rows)). The rewrite is
+// semantics-preserving: the closure is per-trace (the step ON already
+// pins `t.TraceId = c.TraceId`, and every `c.TraceId` originates in
+// the seed), so no descendant/ancestor row can be added or dropped by
+// scoping `t` to the seed's trace-id set. Because the seed subquery
+// (<L> / <R>) carries the search's `[start,end]` Timestamp filter and
+// resource/span predicates, that time window is pushed into the
+// recursive scan for free.
+//
+// seedSub is the already-rendered seed subquery Frag (parenthesised by
+// subqueryFrag); aliasing it `_seed_ids` keeps CH's analyzer happy
+// when the subquery is referenced from the IN clause.
+func structuralSeedTraceFilter(traceIDCol string, seedSub Frag) Frag {
+	seedIDs := NewQuery().
+		Select(Col(traceIDCol)).
+		From(aliasedFrag(seedSub, "_seed_ids"))
+	// In() already parenthesises its right-hand list, so render the
+	// seed-id SELECT bare (Build, not Frag, which would double-wrap).
+	seedSQL, seedArgs := seedIDs.Build()
+	bareSeed := func(b *Builder) {
+		b.writeSQL(seedSQL)
+		b.args = append(b.args, seedArgs...)
+	}
+	return In(qualColFrag("t", traceIDCol), bareSeed)
 }
 
 // findScanTable walks a plan subtree looking for the first chplan.Scan
