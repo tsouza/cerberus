@@ -95,6 +95,19 @@ property:
 perf-chdb:
     go test -tags chdb -count=1 ./test/perf/...
 
+# Profile the WHOLE TXTAR corpus for compute fan-out (perf-assessment
+# Component B). Walks every executable fixture under test/spec/** (those
+# with `seed:` + `expected_rows:` + `sql:`) and, per fixture, runs
+# EXPLAIN PLAN actions=1 (CROSS JOIN / ARRAY JOIN / recursive-CTE
+# detection) + a per-subquery-level count() decomposition (peak
+# intermediate cardinality vs leaf scan rows) in-process via chDB.
+# Writes a JSON profile array and prints the top fan_factor fixtures.
+# Requires libchdb.so (see `just chdb-install`). Drives the nightly
+# perf-profile.yml lane — NOT a per-PR gate (corpus-wide breadth over
+# ~640 fixtures is too heavy for every PR). Override OUT / TOP to taste.
+perf-profile OUT="perf-profile.json" TOP="40":
+    go run -tags chdb ./cmd/perf-profile -spec test/spec -out {{OUT}} -top {{TOP}}
+
 # Run the chclient testcontainers integration tests against a real
 # ClickHouse container. Requires Docker. Gated behind the `integration`
 # build tag so regular `just test` doesn't pull in Docker.
