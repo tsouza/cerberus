@@ -1669,17 +1669,26 @@ type joinClause struct {
 	On   Frag
 }
 
-// cteClause is one entry in a QueryBuilder's WITH chain. The
-// recursive flag flips on the WITH RECURSIVE shape:
+// cteClause is one entry in a QueryBuilder's WITH chain. Two shapes
+// are supported:
 //
-//	WITH RECURSIVE <name> AS (<anchor> UNION ALL <recursive>)
+//   - Recursive (Anchor + Recursive both set):
+//     `WITH RECURSIVE <name> AS (<anchor> UNION ALL <recursive>)`.
+//     Used by structural_join.go's >> / << closure emitter.
 //
-// Non-recursive CTEs render the anchor alone (no UNION ALL). Only
-// recursive CTEs are wired up; the non-recursive shape is unused.
+//   - Non-recursive (Body set, Anchor + Recursive nil):
+//     `WITH <name> AS (<body>)`. Used by vector_set_op.go to
+//     materialise each set-op arm subplan exactly once and reference
+//     it by name in both the UNION-ALL leg and the IN / NOT-IN
+//     signature subquery (common-subexpression elimination — avoids
+//     the textual duplication that blew set-op chains up
+//     exponentially). Body renders the (already-parenthesised) arm
+//     subquery Frag.
 type cteClause struct {
 	Name      string
 	Anchor    *QueryBuilder
 	Recursive *QueryBuilder
+	Body      Frag
 }
 
 // QueryBuilder accumulates a SELECT statement's parts. Slots are
@@ -1788,6 +1797,29 @@ func (s *QueryBuilder) WithRecursive(name string, anchor, recursive *QueryBuilde
 	return s
 }
 
+// With registers a non-recursive `WITH <name> AS (<body>)` CTE in
+// front of the SELECT. body is the (already-parenthesised) subquery
+// Frag — its args land ahead of the outer SELECT's args, in emission
+// order, because writeInto renders the CTE chain before the SELECT
+// keyword.
+//
+// Used by the vector-set-op emitter to materialise each arm subplan
+// exactly once and reference it by name in both the UNION-ALL leg and
+// the IN / NOT-IN signature subquery, instead of inlining (and so
+// re-rendering) the whole subplan twice per chain level — the textual
+// duplication that made `a or b or c …` chains grow exponentially.
+//
+// When a QueryBuilder mixes recursive and non-recursive CTEs the head
+// renders as `WITH RECURSIVE` (CH accepts non-recursive entries under
+// the RECURSIVE keyword); a chain of only non-recursive CTEs renders
+// the bare `WITH`.
+//
+// Passing a nil body panics at render time.
+func (s *QueryBuilder) With(name string, body Frag) *QueryBuilder {
+	s.ctes = append(s.ctes, cteClause{Name: name, Body: body})
+	return s
+}
+
 // Where appends predicates to the WHERE clause. Multiple predicates
 // are joined with " AND " when rendered.
 func (s *QueryBuilder) Where(conds ...Frag) *QueryBuilder {
@@ -1862,29 +1894,69 @@ func (s *QueryBuilder) Build() (string, []any) {
 	return b.Build()
 }
 
-func (s *QueryBuilder) writeInto(b *Builder) {
-	if len(s.ctes) > 0 {
-		b.sb.WriteString("WITH RECURSIVE ")
-		for i, c := range s.ctes {
-			if c.Anchor == nil || c.Recursive == nil {
-				panic("chsql: WithRecursive requires non-nil anchor and recursive")
-			}
-			if i > 0 {
-				b.sb.WriteString(", ")
-			}
-			// CTE names render bare — CH accepts unquoted identifiers
-			// for CTE aliases, and the existing structural_join fixture
-			// pins `_struct_closure` (no backticks). The caller is
-			// responsible for passing a CH-identifier-safe token.
-			b.sb.WriteString(c.Name)
-			b.sb.WriteString(" AS (")
-			c.Anchor.writeInto(b)
-			b.sb.WriteString(" UNION ALL ")
-			c.Recursive.writeInto(b)
-			b.sb.WriteByte(')')
-		}
-		b.sb.WriteByte(' ')
+// writeCTEs renders the `WITH [RECURSIVE] <name> AS (...)` head ahead
+// of the SELECT keyword. Split out of writeInto to keep the latter's
+// cognitive complexity bounded. The head is `WITH RECURSIVE` when any
+// entry is recursive (Anchor + Recursive set); a chain of only
+// non-recursive `With` CTEs renders the bare `WITH`. CH accepts
+// non-recursive entries under the RECURSIVE keyword, so the mixed case
+// stays valid.
+func (s *QueryBuilder) writeCTEs(b *Builder) {
+	if len(s.ctes) == 0 {
+		return
 	}
+	recursive := false
+	for _, c := range s.ctes {
+		if c.Anchor != nil || c.Recursive != nil {
+			recursive = true
+			break
+		}
+	}
+	if recursive {
+		b.sb.WriteString("WITH RECURSIVE ")
+	} else {
+		b.sb.WriteString("WITH ")
+	}
+	for i, c := range s.ctes {
+		if i > 0 {
+			b.sb.WriteString(", ")
+		}
+		// CTE names render bare — CH accepts unquoted identifiers for
+		// CTE aliases, and the existing structural_join fixture pins
+		// `_struct_closure` (no backticks). The caller is responsible
+		// for passing a CH-identifier-safe token.
+		b.sb.WriteString(c.Name)
+		b.sb.WriteString(" AS ")
+		c.writeBody(b)
+	}
+	b.sb.WriteByte(' ')
+}
+
+// writeBody renders a single CTE entry's body: the non-recursive
+// `(<subquery>)` Body Frag (which carries its own surrounding parens),
+// or the recursive `(<anchor> UNION ALL <recursive>)` shape.
+func (c cteClause) writeBody(b *Builder) {
+	switch {
+	case c.Body != nil:
+		// Non-recursive CTE: the Body Frag already renders its own
+		// surrounding parens (it's an arm subquery Frag), so emit it
+		// verbatim — `<name> AS (<subquery>)`.
+		c.Body(b)
+	case c.Anchor != nil && c.Recursive != nil:
+		b.sb.WriteByte('(')
+		c.Anchor.writeInto(b)
+		b.sb.WriteString(" UNION ALL ")
+		c.Recursive.writeInto(b)
+		b.sb.WriteByte(')')
+	default:
+		// No Body means the entry was registered via WithRecursive;
+		// both Anchor and Recursive must be set.
+		panic("chsql: WithRecursive requires non-nil anchor and recursive")
+	}
+}
+
+func (s *QueryBuilder) writeInto(b *Builder) {
+	s.writeCTEs(b)
 	b.sb.WriteString("SELECT ")
 	if len(s.selectList) == 0 {
 		b.sb.WriteByte('*')

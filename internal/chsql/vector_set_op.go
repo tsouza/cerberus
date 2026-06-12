@@ -2,6 +2,7 @@ package chsql
 
 import (
 	"fmt"
+	"strconv"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 )
@@ -125,14 +126,30 @@ func (e *emitter) emitVectorSetOp(s *chplan.VectorSetOp) error {
 		// across arms never hits the String-vs-Map supertype error even
 		// when one arm is a derived-shape RangeWindow / Aggregate that
 		// drops `__name__`.
+		//
+		// CSE — materialise the LEFT canonical arm exactly once as a
+		// `WITH _setop_lhs_<n> AS (<leftArm>)` CTE and reference it by
+		// name in BOTH the UNION-ALL left leg AND the right leg's
+		// `<sig> NOT IN (SELECT DISTINCT <sig> FROM …)` anti-join. Before
+		// this, the left subplan was inlined textually in both spots —
+		// so a left-assoc chain `a or b or c …` re-rendered the whole
+		// nested LHS twice per level, blowing the SQL text up
+		// EXPONENTIALLY (k=4 ≈ 33KB, k=8 breaches CH's 256KB
+		// max_query_size → Code:62). Emitting it once and referencing the
+		// CTE name makes the chain grow LINEARLY while producing a
+		// byte-for-byte identical result set: the NOT-IN only reads the
+		// signature (Attributes / on()/ignoring() projection), which the
+		// canonical arm passes through unchanged.
+		lhsCTE := "_setop_lhs_" + strconv.Itoa(e.nextSetOpSeq())
 		leftSelect := NewQuery().
 			Select(vectorSetOpOutputCols(s)...).
-			From(leftArm)
+			From(BareIdent(lhsCTE))
 		rightSelect := NewQuery().
 			Select(vectorSetOpOutputCols(s)...).
 			From(rightArm).
-			Where(setOpInSubqueryFrag(s.Match, s.AttributesColumn, leftFrag, false /*notIn*/))
+			Where(setOpInSubqueryFrag(s.Match, s.AttributesColumn, BareIdent(lhsCTE), false /*notIn*/))
 		outer := NewQuery().
+			With(lhsCTE, leftArm).
 			Select(vectorSetOpOutputCols(s)...).
 			From(Paren(UnionAll(leftSelect.Frag(), rightSelect.Frag())))
 		e.emitSelect(outer)

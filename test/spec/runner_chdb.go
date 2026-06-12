@@ -105,6 +105,16 @@ func isMapColumn(name string) bool {
 // lets the outer SELECT name the columns and the Map-wrap pass do
 // its work without touching the inner shape.
 func expandStarProjection(query string) string {
+	// A `WITH <cte> AS (...) SELECT …` head (the vector-set-op CSE CTE,
+	// or the structural-join WITH RECURSIVE closure) precedes the outer
+	// SELECT — peel it so the projection split sees the real outer
+	// SELECT, then re-prepend it on the rewritten result. The CTE
+	// bodies keep their raw Map columns (consumed server-side); only
+	// the outer projection needs the toJSONString wrap.
+	withHead, body := stripWithHead(query)
+	if withHead != "" {
+		return withHead + expandStarProjection(body)
+	}
 	head, tail := splitOuterSelect(query)
 	if head == "" || strings.TrimSpace(head) != "*" {
 		return query
@@ -176,6 +186,14 @@ func expandStarProjection(query string) string {
 // at scan time if a Map column slips through unwrapped, which makes
 // the failure mode loud and easy to debug.
 func rewriteMapProjections(query string) string {
+	// Peel a leading `WITH <cte> AS (...)` head so the outer-SELECT
+	// projection split sees the real outer SELECT; re-prepend it after
+	// rewriting. The CTE bodies are subqueries — CH consumes their Map
+	// columns server-side, so they stay raw (the same rule the
+	// subquery branches already follow).
+	if withHead, body := stripWithHead(query); withHead != "" {
+		return withHead + rewriteMapProjections(body)
+	}
 	head, tail := splitOuterSelect(query)
 	if head == "" {
 		// Top-level UNION (`(SELECT ...) UNION DISTINCT (SELECT ...)`):
@@ -282,6 +300,49 @@ func mapColAlias(s string) string {
 		s = s[i+1:]
 	}
 	return unquoteBackticks(s)
+}
+
+// stripWithHead peels a leading `WITH <cte> AS (...)[, <cte> AS (...)]`
+// CTE chain off query, returning (head, body) where head is the verbatim
+// `WITH … ` prefix (including the single trailing space before SELECT)
+// and body is the outer `SELECT …` that follows. The `RECURSIVE` keyword
+// is optional. When query does not begin with `WITH ` (case-insensitive)
+// it returns ("", "") so callers fall through to the bare-SELECT path.
+//
+// The outer SELECT is the first `SELECT` keyword reached at paren depth 0
+// after the CTE chain — CTE bodies are parenthesised, so their nested
+// SELECTs sit at depth > 0 and are skipped. This lets the Map-rewrite
+// passes operate on the real outer projection of the vector-set-op CSE
+// CTE (`WITH _setop_lhs_<n> AS (...) SELECT …`) and the structural-join
+// `WITH RECURSIVE` closure alike.
+func stripWithHead(query string) (head, body string) {
+	upper := strings.ToUpper(query)
+	if !strings.HasPrefix(upper, "WITH ") {
+		return "", ""
+	}
+	depth := 0
+	for i := 0; i < len(query); i++ {
+		switch query[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		}
+		// The outer SELECT is the first depth-0 `SELECT ` token after the
+		// `WITH ` keyword itself (i > 0 guards against matching at the
+		// very start, which can't happen here anyway since we begin with
+		// WITH).
+		if depth == 0 && i+len("SELECT ") <= len(query) &&
+			strings.EqualFold(query[i:i+len("SELECT ")], "SELECT ") {
+			// Only treat it as the outer SELECT when it's a standalone
+			// keyword (preceded by whitespace), not a substring of an
+			// identifier.
+			if i > 0 && (query[i-1] == ' ' || query[i-1] == ')' || query[i-1] == '\n' || query[i-1] == '\t') {
+				return query[:i], query[i:]
+			}
+		}
+	}
+	return "", ""
 }
 
 // splitOuterSelect returns the (projection-list, rest) split of a
@@ -447,6 +508,13 @@ func unquoteBackticks(s string) string {
 // branch's SELECT — every UNION branch shares the same projection shape
 // by construction so any branch's count is authoritative.
 func extractProjectionCount(query string) int {
+	// Peel a leading `WITH <cte> AS (...)` head so the column count is
+	// read off the real outer SELECT, not the (absent) WITH-prefixed
+	// one. Without this the WITH-shaped vector-set-op CSE SQL falls to
+	// the wildcard (count 0 → rows.Columns()) path.
+	if _, body := stripWithHead(query); body != "" {
+		query = body
+	}
 	head, _ := splitOuterSelect(peelUnionPrefix(query))
 	if head == "" {
 		return 0
