@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/prometheus/common/model"
+	promparser "github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/chclient"
@@ -17,6 +18,194 @@ import (
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/promql"
 )
+
+// maxMetricCandidatesPerQuery bounds how many matcher variants the
+// fan-in batched metadata endpoints (/api/v1/series, /api/v1/labels,
+// /api/v1/label/<name>/values) fold into a single combined ClickHouse
+// query (task #71).
+//
+// Why a cap: the fan-in batching collapses the V×H×matcher variant
+// fan-out into ONE combined UNION-ALL query (N round-trips → 1). Each
+// variant lowers to a full Sample-projecting / matched-row SELECT — a
+// multi-line statement with its own PREWHERE / WHERE / window clauses.
+// The metrics-explorer "every published metric" probe (and the
+// home/drilldown bulk load) send hundreds-to-thousands of match[]
+// selectors at once; each fans out to up to ~192 variants. UNION-ALL'ing
+// that many full SELECTs blows the rendered SQL text past ClickHouse's
+// `max_query_size` (256KB default) — the exact failure that 502'd the
+// first un-bounded fan-in attempt (PR #790) at byte position 262124.
+//
+// The cap chunks the variant set into ⌈N/cap⌉ combined queries, each well
+// under the 256KB ceiling, merged through the same Go dedup the single-
+// query path uses. Typical requests (a handful of variants) stay one
+// round-trip — the win is preserved; only pathologically broad requests
+// fan to a few bounded queries, still ≪ the per-variant round-trip count.
+//
+// Sizing: a lowered matcher SELECT on the default OTel schema renders to
+// ~1KB now that internal/promql/lower.go::metricNamePredicate emits the
+// candidate set as a flat parameterized `MetricName IN (?,…)` (PR #795)
+// rather than the old inline OR-chain (~3KB/arm — the per-arm blowup that
+// actually killed #790). 128 arms × ~1KB ≈ 130KB of arm text plus
+// UNION-ALL glue — comfortably under the 256KB ceiling even when arms run
+// ~50% wider on a custom schema. The rendered-size guard below
+// (maxRenderedQueryBytes) is the belt-and-suspenders: it re-checks each
+// built chunk's actual byte length and splits further if a pathological
+// schema still breaches the budget, so correctness never depends on the
+// arm-count heuristic alone.
+const maxMetricCandidatesPerQuery = 128
+
+// maxRenderedQueryBytes is the byte budget the rendered-size guard
+// enforces on every combined query the batched endpoints build. It sits
+// below ClickHouse's default `max_query_size` (256KB / 262144 bytes) with
+// headroom for wider custom schemas: a combined query whose BOUND size
+// (placeholder SQL with every `?` replaced by its inlined arg literal —
+// see boundQueryBytes) exceeds this budget is split further (down to a
+// single arm) so no query ever approaches the CH ceiling for ANY request,
+// however broad.
+//
+// This is the guard the first fan-in attempt (PR #790) lacked: it relied
+// on the arm-count cap alone, and a wide-schema / heavily-underscored
+// probe rendered arms fat enough to cross 256KB even under the cap. The
+// guard makes the bound unconditional — correctness over the perf win:
+// a pathologically broad request degrades to a few bounded queries (still
+// ≪ N round-trips), never a 502.
+//
+// The budget is measured against the BOUND query size, not the compact
+// placeholder SQL: clickhouse-go/v2 inlines positional args client-side
+// (no native bound-param channel), so the bytes CH's max_query_size counts
+// are the literal-substituted query. Measuring `len(placeholderSQL)` alone
+// — as the original #71 guard did — undercounted the wire size by the
+// entire arg-literal payload, which is exactly how the #799 502 on
+// `otelcol_process_runtime_total_sys_memory_bytes` slipped past the guard
+// in CI yet 502'd against real clickhouse-server in compose-smoke.
+const maxRenderedQueryBytes = 200 * 1024
+
+// chunkMatcherVariants splits the matcher-variant slice into chunks of at
+// most maxMetricCandidatesPerQuery so each combined query the batched
+// endpoints build starts well under ClickHouse's max_query_size. A slice
+// at or below the cap returns a single chunk (the typical one-round-trip
+// case); only an over-cap set fans into ⌈len/cap⌉ chunks. The
+// rendered-size guard (splitOversizeChunk) may split any of these chunks
+// further at build time. Returns nil for an empty input so callers
+// short-circuit without issuing a query.
+func chunkMatcherVariants(variants []string) [][]string {
+	if len(variants) == 0 {
+		return nil
+	}
+	if len(variants) <= maxMetricCandidatesPerQuery {
+		return [][]string{variants}
+	}
+	chunks := make([][]string, 0, (len(variants)+maxMetricCandidatesPerQuery-1)/maxMetricCandidatesPerQuery)
+	for i := 0; i < len(variants); i += maxMetricCandidatesPerQuery {
+		end := i + maxMetricCandidatesPerQuery
+		if end > len(variants) {
+			end = len(variants)
+		}
+		chunks = append(chunks, variants[i:end])
+	}
+	return chunks
+}
+
+// renderedSQLBytes returns the byte length of the statement `combine`
+// produces for the given matcher-subquery arms — measured as the size
+// ClickHouse actually PARSES, not the size of the placeholder SQL.
+//
+// chDB-lenient-vs-prod-strict gap (the #799 502): clickhouse-go/v2 speaks
+// the native protocol, which has no server-side bound-parameter channel —
+// the driver substitutes every positional `?` with its rendered literal
+// CLIENT-SIDE before the query reaches the server (lib/column bind path).
+// So the bytes CH parses, and the bytes its `max_query_size` (256KB)
+// ceiling counts, are the placeholder SQL with every `?` REPLACED by its
+// argument literal — not the compact `?`-carrying string `combine`
+// returns. A heavily-underscored gauge metric like
+// `otelcol_process_runtime_total_sys_memory_bytes` fans out to a 2^6
+// dotted-candidate × histogram-companion arm set, and each arm binds its
+// candidate powerset as `MetricName IN (?,…)`; the placeholder SQL stays
+// ~1KB/arm (the args ride the `[]any` channel, invisible to a `len(sql)`
+// probe), but once the driver inlines ~thousands of candidate string
+// literals the wire query crosses 256KB at parse position ~262142 and CH
+// rejects it with code 62 "Max query size exceeded" — a 502 the old
+// `len(sql)` guard could never see because it measured the wrong string.
+// chDB masks this entirely (its bind path tolerates the oversize), which
+// is why only the real-clickhouse-server compose-smoke reproduced it.
+//
+// We add the per-arg inlined-literal cost so the guard measures the bound
+// query the driver transmits, and buildBoundedChunkSQL splits on the real
+// figure.
+func renderedSQLBytes(arms []chsql.Frag, combine func([]chsql.Frag) (string, []any)) int {
+	sql, args := combine(arms)
+	return boundQueryBytes(sql, args)
+}
+
+// boundQueryBytes estimates the byte length of the query ClickHouse parses
+// after clickhouse-go/v2 inlines the positional args client-side: the
+// placeholder SQL plus, for each `?`, the extra bytes its rendered literal
+// occupies beyond the single `?` it replaces. The estimate is a safe
+// over-approximation (it never undercounts the wire size), so the
+// rendered-size guard errs toward smaller, safer chunks rather than
+// shipping an oversize query CH would 502 on.
+func boundQueryBytes(sql string, args []any) int {
+	total := len(sql)
+	for _, a := range args {
+		// Each arg replaces one `?` (1 byte) with its rendered literal.
+		total += argLiteralBytes(a) - 1
+	}
+	return total
+}
+
+// argLiteralBytes returns an upper bound on the byte length of the literal
+// clickhouse-go/v2 renders for one bound arg. String args dominate the
+// series/metadata fan-out (metric-name + label-key candidates); they render
+// as `'<value>'` with each quote/backslash byte-doubled by escaping, so the
+// worst case is `2*len + 2` (every byte escaped, plus the surrounding
+// quotes). Non-string args (ints, the empty-string sentinel, time bounds)
+// are bounded by a small constant — generous enough that no realistic
+// numeric/temporal literal undercounts.
+func argLiteralBytes(a any) int {
+	if s, ok := a.(string); ok {
+		return 2*len(s) + 2
+	}
+	const nonStringLiteralBudget = 40
+	return nonStringLiteralBudget
+}
+
+// buildBoundedChunkSQL renders the matcher-variant arms of ONE arm-cap
+// chunk into one or more (sql, args) combined statements, each guaranteed
+// under maxRenderedQueryBytes — the rendered-size guard (task #71
+// redesign). `combine` takes a slice of matcher-subquery arm Frags and
+// returns the combined statement (the per-endpoint projection over the
+// UNION-ALL of those arms).
+//
+// The common case — a chunk whose rendered SQL fits the budget — returns
+// exactly one statement (one round-trip). Only a chunk that still renders
+// oversize (a pathologically wide custom schema where even ≤cap arms blow
+// the budget) is split: the arms are halved recursively until each
+// sub-chunk fits, or down to a single arm (which is emitted as-is even if
+// it alone exceeds the budget — a single matcher SELECT can't be split
+// further, and CH will surface its own max_query_size error rather than
+// cerberus silently dropping it). Correctness over the perf win: the
+// caller's Go dedup folds the overlapping sub-chunk results safely.
+func buildBoundedChunkSQL(arms []chsql.Frag, combine func([]chsql.Frag) (string, []any)) []renderedQuery {
+	if len(arms) == 0 {
+		return nil
+	}
+	if len(arms) == 1 || renderedSQLBytes(arms, combine) <= maxRenderedQueryBytes {
+		sql, args := combine(arms)
+		return []renderedQuery{{sql: sql, args: args}}
+	}
+	mid := len(arms) / 2
+	left := buildBoundedChunkSQL(arms[:mid], combine)
+	right := buildBoundedChunkSQL(arms[mid:], combine)
+	return append(left, right...)
+}
+
+// renderedQuery is one combined (sql, args) statement the batched
+// endpoints execute. buildBoundedChunkSQL returns a slice of these so the
+// caller runs each as its own round-trip and merges the results.
+type renderedQuery struct {
+	sql  string
+	args []any
+}
 
 // handleLabels implements GET /api/v1/labels — distinct label names across
 // all metric tables, plus the synthetic `__name__` for the metric-name
@@ -323,43 +512,30 @@ func (h *Handler) handleSeries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Two-layer matcher fan-out — `expandUnderscoredMetricNameMatcher`
+	// (dotted-storage candidates) nested inside `expandBareHistogramMatcher`
+	// (classic-histogram companion variants). See the per-helper docstrings
+	// for the resolution semantics each layer covers.
+	//
+	// Fan-in batching (task #71): the V×H (and matcher) variant set is
+	// collapsed into ONE combined CH round-trip instead of one round-trip
+	// per variant. Each variant lowers to a Sample-projecting SELECT; the
+	// arms are UNION-ALL'd into a single query whose row stream the Go
+	// dedup below folds into distinct label sets — same series returned,
+	// N round-trips → 1. Pathologically broad probes chunk into ⌈N/K⌉
+	// bounded queries (still ≪ N); see fetchSeries.
+	variants := expandSeriesMatchers(h.parser, matchers, h.Schema.HistogramTable)
+	sets, err := h.fetchSeries(r.Context(), variants)
+	if err != nil {
+		h.respondError(w, err)
+		return
+	}
+
 	seen := make(map[string]map[string]string)
-	for _, m := range matchers {
-		// Two-layer matcher fan-out:
-		//
-		//   1. `expandUnderscoredMetricNameMatcher` — when the matcher
-		//      pins `__name__` to a Prom-grammar form with at least one
-		//      rewritable underscore, also probe every OTel-dotted
-		//      candidate so a catalog entry like
-		//      `http_server_request_body_size` resolves against rows
-		//      stored under the dotted form
-		//      (`http.server.request.body.size`). The catalog endpoint
-		//      already normalises stored MetricNames through
-		//      `OTelToPromMetric`; without this fan-out the matcher
-		//      side disagrees and Drilldown-Metrics' label-chip fetch
-		//      surfaces "Unable to fetch labels".
-		//
-		//   2. `expandBareHistogramMatcher` — per-arm of (1), fan a
-		//      bare classic-histogram base name out into its three
-		//      Prom-wire companion variants (`<base>_bucket` /
-		//      `<base>_count` / `<base>_sum`) so /api/v1/series
-		//      returns the three companion series Grafana's Metrics
-		//      Explorer expects. Non-histogram matchers short-circuit
-		//      through the helper's single-element return.
-		for _, nameVariant := range expandUnderscoredMetricNameMatcher(h.parser, m) {
-			for _, variant := range expandBareHistogramMatcher(h.parser, nameVariant, h.Schema.HistogramTable) {
-				sets, err := h.fetchSeries(r.Context(), variant)
-				if err != nil {
-					h.respondError(w, err)
-					return
-				}
-				for _, lset := range sets {
-					key := format.CanonicalKey(lset)
-					if _, ok := seen[key]; !ok {
-						seen[key] = lset
-					}
-				}
-			}
+	for _, lset := range sets {
+		key := format.CanonicalKey(lset)
+		if _, ok := seen[key]; !ok {
+			seen[key] = lset
 		}
 	}
 
@@ -540,18 +716,19 @@ func (h *Handler) catalogNameTables() (bareTables []string, histogramTable strin
 // Non-histogram inputs short-circuit through the no-op (single-element)
 // return of the expander.
 func (h *Handler) fetchLabelNamesMatched(ctx context.Context, matchers []string) ([]string, error) {
-	collected := []string{model.MetricNameLabel}
-	for _, m := range matchers {
-		for _, nameVariant := range expandUnderscoredMetricNameMatcher(h.parser, m) {
-			for _, variant := range expandBareHistogramMatcher(h.parser, nameVariant, h.Schema.HistogramTable) {
-				keys, err := h.labelKeysForMatcher(ctx, variant)
-				if err != nil {
-					return nil, err
-				}
-				collected = append(collected, keys...)
-			}
-		}
+	// Fan-in batching (task #71): the variant fan-out across all matchers
+	// collapses into ONE combined query (chunked under CH's max_query_size
+	// when broad). Each variant lowers to its inner matcher SELECT; the
+	// arms UNION-ALL into the FROM source of a single
+	// `SELECT DISTINCT arrayJoin(mapKeys(Attributes))` — N round-trips → 1
+	// (⌈N/K⌉ for a pathologically broad probe), same distinct key set the
+	// per-arm loop collected.
+	variants := expandSeriesMatchers(h.parser, matchers, h.Schema.HistogramTable)
+	keys, err := h.labelKeysForMatchers(ctx, variants)
+	if err != nil {
+		return nil, err
 	}
+	collected := append([]string{model.MetricNameLabel}, keys...)
 	out := format.NormalizeLabelNames(collected)
 	sort.Strings(out)
 	return out, nil
@@ -559,7 +736,7 @@ func (h *Handler) fetchLabelNamesMatched(ctx context.Context, matchers []string)
 
 // fetchLabelValuesMatched returns the distinct values of <name> across
 // series matching any of the given match[] selectors. The start/end pair
-// is forwarded to matcherSQL via labelValuesForMatcher so the lowering's
+// is forwarded to matcherSQL via labelValuesForMatchers so the lowering's
 // LWR anchor reflects the request window when present.
 //
 // As with fetchLabelNamesMatched, each matcher fans out through
@@ -568,20 +745,21 @@ func (h *Handler) fetchLabelNamesMatched(ctx context.Context, matchers []string)
 // histogram metric) also visits the three classic-histogram companion
 // variants. See expandBareHistogramMatcher for the rationale.
 func (h *Handler) fetchLabelValuesMatched(ctx context.Context, name string, matchers []string, start, end time.Time) ([]string, error) {
+	// Fan-in batching (task #71): the variant fan-out across all matchers
+	// collapses into ONE combined query (chunked under CH's max_query_size
+	// when broad). Each variant's matched-row subquery is a UNION-ALL arm
+	// of the shared scan; the per-name value projection (the `__name__` /
+	// single-candidate / multi-candidate shapes) runs once over that union
+	// — N round-trips → 1 (⌈N/K⌉ for a pathologically broad probe).
+	variants := expandSeriesMatchers(h.parser, matchers, h.Schema.HistogramTable)
+	vals, err := h.labelValuesForMatchers(ctx, name, variants, start, end)
+	if err != nil {
+		return nil, err
+	}
 	seen := map[string]bool{}
-	for _, m := range matchers {
-		for _, nameVariant := range expandUnderscoredMetricNameMatcher(h.parser, m) {
-			for _, variant := range expandBareHistogramMatcher(h.parser, nameVariant, h.Schema.HistogramTable) {
-				vals, err := h.labelValuesForMatcher(ctx, name, variant, start, end)
-				if err != nil {
-					return nil, err
-				}
-				for _, v := range vals {
-					if v != "" {
-						seen[v] = true
-					}
-				}
-			}
+	for _, v := range vals {
+		if v != "" {
+			seen[v] = true
 		}
 	}
 	out := make([]string, 0, len(seen))
@@ -602,85 +780,155 @@ func (h *Handler) fetchLabelValuesMatched(ctx context.Context, name string, matc
 	return out, nil
 }
 
-// labelKeysForMatcher lowers a single match[] selector, then wraps the
-// matched rows in a `SELECT DISTINCT arrayJoin(mapKeys(Attributes))`
-// to extract its attribute keys.
-func (h *Handler) labelKeysForMatcher(ctx context.Context, matcher string) ([]string, error) {
-	innerSQL, args, err := h.matcherSQL(ctx, matcher, time.Time{}, time.Time{})
-	if err != nil {
-		return nil, err
+// matcherArms lowers each match[] selector variant to its inner matcher
+// SELECT and wraps it as a parenthesised subquery Frag — the per-variant
+// UNION-ALL arm shared by the batched label-keys / label-values builders.
+// start/end anchor the matcher lowering's LWR window (zero-time falls back
+// to the lowering default).
+func (h *Handler) matcherArms(ctx context.Context, matchers []string, start, end time.Time) ([]chsql.Frag, error) {
+	arms := make([]chsql.Frag, 0, len(matchers))
+	for _, m := range matchers {
+		innerSQL, args, err := h.matcherSQL(ctx, m, start, end)
+		if err != nil {
+			return nil, err
+		}
+		arms = append(arms, matcherSubqueryFrag(innerSQL, args))
 	}
-	attrsCol := h.Schema.AttributesColumn
-
-	sb := chsql.NewQuery().
-		Select(chsql.As(arrayJoinMapKeysFrag(attrsCol), "name")).
-		From(matcherSubqueryFrag(innerSQL, args)).
-		OrderBy(chsql.Col("name"), false)
-	sql, combined := sb.Build()
-	return timeCH(ctx, func() ([]string, error) {
-		return h.Client.QueryStrings(ctx, sql, combined...)
-	})
+	return arms, nil
 }
 
-// labelValuesForMatcher lowers a single match[] selector, then projects
-// the named label's distinct values. `__name__` resolves to MetricName;
-// other labels to `Attributes[<name>]`. start/end anchor the matcher
-// lowering's LWR window (zero-time falls back to the lowering default).
-func (h *Handler) labelValuesForMatcher(ctx context.Context, name, matcher string, start, end time.Time) ([]string, error) {
-	innerSQL, args, err := h.matcherSQL(ctx, matcher, start, end)
-	if err != nil {
-		return nil, err
+// labelKeysForMatchers lowers each match[] selector variant, UNION-ALLs
+// their matched-row subqueries into one scan, and wraps the union in a
+// `SELECT DISTINCT arrayJoin(mapKeys(Attributes))` to extract the attribute
+// keys across all variants in a single CH round-trip (task #71).
+//
+// Bounded-batch-or-fallback: the variants are arm-capped into ⌈N/K⌉
+// chunks (chunkMatcherVariants); the rendered-size guard
+// (buildBoundedChunkSQL) then splits any chunk whose combined SQL still
+// breaches maxRenderedQueryBytes. The caller (fetchLabelNamesMatched)
+// re-dedupes via format.NormalizeLabelNames, so the per-query key sets can
+// overlap safely. An empty variant list yields no keys (and no query).
+func (h *Handler) labelKeysForMatchers(ctx context.Context, matchers []string) ([]string, error) {
+	if len(matchers) == 0 {
+		return nil, nil
 	}
+	attrsCol := h.Schema.AttributesColumn
+	combine := func(arms []chsql.Frag) (string, []any) {
+		return chsql.NewQuery().
+			Select(chsql.As(arrayJoinMapKeysFrag(attrsCol), "name")).
+			From(chsql.Paren(chsql.UnionAll(arms...))).
+			OrderBy(chsql.Col("name"), false).
+			Build()
+	}
+	var all []string
+	for _, chunk := range chunkMatcherVariants(matchers) {
+		arms, err := h.matcherArms(ctx, chunk, time.Time{}, time.Time{})
+		if err != nil {
+			return nil, err
+		}
+		for _, q := range buildBoundedChunkSQL(arms, combine) {
+			keys, err := timeCH(ctx, func() ([]string, error) {
+				return h.Client.QueryStrings(ctx, q.sql, q.args...)
+			})
+			if err != nil {
+				return nil, err
+			}
+			all = append(all, keys...)
+		}
+	}
+	return all, nil
+}
+
+// labelValuesForMatchers lowers each match[] selector variant, UNION-ALLs
+// their matched-row subqueries into one shared scan, and projects the
+// named label's distinct values over that union in a single CH round-trip
+// (task #71). `__name__` resolves to MetricName; other labels to
+// `Attributes[<name>]`. start/end anchor the matcher lowering's LWR window
+// (zero-time falls back to the lowering default).
+//
+// Bounded-batch-or-fallback: as with labelKeysForMatchers the variants are
+// arm-capped into ⌈N/K⌉ chunks and the rendered-size guard splits any
+// chunk that still breaches maxRenderedQueryBytes. The caller re-dedupes
+// via its `seen` map, so per-query value sets can overlap safely. An empty
+// variant list yields no values (and no query).
+func (h *Handler) labelValuesForMatchers(ctx context.Context, name string, matchers []string, start, end time.Time) ([]string, error) {
+	if len(matchers) == 0 {
+		return nil, nil
+	}
+	combine := h.labelValueCombine(name)
+	var all []string
+	for _, chunk := range chunkMatcherVariants(matchers) {
+		arms, err := h.matcherArms(ctx, chunk, start, end)
+		if err != nil {
+			return nil, err
+		}
+		for _, q := range buildBoundedChunkSQL(arms, combine) {
+			vals, err := timeCH(ctx, func() ([]string, error) {
+				return h.Client.QueryStrings(ctx, q.sql, q.args...)
+			})
+			if err != nil {
+				return nil, err
+			}
+			all = append(all, vals...)
+		}
+	}
+	return all, nil
+}
+
+// labelValueCombine returns the per-endpoint combine closure that projects
+// the distinct values of label <name> over a UNION-ALL of matcher-variant
+// arms. The closure shape is the three label-value projections the
+// pre-batch single-matcher path used: `__name__` → MetricName, a
+// single-candidate label → one `Attributes[k]` projection, a
+// multi-candidate label → an inner per-candidate UNION over the shared
+// matched-row scan (so a user-supplied `cerberus_ql` reaches both the
+// underscored and dotted storage forms).
+func (h *Handler) labelValueCombine(name string) func([]chsql.Frag) (string, []any) {
 	if name == model.MetricNameLabel {
-		sb := chsql.NewQuery().
-			Select(chsql.As(distinctIdent(h.Schema.MetricNameColumn), "value")).
-			From(matcherSubqueryFrag(innerSQL, args)).
-			OrderBy(chsql.Col("value"), false)
-		sql, combined := sb.Build()
-		return timeCH(ctx, func() ([]string, error) {
-			return h.Client.QueryStrings(ctx, sql, combined...)
-		})
+		return func(arms []chsql.Frag) (string, []any) {
+			return chsql.NewQuery().
+				Select(chsql.As(distinctIdent(h.Schema.MetricNameColumn), "value")).
+				From(chsql.Paren(chsql.UnionAll(arms...))).
+				OrderBy(chsql.Col("value"), false).
+				Build()
+		}
 	}
 	attrsCol := h.Schema.AttributesColumn
 	candidates := labelValueCandidates(name)
-	// Fast-path: a single candidate (the typical `job` / `instance`
-	// shape) emits the legacy single-arm SQL — keeps byte-stable with
-	// the pre-#664 fixtures.
 	if len(candidates) == 1 {
-		sb := chsql.NewQuery().
-			Select(chsql.As(distinctMapAtFrag(attrsCol, candidates[0]), "value")).
-			From(matcherSubqueryFrag(innerSQL, args)).
-			Where(mapAtNotEmptyFrag(attrsCol, candidates[0])).
-			OrderBy(chsql.Col("value"), false)
-		sql, combined := sb.Build()
-		return timeCH(ctx, func() ([]string, error) {
-			return h.Client.QueryStrings(ctx, sql, combined...)
-		})
+		// Single candidate (the typical `job` / `instance` shape): the
+		// value projection runs directly over the combined matched-row
+		// scan.
+		return func(arms []chsql.Frag) (string, []any) {
+			return chsql.NewQuery().
+				Select(chsql.As(distinctMapAtFrag(attrsCol, candidates[0]), "value")).
+				From(chsql.Paren(chsql.UnionAll(arms...))).
+				Where(mapAtNotEmptyFrag(attrsCol, candidates[0])).
+				OrderBy(chsql.Col("value"), false).
+				Build()
+		}
 	}
-	// Multi-candidate fan-out: emit one UNION arm per candidate over the
-	// SAME matcher subquery so a user-supplied `cerberus_ql` reaches both
-	// the underscored and dotted storage forms. The matcher subquery is
-	// expressed as a PreRenderedSQL Frag so its args land inline at each
-	// arm's FROM position; the matcher SQL itself runs once per arm at
-	// CH-time but the optimizer hoists the shared scan into a CTE for
-	// the multi-candidate case (and the typical 2-candidate fan-out is
-	// bounded by the same 64-candidate cap the matcher chain honours).
-	parts := make([]chsql.Frag, 0, len(candidates))
-	for _, k := range candidates {
-		arm := chsql.NewQuery().
-			Select(chsql.As(distinctMapAtFrag(attrsCol, k), "value")).
-			From(matcherSubqueryFrag(innerSQL, args)).
-			Where(mapAtNotEmptyFrag(attrsCol, k))
-		parts = append(parts, arm.Frag())
+	// Multi-candidate fan-out: emit one inner UNION arm per candidate over
+	// the SAME combined matched-row scan so a user-supplied `cerberus_ql`
+	// reaches both the underscored and dotted storage forms. The matched
+	// scan is itself a UNION-ALL of the matcher variants; both fan-outs
+	// stay inside the single combined query.
+	return func(arms []chsql.Frag) (string, []any) {
+		matchedFrom := chsql.Paren(chsql.UnionAll(arms...))
+		parts := make([]chsql.Frag, 0, len(candidates))
+		for _, k := range candidates {
+			arm := chsql.NewQuery().
+				Select(chsql.As(distinctMapAtFrag(attrsCol, k), "value")).
+				From(matchedFrom).
+				Where(mapAtNotEmptyFrag(attrsCol, k))
+			parts = append(parts, arm.Frag())
+		}
+		return chsql.NewQuery().
+			Select(chsql.As(distinctIdent("value"), "")).
+			From(chsql.Paren(chsql.UnionAll(parts...))).
+			OrderBy(chsql.Col("value"), false).
+			Build()
 	}
-	outer := chsql.NewQuery().
-		Select(chsql.As(distinctIdent("value"), "")).
-		From(chsql.Paren(chsql.UnionAll(parts...))).
-		OrderBy(chsql.Col("value"), false)
-	sql, combined := outer.Build()
-	return timeCH(ctx, func() ([]string, error) {
-		return h.Client.QueryStrings(ctx, sql, combined...)
-	})
 }
 
 // matcherSQL lowers a single matcher to its inner SQL + args. The caller
@@ -710,26 +958,68 @@ func (h *Handler) matcherSQL(ctx context.Context, matcher string, start, end tim
 	return sql, args, nil
 }
 
-// fetchSeries lowers the matcher to a Scan+Filter, runs as a sample query,
-// and dedupes the resulting label sets.
-func (h *Handler) fetchSeries(ctx context.Context, matcher string) ([]map[string]string, error) {
-	// Reuse the existing instant-query pipeline; rows come back as Samples
-	// and we dedupe to label sets in canonicalKey order. Series matchers
-	// don't carry @ start()/end(); pass `now` for both anchors so any
-	// literal @<ts> still resolves but the start()/end() variants surface
-	// as errors at lowering time.
-	now := time.Now()
-	samples, _, err := h.executeInstant(ctx, matcher, now, now)
-	if err != nil {
-		return nil, err
+// expandSeriesMatchers fans every input match[] selector out through the
+// two-layer variant expansion (`expandUnderscoredMetricNameMatcher` ⊃
+// `expandBareHistogramMatcher`) and flattens the result into one
+// deduplicated list of matcher strings. The flattened list is the
+// candidate set the combined /api/v1/series query UNION-ALLs into a single
+// scan — collapsing the former V×H×matcher round-trip fan-out (task #71).
+func expandSeriesMatchers(parser promparser.Parser, matchers []string, histogramTable string) []string {
+	seen := make(map[string]struct{})
+	out := make([]string, 0, len(matchers))
+	for _, m := range matchers {
+		for _, nameVariant := range expandUnderscoredMetricNameMatcher(parser, m) {
+			for _, variant := range expandBareHistogramMatcher(parser, nameVariant, histogramTable) {
+				if _, dup := seen[variant]; dup {
+					continue
+				}
+				seen[variant] = struct{}{}
+				out = append(out, variant)
+			}
+		}
 	}
+	return out
+}
+
+// fetchSeries lowers every matcher variant to a Sample-projecting
+// Scan+Filter, UNION-ALLs the arms into ONE combined query, runs it as a
+// single CH round-trip, and dedupes the resulting label sets.
+//
+// Fan-in batching (task #71): the pre-#71 shape issued one `Client.Query`
+// per variant (V×H fan-out — up to 32 sequential round-trips for a
+// histogram-base request, ~330ms on the demo dataset). Each variant's
+// lowered Sample-shape SELECT is now a UNION-ALL arm of a single query;
+// the Go dedup below folds the combined row stream into distinct label
+// sets exactly as the per-arm loop did, so the returned series are
+// identical — only the round-trip count drops to 1.
+//
+// Bounded-batch-or-fallback: the variant set is arm-capped into ⌈N/K⌉
+// chunks (chunkMatcherVariants) and the rendered-size guard
+// (buildBoundedChunkSQL) splits any chunk whose combined SQL still
+// breaches maxRenderedQueryBytes — typical requests stay one round-trip;
+// only a pathologically broad probe fans into a few bounded queries
+// (still ≪ N), merged through the dedup below.
+func (h *Handler) fetchSeries(ctx context.Context, matchers []string) ([]map[string]string, error) {
+	if len(matchers) == 0 {
+		return nil, nil
+	}
+	// Series matchers don't carry @ start()/end(); pass `now` for both
+	// anchors so any literal @<ts> still resolves but the start()/end()
+	// variants surface as errors at lowering time.
+	now := time.Now()
 
 	seen := make(map[string]map[string]string)
-	for _, s := range samples {
-		labels := format.NormalizeLabelMap(format.WithMetricName(s.Labels, s.MetricName))
-		key := format.CanonicalKey(labels)
-		if _, ok := seen[key]; !ok {
-			seen[key] = labels
+	for _, chunk := range chunkMatcherVariants(matchers) {
+		samples, err := h.fetchSeriesChunk(ctx, chunk, now)
+		if err != nil {
+			return nil, err
+		}
+		for _, s := range samples {
+			labels := format.NormalizeLabelMap(format.WithMetricName(s.Labels, s.MetricName))
+			key := format.CanonicalKey(labels)
+			if _, ok := seen[key]; !ok {
+				seen[key] = labels
+			}
 		}
 	}
 	out := make([]map[string]string, 0, len(seen))
@@ -737,6 +1027,98 @@ func (h *Handler) fetchSeries(ctx context.Context, matcher string) ([]map[string
 		out = append(out, l)
 	}
 	return out, nil
+}
+
+// fetchSeriesChunk runs the combined Sample-projecting query (or queries,
+// when the rendered-size guard splits) over a single arm-cap chunk of
+// matcher variants and returns the raw samples. The caller folds the
+// per-chunk samples into the cross-chunk dedup.
+func (h *Handler) fetchSeriesChunk(ctx context.Context, matchers []string, now time.Time) ([]chclient.Sample, error) {
+	// Single-matcher fast path: run the lowered Sample-shape SELECT
+	// directly as the top-level statement — byte-identical to the
+	// pre-#71 per-arm query (the engine ran this same SQL). Avoids
+	// wrapping the Map-typed Attributes column in an extra `SELECT * FROM
+	// (…)` boundary, which some CH drivers (chdb) refuse to cast back to
+	// MAP.
+	if len(matchers) == 1 {
+		sql, args, err := h.seriesMatcherSQL(ctx, matchers[0], now, now)
+		if err != nil {
+			return nil, err
+		}
+		return h.querySamples(ctx, sql, args)
+	}
+	// Multi-matcher: UNION-ALL the per-variant Sample-shape SELECTs into
+	// ONE statement. `chsql.UnionAll` emits `(arm1) UNION ALL (arm2) …` —
+	// itself a valid top-level SELECT, so no outer `SELECT *` wrapper is
+	// needed (and the Map column stays castable). The rendered-size guard
+	// splits the arm set further if the combined SQL would breach the
+	// byte budget.
+	arms := make([]chsql.Frag, 0, len(matchers))
+	for _, m := range matchers {
+		s, a, err := h.seriesMatcherSQL(ctx, m, now, now)
+		if err != nil {
+			return nil, err
+		}
+		arms = append(arms, matcherSubqueryFrag(s, a))
+	}
+	combine := func(arms []chsql.Frag) (string, []any) {
+		return chsql.Render(chsql.UnionAll(arms...))
+	}
+	var out []chclient.Sample
+	for _, q := range buildBoundedChunkSQL(arms, combine) {
+		samples, err := h.querySamples(ctx, q.sql, q.args)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, samples...)
+	}
+	return out, nil
+}
+
+// querySamples runs a Sample-projecting SELECT and maps the CH error to a
+// 502 apiError. Shared by the single-matcher fast path and the
+// multi-matcher UNION-ALL path in fetchSeriesChunk.
+func (h *Handler) querySamples(ctx context.Context, sql string, args []any) ([]chclient.Sample, error) {
+	samples, err := timeCH(ctx, func() ([]chclient.Sample, error) {
+		return h.Client.Query(ctx, sql, args...)
+	})
+	if err != nil {
+		return nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
+	}
+	return samples, nil
+}
+
+// seriesMatcherSQL lowers a single /api/v1/series matcher to a SELECT that
+// projects the Sample-shape columns (MetricName, Attributes, TimeUnix,
+// Value) — the projection `chclient.Client.Query` binds positionally. It
+// mirrors the engine instant-query path (`executeInstant` →
+// `lang.ProjectSamples`): lower, apply `wrapWithSampleProjection`,
+// optimize, emit. The Sample shape is what lets every variant become a
+// UNION-ALL arm of the one combined query fetchSeries runs.
+//
+// start/end anchor the matcher lowering's eval timestamp (`now` for both
+// on the series path); zero-time falls back to the lowering default.
+func (h *Handler) seriesMatcherSQL(ctx context.Context, matcher string, start, end time.Time) (string, []any, error) {
+	expr, err := h.parseExpr(ctx, matcher)
+	if err != nil {
+		return "", nil, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
+	}
+	var plan chplan.Node
+	if !end.IsZero() {
+		plan, err = promql.LowerAt(ctx, expr, h.Schema, start, end)
+	} else {
+		plan, err = promql.Lower(ctx, expr, h.Schema)
+	}
+	if err != nil {
+		return "", nil, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
+	}
+	plan = wrapWithSampleProjection(plan, h.Schema)
+	plan = h.Optimizer.Run(ctx, plan)
+	sql, args, err := chsql.Emit(ctx, plan)
+	if err != nil {
+		return "", nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError}
+	}
+	return sql, args, nil
 }
 
 // unionLabelNamesSQL builds a UNION of all metric tables' label keys.

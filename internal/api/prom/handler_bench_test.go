@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"runtime"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -230,44 +232,135 @@ func BenchmarkHandleLabels(b *testing.B) {
 	}
 }
 
-// BenchmarkHandleSeries drives /api/v1/series with several match[]
-// selectors — Grafana's "series autocompletion" path.
-func BenchmarkHandleSeries(b *testing.B) {
-	labelSets := make([]map[string]string, 0, 10)
-	for i := 0; i < 10; i++ {
-		labelSets = append(labelSets, map[string]string{
-			"__name__": "up",
-			"job":      "api",
-			"instance": fmt.Sprintf("host-%d", i),
-		})
-	}
-	q := &stubQuerier{labelSets: labelSets}
-	srv := newServer(q)
-	b.Cleanup(srv.Close)
-	// 10 matchers — each one is a series selector. Grafana variable
-	// pickers commonly issue a small batch like this.
-	url := srv.URL + "/api/v1/series?" +
-		"match%5B%5D=up%7Bjob%3D%22api%22%7D&" +
-		"match%5B%5D=up%7Bjob%3D%22web%22%7D&" +
-		"match%5B%5D=up%7Bjob%3D%22db%22%7D&" +
-		"match%5B%5D=up%7Bjob%3D%22cache%22%7D&" +
-		"match%5B%5D=up%7Bjob%3D%22queue%22%7D&" +
-		"match%5B%5D=up%7Bjob%3D%22worker%22%7D&" +
-		"match%5B%5D=up%7Bjob%3D%22ingest%22%7D&" +
-		"match%5B%5D=up%7Bjob%3D%22output%22%7D&" +
-		"match%5B%5D=up%7Bjob%3D%22auth%22%7D&" +
-		"match%5B%5D=up%7Bjob%3D%22edge%22%7D"
+// countingSeriesQuerier counts the Client.Query round-trips the /series
+// fan-in path issues so the BenchmarkHandleSeries variants can assert the
+// post-fan-in round-trip shape (typical=1, broad=⌈N/K⌉). The other Querier
+// methods are stubbed; /series only drives Query.
+type countingSeriesQuerier struct {
+	samples   []chclient.Sample
+	queryCnt  int64 // atomic — concurrent across handler goroutines.
+	maxArmLen int64 // atomic high-water mark of any combined query's byte length.
+}
 
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		resp, err := http.Get(url)
-		if err != nil {
-			b.Fatalf("GET: %v", err)
+func (c *countingSeriesQuerier) Query(_ context.Context, sql string, _ ...any) ([]chclient.Sample, error) {
+	atomic.AddInt64(&c.queryCnt, 1)
+	for {
+		cur := atomic.LoadInt64(&c.maxArmLen)
+		if int64(len(sql)) <= cur || atomic.CompareAndSwapInt64(&c.maxArmLen, cur, int64(len(sql))) {
+			break
 		}
-		_, _ = io.Copy(io.Discard, resp.Body)
-		_ = resp.Body.Close()
 	}
+	return c.samples, nil
+}
+
+func (c *countingSeriesQuerier) QueryCursor(_ context.Context, _ string, _ ...any) (chclient.Cursor, error) {
+	return newSliceCursor(c.samples), nil
+}
+
+func (c *countingSeriesQuerier) QueryStrings(_ context.Context, _ string, _ ...any) ([]string, error) {
+	return nil, nil
+}
+
+func (c *countingSeriesQuerier) QueryLabelSets(_ context.Context, _ string, _ ...any) ([]map[string]string, error) {
+	return nil, nil
+}
+
+func (c *countingSeriesQuerier) QueryMetricMeta(_ context.Context, _, _ string, _ ...any) ([]chclient.MetricMetaRow, error) {
+	return nil, nil
+}
+
+func (c *countingSeriesQuerier) QueryExemplars(_ context.Context, _ string, _ ...any) ([]chclient.ExemplarRow, error) {
+	return nil, nil
+}
+
+// BenchmarkHandleSeries drives /api/v1/series — Grafana's "series
+// autocompletion" path — through the fan-in batching (task #71). The two
+// sub-benchmarks pin the post-fan-in round-trip shape on top of the timing:
+//
+//   - typical: a small batch of selectors (the common Grafana variable
+//     picker shape) collapses into exactly 1 combined CH round-trip.
+//   - broad:   a metrics-explorer "every published metric" probe whose
+//     V×H expansion blows past the K=128 arm cap fans into ⌈N/K⌉ bounded
+//     round-trips — far fewer than the per-variant count the un-batched
+//     fan-out would have issued, and never the single un-bounded statement
+//     that 502'd PR #790.
+func BenchmarkHandleSeries(b *testing.B) {
+	b.Run("typical", func(b *testing.B) {
+		q := &countingSeriesQuerier{}
+		srv := newServer(q)
+		b.Cleanup(srv.Close)
+		// 10 plain selectors — `up` carries no underscores and isn't a
+		// histogram base, so each fans to a single variant; the 10 variants
+		// fold into ONE combined query.
+		form := url.Values{}
+		for _, job := range []string{"api", "web", "db", "cache", "queue", "worker", "ingest", "output", "auth", "edge"} {
+			form.Add("match[]", fmt.Sprintf(`up{job=%q}`, job))
+		}
+		reqURL := srv.URL + "/api/v1/series?" + form.Encode()
+
+		// Warm-up request to assert the round-trip count once (outside the
+		// timed loop), then measure the steady-state envelope cost.
+		atomic.StoreInt64(&q.queryCnt, 0)
+		drainGet(b, reqURL)
+		if got := atomic.LoadInt64(&q.queryCnt); got != 1 {
+			b.Fatalf("typical /series batch issued %d CH round-trips, want exactly 1 "+
+				"(the fan-in win)", got)
+		}
+
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			drainGet(b, reqURL)
+		}
+	})
+
+	b.Run("broad", func(b *testing.B) {
+		const n = 600
+		q := &countingSeriesQuerier{}
+		srv := newServer(q)
+		b.Cleanup(srv.Close)
+		// Heavily-underscored span-metric base names — each fans out to V
+		// dotted candidates × H histogram companions (≈128 variants), so
+		// the combined arm count crosses the K=128 cap and chunks into
+		// ⌈N_arms/K⌉ bounded queries.
+		form := url.Values{}
+		for i := 0; i < n; i++ {
+			form.Add("match[]", fmt.Sprintf("traces_service_graph_request_total_%d", i))
+		}
+		reqURL := srv.URL + "/api/v1/series?" + form.Encode()
+
+		atomic.StoreInt64(&q.queryCnt, 0)
+		drainGet(b, reqURL)
+		rt := atomic.LoadInt64(&q.queryCnt)
+		if rt <= 1 {
+			b.Fatalf("broad /series probe (n=%d) issued %d CH round-trips — chunking did "+
+				"not kick in past the cap", n, rt)
+		}
+		if rt >= int64(n)*10 {
+			b.Fatalf("broad /series probe (n=%d) issued %d CH round-trips — far above the "+
+				"⌈N/K⌉ bound; the batching did not collapse the fan-out", n, rt)
+		}
+		if mx := atomic.LoadInt64(&q.maxArmLen); mx >= 200*1024 {
+			b.Fatalf("broad /series probe rendered a %d-byte combined query, at/over the "+
+				"200KB budget — the rendered-size guard failed (the #790 502 class)", mx)
+		}
+
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			drainGet(b, reqURL)
+		}
+	})
+}
+
+func drainGet(tb testing.TB, reqURL string) {
+	tb.Helper()
+	resp, err := http.Get(reqURL)
+	if err != nil {
+		tb.Fatalf("GET: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
 }
 
 // BenchmarkStreamingCursor_1M_Points runs query_range against a

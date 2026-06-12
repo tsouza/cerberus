@@ -1,27 +1,28 @@
 //go:build chdb
 
-// Deliverable 2 (task #70): diagnose the Drilldown-Metrics /api/v1/series
-// +600ms latency.
-//
-// handleSeries (internal/api/prom/metadata.go:327-363) runs a triple-nested
-// fan-out per request:
+// Perf guard (task #70 diagnosis → task #71 fan-in): the Drilldown-Metrics
+// /api/v1/series +600ms latency was a fan-in problem — handleSeries ran a
+// triple-nested fan-out, one sequential ClickHouse round-trip per matcher
+// variant:
 //
 //	for each match[] selector m:
 //	  for each nameVariant in expandUnderscoredMetricNameMatcher(m):   // V
 //	    for each variant in expandBareHistogramMatcher(nameVariant):   // H
 //	      fetchSeries(variant)  ->  executeInstant  ->  Engine.Query   // 1 CH round-trip
 //
-// So a single histogram-shaped match[] request issues N×V×H *sequential*
-// ClickHouse round-trips, each a full parse→lower→optimize→emit→execute
-// instant query. The hypothesis: the demo's +600ms is fan-in (many fast
-// round-trips serialised) — not one slow query.
+// So a single histogram-shaped match[] request issued N×V×H *sequential*
+// round-trips, each a full parse→lower→optimize→emit→execute instant query
+// — the demo's +600ms was fan-in (many fast round-trips serialised), not
+// one slow query.
 //
+// Task #71 fixed it: the V×H×matcher variant set now collapses into ONE
+// combined UNION-ALL query (chunked to ⌈N/K⌉ only past the K=128 arm cap,
+// with a rendered-size guard keeping every query under CH's max_query_size).
 // This harness drives the real in-process Prom handler against a chDB
-// session via a round-trip-counting Querier decorator, measures N + the
-// per-trip / total wall time, then runs the equivalent single OR-joined
-// combined query (modelled on internal/api/loki/series.go:buildSeriesSQL)
-// to project the batched-into-one cost. It does NOT refactor the handler
-// (that's task #71) — it only proves the win is real and sizes it.
+// session via a round-trip-counting Querier decorator and now asserts the
+// post-fan-in invariant: a typical histogram-shaped request issues EXACTLY
+// ONE round-trip. It also runs the equivalent single combined query
+// directly to size the wall-clock win the fan-in delivers.
 package perf
 
 import (
@@ -270,40 +271,23 @@ SELECT DISTINCT MetricName, Attributes FROM (
 			float64(chSum)/float64(best))
 	}
 
-	// --- ASSERTION: don't-regress-upward round-trip baseline -------------
+	// --- ASSERTION: fan-in shipped — typical request is ONE round-trip ---
 	//
-	// IMPORTANT SCOPE NOTE: the /series fan-in batching (#790) that would
-	// collapse this triple-nested fan-out into a SINGLE combined query is
-	// HELD — it is NOT on main. So this guard deliberately does NOT assert
-	// `n == 1` (that lands as part of the #790 follow-up, at which point
-	// flip the ceiling below to `if n != 1` and delete this note). What it
-	// CAN do today is pin the CURRENT round-trip count as a regression
-	// ceiling: the matcher above (`{__name__="http_server_request_duration"}`)
-	// fans out over the V (dotted-candidate) × H (classic-histogram
-	// companion) variant cross-product, and a bug that added a new
-	// expansion layer — or made an existing one multiply instead of union —
-	// would inflate N. The ceiling bites that explosion without pretending
-	// the batching shipped.
-	//
-	// The ceiling is set generously above the observed count (32 at the
-	// time of writing) so normal variant-set drift (a companion suffix
-	// added/removed) doesn't flake it, while a multiplicative blow-up
-	// (e.g. fanning the H layer over every gauge row, or a doubled V pass)
-	// trips it. When #790 lands and N drops to 1, replace this block with
-	// the exact `n == 1` assertion.
-	const maxRoundTrips = 64
-	if n > maxRoundTrips {
-		t.Fatalf("/series fan-out round-trip regression: a single histogram-shaped "+
-			"match[] request issued %d sequential ClickHouse round-trips, exceeding the "+
-			"%d ceiling. The V×H variant expansion has blown up (a new expansion layer, "+
-			"or an existing one multiplying instead of unioning). NOTE: the #790 fan-in "+
-			"batching that collapses this to 1 round-trip is held off main; when it lands, "+
-			"swap this ceiling for `n == 1`.", n, maxRoundTrips)
-	}
-	if n < 1 {
-		t.Fatalf("/series request issued %d round-trips — the counting Querier saw no "+
-			"CH traffic, so the harness isn't exercising the fan-out path it claims to "+
-			"measure", n)
+	// The /series fan-in batching (task #71) landed on main: the
+	// triple-nested V×H×matcher fan-out now collapses into ONE combined
+	// UNION-ALL query (chunked to ⌈N/K⌉ only past the K=128 arm cap). The
+	// matcher above (`{__name__="http_server_request_duration"}`) fans out
+	// to V (dotted-candidate) × H (classic-histogram companion) variants —
+	// far below the cap — so the batched handler issues EXACTLY ONE CH
+	// round-trip. This is the deterministic post-fan-in guard: a regression
+	// that re-introduced the per-variant loop (or otherwise un-batched the
+	// fan-out) would inflate n back above 1 and trip here.
+	if n != 1 {
+		t.Fatalf("/series fan-in regression: a typical histogram-shaped match[] request "+
+			"issued %d ClickHouse round-trips, want exactly 1. The fan-in batching (task "+
+			"#71) collapses the V×H variant fan-out into one combined UNION-ALL query for "+
+			"any request below the K=128 arm cap; an n>1 here means the per-variant loop "+
+			"regressed or the combined query was split when it should not have been.", n)
 	}
 }
 
