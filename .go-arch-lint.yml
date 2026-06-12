@@ -112,6 +112,8 @@ components:
   api-health:     { in: api/health }
   chclienttest:   { in: chclienttest }
   qlcommon:       { in: qlcommon }
+  # Static fan-out perf linter — reads the chplan IR; leaf utility.
+  perf-fanout:    { in: perf/fanout }
 
 # commonComponents are importable from every layer without an explicit
 # `mayDependOn` entry. These are the cross-cutting utility packages
@@ -227,6 +229,9 @@ deps:
   # are omitted; commonComponents flow naturally so leaves don't need
   # an entry here.
   cerbtrace:
+    mayDependOn:
+      - chplan
+  perf-fanout:
     mayDependOn:
       - chplan
   chclienttest:
