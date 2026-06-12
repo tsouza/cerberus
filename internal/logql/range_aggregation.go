@@ -117,15 +117,26 @@ func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs, lc low
 	var errorBypassLabels chplan.Expr
 	if e.Left.Unwrap != nil && hasParserMergedLabels(labelsExpr, s) {
 		const mergedAlias = "_logql_merged_labels"
+		projections := []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: s.ResourceAttributesColumn}},
+			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}},
+			{Expr: &chplan.ColumnRef{Name: s.BodyColumn}},
+			{Expr: &chplan.ColumnRef{Name: s.SeverityColumn}},
+			{Expr: labelsExpr, Alias: mergedAlias},
+		}
+		// Carry the structured-metadata (LogAttributes) column through the
+		// materialise step so the downstream identity wrap
+		// ([withDetectedLevelAndColumns]) can still coalesce a non-top-level
+		// outer-by key (e.g. `by (namespace)`) from it — without this the
+		// outer identity references `LogAttributes`, which the intermediate
+		// Project would have dropped, and CH aborts with `Unknown
+		// expression or function identifier 'LogAttributes'` (task #59).
+		if s.AttributesColumn != "" {
+			projections = append(projections, chplan.Projection{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}})
+		}
 		innerNode = &chplan.Project{
-			Input: inner,
-			Projections: []chplan.Projection{
-				{Expr: &chplan.ColumnRef{Name: s.ResourceAttributesColumn}},
-				{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}},
-				{Expr: &chplan.ColumnRef{Name: s.BodyColumn}},
-				{Expr: &chplan.ColumnRef{Name: s.SeverityColumn}},
-				{Expr: labelsExpr, Alias: mergedAlias},
-			},
+			Input:       inner,
+			Projections: projections,
 		}
 		mergedCol := &chplan.ColumnRef{Name: mergedAlias}
 		identityBase = &chplan.MapWithoutKeys{Map: mergedCol, Keys: []string{e.Left.Unwrap.Identifier}}

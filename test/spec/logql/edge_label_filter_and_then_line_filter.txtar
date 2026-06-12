@@ -4,12 +4,15 @@
 [0] string = "job"
 [1] string = "api"
 [2] string = "level"
-[3] string = "error"
-[4] string = "timeout"
+[3] string = "level"
+[4] string = "level"
+[5] string = "error"
+[6] string = "timeout"
 -- sql --
-SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (`ResourceAttributes`[?] = ?) AND (position(`Body`, ?) > 0)
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `ResourceAttributes`[?]) = ?) AND (position(`Body`, ?) > 0)
 -- seed --
 CREATE TABLE otel_logs (
+    LogAttributes Map(String, String) MATERIALIZED map(),
     Body String,
     ResourceAttributes Map(String, String) MATERIALIZED map(
         'job', 'api',
@@ -28,5 +31,5 @@ INSERT INTO otel_logs (Body) VALUES
   ["e2-timeout opening db"]
 ]
 -- chplan --
-Filter predicate=(((ResourceAttributes["job"] = "api") AND (ResourceAttributes["level"] = "error")) AND lineContent(Body, "timeout", substr))
+Filter predicate=(((ResourceAttributes["job"] = "api") AND (if(mapContains(LogAttributes, "level"), LogAttributes["level"], ResourceAttributes["level"]) = "error")) AND lineContent(Body, "timeout", substr))
   Scan(otel_logs)

@@ -979,12 +979,12 @@ func labelFiltererLower(lf loglib.LabelFilterer, s schema.Logs, labelsExpr chpla
 		return &chplan.Binary{Op: op, Left: left, Right: right},
 			append(leftMarks, rightMarks...), nil
 	case *loglib.NumericLabelFilter:
-		return numericLabelFilterExpr(v, labelsExpr), nil, nil
+		return numericLabelFilterExpr(v, s, labelsExpr), nil, nil
 	case *loglib.DurationLabelFilter:
-		pred, mark := durationLabelFilterExpr(v, labelsExpr)
+		pred, mark := durationLabelFilterExpr(v, s, labelsExpr)
 		return pred, []labelFilterMark{mark}, nil
 	case *loglib.BytesLabelFilter:
-		return bytesLabelFilterExpr(v, labelsExpr), nil, nil
+		return bytesLabelFilterExpr(v, s, labelsExpr), nil, nil
 	case *loglib.IPLabelFilter:
 		// `| addr = ip("...")` / `!= ip("...")` — no marks: reference
 		// Loki's IPLabelFilter never stamps `__error__` itself (its
@@ -1002,13 +1002,10 @@ func labelFiltererLower(lf loglib.LabelFilterer, s schema.Logs, labelsExpr chpla
 // `toFloat64OrZero(labelsExpr['<name>'])` — matching Loki's runtime
 // `strconv.ParseFloat` shape — and compared with the literal value at
 // CH evaluation time so a non-parseable value falls through as 0.
-func numericLabelFilterExpr(f *loglib.NumericLabelFilter, labelsExpr chplan.Expr) chplan.Expr {
+func numericLabelFilterExpr(f *loglib.NumericLabelFilter, s schema.Logs, labelsExpr chplan.Expr) chplan.Expr {
 	lhs := &chplan.FuncCall{
 		Name: "toFloat64OrZero",
-		Args: []chplan.Expr{&chplan.MapAccess{
-			Map: labelsExpr,
-			Key: &chplan.LitString{V: f.Name},
-		}},
+		Args: []chplan.Expr{structuredOrStreamLookupOnMap(s, labelsExpr, f.Name)},
 	}
 	return &chplan.Binary{
 		Op:    labelFilterOp(f.Type),
@@ -1037,16 +1034,10 @@ func numericLabelFilterExpr(f *loglib.NumericLabelFilter, labelsExpr chplan.Expr
 // the first row it can't parse — including Go-valid shapes like
 // `291.792µs` on CH 24.8 — aborting the whole query where reference
 // Loki degrades per-row.
-func durationLabelFilterExpr(f *loglib.DurationLabelFilter, labelsExpr chplan.Expr) (chplan.Expr, labelFilterMark) {
-	access := &chplan.MapAccess{
-		Map: labelsExpr,
-		Key: &chplan.LitString{V: f.Name},
-	}
+func durationLabelFilterExpr(f *loglib.DurationLabelFilter, s schema.Logs, labelsExpr chplan.Expr) (chplan.Expr, labelFilterMark) {
+	access := structuredOrStreamLookupOnMap(s, labelsExpr, f.Name)
 	parse := newDurationParse(access)
-	exists := &chplan.FuncCall{
-		Name: "mapContains",
-		Args: []chplan.Expr{labelsExpr, &chplan.LitString{V: f.Name}},
-	}
+	exists := labelPresenceOnMap(s, labelsExpr, f.Name)
 	pred := &chplan.FuncCall{
 		Name: "multiIf",
 		Args: []chplan.Expr{
@@ -1078,13 +1069,10 @@ func durationLabelFilterExpr(f *loglib.DurationLabelFilter, labelsExpr chplan.Ex
 // which understands "1KB", "1MiB", "1.5G", etc. — covering the
 // `humanize.ParseBytes` shape Loki's runtime uses. `parseReadableSize`
 // returns Float64 bytes; we cast the right-hand-side accordingly.
-func bytesLabelFilterExpr(f *loglib.BytesLabelFilter, labelsExpr chplan.Expr) chplan.Expr {
+func bytesLabelFilterExpr(f *loglib.BytesLabelFilter, s schema.Logs, labelsExpr chplan.Expr) chplan.Expr {
 	lhs := &chplan.FuncCall{
 		Name: "parseReadableSize",
-		Args: []chplan.Expr{&chplan.MapAccess{
-			Map: labelsExpr,
-			Key: &chplan.LitString{V: f.Name},
-		}},
+		Args: []chplan.Expr{structuredOrStreamLookupOnMap(s, labelsExpr, f.Name)},
 	}
 	return &chplan.Binary{
 		Op:    labelFilterOp(f.Type),
@@ -1127,7 +1115,7 @@ func labelMatcherToExpr(m *labels.Matcher, s schema.Logs, labelsExpr chplan.Expr
 	if isDetectedLevelLabel(m.Name) {
 		lhs = detectedLevelExpr(s)
 	} else {
-		lhs = attributeLookupExpr(labelsExpr, m.Name)
+		lhs = structuredOrStreamLookupOnMap(s, labelsExpr, m.Name)
 	}
 	return &chplan.Binary{
 		Op:    matchOp(m.Type),
@@ -1211,6 +1199,185 @@ func attributeLookupExpr(labelsMap chplan.Expr, key string) chplan.Expr {
 // schema's ResourceAttributes column.
 func attributeLookupColumn(col, key string) chplan.Expr {
 	return attributeLookupExpr(&chplan.ColumnRef{Name: col}, key)
+}
+
+// structuredOrStreamLookup resolves a bare LogQL label `key` for the
+// OTel-CH logs mapping with reference-Loki LabelsBuilder precedence,
+// restricted to the categories cerberus surfaces at the points it is
+// called from (pipeline label-filters + by/without groupings — NOT
+// stream-selector matchers).
+//
+// Reference Loki resolves a bare label across categories in the order
+// parsed > structured-metadata > stream (pkg/logql/log/labels.go::
+// LabelsBuilder.Get). cerberus stores those categories as:
+//
+//	stream labels        → ResourceAttributes map  (the index — what a
+//	                       `{k="v"}` selector matches)
+//	structured metadata  → LogAttributes map       (per-log-record
+//	                       attributes)
+//	top-level scalars    → dedicated columns (ServiceName, SeverityText,
+//	                       ScopeName, TraceId, ...) — see
+//	                       [topLevelLogColumnFor].
+//
+// There are no parsed labels at the call sites that route through this
+// helper (parser stages thread their own `mapConcat(...)` labels map),
+// so the effective precedence collapses to:
+//
+//	top-level scalar column  >  structured metadata (LogAttributes)
+//	                         >  stream label (ResourceAttributes)
+//
+// Top-level columns are handled by the callers BEFORE this helper (they
+// consult [topLevelLogColumnFor] first and short-circuit), so this
+// helper only resolves the structured-metadata-over-stream tail. The
+// emitted shape is
+//
+//	if(mapContains(LogAttributes, k),
+//	   LogAttributes[k],
+//	   <ResourceAttributes dotted-fallback chain>)
+//
+// i.e. structured metadata SHADOWS the stream label on a key conflict
+// (matching Loki, where a structured-metadata value overrides a stream
+// value of the same name), while a key present only in
+// ResourceAttributes still resolves via the fallback (so existing
+// stream-label / dashboard behaviour is preserved — regression-safe).
+// A key present only in LogAttributes now resolves (the fix for task
+// #59: OTel structured-metadata attributes like `query_duration_ms` /
+// `query_kind` were previously invisible to `| k op v` filters and
+// `by (k)` groupings).
+//
+// The `mapContains` guard (rather than a bare coalesce on the value)
+// is deliberate: CH's `LogAttributes['missing']` returns the value-type
+// default (empty string), so a plain `coalesce` could not distinguish
+// "present with empty value" from "absent" — `mapContains` cleanly
+// resolves the precedence even when the structured-metadata value is
+// the empty string.
+//
+// Dotted-fallback ([attributeLookupExpr]) is applied to BOTH the
+// LogAttributes side and the ResourceAttributes side, so a label like
+// `cerberus_ql` whose OTel key is the dotted `cerberus.ql` resolves in
+// either map.
+//
+// IMPORTANT — this does NOT touch stream-selector matchers. A selector
+// `{k="v"}` matches the index (stream labels) only; reference Loki does
+// NOT consult structured metadata in the selector. So [matcherToExpr] /
+// [buildMatchersPredicate] keep resolving against ResourceAttributes
+// alone — only pipeline label-filters and groupings coalesce.
+func structuredOrStreamLookup(s schema.Logs, key string) chplan.Expr {
+	streamSide := attributeLookupColumn(s.ResourceAttributesColumn, key)
+	if s.AttributesColumn == "" {
+		// Custom schema with no structured-metadata column: nothing to
+		// coalesce, fall back to the stream-label lookup unchanged.
+		return streamSide
+	}
+	structuredSide := attributeLookupColumn(s.AttributesColumn, key)
+	return &chplan.FuncCall{
+		Name: "if",
+		Args: []chplan.Expr{
+			structuredMetadataPresence(s, key),
+			structuredSide,
+			streamSide,
+		},
+	}
+}
+
+// structuredMetadataPresence returns the boolean "is `key` present in the
+// structured-metadata (LogAttributes) map" guard for
+// [structuredOrStreamLookup]. It mirrors [attributeLookupExpr]'s
+// dotted-fallback candidate set: a label such as `cerberus_ql` is
+// considered present when EITHER the underscored form OR any dotted OTel
+// candidate (`cerberus.ql`) is a key in the map, so the value-side
+// lookup and the presence guard agree on which candidate they read.
+func structuredMetadataPresence(s schema.Logs, key string) chplan.Expr {
+	col := &chplan.ColumnRef{Name: s.AttributesColumn}
+	candidates := []string{key}
+	if format.PromLabelNeedsDottedFallback(key) {
+		candidates = format.PromLabelToOTelCandidates(key)
+	}
+	var out chplan.Expr
+	for _, c := range candidates {
+		has := &chplan.FuncCall{
+			Name: "mapContains",
+			Args: []chplan.Expr{col, &chplan.LitString{V: c}},
+		}
+		if out == nil {
+			out = has
+			continue
+		}
+		out = &chplan.Binary{Op: chplan.OpOr, Left: out, Right: has}
+	}
+	return out
+}
+
+// structuredOrStreamLookupOnMap is the labels-map-carrier variant of
+// [structuredOrStreamLookup] used by the pipeline label-filter sites,
+// where the live labels map (`labelsExpr`) may already be a
+// parser-stage `mapConcat(...)` wrapper rather than the bare
+// ResourceAttributes column.
+//
+//   - No parser stage ran (labelsExpr is the bare ResourceAttributes
+//     column): resolve with full precedence
+//     structured-metadata > stream via [structuredOrStreamLookup].
+//   - A parser stage ran (labelsExpr is a mapConcat wrapper whose
+//     extracted keys are the parsed labels, which already SHADOW the
+//     stream labels): parsed labels must win over structured metadata
+//     (reference precedence parsed > structured > stream), so resolve
+//     the parsed/stream side from the live map first and only fall back
+//     to structured metadata when the live map does NOT carry the key.
+func structuredOrStreamLookupOnMap(s schema.Logs, labelsExpr chplan.Expr, key string) chplan.Expr {
+	if col, ok := labelsExpr.(*chplan.ColumnRef); ok && col.Name == s.ResourceAttributesColumn {
+		return structuredOrStreamLookup(s, key)
+	}
+	// Parser-merged labels map: parsed (and stream, folded into the
+	// merge base) keys take precedence; structured metadata fills the
+	// gap for keys the parser did not extract.
+	parsedOrStream := attributeLookupExpr(labelsExpr, key)
+	if s.AttributesColumn == "" {
+		return parsedOrStream
+	}
+	return &chplan.FuncCall{
+		Name: "if",
+		Args: []chplan.Expr{
+			liveMapPresence(labelsExpr, key),
+			parsedOrStream,
+			attributeLookupColumn(s.AttributesColumn, key),
+		},
+	}
+}
+
+// liveMapPresence returns the "is `key` present in the live labels map"
+// guard for [structuredOrStreamLookupOnMap]'s parser-merged branch. The
+// live map already folds stream labels (the merge base) under any
+// parser-extracted keys, so presence here means "the parsed-or-stream
+// resolution has a value" — and only its absence defers to structured
+// metadata.
+func liveMapPresence(labelsExpr chplan.Expr, key string) chplan.Expr {
+	return &chplan.FuncCall{
+		Name: "mapContains",
+		Args: []chplan.Expr{labelsExpr, &chplan.LitString{V: key}},
+	}
+}
+
+// labelPresenceOnMap returns the "is `key` resolvable as a label at this
+// point in the pipeline" guard, with the SAME category coverage as
+// [structuredOrStreamLookupOnMap]: present in the live labels map
+// (stream label or parser-extracted) OR present in the structured-
+// metadata (LogAttributes) map. Used by [durationLabelFilterExpr], where
+// reference Loki DROPS the row when the named label is absent — and a
+// structured-metadata-only key must now count as present so the
+// duration comparison runs against its value rather than the row being
+// dropped.
+func labelPresenceOnMap(s schema.Logs, labelsExpr chplan.Expr, key string) chplan.Expr {
+	live := liveMapPresence(labelsExpr, key)
+	if s.AttributesColumn == "" {
+		return live
+	}
+	// Present in the live map (stream label, or parser-extracted when a
+	// parser stage wrapped it) OR present in structured metadata.
+	return &chplan.Binary{
+		Op:    chplan.OpOr,
+		Left:  live,
+		Right: structuredMetadataPresence(s, key),
+	}
 }
 
 // lowerLineFilter handles `|=`, `!=`, `|~`, `!~` against the Body column.

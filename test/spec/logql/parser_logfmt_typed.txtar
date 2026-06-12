@@ -1,7 +1,7 @@
 -- query.logql --
 {job="api"} | logfmt level="severity" | level="error"
 -- sql --
-SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (mapConcat(`ResourceAttributes`, map(if(mapContains(`ResourceAttributes`, ?), ?, ?), extractKeyValuePairs(`Body`, ?, ?, ?)[?]))[?] = ?)
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (if(mapContains(mapConcat(`ResourceAttributes`, map(if(mapContains(`ResourceAttributes`, ?), ?, ?), extractKeyValuePairs(`Body`, ?, ?, ?)[?])), ?), mapConcat(`ResourceAttributes`, map(if(mapContains(`ResourceAttributes`, ?), ?, ?), extractKeyValuePairs(`Body`, ?, ?, ?)[?]))[?], `LogAttributes`[?]) = ?)
 -- args --
 [0] string = "job"
 [1] string = "api"
@@ -13,9 +13,19 @@ SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (mapConcat(`Re
 [7] string = "\""
 [8] string = "severity"
 [9] string = "level"
-[10] string = "error"
+[10] string = "level"
+[11] string = "level_extracted"
+[12] string = "level"
+[13] string = "="
+[14] string = " "
+[15] string = "\""
+[16] string = "severity"
+[17] string = "level"
+[18] string = "level"
+[19] string = "error"
 -- seed --
 CREATE TABLE otel_logs (
+    LogAttributes Map(String, String) MATERIALIZED map(),
     Body String,
     ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api')
 ) ENGINE = Memory;
@@ -29,5 +39,5 @@ INSERT INTO otel_logs (Body) VALUES
   ["ts=2025-01-01 severity=error msg=\"retry\""]
 ]
 -- chplan --
-Filter predicate=((ResourceAttributes["job"] = "api") AND (mapConcat(ResourceAttributes, map(if(mapContains(ResourceAttributes, "level"), "level_extracted", "level"), extractKeyValuePairs(Body, "=", " ", "\"")["severity"]))["level"] = "error"))
+Filter predicate=((ResourceAttributes["job"] = "api") AND (if(mapContains(mapConcat(ResourceAttributes, map(if(mapContains(ResourceAttributes, "level"), "level_extracted", "level"), extractKeyValuePairs(Body, "=", " ", "\"")["severity"])), "level"), mapConcat(ResourceAttributes, map(if(mapContains(ResourceAttributes, "level"), "level_extracted", "level"), extractKeyValuePairs(Body, "=", " ", "\"")["severity"]))["level"], LogAttributes["level"]) = "error"))
   Scan(otel_logs)

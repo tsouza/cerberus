@@ -4,15 +4,22 @@
 [0] string = "job"
 [1] string = "api"
 [2] string = "level"
-[3] string = "error"
+[3] string = "level"
 [4] string = "level"
-[5] string = "warn"
+[5] string = "error"
 [6] string = "level"
-[7] string = "fatal"
+[7] string = "level"
+[8] string = "level"
+[9] string = "warn"
+[10] string = "level"
+[11] string = "level"
+[12] string = "level"
+[13] string = "fatal"
 -- sql --
-SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (((`ResourceAttributes`[?] = ?) OR (`ResourceAttributes`[?] = ?)) OR (`ResourceAttributes`[?] = ?))
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (((if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `ResourceAttributes`[?]) = ?) OR (if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `ResourceAttributes`[?]) = ?)) OR (if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `ResourceAttributes`[?]) = ?))
 -- seed --
 CREATE TABLE otel_logs (
+    LogAttributes Map(String, String) MATERIALIZED map(),
     Body String,
     ResourceAttributes Map(String, String) MATERIALIZED map(
         'job', 'api',
@@ -36,5 +43,5 @@ INSERT INTO otel_logs (Body) VALUES
   ["r3-fatal"]
 ]
 -- chplan --
-Filter predicate=((ResourceAttributes["job"] = "api") AND (((ResourceAttributes["level"] = "error") OR (ResourceAttributes["level"] = "warn")) OR (ResourceAttributes["level"] = "fatal")))
+Filter predicate=((ResourceAttributes["job"] = "api") AND (((if(mapContains(LogAttributes, "level"), LogAttributes["level"], ResourceAttributes["level"]) = "error") OR (if(mapContains(LogAttributes, "level"), LogAttributes["level"], ResourceAttributes["level"]) = "warn")) OR (if(mapContains(LogAttributes, "level"), LogAttributes["level"], ResourceAttributes["level"]) = "fatal")))
   Scan(otel_logs)

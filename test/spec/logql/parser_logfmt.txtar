@@ -1,7 +1,7 @@
 -- query.logql --
 {job="api"} | logfmt | level="error"
 -- sql --
-SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), extractKeyValuePairs(`Body`, ?, ?, ?)))[?] = ?)
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (if(mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), extractKeyValuePairs(`Body`, ?, ?, ?))), ?), mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), extractKeyValuePairs(`Body`, ?, ?, ?)))[?], `LogAttributes`[?]) = ?)
 -- args --
 [0] string = "job"
 [1] string = "api"
@@ -10,9 +10,16 @@ SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (mapConcat(`Re
 [4] string = " "
 [5] string = "\""
 [6] string = "level"
-[7] string = "error"
+[7] string = "_extracted"
+[8] string = "="
+[9] string = " "
+[10] string = "\""
+[11] string = "level"
+[12] string = "level"
+[13] string = "error"
 -- seed --
 CREATE TABLE otel_logs (
+    LogAttributes Map(String, String) MATERIALIZED map(),
     Body String,
     ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api')
 ) ENGINE = Memory;
@@ -26,5 +33,5 @@ INSERT INTO otel_logs (Body) VALUES
   ["ts=2025-01-01 level=error msg=\"retry\""]
 ]
 -- chplan --
-Filter predicate=((ResourceAttributes["job"] = "api") AND (mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\"")))["level"] = "error"))
+Filter predicate=((ResourceAttributes["job"] = "api") AND (if(mapContains(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\""))), "level"), mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\"")))["level"], LogAttributes["level"]) = "error"))
   Scan(otel_logs)

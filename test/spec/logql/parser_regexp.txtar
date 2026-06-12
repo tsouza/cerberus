@@ -1,7 +1,7 @@
 -- query.logql --
 {job="api"} | regexp "(?P<status>\\d{3})" | status="500"
 -- sql --
-SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (mapConcat(`ResourceAttributes`, map(?, extractAllGroupsHorizontal(`Body`, ?)[?][?]))[?] = ?)
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (if(mapContains(mapConcat(`ResourceAttributes`, map(?, extractAllGroupsHorizontal(`Body`, ?)[?][?])), ?), mapConcat(`ResourceAttributes`, map(?, extractAllGroupsHorizontal(`Body`, ?)[?][?]))[?], `LogAttributes`[?]) = ?)
 -- args --
 [0] string = "job"
 [1] string = "api"
@@ -10,9 +10,16 @@ SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (mapConcat(`Re
 [4] int64 = 1
 [5] int64 = 1
 [6] string = "status"
-[7] string = "500"
+[7] string = "status"
+[8] string = "(?P<status>\\d{3})"
+[9] int64 = 1
+[10] int64 = 1
+[11] string = "status"
+[12] string = "status"
+[13] string = "500"
 -- seed --
 CREATE TABLE otel_logs (
+    LogAttributes Map(String, String) MATERIALIZED map(),
     Body String,
     ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api')
 ) ENGINE = Memory;
@@ -26,5 +33,5 @@ INSERT INTO otel_logs (Body) VALUES
   ["POST /api 500 took=22ms"]
 ]
 -- chplan --
-Filter predicate=((ResourceAttributes["job"] = "api") AND (mapConcat(ResourceAttributes, map("status", extractAllGroupsHorizontal(Body, "(?P<status>\\d{3})")[1][1]))["status"] = "500"))
+Filter predicate=((ResourceAttributes["job"] = "api") AND (if(mapContains(mapConcat(ResourceAttributes, map("status", extractAllGroupsHorizontal(Body, "(?P<status>\\d{3})")[1][1])), "status"), mapConcat(ResourceAttributes, map("status", extractAllGroupsHorizontal(Body, "(?P<status>\\d{3})")[1][1]))["status"], LogAttributes["status"]) = "500"))
   Scan(otel_logs)

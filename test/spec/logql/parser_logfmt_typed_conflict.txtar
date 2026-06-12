@@ -2,6 +2,7 @@
 {level="error"} | logfmt level="severity" | level_extracted="warn"
 -- seed --
 CREATE TABLE otel_logs (
+    LogAttributes Map(String, String) MATERIALIZED map(),
     Body String,
     ResourceAttributes Map(String, String) MATERIALIZED map('level', 'error')
 ) ENGINE = Memory;
@@ -25,9 +26,20 @@ INSERT INTO otel_logs (Body) VALUES
 [7] string = "\""
 [8] string = "severity"
 [9] string = "level_extracted"
-[10] string = "warn"
+[10] string = "level"
+[11] string = "level_extracted"
+[12] string = "level"
+[13] string = "="
+[14] string = " "
+[15] string = "\""
+[16] string = "severity"
+[17] string = "level_extracted"
+[18] string = "level_extracted"
+[19] string = "level_extracted"
+[20] string = "level.extracted"
+[21] string = "warn"
 -- chplan --
-Filter predicate=((ResourceAttributes["level"] = "error") AND (mapConcat(ResourceAttributes, map(if(mapContains(ResourceAttributes, "level"), "level_extracted", "level"), extractKeyValuePairs(Body, "=", " ", "\"")["severity"]))["level_extracted"] = "warn"))
+Filter predicate=((ResourceAttributes["level"] = "error") AND (if(mapContains(mapConcat(ResourceAttributes, map(if(mapContains(ResourceAttributes, "level"), "level_extracted", "level"), extractKeyValuePairs(Body, "=", " ", "\"")["severity"])), "level_extracted"), mapConcat(ResourceAttributes, map(if(mapContains(ResourceAttributes, "level"), "level_extracted", "level"), extractKeyValuePairs(Body, "=", " ", "\"")["severity"]))["level_extracted"], if(mapContains(LogAttributes, "level_extracted"), LogAttributes["level_extracted"], LogAttributes["level.extracted"])) = "warn"))
   Scan(otel_logs)
 -- sql --
-SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (mapConcat(`ResourceAttributes`, map(if(mapContains(`ResourceAttributes`, ?), ?, ?), extractKeyValuePairs(`Body`, ?, ?, ?)[?]))[?] = ?)
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (if(mapContains(mapConcat(`ResourceAttributes`, map(if(mapContains(`ResourceAttributes`, ?), ?, ?), extractKeyValuePairs(`Body`, ?, ?, ?)[?])), ?), mapConcat(`ResourceAttributes`, map(if(mapContains(`ResourceAttributes`, ?), ?, ?), extractKeyValuePairs(`Body`, ?, ?, ?)[?]))[?], if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `LogAttributes`[?])) = ?)

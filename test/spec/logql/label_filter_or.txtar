@@ -1,16 +1,21 @@
 -- query.logql --
 {job="api"} | env="prod" or env="stg"
 -- sql --
-SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND ((`ResourceAttributes`[?] = ?) OR (`ResourceAttributes`[?] = ?))
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND ((if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `ResourceAttributes`[?]) = ?) OR (if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `ResourceAttributes`[?]) = ?))
 -- args --
 [0] string = "job"
 [1] string = "api"
 [2] string = "env"
-[3] string = "prod"
+[3] string = "env"
 [4] string = "env"
-[5] string = "stg"
+[5] string = "prod"
+[6] string = "env"
+[7] string = "env"
+[8] string = "env"
+[9] string = "stg"
 -- seed --
 CREATE TABLE otel_logs (
+    LogAttributes Map(String, String) MATERIALIZED map(),
     Body String,
     ResourceAttributes Map(String, String) MATERIALIZED map(
         'job', 'api',
@@ -24,5 +29,5 @@ INSERT INTO otel_logs (Body) VALUES ('o1'), ('o2'), ('o3-dev');
   ["o2"]
 ]
 -- chplan --
-Filter predicate=((ResourceAttributes["job"] = "api") AND ((ResourceAttributes["env"] = "prod") OR (ResourceAttributes["env"] = "stg")))
+Filter predicate=((ResourceAttributes["job"] = "api") AND ((if(mapContains(LogAttributes, "env"), LogAttributes["env"], ResourceAttributes["env"]) = "prod") OR (if(mapContains(LogAttributes, "env"), LogAttributes["env"], ResourceAttributes["env"]) = "stg")))
   Scan(otel_logs)

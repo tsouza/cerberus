@@ -1,0 +1,35 @@
+-- query.logql --
+{service_name="clickhouse"} | env="prod"
+-- seed --
+CREATE TABLE otel_logs (
+    ServiceName LowCardinality(String) DEFAULT 'clickhouse',
+    Body String,
+    ResourceAttributes Map(String, String) MATERIALIZED map(
+        'service_name', 'clickhouse',
+        'env', 'staging'
+    ),
+    LogAttributes Map(String, String) MATERIALIZED map(
+        'env', if(Body LIKE 'p%', 'prod', 'dev')
+    )
+) ENGINE = Memory;
+INSERT INTO otel_logs (Body) VALUES ('p1'), ('p2'), ('d1');
+-- expected_rows --
+[
+  ["clickhouse", "p1"],
+  ["clickhouse", "p2"]
+]
+-- chplan --
+Filter predicate=((coalesce(nullIf(ServiceName, ""), if(mapContains(ResourceAttributes, "service_name"), ResourceAttributes["service_name"], ResourceAttributes["service.name"])) = "clickhouse") AND (if(mapContains(LogAttributes, "env"), LogAttributes["env"], ResourceAttributes["env"]) = "prod"))
+  Scan(otel_logs)
+-- sql --
+SELECT * FROM `otel_logs` WHERE (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?])) = ?) AND (if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `ResourceAttributes`[?]) = ?)
+-- args --
+[0] string = ""
+[1] string = "service_name"
+[2] string = "service_name"
+[3] string = "service.name"
+[4] string = "clickhouse"
+[5] string = "env"
+[6] string = "env"
+[7] string = "env"
+[8] string = "prod"

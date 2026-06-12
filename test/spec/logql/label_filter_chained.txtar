@@ -1,17 +1,22 @@
 -- query.logql --
 {job="api"} |= "error" | env="prod" | severity="high"
 -- sql --
-SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (position(`Body`, ?) > 0) AND (`ResourceAttributes`[?] = ?) AND (`ResourceAttributes`[?] = ?)
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (position(`Body`, ?) > 0) AND (if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `ResourceAttributes`[?]) = ?) AND (if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `ResourceAttributes`[?]) = ?)
 -- args --
 [0] string = "job"
 [1] string = "api"
 [2] string = "error"
 [3] string = "env"
-[4] string = "prod"
-[5] string = "severity"
-[6] string = "high"
+[4] string = "env"
+[5] string = "env"
+[6] string = "prod"
+[7] string = "severity"
+[8] string = "severity"
+[9] string = "severity"
+[10] string = "high"
 -- seed --
 CREATE TABLE otel_logs (
+    LogAttributes Map(String, String) MATERIALIZED map(),
     Body String,
     ResourceAttributes Map(String, String) MATERIALIZED map(
         'job', 'api',
@@ -31,5 +36,5 @@ INSERT INTO otel_logs (Body) VALUES
   ["error: again"]
 ]
 -- chplan --
-Filter predicate=((((ResourceAttributes["job"] = "api") AND lineContent(Body, "error", substr)) AND (ResourceAttributes["env"] = "prod")) AND (ResourceAttributes["severity"] = "high"))
+Filter predicate=((((ResourceAttributes["job"] = "api") AND lineContent(Body, "error", substr)) AND (if(mapContains(LogAttributes, "env"), LogAttributes["env"], ResourceAttributes["env"]) = "prod")) AND (if(mapContains(LogAttributes, "severity"), LogAttributes["severity"], ResourceAttributes["severity"]) = "high"))
   Scan(otel_logs)

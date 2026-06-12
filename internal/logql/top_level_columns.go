@@ -97,3 +97,35 @@ func topLevelColumnsReferencedBy(labels []string, s schema.Logs) []string {
 func topLevelColumnRef(col string) chplan.Expr {
 	return &chplan.ColumnRef{Name: col}
 }
+
+// structuredOuterByKeys returns the subset of an enclosing vector
+// aggregation's by-clause labels that are NEITHER a top-level OTel-CH
+// scalar column (handled by [topLevelColumnsReferencedBy]) NOR the
+// synthesized `detected_level` family (handled by [withDetectedLevel]
+// directly). These are the labels that resolve from the
+// structured-metadata (LogAttributes) / stream (ResourceAttributes)
+// maps and must be inflated into the inner range aggregation's
+// synthesized identity map so the outer aggregation can read them back
+// after the RangeWindow (see [withDetectedLevelAndColumns]). Order is
+// preserved and duplicates dropped for a deterministic map shape.
+func structuredOuterByKeys(labels []string, s schema.Logs) []string {
+	if len(labels) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(labels))
+	out := make([]string, 0, len(labels))
+	for _, lbl := range labels {
+		if lbl == "" || seen[lbl] {
+			continue
+		}
+		if _, ok := topLevelLogColumnFor(lbl, s); ok {
+			continue
+		}
+		if isDetectedLevelGroupingLabel(lbl) {
+			continue
+		}
+		seen[lbl] = true
+		out = append(out, lbl)
+	}
+	return out
+}
