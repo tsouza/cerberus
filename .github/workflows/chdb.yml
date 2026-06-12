@@ -137,10 +137,23 @@ jobs:
   #
   # Matrix entries run in parallel (`fail-fast: false`) so a regression
   # in one head doesn't mask regressions in the others.
+  #
+  # DOCS-ONLY GUARD IS PER-STEP, NOT JOB-LEVEL — deliberately. The three
+  # `roundtrip (<ql>)` matrix legs are required status checks on `main`.
+  # A *job-level* `if: docs_only != 'true'` would skip the job before the
+  # matrix expands, so the contexts `roundtrip (promql/logql/traceql)`
+  # are never created and branch protection blocks every docs-only PR
+  # forever with "Expected — Waiting for status to be reported" (a plain
+  # skipped non-matrix job reports its named context and resolves, but a
+  # skipped matrix job never publishes its per-leg names). Instead the
+  # job always runs so the matrix expands and each leg's context is
+  # published; the docs-only guard sits on the work steps, so on a
+  # docs-only PR every step is skipped and each leg concludes `success`
+  # in seconds (no chDB compile/run) — satisfying the required check
+  # without doing the work. Do NOT hoist this back to the job level.
   roundtrip:
     name: roundtrip (${{ matrix.ql }})
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -149,20 +162,25 @@ jobs:
         ql: [promql, logql, traceql]
     steps:
       - uses: actions/checkout@v6
+        if: needs.changes.outputs.docs_only != 'true'
 
       - uses: actions/setup-go@v6
+        if: needs.changes.outputs.docs_only != 'true'
         with:
           go-version-file: 'go.mod'
           cache: true
 
       - uses: taiki-e/install-action@v2
+        if: needs.changes.outputs.docs_only != 'true'
         with:
           tool: just
 
       - name: Install libchdb.so
+        if: needs.changes.outputs.docs_only != 'true'
         run: just chdb-install
 
       - name: Run TXTAR round-trip (${{ matrix.ql }})
+        if: needs.changes.outputs.docs_only != 'true'
         run: go test -tags chdb -count=1 ./test/spec/${{ matrix.ql }}/...
 
   # `perf-guards` runs the chDB-tagged deterministic perf-regression
