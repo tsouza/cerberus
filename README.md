@@ -31,32 +31,23 @@ corpus is and what each score actually measures.
 
 ## Quick start
 
-Cerberus is a single stateless binary configured entirely via
-environment variables, treating ClickHouse and the optional OTel
-collector as attached resources. The same image runs unchanged under
-Docker Compose, Kubernetes, or a bare-metal supervisor — see
-[`docs/operations.md`](docs/operations.md) for the runtime contract.
-
-### Docker Compose (one-command local dev)
-
 ```sh
 git clone https://github.com/tsouza/cerberus.git && cd cerberus
 docker compose up --wait
 open http://localhost:3000   # Grafana (auto-login as admin); cerberus on :8080
 ```
 
-The stack builds cerberus from the repo, boots a single-node ClickHouse,
-loads the deterministic OTel fixture (logs / traces / metrics), and brings
-up Grafana pre-provisioned with cerberus as three datasources (Prom +
-Loki + Tempo). ClickHouse data persists in a named volume; use
-`docker compose down -v` to wipe it.
+That builds cerberus, boots single-node ClickHouse, loads a deterministic
+OTel fixture (logs / traces / metrics), and brings up Grafana
+pre-provisioned with cerberus as three datasources (Prometheus + Loki +
+Tempo). A fresh dashboard populates in ~30s; `docker compose down -v`
+wipes the volume.
 
-The quickstart is tuned for time-to-first-panel: the cerberus OTel SDK
-flushes metrics every `10s` (`CERBERUS_OTLP_EXPORT_INTERVAL`) and the
-bundled collector batches every `1s`, so a fresh dashboard populates
-within ~30s. Deployments running at scale should raise the interval to
-cut collector load — see
-[`docs/operations.md`](docs/operations.md) for the env-var contract.
+Cerberus is one stateless binary configured via environment variables,
+with ClickHouse and the OTel collector as attached resources — the same
+image runs unchanged under Compose, Kubernetes, or bare metal. See
+[`docs/operations.md`](docs/operations.md) for the runtime + env-var
+contract (and the `CERBERUS_OTLP_EXPORT_INTERVAL` time-to-first-panel knob).
 
 ### From a published release
 
