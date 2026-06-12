@@ -69,6 +69,39 @@ docker compose up -d --build --wait clickhouse prometheus cerberus
 echo "==> running seeder (go run ./cmd/seed)"
 (cd "$ROOT_DIR/../.." && go run ./compatibility/prometheus/cmd/seed/)
 
+# Patch an upstream tester bug before building: the comparer
+# (upstream/promql/comparer/comparer.go) sorts ONLY the test backend's
+# matrix — `sort.Sort(testResult.(model.Matrix))` — and then diffs it
+# against the reference matrix in the reference's NATIVE return order.
+# Those two orders are NOT the same: `model.Matrix.Less` (prometheus/
+# common) orders series by LABEL COUNT first (LabelSet.Before:
+# `if len(ls) < len(o) { return true }`), then lexicographically;
+# reference Prometheus returns series in pure lexicographic
+# (labels.Compare) order. For a selector whose matched series have
+# DIFFERENT label counts — e.g. `{job="demo", __name__!~"..."}` mixes
+# `up{instance,job}` (2 labels) with `demo_disk_total_bytes{device,
+# instance,job}` (3 labels) — the count-first test sort and the
+# lexicographic reference order diverge, and the order-sensitive
+# `cmp.Diff` reports a spurious mismatch even though both backends
+# returned byte-identical series + samples (verified: sorting BOTH
+# matrices yields zero diff). The one-line fix sorts the reference
+# matrix with the same `model.Matrix.Sort` so the two sides are ordered
+# identically before the diff. Idempotent (the grep guard skips a
+# re-patch); applied to the vendored source before the build because the
+# submodule pins upstream `prometheus/compliance` and carrying a fork
+# just for this is heavier than a build-time patch. Upstream bug; a PR
+# to prometheus/compliance to sort both sides would retire this.
+echo "==> patching promql-compliance-tester comparer (symmetric matrix sort)"
+COMPARER="$ROOT_DIR/upstream/promql/comparer/comparer.go"
+if ! grep -q 'sort.Sort(refResult.(model.Matrix))' "$COMPARER"; then
+    # Insert the reference sort immediately after the existing test sort.
+    perl -0pi -e 's/(\tsort\.Sort\(testResult\.\(model\.Matrix\)\)\n)/$1\tsort.Sort(refResult.(model.Matrix))\n/' "$COMPARER"
+    if ! grep -q 'sort.Sort(refResult.(model.Matrix))' "$COMPARER"; then
+        echo "ERROR: failed to patch comparer.go symmetric sort (upstream layout changed?)" >&2
+        exit 2
+    fi
+fi
+
 echo "==> building promql-compliance-tester"
 TESTER_DIR="$ROOT_DIR/upstream/promql/cmd/promql-compliance-tester"
 TESTER_BIN="$ROOT_DIR/upstream/promql/cmd/promql-compliance-tester/promql-compliance-tester"

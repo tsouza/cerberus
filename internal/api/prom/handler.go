@@ -955,6 +955,17 @@ func matrixFromCursor(
 	}
 
 	bySeries := map[string]*seriesState{}
+	// order records first-seen canonical keys so the output series order
+	// is deterministic; it is sorted below so the matrix is emitted in
+	// canonical label order. Reference Prometheus returns range-query
+	// series sorted by labels, and the prometheus/compliance differential
+	// tester compares the two `model.Matrix` slices ORDER-SENSITIVELY
+	// (cmp.Diff, no pre-sort) — so an unsorted matrix (Go map iteration
+	// order) diffs against reference even when every series + sample is
+	// identical. The instant sibling matrixFromSamples already sorts; this
+	// path must match. (Compat query `{job="demo", __name__!~"..."}`
+	// diverged purely on series order before this.)
+	order := make([]string, 0)
 	for cursor.Next() {
 		s := cursor.Sample()
 		labels := format.NormalizeLabelMap(format.WithMetricName(s.Labels, s.MetricName))
@@ -963,15 +974,18 @@ func matrixFromCursor(
 		if !ok {
 			st = &seriesState{labels: labels}
 			bySeries[key] = st
+			order = append(order, key)
 		}
 		st.rows = append(st.rows, s)
 	}
 	if err := cursor.Err(); err != nil {
 		return nil, err
 	}
+	sort.Strings(order)
 
 	out := make([]MatrixSample, 0, len(bySeries))
-	for _, st := range bySeries {
+	for _, key := range order {
+		st := bySeries[key]
 		// Inline insertion sort by Timestamp ascending — rows are
 		// typically already nearly sorted from CH but the CrossJoin
 		// + Aggregate plan shapes the rework introduces do not

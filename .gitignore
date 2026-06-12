@@ -61,3 +61,12 @@ test/e2e/playwright/playwright-report/
 /compatibility/loki/cmd/seed/seed
 /compatibility/prometheus/cmd/seed/seed
 /test/e2e/seed/cmd/seed/seed
+
+# Transient compatibility-harness outputs (run-compatibility.sh writes
+# these next to the config; they're per-run artifacts uploaded by CI, not
+# source). The prometheus harness emits the tester report + the
+# shields.io badge score + the rejection-parity report.
+/compatibility/prometheus/report.json
+/compatibility/prometheus/compat-score.json
+/compatibility/prometheus/rejection-parity.json
+/compatibility/prometheus/upstream/promql/cmd/promql-compliance-tester/promql-compliance-tester
