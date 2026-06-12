@@ -41,8 +41,8 @@ INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, _svc) VALUES
   ["a0000000000000000000000000000001", "0000000000000004", "0000000000000003", "", 0, 0, {"service.name": "c"}, {}, "", "", "", "", ""]
 ]
 -- chplan --
-StructuralJoin op=>>
-  StructuralJoin op=>
+StructuralJoin op=>> maxDepth=128
+  StructuralJoin op=> maxDepth=128
     Filter predicate=(ResourceAttributes["service.name"] = "a")
       Scan(otel_traces)
     Filter predicate=(ResourceAttributes["service.name"] = "b")

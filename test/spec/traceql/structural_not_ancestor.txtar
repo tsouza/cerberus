@@ -34,7 +34,7 @@ INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, SpanName) VALUES
   ["t3", "s5", "", "b", 0, 0, {}, {}, "", "", "", "", ""]
 ]
 -- chplan --
-StructuralJoin op=!<<
+StructuralJoin op=!<< maxDepth=128
   Filter predicate=(SpanName = "a")
     Scan(otel_traces)
   Filter predicate=(SpanName = "b")

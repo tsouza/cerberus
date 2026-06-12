@@ -60,17 +60,20 @@ const nestedSetPathElemWidth = 40
 //	FROM (<input>) AS m
 //	LEFT JOIN (
 //	  WITH RECURSIVE `_cerberus_ns_paths` AS (
-//	    SELECT `TraceId`, `SpanId`, `ParentSpanId`, <elem> AS `_path`
+//	    SELECT `TraceId`, `SpanId`, `ParentSpanId`, <elem> AS `_path`,
+//	           0 AS `_depth`
 //	      FROM `otel_traces`
 //	     WHERE `ParentSpanId` = '' AND `TraceId` IN <trace-scope>
 //	           -- <trace-scope> = traceScopeFrag(input): a cheap
 //	           -- superset of the input's trace ids, NOT a re-render
 //	           -- of <input> (see traceScopeFrag)
 //	    UNION ALL
-//	    SELECT t.`TraceId`, t.`SpanId`, t.`ParentSpanId`, concat(c.`_path`, <elem(t)>)
+//	    SELECT t.`TraceId`, t.`SpanId`, t.`ParentSpanId`,
+//	           concat(c.`_path`, <elem(t)>), c.`_depth` + 1
 //	      FROM `otel_traces` AS t
 //	      INNER JOIN `_cerberus_ns_paths` AS c
 //	        ON t.`TraceId` = c.`TraceId` AND t.`ParentSpanId` = c.`SpanId`
+//	     WHERE c.`_depth` < <cap>
 //	  )
 //	  SELECT `TraceId`, `SpanId`,
 //	         <rank of entry event>                       AS `_ns_left`,
@@ -170,12 +173,17 @@ func buildNestedSetNumbering(n *chplan.NestedSetAnnotate, scope Frag) *QueryBuil
 	// input touches. The trace-id IN scope keeps the walk off
 	// unrelated traces; the walk itself is NOT time-bounded (Tempo
 	// numbers whole traces at ingest, search window notwithstanding).
+	// `_depth` seeds at 0 and increments one per child level; the
+	// recursive step bounds it (`c._depth < <cap>`) so a span-id cycle
+	// degrades to a partial numbering instead of erroring with CH code
+	// 306 (see structuralDepthBoundFrag / defaultStructuralRecursionDepth).
 	anchor := NewQuery().
 		Select(
 			Col(n.TraceIDColumn),
 			Col(n.SpanIDColumn),
 			Col(n.ParentSpanIDColumn),
 			As(pathElem(""), "_path"),
+			verbatim("0 AS `_depth`"),
 		).
 		From(Col(n.SpansTable)).
 		Where(func(b *Builder) {
@@ -186,7 +194,16 @@ func buildNestedSetNumbering(n *chplan.NestedSetAnnotate, scope Frag) *QueryBuil
 			scope(b)
 		})
 
-	// Recursive step: append one path element per child level.
+	// Recursive step: append one path element per child level and carry
+	// `_depth + 1`. The `c._depth < <cap>` bound (shared with the
+	// structural-join recursion via structuralDepthBoundFrag) keeps a
+	// cyclic parent chain (ParentSpanId looping back into its own
+	// ancestry — clock skew / instrumentation bug / OTLP span-id reuse)
+	// from running the CTE past CH's max_recursive_cte_evaluation_depth
+	// and erroring 306. For an acyclic trace shallower than the cap the
+	// walk still terminates at the natural fixpoint (no span left whose
+	// ParentSpanId matches a numbered SpanId), so the bound is invisible
+	// — the numbering stays byte-identical to the pre-cap output.
 	step := NewQuery().
 		Select(
 			qualColFrag("t", n.TraceIDColumn),
@@ -197,6 +214,7 @@ func buildNestedSetNumbering(n *chplan.NestedSetAnnotate, scope Frag) *QueryBuil
 				pathElem("t")(b)
 				b.writeSQL(")")
 			},
+			verbatim("c.`_depth` + 1 AS `_depth`"),
 		).
 		From(aliasedFrag(Col(n.SpansTable), "t")).
 		Join(
@@ -209,7 +227,8 @@ func buildNestedSetNumbering(n *chplan.NestedSetAnnotate, scope Frag) *QueryBuil
 				b.writeSQL(" = ")
 				writeSideCol(b, "c", n.SpanIDColumn)
 			},
-		)
+		).
+		Where(structuralDepthBoundFrag(0))
 
 	w := strconv.Itoa(nestedSetPathElemWidth)
 

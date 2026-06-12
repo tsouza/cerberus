@@ -88,6 +88,17 @@ func (e *emitter) emitStructuralJoin(j *chplan.StructuralJoin) error {
 		return fmt.Errorf("%w: StructuralJoin column names unset", ErrUnsupported)
 	}
 
+	// Stamp the resolved cap when the plan reaches the emitter unbounded
+	// (MaxDepth == 0). The rendered bound already resolves 0 via
+	// effectiveRecursionDepth, so this is byte-neutral on the SQL — it
+	// keeps the in-memory plan's MaxDepth in agreement with the emitted
+	// `c._depth < N` literal, so the structural recursion and the
+	// nested-set recursion (which also bounds at defaultStructuralRecursionDepth)
+	// agree on the same ceiling.
+	if j.MaxDepth == 0 {
+		j.MaxDepth = defaultStructuralRecursionDepth
+	}
+
 	switch j.Op.Positive() {
 	case chplan.StructuralChild, chplan.StructuralParent, chplan.StructuralSibling:
 		return e.emitStructuralDirectJoin(j)
