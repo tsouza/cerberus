@@ -1221,11 +1221,18 @@ func matcherToExpr(m *labels.Matcher, s schema.Metrics) chplan.Expr {
 //
 // Shapes emitted:
 //
-//   - `__name__="<v>"`  → `MetricName = v OR MetricName = c1 OR …`
-//   - `__name__!="<v>"` → `MetricName != v AND MetricName != c1 AND …`
+//   - `__name__="<v>"`  → `MetricName IN (v, c1, …)`
+//   - `__name__!="<v>"` → `MetricName NOT IN (v, c1, …)`
 //     (a user excluding the advertised alias expects the dotted
 //     storage rows excluded too — the candidates are one logical
 //     series set, so the negation must reject every spelling).
+//     The IN / NOT IN tuple is the flat, constant-depth, parameterised
+//     equivalent of an OR / AND chain of (in)equalities: a span-metric
+//     name fans out to a 2^6 = 64-element candidate powerset, and the
+//     metadata handlers UNION-ALL up to 192 such variant arms into one
+//     combined query — an inline OR-chain blew past ClickHouse's 256KB
+//     `max_query_size` (code 62) on the metrics-explorer broad probe,
+//     while the IN tuple renders the column once + N `?` placeholders.
 //   - `__name__=~"<re>"`  → `match(MetricName, re) OR
 //     match(replaceRegexpAll(MetricName, '[^a-zA-Z0-9_:]', '_'), re)`.
 //     The regex cannot be re-expanded across the candidate powerset
@@ -1243,8 +1250,8 @@ func matcherToExpr(m *labels.Matcher, s schema.Metrics) chplan.Expr {
 //
 // Values with no rewritable underscore (`up`, `gen`) — and values that
 // produce a single candidate — keep the legacy single-comparison
-// emit, byte-stable with the pre-fan-out fixtures. The OR chain is
-// `isCheapPredicate`-shaped (Binary over ColumnRef / LitString), so
+// emit, byte-stable with the pre-fan-out fixtures. The InList is
+// `isCheapPredicate`-shaped (InList over ColumnRef / LitString), so
 // the optimizer's PREWHERE promotion treats it exactly like the
 // single equality it replaces.
 // promMetricNormalizePattern is the SQL-side mirror of
@@ -1291,23 +1298,31 @@ func metricNamePredicate(m *labels.Matcher, s schema.Metrics) chplan.Expr {
 	if len(candidates) <= 1 {
 		return single
 	}
-	fold := chplan.OpOr
-	if m.Type == labels.MatchNotEqual {
-		fold = chplan.OpAnd
+	// Render the candidate set as a single flat, parameterised
+	// `MetricName IN (?, …)` (NOT IN for the `!=` matcher) rather than a
+	// left-associative OR/AND chain of equality Binary nodes. The flat IN
+	// is the load-bearing shape: a heavily-underscored span-metric name
+	// (e.g. `traces_service_graph_request_server_seconds_sum`) fans out to
+	// the 2^6 = 64-element powerset of dotted re-expansions, and the
+	// metadata handlers UNION-ALL up to 192 such variant arms into one
+	// combined query. An OR-chain renders 64 inline `(MetricName = 'lit'
+	// OR …)` terms *per arm*; crossed with the arm fan-out the rendered
+	// SQL crossed ClickHouse's 256KB `max_query_size` at position 262124
+	// (code 62, "Max query size exceeded") on the metrics-explorer broad
+	// probe. An IN tuple renders the column once + N `?` placeholders —
+	// compact text, constant parser depth — regardless of N. InList is
+	// classified cheap + PREWHERE-promotable by the optimizer (see
+	// internal/chsql/prewhere.go), so this preserves the
+	// granule-prune posture the single-equality emit had.
+	list := make([]chplan.Expr, len(candidates))
+	for i, cand := range candidates {
+		list[i] = &chplan.LitString{V: cand}
 	}
-	out := chplan.Expr(single)
-	for _, cand := range candidates[1:] {
-		out = &chplan.Binary{
-			Op:   fold,
-			Left: out,
-			Right: &chplan.Binary{
-				Op:    matchOp(m.Type),
-				Left:  &chplan.ColumnRef{Name: s.MetricNameColumn},
-				Right: &chplan.LitString{V: cand},
-			},
-		}
+	return &chplan.InList{
+		Left:    &chplan.ColumnRef{Name: s.MetricNameColumn},
+		List:    list,
+		Negated: m.Type == labels.MatchNotEqual,
 	}
-	return out
 }
 
 // attributeLookup returns the chplan.Expr that resolves a Prom matcher
