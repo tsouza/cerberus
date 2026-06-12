@@ -119,7 +119,9 @@ func (c *countingQuerier) snapshot() (int, []time.Duration, []string) {
 // triggers the H fan-out; the underscored form triggers the V fan-out
 // (dotted candidate `http.server.request.duration`).
 func seriesSeed() string {
-	const ts = `2026-05-11 12:00:00`
+	// Rows are anchored at now64(9) below (inside the staleness window the
+	// /series bare-selector instant pipeline applies), so no fixed-timestamp
+	// literal is needed here.
 	gaugeDDL := `CREATE OR REPLACE TABLE otel_metrics_gauge (
 	  ServiceName String, MetricName String, Attributes Map(String,String),
 	  TimeUnix DateTime64(9), Value Float64
@@ -266,6 +268,42 @@ SELECT DISTINCT MetricName, Attributes FROM (
 		t.Logf("CH-time delta:               %v (fan-out)  ->  %v (combined)  =  %.1fx",
 			chSum.Round(time.Microsecond), best.Round(time.Microsecond),
 			float64(chSum)/float64(best))
+	}
+
+	// --- ASSERTION: don't-regress-upward round-trip baseline -------------
+	//
+	// IMPORTANT SCOPE NOTE: the /series fan-in batching (#790) that would
+	// collapse this triple-nested fan-out into a SINGLE combined query is
+	// HELD — it is NOT on main. So this guard deliberately does NOT assert
+	// `n == 1` (that lands as part of the #790 follow-up, at which point
+	// flip the ceiling below to `if n != 1` and delete this note). What it
+	// CAN do today is pin the CURRENT round-trip count as a regression
+	// ceiling: the matcher above (`{__name__="http_server_request_duration"}`)
+	// fans out over the V (dotted-candidate) × H (classic-histogram
+	// companion) variant cross-product, and a bug that added a new
+	// expansion layer — or made an existing one multiply instead of union —
+	// would inflate N. The ceiling bites that explosion without pretending
+	// the batching shipped.
+	//
+	// The ceiling is set generously above the observed count (32 at the
+	// time of writing) so normal variant-set drift (a companion suffix
+	// added/removed) doesn't flake it, while a multiplicative blow-up
+	// (e.g. fanning the H layer over every gauge row, or a doubled V pass)
+	// trips it. When #790 lands and N drops to 1, replace this block with
+	// the exact `n == 1` assertion.
+	const maxRoundTrips = 64
+	if n > maxRoundTrips {
+		t.Fatalf("/series fan-out round-trip regression: a single histogram-shaped "+
+			"match[] request issued %d sequential ClickHouse round-trips, exceeding the "+
+			"%d ceiling. The V×H variant expansion has blown up (a new expansion layer, "+
+			"or an existing one multiplying instead of unioning). NOTE: the #790 fan-in "+
+			"batching that collapses this to 1 round-trip is held off main; when it lands, "+
+			"swap this ceiling for `n == 1`.", n, maxRoundTrips)
+	}
+	if n < 1 {
+		t.Fatalf("/series request issued %d round-trips — the counting Querier saw no "+
+			"CH traffic, so the harness isn't exercising the fan-out path it claims to "+
+			"measure", n)
 	}
 }
 
