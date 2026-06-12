@@ -34,7 +34,7 @@ INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, Duration, _svc) VALUES
   ["t1", "s2", "p1", "", 2000000000, 0, {"service.name": "y"}, {}, "", "", "", "", ""]
 ]
 -- chplan --
-StructuralJoin op=~
+StructuralJoin op=~ maxDepth=128
   Filter predicate=(ResourceAttributes["service.name"] = "x")
     Scan(otel_traces)
   Filter predicate=((ResourceAttributes["service.name"] = "y") AND (Duration > 1000000000))

@@ -42,7 +42,7 @@ INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, _svc) VALUES
 -- expected_rows --
 []
 -- chplan --
-StructuralJoin op=>>
+StructuralJoin op=>> maxDepth=128
   SetOperation op=&&
     Filter predicate=(ResourceAttributes["service.name"] = "a")
       Scan(otel_traces)
