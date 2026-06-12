@@ -57,9 +57,11 @@ const maxMetricCandidatesPerQuery = 128
 // maxRenderedQueryBytes is the byte budget the rendered-size guard
 // enforces on every combined query the batched endpoints build. It sits
 // below ClickHouse's default `max_query_size` (256KB / 262144 bytes) with
-// headroom for wider custom schemas: a combined query whose rendered SQL
-// exceeds this budget is split further (down to a single arm) so no query
-// ever approaches the CH ceiling for ANY request, however broad.
+// headroom for wider custom schemas: a combined query whose BOUND size
+// (placeholder SQL with every `?` replaced by its inlined arg literal —
+// see boundQueryBytes) exceeds this budget is split further (down to a
+// single arm) so no query ever approaches the CH ceiling for ANY request,
+// however broad.
 //
 // This is the guard the first fan-in attempt (PR #790) lacked: it relied
 // on the arm-count cap alone, and a wide-schema / heavily-underscored
@@ -67,6 +69,15 @@ const maxMetricCandidatesPerQuery = 128
 // guard makes the bound unconditional — correctness over the perf win:
 // a pathologically broad request degrades to a few bounded queries (still
 // ≪ N round-trips), never a 502.
+//
+// The budget is measured against the BOUND query size, not the compact
+// placeholder SQL: clickhouse-go/v2 inlines positional args client-side
+// (no native bound-param channel), so the bytes CH's max_query_size counts
+// are the literal-substituted query. Measuring `len(placeholderSQL)` alone
+// — as the original #71 guard did — undercounted the wire size by the
+// entire arg-literal payload, which is exactly how the #799 502 on
+// `otelcol_process_runtime_total_sys_memory_bytes` slipped past the guard
+// in CI yet 502'd against real clickhouse-server in compose-smoke.
 const maxRenderedQueryBytes = 200 * 1024
 
 // chunkMatcherVariants splits the matcher-variant slice into chunks of at
@@ -95,13 +106,67 @@ func chunkMatcherVariants(variants []string) [][]string {
 	return chunks
 }
 
-// renderedSQLBytes returns the byte length of the SQL `combine` produces
-// for the given matcher-subquery arms. It is the rendered-size guard's
-// probe: combine renders the same statement the endpoint will execute, so
-// its length is the exact figure compared against maxRenderedQueryBytes.
+// renderedSQLBytes returns the byte length of the statement `combine`
+// produces for the given matcher-subquery arms — measured as the size
+// ClickHouse actually PARSES, not the size of the placeholder SQL.
+//
+// chDB-lenient-vs-prod-strict gap (the #799 502): clickhouse-go/v2 speaks
+// the native protocol, which has no server-side bound-parameter channel —
+// the driver substitutes every positional `?` with its rendered literal
+// CLIENT-SIDE before the query reaches the server (lib/column bind path).
+// So the bytes CH parses, and the bytes its `max_query_size` (256KB)
+// ceiling counts, are the placeholder SQL with every `?` REPLACED by its
+// argument literal — not the compact `?`-carrying string `combine`
+// returns. A heavily-underscored gauge metric like
+// `otelcol_process_runtime_total_sys_memory_bytes` fans out to a 2^6
+// dotted-candidate × histogram-companion arm set, and each arm binds its
+// candidate powerset as `MetricName IN (?,…)`; the placeholder SQL stays
+// ~1KB/arm (the args ride the `[]any` channel, invisible to a `len(sql)`
+// probe), but once the driver inlines ~thousands of candidate string
+// literals the wire query crosses 256KB at parse position ~262142 and CH
+// rejects it with code 62 "Max query size exceeded" — a 502 the old
+// `len(sql)` guard could never see because it measured the wrong string.
+// chDB masks this entirely (its bind path tolerates the oversize), which
+// is why only the real-clickhouse-server compose-smoke reproduced it.
+//
+// We add the per-arg inlined-literal cost so the guard measures the bound
+// query the driver transmits, and buildBoundedChunkSQL splits on the real
+// figure.
 func renderedSQLBytes(arms []chsql.Frag, combine func([]chsql.Frag) (string, []any)) int {
-	sql, _ := combine(arms)
-	return len(sql)
+	sql, args := combine(arms)
+	return boundQueryBytes(sql, args)
+}
+
+// boundQueryBytes estimates the byte length of the query ClickHouse parses
+// after clickhouse-go/v2 inlines the positional args client-side: the
+// placeholder SQL plus, for each `?`, the extra bytes its rendered literal
+// occupies beyond the single `?` it replaces. The estimate is a safe
+// over-approximation (it never undercounts the wire size), so the
+// rendered-size guard errs toward smaller, safer chunks rather than
+// shipping an oversize query CH would 502 on.
+func boundQueryBytes(sql string, args []any) int {
+	total := len(sql)
+	for _, a := range args {
+		// Each arg replaces one `?` (1 byte) with its rendered literal.
+		total += argLiteralBytes(a) - 1
+	}
+	return total
+}
+
+// argLiteralBytes returns an upper bound on the byte length of the literal
+// clickhouse-go/v2 renders for one bound arg. String args dominate the
+// series/metadata fan-out (metric-name + label-key candidates); they render
+// as `'<value>'` with each quote/backslash byte-doubled by escaping, so the
+// worst case is `2*len + 2` (every byte escaped, plus the surrounding
+// quotes). Non-string args (ints, the empty-string sentinel, time bounds)
+// are bounded by a small constant — generous enough that no realistic
+// numeric/temporal literal undercounts.
+func argLiteralBytes(a any) int {
+	if s, ok := a.(string); ok {
+		return 2*len(s) + 2
+	}
+	const nonStringLiteralBudget = 40
+	return nonStringLiteralBudget
 }
 
 // buildBoundedChunkSQL renders the matcher-variant arms of ONE arm-cap
