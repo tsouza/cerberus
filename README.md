@@ -151,9 +151,9 @@ promql/parser      pkg/logql/syntax         pkg/traceql        ← reference ups
                        ▼
  ┌──────────────────────────────────────────────────┐
  │          internal/optimizer — rule-based         │   Catalyst-style batches:
- │  Analyzer (semantic) → Once (heuristic) →        │   fold • predicate pushdown •
- │  FixedPoint (rules that unlock each other)       │   transposes • projection pushdown •
- │                                                  │   MV substitution
+ │  Analyzer (semantic) → Once (heuristic) →        │   semantic + heuristic +
+ │  FixedPoint (rules that unlock each other)       │   fixpoint rewrites; no cost
+ │                                                  │   model (see docs/performance.md)
  └──────────────────────────────────────────────────┘
                        │
                        ▼
@@ -181,6 +181,9 @@ work over that one IR.
 See [`docs/engine.md`](docs/engine.md) for the `Lang` contract, the
 request lifecycle, and the in-depth per-stage breakdown (IR algebra,
 the optimiser rule table, the typed-SQL emitter, and the OTel schema).
+For **how cerberus keeps queries fast** — the compute-fan-out strategy,
+the per-layer optimisations, and the four-layer regression-proofing that
+holds them in place — see [`docs/performance.md`](docs/performance.md).
 
 ## Compatibility harnesses
 
