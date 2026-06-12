@@ -3845,14 +3845,14 @@
     },
     {
      "cerberus": {
-      "expect": "error:aggregation operation",
-      "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the panel FAILS the sweep the moment support lands, forcing the contract (and this dashboard) to be updated alongside the feature."
+      "expect": "nonempty",
+      "why": "Cerberus implements approx_topk (routed to exact top-k over ClickHouse, a correctness superset of Loki\u0027s sketch); the panel asserts a live nonempty result. Flipped per the bidirectional ratchet when the surface burndown landed support."
      },
      "datasource": {
       "type": "loki",
       "uid": "cerberus-loki"
      },
-     "description": "The probabilistic approx_topk aggregation is rejected.",
+     "description": "Cerberus implements `approx_topk` (exact top-k, #66).",
      "fieldConfig": {
       "defaults": {
        "color": {
@@ -3933,7 +3933,7 @@
        "refId": "A"
       }
      ],
-     "title": "approx_topk \u2014 parity rejection",
+     "title": "approx_topk",
      "type": "timeseries"
     },
     {

@@ -1581,10 +1581,9 @@
       "symbol": "vector:approx_topk",
       "kind": "vector-agg",
       "probe": "approx_topk(3, count_over_time({service_name=\"gateway\"}[5m]))",
-      "cerberus": "reject",
+      "cerberus": "accept",
       "reference": "accept",
-      "class": "wrong-reject",
-      "cerberus_error": "logql: aggregation operation \"approx_topk\" is unsupported"
+      "class": "parity-accept"
     },
     {
       "head": "logql",

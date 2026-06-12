@@ -1,0 +1,68 @@
+-- query.logql --
+approx_topk(2, sum by (env) (rate({job="api"}[5m])))
+-- seed --
+CREATE TABLE otel_logs (
+    Timestamp DateTime64(9),
+    Body String,
+    SeverityText LowCardinality(String) DEFAULT '',
+    ResourceAttributes Map(String, String),
+    ServiceName String DEFAULT ''
+) ENGINE = Memory;
+INSERT INTO otel_logs (Timestamp, Body, ResourceAttributes) VALUES
+    (toDateTime64('2025-12-31 23:58:00', 9), 'p1', map('job', 'api', 'env', 'prod')),
+    (toDateTime64('2025-12-31 23:58:20', 9), 'p2', map('job', 'api', 'env', 'prod')),
+    (toDateTime64('2025-12-31 23:58:40', 9), 'p3', map('job', 'api', 'env', 'prod')),
+    (toDateTime64('2025-12-31 23:59:00', 9), 'd1', map('job', 'api', 'env', 'dev')),
+    (toDateTime64('2025-12-31 23:59:20', 9), 'd2', map('job', 'api', 'env', 'dev')),
+    (toDateTime64('2025-12-31 23:59:40', 9), 's1', map('job', 'api', 'env', 'staging'));
+-- expected_rows --
+[
+  ["", {"env": "dev"}, "2026-01-01T00:00:01Z", 0.006666666666666667],
+  ["", {"env": "prod"}, "2026-01-01T00:00:01Z", 0.01]
+]
+-- args --
+[0] string = ""
+[1] string = "env"
+[2] int64 = 9
+[3] string = "env"
+[4] float64 = 300
+[5] string = ""
+[6] string = "detected_level"
+[7] string = ""
+[8] string = "unknown"
+[9] string = "trace"
+[10] string = "trc"
+[11] string = "trace"
+[12] string = "debug"
+[13] string = "dbg"
+[14] string = "debug"
+[15] string = "info"
+[16] string = "inf"
+[17] string = "information"
+[18] string = "info"
+[19] string = "warn"
+[20] string = "wrn"
+[21] string = "warning"
+[22] string = "warn"
+[23] string = "error"
+[24] string = "err"
+[25] string = "error"
+[26] string = "critical"
+[27] string = "critical"
+[28] string = "fatal"
+[29] string = "fatal"
+[30] int64 = 1
+[31] string = "job"
+[32] string = "api"
+[33] string = "env"
+-- chplan --
+TopK k=2 sort=Value DESC columns=[MetricName, Attributes, TimeUnix, Value]
+  Project [MetricName AS MetricName, Attributes AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+    Project ["" AS MetricName, map("env", gkey_0) AS Attributes, now64(9) AS TimeUnix, Value AS Value]
+      Aggregate groupBy=[ResourceAttributes["env"] AS gkey_0] funcs=[sum(Value) AS Value]
+        RangeWindow func=log_rate range=5m0s step=0s ts=Timestamp value=Value groupBy=[ResourceAttributes]
+          Project [mapConcat(ResourceAttributes, mapFilter((k, v) -> (v != ""), map("detected_level", multiIf((lower(SeverityText) = ""), "unknown", ((lower(SeverityText) = "trace") OR (lower(SeverityText) = "trc")), "trace", ((lower(SeverityText) = "debug") OR (lower(SeverityText) = "dbg")), "debug", (((lower(SeverityText) = "info") OR (lower(SeverityText) = "inf")) OR (lower(SeverityText) = "information")), "info", (((lower(SeverityText) = "warn") OR (lower(SeverityText) = "wrn")) OR (lower(SeverityText) = "warning")), "warn", ((lower(SeverityText) = "error") OR (lower(SeverityText) = "err")), "error", (lower(SeverityText) = "critical"), "critical", (lower(SeverityText) = "fatal"), "fatal", lower(SeverityText))))) AS ResourceAttributes, Timestamp, 1 AS Value]
+            Filter predicate=(ResourceAttributes["job"] = "api")
+              Scan(otel_logs)
+-- sql --
+SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT ? AS `MetricName`, map(?, `gkey_0`) AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `ResourceAttributes`[?] AS `gkey_0`, sum(`Value`) AS `Value` FROM (SELECT `ResourceAttributes`, if(length(window_vals) > 0, arraySum(window_vals) / ?, 0.0) AS `Value` FROM (SELECT `ResourceAttributes`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `ResourceAttributes`, arrayFilter(p -> tupleElement(p, 1) > now64(9) - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= now64(9), series_array) AS `window_pairs` FROM (SELECT `ResourceAttributes`, arraySort(groupArray((`Timestamp`, `Value`))) AS `series_array` FROM (SELECT mapConcat(`ResourceAttributes`, mapFilter((k, v) -> (v != ?), map(?, multiIf((lower(`SeverityText`) = ?), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (lower(`SeverityText`) = ?), ?, (lower(`SeverityText`) = ?), ?, lower(`SeverityText`))))) AS `ResourceAttributes`, `Timestamp`, ? AS `Value` FROM (SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?))) GROUP BY `ResourceAttributes`))) WHERE length(`window_vals`) >= 1) GROUP BY `ResourceAttributes`[?]))) ORDER BY `Value` DESC LIMIT 2)
