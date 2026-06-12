@@ -1766,7 +1766,7 @@ func (e *emitter) emitRangeWindowOverTime(r *chplan.RangeWindow) error {
 		// non-empty window). The shared `WHERE length(window_vals) >= 1`
 		// outer filter below already drops empty-window series, so the
 		// per-window value is the constant 1.
-		inner = "1"
+		inner = "toFloat64(1)"
 	case "first_over_time":
 		// LogQL `first_over_time(... | unwrap v [r])` — the value of the
 		// time-EARLIEST sample in the window (Loki's FirstOverTime
