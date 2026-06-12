@@ -133,18 +133,28 @@ func TestEmitRecursiveDescendant_EndToEnd(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"WITH RECURSIVE _struct_closure",
+		"WITH RECURSIVE _struct_closure_",
 		"_seed",
 		"UNION ALL",
-		"_struct_closure AS c",
+		// Closure CTE name carries a per-emit sequence suffix; the
+		// recursive arm self-joins it aliased `c`.
+		"_struct_closure_1 AS c",
+		// #78: the recursive arm is bounded by the default safety cap.
+		"c._depth < 128",
+		// #77: the recursive arm scopes its scan to the seed's trace ids.
+		"_seed_ids",
+		"t.`TraceId` IN (SELECT `TraceId` FROM",
 	} {
 		if !strings.Contains(sql, want) {
 			t.Errorf("emitted SQL missing %q\n  got: %s", want, sql)
 		}
 	}
 
-	// 4 string args: "service.name" / "root" / "service.name" / "leaf".
-	if got, expectedLen := len(args), 4; got != expectedLen {
+	// 6 string args: the L subquery's two args ("service.name" / "root")
+	// appear twice — once at the _seed position and once in the #77
+	// seed-trace-id pushdown subquery — followed by R's two
+	// ("service.name" / "leaf").
+	if got, expectedLen := len(args), 6; got != expectedLen {
 		t.Errorf("args length = %d, want %d (args=%v)", got, expectedLen, args)
 	}
 }

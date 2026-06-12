@@ -94,10 +94,18 @@ func TestNestedSetAnnotate_UnionOfStructural_RenderedOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
-	for _, cte := range []string{"WITH RECURSIVE _struct_closure ", "WITH RECURSIVE _struct_closure_inv "} {
-		if got := strings.Count(sql, cte); got != 1 {
-			t.Errorf("%q must render exactly once, got %d:\n%s", cte, got, sql)
-		}
+	// Closure CTE names carry a per-emit sequence suffix
+	// (`_struct_closure_<n>` / `_struct_closure_inv_<n>`) so nested
+	// structural joins don't collide; match the prefixes. The forward
+	// closure name is a prefix of the inverse one, so count the inverse
+	// first and subtract it from the forward count.
+	invCount := strings.Count(sql, "WITH RECURSIVE _struct_closure_inv_")
+	fwdCount := strings.Count(sql, "WITH RECURSIVE _struct_closure_") - invCount
+	if fwdCount != 1 {
+		t.Errorf("forward closure CTE must render exactly once, got %d:\n%s", fwdCount, sql)
+	}
+	if invCount != 1 {
+		t.Errorf("inverse closure CTE must render exactly once, got %d:\n%s", invCount, sql)
 	}
 	// The Project passes TraceId through bare, so the `||` arm's scope
 	// recurses past it down to the Filter(Scan) leaf.

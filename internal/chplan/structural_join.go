@@ -118,9 +118,13 @@ func (op StructuralOp) Positive() StructuralOp {
 // schema.
 //
 // MaxDepth bounds the parent-chain walk for recursive ops (`>>` / `<<`):
-// 0 means unbounded (the CH `WITH RECURSIVE` CTE iterates until the
-// fixpoint). Positive values cap the recursion at that many levels —
-// useful for cost control on deep traces; the optimizer may set this
+// a positive value caps the recursion at that many levels. 0 leaves the
+// cap to the emitter, which applies a safety default
+// (chsql.defaultStructuralRecursionDepth) — the recursive CTE is never
+// emitted unbounded, so a span-id cycle degrades to a partial closure
+// instead of erroring with CH code 306. For an acyclic trace shallower
+// than the cap the walk still terminates at the natural fixpoint, so
+// the cap is invisible in the common case. The optimizer may set this
 // from a configured ceiling. For the direct ops (`>` / `<` / `~`) the
 // field is ignored: those always emit a single-level INNER JOIN.
 //

@@ -3568,21 +3568,28 @@ func structuralRecursiveNode(op chplan.StructuralOp, maxDepth int) *chplan.Struc
 }
 
 // TestEmitStructuralRecursive_MaxDepthBoundary kills the
-// CONDITIONALS_BOUNDARY + CONDITIONALS_NEGATION at structural_join.go:483
-// (`if j.MaxDepth > 0`). MaxDepth==0 must emit NO depth cap; MaxDepth>0
-// must emit `c._depth < N`. The boundary mutant `>= 0` would emit
-// `c._depth < 0` for the unbounded case; the negation `<= 0` similarly
-// flips which inputs get the cap.
+// CONDITIONALS_BOUNDARY + CONDITIONALS_NEGATION at effectiveRecursionDepth
+// (`if maxDepth > 0`). The recursive arm is ALWAYS bounded now (#78):
+// MaxDepth==0 falls back to the package default cap
+// (defaultStructuralRecursionDepth); MaxDepth>0 overrides it. The
+// boundary mutant `>= 0` would let MaxDepth=0 emit `c._depth < 0`
+// (an always-false bound that empties the closure); the negation
+// `<= 0` would emit the default for positive inputs too.
 func TestEmitStructuralRecursive_MaxDepthBoundary(t *testing.T) {
 	t.Parallel()
-	t.Run("MaxDepth=0 → no depth cap", func(t *testing.T) {
+	t.Run("MaxDepth=0 → default safety cap", func(t *testing.T) {
 		t.Parallel()
 		sql, _, err := Emit(context.Background(), structuralRecursiveNode(chplan.StructuralDescendant, 0))
 		if err != nil {
 			t.Fatalf("Emit: %v", err)
 		}
-		if strings.Contains(sql, "c._depth < ") {
-			t.Errorf("MaxDepth=0 must emit no depth cap.\nSQL: %s", sql)
+		want := "c._depth < " + strconv.Itoa(defaultStructuralRecursionDepth)
+		if !strings.Contains(sql, want) {
+			t.Errorf("MaxDepth=0 must emit the default safety cap %q.\nSQL: %s", want, sql)
+		}
+		// The unbounded `> 0` boundary mutant would emit `c._depth < 0`.
+		if strings.Contains(sql, "c._depth < 0") {
+			t.Errorf("MaxDepth=0 must NOT emit a zero (always-false) cap.\nSQL: %s", sql)
 		}
 	})
 	t.Run("MaxDepth=3 → c._depth < 3", func(t *testing.T) {
@@ -3594,14 +3601,42 @@ func TestEmitStructuralRecursive_MaxDepthBoundary(t *testing.T) {
 		if !strings.Contains(sql, "c._depth < 3") {
 			t.Errorf("MaxDepth=3 must cap at c._depth < 3.\nSQL: %s", sql)
 		}
+		// Must override, not co-emit, the default.
+		if strings.Contains(sql, "c._depth < "+strconv.Itoa(defaultStructuralRecursionDepth)) {
+			t.Errorf("MaxDepth=3 must override the default cap, not co-emit it.\nSQL: %s", sql)
+		}
 	})
 }
 
+// TestEffectiveRecursionDepth pins the #78 cap resolution directly:
+// positive MaxDepth passes through; 0 (and defensively negative) falls
+// back to the package default. Kills the CONDITIONALS_BOUNDARY /
+// CONDITIONALS_NEGATION mutants on the `maxDepth > 0` guard.
+func TestEffectiveRecursionDepth(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in, want int
+	}{
+		{0, defaultStructuralRecursionDepth},
+		{-1, defaultStructuralRecursionDepth},
+		{1, 1},
+		{3, 3},
+		{1000, 1000},
+	}
+	for _, c := range cases {
+		if got := effectiveRecursionDepth(c.in); got != c.want {
+			t.Errorf("effectiveRecursionDepth(%d) = %d, want %d", c.in, got, c.want)
+		}
+	}
+}
+
 // TestEmitStructuralRecursiveUnion_InverseClosureMaxDepth covers + kills
-// the MaxDepth boundary at structural_join.go:613 (the INVERSE closure
-// built for the union recursive arm) and the ARITHMETIC_BASE at 614.
-// The union op (`&>>`) builds both the forward and inverse closures, so
-// a MaxDepth>0 must produce TWO `c._depth < N` caps; MaxDepth=0 none.
+// the MaxDepth boundary in buildStructuralInverseClosure (the INVERSE
+// closure built for the union recursive arm). The union op (`&>>`)
+// builds both the forward and inverse closures, so the bound must
+// appear TWICE: MaxDepth>0 → two `c._depth < N`; MaxDepth=0 → two
+// `c._depth < <default>` (both closures bounded by the #78 safety cap,
+// never unbounded).
 func TestEmitStructuralRecursiveUnion_InverseClosureMaxDepth(t *testing.T) {
 	t.Parallel()
 	t.Run("union MaxDepth=2 → both closures capped at 2", func(t *testing.T) {
@@ -3614,14 +3649,18 @@ func TestEmitStructuralRecursiveUnion_InverseClosureMaxDepth(t *testing.T) {
 			t.Errorf("union recursive MaxDepth=2 must cap BOTH the forward and inverse closures (2 occurrences), got %d.\nSQL: %s", got, sql)
 		}
 	})
-	t.Run("union MaxDepth=0 → no caps", func(t *testing.T) {
+	t.Run("union MaxDepth=0 → both closures at default cap", func(t *testing.T) {
 		t.Parallel()
 		sql, _, err := Emit(context.Background(), structuralRecursiveNode(chplan.StructuralUnionDescendant, 0))
 		if err != nil {
 			t.Fatalf("Emit: %v", err)
 		}
-		if strings.Contains(sql, "c._depth < ") {
-			t.Errorf("union recursive MaxDepth=0 must emit no depth caps.\nSQL: %s", sql)
+		want := "c._depth < " + strconv.Itoa(defaultStructuralRecursionDepth)
+		if got := strings.Count(sql, want); got != 2 {
+			t.Errorf("union recursive MaxDepth=0 must bound BOTH closures with the default cap %q (2 occurrences), got %d.\nSQL: %s", want, got, sql)
+		}
+		if strings.Contains(sql, "c._depth < 0") {
+			t.Errorf("union recursive MaxDepth=0 must NOT emit a zero (always-false) cap.\nSQL: %s", sql)
 		}
 	})
 }
