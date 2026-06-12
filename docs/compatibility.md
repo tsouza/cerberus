@@ -13,7 +13,42 @@ fixture over the same time window.
 
 Scores are published to the orphan
 [`compat-scores`](https://github.com/tsouza/cerberus/tree/compat-scores)
-branch as shields.io badge JSON; the README shows them live.
+branch as shields.io badge JSON; the README shows them live. On
+`push: main` the workflow commits a fresh `compat-score.json` under
+`badges/<head>.json`, which the shields.io endpoint badges read from.
+
+## Per-head detail
+
+### PromQL — `prometheus/compliance`
+
+- **Driver**: upstream `promql-compliance-tester`.
+- **Corpus**: vendored
+  [`prometheus/compliance/promql/promql-test-queries.yml`](https://github.com/prometheus/compliance).
+- **Today**: **536/536** cases pass; no allow-list exists.
+
+### LogQL — `grafana/loki:pkg/logql/bench`
+
+- **Driver**: cerberus-owned `loki-compliance-tester`, shape-compatible
+  JSON report with the Prom driver so both feed a single downstream
+  analyser.
+- **Corpus**: vendored
+  [`grafana/loki:pkg/logql/bench/queries/{fast,regression,exhaustive}`](https://github.com/grafana/loki/tree/main/pkg/logql/bench/queries);
+  the widened corpus's `${SELECTOR}` / `${LABEL_*}` templates resolve
+  off `dataset_metadata.json`.
+- **Today**: shipped and gating as the required `compatibility/loki` PR
+  check; no allow-list exists.
+
+### TraceQL — cerberus-owned driver
+
+- **Driver**: cerberus-owned binary with `seed` + `diff` subcommands
+  (OTLP push to Tempo + direct CH `INSERT` to cerberus, both from one
+  in-memory fixture so per-span fields stay 1:1 across both read paths),
+  patterned on `cmd/tempo-vulture`.
+- **Corpus**: cerberus-owned TXTAR corpus.
+- **Today**: shipped and gating. `/api/search`, `/api/traces/<id>`, the
+  four tag / tag-values endpoints (V1 + V2), and the metrics endpoints
+  (`/api/metrics/query_range` + `/api/metrics/query`) all run under the
+  required `compatibility/tempo` PR check; no allow-list exists.
 
 ## Local run
 

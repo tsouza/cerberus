@@ -202,6 +202,76 @@ error types — `parseStageError` in the Prom adapter,
 so the handler can map them to the right HTTP status without
 losing the cause.
 
+## Pipeline stages in depth
+
+The middle of the pipeline — lower → optimize → emit → schema
+resolution — is the part the three heads share. Each stage is
+described below.
+
+### One IR for three languages — `internal/chplan`
+
+A small algebra (`Scan`, `Filter`, `Project`, `Aggregate`,
+`RangeWindow`, `Limit` + an expression tree) is the meeting point of
+all three heads. The optimiser, the SQL emitter, and the engine work
+over this IR; they don't know which head produced the plan. **New
+optimisations cost one implementation, not three.**
+
+### A real rule-based optimiser — `internal/optimizer`
+
+Catalyst- and DataFusion-style: rules are grouped into batches with
+three strategies — `Analyzer` (semantic, must-run, idempotent — panics
+on contract violation), `Once` (idempotent heuristics, single pass),
+and `FixedPoint(n)` (rules that unlock each other; iterates until no
+rule reports a change or `n` iterations have elapsed). The default
+pipeline ships:
+
+| Stage                            | Rules                                                                                              | What it buys                                                                                        |
+| -------------------------------- | -------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| Analyzer — pure-literal fold     | `ConstantFoldSemantic`                                                                             | Downstream rules can assume pure-literal subtrees have collapsed to a single `Lit`                  |
+| Once — heuristic fold            | `ConstantFoldHeuristic`                                                                            | Boolean identity simplification (`true AND X → X`, `false OR X → X`)                                |
+| FixedPoint — predicate pushdown  | `FilterFusion`, `FilterProjectTranspose`, `FilterAggregateTranspose`, `FilterRangeWindowTranspose` | Filters move below projections / aggregates / range windows so CH skip-indexes can fire on a `Scan` |
+| FixedPoint — projection pushdown | `ProjectionPushdown`                                                                               | Late materialisation: wide columns are only resolved after `LIMIT` cuts the row set                 |
+| FixedPoint — MV substitution     | `MVSubstitution`                                                                                   | Swaps `RangeWindow(Scan(otel_metrics_*))` to a pre-aggregated rollup view when the rewrite is safe  |
+
+The optimiser is gated by termination, decision-pin, rule-interaction,
+property, and gremlins (mutation) tests.
+
+### Typed SQL — `internal/chsql`
+
+Every emitted byte goes through a typed builder. Query shapes compose
+through `QueryBuilder` slots (`.Select` / `.From` / `.Where` /
+`.GroupBy` / `.OrderBy` / `.Limit` / `.Prewhere` / `.Join` /
+`.WithRecursive`); expressions compose through typed `Frag`
+constructors (`Eq`, `And`, `Or`, `Paren`, `Cast`, `In`, `Like`, `Add`,
+`Call`, `Array`, `Subscript`, `If`, `Lambda1`, `Subquery`,
+`BareIdent`, `InlineLit`, …). **External packages cannot produce raw
+SQL by construction** — the typed Frag surface is closed, and adding a
+new shape means adding a new typed constructor.
+
+The emitter is also CH-native rather than ANSI-ish:
+
+- **`PREWHERE` promotion** fuses `Filter(Scan)` into a single
+  `SELECT … FROM <table> [PREWHERE …] WHERE …`, partitions conjuncts
+  into a sort-prefix bucket / skip-index bucket / rest, and promotes
+  cheap predicates that touch no wide column into `PREWHERE` when the
+  projection reads any wide column.
+- **`WITH RECURSIVE`** for label-set / trace-graph traversal.
+- **Streaming `clickhouse-go/v2` cursor** — bounded RSS, no row buffer
+  on the hot path; the engine's `QueryCursor` opens a streaming
+  cursor when the underlying client implements `CursorQuerier`.
+
+### Schema — drop-in OTel
+
+Defaults to the
+[OpenTelemetry ClickHouse Exporter](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/exporter/clickhouseexporter)
+layout (`otel_metrics_*`, `otel_logs`, `otel_traces`). The schema
+source of truth is the upstream OTel-CH exporter via the
+[`tsouza/opentelemetry-collector-contrib:cerberus-ddl`](https://github.com/tsouza/opentelemetry-collector-contrib/tree/cerberus-ddl)
+fork — cerberus consumes the same DDL templates the production
+exporter emits, so a deployment where the exporter writes and cerberus
+reads sees one schema across both sides. A thin YAML override config
+supports SigNoz schemas and custom column layouts.
+
 ## Adding a new query head
 
 To add a fourth query head, three pieces are needed:
