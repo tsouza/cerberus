@@ -84,6 +84,17 @@ test-chdb:
 property:
     go test -tags chdb -count=1 ./test/property/...
 
+# Run the chDB-tagged perf regression guards (test/perf). These are
+# deterministic ASSERTION pins — not wall-clock benchmarks — that bite a
+# regression of the landed perf wins: the metrics-table MetricName-first
+# ORDER BY granule prune (EXPLAIN indexes=1 ratio floor) and the /series
+# fan-out round-trip baseline. Requires libchdb.so (see `just chdb-install`).
+# Mirrors the `perf-guards` CI job in chdb.yml. Distinct from the
+# informational `perf-benchmark.yml` lane, which only reports benchstat
+# deltas and never gates.
+perf-chdb:
+    go test -tags chdb -count=1 ./test/perf/...
+
 # Run the chclient testcontainers integration tests against a real
 # ClickHouse container. Requires Docker. Gated behind the `integration`
 # build tag so regular `just test` doesn't pull in Docker.

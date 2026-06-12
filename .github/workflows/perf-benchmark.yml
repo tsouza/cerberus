@@ -13,6 +13,12 @@ name: perf-benchmark
 # Go test runner auto-scale b.N to amortise setup over many iterations
 # (critical for the sub-µs PromQL/LogQL lower benches). `-cpu=1` pins
 # GOMAXPROCS=1 to avoid the multi-core sampling cost.
+#
+# This lane is INFORMATIONAL by design (benchstat deltas, runner-variance
+# prone) and never gates. The deterministic perf-regression ASSERTIONS —
+# the metrics ORDER BY granule-prune ratio floor and the /series
+# round-trip baseline — live in the `perf-guards` job of chdb.yml and DO
+# gate. Keep wall-clock here; keep structural assertions there.
 
 on:
   pull_request:

@@ -164,3 +164,45 @@ jobs:
 
       - name: Run TXTAR round-trip (${{ matrix.ql }})
         run: go test -tags chdb -count=1 ./test/spec/${{ matrix.ql }}/...
+
+  # `perf-guards` runs the chDB-tagged deterministic perf-regression
+  # ASSERTIONS under test/perf/ — the load-bearing fix for task #73.
+  # Before this job, test/perf compiled under the `chdb` tag but ran in
+  # NO CI lane (nothing invoked `./test/perf/...`), so the harnesses only
+  # `t.Logf`'d and could never fail. The tests are now assertion-pins, not
+  # wall-clock benchmarks, so they belong on a gating lane:
+  #
+  #   - TestOrderByDecision_ChDB: EXPLAIN indexes=1 granule-prune ratio
+  #     floor (≥4×) proving the cerberus-ddl MetricName-first metrics
+  #     ORDER BY win (#791) still holds against a byte-identical
+  #     ServiceName-first table.
+  #   - TestSeriesFanout_ChDB: a don't-regress-upward /series round-trip
+  #     ceiling (the #790 fan-in batching is held off main, so this pins
+  #     the current N rather than asserting ==1).
+  #
+  # Wall-clock perf stays in the informational `perf-benchmark.yml`
+  # (benchstat, never gates) to avoid runner-variance flake; only the
+  # deterministic structural assertions gate here.
+  perf-guards:
+    name: perf-guards
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      - name: Install libchdb.so
+        run: just chdb-install
+
+      - name: Run perf regression guards (chDB)
+        run: just perf-chdb
