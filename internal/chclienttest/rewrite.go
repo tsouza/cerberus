@@ -72,6 +72,24 @@ func isMapColumn(name string) bool {
 // the chdb-go parquet decoder will panic loudly at scan time, which is
 // the failure mode we want.
 func rewriteMapProjections(query string) string {
+	// Top-level UNION-ALL shape: `(SELECT …) UNION ALL (SELECT …) …`. The
+	// fan-in metadata /series path (internal/api/prom/metadata.go) renders
+	// the combined Sample query as a bare UnionAll of parenthesised SELECT
+	// arms — it does NOT start with `SELECT `, so the single-SELECT rewrite
+	// below would pass it through unwrapped and the Map-typed `Attributes`
+	// column would hit the chdb parquet decoder's NULL path. Rewrite each
+	// arm's outer SELECT independently and re-join.
+	if arms, ok := splitTopLevelUnionAll(query); ok {
+		for i, a := range arms {
+			arms[i] = rewriteMapProjections(a)
+		}
+		return strings.Join(arms, " UNION ALL ")
+	}
+	// A UNION-ALL arm arrives wrapped in its own parens — `(SELECT …)`.
+	// Strip the outer parens, rewrite the inner SELECT, re-wrap.
+	if inner, ok := stripOuterParens(query); ok {
+		return "(" + rewriteMapProjections(inner) + ")"
+	}
 	head, tail := splitOuterSelect(query)
 	if head == "" {
 		return query
@@ -88,6 +106,87 @@ func rewriteMapProjections(query string) string {
 		projs[i] = "toJSONString(" + expr + ") AS `" + alias + "`"
 	}
 	return "SELECT " + strings.Join(projs, ", ") + tail
+}
+
+// splitTopLevelUnionAll splits a `<arm> UNION ALL <arm> …` statement on
+// its depth-0 ` UNION ALL ` separators, returning the arms verbatim (each
+// typically a parenthesised `(SELECT …)`). Returns ok=false when no
+// depth-0 ` UNION ALL ` is present, so a plain single SELECT falls through
+// to the single-SELECT rewrite. Single-quoted strings and backtick
+// identifiers shield any ` UNION ALL ` substring inside literals.
+func splitTopLevelUnionAll(query string) (arms []string, ok bool) {
+	const sep = " UNION ALL "
+	var (
+		out   []string
+		start int
+		depth int
+		inStr byte
+	)
+	for i := 0; i < len(query); i++ {
+		c := query[i]
+		switch {
+		case inStr != 0:
+			if c == inStr {
+				inStr = 0
+			}
+		case c == '\'' || c == '`':
+			inStr = c
+		case c == '(':
+			depth++
+		case c == ')':
+			depth--
+		}
+		if depth == 0 && inStr == 0 && i+len(sep) <= len(query) &&
+			strings.EqualFold(query[i:i+len(sep)], sep) {
+			out = append(out, strings.TrimSpace(query[start:i]))
+			i += len(sep) - 1
+			start = i + 1
+		}
+	}
+	if len(out) == 0 {
+		return nil, false
+	}
+	out = append(out, strings.TrimSpace(query[start:]))
+	return out, true
+}
+
+// stripOuterParens returns the contents of a fully-parenthesised
+// expression — `(<inner>)` → `<inner>` — when the leading `(` matches the
+// trailing `)` at depth 0 (i.e. the whole string is one parenthesised
+// group). Returns ok=false otherwise, so a query that merely contains
+// parens (but isn't wholly wrapped) falls through untouched. Quote-aware
+// so a literal `)` inside a string doesn't close the group early.
+func stripOuterParens(s string) (inner string, ok bool) {
+	s = strings.TrimSpace(s)
+	if len(s) < 2 || s[0] != '(' || s[len(s)-1] != ')' {
+		return "", false
+	}
+	depth := 0
+	inStr := byte(0)
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case inStr != 0:
+			if c == inStr {
+				inStr = 0
+			}
+		case c == '\'' || c == '`':
+			inStr = c
+		case c == '(':
+			depth++
+		case c == ')':
+			depth--
+			if depth == 0 && i != len(s)-1 {
+				// The opening paren closed before the end — the string is
+				// not a single wrapped group (e.g. `(a) UNION ALL (b)`).
+				return "", false
+			}
+		}
+	}
+	if depth != 0 {
+		return "", false
+	}
+	return strings.TrimSpace(s[1 : len(s)-1]), true
 }
 
 // splitOuterSelect splits `SELECT <projs> FROM ...` at the depth-0
