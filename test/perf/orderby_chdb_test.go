@@ -63,7 +63,8 @@ const (
 //	attr idx    = (n / nTime)                  % nAttr
 //	time idx    =  n                           % nTime
 func makeInsert(table string, total int) string {
-	return fmt.Sprintf(`INSERT INTO %s
+	return fmt.Sprintf(
+		`INSERT INTO %s
 SELECT
     concat('service.', leftPad(toString(intDiv(number, %d) %% %d), 3, '0')) AS ServiceName,
     concat('metric_', leftPad(toString(intDiv(number, %d) %% %d), 3, '0')) AS MetricName,
@@ -95,6 +96,16 @@ type explainStats struct {
 	cond     string
 	parts    string
 	granules string
+}
+
+// explainRow pairs a query shape + sort-key variant with its parsed
+// EXPLAIN stats and best wall time. Hoisted to package scope (from a
+// local type inside TestOrderByDecision_ChDB) so the granule-prune
+// assertion helpers can range over the collected results.
+type explainRow struct {
+	shape, variant string
+	st             explainStats
+	wall           time.Duration
 }
 
 func runExplain(t *testing.T, db *sql.DB, query string) explainStats {
@@ -206,12 +217,7 @@ func TestOrderByDecision_ChDB(t *testing.T) {
 	t.Logf("=== ORDER BY decision: %d rows (%d svc x %d metrics x %d attr x %d ts), total marks=%d ===",
 		total, nServices, nMetrics, nAttr, nTime, totalGranules)
 
-	type row struct {
-		shape, variant string
-		st             explainStats
-		wall           time.Duration
-	}
-	var results []row
+	var results []explainRow
 	for _, tb := range tables {
 		for _, q := range []struct {
 			shape string
@@ -223,7 +229,7 @@ func TestOrderByDecision_ChDB(t *testing.T) {
 			query := fmt.Sprintf(q.tmpl, tb.name)
 			st := runExplain(t, db, query)
 			wall := timeQuery(t, db, query, iters)
-			results = append(results, row{q.shape, tb.label, st, wall})
+			results = append(results, explainRow{q.shape, tb.label, st, wall})
 		}
 	}
 
@@ -250,6 +256,95 @@ func TestOrderByDecision_ChDB(t *testing.T) {
 		}
 		rows.Close()
 	}
+
+	// --- ASSERTION: granule-prune ratio floor (guards #791) ---------------
+	//
+	// The landed cerberus-ddl fork patch leads the metrics ORDER BY with
+	// MetricName so the common metric-name-first query (NO service.name
+	// matcher — the Grafana / Drilldown-Metrics default) binary-searches
+	// the PK instead of falling to a generic-exclusion scan that touches
+	// granules from every ServiceName block. The measured win on this grid
+	// is 8–17× fewer granules read on the metric-only shape.
+	//
+	// We assert a generous ratio FLOOR (≥4×), not an absolute granule
+	// count: the absolute number is index_granularity-dependent and would
+	// drift if CH changed the default or the grid scaled, but the *ratio*
+	// between the two sort keys on byte-identical data is the structural
+	// property the fork patch buys. The fixed-grid OPTIMIZE … FINAL
+	// single-part setup above makes both granule counts deterministic. A
+	// regression that re-led the sort key with ServiceName (the OTel
+	// upstream default) collapses the ratio toward 1× and trips this floor.
+	svcFirstGranules := selectedGranulesFor(t, results, "metric-only", "ServiceName-first (PRODUCTION)")
+	metricFirstGranules := selectedGranulesFor(t, results, "metric-only", "MetricName-first (PROPOSED)")
+
+	t.Logf("metric-only granule prune: svcfirst=%d  metricfirst=%d  ratio=%.1fx",
+		svcFirstGranules, metricFirstGranules, float64(svcFirstGranules)/float64(maxInt1(metricFirstGranules)))
+
+	if metricFirstGranules <= 0 {
+		t.Fatalf("metric-first metric-only query read %d granules — EXPLAIN parse is "+
+			"degenerate (expected ≥1 selected granule); cannot evaluate the prune ratio",
+			metricFirstGranules)
+	}
+	const minRatio = 4 // generous floor vs the measured 8–17×
+	if metricFirstGranules*minRatio > svcFirstGranules {
+		t.Fatalf("metrics ORDER BY granule-prune regression: the metric-name-first key "+
+			"read %d granules and the service-name-first key read %d — only %.1f× fewer, "+
+			"below the %d× floor. The cerberus-ddl fork's MetricName-first ORDER BY win "+
+			"(measured 8–17× on this grid) has regressed; the leading sort key is no "+
+			"longer letting a no-service.name query PK-range-prune.",
+			metricFirstGranules, svcFirstGranules,
+			float64(svcFirstGranules)/float64(metricFirstGranules), minRatio)
+	}
+}
+
+// selectedGranulesFor pulls the count of SELECTED granules (the
+// numerator of ClickHouse's `Granules: <selected>/<total>` EXPLAIN line)
+// for the result row matching the given shape + variant label. The
+// selected count is the granules ClickHouse actually reads after PK
+// pruning — the quantity the ORDER BY win reduces.
+func selectedGranulesFor(t *testing.T, results []explainRow, shape, variant string) int {
+	t.Helper()
+	for _, r := range results {
+		if r.shape == shape && r.variant == variant {
+			g := parseSelectedGranules(r.st.granules)
+			if g < 0 {
+				t.Fatalf("could not parse selected granules from %q (shape=%s variant=%s)",
+					r.st.granules, shape, variant)
+			}
+			return g
+		}
+	}
+	t.Fatalf("no result row for shape=%s variant=%s", shape, variant)
+	return -1
+}
+
+// parseSelectedGranules extracts the leading integer from a
+// `Granules: <selected>/<total>` EXPLAIN line. Returns -1 on a shape it
+// can't parse.
+func parseSelectedGranules(s string) int {
+	s = stripPrefix(trimSpace(s), "Granules: ")
+	// s is now "<selected>/<total>" (or just "<selected>" defensively).
+	n := 0
+	seen := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c < '0' || c > '9' {
+			break
+		}
+		n = n*10 + int(c-'0')
+		seen = true
+	}
+	if !seen {
+		return -1
+	}
+	return n
+}
+
+func maxInt1(n int) int {
+	if n < 1 {
+		return 1
+	}
+	return n
 }
 
 // --- tiny string helpers (avoid importing strings for two calls) ---
