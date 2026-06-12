@@ -689,6 +689,13 @@
     },
     {
       "head": "promql",
+      "site": "internal/promql/sort.go:lowerSort#749adc13",
+      "message": "promql: %s expects 1 argument, got %d",
+      "class": "internal",
+      "rationale": "The PromQL parser enforces sort()/sort_desc()'s single-argument arity at parse time."
+    },
+    {
+      "head": "promql",
       "site": "internal/promql/subquery.go:buildSubqueryAggFunc#534fdfbe",
       "message": "promql: subquery over %s aggregation is not supported",
       "class": "internal",

@@ -286,7 +286,7 @@ func (e *emitter) emitRangeWindow(r *chplan.RangeWindow) error {
 		return e.emitRangeWindowDelta(r)
 	case "idelta":
 		return e.emitRangeWindowIDelta(r)
-	case "sum_over_time", "avg_over_time", "min_over_time", "max_over_time", "count_over_time", "first_over_time", "last_over_time", "stddev_over_time", "stdvar_over_time":
+	case "sum_over_time", "avg_over_time", "min_over_time", "max_over_time", "count_over_time", "first_over_time", "last_over_time", "stddev_over_time", "stdvar_over_time", "present_over_time":
 		return e.emitRangeWindowOverTime(r)
 	case "quantile_over_time":
 		return e.emitRangeWindowQuantileOverTime(r)
@@ -1759,6 +1759,14 @@ func (e *emitter) emitRangeWindowOverTime(r *chplan.RangeWindow) error {
 		inner = "if(length(window_vals) > 0, arrayMax(window_vals), nan)"
 	case "count_over_time":
 		inner = "toFloat64(length(window_vals))"
+	case "present_over_time":
+		// PromQL present_over_time(v[range]) emits 1 for every series
+		// with ≥1 sample in the window (prometheus/promql/functions.go::
+		// funcPresentOverTime — it appends a single `1` per series with a
+		// non-empty window). The shared `WHERE length(window_vals) >= 1`
+		// outer filter below already drops empty-window series, so the
+		// per-window value is the constant 1.
+		inner = "toFloat64(1)"
 	case "first_over_time":
 		// LogQL `first_over_time(... | unwrap v [r])` — the value of the
 		// time-EARLIEST sample in the window (Loki's FirstOverTime

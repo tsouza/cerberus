@@ -3665,7 +3665,7 @@
             "type": "prometheus",
             "uid": "cerberus-prometheus"
           },
-          "description": "Cerberus rejects `acos(up)` today; this panel pins the rejection.",
+          "description": "Cerberus implements `acos(up)` (surface burndown #65).",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -3747,11 +3747,11 @@
               "refId": "A"
             }
           ],
-          "title": "acos \u2014 parity rejection",
+          "title": "acos",
           "type": "timeseries",
           "cerberus": {
-            "expect": "error:not yet supported",
-            "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the moment lowering support lands, this panel fails the sweep and the contract must be upgraded to nonempty."
+            "expect": "nonempty",
+            "why": "Cerberus implements this construct; the panel asserts a live nonempty result. Previously a parity-rejection pin \u2014 the surface burndown (#65) landed the lowering, so the contract is upgraded to nonempty per the bidirectional ratchet."
           }
         },
         {
@@ -3759,7 +3759,7 @@
             "type": "prometheus",
             "uid": "cerberus-prometheus"
           },
-          "description": "Cerberus rejects `acosh(up)` today; this panel pins the rejection.",
+          "description": "Cerberus implements `acosh(up)` (surface burndown #65).",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -3841,11 +3841,11 @@
               "refId": "A"
             }
           ],
-          "title": "acosh \u2014 parity rejection",
+          "title": "acosh",
           "type": "timeseries",
           "cerberus": {
-            "expect": "error:not yet supported",
-            "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the moment lowering support lands, this panel fails the sweep and the contract must be upgraded to nonempty."
+            "expect": "nonempty",
+            "why": "Cerberus implements this construct; the panel asserts a live nonempty result. Previously a parity-rejection pin \u2014 the surface burndown (#65) landed the lowering, so the contract is upgraded to nonempty per the bidirectional ratchet."
           }
         },
         {
@@ -3853,7 +3853,7 @@
             "type": "prometheus",
             "uid": "cerberus-prometheus"
           },
-          "description": "Cerberus rejects `asin(up)` today; this panel pins the rejection.",
+          "description": "Cerberus implements `asin(up)` (surface burndown #65).",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -3935,11 +3935,11 @@
               "refId": "A"
             }
           ],
-          "title": "asin \u2014 parity rejection",
+          "title": "asin",
           "type": "timeseries",
           "cerberus": {
-            "expect": "error:not yet supported",
-            "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the moment lowering support lands, this panel fails the sweep and the contract must be upgraded to nonempty."
+            "expect": "nonempty",
+            "why": "Cerberus implements this construct; the panel asserts a live nonempty result. Previously a parity-rejection pin \u2014 the surface burndown (#65) landed the lowering, so the contract is upgraded to nonempty per the bidirectional ratchet."
           }
         },
         {
@@ -3947,7 +3947,7 @@
             "type": "prometheus",
             "uid": "cerberus-prometheus"
           },
-          "description": "Cerberus rejects `asinh(up)` today; this panel pins the rejection.",
+          "description": "Cerberus implements `asinh(up)` (surface burndown #65).",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4029,11 +4029,11 @@
               "refId": "A"
             }
           ],
-          "title": "asinh \u2014 parity rejection",
+          "title": "asinh",
           "type": "timeseries",
           "cerberus": {
-            "expect": "error:not yet supported",
-            "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the moment lowering support lands, this panel fails the sweep and the contract must be upgraded to nonempty."
+            "expect": "nonempty",
+            "why": "Cerberus implements this construct; the panel asserts a live nonempty result. Previously a parity-rejection pin \u2014 the surface burndown (#65) landed the lowering, so the contract is upgraded to nonempty per the bidirectional ratchet."
           }
         },
         {
@@ -4041,7 +4041,7 @@
             "type": "prometheus",
             "uid": "cerberus-prometheus"
           },
-          "description": "Cerberus rejects `atan(up)` today; this panel pins the rejection.",
+          "description": "Cerberus implements `atan(up)` (surface burndown #65).",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4123,11 +4123,11 @@
               "refId": "A"
             }
           ],
-          "title": "atan \u2014 parity rejection",
+          "title": "atan",
           "type": "timeseries",
           "cerberus": {
-            "expect": "error:not yet supported",
-            "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the moment lowering support lands, this panel fails the sweep and the contract must be upgraded to nonempty."
+            "expect": "nonempty",
+            "why": "Cerberus implements this construct; the panel asserts a live nonempty result. Previously a parity-rejection pin \u2014 the surface burndown (#65) landed the lowering, so the contract is upgraded to nonempty per the bidirectional ratchet."
           }
         },
         {
@@ -4135,7 +4135,7 @@
             "type": "prometheus",
             "uid": "cerberus-prometheus"
           },
-          "description": "Cerberus rejects `atanh(up)` today; this panel pins the rejection.",
+          "description": "Cerberus implements `atanh(up)` (surface burndown #65).",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4217,11 +4217,11 @@
               "refId": "A"
             }
           ],
-          "title": "atanh \u2014 parity rejection",
+          "title": "atanh",
           "type": "timeseries",
           "cerberus": {
-            "expect": "error:not yet supported",
-            "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the moment lowering support lands, this panel fails the sweep and the contract must be upgraded to nonempty."
+            "expect": "nonempty",
+            "why": "Cerberus implements this construct; the panel asserts a live nonempty result. Previously a parity-rejection pin \u2014 the surface burndown (#65) landed the lowering, so the contract is upgraded to nonempty per the bidirectional ratchet."
           }
         },
         {
@@ -4229,7 +4229,7 @@
             "type": "prometheus",
             "uid": "cerberus-prometheus"
           },
-          "description": "Cerberus rejects `cos(up)` today; this panel pins the rejection.",
+          "description": "Cerberus implements `cos(up)` (surface burndown #65).",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4311,11 +4311,11 @@
               "refId": "A"
             }
           ],
-          "title": "cos \u2014 parity rejection",
+          "title": "cos",
           "type": "timeseries",
           "cerberus": {
-            "expect": "error:not yet supported",
-            "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the moment lowering support lands, this panel fails the sweep and the contract must be upgraded to nonempty."
+            "expect": "nonempty",
+            "why": "Cerberus implements this construct; the panel asserts a live nonempty result. Previously a parity-rejection pin \u2014 the surface burndown (#65) landed the lowering, so the contract is upgraded to nonempty per the bidirectional ratchet."
           }
         },
         {
@@ -4323,7 +4323,7 @@
             "type": "prometheus",
             "uid": "cerberus-prometheus"
           },
-          "description": "Cerberus rejects `cosh(up)` today; this panel pins the rejection.",
+          "description": "Cerberus implements `cosh(up)` (surface burndown #65).",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4405,11 +4405,11 @@
               "refId": "A"
             }
           ],
-          "title": "cosh \u2014 parity rejection",
+          "title": "cosh",
           "type": "timeseries",
           "cerberus": {
-            "expect": "error:not yet supported",
-            "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the moment lowering support lands, this panel fails the sweep and the contract must be upgraded to nonempty."
+            "expect": "nonempty",
+            "why": "Cerberus implements this construct; the panel asserts a live nonempty result. Previously a parity-rejection pin \u2014 the surface burndown (#65) landed the lowering, so the contract is upgraded to nonempty per the bidirectional ratchet."
           }
         },
         {
@@ -4417,7 +4417,7 @@
             "type": "prometheus",
             "uid": "cerberus-prometheus"
           },
-          "description": "Cerberus rejects `sin(up)` today; this panel pins the rejection.",
+          "description": "Cerberus implements `sin(up)` (surface burndown #65).",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4499,11 +4499,11 @@
               "refId": "A"
             }
           ],
-          "title": "sin \u2014 parity rejection",
+          "title": "sin",
           "type": "timeseries",
           "cerberus": {
-            "expect": "error:not yet supported",
-            "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the moment lowering support lands, this panel fails the sweep and the contract must be upgraded to nonempty."
+            "expect": "nonempty",
+            "why": "Cerberus implements this construct; the panel asserts a live nonempty result. Previously a parity-rejection pin \u2014 the surface burndown (#65) landed the lowering, so the contract is upgraded to nonempty per the bidirectional ratchet."
           }
         },
         {
@@ -4511,7 +4511,7 @@
             "type": "prometheus",
             "uid": "cerberus-prometheus"
           },
-          "description": "Cerberus rejects `sinh(up)` today; this panel pins the rejection.",
+          "description": "Cerberus implements `sinh(up)` (surface burndown #65).",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4593,11 +4593,11 @@
               "refId": "A"
             }
           ],
-          "title": "sinh \u2014 parity rejection",
+          "title": "sinh",
           "type": "timeseries",
           "cerberus": {
-            "expect": "error:not yet supported",
-            "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the moment lowering support lands, this panel fails the sweep and the contract must be upgraded to nonempty."
+            "expect": "nonempty",
+            "why": "Cerberus implements this construct; the panel asserts a live nonempty result. Previously a parity-rejection pin \u2014 the surface burndown (#65) landed the lowering, so the contract is upgraded to nonempty per the bidirectional ratchet."
           }
         },
         {
@@ -4605,7 +4605,7 @@
             "type": "prometheus",
             "uid": "cerberus-prometheus"
           },
-          "description": "Cerberus rejects `tan(up)` today; this panel pins the rejection.",
+          "description": "Cerberus implements `tan(up)` (surface burndown #65).",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4687,11 +4687,11 @@
               "refId": "A"
             }
           ],
-          "title": "tan \u2014 parity rejection",
+          "title": "tan",
           "type": "timeseries",
           "cerberus": {
-            "expect": "error:not yet supported",
-            "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the moment lowering support lands, this panel fails the sweep and the contract must be upgraded to nonempty."
+            "expect": "nonempty",
+            "why": "Cerberus implements this construct; the panel asserts a live nonempty result. Previously a parity-rejection pin \u2014 the surface burndown (#65) landed the lowering, so the contract is upgraded to nonempty per the bidirectional ratchet."
           }
         },
         {
@@ -4699,7 +4699,7 @@
             "type": "prometheus",
             "uid": "cerberus-prometheus"
           },
-          "description": "Cerberus rejects `tanh(up)` today; this panel pins the rejection.",
+          "description": "Cerberus implements `tanh(up)` (surface burndown #65).",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4781,11 +4781,11 @@
               "refId": "A"
             }
           ],
-          "title": "tanh \u2014 parity rejection",
+          "title": "tanh",
           "type": "timeseries",
           "cerberus": {
-            "expect": "error:not yet supported",
-            "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the moment lowering support lands, this panel fails the sweep and the contract must be upgraded to nonempty."
+            "expect": "nonempty",
+            "why": "Cerberus implements this construct; the panel asserts a live nonempty result. Previously a parity-rejection pin \u2014 the surface burndown (#65) landed the lowering, so the contract is upgraded to nonempty per the bidirectional ratchet."
           }
         },
         {
@@ -4793,7 +4793,7 @@
             "type": "prometheus",
             "uid": "cerberus-prometheus"
           },
-          "description": "Cerberus rejects `deg(up)` today; this panel pins the rejection.",
+          "description": "Cerberus implements `deg(up)` (surface burndown #65).",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4875,11 +4875,11 @@
               "refId": "A"
             }
           ],
-          "title": "deg \u2014 parity rejection",
+          "title": "deg",
           "type": "timeseries",
           "cerberus": {
-            "expect": "error:not yet supported",
-            "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the moment lowering support lands, this panel fails the sweep and the contract must be upgraded to nonempty."
+            "expect": "nonempty",
+            "why": "Cerberus implements this construct; the panel asserts a live nonempty result. Previously a parity-rejection pin \u2014 the surface burndown (#65) landed the lowering, so the contract is upgraded to nonempty per the bidirectional ratchet."
           }
         },
         {
@@ -4887,7 +4887,7 @@
             "type": "prometheus",
             "uid": "cerberus-prometheus"
           },
-          "description": "Cerberus rejects `rad(up)` today; this panel pins the rejection.",
+          "description": "Cerberus implements `rad(up)` (surface burndown #65).",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4969,11 +4969,11 @@
               "refId": "A"
             }
           ],
-          "title": "rad \u2014 parity rejection",
+          "title": "rad",
           "type": "timeseries",
           "cerberus": {
-            "expect": "error:not yet supported",
-            "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the moment lowering support lands, this panel fails the sweep and the contract must be upgraded to nonempty."
+            "expect": "nonempty",
+            "why": "Cerberus implements this construct; the panel asserts a live nonempty result. Previously a parity-rejection pin \u2014 the surface burndown (#65) landed the lowering, so the contract is upgraded to nonempty per the bidirectional ratchet."
           }
         },
         {
@@ -5075,7 +5075,7 @@
             "type": "prometheus",
             "uid": "cerberus-prometheus"
           },
-          "description": "Cerberus rejects `day_of_year(up)` today; this panel pins the rejection.",
+          "description": "Cerberus implements `day_of_year(up)` (surface burndown #65).",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -5157,11 +5157,11 @@
               "refId": "A"
             }
           ],
-          "title": "day_of_year \u2014 parity rejection",
+          "title": "day_of_year",
           "type": "timeseries",
           "cerberus": {
-            "expect": "error:not yet supported",
-            "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the moment lowering support lands, this panel fails the sweep and the contract must be upgraded to nonempty."
+            "expect": "nonempty",
+            "why": "Cerberus implements this construct; the panel asserts a live nonempty result. Previously a parity-rejection pin \u2014 the surface burndown (#65) landed the lowering, so the contract is upgraded to nonempty per the bidirectional ratchet."
           }
         },
         {
@@ -5263,7 +5263,7 @@
             "type": "prometheus",
             "uid": "cerberus-prometheus"
           },
-          "description": "Cerberus rejects `scalar(up)` today; this panel pins the rejection.",
+          "description": "Cerberus implements `scalar(up)` (surface burndown #65).",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -5345,11 +5345,11 @@
               "refId": "A"
             }
           ],
-          "title": "scalar \u2014 parity rejection",
+          "title": "scalar",
           "type": "timeseries",
           "cerberus": {
-            "expect": "error:not yet supported",
-            "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the moment lowering support lands, this panel fails the sweep and the contract must be upgraded to nonempty."
+            "expect": "nonempty",
+            "why": "Cerberus implements this construct; the panel asserts a live nonempty result. Previously a parity-rejection pin \u2014 the surface burndown (#65) landed the lowering, so the contract is upgraded to nonempty per the bidirectional ratchet."
           }
         },
         {
@@ -5357,7 +5357,7 @@
             "type": "prometheus",
             "uid": "cerberus-prometheus"
           },
-          "description": "Cerberus rejects `sort(up)` today; this panel pins the rejection.",
+          "description": "Cerberus implements `sort(up)` (surface burndown #65).",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -5439,11 +5439,11 @@
               "refId": "A"
             }
           ],
-          "title": "sort \u2014 parity rejection",
+          "title": "sort",
           "type": "timeseries",
           "cerberus": {
-            "expect": "error:not yet supported",
-            "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the moment lowering support lands, this panel fails the sweep and the contract must be upgraded to nonempty."
+            "expect": "nonempty",
+            "why": "Cerberus implements this construct; the panel asserts a live nonempty result. Previously a parity-rejection pin \u2014 the surface burndown (#65) landed the lowering, so the contract is upgraded to nonempty per the bidirectional ratchet."
           }
         },
         {
@@ -5451,7 +5451,7 @@
             "type": "prometheus",
             "uid": "cerberus-prometheus"
           },
-          "description": "Cerberus rejects `sort_desc(up)` today; this panel pins the rejection.",
+          "description": "Cerberus implements `sort_desc(up)` (surface burndown #65).",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -5533,11 +5533,11 @@
               "refId": "A"
             }
           ],
-          "title": "sort_desc \u2014 parity rejection",
+          "title": "sort_desc",
           "type": "timeseries",
           "cerberus": {
-            "expect": "error:not yet supported",
-            "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the moment lowering support lands, this panel fails the sweep and the contract must be upgraded to nonempty."
+            "expect": "nonempty",
+            "why": "Cerberus implements this construct; the panel asserts a live nonempty result. Previously a parity-rejection pin \u2014 the surface burndown (#65) landed the lowering, so the contract is upgraded to nonempty per the bidirectional ratchet."
           }
         },
         {
@@ -7049,7 +7049,7 @@
             "type": "prometheus",
             "uid": "cerberus-prometheus"
           },
-          "description": "Cerberus rejects `present_over_time(up[5m])` today; this panel pins the rejection.",
+          "description": "Cerberus implements `present_over_time(up[5m])` (surface burndown #65).",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -7131,11 +7131,11 @@
               "refId": "A"
             }
           ],
-          "title": "present_over_time \u2014 parity rejection",
+          "title": "present_over_time",
           "type": "timeseries",
           "cerberus": {
-            "expect": "error:unsupported: range function",
-            "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the moment lowering support lands, this panel fails the sweep and the contract must be upgraded to nonempty."
+            "expect": "nonempty",
+            "why": "Cerberus implements this construct; the panel asserts a live nonempty result. Previously a parity-rejection pin \u2014 the surface burndown (#65) landed the lowering, so the contract is upgraded to nonempty per the bidirectional ratchet."
           }
         },
         {
