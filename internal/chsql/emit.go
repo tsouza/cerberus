@@ -84,6 +84,8 @@ func (e *emitter) emitNode(n chplan.Node) error {
 		return e.emitMetricsCompare(v)
 	case *chplan.RangeWindow:
 		return e.emitRangeWindow(v)
+	case *chplan.RangeLWR:
+		return e.emitRangeLWR(v)
 	case *chplan.AbsentOverTime:
 		return e.emitAbsentOverTime(v)
 	case *chplan.HistogramQuantile:

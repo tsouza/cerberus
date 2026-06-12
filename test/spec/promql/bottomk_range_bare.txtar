@@ -77,15 +77,10 @@ INSERT INTO otel_metrics_gauge VALUES
 [5] string = "demo_memory.usage.bytes"
 [6] string = "demo_memory.usage_bytes"
 [7] string = "demo_memory_usage.bytes"
-[8] int64 = 300000000000
 -- chplan --
 TopK k=5 sort=Value ASC by=[TimeUnix] columns=[MetricName, Attributes, TimeUnix, Value]
-  Project [MetricName AS MetricName, Attributes AS Attributes, anchor_ts AS TimeUnix, lwr_value AS Value]
-    Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes, anchor_ts AS anchor_ts] funcs=[argMax(Value, TimeUnix) AS lwr_value]
-      Filter predicate=((TimeUnix <= anchor_ts) AND (TimeUnix > (anchor_ts - toIntervalNanosecond(300000000000))))
-        CrossJoin
-          StepGrid start=2026-01-01T00:00:00.000000000Z end=2026-01-01T00:05:00.000000000Z step=30s
-          Filter predicate=(MetricName IN ("demo_memory_usage_bytes", "demo.memory.usage.bytes", "demo.memory.usage_bytes", "demo.memory_usage.bytes", "demo.memory_usage_bytes", "demo_memory.usage.bytes", "demo_memory.usage_bytes", "demo_memory_usage.bytes"))
-            Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+  RangeLWR step=30s lookback=5m0s ts=TimeUnix value=Value start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+    Filter predicate=(MetricName IN ("demo_memory_usage_bytes", "demo.memory.usage.bytes", "demo.memory.usage_bytes", "demo.memory_usage.bytes", "demo.memory_usage_bytes", "demo_memory.usage.bytes", "demo_memory.usage_bytes", "demo_memory_usage.bytes"))
+      Scan(merge(otel_metrics_gauge|otel_metrics_sum))
 -- sql --
-SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `anchor_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `anchor_ts` AS `anchor_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT * FROM (SELECT arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:00:00.000000000', 9) + toIntervalNanosecond(i * 30000000000), range(0, 11))) AS `anchor_ts`) AS L CROSS JOIN (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?))) AS R) WHERE ((`TimeUnix` <= `anchor_ts`) AND (`TimeUnix` > (`anchor_ts` - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`, `anchor_ts`)) ORDER BY `Value` LIMIT 5 BY `TimeUnix`)
+SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, anchor_ts AS `TimeUnix`, lwr_value AS `Value` FROM (SELECT `MetricName`, `Attributes`, `anchor_ts`, argMax(`Value`, `TimeUnix`) AS lwr_value FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1), least(11, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?)))) GROUP BY `MetricName`, `Attributes`, `anchor_ts`)) ORDER BY `Value` LIMIT 5 BY `TimeUnix`)
