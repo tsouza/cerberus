@@ -143,45 +143,6 @@ var inputs = map[string]chplan.Node{
 		},
 	},
 
-	// filter_project_transpose_passes: Filter over Project([X, Y], Scan)
-	// where the predicate references a passthrough column. The
-	// FilterProjectTranspose rule pushes the Filter under the Project;
-	// the optimized SQL shows the Filter wrapping the Scan with the
-	// Project on top.
-	"filter_project_transpose_passes": &chplan.Filter{
-		Input: &chplan.Project{
-			Input: &chplan.Scan{Table: "otel_metrics_gauge"},
-			Projections: []chplan.Projection{
-				{Expr: &chplan.ColumnRef{Name: "MetricName"}},
-				{Expr: &chplan.ColumnRef{Name: "Value"}},
-			},
-		},
-		Predicate: &chplan.Binary{
-			Op:    chplan.OpEq,
-			Left:  &chplan.ColumnRef{Name: "MetricName"},
-			Right: &chplan.LitString{V: "up"},
-		},
-	},
-
-	// filter_project_transpose_blocked: Project renames `MetricName`
-	// to `metric`; the Filter touches the *alias*. The transpose rule
-	// declines (alias has no source-side column). ProjectionPushdown
-	// still fires on the inner Project(Scan) and narrows the scan's
-	// column list — a benign side effect that the fixture records.
-	"filter_project_transpose_blocked": &chplan.Filter{
-		Input: &chplan.Project{
-			Input: &chplan.Scan{Table: "otel_metrics_gauge"},
-			Projections: []chplan.Projection{
-				{Expr: &chplan.ColumnRef{Name: "MetricName"}, Alias: "metric"},
-			},
-		},
-		Predicate: &chplan.Binary{
-			Op:    chplan.OpEq,
-			Left:  &chplan.ColumnRef{Name: "metric"},
-			Right: &chplan.LitString{V: "up"},
-		},
-	},
-
 	// filter_aggregate_transpose_passes: Filter over Aggregate where
 	// the predicate references a bare group-by column (`job`). The
 	// FilterAggregateTranspose rule pushes the Filter under the
@@ -286,73 +247,6 @@ var inputs = map[string]chplan.Node{
 		},
 	},
 
-	// mv_substitution_sum_5m: sum_over_time(metric[1h]) with step=5m
-	// over otel_metrics_sum. All four safety conditions hold against
-	// the default 5m sum-rollup; the rule rewrites Scan.Table to
-	// otel_metrics_sum_5m and RangeWindow.ValueColumn from `Value` to
-	// the rollup's pre-aggregated `Sum` column.
-	"mv_substitution_sum_5m": &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: "otel_metrics_sum"},
-		Func:            "sum_over_time",
-		Range:           time.Hour,
-		Step:            5 * time.Minute,
-		TimestampColumn: "TimeUnix",
-		ValueColumn:     "Value",
-		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
-	},
-
-	// mv_substitution_step_too_small: same plan as the happy path but
-	// with step=30s. Step < window violates safety condition (1); the
-	// rule must skip and the optimized SQL stays on otel_metrics_sum.
-	"mv_substitution_step_too_small": &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: "otel_metrics_sum"},
-		Func:            "sum_over_time",
-		Range:           time.Hour,
-		Step:            30 * time.Second,
-		TimestampColumn: "TimeUnix",
-		ValueColumn:     "Value",
-		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
-	},
-
-	// mv_substitution_range_not_multiple: 7-minute range over a 5m
-	// rollup. range%window != 0 violates safety condition (2); the
-	// rule must skip.
-	"mv_substitution_range_not_multiple": &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: "otel_metrics_sum"},
-		Func:            "sum_over_time",
-		Range:           7 * time.Minute,
-		Step:            5 * time.Minute,
-		TimestampColumn: "TimeUnix",
-		ValueColumn:     "Value",
-		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
-	},
-
-	// mv_substitution_avg_blocked: avg_over_time does NOT commute
-	// with a sum-rollup (no per-bucket weights). Safety condition (3)
-	// rejects; the rule must skip.
-	"mv_substitution_avg_blocked": &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: "otel_metrics_sum"},
-		Func:            "avg_over_time",
-		Range:           time.Hour,
-		Step:            5 * time.Minute,
-		TimestampColumn: "TimeUnix",
-		ValueColumn:     "Value",
-		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
-	},
-
-	// mv_substitution_no_rollup_for_gauge: query over otel_metrics_gauge
-	// — the default registry has no gauge rollups, so safety condition
-	// (4) rejects.
-	"mv_substitution_no_rollup_for_gauge": &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
-		Func:            "sum_over_time",
-		Range:           time.Hour,
-		Step:            5 * time.Minute,
-		TimestampColumn: "TimeUnix",
-		ValueColumn:     "Value",
-		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
-	},
-
 	// subquery_matrix_opaque: a matrix-shape RangeWindow with a
 	// FilterFusion-friendly nested Filter underneath. The optimizer
 	// should fuse the inner two Filters but NOT alter the matrix
@@ -393,7 +287,7 @@ var inputs = map[string]chplan.Node{
 	// union of refs(Projections) ∪ refs(Filter.Predicate). The
 	// Filter stays in place between the (narrowed) Scan and the
 	// Project. Locks the v0.2 widening of ProjectionPushdown that
-	// removes the rule-interaction skip with FilterProjectTranspose.
+	// lets it see through an intervening Filter.
 	"pushdown_through_filter": &chplan.Project{
 		Input: &chplan.Filter{
 			Input: &chplan.Scan{Table: "otel_metrics_gauge"},
@@ -407,71 +301,6 @@ var inputs = map[string]chplan.Node{
 			{Expr: &chplan.ColumnRef{Name: "Value"}, Alias: "v"},
 			{Expr: &chplan.ColumnRef{Name: "TimeUnix"}, Alias: "t"},
 		},
-	},
-
-	// mv_sub_through_safe_filter: Filter(RangeWindow(Scan), pred)
-	// where pred references only the series-identity GroupBy column
-	// (`Attributes`). After predicate-pushdown transposes the Filter
-	// under the RangeWindow (`RangeWindow(Filter(Scan), pred)`), the
-	// widened MVSubstitution pattern matches and substitutes the
-	// rollup table + ValueColumn. Locks the v0.2 widening of
-	// MVSubstitution that removes the rule-interaction skip with
-	// FilterRangeWindowTranspose.
-	"mv_sub_through_safe_filter": &chplan.Filter{
-		Input: &chplan.RangeWindow{
-			Input:           &chplan.Scan{Table: "otel_metrics_sum"},
-			Func:            "sum_over_time",
-			Range:           time.Hour,
-			Step:            5 * time.Minute,
-			TimestampColumn: "TimeUnix",
-			ValueColumn:     "Value",
-			GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
-		},
-		Predicate: &chplan.Binary{
-			Op: chplan.OpEq,
-			Left: &chplan.MapAccess{
-				Map: &chplan.ColumnRef{Name: "Attributes"},
-				Key: &chplan.LitString{V: "job"},
-			},
-			Right: &chplan.LitString{V: "api"},
-		},
-	},
-
-	// mv_sub_blocked_by_unsafe_filter: RangeWindow(Filter(Scan), pred)
-	// where pred references the per-sample `Value` column — NOT a
-	// series-identity GroupBy column. The widened MVSubstitution must
-	// refuse: applying the predicate against the rollup table would
-	// look up a column whose semantics (a per-sample value) don't
-	// match the rolled-up shape. Pins the safety guard on the widened
-	// MVSubstitution pattern.
-	//
-	// Note. The input starts already in `RangeWindow(Filter(Scan))`
-	// shape rather than `Filter(RangeWindow(Scan))`. If the test
-	// started with the outer-Filter shape, predicate-pushdown's
-	// FilterRangeWindowTranspose would decline (Value is not
-	// passthrough), the Filter would stay above the RangeWindow, and
-	// MVSubstitution's seed `RangeWindow(Scan)` pattern would then
-	// substitute the rollup — which is correct, because the Filter is
-	// above the RangeWindow and applies to the windowed output, not
-	// the rolled-up rows. The case this fixture pins is the orthogonal
-	// one: the Filter is *between* the RangeWindow and the Scan, so
-	// it would apply to the rollup's row shape, where `Value` doesn't
-	// exist with the same semantics.
-	"mv_sub_blocked_by_unsafe_filter": &chplan.RangeWindow{
-		Input: &chplan.Filter{
-			Input: &chplan.Scan{Table: "otel_metrics_sum"},
-			Predicate: &chplan.Binary{
-				Op:    chplan.OpGt,
-				Left:  &chplan.ColumnRef{Name: "Value"},
-				Right: &chplan.LitFloat{V: 0},
-			},
-		},
-		Func:            "sum_over_time",
-		Range:           time.Hour,
-		Step:            5 * time.Minute,
-		TimestampColumn: "TimeUnix",
-		ValueColumn:     "Value",
-		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 	},
 
 	// pushdown_select_wrap_carriers: the Tempo /api/search

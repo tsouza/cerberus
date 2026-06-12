@@ -139,12 +139,14 @@ type Metrics struct {
 
 	// MetricsRollups declares pre-aggregated rollup tables the
 	// operator has provisioned alongside the base metrics tables. The
-	// optimizer's MV-substitution rule reads this list to decide whether
-	// a `RangeWindow` over a base table can be rewritten
-	// to scan the matching rollup instead. The registry is the
-	// operator's contract: cerberus trusts the listed tables exist and
-	// carry the declared (Window, AggOp) semantics. Empty means "no
-	// rollups available" — the rule will never fire.
+	// registry is the operator's contract: the listed tables are trusted
+	// to exist and carry the declared (Window, AggOp) semantics.
+	//
+	// NOTE: as of 2026-06 no optimizer rule consumes this registry — the
+	// MV-substitution rule that read it was retired (no rollup roadmap;
+	// it was a guaranteed no-op against the shipped schemas). The type
+	// and the default entries are retained as the schema-side contract a
+	// future rollup-substitution rule would re-consume.
 	MetricsRollups []Rollup
 
 	// ExpHistogramSuffix is the metric-name suffix used to route a
@@ -161,11 +163,12 @@ type Metrics struct {
 }
 
 // RollupAggOp enumerates the per-bucket reducer the operator
-// configured the upstream rollup table to compute. The optimizer uses
-// this to check commutativity against the outer query's aggregate (sum
-// over sums is total sum; max over maxes is total max; avg over avgs
-// is NOT total avg without per-bucket weights, so RollupAggAvg is
-// explicitly excluded from the v1 substitution).
+// configured the upstream rollup table to compute. A rollup-substitution
+// rule would use this to check commutativity against the outer query's
+// aggregate (sum over sums is total sum; max over maxes is total max;
+// avg over avgs is NOT total avg without per-bucket weights, so an avg
+// rollup would be excluded). No optimizer rule consumes this today (see
+// MetricsRollups).
 type RollupAggOp string
 
 const (
@@ -186,10 +189,13 @@ const (
 )
 
 // Rollup describes a single pre-aggregated rollup table in the OTel
-// metrics schema. The optimizer's MV-substitution rule rewrites a
+// metrics schema. A rollup-substitution rule would rewrite a
 // `RangeWindow(Scan(BaseTable))` to `RangeWindow(Scan(RollupTable))`
 // when the query's step + range + aggregate operator are compatible
-// with the rollup's window + commuting aggregate.
+// with the rollup's window + commuting aggregate. No optimizer rule
+// consumes this today — the MV-substitution rule that did was retired in
+// 2026-06 (see MetricsRollups); the type stays as the schema-side
+// contract a future rule would re-consume.
 //
 // The rollup table is expected to expose:
 //
@@ -230,12 +236,11 @@ type Rollup struct {
 func (m Metrics) Rollups() []Rollup { return m.MetricsRollups }
 
 // RollupsFor returns the rollups whose BaseTable equals base. Order
-// is preserved from MetricsRollups; the rule walks the slice in this
-// order and picks the first applicable candidate (the v1
-// `firstApplicable` CostModel — see internal/optimizer/mv_substitution.go).
-// Operators who care about candidate ordering should list the longest
-// (coarsest) window first so the rule prefers the rollup that strips
-// the most data.
+// is preserved from MetricsRollups. No optimizer rule consumes this
+// today (the MV-substitution rule that did was retired in 2026-06); a
+// future rollup-substitution rule that walks the slice in order should
+// have operators list the longest (coarsest) window first so it prefers
+// the rollup that strips the most data.
 func (m Metrics) RollupsFor(base string) []Rollup {
 	var out []Rollup
 	for _, r := range m.MetricsRollups {

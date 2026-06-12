@@ -32,7 +32,6 @@ import (
 
 	"github.com/tsouza/cerberus/internal/cerbtrace"
 	"github.com/tsouza/cerberus/internal/chplan"
-	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/telemetry"
 )
 
@@ -94,43 +93,29 @@ func NewWithBatches(batches ...Batch) *Driver {
 //     (`true AND X → X`, `false OR X → X`, `false AND X → false`,
 //     `true OR X → true`). Single bottom-up sweep reaches its fixpoint;
 //     the identities are ergonomic — they shrink emitted SQL but the
-//     result is correct either way.
+//     result is correct either way. Fires on the real corpus (e.g. the
+//     TraceQL `rate() by(kind)` drilldown whose lowering emits a
+//     `(... AND true) AND true` predicate above a MetricsAggregate);
+//     reachable since #812 made the optimizer walk total across all 26
+//     chplan node types.
 //   - "optimizer.predicate-pushdown" (FixedPoint) — FilterFusion + the
 //     transpose rules can unlock each other: fuse adjacent filters,
-//     transpose the fused filter through Project / Aggregate, then
+//     transpose the fused filter through Aggregate / RangeWindow, then
 //     possibly fuse again as new neighbours appear. Iteration is
-//     load-bearing here.
+//     load-bearing here. See doc.go for which transpose rules fire on
+//     the current corpus versus which are speculative correctness
+//     insurance.
 //   - "optimizer.projection" (FixedPoint) — ProjectionPushdown may
 //     iterate as pushdown unused-column elimination cascades through
 //     nested Projects. Only one pass changes anything in the current
 //     rule set, but the FixedPoint strategy lets additional rules join
 //     the batch without changing wiring.
-//   - "optimizer.mv-substitution" (FixedPoint) — MVSubstitution
-//     rewrites `RangeWindow(Scan(base))` to `RangeWindow(Scan(rollup))`
-//     when the operator has declared a pre-aggregated rollup whose
-//     window + aggregation operator commute with the query's step +
-//     range + outer function. Runs after predicate-pushdown so a
-//     filter transposed under a RangeWindow can still see the
-//     post-substitution scan (the rollup table exposes the same
-//     series-identity columns as the base table). Default schema
-//     ships the canonical `otel_metrics_sum_5m` / `otel_metrics_sum_1h`
-//     entries — operators using a custom schema can call
-//     `DefaultWithSchema(...)` to plug their own rollups in.
 //
 // Order matters across batches: the analyzer batch runs first
 // (must-run); the heuristic constant fold then canonicalises bool
 // literals so that predicate pushdown sees a tree where filters whose
 // predicates contained `true AND ...` have already collapsed.
 func Default() *Driver {
-	return DefaultWithSchema(schema.DefaultOTelMetrics())
-}
-
-// DefaultWithSchema is like Default but binds the MV-substitution rule
-// to the supplied Metrics schema's rollup registry. Use this from API
-// handler wiring when the deployment overrides the default OTel
-// schema; the rule needs to see the operator's configured rollup
-// tables to find substitution candidates.
-func DefaultWithSchema(metrics schema.Metrics) *Driver {
 	return NewWithBatches(
 		AnalyzerBatch("analyzer.constant-fold-semantic", ConstantFoldSemantic{}),
 		Batch{
@@ -143,7 +128,6 @@ func DefaultWithSchema(metrics schema.Metrics) *Driver {
 			Strategy: FixedPoint(defaultMaxIterations),
 			Rules: []Rule{
 				FilterFusion{},
-				FilterProjectTranspose(),
 				FilterAggregateTranspose(),
 				FilterRangeWindowTranspose(),
 			},
@@ -152,11 +136,6 @@ func DefaultWithSchema(metrics schema.Metrics) *Driver {
 			Name:     "optimizer.projection",
 			Strategy: FixedPoint(defaultMaxIterations),
 			Rules:    []Rule{ProjectionPushdown{}},
-		},
-		Batch{
-			Name:     "optimizer.mv-substitution",
-			Strategy: FixedPoint(defaultMaxIterations),
-			Rules:    []Rule{MVSubstitution(metrics.Rollups(), metrics.ValueColumn)},
 		},
 	)
 }

@@ -11,11 +11,9 @@ package optimizer_test
 
 import (
 	"testing"
-	"time"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/optimizer"
-	"github.com/tsouza/cerberus/internal/schema"
 )
 
 // TestFilterAggregateTranspose_SkipsNonColumnRefGroupKeyButKeepsLater
@@ -273,116 +271,6 @@ func TestConstantFoldHeuristic_MapAccessFoldsWhenOnlyMapChanges(t *testing.T) {
 	}
 }
 
-// TestMVSubstitution_DifferingNonEmptyValueColumnSkips pins the
-// `if rw.ValueColumn == "" || rw.ValueColumn != r.baseValueColumn`
-// guard at mv_substitution.go:117 — the rule must decline whenever
-// ValueColumn is missing OR it does not match the base table's value
-// column. Flipping `||` to `&&` (gremlins INVERT_LOGICAL) would still
-// decline on a missing ValueColumn, but a non-empty differing
-// ValueColumn would slip through and the rule would erroneously
-// substitute the rollup table.
-//
-// Input: a sum_over_time RangeWindow whose ValueColumn is the
-// non-empty string "Other" (≠ baseValueColumn "Value"). With the
-// original `||`, the guard fires (`false || true`) → skip. With the
-// `&&` mutant, the guard does NOT fire (`false && true`) → the rule
-// would rewrite the Scan.Table to the rollup. The assertion that the
-// Scan.Table stays unchanged kills the mutant.
-func TestMVSubstitution_DifferingNonEmptyValueColumnSkips(t *testing.T) {
-	t.Parallel()
-
-	rollup := schema.Rollup{
-		BaseTable:   "otel_metrics_sum",
-		RollupTable: "otel_metrics_sum_5m",
-		Window:      5 * time.Minute,
-		AggOp:       schema.RollupAggSum,
-		ValueColumn: "Sum",
-	}
-	plan := &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: "otel_metrics_sum"},
-		Func:            "sum_over_time",
-		Range:           time.Hour,
-		Step:            5 * time.Minute,
-		TimestampColumn: "TimeUnix",
-		ValueColumn:     "Other",
-		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
-	}
-
-	rule := optimizer.MVSubstitution([]schema.Rollup{rollup}, "Value")
-	out, changed := rule.Apply(plan)
-	if changed {
-		t.Fatalf("expected rule to skip when ValueColumn (%q) differs from baseValueColumn (%q); changed=true",
-			plan.ValueColumn, "Value")
-	}
-	rw, ok := out.(*chplan.RangeWindow)
-	if !ok {
-		t.Fatalf("expected *RangeWindow, got %T", out)
-	}
-	scan, ok := rw.Input.(*chplan.Scan)
-	if !ok {
-		t.Fatalf("expected Scan child, got %T", rw.Input)
-	}
-	if scan.Table != "otel_metrics_sum" {
-		t.Errorf("expected Scan.Table unchanged at %q, got %q", "otel_metrics_sum", scan.Table)
-	}
-}
-
-// TestMVSubstitution_InstantQueryStepZeroStillApplies pins the
-// `rw.Step > 0` half of the Step/Window guard at
-// mv_substitution.go:235 inside rollupApplies:
-//
-//	if rw.Step > 0 && rw.Step < c.Window { return false }
-//
-// Step==0 means "instant query" — the rollup still applies as long as
-// the range covers at least one bucket. Flipping `>` to `>=` (gremlins
-// CONDITIONALS_BOUNDARY) would make the guard fire for Step==0 with
-// any non-zero window (`0 >= 0 && 0 < W` = true), declining the
-// substitution even though the doc comment says instant queries land
-// on the most recent bucket and the rule should still fire.
-//
-// Input: a sum_over_time RangeWindow with Step=0 (instant query
-// shape), Range=1h, Window=5m on the registry. The original code
-// reaches the (1) check, sees `0 > 0 = false`, skips it, falls
-// through the Range/Window checks (1h ≥ 5m, 1h%5m==0), and applies the
-// rule. The mutant fires the guard and declines.
-func TestMVSubstitution_InstantQueryStepZeroStillApplies(t *testing.T) {
-	t.Parallel()
-
-	rollup := schema.Rollup{
-		BaseTable:   "otel_metrics_sum",
-		RollupTable: "otel_metrics_sum_5m",
-		Window:      5 * time.Minute,
-		AggOp:       schema.RollupAggSum,
-		ValueColumn: "Sum",
-	}
-	plan := &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: "otel_metrics_sum"},
-		Func:            "sum_over_time",
-		Range:           time.Hour,
-		Step:            0, // instant query
-		TimestampColumn: "TimeUnix",
-		ValueColumn:     "Value",
-		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
-	}
-
-	rule := optimizer.MVSubstitution([]schema.Rollup{rollup}, "Value")
-	out, changed := rule.Apply(plan)
-	if !changed {
-		t.Fatalf("expected rule to fire for instant query (Step=0); changed=false (CONDITIONALS_BOUNDARY mutant `>` → `>=` blocks substitution)")
-	}
-	rw, ok := out.(*chplan.RangeWindow)
-	if !ok {
-		t.Fatalf("expected *RangeWindow, got %T", out)
-	}
-	scan, ok := rw.Input.(*chplan.Scan)
-	if !ok {
-		t.Fatalf("expected Scan child, got %T", rw.Input)
-	}
-	if scan.Table != "otel_metrics_sum_5m" {
-		t.Errorf("expected Scan.Table rewritten to %q, got %q", "otel_metrics_sum_5m", scan.Table)
-	}
-}
-
 // TestCapturePattern_PreservesInnerBindings pins the `inner == nil`
 // branch at pattern.go:140 inside capturePattern.Match:
 //
@@ -425,69 +313,5 @@ func TestCapturePattern_PreservesInnerBindings(t *testing.T) {
 	}
 	if gotInner != scan {
 		t.Errorf("inner binding mismatch: got %p, want %p", gotInner, scan)
-	}
-}
-
-// TestMVSubstitution_SkipsRollupForOtherBaseTableButKeepsLater pins
-// the `continue` at mv_substitution.go:163 inside the
-// candidate-collection loop:
-//
-//	for _, c := range r.rollups {
-//	    if c.BaseTable != scan.Table { continue }
-//	    ...
-//	}
-//
-// The loop must skip rollups for unrelated base tables but keep
-// scanning; flipping `continue` to `break` (gremlins INVERT_LOOPCTRL)
-// would abort on the first unrelated entry, never reaching a matching
-// rollup later in the registry.
-//
-// Input: registry lists a gauge rollup first, then the sum rollup. The
-// query is a sum_over_time over otel_metrics_sum. The original loop
-// skips the gauge rollup (`BaseTable` mismatch) and substitutes the
-// sum rollup; a `break` mutant would stop at the gauge entry and the
-// rule would decline.
-func TestMVSubstitution_SkipsRollupForOtherBaseTableButKeepsLater(t *testing.T) {
-	t.Parallel()
-
-	gaugeRollup := schema.Rollup{
-		BaseTable:   "otel_metrics_gauge",
-		RollupTable: "otel_metrics_gauge_5m",
-		Window:      5 * time.Minute,
-		AggOp:       schema.RollupAggSum,
-		ValueColumn: "Sum",
-	}
-	sumRollup := schema.Rollup{
-		BaseTable:   "otel_metrics_sum",
-		RollupTable: "otel_metrics_sum_5m",
-		Window:      5 * time.Minute,
-		AggOp:       schema.RollupAggSum,
-		ValueColumn: "Sum",
-	}
-	plan := &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: "otel_metrics_sum"},
-		Func:            "sum_over_time",
-		Range:           time.Hour,
-		Step:            5 * time.Minute,
-		TimestampColumn: "TimeUnix",
-		ValueColumn:     "Value",
-		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
-	}
-
-	rule := optimizer.MVSubstitution([]schema.Rollup{gaugeRollup, sumRollup}, "Value")
-	out, changed := rule.Apply(plan)
-	if !changed {
-		t.Fatalf("expected rule to fire (sum-rollup follows a non-matching gauge rollup); changed=false")
-	}
-	rw, ok := out.(*chplan.RangeWindow)
-	if !ok {
-		t.Fatalf("expected *RangeWindow, got %T", out)
-	}
-	scan, ok := rw.Input.(*chplan.Scan)
-	if !ok {
-		t.Fatalf("expected Scan child, got %T", rw.Input)
-	}
-	if scan.Table != "otel_metrics_sum_5m" {
-		t.Errorf("expected Scan.Table rewritten to %q, got %q", "otel_metrics_sum_5m", scan.Table)
 	}
 }

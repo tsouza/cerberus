@@ -17,9 +17,8 @@
 //   - Every generated plan emits valid ClickHouse SQL.
 //   - Every predicate references columns that exist in the seed.
 //   - The optimizer's baseline rules (FilterFusion, ConstantFold,
-//     ProjectionPushdown) and the FilterProjectTranspose /
-//     FilterAggregateTranspose pair all have shots at firing without
-//     needing aggregates or windows.
+//     ProjectionPushdown) and the FilterAggregateTranspose rule all
+//     have shots at firing without needing aggregates or windows.
 //
 // Wider node coverage (Aggregate, RangeWindow, joins) is future work —
 // the property test catches the high-traffic shapes today, and the

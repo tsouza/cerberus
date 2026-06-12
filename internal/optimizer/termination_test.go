@@ -28,7 +28,6 @@ import (
 
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/optimizer"
-	"github.com/tsouza/cerberus/internal/schema"
 )
 
 // applyTwice runs rule.Apply against the plan; if it changed, runs
@@ -129,31 +128,6 @@ func TestTermination_ConstantFoldHeuristic_Idempotent(t *testing.T) {
 	}
 }
 
-// TestTermination_FilterProjectTranspose_Idempotent. After the
-// rewrite the tree is Project(Filter(Scan)); the rule's match
-// pattern is Filter(Project(...)) so the next pass sees no match.
-func TestTermination_FilterProjectTranspose_Idempotent(t *testing.T) {
-	t.Parallel()
-	scan := &chplan.Scan{Table: "otel_metrics_gauge"}
-	plan := &chplan.Filter{
-		Input: &chplan.Project{
-			Input: scan,
-			Projections: []chplan.Projection{
-				{Expr: &chplan.ColumnRef{Name: "MetricName"}},
-				{Expr: &chplan.ColumnRef{Name: "Value"}},
-			},
-		},
-		Predicate: labelFilter("MetricName", "up"),
-	}
-	_, ch1, ch2 := applyTwice(optimizer.FilterProjectTranspose(), plan)
-	if !ch1 {
-		t.Fatalf("first Apply: expected changed=true on Filter(Project(Scan)) with passthrough")
-	}
-	if ch2 {
-		t.Fatalf("second Apply: expected changed=false; transpose is one-directional and must be idempotent")
-	}
-}
-
 // TestTermination_FilterAggregateTranspose_Idempotent.
 func TestTermination_FilterAggregateTranspose_Idempotent(t *testing.T) {
 	t.Parallel()
@@ -217,31 +191,6 @@ func TestTermination_ProjectionPushdown_Idempotent(t *testing.T) {
 	}
 	if ch2 {
 		t.Fatalf("second Apply: expected changed=false; ProjectionPushdown must be idempotent")
-	}
-}
-
-// TestTermination_MVSubstitution_Idempotent. After the substitution
-// Scan.Table is the rollup; the rule's lookup of
-// `r.BaseTable != scan.Table` filters that out so the second pass is
-// a no-op.
-func TestTermination_MVSubstitution_Idempotent(t *testing.T) {
-	t.Parallel()
-	plan := &chplan.RangeWindow{
-		Input:           &chplan.Scan{Table: "otel_metrics_sum"},
-		Func:            "sum_over_time",
-		Range:           time.Hour,
-		Step:            5 * time.Minute,
-		TimestampColumn: "TimeUnix",
-		ValueColumn:     "Value",
-		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
-	}
-	rule := optimizer.MVSubstitution([]schema.Rollup{sumRollupForInteraction}, "Value")
-	_, ch1, ch2 := applyTwice(rule, plan)
-	if !ch1 {
-		t.Fatalf("first Apply: expected changed=true on otel_metrics_sum + 5m sum-rollup")
-	}
-	if ch2 {
-		t.Fatalf("second Apply: expected changed=false; MVSubstitution must be idempotent")
 	}
 }
 

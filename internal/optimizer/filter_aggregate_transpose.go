@@ -6,6 +6,15 @@ import "github.com/tsouza/cerberus/internal/chplan"
 // `Aggregate(Filter(X, p))` when the Filter's predicate references only
 // columns that appear, unchanged, as group-by keys.
 //
+// SPECULATIVE: 0 fires on the current test/spec corpus (measured with
+// the total optimizer walk from #812). No live lowering emits a
+// group-key label filter stacked *above* an Aggregate — PromQL
+// `sum by (job) (m{job="x"})` lowers the `job="x"` matcher into the
+// scan PREWHERE, never above the aggregate. The rule is kept as cheap
+// correctness insurance: a future lowering that *does* surface such a
+// shape is then handled without re-derivation. Do not count it as an
+// active optimization. See doc.go for the corpus-wide fire census.
+//
 // Lineage: Calcite's `FilterAggregateTransposeRule` — see
 // https://calcite.apache.org/javadocAggregate/org/apache/calcite/rel/rules/FilterAggregateTransposeRule.html.
 // The motivating case is `sum by (job) (m{job="x"})`: the `job="x"`
