@@ -30,7 +30,7 @@ Project maintainers are responsible for clarifying and enforcing our standards a
 
 ## Scope
 
-This Code of Conduct applies within all community spaces — issues are disabled on this repo, so the spaces are: PR descriptions and reviews, discussions (when enabled), and any external community space when an individual is officially representing the project.
+This Code of Conduct applies within all community spaces — issues (bug reports, feature proposals, design discussions), PR descriptions and reviews, discussions (when enabled), and any external community space when an individual is officially representing the project.
 
 ## Enforcement
 
