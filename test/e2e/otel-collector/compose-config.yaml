@@ -30,6 +30,16 @@
 #                         system.asynchronous_metrics rows pulled from
 #                         the ClickHouse server every 15 s
 #
+# And one log receiver closes the gap where the stack ingested CH
+# *metrics* but not CH *logs*:
+#
+#   sqlquery/clickhouse-logs -> ClickHouse's own system.query_log tailed
+#                         incrementally into OTLP logs (one structured
+#                         record per server-side query: duration, rows,
+#                         memory, exception), tagged service.name=
+#                         clickhouse so the Loki head surfaces it as
+#                         `{service_name="clickhouse"}`.
+#
 # Every metric flows through the same OTLP -> clickhouseexporter path
 # so cerberus's PromQL head can query them back through Grafana —
 # nothing bypasses cerberus. The transform/metric_names processor
@@ -181,6 +191,65 @@ receivers:
             value_column: rows
             data_type: gauge
             value_type: int
+
+  # ClickHouse's own query log -> OTLP logs. Every server-side query
+  # (duration, rows read, memory, exception) becomes a structured log
+  # record, so the demo can inspect slow / failing ClickHouse queries
+  # through cerberus's Loki head in Grafana (`{service_name="clickhouse"}`)
+  # rather than only via `clickhouse-client`. This closes the gap where
+  # the stack ingested CH *metrics* (above) but not CH *logs*.
+  #
+  # Incremental tailing: `tracking_column: event_time_microseconds` keeps a
+  # high-water mark so each 15s poll only pulls rows newer than the last,
+  # never re-ingesting the whole table. The `query NOT LIKE %query_log%`
+  # guard drops the receiver's own polling SELECTs so it can't feed on its
+  # own output. `type != 'QueryStart'` keeps one record per query (the
+  # terminal QueryFinish / Exception row) instead of a start+finish pair.
+  sqlquery/clickhouse-logs:
+    driver: clickhouse
+    datasource: clickhouse://cerberus:cerberus@clickhouse:9000/otel?dial_timeout=5s
+    collection_interval: 15s
+    queries:
+      - sql: |-
+          SELECT
+            toUnixTimestamp64Micro(event_time_microseconds) AS event_us,
+            query_id,
+            type,
+            query_kind,
+            user,
+            toString(query_duration_ms) AS query_duration_ms,
+            toString(read_rows)         AS read_rows,
+            toString(read_bytes)        AS read_bytes,
+            toString(result_rows)       AS result_rows,
+            toString(memory_usage)      AS memory_usage,
+            exception,
+            query
+          FROM system.query_log
+          WHERE toUnixTimestamp64Micro(event_time_microseconds) > ?
+            AND type != 'QueryStart'
+            AND query NOT LIKE '%system.query_log%'
+            AND NOT (query_kind = 'Insert' AND query LIKE '%otel_logs%')
+          ORDER BY event_us ASC
+        # Track an integer microsecond epoch, not the DateTime64 column:
+        # the sqlquery receiver round-trips the high-water mark as an
+        # RFC3339 string (…T…Z), which ClickHouse will not coerce back to
+        # DateTime64(6). A UInt64 microsecond cursor sidesteps the format
+        # mismatch entirely.
+        tracking_start_value: "0"
+        tracking_column: event_us
+        logs:
+          - body_column: query
+            attribute_columns:
+              - query_id
+              - type
+              - query_kind
+              - user
+              - query_duration_ms
+              - read_rows
+              - read_bytes
+              - result_rows
+              - memory_usage
+              - exception
 
 processors:
   memory_limiter:
@@ -335,6 +404,12 @@ service:
     logs:
       receivers: [otlp]
       processors: [memory_limiter, resource, batch]
+      exporters: [clickhouse]
+    # ClickHouse query log -> CH (tagged service.name=clickhouse so the
+    # Loki head surfaces it as `{service_name="clickhouse"}`).
+    logs/clickhouse:
+      receivers: [sqlquery/clickhouse-logs]
+      processors: [memory_limiter, resource/clickhouse, batch]
       exporters: [clickhouse]
     traces:
       receivers: [otlp]
