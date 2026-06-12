@@ -1,16 +1,21 @@
 -- query.logql --
 {job="api"} | json level="severity" | level="error"
 -- sql --
-SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (mapConcat(`ResourceAttributes`, map(?, JSONExtractString(`Body`, ?)))[?] = ?)
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (if(mapContains(mapConcat(`ResourceAttributes`, map(?, JSONExtractString(`Body`, ?))), ?), mapConcat(`ResourceAttributes`, map(?, JSONExtractString(`Body`, ?)))[?], `LogAttributes`[?]) = ?)
 -- args --
 [0] string = "job"
 [1] string = "api"
 [2] string = "level"
 [3] string = "severity"
 [4] string = "level"
-[5] string = "error"
+[5] string = "level"
+[6] string = "severity"
+[7] string = "level"
+[8] string = "level"
+[9] string = "error"
 -- seed --
 CREATE TABLE otel_logs (
+    LogAttributes Map(String, String) MATERIALIZED map(),
     Body String,
     ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api')
 ) ENGINE = Memory;
@@ -24,5 +29,5 @@ INSERT INTO otel_logs (Body) VALUES
   [{"msg": "retry", "severity": "error", "ts": "2025-01-01"}]
 ]
 -- chplan --
-Filter predicate=((ResourceAttributes["job"] = "api") AND (mapConcat(ResourceAttributes, map("level", JSONExtractString(Body, "severity")))["level"] = "error"))
+Filter predicate=((ResourceAttributes["job"] = "api") AND (if(mapContains(mapConcat(ResourceAttributes, map("level", JSONExtractString(Body, "severity"))), "level"), mapConcat(ResourceAttributes, map("level", JSONExtractString(Body, "severity")))["level"], LogAttributes["level"]) = "error"))
   Scan(otel_logs)

@@ -266,6 +266,26 @@ func withDetectedLevelAndColumns(s schema.Logs, baseLabels chplan.Expr, outerByL
 			},
 		)
 	}
+	// Non-top-level outer-by keys (e.g. an OTel structured-metadata
+	// attribute like `query_kind`) are inflated into the synthesized
+	// identity map so the post-RangeWindow outer aggregation
+	// ([levelAwareGroupKey]) can read them back from the
+	// ResourceAttributes-aliased identity column. Each value resolves
+	// with the structured-metadata > stream precedence
+	// [structuredOrStreamLookup] applies — without this inflation a
+	// `sum by (query_kind) (count_over_time({...}[5m]))` collapses every
+	// row into one `{query_kind:""}` series because `query_kind` lives in
+	// LogAttributes, not in the bare ResourceAttributes identity base
+	// (task #59). The enclosing `mapFilter((k, v) -> v != '')` drops the
+	// key on rows where neither map carries it, so a stream-only or
+	// absent key keeps its prior (empty-dropped) shape.
+	for _, key := range structuredOuterByKeys(outerByLabels, s) {
+		args = append(
+			args,
+			&chplan.LitString{V: key},
+			structuredOrStreamLookup(s, key),
+		)
+	}
 	synthMap := &chplan.FuncCall{Name: "map", Args: args}
 	filtered := &chplan.FuncCall{
 		Name: "mapFilter",

@@ -1,0 +1,38 @@
+-- query.logql --
+{service_name="clickhouse"} | query_kind="Select"
+-- seed --
+CREATE TABLE otel_logs (
+    ServiceName LowCardinality(String) DEFAULT 'clickhouse',
+    Body String,
+    ResourceAttributes Map(String, String) MATERIALIZED map('service_name', 'clickhouse'),
+    LogAttributes Map(String, String) MATERIALIZED map(
+        'query_kind', if(Body = 'q2', 'Insert', 'Select'),
+        'query_duration_ms', Body
+    )
+) ENGINE = Memory;
+INSERT INTO otel_logs (Body) VALUES ('q1'), ('q2'), ('q3');
+-- expected_rows --
+[
+  ["clickhouse", "q1"],
+  ["clickhouse", "q3"]
+]
+-- chplan --
+Filter predicate=((coalesce(nullIf(ServiceName, ""), if(mapContains(ResourceAttributes, "service_name"), ResourceAttributes["service_name"], ResourceAttributes["service.name"])) = "clickhouse") AND (if((mapContains(LogAttributes, "query_kind") OR mapContains(LogAttributes, "query.kind")), if(mapContains(LogAttributes, "query_kind"), LogAttributes["query_kind"], LogAttributes["query.kind"]), if(mapContains(ResourceAttributes, "query_kind"), ResourceAttributes["query_kind"], ResourceAttributes["query.kind"])) = "Select"))
+  Scan(otel_logs)
+-- sql --
+SELECT * FROM `otel_logs` WHERE (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?])) = ?) AND (if((mapContains(`LogAttributes`, ?) OR mapContains(`LogAttributes`, ?)), if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `LogAttributes`[?]), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?])) = ?)
+-- args --
+[0] string = ""
+[1] string = "service_name"
+[2] string = "service_name"
+[3] string = "service.name"
+[4] string = "clickhouse"
+[5] string = "query_kind"
+[6] string = "query.kind"
+[7] string = "query_kind"
+[8] string = "query_kind"
+[9] string = "query.kind"
+[10] string = "query_kind"
+[11] string = "query_kind"
+[12] string = "query.kind"
+[13] string = "Select"

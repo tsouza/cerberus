@@ -187,6 +187,13 @@ func levelAwareGroupKey(label string, s schema.Logs) chplan.Expr {
 			Key: &chplan.LitString{V: col},
 		}
 	}
+	// Non-top-level label in the post-RangeWindow augmented identity map.
+	// The inner range-aggregation Project inflates the identity map with
+	// structured-metadata + stream values for this key (see
+	// [withDetectedLevelAndColumns] / OuterByLabels), so reading it back
+	// from the ResourceAttributes-aliased identity column resolves the
+	// coalesced value the inner layer wrote. The dotted-fallback chain
+	// keeps `cerberus_ql`-style keys resolving against the inflated map.
 	return attributeLookupColumn(s.ResourceAttributesColumn, label)
 }
 
@@ -214,7 +221,14 @@ func levelAwareRangeGroupKey(label string, s schema.Logs) chplan.Expr {
 		// scope only exposes the identity map.
 		return topLevelColumnRef(col)
 	}
-	return attributeLookupColumn(s.ResourceAttributesColumn, label)
+	// Non-top-level group key at the inner range-aggregation layer, where
+	// both the ResourceAttributes (stream) and LogAttributes (structured
+	// metadata) maps are still in scope. Resolve with reference-Loki
+	// precedence structured-metadata > stream so `by (query_kind)` on an
+	// OTel structured-metadata key groups by its real value rather than
+	// collapsing every row into a single `{query_kind:""}` series (task
+	// #59).
+	return structuredOrStreamLookup(s, label)
 }
 
 // canonicalLevelKeys returns the input `groups` with every

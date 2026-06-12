@@ -8,9 +8,16 @@
 [4] string = " "
 [5] string = "\""
 [6] string = "status"
-[7] float64 = 400
+[7] string = "_extracted"
+[8] string = "="
+[9] string = " "
+[10] string = "\""
+[11] string = "status"
+[12] string = "status"
+[13] float64 = 400
 -- seed --
 CREATE TABLE otel_logs (
+    LogAttributes Map(String, String) MATERIALIZED map(),
     Body String,
     ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api')
 ) ENGINE = Memory;
@@ -24,7 +31,7 @@ INSERT INTO otel_logs (Body) VALUES
   ["ts=2026-01-01 status=503 msg=\"unavailable\""]
 ]
 -- chplan --
-Filter predicate=((ResourceAttributes["job"] = "api") AND (toFloat64OrZero(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\"")))["status"]) > 400))
+Filter predicate=((ResourceAttributes["job"] = "api") AND (toFloat64OrZero(if(mapContains(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\""))), "status"), mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\"")))["status"], LogAttributes["status"])) > 400))
   Scan(otel_logs)
 -- sql --
-SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (toFloat64OrZero(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), extractKeyValuePairs(`Body`, ?, ?, ?)))[?]) > toFloat64(?))
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (toFloat64OrZero(if(mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), extractKeyValuePairs(`Body`, ?, ?, ?))), ?), mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), extractKeyValuePairs(`Body`, ?, ?, ?)))[?], `LogAttributes`[?])) > toFloat64(?))

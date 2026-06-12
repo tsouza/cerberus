@@ -254,7 +254,16 @@ func TestDetectedLevel_LabelFilterLevelDoesNotAlias(t *testing.T) {
 	if !ok {
 		t.Fatalf("lower top is %T; want *chplan.Filter", plan)
 	}
-	var sawMapAccessLevel bool
+	// The `level="error"` comparison's LHS must resolve `level` through
+	// the labels maps — NOT through the SeverityText-derived
+	// `multiIf(...)` the detected_level alias would emit. After task #59
+	// the LHS is the structured-metadata-over-stream coalescing wrapper
+	// `if(mapContains(LogAttributes, "level"), LogAttributes["level"],
+	// <parser-merged map>["level"])`, whose parser-merged side is itself
+	// a MapAccess on the `| logfmt` mapConcat. Assert (1) the comparison
+	// LHS is that `if(...)` coalescing FuncCall (never a `multiIf`), and
+	// (2) a `MapAccess(_, "level")` value lookup survives inside it.
+	var sawLevelCompare, sawMapAccessLevel bool
 	walkExprTree(filt.Predicate, func(e chplan.Expr) {
 		bin, ok := e.(*chplan.Binary)
 		if !ok || bin.Op != chplan.OpEq {
@@ -264,7 +273,14 @@ func TestDetectedLevel_LabelFilterLevelDoesNotAlias(t *testing.T) {
 		if !ok || rhs.V != "error" {
 			return
 		}
-		ma, ok := bin.Left.(*chplan.MapAccess)
+		lhs, ok := bin.Left.(*chplan.FuncCall)
+		if !ok || lhs.Name != "if" {
+			return
+		}
+		sawLevelCompare = true
+	})
+	walkExprTree(filt.Predicate, func(e chplan.Expr) {
+		ma, ok := e.(*chplan.MapAccess)
 		if !ok {
 			return
 		}
@@ -274,8 +290,11 @@ func TestDetectedLevel_LabelFilterLevelDoesNotAlias(t *testing.T) {
 		}
 		sawMapAccessLevel = true
 	})
+	if !sawLevelCompare {
+		t.Errorf("expected `level=\"error\"` LHS to be the structured-over-stream `if(...)` coalescing wrapper (not a SeverityText multiIf); got plan %v", filt.Predicate)
+	}
 	if !sawMapAccessLevel {
-		t.Errorf("expected MapAccess(<labels>, \"level\") = \"error\" filter; got plan %v", filt.Predicate)
+		t.Errorf("expected a MapAccess(<labels>, \"level\") value lookup inside the coalescing wrapper; got plan %v", filt.Predicate)
 	}
 }
 

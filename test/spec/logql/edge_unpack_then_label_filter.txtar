@@ -4,11 +4,14 @@
 [0] string = "job"
 [1] string = "api"
 [2] string = "level"
-[3] string = "warn|error"
+[3] string = "level"
+[4] string = "level"
+[5] string = "warn|error"
 -- sql --
-SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND match(`ResourceAttributes`[?], ?)
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND match(if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `ResourceAttributes`[?]), ?)
 -- seed --
 CREATE TABLE otel_logs (
+    LogAttributes Map(String, String) MATERIALIZED map(),
     Body String,
     ResourceAttributes Map(String, String) MATERIALIZED map(
         'job', 'api',
@@ -29,5 +32,5 @@ INSERT INTO otel_logs (Body) VALUES
   ["u2"]
 ]
 -- chplan --
-Filter predicate=((ResourceAttributes["job"] = "api") AND (ResourceAttributes["level"] =~ "warn|error"))
+Filter predicate=((ResourceAttributes["job"] = "api") AND (if(mapContains(LogAttributes, "level"), LogAttributes["level"], ResourceAttributes["level"]) =~ "warn|error"))
   Scan(otel_logs)

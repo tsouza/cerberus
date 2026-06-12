@@ -74,6 +74,7 @@ var mapColumnNames = []string{
 	"ResourceAttrs",
 	"ScopeAttributes",
 	"SpanAttributes",
+	"LogAttributes",
 }
 
 // isMapColumn reports whether name (a backtick-quoted alias) is one

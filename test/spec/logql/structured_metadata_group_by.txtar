@@ -1,0 +1,89 @@
+-- query.logql --
+sum by (query_kind) (count_over_time({service_name="clickhouse"}[5m]))
+-- start --
+2026-01-01T00:00:00Z
+-- end --
+2026-01-01T00:00:00Z
+-- step --
+1m
+-- seed --
+CREATE TABLE otel_logs (
+    ServiceName LowCardinality(String) DEFAULT 'clickhouse',
+    Timestamp DateTime64(9),
+    Body String,
+    SeverityText LowCardinality(String) DEFAULT '',
+    ResourceAttributes Map(String, String),
+    LogAttributes Map(String, String)
+) ENGINE = Memory;
+INSERT INTO otel_logs (Timestamp, Body, LogAttributes) VALUES
+    (toDateTime64('2026-01-01 00:00:00', 9), 'q1', map('query_kind', 'Select')),
+    (toDateTime64('2026-01-01 00:00:00', 9), 'q2', map('query_kind', 'Select')),
+    (toDateTime64('2026-01-01 00:00:00', 9), 'q3', map('query_kind', 'Insert'));
+-- expected_rows --
+[
+  ["", {"query_kind": "Insert"}, "2026-01-01T00:00:01Z", 1],
+  ["", {"query_kind": "Select"}, "2026-01-01T00:00:01Z", 2]
+]
+-- chplan --
+Project ["" AS MetricName, map("query_kind", gkey_0) AS Attributes, now64(9) AS TimeUnix, Value AS Value]
+  Aggregate groupBy=[if(mapContains(ResourceAttributes, "query_kind"), ResourceAttributes["query_kind"], ResourceAttributes["query.kind"]) AS gkey_0] funcs=[sum(Value) AS Value]
+    RangeWindow func=count_over_time range=5m0s step=1m0s ts=Timestamp value=Value groupBy=[ResourceAttributes] start=2026-01-01T00:00:00Z end=2026-01-01T00:00:00Z
+      Project [mapConcat(ResourceAttributes, mapFilter((k, v) -> (v != ""), map("detected_level", multiIf((lower(SeverityText) = ""), "unknown", ((lower(SeverityText) = "trace") OR (lower(SeverityText) = "trc")), "trace", ((lower(SeverityText) = "debug") OR (lower(SeverityText) = "dbg")), "debug", (((lower(SeverityText) = "info") OR (lower(SeverityText) = "inf")) OR (lower(SeverityText) = "information")), "info", (((lower(SeverityText) = "warn") OR (lower(SeverityText) = "wrn")) OR (lower(SeverityText) = "warning")), "warn", ((lower(SeverityText) = "error") OR (lower(SeverityText) = "err")), "error", (lower(SeverityText) = "critical"), "critical", (lower(SeverityText) = "fatal"), "fatal", lower(SeverityText)), "query_kind", if((mapContains(LogAttributes, "query_kind") OR mapContains(LogAttributes, "query.kind")), if(mapContains(LogAttributes, "query_kind"), LogAttributes["query_kind"], LogAttributes["query.kind"]), if(mapContains(ResourceAttributes, "query_kind"), ResourceAttributes["query_kind"], ResourceAttributes["query.kind"]))))) AS ResourceAttributes, Timestamp, 1 AS Value]
+        Filter predicate=((coalesce(nullIf(ServiceName, ""), if(mapContains(ResourceAttributes, "service_name"), ResourceAttributes["service_name"], ResourceAttributes["service.name"])) = "clickhouse") AND ((Timestamp >= toDateTime64("2025-12-31 23:55:00.000000000", 9)) AND (Timestamp <= toDateTime64("2026-01-01 00:00:00.000000000", 9))))
+          Scan(otel_logs)
+-- sql --
+SELECT ? AS `MetricName`, map(?, `gkey_0`) AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?]) AS `gkey_0`, sum(`Value`) AS `Value` FROM (SELECT `ResourceAttributes`, toFloat64(length(window_vals)) AS `Value` FROM (SELECT `ResourceAttributes`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `ResourceAttributes`, arrayFilter(p -> tupleElement(p, 1) > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= toDateTime64('2026-01-01 00:00:00.000000000', 9), series_array) AS `window_pairs` FROM (SELECT `ResourceAttributes`, arraySort(groupArray((`Timestamp`, `Value`))) AS `series_array` FROM (SELECT mapConcat(`ResourceAttributes`, mapFilter((k, v) -> (v != ?), map(?, multiIf((lower(`SeverityText`) = ?), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, (((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)) OR (lower(`SeverityText`) = ?)), ?, ((lower(`SeverityText`) = ?) OR (lower(`SeverityText`) = ?)), ?, (lower(`SeverityText`) = ?), ?, (lower(`SeverityText`) = ?), ?, lower(`SeverityText`)), ?, if((mapContains(`LogAttributes`, ?) OR mapContains(`LogAttributes`, ?)), if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `LogAttributes`[?]), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?]))))) AS `ResourceAttributes`, `Timestamp`, ? AS `Value` FROM (SELECT * FROM `otel_logs` WHERE (`Timestamp` >= toDateTime64(?, ?)) AND (`Timestamp` <= toDateTime64(?, ?)) AND (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?])) = ?))) GROUP BY `ResourceAttributes`))) WHERE length(`window_vals`) >= 1) GROUP BY if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?]))
+-- args --
+[0] string = ""
+[1] string = "query_kind"
+[2] int64 = 9
+[3] string = "query_kind"
+[4] string = "query_kind"
+[5] string = "query.kind"
+[6] string = ""
+[7] string = "detected_level"
+[8] string = ""
+[9] string = "unknown"
+[10] string = "trace"
+[11] string = "trc"
+[12] string = "trace"
+[13] string = "debug"
+[14] string = "dbg"
+[15] string = "debug"
+[16] string = "info"
+[17] string = "inf"
+[18] string = "information"
+[19] string = "info"
+[20] string = "warn"
+[21] string = "wrn"
+[22] string = "warning"
+[23] string = "warn"
+[24] string = "error"
+[25] string = "err"
+[26] string = "error"
+[27] string = "critical"
+[28] string = "critical"
+[29] string = "fatal"
+[30] string = "fatal"
+[31] string = "query_kind"
+[32] string = "query_kind"
+[33] string = "query.kind"
+[34] string = "query_kind"
+[35] string = "query_kind"
+[36] string = "query.kind"
+[37] string = "query_kind"
+[38] string = "query_kind"
+[39] string = "query.kind"
+[40] int64 = 1
+[41] string = "2025-12-31 23:55:00.000000000"
+[42] int64 = 9
+[43] string = "2026-01-01 00:00:00.000000000"
+[44] int64 = 9
+[45] string = ""
+[46] string = "service_name"
+[47] string = "service_name"
+[48] string = "service.name"
+[49] string = "clickhouse"
+[50] string = "query_kind"
+[51] string = "query_kind"
+[52] string = "query.kind"

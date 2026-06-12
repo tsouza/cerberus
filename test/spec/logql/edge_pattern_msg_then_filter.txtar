@@ -4,11 +4,14 @@
 [0] string = "job"
 [1] string = "api"
 [2] string = "msg"
-[3] string = "^$"
+[3] string = "msg"
+[4] string = "msg"
+[5] string = "^$"
 -- sql --
-SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND NOT match(`ResourceAttributes`[?], ?)
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND NOT match(if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `ResourceAttributes`[?]), ?)
 -- seed --
 CREATE TABLE otel_logs (
+    LogAttributes Map(String, String) MATERIALIZED map(),
     Body String,
     ResourceAttributes Map(String, String) MATERIALIZED map(
         'job', 'api',
@@ -25,5 +28,5 @@ INSERT INTO otel_logs (Body) VALUES
   ["r2 quick test"]
 ]
 -- chplan --
-Filter predicate=((ResourceAttributes["job"] = "api") AND (ResourceAttributes["msg"] !~ "^$"))
+Filter predicate=((ResourceAttributes["job"] = "api") AND (if(mapContains(LogAttributes, "msg"), LogAttributes["msg"], ResourceAttributes["msg"]) !~ "^$"))
   Scan(otel_logs)
