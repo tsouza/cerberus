@@ -4,7 +4,7 @@
 Keep Grafana, alerting, and your CLI tooling. Swap the backend.
 
 > [!WARNING]
-> **RELEASE CANDIDATE — NOT YET GA.** Cerberus is at `v1.0.0-RC`;
+> **RELEASE CANDIDATE — NOT YET GA.** Cerberus is at `v1.0.0-RC1`;
 > the surface is feature-complete for 1.0 and the three differential
 > harnesses gate every merge, but correctness, performance, and
 > operational hardening are still being burned down toward GA. Evaluate
@@ -57,7 +57,7 @@ optimised ClickHouse SQL underneath.
 
 ## Status
 
-**Release candidate — `v1.0.0-RC`.** PromQL, LogQL, and TraceQL parse +
+**Release candidate — `v1.0.0-RC1`.** PromQL, LogQL, and TraceQL parse +
 lowering are in place; the pattern-based optimiser, the typed `chsql`
 SQL emitter, and the shared `internal/engine` pipeline drive every
 query end to end. Self-observability is wired across all three OTel pillars (logs +
