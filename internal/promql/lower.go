@@ -1503,7 +1503,24 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 	case "predict_linear":
 		return lowerPredictLinear(c, s, ctx)
 	case "holt_winters", "double_exponential_smoothing":
-		return lowerHoltWinters(c, s, ctx)
+		// `double_exponential_smoothing` (and its `holt_winters` alias) is
+		// an experimental PromQL function: the reference backend
+		// (prom/prometheus:v3.11.3, started WITHOUT
+		// `--enable-feature=promql-experimental-functions` in the
+		// compatibility harness) rejects it. Cerberus's parser enables
+		// experimental functions for the deliberately-supported extension
+		// subset (`@start()`/`@end()`, `predict_linear`), so the parser
+		// accepts `double_exponential_smoothing` and lowering would
+		// otherwise build a RangeWindow the chsql emitter executes —
+		// silently turning a parity rejection into a wrong acceptance.
+		// To keep the PromQL head at strict reference parity we reject
+		// here at the lowering dispatch, mirroring the `first_over_time`
+		// gate. `lowerHoltWinters` is retained so the package-internal
+		// boundary-guard unit tests (gremlins_kill_test.go) can keep
+		// exercising the (0,1) smoothing/trend factor checks directly.
+		// The message contains "unsupported: range function" so the
+		// showcase-promql parity-rejection contract substring matches.
+		return nil, fmt.Errorf("unsupported: range function %q is experimental and not supported by the PromQL head", c.Func.Name)
 	case "absent_over_time":
 		return lowerAbsentOverTime(c, s, ctx)
 	case "first_over_time":
