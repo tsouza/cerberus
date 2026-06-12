@@ -257,60 +257,226 @@ func rewriteSingleInput(
 	return clone(newInput), true
 }
 
+// rewriteLeftRight is the shared clone-on-change shape for binary nodes
+// with exactly two children (Left / Right): apply fn to each; when
+// neither changed, hand back the original node, otherwise clone via
+// `clone(newLeft, newRight)`.
+func rewriteLeftRight(
+	orig chplan.Node,
+	left, right chplan.Node,
+	fn func(chplan.Node) (chplan.Node, bool),
+	clone func(newLeft, newRight chplan.Node) chplan.Node,
+) (chplan.Node, bool) {
+	newLeft, lch := fn(left)
+	newRight, rch := fn(right)
+	if !lch && !rch {
+		return orig, false
+	}
+	return clone(newLeft, newRight), true
+}
+
 // rewriteChildren clones n with each child replaced by `fn(child)`. Returns
 // the new (or same) node and whether any child changed.
+//
+// EXHAUSTIVENESS CONTRACT: every concrete chplan.Node implementation MUST
+// be handled by exactly one of the category dispatchers below. A node that
+// recurses into its `Children()` lets every optimizer rule (predicate
+// pushdown, PREWHERE, projection-pushdown, MV, constant-fold) fire beneath
+// it; a node that falls through to the final `return n, false` becomes an
+// OPAQUE LEAF that silently DISABLES all rules on its subtree. The only
+// legitimate no-recursion arms are genuine leaves whose `Children()` is
+// always nil (Scan, OneRow, StepGrid), handled by rewriteLeafNode. The
+// compile-time test TestRewriteChildren_Exhaustive enumerates every Node
+// type and fails if a node with non-nil children is returned unchanged, so
+// a future new node type can't silently reintroduce the gap.
+//
+// The dispatch is split into per-shape helpers (unary-Input, binary
+// Left/Right, leaf, and the irregular shapes) purely to keep each function
+// under the cyclomatic-complexity gate; the behaviour is a single flat
+// "match the concrete type, recurse into its children" rule.
 func rewriteChildren(n chplan.Node, fn func(chplan.Node) (chplan.Node, bool)) (chplan.Node, bool) {
+	if out, changed, handled := rewriteLeafNode(n); handled {
+		return out, changed
+	}
+	if out, changed, handled := rewriteUnaryNode(n, fn); handled {
+		return out, changed
+	}
+	if out, changed, handled := rewriteBinaryNode(n, fn); handled {
+		return out, changed
+	}
+	if out, changed, handled := rewriteIrregularNode(n, fn); handled {
+		return out, changed
+	}
+	return n, false
+}
+
+// rewriteLeafNode handles the genuine leaves — nodes whose `Children()` is
+// always nil. They are returned unchanged (recursing would be a no-op).
+func rewriteLeafNode(n chplan.Node) (out chplan.Node, changed, handled bool) {
 	switch v := n.(type) {
 	case *chplan.Scan:
-		return v, false
+		return v, false, true
+	case *chplan.OneRow:
+		return v, false, true
+	case *chplan.StepGrid:
+		return v, false, true
+	}
+	return n, false, false
+}
+
+// rewriteUnaryNode handles every node with exactly one Node-typed child.
+// Most carry it as `Input`; the Metrics* aggregation nodes carry it as
+// `Inner`. Each rebuilds via the shared clone-on-change rewriteSingleInput
+// shape.
+func rewriteUnaryNode(n chplan.Node, fn func(chplan.Node) (chplan.Node, bool)) (out chplan.Node, changed, handled bool) {
+	switch v := n.(type) {
 	case *chplan.Filter:
-		return rewriteSingleInput(v, v.Input, fn, func(in chplan.Node) chplan.Node {
+		out, changed = rewriteSingleInput(v, v.Input, fn, func(in chplan.Node) chplan.Node {
 			cp := *v
 			cp.Input = in
 			return &cp
 		})
 	case *chplan.Project:
-		return rewriteSingleInput(v, v.Input, fn, func(in chplan.Node) chplan.Node {
+		out, changed = rewriteSingleInput(v, v.Input, fn, func(in chplan.Node) chplan.Node {
 			cp := *v
 			cp.Input = in
 			return &cp
 		})
 	case *chplan.NestedSetAnnotate:
-		return rewriteSingleInput(v, v.Input, fn, func(in chplan.Node) chplan.Node {
+		out, changed = rewriteSingleInput(v, v.Input, fn, func(in chplan.Node) chplan.Node {
 			cp := *v
 			cp.Input = in
 			return &cp
 		})
 	case *chplan.Aggregate:
-		return rewriteSingleInput(v, v.Input, fn, func(in chplan.Node) chplan.Node {
+		out, changed = rewriteSingleInput(v, v.Input, fn, func(in chplan.Node) chplan.Node {
 			cp := *v
 			cp.Input = in
 			return &cp
 		})
 	case *chplan.RangeWindow:
-		return rewriteSingleInput(v, v.Input, fn, func(in chplan.Node) chplan.Node {
+		out, changed = rewriteSingleInput(v, v.Input, fn, func(in chplan.Node) chplan.Node {
 			cp := *v
 			cp.Input = in
 			return &cp
 		})
 	case *chplan.AbsentOverTime:
-		return rewriteSingleInput(v, v.Input, fn, func(in chplan.Node) chplan.Node {
+		out, changed = rewriteSingleInput(v, v.Input, fn, func(in chplan.Node) chplan.Node {
 			cp := *v
 			cp.Input = in
 			return &cp
 		})
 	case *chplan.Limit:
-		return rewriteSingleInput(v, v.Input, fn, func(in chplan.Node) chplan.Node {
+		out, changed = rewriteSingleInput(v, v.Input, fn, func(in chplan.Node) chplan.Node {
 			cp := *v
 			cp.Input = in
 			return &cp
 		})
 	case *chplan.OrderBy:
-		return rewriteSingleInput(v, v.Input, fn, func(in chplan.Node) chplan.Node {
+		out, changed = rewriteSingleInput(v, v.Input, fn, func(in chplan.Node) chplan.Node {
 			cp := *v
 			cp.Input = in
 			return &cp
 		})
+	case *chplan.RangeLWR:
+		out, changed = rewriteSingleInput(v, v.Input, fn, func(in chplan.Node) chplan.Node {
+			cp := *v
+			cp.Input = in
+			return &cp
+		})
+	case *chplan.RangeBucketFanout:
+		out, changed = rewriteSingleInput(v, v.Input, fn, func(in chplan.Node) chplan.Node {
+			cp := *v
+			cp.Input = in
+			return &cp
+		})
+	case *chplan.HistogramQuantile:
+		out, changed = rewriteSingleInput(v, v.Input, fn, func(in chplan.Node) chplan.Node {
+			cp := *v
+			cp.Input = in
+			return &cp
+		})
+	case *chplan.HistogramQuantileNative:
+		out, changed = rewriteSingleInput(v, v.Input, fn, func(in chplan.Node) chplan.Node {
+			cp := *v
+			cp.Input = in
+			return &cp
+		})
+	case *chplan.MetricsAggregate:
+		out, changed = rewriteSingleInput(v, v.Inner, fn, func(in chplan.Node) chplan.Node {
+			cp := *v
+			cp.Inner = in
+			return &cp
+		})
+	case *chplan.MetricsHistogramOverTime:
+		out, changed = rewriteSingleInput(v, v.Inner, fn, func(in chplan.Node) chplan.Node {
+			cp := *v
+			cp.Inner = in
+			return &cp
+		})
+	case *chplan.MetricsSecondStage:
+		out, changed = rewriteSingleInput(v, v.Input, fn, func(in chplan.Node) chplan.Node {
+			cp := *v
+			cp.Input = in
+			return &cp
+		})
+	default:
+		return n, false, false
+	}
+	return out, changed, true
+}
+
+// rewriteBinaryNode handles every node with exactly two Node-typed
+// children carried as `Left` / `Right`. Each rebuilds via the shared
+// rewriteLeftRight shape.
+func rewriteBinaryNode(n chplan.Node, fn func(chplan.Node) (chplan.Node, bool)) (out chplan.Node, changed, handled bool) {
+	switch v := n.(type) {
+	case *chplan.CrossJoin:
+		out, changed = rewriteLeftRight(v, v.Left, v.Right, fn, func(l, r chplan.Node) chplan.Node {
+			cp := *v
+			cp.Left = l
+			cp.Right = r
+			return &cp
+		})
+	case *chplan.StructuralJoin:
+		out, changed = rewriteLeftRight(v, v.Left, v.Right, fn, func(l, r chplan.Node) chplan.Node {
+			cp := *v
+			cp.Left = l
+			cp.Right = r
+			return &cp
+		})
+	case *chplan.VectorJoin:
+		out, changed = rewriteLeftRight(v, v.Left, v.Right, fn, func(l, r chplan.Node) chplan.Node {
+			cp := *v
+			cp.Left = l
+			cp.Right = r
+			return &cp
+		})
+	case *chplan.VectorSetOp:
+		out, changed = rewriteLeftRight(v, v.Left, v.Right, fn, func(l, r chplan.Node) chplan.Node {
+			cp := *v
+			cp.Left = l
+			cp.Right = r
+			return &cp
+		})
+	case *chplan.SetOperation:
+		out, changed = rewriteLeftRight(v, v.Left, v.Right, fn, func(l, r chplan.Node) chplan.Node {
+			cp := *v
+			cp.Left = l
+			cp.Right = r
+			return &cp
+		})
+	default:
+		return n, false, false
+	}
+	return out, changed, true
+}
+
+// rewriteIrregularNode handles the nodes whose child shape doesn't fit the
+// unary / binary helpers: TopK (Input + optional KExpr), UnionAll
+// (N inputs), and MetricsCompare (Inner + optional RootLookup).
+func rewriteIrregularNode(n chplan.Node, fn func(chplan.Node) (chplan.Node, bool)) (out chplan.Node, changed, handled bool) {
+	switch v := n.(type) {
 	case *chplan.TopK:
 		newInput, ch := fn(v.Input)
 		var newKExpr chplan.Node
@@ -319,7 +485,7 @@ func rewriteChildren(n chplan.Node, fn func(chplan.Node) (chplan.Node, bool)) (c
 			newKExpr, kCh = fn(v.KExpr)
 		}
 		if !ch && !kCh {
-			return v, false
+			return v, false, true
 		}
 		cp := *v
 		if ch {
@@ -328,27 +494,48 @@ func rewriteChildren(n chplan.Node, fn func(chplan.Node) (chplan.Node, bool)) (c
 		if kCh {
 			cp.KExpr = newKExpr
 		}
-		return &cp, true
+		return &cp, true, true
 	case *chplan.UnionAll:
 		// Recurse into each arm so existing optimizer rules
 		// (constant-fold, PREWHERE promotion, etc.) can rewrite the
 		// per-arm Project(Filter(Scan)) subtrees the PromQL
 		// classic-histogram companion-suffix lowering emits.
 		newInputs := make([]chplan.Node, len(v.Inputs))
-		changed := false
+		ch := false
 		for i, in := range v.Inputs {
-			newIn, ch := fn(in)
-			if ch {
-				changed = true
+			newIn, c := fn(in)
+			if c {
+				ch = true
 			}
 			newInputs[i] = newIn
 		}
-		if !changed {
-			return v, false
+		if !ch {
+			return v, false, true
 		}
 		cp := *v
 		cp.Inputs = newInputs
-		return &cp, true
+		return &cp, true, true
+	case *chplan.MetricsCompare:
+		// Inner is the always-present child; RootLookup is an optional
+		// second child (the service-graph root-name join side). Recurse
+		// into both, rebuilding only when one changed.
+		newInner, innerCh := fn(v.Inner)
+		var newRootLookup chplan.Node
+		rootCh := false
+		if v.RootLookup != nil {
+			newRootLookup, rootCh = fn(v.RootLookup)
+		}
+		if !innerCh && !rootCh {
+			return v, false, true
+		}
+		cp := *v
+		if innerCh {
+			cp.Inner = newInner
+		}
+		if rootCh {
+			cp.RootLookup = newRootLookup
+		}
+		return &cp, true, true
 	}
-	return n, false
+	return n, false, false
 }
