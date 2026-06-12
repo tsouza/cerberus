@@ -2,9 +2,19 @@ package chsql
 
 import (
 	"fmt"
-	"strconv"
 
 	"github.com/tsouza/cerberus/internal/chplan"
+)
+
+// Synthetic bare-identifier column names the VectorSetOr single-pass
+// emission pins. `_setop_side` tags each UNION-ALL arm (0 = LHS, 1 =
+// RHS) so the windowed `_setop_has_left` flag — `max(_setop_side = 0)
+// OVER (PARTITION BY <sig>)` — can decide which RHS rows survive the
+// `or` (drop those whose signature already has a LHS row). Neither name
+// takes user input; both match CH's bare-identifier grammar.
+const (
+	setOpSideCol    = "_setop_side"
+	setOpHasLeftCol = "_setop_has_left"
 )
 
 // emitVectorSetOp renders a PromQL vector set operator (`and`, `or`,
@@ -106,52 +116,83 @@ func (e *emitter) emitVectorSetOp(s *chplan.VectorSetOp) error {
 		e.emitSelect(outer)
 		return nil
 	case chplan.VectorSetOr:
-		// SELECT MetricName, Attributes, TimeUnix, Value FROM (
-		//   (SELECT MetricName, Attributes, TimeUnix, Value FROM (<A>))
-		//   UNION ALL
-		//   (SELECT MetricName, Attributes, TimeUnix, Value FROM (<B>)
-		//      WHERE <sig> NOT IN (SELECT DISTINCT <sig> FROM (<A>)))
-		// )
+		// `A or B`: every LHS sample, plus every RHS sample whose match-
+		// key signature does NOT appear in A. Rendered as a SINGLE pass
+		// over `A UNION ALL B`, tagging each arm with a side marker and
+		// a windowed "does a left row share this signature?" flag:
 		//
-		// The UNION ALL must be wrapped in an extra outer paren so the
-		// outer SELECT's FROM clause sees a single subquery; otherwise
-		// the rendered SQL is `… FROM (<left>) UNION ALL (<right>)`,
-		// which parses as a top-level UNION between two whole SELECTs
-		// (and CH then asks for a supertype between the outer SELECT's
-		// projection and the right UNION arm — Map vs. String — and
-		// fails with NO_COMMON_TYPE).
+		//   SELECT MetricName, Attributes, TimeUnix, Value FROM (
+		//     SELECT MetricName, Attributes, TimeUnix, Value, _setop_side,
+		//            max(_setop_side = 0) OVER (PARTITION BY <sig>)
+		//              AS _setop_has_left
+		//       FROM (
+		//         (SELECT <canonical A cols>, 0 AS _setop_side FROM (<A>))
+		//         UNION ALL
+		//         (SELECT <canonical B cols>, 1 AS _setop_side FROM (<B>))
+		//       )
+		//   ) WHERE (_setop_side = 0) OR (_setop_has_left = 0)
 		//
-		// Each arm projects the canonical 4-column shape via
-		// vectorSetOpCanonicalArmFrag so positional column unification
-		// across arms never hits the String-vs-Map supertype error even
-		// when one arm is a derived-shape RangeWindow / Aggregate that
-		// drops `__name__`.
+		// WHY this shape and NOT a CTE / anti-join.
+		// The previous emission referenced the LHS in two places — the
+		// UNION-ALL left leg AND a `<sig> NOT IN (SELECT DISTINCT <sig>
+		// FROM <lhs>)` anti-join. #810 hoisted the LHS into a non-
+		// recursive `WITH _setop_lhs_<n> AS (…)` CTE to stop the SQL
+		// TEXT doubling per chain level, but ClickHouse does NOT
+		// materialise a non-recursive CTE — it INLINES it at every
+		// reference. So a left-assoc chain `((a or b) or c) …` still
+		// RE-EXECUTED the whole nested LHS subplan twice per level →
+		// super-linear EXECUTION (BUG #88: K=2/4/6/8 ≈ 38ms/205ms/1.4s/
+		// 12.9s on the scaling harness, ~312x over a 4x K sweep) even
+		// though SQL text + intermediate cardinality stayed linear.
 		//
-		// CSE — materialise the LEFT canonical arm exactly once as a
-		// `WITH _setop_lhs_<n> AS (<leftArm>)` CTE and reference it by
-		// name in BOTH the UNION-ALL left leg AND the right leg's
-		// `<sig> NOT IN (SELECT DISTINCT <sig> FROM …)` anti-join. Before
-		// this, the left subplan was inlined textually in both spots —
-		// so a left-assoc chain `a or b or c …` re-rendered the whole
-		// nested LHS twice per level, blowing the SQL text up
-		// EXPONENTIALLY (k=4 ≈ 33KB, k=8 breaches CH's 256KB
-		// max_query_size → Code:62). Emitting it once and referencing the
-		// CTE name makes the chain grow LINEARLY while producing a
-		// byte-for-byte identical result set: the NOT-IN only reads the
-		// signature (Attributes / on()/ignoring() projection), which the
-		// canonical arm passes through unchanged.
-		lhsCTE := "_setop_lhs_" + strconv.Itoa(e.nextSetOpSeq())
-		leftSelect := NewQuery().
-			Select(vectorSetOpOutputCols(s)...).
-			From(BareIdent(lhsCTE))
-		rightSelect := NewQuery().
-			Select(vectorSetOpOutputCols(s)...).
-			From(rightArm).
-			Where(setOpInSubqueryFrag(s.Match, s.AttributesColumn, BareIdent(lhsCTE), false /*notIn*/))
+		// This single-pass shape scans each arm EXACTLY ONCE: the
+		// "is there a left row for this signature?" test that drove the
+		// anti-join becomes a window aggregate over the unified arms, so
+		// the LHS subplan is never re-read. The result is byte-identical
+		// to the anti-join — left rows (`_setop_side = 0`) always
+		// survive; right rows survive iff no left row shares their
+		// signature (`_setop_has_left = 0`). on()/ignoring() flow through
+		// the same matchKeyGroupExprFrag signature used by the window's
+		// PARTITION BY, so default / on / ignoring matching are all
+		// covered. Measured K=1..8 on chDB: ~flat/sub-quadratic (K=8 at
+		// ~77ms vs the CTE-inline shape's ~721ms — 9.4x).
+		//
+		// Each arm still projects the canonical 4-column shape via
+		// vectorSetOpCanonicalArmFrag so positional UNION-ALL column
+		// unification never hits the String-vs-Map (NO_COMMON_TYPE)
+		// supertype error when one arm is a derived-shape RangeWindow /
+		// Aggregate that drops `__name__`. The side marker is appended as
+		// a 5th projected column so it never disturbs that unification.
+		//
+		// The window-bearing inner SELECT must PROJECT `_setop_side`
+		// explicitly (alongside `_setop_has_left`): the outer WHERE
+		// references it, and CH 24.x cannot resolve a UNION-arm alias
+		// from a window-SELECT's own WHERE — lifting the filter one level
+		// out, with `_setop_side` re-projected, is what makes the
+		// analyzer bind it.
+		sideArmL := vectorSetOpSideArmFrag(s, leftArm, 0)
+		sideArmR := vectorSetOpSideArmFrag(s, rightArm, 1)
+		windowed := NewQuery().
+			Select(append(
+				vectorSetOpOutputCols(s),
+				Col(setOpSideCol),
+				As(
+					Window(
+						Call("max", Eq(Col(setOpSideCol), InlineLit(0))),
+						[]Frag{matchKeyGroupExprFrag(s.Match, s.AttributesColumn)},
+						nil,
+					),
+					setOpHasLeftCol,
+				),
+			)...).
+			From(Paren(UnionAll(sideArmL, sideArmR)))
 		outer := NewQuery().
-			With(lhsCTE, leftArm).
 			Select(vectorSetOpOutputCols(s)...).
-			From(Paren(UnionAll(leftSelect.Frag(), rightSelect.Frag())))
+			From(windowed.Frag()).
+			Where(Or(
+				Eq(Col(setOpSideCol), InlineLit(0)),
+				Eq(Col(setOpHasLeftCol), InlineLit(0)),
+			))
 		e.emitSelect(outer)
 		return nil
 	}
@@ -252,6 +293,24 @@ func vectorSetOpCanonicalArmFrag(s *chplan.VectorSetOp, arm chplan.Node, armFrag
 		).
 		From(armFrag)
 	return inner.Frag()
+}
+
+// vectorSetOpSideArmFrag wraps an already-canonicalised arm Frag in a
+// `SELECT MetricName, Attributes, TimeUnix, Value, <side> AS _setop_side
+// FROM (<arm>)` so the VectorSetOr single-pass UNION ALL carries the
+// side marker as a 5th column. The marker is an inline shape constant
+// (0 = LHS, 1 = RHS), not user data, so InlineLit is correct. Selecting
+// the four canonical columns by name keeps positional UNION-ALL
+// unification stable across the two arms (the marker is always the last
+// position on both sides).
+func vectorSetOpSideArmFrag(s *chplan.VectorSetOp, armFrag Frag, side int) Frag {
+	q := NewQuery().
+		Select(append(
+			vectorSetOpOutputCols(s),
+			As(InlineLit(side), setOpSideCol),
+		)...).
+		From(armFrag)
+	return Paren(q.Frag())
 }
 
 // vectorSetOpSynthesizedAnchorFrag renders the synthetic anchor

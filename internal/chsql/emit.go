@@ -66,15 +66,6 @@ type emitter struct {
 	// without unique names CH binds the inner same-named CTE in the
 	// outer scope and rejects the outer as "not recursive" (error 49).
 	structSeq int
-
-	// setOpSeq is a monotonic counter handed out to the vector-set-op
-	// emitter so each materialised set-op arm CTE gets a unique name
-	// (`_setop_lhs_<n>`). Nested set ops (`A or B or C` lowers
-	// left-assoc to `(A or B) or C`) embed an inner set-op subquery —
-	// itself carrying a `_setop_lhs_<n>` CTE — inside the outer arm; a
-	// shared monotonic counter keeps the names globally distinct so CH
-	// never binds an inner same-named CTE in the outer scope.
-	setOpSeq int
 }
 
 // nextStructSeq returns the next unique structural-closure sequence
@@ -82,13 +73,6 @@ type emitter struct {
 func (e *emitter) nextStructSeq() int {
 	e.structSeq++
 	return e.structSeq
-}
-
-// nextSetOpSeq returns the next unique set-op arm-CTE sequence number,
-// advancing the counter.
-func (e *emitter) nextSetOpSeq() int {
-	e.setOpSeq++
-	return e.setOpSeq
 }
 
 // emitNode writes a `SELECT ...` statement for n into e.b.

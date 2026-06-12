@@ -46,9 +46,19 @@ func TestLower_Binary_VectorSetOps(t *testing.T) {
 			wantInSQL: []string{"`Attributes` NOT IN (", "DISTINCT `Attributes`"},
 		},
 		{
-			name:      "or default match",
-			query:     `up or up`,
-			wantInSQL: []string{"UNION ALL", "NOT IN ("},
+			name:  "or default match",
+			query: `up or up`,
+			// `or` is a single pass over `A UNION ALL B` with a
+			// windowed "does a left row share this signature?" flag
+			// (`max(_setop_side = 0) OVER (PARTITION BY <sig>)`)
+			// deciding which RHS rows survive — no anti-join / NOT IN
+			// that would re-read the LHS per chain level (BUG #88).
+			wantInSQL: []string{
+				"UNION ALL",
+				"`_setop_side`",
+				"max(`_setop_side` = 0) OVER (PARTITION BY `Attributes`)",
+				"`_setop_has_left`",
+			},
 		},
 		{
 			name:      "and ignoring",
