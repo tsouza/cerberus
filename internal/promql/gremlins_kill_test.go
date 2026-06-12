@@ -86,21 +86,28 @@ func TestFoldComparisonScalar_LessOrEqualIncludesEquality(t *testing.T) {
 	}
 }
 
-// mustParseExperimental parses a PromQL query with experimental
-// functions (e.g. double_exponential_smoothing) enabled. The Prom
-// parser refuses such names by default; the boundary-guard tests for
-// lowerHoltWinters need them through to exercise the in-range checks.
-func mustParseExperimental(t *testing.T, q string) parser.Expr {
+// mustParseHoltWintersCall parses a `double_exponential_smoothing(...)`
+// query with experimental functions enabled and returns the underlying
+// *parser.Call. The Prom parser refuses the experimental name by default;
+// the boundary-guard tests for lowerHoltWinters need the call through to
+// exercise the in-range checks. The PromQL lowering *dispatch* now gates
+// double_exponential_smoothing for reference parity (see
+// holt_winters_reject_test.go), so these mutation tests drive
+// lowerHoltWinters directly — the dispatch gate would short-circuit
+// before the boundary checks run, leaving the (0,1)-guard mutants
+// uncovered otherwise.
+func mustParseHoltWintersCall(t *testing.T, q string) *parser.Call {
 	t.Helper()
 	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
 	expr, err := p.ParseExpr(q)
 	if err != nil {
 		t.Fatalf("ParseExpr(%q): %v", q, err)
 	}
-	if expr == nil {
-		t.Fatalf("ParseExpr(%q) returned nil", q)
+	call, ok := expr.(*parser.Call)
+	if !ok {
+		t.Fatalf("ParseExpr(%q) = %T, want *parser.Call", q, expr)
 	}
-	return expr
+	return call
 }
 
 // TestLowerHoltWinters_SmoothingFactorZeroRejected kills the `<=` → `<`
@@ -111,9 +118,9 @@ func mustParseExperimental(t *testing.T, q string) parser.Expr {
 func TestLowerHoltWinters_SmoothingFactorZeroRejected(t *testing.T) {
 	t.Parallel()
 
-	expr := mustParseExperimental(t, `double_exponential_smoothing(up[5m], 0, 0.5)`)
+	call := mustParseHoltWintersCall(t, `double_exponential_smoothing(up[5m], 0, 0.5)`)
 	s := schema.DefaultOTelMetrics()
-	_, err := lower(expr, s, lowerCtx{})
+	_, err := lowerHoltWinters(call, s, lowerCtx{})
 	if err == nil {
 		t.Fatalf("expected holt_winters(sf=0, ...) to error; got nil (mutant `<=` → `<` at range_fns.go:91 would pass sf=0 through the (0,1) check)")
 	}
@@ -126,9 +133,9 @@ func TestLowerHoltWinters_SmoothingFactorZeroRejected(t *testing.T) {
 func TestLowerHoltWinters_SmoothingFactorOneRejected(t *testing.T) {
 	t.Parallel()
 
-	expr := mustParseExperimental(t, `double_exponential_smoothing(up[5m], 1, 0.5)`)
+	call := mustParseHoltWintersCall(t, `double_exponential_smoothing(up[5m], 1, 0.5)`)
 	s := schema.DefaultOTelMetrics()
-	_, err := lower(expr, s, lowerCtx{})
+	_, err := lowerHoltWinters(call, s, lowerCtx{})
 	if err == nil {
 		t.Fatalf("expected holt_winters(sf=1, ...) to error; got nil (mutant `>=` → `>` at range_fns.go:91 would pass sf=1 through the (0,1) check)")
 	}
@@ -142,9 +149,9 @@ func TestLowerHoltWinters_SmoothingFactorOneRejected(t *testing.T) {
 func TestLowerHoltWinters_TrendFactorZeroRejected(t *testing.T) {
 	t.Parallel()
 
-	expr := mustParseExperimental(t, `double_exponential_smoothing(up[5m], 0.5, 0)`)
+	call := mustParseHoltWintersCall(t, `double_exponential_smoothing(up[5m], 0.5, 0)`)
 	s := schema.DefaultOTelMetrics()
-	_, err := lower(expr, s, lowerCtx{})
+	_, err := lowerHoltWinters(call, s, lowerCtx{})
 	if err == nil {
 		t.Fatalf("expected holt_winters(tf=0, ...) to error; got nil (mutant `<=` → `<` at range_fns.go:94 would pass tf=0 through the (0,1) check)")
 	}
@@ -155,9 +162,9 @@ func TestLowerHoltWinters_TrendFactorZeroRejected(t *testing.T) {
 func TestLowerHoltWinters_TrendFactorOneRejected(t *testing.T) {
 	t.Parallel()
 
-	expr := mustParseExperimental(t, `double_exponential_smoothing(up[5m], 0.5, 1)`)
+	call := mustParseHoltWintersCall(t, `double_exponential_smoothing(up[5m], 0.5, 1)`)
 	s := schema.DefaultOTelMetrics()
-	_, err := lower(expr, s, lowerCtx{})
+	_, err := lowerHoltWinters(call, s, lowerCtx{})
 	if err == nil {
 		t.Fatalf("expected holt_winters(tf=1, ...) to error; got nil (mutant `>=` → `>` at range_fns.go:94 would pass tf=1 through the (0,1) check)")
 	}

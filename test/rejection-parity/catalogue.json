@@ -614,22 +614,22 @@
       "head": "promql",
       "site": "internal/promql/range_fns.go:lowerHoltWinters#0ff3d8b3",
       "message": "promql: holt_winters smoothing factor must be in (0, 1), got %v",
-      "class": "rejection",
-      "trigger_query": "double_exponential_smoothing(foo[5m], 2, 0.5)"
+      "class": "internal",
+      "rationale": "unreachable via the PromQL lowering dispatch: double_exponential_smoothing is gated as experimental at lowerRangeVectorCall (reference-parity reject) before lowerHoltWinters runs, so this boundary check fires only from the package-internal mutation tests that call lowerHoltWinters directly"
     },
     {
       "head": "promql",
       "site": "internal/promql/range_fns.go:lowerHoltWinters#15e82804",
       "message": "promql: holt_winters requires scalar-literal smoothing and trend factors",
-      "class": "rejection",
-      "trigger_query": "double_exponential_smoothing(foo[5m], scalar(up), 0.5)"
+      "class": "internal",
+      "rationale": "unreachable via the PromQL lowering dispatch: double_exponential_smoothing is gated as experimental at lowerRangeVectorCall (reference-parity reject) before lowerHoltWinters runs, so this scalar-literal check fires only from the package-internal mutation tests that call lowerHoltWinters directly"
     },
     {
       "head": "promql",
       "site": "internal/promql/range_fns.go:lowerHoltWinters#2db9f2aa",
       "message": "promql: holt_winters trend factor must be in (0, 1), got %v",
-      "class": "rejection",
-      "trigger_query": "double_exponential_smoothing(foo[5m], 0.5, 2)"
+      "class": "internal",
+      "rationale": "unreachable via the PromQL lowering dispatch: double_exponential_smoothing is gated as experimental at lowerRangeVectorCall (reference-parity reject) before lowerHoltWinters runs, so this boundary check fires only from the package-internal mutation tests that call lowerHoltWinters directly"
     },
     {
       "head": "promql",

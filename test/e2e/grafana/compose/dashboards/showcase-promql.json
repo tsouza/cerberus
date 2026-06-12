@@ -747,7 +747,7 @@
         "type": "prometheus",
         "uid": "cerberus-prometheus"
       },
-      "description": "Linear extrapolation and Holt-Winters style smoothing over the monotone counter.",
+      "description": "Linear extrapolation over the monotone counter.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -827,7 +827,87 @@
           "legendFormat": "__auto",
           "range": true,
           "refId": "A"
+        }
+      ],
+      "title": "predict_linear",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cerberus-prometheus"
+      },
+      "description": "double_exponential_smoothing (a.k.a. holt_winters) is an experimental PromQL function reference Prometheus rejects without the experimental-functions feature flag; the PromQL head gates it for strict reference parity.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
         },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 16,
+        "y": 16
+      },
+      "id": 110,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
         {
           "datasource": {
             "type": "prometheus",
@@ -837,11 +917,15 @@
           "expr": "double_exponential_smoothing(http_server_request_duration_count[5m], 0.5, 0.5)",
           "legendFormat": "__auto",
           "range": true,
-          "refId": "B"
+          "refId": "A"
         }
       ],
-      "title": "predict_linear / double_exponential_smoothing",
-      "type": "timeseries"
+      "title": "double_exponential_smoothing \u2014 parity rejection",
+      "type": "timeseries",
+      "cerberus": {
+        "expect": "error:unsupported: range function",
+        "why": "Cerberus rejects this construct today; the declaration is a bidirectional parity pin \u2014 the moment lowering support lands, this panel fails the sweep and the contract must be upgraded to nonempty."
+      }
     },
     {
       "collapsed": false,
