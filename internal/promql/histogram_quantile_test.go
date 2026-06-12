@@ -436,10 +436,10 @@ func TestLower_HistogramQuantile_OverAggregation_Native_LeDropped(t *testing.T) 
 // TestLower_HistogramQuantile_NativeBareRange pins the chplan shape
 // for `histogram_quantile(phi, <exp-hist-VectorSelector>)` under range
 // mode (LowerAtRange with step > 0): the lowering must fan a per-step
-// LWR window across the StepGrid so each anchor in `[start, end]`
+// LWR window across the anchor grid so each anchor in `[start, end]`
 // produces its own quantile row instead of every step collapsing onto
-// a single `now64(9)` instant. The shape is the CrossJoin + per-anchor
-// Filter + Aggregate variant of the native instant path: the same
+// a single `now64(9)` instant. The shape is the single-pass
+// RangeBucketFanout variant of the native instant path: the same
 // HistogramQuantileNative IR drives the quantile interpolation, but
 // the GroupBy carries anchor_ts as the leading partition key and the
 // outer Project surfaces anchor_ts as TimeUnix.
@@ -492,11 +492,15 @@ func TestLower_HistogramQuantile_NativeBareRange(t *testing.T) {
 		t.Errorf("outer Project must project anchor_ts AS %s (got projections: %+v)",
 			s.TimestampColumn, pj.Projections)
 	}
-	// The tree must contain a StepGrid + CrossJoin pair — the per-anchor
-	// fan-out scaffold.
-	var sawStepGrid, sawCrossJoin bool
+	// The tree must contain the single-pass RangeBucketFanout node — the
+	// bounded sample-side anchor fan-out — and must NOT contain the old
+	// O(rows × N) StepGrid CROSS JOIN scaffold it superseded (#804-style
+	// rework for the histogram range path).
+	var sawFanout, sawStepGrid, sawCrossJoin bool
 	chplan.Walk(hq.Input, func(n chplan.Node) bool {
 		switch n.(type) {
+		case *chplan.RangeBucketFanout:
+			sawFanout = true
 		case *chplan.StepGrid:
 			sawStepGrid = true
 		case *chplan.CrossJoin:
@@ -504,11 +508,14 @@ func TestLower_HistogramQuantile_NativeBareRange(t *testing.T) {
 		}
 		return true
 	})
-	if !sawStepGrid {
-		t.Errorf("expected a StepGrid in the subtree, found none")
+	if !sawFanout {
+		t.Errorf("expected a RangeBucketFanout in the subtree, found none")
 	}
-	if !sawCrossJoin {
-		t.Errorf("expected a CrossJoin in the subtree, found none")
+	if sawStepGrid {
+		t.Errorf("range lowering must not contain a StepGrid (single-pass invariant)")
+	}
+	if sawCrossJoin {
+		t.Errorf("range lowering must not contain a CrossJoin (single-pass invariant)")
 	}
 }
 

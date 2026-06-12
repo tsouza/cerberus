@@ -206,6 +206,29 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		}
 		b.WriteString("\n")
 		printNode(b, v.Input, depth+1)
+	case *chplan.RangeBucketFanout:
+		gb := make([]string, len(v.GroupBy))
+		for i, e := range v.GroupBy {
+			if i < len(v.GroupByAliases) && v.GroupByAliases[i] != "" {
+				gb[i] = fmt.Sprintf("%s AS %s", printExpr(e), v.GroupByAliases[i])
+			} else {
+				gb[i] = printExpr(e)
+			}
+		}
+		aggs := make([]string, len(v.AggFuncs))
+		for i, f := range v.AggFuncs {
+			aggs[i] = printAggFunc(f)
+		}
+		fmt.Fprintf(b, "%sRangeBucketFanout step=%s lookback=%s", indent, v.Step, v.Lookback)
+		if v.Offset != 0 {
+			fmt.Fprintf(b, " offset=%s", v.Offset)
+		}
+		fmt.Fprintf(b, " groupBy=[%s] funcs=[%s]", strings.Join(gb, ", "), strings.Join(aggs, ", "))
+		if !v.Start.IsZero() || !v.End.IsZero() {
+			fmt.Fprintf(b, " start=%s end=%s", v.Start.UTC().Format("2006-01-02T15:04:05Z"), v.End.UTC().Format("2006-01-02T15:04:05Z"))
+		}
+		b.WriteString("\n")
+		printNode(b, v.Input, depth+1)
 	case *chplan.VectorJoin:
 		fmt.Fprintf(b, "%sVectorJoin op=%s match=%s card=%s",
 			indent, v.Op, printVectorMatch(v.Match), printVectorCard(v.Card))
