@@ -125,6 +125,89 @@ a re-introduced compute tier.
   execution architecture, and should be reserved for operators that provably
   cannot be reduced bounded in SQL.
 
+## Operator classification (the table, filled in)
+
+Every range / subquery operator cerberus lowers, classified on **two
+independent axes**. The distinction matters because the first instinct
+conflates them, and they point at different fixes.
+
+**Axis 1 — per-window reduction.** Does the function need only *bounded
+aggregate state* (sum / count / min / max / first / last / argMin / argMax /
+sum-of-squares), or the *full ordered sample array*?
+
+**Axis 2 — anchor association.** Orthogonal, and it applies to **every** range
+op: at step `s` with lookback `L`, each sample belongs to `L/s` overlapping
+anchor windows, so associating samples with anchors is a `rows × L/s` fan-out.
+A bounded reduction makes the *group state* bounded (one `argMin`/`argMax`
+accumulator per `(series, anchor)`), so it does not OOM — but the fan-out
+*stream* is still produced and scanned. This is exactly what `#92` hit in live
+testing: the cumulative-counter removes the per-anchor array, yet the
+`arrayJoin` anchor-expansion still emits the `rows × overlap` stream, so a
+5M-row / 20×-overlap query still wanted >1 GiB even with bounded group state.
+
+### Axis 1: reduction is bounded-in-SQL (the large majority → stay in A)
+
+Need only bounded aggregate state; A (push-down) is the right home, with the
+`#92` memory-axis guard:
+
+- `rate`, `increase`, `delta` — reset-corrected cumulative + first/last/count
+  (the `#92` approach).
+- `irate`, `idelta` — last two samples (`lagInFrame`).
+- `resets`, `changes` — a running count of drops / changes (`sum(if(...))`).
+- `sum_over_time`, `avg_over_time` (sum/count), `min_/max_/count_over_time`,
+  `first_over_time` (`argMin`), `last_over_time` (`argMax`),
+  `present_/absent_over_time` — native aggregates.
+- `stddev_over_time`, `stdvar_over_time` — variance from `sum(x)`, `sum(x²)`,
+  `count`. *Currently emitted via the window array; reducible to bounded
+  aggregates — a worthwhile A-side simplification.*
+- `predict_linear` — linear regression from `sum(x)`, `sum(y)`, `sum(xy)`,
+  `sum(x²)`, `count`. *Currently `arrayReduce('simpleLinearRegression', …)`;
+  reducible (CH ships a bounded `simpleLinearRegression` aggregate).*
+
+### Axis 1: reduction genuinely needs the ordered array (the short list → B′/B)
+
+Cannot be expressed with bounded aggregate state at reference parity:
+
+- `quantile_over_time` — exact semantics are linear interpolation over the
+  **sorted** window (all samples). CH's bounded `quantile()` is a t-digest
+  *approximation* — fine only if we ever accept approximate quantiles. Exact ⇒
+  array.
+- `holt_winters` / `double_exponential_smoothing` — a **sequential
+  recurrence** (`arrayFold` over the ordered window); not reducible to
+  commutative aggregates.
+
+### Axis 2 only: doubly-nested (the hardest → B′/B)
+
+- **Subqueries** `(<expr>)[<range>:<res>]` — an inner range eval at
+  sub-resolution feeding an outer range function; the anchor fan-out
+  *compounds* (`inner-anchors × outer-overlap`). Even with bounded reductions,
+  the inner-anchor grid is itself a fan-out. Where A strains worst.
+
+### What this buys the decision
+
+- **The reduction axis is mostly solved by A.** Only **three** shapes are
+  reduction-unbounded — exact `quantile_over_time`, `holt_winters`, and
+  subqueries. Small and well-defined, not pervasive.
+- **The anchor axis is the real architectural cost — and it is exactly what a
+  streaming evaluator gets for free.** In SQL, associating samples with
+  overlapping anchors is a `rows × L/s` fan-out. In a streaming evaluator the
+  anchor grid is an `O(anchors)` loop with a sliding window pointer — *zero*
+  fan-out. So B's structural advantage is not the reductions (A does those
+  fine); it is the windowing.
+- **So the call is not all-or-nothing.** Keep A + `#92` for the bulk (and
+  refactor `stddev`/`predict_linear` off the array). Reserve a streaming path
+  (B′ where a bounded CH reduction exists, full B where it does not) for the
+  **three reduction-unbounded shapes** *and* the **high-overlap /
+  high-cardinality tail** of ordinary range queries — the only place the
+  axis-2 fan-out (not the reduction) is what costs, and the only place B's wire
+  cost is justified by A's fan-out cost. For typical dashboard queries
+  (moderate overlap and cardinality) A + `#92` wins outright.
+
+That is the table the perf-RC1 gate needs: of everything cerberus evaluates,
+the set that *might* require an architecture change is three named operators
+plus a measurable scaling tail — small enough to decide deliberately before
+tagging, instead of discovering one OOM at a time.
+
 ## Pointers
 
 - [`performance.md`](performance.md) — the compute-fan-out lens these problems
