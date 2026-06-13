@@ -76,6 +76,14 @@ type rowsCursor struct {
 	// seen counts rows successfully decoded so far, compared against
 	// maxSamples after each scan.
 	seen int64
+	// budget, when non-nil, is the per-REQUEST shared sample budget
+	// attached to the QueryCursor ctx via WithSampleBudget. It takes
+	// precedence over maxSamples: a fan-out request shares ONE budget
+	// across all its shard cursors so the 422 trips at the request
+	// total rather than per cursor. When nil the cursor enforces its own
+	// maxSamples. Either way a crossing yields the IDENTICAL
+	// *TooManySamplesError (errors.Is ErrTooManySamples).
+	budget *SampleBudget
 	// maxMemoryBytes is the Client's configured per-query ClickHouse
 	// memory cap (Config.MaxQueryMemoryBytes), carried so a mid-stream
 	// MEMORY_LIMIT_EXCEEDED (code 241) surfacing via rows.Err() — the
@@ -134,7 +142,20 @@ func (c *rowsCursor) Next() bool {
 		return false
 	}
 	c.seen++
-	if c.maxSamples > 0 && c.seen > c.maxSamples {
+	// A per-request shared budget (set by QueryCursor from the ctx)
+	// takes precedence over the per-cursor maxSamples: charging one
+	// sample against it lets a fan-out request's concurrent shard
+	// cursors collectively trip the 422 at the request total. When no
+	// budget is attached, fall back to the per-cursor limit. Both paths
+	// produce the IDENTICAL *TooManySamplesError so the upstream 422
+	// message and behaviour are the same regardless of which limit
+	// fired.
+	if c.budget != nil {
+		if !c.budget.take() {
+			c.err = &TooManySamplesError{Limit: c.budget.limit}
+			return false
+		}
+	} else if c.maxSamples > 0 && c.seen > c.maxSamples {
 		c.err = &TooManySamplesError{Limit: c.maxSamples}
 		return false
 	}
@@ -248,6 +269,13 @@ func (c *rowsCursor) Close() error {
 // ErrTooManySamples). Mirrors upstream Prometheus's
 // --query.max-samples abort-the-query contract.
 //
+// When ctx carries a per-request *SampleBudget (attached via
+// WithSampleBudget), that shared budget takes precedence over the
+// per-cursor MaxQuerySamples: every cursor the request opens charges
+// against ONE counter so a fan-out query trips the 422 at the request
+// total rather than per cursor. The *TooManySamplesError produced is
+// identical either way.
+//
 // Guarded by the circuit breaker (see [Client] doc). The breaker
 // observes the open-call outcome only — once the cursor is returned,
 // iteration errors propagate via cursor.Err() but are NOT re-recorded
@@ -275,5 +303,6 @@ func (c *Client) QueryCursor(ctx context.Context, sql string, args ...any) (Curs
 		rec:            recorderFromContext(ctx),
 		maxSamples:     c.maxSamples,
 		maxMemoryBytes: c.maxMemory,
+		budget:         budgetFromContext(ctx),
 	}, nil
 }

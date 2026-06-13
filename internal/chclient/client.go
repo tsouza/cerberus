@@ -87,6 +87,29 @@ type Config struct {
 	// DialTimeout caps the initial connection dial. Zero falls back to 5s.
 	DialTimeout time.Duration
 
+	// MaxOpenConns caps the total number of pooled connections (busy +
+	// idle) the driver will hold open to ClickHouse. clickhouse-go's
+	// implicit default is MaxIdleConns+5 (≈10); cerberus makes it
+	// explicit and configurable so the sharded-pushdown solver can raise
+	// the ceiling for fan-out without silently inheriting the driver
+	// default. When a query needs a connection and all MaxOpenConns are
+	// in use, the acquire blocks up to DialTimeout and then fails with
+	// clickhouse.ErrAcquireConnTimeout — a local pool-sizing signal, not
+	// a CH-health failure (the breaker treats it neutrally; see
+	// breaker.record). Zero falls back to defaultMaxOpenConns.
+	MaxOpenConns int
+
+	// MaxIdleConns caps the number of idle connections kept warm in the
+	// pool for reuse. clickhouse-go's implicit default is 5; cerberus
+	// makes it explicit. Zero falls back to defaultMaxIdleConns.
+	MaxIdleConns int
+
+	// ConnMaxLifetime caps how long a single pooled connection may live
+	// before the driver recycles it. clickhouse-go's implicit default is
+	// 1h; cerberus makes it explicit. Zero falls back to
+	// defaultConnMaxLifetime.
+	ConnMaxLifetime time.Duration
+
 	// MaxQuerySamples caps the number of Sample rows a single query may
 	// load into memory. When a cursor drain crosses the budget,
 	// iteration aborts and Cursor.Err() returns a *TooManySamplesError
@@ -161,7 +184,7 @@ func New(cfg Config) (*Client, error) {
 	if dial == 0 {
 		dial = 5 * time.Second
 	}
-	conn, err := clickhouse.Open(&clickhouse.Options{
+	opts := &clickhouse.Options{
 		Addr: []string{cfg.Addr},
 		Auth: clickhouse.Auth{
 			Database: cfg.Database,
@@ -169,7 +192,23 @@ func New(cfg Config) (*Client, error) {
 			Password: cfg.Password,
 		},
 		DialTimeout: dial,
-	})
+	}
+	// Pool sizing is explicit and configurable (#81). A zero field is
+	// left unset so clickhouse-go's own default applies — that keeps the
+	// non-sharded path behaviour-compatible for callers (notably tests)
+	// that build a bare Config. cmd/cerberus always supplies positive
+	// values derived once in internal/config, so the production pool is
+	// never implicit.
+	if cfg.MaxOpenConns > 0 {
+		opts.MaxOpenConns = cfg.MaxOpenConns
+	}
+	if cfg.MaxIdleConns > 0 {
+		opts.MaxIdleConns = cfg.MaxIdleConns
+	}
+	if cfg.ConnMaxLifetime > 0 {
+		opts.ConnMaxLifetime = cfg.ConnMaxLifetime
+	}
+	conn, err := clickhouse.Open(opts)
 	if err != nil {
 		return nil, fmt.Errorf("chclient: open: %w", err)
 	}
