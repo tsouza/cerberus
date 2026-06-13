@@ -50,6 +50,8 @@ var floatProducingTokens = []string{
 	"arrayAvg(",              // avg_over_time
 	"arrayMin(",              // min_over_time
 	"arrayMax(",              // max_over_time
+	"min(",                   // min_over_time direct CH aggregate over Float64 Value → Float64
+	"max(",                   // max_over_time direct CH aggregate over Float64 Value → Float64
 	"window_vals[",           // first/last_over_time element indexing — Float64 element
 	"sqrt(",                  // stddev_over_time
 	"arrayWithConstant(",     // stdvar_over_time two-pass variance (arrayAvg inside)

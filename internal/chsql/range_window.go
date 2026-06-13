@@ -1784,6 +1784,23 @@ func (e *emitter) emitRangeWindowIncrease(r *chplan.RangeWindow) error {
 // μ across the window so `arrayMap` evaluates the centred sample once
 // per element. Divisor N matches Prom (population variance).
 func (e *emitter) emitRangeWindowOverTime(r *chplan.RangeWindow) error {
+	// Fast path: the incrementally-reducible *_over_time funcs whose
+	// result is reduction-order-independent (min/max/count/present) need
+	// no per-window sample array at all — a direct CH group aggregate over
+	// window membership produces byte-identical results. Dropping the
+	// groupArray + arraySort + window_vals materialisation removes the
+	// per-(series, anchor) array fan-out for these funcs (recorded as a
+	// fan_factor drop in the cardinality baseline). sum/avg_over_time stay
+	// on the array path to preserve the exact arraySum/arrayAvg reduction
+	// order (float addition is non-associative — see overTimeDirectAggFrag);
+	// quantile_over_time (arraySort interpolation) and stddev/stdvar_over_time
+	// (two-pass moments over the array) genuinely need the materialised
+	// values; first/last_over_time keep the array's deterministic
+	// duplicate-ts tie-break (window_vals[1] / window_vals[N] over the
+	// arraySort-by-(ts, value) order) that argMin/argMax don't replicate.
+	if agg, ok := overTimeDirectAggFrag(r.Func, r.ValueColumn, r.TimestampColumn); ok {
+		return e.emitRangeWindowOverTimeDirect(r, agg)
+	}
 	// Two-pass population variance: μ = arrayAvg(vals); Σ(x - μ)² / N.
 	// arrayWithConstant materialises the broadcast mean exactly once
 	// per row so the lambda doesn't re-evaluate arrayAvg per element.
@@ -1847,6 +1864,192 @@ func (e *emitter) emitRangeWindowOverTime(r *chplan.RangeWindow) error {
 	// short-circuit on zero samples). The outer SELECT gets
 	// `WHERE length(window_vals) >= 1`.
 	return e.emitWindowedArray(r, verbatim(inner), 1)
+}
+
+// overTimeDirectAggFrag returns the direct CH group-aggregate Frag for an
+// incrementally-reducible *_over_time func that the direct path can render
+// BYTE-IDENTICALLY, and whether the func is on the direct-aggregate fast
+// path at all.
+//
+// The aggregate runs over the per-(series[, anchor]) GROUP BY of the
+// window-membership rows, so it produces exactly the value the array
+// reduce produced over `window_vals` — but with no array materialised:
+//
+//   - min_over_time   → min(Value)        (arrayMin — a SELECTION, no
+//     summation, so the result is the same element regardless of
+//     reduction order)
+//   - max_over_time   → max(Value)        (arrayMax — likewise a selection)
+//   - count_over_time → toFloat64(count()) (toFloat64(length(...)) — an
+//     exact integer cardinality)
+//   - present_over_time → toFloat64(1)    (constant per non-empty group)
+//
+// count/present are wrapped in toFloat64 so the Value column keeps the
+// uniform Float64 wire type chclient.Sample.Value expects (count() is
+// UInt64; the CH Go driver refuses to coerce it into *float64 at Scan
+// time — same rationale as metricsReducerFrag).
+//
+// sum_over_time / avg_over_time are deliberately NOT on the direct path
+// even though they are incrementally reducible: CH's streaming sum()/avg()
+// accumulate floats in scan/merge order, whereas the array path's
+// arraySum()/arrayAvg() reduce over the arraySort-by-(ts, value) order.
+// Float addition is non-associative, so the two differ in the final ULP on
+// non-integer inputs (observed on avg_over_time(rate(...)) where the rate
+// values are fractional — `0.14814814814814814` vs `...817`). Keeping them
+// on the array path preserves byte-identical results; this optimization is
+// pure-performance and must not perturb a single output bit.
+//
+// quantile/stddev/stdvar/first/last_over_time also return ok=false and
+// stay on the array path (see emitRangeWindowOverTime for why).
+func overTimeDirectAggFrag(fn, valueCol, _ string) (Frag, bool) {
+	switch fn {
+	case "min_over_time":
+		return Call("min", Col(valueCol)), true
+	case "max_over_time":
+		return Call("max", Col(valueCol)), true
+	case "count_over_time":
+		return Call("toFloat64", Call("count")), true
+	case "present_over_time":
+		return Call("toFloat64", InlineLit(int64(1))), true
+	}
+	return nil, false
+}
+
+// emitRangeWindowOverTimeDirect renders an incrementally-reducible
+// *_over_time func (see overTimeDirectAggFrag) as a direct CH group
+// aggregate over the window-membership rows — no per-window sample array.
+//
+// Instant mode (OuterRange == 0): the window predicate
+// `(end - range, end]` is pushed into a WHERE over the input scan, then a
+// single `GROUP BY <series>` applies the direct aggregate. A series with
+// no rows in the window produces no group, which matches the array path's
+// `WHERE length(window_vals) >= 1` empty-window drop. Compare the old
+// shape (groupArray((ts,val)) → arrayFilter → window_vals → arraySum):
+//
+//	SELECT <series>, <agg(Value)> AS Value
+//	FROM (<input>)
+//	WHERE <ts> > end - range AND <ts> <= end
+//	GROUP BY <series>
+//
+// Matrix mode (OuterRange > 0) is delegated to the matrix variant.
+func (e *emitter) emitRangeWindowOverTimeDirect(r *chplan.RangeWindow, agg Frag) error {
+	if r.TimestampColumn == "" {
+		return fmt.Errorf("%w: RangeWindow.TimestampColumn unset", ErrUnsupported)
+	}
+	if r.ValueColumn == "" {
+		return fmt.Errorf("%w: RangeWindow.ValueColumn unset", ErrUnsupported)
+	}
+	if r.OuterRange > 0 {
+		if r.Step <= 0 {
+			return fmt.Errorf("%w: RangeWindow.OuterRange > 0 requires Step > 0", ErrUnsupported)
+		}
+		return e.emitRangeWindowOverTimeDirectMatrix(r, agg)
+	}
+
+	end := endExprFrag(r)
+	rangeNS := r.Range.Nanoseconds()
+	groupFrags, err := e.collectGroupByFrags(r.GroupBy)
+	if err != nil {
+		return err
+	}
+
+	inner, err := e.subqueryFrag(r.Input)
+	if err != nil {
+		return err
+	}
+
+	sb := NewQuery().From(inner)
+	for _, g := range groupFrags {
+		sb.Select(g)
+	}
+	sb.Select(As(agg, r.ValueColumn))
+	// The (end - range, end] window predicate the array path applied via
+	// arrayFilter over the (ts, value) tuples becomes a row-level WHERE:
+	// left-open / right-closed, identical bounds.
+	winStart := Sub(end, Call("toIntervalNanosecond", InlineLit(rangeNS)))
+	sb.Where(
+		Gt(Col(r.TimestampColumn), winStart),
+		Lte(Col(r.TimestampColumn), end),
+	)
+	sb.GroupBy(groupFrags...)
+
+	e.emitSelect(sb)
+	return nil
+}
+
+// emitRangeWindowOverTimeDirectMatrix is the OuterRange > 0 variant of
+// emitRangeWindowOverTimeDirect: each series emits one row per anchor
+// (across [End-OuterRange, End] spaced by Step, end-inclusive) whose
+// window holds at least one sample. The sample-side arrayJoin fanout (the
+// membership mechanism — each input row fans across only the anchors
+// whose `(anchor - range, anchor]` window contains its timestamp; see
+// sampleAnchorFanoutFrag) is kept; the per-(series, anchor) regroup
+// applies the direct aggregate INSTEAD of rebuilding the window array via
+// groupArray + arraySort + window_vals. Anchors whose window is empty
+// produce no group (matching the array path's empty-window drop).
+//
+// SQL skeleton (with N = OuterRange/Step + 1):
+//
+//	SELECT <series>, anchor_ts, anchor_ts AS <ts>, <agg(Value)> AS Value
+//	FROM (
+//	  SELECT <series>, <ts>, Value,
+//	    arrayJoin(arrayMap(i -> <end> - toIntervalNanosecond(i * <step_ns>),
+//	              range(<covered-anchor index bounds>))) AS anchor_ts
+//	  FROM (<input>)
+//	)
+//	GROUP BY <series>, anchor_ts
+func (e *emitter) emitRangeWindowOverTimeDirectMatrix(r *chplan.RangeWindow, agg Frag) error {
+	end := endExprFrag(r)
+	rangeNS := r.Range.Nanoseconds()
+	stepNS := r.Step.Nanoseconds()
+	numAnchors := r.OuterRange.Nanoseconds()/stepNS + 1
+	groupFrags, err := e.collectGroupByFrags(r.GroupBy)
+	if err != nil {
+		return err
+	}
+
+	innerSub, err := e.subqueryFrag(r.Input)
+	if err != nil {
+		return err
+	}
+	innerSub, srcTs := fanoutTsSource(innerSub, r.TimestampColumn)
+
+	// Sample-fanout SELECT — one row per (sample, covered anchor).
+	fanout := NewQuery().From(innerSub)
+	for _, g := range groupFrags {
+		fanout.Select(g)
+	}
+	fanout.Select(Col(srcTs))
+	fanout.Select(Col(r.ValueColumn))
+	fanout.Select(As(
+		sampleAnchorFanoutFrag(end, Col(srcTs), stepNS, rangeNS, numAnchors),
+		"anchor_ts",
+	))
+	maybePushInnerScanTimeBounds(fanout, r, srcTs, rangeNS)
+
+	// Regroup SELECT — direct aggregate per (series, anchor). No array.
+	regroup := NewQuery().From(fanout.Frag())
+	for _, g := range groupFrags {
+		regroup.Select(g)
+	}
+	regroup.Select(Col("anchor_ts"))
+	// Surface anchor_ts under the schema timestamp column so a wrapping
+	// Aggregate's per-step GROUP BY (ColumnRef{TimestampColumn}) resolves
+	// — mirrors emitWindowedArrayMatrix's outer projection.
+	if r.TimestampColumn != "" && r.TimestampColumn != "anchor_ts" {
+		regroup.Select(As(verbatim("anchor_ts"), r.TimestampColumn))
+	}
+	// The aggregate references srcTs/ValueColumn; in the nested-matrix
+	// rename case (fanoutTsSource) it operates over Value only, so the
+	// rename of the timestamp column doesn't affect these order-free
+	// reducers.
+	regroup.Select(As(agg, r.ValueColumn))
+	regroupKeys := make([]Frag, 0, len(groupFrags)+1)
+	regroupKeys = append(regroupKeys, groupFrags...)
+	regroupKeys = append(regroupKeys, Col("anchor_ts"))
+	regroup.GroupBy(regroupKeys...)
+
+	e.emitSelect(regroup)
+	return nil
 }
 
 // emitRangeWindowDeriv emits SQL for `deriv(v[range])`.

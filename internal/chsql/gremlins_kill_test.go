@@ -1666,11 +1666,17 @@ func TestEmitWindowedArrayMatrix_GroupByBoundary(t *testing.T) {
 // TestEmitWindowedArray_MinWindowBoundary.
 func TestEmitWindowedArrayMatrix_MinWindowBoundary(t *testing.T) {
 	t.Parallel()
-	t.Run("matrix deriv → window_vals >= 1 emitted", func(t *testing.T) {
+	t.Run("matrix stddev → window_vals >= 1 emitted", func(t *testing.T) {
 		t.Parallel()
 		plan := &chplan.RangeWindow{
-			Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
-			Func:            "sum_over_time",
+			Input: &chplan.Scan{Table: "otel_metrics_gauge"},
+			// stddev_over_time stays on the array (windowed) path — the
+			// incremental funcs (sum/avg/min/max/count/present) now emit a
+			// direct CH group aggregate with no window_vals array, so they
+			// no longer exercise this minWindowSize boundary. stddev needs
+			// the materialised array (two-pass moments) and so still routes
+			// through emitWindowedArrayMatrix with minWindowSize=1.
+			Func:            "stddev_over_time",
 			Range:           time.Minute,
 			OuterRange:      5 * time.Minute,
 			Step:            time.Minute,
@@ -1681,7 +1687,7 @@ func TestEmitWindowedArrayMatrix_MinWindowBoundary(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Emit: %v", err)
 		}
-		// sum_over_time uses minWindowSize=1 → length(window_vals)>=1.
+		// stddev_over_time uses minWindowSize=1 → length(window_vals)>=1.
 		if !strings.Contains(sql, "length(`window_vals`) >= 1") {
 			t.Errorf("expected length(window_vals)>=1 filter, SQL=%s", sql)
 		}
