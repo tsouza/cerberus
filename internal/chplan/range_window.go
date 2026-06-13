@@ -73,6 +73,18 @@ type RangeWindow struct {
 	// becomes [End - Offset - Range, End - Offset]. Zero means no offset.
 	Offset time.Duration
 
+	// StepAlign requests that the matrix anchor grid be snapped so anchors
+	// land on absolute-epoch multiples of Step — PromQL subquery
+	// inner-sample-grid semantics. Reference Prometheus evaluates a
+	// subquery's inner samples at timestamps `interval * ((endTs - offset)
+	// / interval)`, i.e. epoch-aligned (phase 0), independent of the outer
+	// request's start/step. When true the emitter floors the anchor-grid
+	// base to `fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(End),
+	// Step) * Step)` (after offset) so the fan-out lands on phase-0
+	// timestamps. The outer query_range eval grid leaves this false — it
+	// uses the user-supplied start + k*Step grid (not epoch-aligned).
+	StepAlign bool
+
 	// TimestampColumn names the column carrying the per-sample timestamp
 	// on Input (typically "TimeUnix" for OTel-CH).
 	TimestampColumn string
@@ -120,6 +132,9 @@ func (r *RangeWindow) Equal(other Node) bool {
 		return false
 	}
 	if r.OuterRange != o.OuterRange || r.Identity != o.Identity {
+		return false
+	}
+	if r.StepAlign != o.StepAlign {
 		return false
 	}
 	if !r.Start.Equal(o.Start) || !r.End.Equal(o.End) {

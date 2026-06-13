@@ -574,6 +574,7 @@ func (e *emitter) emitWindowedArrayPairsMatrix(r *chplan.RangeWindow, valueWrite
 	stepNS := r.Step.Nanoseconds()
 	// End-inclusive anchor count. Truncating division matches Prom.
 	numAnchors := r.OuterRange.Nanoseconds()/stepNS + 1
+	end, numAnchors = stepAlignGrid(r, end, stepNS, numAnchors)
 	groupFrags, err := e.collectGroupByFrags(r.GroupBy)
 	if err != nil {
 		return err
@@ -1415,6 +1416,54 @@ func sampleAnchorFanoutFrag(end, ts Frag, stepNS, rangeNS, numAnchors int64) Fra
 		b.sb.WriteString(", ")
 		writeAnchorGridFloorIdx(b, dist, 0, stepNS)
 		b.sb.WriteString("))))")
+	}
+}
+
+// epochAlignedEndFrag snaps the anchor-grid base `end` down to the nearest
+// absolute-epoch multiple of stepNS (phase 0), spelled
+//
+//	fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(<end>), <stepNS>) * <stepNS>)
+//
+// PromQL evaluates a subquery's inner samples at timestamps that are exact
+// epoch-multiples of the subquery step (`interval * ((endTs - offset) /
+// interval)` in reference engine.go's evalSubquery), independent of any
+// offset or the outer request grid. The anchor grid walks back from this
+// snapped base by i*stepNS, so every fanned anchor lands on phase 0.
+//
+// `end` here is the post-offset base (endExprFrag already subtracted the
+// offset). CH's intDiv truncates toward zero; epoch-nanos are positive so
+// the truncation is a floor — the snapped base is the largest phase-0
+// timestamp <= end. Snapping by a multiple of step preserves phase 0
+// regardless of offset, so this one wrap handles literal End, now64(9),
+// and the offset-shifted form uniformly.
+// stepAlignGrid centralises the StepAlign branch shared by the three
+// matrix emitters (emitWindowedArrayPairsMatrix / emitWindowedArrayMatrix
+// / emitWindowedArrayExtrapolatedMatrix). When r.StepAlign is set, it
+// snaps the anchor-grid base to a phase-0 epoch multiple of stepNS (see
+// epochAlignedEndFrag) AND over-provisions the anchor count by one:
+// snapping shifts the base down by up to one full step, so the oldest
+// anchor the outer window still needs can fall just past the original N.
+// The extra low anchor is harmless — it is selected by no outer window
+// and drops out. When StepAlign is false the inputs pass through
+// unchanged (byte-stable goldens for the outer query_range grid and the
+// Tempo metrics path).
+func stepAlignGrid(r *chplan.RangeWindow, end Frag, stepNS, numAnchors int64) (Frag, int64) {
+	if !r.StepAlign {
+		return end, numAnchors
+	}
+	return epochAlignedEndFrag(end, stepNS), numAnchors + 1
+}
+
+func epochAlignedEndFrag(end Frag, stepNS int64) Frag {
+	return func(b *Builder) {
+		step := strconv.FormatInt(stepNS, 10)
+		b.sb.WriteString("fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(")
+		end(b)
+		b.sb.WriteString("), ")
+		b.sb.WriteString(step)
+		b.sb.WriteString(") * ")
+		b.sb.WriteString(step)
+		b.sb.WriteString(")")
 	}
 }
 
@@ -2482,6 +2531,7 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 	rangeSeconds := r.Range.Seconds()
 	// End-inclusive anchor count. Truncating division matches Prom.
 	numAnchors := r.OuterRange.Nanoseconds()/stepNS + 1
+	end, numAnchors = stepAlignGrid(r, end, stepNS, numAnchors)
 	anchor := verbatim("anchor_ts")
 	rangeStart := rangeStartFrag(anchor, rangeNS)
 	groupFrags, err := e.collectGroupByFrags(r.GroupBy)
@@ -2886,6 +2936,7 @@ func (e *emitter) emitWindowedArrayMatrix(r *chplan.RangeWindow, value Frag, min
 	// End-inclusive anchor count. e.g. [5m:2m] = 5m/2m + 1 = 3 anchors
 	// at end, end-2m, end-4m. Truncating division matches Prom semantics.
 	numAnchors := r.OuterRange.Nanoseconds()/stepNS + 1
+	end, numAnchors = stepAlignGrid(r, end, stepNS, numAnchors)
 	groupFrags, err := e.collectGroupByFrags(r.GroupBy)
 	if err != nil {
 		return err

@@ -18,14 +18,14 @@ INSERT INTO otel_metrics_gauge VALUES
     ('up', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 1.0);
 -- expected_rows --
 [
-  [{"job": "api"}, "2025-12-31T23:56:01Z", "2025-12-31T23:56:01Z", 1],
-  [{"job": "api"}, "2025-12-31T23:57:01Z", "2025-12-31T23:57:01Z", 1],
-  [{"job": "api"}, "2025-12-31T23:58:01Z", "2025-12-31T23:58:01Z", 1],
-  [{"job": "api"}, "2025-12-31T23:59:01Z", "2025-12-31T23:59:01Z", 1],
-  [{"job": "api"}, "2026-01-01T00:00:01Z", "2026-01-01T00:00:01Z", 1]
+  [{"job": "api"}, "2025-12-31T23:56:00Z", "2025-12-31T23:56:00Z", 1],
+  [{"job": "api"}, "2025-12-31T23:57:00Z", "2025-12-31T23:57:00Z", 1],
+  [{"job": "api"}, "2025-12-31T23:58:00Z", "2025-12-31T23:58:00Z", 1],
+  [{"job": "api"}, "2025-12-31T23:59:00Z", "2025-12-31T23:59:00Z", 1],
+  [{"job": "api"}, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", 1]
 ]
 -- sql --
-SELECT `Attributes`, `anchor_ts`, anchor_ts AS `TimeUnix`, if(length(window_vals) > 0, window_vals[length(window_vals)], nan) AS `Value` FROM (SELECT `Attributes`, `anchor_ts`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `Attributes`, `anchor_ts`, arraySort(groupArray((`TimeUnix`, `Value`))) AS `window_pairs` FROM (SELECT `Attributes`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> now64(9) - toIntervalNanosecond(i * 60000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, now64(9)) - 60000000000, toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, now64(9)) - 60000000000, toInt64(60000000000)) < 0) + 1), least(6, intDiv(dateDiff('nanosecond', `TimeUnix`, now64(9)), toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, now64(9)), toInt64(60000000000)) < 0) + 1)))) AS `anchor_ts` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` = ?))) GROUP BY `Attributes`, `anchor_ts`)) WHERE length(`window_vals`) >= 1
+SELECT `Attributes`, `anchor_ts`, anchor_ts AS `TimeUnix`, if(length(window_vals) > 0, window_vals[length(window_vals)], nan) AS `Value` FROM (SELECT `Attributes`, `anchor_ts`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `Attributes`, `anchor_ts`, arraySort(groupArray((`TimeUnix`, `Value`))) AS `window_pairs` FROM (SELECT `Attributes`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(now64(9)), 60000000000) * 60000000000) - toIntervalNanosecond(i * 60000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(now64(9)), 60000000000) * 60000000000)) - 60000000000, toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(now64(9)), 60000000000) * 60000000000)) - 60000000000, toInt64(60000000000)) < 0) + 1), least(7, intDiv(dateDiff('nanosecond', `TimeUnix`, fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(now64(9)), 60000000000) * 60000000000)), toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(now64(9)), 60000000000) * 60000000000)), toInt64(60000000000)) < 0) + 1)))) AS `anchor_ts` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` = ?))) GROUP BY `Attributes`, `anchor_ts`)) WHERE length(`window_vals`) >= 1
 -- chplan --
 RangeWindow func= range=1m0s step=1m0s outerRange=5m0s identity=true ts=TimeUnix value=Value groupBy=[Attributes]
   Filter predicate=(MetricName = "up")
