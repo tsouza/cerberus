@@ -235,13 +235,23 @@ func lowerQuantileOverTime(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpl
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 	}
 
-	// Literal phi: detect compile-time out-of-range phi. CH's quantile
-	// aggregate errors on phi outside [0, 1]; substitute a safe phi for
-	// the inner aggregate and post-Project the Value column to the
-	// PromQL-spec Inf-valued constant. NaN phi rides the same path
-	// (CH would also error on `quantile(NaN)`) and is materialised
-	// as a NaN literal in the post-Project — empty windows still
+	// Literal phi: detect compile-time out-of-range phi. PromQL's
+	// quantile() returns -Inf for phi<0, +Inf for phi>1, NaN for NaN.
+	// For an OUT-OF-RANGE / NaN literal the inner aggregate is fed a
+	// safe sentinel phi (0.5 — value discarded) and the Value column is
+	// post-Projected to the PromQL-spec constant; empty windows still
 	// produce `nan` via the emitter's length-guarded `if`.
+	//
+	// For an IN-RANGE literal phi we route through the SAME exact
+	// arraySort + linear-interpolation branch the computed-phi path
+	// uses (RangeWindow.ScalarExprs), materialising phi as a LitFloat.
+	// This replaces CH's approximate t-digest `quantile()` aggregate —
+	// which diverges from reference PromQL on larger windows — with
+	// Prometheus's exact `quantile()` formula (rank = phi*(N-1), linear
+	// interpolation between the two nearest ranks). The emitter's
+	// multiIf domain guards (isNaN / <0 / >1) are constant-folded by CH
+	// for the literal; the single-sample window falls out naturally
+	// (rank=0 → sorted[0]).
 	//
 	// Computed phi: the emitter's ScalarExprs path embeds the runtime
 	// domain rules (multiIf over isNaN / <0 / >1) directly in the
@@ -252,11 +262,14 @@ func lowerQuantileOverTime(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpl
 	)
 	if phiOK {
 		infValue, replaceValue = outOfRangePhiInf(phi)
-		emitPhi := phi
 		if replaceValue {
-			emitPhi = 0.5
+			// Out-of-range / NaN literal: feed a safe sentinel to the
+			// inner aggregate and fold the spec value via post-Project.
+			window.Scalars = []float64{0.5}
+		} else {
+			// In-range literal: exact interpolation via ScalarExprs.
+			window.ScalarExprs = []chplan.Expr{&chplan.LitFloat{V: phi}}
 		}
-		window.Scalars = []float64{emitPhi}
 	} else {
 		window.ScalarExprs = []chplan.Expr{phiExpr}
 	}

@@ -3550,6 +3550,16 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "promql/quantile_over_time_p95_exact_interp",
+    "fan_factor": 1,
+    "scan_rows": 10000,
+    "peak_intermediate": 10000,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "promql/quantile_over_time_q_above_one",
     "fan_factor": 1,
     "scan_rows": 5,
