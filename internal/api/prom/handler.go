@@ -808,6 +808,13 @@ func isMatrixRangeWindow(plan chplan.Node) bool {
 	switch v := plan.(type) {
 	case *chplan.RangeWindow:
 		return v.OuterRange > 0
+	case *chplan.RangeWindowNative:
+		// The native timeSeriesRateToGrid path is always matrix-shape: it
+		// explodes the grid into one row per anchor and surfaces the
+		// per-row `anchor_ts` column, exactly like the fan-out matrix
+		// RangeWindow. The TimeUnix source is therefore that column, not
+		// the now64() instant synthesis.
+		return true
 	case *chplan.Project:
 		return isMatrixRangeWindow(v.Input)
 	case *chplan.Filter:
@@ -842,7 +849,12 @@ func synthesizedAnchor() chplan.Expr {
 // the missing-column reference with a 502 on `query_range`.
 func isDerivedShape(plan chplan.Node, s schema.Metrics) bool {
 	switch v := plan.(type) {
-	case *chplan.RangeWindow, *chplan.Aggregate:
+	case *chplan.RangeWindow, *chplan.Aggregate, *chplan.RangeWindowNative:
+		// RangeWindowNative emits the same derived (group-keys…, anchor_ts,
+		// value) shape as the fan-out RangeWindow — MetricName never exists
+		// in that scope, so it must be synthesised as the empty string
+		// rather than referenced as a bare column (CH would 502 with
+		// "Unknown expression identifier MetricName").
 		return true
 	case *chplan.Filter:
 		return isDerivedShape(v.Input, s)
