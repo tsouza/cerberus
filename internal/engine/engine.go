@@ -12,6 +12,18 @@
 // type stays inside the adapter, lowering happens inside Lang.Parse,
 // and the sample-row reshaping that used to live in each handler's
 // wrapWithSampleProjection helper moves behind Lang.ProjectSamples.
+//
+// Execution strategy: route A (the default for the overwhelming majority
+// of traffic) emits one optimized plan into one ClickHouse statement and
+// pushes all reduction into CH. The maintainer relaxed the old "one CH
+// query per request — no scatter-gather" lock on 2026-06-12 for the narrow
+// memory-unbounded anchor-fan-out class: the sharded-pushdown solver
+// (internal/solver, docs/query-solver-design.md) re-anchors K copies of the
+// same optimized plan onto disjoint anchor slices, emits each via chsql.Emit,
+// and concatenates the streams — no new evaluator, no new SQL template, and
+// the all-or-nothing wire contract preserved. The solver hooks the seam
+// between Optimizer.Run and chsql.Emit (see QueryPlan / QueryPlanCursor) and
+// is off by default. The relaxed invariant set lives in docs/performance.md.
 package engine
 
 import (
