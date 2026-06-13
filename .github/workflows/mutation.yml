@@ -230,17 +230,14 @@ jobs:
           fi
           args+=("${{ matrix.scope }}")
           gremlins "${args[@]}"
+      # gremlins v0.6.0 exits 0 even when --threshold-efficacy is
+      # violated, so the gate is done in gremlins-threshold.mjs against
+      # the parsed report JSON (measured < threshold -> fail).
       - name: enforce efficacy threshold
-        run: |
-          set -euo pipefail
-          measured=$(jq -r '.test_efficacy' gremlins.json)
-          threshold=${{ matrix.efficacy }}
-          if awk -v m="$measured" -v t="$threshold" 'BEGIN { exit (m < t) ? 1 : 0 }'; then
-            echo "::notice::gremlins efficacy ${measured}% >= threshold ${threshold}%"
-          else
-            echo "::error::gremlins efficacy ${measured}% < threshold ${threshold}%"
-            exit 1
-          fi
+        run: node .github/scripts/gremlins-threshold.mjs
+        env:
+          REPORT: gremlins.json
+          THRESHOLD: ${{ matrix.efficacy }}
       - name: upload gremlins report
         if: always()
         uses: actions/upload-artifact@v7

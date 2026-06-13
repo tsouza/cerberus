@@ -214,26 +214,13 @@ jobs:
         # row to $GITHUB_STEP_SUMMARY so the workflow's summary page shows
         # the at-a-glance parity score next to the per-job log link. The
         # three jobs format identically (head / passed-over-total /
-        # percent) so the rendered summary is readable when all three
-        # rows land together.
+        # percent) via compat-step-summary.mjs so the rendered summary is
+        # readable when all three rows land together.
         if: always()
-        run: |
-          set -euo pipefail
-          score="compatibility/prometheus/compat-score.json"
-          if [ -f "$score" ]; then
-            percent=$(jq -r .percent "$score")
-            passed=$(jq -r .passed "$score")
-            total=$(jq -r .total "$score")
-            {
-              echo "### compatibility/prometheus"
-              echo ""
-              echo "| head | passed/total | percent |"
-              echo "|------|--------------|---------|"
-              echo "| prometheus | ${passed}/${total} | ${percent}% |"
-            } >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "no compat-score.json produced (harness step likely failed before scorer ran)"
-          fi
+        run: node .github/scripts/compat-step-summary.mjs
+        env:
+          HEAD: prometheus
+          SCORE: compatibility/prometheus/compat-score.json
 
       - name: Upload report
         if: always()
@@ -488,23 +475,10 @@ jobs:
 
       - name: Append score to step summary
         if: always()
-        run: |
-          set -euo pipefail
-          score="compatibility/tempo/reports/compat-score.json"
-          if [ -f "$score" ]; then
-            percent=$(jq -r .percent "$score")
-            passed=$(jq -r .passed "$score")
-            total=$(jq -r .total "$score")
-            {
-              echo "### compatibility/tempo"
-              echo ""
-              echo "| head | passed/total | percent |"
-              echo "|------|--------------|---------|"
-              echo "| tempo | ${passed}/${total} | ${percent}% |"
-            } >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "no compat-score.json produced (harness step likely failed before driver ran)"
-          fi
+        run: node .github/scripts/compat-step-summary.mjs
+        env:
+          HEAD: tempo
+          SCORE: compatibility/tempo/reports/compat-score.json
 
       - name: Upload report
         # `if: always()` so we capture whatever the driver wrote even
@@ -631,23 +605,10 @@ jobs:
 
       - name: Append score to step summary
         if: always()
-        run: |
-          set -euo pipefail
-          score="compatibility/loki/reports/compat-score.json"
-          if [ -f "$score" ]; then
-            percent=$(jq -r .percent "$score")
-            passed=$(jq -r .passed "$score")
-            total=$(jq -r .total "$score")
-            {
-              echo "### compatibility/loki"
-              echo ""
-              echo "| head | passed/total | percent |"
-              echo "|------|--------------|---------|"
-              echo "| loki | ${passed}/${total} | ${percent}% |"
-            } >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "no compat-score.json produced (harness step likely failed before driver ran)"
-          fi
+        run: node .github/scripts/compat-step-summary.mjs
+        env:
+          HEAD: loki
+          SCORE: compatibility/loki/reports/compat-score.json
 
       - name: Upload report
         # `if: always()` so we capture whatever the driver wrote even
