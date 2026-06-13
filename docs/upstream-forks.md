@@ -81,6 +81,51 @@ Concretely, the daily cycle is:
 6. Dependabot in cerberus picks up the new tag on its next daily run (`.github/dependabot.yml`, group `upstream-parsers`) and opens a single grouped PR.
 7. The patch-only auto-merge workflow (`.github/workflows/auto-merge-deps.yml`) enables auto-merge once `check + lint` go green. Branch protection still gates the actual merge.
 
+## Version-skew gate (fork base ↔ compat reference container)
+
+`test/regression/fork_version_skew_test.go` (`TestForkVersionSkew`, runs in the
+required `check` lane — no build tag, no network) pins the correspondence
+between the upstream version each parser fork is based on and the reference
+backend container the matching compatibility harness diffs cerberus against.
+
+This is phase-0(g) of `docs/query-solver-design.md`. The compat lanes are the
+parity oracle for all three heads; the sharded-pushdown solver trusts "route A"
+precisely because it matches the reference engine those lanes run. But route A
+parses with a `tsouza/*` fork of that engine's parser. If a fork drifts to a
+different upstream version than the reference container, the lane silently
+compares cerberus-with-parser-vX against reference-engine-vY, and any parity it
+certifies is unsound for whatever grammar/semantics moved between vX and vY. The
+gate turns that drift into a `check`-lane failure instead.
+
+What it asserts, per head — both sides are statically derivable from committed
+files, so the check needs no network call:
+
+| Head       | Fork base (go.mod `require`)                | Compat reference container                       | Compared at         |
+| ---------- | ------------------------------------------- | ------------------------------------------------ | ------------------- |
+| prometheus | `v0.(300+MINOR).PATCH` — e.g. `v0.311.3`    | `prom/prometheus:vMAJOR.MINOR.PATCH` (`v3.11.3`) | release MAJOR.MINOR |
+| loki       | `grafana/loki/v3 vMAJOR.MINOR.PATCH`        | `grafana/loki:MAJOR.MINOR.PATCH` (`3.7.0`)       | MAJOR.MINOR         |
+| tempo      | pseudo-version `…-<commit12>`               | `grafana/tempo:main-<commit7>`                   | commit prefix       |
+
+For tempo the gate additionally cross-checks the committed
+`compatibility/tempo/upstream/VERSION` `upstream_commit` field against the same
+go.mod pseudo-version commit, so the vendored snapshot can't drift either.
+
+The Prometheus library reports `v0.(300+MINOR).PATCH` for release
+`v3.MINOR.PATCH` since the v3.0.0 release; the gate lowers the library version
+into release coordinates before comparing. The two semver heads are checked at
+MAJOR.MINOR — that is the grain at which the query-language grammar and
+evaluation semantics that parity rests on actually change; patch releases are
+bug fixes that don't move the language, and the reference image routinely lags
+the Go library by a patch (loki today: go.mod `v3.7.1`, image `3.7.0` — same
+`3.7` grammar, gate green). Tempo is commit-pinned on every side, so it is
+checked at the exact commit prefix.
+
+If the gate fails, **bump whichever side is wrong** (the reference image to
+match the fork base, or the fork `require` to match the image) — do not relax
+the assertion to make the skew disappear. When the forks-monitor cron bumps a
+fork onto a new upstream minor, this gate is what forces the matching
+compat-image bump to land in the same PR.
+
 ## Manual operations
 
 ### Force a fork re-check
