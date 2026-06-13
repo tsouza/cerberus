@@ -5,6 +5,8 @@ import (
 	"errors"
 	"sync"
 	"time"
+
+	"github.com/ClickHouse/clickhouse-go/v2"
 )
 
 // ErrCircuitOpen is the sentinel returned by Client methods when the
@@ -205,6 +207,23 @@ func (b *breaker) record(ctx context.Context, err error) {
 	// cursor.Err(); the memory cap can additionally reject at query
 	// open, so it needs the explicit filter here.
 	if err != nil && isMemoryLimitExceeded(err) {
+		err = nil
+	}
+
+	// A pool acquire-timeout (clickhouse.ErrAcquireConnTimeout) is NOT a
+	// ClickHouse-health failure: it means every connection in the local
+	// pool is busy and the acquire blocked past DialTimeout without one
+	// freeing up. That is a local pool-sizing signal — the cerberus
+	// replica is asking CH for more concurrency than MaxOpenConns
+	// allows — and says nothing about whether ClickHouse is alive. The
+	// sharded-pushdown solver's fan-out makes this reachable under
+	// healthy CH, so counting it would let a too-small pool trip the
+	// breaker and 503 traffic against a perfectly healthy backend. Treat
+	// it as a SUCCESS so it can never advance the failure counter, the
+	// same way the code-241 memory-limit rejection is handled above. The
+	// fix for a recurring acquire-timeout is to raise MaxOpenConns, not
+	// to fail CH health.
+	if err != nil && errors.Is(err, clickhouse.ErrAcquireConnTimeout) {
 		err = nil
 	}
 

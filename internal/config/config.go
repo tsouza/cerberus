@@ -139,6 +139,9 @@ type OTLPConfig struct {
 //	CERBERUS_CH_USERNAME           default "default"
 //	CERBERUS_CH_PASSWORD           default ""
 //	CERBERUS_CH_DIAL_TIMEOUT       default "5s"
+//	CERBERUS_CH_MAX_OPEN_CONNS     default 10 (total pooled conns, busy + idle)
+//	CERBERUS_CH_MAX_IDLE_CONNS     default 5  (idle conns kept warm for reuse)
+//	CERBERUS_CH_CONN_MAX_LIFETIME  default "1h" (max age before a conn is recycled)
 //	CERBERUS_QUERY_MAX_SAMPLES     default 50000000 (0 disables the budget)
 //	CERBERUS_CH_QUERY_MAX_MEMORY   default 1073741824 bytes = 1GiB (0 = don't set)
 //	CERBERUS_AUTO_CREATE_SCHEMA    default "false"
@@ -175,6 +178,27 @@ func FromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("CERBERUS_AUTO_CREATE_SCHEMA: %w", err)
 	}
+	maxOpenConns, err := envInt("CERBERUS_CH_MAX_OPEN_CONNS", defaultCHMaxOpenConns)
+	if err != nil {
+		return Config{}, fmt.Errorf("CERBERUS_CH_MAX_OPEN_CONNS: %w", err)
+	}
+	if maxOpenConns <= 0 {
+		return Config{}, fmt.Errorf("CERBERUS_CH_MAX_OPEN_CONNS: must be > 0, got %d", maxOpenConns)
+	}
+	maxIdleConns, err := envInt("CERBERUS_CH_MAX_IDLE_CONNS", defaultCHMaxIdleConns)
+	if err != nil {
+		return Config{}, fmt.Errorf("CERBERUS_CH_MAX_IDLE_CONNS: %w", err)
+	}
+	if maxIdleConns <= 0 {
+		return Config{}, fmt.Errorf("CERBERUS_CH_MAX_IDLE_CONNS: must be > 0, got %d", maxIdleConns)
+	}
+	connMaxLifetime, err := time.ParseDuration(envDefault("CERBERUS_CH_CONN_MAX_LIFETIME", defaultCHConnMaxLifetime.String()))
+	if err != nil {
+		return Config{}, fmt.Errorf("CERBERUS_CH_CONN_MAX_LIFETIME: %w", err)
+	}
+	if connMaxLifetime <= 0 {
+		return Config{}, fmt.Errorf("CERBERUS_CH_CONN_MAX_LIFETIME: must be > 0, got %s", connMaxLifetime)
+	}
 	maxSamples, err := envInt64("CERBERUS_QUERY_MAX_SAMPLES", defaultQueryMaxSamples)
 	if err != nil {
 		return Config{}, fmt.Errorf("CERBERUS_QUERY_MAX_SAMPLES: %w", err)
@@ -209,6 +233,9 @@ func FromEnv() (Config, error) {
 			Username:            envDefault("CERBERUS_CH_USERNAME", "default"),
 			Password:            envDefault("CERBERUS_CH_PASSWORD", ""),
 			DialTimeout:         dial,
+			MaxOpenConns:        maxOpenConns,
+			MaxIdleConns:        maxIdleConns,
+			ConnMaxLifetime:     connMaxLifetime,
 			MaxQuerySamples:     maxSamples,
 			MaxQueryMemoryBytes: maxMemory,
 		},
@@ -242,6 +269,25 @@ const defaultQueryMaxSamples int64 = 50_000_000
 // ClickHouse's server-total cap mid-stream and 502-ing. 0 disables the
 // setting entirely (ClickHouse server defaults apply).
 const defaultCHQueryMaxMemory int64 = 1 << 30 // 1073741824 bytes
+
+// ClickHouse connection-pool defaults (#81). These reproduce
+// clickhouse-go/v2's previously-implicit defaults verbatim so the
+// non-sharded path stays behaviour-compatible: the driver defaulted
+// MaxIdleConns to 5, MaxOpenConns to MaxIdleConns+5 (= 10), and
+// ConnMaxLifetime to 1h. Cerberus now sets them explicitly here — the
+// ONE place pool sizing is derived — so the sharded-pushdown solver can
+// raise the ceiling for fan-out by bumping these (or the matching
+// CERBERUS_CH_MAX_OPEN_CONNS / CERBERUS_CH_MAX_IDLE_CONNS /
+// CERBERUS_CH_CONN_MAX_LIFETIME env vars) rather than inheriting an
+// implicit driver default. When the pool is exhausted an acquire blocks
+// up to DialTimeout and then fails with clickhouse.ErrAcquireConnTimeout,
+// which the circuit breaker treats neutrally (local pool-sizing signal,
+// not CH-health failure).
+const (
+	defaultCHMaxOpenConns                  = 10
+	defaultCHMaxIdleConns                  = 5
+	defaultCHConnMaxLifetime time.Duration = time.Hour
+)
 
 // Default per-handler concurrency caps. Tempo gets a smaller cap
 // because trace queries (search + tag-value scans + per-trace span
