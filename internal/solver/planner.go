@@ -41,6 +41,15 @@ func (p *Planner) Plan(plan chplan.Node, meta RequestMeta) (*Decision, bool) {
 	if !sig.allSliceInvariant {
 		return notRouted(ReasonNotSliceable), false
 	}
+	// (1b) Routable-spine restriction: phase 1 re-anchors the *RangeWindow
+	// matrix family only. A RangeLWR / RangeBucketFanout / StepGrid spine
+	// bound-carrier would be left at zero/stale bounds by the slicer (the
+	// base ReanchorRange re-grids *RangeWindow alone), so fail closed to
+	// route A. Widening to those families is a later PR that extends
+	// ReanchorRange + adds coverage.
+	if sig.sawNonRangeWindowSpine {
+		return notRouted(ReasonNotSliceable), false
+	}
 	// (3) now64 anywhere (predicate / projection / ScalarSubquery.Input).
 	if sig.sawNow64 {
 		return notRouted(ReasonNow64), false
@@ -131,6 +140,15 @@ func (p *Planner) Plan(plan chplan.Node, meta RequestMeta) (*Decision, bool) {
 		return notRouted(ReasonNotSliceable), false
 	}
 
+	// The doc's invariant is "route iff K >= 2". The clamp above keeps the
+	// requested K >= 2, but the singleton-tail merge inside slice() can
+	// still collapse a tiny-N grid to a SINGLE produced slice — one shard
+	// is route A with extra machinery, not a sharded route. Report the
+	// ACTUAL produced slice count and only route when it is >= 2.
+	if len(slices) < 2 {
+		return notRouted(ReasonBelowThreshold), false
+	}
+
 	return &Decision{
 		Strategy: StrategyShardedTimeslice,
 		K:        len(slices),
@@ -155,6 +173,17 @@ type signals struct {
 	sawGridMismatch   bool
 	sawIncommensurate bool
 	sawScalarHeavy    bool
+
+	// sawNonRangeWindowSpine records a routed-spine grid bound-carrier that
+	// is NOT a *RangeWindow — a RangeLWR, RangeBucketFanout, or StepGrid
+	// whose grid the slicer would have to re-anchor. The base #826
+	// ReanchorRange only re-grids *RangeWindow: RangeLWR is zeroed by
+	// unpinSpine but never re-anchored (every shard would emit
+	// zero/stale bounds), and RangeBucketFanout / StepGrid are
+	// CloneNode'd verbatim (stale bounds). Phase 1's routable set is the
+	// *RangeWindow matrix family only; any non-RangeWindow spine
+	// bound-carrier fails closed to route A.
+	sawNonRangeWindowSpine bool
 
 	// Cost grid, derived from the OUTERMOST windowed node (the spine root).
 	outerN      int           // N = OuterRange/Step + 1
@@ -216,6 +245,62 @@ func (p *Planner) walkNode(n chplan.Node, predStart, predEnd time.Time, depth in
 	case *chplan.RangeLWR:
 		p.recordRangeLWR(v, predStart, predEnd, depth, sig)
 		p.walkNode(v.Input, predStart, predEnd, depth+1, sig)
+		return
+
+	case *chplan.Aggregate:
+		// Aggregate is slice-invariant AND the OUTERMOST node of the
+		// dominant routed shape sum(rate(m[5m])). Its key/value exprs are
+		// off the windowed spine, so a now64 hidden in a group key or an
+		// aggregate argument would otherwise never reach walkExpr and the
+		// plan would route despite two shards seeing different now64
+		// wall-clocks. Sweep them explicitly before recursing.
+		for _, e := range v.GroupBy {
+			p.walkExpr(e, sig)
+		}
+		for _, fn := range v.AggFuncs {
+			for _, e := range fn.Params {
+				p.walkExpr(e, sig)
+			}
+			for _, e := range fn.Args {
+				p.walkExpr(e, sig)
+			}
+		}
+		p.walkNode(v.Input, predStart, predEnd, depth, sig)
+		return
+
+	case *chplan.RangeBucketFanout:
+		// RangeBucketFanout is the array-aggregate sibling of RangeLWR and
+		// is slice-invariant; like Aggregate it carries group keys + agg
+		// args that the spine recursion never sweeps. Cover the same now64
+		// gap. It also carries its own eval grid (Start/End/Step) that
+		// ReanchorRange clones VERBATIM (never re-anchors), so every shard
+		// would emit stale bounds — fail closed to route A.
+		if v.Step > 0 {
+			sig.sawNonRangeWindowSpine = true
+		}
+		for _, e := range v.GroupBy {
+			p.walkExpr(e, sig)
+		}
+		for _, fn := range v.AggFuncs {
+			for _, e := range fn.Params {
+				p.walkExpr(e, sig)
+			}
+			for _, e := range fn.Args {
+				p.walkExpr(e, sig)
+			}
+		}
+		p.walkNode(v.Input, predStart, predEnd, depth, sig)
+		return
+
+	case *chplan.StepGrid:
+		// StepGrid carries an eval grid (Start/End/Step) that ReanchorRange
+		// clones VERBATIM — the grid-prediction guard cannot see it and the
+		// slicer would leave every shard on the original full-grid bounds.
+		// Phase 1 routes the *RangeWindow matrix family only; a StepGrid
+		// spine carrier fails closed to route A.
+		if v.Step > 0 {
+			sig.sawNonRangeWindowSpine = true
+		}
 		return
 
 	case *chplan.Filter:
@@ -296,6 +381,13 @@ func (p *Planner) recordRangeWindow(v *chplan.RangeWindow, predStart, predEnd ti
 // recordRangeLWR gathers signals for a bare-selector last-with-respect-to
 // node — the leaf of the safe-set range family.
 func (p *Planner) recordRangeLWR(v *chplan.RangeLWR, predStart, predEnd time.Time, depth int, sig *signals) {
+	// A RangeLWR that carries an own grid (Step > 0) is a bound-carrier the
+	// slicer's unpinSpine would zero but ReanchorRange never re-anchors, so
+	// every shard would emit zero/stale bounds. Phase 1 routes the
+	// *RangeWindow matrix family only — fail closed to route A.
+	if v.Step > 0 {
+		sig.sawNonRangeWindowSpine = true
+	}
 	if v.Step <= 0 || (depth == 0 && v.End.Sub(v.Start) <= 0) {
 		sig.sawInstantWindow = true
 	}
@@ -400,6 +492,33 @@ func (p *Planner) walkScalarInterior(n chplan.Node, sig *signals) {
 		case *chplan.RangeWindow:
 			for _, e := range v.ScalarExprs {
 				p.scanExprForNow64(e, sig)
+			}
+		case *chplan.Aggregate:
+			// scalar(sum(... now64 ...)) — the interior Aggregate's group
+			// keys + agg args must be swept too, else a now64 inside a
+			// ScalarSubquery-interior aggregate escapes the now64 gate.
+			for _, e := range v.GroupBy {
+				p.scanExprForNow64(e, sig)
+			}
+			for _, fn := range v.AggFuncs {
+				for _, e := range fn.Params {
+					p.scanExprForNow64(e, sig)
+				}
+				for _, e := range fn.Args {
+					p.scanExprForNow64(e, sig)
+				}
+			}
+		case *chplan.RangeBucketFanout:
+			for _, e := range v.GroupBy {
+				p.scanExprForNow64(e, sig)
+			}
+			for _, fn := range v.AggFuncs {
+				for _, e := range fn.Params {
+					p.scanExprForNow64(e, sig)
+				}
+				for _, e := range fn.Args {
+					p.scanExprForNow64(e, sig)
+				}
 			}
 		}
 		return true

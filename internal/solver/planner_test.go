@@ -297,6 +297,182 @@ func TestPlan_RejectionTable(t *testing.T) {
 	}
 }
 
+// TestPlan_Now64InAggregateArgsRejected pins DEFECT 1: a now64 hidden in the
+// OUTERMOST Aggregate's AggFuncs[].Args (off the windowed spine) must be swept
+// by walkNode — otherwise the OOM shape routes despite a now64, and two shards
+// would resolve different wall-clocks.
+func TestPlan_Now64InAggregateArgsRejected(t *testing.T) {
+	t.Parallel()
+	agg := oomWindow().(*chplan.Aggregate)
+	// Inject now64 into the outer sum's argument: sum(rate(m[5m]) * now64()).
+	agg.AggFuncs = []chplan.AggFunc{{
+		Name: "sum",
+		Args: []chplan.Expr{&chplan.Binary{
+			Op:    chplan.OpMul,
+			Left:  &chplan.ColumnRef{Name: "Value"},
+			Right: &chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}},
+		}},
+	}}
+	p := &Planner{Cfg: autoCfg()}
+	d, routed := p.Plan(agg, oomMeta())
+	if routed {
+		t.Fatal("now64 in outer Aggregate args must not route")
+	}
+	if d.Reason != ReasonNow64 {
+		t.Fatalf("reason = %q, want %q", d.Reason, ReasonNow64)
+	}
+}
+
+// TestPlan_Now64InAggregateGroupByRejected: a now64 in the outer Aggregate's
+// GroupBy keys is the sibling gap walkNode must also sweep.
+func TestPlan_Now64InAggregateGroupByRejected(t *testing.T) {
+	t.Parallel()
+	agg := oomWindow().(*chplan.Aggregate)
+	agg.GroupBy = []chplan.Expr{&chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}}}
+	p := &Planner{Cfg: autoCfg()}
+	d, routed := p.Plan(agg, oomMeta())
+	if routed {
+		t.Fatal("now64 in outer Aggregate GroupBy must not route")
+	}
+	if d.Reason != ReasonNow64 {
+		t.Fatalf("reason = %q, want %q", d.Reason, ReasonNow64)
+	}
+}
+
+// TestPlan_Now64InScalarInteriorAggregateRejected pins the DEFECT 1 sibling in
+// walkScalarInterior: scalar(sum(... now64 ...)) — a now64 inside an Aggregate
+// nested in a ScalarSubquery interior must be caught.
+func TestPlan_Now64InScalarInteriorAggregateRejected(t *testing.T) {
+	t.Parallel()
+	agg := oomWindow().(*chplan.Aggregate)
+	// ScalarSubquery whose interior is an Aggregate with now64 in its args.
+	scalarInner := &chplan.Aggregate{
+		Input: leafScan(),
+		AggFuncs: []chplan.AggFunc{{
+			Name:  "sum",
+			Args:  []chplan.Expr{&chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}}},
+			Alias: "v",
+		}},
+	}
+	plan := &chplan.Filter{
+		Input: agg,
+		Predicate: &chplan.Binary{
+			Op:    chplan.OpGt,
+			Left:  &chplan.ColumnRef{Name: "Value"},
+			Right: &chplan.ScalarSubquery{Input: scalarInner},
+		},
+	}
+	p := &Planner{Cfg: autoCfg()}
+	d, routed := p.Plan(plan, oomMeta())
+	if routed {
+		t.Fatal("now64 in scalar-interior Aggregate must not route")
+	}
+	if d.Reason != ReasonNow64 {
+		t.Fatalf("reason = %q, want %q", d.Reason, ReasonNow64)
+	}
+}
+
+// TestPlan_NonRangeWindowSpineRejected pins DEFECT 2: the routable spine
+// bound-carrier is *RangeWindow only. A RangeLWR / RangeBucketFanout / StepGrid
+// spine carries a grid the base ReanchorRange leaves un-re-anchored, so each
+// such plan must fail closed to route A with Reason=not-sliceable.
+func TestPlan_NonRangeWindowSpineRejected(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		plan func() chplan.Node
+	}{
+		{
+			name: "RangeLWR spine",
+			plan: func() chplan.Node {
+				return &chplan.RangeLWR{
+					Input:        leafScan(),
+					Start:        gridStart,
+					End:          gridEnd,
+					Step:         gridStep,
+					Lookback:     5 * time.Minute,
+					TimestampCol: "TimeUnix",
+					ValueCol:     "Value",
+				}
+			},
+		},
+		{
+			name: "RangeBucketFanout spine",
+			plan: func() chplan.Node {
+				return &chplan.RangeBucketFanout{
+					Input:        leafScan(),
+					Start:        gridStart,
+					End:          gridEnd,
+					Step:         gridStep,
+					Lookback:     5 * time.Minute,
+					AnchorAlias:  "anchor_ts",
+					TimestampCol: "TimeUnix",
+					AggFuncs: []chplan.AggFunc{{
+						Name:  "sumForEach",
+						Args:  []chplan.Expr{&chplan.ColumnRef{Name: "BucketCounts"}},
+						Alias: "BucketCounts",
+					}},
+				}
+			},
+		},
+		{
+			name: "StepGrid spine",
+			plan: func() chplan.Node {
+				return &chplan.StepGrid{Start: gridStart, End: gridEnd, Step: gridStep}
+			},
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			p := &Planner{Cfg: autoCfg()}
+			d, routed := p.Plan(tc.plan(), oomMeta())
+			if routed {
+				t.Fatalf("%s must not route (K=%d)", tc.name, d.K)
+			}
+			if d.Reason != ReasonNotSliceable {
+				t.Fatalf("%s: reason = %q, want %q", tc.name, d.Reason, ReasonNotSliceable)
+			}
+		})
+	}
+}
+
+// TestPlan_SingleProducedSliceNotRouted pins DEFECT 3: a tiny-N eligible plan
+// whose singleton-tail merge collapses to ONE produced slice must report NOT
+// routed (route A) — never a K=1 routed Decision (the doc's "route iff K>=2").
+func TestPlan_SingleProducedSliceNotRouted(t *testing.T) {
+	t.Parallel()
+	cfg := DefaultConfig()
+	cfg.Mode = ModeSharded // floor thresholds so eligibility, not cost, decides
+	// N = 3 anchors (Step=1m over 2m). m = ceil(3/2) = 2 → spans {2,1};
+	// the singleton tail (count 1) merges into its neighbor → ONE slice.
+	step := time.Minute
+	start := gridStart
+	end := start.Add(2 * time.Minute)
+	plan := &chplan.RangeWindow{
+		Input:           leafScan(),
+		Func:            "rate",
+		Range:           time.Minute,
+		Step:            step,
+		OuterRange:      2 * time.Minute,
+		Start:           start,
+		End:             end,
+		TimestampColumn: "TimeUnix",
+		ValueColumn:     "Value",
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+	}
+	meta := RequestMeta{Lang: "promql", Start: start, End: end, Step: step}
+	p := &Planner{Cfg: cfg}
+	d, routed := p.Plan(plan, meta)
+	if routed {
+		t.Fatalf("a plan collapsing to one slice must not route (K=%d)", d.K)
+	}
+	if d.Reason != ReasonBelowThreshold {
+		t.Fatalf("reason = %q, want %q", d.Reason, ReasonBelowThreshold)
+	}
+}
+
 // TestPlan_ScalarHeavyRejected: a ScalarSubquery whose interior carries its
 // own windowed spine cannot be replicated K× in phase 1 → scalar-heavy.
 func TestPlan_ScalarHeavyRejected(t *testing.T) {
