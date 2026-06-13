@@ -93,6 +93,7 @@ components:
   chsql:     { in: chsql }
   chclient:  { in: chclient }
   engine:    { in: engine }
+  solver:    { in: solver }
   config:    { in: config }
   api-loki:  { in: api/loki }
   api-prom:  { in: api/prom }
@@ -179,6 +180,17 @@ deps:
       - chsql
       - chclient
       - optimizer
+
+  # solver is the sharded-pushdown query-solver framework (off by
+  # default — Mode="single"). The Planner/Slicer classify + re-anchor
+  # chplan plans; the Executor dispatches shard cursors through the
+  # chclient driver. It must NOT import engine (engine imports solver
+  # at the QueryPlan seam) nor the QL / handler layers. chclient is
+  # declared up front so the Executor PR inherits the allowance.
+  solver:
+    mayDependOn:
+      - chplan
+      - chclient
 
   # config is wired from cmd/ to build chclient + schema at boot.
   config:
