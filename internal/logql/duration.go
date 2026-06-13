@@ -23,13 +23,14 @@ import (
 // the whole query (crawl run 27327766381, Logs Drilldown fields tab).
 //
 // CH `parseTimeDelta` unit gaps vs Go `time.ParseDuration` (verified
-// empirically against clickhouse-server 24.8.14 — the version the k3d
-// stack pins — and chDB 25.8, see the spec fixtures under
-// test/spec/logql/duration-*):
+// empirically against clickhouse-server 24.8.14 and chDB / server 25.8
+// — the k3d, compose and compatibility stacks now all pin 25.8, see the
+// spec fixtures under test/spec/logql/duration-*):
 //
 //   - the micro sign `µs` (U+00B5) and Greek mu `μs` (U+03BC) are
 //     rejected by 24.8 ("parse unit failed") though `us` parses; 25.8
-//     accepts both. Normalised to `us` before the call.
+//     accepts both. Normalising to `us` before the call stays
+//     forward-safe — it is a no-op on 25.8 and keeps the emit identical.
 //   - a leading `-` / `+` sign is rejected on both versions. The sign
 //     is stripped before the call and re-applied as a multiplier.
 //   - the bare-zero special case `0` (Go: valid, no unit required) is

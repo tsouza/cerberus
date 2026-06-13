@@ -399,7 +399,7 @@ CERBERUS_IMAGE := "cerberus:e2e"
 # MUST stay in lock-step with the image pins in test/e2e/k3s/*.yaml —
 # a stale entry here means the pod pulls straight from the registry at
 # start-up (no pre-pull, no import, full Docker-Hub-flake exposure).
-E2E_EXTERNAL_IMAGES := "clickhouse/clickhouse-server:24.8-alpine ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.116.0 grafana/grafana:12.2.9 otel/opentelemetry-collector-contrib:0.152.1"
+E2E_EXTERNAL_IMAGES := "clickhouse/clickhouse-server:25.8-alpine ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.116.0 grafana/grafana:12.2.9 otel/opentelemetry-collector-contrib:0.152.1"
 
 # Extra args appended verbatim to `k3d cluster create` in `e2e-up`. Empty by
 # default (CI uses none). Interpolated unquoted, so the value is shell-parsed:

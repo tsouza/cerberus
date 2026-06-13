@@ -78,7 +78,8 @@ func TestFromEnv_AutoCreateSchema_Whitespace(t *testing.T) {
 // TestFromEnv_ExperimentalTSGridRange_Default confirms the experimental
 // native-rate flag defaults OFF when unset — the default behaviour
 // (arrayJoin fan-out) is preserved and the compose / e2e / compatibility
-// lanes (ClickHouse 24.8, which lacks timeSeriesRateToGrid) stay green.
+// lanes (ClickHouse 25.8; the native path stays experimental even though
+// the function now exists) stay green.
 func TestFromEnv_ExperimentalTSGridRange_Default(t *testing.T) {
 	t.Setenv("CERBERUS_EXPERIMENTAL_TS_GRID_RANGE", "")
 	cfg, err := FromEnv()

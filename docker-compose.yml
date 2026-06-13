@@ -52,13 +52,13 @@ services:
   clickhouse:
     # Use the Ubuntu-base image, NOT -alpine. Per PR #245's finding on
     # the startup-bench job and PR #297's fix for the compatibility
-    # harnesses, `clickhouse/clickhouse-server:24.8-alpine` stalls in the
+    # harnesses, `clickhouse/clickhouse-server:25.8-alpine` stalls in the
     # entrypoint script for 5+ min (create-user → restart sequence never
     # completes, port 8123 never binds). The Ubuntu-base variant boots in
     # ~10-20s on the same hosts. A future maintainer: do NOT innocently
     # switch back to -alpine without re-validating against the musl /
     # scheduling regression that bit #245.
-    image: clickhouse/clickhouse-server:24.8
+    image: clickhouse/clickhouse-server:25.8
     networks: [cerberus-dev]
     environment:
       CLICKHOUSE_DB: otel

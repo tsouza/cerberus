@@ -277,9 +277,11 @@ moves.
 Native ClickHouse **`timeSeriesRateToGrid`** — CH copied Prometheus's rate code
 verbatim, so it computes the same `extrapolatedRate` *inside the engine*,
 moving the arithmetic floor down rather than around it. It lands in CH
-**≥ 25.6**; the production / compose deployment is on **24.8**, where the
-function is absent entirely (`UNKNOWN_FUNCTION`). The plan is to adopt it
-outright when the CH floor moves; until then the fan-out is the right default.
+**≥ 25.6**; the production / compose deployment is now on **25.8** (matching the
+chDB substrate), so the function is available — but the path stays experimental
+behind a flag (it rides the experimental `allow_experimental_time_series_aggregate_functions`
+setting), so the fan-out remains the right default until the native path is
+differentially proven on a real (non-chDB) server.
 
 **It is now shipped as an opt-in experimental path** — default OFF, gated by
 `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE` (see
@@ -291,7 +293,7 @@ to a `chplan.RangeWindowNative` node that emits the native aggregate
 instead of the fan-out. The wrapping outer-sum `Aggregate` is byte-identical, so
 only the windowed-rate subquery changes. Flag OFF (the default) is byte-for-byte
 the established fan-out — every existing golden, the compat 574/574 corpus, and
-the compose / e2e lanes (all on CH 24.8) are structurally untouched.
+the compose / e2e lanes (now all on CH 25.8) are structurally untouched.
 
 The *stale* note in earlier revisions — "untestable until prod upgrades" — was
 wrong. The **chDB test substrate is 25.8** and ships the full

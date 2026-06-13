@@ -822,9 +822,11 @@ func (b *Builder) exprMapWithoutEmptyValues(m *chplan.MapWithoutEmptyValues) err
 // value Go's `ExpandString` (Prom's reference impl) produces against
 // an empty match. CH ≥ 25.8 honours `replaceRegexpOne` on empty
 // inputs natively; the conditional collapses harmlessly in that
-// regime (both branches produce the same string). The compose
-// harness's reference Prom is on CH 24.8 so the short-circuit is
-// load-bearing on the compatibility lane.
+// regime (both branches produce the same string). The compose +
+// compatibility harnesses now run CH 25.8 (reference Prom executes on
+// that same harness CH), so emit-side and reference-side moved in
+// lock-step — the short-circuit stays because it is forward-safe and
+// keeps emission byte-identical across the version move.
 func (b *Builder) exprLabelReplace(l *chplan.LabelReplace) error {
 	anchored := "^" + l.Regex + "$"
 	b.sb.WriteString("mapFilter((k, v) -> v != '', if(match(")

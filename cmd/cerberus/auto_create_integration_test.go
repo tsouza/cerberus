@@ -30,7 +30,7 @@ func TestAutoCreateSchema_StartupWiring(t *testing.T) {
 
 	container, err := tcclickhouse.Run(
 		ctx,
-		"clickhouse/clickhouse-server:24.8-alpine",
+		"clickhouse/clickhouse-server:25.8-alpine",
 		tcclickhouse.WithUsername("cerberus"),
 		tcclickhouse.WithPassword("cerberus"),
 		tcclickhouse.WithDatabase("otel"),
