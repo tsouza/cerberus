@@ -596,6 +596,12 @@ func (e *emitter) emitWindowedArrayPairsMatrix(r *chplan.RangeWindow, valueWrite
 		sampleAnchorFanoutFrag(end, Col(srcTs), stepNS, rangeNS, numAnchors),
 		"anchor_ts",
 	))
+	// Restrict the input scan to the offset-shifted
+	// (Start - Offset - range, End - Offset] window the anchor grid
+	// covers — same pushdown as emitWindowedArrayMatrix, against srcTs
+	// (the timestamp column present in the fanout's FROM). See
+	// maybePushInnerScanTimeBounds.
+	maybePushInnerScanTimeBounds(fanout, r, srcTs, rangeNS)
 
 	// Regroup SELECT — rebuild the per-(series, anchor) window array.
 	regroup := NewQuery().From(fanout.Frag())
@@ -1475,38 +1481,73 @@ func writeAnchorGridFloorIdx(b *Builder, dist Frag, addNS, stepNS int64) {
 // no explicit grid) rely on the bounds being absent to stay byte-stable
 // against pinned snapshots. The `&&` gate is load-bearing: with either
 // bound zero the WHERE clause is suppressed entirely. Shared by
-// emitRangeWindowMetrics, emitRangeWindowMetricsQuantileBuckets, and
-// emitMetricsExemplars so the three matrix-shape emitters keep a single
-// pushdown contract.
+// emitRangeWindowMetrics, emitRangeWindowMetricsQuantileBuckets,
+// emitMetricsExemplars, and the PromQL matrix emitters
+// (emitWindowedArrayMatrix / emitWindowedArrayExtrapolatedMatrix /
+// emitWindowedArrayPairsMatrix) so every matrix-shape emitter keeps a
+// single pushdown contract.
+//
+// Offset (rw.Offset) enters with its sign: the matrix anchors are
+// `a_i = (End - Offset) - i·step` (see endExprFrag), so windows live in
+// the half-open interval `(Start - Offset - Range, End - Offset]`. The
+// scan bound mirrors that interval. Offset == 0 (the common case, and
+// every current Tempo caller) reduces to `tsCol > Start - range AND
+// tsCol <= End`, keeping those fixtures byte-stable.
 func maybePushInnerScanTimeBounds(innerSb *QueryBuilder, rw *chplan.RangeWindow, tsCol string, rangeNS int64) {
 	if rw.Start.IsZero() || rw.End.IsZero() {
 		return
 	}
-	lo, hi := innerScanTsBoundsFrags(tsCol, rw.Start, rw.End, rangeNS)
+	lo, hi := innerScanTsBoundsFrags(tsCol, rw.Start, rw.End, rw.Offset.Nanoseconds(), rangeNS)
 	innerSb.Where(lo, hi)
 }
 
 // innerScanTsBoundsFrags returns the two Frags that pin the input scan
-// to the (Start - range, End] window:
+// to the offset-shifted (Start - Offset - range, End - Offset] window:
 //
-//	<tsCol> >  <Start> - toIntervalNanosecond(<rangeNS>)
-//	<tsCol> <= <End>
+//	<tsCol> >  (<Start> - toIntervalNanosecond(<offsetNS>)) - toIntervalNanosecond(<rangeNS>)
+//	<tsCol> <= (<End>   - toIntervalNanosecond(<offsetNS>))
 //
 // Strict lower / inclusive upper matches the per-anchor `(anchor_ts -
-// range, anchor_ts]` window the outer SELECT later applies: any row that
-// could land in any anchor on the [Start, End] grid satisfies
-// `tsCol > Start - range AND tsCol <= End`. See
+// range, anchor_ts]` window the outer SELECT later applies over the
+// offset-shifted anchor grid `a_i = (End - Offset) - i·step`: any row
+// that could land in any anchor satisfies
+// `tsCol > (Start - Offset) - range AND tsCol <= (End - Offset)`.
+//
+// offsetNS enters with its sign — a negative offset (Prom's forward-shift
+// form, `rate(metric[range] offset -5m)`) renders
+// `End - toIntervalNanosecond(-N)` which CH evaluates as `End + N`,
+// widening the upper bound to the RIGHT past End exactly as the anchor
+// base does; a positive offset shifts the whole interval left. offsetNS
+// == 0 omits the shift entirely so the bound collapses to
+// `tsCol > Start - range AND tsCol <= End` (byte-stable for the Tempo
+// callers, which always pass Offset == 0). See
 // maybePushInnerScanTimeBounds for the gating contract callers go
 // through.
-func innerScanTsBoundsFrags(tsCol string, start, end time.Time, rangeNS int64) (Frag, Frag) {
-	startFrag := timeOrNowFrag(start)
-	endFrag := timeOrNowFrag(end)
+func innerScanTsBoundsFrags(tsCol string, start, end time.Time, offsetNS, rangeNS int64) (Frag, Frag) {
+	startFrag := offsetShiftedTimeFrag(start, offsetNS)
+	endFrag := offsetShiftedTimeFrag(end, offsetNS)
 	lower := Gt(
 		Col(tsCol),
 		Sub(startFrag, Call("toIntervalNanosecond", InlineLit(rangeNS))),
 	)
 	upper := Lte(Col(tsCol), endFrag)
 	return lower, upper
+}
+
+// offsetShiftedTimeFrag renders `<t>` shifted left by Offset:
+// `(<t> - toIntervalNanosecond(<offsetNS>))` when offsetNS != 0, else
+// the bare `<t>` literal. Mirrors endExprFrag's Offset branch so the
+// scan bound's End-side anchor base lines up byte-for-byte with the
+// anchor grid the fanout walks (both subtract the same
+// `toIntervalNanosecond(Offset)` term). A negative offsetNS renders the
+// subtraction of a negative interval — CH folds `t - toIntervalNanosecond(-N)`
+// to `t + N`, the forward-shift the matrix anchors take.
+func offsetShiftedTimeFrag(t time.Time, offsetNS int64) Frag {
+	base := timeOrNowFrag(t)
+	if offsetNS == 0 {
+		return base
+	}
+	return Paren(Sub(base, Call("toIntervalNanosecond", InlineLit(offsetNS))))
 }
 
 // groupArrayPairFrag returns a Frag rendering
@@ -2262,6 +2303,12 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 		sampleAnchorFanoutFrag(end, Col(srcTs), stepNS, rangeNS, numAnchors),
 		"anchor_ts",
 	))
+	// Restrict the input scan to the offset-shifted
+	// (Start - Offset - range, End - Offset] window the anchor grid
+	// covers — same pushdown as emitWindowedArrayMatrix, against srcTs
+	// (the timestamp column present in the fanout's FROM). See
+	// maybePushInnerScanTimeBounds.
+	maybePushInnerScanTimeBounds(fanout, r, srcTs, rangeNS)
 
 	// Regroup SELECT — rebuild the per-(series, anchor) window array.
 	regroup := NewQuery().From(fanout.Frag())
@@ -2658,6 +2705,16 @@ func (e *emitter) emitWindowedArrayMatrix(r *chplan.RangeWindow, value Frag, min
 		sampleAnchorFanoutFrag(end, Col(srcTs), stepNS, rangeNS, numAnchors),
 		"anchor_ts",
 	))
+	// Restrict the input scan to the offset-shifted
+	// (Start - Offset - range, End - Offset] window the anchor grid
+	// covers, so CH prunes partitions / granules instead of fanning the
+	// whole series history through sampleAnchorFanoutFrag. The bound
+	// references srcTs (the timestamp column actually present in the
+	// fanout's FROM — the same column the fanout / regroup read), and
+	// ANDs with any predicate already on the input. Gated on Start/End
+	// being set, so subquery-internal shapes stay byte-stable. See
+	// maybePushInnerScanTimeBounds.
+	maybePushInnerScanTimeBounds(fanout, r, srcTs, rangeNS)
 
 	// Regroup SELECT — rebuild the per-(series, anchor) window array.
 	regroup := NewQuery().From(fanout.Frag())

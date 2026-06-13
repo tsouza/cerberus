@@ -124,6 +124,69 @@ func TestRangeWindowMetricsInnerScanPushdown_OnlyOneSet(t *testing.T) {
 	}
 }
 
+// TestPromQLMatrixInnerScanPushdown_OffsetAware pins #93: the PromQL
+// matrix emitters (here the extrapolated rate path via a bare
+// RangeWindow with a Scan input) push the offset-shifted
+// (Start - Offset - range, End - Offset] inner-scan bound. Offset
+// enters with its sign — a positive offset subtracts a positive
+// interval from both edges; a negative offset subtracts a negative
+// interval (CH folds `End - toIntervalNanosecond(-N)` to `End + N`),
+// widening the upper bound to the RIGHT past End. Offset == 0 reduces
+// to the bare `> toDateTime64(...)` / `<= toDateTime64(...)` pair the
+// Tempo-path tests above already pin.
+func TestPromQLMatrixInnerScanPushdown_OffsetAware(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 5, 13, 12, 5, 0, 0, time.UTC)
+
+	cases := []struct {
+		name      string
+		offset    time.Duration
+		wantShift string // the offset interval the bound must subtract
+	}{
+		{name: "positive_offset", offset: 2 * time.Minute, wantShift: "toIntervalNanosecond(120000000000)"},
+		{name: "negative_offset", offset: -3 * time.Minute, wantShift: "toIntervalNanosecond(-180000000000)"},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			plan := &chplan.RangeWindow{
+				Input:           &chplan.Scan{Table: "otel_metrics_sum"},
+				Func:            "rate",
+				Step:            30 * time.Second,
+				Range:           5 * time.Minute,
+				OuterRange:      5 * time.Minute,
+				Offset:          c.offset,
+				Start:           start,
+				End:             end,
+				TimestampColumn: "TimeUnix",
+				ValueColumn:     "Value",
+			}
+			sql, _, err := chsql.Emit(context.Background(), plan)
+			if err != nil {
+				t.Fatalf("Emit: %v", err)
+			}
+			// The offset-shifted edges render as
+			// `(toDateTime64(...) - toIntervalNanosecond(<offsetNS>))`,
+			// so the offset interval must appear in the pushdown WHERE.
+			if !strings.Contains(sql, c.wantShift) {
+				t.Errorf("expected offset-shifted bound carrying %q in SQL=%s", c.wantShift, sql)
+			}
+			// The lower bound still subtracts the range (300000000000ns)
+			// from the offset-shifted Start; the upper bound carries no
+			// range term. Both reference the scan's TimeUnix column.
+			if !strings.Contains(sql, "`TimeUnix` > ") {
+				t.Errorf("expected lower-bound pushdown on TimeUnix in SQL=%s", sql)
+			}
+			if !strings.Contains(sql, "`TimeUnix` <= ") {
+				t.Errorf("expected upper-bound pushdown on TimeUnix in SQL=%s", sql)
+			}
+		})
+	}
+}
+
 // TestRangeWindowMetricsQuantileBucketsInnerScanPushdown_BothSet pins
 // the matrix-quantile path's pushdown: with Start AND End set the
 // inner SELECT carries the (Start - range, End] WHERE.
