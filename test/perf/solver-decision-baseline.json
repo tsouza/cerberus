@@ -1,9 +1,9 @@
 [
   {
     "query": "abs_metric",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "absent_aggregate_no_series",
@@ -67,15 +67,15 @@
   },
   {
     "query": "agg_by_dotted_source",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "agg_by_service_name",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "at_end_basic",
@@ -151,15 +151,15 @@
   },
   {
     "query": "binop_atan2_scalar_vector",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "binop_atan2_vector_scalar",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "binop_atan2_vv",
@@ -169,33 +169,33 @@
   },
   {
     "query": "binop_metric_minus_time",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "binop_time_arith_range",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "binop_time_lt_bool_metric",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "binop_time_lt_metric",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "binop_time_plus_metric",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "binop_vv_on_compare_eq",
@@ -211,9 +211,9 @@
   },
   {
     "query": "bool_lt",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "bool_vv_eq",
@@ -235,9 +235,9 @@
   },
   {
     "query": "bottomk_below_one_empty",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "bottomk_computed",
@@ -277,15 +277,15 @@
   },
   {
     "query": "ceil_metric",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "chained_filter",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "changes_oscillating",
@@ -295,81 +295,81 @@
   },
   {
     "query": "clamp",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "clamp_max",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "clamp_max_scalar_bound",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "clamp_min",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "clamp_min_scalar_bound",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "clamp_min_scalar_nan_bound",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "clamp_scalar_min_literal_max",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "comparison_arithmetic",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "count_agg_returns_float",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "count_no_group",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "count_values_basic",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "count_values_without",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "count_values_without_empty",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "day_of_month_default",
@@ -379,9 +379,9 @@
   },
   {
     "query": "day_of_month_of_vector",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "day_of_week_default",
@@ -391,15 +391,15 @@
   },
   {
     "query": "day_of_week_offset",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "day_of_year_of_vector",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "days_in_month_default",
@@ -409,15 +409,15 @@
   },
   {
     "query": "days_in_month_of_vector",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "deg_metric",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "delta_empty_window",
@@ -475,39 +475,39 @@
   },
   {
     "query": "edge_bool_eq",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "edge_bool_ge",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "edge_bool_le",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "edge_bool_ne",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "edge_ceil_over_sum_by",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "edge_clamp_neg_to_pos",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "edge_count_over_time",
@@ -601,21 +601,21 @@
   },
   {
     "query": "edge_neg_scalar_minus_vector",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "edge_offset_zero",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "edge_paren_chain_arith",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "edge_rate_at_timestamp_range_pinned",
@@ -631,15 +631,15 @@
   },
   {
     "query": "edge_round_step_half",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "edge_sqrt_over_aggregate",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "edge_subquery_nested",
@@ -661,27 +661,27 @@
   },
   {
     "query": "exp_metric",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "floor_metric",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "group_basic",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "group_by_job",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "histogram_avg_exp",
@@ -703,15 +703,15 @@
   },
   {
     "query": "histogram_bucket_companion",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "histogram_bucket_le_filter",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "histogram_count_basic",
@@ -907,9 +907,9 @@
   },
   {
     "query": "histogram_quantile_non_bucket_empty",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "histogram_quantile_scalar_phi",
@@ -949,9 +949,9 @@
   },
   {
     "query": "histogram_sum_aggregate_arg_empty",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "histogram_sum_basic",
@@ -985,9 +985,9 @@
   },
   {
     "query": "hour_of_vector",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "idelta_subscrape_drops",
@@ -1027,99 +1027,99 @@
   },
   {
     "query": "label_join_two_labels",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "label_join_with_separator",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "label_replace_basic",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "label_replace_missing_src",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "label_replace_missing_src_overwrite",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "label_replace_no_match",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "label_replace_regex_capture",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "ln_metric",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "log10_metric",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "log2_metric",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "lwr_bare_selector_eval_ts_boundary",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "lwr_bare_selector_latest_per_series",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "lwr_bare_selector_staleness_window",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "matcher_and_agg_by_service_name",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "matcher_dotted_source",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "matcher_service_name",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "matrix_selector_top_level",
@@ -1135,15 +1135,15 @@
   },
   {
     "query": "minute_of_vector",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "mod_arithmetic",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "month_default",
@@ -1153,15 +1153,15 @@
   },
   {
     "query": "month_of_vector",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "multiple_matchers",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "negative_at",
@@ -1171,27 +1171,27 @@
   },
   {
     "query": "negative_offset",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "not_regex_label",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "not_regex_name_matcher_excludes_dotted",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "offset_negative",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "pi_constant",
@@ -1201,15 +1201,15 @@
   },
   {
     "query": "pow_arithmetic",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "power_op_basic",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "power_op_vv",
@@ -1243,9 +1243,9 @@
   },
   {
     "query": "quantile_by_job",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "quantile_over_time_p95",
@@ -1291,33 +1291,33 @@
   },
   {
     "query": "quantile_q_above_one",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "quantile_q_negative",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "quantile_scalar_phi",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "quantile_scalar_phi_nan",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "rad_metric",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "rate_empty_window",
@@ -1339,27 +1339,27 @@
   },
   {
     "query": "regex_alternation",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "regex_anchored",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "regex_name_matcher_scans_sum_table",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "regex_name_matcher_underscored_matches_dotted",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "resets_counter",
@@ -1369,21 +1369,21 @@
   },
   {
     "query": "round_metric",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "round_scalar_to_nearest",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "round_to_nearest",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "scalar_binop_fold",
@@ -1405,9 +1405,9 @@
   },
   {
     "query": "scalar_lt_vector",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "scalar_many_series_nan",
@@ -1417,9 +1417,9 @@
   },
   {
     "query": "scalar_minus_vector",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "scalar_single_series",
@@ -1429,27 +1429,27 @@
   },
   {
     "query": "scan_unions_gauge_sum_for_unsuffixed_metric",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "scan_unions_histogram_sum_for_suffixed_metric",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "scientific_threshold",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "sgn_metric",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "sort_ascending",
@@ -1465,15 +1465,15 @@
   },
   {
     "query": "sqrt_metric",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "stddev_by_job",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "stddev_over_time_window",
@@ -1483,9 +1483,9 @@
   },
   {
     "query": "stdvar_no_group",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "stdvar_over_time_basic",
@@ -1681,9 +1681,9 @@
   },
   {
     "query": "sum_by_job",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "sum_by_rate_dotted_source",
@@ -1711,27 +1711,27 @@
   },
   {
     "query": "sum_by_underscored_otel_label",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "sum_without_empty",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "sum_without_instance",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "sum_without_two_labels",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "time_eq_bool_time_range",
@@ -1759,9 +1759,9 @@
   },
   {
     "query": "timestamp_of_metric",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "topk_3_by_job",
@@ -1813,45 +1813,45 @@
   },
   {
     "query": "topk_zero_empty",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "trig_acos_metric",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "trig_cos_metric",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "trig_sin_metric",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "trig_sinh_metric",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "unary_minus_binary_lhs",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "unary_minus_in_function",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "unary_minus_rate",
@@ -1861,21 +1861,21 @@
   },
   {
     "query": "unary_minus_vector",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "unary_plus_vector",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "up",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "up_at_offset_combined",
@@ -1891,51 +1891,51 @@
   },
   {
     "query": "up_gt_bool",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "up_gt_threshold",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "up_ne_zero",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "up_offset_5m",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "up_times_two",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "up_with_label",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "up_with_regex",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "vector_div_scalar",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "vector_group_left",
@@ -1969,9 +1969,9 @@
   },
   {
     "query": "vector_mod_scalar",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "vector_on_job",
@@ -1987,9 +1987,9 @@
   },
   {
     "query": "vector_pow_scalar",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   },
   {
     "query": "vector_promotes_scalar",
@@ -2023,8 +2023,8 @@
   },
   {
     "query": "year_of_vector",
-    "routed": false,
-    "k": 0,
-    "reason": "not-sliceable"
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
   }
 ]

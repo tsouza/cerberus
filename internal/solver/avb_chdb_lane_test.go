@@ -106,21 +106,30 @@ INSERT INTO otel_metrics_sum VALUES
   ('http_requests_total', map('job', 'c'), 'svc', toDateTime64('2026-06-13 00:10:00', 9), 5.0),
   ('http_requests_total', map('job', 'c'), 'svc', toDateTime64('2026-06-13 00:10:00', 9), 9.0);`
 
-// laneFixtures are the PromQL RangeWindow matrix-family shapes the lane
-// proves. Each is a real eligible shape the Planner routes under sharded
-// mode over laneSeed:
+// laneFixtures are the eligible shapes the lane proves. Each is a real shape
+// the Planner routes under sharded mode over laneSeed:
 //
-//   - rate(...)        — bare matrix, per-series Attributes carried through.
+//   - rate(...)        — bare matrix RangeWindow, per-series Attributes carried.
 //   - sum(rate(...))   — cross-series total (empty-Attributes output).
 //   - sum by (job)(..) — keyed aggregate (single-key Attributes output).
+//   - http_requests_total — a BARE instant-vector selector that lowers to a
+//     RangeLWR (last-with-respect-to) spine, the phase-3 widened routable
+//     family. It exercises the RangeLWR re-anchor arm under chDB: each shard
+//     re-grids its [Start, End] and emits the most-recent in-window sample per
+//     anchor, and the oldest-first concatenation must equal route A's single
+//     pass exactly. (No rate arithmetic → no NaN cell, but it shares every
+//     anchor_ts across job=a / job=b, so it adds duplicate-timestamp coverage.)
 //
-// Each carries a NaN cell (the job=c window) and duplicate output timestamps
-// (job=a / job=b share every anchor_ts before aggregation; sum by (job) keeps
-// the per-anchor duplication across the surviving keys).
+// The matrix shapes each carry a NaN cell (the job=c window) and duplicate
+// output timestamps (job=a / job=b share every anchor_ts before aggregation;
+// sum by (job) keeps the per-anchor duplication across the surviving keys); the
+// combined NaN / duplicate-timestamp boundary-coverage gates are satisfied
+// across the whole fixture set.
 var laneFixtures = []string{
 	"rate(http_requests_total[5m])",
 	"sum(rate(http_requests_total[5m]))",
 	"sum by (job) (rate(http_requests_total[5m]))",
+	"http_requests_total",
 }
 
 // TestSolver_AvsB_ChDB_Differential is the per-PR parity workhorse. For each

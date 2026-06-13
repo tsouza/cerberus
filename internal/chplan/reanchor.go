@@ -56,6 +56,13 @@ var ErrReanchorGridMismatch = errors.New("chplan: windowed node bounds do not ma
 // (Project / Aggregate / TopK / Filter) pass the requirement through
 // unchanged. Every other node type is copied verbatim — it is below the
 // spine and does not move in time.
+//
+// RangeLWR (the bare-selector last-with-respect-to leaf, the deriv / idelta /
+// irate / instant-LWR / negative-offset families) re-anchors the same way:
+// matrix-grid RangeLWRs (Step > 0) re-grid their (Start, End) and recurse into
+// their input widened by the offset-aware membership lookback Offset+Lookback;
+// an instant-shape RangeLWR (Step == 0) terminates the walk. The
+// grid-prediction guard applies identically, so an @-pinned RangeLWR routes A.
 func ReanchorRange(n Node, start, end time.Time) (Node, error) {
 	if n == nil {
 		return nil, nil
@@ -84,6 +91,39 @@ func reanchor(n Node, start, end time.Time) (Node, error) {
 		// Each of this window's anchors looks back v.Range; widen the input
 		// spine by that much so the inner grid covers every anchor's window.
 		input, err := reanchor(v.Input, start.Add(-v.Range), end)
+		if err != nil {
+			return nil, err
+		}
+		c.Input = input
+		return &c, nil
+	case *RangeLWR:
+		// The bare-selector last-with-respect-to leaf. Its eval grid is
+		// [Start, End] spaced by Step; each anchor reduces the most-recent
+		// sample in its offset-aware staleness window
+		// `(anchor - Offset - Lookback, anchor - Offset]`. The per-(series,
+		// anchor) value depends only on that window's membership, not on the
+		// scan lower bound — it is registered slice-invariant — so re-anchoring
+		// to a sub-grid yields exactly the rows route A would have produced for
+		// those anchors. Same copy-not-mutate + grid-prediction discipline as
+		// the RangeWindow arm: the grid is filled only when the node is either
+		// unpinned (the slicer's unpinSpine shape) or already sits exactly on
+		// the predicted grid; an @-pinned divergence routes A via
+		// ErrReanchorGridMismatch.
+		if v.Step <= 0 {
+			// No anchor grid to re-grid (an instant-shape LWR); copy verbatim.
+			return CloneNode(v), nil
+		}
+		if err := checkPredictedGridLWR(v, start, end); err != nil {
+			return nil, err
+		}
+		c := *v
+		c.Start = start
+		c.End = end
+		// The membership window looks back Offset+Lookback from each anchor;
+		// widen the input spine by that much so every anchor finds its samples.
+		// Offset enters with its sign (a negative offset shifts the window
+		// forward), mirroring the solver-owned sign-aware scan floor.
+		input, err := reanchor(v.Input, start.Add(-v.Offset-v.Lookback), end)
 		if err != nil {
 			return nil, err
 		}
@@ -156,4 +196,25 @@ func checkPredictedGrid(r *RangeWindow, predStart, predEnd time.Time) error {
 		ErrReanchorGridMismatch,
 		r.Start, r.End, r.OuterRange,
 		predStart, predEnd, predEnd.Sub(predStart))
+}
+
+// checkPredictedGridLWR is checkPredictedGrid for a RangeLWR. The LWR carries
+// no OuterRange field — its grid span is End-Start directly — so the predicted
+// grid is just [predStart, predEnd]. Either the bounds are unpinned (zero Start
+// and End — the slicer's unpinSpine shape, filled by the re-anchor) or they
+// already sit exactly on the predicted grid. Anything else — most importantly
+// an @-pinned End diverging from the predicted grid — is rejected so the solver
+// routes A.
+func checkPredictedGridLWR(r *RangeLWR, predStart, predEnd time.Time) error {
+	if r.Start.IsZero() && r.End.IsZero() {
+		return nil
+	}
+	if r.Start.Equal(predStart) && r.End.Equal(predEnd) {
+		return nil
+	}
+	return fmt.Errorf("%w: RangeLWR bounds (Start=%v End=%v) "+
+		"do not match predicted grid (Start=%v End=%v) — an @-pinned or non-grid anchor",
+		ErrReanchorGridMismatch,
+		r.Start, r.End,
+		predStart, predEnd)
 }

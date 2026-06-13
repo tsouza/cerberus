@@ -77,6 +77,85 @@ func TestPlan_OOMShapeRoutes(t *testing.T) {
 	}
 }
 
+// lwrSpine builds a bare-selector last-with-respect-to plan over the canonical
+// grid — the deriv / idelta / irate / instant-LWR / negative-offset family the
+// phase-3 widening admits. With Lookback=5m / Step=15s the membership fan-out
+// F = Lookback/Step = 20, N = 241, so it clears the auto cost thresholds.
+func lwrSpine(offset time.Duration) chplan.Node {
+	return &chplan.RangeLWR{
+		Input:         leafScan(),
+		Start:         gridStart,
+		End:           gridEnd,
+		Step:          gridStep,
+		Lookback:      5 * time.Minute,
+		Offset:        offset,
+		MetricNameCol: "MetricName",
+		AttributesCol: "Attributes",
+		TimestampCol:  "TimeUnix",
+		ValueCol:      "Value",
+	}
+}
+
+// TestPlan_RangeLWRSpineRoutes is the phase-3 advancement: a bare-selector
+// RangeLWR spine that route A left un-sliceable now ROUTES B with K >= 2 and
+// correctly-anchored slices. Both the zero-offset and the negative-offset
+// (offset -5m) shapes route — the offset shifts only the membership window, not
+// the grid, so the anchor decomposition is unchanged.
+func TestPlan_RangeLWRSpineRoutes(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		offset time.Duration
+	}{
+		{"zero offset", 0},
+		{"negative offset", -5 * time.Minute},
+		{"positive offset", time.Hour},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			p := &Planner{Cfg: autoCfg()}
+			d, routed := p.Plan(lwrSpine(tc.offset), oomMeta())
+			if !routed {
+				t.Fatalf("RangeLWR spine must route; got reason=%q", d.Reason)
+			}
+			if d.Reason != ReasonRouted {
+				t.Fatalf("reason = %q, want %q", d.Reason, ReasonRouted)
+			}
+			if d.K < 2 {
+				t.Fatalf("K = %d, want >= 2", d.K)
+			}
+			if d.Strategy != StrategyShardedTimeslice {
+				t.Fatalf("strategy = %q, want %q", d.Strategy, StrategyShardedTimeslice)
+			}
+			if len(d.Slices) != d.K {
+				t.Fatalf("len(Slices) = %d, want K=%d", len(d.Slices), d.K)
+			}
+			// The produced slices must re-grid onto RangeLWR nodes whose bounds
+			// are filled (non-zero) and whose union covers the original grid:
+			// oldest slice starts at the grid Start, newest ends at grid End.
+			oldest := d.Slices[0].Plan.(*chplan.RangeLWR)
+			newest := d.Slices[len(d.Slices)-1].Plan.(*chplan.RangeLWR)
+			if !oldest.Start.Equal(gridStart) {
+				t.Fatalf("oldest slice Start=%v, want grid Start=%v", oldest.Start, gridStart)
+			}
+			if !newest.End.Equal(gridEnd) {
+				t.Fatalf("newest slice End=%v, want grid End=%v", newest.End, gridEnd)
+			}
+			for _, sl := range d.Slices {
+				r := sl.Plan.(*chplan.RangeLWR)
+				if r.Start.IsZero() || r.End.IsZero() {
+					t.Fatalf("slice %d left RangeLWR bounds unpinned: Start=%v End=%v",
+						sl.Index, r.Start, r.End)
+				}
+				if r.Step != gridStep || r.Lookback != 5*time.Minute || r.Offset != tc.offset {
+					t.Fatalf("slice %d RangeLWR lost a non-grid field: %+v", sl.Index, r)
+				}
+			}
+		})
+	}
+}
+
 // TestPlan_SingleNeverRoutes: Mode=="single" classifies but never routes,
 // even for the eligible OOM shape.
 func TestPlan_SingleNeverRoutes(t *testing.T) {
@@ -372,30 +451,17 @@ func TestPlan_Now64InScalarInteriorAggregateRejected(t *testing.T) {
 	}
 }
 
-// TestPlan_NonRangeWindowSpineRejected pins DEFECT 2: the routable spine
-// bound-carrier is *RangeWindow only. A RangeLWR / RangeBucketFanout / StepGrid
-// spine carries a grid the base ReanchorRange leaves un-re-anchored, so each
-// such plan must fail closed to route A with Reason=not-sliceable.
+// TestPlan_NonRangeWindowSpineRejected pins the residual routable-spine
+// restriction after phase 3: the routable bound-carriers are *RangeWindow
+// (phase 1) and *RangeLWR (phase 3). A RangeBucketFanout / StepGrid spine still
+// carries a grid ReanchorRange leaves un-re-anchored (CloneNode'd verbatim), so
+// each such plan must fail closed to route A with Reason=not-sliceable.
 func TestPlan_NonRangeWindowSpineRejected(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name string
 		plan func() chplan.Node
 	}{
-		{
-			name: "RangeLWR spine",
-			plan: func() chplan.Node {
-				return &chplan.RangeLWR{
-					Input:        leafScan(),
-					Start:        gridStart,
-					End:          gridEnd,
-					Step:         gridStep,
-					Lookback:     5 * time.Minute,
-					TimestampCol: "TimeUnix",
-					ValueCol:     "Value",
-				}
-			},
-		},
 		{
 			name: "RangeBucketFanout spine",
 			plan: func() chplan.Node {
