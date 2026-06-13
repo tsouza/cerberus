@@ -60,6 +60,14 @@ func TestMetricsCompare_Equal_Negative_Fields(t *testing.T) {
 		}},
 		{"pairsNil", func(m *chplan.MetricsCompare) { m.Pairs = nil }},
 		{"rootLookupNil", func(m *chplan.MetricsCompare) { m.RootLookup = nil }},
+		// Both RootLookups non-nil but with different content. Kills the
+		// CONDITIONALS_NEGATION at metrics_compare.go (the `!m.RootLookup.Equal`
+		// guard): dropping the `!` would make divergent-but-present RootLookups
+		// fall through to "equal". rootLookupNil only exercises the nil-mismatch
+		// guard a line above; this exercises the content comparison.
+		{"rootLookupContent", func(m *chplan.MetricsCompare) {
+			m.RootLookup = &chplan.Scan{Table: "different_root_lookup"}
+		}},
 		{"traceIDColumn", func(m *chplan.MetricsCompare) { m.TraceIDColumn = "Other" }},
 		{"rootNameAlias", func(m *chplan.MetricsCompare) { m.RootNameAlias = "x" }},
 		{"rootServiceAlias", func(m *chplan.MetricsCompare) { m.RootServiceAlias = "x" }},
