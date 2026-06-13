@@ -1605,12 +1605,15 @@ func TestEmitWindowedExtrapolated_GroupByBoundary(t *testing.T) {
 }
 
 // TestEmitWindowedArrayMatrix_GroupByBoundary pins the matrix-shape
-// regroup GROUP BY key list: the per-(series, anchor) regroup layer
-// always GROUPs BY anchor_ts (the sample-side fanout requires it to
-// rebuild the window array), with the series-identity columns
-// prepended when GroupBy is set. A mutant that dropped the group
-// columns from the key list would collapse all series into one window
-// per anchor; one that dropped anchor_ts would collapse the grid.
+// series-key threading for rate in query_range mode. The KEYLESS rate
+// (no GroupBy) keeps the sample-side fan-out emitter (CH ASOF needs an
+// equi-key), whose per-(series, anchor) regroup GROUPs BY anchor_ts
+// alone — a mutant dropping anchor_ts collapses the grid. The KEYED
+// rate routes to the fan-out-free ASOF boundary emitter, which threads
+// the series-identity column through the equi-join ON predicate
+// (`g.Attributes = E.Attributes`) and the grid's DISTINCT-series
+// discovery (`GROUP BY Attributes`); a mutant dropping the equi-key
+// would cross-join every series.
 func TestEmitWindowedArrayMatrix_GroupByBoundary(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -1620,15 +1623,15 @@ func TestEmitWindowedArrayMatrix_GroupByBoundary(t *testing.T) {
 		dont    string
 	}{
 		{
-			name:    "no GroupBy in matrix mode → regroup keys on anchor_ts only",
+			name:    "no GroupBy in matrix mode → fan-out regroup keys on anchor_ts only",
 			groupBy: nil,
 			want:    "GROUP BY `anchor_ts`",
 			dont:    "GROUP BY `Attributes`, `anchor_ts`",
 		},
 		{
-			name:    "with GroupBy in matrix mode → series key prepended",
+			name:    "with GroupBy in matrix mode → ASOF equi-key threads the series column",
 			groupBy: []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
-			want:    "GROUP BY `Attributes`, `anchor_ts`",
+			want:    "`g`.`Attributes` = `E`.`Attributes`",
 			dont:    "",
 		},
 	}

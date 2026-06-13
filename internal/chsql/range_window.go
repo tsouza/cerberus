@@ -2518,6 +2518,15 @@ func (e *emitter) emitWindowedArrayExtrapolated(r *chplan.RangeWindow, kind extr
 		if r.Step <= 0 {
 			return fmt.Errorf("%w: RangeWindow.OuterRange > 0 requires Step > 0", ErrUnsupported)
 		}
+		// The ASOF boundary-lookup path collapses the per-(sample,
+		// covering-anchor) fan-out, but CH's ASOF JOIN needs at least one
+		// equi-join column — the series-identity group key. A keyless
+		// rate (no GroupBy) has no equi-key, so it stays on the fan-out
+		// emitter. Every PromQL query_range rate/increase/delta carries
+		// the Attributes series key, so the common path takes ASOF.
+		if len(r.GroupBy) > 0 {
+			return e.emitWindowedArrayExtrapolatedMatrixASOF(r, kind)
+		}
 		return e.emitWindowedArrayExtrapolatedMatrix(r, kind)
 	}
 

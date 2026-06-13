@@ -1726,6 +1726,19 @@ const (
 	// matches *no* row on the right. Used by structural_join.go for
 	// the negated TraceQL operators (`!>`, `!<`, `!~`, `!>>`, `!<<`).
 	LeftAntiJoin JoinKind = "LEFT ANTI JOIN"
+	// ASOFLeftJoin renders as "ASOF LEFT JOIN" — ClickHouse's
+	// nearest-match join. The ON predicate must carry at least one
+	// equi-join condition AND exactly one inequality (`<`, `<=`, `>`,
+	// `>=`) as its LAST term; CH matches each left row to the single
+	// right row whose inequality column is closest under that operator
+	// (and equal on the equi-keys). Rows with no qualifying right match
+	// emit NULLs for the right columns (LEFT flavour). Used by
+	// range_window.go's rate/increase/delta boundary lookup: each anchor
+	// row ASOF-joins the per-series sample stream to find its window-end
+	// (`ts <= anchor`) and window-start (`ts > anchor - range`) boundary
+	// samples in O((samples + anchors)·log) instead of fanning every
+	// sample across its covering anchors.
+	ASOFLeftJoin JoinKind = "ASOF LEFT JOIN"
 )
 
 // joinClause is one entry in a QueryBuilder's join chain. Rendered
