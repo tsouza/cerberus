@@ -30,7 +30,7 @@ func allNodeKinds() []chplan.Node {
 			OuterRange: time.Hour, Start: time.Unix(1000, 0).UTC(), End: time.Unix(4600, 0).UTC(),
 			GroupBy: []chplan.Expr{expr}, Scalars: []float64{1}, ScalarExprs: []chplan.Expr{&chplan.LitFloat{V: 2}},
 		},
-		&chplan.RangeLWR{Input: leaf, Range: time.Minute, Lookback: 5 * time.Minute, ValueCol: "Value"},
+		&chplan.RangeLWR{Input: leaf, Lookback: 5 * time.Minute, ValueCol: "Value"},
 		&chplan.RangeBucketFanout{
 			Input: leaf, GroupBy: []chplan.Expr{expr}, GroupByAliases: []string{"g0"},
 			AggFuncs:    []chplan.AggFunc{{Name: "sumForEach", Args: []chplan.Expr{&chplan.ColumnRef{Name: "BucketCounts"}}, Alias: "BucketCounts"}},

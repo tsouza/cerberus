@@ -61,7 +61,7 @@ func TestReanchorRange_EquivalentToWidenSubquerySpine(t *testing.T) {
 		t.Run(q, func(t *testing.T) {
 			t.Parallel()
 
-			expr, err := parser.ParseExpr(q)
+			expr, err := parser.NewParser(parser.Options{EnableExperimentalFunctions: true}).ParseExpr(q)
 			if err != nil {
 				t.Fatalf("ParseExpr(%q): %v", q, err)
 			}
