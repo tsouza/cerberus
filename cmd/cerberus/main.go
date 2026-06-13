@@ -207,6 +207,7 @@ func run() error {
 	promHandler.Engine = &engine.Engine{Optimizer: promHandler.Optimizer, Client: client, Solver: evalSolver}
 	promHandler.Limiter = promLimiter
 	promHandler.Version = Version
+	promHandler.ExperimentalTSGridRange = cfg.ExperimentalTSGridRange
 	promHandler.Mount(traceMux)
 
 	lokiHandler := loki.New(client, cfg.Logs, logger.With("api", "loki"))

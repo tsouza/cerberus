@@ -101,7 +101,15 @@ func TestLower(t *testing.T) {
 				if perr != nil {
 					t.Fatalf("fixture %s: parse range_step %q: %v", c.Name, rs, perr)
 				}
-				plan, err = promql.LowerAtRange(context.Background(), expr, s, rangeStart, rangeEnd, stepDur)
+				// An `experimental_ts_grid_range:` section (any non-empty
+				// body) opts the fixture into the native timeSeriesRateToGrid
+				// lowering — the always-on SQL-shape coverage floor for the
+				// experimental flag. Without the section the default
+				// (arrayJoin fan-out) path is exercised, so every existing
+				// fixture stays byte-identical.
+				_, native := c.Section("experimental_ts_grid_range")
+				plan, err = promql.LowerAtRangeOpts(context.Background(), expr, s, rangeStart, rangeEnd, stepDur,
+					promql.LowerOpts{ExperimentalTSGridRange: native})
 			} else {
 				plan, err = promql.LowerAt(context.Background(), expr, s, instantEval, instantEval)
 			}

@@ -190,6 +190,30 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		}
 		b.WriteString("\n")
 		printNode(b, v.Input, depth+1)
+	case *chplan.RangeWindowNative:
+		fmt.Fprintf(b, "%sRangeWindowNative func=%s range=%s step=%s",
+			indent, v.Func, v.Range, v.Step)
+		if v.Offset != 0 {
+			fmt.Fprintf(b, " offset=%s", v.Offset)
+		}
+		if v.TimestampColumn != "" {
+			fmt.Fprintf(b, " ts=%s", v.TimestampColumn)
+		}
+		if v.ValueColumn != "" {
+			fmt.Fprintf(b, " value=%s", v.ValueColumn)
+		}
+		if len(v.GroupBy) > 0 {
+			gb := make([]string, len(v.GroupBy))
+			for i, e := range v.GroupBy {
+				gb[i] = printExpr(e)
+			}
+			fmt.Fprintf(b, " groupBy=[%s]", strings.Join(gb, ", "))
+		}
+		if !v.Start.IsZero() || !v.End.IsZero() {
+			fmt.Fprintf(b, " start=%s end=%s", v.Start.UTC().Format("2006-01-02T15:04:05Z"), v.End.UTC().Format("2006-01-02T15:04:05Z"))
+		}
+		b.WriteString("\n")
+		printNode(b, v.Input, depth+1)
 	case *chplan.RangeLWR:
 		fmt.Fprintf(b, "%sRangeLWR step=%s lookback=%s", indent, v.Step, v.Lookback)
 		if v.Offset != 0 {

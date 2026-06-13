@@ -104,7 +104,7 @@ func TestQuerySettings_MaxMemoryUsage(t *testing.T) {
 	t.Parallel()
 
 	c := &Client{maxMemory: 1 << 30}
-	settings := c.querySettings()
+	settings := c.querySettings(context.Background())
 	if settings == nil {
 		t.Fatal("querySettings() = nil with a configured cap; want max_memory_usage set")
 	}
@@ -120,8 +120,61 @@ func TestQuerySettings_MaxMemoryUsage(t *testing.T) {
 	}
 
 	unset := &Client{}
-	if s := unset.querySettings(); s != nil {
+	if s := unset.querySettings(context.Background()); s != nil {
 		t.Errorf("querySettings() with cap 0 = %v; want nil (setting not sent)", s)
+	}
+}
+
+// TestQuerySettings_TSGridSetting — the experimental
+// timeSeriesRateToGrid setting is added ONLY when ctx is marked by
+// WithTSGridSetting, and when it is, it MERGES with max_memory_usage on
+// the same map (never clobbers it). Unmarked ctx never carries the knob.
+func TestQuerySettings_TSGridSetting(t *testing.T) {
+	t.Parallel()
+
+	// Unmarked ctx → no experimental knob even on a configured client.
+	c := &Client{maxMemory: 1 << 30}
+	plain := c.querySettings(context.Background())
+	if _, ok := plain[SettingExperimentalTSGridAggregate]; ok {
+		t.Errorf("plain ctx carries %s; want it absent", SettingExperimentalTSGridAggregate)
+	}
+
+	// Marked ctx → both knobs present on the one map (the merge, not a
+	// clobbering second WithSettings wrap).
+	marked := c.querySettings(WithTSGridSetting(context.Background()))
+	if marked[SettingExperimentalTSGridAggregate] != 1 {
+		t.Errorf("%s = %v; want 1", SettingExperimentalTSGridAggregate, marked[SettingExperimentalTSGridAggregate])
+	}
+	if marked["max_memory_usage"] != int64(1<<30) {
+		t.Errorf("max_memory_usage = %v; want %d (the merge must not drop the cap)", marked["max_memory_usage"], int64(1<<30))
+	}
+	if len(marked) != 2 {
+		t.Errorf("marked settings carries %d entries (%v); want exactly the two knobs", len(marked), marked)
+	}
+
+	// Marked ctx with NO memory cap → only the experimental knob, no
+	// spurious max_memory_usage=0.
+	bare := (&Client{}).querySettings(WithTSGridSetting(context.Background()))
+	if bare[SettingExperimentalTSGridAggregate] != 1 {
+		t.Errorf("bare client %s = %v; want 1", SettingExperimentalTSGridAggregate, bare[SettingExperimentalTSGridAggregate])
+	}
+	if _, ok := bare["max_memory_usage"]; ok {
+		t.Errorf("bare client carries max_memory_usage; want it absent (cap is 0)")
+	}
+	if len(bare) != 1 {
+		t.Errorf("bare settings carries %d entries (%v); want exactly the experimental knob", len(bare), bare)
+	}
+}
+
+// TestSettingExperimentalTSGridAggregate_ExactName pins the exact
+// ClickHouse setting spelling so a future server-side rename surfaces
+// loudly here (chDB does not enforce the gate, so the chdb parity lane
+// cannot catch a mis-spelled or omitted setting).
+func TestSettingExperimentalTSGridAggregate_ExactName(t *testing.T) {
+	t.Parallel()
+	const want = "allow_experimental_ts_to_grid_aggregate_function"
+	if SettingExperimentalTSGridAggregate != want {
+		t.Errorf("SettingExperimentalTSGridAggregate = %q; want %q", SettingExperimentalTSGridAggregate, want)
 	}
 }
 

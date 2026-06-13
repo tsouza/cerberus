@@ -82,9 +82,36 @@ func LowerAt(ctx context.Context, expr parser.Expr, s schema.Metrics, start, end
 // start / end (the StepGrid emitter renders them as inline DateTime64
 // literals).
 func LowerAtRange(ctx context.Context, expr parser.Expr, s schema.Metrics, start, end time.Time, step time.Duration) (chplan.Node, error) {
+	return LowerAtRangeOpts(ctx, expr, s, start, end, step, LowerOpts{})
+}
+
+// LowerOpts carries optional, per-request lowering knobs that are
+// off-by-default. A zero LowerOpts reproduces [LowerAtRange]'s behaviour
+// byte-for-byte, so every caller that doesn't opt in stays on the
+// established lowering paths.
+type LowerOpts struct {
+	// ExperimentalTSGridRange opts eligible `rate(<counter>[<range>])`
+	// query_range expressions into the ClickHouse-native
+	// timeSeriesRateToGrid lowering (a chplan.RangeWindowNative node)
+	// instead of the default arrayJoin fan-out. Threaded from
+	// Config.ExperimentalTSGridRange. Default false.
+	ExperimentalTSGridRange bool
+}
+
+// LowerAtRangeOpts is the options-carrying variant of [LowerAtRange].
+// The query_range handler adapters pass a populated LowerOpts so the
+// experimental native-rate path can be enabled per deployment; every
+// other caller uses [Lower] / [LowerAt] / [LowerAtRange] and gets the
+// zero-options (default) behaviour.
+func LowerAtRangeOpts(ctx context.Context, expr parser.Expr, s schema.Metrics, start, end time.Time, step time.Duration, opts LowerOpts) (chplan.Node, error) {
 	_, span := tracer.Start(ctx, cerbtrace.SpanLower, trace.WithAttributes(cerbtrace.AttrQL.String("promql")))
 	defer span.End()
-	plan, err := lower(expr, s, lowerCtx{start: start, end: end, step: step})
+	plan, err := lower(expr, s, lowerCtx{
+		start:                   start,
+		end:                     end,
+		step:                    step,
+		experimentalTSGridRange: opts.ExperimentalTSGridRange,
+	})
 	if err != nil {
 		span.RecordError(err)
 		return nil, err
@@ -1538,6 +1565,20 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 		rw.End = ctx.end.UTC()
 		rw.Step = ctx.step
 		rw.OuterRange = ctx.end.Sub(ctx.start)
+
+		// Experimental opt-in: substitute the ClickHouse-native
+		// timeSeriesRateToGrid lowering for the eligible rate query_range
+		// shape. The native node carries the same Func/Range/Step/Start/
+		// End/Offset/columns/GroupBy as the fan-out RangeWindow above —
+		// only the emitter differs — and produces the identical
+		// per-(series, anchor) row shape (proven byte-identical on the
+		// chDB substrate; see test/spec/promql/native_rate_range_step.txtar
+		// and the dual-emit parity test). `rate` drops `__name__` (it is a
+		// derived sample), so the native node returns directly here,
+		// bypassing the last/first_over_time name-preservation wrap below.
+		if native := maybeNativeTSGridRate(rw, ctx); native != nil {
+			return native, nil
+		}
 	}
 	// `last_over_time` and `first_over_time` preserve `__name__`
 	// per Prometheus semantics — they're position-shift reducers that
@@ -1568,6 +1609,74 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 		return wrapRangeWindowPreserveName(rw, s, metricNameFromMatchers(vs.LabelMatchers)), nil
 	}
 	return rw, nil
+}
+
+// maybeNativeTSGridRate returns a chplan.RangeWindowNative when rw is an
+// eligible `rate(<counter>[<range>])` query_range RangeWindow AND the
+// experimental flag is set; otherwise nil (the caller keeps the fan-out
+// RangeWindow). The eligibility predicate is intentionally narrow — every
+// clause that fails sends the query down the unchanged fan-out path:
+//
+//   - ctx.experimentalTSGridRange must be true (default false).
+//   - rw.Func must be "rate". increase / delta have no proven-equivalent
+//     timeSeries*ToGrid aggregate yet (no timeSeriesIncreaseToGrid; the
+//     timeSeriesDeltaToGrid + reset-semantics mapping is unverified), so
+//     they stay on the fan-out until a dedicated differential sweep lands.
+//   - The window must be the materialised range grid: Step > 0 and both
+//     Start and End pinned. (The caller only reaches this with rw in
+//     matrix shape, but the guard is explicit so the node's invariants
+//     hold regardless of caller.)
+//   - rw.Identity must be false (the bare-vector subquery no-op path is
+//     not a rate) and rw.Input must be a plain Scan / Filter — the
+//     row-shape relation timeSeriesRateToGrid consumes. Inputs that route
+//     through MetricsAggregate / MetricsHistogramOverTime / MetricsCompare
+//     keep their own emit branches.
+//
+// The OuterRange field is intentionally NOT copied: it is a fan-out-only
+// emit knob (the matrix anchor span) that the native grid encodes
+// directly via Start/End/Step.
+func maybeNativeTSGridRate(rw *chplan.RangeWindow, ctx lowerCtx) *chplan.RangeWindowNative {
+	if !ctx.experimentalTSGridRange {
+		return nil
+	}
+	if rw.Func != "rate" {
+		return nil
+	}
+	if rw.Identity || rw.Step <= 0 || rw.Start.IsZero() || rw.End.IsZero() {
+		return nil
+	}
+	if !isPlainScanFilter(rw.Input) {
+		return nil
+	}
+	return &chplan.RangeWindowNative{
+		Input:           rw.Input,
+		Func:            rw.Func,
+		Range:           rw.Range,
+		Step:            rw.Step,
+		Start:           rw.Start,
+		End:             rw.End,
+		Offset:          rw.Offset,
+		TimestampColumn: rw.TimestampColumn,
+		ValueColumn:     rw.ValueColumn,
+		GroupBy:         rw.GroupBy,
+	}
+}
+
+// isPlainScanFilter reports whether n is a row-shape relation the native
+// timeSeriesRateToGrid emitter can consume directly: a Scan, or a Filter
+// chain bottoming out in a Scan. Anything else (the metrics_* TraceQL
+// families, joins, set-ops) has its own emit branch and is ineligible.
+func isPlainScanFilter(n chplan.Node) bool {
+	for {
+		switch v := n.(type) {
+		case *chplan.Scan:
+			return true
+		case *chplan.Filter:
+			n = v.Input
+		default:
+			return false
+		}
+	}
 }
 
 // wrapRangeWindowPreserveName wraps a RangeWindow with a canonical

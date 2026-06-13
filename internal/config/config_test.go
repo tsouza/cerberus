@@ -75,6 +75,57 @@ func TestFromEnv_AutoCreateSchema_Whitespace(t *testing.T) {
 	}
 }
 
+// TestFromEnv_ExperimentalTSGridRange_Default confirms the experimental
+// native-rate flag defaults OFF when unset — the default behaviour
+// (arrayJoin fan-out) is preserved and the compose / e2e / compatibility
+// lanes (ClickHouse 24.8, which lacks timeSeriesRateToGrid) stay green.
+func TestFromEnv_ExperimentalTSGridRange_Default(t *testing.T) {
+	t.Setenv("CERBERUS_EXPERIMENTAL_TS_GRID_RANGE", "")
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+	if cfg.ExperimentalTSGridRange {
+		t.Errorf("ExperimentalTSGridRange = true; want false (default)")
+	}
+}
+
+// TestFromEnv_ExperimentalTSGridRange_Parsing covers the strconv.ParseBool
+// vocabulary the flag accepts, with the load-bearing assertion that
+// CERBERUS_EXPERIMENTAL_TS_GRID_RANGE=true flips it on.
+func TestFromEnv_ExperimentalTSGridRange_Parsing(t *testing.T) {
+	cases := []struct {
+		val  string
+		want bool
+	}{
+		{"true", true},
+		{"1", true},
+		{"false", false},
+		{"0", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.val, func(t *testing.T) {
+			t.Setenv("CERBERUS_EXPERIMENTAL_TS_GRID_RANGE", tc.val)
+			cfg, err := FromEnv()
+			if err != nil {
+				t.Fatalf("FromEnv: %v", err)
+			}
+			if cfg.ExperimentalTSGridRange != tc.want {
+				t.Errorf("ExperimentalTSGridRange = %v; want %v", cfg.ExperimentalTSGridRange, tc.want)
+			}
+		})
+	}
+}
+
+// TestFromEnv_ExperimentalTSGridRange_Invalid confirms a bad boolean
+// string fails fast at startup rather than silently defaulting.
+func TestFromEnv_ExperimentalTSGridRange_Invalid(t *testing.T) {
+	t.Setenv("CERBERUS_EXPERIMENTAL_TS_GRID_RANGE", "maybe")
+	if _, err := FromEnv(); err == nil {
+		t.Fatal("FromEnv: want error for invalid bool, got nil")
+	}
+}
+
 // TestFromEnv_OTLP_Default confirms the disabled-by-default contract:
 // no env vars set → empty endpoint, default timeout, no headers. The
 // empty endpoint is what installs noop providers in main.

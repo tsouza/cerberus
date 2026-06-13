@@ -63,6 +63,16 @@ type lowerCtx struct {
 	// don't reference specific columns so the slot stays nil for the
 	// without branch (see [lowerAggregate]).
 	outerByLabels []string
+
+	// experimentalTSGridRange opts the eligible `rate(<counter>[<range>])`
+	// query_range shape into the ClickHouse-native `timeSeriesRateToGrid`
+	// lowering (a RangeWindowNative node) instead of the default
+	// arrayJoin fan-out (a RangeWindow node). Threaded from
+	// Config.ExperimentalTSGridRange via [LowerAtRangeOpts]. Default
+	// false — every other lowering path is byte-identical to today's, and
+	// the only callers that set it true are the query_range handler
+	// adapters. See [lowerRangeVectorCall] for the gating predicate.
+	experimentalTSGridRange bool
 }
 
 // withOuterByLabels returns a copy of c with outerByLabels set to

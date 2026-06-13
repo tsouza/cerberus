@@ -71,6 +71,17 @@ type Handler struct {
 	// behaviour when build metadata is unset).
 	Version string
 
+	// ExperimentalTSGridRange, when true, threads
+	// promql.LowerOpts{ExperimentalTSGridRange: true} into the
+	// query_range lowering so eligible `rate(<counter>[<range>])`
+	// expressions lower to the ClickHouse-native timeSeriesRateToGrid
+	// path (chplan.RangeWindowNative). Wired from
+	// Config.ExperimentalTSGridRange in cmd/cerberus. Default false (the
+	// arrayJoin fan-out). Only the range-streaming path consults it —
+	// instant queries and metadata queries never produce a rate
+	// query_range grid, so they are unaffected.
+	ExperimentalTSGridRange bool
+
 	// parser is the single PromQL parser instance the handler uses for
 	// every parse path. The handler-side classification parse
 	// (parseExpr — scalar fold / string literal / expression type
@@ -517,7 +528,14 @@ func (h *Handler) executeRangeStreaming(
 	start, end time.Time,
 	step time.Duration,
 ) (chclient.Cursor, map[string]string, error) {
-	l := &lang{Parser: h.parser, Schema: h.Schema, Start: start, End: end, Step: step}
+	l := &lang{
+		Parser:                  h.parser,
+		Schema:                  h.Schema,
+		Start:                   start,
+		End:                     end,
+		Step:                    step,
+		ExperimentalTSGridRange: h.ExperimentalTSGridRange,
+	}
 	// Time the entire QueryCursor entry so the cursor-open round-trip
 	// is billed to X-Cerberus-CH-Millis the same way timeCH did pre-
 	// port. The execute span the engine opens internally covers the

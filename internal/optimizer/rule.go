@@ -354,6 +354,12 @@ func rewriteUnaryNode(n chplan.Node, fn func(chplan.Node) (chplan.Node, bool)) (
 			cp.Input = in
 			return &cp
 		})
+	case *chplan.RangeWindowNative:
+		out, changed = rewriteSingleInput(v, v.Input, fn, func(in chplan.Node) chplan.Node {
+			cp := *v
+			cp.Input = in
+			return &cp
+		})
 	case *chplan.AbsentOverTime:
 		out, changed = rewriteSingleInput(v, v.Input, fn, func(in chplan.Node) chplan.Node {
 			cp := *v

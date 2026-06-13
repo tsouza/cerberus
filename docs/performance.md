@@ -277,8 +277,40 @@ moves.
 Native ClickHouse **`timeSeriesRateToGrid`** — CH copied Prometheus's rate code
 verbatim, so it computes the same `extrapolatedRate` *inside the engine*,
 moving the arithmetic floor down rather than around it. It lands in CH
-**≥ 25.6**; the deployment is on **24.8**. The plan is to adopt it outright when
-the CH floor moves; until then the fan-out is the right default.
+**≥ 25.6**; the production / compose deployment is on **24.8**, where the
+function is absent entirely (`UNKNOWN_FUNCTION`). The plan is to adopt it
+outright when the CH floor moves; until then the fan-out is the right default.
+
+**It is now shipped as an opt-in experimental path** — default OFF, gated by
+`CERBERUS_EXPERIMENTAL_TS_GRID_RANGE` (see
+[`operations.md`](operations.md#experimental-native-rate-timeseriesratetogrid)).
+When the flag is on, an eligible `rate(<counter>[<range>])` query_range lowers
+to a `chplan.RangeWindowNative` node that emits the native aggregate
+(`timeSeriesRateToGrid(start, end, step, window)(ts, value)` + a parallel
+`timeSeriesRange` anchor axis + `ARRAY JOIN` + `WHERE grid_val IS NOT NULL`)
+instead of the fan-out. The wrapping outer-sum `Aggregate` is byte-identical, so
+only the windowed-rate subquery changes. Flag OFF (the default) is byte-for-byte
+the established fan-out — every existing golden, the compat 574/574 corpus, and
+the compose / e2e lanes (all on CH 24.8) are structurally untouched.
+
+The *stale* note in earlier revisions — "untestable until prod upgrades" — was
+wrong. The **chDB test substrate is 25.8** and ships the full
+`timeSeries*ToGrid` family, so the native path *is* exercisable today on the
+chdb-tagged roundtrip lane. A dual-emit parity test
+(`internal/chsql/range_window_native_chdb_test.go`) lowers the same seed twice
+(OFF = fan-out, ON = native), runs both on one chDB session, and compares the
+decoded float64 grids. The result on the canonical 12-sample ramp:
+**16 of 18 grid cells are bit-identical; 2 cells (the same anchor on both
+series) differ by exactly 1 ULP** — the native C++ value is the next double up
+from the correctly-rounded SQL fan-out value (e.g. `0.12000000000000001` vs
+`0.12`). This is the inherent last-bit difference between two correct
+floating-point evaluation orders of the *identical* `extrapolatedRate`
+algorithm; it is far below any Prometheus-observable precision (the wire format
+and Grafana both render `0.12`). The test characterises it explicitly — every
+cell within 1 ULP, no more than the documented 2 cells diverging, and none
+diverging by more than 1 ULP — rather than masking it with an epsilon. Adoption
+beyond `rate` (increase / delta / deriv / predict_linear) stays on the fan-out
+until each native sibling is differentially proven against Prometheus.
 
 ### The lesson
 

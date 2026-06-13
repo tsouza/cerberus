@@ -126,6 +126,40 @@ func strategyFor(meta Meta) string {
 	return "native"
 }
 
+// execContext wraps the execute-stage ctx with any per-plan ClickHouse
+// settings the emitted plan requires. Today the single rule is: when the
+// optimized plan contains a chplan.RangeWindowNative node (the
+// experimental timeSeriesRateToGrid lowering), mark the ctx with
+// chclient.WithTSGridSetting so the chclient query path adds
+// `allow_experimental_ts_to_grid_aggregate_function=1` to THAT query's
+// settings. Plans without the native node return ctx unchanged, so the
+// experimental setting never rides an unrelated query (a plain unknown
+// setting can itself error on a ClickHouse < 25.6).
+//
+// Applied identically on the eager (QueryPlan) and streaming
+// (QueryPlanCursor) execute sites so the native path is gated the same
+// way regardless of which one runs.
+func execContext(ctx context.Context, plan chplan.Node) context.Context {
+	if planHasTSGridNative(plan) {
+		return chclient.WithTSGridSetting(ctx)
+	}
+	return ctx
+}
+
+// planHasTSGridNative reports whether plan contains a
+// chplan.RangeWindowNative node anywhere in the tree.
+func planHasTSGridNative(plan chplan.Node) bool {
+	found := false
+	chplan.Walk(plan, func(n chplan.Node) bool {
+		if _, ok := n.(*chplan.RangeWindowNative); ok {
+			found = true
+			return false // stop descending this branch
+		}
+		return true
+	})
+	return found
+}
+
 // Querier is the subset of *chclient.Client Engine needs. Each handler
 // already declares a (broader) Querier in its own package; Engine
 // requires only the row-returning Query method since adapters lower to
@@ -331,7 +365,7 @@ func (e *Engine) QueryPlan(ctx context.Context, lang Lang, plan chplan.Node, met
 	// their per-head labels.
 	execT := telemetry.ObserveStage(telemetry.StageExecute)
 	start := time.Now()
-	samples, err := e.Client.Query(chclient.WithProgressFor(ctx, lang.Name()), sql, args...)
+	samples, err := e.Client.Query(execContext(chclient.WithProgressFor(ctx, lang.Name()), plan), sql, args...)
 	chMillis := time.Since(start).Milliseconds()
 	execT.Done(ctx)
 	if err != nil {
@@ -537,7 +571,7 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 	}
 
 	execT := telemetry.ObserveStage(telemetry.StageExecute)
-	cursor, err := cq.QueryCursor(chclient.WithProgressFor(ctx, lang.Name()), sql, args...)
+	cursor, err := cq.QueryCursor(execContext(chclient.WithProgressFor(ctx, lang.Name()), plan), sql, args...)
 	execT.Done(ctx)
 	if err != nil {
 		return CursorResult{}, fmt.Errorf("engine: execute: %w", err)

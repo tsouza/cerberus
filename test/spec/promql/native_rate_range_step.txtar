@@ -1,0 +1,83 @@
+# Experimental: the ClickHouse-native timeSeriesRateToGrid lowering for
+# `sum by (X) (rate(metric[range]))` in range mode (Step > 0). This is the
+# always-on SQL-shape coverage floor for the CERBERUS_EXPERIMENTAL_TS_GRID_RANGE
+# flag: the `experimental_ts_grid_range` section opts the fixture into
+# LowerOpts{ExperimentalTSGridRange: true}, so the lowering emits a
+# chplan.RangeWindowNative (rendered as the timeSeriesRateToGrid parametric
+# aggregate + parallel timeSeriesRange axis + ARRAY JOIN + IS NOT NULL filter)
+# instead of the arrayJoin fan-out. The wrapping outer-sum Aggregate is
+# byte-identical to the fan-out fixture (sum_by_rate_range_step.txtar) — only
+# the windowed-rate subquery differs.
+#
+# The seed + grid are IDENTICAL to sum_by_rate_range_step.txtar so the
+# chdb-tagged dual-emit parity test can prove native == fan-out == Prometheus
+# at full float64 precision on one chDB session. See
+# native_dual_emit_chdb_test.go.
+
+-- query.promql --
+sum by(cerberus_ql) (rate(cerberus_queries_total[5m]))
+-- range_step --
+30s
+-- experimental_ts_grid_range --
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum VALUES
+    ('cerberus_queries_total', map('cerberus_ql', 'promql'), toDateTime64('2026-01-01 00:00:00', 9), 0.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'promql'), toDateTime64('2026-01-01 00:01:00', 9), 12.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'promql'), toDateTime64('2026-01-01 00:02:00', 9), 24.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'promql'), toDateTime64('2026-01-01 00:03:00', 9), 36.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'promql'), toDateTime64('2026-01-01 00:04:00', 9), 48.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'promql'), toDateTime64('2026-01-01 00:05:00', 9), 60.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'logql'), toDateTime64('2026-01-01 00:00:00', 9), 0.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'logql'), toDateTime64('2026-01-01 00:01:00', 9), 6.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'logql'), toDateTime64('2026-01-01 00:02:00', 9), 12.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'logql'), toDateTime64('2026-01-01 00:03:00', 9), 18.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'logql'), toDateTime64('2026-01-01 00:04:00', 9), 24.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'logql'), toDateTime64('2026-01-01 00:05:00', 9), 30.0);
+-- expected_rows --
+[
+  ["", {"cerberus_ql": "logql"}, "2026-01-01T00:01:00Z", 0.02],
+  ["", {"cerberus_ql": "logql"}, "2026-01-01T00:01:30Z", 0.03],
+  ["", {"cerberus_ql": "logql"}, "2026-01-01T00:02:00Z", 0.04],
+  ["", {"cerberus_ql": "logql"}, "2026-01-01T00:02:30Z", 0.05],
+  ["", {"cerberus_ql": "logql"}, "2026-01-01T00:03:00Z", 0.060000000000000005],
+  ["", {"cerberus_ql": "logql"}, "2026-01-01T00:03:30Z", 0.07],
+  ["", {"cerberus_ql": "logql"}, "2026-01-01T00:04:00Z", 0.08],
+  ["", {"cerberus_ql": "logql"}, "2026-01-01T00:04:30Z", 0.09],
+  ["", {"cerberus_ql": "logql"}, "2026-01-01T00:05:00Z", 0.1],
+  ["", {"cerberus_ql": "promql"}, "2026-01-01T00:01:00Z", 0.04],
+  ["", {"cerberus_ql": "promql"}, "2026-01-01T00:01:30Z", 0.06],
+  ["", {"cerberus_ql": "promql"}, "2026-01-01T00:02:00Z", 0.08],
+  ["", {"cerberus_ql": "promql"}, "2026-01-01T00:02:30Z", 0.1],
+  ["", {"cerberus_ql": "promql"}, "2026-01-01T00:03:00Z", 0.12000000000000001],
+  ["", {"cerberus_ql": "promql"}, "2026-01-01T00:03:30Z", 0.14],
+  ["", {"cerberus_ql": "promql"}, "2026-01-01T00:04:00Z", 0.16],
+  ["", {"cerberus_ql": "promql"}, "2026-01-01T00:04:30Z", 0.18],
+  ["", {"cerberus_ql": "promql"}, "2026-01-01T00:05:00Z", 0.2]
+]
+-- args --
+[0] string = ""
+[1] string = "cerberus_ql"
+[2] string = "cerberus_ql"
+[3] string = "cerberus_ql"
+[4] string = "cerberus.ql"
+[5] string = "cerberus_queries_total"
+[6] string = "cerberus.queries.total"
+[7] string = "cerberus.queries_total"
+[8] string = "cerberus_queries.total"
+[9] string = "cerberus_ql"
+[10] string = "cerberus_ql"
+[11] string = "cerberus.ql"
+-- chplan --
+Project ["" AS MetricName, mapWithoutEmpty(map("cerberus_ql", gkey_0)) AS Attributes, bucket_ts AS TimeUnix, Value AS Value]
+  Aggregate groupBy=[if(mapContains(Attributes, "cerberus_ql"), Attributes["cerberus_ql"], Attributes["cerberus.ql"]) AS gkey_0, TimeUnix AS bucket_ts] funcs=[sum(Value) AS Value]
+    RangeWindowNative func=rate range=5m0s step=30s ts=TimeUnix value=Value groupBy=[Attributes] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+      Filter predicate=(MetricName IN ("cerberus_queries_total", "cerberus.queries.total", "cerberus.queries_total", "cerberus_queries.total"))
+        Scan(otel_metrics_sum)
+-- sql --
+SELECT ? AS `MetricName`, mapFilter((k, v) -> v != '', map(?, `gkey_0`)) AS `Attributes`, `bucket_ts` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT if(mapContains(`Attributes`, ?), `Attributes`[?], `Attributes`[?]) AS `gkey_0`, `TimeUnix` AS `bucket_ts`, sum(`Value`) AS `Value` FROM (SELECT `Attributes`, `anchor_ts`, `anchor_ts` AS `TimeUnix`, toFloat64(`grid_val`) AS `Value` FROM (SELECT `Attributes`, timeSeriesRateToGrid(toDateTime64('2026-01-01 00:00:00.000000000', 9), toDateTime64('2026-01-01 00:05:00.000000000', 9), 30, 300)(`TimeUnix`, `Value`) AS `grid`, timeSeriesRange(toDateTime64('2026-01-01 00:00:00.000000000', 9), toDateTime64('2026-01-01 00:05:00.000000000', 9), 30) AS `grid_ts` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?, ?))) GROUP BY `Attributes`) ARRAY JOIN `grid` AS `grid_val`, `grid_ts` AS `anchor_ts` WHERE `grid_val` IS NOT NULL) GROUP BY if(mapContains(`Attributes`, ?), `Attributes`[?], `Attributes`[?]), `TimeUnix`)

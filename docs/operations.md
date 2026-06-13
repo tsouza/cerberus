@@ -27,6 +27,7 @@ Every runtime knob is an environment variable read at startup by
 | `CERBERUS_CH_BREAKER_WINDOW`           | `10s`            | Rolling window over which the threshold failures must occur (`time.ParseDuration` syntax). Must be > 0.                                                                                                                                              |
 | `CERBERUS_CH_BREAKER_OPEN_INTERVAL`    | `5s`             | OPEN-state backoff before the breaker admits a single HALF-OPEN probe (`time.ParseDuration` syntax). Must be > 0.                                                                                                                                    |
 | `CERBERUS_AUTO_CREATE_SCHEMA`          | `false`          | When `true`, apply the OTel-CH DDL at startup before serving.                                                                                                                                                                                        |
+| `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE`  | `false`          | **Experimental.** Emit native `timeSeriesRateToGrid` for eligible `rate(…[range])` query_range (needs CH ≥ 25.6; errors on 24.8). OFF keeps the fan-out. See [native rate](#experimental-native-rate-timeseriesratetogrid).                          |
 | `CERBERUS_LOG_FORMAT`                  | `text`           | slog handler kind (`text` or `json`).                                                                                                                                                                                                                |
 | `CERBERUS_LOG_LEVEL`                   | `info`           | Minimum slog level (`debug` / `info` / `warn` / `error`).                                                                                                                                                                                            |
 | `CERBERUS_OTLP_ENDPOINT`               | (empty)          | gRPC OTLP target for self-telemetry. Empty disables exporters.                                                                                                                                                                                       |
@@ -137,6 +138,44 @@ per-shard memory apportionment; their defaults are deliberately conservative
 against over-routing (Grafana's auto-step makes `rate[5m] @ 15s` hit `F=20`,
 which must NOT route at the default thresholds unless the total expansion is
 spike-class).
+
+### Experimental: native rate (`timeSeriesRateToGrid`)
+
+`CERBERUS_EXPERIMENTAL_TS_GRID_RANGE` (**default `false`**) opts the eligible
+`rate(<counter>[<range>])` query_range shape into ClickHouse's compiled
+`timeSeriesRateToGrid` aggregate instead of the default arrayJoin fan-out. The
+native operator computes the same Prometheus `extrapolatedRate` *inside the
+engine* — CH ported the calculation verbatim — closing the execution-layer gap
+the SQL array machinery leaves at high cardinality. See
+[`performance.md`](performance.md#the-durable-answer) for the why.
+
+**Requirements and hard constraints:**
+
+- **ClickHouse ≥ 25.6.** The `timeSeries*ToGrid` family was introduced in CH
+  v25.6.0. On an older server (the compose / e2e deployment runs **24.8**) a
+  native-path query errors with `UNKNOWN_FUNCTION` — so the flag **must stay
+  OFF** there. The experimental ClickHouse setting
+  `allow_experimental_ts_to_grid_aggregate_function=1` is sent **only on the
+  queries that actually use the native node** (cerberus detects a
+  `RangeWindowNative` in the emitted plan and stamps the setting per-query), so
+  enabling the flag never adds an unknown setting to unrelated queries.
+- **Scope: `rate` only.** `increase` / `delta` / `deriv` / `predict_linear`
+  stay on the fan-out — there is no `timeSeriesIncreaseToGrid`, and the
+  `timeSeriesDeltaToGrid` mapping is not yet differentially proven against
+  Prometheus. Those functions, instant queries, and every non-PromQL head are
+  unaffected by the flag.
+- **Default OFF is byte-for-byte the established fan-out.** Every existing
+  golden, the compat 574/574 corpus, and the compose / e2e lanes are
+  structurally untouched when the flag is unset.
+
+**Parity.** Validated on the chDB substrate (25.8) by a dual-emit test that runs
+the fan-out and the native path on the same seed and compares decoded float64
+grids: 16/18 cells bit-identical, 2 cells differ by exactly 1 ULP (the native
+value is the next double up from the correctly-rounded fan-out value — a
+sub-observable float-order difference, both render `0.12`). Treat this as
+experimental until the production CH floor reaches ≥ 25.6 and the path is
+exercised against a real (non-chDB) server, where the experimental setting is
+actually enforced.
 
 ## Backing services
 
