@@ -1440,18 +1440,25 @@ func sampleAnchorFanoutFrag(end, ts Frag, stepNS, rangeNS, numAnchors int64) Fra
 // matrix emitters (emitWindowedArrayPairsMatrix / emitWindowedArrayMatrix
 // / emitWindowedArrayExtrapolatedMatrix). When r.StepAlign is set, it
 // snaps the anchor-grid base to a phase-0 epoch multiple of stepNS (see
-// epochAlignedEndFrag) AND over-provisions the anchor count by one:
-// snapping shifts the base down by up to one full step, so the oldest
-// anchor the outer window still needs can fall just past the original N.
-// The extra low anchor is harmless — it is selected by no outer window
-// and drops out. When StepAlign is false the inputs pass through
-// unchanged (byte-stable goldens for the outer query_range grid and the
-// Tempo metrics path).
+// epochAlignedEndFrag); numAnchors is left unchanged.
+//
+// The anchor count needs no over-provisioning: snapping shifts the base
+// down by δ ∈ [0, step), which maps every sample to an anchor index ≤ its
+// pre-snap index (dist shrinks by δ < step), so no sample crosses the
+// `least(numAnchors, …)` clamp that wasn't already inside it. The oldest
+// epoch-multiple any outer window needs sits at index
+// (snappedEnd − anchor)/step ≤ (OuterRange − δ)/step ≤ floor(OuterRange/
+// step) = numAnchors − 1 < numAnchors — already covered. (A speculative
+// +1 here regressed the subquery_over_increase cardinality ratchet
+// peak_intermediate 6→7 for zero coverage gain.)
+//
+// When StepAlign is false the inputs pass through unchanged (byte-stable
+// goldens for the outer query_range grid and the Tempo metrics path).
 func stepAlignGrid(r *chplan.RangeWindow, end Frag, stepNS, numAnchors int64) (Frag, int64) {
 	if !r.StepAlign {
 		return end, numAnchors
 	}
-	return epochAlignedEndFrag(end, stepNS), numAnchors + 1
+	return epochAlignedEndFrag(end, stepNS), numAnchors
 }
 
 func epochAlignedEndFrag(end Frag, stepNS int64) Frag {
