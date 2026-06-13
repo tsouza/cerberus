@@ -180,6 +180,7 @@ deps:
       - chsql
       - chclient
       - optimizer
+      - solver
 
   # solver is the sharded-pushdown query-solver framework (off by
   # default — Mode="single"). The Planner/Slicer classify + re-anchor

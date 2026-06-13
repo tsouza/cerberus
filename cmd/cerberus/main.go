@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel"
+	"golang.org/x/sync/semaphore"
 
 	"github.com/tsouza/cerberus/internal/api/admit"
 	"github.com/tsouza/cerberus/internal/api/health"
@@ -26,6 +27,7 @@ import (
 	"github.com/tsouza/cerberus/internal/config"
 	"github.com/tsouza/cerberus/internal/engine"
 	"github.com/tsouza/cerberus/internal/schema/ddl"
+	"github.com/tsouza/cerberus/internal/solver"
 	"github.com/tsouza/cerberus/internal/telemetry"
 )
 
@@ -181,11 +183,27 @@ func run() error {
 	// the route.
 	traceMux := http.NewServeMux()
 
+	// Sharded-pushdown solver (DARK by default — Mode=single). Built from
+	// the CERBERUS_EVAL_ROUTE knobs and fail-fast validated, then wired with
+	// the data-plane hooks: a GLOBAL connection gate sized from the chclient
+	// pool (MaxOpenConns − reserve) and SHARED across heads, the breaker
+	// peek, the chsql emitter adapter, and the prom admit limiter for the
+	// (P-1) top-up. Under Mode=single the Planner classifies but never
+	// routes, so the Executor stays dormant — this is all dead-weight until
+	// the phase-2 auto flip. A nil *solver.Solver (returned when route="off"
+	// is NOT a thing — single IS the off state) keeps the engine on the
+	// byte-identical pre-solver path; here we always wire it so the shadow
+	// header reports the classification.
+	evalSolver, err := buildSolver(logger, cfg.ClickHouse, client, promLimiter)
+	if err != nil {
+		return fmt.Errorf("configure solver: %w", err)
+	}
+
 	// All three heads run on the shared engine.Engine pipeline; each
 	// engine is constructed below from the shared Client + a seed
 	// optimizer and assigned onto the per-head handler.
 	promHandler := prom.New(client, cfg.Schema, logger.With("api", "prom"))
-	promHandler.Engine = &engine.Engine{Optimizer: promHandler.Optimizer, Client: client}
+	promHandler.Engine = &engine.Engine{Optimizer: promHandler.Optimizer, Client: client, Solver: evalSolver}
 	promHandler.Limiter = promLimiter
 	promHandler.Version = Version
 	promHandler.Mount(traceMux)
@@ -261,6 +279,72 @@ func run() error {
 	}
 	logger.Info("cerberus stopped")
 	return nil
+}
+
+// solverGateReserve is the number of pooled connections the solver's GLOBAL
+// shard gate leaves untouched so route-A traffic (the overwhelming majority)
+// always has headroom even when a routed fan-out is holding gate slots. The
+// gate is sized MaxOpenConns − reserve; the Executor additionally caps any
+// single routed request at gate/2 so >=2 routed requests can always progress.
+const solverGateReserve = 2
+
+// buildSolver constructs the sharded-pushdown solver from the CERBERUS_*
+// environment and wires its data-plane hooks. The Config is validated
+// fail-fast (an invalid CERBERUS_EVAL_ROUTE / threshold aborts startup). The
+// GLOBAL gate is sized from the chclient pool (MaxOpenConns − reserve) and
+// shared across heads via the single returned *solver.Solver. Under the
+// phase-1 default (Mode=single) everything below is dormant: the Planner
+// classifies for the shadow header but never routes, so the Executor and its
+// gate / breaker / admit hooks are wired but never exercised.
+func buildSolver(
+	logger *slog.Logger,
+	chCfg chclient.Config,
+	client *chclient.Client,
+	promLimiter *admit.Limiter,
+) (*solver.Solver, error) {
+	cfg, err := solver.ConfigFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+
+	// GLOBAL shard gate: MaxOpenConns − reserve, floored at 2 so the
+	// Executor's gate/2 cap never collapses to zero. The pool size is the
+	// validated, already-positive value config.FromEnv resolved.
+	gateCap := int64(chCfg.MaxOpenConns - solverGateReserve)
+	if gateCap < 2 {
+		gateCap = 2
+	}
+	gate := semaphore.NewWeighted(gateCap)
+
+	// The admit top-up is only meaningful when admission control is enabled.
+	// A nil *admit.Limiter (CERBERUS_ADMIT_DISABLED=true) leaves ExecDeps.Admit
+	// nil, which the Executor treats as "no cap" (it runs at full P). Passing
+	// the typed-nil *admit.Limiter directly would defeat the Executor's
+	// nil-interface guard, so gate the assignment on a non-nil limiter.
+	deps := solver.ExecDeps{
+		Client:  client,
+		Gate:    gate,
+		GateCap: gateCap,
+		Breaker: client,
+	}
+	if promLimiter != nil {
+		deps.Admit = promLimiter
+	}
+
+	s := solver.New(cfg, engine.ChsqlEmitter{}, deps)
+
+	logger.Info(
+		"sharded-pushdown solver wired (dark)",
+		"mode", cfg.Mode,
+		"gate_cap", gateCap,
+		"parallel", cfg.Parallel,
+		"min_fanout", cfg.MinFanout,
+		"min_anchor_pairs", cfg.MinAnchorPairs,
+	)
+	return s, nil
 }
 
 // warnIfClickHouseUnreachable performs the best-effort startup
