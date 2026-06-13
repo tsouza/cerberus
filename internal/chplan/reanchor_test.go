@@ -262,6 +262,181 @@ func TestReanchorRange_PropertyRejectsAtPin(t *testing.T) {
 	})
 }
 
+// lwrNode builds a RangeLWR over a leaf scan for the given grid + offset — the
+// bare-selector last-with-respect-to shape phase-3 ReanchorRange re-grids.
+func lwrNode(start, end time.Time, step, lookback, offset time.Duration) *chplan.RangeLWR {
+	return &chplan.RangeLWR{
+		Input:         &chplan.Scan{Table: "metrics", Columns: []string{"Value", "TimeUnix"}},
+		Start:         start,
+		End:           end,
+		Step:          step,
+		Lookback:      lookback,
+		Offset:        offset,
+		MetricNameCol: "MetricName",
+		AttributesCol: "Attributes",
+		TimestampCol:  "TimeUnix",
+		ValueCol:      "Value",
+	}
+}
+
+// TestReanchorRange_LWRReGrids asserts a pinned RangeLWR sitting on the
+// predicted grid is re-anchored onto a sub-grid, its input scan widened by the
+// offset-aware membership lookback (Offset+Lookback), and the input is left
+// byte-identical (copy-not-mutate).
+func TestReanchorRange_LWRReGrids(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		offset time.Duration
+	}{
+		{"zero offset", 0},
+		{"negative offset", -5 * time.Minute},
+		{"positive offset", time.Hour},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			gridStart := time.Unix(1000, 0).UTC()
+			gridEnd := time.Unix(4600, 0).UTC()
+			lookback := 5 * time.Minute
+			in := lwrNode(gridStart, gridEnd, time.Minute, lookback, tc.offset)
+			snapshot := chplan.CloneNode(in)
+
+			// Re-anchor onto a sub-window of the predicted grid. The node is
+			// unpinned first (the slicer's shape) so the sub-grid is accepted.
+			in.Start = time.Time{}
+			in.End = time.Time{}
+			subStart := gridStart.Add(10 * time.Minute)
+			subEnd := gridEnd.Add(-10 * time.Minute)
+
+			out, err := chplan.ReanchorRange(in, subStart, subEnd)
+			if err != nil {
+				t.Fatalf("ReanchorRange: %v", err)
+			}
+			r := out.(*chplan.RangeLWR)
+			if !r.Start.Equal(subStart) || !r.End.Equal(subEnd) {
+				t.Fatalf("re-anchored bounds wrong: Start=%v End=%v", r.Start, r.End)
+			}
+			if r.Lookback != lookback || r.Offset != tc.offset || r.Step != time.Minute {
+				t.Fatalf("re-anchor lost a non-grid field: %+v", r)
+			}
+			// The input must NOT be mutated — restore its pins and compare.
+			in.Start = gridStart
+			in.End = gridEnd
+			if !in.Equal(snapshot) {
+				t.Fatal("ReanchorRange mutated its RangeLWR input")
+			}
+		})
+	}
+}
+
+// TestReanchorRange_LWRAcceptsAlreadyGridded: a RangeLWR already on the
+// predicted grid re-anchors without error (the equivalence-with-unpinned path).
+func TestReanchorRange_LWRAcceptsAlreadyGridded(t *testing.T) {
+	t.Parallel()
+	start := time.Unix(1000, 0).UTC()
+	end := time.Unix(4600, 0).UTC()
+	in := lwrNode(start, end, time.Minute, 5*time.Minute, 0)
+	out, err := chplan.ReanchorRange(in, start, end)
+	if err != nil {
+		t.Fatalf("already-gridded RangeLWR should re-anchor cleanly, got %v", err)
+	}
+	r := out.(*chplan.RangeLWR)
+	if !r.Start.Equal(start) || !r.End.Equal(end) {
+		t.Fatalf("bounds drifted: %v %v", r.Start, r.End)
+	}
+}
+
+// TestReanchorRange_LWRRejectsAtPin: an @-pinned RangeLWR whose End diverges
+// from the predicted grid is rejected so the solver routes A.
+func TestReanchorRange_LWRRejectsAtPin(t *testing.T) {
+	t.Parallel()
+	in := lwrNode(time.Unix(9999-3600, 0).UTC(), time.Unix(9999, 0).UTC(), time.Minute, 5*time.Minute, 0)
+	start := time.Unix(1000, 0).UTC()
+	end := time.Unix(4600, 0).UTC()
+	_, err := chplan.ReanchorRange(in, start, end)
+	if !errors.Is(err, chplan.ErrReanchorGridMismatch) {
+		t.Fatalf("expected ErrReanchorGridMismatch for @-pinned RangeLWR, got %v", err)
+	}
+}
+
+// TestReanchorRange_LWRInstantTerminates: a Step==0 RangeLWR is copied verbatim.
+func TestReanchorRange_LWRInstantTerminates(t *testing.T) {
+	t.Parallel()
+	in := lwrNode(time.Time{}, time.Time{}, 0, 5*time.Minute, 0)
+	snapshot := chplan.CloneNode(in)
+	out, err := chplan.ReanchorRange(in, time.Unix(1, 0).UTC(), time.Unix(2, 0).UTC())
+	if err != nil {
+		t.Fatalf("ReanchorRange: %v", err)
+	}
+	if !out.Equal(snapshot) {
+		t.Fatal("instant RangeLWR should be copied unchanged")
+	}
+	if !in.Equal(snapshot) {
+		t.Fatal("ReanchorRange mutated the instant RangeLWR input")
+	}
+}
+
+// TestReanchorRange_LWROutputIsolated: mutating the re-anchored RangeLWR output
+// must not leak into the input — deep-copy isolation through the LWR rewrite.
+func TestReanchorRange_LWROutputIsolated(t *testing.T) {
+	t.Parallel()
+	in := lwrNode(time.Time{}, time.Time{}, time.Minute, 5*time.Minute, -5*time.Minute)
+	snapshot := chplan.CloneNode(in)
+
+	out, err := chplan.ReanchorRange(in, time.Unix(1000, 0).UTC(), time.Unix(4600, 0).UTC())
+	if err != nil {
+		t.Fatalf("ReanchorRange: %v", err)
+	}
+	r := out.(*chplan.RangeLWR)
+	r.Offset = 999 * time.Hour
+	r.Input.(*chplan.Scan).Table = "MUTATED"
+
+	if !in.Equal(snapshot) {
+		t.Fatal("mutating ReanchorRange RangeLWR output leaked into the input")
+	}
+}
+
+// TestReanchorRange_LWRPropertyBounds is the rapid property test for the
+// RangeLWR arm: over random (step, lookback, anchors, offset) the re-anchored
+// LWR lands exactly on the requested grid and its input scan is widened by
+// Offset+Lookback.
+func TestReanchorRange_LWRPropertyBounds(t *testing.T) {
+	t.Parallel()
+	rapid.Check(t, func(rt *rapid.T) {
+		stepSec := rapid.Int64Range(1, 600).Draw(rt, "stepSec")
+		anchors := rapid.Int64Range(2, 5000).Draw(rt, "anchors")
+		lookbackMul := rapid.Int64Range(1, 100).Draw(rt, "lookbackMul")
+		offsetSec := rapid.Int64Range(-3600, 7200).Draw(rt, "offsetSec")
+		startSec := rapid.Int64Range(0, 1_000_000).Draw(rt, "startSec")
+
+		step := time.Duration(stepSec) * time.Second
+		lookback := time.Duration(lookbackMul) * step
+		offset := time.Duration(offsetSec) * time.Second
+		start := time.Unix(startSec, 0).UTC()
+		end := start.Add(time.Duration(anchors-1) * step)
+
+		// Unpinned LWR (the slicer's shape) so any sub-grid is accepted.
+		in := lwrNode(time.Time{}, time.Time{}, step, lookback, offset)
+		snapshot := chplan.CloneNode(in)
+
+		out, err := chplan.ReanchorRange(in, start, end)
+		if err != nil {
+			rt.Fatalf("ReanchorRange errored on a well-formed grid: %v", err)
+		}
+		if !in.Equal(snapshot) {
+			rt.Fatal("input mutated")
+		}
+		r := out.(*chplan.RangeLWR)
+		if !r.Start.Equal(start) || !r.End.Equal(end) {
+			rt.Fatalf("LWR bounds: want [%v,%v] got [%v,%v]", start, end, r.Start, r.End)
+		}
+		if r.Lookback != lookback || r.Offset != offset || r.Step != step {
+			rt.Fatalf("LWR lost a non-grid field: %+v", r)
+		}
+	})
+}
+
 // TestReanchorRange_NilInput returns (nil, nil).
 func TestReanchorRange_NilInput(t *testing.T) {
 	t.Parallel()

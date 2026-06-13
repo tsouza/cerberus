@@ -41,11 +41,12 @@ func (p *Planner) Plan(plan chplan.Node, meta RequestMeta) (*Decision, bool) {
 	if !sig.allSliceInvariant {
 		return notRouted(ReasonNotSliceable), false
 	}
-	// (1b) Routable-spine restriction: phase 1 re-anchors the *RangeWindow
-	// matrix family only. A RangeLWR / RangeBucketFanout / StepGrid spine
-	// bound-carrier would be left at zero/stale bounds by the slicer (the
-	// base ReanchorRange re-grids *RangeWindow alone), so fail closed to
-	// route A. Widening to those families is a later PR that extends
+	// (1b) Routable-spine restriction: the routable spine families are the
+	// *RangeWindow matrix family (phase 1) and the *RangeLWR bare-selector
+	// last-with-respect-to family (phase 3) — ReanchorRange re-grids both. A
+	// RangeBucketFanout / StepGrid spine bound-carrier is still left at
+	// zero/stale bounds (ReanchorRange CloneNode's their grid verbatim), so
+	// those fail closed to route A. Widening to those families extends
 	// ReanchorRange + adds coverage.
 	if sig.sawNonRangeWindowSpine {
 		return notRouted(ReasonNotSliceable), false
@@ -174,15 +175,14 @@ type signals struct {
 	sawIncommensurate bool
 	sawScalarHeavy    bool
 
-	// sawNonRangeWindowSpine records a routed-spine grid bound-carrier that
-	// is NOT a *RangeWindow — a RangeLWR, RangeBucketFanout, or StepGrid
-	// whose grid the slicer would have to re-anchor. The base #826
-	// ReanchorRange only re-grids *RangeWindow: RangeLWR is zeroed by
-	// unpinSpine but never re-anchored (every shard would emit
-	// zero/stale bounds), and RangeBucketFanout / StepGrid are
-	// CloneNode'd verbatim (stale bounds). Phase 1's routable set is the
-	// *RangeWindow matrix family only; any non-RangeWindow spine
-	// bound-carrier fails closed to route A.
+	// sawNonRangeWindowSpine records a routed-spine grid bound-carrier whose
+	// grid ReanchorRange does NOT re-anchor — a RangeBucketFanout or StepGrid,
+	// which ReanchorRange CloneNode's verbatim (every shard would emit
+	// stale bounds). The routable set is the *RangeWindow matrix family
+	// (phase 1) plus the *RangeLWR bare-selector family (phase 3): both are
+	// re-gridded by ReanchorRange and zeroed/re-filled by unpinSpine, so
+	// neither sets this flag. RangeBucketFanout / StepGrid fail closed to
+	// route A until ReanchorRange learns their grids.
 	sawNonRangeWindowSpine bool
 
 	// Cost grid, derived from the OUTERMOST windowed node (the spine root).
@@ -381,13 +381,14 @@ func (p *Planner) recordRangeWindow(v *chplan.RangeWindow, predStart, predEnd ti
 // recordRangeLWR gathers signals for a bare-selector last-with-respect-to
 // node — the leaf of the safe-set range family.
 func (p *Planner) recordRangeLWR(v *chplan.RangeLWR, predStart, predEnd time.Time, depth int, sig *signals) {
-	// A RangeLWR that carries an own grid (Step > 0) is a bound-carrier the
-	// slicer's unpinSpine would zero but ReanchorRange never re-anchors, so
-	// every shard would emit zero/stale bounds. Phase 1 routes the
-	// *RangeWindow matrix family only — fail closed to route A.
-	if v.Step > 0 {
-		sig.sawNonRangeWindowSpine = true
-	}
+	// Phase 3 widens the routable set to the RangeLWR matrix family: a
+	// grid-carrying RangeLWR (Step > 0) is now re-anchored by ReanchorRange
+	// (its Start/End re-gridded, the input spine widened by the offset-aware
+	// Offset+Lookback membership window) and zeroed/re-filled by the slicer's
+	// unpinSpine, so it no longer sets sawNonRangeWindowSpine. The deriv /
+	// idelta / irate / instant-LWR / negative-offset families that lower to a
+	// bare RangeLWR spine now route B. RangeBucketFanout / StepGrid stay
+	// rejected — their grids are still CloneNode'd verbatim by ReanchorRange.
 	if v.Step <= 0 || (depth == 0 && v.End.Sub(v.Start) <= 0) {
 		sig.sawInstantWindow = true
 	}
