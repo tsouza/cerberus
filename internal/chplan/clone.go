@@ -83,6 +83,19 @@ func CloneNode(n Node) Node {
 		return &c
 	case *UnionAll:
 		return &UnionAll{Inputs: cloneNodes(v.Inputs)}
+	default:
+		return cloneCompositeNode(n)
+	}
+}
+
+// cloneCompositeNode deep-copies the join / set-op / histogram / metrics /
+// trace Node families. Split out of CloneNode so each type switch stays within
+// the funlen budget; together the two functions remain exhaustive over every
+// planNode() implementer — the TestCloneNodeExhaustive lock-step guard proves
+// no kind is missed, and the default below still panics on an unknown type so a
+// new kind cannot silently alias into a re-anchored shard plan.
+func cloneCompositeNode(n Node) Node {
+	switch v := n.(type) {
 	case *CrossJoin:
 		return &CrossJoin{Left: CloneNode(v.Left), Right: CloneNode(v.Right)}
 	case *SetOperation:

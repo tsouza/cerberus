@@ -80,7 +80,13 @@ func TestCloneNodeExhaustive(t *testing.T) {
 		if reflect.TypeOf(clone) != rt {
 			t.Errorf("CloneNode(%T) returned %T", n, clone)
 		}
-		if clone == n {
+		// Pointer-distinctness is a proxy for "deep copy", but zero-size types
+		// (e.g. *OneRow, backed by struct{}) cannot satisfy it: Go returns the
+		// single runtime.zerobase address for every zero-size allocation, so
+		// clone == n is unavoidable. Sharing is safe because such nodes are
+		// immutable — no fields to alias — so the deep-copy contract holds
+		// vacuously. Skip the proxy only for them.
+		if rt.Elem().Size() != 0 && clone == n {
 			t.Errorf("CloneNode(%T) returned the same pointer — not a copy", n)
 		}
 		if !n.Equal(clone) {
