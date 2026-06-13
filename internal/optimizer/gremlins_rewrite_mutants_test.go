@@ -60,14 +60,14 @@ func TestRewriteLeftRight_RebuildsWhenOnlyLeftChanges(t *testing.T) {
 // `if v.KExpr != nil` guard at rule.go:463 inside rewriteIrregularNode's
 // TopK case. The guard means "only recurse into KExpr when it exists".
 // Flipping `!= nil` to `== nil` (gremlins CONDITIONALS_NEGATION) inverts
-// it: a non-nil KExpr would be skipped (and a nil KExpr would be fed to
+// it: a non-nil KExpr would be bypassed (and a nil KExpr would be fed to
 // fn). So a TopK whose KExpr carries the only rewrite target — and whose
 // Input is unchanged — would be returned UNCHANGED, dropping the KExpr
 // rewrite.
 //
 // Input: TopK{Input: plain Scan (unchanged), KExpr: sentinel}. Original:
 // kCh=true → rebuild with rewritten KExpr. Mutant (`== nil`): KExpr is
-// non-nil so the branch is skipped, kCh=false, Input unchanged → returns
+// non-nil so the branch is bypassed, kCh=false, Input unchanged → returns
 // the original unchanged.
 func TestRewriteIrregular_TopK_RecursesIntoKExprWhenInputUnchanged(t *testing.T) {
 	t.Parallel()
