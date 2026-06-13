@@ -144,6 +144,10 @@ type OTLPConfig struct {
 //	CERBERUS_CH_CONN_MAX_LIFETIME  default "1h" (max age before a conn is recycled)
 //	CERBERUS_QUERY_MAX_SAMPLES     default 50000000 (0 disables the budget)
 //	CERBERUS_CH_QUERY_MAX_MEMORY   default 1073741824 bytes = 1GiB (0 = don't set)
+//	CERBERUS_CH_BREAKER_ENABLED       default "true"  (false → breaker never trips)
+//	CERBERUS_CH_BREAKER_THRESHOLD     default 5   (consecutive failures to trip OPEN)
+//	CERBERUS_CH_BREAKER_WINDOW        default "10s" (rolling failure window)
+//	CERBERUS_CH_BREAKER_OPEN_INTERVAL default "5s"  (OPEN-state backoff before a probe)
 //	CERBERUS_AUTO_CREATE_SCHEMA    default "false"
 //	CERBERUS_LOG_FORMAT            default "text"  ("text" | "json")
 //	CERBERUS_LOG_LEVEL             default "info"  ("debug" | "info" | "warn" | "error")
@@ -213,6 +217,10 @@ func FromEnv() (Config, error) {
 	if maxMemory < 0 {
 		return Config{}, fmt.Errorf("CERBERUS_CH_QUERY_MAX_MEMORY: must be >= 0, got %d", maxMemory)
 	}
+	breaker, err := breakerFromEnv()
+	if err != nil {
+		return Config{}, err
+	}
 	logCfg, err := envLog()
 	if err != nil {
 		return Config{}, err
@@ -238,6 +246,10 @@ func FromEnv() (Config, error) {
 			ConnMaxLifetime:     connMaxLifetime,
 			MaxQuerySamples:     maxSamples,
 			MaxQueryMemoryBytes: maxMemory,
+			BreakerThreshold:    breaker.Threshold,
+			BreakerWindow:       breaker.Window,
+			BreakerOpenInterval: breaker.OpenInterval,
+			BreakerDisabled:     breaker.Disabled,
 		},
 		Schema:           schema.DefaultOTelMetricsFromEnv(),
 		Logs:             schema.DefaultOTelLogsFromEnv(),
@@ -288,6 +300,74 @@ const (
 	defaultCHMaxIdleConns                  = 5
 	defaultCHConnMaxLifetime time.Duration = time.Hour
 )
+
+// Circuit-breaker defaults (#95). These reproduce the previously-
+// hardcoded constants in internal/chclient/breaker.go verbatim
+// (threshold 5, window 10s, open-interval 5s, enabled) so out-of-the-box
+// breaker behaviour is byte-unchanged when none of the CERBERUS_CH_BREAKER_*
+// env vars are set. cmd/cerberus threads these through chclient.Config
+// into the per-Client breaker; a zero field there resolves back to the
+// matching constant inside the breaker, so the two default sources can
+// never drift apart silently.
+const (
+	defaultCHBreakerThreshold                  = 5
+	defaultCHBreakerWindow       time.Duration = 10 * time.Second
+	defaultCHBreakerOpenInterval time.Duration = 5 * time.Second
+)
+
+// breakerConfig is the parsed CERBERUS_CH_BREAKER_* knob set. It is an
+// internal carrier between breakerFromEnv and FromEnv — the fields land
+// flat on chclient.Config (the breaker lives in chclient, so there is no
+// separate public breaker struct to expose).
+type breakerConfig struct {
+	Disabled     bool
+	Threshold    int
+	Window       time.Duration
+	OpenInterval time.Duration
+}
+
+// breakerFromEnv reads the CERBERUS_CH_BREAKER_* env vars into a
+// breakerConfig. Unset values use the defaults above, which reproduce the
+// pre-#95 hardcoded breaker constants exactly (so defaults are
+// byte-unchanged). CERBERUS_CH_BREAKER_ENABLED=false disables the breaker
+// entirely (always-allow, never trips); when disabled the threshold /
+// window / interval knobs are still validated so a typo doesn't pass
+// silently, but they have no runtime effect.
+//
+// Fail-fast validation: threshold must be >= 1, window > 0, interval > 0.
+func breakerFromEnv() (breakerConfig, error) {
+	enabled, err := envBool("CERBERUS_CH_BREAKER_ENABLED", true)
+	if err != nil {
+		return breakerConfig{}, fmt.Errorf("CERBERUS_CH_BREAKER_ENABLED: %w", err)
+	}
+	threshold, err := envInt("CERBERUS_CH_BREAKER_THRESHOLD", defaultCHBreakerThreshold)
+	if err != nil {
+		return breakerConfig{}, fmt.Errorf("CERBERUS_CH_BREAKER_THRESHOLD: %w", err)
+	}
+	if threshold < 1 {
+		return breakerConfig{}, fmt.Errorf("CERBERUS_CH_BREAKER_THRESHOLD: must be >= 1, got %d", threshold)
+	}
+	window, err := time.ParseDuration(envDefault("CERBERUS_CH_BREAKER_WINDOW", defaultCHBreakerWindow.String()))
+	if err != nil {
+		return breakerConfig{}, fmt.Errorf("CERBERUS_CH_BREAKER_WINDOW: %w", err)
+	}
+	if window <= 0 {
+		return breakerConfig{}, fmt.Errorf("CERBERUS_CH_BREAKER_WINDOW: must be > 0, got %s", window)
+	}
+	openInterval, err := time.ParseDuration(envDefault("CERBERUS_CH_BREAKER_OPEN_INTERVAL", defaultCHBreakerOpenInterval.String()))
+	if err != nil {
+		return breakerConfig{}, fmt.Errorf("CERBERUS_CH_BREAKER_OPEN_INTERVAL: %w", err)
+	}
+	if openInterval <= 0 {
+		return breakerConfig{}, fmt.Errorf("CERBERUS_CH_BREAKER_OPEN_INTERVAL: must be > 0, got %s", openInterval)
+	}
+	return breakerConfig{
+		Disabled:     !enabled,
+		Threshold:    threshold,
+		Window:       window,
+		OpenInterval: openInterval,
+	}, nil
+}
 
 // Default per-handler concurrency caps. Tempo gets a smaller cap
 // because trace queries (search + tag-value scans + per-trace span

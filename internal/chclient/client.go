@@ -118,6 +118,33 @@ type Config struct {
 	// wires it from CERBERUS_QUERY_MAX_SAMPLES.
 	MaxQuerySamples int64
 
+	// BreakerThreshold is the number of consecutive CH-health failures
+	// (within BreakerWindow) that trip the circuit breaker from CLOSED to
+	// OPEN. 0 falls back to the breaker default (5). cmd/cerberus wires it
+	// from CERBERUS_CH_BREAKER_THRESHOLD; see breaker.go for the state
+	// machine. Defaults reproduce the pre-#95 hardcoded constants exactly,
+	// so out-of-the-box breaker behaviour is byte-unchanged.
+	BreakerThreshold int
+
+	// BreakerWindow is the rolling window over which BreakerThreshold
+	// consecutive failures must occur to trip the breaker. 0 falls back to
+	// the breaker default (10s). cmd/cerberus wires it from
+	// CERBERUS_CH_BREAKER_WINDOW.
+	BreakerWindow time.Duration
+
+	// BreakerOpenInterval is the OPEN-state backoff: after it elapses the
+	// breaker admits a single HALF-OPEN probe. 0 falls back to the breaker
+	// default (5s). cmd/cerberus wires it from
+	// CERBERUS_CH_BREAKER_OPEN_INTERVAL.
+	BreakerOpenInterval time.Duration
+
+	// BreakerDisabled, when true, turns the circuit breaker into a no-op:
+	// every call is admitted and the breaker can never trip, so a saturated
+	// or dead CH surfaces as ordinary dial/query errors rather than
+	// ErrCircuitOpen. Default false (breaker enabled). cmd/cerberus wires
+	// it from CERBERUS_CH_BREAKER_ENABLED (enabled=false → disabled=true).
+	BreakerDisabled bool
+
 	// MaxQueryMemoryBytes caps ClickHouse's server-side memory use for
 	// a single data-plane query: it is stamped as the per-query
 	// `max_memory_usage` setting on every read-path query (QueryCursor
@@ -213,8 +240,18 @@ func New(cfg Config) (*Client, error) {
 		return nil, fmt.Errorf("chclient: open: %w", err)
 	}
 	return &Client{
-		conn:       conn,
-		addr:       cfg.Addr,
+		conn: conn,
+		addr: cfg.Addr,
+		// Breaker tuning (#95). Zero fields resolve to the GA defaults
+		// inside the breaker (resolveThreshold / resolveWindow /
+		// resolveOpenInterval), so a bare Config — notably the ones tests
+		// build — keeps the pre-#95 hardcoded behaviour byte-for-byte.
+		br: breaker{
+			disabled:     cfg.BreakerDisabled,
+			threshold:    cfg.BreakerThreshold,
+			window:       cfg.BreakerWindow,
+			openInterval: cfg.BreakerOpenInterval,
+		},
 		maxSamples: cfg.MaxQuerySamples,
 		maxMemory:  cfg.MaxQueryMemoryBytes,
 	}, nil
