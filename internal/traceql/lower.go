@@ -41,6 +41,10 @@ func Lower(ctx context.Context, expr *traceql.RootExpr, s schema.Traces) (chplan
 		span.RecordError(err)
 		return nil, err
 	}
+	// Bound the nested-set numbering walk to the N traces /api/search will
+	// return (no-op unless the request set a limit AND the plan is a
+	// select() over the Drilldown structure shape — see search_limit.go).
+	plan = stampNestedSetTraceLimit(plan, searchTraceLimit(ctx), s)
 	span.SetAttributes(cerbtrace.AttrPlanNodeCount.Int(cerbtrace.CountNodes(plan)))
 	return plan, nil
 }

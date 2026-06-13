@@ -125,6 +125,17 @@ func (e *emitter) emitNestedSetAnnotate(n *chplan.NestedSetAnnotate) error {
 	if err != nil {
 		return err
 	}
+	// When the search returns only the N newest traces, bound the numbering
+	// walk to exactly those N: rank the root spans of the scope's trace
+	// universe by Timestamp (descending, ties by TraceId ascending — the
+	// order /api/search's TruncateSummaries keeps) and keep the top N. The
+	// lowering only sets TraceLimit when the plan guarantees each returned
+	// trace's root is in the result, so this root-Timestamp ranking equals
+	// the result-min-Timestamp ranking the handler applies — the kept
+	// traces are numbered byte-identically; the excess is dropped.
+	if n.TraceLimit > 0 {
+		scope = boundedTraceScopeFrag(n, scope)
+	}
 
 	numbering := buildNestedSetNumbering(n, scope)
 
@@ -361,6 +372,42 @@ func (e *emitter) traceScopeFrag(n chplan.Node, traceIDCol string) (Frag, error)
 	}
 	// `(SELECT <traceIDCol> FROM <sub>)` — the leaf-scope exact form.
 	return NewQuery().Select(Col(traceIDCol)).From(sub).Frag(), nil
+}
+
+// boundedTraceScopeFrag narrows scope to the N newest traces the numbering
+// walk needs — exactly the set /api/search returns. It ranks the root spans
+// (ParentSpanId = ”) of the traces in scope by start time and keeps the top
+// n.TraceLimit:
+//
+//	(SELECT `TraceId`
+//	   FROM `otel_traces`
+//	  WHERE `ParentSpanId` = '' AND `TraceId` IN <scope>
+//	  GROUP BY `TraceId`
+//	  ORDER BY min(`Timestamp`) DESC, `TraceId` ASC
+//	  LIMIT <n.TraceLimit>)
+//
+// `min(Timestamp)` per trace is the trace's start time — the same value
+// toTraceSummaries records as StartTimeUnixNano — and the DESC / TraceId-ASC
+// order matches sortSummariesStartDesc, so the n.TraceLimit traces kept here
+// are precisely the ones TruncateSummaries keeps (root-Timestamp == result-
+// min-Timestamp under lowerSelect's root-in-result gate). The GROUP BY +
+// LIMIT over the narrow root scan is linear in trace count and tiny next to
+// the numbering it bounds. QueryBuilder.Frag already parenthesises the SELECT,
+// so the anchor's `TraceId IN (...)` stays a single subquery, matching the
+// unbounded form.
+func boundedTraceScopeFrag(n *chplan.NestedSetAnnotate, scope Frag) Frag {
+	return NewQuery().
+		Select(Col(n.TraceIDColumn)).
+		From(Col(n.SpansTable)).
+		Where(
+			Eq(Col(n.ParentSpanIDColumn), InlineLit("")),
+			InSubquery(Col(n.TraceIDColumn), scope),
+		).
+		GroupBy(Col(n.TraceIDColumn)).
+		OrderBy(Call("min", Col(n.TimestampColumn)), true).
+		OrderBy(Col(n.TraceIDColumn), false).
+		Limit(n.TraceLimit).
+		Frag()
 }
 
 // unionTraceScopeFrag renders `(<scope(left)> UNION ALL <scope(right)>)`

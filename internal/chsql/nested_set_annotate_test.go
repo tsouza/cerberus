@@ -156,3 +156,65 @@ func TestNestedSetAnnotate_LimitInput_ScopeDropsLimit(t *testing.T) {
 		t.Errorf("the FROM arm must keep its LIMIT exactly once, got %d:\n%s", got, sql)
 	}
 }
+
+// drilldownUnionInput builds the Drilldown structure-tab input shape:
+// `({ParentSpanId=”} &>> {SpanKind=Server}) || ({ParentSpanId=”})`.
+func drilldownUnionInput() *chplan.SetOperation {
+	return &chplan.SetOperation{
+		Left:          nsStructuralJoin(chplan.StructuralUnionDescendant),
+		Right:         nsFilterScan("ParentSpanId", ""),
+		Op:            chplan.SetUnion,
+		TraceIDColumn: "TraceId",
+		SpanIDColumn:  "SpanId",
+	}
+}
+
+// TestNestedSetAnnotate_TraceLimit_BoundsAnchorScope pins the bounded
+// numbering: a non-zero TraceLimit wraps the anchor's trace-id IN scope
+// in a `GROUP BY TraceId ORDER BY min(Timestamp) DESC, TraceId LIMIT N`
+// subquery that keeps only the N newest traces — exactly the set
+// /api/search's TruncateSummaries keeps (newest by start time, ties by
+// TraceId). The rest of the numbering (recursive walk, ARRAY JOIN, window
+// passes) is unchanged; only the trace universe narrows.
+func TestNestedSetAnnotate_TraceLimit_BoundsAnchorScope(t *testing.T) {
+	t.Parallel()
+	n := nsAnnotateOver(drilldownUnionInput())
+	n.TraceLimit = 200
+	sql, _, err := chsql.Emit(context.Background(), n)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	// The anchor scope is wrapped in the newest-N selection. The ordering
+	// (DESC, TraceId ASC) and the GROUP BY min(Timestamp) match
+	// sortSummariesStartDesc / toTraceSummaries' StartTimeUnixNano.
+	wantBound := "WHERE `ParentSpanId` = '' AND `TraceId` IN (((SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE (`ParentSpanId` = ?))) UNION ALL (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE (`SpanKind` = ?)))) UNION ALL (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE (`ParentSpanId` = ?)))) GROUP BY `TraceId` ORDER BY min(`Timestamp`) DESC, `TraceId` LIMIT 200"
+	if !strings.Contains(sql, wantBound) {
+		t.Errorf("bounded anchor scope missing;\nwant substring: %s\ngot:\n%s", wantBound, sql)
+	}
+	// The bound is a single extra subquery over the root scan — the
+	// recursive numbering CTE still renders exactly once.
+	if got := strings.Count(sql, "WITH RECURSIVE _cerberus_ns_paths"); got != 1 {
+		t.Errorf("numbering CTE must render exactly once, got %d:\n%s", got, sql)
+	}
+}
+
+// TestNestedSetAnnotate_TraceLimit_ZeroUnbounded pins the no-churn
+// invariant: TraceLimit == 0 (every non-search caller — metrics, tests,
+// property harness) emits the exact unbounded SQL, with no LIMIT / GROUP BY
+// / ORDER BY injected into the anchor scope.
+func TestNestedSetAnnotate_TraceLimit_ZeroUnbounded(t *testing.T) {
+	t.Parallel()
+	n := nsAnnotateOver(drilldownUnionInput()) // TraceLimit defaults to 0
+	sql, _, err := chsql.Emit(context.Background(), n)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	// The anchor scope is the bare UNION-ALL superset, no newest-N wrap.
+	wantUnbounded := "WHERE `ParentSpanId` = '' AND `TraceId` IN (((SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE (`ParentSpanId` = ?))) UNION ALL (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE (`SpanKind` = ?)))) UNION ALL (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE (`ParentSpanId` = ?)))) UNION ALL"
+	if !strings.Contains(sql, wantUnbounded) {
+		t.Errorf("unbounded anchor scope changed;\nwant substring: %s\ngot:\n%s", wantUnbounded, sql)
+	}
+	if strings.Contains(sql, "ORDER BY min(`Timestamp`)") {
+		t.Errorf("TraceLimit=0 must not inject the newest-N ordering:\n%s", sql)
+	}
+}

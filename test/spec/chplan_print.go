@@ -289,7 +289,11 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		printNode(b, v.Left, depth+1)
 		printNode(b, v.Right, depth+1)
 	case *chplan.NestedSetAnnotate:
-		fmt.Fprintf(b, "%sNestedSetAnnotate table=%s\n", indent, v.SpansTable)
+		if v.TraceLimit > 0 {
+			fmt.Fprintf(b, "%sNestedSetAnnotate table=%s traceLimit=%d\n", indent, v.SpansTable, v.TraceLimit)
+		} else {
+			fmt.Fprintf(b, "%sNestedSetAnnotate table=%s\n", indent, v.SpansTable)
+		}
 		printNode(b, v.Input, depth+1)
 	case *chplan.MetricsAggregate:
 		gb := make([]string, len(v.GroupBy))

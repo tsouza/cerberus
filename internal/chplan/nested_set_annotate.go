@@ -63,6 +63,24 @@ type NestedSetAnnotate struct {
 	// the closest observable equivalent and yields a valid nested-set
 	// numbering of the same tree either way.
 	TimestampColumn string
+
+	// TraceLimit bounds the numbering walk to the N newest traces (by
+	// root-span Timestamp, descending, ties by TraceId ascending) — the
+	// exact selection /api/search's TruncateSummaries keeps. 0 leaves the
+	// walk unbounded (every trace the input touches gets numbered), which
+	// is the behaviour for callers that don't return a bounded trace set
+	// (metrics pipelines, tests, the property harness).
+	//
+	// The bound only narrows the recursive numbering's trace universe; the
+	// outer LEFT JOIN still drops numbering rows for traces the input never
+	// produced, and spans of traces outside the top-N fall back to the
+	// 0/0/0 unnumbered values — which the search response discards anyway.
+	// It is only ever set when the input plan guarantees each returned
+	// trace's root span is in the result (so root-Timestamp ranking equals
+	// TruncateSummaries' result-min-Timestamp ranking — see
+	// traceql.lowerSelect's inputGuaranteesRootInResult gate); for every
+	// other shape it stays 0 and the numbering is byte-identical to today.
+	TraceLimit int64
 }
 
 func (*NestedSetAnnotate) planNode() {}
@@ -78,7 +96,8 @@ func (n *NestedSetAnnotate) Equal(other Node) bool {
 		n.TraceIDColumn != o.TraceIDColumn ||
 		n.SpanIDColumn != o.SpanIDColumn ||
 		n.ParentSpanIDColumn != o.ParentSpanIDColumn ||
-		n.TimestampColumn != o.TimestampColumn {
+		n.TimestampColumn != o.TimestampColumn ||
+		n.TraceLimit != o.TraceLimit {
 		return false
 	}
 	return n.Input.Equal(o.Input)
