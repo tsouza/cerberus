@@ -315,3 +315,143 @@ func TestCapturePattern_PreservesInnerBindings(t *testing.T) {
 		t.Errorf("inner binding mismatch: got %p, want %p", gotInner, scan)
 	}
 }
+
+// TestConstantFold_FloatLtIsStrictAtEquality pins the `l < r` fold at
+// constant_fold.go:327 inside foldFloatFloat's OpLt case. A gremlins
+// CONDITIONALS_BOUNDARY mutant flips `<` to `<=`, which only changes the
+// result when the two operands are EQUAL: `5.0 < 5.0` is false but
+// `5.0 <= 5.0` is true. Every non-equal operand pair folds identically
+// under both, so the equality case is the sole observable witness.
+//
+// Input: Binary{OpLt, LitFloat(5), LitFloat(5)} inside a projection.
+// The semantic fold must produce LitBool(false); the `<=` mutant would
+// produce LitBool(true).
+func TestConstantFold_FloatLtIsStrictAtEquality(t *testing.T) {
+	t.Parallel()
+
+	cmp := &chplan.Binary{
+		Op:    chplan.OpLt,
+		Left:  &chplan.LitFloat{V: 5},
+		Right: &chplan.LitFloat{V: 5},
+	}
+	plan := &chplan.Project{
+		Input: &chplan.Scan{Table: "t"},
+		Projections: []chplan.Projection{
+			{Expr: cmp, Alias: "lt"},
+		},
+	}
+
+	out, changed := optimizer.ConstantFoldSemantic{}.Apply(plan)
+	if !changed {
+		t.Fatalf("ConstantFoldSemantic should fold `5.0 < 5.0` to a literal bool")
+	}
+	proj, ok := out.(*chplan.Project)
+	if !ok {
+		t.Fatalf("expected *Project, got %T", out)
+	}
+	lb, ok := proj.Projections[0].Expr.(*chplan.LitBool)
+	if !ok {
+		t.Fatalf("expected folded expr *LitBool, got %T", proj.Projections[0].Expr)
+	}
+	if lb.V {
+		t.Fatalf("expected `5.0 < 5.0` to fold to false (CONDITIONALS_BOUNDARY `<`→`<=` would yield true), got true")
+	}
+}
+
+// TestRunBatch_AnalyzerBranchCountsEachChange pins the `rulesApplied++`
+// at rule.go:187 inside runBatch's analyzer branch. A gremlins
+// INCREMENT_DECREMENT mutant flips `++` to `--`, so a changing analyzer
+// rule would DECREMENT the counter (driving it negative) rather than
+// incrementing it. Driver.Run only surfaces the counter via telemetry,
+// so we drive runBatch directly via the RunBatchForTest seam and assert
+// the exact post-count.
+//
+// Input: an AnalyzerBatch with one IdempotentTestAnalyzerRule that
+// rewrites Scan{raw}→Scan{canon} exactly once. Starting from
+// rulesApplied=0 the single change must leave the counter at 1; the `--`
+// mutant would leave it at -1.
+func TestRunBatch_AnalyzerBranchCountsEachChange(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	batch := optimizer.AnalyzerBatch(
+		"count-analyzer",
+		optimizer.IdempotentTestAnalyzerRule{Calls: &calls},
+	)
+
+	_, got := optimizer.RunBatchForTest(&chplan.Scan{Table: "raw"}, batch, 0)
+	if got != 1 {
+		t.Fatalf("analyzer batch with one change must increment rulesApplied to 1 (INCREMENT_DECREMENT `++`→`--` would give -1), got %d", got)
+	}
+}
+
+// TestRunBatch_FixedPointBranchCountsEachChange pins the `rulesApplied++`
+// at rule.go:200 inside runBatch's FixedPoint branch. Same INCREMENT_
+// DECREMENT mutant class as the analyzer-branch test above, but on the
+// iterative branch.
+//
+// Input: a FixedPoint batch with renamingRule a→b. The fixpoint loop
+// changes once (iter 1: a→b) then converges (iter 2: no change), so the
+// counter must end at exactly 1; the `--` mutant would give -1.
+func TestRunBatch_FixedPointBranchCountsEachChange(t *testing.T) {
+	t.Parallel()
+
+	var calls int
+	batch := optimizer.Batch{
+		Name:     "count-fixedpoint",
+		Strategy: optimizer.FixedPoint(10),
+		Rules:    []optimizer.Rule{renamingRule("rename", "a", "b", &calls)},
+	}
+
+	_, got := optimizer.RunBatchForTest(&chplan.Scan{Table: "a"}, batch, 0)
+	if got != 1 {
+		t.Fatalf("FixedPoint batch with one change must increment rulesApplied to 1 (INCREMENT_DECREMENT `++`→`--` would give -1), got %d", got)
+	}
+}
+
+// matchAllPattern is a Pattern that matches EVERY node, including nil,
+// recording nothing. It exists to witness the rule_pattern.go:53 guard:
+// stock kindPattern.Match(nil) returns (nil,false), so it can't reveal
+// whether Apply's nil-guard short-circuited before calling Match. A
+// pattern that matches nil makes the difference observable.
+type matchAllPattern struct{}
+
+func (matchAllPattern) Match(_ chplan.Node) (optimizer.Bindings, bool) {
+	return optimizer.Bindings{}, true
+}
+
+// TestPatternRule_ApplyNilShortCircuitsBeforeMatch pins the leading
+// `n == nil ||` term of the nil-guard at rule_pattern.go:53:
+//
+//	if n == nil || r == nil || r.Match == nil || r.Transform == nil {
+//		return n, false
+//	}
+//
+// A gremlins INVERT_LOGICAL mutant flips the first `||` to `&&`, yielding
+// `(n == nil && r == nil) || r.Match == nil || r.Transform == nil`. With
+// a fully-populated rule (Match + Transform both non-nil) the whole guard
+// then evaluates false even when n is nil, so Apply falls through to
+// `r.Match.Match(nil)` instead of short-circuiting.
+//
+// Input: a PatternRule whose Match matches nil and whose Transform emits
+// a sentinel, called via Apply(nil). Original: n==nil short-circuits →
+// (nil,false), Transform never runs. Mutant: guard false → Match(nil)
+// succeeds → Transform fires → (sentinel,true).
+func TestPatternRule_ApplyNilShortCircuitsBeforeMatch(t *testing.T) {
+	t.Parallel()
+
+	sentinel := &chplan.Scan{Table: "TRANSFORMED"}
+	rule := &optimizer.PatternRule{
+		RuleName:  "match-all",
+		Match:     matchAllPattern{},
+		Transform: func(_ optimizer.Bindings) chplan.Node { return sentinel },
+	}
+
+	out, changed := rule.Apply(nil)
+	if changed {
+		t.Fatalf("Apply(nil) must short-circuit on the `n == nil` guard (INVERT_LOGICAL `||`→`&&` would call Match(nil) and fire Transform), got changed=true")
+	}
+	if out != nil {
+		t.Fatalf("Apply(nil) must return nil node, got %#v", out)
+	}
+}

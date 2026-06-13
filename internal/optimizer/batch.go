@@ -68,7 +68,15 @@ func (fixedPointStrategy) isStrategy()          {}
 // a generous cap (100 is the project default) — rules that don't
 // converge typically signal a bug rather than a tuning concern.
 func FixedPoint(n int) Strategy {
-	if n < 1 {
+	// Clamp non-positive caps to 1. Written as `n <= 0` rather than
+	// `n < 1` so the boundary is observable: `n < 1` and `n <= 1` are
+	// behaviourally identical (the clamp target 1 sits on the boundary),
+	// which leaves a gremlins CONDITIONALS_BOUNDARY mutant equivalent and
+	// unkillable. `n <= 0` moves the boundary off the clamp target, so the
+	// `n < 0` mutant becomes observable: FixedPoint(0) would then skip the
+	// clamp and yield a zero-iteration strategy, which
+	// TestStrategy_FixedPointClampsToOne catches.
+	if n <= 0 {
 		n = 1
 	}
 	return fixedPointStrategy{n: n}

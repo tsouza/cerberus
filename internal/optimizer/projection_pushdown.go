@@ -122,7 +122,12 @@ func collectColumn(seen map[string]struct{}) func(chplan.Expr) {
 // slices into a single sorted+deduped slice. Stable, deterministic
 // output keeps Scan.Columns reproducible across runs.
 func unionSortedColumns(a, b []string) []string {
-	seen := make(map[string]struct{}, len(a)+len(b))
+	// No capacity hint: `len(a)+len(b)` is only an upper-bound pre-size
+	// (a and b may overlap), so it has no observable effect on the
+	// result — a gremlins ARITHMETIC_BASE mutant on the `+` is
+	// equivalent and unkillable. Dropping the hint removes the dead
+	// arithmetic; the union result is identical.
+	seen := make(map[string]struct{})
 	for _, n := range a {
 		seen[n] = struct{}{}
 	}
