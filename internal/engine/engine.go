@@ -37,6 +37,7 @@ import (
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/optimizer"
+	"github.com/tsouza/cerberus/internal/solver"
 	"github.com/tsouza/cerberus/internal/telemetry"
 )
 
@@ -59,7 +60,61 @@ const (
 	HeaderStrategy  = "X-Cerberus-Strategy"
 	HeaderPlanNodes = "X-Cerberus-Plan-Nodes"
 	HeaderCHMillis  = "X-Cerberus-CH-Millis"
+
+	// HeaderRouteDecision is the ADDITIVE shadow header carrying the
+	// sharded-pushdown solver's routing classification. It is stamped only
+	// when the Solver is wired AND it classified the plan (PromQL head); it
+	// is OMITTED entirely otherwise, so a nil-Solver engine and a non-PromQL
+	// head produce a byte-identical response to the pre-solver path.
+	//
+	// Value grammar: "<strategy>;reason=<reason>". On a non-route the
+	// strategy is the route-A label "route-a" and reason is the solver's
+	// Reason vocabulary (instant / below-threshold / not-sliceable / ...);
+	// on a true route (phase-2, never under Mode=single) the strategy is the
+	// decomposition name (sharded-timeslice) carrying ";k=<K>" before the
+	// reason. The header is OBSERVATIONAL — it never changes the X-Cerberus-
+	// Strategy value or the response body.
+	HeaderRouteDecision = "X-Cerberus-Route-Decision"
 )
+
+// routeStrategyA is the shadow-header strategy token for a plan the solver
+// classified but did NOT route — execution stays on route A.
+const routeStrategyA = "route-a"
+
+// ChsqlEmitter adapts the package-level chsql.Emit function to the
+// solver.SQLEmitter interface so the Solver's Executor can lower each
+// re-anchored shard plan to SQL without internal/solver importing
+// internal/chsql (the import-cycle / dependency-cone rule). It is the thin
+// wrapper main.go injects into solver.New: the engine package already
+// imports chsql, so the adapter composes here cleanly. Stateless — the zero
+// value is ready to use.
+type ChsqlEmitter struct{}
+
+// Emit lowers a re-anchored shard plan to parameterised ClickHouse SQL,
+// delegating verbatim to chsql.Emit so a shard's SQL is byte-identical to
+// what route A would emit for the same (sub-grid) plan.
+func (ChsqlEmitter) Emit(ctx context.Context, plan chplan.Node) (string, []any, error) {
+	return chsql.Emit(ctx, plan)
+}
+
+// routeDecisionValue composes the shadow-header value from a solver Decision.
+// The grammar is an ordered, semicolon-delimited list so a future composite
+// strategy (e.g. "sharded-timeslice;k=4;reason=routed") never loses a signal.
+// routed=false yields "route-a;reason=<reason>"; routed=true yields
+// "<strategy>;k=<K>;reason=<reason>".
+func routeDecisionValue(d *solver.Decision, routed bool) string {
+	if d == nil {
+		return ""
+	}
+	if !routed {
+		return routeStrategyA + ";reason=" + d.Reason
+	}
+	strategy := d.Strategy
+	if strategy == "" {
+		strategy = solver.StrategyShardedTimeslice
+	}
+	return strategy + ";k=" + strconv.Itoa(d.K) + ";reason=" + d.Reason
+}
 
 // strategyFor picks the canonical Strategy label from meta. Centralised
 // so Result and CursorResult agree on the value and so future strategies
@@ -100,6 +155,18 @@ type Engine struct {
 	Optimizer *optimizer.Driver
 	// Client executes the emitted ClickHouse SQL. Required.
 	Client Querier
+	// Solver is the OPTIONAL sharded-pushdown query orchestrator
+	// (internal/solver, docs/query-solver-design.md). When nil the feature
+	// is fully off and every existing call path is byte-unchanged — the
+	// classification branch, the shadow header, and the Executor are all
+	// dead code. When non-nil the engine classifies the optimized plan at
+	// the seam between Optimizer.Run and chsql.Emit and stamps the
+	// additive X-Cerberus-Route-Decision shadow header; under the phase-1
+	// default (Mode=single) the Planner never routes, so EXECUTION STAYS ON
+	// ROUTE A and the Executor is never invoked. The routed branch is wired
+	// (so the phase-2 flip is a config change) but dormant at the default
+	// config.
+	Solver *solver.Solver
 }
 
 // Lang adapts a query-language head (PromQL / LogQL / TraceQL) to
@@ -239,6 +306,18 @@ func (e *Engine) QueryPlan(ctx context.Context, lang Lang, plan chplan.Node, met
 		optT.Done(ctx)
 	}
 
+	// Solver classification (DARK). When the Solver is wired it classifies
+	// the optimized plan into a routing Decision between Optimizer.Run and
+	// chsql.Emit. Under Mode=single routed is always false: the Decision is
+	// read ONLY for the additive shadow header and EXECUTION CONTINUES ON
+	// ROUTE A below, byte-unchanged. The routed branch (Mode=sharded /
+	// test-only force) drains the Executor's composed cursor instead — it is
+	// wired but dormant at the default config.
+	decision, routed := e.classify(plan, lang)
+	if routed {
+		return e.executeRouted(ctx, lang, meta, plan, decision)
+	}
+
 	// Emit.
 	emitT := telemetry.ObserveStage(telemetry.StageEmit)
 	sql, args, err := chsql.Emit(ctx, plan)
@@ -261,6 +340,14 @@ func (e *Engine) QueryPlan(ctx context.Context, lang Lang, plan chplan.Node, met
 
 	nodes := cerbtrace.CountNodes(plan)
 	strategy := strategyFor(meta)
+	headers := map[string]string{
+		HeaderStrategy:  strategy,
+		HeaderPlanNodes: strconv.Itoa(nodes),
+		HeaderCHMillis:  strconv.FormatInt(chMillis, 10),
+	}
+	if v := routeDecisionValue(decision, false); v != "" {
+		headers[HeaderRouteDecision] = v
+	}
 	return Result{
 		Samples:       samples,
 		SQL:           sql,
@@ -268,13 +355,101 @@ func (e *Engine) QueryPlan(ctx context.Context, lang Lang, plan chplan.Node, met
 		Strategy:      strategy,
 		CHMillis:      chMillis,
 		PlanNodeCount: nodes,
-		Headers: map[string]string{
-			HeaderStrategy:  strategy,
-			HeaderPlanNodes: strconv.Itoa(nodes),
-			HeaderCHMillis:  strconv.FormatInt(chMillis, 10),
-		},
-		Meta: meta,
+		Headers:       headers,
+		Meta:          meta,
 	}, nil
+}
+
+// classify runs the Solver over the optimized plan, gated on a non-nil
+// Solver. It derives the solver.RequestMeta from the plan's OUTER grid
+// carrier (solver.GridOf) plus the language name, then asks the Planner to
+// classify. The returned Decision is nil (and routed false) when the Solver
+// is off OR the head is not PromQL — both cases make the engine omit the
+// shadow header and stay byte-identical to the pre-solver path.
+func (e *Engine) classify(plan chplan.Node, lang Lang) (*solver.Decision, bool) {
+	if e.Solver == nil {
+		return nil, false
+	}
+	start, end, step := solver.GridOf(plan)
+	rm := solver.RequestMeta{
+		Lang:  lang.Name(),
+		Start: start,
+		End:   end,
+		Step:  step,
+	}
+	return e.Solver.Classify(plan, rm)
+}
+
+// executeRouted runs the dormant route-B path: it dispatches the K shard
+// cursors through the Solver's Executor and drains the composed cursor into
+// the eager Result slice. It is NEVER reached under Mode=single (classify
+// returns routed=false there); it is wired so the phase-2 flip is a config
+// change. A nil Executor on a routed Decision is a wiring bug — fail closed
+// to an error rather than panic.
+func (e *Engine) executeRouted(
+	ctx context.Context,
+	lang Lang,
+	meta Meta,
+	plan chplan.Node,
+	decision *solver.Decision,
+) (Result, error) {
+	if e.Solver == nil || e.Solver.Executor == nil {
+		return Result{}, fmt.Errorf("engine: solver routed without an Executor")
+	}
+	execT := telemetry.ObserveStage(telemetry.StageExecute)
+	start := time.Now()
+	cursor, info, err := e.Solver.Executor.Execute(
+		chclient.WithProgressFor(ctx, lang.Name()), lang.Name(), decision, chclient.SampleBudgetFromContext(ctx),
+	)
+	if err != nil {
+		execT.Done(ctx)
+		return Result{}, fmt.Errorf("engine: solver execute: %w", err)
+	}
+	defer func() { _ = cursor.Close() }()
+
+	var samples []chclient.Sample
+	for cursor.Next() {
+		samples = append(samples, cursor.Sample())
+	}
+	if cerr := cursor.Err(); cerr != nil {
+		execT.Done(ctx)
+		return Result{}, fmt.Errorf("engine: solver drain: %w", cerr)
+	}
+	chMillis := time.Since(start).Milliseconds()
+	execT.Done(ctx)
+
+	nodes := cerbtrace.CountNodes(plan)
+	strategy := strategyFor(meta)
+	sql, args := routedSQLArgs(info)
+	headers := map[string]string{
+		HeaderStrategy:  strategy,
+		HeaderPlanNodes: strconv.Itoa(nodes),
+		HeaderCHMillis:  strconv.FormatInt(chMillis, 10),
+	}
+	if v := routeDecisionValue(decision, true); v != "" {
+		headers[HeaderRouteDecision] = v
+	}
+	return Result{
+		Samples:       samples,
+		SQL:           sql,
+		Args:          args,
+		Strategy:      strategy,
+		CHMillis:      chMillis,
+		PlanNodeCount: nodes,
+		Headers:       headers,
+		Meta:          meta,
+	}, nil
+}
+
+// routedSQLArgs surfaces the FIRST shard's SQL + args on the Result for
+// debug logging parity with route A (which carries the single emitted SQL).
+// The full per-shard list lives on the ExecInfo the tracing path reads; the
+// eager Result keeps the single-string contract its callers expect.
+func routedSQLArgs(info *solver.ExecInfo) (string, []any) {
+	if info == nil || len(info.SQLs) == 0 {
+		return "", nil
+	}
+	return info.SQLs[0], info.ShardArgs[0]
 }
 
 // CursorResult is what Engine.QueryCursor / QueryPlanCursor return on
@@ -344,6 +519,16 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 		optT.Done(ctx)
 	}
 
+	// Solver classification (DARK) — symmetrical with QueryPlan. Under
+	// Mode=single routed is always false and the streaming path below is
+	// byte-unchanged; the Decision is read only for the additive shadow
+	// header. The routed branch returns the Executor's composed cursor
+	// instead — wired but dormant at the default config.
+	decision, routed := e.classify(plan, lang)
+	if routed {
+		return e.executeRoutedCursor(ctx, lang, meta, plan, decision)
+	}
+
 	emitT := telemetry.ObserveStage(telemetry.StageEmit)
 	sql, args, err := chsql.Emit(ctx, plan)
 	emitT.Done(ctx)
@@ -360,21 +545,70 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 
 	nodes := cerbtrace.CountNodes(plan)
 	strategy := strategyFor(meta)
+	headers := map[string]string{
+		HeaderStrategy:  strategy,
+		HeaderPlanNodes: strconv.Itoa(nodes),
+		// CH-Millis is omitted on the cursor path — wall-clock for
+		// the execute stage isn't known until the caller drains
+		// the cursor + Close()s it. Streaming consumers that want
+		// per-request CH timing should plug into the
+		// cerberus.clickhouse.* histograms instead.
+	}
+	if v := routeDecisionValue(decision, false); v != "" {
+		headers[HeaderRouteDecision] = v
+	}
 	return CursorResult{
 		Cursor:        cursor,
 		SQL:           sql,
 		Args:          args,
 		Strategy:      strategy,
 		PlanNodeCount: nodes,
-		Headers: map[string]string{
-			HeaderStrategy:  strategy,
-			HeaderPlanNodes: strconv.Itoa(nodes),
-			// CH-Millis is omitted on the cursor path — wall-clock for
-			// the execute stage isn't known until the caller drains
-			// the cursor + Close()s it. Streaming consumers that want
-			// per-request CH timing should plug into the
-			// cerberus.clickhouse.* histograms instead.
-		},
-		Meta: meta,
+		Headers:       headers,
+		Meta:          meta,
+	}, nil
+}
+
+// executeRoutedCursor is the streaming sibling of executeRouted: it
+// dispatches the K shard cursors through the Solver's Executor and returns
+// the composed cursor directly (the caller drives the drain + Close, exactly
+// as route A's single cursor). NEVER reached under Mode=single; wired so the
+// phase-2 flip is a config change.
+func (e *Engine) executeRoutedCursor(
+	ctx context.Context,
+	lang Lang,
+	meta Meta,
+	plan chplan.Node,
+	decision *solver.Decision,
+) (CursorResult, error) {
+	if e.Solver == nil || e.Solver.Executor == nil {
+		return CursorResult{}, fmt.Errorf("engine: solver routed without an Executor")
+	}
+	execT := telemetry.ObserveStage(telemetry.StageExecute)
+	cursor, info, err := e.Solver.Executor.Execute(
+		chclient.WithProgressFor(ctx, lang.Name()), lang.Name(), decision, chclient.SampleBudgetFromContext(ctx),
+	)
+	execT.Done(ctx)
+	if err != nil {
+		return CursorResult{}, fmt.Errorf("engine: solver execute: %w", err)
+	}
+
+	nodes := cerbtrace.CountNodes(plan)
+	strategy := strategyFor(meta)
+	sql, args := routedSQLArgs(info)
+	headers := map[string]string{
+		HeaderStrategy:  strategy,
+		HeaderPlanNodes: strconv.Itoa(nodes),
+	}
+	if v := routeDecisionValue(decision, true); v != "" {
+		headers[HeaderRouteDecision] = v
+	}
+	return CursorResult{
+		Cursor:        cursor,
+		SQL:           sql,
+		Args:          args,
+		Strategy:      strategy,
+		PlanNodeCount: nodes,
+		Headers:       headers,
+		Meta:          meta,
 	}, nil
 }
