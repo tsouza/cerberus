@@ -1462,16 +1462,14 @@ func stepAlignGrid(r *chplan.RangeWindow, end Frag, stepNS, numAnchors int64) (F
 }
 
 func epochAlignedEndFrag(end Frag, stepNS int64) Frag {
-	return func(b *Builder) {
-		step := strconv.FormatInt(stepNS, 10)
-		b.sb.WriteString("fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(")
-		end(b)
-		b.sb.WriteString("), ")
-		b.sb.WriteString(step)
-		b.sb.WriteString(") * ")
-		b.sb.WriteString(step)
-		b.sb.WriteString(")")
-	}
+	step := InlineLit(stepNS)
+	// fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(end), step) * step)
+	return Call("fromUnixTimestamp64Nano",
+		Mul(
+			Call("intDiv", Call("toUnixTimestamp64Nano", end), step),
+			step,
+		),
+	)
 }
 
 // writeAnchorGridFloorIdx writes the floor-division grid index
