@@ -233,6 +233,6 @@ func dateTime64Frag(t time.Time) Frag {
 	return Call(
 		"toDateTime64",
 		Lit(t.UTC().Format("2006-01-02 15:04:05.000000000")),
-		Lit(int64(9)),
+		Lit(int64(nanoScale)),
 	)
 }

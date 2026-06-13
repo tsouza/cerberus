@@ -394,6 +394,15 @@ func classifySearchErr(err error) int {
 	return http.StatusInternalServerError
 }
 
+// search/recent page-size bounds: the Tempo Search UI's first-page
+// trace list. defaultSearchRecentLimit is one screen's worth when the
+// client sends no `?limit`; maxSearchRecentLimit caps a client-supplied
+// limit so a single request can't drain an unbounded scan.
+const (
+	defaultSearchRecentLimit = 20
+	maxSearchRecentLimit     = 200
+)
+
 // handleSearchRecent implements `GET /api/search/recent`. Returns the
 // most-recent N traces (per the seeded Timestamp) without applying a
 // TraceQL filter. Grafana's Tempo Search UI calls this on first page
@@ -402,11 +411,11 @@ func classifySearchErr(err error) int {
 // Honors `?limit=N` (default 20, max 200); ignores `start` / `end` for
 // now (the emitter doesn't thread them through OrderBy + Limit).
 func (h *Handler) handleSearchRecent(w http.ResponseWriter, r *http.Request) {
-	limit := int64(20)
+	limit := int64(defaultSearchRecentLimit)
 	if v := r.URL.Query().Get("limit"); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
-			if n > 200 {
-				n = 200
+			if n > maxSearchRecentLimit {
+				n = maxSearchRecentLimit
 			}
 			limit = n
 		}
@@ -874,7 +883,7 @@ func wrapWithSampleProjection(plan chplan.Node, s schema.Traces, meta engine.Met
 		return &chplan.Project{Input: plan, Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: "MetricName"},
 			{Expr: emptyAttrsMap(), Alias: "Attributes"},
-			{Expr: &chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}}, Alias: "TimeUnix"},
+			{Expr: chplan.NowNano(), Alias: "TimeUnix"},
 			{Expr: &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}}, Alias: "Value"},
 		}}
 	case isProjectShape(plan):

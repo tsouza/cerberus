@@ -1591,14 +1591,7 @@ func wrapRangeWindowPreserveName(rw *chplan.RangeWindow, s schema.Metrics, name 
 		// Mirror `synthesizedAnchor()` in internal/api/prom/handler.go:
 		// the instant-shape RangeWindow doesn't expose a real per-row
 		// anchor, so we stamp `now64(9) - toIntervalNanosecond(5e9)`.
-		tsExpr = &chplan.Binary{
-			Op:   chplan.OpSub,
-			Left: &chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}},
-			Right: &chplan.FuncCall{
-				Name: "toIntervalNanosecond",
-				Args: []chplan.Expr{&chplan.LitInt{V: 5_000_000_000}},
-			},
-		}
+		tsExpr = chplan.NowNanoMinusStaleness()
 	}
 	return &chplan.Project{
 		Input: rw,
@@ -1964,7 +1957,7 @@ func lowerCountValues(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (
 
 	// Instant mode stamps the single evaluation timestamp; range mode
 	// forwards the per-step anchor captured in the group key above.
-	var tsExpr chplan.Expr = &chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}}
+	tsExpr := chplan.NowNano()
 	if rangeMode {
 		tsExpr = &chplan.ColumnRef{Name: anchorAlias}
 	}
@@ -2279,7 +2272,7 @@ func wrapAggregateForSample(agg *chplan.Aggregate, a *parser.AggregateExpr, s sc
 		}
 	}
 
-	tsExpr := chplan.Expr(&chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}})
+	tsExpr := chplan.NowNano()
 	if rangeBucketed {
 		tsExpr = &chplan.ColumnRef{Name: bucketAlias}
 	}

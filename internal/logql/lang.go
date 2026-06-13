@@ -181,11 +181,7 @@ func (l *Lang) ProjectSamples(plan chplan.Node, meta engine.Meta) chplan.Node {
 		case !l.End.IsZero():
 			tsExpr = timeLiteralExpr(l.End)
 		default:
-			tsExpr = &chplan.Binary{
-				Op:    chplan.OpSub,
-				Left:  &chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}},
-				Right: &chplan.FuncCall{Name: "toIntervalNanosecond", Args: []chplan.Expr{&chplan.LitInt{V: 5_000_000_000}}},
-			}
+			tsExpr = chplan.NowNanoMinusStaleness()
 		}
 		return &chplan.Project{
 			Input: plan,

@@ -157,6 +157,12 @@ func (b *Builder) MapFilterExcept(col string, keys ...string) {
 	b.sb.WriteByte(')')
 }
 
+// nanoScale is the DateTime64 sub-second scale every cerberus timestamp
+// fragment uses: 9 fractional digits = nanosecond precision, matching
+// the OTel-CH schema's `DateTime64(9)` columns and chplan.NanoScale on
+// the IR side.
+const nanoScale = 9
+
 // Now64 appends "now64(9)" — ClickHouse's current-time-at-nanosecond
 // precision builtin. The range-window stack falls back to this when
 // the lowering hasn't populated an explicit End time (typically only

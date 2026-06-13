@@ -168,16 +168,13 @@ func timeBoundExpr(col string, a evalAnchor) chplan.Expr {
 // staleness predicate composes its own offset+lookback delta).
 func anchorBaseExpr(a evalAnchor) chplan.Expr {
 	if a.End.IsZero() {
-		return &chplan.FuncCall{
-			Name: "now64",
-			Args: []chplan.Expr{&chplan.LitInt{V: 9}},
-		}
+		return chplan.NowNano()
 	}
 	return &chplan.FuncCall{
 		Name: "toDateTime64",
 		Args: []chplan.Expr{
 			&chplan.LitString{V: a.End.Format("2006-01-02 15:04:05.000000000")},
-			&chplan.LitInt{V: 9},
+			&chplan.LitInt{V: chplan.NanoScale},
 		},
 	}
 }

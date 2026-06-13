@@ -64,10 +64,7 @@ func syntheticScalarVector(valueExpr, timeExpr chplan.Expr, s schema.Metrics, ct
 		}
 	}
 	if timeExpr == nil {
-		timeExpr = &chplan.FuncCall{
-			Name: "now64",
-			Args: []chplan.Expr{&chplan.LitInt{V: 9}},
-		}
+		timeExpr = chplan.NowNano()
 	}
 	return &chplan.Project{
 		Input: &chplan.OneRow{},
@@ -228,7 +225,7 @@ func lowerTime(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 	var anchor chplan.Expr
 	switch {
 	case ctx.step > 0:
-		anchor = &chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}}
+		anchor = chplan.NowNano()
 	case !ctx.end.IsZero():
 		anchor = anchorBaseExpr(evalAnchor{End: ctx.end.UTC()})
 	default:
