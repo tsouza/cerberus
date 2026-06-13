@@ -242,43 +242,49 @@ func (e *emitter) emitStructuralSiblingJoin(j *chplan.StructuralJoin) error {
 	rightProj := structuralProjectionFrags(j, "R")
 	leftProj := structuralProjectionFrags(j, "L")
 
-	onEq := func(b *Builder) {
-		spanIDPairFrag("L", j.TraceIDColumn, "R", j.TraceIDColumn)(b)
-		b.writeSQL(" AND ")
-		spanIDPairFrag("L", j.ParentSpanIDColumn, "R", j.ParentSpanIDColumn)(b)
-	}
-	distinctSpan := func(b *Builder) {
-		writeSideCol(b, "L", j.SpanIDColumn)
-		b.writeSQL(" != ")
-		writeSideCol(b, "R", j.SpanIDColumn)
-	}
+	onEq := And(
+		spanIDPairFrag("L", j.TraceIDColumn, "R", j.TraceIDColumn),
+		spanIDPairFrag("L", j.ParentSpanIDColumn, "R", j.ParentSpanIDColumn),
+	)
+	distinctSpan := Neq(qualColFrag("L", j.SpanIDColumn), qualColFrag("R", j.SpanIDColumn))
 
 	switch {
 	case j.Op.IsNegated():
 		// Aggregate L per (TraceId, ParentSpanId): how many L spans the
 		// group holds and which span ids they are.
+		// `_l_cnt` / `_l_span_ids` are emitter-pinned bare aliases (no
+		// backticks); the AS suffix rides verbatim while count() /
+		// groupUniqArray(...) compose as Frags.
+		cntAgg := func(b *Builder) { Call("count")(b); verbatim(" AS _l_cnt")(b) }
+		spanIDsAgg := func(b *Builder) {
+			Call("groupUniqArray", Col(j.SpanIDColumn))(b)
+			verbatim(" AS _l_span_ids")(b)
+		}
 		aggL := NewQuery().
 			Select(
 				Col(j.TraceIDColumn),
 				Col(j.ParentSpanIDColumn),
-				func(b *Builder) { b.writeSQL("count() AS _l_cnt") },
-				func(b *Builder) {
-					b.writeSQL("groupUniqArray(")
-					b.Ident(j.SpanIDColumn)
-					b.writeSQL(") AS _l_span_ids")
-				},
+				cntAgg,
+				spanIDsAgg,
 			).
 			From(aliasedFrag(leftSub, "_l")).
 			GroupBy(Col(j.TraceIDColumn), Col(j.ParentSpanIDColumn))
+		// `(L._l_cnt - has(L._l_span_ids, R.<spanID>)) = 0`. The two
+		// synthetic aggregate columns are referenced bare-qualified
+		// (`L._l_cnt`) — emitter-pinned tokens, so verbatim; the has()
+		// call and arithmetic compose as Frags.
+		negWhere := Eq(
+			Paren(Sub(
+				verbatim("L._l_cnt"),
+				Call("has", verbatim("L._l_span_ids"), qualColFrag("R", j.SpanIDColumn)),
+			)),
+			InlineLit(0),
+		)
 		sb := NewQuery().
 			Select(rightProj...).
 			From(aliasedFrag(rightSub, "R")).
 			Join(LeftJoin, aliasedFrag(aggL.Frag(), "L"), onEq).
-			Where(func(b *Builder) {
-				b.writeSQL("(L._l_cnt - has(L._l_span_ids, ")
-				writeSideCol(b, "R", j.SpanIDColumn)
-				b.writeSQL(")) = 0")
-			})
+			Where(negWhere)
 		e.emitSelect(sb)
 		return nil
 	case j.Op.IsUnion():
@@ -352,29 +358,28 @@ func structuralProjectionFrags(j *chplan.StructuralJoin, side string) []Frag {
 }
 
 // aliasedSideCol renders `<side>.<col> AS <alias>` with `col` and
-// `alias` both backtick-quoted.
+// `alias` both backtick-quoted. The bare side (L / R) rides qualColFrag;
+// As applies the alias's backtick quoting.
 func aliasedSideCol(side, col, alias string) Frag {
-	return func(b *Builder) {
-		writeSideCol(b, side, col)
-		b.writeSQL(" AS ")
-		b.Ident(alias)
-	}
+	return As(qualColFrag(side, col), alias)
 }
 
 // starExceptKeys renders `<side>.* EXCEPT (<k1>, <k2>, <k3>)` with each
 // key backtick-quoted. Used in tandem with the leading aliased-key
 // projections to pass through every other column without re-emitting
-// the keys twice.
+// the keys twice. The `<side>.* EXCEPT (` and `)` glue is an
+// emitter-chosen synthetic shape (bare side alias + CH's EXCEPT modifier
+// on a star projection — no Frag constructor covers a star-except), so
+// it rides verbatim; the keys flow through Col's quoting.
 func starExceptKeys(side, k1, k2, k3 string) Frag {
 	return func(b *Builder) {
-		b.writeSQL(side)
-		b.writeSQL(".* EXCEPT (")
-		b.Ident(k1)
-		b.writeSQL(", ")
-		b.Ident(k2)
-		b.writeSQL(", ")
-		b.Ident(k3)
-		b.writeSQL(")")
+		verbatim(side + ".* EXCEPT (")(b)
+		Col(k1)(b)
+		verbatim(", ")(b)
+		Col(k2)(b)
+		verbatim(", ")(b)
+		Col(k3)(b)
+		verbatim(")")(b)
 	}
 }
 
@@ -402,22 +407,14 @@ func structuralDirectRelFrag(j *chplan.StructuralJoin) (Frag, error) {
 
 // spanIDPairFrag returns a Frag for `<lside>.<lcol> = <rside>.<rcol>`.
 func spanIDPairFrag(lside, lcol, rside, rcol string) Frag {
-	return func(b *Builder) {
-		writeSideCol(b, lside, lcol)
-		b.writeSQL(" = ")
-		writeSideCol(b, rside, rcol)
-	}
+	return Eq(qualColFrag(lside, lcol), qualColFrag(rside, rcol))
 }
 
 // structuralDirectOnFrag composes the full ON clause:
 // `L.<TraceID> = R.<TraceID> AND <rel>`. The trace-id equality is
 // always present — direct ops scope every relation to within a trace.
 func structuralDirectOnFrag(j *chplan.StructuralJoin, rel Frag) Frag {
-	return func(b *Builder) {
-		spanIDPairFrag("L", j.TraceIDColumn, "R", j.TraceIDColumn)(b)
-		b.writeSQL(" AND ")
-		rel(b)
-	}
+	return And(spanIDPairFrag("L", j.TraceIDColumn, "R", j.TraceIDColumn), rel)
 }
 
 // emitStructuralRecursive renders `>>` / `<<` as a `WITH RECURSIVE`
@@ -538,11 +535,7 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 	// Recursive step: SELECT t.<...>, c._depth + 1 FROM `<table>` AS t
 	// INNER JOIN _struct_closure AS c ON <stepOn>
 	// WHERE c._depth < <cap> [AND t.TraceId IN (SELECT TraceId FROM (<L>) AS _seed_ids)].
-	stepOn := func(b *Builder) {
-		spanIDPairFrag("t", j.TraceIDColumn, "c", j.TraceIDColumn)(b)
-		b.writeSQL(" AND ")
-		stepRel(b)
-	}
+	stepOn := And(spanIDPairFrag("t", j.TraceIDColumn, "c", j.TraceIDColumn), stepRel)
 	step := NewQuery().
 		Select(
 			Distinct(qualColFrag("t", j.TraceIDColumn)),
@@ -568,11 +561,10 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 		From(verbatim(cteName)).
 		Where(verbatim("_depth > 0"))
 
-	onClause := func(b *Builder) {
-		spanIDPairFrag("L", j.TraceIDColumn, "R", j.TraceIDColumn)(b)
-		b.writeSQL(" AND ")
-		spanIDPairFrag("L", j.SpanIDColumn, "R", j.SpanIDColumn)(b)
-	}
+	onClause := And(
+		spanIDPairFrag("L", j.TraceIDColumn, "R", j.TraceIDColumn),
+		spanIDPairFrag("L", j.SpanIDColumn, "R", j.SpanIDColumn),
+	)
 	rightProj := structuralProjectionFrags(j, "R")
 	leftProj := structuralProjectionFrags(j, "L")
 	switch {
@@ -663,11 +655,7 @@ func buildStructuralInverseClosure(j *chplan.StructuralJoin, seedNode chplan.Nod
 		).
 		From(aliasedFrag(rightSub, "_seed"))
 
-	stepOn := func(b *Builder) {
-		spanIDPairFrag("t", j.TraceIDColumn, "c", j.TraceIDColumn)(b)
-		b.writeSQL(" AND ")
-		stepRel(b)
-	}
+	stepOn := And(spanIDPairFrag("t", j.TraceIDColumn, "c", j.TraceIDColumn), stepRel)
 	step := NewQuery().
 		Select(
 			Distinct(qualColFrag("t", j.TraceIDColumn)),
@@ -778,14 +766,10 @@ func structuralSeedTraceFilter(traceIDCol string, seedSub Frag) Frag {
 	seedIDs := NewQuery().
 		Select(Col(traceIDCol)).
 		From(aliasedFrag(seedSub, "_seed_ids"))
-	// In() already parenthesises its right-hand list, so render the
-	// seed-id SELECT bare (Build, not Frag, which would double-wrap).
-	seedSQL, seedArgs := seedIDs.Build()
-	bareSeed := func(b *Builder) {
-		b.writeSQL(seedSQL)
-		b.args = append(b.args, seedArgs...)
-	}
-	return In(qualColFrag("t", traceIDCol), bareSeed)
+	// In() already parenthesises its right-hand list, so splice the
+	// seed-id SELECT bare (Spliced, not Subquery — the latter would
+	// double-wrap in parens).
+	return In(qualColFrag("t", traceIDCol), Spliced(seedIDs))
 }
 
 // findScanTable walks a plan subtree looking for the first chplan.Scan

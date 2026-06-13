@@ -129,139 +129,101 @@ func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative) Frag {
 	po := h.PositiveOffsetColumn
 	no := h.NegativeOffsetColumn
 	zc := h.ZeroCountColumn
+	w := newHQNativeWriters(h)
 
-	return func(b *Builder) {
-		w := newHQNativeWriters(h, b)
+	// `nan` is a CH-portable shape token, not data — InlineLit would
+	// quote it. `0.0` similarly can't ride InlineLit (FormatFloat
+	// canonicalises it to `0`). Both ride verbatim (the IfNonZero
+	// precedent in builder.go).
+	nan := verbatim("nan")
+	zeroF := verbatim("0.0")
 
-		// Outer chain:
-		//   if(total = 0, nan,
-		//     if(phi <= 0, <smallest-bucket lower edge>,
-		//       if(phi >= 1, <largest-bucket upper edge>,
-		//         if(idx <= nlen, <negative interp>,
-		//           if(idx = nlen + 1, <zero interp>,
-		//             <positive interp>)))))
+	// phi <= 0 → smallest-bucket lower edge:
+	//   if(nlen > 0, -pow(base, no + nlen), 0.0)
+	phiLow := If(
+		Gt(w.nLen(), InlineLit(0)),
+		Neg(Call("pow", w.base(), Add(Col(no), w.nLen()))),
+		zeroF,
+	)
+	// phi >= 1 → largest-bucket upper edge:
+	//   if(plen > 0, pow(base, po + plen),
+	//      if(zc > 0, zt, -pow(base, no)))
+	phiHigh := If(
+		Gt(w.pLen(), InlineLit(0)),
+		Call("pow", w.base(), Add(Col(po), w.pLen())),
+		If(
+			Gt(Col(zc), InlineLit(0)),
+			w.zt(),
+			Neg(Call("pow", w.base(), Col(no))),
+		),
+	)
+	// Negative bucket interp (idx <= nlen):
+	//   -pow(base, no + (nlen - idx) + 1 - fraction)
+	negInterp := Neg(Call(
+		"pow",
+		w.base(),
+		Sub(
+			Add(Add(Col(no), Paren(Sub(w.nLen(), w.idx()))), InlineLit(1)),
+			w.fraction(),
+		),
+	))
+	// Zero bucket interp (idx = nlen + 1):
+	//   -ZeroThreshold + 2 * ZeroThreshold * fraction
+	zeroInterp := Add(Neg(w.zt()), Mul(Mul(InlineLit(2), w.zt()), w.fraction()))
+	// Positive bucket interp (idx > nlen + 1):
+	//   pow(base, po + (idx - nlen - 2) + fraction)
+	posInterp := Call(
+		"pow",
+		w.base(),
+		Add(
+			Add(Col(po), Paren(Sub(Sub(w.idx(), w.nLen()), InlineLit(2)))),
+			w.fraction(),
+		),
+	)
 
-		// Computed phi can be NaN at runtime (PromQL `scalar()` over
-		// zero / many series); every comparison branch below evaluates
-		// false on NaN and the interpolation would walk cum[0] — guard
-		// with a leading isNaN → nan branch (Prom's bucketQuantile
-		// NaN-phi contract). The literal path skips the wrapper so
-		// existing fixtures stay byte-stable.
-		if h.PhiExpr != nil {
-			b.writeSQL("if(isNaN(")
-			w.phi()
-			b.writeSQL("), nan, ")
-		}
-		// if(total = 0, nan, ...
-		b.writeSQL("if(")
-		w.total()
-		b.writeSQL(" = 0, nan, ")
-		// if(phi <= 0, if(nlen > 0, -pow(base, no + nlen), 0.0), ...
-		b.writeSQL("if(")
-		w.phi()
-		b.writeSQL(" <= 0, if(")
-		w.nLen()
-		b.writeSQL(" > 0, -pow(")
-		w.base()
-		b.writeSQL(", ")
-		b.Ident(no)
-		b.writeSQL(" + ")
-		w.nLen()
-		b.writeSQL("), 0.0), ")
-		// if(phi >= 1, <upper edge>, ...
-		// upper edge:
-		//   if(plen > 0, pow(base, po + plen),
-		//      if(zc > 0, zt, -pow(base, no)))
-		b.writeSQL("if(")
-		w.phi()
-		b.writeSQL(" >= 1, if(")
-		w.pLen()
-		b.writeSQL(" > 0, pow(")
-		w.base()
-		b.writeSQL(", ")
-		b.Ident(po)
-		b.writeSQL(" + ")
-		w.pLen()
-		b.writeSQL("), if(")
-		b.Ident(zc)
-		b.writeSQL(" > 0, ")
-		w.zt()
-		b.writeSQL(", -pow(")
-		w.base()
-		b.writeSQL(", ")
-		b.Ident(no)
-		b.writeSQL("))), ")
-		// if(idx <= nlen, <negative interp>, ...
-		// negative interp:
-		//   -pow(base, no + (nlen - idx) + 1 - fraction)
-		b.writeSQL("if(")
-		w.idx()
-		b.writeSQL(" <= ")
-		w.nLen()
-		b.writeSQL(", -pow(")
-		w.base()
-		b.writeSQL(", ")
-		b.Ident(no)
-		b.writeSQL(" + (")
-		w.nLen()
-		b.writeSQL(" - ")
-		w.idx()
-		b.writeSQL(") + 1 - ")
-		w.fraction()
-		b.writeSQL("), ")
-		// if(idx = nlen + 1, <zero interp>, <positive interp>)
-		// zero interp:
-		//   -ZeroThreshold + 2 * ZeroThreshold * fraction
-		// positive interp:
-		//   pow(base, po + (idx - nlen - 2) + fraction)
-		b.writeSQL("if(")
-		w.idx()
-		b.writeSQL(" = ")
-		w.nLen()
-		b.writeSQL(" + 1, -")
-		w.zt()
-		b.writeSQL(" + 2 * ")
-		w.zt()
-		b.writeSQL(" * ")
-		w.fraction()
-		b.writeSQL(", pow(")
-		w.base()
-		b.writeSQL(", ")
-		b.Ident(po)
-		b.writeSQL(" + (")
-		w.idx()
-		b.writeSQL(" - ")
-		w.nLen()
-		b.writeSQL(" - 2) + ")
-		w.fraction()
-		b.writeSQL("))")
-		// Close: if(idx=nlen+1), if(idx<=nlen), if(phi>=1), if(phi<=0), if(total=0)
-		b.writeSQL("))))")
-		// Close the computed-phi `if(isNaN(phi), nan, …)` wrapper.
-		if h.PhiExpr != nil {
-			b.writeSQL(")")
-		}
+	// Outer chain:
+	//   if(total = 0, nan,
+	//     if(phi <= 0, phiLow,
+	//       if(phi >= 1, phiHigh,
+	//         if(idx <= nlen, negInterp,
+	//           if(idx = nlen + 1, zeroInterp, posInterp)))))
+	core := If(Eq(w.total(), InlineLit(0)), nan,
+		If(Lte(w.phi(), InlineLit(0)), phiLow,
+			If(Gte(w.phi(), InlineLit(1)), phiHigh,
+				If(Lte(w.idx(), w.nLen()), negInterp,
+					If(Eq(w.idx(), Add(w.nLen(), InlineLit(1))), zeroInterp, posInterp)))))
+
+	if h.PhiExpr == nil {
+		return core
 	}
+	// Computed phi can be NaN at runtime (PromQL `scalar()` over zero /
+	// many series); every comparison branch evaluates false on NaN and
+	// the interpolation would walk cum[0] — guard with a leading isNaN →
+	// nan branch (Prom's bucketQuantile NaN-phi contract). The literal
+	// path skips the wrapper so existing fixtures stay byte-stable.
+	return If(Call("isNaN", w.phi()), nan, core)
 }
 
-// hqNativeWriters bundles the per-row SQL sub-expression writers the
-// native quantile value fragment composes, bound to one Builder
-// invocation. Extracted from histogramQuantileNativeValueFrag so the
-// fragment body stays focused on the if() chain layout.
+// hqNativeWriters bundles the per-row sub-expression Frag builders the
+// native quantile value fragment composes. Each field is a closure
+// returning a fresh Frag so a sub-expression re-rendered at multiple
+// positions (base / total / idx / fraction — all CSE-folded by CH)
+// re-emits its own `?` placeholders, matching the legacy emitter's
+// per-position re-emission.
 type hqNativeWriters struct {
-	phi      func()
-	base     func()
-	cum      func()
-	total    func()
-	idx      func()
-	cumAt    func(offset string)
-	nLen     func()
-	pLen     func()
-	zt       func()
-	fraction func()
+	phi      func() Frag
+	base     func() Frag
+	cum      func() Frag
+	total    func() Frag
+	idx      func() Frag
+	cumAt    func(offsetMinusOne bool) Frag
+	nLen     func() Frag
+	pLen     func() Frag
+	zt       func() Frag
+	fraction func() Frag
 }
 
-func newHQNativeWriters(h *chplan.HistogramQuantileNative, b *Builder) hqNativeWriters {
+func newHQNativeWriters(h *chplan.HistogramQuantileNative) hqNativeWriters {
 	pbc := h.PositiveBucketCountsColumn
 	nbc := h.NegativeBucketCountsColumn
 	scale := h.ScaleColumn
@@ -269,126 +231,80 @@ func newHQNativeWriters(h *chplan.HistogramQuantileNative, b *Builder) hqNativeW
 	zt := h.ZeroThresholdColumn
 	var w hqNativeWriters
 
-	// phi renders the parameter: the computed expression when PhiExpr
-	// is set (typically a scalar subquery — CH folds it as a
-	// constant), the inline literal otherwise.
-	w.phi = func() {
+	// phi: the computed expression when PhiExpr is set (typically a
+	// scalar subquery — CH folds it as a constant), the inline literal
+	// (InlineLit float == formatFloat) otherwise.
+	w.phi = func() Frag {
 		if h.PhiExpr != nil {
-			_ = b.Expr(h.PhiExpr)
-			return
+			return func(b *Builder) { _ = b.Expr(h.PhiExpr) }
 		}
-		b.writeSQL(formatFloat(h.Phi))
+		return InlineLit(h.Phi)
 	}
-	// base = pow(2, pow(2, -Scale)). Re-rendered inline at each
-	// use; CH's planner CSEs. Inline literal `2` and array-literal
-	// `[col]` have no typed Frag (no inline-int / array-literal
-	// helpers), so the in-package b.writeSQL path is kept for the
-	// shape's outer layout; the inner pow/arrayCumSum/arrayReverse
-	// function shells use typed Call where they would otherwise
-	// duplicate "fn(" + ... + ")" string fragments.
-	w.base = func() {
-		b.writeSQL("pow(2, pow(2, -")
-		b.Ident(scale)
-		b.writeSQL("))")
+	// base = pow(2, pow(2, -Scale)). Higher scale = finer buckets.
+	w.base = func() Frag {
+		return Call("pow", InlineLit(2), Call("pow", InlineLit(2), Neg(Col(scale))))
 	}
 	// cum = arrayCumSum(arrayConcat(
 	//         arrayReverse(NegativeBucketCounts),
 	//         [ZeroCount],
 	//         PositiveBucketCounts)).
-	// arrayReverse on an empty array yields [], so the walk
-	// collapses to the Phase 1 shape when NegativeBucketCounts
-	// is empty.
-	cumBody := func(b *Builder) {
-		b.writeSQL("arrayConcat(")
-		Call("arrayReverse", Col(nbc))(b)
-		b.writeSQL(", [")
-		b.Ident(zc)
-		b.writeSQL("], ")
-		b.Ident(pbc)
-		b.writeSQL(")")
-	}
-	w.cum = func() {
-		Call("arrayCumSum", cumBody)(b)
+	// arrayReverse on an empty array yields [], so the walk collapses to
+	// the Phase 1 shape when NegativeBucketCounts is empty.
+	w.cum = func() Frag {
+		return Call(
+			"arrayCumSum",
+			Call("arrayConcat", Call("arrayReverse", Col(nbc)), Array(Col(zc)), Col(pbc)),
+		)
 	}
 	// total = cum[length(cum)] — last element of cum.
-	w.total = func() {
-		w.cum()
-		b.writeSQL("[")
-		Call("length", func(b *Builder) { w.cum() })(b)
-		b.writeSQL("]")
+	w.total = func() Frag {
+		return Subscript(w.cum(), Call("length", w.cum()))
 	}
-	// idx = arrayFirstIndex(c -> c >= phi*total, cum).
-	// Lambda body uses bound var `c`; Builder.Lambda emits "(c) ->"
-	// which drifts vs. "c ->" output, so the in-package writeSQL
-	// path is kept here.
-	// Computed phi: wrap the lambda predicate as `if(<cmp>, 1, 0) = 1`
-	// — CH 24.8 rejects a scalar subquery anywhere in
-	// arrayFirstIndex's argument tree with ILLEGAL_COLUMN (see the
-	// classic emitter's writeIdx for the full rationale). The
-	// literal path keeps the bare comparison (byte-stable fixtures).
-	w.idx = func() {
-		b.writeSQL("arrayFirstIndex(c -> ")
+	// idx = arrayFirstIndex(c -> c >= phi*total, cum). Computed phi:
+	// wrap the lambda predicate as `(if(<cmp>, 1, 0) = 1)` — CH 24.8
+	// rejects a scalar subquery anywhere in arrayFirstIndex's argument
+	// tree with ILLEGAL_COLUMN (see the classic emitter for the full
+	// rationale). The literal path keeps the bare comparison
+	// (byte-stable fixtures).
+	w.idx = func() Frag {
+		cmp := Gte(BareIdent("c"), Paren(Mul(w.phi(), w.total())))
+		pred := cmp
 		if h.PhiExpr != nil {
-			b.writeSQL("(if(")
+			pred = Paren(Eq(If(cmp, InlineLit(1), InlineLit(0)), InlineLit(1)))
 		}
-		b.writeSQL("c >= (")
-		w.phi()
-		b.writeSQL(" * ")
-		w.total()
-		b.writeSQL(")")
-		if h.PhiExpr != nil {
-			b.writeSQL(", 1, 0) = 1)")
+		return Call("arrayFirstIndex", Lambda1("c", pred), w.cum())
+	}
+	// cum[idx] (offsetMinusOne=false) / cum[idx - 1] (true). idx=1 with
+	// the `- 1` form indexes cum[0], which CH evaluates to the array
+	// element's default (0) — matches the "no bucket consumed yet"
+	// semantics the fraction formula needs.
+	w.cumAt = func(offsetMinusOne bool) Frag {
+		key := w.idx()
+		if offsetMinusOne {
+			key = Sub(w.idx(), InlineLit(1))
 		}
-		b.writeSQL(", ")
-		w.cum()
-		b.writeSQL(")")
+		return Subscript(w.cum(), key)
 	}
-	// cum[idx + offset]. offset is a string fragment like " - 1"
-	// or "" — caller-supplied so the same helper covers cum[idx]
-	// (offset="") and cum[idx-1] (offset=" - 1"). idx=1 with
-	// offset=" - 1" indexes cum[0], which CH evaluates to the
-	// array element's default (0) — matches the
-	// "no bucket consumed yet" semantics the fraction formula
-	// needs.
-	w.cumAt = func(offset string) {
-		w.cum()
-		b.writeSQL("[")
-		w.idx()
-		b.writeSQL(offset)
-		b.writeSQL("]")
-	}
-	w.nLen = func() {
-		Call("length", Col(nbc))(b)
-	}
-	w.pLen = func() {
-		Call("length", Col(pbc))(b)
-	}
-	// Zero-bucket upper edge. With a configured ZeroThreshold
-	// column the edge is the stored per-row value; an empty
-	// column name means the physical schema doesn't persist the
-	// OTLP zero_threshold (the upstream OTel-CH DDL doesn't) and
-	// the zero bucket collapses to a point at 0.
-	w.zt = func() {
+	w.nLen = func() Frag { return Call("length", Col(nbc)) }
+	w.pLen = func() Frag { return Call("length", Col(pbc)) }
+	// Zero-bucket upper edge. With a configured ZeroThreshold column the
+	// edge is the stored per-row value; an empty column name means the
+	// physical schema doesn't persist the OTLP zero_threshold (the
+	// upstream OTel-CH DDL doesn't) and the zero bucket collapses to a
+	// point at 0 — emitted as the CH-portable shape token `0.`.
+	w.zt = func() Frag {
 		if zt == "" {
-			b.writeSQL("0.")
-			return
+			return verbatim("0.")
 		}
-		b.Ident(zt)
+		return Col(zt)
 	}
-	// fraction = (target - cum[idx-1]) / (cum[idx] - cum[idx-1]).
+	// fraction = (target - cum[idx-1]) / (cum[idx] - cum[idx-1]),
 	// target = phi * total.
-	w.fraction = func() {
-		b.writeSQL("((")
-		w.phi()
-		b.writeSQL(" * ")
-		w.total()
-		b.writeSQL(") - ")
-		w.cumAt(" - 1")
-		b.writeSQL(") / (")
-		w.cumAt("")
-		b.writeSQL(" - ")
-		w.cumAt(" - 1")
-		b.writeSQL(")")
+	w.fraction = func() Frag {
+		return Div(
+			Paren(Sub(Paren(Mul(w.phi(), w.total())), w.cumAt(true))),
+			Paren(Sub(w.cumAt(false), w.cumAt(true))),
+		)
 	}
 
 	return w
