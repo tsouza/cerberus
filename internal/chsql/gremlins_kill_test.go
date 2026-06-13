@@ -3702,3 +3702,333 @@ func TestEmitStructuralSiblingJoin_Succeeds(t *testing.T) {
 		}
 	}
 }
+
+// =====================================================================
+// Phase-2 (chsql) LIVED-mutant kills from the push-to-main mutation run
+// 27469747395 (commit fef5109a). The typed-Frag sweep (#850) plus
+// accumulated test-quality gaps left 40 LIVED chsql mutants — efficacy
+// 94.13% < the 95% bar. The block below kills the clearly-killable set
+// (validation disjunct chains, off-by-one / sign boundaries on the
+// emitted SQL, and the computed-phi / qualifier branches), each by
+// asserting the EXACT emitted SQL or error so the mutated operator
+// produces observably-different output.
+// =====================================================================
+
+// --- range_lwr.go column-validation disjunct (65:26/46/71) ---
+
+// TestEmitRangeLWR_EachColumnEmptyErrors kills the INVERT_LOGICAL
+// mutants on the `TimestampCol == "" || ValueCol == "" || MetricNameCol
+// == "" || AttributesCol == ""` validation chain. Each case blanks
+// exactly ONE column; `||` → `&&` would require every column blank
+// before erroring, so a single missing name must still be rejected.
+func TestEmitRangeLWR_EachColumnEmptyErrors(t *testing.T) {
+	t.Parallel()
+	base := func() *chplan.RangeLWR {
+		return &chplan.RangeLWR{
+			Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
+			Step:          30 * time.Second,
+			MetricNameCol: "MetricName",
+			AttributesCol: "Attributes",
+			TimestampCol:  "TimeUnix",
+			ValueCol:      "Value",
+		}
+	}
+	cases := []struct {
+		name  string
+		blank func(r *chplan.RangeLWR)
+	}{
+		{"timestamp", func(r *chplan.RangeLWR) { r.TimestampCol = "" }},
+		{"value", func(r *chplan.RangeLWR) { r.ValueCol = "" }},
+		{"metricName", func(r *chplan.RangeLWR) { r.MetricNameCol = "" }},
+		{"attributes", func(r *chplan.RangeLWR) { r.AttributesCol = "" }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := base()
+			tc.blank(r)
+			if _, _, err := Emit(context.Background(), r); err == nil {
+				t.Errorf("RangeLWR with empty %s column must error", tc.name)
+			}
+		})
+	}
+}
+
+// --- range_lwr.go Start/End guard + span boundary (76:23, 78:11) ---
+
+// TestEmitRangeLWR_AnchorCountBounds kills two mutants in the anchor-
+// count computation:
+//   - 76:23 INVERT_LOGICAL on `!Start.IsZero() && !End.IsZero()`: with a
+//     pinned [Start,End] grid the anchor count is computed from the span
+//     (least(11, …)); the `&&` → `||` flip would still take the computed
+//     branch when only one bound is set, but more importantly the
+//     pinned-grid case below proves the computed branch runs (least(11)).
+//   - 78:11 CONDITIONALS_BOUNDARY on `span < 0` → `span <= 0`: a
+//     ZERO-span grid (Start == End) is legal — one anchor — and must NOT
+//     error; the `<=` mutant would reject it.
+func TestEmitRangeLWR_AnchorCountBounds(t *testing.T) {
+	t.Parallel()
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// Pinned grid → computed anchor count least(11, …) (5m / 30s + 1).
+	pinned := &chplan.RangeLWR{
+		Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
+		Start:         start,
+		End:           start.Add(5 * time.Minute),
+		Step:          30 * time.Second,
+		Lookback:      5 * time.Minute,
+		MetricNameCol: "MetricName", AttributesCol: "Attributes",
+		TimestampCol: "TimeUnix", ValueCol: "Value",
+	}
+	sql, _, err := Emit(context.Background(), pinned)
+	if err != nil {
+		t.Fatalf("pinned-grid RangeLWR: %v", err)
+	}
+	if !strings.Contains(sql, "least(11,") {
+		t.Errorf("pinned [Start,End] grid must compute 11 anchors (least(11, …)); got:\n%s", sql)
+	}
+
+	// Zero-span grid (Start == End): exactly one anchor, must NOT error.
+	zeroSpan := &chplan.RangeLWR{
+		Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
+		Start:         start,
+		End:           start, // span == 0
+		Step:          30 * time.Second,
+		Lookback:      5 * time.Minute,
+		MetricNameCol: "MetricName", AttributesCol: "Attributes",
+		TimestampCol: "TimeUnix", ValueCol: "Value",
+	}
+	zsSQL, _, err := Emit(context.Background(), zeroSpan)
+	if err != nil {
+		t.Fatalf("zero-span RangeLWR must emit (1 anchor), got error: %v", err)
+	}
+	if !strings.Contains(zsSQL, "least(1,") {
+		t.Errorf("zero-span grid must yield exactly one anchor (least(1, …)); got:\n%s", zsSQL)
+	}
+
+	// 76:23 INVERT_LOGICAL on `!Start.IsZero() && !End.IsZero()`: only
+	// when BOTH bounds are pinned is the span computed. With Start set
+	// but End zero the guard is false → single anchor, no span math, must
+	// emit cleanly. The `&&` → `||` mutant would enter the span branch on
+	// the zero End, computing a negative span and erroring.
+	oneBound := &chplan.RangeLWR{
+		Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
+		Start:         start,
+		End:           time.Time{}, // zero
+		Step:          30 * time.Second,
+		Lookback:      5 * time.Minute,
+		MetricNameCol: "MetricName", AttributesCol: "Attributes",
+		TimestampCol: "TimeUnix", ValueCol: "Value",
+	}
+	obSQL, _, err := Emit(context.Background(), oneBound)
+	if err != nil {
+		t.Fatalf("RangeLWR with only Start pinned must emit (1 anchor), got error: %v", err)
+	}
+	if !strings.Contains(obSQL, "least(1,") {
+		t.Errorf("single pinned bound must yield exactly one anchor (least(1, …)); got:\n%s", obSQL)
+	}
+}
+
+// --- range_lwr.go lookback sign in the floor-index numerator (189:72) ---
+
+// TestEmitRangeLWR_LookbackSign kills the INVERT_NEGATIVES /
+// ARITHMETIC_BASE on `-lookbackNS` in the floor-index numerator. The
+// window floor walks BACK by the lookback, so the emitted numerator is
+// `dist - <lookbackNS>`; flipping the sign to `+ <lookbackNS>` (or
+// changing the op) would walk the window the wrong way and is caught by
+// the exact subtraction substring.
+func TestEmitRangeLWR_LookbackSign(t *testing.T) {
+	t.Parallel()
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	plan := &chplan.RangeLWR{
+		Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
+		Start:         start,
+		End:           start.Add(5 * time.Minute),
+		Step:          30 * time.Second,
+		Lookback:      5 * time.Minute, // 300000000000 ns
+		MetricNameCol: "MetricName", AttributesCol: "Attributes",
+		TimestampCol: "TimeUnix", ValueCol: "Value",
+	}
+	sql, _, err := Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	// The floor numerator subtracts the lookback (greatest(0, intDiv(dist
+	// - lookbackNS, …))). A sign flip would render "+ 300000000000".
+	if !strings.Contains(sql, "- 300000000000, toInt64(30000000000)) - (modulo") {
+		t.Errorf("floor index must subtract the lookback (dist - 300000000000); got:\n%s", sql)
+	}
+	if strings.Contains(sql, "+ 300000000000") {
+		t.Errorf("lookback must be subtracted, never added; got:\n%s", sql)
+	}
+}
+
+// --- histogram_quantile_native.go computed-phi guard (196:15) ---
+
+// TestEmitHistogramQuantileNative_ComputedPhiNaNGuard kills the
+// CONDITIONALS_NEGATION on `if h.PhiExpr == nil`. With a computed phi
+// (PhiExpr set) the emitter wraps the core in an `isNaN(phi)` guard
+// (Prometheus's NaN-phi contract); the literal-phi path omits it. The
+// `== nil` → `!= nil` flip would swap which path gets the wrapper, so
+// the isNaN token must be PRESENT for computed phi and ABSENT for
+// literal phi.
+func TestEmitHistogramQuantileNative_ComputedPhiNaNGuard(t *testing.T) {
+	t.Parallel()
+	build := func(phiExpr chplan.Expr) string {
+		t.Helper()
+		plan := &chplan.HistogramQuantileNative{
+			Phi:                        0.9,
+			PhiExpr:                    phiExpr,
+			ScaleColumn:                "Scale",
+			ZeroCountColumn:            "ZeroCount",
+			PositiveOffsetColumn:       "PositiveOffset",
+			PositiveBucketCountsColumn: "PositiveBucketCounts",
+			NegativeOffsetColumn:       "NegativeOffset",
+			NegativeBucketCountsColumn: "NegativeBucketCounts",
+			Input:                      &chplan.Scan{Table: "otel_metrics_exp_histogram"},
+		}
+		sql, _, err := Emit(context.Background(), plan)
+		if err != nil {
+			t.Fatalf("Emit: %v", err)
+		}
+		return sql
+	}
+	computed := build(&chplan.FuncCall{Name: "scalar"})
+	if !strings.Contains(computed, "isNaN") {
+		t.Errorf("computed-phi native quantile must carry the isNaN NaN-guard; got:\n%s", computed)
+	}
+	literal := build(nil)
+	if strings.Contains(literal, "isNaN") {
+		t.Errorf("literal-phi native quantile must NOT carry the isNaN guard; got:\n%s", literal)
+	}
+}
+
+// --- nested_set_annotate.go optQualColFrag qualifier branch (410:10) ---
+
+// TestOptQualColFrag_QualifierBranch kills the CONDITIONALS_NEGATION on
+// `if qual == ""` in optQualColFrag: an empty qualifier renders the bare
+// `col`, a non-empty one renders `qual`.`col`. The `== ""` → `!= ""`
+// flip would swap the two branches.
+func TestOptQualColFrag_QualifierBranch(t *testing.T) {
+	t.Parallel()
+	render := func(f Frag) string {
+		b := &Builder{}
+		f(b)
+		return b.String()
+	}
+	if got := render(optQualColFrag("", "col")); got != "`col`" {
+		t.Errorf("empty qualifier should render bare `col`, got %q", got)
+	}
+	if got := render(optQualColFrag("c", "col")); got != "`c`.`col`" {
+		t.Errorf("non-empty qualifier should render `c`.`col`, got %q", got)
+	}
+}
+
+// --- structural_join.go nil-node guard (714:7) ---
+
+// TestSubtreeHasRecursiveStructural_NilGuard kills the
+// CONDITIONALS_NEGATION on `if n == nil { return false }`. A nil node
+// must short-circuit to false; the `== nil` → `!= nil` flip would skip
+// the early-out and call n.Children() on a nil node, panicking. The
+// test asserts the nil case returns false WITHOUT panicking.
+func TestSubtreeHasRecursiveStructural_NilGuard(t *testing.T) {
+	t.Parallel()
+	if subtreeHasRecursiveStructural(nil) {
+		t.Errorf("subtreeHasRecursiveStructural(nil) must be false")
+	}
+	// A non-recursive subtree (a bare Scan) must also be false — anchors
+	// the positive side so the nil case is a genuine early-out, not a
+	// blanket false.
+	if subtreeHasRecursiveStructural(&chplan.Scan{Table: "t"}) {
+		t.Errorf("subtreeHasRecursiveStructural(Scan) must be false")
+	}
+}
+
+// --- range_window.go over-time matrix anchor count + mode split ---
+
+// TestEmitRangeWindowOverTimeMatrix_AnchorArithmetic kills the
+// ARITHMETIC_BASE mutants on `OuterRange/Step + 1` (the anchor count) in
+// the direct-matrix over-time emitter. A 5m OuterRange at 30s Step is 11
+// anchors → `least(11, …)`; the `/` or `+1` mutation moves that count.
+func TestEmitRangeWindowOverTimeMatrix_AnchorArithmetic(t *testing.T) {
+	t.Parallel()
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	plan := &chplan.RangeWindow{
+		Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+		Func:            "max_over_time",
+		Range:           time.Minute,
+		Step:            30 * time.Second,
+		OuterRange:      5 * time.Minute, // 5m / 30s + 1 = 11
+		Start:           start,
+		End:             start.Add(5 * time.Minute),
+		TimestampColumn: "TimeUnix",
+		ValueColumn:     "Value",
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+	}
+	sql, _, err := Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if !strings.Contains(sql, "least(11,") {
+		t.Errorf("matrix over-time must compute 11 anchors (least(11, …)); got:\n%s", sql)
+	}
+	// The +1 mutation would yield 10; assert the off-by-one neighbour is absent.
+	if strings.Contains(sql, "least(10,") {
+		t.Errorf("anchor count must be 11, not 10 (off-by-one mutant); got:\n%s", sql)
+	}
+}
+
+// TestEmitRangeWindowOverTime_OuterRangeBoundary kills the
+// CONDITIONALS_BOUNDARY on `if r.OuterRange > 0` (instant vs matrix
+// mode). With OuterRange == 0 the emitter takes the INSTANT path — a
+// single windowed aggregate, NO anchor fan-out. The `> 0` → `>= 0`
+// mutant would wrongly route the instant case through the matrix
+// variant, introducing the `arrayJoin(arrayMap` / `least(` fan-out.
+func TestEmitRangeWindowOverTime_OuterRangeBoundary(t *testing.T) {
+	t.Parallel()
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	plan := &chplan.RangeWindow{
+		Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+		Func:            "max_over_time",
+		Range:           time.Minute,
+		Step:            30 * time.Second,
+		OuterRange:      0, // instant mode
+		End:             start.Add(5 * time.Minute),
+		TimestampColumn: "TimeUnix",
+		ValueColumn:     "Value",
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+	}
+	sql, _, err := Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if strings.Contains(sql, "arrayJoin(arrayMap(i ->") || strings.Contains(sql, "least(") {
+		t.Errorf("instant over-time (OuterRange=0) must NOT fan out across anchors; got:\n%s", sql)
+	}
+}
+
+// --- builder.go Window PARTITION-BY boundary (1575:23) ---
+
+// TestWindowFrag_PartitionByBoundary kills the CONDITIONALS_BOUNDARY on
+// `if len(partitionBy) > 0` inside the Window OVER frag. An empty
+// partition list must omit `PARTITION BY` entirely; the `> 0` → `>= 0`
+// mutant would emit a dangling `PARTITION BY ` with no columns.
+func TestWindowFrag_PartitionByBoundary(t *testing.T) {
+	t.Parallel()
+	render := func(f Frag) string {
+		b := &Builder{}
+		f(b)
+		return b.String()
+	}
+	with := render(Window(Call("row_number"), []Frag{Col("a")}, nil))
+	if !strings.Contains(with, "OVER (PARTITION BY `a`)") {
+		t.Errorf("non-empty partition list must render PARTITION BY; got %q", with)
+	}
+	without := render(Window(Call("row_number"), nil, nil))
+	if without != "row_number() OVER ()" {
+		t.Errorf("empty partition list must omit PARTITION BY entirely; got %q", without)
+	}
+	if strings.Contains(without, "PARTITION BY") {
+		t.Errorf("empty partition list must NOT emit a dangling PARTITION BY; got %q", without)
+	}
+}

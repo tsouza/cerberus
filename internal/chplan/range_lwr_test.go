@@ -69,6 +69,73 @@ func TestRangeLWR_Equal_Negative_Cols(t *testing.T) {
 	}
 }
 
+// TestRangeLWR_Equal_Negative_Start / _End pin the `!Start.Equal ||
+// !End.Equal` disjunct: flipping the `||` to `&&` would only report a
+// divergence when BOTH bounds differ, so a single-bound mismatch must
+// still come back not-Equal. (The Step/Offset/Lookback cases above sit
+// on a different line; this one is the time-bound clause.)
+func TestRangeLWR_Equal_Negative_Start(t *testing.T) {
+	t.Parallel()
+	a := newRangeLWR()
+	b := newRangeLWR()
+	b.Start = b.Start.Add(time.Second) // End stays equal
+	if a.Equal(b) {
+		t.Errorf("different Start (End equal) should not be Equal")
+	}
+}
+
+func TestRangeLWR_Equal_Negative_End(t *testing.T) {
+	t.Parallel()
+	a := newRangeLWR()
+	b := newRangeLWR()
+	b.End = b.End.Add(time.Second) // Start stays equal
+	if a.Equal(b) {
+		t.Errorf("different End (Start equal) should not be Equal")
+	}
+}
+
+// TestRangeLWR_Equal_Negative_MetricNameCol / _AttributesCol pin the
+// `MetricNameCol != || AttributesCol !=` disjunct (a different line
+// from the ValueCol case above). `||` → `&&` would require both columns
+// to differ before reporting not-Equal.
+func TestRangeLWR_Equal_Negative_MetricNameCol(t *testing.T) {
+	t.Parallel()
+	a := newRangeLWR()
+	b := newRangeLWR()
+	b.MetricNameCol = "OtherMetricName" // AttributesCol stays equal
+	if a.Equal(b) {
+		t.Errorf("different MetricNameCol (AttributesCol equal) should not be Equal")
+	}
+}
+
+func TestRangeLWR_Equal_Negative_AttributesCol(t *testing.T) {
+	t.Parallel()
+	a := newRangeLWR()
+	b := newRangeLWR()
+	b.AttributesCol = "OtherAttributes" // MetricNameCol stays equal
+	if a.Equal(b) {
+		t.Errorf("different AttributesCol (MetricNameCol equal) should not be Equal")
+	}
+}
+
+// TestRangeLWR_Equal_Negative_InputOneNil pins the `Input == nil ||
+// o.Input == nil` short-circuit: one side has a nil Input, the other a
+// real one. `||` → `&&` would skip the early-out and walk into
+// Input.Equal on a nil receiver (or mis-report equality), so the nodes
+// must come back not-Equal both ways.
+func TestRangeLWR_Equal_Negative_InputOneNil(t *testing.T) {
+	t.Parallel()
+	a := newRangeLWR()
+	b := newRangeLWR()
+	b.Input = nil
+	if a.Equal(b) {
+		t.Errorf("non-nil Input vs nil Input should not be Equal")
+	}
+	if b.Equal(a) {
+		t.Errorf("nil Input vs non-nil Input should not be Equal (reverse)")
+	}
+}
+
 func TestRangeLWR_Equal_Negative_Input(t *testing.T) {
 	t.Parallel()
 	a := newRangeLWR()
