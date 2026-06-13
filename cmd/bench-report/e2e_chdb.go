@@ -14,15 +14,17 @@ import (
 
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/logql"
+	"github.com/tsouza/cerberus/internal/optimizer"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/traceql"
 )
 
 // e2eResult is one representative query's end-to-end latency on the large
-// synthetic dataset. The query is lowered + emitted through the REAL
-// cerberus pipeline (parse -> lower -> chsql.Emit) and executed on chDB;
-// the latency is best-of-N (the floor, the most stable single-process
+// synthetic dataset. The query is lowered + optimized + emitted through the
+// REAL cerberus production pipeline (parse -> lower -> optimizer.Default().Run
+// -> chsql.Emit, the exact sequence internal/engine drives) and executed on
+// chDB; the latency is best-of-N (the floor, the most stable single-process
 // estimate).
 type e2eResult struct {
 	Name     string
@@ -146,6 +148,7 @@ func emitPromInstant(q string, now time.Time) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	plan = optimizer.Default().Run(context.Background(), plan)
 	sqlText, args, err := chsql.Emit(context.Background(), plan)
 	if err != nil {
 		return "", err
@@ -163,6 +166,7 @@ func emitPromRange(q string, start, end time.Time, step time.Duration) (string, 
 	if err != nil {
 		return "", err
 	}
+	plan = optimizer.Default().Run(context.Background(), plan)
 	sqlText, args, err := chsql.Emit(context.Background(), plan)
 	if err != nil {
 		return "", err
@@ -179,6 +183,7 @@ func emitTraceQL(q string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	plan = optimizer.Default().Run(context.Background(), plan)
 	sqlText, args, err := chsql.Emit(context.Background(), plan)
 	if err != nil {
 		return "", err
@@ -195,6 +200,7 @@ func emitLogQLRange(q string, start, end time.Time, step time.Duration) (string,
 	if err != nil {
 		return "", err
 	}
+	plan = optimizer.Default().Run(context.Background(), plan)
 	sqlText, args, err := chsql.Emit(context.Background(), plan)
 	if err != nil {
 		return "", err

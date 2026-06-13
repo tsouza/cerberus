@@ -397,8 +397,10 @@ func renderMicro(b *strings.Builder, in docInput) {
 
 func renderE2E(b *strings.Builder, in docInput) {
 	b.WriteString("## End-to-end query latency\n\n")
-	fmt.Fprintf(b, "Representative queries lowered + emitted through the real cerberus ")
-	b.WriteString("pipeline and executed on a large synthetic OTel dataset: ")
+	fmt.Fprintf(b, "Representative queries lowered, optimized (`optimizer.Default().Run`), ")
+	b.WriteString("and emitted through the real cerberus production pipeline — the exact ")
+	b.WriteString("sequence `internal/engine` drives — then executed on a large synthetic ")
+	b.WriteString("OTel dataset: ")
 	fmt.Fprintf(b, "**%s** metric samples, **%s** log records, **%s** spans ",
 		fmtInt(in.metricRows), fmtInt(in.logRows), fmtInt(in.traceRows))
 	b.WriteString("(generated server-side via `numbers(N)`). Latency is best-of-")
@@ -415,6 +417,34 @@ func renderE2E(b *strings.Builder, in docInput) {
 		fmt.Fprintf(b, "- **%s** (`%s`): `%s`\n", r.Name, r.Head, r.Query)
 	}
 	b.WriteString("\n")
+	renderE2ERangeNote(b)
+}
+
+// renderE2ERangeNote annotates the range-query row honestly. Every row above
+// is measured through the full production pipeline (parse -> lower ->
+// optimizer.Default().Run -> chsql.Emit), so the second-class latency of the
+// range query is NOT an optimizer-bypass artifact — it is the inherent
+// rate-range matrix fan-out, and we say so rather than hide it.
+func renderE2ERangeNote(b *strings.Builder) {
+	b.WriteString("> **On the `range query (240 steps)` row.** This is the ")
+	b.WriteString("high-fan-out matrix / OOM-class shape — `sum(rate(…[5m]))` over a ")
+	b.WriteString("1h × 15s grid expands ≈5M samples × ≈21 anchors/window into ")
+	b.WriteString("≈105M (sample, anchor) intermediate rows in a **single statement** ")
+	b.WriteString("(the route-A wall). The optimizer runs on it (same pipeline as ")
+	b.WriteString("every other row), but the rate / `*_over_time` extrapolated-window ")
+	b.WriteString("path does **not** benefit from the RangeLWR collapse: `rate` needs ")
+	b.WriteString("window pairs, so the fan-out can't be folded away. The latency is ")
+	b.WriteString("therefore the inherent cost of materializing those pairs on one ")
+	b.WriteString("engine, not a missing rewrite.\n>\n")
+	b.WriteString("> The [Sharded solver](#sharded-solver--the-oom-class-win) targets ")
+	b.WriteString("exactly this class. Its **measurable win on chDB is per-shard ")
+	b.WriteString("memory** — each of K disjoint anchor-grid shards materializes only ")
+	b.WriteString("≈1/K of the pairs, clearing the per-query memory cap with headroom ")
+	b.WriteString("(see that section). The solver's **wall-clock** win requires real ")
+	b.WriteString("parallel ClickHouse connections in production; this harness is a ")
+	b.WriteString("single in-process chDB engine, so running K shards here would be ")
+	b.WriteString("sequential (slower, not faster) — we deliberately do **not** report ")
+	b.WriteString("a sharded wall speedup on chDB.\n\n")
 }
 
 // --- formatting helpers --------------------------------------------------
