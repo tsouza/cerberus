@@ -1504,16 +1504,36 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 		ValueColumn:     s.ValueColumn,
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 	}
-	// In range mode, fan the range function across the request's step
-	// grid: each anchor in [start, end] (spaced by step) emits one row
-	// per series with the per-anchor function value. The emitter
-	// already supports this via OuterRange + Step (the matrix path used
-	// by subqueries); we just need to flip the switch when LowerAtRange
-	// threaded a non-zero step. Without this, `rate(m[5m])` over
-	// query_range degenerates to a single anchor at end_ts and the
-	// matrix pivot only sees one sample per series — the same root
-	// cause as the bare-selector range-mode bug Pool-AK is fixing.
-	if ctx.step > 0 && !ctx.start.IsZero() && !ctx.end.IsZero() {
+	rangeMode := ctx.step > 0 && !ctx.start.IsZero() && !ctx.end.IsZero()
+	pinned := hasAbsoluteAt(vs)
+	switch {
+	case rangeMode && pinned:
+		// `@`-pinned range-vector call (`rate(m[5m] @ <ts>)`,
+		// `... @ start()` / `@ end()`) under query_range. Reference
+		// PromQL evaluates the SAME pinned window [anchor - range,
+		// anchor] at EVERY step in [start, end] — the `@` fixes the
+		// anchor, only the OUTPUT timestamps vary. The bare matrix
+		// fan-out below would instead re-anchor the window onto each
+		// step grid point (the clobber overwrites rw.End with
+		// ctx.end), so the pin is lost and `rate(m[5m] @ T)` fans the
+		// rate across the grid rather than broadcasting the single
+		// pinned value. Keep rw as the INSTANT shape (Step=0,
+		// End=anchor.End, no OuterRange) — it produces one row per
+		// series at the pinned window — then broadcast that value
+		// across the step grid via a CrossJoin(StepGrid). This is the
+		// range-vector sibling of wrapRangeAbsoluteAtBroadcast (the
+		// bare-selector `@`-pin path).
+		return wrapRangeWindowAtBroadcast(rw, ctx, s, c.Func.Name, metricNameFromMatchers(vs.LabelMatchers)), nil
+	case rangeMode:
+		// In range mode, fan the range function across the request's step
+		// grid: each anchor in [start, end] (spaced by step) emits one row
+		// per series with the per-anchor function value. The emitter
+		// already supports this via OuterRange + Step (the matrix path used
+		// by subqueries); we just need to flip the switch when LowerAtRange
+		// threaded a non-zero step. Without this, `rate(m[5m])` over
+		// query_range degenerates to a single anchor at end_ts and the
+		// matrix pivot only sees one sample per series — the same root
+		// cause as the bare-selector range-mode bug Pool-AK is fixing.
 		rw.Start = ctx.start.UTC()
 		rw.End = ctx.end.UTC()
 		rw.Step = ctx.step
@@ -1589,6 +1609,45 @@ func wrapRangeWindowPreserveName(rw *chplan.RangeWindow, s schema.Metrics, name 
 			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
 		},
 	}
+}
+
+// wrapRangeWindowAtBroadcast broadcasts an INSTANT-shape range-vector
+// RangeWindow (rate / increase / *_over_time / ...) pinned by an
+// absolute `@` modifier across the request's step grid. The pinned
+// window is evaluated ONCE (rw is left in its instant shape: Step=0,
+// End=anchor.End), yielding one row per series with the canonical
+// `(Attributes, Value)` shape the instant range emitter produces. A
+// CrossJoin with a StepGrid spanning [start, end] then fans that single
+// per-series value across every step timestamp, and the outer Project
+// restores the matrix 4-column contract `(Attributes, anchor_ts,
+// anchor_ts AS TimeUnix, Value)` the non-pinned range path emits — so
+// downstream consumers (aggregations, arithmetic) see the identical
+// column shape whether or not the inner carried an `@` pin.
+//
+// `last_over_time` / `first_over_time` preserve `__name__`
+// (dropName=false in Prom); for them the projection pins MetricName to
+// the matcher's literal name and exposes the canonical 4-column Sample
+// contract `(MetricName, Attributes, anchor_ts AS TimeUnix, Value)`,
+// mirroring wrapRangeWindowPreserveName's matrix branch. Every other
+// range fn drops `__name__`, so MetricName is omitted.
+func wrapRangeWindowAtBroadcast(rw *chplan.RangeWindow, ctx lowerCtx, s schema.Metrics, fn, name string) chplan.Node {
+	grid := &chplan.StepGrid{Start: ctx.start.UTC(), End: ctx.end.UTC(), Step: ctx.step}
+	joined := &chplan.CrossJoin{Left: grid, Right: rw}
+
+	preserveName := fn == "last_over_time" || fn == "first_over_time"
+	projections := make([]chplan.Projection, 0, 4)
+	if preserveName {
+		projections = append(projections,
+			chplan.Projection{Expr: &chplan.LitString{V: name}, Alias: s.MetricNameColumn})
+	}
+	projections = append(
+		projections,
+		chplan.Projection{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+		chplan.Projection{Expr: &chplan.ColumnRef{Name: "anchor_ts"}, Alias: "anchor_ts"},
+		chplan.Projection{Expr: &chplan.ColumnRef{Name: "anchor_ts"}, Alias: s.TimestampColumn},
+		chplan.Projection{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
+	)
+	return &chplan.Project{Input: joined, Projections: projections}
 }
 
 // lowerAggregate handles `sum by (job) (...)`, `sum without (instance) (...)`,
