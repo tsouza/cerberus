@@ -18,14 +18,15 @@ import (
 
 // startClickHouse spins up a real ClickHouse via testcontainers and returns
 // a driver.Conn bound to it plus a cleanup func. The image tracks the same
-// `24-alpine` line used by chclient's integration test.
+// `25-alpine` line used by chclient's integration test.
 func startClickHouse(t *testing.T) (driver.Conn, string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	container, err := tcclickhouse.Run(ctx,
-		"clickhouse/clickhouse-server:24.8-alpine",
+	container, err := tcclickhouse.Run(
+		ctx,
+		"clickhouse/clickhouse-server:25.8-alpine",
 		tcclickhouse.WithUsername("cerberus"),
 		tcclickhouse.WithPassword("cerberus"),
 		tcclickhouse.WithDatabase("otel"),

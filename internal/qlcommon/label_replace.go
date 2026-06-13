@@ -180,10 +180,13 @@ func replacementStep(b *strings.Builder, escaped string, i, allowed int) int {
 //	The outer `mapFilter((k, v) -> v != '', …)` then drops the dst
 //	label entirely, diverging from reference Prom which emits
 //	`dst="value-"`. CH ≥ 25.8 honours the replacement on empty inputs,
-//	but the cerberus deployment lane targets CH 24.8 (the OTel
-//	collector's pinned LTS), so we patch the divergence at SQL build
-//	time by pre-computing the empty-captures result and using it as a
-//	short-circuit when the source value is empty at row time.
+//	and the cerberus deployment lane now targets CH 25.8 — but the
+//	short-circuit stays load-bearing: it is forward-safe (collapses to
+//	the same spec-correct value on 25.8) and keeps the emit identical
+//	while the compatibility reference backend moves in lock-step. We
+//	patch the divergence at SQL build time by pre-computing the
+//	empty-captures result and using it as a short-circuit when the
+//	source value is empty at row time.
 //
 // Substitution rules (mirror `ReplacementToCH` but resolve each
 // backref to the empty string instead of CH's `\N` form):

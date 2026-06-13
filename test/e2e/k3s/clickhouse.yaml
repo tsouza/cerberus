@@ -38,7 +38,7 @@ spec:
     spec:
       containers:
         - name: clickhouse
-          image: clickhouse/clickhouse-server:24.8-alpine
+          image: clickhouse/clickhouse-server:25.8-alpine
           ports:
             - name: native
               containerPort: 9000

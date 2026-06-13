@@ -52,15 +52,15 @@ type Config struct {
 	//
 	// Default is false — and MUST stay false out of the box. The family
 	// was introduced in ClickHouse v25.6.0; the compose / e2e /
-	// compatibility lanes all run ClickHouse 24.8, which lacks the
-	// function entirely (a native-path query 500s there with
-	// UNKNOWN_FUNCTION). The experimental setting
-	// `allow_experimental_time_series_aggregate_functions=1` is sent only
+	// compatibility lanes now all run ClickHouse 25.8 (matching the chDB
+	// test substrate, chdb-go v1.11.0 = 25.8.2.1-lts), so the function
+	// exists everywhere — but the path stays experimental because it
+	// depends on the experimental setting
+	// `allow_experimental_time_series_aggregate_functions=1`, sent only
 	// on the queries that actually use the native node (see
-	// internal/engine), so unrelated queries on a 24.8 server are never
-	// touched. First cut is rate-only; increase / delta stay on the
-	// fan-out until a dedicated chDB differential sweep proves the
-	// timeSeriesDeltaToGrid mapping.
+	// internal/engine), so unrelated queries are never touched. First cut
+	// is rate-only; increase / delta stay on the fan-out until a dedicated
+	// chDB differential sweep proves the timeSeriesDeltaToGrid mapping.
 	ExperimentalTSGridRange bool
 
 	// Log configures cerberus's own structured logging (stdlib log/slog).
@@ -172,7 +172,8 @@ type OTLPConfig struct {
 //	CERBERUS_AUTO_CREATE_SCHEMA    default "false"
 //	CERBERUS_EXPERIMENTAL_TS_GRID_RANGE default "false" — emit ClickHouse-native
 //	    timeSeriesRateToGrid for eligible rate query_range; requires ClickHouse
-//	    >= 25.6; on older servers the native query 500s with UNKNOWN_FUNCTION
+//	    >= 25.6 (prod / compose / e2e are on 25.8, so this floor is met by
+//	    default); on older servers the native query 500s with UNKNOWN_FUNCTION
 //	CERBERUS_LOG_FORMAT            default "text"  ("text" | "json")
 //	CERBERUS_LOG_LEVEL             default "info"  ("debug" | "info" | "warn" | "error")
 //	CERBERUS_OTLP_ENDPOINT         default ""   (empty → exporters disabled)

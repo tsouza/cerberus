@@ -23,7 +23,7 @@ body:
     attributes:
       label: ClickHouse version
       description: From `SELECT version()` against your CH cluster.
-      placeholder: "24.8.4.13 (clickhouse/clickhouse-server:24.8-alpine)"
+      placeholder: "25.8.24.21 (clickhouse/clickhouse-server:25.8-alpine)"
     validations:
       required: true
   - type: dropdown
