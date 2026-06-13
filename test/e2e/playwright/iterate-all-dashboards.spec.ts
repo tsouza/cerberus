@@ -61,6 +61,7 @@ import {
 
 import {
   type VariableJSON,
+  awaitSelfTelemetryRangeSignal,
   checkDashboardVariable,
   describeSweepDepth,
   enforceExpectation,
@@ -519,6 +520,15 @@ test.describe('iterate-all-dashboards: full provisioned-dashboard sweep', () => 
     // Single warmup for the whole describe block — the per-dashboard
     // tests inherit the populated counters.
     await generateSelfTraffic(request, SEED_TRAFFIC_SECONDS);
+    // Flake #89: this sweep renders cerberus-self directly via
+    // /d/<uid>, whose "Error rate by language" panel needs ≥2 exported
+    // samples of both the aggregate rate and the {result="error"}
+    // numerator in the [5m] window before it emits a point.
+    // generateSelfTraffic guarantees REQUESTS, not that their exported
+    // samples reached ClickHouse — gate the per-dashboard renders on a
+    // bounded, data-driven wait so an empty panel is a real bug, not a
+    // boot race. Loud deadline failure, never a skip.
+    await awaitSelfTelemetryRangeSignal(request);
   });
 
   for (const d of dashboards) {
