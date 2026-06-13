@@ -109,6 +109,7 @@ import {
 } from '@playwright/test';
 
 import {
+  awaitSelfTelemetryRangeSignal,
   captureConsoleErrors,
   describeSweepDepth,
   generateSelfTraffic,
@@ -605,6 +606,18 @@ test('crawl: BFS over every reachable Grafana surface with universal oracles + i
     stack.defaultGrafanaURL;
 
   await generateSelfTraffic(request, SEED_TRAFFIC_SECONDS);
+  // Flake #89: url=/ is the first surface this BFS audits, and the
+  // cerberus-self home dashboard's "Error rate by language" panel
+  // divides rate(cerberus_queries_total{result="error"}[5m]) by the
+  // aggregate rate — both need ≥2 exported samples in the [5m] window
+  // before they emit a point. generateSelfTraffic guarantees REQUESTS,
+  // not that their exported samples have landed in ClickHouse, so on a
+  // cold stack the panel could render "No data" and trip the
+  // panel-no-data-undeclared oracle. This bounded, data-driven wait
+  // gates the whole crawl until the panel's data is provably
+  // rate()-able — parity with dsquery.spec.ts + lints.spec.ts. Loud
+  // deadline failure, never a skip.
+  await awaitSelfTelemetryRangeSignal(request);
 
   // The engine drives no login flow — every stack config declares
   // anonymousAuth and the crawl proves the assumption live before

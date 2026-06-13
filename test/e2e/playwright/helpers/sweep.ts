@@ -164,6 +164,85 @@ export async function generateSelfTraffic(
   }
 }
 
+// Each probe expression must yield at least this many range points
+// before we treat the underlying series as rate()-able. Two samples
+// are the arithmetic floor for `rate(x[5m])` to emit a single point;
+// we demand a third as step-alignment margin (see the comment in
+// awaitSelfTelemetryExprSignal) so "probe passed" implies "any
+// consumer window over the same range has data".
+const MIN_SELF_TELEMETRY_POINTS = 3;
+
+// How far in the PAST the probe window ends. Grafana's Prometheus
+// plugin backend step-aligns the replay window, which can exclude the
+// single newest evaluation step — ending the probe window here keeps
+// the probe and any consumer panel looking at the same settled range.
+const SELF_TELEMETRY_PROBE_LAG_SEC = 30;
+
+// Width of the probe's range window, matching the panel's [5m] rate
+// lookback so the probe exercises the same number of in-window samples
+// the consumer panel needs.
+const SELF_TELEMETRY_PROBE_WINDOW_SEC = 300;
+
+// Poll cadence while waiting for a self-telemetry expression to become
+// rate()-able. One OTel export cycle is 10s; 5s keeps the loop
+// responsive without hammering cerberus.
+const SELF_TELEMETRY_POLL_INTERVAL_MS = 5_000;
+
+/**
+ * Block until a single cerberus self-telemetry expression supports
+ * rate()-over-range queries (>= MIN_SELF_TELEMETRY_POINTS points), or
+ * throw after `deadlineSec`.
+ *
+ * Polls cerberus DIRECTLY (not through Grafana) on purpose: it
+ * isolates "the data exists on the wire" from "the consumer decodes
+ * it". The deadline failure is loud and actionable, never a skip.
+ */
+async function awaitSelfTelemetryExprSignal(
+  request: APIRequestContext,
+  expr: string,
+  deadlineSec: number,
+): Promise<void> {
+  const cerberusURL = process.env.CERBERUS_URL ?? DEFAULT_CERBERUS_URL;
+  const deadline = Date.now() + deadlineSec * 1000;
+  let lastBody = '';
+  for (;;) {
+    // The probe window deliberately ends SELF_TELEMETRY_PROBE_LAG_SEC
+    // in the PAST and demands MIN_SELF_TELEMETRY_POINTS points: a
+    // probe satisfied by one fresh point green-lit a replay that
+    // still saw zero rows (reproduced on the 2026-06-10 cold-boot
+    // verification). Requiring margin makes "probe passed" imply "any
+    // consumer window over the same range has data".
+    const nowSec = Math.floor(Date.now() / 1000) - SELF_TELEMETRY_PROBE_LAG_SEC;
+    const url =
+      `${cerberusURL}/api/v1/query_range?query=${encodeURIComponent(expr)}` +
+      `&start=${nowSec - SELF_TELEMETRY_PROBE_WINDOW_SEC}&end=${nowSec}&step=15`;
+    try {
+      const resp = await request.get(url);
+      lastBody = await resp.text();
+      if (resp.status() === 200) {
+        const parsed = JSON.parse(lastBody) as {
+          data?: { result?: Array<{ values?: unknown[] }> };
+        };
+        const points = (parsed.data?.result ?? []).reduce(
+          (acc, s) => acc + (s.values?.length ?? 0),
+          0,
+        );
+        if (points >= MIN_SELF_TELEMETRY_POINTS) return;
+      }
+    } catch {
+      // transient — the deadline below is the failure path
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `awaitSelfTelemetryExprSignal: ${expr} returned <${MIN_SELF_TELEMETRY_POINTS} points within ${deadlineSec}s of seed traffic — ` +
+          `cerberus self-telemetry is not reaching ClickHouse (seed, OTel export, or ingest regression). ` +
+          `Last response: ${lastBody.slice(0, 400)}`,
+      );
+    }
+    await new Promise((r) => setTimeout(r, SELF_TELEMETRY_POLL_INTERVAL_MS));
+  }
+}
+
 /**
  * Block until cerberus's own self-telemetry supports rate()-over-range
  * queries, or throw after `deadlineSec`.
@@ -179,6 +258,20 @@ export async function generateSelfTraffic(
  * EMPTY — adversarial verification on 2026-06-10 reproduced exactly
  * that red on a healthy stack at ~2min uptime.
  *
+ * We gate on TWO expressions, both of which the cerberus-self "Error
+ * rate by language" panel depends on (flake #89):
+ *   - the AGGREGATE denominator  sum(rate(cerberus_queries_total[5m]))
+ *   - the sparser NUMERATOR
+ *       sum by (cerberus_ql) (rate(cerberus_queries_total{result="error"}[5m]))
+ * The numerator is partitioned by (cerberus_ql) AND filtered to the
+ * error path, so a single (result="error", cerberus_ql) bucket can lag
+ * the aggregate by an export cycle. Gating on the aggregate alone left
+ * a residual race where the denominator was rate()-able but the
+ * numerator wasn't yet — the panel's `numerator / clamp_min(denom, …)`
+ * then yields no series and renders "No data". Probing the exact panel
+ * numerator closes that gap: once this returns, an empty "Error rate
+ * by language" panel is a real bug, not a boot race.
+ *
  * The wait polls cerberus DIRECTLY (not through Grafana) on purpose:
  * it isolates "the data exists on the wire" from "the consumer decodes
  * it", so the caller's plugin-backend / lint assertions stay
@@ -190,45 +283,14 @@ export async function awaitSelfTelemetryRangeSignal(
   request: APIRequestContext,
   deadlineSec = 120,
 ): Promise<void> {
-  const cerberusURL = process.env.CERBERUS_URL ?? DEFAULT_CERBERUS_URL;
-  const expr = 'sum(rate(cerberus_queries_total[5m]))';
-  const deadline = Date.now() + deadlineSec * 1000;
-  let lastBody = '';
-  for (;;) {
-    // The probe window deliberately ends 30s in the PAST and demands
-    // >=3 points: Grafana's Prometheus plugin backend step-aligns the
-    // replay window, which can exclude the single newest evaluation
-    // step — a probe satisfied by one fresh point green-lit a replay
-    // that still saw zero rows (reproduced on the 2026-06-10
-    // cold-boot verification). Requiring margin makes "probe passed"
-    // imply "any consumer window over the same range has data".
-    const nowSec = Math.floor(Date.now() / 1000) - 30;
-    const url =
-      `${cerberusURL}/api/v1/query_range?query=${encodeURIComponent(expr)}` +
-      `&start=${nowSec - 300}&end=${nowSec}&step=15`;
-    try {
-      const resp = await request.get(url);
-      lastBody = await resp.text();
-      if (resp.status() === 200) {
-        const parsed = JSON.parse(lastBody) as {
-          data?: { result?: Array<{ values?: unknown[] }> };
-        };
-        const points = (parsed.data?.result ?? []).reduce(
-          (acc, s) => acc + (s.values?.length ?? 0),
-          0,
-        );
-        if (points >= 3) return;
-      }
-    } catch {
-      // transient — the deadline below is the failure path
-    }
-    if (Date.now() >= deadline) {
-      throw new Error(
-        `awaitSelfTelemetryRangeSignal: ${expr} returned <3 points within ${deadlineSec}s of seed traffic — ` +
-          `cerberus self-telemetry is not reaching ClickHouse (seed, OTel export, or ingest regression). ` +
-          `Last response: ${lastBody.slice(0, 400)}`,
-      );
-    }
-    await new Promise((r) => setTimeout(r, 5_000));
+  // The aggregate denominator the panel divides by, plus the strictly
+  // sparser by-language error numerator. Both must be rate()-able
+  // before the consumer panel can render a non-empty frame.
+  const exprs = [
+    'sum(rate(cerberus_queries_total[5m]))',
+    'sum by (cerberus_ql) (rate(cerberus_queries_total{result="error"}[5m]))',
+  ];
+  for (const expr of exprs) {
+    await awaitSelfTelemetryExprSignal(request, expr, deadlineSec);
   }
 }
