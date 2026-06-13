@@ -22,6 +22,10 @@ Every runtime knob is an environment variable read at startup by
 | `CERBERUS_CH_CONN_MAX_LIFETIME` | `1h`             | Max age of a pooled ClickHouse connection before it is recycled (`time.ParseDuration` syntax). Reproduces clickhouse-go's implicit default. Must be > 0.                                                                                             |
 | `CERBERUS_CH_QUERY_MAX_MEMORY`  | `1073741824`     | Per-query ClickHouse memory cap in bytes (`max_memory_usage` on every data-plane query; DDL exempt). `0` = don't set. Queries over the cap get a resource-exhausted rejection (Prom 422 / Loki 400 / Tempo 422), breaker-neutral.                    |
 | `CERBERUS_QUERY_MAX_SAMPLES`    | `50000000`       | Per-query sample budget (Prometheus `--query.max-samples` parity); bounds cerberus-process memory. `0` disables.                                                                                                                                     |
+| `CERBERUS_CH_BREAKER_ENABLED`       | `true`       | Master switch for the ClickHouse-disconnect circuit breaker. `false` makes the breaker a no-op (always-allow, never trips) — a saturated or dead CH then surfaces as ordinary dial/query errors instead of fast-fail `503 Retry-After: 5`.        |
+| `CERBERUS_CH_BREAKER_THRESHOLD`     | `5`          | Consecutive CH-health failures within the window that trip the breaker CLOSED → OPEN. Must be >= 1.                                                                                                                                              |
+| `CERBERUS_CH_BREAKER_WINDOW`        | `10s`        | Rolling window over which the threshold failures must occur (`time.ParseDuration` syntax). Must be > 0.                                                                                                                                          |
+| `CERBERUS_CH_BREAKER_OPEN_INTERVAL` | `5s`         | OPEN-state backoff before the breaker admits a single HALF-OPEN probe (`time.ParseDuration` syntax). Must be > 0.                                                                                                                                |
 | `CERBERUS_AUTO_CREATE_SCHEMA`   | `false`          | When `true`, apply the OTel-CH DDL at startup before serving.                                                                                                                                                                                        |
 | `CERBERUS_LOG_FORMAT`           | `text`           | slog handler kind (`text` or `json`).                                                                                                                                                                                                                |
 | `CERBERUS_LOG_LEVEL`            | `info`           | Minimum slog level (`debug` / `info` / `warn` / `error`).                                                                                                                                                                                            |
@@ -45,6 +49,29 @@ rather than silently downgrading behaviour. Secrets (CH password, OTLP
 bearer tokens) live in the same env-var namespace and are sourced from
 Kubernetes `Secret` / Docker `secrets:` / a vault-injecting init
 container — never committed.
+
+### ClickHouse circuit breaker
+
+Every CH-touching call is guarded by a per-`Client` circuit breaker
+(`internal/chclient/breaker.go`). After `CERBERUS_CH_BREAKER_THRESHOLD`
+consecutive failures inside `CERBERUS_CH_BREAKER_WINDOW` the breaker trips
+OPEN and methods return `ErrCircuitOpen` without dialling — the handler
+layer maps that into `503` with `Retry-After: 5` so clients back off
+instead of stacking inner-stage retries against a dead upstream. After
+`CERBERUS_CH_BREAKER_OPEN_INTERVAL` the breaker admits exactly one
+HALF-OPEN probe; a successful probe closes the circuit, a failed one
+restarts the backoff. Pool-acquire timeouts, `MEMORY_LIMIT_EXCEEDED`
+rejections, and client-cancelled requests are treated as breaker-neutral
+(they prove CH is alive, or say nothing about its health) and never
+advance the failure count.
+
+The defaults (`5` / `10s` / `5s`, enabled) reproduce the pre-tunable
+hardcoded values exactly, so out-of-the-box behaviour is unchanged.
+Tighten the knobs for a flappier CH, loosen them to tolerate longer
+hiccups, or set `CERBERUS_CH_BREAKER_ENABLED=false` to switch the breaker
+off entirely — a disabled breaker is always-allow and never trips, so a
+saturated or dead CH surfaces as ordinary dial/query errors (useful when
+an external proxy or service mesh already owns CH fail-fast).
 
 ## Backing services
 

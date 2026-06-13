@@ -20,11 +20,19 @@ import (
 // matching the existing error-wrapping style in this package.
 var ErrCircuitOpen = errors.New("chclient: circuit breaker open")
 
-// Circuit-breaker tuning. These are the GA defaults, not configurable
-// via flags or env vars — they're tight enough that an actual CH
-// outage trips the breaker within one Grafana panel refresh, yet
-// loose enough that transient hiccups (a single slow query, a CH
-// node mid-restart) don't open the door to spurious 503s.
+// Circuit-breaker tuning defaults. These are the GA defaults, applied
+// whenever a breaker field is left at its zero value (the zero-value
+// breaker, and any Config that doesn't override them) — they're tight
+// enough that an actual CH outage trips the breaker within one Grafana
+// panel refresh, yet loose enough that transient hiccups (a single slow
+// query, a CH node mid-restart) don't open the door to spurious 503s.
+//
+// As of #95 the three knobs are tunable (and the breaker is disablable)
+// via the CERBERUS_CH_BREAKER_* env vars wired through chclient.Config;
+// these consts remain the out-of-the-box defaults so behaviour is
+// byte-unchanged when nothing is overridden. They are applied through
+// the breaker's resolverThreshold / resolverWindow / resolverOpenInterval
+// helpers whenever the corresponding per-breaker field is left zero.
 //
 // breakerThreshold is the number of consecutive failures required
 // within breakerWindow for the breaker to trip from CLOSED to OPEN.
@@ -75,10 +83,10 @@ type breaker struct {
 	mu sync.Mutex
 
 	// state is the current lifecycle phase. Transitions:
-	//   CLOSED → OPEN: failures within breakerWindow exceed
-	//     breakerThreshold.
+	//   CLOSED → OPEN: failures within the failure window exceed
+	//     the configured threshold (resolveThreshold()).
 	//   OPEN → HALF-OPEN: allow() called after openedAt +
-	//     breakerOpenInterval has elapsed; the call also reserves
+	//     resolveOpenInterval() has elapsed; the call also reserves
 	//     the in-flight probe slot.
 	//   HALF-OPEN → CLOSED: probe completes with nil error.
 	//   HALF-OPEN → OPEN: probe completes with non-nil error;
@@ -92,7 +100,7 @@ type breaker struct {
 
 	// failureWindowStart anchors the rolling failure window. The
 	// breaker counts failures since this timestamp; if more than
-	// breakerWindow elapses without crossing the threshold, the
+	// resolveWindow() elapses without crossing the threshold, the
 	// counter resets on the next failure (the window slides).
 	failureWindowStart time.Time
 
@@ -111,6 +119,51 @@ type breaker struct {
 	// nowOrTime; tests inject a deterministic clock to drive the
 	// state machine without sleeping.
 	now func() time.Time
+
+	// disabled, when true, turns the breaker into a no-op: allow()
+	// always admits and record() never advances the state machine, so
+	// the circuit can never trip. Set from chclient.Config.BreakerDisabled
+	// (CERBERUS_CH_BREAKER_ENABLED=false). Default false — the breaker
+	// is enabled out of the box.
+	disabled bool
+
+	// threshold / window / openInterval are the per-breaker tuning knobs
+	// (#95). Each is read through its resolver helper (resolveThreshold /
+	// resolveWindow / resolveOpenInterval) so a zero value falls back to
+	// the package default — that keeps the zero-value breaker, and any
+	// Config that doesn't override a knob, byte-identical to the GA
+	// constants. cmd/cerberus sets them from CERBERUS_CH_BREAKER_THRESHOLD
+	// / _WINDOW / _OPEN_INTERVAL via chclient.Config.
+	threshold    int
+	window       time.Duration
+	openInterval time.Duration
+}
+
+// resolveThreshold returns the configured consecutive-failure threshold,
+// falling back to the breakerThreshold default when unset (zero value).
+func (b *breaker) resolveThreshold() int {
+	if b.threshold > 0 {
+		return b.threshold
+	}
+	return breakerThreshold
+}
+
+// resolveWindow returns the configured rolling failure window, falling
+// back to the breakerWindow default when unset (zero value).
+func (b *breaker) resolveWindow() time.Duration {
+	if b.window > 0 {
+		return b.window
+	}
+	return breakerWindow
+}
+
+// resolveOpenInterval returns the configured OPEN-state backoff, falling
+// back to the breakerOpenInterval default when unset (zero value).
+func (b *breaker) resolveOpenInterval() time.Duration {
+	if b.openInterval > 0 {
+		return b.openInterval
+	}
+	return breakerOpenInterval
 }
 
 // nowOrTime returns b.now() if set, otherwise time.Now(). Kept as a
@@ -133,6 +186,13 @@ func (b *breaker) nowOrTime() time.Time {
 // the probe's record() call completes. This guarantees the GA design:
 // at most one in-flight probe through the breaker during HALF-OPEN.
 func (b *breaker) allow() bool {
+	// A disabled breaker is always-allow: it never short-circuits, so the
+	// circuit can never be OPEN to fast-fail against. No lock needed —
+	// disabled is set once at construction and never mutated.
+	if b.disabled {
+		return true
+	}
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -143,7 +203,7 @@ func (b *breaker) allow() bool {
 		// Has the backoff elapsed? If so, transition to HALF-OPEN
 		// and admit the probe in this same call so we don't race
 		// other goroutines for the slot.
-		if b.nowOrTime().Sub(b.openedAt) < breakerOpenInterval {
+		if b.nowOrTime().Sub(b.openedAt) < b.resolveOpenInterval() {
 			return false
 		}
 		b.state = stateHalfOpen
@@ -220,6 +280,12 @@ func (b *breaker) peek() string {
 // the call-site shape uniform. Counting it would double-fault the
 // breaker.
 func (b *breaker) record(ctx context.Context, err error) {
+	// A disabled breaker keeps no state — record is a no-op so the
+	// circuit can never trip. Mirrors allow()'s disabled early-return.
+	if b.disabled {
+		return
+	}
+
 	// Don't double-count: ErrCircuitOpen means allow() returned
 	// false, so the call never touched CH. Counting it as a failure
 	// would keep the breaker permanently OPEN.
@@ -347,14 +413,14 @@ func (b *breaker) record(ctx context.Context, err error) {
 		// resetting the window if too long has passed since the
 		// first failure of the current sequence.
 		now := b.nowOrTime()
-		if b.failureWindowStart.IsZero() || now.Sub(b.failureWindowStart) > breakerWindow {
+		if b.failureWindowStart.IsZero() || now.Sub(b.failureWindowStart) > b.resolveWindow() {
 			// Window rolled over — start a fresh count.
 			b.failureWindowStart = now
 			b.failures = 1
 		} else {
 			b.failures++
 		}
-		if b.failures >= breakerThreshold {
+		if b.failures >= b.resolveThreshold() {
 			b.state = stateOpen
 			b.openedAt = now
 			b.failures = 0
