@@ -44,10 +44,21 @@ func (b *Builder) Build() (string, []any) { return b.sb.String(), b.args }
 
 // writeSQL appends raw SQL text. Unexported — external packages must
 // use the typed surface (QueryBuilder slots + Frag constructors like
-// Eq / And / Paren / Cast). In-package callers
-// (histogram_quantile.go, vector_join.go, structural_join.go,
-// set_op.go) use this for operator-token-style glue inside Frag
-// callbacks; clause keywords still go through QueryBuilder slots.
+// Eq / And / Paren / Cast).
+//
+// IN-PACKAGE ESCAPE HATCH, NOT A SHORTCUT. writeSQL is the last resort
+// for the few remaining operator-token-style glue sites inside the
+// `internal/chsql` domain emitters that have not yet been ported to
+// typed Frags (histogram_quantile.go, histogram_quantile_native.go,
+// vector_join.go, structural_join.go, nested_set_annotate.go,
+// set_op.go, vector_set_op.go). It must NEVER be reached for to build a
+// query/expression SHAPE that a Frag constructor already covers: any CH
+// function is Call("fn", args…), arithmetic is Mul/Add/Sub/Div, and so
+// on. The 2026-06 typed-Frag sweep removed every writeSQL / sb.Write*
+// site from the range-window / over-time / fan-out emitters precisely
+// because those WERE expressible as Frags; the remaining callers are
+// tracked for the same treatment. When you touch one of those files,
+// port the glue you're near rather than adding more.
 //
 // (There is intentionally no writeByte method on Builder: io.ByteWriter
 // expects WriteByte(byte) error, and offering a non-error variant
@@ -1637,6 +1648,23 @@ func In(left Frag, right ...Frag) Frag {
 			}
 			r(b)
 		}
+		b.sb.WriteByte(')')
+	}
+}
+
+// NotInSubquery returns a Frag rendering "<left> NOT IN (<sub>)" — the
+// anti-set membership predicate where the right-hand side is a single
+// subquery rather than an element list. `sub` is rendered inside one
+// pair of parens (typically a QueryBuilder.Frag() that already wraps
+// itself, yielding the CH-idiomatic `NOT IN (SELECT …)`). The list-form
+// `In` constructor parenthesises a comma list; this is its subquery
+// sibling for the NOT-IN direction. Used by the range-mode
+// absent_over_time anti-join.
+func NotInSubquery(left, sub Frag) Frag {
+	return func(b *Builder) {
+		left(b)
+		b.sb.WriteString(" NOT IN (")
+		sub(b)
 		b.sb.WriteByte(')')
 	}
 }

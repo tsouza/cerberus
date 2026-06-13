@@ -1,7 +1,6 @@
 package chsql
 
 import (
-	"strconv"
 	"time"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -127,7 +126,7 @@ func (e *emitter) emitAbsentOverTime(a *chplan.AbsentOverTime) error {
 		emptyWindow = NewQuery().
 			From(fanout.Frag()).
 			Select(BareIdent("anchor_ts")).
-			Where(notInSubqueryFrag(BareIdent("anchor_ts"), covered.Frag()))
+			Where(NotInSubquery(BareIdent("anchor_ts"), covered.Frag()))
 	} else {
 		// Instant mode: single anchor at End — already bounded, keep the
 		// 1-row groupArray + arrayCount shape.
@@ -192,13 +191,16 @@ func absentOverTimeBookendFrag(t time.Time, offsetNS int64) Frag {
 	if offsetNS == 0 {
 		return base
 	}
-	return func(b *Builder) {
-		b.sb.WriteByte('(')
-		base(b)
-		b.sb.WriteString(" - toIntervalNanosecond(")
-		b.sb.WriteString(strconv.FormatInt(offsetNS, 10))
-		b.sb.WriteString("))")
-	}
+	return Paren(Sub(base, Call("toIntervalNanosecond", InlineLit(offsetNS))))
+}
+
+// absentOverTimeForwardAnchorFrag renders the forward-grid arrayMap body
+// `<start> + toIntervalNanosecond(i * <stepNS>)` — the i-th anchor
+// walking FORWARD from the query start (Prom range-query convention).
+// The additive sibling of anchorBaseAtIdxFrag (which walks backward from
+// End). `i` is the enclosing Lambda1 param.
+func absentOverTimeForwardAnchorFrag(start Frag, stepNS int64) Frag {
+	return Add(start, Call("toIntervalNanosecond", Mul(BareIdent("i"), InlineLit(stepNS))))
 }
 
 // absentOverTimeAnchorRangeFrag returns a Frag rendering
@@ -208,15 +210,14 @@ func absentOverTimeBookendFrag(t time.Time, offsetNS int64) Frag {
 // Prom range-query convention where anchors walk forward from the
 // query's `start` to its `end`.
 func absentOverTimeAnchorRangeFrag(start Frag, stepNS, numAnchors int64) Frag {
-	return func(b *Builder) {
-		b.sb.WriteString("arrayJoin(arrayMap(i -> ")
-		start(b)
-		b.sb.WriteString(" + toIntervalNanosecond(i * ")
-		b.sb.WriteString(strconv.FormatInt(stepNS, 10))
-		b.sb.WriteString("), range(0, ")
-		b.sb.WriteString(strconv.FormatInt(numAnchors, 10))
-		b.sb.WriteString(")))")
-	}
+	return Call(
+		"arrayJoin",
+		Call(
+			"arrayMap",
+			Lambda1("i", absentOverTimeForwardAnchorFrag(start, stepNS)),
+			Call("range", InlineLit(int64(0)), InlineLit(numAnchors)),
+		),
+	)
 }
 
 // absentOverTimeCoveredAnchorFrag returns a Frag rendering the
@@ -237,43 +238,24 @@ func absentOverTimeAnchorRangeFrag(start Frag, stepNS, numAnchors int64) Frag {
 // (integer dist, strict edges folded into the ±1 shifts) — at most
 // range/step + 1 anchors per sample. The greatest/least clamps and the
 // truncate-toward-zero intDiv correction follow the same contract as
-// sampleAnchorFanoutFrag; see writeAnchorGridFloorIdx.
+// sampleAnchorFanoutFrag; see anchorGridFloorIdxFrag.
 func absentOverTimeCoveredAnchorFrag(start, ts Frag, stepNS, rangeNS, numAnchors int64) Frag {
-	dist := func(b *Builder) {
-		b.sb.WriteString("dateDiff('nanosecond', ")
-		start(b)
-		b.sb.WriteString(", ")
-		ts(b)
-		b.sb.WriteByte(')')
-	}
-	return func(b *Builder) {
-		b.sb.WriteString("arrayJoin(arrayMap(i -> ")
-		start(b)
-		b.sb.WriteString(" + toIntervalNanosecond(i * ")
-		b.sb.WriteString(strconv.FormatInt(stepNS, 10))
-		b.sb.WriteString("), range(greatest(0, ")
-		writeAnchorGridFloorIdx(b, dist, -1, stepNS)
-		b.sb.WriteString("), least(")
-		b.sb.WriteString(strconv.FormatInt(numAnchors, 10))
-		b.sb.WriteString(", ")
-		writeAnchorGridFloorIdx(b, dist, rangeNS-1, stepNS)
-		b.sb.WriteString("))))")
-	}
-}
-
-// notInSubqueryFrag renders `<left> NOT IN (<sub>)` — the anti-set
-// predicate the range-mode absent shape uses to keep only anchors no
-// sample covers. Mirrors the `NOT IN (SELECT …)` idiom in
-// vector_set_op.go's setOpInSubqueryFrag, kept local because the
-// left-hand side here is a bare alias rather than a match-key
-// expression.
-func notInSubqueryFrag(left, sub Frag) Frag {
-	return func(b *Builder) {
-		left(b)
-		b.sb.WriteString(" NOT IN (")
-		sub(b)
-		b.sb.WriteByte(')')
-	}
+	// Forward orientation: dist is the sample's distance AHEAD of the
+	// earliest anchor (start → ts), the mirror of the backward fan-out's
+	// dateDiff(ts, end).
+	dist := distBehindAnchorFrag(start, ts)
+	return Call(
+		"arrayJoin",
+		Call(
+			"arrayMap",
+			Lambda1("i", absentOverTimeForwardAnchorFrag(start, stepNS)),
+			Call(
+				"range",
+				Call("greatest", InlineLit(int64(0)), anchorGridFloorIdxFrag(dist, -1, stepNS)),
+				Call("least", InlineLit(numAnchors), anchorGridFloorIdxFrag(dist, rangeNS-1, stepNS)),
+			),
+		),
+	)
 }
 
 // synthAttrsMapFrag renders the matcher-derived label set as a CH

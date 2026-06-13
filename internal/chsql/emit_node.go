@@ -2,7 +2,6 @@ package chsql
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -151,15 +150,21 @@ func (e *emitter) emitStepGrid(g *chplan.StepGrid) error {
 		numAnchors = 1
 	}
 	start := g.Start
-	sb := NewQuery().Select(As(func(b *Builder) {
-		b.sb.WriteString("arrayJoin(arrayMap(i -> ")
-		b.DateTime64Lit(start)
-		b.sb.WriteString(" + toIntervalNanosecond(i * ")
-		b.sb.WriteString(strconv.FormatInt(stepNS, 10))
-		b.sb.WriteString("), range(0, ")
-		b.sb.WriteString(strconv.FormatInt(numAnchors, 10))
-		b.sb.WriteString(")))")
-	}, "anchor_ts"))
+	// Forward step grid: anchorBase_i = <start> + toIntervalNanosecond(i * step),
+	// fanned out via arrayJoin(arrayMap(i -> …, range(0, N))).
+	startFrag := func(b *Builder) { b.DateTime64Lit(start) }
+	gridBody := Add(startFrag, Call("toIntervalNanosecond", Mul(BareIdent("i"), InlineLit(stepNS))))
+	sb := NewQuery().Select(As(
+		Call(
+			"arrayJoin",
+			Call(
+				"arrayMap",
+				Lambda1("i", gridBody),
+				Call("range", InlineLit(int64(0)), InlineLit(numAnchors)),
+			),
+		),
+		"anchor_ts",
+	))
 	e.emitSelect(sb)
 	return nil
 }
@@ -286,13 +291,14 @@ func mergeTableFrag(db string, tables []string) Frag {
 		escaped[i] = regexQuoteMeta(t)
 	}
 	regex := "^(" + strings.Join(escaped, "|") + ")$"
-	return func(b *Builder) {
-		b.sb.WriteString("merge(")
-		b.sb.WriteString(dbArg)
-		b.sb.WriteString(", '")
-		b.sb.WriteString(escapeSingleQuotes(regex))
-		b.sb.WriteString("')")
-	}
+	// merge(<db>, '<regex>') — a CH table function. dbArg is either the
+	// `currentDatabase()` call or a pre-quoted `'<db>'` literal; the regex
+	// is single-quoted with SQL-standard `''` doubling (escapeSingleQuotes),
+	// not InlineLit's backslash escaping, so both pre-quoted tokens ride
+	// `verbatim` (emitter-controlled synthetic literals) inside the typed
+	// Call shape.
+	regexLit := "'" + escapeSingleQuotes(regex) + "'"
+	return Call("merge", verbatim(dbArg), verbatim(regexLit))
 }
 
 // escapeSingleQuotes doubles every single-quote in s so it can be
@@ -415,14 +421,12 @@ func (e *emitter) emitFilterScan(f *chplan.Filter, scan *chplan.Scan) error {
 // outer parens, mirroring the legacy emitter's Binary{OpAnd} output
 // shape).
 func conjunctionFrag(exprs []chplan.Expr) Frag {
-	return func(b *Builder) {
-		for i, x := range exprs {
-			if i > 0 {
-				b.sb.WriteString(" AND ")
-			}
-			_ = b.Expr(x)
-		}
+	parts := make([]Frag, len(exprs))
+	for i, x := range exprs {
+		x := x
+		parts[i] = func(b *Builder) { _ = b.Expr(x) }
 	}
+	return And(parts...)
 }
 
 func (e *emitter) emitProject(p *chplan.Project) error {
@@ -606,14 +610,9 @@ func aggFuncFrag(af chplan.AggFunc) Frag {
 	for _, a := range af.Args {
 		args = append(args, mkExpr(a))
 	}
-	body := func(b *Builder) { b.ParamAgg(af.Name, params, args) }
+	var body Frag = func(b *Builder) { b.ParamAgg(af.Name, params, args) }
 	if intReturningAggregates[af.Name] {
-		inner := body
-		body = func(b *Builder) {
-			b.sb.WriteString("toFloat64(")
-			inner(b)
-			b.sb.WriteByte(')')
-		}
+		body = Call("toFloat64", body)
 	}
 	return As(body, af.Alias)
 }

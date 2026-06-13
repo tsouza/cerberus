@@ -2,6 +2,7 @@ package chsql
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"time"
 
@@ -347,32 +348,27 @@ func (e *emitter) emitRangeWindowPredictLinear(r *chplan.RangeWindow) error {
 	// per-sample x-offset (dateDiff('second', anchor, sample_ts)) is
 	// computed against the anchor of THIS row, not r.End.
 	writer := func(anchor Frag) Frag {
-		return func(b *Builder) {
-			// arrayMap to derive xs (seconds from anchor) and ys (values).
-			// window_pairs is Array(Tuple(DateTime64(9), Float64)).
-			//
-			// CH's `simpleLinearRegression(x, y)` is an aggregate — it
-			// rejects raw arrays at the call site (ILLEGAL_TYPE_OF_ARGUMENT).
-			// `arrayReduce('simpleLinearRegression', xs, ys)` is the idiom
-			// for applying an aggregate to parallel array columns
-			// row-by-row, matching the per-series shape the window-array
-			// path produces. Mirrors the stddev_over_time / quantile_over_time
-			// emit paths in this file.
-			b.sb.WriteString("if(length(window_pairs) > 1, ")
-			b.sb.WriteString("tupleElement(arrayReduce('simpleLinearRegression', ")
-			b.sb.WriteString("arrayMap(p -> dateDiff('second', ")
-			anchor(b)
-			b.sb.WriteString(", tupleElement(p, 1)), window_pairs), ")
-			b.sb.WriteString("arrayMap(p -> tupleElement(p, 2), window_pairs)")
-			b.sb.WriteString("), 2) + tupleElement(arrayReduce('simpleLinearRegression', ")
-			b.sb.WriteString("arrayMap(p -> dateDiff('second', ")
-			anchor(b)
-			b.sb.WriteString(", tupleElement(p, 1)), window_pairs), ")
-			b.sb.WriteString("arrayMap(p -> tupleElement(p, 2), window_pairs)")
-			b.sb.WriteString("), 1) * ")
-			writeT(b)
-			b.sb.WriteString(", nan)")
-		}
+		// arrayMap to derive xs (seconds from anchor) and ys (values).
+		// window_pairs is Array(Tuple(DateTime64(9), Float64)).
+		//
+		// CH's `simpleLinearRegression(x, y)` is an aggregate — it
+		// rejects raw arrays at the call site (ILLEGAL_TYPE_OF_ARGUMENT).
+		// `arrayReduce('simpleLinearRegression', xs, ys)` is the idiom
+		// for applying an aggregate to parallel array columns
+		// row-by-row, matching the per-series shape the window-array
+		// path produces. Mirrors the stddev_over_time / quantile_over_time
+		// emit paths in this file.
+		slr := windowPairsSLRFrag(anchor)
+		intercept := Call("tupleElement", slr, InlineLit(int64(2)))
+		slope := Call("tupleElement", slr, InlineLit(int64(1)))
+		// intercept + slope * t
+		predict := Add(intercept, Mul(slope, writeT))
+		return Call(
+			"if",
+			Gt(Call("length", BareIdent("window_pairs")), InlineLit(int64(1))),
+			predict,
+			BareIdent("nan"),
+		)
 	}
 	return e.emitWindowedArrayPairsAnchored(r, writer, 2)
 }
@@ -400,7 +396,7 @@ func (e *emitter) emitRangeWindowHoltWinters(r *chplan.RangeWindow) error {
 	}
 	sf := r.Scalars[0]
 	tf := r.Scalars[1]
-	return e.emitWindowedArray(r, verbatim(holtWintersValueExpr(sf, tf)), 2)
+	return e.emitWindowedArray(r, holtWintersValueFrag(sf, tf), 2)
 }
 
 // holtWintersValueExpr renders the per-window Holt-Winters value
@@ -413,28 +409,49 @@ func (e *emitter) emitRangeWindowHoltWinters(r *chplan.RangeWindow) error {
 //
 // The expression returns NaN when the window has < 2 samples (Prom
 // emits NaN there).
-func holtWintersValueExpr(sf, tf float64) string {
+func holtWintersValueFrag(sf, tf float64) Frag {
 	// We seed with the first two samples, then fold over the slice
 	// `window_vals[3:]` applying the recurrence. CH's arrayFold takes
 	// (lambda, array, initialAcc) and the lambda is (acc, elem).
 	//
-	// Numbers are formatted with FormatFloat to keep the SQL stable and
-	// avoid Sprintf-on-SQL. Bound floats inline (no `?`); these are
-	// query-shape parameters, not user data.
-	sfStr := formatFloat(sf)
-	oneMinusSf := formatFloat(1 - sf)
-	tfStr := formatFloat(tf)
-	oneMinusTf := formatFloat(1 - tf)
-	// Lambda body computes new (s, b) given prior (acc.s, acc.b, x).
-	// new_s = sf*x + (1-sf)*(acc.s + acc.b)
+	// The smoothing constants ride InlineLit so they stay inline
+	// query-shape literals (no `?` binding) and format identically to the
+	// pinned goldens.
+	sfL := InlineLit(sf)
+	oneMinusSf := InlineLit(1 - sf)
+	tfL := InlineLit(tf)
+	oneMinusTf := InlineLit(1 - tf)
+	accS := Call("tupleElement", BareIdent("acc"), InlineLit(int64(1)))
+	accB := Call("tupleElement", BareIdent("acc"), InlineLit(int64(2)))
+	// new_s = sf*x + (1-sf)*(acc.s + acc.b). A factory because it appears
+	// both as a tuple element and inside new_b.
+	newS := func() Frag {
+		return Add(
+			Mul(sfL, BareIdent("x")),
+			Mul(oneMinusSf, Paren(Add(accS, accB))),
+		)
+	}
 	// new_b = tf*(new_s - acc.s) + (1-tf)*acc.b
-	// We expose them via let bindings inline.
-	return "if(length(window_vals) > 1, " +
-		"tupleElement(arrayFold(" +
-		"(acc, x) -> (" +
-		sfStr + " * x + " + oneMinusSf + " * (tupleElement(acc, 1) + tupleElement(acc, 2)), " +
-		tfStr + " * (" + sfStr + " * x + " + oneMinusSf + " * (tupleElement(acc, 1) + tupleElement(acc, 2)) - tupleElement(acc, 1)) + " + oneMinusTf + " * tupleElement(acc, 2)" +
-		"), arraySlice(window_vals, 3), (window_vals[2], window_vals[2] - window_vals[1])), 1), nan)"
+	newB := Add(
+		Mul(tfL, Paren(Sub(newS(), accS))),
+		Mul(oneMinusTf, accB),
+	)
+	fold := Call(
+		"arrayFold",
+		Lambda2("acc", "x", Tuple(newS(), newB)),
+		Call("arraySlice", BareIdent("window_vals"), InlineLit(int64(3))),
+		Tuple(
+			Subscript(BareIdent("window_vals"), InlineLit(int64(2))),
+			Sub(Subscript(BareIdent("window_vals"), InlineLit(int64(2))),
+				Subscript(BareIdent("window_vals"), InlineLit(int64(1)))),
+		),
+	)
+	return Call(
+		"if",
+		Gt(Call("length", BareIdent("window_vals")), InlineLit(int64(1))),
+		Call("tupleElement", fold, InlineLit(int64(1))),
+		BareIdent("nan"),
+	)
 }
 
 // emitWindowedArrayPairs is a variant of emitWindowedArray for callers
@@ -644,18 +661,35 @@ func (e *emitter) emitWindowedArrayPairsMatrix(r *chplan.RangeWindow, valueWrite
 // CH interval arithmetic renders `End - toIntervalNanosecond(-N)` as
 // `End + N` so the window shifts forward into the future correctly.
 func endExprFrag(r *chplan.RangeWindow) Frag {
-	return func(b *Builder) {
-		base := timeOrNowFrag(r.End)
-		if r.Offset != 0 {
-			b.sb.WriteByte('(')
-			base(b)
-			b.sb.WriteString(" - toIntervalNanosecond(")
-			b.sb.WriteString(strconv.FormatInt(r.Offset.Nanoseconds(), 10))
-			b.sb.WriteString("))")
-			return
-		}
-		base(b)
-	}
+	return offsetShiftedBaseFrag(timeOrNowFrag(r.End), r.Offset)
+}
+
+// windowPairsSLRFrag renders the per-row CH simple-linear-regression
+// over a window of (timestamp, value) pairs:
+//
+//	arrayReduce('simpleLinearRegression',
+//	            arrayMap(p -> dateDiff('second', <anchor>, tupleElement(p, 1)), window_pairs),
+//	            arrayMap(p -> tupleElement(p, 2), window_pairs))
+//
+// The xs are seconds elapsed from `anchor` to each pair's timestamp
+// (tuple element 1); the ys are the pair values (tuple element 2).
+// `simpleLinearRegression` is a CH aggregate, so it's applied to the two
+// parallel arrays via arrayReduce. The result is a Tuple(slope,
+// intercept) — element 1 is the slope (k), element 2 the intercept (b).
+// Shared by predict_linear (intercept + slope*t) and deriv (slope).
+func windowPairsSLRFrag(anchor Frag) Frag {
+	xs := Call(
+		"arrayMap",
+		Lambda1("p", Call("dateDiff", InlineLit("second"), anchor,
+			Call("tupleElement", BareIdent("p"), InlineLit(int64(1))))),
+		BareIdent("window_pairs"),
+	)
+	ys := Call(
+		"arrayMap",
+		Lambda1("p", Call("tupleElement", BareIdent("p"), InlineLit(int64(2)))),
+		BareIdent("window_pairs"),
+	)
+	return Call("arrayReduce", InlineLit("simpleLinearRegression"), xs, ys)
 }
 
 // fanoutTsSource resolves the per-sample timestamp column the matrix
@@ -1034,16 +1068,10 @@ func (e *emitter) metricsZeroFillGridArm(
 // uniform Float64 wire type chclient.Sample.Value expects (see
 // TestRangeWindowMetricsReducerIsFloat64).
 func metricsSumWeightReducerFrag(op chplan.MetricsOp, rangeSeconds float64) Frag {
-	sum := func(b *Builder) {
-		b.sb.WriteString("toFloat64(sum(in_window))")
-	}
+	sum := Call("toFloat64", Call("sum", BareIdent("in_window")))
 	switch op {
 	case chplan.MetricsOpRate:
-		return func(b *Builder) {
-			sum(b)
-			b.sb.WriteString(" / ")
-			b.sb.WriteString(strconv.FormatFloat(rangeSeconds, 'f', -1, 64))
-		}
+		return Div(sum, InlineLit(rangeSeconds))
 	default:
 		return sum
 	}
@@ -1252,13 +1280,7 @@ func (e *emitter) emitRangeWindowMetricsQuantileBuckets(r *chplan.RangeWindow, m
 // every row across the full anchor grid instead.
 func quantileBucketIfFrag(isDuration bool) Frag {
 	bucket := quantileBucketFrag(isDuration)
-	return func(b *Builder) {
-		b.sb.WriteString("if(")
-		writeQuantileSamplePredicate(b, isDuration)
-		b.sb.WriteString(", ")
-		bucket(b)
-		b.sb.WriteString(", 0)")
-	}
+	return Call("if", quantileSamplePredicateFrag(isDuration), bucket, InlineLit(int64(0)))
 }
 
 // quantileCountIfFrag renders the conditional `Value` projection for
@@ -1268,14 +1290,10 @@ func quantileBucketIfFrag(isDuration bool) Frag {
 // count their observed sample count. See quantileBucketIfFrag for the
 // per-(group, anchor) zero-fill rationale.
 func quantileCountIfFrag(isDuration bool) Frag {
-	return func(b *Builder) {
-		b.sb.WriteString("toFloat64(countIf(")
-		writeQuantileSamplePredicate(b, isDuration)
-		b.sb.WriteString("))")
-	}
+	return Call("toFloat64", Call("countIf", quantileSamplePredicateFrag(isDuration)))
 }
 
-// writeQuantileSamplePredicate writes the conjunction shared by the
+// quantileSamplePredicateFrag renders the conjunction shared by the
 // quantile zero-fill `if(...)` / `countIf(...)` calls:
 //
 //	in_window = 1 AND <metric_arg-min-pred>
@@ -1288,13 +1306,13 @@ func quantileCountIfFrag(isDuration bool) Frag {
 // (pkg/traceql/ast_metrics.go, bucketizeDuration / bucketizeAttribute);
 // for duration operands metric_arg carries seconds (the cerberus-side
 // `Duration / 1e9` rebase), so the guard re-scales to raw nanoseconds.
-func writeQuantileSamplePredicate(b *Builder, isDuration bool) {
-	b.sb.WriteString("in_window = 1 AND ")
+func quantileSamplePredicateFrag(isDuration bool) Frag {
+	inWindow := Eq(BareIdent("in_window"), InlineLit(int64(1)))
 	if isDuration {
-		b.sb.WriteString("metric_arg * 1000000000 >= 2")
-		return
+		return And(inWindow,
+			Gte(Mul(BareIdent("metric_arg"), InlineLit(int64(1000000000))), InlineLit(int64(2))))
 	}
-	b.sb.WriteString("metric_arg >= 2")
+	return And(inWindow, Gte(BareIdent("metric_arg"), InlineLit(int64(2))))
 }
 
 // metricsQuantileBucketAlias is the SELECT-list alias the matrix-path
@@ -1325,10 +1343,15 @@ const metricsQuantileBucketAlias = "__bucket"
 // query-shape, not user data) — same idiom used by
 // `histogramBucketFrag` in internal/chsql/histogram_over_time.go.
 func quantileBucketFrag(isDuration bool) Frag {
+	metricArg := Call("toFloat64", BareIdent("metric_arg"))
 	if isDuration {
-		return verbatim("pow(2, ceil(log2(toFloat64(metric_arg) * 1000000000))) / 1000000000")
+		// log2 over the raw nanosecond value (metric_arg rebased back up by
+		// 1e9), bucket divided back to fractional seconds.
+		bucket := Call("pow", InlineLit(int64(2)),
+			Call("ceil", Call("log2", Mul(metricArg, InlineLit(int64(1000000000))))))
+		return Div(bucket, InlineLit(int64(1000000000)))
 	}
-	return verbatim("pow(2, ceil(log2(toFloat64(metric_arg))))")
+	return Call("pow", InlineLit(int64(2)), Call("ceil", Call("log2", metricArg)))
 }
 
 // anchorFanoutFrag returns a Frag rendering
@@ -1349,15 +1372,22 @@ func quantileBucketFrag(isDuration bool) Frag {
 // eval-grid anchor base — typically a DateTime64 literal or
 // `now64(9)`); stepNS and N are inline integer literals.
 func anchorFanoutFrag(end Frag, stepNS, numAnchors int64) Frag {
-	return func(b *Builder) {
-		b.sb.WriteString("arrayJoin(arrayMap(i -> ")
-		end(b)
-		b.sb.WriteString(" - toIntervalNanosecond(i * ")
-		b.sb.WriteString(strconv.FormatInt(stepNS, 10))
-		b.sb.WriteString("), range(0, ")
-		b.sb.WriteString(strconv.FormatInt(numAnchors, 10))
-		b.sb.WriteString(")))")
-	}
+	return Call(
+		"arrayJoin",
+		Call(
+			"arrayMap",
+			Lambda1("i", anchorBaseAtIdxFrag(end, stepNS)),
+			Call("range", InlineLit(int64(0)), InlineLit(numAnchors)),
+		),
+	)
+}
+
+// anchorBaseAtIdxFrag renders the arrayMap body shared by every anchor
+// fan-out: `<end> - toIntervalNanosecond(i * <stepNS>)` — the i-th grid
+// anchor walking back from the eval-grid base. `i` is the enclosing
+// Lambda1 param (BareIdent("i")).
+func anchorBaseAtIdxFrag(end Frag, stepNS int64) Frag {
+	return Sub(end, Call("toIntervalNanosecond", Mul(BareIdent("i"), InlineLit(stepNS))))
 }
 
 // sampleAnchorFanoutFrag returns a Frag rendering the SAMPLE-SIDE
@@ -1397,26 +1427,19 @@ func anchorFanoutFrag(end Frag, stepNS, numAnchors int64) Frag {
 // dividend's sign, making the correction term exactly the "truncation
 // rounded the wrong way" indicator. See writeAnchorGridFloorIdx.
 func sampleAnchorFanoutFrag(end, ts Frag, stepNS, rangeNS, numAnchors int64) Frag {
-	dist := func(b *Builder) {
-		b.sb.WriteString("dateDiff('nanosecond', ")
-		ts(b)
-		b.sb.WriteString(", ")
-		end(b)
-		b.sb.WriteByte(')')
-	}
-	return func(b *Builder) {
-		b.sb.WriteString("arrayJoin(arrayMap(i -> ")
-		end(b)
-		b.sb.WriteString(" - toIntervalNanosecond(i * ")
-		b.sb.WriteString(strconv.FormatInt(stepNS, 10))
-		b.sb.WriteString("), range(greatest(0, ")
-		writeAnchorGridFloorIdx(b, dist, -rangeNS, stepNS)
-		b.sb.WriteString("), least(")
-		b.sb.WriteString(strconv.FormatInt(numAnchors, 10))
-		b.sb.WriteString(", ")
-		writeAnchorGridFloorIdx(b, dist, 0, stepNS)
-		b.sb.WriteString("))))")
-	}
+	dist := distBehindAnchorFrag(ts, end)
+	return Call(
+		"arrayJoin",
+		Call(
+			"arrayMap",
+			Lambda1("i", anchorBaseAtIdxFrag(end, stepNS)),
+			Call(
+				"range",
+				Call("greatest", InlineLit(int64(0)), anchorGridFloorIdxFrag(dist, -rangeNS, stepNS)),
+				Call("least", InlineLit(numAnchors), anchorGridFloorIdxFrag(dist, 0, stepNS)),
+			),
+		),
+	)
 }
 
 // epochAlignedEndFrag snaps the anchor-grid base `end` down to the nearest
@@ -1464,7 +1487,8 @@ func stepAlignGrid(r *chplan.RangeWindow, end Frag, stepNS, numAnchors int64) (F
 func epochAlignedEndFrag(end Frag, stepNS int64) Frag {
 	step := InlineLit(stepNS)
 	// fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(end), step) * step)
-	return Call("fromUnixTimestamp64Nano",
+	return Call(
+		"fromUnixTimestamp64Nano",
 		Mul(
 			Call("intDiv", Call("toUnixTimestamp64Nano", end), step),
 			step,
@@ -1472,7 +1496,14 @@ func epochAlignedEndFrag(end Frag, stepNS int64) Frag {
 	)
 }
 
-// writeAnchorGridFloorIdx writes the floor-division grid index
+// distBehindAnchorFrag renders `dateDiff('nanosecond', <ts>, <base>)` —
+// the row's distance (ns) behind the newest anchor base, the shared
+// `dist` term every bounded fan-out feeds into anchorGridFloorIdxFrag.
+func distBehindAnchorFrag(ts, base Frag) Frag {
+	return Call("dateDiff", InlineLit("nanosecond"), ts, base)
+}
+
+// anchorGridFloorIdxFrag renders the floor-division grid index
 // `floorDiv(<dist> + <addNS>, <stepNS>) + 1` with CH's
 // truncate-toward-zero intDiv corrected into a true floor for negative
 // numerators:
@@ -1498,28 +1529,26 @@ func epochAlignedEndFrag(end Frag, stepNS int64) Frag {
 // walk forward from Start) — the two differ only in how `dist` is
 // oriented and which addNS shifts encode their open/closed window
 // edges.
-func writeAnchorGridFloorIdx(b *Builder, dist Frag, addNS, stepNS int64) {
-	step := strconv.FormatInt(stepNS, 10)
-	writeNum := func() {
-		dist(b)
-		switch {
-		case addNS > 0:
-			b.sb.WriteString(" + ")
-			b.sb.WriteString(strconv.FormatInt(addNS, 10))
-		case addNS < 0:
-			b.sb.WriteString(" - ")
-			b.sb.WriteString(strconv.FormatInt(-addNS, 10))
-		}
+func anchorGridFloorIdxFrag(dist Frag, addNS, stepNS int64) Frag {
+	// Numerator: `dist`, `dist + addNS`, or `dist - |addNS|`. binOp adds
+	// the surrounding single spaces, byte-identical to the old hand-rolled
+	// " + " / " - " glue; addNS == 0 leaves the bare dist.
+	num := dist
+	switch {
+	case addNS > 0:
+		num = Add(dist, InlineLit(addNS))
+	case addNS < 0:
+		num = Sub(dist, InlineLit(-addNS))
 	}
-	b.sb.WriteString("intDiv(")
-	writeNum()
-	b.sb.WriteString(", toInt64(")
-	b.sb.WriteString(step)
-	b.sb.WriteString(")) - (modulo(")
-	writeNum()
-	b.sb.WriteString(", toInt64(")
-	b.sb.WriteString(step)
-	b.sb.WriteString(")) < 0) + 1")
+	step := Call("toInt64", InlineLit(stepNS))
+	// intDiv(num, toInt64(step)) - (modulo(num, toInt64(step)) < 0) + 1
+	return Add(
+		Sub(
+			Call("intDiv", num, step),
+			Paren(Lt(Call("modulo", num, step), InlineLit(int64(0)))),
+		),
+		InlineLit(int64(1)),
+	)
 }
 
 // maybePushInnerScanTimeBounds pushes the (Start - range, End] time
@@ -1610,13 +1639,8 @@ func offsetShiftedTimeFrag(t time.Time, offsetNS int64) Frag {
 // sorted ascending by ts so subsequent counter-reset arithmetic
 // operates in chronological order.
 func groupArrayPairFrag(tsCol, valCol string) Frag {
-	return func(b *Builder) {
-		b.sb.WriteString("arraySort(groupArray((")
-		b.Ident(tsCol)
-		b.sb.WriteString(", ")
-		b.Ident(valCol)
-		b.sb.WriteString(")))")
-	}
+	return Call("arraySort",
+		Call("groupArray", Tuple(Col(tsCol), Col(valCol))))
 }
 
 // windowFilterPairsFrag returns a Frag rendering the per-series
@@ -1645,12 +1669,7 @@ func windowFilterPairsFrag(end Frag, rangeNS int64) Frag {
 // rate / increase / delta / idelta / irate / predict_linear /
 // holt_winters).
 func windowLenAtLeastFrag(arrCol string, n int) Frag {
-	return func(b *Builder) {
-		b.sb.WriteString("length(")
-		b.Ident(arrCol)
-		b.sb.WriteString(") >= ")
-		b.sb.WriteString(strconv.Itoa(n))
-	}
+	return Gte(Call("length", Col(arrCol)), InlineLit(int64(n)))
 }
 
 // counterDeltaFrag returns a Frag rendering
@@ -1676,7 +1695,11 @@ func counterDeltaFrag() Frag {
 // `arrayMap(p -> tupleElement(p, 2), window_pairs)` — the per-window
 // values array (the values projected out of the (ts, value) tuples).
 func windowValsFrag() Frag {
-	return verbatim("arrayMap(p -> tupleElement(p, 2), window_pairs)")
+	return Call(
+		"arrayMap",
+		Lambda1("p", Call("tupleElement", BareIdent("p"), InlineLit(int64(2)))),
+		BareIdent("window_pairs"),
+	)
 }
 
 // metricsReducerFrag returns the per-bucket reducer Frag for the matrix
@@ -1715,20 +1738,12 @@ func metricsReducerFrag(op chplan.MetricsOp, chName string, params, args []chpla
 		paramFrags = append(paramFrags, func(b *Builder) { _ = b.Expr(expr) })
 	}
 
+	agg := Call("toFloat64", func(b *Builder) { b.ParamAgg(chName, paramFrags, argFrags) })
 	switch op {
 	case chplan.MetricsOpRate:
-		return func(b *Builder) {
-			b.sb.WriteString("toFloat64(")
-			b.ParamAgg(chName, paramFrags, argFrags)
-			b.sb.WriteString(") / ")
-			b.sb.WriteString(strconv.FormatFloat(rangeSeconds, 'f', -1, 64))
-		}
+		return Div(agg, InlineLit(rangeSeconds))
 	}
-	return func(b *Builder) {
-		b.sb.WriteString("toFloat64(")
-		b.ParamAgg(chName, paramFrags, argFrags)
-		b.sb.WriteByte(')')
-	}
+	return agg
 }
 
 // outerGroupAliases returns the SELECT-list aliases used to refer to
@@ -1757,7 +1772,7 @@ func outerGroupAliases(groupBy []chplan.Expr, aliases []string) []string {
 // Drops anchors whose window is empty (1+ samples required to have a
 // "last").
 func (e *emitter) emitRangeWindowIdentity(r *chplan.RangeWindow) error {
-	return e.emitWindowedArray(r, verbatim("if(length(window_vals) > 0, window_vals[length(window_vals)], nan)"), 1)
+	return e.emitWindowedArray(r, lastWindowValOrNaNFrag(), 1)
 }
 
 // emitRangeWindowLogRate emits SQL for LogQL-style `rate({...}[range])`
@@ -1858,19 +1873,19 @@ func (e *emitter) emitRangeWindowOverTime(r *chplan.RangeWindow) error {
 	// Two-pass population variance: μ = arrayAvg(vals); Σ(x - μ)² / N.
 	// arrayWithConstant materialises the broadcast mean exactly once
 	// per row so the lambda doesn't re-evaluate arrayAvg per element.
-	varPopTwoPass := "arraySum(arrayMap((x, m) -> (x - m) * (x - m), window_vals, arrayWithConstant(length(window_vals), arrayAvg(window_vals)))) / length(window_vals)" //nolint:gosec // G101 false positive: SQL expression for two-pass population variance, not a credential
-	var inner string
+	varPopTwoPass := varPopTwoPassFrag()
+	var inner Frag
 	switch r.Func {
 	case "sum_over_time":
-		inner = "arraySum(window_vals)"
+		inner = Call("arraySum", BareIdent("window_vals"))
 	case "avg_over_time":
-		inner = "if(length(window_vals) > 0, arrayAvg(window_vals), nan)"
+		inner = nonEmptyWindowOrNaNFrag(Call("arrayAvg", BareIdent("window_vals")))
 	case "min_over_time":
-		inner = "if(length(window_vals) > 0, arrayMin(window_vals), nan)"
+		inner = nonEmptyWindowOrNaNFrag(Call("arrayMin", BareIdent("window_vals")))
 	case "max_over_time":
-		inner = "if(length(window_vals) > 0, arrayMax(window_vals), nan)"
+		inner = nonEmptyWindowOrNaNFrag(Call("arrayMax", BareIdent("window_vals")))
 	case "count_over_time":
-		inner = "toFloat64(length(window_vals))"
+		inner = Call("toFloat64", Call("length", BareIdent("window_vals")))
 	case "present_over_time":
 		// PromQL present_over_time(v[range]) emits 1 for every series
 		// with ≥1 sample in the window (prometheus/promql/functions.go::
@@ -1878,16 +1893,16 @@ func (e *emitter) emitRangeWindowOverTime(r *chplan.RangeWindow) error {
 		// non-empty window). The shared `WHERE length(window_vals) >= 1`
 		// outer filter below already drops empty-window series, so the
 		// per-window value is the constant 1.
-		inner = "toFloat64(1)"
+		inner = Call("toFloat64", InlineLit(int64(1)))
 	case "first_over_time":
 		// LogQL `first_over_time(... | unwrap v [r])` — the value of the
 		// time-EARLIEST sample in the window (Loki's FirstOverTime
 		// streaming aggregator / `first` batch fn, pkg/logql/
 		// range_vector.go). window_vals is time-sorted (arraySort over
 		// (ts, value) tuples upstream), so element 1 is the earliest.
-		inner = "if(length(window_vals) > 0, window_vals[1], nan)"
+		inner = nonEmptyWindowOrNaNFrag(Subscript(BareIdent("window_vals"), InlineLit(int64(1))))
 	case "last_over_time":
-		inner = "if(length(window_vals) > 0, window_vals[length(window_vals)], nan)"
+		inner = lastWindowValOrNaNFrag()
 	case "stddev_over_time":
 		// Empty window → drop the series (Prom returns no sample).
 		// We mirror with NaN; the engine layer treats NaN as "drop"
@@ -1898,7 +1913,7 @@ func (e *emitter) emitRangeWindowOverTime(r *chplan.RangeWindow) error {
 		// Two-pass variance under a sqrt: see the package comment
 		// above for the precision rationale (CH varPop one-pass loses
 		// precision at value scale ≥ 2^31; #400 bucket 1).
-		inner = "if(length(window_vals) > 0, sqrt(" + varPopTwoPass + "), nan)"
+		inner = nonEmptyWindowOrNaNFrag(Call("sqrt", varPopTwoPass))
 	case "stdvar_over_time":
 		// Population variance (divides by N, not N-1) to match
 		// Prometheus's funcStdvarOverTime / varianceOverTime. Same
@@ -1909,7 +1924,7 @@ func (e *emitter) emitRangeWindowOverTime(r *chplan.RangeWindow) error {
 		// Two-pass variance: see the package comment above for the
 		// precision rationale (CH varPop one-pass loses precision at
 		// value scale ≥ 2^31; #400 bucket 1).
-		inner = "if(length(window_vals) > 0, " + varPopTwoPass + ", nan)"
+		inner = nonEmptyWindowOrNaNFrag(varPopTwoPass)
 	default:
 		return fmt.Errorf("%w: over-time function %q", ErrUnsupported, r.Func)
 	}
@@ -1917,7 +1932,48 @@ func (e *emitter) emitRangeWindowOverTime(r *chplan.RangeWindow) error {
 	// semantics (Prom's funcSumOverTime / funcCountOverTime / etc. all
 	// short-circuit on zero samples). The outer SELECT gets
 	// `WHERE length(window_vals) >= 1`.
-	return e.emitWindowedArray(r, verbatim(inner), 1)
+	return e.emitWindowedArray(r, inner, 1)
+}
+
+// nonEmptyWindowOrNaNFrag wraps a per-window value in the PromQL
+// drop-empty-window guard `if(length(window_vals) > 0, <val>, nan)` —
+// the shared shape the *_over_time family uses so an empty window
+// surfaces NaN (which the engine layer treats as "drop the series").
+func nonEmptyWindowOrNaNFrag(val Frag) Frag {
+	return Call(
+		"if",
+		Gt(Call("length", BareIdent("window_vals")), InlineLit(int64(0))),
+		val,
+		BareIdent("nan"),
+	)
+}
+
+// lastWindowValOrNaNFrag renders `if(length(window_vals) > 0,
+// window_vals[length(window_vals)], nan)` — the time-LATEST sample in
+// the window (last_over_time / bare-subquery identity), or NaN for an
+// empty window. window_vals is arraySort-ordered so the final element
+// is the newest sample.
+func lastWindowValOrNaNFrag() Frag {
+	return nonEmptyWindowOrNaNFrag(
+		Subscript(BareIdent("window_vals"), Call("length", BareIdent("window_vals"))),
+	)
+}
+
+// varPopTwoPassFrag renders the two-pass population variance
+// `arraySum(arrayMap((x, m) -> (x - m) * (x - m), window_vals,
+// arrayWithConstant(length(window_vals), arrayAvg(window_vals)))) /
+// length(window_vals)`. The broadcast mean is materialised once via
+// arrayWithConstant so the lambda doesn't re-evaluate arrayAvg per
+// element. Shared by stddev_over_time (under sqrt) and stdvar_over_time.
+func varPopTwoPassFrag() Frag {
+	diff := Paren(Sub(BareIdent("x"), BareIdent("m")))
+	body := Mul(diff, diff)
+	means := Call("arrayWithConstant",
+		Call("length", BareIdent("window_vals")),
+		Call("arrayAvg", BareIdent("window_vals")))
+	sumSq := Call("arraySum",
+		Call("arrayMap", Lambda2("x", "m", body), BareIdent("window_vals"), means))
+	return Div(sumSq, Call("length", BareIdent("window_vals")))
 }
 
 // overTimeDirectAggFrag returns the direct CH group-aggregate Frag for an
@@ -2130,14 +2186,13 @@ func (e *emitter) emitRangeWindowDeriv(r *chplan.RangeWindow) error {
 	// Use the factory form so the per-sample seconds-from-anchor
 	// computation references the correct per-row anchor.
 	writer := func(anchor Frag) Frag {
-		return func(b *Builder) {
-			b.sb.WriteString("if(length(window_pairs) > 1, tupleElement(arrayReduce('simpleLinearRegression', ")
-			b.sb.WriteString("arrayMap(p -> dateDiff('second', ")
-			anchor(b)
-			b.sb.WriteString(", tupleElement(p, 1)), window_pairs), ")
-			b.sb.WriteString("arrayMap(p -> tupleElement(p, 2), window_pairs)")
-			b.sb.WriteString("), 1), nan)")
-		}
+		slope := Call("tupleElement", windowPairsSLRFrag(anchor), InlineLit(int64(1)))
+		return Call(
+			"if",
+			Gt(Call("length", BareIdent("window_pairs")), InlineLit(int64(1))),
+			slope,
+			BareIdent("nan"),
+		)
 	}
 	return e.emitWindowedArrayPairsAnchored(r, writer, 2)
 }
@@ -2231,10 +2286,18 @@ func (e *emitter) emitRangeWindowDelta(r *chplan.RangeWindow) error {
 // `idelta` returns NaN when the window holds fewer than 2 samples
 // (matches Prom's `funcIdelta`).
 func (e *emitter) emitRangeWindowIDelta(r *chplan.RangeWindow) error {
-	const expr = "if(length(window_vals) > 1, window_vals[length(window_vals)] - window_vals[length(window_vals) - 1], nan)"
+	n := Call("length", BareIdent("window_vals"))
+	last := Subscript(BareIdent("window_vals"), n)
+	prev := Subscript(BareIdent("window_vals"), Sub(n, InlineLit(int64(1))))
+	expr := Call(
+		"if",
+		Gt(n, InlineLit(int64(1))),
+		Sub(last, prev),
+		BareIdent("nan"),
+	)
 	// PromQL idelta drops series whose window holds fewer than 2
 	// samples (matches Prom's funcIdelta).
-	return e.emitWindowedArray(r, verbatim(expr), 2)
+	return e.emitWindowedArray(r, expr, 2)
 }
 
 // emitRangeWindowIRate emits SQL for `irate(v[range])`: per-second
@@ -2252,7 +2315,7 @@ func (e *emitter) emitRangeWindowIRate(r *chplan.RangeWindow) error {
 	// emitWindowedArrayPairs rather than the values-only
 	// emitWindowedArray path. PromQL irate drops series whose window
 	// holds fewer than 2 samples (matches Prom's funcIrate).
-	return e.emitWindowedArrayPairs(r, verbatim(irateValueExpr()), 2)
+	return e.emitWindowedArrayPairs(r, irateValueFrag(), 2)
 }
 
 // irateValueExpr renders the irate per-window value expression. Operates
@@ -2268,19 +2331,28 @@ func (e *emitter) emitRangeWindowIRate(r *chplan.RangeWindow) error {
 // nanoseconds; divide by 1e9 to get fractional seconds. We use the
 // nanosecond flavour so the result agrees with Prometheus's
 // nanosecond-precision arithmetic.
-func irateValueExpr() string {
-	const lastPair = "window_pairs[length(window_pairs)]"
-	const prevPair = "window_pairs[length(window_pairs) - 1]"
-	const lastVal = "tupleElement(" + lastPair + ", 2)"
-	const prevVal = "tupleElement(" + prevPair + ", 2)"
-	const lastTs = "tupleElement(" + lastPair + ", 1)"
-	const prevTs = "tupleElement(" + prevPair + ", 1)"
+func irateValueFrag() Frag {
+	wp := BareIdent("window_pairs")
+	n := Call("length", wp)
+	lastPair := func() Frag { return Subscript(wp, n) }
+	prevPair := func() Frag { return Subscript(wp, Sub(n, InlineLit(int64(1)))) }
+	lastVal := func() Frag { return Call("tupleElement", lastPair(), InlineLit(int64(2))) }
+	prevVal := func() Frag { return Call("tupleElement", prevPair(), InlineLit(int64(2))) }
+	lastTs := Call("tupleElement", lastPair(), InlineLit(int64(1)))
+	prevTs := Call("tupleElement", prevPair(), InlineLit(int64(1)))
 	// dateDiff('nanosecond', earlier, later) returns Int64.
-	dt := "dateDiff('nanosecond', " + prevTs + ", " + lastTs + ")"
-	delta := "if(" + lastVal + " < " + prevVal + ", " + lastVal + ", " + lastVal + " - " + prevVal + ")"
+	dt := func() Frag { return Call("dateDiff", InlineLit("nanosecond"), prevTs, lastTs) }
+	// Counter-reset-aware delta: if the value dropped, treat it as a reset
+	// and take the raw last value; otherwise the difference.
+	delta := Call("if", Lt(lastVal(), prevVal()), lastVal(), Sub(lastVal(), prevVal()))
 	// Guard against zero-second interval (two samples at the same
 	// nanosecond) — return NaN rather than divide-by-zero.
-	return "if(length(window_pairs) > 1 AND " + dt + " > 0, (" + delta + ") / ((" + dt + ") / 1e9), nan)"
+	return Call(
+		"if",
+		And(Gt(n, InlineLit(int64(1))), Gt(dt(), InlineLit(int64(0)))),
+		Div(Paren(delta), Paren(Div(Paren(dt()), BareIdent("1e9")))),
+		BareIdent("nan"),
+	)
 }
 
 // emitRangeWindowQuantileOverTime emits SQL for
@@ -2315,47 +2387,54 @@ func (e *emitter) emitRangeWindowQuantileOverTime(r *chplan.RangeWindow) error {
 		if err := (&Builder{}).Expr(phiE); err != nil {
 			return err
 		}
-		writePhi := func(b *Builder) { _ = b.Expr(phiE) }
-		const (
-			sorted = "arraySort(window_vals)"
-			nMinus = "toFloat64(length(window_vals) - 1)"
+		// Linear-interpolation quantile over the sorted window, computed-phi
+		// path. Mirrors Prom's quantile() helper: rank = phi*(n-1), the
+		// value is the lower / upper sorted samples blended by the
+		// fractional part of rank, with out-of-range phi mapping to
+		// ±Inf / NaN (matches the literal-phi outOfRangePhiInf rules).
+		phi := func(b *Builder) { _ = b.Expr(phiE) }
+		sorted := Call("arraySort", BareIdent("window_vals"))
+		nMinus := Call("toFloat64", Sub(Call("length", BareIdent("window_vals")), InlineLit(int64(1))))
+		// CH evaluates each Frag fresh on every render, so rank / floorRank
+		// are factories: rank = (phi * (n-1)); floorRank = floor(rank).
+		rank := func() Frag { return Paren(Mul(phi, nMinus)) }
+		floorRank := func() Frag { return Call("floor", rank()) }
+		// 1-based CH array indices: lower = toUInt32(floor(rank)) + 1;
+		// upper = toUInt32(least(n-1, floor(rank) + 1)) + 1.
+		lowerIdx := Add(Call("toUInt32", floorRank()), InlineLit(int64(1)))
+		upperIdx := Add(
+			Call("toUInt32", Call("least", nMinus, Add(floorRank(), InlineLit(int64(1))))),
+			InlineLit(int64(1)),
 		)
-		writeRank := func(b *Builder) {
-			b.writeSQL("(")
-			writePhi(b)
-			b.writeSQL(" * " + nMinus + ")")
-		}
-		frag := func(b *Builder) {
-			b.writeSQL("multiIf(isNaN(")
-			writePhi(b)
-			b.writeSQL("), nan, ")
-			writePhi(b)
-			b.writeSQL(" < 0, (-1.0/0), ")
-			writePhi(b)
-			b.writeSQL(" > 1, (1.0/0), ")
-			// lower * (1 - weight) + upper * weight.
-			b.writeSQL(sorted + "[toUInt32(floor(")
-			writeRank(b)
-			b.writeSQL(")) + 1] * (1 - (")
-			writeRank(b)
-			b.writeSQL(" - floor(")
-			writeRank(b)
-			b.writeSQL("))) + " + sorted + "[toUInt32(least(" + nMinus + ", floor(")
-			writeRank(b)
-			b.writeSQL(") + 1)) + 1] * (")
-			writeRank(b)
-			b.writeSQL(" - floor(")
-			writeRank(b)
-			b.writeSQL(")))")
-		}
+		// weight = rank - floor(rank); blend = lower*(1-weight) + upper*weight.
+		weight := func() Frag { return Paren(Sub(rank(), floorRank())) }
+		lowerTerm := Mul(Subscript(sorted, lowerIdx), Paren(Sub(InlineLit(int64(1)), weight())))
+		upperTerm := Mul(Subscript(sorted, upperIdx), weight())
+		interp := Add(lowerTerm, upperTerm)
+		frag := Call(
+			"multiIf",
+			Call("isNaN", phi), BareIdent("nan"),
+			Lt(phi, InlineLit(int64(0))), InlineLit(math.Inf(-1)),
+			Gt(phi, InlineLit(int64(1))), InlineLit(math.Inf(+1)),
+			interp,
+		)
 		return e.emitWindowedArray(r, frag, 1)
 	}
 	if len(r.Scalars) != 1 {
 		return fmt.Errorf("%w: quantile_over_time requires 1 scalar (phi), got %d", ErrUnsupported, len(r.Scalars))
 	}
 	phi := r.Scalars[0]
-	expr := "if(length(window_vals) > 0, arrayReduce('quantile(" + formatFloat(phi) + ")', window_vals), nan)"
-	return e.emitWindowedArray(r, verbatim(expr), 1)
+	// arrayReduce('quantile(<phi>)', window_vals) — the literal-phi path;
+	// the aggregate name carries phi inline (formatFloat keeps it stable
+	// across driver float formatting), so it rides InlineLit as a single
+	// quoted string. Empty window drops the series (nan).
+	frag := Call(
+		"if",
+		Gt(Call("length", BareIdent("window_vals")), InlineLit(int64(0))),
+		Call("arrayReduce", InlineLit("quantile("+formatFloat(phi)+")"), BareIdent("window_vals")),
+		BareIdent("nan"),
+	)
+	return e.emitWindowedArray(r, frag, 1)
 }
 
 // extrapolationKind selects the per-function flavour of Prom's shared
@@ -2635,14 +2714,17 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 // sample's timestamp (DateTime64(9)) extracted from the per-window
 // pair array. Mirrors Prom's `samples.Floats[0].T`.
 func firstTsFrag() Frag {
-	return verbatim("tupleElement(window_pairs[1], 1)")
+	return Call("tupleElement",
+		Subscript(BareIdent("window_pairs"), InlineLit(int64(1))), InlineLit(int64(1)))
 }
 
 // lastTsFrag renders `tupleElement(window_pairs[length(window_pairs)], 1)`
 // — the last sample's timestamp. Mirrors Prom's
 // `samples.Floats[numSamplesMinusOne].T`.
 func lastTsFrag() Frag {
-	return verbatim("tupleElement(window_pairs[length(window_pairs)], 1)")
+	return Call("tupleElement",
+		Subscript(BareIdent("window_pairs"), Call("length", BareIdent("window_pairs"))),
+		InlineLit(int64(1)))
 }
 
 // firstValFrag renders `tupleElement(window_pairs[1], 2)` — the first
@@ -2650,7 +2732,8 @@ func lastTsFrag() Frag {
 // extrapolated rate doesn't dip below zero when the counter started
 // inside the window.
 func firstValFrag() Frag {
-	return verbatim("tupleElement(window_pairs[1], 2)")
+	return Call("tupleElement",
+		Subscript(BareIdent("window_pairs"), InlineLit(int64(1))), InlineLit(int64(2)))
 }
 
 // rangeStartFrag renders `<end> - toIntervalNanosecond(<rangeNS>)` —
@@ -2667,7 +2750,10 @@ func rangeStartFrag(end Frag, rangeNS int64) Frag {
 // (functions.go:258), substituting nanosecond precision for the
 // millisecond timebase Prom carries.
 func sampledIntervalFrag() Frag {
-	return verbatim("toFloat64(dateDiff('nanosecond', first_ts, last_ts)) / 1e9")
+	return Div(
+		Call("toFloat64", Call("dateDiff", InlineLit("nanosecond"), BareIdent("first_ts"), BareIdent("last_ts"))),
+		BareIdent("1e9"),
+	)
 }
 
 // durationToStartFrag renders the per-window distance from the left
@@ -2698,23 +2784,43 @@ func sampledIntervalFrag() Frag {
 // duration_to_start layer — leaving the parameter in place keeps the
 // emit call sites symmetric.
 func durationToStartFrag(rangeStart Frag, _ bool) Frag {
-	return func(b *Builder) {
-		b.sb.WriteString("if(")
-		writeDurationToStartRaw(b, rangeStart)
-		b.sb.WriteString(" >= 1.1 * sampled_interval / (length(window_vals) - 1), ")
-		b.sb.WriteString("sampled_interval / (length(window_vals) - 1) / 2, ")
-		writeDurationToStartRaw(b, rangeStart)
-		b.sb.WriteByte(')')
-	}
+	raw := durationToStartRawFrag(rangeStart)
+	return extrapThresholdClampFrag(raw)
 }
 
-// writeDurationToStartRaw renders the un-clamped duration-to-start in
+// numSamplesMinusOneFrag renders `(length(window_vals) - 1)` — the
+// sample-interval count the extrapolation arithmetic divides by; the
+// outer WHERE `length >= 2` gate keeps it non-zero.
+func numSamplesMinusOneFrag() Frag {
+	return Paren(Sub(Call("length", BareIdent("window_vals")), InlineLit(int64(1))))
+}
+
+// extrapThresholdClampFrag wraps a raw per-edge duration in Prom's
+// extrapolation-threshold clamp:
+//
+//	if(<raw> >= 1.1 * sampled_interval / (length(window_vals) - 1),
+//	   sampled_interval / (length(window_vals) - 1) / 2,
+//	   <raw>)
+//
+// When the gap to the window edge exceeds 1.1× the average inter-sample
+// interval, Prom replaces it with half that average (functions.go).
+func extrapThresholdClampFrag(raw Frag) Frag {
+	nm1 := numSamplesMinusOneFrag()
+	threshold := Div(Mul(InlineLit(1.1), BareIdent("sampled_interval")), nm1)
+	halfAvg := Div(Div(BareIdent("sampled_interval"), nm1), InlineLit(int64(2)))
+	return Call("if", Gte(raw, threshold), halfAvg, raw)
+}
+
+// durationToStartRawFrag renders the un-clamped duration-to-start in
 // seconds: `toFloat64(dateDiff('nanosecond', rangeStart, first_ts)) / 1e9`.
-// Mirrors Prom's `float64(firstT-rangeStart) / 1000`.
-func writeDurationToStartRaw(b *Builder, rangeStart Frag) {
-	b.sb.WriteString("toFloat64(dateDiff('nanosecond', ")
-	rangeStart(b)
-	b.sb.WriteString(", first_ts)) / 1e9")
+// Mirrors Prom's `float64(firstT-rangeStart) / 1000`. The `1e9` divisor
+// is an emitter-controlled query-shape constant kept in scientific form
+// (BareIdent) to stay byte-stable against the pinned goldens.
+func durationToStartRawFrag(rangeStart Frag) Frag {
+	return Div(
+		Call("toFloat64", Call("dateDiff", InlineLit("nanosecond"), rangeStart, BareIdent("first_ts"))),
+		BareIdent("1e9"),
+	)
 }
 
 // durationToEndFrag renders the per-window distance from the last
@@ -2733,23 +2839,17 @@ func writeDurationToStartRaw(b *Builder, rangeStart Frag) {
 // the appropriate window-right expression (instant: `end`; matrix:
 // `anchor_ts`).
 func durationToEndFrag(rangeEnd Frag) Frag {
-	return func(b *Builder) {
-		b.sb.WriteString("if(")
-		writeDurationToEndRaw(b, rangeEnd)
-		b.sb.WriteString(" >= 1.1 * sampled_interval / (length(window_vals) - 1), ")
-		b.sb.WriteString("sampled_interval / (length(window_vals) - 1) / 2, ")
-		writeDurationToEndRaw(b, rangeEnd)
-		b.sb.WriteByte(')')
-	}
+	return extrapThresholdClampFrag(durationToEndRawFrag(rangeEnd))
 }
 
-// writeDurationToEndRaw renders the un-clamped duration-to-end in
+// durationToEndRawFrag renders the un-clamped duration-to-end in
 // seconds: `toFloat64(dateDiff('nanosecond', last_ts, rangeEnd)) / 1e9`.
 // Mirrors Prom's `float64(rangeEnd-lastT) / 1000`.
-func writeDurationToEndRaw(b *Builder, rangeEnd Frag) {
-	b.sb.WriteString("toFloat64(dateDiff('nanosecond', last_ts, ")
-	rangeEnd(b)
-	b.sb.WriteString(")) / 1e9")
+func durationToEndRawFrag(rangeEnd Frag) Frag {
+	return Div(
+		Call("toFloat64", Call("dateDiff", InlineLit("nanosecond"), BareIdent("last_ts"), rangeEnd)),
+		BareIdent("1e9"),
+	)
 }
 
 // extrapolatedValueFrag renders the per-window final value:
@@ -2771,44 +2871,47 @@ func writeDurationToEndRaw(b *Builder, rangeEnd Frag) {
 // The optional `/ <range_seconds>` only applies to rate (Prom's
 // `isRate` branch at functions.go:305-307).
 func extrapolatedValueFrag(kind extrapolationKind, rangeSeconds float64) Frag {
-	return func(b *Builder) {
-		b.sb.WriteString("if(sampled_interval > 0, ")
-		// raw result
-		switch kind {
-		case extrapolationKindDelta:
-			b.sb.WriteString("(window_vals[length(window_vals)] - first_val)")
-		default:
-			b.sb.WriteString("counter_delta")
-		}
-		// counter clamp-to-zero rewrite of durationToStart: when the
-		// counter started inside the window, Prom shortens the
-		// durationToStart to the implied zero-crossing of the linear
-		// extrapolation so the rate stays non-negative. Encoded inline
-		// at the `factor` level via:
-		//
-		//   factor = (sampled_interval +
-		//             least(duration_to_start, duration_to_zero) +
-		//             duration_to_end) / sampled_interval
-		//
-		// duration_to_zero = sampled_interval * (first_val / counter_delta)
-		// only when `counter_delta > 0 && first_val >= 0`; otherwise we
-		// keep the un-clamped duration_to_start.
-		b.sb.WriteString(" * (sampled_interval + ")
-		if kind.isCounter() {
-			// least() with the counter zero-crossing guard.
-			b.sb.WriteString("if(counter_delta > 0 AND first_val >= 0, ")
-			b.sb.WriteString("least(duration_to_start, sampled_interval * first_val / counter_delta), ")
-			b.sb.WriteString("duration_to_start)")
-		} else {
-			b.sb.WriteString("duration_to_start")
-		}
-		b.sb.WriteString(" + duration_to_end) / sampled_interval")
-		if kind.isRate() {
-			b.sb.WriteString(" / ")
-			b.sb.WriteString(formatFloat(rangeSeconds))
-		}
-		b.sb.WriteString(", nan)")
+	// raw result: counter_delta for rate/increase, (last - first) for delta.
+	rawResult := BareIdent("counter_delta")
+	if kind == extrapolationKindDelta {
+		rawResult = Paren(Sub(
+			Subscript(BareIdent("window_vals"), Call("length", BareIdent("window_vals"))),
+			BareIdent("first_val"),
+		))
 	}
+
+	// duration_to_start, optionally clamped to the counter zero-crossing.
+	// For counters Prom shortens it to the implied zero of the linear
+	// extrapolation (functions.go) so the rate stays non-negative:
+	//   if(counter_delta > 0 AND first_val >= 0,
+	//      least(duration_to_start, sampled_interval * first_val / counter_delta),
+	//      duration_to_start)
+	durToStart := BareIdent("duration_to_start")
+	if kind.isCounter() {
+		durToStart = Call(
+			"if",
+			And(
+				Gt(BareIdent("counter_delta"), InlineLit(int64(0))),
+				Gte(BareIdent("first_val"), InlineLit(int64(0))),
+			),
+			Call("least", BareIdent("duration_to_start"),
+				Div(Mul(BareIdent("sampled_interval"), BareIdent("first_val")), BareIdent("counter_delta"))),
+			BareIdent("duration_to_start"),
+		)
+	}
+
+	// factor numerator: sampled_interval + <durToStart> + duration_to_end
+	factorNum := Add(
+		Add(BareIdent("sampled_interval"), durToStart),
+		BareIdent("duration_to_end"),
+	)
+	// <rawResult> * (sampled_interval + … + duration_to_end) / sampled_interval
+	value := Div(Mul(rawResult, Paren(factorNum)), BareIdent("sampled_interval"))
+	if kind.isRate() {
+		value = Div(value, InlineLit(rangeSeconds))
+	}
+
+	return Call("if", Gt(BareIdent("sampled_interval"), InlineLit(int64(0))), value, BareIdent("nan"))
 }
 
 // emitWindowedArray writes the windowed-array SQL skeleton with the
