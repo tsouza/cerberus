@@ -73,38 +73,17 @@ jobs:
       - name: install benchstat
         run: go install golang.org/x/perf/cmd/benchstat@latest
 
+      # Baseline/ref selection: explicit input wins; else if the trigger
+      # ref already resolves to origin/main (dispatch-from-main or the
+      # weekly schedule) compare against the parent commit so the diff
+      # isn't a trivial same-vs-same; else baseline = origin/main. Same-
+      # vs-same is a hard ::error::. Logic lives in resolve-bench-refs.mjs,
+      # which writes ref_sha / baseline_sha / baseline_ref to $GITHUB_OUTPUT.
       - name: resolve baseline + ref SHAs
         id: refs
         env:
           INPUT_BASELINE_REF: ${{ inputs.baseline_ref }}
-        run: |
-          set -euo pipefail
-          git fetch --no-tags origin main
-          ref_sha="$(git rev-parse HEAD)"
-          main_sha="$(git rev-parse origin/main)"
-
-          # Explicit input wins. Otherwise: if the trigger ref already
-          # resolves to origin/main (workflow_dispatch from main, or the
-          # weekly schedule), compare against the parent commit so the
-          # diff isn't a trivial same-vs-same. For any other ref, the
-          # natural baseline is origin/main.
-          if [[ -n "${INPUT_BASELINE_REF}" ]]; then
-            baseline_ref="${INPUT_BASELINE_REF}"
-          elif [[ "${ref_sha}" == "${main_sha}" ]]; then
-            baseline_ref="${ref_sha}^"
-          else
-            baseline_ref="${main_sha}"
-          fi
-
-          baseline_sha="$(git rev-parse "${baseline_ref}")"
-          if [[ "${baseline_sha}" == "${ref_sha}" ]]; then
-            echo "::error::baseline (${baseline_ref} = ${baseline_sha}) is the same as ref (${ref_sha}); benchstat would produce same-vs-same noise." >&2
-            exit 1
-          fi
-
-          echo "ref_sha=${ref_sha}"           | tee -a "$GITHUB_OUTPUT"
-          echo "baseline_sha=${baseline_sha}" | tee -a "$GITHUB_OUTPUT"
-          echo "baseline_ref=${baseline_ref}" | tee -a "$GITHUB_OUTPUT"
+        run: node .github/scripts/resolve-bench-refs.mjs
 
       - name: bench against baseline
         env:

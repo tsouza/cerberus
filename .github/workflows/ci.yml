@@ -229,25 +229,19 @@ jobs:
           # The new-should_skip-additions guard diffs against
           # origin/main, so we need both refs reachable.
           fetch-depth: 0
+      # The discipline scans below are implemented in
+      # .github/scripts/forbid-skip.mjs (one $CHECK per scan) — see
+      # `.github/scripts/README.md` for the convention. The regexes are
+      # kept byte-identical to scripts/test-forbid-skip.sh (the self-test
+      # step at the end of this job pins them).
       - name: Reject t.Skip in test files
-        run: |
-          if git ls-files -z -- \
-              '*_test.go' \
-              ':!:compatibility/*/upstream/**' \
-              | xargs -0 grep -nE 't\.Skip[fN]?\(' --; then
-            echo "::error::t.Skip / t.Skipf / t.SkipNow found in test files — fix the bug, do not skip"
-            exit 1
-          fi
+        run: node .github/scripts/forbid-skip.mjs
+        env:
+          CHECK: t-skip
       - name: Reject "not implemented" / "skipped" / "deferred" in tests + fixtures
-        run: |
-          if git ls-files -z -- \
-              '*_test.go' \
-              '*.txtar' \
-              ':!:compatibility/*/upstream/**' \
-              | xargs -0 grep -niEH 'not implemented|\bskipped\b|\bdeferred\b' --; then
-            echo "::error::discipline-erosion wording (\"not implemented\" / \"skipped\" / \"deferred\") found in test files or TXTAR fixtures — implement the feature, rewrite to a neutral verb (dropped / excluded / rejected / bypassed), or remove the comment"
-            exit 1
-          fi
+        run: node .github/scripts/forbid-skip.mjs
+        env:
+          CHECK: wording-tests
       # Production code (non-test) must not advertise "not implemented".
       # The bare words "skipped" / "deferred" are *not* gated here
       # because Go has legitimate uses of both — `defer` statements
@@ -256,14 +250,9 @@ jobs:
       # no legitimate prod meaning: either implement the feature or
       # rewrite to a factual verb (rejected / unsupported / falls back).
       - name: Reject "not implemented" in production code
-        run: |
-          if git ls-files -z -- \
-              'internal/**/*.go' \
-              ':!:internal/**/*_test.go' \
-              | xargs -0 grep -niEH 'not implemented' --; then
-            echo "::error::\"not implemented\" found in production code — implement the feature or rewrite to a factual verb (rejected / unsupported / falls back)"
-            exit 1
-          fi
+        run: node .github/scripts/forbid-skip.mjs
+        env:
+          CHECK: not-implemented
       # Reject soft-assertion patterns that look like real verification
       # but pass tautologically — a discipline pin against fake-pass
       # regressions.
@@ -277,69 +266,30 @@ jobs:
       #
       # New additions must use the matching deep-assertion form: assert
       # actual content, assert specific panic, or remove the recover.
+      # Soft-assertion + multi-line silent-recover scan. The `[^{}]*`
+      # clamp keeps the silent-recover match inside a single brace level
+      # so it does not over-reach into surrounding bodies, while
+      # `_\s*=\s*recover` discriminates a silent swallow from the
+      # legitimate `r := recover(); if r == nil { t.Fatal(...) }`
+      # assert-the-panic pattern. Both the grep ERE and the perl slurp
+      # live in forbid-skip.mjs verbatim.
       - name: Reject soft-assertion / silent-recover patterns
-        run: |
-          fail=0
-          if git ls-files -z -- \
-              '*_test.go' \
-              ':!:compatibility/*/upstream/**' \
-              | xargs -0 grep -nEH 'assert\.Contains\(([^,]+,\s*){0,1}[^,]+,\s*""\s*\)|assert\.ElementsMatch\(([^,]+,\s*){0,1}[^,]+,\s*\[\][^)]*\{\s*\}\s*\)' --; then
-            fail=1
-          fi
-          # Multi-line silent-recover scan. Catches both the bare
-          # `defer recover()` form and the `defer func() { ... _ =
-          # recover() ... }()` block — including variants where comments
-          # or blank lines sit between the brace and the recover. The
-          # `[^{}]*` clamp keeps the match inside a single brace level
-          # so it does not over-reach into surrounding bodies, while
-          # `_\s*=\s*recover` discriminates a silent swallow from the
-          # legitimate `r := recover(); if r == nil { t.Fatal(...) }`
-          # assert-the-panic pattern used elsewhere in the repo.
-          # shellcheck disable=SC2016 # single-quoted perl one-liner: $vars are perl, not shell
-          matches=$(git ls-files -z -- '*_test.go' ':!:compatibility/*/upstream/**' \
-            | xargs -0 perl -0777 -ne '
-                while (/defer\s+recover\s*\(\s*\)|defer\s+func\s*\(\s*\)\s*\{[^{}]*_\s*=\s*recover\s*\(\s*\)/g) {
-                  my $pre = substr($_, 0, $-[0]);
-                  my $line = ($pre =~ tr/\n//) + 1;
-                  print "$ARGV:$line: silent-recover pattern\n";
-                }
-              ')
-          if [ -n "$matches" ]; then
-            printf '%s\n' "$matches"
-            fail=1
-          fi
-          if [ "$fail" -ne 0 ]; then
-            echo "::error::soft-assertion or silent-recover pattern found — replace assert.Contains(x, \"\") with the actual substring, replace assert.ElementsMatch(x, []T{}) with len(x) == 0, replace defer recover() / defer func(){_ = recover()}() with assert.Panics(t, func(){...}, \"reason\")"
-            exit 1
-          fi
+        run: node .github/scripts/forbid-skip.mjs
+        env:
+          CHECK: soft-assert
       # Reject any non-empty `should_skip:` overlay entry. The harness
       # consumer code was removed, so an entry would be silently
       # ignored. `should_skip: []` is the only accepted form (kept
       # for schema documentation); any element under the key
       # re-introduces the anti-pattern. The rule is structural: every
       # failure must surface as a real bug to fix at the source.
+      # Multi-line scan: detect `should_skip:` followed by a block child
+      # (`- source:`) — i.e. a non-empty entry. The accepted empty form
+      # `should_skip: []` does not match. Perl slurp lives in forbid-skip.mjs.
       - name: Reject should_skip overlay entries
-        run: |
-          # Multi-line scan: detect `should_skip:` followed by a
-          # block child (`- source:`) — i.e. a non-empty entry. The
-          # accepted empty form `should_skip: []` does not match.
-          # shellcheck disable=SC2016 # single-quoted perl one-liner: $vars are perl, not shell
-          matches=$(git ls-files -z -- \
-              'compatibility/**/*.yml' \
-              'compatibility/**/*.yaml' \
-              ':!:compatibility/*/upstream/**' \
-              | xargs -0 perl -0777 -ne '
-                  while (/^[ \t]*should_skip:[ \t]*\n(?:[ \t]*\#[^\n]*\n|[ \t]*\n)*[ \t]+-/mg) {
-                    my $pre = substr($_, 0, $-[0]);
-                    my $line = ($pre =~ tr/\n//) + 1;
-                    print "$ARGV:$line: non-empty should_skip block\n";
-                  }
-                ')
-          if [ -n "$matches" ]; then
-            printf '%s\n' "$matches"
-            echo "::error::non-empty should_skip overlay entry found. The consumer code was removed in the structural-cleanup PR; entries here are silently ignored. Fix the underlying bug instead of skipping the case."
-            exit 1
-          fi
+        run: node .github/scripts/forbid-skip.mjs
+        env:
+          CHECK: should-skip
       # Regex self-test for the forbid-skip gate. Every pattern
       # documented in docs/forbid-skip.md has a canonical match-example
       # and a counter-example; this step asserts the regexes still
@@ -366,14 +316,6 @@ jobs:
       # (cerberus code, seed, dashboard, panel). Never silence it
       # with one of these.
       - name: Reject test escape-hatch patterns
-        run: |
-          if git ls-files -z -- \
-              '*.ts' '*.tsx' '*.go' \
-              ':!:compatibility/*/upstream/**' \
-              ':!:**/node_modules/**' \
-              ':!:vendor/**' \
-              ':!:.claude/**' \
-              | xargs -0 grep -nEH 'EXPECTED_EMPTY|EXPECTED_TOLERATED|isKnownTolerated|tolerated404|expect\.soft|should_tolerate|skipReason|SkipReason|APP_NOT_INSTALLED_BANNER_PATTERNS|DRILLDOWN_UPSTREAM_GRAFANA_CONSOLE_NOISE' --; then
-            echo "::error::test escape-hatch pattern found. Every assertion must fail loud; never mask a failure with an allow-list / tolerance / soft-assert. Fix the bug at the source (cerberus code, seed, dashboard, panel)."
-            exit 1
-          fi
+        run: node .github/scripts/forbid-skip.mjs
+        env:
+          CHECK: escape-hatch
