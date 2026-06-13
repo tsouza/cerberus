@@ -341,6 +341,119 @@ jobs:
           echo "::error title=compatibility/prometheus suite failed::compatibility harness (steps.compat) exited non-zero — see the 'Run compatibility harness' step log and the uploaded compatibility-prometheus-report artifact"
           exit 1
 
+  prometheus-forced-route:
+    # Phase-2 FLIP proof job for the sharded-pushdown solver. It runs the
+    # SAME prometheus differential harness as `compatibility/prometheus`,
+    # but starts cerberus with CERBERUS_EVAL_ROUTE=sharded so EVERY
+    # eligible plan is forced onto route B (the solver re-anchors K deep
+    # copies onto disjoint anchor sub-grids and composes them). Ineligible
+    # plans (instant / now64 / un-sliceable / grid-mismatch) still fail
+    # toward the byte-identical route A via the Planner. With FAIL_ON_DIFF=1
+    # the run hard-fails on ANY per-case diff or unexpected failure vs
+    # reference Prometheus, so a green result is the corpus-wide proof that
+    # route B == reference — far stronger than the 3 chDB-lane fixtures.
+    #
+    # This is intentionally a NORMAL CI job, not a branch-protection-required
+    # check: its green status on the flip PR is the proof, and keeping it
+    # off the required-checks list avoids gating every unrelated PR on the
+    # full forced-route corpus run.
+    name: compatibility/prometheus-forced-route
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      - name: Log in to Docker Hub
+        if: ${{ env.DOCKERHUB_TOKEN_SET == 'true' }}
+        env:
+          DOCKERHUB_TOKEN_SET: ${{ secrets.DOCKERHUB_TOKEN != '' }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Run forced-route compatibility harness
+        id: compat
+        # CERBERUS_EVAL_ROUTE=sharded is interpolated into the cerberus
+        # container's environment by docker-compose.yml; FAIL_ON_DIFF=1
+        # makes run-compatibility.sh re-raise ANY parity diff. Same seed
+        # window + tester knobs as the standard prometheus job so the only
+        # variable under test is the routing mode.
+        env:
+          TESTER_END_TIME: "2026-05-11T01:00:00Z"
+          TESTER_RANGE: "3600"
+          CERBERUS_EVAL_ROUTE: "sharded"
+          FAIL_ON_DIFF: "1"
+        run: ./compatibility/prometheus/scripts/run-compatibility.sh
+
+      - name: Summarise report
+        if: always()
+        run: |
+          if [ -f compatibility/prometheus/report.json ]; then
+            jq '{
+              total: ([.results[]?] | length),
+              passed: ([.results[]? | select((.unexpectedFailure // "") == "" and (.diff // "") == "")] | length),
+              diffs: ([.results[]? | select((.diff // "") != "")] | length),
+              unexpected_failures: ([.results[]? | select((.unexpectedFailure // "") != "")] | length)
+            }' compatibility/prometheus/report.json
+          else
+            echo "no report produced (harness step likely failed before tester ran)"
+          fi
+
+      - name: Append score to step summary
+        if: always()
+        run: |
+          set -euo pipefail
+          score="compatibility/prometheus/compat-score.json"
+          if [ -f "$score" ]; then
+            percent=$(jq -r .percent "$score")
+            passed=$(jq -r .passed "$score")
+            total=$(jq -r .total "$score")
+            {
+              echo "### compatibility/prometheus-forced-route (CERBERUS_EVAL_ROUTE=sharded)"
+              echo ""
+              echo "| head | passed/total | percent |"
+              echo "|------|--------------|---------|"
+              echo "| prometheus (route B) | ${passed}/${total} | ${percent}% |"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "no compat-score.json produced (harness step likely failed before scorer ran)"
+          fi
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: compatibility-prometheus-forced-route-report
+          path: |
+            compatibility/prometheus/report.json
+            compatibility/prometheus/compat-score.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Fail job if forced-route compatibility step failed
+        # Re-raises the harness failure after summary + artifact upload.
+        # Under FAIL_ON_DIFF=1 the harness itself exits non-zero on any
+        # parity diff, so this step turns the proof job red on drift.
+        if: always() && steps.compat.outcome == 'failure'
+        run: |
+          echo "::error title=compatibility/prometheus-forced-route failed::forced-route harness exited non-zero — route B (CERBERUS_EVAL_ROUTE=sharded) diverged from reference Prometheus, OR an infra failure occurred. See the harness log + the uploaded compatibility-prometheus-forced-route-report artifact"
+          exit 1
+
   tempo:
     name: compatibility/tempo
     needs: changes

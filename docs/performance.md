@@ -37,8 +37,9 @@ Two architectural invariants frame the whole approach:
   pipeline cerberus has always shipped. (Loki's query-frontend exists because
   object storage has no parallel scan — that constraint doesn't transfer to CH,
   so route A stays the default rather than a scatter-gather frontend.)
-- **The sharded-pushdown solver is the exception — off by default, narrow by
-  construction.** The old lock ("one CH query per request — no scatter-gather,
+- **The sharded-pushdown solver is the exception — ON by default (`auto`),
+  narrow by construction.** The old lock ("one CH query per request — no
+  scatter-gather,
   no merge layer to add later") was relaxed by the maintainer on 2026-06-12 for
   the single class route A cannot solve bounded: high **anchor fan-out**
   (`F = Range/Step`, e.g. `sum(rate(m[5m]))` at a fine step over a wide range),
@@ -49,10 +50,21 @@ Two architectural invariants frame the whole approach:
   anchor grid, emits each via the existing `chsql.Emit`, and concatenates the
   result streams behind the existing cursor. There is **no new evaluator and no
   new SQL template** — every shard runs the same compat-gated route-A SQL,
-  restricted to its anchor sub-grid. The solver stays off until a forced-route
-  compatibility lane proves zero diffs, and ineligible queries always stay on
-  route A. See [`evaluation-architecture.md`](evaluation-architecture.md) for
-  the operator classification the solver's safe set maps onto.
+  restricted to its anchor sub-grid. The phase-2 flip landed on 2026-06-13: the
+  solver now routes by default (`CERBERUS_EVAL_ROUTE=auto`), gated on the
+  `compatibility/prometheus-forced-route` CI job, which forces every eligible
+  plan onto route B (`CERBERUS_EVAL_ROUTE=sharded`) over the WHOLE upstream
+  PromQL corpus and fails on any diff vs reference Prometheus — the corpus-wide
+  proof that route B is byte-identical to route A. Routing remains
+  fail-toward-A: only ELIGIBLE, above-threshold plans take route B; ineligible
+  queries (instant / `now64` / un-sliceable / grid-mismatch) always stay on
+  route A. Operators pin `CERBERUS_EVAL_ROUTE=single` to disable routing
+  entirely. The additive `X-Cerberus-Route-Decision` response header reports
+  the per-request classification in every mode (`routed` / `below-threshold` /
+  `instant` / `not-sliceable` / …). See
+  [`evaluation-architecture.md`](evaluation-architecture.md) for the operator
+  classification the solver's safe set maps onto, and
+  [operations.md](operations.md#sharded-pushdown-solver) for the runtime knobs.
 - **All-or-nothing wire contract.** Whether a request is solved by route A or
   fanned out across `K` shards, the client sees a single response: a shard
   failure surfaces as one typed error (first-error-wins, cause-threaded), never
