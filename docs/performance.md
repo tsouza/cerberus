@@ -194,6 +194,102 @@ tracked `KnownSuperlinear` finding (the cardinality axis still hard-gates), and
 the true fix — flattening the chain into one N-ary single pass — is tracked
 rather than silently accepted.
 
+## Rate-range windowing: why we ship the fan-out
+
+This section is a decision record. `sum(rate(metric[5m]))` as a `query_range`
+(e.g. 1h @ 15s = **240 anchors**) over the OTel-CH counter table is the one
+metrics shape route A cannot fold flat — `rate` needs the per-window sample
+pairs, so the RangeLWR collapse doesn't apply (see the
+[`range query (240 steps)` note in benchmarks.md](benchmarks.md#end-to-end-query-latency)).
+The emit fans each sample into the `~Range/Step` overlapping windows it belongs
+to (`arrayJoin`), groups + sorts per `(series, anchor)`, then applies
+Prometheus's `extrapolatedRate`. That fan-out *looks* like the expensive part,
+and every instinct says to attack the data movement. We built and measured the
+alternatives. They lose. This records why, so they are never re-attempted.
+
+All numbers below were **measured this session on real ClickHouse 24.8, 8-core**
+(not chDB — the benchmarks.md curves run in-process chDB; these are prod CH).
+
+### The bottleneck is the extrapolation arithmetic, not the scan
+
+The single load-bearing fact: the bare table scan is **14 ms**, fully
+page-cached. The wall is **~98% per-anchor Prometheus-extrapolation
+arithmetic** — `extrapolatedRate` evaluated once per `(series, anchor)` window.
+It is compute, not data movement. The route-A fan-out scale curve:
+
+| samples | wall  | peak mem |
+| ------- | ----- | -------- |
+| 100k    | 0.45s | —        |
+| 300k    | 0.57s | 0.76 GiB |
+| 500k    | 0.79s | —        |
+| 1M      | 1.5s  | —        |
+| 5M      | 7.6s  | 5.47 GiB |
+
+The realistic-scale reading is the decision: **a normal 1h panel
+(~1000 series × 15s ≈ 200–500k samples) is already sub-second on what we
+ship.** 5M samples is **5000 fully-sampled series** — a high-cardinality stress
+case, not a panel anyone draws. At realistic scale the fan-out is already
+Prometheus-class, and the extrapolation-arithmetic floor (~1.7–2s at high
+cardinality) — *not* the data movement — is what every alternative has to beat.
+None do.
+
+### The measured dead-ends
+
+Each row is an alternative we built and benchmarked against the fan-out. They
+are recorded here with numbers precisely so nobody re-spends the time:
+
+| alternative                            | what it does                                                        | result                                                                             | why it loses                                                                                                                                                        |
+| -------------------------------------- | ------------------------------------------------------------------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Anchor-grid **sharding** (route B)     | K parallel shards over disjoint anchor sub-grids                    | **+8% slower** AND **8× scan amplification** (40M vs 5M `read_rows`)               | the 5m lookback straddles shards, so every shard re-scans the whole table. It's a MEMORY mechanism, not a wall one.                                                 |
+| **ASOF JOIN** boundary lookup (#97)    | window-function enrichment instead of `arrayJoin`                   | cardinality down (fan_factor **5.83 → 1.0**) but wall **REGRESSED 6.31s → 36.90s** | ASOF + window enrichment is far slower than `arrayJoin` + `GROUP BY`. The cardinality ratchet missed it — the ratchet is blind to wall. (#851, closed.)             |
+| **MV substitution / downsampling**     | rollup the 14 ms scan                                               | attacks the wrong axis; also lossy                                                 | breaks exact parity; cerberus already removed its `MVSubstitution` rule as a no-op (no rollups exist).                                                              |
+| **Naive single-pass array**            | per-anchor `arrayCount` / `arrayFirstIndex` over a per-series array | **6.9s**                                                                           | per-anchor LINEAR rescans — same `O(n × windows)` class as the fan-out; only cut memory ~5×.                                                                        |
+| **`arrayReduceInRanges`** segment-tree | range-aggregate the per-series sample array                         | dominated                                                                          | cannot produce the reset-adjusted increase — counter resets are a global per-series property needing the cumulative prefix-sum, which a segment-tree doesn't carry. |
+| **B2 prefix-sum / two-pointer**        | the asymptotically-optimal single pass, byte-exact parity           | LOSES at realistic scale, WINS only past ~1M (crossover **~1M**)                   | the optimal algorithm is the wrong *default* because the extrapolation arithmetic is the floor, not the data movement it optimizes. See below.                      |
+
+The B2 prefix-sum / two-pointer deserves the detail, because it is the
+*asymptotically optimal* answer and it still loses as a default:
+
+| samples | B2 (optimal single-pass) | fan-out (shipped) | verdict                         |
+| ------- | ------------------------ | ----------------- | ------------------------------- |
+| 300k    | 1.69s / 2.2 GiB          | 0.57s / 0.76 GiB  | fan-out **3× faster**           |
+| 5M      | 3.75s / 1.23 GiB         | 7.58s / 5.47 GiB  | B2 **2× faster, 4.4× less mem** |
+
+The crossover sits near **1M samples** — above realistic panel scale. B2 wins
+only in the high-cardinality stress regime, and it wins on *memory* and *wall*
+there because it stops materializing the pair set. But at the scale real panels
+run, the extrapolation-arithmetic floor dominates the data movement B2
+optimizes, so the optimal algorithm is **3× slower** than the fan-out it was
+meant to replace.
+
+### Why we ship the fan-out
+
+At realistic scale it is already Prometheus-class, and every alternative we
+built **loses at realistic scale** because they all optimize data movement
+while the irreducible cost is the per-anchor extrapolation arithmetic. Sharding
+and ASOF and single-pass each cut memory or cardinality — the axes the
+cardinality ratchet watches — but pay for it in wall, and wall is the axis the
+user feels. The fan-out is the right default until the arithmetic floor itself
+moves.
+
+### The durable answer
+
+Native ClickHouse **`timeSeriesRateToGrid`** — CH copied Prometheus's rate code
+verbatim, so it computes the same `extrapolatedRate` *inside the engine*,
+moving the arithmetic floor down rather than around it. It lands in CH
+**≥ 25.6**; the deployment is on **24.8**. The plan is to adopt it outright when
+the CH floor moves; until then the fan-out is the right default.
+
+### The lesson
+
+The bottleneck for rate-range is the **per-anchor extrapolation arithmetic
+(irreducible)**, not data movement. So data-movement optimizations
+(sharding / ASOF / MV / single-pass) don't help at realistic scale — and
+realistic scale is already fast. When an optimization targets memory or
+cardinality but the user-felt cost is wall, confirm which axis actually
+dominates *before* building the alternative: here, four of them were built
+before the 14 ms scan vs ~98%-arithmetic split was measured.
+
 ## See also
 
 - [`benchmarks.md`](benchmarks.md) — live before/after wins, scaling curves,
