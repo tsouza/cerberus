@@ -217,6 +217,19 @@ func (x *Executor) Execute(
 		cancelCause(errSolverTimeout)
 	})
 
+	// 5. BREAKER FAILURE DEDUP — install ONE per-request latch on the SHARED
+	// cause-carrying ctx so every shard's QueryCursor → breaker.record consults
+	// the same latch. Under P_eff concurrent shard opens against a degraded
+	// ClickHouse, each open can fail with a real (non-Canceled, non-241) error
+	// before the first failure's cancel propagates; without the latch each
+	// would advance the shared breaker counter, tripping the threshold-5
+	// breaker by up to gate/2 in ONE logical request and 503-ing all three
+	// heads. The latch makes the first real failure count and treats siblings
+	// as breaker-neutral, enforcing the docs §"Parallel execution" #6 contract
+	// (at most one breaker failure per logical request). The latch is
+	// request-scoped (born/dies with causeCtx, no cross-request state).
+	causeCtx = chclient.WithBreakerDedup(causeCtx)
+
 	// 7. PER-SHARD EXECUTION. errgroup under the cause-carrying ctx;
 	// SetLimit(P_eff). Each producer drains its cursor into a bounded chan
 	// and selects on gctx.Done() while sending (provably terminating).
@@ -242,10 +255,6 @@ func (x *Executor) Execute(
 		sc.chans[i] = make(chan chclient.Sample, shardChanCap)
 	}
 
-	// 5. BREAKER FAILURE DEDUP — at most one real failure latches the
-	// cancel cause; siblings cancel breaker-neutrally via the cause
-	// sentinel. The latch lives on the shardCursor (firstErr).
-	//
 	// LAUNCH newest-slice-first (minimizes live-edge snapshot skew);
 	// composition order is oldest-first regardless because the channels
 	// buffer and the shardCursor drains them in index order.

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -306,6 +307,141 @@ func TestExecute_BreakerDedup_FirstErrorWins(t *testing.T) {
 	}
 	if q.live.Load() != 0 {
 		t.Fatalf("cursors leaked: %d", q.live.Load())
+	}
+}
+
+// recordingQuerier wraps a fake querier and models chclient's
+// QueryCursor→breaker.record path faithfully for the dedup contract: every
+// open that FAILS consults the per-request latch via ClaimBreakerDedup (the
+// exact CAS breaker.record runs) and increments breakerCount only when the
+// latch admits the failure. A barrier releases all K opens at once so the
+// failures race exactly as P_eff concurrent shard opens against a degraded CH
+// would. It thus measures the breaker's failure-counter advance per logical
+// request without reaching into the unexported breaker.
+type recordingQuerier struct {
+	inner        *fakeQuerier
+	barrier      chan struct{} // closed once all K opens have arrived
+	arrived      atomic.Int64
+	k            int64
+	breakerCount atomic.Int64 // failures the latch admitted (i.e. would count)
+}
+
+func (r *recordingQuerier) QueryCursor(ctx context.Context, sql string, args ...any) (chclient.Cursor, error) {
+	// Rendezvous: block until all K opens have arrived, then release them
+	// together so the failures are genuinely concurrent.
+	if r.arrived.Add(1) == r.k {
+		close(r.barrier)
+	}
+	<-r.barrier
+	cur, err := r.inner.QueryCursor(ctx, sql, args...)
+	if err != nil {
+		// Mirror cursor.go's c.br.record(ctx, err): a real failure consults the
+		// per-request dedup latch; only the latch winner advances the counter.
+		if chclient.ClaimBreakerDedup(ctx) {
+			r.breakerCount.Add(1)
+		}
+		return nil, err
+	}
+	return cur, nil
+}
+
+// TestExecute_BreakerDedup_CountsOnce is the regression pin for the docs
+// §"Parallel execution" #6 contract — "the Executor records at MOST ONE
+// breaker failure per logical request". It drives a routed Execute where ALL
+// P_eff shard opens fail CONCURRENTLY with a real (non-Canceled, non-241) CH
+// error and asserts the breaker failure counter advanced by EXACTLY 1, not by
+// P. Run under GOMAXPROCS 1 and 4.
+func TestExecute_BreakerDedup_CountsOnce(t *testing.T) {
+	shardErr := errors.New("dial tcp 127.0.0.1:9000: connection refused")
+	for _, gomax := range []int{1, 4} {
+		t.Run(fmt.Sprintf("gomax%d", gomax), func(t *testing.T) {
+			prev := runtime.GOMAXPROCS(gomax)
+			defer runtime.GOMAXPROCS(prev)
+
+			const k = 4
+			q := newFakeQuerier(5)
+			for i := 0; i < k; i++ {
+				q.openErrAt[i] = shardErr
+			}
+			rq := &recordingQuerier{inner: q, barrier: make(chan struct{}), k: k}
+			cfg := testCfg()
+			cfg.Parallel = k // P_eff = K so all K open concurrently
+			x := newExec(rq, newFakeEmitter(), cfg, 32, newFakeBreaker(BreakerClosed), nil)
+			cur, _, err := x.Execute(context.Background(), "promql", makeDecision(k), nil)
+			if err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			_, derr := drainAll(cur)
+			_ = cur.Close()
+			if !errors.Is(derr, shardErr) {
+				t.Fatalf("want shardErr surfaced, got %v", derr)
+			}
+			if got := rq.breakerCount.Load(); got != 1 {
+				t.Fatalf("breaker-dedup violated: %d shard failures counted, want exactly 1", got)
+			}
+			if q.live.Load() != 0 {
+				t.Fatalf("cursors leaked: %d", q.live.Load())
+			}
+		})
+	}
+}
+
+// TestExecute_BreakerDedup_RouteAUnaffected asserts a route-A-shaped call (no
+// WithBreakerDedup latch on ctx) still records each failure normally — the
+// latch only suppresses opted-in (routed) requests. We model route-A directly
+// at the chclient boundary: with no latch installed, ClaimBreakerDedup admits
+// every failure.
+func TestExecute_BreakerDedup_RouteAUnaffected(t *testing.T) {
+	// A bare ctx carries no dedup latch (the single-statement route-A path).
+	plainCtx := context.Background()
+	const opens = 4
+	counted := 0
+	for i := 0; i < opens; i++ {
+		if chclient.ClaimBreakerDedup(plainCtx) {
+			counted++
+		}
+	}
+	if counted != opens {
+		t.Fatalf("route-A (no latch): each failure must count, got %d of %d", counted, opens)
+	}
+}
+
+// TestExecute_CallerCancelMidDrain asserts a caller-context cancel mid-drain
+// (a cancellable parent ctx cancelled while producers block on the bounded
+// send chan) leaks ZERO goroutines (enforced by the package goleak TestMain)
+// and returns every fake conn. The composer stops draining, the producers
+// unblock via gctx.Done(), and Close tears down all child cursors.
+func TestExecute_CallerCancelMidDrain(t *testing.T) {
+	q := newFakeQuerier(1_000_000) // far more rows than the composer will drain
+	q.delay = 50 * time.Microsecond
+	x := newExec(q, newFakeEmitter(), testCfg(), 32, newFakeBreaker(BreakerClosed), nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cur, _, err := x.Execute(ctx, "promql", makeDecision(4), nil)
+	if err != nil {
+		cancel()
+		t.Fatalf("Execute: %v", err)
+	}
+
+	// Drain a few rows so producers are mid-stream (blocked on the bounded
+	// send chan once the composer pauses), then cancel the caller ctx.
+	for i := 0; i < 16 && cur.Next(); i++ {
+		_ = cur.Sample()
+	}
+	cancel()
+
+	// Finish draining: the cancel propagates to gctx, producers exit via
+	// gctx.Done(), and the cursor surfaces the terminal error.
+	_, _ = drainAll(cur)
+	if err := cur.Close(); err != nil {
+		// Close itself must not error on the teardown path.
+		t.Fatalf("close after caller cancel: %v", err)
+	}
+	if q.live.Load() != 0 {
+		t.Fatalf("conns not returned after caller cancel: %d live", q.live.Load())
+	}
+	if q.opened.Load() != q.closed.Load() {
+		t.Fatalf("opened (%d) != closed (%d) after caller cancel", q.opened.Load(), q.closed.Load())
 	}
 }
 

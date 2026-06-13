@@ -287,6 +287,26 @@ func (b *breaker) record(ctx context.Context, err error) {
 		return
 	}
 
+	// PER-REQUEST BREAKER DEDUP. A failure that survived the neutral arms
+	// above is a real CH-health signal that WOULD advance the counter. If the
+	// request installed a dedup latch (the solver's routed K-shard fan-out via
+	// WithBreakerDedup), only the FIRST real failure to win the CAS counts;
+	// every sibling failure is treated as breaker-NEUTRAL so K concurrent
+	// shard opens against a degraded CH advance the shared counter by exactly
+	// 1, not by K. Route-A requests install no latch (claim() returns true on
+	// a nil latch), so their counting is byte-unchanged. The neutral sibling
+	// still drives the half-open probe slot consistently — it releases an
+	// in-flight probe rather than corrupting the state machine, exactly as a
+	// cancellation would.
+	if err != nil && !breakerDedupFromContext(ctx).claim() {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		if b.state == stateHalfOpen {
+			b.probeInFlight = false
+		}
+		return
+	}
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
