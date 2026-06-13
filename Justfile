@@ -202,6 +202,25 @@ update-cardinality-baseline:
     @echo "Diff of regenerated baseline:"
     @git --no-pager diff --stat test/perf/cardinality-baseline.json || true
 
+# Regenerate the routing-DECISION ratchet baseline (perf-assessment
+# Component D) from the current PromQL corpus. Parses every `-- query.promql --`
+# fixture under test/spec/promql/**, lowers it on the fixed eval grid
+# (end=2026-01-01T00:00:00Z, range=1h, step=15s), optimizes it, and records the
+# solver Planner's routing decision {routed, K, reason} under Mode=auto into
+# test/perf/solver-decision-baseline.json (deterministic, sorted by query).
+# Pure Go — NO chDB — so it runs in the standard `check`/`just test` lane.
+# Run this — and REVIEW THE DIFF — whenever the ratchet test reports drift or a
+# NEW/REMOVED query. The diff classifies each moved row as ADVANCEMENT vs
+# REGRESSION; a REGRESSION (route B->A, K down, or a routed query now rejected)
+# MUST be justified in the PR with a real reason (a correctness fix that
+# disqualifies the query), never accepted as a silent relaxation. The gating
+# assertion is TestSolverDecisionRatchet in the already-required `check` job.
+update-solver-decision-baseline:
+    UPDATE_SOLVER_DECISION_BASELINE=1 go test -count=1 -run TestSolverDecisionRatchet ./test/perf/
+    @echo
+    @echo "Diff of regenerated baseline:"
+    @git --no-pager diff --stat test/perf/solver-decision-baseline.json || true
+
 # Regenerate the publishable benchmark document (docs/benchmarks.md) from
 # LIVE measurements: optimizer before/after wins, per-construct scaling
 # curves, per-stage Go micro-benchmarks, and end-to-end query latency on a
