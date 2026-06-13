@@ -4,19 +4,23 @@
 // embedded chDB engine and writes a publishable, regenerable benchmark
 // document (docs/benchmarks.md). It is the source for `just bench-report`.
 //
-// It covers four dimensions:
+// It covers five dimensions:
 //
 //  1. Headline before/after wins — each of cerberus's key optimizations,
 //     measured by constructing both the NAIVE pre-fix SQL and the
 //     OPTIMIZED shape the real lowering emits, running both on chDB over a
 //     seeded dataset, and reporting the speedup × (plus a deterministic
 //     structural ratio where one exists).
-//  2. Scaling curves — wall + fan_factor vs the real fan-out multiplier
+//  2. Sharded-solver dimension — the OOM-class range query route A cannot
+//     serve under the 1 GiB per-query cap, that route B (the sharded
+//     solver, internal/solver) clears: the measured expanded (sample,
+//     anchor) pair count drives ~1/K modeled memory per shard.
+//  3. Scaling curves — wall + fan_factor vs the real fan-out multiplier
 //     for the registered scaling constructs, showing wall stays
 //     sub-linear and intermediate cardinality stays bounded.
-//  3. Micro-benchmarks — ns/op + allocs/op for the Go per-stage
+//  4. Micro-benchmarks — ns/op + allocs/op for the Go per-stage
 //     benchmarks across the pipeline.
-//  4. End-to-end query latency — representative queries lowered + emitted
+//  5. End-to-end query latency — representative queries lowered + emitted
 //     through the real pipeline and executed on a LARGE synthetic dataset
 //     (millions of rows, generated server-side via numbers(N)).
 //
@@ -83,6 +87,12 @@ func run(outPath string, iters int, benchtime, goBin string) error {
 		return err
 	}
 
+	fmt.Fprintln(os.Stderr, "bench-report: measuring sharded-solver dimension (OOM-class)…")
+	sharded, err := measureSharded(s, iters)
+	if err != nil {
+		return err
+	}
+
 	fmt.Fprintln(os.Stderr, "bench-report: seeding + measuring end-to-end latency (large dataset)…")
 	e2e, metricRows, logRows, traceRows, err := measureE2E(s, iters)
 	if err != nil {
@@ -98,6 +108,7 @@ func run(outPath string, iters int, benchtime, goBin string) error {
 	doc := renderDoc(docInput{
 		wins:       wins,
 		curves:     curves,
+		sharded:    sharded,
 		e2e:        e2e,
 		micro:      micro,
 		iters:      iters,
@@ -113,8 +124,8 @@ func run(outPath string, iters int, benchtime, goBin string) error {
 	if err := os.WriteFile(outPath, []byte(doc), 0o644); err != nil { //nolint:gosec // doc artifact
 		return fmt.Errorf("write %s: %w", outPath, err)
 	}
-	fmt.Fprintf(os.Stderr, "bench-report: wrote %s (%d wins, %d curves, %d e2e, %d micro) in %s\n",
-		outPath, len(wins), len(curves), len(e2e), len(micro), time.Since(started).Round(time.Second))
+	fmt.Fprintf(os.Stderr, "bench-report: wrote %s (%d wins, sharded K=%d, %d curves, %d e2e, %d micro) in %s\n",
+		outPath, len(wins), sharded.K, len(curves), len(e2e), len(micro), time.Since(started).Round(time.Second))
 	return nil
 }
 
