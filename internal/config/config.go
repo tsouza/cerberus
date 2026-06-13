@@ -42,6 +42,27 @@ type Config struct {
 	// the flag on an already-populated ClickHouse is a no-op.
 	AutoCreateSchema bool
 
+	// ExperimentalTSGridRange, when true, makes the PromQL lowering emit
+	// ClickHouse-native `timeSeriesRateToGrid` for eligible
+	// `rate(<counter>[<range>])` query_range expressions instead of the
+	// default arrayJoin fan-out. The native operator is a compiled C++
+	// aggregate that computes the per-grid-point rate directly, closing
+	// the execution-layer gap the SQL array machinery leaves at high
+	// cardinality.
+	//
+	// Default is false — and MUST stay false out of the box. The family
+	// was introduced in ClickHouse v25.6.0; the compose / e2e /
+	// compatibility lanes all run ClickHouse 24.8, which lacks the
+	// function entirely (a native-path query 500s there with
+	// UNKNOWN_FUNCTION). The experimental setting
+	// `allow_experimental_time_series_aggregate_functions=1` is sent only
+	// on the queries that actually use the native node (see
+	// internal/engine), so unrelated queries on a 24.8 server are never
+	// touched. First cut is rate-only; increase / delta stay on the
+	// fan-out until a dedicated chDB differential sweep proves the
+	// timeSeriesDeltaToGrid mapping.
+	ExperimentalTSGridRange bool
+
 	// Log configures cerberus's own structured logging (stdlib log/slog).
 	// See LogConfig for the env-var contract.
 	Log LogConfig
@@ -149,6 +170,9 @@ type OTLPConfig struct {
 //	CERBERUS_CH_BREAKER_WINDOW        default "10s" (rolling failure window)
 //	CERBERUS_CH_BREAKER_OPEN_INTERVAL default "5s"  (OPEN-state backoff before a probe)
 //	CERBERUS_AUTO_CREATE_SCHEMA    default "false"
+//	CERBERUS_EXPERIMENTAL_TS_GRID_RANGE default "false" — emit ClickHouse-native
+//	    timeSeriesRateToGrid for eligible rate query_range; requires ClickHouse
+//	    >= 25.6; on older servers the native query 500s with UNKNOWN_FUNCTION
 //	CERBERUS_LOG_FORMAT            default "text"  ("text" | "json")
 //	CERBERUS_LOG_LEVEL             default "info"  ("debug" | "info" | "warn" | "error")
 //	CERBERUS_OTLP_ENDPOINT         default ""   (empty → exporters disabled)
@@ -181,6 +205,10 @@ func FromEnv() (Config, error) {
 	autoCreate, err := envBool("CERBERUS_AUTO_CREATE_SCHEMA", false)
 	if err != nil {
 		return Config{}, fmt.Errorf("CERBERUS_AUTO_CREATE_SCHEMA: %w", err)
+	}
+	tsGridRange, err := envBool("CERBERUS_EXPERIMENTAL_TS_GRID_RANGE", false)
+	if err != nil {
+		return Config{}, fmt.Errorf("CERBERUS_EXPERIMENTAL_TS_GRID_RANGE: %w", err)
 	}
 	maxOpenConns, err := envInt("CERBERUS_CH_MAX_OPEN_CONNS", defaultCHMaxOpenConns)
 	if err != nil {
@@ -251,13 +279,14 @@ func FromEnv() (Config, error) {
 			BreakerOpenInterval: breaker.OpenInterval,
 			BreakerDisabled:     breaker.Disabled,
 		},
-		Schema:           schema.DefaultOTelMetricsFromEnv(),
-		Logs:             schema.DefaultOTelLogsFromEnv(),
-		Traces:           schema.DefaultOTelTracesFromEnv(),
-		AutoCreateSchema: autoCreate,
-		Log:              logCfg,
-		OTLP:             otlp,
-		Admit:            admit,
+		Schema:                  schema.DefaultOTelMetricsFromEnv(),
+		Logs:                    schema.DefaultOTelLogsFromEnv(),
+		Traces:                  schema.DefaultOTelTracesFromEnv(),
+		AutoCreateSchema:        autoCreate,
+		ExperimentalTSGridRange: tsGridRange,
+		Log:                     logCfg,
+		OTLP:                    otlp,
+		Admit:                   admit,
 	}, nil
 }
 

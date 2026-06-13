@@ -109,6 +109,8 @@ func (e *emitter) emitNode(n chplan.Node) error {
 		return e.emitMetricsCompare(v)
 	case *chplan.RangeWindow:
 		return e.emitRangeWindow(v)
+	case *chplan.RangeWindowNative:
+		return e.emitRangeWindowNative(v)
 	case *chplan.RangeLWR:
 		return e.emitRangeLWR(v)
 	case *chplan.RangeBucketFanout:

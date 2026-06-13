@@ -259,17 +259,35 @@ func New(cfg Config) (*Client, error) {
 
 // querySettings returns the per-query ClickHouse settings map applied
 // to every data-plane query, or nil when no setting is configured.
-// Today it carries exactly one knob: `max_memory_usage`, ClickHouse's
-// per-query memory cap, from Config.MaxQueryMemoryBytes.
+// It carries:
+//
+//   - `max_memory_usage` — ClickHouse's per-query memory cap, from
+//     Config.MaxQueryMemoryBytes (when > 0).
+//   - SettingExperimentalTSGridAggregate=1 — ONLY when ctx was marked by
+//     WithTSGridSetting (the engine marks it when the emitted plan
+//     contains a chplan.RangeWindowNative node). The experimental knob
+//     is added to the SAME map as max_memory_usage, never via a second
+//     independent clickhouse.WithSettings wrap — a second wrap REPLACES
+//     rather than unions the settings map (clickhouse-go context.go:
+//     `c.settings = maps.Clone(q.settings)`), which would silently drop
+//     the memory cap. Merging here keeps both knobs on the one map.
 //
 // Kept as its own method (rather than inlined into queryContext) so
 // tests can assert the settings content directly — the driver stores
 // QueryOptions under an unexported context key with no public getter.
-func (c *Client) querySettings() clickhouse.Settings {
-	if c.maxMemory <= 0 {
+func (c *Client) querySettings(ctx context.Context) clickhouse.Settings {
+	wantTSGrid := wantTSGridSetting(ctx)
+	if c.maxMemory <= 0 && !wantTSGrid {
 		return nil
 	}
-	return clickhouse.Settings{"max_memory_usage": c.maxMemory}
+	s := clickhouse.Settings{}
+	if c.maxMemory > 0 {
+		s["max_memory_usage"] = c.maxMemory
+	}
+	if wantTSGrid {
+		s[SettingExperimentalTSGridAggregate] = 1
+	}
+	return s
 }
 
 // queryContext derives the context every data-plane query runs under:
@@ -282,7 +300,7 @@ func (c *Client) querySettings() clickhouse.Settings {
 // Exec (DDL / DML) deliberately does NOT go through this — see
 // Config.MaxQueryMemoryBytes.
 func (c *Client) queryContext(ctx context.Context) context.Context {
-	s := c.querySettings()
+	s := c.querySettings(ctx)
 	if s == nil {
 		return ctx
 	}

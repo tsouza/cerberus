@@ -731,6 +731,23 @@ func openChDB(t *testing.T) *sql.DB {
 	if err := db.Ping(); err != nil {
 		t.Fatalf("ping chdb: %v", err)
 	}
+	// Enable the experimental timeSeries*ToGrid aggregate family at the
+	// session level so the native-rate fixtures (RangeWindowNative →
+	// timeSeriesRateToGrid) run. The setting is harmless for every other
+	// fixture — it gates only those aggregates, which no other fixture
+	// emits — and chDB does not enforce the gate, so this is belt-and-
+	// braces for forward-compatibility if a future chDB starts to. The
+	// production chclient sends the same setting per-query (only on the
+	// native path); see internal/chclient.WithTSGridSetting. The spelling
+	// is the CANONICAL `allow_experimental_time_series_aggregate_functions`
+	// (ClickHouse PR #80590 renamed the gate before the v25.6 release; the
+	// old `..._ts_to_grid_aggregate_function` survives only as an alias —
+	// see chclient.SettingExperimentalTSGridAggregate). A chDB build older
+	// than the family's introduction would reject the SET — current
+	// substrate is 25.8 (probed), well past the v25.6 floor.
+	if _, err := db.Exec("SET allow_experimental_time_series_aggregate_functions = 1"); err != nil {
+		t.Fatalf("enable experimental ts-grid aggregate: %v", err)
+	}
 	return db
 }
 

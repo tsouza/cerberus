@@ -1164,6 +1164,12 @@
     "reason": "routed"
   },
   {
+    "query": "native_rate_range_step",
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
+  },
+  {
     "query": "negative_at",
     "routed": false,
     "k": 0,

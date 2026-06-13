@@ -45,6 +45,14 @@ type lang struct {
 	Start  time.Time
 	End    time.Time
 	Step   time.Duration
+
+	// ExperimentalTSGridRange opts the eligible rate query_range shape
+	// into the ClickHouse-native timeSeriesRateToGrid lowering. Threaded
+	// from Handler.ExperimentalTSGridRange (which reads
+	// Config.ExperimentalTSGridRange). Only the range path
+	// (executeRangeStreaming) sets it true; instant queries leave it
+	// false. Default false → the default arrayJoin fan-out.
+	ExperimentalTSGridRange bool
 }
 
 // Compile-time check that *lang satisfies engine.Lang.
@@ -100,7 +108,8 @@ func (l *lang) Parse(ctx context.Context, query string) (chplan.Node, engine.Met
 	parseT.Done(ctx)
 
 	lowerT := telemetry.ObserveStage(telemetry.StageLower)
-	plan, err := promql.LowerAtRange(ctx, expr, l.Schema, l.Start, l.End, l.Step)
+	plan, err := promql.LowerAtRangeOpts(ctx, expr, l.Schema, l.Start, l.End, l.Step,
+		promql.LowerOpts{ExperimentalTSGridRange: l.ExperimentalTSGridRange})
 	lowerT.Done(ctx)
 	if err != nil {
 		return nil, engine.Meta{}, &parseStageError{stage: "lower", err: err}

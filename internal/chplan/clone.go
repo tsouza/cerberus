@@ -47,6 +47,11 @@ func CloneNode(n Node) Node {
 		c.Scalars = cloneFloats(v.Scalars)
 		c.ScalarExprs = cloneExprs(v.ScalarExprs)
 		return &c
+	case *RangeWindowNative:
+		c := *v
+		c.Input = CloneNode(v.Input)
+		c.GroupBy = cloneExprs(v.GroupBy)
+		return &c
 	case *RangeLWR:
 		c := *v
 		c.Input = CloneNode(v.Input)

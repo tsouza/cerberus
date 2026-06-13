@@ -1791,6 +1791,7 @@ type QueryBuilder struct {
 	selectList []Frag
 	from       Frag
 	joins      []joinClause
+	arrayJoin  []Frag
 	where      []Frag
 	prewhere   []Frag
 	groupBy    []Frag
@@ -1845,6 +1846,23 @@ func (s *QueryBuilder) From(src Frag) *QueryBuilder {
 // PREWHERE / WHERE.
 func (s *QueryBuilder) Join(kind JoinKind, src, on Frag) *QueryBuilder {
 	s.joins = append(s.joins, joinClause{Kind: kind, Src: src, On: on})
+	return s
+}
+
+// ArrayJoin appends one or more terms to the `ARRAY JOIN` clause, which
+// CH renders after FROM (and any JOINs) and before PREWHERE / WHERE.
+// Each term is a full Frag — typically `As(arrayExpr, alias)` — and
+// multiple terms in a single ARRAY JOIN explode their arrays IN LOCKSTEP
+// (the i-th element of every array lands on the same output row), which
+// is exactly the parallel-explosion semantics the native
+// timeSeriesRateToGrid emitter needs to pair each per-grid-point rate
+// value with its parallel timeSeriesRange anchor timestamp. (Contrast
+// the `arrayJoin(...)` scalar function, which cross-products independent
+// arrays.)
+//
+// Multiple ArrayJoin calls chain into a single comma-separated clause.
+func (s *QueryBuilder) ArrayJoin(terms ...Frag) *QueryBuilder {
+	s.arrayJoin = append(s.arrayJoin, terms...)
 	return s
 }
 
@@ -2051,6 +2069,15 @@ func (s *QueryBuilder) writeInto(b *Builder) {
 			}
 			b.sb.WriteString(" ON ")
 			j.On(b)
+		}
+	}
+	if len(s.arrayJoin) > 0 {
+		b.sb.WriteString(" ARRAY JOIN ")
+		for i, f := range s.arrayJoin {
+			if i > 0 {
+				b.sb.WriteString(", ")
+			}
+			f(b)
 		}
 	}
 	if len(s.prewhere) > 0 {
