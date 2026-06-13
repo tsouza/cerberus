@@ -339,8 +339,14 @@ func TestEmitNode_SetOperation_Intersect(t *testing.T) {
 }
 
 // TestEmitNode_SetOperation_Union — TraceQL `A || B` lowers to
-// `(<A>) UNION DISTINCT (<B>)`. Both arms render as parenthesised
-// subqueries with the UNION DISTINCT keyword between them.
+// `SELECT * FROM (<A> UNION ALL <B>) LIMIT 1 BY (TraceId, SpanId)`:
+// dedup on SPAN IDENTITY, not the full (wide) row tuple. The full-row
+// UNION DISTINCT was the memory/time root cause of the showcase
+// "Spanset ||" panel never loading + the Drilldown structure-tab query
+// tripping the 1 GiB cap at self-telemetry scale; identity dedup via
+// CH's `LIMIT n BY` is result-identical (same-table arms ⇒ a span in
+// both arms is byte-identical) but O(rows × 2 ids) memory instead of
+// O(rows × full-row-width incl. the nested Events.*/Links.* arrays).
 func TestEmitNode_SetOperation_Union(t *testing.T) {
 	t.Parallel()
 
@@ -355,11 +361,18 @@ func TestEmitNode_SetOperation_Union(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
-	if !strings.Contains(sql, "UNION DISTINCT") {
-		t.Errorf("SetUnion did not emit UNION DISTINCT: %q", sql)
+	// Arms joined by the cheap UNION ALL, deduped by identity LIMIT 1 BY.
+	if !strings.Contains(sql, "UNION ALL") {
+		t.Errorf("SetUnion did not emit UNION ALL: %q", sql)
 	}
-	// Both arms should be wrapped in parens — UNION DISTINCT is a
-	// SELECT-level binary, each arm is a complete SELECT.
+	if strings.Contains(sql, "UNION DISTINCT") {
+		t.Errorf("SetUnion still emits the wide-row UNION DISTINCT: %q", sql)
+	}
+	if !strings.Contains(sql, "LIMIT 1 BY `TraceId`, `SpanId`") {
+		t.Errorf("SetUnion missing identity dedup `LIMIT 1 BY (TraceId, SpanId)`: %q", sql)
+	}
+	// Both arms should still be wrapped in parens — each is a complete
+	// SELECT joined by the SELECT-level UNION ALL binary.
 	if !strings.Contains(sql, "(SELECT * FROM `otel_traces`)") {
 		t.Errorf("SetUnion arms not parenthesised: %q", sql)
 	}

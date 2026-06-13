@@ -8,22 +8,24 @@
 [4] string = "service.name"
 [5] string = "c"
 -- sql --
-((SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) UNION DISTINCT (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?))) UNION DISTINCT (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?))
+SELECT * FROM ((SELECT * FROM ((SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) UNION ALL (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?))) LIMIT 1 BY `TraceId`, `SpanId`) UNION ALL (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?))) LIMIT 1 BY `TraceId`, `SpanId`
 -- seed --
 CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
     _svc String,
     ResourceAttributes Map(String, String) MATERIALIZED map('service.name', _svc)
 ) ENGINE = MergeTree ORDER BY _svc;
-INSERT INTO otel_traces (_svc) VALUES
-    ('a'),
-    ('b'),
-    ('c'),
-    ('d');
+INSERT INTO otel_traces (TraceId, SpanId, _svc) VALUES
+    ('a0000000000000000000000000000001', '0000000000000001', 'a'),
+    ('a0000000000000000000000000000001', '0000000000000002', 'b'),
+    ('a0000000000000000000000000000001', '0000000000000003', 'c'),
+    ('a0000000000000000000000000000001', '0000000000000004', 'd');
 -- expected_rows --
 [
-  ["a"],
-  ["b"],
-  ["c"]
+  ["a0000000000000000000000000000001", "0000000000000001", "a"],
+  ["a0000000000000000000000000000001", "0000000000000002", "b"],
+  ["a0000000000000000000000000000001", "0000000000000003", "c"]
 ]
 -- chplan --
 SetOperation op=||
