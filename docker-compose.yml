@@ -193,6 +193,14 @@ services:
       # ClickHouse's server-total cap into a mid-stream 502 (k3d run
       # 27277793810).
       CERBERUS_CH_QUERY_MAX_MEMORY: "1073741824"
+      # CERBERUS_EXPERIMENTAL_TS_GRID_RANGE   route rate()-over-range to
+      # ClickHouse's native timeSeriesRateToGrid aggregate (CH >= 25.6,
+      # satisfied by the 25.8 server above) instead of the per-anchor
+      # array fan-out. Default-off in prod (parity is exact to <=1 ULP,
+      # not byte-identical); enabled here so the demo dogfoods the native
+      # path against a real 25.8 server — the compose-smoke crawl is its
+      # first real-CH exercise.
+      CERBERUS_EXPERIMENTAL_TS_GRID_RANGE: "true"
     depends_on:
       clickhouse:
         condition: service_healthy
