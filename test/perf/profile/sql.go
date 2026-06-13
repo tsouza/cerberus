@@ -56,6 +56,15 @@ func planHasRecursiveCTE(plan string) bool {
 // `count()` on a stripped inner level would fail (caught + excluded by the
 // caller). The outer count() still measures the post-CTE result, and the
 // EXPLAIN plan flags still detect the recursive/cross operators.
+// FromSourceLevels is the exported wrapper over [fromSourceLevels] for
+// callers outside the corpus profiler that need the same per-level
+// decomposition — notably the scale-wall pin (test/perf), which counts
+// each level over its own seeded-at-scale table to derive the peak
+// intermediate cardinality. Keeping the decomposition in ONE place means
+// the corpus ratchet and the scale-wall pin agree on what "a pipeline
+// level" is by construction.
+func FromSourceLevels(query string) []string { return fromSourceLevels(query) }
+
 func fromSourceLevels(query string) []string {
 	query = strings.TrimSpace(query)
 	levels := []string{query}
