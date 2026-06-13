@@ -144,7 +144,7 @@ func lowerHistogramValueFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpl
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
 			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
-			{Expr: &chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}}, Alias: s.TimestampColumn},
+			{Expr: chplan.NowNano(), Alias: s.TimestampColumn},
 			{Expr: value, Alias: s.ValueColumn},
 		},
 	}, nil

@@ -349,6 +349,13 @@ func matrixFromSamples(samples []chclient.Sample) []MatrixSample {
 	return out
 }
 
+// maxResolutionPoints caps the returned points per timeseries on a range
+// query: (end-start)/step must not exceed it. Mirrors upstream
+// Prometheus's web/api/v1.queryRange ceiling (sufficient for 60s
+// resolution over a week, or 1h over a year), so Prom clients see
+// identical behaviour.
+const maxResolutionPoints = 11000
+
 func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 	// r.FormValue merges URL query params with POST form-encoded body
 	// (auto-calling ParseForm). Upstream Prometheus accepts these in
@@ -387,7 +394,7 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 	// Placed before the scalar fold so `1+1`-style queries are capped
 	// too (upstream rejects them as well; the check runs before the
 	// engine is consulted).
-	if end.Sub(start)/step > 11000 {
+	if end.Sub(start)/step > maxResolutionPoints {
 		writeError(w, http.StatusBadRequest, ErrBadData,
 			errors.New("exceeded maximum resolution of 11,000 points per timeseries. Try decreasing the query resolution (?step=XX)"))
 		return
@@ -797,14 +804,7 @@ func isMatrixRangeWindow(plan chplan.Node) bool {
 // before CH-now. See the docstring on wrapWithSampleProjection's
 // derived-shape branch for the rationale.
 func synthesizedAnchor() chplan.Expr {
-	return &chplan.Binary{
-		Op:   chplan.OpSub,
-		Left: &chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}},
-		Right: &chplan.FuncCall{
-			Name: "toIntervalNanosecond",
-			Args: []chplan.Expr{&chplan.LitInt{V: 5_000_000_000}},
-		},
-	}
+	return chplan.NowNanoMinusStaleness()
 }
 
 // isDerivedShape reports whether the plan's output schema lacks the

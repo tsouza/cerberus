@@ -1682,7 +1682,7 @@ func timeLiteralExpr(t time.Time) chplan.Expr {
 		Name: "toDateTime64",
 		Args: []chplan.Expr{
 			&chplan.LitString{V: t.UTC().Format("2006-01-02 15:04:05.000000000")},
-			&chplan.LitInt{V: 9},
+			&chplan.LitInt{V: chplan.NanoScale},
 		},
 	}
 }

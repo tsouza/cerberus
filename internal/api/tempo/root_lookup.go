@@ -257,7 +257,7 @@ func buildRootLookupPlan(s schema.Traces, traceIDs []string) chplan.Node {
 		Projections: []chplan.Projection{
 			{Expr: &chplan.ColumnRef{Name: "RootSpanName"}, Alias: "MetricName"},
 			{Expr: attrsMap, Alias: "Attributes"},
-			{Expr: &chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}}, Alias: "TimeUnix"},
+			{Expr: chplan.NowNano(), Alias: "TimeUnix"},
 			{Expr: &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{traceDurationNs}}, Alias: "Value"},
 		},
 	}

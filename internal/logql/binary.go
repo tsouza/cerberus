@@ -434,7 +434,7 @@ func logSampleColumns(inner chplan.Node, s schema.Logs) logSampleShape {
 	return logSampleShape{
 		metricName: &chplan.LitString{V: ""},
 		attrsCol:   s.ResourceAttributesColumn,
-		timeExpr:   &chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}},
+		timeExpr:   chplan.NowNano(),
 	}
 }
 

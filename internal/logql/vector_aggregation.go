@@ -456,7 +456,7 @@ func wrapVectorAggregateForSample(agg *chplan.Aggregate, e *syntax.VectorAggrega
 		valueCol      = "Value"
 	)
 
-	tsExpr := chplan.Expr(&chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}})
+	tsExpr := chplan.NowNano()
 	if rangeBucketed {
 		tsExpr = &chplan.ColumnRef{Name: bucketAlias}
 	}
