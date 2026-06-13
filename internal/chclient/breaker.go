@@ -174,6 +174,38 @@ func (b *breaker) allow() bool {
 	}
 }
 
+// peek reports the breaker's current lifecycle phase as a stable string
+// WITHOUT mutating state — in particular without admitting or reserving a
+// HALF-OPEN probe (unlike allow, which transitions OPEN→HALF-OPEN and
+// reserves the probe). It exists for the solver's pre-flight: a routed
+// K-shard fan-out must fail fast when the breaker is not CLOSED rather than
+// burn the single recovery probe on a doomed request, so the peek is
+// strictly read-only.
+//
+// It does evaluate the OPEN backoff window so a caller sees "would admit a
+// probe" (half-open) once the interval has elapsed — but it does NOT take
+// the slot; allow still owns the transition. The returned strings are the
+// stable vocabulary "closed" / "open" / "half-open".
+func (b *breaker) peek() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	switch b.state {
+	case stateClosed:
+		return "closed"
+	case stateOpen:
+		// The backoff has elapsed but no probe is reserved yet — report
+		// half-open so the solver still defers to route-A probing.
+		if b.nowOrTime().Sub(b.openedAt) >= breakerOpenInterval {
+			return "half-open"
+		}
+		return "open"
+	case stateHalfOpen:
+		return "half-open"
+	default:
+		return "closed"
+	}
+}
+
 // record observes the outcome of a CH-touching call and advances
 // the breaker state machine accordingly. ctx is the request context
 // the call ran under; err is the post-CH error (nil on success,
@@ -249,6 +281,26 @@ func (b *breaker) record(ctx context.Context, err error) {
 		// A cancelled HALF-OPEN probe is no verdict either way —
 		// release the probe slot so the next allow() admits a fresh
 		// probe instead of stalling the state machine forever.
+		if b.state == stateHalfOpen {
+			b.probeInFlight = false
+		}
+		return
+	}
+
+	// PER-REQUEST BREAKER DEDUP. A failure that survived the neutral arms
+	// above is a real CH-health signal that WOULD advance the counter. If the
+	// request installed a dedup latch (the solver's routed K-shard fan-out via
+	// WithBreakerDedup), only the FIRST real failure to win the CAS counts;
+	// every sibling failure is treated as breaker-NEUTRAL so K concurrent
+	// shard opens against a degraded CH advance the shared counter by exactly
+	// 1, not by K. Route-A requests install no latch (claim() returns true on
+	// a nil latch), so their counting is byte-unchanged. The neutral sibling
+	// still drives the half-open probe slot consistently — it releases an
+	// in-flight probe rather than corrupting the state machine, exactly as a
+	// cancellation would.
+	if err != nil && !breakerDedupFromContext(ctx).claim() {
+		b.mu.Lock()
+		defer b.mu.Unlock()
 		if b.state == stateHalfOpen {
 			b.probeInFlight = false
 		}
