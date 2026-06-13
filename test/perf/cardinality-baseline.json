@@ -6150,6 +6150,16 @@
     "max_recursion_depth": 3
   },
   {
+    "fixture": "traceql/select_nested_set_drilldown_limited",
+    "fan_factor": 1,
+    "scan_rows": 8,
+    "peak_intermediate": 8,
+    "has_cross_join": false,
+    "has_array_join": true,
+    "has_recursive_cte": true,
+    "max_recursion_depth": 8
+  },
+  {
     "fixture": "traceql/select_nested_set_drilldown_structure",
     "fan_factor": 1,
     "scan_rows": 2,

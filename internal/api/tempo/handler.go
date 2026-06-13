@@ -29,6 +29,7 @@ import (
 	"github.com/tsouza/cerberus/internal/optimizer"
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/telemetry"
+	traceql_lower "github.com/tsouza/cerberus/internal/traceql"
 )
 
 // tracer emits the `parse` pipeline-stage span before the TraceQL
@@ -297,6 +298,12 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 	spss := positiveIntParam(r, "spss", DefaultSpansPerSpanSet)
 
 	ctx := r.Context()
+	// Thread the response trace limit into lowering so the nested-set
+	// numbering walk only numbers the traces this response will keep —
+	// without it the structure-tab `select(nestedSet*)` query numbers
+	// every matched trace and peaks past the per-query memory cap (#103).
+	// No-op for queries that don't carry a nested-set select.
+	ctx = traceql_lower.WithSearchTraceLimit(ctx, limit)
 	// Engine.Query runs parse → lower → wrap-projection → optimize →
 	// emit → execute. The TraceQL adapter (h.lang) owns the parser
 	// dispatch + wrap-projection so the post-engine response pivot

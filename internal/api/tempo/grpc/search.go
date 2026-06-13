@@ -10,6 +10,7 @@ import (
 
 	"github.com/tsouza/cerberus/internal/api/tempo"
 	"github.com/tsouza/cerberus/internal/chclient"
+	"github.com/tsouza/cerberus/internal/traceql"
 )
 
 // searchFrameSize caps the number of TraceSearchMetadata entries
@@ -69,6 +70,17 @@ func (s *Service) Search(req *tempopb.SearchRequest, stream tempopb.StreamingQue
 	}
 
 	ctx := stream.Context()
+
+	// Thread the response trace limit into lowering so the nested-set
+	// numbering walk bounds to the traces this stream will keep — same
+	// memory bound the HTTP /api/search path applies (#103). req.Limit==0
+	// falls back to the documented default so the bound matches the
+	// TruncateSummaries default below.
+	limit := int(req.Limit)
+	if limit <= 0 {
+		limit = tempo.DefaultSearchLimit
+	}
+	ctx = traceql.WithSearchTraceLimit(ctx, limit)
 
 	// Open the streaming cursor against the lowered TraceQL plan.
 	// cursor.Close is deferred so a client cancellation (ctx.Done()

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -36,7 +37,19 @@ func TestLower(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Parse(%q): %v", query, err)
 		}
-		plan, err := traceql.Lower(context.Background(), expr, s)
+		// Optional `search_limit:` section threads /api/search's response
+		// trace limit into lowering (via the same ctx key the handler
+		// uses), so a fixture can pin the bounded nested-set numbering
+		// shape (#103). Absent ⇒ unbounded, today's behaviour.
+		ctx := context.Background()
+		if v, ok := c.Section("search_limit"); ok {
+			n, err := strconv.Atoi(strings.TrimSpace(v))
+			if err != nil {
+				t.Fatalf("fixture %s: bad search_limit %q: %v", c.Name, v, err)
+			}
+			ctx = traceql.WithSearchTraceLimit(ctx, n)
+		}
+		plan, err := traceql.Lower(ctx, expr, s)
 		if err != nil {
 			t.Fatalf("Lower(%q): %v", query, err)
 		}
