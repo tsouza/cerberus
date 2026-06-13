@@ -67,8 +67,8 @@ func TestRateRangeASOF_MatrixParityVsFanout(t *testing.T) {
 	for _, fn := range []string{"rate", "increase", "delta"} {
 		fn := fn
 		t.Run(fn, func(t *testing.T) {
-			// Subtests share the parent's chDB handle (the deferred Close
-			// fires only after all subtests return), so they run serially.
+			// Subtests share the parent's chDB handle (its Close runs via
+			// defer, after all subtests return), so they run serially.
 			// Keyed plan -> ASOF emitter; keyless plan -> fan-out emitter.
 			// Both read the SAME single-series data; the keyed plan groups
 			// on a column whose value is constant, so the two value streams
