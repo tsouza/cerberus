@@ -42,7 +42,7 @@ import "time"
 //
 // Required ClickHouse setting. `timeSeriesRateToGrid` is experimental: a
 // query carrying this node must run with
-// `allow_experimental_ts_to_grid_aggregate_function=1`. The engine
+// `allow_experimental_time_series_aggregate_functions=1`. The engine
 // detects the node in the emitted plan and stamps that setting onto the
 // per-query ClickHouse context (see internal/engine + internal/chclient),
 // so unrelated queries never carry the experimental knob.

@@ -155,7 +155,7 @@ the SQL array machinery leaves at high cardinality. See
   v25.6.0. On an older server (the compose / e2e deployment runs **24.8**) a
   native-path query errors with `UNKNOWN_FUNCTION` — so the flag **must stay
   OFF** there. The experimental ClickHouse setting
-  `allow_experimental_ts_to_grid_aggregate_function=1` is sent **only on the
+  `allow_experimental_time_series_aggregate_functions=1` is sent **only on the
   queries that actually use the native node** (cerberus detects a
   `RangeWindowNative` in the emitted plan and stamps the setting per-query), so
   enabling the flag never adds an unknown setting to unrelated queries.

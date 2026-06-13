@@ -10,13 +10,36 @@ import "context"
 // that has the function gated off; UNKNOWN_FUNCTION on a build < 25.6
 // that lacks it entirely).
 //
+// The spelling is the CANONICAL setting name, not the deprecated alias.
+// ClickHouse PR #80590 (the one PR that introduced the function family)
+// first named the gate `allow_experimental_ts_to_grid_aggregate_function`,
+// then RENAMED it to `allow_experimental_time_series_aggregate_functions`
+// (commit 5e0c5c5) before the v25.6 release — so every RELEASED build that
+// has timeSeriesRateToGrid recognises the canonical name. The old spelling
+// survives only as a backward-compat alias (`system.settings` reports it
+// as `alias_for => allow_experimental_time_series_aggregate_functions` on
+// 25.8) that ClickHouse may drop in a future release. The server's own
+// error hint names the canonical setting:
+//
+//	Code: 63 ... Aggregate function timeSeriesRateToGrid is experimental
+//	and disabled by default. Enable it with setting
+//	allow_experimental_time_series_aggregate_functions.
+//
+// Sending the canonical name is therefore both correct (matches the
+// server-side spelling) and forward-safe (it is the non-alias setting that
+// outlives the alias). We do NOT also send the old alias: an unknown
+// setting name is itself a hard error (UNKNOWN_SETTING, code 115), so
+// sending the deprecated alias would break the moment ClickHouse retires
+// it — and it buys nothing, since the canonical name exists wherever the
+// function does.
+//
 // It is a named constant so a single test can pin the exact spelling: if
-// a future ClickHouse release renames the setting, that test fails
+// a future ClickHouse release renames the setting again, that test fails
 // loudly rather than the rename silently slipping past (chDB does not
-// enforce the gate, so the chdb parity lane alone cannot catch a
-// mis-spelled or omitted setting — see the package note in
-// internal/chsql/range_window_native.go).
-const SettingExperimentalTSGridAggregate = "allow_experimental_ts_to_grid_aggregate_function"
+// enforce the gate the same way, and registers the alias too, so the chdb
+// parity lane alone cannot catch a mis-spelled or omitted setting — see
+// the package note in internal/chsql/range_window_native.go).
+const SettingExperimentalTSGridAggregate = "allow_experimental_time_series_aggregate_functions"
 
 type tsGridSettingKeyType struct{}
 

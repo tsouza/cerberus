@@ -76,7 +76,7 @@ var nativeTSGridFn = map[string]string{
 //     emitWindowedArrayExtrapolatedMatrix so the wrapping Aggregate's
 //     per-step GROUP BY (ColumnRef{TimestampColumn}) resolves.
 //
-// The experimental setting `allow_experimental_ts_to_grid_aggregate_function=1`
+// The experimental setting `allow_experimental_time_series_aggregate_functions=1`
 // is NOT emitted here (it is not SQL the plan carries) — the engine
 // detects the RangeWindowNative node in the plan and stamps the setting
 // onto the per-query ClickHouse context (see internal/engine +

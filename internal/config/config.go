@@ -55,7 +55,7 @@ type Config struct {
 	// compatibility lanes all run ClickHouse 24.8, which lacks the
 	// function entirely (a native-path query 500s there with
 	// UNKNOWN_FUNCTION). The experimental setting
-	// `allow_experimental_ts_to_grid_aggregate_function=1` is sent only
+	// `allow_experimental_time_series_aggregate_functions=1` is sent only
 	// on the queries that actually use the native node (see
 	// internal/engine), so unrelated queries on a 24.8 server are never
 	// touched. First cut is rate-only; increase / delta stay on the

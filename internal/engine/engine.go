@@ -131,7 +131,7 @@ func strategyFor(meta Meta) string {
 // optimized plan contains a chplan.RangeWindowNative node (the
 // experimental timeSeriesRateToGrid lowering), mark the ctx with
 // chclient.WithTSGridSetting so the chclient query path adds
-// `allow_experimental_ts_to_grid_aggregate_function=1` to THAT query's
+// `allow_experimental_time_series_aggregate_functions=1` to THAT query's
 // settings. Plans without the native node return ctx unchanged, so the
 // experimental setting never rides an unrelated query (a plain unknown
 // setting can itself error on a ClickHouse < 25.6).

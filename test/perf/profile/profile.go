@@ -133,13 +133,36 @@ type Profiler struct {
 	sess *chdb.Session
 }
 
+// experimentalTSGridSetting is the canonical ClickHouse setting that
+// gates the experimental timeSeries*ToGrid aggregate family. The profiler
+// EXPLAINs + count()s every executable fixture's SQL, including the
+// native-rate fixture whose SQL emits timeSeriesRateToGrid — without the
+// gate enabled on the session, that fixture's EXPLAIN errors with Code 63
+// (experimental-and-disabled), so the profiler must enable it session-wide
+// exactly as the round-trip lane does (test/spec/runner_chdb.go). It is
+// harmless for every other fixture: it gates only those aggregates, which
+// no other fixture emits. Kept in lock-step with the canonical spelling in
+// chclient.SettingExperimentalTSGridAggregate (ClickHouse PR #80590 renamed
+// the gate from `..._ts_to_grid_aggregate_function` before the v25.6
+// release; the old name survives only as an alias).
+const experimentalTSGridSetting = "allow_experimental_time_series_aggregate_functions"
+
 // NewProfiler opens a fresh ephemeral chDB session. Caller must Close.
 func NewProfiler() (*Profiler, error) {
 	sess, err := chdb.NewSession("")
 	if err != nil {
 		return nil, fmt.Errorf("open chdb session: %w", err)
 	}
-	return &Profiler{sess: sess}, nil
+	p := &Profiler{sess: sess}
+	// Enable the experimental timeSeries*ToGrid gate so the native-rate
+	// fixture's SQL EXPLAINs + counts instead of erroring (Code 63). The
+	// chDB substrate is 25.8, well past the v25.6 floor where the family
+	// (and the canonical setting) landed.
+	if err := p.exec("SET " + experimentalTSGridSetting + " = 1"); err != nil {
+		p.Close()
+		return nil, fmt.Errorf("enable experimental ts-grid aggregate: %w", err)
+	}
+	return p, nil
 }
 
 // Close tears down the session and its temp dir.

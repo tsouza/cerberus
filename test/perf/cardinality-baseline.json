@@ -3440,6 +3440,16 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "promql/native_rate_range_step",
+    "fan_factor": 1.5,
+    "scan_rows": 12,
+    "peak_intermediate": 18,
+    "has_cross_join": false,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "promql/negative_at",
     "fan_factor": 1,
     "scan_rows": 1,

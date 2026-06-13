@@ -172,7 +172,12 @@ func TestQuerySettings_TSGridSetting(t *testing.T) {
 // cannot catch a mis-spelled or omitted setting).
 func TestSettingExperimentalTSGridAggregate_ExactName(t *testing.T) {
 	t.Parallel()
-	const want = "allow_experimental_ts_to_grid_aggregate_function"
+	// The CANONICAL name (the rename target), not the deprecated
+	// `allow_experimental_ts_to_grid_aggregate_function` alias. See the
+	// constant's doc comment for the ClickHouse PR #80590 rename history:
+	// the canonical name is what every released build that has the function
+	// recognises, and what the server's experimental-gate error hint names.
+	const want = "allow_experimental_time_series_aggregate_functions"
 	if SettingExperimentalTSGridAggregate != want {
 		t.Errorf("SettingExperimentalTSGridAggregate = %q; want %q", SettingExperimentalTSGridAggregate, want)
 	}
