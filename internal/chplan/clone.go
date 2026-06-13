@@ -122,6 +122,8 @@ func cloneCompositeNode(n Node) Node {
 		c.Right = CloneNode(v.Right)
 		c.Match.Labels = cloneStrings(v.Match.Labels)
 		return &c
+	case *NaryVectorSetOp:
+		return cloneNaryVectorSetOp(v)
 	case *HistogramQuantile:
 		c := *v
 		c.Input = CloneNode(v.Input)
@@ -172,6 +174,19 @@ func cloneCompositeNode(n Node) Node {
 	default:
 		panic(fmt.Sprintf("chplan.CloneNode: unhandled Node type %T — extend the switch in clone.go", n))
 	}
+}
+
+// cloneNaryVectorSetOp deep-copies a linearised N-ary vector set-op node,
+// cloning every arm and the match-modifier label slice. Split out of
+// cloneCompositeNode so that switch stays within the funlen budget.
+func cloneNaryVectorSetOp(v *NaryVectorSetOp) Node {
+	c := *v
+	c.Arms = make([]Node, len(v.Arms))
+	for i, arm := range v.Arms {
+		c.Arms[i] = CloneNode(arm)
+	}
+	c.Match.Labels = cloneStrings(v.Match.Labels)
+	return &c
 }
 
 // cloneExpr returns a deep copy of e. Exhaustive over every concrete Expr

@@ -16,38 +16,32 @@
 //     evaluates such CTEs INLINE at every reference, so the EXECUTION fan-out
 //     survived even though the SQL text went linear. This harness caught that
 //     (filed #88).
-//   - Gen #814 (current main): replaced the per-arm CTE with a single-pass
-//     `A UNION ALL B` tagging each row `0/1 AS _setop_side`, then
+//   - Gen #814 (superseded for chains >2): replaced the per-arm CTE with a
+//     single-pass `A UNION ALL B` tagging each row `0/1 AS _setop_side`, then
 //     `max(_setop_side=0) OVER (PARTITION BY <sig>) AS _setop_has_left` and a
 //     final `WHERE _setop_side = 0 OR _setop_has_left = 0`. Each BINARY set-op
 //     now scans both arms EXACTLY ONCE — the data re-execution is gone, and the
 //     peak intermediate is now a tiny bounded constant (3 -> 5 -> 9 rows across
 //     K=2/4/8, the disjoint-arm row count, NOT a fan-out). The cardinality axis
-//     is genuinely flat.
+//     is genuinely flat. But `m0 or m1 or m2 ...` still lowered LEFT-ASSOC into
+//     K nested binary levels, each wrapping the prior level's whole relation in
+//     ANOTHER `UNION ALL` + window-partition pass, so the COMPUTE (wall) tracked
+//     K structurally (~2.6x/level) even though the intermediate stayed tiny.
+//   - Gen #90 (current main): N-ARY LINEARISATION. The optimizer's
+//     FlattenVectorSetOp rule collapses the left-assoc nested binary chain into
+//     ONE chplan.NaryVectorSetOp, and the emitter renders it as a SINGLE
+//     `UNION ALL` over all K arms with per-arm `_setop_side` tags + ONE
+//     `min(_setop_side) OVER (PARTITION BY <sig>)` window over the combined
+//     relation. The whole chain is now O(rows) in one scan — the K nested
+//     window passes are gone — so the wall axis is genuinely (sub-)linear and
+//     the quarantine is removed.
 //
 // THE REAL MULTIPLIER is the chain depth K. Param = K, swept 2 -> 4 -> 8.
 //
-// RESIDUAL FINDING (this harness, on post-#814 main): the EXECUTION wall-time
-// is STILL super-linear — measured on in-process chDB, ~2.6x PER LEVEL
-// (K=2/4/8 -> ~24ms / 71ms / 327ms, a ~13.7x blow-up over the 4x K sweep)
-// while the intermediate stays at 3 -> 9 rows. #814 made each BINARY set-op
-// single-pass, but `m0 or m1 or m2 ...` still lowers LEFT-ASSOCIATIVELY into K
-// nested binary levels, and each level wraps the prior level's whole relation
-// in ANOTHER `UNION ALL` + window-partition pass. So CH re-scans the
-// accumulated inner result at every level: each level is individually
-// single-pass and the row count stays tiny, but the COMPUTE tracks K
-// structurally. The static fan-out linter (#811) does not cover this shape (it
-// keys on cross-join / arrayJoin-into-join / uncapped-recursion /
-// correlated-subquery, not depth-of-nesting), so only this harness's chDB wall
-// sweep surfaces it.
-//
-// The true fix is N-ary linearisation (#90): flatten the left-assoc nested
-// binary chain into ONE single-pass — a single `UNION ALL` over all K arms with
-// per-arm side tags, one window partition over the combined relation — so the
-// whole chain is O(rows) in one scan instead of O(rows x K) nested passes.
-// Until #90 lands the wall axis is QUARANTINED via KnownSuperlinear (the
-// cardinality axis still hard-gates), so the harness stays green-on-main
-// without weakening the assertion — the violation is logged loudly every run.
+// Because the harness now runs the chain through the optimizer (so the flatten
+// rule fires), both axes — peak intermediate cardinality AND wall time — hard-
+// gate. The static fan-out linter (#811) does not cover depth-of-nesting, so
+// this harness's chDB sweep is the gate that proves the linearisation holds.
 package scaling
 
 import (
@@ -60,6 +54,7 @@ import (
 	"github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/tsouza/cerberus/internal/chsql"
+	"github.com/tsouza/cerberus/internal/optimizer"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
 )
@@ -83,17 +78,10 @@ func init() {
 		// exponential re-materialisation regression blows straight past.
 		CardinalityBound: float64(maxK + 2),
 		SubLinearSlack:   0.9,
-		// Post-#814 the data re-execution is gone (each binary set-op is
-		// single-pass; intermediate stays 3->9 rows) but the wall is still
-		// super-linear: `m0 or m1 or ...` lowers left-assoc into K nested
-		// binary levels, each wrapping the prior relation in another
-		// UNION-ALL+window pass, so compute tracks K (~2.6x/level).
-		// Quarantine the wall axis as a documented, tracked finding (the
-		// cardinality axis below still hard-gates); see the package doc above
-		// for the full diagnosis. True fix tracked as #90 (N-ary flatten).
-		KnownSuperlinear: "set-op left-assoc K-level nesting: post-#814 each binary `or` is single-pass " +
-			"and the intermediate is bounded, but K nested levels each re-scan the accumulated inner " +
-			"relation, so wall ~2.6x/level. True fix = N-ary single-pass flatten (#90).",
+		// Post-#90 the chain flattens into ONE NaryVectorSetOp single-pass
+		// (one UNION ALL over all K arms + one window partition), so both the
+		// intermediate (3->9 rows, disjoint arms) AND the wall are (sub-)linear
+		// in K. No quarantine — both axes hard-gate. See the package doc above.
 		Seed: func() string {
 			return setOpChainSeed(maxK)
 		},
@@ -174,6 +162,11 @@ func emitSetOpChainSQL(t *testing.T, op string, k int) (string, []any) {
 	if err != nil {
 		t.Fatalf("LowerAt(%q): %v", q, err)
 	}
+	// Run the optimizer so FlattenVectorSetOp (#90) linearises the left-assoc
+	// nested binary chain into one NaryVectorSetOp single-pass — the whole
+	// point of this harness post-#90. Mirrors the prom handler's pipeline
+	// (LowerAt -> optimizer.Default().Run -> chsql.Emit).
+	plan = optimizer.Default().Run(context.Background(), plan)
 	sqlText, args, err := chsql.Emit(context.Background(), plan)
 	if err != nil {
 		t.Fatalf("Emit(%q): %v", q, err)

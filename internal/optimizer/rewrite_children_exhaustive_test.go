@@ -106,8 +106,9 @@ func allNodeCases() []nodeExhaustivenessCase {
 		//     two-child path. ---
 		{"MetricsCompare", &chplan.MetricsCompare{Inner: sentinelChild(), RootLookup: sentinelChild()}, false},
 
-		// --- multi-arm interior node ---
+		// --- multi-arm interior nodes ---
 		{"UnionAll", &chplan.UnionAll{Inputs: []chplan.Node{sentinelChild(), sentinelChild()}}, false},
+		{"NaryVectorSetOp", &chplan.NaryVectorSetOp{Arms: []chplan.Node{sentinelChild(), sentinelChild()}}, false},
 
 		// --- Left/Right binary interior nodes ---
 		{"CrossJoin", &chplan.CrossJoin{Left: sentinelChild(), Right: sentinelChild()}, false},
@@ -122,7 +123,7 @@ func allNodeCases() []nodeExhaustivenessCase {
 // implementations. Cross-checked against
 // `grep -rn 'planNode()' internal/chplan/*.go`. Bump this (and add a table
 // row + a rewriteChildren arm) when a new Node type lands.
-const expectedNodeTypeCount = 26
+const expectedNodeTypeCount = 27
 
 // TestRewriteChildren_TableCoversEveryNodeType is the count guard. If a new
 // chplan.Node type is added without a corresponding allNodeCases() row, the

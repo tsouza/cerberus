@@ -110,6 +110,16 @@ func NewWithBatches(batches ...Batch) *Driver {
 //     nested Projects. Only one pass changes anything in the current
 //     rule set, but the FixedPoint strategy lets additional rules join
 //     the batch without changing wiring.
+//   - "optimizer.set-op-linearize" (FixedPoint) — FlattenVectorSetOp
+//     collapses a left-assoc chain of the SAME associative vector
+//     set-op (`a or b or c …` / `a and b and c …`) into one N-ary
+//     NaryVectorSetOp so the emitter renders ONE windowed single-pass
+//     instead of one per nesting level. Runs last so the per-arm
+//     subtrees have already been rewritten (pushdown / projection)
+//     before they're frozen into N-ary arms. Iterates bottom-up: each
+//     level absorbs the already-flattened left child until the whole
+//     chain is one node. Parity-preserving — changes execution shape,
+//     not results; `unless` is skipped (not associative).
 //
 // Order matters across batches: the analyzer batch runs first
 // (must-run); the heuristic constant fold then canonicalises bool
@@ -136,6 +146,11 @@ func Default() *Driver {
 			Name:     "optimizer.projection",
 			Strategy: FixedPoint(defaultMaxIterations),
 			Rules:    []Rule{ProjectionPushdown{}},
+		},
+		Batch{
+			Name:     "optimizer.set-op-linearize",
+			Strategy: FixedPoint(defaultMaxIterations),
+			Rules:    []Rule{FlattenVectorSetOp{}},
 		},
 	)
 }
@@ -493,6 +508,25 @@ func rewriteIrregularNode(n chplan.Node, fn func(chplan.Node) (chplan.Node, bool
 		}
 		cp := *v
 		cp.Inputs = newInputs
+		return &cp, true, true
+	case *chplan.NaryVectorSetOp:
+		// Recurse into each arm so rules already applied to the binary
+		// VectorSetOp's Left / Right children keep firing once the
+		// flatten rule has linearised the chain into N arms.
+		newArms := make([]chplan.Node, len(v.Arms))
+		ch := false
+		for i, arm := range v.Arms {
+			newArm, c := fn(arm)
+			if c {
+				ch = true
+			}
+			newArms[i] = newArm
+		}
+		if !ch {
+			return v, false, true
+		}
+		cp := *v
+		cp.Arms = newArms
 		return &cp, true, true
 	case *chplan.MetricsCompare:
 		// Inner is the always-present child; RootLookup is an optional
