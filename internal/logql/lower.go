@@ -941,11 +941,12 @@ func regexpMergeLabels(prev chplan.Expr, s schema.Logs, pattern string) (chplan.
 //     preserved by mark order, which [wrapLabelsWithMarks] folds into a
 //     first-match-wins multiIf.
 //
-// Only duration filters currently produce marks: string filters never
-// error in reference Loki, numeric filters lower through
-// `toFloat64OrZero` (no abort, no mark — a known narrow divergence from
-// reference, which stamps LabelFilterErr on a non-numeric value), and
-// bytes filters still lower through bare `parseReadableSize`.
+// Duration, numeric, and bytes filters all produce marks: each parses
+// its label value with a conversion that reference Loki keeps-and-marks
+// on rejection (time.ParseDuration / strconv.ParseFloat /
+// humanize.ParseBytes — see durationLabelFilterExpr /
+// numericLabelFilterExpr / bytesLabelFilterExpr). String filters never
+// error in reference Loki, so they contribute no mark.
 func labelFiltererLower(lf loglib.LabelFilterer, s schema.Logs, labelsExpr chplan.Expr) (chplan.Expr, []labelFilterMark, error) {
 	switch v := lf.(type) {
 	case *loglib.StringLabelFilter:
@@ -979,12 +980,14 @@ func labelFiltererLower(lf loglib.LabelFilterer, s schema.Logs, labelsExpr chpla
 		return &chplan.Binary{Op: op, Left: left, Right: right},
 			append(leftMarks, rightMarks...), nil
 	case *loglib.NumericLabelFilter:
-		return numericLabelFilterExpr(v, s, labelsExpr), nil, nil
+		pred, mark := numericLabelFilterExpr(v, s, labelsExpr)
+		return pred, []labelFilterMark{mark}, nil
 	case *loglib.DurationLabelFilter:
 		pred, mark := durationLabelFilterExpr(v, s, labelsExpr)
 		return pred, []labelFilterMark{mark}, nil
 	case *loglib.BytesLabelFilter:
-		return bytesLabelFilterExpr(v, s, labelsExpr), nil, nil
+		pred, mark := bytesLabelFilterExpr(v, s, labelsExpr)
+		return pred, []labelFilterMark{mark}, nil
 	case *loglib.IPLabelFilter:
 		// `| addr = ip("...")` / `!= ip("...")` — no marks: reference
 		// Loki's IPLabelFilter never stamps `__error__` itself (its
@@ -998,20 +1001,49 @@ func labelFiltererLower(lf loglib.LabelFilterer, s schema.Logs, labelsExpr chpla
 
 // numericLabelFilterExpr lowers `| field > 5` / `>= 5` / `< 5` / `<= 5`
 // / `= 5` / `!= 5` to a numeric comparison on the parsed Float64 value
-// of the named label. The label value is interpreted via
-// `toFloat64OrZero(labelsExpr['<name>'])` — matching Loki's runtime
-// `strconv.ParseFloat` shape — and compared with the literal value at
-// CH evaluation time so a non-parseable value falls through as 0.
-func numericLabelFilterExpr(f *loglib.NumericLabelFilter, s schema.Logs, labelsExpr chplan.Expr) chplan.Expr {
-	lhs := &chplan.FuncCall{
-		Name: "toFloat64OrZero",
-		Args: []chplan.Expr{structuredOrStreamLookupOnMap(s, labelsExpr, f.Name)},
+// of the named label.
+//
+// Reference per-row semantics
+// (pkg/logql/log/label_filter.go::(*NumericLabelFilter).Process, which
+// calls strconv.ParseFloat) mirror the duration filter exactly:
+//
+//   - label absent → the row is DROPPED (predicate false), no error.
+//   - label present but strconv.ParseFloat rejects the value → the row
+//     is KEPT (predicate true) and `__error__="LabelFilterErr"` +
+//     `__error_details__` are stamped — the returned mark carries that
+//     stamping event for [wrapLabelsWithMarks].
+//   - otherwise → compare the parsed value against the literal.
+//
+// The parse is the regex-gated [newNumericParse] shape so an
+// unparseable value keeps-and-marks the row instead of silently
+// falling through as 0 (the prior `toFloat64OrZero` behaviour diverged
+// from reference, which stamps LabelFilterErr).
+func numericLabelFilterExpr(f *loglib.NumericLabelFilter, s schema.Logs, labelsExpr chplan.Expr) (chplan.Expr, labelFilterMark) {
+	access := structuredOrStreamLookupOnMap(s, labelsExpr, f.Name)
+	parse := newNumericParse(access)
+	exists := labelPresenceOnMap(s, labelsExpr, f.Name)
+	pred := &chplan.FuncCall{
+		Name: "multiIf",
+		Args: []chplan.Expr{
+			notExpr(exists), &chplan.LitBool{V: false},
+			notExpr(parse.valid), &chplan.LitBool{V: true},
+			&chplan.Binary{
+				Op:    labelFilterOp(f.Type),
+				Left:  parse.value,
+				Right: &chplan.LitFloat{V: f.Value},
+			},
+		},
 	}
-	return &chplan.Binary{
-		Op:    labelFilterOp(f.Type),
-		Left:  lhs,
-		Right: &chplan.LitFloat{V: f.Value},
+	mark := labelFilterMark{
+		cond: &chplan.Binary{
+			Op:    chplan.OpAnd,
+			Left:  exists,
+			Right: notExpr(parse.valid),
+		},
+		kind:    errLabelFilterKind,
+		details: parse.details,
 	}
+	return pred, mark
 }
 
 // durationLabelFilterExpr lowers `| field > 5s` and friends. Loki's
@@ -1065,20 +1097,51 @@ func durationLabelFilterExpr(f *loglib.DurationLabelFilter, s schema.Logs, label
 // bytesLabelFilterExpr lowers `| field > 1KB` and friends. Loki's
 // parser has already converted the right-hand-side spec to a `uint64`
 // byte count; we compare the parsed-from-string byte count against the
-// literal. The label string is parsed with CH's `parseReadableSize`
-// which understands "1KB", "1MiB", "1.5G", etc. — covering the
-// `humanize.ParseBytes` shape Loki's runtime uses. `parseReadableSize`
-// returns Float64 bytes; we cast the right-hand-side accordingly.
-func bytesLabelFilterExpr(f *loglib.BytesLabelFilter, s schema.Logs, labelsExpr chplan.Expr) chplan.Expr {
-	lhs := &chplan.FuncCall{
-		Name: "parseReadableSize",
-		Args: []chplan.Expr{structuredOrStreamLookupOnMap(s, labelsExpr, f.Name)},
+// literal.
+//
+// Reference per-row semantics
+// (pkg/logql/log/label_filter.go::(*BytesLabelFilter).Process, which
+// calls humanize.ParseBytes) mirror the duration filter exactly:
+//
+//   - label absent → the row is DROPPED (predicate false), no error.
+//   - label present but humanize.ParseBytes rejects the value → the row
+//     is KEPT (predicate true) and `__error__="LabelFilterErr"` +
+//     `__error_details__` are stamped — the returned mark carries that
+//     stamping event for [wrapLabelsWithMarks].
+//   - otherwise → compare the parsed byte count against the literal.
+//
+// The parse is the regex-gated [newBytesParse] shape (replicating
+// humanize.ParseBytes's number/unit split) so an unparseable value
+// keeps-and-marks the row instead of silently falling through as 0 (the
+// prior bare `parseReadableSize` behaviour diverged from reference,
+// which stamps LabelFilterErr). The value branch still reads through
+// `parseReadableSize`, which understands "1KB", "1MiB", "1.5G", etc.
+func bytesLabelFilterExpr(f *loglib.BytesLabelFilter, s schema.Logs, labelsExpr chplan.Expr) (chplan.Expr, labelFilterMark) {
+	access := structuredOrStreamLookupOnMap(s, labelsExpr, f.Name)
+	parse := newBytesParse(access)
+	exists := labelPresenceOnMap(s, labelsExpr, f.Name)
+	pred := &chplan.FuncCall{
+		Name: "multiIf",
+		Args: []chplan.Expr{
+			notExpr(exists), &chplan.LitBool{V: false},
+			notExpr(parse.valid), &chplan.LitBool{V: true},
+			&chplan.Binary{
+				Op:    labelFilterOp(f.Type),
+				Left:  parse.value,
+				Right: &chplan.LitFloat{V: float64(f.Value)},
+			},
+		},
 	}
-	return &chplan.Binary{
-		Op:    labelFilterOp(f.Type),
-		Left:  lhs,
-		Right: &chplan.LitFloat{V: float64(f.Value)},
+	mark := labelFilterMark{
+		cond: &chplan.Binary{
+			Op:    chplan.OpAnd,
+			Left:  exists,
+			Right: notExpr(parse.valid),
+		},
+		kind:    errLabelFilterKind,
+		details: parse.details,
 	}
+	return pred, mark
 }
 
 // labelFilterOp maps a LogQL LabelFilterType (the value-comparison enum

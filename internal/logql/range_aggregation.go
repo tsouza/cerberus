@@ -392,9 +392,13 @@ func lowerLogRange(lr *syntax.LogRangeExpr, s schema.Logs, lc lowerCtx) (chplan.
 //  3. the unwrap post-filters then AND-fold against the
 //     conversion-stamped labels (see [applyUnwrapPostFilters]).
 //
-// Only the duration conversions can reject a value under cerberus's
-// lowering today (bare unwrap reads through toFloat64OrZero, bytes
-// through parseReadableSize), so only they contribute a mark.
+// Only the duration conversions can reject a value at the unwrap
+// conversion stage under cerberus's lowering today (bare unwrap reads
+// through toFloat64OrZero, bytes through parseReadableSize), so only
+// they contribute a mark here; the unwrap POST-filters
+// (applyUnwrapPostFilters) route through labelFiltererLower, so numeric
+// and bytes post-filters keep-and-mark per [numericLabelFilterExpr] /
+// [bytesLabelFilterExpr] like the duration ones.
 // hasErrorMarks reports whether the returned labels expression carries
 // any conditional `__error__` stamp — the identity construction uses
 // it to gate the reference engine's error-series grouping bypass.
