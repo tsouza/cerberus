@@ -523,15 +523,6 @@ func aliasedFrag(inner Frag, bareAlias string) Frag {
 	}
 }
 
-// writeSideCol emits `<side>.<col>` where <side> is the unquoted alias
-// (L or R) and <col> is the backtick-quoted column identifier. The
-// unquoted alias matches the legacy emitter's output so existing
-// fixtures that pre-date the Builder port stay stable. Thin shim over
-// qualColFrag so the predicate constructors below can read as Frags.
-func writeSideCol(b *Builder, side, col string) {
-	qualColFrag(side, col)(b)
-}
-
 // vectorMatchPredicateFrag returns a Frag for the join's ON clause.
 //
 //   - default (Labels empty, On false) → L.Attributes = R.Attributes
