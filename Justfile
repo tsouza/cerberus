@@ -221,6 +221,27 @@ update-solver-decision-baseline:
     @echo "Diff of regenerated baseline:"
     @git --no-pager diff --stat test/perf/solver-decision-baseline.json || true
 
+# Regenerate the SCALE-WALL pin baseline — the perf guard for the wall /
+# scan-amplification regression classes the cardinality ratchet is blind to
+# (it pins fan_factor only, so #97's 6x CPU-bound wall regression and the
+# anchor-grid sharding's 8x scan amplification both sailed through it). Seeds
+# a counter table at scale, lowers `sum(rate(http_requests_total[5m]))` on a
+# 1h/15s query_range grid through the real lower -> optimizer -> emit chain,
+# and records two bounds into test/perf/scale-wall-baseline.json: the
+# deterministic peak-intermediate/scan-rows amplification ceiling (PRONG 1)
+# and the in-run query/yardstick wall ratio ceiling (PRONG 2). Both carry
+# headroom over the measured floor (1.5x / 2.5x). Requires libchdb.so
+# (`just chdb-install`). Run this — and REVIEW THE DIFF — only when a bound
+# move is genuinely intended (a real, justified compute-cost increase); a
+# silent loosen is exactly the regression the pin exists to catch. The gating
+# assertion is TestScaleWallPin in the already-required `perf-guards` job.
+update-scale-wall-baseline:
+    @test -f "{{CHDB_INSTALL_PATH}}" || { echo "error: {{CHDB_INSTALL_PATH}} not found — run 'just chdb-install' first; the scale-wall bounds are measured by an in-process chDB run" >&2; exit 1; }
+    UPDATE_SCALE_WALL_BASELINE=1 go test -tags chdb -count=1 -run TestScaleWallPin ./test/perf/
+    @echo
+    @echo "Diff of regenerated baseline:"
+    @git --no-pager diff --stat test/perf/scale-wall-baseline.json || true
+
 # Regenerate the publishable benchmark document (docs/benchmarks.md) from
 # LIVE measurements: optimizer before/after wins, per-construct scaling
 # curves, per-stage Go micro-benchmarks, and end-to-end query latency on a
