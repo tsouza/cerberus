@@ -51,6 +51,10 @@ func allNodeKinds() []chplan.Node {
 			Include: []string{"inst"}, ValueColumn: "Value",
 		},
 		&chplan.VectorSetOp{Left: leaf, Right: &chplan.Scan{Table: "r"}, Match: chplan.VectorMatch{Labels: []string{"job"}}, ValueColumn: "Value"},
+		&chplan.NaryVectorSetOp{
+			Arms: []chplan.Node{leaf, &chplan.Scan{Table: "r"}, &chplan.Scan{Table: "s"}},
+			Op:   chplan.VectorSetOr, Match: chplan.VectorMatch{Labels: []string{"job"}}, ValueColumn: "Value",
+		},
 		&chplan.HistogramQuantile{Input: leaf, Phi: 0.9, GroupBy: []chplan.Expr{expr}, GroupByAliases: []string{"g0"}, BucketCountsColumn: "BucketCounts"},
 		&chplan.HistogramQuantileNative{Input: leaf, Phi: 0.9, GroupBy: []chplan.Expr{expr}, GroupByAliases: []string{"g0"}, ScaleColumn: "Scale"},
 		&chplan.MetricsAggregate{Attr: expr, GroupBy: []chplan.Expr{expr}, GroupByAliases: []string{"g0"}, GroupByDisplayNames: []string{"g"}, Quantiles: []float64{0.5}, Inner: leaf},
@@ -100,7 +104,7 @@ func TestCloneNodeExhaustive(t *testing.T) {
 	// Lock-step guard: every concrete planNode() implementer in chplan must
 	// appear here. When this count drifts, a Node type was added — extend
 	// allNodeKinds AND the CloneNode switch in clone.go.
-	const wantNodeTypes = 26
+	const wantNodeTypes = 27
 	if len(nodes) != wantNodeTypes {
 		t.Fatalf("expected %d Node types, listed %d — a Node type was added: "+
 			"extend allNodeKinds + CloneNode", wantNodeTypes, len(nodes))

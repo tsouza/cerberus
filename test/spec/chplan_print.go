@@ -246,6 +246,12 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 			indent, v.Op, printVectorMatch(v.Match))
 		printNode(b, v.Left, depth+1)
 		printNode(b, v.Right, depth+1)
+	case *chplan.NaryVectorSetOp:
+		fmt.Fprintf(b, "%sNaryVectorSetOp op=%s match=%s arms=%d\n",
+			indent, v.Op, printVectorMatch(v.Match), len(v.Arms))
+		for _, arm := range v.Arms {
+			printNode(b, arm, depth+1)
+		}
 	case *chplan.StructuralJoin:
 		fmt.Fprintf(b, "%sStructuralJoin op=%s", indent, v.Op)
 		if v.MaxDepth != 0 {

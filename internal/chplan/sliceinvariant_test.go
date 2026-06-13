@@ -63,11 +63,15 @@ func TestIsSliceInvariant_UnregisteredKinds(t *testing.T) {
 		}
 	}
 
-	// 26 total node kinds, 9 registered → 17 must be default-denied. If this
+	// 27 total node kinds, 9 registered → 18 must be default-denied. If this
 	// drifts, a node kind was added: decide explicitly whether it is
 	// slice-invariant (extend sliceInvariantKinds + the registered set here)
 	// or not (it falls into the default-deny count).
-	const wantUnregistered = 26 - 9
+	//
+	// NaryVectorSetOp is deliberately default-denied: like VectorSetOp it is
+	// a set-op family node, absent from sliceInvariantKinds until its own
+	// slice-invariance proof + §Parity lanes land.
+	const wantUnregistered = 27 - 9
 	if unregisteredSeen != wantUnregistered {
 		t.Fatalf("expected %d default-denied node kinds, saw %d — a node kind was added; "+
 			"make an explicit slice-invariance decision", wantUnregistered, unregisteredSeen)
