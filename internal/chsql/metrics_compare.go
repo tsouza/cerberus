@@ -155,22 +155,19 @@ func compareValueOut(m *chplan.MetricsCompare) string {
 // The index binds as a positional arg (clickhouse-go interpolates it
 // client-side, so CH sees the constant literal tupleElement requires).
 func compareTupleElementFrag(idx int64) Frag {
-	return func(b *Builder) {
-		b.sb.WriteString("tupleElement(kv, ")
-		b.Arg(idx)
-		b.sb.WriteByte(')')
-	}
+	return Call("tupleElement", BareIdent("kv"), Lit(idx))
 }
 
 // compareCountValueFrag renders `toFloat64(count(?))` with the bound
 // literal 1 — same reducer shape as the other metrics emitters, pinned
 // to Float64 so chclient.Sample.Value scans cleanly.
 func compareCountValueFrag() Frag {
-	return func(b *Builder) {
-		b.sb.WriteString("toFloat64(")
-		_ = b.Expr(&chplan.FuncCall{Name: "count", Args: []chplan.Expr{&chplan.LitInt{V: 1}}})
-		b.sb.WriteByte(')')
-	}
+	return Call(
+		"toFloat64",
+		func(b *Builder) {
+			_ = b.Expr(&chplan.FuncCall{Name: "count", Args: []chplan.Expr{&chplan.LitInt{V: 1}}})
+		},
+	)
 }
 
 // emitMetricsCompare renders the bare (time-collapsed) shape.

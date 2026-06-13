@@ -2,7 +2,6 @@ package chsql
 
 import (
 	"fmt"
-	"strconv"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 )
@@ -105,18 +104,7 @@ func (e *emitter) emitRangeBucketFanout(r *chplan.RangeBucketFanout) error {
 
 	// Membership base (offset-shifted newest anchor) and value base
 	// (unshifted grid anchor). Offset folds onto the membership base only.
-	shiftBase := func(b *Builder) {
-		base := timeOrNowFrag(r.End)
-		if r.Offset != 0 {
-			b.sb.WriteByte('(')
-			base(b)
-			b.sb.WriteString(" - toIntervalNanosecond(")
-			b.sb.WriteString(strconv.FormatInt(r.Offset.Nanoseconds(), 10))
-			b.sb.WriteString("))")
-			return
-		}
-		base(b)
-	}
+	shiftBase := offsetShiftedBaseFrag(timeOrNowFrag(r.End), r.Offset)
 	gridBase := timeOrNowFrag(r.End)
 
 	inner, err := e.subqueryFrag(r.Input)

@@ -86,10 +86,7 @@ func (e *emitter) emitMetricsHistogramOverTime(m *chplan.MetricsHistogramOverTim
 
 	// WHERE <attr> >= 2 — Tempo's runtime drops rows with attr < 2.
 	attrExpr := m.Attr
-	sb.Where(func(b *Builder) {
-		_ = b.Expr(attrExpr)
-		b.sb.WriteString(" >= 2")
-	})
+	sb.Where(Gte(func(b *Builder) { _ = b.Expr(attrExpr) }, InlineLit(int64(2))))
 
 	// GROUP BY <group cols>, bucket.
 	groupFrags := make([]Frag, 0, len(m.GroupBy)+1)
@@ -129,17 +126,14 @@ func (e *emitter) emitMetricsHistogramOverTime(m *chplan.MetricsHistogramOverTim
 // per-attribute bucket arithmetic is otherwise parameter-free.
 func histogramBucketFrag(attr chplan.Expr, isDuration bool) Frag {
 	attrFrag := func(b *Builder) { _ = b.Expr(attr) }
-	return func(b *Builder) {
-		b.sb.WriteString("pow(2, ceil(log2(toFloat64(")
-		attrFrag(b)
-		b.sb.WriteString("))))")
-		if isDuration {
-			// "/ 1e9" — inline divisor (query-shape constant, not user
-			// data); appended via direct write because the surrounding
-			// emitter expects a writer callback, not a Frag.
-			b.sb.WriteString(" / 1000000000")
-		}
+	bucket := Call("pow", InlineLit(int64(2)),
+		Call("ceil", Call("log2", Call("toFloat64", attrFrag))))
+	if isDuration {
+		// "/ 1000000000" — inline divisor (query-shape constant, not user
+		// data) rebasing the nanosecond bucket key into seconds.
+		return Div(bucket, InlineLit(int64(1000000000)))
 	}
+	return bucket
 }
 
 // emitRangeWindowHistogram renders a RangeWindow wrapping a
@@ -277,10 +271,7 @@ func (e *emitter) emitRangeWindowHistogram(r *chplan.RangeWindow, m *chplan.Metr
 	// Push the <attr> >= 2 filter into the inner SELECT so the anchor
 	// fanout doesn't multiply work for rows that drop anyway.
 	attrExpr := m.Attr
-	attrGuard := func(b *Builder) {
-		_ = b.Expr(attrExpr)
-		b.sb.WriteString(" >= 2")
-	}
+	attrGuard := Gte(func(b *Builder) { _ = b.Expr(attrExpr) }, InlineLit(int64(2)))
 	innerSb.Where(attrGuard)
 	// Same Start/End scan-bound pushdown as the non-histogram metrics
 	// emitter — see maybePushInnerScanTimeBounds.
@@ -309,9 +300,7 @@ func (e *emitter) emitRangeWindowHistogram(r *chplan.RangeWindow, m *chplan.Metr
 	}
 	outerSb.Select(Col(bucketAlias))
 	outerSb.Select(Col("anchor_ts"))
-	outerSb.SelectAs(func(b *Builder) {
-		b.sb.WriteString("toFloat64(sum(in_window))")
-	}, valueAlias)
+	outerSb.SelectAs(Call("toFloat64", Call("sum", BareIdent("in_window"))), valueAlias)
 
 	// GROUP BY group aliases + bucket + anchor_ts.
 	groupFrags := make([]Frag, 0, len(groupAliases)+2)

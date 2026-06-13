@@ -2,7 +2,7 @@ package chsql
 
 import (
 	"fmt"
-	"strconv"
+	"time"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 )
@@ -83,18 +83,7 @@ func (e *emitter) emitRangeLWR(r *chplan.RangeLWR) error {
 
 	// Membership base (offset-shifted newest anchor) and value base
 	// (unshifted grid anchor). Offset folds onto the membership base only.
-	shiftBase := func(b *Builder) {
-		base := timeOrNowFrag(r.End)
-		if r.Offset != 0 {
-			b.sb.WriteByte('(')
-			base(b)
-			b.sb.WriteString(" - toIntervalNanosecond(")
-			b.sb.WriteString(strconv.FormatInt(r.Offset.Nanoseconds(), 10))
-			b.sb.WriteString("))")
-			return
-		}
-		base(b)
-	}
+	shiftBase := offsetShiftedBaseFrag(timeOrNowFrag(r.End), r.Offset)
 	gridBase := timeOrNowFrag(r.End)
 
 	inner, err := e.subqueryFrag(r.Input)
@@ -189,24 +178,29 @@ func (e *emitter) emitRangeLWR(r *chplan.RangeLWR) error {
 // and the window width is the staleness lookback rather than a PromQL
 // range-vector `[range]`.
 func lwrAnchorFanoutFrag(gridBase, shiftBase, ts Frag, stepNS, lookbackNS, numAnchors int64) Frag {
-	dist := func(b *Builder) {
-		b.sb.WriteString("dateDiff('nanosecond', ")
-		ts(b)
-		b.sb.WriteString(", ")
-		shiftBase(b)
-		b.sb.WriteByte(')')
+	dist := distBehindAnchorFrag(ts, shiftBase)
+	return Call(
+		"arrayJoin",
+		Call(
+			"arrayMap",
+			Lambda1("i", anchorBaseAtIdxFrag(gridBase, stepNS)),
+			Call(
+				"range",
+				Call("greatest", InlineLit(int64(0)), anchorGridFloorIdxFrag(dist, -lookbackNS, stepNS)),
+				Call("least", InlineLit(numAnchors), anchorGridFloorIdxFrag(dist, 0, stepNS)),
+			),
+		),
+	)
+}
+
+// offsetShiftedBaseFrag renders an anchor base shifted back by a PromQL
+// `offset`: `(<base> - toIntervalNanosecond(<offsetNS>))` when offset is
+// non-zero, or the bare base otherwise. The parens match the membership
+// base the StepGrid Filter applied. Shared by emitRangeLWR and
+// emitRangeBucketFanout.
+func offsetShiftedBaseFrag(base Frag, offset time.Duration) Frag {
+	if offset == 0 {
+		return base
 	}
-	return func(b *Builder) {
-		b.sb.WriteString("arrayJoin(arrayMap(i -> ")
-		gridBase(b)
-		b.sb.WriteString(" - toIntervalNanosecond(i * ")
-		b.sb.WriteString(strconv.FormatInt(stepNS, 10))
-		b.sb.WriteString("), range(greatest(0, ")
-		writeAnchorGridFloorIdx(b, dist, -lookbackNS, stepNS)
-		b.sb.WriteString("), least(")
-		b.sb.WriteString(strconv.FormatInt(numAnchors, 10))
-		b.sb.WriteString(", ")
-		writeAnchorGridFloorIdx(b, dist, 0, stepNS)
-		b.sb.WriteString("))))")
-	}
+	return Paren(Sub(base, Call("toIntervalNanosecond", InlineLit(offset.Nanoseconds()))))
 }
