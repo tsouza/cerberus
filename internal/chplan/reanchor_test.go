@@ -13,7 +13,7 @@ import (
 // matrixWindow builds an unpinned matrix RangeWindow over a leaf scan —
 // the shape the subquery lowerings emit (OuterRange + Step set, Start/End
 // zero, filled by the re-anchor pass).
-func matrixWindow(rang, step time.Duration, outerRange time.Duration) *chplan.RangeWindow {
+func matrixWindow(rang, step, outerRange time.Duration) *chplan.RangeWindow {
 	return &chplan.RangeWindow{
 		Input:           &chplan.Scan{Table: "metrics", Columns: []string{"Value", "TimeUnix"}},
 		Func:            "rate",
