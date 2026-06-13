@@ -183,17 +183,18 @@ func run() error {
 	// the route.
 	traceMux := http.NewServeMux()
 
-	// Sharded-pushdown solver (DARK by default — Mode=single). Built from
-	// the CERBERUS_EVAL_ROUTE knobs and fail-fast validated, then wired with
-	// the data-plane hooks: a GLOBAL connection gate sized from the chclient
-	// pool (MaxOpenConns − reserve) and SHARED across heads, the breaker
-	// peek, the chsql emitter adapter, and the prom admit limiter for the
-	// (P-1) top-up. Under Mode=single the Planner classifies but never
-	// routes, so the Executor stays dormant — this is all dead-weight until
-	// the phase-2 auto flip. A nil *solver.Solver (returned when route="off"
-	// is NOT a thing — single IS the off state) keeps the engine on the
-	// byte-identical pre-solver path; here we always wire it so the shadow
-	// header reports the classification.
+	// Sharded-pushdown solver (ON by default — Mode=auto, the phase-2 flip).
+	// Built from the CERBERUS_EVAL_ROUTE knobs and fail-fast validated, then
+	// wired with the data-plane hooks: a GLOBAL connection gate sized from the
+	// chclient pool (MaxOpenConns − reserve) and SHARED across heads, the
+	// breaker peek, the chsql emitter adapter, and the prom admit limiter for
+	// the (P-1) top-up. Under the default Mode=auto the Planner classifies
+	// every plan and routes the ELIGIBLE, above-threshold ones through the
+	// Executor (route B); everything else fails toward the byte-identical
+	// route A. Operators pin CERBERUS_EVAL_ROUTE=single to disable routing
+	// (the Planner still classifies for the shadow header, but never routes).
+	// We always wire the solver so the additive X-Cerberus-Route-Decision
+	// shadow header reports the classification regardless of mode.
 	evalSolver, err := buildSolver(logger, cfg.ClickHouse, client, promLimiter)
 	if err != nil {
 		return fmt.Errorf("configure solver: %w", err)
@@ -293,9 +294,10 @@ const solverGateReserve = 2
 // fail-fast (an invalid CERBERUS_EVAL_ROUTE / threshold aborts startup). The
 // GLOBAL gate is sized from the chclient pool (MaxOpenConns − reserve) and
 // shared across heads via the single returned *solver.Solver. Under the
-// phase-1 default (Mode=single) everything below is dormant: the Planner
-// classifies for the shadow header but never routes, so the Executor and its
-// gate / breaker / admit hooks are wired but never exercised.
+// phase-2 default (Mode=auto) eligible, above-threshold plans route B through
+// the Executor; everything else fails toward route A. Operators pin
+// CERBERUS_EVAL_ROUTE=single to keep the Executor dormant (the Planner still
+// classifies for the shadow header, but never routes).
 func buildSolver(
 	logger *slog.Logger,
 	chCfg chclient.Config,
@@ -337,7 +339,7 @@ func buildSolver(
 	s := solver.New(cfg, engine.ChsqlEmitter{}, deps)
 
 	logger.Info(
-		"sharded-pushdown solver wired (dark)",
+		"sharded-pushdown solver wired",
 		"mode", cfg.Mode,
 		"gate_cap", gateCap,
 		"parallel", cfg.Parallel,

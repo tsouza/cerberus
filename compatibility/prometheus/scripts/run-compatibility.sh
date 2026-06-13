@@ -8,12 +8,20 @@
 # endpoint-badge compat-score JSON next to it.
 #
 # Per task #68 ("compat is informational" workstream), this harness is
-# report-only: per-case parity diffs no longer fail the run. The
-# upstream tester still exits non-zero when any case diff'd (it has
+# report-only BY DEFAULT: per-case parity diffs no longer fail the run.
+# The upstream tester still exits non-zero when any case diff'd (it has
 # no "report-only" flag), but the wrapping script ignores that exit
 # as long as it can read + score the report. Only hard infrastructure
 # failures (compose-up, build, missing report.json, scorer failure)
 # escalate to a non-zero rc.
+#
+# FAIL_ON_DIFF=1 flips that: ANY per-case parity diff or unexpected
+# failure in report.json becomes a hard non-zero exit. The
+# compatibility/prometheus-forced-route CI job runs with
+# CERBERUS_EVAL_ROUTE=sharded + FAIL_ON_DIFF=1 so the whole-corpus run
+# is the PROOF that route B (the sharded-pushdown solver) is
+# byte-identical to reference Prometheus — not just the 3 chDB-lane
+# fixtures. A single diff under forced routing fails the gate.
 #
 # Tests are RUN_ONCE here. There is no expected-failures allow-list:
 # every diff against reference Prometheus is a real bug to surface and
@@ -202,7 +210,27 @@ mkdir -p "$(dirname "$SCORE")"
 "$SCORER_BIN" -report "$OUTPUT" -score "$SCORE"
 
 echo "==> score written to $SCORE"
-if [ "$TESTER_RC" -ne 0 ]; then
+
+# FAIL_ON_DIFF gate (forced-route proof lane). When set, ANY per-case
+# diff or unexpected failure in report.json is a hard failure — the
+# whole-corpus run must be byte-identical to reference Prometheus.
+# Used by compatibility/prometheus-forced-route, which forces every
+# eligible plan through the sharded-pushdown solver (route B) via
+# CERBERUS_EVAL_ROUTE=sharded. This is the corpus-wide proof, not the
+# 3-fixture chDB lane.
+if [ -n "${FAIL_ON_DIFF:-}" ]; then
+    DIFFS=$(jq '[.results[]? | select((.diff // "") != "")] | length' "$OUTPUT")
+    UNEXPECTED=$(jq '[.results[]? | select((.unexpectedFailure // "") != "")] | length' "$OUTPUT")
+    if [ "$DIFFS" -ne 0 ] || [ "$UNEXPECTED" -ne 0 ]; then
+        echo "::error title=forced-route parity drift::FAIL_ON_DIFF set and report.json has ${DIFFS} diff(s) + ${UNEXPECTED} unexpected failure(s) — route B is NOT byte-identical to reference Prometheus over the corpus"
+        echo "==> failing cases (query + diff/unexpectedFailure):"
+        jq -r '.results[]? | select((.diff // "") != "" or (.unexpectedFailure // "") != "") | "  - query: " + (.query // .expr // "(unknown)") + "\n    diff: " + ((.diff // "") | gsub("\n";"\n      ")) + (if (.unexpectedFailure // "") != "" then "\n    unexpectedFailure: " + .unexpectedFailure else "" end)' "$OUTPUT" || true
+        exit 1
+    fi
+    echo "==> FAIL_ON_DIFF: zero diffs over the full corpus under forced routing — route B == reference"
+fi
+
+if [ "$TESTER_RC" -ne 0 ] && [ -z "${FAIL_ON_DIFF:-}" ]; then
     echo "==> tester rc=$TESTER_RC was parity drift (report.json present); exiting 0"
 fi
 exit 0
