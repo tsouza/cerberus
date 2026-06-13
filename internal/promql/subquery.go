@@ -110,6 +110,7 @@ func wrapSubqueryIdentity(
 		Range:           step, // per-anchor lookback = subquery step
 		OuterRange:      sub.Range,
 		Step:            step,
+		StepAlign:       true, // epoch-align inner subquery sample grid (PromQL)
 		End:             anchor.End,
 		Offset:          anchor.Offset,
 		TimestampColumn: s.TimestampColumn,
@@ -205,6 +206,7 @@ func lowerSubqueryOverCall(
 		Range:           ms.Range,
 		OuterRange:      sub.Range,
 		Step:            step,
+		StepAlign:       true, // epoch-align inner subquery sample grid (PromQL)
 		End:             anchor.End,
 		Offset:          anchor.Offset,
 		TimestampColumn: s.TimestampColumn,
@@ -256,6 +258,7 @@ func lowerSubqueryOverBinary(
 		Range:           step, // per-anchor lookback = subquery step
 		OuterRange:      sub.Range,
 		Step:            step,
+		StepAlign:       true, // epoch-align inner subquery sample grid (PromQL)
 		End:             anchor.End,
 		Offset:          anchor.Offset,
 		TimestampColumn: s.TimestampColumn,
@@ -301,6 +304,7 @@ func lowerSubqueryOverVectorSelector(
 		Range:           step, // per-anchor lookback = subquery step
 		OuterRange:      sub.Range,
 		Step:            step,
+		StepAlign:       true, // epoch-align inner subquery sample grid (PromQL)
 		End:             anchor.End,
 		Offset:          anchor.Offset,
 		TimestampColumn: s.TimestampColumn,
@@ -455,6 +459,17 @@ func widenSubquerySpine(n chplan.Node, start, end time.Time) {
 		v.Start = start.UTC()
 		v.End = end.UTC()
 		v.OuterRange = end.Sub(start)
+		// PromQL evaluates a subquery's inner samples on an
+		// absolute-epoch grid (phase 0), independent of the outer
+		// query_range start/step. This is the single choke point that
+		// re-anchors every inner matrix grid in range mode (incl. nested
+		// subqueries — the recursion below re-enters this arm for each
+		// stacked inner RangeWindow), so snapping the grid base here
+		// covers them all. The outer reducer built in
+		// lowerOuterRangeFnOverSubquery is NOT walked by this function, so
+		// it correctly keeps StepAlign=false (the outer query_range grid
+		// uses user start + k*step, not epoch-aligned).
+		v.StepAlign = true
 		widenSubquerySpine(v.Input, start.Add(-v.Range), end)
 	case *chplan.Project:
 		widenSubquerySpine(v.Input, start, end)
@@ -1290,6 +1305,7 @@ func lowerSubqueryOverSubquery(
 		Range:           step,
 		OuterRange:      sub.Range,
 		Step:            step,
+		StepAlign:       true, // epoch-align inner subquery sample grid (PromQL)
 		End:             anchor.End,
 		Offset:          anchor.Offset,
 		TimestampColumn: "anchor_ts",
@@ -1354,6 +1370,7 @@ func lowerSubqueryOverCallSubquery(
 		Range:           innerSub.Range,
 		OuterRange:      sub.Range,
 		Step:            step,
+		StepAlign:       true, // epoch-align inner subquery sample grid (PromQL)
 		End:             anchor.End,
 		Offset:          anchor.Offset,
 		TimestampColumn: "anchor_ts",
