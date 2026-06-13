@@ -27,16 +27,43 @@ Everything below is in service of keeping that number flat.
 
 Two architectural invariants frame the whole approach:
 
-- **One query per request — no scatter-gather.** ClickHouse parallelises a
-  single MergeTree scan server-side, so cerberus never splits a query into
-  shards and merges client-side. Memory is bounded instead by
-  `max_memory_usage`, the sample budget, an 11k-point resolution cap, and a
-  streaming cursor. (Loki's query-frontend exists because object storage has
-  no parallel scan — that constraint doesn't transfer to CH.) This freezes the
-  execution architecture: there is no merge layer to add later.
+- **Route A is the default: one optimized plan → one CH statement.** The
+  overwhelming majority of traffic is solved by lowering, optimizing, and
+  emitting a *single* parameterised ClickHouse statement, with all reduction
+  pushed into ClickHouse — the leaf scan, the windowing, the aggregation all
+  happen server-side, where CH parallelises a single MergeTree scan across
+  cores. Route A bounds memory with `max_memory_usage`, the sample budget, an
+  11k-point resolution cap, and a streaming cursor; it is byte-identical to the
+  pipeline cerberus has always shipped. (Loki's query-frontend exists because
+  object storage has no parallel scan — that constraint doesn't transfer to CH,
+  so route A stays the default rather than a scatter-gather frontend.)
+- **The sharded-pushdown solver is the exception — off by default, narrow by
+  construction.** The old lock ("one CH query per request — no scatter-gather,
+  no merge layer to add later") was relaxed by the maintainer on 2026-06-12 for
+  the single class route A cannot solve bounded: high **anchor fan-out**
+  (`F = Range/Step`, e.g. `sum(rate(m[5m]))` at a fine step over a wide range),
+  where one statement's peak intermediate cardinality exceeds the CH memory cap.
+  For *that class only*, the `internal/solver` orchestrator
+  ([`query-solver-design.md`](query-solver-design.md)) re-anchors `K` deep
+  copies of the **same already-optimized plan** onto disjoint slices of the
+  anchor grid, emits each via the existing `chsql.Emit`, and concatenates the
+  result streams behind the existing cursor. There is **no new evaluator and no
+  new SQL template** — every shard runs the same compat-gated route-A SQL,
+  restricted to its anchor sub-grid. The solver stays off until a forced-route
+  compatibility lane proves zero diffs, and ineligible queries always stay on
+  route A. See [`evaluation-architecture.md`](evaluation-architecture.md) for
+  the operator classification the solver's safe set maps onto.
+- **All-or-nothing wire contract.** Whether a request is solved by route A or
+  fanned out across `K` shards, the client sees a single response: a shard
+  failure surfaces as one typed error (first-error-wins, cause-threaded), never
+  as a partial body. Sharding is an internal execution strategy, invisible at
+  the wire format.
 - **No caching.** Cerberus is a stateless query gateway, not a result cache.
+  This invariant is **unchanged** by the solver relaxation — the solver
+  re-emits and re-executes per request, it never memoises a previous result.
   The only TTL anywhere is the `/readyz` health probe. Speed comes from
-  emitting a better query, never from memoising a previous one.
+  emitting a better query (and, for the unbounded class, from dividing it),
+  never from caching a previous one.
 
 ## Where the speed comes from, layer by layer
 
@@ -162,6 +189,12 @@ rather than silently accepted.
   `just bench-report`.
 - [`engine.md`](engine.md) — the pipeline stages in depth: the IR algebra, the
   optimizer rule table, and the typed CH-native emitter.
+- [`query-solver-design.md`](query-solver-design.md) — the sharded-pushdown
+  solver: the eligibility signals, the slicing geometry, and the phased
+  migration that keeps route A the default.
+- [`evaluation-architecture.md`](evaluation-architecture.md) — the operator
+  classification (slice-invariant vs. not) the solver's safe set maps onto, and
+  the ceiling shapes time-slicing cannot reach.
 - [`test-strategy.md`](test-strategy.md) — the full test-layer map the perf
   lanes sit inside.
 - [`operations.md`](operations.md) — runtime memory, admission control, and
