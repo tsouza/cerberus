@@ -2450,6 +2450,16 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "promql/edge_max_over_time_subquery_at_pinned",
+    "fan_factor": 1,
+    "scan_rows": 6,
+    "peak_intermediate": 6,
+    "has_cross_join": true,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "promql/edge_max_over_time_subquery_step_default",
     "fan_factor": 1,
     "scan_rows": 2,
@@ -2496,6 +2506,16 @@
     "peak_intermediate": 1,
     "has_cross_join": false,
     "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/edge_rate_at_timestamp_range_pinned",
+    "fan_factor": 1,
+    "scan_rows": 6,
+    "peak_intermediate": 6,
+    "has_cross_join": true,
+    "has_array_join": true,
     "has_recursive_cte": false,
     "max_recursion_depth": 0
   },

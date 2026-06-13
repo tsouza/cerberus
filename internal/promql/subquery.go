@@ -352,23 +352,53 @@ func lowerOuterRangeFnOverSubquery(
 		return nil, err
 	}
 
+	anchor, err := subqueryAnchor(sub, ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	rw := &chplan.RangeWindow{
 		Input:           inner,
 		Func:            outer.Func.Name,
 		Range:           sub.Range,
+		Offset:          anchor.Offset,
 		TimestampColumn: "anchor_ts",
 		ValueColumn:     s.ValueColumn,
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 	}
-	// Range mode: the outer reducer in `max_over_time(rate(m[5m])[1h:5m])`
-	// must fan across the request's step grid so each anchor in
-	// [start, end] emits its own per-window reduction. Without this the
-	// outer RangeWindow keeps Step=0 and collapses to a single anchor at
-	// end_ts (compat-lane: 502 / single-point matrix). Mirrors the
-	// `lowerRangeVectorCall` matrix fan-out introduced for bare
-	// range-vector calls — the same gate (ctx.step > 0 with start/end
-	// threaded through LowerAtRange) applies here.
-	if ctx.step > 0 && !ctx.start.IsZero() && !ctx.end.IsZero() {
+
+	rangeMode := ctx.step > 0 && !ctx.start.IsZero() && !ctx.end.IsZero()
+	pinned := sub.Timestamp != nil || sub.StartOrEnd != 0
+
+	switch {
+	case rangeMode && pinned:
+		// `@`-pinned subquery under query_range
+		// (`max_over_time(rate(m[5m])[10m:1m] @ <ts>)`,
+		// `... @ start()` / `@ end()`). The `@` fixes the WHOLE subquery
+		// evaluation at the anchor, so every output step reduces the SAME
+		// pinned window `(anchor - sub.Range, anchor]` and emits an
+		// identical per-series value. The bare matrix fan-out below would
+		// instead re-anchor the outer reducer onto each step grid point
+		// (overwriting rw.End with ctx.end) AND widen the inner grid out
+		// to ctx.end — so the pin is lost and later-than-anchor inner
+		// samples leak into the reduction. Keep the outer reducer as the
+		// INSTANT shape (Step=0, End=anchor.End, OuterRange=0) — it
+		// reduces the pinned window once per series — widen the inner
+		// spine to exactly the pinned window, then broadcast the single
+		// per-series value across the step grid. The range-vector sibling
+		// of this guard lives in `lowerRangeVectorCall`.
+		rw.End = anchor.End
+		widenSubquerySpine(inner, anchor.End.Add(-sub.Range), anchor.End)
+		return wrapRangeWindowAtBroadcast(rw, ctx, s, outer.Func.Name, ""), nil
+	case rangeMode:
+		// Range mode: the outer reducer in `max_over_time(rate(m[5m])[1h:5m])`
+		// must fan across the request's step grid so each anchor in
+		// [start, end] emits its own per-window reduction. Without this the
+		// outer RangeWindow keeps Step=0 and collapses to a single anchor at
+		// end_ts (compat-lane: 502 / single-point matrix). Mirrors the
+		// `lowerRangeVectorCall` matrix fan-out introduced for bare
+		// range-vector calls — the same gate (ctx.step > 0 with start/end
+		// threaded through LowerAtRange) applies here.
 		rw.Start = ctx.start.UTC()
 		rw.End = ctx.end.UTC()
 		rw.Step = ctx.step

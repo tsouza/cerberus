@@ -1,0 +1,43 @@
+-- query.promql --
+max_over_time(rate(http_requests_total[5m])[10m:1m] @ 1767225600)
+-- range_step --
+60s
+-- args --
+[0] string = "http_requests_total"
+[1] string = "http.requests.total"
+[2] string = "http.requests_total"
+[3] string = "http_requests.total"
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum VALUES
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:51:00', 9), 10.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:53:00', 9), 25.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:55:00', 9), 40.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:57:00', 9), 60.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:59:00', 9), 90.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:01:00', 9), 100000.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:04:00', 9), 200000.0);
+-- expected_rows --
+[
+  [{"job": "api"}, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", 0.25],
+  [{"job": "api"}, "2026-01-01T00:01:00Z", "2026-01-01T00:01:00Z", 0.25],
+  [{"job": "api"}, "2026-01-01T00:02:00Z", "2026-01-01T00:02:00Z", 0.25],
+  [{"job": "api"}, "2026-01-01T00:03:00Z", "2026-01-01T00:03:00Z", 0.25],
+  [{"job": "api"}, "2026-01-01T00:04:00Z", "2026-01-01T00:04:00Z", 0.25],
+  [{"job": "api"}, "2026-01-01T00:05:00Z", "2026-01-01T00:05:00Z", 0.25]
+]
+-- chplan --
+Project [Attributes AS Attributes, anchor_ts AS anchor_ts, anchor_ts AS TimeUnix, Value AS Value]
+  CrossJoin
+    StepGrid start=2026-01-01T00:00:00.000000000Z end=2026-01-01T00:05:00.000000000Z step=1m0s
+    RangeWindow func=max_over_time range=10m0s step=0s ts=anchor_ts value=Value groupBy=[Attributes] start=0001-01-01T00:00:00Z end=2026-01-01T00:00:00Z
+      RangeWindow func=rate range=5m0s step=1m0s outerRange=10m0s ts=TimeUnix value=Value groupBy=[Attributes] start=2025-12-31T23:50:00Z end=2026-01-01T00:00:00Z
+        Filter predicate=(MetricName IN ("http_requests_total", "http.requests.total", "http.requests_total", "http_requests.total"))
+          Scan(otel_metrics_sum)
+-- sql --
+SELECT `Attributes` AS `Attributes`, `anchor_ts` AS `anchor_ts`, `anchor_ts` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM (SELECT arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:00:00.000000000', 9) + toIntervalNanosecond(i * 60000000000), range(0, 6))) AS `anchor_ts`) AS L CROSS JOIN (SELECT `Attributes`, if(length(window_vals) > 0, arrayMax(window_vals), nan) AS `Value` FROM (SELECT `Attributes`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `Attributes`, arrayFilter(p -> tupleElement(p, 1) > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(600000000000) AND tupleElement(p, 1) <= toDateTime64('2026-01-01 00:00:00.000000000', 9), series_array) AS `window_pairs` FROM (SELECT `Attributes`, arraySort(groupArray((`anchor_ts`, `Value`))) AS `series_array` FROM (SELECT `Attributes`, `anchor_ts`, anchor_ts AS `TimeUnix`, if(sampled_interval > 0, counter_delta * (sampled_interval + if(counter_delta > 0 AND first_val >= 0, least(duration_to_start, sampled_interval * first_val / counter_delta), duration_to_start) + duration_to_end) / sampled_interval / 300, nan) AS `Value` FROM (SELECT `Attributes`, `anchor_ts`, `window_vals`, `counter_delta`, `first_val`, toFloat64(dateDiff('nanosecond', first_ts, last_ts)) / 1e9 AS `sampled_interval`, if(toFloat64(dateDiff('nanosecond', anchor_ts - toIntervalNanosecond(300000000000), first_ts)) / 1e9 >= 1.1 * sampled_interval / (length(window_vals) - 1), sampled_interval / (length(window_vals) - 1) / 2, toFloat64(dateDiff('nanosecond', anchor_ts - toIntervalNanosecond(300000000000), first_ts)) / 1e9) AS `duration_to_start`, if(toFloat64(dateDiff('nanosecond', last_ts, anchor_ts)) / 1e9 >= 1.1 * sampled_interval / (length(window_vals) - 1), sampled_interval / (length(window_vals) - 1) / 2, toFloat64(dateDiff('nanosecond', last_ts, anchor_ts)) / 1e9) AS `duration_to_end` FROM (SELECT `Attributes`, `anchor_ts`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta`, tupleElement(window_pairs[1], 1) AS `first_ts`, tupleElement(window_pairs[length(window_pairs)], 1) AS `last_ts`, tupleElement(window_pairs[1], 2) AS `first_val` FROM (SELECT `Attributes`, `anchor_ts`, arraySort(groupArray((`TimeUnix`, `Value`))) AS `window_pairs` FROM (SELECT `Attributes`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(i * 60000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:00:00.000000000', 9)) - 300000000000, toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:00:00.000000000', 9)) - 300000000000, toInt64(60000000000)) < 0) + 1), least(11, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:00:00.000000000', 9)), toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:00:00.000000000', 9)), toInt64(60000000000)) < 0) + 1)))) AS `anchor_ts` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?, ?))) WHERE `TimeUnix` > toDateTime64('2025-12-31 23:50:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:00:00.000000000', 9)) GROUP BY `Attributes`, `anchor_ts`))) WHERE length(`window_vals`) >= 2) GROUP BY `Attributes`))) WHERE length(`window_vals`) >= 1) AS R)
