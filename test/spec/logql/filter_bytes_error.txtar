@@ -1,5 +1,23 @@
 -- query.logql --
-{job="api"} | logfmt | size > 10KB
+{job="api"} | logfmt | size > 5MB
+-- seed --
+CREATE TABLE otel_logs (
+    LogAttributes Map(String, String) MATERIALIZED map(),
+    Body String,
+    ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api')
+) ENGINE = Memory;
+INSERT INTO otel_logs (Body) VALUES
+    ('ts=2026-01-01 size=1MB msg="small"'),
+    ('ts=2026-01-01 size=9MB msg="big"'),
+    ('ts=2026-01-01 size=huge msg="bad_number"'),
+    ('ts=2026-01-01 size=10ZB msg="bad_unit"'),
+    ('ts=2026-01-01 msg="no_size"');
+-- expected_rows --
+[
+  ["ts=2026-01-01 size=10ZB msg=\"bad_unit\""],
+  ["ts=2026-01-01 size=9MB msg=\"big\""],
+  ["ts=2026-01-01 size=huge msg=\"bad_number\""]
+]
 -- args --
 [0] string = "job"
 [1] string = "api"
@@ -52,24 +70,9 @@
 [48] string = "\""
 [49] string = "size"
 [50] string = "size"
-[51] float64 = 10000
--- seed --
-CREATE TABLE otel_logs (
-    LogAttributes Map(String, String) MATERIALIZED map(),
-    Body String,
-    ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api')
-) ENGINE = Memory;
-INSERT INTO otel_logs (Body) VALUES
-    ('ts=2026-01-01 size=5KB msg="small"'),
-    ('ts=2026-01-01 size=20KB msg="medium"'),
-    ('ts=2026-01-01 size=100KB msg="large"');
--- expected_rows --
-[
-  ["ts=2026-01-01 size=20KB msg=\"medium\""],
-  ["ts=2026-01-01 size=100KB msg=\"large\""]
-]
+[51] float64 = 5e+06
 -- chplan --
-Filter predicate=((ResourceAttributes["job"] = "api") AND multiIf(not((mapContains(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\""))), "size") OR mapContains(LogAttributes, "size"))), false, not((isNotNull(toFloat64OrNull(replaceAll(extract(if(mapContains(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\""))), "size"), mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\"")))["size"], LogAttributes["size"]), "^[0-9.,]*"), ",", ""))) AND match(replaceRegexpAll(lower(replaceRegexpAll(if(mapContains(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\""))), "size"), mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\"")))["size"], LogAttributes["size"]), "^[0-9.,]*", "")), "^\\s+|\\s+$", ""), "^(kib|mib|gib|tib|pib|eib|ki|mi|gi|ti|pi|ei|kb|mb|gb|tb|pb|eb|b|k|m|g|t|p|e)?$"))), true, (parseReadableSize(if(mapContains(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\""))), "size"), mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\"")))["size"], LogAttributes["size"])) > 10000)))
+Filter predicate=((ResourceAttributes["job"] = "api") AND multiIf(not((mapContains(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\""))), "size") OR mapContains(LogAttributes, "size"))), false, not((isNotNull(toFloat64OrNull(replaceAll(extract(if(mapContains(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\""))), "size"), mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\"")))["size"], LogAttributes["size"]), "^[0-9.,]*"), ",", ""))) AND match(replaceRegexpAll(lower(replaceRegexpAll(if(mapContains(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\""))), "size"), mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\"")))["size"], LogAttributes["size"]), "^[0-9.,]*", "")), "^\\s+|\\s+$", ""), "^(kib|mib|gib|tib|pib|eib|ki|mi|gi|ti|pi|ei|kb|mb|gb|tb|pb|eb|b|k|m|g|t|p|e)?$"))), true, (parseReadableSize(if(mapContains(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\""))), "size"), mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\"")))["size"], LogAttributes["size"])) > 5e+06)))
   Scan(otel_logs)
 -- sql --
 SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND multiIf(not((mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), extractKeyValuePairs(`Body`, ?, ?, ?))), ?) OR mapContains(`LogAttributes`, ?))), ?, not((isNotNull(toFloat64OrNull(replaceAll(extract(if(mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), extractKeyValuePairs(`Body`, ?, ?, ?))), ?), mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), extractKeyValuePairs(`Body`, ?, ?, ?)))[?], `LogAttributes`[?]), ?), ?, ?))) AND match(replaceRegexpAll(lower(replaceRegexpAll(if(mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), extractKeyValuePairs(`Body`, ?, ?, ?))), ?), mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), extractKeyValuePairs(`Body`, ?, ?, ?)))[?], `LogAttributes`[?]), ?, ?)), ?, ?), ?))), ?, (parseReadableSize(if(mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), extractKeyValuePairs(`Body`, ?, ?, ?))), ?), mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), extractKeyValuePairs(`Body`, ?, ?, ?)))[?], `LogAttributes`[?])) > toFloat64(?)))
