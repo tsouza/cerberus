@@ -28,10 +28,10 @@ import (
 //   - CardOneToMany (`group_right(<labels>)`): mirror of CardManyToOne.
 //
 // The outer SELECT, each per-side aggregation subquery, and the INNER
-// JOIN slot all flow through typed QueryBuilder slots. The bare-alias glue (`AS L` /
-// `AS R`) is operator-token-style writeSQL inside a Frag — CH accepts
-// unquoted single-letter aliases and the existing fixtures pin that
-// shape.
+// JOIN slot all flow through typed QueryBuilder slots. The bare-alias
+// glue (`AS L` / `AS R`) is an emitter-chosen synthetic token spliced
+// via verbatim inside aliasedFrag — CH accepts unquoted single-letter
+// aliases and the existing fixtures pin that shape.
 func (e *emitter) emitVectorJoin(j *chplan.VectorJoin) error {
 	if err := e.validateVectorJoinCols(j); err != nil {
 		return err
@@ -263,22 +263,12 @@ func joinAlias(col string) string {
 
 // aggMaxAs returns a Frag for `max(<col>) AS <alias>`.
 func aggMaxAs(col, alias string) Frag {
-	return As(func(b *Builder) {
-		b.writeSQL("max(")
-		b.Ident(col)
-		b.writeSQL(")")
-	}, alias)
+	return As(Call("max", Col(col)), alias)
 }
 
 // argMaxAs returns a Frag for `argMax(<valCol>, <byCol>) AS <alias>`.
 func argMaxAs(valCol, byCol, alias string) Frag {
-	return As(func(b *Builder) {
-		b.writeSQL("argMax(")
-		b.Ident(valCol)
-		b.writeSQL(", ")
-		b.Ident(byCol)
-		b.writeSQL(")")
-	}, alias)
+	return As(Call("argMax", Col(valCol), Col(byCol)), alias)
 }
 
 // matchCheckFrag returns a Frag for the runtime uniqueness guard:
@@ -290,12 +280,16 @@ func argMaxAs(valCol, byCol, alias string) Frag {
 // fixtures pin that shape; CH accepts unquoted aliases for ASCII
 // underscore-prefixed names.
 func matchCheckFrag(attrsCol string) Frag {
+	check := Call(
+		"throwIf",
+		Gt(Call("uniqExact", Col(attrsCol)), InlineLit(1)),
+		Lit("many-to-many matching not allowed: matching labels must be unique on one side"),
+	)
+	// `_cerberus_match_check` is an emitter-pinned bare alias (no
+	// backticks); the AS suffix rides verbatim, not the quoting As Frag.
 	return func(b *Builder) {
-		b.writeSQL("throwIf(uniqExact(")
-		b.Ident(attrsCol)
-		b.writeSQL(") > 1, ")
-		b.Arg("many-to-many matching not allowed: matching labels must be unique on one side")
-		b.writeSQL(") AS _cerberus_match_check")
+		check(b)
+		verbatim(" AS _cerberus_match_check")(b)
 	}
 }
 
@@ -305,40 +299,31 @@ func matchCheckFrag(attrsCol string) Frag {
 // it's `mapFilter((k, v) -> k IN (...), Attributes)`; for
 // ignoring(labels) it's the complementary mapFilter.
 func matchKeyGroupExprFrag(m chplan.VectorMatch, attrsCol string) Frag {
-	return func(b *Builder) { writeMatchKeyGroupExpr(b, m, attrsCol) }
-}
-
-// writeMatchKeyGroupExpr emits the GROUP BY expression that collapses
-// rows onto a single matching key. For default matching (full
-// Attributes) this is just the Attributes column; for on(labels) it's
-// `mapFilter((k,v) -> k IN (...), Attributes)`; for ignoring(labels)
-// it's the complementary mapFilter.
-func writeMatchKeyGroupExpr(b *Builder, m chplan.VectorMatch, attrsCol string) {
 	if len(m.Labels) == 0 && !m.On {
-		b.Ident(attrsCol)
-		return
+		return Col(attrsCol)
 	}
 	if m.On && len(m.Labels) == 0 {
 		// on() with no labels — group everything onto a single
 		// match-key. CH doesn't allow an empty IN list, so emit a
 		// constant tuple.
-		b.writeSQL("tuple()")
-		return
+		return Call("tuple")
 	}
 	if m.On {
-		b.writeSQL("mapFilter((k, v) -> k IN (")
+		// mapFilter((k, v) -> k IN (?, ?, …), Attributes) — keep only
+		// the on(...) labels.
+		lbls := make([]Frag, len(m.Labels))
 		for i, lbl := range m.Labels {
-			if i > 0 {
-				b.writeSQL(", ")
-			}
-			b.Arg(lbl)
+			lbls[i] = Lit(lbl)
 		}
-		b.writeSQL("), ")
-		b.Ident(attrsCol)
-		b.writeSQL(")")
-		return
+		return Call(
+			"mapFilter",
+			Lambda2("k", "v", In(BareIdent("k"), lbls...)),
+			Col(attrsCol),
+		)
 	}
-	b.MapFilterExcept(attrsCol, m.Labels...)
+	// ignoring(...) — the complementary mapFilter. MapFilterExcept is a
+	// Builder helper that renders `mapFilter((k, v) -> NOT (k IN (…)), col)`.
+	return func(b *Builder) { b.MapFilterExcept(attrsCol, m.Labels...) }
 }
 
 // outputAttributesFrag returns a Frag for the output Attributes
@@ -353,10 +338,7 @@ func writeMatchKeyGroupExpr(b *Builder, m chplan.VectorMatch, attrsCol string) {
 // Prometheus's behaviour where bare group_left/right copies nothing
 // beyond the matching key.
 func outputAttributesFrag(j *chplan.VectorJoin) Frag {
-	return func(b *Builder) { writeOutputAttributes(b, j) }
-}
-
-func writeOutputAttributes(b *Builder, j *chplan.VectorJoin) {
+	attrs := j.AttributesColumn
 	manySide := ""
 	switch j.Card {
 	case chplan.CardManyToOne:
@@ -378,10 +360,7 @@ func writeOutputAttributes(b *Builder, j *chplan.VectorJoin) {
 		if manySide == "R" {
 			side = "R"
 		}
-		writeSideCol(b, side, j.AttributesColumn)
-		b.writeSQL(" AS ")
-		b.Ident(j.AttributesColumn)
-		return
+		return As(qualColFrag(side, attrs), attrs)
 	}
 
 	// group_left/right with Include labels — overlay the "one" side's
@@ -391,19 +370,20 @@ func writeOutputAttributes(b *Builder, j *chplan.VectorJoin) {
 	if manySide == "R" {
 		oneSide = "L"
 	}
-	b.writeSQL("mapConcat(")
-	writeSideCol(b, manySide, j.AttributesColumn)
-	b.writeSQL(", mapFilter((k, v) -> k IN (")
+	includes := make([]Frag, len(j.Include))
 	for i, lbl := range j.Include {
-		if i > 0 {
-			b.writeSQL(", ")
-		}
-		b.Arg(lbl)
+		includes[i] = Lit(lbl)
 	}
-	b.writeSQL("), ")
-	writeSideCol(b, oneSide, j.AttributesColumn)
-	b.writeSQL(")) AS ")
-	b.Ident(j.AttributesColumn)
+	merged := Call(
+		"mapConcat",
+		qualColFrag(manySide, attrs),
+		Call(
+			"mapFilter",
+			Lambda2("k", "v", In(BareIdent("k"), includes...)),
+			qualColFrag(oneSide, attrs),
+		),
+	)
+	return As(merged, attrs)
 }
 
 // outputMetricNameFrag returns a Frag for the joined output's
@@ -427,7 +407,7 @@ func writeOutputAttributes(b *Builder, j *chplan.VectorJoin) {
 // bare-compare + group_left variants.
 func outputMetricNameFrag(j *chplan.VectorJoin, outerSide string) Frag {
 	if vectorJoinDropsName(j) {
-		return As(func(b *Builder) { b.Arg("") }, j.MetricNameColumn)
+		return As(Lit(""), j.MetricNameColumn)
 	}
 	return qualColFrag(outerSide, j.MetricNameColumn)
 }
@@ -519,31 +499,28 @@ func isComparisonOp(op chplan.BinaryOp) bool {
 }
 
 // qualColFrag returns a Frag for `<bareSide>.<col>` — the bare-alias
-// L / R qualifier the legacy emitter pins.
+// L / R qualifier the legacy emitter pins. The side is a synthetic,
+// emitter-chosen single-letter alias (never user input) so it rides
+// `verbatim` rather than Ident's backtick quoting; the column is a real
+// identifier and flows through Col.
 func qualColFrag(side, col string) Frag {
-	return func(b *Builder) { writeSideCol(b, side, col) }
+	return func(b *Builder) {
+		verbatim(side + ".")(b)
+		Col(col)(b)
+	}
 }
 
 // aliasedFrag wraps inner in a trailing ` AS <bareAlias>`. The alias
 // is rendered bare (no backticks) — CH accepts unquoted single-letter
 // aliases, and the vector_join / structural_join fixtures pin that
-// shape.
+// shape. The bare alias is an emitter-chosen synthetic token (L / R /
+// _seed / ns / …), so the AS-suffix is a verbatim synthetic-token
+// splice rather than the backtick-quoting As Frag.
 func aliasedFrag(inner Frag, bareAlias string) Frag {
 	return func(b *Builder) {
 		inner(b)
-		b.writeSQL(" AS ")
-		b.writeSQL(bareAlias)
+		verbatim(" AS " + bareAlias)(b)
 	}
-}
-
-// writeSideCol emits `<side>.<col>` where <side> is the unquoted alias
-// (L or R) and <col> is the backtick-quoted column identifier. The
-// unquoted alias matches the legacy emitter's output so existing
-// fixtures that pre-date the Builder port stay stable.
-func writeSideCol(b *Builder, side, col string) {
-	b.writeSQL(side)
-	b.writeSQL(".")
-	b.Ident(col)
 }
 
 // vectorMatchPredicateFrag returns a Frag for the join's ON clause.
@@ -561,66 +538,51 @@ func writeSideCol(b *Builder, side, col string) {
 // across anchors (roleMany) or fold the matrix down to a single per-
 // match-key row at the surviving anchor (roleOne).
 func vectorMatchPredicateFrag(m chplan.VectorMatch, attrsCol, tsCol string, stepAligned bool) Frag {
-	return func(b *Builder) { writeVectorMatchPredicate(b, m, attrsCol, tsCol, stepAligned) }
-}
-
-func writeVectorMatchPredicate(b *Builder, m chplan.VectorMatch, attrsCol, tsCol string, stepAligned bool) {
-	writeMatchKeyPredicate(b, m, attrsCol)
-	if stepAligned {
-		b.writeSQL(" AND ")
-		writeSideCol(b, "L", tsCol)
-		b.writeSQL(" = ")
-		writeSideCol(b, "R", tsCol)
+	key := matchKeyPredicateFrag(m, attrsCol)
+	if !stepAligned {
+		return key
 	}
+	// Step-aligned (range mode): additionally pin each anchor to its own
+	// per-anchor pair — `<key> AND L.<tsCol> = R.<tsCol>`.
+	return And(key, Eq(qualColFrag("L", tsCol), qualColFrag("R", tsCol)))
 }
 
-// writeMatchKeyPredicate renders just the label-matching half of the
+// matchKeyPredicateFrag renders just the label-matching half of the
 // join's ON clause — extracted so the step-alignment AND can be
 // composed on top without copying the per-shape branches.
-func writeMatchKeyPredicate(b *Builder, m chplan.VectorMatch, attrsCol string) {
+func matchKeyPredicateFrag(m chplan.VectorMatch, attrsCol string) Frag {
 	if len(m.Labels) == 0 && !m.On {
-		writeSideCol(b, "L", attrsCol)
-		b.writeSQL(" = ")
-		writeSideCol(b, "R", attrsCol)
-		return
+		return Eq(qualColFrag("L", attrsCol), qualColFrag("R", attrsCol))
 	}
 	if m.On && len(m.Labels) == 0 {
 		// on() with no labels — every row on the left pairs with
 		// every row on the right. The per-side aggregation already
 		// collapses each side to one row via the throwIf-guard, so
 		// the join condition is just a constant TRUE.
-		b.writeSQL("1 = 1")
-		return
+		return Eq(InlineLit(1), InlineLit(1))
 	}
 	if m.On {
+		// `L.<attrs>[?] = R.<attrs>[?]` per on(...) label, AND-joined.
+		perLabel := make([]Frag, len(m.Labels))
 		for i, lbl := range m.Labels {
-			if i > 0 {
-				b.writeSQL(" AND ")
-			}
-			writeSideCol(b, "L", attrsCol)
-			b.writeSQL("[")
-			b.Arg(lbl)
-			b.writeSQL("] = ")
-			writeSideCol(b, "R", attrsCol)
-			b.writeSQL("[")
-			b.Arg(lbl)
-			b.writeSQL("]")
+			perLabel[i] = Eq(
+				Subscript(qualColFrag("L", attrsCol), Lit(lbl)),
+				Subscript(qualColFrag("R", attrsCol), Lit(lbl)),
+			)
 		}
-		return
+		return And(perLabel...)
 	}
-	for i, side := range []string{"L", "R"} {
-		if i == 1 {
-			b.writeSQL(" = ")
+	// ignoring(...) — equate the complementary mapFilter on each side.
+	ignFilter := func(side string) Frag {
+		lbls := make([]Frag, len(m.Labels))
+		for i, lbl := range m.Labels {
+			lbls[i] = Lit(lbl)
 		}
-		b.writeSQL("mapFilter((k, v) -> NOT (k IN (")
-		for j, lbl := range m.Labels {
-			if j > 0 {
-				b.writeSQL(", ")
-			}
-			b.Arg(lbl)
-		}
-		b.writeSQL(")), ")
-		writeSideCol(b, side, attrsCol)
-		b.writeSQL(")")
+		return Call(
+			"mapFilter",
+			Lambda2("k", "v", Not(Paren(In(BareIdent("k"), lbls...)))),
+			qualColFrag(side, attrsCol),
+		)
 	}
+	return Eq(ignFilter("L"), ignFilter("R"))
 }

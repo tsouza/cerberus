@@ -91,12 +91,6 @@ func (e *emitter) emitHistogramQuantile(h *chplan.HistogramQuantile) error {
 func histogramQuantileValueFrag(h *chplan.HistogramQuantile) Frag {
 	bc := h.BucketCountsColumn
 	eb := h.ExplicitBoundsColumn
-	// Reusable typed Frags for the function-call shapes; closures below
-	// inline these into the if() chain. The non-Call structure (if()
-	// nesting, "[idx]" array indexing, inline phi formatFloat literal)
-	// keeps the in-package b.writeSQL path — no typed Frag covers those
-	// shapes yet.
-	//
 	// BucketCounts is Array(UInt64) in the OTel-CH schema; arraySum /
 	// arrayCumSum on it return UInt64. The downstream linear-interpolation
 	// arithmetic mixes those with Float64 ExplicitBounds and the `0.0`
@@ -105,192 +99,109 @@ func histogramQuantileValueFrag(h *chplan.HistogramQuantile) Frag {
 	// to Array(Float64) once at the entry so every sum / cumsum derives
 	// Float64 and the interpolation arithmetic stays in a single numeric
 	// domain. CSE folds the cast across the many references.
-	var bcFloat Frag = func(b *Builder) {
-		b.writeSQL("arrayMap(x -> toFloat64(x), ")
-		b.Ident(bc)
-		b.writeSQL(")")
-	}
+	bcFloat := Call("arrayMap", Lambda1("x", Call("toFloat64", BareIdent("x"))), Col(bc))
 	lengthBC := Call("length", Col(bc))
 	lengthEB := Call("length", Col(eb))
 	arraySumBC := Call("arraySum", bcFloat)
 	arrayCumSumBC := Call("arrayCumSum", bcFloat)
-	return func(b *Builder) {
-		// writePhi renders the phi parameter: computed expression when
-		// PhiExpr is set, inline literal otherwise.
-		writePhi := func() {
-			if h.PhiExpr != nil {
-				_ = b.Expr(h.PhiExpr)
-				return
-			}
-			b.writeSQL(formatFloat(h.Phi))
-		}
-		// Computed phi can be NaN at runtime; every comparison branch
-		// below evaluates false on NaN and the interpolation arithmetic
-		// would index cum[0] — guard with a leading isNaN → nan branch
-		// (Prom's bucketQuantile NaN-phi contract). The literal path
-		// skips the wrapper so existing fixtures stay byte-stable.
+
+	// phi renders the phi parameter: the computed expression when PhiExpr
+	// is set, the inline float literal (query-shape param, mirrors
+	// holtWintersValueExpr's sf / tf) otherwise. Re-invoked at each phi
+	// position so each carries its own `?` placeholder for the PhiExpr
+	// case — matching the legacy emitter's per-position re-emission.
+	phi := func() Frag {
 		if h.PhiExpr != nil {
-			b.writeSQL("if(isNaN(")
-			writePhi()
-			b.writeSQL("), nan, ")
+			return func(b *Builder) { _ = b.Expr(h.PhiExpr) }
 		}
-		// Empty histogram → NaN. arrayCumSum on an empty array is empty;
-		// `length(cum) = 0` and `total = 0`. Guard the divide-by-zero +
-		// the empty path with a single outer if() on total.
-		//
-		// We emit one binding of phi for the multiply-by-total branch;
-		// the phi-bounds short-circuits below bind it again so each
-		// branch carries its own `?` placeholder.
-		b.writeSQL("if(")
-		lengthBC(b)
-		b.writeSQL(" = 0, nan, ")
-		// total = cum[length(cum)]; cum = arrayCumSum(bc).
-		// Outer if: total = 0 → NaN. We materialise `cum` and `total`
-		// inline via subexpression rather than CTE to keep the shape flat.
-		//
-		// Structure:
-		//   if(arraySum(bc) = 0, nan,
-		//      if(phi <= 0, lowest_bound,
-		//         if(phi >= 1, highest_bound,
-		//            <interpolation>)))
-		//
-		// `lowest_bound` for OTel-CH classic histograms is 0 (the lower
-		// edge of bucket 1 is conventionally 0 for non-negative
-		// observations; matches upstream Prom's p0 behavior).
-		// `highest_bound` is the last entry in ExplicitBounds.
-		b.writeSQL("if(")
-		arraySumBC(b)
-		b.writeSQL(" = 0, nan, ")
-		b.writeSQL("if(")
-		writePhi()
-		b.writeSQL(" <= 0, 0.0, ")
-		b.writeSQL("if(")
-		writePhi()
-		b.writeSQL(" >= 1, ")
-		b.Ident(eb)
-		b.writeSQL("[")
-		lengthEB(b)
-		b.writeSQL("], ")
-		// Interpolation branch.
-		// Bind phi for the target multiplier and build the lookup.
-		// Using CH's let-like binding by re-evaluating subexprs is
-		// cheap (CH's planner CSEs) and keeps the SQL self-contained
-		// inside the if() — no CTE needed.
-		//
-		// target = phi * arraySum(bc)
-		// cum = arrayCumSum(bc)
-		// idx = arrayFirstIndex(c -> c >= target, cum)
-		// If idx = length(cum) (only the +Inf bucket crosses target),
-		//   return ExplicitBounds[length(ExplicitBounds)] (highest bound).
-		// Otherwise:
-		//   bound_lo = idx = 1 ? 0 : ExplicitBounds[idx-1]
-		//   bound_hi = ExplicitBounds[idx]
-		//   cum_lo   = idx = 1 ? 0 : cum[idx-1]
-		//   cum_hi   = cum[idx]
-		//   result   = bound_lo + (bound_hi - bound_lo) * (target - cum_lo) / (cum_hi - cum_lo)
-		//
-		// `idx` is rendered three times in the sub-expression; we
-		// recompute it each time rather than CTE-ing. CH CSE folds it.
-		// arrayFirstIndex(c -> ..., arrayCumSum(bc)) — the lambda body
-		// uses a bound var `c`; Builder.Lambda emits "(c) -> ..." which
-		// drifts vs. the existing "c -> ..." output, so the in-package
-		// b.writeSQL path is kept for the lambda. The outer
-		// arrayFirstIndex call wraps the cum frag via Call once the
-		// lambda is emitted.
-		// Computed phi: ClickHouse 24.8 rejects a scalar subquery
-		// anywhere in arrayFirstIndex's argument tree with ILLEGAL_COLUMN
-		// ("Unexpected type of filter column") — the lambda's comparison
-		// result stops being the plain UInt8 filter column the
-		// higher-order filter machinery expects (newer CH accepts it).
-		// Wrapping the predicate as `if(<cmp>, 1, 0) = 1` restores the
-		// constant-folded UInt8 the 24.8 filter path requires. The
-		// literal path keeps the bare comparison (byte-stable fixtures).
-		writeIdx := func() {
-			b.writeSQL("arrayFirstIndex(c -> ")
-			if h.PhiExpr != nil {
-				b.writeSQL("(if(")
-			}
-			b.writeSQL("c >= (")
-			writePhi()
-			b.writeSQL(" * ")
-			arraySumBC(b)
-			b.writeSQL(")")
-			if h.PhiExpr != nil {
-				b.writeSQL(", 1, 0) = 1)")
-			}
-			b.writeSQL(", ")
-			arrayCumSumBC(b)
-			b.writeSQL(")")
-		}
-		writeCumAt := func(offset string) {
-			arrayCumSumBC(b)
-			b.writeSQL("[")
-			writeIdx()
-			b.writeSQL(offset)
-			b.writeSQL("]")
-		}
-		writeBoundAt := func(offset string) {
-			b.Ident(eb)
-			b.writeSQL("[")
-			writeIdx()
-			b.writeSQL(offset)
-			b.writeSQL("]")
-		}
-		// if(idx = length(cum), highest_bound, interpolate)
-		b.writeSQL("if(")
-		writeIdx()
-		b.writeSQL(" = ")
-		Call("length", arrayCumSumBC)(b)
-		b.writeSQL(", ")
-		b.Ident(eb)
-		b.writeSQL("[")
-		lengthEB(b)
-		b.writeSQL("], ")
-		// Interpolate. bound_lo / cum_lo branch on idx = 1.
-		// bound_hi = ExplicitBounds[idx]; cum_hi = cum[idx].
-		// bound_lo = if(idx = 1, 0, ExplicitBounds[idx - 1]);
-		// cum_lo   = if(idx = 1, 0, cum[idx - 1]).
-		b.writeSQL("(if(")
-		writeIdx()
-		b.writeSQL(" = 1, 0.0, ")
-		writeBoundAt(" - 1")
-		b.writeSQL(") + (")
-		writeBoundAt("")
-		b.writeSQL(" - if(")
-		writeIdx()
-		b.writeSQL(" = 1, 0.0, ")
-		writeBoundAt(" - 1")
-		b.writeSQL(")) * ((")
-		writePhi()
-		b.writeSQL(" * ")
-		arraySumBC(b)
-		b.writeSQL(") - if(")
-		writeIdx()
-		b.writeSQL(" = 1, 0.0, ")
-		writeCumAt(" - 1")
-		b.writeSQL(")) / (")
-		writeCumAt("")
-		b.writeSQL(" - if(")
-		writeIdx()
-		b.writeSQL(" = 1, 0.0, ")
-		writeCumAt(" - 1")
-		// Three closes: close the `if(idx=1, ...)`, close the
-		// `(cum_hi - cum_lo)` paren, and close the outer `(if(idx=1, ..., bl) + ...)`
-		// expression wrapper.
-		b.writeSQL(")))")
-		// Close the if(idx = length(cum), highest, <interp>)
-		b.writeSQL(")")
-		// Close the if(phi >= 1, …, interpolation)
-		b.writeSQL(")")
-		// Close the if(phi <= 0, 0.0, …)
-		b.writeSQL(")")
-		// Close the if(arraySum = 0, nan, …)
-		b.writeSQL(")")
-		// Close the if(length(bc) = 0, nan, …)
-		b.writeSQL(")")
-		// Close the computed-phi `if(isNaN(phi), nan, …)` wrapper.
-		if h.PhiExpr != nil {
-			b.writeSQL(")")
-		}
+		return InlineLit(h.Phi)
 	}
+	// `nan` / `0.0` are CH-portable shape tokens, not data: InlineLit
+	// would render `nan` as the quoted string `'nan'` and `0.0` as the
+	// canonicalised `0`, so they ride verbatim (the same posture as
+	// IfNonZero's `0.0` fallback in builder.go).
+	nan := verbatim("nan")
+	zeroF := verbatim("0.0")
+	highestBound := Subscript(Col(eb), lengthEB) // ExplicitBounds[length(ExplicitBounds)]
+	target := Paren(Mul(phi(), arraySumBC))      // (phi * arraySum(bc))
+
+	// idx = arrayFirstIndex(c -> c >= target, cum). Computed phi:
+	// ClickHouse 24.8 rejects a scalar subquery anywhere in
+	// arrayFirstIndex's argument tree with ILLEGAL_COLUMN ("Unexpected
+	// type of filter column") — the lambda's comparison result stops
+	// being the plain UInt8 filter column the higher-order filter
+	// machinery expects (newer CH accepts it). Wrapping the predicate as
+	// `(if(<cmp>, 1, 0) = 1)` restores the constant-folded UInt8 the 24.8
+	// filter path requires. The literal path keeps the bare comparison
+	// (byte-stable fixtures). idx is re-evaluated at each use site rather
+	// than CTE- d; CH's CSE folds it.
+	idx := func() Frag {
+		cmp := Gte(BareIdent("c"), target)
+		pred := cmp
+		if h.PhiExpr != nil {
+			pred = Paren(Eq(If(cmp, InlineLit(1), InlineLit(0)), InlineLit(1)))
+		}
+		return Call("arrayFirstIndex", Lambda1("c", pred), arrayCumSumBC)
+	}
+	// idxAtOffset renders `<idx>` or `<idx> - 1` (the `idx - 1` lower-edge
+	// lookups). offsetMinusOne selects the `- 1` form.
+	idxAtOffset := func(offsetMinusOne bool) Frag {
+		if offsetMinusOne {
+			return Sub(idx(), InlineLit(1))
+		}
+		return idx()
+	}
+	cumAt := func(offsetMinusOne bool) Frag {
+		return Subscript(arrayCumSumBC, idxAtOffset(offsetMinusOne))
+	}
+	boundAt := func(offsetMinusOne bool) Frag {
+		return Subscript(Col(eb), idxAtOffset(offsetMinusOne))
+	}
+	// Lower-edge selectors branch on idx = 1 → 0.0, else the [idx-1]
+	// lookup. bound_lo / cum_lo per the interpolation below.
+	boundLo := If(Eq(idx(), InlineLit(1)), zeroF, boundAt(true))
+	cumLo := If(Eq(idx(), InlineLit(1)), zeroF, cumAt(true))
+
+	// Interpolation:
+	//   bound_lo + (bound_hi - bound_lo) * (target - cum_lo) / (cum_hi - cum_lo)
+	// bound_hi = ExplicitBounds[idx]; cum_hi = cum[idx]; target = phi *
+	// arraySum(bc). The grouping parens match the legacy emitter exactly:
+	//   (bound_lo + (bound_hi - bound_lo) * ((target) - cum_lo) / (cum_hi - cum_lo))
+	interp := Paren(
+		Add(
+			boundLo,
+			Div(
+				Mul(
+					Paren(Sub(boundAt(false), boundLo)),
+					Paren(Sub(target, cumLo)),
+				),
+				Paren(Sub(cumAt(false), cumLo)),
+			),
+		),
+	)
+
+	// if(idx = length(cum), highest_bound, <interp>) — the +Inf bucket
+	// (only the trailing bucket crosses target) returns the highest
+	// explicit bound.
+	idxBranch := If(Eq(idx(), Call("length", arrayCumSumBC)), highestBound, interp)
+
+	// Nested edge-case chain, outermost first:
+	//   if(length(bc) = 0, nan,
+	//      if(arraySum(bc) = 0, nan,
+	//         if(phi <= 0, 0.0,
+	//            if(phi >= 1, highest_bound, idxBranch))))
+	core := If(Eq(lengthBC, InlineLit(0)), nan,
+		If(Eq(arraySumBC, InlineLit(0)), nan,
+			If(Lte(phi(), InlineLit(0)), zeroF,
+				If(Gte(phi(), InlineLit(1)), highestBound, idxBranch))))
+
+	if h.PhiExpr == nil {
+		return core
+	}
+	// Computed phi can be NaN at runtime; every comparison branch above
+	// evaluates false on NaN and the interpolation would index cum[0] —
+	// guard with a leading isNaN → nan branch (Prom's bucketQuantile
+	// NaN-phi contract). The literal path skips the wrapper so existing
+	// fixtures stay byte-stable.
+	return If(Call("isNaN", phi()), nan, core)
 }

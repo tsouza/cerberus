@@ -40,15 +40,10 @@ func (e *emitter) emitSetOperation(s *chplan.SetOperation) error {
 		//   ON L.TraceId = R.TraceId AND L.SpanId = R.SpanId
 		traceID := s.TraceIDColumn
 		spanID := s.SpanIDColumn
-		on := func(b *Builder) {
-			b.QualIdent("L", traceID)
-			b.writeSQL(" = ")
-			b.QualIdent("R", traceID)
-			b.writeSQL(" AND ")
-			b.QualIdent("L", spanID)
-			b.writeSQL(" = ")
-			b.QualIdent("R", spanID)
-		}
+		on := And(
+			Eq(Qual("L", traceID), Qual("R", traceID)),
+			Eq(Qual("L", spanID), Qual("R", spanID)),
+		)
 		sb := NewQuery().
 			Select(verbatim("L.*")).
 			From(As(leftFrag, "L")).

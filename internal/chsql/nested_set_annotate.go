@@ -7,13 +7,17 @@ import (
 	"github.com/tsouza/cerberus/internal/chplan"
 )
 
-// nestedSetPathElemWidth is the byte width of one DFS-path element:
-// 20 zero-padded decimal digits of the span's start timestamp in
-// nanoseconds + 20 zero-padded decimal digits of sipHash64(SpanId).
-// Fixed-width elements make plain string comparison of concatenated
-// paths equivalent to lexicographic tuple comparison, and
-// length(path) / width recovers the span's depth.
-const nestedSetPathElemWidth = 40
+// nestedSetPathElemHalf is the zero-padded decimal width of each half of
+// a DFS-path element: 20 digits of the span's start timestamp in
+// nanoseconds, and 20 digits of sipHash64(SpanId).
+const nestedSetPathElemHalf = 20
+
+// nestedSetPathElemWidth is the byte width of one DFS-path element: the
+// two nestedSetPathElemHalf halves concatenated. Fixed-width elements
+// make plain string comparison of concatenated paths equivalent to
+// lexicographic tuple comparison, and length(path) / width recovers the
+// span's depth.
+const nestedSetPathElemWidth = 2 * nestedSetPathElemHalf
 
 // emitNestedSetAnnotate renders a chplan.NestedSetAnnotate: the input
 // rows LEFT JOINed against a per-trace nested-set numbering computed
@@ -125,18 +129,15 @@ func (e *emitter) emitNestedSetAnnotate(n *chplan.NestedSetAnnotate) error {
 	numbering := buildNestedSetNumbering(n, scope)
 
 	aliasedNS := func(nsCol, outCol string) Frag {
-		return func(b *Builder) {
-			b.writeSQL("ifNull(")
-			b.QualIdent("ns", nsCol)
-			b.writeSQL(", 0) AS ")
-			b.Ident(outCol)
-		}
+		// The `ns` qualifier is backtick-quoted (Qual/QualIdent), matching
+		// the legacy emitter; the bare-qualifier qualColFrag is only for
+		// the L / R / m single-letter aliases elsewhere.
+		return As(Call("ifNull", Qual("ns", nsCol), InlineLit(0)), outCol)
 	}
-	onClause := func(b *Builder) {
-		spanIDPairFrag("m", n.TraceIDColumn, "ns", n.TraceIDColumn)(b)
-		b.writeSQL(" AND ")
-		spanIDPairFrag("m", n.SpanIDColumn, "ns", n.SpanIDColumn)(b)
-	}
+	onClause := And(
+		spanIDPairFrag("m", n.TraceIDColumn, "ns", n.TraceIDColumn),
+		spanIDPairFrag("m", n.SpanIDColumn, "ns", n.SpanIDColumn),
+	)
 
 	sb := NewQuery().
 		Select(
@@ -160,13 +161,17 @@ func buildNestedSetNumbering(n *chplan.NestedSetAnnotate, scope Frag) *QueryBuil
 	// One fixed-width path element for the span row `qual` qualifies
 	// (empty qual = bare column references in the anchor SELECT).
 	pathElem := func(qual string) Frag {
-		return func(b *Builder) {
-			b.writeSQL("concat(leftPad(toString(toUnixTimestamp64Nano(")
-			writeOptQualCol(b, qual, n.TimestampColumn)
-			b.writeSQL(")), 20, '0'), leftPad(toString(sipHash64(")
-			writeOptQualCol(b, qual, n.SpanIDColumn)
-			b.writeSQL(")), 20, '0'))")
+		// One fixed-width element = zero-padded ns-timestamp ++
+		// zero-padded sipHash64(SpanId). Each half is nestedSetPathElemHalf
+		// digits; the two halves concatenate to nestedSetPathElemWidth.
+		padded := func(inner Frag) Frag {
+			return Call("leftPad", Call("toString", inner), InlineLit(nestedSetPathElemHalf), InlineLit("0"))
 		}
+		return Call(
+			"concat",
+			padded(Call("toUnixTimestamp64Nano", optQualColFrag(qual, n.TimestampColumn))),
+			padded(Call("sipHash64", optQualColFrag(qual, n.SpanIDColumn))),
+		)
 	}
 
 	// Anchor: the root spans (ParentSpanId = '') of every trace the
@@ -186,13 +191,12 @@ func buildNestedSetNumbering(n *chplan.NestedSetAnnotate, scope Frag) *QueryBuil
 			verbatim("0 AS `_depth`"),
 		).
 		From(Col(n.SpansTable)).
-		Where(func(b *Builder) {
-			b.Ident(n.ParentSpanIDColumn)
-			b.writeSQL(" = '' AND ")
-			b.Ident(n.TraceIDColumn)
-			b.writeSQL(" IN ")
-			scope(b)
-		})
+		Where(
+			Eq(Col(n.ParentSpanIDColumn), InlineLit("")),
+			// scope already carries its own parens; InSubquery adds none,
+			// giving `<TraceId> IN (SELECT …)` with a single paren pair.
+			InSubquery(Col(n.TraceIDColumn), scope),
+		)
 
 	// Recursive step: append one path element per child level and carry
 	// `_depth + 1`. The `c._depth < <cap>` bound (shared with the
@@ -209,24 +213,20 @@ func buildNestedSetNumbering(n *chplan.NestedSetAnnotate, scope Frag) *QueryBuil
 			qualColFrag("t", n.TraceIDColumn),
 			qualColFrag("t", n.SpanIDColumn),
 			qualColFrag("t", n.ParentSpanIDColumn),
-			func(b *Builder) {
-				b.writeSQL("concat(c.`_path`, ")
-				pathElem("t")(b)
-				b.writeSQL(")")
-			},
+			// `c.\`_path\`` is the recursive CTE's synthetic path column,
+			// referenced bare-qualified (alias `c`, backtick-quoted
+			// `_path`) — emitter-pinned, so verbatim; concat composes.
+			Call("concat", verbatim("c.`_path`"), pathElem("t")),
 			verbatim("c.`_depth` + 1 AS `_depth`"),
 		).
 		From(aliasedFrag(Col(n.SpansTable), "t")).
 		Join(
 			InnerJoin,
 			aliasedFrag(verbatim("`_cerberus_ns_paths`"), "c"),
-			func(b *Builder) {
-				spanIDPairFrag("t", n.TraceIDColumn, "c", n.TraceIDColumn)(b)
-				b.writeSQL(" AND ")
-				writeSideCol(b, "t", n.ParentSpanIDColumn)
-				b.writeSQL(" = ")
-				writeSideCol(b, "c", n.SpanIDColumn)
-			},
+			And(
+				spanIDPairFrag("t", n.TraceIDColumn, "c", n.TraceIDColumn),
+				Eq(qualColFrag("t", n.ParentSpanIDColumn), qualColFrag("c", n.SpanIDColumn)),
+			),
 		).
 		Where(structuralDepthBoundFrag(0))
 
@@ -359,13 +359,8 @@ func (e *emitter) traceScopeFrag(n chplan.Node, traceIDCol string) (Frag, error)
 	if err != nil {
 		return nil, err
 	}
-	return func(b *Builder) {
-		b.writeSQL("(SELECT ")
-		b.Ident(traceIDCol)
-		b.writeSQL(" FROM ")
-		sub(b)
-		b.writeSQL(")")
-	}, nil
+	// `(SELECT <traceIDCol> FROM <sub>)` — the leaf-scope exact form.
+	return NewQuery().Select(Col(traceIDCol)).From(sub).Frag(), nil
 }
 
 // unionTraceScopeFrag renders `(<scope(left)> UNION ALL <scope(right)>)`
@@ -379,13 +374,7 @@ func (e *emitter) unionTraceScopeFrag(left, right chplan.Node, traceIDCol string
 	if err != nil {
 		return nil, err
 	}
-	return func(b *Builder) {
-		b.writeSQL("(")
-		l(b)
-		b.writeSQL(" UNION ALL ")
-		r(b)
-		b.writeSQL(")")
-	}, nil
+	return Paren(UnionAll(l, r)), nil
 }
 
 // projectsBareColumn reports whether p projects col through unchanged:
@@ -412,6 +401,16 @@ func writeOptQualCol(b *Builder, qual, col string) {
 		return
 	}
 	b.QualIdent(qual, col)
+}
+
+// optQualColFrag is the Frag form of writeOptQualCol: `<qual>.<col>`
+// (both backtick-quoted) when qual is non-empty, bare backtick-quoted
+// `<col>` otherwise.
+func optQualColFrag(qual, col string) Frag {
+	if qual == "" {
+		return Col(col)
+	}
+	return Qual(qual, col)
 }
 
 // quoteIdent backtick-quotes a column name for use inside verbatim

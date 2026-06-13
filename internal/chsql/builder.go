@@ -1460,6 +1460,23 @@ func Subquery(s Subqueryable) Frag {
 	}
 }
 
+// Spliced returns a Frag that splices an already-rendered (sql, args)
+// pair into the stream verbatim — NO surrounding parens, unlike
+// Subquery. Used when the rendered SELECT must sit bare in a context
+// that supplies its own parens (e.g. the right-hand side of the list-
+// form In, which parenthesises its arguments): wrapping it in Subquery
+// would double-paren. The args splice at the position the Frag emits so
+// positional `?` ordering follows the SQL text. The narrow contract:
+// sql is emitter-rendered SQL (a QueryBuilder.Build() result), never
+// user input.
+func Spliced(s Subqueryable) Frag {
+	return func(b *Builder) {
+		sql, args := s.Build()
+		b.sb.WriteString(sql)
+		b.args = append(b.args, args...)
+	}
+}
+
 // PreRenderedSQL adapts an already-rendered (sql, args) pair into a
 // Subqueryable so it can flow through Subquery without raw-string
 // composition. Holds an opaque CH SQL string plus its positional args;
@@ -1649,6 +1666,23 @@ func In(left Frag, right ...Frag) Frag {
 			r(b)
 		}
 		b.sb.WriteByte(')')
+	}
+}
+
+// InSubquery returns a Frag rendering "<left> IN <sub>" — the set-
+// membership predicate where the right-hand side is a single subquery
+// Frag that already carries its own surrounding parens (e.g. a
+// traceScopeFrag's `(SELECT … )` or a QueryBuilder.Frag()). Unlike the
+// list-form In (which wraps a comma list in parens), this emits no
+// parens of its own, so a self-parenthesising subquery renders as the
+// CH-idiomatic `<left> IN (SELECT …)` with exactly one paren pair.
+// Sibling of NotInSubquery for the IN direction; used by the nested-set
+// annotate anchor's trace-id scope filter.
+func InSubquery(left, sub Frag) Frag {
+	return func(b *Builder) {
+		left(b)
+		b.sb.WriteString(" IN ")
+		sub(b)
 	}
 }
 

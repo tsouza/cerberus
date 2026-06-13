@@ -472,17 +472,15 @@ func (e *emitter) validateVectorSetOpCols(s *chplan.VectorSetOp) error {
 // per signature; set ops are inherently many-to-many on labels so a
 // per-series subquery would otherwise emit one row per LHS+RHS series.
 func setOpInSubqueryFrag(m chplan.VectorMatch, attrsCol string, sub Frag, in bool) Frag {
-	return func(b *Builder) {
-		matchKeyGroupExprFrag(m, attrsCol)(b)
-		if in {
-			b.writeSQL(" IN (")
-		} else {
-			b.writeSQL(" NOT IN (")
-		}
-		inner := NewQuery().
-			Select(Distinct(matchKeyGroupExprFrag(m, attrsCol))).
-			From(sub)
-		inner.Frag()(b)
-		b.writeSQL(")")
+	sig := matchKeyGroupExprFrag(m, attrsCol)
+	inner := NewQuery().
+		Select(Distinct(matchKeyGroupExprFrag(m, attrsCol))).
+		From(sub)
+	// inner.Frag() already wraps the SELECT in parens; In / NotInSubquery
+	// each add the outer membership parens, giving the existing
+	// `<sig> [NOT] IN ((SELECT DISTINCT … FROM …))` byte shape.
+	if in {
+		return In(sig, inner.Frag())
 	}
+	return NotInSubquery(sig, inner.Frag())
 }
