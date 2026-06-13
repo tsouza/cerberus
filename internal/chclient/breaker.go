@@ -174,6 +174,38 @@ func (b *breaker) allow() bool {
 	}
 }
 
+// peek reports the breaker's current lifecycle phase as a stable string
+// WITHOUT mutating state — in particular without admitting or reserving a
+// HALF-OPEN probe (unlike allow, which transitions OPEN→HALF-OPEN and
+// reserves the probe). It exists for the solver's pre-flight: a routed
+// K-shard fan-out must fail fast when the breaker is not CLOSED rather than
+// burn the single recovery probe on a doomed request, so the peek is
+// strictly read-only.
+//
+// It does evaluate the OPEN backoff window so a caller sees "would admit a
+// probe" (half-open) once the interval has elapsed — but it does NOT take
+// the slot; allow still owns the transition. The returned strings are the
+// stable vocabulary "closed" / "open" / "half-open".
+func (b *breaker) peek() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	switch b.state {
+	case stateClosed:
+		return "closed"
+	case stateOpen:
+		// The backoff has elapsed but no probe is reserved yet — report
+		// half-open so the solver still defers to route-A probing.
+		if b.nowOrTime().Sub(b.openedAt) >= breakerOpenInterval {
+			return "half-open"
+		}
+		return "open"
+	case stateHalfOpen:
+		return "half-open"
+	default:
+		return "closed"
+	}
+}
+
 // record observes the outcome of a CH-touching call and advances
 // the breaker state machine accordingly. ctx is the request context
 // the call ran under; err is the post-CH error (nil on success,

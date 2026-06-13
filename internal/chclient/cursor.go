@@ -73,17 +73,16 @@ type rowsCursor struct {
 	// iteration crosses it, Next returns false and Err yields a
 	// *TooManySamplesError wrapping ErrTooManySamples.
 	maxSamples int64
+	// budget is the request-scoped SHARED sample budget pulled from ctx at
+	// QueryCursor time (nil on the single-statement route-A path). When
+	// present it takes precedence over maxSamples so a routed fan-out of K
+	// cursors enforces ONE per-request max-samples limit (the 422 parity).
+	// A crossing yields the IDENTICAL *TooManySamplesError (errors.Is
+	// ErrTooManySamples) the per-cursor limit produces.
+	budget *SampleBudget
 	// seen counts rows successfully decoded so far, compared against
 	// maxSamples after each scan.
 	seen int64
-	// budget, when non-nil, is the per-REQUEST shared sample budget
-	// attached to the QueryCursor ctx via WithSampleBudget. It takes
-	// precedence over maxSamples: a fan-out request shares ONE budget
-	// across all its shard cursors so the 422 trips at the request
-	// total rather than per cursor. When nil the cursor enforces its own
-	// maxSamples. Either way a crossing yields the IDENTICAL
-	// *TooManySamplesError (errors.Is ErrTooManySamples).
-	budget *SampleBudget
 	// maxMemoryBytes is the Client's configured per-query ClickHouse
 	// memory cap (Config.MaxQueryMemoryBytes), carried so a mid-stream
 	// MEMORY_LIMIT_EXCEEDED (code 241) surfacing via rows.Err() — the
@@ -142,17 +141,18 @@ func (c *rowsCursor) Next() bool {
 		return false
 	}
 	c.seen++
-	// A per-request shared budget (set by QueryCursor from the ctx)
-	// takes precedence over the per-cursor maxSamples: charging one
-	// sample against it lets a fan-out request's concurrent shard
-	// cursors collectively trip the 422 at the request total. When no
-	// budget is attached, fall back to the per-cursor limit. Both paths
-	// produce the IDENTICAL *TooManySamplesError so the upstream 422
-	// message and behaviour are the same regardless of which limit
-	// fired.
+	// A per-request shared budget (set by QueryCursor from the ctx) takes
+	// precedence over the per-cursor maxSamples: charging one sample
+	// against it lets a fan-out request's concurrent shard cursors
+	// collectively trip the 422 at the request total. When no budget is
+	// attached, fall back to the per-cursor limit. Both paths produce the
+	// IDENTICAL *TooManySamplesError so the upstream 422 message and
+	// behaviour are the same regardless of which limit fired — the
+	// budget's Limit() is the configured max a single-statement query
+	// would report.
 	if c.budget != nil {
-		if !c.budget.take() {
-			c.err = &TooManySamplesError{Limit: c.budget.limit}
+		if !c.budget.consume(1) {
+			c.err = &TooManySamplesError{Limit: c.budget.Limit()}
 			return false
 		}
 	} else if c.maxSamples > 0 && c.seen > c.maxSamples {

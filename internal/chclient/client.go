@@ -326,6 +326,20 @@ type Sample struct {
 	Value      float64
 }
 
+// PeekBreakerState reports the circuit-breaker lifecycle phase as a stable
+// string — "closed", "open", or "half-open" — WITHOUT mutating breaker
+// state. In particular it never reserves a HALF-OPEN probe slot, unlike the
+// internal allow() path that the data-plane methods use.
+//
+// It is the read-only pre-flight hook the sharded solver uses (satisfies
+// solver.breakerPeeker): a routed K-shard fan-out checks this before
+// emitting and fails fast when the breaker is not CLOSED, so a doomed routed
+// request never burns the single recovery probe — recovery probing is left
+// to lighter route-A traffic.
+func (c *Client) PeekBreakerState() string {
+	return c.br.peek()
+}
+
 // Exec runs sql with positional args against ClickHouse and returns any
 // error. Use for DDL (CREATE TABLE, ...) and DML (INSERT, ...) that don't
 // produce a result set.

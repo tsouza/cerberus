@@ -50,16 +50,37 @@ func NewSampleBudget(max int64) *SampleBudget {
 	return b
 }
 
-// take attempts to charge one sample against the shared budget. It
-// returns true when the sample fits (the request may keep draining) and
-// false when this sample would cross the budget — at which point the
-// caller aborts iteration with a *TooManySamplesError{Limit: b.limit}.
+// consume draws n samples against the shared budget. It returns true when
+// the draw fits (the request may keep draining) and false when it would
+// cross the budget — at which point the caller aborts iteration with a
+// *TooManySamplesError{Limit: b.Limit()}.
 //
-// The decrement is atomic so the concurrent shard cursors of one fan-out
-// share the counter without a lock. Once remaining has gone negative the
-// budget stays tripped for every later take across every cursor.
-func (b *SampleBudget) take() bool {
-	return b.remaining.Add(-1) >= 0
+// A non-positive limit is "unlimited": consume short-circuits to true
+// without touching remaining, mirroring the per-cursor maxSamples == 0
+// contract. The decrement is otherwise atomic so the concurrent shard
+// cursors of one fan-out share the counter without a lock. Once remaining
+// has gone negative the budget stays tripped for every later consume
+// across every cursor.
+func (b *SampleBudget) consume(n int64) bool {
+	if b == nil || b.limit <= 0 {
+		return true
+	}
+	return b.remaining.Add(-n) >= 0
+}
+
+// Consume draws n samples from the budget, returning false once the
+// request has exhausted it. Exported for the solver's shared-budget tests;
+// the data-plane cursor calls the unexported consume.
+func (b *SampleBudget) Consume(n int64) bool { return b.consume(n) }
+
+// Limit returns the original per-request budget (the configured cap),
+// carried so a *TooManySamplesError can name the limit rather than the
+// residual count. Returns 0 on a nil budget.
+func (b *SampleBudget) Limit() int64 {
+	if b == nil {
+		return 0
+	}
+	return b.limit
 }
 
 // active reports whether the budget carries a positive limit and should
@@ -92,4 +113,12 @@ func budgetFromContext(ctx context.Context) *SampleBudget {
 		return nil
 	}
 	return b
+}
+
+// SampleBudgetFromContext returns the shared *SampleBudget attached to ctx
+// by WithSampleBudget, or nil. Exported so the sharded solver's tests can
+// confirm the per-request budget is threaded into every shard's ctx; the
+// data-plane cursor uses the unexported budgetFromContext.
+func SampleBudgetFromContext(ctx context.Context) *SampleBudget {
+	return budgetFromContext(ctx)
 }

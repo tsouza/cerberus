@@ -190,6 +190,45 @@ func (l *Limiter) Acquire(ctx context.Context) (release func(), ok bool) {
 	}, true
 }
 
+// TryAcquireTopUp is the two-stage weighted-admission hook the sharded
+// solver uses (docs/query-solver-design.md §"Parallel execution"). The
+// Middleware already charged weight 1 at handler entry — before the route
+// was known — so the solver, once it decides to fan out into shards, asks
+// here for `want` ADDITIONAL semaphore units (typically P-1).
+//
+// It is NON-BLOCKING and DEGRADE-don't-reject: it greedily takes as many of
+// the `want` units as are free RIGHT NOW (down to zero), returns the count
+// actually granted plus an idempotent release closure. The solver clamps
+// effective parallelism to 1+granted and runs — it never 503s on a partial
+// grant. Taking the units one-at-a-time (rather than one TryAcquire(want)
+// that's all-or-nothing) is what makes the degrade smooth: under contention
+// the request still gets whatever headroom exists instead of falling all
+// the way to sequential.
+//
+// A nil receiver (admission disabled) grants the full request with a no-op
+// release — symmetric with Acquire's disabled path. want <= 0 is a no-op
+// grant of 0.
+func (l *Limiter) TryAcquireTopUp(ctx context.Context, want int) (granted int, release func()) {
+	if l == nil || want <= 0 {
+		return 0, func() {}
+	}
+	for granted < want && l.sem.TryAcquire(1) {
+		granted++
+	}
+	if granted == 0 {
+		return 0, func() {}
+	}
+	took := granted
+	released := false
+	return granted, func() {
+		if released {
+			return
+		}
+		released = true
+		l.sem.Release(int64(took))
+	}
+}
+
 // Middleware wraps next so every request first tries to acquire a
 // slot from l. On rejection the wrapper writes a 503 with
 // `Retry-After: 1` and drops the request without invoking next. On
