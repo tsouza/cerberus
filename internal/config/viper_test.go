@@ -48,6 +48,18 @@ func TestFromEnv_ViperDefaults_NoEnv(t *testing.T) {
 	if cfg.ClickHouse.ConnMaxLifetime != 30*time.Second {
 		t.Errorf("ConnMaxLifetime = %v; want 30s", cfg.ClickHouse.ConnMaxLifetime)
 	}
+	if !cfg.ClickHouse.KeepAliveEnabled {
+		t.Errorf("KeepAliveEnabled = false; want true")
+	}
+	if cfg.ClickHouse.KeepAliveIdle != 10*time.Second {
+		t.Errorf("KeepAliveIdle = %v; want 10s", cfg.ClickHouse.KeepAliveIdle)
+	}
+	if cfg.ClickHouse.KeepAliveInterval != 5*time.Second {
+		t.Errorf("KeepAliveInterval = %v; want 5s", cfg.ClickHouse.KeepAliveInterval)
+	}
+	if cfg.ClickHouse.KeepAliveProbes != 3 {
+		t.Errorf("KeepAliveProbes = %d; want 3", cfg.ClickHouse.KeepAliveProbes)
+	}
 	if cfg.ClickHouse.MaxQuerySamples != 50_000_000 {
 		t.Errorf("MaxQuerySamples = %d; want 50000000", cfg.ClickHouse.MaxQuerySamples)
 	}

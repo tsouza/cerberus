@@ -5,6 +5,7 @@ package chclient
 import (
 	"context"
 	"fmt"
+	"net"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
@@ -107,28 +108,41 @@ type Config struct {
 	// ConnMaxLifetime caps how long a single pooled connection may live
 	// before the driver recycles it. clickhouse-go's implicit default is
 	// 1h; cerberus makes it explicit. Zero falls back to
-	// defaultConnMaxLifetime.
-	//
-	// It is the recovery-speed CEILING for a restarted ClickHouse backend
-	// (ch-pod-kill, run 27509796946). clickhouse-go (v2.46.0) has no
-	// idle-health knob: a pooled conn to the OLD pod is dropped at acquire
-	// only once acquire()'s isBad() check trips — either the non-blocking
-	// socket read in conn_check.go notices the dead peer, OR the conn
-	// crosses ConnMaxLifetime (isBad checks both). A force-killed pod often
-	// leaves the socket in ESTABLISHED with no FIN/RST, so the socket check
-	// passes the dead conn through as healthy. The driver evicts a conn the
-	// instant a query against it errors (release(conn, err) → close), but
-	// the error only surfaces AFTER the read on the dead peer unblocks — and
-	// that read blocks for the driver's ReadTimeout (300s default) or the
-	// request's ctx budget (minutes). So the transport-retry can NOT make a
-	// stale conn transparent in seconds: the FIRST attempt blocks for
-	// minutes before it can even retry. ConnMaxLifetime is therefore the
-	// effective heal bound — the only age-eviction lever — so it must be
-	// SHORT (tens of seconds) for fast restart recovery, not minutes. See
-	// internal/config defaultCHConnMaxLifetime for the chosen value + churn
-	// trade-off; the retry.go path remains the in-window absorber for the
-	// rare stale conn that fails fast.
+	// defaultConnMaxLifetime. It is an age-eviction backstop for a stale
+	// conn to a restarted backend (see KeepAliveEnabled for the primary
+	// dead-peer detection mechanism).
 	ConnMaxLifetime time.Duration
+
+	// KeepAliveEnabled turns on TCP keepalive on every CH connection's
+	// socket (via the New() DialContext dialer). It is the ROOT-CAUSE fix
+	// for slow breaker recovery after a ClickHouse restart: clickhouse-go
+	// (v2.46.0) has no idle-health knob, and a force-killed pod often
+	// leaves the socket ESTABLISHED with no FIN/RST, so the driver's cheap
+	// per-acquire socket check passes the dead conn through as healthy and
+	// the next query blocks on a read until ReadTimeout (300s) — surfacing
+	// as context.DeadlineExceeded, which is NOT a broken-conn error and so
+	// is neither fast-retried nor evicted. With keepalive on, the kernel
+	// probes the idle socket and, after KeepAliveProbes unanswered probes,
+	// declares the peer dead; the blocked read then returns ECONNRESET fast
+	// — which isBrokenConnError classifies, so withTransportRetry evicts +
+	// redials. Keepalive probes fire ONLY on IDLE sockets, so a long
+	// streaming query is never interrupted. Default false on a bare Config
+	// (tests); internal/config always supplies the production true default.
+	KeepAliveEnabled bool
+
+	// KeepAliveIdle is how long a connection stays idle before the kernel
+	// sends the first keepalive probe. Only consulted when KeepAliveEnabled.
+	KeepAliveIdle time.Duration
+
+	// KeepAliveInterval is the gap between successive keepalive probes once
+	// probing has started. Only consulted when KeepAliveEnabled.
+	KeepAliveInterval time.Duration
+
+	// KeepAliveProbes is the number of unanswered keepalive probes after
+	// which the socket is declared dead. Idle + Interval*Probes is the
+	// worst-case dead-peer detection window. Only consulted when
+	// KeepAliveEnabled.
+	KeepAliveProbes int
 
 	// MaxQuerySamples caps the number of Sample rows a single query may
 	// load into memory. When a cursor drain crosses the budget,
@@ -351,6 +365,28 @@ func (c *Client) ForHead(h Head) *Client {
 	return &view
 }
 
+// dialContext builds the clickhouse.Options.DialContext function: a
+// net.Dialer that applies the dial timeout plus the per-Config TCP
+// keepalive policy. When cfg.KeepAliveEnabled is false the dialer still
+// dials (KeepAliveConfig.Enable:false) so DialContext behaviour is
+// uniform — keepalive is simply not armed. The network is forced to
+// "tcp" because the CH native protocol is always TCP; the driver passes
+// the configured host:port as addr.
+func dialContext(dial time.Duration, cfg Config) func(context.Context, string) (net.Conn, error) {
+	d := &net.Dialer{
+		Timeout: dial,
+		KeepAliveConfig: net.KeepAliveConfig{
+			Enable:   cfg.KeepAliveEnabled,
+			Idle:     cfg.KeepAliveIdle,
+			Interval: cfg.KeepAliveInterval,
+			Count:    cfg.KeepAliveProbes,
+		},
+	}
+	return func(ctx context.Context, addr string) (net.Conn, error) {
+		return d.DialContext(ctx, "tcp", addr)
+	}
+}
+
 // New opens a connection pool to ClickHouse. Construction is lazy:
 // clickhouse.Open only validates options and never dials, so New
 // succeeds even when ClickHouse is unreachable — the first Ping/Query
@@ -380,6 +416,14 @@ func New(cfg Config) (*Client, error) {
 			Password: cfg.Password,
 		},
 		DialTimeout: dial,
+		// DialContext routes every CH connection through a net.Dialer so we
+		// can put TCP keepalive on the socket — the root-cause fix for slow
+		// breaker recovery after a CH restart (see Config.KeepAliveEnabled).
+		// Keepalive probes fire ONLY on idle sockets, so a long streaming
+		// query is never interrupted. When keepalive is disabled we still
+		// dial through the same net.Dialer (Enable:false) so DialContext
+		// behaviour is uniform — only the keepalive policy changes.
+		DialContext: dialContext(dial, cfg),
 	}
 	// Pool sizing is explicit and configurable (#81). A zero field is
 	// left unset so clickhouse-go's own default applies — that keeps the
