@@ -102,12 +102,18 @@ func postProcessExtract(expr syntax.Expr) (lineTransform, error) {
 }
 
 // lineTransform is the per-row transform shape: takes the current
-// line + the stream's labels and returns the new line + new labels.
+// line, the row's nanosecond timestamp, and the stream's labels and
+// returns the new line + new labels. The timestamp is threaded through
+// so `| line_format` / `| label_format` templates can expose
+// `{{__timestamp__}}` (as a time.Time, matching Loki's
+// AddLineAndTimestampFunctions). Transforms that don't read the
+// timestamp ignore it.
+//
 // Transforms that don't modify labels (line_format, decolorize)
 // return the input map reference unchanged; transforms that DO
 // modify labels (label_format) return a fresh map so callers can
 // safely treat the original sample's labels as immutable.
-type lineTransform func(line string, labels map[string]string) (string, map[string]string)
+type lineTransform func(line string, ts int64, labels map[string]string) (string, map[string]string)
 
 // composeTransforms left-to-right composes the per-stage transforms
 // so the next stage sees the previous stage's output line AND output
@@ -117,9 +123,9 @@ func composeTransforms(steps []lineTransform) lineTransform {
 	if len(steps) == 1 {
 		return steps[0]
 	}
-	return func(line string, labels map[string]string) (string, map[string]string) {
+	return func(line string, ts int64, labels map[string]string) (string, map[string]string) {
 		for _, s := range steps {
-			line, labels = s(line, labels)
+			line, labels = s(line, ts, labels)
 		}
 		return line, labels
 	}
@@ -142,13 +148,19 @@ func composeTransforms(steps []lineTransform) lineTransform {
 // samples), so no synchronization is needed. Labels pass through
 // unchanged.
 func newLineFormatStep(src string) (lineTransform, error) {
-	var currentLine string
-	funcs := templateFuncs()
-	funcs["__line__"] = func() string { return currentLine }
-	// __timestamp__ stub — Loki exposes this as a func too. Not wired
-	// through Sample.Timestamp yet; revisit if a user template
-	// references it.
-	funcs["__timestamp__"] = func() string { return "" }
+	var (
+		currentLine string
+		currentTs   int64
+	)
+	// AddLineAndTimestampFunctions returns the FULL Loki funcmap (sprig
+	// allow-list + Loki-native funcs) with `__line__` / `__timestamp__`
+	// bound to the capture closures. `__timestamp__` returns a
+	// time.Time(time.Unix(0, ns)) so `{{ __timestamp__ | date "..." }}`
+	// stays at parity.
+	funcs := templateFuncs(
+		func() string { return currentLine },
+		func() int64 { return currentTs },
+	)
 	// Parsing a user-supplied template is the documented contract for
 	// `| line_format` — Loki accepts the same input and we mirror its
 	// semantics. The template runs against the streams response (label
@@ -159,8 +171,9 @@ func newLineFormatStep(src string) (lineTransform, error) {
 	if err != nil {
 		return nil, err
 	}
-	return func(line string, labels map[string]string) (string, map[string]string) {
+	return func(line string, ts int64, labels map[string]string) (string, map[string]string) {
 		currentLine = line
+		currentTs = ts
 		ctx := make(map[string]any, len(labels))
 		for k, v := range labels {
 			ctx[k] = v
@@ -175,7 +188,7 @@ func newLineFormatStep(src string) (lineTransform, error) {
 
 // decolorizeStep strips ANSI escape sequences from each line. Matches
 // Loki's `| decolorize` semantics. Labels pass through unchanged.
-func decolorizeStep(line string, labels map[string]string) (string, map[string]string) {
+func decolorizeStep(line string, _ int64, labels map[string]string) (string, map[string]string) {
 	return ansiEscape.ReplaceAllString(line, ""), labels
 }
 
@@ -208,6 +221,18 @@ func newLabelFormatStep(formats []loglib.LabelFmt) (lineTransform, error) {
 		rename bool
 		tpl    *template.Template
 	}
+	// Capture closures shared across every template Format in this
+	// stage, updated per-row before Execute so `__line__` /
+	// `__timestamp__` read the current sample — matching line_format and
+	// upstream Loki's LabelsFormatter.
+	var (
+		currentLine string
+		currentTs   int64
+	)
+	funcs := templateFuncs(
+		func() string { return currentLine },
+		func() int64 { return currentTs },
+	)
 	steps := make([]compiled, 0, len(formats))
 	for _, f := range formats {
 		c := compiled{dst: f.Name, src: f.Value, rename: f.Rename}
@@ -217,7 +242,7 @@ func newLabelFormatStep(formats []loglib.LabelFmt) (lineTransform, error) {
 			// rather than error, same as line_format.
 			tpl, err := template.New("label_format").
 				Option("missingkey=zero").
-				Funcs(templateFuncs()).
+				Funcs(funcs).
 				Parse(f.Value) //nolint:gosec // G708: user-template input is the feature
 			if err != nil {
 				return nil, err
@@ -226,7 +251,9 @@ func newLabelFormatStep(formats []loglib.LabelFmt) (lineTransform, error) {
 		}
 		steps = append(steps, c)
 	}
-	return func(line string, labels map[string]string) (string, map[string]string) {
+	return func(line string, ts int64, labels map[string]string) (string, map[string]string) {
+		currentLine = line
+		currentTs = ts
 		// Copy the input labels into a fresh map; mutations stay scoped
 		// to this row's result.
 		out := make(map[string]string, len(labels))
@@ -274,7 +301,7 @@ func newLabelFormatStep(formats []loglib.LabelFmt) (lineTransform, error) {
 //
 // Returns a FRESH labels map so callers can treat the input as
 // immutable, consistent with newLabelFormatStep.
-func unpackStep(line string, labels map[string]string) (string, map[string]string) {
+func unpackStep(line string, _ int64, labels map[string]string) (string, map[string]string) {
 	if len(line) == 0 || line[0] != '{' {
 		return line, labels
 	}
@@ -334,7 +361,7 @@ func newPatternStep(p string) (lineTransform, error) {
 		return nil, err
 	}
 	names := m.Names()
-	return func(line string, lbs map[string]string) (string, map[string]string) {
+	return func(line string, _ int64, lbs map[string]string) (string, map[string]string) {
 		caps := m.Matches([]byte(line))
 		if len(caps) == 0 {
 			return line, lbs
@@ -381,7 +408,7 @@ func newLabelProjectionStep(stage syntax.StageExpr) (lineTransform, error) {
 		return nil, err
 	}
 	baseBuilder := loglib.NewBaseLabelsBuilder()
-	return func(line string, in map[string]string) (string, map[string]string) {
+	return func(line string, _ int64, in map[string]string) (string, map[string]string) {
 		// Convert the input label map into labels.Labels. Order doesn't
 		// matter for Drop/Keep — both iterate via UnsortedLabels — but
 		// labels.FromMap returns a canonicalised set so the hash is

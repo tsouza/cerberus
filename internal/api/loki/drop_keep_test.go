@@ -25,7 +25,7 @@ func TestDropLabels_SingleName(t *testing.T) {
 		t.Fatalf("expected non-nil transform for drop query")
 	}
 
-	gotLine, gotLabels := tx("hello", map[string]string{
+	gotLine, gotLabels := tx("hello", 0, map[string]string{
 		"job": "api",
 		"env": "prod",
 		"pod": "web-1",
@@ -50,7 +50,7 @@ func TestDropLabels_MultipleNames(t *testing.T) {
 		t.Fatalf("extract: %v", err)
 	}
 
-	_, got := tx("l", map[string]string{
+	_, got := tx("l", 0, map[string]string{
 		"job": "api",
 		"env": "prod",
 		"pod": "web-1",
@@ -75,7 +75,7 @@ func TestDropLabels_Matcher(t *testing.T) {
 	}
 
 	// value matches → dropped
-	_, gotDrop := tx("l", map[string]string{
+	_, gotDrop := tx("l", 0, map[string]string{
 		"job": "api",
 		"env": "prod",
 	})
@@ -84,7 +84,7 @@ func TestDropLabels_Matcher(t *testing.T) {
 	}
 
 	// value differs → preserved
-	_, gotKeep := tx("l", map[string]string{
+	_, gotKeep := tx("l", 0, map[string]string{
 		"job": "api",
 		"env": "stg",
 	})
@@ -102,7 +102,7 @@ func TestDropLabels_AbsentNameIsNoOp(t *testing.T) {
 	expr, _ := syntax.ParseExpr(`{job="api"} | drop nope`)
 	tx, _ := postProcessExtract(expr)
 
-	_, got := tx("l", map[string]string{"job": "api"})
+	_, got := tx("l", 0, map[string]string{"job": "api"})
 	want := map[string]string{"job": "api"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("absent-name drop should be no-op\n got %#v\nwant %#v", got, want)
@@ -126,7 +126,7 @@ func TestKeepLabels_SingleName(t *testing.T) {
 		t.Fatalf("expected non-nil transform for keep query")
 	}
 
-	gotLine, got := tx("hello", map[string]string{
+	gotLine, got := tx("hello", 0, map[string]string{
 		"job": "api",
 		"env": "prod",
 		"pod": "web-1",
@@ -151,7 +151,7 @@ func TestKeepLabels_MultipleNames(t *testing.T) {
 		t.Fatalf("extract: %v", err)
 	}
 
-	_, got := tx("l", map[string]string{
+	_, got := tx("l", 0, map[string]string{
 		"job": "api",
 		"env": "prod",
 		"pod": "web-1",
@@ -176,7 +176,7 @@ func TestKeepLabels_Matcher(t *testing.T) {
 	}
 
 	// value matches → preserved (but only env survives)
-	_, gotMatch := tx("l", map[string]string{
+	_, gotMatch := tx("l", 0, map[string]string{
 		"job": "api",
 		"env": "prod",
 	})
@@ -188,7 +188,7 @@ func TestKeepLabels_Matcher(t *testing.T) {
 	}
 
 	// value differs → dropped
-	_, gotMiss := tx("l", map[string]string{
+	_, gotMiss := tx("l", 0, map[string]string{
 		"job": "api",
 		"env": "stg",
 	})
@@ -213,7 +213,7 @@ func TestDropKeep_Compose(t *testing.T) {
 		t.Fatalf("extract: %v", err)
 	}
 
-	gotLine, gotLabels := tx("hi", map[string]string{
+	gotLine, gotLabels := tx("hi", 0, map[string]string{
 		"job": "api",
 		"env": "prod",
 	})

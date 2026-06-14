@@ -689,7 +689,7 @@ func toStreamsWithTransform(samples []chclient.Sample, tx lineTransform) []Strea
 		line := s.MetricName
 		labels := s.Labels
 		if tx != nil {
-			line, labels = tx(line, labels)
+			line, labels = tx(line, s.Timestamp.UnixNano(), labels)
 		}
 		key := format.CanonicalKey(labels)
 		a, ok := bySeries[key]
