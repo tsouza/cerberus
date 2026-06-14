@@ -166,8 +166,8 @@ func runCerberusLogQLInstant(ctx context.Context, baseURL string, q property.Que
 		ErrorType string `json:"errorType"`
 		Error     string `json:"error"`
 		Data      struct {
-			ResultType string         `json:"resultType"`
-			Result     []loki.Stream  `json:"result"`
+			ResultType string        `json:"resultType"`
+			Result     []loki.Stream `json:"result"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil {
@@ -196,14 +196,14 @@ func runCerberusLogQLInstant(ctx context.Context, baseURL string, q property.Que
 	for _, s := range parsed.Data.Result {
 		stripped := copyLabels(s.Stream)
 		for _, v := range s.Values {
-			ts, line, perr := parseStreamSample(v)
+			ts, perr := parseStreamSample(v)
 			if perr != nil {
 				return property.Outcome{Err: fmt.Errorf("property: parse stream sample: %w", perr)}
 			}
 			out.Rows = append(out.Rows, property.OutcomeRow{
 				Labels:      copyLabels(stripped),
 				TimestampMs: ts / int64(1e6),
-				Line:        line,
+				Line:        v.Line,
 			})
 		}
 	}
@@ -220,14 +220,15 @@ func runCerberusLogQLInstant(ctx context.Context, baseURL string, q property.Que
 	return out
 }
 
-// parseStreamSample decodes a [unix_nanos_string, line_text] tuple
-// from Loki's streams response shape.
-func parseStreamSample(v [2]string) (int64, string, error) {
-	ts, err := strconv.ParseInt(v[0], 10, 64)
+// parseStreamSample decodes the nanosecond timestamp from a Loki stream
+// value. [loki.StreamValue] already carries the parsed Line + structured
+// Metadata; only the unix-nanos Timestamp string still needs conversion.
+func parseStreamSample(v loki.StreamValue) (int64, error) {
+	ts, err := strconv.ParseInt(v.Timestamp, 10, 64)
 	if err != nil {
-		return 0, "", fmt.Errorf("parse timestamp %q: %w", v[0], err)
+		return 0, fmt.Errorf("parse timestamp %q: %w", v.Timestamp, err)
 	}
-	return ts, v[1], nil
+	return ts, nil
 }
 
 // copyLabels returns a fresh map[string]string identical to in. The
