@@ -186,6 +186,10 @@ const (
 	envCHMaxOpenConns      = "CERBERUS_CH_MAX_OPEN_CONNS"
 	envCHMaxIdleConns      = "CERBERUS_CH_MAX_IDLE_CONNS"
 	envCHConnMaxLifetime   = "CERBERUS_CH_CONN_MAX_LIFETIME"
+	envCHKeepAliveEnabled  = "CERBERUS_CH_KEEPALIVE_ENABLED"
+	envCHKeepAliveIdle     = "CERBERUS_CH_KEEPALIVE_IDLE"
+	envCHKeepAliveInterval = "CERBERUS_CH_KEEPALIVE_INTERVAL"
+	envCHKeepAliveCount    = "CERBERUS_CH_KEEPALIVE_COUNT"
 	envQueryMaxSamples     = "CERBERUS_QUERY_MAX_SAMPLES"
 	envQueryTimeout        = "CERBERUS_QUERY_TIMEOUT"
 	envCHQueryMaxMemory    = "CERBERUS_CH_QUERY_MAX_MEMORY"
@@ -228,7 +232,11 @@ const configFileBaseName = "cerberus"
 //	CERBERUS_CH_DIAL_TIMEOUT       default "5s"
 //	CERBERUS_CH_MAX_OPEN_CONNS     default 10 (total pooled conns, busy + idle)
 //	CERBERUS_CH_MAX_IDLE_CONNS     default 5  (idle conns kept warm for reuse)
-//	CERBERUS_CH_CONN_MAX_LIFETIME  default "5m" (max age before a conn is recycled; short so a stale conn to a restarted CH pod recycles fast)
+//	CERBERUS_CH_CONN_MAX_LIFETIME  default "30s" (max age before a pooled conn is recycled)
+//	CERBERUS_CH_KEEPALIVE_ENABLED  default "true" (TCP keepalive on CH sockets; bounds dead-peer detection after a restart)
+//	CERBERUS_CH_KEEPALIVE_IDLE     default "10s"  (idle before the first keepalive probe)
+//	CERBERUS_CH_KEEPALIVE_INTERVAL default "5s"   (gap between keepalive probes)
+//	CERBERUS_CH_KEEPALIVE_COUNT    default 3      (unanswered probes before the socket is declared dead)
 //	CERBERUS_QUERY_MAX_SAMPLES     default 50000000 (0 disables the budget)
 //	CERBERUS_QUERY_TIMEOUT         default "2m" — per-query wall-clock cap stamped
 //	    as ClickHouse max_execution_time (timeout_overflow_mode=throw); the
@@ -313,6 +321,37 @@ func FromEnv() (Config, error) {
 	if connMaxLifetime <= 0 {
 		return Config{}, fmt.Errorf("%s: must be > 0, got %s", envCHConnMaxLifetime, connMaxLifetime)
 	}
+	keepAliveEnabled, err := getBool(v, envCHKeepAliveEnabled)
+	if err != nil {
+		return Config{}, err
+	}
+	keepAliveIdle, err := getDuration(v, envCHKeepAliveIdle)
+	if err != nil {
+		return Config{}, err
+	}
+	keepAliveInterval, err := getDuration(v, envCHKeepAliveInterval)
+	if err != nil {
+		return Config{}, err
+	}
+	keepAliveCount, err := getInt(v, envCHKeepAliveCount)
+	if err != nil {
+		return Config{}, err
+	}
+	// Validate the keepalive timing knobs only when keepalive is enabled —
+	// a degenerate idle/interval/count would arm a useless or never-firing
+	// probe schedule. When disabled the values are inert, so they are not
+	// gated (mirrors how the breaker knobs are inert when the breaker is off).
+	if keepAliveEnabled {
+		if keepAliveIdle <= 0 {
+			return Config{}, fmt.Errorf("%s: must be > 0, got %s", envCHKeepAliveIdle, keepAliveIdle)
+		}
+		if keepAliveInterval <= 0 {
+			return Config{}, fmt.Errorf("%s: must be > 0, got %s", envCHKeepAliveInterval, keepAliveInterval)
+		}
+		if keepAliveCount <= 0 {
+			return Config{}, fmt.Errorf("%s: must be > 0, got %d", envCHKeepAliveCount, keepAliveCount)
+		}
+	}
 	maxSamples, err := getInt64(v, envQueryMaxSamples)
 	if err != nil {
 		return Config{}, err
@@ -361,6 +400,10 @@ func FromEnv() (Config, error) {
 			MaxOpenConns:        maxOpenConns,
 			MaxIdleConns:        maxIdleConns,
 			ConnMaxLifetime:     connMaxLifetime,
+			KeepAliveEnabled:    keepAliveEnabled,
+			KeepAliveIdle:       keepAliveIdle,
+			KeepAliveInterval:   keepAliveInterval,
+			KeepAliveProbes:     keepAliveCount,
 			MaxQuerySamples:     maxSamples,
 			MaxQueryMemoryBytes: maxMemory,
 			QueryTimeout:        queryTimeout,
@@ -394,6 +437,10 @@ var allEnvKeys = []string{
 	envCHMaxOpenConns,
 	envCHMaxIdleConns,
 	envCHConnMaxLifetime,
+	envCHKeepAliveEnabled,
+	envCHKeepAliveIdle,
+	envCHKeepAliveInterval,
+	envCHKeepAliveCount,
 	envQueryMaxSamples,
 	envQueryTimeout,
 	envCHQueryMaxMemory,
@@ -452,6 +499,10 @@ func newLoader() *viper.Viper {
 	v.SetDefault(envCHMaxOpenConns, defaultCHMaxOpenConns)
 	v.SetDefault(envCHMaxIdleConns, defaultCHMaxIdleConns)
 	v.SetDefault(envCHConnMaxLifetime, defaultCHConnMaxLifetime.String())
+	v.SetDefault(envCHKeepAliveEnabled, defaultCHKeepAliveEnabled)
+	v.SetDefault(envCHKeepAliveIdle, defaultCHKeepAliveIdle.String())
+	v.SetDefault(envCHKeepAliveInterval, defaultCHKeepAliveInterval.String())
+	v.SetDefault(envCHKeepAliveCount, defaultCHKeepAliveCount)
 	v.SetDefault(envQueryMaxSamples, defaultQueryMaxSamples)
 	v.SetDefault(envQueryTimeout, defaultQueryTimeout.String())
 	v.SetDefault(envCHQueryMaxMemory, defaultCHQueryMaxMemory)
@@ -512,6 +563,7 @@ const (
 	defaultOTLPInsecure       = false
 	defaultOTLPHeaders        = ""
 	defaultCHBreakerEnabled   = true
+	defaultCHKeepAliveEnabled = true
 	defaultAdmitDisabled      = false
 )
 
@@ -571,22 +623,37 @@ const defaultCHQueryMaxMemory int64 = 1 << 30 // 1073741824 bytes
 // circuit breaker treats neutrally (local pool-sizing signal, not CH-health
 // failure).
 //
-// ConnMaxLifetime DEPARTS from the driver's 1h default: it is the backstop
-// that bounds how long a stale pooled conn to a RESTARTED ClickHouse backend
-// can loiter (ch-pod-kill recovery, run 27509796946). clickhouse-go v2.46.0
-// has no idle-time knob, and a force-killed pod's socket can stay ESTABLISHED
-// (no FIN/RST) so the driver's per-acquire socket check passes the dead conn
-// through; the conn is only retired once it ages past ConnMaxLifetime. At 1h
-// that left a never-queried idle conn dead-but-pooled for the better part of
-// an hour. 5m keeps the pool self-healing after a restart while staying long
-// enough that healthy conns are not churned on every request. The data-path
-// transport-retry (internal/chclient/retry.go) already makes a stale conn
-// transparent on the first QUERY regardless of this value; this just caps the
-// loiter window for idle conns that are never queried.
+// ConnMaxLifetime departs from the driver's 1h default to 30s: it is the
+// age-eviction backstop that bounds recovery after a ClickHouse restart even
+// if TCP keepalive (see below) is disabled. CH native conns are stateless and
+// cheap to redial, so recycling the idle pool every 30s is negligible churn.
 const (
 	defaultCHMaxOpenConns                  = 10
 	defaultCHMaxIdleConns                  = 5
-	defaultCHConnMaxLifetime time.Duration = 5 * time.Minute
+	defaultCHConnMaxLifetime time.Duration = 30 * time.Second
+)
+
+// TCP keepalive defaults — the ROOT-CAUSE fix for slow breaker recovery after
+// a ClickHouse restart. clickhouse-go v2.46.0 exposes NO idle-health knob, and
+// a force-killed pod's socket can stay ESTABLISHED (no FIN/RST), so the
+// driver's per-acquire socket check passes the dead conn through as healthy.
+// The next query then blocks on a read until the driver's ReadTimeout (300s)
+// or the request's ctx budget — surfacing as context.DeadlineExceeded, which
+// is NOT a broken-conn error, so withTransportRetry neither fast-retries nor
+// evicts it; the stale conn lingers and re-trips every breaker probe until
+// something AGES it out. With keepalive armed, the kernel probes the idle
+// socket and, after defaultCHKeepAliveCount unanswered probes, declares the
+// peer dead; the blocked read returns ECONNRESET fast, which isBrokenConnError
+// classifies → withTransportRetry evicts + redials. Idle(10s) +
+// Interval(5s)*Count(3) ≈ 25s worst-case dead-peer detection — well under the
+// chaos BREAKER_CLOSE_DEADLINE_MS=300s and under 60s, deterministically and on
+// EVERY replica. Probes fire only on IDLE sockets, so a long streaming query
+// is never interrupted. ConnMaxLifetime remains the age-eviction backstop if
+// keepalive is turned off.
+const (
+	defaultCHKeepAliveIdle     time.Duration = 10 * time.Second
+	defaultCHKeepAliveInterval time.Duration = 5 * time.Second
+	defaultCHKeepAliveCount                  = 3
 )
 
 // Circuit-breaker defaults (#95). These reproduce the previously-

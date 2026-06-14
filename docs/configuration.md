@@ -99,11 +99,24 @@ exhausted an acquire blocks up to `CERBERUS_CH_DIAL_TIMEOUT` and then fails with
 a breaker-neutral acquire-timeout (a local pool-sizing signal, not a
 ClickHouse-health failure).
 
-| Variable                        | Type     | Default | Description                                                                                                                                                                           |
-| ------------------------------- | -------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CERBERUS_CH_MAX_OPEN_CONNS`    | int      | `10`    | Total pooled ClickHouse connections (busy + idle). Must be > 0.                                                                                                                       |
-| `CERBERUS_CH_MAX_IDLE_CONNS`    | int      | `5`     | Idle ClickHouse connections kept warm for reuse. Must be > 0.                                                                                                                         |
-| `CERBERUS_CH_CONN_MAX_LIFETIME` | duration | `5m`    | Max age of a pooled connection before it is recycled. Kept short (vs the driver's 1h) so a stale conn to a restarted ClickHouse pod is recycled in minutes, not an hour. Must be > 0. |
+TCP keepalive (`CERBERUS_CH_KEEPALIVE_*`, on by default) is the primary
+recovery mechanism after a ClickHouse restart: the kernel probes idle sockets
+and tears down a connection to a force-killed pod within roughly
+`IDLE + INTERVAL × COUNT` (≈25s at the defaults), so the next query fails fast
+with a broken-conn error that is retried and evicted instead of blocking on a
+half-open socket. Probes fire only on idle connections, so long streaming
+queries are never interrupted. `CERBERUS_CH_CONN_MAX_LIFETIME` is the
+age-eviction backstop if keepalive is disabled.
+
+| Variable                         | Type     | Default | Description                                                                                                                                                                                                                                                     |
+| -------------------------------- | -------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CERBERUS_CH_MAX_OPEN_CONNS`     | int      | `10`    | Total pooled ClickHouse connections (busy + idle). Must be > 0.                                                                                                                                                                                                 |
+| `CERBERUS_CH_MAX_IDLE_CONNS`     | int      | `5`     | Idle ClickHouse connections kept warm for reuse. Must be > 0.                                                                                                                                                                                                   |
+| `CERBERUS_CH_CONN_MAX_LIFETIME`  | duration | `30s`   | Max age of a pooled connection before it is recycled. Age-eviction backstop for a stale conn to a restarted backend (keepalive is the primary mechanism). Must be > 0.                                                                                          |
+| `CERBERUS_CH_KEEPALIVE_ENABLED`  | bool     | `true`  | Enable TCP keepalive on ClickHouse connection sockets so the kernel detects a dead peer after a restart.                                                                                                                                                        |
+| `CERBERUS_CH_KEEPALIVE_IDLE`     | duration | `10s`   | Idle time before the first keepalive probe. Must be > 0 when keepalive is enabled.                                                                                                                                                                              |
+| `CERBERUS_CH_KEEPALIVE_INTERVAL` | duration | `5s`    | Gap between successive keepalive probes. Must be > 0 when keepalive is enabled.                                                                                                                                                                                 |
+| `CERBERUS_CH_KEEPALIVE_COUNT`    | int      | `3`     | Unanswered keepalive probes before the socket is declared dead. Must be > 0 when keepalive is enabled.                                                                                                                                                          |
 
 ## Query limits and memory
 
