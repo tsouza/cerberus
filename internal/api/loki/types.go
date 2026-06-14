@@ -21,49 +21,106 @@ type Response struct {
 // QueryData wraps a /loki/api/v1/query or /loki/api/v1/query_range body.
 // ResultType is "streams" for raw log-line queries, or "matrix" /
 // "vector" for the LogQL metric form (rate, count_over_time, ...).
+//
+// EncodingFlags echoes the response-encoding flags the client requested
+// via the `X-Loki-Response-Encoding-Flags` header. It is set to
+// `["categorize-labels"]` ONLY when the client asked for it AND the
+// result is a metadata-bearing stream — Grafana's Loki datasource always
+// requests it, and its shared Prometheus-style response parser
+// (`promlib/converter.ReadPrometheusStyleResult`) switches to the
+// categorized-stream reader exactly when the response carries this field.
+// A plain client (the loki-compat harness, curl) that omits the header
+// gets no `encodingFlags` and the byte-identical two-element value shape
+// reference Loki returns. Omitted (nil) → field absent from the JSON.
 type QueryData struct {
-	ResultType string `json:"resultType"` // "streams" | "matrix" | "vector"
-	Result     any    `json:"result"`     // shape depends on ResultType
+	ResultType    string   `json:"resultType"`              // "streams" | "matrix" | "vector"
+	EncodingFlags []string `json:"encodingFlags,omitempty"` // e.g. ["categorize-labels"]
+	Result        any      `json:"result"`                  // shape depends on ResultType
 }
 
+// encodingFlagCategorizeLabels is the single response-encoding flag
+// cerberus honours: when the client sends it via
+// `X-Loki-Response-Encoding-Flags`, structured metadata rides each stream
+// value as a categorized `{structuredMetadata: {...}}` third element and
+// the response advertises the flag back so Grafana's parser takes the
+// categorized-stream branch. Mirrors reference Loki's
+// `loghttp.LabelsCategorizationFlag`.
+const encodingFlagCategorizeLabels = "categorize-labels"
+
 // Stream is one element of a "streams"-type Result. Values are
-// [unix_nanoseconds_string, log_line] or
-// [unix_nanoseconds_string, log_line, {structured_metadata}] tuples —
-// Loki's documented on-the-wire format. The optional third element
-// carries per-entry structured metadata (the OTel-CH LogAttributes map),
-// which Grafana's Logs Drilldown reads to render clean per-line columns.
+// [unix_nanoseconds_string, log_line] tuples by default, or
+// [unix_nanoseconds_string, log_line, {"structuredMetadata": {...}}]
+// tuples when the client requested `categorize-labels`. The categorized
+// third element carries per-entry structured metadata (the OTel-CH
+// LogAttributes map) which Grafana's Logs Drilldown reads to render clean
+// per-line columns — see [StreamValue.MarshalJSON] for the exact shape
+// each path emits.
 type Stream struct {
 	Stream map[string]string `json:"stream"`
 	Values []StreamValue     `json:"values"`
 }
 
 // StreamValue is one log entry inside a [Stream]: a nanosecond timestamp
-// string, the log line, and an optional structured-metadata map. It
-// marshals to Loki's positional array shape — a two-element
-// `[ts, line]` array when Metadata is empty, or a three-element
-// `[ts, line, {metadata}]` array when structured metadata is present —
-// so the wire format stays byte-compatible with reference Loki on both
-// paths.
+// string, the log line, and an optional structured-metadata map. Its
+// marshalled shape depends on Categorize:
+//
+//   - Categorize == false (default — plain clients, the loki-compat
+//     harness, and every metadata-free query): a two-element
+//     `[ts, line]` array, byte-identical to reference Loki's default
+//     wire format. Metadata is NOT surfaced; without the categorize
+//     request a non-Loki-aware parser (Grafana's shared Prometheus-style
+//     converter on the `readStream` branch) rejects a bare third map
+//     element with `ReadArray: expect [ or , or ] or n, but found {`.
+//   - Categorize == true AND Metadata non-empty: a three-element
+//     `[ts, line, {"structuredMetadata": {...}}]` array — the categorized
+//     shape reference Loki returns under `X-Loki-Response-Encoding-Flags:
+//     categorize-labels`, which Grafana's `readCategorizedStream` parser
+//     reads to render structured-metadata columns in Logs Drilldown.
+//   - Categorize == true but Metadata empty: still the two-element shape,
+//     so a row that populated no attributes doesn't advertise an empty
+//     metadata object.
 type StreamValue struct {
 	Timestamp string
 	Line      string
 	Metadata  map[string]string
+	// Categorize gates the categorized three-element marshalling. Set by
+	// the handler from the request's `X-Loki-Response-Encoding-Flags`
+	// header so the wire shape matches what the client's parser expects.
+	Categorize bool
 }
 
-// MarshalJSON renders the entry as Loki's positional array. The
-// structured-metadata object is emitted only when non-empty, keeping
-// metadata-free streams (every prior log query, and rows whose
-// LogAttributes map is empty) byte-identical to the two-element shape.
+// categorizedValue is the third element of a categorized stream value:
+// `{"structuredMetadata": {...}}`. Grafana's `readCategorizedStreamField`
+// reads the `structuredMetadata` (and `parsed`) sub-objects to tag each
+// surfaced key with its label type ("S" / "P"). Cerberus's OTel-CH
+// LogAttributes are all structured metadata; the `parsed` slot is omitted
+// (parser-stage extraction isn't surfaced here).
+type categorizedValue struct {
+	StructuredMetadata map[string]string `json:"structuredMetadata"`
+}
+
+// MarshalJSON renders the entry as Loki's positional array. A two-element
+// `[ts, line]` array is the default — it keeps metadata-free streams and
+// every non-categorize-labels client byte-compatible with reference Loki.
+// When the client asked for `categorize-labels` AND this row carries
+// structured metadata, the third element is the categorized
+// `{"structuredMetadata": {...}}` object reference Loki emits under that
+// flag.
 func (v StreamValue) MarshalJSON() ([]byte, error) {
-	if len(v.Metadata) == 0 {
+	if !v.Categorize || len(v.Metadata) == 0 {
 		return json.Marshal([2]string{v.Timestamp, v.Line})
 	}
-	return json.Marshal([3]any{v.Timestamp, v.Line, v.Metadata})
+	return json.Marshal([3]any{
+		v.Timestamp,
+		v.Line,
+		categorizedValue{StructuredMetadata: v.Metadata},
+	})
 }
 
 // UnmarshalJSON parses Loki's positional value array back into the
-// struct, accepting both the two-element `[ts, line]` and the
-// three-element `[ts, line, {metadata}]` shapes so a round-trip (e.g. a
+// struct, accepting the two-element `[ts, line]` shape, the categorized
+// three-element `[ts, line, {"structuredMetadata": {...}}]` shape, and the
+// legacy flat `[ts, line, {metadata}]` shape so a round-trip (a
 // conformance test decoding cerberus's own output, or a client reading a
 // reference-Loki response) recovers the structured metadata when present.
 func (v *StreamValue) UnmarshalJSON(data []byte) error {
@@ -81,6 +138,14 @@ func (v *StreamValue) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	if len(raw) >= 3 {
+		// Prefer the categorized `{"structuredMetadata": {...}}` envelope;
+		// fall back to a flat `{key: value}` map for legacy callers.
+		var cat categorizedValue
+		if err := json.Unmarshal(raw[2], &cat); err == nil && cat.StructuredMetadata != nil {
+			v.Metadata = cat.StructuredMetadata
+			v.Categorize = true
+			return nil
+		}
 		return json.Unmarshal(raw[2], &v.Metadata)
 	}
 	return nil

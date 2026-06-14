@@ -264,7 +264,7 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 	expr, _ := res.Meta.Extra["expr"].(syntax.Expr)
 	h.Logger.Debug("cerberus loki query", "logql", q, "sql", res.SQL, "args", res.Args)
 
-	data, err := buildInstantData(expr, res.Samples, ts, h.Schema, limit, dir)
+	data, err := buildInstantData(expr, res.Samples, ts, h.Schema, limit, dir, wantsCategorizedLabels(r))
 	if err != nil {
 		h.respondError(w, err)
 		return
@@ -324,7 +324,7 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 	expr, _ := res.Meta.Extra["expr"].(syntax.Expr)
 	h.Logger.Debug("cerberus loki query_range", "logql", q, "sql", res.SQL, "args", res.Args)
 
-	data, err := buildRangeData(expr, res.Samples, start, end, step, h.Schema, limit, dir)
+	data, err := buildRangeData(expr, res.Samples, start, end, step, h.Schema, limit, dir, wantsCategorizedLabels(r))
 	if err != nil {
 		h.respondError(w, err)
 		return
@@ -526,7 +526,7 @@ func classifyEngineErr(err error) error {
 // streams. The limit + direction control how many log entries to
 // surface and in what order (Loki applies `limit` to the TOTAL entry
 // count across all streams, not per-stream).
-func buildInstantData(expr syntax.Expr, samples []chclient.Sample, ts time.Time, _ schema.Logs, limit int, dir logDirection) (*QueryData, error) {
+func buildInstantData(expr syntax.Expr, samples []chclient.Sample, ts time.Time, _ schema.Logs, limit int, dir logDirection, categorize bool) (*QueryData, error) {
 	if logql.IsMetricQuery(expr) {
 		return &QueryData{
 			ResultType: "vector",
@@ -538,9 +538,11 @@ func buildInstantData(expr syntax.Expr, samples []chclient.Sample, ts time.Time,
 		return nil, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
 	}
 	samples = clampLogSamples(samples, limit, dir)
+	streams := toStreamsWithTransform(samples, tx, categorize)
 	return &QueryData{
-		ResultType: "streams",
-		Result:     toStreamsWithTransform(samples, tx),
+		ResultType:    "streams",
+		EncodingFlags: encodingFlagsFor(categorize, streams),
+		Result:        streams,
 	}, nil
 }
 
@@ -548,7 +550,7 @@ func buildInstantData(expr syntax.Expr, samples []chclient.Sample, ts time.Time,
 // body. Metric queries produce a matrix (per-step latest value per
 // series). Log queries produce streams; limit + direction follow the
 // same `total entries across all streams` rule as [buildInstantData].
-func buildRangeData(expr syntax.Expr, samples []chclient.Sample, start, end time.Time, step time.Duration, _ schema.Logs, limit int, dir logDirection) (*QueryData, error) {
+func buildRangeData(expr syntax.Expr, samples []chclient.Sample, start, end time.Time, step time.Duration, _ schema.Logs, limit int, dir logDirection, categorize bool) (*QueryData, error) {
 	if logql.IsMetricQuery(expr) {
 		return &QueryData{
 			ResultType: "matrix",
@@ -560,10 +562,52 @@ func buildRangeData(expr syntax.Expr, samples []chclient.Sample, start, end time
 		return nil, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
 	}
 	samples = clampLogSamples(samples, limit, dir)
+	streams := toStreamsWithTransform(samples, tx, categorize)
 	return &QueryData{
-		ResultType: "streams",
-		Result:     toStreamsWithTransform(samples, tx),
+		ResultType:    "streams",
+		EncodingFlags: encodingFlagsFor(categorize, streams),
+		Result:        streams,
 	}, nil
+}
+
+// wantsCategorizedLabels reports whether the request asked for the
+// categorized-labels response encoding via the
+// `X-Loki-Response-Encoding-Flags` header. Grafana's Loki datasource
+// always sends `categorize-labels`; plain clients (the loki-compat
+// harness, curl) omit it and get the default two-element value shape.
+// The header is comma-separated; cerberus honours the single flag it
+// supports.
+func wantsCategorizedLabels(r *http.Request) bool {
+	for _, raw := range r.Header.Values("X-Loki-Response-Encoding-Flags") {
+		for _, flag := range strings.Split(raw, ",") {
+			if strings.TrimSpace(flag) == encodingFlagCategorizeLabels {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// encodingFlagsFor returns the `encodingFlags` array to advertise on a
+// streams response. It is `["categorize-labels"]` only when the client
+// requested categorization AND at least one value actually carries
+// structured metadata — so a categorize-labels request over a
+// metadata-free result still returns the plain two-element shape with no
+// flag, byte-identical to a non-categorize request. Returning nil leaves
+// the `encodingFlags` field absent from the JSON (omitempty), which keeps
+// Grafana's parser on the plain `readStream` branch.
+func encodingFlagsFor(categorize bool, streams []Stream) []string {
+	if !categorize {
+		return nil
+	}
+	for _, s := range streams {
+		for _, v := range s.Values {
+			if len(v.Metadata) > 0 {
+				return []string{encodingFlagCategorizeLabels}
+			}
+		}
+	}
+	return nil
 }
 
 // logDirection is the wire-format direction parameter — "backward"
@@ -769,7 +813,7 @@ func toMatrixStepGrid(samples []chclient.Sample, start, end time.Time, _ time.Du
 // chclient.Sample.MetricName (since Sample.Value is float64). This is a
 // short-term hack — the proper fix is a new chclient row decoder for
 // log-stream output, which lands with the stream-aware decoder PR.
-func toStreamsWithTransform(samples []chclient.Sample, tx lineTransform) []Stream {
+func toStreamsWithTransform(samples []chclient.Sample, tx lineTransform, categorize bool) []Stream {
 	type acc struct {
 		labels map[string]string
 		values []StreamValue
@@ -790,14 +834,16 @@ func toStreamsWithTransform(samples []chclient.Sample, tx lineTransform) []Strea
 		a.values = append(a.values, StreamValue{
 			Timestamp: strconv.FormatInt(s.Timestamp.UnixNano(), 10),
 			Line:      line,
-			// Per-line structured metadata (the OTel-CH LogAttributes map)
-			// rides as the optional third tuple element. Keys are
-			// normalised to the Loki/Prom grammar so the Drilldown app
-			// renders them as well-formed columns; empty-valued keys are
-			// dropped so a blank column never surfaces; an all-empty map
-			// marshals back to the two-element shape (see
-			// [StreamValue.MarshalJSON]).
-			Metadata: normalizeMetadata(s.Metadata),
+			// Per-line structured metadata (the OTel-CH LogAttributes map).
+			// When the client requested `categorize-labels` it rides as the
+			// categorized `{"structuredMetadata": {...}}` third tuple element
+			// (see [StreamValue.MarshalJSON]); otherwise it is dropped and the
+			// value marshals to the two-element shape reference Loki returns
+			// without the flag. Keys are normalised to the Loki/Prom grammar
+			// so the Drilldown app renders them as well-formed columns;
+			// empty-valued keys are dropped so a blank column never surfaces.
+			Metadata:   normalizeMetadata(s.Metadata),
+			Categorize: categorize,
 		})
 	}
 	out := make([]Stream, 0, len(bySeries))

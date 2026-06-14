@@ -268,11 +268,18 @@ var stubFixtures = map[string]func() *StubQuerier{
 	},
 
 	// loki-streams: log lines ride MetricName (the body slot of the
-	// log-sample projection) with stream labels in Labels.
+	// log-sample projection) with stream labels in Labels. Each row also
+	// carries per-line structured metadata (the OTel-CH LogAttributes map)
+	// so the replay exercises the categorize-labels wire gate: the
+	// `logs-panel-streams` corpus entry does NOT send
+	// `X-Loki-Response-Encoding-Flags`, so cerberus must surface these as
+	// plain two-element `[ts, line]` tuples — a stray third metadata
+	// element 400s Grafana's strict `readStream` parser (the #908 break,
+	// now guarded by checkStreamValueArity in the loki-envelope decoder).
 	"loki-streams": func() *StubQuerier {
 		return &StubQuerier{Samples: []chclient.Sample{
-			{MetricName: "level=info duration=100ms msg=ok id=1", Labels: map[string]string{"service_name": "api"}, Timestamp: stubLokiAnchor},
-			{MetricName: "level=error duration=400ms msg=boom id=2", Labels: map[string]string{"service_name": "api"}, Timestamp: stubLokiAnchor.Add(time.Second)},
+			{MetricName: "level=info duration=100ms msg=ok id=1", Labels: map[string]string{"service_name": "api"}, Timestamp: stubLokiAnchor, Metadata: map[string]string{"thread": "worker-0"}},
+			{MetricName: "level=error duration=400ms msg=boom id=2", Labels: map[string]string{"service_name": "api"}, Timestamp: stubLokiAnchor.Add(time.Second), Metadata: map[string]string{"thread": "worker-1"}},
 		}}
 	},
 

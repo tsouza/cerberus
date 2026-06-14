@@ -236,7 +236,10 @@ func (h *Handler) runTailLoop(ctx context.Context, conn *websocket.Conn, cfg tai
 			return
 		}
 
-		streams := toStreamsWithTransform(samples, cfg.tx)
+		// The tail websocket stream uses the plain two-element value shape:
+		// Grafana's tail client doesn't negotiate `categorize-labels` over
+		// the socket, so per-line structured metadata is not surfaced here.
+		streams := toStreamsWithTransform(samples, cfg.tx, false)
 		// Advance the cursor past the latest row we just sent so the
 		// next poll picks up only newer data. If the batch was empty we
 		// still advance to `end` to avoid re-querying the same window.

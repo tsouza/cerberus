@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -224,8 +225,32 @@ type matrixSeriesView struct {
 }
 
 type streamView struct {
-	Stream map[string]string `json:"stream"`
-	Values [][2]string       `json:"values"`
+	Stream map[string]string   `json:"stream"`
+	Values [][]json.RawMessage `json:"values"`
+}
+
+// checkStreamValueArity validates each stream value tuple against the
+// arity Grafana's strict response parser accepts: exactly two elements
+// `[ts, line]` in the default (non-categorized) shape, or two-or-three
+// when the response negotiated `categorize-labels`. A bare third element
+// in the non-categorized shape is the #908 regression that 400'd every
+// plain Grafana log query.
+func checkStreamValueArity(streams []streamView, categorized bool) error {
+	maxArity := 2
+	if categorized {
+		maxArity = 3
+	}
+	for si, s := range streams {
+		for vi, val := range s.Values {
+			if len(val) < 2 || len(val) > maxArity {
+				return fmt.Errorf(
+					"stream[%d] value[%d] has %d elements, want 2..%d (categorize-labels=%t) — a stray third element 400s Grafana's readStream parser",
+					si, vi, len(val), maxArity, categorized,
+				)
+			}
+		}
+	}
+	return nil
 }
 
 // promEnvelopeView is the Prometheus query-API envelope.
@@ -334,8 +359,9 @@ var decoders = map[string]decodeFunc{
 		var env struct {
 			Status string `json:"status"`
 			Data   struct {
-				ResultType string          `json:"resultType"`
-				Result     json.RawMessage `json:"result"`
+				ResultType    string          `json:"resultType"`
+				EncodingFlags []string        `json:"encodingFlags"`
+				Result        json.RawMessage `json:"result"`
 			} `json:"data"`
 		}
 		if err := json.Unmarshal(body, &env); err != nil {
@@ -353,6 +379,21 @@ var decoders = map[string]decodeFunc{
 		case "streams":
 			if err := json.Unmarshal(env.Data.Result, &v.Streams); err != nil {
 				return nil, fmt.Errorf("streams result decode: %w", err)
+			}
+			// Mirror Grafana's strict stream parser
+			// (promlib/converter.ReadPrometheusStyleResult): a stream value
+			// tuple is two-element `[ts, line]` UNLESS the response
+			// advertises the `categorize-labels` encoding flag, in which
+			// case it carries a categorized `{...}` third element. A bare
+			// third element WITHOUT the flag is exactly the #908 break —
+			// Grafana's `readStream` branch 400s on it with
+			// `ReadArray: expect [ or , or ] or n, but found {`. This guard
+			// catches that off-compose, where the lenient Go json.Unmarshal
+			// that previously decoded into [][2]string silently dropped the
+			// stray element.
+			categorized := slices.Contains(env.Data.EncodingFlags, "categorize-labels")
+			if err := checkStreamValueArity(v.Streams, categorized); err != nil {
+				return nil, err
 			}
 		default:
 			return nil, fmt.Errorf("resultType = %q, want matrix/vector/streams", env.Data.ResultType)

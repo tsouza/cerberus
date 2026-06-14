@@ -264,7 +264,14 @@ func TestQuery_Streams_StructuredMetadata(t *testing.T) {
 	srv := newServer(q)
 	t.Cleanup(srv.Close)
 
-	resp, err := http.Get(srv.URL + `/loki/api/v1/query?query=%7Bservice_name%3D%22clickhouse%22%7D`)
+	// Grafana's Loki datasource always negotiates `categorize-labels`; only
+	// then does cerberus surface the structured-metadata third element.
+	req, err := http.NewRequest(http.MethodGet, srv.URL+`/loki/api/v1/query?query=%7Bservice_name%3D%22clickhouse%22%7D`, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("X-Loki-Response-Encoding-Flags", "categorize-labels")
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
@@ -276,6 +283,12 @@ func TestQuery_Streams_StructuredMetadata(t *testing.T) {
 	var parsed queryResponse
 	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
 		t.Fatalf("decode: %v", err)
+	}
+	// The response must advertise the categorize-labels encoding flag so
+	// Grafana's shared Prometheus-style converter takes the
+	// `readCategorizedStream` branch instead of the plain `readStream` one.
+	if got := parsed.Data.EncodingFlags; len(got) != 1 || got[0] != "categorize-labels" {
+		t.Fatalf("encodingFlags=%v, want [categorize-labels]", got)
 	}
 	raw, _ := json.Marshal(parsed.Data.Result)
 	var streams []loki.Stream
@@ -307,6 +320,75 @@ func TestQuery_Streams_StructuredMetadata(t *testing.T) {
 		if k == "_" || strings.HasPrefix(k, "_") {
 			t.Errorf("garbage structured-metadata key surfaced: %q", k)
 		}
+	}
+}
+
+// TestQuery_Streams_PlainShapeNoCategorize is the regression guard for
+// the #908 compose-smoke break: a log-stream query WITHOUT the
+// `X-Loki-Response-Encoding-Flags: categorize-labels` request header must
+// return strictly two-element `[ts, line]` value tuples and NO
+// `encodingFlags` field — byte-identical to reference Loki's default wire
+// format. Grafana's shared Prometheus-style response converter takes the
+// `readStream` branch for such responses, and that branch rejects a third
+// `{...}` element with `ReadArray: expect [ or , or ] or n, but found {`.
+// #908 unconditionally appended the metadata object, 400-ing every plain
+// Grafana log query; this test fails fast if that ever regresses again
+// off-compose (the chDB probe + the narrow categorize test both pass even
+// when this shape is wrong, which is exactly why the original break
+// reached compose-only).
+func TestQuery_Streams_PlainShapeNoCategorize(t *testing.T) {
+	t.Parallel()
+
+	ts := time.Date(2026, 5, 12, 12, 0, 0, 0, time.UTC)
+	q := &stubQuerier{
+		samples: []chclient.Sample{
+			{
+				MetricName: "request started",
+				Labels:     map[string]string{"service_name": "api"},
+				Timestamp:  ts,
+				Metadata:   map[string]string{"thread": "worker-0"},
+			},
+		},
+	}
+
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	// Plain GET — no categorize-labels header, the loki-compat-harness /
+	// curl shape.
+	resp, err := http.Get(srv.URL + `/loki/api/v1/query?query=%7Bservice_name%3D%22api%22%7D`)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+
+	var parsed queryResponse
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(parsed.Data.EncodingFlags) != 0 {
+		t.Fatalf("plain request must not advertise encodingFlags, got %v", parsed.Data.EncodingFlags)
+	}
+
+	// Assert the RAW wire shape: each value array must have exactly two
+	// elements. Decoding through loki.StreamValue would hide a stray third
+	// element, so inspect the raw JSON.
+	rawResult, _ := json.Marshal(parsed.Data.Result)
+	var rawStreams []struct {
+		Values [][]json.RawMessage `json:"values"`
+	}
+	if err := json.Unmarshal(rawResult, &rawStreams); err != nil {
+		t.Fatalf("decode raw streams: %v", err)
+	}
+	if len(rawStreams) != 1 || len(rawStreams[0].Values) != 1 {
+		t.Fatalf("want 1 stream / 1 value, got %+v", rawStreams)
+	}
+	if n := len(rawStreams[0].Values[0]); n != 2 {
+		t.Fatalf("plain stream value must be a 2-element [ts, line] tuple, got %d elements: %s",
+			n, rawResult)
 	}
 }
 
