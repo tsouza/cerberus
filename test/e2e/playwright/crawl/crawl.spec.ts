@@ -129,10 +129,13 @@ import {
   expandSiblingTabs,
   harvestLinks,
   inventoryPath,
+  isSupersededDsQueryFailure,
   loadExclusions,
   loadInventory,
   marshalInventory,
   pinnedStructuralParamCount,
+  refIdToExpr,
+  succeededDsQuerySignatures,
   truncate,
   type ScopeRules,
   type SurfaceInventory,
@@ -990,6 +993,15 @@ function evaluateWireOracles(
   contracts: OracleContracts,
   fail: FailFn,
 ): void {
+  // Signatures of every ds/query request that ultimately succeeded
+  // (2xx) in this capture window. A non-2xx whose signature lands here
+  // was a Grafana-aborted, superseded in-flight request — last-write-
+  // wins reconciliation, mirroring what the DOM oracle already asserts
+  // (it only inspects the final rendered panel state). This is NOT an
+  // escape hatch: a genuinely-broken query never produces a 2xx sibling,
+  // so it still fails loudly. See succeededDsQuerySignatures in lib.ts.
+  const succeededSigs = succeededDsQuerySignatures(captured);
+
   // Oracle 2a — non-2xx on the datasource API families. Sanctioned
   // only when every query in the failing ds/query request is a
   // declared-error panel target on this dashboard.
@@ -999,6 +1011,9 @@ function evaluateWireOracles(
       resp.url.includes('/api/ds/query') &&
       requestFullyDeclaredError(resp.requestBody, contracts.errExprsDeclared)
     ) {
+      continue;
+    }
+    if (isSupersededDsQueryFailure(resp, succeededSigs)) {
       continue;
     }
     fail(
@@ -1311,26 +1326,6 @@ async function sweepInteractions(
   }
 
   return { discovered, inPlaceStates, failures };
-}
-
-/**
- * Map refId → expr/query from a ds/query request body. Returns an
- * empty map for non-JSON bodies.
- */
-function refIdToExpr(requestBody: string): Map<string, string> {
-  const out = new Map<string, string>();
-  try {
-    const parsed = JSON.parse(requestBody) as {
-      queries?: Array<{ refId?: string; expr?: string; query?: string }>;
-    };
-    for (const q of parsed.queries ?? []) {
-      const expr = (q.expr ?? q.query ?? '').trim();
-      if (q.refId) out.set(q.refId, expr);
-    }
-  } catch {
-    // fallthrough — empty map; caller treats every refId as undeclared
-  }
-  return out;
 }
 
 /**
