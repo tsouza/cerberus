@@ -152,7 +152,7 @@ func TestRunIfEnabledOffSkipsBothGates(t *testing.T) {
 
 func TestRunIfEnabledOnDelegatesToRun(t *testing.T) {
 	t.Parallel()
-	q := &stubQuerier{Version: "25.4.0", Columns: healthyColumns()}
+	q := &stubQuerier{Version: "24.3.0", Columns: healthyColumns()}
 	if err := RunIfEnabled(context.Background(), true, q, defaultReq()); err == nil {
 		t.Fatal("knob on must run the gates (too-old version should fail)")
 	}
@@ -195,27 +195,26 @@ func TestMinVersionMaxOfApplicable(t *testing.T) {
 	if got := off.minVersion(); got != minCHBase {
 		t.Errorf("native-rate off: min=%v, want base %v", got, minCHBase)
 	}
-	// Native rate enabled → max(base, native). Base (25.8) > native (25.6),
-	// so the base still wins today — but the result must be the max, never
-	// the lower native floor.
+	// Native rate enabled → max(base, native). Native (25.6) > base (24.8),
+	// so enabling native rate raises the effective floor to the native one.
 	on := Requirements{NativeRateEnabled: true}
 	got := on.minVersion()
 	if !got.atLeast(minCHBase) || !got.atLeast(minCHNativeRate) {
 		t.Errorf("native-rate on: min=%v must be >= both base %v and native %v", got, minCHBase, minCHNativeRate)
 	}
-	if got != minCHBase {
-		t.Errorf("native-rate on: min=%v, want max-of-applicable = %v (base dominates)", got, minCHBase)
+	if got != minCHNativeRate {
+		t.Errorf("native-rate on: min=%v, want max-of-applicable = %v (native dominates)", got, minCHNativeRate)
 	}
 }
 
 func TestRunVersionTooOld(t *testing.T) {
 	t.Parallel()
-	q := &stubQuerier{Version: "25.4.1.2", Columns: healthyColumns()}
+	q := &stubQuerier{Version: "24.3.1.2557-stable", Columns: healthyColumns()}
 	err := Run(context.Background(), q, defaultReq())
 	if err == nil {
 		t.Fatal("expected failure for too-old version, got nil")
 	}
-	if !strings.Contains(err.Error(), "25.4.1.2 is below the required minimum 25.8") {
+	if !strings.Contains(err.Error(), "24.3.1.2557-stable is below the required minimum 24.8") {
 		t.Errorf("message missing version diff: %v", err)
 	}
 	if !strings.Contains(err.Error(), "native rate disabled") {
@@ -233,22 +232,32 @@ func TestRunVersionOKAllPass(t *testing.T) {
 
 func TestRunVersionExactlyAtFloor(t *testing.T) {
 	t.Parallel()
-	q := &stubQuerier{Version: "25.8.0.0", Columns: healthyColumns()}
+	q := &stubQuerier{Version: "24.8.0.0", Columns: healthyColumns()}
 	if err := Run(context.Background(), q, defaultReq()); err != nil {
 		t.Fatalf("version exactly at floor must pass, got: %v", err)
 	}
 }
 
-func TestRunNativeRateRaisesMinAndStillPasses(t *testing.T) {
+func TestRunNativeRateRaisesMin(t *testing.T) {
 	t.Parallel()
-	// 25.6 meets the native-rate floor but NOT the base floor; with native
-	// rate on the effective min is max(25.8, 25.6)=25.8, so 25.6 fails.
+	// Native rate raises the effective floor from base 24.8 to native 25.6.
+	// 25.6 meets the raised floor and passes; a 25.0 that clears the base
+	// floor must now fail because native rate is on.
 	req := defaultReq()
 	req.NativeRateEnabled = true
-	q := &stubQuerier{Version: "25.6.0.0", Columns: healthyColumns()}
-	err := Run(context.Background(), q, req)
+
+	atNative := &stubQuerier{Version: "25.6.0.0", Columns: healthyColumns()}
+	if err := Run(context.Background(), atNative, req); err != nil {
+		t.Fatalf("native-rate on: 25.6 meets the raised floor and must pass, got: %v", err)
+	}
+
+	belowNative := &stubQuerier{Version: "25.0.0.0", Columns: healthyColumns()}
+	err := Run(context.Background(), belowNative, req)
 	if err == nil {
-		t.Fatal("native-rate on: 25.6 below the 25.8 base floor must fail")
+		t.Fatal("native-rate on: 25.0 (above base 24.8 but below native 25.6) must fail")
+	}
+	if !strings.Contains(err.Error(), "below the required minimum 25.6") {
+		t.Errorf("message missing raised-floor diff: %v", err)
 	}
 	if !strings.Contains(err.Error(), "native rate enabled") {
 		t.Errorf("message missing enabled rate note: %v", err)
@@ -407,7 +416,7 @@ func TestRunAggregatesAllFailures(t *testing.T) {
 	cols[tr.SpansTable] = pruned
 
 	// 3: version too old.
-	q := &stubQuerier{Version: "25.4.1", Columns: cols}
+	q := &stubQuerier{Version: "24.3.1", Columns: cols}
 	err := Run(context.Background(), q, defaultReq())
 	if err == nil {
 		t.Fatal("expected aggregated failure")
@@ -415,7 +424,7 @@ func TestRunAggregatesAllFailures(t *testing.T) {
 	msg := err.Error()
 	for _, want := range []string{
 		"requirements check failed:",
-		"clickhouse version 25.4.1 is below the required minimum 25.8",
+		"clickhouse version 24.3.1 is below the required minimum 24.8",
 		"table otel_metrics_gauge column Attributes: expected Map(String,String), found JSON",
 		"table otel_traces: missing required column ServiceName",
 	} {

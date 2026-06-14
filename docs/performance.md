@@ -208,8 +208,8 @@ and every instinct says to attack the data movement. The alternatives don't win
 at realistic scale; this section is the rationale for why the fan-out is the
 right default.
 
-The numbers below come from real ClickHouse 24.8, 8-core (a bench host; the
-deployment floor is now CH 25.8) — not chDB; the benchmarks.md curves run
+The numbers below come from real ClickHouse 24.8, 8-core (a bench host at the
+supported deployment floor of CH 24.8) — not chDB; the benchmarks.md curves run
 in-process chDB, these are prod CH.
 
 ### The bottleneck is the extrapolation arithmetic, not the scan

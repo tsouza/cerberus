@@ -184,10 +184,11 @@ fan-out value — a sub-observable float-order difference, both render `0.12`).
 The test enforces a tight bound rather than the raw fixture count: **at most two
 cells may diverge, each by no more than 1 ULP** (`maxDualEmitUlpDivergentCells
 = 2`); any cell off by more than 1 ULP, or a third divergent cell, fails the
-test as an arithmetic regression. Treat this as experimental: the production /
-compose / e2e CH floor is now 25.8 (past the ≥ 25.6 introduction point), but the
-path still rides the experimental setting and has not yet been differentially
-swept against a real (non-chDB) server where that setting is actually enforced.
+test as an arithmetic regression. Treat this as experimental: the compose / e2e
+CH substrate is 25.8 (past the ≥ 25.6 introduction point, so the flag is
+exercisable there), but the path still rides the experimental setting and has not
+yet been differentially swept against a real (non-chDB) server where that setting
+is actually enforced.
 
 ## Backing services
 
@@ -333,8 +334,8 @@ converts two classes of misconfiguration that would otherwise surface as
 opaque query-time errors into a precise, fail-fast boot error:
 
 - **ClickHouse too old.** The connected server's `version()` is compared
-  against `max(base, applicable-feature-floors)` — base **25.8**, raised by
-  the native-rate floor (25.6) when `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE` is
+  against `max(base, applicable-feature-floors)` — base **24.8**, raised to
+  **25.6** by the native-rate floor when `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE` is
   on. A version below the floor (or an unparseable one) fails startup.
 - **Divergent schema.** The configured tables are introspected via
   `system.columns`; a missing essential column or a wrong attribute-map type

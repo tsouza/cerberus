@@ -53,20 +53,20 @@ Two axes decide whether a deployment is compatible: the **ClickHouse server
 version** cerberus queries, and the **OTel schema shape** the data was written
 in.
 
-| Component            | Minimum                        | Notes                                                                                                                                       |
-| -------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| ClickHouse           | **25.8**                       | The supported floor — every head emits SQL proven against ClickHouse 25.8. The experimental native rate needs no newer version (see below). |
-| OTel exporter schema | **clickhouseexporter 0.152.0** | A **schema shape**, not a binary version — see below.                                                                                       |
+| Component            | Minimum                        | Notes                                                                                                                               |
+| -------------------- | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
+| ClickHouse           | **24.8**                       | The supported floor — proven by the differential compatibility suite. Enabling the experimental native rate requires 25.6 (below).  |
+| OTel exporter schema | **clickhouseexporter 0.152.0** | A **schema shape**, not a binary version — see below.                                                                               |
 
-**ClickHouse.** The floor is the version cerberus is proven against: the test
-substrate (chDB), the compose stack, the e2e cluster, and the three differential
-compatibility harnesses all run ClickHouse 25.8, so that is the version every
-emitted query is validated on. Enabling the experimental native-rate path
-(`CERBERUS_EXPERIMENTAL_TS_GRID_RANGE`, **default off**) does **not** raise this
-floor: it lowers eligible `rate(<counter>[range])` range queries to the compiled
-`timeSeriesRateToGrid` aggregate, which exists from ClickHouse 25.6 — already
-below the 25.8 floor, so any supported deployment can turn it on without a
-version bump. See
+**ClickHouse.** The floor is the version cerberus is proven against end-to-end:
+the three differential compatibility harnesses — the source of truth for all
+three heads — run ClickHouse 24.8, so every emitted query is validated against
+it (the 24.8 empty-input / parse-unit / filter-path quirks are all worked around
+unconditionally). Enabling the experimental native-rate path
+(`CERBERUS_EXPERIMENTAL_TS_GRID_RANGE`, **default off**) **raises** the floor to
+**25.6**: it lowers eligible `rate(<counter>[range])` range queries to the
+compiled `timeSeriesRateToGrid` aggregate, which exists only from ClickHouse
+25.6. With the flag off, 24.8 is sufficient. See
 [`docs/operations.md`](docs/operations.md#experimental-native-rate-timeseriesratetogrid)
 for the runtime contract and the experimental-setting details.
 

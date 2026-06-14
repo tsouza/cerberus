@@ -56,10 +56,12 @@ func (v chVersion) atLeast(min chVersion) bool {
 }
 
 // minCHBase is the supported / CI-tested ClickHouse floor — the version
-// README and docs state as the minimum. The chDB test substrate is
-// 25.8.2.1-lts and the compose / e2e / compatibility lanes run 25.8, so
-// the SQL cerberus emits is exercised against this floor.
-var minCHBase = chVersion{Major: 25, Minor: 8}
+// README and docs state as the minimum. The differential compatibility
+// suite (the source of truth for all three heads) runs ClickHouse 24.8
+// and is green, so the SQL cerberus emits is exercised end-to-end against
+// this floor; the 24.8 empty-input / parse-unit / filter-path workarounds
+// are all emitted unconditionally.
+var minCHBase = chVersion{Major: 24, Minor: 8}
 
 // minCHNativeRate is the ClickHouse floor the native timeSeriesRateToGrid
 // family was introduced at (v25.6.0). It only applies when the

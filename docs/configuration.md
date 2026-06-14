@@ -184,11 +184,11 @@ The preflight runs two gates, both parameterised by the active
 
 - **Version gate.** `SELECT version()` is compared against
   `max(base, applicable-feature-floors)`. The base floor is **ClickHouse
-  25.8** (the supported / CI-tested floor — the chDB substrate is
-  `25.8.2.1-lts`). Enabling `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE` adds the
+  24.8** (the supported floor — the differential compatibility suite runs
+  24.8 and is green). Enabling `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE` adds the
   native-rate floor (CH 25.6); the effective requirement is the maximum, so
-  it stays 25.8 today but rises automatically if a future feature floor
-  exceeds the base. An unreadable or unparseable version is a failure, never
+  the flag **raises** the floor from 24.8 to 25.6, and a future feature floor
+  raises it further. An unreadable or unparseable version is a failure, never
   a silent pass.
 - **Schema-shape gate.** The configured tables are introspected via
   `system.columns` and validated to carry the essential columns the emitters
@@ -205,7 +205,7 @@ any gate fails, the error **aggregates every** unmet requirement, e.g.:
 
 ```text
 requirements check failed:
-  - clickhouse version 25.4.1 is below the required minimum 25.8 (native rate disabled)
+  - clickhouse version 24.3.1 is below the required minimum 24.8 (native rate disabled)
   - table otel_metrics_gauge column Attributes: expected Map(String,String), found JSON
   - table otel_traces: missing required column ServiceName
 ```
@@ -245,8 +245,9 @@ take route B; everything else stays byte-identical on route A.
 `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE` **requires ClickHouse ≥ 25.6** — the
 `timeSeries*ToGrid` family was introduced in CH v25.6.0; on any older server a
 native-path query errors with `UNKNOWN_FUNCTION`, so the flag **must stay off**
-unless the target ClickHouse is ≥ 25.6 (the compose / e2e / compatibility lanes
-run 25.8, so the floor is met there). The native operator computes the same
+unless the target ClickHouse is ≥ 25.6 (the compose / e2e lanes run 25.8, so the
+floor is met where the flag is exercised; the compatibility lanes run 24.8 with
+the flag off). The native operator computes the same
 Prometheus `extrapolatedRate` inside the engine, closing the execution-layer gap
 the SQL array machinery leaves at high cardinality. Default off is byte-for-byte
 the established fan-out. See [`performance.md`](performance.md#the-durable-answer)
