@@ -444,6 +444,12 @@
     "reason": "not-sliceable"
   },
   {
+    "query": "double_exponential_smoothing",
+    "routed": true,
+    "k": 6,
+    "reason": "routed"
+  },
+  {
     "query": "edge_abs_over_rate",
     "routed": true,
     "k": 8,
@@ -661,6 +667,12 @@
   },
   {
     "query": "exp_metric",
+    "routed": true,
+    "k": 8,
+    "reason": "routed"
+  },
+  {
+    "query": "first_over_time",
     "routed": true,
     "k": 8,
     "reason": "routed"

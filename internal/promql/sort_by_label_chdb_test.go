@@ -54,8 +54,14 @@ import (
 // are the natural-vs-lexicographic discriminators: byte order ranks
 // `v10` before `v2`, natural order ranks `v2` before `v10`. They are
 // inserted in a scrambled order that matches neither target ordering.
+// CREATE OR REPLACE so re-running against the process-shared in-process
+// chDB session (every openChDB uses the empty DSN → one global session)
+// is idempotent: a sibling fixture (limit_ratio_chdb_test.go) already
+// materialises otel_metrics_gauge, and a bare CREATE TABLE trips
+// TABLE_ALREADY_EXISTS when the package's chDB tests share the session.
+// Mirrors the OR-REPLACE limit_ratio_chdb_test.go already uses.
 const sortByLabelSeed = `
-CREATE TABLE otel_metrics_gauge (
+CREATE OR REPLACE TABLE otel_metrics_gauge (
     MetricName String,
     Attributes Map(String, String),
     TimeUnix DateTime64(9),

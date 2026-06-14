@@ -1466,47 +1466,28 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 	case "predict_linear":
 		return lowerPredictLinear(c, s, ctx)
 	case "holt_winters", "double_exponential_smoothing":
-		// `double_exponential_smoothing` (and its `holt_winters` alias) is
-		// an experimental PromQL function: the reference backend
-		// (prom/prometheus:v3.11.3, started WITHOUT
-		// `--enable-feature=promql-experimental-functions` in the
-		// compatibility harness) rejects it. Cerberus's parser enables
-		// experimental functions for the deliberately-supported extension
-		// subset (`@start()`/`@end()`, `predict_linear`), so the parser
-		// accepts `double_exponential_smoothing` and lowering would
-		// otherwise build a RangeWindow the chsql emitter executes —
-		// silently turning a parity rejection into a wrong acceptance.
-		// To keep the PromQL head at strict reference parity we reject
-		// here at the lowering dispatch, mirroring the `first_over_time`
-		// gate. `lowerHoltWinters` is retained so the package-internal
-		// boundary-guard unit tests (gremlins_kill_test.go) can keep
-		// exercising the (0,1) smoothing/trend factor checks directly.
-		// The message contains "unsupported: range function" so the
-		// showcase-promql parity-rejection contract substring matches.
-		return nil, fmt.Errorf("unsupported: range function %q is experimental and not supported by the PromQL head", c.Func.Name)
+		// `double_exponential_smoothing` (and its legacy `holt_winters`
+		// alias) applies Holt-Winters double-exponential smoothing over
+		// the lookback window. The chsql emitter renders the sequential
+		// recurrence as an `arrayFold` over the windowed value array and
+		// is verified reference-exact against
+		// prometheus/promql/functions.go::funcDoubleExponentialSmoothing
+		// (incl. the calcTrendValue seeding). `lowerHoltWinters`
+		// enforces the (0,1) smoothing/trend-factor guards and emits the
+		// canonical "holt_winters" IR Func regardless of which spelling
+		// the query used.
+		return lowerHoltWinters(c, s, ctx)
 	case "absent_over_time":
 		return lowerAbsentOverTime(c, s, ctx)
-	case "first_over_time":
-		// `first_over_time` is an experimental PromQL function: the
-		// reference backend (prom/prometheus:v3.11.3, started without
-		// `--enable-feature=promql-experimental-functions` in the
-		// compatibility harness) rejects it. Cerberus's parser enables
-		// experimental functions for the deliberately-supported subset
-		// (`@start()`/`@end()`, `double_exponential_smoothing`,
-		// `predict_linear`), so the parser accepts `first_over_time`
-		// and lowering would otherwise build a RangeWindow that the
-		// *shared* chsql over-time emitter now executes — the LogQL
-		// burndown added `first_over_time` to that emitter's reducer
-		// set (range_window.go) for `first_over_time(... | unwrap v)`.
-		// To keep the PromQL head at reference parity we reject here,
-		// before the RangeWindow reaches the LogQL-shared emitter. The
-		// LogQL head keeps its `first_over_time` support; only the
-		// PromQL lowering path is gated. The message mirrors the
-		// emitter's `ErrUnsupported: range function %q` wording so the
-		// showcase-promql parity-rejection contract substring
-		// ("unsupported: range function") still matches.
-		return nil, fmt.Errorf("unsupported: range function %q is experimental and not supported by the PromQL head", c.Func.Name)
 	}
+	// `first_over_time(v[range])` — the time-EARLIEST sample value in the
+	// window, mirroring last_over_time exactly. It flows through the
+	// generic RangeWindow over-time path below: the shared chsql over-time
+	// emitter's `first_over_time` reducer returns `window_vals[1]` (the
+	// arrayBy (ts, value)-sorted earliest element), reference-exact against
+	// prometheus/promql/functions.go::funcFirstOverTime. Like
+	// last_over_time it preserves `__name__` via the
+	// wrapRangeWindowPreserveName special-case below.
 	if len(c.Args) != 1 {
 		return nil, fmt.Errorf("promql: %s expects exactly 1 argument, got %d", c.Func.Name, len(c.Args))
 	}

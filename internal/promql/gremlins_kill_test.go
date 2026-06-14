@@ -90,12 +90,10 @@ func TestFoldComparisonScalar_LessOrEqualIncludesEquality(t *testing.T) {
 // query with experimental functions enabled and returns the underlying
 // *parser.Call. The Prom parser refuses the experimental name by default;
 // the boundary-guard tests for lowerHoltWinters need the call through to
-// exercise the in-range checks. The PromQL lowering *dispatch* now gates
-// double_exponential_smoothing for reference parity (see
-// holt_winters_reject_test.go), so these mutation tests drive
-// lowerHoltWinters directly — the dispatch gate would short-circuit
-// before the boundary checks run, leaving the (0,1)-guard mutants
-// uncovered otherwise.
+// exercise the in-range checks. These mutation tests drive lowerHoltWinters
+// directly (rather than via the lowering dispatch) so the (0,1) smoothing/
+// trend-factor boundary mutants are pinned at the guard itself, independent
+// of how the dispatch routes the call.
 func mustParseHoltWintersCall(t *testing.T, q string) *parser.Call {
 	t.Helper()
 	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})

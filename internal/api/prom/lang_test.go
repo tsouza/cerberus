@@ -76,36 +76,39 @@ func TestLang_Parse_ParseError(t *testing.T) {
 	}
 }
 
-// TestLang_Parse_LowerError — a parseable but unsupported PromQL form
-// (`first_over_time`, an experimental range function the PromQL head
-// deliberately rejects at lowering — see
-// internal/promql/first_over_time_reject_test.go) surfaces as a
-// parseStageError tagged "lower". Verifies the parse → lower split is
-// preserved through the adapter.
+// TestLang_Parse_LowerError — a parseable but lower-stage-rejected PromQL
+// form surfaces as a parseStageError tagged "lower". Verifies the parse →
+// lower split is preserved through the adapter.
 //
-// `limitk` was the original example here; it now lowers (the
-// experimental-aggregator burndown wired limitk → LIMIT K BY). Its
-// sibling `limit_ratio` likewise carried the assertion for a while, but
-// it too now lowers (#874 implemented the hash-sampling aggregator), so
-// the still-gated `first_over_time` carries the parse→lower-split
-// assertion forward.
+// The example is `limitk` with a *computed* K (`limitk(scalar(up), up)`):
+// the aggregator itself lowers (the experimental-aggregator burndown wired
+// limitk → LIMIT K BY), but the lowering requires K to be a scalar
+// *literal* — a computed `scalar(<vector>)` K is genuinely unsupported and
+// rejected at the lowering stage. This is a stable parse→lower-split
+// example that doesn't depend on any function being globally unsupported.
+//
+// Earlier revisions keyed this on `first_over_time` /
+// `double_exponential_smoothing`, but both are now implemented (the
+// maintainer flipped them from gated to supported), so they lower cleanly
+// and can no longer exercise the lower-error path.
 func TestLang_Parse_LowerError(t *testing.T) {
 	t.Parallel()
 
 	l := langForTest()
-	_, _, err := l.Parse(context.Background(), `first_over_time(up[5m])`)
+	const q = `limitk(scalar(up), up)`
+	_, _, err := l.Parse(context.Background(), q)
 	if err == nil {
-		t.Fatalf("Parse(first_over_time): expected lower failure, got nil")
+		t.Fatalf("Parse(%q): expected lower failure, got nil", q)
 	}
 	var ps *parseStageError
 	if !errors.As(err, &ps) {
-		t.Fatalf("Parse(first_over_time): err type = %T, want *parseStageError; err=%v", err, err)
+		t.Fatalf("Parse(%q): err type = %T, want *parseStageError; err=%v", q, err, err)
 	}
 	if ps.stage != "lower" {
 		t.Errorf("parseStageError.stage: got %q, want %q (got err=%v)", ps.stage, "lower", err)
 	}
-	if !strings.Contains(err.Error(), "unsupported: range function") {
-		t.Errorf("err message: got %q, want it to mention the range-function rejection", err.Error())
+	if !strings.Contains(err.Error(), "must be a scalar literal") {
+		t.Errorf("err message: got %q, want it to mention the scalar-literal requirement", err.Error())
 	}
 }
 

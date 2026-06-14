@@ -13,41 +13,39 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
-// TestLower_HoltWinters_RejectedByPromQLHead pins the cross-head parity
-// gate: `double_exponential_smoothing` (and its legacy `holt_winters`
-// alias) is an experimental PromQL function the reference backend
-// (prom/prometheus:v3.11.3, started WITHOUT
-// `--enable-feature=promql-experimental-functions` in the compatibility
-// harness) rejects. Cerberus's parser enables experimental functions for
-// the deliberately-supported extension subset (`@start()`/`@end()`,
-// `predict_linear`), so it parses the call, but the lowering dispatch now
-// rejects it to keep the PromQL head at strict reference parity (the
-// #64 surface-parity prober flagged it as the lone PromQL wrong-accept).
+// TestLower_HoltWinters_Supported pins that the PromQL head lowers
+// `double_exponential_smoothing` cleanly. The function is now implemented
+// (the maintainer flipped it from gated to supported): the chsql emitter
+// renders the Holt-Winters double-exponential recurrence as an arrayFold
+// over the windowed value array, verified reference-exact against
+// prometheus/promql/functions.go::funcDoubleExponentialSmoothing.
 //
-// The error message must contain "unsupported: range function" so the
-// showcase-promql parity-rejection contract substring still matches.
-func TestLower_HoltWinters_RejectedByPromQLHead(t *testing.T) {
+// `double_exponential_smoothing` is the only spelling the upstream parser
+// recognises (the legacy `holt_winters` name was removed upstream and is
+// rejected at parse time — itself parity-correct). The lowering case still
+// keys on both names so the IR alias is covered if upstream ever re-adds
+// the old spelling.
+func TestLower_HoltWinters_Supported(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
 	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
 
-	// `double_exponential_smoothing` is the only spelling the upstream
-	// parser recognises (the legacy `holt_winters` name was renamed
-	// upstream and is rejected at parse time — itself parity-correct).
-	// The lowering case still keys on both names so the IR alias is
-	// covered if upstream ever re-adds the old spelling.
 	const q = `double_exponential_smoothing(http_requests_total[10m], 0.5, 0.1)`
 	expr, err := p.ParseExpr(q)
 	if err != nil {
 		t.Fatalf("ParseExpr(%q): %v", q, err)
 	}
-	_, err = promql.Lower(context.Background(), expr, s)
-	if err == nil {
-		t.Fatalf("expected %q to be rejected by the PromQL head, got nil error", q)
+	plan, err := promql.Lower(context.Background(), expr, s)
+	if err != nil {
+		t.Fatalf("double_exponential_smoothing should lower cleanly, got: %v", err)
 	}
-	if want := "unsupported: range function"; !strings.Contains(err.Error(), want) {
-		t.Fatalf("error %q does not contain showcase contract substring %q", err.Error(), want)
+	sql, _, err := chsql.Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if !strings.Contains(sql, "arrayFold") {
+		t.Fatalf("emitted SQL does not contain arrayFold:\n%s", sql)
 	}
 }
 
