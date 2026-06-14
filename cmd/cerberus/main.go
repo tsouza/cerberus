@@ -215,29 +215,38 @@ func run() error {
 	// (the Planner still classifies for the shadow header, but never routes).
 	// We always wire the solver so the additive X-Cerberus-Route-Decision
 	// shadow header reports the classification regardless of mode.
-	evalSolver, err := buildSolver(logger, cfg.ClickHouse, client, promLimiter)
+	//
+	// Per-head Client VIEWS (#94) are built FIRST so the solver's breaker
+	// peek and the prom data plane share the SAME prom breaker: the solver's
+	// routed fan-out is prom-only (it carries the prom admit limiter), so a
+	// tripped prom breaker must fast-fail the solver's prom fan-out exactly
+	// as it fast-fails the prom handler's route-A queries. ForHead hands each
+	// head its OWN circuit breaker over the SAME connection pool, so a query
+	// storm that trips one head's breaker (503s that head's queries) can
+	// never cascade to the other two — and the readiness probe gets its own
+	// HeadProbe breaker below so it stays green throughout.
+	promClient := client.ForHead(chclient.HeadProm)
+	lokiClient := client.ForHead(chclient.HeadLoki)
+	tempoClient := client.ForHead(chclient.HeadTempo)
+
+	evalSolver, err := buildSolver(logger, cfg.ClickHouse, promClient, promLimiter)
 	if err != nil {
 		return fmt.Errorf("configure solver: %w", err)
 	}
 
 	// All three heads run on the shared engine.Engine pipeline; each
-	// engine is constructed below from the shared Client + a seed
+	// engine is constructed below from a per-head Client VIEW + a seed
 	// optimizer and assigned onto the per-head handler.
-	promHandler := prom.New(client, cfg.Schema, logger.With("api", "prom"))
-	promHandler.Engine = &engine.Engine{Optimizer: promHandler.Optimizer, Client: client, Solver: evalSolver}
-	promHandler.Limiter = promLimiter
-	promHandler.Version = Version
-	promHandler.ExperimentalTSGridRange = cfg.ExperimentalTSGridRange
-	promHandler.QueryTimeout = cfg.ClickHouse.QueryTimeout
+	promHandler := newPromHandler(promClient, cfg, evalSolver, promLimiter, logger)
 	promHandler.Mount(traceMux)
 
-	lokiHandler := loki.New(client, cfg.Logs, logger.With("api", "loki"))
+	lokiHandler := loki.New(lokiClient, cfg.Logs, logger.With("api", "loki"))
 	lokiHandler.Limiter = lokiLimiter
 	lokiHandler.Version = Version
 	lokiHandler.QueryTimeout = cfg.ClickHouse.QueryTimeout
 	lokiHandler.Mount(traceMux)
 
-	tempoHandler := tempo.New(client, cfg.Traces, Version, logger.With("api", "tempo"))
+	tempoHandler := tempo.New(tempoClient, cfg.Traces, Version, logger.With("api", "tempo"))
 	tempoHandler.Limiter = tempoLimiter
 	tempoHandler.Mount(traceMux)
 
@@ -248,8 +257,16 @@ func run() error {
 	// flood the trace backend with no-op spans. The readiness handler
 	// memoises results behind a TTL cache so concurrent probes coalesce
 	// into a single ClickHouse ping per window.
+	// Readiness pings flow through the dedicated HeadProbe breaker (#94), NOT
+	// any data head's. That decouples "can cerberus reach ClickHouse at all"
+	// (the only question readiness should ask) from "is one head's workload
+	// melting ClickHouse": a prom-only query storm trips the prom breaker and
+	// 503s prom queries while /readyz stays GREEN, so a single head's
+	// transient CH storm never evicts a pod that is still serving the other
+	// two heads. A genuine total-CH outage still fails the pings themselves
+	// and trips the probe breaker, flipping /readyz red — correct eviction.
 	healthHandler := health.New(health.Options{
-		Pinger:        client,
+		Pinger:        client.ForHead(chclient.HeadProbe),
 		SchemaReady:   schemaReady,
 		SchemaPresent: schemaPresent,
 	})
@@ -322,6 +339,18 @@ const solverGateReserve = 2
 // the Executor; everything else fails toward route A. Operators pin
 // CERBERUS_EVAL_ROUTE=single to keep the Executor dormant (the Planner still
 // classifies for the shadow header, but never routes).
+// newPromHandler builds the prom head's handler with its engine (per-head
+// Client view + seed optimizer + solver), limiter, and runtime knobs wired in.
+func newPromHandler(client *chclient.Client, cfg config.Config, evalSolver *solver.Solver, limiter *admit.Limiter, logger *slog.Logger) *prom.Handler {
+	h := prom.New(client, cfg.Schema, logger.With("api", "prom"))
+	h.Engine = &engine.Engine{Optimizer: h.Optimizer, Client: client, Solver: evalSolver}
+	h.Limiter = limiter
+	h.Version = Version
+	h.ExperimentalTSGridRange = cfg.ExperimentalTSGridRange
+	h.QueryTimeout = cfg.ClickHouse.QueryTimeout
+	return h
+}
+
 func buildSolver(
 	logger *slog.Logger,
 	chCfg chclient.Config,

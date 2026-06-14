@@ -138,6 +138,15 @@ type breaker struct {
 	window       time.Duration
 	openInterval time.Duration
 
+	// head is the logical query head this breaker fronts (prom / loki /
+	// tempo / probe). It is stamped as the `head` attribute on every
+	// state-gauge and trips-counter sample so a single
+	// cerberus_ch_breaker_state metric carries one series per head and a
+	// dashboard's `sum by(head)` panel can tell which head tripped. Empty
+	// for the bare zero-value breaker used in unit tests (those assert via
+	// currentState(), not via the metric label).
+	head Head
+
 	// metrics carries the OTel state gauge + trips counter the breaker
 	// fires on every transition. A nil pointer is the no-telemetry
 	// sentinel — the zero-value breaker (and any breaker built without a
@@ -145,7 +154,10 @@ type breaker struct {
 	// zero cost. client.New always wires a non-nil set off the global
 	// MeterProvider. Recording happens inside the b.mu critical section
 	// (the transition site) so the gauge level can never lag or reorder
-	// against the state field it mirrors.
+	// against the state field it mirrors. The set is SHARED across all of a
+	// Client's per-head breakers (one instrument pair, N head-labelled
+	// streams); each breaker fans its own head label in via recordState /
+	// recordTrip.
 	metrics *breakerMetrics
 }
 
@@ -196,6 +208,14 @@ func (b *breaker) nowOrTime() time.Time {
 // the probe's record() call completes. This guarantees the GA design:
 // at most one in-flight probe through the breaker during HALF-OPEN.
 func (b *breaker) allow() bool {
+	// A nil breaker is the zero-value-Client fallback: a *Client built as a
+	// bare struct literal (test seams that don't go through New /
+	// newWithConn) carries a nil br. Treat it as a permanently-CLOSED,
+	// always-admit breaker so the zero-value-Client-is-usable contract holds
+	// without every method body having to nil-check c.br.
+	if b == nil {
+		return true
+	}
 	// A disabled breaker is always-allow: it never short-circuits, so the
 	// circuit can never be OPEN to fast-fail against. No lock needed —
 	// disabled is set once at construction and never mutated.
@@ -218,7 +238,7 @@ func (b *breaker) allow() bool {
 		}
 		b.state = stateHalfOpen
 		b.probeInFlight = true
-		b.metrics.recordState(breakerGaugeHalfOpen, "half-open")
+		b.metrics.recordState(b.head, breakerGaugeHalfOpen, "half-open")
 		breakerLogger().Warn("ch circuit breaker entering half-open: admitting one recovery probe",
 			"from", "open", "to", "half-open")
 		return true
@@ -260,6 +280,10 @@ func (b *breaker) allow() bool {
 // the slot; allow still owns the transition. The returned strings are the
 // stable vocabulary "closed" / "open" / "half-open".
 func (b *breaker) peek() string {
+	// Nil breaker (zero-value Client) is always CLOSED — see allow().
+	if b == nil {
+		return "closed"
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	switch b.state {
@@ -293,6 +317,11 @@ func (b *breaker) peek() string {
 // the call-site shape uniform. Counting it would double-fault the
 // breaker.
 func (b *breaker) record(ctx context.Context, err error) {
+	// Nil breaker (zero-value Client) keeps no state — record is a no-op,
+	// matching allow()'s always-admit nil path.
+	if b == nil {
+		return
+	}
 	// A disabled breaker keeps no state — record is a no-op so the
 	// circuit can never trip. Mirrors allow()'s disabled early-return.
 	if b.disabled {
@@ -411,7 +440,7 @@ func (b *breaker) record(ctx context.Context, err error) {
 			b.state = stateClosed
 			b.failures = 0
 			b.failureWindowStart = time.Time{}
-			b.metrics.recordState(breakerGaugeClosed, "closed")
+			b.metrics.recordState(b.head, breakerGaugeClosed, "closed")
 			breakerLogger().Warn("ch circuit breaker recovered: probe succeeded, circuit closed",
 				"from", "half-open", "to", "closed")
 			return
@@ -425,7 +454,7 @@ func (b *breaker) record(ctx context.Context, err error) {
 		// the probe outcome matters.
 		b.failures = 0
 		b.failureWindowStart = time.Time{}
-		b.metrics.recordState(breakerGaugeOpen, "open")
+		b.metrics.recordState(b.head, breakerGaugeOpen, "open")
 		breakerLogger().Warn("ch circuit breaker probe failed: circuit re-opened, backoff restarted",
 			"from", "half-open", "to", "open")
 		return
@@ -457,8 +486,8 @@ func (b *breaker) record(ctx context.Context, err error) {
 			b.openedAt = now
 			b.failures = 0
 			b.failureWindowStart = time.Time{}
-			b.metrics.recordState(breakerGaugeOpen, "open")
-			b.metrics.recordTrip()
+			b.metrics.recordState(b.head, breakerGaugeOpen, "open")
+			b.metrics.recordTrip(b.head)
 			breakerLogger().Warn("ch circuit breaker tripped OPEN: fast-failing all queries (503) until recovery",
 				"from", "closed", "to", "open",
 				"threshold", b.resolveThreshold(),
@@ -478,6 +507,10 @@ func (b *breaker) record(ctx context.Context, err error) {
 // currentState returns the current breaker phase as a stable string
 // for logging / tests. Always one of "closed", "open", or "half-open".
 func (b *breaker) currentState() string {
+	// Nil breaker (zero-value Client) is always CLOSED — see allow().
+	if b == nil {
+		return "closed"
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	switch b.state {

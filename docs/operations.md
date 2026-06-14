@@ -38,7 +38,7 @@ in the same env-var namespace and are sourced from Kubernetes `Secret` / Docker
 
 ### ClickHouse circuit breaker
 
-Every CH-touching call is guarded by a per-`Client` circuit breaker
+Every CH-touching call is guarded by a circuit breaker
 (`internal/chclient/breaker.go`). After `CERBERUS_CH_BREAKER_THRESHOLD`
 consecutive failures inside `CERBERUS_CH_BREAKER_WINDOW` the breaker trips
 OPEN and methods return `ErrCircuitOpen` without dialling — the handler
@@ -59,37 +59,54 @@ off entirely — a disabled breaker is always-allow and never trips, so a
 saturated or dead CH surfaces as ordinary dial/query errors (useful when
 an external proxy or service mesh already owns CH fail-fast).
 
-**Blast radius — one breaker, all three heads, and `/readyz`.** The breaker
-is per-`Client`, and a single `chclient.Client` is constructed once at startup
-and **shared across all three API heads** (Prom, Loki, Tempo) *and* the
-`/readyz` readiness pinger. There is no per-head breaker. So when consecutive
-CH-health failures trip the breaker OPEN, the coupling is total:
+**Blast radius — per-head breakers over one shared pool, and a dedicated
+`/readyz` probe breaker.** The single `chclient.Client` is constructed once at
+startup and holds a **registry of breakers, one per head** — `prom` / `loki` /
+`tempo` for the data planes plus a dedicated `probe` breaker for `/readyz` —
+all fronting the **one** shared ClickHouse connection pool. Each API head is
+handed its own breaker via `Client.ForHead(head)`; the readiness pinger gets
+the `probe` breaker. So a query storm that trips one head's breaker OPEN
+isolates the fast-fail to that head:
 
-- **All three heads return 503.** Every Prom, Loki, and Tempo query short-
-  circuits to `ErrCircuitOpen` → `503` + `Retry-After: 5`, even if the failures
-  that tripped it all came from one head's traffic. A Loki outage thus fails
-  Tempo and Prom queries too.
-- **`/readyz` flips red.** The readiness probe pings through the same client, so
-  an OPEN breaker makes `/readyz` return `503` with the breaker-open signal
-  embedded in the `clickhouse` field (`health.md`). Under Kubernetes that
-  **evicts the pod from the Service endpoints** until the breaker closes — the
-  HALF-OPEN probe succeeds, `/readyz` goes green, and the pod is re-added.
+- **Only the storming head returns 503.** A Prom query storm that drives 5
+  consecutive CH-health failures trips ONLY the `prom` breaker; Prom queries
+  short-circuit to `ErrCircuitOpen` → `503` + `Retry-After: 5`, while Loki and
+  Tempo keep their own CLOSED breakers and serve normally. One head's CH-path
+  problem no longer 503s the other two.
+- **`/readyz` stays green under a single head's storm.** The readiness probe
+  pings through the dedicated `probe` breaker, which is driven ONLY by the
+  low-rate, TTL-coalesced readiness pings — never by data-plane traffic. So a
+  Prom-only storm 503s Prom queries while `/readyz` stays green and the pod is
+  **not** evicted: it is still happily serving Loki and Tempo, and could serve
+  Prom again within `CERBERUS_CH_BREAKER_OPEN_INTERVAL` once the HALF-OPEN probe
+  recovers. A genuine total-CH outage still fails the readiness pings
+  themselves, trips the `probe` breaker, and flips `/readyz` red → correct
+  eviction. The probe breaker uses a slightly tighter default failure budget so
+  a dead CH is reported red well inside the k8s `readinessProbe` eviction window
+  even though it only sees the throttled probe stream.
 
-This single-breaker coupling is deliberate: a cerberus replica whose only
-backing store is unreachable has nothing useful to serve on any head, so
-fail-fast + eviction is the correct response (a load balancer routes around it
-to a replica whose CH is healthy). But operators must understand it is
-**all-or-nothing** — there is no graceful degradation where one head stays up
-while another's CH path is broken, because they share one ClickHouse client and
-one breaker. Tune `CERBERUS_CH_BREAKER_*` (or disable the breaker) with that
-whole-replica coupling in mind. A query whose latency — not CH health — is the
-problem is bounded separately by the per-query wall-clock timeout
-([`CERBERUS_QUERY_TIMEOUT` in `configuration.md`](configuration.md#query-limits-and-memory)),
-so a single slow query is cancelled without advancing the breaker toward a
-replica-wide trip.
+**Bulkhead boundary (what this does NOT isolate).** Per-head breakers isolate
+the **503-cascade + pod-eviction** blast radius, NOT pool or CH-server
+saturation. All heads still share ONE connection pool: a fan-out that saturates
+ClickHouse's server-side resources can still slow the other heads' queries
+(pool-acquire timeouts are breaker-neutral by design and never trip a breaker),
+and a `MEMORY_LIMIT_EXCEEDED` (code 241) storm counts as breaker SUCCESS (CH
+answering with a typed cap is proof it's alive), so it does not trip the
+storming head's breaker at all. The isolation earns its keep where one head's
+queries time out (code 159) or hard-error CH-side at a rate tripping that
+head's budget. A query whose latency — not CH health — is the problem is bounded
+separately by the per-query wall-clock timeout
+([`CERBERUS_QUERY_TIMEOUT` in `configuration.md`](configuration.md#query-limits-and-memory)).
+
+Tune `CERBERUS_CH_BREAKER_*` (or disable the breaker) per the failure budget
+each head should tolerate; the knobs apply to every head, and the `probe`
+breaker's tighter default trip budget keeps readiness honest about a truly dead
+backend. The per-head state + trip telemetry
+(`cerberus_ch_breaker_state{head=…}` / `cerberus_ch_breaker_trips_total{head=…}`)
+shows exactly which head tripped.
 
 These resilience contracts — the breaker trip + recovery (and the
-whole-replica `/readyz`-eviction blast radius above), the
+per-head isolation + dedicated-probe-breaker `/readyz` contract above), the
 breaker-neutrality of query timeouts / admit + pool rejections, the
 `/healthz`-stays-green-on-CH-outage invariant, and replica resilience
 under a single-pod kill — are validated against a *real* k3d deployment

@@ -20,6 +20,14 @@ const breakerMeterName = "github.com/tsouza/cerberus/internal/chclient"
 // vocabulary peek() / currentState() return.
 const attrBreakerState = attribute.Key("state")
 
+// attrBreakerHead labels every breaker sample with the logical head the
+// breaker fronts — "prom" / "loki" / "tempo" / "probe". Adding this label
+// (per-head isolation, #94) turns the single cerberus_ch_breaker_state /
+// _trips_total stream into one series per head, so a `sum by(head)` panel
+// shows exactly which head tripped. It is a non-breaking addition for
+// bare-metric / `sum()`-style panels that don't pivot on it.
+const attrBreakerHead = attribute.Key("head")
+
 // breakerState gauge values. The gauge is a single 0/1/2 level so a dashboard
 // can render the current phase as a state-timeline without needing three
 // separate boolean series; the numeric mapping matches the breakerState iota
@@ -95,32 +103,49 @@ func newBreakerMetrics(mp metric.MeterProvider) *breakerMetrics {
 	m := &breakerMetrics{state: state, trips: trips}
 	// Zero-init: seed the trips counter (so increase() has a baseline) and
 	// the gauge at the closed level (so the state-timeline starts CLOSED,
-	// not blank). Both records happen before any transition fires.
-	m.trips.Add(context.Background(), 0)
-	m.state.Record(context.Background(), breakerGaugeClosed, metric.WithAttributes(
-		attrBreakerState.String("closed"),
-	))
+	// not blank) — for EVERY head (#94). OTel sync instruments export
+	// nothing until their first record/Add, so without a per-head seed a
+	// healthy replica whose loki breaker never trips would export NO
+	// head="loki" series at all and a `sum by(head)` panel would silently
+	// miss the healthy heads. Seeding all four at construction makes every
+	// head's stream exist from process start. Both records happen before any
+	// transition fires.
+	for _, h := range allHeads {
+		m.trips.Add(context.Background(), 0, metric.WithAttributes(
+			attrBreakerHead.String(h.String()),
+		))
+		m.state.Record(context.Background(), breakerGaugeClosed, metric.WithAttributes(
+			attrBreakerHead.String(h.String()),
+			attrBreakerState.String("closed"),
+		))
+	}
 	return m
 }
 
-// recordState fires the state gauge for the phase the breaker just entered.
-// A nil receiver is the no-telemetry no-op for the zero-value breaker.
-func (m *breakerMetrics) recordState(level int64, label string) {
+// recordState fires the state gauge for the phase the breaker (fronting head)
+// just entered. A nil receiver is the no-telemetry no-op for the zero-value
+// breaker.
+func (m *breakerMetrics) recordState(head Head, level int64, label string) {
 	if m == nil {
 		return
 	}
 	m.state.Record(context.Background(), level, metric.WithAttributes(
+		attrBreakerHead.String(head.String()),
 		attrBreakerState.String(label),
 	))
 }
 
-// recordTrip increments the CLOSED->OPEN trip counter. A nil receiver is the
-// no-telemetry no-op for the zero-value breaker.
-func (m *breakerMetrics) recordTrip() {
+// recordTrip increments the CLOSED->OPEN trip counter for head. A nil receiver
+// is the no-telemetry no-op for the zero-value breaker. Increment is on the
+// CLOSED->OPEN edge ONLY (not the HALF-OPEN->OPEN re-open), so rate() over the
+// counter reads as "new outages/sec per head".
+func (m *breakerMetrics) recordTrip(head Head) {
 	if m == nil {
 		return
 	}
-	m.trips.Add(context.Background(), 1)
+	m.trips.Add(context.Background(), 1, metric.WithAttributes(
+		attrBreakerHead.String(head.String()),
+	))
 }
 
 // breakerLogger is the slog handle WARN transition logs flow through. Kept as
