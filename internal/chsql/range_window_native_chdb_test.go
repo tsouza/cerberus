@@ -52,6 +52,7 @@ import (
 
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chsql"
+	"github.com/tsouza/cerberus/internal/optimizer"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
 )
@@ -119,14 +120,39 @@ func TestNativeTSGridRate_DualEmitParity(t *testing.T) {
 	}
 
 	hasFn := tsGridFnPresent(t, db)
-	fanout := runDualEmit(t, db, false)
+	fanout := runDualEmit(t, db, false, false)
 	if !hasFn {
 		t.Logf("NOTICE: timeSeriesRateToGrid absent on this chDB substrate — " +
 			"native parity assertion bypassed (fan-out half still validated). " +
 			"Coverage is reduced but the always-on SQL-shape golden still pins the emit.")
 		return
 	}
-	native := runDualEmit(t, db, true)
+	native := runDualEmit(t, db, true, false)
+
+	// Optimizer-narrowed native scan must be BIT-IDENTICAL to the wide
+	// native scan. ProjectionPushdown narrows the RangeWindowNative inner
+	// Scan from `SELECT *` to the exact {GroupBy ∪ TimestampColumn ∪
+	// ValueColumn} the timeSeriesRateToGrid emit reads. Dropping any of
+	// those identity/grid-input columns would 502 (the #860/#861 class) or
+	// silently change the grid; this proves the narrowing changes NEITHER
+	// the row set NOR a single rate value at full float64 precision.
+	nativeOpt := runDualEmit(t, db, true, true)
+	if len(nativeOpt) != len(native) {
+		t.Fatalf("optimized-native row-count divergence: opt=%d wide=%d cells", len(nativeOpt), len(native))
+	}
+	for cell, wv := range native {
+		ov, ok := nativeOpt[cell]
+		if !ok {
+			t.Errorf("cell %+v present in wide native but absent in optimized native (a column was dropped)", cell)
+			continue
+		}
+		if math.Float64bits(ov) != math.Float64bits(wv) {
+			t.Errorf("cell %+v: optimized-native=%.20g wide-native=%.20g NOT bit-identical — "+
+				"the scan narrowing changed a rate value (the narrowing is WRONG)", cell, ov, wv)
+		}
+	}
+	t.Logf("scan-narrowing parity: %d/%d optimized-native cells bit-identical to wide native — "+
+		"ProjectionPushdown narrowed the RangeWindowNative inner scan with zero result drift.", len(native), len(native))
 
 	if len(native) != len(fanout) {
 		t.Fatalf("row-count divergence: native=%d fanout=%d cells", len(native), len(fanout))
@@ -164,9 +190,10 @@ func TestNativeTSGridRate_DualEmitParity(t *testing.T) {
 }
 
 // runDualEmit lowers + emits the dual-emit query with the experimental
-// flag set to `native`, runs the resulting SQL on db, and returns the
+// flag set to `native`, optionally runs the default optimizer pipeline over
+// the plan (`optimize`), runs the resulting SQL on db, and returns the
 // per-cell rate values.
-func runDualEmit(t *testing.T, db *sql.DB, native bool) map[gridCell]float64 {
+func runDualEmit(t *testing.T, db *sql.DB, native, optimize bool) map[gridCell]float64 {
 	t.Helper()
 	p := promparser.NewParser(promparser.Options{EnableExperimentalFunctions: true})
 	expr, err := p.ParseExpr(dualEmitQuery)
@@ -180,6 +207,9 @@ func runDualEmit(t *testing.T, db *sql.DB, native bool) map[gridCell]float64 {
 		promql.LowerOpts{ExperimentalTSGridRange: native})
 	if err != nil {
 		t.Fatalf("lower (native=%v): %v", native, err)
+	}
+	if optimize {
+		plan = optimizer.Default().Run(context.Background(), plan)
 	}
 	sqlStr, args, err := chsql.Emit(context.Background(), plan)
 	if err != nil {
