@@ -99,6 +99,13 @@ rules, the typed-SQL emitter, the OTel schema). For how cerberus keeps
 queries fast — the compute-fan-out strategy and per-layer optimisations —
 see [`docs/performance.md`](docs/performance.md).
 
+> **Rate-over-range is exact by default.** `rate(…)` range queries match
+> reference Prometheus bit-for-bit and stay sub-second at realistic scale.
+> For million-row queries an experimental native ClickHouse path
+> (`timeSeriesRateToGrid`) trades a sub-observable last-bit rounding
+> difference for flat memory and an order-of-magnitude speed-up — see the
+> [exactness-vs-scale tradeoff guide](docs/performance.md#native-rate-exactness-vs-scale-should-i-enable-it).
+
 ## Compatibility
 
 Each query language is gated by a **differential harness**: cerberus and

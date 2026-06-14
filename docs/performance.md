@@ -275,46 +275,112 @@ why route B exists for it — but it is a memory mechanism, not a wall-time one,
 so it is not the default for the bounded majority.) The fan-out is the right
 default until the arithmetic floor itself moves.
 
+## Native rate: exactness vs. scale (should I enable it?)
+
+There is one optional knob in the rate-range story —
+`CERBERUS_EXPERIMENTAL_TS_GRID_RANGE` — and it asks you a single, honest
+question: **do you want results that are identical to Prometheus down to the
+last bit, or results that scale to millions of rows on flat memory?** You only
+have to think about it for `rate(...)` range queries (the `sum(rate(...[5m]))`
+panel shape); everything else is unaffected. For almost every deployment the
+default — *off* — is the right answer, and you can stop reading here. The rest
+of this section is for the case where a query is large enough that "scales to
+millions of rows" starts to matter.
+
+### Default (off): exact, Prometheus-identical, sub-second at realistic scale
+
+With the flag off, cerberus computes the rate the way it always has: the
+`arrayJoin` fan-out described above, applying Prometheus's own
+`extrapolatedRate` to each `(series, anchor)` window. This is the path the
+differential compatibility suite proves against a *reference Prometheus engine*
+on the same seeded data — the `compatibility/prometheus` gate, a required check
+on every merge. **The default path is the one that gate signs off on, so its
+results match Prometheus exactly.**
+
+It is also fast at the scale real dashboards run. A normal 1h panel
+(~1000 series × 15s ≈ 200–500k samples) is comfortably **sub-second** on the
+shipped fan-out (the scale curve above tops out at 0.79s for 500k samples). The
+one place it strains is memory: the fan-out materializes one intermediate row
+per `(sample, anchor)` pair, so its peak memory grows with
+**series × anchors**. Push that high enough — millions of samples over a wide,
+fine-grained grid — and a single statement's peak crosses the per-query memory
+cap (`CERBERUS_CH_QUERY_MAX_MEMORY`, **1 GiB** by default), and the query is
+rejected rather than served. That is exactly the wall this flag exists to move.
+
+> The [sharded-pushdown solver](solver.md) is cerberus's *other* answer to that
+> wall, and it is on by default (`auto`): it slices the same fan-out across `K`
+> statements so no single one exceeds the cap. Sharding makes the fan-out
+> *fit*; the native path below makes it *vanish*. They are independent levers —
+> see the [route × native-rate numbers in benchmarks.md](benchmarks.md#end-to-end-query-latency)
+> for how they compose.
+
 ### The durable answer
 
-Native ClickHouse **`timeSeriesRateToGrid`** — CH copied Prometheus's rate code
-verbatim, so it computes the same `extrapolatedRate` *inside the engine*,
-moving the arithmetic floor down rather than around it. It lands in CH
-**≥ 25.6**; the production / compose deployment is now on **25.8** (matching the
-chDB substrate), so the function is available — but the path stays experimental
-behind a flag (it rides the experimental `allow_experimental_time_series_aggregate_functions`
-setting), so the fan-out remains the right default until the native path is
-differentially proven on a real (non-chDB) server.
+Enabling the flag is the path that moves the arithmetic floor *down* instead of
+working around it: ClickHouse ≥ 25.6 ships **`timeSeriesRateToGrid`**, which
+ClickHouse ported from Prometheus's rate code essentially verbatim, so it
+computes the *same* `extrapolatedRate`, but *inside the engine* in a single
+pass. There is no
+`(sample, anchor)` matrix to build, so the intermediate row set — and therefore
+the memory — stays **flat** instead of growing with the grid. On the canonical
+500k-row rate-range query the difference is stark:
 
-**It is now shipped as an opt-in experimental path** — default OFF, gated by
-`CERBERUS_EXPERIMENTAL_TS_GRID_RANGE` (see
-[`operations.md`](operations.md#experimental-native-rate-timeseriesratetogrid)).
-When the flag is on, an eligible `rate(<counter>[<range>])` query_range lowers
-to a `chplan.RangeWindowNative` node that emits the native aggregate
-(`timeSeriesRateToGrid(start, end, step, window)(ts, value)` + a parallel
-`timeSeriesRange` anchor axis + `ARRAY JOIN` + `WHERE grid_val IS NOT NULL`)
-instead of the fan-out. The wrapping outer-sum `Aggregate` is byte-identical, so
-only the windowed-rate subquery changes. Flag OFF (the default) is byte-for-byte
-the established fan-out — every existing golden, the compat 574/574 corpus, and
-the compose / e2e lanes (now all on CH 25.8) are structurally untouched.
+| flag                  | how the rate is computed         | wall    | modeled peak memory |
+| --------------------- | -------------------------------- | ------- | ------------------- |
+| **off** (default)     | `arrayJoin` fan-out (Prom-exact) | ~658 ms | ~216 MiB            |
+| **on** (experimental) | native `timeSeriesRateToGrid`    | ~87 ms  | ~11 MiB             |
 
-The **chDB test substrate is 25.8** and ships the full
-`timeSeries*ToGrid` family, so the native path *is* exercisable today on the
-chdb-tagged roundtrip lane. A dual-emit parity test
-(`internal/chsql/range_window_native_chdb_test.go`) lowers the same seed twice
-(OFF = fan-out, ON = native), runs both on one chDB session, and compares the
-decoded float64 grids. The result on the canonical 12-sample ramp:
-**16 of 18 grid cells are bit-identical; 2 cells (the same anchor on both
-series) differ by exactly 1 ULP** — the native C++ value is the next double up
-from the correctly-rounded SQL fan-out value (e.g. `0.12000000000000001` vs
-`0.12`). This is the inherent last-bit difference between two correct
-floating-point evaluation orders of the *identical* `extrapolatedRate`
-algorithm; it is far below any Prometheus-observable precision (the wire format
-and Grafana both render `0.12`). The test characterises it explicitly — every
-cell within 1 ULP, no more than the documented 2 cells diverging, and none
-diverging by more than 1 ULP — rather than masking it with an epsilon. Adoption
-beyond `rate` (increase / delta / deriv / predict_linear) stays on the fan-out
-until each native sibling is differentially proven against Prometheus.
+(Measured on the 500k-row seed; full methodology and the route × native-rate
+numbers are in [benchmarks.md](benchmarks.md#end-to-end-query-latency).)
+The fan-out's memory scales with the data; the native path's stays roughly flat
+no matter how many series or anchors you ask for — which is precisely what lets
+it serve the million-row queries that would otherwise hit the cap.
+
+**What you give up** is exact bit-for-bit agreement with Prometheus — but only
+just barely. The native path is the *same algorithm*; the only difference is the
+order the floating-point arithmetic happens in inside C++ vs. SQL. A dual-emit
+parity test (`internal/chsql/range_window_native_chdb_test.go`) runs both paths
+on the same data and compares the decoded `float64` grids: the overwhelming
+majority of grid cells are **bit-identical**, and the few that differ do so by
+**exactly one ULP** — one unit in the last place, the next representable double
+(e.g. `0.12000000000000001` vs `0.12`). This is *not* a correctness defect: it
+is the inherent last-bit difference between two correct evaluation orders of the
+identical calculation, far below anything Prometheus can observe — the wire
+format and Grafana both render `0.12` either way. The test pins this exactly
+(every cell within 1 ULP, no more than the documented two cells diverging, none
+by more than 1 ULP) rather than papering over it with a tolerance.
+
+The native path is **experimental and off by default** for two honest reasons,
+not because the rounding matters: it requires ClickHouse **≥ 25.6** (older
+servers reject the unknown function), and it rides ClickHouse's experimental
+`allow_experimental_time_series_aggregate_functions` setting, so it has not yet
+been swept against a real (non-chDB) server where that setting is enforced.
+Scope is **`rate` only** — `increase` / `delta` / `deriv` / `predict_linear`
+stay on the fan-out until each native sibling is differentially proven against
+Prometheus.
+
+### The decision rule
+
+| Your situation                                                       | Use                          |
+| -------------------------------------------------------------------- | ---------------------------- |
+| Normal dashboards / alerting — exact Prometheus parity matters       | **Default (off)**            |
+| Your ClickHouse is older than 25.6                                   | **Default (off)** (required) |
+| Large `rate(...)` range queries that hit the memory cap or feel slow | **Enable native (on)**       |
+
+Enable native only when **all three** hold: the slow/large query is a
+`rate(...)` range query over millions of rows, your ClickHouse is ≥ 25.6, and an
+imperceptible last-bit rounding difference is acceptable for that panel.
+
+In short: **leave it off** unless you are specifically running large
+`rate(...)` range queries, you are on ClickHouse ≥ 25.6, and you would trade a
+sub-observable rounding difference for an order-of-magnitude drop in memory and
+latency. When the flag is on, an eligible `rate(<counter>[<range>])` query_range
+lowers to a `chplan.RangeWindowNative` node that emits the native aggregate; the
+wrapping outer aggregate (`sum by (...)`) is byte-identical, so only the
+windowed-rate subquery changes, and turning the flag back off restores the
+established, Prometheus-exact fan-out. The full env-var contract and CH-version
+constraint live in
+[`operations.md`](operations.md#experimental-native-rate-timeseriesratetogrid).
 
 ### The lesson
 
