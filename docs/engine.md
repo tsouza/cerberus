@@ -206,7 +206,44 @@ losing the cause.
 
 The middle of the pipeline — lower → optimize → emit → schema
 resolution — is the part the three heads share. Each stage is
-described below.
+described below. The three heads converge on it: each parses with its
+reference upstream parser, lowers to the shared IR, and from there runs
+the same optimize → emit → execute path.
+
+```text
+   PromQL                LogQL                TraceQL
+     │                     │                     │
+     ▼                     ▼                     ▼
+prometheus/        grafana/loki/v3/         grafana/tempo/
+promql/parser      pkg/logql/syntax         pkg/traceql        ← reference upstream parsers, imported directly
+     │                     │                     │
+     │      per-QL lowering (head → chplan)      │
+     ▼                     ▼                     ▼
+ ┌──────────────────────────────────────────────────┐
+ │           internal/chplan — shared IR            │   Scan • Filter • Project •
+ │  one algebra; the optimiser and the emitter      │   Aggregate • RangeWindow •
+ │  don't know which head produced the plan         │   Limit • expression tree
+ └──────────────────────────────────────────────────┘
+                       │
+                       ▼
+ ┌──────────────────────────────────────────────────┐
+ │          internal/optimizer — rule-based         │   Catalyst-style batches:
+ │  Analyzer (semantic) → Once (heuristic) →        │   semantic + heuristic +
+ │  FixedPoint (rules that unlock each other)       │   fixpoint rewrites; no cost
+ │                                                  │   model (see performance.md)
+ └──────────────────────────────────────────────────┘
+                       │
+                       ▼
+ ┌──────────────────────────────────────────────────┐
+ │           internal/chsql — typed emitter         │   • parameterised, escape-free
+ │  QueryBuilder slots + typed Frag constructors;   │   • PREWHERE promotion on Filter(Scan)
+ │  the typed surface is closed — external packages │   • sort-key-aware predicate ordering
+ │  cannot compose raw SQL by construction          │   • streaming clickhouse-go/v2 cursor
+ └──────────────────────────────────────────────────┘
+                       │
+                       ▼
+                  ClickHouse
+```
 
 ### One IR for three languages — `internal/chplan`
 
