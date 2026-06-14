@@ -1,0 +1,18 @@
+{
+  "_comment": "Parity-regression ratchet baseline. The required compatibility/{prometheus,loki,tempo} checks compare each run's compat-score.json against the matching entry here and FAIL the job when a run drops below baseline (a real numeric regression on the main route). Noise WITHIN the baseline is tolerated; only a DROP gates. This makes 'compat is the source of truth' a real gate, not just an informational badge. See .github/scripts/compat-ratchet.mjs + docs/compatibility.md.",
+  "_contract": "Per head: 'passed' is the floor of agreeing cases (a run with fewer passing cases regresses); 'total' is the corpus floor (a run whose corpus shrank below this is rejected, so a regression can't hide by dropping a failing case). RAISE these numbers in lock-step whenever the harness legitimately gains passing cases or the corpus grows — never lower them without a documented reason.",
+  "heads": {
+    "prometheus": {
+      "passed": 574,
+      "total": 574
+    },
+    "loki": {
+      "passed": 116,
+      "total": 116
+    },
+    "tempo": {
+      "passed": 48,
+      "total": 48
+    }
+  }
+}

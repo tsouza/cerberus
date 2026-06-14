@@ -292,6 +292,24 @@ jobs:
           HEAD: prometheus
           SCORE: compatibility/prometheus/compat-score.json
 
+      - name: Parity-regression ratchet
+        # GATE: this is what makes compatibility/prometheus a real
+        # source-of-truth check rather than an informational badge. PR
+        # #503 (task #68) downgraded per-case diffs to report-only so the
+        # harness exits 0 even on a numeric regression; this step restores
+        # the gate by failing the job when the run's compat-score.json
+        # drops below the committed per-head floor in
+        # compatibility/parity-baseline.json. It compares integers
+        # (passed/total), not floats, so it can't flake (see the script
+        # header). Runs only when the harness itself succeeded — a harness
+        # infra failure is re-raised by the "Fail job" step below, and the
+        # ratchet shouldn't double-report a missing score in that path.
+        if: steps.compat.outcome == 'success'
+        run: node .github/scripts/compat-ratchet.mjs
+        env:
+          HEAD: prometheus
+          SCORE: compatibility/prometheus/compat-score.json
+
       - name: Upload report
         if: always()
         uses: actions/upload-artifact@v7
@@ -590,13 +608,31 @@ jobs:
 
       - name: Run tempo-compatibility harness
         id: harness
-        env:
-          FAIL_ON_DIFF: "1"
+        # NOTE: the old `FAIL_ON_DIFF: "1"` env here was DEAD — PR #503
+        # deleted the `--fail-on-diff` flag from compatibility/tempo/
+        # driver/diff.go, so nothing in compatibility/tempo/ ever read
+        # this var (grep is clean). It gave a false sense that tempo
+        # parity was gated when it wasn't. The real gate is now the
+        # "Parity-regression ratchet" step below, which works uniformly
+        # across all three heads off compat-score.json. Removed to kill
+        # the dead signal.
         run: ./compatibility/tempo/scripts/run-tempo-compatibility.sh
 
       - name: Append score to step summary
         if: always()
         run: node .github/scripts/compat-step-summary.mjs
+        env:
+          HEAD: tempo
+          SCORE: compatibility/tempo/reports/compat-score.json
+
+      - name: Parity-regression ratchet
+        # GATE: see the prometheus job for the full rationale. Fails the
+        # job when tempo's compat-score.json drops below the committed
+        # floor in compatibility/parity-baseline.json (heads.tempo). This
+        # replaces the dead FAIL_ON_DIFF env removed from the harness step
+        # above — it is the actual tempo parity gate.
+        if: steps.harness.outcome == 'success'
+        run: node .github/scripts/compat-ratchet.mjs
         env:
           HEAD: tempo
           SCORE: compatibility/tempo/reports/compat-score.json
@@ -727,6 +763,16 @@ jobs:
       - name: Append score to step summary
         if: always()
         run: node .github/scripts/compat-step-summary.mjs
+        env:
+          HEAD: loki
+          SCORE: compatibility/loki/reports/compat-score.json
+
+      - name: Parity-regression ratchet
+        # GATE: see the prometheus job for the full rationale. Fails the
+        # job when loki's compat-score.json drops below the committed
+        # floor in compatibility/parity-baseline.json (heads.loki).
+        if: steps.harness.outcome == 'success'
+        run: node .github/scripts/compat-ratchet.mjs
         env:
           HEAD: loki
           SCORE: compatibility/loki/reports/compat-score.json
