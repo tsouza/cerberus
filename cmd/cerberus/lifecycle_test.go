@@ -15,6 +15,14 @@ import (
 	"time"
 )
 
+// lifecycleTestBudget bounds how long these tests wait for a lifecycle
+// operation (Shutdown, in-flight drain, Accept-after-close, signal fan-out)
+// to complete before failing. It is headroom, not a latency assertion — the
+// operations finish in milliseconds when correct, so this only bounds the
+// FAILURE case; a generous value de-flakes the suite under loaded CI runners
+// without weakening any check (a real hang still fails, just later).
+const lifecycleTestBudget = 10 * time.Second
+
 // Server-lifecycle tests live alongside otel.go in cmd/cerberus.
 //
 // run() in main.go is not directly callable here (it owns os.Stderr, a
@@ -50,7 +58,7 @@ func TestSignalNotifyContext_TerminatesOnSIGTERM(t *testing.T) {
 		if !errors.Is(ctx.Err(), context.Canceled) {
 			t.Errorf("ctx.Err() = %v; want context.Canceled", ctx.Err())
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(lifecycleTestBudget):
 		t.Fatal("SIGTERM did not cancel context within deadline")
 	}
 }
@@ -69,7 +77,7 @@ func TestSignalNotifyContext_TerminatesOnSIGINT(t *testing.T) {
 	select {
 	case <-ctx.Done():
 		// good
-	case <-time.After(2 * time.Second):
+	case <-time.After(lifecycleTestBudget):
 		t.Fatal("SIGINT did not cancel context within deadline")
 	}
 }
@@ -137,7 +145,7 @@ func TestHTTPServer_GracefulShutdown_DrainsInflightRequest(t *testing.T) {
 
 	shutdownDone := make(chan error, 1)
 	go func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), lifecycleTestBudget)
 		defer cancel()
 		shutdownDone <- srv.Shutdown(shutdownCtx)
 	}()
@@ -157,7 +165,7 @@ func TestHTTPServer_GracefulShutdown_DrainsInflightRequest(t *testing.T) {
 		if err != nil {
 			t.Errorf("Shutdown: %v", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(lifecycleTestBudget):
 		t.Fatal("Shutdown did not return after handler released")
 	}
 	if err := <-clientDone; err != nil {
@@ -257,7 +265,7 @@ func TestHTTPServer_ListenAndServeErrServerClosed(t *testing.T) {
 	// Give the goroutine a tick to enter Serve.
 	time.Sleep(50 * time.Millisecond)
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), lifecycleTestBudget)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		t.Fatalf("Shutdown: %v", err)
@@ -267,7 +275,7 @@ func TestHTTPServer_ListenAndServeErrServerClosed(t *testing.T) {
 		if !errors.Is(got, http.ErrServerClosed) {
 			t.Errorf("Serve err = %v; want http.ErrServerClosed", got)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(lifecycleTestBudget):
 		t.Fatal("Serve did not return after Shutdown")
 	}
 }
@@ -304,7 +312,7 @@ func TestHTTPServer_Shutdown_BlocksNewConnections(t *testing.T) {
 	}
 	_ = conn.Close()
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), lifecycleTestBudget)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		t.Fatalf("Shutdown: %v", err)
@@ -318,7 +326,7 @@ func TestHTTPServer_Shutdown_BlocksNewConnections(t *testing.T) {
 		if !errors.Is(got, net.ErrClosed) {
 			t.Errorf("Accept after Shutdown returned %v; want net.ErrClosed", got)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(lifecycleTestBudget):
 		t.Fatal("Accept did not return after Shutdown")
 	}
 }
@@ -373,7 +381,7 @@ func TestHTTPServer_GoroutineDeltaWithinBound(t *testing.T) {
 		}
 		_ = resp.Body.Close()
 
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), lifecycleTestBudget)
 		if err := srv.Shutdown(ctx); err != nil {
 			t.Fatalf("Shutdown: %v", err)
 		}
