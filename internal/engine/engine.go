@@ -18,7 +18,7 @@
 // pushes all reduction into CH. The maintainer relaxed the old "one CH
 // query per request — no scatter-gather" lock on 2026-06-12 for the narrow
 // memory-unbounded anchor-fan-out class: the sharded-pushdown solver
-// (internal/solver, docs/query-solver-design.md) re-anchors K copies of the
+// (internal/solver, docs/solver.md) re-anchors K copies of the
 // same optimized plan onto disjoint anchor slices, emits each via chsql.Emit,
 // and concatenates the streams — no new evaluator, no new SQL template, and
 // the all-or-nothing wire contract preserved. The solver hooks the seam
@@ -190,7 +190,7 @@ type Engine struct {
 	// Client executes the emitted ClickHouse SQL. Required.
 	Client Querier
 	// Solver is the OPTIONAL sharded-pushdown query orchestrator
-	// (internal/solver, docs/query-solver-design.md). When nil the feature
+	// (internal/solver, docs/solver.md). When nil the feature
 	// is fully off and every existing call path is byte-unchanged — the
 	// classification branch, the shadow header, and the Executor are all
 	// dead code. When non-nil the engine classifies the optimized plan at

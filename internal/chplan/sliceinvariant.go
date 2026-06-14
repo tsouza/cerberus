@@ -37,7 +37,7 @@ func IsSliceInvariant(n Node) bool {
 // correspondingly-bounded input scan yields exactly the rows route A would
 // have produced for those anchors.
 //
-// Phase 1 set (docs/query-solver-design.md §Routing, signal 1):
+// Phase 1 set (docs/solver.md §"Eligibility signals", signal 1):
 //
 //   - Scan / Filter / Project — pure row-wise passthroughs; no cross-row,
 //     cross-anchor, or scan-order dependence.

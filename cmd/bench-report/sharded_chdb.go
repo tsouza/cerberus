@@ -18,7 +18,7 @@ import (
 )
 
 // shardedResult is the SHARDED-SOLVER dimension: the headline win of the
-// sharded-pushdown solver (internal/solver, docs/query-solver-design.md). It
+// sharded-pushdown solver (internal/solver, docs/solver.md). It
 // measures the OOM-class range query — a high anchor-fan-out matrix shape
 // (sum(rate(metric[Range])) @ Step over OuterRange) whose single-statement
 // route A demands more than the 1 GiB per-query memory cap, while route B
@@ -75,8 +75,8 @@ type shardedResult struct {
 	MaxShardModeledBytes int64
 }
 
-// Calibration + cap constants, all from docs/query-solver-design.md §"Worked
-// case" + internal/config (the published, reproducible numbers this dimension
+// Calibration + cap constants, all from docs/solver.md §"Slicing geometry"
+// + internal/config (the published, reproducible numbers this dimension
 // models against — never fabricated).
 const (
 	// shardCapBytes is the prod per-query cap CERBERUS_CH_QUERY_MAX_MEMORY

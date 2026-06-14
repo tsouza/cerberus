@@ -13,7 +13,7 @@ git push -u origin <branch>
 gh pr create
 ```
 
-Two CI checks gate `main`: **`ci / check`** (golangci-lint + race tests + build) and **`ci / lint`** (commitlint + markdownlint). Branch protection is strict — your branch must be up-to-date with `main` before merging. Squash is the only merge style.
+The required checks on `main` are `check` (golangci-lint + race tests + build), `lint` (commitlint + markdownlint), `forbid-skip`, `compatibility/{prometheus,loki,tempo}`, `probe`, `roundtrip (promql|logql|traceql)`, and `compose-smoke` — see the Testing layers below for what each covers. Branch protection is strict — your branch must be up-to-date with `main` before merging. Squash is the only merge style.
 
 ## House rules
 
@@ -43,6 +43,15 @@ instead of in CI. Heavy validation (`go test`, `golangci-lint run`,
 pre-flight manually.
 
 If `direnv allow` complains, `eval "$(direnv export bash)"` once per shell.
+
+End-to-end against a real ClickHouse + Grafana in k3d:
+
+```sh
+just e2e-up            # boot k3d cluster, deploy CH / Grafana / cerberus
+just e2e-seed          # ingest sample OTel data
+just e2e-run           # Go E2E tests + Grafana Playwright smoke
+just e2e-down          # tear down
+```
 
 `go.mod` may pin a newer Go than your system Go. `GOTOOLCHAIN=auto` (the default) silently fetches the right version into `~/go/pkg/mod/golang.org/toolchain@...`; no manual install needed.
 

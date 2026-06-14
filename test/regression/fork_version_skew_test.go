@@ -14,7 +14,8 @@ import (
 // backend container the matching compatibility harness diffs cerberus
 // against.
 //
-// Why this matters (phase-0(g) of docs/query-solver-design.md):
+// Why this matters (the fork-vs-reference parity story; see
+// docs/upstream-forks.md §"Version-skew gate"):
 //
 // The compat lanes — compatibility/{prometheus,loki,tempo} — are the source
 // of truth for all three heads. They run cerberus's emitted SQL against a

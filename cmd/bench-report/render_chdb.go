@@ -257,7 +257,7 @@ func renderSharded(b *strings.Builder, in docInput) {
 	b.WriteString("## Sharded solver — the OOM-class win\n\n")
 
 	fmt.Fprintf(b, "The sharded-pushdown solver (`internal/solver`, ")
-	b.WriteString("[`docs/query-solver-design.md`](query-solver-design.md)) recognizes the narrow ")
+	b.WriteString("[`solver.md`](solver.md)) recognizes the narrow ")
 	b.WriteString("class of range queries whose **single-statement** execution is memory-unbounded ")
 	b.WriteString("on ClickHouse — a high anchor fan-out `F = Range/Step` matrix shape — and ")
 	b.WriteString("re-anchors the *same* optimized plan onto **K disjoint anchor-grid shards**, ")

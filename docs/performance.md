@@ -38,32 +38,29 @@ Two architectural invariants frame the whole approach:
   object storage has no parallel scan — that constraint doesn't transfer to CH,
   so route A stays the default rather than a scatter-gather frontend.)
 - **The sharded-pushdown solver is the exception — ON by default (`auto`),
-  narrow by construction.** The old lock ("one CH query per request — no
-  scatter-gather,
-  no merge layer to add later") was relaxed by the maintainer on 2026-06-12 for
-  the single class route A cannot solve bounded: high **anchor fan-out**
-  (`F = Range/Step`, e.g. `sum(rate(m[5m]))` at a fine step over a wide range),
-  where one statement's peak intermediate cardinality exceeds the CH memory cap.
-  For *that class only*, the `internal/solver` orchestrator
-  ([`query-solver-design.md`](query-solver-design.md)) re-anchors `K` deep
-  copies of the **same already-optimized plan** onto disjoint slices of the
-  anchor grid, emits each via the existing `chsql.Emit`, and concatenates the
-  result streams behind the existing cursor. There is **no new evaluator and no
-  new SQL template** — every shard runs the same compat-gated route-A SQL,
-  restricted to its anchor sub-grid. The phase-2 flip landed on 2026-06-13: the
-  solver now routes by default (`CERBERUS_EVAL_ROUTE=auto`), gated on the
+  narrow by construction.** Route A holds one CH statement per request for the
+  overwhelming majority of traffic; the solver handles the single class route A
+  cannot solve bounded: high **anchor fan-out** (`F = Range/Step`, e.g.
+  `sum(rate(m[5m]))` at a fine step over a wide range), where one statement's
+  peak intermediate cardinality exceeds the CH memory cap. For *that class
+  only*, the `internal/solver` orchestrator ([`solver.md`](solver.md))
+  re-anchors `K` deep copies of the **same already-optimized plan** onto
+  disjoint slices of the anchor grid, emits each via the existing `chsql.Emit`,
+  and concatenates the result streams behind the existing cursor. There is **no
+  new evaluator and no new SQL template** — every shard runs the same
+  compat-gated route-A SQL, restricted to its anchor sub-grid. The solver routes
+  by default (`CERBERUS_EVAL_ROUTE=auto`), gated on the
   `compatibility/prometheus-forced-route` CI job, which forces every eligible
   plan onto route B (`CERBERUS_EVAL_ROUTE=sharded`) over the WHOLE upstream
   PromQL corpus and fails on any diff vs reference Prometheus — the corpus-wide
-  proof that route B is byte-identical to route A. Routing remains
-  fail-toward-A: only ELIGIBLE, above-threshold plans take route B; ineligible
-  queries (instant / `now64` / un-sliceable / grid-mismatch) always stay on
-  route A. Operators pin `CERBERUS_EVAL_ROUTE=single` to disable routing
-  entirely. The additive `X-Cerberus-Route-Decision` response header reports
-  the per-request classification in every mode (`routed` / `below-threshold` /
-  `instant` / `not-sliceable` / …). See
-  [`evaluation-architecture.md`](evaluation-architecture.md) for the operator
-  classification the solver's safe set maps onto, and
+  proof that route B is byte-identical to route A. Routing is fail-toward-A:
+  only ELIGIBLE, above-threshold plans take route B; ineligible queries
+  (instant / `now64` / un-sliceable / grid-mismatch) always stay on route A.
+  Operators pin `CERBERUS_EVAL_ROUTE=single` to disable routing entirely. The
+  additive `X-Cerberus-Route-Decision` response header reports the per-request
+  classification in every mode (`routed` / `below-threshold` / `instant` /
+  `not-sliceable` / …). See [`solver.md`](solver.md) for the eligibility
+  signals, slicing geometry, execution/cursor model, and failure contract, and
   [operations.md](operations.md#sharded-pushdown-solver) for the runtime knobs.
 - **All-or-nothing wire contract.** Whether a request is solved by route A or
   fanned out across `K` shards, the client sees a single response: a shard
@@ -118,7 +115,7 @@ projections toward the scan so ClickHouse does less work:
   the emitter see simplified predicates.
 
 The optimizer carries **no cost model** — it is a deterministic rewrite engine,
-and every rule must earn its place (two inert rules were retired in 2026-06).
+and every rule must earn its place: it carries only rules that fire.
 The exhaustive, current rule table lives in
 [`engine.md`](engine.md#a-real-rule-based-optimiser--internaloptimizer); it is
 the source of truth and is not duplicated here precisely so it cannot drift.
@@ -194,21 +191,23 @@ tracked `KnownSuperlinear` finding (the cardinality axis still hard-gates), and
 the true fix — flattening the chain into one N-ary single pass — is tracked
 rather than silently accepted.
 
-## Rate-range windowing: why we ship the fan-out
+## Rate-range windowing: why the fan-out ships as the default
 
-This section is a decision record. `sum(rate(metric[5m]))` as a `query_range`
-(e.g. 1h @ 15s = **240 anchors**) over the OTel-CH counter table is the one
-metrics shape route A cannot fold flat — `rate` needs the per-window sample
-pairs, so the RangeLWR collapse doesn't apply (see the
+`sum(rate(metric[5m]))` as a `query_range` (e.g. 1h @ 15s = **240 anchors**)
+over the OTel-CH counter table is the one metrics shape route A cannot fold
+flat — `rate` needs the per-window sample pairs, so the RangeLWR collapse
+doesn't apply (see the
 [`range query (240 steps)` note in benchmarks.md](benchmarks.md#end-to-end-query-latency)).
 The emit fans each sample into the `~Range/Step` overlapping windows it belongs
 to (`arrayJoin`), groups + sorts per `(series, anchor)`, then applies
 Prometheus's `extrapolatedRate`. That fan-out *looks* like the expensive part,
-and every instinct says to attack the data movement. We built and measured the
-alternatives. They lose. This records why, so they are never re-attempted.
+and every instinct says to attack the data movement. The alternatives don't win
+at realistic scale; this section is the rationale for why the fan-out is the
+right default.
 
-All numbers below were **measured this session on real ClickHouse 24.8, 8-core**
-(not chDB — the benchmarks.md curves run in-process chDB; these are prod CH).
+The numbers below come from real ClickHouse 24.8, 8-core (a bench host; the
+deployment floor is now CH 25.8) — not chDB; the benchmarks.md curves run
+in-process chDB, these are prod CH.
 
 ### The bottleneck is the extrapolation arithmetic, not the scan
 
@@ -233,19 +232,21 @@ Prometheus-class, and the extrapolation-arithmetic floor (~1.7–2s at high
 cardinality) — *not* the data movement — is what every alternative has to beat.
 None do.
 
-### The measured dead-ends
+### Why the alternatives don't win on wall time
 
-Each row is an alternative we built and benchmarked against the fan-out. They
-are recorded here with numbers precisely so nobody re-spends the time:
+Each row is an alternative to the fan-out, with the numbers that decide it. The
+common thread: every one of them optimizes data movement (memory or
+cardinality), while the irreducible cost at realistic scale is the per-anchor
+extrapolation arithmetic — so none of them moves the wall-time floor.
 
-| alternative                            | what it does                                                        | result                                                                             | why it loses                                                                                                                                                        |
-| -------------------------------------- | ------------------------------------------------------------------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Anchor-grid **sharding** (route B)     | K parallel shards over disjoint anchor sub-grids                    | **+8% slower** AND **8× scan amplification** (40M vs 5M `read_rows`)               | the 5m lookback straddles shards, so every shard re-scans the whole table. It's a MEMORY mechanism, not a wall one.                                                 |
-| **ASOF JOIN** boundary lookup (#97)    | window-function enrichment instead of `arrayJoin`                   | cardinality down (fan_factor **5.83 → 1.0**) but wall **REGRESSED 6.31s → 36.90s** | ASOF + window enrichment is far slower than `arrayJoin` + `GROUP BY`. The cardinality ratchet missed it — the ratchet is blind to wall. (#851, closed.)             |
-| **MV substitution / downsampling**     | rollup the 14 ms scan                                               | attacks the wrong axis; also lossy                                                 | breaks exact parity; cerberus already removed its `MVSubstitution` rule as a no-op (no rollups exist).                                                              |
-| **Naive single-pass array**            | per-anchor `arrayCount` / `arrayFirstIndex` over a per-series array | **6.9s**                                                                           | per-anchor LINEAR rescans — same `O(n × windows)` class as the fan-out; only cut memory ~5×.                                                                        |
-| **`arrayReduceInRanges`** segment-tree | range-aggregate the per-series sample array                         | dominated                                                                          | cannot produce the reset-adjusted increase — counter resets are a global per-series property needing the cumulative prefix-sum, which a segment-tree doesn't carry. |
-| **B2 prefix-sum / two-pointer**        | the asymptotically-optimal single pass, byte-exact parity           | LOSES at realistic scale, WINS only past ~1M (crossover **~1M**)                   | the optimal algorithm is the wrong *default* because the extrapolation arithmetic is the floor, not the data movement it optimizes. See below.                      |
+| alternative                            | what it does                                                        | result                                                                             | why it doesn't win on wall                                                                                                                                                                                                                                                                                      |
+| -------------------------------------- | ------------------------------------------------------------------- | ---------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Anchor-grid **sharding** (route B)     | K parallel shards over disjoint anchor sub-grids                    | **+8% slower** AND **8× scan amplification** (40M vs 5M `read_rows`)               | the 5m lookback straddles shards, so every shard re-scans the whole table. Sharding is a MEMORY mechanism — it divides the per-statement peak so the unbounded class clears the cap; it is not a wall-time optimization, which is exactly why route B is reserved for that class and route A stays the default. |
+| **ASOF JOIN** boundary lookup          | window-function enrichment instead of `arrayJoin`                   | cardinality down (fan_factor **5.83 → 1.0**) but wall **6.31s → 36.90s** worse     | ASOF + window enrichment is far slower than `arrayJoin` + `GROUP BY`, and the cardinality ratchet is blind to wall so it wouldn't catch the regression.                                                                                                                                                         |
+| **MV substitution / downsampling**     | rollup the 14 ms scan                                               | attacks the wrong axis; also lossy                                                 | breaks exact parity; the default schema ships no rollups, so a `MVSubstitution` rule would be a guaranteed no-op (the optimizer carries no such rule).                                                                                                                                                          |
+| **Naive single-pass array**            | per-anchor `arrayCount` / `arrayFirstIndex` over a per-series array | **6.9s**                                                                           | per-anchor LINEAR rescans — same `O(n × windows)` class as the fan-out; cuts memory ~5× but not wall.                                                                                                                                                                                                           |
+| **`arrayReduceInRanges`** segment-tree | range-aggregate the per-series sample array                         | dominated                                                                          | cannot produce the reset-adjusted increase — counter resets are a global per-series property needing the cumulative prefix-sum, which a segment-tree doesn't carry.                                                                                                                                             |
+| **B2 prefix-sum / two-pointer**        | the asymptotically-optimal single pass, byte-exact parity           | loses at realistic scale, wins only past ~1M (crossover **~1M**)                   | the optimal algorithm is the wrong *default* because the extrapolation arithmetic is the floor, not the data movement it optimizes. See below.                                                                                                                                                                  |
 
 The B2 prefix-sum / two-pointer deserves the detail, because it is the
 *asymptotically optimal* answer and it still loses as a default:
@@ -262,15 +263,17 @@ run, the extrapolation-arithmetic floor dominates the data movement B2
 optimizes, so the optimal algorithm is **3× slower** than the fan-out it was
 meant to replace.
 
-### Why we ship the fan-out
+### Why the fan-out is the default
 
-At realistic scale it is already Prometheus-class, and every alternative we
-built **loses at realistic scale** because they all optimize data movement
-while the irreducible cost is the per-anchor extrapolation arithmetic. Sharding
-and ASOF and single-pass each cut memory or cardinality — the axes the
-cardinality ratchet watches — but pay for it in wall, and wall is the axis the
-user feels. The fan-out is the right default until the arithmetic floor itself
-moves.
+At realistic scale it is already Prometheus-class, and every alternative
+**loses at realistic scale** because they all optimize data movement while the
+irreducible cost is the per-anchor extrapolation arithmetic. Sharding and ASOF
+and single-pass each cut memory or cardinality — the axes the cardinality
+ratchet watches — but pay for it in wall, and wall is the axis the user feels.
+(Sharding's memory win is still the right tool for the unbounded class, which is
+why route B exists for it — but it is a memory mechanism, not a wall-time one,
+so it is not the default for the bounded majority.) The fan-out is the right
+default until the arithmetic floor itself moves.
 
 ### The durable answer
 
@@ -295,8 +298,7 @@ only the windowed-rate subquery changes. Flag OFF (the default) is byte-for-byte
 the established fan-out — every existing golden, the compat 574/574 corpus, and
 the compose / e2e lanes (now all on CH 25.8) are structurally untouched.
 
-The *stale* note in earlier revisions — "untestable until prod upgrades" — was
-wrong. The **chDB test substrate is 25.8** and ships the full
+The **chDB test substrate is 25.8** and ships the full
 `timeSeries*ToGrid` family, so the native path *is* exercisable today on the
 chdb-tagged roundtrip lane. A dual-emit parity test
 (`internal/chsql/range_window_native_chdb_test.go`) lowers the same seed twice
@@ -331,12 +333,9 @@ before the 14 ms scan vs ~98%-arithmetic split was measured.
   `just bench-report`.
 - [`engine.md`](engine.md) — the pipeline stages in depth: the IR algebra, the
   optimizer rule table, and the typed CH-native emitter.
-- [`query-solver-design.md`](query-solver-design.md) — the sharded-pushdown
-  solver: the eligibility signals, the slicing geometry, and the phased
-  migration that keeps route A the default.
-- [`evaluation-architecture.md`](evaluation-architecture.md) — the operator
-  classification (slice-invariant vs. not) the solver's safe set maps onto, and
-  the ceiling shapes time-slicing cannot reach.
+- [`solver.md`](solver.md) — the sharded-pushdown solver reference: the
+  eligibility signals (which queries route B), the slicing geometry, the
+  execution/cursor model, and the failure/cancellation contract.
 - [`test-strategy.md`](test-strategy.md) — the full test-layer map the perf
   lanes sit inside.
 - [`operations.md`](operations.md) — runtime memory, admission control, and

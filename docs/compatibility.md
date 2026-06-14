@@ -24,7 +24,7 @@ branch as shields.io badge JSON; the README shows them live. On
 - **Driver**: upstream `promql-compliance-tester`.
 - **Corpus**: vendored
   [`prometheus/compliance/promql/promql-test-queries.yml`](https://github.com/prometheus/compliance).
-- **Today**: **536/536** cases pass; no allow-list exists.
+- **Today**: **574/574** cases pass; no allow-list exists.
 
 ### LogQL — `grafana/loki:pkg/logql/bench`
 

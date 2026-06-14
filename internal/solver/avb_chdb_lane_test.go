@@ -1,8 +1,8 @@
 //go:build chdb
 
 // A-vs-B chDB differential lane — the parity proof that unlocks the Mode
-// flip (docs/query-solver-design.md §Parity, lane 1 "A-vs-B chDB
-// differential").
+// flip: route A and the K shard SQLs run on chDB and compare bit-for-bit
+// (the disjoint-anchor equivalence behind docs/solver.md).
 //
 // For every seeded fixture whose optimized plan the Planner force-routes
 // under Mode="sharded", this lane:

@@ -235,11 +235,11 @@ pipeline ships:
 `FilterAggregateTranspose` is retained as speculative correctness
 insurance (0 fires on the current corpus); `FilterRangeWindowTranspose`,
 `FilterFusion`, `ConstantFoldHeuristic`, and `ProjectionPushdown` all
-fire on real queries. Two rules were retired in 2026-06 after the
-optimizer walk was made total (`internal/optimizer/rule.go`):
-`FilterProjectTranspose` (0 fires — no lowering emits `Filter(Project)`)
-and `MVSubstitution` (no rollup roadmap; the default schema shipped no
-live rollups, so the rule was a guaranteed no-op).
+fire on real queries. The rule set carries only rules that can fire:
+there is no `FilterProjectTranspose` (no lowering emits `Filter(Project)`,
+so the rule would never match) and no `MVSubstitution` (the default schema
+ships no live rollups, so a substitution rule would be a guaranteed
+no-op).
 
 The optimiser is gated by termination, decision-pin, rule-interaction,
 property, and gremlins (mutation) tests.

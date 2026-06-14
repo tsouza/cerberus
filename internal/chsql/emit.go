@@ -8,7 +8,7 @@
 //
 // Emit always renders one plan into one CH statement. The default route A
 // executes exactly that statement per request. The sharded-pushdown solver
-// (internal/solver, docs/query-solver-design.md) does not change this: for
+// (internal/solver, docs/solver.md) does not change this: for
 // the narrow memory-unbounded anchor-fan-out class it re-anchors K deep copies
 // of the same optimized plan onto disjoint anchor slices and calls Emit once
 // per slice — no new SQL template, just the same per-statement emission run K
