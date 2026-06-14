@@ -62,6 +62,7 @@ package scaling
 
 import (
 	"database/sql"
+	"sort"
 	"strconv"
 	"testing"
 	"time"
@@ -159,8 +160,9 @@ type Construct struct {
 	// (0) is treated as 0.75 — comfortably sub-linear while portable.
 	SubLinearSlack float64
 
-	// Iters is the bestOf repetition count for each Point's wall timing
-	// (min strips GC / scheduler jitter). Default (0) -> 5.
+	// Iters is the timed-sample count for each Point's wall measurement;
+	// the driver takes the MEDIAN of these samples (after a warm-up pass)
+	// so a single fast/slow run can't skew the ratio. Default (0) -> 5.
 	Iters int
 
 	// KnownSuperlinear quarantines the wall-time invariant (a) as a
@@ -206,27 +208,51 @@ func openChDB(t *testing.T) *sql.DB {
 	return db
 }
 
-// bestOf runs `SELECT count() FROM (<q>)` `iters` times and returns the
-// fastest wall (min strips scheduler / GC jitter — the floor is what we
-// compare). Wrapping in count() makes chDB-go's parquet driver return one
-// row while the fan-out / scan / GROUP BY work being timed is identical.
-func bestOf(t *testing.T, db *sql.DB, q string, args []any, iters int) time.Duration {
+// warmupRuns is the count of untimed priming executions done before any
+// timed sample. The first execution of a query under chDB pays one-off
+// costs that are NOT part of the compute being measured — lazy engine
+// init, plan/parse caching, cold OS page cache for the just-seeded table.
+// Discarding them keeps a single cold run from distorting a point's wall
+// (which, on a sub-20ms floor, swings the K=2/K=8 ratio the gate reads).
+const warmupRuns = 1
+
+// medianWall runs the timed query `iters` times (after warmupRuns priming
+// passes) and returns the MEDIAN wall, not the min.
+//
+// Why median, not min: the gate compares a RATIO of two point timings
+// (last/first), and the K=2 floor is dominated by fixed per-query
+// overhead (~15ms), so the ratio is hypersensitive to its denominator. A
+// min estimator is a single-sample extreme: one unusually fast K=2 pass
+// (or one slow K=8 pass) on a shared CI runner skews the ratio by a third
+// or more — exactly the run-to-run jitter that tripped this gate by 1.6%
+// at the 3.6x line while the deterministic cardinality axis stayed flat.
+// The median is the central order statistic: insensitive to a single fast
+// OR slow outlier at either endpoint, so the ratio reflects the SUSTAINED
+// compute cost (a real super-linear regression moves every sample, so the
+// median moves with it and the gate still bites).
+func medianWall(t *testing.T, db *sql.DB, q string, args []any, iters int) time.Duration {
 	t.Helper()
 	if iters <= 0 {
 		iters = 5
 	}
-	best := time.Hour
-	for i := 0; i < iters; i++ {
+	wrapped := "SELECT count() FROM (" + q + ")"
+	run := func() time.Duration {
 		s := time.Now()
 		var c int64
-		if err := db.QueryRow("SELECT count() FROM ("+q+")", args...).Scan(&c); err != nil {
+		if err := db.QueryRow(wrapped, args...).Scan(&c); err != nil {
 			t.Fatalf("wall query: %v\nSQL: %s", err, q)
 		}
-		if d := time.Since(s); d < best {
-			best = d
-		}
+		return time.Since(s)
 	}
-	return best
+	for i := 0; i < warmupRuns; i++ {
+		run()
+	}
+	samples := make([]time.Duration, iters)
+	for i := range samples {
+		samples[i] = run()
+	}
+	sort.Slice(samples, func(i, j int) bool { return samples[i] < samples[j] })
+	return samples[len(samples)/2]
 }
 
 // cardinalityOf returns `count() FROM (<level>)` — the row count one
