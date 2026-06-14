@@ -66,9 +66,14 @@ func TestLowerSortByLabel_OrderKeys(t *testing.T) {
 				if k.Desc != tc.wantDesc {
 					t.Errorf("key[%d]: Desc=%v, want %v", i, k.Desc, tc.wantDesc)
 				}
-				ma, ok := k.Expr.(*chplan.MapAccess)
+				// The sort key is the natural-sort wrapper over the
+				// label-value expression (see naturalSortKeyExpr). Unwrap
+				// to the underlying label-value expr before asserting it
+				// resolves to the right Attributes lookup.
+				inner := unwrapNaturalSortKey(t, k.Expr)
+				ma, ok := inner.(*chplan.MapAccess)
 				if !ok {
-					t.Fatalf("key[%d]: Expr=%T, want *chplan.MapAccess", i, k.Expr)
+					t.Fatalf("key[%d]: inner Expr=%T, want *chplan.MapAccess", i, inner)
 				}
 				keyLit, ok := ma.Key.(*chplan.LitString)
 				if !ok {
@@ -101,10 +106,35 @@ func TestLowerSortByLabel_MetricNameKey(t *testing.T) {
 	if !ok || len(ob.Keys) != 1 {
 		t.Fatalf("plan = %T with keys; want OrderBy with 1 key", plan)
 	}
-	col, ok := ob.Keys[0].Expr.(*chplan.ColumnRef)
+	inner := unwrapNaturalSortKey(t, ob.Keys[0].Expr)
+	col, ok := inner.(*chplan.ColumnRef)
 	if !ok || col.Name != s.MetricNameColumn {
-		t.Errorf("key expr = %v, want ColumnRef(%q)", ob.Keys[0].Expr, s.MetricNameColumn)
+		t.Errorf("inner key expr = %v, want ColumnRef(%q)", inner, s.MetricNameColumn)
 	}
+}
+
+// unwrapNaturalSortKey peels the natural-sort key wrapper
+// (`arrayStringConcat(arrayMap(c -> …, extractAll(<value>, …)))` — see
+// naturalSortKeyExpr) and returns the underlying label-value expression
+// — the first argument of the inner `extractAll`. It fails the test if
+// the wrapper shape doesn't match, so a regression that drops the
+// natural-sort wrapper (reverting to a plain lexicographic ORDER BY) is
+// caught here, not just by the chDB parity fixture.
+func unwrapNaturalSortKey(t *testing.T, e chplan.Expr) chplan.Expr {
+	t.Helper()
+	concat, ok := e.(*chplan.FuncCall)
+	if !ok || concat.Name != "arrayStringConcat" || len(concat.Args) != 1 {
+		t.Fatalf("key expr = %T (%v), want arrayStringConcat(...)", e, e)
+	}
+	mapFn, ok := concat.Args[0].(*chplan.FuncCall)
+	if !ok || mapFn.Name != "arrayMap" || len(mapFn.Args) != 2 {
+		t.Fatalf("arrayStringConcat arg = %T, want arrayMap(lambda, extractAll(...))", concat.Args[0])
+	}
+	extract, ok := mapFn.Args[1].(*chplan.FuncCall)
+	if !ok || extract.Name != "extractAll" || len(extract.Args) != 2 {
+		t.Fatalf("arrayMap arg[1] = %T, want extractAll(<value>, pattern)", mapFn.Args[1])
+	}
+	return extract.Args[0]
 }
 
 // TestLowerSortByLabel_Errors pins the argument-shape rejections.

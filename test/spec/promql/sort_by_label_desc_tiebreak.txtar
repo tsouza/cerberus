@@ -25,13 +25,21 @@ INSERT INTO otel_metrics_gauge VALUES
 [4] string = "2026-01-01 00:00:01.000000000"
 [5] int64 = 9
 [6] int64 = 300000000000
-[7] string = "handler"
-[8] string = "method"
+[7] string = "^[0-9]+$"
+[8] int64 = 20
+[9] string = "0"
+[10] string = "handler"
+[11] string = "[0-9]+|[^0-9]+"
+[12] string = "^[0-9]+$"
+[13] int64 = 20
+[14] string = "0"
+[15] string = "method"
+[16] string = "[0-9]+|[^0-9]+"
 -- chplan --
-OrderBy [Attributes["handler"] DESC, Attributes["method"] DESC]
+OrderBy [arrayStringConcat(arrayMap(c -> if(match(c, "^[0-9]+$"), leftPad(c, 20, "0"), c), extractAll(Attributes["handler"], "[0-9]+|[^0-9]+"))) DESC, arrayStringConcat(arrayMap(c -> if(match(c, "^[0-9]+$"), leftPad(c, 20, "0"), c), extractAll(Attributes["method"], "[0-9]+|[^0-9]+"))) DESC]
   Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
     Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
       Filter predicate=(((MetricName IN ("http_requests", "http.requests")) AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
         Scan(merge(otel_metrics_gauge|otel_metrics_sum))
 -- sql --
-SELECT * FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE (`MetricName` IN (?, ?)) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`)) ORDER BY `Attributes`[?] DESC, `Attributes`[?] DESC
+SELECT * FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE (`MetricName` IN (?, ?)) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `MetricName`, `Attributes`)) ORDER BY arrayStringConcat(arrayMap(c -> if(match(c, ?), leftPad(c, ?, ?), c), extractAll(`Attributes`[?], ?))) DESC, arrayStringConcat(arrayMap(c -> if(match(c, ?), leftPad(c, ?, ?), c), extractAll(`Attributes`[?], ?))) DESC

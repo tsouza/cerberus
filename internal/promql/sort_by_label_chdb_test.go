@@ -12,9 +12,18 @@
 // an ephemeral chDB session seeded with a Map-typed Attributes column,
 // and asserts the resulting handler/method label order matches what
 // reference Prometheus's funcSortByLabel / funcSortByLabelDesc produce:
-// a lexicographic sort on the named label value(s), ascending for
-// `sort_by_label` and descending for `sort_by_label_desc`, with later
-// label args acting as tie-breakers.
+// a NATURAL-ORDER sort (github.com/facette/natsort) on the named label
+// value(s), ascending for `sort_by_label` and descending for
+// `sort_by_label_desc`, with later label args acting as tie-breakers.
+//
+// Natural order — NOT byte/lexicographic — is the parity bar: natsort
+// compares digit runs numerically, so `v1 < v2 < v10` (lexicographic
+// would give `v1 < v10 < v2`). The `natural_*` cases below carry the
+// `v1`/`v2`/`v10` values that diverge between the two orderings; they
+// FAIL against a plain `ORDER BY Attributes[label]` emit and pass only
+// with the natural-sort key (see promql.naturalSortKeyExpr). The
+// alphabetic `a`/`b`/`c` cases sort identically under both orderings, so
+// they alone could not catch the lexicographic bug.
 //
 // Gated by `//go:build chdb` so the default `check` lane (CGO off, no
 // libchdb.so) skips it; the dedicated `chdb` workflow runs it.
@@ -40,6 +49,11 @@ import (
 // come from the emitted ORDER BY — not from the storage order. The
 // `handler` values exercise the primary key; `method` breaks the
 // `handler='a'` tie.
+//
+// The `instance` values (`v1`/`v2`/`v10` and `node1`/`node2`/`node10`)
+// are the natural-vs-lexicographic discriminators: byte order ranks
+// `v10` before `v2`, natural order ranks `v2` before `v10`. They are
+// inserted in a scrambled order that matches neither target ordering.
 const sortByLabelSeed = `
 CREATE TABLE otel_metrics_gauge (
     MetricName String,
@@ -51,7 +65,12 @@ INSERT INTO otel_metrics_gauge VALUES
     ('http_requests', map('handler', 'b', 'method', 'get'),  toDateTime64('2026-01-01 00:00:00', 9), 30.0),
     ('http_requests', map('handler', 'a', 'method', 'post'), toDateTime64('2026-01-01 00:00:00', 9), 20.0),
     ('http_requests', map('handler', 'a', 'method', 'get'),  toDateTime64('2026-01-01 00:00:00', 9), 10.0),
-    ('http_requests', map('handler', 'c', 'method', 'get'),  toDateTime64('2026-01-01 00:00:00', 9), 40.0);`
+    ('http_requests', map('handler', 'c', 'method', 'get'),  toDateTime64('2026-01-01 00:00:00', 9), 40.0);
+INSERT INTO otel_metrics_gauge VALUES
+    ('node_load', map('instance', 'v10', 'rack', 'r2'), toDateTime64('2026-01-01 00:00:00', 9), 100.0),
+    ('node_load', map('instance', 'v2',  'rack', 'r2'), toDateTime64('2026-01-01 00:00:00', 9), 20.0),
+    ('node_load', map('instance', 'v1',  'rack', 'r2'), toDateTime64('2026-01-01 00:00:00', 9), 10.0),
+    ('node_load', map('instance', 'v2',  'rack', 'r10'), toDateTime64('2026-01-01 00:00:00', 9), 21.0);`
 
 func TestSortByLabel_OrderParityVsPrometheus(t *testing.T) {
 	db, err := sql.Open("chdb", "")
@@ -79,35 +98,76 @@ func TestSortByLabel_OrderParityVsPrometheus(t *testing.T) {
 	cases := []struct {
 		name  string
 		query string
-		// want is the reference-Prometheus row order, expressed as the
-		// "<handler>/<method>" label-value pairs the sort should yield.
+		// primary / secondary are the label names projected back out, in
+		// the order the sort keys them. secondary == "" means a
+		// single-label sort (only primary is read; want holds bare values).
+		primary   string
+		secondary string
+		// want is the reference-Prometheus row order. For a tie-break case
+		// (secondary != "") each entry is "<primary>/<secondary>".
 		want []string
 	}{
 		{
-			// funcSortByLabel: ascending lexicographic on handler.
-			name:  "asc_single_label",
-			query: `sort_by_label(http_requests, "handler")`,
-			want:  []string{"a", "a", "b", "c"},
+			// funcSortByLabel: ascending on handler. Alphabetic values sort
+			// the same under natural and byte order — the natural-order
+			// cases below are what discriminate the two.
+			name:    "asc_single_label",
+			query:   `sort_by_label(http_requests, "handler")`,
+			primary: "handler",
+			want:    []string{"a", "a", "b", "c"},
 		},
 		{
-			// funcSortByLabelDesc: descending lexicographic on handler.
-			name:  "desc_single_label",
-			query: `sort_by_label_desc(http_requests, "handler")`,
-			want:  []string{"c", "b", "a", "a"},
+			// funcSortByLabelDesc: descending on handler.
+			name:    "desc_single_label",
+			query:   `sort_by_label_desc(http_requests, "handler")`,
+			primary: "handler",
+			want:    []string{"c", "b", "a", "a"},
 		},
 		{
 			// Tie-breaker: handler ascending, method ascending breaks the
 			// two handler='a' rows (get before post).
-			name:  "asc_tiebreak",
-			query: `sort_by_label(http_requests, "handler", "method")`,
-			want:  []string{"a/get", "a/post", "b/get", "c/get"},
+			name:      "asc_tiebreak",
+			query:     `sort_by_label(http_requests, "handler", "method")`,
+			primary:   "handler",
+			secondary: "method",
+			want:      []string{"a/get", "a/post", "b/get", "c/get"},
 		},
 		{
 			// Tie-breaker, descending: handler descending, method
 			// descending breaks the handler='a' rows (post before get).
-			name:  "desc_tiebreak",
-			query: `sort_by_label_desc(http_requests, "handler", "method")`,
-			want:  []string{"c/get", "b/get", "a/post", "a/get"},
+			name:      "desc_tiebreak",
+			query:     `sort_by_label_desc(http_requests, "handler", "method")`,
+			primary:   "handler",
+			secondary: "method",
+			want:      []string{"c/get", "b/get", "a/post", "a/get"},
+		},
+		{
+			// NATURAL-ORDER discriminator (ascending). natsort ranks
+			// v1 < v2 < v10; a plain byte-order `ORDER BY Attributes[label]`
+			// would emit v1, v10, v2 and FAIL here. Three distinct instance
+			// values (v1 appears once, v2 twice, v10 once).
+			name:    "natural_asc_single_label",
+			query:   `sort_by_label(node_load, "instance")`,
+			primary: "instance",
+			want:    []string{"v1", "v2", "v2", "v10"},
+		},
+		{
+			// NATURAL-ORDER discriminator (descending): v10 > v2 > v1.
+			name:    "natural_desc_single_label",
+			query:   `sort_by_label_desc(node_load, "instance")`,
+			primary: "instance",
+			want:    []string{"v10", "v2", "v2", "v1"},
+		},
+		{
+			// NATURAL-ORDER tie-break: instance ascending (v2 < v10), rack
+			// ascending breaks the two instance='v2' rows. rack values
+			// r2/r10 are themselves natural-order discriminators (r2 < r10),
+			// so the tie-break key must ALSO be natural, not byte order.
+			name:      "natural_asc_tiebreak",
+			query:     `sort_by_label(node_load, "instance", "rack")`,
+			primary:   "instance",
+			secondary: "rack",
+			want:      []string{"v1/r2", "v2/r2", "v2/r10", "v10/r2"},
 		},
 	}
 
@@ -126,11 +186,15 @@ func TestSortByLabel_OrderParityVsPrometheus(t *testing.T) {
 				t.Fatalf("Emit: %v", err)
 			}
 			// Read the sort-key label values out as plain String columns —
-			// projecting `Attributes['handler']` / `Attributes['method']`
+			// projecting `Attributes[<primary>]` / `Attributes[<secondary>]`
 			// over the emitted (ORDER BY-bearing) subquery sidesteps the
 			// chdb-go parquet Map-scan panic while preserving the row order
 			// the inner ORDER BY produced.
-			wrapped := "SELECT `Attributes`['handler'] AS h, `Attributes`['method'] AS m FROM (" + sqlStr + ")"
+			secCol := tc.secondary
+			if secCol == "" {
+				secCol = tc.primary // harmless duplicate read; m is ignored
+			}
+			wrapped := "SELECT `Attributes`['" + tc.primary + "'] AS h, `Attributes`['" + secCol + "'] AS m FROM (" + sqlStr + ")"
 			rows, err := db.Query(wrapped, args...)
 			if err != nil {
 				t.Fatalf("query: %v\nSQL: %s", err, wrapped)
@@ -138,7 +202,7 @@ func TestSortByLabel_OrderParityVsPrometheus(t *testing.T) {
 			defer func() { _ = rows.Close() }()
 
 			var got []string
-			tieBreak := strings.Contains(tc.want[0], "/")
+			tieBreak := tc.secondary != ""
 			for rows.Next() {
 				var h, m string
 				if err := rows.Scan(&h, &m); err != nil {

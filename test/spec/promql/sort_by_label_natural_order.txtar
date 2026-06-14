@@ -8,14 +8,14 @@ CREATE TABLE otel_metrics_gauge (
     Value Float64
 ) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
 INSERT INTO otel_metrics_gauge VALUES
-    ('http_requests', map('handler', 'b'), toDateTime64('2026-01-01 00:00:00', 9), 30.0),
-    ('http_requests', map('handler', 'a'), toDateTime64('2026-01-01 00:00:00', 9), 10.0),
-    ('http_requests', map('handler', 'c'), toDateTime64('2026-01-01 00:00:00', 9), 20.0);
+    ('http_requests', map('handler', 'v10'), toDateTime64('2026-01-01 00:00:00', 9), 100.0),
+    ('http_requests', map('handler', 'v2'), toDateTime64('2026-01-01 00:00:00', 9), 20.0),
+    ('http_requests', map('handler', 'v1'), toDateTime64('2026-01-01 00:00:00', 9), 10.0);
 -- expected_rows --
 [
-  ["http_requests", {"handler": "a"}, "2026-01-01T00:00:00Z", 10],
-  ["http_requests", {"handler": "b"}, "2026-01-01T00:00:00Z", 30],
-  ["http_requests", {"handler": "c"}, "2026-01-01T00:00:00Z", 20]
+  ["http_requests", {"handler": "v1"}, "2026-01-01T00:00:00Z", 10],
+  ["http_requests", {"handler": "v2"}, "2026-01-01T00:00:00Z", 20],
+  ["http_requests", {"handler": "v10"}, "2026-01-01T00:00:00Z", 100]
 ]
 -- args --
 [0] string = "http_requests"
