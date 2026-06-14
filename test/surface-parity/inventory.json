@@ -1,5 +1,5 @@
 {
-  "source": "in-process probe of the three upstream parser symbol tables (prometheus parser.Functions/aggregators/ops, loki syntax.Op* consts, tempo intrinsic + metrics-op enums); cerberus verdict = parse→fold→lower→optimize→emit, reference verdict = parser experimental flags (promql) / ParseExpr+validate (logql) / Parse+Validate (traceql); generated + pinned by test/surface-parity",
+  "source": "in-process probe of the three upstream parser symbol tables (prometheus parser.Functions/aggregators/ops, loki syntax.Op* consts, tempo intrinsic + metrics-op enums); cerberus verdict = parse→fold→lower→optimize→emit, reference verdict = flag-enabled reference Prometheus HTTP verdict pinned in promql-reference-verdicts.json (promql) / ParseExpr+validate (logql) / Parse+Validate (traceql); generated + pinned by test/surface-parity",
   "entries": [
     {
       "head": "promql",
@@ -61,8 +61,8 @@
       "kind": "aggregator",
       "probe": "limitk(3, up)",
       "cerberus": "accept",
-      "reference": "reject",
-      "class": "wrong-accept"
+      "reference": "accept",
+      "class": "parity-accept"
     },
     {
       "head": "promql",
@@ -358,8 +358,8 @@
       "kind": "function",
       "probe": "double_exponential_smoothing(http_server_request_duration_count[5m], 0.5, 0.5)",
       "cerberus": "reject",
-      "reference": "reject",
-      "class": "parity-reject",
+      "reference": "accept",
+      "class": "wrong-reject",
       "cerberus_error": "unsupported: range function \"double_exponential_smoothing\" is experimental and not supported by the PromQL head"
     },
     {
@@ -387,8 +387,8 @@
       "kind": "function",
       "probe": "first_over_time(up[5m])",
       "cerberus": "reject",
-      "reference": "reject",
-      "class": "parity-reject",
+      "reference": "accept",
+      "class": "wrong-reject",
       "cerberus_error": "unsupported: range function \"first_over_time\" is experimental and not supported by the PromQL head"
     },
     {
@@ -505,8 +505,8 @@
       "kind": "function",
       "probe": "info(http_server_request_duration_count)",
       "cerberus": "accept",
-      "reference": "reject",
-      "class": "wrong-accept"
+      "reference": "accept",
+      "class": "parity-accept"
     },
     {
       "head": "promql",
@@ -577,8 +577,8 @@
       "kind": "function",
       "probe": "mad_over_time(up[5m])",
       "cerberus": "accept",
-      "reference": "reject",
-      "class": "wrong-accept"
+      "reference": "accept",
+      "class": "parity-accept"
     },
     {
       "head": "promql",
@@ -748,8 +748,8 @@
       "kind": "function",
       "probe": "sort_by_label(up, \"s\")",
       "cerberus": "accept",
-      "reference": "reject",
-      "class": "wrong-accept"
+      "reference": "accept",
+      "class": "parity-accept"
     },
     {
       "head": "promql",
@@ -757,8 +757,8 @@
       "kind": "function",
       "probe": "sort_by_label_desc(up, \"s\")",
       "cerberus": "accept",
-      "reference": "reject",
-      "class": "wrong-accept"
+      "reference": "accept",
+      "class": "parity-accept"
     },
     {
       "head": "promql",
@@ -866,8 +866,8 @@
       "kind": "function",
       "probe": "ts_of_first_over_time(up[5m])",
       "cerberus": "accept",
-      "reference": "reject",
-      "class": "wrong-accept"
+      "reference": "accept",
+      "class": "parity-accept"
     },
     {
       "head": "promql",
@@ -875,8 +875,8 @@
       "kind": "function",
       "probe": "ts_of_last_over_time(up[5m])",
       "cerberus": "accept",
-      "reference": "reject",
-      "class": "wrong-accept"
+      "reference": "accept",
+      "class": "parity-accept"
     },
     {
       "head": "promql",
@@ -884,8 +884,8 @@
       "kind": "function",
       "probe": "ts_of_max_over_time(up[5m])",
       "cerberus": "accept",
-      "reference": "reject",
-      "class": "wrong-accept"
+      "reference": "accept",
+      "class": "parity-accept"
     },
     {
       "head": "promql",
@@ -893,8 +893,8 @@
       "kind": "function",
       "probe": "ts_of_min_over_time(up[5m])",
       "cerberus": "accept",
-      "reference": "reject",
-      "class": "wrong-accept"
+      "reference": "accept",
+      "class": "parity-accept"
     },
     {
       "head": "promql",

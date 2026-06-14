@@ -42,6 +42,22 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
   - Env: `INPUT_BASELINE_REF` (optional); writes `ref_sha`,
     `baseline_sha`, and `baseline_ref` to `$GITHUB_OUTPUT`.
   - Exit: `0` resolved, `1` on baseline `==` ref or a git error.
+- **`promql-surface-gate.mjs`** — `compatibility.yml`, the
+  `compatibility/promql-surface` job (reference-backed full-surface PromQL
+  rejection-completeness gate, #106). Stands up a flag-enabled reference
+  Prometheus (`--enable-feature=promql-experimental-functions`), probes
+  every PromQL parser symbol over HTTP `/api/v1/query`, and fails on any
+  symbol the reference ACCEPTS that cerberus REJECTS but isn't a recorded
+  wrong-reject (a silent coverage gap), on artifact drift, or on a
+  showcase declared-rejection panel the reference accepts.
+  - Env: `PROM_IMAGE` (default `prom/prometheus:v3.11.3`), `REF_PORT`
+    (default `39090`), `INVENTORY`, `ARTIFACT`, `SHOWCASE` (defaults under
+    `test/surface-parity/` + the compose showcase dashboard), `REGENERATE`
+    (`1` rewrites the verdict artifact from the live reference + exits),
+    `KEEP_REF` (`1` leaves the reference container up for local debugging).
+  - Exit: `0` all checks pass / regenerate done, `1` on any gap / drift /
+    misfile / infra error. Self-managing: starts + `docker rm -f`s its own
+    reference container.
 
 ## Notes
 

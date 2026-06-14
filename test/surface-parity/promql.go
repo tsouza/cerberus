@@ -145,41 +145,27 @@ func promQLAggregatorProbe(op string) string {
 	}
 }
 
-// promAggregators is the aggregation-op set with the reference posture.
-// limitk / limit_ratio are experimental (parser.ItemType.IsExperimental-
-// Aggregator). The `experimental` flag here models the reference verdict:
-// true means "reference rejects under cerberus's parity posture".
-//
-// Both parse only because cerberus's heads enable EnableExperimentalFunctions
-// — the same flag the compatibility reference runs with. So the parity
-// question is purely "does cerberus LOWER it":
-//
-//   - limit_ratio is implemented (lowerLimitRatio → HashRatioSampler
-//     parity), so the experimental-enabled reference and cerberus BOTH
-//     accept it — a parity-accept. experimental=false here.
-//   - limitk's reference posture stays reject (experimental=true): under
-//     the parity model the experimental aggregator is gated off, so the
-//     recorded class is the inventory's tracked wrong-accept rather than a
-//     parity-accept. The value is independent of cerberus's own lowering
-//     state.
-var promAggregators = []struct {
-	op           string
-	experimental bool
-}{
-	{"sum", false},
-	{"avg", false},
-	{"count", false},
-	{"min", false},
-	{"max", false},
-	{"group", false},
-	{"stddev", false},
-	{"stdvar", false},
-	{"topk", false},
-	{"bottomk", false},
-	{"count_values", false},
-	{"quantile", false},
-	{"limitk", true},
-	{"limit_ratio", false},
+// promAggregators is the aggregation-op set probed for parity. The
+// reference verdict is NO LONGER modelled from a hand-set experimental
+// flag — it is read from the flag-enabled-reference verdict artifact
+// (promql-reference-verdicts.json) keyed by "agg:<op>", so limitk /
+// limit_ratio inherit the SAME real reference posture every other symbol
+// does. See referenceVerdictPromQL + the artifact doc-comment.
+var promAggregators = []string{
+	"sum",
+	"avg",
+	"count",
+	"min",
+	"max",
+	"group",
+	"stddev",
+	"stdvar",
+	"topk",
+	"bottomk",
+	"count_values",
+	"quantile",
+	"limitk",
+	"limit_ratio",
 }
 
 // promBinaryOps is the binary-operator set. Each probe applies the op
@@ -219,34 +205,31 @@ var promModifiers = []struct {
 	{"at_end", promGauge + " @ end()"},
 }
 
-// referenceImplementedExperimentalFns is the set of parser-experimental
-// PromQL functions the REFERENCE engine actually IMPLEMENTS (and returns
-// data for) once EnableExperimentalFunctions is set — the posture every
-// Grafana/Prometheus deployment that opts in sees. The parser's
-// `Experimental` flag alone models only the default-OFF parse gate, not
-// whether a result exists; for these symbols the reference verdict is
-// ACCEPT, so a cerberus implementation lands parity-accept rather than a
-// spurious wrong-accept. Membership is added the moment cerberus grows a
-// real lowering+emit for the symbol (mirrored by a live showcase panel +
-// chDB parity fixture).
-var referenceImplementedExperimentalFns = map[string]bool{
-	// histogram_quantiles(<vector>, "<label>", phi...) — variadic
-	// multi-quantile sibling of histogram_quantile. Implemented in
-	// internal/promql/histogram_quantile.go (per-phi kernel + q-label
-	// injection + UNION ALL); pinned by the histogram_quantiles_*
-	// fixtures under test/spec/promql and the showcase-promql panel.
-	"histogram_quantiles": true,
-}
-
 // probePromQL enumerates the PromQL parser symbol table, synthesizes a
-// domain-aware probe per symbol, runs the cerberus verdict, models the
-// reference verdict from the parser's experimental flags, and
+// domain-aware probe per symbol, runs the cerberus verdict, reads the
+// flag-enabled-reference verdict from the pinned artifact, and
 // classifies each.
+//
+// The reference oracle was previously a hardcoded
+// `if fn.Experimental { ref = reject }` stand-in. That assumption — that
+// the reference rejects every experimental fn — only held for a reference
+// started WITHOUT --enable-feature=promql-experimental-functions (the
+// flag-OFF compat reference). With the flag ON, the reference ACCEPTS
+// every experimental fn it actually implements, so an unimplemented fn
+// cerberus rejected could masquerade as a "parity rejection" while a fn
+// cerberus accepted looked like a "wrong-accept". referenceVerdictPromQL
+// replaces the stand-in with the REAL flag-enabled HTTP verdict captured
+// in promql-reference-verdicts.json — see the oracle's doc-comment.
 func probePromQL() ([]Entry, error) {
+	ref, err := loadReferenceVerdicts()
+	if err != nil {
+		return nil, err
+	}
+
 	var entries []Entry
 
-	// Functions — parser.Functions is the authoritative map; its
-	// Experimental flag is the reference oracle.
+	// Functions — parser.Functions is the authoritative map; the pinned
+	// flag-enabled reference verdict is the oracle.
 	names := make([]string, 0, len(promparser.Functions))
 	for name := range promparser.Functions {
 		names = append(names, name)
@@ -256,9 +239,9 @@ func probePromQL() ([]Entry, error) {
 		fn := promparser.Functions[name]
 		probe := promQLFunctionProbe(fn)
 		cv, cerr := cerberusVerdictPromQL(probe)
-		ref := VerdictAccept
-		if fn.Experimental && !referenceImplementedExperimentalFns[name] {
-			ref = VerdictReject
+		rv, rerr := ref.verdict("fn:" + name)
+		if rerr != nil {
+			return nil, rerr
 		}
 		entries = append(entries, Entry{
 			Head:          "promql",
@@ -266,28 +249,28 @@ func probePromQL() ([]Entry, error) {
 			Kind:          "function",
 			Probe:         probe,
 			Cerberus:      cv,
-			Reference:     ref,
-			Class:         classify(cv, ref),
+			Reference:     rv,
+			Class:         classify(cv, rv),
 			CerberusError: cerr,
 		})
 	}
 
 	// Aggregators.
-	for _, a := range promAggregators {
-		probe := promQLAggregatorProbe(a.op)
+	for _, op := range promAggregators {
+		probe := promQLAggregatorProbe(op)
 		cv, cerr := cerberusVerdictPromQL(probe)
-		ref := VerdictAccept
-		if a.experimental {
-			ref = VerdictReject
+		rv, rerr := ref.verdict("agg:" + op)
+		if rerr != nil {
+			return nil, rerr
 		}
 		entries = append(entries, Entry{
 			Head:          "promql",
-			Symbol:        "agg:" + a.op,
+			Symbol:        "agg:" + op,
 			Kind:          "aggregator",
 			Probe:         probe,
 			Cerberus:      cv,
-			Reference:     ref,
-			Class:         classify(cv, ref),
+			Reference:     rv,
+			Class:         classify(cv, rv),
 			CerberusError: cerr,
 		})
 	}

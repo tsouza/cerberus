@@ -97,7 +97,8 @@ type Inventory struct {
 const inventorySource = "in-process probe of the three upstream parser symbol tables " +
 	"(prometheus parser.Functions/aggregators/ops, loki syntax.Op* consts, tempo " +
 	"intrinsic + metrics-op enums); cerberus verdict = parse→fold→lower→optimize→emit, " +
-	"reference verdict = parser experimental flags (promql) / ParseExpr+validate (logql) " +
+	"reference verdict = flag-enabled reference Prometheus HTTP verdict pinned in " +
+	"promql-reference-verdicts.json (promql) / ParseExpr+validate (logql) " +
 	"/ Parse+Validate (traceql); generated + pinned by test/surface-parity"
 
 // Generate probes every symbol of every head and assembles the
