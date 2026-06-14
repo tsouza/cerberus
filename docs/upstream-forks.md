@@ -88,7 +88,7 @@ required `check` lane — no build tag, no network) pins the correspondence
 between the upstream version each parser fork is based on and the reference
 backend container the matching compatibility harness diffs cerberus against.
 
-This is phase-0(g) of `docs/query-solver-design.md`. The compat lanes are the
+The compat lanes are the
 parity oracle for all three heads; the sharded-pushdown solver trusts "route A"
 precisely because it matches the reference engine those lanes run. But route A
 parses with a `tsouza/*` fork of that engine's parser. If a fork drifts to a

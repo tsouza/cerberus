@@ -1,5 +1,5 @@
 // Package solver is the sharded-pushdown query orchestrator
-// (docs/query-solver-design.md). It recognizes the narrow class of plans
+// (docs/solver.md). It recognizes the narrow class of plans
 // whose single-statement execution is memory-unbounded on ClickHouse —
 // high anchor fan-out F = Range/Step — and re-anchors K deep copies of the
 // already-optimized chplan onto disjoint slices of the anchor grid so each

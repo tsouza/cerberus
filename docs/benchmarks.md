@@ -73,7 +73,7 @@ Each win pairs the **naive** pre-optimization SQL shape against the **optimized*
 
 ## Sharded solver — the OOM-class win
 
-The sharded-pushdown solver (`internal/solver`, [`docs/query-solver-design.md`](query-solver-design.md)) recognizes the narrow class of range queries whose **single-statement** execution is memory-unbounded on ClickHouse — a high anchor fan-out `F = Range/Step` matrix shape — and re-anchors the *same* optimized plan onto **K disjoint anchor-grid shards**, each running the identical compat-gated SQL restricted to its anchor sub-grid. No new evaluator, no new SQL template.
+The sharded-pushdown solver (`internal/solver`, [`solver.md`](solver.md)) recognizes the narrow class of range queries whose **single-statement** execution is memory-unbounded on ClickHouse — a high anchor fan-out `F = Range/Step` matrix shape — and re-anchors the *same* optimized plan onto **K disjoint anchor-grid shards**, each running the identical compat-gated SQL restricted to its anchor sub-grid. No new evaluator, no new SQL template.
 
 **Fixture (OOM class).** `sum(rate(bench_shard_total[5m]))` @ 15s over 1h — F = Range/Step = **20**, N = OuterRange/Step + 1 = **241**. Seeded: **13,000** series, **3,393,000** scanned samples (one sample / 15s across the input window, generated server-side via `numbers(N)`).
 

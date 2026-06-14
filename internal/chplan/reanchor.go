@@ -26,8 +26,8 @@ var ErrReanchorGridMismatch = errors.New("chplan: windowed node bounds do not ma
 // input Node and every expr tree reachable from it byte-identical and
 // returns a fresh tree the solver can run as one of K concurrent shards.
 //
-// Defensive grid-prediction check (the @-modifier guard, §Routing of
-// docs/query-solver-design.md). A windowed matrix node is re-anchored only
+// Defensive grid-prediction check (the @-modifier guard, §"Eligibility signals" of
+// docs/solver.md). A windowed matrix node is re-anchored only
 // if its current (Start, End, Step, OuterRange) match the grid the request
 // predicts at that spine depth — concretely either:
 //

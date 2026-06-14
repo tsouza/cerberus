@@ -191,7 +191,7 @@ func (l *Limiter) Acquire(ctx context.Context) (release func(), ok bool) {
 }
 
 // TryAcquireTopUp is the two-stage weighted-admission hook the sharded
-// solver uses (docs/query-solver-design.md §"Parallel execution"). The
+// solver uses (docs/solver.md §"Execution and cursor model"). The
 // Middleware already charged weight 1 at handler entry — before the route
 // was known — so the solver, once it decides to fan out into shards, asks
 // here for `want` ADDITIONAL semaphore units (typically P-1).
