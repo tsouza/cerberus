@@ -14,19 +14,21 @@ import (
 )
 
 // queryContextParser enables experimental functions so the parser
-// accepts the query-context functions (start/end/range/step are flagged
+// accepts the query-context functions (range/step are flagged
 // Experimental in the upstream function table).
 func queryContextParser() parser.Parser {
 	return parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
 }
 
 // TestQueryContextFold_Instant pins the instant-mode (start == end)
-// fold for the four query-context functions. The reference engine
+// fold for the top-level query-context functions. The reference engine
 // (engine.foldQueryContextFunctions) folds:
 //
-//   - start() / end() → the eval timestamp in Unix seconds
-//   - range()         → (end - start) seconds → 0 for an instant query
-//   - step()          → 0 for an instant query (start == end)
+//   - range() → (end - start) seconds → 0 for an instant query
+//   - step()  → 0 for an instant query (start == end)
+//
+// `start()` / `end()` are not top-level callable functions — upstream
+// admits them only inside an `@` modifier — so they are not folded here.
 //
 // Cerberus folds these at lowering into a single synthetic scalar row
 // (Project over OneRow), so the emitted SQL must render over the
@@ -37,17 +39,13 @@ func TestQueryContextFold_Instant(t *testing.T) {
 
 	s := schema.DefaultOTelMetrics()
 	p := queryContextParser()
-	// 2026-01-01T00:00:01Z = 1767225601.
 	instant := time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC)
-	const instantEpoch = 1767225601.0
 
 	cases := []struct {
 		name  string
 		query string
 		want  float64
 	}{
-		{"start", "start()", instantEpoch},
-		{"end", "end()", instantEpoch},
 		{"range", "range()", 0},
 		{"step", "step()", 0},
 	}
@@ -86,8 +84,6 @@ func TestQueryContextFold_Instant(t *testing.T) {
 // The reference values over the window [2026-01-01 00:00:00,
 // 00:05:00] with a 30s step are:
 //
-//   - start() → 1767225600 (00:00:00Z)
-//   - end()   → 1767225900 (00:05:00Z)
 //   - range() → 300
 //   - step()  → 30
 //
@@ -108,8 +104,6 @@ func TestQueryContextFold_Range(t *testing.T) {
 		query string
 		want  float64
 	}{
-		{"start", "start()", 1767225600},
-		{"end", "end()", 1767225900},
 		{"range", "range()", 300},
 		{"step", "step()", 30},
 	}

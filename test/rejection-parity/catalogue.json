@@ -857,6 +857,20 @@
     },
     {
       "head": "promql",
+      "site": "internal/promql/synthetic.go:lowerQueryContextFold#5004da30",
+      "message": "promql: %s() takes no arguments, got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity: range() / step() take no arguments"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/synthetic.go:lowerQueryContextFold#93eabf31",
+      "message": "promql: %s is not a query-context function",
+      "class": "internal",
+      "rationale": "unreachable default: the lowering switch routes only range / step into this helper"
+    },
+    {
+      "head": "promql",
       "site": "internal/promql/synthetic.go:lowerTime#99c84578",
       "message": "promql: time() takes no arguments, got %d",
       "class": "internal",

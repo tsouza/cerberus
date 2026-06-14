@@ -1418,13 +1418,20 @@ func lowerCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 		return lowerSort(c, s, ctx)
 	case "scalar":
 		return lowerScalarTopLevel(c, s, ctx)
-	case "start", "end", "range", "step":
+	case "range", "step":
 		// Query-context functions: their value is constant for a given
 		// query execution (it depends only on the eval range, not on
 		// series data). The reference engine constant-folds these into
 		// NumberLiterals before evaluation; cerberus folds them at
 		// lowering into a synthetic scalar vector, mirroring `time()` /
 		// `vector(N)`. See [lowerQueryContextFold].
+		//
+		// Only `range()` and `step()` are folded as top-level scalar
+		// calls. `start()` / `end()` are NOT callable functions in this
+		// position — upstream's parser only admits them inside an `@`
+		// modifier (`up @ start()`), which lowers through the at-modifier
+		// path, not here. Lowering bare `start()` / `end()` as scalar
+		// calls would accept a shape stock reference Prometheus rejects.
 		return lowerQueryContextFold(c, s, ctx)
 	case "pi":
 		// Bare top-level `pi()` (or any scalar-foldable call the parser

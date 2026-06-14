@@ -1326,6 +1326,24 @@
     "reason": "routed"
   },
   {
+    "query": "query_context_range_range_mode",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
+    "query": "query_context_step_instant_zero",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
+    "query": "query_context_step_range_mode",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
     "query": "rad_metric",
     "routed": true,
     "k": 8,

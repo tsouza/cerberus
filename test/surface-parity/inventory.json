@@ -670,10 +670,9 @@
       "symbol": "fn:range",
       "kind": "function",
       "probe": "range()",
-      "cerberus": "reject",
+      "cerberus": "accept",
       "reference": "reject",
-      "class": "parity-reject",
-      "cerberus_error": "promql: function range is not yet supported"
+      "class": "wrong-accept"
     },
     {
       "head": "promql",
@@ -818,10 +817,9 @@
       "symbol": "fn:step",
       "kind": "function",
       "probe": "step()",
-      "cerberus": "reject",
+      "cerberus": "accept",
       "reference": "reject",
-      "class": "parity-reject",
-      "cerberus_error": "promql: function step is not yet supported"
+      "class": "wrong-accept"
     },
     {
       "head": "promql",
