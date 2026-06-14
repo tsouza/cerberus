@@ -55,14 +55,15 @@ in.
 
 | Component            | Minimum                        | Notes                                                                                                                               |
 | -------------------- | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
-| ClickHouse           | **24.8**                       | The supported floor — proven by the differential compatibility suite. Enabling the experimental native rate requires 25.6 (below).  |
+| ClickHouse           | **24.8**                       | The supported floor — the SQL cerberus emits is correct down to it. Enabling the experimental native rate requires 25.6 (below).    |
 | OTel exporter schema | **clickhouseexporter 0.152.0** | A **schema shape**, not a binary version — see below.                                                                               |
 
-**ClickHouse.** The floor is the version cerberus is proven against end-to-end:
-the three differential compatibility harnesses — the source of truth for all
-three heads — run ClickHouse 24.8, so every emitted query is validated against
-it (the 24.8 empty-input / parse-unit / filter-path quirks are all worked around
-unconditionally). Enabling the experimental native-rate path
+**ClickHouse.** 24.8 is the lowest version cerberus's emitted SQL is correct on:
+the 24.8 empty-input / parse-unit / filter-path quirks are all worked around
+unconditionally, so a query that runs on 24.8 runs on every newer server too.
+The differential compatibility harnesses — the source of truth for all three
+heads — execute on ClickHouse 25.8, so the validated SQL is exercised forward of
+the floor as well. Enabling the experimental native-rate path
 (`CERBERUS_EXPERIMENTAL_TS_GRID_RANGE`, **default off**) **raises** the floor to
 **25.6**: it lowers eligible `rate(<counter>[range])` range queries to the
 compiled `timeSeriesRateToGrid` aggregate, which exists only from ClickHouse

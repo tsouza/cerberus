@@ -55,17 +55,17 @@ ORDER BY (MetricName, Attributes, ServiceName, toUnixTimestamp64Nano(TimeUnix))
 
 — where stock OTel-CH leads with `ServiceName`. ClickHouse's `ORDER BY` (the table sort key) governs only data-skipping and on-disk layout, never query results, so this divergence is **correctness-neutral**: cerberus answers identically whether the metrics tables carry the stock key or the MetricName-first key. The only difference is performance — the metric-name-first key lets the common metric query (no `service.name` matcher) binary-search the primary key instead of falling to a generic-exclusion granule scan, measured at ~17× fewer granules read (see [`benchmarks.md`](benchmarks.md#metricname-first-order-by)). The traces and logs tables are rendered stock, unchanged. This is the single point at which cerberus's auto-created schema differs from a stock OTel-CH deployment; the operator-facing framing lives in [`operations.md`](operations.md#schema-divergence-metricname-first-metrics-sort-key).
 
-Both shapes (`unsafe.Pointer` + `reflect.Value.FieldByName`) are now banned in `internal/traceql/` and `internal/api/tempo/` via a `forbidigo` rule in `.golangci.yml`. New shims regress the lint gate.
+Both shapes (`unsafe.Pointer` + `reflect.Value.FieldByName`) are banned across every `internal/**` package via a `forbidigo` rule in `.golangci.yml`. New shims regress the lint gate.
 
 ## How a new upstream change reaches cerberus
 
 ```text
 ┌──────────────────────┐                             ┌──────────────────────────┐
-│ upstream repo        │ ────────────────────────▶  │ tsouza/<fork>            │
-│ (prometheus, loki,   │   ─ relevant paths only ─  │   cerberus-<branch>      │
-│  tempo, otel-c)      │   ─ as a new tag ─         │     ├── v0.0.1 (baseline)│
-│                      │                             │     ├── v0.0.2          │
-│                      │                             │     └── …               │
+│ upstream repo        │ ────────────────────────▶   │ tsouza/<fork>            │
+│ (prometheus, loki,   │   ─ relevant paths only ─   │   cerberus-<branch>      │
+│  tempo, otel-c)      │   ─ as a new tag ─          │     ├── v0.0.1 (baseline)│
+│                      │                             │     ├── v0.0.2           │
+│                      │                             │     └── …                │
 └──────────────────────┘                             └────────────┬─────────────┘
                                                                   │
                                   cerberus-forks-monitor (cron) ──┘
@@ -187,7 +187,7 @@ If a new RC introduces a fifth parser dep:
 - [`tsouza/cerberus-forks-monitor`](https://github.com/tsouza/cerberus-forks-monitor) — the daily cron repo. `README.md` there has the operational detail.
 - `.github/dependabot.yml` — daily-grouped config. Group `upstream-parsers` covers all four forks.
 - `.github/workflows/auto-merge-deps.yml` — auto-merge on green CI for trusted patch-only bumps.
-- `.golangci.yml` — `forbidigo` rule blocking `unsafe.Pointer` / `reflect.Value.FieldByName` from being reintroduced in `internal/traceql/` and `internal/api/tempo/`.
+- `.golangci.yml` — `forbidigo` rule blocking `unsafe.Pointer` / `reflect.Value.FieldByName` from being reintroduced anywhere under `internal/**`.
 - `internal/schema/ddl/` — consumes the `sqltemplates` API exposed by the collector-contrib fork.
 - `internal/traceql/aggregate.go`, `internal/traceql/select.go`, `internal/traceql/metrics_pipeline.go` — call the Tempo fork's accessors.
 - `CLAUDE.md` § "Transitive-dep gotcha" — the unrelated memberlist replace.

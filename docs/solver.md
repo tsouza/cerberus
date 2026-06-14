@@ -208,9 +208,10 @@ oldest slice) to exhaustion, then channel 1, and so on. Oldest-first drain
 keeps per-series timestamps nearly ascending, so the handler's insertion sort
 stays roughly linear. Two guards run during the drain:
 
-- **Per-request output cap.** Route B makes previously-422 high-cardinality
-  successes succeed, and a success lands `O(rows)` in the gateway's matrix
-  buffers. The cursor enforces `Config.MaxOutputRows` with a **distinct** typed
+- **Per-request output cap.** Route B turns a high-cardinality query that a
+  single statement would 422 into a success, and a success lands `O(rows)` in
+  the gateway's matrix buffers. The cursor enforces `Config.MaxOutputRows` with
+  a **distinct** typed
   422 (`OutputCapError`) whose message is deliberately not the upstream
   max-samples text — that text is a parity surface, and the output cap is a
   separate gateway-memory guard.

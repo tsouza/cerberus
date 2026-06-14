@@ -153,10 +153,10 @@ See `compatibility/loki/README.md` for the full mechanism.
 Cerberus's deliberate rejections — the HTTP 422 "valid query, but the
 lowering refuses it" paths in `internal/{promql,logql,traceql}` — are
 claims about reference behaviour: "the reference backend cannot answer
-this either". Historically nothing verified those claims
-differentially, which is how `kind != nil` ended up rejected by
-cerberus while reference Tempo accepts it. The rejection-parity layer
-closes that gap:
+this either". The rejection-parity layer verifies those claims
+differentially, so a query cerberus rejects but the reference accepts
+(the `kind != nil` class, which reference Tempo answers) surfaces as a
+real bug rather than a silent wrong-rejection:
 
 1. **Catalogue** — `test/rejection-parity/catalogue.json` is the
    machine-readable inventory of every prefixed error-construction
@@ -190,8 +190,8 @@ closes that gap:
    Reports land at `compatibility/prometheus/rejection-parity.json`,
    `compatibility/loki/reports/rejection-parity.json`, and
    `compatibility/tempo/reports/rejection-parity.json`. Like the main
-   testers (task #68), the driver is report-only: verdicts never
-   change the exit code; only infrastructure failures do.
+   testers, the driver is report-only: verdicts never change the exit
+   code; only infrastructure failures do.
 
 ## CI integration
 

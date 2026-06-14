@@ -28,12 +28,9 @@ lefthook `forbid-skip-self-test` command runs the same script on
 pre-push.
 
 The two locations carry **identical** patterns for rows 1–6 of the
-summary table below. A former row 7 (a per-PR `should_skip:` overlay
-tracking-ref guard) is no longer separately enforced — the strict
-rule in `.github/workflows/ci.yml` `forbid-skip` job step "Reject
-should_skip overlay entries" rejects every non-empty `should_skip:`
-block in `compatibility/**/*.{yml,yaml}` outright, so there is no
-per-PR tracking-ref check to assert.
+summary table below. Row 7 is enforced by the CI `forbid-skip` job step
+"Reject should_skip overlay entries", which rejects every non-empty
+`should_skip:` block in `compatibility/**/*.{yml,yaml}` outright.
 
 ## Adding a new pattern
 
@@ -62,14 +59,12 @@ shape.
 | 4   | Reject `assert.Contains(x, "")` soft assertion (2-arg + testify 3-arg)                                      | `*_test.go`                                                     | #587 / #277   |
 | 5   | Reject `assert.ElementsMatch(x, []T{})` soft assertion (2-arg + testify 3-arg)                              | `*_test.go`                                                     | #587 / #277   |
 | 6   | Reject silent panic recovery (`defer recover()` and the multi-line `defer func(){ _ = recover() }()` block) | `*_test.go`                                                     | #587 / #648   |
+| 7   | Reject any non-empty `should_skip:` block                                                                   | `compatibility/**/*.{yml,yaml}`                                 | #596          |
 
-A former row 7 (reject net-new `should_skip:` overlay entries lacking
-a tracking ref, PR #596) was superseded by the structural-cleanup PR
-that removed the overlay consumer code and replaced the tracking-ref
-guard with a strict "reject any non-empty `should_skip:` block" rule
-(see `.github/workflows/ci.yml` `forbid-skip` job step "Reject
-should_skip overlay entries"). The accepted form is `should_skip: []`;
-any element under the key fails CI.
+Row 7 rejects any non-empty `should_skip:` block outright (see
+`.github/workflows/ci.yml` `forbid-skip` job step "Reject should_skip
+overlay entries"). The only accepted form is `should_skip: []`; any
+element under the key fails CI.
 
 Vendored upstream snapshots under `compatibility/*/upstream/**` are
 excluded from every test-file / fixture grep — they sit outside
@@ -79,11 +74,10 @@ cerberus's authorship boundary.
 
 Regex: `t\.Skip[fN]?\(`
 
-PR #309 wired this gate. Before #309 the maintainer noticed `t.Skip`
-calls accumulating in test files as a way to mark known-broken tests
-as "we'll fix it later." The bug never got fixed. The skip lingered.
-The discipline rule became "fix the bug or delete the test, no
-skipping" — and the regex is the enforcement.
+`t.Skip` calls are a way to mark known-broken tests as "we'll fix it
+later" — and the fix tends never to land, so the skip lingers. The
+discipline rule is "fix the bug or delete the test, no skipping"; this
+regex is the enforcement.
 
 `[fN]?` covers all three call shapes (`t.Skip`, `t.Skipf`, `t.SkipNow`)
 in one alternation. The literal `(` anchors against accidental matches
@@ -97,12 +91,11 @@ on identifiers.
 
 Regex: `not implemented` \| `\bskipped\b` \| `\bdeferred\b`
 
-PR #309 caught only `t.Skip*` calls — but English wording like "not
+Pattern 1 catches only `t.Skip*` calls — but English wording like "not
 implemented yet" / "deferred to RC3" / "skipped because foo" in
-comments and TXTAR fixtures was just as much a discipline smell.
-PR #458 first added a phrase-pattern regex (`deferred to`, `not yet
-supported`, etc.); PR #461 widened to bare words because the
-phrase-only shape kept missing new offenders.
+comments and TXTAR fixtures is just as much a discipline smell. This
+pattern matches the bare words rather than fixed phrases, because a
+phrase-only shape misses new offenders.
 
 The bare-word shape does produce some apparent false positives — Go
 has the `defer` keyword, mock packages have `Skipper` types — which
@@ -119,8 +112,8 @@ bypassed)" rather than "delete the comment."
 
 Regex: `not implemented`
 
-PR #197 scrubbed `not implemented` from `internal/**.go` and added the
-gate so it stays scrubbed. Bare `skipped` / `deferred` are NOT in the
+`internal/**.go` carries no `not implemented` wording, and this gate
+keeps it that way. Bare `skipped` / `deferred` are NOT in the
 production gate — `defer` statements described in docstrings would
 false-positive, and runtime prose like "request X is rejected" is the
 correct rewrite of "skipped" rather than something to forbid.
@@ -132,9 +125,9 @@ correct rewrite of "skipped" rather than something to forbid.
 
 Regex: `assert\.Contains\(([^,]+,\s*){0,1}[^,]+,\s*""\s*\)`
 
-PR #587 added this. The trigger was a sweep that uncovered
-`assert.Contains(body, "")` calls — they pass any input, look like
-real assertions in reviews, but verify nothing.
+An `assert.Contains(body, "")` call passes for any input — it looks
+like a real assertion in review but verifies nothing. This gate
+rejects it.
 
 The regex uses `[^,]+` to clamp the haystack-argument match inside a
 single function call (so it doesn't reach into adjacent calls), and
@@ -143,9 +136,7 @@ leading `([^,]+,\s*){0,1}` is an optional prefix that consumes a
 testify-style first argument (`t *testing.T`) when present, so the
 single regex catches BOTH the 2-arg gocheck-style call
 (`assert.Contains(haystack, "")`) and the 3-arg testify call
-(`assert.Contains(t, haystack, "")`). The original PR #587 regex was
-2-arg-only; PR #277 widened it to both shapes after the limitation
-was flagged on PR #719.
+(`assert.Contains(t, haystack, "")`).
 
 - Matches (2-arg gocheck): `assert.Contains(body, "")`
 - Matches (3-arg testify): `assert.Contains(t, body, "")`
@@ -160,8 +151,7 @@ Sibling of pattern 4. Same regex shape (`[^,]+,` clamp + empty-needle
 match) targeting `ElementsMatch` against an empty slice literal. The
 optional `([^,]+,\s*){0,1}` prefix matches the testify-style
 `t *testing.T` first arg when present, so the regex catches BOTH the
-2-arg gocheck-style and the 3-arg testify forms — widened by PR #277
-on top of PR #587's original 2-arg-only shape.
+2-arg gocheck-style and the 3-arg testify forms.
 
 - Matches (2-arg gocheck): `assert.ElementsMatch(got, []string{})`
 - Matches (3-arg testify): `assert.ElementsMatch(t, got, []string{})`
@@ -173,10 +163,11 @@ on top of PR #587's original 2-arg-only shape.
 Regex (perl-slurp form):
 `defer\s+recover\s*\(\s*\)` \| `defer\s+func\s*\(\s*\)\s*\{[^{}]*_\s*=\s*recover\s*\(\s*\)`
 
-PR #587 added the single-line `defer recover()` and the same-line
-`defer func() { _ = recover() }()`. PR #648 widened to the
-multi-line variant via a `perl -0777` slurp because reviewers found
-the original regex missed `defer func() {\n  _ = recover()\n}()`.
+The gate covers the single-line `defer recover()`, the same-line
+`defer func() { _ = recover() }()`, and the multi-line variant
+`defer func() {\n  _ = recover()\n}()` — the last caught via a
+`perl -0777` slurp so a newline between the brace and the `recover()`
+doesn't dodge it.
 
 The `[^{}]*` clamp keeps the multi-line match inside a single brace
 level so it doesn't over-reach. The `_\s*=\s*recover` discriminator
@@ -202,18 +193,14 @@ used in real tests.
   }()
   ```
 
-## Former pattern 7 — `should_skip:` overlay tracking-ref guard (PR #596, superseded)
+## Pattern 7 — `should_skip:` compatibility overlay
 
-Originally PR #596 added a per-PR guard that diffed the overlay
-against `origin/main` and required every net-new `should_skip:` entry
-to carry a non-empty `jira:` value, a `link:` field, or a `#NNN`
-reference inside `reason:`. The structural-cleanup PR removed the
-overlay consumer code entirely, so the per-PR tracking-ref guard is
-no longer load-bearing: the `forbid-skip` CI job step "Reject
-should_skip overlay entries" now rejects ANY non-empty
-`should_skip:` block in `compatibility/**/*.{yml,yaml}` outright. The
-delegating helper script and its assertion in
-`scripts/test-forbid-skip.sh` were removed at the same time.
+The `forbid-skip` CI job step "Reject should_skip overlay entries"
+rejects ANY non-empty `should_skip:` block in
+`compatibility/**/*.{yml,yaml}` outright. A compatibility corpus entry
+is either scored against the reference or it is not in the corpus —
+there is no per-case skip overlay, so the gate forbids the construct
+itself rather than auditing each entry's tracking ref.
 
 ## Redundancy review
 
@@ -233,6 +220,7 @@ redundancies — each catches a shape the others would miss:
   patterns 4 / 5 because pattern 6 needs the `perl -0777` slurp to
   span lines.
 
-The gate's total active pattern count: **6** (patterns 1–6 above).
-The former pattern 7 was superseded by the strict overlay-entry
-rejection rule in CI.
+The gate's total active pattern count: **7** (patterns 1–7 above).
+Patterns 1–6 run over Go test files / fixtures / production code;
+pattern 7 is the strict overlay-entry rejection over the compatibility
+YAML.
