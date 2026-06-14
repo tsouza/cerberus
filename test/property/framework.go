@@ -66,13 +66,17 @@ type LogsModel struct {
 }
 
 // LogRecord is one row in a LogsModel. ResourceAttributes carries the
-// stream-identity labels (job, service_name, …); Body is the raw log
-// line; SeverityText is the OTel SeverityText column; Timestamp is
-// unix nanoseconds (DateTime64(9) precision in chDB).
+// stream-identity labels (job, service_name, …); LogAttributes carries
+// the structured-metadata map (the OTel-CH `LogAttributes` column —
+// per-log-record level/severity keys cerberus's detected_level cascade
+// reads); Body is the raw log line; SeverityText is the OTel
+// SeverityText column; Timestamp is unix nanoseconds (DateTime64(9)
+// precision in chDB).
 type LogRecord struct {
 	Body               string
 	SeverityText       string
 	ResourceAttributes map[string]string
+	LogAttributes      map[string]string
 	TimestampNanos     int64
 }
 
