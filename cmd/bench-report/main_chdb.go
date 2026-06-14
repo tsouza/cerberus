@@ -99,17 +99,24 @@ func run(outPath string, iters int, benchtime, goBin string) error {
 		return err
 	}
 
+	fmt.Fprintln(os.Stderr, "bench-report: measuring execution-route × native-rate matrix…")
+	matrix, err := measureMatrix(s, iters)
+	if err != nil {
+		return err
+	}
+
 	fmt.Fprintln(os.Stderr, "bench-report: running Go micro-benchmarks…")
 	micro, err := runMicroBenchmarks(goBin, benchtime)
 	if err != nil {
 		return err
 	}
 
-	doc := renderDoc(docInput{
+	doc, err := renderDoc(docInput{
 		wins:       wins,
 		curves:     curves,
 		sharded:    sharded,
 		e2e:        e2e,
+		matrix:     matrix,
 		micro:      micro,
 		iters:      iters,
 		benchtime:  benchtime,
@@ -118,14 +125,20 @@ func run(outPath string, iters int, benchtime, goBin string) error {
 		traceRows:  traceRows,
 		goVersion:  runtime.Version(),
 		goarch:     runtime.GOARCH,
+		goos:       runtime.GOOS,
 		numCPU:     runtime.NumCPU(),
+		host:       captureHost(),
+		outPath:    outPath,
 	})
+	if err != nil {
+		return fmt.Errorf("render: %w", err)
+	}
 
 	if err := os.WriteFile(outPath, []byte(doc), 0o644); err != nil { //nolint:gosec // doc artifact
 		return fmt.Errorf("write %s: %w", outPath, err)
 	}
-	fmt.Fprintf(os.Stderr, "bench-report: wrote %s (%d wins, sharded K=%d, %d curves, %d e2e, %d micro) in %s\n",
-		outPath, len(wins), sharded.K, len(curves), len(e2e), len(micro), time.Since(started).Round(time.Second))
+	fmt.Fprintf(os.Stderr, "bench-report: wrote %s (%d wins, sharded K=%d, %d curves, %d e2e, %d matrix cells, %d micro) in %s\n",
+		outPath, len(wins), sharded.K, len(curves), len(e2e), len(matrix.Cells), len(micro), time.Since(started).Round(time.Second))
 	return nil
 }
 
