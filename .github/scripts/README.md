@@ -62,8 +62,10 @@ wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
   contracts (circuit breaker, per-query wall-clock timeout, admission
   control, replica resilience) hold under real faults. Phase-1 scenarios
   run sequentially with heal-between-each; metric corroboration is read
-  back through cerberus's own Prom head (settle poll). INFORMATIONAL —
-  never a PR gate.
+  back through cerberus's own Prom head (settle poll). After a
+  CH-destructive scenario (which recreates CH empty on ephemeral storage),
+  the heal gate shells out to `just e2e-reseed` to repopulate ClickHouse
+  before the next scenario asserts. INFORMATIONAL — never a PR gate.
   - Env: `CERBERUS_URL` (default `http://localhost:8080`), `CHAOS_NS`
     (default `cerberus`), `CHAOS_PHASE` (`phase-1` | `all`, default
     `phase-1`), `CHAOS_SCENARIOS` (comma list to run a subset),
