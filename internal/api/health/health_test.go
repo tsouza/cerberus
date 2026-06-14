@@ -128,6 +128,83 @@ func TestReadyz_SchemaPending(t *testing.T) {
 	}
 }
 
+// TestReadyz_SchemaAbsent: CH ok but the schema has not been provisioned
+// yet (the cerberus+collector startup race). /readyz returns 503 with the
+// precise absent reason — distinct from the auto-create "pending" state —
+// and the process stays up (this gate never restarts the pod).
+func TestReadyz_SchemaAbsent(t *testing.T) {
+	const reason = "schema not yet provisioned: table otel_logs absent"
+	h := New(Options{
+		Pinger:        &stubPinger{},
+		SchemaPresent: func() (bool, string) { return false, reason },
+		CacheTTL:      -1,
+	})
+
+	rec := serveReadyz(t, h)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d; want 503", rec.Code)
+	}
+	var resp map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal body: %v", err)
+	}
+	if resp["clickhouse"] != "ok" {
+		t.Errorf("clickhouse = %q; want ok", resp["clickhouse"])
+	}
+	if !strings.HasPrefix(resp["schema"], "absent") {
+		t.Errorf("schema = %q; want an 'absent…' status", resp["schema"])
+	}
+	if !strings.Contains(resp["schema"], "otel_logs") {
+		t.Errorf("schema = %q; want the precise absent reason embedded", resp["schema"])
+	}
+}
+
+// TestReadyz_SchemaAbsentGatesBeforeReady: when SchemaPresent reports
+// not-present it wins over SchemaReady — the absent reason is the honest
+// status even if the auto-create hook happens to report ready.
+func TestReadyz_SchemaAbsentGatesBeforeReady(t *testing.T) {
+	h := New(Options{
+		Pinger:        &stubPinger{},
+		SchemaReady:   func() bool { return true },
+		SchemaPresent: func() (bool, string) { return false, "schema not yet provisioned: table otel_traces absent" },
+		CacheTTL:      -1,
+	})
+
+	rec := serveReadyz(t, h)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d; want 503", rec.Code)
+	}
+	var resp map[string]string
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if !strings.Contains(resp["schema"], "absent") {
+		t.Errorf("schema = %q; want absent to win over ready", resp["schema"])
+	}
+}
+
+// TestReadyz_SchemaPresentReady: once the schema is provisioned the
+// not-present gate passes and readiness reports ready.
+func TestReadyz_SchemaPresentReady(t *testing.T) {
+	h := New(Options{
+		Pinger:        &stubPinger{},
+		SchemaReady:   func() bool { return true },
+		SchemaPresent: func() (bool, string) { return true, "" },
+		CacheTTL:      -1,
+	})
+
+	rec := serveReadyz(t, h)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rec.Code)
+	}
+	var resp map[string]string
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp["schema"] != "ready" {
+		t.Errorf("schema = %q; want ready once provisioned", resp["schema"])
+	}
+}
+
 // TestReadyz_NilPinger: defensive — if startup forgot the client, fail
 // closed (503), don't false-positive.
 func TestReadyz_NilPinger(t *testing.T) {

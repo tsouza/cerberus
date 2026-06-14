@@ -17,9 +17,31 @@
 //     Map(String, String).
 //
 // Both gates are validated against the active, override-resolved config —
-// never hardcoded names. Failures are aggregated: Run reports EVERY unmet
-// requirement, not just the first, so an operator fixes the deployment in
-// one pass.
+// never hardcoded names.
+//
+// # Fatal vs transient: the absent-schema race
+//
+// Cerberus is a drop-in query gateway frequently deployed ALONGSIDE its
+// ingestion pipeline (an otel-collector that owns schema creation as
+// telemetry first flows). On a cold cluster cerberus can legitimately boot
+// BEFORE any table exists. Crash-looping in that window is wrong — it is a
+// transient startup race, not a misconfiguration — so the preflight
+// classifies its findings into two buckets:
+//
+//   - FATAL — a too-old / unreadable / unparseable server version, or a
+//     table that EXISTS but whose SHAPE is wrong (a missing essential
+//     column, an attribute map typed something other than
+//     Map(String, String)). These never self-heal, so they fail startup
+//     fast with an aggregated diff (every unmet requirement at once).
+//   - TRANSIENT — the configured tables are ENTIRELY ABSENT (system.columns
+//     reports zero rows for them): the schema has not been provisioned yet.
+//     This does NOT fail startup; cerberus boots but reports NOT READY on
+//     /readyz with a precise reason, and an external re-probe flips it ready
+//     once the writer creates the schema — no restart.
+//
+// Run returns a Result that carries both buckets separately. The caller
+// turns the fatal bucket into a non-zero exit and feeds the absent bucket
+// into the readiness machinery.
 package preflight
 
 import (
@@ -119,29 +141,75 @@ type Querier interface {
 	QueryNameTypePairs(ctx context.Context, sql string, args ...any) ([]chclient.NameTypePair, error)
 }
 
+// Result is the outcome of a preflight pass, splitting findings by how the
+// caller must react to them.
+//
+//   - Fatal is the aggregated, non-self-healing failure: a bad server
+//     version or a wrong-shape table. When non-nil the caller exits
+//     non-zero. It already carries the "requirements check failed:" header
+//     and one bullet per unmet requirement.
+//   - AbsentTables names every configured table that is ENTIRELY absent
+//     (not yet provisioned). It is empty when no table is missing. A
+//     non-empty AbsentTables with a nil Fatal is the transient "schema not
+//     yet provisioned" state: the caller boots NOT READY and re-probes
+//     rather than exiting.
+//
+// The two buckets are independent. A pass can report both (e.g. an old
+// server AND an absent table) — the Fatal bucket still wins (the caller
+// exits), because a too-old server never heals on its own.
+type Result struct {
+	Fatal        error
+	AbsentTables []string
+}
+
+// SchemaProvisioned reports whether no configured table is missing — i.e.
+// the schema is fully present (whatever its shape). The readiness wiring
+// consults this to decide whether to gate /readyz on a not-yet-provisioned
+// schema.
+func (r Result) SchemaProvisioned() bool { return len(r.AbsentTables) == 0 }
+
+// AbsentReason renders the absent-tables list into a single precise reason
+// string for the /readyz body, e.g. "schema not yet provisioned: tables
+// otel_logs, otel_traces absent". Returns "" when nothing is absent.
+func (r Result) AbsentReason() string {
+	if len(r.AbsentTables) == 0 {
+		return ""
+	}
+	noun := "table"
+	if len(r.AbsentTables) > 1 {
+		noun = "tables"
+	}
+	return fmt.Sprintf("schema not yet provisioned: %s %s absent", noun, strings.Join(r.AbsentTables, ", "))
+}
+
 // RunIfEnabled is the ON/OFF gate around Run. When enabled is false both
 // gates are bypassed entirely and q is never touched (the caller logs the
-// disabled line); when true it delegates to Run. Keeping the knob check
-// here makes the disabled path unit-testable without standing up cmd wiring.
-func RunIfEnabled(ctx context.Context, enabled bool, q Querier, req Requirements) error {
+// disabled line) and an all-clear Result is returned; when true it
+// delegates to Run. Keeping the knob check here makes the disabled path
+// unit-testable without standing up cmd wiring.
+func RunIfEnabled(ctx context.Context, enabled bool, q Querier, req Requirements) Result {
 	if !enabled {
-		return nil
+		return Result{}
 	}
 	return Run(ctx, q, req)
 }
 
-// Run executes both gates against q and returns an aggregated error
-// listing every unmet requirement, or nil when all requirements hold.
-// The caller is responsible for turning a non-nil error into a non-zero
-// process exit. Use RunIfEnabled for the CERBERUS_REQUIREMENTS_CHECK gate.
-func Run(ctx context.Context, q Querier, req Requirements) error {
+// Run executes both gates against q and returns a Result splitting fatal
+// (version / wrong-shape) findings from the transient absent-table set.
+// The fatal bucket aggregates EVERY non-self-healing requirement so an
+// operator fixes the deployment in one pass; the absent bucket lets the
+// caller boot-but-wait on a not-yet-provisioned schema. Use RunIfEnabled
+// for the CERBERUS_REQUIREMENTS_CHECK gate.
+func Run(ctx context.Context, q Querier, req Requirements) Result {
 	var problems []string
-
 	problems = append(problems, checkVersion(ctx, q, req)...)
-	problems = append(problems, checkSchema(ctx, q, req)...)
 
+	schemaProblems, absent := checkSchema(ctx, q, req)
+	problems = append(problems, schemaProblems...)
+
+	res := Result{AbsentTables: absent}
 	if len(problems) == 0 {
-		return nil
+		return res
 	}
 	var b strings.Builder
 	b.WriteString("requirements check failed:")
@@ -149,7 +217,8 @@ func Run(ctx context.Context, q Querier, req Requirements) error {
 		b.WriteString("\n  - ")
 		b.WriteString(p)
 	}
-	return fmt.Errorf("%s", b.String())
+	res.Fatal = fmt.Errorf("%s", b.String())
+	return res
 }
 
 // checkVersion runs gate 1: it reads version() and compares the parsed
@@ -310,24 +379,40 @@ func nonEmpty(vals ...string) []string {
 // every essential column exists, with the attribute-map columns typed
 // Map(String, String). Distinct tables that resolve to the same physical
 // name (Gauge==Sum on a collapsed schema) are introspected once.
-func checkSchema(ctx context.Context, q Querier, req Requirements) []string {
+//
+// It returns two slices: the FATAL wrong-shape problems (missing columns /
+// wrong attribute-map types / introspection errors) for the aggregated
+// boot failure, and the ABSENT-table names — tables system.columns reports
+// zero rows for, i.e. not yet provisioned. An entirely-absent table is
+// transient (the schema race), so it lands in the second slice and is NOT
+// a wrong-shape problem; a table that exists but has the wrong columns is.
+func checkSchema(ctx context.Context, q Querier, req Requirements) (problems, absent []string) {
 	seen := map[string]bool{}
-	var problems []string
 	for _, t := range requiredTables(req) {
 		if t.name == "" || seen[t.name] {
 			continue
 		}
 		seen[t.name] = true
-		problems = append(problems, checkTable(ctx, q, req.Database, t)...)
+		probs, isAbsent := checkTable(ctx, q, req.Database, t)
+		problems = append(problems, probs...)
+		if isAbsent {
+			absent = append(absent, t.name)
+		}
 	}
-	return problems
+	return problems, absent
 }
 
 // checkTable introspects one table via system.columns and validates its
-// shape. A query error or a wholly-absent table is reported as a single
-// failure; otherwise each missing column and each wrong attribute-map
-// type is reported individually so the aggregated message is complete.
-func checkTable(ctx context.Context, q Querier, database string, t tableReq) []string {
+// shape. It returns the per-table wrong-shape problems plus an absent flag.
+//
+//   - A table that reports ZERO columns is treated as absent (not yet
+//     provisioned): absent=true, no wrong-shape problem. The caller turns
+//     this into a transient NOT-READY state, not a boot failure.
+//   - A query error is itself fatal (it is not a clean "table missing"
+//     signal — the introspection failed) and is reported as a problem.
+//   - Otherwise each missing column and each wrong attribute-map type is
+//     reported individually so the aggregated message is complete.
+func checkTable(ctx context.Context, q Querier, database string, t tableReq) (problems []string, absent bool) {
 	sql, args := chsql.NewQuery().
 		Select(chsql.Col("name"), chsql.Col("type")).
 		From(chsql.Qual("system", "columns")).
@@ -338,10 +423,13 @@ func checkTable(ctx context.Context, q Querier, database string, t tableReq) []s
 		Build()
 	rows, err := q.QueryNameTypePairs(ctx, sql, args...)
 	if err != nil {
-		return []string{fmt.Sprintf("could not introspect table %s: %v", t.name, err)}
+		return []string{fmt.Sprintf("could not introspect table %s: %v", t.name, err)}, false
 	}
 	if len(rows) == 0 {
-		return []string{fmt.Sprintf("table %s: not found in database %s (no columns reported)", t.name, database)}
+		// Entirely absent: the schema has not been provisioned yet. This is
+		// the transient startup race, not a misconfiguration — surface it as
+		// absent so the caller waits (NOT READY) rather than exiting.
+		return nil, true
 	}
 
 	types := make(map[string]string, len(rows))
@@ -349,7 +437,6 @@ func checkTable(ctx context.Context, q Querier, database string, t tableReq) []s
 		types[r.Name] = r.Type
 	}
 
-	var problems []string
 	for _, col := range t.columns {
 		if _, ok := types[col]; !ok {
 			problems = append(problems, fmt.Sprintf("table %s: missing required column %s", t.name, col))
@@ -370,7 +457,7 @@ func checkTable(ctx context.Context, q Querier, database string, t tableReq) []s
 			))
 		}
 	}
-	return problems
+	return problems, false
 }
 
 // normalizeType canonicalises a ClickHouse type string for comparison:

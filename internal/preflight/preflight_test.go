@@ -143,18 +143,22 @@ func (p panicQuerier) QueryNameTypePairs(context.Context, string, ...any) ([]chc
 func TestRunIfEnabledOffSkipsBothGates(t *testing.T) {
 	t.Parallel()
 	// A deliberately-broken requirement (empty everything) would fail if
-	// Run executed; with enabled=false it must return nil without touching
-	// the querier.
-	if err := RunIfEnabled(context.Background(), false, panicQuerier{t}, defaultReq()); err != nil {
-		t.Fatalf("knob off must return nil, got: %v", err)
+	// Run executed; with enabled=false it must return an all-clear Result
+	// without touching the querier.
+	res := RunIfEnabled(context.Background(), false, panicQuerier{t}, defaultReq())
+	if res.Fatal != nil {
+		t.Fatalf("knob off must return no fatal, got: %v", res.Fatal)
+	}
+	if !res.SchemaProvisioned() {
+		t.Fatalf("knob off must report schema provisioned (gates bypassed), got absent: %v", res.AbsentTables)
 	}
 }
 
 func TestRunIfEnabledOnDelegatesToRun(t *testing.T) {
 	t.Parallel()
 	q := &stubQuerier{Version: "24.3.0", Columns: healthyColumns()}
-	if err := RunIfEnabled(context.Background(), true, q, defaultReq()); err == nil {
-		t.Fatal("knob on must run the gates (too-old version should fail)")
+	if res := RunIfEnabled(context.Background(), true, q, defaultReq()); res.Fatal == nil {
+		t.Fatal("knob on must run the gates (too-old version should be fatal)")
 	}
 }
 
@@ -210,7 +214,7 @@ func TestMinVersionMaxOfApplicable(t *testing.T) {
 func TestRunVersionTooOld(t *testing.T) {
 	t.Parallel()
 	q := &stubQuerier{Version: "24.3.1.2557-stable", Columns: healthyColumns()}
-	err := Run(context.Background(), q, defaultReq())
+	err := Run(context.Background(), q, defaultReq()).Fatal
 	if err == nil {
 		t.Fatal("expected failure for too-old version, got nil")
 	}
@@ -225,7 +229,7 @@ func TestRunVersionTooOld(t *testing.T) {
 func TestRunVersionOKAllPass(t *testing.T) {
 	t.Parallel()
 	q := &stubQuerier{Version: "25.8.2.1-lts", Columns: healthyColumns()}
-	if err := Run(context.Background(), q, defaultReq()); err != nil {
+	if err := Run(context.Background(), q, defaultReq()).Fatal; err != nil {
 		t.Fatalf("expected pass, got: %v", err)
 	}
 }
@@ -233,7 +237,7 @@ func TestRunVersionOKAllPass(t *testing.T) {
 func TestRunVersionExactlyAtFloor(t *testing.T) {
 	t.Parallel()
 	q := &stubQuerier{Version: "24.8.0.0", Columns: healthyColumns()}
-	if err := Run(context.Background(), q, defaultReq()); err != nil {
+	if err := Run(context.Background(), q, defaultReq()).Fatal; err != nil {
 		t.Fatalf("version exactly at floor must pass, got: %v", err)
 	}
 }
@@ -247,12 +251,12 @@ func TestRunNativeRateRaisesMin(t *testing.T) {
 	req.NativeRateEnabled = true
 
 	atNative := &stubQuerier{Version: "25.6.0.0", Columns: healthyColumns()}
-	if err := Run(context.Background(), atNative, req); err != nil {
+	if err := Run(context.Background(), atNative, req).Fatal; err != nil {
 		t.Fatalf("native-rate on: 25.6 meets the raised floor and must pass, got: %v", err)
 	}
 
 	belowNative := &stubQuerier{Version: "25.0.0.0", Columns: healthyColumns()}
-	err := Run(context.Background(), belowNative, req)
+	err := Run(context.Background(), belowNative, req).Fatal
 	if err == nil {
 		t.Fatal("native-rate on: 25.0 (above base 24.8 but below native 25.6) must fail")
 	}
@@ -267,7 +271,7 @@ func TestRunNativeRateRaisesMin(t *testing.T) {
 func TestRunUnparseableVersionFails(t *testing.T) {
 	t.Parallel()
 	q := &stubQuerier{Version: "not-a-version", Columns: healthyColumns()}
-	err := Run(context.Background(), q, defaultReq())
+	err := Run(context.Background(), q, defaultReq()).Fatal
 	if err == nil {
 		t.Fatal("unparseable version must fail (never silently pass)")
 	}
@@ -279,7 +283,7 @@ func TestRunUnparseableVersionFails(t *testing.T) {
 func TestRunVersionQueryErrorFails(t *testing.T) {
 	t.Parallel()
 	q := &stubQuerier{VersionErr: errors.New("connection refused"), Columns: healthyColumns()}
-	err := Run(context.Background(), q, defaultReq())
+	err := Run(context.Background(), q, defaultReq()).Fatal
 	if err == nil {
 		t.Fatal("version query error must fail startup")
 	}
@@ -291,7 +295,7 @@ func TestRunVersionQueryErrorFails(t *testing.T) {
 func TestRunNoVersionRowFails(t *testing.T) {
 	t.Parallel()
 	q := &stubQuerier{NoVersionRow: true, Columns: healthyColumns()}
-	err := Run(context.Background(), q, defaultReq())
+	err := Run(context.Background(), q, defaultReq()).Fatal
 	if err == nil || !strings.Contains(err.Error(), "no rows") {
 		t.Fatalf("empty version result must fail; got %v", err)
 	}
@@ -312,7 +316,7 @@ func TestRunMissingColumnFails(t *testing.T) {
 	cols[tr.SpansTable] = pruned
 
 	q := &stubQuerier{Version: "25.8.2.1", Columns: cols}
-	err := Run(context.Background(), q, defaultReq())
+	err := Run(context.Background(), q, defaultReq()).Fatal
 	if err == nil {
 		t.Fatal("missing column must fail")
 	}
@@ -333,7 +337,7 @@ func TestRunWrongAttributeTypeFails(t *testing.T) {
 		}
 	}
 	q := &stubQuerier{Version: "25.8.2.1", Columns: cols}
-	err := Run(context.Background(), q, defaultReq())
+	err := Run(context.Background(), q, defaultReq()).Fatal
 	if err == nil {
 		t.Fatal("wrong attribute-map type must fail")
 	}
@@ -355,23 +359,102 @@ func TestRunLowCardinalityMapAccepted(t *testing.T) {
 		}
 	}
 	q := &stubQuerier{Version: "25.8.2.1", Columns: cols}
-	if err := Run(context.Background(), q, defaultReq()); err != nil {
+	if err := Run(context.Background(), q, defaultReq()).Fatal; err != nil {
 		t.Fatalf("LowCardinality map value should pass, got: %v", err)
 	}
 }
 
-func TestRunMissingTableFails(t *testing.T) {
+// TestRunAbsentTableIsTransientNotFatal: a single table reporting zero
+// columns is "not yet provisioned" — it must NOT be fatal, and must surface
+// in AbsentTables so the caller waits (NOT READY) rather than exiting.
+func TestRunAbsentTableIsTransientNotFatal(t *testing.T) {
 	t.Parallel()
 	cols := healthyColumns()
 	l := schema.DefaultOTelLogs()
 	delete(cols, l.LogsTable)
 	q := &stubQuerier{Version: "25.8.2.1", Columns: cols}
-	err := Run(context.Background(), q, defaultReq())
-	if err == nil {
-		t.Fatal("missing table must fail")
+	res := Run(context.Background(), q, defaultReq())
+	if res.Fatal != nil {
+		t.Fatalf("absent table must NOT be fatal (transient schema race), got: %v", res.Fatal)
 	}
-	if !strings.Contains(err.Error(), "table otel_logs: not found") {
-		t.Errorf("message missing not-found note: %v", err)
+	if res.SchemaProvisioned() {
+		t.Fatal("absent table must report schema NOT provisioned")
+	}
+	if got := res.AbsentTables; len(got) != 1 || got[0] != l.LogsTable {
+		t.Errorf("AbsentTables = %v, want [%s]", got, l.LogsTable)
+	}
+	reason := res.AbsentReason()
+	if !strings.Contains(reason, "schema not yet provisioned") || !strings.Contains(reason, l.LogsTable) {
+		t.Errorf("AbsentReason = %q, want precise not-yet-provisioned reason naming %s", reason, l.LogsTable)
+	}
+	if !strings.Contains(reason, "table ") || strings.Contains(reason, "tables ") {
+		t.Errorf("single absent table should use singular noun: %q", reason)
+	}
+}
+
+// TestRunAllTablesAbsentTransient: a cold cluster where NOTHING is
+// provisioned yet (every table absent) is the canonical cerberus+collector
+// startup race — still transient, never fatal, with a plural reason.
+func TestRunAllTablesAbsentTransient(t *testing.T) {
+	t.Parallel()
+	q := &stubQuerier{Version: "25.8.2.1", Columns: map[string][]chclient.NameTypePair{}}
+	res := Run(context.Background(), q, defaultReq())
+	if res.Fatal != nil {
+		t.Fatalf("all-absent schema must NOT be fatal, got: %v", res.Fatal)
+	}
+	if res.SchemaProvisioned() {
+		t.Fatal("all-absent must report schema NOT provisioned")
+	}
+	if len(res.AbsentTables) < 2 {
+		t.Fatalf("expected multiple absent tables, got %v", res.AbsentTables)
+	}
+	if reason := res.AbsentReason(); !strings.Contains(reason, "tables ") {
+		t.Errorf("multiple absent tables should use plural noun: %q", reason)
+	}
+}
+
+// TestRunWrongShapeFatalEvenIfOtherTableAbsent: an EXISTING table with a
+// wrong shape is fatal (never self-heals) even when a different table is
+// merely absent — the fatal bucket wins, the caller exits.
+func TestRunWrongShapeFatalEvenIfOtherTableAbsent(t *testing.T) {
+	t.Parallel()
+	cols := healthyColumns()
+	m := schema.DefaultOTelMetrics()
+	l := schema.DefaultOTelLogs()
+	// otel_logs absent (transient) …
+	delete(cols, l.LogsTable)
+	// … but otel_metrics_gauge exists with a wrong Attributes type (fatal).
+	for i, c := range cols[m.GaugeTable] {
+		if c.Name == m.AttributesColumn {
+			cols[m.GaugeTable][i].Type = "JSON"
+		}
+	}
+	q := &stubQuerier{Version: "25.8.2.1", Columns: cols}
+	res := Run(context.Background(), q, defaultReq())
+	if res.Fatal == nil {
+		t.Fatal("wrong-shape table must be fatal even when another table is absent")
+	}
+	if !strings.Contains(res.Fatal.Error(), "expected Map(String,String), found JSON") {
+		t.Errorf("fatal message missing wrong-shape diff: %v", res.Fatal)
+	}
+	// The absent table is still tracked even though Fatal wins.
+	if res.SchemaProvisioned() {
+		t.Error("absent table should still be reported alongside the fatal finding")
+	}
+}
+
+// TestRunIntrospectionErrorIsFatal: an introspection QUERY error (not a
+// clean zero-row absence) is fatal — the check could not run, which is not
+// the same signal as a cleanly-absent table.
+func TestRunIntrospectionErrorIsFatal(t *testing.T) {
+	t.Parallel()
+	q := &stubQuerier{Version: "25.8.2.1", ColumnsErr: errors.New("read timeout")}
+	res := Run(context.Background(), q, defaultReq())
+	if res.Fatal == nil {
+		t.Fatal("introspection query error must be fatal")
+	}
+	if !strings.Contains(res.Fatal.Error(), "could not introspect table") {
+		t.Errorf("fatal message missing introspection-error note: %v", res.Fatal)
 	}
 }
 
@@ -389,7 +472,7 @@ func TestRunRespectsOverrides(t *testing.T) {
 	delete(cols, m.GaugeTable) // the default name no longer exists
 
 	q := &stubQuerier{Version: "25.8.2.1", Columns: cols}
-	if err := Run(context.Background(), q, req); err != nil {
+	if err := Run(context.Background(), q, req).Fatal; err != nil {
 		t.Fatalf("override-resolved schema should pass, got: %v", err)
 	}
 }
@@ -417,7 +500,7 @@ func TestRunAggregatesAllFailures(t *testing.T) {
 
 	// 3: version too old.
 	q := &stubQuerier{Version: "24.3.1", Columns: cols}
-	err := Run(context.Background(), q, defaultReq())
+	err := Run(context.Background(), q, defaultReq()).Fatal
 	if err == nil {
 		t.Fatal("expected aggregated failure")
 	}
@@ -447,7 +530,7 @@ func TestRunCollapsedGaugeSumIntrospectedOnce(t *testing.T) {
 
 	cols := healthyColumns()
 	counter := &countingQuerier{stubQuerier: stubQuerier{Version: "25.8.2.1", Columns: cols}}
-	if err := Run(context.Background(), counter, req); err != nil {
+	if err := Run(context.Background(), counter, req).Fatal; err != nil {
 		t.Fatalf("collapsed gauge/sum should pass, got: %v", err)
 	}
 	if got := counter.tableQueries[req.Metrics.GaugeTable]; got != 1 {

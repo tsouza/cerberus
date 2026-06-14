@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -121,10 +122,16 @@ func run() error {
 	// created the tables, so introspecting them before the create would
 	// fail gate 2 against tables that don't exist yet. The check fails
 	// startup (returns an error → exit 1) when the connected server is
-	// older than the config-derived floor or the deployed schema diverges
-	// from the active shape, converting an opaque query-time failure into a
-	// precise boot-time one. CERBERUS_REQUIREMENTS_CHECK=false skips it.
-	if err := runRequirementsCheck(ctx, logger, client, cfg); err != nil {
+	// older than the config-derived floor or the deployed schema is
+	// WRONG-SHAPE (a table exists but its columns diverge) — neither
+	// self-heals, so failing fast converts an opaque query-time failure into
+	// a precise boot-time one. A schema that is ENTIRELY ABSENT (not yet
+	// provisioned — the cerberus+collector startup race) is NOT fatal: the
+	// returned schemaPresent func reports NOT READY on /readyz and a
+	// background re-probe flips it ready once an external writer creates the
+	// schema, with no restart. CERBERUS_REQUIREMENTS_CHECK=false skips it.
+	schemaPresent, err := runRequirementsCheck(ctx, logger, client, cfg)
+	if err != nil {
 		return err
 	}
 
@@ -242,8 +249,9 @@ func run() error {
 	// memoises results behind a TTL cache so concurrent probes coalesce
 	// into a single ClickHouse ping per window.
 	healthHandler := health.New(health.Options{
-		Pinger:      client,
-		SchemaReady: schemaReady,
+		Pinger:        client,
+		SchemaReady:   schemaReady,
+		SchemaPresent: schemaPresent,
 	})
 
 	rootMux := http.NewServeMux()
@@ -439,20 +447,31 @@ func setupSchema(
 // deployed schema shape of the configured (override-resolved) tables. The
 // check is parameterised by the active config: the native-rate knob raises
 // the version floor, and every table/column name comes from the resolved
-// schema structs so CERBERUS_SCHEMA_* overrides are respected. When any
-// gate fails the returned error aggregates every unmet requirement and the
-// caller exits non-zero — the precise boot-time failure replaces the
-// opaque query-time error a too-old server or divergent schema would
-// otherwise produce. When disabled, both gates are bypassed (one log line).
+// schema structs so CERBERUS_SCHEMA_* overrides are respected.
+//
+// Findings split two ways. A FATAL finding (too-old/unreadable server, or a
+// table that EXISTS but is WRONG-SHAPE) never self-heals, so the returned
+// error aggregates every such requirement and the caller exits non-zero —
+// the precise boot-time failure replaces the opaque query-time error a
+// too-old server or divergent schema would otherwise produce. A schema that
+// is ENTIRELY ABSENT (not yet provisioned) is TRANSIENT — the
+// cerberus+collector startup race — so it does NOT fail startup: the
+// returned health.SchemaPresentFunc reports NOT READY on /readyz with the
+// absent reason, and a background re-probe (reusing the auto-create retry
+// cadence) flips it ready once an external writer provisions the schema,
+// with no restart.
+//
+// When the check is disabled, both gates are bypassed (one log line) and a
+// nil SchemaPresentFunc is returned — readiness does not gate on the schema.
 func runRequirementsCheck(
 	ctx context.Context,
 	logger *slog.Logger,
 	client *chclient.Client,
 	cfg config.Config,
-) error {
+) (health.SchemaPresentFunc, error) {
 	if !cfg.RequirementsCheck {
 		logger.Info("requirements check disabled (CERBERUS_REQUIREMENTS_CHECK=false)")
-		return nil
+		return nil, nil
 	}
 	req := preflight.Requirements{
 		Database:          cfg.ClickHouse.Database,
@@ -461,15 +480,119 @@ func runRequirementsCheck(
 		Logs:              cfg.Logs,
 		Traces:            cfg.Traces,
 	}
-	if err := preflight.RunIfEnabled(ctx, cfg.RequirementsCheck, client, req); err != nil {
-		return err
+	res := preflight.RunIfEnabled(ctx, cfg.RequirementsCheck, client, req)
+	if res.Fatal != nil {
+		// Wrong-shape / too-old / unreadable — never self-heals. Exit even if
+		// some tables are also absent: a too-old server won't fix itself by
+		// waiting, and a wrong-shape table is a genuine misconfiguration.
+		return nil, res.Fatal
 	}
+
+	if !res.SchemaProvisioned() {
+		// Transient: the schema has not been provisioned yet (cerberus booted
+		// ahead of the collector that owns schema creation). Boot but stay
+		// NOT READY; a background re-probe flips readiness once the writer
+		// creates the schema. No restart.
+		reason := res.AbsentReason()
+		logger.Warn(
+			"schema not yet provisioned; serving unready until an external writer creates it (/readyz gates traffic)",
+			"reason", reason,
+		)
+		present := newSchemaPresentSignal(reason)
+		go reprobeSchema(ctx, logger, client, req, present, schemaRetryInterval)
+		return present.Func(), nil
+	}
+
 	logger.Info(
 		"requirements check passed",
 		"database", cfg.ClickHouse.Database,
 		"native_rate", cfg.ExperimentalTSGridRange,
 	)
-	return nil
+	return nil, nil
+}
+
+// schemaPresentSignal is the concurrency-safe carrier behind the
+// health.SchemaPresentFunc the readiness probe consults. present is flipped
+// once the background re-probe sees a fully-provisioned schema; reason holds
+// the current absent-tables explanation until then. The mutex guards reason
+// (a string can't be stored atomically) and keeps the present/reason pair
+// consistent for a probe that reads both.
+type schemaPresentSignal struct {
+	mu      sync.Mutex
+	present bool
+	reason  string
+}
+
+// newSchemaPresentSignal seeds the signal in the not-present state with the
+// initial absent reason.
+func newSchemaPresentSignal(reason string) *schemaPresentSignal {
+	return &schemaPresentSignal{reason: reason}
+}
+
+// Func returns the health.SchemaPresentFunc view the readiness handler
+// calls on every probe.
+func (s *schemaPresentSignal) Func() health.SchemaPresentFunc {
+	return func() (bool, string) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.present, s.reason
+	}
+}
+
+// markPresent flips the signal to provisioned; once present the readiness
+// probe stops gating on the schema.
+func (s *schemaPresentSignal) markPresent() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.present = true
+	s.reason = ""
+}
+
+// setReason updates the absent-tables explanation while still not-present
+// (e.g. fewer tables remain absent on a later probe).
+func (s *schemaPresentSignal) setReason(reason string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reason = reason
+}
+
+// reprobeSchema re-runs the requirements check on the auto-create retry
+// cadence until the configured schema is fully provisioned (or ctx is
+// cancelled). It only ever transitions a not-present schema to present: a
+// re-probe that turns up a FATAL finding (e.g. an external writer created a
+// wrong-shape table) is logged and retried rather than crashing a
+// already-serving process — the boot-time fail-fast contract covers the
+// cold-start case, and a running replica must not exit on a transient
+// introspection blip. Once present it flips readiness and returns.
+func reprobeSchema(
+	ctx context.Context,
+	logger *slog.Logger,
+	client *chclient.Client,
+	req preflight.Requirements,
+	signal *schemaPresentSignal,
+	interval time.Duration,
+) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		res := preflight.Run(ctx, client, req)
+		if res.Fatal != nil {
+			logger.Warn("schema re-probe found a fatal requirement; staying unready and retrying", "err", res.Fatal)
+			continue
+		}
+		if !res.SchemaProvisioned() {
+			signal.setReason(res.AbsentReason())
+			continue
+		}
+		logger.Info("schema now provisioned; reporting ready", "database", req.Database)
+		signal.markPresent()
+		return
+	}
 }
 
 // schemaRetryInterval is the cadence of background auto-create-schema

@@ -11,6 +11,18 @@ data:
   CERBERUS_CH_USERNAME: "cerberus"
   CERBERUS_CH_PASSWORD: "cerberus"
   CERBERUS_CH_DIAL_TIMEOUT: "10s"
+  # Provision the OTel-CH schema at boot. The otel-collector's
+  # clickhouseexporter (create_schema: true) also owns schema creation as
+  # telemetry first flows, but that's gated on telemetry actually arriving —
+  # a cold cluster has a window where the tables don't exist yet. Letting
+  # cerberus apply the same idempotent DDL (CREATE TABLE IF NOT EXISTS) at
+  # startup makes it ready promptly instead of waiting on the collector's
+  # first export. The boot-time requirements check's absent-schema branch is
+  # the real safety net (cerberus boots NOT READY and re-probes rather than
+  # crash-looping when the schema is still missing — see internal/preflight);
+  # auto-create here just shortens the not-ready window so the dashboard's
+  # readiness wait doesn't ride the collector's timing.
+  CERBERUS_AUTO_CREATE_SCHEMA: "true"
   # Self-observability OTLP export — cerberus pushes its own metrics +
   # traces + logs to the in-cluster gateway, which forwards them to
   # ClickHouse via the clickhouseexporter. Reading those rows back
