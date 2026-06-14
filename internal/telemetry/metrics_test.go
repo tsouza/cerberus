@@ -314,7 +314,7 @@ func TestQueryMiddleware_ResultOK(t *testing.T) {
 	// handlers wire the middleware — that ordering lets the middleware
 	// see r.Pattern after the mux resolves the route.
 	mux := http.NewServeMux()
-	mux.Handle("GET /api/v1/query", telemetry.QueryMiddleware("promql", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	mux.Handle("GET /api/v1/query", telemetry.QueryMiddleware("promql", noopPanicRenderer, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})))
 	srv := httptest.NewServer(mux)
@@ -362,7 +362,7 @@ func TestQueryMiddleware_ResultError(t *testing.T) {
 
 			mux := http.NewServeMux()
 			status := tc.status
-			mux.Handle("GET /api/v1/query", telemetry.QueryMiddleware("promql", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			mux.Handle("GET /api/v1/query", telemetry.QueryMiddleware("promql", noopPanicRenderer, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(status)
 			})))
 			srv := httptest.NewServer(mux)
@@ -384,6 +384,119 @@ func TestQueryMiddleware_ResultError(t *testing.T) {
 				t.Errorf("result: got %q want error", v.AsString())
 			}
 		})
+	}
+}
+
+// noopPanicRenderer is the [telemetry.PanicRenderer] the success/error
+// middleware tests pass when no panic is expected. It writes a minimal
+// 500 envelope so a regression that starts panicking still produces a
+// well-formed response the test can observe.
+func noopPanicRenderer(w http.ResponseWriter, _ *http.Request) {
+	w.WriteHeader(http.StatusInternalServerError)
+	_, _ = w.Write([]byte(`{"status":"error"}`))
+}
+
+// TestQueryMiddleware_PanicRecovered_RendersEnvelopeAndCountsError pins
+// the RC1 robustness contract at the shared-middleware layer: a handler
+// panic must NOT drop the connection. The middleware must (a) recover,
+// (b) invoke the head's PanicRenderer so a 500 body reaches the client,
+// and (c) still record the failed query on cerberus_queries_total with
+// result=error — the metric-defer fix. Before the fix, t.Done() ran
+// inline after ServeHTTP and a panic bypassed it entirely.
+func TestQueryMiddleware_PanicRecovered_RendersEnvelopeAndCountsError(t *testing.T) {
+	reader := installManualReader(t)
+
+	rendered := false
+	renderer := func(w http.ResponseWriter, _ *http.Request) {
+		rendered = true
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"status":"error","errorType":"internal"}`))
+	}
+
+	mux := http.NewServeMux()
+	mux.Handle("GET /api/v1/query", telemetry.QueryMiddleware("promql", renderer,
+		http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+			panic("boom: simulated handler panic")
+		})))
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/v1/query?query=up")
+	if err != nil {
+		t.Fatalf("GET: %v (connection must not drop on panic)", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status: got %d want 500", resp.StatusCode)
+	}
+	if !rendered {
+		t.Error("PanicRenderer was not invoked on the recovered panic")
+	}
+
+	sm := collect(t, reader)
+	total := findMetric(t, sm, "cerberus_queries_total")
+	sum := total.Data.(metricdata.Sum[int64])
+	if len(sum.DataPoints) != 1 {
+		t.Fatalf("queries.total DPs: got %d want 1 (panic must still count)", len(sum.DataPoints))
+	}
+	if v, _ := sum.DataPoints[0].Attributes.Value("result"); v.AsString() != telemetry.ResultError {
+		t.Errorf("result: got %q want error", v.AsString())
+	}
+	// The duration histogram must also record the panicked query so its
+	// count stays balanced with the total counter.
+	dur := findMetric(t, sm, "cerberus_queries_duration_seconds")
+	dh := dur.Data.(metricdata.Histogram[float64])
+	if len(dh.DataPoints) != 1 || dh.DataPoints[0].Count != 1 {
+		t.Errorf("query_duration: got %+v want one DP with count=1", dh.DataPoints)
+	}
+}
+
+// TestQueryMiddleware_PanicAfterCommit_NoDoubleWrite verifies that when a
+// handler panics AFTER it already committed a status line / body bytes,
+// the middleware does NOT call the renderer (the wire is past the point
+// of re-rendering) but still records the query so the metric stays
+// balanced.
+func TestQueryMiddleware_PanicAfterCommit_NoDoubleWrite(t *testing.T) {
+	reader := installManualReader(t)
+
+	rendererCalled := false
+	renderer := func(w http.ResponseWriter, _ *http.Request) {
+		rendererCalled = true
+		w.WriteHeader(http.StatusInternalServerError)
+	}
+
+	mux := http.NewServeMux()
+	mux.Handle("GET /api/v1/query", telemetry.QueryMiddleware("promql", renderer,
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("partial body"))
+			panic("boom: panic after partial write")
+		})))
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/v1/query?query=up")
+	if err == nil {
+		defer resp.Body.Close()
+		// A 200 status line already went out; the body is truncated but
+		// the status can't change. The renderer must not have fired.
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("status: got %d want 200 (already committed)", resp.StatusCode)
+		}
+	}
+	if rendererCalled {
+		t.Error("PanicRenderer must NOT fire once the response is committed")
+	}
+
+	sm := collect(t, reader)
+	total := findMetric(t, sm, "cerberus_queries_total")
+	sum := total.Data.(metricdata.Sum[int64])
+	if len(sum.DataPoints) != 1 {
+		t.Fatalf("queries.total DPs: got %d want 1", len(sum.DataPoints))
+	}
+	if v, _ := sum.DataPoints[0].Attributes.Value("result"); v.AsString() != telemetry.ResultError {
+		t.Errorf("result: got %q want error (committed-200 then panic is still a failed query)", v.AsString())
 	}
 }
 
