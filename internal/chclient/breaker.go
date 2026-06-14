@@ -137,6 +137,16 @@ type breaker struct {
 	threshold    int
 	window       time.Duration
 	openInterval time.Duration
+
+	// metrics carries the OTel state gauge + trips counter the breaker
+	// fires on every transition. A nil pointer is the no-telemetry
+	// sentinel — the zero-value breaker (and any breaker built without a
+	// MeterProvider) records nothing, so the un-instrumented path pays
+	// zero cost. client.New always wires a non-nil set off the global
+	// MeterProvider. Recording happens inside the b.mu critical section
+	// (the transition site) so the gauge level can never lag or reorder
+	// against the state field it mirrors.
+	metrics *breakerMetrics
 }
 
 // resolveThreshold returns the configured consecutive-failure threshold,
@@ -208,6 +218,9 @@ func (b *breaker) allow() bool {
 		}
 		b.state = stateHalfOpen
 		b.probeInFlight = true
+		b.metrics.recordState(breakerGaugeHalfOpen, "half-open")
+		breakerLogger().Warn("ch circuit breaker entering half-open: admitting one recovery probe",
+			"from", "open", "to", "half-open")
 		return true
 	case stateHalfOpen:
 		// Another goroutine already grabbed the probe slot. Wait
@@ -255,7 +268,7 @@ func (b *breaker) peek() string {
 	case stateOpen:
 		// The backoff has elapsed but no probe is reserved yet — report
 		// half-open so the solver still defers to route-A probing.
-		if b.nowOrTime().Sub(b.openedAt) >= breakerOpenInterval {
+		if b.nowOrTime().Sub(b.openedAt) >= b.resolveOpenInterval() {
 			return "half-open"
 		}
 		return "open"
@@ -385,6 +398,9 @@ func (b *breaker) record(ctx context.Context, err error) {
 			b.state = stateClosed
 			b.failures = 0
 			b.failureWindowStart = time.Time{}
+			b.metrics.recordState(breakerGaugeClosed, "closed")
+			breakerLogger().Warn("ch circuit breaker recovered: probe succeeded, circuit closed",
+				"from", "half-open", "to", "closed")
 			return
 		}
 		// Probe failed: stay OPEN and reset the timer so we try
@@ -396,6 +412,9 @@ func (b *breaker) record(ctx context.Context, err error) {
 		// the probe outcome matters.
 		b.failures = 0
 		b.failureWindowStart = time.Time{}
+		b.metrics.recordState(breakerGaugeOpen, "open")
+		breakerLogger().Warn("ch circuit breaker probe failed: circuit re-opened, backoff restarted",
+			"from", "half-open", "to", "open")
 		return
 
 	case stateClosed:
@@ -425,6 +444,12 @@ func (b *breaker) record(ctx context.Context, err error) {
 			b.openedAt = now
 			b.failures = 0
 			b.failureWindowStart = time.Time{}
+			b.metrics.recordState(breakerGaugeOpen, "open")
+			b.metrics.recordTrip()
+			breakerLogger().Warn("ch circuit breaker tripped OPEN: fast-failing all queries (503) until recovery",
+				"from", "closed", "to", "open",
+				"threshold", b.resolveThreshold(),
+				"window", b.resolveWindow().String())
 		}
 		return
 

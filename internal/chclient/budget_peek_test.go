@@ -94,6 +94,37 @@ func TestPeekBreakerState_ReadOnly(t *testing.T) {
 	}
 }
 
+// TestPeekBreakerState_CustomOpenInterval — peek() must honor the per-breaker
+// openInterval (via resolveOpenInterval), not the hardcoded GA 5s default.
+// Mirrors the allow()-side TestBreaker_CustomOpenInterval. The pre-existing
+// peek tests use a zero openInterval, so the literal-vs-resolver bug was
+// invisible there: with a 1s custom interval, a peek at +1.5s must already
+// report half-open even though the GA 5s has NOT elapsed.
+func TestPeekBreakerState_CustomOpenInterval(t *testing.T) {
+	t.Parallel()
+	base := time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC)
+	now := base
+	b := &breaker{threshold: 1, openInterval: time.Second, now: func() time.Time { return now }}
+
+	_ = b.allow()
+	b.record(context.Background(), errors.New("simulated CH outage")) // trips OPEN
+	if got := b.peek(); got != "open" {
+		t.Fatalf("freshly tripped breaker peek = %q, want open", got)
+	}
+
+	// At +1.5s the custom 1s interval has elapsed but the GA 5s has not.
+	// With the bug (hardcoded breakerOpenInterval) peek would still report
+	// "open"; with resolveOpenInterval it correctly reports "half-open".
+	now = base.Add(1500 * time.Millisecond)
+	if got := b.peek(); got != "half-open" {
+		t.Fatalf("peek after custom 1s open-interval = %q, want half-open", got)
+	}
+	// peek is read-only: the probe slot is still free for allow() to take.
+	if !b.allow() {
+		t.Fatalf("peek consumed the half-open probe — allow() denied")
+	}
+}
+
 // TestPeekBreakerState_ClientSurface — the *Client wrapper exposes the
 // stable string vocabulary.
 func TestPeekBreakerState_ClientSurface(t *testing.T) {
