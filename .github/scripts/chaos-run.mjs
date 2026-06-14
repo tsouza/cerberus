@@ -99,9 +99,41 @@ const SETTLE_INTERVAL_MS = 3_000;
 //      HOLDING CLOSED for the same hold window (absorbs OTLP lag + per-replica
 //      oscillation; a mid-warm-up transient half-open breaks the hold and the
 //      wait continues rather than passing prematurely).
-// Deadline raised to comfortably exceed the observed ~98 s warm-up + a few
-// seconds of OTLP propagation, with margin for a slower CI runner.
-const BREAKER_CLOSE_DEADLINE_MS = 180_000; // > observed ~98s CH warm-up oscillation + OTLP lag, with CI margin
+//
+// THE DRIVE IS READINESS-GATED. The main prom breaker only closes when a
+// SUCCESSFUL CH-touching query flows through THAT replica's breaker (breaker.go
+// record(): stateHalfOpen + err==nil -> stateClosed). But while a pod is
+// NOT-Ready the k8s Service excludes it from its endpoint set, so the harness's
+// drive queries (routed through the Service / port-forward, exactly like real
+// traffic) never reach it — driving before the pod is Ready is wasted work that
+// burns the deadline against an unroutable target. So recovery is TWO-STAGE and
+// the harness mirrors it:
+//   stage (i)  — poll /readyz until 200. /readyz pings flow through the SEPARATE
+//                HeadProbe breaker (#94, cmd/cerberus/main.go wires
+//                client.ForHead(HeadProbe) as the Pinger), and the kubelet
+//                readiness probe hits the pod DIRECTLY (bypassing the Service),
+//                so the probe breaker can close and the pod flip Ready off its
+//                own low-rate pings — independent of any data-plane traffic.
+//                Pod Ready => the Service now routes to it.
+//   stage (ii) — only THEN drive successful query=up bursts (prom head -> real
+//                CH round-trip through the MAIN breaker), which now actually
+//                reach the Ready pod, and wait for the SETTLED all-replica
+//                CLOSED hold below.
+// driveBreakerClosed enforces this gate: it re-confirms /readyz 200 before each
+// drive tick, so a pod that briefly drops Ready mid-warm-up stops being driven
+// until it's routable again.
+//
+// Deadline: dispatch 27506048143 saw the final stable close at +~2 min after the
+// fault, and recovery on k3d (CH pod recreate -> PVC reattach -> warm-up ->
+// breaker re-close, with mid-warm-up oscillation) is VARIABLE and can exceed the
+// old 180 s budget — that run's drive deadline expired ~5 s before the final
+// close and read a transient HALF-OPEN. Raised to a k3d-generous 300 s so the
+// genuine two-stage self-heal completes with comfortable margin on a slow CI
+// runner; the assertion stays BINDING (a breaker that never settles CLOSED
+// within 300 s despite a Ready pod + sustained successful queries is a real
+// stuck-breaker bug worth surfacing, not masked).
+const BREAKER_CLOSE_DEADLINE_MS = 300_000; // k3d-generous: > observed +~2min variable warm-up oscillation + OTLP lag, with CI margin
+const BREAKER_CLOSE_READYZ_DEADLINE_MS = 10_000; // per-tick /readyz re-confirm: pod must be Ready (Service-routable) before a drive tick counts
 const BREAKER_CLOSE_STABILITY_MS = 15_000; // CLOSED must HOLD this long (behaviorally + on the gauge) to count as settled
 const BREAKER_CLOSE_DRIVE_QUERIES = 8; // successful CH-touching queries to fire per drive tick (covers >=2 replicas' breakers)
 const BREAKER_CLOSE_HOLD_INTERVAL_MS = 3_000; // re-check cadence inside the hold window
@@ -443,16 +475,30 @@ async function breakerSettledClosed() {
 // real CH round-trip through the main breaker) and wait for a SETTLED,
 // all-replica CLOSED state that HOLDS for BREAKER_CLOSE_STABILITY_MS on both
 // the behavioral (all-200) and gauge (max-across-replicas == 0) signals.
+//
+// READINESS-GATED: each drive tick first re-confirms /readyz 200 (the pod is
+// Ready, so the Service routes drive traffic to it — see the BREAKER_CLOSE_*
+// rationale block above). A drive against a NOT-Ready pod can't reach it through
+// the Service and would just burn the deadline, so we wait for readiness inside
+// the tick instead of counting an unroutable drive. Once Ready, drive + attempt
+// to confirm a STABLE close.
+//
 // Returns true once settled, false on timeout. It is a DRIVE + SETTLE, not a
 // tolerance: callers still bindingly assert the gauge reads CLOSED afterwards,
 // and a genuinely-stuck breaker never settles so the assert still fails.
 async function driveBreakerClosed(deadlineMs) {
   return pollUntil(
     async () => {
-      // Drive once to admit recovery probes across all replicas, then attempt
-      // to confirm a STABLE close. breakerSettledClosed drives further bursts
-      // inside its own hold window, so a steady stream of CH-touching queries
-      // flows the whole time; it returns true only once CLOSED has held.
+      // Stage (i): the pod must be Ready before a drive can route to it. If it
+      // isn't yet, abandon this tick (return false -> pollUntil retries) rather
+      // than drive into a black hole.
+      const ready = await assertReadyzGreen(BREAKER_CLOSE_READYZ_DEADLINE_MS);
+      if (!ready) return false;
+      // Stage (ii): drive once to admit recovery probes across all replicas,
+      // then attempt to confirm a STABLE close. breakerSettledClosed drives
+      // further bursts inside its own hold window, so a steady stream of
+      // CH-touching queries flows the whole time; it returns true only once
+      // CLOSED has held.
       await driveOneBurst();
       return breakerSettledClosed();
     },
