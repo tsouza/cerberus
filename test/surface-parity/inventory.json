@@ -51,10 +51,9 @@
       "symbol": "agg:limit_ratio",
       "kind": "aggregator",
       "probe": "limit_ratio(0.5, up)",
-      "cerberus": "reject",
-      "reference": "reject",
-      "class": "parity-reject",
-      "cerberus_error": "promql: aggregation op limit_ratio is not yet supported"
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
     },
     {
       "head": "promql",

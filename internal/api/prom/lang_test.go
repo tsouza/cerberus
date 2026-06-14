@@ -77,31 +77,35 @@ func TestLang_Parse_ParseError(t *testing.T) {
 }
 
 // TestLang_Parse_LowerError — a parseable but unsupported PromQL form
-// (`limit_ratio`, an experimental aggregation cerberus rejects at
-// lowering) surfaces as a parseStageError tagged "lower". Verifies the
-// parse → lower split is preserved through the adapter.
+// (`first_over_time`, an experimental range function the PromQL head
+// deliberately rejects at lowering — see
+// internal/promql/first_over_time_reject_test.go) surfaces as a
+// parseStageError tagged "lower". Verifies the parse → lower split is
+// preserved through the adapter.
 //
 // `limitk` was the original example here; it now lowers (the
-// experimental-aggregator burndown wired limitk → LIMIT K BY), so the
-// still-unsupported sibling `limit_ratio` carries the parse→lower-split
+// experimental-aggregator burndown wired limitk → LIMIT K BY). Its
+// sibling `limit_ratio` likewise carried the assertion for a while, but
+// it too now lowers (#874 implemented the hash-sampling aggregator), so
+// the still-gated `first_over_time` carries the parse→lower-split
 // assertion forward.
 func TestLang_Parse_LowerError(t *testing.T) {
 	t.Parallel()
 
 	l := langForTest()
-	_, _, err := l.Parse(context.Background(), `limit_ratio(0.5, up)`)
+	_, _, err := l.Parse(context.Background(), `first_over_time(up[5m])`)
 	if err == nil {
-		t.Fatalf("Parse(limit_ratio): expected lower failure, got nil")
+		t.Fatalf("Parse(first_over_time): expected lower failure, got nil")
 	}
 	var ps *parseStageError
 	if !errors.As(err, &ps) {
-		t.Fatalf("Parse(limit_ratio): err type = %T, want *parseStageError; err=%v", err, err)
+		t.Fatalf("Parse(first_over_time): err type = %T, want *parseStageError; err=%v", err, err)
 	}
 	if ps.stage != "lower" {
 		t.Errorf("parseStageError.stage: got %q, want %q (got err=%v)", ps.stage, "lower", err)
 	}
-	if !strings.Contains(err.Error(), "limit_ratio") {
-		t.Errorf("err message: got %q, want it to mention limit_ratio", err.Error())
+	if !strings.Contains(err.Error(), "unsupported: range function") {
+		t.Errorf("err message: got %q, want it to mention the range-function rejection", err.Error())
 	}
 }
 

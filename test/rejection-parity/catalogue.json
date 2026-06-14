@@ -537,8 +537,8 @@
       "head": "promql",
       "site": "internal/promql/lower.go:buildAggFunc#a6e9df79",
       "message": "promql: aggregation op %s is not yet supported",
-      "class": "rejection",
-      "trigger_query": "limit_ratio(0.5, up)"
+      "class": "internal",
+      "rationale": "defensive fallback: every PromQL aggregator the parser emits (sum/avg/count/min/max/group/stddev/stdvar/topk/bottomk/count_values/quantile/limitk/limit_ratio) is dispatched by lowerAggregate or handled in buildAggFunc's switch, so no wire-reachable query reaches this branch. It guards against a future parser op landing unlowered."
     },
     {
       "head": "promql",
@@ -581,6 +581,20 @@
       "message": "promql: limitk K must be a scalar literal; computed-K (e.g. scalar(\u003cvector\u003e)) is not supported",
       "class": "rejection",
       "trigger_query": "limitk(scalar(up), up)"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/lower.go:lowerLimitRatio#a75ec376",
+      "message": "promql: limit_ratio ratio value is NaN",
+      "class": "rejection",
+      "trigger_query": "limit_ratio(NaN, up)"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/lower.go:lowerLimitRatio#afc83b92",
+      "message": "promql: limit_ratio ratio: %w",
+      "class": "internal",
+      "rationale": "error-propagation wrapper (%w): the wrapped scalar-lowering rejection is catalogued at its origin"
     },
     {
       "head": "promql",

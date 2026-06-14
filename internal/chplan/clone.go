@@ -259,6 +259,9 @@ func cloneExpr(e Expr) Expr {
 	case *LitString:
 		c := *v
 		return &c
+	case *InlineString:
+		c := *v
+		return &c
 	case *LitInt:
 		c := *v
 		return &c

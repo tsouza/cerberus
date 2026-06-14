@@ -147,8 +147,21 @@ func promQLAggregatorProbe(op string) string {
 
 // promAggregators is the aggregation-op set with the reference posture.
 // limitk / limit_ratio are experimental (parser.ItemType.IsExperimental-
-// Aggregator) — the reference gates them off by default exactly like
-// experimental functions.
+// Aggregator). The `experimental` flag here models the reference verdict:
+// true means "reference rejects under cerberus's parity posture".
+//
+// Both parse only because cerberus's heads enable EnableExperimentalFunctions
+// — the same flag the compatibility reference runs with. So the parity
+// question is purely "does cerberus LOWER it":
+//
+//   - limit_ratio is implemented (lowerLimitRatio → HashRatioSampler
+//     parity), so the experimental-enabled reference and cerberus BOTH
+//     accept it — a parity-accept. experimental=false here.
+//   - limitk's reference posture stays reject (experimental=true): under
+//     the parity model the experimental aggregator is gated off, so the
+//     recorded class is the inventory's tracked wrong-accept rather than a
+//     parity-accept. The value is independent of cerberus's own lowering
+//     state.
 var promAggregators = []struct {
 	op           string
 	experimental bool
@@ -166,7 +179,7 @@ var promAggregators = []struct {
 	{"count_values", false},
 	{"quantile", false},
 	{"limitk", true},
-	{"limit_ratio", true},
+	{"limit_ratio", false},
 }
 
 // promBinaryOps is the binary-operator set. Each probe applies the op

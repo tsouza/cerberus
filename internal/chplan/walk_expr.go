@@ -33,7 +33,7 @@ func inspectExpr(e Expr, visit func(Expr) bool, nodeVisit func(Node)) {
 		return
 	}
 	switch v := e.(type) {
-	case *ColumnRef, *LitString, *LitInt, *LitFloat, *LitBool, *BareIdent:
+	case *ColumnRef, *LitString, *InlineString, *LitInt, *LitFloat, *LitBool, *BareIdent:
 		// Leaf expressions: no sub-expressions.
 	case *Binary:
 		inspectExpr(v.Left, visit, nodeVisit)
