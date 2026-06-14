@@ -114,9 +114,13 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		if v.Desc {
 			dir = "DESC"
 		}
-		if v.KExpr != nil {
+		switch {
+		case v.Unordered:
+			// limitk: no ranking — arbitrary K rows per partition.
+			fmt.Fprintf(b, "%sLimitK k=%d", indent, v.K)
+		case v.KExpr != nil:
 			fmt.Fprintf(b, "%sTopK k=<expr> sort=%s %s", indent, printExpr(v.SortExpr), dir)
-		} else {
+		default:
 			fmt.Fprintf(b, "%sTopK k=%d sort=%s %s", indent, v.K, printExpr(v.SortExpr), dir)
 		}
 		if len(v.By) > 0 {

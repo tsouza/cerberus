@@ -713,10 +713,11 @@ func subqueryAnchor(e *parser.SubqueryExpr, ctx lowerCtx) (evalAnchor, error) {
 // caring that the underlying series identity came from a `by(...)` /
 // `without(...)` clause rather than the raw scan's Attributes map.
 //
-// Shape-changing aggregations (`topk` / `bottomk` / `count_values`) are
-// dispatched to dedicated helpers — topk/bottomk preserve every input
-// label and emit a TopK plan node, count_values builds a synthetic
-// label from the per-bucket value via toString().
+// Shape-changing aggregations (`topk` / `bottomk` / `limitk` /
+// `count_values`) are dispatched to dedicated helpers — topk/bottomk/
+// limitk preserve every input label and emit a TopK plan node (limitk
+// via the Unordered LIMIT-K-BY shape, no ranking), count_values builds
+// a synthetic label from the per-bucket value via toString().
 func lowerSubqueryOverAggregate(
 	sub *parser.SubqueryExpr,
 	agg *parser.AggregateExpr,
@@ -725,7 +726,7 @@ func lowerSubqueryOverAggregate(
 	ctx lowerCtx,
 ) (chplan.Node, error) {
 	switch agg.Op {
-	case parser.TOPK, parser.BOTTOMK:
+	case parser.TOPK, parser.BOTTOMK, parser.LIMITK:
 		return lowerSubqueryOverTopK(sub, agg, step, s, ctx)
 	case parser.COUNT_VALUES:
 		return lowerSubqueryOverCountValues(sub, agg, step, s, ctx)
@@ -947,17 +948,32 @@ func lowerSubqueryOverTopK(
 	}
 	by = append(by, &chplan.ColumnRef{Name: "anchor_ts"})
 
+	columns := []string{
+		s.AttributesColumn,
+		"anchor_ts",
+		s.ValueColumn,
+	}
+
+	if agg.Op == parser.LIMITK {
+		// limitk: K arbitrary series per (partition, anchor) — no
+		// ranking. Unordered emits `LIMIT K BY <by>` with no ORDER BY
+		// and a nil SortExpr (mirrors lower.go's lowerLimitK).
+		return &chplan.TopK{
+			Input:     matrix,
+			K:         k,
+			By:        by,
+			Unordered: true,
+			Columns:   columns,
+		}, nil
+	}
+
 	return &chplan.TopK{
 		Input:    matrix,
 		K:        k,
 		By:       by,
 		SortExpr: &chplan.ColumnRef{Name: s.ValueColumn},
 		Desc:     agg.Op == parser.TOPK,
-		Columns: []string{
-			s.AttributesColumn,
-			"anchor_ts",
-			s.ValueColumn,
-		},
+		Columns:  columns,
 	}, nil
 }
 
