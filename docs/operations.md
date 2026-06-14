@@ -325,6 +325,53 @@ crash-loop; see [`health.md`](health.md)). Fail-fast is reserved for
 misconfiguration that can never succeed — a bad env value or invalid
 connection options abort startup with a clear error.
 
+### Schema divergence: MetricName-first metrics sort key
+
+Cerberus auto-creates the OTel-CH schema from upstream's own DDL
+templates (the `sqltemplates` API exposed by the
+[`cerberus-ddl` fork](upstream-forks.md)), so the tables cerberus writes
+match a stock OTel ClickHouse Exporter deployment — with **one
+deliberate exception**. The five metrics tables (`otel_metrics_gauge`,
+`otel_metrics_sum`, `otel_metrics_histogram`,
+`otel_metrics_exp_histogram`, `otel_metrics_summary`) carry a
+**MetricName-first sort key**:
+
+```sql
+ORDER BY (MetricName, Attributes, ServiceName, toUnixTimestamp64Nano(TimeUnix))
+```
+
+where stock OTel-CH leads its `ORDER BY` with `ServiceName`. The traces
+and logs tables are unchanged from stock.
+
+This divergence is **correctness-neutral**. A ClickHouse `ORDER BY`
+(the table sort key) governs only data-skipping and on-disk row layout —
+it never changes which rows a query returns. Cerberus therefore answers
+**identically** whether the metrics tables carry the stock
+ServiceName-first key or the MetricName-first key.
+
+What it buys is metric-query speed. The common metric query carries a
+`MetricName` matcher but no `service.name` matcher; against a
+MetricName-first key ClickHouse range-prunes the primary key, against a
+ServiceName-first key it falls back to a generic-exclusion granule scan
+(~17× more granules read — see
+[`benchmarks.md`](benchmarks.md#metricname-first-order-by)).
+
+The practical contract for adopters:
+
+- **Cerberus is a correct drop-in against an existing stock OTel-CH
+  deployment.** Pointed at tables that were created by the stock
+  exporter (ServiceName-first metrics key), cerberus returns correct
+  results for every query — it simply forgoes the ~17× metric-query
+  granule-prune speedup until the metrics tables carry the
+  MetricName-first key.
+- **`CERBERUS_AUTO_CREATE_SCHEMA=true`** is what writes the
+  MetricName-first key: any metrics table cerberus auto-creates (the
+  table does not already exist) gets the optimized sort key. The DDL
+  is `CREATE TABLE IF NOT EXISTS`, so cerberus never rewrites the sort
+  key of a table that already exists — adopting the optimized key on an
+  existing stock table is an operator-driven migration (create the new
+  table, backfill), not something cerberus does silently.
+
 ### Shutdown
 
 On `SIGINT` or `SIGTERM`, cerberus:

@@ -370,11 +370,13 @@ func (e *emitter) emitFilterScan(f *chplan.Filter, scan *chplan.Scan) error {
 		return err
 	}
 	// For a UnionTables scan every member table shares the metric-row
-	// shape (the OTel-CH metrics tables all order by (ServiceName,
-	// MetricName, Attributes, TimeUnix) and carry the same wide columns
-	// — see internal/chsql/tableshape.go). Resolving against the first
-	// member is correct for shape lookup; the PREWHERE/WHERE split CH
-	// then translates uniformly to every arm of the merge() fanout.
+	// shape (the cerberus-created metrics tables all order by
+	// (MetricName, Attributes, ServiceName, toUnixTimestamp64Nano(TimeUnix))
+	// — the MetricName-first sort key, cerberus's one deliberate divergence
+	// from stock OTel-CH — and carry the same wide columns; see
+	// internal/chsql/tableshape.go). Resolving against the first member is
+	// correct for shape lookup; the PREWHERE/WHERE split CH then translates
+	// uniformly to every arm of the merge() fanout.
 	shapeKey := scan.Table
 	if shapeKey == "" && len(scan.UnionTables) > 0 {
 		shapeKey = scan.UnionTables[0]
