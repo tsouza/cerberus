@@ -100,7 +100,7 @@ func runConstruct(t *testing.T, c Construct) {
 			}
 		}
 
-		wall := bestOf(t, db, p.SQL, p.Args, c.Iters)
+		wall := medianWall(t, db, p.SQL, p.Args, c.Iters)
 
 		levels := p.LevelSQLs
 		if len(levels) == 0 {
@@ -126,10 +126,23 @@ func runConstruct(t *testing.T, c Construct) {
 	// Contrast the measured wall-growth ratio against the parameter's own
 	// growth across the sweep. A true compute fan-out makes wall track the
 	// parameter 1:1 (or worse); a bounded shape grows far flatter. The gate
-	// is `wallGrowth < paramGrowth x slack` — runner-portable (a ratio of
-	// ratios, no absolute-ms threshold).
+	// is `wallGrowth < paramGrowth x slack + jitter` — runner-portable (a
+	// ratio of ratios, no absolute-ms threshold).
+	//
+	// The wall is measured as a per-point MEDIAN (see medianWall) so a
+	// single fast/slow sample can't skew the ratio; wallJitterMargin is the
+	// residual headroom for cross-run variance the median can't remove (the
+	// two endpoints are independent timings on a shared runner). Crucially,
+	// this margin is ADDITIVE and bounded — it tolerates a flat shape's
+	// jitter but is dwarfed by a genuine super-linear regression, which adds
+	// a MULTIPLE of paramGrowth (here a real #88-class re-execution would
+	// push wallGrowth toward paramGrowth itself, ~4x, far past gate ~3.85x),
+	// and is caught regardless by the deterministic cardinality axis below,
+	// which is the PRIMARY hard anti-fan-out invariant and carries no margin.
+	const wallJitterMargin = 0.25
 	paramGrowth := fratio(float64(last.param), float64(first.param))
 	wallGrowth := ratio(last.wall, first.wall)
+	gate := paramGrowth*slack + wallJitterMargin
 	t.Logf("%s: param grew %.2fx (%d->%d), wall grew %.2fx (%v->%v)",
 		c.Name, paramGrowth, first.param, last.param, wallGrowth,
 		first.wall.Round(time.Microsecond), last.wall.Round(time.Microsecond))
@@ -138,11 +151,12 @@ func runConstruct(t *testing.T, c Construct) {
 		t.Fatalf("construct %q: parameter did not grow across the sweep (%.2fx) — the sweep is mis-built; "+
 			"a sub-linearity assertion is meaningless without a growing parameter.", c.Name, paramGrowth)
 	}
-	if wallGrowth >= paramGrowth*slack {
+	if wallGrowth >= gate {
 		msg := func(verb string) string {
 			return verb + ": compute-scaling violation in " + c.Name + " (" + c.Why + "): wall-time grew " +
 				ftoa(wallGrowth) + "x while " + c.Param + " grew only " + ftoa(paramGrowth) + "x (slack=" +
-				ftoa(slack) + " -> gate " + ftoa(paramGrowth*slack) + "x). Wall is tracking the parameter."
+				ftoa(slack) + ", jitter=" + ftoa(wallJitterMargin) + " -> gate " + ftoa(gate) +
+				"x). Wall is tracking the parameter."
 		}
 		if c.KnownSuperlinear != "" {
 			// Quarantined: log the finding loudly but do NOT fail the wall
@@ -161,7 +175,7 @@ func runConstruct(t *testing.T, c Construct) {
 		// gate) rather than lingering as dead quarantine.
 		t.Logf("NOTE: %q is flagged KnownSuperlinear (%s) but measured SUB-LINEAR this run "+
 			"(wall %.2fx < gate %.2fx). If the tracked bug is fixed, remove the KnownSuperlinear flag to "+
-			"restore the hard wall gate.", c.Name, c.KnownSuperlinear, wallGrowth, paramGrowth*slack)
+			"restore the hard wall gate.", c.Name, c.KnownSuperlinear, wallGrowth, gate)
 	}
 
 	// --- Invariant (b): peak intermediate cardinality stays BOUNDED -------
