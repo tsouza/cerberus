@@ -89,6 +89,10 @@ services:
       CERBERUS_CH_USERNAME: "cerberus"
       CERBERUS_CH_PASSWORD: "cerberus"
       CERBERUS_CH_DIAL_TIMEOUT: "10s"
+      # cerberus provisions + validates its own schema on boot (the startup
+      # requirements check runs after auto-create); the seeder's IF NOT EXISTS
+      # DDL then no-ops and just inserts rows.
+      CERBERUS_AUTO_CREATE_SCHEMA: "true"
       # Sharded-pushdown solver route knob, threaded from the host so the
       # forced-route compat job (compatibility/prometheus-forced-route) can
       # start cerberus with CERBERUS_EVAL_ROUTE=sharded — forcing every
