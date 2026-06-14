@@ -56,6 +56,30 @@ type Logs struct {
 	// `LogAttributes` — each can carry hundreds of bytes per row.
 	WideColumns []string
 
+	// MaterializedResourceColumns maps a ResourceAttributes map key
+	// (e.g. `k8s.namespace.name`) to the dedicated top-level
+	// LowCardinality(String) column the OTel ClickHouse Exporter
+	// MATERIALIZEs from that key (e.g. `__otel_materialized_k8s.namespace.name`).
+	//
+	// The exporter's `logs_table.sql` template defines each such column
+	// as `LowCardinality(String) MATERIALIZED ResourceAttributes['<key>']`,
+	// so reading the column is byte-for-byte equivalent to reading the
+	// map key — including the empty-string default a missing key yields —
+	// but avoids decompressing the wide ResourceAttributes Map. A
+	// stream-selector matcher (or inner range-aggregation group-by) whose
+	// label resolves through this table emits a bare ColumnRef against the
+	// materialized column instead of a Map access.
+	//
+	// This is the opt-in gate: DefaultOTelLogs() populates it from the
+	// exporter's exact DDL set; a custom-schema user whose otel_logs has
+	// no `__otel_materialized_*` columns (or who renamed
+	// ResourceAttributesColumn) leaves it nil and stays on the map read,
+	// mirroring the resourceFallbackColumn opt-out. Only the logs table
+	// carries these columns — the traces / metrics tables ship a plain
+	// ResourceAttributes Map with no materialized siblings — so the
+	// routing is LogQL-only by construction.
+	MaterializedResourceColumns map[string]string
+
 	// RowKey is the tuple of columns that uniquely identifies a row in
 	// the logs table. Used by the chsql late-materialisation rewrite
 	// as the JOIN key between the thin inner SELECT and the outer
@@ -76,6 +100,45 @@ type Logs struct {
 // for the late-materialisation rewrite. Custom-schema users with
 // non-unique storage layouts leave RowKey empty to bypass the rewrite.
 func (l Logs) HasUniqueRowKey() bool { return len(l.RowKey) > 0 }
+
+// materializedColumnPrefix is the literal prefix the OTel ClickHouse
+// Exporter prepends to a ResourceAttributes map key to name the
+// MATERIALIZED column it hoists that key into. The exporter's
+// `logs_table.sql` template spells the full column name as
+// `__otel_materialized_<key>` (the key verbatim, dots preserved) — see
+// the `MATERIALIZED ResourceAttributes['<key>']` column definitions.
+const materializedColumnPrefix = "__otel_materialized_"
+
+// defaultMaterializedResourceKeys lists the ResourceAttributes map keys
+// the OTel ClickHouse Exporter MATERIALIZEs into dedicated top-level
+// LowCardinality(String) columns on the logs table. Read verbatim from
+// the exporter's `logs_table.sql` template — the column for each key is
+// defined as `MATERIALIZED ResourceAttributes['<key>']`, so reading the
+// column is equivalent to reading the map key. The set is exporter DDL,
+// not a cerberus-chosen allow-list: it tracks exactly which keys the
+// shipped schema promotes.
+var defaultMaterializedResourceKeys = []string{
+	"k8s.cluster.name",
+	"k8s.container.name",
+	"k8s.deployment.name",
+	"k8s.namespace.name",
+	"k8s.node.name",
+	"k8s.pod.name",
+	"k8s.pod.uid",
+	"deployment.environment.name",
+}
+
+// defaultMaterializedResourceColumns builds the {map-key →
+// materialized-column} table from defaultMaterializedResourceKeys by
+// prepending materializedColumnPrefix to each key — mirroring the
+// exporter's column-naming rule exactly.
+func defaultMaterializedResourceColumns() map[string]string {
+	out := make(map[string]string, len(defaultMaterializedResourceKeys))
+	for _, key := range defaultMaterializedResourceKeys {
+		out[key] = materializedColumnPrefix + key
+	}
+	return out
+}
 
 // DefaultOTelLogs returns the schema produced by the upstream OTel
 // ClickHouse Exporter for logs.
@@ -103,5 +166,10 @@ func DefaultOTelLogs() Logs {
 		// log row when ingestion carries trace context. See the
 		// WideColumns godoc above.
 		RowKey: []string{"Timestamp", "TraceId", "SpanId"},
+		// The 8 k8s.* / deployment.environment.name resource attributes
+		// the exporter MATERIALIZEs into dedicated LowCardinality columns
+		// on the logs table — routing a matcher/group-by here avoids
+		// decompressing the wide ResourceAttributes Map.
+		MaterializedResourceColumns: defaultMaterializedResourceColumns(),
 	}
 }

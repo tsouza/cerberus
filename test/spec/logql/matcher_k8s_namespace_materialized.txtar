@@ -1,0 +1,50 @@
+-- query.logql --
+{k8s_namespace_name="ns-3"}
+-- seed --
+-- The exporter MATERIALIZEs `ResourceAttributes['k8s.namespace.name']`
+-- into the dedicated `__otel_materialized_k8s.namespace.name`
+-- LowCardinality column. cerberus routes the `{k8s_namespace_name=...}`
+-- stream-selector matcher to that bare column instead of decompressing
+-- the wide ResourceAttributes Map. This fixture proves the substitution
+-- is byte-for-byte result-equivalent.
+--
+-- Both columns are MATERIALIZED off Body (one Body value encodes each
+-- storage shape), so the runner's `SELECT *` returns just the two
+-- inserted columns — sidestepping the chdb-go Parquet driver's panic on
+-- Map column scans while leaving what the matcher predicate evaluates
+-- against unchanged. The materialized column's MATERIALIZED expression
+-- is LITERALLY `ResourceAttributes['k8s.namespace.name']`, so col-read
+-- and map-read agree on every row by construction — including the
+-- missing-key row where both yield ''.
+CREATE TABLE otel_logs (
+    Timestamp DateTime64(9),
+    Body String,
+    ResourceAttributes Map(String, String) MATERIALIZED multiIf(
+        Body = 'dotted-ns3', map('k8s.namespace.name', 'ns-3'),
+        Body = 'dotted-ns3-extra', map('k8s.namespace.name', 'ns-3', 'k8s.pod.name', 'p1'),
+        Body = 'other-ns', map('k8s.namespace.name', 'ns-9'),
+        Body = 'no-key', CAST(map() AS Map(String, String)),
+        CAST(map() AS Map(String, String))
+    ),
+    `__otel_materialized_k8s.namespace.name` LowCardinality(String) MATERIALIZED ResourceAttributes['k8s.namespace.name']
+) ENGINE = Memory;
+-- Two matching rows (value in the dotted map key the materialized
+-- column mirrors), one non-matching namespace, one missing-key row
+-- (both sides resolve to '' → must NOT match "ns-3").
+INSERT INTO otel_logs (Timestamp, Body) VALUES
+    (toDateTime64('2026-05-20 12:00:00.000000000', 9), 'dotted-ns3'),
+    (toDateTime64('2026-05-20 12:01:00.000000000', 9), 'dotted-ns3-extra'),
+    (toDateTime64('2026-05-20 12:02:00.000000000', 9), 'other-ns'),
+    (toDateTime64('2026-05-20 12:03:00.000000000', 9), 'no-key');
+-- expected_rows --
+[
+  ["2026-05-20T12:00:00Z", "dotted-ns3"],
+  ["2026-05-20T12:01:00Z", "dotted-ns3-extra"]
+]
+-- args --
+[0] string = "ns-3"
+-- chplan --
+Filter predicate=(__otel_materialized_k8s.namespace.name = "ns-3")
+  Scan(otel_logs)
+-- sql --
+SELECT * FROM `otel_logs` WHERE (`__otel_materialized_k8s.namespace.name` = ?)

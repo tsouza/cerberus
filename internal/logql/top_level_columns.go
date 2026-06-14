@@ -1,9 +1,47 @@
 package logql
 
 import (
+	"strings"
+
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/schema"
 )
+
+// materializedColumnFor reports whether `label` names a ResourceAttributes
+// map key the OTel ClickHouse Exporter MATERIALIZEs into a dedicated
+// top-level LowCardinality(String) column on the logs table (one of the 8
+// k8s.* / deployment.environment.name keys). When it does, the second
+// return is the materialized column name — a bare ColumnRef against it is
+// byte-for-byte equivalent to `ResourceAttributes[<key>]` (the column's
+// MATERIALIZED expression IS that map access, including the empty-string
+// default a missing key yields) but avoids decompressing the wide Map.
+//
+// Both the dotted OTel-semantic-convention form (`k8s.namespace.name`,
+// the actual map key) and the underscored Grafana form
+// (`k8s_namespace_name`, the identifier Grafana panels + the LogQL
+// grammar surface) resolve — the underscored form is normalised to dots
+// before the lookup, mirroring resourceFallbackColumn's `service_name`
+// alias. A custom-schema user whose otel_logs has no materialized columns
+// leaves schema.Logs.MaterializedResourceColumns nil and opts out: the
+// table is empty so this never fires and the lowering stays map-only.
+func materializedColumnFor(label string, s schema.Logs) (string, bool) {
+	if label == "" || len(s.MaterializedResourceColumns) == 0 {
+		return "", false
+	}
+	if col, ok := s.MaterializedResourceColumns[label]; ok {
+		return col, true
+	}
+	// Grafana panels + the LogQL grammar spell the dotted OTel key with
+	// underscores (`k8s_namespace_name`). The map is keyed by the dotted
+	// form (the literal ResourceAttributes key), so normalise before the
+	// second lookup.
+	if dotted := strings.ReplaceAll(label, "_", "."); dotted != label {
+		if col, ok := s.MaterializedResourceColumns[dotted]; ok {
+			return col, true
+		}
+	}
+	return "", false
+}
 
 // topLevelLogColumnFor reports whether `label` names a top-level OTel-CH
 // scalar column on the logs table (rather than a key inside the
