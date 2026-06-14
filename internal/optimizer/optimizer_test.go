@@ -361,6 +361,35 @@ var inputs = map[string]chplan.Node{
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 	},
 
+	// pushdown_through_range_window_native: the experimental
+	// ClickHouse-native rate-range shape RangeWindowNative(Filter(Scan)).
+	// The stage-aware arm fires on the RangeWindowNative and narrows the
+	// inner Scan to the union of the (TimestampColumn, ValueColumn) pair the
+	// timeSeriesRateToGrid aggregate consumes, the GroupBy series-identity
+	// refs (Attributes — the inner SELECT's GROUP BY keys), and the Filter
+	// predicate refs (MetricName). The synthetic grid/anchor identifiers the
+	// native emit names are produced inside the subquery and are NOT Scan
+	// reads, so they never enter the narrowed set. This is the #860/#861
+	// correctness-critical arm: a dropped identity column 502s at runtime.
+	"pushdown_through_range_window_native": &chplan.RangeWindowNative{
+		Input: &chplan.Filter{
+			Input: &chplan.Scan{Table: "otel_metrics_sum"},
+			Predicate: &chplan.Binary{
+				Op:    chplan.OpEq,
+				Left:  &chplan.ColumnRef{Name: "MetricName"},
+				Right: &chplan.LitString{V: "http_requests_total"},
+			},
+		},
+		Func:            "rate",
+		Range:           5 * time.Minute,
+		Step:            30 * time.Second,
+		Start:           time.Unix(1000, 0).UTC(),
+		End:             time.Unix(1300, 0).UTC(),
+		TimestampColumn: "TimeUnix",
+		ValueColumn:     "Value",
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+	},
+
 	// pushdown_select_wrap_carriers: the Tempo /api/search
 	// `| select(...)` wrap shape — Project(Filter(Scan)) where the
 	// selected attribute values ride INSIDE the canonical Attributes

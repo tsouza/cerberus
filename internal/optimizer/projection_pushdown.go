@@ -39,8 +39,23 @@ import (
 //     to the union of TimestampColumn + ValueColumn (the per-sample pair
 //     the windowed-array idiom reads), the GroupBy + ScalarExprs column
 //     refs, plus the Filter predicate's columns when present.
+//  5. `RangeWindowNative(Scan)` / `RangeWindowNative(Filter(Scan))` — the
+//     experimental ClickHouse-native `timeSeriesRateToGrid` lowering.
+//     emitRangeWindowNative reads EXACTLY three things off the inner Scan:
+//     the per-series GroupBy identity refs (the `GROUP BY` of the inner
+//     SELECT), and the (TimestampColumn, ValueColumn) pair fed positionally
+//     into the timeSeriesRateToGrid aggregate. Every other identifier the
+//     native emit names (`grid` / `grid_ts` / `grid_val` / `anchor_ts`) is
+//     SYNTHETIC — produced inside the subquery, never read off the Scan —
+//     so the narrowed column set is the same union shape as shape (4) minus
+//     ScalarExprs (the native node carries none). This is the
+//     correctness-critical arm: dropping any of MetricName-class identity
+//     columns the GroupBy walks, or the ts/value pair, 502s at runtime with
+//     `Unknown expression identifier`. nativeRangeWindowColumns enumerates
+//     exactly the emit's reads, and applyStageScan unions in the Filter
+//     predicate's columns so the predicate stays evaluable.
 //
-// Shapes (3) and (4) are what makes the pushdown reach the inner Scan of
+// Shapes (3), (4), (5) are what makes the pushdown reach the inner Scan of
 // the canonical metrics shape `Project(Aggregate(Filter(Scan)))` (and the
 // matrix `Project(RangeWindow(Filter(Scan)))`): the Project's pushdown in
 // shapes (1)/(2) stops at the Aggregate/RangeWindow, so without these arms
@@ -66,6 +81,8 @@ func (ProjectionPushdown) Apply(n chplan.Node) (chplan.Node, bool) {
 		return applyStageScan(node, node.Input, aggregateColumns(node))
 	case *chplan.RangeWindow:
 		return applyStageScan(node, node.Input, rangeWindowColumns(node))
+	case *chplan.RangeWindowNative:
+		return applyStageScan(node, node.Input, nativeRangeWindowColumns(node))
 	default:
 		return n, false
 	}
@@ -132,6 +149,10 @@ func cloneStageOverInput(stage, newInput chplan.Node) chplan.Node {
 		clone := *s
 		clone.Input = newInput
 		return &clone
+	case *chplan.RangeWindowNative:
+		clone := *s
+		clone.Input = newInput
+		return &clone
 	default:
 		return stage
 	}
@@ -184,6 +205,39 @@ func rangeWindowColumns(r *chplan.RangeWindow) []string {
 	}
 	for _, s := range r.ScalarExprs {
 		walkExpr(s, collect)
+	}
+	return sortedColumnSet(seen)
+}
+
+// nativeRangeWindowColumns returns the sorted, deduped set of base columns
+// a RangeWindowNative's emit reads off the inner Scan. emitRangeWindowNative
+// (chsql/range_window_native.go) reads EXACTLY three things off the Scan:
+//
+//   - TimestampColumn and ValueColumn — fed positionally into the
+//     timeSeriesRateToGrid aggregate's second paren group (`Col(...)` each).
+//   - the column refs walked out of GroupBy — the inner SELECT's series keys
+//     and `GROUP BY` list (rendered by collectGroupByFrags).
+//
+// Every other identifier the native emit names — `grid`, `grid_ts`,
+// `grid_val`, `anchor_ts` — is SYNTHETIC (produced inside the subquery via
+// the timeSeriesRateToGrid / timeSeriesRange / ARRAY JOIN machinery), so it
+// is never a Scan read and must NOT be added here. The native node carries
+// no ScalarExprs (unlike RangeWindow), so this set is strictly
+// {TimestampColumn, ValueColumn} ∪ refs(GroupBy). Dropping any of these —
+// in particular the identity columns the GroupBy walks (the MetricName-class
+// #860/#861 failure) — 502s the native query at runtime, so the enumeration
+// must match the emit's reads exactly.
+func nativeRangeWindowColumns(r *chplan.RangeWindowNative) []string {
+	seen := map[string]struct{}{}
+	if r.TimestampColumn != "" {
+		seen[r.TimestampColumn] = struct{}{}
+	}
+	if r.ValueColumn != "" {
+		seen[r.ValueColumn] = struct{}{}
+	}
+	collect := collectColumn(seen)
+	for _, g := range r.GroupBy {
+		walkExpr(g, collect)
 	}
 	return sortedColumnSet(seen)
 }
