@@ -27,13 +27,21 @@
 //   - wrong-accept   — cerberus accepts, the reference rejects. A
 //     correctness risk: cerberus answers a query the reference won't.
 //
-// Reference oracle (the LIGHT path, no compat containers):
+// Reference oracle:
 //
-//   - PromQL: reference Prometheus v3.11.3 rejects functions /
-//     aggregators flagged Experimental in the parser
-//     (parser.Functions[name].Experimental, ItemType.IsExperimental-
-//     Aggregator) when --enable-feature=promql-experimental-functions
-//     is off (the compat harness default), and accepts the rest.
+//   - PromQL: the FLAG-ENABLED reference Prometheus HTTP verdict, pinned
+//     in promql-reference-verdicts.json. A real prom/prometheus started
+//     with --enable-feature=promql-experimental-functions is driven over
+//     /api/v1/query for every parser.Functions symbol + the two
+//     experimental aggregators (2xx => accept, 4xx => reject). This
+//     REPLACES the former `if fn.Experimental { ref = reject }` stand-in,
+//     which modelled a flag-OFF reference and so mislabelled every
+//     flag-ON-implemented experimental fn as a parity rejection. The
+//     in-process ratchet reads the pinned artifact (Docker-free); the
+//     compatibility/promql-surface CI job re-probes the live reference and
+//     fails on drift, so the artifact can never silently diverge from the
+//     real reference. See promql_reference.go +
+//     .github/scripts/promql-surface-gate.mjs.
 //   - LogQL: reference Loki accepts exactly what syntax.ParseExpr
 //     (parse + validate) accepts — the same gate the wire path runs.
 //   - TraceQL: reference Tempo accepts exactly what traceql.Parse +

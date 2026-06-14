@@ -441,6 +441,57 @@ jobs:
           echo "::error title=compatibility/prometheus-forced-route failed::forced-route harness exited non-zero — route B (CERBERUS_EVAL_ROUTE=sharded) diverged from reference Prometheus, OR an infra failure occurred. See the harness log + the uploaded compatibility-prometheus-forced-route-report artifact"
           exit 1
 
+  promql-surface:
+    # Reference-backed full-surface PromQL rejection-completeness gate (#106).
+    #
+    # Stands up a SECOND reference Prometheus — the same pinned
+    # prom/prometheus tag as compatibility/prometheus, but started WITH
+    # --enable-feature=promql-experimental-functions (the standard
+    # prometheus job deliberately runs flag-OFF for the showcase parity
+    # contract, so this is a distinct target). It then drives every
+    # parser.Functions symbol + the two experimental aggregators through
+    # the flag-enabled reference's HTTP /api/v1/query and asserts that no
+    # PromQL function the reference ACCEPTS is silently rejected by
+    # cerberus (a coverage gap masquerading as a "parity rejection").
+    #
+    # The reference verdict is parse + type validation — data-independent,
+    # so no ClickHouse / seeding / cerberus container is needed. Cerberus's
+    # runtime verdict comes from the in-process pipeline recorded in
+    # test/surface-parity/inventory.json (the same parse->lower->optimize->
+    # emit path the HTTP handler runs), so the gate is deterministic +
+    # dependency-light: a Docker daemon (already on the runner) + node
+    # (already on ubuntu-latest). All logic lives in
+    # .github/scripts/promql-surface-gate.mjs per the repo CI-scripts rule.
+    #
+    # This is a NORMAL CI job (not a branch-protection-required check) until
+    # it has soaked on main — its green status on this PR is the proof.
+    name: compatibility/promql-surface
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      # See the prometheus job: authed Docker Hub pulls dodge the anonymous
+      # rate limit shared across runner IPs; skips silently on forks.
+      - name: Log in to Docker Hub
+        if: ${{ env.DOCKERHUB_TOKEN_SET == 'true' }}
+        env:
+          DOCKERHUB_TOKEN_SET: ${{ secrets.DOCKERHUB_TOKEN != '' }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Run PromQL surface-completeness gate
+        id: gate
+        # The script stands up + tears down the flag-enabled reference
+        # itself (docker run / rm -f), polls /-/ready, probes every symbol,
+        # and exits non-zero on any silent gap / artifact drift / showcase
+        # misfile. node ships on ubuntu-latest, so no setup-node is needed.
+        run: node .github/scripts/promql-surface-gate.mjs
+
   tempo:
     name: compatibility/tempo
     needs: changes
