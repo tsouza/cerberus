@@ -127,6 +127,76 @@ receivers:
           system.network.conntrack.max:
             enabled: true
       filesystem:
+        # Portability across the two compose hosts (Linux vs Docker
+        # Desktop for Mac). The "Filesystem utilisation by mount" panel
+        # on the host dashboard queries
+        # `max by (mountpoint) (system_filesystem_utilization)`, so it
+        # only renders if at least one real mount is scraped.
+        #
+        # The scraper has no default filters, so out of the box it emits
+        # whatever gopsutil's disk.Partitions returns. With
+        # include_virtual_filesystems unset (false) gopsutil keeps only
+        # "physical" filesystems — those listed in /proc/filesystems
+        # *without* the `nodev` marker:
+        #   - On native Linux (CI), the host root mounted at /hostfs is a
+        #     real device fs (ext4 / xfs / btrfs), which is physical, so
+        #     `/` is emitted and the panel populates.
+        #   - On Docker Desktop for Mac, /hostfs is the LinuxKit VM's root,
+        #     and the user's Mac volumes are shared into that VM over
+        #     virtiofs / grpcfuse / 9p — all `nodev` (virtual) in the VM's
+        #     /proc/filesystems, alongside the overlay VM root. gopsutil
+        #     therefore drops *every* partition, no series is produced, and
+        #     the panel renders empty.
+        #
+        # Fix: opt the virtual filesystems back in, then blocklist the
+        # kernel pseudo-filesystems that carry no meaningful "utilisation".
+        # A blocklist (exclude pseudo-fs) is portable where an allowlist
+        # (include only ext4/xfs) would not be — it keeps the real macOS
+        # shared mounts (virtiofs / grpcfuse / 9p) and the Linux device
+        # root, while dropping proc / sysfs / cgroup / tmpfs / overlay on
+        # both. Linux still emits its ext4/xfs `/` mount, so CI's
+        # compose-smoke path is unchanged.
+        include_virtual_filesystems: true
+        exclude_fs_types:
+          match_type: strict
+          fs_types:
+            - autofs
+            - binfmt_misc
+            - bpf
+            - cgroup
+            - cgroup2
+            - configfs
+            - debugfs
+            - devpts
+            - devtmpfs
+            - fusectl
+            - hugetlbfs
+            - mqueue
+            - nsfs
+            - overlay
+            - proc
+            - procfs
+            - pstore
+            - ramfs
+            - securityfs
+            - selinuxfs
+            - squashfs
+            - sysfs
+            - tmpfs
+            - tracefs
+        exclude_mount_points:
+          # Host-perspective paths (the scraper resolves these against the
+          # un-rerooted mountpoint even though root_path is /hostfs). These
+          # drop the kernel/runtime plumbing trees that survive the fs-type
+          # blocklist, leaving only operator-meaningful volumes.
+          match_type: regexp
+          mount_points:
+            - /dev/.*
+            - /proc/.*
+            - /sys/.*
+            - /run/.*
+            - /var/lib/docker/.*
+            - /var/lib/kubelet/.*
         metrics:
           system.filesystem.utilization:
             enabled: true
