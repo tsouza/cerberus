@@ -71,12 +71,40 @@ const SETTLE_INTERVAL_MS = 3_000;
 // its OWN main query breaker, so one sweep may close one replica's breaker
 // while another stays HALF-OPEN. We therefore DRIVE sustained successful
 // CH-touching queries (prom head -> real CH round-trip through the main
-// breaker) and POLL cerberus_ch_breaker_state until it reads CLOSED, so the
+// breaker) and wait for a SETTLED, all-replica CLOSED signal, so the
 // post-recovery assertion (and every downstream scenario that reads the gauge)
 // sees a genuinely-CLOSED breaker. This drives the legitimate transition; it
 // never weakens the assertion.
-const BREAKER_CLOSE_DEADLINE_MS = 90_000; // bound the drive-to-CLOSED poll (OTLP gauge lag + per-replica probes)
-const BREAKER_CLOSE_DRIVE_QUERIES = 8; // successful CH-touching queries to fire per poll tick (covers >=2 replicas' breakers)
+//
+// Why a SETTLE-AND-HOLD (not a single CLOSED sample): the CH pod is recreated
+// onto a PVC, so on heal it boots + reattaches the volume + the heal re-seed
+// loads it. During that warm-up CH is INTERMITTENTLY available, so the breaker
+// OSCILLATES — it closes, re-opens on a transient CH blip, then closes again
+// once CH is fully warm. Dispatch 27505378745 captured exactly this: a first
+// close at 16:49:08, then a re-open, then the FINAL stable close at 16:50:46 —
+// ~98 s after the first observable HALF-OPEN. The old 90 s drive deadline
+// expired at 16:50:41, ~5 s BEFORE that final close, so a single-sample poll
+// gave up mid-oscillation and the binding assert read a transient HALF-OPEN.
+// The gauge also rides the OTLP self-metric pipeline (cerberus -> collector ->
+// CH -> Prom head), so it LAGS real state by the flush/scrape interval and is
+// PER-REPLICA (>=2 via the HPA floor); queryBreakerMetric() takes the MAX
+// across replica series, so a non-zero from ANY lagged/oscillating replica
+// keeps the read off CLOSED until every replica has genuinely settled.
+//
+// The fix gates on TWO things, both of which a genuinely-recovered breaker
+// reaches and a genuinely-stuck-open one never does:
+//   1. a behavioral real-time gate — query=up returns 200 continuously for a
+//      hold window (the breaker is admitting traffic with no re-trip), and
+//   2. the OTLP gauge reading CLOSED (max across all replica series) and
+//      HOLDING CLOSED for the same hold window (absorbs OTLP lag + per-replica
+//      oscillation; a mid-warm-up transient half-open breaks the hold and the
+//      wait continues rather than passing prematurely).
+// Deadline raised to comfortably exceed the observed ~98 s warm-up + a few
+// seconds of OTLP propagation, with margin for a slower CI runner.
+const BREAKER_CLOSE_DEADLINE_MS = 180_000; // > observed ~98s CH warm-up oscillation + OTLP lag, with CI margin
+const BREAKER_CLOSE_STABILITY_MS = 15_000; // CLOSED must HOLD this long (behaviorally + on the gauge) to count as settled
+const BREAKER_CLOSE_DRIVE_QUERIES = 8; // successful CH-touching queries to fire per drive tick (covers >=2 replicas' breakers)
+const BREAKER_CLOSE_HOLD_INTERVAL_MS = 3_000; // re-check cadence inside the hold window
 
 // cerberus_ch_breaker_state gauge encoding — mirrors the breakerGauge* consts
 // in internal/chclient/breaker_metrics.go (closed=0, open=1, half-open=2). The
@@ -335,30 +363,71 @@ async function queryBreakerMetric(metric) {
   }
 }
 
+// driveOneBurst — fan out BREAKER_CLOSE_DRIVE_QUERIES successful CH-touching
+// prom-head queries so every replica's main breaker gets a HALF-OPEN probe + a
+// closing success (with >=2 replicas the Service round-robins, so a single
+// query may miss a still-HALF-OPEN replica). Returns true iff EVERY query in
+// the burst returned 200 — i.e. no replica fast-failed (503) and no transport
+// error, which is the behavioral, real-time signal that the breaker is
+// admitting traffic with no re-trip. A non-200 means we drive again; the close
+// only lands once a probe succeeds.
+async function driveOneBurst() {
+  let allOk = true;
+  for (let i = 0; i < BREAKER_CLOSE_DRIVE_QUERIES; i += 1) {
+    const r = await httpGet('/api/v1/query?query=up', { timeoutMs: 10_000 });
+    if (r.status !== 200) allOk = false;
+  }
+  return allOk;
+}
+
+// breakerSettledClosed — confirm the close is STABLE, not a transient caught
+// mid-oscillation. Requires BOTH gates to hold continuously for
+// BREAKER_CLOSE_STABILITY_MS:
+//   - behavioral (real-time): a query=up burst keeps returning all-200 (the
+//     breaker keeps admitting traffic; a re-trip would 503), and
+//   - the OTLP gauge: cerberus_ch_breaker_state reads CLOSED as the MAX across
+//     ALL replica series (queryBreakerMetric maxes them, so any lagged or
+//     oscillating replica reading non-zero breaks the hold).
+// Returns true iff the hold completes uninterrupted; false the moment either
+// gate regresses (so the caller keeps driving). This absorbs OTLP lag +
+// per-replica oscillation while staying binding: a genuinely-stuck-open breaker
+// never holds, so it still fails.
+async function breakerSettledClosed() {
+  const holdStart = Date.now();
+  while (Date.now() - holdStart < BREAKER_CLOSE_STABILITY_MS) {
+    const burstOk = await driveOneBurst();
+    if (!burstOk) return false; // a 503/transport error = re-trip; not settled
+    const state = await queryBreakerMetric('cerberus_ch_breaker_state');
+    // null = gauge not yet flushed (OTLP lag) — not a confirmed CLOSED, so the
+    // hold cannot complete on it; keep driving from the outer loop.
+    if (state !== BREAKER_STATE_CLOSED) return false;
+    await sleep(BREAKER_CLOSE_HOLD_INTERVAL_MS);
+  }
+  return true;
+}
+
 // driveBreakerClosed — after CH recovers, the main query breaker is in
 // HALF-OPEN until a SUCCESSFUL CH-touching request flows through it and closes
-// it (breaker.go record(): stateHalfOpen + err==nil -> stateClosed). This
-// fires a burst of successful prom-head queries (each a real CH round-trip
-// through the main breaker) on every poll tick and polls cerberus_ch_breaker_state
-// until it reads CLOSED (0) or the deadline elapses. Returns true once CLOSED,
-// false on timeout. It is a DRIVE, not a tolerance: callers still bindingly
-// assert the gauge reads CLOSED afterwards.
+// it (breaker.go record(): stateHalfOpen + err==nil -> stateClosed). The CH pod
+// boots onto a PVC and the heal re-seed loads it, so CH is intermittently
+// available during warm-up and the breaker OSCILLATES (close -> transient
+// re-open -> final close). A single CLOSED sample can therefore catch a
+// transient; we instead drive sustained successful prom-head queries (each a
+// real CH round-trip through the main breaker) and wait for a SETTLED,
+// all-replica CLOSED state that HOLDS for BREAKER_CLOSE_STABILITY_MS on both
+// the behavioral (all-200) and gauge (max-across-replicas == 0) signals.
+// Returns true once settled, false on timeout. It is a DRIVE + SETTLE, not a
+// tolerance: callers still bindingly assert the gauge reads CLOSED afterwards,
+// and a genuinely-stuck breaker never settles so the assert still fails.
 async function driveBreakerClosed(deadlineMs) {
   return pollUntil(
     async () => {
-      // Fan out successful CH-touching queries so every replica's main breaker
-      // gets a HALF-OPEN probe + a closing success (with >=2 replicas the
-      // Service round-robins, so a single query may miss a still-HALF-OPEN
-      // replica). A non-200 here is fine — it just means we drive again next
-      // tick; the close only lands once a probe succeeds.
-      for (let i = 0; i < BREAKER_CLOSE_DRIVE_QUERIES; i += 1) {
-        await httpGet('/api/v1/query?query=up', { timeoutMs: 10_000 });
-      }
-      const state = await queryBreakerMetric('cerberus_ch_breaker_state');
-      // null = gauge not yet flushed (OTLP lag); keep driving until it reads a
-      // concrete CLOSED. We must not clear on null here — the binding assert
-      // that follows tolerates null, but the DRIVE wants a real CLOSED read.
-      return state === BREAKER_STATE_CLOSED;
+      // Drive once to admit recovery probes across all replicas, then attempt
+      // to confirm a STABLE close. breakerSettledClosed drives further bursts
+      // inside its own hold window, so a steady stream of CH-touching queries
+      // flows the whole time; it returns true only once CLOSED has held.
+      await driveOneBurst();
+      return breakerSettledClosed();
     },
     { deadlineMs, intervalMs: SETTLE_INTERVAL_MS, label: 'breaker-close' },
   );
