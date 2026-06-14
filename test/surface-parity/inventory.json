@@ -580,10 +580,9 @@
       "symbol": "fn:mad_over_time",
       "kind": "function",
       "probe": "mad_over_time(up[5m])",
-      "cerberus": "reject",
+      "cerberus": "accept",
       "reference": "reject",
-      "class": "parity-reject",
-      "cerberus_error": "emit: chsql: unsupported: range function \"mad_over_time\""
+      "class": "wrong-accept"
     },
     {
       "head": "promql",
@@ -874,40 +873,36 @@
       "symbol": "fn:ts_of_first_over_time",
       "kind": "function",
       "probe": "ts_of_first_over_time(up[5m])",
-      "cerberus": "reject",
+      "cerberus": "accept",
       "reference": "reject",
-      "class": "parity-reject",
-      "cerberus_error": "emit: chsql: unsupported: range function \"ts_of_first_over_time\""
+      "class": "wrong-accept"
     },
     {
       "head": "promql",
       "symbol": "fn:ts_of_last_over_time",
       "kind": "function",
       "probe": "ts_of_last_over_time(up[5m])",
-      "cerberus": "reject",
+      "cerberus": "accept",
       "reference": "reject",
-      "class": "parity-reject",
-      "cerberus_error": "emit: chsql: unsupported: range function \"ts_of_last_over_time\""
+      "class": "wrong-accept"
     },
     {
       "head": "promql",
       "symbol": "fn:ts_of_max_over_time",
       "kind": "function",
       "probe": "ts_of_max_over_time(up[5m])",
-      "cerberus": "reject",
+      "cerberus": "accept",
       "reference": "reject",
-      "class": "parity-reject",
-      "cerberus_error": "emit: chsql: unsupported: range function \"ts_of_max_over_time\""
+      "class": "wrong-accept"
     },
     {
       "head": "promql",
       "symbol": "fn:ts_of_min_over_time",
       "kind": "function",
       "probe": "ts_of_min_over_time(up[5m])",
-      "cerberus": "reject",
+      "cerberus": "accept",
       "reference": "reject",
-      "class": "parity-reject",
-      "cerberus_error": "emit: chsql: unsupported: range function \"ts_of_min_over_time\""
+      "class": "wrong-accept"
     },
     {
       "head": "promql",
