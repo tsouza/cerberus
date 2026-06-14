@@ -107,6 +107,12 @@ func allNodeCases() []nodeExhaustivenessCase {
 		//     two-child path. ---
 		{"MetricsCompare", &chplan.MetricsCompare{Inner: sentinelChild(), RootLookup: sentinelChild()}, false},
 
+		// --- InfoJoin: Input (base) + Info (info-metric scan). Plant the
+		//     sentinel in both so the recursion assertion exercises the
+		//     two-child path; field names differ from Left/Right so it
+		//     lands in the irregular arm. ---
+		{"InfoJoin", &chplan.InfoJoin{Input: sentinelChild(), Info: sentinelChild()}, false},
+
 		// --- multi-arm interior nodes ---
 		{"UnionAll", &chplan.UnionAll{Inputs: []chplan.Node{sentinelChild(), sentinelChild()}}, false},
 		{"NaryVectorSetOp", &chplan.NaryVectorSetOp{Arms: []chplan.Node{sentinelChild(), sentinelChild()}}, false},
@@ -124,7 +130,7 @@ func allNodeCases() []nodeExhaustivenessCase {
 // implementations. Cross-checked against
 // `grep -rn 'planNode()' internal/chplan/*.go`. Bump this (and add a table
 // row + a rewriteChildren arm) when a new Node type lands.
-const expectedNodeTypeCount = 28
+const expectedNodeTypeCount = 29
 
 // TestRewriteChildren_TableCoversEveryNodeType is the count guard. If a new
 // chplan.Node type is added without a corresponding allNodeCases() row, the

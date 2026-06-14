@@ -160,10 +160,10 @@ func classifyCorpus(t *testing.T) map[string]decisionEntry {
 	// EnableExperimentalFunctions=true (see internal/api/prom/lang.go) so
 	// the deliberately-supported experimental subset
 	// (mad_over_time / ts_of_*_over_time / range() / step() / limitk() /
-	// histogram_quantiles / …) parses here exactly as it does in production
-	// and contributes its routing decision to the ratchet. Without this the
-	// ratchet rejects those corpus fixtures at parse time even though the
-	// engine accepts them.
+	// histogram_quantiles / info() / …) parses here exactly as it does in
+	// production and contributes its routing decision to the ratchet. Without
+	// this the ratchet rejects those corpus fixtures at parse time even though
+	// the engine accepts them.
 	parse := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
 	meta := solver.RequestMeta{
 		Lang:  "promql",

@@ -127,46 +127,20 @@ func cloneCompositeNode(n Node) Node {
 		c.Right = CloneNode(v.Right)
 		c.Match.Labels = cloneStrings(v.Match.Labels)
 		return &c
+	case *InfoJoin:
+		return cloneInfoJoin(v)
 	case *NaryVectorSetOp:
 		return cloneNaryVectorSetOp(v)
 	case *HistogramQuantile:
-		c := *v
-		c.Input = CloneNode(v.Input)
-		c.PhiExpr = cloneExpr(v.PhiExpr)
-		c.GroupBy = cloneExprs(v.GroupBy)
-		c.GroupByAliases = cloneStrings(v.GroupByAliases)
-		return &c
+		return cloneHistogramQuantile(v)
 	case *HistogramQuantileNative:
-		c := *v
-		c.Input = CloneNode(v.Input)
-		c.PhiExpr = cloneExpr(v.PhiExpr)
-		c.GroupBy = cloneExprs(v.GroupBy)
-		c.GroupByAliases = cloneStrings(v.GroupByAliases)
-		return &c
+		return cloneHistogramQuantileNative(v)
 	case *MetricsAggregate:
-		c := *v
-		c.Attr = cloneExpr(v.Attr)
-		c.GroupBy = cloneExprs(v.GroupBy)
-		c.GroupByAliases = cloneStrings(v.GroupByAliases)
-		c.GroupByDisplayNames = cloneStrings(v.GroupByDisplayNames)
-		c.Quantiles = cloneFloats(v.Quantiles)
-		c.Inner = CloneNode(v.Inner)
-		return &c
+		return cloneMetricsAggregate(v)
 	case *MetricsCompare:
-		c := *v
-		c.Selection = cloneExpr(v.Selection)
-		c.Pairs = cloneExpr(v.Pairs)
-		c.RootLookup = CloneNode(v.RootLookup)
-		c.Inner = CloneNode(v.Inner)
-		return &c
+		return cloneMetricsCompare(v)
 	case *MetricsHistogramOverTime:
-		c := *v
-		c.Attr = cloneExpr(v.Attr)
-		c.GroupBy = cloneExprs(v.GroupBy)
-		c.GroupByAliases = cloneStrings(v.GroupByAliases)
-		c.GroupByDisplayNames = cloneStrings(v.GroupByDisplayNames)
-		c.Inner = CloneNode(v.Inner)
-		return &c
+		return cloneMetricsHistogramOverTime(v)
 	case *MetricsSecondStage:
 		c := *v
 		c.Input = CloneNode(v.Input)
@@ -191,6 +165,83 @@ func cloneNaryVectorSetOp(v *NaryVectorSetOp) Node {
 		c.Arms[i] = CloneNode(arm)
 	}
 	c.Match.Labels = cloneStrings(v.Match.Labels)
+	return &c
+}
+
+// cloneInfoJoin deep-copies an info() label-enrichment join, cloning both
+// plan inputs and the identity / data label slices. Split out of
+// cloneCompositeNode so that switch stays within the funlen budget.
+func cloneInfoJoin(v *InfoJoin) Node {
+	c := *v
+	c.Input = CloneNode(v.Input)
+	c.Info = CloneNode(v.Info)
+	c.IdentityLabels = cloneStrings(v.IdentityLabels)
+	c.DataLabels = cloneStrings(v.DataLabels)
+	return &c
+}
+
+// cloneHistogramQuantile deep-copies a classic-histogram quantile node.
+// Split out of cloneCompositeNode so that switch stays within the funlen
+// budget.
+func cloneHistogramQuantile(v *HistogramQuantile) Node {
+	c := *v
+	c.Input = CloneNode(v.Input)
+	c.PhiExpr = cloneExpr(v.PhiExpr)
+	c.GroupBy = cloneExprs(v.GroupBy)
+	c.GroupByAliases = cloneStrings(v.GroupByAliases)
+	return &c
+}
+
+// cloneHistogramQuantileNative deep-copies a native-histogram quantile node.
+// Split out of cloneCompositeNode so that switch stays within the funlen
+// budget.
+func cloneHistogramQuantileNative(v *HistogramQuantileNative) Node {
+	c := *v
+	c.Input = CloneNode(v.Input)
+	c.PhiExpr = cloneExpr(v.PhiExpr)
+	c.GroupBy = cloneExprs(v.GroupBy)
+	c.GroupByAliases = cloneStrings(v.GroupByAliases)
+	return &c
+}
+
+// cloneMetricsAggregate deep-copies a TraceQL metrics aggregate node, cloning
+// its attribute expr, group-by exprs/aliases/display-names, quantile slice,
+// and inner plan. Split out of cloneCompositeNode so that switch stays within
+// the funlen budget.
+func cloneMetricsAggregate(v *MetricsAggregate) Node {
+	c := *v
+	c.Attr = cloneExpr(v.Attr)
+	c.GroupBy = cloneExprs(v.GroupBy)
+	c.GroupByAliases = cloneStrings(v.GroupByAliases)
+	c.GroupByDisplayNames = cloneStrings(v.GroupByDisplayNames)
+	c.Quantiles = cloneFloats(v.Quantiles)
+	c.Inner = CloneNode(v.Inner)
+	return &c
+}
+
+// cloneMetricsCompare deep-copies a TraceQL compare() node, cloning its
+// selection / pairs exprs and both plan inputs. Split out of
+// cloneCompositeNode so that switch stays within the funlen budget.
+func cloneMetricsCompare(v *MetricsCompare) Node {
+	c := *v
+	c.Selection = cloneExpr(v.Selection)
+	c.Pairs = cloneExpr(v.Pairs)
+	c.RootLookup = CloneNode(v.RootLookup)
+	c.Inner = CloneNode(v.Inner)
+	return &c
+}
+
+// cloneMetricsHistogramOverTime deep-copies a TraceQL histogram_over_time
+// node, cloning its attribute expr, group-by exprs/aliases/display-names, and
+// inner plan. Split out of cloneCompositeNode so that switch stays within the
+// funlen budget.
+func cloneMetricsHistogramOverTime(v *MetricsHistogramOverTime) Node {
+	c := *v
+	c.Attr = cloneExpr(v.Attr)
+	c.GroupBy = cloneExprs(v.GroupBy)
+	c.GroupByAliases = cloneStrings(v.GroupByAliases)
+	c.GroupByDisplayNames = cloneStrings(v.GroupByDisplayNames)
+	c.Inner = CloneNode(v.Inner)
 	return &c
 }
 

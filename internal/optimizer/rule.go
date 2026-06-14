@@ -534,6 +534,25 @@ func rewriteIrregularNode(n chplan.Node, fn func(chplan.Node) (chplan.Node, bool
 		cp := *v
 		cp.Arms = newArms
 		return &cp, true, true
+	case *chplan.InfoJoin:
+		// Two always-present children carried as Input (the base vector)
+		// + Info (the info-metric scan). Recurse into both so the per-
+		// side LWR / PREWHERE-promotable Filter(Scan) subtrees stay
+		// reachable to the optimizer. Field names differ from the
+		// Left/Right binary shape, so this lands in the irregular arm.
+		newInput, inCh := fn(v.Input)
+		newInfo, infoCh := fn(v.Info)
+		if !inCh && !infoCh {
+			return v, false, true
+		}
+		cp := *v
+		if inCh {
+			cp.Input = newInput
+		}
+		if infoCh {
+			cp.Info = newInfo
+		}
+		return &cp, true, true
 	case *chplan.MetricsCompare:
 		// Inner is the always-present child; RootLookup is an optional
 		// second child (the service-graph root-name join side). Recurse

@@ -3250,6 +3250,16 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "promql/info_target_info_enrichment",
+    "fan_factor": 1,
+    "scan_rows": 2,
+    "peak_intermediate": 2,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "promql/irate_over_subquery",
     "fan_factor": 1,
     "scan_rows": 3,

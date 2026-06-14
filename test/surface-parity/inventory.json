@@ -505,10 +505,9 @@
       "symbol": "fn:info",
       "kind": "function",
       "probe": "info(http_server_request_duration_count)",
-      "cerberus": "reject",
+      "cerberus": "accept",
       "reference": "reject",
-      "class": "parity-reject",
-      "cerberus_error": "promql: function info is not yet supported"
+      "class": "wrong-accept"
     },
     {
       "head": "promql",

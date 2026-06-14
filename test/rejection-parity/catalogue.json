@@ -451,6 +451,27 @@
     },
     {
       "head": "promql",
+      "site": "internal/promql/info_fn.go:lowerInfo#4ef6f344",
+      "message": "promql: info(...) second-argument __name__ matcher must be an equality match, got %q",
+      "class": "rejection",
+      "trigger_query": "info(up, {__name__=~\"target.*\"})"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/info_fn.go:lowerInfo#9e913846",
+      "message": "promql: info expects 1 or 2 arguments, got %d",
+      "class": "internal",
+      "rationale": "The PromQL parser pins info() arity via Variadic:1 over a two-vector ArgTypes signature, so a call with zero or three-plus arguments is rejected at parse time and never reaches lowering."
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/info_fn.go:lowerInfo#a1d855c7",
+      "message": "promql: info(...) second argument must be a label selector, got %T",
+      "class": "internal",
+      "rationale": "The reference engine's evalInfo itself type-asserts args[1] to *parser.VectorSelector; a non-selector vector second argument is not a meaningful info label-selector and the guard mirrors that upstream assumption rather than panicking on the cast."
+    },
+    {
+      "head": "promql",
       "site": "internal/promql/instant_fns.go:lowerClamp#dd15dfed",
       "message": "promql: clamp expects 3 arguments, got %d",
       "class": "internal",
@@ -538,7 +559,7 @@
       "site": "internal/promql/lower.go:lowerCall#ab321c46",
       "message": "promql: function %s is not yet supported",
       "class": "rejection",
-      "trigger_query": "info(up)"
+      "trigger_query": "sort_by_label(up, \"job\")"
     },
     {
       "head": "promql",

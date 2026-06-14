@@ -1020,6 +1020,12 @@
     "reason": "not-sliceable"
   },
   {
+    "query": "info_target_info_enrichment",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
     "query": "irate_over_subquery",
     "routed": true,
     "k": 8,

@@ -280,6 +280,14 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		for _, arm := range v.Arms {
 			printNode(b, arm, depth+1)
 		}
+	case *chplan.InfoJoin:
+		fmt.Fprintf(b, "%sInfoJoin identity=[%s]", indent, strings.Join(v.IdentityLabels, ", "))
+		if len(v.DataLabels) > 0 {
+			fmt.Fprintf(b, " dataLabels=[%s]", strings.Join(v.DataLabels, ", "))
+		}
+		b.WriteString("\n")
+		printNode(b, v.Input, depth+1)
+		printNode(b, v.Info, depth+1)
 	case *chplan.StructuralJoin:
 		fmt.Fprintf(b, "%sStructuralJoin op=%s", indent, v.Op)
 		if v.MaxDepth != 0 {
