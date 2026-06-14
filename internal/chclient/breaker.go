@@ -503,8 +503,11 @@ func (b *breaker) record(ctx context.Context, err error) {
 }
 
 // observeLevel returns the breaker's CURRENT lifecycle phase as the gauge
-// level (breakerGaugeClosed / _Open / _HalfOpen) plus its stable string label,
-// read under b.mu so the observable-gauge callback gets a tear-free snapshot.
+// level (breakerGaugeClosed / _Open / _HalfOpen), read under b.mu so the
+// observable-gauge callback gets a tear-free snapshot. The level IS the phase
+// — there is no companion string label, because a phase-keyed label would
+// orphan the prior-phase series on every transition and leave it stale (see
+// registerStateCallback).
 //
 // Unlike peek(), it does NOT evaluate the OPEN backoff window: the gauge must
 // mirror the breaker's STORED state field exactly (the same value
@@ -512,19 +515,19 @@ func (b *breaker) record(ctx context.Context, err error) {
 // allow() has yet driven to HALF-OPEN still reports OPEN — the gauge tracks
 // what the breaker IS, not what the next allow() would make it. A nil breaker
 // (zero-value Client) is permanently CLOSED, matching allow().
-func (b *breaker) observeLevel() (int64, string) {
+func (b *breaker) observeLevel() int64 {
 	if b == nil {
-		return breakerGaugeClosed, "closed"
+		return breakerGaugeClosed
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	switch b.state {
 	case stateOpen:
-		return breakerGaugeOpen, "open"
+		return breakerGaugeOpen
 	case stateHalfOpen:
-		return breakerGaugeHalfOpen, "half-open"
+		return breakerGaugeHalfOpen
 	default:
-		return breakerGaugeClosed, "closed"
+		return breakerGaugeClosed
 	}
 }
 

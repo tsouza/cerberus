@@ -13,11 +13,16 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
-// breakerGaugeLevels collects every cerberus_ch_breaker_state data point from
-// a manual-reader snapshot, keyed by its "state" attribute. The gauge is
-// observable: its callback reports exactly one sample per breaker (the head's
-// CURRENT state) on each collection, so the map holds the live level per
-// state-label present in this snapshot.
+// breakerGaugeLevels collects the cerberus_ch_breaker_state data points from a
+// manual-reader snapshot, keyed by the breaker's HEAD. The gauge carries ONE
+// series per head, keyed only on `head` — the numeric level (0/1/2) IS the
+// phase, so there is deliberately NO `state` label. A leveled gauge keyed on
+// the phase would orphan the prior-phase series on every transition (an OTel
+// observable gauge only overwrites series it re-observes), leaving a stale
+// state="open"=1 lingering after recovery — exactly the chaos-lane bug. So the
+// helper additionally asserts NO data point carries a `state` attribute, and
+// that no head appears more than once: the invariants that keep the gauge from
+// going stale over OTLP.
 func breakerGaugeLevels(t *testing.T, reader *metric.ManualReader) map[string]int64 {
 	t.Helper()
 	var rm metricdata.ResourceMetrics
@@ -37,11 +42,17 @@ func breakerGaugeLevels(t *testing.T, reader *metric.ManualReader) map[string]in
 				t.Fatalf("breaker_state data: want Gauge[int64], got %T", m.Data)
 			}
 			for _, dp := range g.DataPoints {
-				st, ok := dp.Attributes.Value("state")
-				if !ok {
-					t.Fatalf("breaker_state data point missing state attribute: %v", dp.Attributes.ToSlice())
+				if _, ok := dp.Attributes.Value("state"); ok {
+					t.Fatalf("breaker_state must NOT carry a `state` label (orphan-series bug): %v", dp.Attributes.ToSlice())
 				}
-				levels[st.AsString()] = dp.Value
+				h, ok := dp.Attributes.Value("head")
+				if !ok {
+					t.Fatalf("breaker_state data point missing head attribute: %v", dp.Attributes.ToSlice())
+				}
+				if _, dup := levels[h.AsString()]; dup {
+					t.Fatalf("breaker_state head %q appears twice in one collection (orphan-series bug)", h.AsString())
+				}
+				levels[h.AsString()] = dp.Value
 			}
 		}
 	}
@@ -108,12 +119,12 @@ func TestBreakerMetrics_ZeroInitAtConstruction(t *testing.T) {
 		t.Errorf("trips_total before any trip: want 0, got %d", got)
 	}
 	levels := breakerGaugeLevels(t, reader)
-	got, ok := levels["closed"]
+	got, ok := levels[HeadProm.String()]
 	if !ok {
-		t.Fatalf("breaker_state: missing closed stream (panel would show No data)")
+		t.Fatalf("breaker_state: missing prom-head stream (panel would show No data)")
 	}
 	if got != breakerGaugeClosed {
-		t.Errorf("breaker_state closed: want %d at construction, got %d", breakerGaugeClosed, got)
+		t.Errorf("breaker_state prom: want %d (closed) at construction, got %d", breakerGaugeClosed, got)
 	}
 }
 
@@ -157,17 +168,15 @@ func TestBreakerMetrics_ObservableNeverStale(t *testing.T) {
 	}
 
 	// Many collection intervals later, with NO further transition, the
-	// observable callback must still report the CURRENT level: 0/closed.
+	// observable callback must still report the CURRENT level: 0/closed. The
+	// single prom-head series is overwritten in place each collection, so it
+	// reads 0 — and breakerGaugeLevels asserts there is exactly ONE series for
+	// the head with NO `state` label, so no transient open/half-open level can
+	// survive as an orphan series (the OTLP stale-gauge bug the chaos lane hit).
 	now = base.Add(5 * time.Minute)
 	levels := breakerGaugeLevels(t, reader)
-	if got, ok := levels["closed"]; !ok || got != breakerGaugeClosed {
-		t.Fatalf("stale-gauge regression: closed level = %d (ok=%v), want %d", got, ok, breakerGaugeClosed)
-	}
-	// Critically, NO half-open sample must survive: the pre-fix bug left a
-	// lingering 2. The observable gauge reports exactly one sample per head
-	// (the current state), so half-open must be absent entirely.
-	if _, ok := levels["half-open"]; ok {
-		t.Fatalf("stale-gauge regression: half-open sample lingers after breaker closed (the chaos-lane bug)")
+	if got, ok := levels[HeadProm.String()]; !ok || got != breakerGaugeClosed {
+		t.Fatalf("stale-gauge regression: prom level = %d (ok=%v), want %d (closed)", got, ok, breakerGaugeClosed)
 	}
 }
 
@@ -201,8 +210,8 @@ func TestBreakerMetrics_TransitionsRecorded(t *testing.T) {
 	if got := breakerTripsTotal(t, reader); got != 1 {
 		t.Fatalf("trips_total after one trip: want 1, got %d", got)
 	}
-	if lv := breakerGaugeLevels(t, reader); lv["open"] != breakerGaugeOpen {
-		t.Fatalf("gauge open level after trip: want %d, got %d", breakerGaugeOpen, lv["open"])
+	if lv := breakerGaugeLevels(t, reader); lv[HeadProm.String()] != breakerGaugeOpen {
+		t.Fatalf("gauge level after trip: want %d (open), got %d", breakerGaugeOpen, lv[HeadProm.String()])
 	}
 
 	// OPEN -> HALF-OPEN (probe admitted past the 1s backoff).
@@ -210,8 +219,8 @@ func TestBreakerMetrics_TransitionsRecorded(t *testing.T) {
 	if !b.allow() {
 		t.Fatal("allow() did not admit the half-open probe")
 	}
-	if lv := breakerGaugeLevels(t, reader); lv["half-open"] != breakerGaugeHalfOpen {
-		t.Fatalf("gauge half-open level: want %d, got %d", breakerGaugeHalfOpen, lv["half-open"])
+	if lv := breakerGaugeLevels(t, reader); lv[HeadProm.String()] != breakerGaugeHalfOpen {
+		t.Fatalf("gauge level in half-open: want %d, got %d", breakerGaugeHalfOpen, lv[HeadProm.String()])
 	}
 
 	// HALF-OPEN -> CLOSED (probe succeeds).
@@ -219,8 +228,8 @@ func TestBreakerMetrics_TransitionsRecorded(t *testing.T) {
 	if got := b.currentState(); got != "closed" {
 		t.Fatalf("after probe success: state = %q, want closed", got)
 	}
-	if lv := breakerGaugeLevels(t, reader); lv["closed"] != breakerGaugeClosed {
-		t.Fatalf("gauge closed level after recovery: want %d, got %d", breakerGaugeClosed, lv["closed"])
+	if lv := breakerGaugeLevels(t, reader); lv[HeadProm.String()] != breakerGaugeClosed {
+		t.Fatalf("gauge level after recovery: want %d (closed), got %d", breakerGaugeClosed, lv[HeadProm.String()])
 	}
 	// The trip counter is monotonic: recovery does NOT decrement it.
 	if got := breakerTripsTotal(t, reader); got != 1 {

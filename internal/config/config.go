@@ -228,7 +228,7 @@ const configFileBaseName = "cerberus"
 //	CERBERUS_CH_DIAL_TIMEOUT       default "5s"
 //	CERBERUS_CH_MAX_OPEN_CONNS     default 10 (total pooled conns, busy + idle)
 //	CERBERUS_CH_MAX_IDLE_CONNS     default 5  (idle conns kept warm for reuse)
-//	CERBERUS_CH_CONN_MAX_LIFETIME  default "1h" (max age before a conn is recycled)
+//	CERBERUS_CH_CONN_MAX_LIFETIME  default "5m" (max age before a conn is recycled; short so a stale conn to a restarted CH pod recycles fast)
 //	CERBERUS_QUERY_MAX_SAMPLES     default 50000000 (0 disables the budget)
 //	CERBERUS_QUERY_TIMEOUT         default "2m" — per-query wall-clock cap stamped
 //	    as ClickHouse max_execution_time (timeout_overflow_mode=throw); the
@@ -558,23 +558,35 @@ const defaultQueryTimeout time.Duration = 2 * time.Minute
 // setting entirely (ClickHouse server defaults apply).
 const defaultCHQueryMaxMemory int64 = 1 << 30 // 1073741824 bytes
 
-// ClickHouse connection-pool defaults (#81). These reproduce
-// clickhouse-go/v2's previously-implicit defaults verbatim so the
-// non-sharded path stays behaviour-compatible: the driver defaulted
-// MaxIdleConns to 5, MaxOpenConns to MaxIdleConns+5 (= 10), and
-// ConnMaxLifetime to 1h. Cerberus now sets them explicitly here — the
-// ONE place pool sizing is derived — so the sharded-pushdown solver can
-// raise the ceiling for fan-out by bumping these (or the matching
-// CERBERUS_CH_MAX_OPEN_CONNS / CERBERUS_CH_MAX_IDLE_CONNS /
-// CERBERUS_CH_CONN_MAX_LIFETIME env vars) rather than inheriting an
-// implicit driver default. When the pool is exhausted an acquire blocks
-// up to DialTimeout and then fails with clickhouse.ErrAcquireConnTimeout,
-// which the circuit breaker treats neutrally (local pool-sizing signal,
-// not CH-health failure).
+// ClickHouse connection-pool defaults (#81). MaxIdleConns / MaxOpenConns
+// reproduce clickhouse-go/v2's previously-implicit defaults verbatim so the
+// non-sharded path stays behaviour-compatible (the driver defaulted
+// MaxIdleConns to 5, MaxOpenConns to MaxIdleConns+5 = 10). Cerberus sets
+// them explicitly here — the ONE place pool sizing is derived — so the
+// sharded-pushdown solver can raise the ceiling for fan-out by bumping these
+// (or the matching CERBERUS_CH_MAX_OPEN_CONNS / CERBERUS_CH_MAX_IDLE_CONNS /
+// CERBERUS_CH_CONN_MAX_LIFETIME env vars) rather than inheriting an implicit
+// driver default. When the pool is exhausted an acquire blocks up to
+// DialTimeout and then fails with clickhouse.ErrAcquireConnTimeout, which the
+// circuit breaker treats neutrally (local pool-sizing signal, not CH-health
+// failure).
+//
+// ConnMaxLifetime DEPARTS from the driver's 1h default: it is the backstop
+// that bounds how long a stale pooled conn to a RESTARTED ClickHouse backend
+// can loiter (ch-pod-kill recovery, run 27509796946). clickhouse-go v2.46.0
+// has no idle-time knob, and a force-killed pod's socket can stay ESTABLISHED
+// (no FIN/RST) so the driver's per-acquire socket check passes the dead conn
+// through; the conn is only retired once it ages past ConnMaxLifetime. At 1h
+// that left a never-queried idle conn dead-but-pooled for the better part of
+// an hour. 5m keeps the pool self-healing after a restart while staying long
+// enough that healthy conns are not churned on every request. The data-path
+// transport-retry (internal/chclient/retry.go) already makes a stale conn
+// transparent on the first QUERY regardless of this value; this just caps the
+// loiter window for idle conns that are never queried.
 const (
 	defaultCHMaxOpenConns                  = 10
 	defaultCHMaxIdleConns                  = 5
-	defaultCHConnMaxLifetime time.Duration = time.Hour
+	defaultCHConnMaxLifetime time.Duration = 5 * time.Minute
 )
 
 // Circuit-breaker defaults (#95). These reproduce the previously-

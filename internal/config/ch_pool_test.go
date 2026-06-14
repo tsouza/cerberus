@@ -6,10 +6,12 @@ import (
 	"time"
 )
 
-// TestFromEnv_CHPool_Defaults pins the explicit pool defaults (#81) to
-// clickhouse-go/v2's previously-implicit values, so the non-sharded path
-// stays behaviour-compatible: MaxOpenConns 10, MaxIdleConns 5,
-// ConnMaxLifetime 1h.
+// TestFromEnv_CHPool_Defaults pins the explicit pool defaults (#81).
+// MaxOpenConns / MaxIdleConns reproduce clickhouse-go/v2's implicit values
+// (10 / 5) so the non-sharded path stays behaviour-compatible. ConnMaxLifetime
+// DEPARTS from the driver's 1h default: it is 5m, the backstop that bounds how
+// long a stale pooled conn to a restarted backend can loiter (ch-pod-kill
+// recovery, run 27509796946).
 func TestFromEnv_CHPool_Defaults(t *testing.T) {
 	t.Setenv("CERBERUS_CH_MAX_OPEN_CONNS", "")
 	t.Setenv("CERBERUS_CH_MAX_IDLE_CONNS", "")
@@ -24,8 +26,8 @@ func TestFromEnv_CHPool_Defaults(t *testing.T) {
 	if cfg.ClickHouse.MaxIdleConns != 5 {
 		t.Errorf("MaxIdleConns = %d; want 5 (clickhouse-go implicit default)", cfg.ClickHouse.MaxIdleConns)
 	}
-	if cfg.ClickHouse.ConnMaxLifetime != time.Hour {
-		t.Errorf("ConnMaxLifetime = %s; want 1h (clickhouse-go implicit default)", cfg.ClickHouse.ConnMaxLifetime)
+	if cfg.ClickHouse.ConnMaxLifetime != 5*time.Minute {
+		t.Errorf("ConnMaxLifetime = %s; want 5m (restart-recovery backstop, not the driver's 1h)", cfg.ClickHouse.ConnMaxLifetime)
 	}
 }
 
